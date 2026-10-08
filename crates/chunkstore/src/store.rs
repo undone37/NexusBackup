@@ -104,6 +104,41 @@ pub struct VerifyReport {
     pub missing: Vec<ChunkId>,
 }
 
+/// Random access into a fixed index (restore / instant recovery), caching the last chunk.
+pub struct ImageReader<'a> {
+    store: &'a Store,
+    chunk_size: u64,
+    size: u64,
+    chunks: &'a [ChunkId],
+    cached: Option<(usize, Vec<u8>)>,
+}
+
+impl ImageReader<'_> {
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub fn read_at(&mut self, off: u64, buf: &mut [u8]) -> io::Result<()> {
+        if off.checked_add(buf.len() as u64).is_none_or(|e| e > self.size) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "read beyond image end"));
+        }
+        let mut done = 0;
+        while done < buf.len() {
+            let pos = off + done as u64;
+            let n = (pos / self.chunk_size) as usize;
+            if self.cached.as_ref().is_none_or(|(c, _)| *c != n) {
+                self.cached = Some((n, self.store.read_chunk(&self.chunks[n])?));
+            }
+            let data = &self.cached.as_ref().unwrap().1;
+            let at = (pos % self.chunk_size) as usize;
+            let k = (data.len() - at).min(buf.len() - done);
+            buf[done..done + k].copy_from_slice(&data[at..at + k]);
+            done += k;
+        }
+        Ok(())
+    }
+}
+
 pub struct Store {
     root: PathBuf,
     keys: Keyring,
@@ -233,6 +268,24 @@ impl Store {
         fs::rename(&tmp, &path)?;
         self.dirty_dirs.lock().unwrap().insert(dir.to_owned());
         Ok((id, true))
+    }
+
+    pub fn image_reader<'a>(&'a self, index: &'a Index) -> io::Result<ImageReader<'a>> {
+        let Index::Fixed {
+            chunk_size,
+            size,
+            chunks,
+        } = index
+        else {
+            return Err(invalid("not a fixed index"));
+        };
+        Ok(ImageReader {
+            store: self,
+            chunk_size: *chunk_size as u64,
+            size: *size,
+            chunks,
+            cached: None,
+        })
     }
 
     pub fn read_chunk(&self, id: &ChunkId) -> io::Result<Vec<u8>> {

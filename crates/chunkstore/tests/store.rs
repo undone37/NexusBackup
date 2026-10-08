@@ -244,3 +244,26 @@ fn dirty_extents_incremental_matches_full_read() {
         .unwrap();
     assert_eq!(i4, full(&v4));
 }
+
+#[test]
+fn image_reader_random_access() {
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), 0, 0);
+    let mut img = image(3);
+    img.extend(vec![9u8; 777]);
+    let idx = s.store_image(&img[..], 65536).unwrap();
+    let mut r = s.image_reader(&idx).unwrap();
+    assert_eq!(r.size(), img.len() as u64);
+    for (off, len) in [
+        (0usize, 10usize),
+        (65530, 20),
+        (65536 * 6, 777),
+        (1, 65536 * 3),
+        (100, 0),
+    ] {
+        let mut b = vec![0u8; len];
+        r.read_at(off as u64, &mut b).unwrap();
+        assert_eq!(b, img[off..off + len]);
+    }
+    assert!(r.read_at(img.len() as u64 - 1, &mut [0, 0]).is_err());
+}
