@@ -313,13 +313,13 @@ impl<R: Read, W: Write> Client<R, W> {
     }
 }
 
-/// Chunk numbers touched by any extent with `flag` set (dirty bitmap: flag 1).
-pub fn chunks_with_flag(extents: &[(u64, u64, u32)], flag: u32, chunk_size: u64) -> Vec<bool> {
-    let size = extents.last().map_or(0, |e| e.0 + e.1);
-    let mut out = vec![false; size.div_ceil(chunk_size) as usize];
-    for &(off, len, f) in extents {
-        if f & flag != 0 && len > 0 {
-            (off / chunk_size..=(off + len - 1) / chunk_size).for_each(|n| out[n as usize] = true);
+/// `(offset, len)` of extents with `flag` set (dirty bitmap: flag 1), adjacent ones merged.
+pub fn flagged(extents: &[(u64, u64, u32)], flag: u32) -> Vec<(u64, u64)> {
+    let mut out: Vec<(u64, u64)> = Vec::new();
+    for &(off, len, _) in extents.iter().filter(|e| e.2 & flag != 0 && e.1 > 0) {
+        match out.last_mut() {
+            Some(last) if last.0 + last.1 == off => last.1 += len,
+            _ => out.push((off, len)),
         }
     }
     out
@@ -355,11 +355,8 @@ impl<R: Read, W: Write> Seek for Client<R, W> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn chunk_mapping() {
-        let ext = [(0, 100, 0), (100, 1, 1), (101, 299, 0), (400, 200, 1)];
-        assert_eq!(
-            super::chunks_with_flag(&ext, 1, 100),
-            vec![false, true, false, false, true, true]
-        );
+    fn flagged_merges_adjacent() {
+        let ext = [(0, 100, 0), (100, 1, 1), (101, 299, 0), (400, 100, 1), (500, 100, 3)];
+        assert_eq!(super::flagged(&ext, 1), vec![(100, 1), (400, 200)]);
     }
 }

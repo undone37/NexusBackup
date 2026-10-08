@@ -192,22 +192,55 @@ fn survives_kill_9() {
     }
 }
 
+/// read_at that fails outside the allowed extents, like a PVE snapshot-access export.
+fn reader<'a>(data: &'a [u8], allowed: &'a [(u64, u64)]) -> impl FnMut(u64, &mut [u8]) -> std::io::Result<()> + 'a {
+    move |off, buf| {
+        let end = off + buf.len() as u64;
+        assert!(
+            allowed.iter().any(|&(o, l)| off >= o && end <= o + l),
+            "read of clean area {off}..{end}"
+        );
+        buf.copy_from_slice(&data[off as usize..end as usize]);
+        Ok(())
+    }
+}
+
 #[test]
-fn dirty_bitmap_incremental_matches_full_read() {
+fn dirty_extents_incremental_matches_full_read() {
     let d = tempfile::tempdir().unwrap();
     let s = open(d.path(), 0, 0);
-    let prev = s.store_image(&image(1)[..], 65536).unwrap();
-    // image(2) differs from image(1) in chunks 1 and 2; disk also grows by 1000 bytes
-    let mut next = image(2);
-    next.extend(vec![5u8; 1000]);
-    let size = next.len() as u64;
-    let inc = s
-        .store_image_dirty(&prev, std::io::Cursor::new(&next), size, |n| n == 1 || n == 2)
+    let cs = 65536usize;
+    let v1 = image(1);
+    let full = |data: &[u8]| s.store_image(data, cs).unwrap();
+    let all = [(0u64, u64::MAX / 2)];
+    let i1 = s
+        .store_image_extents(None, cs, v1.len() as u64, &all, reader(&v1, &all))
         .unwrap();
-    assert_eq!(inc, s.store_image(&next[..], 65536).unwrap());
-    // a wrong (empty) bitmap silently reuses stale chunks: proves only dirty chunks are read
-    let stale = s
-        .store_image_dirty(&prev, std::io::Cursor::new(&image(2)), 6 * 65536, |_| false)
+    assert_eq!(i1, full(&v1));
+
+    // image(2) differs in chunks 1 and 2; disk grows by 1000 bytes (tail must be read)
+    let mut v2 = image(2);
+    v2.extend(vec![5u8; 1000]);
+    let dirty = [(65536u64, 131072u64)];
+    let allowed = [(65536u64, 131072u64), (6 * 65536, 1000)];
+    let i2 = s
+        .store_image_extents(Some(&i1), cs, v2.len() as u64, &dirty, reader(&v2, &allowed))
         .unwrap();
-    assert_eq!(stale, prev);
+    assert_eq!(i2, full(&v2));
+
+    // 10 bytes change inside chunk 3: only those sectors are read, rest of chunk from base
+    let mut v3 = v2.clone();
+    v3[3 * 65536 + 100..3 * 65536 + 110].fill(0x77);
+    let dirty = [(3 * 65536 + 96u64, 16u64)];
+    let i3 = s
+        .store_image_extents(Some(&i2), cs, v3.len() as u64, &dirty, reader(&v3, &dirty))
+        .unwrap();
+    assert_eq!(i3, full(&v3));
+
+    // shrink: last chunk truncated from base without reads
+    let v4 = v3[..5 * 65536 + 10].to_vec();
+    let i4 = s
+        .store_image_extents(Some(&i3), cs, v4.len() as u64, &[], reader(&v4, &[]))
+        .unwrap();
+    assert_eq!(i4, full(&v4));
 }

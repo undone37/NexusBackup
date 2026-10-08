@@ -15,7 +15,7 @@ use crate::crypto::{hex, invalid, parse_hex, ChunkId, Keyring};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -258,43 +258,64 @@ impl Store {
         })
     }
 
-    /// Incremental-forever for block devices: only chunks flagged by `dirty`
-    /// (QEMU dirty bitmap, in chunk units) are read; the rest come from `prev`.
-    /// After bitmap loss use `store_image` (full read, still only new chunks stored).
-    pub fn store_image_dirty(
+    /// Incremental-forever for block devices. `dirty` = sorted, non-overlapping
+    /// `(offset, len)` extents of the QEMU dirty bitmap. Only dirty bytes (plus any
+    /// area beyond the previous size) are read via `read_at`: PVE snapshot-access
+    /// exports refuse reads of clean areas. Clean parts of a partly dirty chunk are
+    /// taken from the previous snapshot's chunk. `prev = None` reads everything.
+    pub fn store_image_extents(
         &self,
-        prev: &Index,
-        mut r: impl Read + Seek,
+        prev: Option<&Index>,
+        chunk_size: usize,
         size: u64,
-        dirty: impl Fn(u64) -> bool,
+        dirty: &[(u64, u64)],
+        mut read_at: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
     ) -> io::Result<Index> {
-        let Index::Fixed {
-            chunk_size,
-            size: prev_size,
-            chunks: prev_chunks,
-        } = prev
-        else {
-            return Err(invalid("previous index is not a fixed index"));
+        let (prev_size, prev_chunks) = match prev {
+            Some(Index::Fixed {
+                chunk_size: c,
+                size,
+                chunks,
+            }) if *c as usize == chunk_size => (*size, chunks.as_slice()),
+            Some(_) => return Err(invalid("previous index is not a fixed index with the same chunk size")),
+            None => (0, &[][..]),
         };
-        let cs = *chunk_size as u64;
-        let mut buf = vec![0u8; cs as usize];
+        let cs = chunk_size as u64;
+        let mut buf = vec![0u8; chunk_size];
         let mut chunks = Vec::with_capacity(size.div_ceil(cs) as usize);
+        let mut i = 0;
         for n in 0..size.div_ceil(cs) {
-            let end = ((n + 1) * cs).min(size);
-            let same_range = n < prev_chunks.len() as u64 && end == ((n + 1) * cs).min(*prev_size);
-            if same_range && !dirty(n) {
-                chunks.push(prev_chunks[n as usize]);
+            let (start, end) = (n * cs, ((n + 1) * cs).min(size));
+            while i < dirty.len() && dirty[i].0 + dirty[i].1 <= start {
+                i += 1;
+            }
+            let mut reads: Vec<(u64, u64)> = dirty[i..]
+                .iter()
+                .take_while(|e| e.0 < end)
+                .map(|&(o, l)| (o.max(start), (o + l).min(end)))
+                .collect();
+            if prev_size < end {
+                reads.push((prev_size.max(start), end)); // grown disk / no base
+            }
+            let base = prev_chunks.get(n as usize);
+            if reads.is_empty() && ((n + 1) * cs).min(prev_size) == end {
+                chunks.push(*base.unwrap());
                 continue;
             }
-            let len = (end - n * cs) as usize;
-            r.seek(SeekFrom::Start(n * cs))?;
-            if read_full(&mut r, &mut buf[..len])? != len {
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "device shorter than size"));
+            let chunk = &mut buf[..(end - start) as usize];
+            chunk.fill(0);
+            if let Some(id) = base {
+                let old = self.read_chunk(id)?;
+                let k = old.len().min(chunk.len());
+                chunk[..k].copy_from_slice(&old[..k]);
             }
-            chunks.push(self.insert_chunk(&buf[..len])?.0);
+            for (a, b) in reads {
+                read_at(a, &mut chunk[(a - start) as usize..(b - start) as usize])?;
+            }
+            chunks.push(self.insert_chunk(chunk)?.0);
         }
         Ok(Index::Fixed {
-            chunk_size: *chunk_size,
+            chunk_size: chunk_size as u32,
             size,
             chunks,
         })

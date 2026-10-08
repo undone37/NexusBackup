@@ -77,8 +77,7 @@ fn reads_data_holes_and_dirty_bitmap() {
 
     let ext = c.block_status(ctx).unwrap();
     assert_eq!(ext.iter().map(|e| e.1).sum::<u64>(), 64 << 20, "extents cover the disk");
-    let dirty = nbd::chunks_with_flag(&ext, 1, 4 << 20);
-    let idx: Vec<_> = dirty.iter().enumerate().filter(|(_, &d)| d).map(|(i, _)| i).collect();
-    assert_eq!(idx, vec![2, 10], "only chunks written after the bitmap was added");
+    // qcow2 bitmap granularity is 64 KiB: the 4 KiB write marks a whole 64 KiB block
+    assert_eq!(nbd::flagged(&ext, 1), vec![(8 << 20, 64 << 10), (40 << 20, 64 << 10)]);
     c.disconnect().unwrap();
 }
