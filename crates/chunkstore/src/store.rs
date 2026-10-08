@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
@@ -170,6 +171,11 @@ impl Store {
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => write_atomic(&check, &keys.seal(b"keycheck", b"ok"))?,
             Err(e) => return Err(e),
+        }
+        // A crashed predecessor may have renamed chunks into place without syncing
+        // their directories; we reuse such chunks without re-syncing, so flush once here.
+        if unsafe { libc::syncfs(File::open(&root)?.as_raw_fd()) } != 0 {
+            return Err(io::Error::last_os_error());
         }
         let clock = ComplianceClock::open(root.join("clock"), opts.clock_slew)?;
         Ok(Store {
@@ -337,6 +343,7 @@ impl Store {
             ));
         }
         fs::create_dir_all(&dir)?;
+        sync_dir(&self.root.join("snapshots"))?; // entry of a new <source> dir
         let dirty: Vec<_> = self.dirty_dirs.lock().unwrap().drain().collect();
         dirty.iter().try_for_each(|d| sync_dir(d))?;
         sync_dir(&self.root.join("chunks"))?;
