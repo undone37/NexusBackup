@@ -34,7 +34,8 @@ Decisions: PVE 9.x only · NBD over SSH stdio (forced command) · .deb via dpkg-
 - [ ] Lab: nested PVE 9 VM (agent)
 - [ ] On-node plugin (Perl storage + backup provider) + forced-command helper + .deb
 - [x] `crates/nbd`: NBD client (fixed newstyle, structured replies, meta contexts, block status, Read+Seek, transport-agnostic for SSH stdio); tested against qemu-nbd with a persistent dirty bitmap
-- [ ] Appliance side: PVE API client, orchestration into fixed index
+- [x] `crates/pve/src/api.rs`: PVE API client (token auth, TLS pinned to cluster CA, vzdump start, task status/wait/log) — **not yet tested against lab**
+- [ ] Appliance side: orchestration (vzdump → SSH helper → NBD → fixed index → snapshot)
 - [ ] LXC file-level backup, full VM restore, scheduling → M2
 
 ## Next

@@ -1,0 +1,14 @@
+[package]
+name = "pve"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1"
+chunkstore = { path = "../chunkstore" }
+nbd = { path = "../nbd" }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
