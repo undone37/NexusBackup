@@ -10,7 +10,8 @@ pub struct ApiConfig {
     /// Host name or IP as present in the node certificate (e.g. `pve1.lab.local`).
     pub host: String,
     pub port: u16,
-    /// Connect here instead of resolving `host` (NAT / lab port forwards).
+    /// Connect to this IP instead of resolving `host`. Only the IP is used: reqwest's
+    /// `resolve()` ignores the port, so `port` must already be the reachable port.
     pub connect_addr: Option<SocketAddr>,
     pub ca_pem: Vec<u8>,
     /// `user@realm!tokenid`

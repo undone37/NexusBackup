@@ -9,8 +9,8 @@ Status: v1 (2026-10-08). PVE 9.x only. API facts: `docs/pve-backup-provider-api.
 | `/usr/share/perl5/PVE/BackupProvider/Plugin/NexusBackup.pm` | backup provider plugin |
 | `/usr/lib/nexusbackup/helper` | SSH forced command (Perl, no deps beyond PVE's) |
 | user/group `nexusbackup` | unprivileged system user, shell `/bin/sh` (needed for forced command), no password |
-| `/run/nexusbackup/jobs/` | rendezvous dir, `0750 root:nexusbackup` (tmpfiles.d) |
-| `/var/lib/nexusbackup/<storeid>/index.json` | catalog pushed by the appliance, `0640 root:nexusbackup`, written by helper via group write on dir `0770 root:nexusbackup` |
+| `/run/nexusbackup/jobs/`, `/run/nexusbackup/restore/` | rendezvous dirs, `1770 root:nexusbackup` (tmpfiles.d; sticky so the helper cannot replace root's files) |
+| `/var/lib/nexusbackup/<storeid>/index.json` | catalog pushed by the appliance, `0640 nexusbackup:nexusbackup` (written by the helper) |
 
 `authorized_keys` of `nexusbackup`:
 `restrict,command="/usr/lib/nexusbackup/helper" ssh-ed25519 AAAA… nexus-appliance`
@@ -33,7 +33,7 @@ Fleecing is mandatory for provider VM backups; the appliance passes
 1. Appliance: `GET /cluster/resources?type=vm` → node of vmid. `POST /nodes/<node>/vzdump vmid=<id> storage=<storeid> mode=snapshot fleecing=enabled=1,storage=<fs>` → UPID.
 2. Plugin `backup_vm_query_incremental`: for each device return `use` if `index.json` lists a previous archive of this vmid that contains that device, else `new`.
 3. Plugin `backup_vm` (runs as root):
-   - `chgrp nexusbackup` + `chmod g+x` on the backup-access directory, `chgrp nexusbackup` + `chmod g+rw` on the NBD socket (dir is created by qemu-server with 0700; it is removed at teardown).
+   - `chgrp nexusbackup` + `chmod g+rw` on the NBD socket and hard-link it to `/run/nexusbackup/jobs/<vmid>.nbd` (same tmpfs); `nbd_socket` in the job JSON is that link. qemu-server's directories (`/run/qemu-server` is `0750 root:www-data`) stay untouched.
    - write `/run/nexusbackup/jobs/<vmid>.json` atomically (tmp + rename, mode 0640 root:nexusbackup):
      ```json
      {"vmid":100,"archive":"nexus-100-1760000000","nbd_socket":"/run/qemu-server/…-nbd.backup-access",
@@ -66,8 +66,8 @@ Plugin uses it for `list_volumes`, `archive_get_guest_config`, `archive_get_fire
 |---|---|
 | `job <vmid>` | print job JSON or exit 1 |
 | `nbd <vmid>` | pipe stdio ⇄ job's NBD socket |
-| `done <vmid> ok` / `done <vmid> fail <msg>` | write the done file |
-| `put-index <storeid>` | atomically replace `/var/lib/nexusbackup/<storeid>/index.json` from stdin (max 64 MiB, must parse as JSON) |
+| `done <vmid> ok` / `done <vmid> fail <msg>` | write the done file (`fail` requires a message) |
+| `put-index <storeid>` | atomically replace `/var/lib/nexusbackup/<storeid>/index.json` from stdin (max 64 MiB, JSON object with `archives` array; optional top-level `total`/`used` feed `status`) |
 | anything else | exit 2, log to syslog |
 Arguments are validated: vmid `^\d{1,9}$`, storeid `^[a-z][a-z0-9\-_.]{1,99}$`.
 
@@ -85,7 +85,14 @@ attaches the appliance's NBD export to `/dev/nbdX` with the node's own `qemu-nbd
 5. Plugin `restore_vm_volume_cleanup`: `qemu-nbd -d /dev/nbdX`, remove JSON + socket. The appliance's server sees EOF and polls for the next device until the restore task stops.
 6. `restore_vm_cleanup`: remove leftovers. Live restore is impossible for providers (PVE refuses).
 
+`restore-serve` binds under a temporary name, sets 0660, then renames, so the plugin never sees an unready socket; it accepts one connection (600 s timeout).
+
 Helper additions: `restore-job <archive>`, `restore-serve <archive> <device>`; archive `^nexus-\d{1,9}-\d{1,12}$`, device `^[a-z0-9\-]{1,64}$`.
+
+## Known issues
+- `api()` returns 11 → every PVE CLI call prints "implementing an older storage API" (current APIVER 14). Decide: return `PVE::Storage::APIVER` within a tested range.
+- vzdump `bwlimit` is not enforced (plugin logs a warning); bandwidth limiting belongs on the appliance side.
+- Token privileges for API restore additionally need `SDN.Use` on the guest's bridge zone (e.g. `PVESDNUser` on `/sdn/zones/localnetwork`).
 
 ## Not in v1
 Containers (directory mechanism, mapped-root `backup_container`), trim of read regions (fleecing shrink).
