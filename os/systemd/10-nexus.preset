@@ -1,0 +1,7 @@
+# Overrides 90-default.preset, which enables sshd. Presets are re-applied on first
+# boot (empty machine-id), so disabling sshd only via a symlink is not enough.
+disable sshd.service
+disable sshd.socket
+enable nftables.service
+enable chronyd.service
+# nexus-*.service are enabled here once their binaries ship in the image.

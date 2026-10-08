@@ -1,0 +1,12 @@
+/usr/libexec/nexus/chunkstore	--	gen_context(system_u:object_r:nexus_chunkstore_exec_t,s0)
+/usr/libexec/nexus/keyd		--	gen_context(system_u:object_r:nexus_keyd_exec_t,s0)
+/usr/libexec/nexus/web-api	--	gen_context(system_u:object_r:nexus_webapi_exec_t,s0)
+
+/var/lib/nexus			-d	gen_context(system_u:object_r:nexus_var_lib_t,s0)
+/var/lib/nexus/chunkstore(/.*)?		gen_context(system_u:object_r:nexus_chunkstore_var_lib_t,s0)
+/var/lib/nexus/keyd(/.*)?		gen_context(system_u:object_r:nexus_keyd_var_lib_t,s0)
+/var/lib/nexus/webapi(/.*)?		gen_context(system_u:object_r:nexus_webapi_var_lib_t,s0)
+
+/run/nexus-chunkstore(/.*)?		gen_context(system_u:object_r:nexus_chunkstore_var_run_t,s0)
+/run/nexus-keyd(/.*)?			gen_context(system_u:object_r:nexus_keyd_var_run_t,s0)
+/run/nexus-webapi(/.*)?			gen_context(system_u:object_r:nexus_webapi_var_run_t,s0)
