@@ -119,7 +119,7 @@ pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
 }
 
 /// tmp + fsync + rename + fsync(dir): the file is either old or new, never torn.
-pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> io::Result<()> {
+pub fn write_atomic(path: &Path, data: &[u8]) -> io::Result<()> {
     let tmp = path.with_extension(format!("tmp{}", rand::random::<u32>()));
     let mut f = File::create(&tmp)?;
     f.write_all(data)?;

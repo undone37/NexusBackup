@@ -285,6 +285,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "keyd"
+version = "0.1.0"
+dependencies = [
+ "chunkstore",
+ "libc",
+ "tempfile",
+ "zeroize",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -8,24 +8,24 @@ _Last updated: 2026-10-08_
 
 ## Done
 - [x] Questions answered, recorded in plan.md
-- [x] git repo (branch `main`, **nothing committed yet**), Cargo workspace, LICENSE (AGPL-3.0), rustfmt.toml
+- [x] git repo (branch `main`, committed after each step), Cargo workspace, LICENSE (AGPL-3.0), rustfmt.toml
 - [x] CI `.github/workflows/ci.yml`: fmt, clippy `-D warnings`, tests, cargo-audit
 - [x] `docs/adr.md` (ADR-001…012), `docs/threat-model.md` (T1…T11)
 - [x] `crates/chunkstore`
   - `crypto.rs`: keyed BLAKE3 chunk IDs, sealed blob format (zstd + XChaCha20-Poly1305, AAD = header|tenant|context), DEK versions/rotation, key wrap/unwrap
   - `clock.rs`: compliance clock (monotonic, ≤1 % forward slew, ignores backward jumps, persisted)
   - `store.rs`: one file per chunk, fixed + dynamic index, FastCDC file chunking, manifests, commit protocol, retention locks (extend-only, delete blocked), mark-and-sweep GC (grace period, quorum valve at 20 %, abort on unreadable metadata), verify (missing + corrupt, selectable subset), keyring check, name validation
-- [x] Tests: 13 passing (`cargo test`), including `survives_kill_9` (6× SIGKILL during writes, then restore + GC + verify); clippy clean
+- [x] `crates/keyd`: KEK + recovery-key escrow (`kek.recovery`), tenant DEKs wrapped per version (create/rotate), DR `recover`, recovery-key check, Unix socket protocol with SO_PEERCRED uid check, `fetch_keyring` client, process hardening (umask 077, non-dumpable, mlockall); CLI `keyd init|check-recovery|recover|tenant-create|tenant-rotate|serve`
+  - **KEK sealing is file-based (0600)** — user decision 2026-10-08: no TPM for now; TPM replaces `seal`/`unseal` later (needs libtss2-dev)
+- [x] Tests: 13 chunkstore + 2 keyd passing (`cargo test`), including `survives_kill_9` (6× SIGKILL during writes, then restore + GC + verify); clippy clean
 
 ## M1 status
-Chunk store ingests and restores synthetic block and file data with dedup, encryption, GC and locks, and survives kill -9 tests. **Still missing for M1:** `keyd` (TPM), power-loss simulation (beyond kill -9).
+Chunk store ingests and restores synthetic block and file data with dedup, encryption, GC and locks, and survives kill -9 tests. **Still missing for M1:** TPM sealing (deferred by user), power-loss test (agent working).
 
 ## Next
-- [ ] Initial commit (waiting for user OK)
-- [ ] `keyd`: TPM sealing of KEK (tss-esapi, test with swtpm), recovery-key first-boot flow, Unix socket to chunkstore
-- [ ] Power-loss test (e.g. dm-flakey or QEMU VM hard reset)
+- [ ] Power-loss test via QEMU hard kill (agent in worktree, in progress)
+- [ ] OS image skeleton (agent in worktree, in progress)
 - [ ] Incremental fixed index from a dirty bitmap (needed in Phase 2)
-- [ ] OS image skeleton (bootc Containerfile, SELinux, LUKS/TPM)
 
 ## Deferred (with reason)
 - Bloom filter / separate dedup index: the filesystem path is the local dedup index; add when stat lookups become the bottleneck
@@ -33,3 +33,4 @@ Chunk store ingests and restores synthetic block and file data with dedup, encry
 - Fsync per new chunk file (dir fsync is batched at commit): batch file syncs if HDD throughput suffers
 - GFS retention classification: belongs to the scheduler (Phase 5)
 - Offsite/verify status: catalog, not the immutable manifest
+- keyd TPM sealing: user chose no TPM for now (no libtss2-dev install)
