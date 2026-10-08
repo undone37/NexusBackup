@@ -1,4 +1,6 @@
+use std::ffi::CString;
 use std::io::{self, Read};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::process::ExitCode;
@@ -9,12 +11,24 @@ const USAGE: &str = "usage:
   keyd recover <dir>                    recovery key on stdin, re-seal KEK
   keyd tenant-create <dir> <tenant>
   keyd tenant-rotate <dir> <tenant>
-  keyd serve <dir> <socket> <allow-uid>";
+  keyd serve <dir> <socket> <allow-user>   allow-user: name or uid of chunkstore";
 
 fn stdin_line() -> io::Result<String> {
     let mut s = String::new();
     io::stdin().read_to_string(&mut s)?;
     Ok(s)
+}
+
+fn resolve_uid(user: &str) -> io::Result<u32> {
+    if let Ok(uid) = user.parse() {
+        return Ok(uid);
+    }
+    let name = CString::new(user).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "bad user"))?;
+    let pw = unsafe { libc::getpwnam(name.as_ptr()) };
+    if pw.is_null() {
+        return Err(io::Error::new(io::ErrorKind::NotFound, format!("unknown user {user}")));
+    }
+    Ok(unsafe { (*pw).pw_uid })
 }
 
 fn run(args: &[String]) -> io::Result<()> {
@@ -28,12 +42,13 @@ fn run(args: &[String]) -> io::Result<()> {
         ["recover", dir] => keyd::recover(Path::new(dir), &stdin_line()?)?,
         ["tenant-create", dir, t] => println!("{t}: DEK v{}", keyd::create_tenant(Path::new(dir), t)?),
         ["tenant-rotate", dir, t] => println!("{t}: DEK v{}", keyd::rotate_tenant(Path::new(dir), t)?),
-        ["serve", dir, socket, uid] => {
-            let uid = uid
-                .parse()
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "bad uid"))?;
+        ["serve", dir, socket, user] => {
+            let uid = resolve_uid(user)?;
             let _ = std::fs::remove_file(socket);
-            keyd::serve(UnixListener::bind(socket)?, Path::new(dir), uid)?
+            let listener = UnixListener::bind(socket)?;
+            // umask 077 made it 0600; the chunkstore user connects via group nexus-keyd
+            std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o660))?;
+            keyd::serve(listener, Path::new(dir), uid)?
         }
         _ => return Err(io::Error::new(io::ErrorKind::InvalidInput, USAGE)),
     }

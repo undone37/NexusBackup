@@ -20,12 +20,16 @@ _Last updated: 2026-10-08_
 - [x] `store_image_dirty`: incremental-forever fixed index from a dirty bitmap (reuses previous chunk IDs, handles disk growth)
 - [x] Tests: 14 chunkstore + 2 keyd passing (`cargo test`), including `survives_kill_9` (6× SIGKILL during writes, then restore + GC + verify); clippy clean
 
+- [x] `os/` bootc image skeleton (AlmaLinux 10.2 `quay.io/almalinuxorg/almalinux-bootc:10`), `podman build -t nexus-os:dev os/` succeeds, bootc lint passes
+  - systemd units chunkstore/keyd/web-api (security exposure 0.4 / 0.6 / 1.1), sysusers, preset (sshd off, nftables + chronyd on), nftables default-deny in/out with allow-list sets, chrony NTS, SELinux module with 3 domains (compiles; untested under enforcing)
+  - keyd unit wired to the real CLI (`keyd serve … nexus-chunkstore`, socket 0660 for group nexus-keyd, condition on `keyd init`)
+  - Nexus units installed but not enabled (no binaries yet); chunkstore/web-api units expect `Type=notify` from future binaries
+
 ## M1 status
 Chunk store ingests and restores synthetic block and file data with dedup, encryption, GC and locks, and survives kill -9 tests. **Still missing for M1:** TPM sealing (deferred by user), power-loss test (agent working).
 
 ## Next
 - [ ] Power-loss test via QEMU hard kill (agent in worktree, in progress)
-- [ ] OS image skeleton (agent in worktree, in progress)
 
 
 ## Deferred (with reason)
@@ -35,3 +39,4 @@ Chunk store ingests and restores synthetic block and file data with dedup, encry
 - GFS retention classification: belongs to the scheduler (Phase 5)
 - Offsite/verify status: catalog, not the immutable manifest
 - keyd TPM sealing: user chose no TPM for now (no libtss2-dev install)
+- OS: LUKS2/TPM enrolment, A/B updates + rollback, image signing, first-boot TUI, runtime nftables sets, SELinux refinement (see os/README.md)

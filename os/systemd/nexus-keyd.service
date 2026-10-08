@@ -2,10 +2,12 @@
 Description=NexusBackup key daemon (sole TPM user, hands tenant keys to chunkstore)
 After=dev-tpmrm0.device
 Wants=dev-tpmrm0.device
+# Requires `keyd init /var/lib/nexus/keyd` from the first-boot wizard.
+ConditionPathExists=/var/lib/nexus/keyd/kek.recovery
 
 [Service]
-Type=notify
-ExecStart=/usr/libexec/nexus/keyd
+Type=exec
+ExecStart=/usr/libexec/nexus/keyd serve /var/lib/nexus/keyd /run/nexus-keyd/keyd.sock nexus-chunkstore
 User=nexus-keyd
 Group=nexus-keyd
 SupplementaryGroups=tss
