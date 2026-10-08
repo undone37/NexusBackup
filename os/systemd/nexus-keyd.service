@@ -1,0 +1,61 @@
+[Unit]
+Description=NexusBackup key daemon (sole TPM user, hands tenant keys to chunkstore)
+After=dev-tpmrm0.device
+Wants=dev-tpmrm0.device
+
+[Service]
+Type=notify
+ExecStart=/usr/libexec/nexus/keyd
+User=nexus-keyd
+Group=nexus-keyd
+SupplementaryGroups=tss
+Restart=on-failure
+
+# Socket for chunkstore: /run/nexus-keyd/keyd.sock, reachable by group nexus-keyd only.
+RuntimeDirectory=nexus-keyd
+RuntimeDirectoryMode=0750
+StateDirectory=nexus/keyd
+StateDirectoryMode=0700
+UMask=0077
+
+# Keys live only in memory: allow mlock, never dump core.
+LimitMEMLOCK=64M
+LimitCORE=0
+
+# No network at all, only the local socket.
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+
+# Only the TPM resource manager device is reachable.
+DevicePolicy=closed
+DeviceAllow=/dev/tpmrm0 rw
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

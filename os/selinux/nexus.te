@@ -1,0 +1,96 @@
+policy_module(nexus, 0.1.0)
+
+########################################
+# NexusBackup appliance policy (plan.md 4.2, ADR-004).
+# One domain per service; systemd (init_t) transitions into each domain
+# via its exec type. Rules are the minimum known to be needed today and
+# will be extended (never broadened with generic types) once the
+# binaries exist and run under enforcing mode.
+########################################
+
+gen_require(`
+	type tpm_device_t;
+')
+
+########################################
+# Declarations
+
+type nexus_var_lib_t;
+files_type(nexus_var_lib_t)
+
+# chunkstore
+type nexus_chunkstore_t;
+type nexus_chunkstore_exec_t;
+init_daemon_domain(nexus_chunkstore_t, nexus_chunkstore_exec_t)
+type nexus_chunkstore_var_lib_t;
+files_type(nexus_chunkstore_var_lib_t)
+type nexus_chunkstore_var_run_t;
+files_pid_file(nexus_chunkstore_var_run_t)
+
+# keyd
+type nexus_keyd_t;
+type nexus_keyd_exec_t;
+init_daemon_domain(nexus_keyd_t, nexus_keyd_exec_t)
+type nexus_keyd_var_lib_t;
+files_type(nexus_keyd_var_lib_t)
+type nexus_keyd_var_run_t;
+files_pid_file(nexus_keyd_var_run_t)
+
+# web-api
+type nexus_webapi_t;
+type nexus_webapi_exec_t;
+init_daemon_domain(nexus_webapi_t, nexus_webapi_exec_t)
+type nexus_webapi_var_lib_t;
+files_type(nexus_webapi_var_lib_t)
+type nexus_webapi_var_run_t;
+files_pid_file(nexus_webapi_var_run_t)
+
+attribute nexus_domain;
+typeattribute nexus_chunkstore_t nexus_domain;
+typeattribute nexus_keyd_t nexus_domain;
+typeattribute nexus_webapi_t nexus_domain;
+
+########################################
+# Common to all nexus domains
+
+allow nexus_domain self:process { signal_perms };
+allow nexus_domain self:fifo_file rw_fifo_file_perms;
+allow nexus_domain self:unix_stream_socket create_stream_socket_perms;
+allow nexus_domain nexus_var_lib_t:dir search_dir_perms;
+files_search_var_lib(nexus_domain)
+files_search_pids(nexus_domain)
+kernel_read_system_state(nexus_domain)
+miscfiles_read_localization(nexus_domain)
+logging_send_syslog_msg(nexus_domain)
+init_write_pid_socket(nexus_domain)
+
+########################################
+# chunkstore: own state + runtime dir, connects to keyd. No network, no devices.
+
+manage_dirs_pattern(nexus_chunkstore_t, nexus_chunkstore_var_lib_t, nexus_chunkstore_var_lib_t)
+manage_files_pattern(nexus_chunkstore_t, nexus_chunkstore_var_lib_t, nexus_chunkstore_var_lib_t)
+manage_dirs_pattern(nexus_chunkstore_t, nexus_chunkstore_var_run_t, nexus_chunkstore_var_run_t)
+manage_sock_files_pattern(nexus_chunkstore_t, nexus_chunkstore_var_run_t, nexus_chunkstore_var_run_t)
+stream_connect_pattern(nexus_chunkstore_t, nexus_keyd_var_run_t, nexus_keyd_var_run_t, nexus_keyd_t)
+
+########################################
+# keyd: own state + socket, the ONLY nexus domain with TPM access.
+
+manage_dirs_pattern(nexus_keyd_t, nexus_keyd_var_lib_t, nexus_keyd_var_lib_t)
+manage_files_pattern(nexus_keyd_t, nexus_keyd_var_lib_t, nexus_keyd_var_lib_t)
+manage_sock_files_pattern(nexus_keyd_t, nexus_keyd_var_run_t, nexus_keyd_var_run_t)
+dev_rw_tpm(nexus_keyd_t)
+
+neverallow { nexus_domain -nexus_keyd_t } tpm_device_t:chr_file *;
+
+########################################
+# web-api: own state + runtime dir, listens on 8443/tcp (http_port_t).
+# Talks to scheduler/catalog/restore over their sockets (rules added with those services).
+
+manage_dirs_pattern(nexus_webapi_t, nexus_webapi_var_lib_t, nexus_webapi_var_lib_t)
+manage_files_pattern(nexus_webapi_t, nexus_webapi_var_lib_t, nexus_webapi_var_lib_t)
+manage_sock_files_pattern(nexus_webapi_t, nexus_webapi_var_run_t, nexus_webapi_var_run_t)
+allow nexus_webapi_t self:tcp_socket create_stream_socket_perms;
+corenet_tcp_bind_generic_node(nexus_webapi_t)
+corenet_tcp_bind_http_port(nexus_webapi_t)
+sysnet_read_config(nexus_webapi_t)
