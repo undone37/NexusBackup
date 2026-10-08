@@ -1,0 +1,23 @@
+# Template for the PVE automated installer. build.sh renders it into
+# /home/ah/nexus-lab/answer.toml (never committed: contains the root password).
+[global]
+keyboard = "de"
+country = "de"
+fqdn = "pve1.lab.local"
+mailto = "root@lab.local"
+timezone = "Europe/Berlin"
+root-password = "@ROOT_PASSWORD@"
+root-ssh-keys = ["@ROOT_SSH_KEY@"]
+reboot-mode = "power-off"
+
+[network]
+source = "from-answer"
+cidr = "10.0.2.15/24"
+gateway = "10.0.2.2"
+dns = "10.0.2.3"
+filter.ID_NET_NAME = "en*"
+
+[disk-setup]
+filesystem = "ext4"
+lvm.swapsize = 0
+disk-list = ["vda"]

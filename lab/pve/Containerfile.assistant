@@ -1,0 +1,10 @@
+# Debian trixie + Proxmox no-subscription repo, only used to run
+# proxmox-auto-install-assistant (nothing gets installed on the host).
+FROM docker.io/library/debian:trixie
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl xorriso \
+ && curl -fsSL https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg \
+      -o /usr/share/keyrings/proxmox-archive-keyring.gpg \
+ && printf 'Types: deb\nURIs: http://download.proxmox.com/debian/pve\nSuites: trixie\nComponents: pve-no-subscription\nSigned-By: /usr/share/keyrings/proxmox-archive-keyring.gpg\n' \
+      > /etc/apt/sources.list.d/pve.sources \
+ && apt-get update && apt-get install -y --no-install-recommends proxmox-auto-install-assistant \
+ && rm -rf /var/lib/apt/lists/*
