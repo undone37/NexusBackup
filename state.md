@@ -42,7 +42,8 @@ Decisions: PVE 9.x only · NBD over SSH stdio (forced command) · .deb via dpkg-
 - [x] `crates/pve/src/backup.rs`: orchestration — node lookup via /cluster/resources, vzdump with fleecing, poll `job`, per device NBD over `ssh nbd` → dirty extents → `store_image_extents`, config files as dynamic index, commit, then `done ok|fail`, wait task, `push_index` to all nodes; `nexus-pve` dev CLI (`backup <vmid> | push-index | list`, config JSON, keys via keyd socket) — **not yet tested against lab**
 - [x] `Store::image_reader`: random access into a fixed index (one-chunk cache)
 - [x] `nbd::server`: read-only NBD server (fixed newstyle, GO/INFO/LIST/EXPORT_NAME, simple replies, writes refused); client falls back to simple replies; interop-tested with qemu-img convert
-- [ ] LXC file-level backup, full VM restore, scheduling → M2
+- [x] Restore contract in `docs/pve-connector.md` (node attaches appliance NBD export via `qemu-nbd -c /dev/nbdX`); appliance `restore_vm` (POST /nodes/<n>/qemu archive=…, poll `restore-job`, serve each device from the fixed index via `ssh restore-serve` + `nbd::server`); `nexus-pve restore …`; index.json has `device_sizes` — **node side + lab test pending**
+- [ ] LXC file-level backup, scheduling → M2
 
 ## Next
 

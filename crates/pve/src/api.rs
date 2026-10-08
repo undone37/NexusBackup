@@ -81,6 +81,21 @@ impl Api {
         upid.as_str().map(str::to_owned).context("vzdump returned no UPID")
     }
 
+    /// Restores a provider archive (`<storeid>:backup/<name>`) as VM `vmid`; returns the UPID.
+    pub fn start_restore(&self, node: &str, vmid: u32, archive: &str, storage: &str) -> Result<String> {
+        let id = vmid.to_string();
+        let upid = self.post(
+            &format!("/nodes/{node}/qemu"),
+            &[
+                ("vmid", id.as_str()),
+                ("archive", archive),
+                ("storage", storage),
+                ("unique", "1"),
+            ],
+        )?;
+        upid.as_str().map(str::to_owned).context("restore returned no UPID")
+    }
+
     /// `None` while running, `Some(exitstatus)` when stopped ("OK" = success).
     pub fn task_status(&self, node: &str, upid: &str) -> Result<Option<String>> {
         let st = self.get(&format!("/nodes/{node}/tasks/{upid}/status"))?;

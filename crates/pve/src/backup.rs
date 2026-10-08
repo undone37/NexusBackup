@@ -177,6 +177,49 @@ impl Cluster {
         Ok(store.commit_snapshot(&source, time, &refs)?)
     }
 
+    /// Full restore of snapshot `vm-<vmid>/<time>` as VM `target` on `node`. PVE pulls
+    /// each disk through `qemu-nbd` on the node; we serve it over `ssh restore-serve`.
+    pub fn restore_vm(
+        &self,
+        store: &Store,
+        vmid: u32,
+        time: u64,
+        node: &str,
+        target: u32,
+        target_storage: &str,
+    ) -> Result<String> {
+        let m = store.load_manifest(&source_name(vmid), time)?;
+        let ssh = self.ssh(node)?;
+        let archive = format!("nexus-{vmid}-{time}");
+        let volid = format!("{}:backup/{archive}", self.storage);
+        let upid = self.api.start_restore(node, target, &volid, target_storage)?;
+        let mut served = std::collections::HashSet::new();
+        loop {
+            if let Some(exit) = self.api.task_status(node, &upid)? {
+                if exit != "OK" {
+                    let log = self.api.task_log(node, &upid).unwrap_or_default();
+                    bail!("restore task ended with {exit}: {}", log.join("\n"));
+                }
+                return Ok(exit);
+            }
+            let Ok(out) = ssh.run(&format!("restore-job {archive}"), None) else {
+                std::thread::sleep(Duration::from_secs(1));
+                continue;
+            };
+            let req: serde_json::Value = serde_json::from_slice(&out).context("restore job JSON")?;
+            let device = req["device"].as_str().context("restore job without device")?.to_owned();
+            if !served.insert(device.clone()) {
+                std::thread::sleep(Duration::from_secs(1)); // previous serve of this device still finishing
+                continue;
+            }
+            if !m.indexes.contains(&device) || device == "config" {
+                bail!("snapshot has no device {device}");
+            }
+            let idx = store.load_index(&m, &device)?;
+            serve_device(store, ssh, &archive, &device, &idx).with_context(|| format!("serve {device}"))?;
+        }
+    }
+
     /// Writes the catalog the node plugin needs for offline calls to every node.
     pub fn push_index(&self, store: &Store) -> Result<()> {
         let json = serde_json::to_vec(&build_index(store)?)?;
@@ -224,6 +267,21 @@ fn pull_device(store: &Store, ssh: &SshNode, vmid: u32, dev: &Device, base: Opti
     Ok(idx)
 }
 
+fn serve_device(store: &Store, ssh: &SshNode, archive: &str, device: &str, idx: &Index) -> Result<()> {
+    let mut child = Kill(
+        ssh.cmd(&format!("restore-serve {archive} {device}"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()?,
+    );
+    let r = BufReader::with_capacity(1 << 20, child.0.stdout.take().unwrap());
+    let w = BufWriter::with_capacity(1 << 20, child.0.stdin.take().unwrap());
+    let mut img = store.image_reader(idx)?;
+    let size = img.size();
+    nbd::server::serve(r, w, device, size, |off, buf| img.read_at(off, buf))?;
+    Ok(())
+}
+
 fn config_entry(store: &Store, name: &str, text: &str) -> Result<FileEntry> {
     let (chunks, size) = store.store_file(text.as_bytes())?;
     Ok(FileEntry {
@@ -242,6 +300,7 @@ struct CatalogArchive {
     ctime: u64,
     size: u64,
     devices: Vec<String>,
+    device_sizes: BTreeMap<String, u64>,
     config: String,
     firewall: Option<String>,
     notes: String,
@@ -267,18 +326,19 @@ pub fn build_index(store: &Store) -> Result<serde_json::Value> {
             continue;
         };
         let devices: Vec<String> = m.indexes.iter().filter(|n| *n != "config").cloned().collect();
-        let mut size = 0;
+        let mut device_sizes = BTreeMap::new();
         for d in &devices {
-            if let Index::Fixed { size: s, .. } = store.load_index(&m, d)? {
-                size += s;
+            if let Index::Fixed { size, .. } = store.load_index(&m, d)? {
+                device_sizes.insert(d.clone(), size);
             }
         }
         archives.push(CatalogArchive {
             volname: format!("backup/nexus-{vmid}-{}", m.time),
             vmid,
             ctime: m.time,
-            size,
+            size: device_sizes.values().sum(),
             devices,
+            device_sizes,
             config: read_config(store, &m, "qemu-server.conf")?.unwrap_or_default(),
             firewall: read_config(store, &m, "firewall.fw")?,
             notes: String::new(),
