@@ -43,7 +43,10 @@ Decisions: PVE 9.x only · NBD over SSH stdio (forced command) · .deb via dpkg-
 - [x] `Store::image_reader`: random access into a fixed index (one-chunk cache)
 - [x] `nbd::server`: read-only NBD server (fixed newstyle, GO/INFO/LIST/EXPORT_NAME, simple replies, writes refused); client falls back to simple replies; interop-tested with qemu-img convert
 - [x] Restore contract in `docs/pve-connector.md` (node attaches appliance NBD export via `qemu-nbd -c /dev/nbdX`); appliance `restore_vm` (POST /nodes/<n>/qemu archive=…, poll `restore-job`, serve each device from the fixed index via `ssh restore-serve` + `nbd::server`); `nexus-pve restore …`; index.json has `device_sizes` — **node side + lab test pending**
-- [ ] LXC file-level backup, scheduling → M2
+- [x] Scheduling: `nexus-pve backup-all` (config `vmids`, sequential, continues on error) + `os/systemd/nexus-pve-backup.{service,timer}` (daily 22:00, Persistent)
+  - deviation: connector opens the chunk store in-process (same user `nexus-chunkstore`, keys via keyd) instead of a separate chunkstore daemon socket — split when the chunkstore service exists
+- [ ] Lab end-to-end test of backup/restore (waiting on lab + node plugin agents)
+- [ ] LXC file-level backup → M2
 
 ## Next
 
