@@ -1,0 +1,332 @@
+#!/usr/bin/perl
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# NexusBackup SSH forced command (runs as user nexusbackup on a PVE node).
+#
+# authorized_keys:
+#   restrict,command="/usr/lib/nexusbackup/helper" ssh-ed25519 AAAA... nexus-appliance
+#
+# Commands (from SSH_ORIGINAL_COMMAND; see docs/pve-connector.md):
+#   job <vmid>                  print the job JSON, exit 1 if there is none
+#   nbd <vmid>                  pipe stdin/stdout <-> the job's NBD unix socket
+#   done <vmid> ok              signal success to the waiting backup_vm
+#   done <vmid> fail <msg>      signal failure
+#   put-index <storeid>         replace the catalog from stdin (max 64 MiB JSON)
+#   restore-job <archive>       print the pending restore request, exit 1 if none
+#   restore-serve <archive> <device>
+#                               listen on the request's socket, accept exactly one
+#                               connection (qemu-nbd on the node), pipe it <-> stdio
+# Anything else: exit 2 and log to syslog.
+#
+# Exit codes: 0 ok, 1 runtime failure, 2 invalid command or arguments.
+#
+# TEST-ONLY: NEXUSBACKUP_RUNDIR, NEXUSBACKUP_RESTOREDIR and NEXUSBACKUP_STATEDIR
+# override /run/nexusbackup/jobs, /run/nexusbackup/restore and
+# /var/lib/nexusbackup for pve-plugin/t/helper.t. They are ignored when running
+# under sshd (SSH_CONNECTION set), and sshd does not pass client environment by
+# default.
+
+use strict;
+use warnings;
+
+use Fcntl qw(O_RDONLY);
+use File::Temp ();
+use IO::Handle;
+use IO::Select;
+use IO::Socket::UNIX;
+use JSON;
+use POSIX ();
+use Socket qw(SOCK_STREAM SHUT_WR);
+use Sys::Syslog ();
+
+my $under_sshd = defined($ENV{SSH_CONNECTION});
+my $RUNDIR = (!$under_sshd && $ENV{NEXUSBACKUP_RUNDIR}) || '/run/nexusbackup/jobs';
+my $STATEDIR = (!$under_sshd && $ENV{NEXUSBACKUP_STATEDIR}) || '/var/lib/nexusbackup';
+my $RESTOREDIR = (!$under_sshd && $ENV{NEXUSBACKUP_RESTOREDIR}) || '/run/nexusbackup/restore';
+
+my $INDEX_MAX = 64 * 1024 * 1024;
+my $BUFSIZE = 1024 * 1024;
+my $ACCEPT_TIMEOUT = 600;
+my $VMID_RE = qr/^\d{1,9}\z/;
+my $STOREID_RE = qr/^[a-z][a-z0-9\-_.]{1,99}\z/;
+my $ARCHIVE_RE = qr/^nexus-\d{1,9}-\d{1,12}\z/;
+my $DEVICE_RE = qr/^[a-z0-9\-]{1,64}\z/;
+
+my $syslog_open = 0;
+
+sub slog {
+    my ($prio, $msg) = @_;
+    eval {
+        if (!$syslog_open) {
+            Sys::Syslog::openlog('nexusbackup-helper', 'pid', 'auth');
+            $syslog_open = 1;
+        }
+        $msg =~ s/[^\x20-\x7e]/?/g;
+        Sys::Syslog::syslog($prio, '%s', $msg);
+    };
+}
+
+sub fail {
+    my ($code, $msg) = @_;
+    print STDERR "nexusbackup-helper: $msg\n";
+    slog($code == 2 ? 'warning' : 'err', $msg);
+    exit($code);
+}
+
+sub usage_error {
+    my ($what) = @_;
+    fail(2, "rejected command: $what");
+}
+
+sub read_job {
+    my ($vmid) = @_;
+    my $file = "$RUNDIR/$vmid.json";
+    open(my $fh, '<', $file) or return undef;
+    binmode($fh);
+    my $raw = do { local $/; <$fh> };
+    close($fh);
+    return $raw;
+}
+
+# Copy everything from $in to $out until EOF. Returns 1 on EOF, 0 on error.
+sub pump {
+    my ($in, $out) = @_;
+    my $buf;
+    while (1) {
+        my $n = sysread($in, $buf, $BUFSIZE);
+        if (!defined($n)) {
+            next if $!{EINTR};
+            return 0;
+        }
+        return 1 if $n == 0;
+        my $off = 0;
+        while ($off < $n) {
+            my $w = syswrite($out, $buf, $n - $off, $off);
+            if (!defined($w)) {
+                next if $!{EINTR};
+                return 0;
+            }
+            $off += $w;
+        }
+    }
+}
+
+sub cmd_job {
+    my ($vmid) = @_;
+    my $raw = read_job($vmid);
+    exit(1) if !defined($raw);
+    binmode(STDOUT);
+    print STDOUT $raw;
+    exit(0);
+}
+
+sub cmd_nbd {
+    my ($vmid) = @_;
+
+    my $raw = read_job($vmid) // fail(1, "nbd $vmid: no job");
+    my $job = eval { JSON->new->utf8->decode($raw) };
+    fail(1, "nbd $vmid: invalid job file") if ref($job) ne 'HASH';
+    my $path = $job->{nbd_socket};
+    fail(1, "nbd $vmid: job has no valid nbd_socket")
+        if !defined($path) || ref($path) || $path !~ m!^/!;
+
+    my $sock = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => $path)
+        or fail(1, "nbd $vmid: connect to $path failed: $!");
+    slog('info', "nbd $vmid: connected to $path");
+
+    pipe_stdio($sock, "nbd $vmid");
+}
+
+# Full-duplex byte pipe stdin -> $sock and $sock -> stdout; exits the process.
+# Ends when the socket peer closes (or stdout breaks).
+sub pipe_stdio {
+    my ($sock, $label) = @_;
+
+    binmode(STDIN);
+    binmode(STDOUT);
+    binmode($sock);
+    $SIG{PIPE} = 'IGNORE';
+
+    # Two processes, one per direction, so a blocked write in one direction
+    # can never stall the other (NBD pipelines requests and replies).
+    my $pid = fork();
+    fail(1, "$label: fork failed: $!") if !defined($pid);
+
+    if ($pid == 0) {
+        # child: stdin -> socket, then half-close so the server sees EOF
+        close(STDOUT);
+        my $ok = pump(\*STDIN, $sock);
+        shutdown($sock, SHUT_WR);
+        POSIX::_exit($ok ? 0 : 1);
+    }
+
+    # parent: socket -> stdout until the server closes
+    close(STDIN);
+    my $ok = pump($sock, \*STDOUT);
+    close(STDOUT);
+    close($sock);
+    kill('TERM', $pid);
+    waitpid($pid, 0);
+    slog('info', "$label: closed" . ($ok ? '' : " (write error: $!)"));
+    exit($ok ? 0 : 1);
+}
+
+sub cmd_restore_job {
+    my ($archive) = @_;
+    open(my $fh, '<', "$RESTOREDIR/$archive.json") or exit(1);
+    binmode($fh);
+    my $raw = do { local $/; <$fh> };
+    close($fh);
+    binmode(STDOUT);
+    print STDOUT $raw;
+    exit(0);
+}
+
+sub cmd_restore_serve {
+    my ($archive, $device) = @_;
+    my $label = "restore-serve $archive $device";
+
+    # The request must exist and be for this device. The socket path is derived
+    # here, never taken from the file.
+    open(my $fh, '<', "$RESTOREDIR/$archive.json") or fail(1, "$label: no restore request");
+    my $req = eval { JSON->new->utf8->decode(do { local $/; <$fh> }) };
+    close($fh);
+    fail(1, "$label: invalid restore request") if ref($req) ne 'HASH';
+    fail(1, "$label: pending request is for device '" . ($req->{device} // '') . "'")
+        if ($req->{device} // '') ne $device || ($req->{archive} // '') ne $archive;
+
+    my $path = "$RESTOREDIR/$archive.$device.sock";
+    my $tmp = "$RESTOREDIR/.$archive.$device.$$.sock";
+    unlink($tmp);
+    # Listen under a temporary name, then rename: the waiting plugin only sees
+    # the socket once it accepts connections, with its final mode.
+    my $listen = IO::Socket::UNIX->new(Type => SOCK_STREAM, Local => $tmp, Listen => 1)
+        or fail(1, "$label: listen on $tmp failed: $!");
+    if (!chmod(0660, $tmp) || !rename($tmp, $path)) {
+        my $err = $!;
+        unlink($tmp);
+        fail(1, "$label: publishing socket failed: $err");
+    }
+    slog('info', "$label: listening on $path");
+
+    my $sel = IO::Select->new($listen);
+    my $conn;
+    my $deadline = time() + $ACCEPT_TIMEOUT;
+    while (!$conn) {
+        my $left = $deadline - time();
+        if ($left <= 0) {
+            unlink($path);
+            fail(1, "$label: no connection within ${ACCEPT_TIMEOUT}s");
+        }
+        $conn = $listen->accept() if $sel->can_read($left);
+    }
+    unlink($path); # exactly one connection
+    close($listen);
+    slog('info', "$label: accepted connection");
+
+    pipe_stdio($conn, $label);
+}
+
+sub cmd_done {
+    my ($vmid, $status, @msg) = @_;
+
+    my $content;
+    if ($status eq 'ok') {
+        usage_error("done $vmid ok: extra arguments") if @msg;
+        $content = "ok\n";
+    } elsif ($status eq 'fail') {
+        my $msg = join(' ', @msg);
+        $msg =~ s/[^\x20-\x7e]//g;
+        $msg = substr($msg, 0, 1024);
+        usage_error("done $vmid fail: message required") if $msg !~ m/\S/;
+        $content = "fail $msg\n";
+    } else {
+        usage_error("done $vmid: status must be ok or fail");
+    }
+
+    fail(1, "done $vmid: no job") if !-e "$RUNDIR/$vmid.json";
+
+    my $tmp = eval { File::Temp->new(DIR => $RUNDIR, TEMPLATE => ".$vmid.done.XXXXXX", UNLINK => 0) }
+        or fail(1, "done $vmid: cannot create temp file: $@");
+    print {$tmp} $content;
+    $tmp->flush;
+    $tmp->sync;
+    close($tmp) or fail(1, "done $vmid: write failed: $!");
+    rename($tmp->filename, "$RUNDIR/$vmid.done")
+        or do { unlink($tmp->filename); fail(1, "done $vmid: rename failed: $!") };
+
+    slog('info', "done $vmid " . substr($content, 0, -1));
+    exit(0);
+}
+
+sub cmd_put_index {
+    my ($storeid) = @_;
+
+    my $dir = "$STATEDIR/$storeid";
+    fail(1, "put-index $storeid: $dir does not exist") if !-d $dir;
+
+    binmode(STDIN);
+    my $data = '';
+    while (1) {
+        my $n = sysread(STDIN, $data, $BUFSIZE, length($data));
+        if (!defined($n)) {
+            next if $!{EINTR};
+            fail(1, "put-index $storeid: read error: $!");
+        }
+        last if $n == 0;
+        fail(1, "put-index $storeid: index larger than 64 MiB") if length($data) > $INDEX_MAX;
+    }
+
+    my $json = eval { JSON->new->utf8->decode($data) };
+    fail(1, "put-index $storeid: invalid JSON: " . ($@ =~ s/\s+$//r)) if !defined($json);
+    fail(1, "put-index $storeid: index must be an object with an 'archives' array")
+        if ref($json) ne 'HASH' || ref($json->{archives}) ne 'ARRAY';
+
+    my $tmp = eval { File::Temp->new(DIR => $dir, TEMPLATE => '.index.json.XXXXXX', UNLINK => 0) }
+        or fail(1, "put-index $storeid: cannot create temp file: $@");
+    binmode($tmp);
+    print {$tmp} $data;
+    $tmp->flush;
+    $tmp->sync;
+    chmod(0640, $tmp->filename);
+    close($tmp) or do { unlink($tmp->filename); fail(1, "put-index $storeid: write failed: $!") };
+    rename($tmp->filename, "$dir/index.json")
+        or do { unlink($tmp->filename); fail(1, "put-index $storeid: rename failed: $!") };
+
+    slog('info', "put-index $storeid: " . scalar(@{ $json->{archives} }) . " archives");
+    exit(0);
+}
+
+# ---------------------------------------------------------------------------
+
+my @args;
+if (defined($ENV{SSH_ORIGINAL_COMMAND}) || $under_sshd) {
+    my $cmdline = $ENV{SSH_ORIGINAL_COMMAND} // '';
+    usage_error('(empty)') if $cmdline !~ m/\S/;
+    usage_error('command too long') if length($cmdline) > 2048;
+    @args = split(/\s+/, $cmdline =~ s/^\s+//r);
+} else {
+    @args = @ARGV;
+}
+
+my $cmd = shift(@args) // usage_error('(empty)');
+my $printable = join(' ', $cmd, @args);
+
+if ($cmd eq 'job' || $cmd eq 'nbd') {
+    usage_error($printable) if @args != 1 || $args[0] !~ $VMID_RE;
+    $cmd eq 'job' ? cmd_job($args[0]) : cmd_nbd($args[0]);
+} elsif ($cmd eq 'done') {
+    usage_error($printable) if @args < 2 || $args[0] !~ $VMID_RE;
+    cmd_done(@args);
+} elsif ($cmd eq 'put-index') {
+    usage_error($printable) if @args != 1 || $args[0] !~ $STOREID_RE;
+    cmd_put_index($args[0]);
+} elsif ($cmd eq 'restore-job') {
+    usage_error($printable) if @args != 1 || $args[0] !~ $ARCHIVE_RE;
+    cmd_restore_job($args[0]);
+} elsif ($cmd eq 'restore-serve') {
+    usage_error($printable) if @args != 2 || $args[0] !~ $ARCHIVE_RE || $args[1] !~ $DEVICE_RE;
+    cmd_restore_serve(@args);
+} else {
+    usage_error($printable);
+}
