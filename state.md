@@ -17,7 +17,8 @@ _Last updated: 2026-10-08_
   - `store.rs`: one file per chunk, fixed + dynamic index, FastCDC file chunking, manifests, commit protocol, retention locks (extend-only, delete blocked), mark-and-sweep GC (grace period, quorum valve at 20 %, abort on unreadable metadata), verify (missing + corrupt, selectable subset), keyring check, name validation
 - [x] `crates/keyd`: KEK + recovery-key escrow (`kek.recovery`), tenant DEKs wrapped per version (create/rotate), DR `recover`, recovery-key check, Unix socket protocol with SO_PEERCRED uid check, `fetch_keyring` client, process hardening (umask 077, non-dumpable, mlockall); CLI `keyd init|check-recovery|recover|tenant-create|tenant-rotate|serve`
   - **KEK sealing is file-based (0600)** — user decision 2026-10-08: no TPM for now; TPM replaces `seal`/`unseal` later (needs libtss2-dev)
-- [x] Tests: 13 chunkstore + 2 keyd passing (`cargo test`), including `survives_kill_9` (6× SIGKILL during writes, then restore + GC + verify); clippy clean
+- [x] `store_image_dirty`: incremental-forever fixed index from a dirty bitmap (reuses previous chunk IDs, handles disk growth)
+- [x] Tests: 14 chunkstore + 2 keyd passing (`cargo test`), including `survives_kill_9` (6× SIGKILL during writes, then restore + GC + verify); clippy clean
 
 ## M1 status
 Chunk store ingests and restores synthetic block and file data with dedup, encryption, GC and locks, and survives kill -9 tests. **Still missing for M1:** TPM sealing (deferred by user), power-loss test (agent working).
@@ -25,7 +26,7 @@ Chunk store ingests and restores synthetic block and file data with dedup, encry
 ## Next
 - [ ] Power-loss test via QEMU hard kill (agent in worktree, in progress)
 - [ ] OS image skeleton (agent in worktree, in progress)
-- [ ] Incremental fixed index from a dirty bitmap (needed in Phase 2)
+
 
 ## Deferred (with reason)
 - Bloom filter / separate dedup index: the filesystem path is the local dedup index; add when stat lookups become the bottleneck

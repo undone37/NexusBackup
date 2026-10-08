@@ -15,7 +15,7 @@ use crate::crypto::{hex, invalid, parse_hex, ChunkId, Keyring};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
@@ -247,6 +247,48 @@ impl Store {
         }
         Ok(Index::Fixed {
             chunk_size: chunk_size as u32,
+            size,
+            chunks,
+        })
+    }
+
+    /// Incremental-forever for block devices: only chunks flagged by `dirty`
+    /// (QEMU dirty bitmap, in chunk units) are read; the rest come from `prev`.
+    /// After bitmap loss use `store_image` (full read, still only new chunks stored).
+    pub fn store_image_dirty(
+        &self,
+        prev: &Index,
+        mut r: impl Read + Seek,
+        size: u64,
+        dirty: impl Fn(u64) -> bool,
+    ) -> io::Result<Index> {
+        let Index::Fixed {
+            chunk_size,
+            size: prev_size,
+            chunks: prev_chunks,
+        } = prev
+        else {
+            return Err(invalid("previous index is not a fixed index"));
+        };
+        let cs = *chunk_size as u64;
+        let mut buf = vec![0u8; cs as usize];
+        let mut chunks = Vec::with_capacity(size.div_ceil(cs) as usize);
+        for n in 0..size.div_ceil(cs) {
+            let end = ((n + 1) * cs).min(size);
+            let same_range = n < prev_chunks.len() as u64 && end == ((n + 1) * cs).min(*prev_size);
+            if same_range && !dirty(n) {
+                chunks.push(prev_chunks[n as usize]);
+                continue;
+            }
+            let len = (end - n * cs) as usize;
+            r.seek(SeekFrom::Start(n * cs))?;
+            if read_full(&mut r, &mut buf[..len])? != len {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "device shorter than size"));
+            }
+            chunks.push(self.insert_chunk(&buf[..len])?.0);
+        }
+        Ok(Index::Fixed {
+            chunk_size: *chunk_size,
             size,
             chunks,
         })

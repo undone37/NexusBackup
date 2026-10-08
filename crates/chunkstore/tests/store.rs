@@ -191,3 +191,23 @@ fn survives_kill_9() {
         assert_eq!(restore(&s, m, "disk"), image(m.time));
     }
 }
+
+#[test]
+fn dirty_bitmap_incremental_matches_full_read() {
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), 0, 0);
+    let prev = s.store_image(&image(1)[..], 65536).unwrap();
+    // image(2) differs from image(1) in chunks 1 and 2; disk also grows by 1000 bytes
+    let mut next = image(2);
+    next.extend(vec![5u8; 1000]);
+    let size = next.len() as u64;
+    let inc = s
+        .store_image_dirty(&prev, std::io::Cursor::new(&next), size, |n| n == 1 || n == 2)
+        .unwrap();
+    assert_eq!(inc, s.store_image(&next[..], 65536).unwrap());
+    // a wrong (empty) bitmap silently reuses stale chunks: proves only dirty chunks are read
+    let stale = s
+        .store_image_dirty(&prev, std::io::Cursor::new(&image(2)), 6 * 65536, |_| false)
+        .unwrap();
+    assert_eq!(stale, prev);
+}
