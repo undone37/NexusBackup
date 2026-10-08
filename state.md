@@ -28,6 +28,14 @@ _Last updated: 2026-10-08_
 ## M1 status
 Chunk store ingests and restores synthetic block and file data with dedup, encryption, GC and locks, and survives kill -9 tests. **Still missing for M1:** TPM sealing (deferred by user), power-loss test (agent working).
 
+## Phase 2 — Proxmox connector (started 2026-10-08)
+Decisions: PVE 9.x only · NBD over SSH stdio (forced command) · .deb via dpkg-deb · nested PVE 9 lab in QEMU
+- [ ] Research PVE Backup Provider API → docs/pve-backup-provider-api.md (agent running)
+- [ ] Lab: nested PVE 9 VM (agent)
+- [ ] On-node plugin (Perl storage + backup provider) + forced-command helper + .deb
+- [ ] Appliance side: NBD client, PVE API client, orchestration into fixed index
+- [ ] LXC file-level backup, full VM restore, scheduling → M2
+
 ## Next
 - [ ] Power-loss test via QEMU hard kill (agent in worktree, in progress)
 

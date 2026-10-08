@@ -53,6 +53,9 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | Data path order | **Dedup → compress → encrypt** | Any other order destroys deduplication. |
 | License | **AGPL-3.0** (decided 2026-10-08) | Allows reuse of AGPL Proxmox / PBS crates; network clause fits an appliance that may be offered as a service. |
 | VCS / CI | **git + GitHub Actions** (decided 2026-10-08) | CI runs fmt, clippy, tests and cargo-audit. |
+| PVE support | **PVE 9.x only** (decided 2026-10-08) | One API version to track; 8.4 not targeted. |
+| PVE NBD transport | **NBD piped over SSH stdio via forced command** (decided 2026-10-08) | `restrict`ed key without any forwarding; `permitopen` cannot limit Unix-socket forwards. |
+| PVE test lab | **Nested PVE 9 VM in QEMU on the dev machine** (decided 2026-10-08) | No host installs; reproducible lab scripts. |
 
 ---
 
@@ -224,18 +227,18 @@ Tenant DEK (one per tenant; used for chunk ID keying, chunk AEAD, index encrypti
 
 1. Appliance calls the PVE API (port 8006) with a least-privilege token (`VM.Backup`, `VM.Audit` on the required paths) to start the backup job for the provider storage.
 2. The on-node plugin makes **no outbound connections**. It lets PVE prepare the snapshot and the NBD export (with dirty bitmap information) and then waits.
-3. The appliance opens an SSH tunnel to the node (`ssh -L` to the local NBD Unix socket) and reads only the dirty blocks, building the new fixed index.
+3. The appliance opens an SSH session to the node; a forced-command helper connects to the local NBD Unix socket and pipes it over the session's stdin/stdout (no SSH forwarding at all, decided 2026-10-08). The appliance reads only the dirty blocks, building the new fixed index.
 4. Plugin signals completion; PVE finalizes the job and keeps the task log.
 
 Dirty bitmaps are managed by PVE; the appliance only consumes them. Note: bitmaps are lost on VM/host restart; the next backup then reads the full disk but still transfers only changed chunks.
 
-**SSH hardening on nodes:** dedicated user, key restricted in `authorized_keys` with `restrict`, forced command, `permitopen` limited to the NBD sockets.
+**SSH hardening on nodes:** dedicated user, key restricted in `authorized_keys` with `restrict` (no forwarding of any kind), forced command that only offers: read job status, pipe a named NBD export of the current job, signal completion. (`permitopen` cannot restrict Unix-socket forwarding, hence stdio piping instead of `ssh -L`.)
 
 **Instant recovery:** appliance opens an SSH **reverse** tunnel (`ssh -R`) exposing its NBD server as a local socket on the node; the VM starts from that disk, data is migrated to PVE storage in the background. Direction of the TCP connection remains appliance → node.
 
 **Containers (LXC):** file-level via the provider API directory mechanism, chunked with FastCDC.
 
-**Deliverable:** `.deb` package for the on-node plugin; supports PVE 8.4+ and 9.x.
+**Deliverable:** `.deb` package for the on-node plugin, built with `dpkg-deb`; supports **PVE 9.x only** (decided 2026-10-08; 8.4 is not targeted).
 
 ### 7.2 Linux agent (physical servers)
 
@@ -423,7 +426,7 @@ The appliance holds credentials to every source and therefore becomes a **tier-0
 - **Unit and property tests** for chunking (boundary stability under inserts/shifts), index formats, GC marking, lock logic, compliance clock.
 - **Crash-consistency tests** for the chunk store (kill -9 / power-loss simulation during write, index commit, GC).
 - **Integration lab:** a Proxmox cluster running the test matrix as VMs, backed up by a test appliance (exercises the PVE integration at the same time).
-- **Test matrix:** Windows Server 2016/2019/2022/2025; Debian, Ubuntu LTS, RHEL clones — each with and without LVM/ZFS/btrfs; PVE 8.4 and 9.x; TrueNAS Community current release; NFS and SMB shares with millions of small files.
+- **Test matrix:** Windows Server 2016/2019/2022/2025; Debian, Ubuntu LTS, RHEL clones — each with and without LVM/ZFS/btrfs; PVE 9.x; TrueNAS Community current release; NFS and SMB shares with millions of small files.
 - **Restore drills:** full VM, instant recovery, single-file from NTFS/ext4/XFS/LVM images, file-level to host, restore from offsite, **DR restore on fresh hardware with recovery key only**.
 - **Security tests:** SELinux policy coverage (audit2allow review, no permissive domains), systemd sandbox audit, external penetration test before first production tenant, fuzzing of network-facing parsers (agent protocol, NBD, SFTP client).
 - **Performance tests:** initial full of 10 TB, daily deltas, GC runtime, instant-recovery latency with and without NVMe cache, offsite upload with 4 connections.
@@ -504,7 +507,7 @@ Timelines assume a small dedicated team (2–4 engineers); adjust to actual staf
 
 | Risk / question | Impact | Mitigation / decision needed |
 |---|---|---|
-| Proxmox Backup Provider API changes between PVE releases | Connector breakage | Track `pve-devel`; pin `APIVERSION`/`APIAGE`; integration tests against PVE 8.4 and 9.x. |
+| Proxmox Backup Provider API changes between PVE releases | Connector breakage | Track `pve-devel`; pin `APIVERSION`/`APIAGE`; integration tests against PVE 9.x (only supported version). |
 | Dirty bitmap loss after VM/host restart | Full re-read (not full transfer) | Document; monitor backup duration; nothing further needed. |
 | Linux hosts without snapshot capability | Inconsistent file backups | Fallback mode with explicit UI status; DB dump hooks; recommend LVM for new installs. |
 | Windows application consistency | Crash-consistent DBs if writers are missing | VSS writer participation shown per job; alerts if expected writers are absent. |
