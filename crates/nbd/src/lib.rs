@@ -3,6 +3,8 @@
 //! over a Unix socket or the stdio of an `ssh` process.
 //! Spec: https://github.com/NetworkBlockDevice/nbd/blob/master/doc/proto.md
 
+pub mod server;
+
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 const NBDMAGIC: u64 = 0x4e42_444d_4147_4943; // "NBDMAGIC"
@@ -94,8 +96,12 @@ impl<R: Read, W: Write> Client<R, W> {
             contexts: vec![],
         };
 
+        // structured replies are required for block status only; plain reads fall back to simple replies
         c.option(OPT_STRUCTURED_REPLY, &[])?;
-        c.expect_ack(OPT_STRUCTURED_REPLY)?;
+        let structured = c.expect_ack(OPT_STRUCTURED_REPLY).is_ok();
+        if !structured && !meta.is_empty() {
+            return Err(proto("server refuses structured replies, needed for meta contexts"));
+        }
 
         if !meta.is_empty() {
             let mut d = with_len(export);
@@ -194,8 +200,14 @@ impl<R: Read, W: Write> Client<R, W> {
     }
 
     /// Reads reply chunks for `cookie` until DONE, calling `f(type, payload)`.
+    /// A simple reply to a read (`simple_read = (offset, len)`) is passed on as OFFSET_DATA.
     // ponytail: one request in flight; pipeline requests if SSH latency limits throughput.
-    fn replies(&mut self, cookie: u64, mut f: impl FnMut(u16, Vec<u8>) -> io::Result<()>) -> io::Result<()> {
+    fn replies(
+        &mut self,
+        cookie: u64,
+        simple_read: Option<(u64, usize)>,
+        mut f: impl FnMut(u16, Vec<u8>) -> io::Result<()>,
+    ) -> io::Result<()> {
         loop {
             match u32_(&mut self.r)? {
                 SIMPLE_REPLY_MAGIC => {
@@ -203,11 +215,15 @@ impl<R: Read, W: Write> Client<R, W> {
                     if u64_(&mut self.r)? != cookie {
                         return Err(proto("cookie mismatch"));
                     }
-                    return if err == 0 {
-                        Ok(())
-                    } else {
-                        Err(proto(format!("server error {err}")))
-                    };
+                    if err != 0 {
+                        return Err(proto(format!("server error {err}")));
+                    }
+                    if let Some((off, len)) = simple_read {
+                        let mut p = off.to_be_bytes().to_vec();
+                        p.extend(bytes(&mut self.r, len)?);
+                        f(REPLY_OFFSET_DATA, p)?;
+                    }
+                    return Ok(());
                 }
                 STRUCTURED_REPLY_MAGIC => {
                     let flags = u16_(&mut self.r)?;
@@ -249,7 +265,7 @@ impl<R: Read, W: Write> Client<R, W> {
             let off = offset + i as u64 * MAX_REQUEST as u64;
             piece.fill(0);
             let cookie = self.request(CMD_READ, off, piece.len() as u32)?;
-            self.replies(cookie, |ty, p| {
+            self.replies(cookie, Some((off, piece.len())), |ty, p| {
                 if ty != REPLY_OFFSET_DATA && ty != REPLY_OFFSET_HOLE {
                     return if ty == REPLY_NONE {
                         Ok(())
@@ -285,7 +301,7 @@ impl<R: Read, W: Write> Client<R, W> {
             let len = (self.size - off).min(1 << 30) as u32;
             let cookie = self.request(CMD_BLOCK_STATUS, off, len)?;
             let mut got = 0u64;
-            self.replies(cookie, |ty, p| {
+            self.replies(cookie, None, |ty, p| {
                 if ty != REPLY_BLOCK_STATUS || p.len() < 4 || u32::from_be_bytes(p[..4].try_into().unwrap()) != id {
                     return Ok(()); // other contexts / NONE
                 }

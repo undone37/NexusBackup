@@ -81,3 +81,54 @@ fn reads_data_holes_and_dirty_bitmap() {
     assert_eq!(nbd::flagged(&ext, 1), vec![(8 << 20, 64 << 10), (40 << 20, 64 << 10)]);
     c.disconnect().unwrap();
 }
+
+fn pattern(size: usize) -> Vec<u8> {
+    (0..size).map(|i| (i * 7 + i / 4096) as u8).collect()
+}
+
+#[test]
+fn server_roundtrip_with_own_client() {
+    let data = pattern(5 << 20 | 123);
+    let (a, b) = UnixStream::pair().unwrap();
+    let d2 = data.clone();
+    let srv = std::thread::spawn(move || {
+        nbd::server::serve(b.try_clone().unwrap(), b, "drive-scsi0", d2.len() as u64, |off, buf| {
+            buf.copy_from_slice(&d2[off as usize..off as usize + buf.len()]);
+            Ok(())
+        })
+    });
+    let mut c = nbd::Client::connect(a.try_clone().unwrap(), a, "drive-scsi0", &[]).unwrap();
+    assert_eq!(c.size(), data.len() as u64);
+    let mut out = Vec::new();
+    c.read_to_end(&mut out).unwrap();
+    assert_eq!(out, data);
+    c.disconnect().unwrap();
+    srv.join().unwrap().unwrap();
+}
+
+#[test]
+fn server_interops_with_qemu_img() {
+    if Command::new("qemu-img").arg("--version").output().is_err() {
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let sock = d.path().join("srv.sock");
+    let data = pattern(3 << 20 | 512);
+    let l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let d2 = data.clone();
+    let srv = std::thread::spawn(move || {
+        let (s, _) = l.accept().unwrap();
+        nbd::server::serve(s.try_clone().unwrap(), s, "disk", d2.len() as u64, |off, buf| {
+            buf.copy_from_slice(&d2[off as usize..off as usize + buf.len()]);
+            Ok(())
+        })
+    });
+    let out = d.path().join("out.raw");
+    let uri = format!("nbd+unix:///disk?socket={}", sock.display());
+    run(
+        "qemu-img",
+        &["convert", "-f", "raw", "-O", "raw", &uri, out.to_str().unwrap()],
+    );
+    assert_eq!(std::fs::read(&out).unwrap(), data);
+    srv.join().unwrap().unwrap();
+}
