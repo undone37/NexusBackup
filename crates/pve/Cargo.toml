@@ -8,7 +8,12 @@ rust-version.workspace = true
 [dependencies]
 anyhow = "1"
 chunkstore = { path = "../chunkstore" }
+keyd = { path = "../keyd" }
 nbd = { path = "../nbd" }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[[bin]]
+name = "nexus-pve"
+path = "src/main.rs"

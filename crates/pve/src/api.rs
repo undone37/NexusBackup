@@ -66,11 +66,17 @@ impl Api {
     }
 
     /// Starts `vzdump` for one guest to the provider storage; returns the task UPID.
-    pub fn start_backup(&self, node: &str, vmid: u32, storage: &str) -> Result<String> {
+    /// `fleecing` e.g. `enabled=1,storage=local-lvm` (mandatory for provider VM backups).
+    pub fn start_backup(&self, node: &str, vmid: u32, storage: &str, fleecing: &str) -> Result<String> {
         let id = vmid.to_string();
         let upid = self.post(
             &format!("/nodes/{node}/vzdump"),
-            &[("vmid", id.as_str()), ("storage", storage), ("mode", "snapshot")],
+            &[
+                ("vmid", id.as_str()),
+                ("storage", storage),
+                ("mode", "snapshot"),
+                ("fleecing", fleecing),
+            ],
         )?;
         upid.as_str().map(str::to_owned).context("vzdump returned no UPID")
     }
