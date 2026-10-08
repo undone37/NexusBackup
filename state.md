@@ -33,7 +33,8 @@ Decisions: PVE 9.x only · NBD over SSH stdio (forced command) · .deb via dpkg-
 - [ ] Research PVE Backup Provider API → docs/pve-backup-provider-api.md (agent running)
 - [ ] Lab: nested PVE 9 VM (agent)
 - [ ] On-node plugin (Perl storage + backup provider) + forced-command helper + .deb
-- [ ] Appliance side: NBD client, PVE API client, orchestration into fixed index
+- [x] `crates/nbd`: NBD client (fixed newstyle, structured replies, meta contexts, block status, Read+Seek, transport-agnostic for SSH stdio); tested against qemu-nbd with a persistent dirty bitmap
+- [ ] Appliance side: PVE API client, orchestration into fixed index
 - [ ] LXC file-level backup, full VM restore, scheduling → M2
 
 ## Next
