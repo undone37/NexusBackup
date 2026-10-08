@@ -56,7 +56,7 @@ Storage plugin properties are global across plugins, hence the `nexus-` prefix.
 ## index.json (appliance → nodes)
 ```json
 {"version":1,"archives":[{"volname":"backup/nexus-100-1760000000","vmid":100,"ctime":1760000000,
-  "size":34359738368,"devices":["drive-scsi0"],"config":"<qemu-server.conf>","firewall":null,
+  "size":34359738368,"devices":["drive-scsi0"],"device_sizes":{"drive-scsi0":34359738368},"config":"<qemu-server.conf>","firewall":null,
   "notes":"","protected":false}]}
 ```
 Plugin uses it for `list_volumes`, `archive_get_guest_config`, `archive_get_firewall_config`, `volume_size_info`, `backup_vm_query_incremental`, `status` (total/used from the last appliance push or 0). Missing/unreadable index ⇒ empty list, never die.
@@ -71,5 +71,21 @@ Plugin uses it for `list_volumes`, `archive_get_guest_config`, `archive_get_fire
 | anything else | exit 2, log to syslog |
 Arguments are validated: vmid `^\d{1,9}$`, storeid `^[a-z][a-z0-9\-_.]{1,99}$`.
 
+## VM restore flow (full restore, v1.1)
+PVE only accepts a regular file or block device as `qemu-img-path`, so the node
+attaches the appliance's NBD export to `/dev/nbdX` with the node's own `qemu-nbd`.
+1. Appliance: `POST /nodes/<node>/qemu vmid=<target> archive=<storeid>:backup/nexus-<vmid>-<t> storage=<target storage> [force=1] [unique=1]` → UPID.
+2. Plugin `restore_get_mechanism` → `('qemu-img', 'qemu')`; `restore_vm_init` → `{ <device> => { size } }` from index.json (devices + sizes; index.json archive entries get a `device_sizes` map `{name: bytes}`).
+3. Plugin `restore_vm_volume_init($volname, $device)`:
+   - writes `/run/nexusbackup/restore/<archive>.json` = `{"archive":"nexus-100-1760000000","device":"drive-scsi0","socket":"/run/nexusbackup/restore/<archive>.<device>.sock"}` (one device at a time; PVE restores volumes sequentially),
+   - waits for the socket to appear (same timeout option), `modprobe nbd`, picks a free `/dev/nbdX` (size 0 in `/sys/block/nbdX/size`), runs
+     `qemu-nbd -c /dev/nbdX -r --image-opts driver=raw,file.driver=nbd,file.server.type=unix,file.server.path=<socket>,file.export=<device>`,
+   - returns `{ 'qemu-img-path' => '/dev/nbdX' }`.
+4. Appliance polls `restore-job <archive>` (prints the JSON, exit 1 if none) and runs `restore-serve <archive> <device>`: the helper creates the listening socket (dir `/run/nexusbackup/restore` 0770 root:nexusbackup, socket 0660), accepts exactly one connection and pipes it ⇄ stdio. The appliance runs `nbd::server` over the SSH stdio, serving the device from the snapshot's fixed index (read-only).
+5. Plugin `restore_vm_volume_cleanup`: `qemu-nbd -d /dev/nbdX`, remove JSON + socket. The appliance's server sees EOF and polls for the next device until the restore task stops.
+6. `restore_vm_cleanup`: remove leftovers. Live restore is impossible for providers (PVE refuses).
+
+Helper additions: `restore-job <archive>`, `restore-serve <archive> <device>`; archive `^nexus-\d{1,9}-\d{1,12}$`, device `^[a-z0-9\-]{1,64}$`.
+
 ## Not in v1
-Containers (directory mechanism, mapped-root `backup_container`), restore (needs `qemu-nbd -c /dev/nbdX` or `nbdfuse` on the node because PVE rejects NBD URIs as restore source), trim of read regions (fleecing shrink).
+Containers (directory mechanism, mapped-root `backup_container`), trim of read regions (fleecing shrink).
