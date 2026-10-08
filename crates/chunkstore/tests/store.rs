@@ -1,0 +1,193 @@
+use chunkstore::{FileEntry, Index, Keyring, Options, Store};
+use std::io::ErrorKind;
+use std::path::Path;
+use std::process::Command;
+use std::time::Duration;
+
+fn keys() -> Keyring {
+    Keyring::new("tenant1", &[(1, [9; 32])])
+}
+
+fn open(dir: &Path, min_lock_secs: u64, gc_grace_secs: u64) -> Store {
+    Store::open(
+        dir,
+        keys(),
+        Options {
+            min_lock_secs,
+            gc_grace_secs,
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
+/// Deterministic pseudo-random image; chunk `t % 6` differs per snapshot.
+fn image(t: u64) -> Vec<u8> {
+    let mut x = 0x9e3779b97f4a7c15u64;
+    (0..6 * 65536usize)
+        .map(|i| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            if i / 65536 == (t % 6) as usize {
+                (x as u8) ^ (t as u8)
+            } else {
+                x as u8
+            }
+        })
+        .collect()
+}
+
+fn restore(s: &Store, m: &chunkstore::Manifest, name: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    s.write_chunks(s.load_index(m, name).unwrap().chunk_ids(), &mut out)
+        .unwrap();
+    out
+}
+
+#[test]
+fn image_and_files_roundtrip_with_dedup() {
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), 0, 0);
+    let img = s.store_image(&image(1)[..], 65536).unwrap();
+    let file = vec![7u8; 3 << 20];
+    let (chunks, size) = s.store_file(&file[..]).unwrap();
+    let files = Index::Dynamic {
+        entries: vec![FileEntry {
+            path: "a/b".into(),
+            mode: 0o644,
+            size,
+            mtime: 0,
+            chunks,
+        }],
+    };
+    let m = s
+        .commit_snapshot("vm-100", 1, &[("disk0", img), ("files", files)])
+        .unwrap();
+    assert_eq!(restore(&s, &m, "disk0"), image(1));
+    assert_eq!(restore(&s, &m, "files"), file);
+
+    // image(2) differs from image(1) in chunks 1 and 2 only
+    let new = image(2)
+        .chunks(65536)
+        .map(|c| s.insert_chunk(c).unwrap().1)
+        .filter(|&n| n)
+        .count();
+    assert_eq!(new, 2);
+    assert!(s.commit_snapshot("vm-100", 1, &[]).unwrap_err().kind() == ErrorKind::AlreadyExists);
+    assert!(s.commit_snapshot("../etc", 2, &[]).is_err(), "path traversal rejected");
+}
+
+#[test]
+fn wrong_keyring_rejected() {
+    let d = tempfile::tempdir().unwrap();
+    open(d.path(), 0, 0);
+    let other = Keyring::new("tenant1", &[(1, [8; 32])]);
+    assert!(Store::open(d.path(), other, Options::default()).is_err());
+}
+
+#[test]
+fn locks_only_extend_and_block_delete() {
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), 3600, 0);
+    let m = s.commit_snapshot("vm-1", 10, &[]).unwrap();
+    assert_eq!(s.extend_lock("vm-1", 10, 0).unwrap(), m.lock_until, "cannot shorten");
+    assert_eq!(s.extend_lock("vm-1", 10, m.lock_until + 99).unwrap(), m.lock_until + 99);
+    assert_eq!(
+        s.delete_snapshot("vm-1", 10).unwrap_err().kind(),
+        ErrorKind::PermissionDenied
+    );
+    drop(s);
+    let s = open(d.path(), 0, 0); // reopening with weaker options changes nothing
+    assert!(s.delete_snapshot("vm-1", 10).is_err());
+    s.commit_snapshot("vm-1", 11, &[]).unwrap();
+    s.delete_snapshot("vm-1", 11).unwrap();
+    assert_eq!(s.list_snapshots().unwrap().len(), 1);
+}
+
+#[test]
+fn gc_sweeps_only_unreferenced_and_needs_quorum_for_mass_delete() {
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), 0, 0);
+    for t in 1..=3 {
+        let idx = s.store_image(&image(t)[..], 65536).unwrap();
+        s.commit_snapshot("vm", t, &[("disk", idx)]).unwrap();
+    }
+    s.delete_snapshot("vm", 1).unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    let st = s.gc(false).unwrap(); // 6 base + 3 variants; 1 of 9 dead: under 20 %
+    assert_eq!((st.total, st.deleted), (9, 1));
+    s.delete_snapshot("vm", 2).unwrap();
+    s.delete_snapshot("vm", 3).unwrap();
+    assert_eq!(s.gc(false).unwrap_err().kind(), ErrorKind::PermissionDenied);
+    assert_eq!(s.gc(true).unwrap().deleted, 8);
+
+    // grace period protects fresh unreferenced chunks (in-flight backup)
+    let s = open(d.path(), 0, 3600);
+    s.insert_chunk(b"in flight").unwrap();
+    assert_eq!(s.gc(true).unwrap().deleted, 0);
+}
+
+#[test]
+fn verify_detects_corruption_and_missing() {
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), 0, 0);
+    let idx = s.store_image(&image(1)[..], 65536).unwrap();
+    let ids: Vec<_> = idx.chunk_ids().into_iter().copied().collect();
+    s.commit_snapshot("vm", 1, &[("disk", idx)]).unwrap();
+    let path = |id: &[u8; 32]| {
+        let h = chunkstore::crypto::hex(id);
+        d.path().join("chunks").join(&h[..4]).join(h)
+    };
+    let mut b = std::fs::read(path(&ids[0])).unwrap();
+    b[40] ^= 0xff;
+    std::fs::write(path(&ids[0]), b).unwrap();
+    std::fs::remove_file(path(&ids[1])).unwrap();
+    let r = s.verify(|_| true).unwrap();
+    assert_eq!((r.checked, r.corrupt, r.missing), (5, vec![ids[0]], vec![ids[1]]));
+}
+
+/// Child half of the crash test: writes snapshots until killed.
+#[test]
+fn crash_child() {
+    let Ok(dir) = std::env::var("CHUNKSTORE_CRASH_DIR") else {
+        return;
+    };
+    let s = open(Path::new(&dir), 0, 0);
+    let mut t = s.list_snapshots().unwrap().last().map_or(0, |m| m.time);
+    loop {
+        t += 1;
+        let idx = s.store_image(&image(t)[..], 65536).unwrap();
+        s.commit_snapshot("vm", t, &[("disk", idx)]).unwrap();
+    }
+}
+
+/// kill -9 the writer at random points; every committed snapshot must restore
+/// bit-exact and GC + verify must leave a consistent store.
+#[test]
+fn survives_kill_9() {
+    let d = tempfile::tempdir().unwrap();
+    for round in 0..6u64 {
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["crash_child", "--exact", "--nocapture", "--test-threads=1"])
+            .env("CHUNKSTORE_CRASH_DIR", d.path())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(150 + round * 37));
+        child.kill().unwrap(); // SIGKILL on unix
+        child.wait().unwrap();
+    }
+    let s = open(d.path(), 0, 0);
+    let snaps = s.list_snapshots().unwrap();
+    assert!(snaps.len() > 6, "child made progress: {}", snaps.len());
+    for m in &snaps {
+        assert_eq!(restore(&s, m, "disk"), image(m.time), "snapshot {}", m.time);
+    }
+    std::thread::sleep(Duration::from_millis(20));
+    s.gc(true).unwrap();
+    let r = s.verify(|_| true).unwrap();
+    assert!(r.corrupt.is_empty() && r.missing.is_empty(), "{r:?}");
+    for m in &snaps {
+        assert_eq!(restore(&s, m, "disk"), image(m.time));
+    }
+}
