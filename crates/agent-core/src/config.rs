@@ -107,6 +107,8 @@ pub struct Settings {
     pub max_connections: usize,
     /// uid that must own hook files and directories (0 in production)
     pub hook_owner: u32,
+    /// Windows: VSS writer class ids (comma separated) that must not take part
+    pub vss_exclude_writers: String,
 }
 
 impl Default for Settings {
@@ -120,6 +122,7 @@ impl Default for Settings {
             appliance_id: None,
             max_connections: 4,
             hook_owner: 0,
+            vss_exclude_writers: String::new(),
         }
     }
 }
@@ -150,6 +153,7 @@ impl Settings {
                 "spool_max_bytes" => s.spool_max_bytes = num(v)?,
                 "appliance_id" => s.appliance_id = Some(v.to_string()).filter(|v| !v.is_empty()),
                 "max_connections" => s.max_connections = num(v)?.clamp(1, 64) as usize,
+                "vss_exclude_writers" => s.vss_exclude_writers = v.to_string(),
                 _ => return Err(format!("agent.conf line {}: unknown key {k}", n + 1)),
             }
         }

@@ -77,8 +77,9 @@ pub trait RestoreFs {
 
     /// target directory (for logs)
     fn target_display(&self) -> String;
-    /// Validate an entry path for this platform (at least [`components`]).
-    fn check_path(&self, path: &[u8]) -> io::Result<()>;
+    /// Validate an entry's path (and a hard link's target) for this platform (at
+    /// least [`components`]).
+    fn check_entry(&self, e: &Entry) -> io::Result<()>;
     /// State of the destination; creates missing parent directories (restrictive
     /// permissions; their real metadata arrives with their own entries).
     fn existing(&mut self, path: &[u8]) -> io::Result<Existing>;
@@ -165,17 +166,15 @@ impl<F: RestoreFs> Stream<F> {
     }
 
     fn entry(&mut self, e: Entry) -> io::Result<()> {
+        // the appliance may send the root itself as "" / "."; it is the target
+        if e.kind != Kind::Hardlink && (e.path.is_empty() || e.path == b".") {
+            return Ok(());
+        }
+        self.fs.check_entry(&e)?;
         if e.kind == Kind::Hardlink {
-            self.fs.check_path(&e.path)?;
-            self.fs.check_path(e.link_target.as_deref().unwrap_or_default())?;
             self.links.push(e);
             return Ok(());
         }
-        // the appliance may send the root itself as "" / "."; it is the target
-        if e.path.is_empty() || e.path == b"." {
-            return Ok(());
-        }
-        self.fs.check_path(&e.path)?;
         let existing = self.fs.existing(&e.path)?;
         if !may_replace(existing, &e, self.overwrite)? {
             // policy decision, not an error (errors fail the restore job)
@@ -373,8 +372,12 @@ mod tests {
         fn target_display(&self) -> String {
             "mem".into()
         }
-        fn check_path(&self, path: &[u8]) -> io::Result<()> {
-            components(path).map(drop)
+        fn check_entry(&self, e: &Entry) -> io::Result<()> {
+            components(&e.path)?;
+            if e.kind == Kind::Hardlink {
+                components(e.link_target.as_deref().unwrap_or_default())?;
+            }
+            Ok(())
         }
         fn existing(&mut self, path: &[u8]) -> io::Result<Existing> {
             Ok(match self.nodes.get(path) {

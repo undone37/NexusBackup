@@ -167,8 +167,43 @@ pub struct Agent<P: Platform> {
     pub exit_on_update: bool,
 }
 
+static LOG_TIMESTAMPS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Prefix log lines with a UTC timestamp (log files; journald adds its own).
+pub fn log_timestamps(on: bool) {
+    LOG_TIMESTAMPS.store(on, Ordering::Relaxed);
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ` for a Unix time.
+pub fn utc(secs: u64) -> String {
+    let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+    // civil from days (H. Hinnant)
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
+}
+
 pub fn log(msg: impl AsRef<str>) {
-    eprintln!("nexus-agent: {}", msg.as_ref());
+    if LOG_TIMESTAMPS.load(Ordering::Relaxed) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        eprintln!("{} nexus-agent: {}", utc(now), msg.as_ref());
+    } else {
+        eprintln!("nexus-agent: {}", msg.as_ref());
+    }
 }
 
 pub fn failures(paths: &Paths) -> u32 {
@@ -722,5 +757,15 @@ fn msg_name(m: &Message) -> &'static str {
         Message::Hello { .. } => "Hello",
         Message::Error { .. } => "Error",
         _ => "(agent-to-appliance message)",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn utc_format() {
+        assert_eq!(super::utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(super::utc(1_609_459_200), "2021-01-01T00:00:00Z");
+        assert_eq!(super::utc(951_782_400 + 3_723), "2000-02-29T01:02:03Z");
     }
 }

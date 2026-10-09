@@ -208,8 +208,12 @@ impl RestoreFs for LinuxFs {
         self.target.display().to_string()
     }
 
-    fn check_path(&self, path: &[u8]) -> io::Result<()> {
-        components(path).map(drop)
+    fn check_entry(&self, e: &Entry) -> io::Result<()> {
+        components(&e.path)?;
+        if e.kind == Kind::Hardlink {
+            components(e.link_target.as_deref().unwrap_or_default())?;
+        }
+        Ok(())
     }
 
     fn existing(&mut self, path: &[u8]) -> io::Result<Existing> {
