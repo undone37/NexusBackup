@@ -186,6 +186,17 @@ fn run_one(hook: &Path, phase: &str, timeout: Duration, env: &[(&str, String)]) 
 mod tests {
     use super::*;
 
+    #[test]
+    fn unit_lets_hooks_change_user() {
+        // NoNewPrivileges=yes + an explicit User= makes systemd drop CAP_SETUID, which
+        // breaks `setpriv --reuid=postgres` in the DB hook examples (lab: Debian 13)
+        let unit = include_str!("../dist/nexus-agent.service");
+        assert!(!unit.lines().any(|l| l.trim_start().starts_with("User=")));
+        assert!(unit.contains("CAP_SETUID CAP_SETGID"));
+        let pg = include_str!("../dist/hooks.d/pre/10-postgresql.example");
+        assert!(pg.contains("setpriv --reuid"));
+    }
+
     fn me() -> u32 {
         crate::sys::geteuid()
     }

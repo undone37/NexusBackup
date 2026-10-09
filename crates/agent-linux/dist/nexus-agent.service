@@ -15,7 +15,9 @@ ConditionPathExists=/etc/nexus-agent/agent.key
 
 [Service]
 Type=simple
-User=root
+# Runs as root. No `User=root`: with an explicit User= and NoNewPrivileges=yes, systemd
+# (seen with 257) drops CAP_SETUID from the permitted set while switching users, and
+# hooks can no longer change to the database user (setpriv: setresuid failed).
 ExecStart=/usr/local/sbin/nexus-agent run
 Restart=on-failure
 RestartSec=5s
