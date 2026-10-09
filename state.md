@@ -132,8 +132,8 @@ Hardened image builds, boots and runs the full flow under SELinux enforcing; sig
   - open (documented): H-1 KEK plain file (TPM/LUKS deferred), H-2 catalog holds PVE token secrets + TOTP seeds in plaintext (web-api + scheduler read/write), H-3 shared uid nexus-chunkstore for scheduler/connectors/QEMU (forwarded to A1); mediums: audit chain not anchored off-box, clock file deletion, restored disks parsed by node kernel, self password/TOTP change without re-auth, admin can stop future backups
 Decisions (user, 2026-10-09): LUKS disk encryption deferred with TPM; cosign with offline key; updates as signed bootc images on ghcr.io; internal security review + scope doc, external pentest commissioned by the user
 
-## Phase 7 — Additional sources (starts after Phase 6 merge)
-Decisions (user, 2026-10-09): order Linux agent → Windows agent → TrueNAS → NAS; Windows = build + unit tests only (no Windows VMs); agent trust = appliance CA + one-time enrollment token; Windows cross-build in podman (mingw-w64)
+## Phase 7 — Additional sources (started 2026-10-09)
+Decisions (user, 2026-10-09): order Linux agent → Windows agent → TrueNAS → NAS; Windows = build + unit tests only (no Windows VMs); agent trust = appliance CA + one-time enrollment token; Windows cross-build in podman (mingw-w64); agent dedup via plain BLAKE3 + appliance-local mapping to keyed IDs
 
 ## Next
 
