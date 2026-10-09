@@ -139,7 +139,8 @@ Decisions (user, 2026-10-09): order Linux agent → Windows agent → TrueNAS �
 - [x] Appliance side `crates/agent-conn` (`nexus-agentctl`): appliance CA (P-256), enrollment + mTLS with fingerprint pin, backup with validation of every entry/chunk, mapping index `<store>/agent-map.db` (verified chunks only, re-transfer if GC'd), Tree snapshots `host-<agent_id>`, restore-to-path (confirm = agent name), tar/zip downloads, signed agent update; catalog v4 (`agents`, sources kind `linux` via table rebuild, migrations with FK check); web-api `/agents` (token once, enroll job, quorum delete), job kinds `agent_enroll`/`restore_files`/`agent_update`; scheduler integration (alerts incl. `backup_inconsistent`, nft allow-list); UI Agents page + restore dialog; job log escaping
 - [x] Interop: real agent ↔ real agent-conn in-process (`crates/agent-linux/tests/interop.rs`): enroll, backup, second backup 0 transfers, lost mapping → re-transfer by re-read, restore with metadata
   - open: SELinux domain for nexus-agentctl (port 7444); snapshot providers + unit/install need root → VM lab; Update in one frame (< 8 MiB); entry list in memory; no cert renewal; agent host/port change unsupported
-- [ ] Lab: Linux test VMs (LVM, XFS, ZFS, btrfs, fallback) end to end — after merge
+- [ ] Lab: Linux test VMs (Debian LVM/thin+XFS, Alma XFS-on-LVM, ZFS, btrfs, plain ext4 fallback) + DB hooks + appliance VM under enforcing with `nexus_agentctl_t` — agent running
+- [ ] Windows agent `crates/agent-windows` (+ shared `agent-core` extracted from agent-linux; VSS, USN, cross-build in podman; build + unit tests only) — agent running
 
 ## Next
 
