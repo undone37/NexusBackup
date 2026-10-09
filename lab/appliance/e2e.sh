@@ -72,12 +72,12 @@ setup() {
 	con run 'chown nexus-chunkstore: /etc/nexus/ssh/pve1 /etc/nexus/ssh/offsite && restorecon -RF /etc/nexus/ssh && ls -lZ /etc/nexus/ssh'
 
 	log "first boot: nexus-setup.service with --script (drop-in in /run, lab only)"
-	con put "$ROOT/answers.json" /run/nexus-lab/answers.json 0600 >/dev/null
+	con put "$ROOT/answers.json" /etc/nexus/lab-answers.json 0600 >/dev/null
 	rm -f "$ROOT/answers.json"
-	con run 'mkdir -p /run/systemd/system/nexus-setup.service.d && printf "[Service]\nExecStart=\nExecStart=/usr/libexec/nexus/nexus-setup --script /run/nexus-lab/answers.json\nStandardInput=null\nStandardOutput=journal\nTTYReset=no\nTTYVHangup=no\nTTYVTDisallocate=no\n" > /run/systemd/system/nexus-setup.service.d/lab.conf && systemctl daemon-reload' >/dev/null
+	con run 'mkdir -p /run/systemd/system/nexus-setup.service.d && printf "[Service]\nExecStart=\nExecStart=/usr/libexec/nexus/nexus-setup --script /etc/nexus/lab-answers.json\nStandardInput=null\nStandardOutput=journal\nTTYReset=no\nTTYVHangup=no\nTTYVTDisallocate=no\n" > /run/systemd/system/nexus-setup.service.d/lab.conf && systemctl daemon-reload' >/dev/null
 	local t0
 	t0=$(date +%s)
-	con run 'systemctl restart nexus-setup.service; echo "setup exit: $?"; rm -f /run/nexus-lab/answers.json; rm -rf /run/systemd/system/nexus-setup.service.d; systemctl daemon-reload' 300
+	con run 'systemctl restart nexus-setup.service; echo "setup exit: $?"; rm -f /etc/nexus/lab-answers.json; rm -rf /run/systemd/system/nexus-setup.service.d; systemctl daemon-reload' 300
 	log "setup took $(($(date +%s) - t0)) s"
 	con run 'journalctl -u nexus-setup -o cat --no-pager | grep -v "^RECOVERY\|^ *[0-9A-Z]\{4\}-" | tail -n 25; ls -l /var/lib/nexus /etc/nexus /etc/nexus/tls; systemctl is-active nexus-keyd nexus-web-api nexus-scheduler'
 	con get /etc/nexus/tls/cert.pem >"$ROOT/etc/nexus/tls/cert.pem"

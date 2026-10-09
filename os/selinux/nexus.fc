@@ -18,6 +18,7 @@
 # state
 /var/lib/nexus				-d	gen_context(system_u:object_r:nexus_var_lib_t,s0)
 /var/lib/nexus/setup-done		--	gen_context(system_u:object_r:nexus_var_lib_t,s0)
+/var/lib/nexus/\.setup\.lock		--	gen_context(system_u:object_r:nexus_var_lib_t,s0)
 /var/lib/nexus/catalog(/.*)?			gen_context(system_u:object_r:nexus_catalog_t,s0)
 /var/lib/nexus/downloads(/.*)?			gen_context(system_u:object_r:nexus_downloads_t,s0)
 /var/lib/nexus/keyd(/.*)?			gen_context(system_u:object_r:nexus_keyd_var_lib_t,s0)
@@ -25,6 +26,7 @@
 /var/lib/nexus/offsite(/.*)?			gen_context(system_u:object_r:nexus_store_t,s0)
 /var/lib/nexus/scheduler(/.*)?			gen_context(system_u:object_r:nexus_store_t,s0)
 /var/lib/nexus/escrow(/.*)?			gen_context(system_u:object_r:nexus_escrow_t,s0)
+/var/lib/nexus/update(/.*)?			gen_context(system_u:object_r:nexus_update_t,s0)
 
 # configuration and secrets
 /etc/nexus(/.*)?				gen_context(system_u:object_r:nexus_etc_t,s0)
@@ -36,3 +38,4 @@
 /run/nexus-keyd(/.*)?				gen_context(system_u:object_r:nexus_keyd_var_run_t,s0)
 /run/nexus-scheduler(/.*)?			gen_context(system_u:object_r:nexus_scheduler_var_run_t,s0)
 /run/nexus-nft(/.*)?				gen_context(system_u:object_r:nexus_nft_var_run_t,s0)
+/run/nexus-nft-sync(/.*)?			gen_context(system_u:object_r:nexus_nftsync_var_run_t,s0)

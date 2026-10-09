@@ -15,6 +15,8 @@ Group=nexus-webapi
 # 0640 root:nexus-webapi (written by nexus-setup).
 SupplementaryGroups=nexus-catalog
 ReadWritePaths=/var/lib/nexus/catalog
+# OS update control (request/window/inhibit for nexus-update; 2770 root:nexus-catalog)
+ReadWritePaths=/var/lib/nexus/update
 Restart=on-failure
 UMask=0077
 LimitCORE=0

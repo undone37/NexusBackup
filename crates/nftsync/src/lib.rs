@@ -19,7 +19,7 @@
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::net::{IpAddr, ToSocketAddrs};
@@ -132,6 +132,10 @@ pub fn write_allowed(path: &Path, endpoints: impl IntoIterator<Item = Endpoint>)
             .mode(0o644)
             .open(&tmp)?;
         f.write_all(&data)?;
+        // world-readable whatever the umask (the scheduler runs with 0077): the
+        // root reader holds only CAP_NET_ADMIN, no DAC override
+        use std::os::unix::fs::PermissionsExt;
+        f.set_permissions(std::fs::Permissions::from_mode(0o644))?;
     }
     std::fs::rename(&tmp, path)?;
     Ok(true)
@@ -230,41 +234,62 @@ pub fn resolve(hosts: &[String]) -> (Vec<IpAddr>, Vec<String>) {
     (addrs, errors)
 }
 
-fn set_lines(out: &mut String, set: &str, elems: &[String]) {
-    let _ = writeln!(out, "flush set {TABLE} {set}");
-    if !elems.is_empty() {
-        let _ = writeln!(out, "add element {TABLE} {set} {{ {} }}", elems.join(", "));
-    }
-}
+/// Elements per set (set name -> nft element expressions) that this tool manages.
+/// Only sets present in the map are touched.
+pub type State = BTreeMap<String, BTreeSet<String>>;
 
-fn split<T>(addrs: &[T], v4: impl Fn(&T) -> bool, fmt: impl Fn(&T) -> String) -> (Vec<String>, Vec<String>) {
+fn split<T>(addrs: &[T], v4: impl Fn(&T) -> bool, fmt: impl Fn(&T) -> String) -> (BTreeSet<String>, BTreeSet<String>) {
     let (a, b): (Vec<&T>, Vec<&T>) = addrs.iter().partition(|x| v4(x));
     (a.into_iter().map(&fmt).collect(), b.into_iter().map(&fmt).collect())
 }
 
-/// The nft script: each given set is flushed and refilled. `None` leaves those sets untouched.
-pub fn script(dns: Option<&[IpAddr]>, nts: Option<&[IpAddr]>, allowed: Option<&Allowed>) -> String {
-    let mut s = String::new();
+/// The desired content of the given sets; `None` = leave those sets alone.
+pub fn desired(dns: Option<&[IpAddr]>, nts: Option<&[IpAddr]>, allowed: Option<&Allowed>) -> State {
+    let mut st = State::new();
     for (name, list) in [("dns_servers", dns), ("nts_servers", nts)] {
         if let Some(list) = list {
             let (v4, v6) = split(list, IpAddr::is_ipv4, IpAddr::to_string);
-            set_lines(&mut s, &format!("{name}_v4"), &v4);
-            set_lines(&mut s, &format!("{name}_v6"), &v6);
+            st.insert(format!("{name}_v4"), v4);
+            st.insert(format!("{name}_v6"), v6);
         }
     }
     if let Some(a) = allowed {
-        let mut eps = a.endpoints.clone();
-        eps.sort();
-        eps.dedup();
         let (v4, v6) = split(
-            &eps,
+            &a.endpoints,
             |e| e.addr.is_ipv4(),
             |e| format!("{} . {} . {}", e.addr, e.proto.as_str(), e.port),
         );
-        set_lines(&mut s, "allowed_out_v4", &v4);
-        set_lines(&mut s, "allowed_out_v6", &v6);
+        st.insert("allowed_out_v4".into(), v4);
+        st.insert("allowed_out_v6".into(), v6);
     }
-    s
+    st
+}
+
+/// The nft script from the previously applied state to `want`. Without a
+/// previous state (first run after boot) the sets are flushed and refilled.
+/// With one, only elements this tool added before and no longer wants are
+/// removed (`destroy`: no error if already gone, e.g. after an nftables
+/// reload), so elements added by others (nexus-update opens 443/tcp to the
+/// registry in `allowed_out_*` during a fetch) survive a sync.
+pub fn script(prev: Option<&State>, want: &State) -> String {
+    let mut out = String::new();
+    for (set, elems) in want {
+        match prev {
+            None => {
+                let _ = writeln!(out, "flush set {TABLE} {set}");
+            }
+            Some(p) => {
+                for gone in p.get(set).into_iter().flatten().filter(|e| !elems.contains(*e)) {
+                    let _ = writeln!(out, "destroy element {TABLE} {set} {{ {gone} }}");
+                }
+            }
+        }
+        if !elems.is_empty() {
+            let v: Vec<&str> = elems.iter().map(String::as_str).collect();
+            let _ = writeln!(out, "add element {TABLE} {set} {{ {} }}", v.join(", "));
+        }
+    }
+    out
 }
 
 /// Applies a script atomically (`nft -f -`: one transaction).
@@ -361,15 +386,26 @@ mod tests {
             ],
         };
         let dns: Vec<IpAddr> = vec!["10.0.2.3".parse().unwrap()];
-        let s = script(Some(&dns), None, Some(&a));
+        let want = desired(Some(&dns), None, Some(&a));
+        assert_eq!(
+            script(None, &want),
+            "flush set inet nexus allowed_out_v4\nadd element inet nexus allowed_out_v4 { 10.0.2.2 . tcp . 10022 }\n\
+             flush set inet nexus allowed_out_v6\nadd element inet nexus allowed_out_v6 { 2001:db8::1 . tcp . 23 }\n\
+             flush set inet nexus dns_servers_v4\nadd element inet nexus dns_servers_v4 { 10.0.2.3 }\n\
+             flush set inet nexus dns_servers_v6\n"
+        );
+        assert!(!script(None, &want).contains("nts_servers"));
+        // incremental: only our own stale elements go, nothing is flushed
+        let a2 = Allowed {
+            endpoints: vec![a.endpoints[2]],
+        };
+        let s = script(Some(&want), &desired(Some(&dns), None, Some(&a2)));
         assert_eq!(
             s,
-            "flush set inet nexus dns_servers_v4\nadd element inet nexus dns_servers_v4 { 10.0.2.3 }\n\
-             flush set inet nexus dns_servers_v6\n\
-             flush set inet nexus allowed_out_v4\nadd element inet nexus allowed_out_v4 { 10.0.2.2 . tcp . 10022 }\n\
-             flush set inet nexus allowed_out_v6\nadd element inet nexus allowed_out_v6 { 2001:db8::1 . tcp . 23 }\n"
+            "destroy element inet nexus allowed_out_v4 { 10.0.2.2 . tcp . 10022 }\n\
+             add element inet nexus allowed_out_v6 { 2001:db8::1 . tcp . 23 }\n\
+             add element inet nexus dns_servers_v4 { 10.0.2.3 }\n"
         );
-        assert!(!s.contains("nts_servers"));
     }
 
     #[test]
@@ -383,6 +419,8 @@ mod tests {
             port: 22,
         };
         assert!(write_allowed(&p, [e, e]).unwrap());
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o644);
         assert!(!write_allowed(&p, [e]).unwrap());
         assert_eq!(Allowed::load(&p).unwrap().endpoints, vec![e]);
         assert!(!write_allowed(&d.join("missing/allowed.json"), [e]).unwrap());

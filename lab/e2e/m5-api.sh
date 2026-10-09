@@ -115,12 +115,28 @@ step_config() {
 	log "tenant lab, source $SRC, policy $POL (daily $at UTC), group $GRP [100, 200]"
 }
 
+# re-run: move the policy's daily time to the next full minute >= 40 s away, so
+# wait-backup sees a new scheduled backup (keeps gfs/offsite, so no quorum)
+step_reschedule() {
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	# shellcheck disable=SC1091
+	. "$S/ids"
+	local at pol
+	at=$(date -u -d "@$((($(date +%s) + 100) / 60 * 60))" +%H:%M)
+	pol=$(api admin GET /policies | jq -c --argjson id "$POL" --arg s "daily $at" '.[] | select(.id==$id) | {name, schedule: $s, gfs, offsite}')
+	api admin PUT "/policies/$POL" "$pol" >/dev/null
+	expect 200 "reschedule policy"
+	log "policy $POL now daily $at UTC"
+}
+
 step_wait_backup() {
 	login admin "$ADMIN_PW" "$ADMIN_TOTP"
 	log "waiting for the scheduled backup"
-	local b=""
+	local b="" seen
+	# jobs of earlier runs (reschedule) do not count
+	seen=$(api admin GET "/jobs?kind=backup" | jq '[.[] | select(.requested_by=="scheduler") | .id] | max // 0')
 	for _ in $(seq 300); do
-		b=$(api admin GET "/jobs?kind=backup" | jq -r '[.[] | select(.requested_by=="scheduler")][0].id // empty')
+		b=$(api admin GET "/jobs?kind=backup" | jq -r --argjson s "$seen" '[.[] | select(.requested_by=="scheduler" and .id > $s)][0].id // empty')
 		[ -n "$b" ] && break
 		sleep 1
 	done

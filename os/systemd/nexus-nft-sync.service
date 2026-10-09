@@ -12,6 +12,11 @@ StartLimitBurst=20
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/nexus/nexus-nft-sync
+# state.json: the elements the last run added (so a sync removes only its own
+# stale elements, never those nexus-update adds for a registry fetch)
+RuntimeDirectory=nexus-nft-sync
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 
 # Root with CAP_NET_ADMIN only (nft netlink); reads the scheduler's JSON
 # (validated: IP literals, tcp/udp, ports), resolv.conf and chrony.conf; DNS

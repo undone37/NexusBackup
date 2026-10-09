@@ -83,8 +83,9 @@ RUN make -C /build -f /usr/share/selinux/devel/Makefile nexus.pp
 FROM ${BASE}
 
 # chrony, nftables: part of the base, asserted. qemu-kvm-core: the restore
-# micro-VM (/usr/libexec/qemu-kvm, nbd block driver and seccomp built in).
-RUN dnf -y install --setopt=install_weak_deps=False chrony nftables qemu-kvm-core \
+# micro-VM (/usr/libexec/qemu-kvm, nbd block driver and seccomp built in). audit:
+# auditd keeps AVC denials and other security events in /var/log/audit.
+RUN dnf -y install --setopt=install_weak_deps=False chrony nftables qemu-kvm-core audit \
  && dnf clean all \
  && rm -rf /var/cache/dnf /var/cache/ldconfig /var/lib/dnf /var/log/dnf* /var/log/hawkey.log \
  && /usr/libexec/qemu-kvm -drive format=help | grep -qw nbd
@@ -120,11 +121,31 @@ COPY os/tmpfiles.d/nexus.conf /usr/lib/tmpfiles.d/nexus.conf
 # Firewall: EL's nftables.service loads /etc/sysconfig/nftables.conf.
 COPY os/nftables.conf /etc/sysconfig/nftables.conf
 
-# /etc overlay (chrony.conf, and the update/signing files: containers policy,
-# keys, greenboot checks, ...). Optional greenboot health checks.
+# Signed OS updates and health-gated rollback (docs/release.md).
+ARG NEXUS_IMAGE_REPO=ghcr.io/nexusbackup/appliance
+ARG NEXUS_VERSION=0.0.0-dev
+# greenboot only; NOT greenboot-default-health-checks (its DNS check fails behind default-deny)
+RUN dnf -y install --setopt=install_weak_deps=False greenboot \
+ && dnf clean all && rm -rf /var/cache/dnf /var/lib/dnf /var/log/dnf* /var/log/hawkey.log
+
+# /etc overlay: chrony.conf, containers signature policy + registry config, cosign
+# key, update.conf, greenboot.conf, presets. Must come AFTER the greenboot install
+# (overrides /etc/greenboot/greenboot.conf). Then the update agent, health check
+# and their units (os/greenboot/usr only, never os/greenboot/tests).
 COPY os/etc/ /etc/
-RUN --mount=type=bind,source=os,target=/ctx \
-    if [ -d /ctx/greenboot ]; then mkdir -p /etc/greenboot && cp -a /ctx/greenboot/. /etc/greenboot/; fi
+COPY os/greenboot/usr/ /usr/
+RUN if [ "$NEXUS_IMAGE_REPO" != ghcr.io/nexusbackup/appliance ]; then \
+      sed -i "s|ghcr.io/nexusbackup/appliance|$NEXUS_IMAGE_REPO|" /etc/containers/policy.json \
+        /etc/containers/registries.d/nexus-appliance.yaml /etc/nexus/update.conf; fi \
+ && python3 -c 'import json; json.load(open("/etc/containers/policy.json"))' \
+ && test -f /usr/lib/bootupd/grub2-static/configs.d/08_greenboot.cfg \
+ && systemctl preset nexus-update.timer nexus-update.path greenboot-healthcheck.service \
+      greenboot-set-rollback-trigger.service greenboot-success.target \
+ && systemctl is-enabled -q nexus-update.timer nexus-update.path greenboot-healthcheck.service \
+      greenboot-set-rollback-trigger.service \
+ && test "$(systemctl is-enabled bootc-fetch-apply-updates.timer)" = masked \
+ && test "$(systemctl is-enabled rpm-ostreed-automatic.timer)" = masked
+LABEL org.opencontainers.image.version=${NEXUS_VERSION}
 
 # Time: NTS only (chronyd -p parses the config and fails on errors).
 RUN chronyd -p -f /etc/chrony.conf >/dev/null

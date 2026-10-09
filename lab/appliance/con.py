@@ -5,6 +5,7 @@
   con.py run 'cmd' [timeout]       run a shell command, print its output, exit with its status
   con.py put LOCAL REMOTE [mode]   copy a file (base64 over the console)
   con.py get REMOTE                print a remote file (base64 over the console)
+  con.py script FILE [timeout]     run a local shell script in the VM
 
 env CONSOLE: console socket (default /home/ah/nexus-lab/appliance/console.sock)
 """
@@ -92,6 +93,18 @@ def main():
         for i in range(0, len(data), 1000):
             c.run(f"echo {data[i:i + 1000]} >> {tmp}")
         out, rc = c.run(f"base64 -d {tmp} > '{remote}' && chmod {mode} '{remote}'; r=$?; rm -f {tmp}; exit_ok() {{ return $r; }}; exit_ok")
+        sys.stdout.buffer.write(out)
+        sys.exit(rc)
+    if a[0] == "script":
+        data = base64.b64encode(open(a[1], "rb").read()).decode()
+        tmp = f"/run/con-script-{secrets.token_hex(4)}.sh"
+        c.run(f"umask 077; : > {tmp}")
+        for i in range(0, len(data), 1000):
+            c.run(f"echo {data[i:i + 1000]} >> {tmp}.b64")
+        out, rc = c.run(
+            f"base64 -d {tmp}.b64 > {tmp}; rm -f {tmp}.b64; bash {tmp} {' '.join(a[3:])}; r=$?; rm -f {tmp}; (exit $r)",
+            float(a[2]) if len(a) > 2 else 600,
+        )
         sys.stdout.buffer.write(out)
         sys.exit(rc)
     if a[0] == "get":

@@ -24,6 +24,8 @@ Environment=NEXUS_QEMU=/usr/libexec/qemu-kvm
 ReadWritePaths=/var/lib/nexus/catalog /var/lib/nexus/chunkstore /var/lib/nexus/offsite
 ReadWritePaths=/var/lib/nexus/escrow /var/lib/nexus/scheduler /var/lib/nexus/downloads
 ReadWritePaths=/run/nexus-nft
+# OS update control (maintenance window for nexus-update; 2770 root:nexus-catalog)
+ReadWritePaths=/var/lib/nexus/update
 # generated job configs with secrets: private, wiped at start
 RuntimeDirectory=nexus-scheduler
 RuntimeDirectoryMode=0700

@@ -19,7 +19,8 @@ concurrency:
 env:
   # The Containerfile and its build context (see os/README.md).
   CONTAINERFILE: os/Containerfile
-  BUILD_CONTEXT: os
+  # repo root: the image builds the Rust workspace, the web UI and the restore micro-VM
+  BUILD_CONTEXT: .
 
 jobs:
   image:

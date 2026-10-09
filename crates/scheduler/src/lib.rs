@@ -281,7 +281,12 @@ impl Scheduler {
         }
         // downloads: setgid dir in the catalog's group (= nexus-catalog), so web-api can read
         fs::create_dir_all(&self.cfg.downloads)?;
-        fs::set_permissions(&self.cfg.downloads, fs::Permissions::from_mode(0o2750))?;
+        // only when needed: on the appliance tmpfiles already created it 2750, and the
+        // unit's RestrictSUIDSGID= refuses any chmod that sets the setgid bit (EPERM)
+        if fs::metadata(&self.cfg.downloads)?.permissions().mode() & 0o7777 != 0o2750 {
+            fs::set_permissions(&self.cfg.downloads, fs::Permissions::from_mode(0o2750))
+                .with_context(|| format!("chmod 2750 {}", self.cfg.downloads.display()))?;
+        }
         if let Some(gid) = self
             .cfg
             .catalog
@@ -292,6 +297,9 @@ impl Scheduler {
             for p in std::iter::once(self.cfg.downloads.clone())
                 .chain(fs::read_dir(&self.cfg.downloads)?.filter_map(|e| e.ok().map(|e| e.path())))
             {
+                if fs::symlink_metadata(&p).is_ok_and(|m| m.gid() == gid) {
+                    continue;
+                }
                 if let Err(e) = std::os::unix::fs::chown(&p, None, Some(gid)) {
                     eprintln!("<4>cannot set group of {}: {e}", p.display());
                 }

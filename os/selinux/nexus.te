@@ -40,6 +40,8 @@ define(`nexus_daemon',`
 	type nexus_$1_t, nexus_domain;
 	type nexus_$1_exec_t;
 	init_daemon_domain(nexus_$1_t, nexus_$1_exec_t)
+	# every unit has NoNewPrivileges=yes: the transition must be NNP-safe
+	allow init_t nexus_$1_t:process2 { nnp_transition nosuid_transition };
 ')
 # nexus_job(name): domain + exec type, entered only from nexus_scheduler_t
 define(`nexus_job',`
@@ -92,6 +94,10 @@ type nexus_scheduler_var_run_t;	# job dirs with generated configs + secrets
 files_pid_file(nexus_scheduler_var_run_t)
 type nexus_nft_var_run_t;	# outbound allow-list (scheduler -> nft-sync)
 files_pid_file(nexus_nft_var_run_t)
+type nexus_update_t;		# OS update control dir (nexus-update reads it as root)
+files_type(nexus_update_t)
+type nexus_nftsync_var_run_t;	# nft-sync: elements it added last time
+files_pid_file(nexus_nftsync_var_run_t)
 type nexus_pve_tmp_t;		# restore micro-VM work dir (sockets, console log)
 files_tmp_file(nexus_pve_tmp_t)
 
@@ -156,6 +162,8 @@ allow nexus_webapi_t nexus_catalog_t:dir rw_dir_perms;
 allow nexus_webapi_t nexus_catalog_t:file map;
 # GET /downloads/{token}: stream files the scheduler wrote
 read_files_pattern(nexus_webapi_t, nexus_downloads_t, nexus_downloads_t)
+# OS update control: request (stage/apply), window, inhibit; reads status.json
+manage_files_pattern(nexus_webapi_t, nexus_update_t, nexus_update_t)
 # setup-done (ConditionPathExists and the binary's own check)
 read_files_pattern(nexus_webapi_t, nexus_var_lib_t, nexus_var_lib_t)
 # TLS key + cert, metrics token
@@ -187,6 +195,8 @@ fs_getattr_xattr_fs(nexus_scheduler_t)
 # job dirs with generated configs (0600) in /run/nexus-scheduler
 manage_dirs_pattern(nexus_scheduler_t, nexus_scheduler_var_run_t, nexus_scheduler_var_run_t)
 manage_files_pattern(nexus_scheduler_t, nexus_scheduler_var_run_t, nexus_scheduler_var_run_t)
+# OS update control: maintenance window from the policies
+manage_files_pattern(nexus_scheduler_t, nexus_update_t, nexus_update_t)
 # outbound allow-list for nexus-nft-sync (atomic rename)
 manage_files_pattern(nexus_scheduler_t, nexus_nft_var_run_t, nexus_nft_var_run_t)
 # scheduler.json, alerts.json, smtp password file
@@ -210,6 +220,8 @@ auth_read_passwd(nexus_scheduler_t)
 # spawn jobs: transition into their domains, collect their output, signal them
 domtrans_pattern(nexus_scheduler_t, nexus_pve_exec_t, nexus_pve_t)
 domtrans_pattern(nexus_scheduler_t, nexus_offsite_exec_t, nexus_offsite_t)
+# the scheduler runs with NoNewPrivileges, inherited by its jobs
+allow nexus_scheduler_t nexus_job_domain:process2 { nnp_transition nosuid_transition };
 allow nexus_scheduler_t nexus_job_domain:process { sigkill signal };
 allow nexus_job_domain nexus_scheduler_t:fd use;
 allow nexus_job_domain nexus_scheduler_t:fifo_file rw_inherited_fifo_file_perms;
@@ -255,11 +267,15 @@ manage_dirs_pattern(nexus_pve_t, nexus_pve_tmp_t, nexus_pve_tmp_t)
 manage_files_pattern(nexus_pve_t, nexus_pve_tmp_t, nexus_pve_tmp_t)
 manage_sock_files_pattern(nexus_pve_t, nexus_pve_tmp_t, nexus_pve_tmp_t)
 files_tmp_filetrans(nexus_pve_t, nexus_pve_tmp_t, dir)
-allow nexus_pve_t self:unix_stream_socket { listen accept };
+allow nexus_pve_t self:unix_stream_socket { listen accept connectto };
+# checks that kernel + initramfs exist before starting QEMU
+list_dirs_pattern(nexus_pve_t, nexus_restorevm_image_t, nexus_restorevm_image_t)
+allow nexus_pve_t nexus_restorevm_image_t:file getattr;
 # /dev/kvm probe (kvm_usable()) before choosing accel=kvm
 dev_rw_kvm(nexus_pve_t)
 # QEMU runs in its own domain; nexus-pve kills it when done
 domtrans_pattern(nexus_pve_t, qemu_exec_t, nexus_restorevm_t)
+allow nexus_pve_t nexus_restorevm_t:process2 { nnp_transition nosuid_transition };
 allow nexus_pve_t nexus_restorevm_t:process { sigkill signal };
 allow nexus_restorevm_t nexus_pve_t:fd use;
 allow nexus_restorevm_t nexus_pve_t:fifo_file rw_inherited_fifo_file_perms;
@@ -279,6 +295,7 @@ list_dirs_pattern(nexus_offsite_t, nexus_escrow_t, nexus_escrow_t)
 # no network, no other files, no devices.
 
 read_files_pattern(nexus_restorevm_t, nexus_restorevm_image_t, nexus_restorevm_image_t)
+allow nexus_restorevm_t nexus_restorevm_image_t:file map;
 list_dirs_pattern(nexus_restorevm_t, nexus_restorevm_image_t, nexus_restorevm_image_t)
 files_search_usr(nexus_restorevm_t)
 dev_rw_kvm(nexus_restorevm_t)
@@ -317,8 +334,11 @@ filetrans_pattern(nexus_setup_t, nexus_etc_t, nexus_webapi_secret_t, dir, "tls")
 filetrans_pattern(nexus_setup_t, nexus_etc_t, nexus_webapi_secret_t, file, "metrics-token")
 filetrans_pattern(nexus_setup_t, nexus_etc_t, nexus_webapi_secret_t, file, ".metrics-token.tmp")
 files_search_etc(nexus_setup_t)
-# user/group names for chown, hostname, NIC list in /sys/class/net
+# user/group names for chown (nss: files, then systemd-userdbd), hostname, NIC list
 auth_read_passwd(nexus_setup_t)
+systemd_userdbd_stream_connect(nexus_setup_t)
+# script mode (lab/tests): answers file placed in /etc/nexus by the operator
+read_files_pattern(nexus_setup_t, nexus_etc_t, nexus_etc_t)
 kernel_read_kernel_sysctls(nexus_setup_t)
 kernel_read_network_state(nexus_setup_t)
 allow nexus_setup_t self:netlink_route_socket r_netlink_socket_perms;
@@ -350,6 +370,8 @@ allow nexus_setup_t self:unix_dgram_socket create_socket_perms;
 # resolve NTS names; run nft (iptables_t) with the script on stdin.
 
 allow nexus_nftsync_t nexus_nft_var_run_t:dir list_dir_perms;
+# its own state (RuntimeDirectory=nexus-nft-sync)
+manage_files_pattern(nexus_nftsync_t, nexus_nftsync_var_run_t, nexus_nftsync_var_run_t)
 read_files_pattern(nexus_nftsync_t, nexus_nft_var_run_t, nexus_nft_var_run_t)
 sysnet_read_config(nexus_nftsync_t)
 # chrony.conf (etc_t) for the NTS server names
@@ -361,6 +383,7 @@ allow nexus_nftsync_t self:udp_socket create_socket_perms;
 allow nexus_nftsync_t self:tcp_socket create_stream_socket_perms;
 corecmd_search_bin(nexus_nftsync_t)
 iptables_domtrans(nexus_nftsync_t)
+allow nexus_nftsync_t iptables_t:process2 { nnp_transition nosuid_transition };
 # nft reads the script from our pipe and writes errors to our stderr
 allow iptables_t nexus_nftsync_t:fd use;
 allow iptables_t nexus_nftsync_t:fifo_file rw_inherited_fifo_file_perms;
