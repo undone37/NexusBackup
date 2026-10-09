@@ -111,6 +111,9 @@ Decisions (user, 2026-10-09): test against a local SFTP container mimicking Stor
 Decisions (user, 2026-10-09): Web UI = TypeScript SPA on the REST API; MFA = TOTP only at first; first boot = console TUI
 
 ## Phase 6 — Hardened appliance release (started 2026-10-09)
+- [ ] A1 appliance image (multi-stage Containerfile, real boot in QEMU, real units/users, SELinux enforcing, nftables egress automation, sandbox scores) — agent running
+- [ ] A2 updates + signing (containers policy with pinned cosign key, staged bootc updates, health-gated rollback, release/sign.sh offline key, release.yml, docs/release.md) — agent running
+- [ ] A3 security review + fuzzing (cargo-fuzz targets for all parsers, docs/security-review.md, docs/pentest-scope.md) — agent running
 Decisions (user, 2026-10-09): LUKS disk encryption deferred with TPM; cosign with offline key; updates as signed bootc images on ghcr.io; internal security review + scope doc, external pentest commissioned by the user
 
 ## Phase 7 — Additional sources (starts after Phase 6 merge)
