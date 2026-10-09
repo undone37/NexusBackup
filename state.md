@@ -112,7 +112,8 @@ Decisions (user, 2026-10-09): Web UI = TypeScript SPA on the REST API; MFA = TOT
 
 ## Phase 6 — Hardened appliance release (started 2026-10-09)
 - [ ] A1 appliance image (multi-stage Containerfile, real boot in QEMU, real units/users, SELinux enforcing, nftables egress automation, sandbox scores) — agent running
-- [ ] A2 updates + signing (containers policy with pinned cosign key, staged bootc updates, health-gated rollback, release/sign.sh offline key, release.yml, docs/release.md) — agent running
+- [x] A2 updates + signing: containers policy (default reject, sigstoreSigned with pinned cosign key, matchRepository), bootc signature enforcement (`switch --enforce-container-sigpolicy`, else bootc ignores policy.json), `nexus-update` (stage, apply only in maintenance window/on request, no version downgrade, rolled-back digests not reapplied, temporary nft allow for ghcr.io), greenboot (AlmaLinux 10 AppStream) + `nexus-health` required check, `release/` (sign.sh air-gapped cosign v2.6.5 by digest, verify, promote :stable, inject-keys, check-trust, test-local), `release.yml` (build/push/SBOM, no CI signing), `docs/release.md`; local demo: signed accepted, wrong key/unsigned/foreign repo/replayed signature rejected; 44 unit tests
+  - open: VM test of real bootc upgrade + greenboot rollback (A1 env); real release key (custodian); UI/quorum for update apply/rollback + scheduler inhibit; nft egress by resolved IP fragile (CDN); catalog migrations must stay one release backward compatible
 - [ ] A3 security review + fuzzing (cargo-fuzz targets for all parsers, docs/security-review.md, docs/pentest-scope.md) — agent running
 Decisions (user, 2026-10-09): LUKS disk encryption deferred with TPM; cosign with offline key; updates as signed bootc images on ghcr.io; internal security review + scope doc, external pentest commissioned by the user
 

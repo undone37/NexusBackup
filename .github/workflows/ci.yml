@@ -12,6 +12,8 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all
       - run: prove pve-plugin/t
+      - run: python3 -m unittest discover -s os/greenboot/tests
+      - run: release/check-trust.sh
   audit:
     runs-on: ubuntu-latest
     steps:
