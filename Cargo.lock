@@ -828,6 +828,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chunkstore",
+ "postcard",
+ "rand 0.8.8",
+ "serde",
  "tempfile",
 ]
 
