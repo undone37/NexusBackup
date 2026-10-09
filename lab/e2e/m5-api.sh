@@ -105,6 +105,8 @@ step_config() {
 	api admin GET "/sources" | jq -e '.[0].config.token_secret_set == true and (.[0].config.token_secret == null)' >/dev/null ||
 		die "token secret leaked or not set"
 	# review H-2: the catalog holds the token only sealed to the scheduler, the TOTP seeds encrypted
+	# (appliance VM: the catalog is inside the VM; lab/appliance/e2e.sh check verifies it there)
+	[ ! -f "$ROOT/var/lib/nexus/catalog/catalog.db" ] && log "catalog not on this host: secret check runs in the appliance" ||
 	python3 - "$ROOT/var/lib/nexus/catalog/catalog.db" "$LAB_TOKEN_SECRET" <<-'PY' || die "plaintext secret in the catalog"
 		import json, sqlite3, sys
 		db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)

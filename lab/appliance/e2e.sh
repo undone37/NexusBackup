@@ -41,6 +41,7 @@ boot() {
 }
 
 setup() {
+	rm -rf "$ROOT/run/api" # fresh appliance: no cookies/operator from an earlier VM
 	mkdir -p "$ROOT/etc/nexus/tls" "$ROOT/run/api"
 	umask 077
 	local as so ap sp nic
@@ -96,6 +97,13 @@ check() {
 echo "== permissive types in the loaded policy (nexus: none expected)"; cd /tmp && semodule -E permissivedomains >/dev/null && grep -c typepermissive permissivedomains.cil; grep nexus permissivedomains.cil; rm -f permissivedomains.cil; semodule -l | grep -i nexus
 echo "== AVCs since boot (ausearch)"; ausearch -m avc,user_avc,selinux_err -ts boot 2>&1 | tail -n 20
 echo "== nft sets"; nft list set inet nexus allowed_out_v4; nft list set inet nexus dns_servers_v4; nft list set inet nexus nts_servers_v4
+echo "== catalog secrets (review H-2: sealed / encrypted only)"; python3 -c "
+import json, sqlite3
+db = sqlite3.connect(\"file:/var/lib/nexus/catalog/catalog.db?mode=ro\", uri=True)
+src = [json.loads(c)[\"token_secret\"][:10] for (c,) in db.execute(\"SELECT config FROM sources\")]
+seeds = [s[:7] for (s,) in db.execute(\"SELECT totp_secret FROM users\")]
+ok = all(x == \"sealed:v1:\" for x in src) and all(x == \"enc:v1:\" for x in seeds)
+print(\"sources\", src, \"seeds\", seeds, \"OK\" if ok else \"PLAINTEXT FOUND\")"
 echo "== security"; for u in nexus-keyd nexus-web-api nexus-scheduler nexus-setup nexus-nft-sync; do printf "%s " $u; systemd-analyze security $u.service 2>/dev/null | tail -1; done' 300
 }
 
