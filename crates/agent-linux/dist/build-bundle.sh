@@ -74,5 +74,8 @@ fi
 if [ $sign = 1 ]; then
 	release/sign.sh sign-blob "$out/nexus-agent" "$out/nexus-agent.sig"
 fi
+# the appliance's update dir expects nexus-agent + .sig + .version (agent-conn `agent_update`);
+# the agent itself trusts only the version embedded in the signed binary
+echo "$version" >"$out/nexus-agent.version"
 tar -C target/agent-dist -czf "target/agent-dist/$name.tar.gz" "$name"
 echo "bundle: target/agent-dist/$name.tar.gz (binary $size bytes)"
