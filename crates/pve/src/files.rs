@@ -45,14 +45,15 @@ fn norm(p: &Path) -> String {
 
 /// Archive-relative form of an entry name for the download: absolute names
 /// become relative, `.` is dropped; `None` for names with `..` (they would
-/// escape the directory the user extracts into).
+/// escape the directory the user extracts into) or NUL bytes (no file system
+/// has them; extractors would truncate the name).
 fn safe_rel(p: &Path) -> Option<String> {
     let mut parts = Vec::new();
     for c in p.components() {
         match c {
-            Component::Normal(s) => parts.push(s.to_string_lossy()),
+            Component::Normal(s) if !s.as_encoded_bytes().contains(&0) => parts.push(s.to_string_lossy()),
             Component::RootDir | Component::CurDir => {}
-            Component::ParentDir | Component::Prefix(_) => return None,
+            Component::Normal(_) | Component::ParentDir | Component::Prefix(_) => return None,
         }
     }
     Some(parts.join("/"))
@@ -284,7 +285,7 @@ mod tests {
 
     /// Raw tar entry; the name bytes bypass the tar crate's own path checks.
     fn raw(b: &mut tar::Builder<Vec<u8>>, name: &str, t: EntryType, data: &[u8], link: Option<&str>) {
-        let mut h = tar::Header::new_old();
+        let mut h = tar::Header::new_gnu();
         h.as_old_mut().name[..name.len()].copy_from_slice(name.as_bytes());
         if let Some(l) = link {
             h.as_old_mut().linkname[..l.len()].copy_from_slice(l.as_bytes());
@@ -308,6 +309,9 @@ mod tests {
         raw(&mut b, "lnk", EntryType::Symlink, b"", Some("/etc"));
         raw(&mut b, "lnk/passwd", EntryType::Regular, b"pw", None);
         raw(&mut b, "hl", EntryType::Link, b"", Some("../../etc/shadow"));
+        // GNU long name with NUL bytes inside (fuzzing found it in a zip name)
+        raw(&mut b, "././@LongLink", EntryType::GNULongName, b"a\0b/c\0", None);
+        raw(&mut b, "short", EntryType::Regular, b"x", None);
         raw(&mut b, "keep/me", EntryType::Regular, b"ok", None);
         let tar = b.into_inner().unwrap();
         let d = tempfile::tempdir().unwrap();
