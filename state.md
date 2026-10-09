@@ -158,9 +158,13 @@ Decisions (user, 2026-10-09): order Linux agent → Windows agent → TrueNAS �
 ## Production gaps (deferred by user decision 2026-10-09: continue plan order first)
 SSH key management for sources, appliance config backup (catalog, totp.key, secrets.key), agent/TrueNAS cert renewal, minimal PVE token privileges, scale/soak tests on real hardware, multi-node PVE, GitHub push + CI + release, agent bundle in the image, TPM/LUKS, H-3 uid split; user-side: release key, real Storage Box, external pentest, pilot tenant
 
-## Phase 7 — NAS (NFS/SMB) (next)
+## Phase 7 — NAS (NFS/SMB) (merged 2026-10-09)
+- [x] `crates/nas`: helper `nexus-nasmount` (socket-activated per connection, CAP_SYS_ADMIN only, SELinux `nexus_nasmount_t`, SO_PEERCRED, fuzzed request parser) builds the mount with fsopen/fsconfig/fsmount (ro,nosuid,nodev,noexec,nosymfollow), never attaches it and hands the detached mount fd to the connector → kernel cleans up on exit; connector `nexus-nas` (`nexus_nas_t`): parallel deterministic scan, reuse by path/inode+size+mtime+ctime, inconsistent detection, NAS snapshot dirs, FastCDC, `share-<id>` Tree snapshots, tar/zip download (no restore to share in v1); catalog v6 kinds nfs/smb with sealed SMB password/keytab; scheduler, nft (2049/mountd, 445), UI, docs/nas-connector.md
+  - lab: NFS 4.2 + SMB 3.1.1 (signed+encrypted) full/incremental, downloads sha256-identical, xattrs/ACLs match; 1M small files: full 2,167 files/s (dev) / 1,842 (appliance), unchanged 72,900 / 36,400 entries/s; appliance VM under enforcing 0 nexus AVCs; fuzz 62 M
+  - open decisions (user): server read-access model (NFS ro export with all_squash anonuid=0 / SMB backup user), SMB Kerberos (ship cifs-utils+krb5 and test vs AD, or drop krb5 from v1), alert noise for shares without NAS snapshots
+  - limits: entries in memory (0.56–0.73 GB at 1M files; appliance needs ≥ 6 GB for that), one chunk per small file, Samba mtime/owner limitations, sparse files full, no NFS Kerberos
 
-## Phase 8 — Replication + S3 (after NAS merge)
+## Phase 8 — Replication + S3 (started 2026-10-09)
 Decisions (user, 2026-10-09): MinIO for dev/tests, real provider later; own minimal SigV4 client; replication = secondary pulls via mTLS endpoint on primary's 8443
 - [ ] After Phase 8: add repository README.md (user request 2026-10-09)
 
