@@ -54,18 +54,25 @@ sub job_timeout {
     return $scfg->{'nexus-job-timeout'} // $DEFAULT_JOB_TIMEOUT;
 }
 
-# Create /var/lib/nexusbackup/<storeid> (0770 root:nexusbackup) if missing.
+# Create /var/lib/nexusbackup/<storeid> (1770 root:nexusbackup) if missing.
+# Sticky: the helper (group nexusbackup) replaces its own index.json there but
+# cannot rename or replace root's entries (logs/), which root later writes into.
 # Never dies; used from activate_storage which pvestatd calls every few seconds.
 sub ensure_state_dir {
     my ($class, $storeid) = @_;
     my $dir = $class->state_dir($storeid);
-    return if -d $dir;
+    if (-d $dir) {
+        # state dirs created by older versions were 0770
+        my $mode = (lstat($dir))[2];
+        chmod(01770, $dir) if defined($mode) && !($mode & 01000) && (lstat(_))[4] == $>;
+        return;
+    }
     eval {
         my $gid = nexus_group_gid();
         mkdir($STATEDIR, 0750) if !-d $STATEDIR;
         mkdir($dir, 0770) or die "mkdir $dir: $!\n";
         chown(-1, $gid, $dir);
-        chmod(0770, $dir);
+        chmod(01770, $dir);
     };
     warn "nexusbackup: unable to create $dir: $@" if $@;
 }
