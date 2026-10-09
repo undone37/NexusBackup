@@ -1,0 +1,8 @@
+M	F	/mnt/tank/data/big/random.bin
+-	F	/mnt/tank/data/docs/empty
+R	F	/mnt/tank/data/many/f7	/mnt/tank/data/renamed-many/f7
+M	/	/mnt/tank/data/
+-	/	/mnt/tank/data/dir\0040with\0040space
+M	F	/mnt/tank/data/docs/Gr\0303\0274\0303\0237e.txt
+M	F	/mnt/tank/data/docs/new.txt	(+1)
++	F	/mnt/tank/data/hl/new-link

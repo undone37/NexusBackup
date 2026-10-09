@@ -126,3 +126,28 @@ place). Results as `key=value` in `$ROOT/run/api/<vm>.results`.
 Against the appliance VM (SELinux enforcing): `PVE=0 LAB=... lab/appliance/e2e.sh boot setup`,
 then `ROOT=$LAB/appliance/root PORT=<port> AGENT_HOST=10.0.2.2 UPDATE_DIR= lab/linux/e2e.sh <vm>`
 and `lab/appliance/e2e.sh check` for AVCs (see docs/agent-linux.md, "Lab results").
+
+## TrueNAS lab (`lab/truenas/`, docs/truenas-connector.md)
+
+TrueNAS Community 25.10.7 in QEMU/KVM (8 GB RAM, 20 GB boot disk, two 8 GB data disks), installed
+without any console interaction through the installer's own JSON-RPC API (port 8080 of the live ISO).
+API https://127.0.0.1:18444 (self-signed `truenas_default`, pinned), SSH 127.0.0.1:12222. State and
+credentials in `$LAB/truenas/` (admin password, lab admin key, API key, appliance key, cert, known_hosts).
+
+```sh
+lab/pve/stop.sh                       # if `free -g` shows < 10 GB available
+lab/truenas/vm.sh fetch               # ISO + sha256 check
+lab/truenas/vm.sh install             # unattended install (~4 min), powers off
+lab/truenas/vm.sh start               # boots, waits for the API (~80 s)
+lab/truenas/provision.py              # pool tank, datasets, user/privilege/API key (docs §3)
+cargo build --release -p keyd -p pve -p offsite -p web-api -p scheduler -p setup -p agent-conn -p truenas
+lab/e2e/m5.sh setup && lab/e2e/m5.sh start
+lab/truenas/e2e.sh                    # data config backup1 modify backup2 snapshots download rotation probe
+lab/e2e/m5.sh stop; lab/truenas/vm.sh stop
+```
+
+`data.sh init|modify|sums|xattrs` (run on TrueNAS via `sh.py`), `probe.py` (the appliance key can only
+use the forced command), `tests/lab.rs` in crates/truenas (`NEXUS_TRUENAS_LAB=$LAB/truenas/lab-cli.json
+NEXUS_TRUENAS_STORE=… NEXUS_TRUENAS_SUMS=… cargo test -p truenas --test lab`). Against the appliance VM:
+`PVE=0 lab/appliance/e2e.sh boot setup`, then `ROOT=$LAB/appliance/root PORT=28443 APPL_HOST=10.0.2.2
+lab/truenas/e2e.sh` and `lab/appliance/e2e.sh check`.

@@ -170,4 +170,46 @@ calls = [
 for i, (who, m, path, body) in enumerate(calls):
     p = path.encode()
     put("web-api", "api_router", f"c{i}", bytes([who, m, len(p)]) + p + (json.dumps(body).encode() if body is not None else b""))
+
+# ---------------------------------------------------------------- truenas
+# shapes of what the forced command returns (lab/truenas, TrueNAS 25.10.7)
+put("truenas", "hostile_stream", "diff",
+    "M\tF\t/mnt/tank/data/big/random.bin\n-\tF\t/mnt/tank/data/docs/empty\n"
+    "R\tF\t/mnt/tank/data/many/f7\t/mnt/tank/data/renamed-many/f7\nM\t/\t/mnt/tank/data/\n"
+    "-\t/\t/mnt/tank/data/dir\\0040with\\0040space\nM\tF\t/mnt/tank/data/docs/Gr\\0303\\0274\\0303\\0237e.txt\n"
+    "M\tF\t/mnt/tank/data/docs/new.txt\t(+1)\n+\tF\t/mnt/tank/data/hl/new-link\n")
+
+
+def walk_rec(head, path, link=b""):
+    return head.encode() + b"\0" + path + b"\0" + link + b"\0"
+
+
+put("truenas", "hostile_stream", "walk",
+    walk_rec("d 755 0 0 4 1791569435.3239792120 1791569435.3239792120 129 2", b"d")
+    + walk_rec("f 644 0 0 5 1791569435.3279792230 1791569435.3279792230 258 2", b"d/f")
+    + walk_rec("f 644 0 0 5 1791569435.3279792230 1791569435.3279792230 258 2", b"d/hard")
+    + walk_rec("l 777 0 0 1 1.0 1.0 300 1", b"d/root", b"/")
+    + walk_rec("p 644 0 0 0 1.0 1.0 301 1", b"d/new\nline"))
+
+
+def pax_tar(members):
+    b = io.BytesIO()
+    with tarfile.open(fileobj=b, mode="w", format=tarfile.PAX_FORMAT) as t:
+        for name, data, pax in members:
+            ti = tarfile.TarInfo(name)
+            ti.pax_headers = dict(pax)
+            if data is None:
+                ti.type = tarfile.DIRTYPE
+                t.addfile(ti)
+            else:
+                ti.size = len(data)
+                t.addfile(ti, io.BytesIO(data))
+    return b.getvalue()
+
+
+put("truenas", "hostile_stream", "tar",
+    pax_tar([("d/", None, {"SCHILY.xattr.system.posix_acl_default": "\x02\0\0\0\x01\0\x07\0"}),
+             ("d/f", b"hello", {"SCHILY.xattr.user.comment": "nexus test", "mtime": "1.5"})]))
+put("truenas", "hostile_stream", "tar-hostile",
+    pax_tar([("d/", None, {}), ("d/f", b"hello", {"path": "../../etc/shadow"})]))
 print("seeds written")

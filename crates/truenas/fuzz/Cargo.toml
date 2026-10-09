@@ -1,0 +1,25 @@
+[package]
+name = "truenas-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "AGPL-3.0-only"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+truenas = { path = ".." }
+chunkstore = { path = "../../chunkstore" }
+tempfile = "3"
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "hostile_stream"
+path = "fuzz_targets/hostile_stream.rs"
+test = false
+doc = false
+bench = false
