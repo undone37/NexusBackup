@@ -151,3 +151,24 @@ use the forced command), `tests/lab.rs` in crates/truenas (`NEXUS_TRUENAS_LAB=$L
 NEXUS_TRUENAS_STORE=… NEXUS_TRUENAS_SUMS=… cargo test -p truenas --test lab`). Against the appliance VM:
 `PVE=0 lab/appliance/e2e.sh boot setup`, then `ROOT=$LAB/appliance/root PORT=28443 APPL_HOST=10.0.2.2
 lab/truenas/e2e.sh` and `lab/appliance/e2e.sh check`.
+
+## NAS lab (`lab/nas/`, docs/nas-connector.md)
+
+One Debian 13 VM (3 GB, 4 vCPUs) serves NFS v3/v4.x (`/srv/share`, `/srv/many` with 1M small files)
+and Samba (`share`, `many`; signing mandatory, encryption desired). Ports on 127.0.0.1: ssh 2250,
+NFS 12049, mountd 12048, SMB 10445, dev API 18453. Mounting needs root, which the dev host does not
+have, so the dev control plane runs **inside** that VM (`devcp.sh`, lab/e2e/m5.sh plus the real
+nexus-nasmount units) and mounts over its loopback; the appliance VM mounts through 10.0.2.2.
+
+```sh
+lab/nas/vm.sh up                      # create + boot + provision.sh (~3 min)
+lab/nas/vm.sh data init; lab/nas/vm.sh data many 1000000   # test data (~30 s for 1M files)
+cargo build --release -p keyd -p web-api -p scheduler -p setup -p nas
+lab/nas/devcp.sh all                  # deploy + setup + start the dev control plane in the VM
+lab/nas/e2e.sh                        # data config backup1 download modify backup2 churn snapshot many alerts summary
+ROOT=$PWD/target/nas-devcp PORT=18453 node --experimental-websocket lab/nas/ui.mjs target/nas-ui
+# appliance VM (MEM=6144: the 1M-file share needs more than 3 GB):
+MEM=6144 lab/appliance/run.sh start <disk>; PVE=0 lab/appliance/e2e.sh setup
+APPL=1 lab/nas/e2e.sh; ROOT=$LAB/appliance/root PORT=28443 node --experimental-websocket lab/nas/ui.mjs target/nas-ui
+lab/nas/devcp.sh stop; lab/nas/vm.sh stop
+```

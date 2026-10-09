@@ -127,8 +127,8 @@ The connector runs unprivileged, so it must be given read access by the server:
   `backup_inconsistent` (as for agents without a snapshot).
 - **Excludes**: patterns as for agents (`*.tmp`, `/path/**`), matched against `/<path in the share>`.
 - **Memory**: entries are held in memory until the commit (one sealed `Index::Tree`, like agents and
-  TrueNAS): measured ~0.7 KB per entry (path, chunk list, xattrs incl. an NFSv4 ACL per file) plus the
-  previous tree; 1M entries ≈ 1 GB peak. Streaming the tree index needs a split tree index format in
+  TrueNAS): ~0.5–0.7 KB per entry (path, chunk list, xattrs; more with an NFSv4 ACL per file) plus the
+  previous tree; the 1M-entry incremental peaked at 0.73 GB (lab). Streaming the tree index needs a split tree index format in
   the chunk store (proposed, §9).
 - **Store**: every new small file is one chunk file in the store (fsync each): the full backup of a
   million small files is bound by chunk writes, the unchanged run by `statx`.
@@ -208,7 +208,50 @@ with "kinit: No such file or directory" until then.
   not required), `xattrs.py` (xattrs/ACLs in the tar vs `getfattr`).
 
 ## 8. Lab results (2026-10-09)
-RESULTS
+NAS VM: Debian 13, 3 GB, 4 vCPUs (server and, in the dev run, client too). `share`: 2,081 entries,
+2,020 files, 1.14 GB apparent (1 GiB sparse file + 64 MiB random file + small files); `many`: 1,000,000
+files of 64..4096 bytes in 1,000 directories (2.08 GB). Jobs through the REST API (`lab/nas/e2e.sh`);
+the first nfs1 run is the scheduled one. "scan" = connector time (mount → commit).
+
+| run | dev control plane in the NAS VM (loopback) | appliance VM (enforcing; QEMU user net, 10.0.2.2) |
+|---|---|---|
+| nfs1 full (NFS 4.2) | 2.2 s, 2,018 files, 1.14 GB read, 84 MB new | 9.8 s |
+| smb1 full (SMB 3.1.1 signed + encrypted) | 2.6 s, 2,021 files, 1.14 GB read | 11.2 s |
+| nfs1 after `modify` | 0.2 s: 9 files read (67 MB: the 64 MiB file edited in place), 2,010 reused | 0.8 s, same counts |
+| smb1 after `modify` | 0.2 s: 5 files read, 2,015 reused (`small/f3` missed: Samba ChangeTime) | 0.8 s, same counts |
+| nfs1 unchanged | 0.2 s, 0 files read | 0.2 s |
+| nfs1 while a writer changes files | 1 file `inconsistent`, `consistent=false`, alert | same |
+| nfs1 from `.snapshot/nightly-1` while the live share changes | `consistent=true` (snapshot automounted via NFSv4 crossmnt, inode-based reuse kept: 2,020 reused) | same |
+| many1 full (NFS 3, 32 threads) | 462 s, **2,167 entries/s**, 1,000,000 files, 2.08 GB, 1M new chunks | 543.5 s, **1,842 entries/s** |
+| many1 unchanged | 13.7 s, **72,922 entries/s** | 27.5 s, **36,410 entries/s** |
+| many1 after 1,000 changed + 1,000 new + 1,000 deleted | 15.0 s, 2,000 files read (2.9 MB), 998,000 reused | 27.5 s, 2,000 files read |
+
+Downloads (tar and zip of `/`) matched the sha256 of every file on the server: NFS 2,020/2,020; SMB
+2,017/2,017 (3 names Samba cannot represent — backslash, newline, tab — appear mangled, in-share
+symlinks as files). xattrs/ACLs in the tar matched `getfattr` (NFS 4.2: `user.*` values and
+`system.nfs4_acl` on every POSIX-ACL entry; SMB: `user.*` values and `system.cifs_acl` on every file
+and directory). Every share backup without a NAS snapshot raised `backup_inconsistent` (9 per run).
+Headless Chrome against the SPA (`lab/nas/ui.mjs`): dashboard, NFS/SMB source dialogs (password
+write-only), group dialog (whole share), snapshots without restore, file browser, consistency banner:
+8/8 against the dev control plane and against the appliance VM, no CSP or console problems. Fuzzing (`lab/fuzz/run.sh 600 1 nas:helper_request`): 62 M executions, no crash.
+
+Appliance VM (bootc image, real units, SELinux enforcing, nftables egress): **zero AVCs in nexus
+domains** (`ausearch -m avc,user_avc,selinux_err -ts boot`; the only denials were lab tooling — the lab
+image's install service's `chcon`, a memory poller started from `/var/tmp` — and the base image's
+`bootc` update check); helper unit exposure 2.2 (`systemd-analyze security`). The allow-list held
+exactly `10.0.2.2 . tcp . 12049/12048/10445`; the catalog held the SMB password only as `sealed:v1:`.
+During a backup the kernel's NFS client was connected (`/proc/fs/nfsfs/servers`) while neither the
+host namespace (`findmnt`) nor the connector's own `mountinfo` contained an NFS/CIFS mount (detached,
+reachable only through the fd). Peak RSS of `nexus-nas` for the 1M-entry incremental runs (previous +
+new tree; NFSv3, no xattrs): 0.56–0.73 GB. With 3 GB RAM the appliance VM's incremental run of the 1M-file share was killed by the
+OOM killer (slab of 1M NFS inodes + chunk-file dentries + two trees); the runs above use 6 GB.
+
+Lab findings fixed on the way: systemd labels the activation socket with the service domain
+(connectto on `nexus_nasmount_t`); `openat2` answers ENOSYS inside the scheduler's sandbox
+(`RestrictSUIDSGID=`) — component-wise fallback with the same confinement; concurrent opens of two
+names of a hard-linked file over SMB fail with EINVAL under leases (`nolease`); NFSv4 walks the export
+path as the mounting process (`nfs_t:dir search` for the helper); one chunk file per small file
+exhausted the inodes of a 16 GB ext4 (store moved to its own file system in the lab).
 
 ## 9. Limitations and decisions
 - **Needs a decision**: server-side read access (NFS export `ro,all_squash,anonuid=0,anongid=0` to the

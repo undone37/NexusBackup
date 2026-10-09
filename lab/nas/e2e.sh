@@ -155,17 +155,23 @@ latest() {
 }
 
 # download SOURCE FMT OUT
-download() {
-	local j id tok t want
-	# the newest snapshot this script committed for the source (the snapshot list is
-	# refreshed by the scheduler a few seconds after the backup)
+# snap_time SOURCE -> the newest snapshot this script committed for the source, once
+# the snapshot list has it (the scheduler refreshes the list on its next tick)
+snap_time() {
+	local t want
 	want=$(awk -v s="$1" '$1 == s {t = $2} END {print t}' "$S/committed" 2>/dev/null)
 	for _ in $(seq 90); do
 		t=$(latest "$1")
 		[ -n "$t" ] && [ "$t" != null ] && { [ -z "$want" ] || [ "$t" = "$want" ]; } && break
 		sleep 2
 	done
-	[ -z "$want" ] || [ "$t" = "$want" ] || die "snapshot $1/$want not listed"
+	[ -n "$t" ] && [ "$t" != null ] && { [ -z "$want" ] || [ "$t" = "$want" ]; } || die "snapshot $1/$want not listed"
+	echo "$t"
+}
+
+download() {
+	local j id tok t
+	t=$(snap_time "$1")
 	j=$(api admin POST /jobs "$(jq -nc --arg s "$1" --argjson t "$t" --arg f "$2" '{kind:"files_get", tenant:"nas", params:{source:$s, time:$t, paths:["/"], format:$f}}')")
 	expect 202 "files_get $1 $2"
 	id=$(jq -r .id <<<"$j")
@@ -185,7 +191,7 @@ step_download() {
 	vmdata sums share >"$S/sums-share.txt"
 	vmdata xattrs >"$S/xattrs.txt"
 	local t j
-	t=$(latest "share-$NFS")
+	t=$(snap_time "share-$NFS")
 	j=$(api admin POST /jobs "$(jq -nc --arg s "share-$NFS" --argjson t "$t" '{kind:"files_list", tenant:"nas", params:{source:$s, time:$t, path:"/docs"}}')")
 	expect 202 "files_list"
 	j=$(wait_job admin "$(jq -r .id <<<"$j")" 300)
