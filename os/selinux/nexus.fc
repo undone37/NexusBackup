@@ -6,6 +6,7 @@
 /usr/libexec/nexus/nexus-scheduler	--	gen_context(system_u:object_r:nexus_scheduler_exec_t,s0)
 /usr/libexec/nexus/nexus-pve		--	gen_context(system_u:object_r:nexus_pve_exec_t,s0)
 /usr/libexec/nexus/nexus-offsite	--	gen_context(system_u:object_r:nexus_offsite_exec_t,s0)
+/usr/libexec/nexus/nexus-agentctl	--	gen_context(system_u:object_r:nexus_agentctl_exec_t,s0)
 /usr/libexec/nexus/nexus-setup		--	gen_context(system_u:object_r:nexus_setup_exec_t,s0)
 /usr/libexec/nexus/nexus-nft-sync	--	gen_context(system_u:object_r:nexus_nftsync_exec_t,s0)
 
@@ -26,6 +27,7 @@
 /var/lib/nexus/offsite(/.*)?			gen_context(system_u:object_r:nexus_store_t,s0)
 /var/lib/nexus/scheduler(/.*)?			gen_context(system_u:object_r:nexus_store_t,s0)
 /var/lib/nexus/scheduler/secrets\.key	--	gen_context(system_u:object_r:nexus_scheduler_secret_t,s0)
+/var/lib/nexus/scheduler/agent-ca(/.*)?		gen_context(system_u:object_r:nexus_agent_ca_t,s0)
 /var/lib/nexus/webapi(/.*)?			gen_context(system_u:object_r:nexus_webapi_var_lib_t,s0)
 /var/lib/nexus/escrow(/.*)?			gen_context(system_u:object_r:nexus_escrow_t,s0)
 /var/lib/nexus/update(/.*)?			gen_context(system_u:object_r:nexus_update_t,s0)

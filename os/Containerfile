@@ -105,9 +105,14 @@ RUN chmod 0755 /usr/libexec/nexus /usr/libexec/nexus/* \
 # SELinux module: install into the image's policy store, check that labels
 # resolve, and label what this stage added.
 COPY --from=selinux /build/nexus.pp /usr/share/selinux/packages/nexus/nexus.pp
-RUN semodule -i /usr/share/selinux/packages/nexus/nexus.pp \
+# portcon (7444/tcp -> nexus_agent_port_t) cannot live in the .te module: a CIL module
+COPY os/selinux/nexus-port.cil /usr/share/selinux/packages/nexus/nexus-port.cil
+RUN semodule -i /usr/share/selinux/packages/nexus/nexus.pp /usr/share/selinux/packages/nexus/nexus-port.cil \
  && semodule -l | grep -qx nexus \
+ && semodule -l | grep -qx nexus-port \
  && matchpathcon /usr/libexec/nexus/keyd | grep -q nexus_keyd_exec_t \
+ && matchpathcon /usr/libexec/nexus/nexus-agentctl | grep -q nexus_agentctl_exec_t \
+ && matchpathcon /var/lib/nexus/scheduler/agent-ca/ca.key | grep -q nexus_agent_ca_t \
  && matchpathcon /usr/libexec/nexus/nexus-web-api | grep -q nexus_webapi_exec_t \
  && matchpathcon /usr/libexec/nexus/nexus-scheduler | grep -q nexus_scheduler_exec_t \
  && matchpathcon /usr/lib/nexus/restore-vm/vmlinuz | grep -q nexus_restorevm_image_t \
