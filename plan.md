@@ -70,6 +70,8 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | Update source (Phase 6) | **Signed bootc images on ghcr.io** (decided 2026-10-09) | Pulled over HTTPS via an explicit nftables allow rule. |
 | Phase 7 order | **Linux agent → Windows agent → TrueNAS → NAS (NFS/SMB)** (decided 2026-10-09) | Agents share most code (protocol, chunking, enrollment). |
 | Agent dedup hashing (Phase 7) | **Agents send plain BLAKE3 chunk hashes; the appliance maps them to keyed chunk IDs in a local index** (decided 2026-10-09) | Source hosts never hold tenant key material; the unkeyed hashes never leave the appliance (not offsite). |
+| TrueNAS data path (Phase 7) | **ZFS snapshot via TrueNAS API, changed files streamed from `.zfs/snapshot` over a restricted SSH user (forced command)** (decided 2026-10-09) | No mounts on the appliance; nothing installed on TrueNAS beyond a key. |
+| NAS shares (Phase 7) | **Kernel NFS/SMB mounts, read-only, in a private mount namespace by a small privileged helper with its own SELinux domain** (decided 2026-10-09) | Mature, fast clients; isolation via namespace + SELinux. |
 | Windows testing (Phase 7) | **Build + unit tests only, no Windows test VMs for now** (decided 2026-10-09) | Real Windows testing later; plan's test matrix for Windows is deferred. |
 | Agent trust (Phase 7) | **Appliance-run private CA + one-time enrollment token**, agent pins appliance cert (decided 2026-10-09) | Agent never connects out; mTLS only. |
 | Windows build (Phase 7) | **Cross-compile in a podman container (mingw-w64)** (decided 2026-10-09) | No host installs. |
