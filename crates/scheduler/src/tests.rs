@@ -528,3 +528,152 @@ fn truenas_jobs() {
         .collect();
     assert_eq!(left.len(), 3, "{left:?}");
 }
+
+/// Secondary side of docs/replication.md: enrollment and sync jobs spawn
+/// nexus-replica with a generated config, results land in the catalog, key
+/// mismatches raise their own alert, replicated tenants take no backups and
+/// get no local DEK.
+#[test]
+fn replication_jobs() {
+    let mut e = env(4);
+    let dir = e.d.path().to_owned();
+    script(
+        &dir.join("replica"),
+        &format!(
+            r#"cp "$1" {0}/replica-$2.json; cat "$(dirname "$1")/token" > {0}/token-seen 2>/dev/null
+case "$2" in
+enroll) echo 'enrolled {{"cert_sha256":"{1}","tenants":["r1","r2"],"keyd_pub":"{2}"}}' ;;
+sync) if grep -q '"tenant": "r2"' "$1"; then echo 'key-mismatch {{"tenant":"r2","version":2}}'; exit 1; fi
+      echo 'replicated {{"imported":["vm-100/5"],"bytes_fetched":10,"remote":1,"key_versions":[1]}}' ;;
+esac"#,
+            dir.display(),
+            "c".repeat(64),
+            "d".repeat(64)
+        ),
+    );
+    e.cfg.replica_bin = dir.join("replica");
+    let mut s = sched(&e);
+    let url = "10.0.2.2:28443";
+    let (peer, pin) = ("0123456789abcdef", "a".repeat(64));
+    s.db.conn()
+        .execute_batch(
+            "INSERT INTO tenants (name) VALUES ('r1'), ('r2');
+             INSERT INTO replication_sources (id, name, url, peer_id, cert_pin, tenants, schedule, gfs, state, created)
+             VALUES (1, 'prim', '10.0.2.2:28443', '0123456789abcdef', 'PIN', '[\"r1\",\"r2\"]', 'hourly 00', '{\"daily\":7}', 'enrolling', 0);",
+        )
+        .unwrap();
+    s.db.conn()
+        .execute("UPDATE replication_sources SET cert_pin = ?1", [&pin])
+        .unwrap();
+    let sealed = s
+        .secrets
+        .public()
+        .seal(
+            &catalog::secret::replication_source_token_location(1, url, peer, &pin),
+            "digest-of-token",
+        )
+        .unwrap();
+    s.db.conn()
+        .execute("UPDATE replication_sources SET token_hash = ?1", [&sealed])
+        .unwrap();
+    // replicated tenants: no keyd ensure, no backups, nothing before data arrived
+    assert!(s.replicated_tenants().unwrap().contains_key("r1"));
+    s.ensure_tenant_keys().unwrap();
+    assert!(!s.keyed.contains("r1") && s.keyed.contains("t1"));
+    let job = |kind: &str, t: &str, p: Value| Job {
+        id: 0,
+        kind: kind.into(),
+        tenant: t.into(),
+        params: p,
+    };
+    let err = s.plan(&job("backup", "r1", json!({"vmid": 100}))).unwrap_err();
+    assert!(format!("{err:#}").contains("no local backups"), "{err:#}");
+    let err = s.plan(&job("gc", "r1", json!({}))).unwrap_err();
+    assert!(format!("{err:#}").contains("no replicated data yet"), "{err:#}");
+    assert!(
+        s.plan(&job("replica_sync", "r1", json!({"replication_source_id": 1})))
+            .is_err(),
+        "not enrolled"
+    );
+    assert!(s
+        .replication_targets()
+        .unwrap()
+        .contains(&("10.0.2.2".to_string(), 28443)));
+
+    // enrollment: token digest in the private job dir, result recorded, token consumed
+    let en = manual(&s, "replica_enroll", "r1", json!({"replication_source_id": 1}));
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert_eq!(state(&s, en), "ok");
+    assert_eq!(fs::read_to_string(dir.join("token-seen")).unwrap(), "digest-of-token");
+    let cfg: Value = serde_json::from_slice(&fs::read(dir.join("replica-enroll.json")).unwrap()).unwrap();
+    assert_eq!(cfg["url"], url);
+    assert_eq!(cfg["cert_pin"].as_str(), Some(pin.as_str()));
+    assert_eq!(cfg["cred_dir"], json!(e.cfg.replica_cred_dir(1)));
+    let (st, fp, tok): (String, String, Option<String>) =
+        s.db.conn()
+            .query_row(
+                "SELECT state, cert_sha256, token_hash FROM replication_sources",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+    assert_eq!((st.as_str(), fp, tok), ("enrolled", "c".repeat(64), None));
+    let again = manual(&s, "replica_enroll", "r1", json!({"replication_source_id": 1}));
+    s.start_jobs().unwrap();
+    assert_eq!(state(&s, again), "failed", "the code is single use");
+
+    // schedule: one sync per tenant per period
+    let hour = 20_000 * 86400 + 10 * 3600;
+    s.now = hour + 600;
+    s.queue_replication(s.now).unwrap();
+    let n = |s: &Scheduler| -> i64 {
+        s.db.conn()
+            .query_row("SELECT COUNT(*) FROM jobs WHERE kind='replica_sync'", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(n(&s), 0, "first sight");
+    s.now = hour + 3600 + 5;
+    s.queue_replication(s.now).unwrap();
+    s.queue_replication(s.now).unwrap();
+    assert_eq!(n(&s), 2, "one per tenant, not duplicated");
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    let cfg: Value = serde_json::from_slice(&fs::read(dir.join("replica-sync.json")).unwrap()).unwrap();
+    assert_eq!(cfg["gfs"], json!({"daily": 7}));
+    let status: Value = serde_json::from_str(
+        &s.db
+            .conn()
+            .query_row("SELECT status FROM replication_sources", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(status["r1"]["last_ok"].is_i64(), "{status}");
+    assert_eq!(status["r1"]["imported"], 1);
+    assert!(status["r2"]["last_error"].is_string(), "{status}");
+    let kinds: Vec<String> = {
+        let c = s.db.conn();
+        let mut q = c.prepare("SELECT kind FROM alerts ORDER BY id").unwrap();
+        let v = q.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        v
+    };
+    assert!(kinds.contains(&"replication_keys".to_string()), "{kinds:?}");
+    // the r2 sync failure is reported as replication_keys, not as a generic failure
+    // (job_failed only for the re-used enrollment code above)
+    assert_eq!(kinds.iter().filter(|k| *k == "job_failed").count(), 1, "{kinds:?}");
+    // lag: r1 synced just now, r2 never (the source was created at 0)
+    s.check_replication_lag(catalog::now()).unwrap();
+    let lag = |s: &Scheduler| -> Vec<String> {
+        let c = s.db.conn();
+        let mut q = c
+            .prepare("SELECT message FROM alerts WHERE kind='replication_lag' ORDER BY id")
+            .unwrap();
+        let v = q.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        v
+    };
+    let l = lag(&s);
+    assert_eq!(l.len(), 1, "{l:?}");
+    assert!(l[0].contains("tenant r2"), "{l:?}");
+    s.check_replication_lag(catalog::now() + 49 * 3600).unwrap();
+    assert_eq!(lag(&s).len(), 2);
+}

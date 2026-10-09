@@ -120,6 +120,18 @@ impl Keyring {
         &self.tenant
     }
 
+    /// DEK versions in this keyring, ascending.
+    pub fn versions(&self) -> Vec<u32> {
+        let mut v: Vec<u32> = self.keys.keys().copied().collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// Key version in a sealed blob's clear header (no decryption, no check).
+    pub fn blob_version(sealed: &[u8]) -> Option<u32> {
+        (sealed.len() >= HEADER && &sealed[..4] == MAGIC).then(|| u32::from_le_bytes(sealed[5..9].try_into().unwrap()))
+    }
+
     pub fn chunk_id(&self, data: &[u8]) -> ChunkId {
         self.chunk_id_v(self.current, data).unwrap()
     }

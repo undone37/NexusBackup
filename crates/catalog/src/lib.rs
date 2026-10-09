@@ -94,7 +94,31 @@ DROP TABLE sources;
 ALTER TABLE sources_v5 RENAME TO sources;
 "#;
 
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5];
+/// v6: appliance replication (docs/replication.md). Primary: `replication_peers`
+/// (enrolled secondaries, tenant scope, client-cert fingerprint, enrollment
+/// token digest sealed to nexus-replicad, DEK exports sealed to the peer's keyd).
+/// Secondary: `replication_sources` (primary address + certificate pin, tenants,
+/// schedule, GFS, enrollment token digest sealed to the scheduler, sync status).
+/// `snapshots.origin`: NULL = local backup, else the replication source name.
+/// The previous release skips it and never reads the new tables/column.
+const SCHEMA_V6: &str = r#"
+CREATE TABLE replication_peers (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, tenants TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('pending','approved','enrolled','revoked')),
+  cert_sha256 TEXT, keyd_pub TEXT, token_hash TEXT, token_expires INTEGER,
+  enroll_failures INTEGER NOT NULL DEFAULT 0, key_exports TEXT NOT NULL DEFAULT '{}',
+  created INTEGER NOT NULL, created_by TEXT NOT NULL, enrolled_at INTEGER, last_seen INTEGER, revoked INTEGER);
+CREATE UNIQUE INDEX replication_peers_cert ON replication_peers(cert_sha256) WHERE cert_sha256 IS NOT NULL;
+CREATE TABLE replication_sources (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, url TEXT NOT NULL, peer_id TEXT NOT NULL,
+  cert_pin TEXT NOT NULL, tenants TEXT NOT NULL, schedule TEXT NOT NULL, gfs TEXT NOT NULL DEFAULT '{}',
+  bwlimit INTEGER, token_hash TEXT,
+  state TEXT NOT NULL CHECK (state IN ('enrolling','enrolled','failed')),
+  cert_sha256 TEXT, keyd_pub TEXT, created INTEGER NOT NULL, last_sync INTEGER, status TEXT NOT NULL DEFAULT '{}');
+ALTER TABLE snapshots ADD COLUMN origin TEXT;
+"#;
+
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6];
 
 pub fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
@@ -364,6 +388,63 @@ mod tests {
         let old = Connection::open(&p).unwrap();
         let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
         assert_eq!(MIGRATIONS[..4].iter().skip(v as usize).count(), 0);
+    }
+
+    /// v6 adds the replication tables and `snapshots.origin`; existing snapshot
+    /// rows survive (origin NULL = local) and the previous release can read the file.
+    #[test]
+    fn migration_v6_adds_replication() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..5].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('acme', 'vm-100', 5, 1, 0);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let origin: Option<String> = conn
+            .query_row("SELECT origin FROM snapshots WHERE source = 'vm-100'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(origin, None);
+        let ok = |sql: &str| conn.execute(sql, []).is_ok();
+        assert!(ok(
+            "INSERT INTO replication_peers (id, name, tenants, state, created, created_by) \
+             VALUES ('0123456789abcdef', 'dr', '[\"acme\"]', 'pending', 1, 'admin')"
+        ));
+        assert!(!ok(
+            "INSERT INTO replication_peers (id, name, tenants, state, created, created_by) \
+             VALUES ('x', 'y', '[]', 'bogus', 1, 'admin')"
+        ));
+        assert!(ok(
+            "UPDATE replication_peers SET cert_sha256 = 'aa' WHERE id = '0123456789abcdef'"
+        ));
+        assert!(
+            !ok(
+                "INSERT INTO replication_peers (id, name, tenants, state, cert_sha256, created, created_by) \
+                 VALUES ('1', 'z', '[]', 'enrolled', 'aa', 1, 'a')"
+            ),
+            "one peer per certificate"
+        );
+        assert!(ok(
+            "INSERT INTO replication_sources (name, url, peer_id, cert_pin, tenants, schedule, state, created) \
+             VALUES ('prim', 'h:8443', 'p', 'aa', '[]', 'daily 01:00', 'enrolling', 1)"
+        ));
+        drop(conn);
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..5].iter().skip(v as usize).count(), 0);
+        let n: i64 = old
+            .query_row("SELECT COUNT(*) FROM snapshots WHERE tenant = 'acme'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
     }
 
     #[test]

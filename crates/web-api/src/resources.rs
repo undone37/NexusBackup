@@ -154,6 +154,16 @@ pub fn tenant_deletable(c: &Connection, name: &str) -> ApiResult<()> {
             return Err(ApiError::conflict(format!("tenant still has {t}")));
         }
     }
+    if crate::replication::replicated_tenant(c, name)?
+        || exists(
+            c,
+            "SELECT 1 FROM replication_peers, json_each(replication_peers.tenants) j
+             WHERE j.value = ?1 AND replication_peers.state != 'revoked'",
+            [name],
+        )?
+    {
+        return Err(ApiError::conflict("tenant is used by replication"));
+    }
     Ok(())
 }
 
@@ -1098,6 +1108,7 @@ pub async fn create_group(State(st): State<St>, ctx: Ctx, J(mut r): J<GroupReq>)
     ctx.require(ADMIN)?;
     let out = {
         let c = st.cat.conn();
+        crate::replication::refuse_replicated(&c, &r.tenant)?;
         check_group(&c, &r.tenant, r.source_id, r.policy_id, &r.name, &mut r.guests)?;
         c.execute(
             "INSERT INTO groups (tenant, source_id, policy_id, name, guests) VALUES (?1, ?2, ?3, ?4, ?5)",

@@ -217,6 +217,57 @@ export interface Snapshot {
   lock_until: number;
   /** time of the last successful verify, null = never verified */
   verified: number | null;
+  /** replication source the snapshot came from (null = local backup) */
+  origin?: string | null;
+}
+
+/** Primary: an enrolled (or pending) secondary appliance (docs/replication.md). */
+export interface ReplicationPeer {
+  id: string;
+  name: string;
+  tenants: string[];
+  state: 'pending' | 'approved' | 'enrolled' | 'revoked';
+  cert_sha256: string | null;
+  keyd_fingerprint: string | null;
+  token_expires: number | null;
+  enrolled_at: number | null;
+  last_seen: number | null;
+  revoked: number | null;
+  created: number;
+  created_by: string;
+  /** exported DEK versions per tenant */
+  keys: Record<string, { versions: number[]; created: number }>;
+  enroll_failures: number;
+}
+
+export interface ReplicationTenantStatus {
+  last_ok?: number;
+  last_error?: string | null;
+  last_error_at?: number;
+  imported?: number;
+  bytes?: number;
+  remote?: number;
+  key_versions?: number[];
+  job?: number;
+}
+
+/** Secondary: a primary this appliance pulls from. */
+export interface ReplicationSource {
+  id: number;
+  name: string;
+  url: string;
+  peer_id: string;
+  cert_pin: string;
+  tenants: string[];
+  schedule: string;
+  gfs: Gfs;
+  bwlimit: number | null;
+  state: 'enrolling' | 'enrolled' | 'failed';
+  cert_sha256: string | null;
+  keyd_fingerprint: string | null;
+  created: number;
+  last_sync: number | null;
+  status: Record<string, ReplicationTenantStatus>;
 }
 
 export type QuorumState = 'pending' | 'approved' | 'rejected' | 'executed' | 'expired';

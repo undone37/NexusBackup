@@ -2005,7 +2005,9 @@ name = "keyd"
 version = "0.1.0"
 dependencies = [
  "chunkstore",
+ "crypto_box",
  "libc",
+ "rand 0.8.8",
  "tempfile",
  "zeroize",
 ]
@@ -2962,6 +2964,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "replication"
+version = "0.1.0"
+dependencies = [
+ "agent-proto",
+ "anyhow",
+ "catalog",
+ "chunkstore",
+ "keyd",
+ "libc",
+ "pem",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "time",
+ "x509-parser",
+]
+
+[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3289,6 +3312,7 @@ dependencies = [
  "lettre",
  "libc",
  "nftsync",
+ "replication",
  "reqwest",
  "serde",
  "serde_json",
@@ -4237,12 +4261,18 @@ dependencies = [
  "anyhow",
  "axum",
  "catalog",
+ "chunkstore",
  "http-body-util",
  "hyper",
  "hyper-util",
+ "keyd",
+ "libc",
  "rand 0.8.8",
+ "rcgen",
+ "replication",
  "rustls",
  "rustls-pki-types",
+ "scheduler",
  "serde",
  "serde_json",
  "sha2 0.10.9",

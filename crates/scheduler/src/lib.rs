@@ -53,6 +53,7 @@
 
 pub mod alerts;
 pub mod firewall;
+pub mod replica;
 pub mod run;
 pub mod schedule;
 
@@ -133,6 +134,14 @@ pub struct Config {
     /// public key published for the web-api (0640, catalog group); default
     /// `secrets.pub` next to the catalog
     pub secrets_pub: Option<PathBuf>,
+    /// replication pull client (crate replication, docs/replication.md)
+    pub replica_bin: PathBuf,
+    /// client keys/certs per replication source; default `<state_dir>/replica`
+    pub replica_dir: Option<PathBuf>,
+    /// parallel connections of a replica_sync
+    pub replica_parallel: usize,
+    /// alert when a replicated tenant had no successful sync for this long
+    pub replication_lag_secs: i64,
 }
 
 impl Default for Config {
@@ -169,6 +178,10 @@ impl Default for Config {
             alert_retry_secs: [10, 60],
             secrets_key: None,
             secrets_pub: None,
+            replica_bin: "/usr/libexec/nexus/nexus-replica".into(),
+            replica_dir: None,
+            replica_parallel: 4,
+            replication_lag_secs: 48 * 3600,
         }
     }
 }
@@ -561,6 +574,8 @@ impl Scheduler {
         self.log_err(|s| s.queue_approved_gc());
         self.log_err(|s| s.queue_scheduled(now));
         self.log_err(|s| s.queue_maintenance(now));
+        self.log_err(|s| s.queue_replication(now));
+        self.log_err(|s| s.execute_key_exports());
         self.log_err(|s| s.start_jobs());
         let all = now.saturating_sub(self.last_refresh) >= self.cfg.refresh_secs;
         if all || !self.dirty.is_empty() {
@@ -571,6 +586,7 @@ impl Scheduler {
             }
         }
         self.log_err(|s| s.check_offsite_lag(now));
+        self.log_err(|s| s.check_replication_lag(now));
         self.log_err(|s| s.sync_firewall().map(drop));
         self.deliver_alerts()
     }
@@ -739,6 +755,8 @@ impl Scheduler {
         for (_, o) in self.tenants()? {
             targets.extend(firewall::offsite_target(&o));
         }
+        // secondary: the primaries' management ports (docs/replication.md §10)
+        targets.extend(self.replication_targets()?);
         if let Ok(a) = alerts::AlertsConfig::load(&self.cfg.alerts_config) {
             targets.extend(firewall::alert_targets(&a));
         }
@@ -951,10 +969,16 @@ impl Scheduler {
             &format!("job/{}", job.id),
             &json!({"kind": job.kind, "tenant": job.tenant}),
         )?;
-        if matches!(job.kind.as_str(), "backup" | "retention" | "offsite" | "gc") {
+        if matches!(
+            job.kind.as_str(),
+            "backup" | "retention" | "offsite" | "gc" | "replica_sync"
+        ) {
             self.dirty.insert(job.tenant.clone());
         }
         self.agent_bookkeeping(&job, &log)?;
+        if job.kind.starts_with("replica_") {
+            self.replica_bookkeeping(&job, &log, ok)?;
+        }
         if ok && job.kind == "backup" {
             // agent backups without snapshots / with failed hooks are usable but not crash-consistent
             for l in log.lines().filter(|l| l.starts_with("inconsistent host-")) {
@@ -996,6 +1020,14 @@ impl Scheduler {
                 let (sev, kind, what) = match alert {
                     Some("verify") => ("critical", "verify", "verification failed"),
                     Some("inventory") => ("critical", "inventory", "offsite inventory anomaly"),
+                    // replica_bookkeeping raised replication_verify / replication_keys already
+                    Some("replication")
+                        if log
+                            .lines()
+                            .any(|l| l.starts_with("verify-failed ") || l.starts_with("key-mismatch ")) =>
+                    {
+                        return Ok(());
+                    }
                     _ => ("critical", "job_failed", "failed"),
                 };
                 self.alert(
@@ -1159,12 +1191,12 @@ impl Scheduler {
                 }
                 Some(r)
             }
-            // `restored {json}` / `enrolled {json}` (nexus-agentctl)
-            "restore_files" | "agent_enroll" => {
-                let pfx = if job.kind == "restore_files" {
-                    "restored "
-                } else {
-                    "enrolled "
+            // `restored {json}` / `enrolled {json}` (nexus-agentctl, nexus-replica), `replicated {json}`
+            "restore_files" | "agent_enroll" | "replica_enroll" | "replica_sync" => {
+                let pfx = match job.kind.as_str() {
+                    "restore_files" => "restored ",
+                    "replica_sync" => "replicated ",
+                    _ => "enrolled ",
                 };
                 log.lines()
                     .find_map(|l| serde_json::from_str::<Value>(l.strip_prefix(pfx)?).ok())
@@ -1506,8 +1538,10 @@ impl Scheduler {
             let rows = st.query_map([], |r| r.get(0))?;
             rows.collect::<Result<_, _>>()?
         };
+        // replicated tenants get the primary's DEKs (keyd import-sealed), never a local one
+        let replicated = self.replicated_tenants()?;
         for t in tenants {
-            if self.keyed.contains(&t) {
+            if self.keyed.contains(&t) || replicated.contains_key(&t) {
                 continue;
             }
             (self.ctx.keys)(&t).with_context(|| format!("keys for tenant {t}"))?;
@@ -1689,6 +1723,19 @@ impl Scheduler {
         let tenant = job.tenant.as_str();
         if !valid_name(tenant) {
             bail!("invalid tenant {tenant:?}");
+        }
+        // replicated tenants (docs/replication.md §7): no local backups, and nothing
+        // that opens the store before the primary's DEKs were imported (keyd
+        // `ensure` would create a local DEK and block the import)
+        let replicated = self.replicated_tenants()?.contains_key(tenant);
+        if replicated && job.kind == "backup" {
+            bail!("tenant {tenant} is replicated from a primary: no local backups");
+        }
+        if replicated
+            && !job.kind.starts_with("replica_")
+            && !self.cfg.store_base.join(tenant).join("keycheck").exists()
+        {
+            bail!("tenant {tenant} is replicated from a primary and has no replicated data yet");
         }
         let p = &job.params;
         let dir = self.job_dir(job.id);
@@ -2027,9 +2074,18 @@ impl Scheduler {
             "files_list" | "files_get" => {
                 let source = ident(p, "source")?;
                 let (ct, vmid) = guest(source)?;
-                let sid = self.resolve_source(job, Some(vmid))?;
                 plan.key = format!("guest:{tenant}/{source}");
-                plan.files = self.pve_config(tenant, sid, &dir, &[])?;
+                plan.files = match self.resolve_source(job, Some(vmid)) {
+                    Ok(sid) => self.pve_config(tenant, sid, &dir, &[])?,
+                    // replicated VM/CT snapshots without a local PVE source: the
+                    // file commands only read the store
+                    Err(_) if replicated => {
+                        let cfg = json!({"store": self.cfg.store_base.join(tenant), "tenant": tenant,
+                                         "keyd_socket": self.cfg.keyd_socket});
+                        vec![("pve.json".into(), serde_json::to_vec_pretty(&cfg)?)]
+                    }
+                    Err(e) => return Err(e),
+                };
                 let mut args = vec![
                     if ct { "ct-files" } else { "files" }.to_owned(),
                     vmid.to_string(),
@@ -2052,6 +2108,7 @@ impl Scheduler {
                 }
                 plan.steps.push(step);
             }
+            "replica_enroll" | "replica_sync" => return self.plan_replica(job, plan),
             k => bail!("unknown job kind {k:?}"),
         }
         Ok(plan)
@@ -2083,6 +2140,8 @@ impl Scheduler {
         if !valid_name(tenant) || !root.join("keycheck").exists() {
             return Ok(());
         }
+        // replicated tenants: the snapshots came from this replication source
+        let origin = self.replicated_tenants()?.remove(tenant);
         let store = chunkstore::Store::open(&root, (self.ctx.keys)(tenant)?, (self.ctx.store_options)())?;
         // (source, time) -> (lock_until, size)
         let mut local: BTreeMap<(String, i64), (i64, Option<i64>)> = BTreeMap::new();
@@ -2152,9 +2211,10 @@ impl Scheduler {
             }
             for ((s, t), (lock, size)) in &local {
                 tx.execute(
-                    "INSERT INTO snapshots (tenant, source, time, size, local, offsite, lock_until) VALUES (?1,?2,?3,?4,1,0,?5) \
-                     ON CONFLICT (tenant, source, time) DO UPDATE SET local=1, lock_until=?5, size=COALESCE(?6, size)",
-                    params![tenant, s, t, size.unwrap_or(0), lock, size],
+                    "INSERT INTO snapshots (tenant, source, time, size, local, offsite, lock_until, origin) \
+                     VALUES (?1,?2,?3,?4,1,0,?5,?7) \
+                     ON CONFLICT (tenant, source, time) DO UPDATE SET local=1, lock_until=?5, size=COALESCE(?6, size), origin=?7",
+                    params![tenant, s, t, size.unwrap_or(0), lock, size, origin],
                 )?;
             }
             tx.execute(
@@ -2325,6 +2385,13 @@ impl Config {
         self.agent_ca_dir
             .clone()
             .unwrap_or_else(|| self.state_dir.join("agent-ca"))
+    }
+    /// Client key + certificate of one replication source (nexus-replica only).
+    pub fn replica_cred_dir(&self, id: i64) -> PathBuf {
+        self.replica_dir
+            .clone()
+            .unwrap_or_else(|| self.state_dir.join("replica"))
+            .join(id.to_string())
     }
     pub fn secrets_key_path(&self) -> PathBuf {
         self.secrets_key

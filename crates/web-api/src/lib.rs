@@ -23,8 +23,10 @@ pub mod auth;
 pub mod jobs;
 pub mod ops;
 pub mod quorum;
+pub mod replication;
 pub mod resources;
 pub mod spa;
+pub mod tls;
 pub mod validate;
 
 /// Runtime configuration. Defaults are the appliance paths; every value can be
@@ -42,6 +44,11 @@ pub struct Config {
     pub totp_key: PathBuf,
     /// scheduler public key: source/offsite secrets are sealed to it
     pub secrets_pub: PathBuf,
+    /// nexus-replicad: socket, replication CA certificate, sealing public key
+    /// (docs/replication.md)
+    pub replicad_socket: PathBuf,
+    pub replication_ca: PathBuf,
+    pub replicad_pub: PathBuf,
 }
 
 impl Config {
@@ -59,6 +66,9 @@ impl Config {
             downloads: p("NEXUS_DOWNLOADS", "/var/lib/nexus/downloads"),
             totp_key: p("NEXUS_TOTP_KEY", "/var/lib/nexus/webapi/totp.key"),
             secrets_pub: p("NEXUS_SECRETS_PUB", "/var/lib/nexus/catalog/secrets.pub"),
+            replicad_socket: p("NEXUS_REPLICAD_SOCKET", "/run/nexus-replicad/replicad.sock"),
+            replication_ca: p("NEXUS_REPLICATION_CA", "/run/nexus-replicad/ca.pem"),
+            replicad_pub: p("NEXUS_REPLICAD_PUB", "/run/nexus-replicad/seal.pub"),
         })
     }
 }
@@ -75,9 +85,32 @@ pub struct AppState {
     /// published scheduler public key; read on every secret write (the
     /// scheduler may start after the web-api). `None` = secret writes refused.
     pub secrets_pub: Option<PathBuf>,
+    /// replication: replicad paths, per-peer limits and sessions
+    pub repl: crate::replication::ReplState,
 }
 
 impl AppState {
+    /// Production / integration tests: everything including replication serving.
+    pub fn with_replication(
+        cat: Catalog,
+        metrics_token: Option<String>,
+        downloads: PathBuf,
+        totp: TotpKey,
+        secrets_pub: Option<PathBuf>,
+        repl: crate::replication::ReplPaths,
+    ) -> Arc<Self> {
+        Arc::new(AppState {
+            cat,
+            metrics_token,
+            downloads,
+            limiter: Mutex::new(auth::Limiter::default()),
+            failed_logins: AtomicU64::new(0),
+            totp,
+            secrets_pub,
+            repl: crate::replication::ReplState::new(repl),
+        })
+    }
+
     /// Tests / fuzzing: ephemeral TOTP key, no scheduler public key.
     pub fn new(cat: Catalog, metrics_token: Option<String>, downloads: PathBuf) -> Arc<Self> {
         Self::with_keys(cat, metrics_token, downloads, TotpKey::generate(), None)
@@ -90,15 +123,14 @@ impl AppState {
         totp: TotpKey,
         secrets_pub: Option<PathBuf>,
     ) -> Arc<Self> {
-        Arc::new(AppState {
+        Self::with_replication(
             cat,
             metrics_token,
             downloads,
-            limiter: Mutex::new(auth::Limiter::default()),
-            failed_logins: AtomicU64::new(0),
             totp,
             secrets_pub,
-        })
+            crate::replication::ReplPaths::default(),
+        )
     }
 
     /// The scheduler's public key, or 503 if it has not been published yet.
@@ -316,7 +348,23 @@ async fn api_not_found() -> ApiError {
     ApiError::not_found()
 }
 
+/// Replication connections (client certificate / enrollment ALPN) reach only
+/// `/replication/v1/*`; ordinary connections never reach it (docs/replication.md §3).
+async fn connection_scope(req: Request, next: Next) -> Response {
+    let repl = req.uri().path().starts_with("/replication/v1/");
+    match (req.extensions().get::<tls::ReplConn>().is_some(), repl) {
+        (true, false) => ApiError::not_found().into_response(),
+        (false, true) => ApiError(
+            StatusCode::FORBIDDEN,
+            "replication requests need the replication protocol and a client certificate".into(),
+        )
+        .into_response(),
+        _ => next.run(req).await,
+    }
+}
+
 pub fn router(st: St) -> Router {
+    use crate::replication as repl;
     use agents::*;
     use auth::*;
     use jobs::*;
@@ -355,13 +403,42 @@ pub fn router(st: St) -> Router {
         .route("/audit/verify", get(verify_audit))
         .route("/alerts", get(list_alerts))
         .route("/alerts/{id}/ack", post(ack_alert))
+        .route("/replication/peers", get(repl::list_peers).post(repl::create_peer))
+        .route("/replication/peers/{id}", axum::routing::delete(repl::delete_peer))
+        .route("/replication/peers/{id}/export-keys", post(repl::export_keys))
+        .route(
+            "/replication/sources",
+            get(repl::list_sources).post(repl::create_source),
+        )
+        .route(
+            "/replication/sources/{id}",
+            put(repl::update_source).delete(repl::delete_source),
+        )
+        .route("/replication/sources/{id}/enroll", post(repl::enroll_source))
+        .route("/replication/sources/{id}/sync", post(repl::sync_source))
+        .fallback(api_not_found);
+    // peer API: only on replication TLS connections (see `connection_scope`)
+    let peer = Router::new()
+        .route("/enroll", post(repl::enroll))
+        .route("/peer", get(repl::peer_info))
+        .route("/session", post(repl::session_start))
+        .route("/session/{id}/end", post(repl::session_end))
+        .route("/tenants/{tenant}/keys", get(repl::tenant_keys))
+        .route("/tenants/{tenant}/snapshots", get(repl::list_remote_snapshots))
+        .route(
+            "/tenants/{tenant}/snapshots/{source}/{time}/{file}",
+            get(repl::snapshot_file),
+        )
+        .route("/tenants/{tenant}/chunks", post(repl::chunks))
         .fallback(api_not_found);
     Router::new()
         .nest("/api/v1", api)
+        .nest(repl_proto::PREFIX, peer)
         .route("/health", get(health))
         .route("/metrics", get(metrics))
         .fallback(spa::serve)
         .layer(axum::extract::DefaultBodyLimit::max(1 << 20))
+        .layer(middleware::from_fn(connection_scope))
         .layer(middleware::from_fn(security_headers))
         .with_state(st)
 }

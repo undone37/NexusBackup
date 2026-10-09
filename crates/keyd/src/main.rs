@@ -12,7 +12,8 @@ const USAGE: &str = "usage:
   keyd tenant-create <dir> <tenant>
   keyd tenant-rotate <dir> <tenant>
   keyd serve <dir> <socket> <allow-user>   allow-user: name or uid of chunkstore
-  keyd export-escrow <dir> <tenant> <out-dir>   wrapped KEK + tenant DEKs for the offsite copy";
+  keyd export-escrow <dir> <tenant> <out-dir>   wrapped KEK + tenant DEKs for the offsite copy
+  keyd replica-pubkey <dir>             X25519 key a replication primary seals DEK exports to (hex)";
 
 fn stdin_line() -> io::Result<String> {
     let mut s = String::new();
@@ -60,6 +61,7 @@ fn run(args: &[String]) -> io::Result<()> {
                 std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o640))?;
             }
         }
+        ["replica-pubkey", dir] => println!("{}", chunkstore::crypto::hex(&keyd::replica_pubkey(Path::new(dir))?)),
         _ => return Err(io::Error::new(io::ErrorKind::InvalidInput, USAGE)),
     }
     Ok(())

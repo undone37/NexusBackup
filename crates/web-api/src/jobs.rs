@@ -144,6 +144,7 @@ fn snapshot_exists(st: &St, tenant: &str, source: &str, time: i64) -> ApiResult<
 fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiResult<Value> {
     Ok(match kind {
         "backup" => {
+            crate::replication::refuse_replicated(&st.cat.conn(), tenant)?;
             let b: BackupP = parse(p)?;
             match (b.group_id, b.vmid, &b.agent_id) {
                 (None, None, Some(a)) => {
@@ -436,7 +437,7 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
     let c = st.cat.conn();
     let rows = c
         .prepare(
-            "SELECT tenant, source, time, size, local, offsite, lock_until, verified FROM snapshots
+            "SELECT tenant, source, time, size, local, offsite, lock_until, verified, origin FROM snapshots
              WHERE (?1 IS NULL OR tenant = ?1) AND (?2 IS NULL OR source = ?2) AND (?3 IS NULL OR tenant = ?3)
              ORDER BY tenant, source, time DESC",
         )?
@@ -445,6 +446,7 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
                 "tenant": r.get::<_, String>(0)?, "source": r.get::<_, String>(1)?, "time": r.get::<_, i64>(2)?,
                 "size": r.get::<_, i64>(3)?, "local": r.get::<_, bool>(4)?, "offsite": r.get::<_, bool>(5)?,
                 "lock_until": r.get::<_, i64>(6)?, "verified": r.get::<_, Option<i64>>(7)?,
+                "origin": r.get::<_, Option<String>>(8)?,
             }))
         })?
         .collect::<Result<Vec<_>, _>>()?;
