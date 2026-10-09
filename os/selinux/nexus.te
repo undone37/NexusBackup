@@ -502,14 +502,15 @@ allow nexus_truenas_t nexus_downloads_t:dir rw_dir_perms;
 
 # systemd creates /run/nexus-nasmount/mount.sock and the per-instance runtime dirs
 init_named_socket_activation(nexus_nasmount_t, nexus_nasmount_var_run_t, "nexus-nasmount")
-# the accepted connection on fd 0 (StandardInput=socket)
-allow nexus_nasmount_t init_t:unix_stream_socket { getattr getopt setopt read write shutdown };
+# the accepted connection on fd 0 (StandardInput=socket): systemd labels activation
+# sockets with the service domain, so the connection is its own socket
 allow nexus_nasmount_t self:unix_stream_socket { getattr getopt setopt read write shutdown };
 # building the mount: only NFS and CIFS superblocks
 allow nexus_nasmount_t self:capability sys_admin;
 fs_mount_nfs(nexus_nasmount_t)
 fs_mount_cifs(nexus_nasmount_t)
 allow nexus_nasmount_t { nfs_t cifs_t }:filesystem getattr;
+# NFSv4 walks from the pseudo root to the export path as the mounting process
 allow nexus_nasmount_t { nfs_t cifs_t }:dir { getattr search };
 # fsopen("nfs4"/"cifs") loads the file system module on first use
 kernel_request_load_module(nexus_nasmount_t)

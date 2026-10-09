@@ -135,9 +135,19 @@ many-modify)
 		    p = os.path.join(root, f"d{a:02d}", f"d{b:03d}", f"f{c:04d}")
 		    with open(p, "ab") as f:
 		        f.write(b"changed\n"); ch += 1
-		    os.unlink(os.path.join(root, f"d{a:02d}", f"d{b:03d}", f"f{(c + 1) % 1000:04d}")); rm += 1
-		    with open(os.path.join(root, f"d{a:02d}", f"d{b:03d}", f"new{k:04d}"), "wb") as f:
-		        f.write(random.Random(-k).randbytes(512)); add += 1
+		    # repeatable: a later round re-creates what an earlier one deleted and vice versa
+		    q = os.path.join(root, f"d{a:02d}", f"d{b:03d}", f"f{(c + 1) % 1000:04d}")
+		    n = os.path.join(root, f"d{a:02d}", f"d{b:03d}", f"new{k:04d}")
+		    if os.path.exists(q):
+		        os.unlink(q); rm += 1
+		    else:
+		        with open(q, "wb") as f:
+		            f.write(random.Random(k).randbytes(700)); add += 1
+		    if os.path.exists(n):
+		        os.unlink(n); rm += 1
+		    else:
+		        with open(n, "wb") as f:
+		            f.write(random.Random(-k).randbytes(512)); add += 1
 		print(f"many: {ch} changed, {add} added, {rm} deleted")
 	PY
 	;;
