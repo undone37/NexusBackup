@@ -92,7 +92,7 @@ struct Entry {
 
 #[derive(Deserialize, Debug)]
 #[serde(tag = "cmd", rename_all = "lowercase")]
-enum Req {
+pub(crate) enum Req {
     Mounts,
     Ls { path: String },
     Tar { paths: Vec<String> },
@@ -368,7 +368,7 @@ fn err(msg: impl Into<String>) -> io::Error {
 
 /// Where a request path points.
 #[derive(Debug, PartialEq)]
-enum Target {
+pub(crate) enum Target {
     /// inside a mounted file system: (mountpoint, components below it)
     Fs(String, Vec<String>),
     /// a directory of the virtual tree above the mountpoints (`/`, `/lvm`)
@@ -377,7 +377,7 @@ enum Target {
 
 /// Validates a request path and maps it to a mountpoint. Rejects relative
 /// paths, `.`/`..`, NUL and over-long paths; `//` and a trailing `/` are fine.
-fn resolve(path: &str, mountpoints: &[String]) -> io::Result<Target> {
+pub(crate) fn resolve(path: &str, mountpoints: &[String]) -> io::Result<Target> {
     if !path.starts_with('/') || path.len() > MAX_PATH || path.contains('\0') {
         return Err(err(format!("invalid path {path:?}")));
     }
@@ -513,9 +513,9 @@ fn ls(path: &str, mountpoints: &[String]) -> io::Result<Vec<Entry>> {
 }
 
 /// Splits a byte stream into `[u32 BE len][data]` frames; `finish` writes the empty end frame.
-struct Frames<W: Write> {
-    w: W,
-    buf: Vec<u8>,
+pub(crate) struct Frames<W: Write> {
+    pub(crate) w: W,
+    pub(crate) buf: Vec<u8>,
 }
 
 impl<W: Write> Frames<W> {
@@ -527,7 +527,7 @@ impl<W: Write> Frames<W> {
         }
         Ok(())
     }
-    fn finish(mut self) -> io::Result<W> {
+    pub(crate) fn finish(mut self) -> io::Result<W> {
         self.flush_frame()?;
         self.w.write_all(&0u32.to_be_bytes())?;
         self.w.flush()?;

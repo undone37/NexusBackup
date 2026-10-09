@@ -13,7 +13,7 @@ package PVE::BackupProvider::Plugin::NexusBackup;
 use strict;
 use warnings;
 
-use Fcntl qw(O_WRONLY O_CREAT O_EXCL);
+use Fcntl qw(O_WRONLY O_CREAT O_EXCL O_NOFOLLOW);
 use File::Basename qw(dirname);
 use File::Copy qw(copy);
 use File::Path qw(make_path);
@@ -285,15 +285,29 @@ sub backup_handle_log_file {
     my $archive = $self->{archive}->{$vmid} or return;
     eval {
         my $gid = PVE::Storage::Custom::NexusBackupPlugin::nexus_group_gid();
-        my $dir = $self->plugin()->state_dir($self->{storeid}) . "/logs";
-        if (!-d $dir) {
-            make_path($dir, { mode => 0750 });
-            chown(-1, $gid, $dir);
-        }
+        my $state = $self->plugin()->state_dir($self->{storeid});
+        $self->plugin()->ensure_state_dir($self->{storeid});
+        # The state dir is group-writable for the helper: everything root writes
+        # into must be a root-owned, not group-writable dir (no symlink, no swap;
+        # the sticky state dir keeps the helper from renaming it), and the file
+        # is created exclusively without following links.
+        my $dir = "$state/logs";
+        mkdir($dir, 0750) or $!{EEXIST} or die "mkdir $dir: $!\n";
+        my @st = lstat($dir) or die "stat $dir: $!\n";
+        die "$dir must be a directory owned by uid $> without group/other write access\n"
+            if !-d _ || -l _ || $st[4] != $> || ($st[2] & 022);
+        my @sst = lstat($state) or die "stat $state: $!\n";
+        die "$state must be sticky and owned by uid $>\n" if $sst[4] != $> || !($sst[2] & 01000);
+        chown(-1, $gid, $dir);
+        chmod(0750, $dir);
         my $target = "$dir/$archive.log";
-        copy($filename, "$target.tmp") or die "copy failed: $!\n";
-        chown(-1, $gid, "$target.tmp");
-        chmod(0640, "$target.tmp");
+        unlink("$target.tmp");
+        sysopen(my $out, "$target.tmp", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0640)
+            or die "create $target.tmp: $!\n";
+        copy($filename, $out) or die "copy failed: $!\n";
+        chown(-1, $gid, $out);
+        chmod(0640, $out);
+        close($out) or die "close failed: $!\n";
         rename("$target.tmp", $target) or die "rename failed: $!\n";
     };
     $self->_log('warn', "unable to store task log: $@") if $@;
@@ -514,13 +528,33 @@ sub backup_container {
     return;
 }
 
+# Config keys that make PVE run commands as root on the node when the guest is
+# restored (raw LXC keys incl. hooks, QEMU `args`, hook scripts). The catalog
+# comes from the appliance (index.json, writable by the helper account), so a
+# compromised appliance must not turn a restore into root on the node: these
+# keys are dropped (and logged); set them again by hand if they were intended.
+our $ROOT_ONLY_KEYS = qr/^\s*(?:lxc\.[^:=\s]*|args|hookscript)\s*[:=]/i;
+
+sub sanitize_guest_config {
+    my ($self, $config, $volname) = @_;
+    my @dropped;
+    my @keep = grep {
+        my $bad = $_ =~ $ROOT_ONLY_KEYS;
+        push @dropped, (split(/[:=]/, $_, 2))[0] =~ s/^\s+|\s+$//gr if $bad;
+        !$bad
+    } split(/^/m, $config);
+    $self->_log('warn', "restore of $volname: dropped root-only config keys from the"
+        . " backup catalog: " . join(', ', @dropped)) if @dropped;
+    return join('', @keep);
+}
+
 sub archive_get_guest_config {
     my ($self, $volname, $storeid) = @_;
 
     my $a = $self->plugin()->find_archive($self->{storeid}, $volname)
         or die "archive '$volname' not found in NexusBackup catalog\n";
     die "archive '$volname' has no guest configuration\n" if !defined($a->{config});
-    return $a->{config};
+    return $self->sanitize_guest_config($a->{config}, $volname);
 }
 
 sub archive_get_firewall_config {
@@ -704,10 +738,12 @@ sub restore_container_init {
 
     eval {
         unlink($sock);
-        if (!-d $STAGEDIR) {
-            mkdir($STAGEDIR, 0700) or die "unable to create $STAGEDIR: $!\n";
-        }
-        chmod(0700, $STAGEDIR) or die "unable to chmod $STAGEDIR: $!\n";
+        # /var/tmp is world-writable: the staging dir must be ours, a real
+        # directory and private, or a local user could redirect root's extraction
+        mkdir($STAGEDIR, 0700) or $!{EEXIST} or die "unable to create $STAGEDIR: $!\n";
+        my @st = lstat($STAGEDIR) or die "unable to stat $STAGEDIR: $!\n";
+        die "$STAGEDIR must be a directory owned by uid $> without group/other access\n"
+            if !-d _ || -l _ || $st[4] != $> || ($st[2] & 077);
         $self->restore_container_cleanup($volname, $storeid, {}) if -e $stage;
         mkdir($stage, 0700) or die "unable to create $stage: $!\n";
 

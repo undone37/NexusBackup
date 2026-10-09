@@ -9,6 +9,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 fn main() -> Result<()> {
+    keyd::deny_dumps();
     let mut cfg_path = PathBuf::from("/etc/nexus/scheduler.json");
     let mut once = false;
     let mut args = std::env::args().skip(1);

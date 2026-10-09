@@ -614,4 +614,44 @@ $PVE::Storage::Custom::NexusBackupPlugin::IRRUNDIR = '/run/nexusbackup/ir';
         qr/cannot hold disk images/, 'alloc_image still refused');
 }
 
+# --- security review regressions (docs/security-review.md) -------------------
+{
+    # task log: root must not write through a logs dir the helper swapped in
+    my $state = "$tmp/state/nexus";
+    ok((lstat($state))[2] & 01000, 'state dir is sticky');
+    $prov->{archive}->{101} = 'nexus-101-1760000999';
+    rename("$state/logs", "$state/logs.root") or die;
+    mkdir("$tmp/evil") or die;
+    symlink("$tmp/evil", "$state/logs") or die;
+    $prov->backup_handle_log_file(101, $logf);
+    ok(!-e "$tmp/evil/nexus-101-1760000999.log" && !-e "$tmp/evil/nexus-101-1760000999.log.tmp",
+        'no task log written through a symlinked logs dir');
+    unlink("$state/logs");
+    mkdir("$state/logs", 0770) or die;
+    chmod(0770, "$state/logs");
+    $prov->backup_handle_log_file(101, $logf);
+    ok(!-e "$state/logs/nexus-101-1760000999.log", 'no task log into a group-writable logs dir');
+    rmdir("$state/logs");
+    rename("$state/logs.root", "$state/logs") or die;
+    symlink("/etc/passwd", "$state/logs/nexus-101-1760000999.log.tmp") or die;
+    $prov->backup_handle_log_file(101, $logf);
+    is(do { local (@ARGV, $/) = ("$state/logs/nexus-101-1760000999.log"); <> }, "INFO: hello\n",
+        'planted tmp symlink replaced, not followed');
+
+    # guest config from the catalog: root-only keys are dropped
+    put_index(JSON->new->encode({ version => 1, archives => [
+        { volname => 'backup/nexus-300-1760000500', vmid => 300, type => 'lxc', ctime => 1760000500, size => 1,
+          config => "arch: amd64\nlxc.hook.pre-start: /bin/sh -c id\nLXC.cgroup2.devices.allow = a\n"
+              . "hookscript: local:snippets/x.pl\n[snap]\nargs: -chardev x\ncores: 2\n" },
+    ]}));
+    is($prov->archive_get_guest_config('backup/nexus-300-1760000500', 'nexus'),
+        "arch: amd64\n[snap]\ncores: 2\n", 'root-only config keys dropped');
+
+    # staging dir: a pre-created symlink in the world-writable parent is refused
+    File::Path::remove_tree($PVE::BackupProvider::Plugin::NexusBackup::STAGEDIR);
+    symlink("$tmp/evil", $PVE::BackupProvider::Plugin::NexusBackup::STAGEDIR) or die;
+    like((eval { $prov->restore_container_init('backup/nexus-300-1760000500', 'nexus', {}); 1 } // $@),
+        qr/must be a directory owned/, 'symlinked staging dir refused');
+}
+
 done_testing();

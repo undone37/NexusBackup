@@ -91,6 +91,15 @@ pub struct Target<'a> {
     packs: BTreeMap<String, (Vec<Entry>, u64)>,
 }
 
+/// Source / index names as the chunk store accepts them (`[A-Za-z0-9._-]`,
+/// no leading dot): anything else in a box listing is not ours.
+fn safe_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && !s.starts_with('.')
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
+
 fn snap_key(source: &str, time: u64) -> String {
     format!("snapshots/{source}/{time}")
 }
@@ -409,7 +418,8 @@ impl<'a> Target<'a> {
         let picks = self.packs.keys().choose_multiple(&mut rand::thread_rng(), n);
         let mut bad = 0;
         for id in &picks {
-            let bytes = self.remote.get(&pack::remote_path(id), 0, None)?;
+            let size = self.packs[*id].1;
+            let bytes = self.remote.get(&pack::remote_path(id), 0, Some(size))?;
             let entries = pack::parse(self.store.keys(), id, &bytes)?;
             for e in entries {
                 let raw = &bytes[e.offset as usize..(e.offset + e.len as u64) as usize];
@@ -428,10 +438,12 @@ impl<'a> Target<'a> {
         for (pp, _, dir) in self.remote.list("packs")? {
             if dir {
                 for (name, size, _) in self.remote.list(&format!("packs/{pp}"))? {
-                    if let Some(id) = name.strip_suffix(".pack") {
-                        remote_packs.insert(id.to_owned(), size);
-                    } else {
-                        r.unknown.push(format!("packs/{pp}/{name}"));
+                    // foreign names (not a pack id in its own prefix dir) are reported, never used
+                    match name.strip_suffix(".pack") {
+                        Some(id) if pack::valid_id(id) && id.get(..2) == Some(pp.as_str()) => {
+                            remote_packs.insert(id.to_owned(), size);
+                        }
+                        _ => r.unknown.push(format!("packs/{pp}/{name}")),
                     }
                 }
             }
@@ -513,11 +525,14 @@ impl<'a> Target<'a> {
             }
             for (name, size, _) in self.remote.list(&format!("packs/{pp}"))? {
                 let Some(id) = name.strip_suffix(".pack") else { continue };
-                if self.packs.contains_key(id) || size < 12 {
+                if !pack::valid_id(id) || id.get(..2) != Some(pp.as_str()) || self.packs.contains_key(id) || size < 12 {
                     continue;
                 }
                 let path = pack::remote_path(id);
                 let ilen = pack::footer_index_len(&self.remote.get(&path, size - pack::FOOTER, Some(pack::FOOTER))?)?;
+                if ilen + pack::FOOTER + 4 > size {
+                    bail!("{path}: index length {ilen} out of range");
+                }
                 let sealed = self.remote.get(&path, size - pack::FOOTER - ilen, Some(ilen))?;
                 let entries = pack::open_index(self.store.keys(), id, &sealed)?;
                 self.record_pack(id, &sealed, entries, size)?;
@@ -528,6 +543,9 @@ impl<'a> Target<'a> {
             if !dir {
                 continue;
             }
+            if !safe_name(&source) {
+                continue; // never a path component we wrote
+            }
             for (time, _, _) in self.remote.list(&format!("snapshots/{source}"))? {
                 let Ok(t) = time.parse::<u64>() else { continue };
                 let key = snap_key(&source, t);
@@ -535,13 +553,23 @@ impl<'a> Target<'a> {
                 if !names.iter().any(|n| n == "manifest") || self.state.join(&key).join("manifest").exists() {
                     continue;
                 }
-                let local = self.state.join(&key);
-                fs::create_dir_all(&local)?;
                 let manifest = self.remote.get(&format!("{key}/manifest"), 0, None)?;
                 let m = self.store.decode_manifest(&source, t, &manifest)?; // verifies tenant + integrity
+                                                                            // only the indexes the authenticated manifest names, each verified before it is kept
+                let mut idx = Vec::new();
+                for name in &m.indexes {
+                    if !safe_name(name) {
+                        bail!("{key}: invalid index name {name:?}");
+                    }
+                    let blob = self.remote.get(&format!("{key}/{name}.idx"), 0, None)?;
+                    self.store.decode_index(&source, t, name, &blob)?;
+                    idx.push((format!("{name}.idx"), blob));
+                }
+                let local = self.state.join(&key);
+                fs::create_dir_all(&local)?;
                 write_atomic(&local.join("lock"), m.lock_until.to_string().as_bytes())?;
-                for name in names.iter().filter(|n| n.ends_with(".idx")) {
-                    write_atomic(&local.join(name), &self.remote.get(&format!("{key}/{name}"), 0, None)?)?;
+                for (name, blob) in &idx {
+                    write_atomic(&local.join(name), blob)?;
                 }
                 write_atomic(&local.join("manifest"), &manifest)?;
             }
