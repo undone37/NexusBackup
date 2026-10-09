@@ -1,5 +1,25 @@
 import { get, post } from './api';
-import type { FileEntry, Job } from './types';
+import { t } from './i18n';
+import type { Agent, AgentStatus, FileEntry, Job, JobKind } from './types';
+
+export const JOB_KINDS: JobKind[] = [
+  'backup',
+  'restore',
+  'restore_ct',
+  'instant_recover',
+  'files_list',
+  'files_get',
+  'restore_files',
+  'offsite',
+  'retention',
+  'gc',
+  'verify',
+  'agent_enroll',
+  'agent_update',
+];
+
+/** Human-readable job kind (falls back to the raw kind for kinds the UI does not know yet). */
+export const kindLabel = (k: string) => t.jobs.kinds[k] ?? k;
 
 export const terminal = (s: string) => s === 'ok' || s === 'failed' || s === 'cancelled';
 
@@ -31,3 +51,11 @@ export function fileEntries(job: Job): FileEntry[] {
 }
 
 export const downloadUrl = (token: string) => `/api/v1/downloads/${encodeURIComponent(token)}`;
+
+/** Agent id of a host snapshot source (`host-<agent id>`), else null. */
+export const hostAgentId = (source: string) => (source.startsWith('host-') ? source.slice(5) : null);
+
+export function agentStatus(a: Agent, now = Date.now() / 1000): AgentStatus {
+  if (a.enrolled_at !== null) return 'enrolled';
+  return a.token_expires !== null && a.token_expires > now ? 'pending' : 'expired';
+}

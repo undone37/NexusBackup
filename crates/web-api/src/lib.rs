@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
+pub mod agents;
 pub mod auth;
 pub mod jobs;
 pub mod ops;
@@ -316,6 +317,7 @@ async fn api_not_found() -> ApiError {
 }
 
 pub fn router(st: St) -> Router {
+    use agents::*;
     use auth::*;
     use jobs::*;
     use ops::*;
@@ -337,6 +339,10 @@ pub fn router(st: St) -> Router {
         .route("/groups/{id}", put(update_group).delete(delete_group))
         .route("/users", get(list_users).post(create_user))
         .route("/users/{id}", put(update_user))
+        .route("/agents", get(list_agents).post(create_agent))
+        .route("/agents/{id}", axum::routing::delete(delete_agent))
+        .route("/agents/{id}/token", post(new_agent_token))
+        .route("/agents/{id}/enroll", post(enroll_agent))
         .route("/snapshots", get(list_snapshots))
         .route("/jobs", get(list_jobs).post(create_job))
         .route("/jobs/{id}", get(get_job))

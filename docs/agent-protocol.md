@@ -60,10 +60,62 @@ agent's metadata cache are sent with `unchanged = true` and the cached chunk lis
   (≤ 4 MiB); violations close the connection.
 
 ## Appliance side
-- Source kind `linux` (catalog migration): config `{agent_id, host, port, paths, excludes, hooks}`; enrollment
-  state per agent (`agents` table: id, tenant, name, host, port, cert fingerprint, enrolled_at, token_hash,
-  token_expires, last_seen, version).
+- Source kind `linux` (catalog v4): config `{agent_id, paths, excludes, hooks}` (endpoint and trust live in
+  the agent row); per agent the `agents` table: id (16 hex, random), tenant, name, host, port, cert_sha256,
+  enrolled_at, token_hash, token_expires, last_seen, version, os. A group of a linux source has
+  `guests = [agent_id]`.
 - Snapshot index: new `Index::Tree { entries }` (postcard variant appended → old data still decodes) holding
-  the full `Entry` metadata with keyed chunk IDs; source name `host-<agent_id>`.
-- Job kinds: `backup` (group guests = agent ids), `restore_files` {source, time, paths, target, overwrite,
-  confirm}, `agent_update` {agent_id}.
+  the full `Entry` metadata with keyed chunk IDs; source name `host-<agent_id>`, index name `tree`.
+- Job kinds: `backup` ({group_id} or {agent_id}), `restore_files` {source, time, paths, target, overwrite,
+  confirm, agent_id}, `agent_update` {agent_id}, `agent_enroll` {agent_id}; endpoints and RBAC in
+  docs/control-plane.md.
+
+### Clarifications (appliance implementation, crate `agent-conn`, CLI `nexus-agentctl`)
+These pin down points the message table leaves open; an agent must behave as described.
+- **Token digest.** Both sides keep only `token_digest(token)` = lowercase hex SHA-256 of the trimmed token
+  (`agent_proto::token_digest`), and that hex string is the `token` argument of `enroll_proof` (HMAC key).
+  The appliance stores it sealed to the scheduler (`agents.token_hash` = `sealed:v1:…`, location
+  `agent/<id>/token@<host>:<port>`, so a changed endpoint voids it) and clears it after enrollment.
+- **Exporter**: `export_keying_material(32 bytes, label "nexus-agent enroll", context = none)`.
+- **Enrollment connection**: TLS 1.3 + ALPN `nexus-agent/1`; the appliance accepts any agent certificate but
+  checks the handshake signature, and offers its client certificate (an agent in enrollment mode may ignore
+  it). `EnrollDone` has no answer: the appliance closes, then confirms with an mTLS `Hello` (retries 60 s).
+  The fingerprint is recorded as soon as `EnrollDone` was sent (the agent has consumed its token).
+- **Certificates.** Appliance CA: ECDSA P-256, `<state_dir>/agent-ca/` (`ca.key`, `client.key` 0600; created
+  on first use under a lock), path length 0. Appliance client cert `CN=nexus-appliance:<appliance-id>`, EKU
+  clientAuth. Agent cert: only the CSR's (self-signature-checked) public key is used; subject
+  `CN=nexus-agent:<agent-id>`, EKU serverAuth, KU digitalSignature, 10 years, no SAN. The appliance verifies
+  the chain to its CA, EKU serverAuth, the CN, and pins the SHA-256 of the cert recorded at enrollment
+  (re-issuing needs a new token + enrollment). `HelloReply.agent_id` must equal the expected id.
+- **Paths.** `Entry.path` is the path relative to the host's `/` (the volume mountpoint prefix included, not
+  relative to a snapshot mount), components separated by `/`, never empty, `.`, `..`, no NUL; the root itself
+  may be sent as `""`/`"."` and is ignored. `paths` in `Prepare` and restore requests are absolute.
+- **Entries checked by the appliance** (violation = backup fails, nothing committed): each path once; regular
+  files: chunk lengths sum to `size`, no empty chunk; other kinds carry no chunks; symlinks have a target;
+  hard-link targets are valid relative paths; one hash has one length across all entries.
+- **Base.** `Scan.base` = time of the newest committed `host-<agent_id>` snapshot in the appliance store (or
+  none). The agent compares against the metadata cache it committed at its last `Release{success: true}`.
+- **Want.** The appliance requests every hash that is not in its mapping index *or* whose mapped chunk is
+  missing in the store (GC) — including hashes of `unchanged` files, so an agent must be able to deliver those
+  (re-read the file). ≤ 10 000 hashes per `Want`, sorted; the agent answers with exactly the requested chunks
+  (any order, each once) and `WantDone`. Unrequested, duplicate, wrong-length or hash-mismatching chunks fail
+  the backup. Mapped chunks are touched against a concurrent GC before they are reused.
+- **Release** is sent with `success: true` only after the snapshot commit; on any earlier failure with
+  `success: false` (chunk messages still in flight are skipped while waiting for `Released`).
+- **Mapping index** `<store>/agent-map.db` (SQLite, 0600, `plain → keyed, len`): written only for verified
+  chunks, never uploaded offsite; losing it costs one full transfer, never correctness.
+- **Restore.** After `RestoreReady` the appliance sends batches of ≤ 1000 entries; after each
+  `RestoreEntries` it sends one `RestoreChunk` per chunk of that batch's regular files in entry order and
+  chunk order (repeated chunks are sent again), so files can be written sequentially; then `RestoreEnd`.
+  Selected paths include all parent directories (with their recorded metadata). `confirm` is the target
+  agent's *name* as typed by the user (the web-api refuses anything else); `RestoreDone.stats.errors` non-empty
+  fails the job. Entry chunk lists carry plain hashes (mapping index, or recomputed).
+- **Update.** The update directory (`/usr/share/nexus/agent`) holds `nexus-agent`, `nexus-agent.sig`,
+  `nexus-agent.version`; the whole binary travels in one frame, so it must stay below 8 MiB (open: chunked
+  update for bigger binaries). After `UpdateDone` the appliance reconnects (≤ 120 s) and expects the new
+  version in `HelloReply`.
+- **Downloads** from tree snapshots need no agent: `nexus-agentctl files <agent> <time> ls|get` (same JSON
+  and tar/zip formats as VM/CT files; tar keeps owners, modes, mtimes, links, devices and xattrs as PAX
+  `SCHILY.xattr.*`).
+- **Consistency.** `Prepared.consistent = false` or entries with `inconsistent` → the backup is committed and
+  the scheduler raises a `backup_inconsistent` warning.

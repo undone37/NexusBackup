@@ -149,7 +149,7 @@ pub async fn update_tenant(
 
 /// A tenant can only be deleted once no source, group or user refers to it.
 pub fn tenant_deletable(c: &Connection, name: &str) -> ApiResult<()> {
-    for t in ["sources", "groups", "users"] {
+    for t in ["sources", "groups", "users", "agents"] {
         if exists(c, &format!("SELECT 1 FROM {t} WHERE tenant = ?1"), [name])? {
             return Err(ApiError::conflict(format!("tenant still has {t}")));
         }
@@ -256,18 +256,79 @@ fn public_config(raw: &str) -> Value {
     v
 }
 
+/// Linux agent source (docs/agent-protocol.md): which agent, what to back up.
+/// No secrets (the agent trust lives in the `agents` table / appliance CA).
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinuxConfig {
+    agent_id: String,
+    paths: Vec<String>,
+    #[serde(default)]
+    excludes: Vec<String>,
+    #[serde(default)]
+    hooks: bool,
+}
+
+impl LinuxConfig {
+    fn check(&self, c: &Connection, tenant: &str) -> ApiResult<()> {
+        validate::agent_id(&self.agent_id)?;
+        if !exists(
+            c,
+            "SELECT 1 FROM agents WHERE id = ?1 AND tenant = ?2",
+            params![self.agent_id, tenant],
+        )? {
+            return Err(ApiError::bad("config.agent_id: no such agent in this tenant"));
+        }
+        if self.paths.is_empty() || self.paths.len() > 64 {
+            return Err(ApiError::bad("config.paths: 1..=64 absolute paths"));
+        }
+        for p in &self.paths {
+            validate::host_path(p, "config.paths")?;
+        }
+        if self.excludes.len() > 256 {
+            return Err(ApiError::bad("config.excludes: at most 256 patterns"));
+        }
+        for x in &self.excludes {
+            if x.is_empty() {
+                return Err(ApiError::bad("config.excludes: empty pattern"));
+            }
+            validate::text(x, "config.excludes", 4096)?;
+            if x.contains(['\n', '\r']) {
+                return Err(ApiError::bad("config.excludes: one pattern per entry"));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn parse_config<T: serde::de::DeserializeOwned>(v: Value) -> ApiResult<T> {
+    serde_json::from_value(v).map_err(|e| ApiError::bad(format!("config: {e}")))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceReq {
     tenant: String,
     kind: String,
     name: String,
-    config: PveConfig,
+    config: Value,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceUpdate {
+    name: String,
+    config: Value,
+}
+
+struct PveSourceUpdate {
+    name: String,
+    config: PveConfig,
+}
+
+struct PveSourceReq {
+    tenant: String,
+    kind: String,
     name: String,
     config: PveConfig,
 }
@@ -301,9 +362,39 @@ pub async fn list_sources(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Valu
 pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -> ApiResult<Response> {
     ctx.require(ADMIN)?;
     validate::name(&r.name, "name")?;
-    if r.kind != "pve" {
-        return Err(ApiError::bad("kind: only `pve` is supported"));
+    match r.kind.as_str() {
+        "pve" => {}
+        "linux" => {
+            let cfg: LinuxConfig = parse_config(r.config)?;
+            let (id, out) = {
+                let c = st.cat.conn();
+                if !exists(&c, "SELECT 1 FROM tenants WHERE name = ?1", [&r.tenant])? {
+                    return Err(ApiError::bad("tenant: does not exist"));
+                }
+                cfg.check(&c, &r.tenant)?;
+                c.execute(
+                    "INSERT INTO sources (tenant, kind, name, config) VALUES (?1, 'linux', ?2, ?3)",
+                    params![r.tenant, r.name, json!(cfg).to_string()],
+                )?;
+                let id = c.last_insert_rowid();
+                (id, source_json(&c, id)?)
+            };
+            st.audit(
+                ctx.name(),
+                "source.create",
+                &format!("source/{id}"),
+                json!({"tenant": r.tenant, "kind": "linux", "name": r.name, "config": out["config"]}),
+            )?;
+            return Ok(created(out));
+        }
+        _ => return Err(ApiError::bad("kind: `pve` or `linux`")),
     }
+    let r = PveSourceReq {
+        config: parse_config(r.config)?,
+        tenant: r.tenant,
+        kind: r.kind,
+        name: r.name,
+    };
     r.config.check()?;
     if r.config.token_secret.is_none() {
         return Err(ApiError::bad("config.token_secret: required"));
@@ -341,10 +432,41 @@ pub async fn update_source(
     State(st): State<St>,
     ctx: Ctx,
     Path(id): Path<i64>,
-    J(mut r): J<SourceUpdate>,
+    J(r): J<SourceUpdate>,
 ) -> ApiResult<Json<Value>> {
     ctx.require(ADMIN)?;
     validate::name(&r.name, "name")?;
+    let (tenant, kind): (String, String) = st
+        .cat
+        .conn()
+        .query_row("SELECT tenant, kind FROM sources WHERE id = ?1", [id], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .optional()?
+        .ok_or_else(ApiError::not_found)?;
+    if kind == "linux" {
+        let cfg: LinuxConfig = parse_config(r.config)?;
+        let out = {
+            let c = st.cat.conn();
+            cfg.check(&c, &tenant)?;
+            c.execute(
+                "UPDATE sources SET name = ?2, config = ?3 WHERE id = ?1",
+                params![id, r.name, json!(cfg).to_string()],
+            )?;
+            source_json(&c, id)?
+        };
+        st.audit(
+            ctx.name(),
+            "source.update",
+            &format!("source/{id}"),
+            json!({"name": r.name, "config": out["config"]}),
+        )?;
+        return Ok(Json(out));
+    }
+    let mut r = PveSourceUpdate {
+        name: r.name,
+        config: parse_config(r.config)?,
+    };
     r.config.check()?;
     let pk = st.seal_key()?;
     let out = {
@@ -580,7 +702,7 @@ pub struct GroupReq {
     source_id: i64,
     policy_id: i64,
     name: String,
-    guests: Vec<u32>,
+    guests: Vec<Value>,
 }
 
 #[derive(Deserialize)]
@@ -589,7 +711,7 @@ pub struct GroupUpdate {
     source_id: i64,
     policy_id: i64,
     name: String,
-    guests: Vec<u32>,
+    guests: Vec<Value>,
 }
 
 fn check_group(
@@ -598,23 +720,42 @@ fn check_group(
     source_id: i64,
     policy_id: i64,
     name: &str,
-    guests: &mut Vec<u32>,
+    guests: &mut Vec<Value>,
 ) -> ApiResult<()> {
     validate::name(name, "name")?;
     if guests.len() > 1000 {
         return Err(ApiError::bad("guests: at most 1000"));
     }
-    for g in guests.iter() {
-        validate::vmid(*g)?;
-    }
-    guests.sort_unstable();
-    guests.dedup();
-    if !exists(
-        c,
-        "SELECT 1 FROM sources WHERE id = ?1 AND tenant = ?2",
-        params![source_id, tenant],
-    )? {
-        return Err(ApiError::bad("source_id: no such source in this tenant"));
+    let (kind, config): (String, String) = c
+        .query_row(
+            "SELECT kind, config FROM sources WHERE id = ?1 AND tenant = ?2",
+            params![source_id, tenant],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| ApiError::bad("source_id: no such source in this tenant"))?;
+    if kind == "linux" {
+        // the guest of a linux source is its agent (the source says what to back up)
+        let agent = serde_json::from_str::<Value>(&config).unwrap_or_default()["agent_id"].clone();
+        if guests.iter().any(|g| *g != agent) {
+            return Err(ApiError::bad(
+                "guests: a linux source's group contains its agent id only",
+            ));
+        }
+        *guests = vec![agent];
+    } else {
+        let mut ids = Vec::with_capacity(guests.len());
+        for g in guests.iter() {
+            let v = g
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok())
+                .ok_or_else(|| ApiError::bad("guests: vmids (numbers) for a pve source"))?;
+            validate::vmid(v)?;
+            ids.push(v);
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        *guests = ids.into_iter().map(Value::from).collect();
     }
     if !exists(c, "SELECT 1 FROM policies WHERE id = ?1", [policy_id])? {
         return Err(ApiError::bad("policy_id: no such policy"));

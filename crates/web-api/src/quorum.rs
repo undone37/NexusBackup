@@ -27,6 +27,7 @@ pub const WEB_ACTIONS: &[&str] = &[
     "group.delete",
     "group.update",
     "user.update",
+    "agent.delete",
 ];
 
 const SECRET_KEYS: &[&str] = &["password_hash", "totp_secret"];
@@ -165,6 +166,13 @@ fn execute(c: &Connection, action: &str, p: &Value) -> ApiResult<bool> {
             ],
         )?)?,
         "user.update" => crate::resources::apply_user_update(c, p)?,
+        "agent.delete" => {
+            let id = p["id"].as_str().unwrap_or_default();
+            if crate::agents::agent_in_use(c, id)? {
+                return Err(ApiError::conflict("agent is still used by a source"));
+            }
+            changed(c.execute("DELETE FROM agents WHERE id = ?1", [id])?)?
+        }
         _ => return Ok(false),
     }
     Ok(true)

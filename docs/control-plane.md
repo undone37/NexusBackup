@@ -7,7 +7,7 @@ console TUI first boot. Plan §11.
 | Process | User | Talks to | Never touches |
 |---|---|---|---|
 | `nexus-web-api` (axum, rustls, port 8443) | `nexus-webapi` | catalog DB, downloads dir (read), `secrets.pub` (read), TOTP key `/var/lib/nexus/webapi/totp.key` (0600, own) | keys, chunks, sources, plaintext source secrets |
-| `nexus-scheduler` | `nexus-chunkstore` | catalog DB, keyd socket, chunk store, `nexus-pve` / `nexus-offsite` (spawned), secrets key `/var/lib/nexus/scheduler/secrets.key` (0600, own) | HTTP clients |
+| `nexus-scheduler` | `nexus-chunkstore` | catalog DB, keyd socket, chunk store, `nexus-pve` / `nexus-offsite` / `nexus-agentctl` (spawned), agent CA `/var/lib/nexus/scheduler/agent-ca/` (keys 0600), secrets key `/var/lib/nexus/scheduler/secrets.key` (0600, own) | HTTP clients |
 | `nexus-setup` (console TUI, first boot) | root | keyd CLI, catalog DB, TLS files, creates the TOTP key | network until configured |
 
 - The **catalog** is SQLite (WAL) at `/var/lib/nexus/catalog/catalog.db`, group `nexus-catalog` (both web-api and scheduler).
@@ -29,16 +29,19 @@ console TUI first boot. Plan §11.
 | `users` | id, name UNIQUE, password_hash (argon2id), totp_secret (`enc:v1:…`, legacy: base32), role, tenant (NULL = all), disabled, created, totp_last_step (v2) |
 | `sessions` | id_hash (sha256 of cookie), user_id, csrf, created, last_seen |
 | `tenants` | name PK, offsite (JSON: remote config, bwlimit, uploaders) |
-| `sources` | id, tenant, kind (`pve`), name, config (JSON: api host/port/ca_pem/token_id, token_secret (`sealed:v1:…`), nodes, storage, fleecing_storage) |
+| `sources` | id, tenant, kind (`pve`, `linux` since v4), name, config (pve JSON: api host/port/ca_pem/token_id, token_secret (`sealed:v1:…`), nodes, storage, fleecing_storage; linux JSON: agent_id, paths, excludes, hooks) |
+| `agents` (v4) | id (16 hex), tenant, name, host, port, cert_sha256, enrolled_at, token_hash (`sealed:v1:` token digest, NULL after enrollment), token_expires, last_seen, version, os |
 | `policies` | id, name, schedule (`daily HH:MM`, `hourly MM`), gfs (JSON {daily,weekly,monthly,yearly}), offsite (bool) |
-| `groups` | id, tenant, source_id, policy_id, name, guests (JSON [vmid]) |
+| `groups` | id, tenant, source_id, policy_id, name, guests (JSON [vmid]; linux source: [agent_id]) |
 | `jobs` | id, kind, tenant, params (JSON), state (`queued`,`running`,`ok`,`failed`,`cancelled`), requested_by, created, started, finished, log, result (JSON, NULL until finished ok; v3) |
-| `snapshots` | tenant, source (`vm-100`/`ct-200`), time, size, local, offsite, lock_until, verified — refreshed by scheduler |
+| `snapshots` | tenant, source (`vm-100`/`ct-200`/`host-<agent_id>`), time, size, local, offsite, lock_until, verified — refreshed by scheduler |
 | `quorum` | id, action, params (JSON), requested_by, created, decided_by, decided_at, state (`pending`,`approved`,`rejected`,`executed`,`expired`) |
 | `audit` | seq PK, ts, actor, action, target, details (JSON), prev_hash, hash |
 | `alerts` | id, ts, severity, kind, message, acked_by |
 
-Job kinds: `backup` {group_id | vmid}, `restore` {source, time, node, target, storage}, `restore_ct`, `instant_recover`, `files_list` {source,time,path}, `files_get` {source,time,paths,format}, `offsite`, `retention`, `gc`, `verify`.
+Job kinds: `backup` {group_id | vmid}, `restore` {source, time, node, target, storage}, `restore_ct`, `instant_recover`, `files_list` {source,time,path}, `files_get` {source,time,paths,format} (also for `host-<agent_id>` snapshots), `offsite`, `retention`, `gc`, `verify`; Linux agents (docs/agent-protocol.md): `backup` {agent_id}, `restore_files` {source: host-<id>, time, paths, target, overwrite: never|if_older|always, confirm, agent_id}, `agent_update` {agent_id}, `agent_enroll` {agent_id}.
+
+Catalog migrations stay backward compatible for one release (docs/release.md): v4 adds `agents` and rebuilds `sources` with the wider kind CHECK (same rows and ids, run with foreign keys off and checked with `foreign_key_check`); the previous release skips the unknown migration and fails jobs of `linux` sources as unsupported.
 
 ## Audit log
 `hash = sha256(prev_hash || seq || ts || actor || action || target || details)`, hex; `prev_hash` of seq 1 = 64×"0".
@@ -49,11 +52,12 @@ Every mutating API call and every job state change appends one entry (`catalog::
 |---|---|---|---|---|
 | read everything (own tenant for tenant_user) | ✓ | ✓ | ✓ | own |
 | sources, policies, groups, tenants, users CRUD | ✓ | — | — | — |
-| run backups / restores / file restore | ✓ | — | ✓ | own (restores only) |
+| run backups / restores / file restore (incl. `restore_files`) | ✓ | — | ✓ | own (restores only) |
+| agents CRUD, enrollment, `agent_update` | ✓ | — | — | — |
 | approve/reject quorum requests | — | ✓ | — | — |
 | audit log, verify chain | ✓ | ✓ | — | — |
 
-**Quorum (four-eyes)** — these never execute directly; they create a `quorum` row that a *different* user with role `security_officer` must approve within 72 h: weakening a policy (any GFS value lowered, offsite disabled), deleting a group/source/tenant/policy, deleting snapshots manually, GC deleting > 20 % of chunks (raised by the scheduler), granting `admin`/`security_officer`, disabling a user who is the last admin/security_officer.
+**Quorum (four-eyes)** — these never execute directly; they create a `quorum` row that a *different* user with role `security_officer` must approve within 72 h: weakening a policy (any GFS value lowered, offsite disabled), deleting a group/source/tenant/policy/agent, deleting snapshots manually, GC deleting > 20 % of chunks (raised by the scheduler), granting `admin`/`security_officer`, disabling a user who is the last admin/security_officer.
 
 ## REST API (`/api/v1`, JSON)
 Auth: `POST /auth/login {name, password, totp}` → `Set-Cookie: nx_session=…; HttpOnly; Secure; SameSite=Strict; Path=/` + body `{csrf, user}`. Every non-GET request needs header `X-CSRF-Token`. `POST /auth/logout`, `GET /auth/me` → `{user, csrf}` (lets the SPA recover its CSRF token after a reload; same-origin + SameSite=Strict keeps it from other sites). Sessions expire after 30 min idle / 12 h absolute. Login rate limit: 5 failures per user or IP per 15 min → 15 min lockout (audited).
@@ -67,6 +71,8 @@ Auth: `POST /auth/login {name, password, totp}` → `Set-Cookie: nx_session=…;
 | `GET/POST /policies`, `PUT/DELETE /policies/{id}` | admin (weakening PUT / DELETE → quorum) | |
 | `GET/POST /groups`, `PUT/DELETE /groups/{id}` | admin (DELETE → quorum) | |
 | `GET/POST /users`, `PUT /users/{id}` | admin (privileged role grants → quorum) | POST returns the TOTP provisioning URI once; `password` / `reset_totp` on PUT need re-authentication (see Clarifications) |
+| `GET /agents`, `POST /agents`, `DELETE /agents/{id}` | read / admin (DELETE → quorum) | POST `{tenant, name, host, port=7444}` → 201 agent + one-time `token` + `install_command` (shown once) |
+| `POST /agents/{id}/token`, `POST /agents/{id}/enroll` | admin | new one-time token (200 `{token, install_command, token_expires}`); enroll → 202 `{id}` of an `agent_enroll` job, 409 without a valid token |
 | `GET /snapshots?tenant=&source=` | read | local/offsite/lock/verified per snapshot |
 | `GET /jobs?state=&kind=`, `GET /jobs/{id}` (incl. log) | read | `result` = structured job result (see Clarifications) |
 | `POST /jobs` `{kind, tenant, params}` | per kind (see RBAC) | returns job id; 202 |
@@ -93,10 +99,11 @@ Headers on every response: `Content-Security-Policy: default-src 'self'; script-
   - Failures count toward the login rate limiter (per user and per IP). A lockout answers 429 and also blocks login.
 - Job results (`jobs.result`, written by the scheduler when a job finishes `ok`, returned as `result` by `GET /jobs` and `GET /jobs/{id}`): `files_list` → `{"entries": [{name, kind, size, mtime, mode?, link?}, …]}` (the JSON `nexus-pve … ls` prints); `files_get` → `{"download_token", "format", "entries": n, "size": bytes, "expires": unix}`; `backup` → `{"snapshots": [{"source", "time"}, …]}` plus top-level `source`/`time` when exactly one guest was committed. Other kinds: `null`.
 - Audit paging: `GET /audit?after=<seq>` returns entries with `seq > after` oldest first; `?order=desc` (no cursor) starts at the newest entry, `?before=<seq>` returns `seq < before` newest first (pages backwards; `order=asc` with `before` is 400). `limit` defaults to 500, max 1000.
+- Agents (docs/agent-protocol.md): `GET /agents` never returns the token digest; the token (128 bit, base32, 26 characters, 24 h) appears only in the answer of `POST /agents` / `POST /agents/{id}/token` (install command `nexus-agent init --token <T>`) and is stored as its digest sealed to the scheduler (503 while `secrets.pub` is missing). Audit: `agent.create`, `agent.token`, `agent.delete` (quorum), `agent.enrolled` (scheduler). An agent used by a linux source cannot be deleted (409); a tenant with agents cannot be deleted. A linux source's `agent_id` must be an agent of the same tenant; `paths` 1..=64 absolute paths without `.`/`..`, `excludes` ≤ 256 patterns. `restore_files`: `confirm` must equal the target agent's name (400 otherwise; the agent journals it); the web-api adds `agent_id` (default: the snapshot's agent). `agent_update` / `agent_enroll` are admin-only job kinds. Job results: `restore_files` → `{target, files, dirs, bytes, errors}`, `agent_enroll` → `{agent_id, cert_sha256, appliance_id}`.
 - `GET /quorum` is readable by admin, security_officer and operator. Tenant-scoped users (`users.tenant` set) see only their tenant's rows in every list (`users` included); `alerts` has no tenant column, so they get an empty list.
 
 ## Scheduler
-Tick every 30 s: (1) queue `backup` jobs for groups whose policy schedule is due (once per period); after each successful backup: `retention` for that source, then `offsite` if the policy says so; (2) run queued jobs FIFO, at most one per source at a time, by spawning `nexus-pve` / `nexus-offsite` with a generated config (0600, in a private runtime dir) and capturing output into `jobs.log`; (3) refresh `snapshots`; (4) daily `gc` + `verify`; a GC that needs quorum raises a `quorum` request and an alert; (5) alerts: failed job, offsite lag > 48 h, verify failure, inventory anomaly, capacity > 75 %. Alert delivery: webhook URL + SMTP from `/etc/nexus/alerts.json`.
+Tick every 30 s: (1) queue `backup` jobs for groups whose policy schedule is due (once per period); after each successful backup: `retention` for that source, then `offsite` if the policy says so; (2) run queued jobs FIFO, at most one per source at a time, by spawning `nexus-pve` / `nexus-offsite` / `nexus-agentctl` with a generated config (0600, in a private runtime dir) and capturing output into `jobs.log`; (3) refresh `snapshots`; (4) daily `gc` + `verify`; a GC that needs quorum raises a `quorum` request and an alert; (5) alerts: failed job, offsite lag > 48 h, verify failure, inventory anomaly, capacity > 75 %, agent backup without a consistent view (`backup_inconsistent`, warning). Agent jobs are exclusive per agent (`agent:<id>`); agent backups are refused before they start if the agent is not enrolled; `agent-info`/`enrolled` lines of `nexus-agentctl` update `agents` (last_seen, version, os; fingerprint, token cleared). The firewall allow-list includes every agent's host:port. Alert delivery: webhook URL + SMTP from `/etc/nexus/alerts.json`.
 
 ## First boot (`nexus-setup`, console TUI)
 Network (NetworkManager, static/DHCP on the management NIC) → admin account + TOTP enrollment (QR in terminal, code confirmation) → `keyd init`: recovery key shown once, re-entry of 3 random groups required → TLS certificate (self-signed, SAN = hostname + IPs; fingerprint shown) → metrics token → `/var/lib/nexus/setup-done` → enable `nexus-web-api`, `nexus-scheduler`, `nexus-keyd`.

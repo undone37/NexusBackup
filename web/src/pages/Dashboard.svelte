@@ -6,7 +6,8 @@
   import { href } from '../lib/router.svelte';
   import { fmtAgo, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
-  import type { Alert, Group, Job, Policy, QuorumRequest, Snapshot } from '../lib/types';
+  import { kindLabel } from '../lib/jobs';
+  import type { Agent, Alert, Group, Job, Policy, QuorumRequest, Snapshot } from '../lib/types';
   import Check from '../components/Check.svelte';
   import JobState from '../components/JobState.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
@@ -16,6 +17,7 @@
   let snaps: Snapshot[] = $state([]);
   let failed: Job[] = $state([]);
   let alerts: Alert[] = $state([]);
+  let agents: Agent[] = $state([]);
   let pending: number | null = $state(null);
   let error: string | null = $state(null);
   let loaded = $state(false);
@@ -37,6 +39,11 @@
       error = null;
     } catch (e) {
       error = errText(e);
+    }
+    try {
+      agents = await get<Agent[]>('/agents');
+    } catch {
+      /* agent names are cosmetic here */
     }
     if (can.viewQuorum(session.user)) {
       try {
@@ -65,17 +72,27 @@
     return m;
   });
 
-  function lastFor(g: Group, vmid: number): Snapshot | undefined {
-    return latest.get(`${g.tenant}/vm-${vmid}`) ?? latest.get(`${g.tenant}/ct-${vmid}`);
+  // Snapshot source names a guest can have: VM/CT IDs (pve) or agent ids (linux hosts).
+  const sourcesOf = (guest: number | string) =>
+    typeof guest === 'string' ? [`host-${guest}`] : [`vm-${guest}`, `ct-${guest}`];
+
+  function lastFor(g: Group, guest: number | string): Snapshot | undefined {
+    for (const s of sourcesOf(guest)) {
+      const hit = latest.get(`${g.tenant}/${s}`);
+      if (hit) return hit;
+    }
+    return undefined;
   }
   // Newest snapshot of a guest that is offsite / verified (the latest one may still be uploading).
-  function newestWhere(g: Group, vmid: number, pred: (s: Snapshot) => boolean): Snapshot | undefined {
+  function newestWhere(g: Group, guest: number | string, pred: (s: Snapshot) => boolean): Snapshot | undefined {
+    const names = sourcesOf(guest);
     return snaps
-      .filter((s) => s.tenant === g.tenant && (s.source === `vm-${vmid}` || s.source === `ct-${vmid}`) && pred(s))
+      .filter((s) => s.tenant === g.tenant && names.includes(s.source) && pred(s))
       .sort((a, b) => b.time - a.time)[0];
   }
-  function guestLabel(g: Group, vmid: number) {
-    return lastFor(g, vmid)?.source ?? String(vmid);
+  function guestLabel(g: Group, guest: number | string) {
+    if (typeof guest === 'string') return agents.find((a) => a.id === guest)?.name ?? `host-${guest}`;
+    return lastFor(g, guest)?.source ?? String(guest);
   }
   const showAlerts = $derived(can.viewAlerts(session.user));
   const policyOf = (g: Group) => policies.find((p) => p.id === g.policy_id);
@@ -203,7 +220,7 @@
             {#each failed.slice(0, 6) as j (j.id)}
               <tr>
                 <td><a href={href(`/jobs/${j.id}`)}>#{j.id}</a></td>
-                <td>{j.kind}</td>
+                <td>{kindLabel(j.kind)}</td>
                 <td>{j.tenant}</td>
                 <td class="nowrap">{fmtAgo(j.finished ?? j.created)}</td>
                 <td><JobState state={j.state} /></td>

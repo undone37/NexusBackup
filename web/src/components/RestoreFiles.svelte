@@ -1,0 +1,137 @@
+<script lang="ts">
+  import { post, act } from '../lib/api';
+  import { navigate } from '../lib/router.svelte';
+  import { hostAgentId } from '../lib/jobs';
+  import { fmtTime } from '../lib/format';
+  import { t } from '../lib/i18n';
+  import type { Agent, Overwrite } from '../lib/types';
+  import Modal from './Modal.svelte';
+
+  // Restore files of a host snapshot (`host-<agent id>`) onto a path of an agent of the
+  // same tenant. The user has to type the target agent's name; the server checks it too.
+  let {
+    open = $bindable(false),
+    tenant,
+    source,
+    time,
+    paths,
+    agents,
+  }: { open?: boolean; tenant: string; source: string; time: number; paths: string[]; agents: Agent[] } = $props();
+
+  const id = $props.id();
+  const OVERWRITE: Overwrite[] = ['never', 'if_older', 'always'];
+
+  const candidates = $derived(agents.filter((a) => a.tenant === tenant));
+  let target = $state('');
+  let overwrite: Overwrite = $state('never');
+  let agentId = $state('');
+  let confirm = $state('');
+  let busy = $state(false);
+
+  // Reset the form each time the dialog opens; default target agent = the snapshot's own host.
+  let wasOpen = false;
+  $effect(() => {
+    if (open && !wasOpen) {
+      agentId = '';
+      target = '';
+      overwrite = 'never';
+      confirm = '';
+    }
+    wasOpen = open;
+  });
+  // (Also runs when the agent list arrives after the dialog opened.)
+  $effect(() => {
+    if (!open || agentId) return;
+    const own = hostAgentId(source);
+    const enrolled = candidates.filter((a) => a.enrolled_at !== null);
+    agentId = enrolled.find((a) => a.id === own)?.id ?? enrolled[0]?.id ?? '';
+  });
+
+  const agent = $derived(candidates.find((a) => a.id === agentId) ?? null);
+  const targetOk = $derived(target.startsWith('/'));
+  const ready = $derived(!!agent && targetOk && confirm === agent.name && paths.length > 0 && !busy);
+
+  async function submit(e: SubmitEvent) {
+    e.preventDefault();
+    if (!ready || !agent) return;
+    busy = true;
+    const params = { source, time, paths, target, overwrite, confirm, agent_id: agent.id };
+    const r = await act(post<{ id: number }>('/jobs', { kind: 'restore_files', tenant, params }), (d) =>
+      t.snap.jobStarted(d.id),
+    );
+    busy = false;
+    if (!r) return;
+    open = false;
+    if (!r.quorum) navigate(`/jobs/${r.data.id}`);
+  }
+</script>
+
+<Modal bind:open title={t.restoreFiles.title(source)} wide>
+  <form onsubmit={submit}>
+    <p class="muted">{tenant} · {fmtTime(time)}</p>
+    <p class="banner warn">{t.restoreFiles.intro}</p>
+    <div class="field">
+      <span class="muted" id="{id}-paths">{t.restoreFiles.paths}</span>
+      <ul class="mono" aria-labelledby="{id}-paths">
+        {#each paths as p (p)}<li>{p}</li>{/each}
+      </ul>
+    </div>
+    <div class="form-grid">
+      <div class="field">
+        <label for="{id}-target">{t.restoreFiles.target}</label>
+        <input
+          id="{id}-target"
+          class="mono"
+          bind:value={target}
+          required
+          pattern="/.*"
+          placeholder="/srv/restore"
+          autocomplete="off"
+          spellcheck="false"
+          aria-invalid={target !== '' && !targetOk}
+          aria-describedby="{id}-target-hint"
+        />
+        <div class="hint" id="{id}-target-hint">
+          {target !== '' && !targetOk ? t.restoreFiles.targetInvalid : t.restoreFiles.targetHint}
+        </div>
+      </div>
+      <div class="field">
+        <label for="{id}-ow">{t.restoreFiles.overwrite}</label>
+        <select id="{id}-ow" bind:value={overwrite}>
+          {#each OVERWRITE as o (o)}<option value={o}>{t.restoreFiles.overwriteOpts[o]}</option>{/each}
+        </select>
+      </div>
+    </div>
+    <div class="field">
+      <label for="{id}-agent">{t.restoreFiles.agent}</label>
+      <select id="{id}-agent" bind:value={agentId} required aria-describedby="{id}-agent-hint">
+        {#each candidates as a (a.id)}
+          <option value={a.id} disabled={a.enrolled_at === null}
+            >{a.name} ({a.host}){a.enrolled_at === null ? ` — ${t.restoreFiles.notEnrolled}` : ''}</option
+          >
+        {/each}
+      </select>
+      <div class="hint" id="{id}-agent-hint">{agent ? t.restoreFiles.agentHint : t.restoreFiles.noAgent}</div>
+    </div>
+    {#if agent}
+      <div class="field">
+        <label for="{id}-confirm">{t.restoreFiles.confirm}</label>
+        <input
+          id="{id}-confirm"
+          class="mono"
+          bind:value={confirm}
+          required
+          autocomplete="off"
+          autocapitalize="none"
+          spellcheck="false"
+          aria-describedby="{id}-confirm-hint"
+        />
+        <div class="hint" id="{id}-confirm-hint">{t.restoreFiles.confirmHint(agent.name)}</div>
+      </div>
+    {/if}
+    <div class="form-actions">
+      <button type="button" onclick={() => (open = false)}>{t.cancel}</button>
+      <button type="submit" class="primary" disabled={!ready}>{t.restoreFiles.start}</button>
+    </div>
+  </form>
+</Modal>

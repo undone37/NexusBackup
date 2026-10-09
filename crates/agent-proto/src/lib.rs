@@ -265,6 +265,19 @@ pub fn enroll_proof(token: &str, role: &str, exporter: &[u8; 32]) -> [u8; 32] {
     mac.finalize().into_bytes().into()
 }
 
+/// What both sides keep of the one-time enrollment token and use as the
+/// `token` argument of [`enroll_proof`]: lowercase hex SHA-256 of the trimmed
+/// token. The agent stores only this (`/etc/nexus-agent/token`), the appliance
+/// stores it sealed to its scheduler; the plaintext token exists only in the
+/// install command shown once.
+pub fn token_digest(token: &str) -> String {
+    use sha2::Digest;
+    Sha256::digest(token.trim().as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// Constant-time comparison of two proofs.
 pub fn proof_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
@@ -332,5 +345,8 @@ mod tests {
         assert!(!proof_eq(&a, &enroll_proof("TOKEN", "agent", &ex)));
         assert!(!proof_eq(&a, &enroll_proof("OTHER", "appliance", &ex)));
         assert!(!proof_eq(&a, &enroll_proof("TOKEN", "appliance", &[8u8; 32])));
+        let d = token_digest("ABC\n");
+        assert_eq!(d, token_digest("ABC"));
+        assert_eq!(d, "b5d4045c3f466fa91fe2cc6abe79232a1a57cdf104f7a26e716e0a1e2789df78");
     }
 }

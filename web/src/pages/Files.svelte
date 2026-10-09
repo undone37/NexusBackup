@@ -1,12 +1,13 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { errText } from '../lib/api';
+  import { get, errText } from '../lib/api';
   import { route, href } from '../lib/router.svelte';
-  import { runJob, downloadUrl, fileEntries } from '../lib/jobs';
+  import { runJob, downloadUrl, fileEntries, hostAgentId } from '../lib/jobs';
   import { fmtBytes, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
-  import type { FileEntry, Job } from '../lib/types';
+  import type { Agent, FileEntry, Job } from '../lib/types';
   import ErrorBanner from '../components/ErrorBanner.svelte';
+  import RestoreFiles from '../components/RestoreFiles.svelte';
 
   // Snapshot coordinates come from the URL (#/files?tenant=&source=&time=).
   const tenant = route.query.get('tenant') ?? '';
@@ -92,6 +93,18 @@
     }
   }
 
+  // Host snapshots (`host-<agent id>`) can also be restored onto a path of an agent.
+  const agentId = hostAgentId(source);
+  let agents: Agent[] = $state([]);
+  let restoreOpen = $state(false);
+  const hostName = $derived(agents.find((a) => a.id === agentId)?.name);
+  if (agentId)
+    get<Agent[]>('/agents')
+      .then((xs) => (agents = xs))
+      .catch(() => {
+        /* the restore dialog then has no agents to offer */
+      });
+
   open(route.query.get('path') || '/');
 </script>
 
@@ -99,7 +112,7 @@
   <h1>{t.files.title(source, fmtTime(time))}</h1>
   <a class="button" href={href(`/snapshots?source=${encodeURIComponent(source)}`)}>{t.snap.title}</a>
 </div>
-<p class="muted">{tenant}</p>
+<p class="muted">{tenant}{hostName ? ` · ${t.snap.agent(hostName)}` : ''}</p>
 
 <ErrorBanner {error} />
 {#if failedJob}<p><a href={href(`/jobs/${failedJob}`)}>{t.jobs.detail(failedJob)}</a></p>{/if}
@@ -177,10 +190,27 @@
     {#if ready}
       <a class="button" href={downloadUrl(ready.token)} download={ready.filename}>{t.files.get} {ready.filename}</a>
     {/if}
+    {#if agentId}
+      <button type="button" onclick={() => (restoreOpen = true)} aria-describedby="restore-hint">
+        {selected.length ? t.snap.restorePath : t.files.restoreAll}
+      </button>
+    {/if}
   </div>
+  {#if agentId}<p class="muted" id="restore-hint">{t.files.restoreHint}</p>{/if}
   {#if selected.length}
     <ul class="mono">
       {#each selected as s (s)}<li>{s}</li>{/each}
     </ul>
   {/if}
 </div>
+
+{#if agentId}
+  <RestoreFiles
+    bind:open={restoreOpen}
+    {tenant}
+    {source}
+    {time}
+    paths={selected.length ? selected : ['/']}
+    {agents}
+  />
+{/if}
