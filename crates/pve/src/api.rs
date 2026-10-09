@@ -67,18 +67,15 @@ impl Api {
     }
 
     /// Starts `vzdump` for one guest to the provider storage; returns the task UPID.
-    /// `fleecing` e.g. `enabled=1,storage=local-lvm` (mandatory for provider VM backups).
-    pub fn start_backup(&self, node: &str, vmid: u32, storage: &str, fleecing: &str) -> Result<String> {
+    /// `fleecing` e.g. `enabled=1,storage=local-lvm` (mandatory for provider VM backups,
+    /// `None` for containers, where vzdump has no fleecing).
+    pub fn start_backup(&self, node: &str, vmid: u32, storage: &str, fleecing: Option<&str>) -> Result<String> {
         let id = vmid.to_string();
-        let upid = self.post(
-            &format!("/nodes/{node}/vzdump"),
-            &[
-                ("vmid", id.as_str()),
-                ("storage", storage),
-                ("mode", "snapshot"),
-                ("fleecing", fleecing),
-            ],
-        )?;
+        let mut form = vec![("vmid", id.as_str()), ("storage", storage), ("mode", "snapshot")];
+        if let Some(f) = fleecing {
+            form.push(("fleecing", f));
+        }
+        let upid = self.post(&format!("/nodes/{node}/vzdump"), &form)?;
         upid.as_str().map(str::to_owned).context("vzdump returned no UPID")
     }
 
@@ -90,6 +87,24 @@ impl Api {
             &[
                 ("vmid", id.as_str()),
                 ("archive", archive),
+                ("storage", storage),
+                ("unique", "1"),
+            ],
+        )?;
+        upid.as_str().map(str::to_owned).context("restore returned no UPID")
+    }
+
+    /// Restores a provider container archive as CT `vmid` (unprivileged; PVE refuses
+    /// privileged restores from providers); returns the UPID.
+    pub fn start_ct_restore(&self, node: &str, vmid: u32, archive: &str, storage: &str) -> Result<String> {
+        let id = vmid.to_string();
+        let upid = self.post(
+            &format!("/nodes/{node}/lxc"),
+            &[
+                ("vmid", id.as_str()),
+                ("ostemplate", archive),
+                ("restore", "1"),
+                ("unprivileged", "1"),
                 ("storage", storage),
                 ("unique", "1"),
             ],

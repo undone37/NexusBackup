@@ -132,6 +132,8 @@ sub normalize_index {
         push @$archives, {
             volname => $volname,
             vmid => $vmid + 0,
+            # absent in catalogs from before container support: VM
+            type => (($a->{type} // '') eq 'lxc' ? 'lxc' : 'qemu'),
             ctime => $num->($a->{ctime}) || $ctime + 0,
             size => $size,
             devices => $devices,
@@ -261,7 +263,7 @@ sub list_volumes {
             format => 'nexus',
             ctime => $a->{ctime},
             size => $a->{size},
-            subtype => 'qemu',
+            subtype => $a->{type},
             content => 'backup',
             notes => $a->{notes},
             protected => $a->{protected},
@@ -306,13 +308,13 @@ sub prune_backups {
 
     my $res = [];
     eval {
-        return if defined($type) && $type ne 'qemu';
         for my $v ($class->list_volumes($storeid, $scfg, $vmid, ['backup'])->@*) {
+            next if defined($type) && $v->{subtype} ne $type;
             push @$res, {
                 volid => $v->{volid},
                 ctime => $v->{ctime},
                 mark => 'keep',
-                type => 'qemu',
+                type => $v->{subtype},
                 vmid => $v->{vmid},
             };
         }

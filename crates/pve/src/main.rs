@@ -1,4 +1,5 @@
-//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-all | restore <vmid> <time> <node> <target-vmid> <storage> | dump <vmid> <time> <device> | push-index | list`.
+//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | restore-ct <vmid> <time> <node> <target> <storage> | dump <vmid> <time> <device> | push-index | list`.
+//! `backup-all` backs up every guest in `vmids`, VM or container (type from /cluster/resources).
 
 use anyhow::{bail, Context, Result};
 use chunkstore::{Options, Store};
@@ -18,7 +19,7 @@ struct Config {
     storage: String,
     fleecing_storage: String,
     nodes: BTreeMap<String, SshNode>,
-    /// guests protected by `backup-all` (scheduled via systemd timer)
+    /// guests (VMs and containers) protected by `backup-all` (scheduled via systemd timer)
     #[serde(default)]
     vmids: Vec<u32>,
 }
@@ -36,7 +37,7 @@ struct ApiFile {
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
-        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | dump <vmid> <time> <device> | push-index | list");
+        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | restore-ct <vmid> <time> <node> <target> <storage> | dump <vmid> <time> <device> | push-index | list");
     };
     let cfg: Config = serde_json::from_slice(&fs::read(cfg_path)?).context("config")?;
     let keys = keyd::fetch_keyring(&cfg.keyd_socket, &cfg.tenant).context("keyd")?;
@@ -69,29 +70,48 @@ fn main() -> Result<()> {
             );
             cluster.push_index(&store)?;
         }
+        ("backup-ct", [vmid]) => {
+            let t = std::time::Instant::now();
+            let (m, st) = cluster.backup_ct(&store, vmid.parse()?)?;
+            println!(
+                "committed {}/{} in {:.1?}: tar stream {} bytes, {} chunks, {} new chunks ({} bytes new)",
+                m.source,
+                m.time,
+                t.elapsed(),
+                st.size,
+                st.chunks.len(),
+                st.new_chunks,
+                st.new_bytes
+            );
+            cluster.push_index(&store)?;
+        }
+        ("restore-ct", [vmid, time, node, target, storage]) => {
+            let exit = cluster.restore_ct(&store, vmid.parse()?, time.parse()?, node, target.parse()?, storage)?;
+            println!("restore finished: {exit}");
+        }
         ("restore", [vmid, time, node, target, storage]) => {
             let exit = cluster.restore_vm(&store, vmid.parse()?, time.parse()?, node, target.parse()?, storage)?;
             println!("restore finished: {exit}");
         }
         ("backup-all", []) => {
-            // ponytail: sequential, one VM at a time; parallel per node when windows get tight
+            // ponytail: sequential, one guest at a time; parallel per node when windows get tight
             let failed: Vec<u32> = vmids
                 .iter()
                 .copied()
-                .filter(|&vmid| match cluster.backup_vm(&store, vmid) {
+                .filter(|&vmid| match cluster.backup_guest(&store, vmid) {
                     Ok(m) => {
                         println!("committed {}/{}", m.source, m.time);
                         false
                     }
                     Err(e) => {
-                        eprintln!("backup of VM {vmid} failed: {e:#}");
+                        eprintln!("backup of guest {vmid} failed: {e:#}");
                         true
                     }
                 })
                 .collect();
             cluster.push_index(&store)?;
             if !failed.is_empty() {
-                bail!("failed VMs: {failed:?}");
+                bail!("failed guests: {failed:?}");
             }
         }
         ("dump", [vmid, time, device]) => {

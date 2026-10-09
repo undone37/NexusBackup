@@ -16,6 +16,10 @@
 #   restore-serve <archive> <device>
 #                               listen on the request's socket, accept exactly one
 #                               connection (qemu-nbd on the node), pipe it <-> stdio
+#   ct-stream <vmid>            pipe stdin/stdout <-> the container job's socket
+#                               (backup_container streams the tar records)
+#   ct-restore-serve <archive>  like restore-serve, for a container restore
+#                               request (the plugin connects and reads the tar)
 # Anything else: exit 2 and log to syslog.
 #
 # Exit codes: 0 ok, 1 runtime failure, 2 invalid command or arguments.
@@ -195,8 +199,13 @@ sub cmd_restore_serve {
     fail(1, "$label: pending request is for device '" . ($req->{device} // '') . "'")
         if ($req->{device} // '') ne $device || ($req->{archive} // '') ne $archive;
 
-    my $path = "$RESTOREDIR/$archive.$device.sock";
-    my $tmp = "$RESTOREDIR/.$archive.$device.$$.sock";
+    serve_one($label, "$RESTOREDIR/$archive.$device.sock", "$RESTOREDIR/.$archive.$device.$$.sock");
+}
+
+# Listen on $path (bound as $tmp, then renamed), accept exactly one connection
+# and pipe it <-> stdio; exits the process.
+sub serve_one {
+    my ($label, $path, $tmp) = @_;
     unlink($tmp);
     # Listen under a temporary name, then rename: the waiting plugin only sees
     # the socket once it accepts connections, with its final mode.
@@ -225,6 +234,38 @@ sub cmd_restore_serve {
     slog('info', "$label: accepted connection");
 
     pipe_stdio($conn, $label);
+}
+
+sub cmd_ct_stream {
+    my ($vmid) = @_;
+    my $label = "ct-stream $vmid";
+
+    my $raw = read_job($vmid) // fail(1, "$label: no job");
+    my $job = eval { JSON->new->utf8->decode($raw) };
+    fail(1, "$label: invalid job file") if ref($job) ne 'HASH';
+    fail(1, "$label: job is not a container job") if ($job->{type} // '') ne 'lxc';
+
+    # derived, never taken from the file
+    my $path = "$RUNDIR/$vmid.ct.sock";
+    my $sock = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => $path)
+        or fail(1, "$label: connect to $path failed: $!");
+    slog('info', "$label: connected to $path");
+
+    pipe_stdio($sock, $label);
+}
+
+sub cmd_ct_restore_serve {
+    my ($archive) = @_;
+    my $label = "ct-restore-serve $archive";
+
+    open(my $fh, '<', "$RESTOREDIR/$archive.json") or fail(1, "$label: no restore request");
+    my $req = eval { JSON->new->utf8->decode(do { local $/; <$fh> }) };
+    close($fh);
+    fail(1, "$label: invalid restore request") if ref($req) ne 'HASH';
+    fail(1, "$label: pending request is not a container restore")
+        if ($req->{type} // '') ne 'lxc' || ($req->{archive} // '') ne $archive;
+
+    serve_one($label, "$RESTOREDIR/$archive.ct.sock", "$RESTOREDIR/.$archive.ct.$$.sock");
 }
 
 sub cmd_done {
@@ -327,6 +368,12 @@ if ($cmd eq 'job' || $cmd eq 'nbd') {
 } elsif ($cmd eq 'restore-serve') {
     usage_error($printable) if @args != 2 || $args[0] !~ $ARCHIVE_RE || $args[1] !~ $DEVICE_RE;
     cmd_restore_serve(@args);
+} elsif ($cmd eq 'ct-stream') {
+    usage_error($printable) if @args != 1 || $args[0] !~ $VMID_RE;
+    cmd_ct_stream($args[0]);
+} elsif ($cmd eq 'ct-restore-serve') {
+    usage_error($printable) if @args != 1 || $args[0] !~ $ARCHIVE_RE;
+    cmd_ct_restore_serve($args[0]);
 } else {
     usage_error($printable);
 }

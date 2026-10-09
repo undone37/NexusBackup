@@ -1,4 +1,5 @@
-//! VM backup orchestration (contract: docs/pve-connector.md).
+//! VM backup orchestration and the shared catalog (contract: docs/pve-connector.md).
+//! Containers: `crate::ct`.
 
 use crate::api::Api;
 use anyhow::{bail, Context, Result};
@@ -44,7 +45,7 @@ impl SshNode {
         c
     }
 
-    fn run(&self, args: &str, stdin: Option<&[u8]>) -> Result<Vec<u8>> {
+    pub(crate) fn run(&self, args: &str, stdin: Option<&[u8]>) -> Result<Vec<u8>> {
         let mut child = self
             .cmd(args)
             .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
@@ -77,11 +78,32 @@ pub struct Cluster {
 }
 
 #[derive(Deserialize)]
-struct Job {
-    archive: String,
+pub(crate) struct Job {
+    /// "qemu" or "lxc" (absent in VM jobs of older plugins)
+    #[serde(rename = "type", default = "qemu")]
+    pub kind: String,
+    pub archive: String,
+    #[serde(default)]
     devices: Vec<Device>,
+    /// VM only; containers send pct.conf in-band
+    #[serde(default)]
     config: String,
-    firewall: Option<String>,
+    pub firewall: Option<String>,
+}
+
+fn qemu() -> String {
+    "qemu".into()
+}
+
+impl Job {
+    /// Snapshot time = the `<unixtime>` of `nexus-<vmid>-<unixtime>`.
+    pub fn time(&self) -> Result<u64> {
+        self.archive
+            .rsplit('-')
+            .next()
+            .and_then(|t| t.parse().ok())
+            .context("archive name without time")
+    }
 }
 
 #[derive(Deserialize)]
@@ -97,17 +119,27 @@ pub fn source_name(vmid: u32) -> String {
 }
 
 impl Cluster {
-    fn node_of(&self, vmid: u32) -> Result<String> {
+    /// (node, type) of a guest; type is "qemu" or "lxc".
+    pub fn guest(&self, vmid: u32) -> Result<(String, String)> {
         let res = self.api.get("/cluster/resources?type=vm")?;
         res.as_array()
             .into_iter()
             .flatten()
             .find(|r| r["vmid"].as_u64() == Some(vmid as u64))
-            .and_then(|r| r["node"].as_str().map(str::to_owned))
-            .with_context(|| format!("VM {vmid} not found in cluster"))
+            .and_then(|r| Some((r["node"].as_str()?.to_owned(), r["type"].as_str()?.to_owned())))
+            .with_context(|| format!("guest {vmid} not found in cluster"))
     }
 
-    fn ssh(&self, node: &str) -> Result<&SshNode> {
+    /// Backs up a VM or a container, whichever `vmid` is. Returns the manifest.
+    pub fn backup_guest(&self, store: &Store, vmid: u32) -> Result<Manifest> {
+        match self.guest(vmid)?.1.as_str() {
+            "qemu" => self.backup_vm(store, vmid),
+            "lxc" => Ok(self.backup_ct(store, vmid)?.0),
+            t => bail!("guest {vmid} has unsupported type {t}"),
+        }
+    }
+
+    pub(crate) fn ssh(&self, node: &str) -> Result<&SshNode> {
         self.nodes
             .get(node)
             .with_context(|| format!("no SSH endpoint configured for node {node}"))
@@ -116,20 +148,14 @@ impl Cluster {
     /// One full backup run of a VM. The snapshot is committed before the node is
     /// told `done ok`, because QEMU commits the dirty bitmap when backup_vm returns.
     pub fn backup_vm(&self, store: &Store, vmid: u32) -> Result<Manifest> {
-        let node = self.node_of(vmid)?;
+        let (node, kind) = self.guest(vmid)?;
+        if kind != "qemu" {
+            bail!("guest {vmid} is not a VM ({kind})");
+        }
         let ssh = self.ssh(&node)?;
         let fleecing = format!("enabled=1,storage={}", self.fleecing_storage);
-        let upid = self.api.start_backup(&node, vmid, &self.storage, &fleecing)?;
-        let job = loop {
-            if let Some(exit) = self.api.task_status(&node, &upid)? {
-                let log = self.api.task_log(&node, &upid).unwrap_or_default();
-                bail!("vzdump ended ({exit}) before the job was ready: {}", log.join("\n"));
-            }
-            if let Ok(out) = ssh.run(&format!("job {vmid}"), None) {
-                break serde_json::from_slice::<Job>(&out).context("job JSON")?;
-            }
-            std::thread::sleep(Duration::from_secs(1));
-        };
+        let upid = self.api.start_backup(&node, vmid, &self.storage, Some(&fleecing))?;
+        let job = self.wait_job(&node, ssh, vmid, &upid, "qemu")?;
         let result = self.pull(store, ssh, vmid, &job);
         let done = match &result {
             Ok(_) => "ok".to_owned(),
@@ -146,13 +172,26 @@ impl Cluster {
         Ok(manifest)
     }
 
+    /// Polls `job <vmid>` until the plugin published the job of the running vzdump task.
+    pub(crate) fn wait_job(&self, node: &str, ssh: &SshNode, vmid: u32, upid: &str, kind: &str) -> Result<Job> {
+        loop {
+            if let Some(exit) = self.api.task_status(node, upid)? {
+                let log = self.api.task_log(node, upid).unwrap_or_default();
+                bail!("vzdump ended ({exit}) before the job was ready: {}", log.join("\n"));
+            }
+            if let Ok(out) = ssh.run(&format!("job {vmid}"), None) {
+                let job = serde_json::from_slice::<Job>(&out).context("job JSON")?;
+                if job.kind != kind {
+                    bail!("node published a {} job for {vmid}, expected {kind}", job.kind);
+                }
+                return Ok(job);
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    }
+
     fn pull(&self, store: &Store, ssh: &SshNode, vmid: u32, job: &Job) -> Result<Manifest> {
-        let time: u64 = job
-            .archive
-            .rsplit('-')
-            .next()
-            .and_then(|t| t.parse().ok())
-            .context("archive name without time")?;
+        let time = job.time()?;
         let source = source_name(vmid);
         let prev = store.list_snapshots()?.into_iter().rfind(|m| m.source == source);
         let (mut names, mut indexes) = (Vec::new(), Vec::new());
@@ -231,7 +270,7 @@ impl Cluster {
     }
 }
 
-struct Kill(Child);
+pub(crate) struct Kill(pub Child);
 impl Drop for Kill {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -282,7 +321,7 @@ fn serve_device(store: &Store, ssh: &SshNode, archive: &str, device: &str, idx: 
     Ok(())
 }
 
-fn config_entry(store: &Store, name: &str, text: &str) -> Result<FileEntry> {
+pub(crate) fn config_entry(store: &Store, name: &str, text: &str) -> Result<FileEntry> {
     let (chunks, size) = store.store_file(text.as_bytes())?;
     Ok(FileEntry {
         path: name.into(),
@@ -297,6 +336,8 @@ fn config_entry(store: &Store, name: &str, text: &str) -> Result<FileEntry> {
 struct CatalogArchive {
     volname: String,
     vmid: u32,
+    #[serde(rename = "type")]
+    kind: &'static str,
     ctime: u64,
     size: u64,
     devices: Vec<String>,
@@ -322,6 +363,22 @@ fn read_config(store: &Store, m: &Manifest, file: &str) -> Result<Option<String>
 pub fn build_index(store: &Store) -> Result<serde_json::Value> {
     let mut archives = Vec::new();
     for m in store.list_snapshots()? {
+        if let Some(vmid) = m.source.strip_prefix("ct-").and_then(|v| v.parse().ok()) {
+            archives.push(CatalogArchive {
+                volname: format!("backup/nexus-{vmid}-{}", m.time),
+                vmid,
+                kind: "lxc",
+                ctime: m.time,
+                size: crate::ct::root_tar(store, &m)?.size,
+                devices: Vec::new(),
+                device_sizes: BTreeMap::new(),
+                config: read_config(store, &m, crate::ct::CONFIG_FILE)?.unwrap_or_default(),
+                firewall: read_config(store, &m, "firewall.fw")?,
+                notes: String::new(),
+                protected: false,
+            });
+            continue;
+        }
         let Some(vmid) = m.source.strip_prefix("vm-").and_then(|v| v.parse().ok()) else {
             continue;
         };
@@ -335,6 +392,7 @@ pub fn build_index(store: &Store) -> Result<serde_json::Value> {
         archives.push(CatalogArchive {
             volname: format!("backup/nexus-{vmid}-{}", m.time),
             vmid,
+            kind: "qemu",
             ctime: m.time,
             size: device_sizes.values().sum(),
             devices,

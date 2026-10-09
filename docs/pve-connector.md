@@ -11,6 +11,7 @@ Status: v1 (2026-10-08). PVE 9.x only. API facts: `docs/pve-backup-provider-api.
 | user/group `nexusbackup` | unprivileged system user, shell `/bin/sh` (needed for forced command), no password |
 | `/run/nexusbackup/jobs/`, `/run/nexusbackup/restore/` | rendezvous dirs, `1770 root:nexusbackup` (tmpfiles.d; sticky so the helper cannot replace root's files) |
 | `/var/lib/nexusbackup/<storeid>/index.json` | catalog pushed by the appliance, `0640 nexusbackup:nexusbackup` (written by the helper) |
+| `/var/tmp/nexusbackup/<archive>/` | container restore staging dir (root only, parent `0700`), removed by `restore_container_cleanup` |
 
 `authorized_keys` of `nexusbackup`:
 `restrict,command="/usr/lib/nexusbackup/helper" ssh-ed25519 AAAA… nexus-appliance`
@@ -28,6 +29,7 @@ Fleecing is mandatory for provider VM backups; the appliance passes
 ## Names
 - archive name (returned by `backup_init`): `nexus-<vmid>-<unixtime>`; volname `backup/nexus-<vmid>-<unixtime>`; `parse_volname` returns vmid as owner.
 - Appliance snapshot: source `vm-<vmid>`, time `<unixtime>`, one fixed index per device named like the device (`drive-scsi0`, …), plus dynamic index `config` with files `qemu-server.conf` and (optional) `firewall.fw`.
+- Container snapshot: source `ct-<vmid>`, time `<unixtime>`, dynamic index `root.tar` with one entry `root.tar` (size = tar stream length, FastCDC chunks), plus dynamic index `config` with `pct.conf` and (optional) `firewall.fw`.
 
 ## VM backup flow
 1. Appliance: `GET /cluster/resources?type=vm` → node of vmid. `POST /nodes/<node>/vzdump vmid=<id> storage=<storeid> mode=snapshot fleecing=enabled=1,storage=<fs>` → UPID.
@@ -55,10 +57,16 @@ Storage plugin properties are global across plugins, hence the `nexus-` prefix.
 
 ## index.json (appliance → nodes)
 ```json
-{"version":1,"archives":[{"volname":"backup/nexus-100-1760000000","vmid":100,"ctime":1760000000,
+{"version":1,"archives":[{"volname":"backup/nexus-100-1760000000","vmid":100,"type":"qemu","ctime":1760000000,
   "size":34359738368,"devices":["drive-scsi0"],"device_sizes":{"drive-scsi0":34359738368},"config":"<qemu-server.conf>","firewall":null,
-  "notes":"","protected":false}]}
+  "notes":"","protected":false},
+ {"volname":"backup/nexus-200-1760000100","vmid":200,"type":"lxc","ctime":1760000100,"size":679413760,
+  "devices":[],"device_sizes":{},"config":"<pct.conf>","firewall":null,"notes":"","protected":false}]}
 ```
+`type` is `qemu` or `lxc`; a missing `type` (catalogs from before container support) means `qemu`.
+It becomes `subtype` in `list_volumes`, selects the restore mechanism and filters `prune_backups` by guest type.
+For containers `size` is the tar stream length and `config` is the raw `pct.conf` (what vzdump hands to
+`backup_container`; `pct restore` / "Show Configuration" parse it with `parse_pct_config`).
 Plugin uses it for `list_volumes`, `archive_get_guest_config`, `archive_get_firewall_config`, `volume_size_info`, `backup_vm_query_incremental`, `status` (total/used from the last appliance push or 0). Missing/unreadable index ⇒ empty list, never die.
 
 ## Helper command set (complete)
@@ -68,8 +76,12 @@ Plugin uses it for `list_volumes`, `archive_get_guest_config`, `archive_get_fire
 | `nbd <vmid>` | pipe stdio ⇄ job's NBD socket |
 | `done <vmid> ok` / `done <vmid> fail <msg>` | write the done file (`fail` requires a message) |
 | `put-index <storeid>` | atomically replace `/var/lib/nexusbackup/<storeid>/index.json` from stdin (max 64 MiB, JSON object with `archives` array; optional top-level `total`/`used` feed `status`) |
+| `restore-job <archive>` | print the pending restore request JSON or exit 1 (VM and container) |
+| `restore-serve <archive> <device>` | VM restore: listen on `/run/nexusbackup/restore/<archive>.<device>.sock`, accept one connection, pipe it ⇄ stdio |
+| `ct-stream <vmid>` | container backup: requires a job with `type` `lxc`; connect to `/run/nexusbackup/jobs/<vmid>.ct.sock` (path derived, not read from the job) and pipe stdio ⇄ socket |
+| `ct-restore-serve <archive>` | container restore: requires a request with `type` `lxc`; listen on `/run/nexusbackup/restore/<archive>.ct.sock` (tmp name + rename, `0660`), accept one connection (600 s), pipe it ⇄ stdio |
 | anything else | exit 2, log to syslog |
-Arguments are validated: vmid `^\d{1,9}$`, storeid `^[a-z][a-z0-9\-_.]{1,99}$`.
+Arguments are validated: vmid `^\d{1,9}$`, storeid `^[a-z][a-z0-9\-_.]{1,99}$`, archive `^nexus-\d{1,9}-\d{1,12}$`, device `^[a-z0-9\-]{1,64}$`.
 
 ## VM restore flow (full restore, v1.1)
 PVE only accepts a regular file or block device as `qemu-img-path`, so the node
@@ -89,10 +101,57 @@ attaches the appliance's NBD export to `/dev/nbdX` with the node's own `qemu-nbd
 
 Helper additions: `restore-job <archive>`, `restore-serve <archive> <device>`; archive `^nexus-\d{1,9}-\d{1,12}$`, device `^[a-z0-9\-]{1,64}$`.
 
+## Container backup flow
+`backup_container` runs as the container's mapped root (e.g. uid 100000) inside a new user
+namespace, in a child forked by `PVE::LXC::Namespaces::run_in_userns` (`run_fork`). That
+process cannot traverse `/run/nexusbackup` (`0750 root:nexusbackup`), its changes to `$self`
+are lost, and `backup_container_prepare` does not get the guest config. Hence:
+1. Appliance: `GET /cluster/resources?type=vm` → node and `type` (`lxc`). `POST /nodes/<node>/vzdump vmid=<id> storage=<storeid> mode=snapshot` (no fleecing: it is a VM-only feature).
+2. Plugin `backup_get_mechanism` → `directory`.
+3. Plugin `backup_container_prepare` (real root, parent process):
+   - creates the **listening** socket `/run/nexusbackup/jobs/<vmid>.ct.sock` (`chgrp nexusbackup`, `0660`) and keeps the fd in `$self`; the forked child inherits it, so the mapped root never needs a path,
+   - creates a pipe through which the child reports the stream size (for `archive-size`),
+   - writes `/run/nexusbackup/jobs/<vmid>.json` atomically (`0640 root:nexusbackup`):
+     `{"type":"lxc","vmid":200,"archive":"nexus-200-1760000100","socket":"/run/nexusbackup/jobs/200.ct.sock","firewall":"<text or null>"}`.
+4. Appliance polls `job <vmid>`, checks `type` is `lxc`, runs `ct-stream <vmid>`. The helper's connect succeeds at once (listen backlog).
+5. Plugin `backup_container` (child, mapped root): accepts (deadline = `nexus-job-timeout`), then sends records `tag(1 byte) len(u32 BE) payload`:
+   - `C` the raw `pct.conf` (once, first),
+   - `D` tar data (≤ 1 MiB per record) from
+     `tar --create --file=- --numeric-owner --xattrs --xattrs-include=* --acls --sparse --one-file-system --preserve-permissions --warning=no-file-ignored --directory=<info.directory> --no-anchored [--exclude=lost+found (unprivileged)] [--exclude=<pattern>…] --anchored [--exclude=.<anchored pattern>…] -- <info.sources>`
+     (same exclude semantics as vzdump's own tar; `sources` contains `.` and `./<mp>` for mount points),
+   - `E` `ok`, or `fail <msg>` if tar exited non-zero (then the child dies).
+   Container uids/gids are container-relative in the stream (tar runs inside the user namespace).
+6. Appliance: chunks the `D` payloads (FastCDC) into `root.tar`, stores `pct.conf` (+ `firewall.fw` from the job) in `config`, commits the snapshot, **then** writes `ok\n` to the helper's stdin (on any error before commit: `fail <msg>\n`, and the SSH session is killed so a still-sending node cannot block). This in-band answer replaces the `done` file for containers: the child cannot reach the rendezvous dir, and the parent is blocked in `run_fork`.
+7. Child: reads one answer line (same deadline): `ok` → reports the size through the pipe and returns; `fail …`, EOF or timeout → dies (vzdump marks the guest failed).
+8. Plugin `backup_cleanup` (parent): closes the listening socket (pending connections are reset, so a helper never hangs), removes job file and socket, reads the size. `job_cleanup` removes leftovers.
+
+No side can block forever: the child's accept and answer waits use the job timeout; the helper ends when the socket closes; the appliance's read ends when the node closes or the SSH session dies.
+
+## Container restore flow
+1. Appliance: `POST /nodes/<node>/lxc vmid=<target> ostemplate=<storeid>:backup/nexus-<vmid>-<t> restore=1 unprivileged=1 unique=1 storage=<target storage>` → UPID. PVE refuses privileged restores from providers; `unique=1` regenerates MAC addresses.
+2. PVE reads the config via `archive_get_guest_config` (catalog), allocates the rootfs, then
+   calls `restore_get_mechanism` → `('directory', 'lxc')` (catalog `type`; unknown archives fall back to `('qemu-img', 'qemu')`).
+3. Plugin `restore_container_init` (root, `perl -T` API worker):
+   - creates `/var/tmp/nexusbackup` (`0700`) and `/var/tmp/nexusbackup/<archive>`,
+   - writes `/run/nexusbackup/restore/<archive>.json` = `{"archive":"nexus-200-1760000100","type":"lxc","socket":"/run/nexusbackup/restore/<archive>.ct.sock"}`,
+   - waits for the socket (job timeout), connects, reads `u64 BE length`, pipes exactly that many bytes into
+     `tar --extract --file=- --numeric-owner --xattrs --xattrs-include=* --acls --preserve-permissions --directory=<staging>`
+     (as real root; the stream holds container-relative ids). Short stream, read timeout or tar failure → staging removed, die,
+   - returns `{ 'archive-directory' => <staging> }`.
+4. Appliance polls `restore-job <archive>`, checks `type` `lxc`, runs `ct-restore-serve <archive>` and writes `u64 BE size` + the `root.tar` entry's chunks to its stdin, then waits for the PVE task.
+5. PVE runs `tar cpf - --directory=<staging> .` into its own extractor inside the new container's user namespace (ids get shifted there).
+6. `restore_container_cleanup`: `rm -rf --one-file-system` the staging dir, remove request and socket.
+
+The staging dir needs free space on the node's `/var/tmp` equal to the container's data.
+
 ## Known issues
 - `api()` returns 11 → every PVE CLI call prints "implementing an older storage API" (current APIVER 14). Decide: return `PVE::Storage::APIVER` within a tested range.
 - vzdump `bwlimit` is not enforced (plugin logs a warning); bandwidth limiting belongs on the appliance side.
 - Token privileges for API restore additionally need `SDN.Use` on the guest's bridge zone (e.g. `PVESDNUser` on `/sdn/zones/localnetwork`).
 
+- Container restore stages the full tree under `/var/tmp/nexusbackup` (needs that much free space on the node's root fs).
+- Container backups are always full reads (tar of the snapshot); dedup happens in the appliance's chunk store.
+- Provider log lines (`$log_function`) go to the vzdump task log/syslog, not to the per-guest log stored by `backup_handle_log_file`.
+
 ## Not in v1
-Containers (directory mechanism, mapped-root `backup_container`), trim of read regions (fleecing shrink).
+Trim of read regions (fleecing shrink), container file-level restore.
