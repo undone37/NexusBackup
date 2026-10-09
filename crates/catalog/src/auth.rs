@@ -54,6 +54,22 @@ pub fn totp_check(secret_b32: &str, code: &str) -> bool {
     totp(secret_b32, "x").is_ok_and(|t| t.check_current(code.trim()).unwrap_or(false))
 }
 
+/// Like `totp_check`, but returns the matched 30 s step so callers can refuse
+/// replays (accept only steps greater than the last accepted one).
+pub fn totp_step(secret_b32: &str, code: &str) -> Option<u64> {
+    let t = totp(secret_b32, "x").ok()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs()
+        / 30;
+    let code = code.trim();
+    (now.saturating_sub(1)..=now + 1).find(|s| {
+        let want = t.generate(s * 30);
+        want.len() == code.len() && want.bytes().zip(code.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+    })
+}
+
 pub fn totp_now(secret_b32: &str) -> Result<String> {
     totp(secret_b32, "x")?.generate_current().map_err(|e| anyhow!("{e}"))
 }
@@ -70,6 +86,13 @@ mod tests {
         assert!(verify_password("correct horse battery", &h) && !verify_password("wrong horse battery", &h));
         let s = new_totp_secret();
         assert!(totp_check(&s, &totp_now(&s).unwrap()));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            / 30;
+        assert!(totp_step(&s, &totp_now(&s).unwrap()).is_some_and(|st| st + 1 >= now && st <= now + 1));
+        assert_eq!(totp_step(&s, "12345"), None);
         assert!(!totp_check(&s, "000000") || totp_now(&s).unwrap() == "000000");
         assert!(totp_uri(&s, "admin")
             .unwrap()

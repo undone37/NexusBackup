@@ -150,7 +150,14 @@ impl T {
         self.send(req).await
     }
 
+    /// Current code; forgets the last accepted step first so tests can log in
+    /// repeatedly within one 30 s window (simulates the clock moving on).
     fn code(&self, name: &str) -> String {
+        self.st
+            .cat
+            .conn()
+            .execute("UPDATE users SET totp_last_step = 0 WHERE name = ?1", [name])
+            .unwrap();
         catalog::auth::totp_now(&self.secrets[name]).unwrap()
     }
 
@@ -1318,4 +1325,16 @@ async fn security_headers_and_spa_fallback() {
         assert_eq!(r.headers[header::CACHE_CONTROL], "public, max-age=31536000, immutable");
         assert_security_headers(&r);
     }
+}
+
+#[tokio::test]
+async fn totp_code_cannot_be_replayed() {
+    let t = T::new();
+    let code = t.code("alice");
+    assert_eq!(t.try_login("alice", &code, None).await.status, StatusCode::OK);
+    // same code again (an observer replaying it) within its window
+    let r = t.try_login("alice", &code, None).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{:?}", r.body);
+    assert!(t.audit_actions().iter().filter(|a| *a == "auth.login_failed").count() == 1);
+    t.st.cat.verify_audit().unwrap();
 }

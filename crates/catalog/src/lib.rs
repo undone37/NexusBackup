@@ -51,7 +51,10 @@ CREATE TABLE alerts (
   id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, severity TEXT NOT NULL, kind TEXT NOT NULL, message TEXT NOT NULL, acked_by TEXT);
 "#;
 
-const MIGRATIONS: &[&str] = &[SCHEMA_V1];
+/// v2: TOTP replay protection (last accepted 30 s step per user).
+const SCHEMA_V2: &str = "ALTER TABLE users ADD COLUMN totp_last_step INTEGER NOT NULL DEFAULT 0;";
+
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2];
 
 pub fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
@@ -161,7 +164,7 @@ mod tests {
         let c = Catalog::open(&p).unwrap();
         assert_eq!(c.verify_audit().unwrap(), 1);
         let v: i64 = c.conn().pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-        assert_eq!(v, 1);
+        assert_eq!(v, MIGRATIONS.len() as i64);
     }
 
     #[test]
