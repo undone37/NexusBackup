@@ -280,7 +280,11 @@ impl<R: Read, W: Write> Client<R, W> {
                 if ty == REPLY_OFFSET_DATA {
                     let data = &p[8..];
                     piece
-                        .get_mut(at..at + data.len())
+                        .get_mut(
+                            at..at
+                                .checked_add(data.len())
+                                .ok_or_else(|| proto("read chunk out of range"))?,
+                        )
                         .ok_or_else(|| proto("read chunk out of range"))?
                         .copy_from_slice(data);
                 }
@@ -298,17 +302,20 @@ impl<R: Read, W: Write> Client<R, W> {
         let mut out = Vec::new();
         let mut off = 0u64;
         while off < self.size {
-            let len = (self.size - off).min(1 << 30) as u32;
-            let cookie = self.request(CMD_BLOCK_STATUS, off, len)?;
+            let len = (self.size - off).min(1 << 30);
+            let cookie = self.request(CMD_BLOCK_STATUS, off, len as u32)?;
             let mut got = 0u64;
             self.replies(cookie, None, |ty, p| {
                 if ty != REPLY_BLOCK_STATUS || p.len() < 4 || u32::from_be_bytes(p[..4].try_into().unwrap()) != id {
                     return Ok(()); // other contexts / NONE
                 }
                 for d in p[4..].chunks_exact(8) {
-                    let l = u32::from_be_bytes(d[..4].try_into().unwrap()) as u64;
-                    out.push((off + got, l, u32::from_be_bytes(d[4..].try_into().unwrap())));
-                    got += l;
+                    // servers may overshoot the requested range: clip, never step past it
+                    let l = (u32::from_be_bytes(d[..4].try_into().unwrap()) as u64).min(len - got);
+                    if l > 0 {
+                        out.push((off + got, l, u32::from_be_bytes(d[4..].try_into().unwrap())));
+                        got += l;
+                    }
                 }
                 Ok(())
             })?;
@@ -316,9 +323,6 @@ impl<R: Read, W: Write> Client<R, W> {
                 return Err(proto("block status made no progress"));
             }
             off += got;
-        }
-        if let Some(last) = out.last_mut() {
-            last.1 = last.1.min(self.size - last.0); // servers may overshoot the end
         }
         Ok(out)
     }
@@ -370,6 +374,77 @@ impl<R: Read, W: Write> Seek for Client<R, W> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn optrep(opt: u32, ty: u32, data: &[u8]) -> Vec<u8> {
+        [
+            &REPLY_MAGIC.to_be_bytes()[..],
+            &opt.to_be_bytes(),
+            &ty.to_be_bytes(),
+            &(data.len() as u32).to_be_bytes(),
+            data,
+        ]
+        .concat()
+    }
+
+    /// Server side of a handshake with structured replies, one meta context (id 1)
+    /// and an export of `size` bytes.
+    fn handshake(size: u64) -> Vec<u8> {
+        let mut info = INFO_EXPORT.to_be_bytes().to_vec();
+        info.extend(size.to_be_bytes());
+        info.extend(3u16.to_be_bytes());
+        [
+            &NBDMAGIC.to_be_bytes()[..],
+            &IHAVEOPT.to_be_bytes(),
+            &3u16.to_be_bytes(),
+            &optrep(OPT_STRUCTURED_REPLY, REP_ACK, &[]),
+            &optrep(OPT_SET_META_CONTEXT, REP_META_CONTEXT, b"\0\0\0\x01ctx"),
+            &optrep(OPT_SET_META_CONTEXT, REP_ACK, &[]),
+            &optrep(OPT_GO, REP_INFO, &info),
+            &optrep(OPT_GO, REP_ACK, &[]),
+        ]
+        .concat()
+    }
+
+    fn chunk(flags: u16, ty: u16, cookie: u64, payload: &[u8]) -> Vec<u8> {
+        [
+            &STRUCTURED_REPLY_MAGIC.to_be_bytes()[..],
+            &flags.to_be_bytes(),
+            &ty.to_be_bytes(),
+            &cookie.to_be_bytes(),
+            &(payload.len() as u32).to_be_bytes(),
+            payload,
+        ]
+        .concat()
+    }
+
+    /// Regression (fuzzing): a hostile server overshooting the requested range
+    /// panicked on `size - last.0` and could push extents past the export end.
+    #[test]
+    fn hostile_block_status_is_clipped() {
+        let mut s = handshake(1000);
+        let mut p = 1u32.to_be_bytes().to_vec();
+        for (l, f) in [(600u32, 1u32), (u32::MAX, 0), (u32::MAX, 1)] {
+            p.extend(l.to_be_bytes());
+            p.extend(f.to_be_bytes());
+        }
+        s.extend(chunk(REPLY_FLAG_DONE, REPLY_BLOCK_STATUS, 1, &p));
+        let mut c = Client::connect(&s[..], io::sink(), "e", &["ctx"]).unwrap();
+        assert_eq!(c.block_status("ctx").unwrap(), vec![(0, 600, 1), (600, 400, 0)]);
+    }
+
+    /// Regression (fuzzing): a read chunk whose offset wraps the buffer index.
+    #[test]
+    fn hostile_read_offset_is_an_error() {
+        let mut s = handshake(1 << 20);
+        let mut p = (u64::MAX - 3).to_be_bytes().to_vec();
+        p.extend([1u8; 16]);
+        s.extend(chunk(REPLY_FLAG_DONE, REPLY_OFFSET_DATA, 1, &p));
+        let mut c = Client::connect(&s[..], io::sink(), "e", &["ctx"]).unwrap();
+        let mut buf = [0u8; 64];
+        assert_eq!(c.read_at(0, &mut buf).unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
     #[test]
     fn flagged_merges_adjacent() {
         let ext = [(0, 100, 0), (100, 1, 1), (101, 299, 0), (400, 100, 1), (500, 100, 3)];
