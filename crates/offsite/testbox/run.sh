@@ -9,6 +9,13 @@
 #        cargo test -p offsite --test sftp
 # env: PORT (default 2223), MAX_CONN (default 10), BASE=<image ref>.
 # Keys live in target/offsite-testbox/ (not in git).
+# Connection limit vs Hetzner: Hetzner documents "max. 10 simultaneous
+# connections" per account but not how an 11th fails. Here an 11th
+# *authenticated* connection is refused at publickey auth (keys-cmd.sh counts
+# live sessions; racy under simultaneous logins), MaxSessions 1 allows one
+# channel per connection, and MaxStartups 10 caps connections that are still
+# authenticating. sshd has no global cap on authenticated connections, hence
+# the key command.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
@@ -55,7 +62,12 @@ start)
 	;;
 stop) podman rm -f "$NAME" >/dev/null 2>&1 || true ;;
 restart)
-	podman restart "$NAME" >/dev/null
+	podman stop -t 2 "$NAME" >/dev/null
+	# pasta may still hold the published port for a moment after stop
+	for _ in $(seq 50); do
+		podman start "$NAME" >/dev/null 2>&1 && break
+		sleep 0.2
+	done
 	wait_ready
 	;;
 drop) podman exec "$NAME" pkill -u tenant || true ;;
@@ -75,7 +87,7 @@ env)
 	EOF
 	;;
 *)
-	sed -n '2,10p' "$0" >&2
+	sed -n '2,18p' "$0" >&2
 	exit 2
 	;;
 esac

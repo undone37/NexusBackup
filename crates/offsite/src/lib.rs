@@ -2,4 +2,5 @@
 
 pub mod pack;
 pub mod remote;
+pub mod sftp;
 pub mod target;
