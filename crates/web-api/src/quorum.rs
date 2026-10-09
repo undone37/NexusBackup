@@ -20,6 +20,7 @@ pub const EXPIRY_SECS: i64 = 72 * 3600;
 
 pub const WEB_ACTIONS: &[&str] = &[
     "tenant.delete",
+    "tenant.update",
     "source.delete",
     "policy.delete",
     "policy.update",
@@ -108,10 +109,33 @@ fn int(p: &Value, k: &str) -> ApiResult<i64> {
         .ok_or_else(|| ApiError::bad(format!("quorum params: missing {k}")))
 }
 
+/// Update requests carry the object as it was when the request was made
+/// (`old`, shown to the approver as the diff). If it changed since, approving
+/// would apply a different change than the one reviewed: refuse.
+fn unchanged_since_request(c: &Connection, action: &str, p: &Value) -> ApiResult<()> {
+    let current = match action {
+        "policy.update" => crate::resources::policy_value(c, int(p, "id")?)?,
+        "group.update" => crate::resources::group_value(c, int(p, "id")?)?,
+        "tenant.update" => crate::resources::tenant_value(c, p["name"].as_str().unwrap_or_default())?,
+        _ => return Ok(()),
+    };
+    if current.as_ref() != Some(&p["old"]) {
+        return Err(ApiError::conflict(
+            "the object changed since this request was made; reject it and request the change again",
+        ));
+    }
+    Ok(())
+}
+
 /// Applies an approved action inside the caller's transaction.
 /// Returns false for actions the scheduler executes.
 fn execute(c: &Connection, action: &str, p: &Value) -> ApiResult<bool> {
+    unchanged_since_request(c, action, p)?;
     match action {
+        "tenant.update" => changed(c.execute(
+            "UPDATE tenants SET offsite = ?2 WHERE name = ?1",
+            params![p["name"].as_str(), p["offsite"].to_string()],
+        )?)?,
         "tenant.delete" => {
             let name = p["name"].as_str().unwrap_or_default();
             crate::resources::tenant_deletable(c, name)?;

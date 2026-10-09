@@ -106,14 +106,33 @@ pub async fn create_tenant(State(st): State<St>, ctx: Ctx, J(r): J<TenantReq>) -
     Ok(created(json!({"name": r.name, "offsite": r.offsite})))
 }
 
+/// `{name, offsite}` of a tenant as stored (quorum `old` snapshots compare against it).
+pub fn tenant_value(c: &Connection, name: &str) -> ApiResult<Option<Value>> {
+    Ok(c.query_row("SELECT name, offsite FROM tenants WHERE name = ?1", [name], |r| {
+        let o: String = r.get(1)?;
+        Ok(json!({"name": r.get::<_, String>(0)?, "offsite": serde_json::from_str::<Value>(&o).unwrap_or_default()}))
+    })
+    .optional()?)
+}
+
+/// Setting up offsite for a tenant applies directly; changing or removing an
+/// existing offsite target (another box, no box, other credentials) would
+/// silently stop or redirect the offsite copy, so it needs a quorum.
 pub async fn update_tenant(
     State(st): State<St>,
     ctx: Ctx,
     Path(name): Path<String>,
     J(r): J<TenantUpdate>,
-) -> ApiResult<Json<Value>> {
+) -> ApiResult<Response> {
     ctx.require(ADMIN)?;
     check_offsite(&r.offsite)?;
+    let old = tenant_value(&st.cat.conn(), &name)?.ok_or_else(ApiError::not_found)?;
+    let target = format!("tenant/{name}");
+    let had_offsite = old["offsite"].as_object().is_some_and(|o| !o.is_empty());
+    if had_offsite && old["offsite"] != r.offsite {
+        let p = json!({"name": name, "offsite": r.offsite, "old": old});
+        return gate(&st, &ctx, "tenant.update", &target, p);
+    }
     let n = st.cat.conn().execute(
         "UPDATE tenants SET offsite = ?2 WHERE name = ?1",
         params![name, r.offsite.to_string()],
@@ -121,13 +140,8 @@ pub async fn update_tenant(
     if n == 0 {
         return Err(ApiError::not_found());
     }
-    st.audit(
-        ctx.name(),
-        "tenant.update",
-        &format!("tenant/{name}"),
-        json!({"offsite": r.offsite}),
-    )?;
-    Ok(Json(json!({"name": name, "offsite": r.offsite})))
+    st.audit(ctx.name(), "tenant.update", &target, json!({"offsite": r.offsite}))?;
+    Ok(Json(json!({"name": name, "offsite": r.offsite})).into_response())
 }
 
 /// A tenant can only be deleted once no source, group or user refers to it.
@@ -320,7 +334,18 @@ pub async fn update_source(
             .optional()?
             .ok_or_else(ApiError::not_found)?;
         if r.config.token_secret.is_none() {
+            // keeping the stored secret is only allowed for the same endpoint: otherwise
+            // an admin could send the (write-only) token to a host of their choice
             let old: Value = serde_json::from_str(&old).unwrap_or_default();
+            let new = serde_json::to_value(&r.config).unwrap_or_default();
+            if ["host", "port", "connect_addr", "ca_pem", "token_id"]
+                .iter()
+                .any(|k| old.get(*k) != new.get(*k))
+            {
+                return Err(ApiError::bad(
+                    "config.token_secret: required when host, port, connect_addr, ca_pem or token_id change",
+                ));
+            }
             r.config.token_secret = old["token_secret"].as_str().map(str::to_owned);
         }
         c.execute(
@@ -419,6 +444,11 @@ fn load_policy(c: &Connection, id: i64) -> ApiResult<Option<PolicyReq>> {
 
 fn policy_json(id: i64, p: &PolicyReq) -> Value {
     json!({"id": id, "name": p.name, "schedule": p.schedule, "gfs": p.gfs, "offsite": p.offsite})
+}
+
+/// A policy as `policy_json` (quorum `old` snapshots compare against it).
+pub fn policy_value(c: &Connection, id: i64) -> ApiResult<Option<Value>> {
+    Ok(load_policy(c, id)?.map(|p| policy_json(id, &p)))
 }
 
 pub async fn list_policies(State(st): State<St>, _ctx: Ctx) -> ApiResult<Json<Value>> {
@@ -581,6 +611,16 @@ fn group_row(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
 
 const GROUP_COLS: &str = "id, tenant, source_id, policy_id, name, guests";
 
+/// A group as `group_row` (quorum `old` snapshots compare against it).
+pub fn group_value(c: &Connection, id: i64) -> ApiResult<Option<Value>> {
+    Ok(c.query_row(
+        &format!("SELECT {GROUP_COLS} FROM groups WHERE id = ?1"),
+        [id],
+        group_row,
+    )
+    .optional()?)
+}
+
 pub async fn list_groups(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>> {
     let c = st.cat.conn();
     let rows = c
@@ -690,7 +730,7 @@ pub struct UserReq {
 pub struct UserUpdate {
     #[serde(default)]
     role: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "present")]
     tenant: Option<Value>,
     #[serde(default)]
     disabled: Option<bool>,
@@ -700,7 +740,20 @@ pub struct UserUpdate {
     reset_totp: bool,
 }
 
+/// `Option<Value>` that keeps an explicit `null` as `Some(Null)` (serde maps
+/// it to `None` otherwise, which made `tenant: null` mean "keep").
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(d).map(Some)
+}
+
 fn check_user_tenant(c: &Connection, role: &str, tenant: Option<&str>) -> ApiResult<()> {
+    // config CRUD and quorum decisions are appliance-wide: a "tenant admin" would
+    // write across tenants and could lift its own restriction
+    if tenant.is_some() && validate::privileged(role) {
+        return Err(ApiError::bad(
+            "tenant: admin and security_officer accounts cannot be tenant-scoped",
+        ));
+    }
     match tenant {
         Some(t) => {
             if !exists(c, "SELECT 1 FROM tenants WHERE name = ?1", [t])? {
@@ -862,6 +915,8 @@ pub async fn update_user(
     }
     let target = format!("user/{}", old.name);
     if grant || removes_last || cred_reset {
+        // the approver sees (and approves) the role the account ends up with
+        p["role"] = json!(role);
         let q = request(&st, &ctx, "user.update", &target, p)?;
         return Ok(accepted(q, extra));
     }
