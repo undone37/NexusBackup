@@ -332,7 +332,15 @@ sub restore_vm_init {
     my $sizes = $a->{device_sizes};
     die "catalog entry for '$volname' has no device sizes\n" if !%$sizes;
 
-    return { map { ($_ => { size => $sizes->{$_} }) } keys %$sizes };
+    # API workers run with perl -T: catalog data is tainted and the sizes reach
+    # lvcreate, so untaint by strict capture.
+    my $res = {};
+    for my $dev (keys %$sizes) {
+        my ($d) = $dev =~ m/^([a-z0-9\-]{1,64})\z/ or die "invalid device name in catalog\n";
+        my ($size) = ($sizes->{$dev} // '') =~ m/^(\d{1,20})\z/ or die "invalid size for $d in catalog\n";
+        $res->{$d} = { size => int($size) };
+    }
+    return $res;
 }
 
 our $SYSBLOCK = '/sys/block'; # tests only
@@ -349,7 +357,7 @@ my $nbd_size = sub {
 sub restore_vm_volume_init {
     my ($self, $volname, $device, $info) = @_;
 
-    die "invalid device name '$device'\n" if $device !~ m/^[a-z0-9\-]{1,64}\z/;
+    ($device) = $device =~ m/^([a-z0-9\-]{1,64})\z/ or die "invalid device name\n"; # untaint (perl -T)
     my (undef, $archive) = $self->plugin()->parse_volname($volname);
     my $gid = PVE::Storage::Custom::NexusBackupPlugin::nexus_group_gid();
     my $dir = $self->restoredir();
@@ -379,7 +387,8 @@ sub restore_vm_volume_init {
         die "no /dev/nbd* devices (modprobe nbd failed?)\n" if !-e "$SYSBLOCK/nbd0";
 
         opendir(my $dh, $SYSBLOCK) or die "unable to list $SYSBLOCK: $!\n";
-        my @devs = sort { ($a =~ s/\D//gr) <=> ($b =~ s/\D//gr) } grep { m/^nbd\d+$/ } readdir($dh);
+        # readdir results are tainted under perl -T; the capture untaints them
+        my @devs = sort { ($a =~ s/\D//gr) <=> ($b =~ s/\D//gr) } map { m/^(nbd\d+)\z/ ? $1 : () } readdir($dh);
         closedir($dh);
         for my $d (@devs) {
             next if -e "$SYSBLOCK/$d/pid" || ($nbd_size->($d) // 1) != 0;
@@ -432,7 +441,8 @@ sub restore_vm_cleanup {
     my (undef, $archive) = eval { $self->plugin()->parse_volname($volname) };
     if (defined($archive)) {
         my $dir = $self->restoredir();
-        unlink(glob("$dir/$archive.json $dir/$archive.*.sock"));
+        # glob results are tainted under perl -T
+        unlink(map { m/^(\Q$dir\E\/[\w.\-]+)\z/ ? $1 : () } glob("$dir/$archive.json $dir/$archive.*.sock"));
     }
     return;
 }

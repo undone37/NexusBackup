@@ -96,6 +96,9 @@ fi
 for role in PVEVMAdmin PVEDatastoreAdmin PVEAuditor; do
   pveum acl modify / --tokens 'nexus@pve!appliance' --roles "$role"
 done
+# API restore attaches the guest NIC to a bridge: needs SDN.Use on the zone.
+pveum acl modify /sdn/zones/localnetwork --users nexus@pve --roles PVESDNUser
+pveum acl modify /sdn/zones/localnetwork --tokens 'nexus@pve!appliance' --roles PVESDNUser
 REMOTE
 
 # Fetch the token secret once (it is only shown at creation time)

@@ -157,8 +157,13 @@ sub find_archive {
 # ---------------------------------------------------------------------------
 # configuration
 
+# Highest storage API version tested (PVE 9.2). Report the running version
+# within the tested range to avoid "older storage API" warnings; fall back to 11.
+use constant TESTED_APIVER => 14;
+
 sub api {
-    return 11;
+    my $v = defined(&PVE::Storage::APIVER) ? PVE::Storage::APIVER() : 11;
+    return ($v >= 11 && $v <= TESTED_APIVER) ? $v : 11;
 }
 
 sub type {

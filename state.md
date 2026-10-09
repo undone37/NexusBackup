@@ -39,15 +39,18 @@ Decisions: PVE 9.x only · NBD over SSH stdio (forced command) · .deb via dpkg-
 - [x] `pve-plugin/`: storage plugin `nexusbackup`, backup provider (backup + full VM restore via qemu-nbd /dev/nbdX), SSH forced-command helper, `build-deb.sh` → `target/deb/nexusbackup-pve_0.1.0_all.deb`; `prove pve-plugin/t` 152 tests (also in CI)
   - deviations folded into contract: NBD socket hard-linked into /run/nexusbackup/jobs (qemu-server dirs untouched), rendezvous dirs 1770, index.json owned by nexusbackup
 - [x] `crates/nbd`: NBD client (fixed newstyle, structured replies, meta contexts, block status, Read+Seek, transport-agnostic for SSH stdio); tested against qemu-nbd with a persistent dirty bitmap
-- [x] `crates/pve/src/api.rs`: PVE API client (token auth, TLS pinned to cluster CA, vzdump start, task status/wait/log) — **not yet tested against lab**
-- [x] `crates/pve/src/backup.rs`: orchestration — node lookup via /cluster/resources, vzdump with fleecing, poll `job`, per device NBD over `ssh nbd` → dirty extents → `store_image_extents`, config files as dynamic index, commit, then `done ok|fail`, wait task, `push_index` to all nodes; `nexus-pve` dev CLI (`backup <vmid> | push-index | list`, config JSON, keys via keyd socket) — **not yet tested against lab**
+- [x] `crates/pve/src/api.rs`: PVE API client (token auth, TLS pinned to cluster CA, vzdump start, restore, task status/wait/log) — tested in lab
+- [x] `crates/pve/src/backup.rs`: orchestration — node lookup via /cluster/resources, vzdump with fleecing, poll `job`, per device NBD over `ssh nbd` → dirty extents → `store_image_extents`, config files as dynamic index, commit, then `done ok|fail`, wait task, `push_index` to all nodes; `nexus-pve` dev CLI (`backup | backup-all | restore | dump | push-index | list`, config JSON, keys via keyd socket) — tested in lab
 - [x] `Store::image_reader`: random access into a fixed index (one-chunk cache)
 - [x] `nbd::server`: read-only NBD server (fixed newstyle, GO/INFO/LIST/EXPORT_NAME, simple replies, writes refused); client falls back to simple replies; interop-tested with qemu-img convert
-- [x] Restore contract in `docs/pve-connector.md` (node attaches appliance NBD export via `qemu-nbd -c /dev/nbdX`); appliance `restore_vm` (POST /nodes/<n>/qemu archive=…, poll `restore-job`, serve each device from the fixed index via `ssh restore-serve` + `nbd::server`); `nexus-pve restore …`; index.json has `device_sizes` — **node side + lab test pending**
+- [x] Restore contract in `docs/pve-connector.md` (node attaches appliance NBD export via `qemu-nbd -c /dev/nbdX`); appliance `restore_vm` (POST /nodes/<n>/qemu archive=…, poll `restore-job`, serve each device from the fixed index via `ssh restore-serve` + `nbd::server`); `nexus-pve restore …`; index.json has `device_sizes`
 - [x] Scheduling: `nexus-pve backup-all` (config `vmids`, sequential, continues on error) + `os/systemd/nexus-pve-backup.{service,timer}` (daily 22:00, Persistent)
   - deviation: connector opens the chunk store in-process (same user `nexus-chunkstore`, keys via keyd) instead of a separate chunkstore daemon socket — split when the chunkstore service exists
 - [x] Lab end-to-end (PVE 9.2.2): full backup VM 100 73 s; incremental after 64 MiB guest write: bitmap reuse, 108 MiB dirty, 4.7 s; catalog/`pvesm list`/Show Configuration OK; fail/abort paths clean; restore via `qmrestore` on node + appliance-style NBD serve: 4 GiB in 24 s, VM 900 boots, marker sha256 matches
-- [ ] API-driven restore (`nexus-pve restore`) blocked: token lacks `SDN.Use` on /sdn/zones/localnetwork/vmbr1 — needs user OK to grant `PVESDNUser` in the lab
+- [x] API-driven restore (`nexus-pve restore 100 <t> pve1 901 local-lvm`): 4 GiB in 22 s, restored LV sha256 == snapshot (`nexus-pve dump`) — after user OK: lab token gets `PVESDNUser` on /sdn/zones/localnetwork (provision.sh)
+  - bug found + fixed: PVE API workers run perl -T; catalog sizes/device names, readdir and glob results reached lvcreate/qemu-nbd/unlink tainted → untainted by strict captures; `t/plugin.t` now runs under `-T` with an exec regression check (fails on old code)
+- [x] Plugin `api()` reports running APIVER within tested range 11..14 (user decision), no more "older storage API" warning
+- [x] `backup-all` via appliance CLI after lab reboot: full re-read (bitmap lost), 62 s
 - [ ] LXC file-level backup → M2
 
 ## Next

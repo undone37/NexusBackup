@@ -1,4 +1,4 @@
-//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-all | restore <vmid> <time> <node> <target-vmid> <storage> | push-index | list`.
+//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-all | restore <vmid> <time> <node> <target-vmid> <storage> | dump <vmid> <time> <device> | push-index | list`.
 
 use anyhow::{bail, Context, Result};
 use chunkstore::{Options, Store};
@@ -36,7 +36,7 @@ struct ApiFile {
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
-        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | push-index | list");
+        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | dump <vmid> <time> <device> | push-index | list");
     };
     let cfg: Config = serde_json::from_slice(&fs::read(cfg_path)?).context("config")?;
     let keys = keyd::fetch_keyring(&cfg.keyd_socket, &cfg.tenant).context("keyd")?;
@@ -93,6 +93,12 @@ fn main() -> Result<()> {
             if !failed.is_empty() {
                 bail!("failed VMs: {failed:?}");
             }
+        }
+        ("dump", [vmid, time, device]) => {
+            // raw device image of a snapshot to stdout (verification / download restore)
+            let m = store.load_manifest(&pve::backup::source_name(vmid.parse()?), time.parse()?)?;
+            let idx = store.load_index(&m, device)?;
+            store.write_chunks(idx.chunk_ids(), std::io::BufWriter::new(std::io::stdout().lock()))?;
         }
         ("push-index", []) => cluster.push_index(&store)?,
         ("list", []) => println!("{}", serde_json::to_string_pretty(&pve::backup::build_index(&store)?)?),

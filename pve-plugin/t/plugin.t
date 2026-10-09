@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/usr/bin/perl -T
 # Unit tests for the storage plugin and backup provider against stub PVE base
 # classes (t/lib). The real integration test runs on a PVE node (lab).
 use strict;
@@ -10,6 +10,11 @@ use IO::Socket::UNIX;
 use POSIX ();
 use Socket qw(SOCK_STREAM);
 use Test::More;
+
+# Runs under taint mode like PVE's API workers (pvedaemon): catalog data that
+# reaches exec/unlink must be untainted by the plugin.
+$ENV{PATH} = '/usr/sbin:/usr/bin:/sbin:/bin';
+delete @ENV{qw(IFS CDPATH ENV BASH_ENV)};
 
 use lib dirname(__FILE__) . '/lib';
 use lib dirname(__FILE__) . '/..';
@@ -130,6 +135,8 @@ is_deeply($prov->restore_vm_init('backup/nexus-101-1760000100'),
     { 'drive-scsi0' => { size => 6144 }, 'drive-efidisk0' => { size => 2048 } }, 'restore_vm_init');
 like((eval { $prov->restore_vm_init('backup/nexus-100-1760000000') } // $@),
     qr/no device sizes/, 'restore_vm_init without device_sizes');
+ok(eval { system('true', map { $_->{size} } values %{ $prov->restore_vm_init('backup/nexus-101-1760000100') }) == 0 },
+    'restore_vm_init sizes are untainted (usable in exec)') or diag($@);
 {
     # nobody serves the device: request published, then timeout and cleanup
     my $t0 = time();
@@ -179,7 +186,8 @@ sub appliance {
     POSIX::_exit(3) if $job->{nbd_socket} ne "$jobs/101.nbd" || !-S $job->{nbd_socket};
     POSIX::_exit(4) if $job->{devices}->[0]->{name} ne 'drive-efidisk0';
     POSIX::_exit(5) if ((stat("$jobs/101.json"))[2] & 07777) != 0640;
-    POSIX::_exit(6) if !IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => $job->{nbd_socket});
+    my ($peer) = $job->{nbd_socket} =~ m/^(.*)\z/s; # fake appliance (the real helper is not -T)
+    POSIX::_exit(6) if !IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => $peer);
     if (defined($result)) {
         open(my $fh, '>', "$jobs/.101.tmp") or POSIX::_exit(7);
         print {$fh} "$result\n";
