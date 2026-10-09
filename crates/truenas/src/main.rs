@@ -39,7 +39,8 @@ struct Config {
     recursive: bool,
     #[serde(default = "yes")]
     sudo: bool,
-    #[serde(default)]
+    /// `zfs diff` via sudo (default). false: `zfs allow -u <user> diff <ds>` + traverse permission on the dataset root
+    #[serde(default = "yes")]
     zfs_sudo: bool,
     #[serde(default = "timeout")]
     timeout_secs: u64,

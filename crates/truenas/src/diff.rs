@@ -84,7 +84,8 @@ pub fn unescape(s: &[u8]) -> Result<Vec<u8>> {
 fn relative(abs: &[u8], mountpoint: &[u8]) -> Result<Vec<u8>> {
     let mp = mountpoint.strip_suffix(b"/").unwrap_or(mountpoint);
     let rest = abs.strip_prefix(mp).context("path outside the dataset")?;
-    if rest.is_empty() {
+    // the root directory is reported as `<mountpoint>/`
+    if rest.is_empty() || rest == b"/" {
         return Ok(Vec::new());
     }
     let rel = rest.strip_prefix(b"/").context("path outside the dataset")?;
@@ -168,7 +169,7 @@ R\tF\t/mnt/tank/data/docs/readme.txt\t/mnt/tank/data/docs/README.txt\n\
 R\t/\t/mnt/tank/data/many\t/mnt/tank/data/renamed-many\n\
 M\tF\t/mnt/tank/data/docs/new.txt\t(+1)\n\
 M\tF\t/mnt/tank/data/x\t(-2)\n\
-M\t/\t/mnt/tank/data\n\
+M\t/\t/mnt/tank/data/\n\
 +\tF\t/mnt/tank/data/docs/Gr\\0303\\0274\\0303\\0237e\n\
 +\tF\t/mnt/tank/data/docs/new\\0012line\n\
 +\tF\t/mnt/tank/data/docs/back\\0134slash\n\
