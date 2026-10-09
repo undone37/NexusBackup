@@ -103,7 +103,11 @@ and setup), `nexus_catalog_t`, `nexus_downloads_t`, `nexus_store_t`, `nexus_escr
 `nexus_webapi_secret_t` (TLS key, metrics token), `nexus_sshkey_t` (`/etc/nexus/ssh`),
 `nexus_scheduler_var_run_t` (job configs with secrets; web-api has a `neverallow` on it
 and on stores, keys and SSH keys), `nexus_nft_var_run_t`, `nexus_update_t`,
-`nexus_restorevm_image_t`. Every rule carries a comment with its reason. Only keyd may
+`nexus_restorevm_image_t`. Every rule carries a comment with its reason. The restore micro-VM (security review
+H-3: QEMU parses untrusted guest disks and still shares the `nexus-chunkstore` uid)
+has `neverallow`s on keys, stores, escrow, catalog, downloads, credentials, job
+configs, the keyd socket and IP sockets, checked against the full policy at image
+build. A dedicated uid for QEMU (small runner) is still open. Only keyd may
 ever touch `tpm_device_t` (`neverallow`). The OS update agent, greenboot and bootc stay
 in the base policy's domains (bootc/ostree need the unconfined service domain, like the
 stock `bootc-fetch-apply-updates.service`).

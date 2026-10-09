@@ -128,6 +128,13 @@ allow nexus_domain nexus_var_lib_t:dir search_dir_perms;
 neverallow { nexus_domain -nexus_keyd_t } tpm_device_t:chr_file *;
 # Key material: only keyd (and setup, which runs `keyd init` once) see it.
 neverallow { nexus_domain -nexus_keyd_t -nexus_setup_t } nexus_keyd_var_lib_t:file { read write open };
+# The restore micro-VM (QEMU parsing untrusted guest disks) never reaches keys,
+# stores, the catalog, downloads, credentials or job configs, nor the keyd socket
+# (security review H-3: it shares the nexus-chunkstore uid, so MAC is the boundary).
+neverallow nexus_restorevm_t { nexus_keyd_var_lib_t nexus_store_t nexus_escrow_t nexus_catalog_t nexus_downloads_t nexus_sshkey_t nexus_scheduler_var_run_t nexus_webapi_secret_t }:file *;
+neverallow nexus_restorevm_t { nexus_keyd_var_run_t nexus_store_t nexus_catalog_t nexus_scheduler_var_run_t }:dir { search read write add_name };
+neverallow nexus_restorevm_t nexus_keyd_t:unix_stream_socket connectto;
+neverallow nexus_restorevm_t self:{ tcp_socket udp_socket } create;
 # The web API never reads chunks, keys or the PVE/SFTP credentials.
 neverallow nexus_webapi_t { nexus_store_t nexus_keyd_var_lib_t nexus_sshkey_t nexus_scheduler_var_run_t }:file { read open };
 
