@@ -69,6 +69,9 @@ pub enum Step {
     },
     Retention {
         sources: Vec<String>,
+        /// plus every store source starting with one of these (TrueNAS child
+        /// datasets: `nas-<id>-<pool.ds>.`)
+        prefixes: Vec<String>,
         gfs: Gfs,
     },
     Gc {
@@ -206,9 +209,28 @@ fn run_steps(plan: &Plan, ctx: &Ctx, log: &Arc<Mutex<BoundedLog>>, stdout: &mut 
                     }
                 }
             }
-            Step::Retention { sources, gfs } => {
+            Step::Retention { sources, prefixes, gfs } => {
                 let s = store.as_ref().unwrap();
-                for src in sources {
+                let mut all = sources.clone();
+                if !prefixes.is_empty() {
+                    match s.list_snapshots() {
+                        Ok(ms) => {
+                            for m in ms {
+                                if prefixes.iter().any(|p| m.source.starts_with(p.as_str())) && !all.contains(&m.source)
+                                {
+                                    all.push(m.source);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log.lock()
+                                .unwrap()
+                                .line(&format!("retention: listing snapshots failed: {e}"));
+                            return failed;
+                        }
+                    }
+                }
+                for src in &all {
                     match s.apply_retention(src, gfs) {
                         Ok((k, d, l)) => log
                             .lock()

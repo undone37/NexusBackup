@@ -36,6 +36,22 @@ pub fn source_targets(src: &Value) -> Vec<(String, u16)> {
     out
 }
 
+/// (host, port) pairs of a TrueNAS source: the API (`connect_addr`, else
+/// `host:port`, default 443) and SSH (`ssh.host:ssh.port`, default 22).
+pub fn truenas_targets(src: &Value) -> Vec<(String, u16)> {
+    let port = |v: &Value, def: u16| v["port"].as_u64().and_then(|p| u16::try_from(p).ok()).unwrap_or(def);
+    let mut out = Vec::new();
+    if let Some((h, p)) = src["connect_addr"].as_str().and_then(split_host_port) {
+        out.push((h, p));
+    } else if let Some(h) = src["host"].as_str() {
+        out.push((h.trim_matches(['[', ']']).to_owned(), port(src, 443)));
+    }
+    if let Some(h) = src["ssh"]["host"].as_str() {
+        out.push((h.trim_matches(['[', ']']).to_owned(), port(&src["ssh"], 22)));
+    }
+    out
+}
+
 /// (host, port) of a tenant's offsite remote (`tenants.offsite`), SFTP only.
 pub fn offsite_target(o: &Value) -> Option<(String, u16)> {
     let r = &o["remote"];

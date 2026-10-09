@@ -165,7 +165,12 @@ fn lab_backup_round() {
                 let mut got: Vec<(String, String)> = e
                     .xattrs
                     .iter()
-                    .map(|(k, v)| (String::from_utf8_lossy(k).into_owned(), v.iter().map(|b| format!("{b:02x}")).collect()))
+                    .map(|(k, v)| {
+                        (
+                            String::from_utf8_lossy(k).into_owned(),
+                            v.iter().map(|b| format!("{b:02x}")).collect(),
+                        )
+                    })
                     .collect();
                 got.sort();
                 let mut exp = want.get(&(d.dataset.clone(), p.clone())).cloned().unwrap_or_default();

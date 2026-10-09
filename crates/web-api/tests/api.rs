@@ -2456,7 +2456,11 @@ async fn truenas_sources() {
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
     }
     let r = t
-        .post("/api/v1/sources", &admin, src(truenas_cfg(Some("1-s3cr3tapikey"), Some(key))))
+        .post(
+            "/api/v1/sources",
+            &admin,
+            src(truenas_cfg(Some("1-s3cr3tapikey"), Some(key))),
+        )
         .await;
     assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
     let sid = r.body["id"].as_i64().unwrap();
@@ -2529,15 +2533,17 @@ async fn truenas_sources() {
     let pol = t.post("/api/v1/policies", &admin, policy(7, false)).await.body["id"]
         .as_i64()
         .unwrap();
-    let group = |name: &str, guests: Value| {
-        json!({"tenant": "acme", "source_id": sid, "policy_id": pol, "name": name, "guests": guests})
-    };
+    let group = |name: &str, guests: Value| json!({"tenant": "acme", "source_id": sid, "policy_id": pol, "name": name, "guests": guests});
     let g = t.post("/api/v1/groups", &admin, group("nas", json!([]))).await;
     assert_eq!(g.status, StatusCode::CREATED, "{:?}", g.body);
     assert_eq!(g.body["guests"], json!(["tank/data", "tank/smb"]));
-    let g = t.post("/api/v1/groups", &admin, group("nas2", json!(["tank/smb"]))).await;
+    let g = t
+        .post("/api/v1/groups", &admin, group("nas2", json!(["tank/smb"])))
+        .await;
     assert_eq!(g.status, StatusCode::CREATED);
-    let g = t.post("/api/v1/groups", &admin, group("nas3", json!(["tank/other"]))).await;
+    let g = t
+        .post("/api/v1/groups", &admin, group("nas3", json!(["tank/other"])))
+        .await;
     assert_eq!(g.status, StatusCode::BAD_REQUEST);
 
     // file jobs accept nas-<id>-<dataset> snapshots; restore_files does not (download only)
@@ -2549,9 +2555,7 @@ async fn truenas_sources() {
             [&snap],
         )
         .unwrap();
-    let files = |source: &str| {
-        json!({"kind": "files_list", "tenant": "acme", "params": {"source": source, "time": 1000, "path": "/"}})
-    };
+    let files = |source: &str| json!({"kind": "files_list", "tenant": "acme", "params": {"source": source, "time": 1000, "path": "/"}});
     let r = t.post("/api/v1/jobs", &admin, files(&snap)).await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
     for bad in ["nas-x-tank", "nas-1-tank..a", "nas-1-"] {

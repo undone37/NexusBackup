@@ -33,6 +33,14 @@
 //! `agent-<id>.json` in the job dir; groups of linux sources list agent ids
 //! as guests, their snapshots are `host-<agent_id>`.
 //!
+//! `sources.config` (kind `truenas`, docs/truenas-connector.md): API endpoint
+//! (`host`, `port`, `connect_addr`, `ca_pem`, `user`, `token_secret` = API key),
+//! `ssh` (`host`, `port`, `user`, `host_key`, `key_pem`), `datasets`, `recursive`,
+//! `sudo`, `zfs_sudo`. Groups list datasets as guests; backups spawn
+//! `nexus-truenas <job>/truenas.json backup` (secrets and the pinned host key as
+//! 0600 files in the job dir); snapshots are `nas-<source>-<pool.dataset>`,
+//! retention covers each dataset and (recursive) its children by prefix.
+//!
 //! `tenants.offsite`: `{ "remote": { "type": "sftp", "host": …, "user": …, "host_key": …,
 //! "key_file": "/path", "port"?, "base_dir"? } | { "type": "local", "path": … },
 //! "bwlimit"?: bytes/s, "uploaders"?: n }`. No `remote` = no offsite for this tenant.
@@ -89,6 +97,8 @@ pub struct Config {
     pub offsite_bin: PathBuf,
     /// Linux agent connector (crate agent-conn)
     pub agentctl_bin: PathBuf,
+    /// TrueNAS connector (crate truenas)
+    pub truenas_bin: PathBuf,
     /// appliance CA for agents (created by nexus-agentctl on first use); default `<state_dir>/agent-ca`
     pub agent_ca_dir: Option<PathBuf>,
     /// signed agent binaries for `agent_update` (nexus-agent, .sig, .version)
@@ -140,6 +150,7 @@ impl Default for Config {
             pve_bin: "/usr/libexec/nexus/nexus-pve".into(),
             offsite_bin: "/usr/libexec/nexus/nexus-offsite".into(),
             agentctl_bin: "/usr/libexec/nexus/nexus-agentctl".into(),
+            truenas_bin: "/usr/libexec/nexus/nexus-truenas".into(),
             agent_ca_dir: None,
             agent_update_dir: "/usr/share/nexus/agent".into(),
             alerts_config: "/etc/nexus/alerts.json".into(),
@@ -207,6 +218,8 @@ struct GroupRow {
     guests: Vec<u32>,
     /// agent ids (linux sources: the group's guests are strings)
     agents: Vec<String>,
+    /// datasets (truenas sources: the group's guests are dataset names)
+    datasets: Vec<String>,
     schedule: String,
     gfs: Gfs,
     offsite: bool,
@@ -243,12 +256,22 @@ fn valid_agent_id(s: &str) -> bool {
     s.len() == 16 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// Snapshot sources of a group: `vm-/ct-<vmid>` for PVE, `host-<agent>` for Linux agents.
+/// Snapshot sources of a group: `vm-/ct-<vmid>` for PVE, `host-<agent>` for Linux agents,
+/// `nas-<source>-<dataset>` for TrueNAS (children of recursive datasets: [`group_prefixes`]).
 fn group_sources(g: &GroupRow) -> Vec<String> {
     g.guests
         .iter()
         .flat_map(|v| [format!("vm-{v}"), format!("ct-{v}")])
         .chain(g.agents.iter().map(|a| format!("host-{a}")))
+        .chain(g.datasets.iter().map(|d| truenas::source_name(g.source_id as u64, d)))
+        .collect()
+}
+
+/// Source prefixes of child datasets (`nas-<source>-<pool.ds>.`), found in the store at retention time.
+fn group_prefixes(g: &GroupRow) -> Vec<String> {
+    g.datasets
+        .iter()
+        .map(|d| format!("{}.", truenas::source_name(g.source_id as u64, d)))
         .collect()
 }
 
@@ -602,13 +625,22 @@ impl Scheduler {
     fn groups(&self) -> Result<Vec<GroupRow>> {
         let c = self.db.conn();
         let mut st = c.prepare(
-            "SELECT g.id, g.tenant, g.source_id, g.guests, p.schedule, p.gfs, p.offsite \
-             FROM groups g JOIN policies p ON p.id = g.policy_id ORDER BY g.id",
+            "SELECT g.id, g.tenant, g.source_id, g.guests, p.schedule, p.gfs, p.offsite, s.kind \
+             FROM groups g JOIN policies p ON p.id = g.policy_id JOIN sources s ON s.id = g.source_id ORDER BY g.id",
         )?;
         let rows = st.query_map([], |r| {
             let guests: Vec<Value> = serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default();
             let gfs: String = r.get(5)?;
+            let nas = r.get::<_, String>(7)? == "truenas";
             Ok(GroupRow {
+                datasets: if nas {
+                    guests
+                        .iter()
+                        .filter_map(|g| g.as_str().filter(|d| truenas::valid_dataset(d)).map(str::to_owned))
+                        .collect()
+                } else {
+                    Vec::new()
+                },
                 id: r.get(0)?,
                 tenant: r.get(1)?,
                 source_id: r.get(2)?,
@@ -616,10 +648,14 @@ impl Scheduler {
                     .iter()
                     .filter_map(|g| g.as_u64().and_then(|v| u32::try_from(v).ok()))
                     .collect(),
-                agents: guests
-                    .iter()
-                    .filter_map(|g| g.as_str().filter(|a| valid_agent_id(a)).map(str::to_owned))
-                    .collect(),
+                agents: if nas {
+                    Vec::new()
+                } else {
+                    guests
+                        .iter()
+                        .filter_map(|g| g.as_str().filter(|a| valid_agent_id(a)).map(str::to_owned))
+                        .collect()
+                },
                 schedule: r.get(4)?,
                 gfs: gfs_of(&serde_json::from_str(&gfs).unwrap_or(Value::Null)),
                 offsite: r.get::<_, i64>(6)? != 0,
@@ -680,6 +716,15 @@ impl Scheduler {
             for cfg in st.query_map([], |r| r.get::<_, String>(0))? {
                 if let Ok(v) = serde_json::from_str::<Value>(&cfg?) {
                     targets.extend(firewall::source_targets(&v));
+                }
+            }
+        }
+        {
+            let c = self.db.conn();
+            let mut st = c.prepare("SELECT config FROM sources WHERE kind='truenas'")?;
+            for cfg in st.query_map([], |r| r.get::<_, String>(0))? {
+                if let Ok(v) = serde_json::from_str::<Value>(&cfg?) {
+                    targets.extend(firewall::truenas_targets(&v));
                 }
             }
         }
@@ -1080,6 +1125,16 @@ impl Scheduler {
                         let id = rest.split_whitespace().next()?;
                         let (s, t) = id.rsplit_once('/')?;
                         let mut v = json!({"source": s, "time": t.parse::<i64>().ok()?});
+                        if s.starts_with("nas-") {
+                            // `…, <n> bytes transferred[, full read …]` (nexus-truenas)
+                            if let Some(n) = rest
+                                .split_once(" bytes transferred")
+                                .and_then(|(a, _)| a.rsplit(' ').next())
+                                .and_then(|n| n.parse::<u64>().ok())
+                            {
+                                v["transferred_bytes"] = json!(n);
+                            }
+                        }
                         if s.starts_with("host-") {
                             let bad = format!("inconsistent {id}:");
                             v["consistent"] = json!(!log.lines().any(|x| x.starts_with(&bad)));
@@ -1205,6 +1260,11 @@ impl Scheduler {
     // ------------------------------------------------------------- planning
 
     fn source(&self, tenant: &str, id: i64) -> Result<Value> {
+        self.source_of(tenant, id, "pve")
+    }
+
+    /// Config of a source of kind `want`, secrets opened (in memory only).
+    fn source_of(&self, tenant: &str, id: i64, want: &str) -> Result<Value> {
         let (t, kind, cfg): (String, String, String) = self
             .db
             .conn()
@@ -1216,8 +1276,8 @@ impl Scheduler {
         if t != tenant {
             bail!("source {id} belongs to another tenant");
         }
-        if kind != "pve" {
-            bail!("source {id}: unsupported kind {kind}");
+        if kind != want {
+            bail!("source {id}: unsupported kind {kind} (expected {want})");
         }
         let mut v: Value = serde_json::from_str(&cfg).context("source config")?;
         // in memory only: the plaintext goes into the 0600 job dir and nowhere else
@@ -1323,6 +1383,84 @@ impl Scheduler {
         });
         files.push(("pve.json".into(), serde_json::to_vec_pretty(&cfg)?));
         Ok(files)
+    }
+
+    /// nexus-truenas config (docs/truenas-connector.md); the CA/pinned certificate,
+    /// API key, SSH key and pinned host key go into 0600 files in the job dir.
+    fn truenas_config(&self, tenant: &str, source_id: i64, dir: &Path, datasets: &[String]) -> Result<Files> {
+        let src = self.source_of(tenant, source_id, "truenas")?;
+        let s = |v: &Value, k: &str| -> Result<String> {
+            v[k].as_str()
+                .map(str::to_owned)
+                .with_context(|| format!("source {source_id}: missing {k}"))
+        };
+        let ssh = &src["ssh"];
+        let host = s(ssh, "host")?;
+        let port = ssh["port"].as_u64().unwrap_or(22);
+        let known = if port == 22 {
+            host.clone()
+        } else {
+            format!("[{host}]:{port}")
+        };
+        let mut key = s(ssh, "key_pem")?;
+        if !key.ends_with('\n') {
+            key.push('\n');
+        }
+        let mut files: Files = vec![
+            ("ca.pem".into(), s(&src, "ca_pem")?.into_bytes()),
+            ("api-key".into(), s(&src, "token_secret")?.into_bytes()),
+            ("ssh.key".into(), key.into_bytes()),
+            (
+                "known_hosts".into(),
+                format!("{known} {}\n", s(ssh, "host_key")?).into_bytes(),
+            ),
+        ];
+        let cfg = json!({
+            "tenant": tenant,
+            "store": self.cfg.store_base.join(tenant),
+            "keyd_socket": self.cfg.keyd_socket,
+            "source_id": source_id,
+            "api": {
+                "host": s(&src, "host")?,
+                "port": src["port"].as_u64().unwrap_or(443),
+                "connect_addr": src["connect_addr"],
+                "ca_file": dir.join("ca.pem"),
+                "user": src["user"].as_str().unwrap_or("nexusbackup"),
+                "key_file": dir.join("api-key"),
+            },
+            "ssh": {
+                "host": host,
+                "port": port,
+                "user": ssh["user"].as_str().unwrap_or("nexusbackup"),
+                "key_file": dir.join("ssh.key"),
+                "known_hosts_file": dir.join("known_hosts"),
+            },
+            "datasets": datasets,
+            "recursive": src["recursive"].as_bool().unwrap_or(false),
+            "sudo": src["sudo"].as_bool().unwrap_or(true),
+            "zfs_sudo": src["zfs_sudo"].as_bool().unwrap_or(true),
+        });
+        files.push(("truenas.json".into(), serde_json::to_vec_pretty(&cfg)?));
+        Ok(files)
+    }
+
+    /// Backup of TrueNAS datasets (one nexus-truenas run; exclusive per source).
+    fn plan_truenas_backup(&self, mut plan: Plan, source_id: i64, datasets: &[String]) -> Result<Plan> {
+        if datasets.is_empty() {
+            bail!("nothing to back up: no datasets");
+        }
+        plan.key = format!("source:{source_id}");
+        plan.files = self.truenas_config(&plan.tenant, source_id, &plan.dir, datasets)?;
+        plan.steps.push(Step::Cli {
+            bin: self.cfg.truenas_bin.clone(),
+            args: vec![
+                plan.dir.join("truenas.json").to_string_lossy().into_owned(),
+                "backup".into(),
+            ],
+            alert: None,
+            capture: false,
+        });
+        Ok(plan)
     }
 
     fn offsite_cfg(&self, tenant: &str) -> Result<Option<Value>> {
@@ -1590,6 +1728,9 @@ impl Scheduler {
                 let (source_id, vmids) = match (p["group_id"].as_i64(), p["agent_id"].as_str()) {
                     (Some(g), _) => {
                         let g = group(g)?;
+                        if !g.datasets.is_empty() {
+                            return self.plan_truenas_backup(plan, g.source_id, &g.datasets);
+                        }
                         if !g.agents.is_empty() {
                             return self.plan_agent_backups(job, plan, g.source_id, &g.agents);
                         }
@@ -1614,8 +1755,12 @@ impl Scheduler {
             "retention" if p["group_id"].is_null() && p["vmid"].is_null() && p["source"].is_null() => {
                 // manual retention for the whole tenant: every group with its own GFS
                 for g in self.groups()?.into_iter().filter(|g| g.tenant == tenant) {
-                    let sources = group_sources(&g);
-                    plan.steps.push(Step::Retention { sources, gfs: g.gfs });
+                    let (sources, prefixes) = (group_sources(&g), group_prefixes(&g));
+                    plan.steps.push(Step::Retention {
+                        sources,
+                        prefixes,
+                        gfs: g.gfs,
+                    });
                 }
             }
             "retention" if !p["agent_id"].is_null() || p["source"].as_str().is_some_and(|s| s.starts_with("host-")) => {
@@ -1634,6 +1779,28 @@ impl Scheduler {
                 plan.key = format!("agent:{a}");
                 plan.steps.push(Step::Retention {
                     sources: vec![format!("host-{a}")],
+                    prefixes: Vec::new(),
+                    gfs,
+                });
+            }
+            "retention" if p["source"].as_str().is_some_and(|s| s.starts_with("nas-")) => {
+                let source = ident(p, "source")?;
+                let (sid, ds) =
+                    truenas::parse_source_name(source).with_context(|| format!("invalid source {source:?}"))?;
+                // GFS of the group that backs up this dataset (or an ancestor of it)
+                let gfs = self
+                    .groups()?
+                    .into_iter()
+                    .find(|g| {
+                        g.tenant == tenant
+                            && g.source_id as u64 == sid
+                            && g.datasets.iter().any(|d| truenas::under(&ds, d))
+                    })
+                    .map_or_else(Gfs::default, |g| g.gfs);
+                plan.key = format!("source:{sid}");
+                plan.steps.push(Step::Retention {
+                    sources: vec![source.to_owned()],
+                    prefixes: Vec::new(),
                     gfs,
                 });
             }
@@ -1641,10 +1808,11 @@ impl Scheduler {
                 let (source_id, vmids, gfs) = match p["group_id"].as_i64() {
                     Some(g) => {
                         let g = group(g)?;
-                        if !g.agents.is_empty() {
+                        if !g.agents.is_empty() || !g.datasets.is_empty() {
                             plan.key = format!("source:{}", g.source_id);
                             plan.steps.push(Step::Retention {
                                 sources: group_sources(&g),
+                                prefixes: group_prefixes(&g),
                                 gfs: g.gfs,
                             });
                             return Ok(plan);
@@ -1669,7 +1837,11 @@ impl Scheduler {
                     .iter()
                     .flat_map(|v| [format!("vm-{v}"), format!("ct-{v}")])
                     .collect();
-                plan.steps.push(Step::Retention { sources, gfs });
+                plan.steps.push(Step::Retention {
+                    sources,
+                    prefixes: Vec::new(),
+                    gfs,
+                });
             }
             "offsite" => {
                 plan.files = self
@@ -1810,6 +1982,43 @@ impl Scheduler {
                 }
                 plan.steps.push(Step::Cli {
                     bin: self.cfg.agentctl_bin.clone(),
+                    args,
+                    alert: None,
+                    capture: true,
+                });
+            }
+            "files_list" | "files_get" if p["source"].as_str().is_some_and(|s| s.starts_with("nas-")) => {
+                let source = ident(p, "source")?;
+                let (sid, _) =
+                    truenas::parse_source_name(source).with_context(|| format!("invalid source {source:?}"))?;
+                plan.key = format!("guest:{tenant}/{source}");
+                // download only from the store: no TrueNAS access, no secrets
+                let cfg = json!({
+                    "tenant": tenant,
+                    "store": self.cfg.store_base.join(tenant),
+                    "keyd_socket": self.cfg.keyd_socket,
+                    "source_id": sid,
+                });
+                plan.files
+                    .push(("truenas.json".into(), serde_json::to_vec_pretty(&cfg)?));
+                let mut args = vec![
+                    dir.join("truenas.json").to_string_lossy().into_owned(),
+                    "files".into(),
+                    source.to_owned(),
+                    num(p, "time")?.to_string(),
+                ];
+                if job.kind == "files_list" {
+                    args.push("ls".into());
+                    args.push(file_arg(p["path"].as_str().unwrap_or("/"))?);
+                } else {
+                    let out = self.cfg.downloads.join(download_file(p)?);
+                    args.push("get".into());
+                    args.push(out.to_string_lossy().into_owned());
+                    args.extend(file_paths(p)?);
+                    plan.download = Some(out);
+                }
+                plan.steps.push(Step::Cli {
+                    bin: self.cfg.truenas_bin.clone(),
                     args,
                     alert: None,
                     capture: true,

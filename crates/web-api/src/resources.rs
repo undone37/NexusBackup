@@ -389,11 +389,14 @@ pub struct TrueNasConfig {
 fn unix_user(s: &str, what: &str) -> ApiResult<()> {
     let ok = (1..=32).contains(&s.len())
         && s.bytes().next().is_some_and(|b| b.is_ascii_lowercase() || b == b'_')
-        && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-".contains(&b));
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-".contains(&b));
     if ok {
         Ok(())
     } else {
-        Err(ApiError::bad(format!("{what}: expected a user name [a-z_][a-z0-9_-]{{0,31}}")))
+        Err(ApiError::bad(format!(
+            "{what}: expected a user name [a-z_][a-z0-9_-]{{0,31}}"
+        )))
     }
 }
 
@@ -451,7 +454,9 @@ impl TrueNasConfig {
         ssh_public_key(&self.ssh.host_key, "ssh.host_key")?;
         if let Some(k) = &self.ssh.key_pem {
             if k.len() > 16 << 10 || !k.contains("PRIVATE KEY-----") {
-                return Err(ApiError::bad("ssh.key_pem: expected a PEM/OpenSSH private key (at most 16 KiB)"));
+                return Err(ApiError::bad(
+                    "ssh.key_pem: expected a PEM/OpenSSH private key (at most 16 KiB)",
+                ));
             }
         }
         if self.datasets.is_empty() || self.datasets.len() > 64 {

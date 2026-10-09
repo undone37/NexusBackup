@@ -376,3 +376,155 @@ fn sealed_secrets_migrated_opened_and_bound() {
     assert_eq!(n, 5, "key_create + 4 migrations, none added by the restart");
     assert!(s.plan(&job(13, "t1", 1)).is_ok());
 }
+
+/// TrueNAS: backup of a group's datasets via nexus-truenas (secrets opened into
+/// 0600 job files, pinned host key as known_hosts), retention over the group's
+/// datasets + their children, file jobs on `nas-` snapshots without secrets.
+#[test]
+fn truenas_jobs() {
+    let e = env(4);
+    let src = json!({"host": "nas", "port": 443, "connect_addr": "10.0.0.9:8443", "ca_pem": "CERT", "user": "nexusbackup",
+                     "token_secret": "1-apikey",
+                     "ssh": {"host": "10.0.0.9", "port": 2222, "user": "nexusbackup", "host_key": "ssh-ed25519 AAAHK",
+                             "key_pem": "SSHKEY", "public_key": "ssh-ed25519 AAAPK"},
+                     "datasets": ["tank/data", "tank/smb"], "recursive": true});
+    e.db.conn()
+        .execute_batch(&format!(
+            "INSERT INTO sources (id, tenant, kind, name, config) VALUES (5,'t1','truenas','nas','{src}');
+             INSERT INTO policies (id, name, schedule, gfs, offsite) VALUES (2,'q','daily 22:00','{{\"daily\":9}}',0);
+             INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (5,'t1',5,2,'nas','[\"tank/data\"]');"
+        ))
+        .unwrap();
+    let s = sched(&e);
+    let raw: String =
+        s.db.conn()
+            .query_row("SELECT config FROM sources WHERE id = 5", [], |r| r.get(0))
+            .unwrap();
+    assert!(!raw.contains("1-apikey") && !raw.contains("SSHKEY"), "{raw}");
+    let job = |id, kind: &str, p: Value| Job {
+        id,
+        kind: kind.into(),
+        tenant: "t1".into(),
+        params: p,
+    };
+    let p = s.plan(&job(20, "backup", json!({"group_id": 5}))).unwrap();
+    assert_eq!(p.key, "source:5");
+    let names: Vec<&str> = p.files.iter().map(|f| f.0.as_str()).collect();
+    assert_eq!(names, ["ca.pem", "api-key", "ssh.key", "known_hosts", "truenas.json"]);
+    let file = |n: &str| p.files.iter().find(|f| f.0 == n).unwrap().1.clone();
+    assert_eq!(file("api-key"), b"1-apikey");
+    assert_eq!(file("ssh.key"), b"SSHKEY\n");
+    assert_eq!(file("known_hosts"), b"[10.0.0.9]:2222 ssh-ed25519 AAAHK\n");
+    let cfg: Value = serde_json::from_slice(&file("truenas.json")).unwrap();
+    assert_eq!(cfg["datasets"], json!(["tank/data"]));
+    assert_eq!(cfg["source_id"], 5);
+    assert_eq!(cfg["api"]["connect_addr"], "10.0.0.9:8443");
+    assert_eq!(cfg["ssh"]["key_file"], json!(p.dir.join("ssh.key")));
+    assert_eq!(
+        (cfg["recursive"].clone(), cfg["zfs_sudo"].clone()),
+        (json!(true), json!(true))
+    );
+    assert!(!String::from_utf8_lossy(&file("truenas.json")).contains("apikey"));
+    match &p.steps[..] {
+        [Step::Cli { bin, args, .. }] => {
+            assert_eq!(bin, &e.cfg.truenas_bin);
+            assert_eq!(args[1], "backup");
+        }
+        st => panic!("{st:?}"),
+    }
+    let p = s
+        .plan(&job(21, "retention", json!({"group_id": 5, "chain": true})))
+        .unwrap();
+    match &p.steps[..] {
+        [Step::Retention { sources, prefixes, gfs }] => {
+            assert_eq!(sources, &["nas-5-tank.data"]);
+            assert_eq!(prefixes, &["nas-5-tank.data."]);
+            assert_eq!(gfs.daily, 9);
+        }
+        st => panic!("{st:?}"),
+    }
+    let p = s
+        .plan(&job(22, "retention", json!({"source": "nas-5-tank.data.projects"})))
+        .unwrap();
+    assert!(
+        matches!(&p.steps[..], [Step::Retention { sources, gfs, .. }] if sources == &["nas-5-tank.data.projects"] && gfs.daily == 9)
+    );
+    let p = s
+        .plan(&job(
+            23,
+            "files_list",
+            json!({"source": "nas-5-tank.data", "time": 77, "path": "/docs"}),
+        ))
+        .unwrap();
+    assert_eq!(p.files.len(), 1);
+    assert!(!String::from_utf8_lossy(&p.files[0].1).contains("apikey"));
+    match &p.steps[..] {
+        [Step::Cli { bin, args, capture, .. }] => {
+            assert!(*capture && bin == &e.cfg.truenas_bin);
+            assert_eq!(&args[1..], ["files", "nas-5-tank.data", "77", "ls", "/docs"]);
+        }
+        st => panic!("{st:?}"),
+    }
+    for bad in ["nas-5-tank..x", "nas-x-tank"] {
+        assert!(s
+            .plan(&job(24, "files_list", json!({"source": bad, "time": 1, "path": "/"})))
+            .is_err());
+    }
+    // the firewall allow-list contains the API and SSH endpoints
+    assert_eq!(
+        firewall::truenas_targets(&src),
+        vec![("10.0.0.9".to_owned(), 8443), ("10.0.0.9".to_owned(), 2222)]
+    );
+    // retention with prefixes applies to the children found in the store
+    let store_dir = e.cfg.store_base.join("t1");
+    let st = chunkstore::Store::open(&store_dir, Keyring::new("t1", &[(1, [7; 32])]), test_opts()).unwrap();
+    for (src, t) in [
+        ("nas-5-tank.data", 1),
+        ("nas-5-tank.data", 2),
+        ("nas-5-tank.data.projects", 1),
+        ("nas-5-tank.data.projects", 2),
+        ("nas-5-tank.database", 1),
+    ] {
+        st.commit_snapshot(src, t, &[("tree", chunkstore::Index::Tree { entries: vec![] })])
+            .unwrap();
+    }
+    let gfs = Gfs {
+        daily: 1,
+        weekly: 0,
+        monthly: 0,
+        yearly: 0,
+    };
+    let plan = Plan {
+        key: "k".into(),
+        tenant: "t1".into(),
+        store: store_dir,
+        dir: e.d.path().join("run/r"),
+        files: vec![],
+        steps: vec![Step::Retention {
+            sources: vec!["nas-5-tank.data".into()],
+            prefixes: vec!["nas-5-tank.data.".into()],
+            gfs,
+        }],
+        download: None,
+    };
+    let keys: KeySource = Arc::new(|t: &str| Ok(Keyring::new(t, &[(1, [7; 32])])));
+    let ctx = Ctx {
+        keys,
+        store_options: test_opts,
+        log_max: 1 << 20,
+    };
+    let f = run::execute(1, &plan, &ctx);
+    assert_eq!(f.outcome, Outcome::Ok, "{}", f.log);
+    assert!(
+        f.log.contains("retention nas-5-tank.data.projects:") && !f.log.contains("tank.database"),
+        "{}",
+        f.log
+    );
+    let left: Vec<(String, u64)> = st
+        .list_snapshots()
+        .unwrap()
+        .into_iter()
+        .map(|m| (m.source, m.time))
+        .collect();
+    assert_eq!(left.len(), 3, "{left:?}");
+}
