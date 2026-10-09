@@ -13,6 +13,7 @@ use agent_proto::{Entry, Overwrite, Volume};
 use std::collections::HashSet;
 use std::fs;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -79,7 +80,29 @@ impl Platform for Linux {
         for p in paths {
             norm.push(volumes::normalize(p).map_err(bad)?);
         }
-        let mounts = volumes::mounts();
+        let mut mounts = volumes::mounts();
+        // nested btrfs subvolumes count as volumes of their own (like mount points): a
+        // path inside one is read from its own snapshot, and they are not included
+        // unless requested (a snapshot of the parent shows them as empty directories)
+        let mut nested_notes = vec![];
+        let btrfs: Vec<volumes::Mount> = mounts
+            .iter()
+            .filter(|m| m.fstype == "btrfs" && norm.iter().any(|p| p.starts_with(&m.mountpoint)))
+            .cloned()
+            .collect();
+        for m in &btrfs {
+            for n in volumes::btrfs_nested(m, &mounts) {
+                let below = norm.iter().any(|p| n.mountpoint.starts_with(p) && *p != n.mountpoint);
+                let requested = norm.iter().any(|p| p.starts_with(&n.mountpoint));
+                if below && !requested && !Excludes::new(excludes).matches(n.mountpoint.as_os_str().as_bytes()) {
+                    nested_notes.push(format!(
+                        "btrfs subvolume {} is not included (like a mount point): add it to the paths to back it up",
+                        n.mountpoint.display()
+                    ));
+                }
+                mounts.push(n);
+            }
+        }
         let mut by_mount: Vec<(volumes::Mount, Vec<PathBuf>)> = vec![];
         for p in norm {
             let Some(m) = volumes::containing(&mounts, &p) else {
@@ -115,6 +138,11 @@ impl Platform for Linux {
                     format!("pre hook failed, nothing snapshotted:\n{log_text}"),
                 ));
             }
+        }
+        for n in nested_notes {
+            log(&n);
+            log_text.push_str(&n);
+            log_text.push('\n');
         }
         let mut snaps = vec![];
         let mut roots = vec![];

@@ -187,6 +187,60 @@ fn btrfs_subvolume_root(mp: &Path) -> bool {
     std::fs::metadata(mp).map(|m| m.ino() == 256).unwrap_or(false)
 }
 
+/// Subvolume paths from `btrfs subvolume list -o <dir>` (paths from the file system's
+/// top level), mapped below the mount whose subvolume is `mount_root` (mountinfo root,
+/// e.g. `/root`). Subvolumes outside that mount and our own snapshots are dropped.
+pub fn parse_subvolume_list(out: &str, mount_root: &str) -> Vec<PathBuf> {
+    let prefix = mount_root.trim_matches('/');
+    out.lines()
+        .filter_map(|l| l.split_once(" path ").map(|(_, p)| p.trim()))
+        .filter_map(|p| {
+            let rel = if prefix.is_empty() {
+                p
+            } else {
+                p.strip_prefix(prefix)?.strip_prefix('/')?
+            };
+            let rel = Path::new(rel);
+            let ok = !rel.as_os_str().is_empty()
+                && rel.components().all(|c| matches!(c, Component::Normal(n) if n != crate::snapshot::BTRFS_DIR));
+            ok.then(|| rel.to_path_buf())
+        })
+        .collect()
+}
+
+/// Nested btrfs subvolumes below a mounted btrfs subvolume, recursively, as synthetic
+/// mounts (a btrfs snapshot does not contain nested subvolumes: they show up as empty
+/// directories). Real mount points are left out (they are mounts of their own).
+pub fn btrfs_nested(m: &Mount, real: &[Mount]) -> Vec<Mount> {
+    let mut out: Vec<Mount> = vec![];
+    if m.fstype != "btrfs" || tool("btrfs").is_none() {
+        return out;
+    }
+    let mut todo = vec![m.mountpoint.clone()];
+    while let Some(dir) = todo.pop() {
+        let Ok(list) = run_tool("btrfs", &["subvolume", "list", "-o", &dir.to_string_lossy()]) else {
+            continue;
+        };
+        for rel in parse_subvolume_list(&list, &m.root) {
+            let mp = m.mountpoint.join(&rel);
+            if out.iter().any(|o| o.mountpoint == mp)
+                || real.iter().any(|r| r.mountpoint == mp)
+                || !btrfs_subvolume_root(&mp)
+            {
+                continue;
+            }
+            todo.push(mp.clone());
+            out.push(Mount {
+                root: format!("{}/{}", m.root.trim_end_matches('/'), rel.display()),
+                mountpoint: mp,
+                fstype: m.fstype.clone(),
+                source: m.source.clone(),
+            });
+        }
+    }
+    out
+}
+
 pub fn snapshot_kind(m: &Mount) -> SnapshotKind {
     match m.fstype.as_str() {
         "zfs" if tool("zfs").is_some() => SnapshotKind::Zfs,
@@ -212,6 +266,25 @@ pub fn list_volumes() -> Vec<Volume> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_subvolumes_below_a_mount() {
+        // Fedora: / is subvolume `root`; `btrfs subvolume list -o /` (lab)
+        let out = "ID 260 gen 41 top level 256 path root/srv/btrfs\n\
+                   ID 261 gen 41 top level 256 path root/srv/with space\n\
+                   ID 267 gen 42 top level 256 path root/.nexus-snapshots/nexus-snap-7\n\
+                   ID 258 gen 29 top level 5 path home\n";
+        assert_eq!(
+            parse_subvolume_list(out, "/root"),
+            vec![PathBuf::from("srv/btrfs"), PathBuf::from("srv/with space")]
+        );
+        // top-level mount (subvolid=5): paths as listed
+        assert_eq!(
+            parse_subvolume_list("ID 300 gen 1 top level 5 path data/sub\n", "/"),
+            vec![PathBuf::from("data/sub")]
+        );
+        assert!(parse_subvolume_list("", "/root").is_empty());
+    }
 
     #[test]
     fn lv_attrs_that_can_be_snapshotted() {

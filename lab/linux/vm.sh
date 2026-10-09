@@ -23,7 +23,7 @@
 #   deb-plain    Debian 13 unchanged: ext4 on a partition, no LVM (fallback mode); MariaDB
 #
 # Ports on 127.0.0.1 (the appliance VM reaches them as 10.0.2.2:<port>):
-#   ssh 2220+N, agent 17440+N  (N = 1..5 in the order above)
+#   ssh 2240+N, agent 17440+N (2223 is the SFTP testbox)  (N = 1..5 in the order above)
 # env: LAB (/home/ah/nexus-lab), MEM (per VM default), CPUS (2), LAB_KEY ($LAB/lab_ed25519)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -53,7 +53,7 @@ vm_load() {
 	NAME=$1
 	read -r N URL SUMS DEFMEM DATAGB <<<"${VMS[$1]}"
 	MEM=${MEM:-$DEFMEM}
-	SSH_PORT=$((2220 + N))
+	SSH_PORT=$((2240 + N))
 	AGENT_PORT=$((17440 + N))
 	IMG=$D/images/$(basename "$URL")
 	V=$D/$NAME

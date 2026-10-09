@@ -3,6 +3,7 @@
 # (lab/linux/vm.sh <vm> up). Results (key=value) in $S/<vm>.results.
 #
 #   e2e.sh appliance            dev control plane: lab/e2e/m5.sh setup + start (ROOT, PORT below)
+#   e2e.sh restart | stop       restart (new binaries, same state) or stop it
 #   e2e.sh <vm> [steps]         default steps: agent backup incr restore download db update
 #     agent     create the agent (API), install the bundle with the token on the VM, enroll (job)
 #     backup    hook(s) on the VM, linux source + policy (daily, next minute) + group, wait for the
@@ -32,6 +33,11 @@ TENANT=linux
 if [ "${1:-}" = appliance ]; then
 	ROOT=$ROOT PORT=$PORT "$repo/lab/e2e/m5.sh" setup
 	ROOT=$ROOT PORT=$PORT "$repo/lab/e2e/m5.sh" start
+	exit 0
+fi
+if [ "${1:-}" = restart ] || [ "${1:-}" = stop ]; then # same state, fresh binaries
+	ROOT=$ROOT PORT=$PORT "$repo/lab/e2e/m5.sh" stop
+	[ "$1" = stop ] || ROOT=$ROOT PORT=$PORT "$repo/lab/e2e/m5.sh" start
 	exit 0
 fi
 VM=${1:?vm or appliance}
@@ -108,6 +114,12 @@ step_agent() {
 	[ "$(status)" = 409 ] || die "second enroll: HTTP $(status)"
 	vm 'sudo test ! -e /etc/nexus-agent/token' || die "token file still on the agent"
 	vm 'sudo /usr/local/sbin/nexus-agent status' | sed 's/^/  vm: /' >&2
+}
+
+# upgrade the installed agent from $BUNDLE in place (install.sh without a token keeps the enrollment)
+step_reinstall() {
+	"$here/vm.sh" "$VM" put "$BUNDLE" /tmp/
+	vm "cd /tmp && rm -rf nexus-agent-*-x86_64/ && tar xzf $(basename "$BUNDLE") && cd nexus-agent-*-x86_64 && sudo ./install.sh >/dev/null && systemctl is-active nexus-agent"
 }
 
 enable_hooks() {
