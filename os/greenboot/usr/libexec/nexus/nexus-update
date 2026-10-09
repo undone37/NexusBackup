@@ -1,0 +1,430 @@
+#!/usr/bin/python3 -I
+# NexusBackup OS update agent (plan.md 12.1, docs/release.md "Updates").
+#
+#   nexus-update tick       what nexus-update.service runs (timer every 15 min + path unit):
+#                           handle a pending request, stage when the last check is older
+#                           than the check interval, apply inside the maintenance window
+#   nexus-update stage      fetch + verify the signed image, stage it download-only
+#                           (an unplanned reboot does NOT apply it)
+#   nexus-update apply      reboot into the staged image now
+#   nexus-update rollback   make the previous deployment the default and reboot
+#   nexus-update status     print the status JSON (also written to the control dir)
+#
+# Control directory (default /var/lib/nexus/update, 2770 root:nexus-catalog, see
+# tmpfiles.d/nexus-update.conf) is the interface for web-api and scheduler:
+#   request      written by the control plane: one word, "stage" | "apply" | "rollback";
+#                consumed (deleted) by the next tick, which nexus-update.path starts at once
+#   window       optional override of NEXUS_UPDATE_WINDOW, e.g. "Sun 03:00 120" or "off"
+#   inhibit      present and younger than 6 h: automatic (window) apply is postponed;
+#                the scheduler touches it while jobs run. Admin "apply" ignores it.
+#   status.json  written here (0640): booted/staged/rollback image, last check, last result
+#
+# Signature enforcement: bootc only consults /etc/containers/policy.json when the
+# deployment's origin is "ostree-image-signed" (bootc status: signature "containerPolicy").
+# An origin with signature "insecure" (the default after a plain install or switch) is
+# fetched with skopeo --insecure-policy. stage therefore refuses `bootc upgrade` on such
+# a host and runs `bootc switch --enforce-container-sigpolicy <repo>:<tag>` instead, which
+# fixes the origin for every later upgrade.
+
+import datetime as dt
+import fcntl
+import json
+import os
+import socket
+import stat
+import subprocess
+import sys
+import time
+
+CONF = os.environ.get("NEXUS_UPDATE_CONF", "/etc/nexus/update.conf")
+CONF_DEFAULTS = {
+    "NEXUS_IMAGE_REPO": "ghcr.io/nexusbackup/appliance",
+    "NEXUS_UPDATE_TAG": "stable",
+    "NEXUS_UPDATE_WINDOW": "Sun 03:00 120",
+    "NEXUS_UPDATE_CHECK_HOURS": "24",
+    "NEXUS_UPDATE_EGRESS": "nft",
+    "NEXUS_UPDATE_HOSTS": "ghcr.io pkg-containers.githubusercontent.com",
+    "NEXUS_UPDATE_DIR": "/var/lib/nexus/update",
+    "NEXUS_UPDATE_LOCK": "/run/nexus-update.lock",
+}
+REQUESTS = ("stage", "apply", "rollback")
+INHIBIT_MAX_AGE = 6 * 3600
+DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+class Error(Exception):
+    pass
+
+
+def load_conf(path=CONF):
+    c = dict(CONF_DEFAULTS)
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                c[k.strip()] = v.strip().strip('"').strip("'")
+    except FileNotFoundError:
+        pass
+    for k in CONF_DEFAULTS:  # environment wins (tests, manual runs)
+        if k in os.environ:
+            c[k] = os.environ[k]
+    return c
+
+
+def tool(name):
+    return os.environ.get("NEXUS_UPDATE_" + name.upper().replace("-", "_"), name)
+
+
+def run(*argv, check=True):
+    p = subprocess.run([tool(argv[0]), *argv[1:]], capture_output=True, text=True)
+    if check and p.returncode != 0:
+        raise Error(f"{' '.join(argv)}: exit {p.returncode}: {(p.stderr or p.stdout).strip()[-500:]}")
+    return p
+
+
+# ---------------------------------------------------------------- window / control files
+
+
+def parse_window(s):
+    """'Sun 03:00 120' | 'Mon,Thu 01:30 60' | 'daily 03:00 90' | 'off' -> (days, minute, dur) | None"""
+    s = s.strip()
+    if s.lower() in ("", "off", "never"):
+        return None
+    parts = s.split()
+    if len(parts) != 3:
+        raise Error(f"bad window {s!r}: want '<days> HH:MM <minutes>'")
+    d, hm, dur = parts
+    if d.lower() == "daily":
+        days = set(range(7))
+    else:
+        try:
+            days = {DAYS.index(x.lower()[:3]) for x in d.split(",") if len(x) >= 3}
+        except ValueError:
+            raise Error(f"bad window days {d!r}")
+    try:
+        h, m = (int(x) for x in hm.split(":"))
+        dur = int(dur)
+    except ValueError:
+        raise Error(f"bad window {s!r}")
+    if not days or not (0 <= h < 24 and 0 <= m < 60) or not (0 < dur <= 24 * 60):
+        raise Error(f"bad window {s!r}")
+    return days, h * 60 + m, dur
+
+
+def in_window(win, now):
+    """now: aware UTC datetime. Windows may cross midnight."""
+    if win is None:
+        return False
+    days, start_min, dur = win
+    for back in (0, 1):
+        day = (now - dt.timedelta(days=back)).date()
+        if day.weekday() not in days:
+            continue
+        start = dt.datetime.combine(day, dt.time(start_min // 60, start_min % 60), dt.timezone.utc)
+        if start <= now < start + dt.timedelta(minutes=dur):
+            return True
+    return False
+
+
+def read_small(path, limit=256):
+    """Read a control file written by a less privileged user: no symlinks, regular file only."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except (FileNotFoundError, OSError):
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        return os.read(fd, limit).decode("utf-8", "replace")
+    finally:
+        os.close(fd)
+
+
+def take_request(d):
+    p = os.path.join(d, "request")
+    s = read_small(p)
+    if s is None:
+        return None
+    try:
+        os.unlink(p)  # consume first, so a failing action cannot re-trigger the path unit forever
+    except FileNotFoundError:
+        pass
+    word = s.strip().lower()
+    if word not in REQUESTS:
+        log(f"ignoring unknown request {word[:32]!r}")
+        return None
+    return word
+
+
+def inhibited(d, now_ts):
+    try:
+        st = os.lstat(os.path.join(d, "inhibit"))
+    except FileNotFoundError:
+        return False
+    return stat.S_ISREG(st.st_mode) and now_ts - st.st_mtime < INHIBIT_MAX_AGE
+
+
+def effective_window(c):
+    s = read_small(os.path.join(c["NEXUS_UPDATE_DIR"], "window"))
+    try:
+        return parse_window(s) if s is not None else parse_window(c["NEXUS_UPDATE_WINDOW"])
+    except Error as e:  # a broken override must not block updates forever: fall back
+        log(f"{e}; using the default window")
+        return parse_window(c["NEXUS_UPDATE_WINDOW"])
+
+
+# ---------------------------------------------------------------- bootc
+
+
+def bootc_status():
+    return json.loads(run("bootc", "status", "--json").stdout)
+
+
+def entry(e):
+    if not e:
+        return None
+    img = e.get("image") or {}
+    ref = img.get("image") or {}
+    return {
+        "image": ref.get("image"),
+        "signature": ref.get("signature"),
+        "digest": img.get("imageDigest"),
+        "version": img.get("version"),
+        "timestamp": img.get("timestamp"),
+        "download_only": bool(e.get("downloadOnly")),
+    }
+
+
+def summary(st):
+    s = st.get("status") or {}
+    spec = (st.get("spec") or {}).get("image") or {}
+    return {
+        "spec_image": spec.get("image"),
+        "spec_signature": spec.get("signature"),
+        "booted": entry(s.get("booted")),
+        "staged": entry(s.get("staged")),
+        "rollback": entry(s.get("rollback")),
+        "rollback_queued": bool(s.get("rollbackQueued")),
+    }
+
+
+class Egress:
+    """Opens 443/tcp to the registry hosts in the nexus nftables sets for the duration of a fetch."""
+
+    def __init__(self, c):
+        self.on = c["NEXUS_UPDATE_EGRESS"] == "nft"
+        self.hosts = c["NEXUS_UPDATE_HOSTS"].split()
+        self.added = []
+
+    def __enter__(self):
+        if not self.on:
+            return self
+        addrs = set()
+        for _ in range(3):  # CDN answers rotate; take the union of a few lookups
+            for h in self.hosts:
+                try:
+                    for fam, _, _, _, sa in socket.getaddrinfo(h, 443, proto=socket.IPPROTO_TCP):
+                        addrs.add((fam, sa[0]))
+                except socket.gaierror as e:
+                    raise Error(f"resolve {h}: {e}")
+        for fam, a in sorted(addrs):
+            v = "v6" if fam == socket.AF_INET6 else "v4"
+            el = f"{{ {a} . tcp . 443 }}"
+            # create fails if the element exists: then it is someone else's and stays
+            if run("nft", "create", "element", "inet", "nexus", f"allowed_out_{v}", el, check=False).returncode == 0:
+                self.added.append((v, el))
+        return self
+
+    def __exit__(self, *exc):
+        for v, el in self.added:
+            run("nft", "delete", "element", "inet", "nexus", f"allowed_out_{v}", el, check=False)
+        self.added = []
+
+
+def stage(c):
+    target = f"{c['NEXUS_IMAGE_REPO']}:{c['NEXUS_UPDATE_TAG']}"
+    s = summary(bootc_status())
+    if s["spec_image"] is None:
+        raise Error("not a bootc host (bootc status has no spec image)")
+    with Egress(c):
+        if s["spec_image"] != target or s["spec_signature"] != "containerPolicy":
+            # first run after install, or channel/repo changed: pin the signed origin
+            log(f"switching origin {s['spec_image']} ({s['spec_signature']}) -> {target} (signature enforced)")
+            run("bootc", "switch", "--quiet", "--enforce-container-sigpolicy", target)
+        else:
+            run("bootc", "upgrade", "--quiet", "--download-only")
+    s = summary(bootc_status())
+    if s["staged"]:
+        log(f"staged {s['staged']['digest']} (version {s['staged']['version']})")
+        return f"staged {s['staged']['digest']}"
+    return "up to date"
+
+
+def parse_version(v):
+    """'v1.2.3', '1.2.3-rc1' -> (1, 2, 3); None if not a dotted number."""
+    if not v:
+        return None
+    core = v.lstrip("vV").split("-", 1)[0].split("+", 1)[0]
+    try:
+        return tuple(int(x) for x in core.split("."))
+    except ValueError:
+        return None
+
+
+def reboot():
+    run("systemctl", "reboot")
+
+
+def apply(c, status=None, force=False):
+    """status: the tick's status dict. The digest is recorded before the reboot so the
+    next boot can tell whether the update stuck or greenboot rolled it back."""
+    s = summary(bootc_status())
+    st = s["staged"]
+    if not st:
+        return "nothing staged"
+    status = status if status is not None else read_status(c)
+    if not force:
+        if st["digest"] in (status.get("failed_digests") or []):
+            return f"not applying {st['digest']}: it was rolled back before (admin apply overrides)"
+        # The signature policy matches the repository, not the tag: a registry (or
+        # whoever moves the tag) could serve an older signed release. Never go back
+        # automatically.
+        old, new = parse_version((s["booted"] or {}).get("version")), parse_version(st["version"])
+        if old and new and new < old:
+            return f"not applying {st['digest']}: version {st['version']} is older than the booted one"
+    log(f"applying staged {st['digest']}, rebooting")
+    status["applying"] = st["digest"]
+    write_status(c, status)
+    if st["download_only"]:
+        run("bootc", "upgrade", "--from-downloaded", "--apply")  # reboots
+    else:
+        reboot()  # a normal staged deployment is finalized at shutdown
+    return f"rebooting into {st['digest']}"
+
+
+def rollback(c):
+    log("rollback requested, rebooting into the previous deployment")
+    run("bootc", "rollback")
+    reboot()
+    return "rolling back"
+
+
+# ---------------------------------------------------------------- status / tick
+
+
+def status_path(c):
+    return os.path.join(c["NEXUS_UPDATE_DIR"], "status.json")
+
+
+def read_status(c):
+    try:
+        with open(status_path(c)) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def write_status(c, data):
+    p = status_path(c)
+    tmp = p + ".tmp"
+    old = os.umask(0o027)
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=1, sort_keys=True)
+            f.write("\n")
+        os.replace(tmp, p)
+    finally:
+        os.umask(old)
+
+
+def tick(c, now=None):
+    now = now or dt.datetime.now(dt.timezone.utc)
+    d = c["NEXUS_UPDATE_DIR"]
+    prev = read_status(c)
+    st = {k: prev.get(k) for k in ("last_check", "last_result", "failed_digests", "applying")}
+    st["failed_digests"] = st["failed_digests"] or []
+    req = take_request(d)
+    result = None
+    try:
+        if st["applying"]:
+            booted = (summary(bootc_status())["booted"] or {}).get("digest")
+            if booted != st["applying"]:
+                # we rebooted into it and are not running it: greenboot rolled it back
+                log(f"update {st['applying']} did not stick (booted {booted}); not applying it again")
+                st["failed_digests"] = (st["failed_digests"] + [st["applying"]])[-10:]
+                result = f"rolled back from {st['applying']}"
+            st["applying"] = None
+        if req == "rollback":
+            result = rollback(c)
+        else:
+            check_due = (
+                req == "stage"
+                or not st["last_check"]
+                or now.timestamp() - st["last_check"] >= float(c["NEXUS_UPDATE_CHECK_HOURS"]) * 3600
+            )
+            if check_due:
+                st["last_check"] = int(now.timestamp())
+                result = stage(c)
+            win = effective_window(c)
+            if req == "apply":
+                result = apply(c, st, force=True)
+            elif in_window(win, now) and not inhibited(d, now.timestamp()):
+                if summary(bootc_status())["staged"]:
+                    result = apply(c, st)
+    except Error as e:
+        result = f"error: {e}"
+        log(result)
+    if result:
+        st["last_result"] = {"time": int(now.timestamp()), "request": req, "result": result}
+    win = effective_window(c)
+    st.update(
+        {
+            "updated": int(now.timestamp()),
+            "channel": f"{c['NEXUS_IMAGE_REPO']}:{c['NEXUS_UPDATE_TAG']}",
+            "window": None if win is None else {"days": sorted(DAYS[i] for i in win[0]), "start_utc": f"{win[1] // 60:02d}:{win[1] % 60:02d}", "minutes": win[2]},
+            "in_window": in_window(win, now),
+            "inhibited": inhibited(d, now.timestamp()),
+        }
+    )
+    try:
+        st.update(summary(bootc_status()))
+    except (Error, ValueError) as e:
+        st["bootc_error"] = str(e)
+    write_status(c, st)
+    return 1 if result and result.startswith("error") else 0
+
+
+def log(msg):
+    print(f"nexus-update: {msg}", file=sys.stderr, flush=True)
+
+
+def main(argv):
+    if len(argv) != 2 or argv[1] not in ("tick", "stage", "apply", "rollback", "status"):
+        print("usage: nexus-update tick|stage|apply|rollback|status", file=sys.stderr)
+        return 2
+    c = load_conf()
+    cmd = argv[1]
+    if cmd == "status":
+        print(json.dumps({**read_status(c), **summary(bootc_status())}, indent=1, sort_keys=True))
+        return 0
+    os.makedirs(c["NEXUS_UPDATE_DIR"], exist_ok=True)
+    with open(c["NEXUS_UPDATE_LOCK"], "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if cmd == "tick":
+            return tick(c)
+        try:
+            if cmd == "apply":  # an admin on the console: like the "apply" request
+                print(apply(c, force=True))
+            else:
+                print({"stage": stage, "rollback": rollback}[cmd](c))
+            return 0
+        except Error as e:
+            log(f"error: {e}")
+            return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

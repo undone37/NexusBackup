@@ -1,0 +1,17 @@
+[Unit]
+Description=NexusBackup OS update agent (stage signed image, apply in maintenance window)
+ConditionPathExists=/run/ostree-booted
+# Never touch deployments while greenboot is still judging this boot.
+After=network-online.target boot-complete.target greenboot-healthcheck.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/nexus/nexus-update tick
+# Runs as root without mount-namespace sandboxing: bootc/ostree remount /sysroot and
+# /boot and must see the real mount table (bootc-fetch-apply-updates.service, which
+# this replaces, is unsandboxed for the same reason). The only input besides
+# /etc/nexus/update.conf is /var/lib/nexus/update/{request,window,inhibit}, which
+# nexus-update reads with O_NOFOLLOW, regular files only, 256 bytes max.
+UMask=0027
+NoNewPrivileges=yes

@@ -1,0 +1,197 @@
+#!/usr/bin/python3 -I
+# NexusBackup boot health check (plan.md 12.1, docs/release.md "Rollback").
+#
+# Run by greenboot (/usr/lib/greenboot/check/required.d/50-nexus-health.sh) before
+# boot-complete.target. Exit 0 = healthy; anything else marks the boot red, and
+# greenboot reboots and, after GREENBOOT_MAX_BOOT_ATTEMPTS failed boots of a new
+# deployment, runs `bootc rollback` and reboots into the previous image.
+#
+# Checks (all required):
+#   disk      free space on /var/lib/nexus, /var and /boot above the minimum
+#   units     nexus-keyd, nexus-web-api, nexus-scheduler active (only those enabled)
+#   keyd      keyd socket accepts a connection
+#   web-api   GET https://127.0.0.1:8443/health over TLS (cert pinned) -> 200 {"ok": true}
+#   catalog   PRAGMA integrity_check == ok, audit hash chain intact
+# Before first-boot setup has finished (no setup-done) only `disk` runs: the nexus
+# services are not enabled yet and the catalog does not exist.
+#
+# Every path and limit can be overridden through NEXUS_HEALTH_* environment
+# variables (see DEFAULTS); the unit tests use that. Stdlib only.
+
+import hashlib
+import json
+import os
+import socket
+import sqlite3
+import ssl
+import subprocess
+import sys
+import time
+import urllib.request
+
+DEFAULTS = {
+    "SETUP_DONE": "/var/lib/nexus/setup-done",
+    "CATALOG": "/var/lib/nexus/catalog/catalog.db",
+    "KEYD_SOCKET": "/run/nexus-keyd/keyd.sock",
+    "TLS_CERT": "/etc/nexus/tls/cert.pem",
+    "URL": "https://127.0.0.1:8443/health",
+    "UNITS": "nexus-keyd.service nexus-web-api.service nexus-scheduler.service",
+    "DISK_PATHS": "/var/lib/nexus /var /boot",
+    "MIN_FREE_MB": "1024",  # absolute floor per filesystem (/boot: a tenth of it)
+    "MIN_FREE_PCT": "2",
+    "TIMEOUT": "300",  # seconds to wait for services to come up
+    "INTERVAL": "5",
+    "SYSTEMCTL": "systemctl",
+}
+
+
+def cfg(name):
+    return os.environ.get("NEXUS_HEALTH_" + name, DEFAULTS[name])
+
+
+class Fail(Exception):
+    pass
+
+
+def check_disk():
+    min_mb, min_pct = int(cfg("MIN_FREE_MB")), float(cfg("MIN_FREE_PCT"))
+    seen = set()
+    for path in cfg("DISK_PATHS").split():
+        if not os.path.exists(path):
+            continue
+        st = os.statvfs(path)
+        if st.f_fsid in seen and st.f_fsid != 0:
+            continue
+        seen.add(st.f_fsid)
+        free = st.f_bavail * st.f_frsize
+        total = st.f_blocks * st.f_frsize
+        floor = min_mb * 2**20 // (10 if path == "/boot" else 1)
+        pct = 100.0 * free / total if total else 100.0
+        if free < floor or pct < min_pct:
+            raise Fail(f"{path}: only {free // 2**20} MiB ({pct:.1f} %) free")
+
+
+def systemctl(*args):
+    return subprocess.run([cfg("SYSTEMCTL"), *args], capture_output=True, text=True)
+
+
+def enabled_units():
+    return [u for u in cfg("UNITS").split() if systemctl("is-enabled", "--quiet", u).returncode == 0]
+
+
+def check_units(units):
+    down = [u for u in units if systemctl("is-active", "--quiet", u).returncode != 0]
+    if down:
+        raise Fail("not active: " + " ".join(down))
+
+
+def check_keyd():
+    path = cfg("KEYD_SOCKET")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(5)
+        try:
+            s.connect(path)
+        except OSError as e:
+            raise Fail(f"keyd socket {path}: {e.strerror or e}")
+
+
+def check_web_api():
+    # The certificate is self-signed and its SAN holds the hostname and management
+    # addresses, not 127.0.0.1: pin it as the only trust anchor, skip the name check.
+    try:
+        ctx = ssl.create_default_context(cafile=cfg("TLS_CERT"))
+        ctx.check_hostname = False
+        with urllib.request.urlopen(cfg("URL"), context=ctx, timeout=10) as r:
+            body = json.loads(r.read(4096) or b"{}")
+            if r.status != 200 or body.get("ok") is not True:
+                raise Fail(f"web-api /health: HTTP {r.status} {body}")
+    except Fail:
+        raise
+    except Exception as e:  # URLError, HTTPError (503), ssl errors, bad JSON
+        raise Fail(f"web-api /health: {e}")
+
+
+def chain_hash(prev, seq, ts, actor, action, target, details):
+    """Must match catalog::chain_hash (crates/catalog/src/lib.rs)."""
+    h = hashlib.sha256()
+    for part in (prev, str(seq), str(ts), actor, action, target, details):
+        b = part.encode()
+        h.update(len(b).to_bytes(8, "little"))
+        h.update(b)
+    return h.hexdigest()
+
+
+def verify_audit(conn):
+    """Returns the number of entries; raises Fail at the first broken link."""
+    prev, expect = "0" * 64, 1
+    rows = conn.execute(
+        "SELECT seq, ts, actor, action, target, details, prev_hash, hash FROM audit ORDER BY seq"
+    )
+    for seq, ts, actor, action, target, details, p, h in rows:
+        if seq != expect or p != prev or h != chain_hash(prev, seq, ts, actor, action, target, details):
+            raise Fail(f"audit chain broken at seq {seq}")
+        prev, expect = h, expect + 1
+    return expect - 1
+
+
+def check_catalog():
+    path = cfg("CATALOG")
+    if not os.path.isfile(path):
+        raise Fail(f"catalog {path} missing")
+    # Read-only: a health check must never be the process that alters the catalog.
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
+    try:
+        res = [r[0] for r in conn.execute("PRAGMA integrity_check")]
+        if res != ["ok"]:
+            raise Fail("catalog integrity_check: " + "; ".join(res[:5]))
+        verify_audit(conn)
+    except sqlite3.Error as e:
+        raise Fail(f"catalog: {e}")
+    finally:
+        conn.close()
+
+
+def retry(fn, *args):
+    """Services start in parallel with greenboot: retry until TIMEOUT."""
+    deadline = time.monotonic() + float(cfg("TIMEOUT"))
+    while True:
+        try:
+            return fn(*args)
+        except Fail:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(float(cfg("INTERVAL")))
+
+
+def run():
+    checks = [("disk", check_disk, ())]
+    if os.path.exists(cfg("SETUP_DONE")):
+        units = enabled_units()
+        checks.append(("units", retry, (check_units, units)))
+        if any(u.startswith("nexus-keyd") for u in units):
+            checks.append(("keyd", retry, (check_keyd,)))
+        if any(u.startswith("nexus-web-api") for u in units):
+            checks.append(("web-api", retry, (check_web_api,)))
+        checks.append(("catalog", check_catalog, ()))
+    failed = []
+    for name, fn, args in checks:
+        try:
+            fn(*args)
+            print(f"nexus-health: {name}: ok")
+        except Exception as e:  # Fail, or a bug in a check: either way the boot is not green
+            print(f"nexus-health: {name}: FAILED: {e}", file=sys.stderr)
+            failed.append(name)
+    return failed
+
+
+def main():
+    failed = run()
+    if failed:
+        print("nexus-health: RED (" + ", ".join(failed) + ")", file=sys.stderr)
+        return 1
+    print("nexus-health: GREEN")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
