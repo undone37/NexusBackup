@@ -2085,6 +2085,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nas"
+version = "0.1.0"
+dependencies = [
+ "agent-conn",
+ "agent-core",
+ "anyhow",
+ "chunkstore",
+ "keyd",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tar",
+ "tempfile",
+]
+
+[[package]]
 name = "nbd"
 version = "0.1.0"
 dependencies = [
@@ -3077,11 +3094,13 @@ name = "scheduler"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "catalog",
  "chunkstore",
  "keyd",
  "lettre",
  "libc",
+ "nas",
  "nftsync",
  "reqwest",
  "serde",
@@ -4035,10 +4054,12 @@ dependencies = [
  "agent-proto",
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "catalog",
  "http-body-util",
  "hyper",
  "hyper-util",
+ "nas",
  "rand 0.8.8",
  "rustls",
  "rustls-pki-types",

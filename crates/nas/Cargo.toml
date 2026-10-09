@@ -1,0 +1,38 @@
+[package]
+name = "nas"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "NexusBackup NAS connector (NFS/SMB shares, file level) and its privileged mount helper"
+
+[features]
+# the connector (scan, store, CLI nexus-nas); without it only names/validation,
+# the mount option builder and the helper protocol (web-api, scheduler, nexus-nasmount)
+default = ["connector"]
+connector = ["dep:agent-conn", "dep:agent-core", "dep:chunkstore", "dep:keyd", "dep:serde", "dep:serde_json"]
+
+[dependencies]
+agent-conn = { path = "../agent-conn", optional = true }
+agent-core = { path = "../agent-core", optional = true }
+anyhow = "1"
+chunkstore = { path = "../chunkstore", optional = true }
+keyd = { path = "../keyd", optional = true }
+libc = "0.2"
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
+[[bin]]
+name = "nexus-nas"
+path = "src/main.rs"
+required-features = ["connector"]
+
+# the privileged mount helper: libc + the option builder only
+[[bin]]
+name = "nexus-nasmount"
+path = "src/bin/nasmount.rs"
+
+[dev-dependencies]
+sha2 = "0.10"
+tar = "0.4"
+tempfile = "3"
