@@ -94,7 +94,20 @@ DROP TABLE sources;
 ALTER TABLE sources_v5 RENAME TO sources;
 "#;
 
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5];
+/// v6: NAS shares (docs/nas-connector.md): kinds `nfs` and `smb`, same
+/// rebuild as v4/v5 (ids, rows, constraints kept; foreign keys checked). The
+/// previous release skips it and fails jobs of share sources as unsupported.
+const SCHEMA_V6: &str = r#"
+CREATE TABLE sources_v6 (
+  id INTEGER PRIMARY KEY, tenant TEXT NOT NULL REFERENCES tenants(name),
+  kind TEXT NOT NULL CHECK (kind IN ('pve','linux','truenas','nfs','smb')),
+  name TEXT NOT NULL, config TEXT NOT NULL, UNIQUE (tenant, name));
+INSERT INTO sources_v6 (id, tenant, kind, name, config) SELECT id, tenant, kind, name, config FROM sources;
+DROP TABLE sources;
+ALTER TABLE sources_v6 RENAME TO sources;
+"#;
+
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6];
 
 pub fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
@@ -355,7 +368,7 @@ mod tests {
         .unwrap();
         assert!(conn
             .execute(
-                "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', 'nfs', 'x', '{}')",
+                "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', 'cifs', 'x', '{}')",
                 []
             )
             .is_err());
@@ -364,6 +377,74 @@ mod tests {
         let old = Connection::open(&p).unwrap();
         let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
         assert_eq!(MIGRATIONS[..4].iter().skip(v as usize).count(), 0);
+    }
+
+    /// v6 rebuilds `sources` again (kinds `nfs`, `smb`): earlier rows, ids and
+    /// references survive; the previous release (5 migrations) can still read the file.
+    #[test]
+    fn migration_v6_adds_share_sources() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.pragma_update(None, "foreign_keys", "ON").unwrap();
+            for (i, m) in MIGRATIONS[..5].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                r#"INSERT INTO tenants (name) VALUES ('acme');
+                 INSERT INTO sources (id, tenant, kind, name, config) VALUES (7, 'acme', 'pve', 'cluster', '{}');
+                 INSERT INTO sources (id, tenant, kind, name, config) VALUES (8, 'acme', 'truenas', 'tn', '{}');
+                 INSERT INTO sources (id, tenant, kind, name, config) VALUES (9, 'acme', 'linux', 'web', '{"agent_id":"a"}');
+                 INSERT INTO policies (id, name, schedule, gfs) VALUES (1, 'p', 'daily 22:00', '{}');
+                 INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (3, 'acme', 8, 1, 'g', '["tank/a"]');"#,
+            )
+            .unwrap();
+            for k in ["nfs", "smb"] {
+                assert!(c
+                    .execute(
+                        "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', ?1, 'n', '{}')",
+                        [k]
+                    )
+                    .is_err());
+            }
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let rows: Vec<(i64, String)> = conn
+            .prepare("SELECT id, kind FROM sources ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![(7, "pve".into()), (8, "truenas".into()), (9, "linux".into())]
+        );
+        assert!(
+            conn.execute("DELETE FROM sources WHERE id = 8", []).is_err(),
+            "group reference kept"
+        );
+        for k in ["nfs", "smb"] {
+            conn.execute(
+                "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', ?1, ?1, '{}')",
+                [k],
+            )
+            .unwrap();
+        }
+        assert!(conn
+            .execute(
+                "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', 'cifs', 'x', '{}')",
+                []
+            )
+            .is_err());
+        drop(conn);
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..5].iter().skip(v as usize).count(), 0);
     }
 
     #[test]

@@ -51,6 +51,11 @@
     const s = sources.find((x) => x.id === Number(f.source_id));
     return s?.kind === 'truenas' ? s : null;
   });
+  // An nfs/smb source is one share: the group has no guests.
+  const shareSource = $derived.by(() => {
+    const s = sources.find((x) => x.id === Number(f.source_id));
+    return s?.kind === 'nfs' || s?.kind === 'smb' ? s : null;
+  });
   // Keep the source selection valid when the tenant changes.
   $effect(() => {
     if (open && !tenantSources.some((s) => s.id === f.source_id)) f.source_id = tenantSources[0]?.id ?? 0;
@@ -75,6 +80,8 @@
     let guests: (number | string)[];
     if (linuxSource) {
       guests = [linuxSource.config.agent_id];
+    } else if (shareSource) {
+      guests = [];
     } else if (nasSource) {
       guests = f.datasets.filter((d) => nasSource.config.datasets.includes(d));
     } else {
@@ -132,7 +139,11 @@
               <td>{x.tenant}</td>
               <td>{sourceName(x.source_id)}</td>
               <td>{policyName(x.policy_id)}</td>
-              <td class="mono">{x.guests.map(guestText).join(', ')}</td>
+              <td class="mono"
+                >{x.guests.length
+                  ? x.guests.map(guestText).join(', ')
+                  : (t.sources.kinds[sources.find((s) => s.id === x.source_id)?.kind ?? ''] ?? '—')}</td
+              >
               <td class="actions">
                 <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
                 <button type="button" class="small danger" onclick={() => remove(x)}>{t.delete}</button>
@@ -173,6 +184,8 @@
     </div>
     {#if linuxSource}
       <p class="muted">{t.groups.linuxGuest(agentName(linuxSource.config.agent_id))}</p>
+    {:else if shareSource}
+      <p class="muted">{t.groups.wholeShare}</p>
     {:else if nasSource}
       <fieldset class="field">
         <legend>{t.groups.datasets}</legend>

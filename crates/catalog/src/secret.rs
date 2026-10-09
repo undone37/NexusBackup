@@ -36,7 +36,8 @@ pub const SEALED_PREFIX: &str = "sealed:v1:";
 pub const TOTP_PREFIX: &str = "enc:v1:";
 
 /// JSON keys whose string values are credentials (sealed to the scheduler).
-pub const SECRET_FIELDS: &[&str] = &["token_secret", "key_pem"];
+/// `password` / `keytab`: SMB shares (docs/nas-connector.md).
+pub const SECRET_FIELDS: &[&str] = &["token_secret", "key_pem", "password", "keytab"];
 
 /// Sibling fields that define where a secret is sent; part of its location.
 pub const BINDING_FIELDS: &[&str] = &["host", "port", "connect_addr", "ca_pem", "token_id", "user", "host_key"];

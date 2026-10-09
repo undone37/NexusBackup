@@ -13,7 +13,11 @@ policy_module(nexus, 1.0.0)
 #               ├─ nexus_offsite_exec_t > nexus_offsite_t  SFTP boxes, stores
 #               ├─ nexus_agentctl_exec_t > nexus_agentctl_t  Linux/Windows agents (TCP 7444, mTLS),
 #               │                                          stores, agent CA (only this domain)
-#               └─ nexus_truenas_exec_t > nexus_truenas_t  TrueNAS API (wss 443) + ssh (in-domain), stores
+#               ├─ nexus_truenas_exec_t > nexus_truenas_t  TrueNAS API (wss 443) + ssh (in-domain), stores
+#               └─ nexus_nas_exec_t ──> nexus_nas_t        NFS/SMB shares: reads nfs_t/cifs_t through the
+#                                                          mount fd from nexus-nasmount, stores
+#   init_t ── nexus_nasmount_exec_t ──> nexus_nasmount_t   root, CAP_SYS_ADMIN: one detached read-only
+#                                                          NFS/CIFS mount per socket connection
 #   init_t ── nexus_setup_exec_t ─────> nexus_setup_t      first boot (root): nmcli/hostnamectl/systemctl
 #   init_t ── nexus_nftsync_exec_t ───> nexus_nftsync_t    root oneshot ── iptables_exec_t ──> iptables_t
 #
@@ -29,6 +33,8 @@ gen_require(`
 	type ssh_exec_t;
 	type qemu_exec_t;
 	type tpm_device_t;
+	type nfs_t;
+	type cifs_t;
 	class service { start stop status reload enable disable };
 	class system { reload status };
 ')
@@ -65,6 +71,8 @@ nexus_job(pve)
 nexus_job(offsite)
 nexus_job(agentctl)
 nexus_job(truenas)
+nexus_job(nas)
+nexus_daemon(nasmount)
 
 # restore micro-VM (EL's qemu-kvm, entered from nexus_pve_t only)
 type nexus_restorevm_t, nexus_domain;
@@ -112,6 +120,8 @@ type nexus_pve_tmp_t;		# restore micro-VM work dir (sockets, console log)
 files_tmp_file(nexus_pve_tmp_t)
 type nexus_agent_ca_t;		# appliance CA for agents: CA + client keys (nexus-agentctl only)
 files_type(nexus_agent_ca_t)
+type nexus_nasmount_var_run_t;	# mount helper socket dir + per-instance runtime dirs (Kerberos cache)
+files_pid_file(nexus_nasmount_var_run_t)
 # backup agents listen on 7444/tcp (docs/agent-protocol.md)
 type nexus_agent_port_t;
 corenet_port(nexus_agent_port_t)
@@ -247,6 +257,7 @@ domtrans_pattern(nexus_scheduler_t, nexus_pve_exec_t, nexus_pve_t)
 domtrans_pattern(nexus_scheduler_t, nexus_offsite_exec_t, nexus_offsite_t)
 domtrans_pattern(nexus_scheduler_t, nexus_agentctl_exec_t, nexus_agentctl_t)
 domtrans_pattern(nexus_scheduler_t, nexus_truenas_exec_t, nexus_truenas_t)
+domtrans_pattern(nexus_scheduler_t, nexus_nas_exec_t, nexus_nas_t)
 # the scheduler runs with NoNewPrivileges, inherited by its jobs
 allow nexus_scheduler_t nexus_job_domain:process2 { nnp_transition nosuid_transition };
 allow nexus_scheduler_t nexus_job_domain:process { sigkill signal };
@@ -476,3 +487,60 @@ files_dontaudit_search_home(nexus_truenas_t)
 # files get: tar/zip downloads for the web-api
 manage_files_pattern(nexus_truenas_t, nexus_downloads_t, nexus_downloads_t)
 allow nexus_truenas_t nexus_downloads_t:dir rw_dir_perms;
+
+########################################
+# NAS shares (crate nas, docs/nas-connector.md). Decision: kernel NFS/CIFS mounts,
+# read-only, in a private mount namespace, by a small privileged helper.
+#
+# nexus-nasmount (root, CAP_SYS_ADMIN only, socket-activated per connection by
+# nexus-nasmount.socket): builds one mount with fsopen/fsconfig/fsmount, detached
+# (an anonymous mount namespace no process lives in), ro,nosuid,nodev,noexec,
+# nosymfollow, and passes the mount fd to the connector. It never attaches a mount
+# anywhere (no move_mount, no mounton on any directory), has no file access beyond
+# its runtime dirs, and opens no sockets itself (the NFS/SMB connections belong to
+# the kernel).
+
+# systemd creates /run/nexus-nasmount/mount.sock and the per-instance runtime dirs
+init_named_socket_activation(nexus_nasmount_t, nexus_nasmount_var_run_t, "nexus-nasmount")
+# the accepted connection on fd 0 (StandardInput=socket): systemd labels activation
+# sockets with the service domain, so the connection is its own socket
+allow nexus_nasmount_t self:unix_stream_socket { getattr getopt setopt read write shutdown };
+# building the mount: only NFS and CIFS superblocks
+allow nexus_nasmount_t self:capability sys_admin;
+fs_mount_nfs(nexus_nasmount_t)
+fs_mount_cifs(nexus_nasmount_t)
+allow nexus_nasmount_t { nfs_t cifs_t }:filesystem getattr;
+# NFSv4 walks from the pseudo root to the export path as the mounting process
+allow nexus_nasmount_t { nfs_t cifs_t }:dir { getattr search };
+# fsopen("nfs4"/"cifs") loads the file system module on first use
+kernel_request_load_module(nexus_nasmount_t)
+# peer check: NEXUS_NASMOUNT_ALLOW_USER -> uid
+auth_read_passwd(nexus_nasmount_t)
+# SMB Kerberos (sec=krb5): keytab + ticket cache in its private runtime dir, kinit (bin_t)
+manage_dirs_pattern(nexus_nasmount_t, nexus_nasmount_var_run_t, nexus_nasmount_var_run_t)
+manage_files_pattern(nexus_nasmount_t, nexus_nasmount_var_run_t, nexus_nasmount_var_run_t)
+corecmd_exec_bin(nexus_nasmount_t)
+files_read_etc_files(nexus_nasmount_t)
+sysnet_dns_name_resolve(nexus_nasmount_t)
+corenet_tcp_connect_kerberos_port(nexus_nasmount_t)
+allow nexus_nasmount_t self:key { create write search view link setattr };
+neverallow nexus_nasmount_t { nexus_store_t nexus_keyd_var_lib_t nexus_catalog_t nexus_scheduler_var_run_t nexus_sshkey_t }:file *;
+
+# nexus-nas: connects to the helper, receives the mount fd and reads the share
+# through it (never mounts, never writes there); tree snapshots in the tenant store
+# (job domain rules: job dir, store, keyd); file downloads.
+allow nexus_nas_t nexus_nasmount_var_run_t:dir search_dir_perms;
+allow nexus_nas_t nexus_nasmount_var_run_t:sock_file write;
+# systemd creates the listening socket in the service domain (socket activation)
+allow nexus_nas_t nexus_nasmount_t:unix_stream_socket connectto;
+allow nexus_nas_t nexus_nasmount_t:fd use;
+allow nexus_nas_t { nfs_t cifs_t }:filesystem getattr;
+allow nexus_nas_t { nfs_t cifs_t }:dir list_dir_perms;
+allow nexus_nas_t { nfs_t cifs_t }:file read_file_perms;
+allow nexus_nas_t { nfs_t cifs_t }:lnk_file { getattr read };
+allow nexus_nas_t { nfs_t cifs_t }:{ fifo_file sock_file chr_file blk_file } getattr;
+neverallow nexus_nas_t { nfs_t cifs_t }:file { write append create unlink setattr relabelfrom };
+neverallow nexus_nas_t { nfs_t cifs_t }:filesystem { mount remount unmount };
+# files get: tar/zip downloads for the web-api
+manage_files_pattern(nexus_nas_t, nexus_downloads_t, nexus_downloads_t)
+allow nexus_nas_t nexus_downloads_t:dir rw_dir_perms;

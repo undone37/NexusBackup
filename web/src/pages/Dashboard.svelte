@@ -73,15 +73,22 @@
     return m;
   });
 
-  // Snapshot source names a guest can have: VM/CT IDs (pve), agent ids (linux hosts)
-  // or datasets (truenas: `nas-<source>-<pool.dataset>`).
-  const isNas = (g: Group) => sources.find((s) => s.id === g.source_id)?.kind === 'truenas';
+  // Snapshot source names a guest can have: VM/CT IDs (pve), agent ids (linux hosts),
+  // datasets (truenas: `nas-<source>-<pool.dataset>`) or the share itself (nfs/smb:
+  // `share-<source>`, the group has no guests: one row for the share).
+  const kindOf = (g: Group) => sources.find((s) => s.id === g.source_id)?.kind;
+  const isNas = (g: Group) => kindOf(g) === 'truenas';
+  const isShare = (g: Group) => kindOf(g) === 'nfs' || kindOf(g) === 'smb';
+  const SHARE = '\u0000share';
+  const guestsOf = (g: Group): (number | string)[] => (isShare(g) ? [SHARE] : g.guests);
   const sourcesOf = (g: Group, guest: number | string) =>
-    typeof guest === 'string'
-      ? isNas(g)
-        ? [`nas-${g.source_id}-${guest.replaceAll('/', '.')}`]
-        : [`host-${guest}`]
-      : [`vm-${guest}`, `ct-${guest}`];
+    guest === SHARE
+      ? [`share-${g.source_id}`]
+      : typeof guest === 'string'
+        ? isNas(g)
+          ? [`nas-${g.source_id}-${guest.replaceAll('/', '.')}`]
+          : [`host-${guest}`]
+        : [`vm-${guest}`, `ct-${guest}`];
 
   function lastFor(g: Group, guest: number | string): Snapshot | undefined {
     for (const s of sourcesOf(g, guest)) {
@@ -98,6 +105,7 @@
       .sort((a, b) => b.time - a.time)[0];
   }
   function guestLabel(g: Group, guest: number | string) {
+    if (guest === SHARE) return sources.find((s) => s.id === g.source_id)?.name ?? `share-${g.source_id}`;
     if (typeof guest === 'string')
       return isNas(g) ? guest : (agents.find((a) => a.id === guest)?.name ?? `host-${guest}`);
     return lastFor(g, guest)?.source ?? String(guest);
@@ -117,7 +125,7 @@
     let all = 0;
     let ok = 0;
     for (const g of groups)
-      for (const v of g.guests) {
+      for (const v of guestsOf(g)) {
         all++;
         if (status(g, lastFor(g, v)) === 'ok') ok++;
       }
@@ -179,14 +187,14 @@
           </thead>
           <tbody>
             {#each groups as g (g.id)}
-              {#each g.guests as v, i (v)}
+              {#each guestsOf(g) as v, i (v)}
                 {@const s = lastFor(g, v)}
                 {@const st = status(g, s)}
                 {@const ver = newestWhere(g, v, (x) => !!x.verified)}
                 {@const off = newestWhere(g, v, (x) => x.offsite)}
                 <tr>
                   {#if i === 0}
-                    <th scope="rowgroup" rowspan={g.guests.length}>
+                    <th scope="rowgroup" rowspan={guestsOf(g).length}>
                       {g.name}
                       <div class="muted">{g.tenant} · {policyOf(g)?.name ?? '—'}</div>
                     </th>
@@ -204,7 +212,7 @@
                   </td>
                   <td><span class="chip {statusCls[st]}">{t.dash[st]}</span></td>
                   {#if can.backup(session.user) && i === 0}
-                    <td class="actions" rowspan={g.guests.length}>
+                    <td class="actions" rowspan={guestsOf(g).length}>
                       <button type="button" class="small" onclick={() => backupNow(g)}>{t.dash.runBackup}</button>
                     </td>
                   {/if}

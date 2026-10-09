@@ -10,6 +10,8 @@ enable nexus-setup.service
 enable nexus-nft-sync.service
 enable nexus-nft-sync.path
 enable nexus-nft-sync.timer
+# NAS mount helper (socket-activated per connection, docs/nas-connector.md).
+enable nexus-nasmount.socket
 # nexus-keyd, nexus-web-api and nexus-scheduler are enabled by nexus-setup
 # (`systemctl enable --now`) as its last step.
 disable nexus-keyd.service

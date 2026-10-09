@@ -1,0 +1,11 @@
+nexus-nasmount 1
+fs nfs
+host fd00::5
+addr fd00::5
+port 2049
+version 3
+sec sys
+timeout 30
+export /srv/many
+mount_port 12048
+end

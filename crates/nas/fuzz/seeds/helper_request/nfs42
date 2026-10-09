@@ -1,0 +1,11 @@
+nexus-nasmount 1
+fs nfs
+host nas.lab
+addr 10.0.2.2
+port 12049
+version 4.2
+sec sys
+timeout 60
+export /srv/share
+mount_port 20048
+end

@@ -95,7 +95,7 @@ interface Job {
 const db = {
   users: [] as User[],
   tenants: [] as { name: string; offsite: Json }[],
-  sources: [] as { id: number; tenant: string; kind: 'pve' | 'linux'; name: string; config: Json }[],
+  sources: [] as { id: number; tenant: string; kind: 'pve' | 'linux' | 'nfs' | 'smb'; name: string; config: Json }[],
   agents: [] as Agent[],
   policies: [] as { id: number; name: string; schedule: string; gfs: Json; offsite: boolean }[],
   groups: [] as { id: number; tenant: string; source_id: number; policy_id: number; name: string; guests: (number | string)[] }[],
@@ -374,11 +374,29 @@ function seed() {
     config: { agent_id: web01.id, paths: ['/etc', '/home', '/var/www'], excludes: ['*.tmp', '/var/www/shop/cache/**'], hooks: true },
   };
   db.sources.push(s3);
+  // NFS/SMB shares (docs/nas-connector.md): one share per source, groups without guests.
+  const s4 = {
+    id: nextId(),
+    tenant: 'acme',
+    kind: 'nfs' as const,
+    name: 'filer-projects',
+    config: { host: 'filer.acme.lan', port: 2049, version: '4.2', export: '/export/projects', snapshot_dir: '.snapshot', snapshot_prefix: 'nightly.', snapshot_order: 'mtime', excludes: ['*.tmp'], threads: 16, xattrs: true, timeout_secs: 60 } as Json,
+  };
+  const s5 = {
+    id: nextId(),
+    tenant: 'acme',
+    kind: 'smb' as const,
+    name: 'fs01-data',
+    config: { host: 'fs01.acme.lan', port: 445, version: '3.1.1', share: 'Data', user: 'svc-backup', domain: 'ACME', sec: 'ntlmssp', sign: true, seal: true, password: 'SECRET', excludes: [], threads: 16, xattrs: true, timeout_secs: 60 } as Json,
+  };
+  db.sources.push(s4, s5);
   db.groups.push(
     { id: nextId(), tenant: 'default', source_id: s1.id, policy_id: gold.id, name: 'production', guests: [100, 101, 200] },
     { id: nextId(), tenant: 'default', source_id: s1.id, policy_id: bronze.id, name: 'development', guests: [102] },
     { id: nextId(), tenant: 'acme', source_id: s2.id, policy_id: gold.id, name: 'acme-all', guests: [300, 301] },
     { id: nextId(), tenant: 'acme', source_id: s3.id, policy_id: gold.id, name: 'acme-hosts', guests: [web01.id] },
+    { id: nextId(), tenant: 'acme', source_id: s4.id, policy_id: gold.id, name: 'acme-filer', guests: [] },
+    { id: nextId(), tenant: 'acme', source_id: s5.id, policy_id: bronze.id, name: 'acme-fs01', guests: [] },
   );
   const day = (d: number) => Math.floor(t / 86400 - d) * 86400 + 3600;
   for (const [tenant, g, sz, skip] of [
@@ -396,6 +414,9 @@ function seed() {
   db.snapshots.push(
     snap('acme', `host-${web01.id}`, day(1), 412 << 20, true, true, day(1) + 7200),
     snap('acme', `host-${web01.id}`, day(0), 398 << 20, true, false, null),
+    snap('acme', `share-${s4.id}`, day(1), 3 * 2 ** 30, true, true, day(1) + 7200),
+    snap('acme', `share-${s4.id}`, day(0), 3 * 2 ** 30, true, false, null),
+    snap('acme', `share-${s5.id}`, day(0), 900 << 20, true, false, null),
   );
   const old = (j: Job, ago: number, state: string, log: string) => {
     Object.assign(j, { created: t - ago, started: t - ago + 2, finished: t - ago + 600, state, log, plan: [] });
@@ -455,6 +476,10 @@ async function quorum(u: User, action: string, params: Json, extra: Json = {}): 
 
 function stripSource(s: (typeof db.sources)[number]) {
   if (s.kind === 'linux') return s;
+  if (s.kind === 'nfs' || s.kind === 'smb') {
+    const { password, keytab, ...config } = s.config;
+    return s.kind === 'nfs' ? { ...s, config } : { ...s, config: { ...config, password_set: !!password, keytab_set: !!keytab } };
+  }
   const { token_secret, ...config } = s.config;
   return { ...s, config: { ...config, token_secret_set: !!token_secret } };
 }
@@ -583,12 +608,31 @@ function linuxConfig(tenant: string, cfg: Json): Json {
   return { agent_id: cfg.agent_id, paths, excludes, hooks: !!cfg.hooks };
 }
 
+// nfs/smb source config: NFS and SMB fields must not be mixed (deny_unknown_fields in the web-api).
+function shareConfig(kind: string, cfg: Json): Json {
+  const common = ['host', 'port', 'version', 'snapshot_dir', 'snapshot_prefix', 'snapshot_order', 'excludes', 'threads', 'xattrs', 'timeout_secs'];
+  const own = kind === 'nfs' ? ['export', 'mount_port'] : ['share', 'user', 'domain', 'sec', 'sign', 'seal', 'password', 'keytab', 'principal'];
+  for (const k of Object.keys(cfg ?? {})) if (![...common, ...own].includes(k)) throw new HttpError(400, `config: unknown field "${k}"`);
+  if (!cfg?.host) throw new HttpError(400, 'host: required');
+  if (kind === 'nfs' && !String(cfg.export ?? '').startsWith('/')) throw new HttpError(400, 'export: absolute path required');
+  if (kind === 'smb' && !cfg.share) throw new HttpError(400, 'share: required');
+  return { ...cfg };
+}
+
 on('POST', '/sources', async (c) => {
   const u = need(c.user, 'admin');
   const { tenant, name, config, kind = 'pve' } = c.body;
   find(db.tenants, (t) => t.name === tenant, 'tenant');
   if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
-  if (kind !== 'pve' && kind !== 'linux') throw new HttpError(400, 'kind: must be pve or linux');
+  if (!['pve', 'linux', 'nfs', 'smb'].includes(kind)) throw new HttpError(400, 'kind: must be pve, linux, nfs or smb');
+  if (kind === 'nfs' || kind === 'smb') {
+    const cfg = shareConfig(kind, config);
+    if (kind === 'smb' && !cfg.password && !cfg.keytab) throw new HttpError(400, 'config.password (or keytab): required');
+    const s = { id: nextId(), tenant, kind: kind as 'nfs' | 'smb', name, config: cfg };
+    db.sources.push(s);
+    await audit(u.name, 'source.create', `source/${s.id}`, { name, kind });
+    return [201, stripSource(s)];
+  }
   if (kind === 'linux') {
     const s = { id: nextId(), tenant, kind: 'linux' as const, name, config: linuxConfig(tenant, config) };
     db.sources.push(s);
@@ -609,6 +653,13 @@ on('PUT', '/sources/:id', async (c, [id]) => {
     const cfg = linuxConfig(s.tenant, c.body.config);
     // Groups of this source back up exactly its agent.
     for (const g of db.groups) if (g.source_id === s.id) g.guests = [cfg.agent_id];
+    Object.assign(s, { name: c.body.name ?? s.name, config: cfg });
+    await audit(u.name, 'source.update', `source/${s.id}`, {});
+    return [200, stripSource(s)];
+  }
+  if (s.kind === 'nfs' || s.kind === 'smb') {
+    const cfg = shareConfig(s.kind, c.body.config);
+    if (!cfg.password && !cfg.keytab) Object.assign(cfg, { password: s.config.password, keytab: s.config.keytab });
     Object.assign(s, { name: c.body.name ?? s.name, config: cfg });
     await audit(u.name, 'source.update', `source/${s.id}`, {});
     return [200, stripSource(s)];
@@ -656,6 +707,8 @@ function checkGuests(src: (typeof db.sources)[number], guests: unknown) {
   if (src.kind === 'linux') {
     if (guests.length !== 1 || guests[0] !== src.config.agent_id)
       throw new HttpError(400, 'guests: a linux source needs exactly [its agent_id]');
+  } else if (src.kind === 'nfs' || src.kind === 'smb') {
+    if (guests.length) throw new HttpError(400, "guests: a share source's group lists no guests");
   } else if (guests.some((g) => !Number.isInteger(g) || g < 100)) throw new HttpError(400, 'guests: VM/CT IDs required');
 }
 on('POST', '/groups', async (c) => {

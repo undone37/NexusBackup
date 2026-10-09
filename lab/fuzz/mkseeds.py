@@ -212,4 +212,25 @@ put("truenas", "hostile_stream", "tar",
              ("d/f", b"hello", {"SCHILY.xattr.user.comment": "nexus test", "mtime": "1.5"})]))
 put("truenas", "hostile_stream", "tar-hostile",
     pax_tar([("d/", None, {}), ("d/f", b"hello", {"path": "../../etc/shadow"})]))
+# ---------------------------------------------------------------- nas
+# requests the connector sends to nexus-nasmount (crates/nas/src/proto.rs)
+def nas_req(*kv):
+    return "nexus-nasmount 1\n" + "".join(f"{k} {v}\n" for k, v in kv) + "end\n"
+
+
+put("nas", "helper_request", "nfs42",
+    nas_req(("fs", "nfs"), ("host", "nas.lab"), ("addr", "10.0.2.2"), ("port", "12049"), ("version", "4.2"),
+            ("sec", "sys"), ("timeout", "60"), ("export", "/srv/share"), ("mount_port", "20048")))
+put("nas", "helper_request", "nfs3",
+    nas_req(("fs", "nfs"), ("host", "fd00::5"), ("addr", "fd00::5"), ("port", "2049"), ("version", "3"),
+            ("sec", "sys"), ("timeout", "30"), ("export", "/srv/many"), ("mount_port", "12048")))
+put("nas", "helper_request", "smb",
+    nas_req(("fs", "smb"), ("host", "fs1"), ("addr", "10.0.2.2"), ("port", "10445"), ("version", "3.1.1"),
+            ("sec", "ntlmssp"), ("timeout", "60"), ("share", "Data Files"), ("user", "nexusbackup"),
+            ("domain", "LAB"), ("sign", "1"), ("seal", "1"), ("password", "73332c63723d6574")))
+put("nas", "helper_request", "krb5",
+    nas_req(("fs", "smb"), ("host", "fs1.lab.example"), ("addr", "10.0.2.2"), ("port", "445"), ("version", "3"),
+            ("sec", "krb5"), ("timeout", "60"), ("share", "share"), ("sign", "1"), ("seal", "0"),
+            ("keytab", "0502000000"), ("principal", "backup@LAB.EXAMPLE")))
+put("nas", "helper_request", "answer", "error nfs: access denied by server\n")
 print("seeds written")

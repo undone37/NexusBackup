@@ -61,6 +61,8 @@
 <ErrorBanner {error} />
 
 {#if job}
+  {@const torn = (job.result?.snapshots ?? []).filter((x) => x.consistent === false).map((x) => x.source)}
+  {#if torn.length}<p class="banner warn">{t.jobs.notConsistent(torn.join(', '))}</p>{/if}
   <div class="two-col">
     <section class="card">
       <dl class="kv">

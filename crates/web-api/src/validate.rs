@@ -93,8 +93,13 @@ pub fn host_path(s: &str, what: &str) -> ApiResult<()> {
     Ok(())
 }
 
-/// `vm-<vmid>`, `ct-<vmid>`, `host-<agent_id>` or `nas-<source-id>-<dataset>` (TrueNAS).
+/// `vm-<vmid>`, `ct-<vmid>`, `host-<agent_id>`, `nas-<source-id>-<dataset>` (TrueNAS) or `share-<source-id>` (NFS/SMB).
 pub fn source_ref(s: &str) -> ApiResult<()> {
+    if s.starts_with("share-") {
+        return nas::parse_source_name(s)
+            .map(|_| ())
+            .ok_or_else(|| ApiError::bad("source: expected share-<source-id>"));
+    }
     if s.starts_with("nas-") {
         return truenas::parse_source_name(s)
             .map(|_| ())

@@ -1,0 +1,15 @@
+nexus-nasmount 1
+fs smb
+host fs1
+addr 10.0.2.2
+port 10445
+version 3.1.1
+sec ntlmssp
+timeout 60
+share Data Files
+user nexusbackup
+domain LAB
+sign 1
+seal 1
+password 73332c63723d6574
+end

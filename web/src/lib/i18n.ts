@@ -120,6 +120,7 @@ export const en = {
     jobStarted: (id: number) => `Job #${id} started.`,
     restorePath: 'Restore to path',
     agent: (n: string) => `Agent ${n}`,
+    share: (n: string) => `Share ${n}`,
     instantHint:
       'The guest starts immediately from the backup over NBD; disks are moved to the target storage while it runs.',
   },
@@ -177,6 +178,8 @@ export const en = {
     detail: (id: number) => `Job #${id}`,
     live: 'Live — refreshing every 2 s',
     back: 'All jobs',
+    notConsistent: (srcs: string) =>
+      `Not point-in-time consistent: ${srcs} (read without a snapshot of the source, or files changed while they were read).`,
     anyState: 'Any state',
     anyKind: 'Any kind',
     kinds: {
@@ -225,7 +228,13 @@ export const en = {
     storage: 'Restore storage',
     fleecing: 'Fleecing storage',
     kind: 'Source type',
-    kinds: { pve: 'Proxmox VE cluster', linux: 'Linux host (agent)', truenas: 'TrueNAS (ZFS datasets)' } as Record<
+    kinds: {
+      pve: 'Proxmox VE cluster',
+      linux: 'Linux host (agent)',
+      truenas: 'TrueNAS (ZFS datasets)',
+      nfs: 'NFS share',
+      smb: 'SMB share',
+    } as Record<
       string,
       string
     >,
@@ -256,6 +265,39 @@ export const en = {
       authorizedKeysHint:
         'Contains the forced command: the key can only list, diff and read snapshots of the datasets above. Update it on TrueNAS whenever datasets change.',
       datasetsShort: 'Datasets',
+    },
+    sh: {
+      host: 'Server (host name or IP)',
+      port: 'Port',
+      version: 'Protocol version',
+      export: 'Export path (e.g. /srv/share)',
+      mountPort: 'mountd port (NFSv3)',
+      mountPortHint: 'NFSv3 is mounted without the portmapper: the server must run mountd on a fixed port.',
+      share: 'Share name',
+      user: 'User',
+      domain: 'Domain (optional)',
+      auth: 'Authentication',
+      auths: { ntlmssp: 'Password (NTLMSSP)', krb5: 'Kerberos (keytab)' } as Record<string, string>,
+      password: 'Password',
+      keytab: 'Keytab file',
+      keytabSet: 'A keytab is stored; choose a file only to replace it.',
+      principal: 'Kerberos principal (user@REALM)',
+      sign: 'Require signing',
+      seal: 'Require encryption (SMB 3)',
+      snapshotDir: 'NAS snapshot directory (optional)',
+      snapshotDirHint:
+        'E.g. .zfs/snapshot, .snapshot or ~snapshot. The newest snapshot there is read. Without it the backup reads the live share and is not point-in-time consistent.',
+      snapshotPrefix: 'Snapshot name prefix (optional)',
+      snapshotOrder: 'Newest snapshot by',
+      orders: { name: 'Name (time-stamped names)', mtime: 'Modification time' } as Record<string, string>,
+      excludes: 'Exclude patterns (one glob per line, optional)',
+      excludesHint: 'E.g. *.tmp or /scratch/**. Snapshot directories (.snapshot, ~snapshot, .zfs) are always excluded.',
+      threads: 'Scan threads',
+      xattrs: 'Back up extended attributes and ACLs',
+      timeout: 'Server timeout (seconds)',
+      exportInvalid: 'The export path must be absolute.',
+      shareHint: 'Read only. The server decides access with this user; it must be able to read everything.',
+      nfsHint: 'Export the share read-only to the appliance with all_squash,anonuid=0,anongid=0 so the connector can read every file.',
     },
     target: 'Target',
     details: 'Details',
@@ -324,6 +366,7 @@ export const en = {
     guestsShort: 'Guests',
     linuxGuest: (n: string) => `Backs up the host of agent ${n} (the paths configured in the source).`,
     datasets: 'Datasets (none selected = all datasets of the source)',
+    wholeShare: 'Backs up the whole share (the export or share configured in the source).',
   },
   users: {
     title: 'Users',
