@@ -14,6 +14,20 @@ jobs:
       - run: prove pve-plugin/t
       - run: python3 -m unittest discover -s os/greenboot/tests
       - run: release/check-trust.sh
+  agent-windows:
+    # Windows agent: cross-compile in podman (rust + mingw-w64), clippy for the Windows
+    # target, size/import checks; platform-independent unit tests on Linux.
+    # No Windows runner on purpose (docs/agent-windows.md "Untested").
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p agent-core -p agent-windows
+      - run: crates/agent-windows/build.sh --test-key --clippy
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexus-agent-windows
+          path: target/agent-dist/windows/
   audit:
     runs-on: ubuntu-latest
     steps:

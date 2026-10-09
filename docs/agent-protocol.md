@@ -119,3 +119,24 @@ These pin down points the message table leaves open; an agent must behave as des
   `SCHILY.xattr.*`).
 - **Consistency.** `Prepared.consistent = false` or entries with `inconsistent` → the backup is committed and
   the scheduler raises a `backup_inconsistent` warning.
+
+## v1.1 (additive, 2026-10-09: Windows agent)
+Old peers are unaffected: postcard enum tags of v1 did not move (new variants are
+appended; checked by `agent-proto` tests), and v1.1 messages are only sent when the
+peer announced them.
+- `SnapshotKind::Vss` (appended): Windows Volume Shadow Copy (`Volumes`, `Prepared.snapshots`).
+- `Writers { job }` (appliance → agent, after `Prepared`, only if `HelloReply.caps`
+  contains `"vss-writers"`) → `WritersReport { job, writers: [VssWriter { name, class_id,
+  instance, participated, state, failure, application }] }`: which VSS writers took part
+  in the job's snapshot (`participated` = not excluded by `vss_exclude_writers`;
+  `failure` = HRESULT text if the writer failed; `application` = SQL Server / Exchange /
+  AD writer). The same information is always in `Prepared.hook_log` as text.
+  **Open (appliance):** `agent-conn` does not request `Writers` yet; the job log shows
+  the `hook_log` summary, and `consistent = false` already raises `backup_inconsistent`
+  when an application writer failed.
+- Windows path and metadata conventions (`Entry.path` = `C/Users/x`, request paths
+  `/C/Users/x`, xattrs `win.sd`, `win.attrs`, `win.created`, `win.reparse`, `win.ads`,
+  ADS as entries `<path>:<stream>`): docs/agent-windows.md.
+- Shared implementation: both agents use `crates/agent-core` (session state machine,
+  enrollment, chunking, cache, restore stream, update checks); the agent metadata cache
+  is format 2 (adds per-volume change-journal marks; format 1 still loads).
