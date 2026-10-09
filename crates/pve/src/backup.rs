@@ -153,6 +153,14 @@ impl Cluster {
             bail!("guest {vmid} is not a VM ({kind})");
         }
         let ssh = self.ssh(&node)?;
+        // The node decides incremental vs. full (bitmap reuse) from its copy of
+        // the index; a stale one (new/replaced store, retention since the last
+        // push) would make PVE reuse a bitmap whose base snapshot is gone.
+        ssh.run(
+            &format!("put-index {}", self.storage),
+            Some(&serde_json::to_vec(&build_index(store)?)?),
+        )
+        .with_context(|| format!("push index to {node}"))?;
         let fleecing = format!("enabled=1,storage={}", self.fleecing_storage);
         let upid = self.api.start_backup(&node, vmid, &self.storage, Some(&fleecing))?;
         let job = self.wait_job(&node, ssh, vmid, &upid, "qemu")?;

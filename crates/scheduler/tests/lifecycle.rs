@@ -230,6 +230,11 @@ esac"#,
         log.contains("backup-all") && log.contains("committed vm-100/1"),
         "{log}"
     );
+    let br: Value = serde_json::from_str(&q::<String>(&db, "SELECT result FROM jobs WHERE kind='backup'")).unwrap();
+    assert_eq!(
+        br,
+        json!({"snapshots": [{"source": "vm-100", "time": 1}], "source": "vm-100", "time": 1})
+    );
     let log: String = q(&db, "SELECT log FROM jobs WHERE kind='retention'");
     assert!(log.contains("retention vm-100: kept 2, deleted 3"), "{log}");
     let log: String = q(&db, "SELECT log FROM jobs WHERE kind='offsite'");
@@ -326,17 +331,19 @@ esac"#,
     run(&mut s, maint + 120);
     let gp: Value = serde_json::from_str(&q::<String>(
         &db,
-        "SELECT params FROM jobs WHERE kind='files_get' AND state='ok'",
+        "SELECT result FROM jobs WHERE kind='files_get' AND state='ok'",
     ))
     .unwrap();
-    let token = gp["result"]["token"].as_str().unwrap();
+    let token = gp["download_token"].as_str().unwrap();
     assert_eq!(token, TOKEN, "the web-api's token names the file");
     let file = p.join("downloads").join(format!("{token}.zip"));
     assert_eq!(fs::read_to_string(&file).unwrap(), "payload\n");
     assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o640);
-    assert_eq!(gp["result"]["size"], 8);
-    let lp: Value = serde_json::from_str(&q::<String>(&db, "SELECT params FROM jobs WHERE kind='files_list'")).unwrap();
-    assert_eq!(lp["result"][0]["name"], "etc");
+    assert_eq!(gp["size"], 8);
+    assert_eq!(gp["format"], "zip");
+    assert_eq!(gp["entries"], 1);
+    let lp: Value = serde_json::from_str(&q::<String>(&db, "SELECT result FROM jobs WHERE kind='files_list'")).unwrap();
+    assert_eq!(lp["entries"][0]["name"], "etc");
     let calls = fs::read_to_string(p.join("pve-calls")).unwrap();
     assert!(
         calls.contains(&format!("files 100 {} get {}", times[0], file.display())),

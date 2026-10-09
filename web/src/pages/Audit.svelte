@@ -13,13 +13,14 @@
   let verify: { ok: boolean; text: string } | null = $state(null);
   let verifying = $state(false);
 
-  // The API pages forward with ?after=<seq>.
+  const PAGE = 100;
+  // Newest first; older pages via ?before=<oldest seq shown>.
   async function loadMore() {
     try {
-      const after = entries.length ? entries[entries.length - 1].seq : 0;
-      const page = await get<AuditEntry[]>(`/audit?after=${after}`);
+      const q = entries.length ? `before=${entries[entries.length - 1].seq}` : 'order=desc';
+      const page = await get<AuditEntry[]>(`/audit?${q}&limit=${PAGE}`);
       entries = [...entries, ...page];
-      more = page.length > 0;
+      more = page.length === PAGE;
       error = null;
     } catch (e) {
       error = errText(e);
@@ -41,8 +42,6 @@
     }
   }
 
-  // Newest first for reading; paging still walks forward by seq.
-  const rows = $derived([...entries].reverse());
   const short = (h: string) => `${h.slice(0, 10)}…`;
 </script>
 
@@ -61,7 +60,7 @@
 <div class="card">
   {#if !loaded}
     <p class="muted" aria-busy="true">{t.loading}</p>
-  {:else if rows.length === 0}
+  {:else if entries.length === 0}
     <p class="empty">{t.none}</p>
   {:else}
     <div class="table-wrap">
@@ -78,7 +77,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each rows as e (e.seq)}
+          {#each entries as e (e.seq)}
             <tr>
               <td class="num">{e.seq}</td>
               <td class="nowrap">{fmtTime(e.ts)}</td>

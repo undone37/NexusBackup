@@ -1201,6 +1201,7 @@ async fn downloads_only_for_the_requester() {
         .await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
     let token = r.body["download_token"].as_str().unwrap().to_owned();
+    let id = r.body["id"].as_i64().unwrap();
     let url = format!("/api/v1/downloads/{token}");
     assert_eq!(
         t.get(&url, &tina).await.status,
@@ -1224,6 +1225,59 @@ async fn downloads_only_for_the_requester() {
         StatusCode::NOT_FOUND
     );
     assert!(t.audit_actions().contains(&"download.get".into()));
+    // the scheduler's structured result is returned with the job
+    let job = t.get(&format!("/api/v1/jobs/{id}"), &tina).await;
+    assert_eq!(job.body["result"], Value::Null, "NULL until finished");
+    t.st.cat
+        .conn()
+        .execute(
+            "UPDATE jobs SET state = 'ok', result = ?1 WHERE id = ?2",
+            params![
+                json!({"download_token": token, "format": "tar", "entries": 1}).to_string(),
+                id
+            ],
+        )
+        .unwrap();
+    let job = t.get(&format!("/api/v1/jobs/{id}"), &tina).await;
+    assert_eq!(job.body["result"]["entries"], 1);
+    assert_eq!(job.body["result"]["download_token"], json!(token));
+    t.finish();
+}
+
+#[tokio::test]
+async fn audit_paging_both_directions() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    for i in 0..9 {
+        t.st.cat.audit("x", "test", &format!("t/{i}"), &json!({})).unwrap();
+    }
+    let n: i64 = t.scalar("SELECT MAX(seq) FROM audit");
+    let seqs = |r: &R| -> Vec<i64> {
+        r.body
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["seq"].as_i64().unwrap())
+            .collect()
+    };
+    // forward (default): oldest first after a cursor
+    let r = t.get("/api/v1/audit?after=2&limit=3", &admin).await;
+    assert_eq!(seqs(&r), [3, 4, 5]);
+    // newest first, then page backwards with `before`
+    let r = t.get("/api/v1/audit?order=desc&limit=4", &admin).await;
+    assert_eq!(seqs(&r), [n, n - 1, n - 2, n - 3]);
+    let r = t.get(&format!("/api/v1/audit?before={}&limit=4", n - 3), &admin).await;
+    assert_eq!(seqs(&r), [n - 4, n - 5, n - 6, n - 7]);
+    let r = t.get("/api/v1/audit?before=3", &admin).await;
+    assert_eq!(seqs(&r), [2, 1]);
+    assert_eq!(
+        t.get("/api/v1/audit?before=3&order=asc", &admin).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        t.get("/api/v1/audit?order=up", &admin).await.status,
+        StatusCode::BAD_REQUEST
+    );
     t.finish();
 }
 

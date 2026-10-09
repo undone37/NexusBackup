@@ -54,3 +54,25 @@ lab/pve/stop.sh       # ACPI powerdown via QMP
 
 The token currently has `PVEVMAdmin`, `PVEDatastoreAdmin`, `PVEAuditor` on `/` (user and
 token ACLs). This is lab-only; the least-privilege role set for the appliance is TBD.
+
+## M5 end-to-end (`lab/e2e/`)
+
+The control plane as the current user under a scratch root (`target/m5-root`), no sudo:
+`nexus-setup --script` (admin + security officer with TOTP, keyd init, TLS, metrics token),
+then keyd, `nexus-web-api` (https://nexus-m5:18443, certificate verified) and `nexus-scheduler`
+(tick 5 s). `m5-api.sh` drives the REST API only (cookie jar + CSRF): tenant `lab` with the SFTP
+testbox as offsite target, source `pve1`, policy (daily schedule one minute ahead), group [100, 200];
+waits for the scheduled backup → retention → offsite; checks snapshots/metrics/alerts; file
+download from the CT and the VM snapshot (micro-VM) as an operator; verify; quorum (weakening
+policy, approval by the security officer); audit chain. `m5-ui.mjs` repeats the main flow in
+headless Chrome against the embedded SPA.
+
+```sh
+(cd web && npm ci --ignore-scripts && npm run build)
+cargo build --release -p keyd -p pve -p offsite -p web-api -p scheduler -p setup
+restore-vm/build.sh                      # once; m5.sh falls back to the main checkout's build
+crates/offsite/testbox/run.sh start      # SFTP testbox on 127.0.0.1:2223
+LAB_SSH_KEY=<appliance key of the node> lab/e2e/m5.sh all   # ~5 min; logs in target/m5-root/log
+lab/e2e/m5.sh stop
+```
+Single steps: `lab/e2e/m5-api.sh check restore` etc. (see the script header).

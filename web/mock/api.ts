@@ -71,6 +71,7 @@ interface Job {
   started: number | null;
   finished: number | null;
   log: string;
+  result: Json | null;
   plan: string[];
   duration: number;
   fail?: string;
@@ -116,6 +117,7 @@ function addJob(kind: string, tenant: string, params: Json, by: string, opts: Pa
     started: null,
     finished: null,
     log: '',
+    result: null,
     plan: planFor(kind, params),
     duration: { files_list: 3, files_get: 5, backup: 12, restore: 16, restore_ct: 12, instant_recover: 10 }[kind] ?? 8,
     ...opts,
@@ -177,9 +179,10 @@ function tick() {
         continue;
       }
       j.state = 'ok';
-      // Like `nexus-pve files … ls`: the listing is a JSON array printed into the log.
-      if (j.kind === 'files_list') j.log += '\n' + JSON.stringify(listDir(String(j.params.path ?? '/')), null, 2);
+      // Like the scheduler: structured results in `job.result`.
+      if (j.kind === 'files_list') j.result = { entries: listDir(String(j.params.path ?? '/')) };
       if (j.kind === 'files_get') {
+        j.result = { download_token: j.params.download_token, format: j.params.format, entries: (j.params.paths ?? []).length };
         db.downloads.set(String(j.params.download_token), {
           owner: j.requested_by,
           filename: `${j.params.source}-${j.params.time}.${j.params.format}`,
@@ -649,7 +652,11 @@ for (const verb of ['approve', 'reject'] as const) {
 on('GET', '/audit', (c) => {
   need(c.user, 'admin', 'security_officer');
   const after = Number(c.query.get('after') ?? 0);
-  return [200, db.audit.filter((e) => e.seq > after).slice(0, 100)];
+  const before = c.query.get('before');
+  const limit = Math.min(Number(c.query.get('limit') ?? 500), 1000);
+  const desc = before !== null || c.query.get('order') === 'desc';
+  const xs = db.audit.filter((e) => e.seq > after && (before === null || e.seq < Number(before)));
+  return [200, (desc ? [...xs].reverse() : xs).slice(0, limit)];
 });
 on('GET', '/audit/verify', async (c) => {
   need(c.user, 'admin', 'security_officer');

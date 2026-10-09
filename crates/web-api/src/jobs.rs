@@ -215,6 +215,7 @@ fn job_json(r: &catalog::rusqlite::Row, with_log: bool) -> catalog::rusqlite::Re
         "params": serde_json::from_str::<Value>(&p).unwrap_or_default(), "state": r.get::<_, String>(4)?,
         "requested_by": r.get::<_, String>(5)?, "created": r.get::<_, i64>(6)?,
         "started": r.get::<_, Option<i64>>(7)?, "finished": r.get::<_, Option<i64>>(8)?,
+        "result": r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
     });
     if with_log {
         v["log"] = json!(r.get::<_, String>(9)?);
@@ -222,7 +223,7 @@ fn job_json(r: &catalog::rusqlite::Row, with_log: bool) -> catalog::rusqlite::Re
     Ok(v)
 }
 
-const JOB_COLS: &str = "id, kind, tenant, params, state, requested_by, created, started, finished, log";
+const JOB_COLS: &str = "id, kind, tenant, params, state, requested_by, created, started, finished, log, result";
 
 pub async fn list_jobs(State(st): State<St>, ctx: Ctx, Q(f): Q<JobFilter>) -> ApiResult<Json<Value>> {
     let c = st.cat.conn();

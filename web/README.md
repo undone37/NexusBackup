@@ -80,12 +80,9 @@ src/pages/*            Login, Dashboard, Snapshots, Files, Jobs, JobDetail, Aler
 
 ## Assumptions about the API (web-api v1)
 
-- **File browsing.** `files_list` results come from the job log: `nexus-pve … ls`
-  prints a JSON array, and the UI cuts it out of the log (`src/lib/jobs.ts`).
-  Suggestion: add a structured `result` JSON field to jobs. The UI already reads
-  `job.result.entries` first if it exists.
+- **File browsing.** `files_list` results come from the structured job result
+  (`job.result.entries`, written by the scheduler).
 - **Downloads.** For `files_get`, the UI takes `download_token` from the 202
   body, polls the job, then links to `/api/v1/downloads/<token>`.
-- **Audit paging.** The audit log pages forward only (`?after=`). A newest-first
-  view (`?before=` or `?order=desc`) would avoid loading the whole chain to see
-  recent entries.
+- **Audit paging.** The audit page loads newest first (`?order=desc&limit=100`)
+  and pages backwards with `?before=<oldest seq shown>`.
