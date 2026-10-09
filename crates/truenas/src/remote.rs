@@ -80,11 +80,14 @@ fn finish(cmd: &str, mut child: Child, err: JoinHandle<String>) -> Result<()> {
 }
 
 fn check_args(ds: &str, snaps: &[&str]) -> Result<()> {
-    if !crate::valid_dataset(ds)
-        || !snaps
-            .iter()
-            .all(|s| s.starts_with("nexus-") && s[6..].split('-').count() == 2)
-    {
+    // `nexus-<id>-<time>` exactly as parse_snap_name accepts it
+    let snap_ok = |s: &str| {
+        s.strip_prefix("nexus-")
+            .and_then(|r| r.split_once('-'))
+            .and_then(|(id, _)| (!id.starts_with('0')).then(|| id.parse::<u64>().ok())?)
+            .is_some_and(|id| crate::parse_snap_name(id, s).is_some())
+    };
+    if !crate::valid_dataset(ds) || !snaps.iter().all(|s| snap_ok(s)) {
         bail!("invalid dataset or snapshot name");
     }
     Ok(())
