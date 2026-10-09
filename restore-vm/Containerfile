@@ -1,0 +1,16 @@
+# Builder for the restore micro-VM: Debian 13 kernel, ZFS module built by
+# zfs-dkms for exactly that kernel, userland copied into the initramfs by
+# mkinitrd.sh. Used by build.sh; nothing is installed on the host.
+ARG BASE=docker.io/library/debian:trixie
+FROM ${BASE}
+ENV DEBIAN_FRONTEND=noninteractive
+RUN sed -i 's/^Components: main$/Components: main contrib/' /etc/apt/sources.list.d/debian.sources \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends linux-image-amd64 linux-headers-amd64 \
+      build-essential dkms kmod cpio zstd xz-utils ca-certificates
+RUN apt-get install -y --no-install-recommends zfs-dkms zfsutils-linux \
+ && KVER=$(basename /boot/vmlinuz-* | sed 's/^vmlinuz-//') \
+ && dkms autoinstall -k "$KVER" \
+ && modinfo -k "$KVER" zfs | grep -E '^(filename|version|vermagic)'
+RUN apt-get install -y --no-install-recommends lvm2 mdadm util-linux fdisk busybox-static \
+      e2fsprogs xfsprogs ntfs-3g btrfs-progs dosfstools
