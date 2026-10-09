@@ -150,6 +150,31 @@ impl ImageReader<'_> {
     }
 }
 
+pub struct ChunkReader<'a> {
+    store: &'a Store,
+    ids: &'a [ChunkId],
+    next: usize,
+    buf: Vec<u8>,
+    pos: usize,
+}
+
+impl Read for ChunkReader<'_> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        while self.pos == self.buf.len() {
+            let Some(id) = self.ids.get(self.next) else {
+                return Ok(0);
+            };
+            self.buf = self.store.read_chunk(id)?;
+            self.pos = 0;
+            self.next += 1;
+        }
+        let n = out.len().min(self.buf.len() - self.pos);
+        out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
+}
+
 pub struct Store {
     root: PathBuf,
     keys: Keyring,
@@ -412,6 +437,17 @@ impl Store {
             w.write_all(&self.read_chunk(id)?)?;
         }
         Ok(())
+    }
+
+    /// Streaming `Read` over a chunk list (one decrypted chunk in memory at a time).
+    pub fn chunk_reader<'a>(&'a self, ids: &'a [ChunkId]) -> ChunkReader<'a> {
+        ChunkReader {
+            store: self,
+            ids,
+            next: 0,
+            buf: Vec::new(),
+            pos: 0,
+        }
     }
 
     fn snap_dir(&self, source: &str, time: u64) -> PathBuf {

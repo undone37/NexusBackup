@@ -267,3 +267,24 @@ fn image_reader_random_access() {
     }
     assert!(r.read_at(img.len() as u64 - 1, &mut [0, 0]).is_err());
 }
+
+#[test]
+fn chunk_reader_streams_file() {
+    use std::io::Read;
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), 0, 0);
+    let mut x = 88172645463325252u64;
+    let data: Vec<u8> = (0..3_000_000)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect();
+    let (chunks, _) = s.store_file(&data[..]).unwrap();
+    assert!(chunks.len() > 1);
+    let mut out = Vec::new();
+    s.chunk_reader(&chunks).read_to_end(&mut out).unwrap();
+    assert_eq!(out, data);
+}

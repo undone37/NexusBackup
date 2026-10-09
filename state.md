@@ -60,7 +60,9 @@ Scheduled (systemd timer + `backup-all`) incremental-forever backups of VMs and 
 
 ## Phase 3 — Restore features (started 2026-10-09)
 Decisions (user, 2026-10-09): instant recovery via qcow2 overlay on the node backed by the appliance NBD export (writes stay local, then `qm disk move`); restore micro-VM = Debian 13 kernel + initramfs incl. ZFS (CDDL, separate component); single-file restore delivered as CLI download (tar/zip)
-- [ ] Instant recovery: verify PVE accepts an NBD-backed qcow2 overlay + live `qm disk move`, then build
+- [x] File restore from container snapshots: `Store::chunk_reader` (streaming Read over chunks), `pve::files` (list one dir, extract selected paths from a tar stream as tar or zip; zip keeps modes + mtimes, tar keeps owners/modes/mtimes, no xattrs), CLI `nexus-pve ct-files <vmid> <time> ls [dir] | get <out.tar|out.zip> <path>...`; lab: marker sha256 from CT 200 snapshot matches
+- [ ] Instant recovery via qcow2 overlay (agent in worktree, running)
+- [ ] Restore micro-VM (Debian 13 + ZFS) for single-file restore from VM images (agent in worktree, running)
 
 ## Next
 

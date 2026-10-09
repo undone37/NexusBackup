@@ -3,3 +3,4 @@
 pub mod api;
 pub mod backup;
 pub mod ct;
+pub mod files;
