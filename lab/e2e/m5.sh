@@ -12,7 +12,8 @@
 #      NEXUS_RESTORE_VM_DIR (default target/restore-vm, built by restore-vm/build.sh).
 # Logs: $ROOT/log/*.log. Build first:
 #   (cd web && npm ci --ignore-scripts && npm run build)
-#   cargo build --release -p keyd -p pve -p offsite -p web-api -p scheduler -p setup
+#   cargo build --release -p keyd -p pve -p offsite -p web-api -p scheduler -p setup -p agent-conn
+# Linux agents (lab/linux/e2e.sh): signed agent bundles for `agent_update` go to $ROOT/agent-update.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -59,6 +60,7 @@ setup() {
 		 "keyd_socket": "run/keyd.sock", "downloads": "$lib/downloads",
 		 "runtime_dir": "$ROOT/run/scheduler", "state_dir": "$lib/scheduler",
 		 "pve_bin": "$BIN/nexus-pve", "offsite_bin": "$BIN/nexus-offsite",
+		 "agentctl_bin": "$BIN/nexus-agentctl", "agent_update_dir": "$ROOT/agent-update",
 		 "alerts_config": "$etc/alerts.json", "tick_secs": 5, "refresh_secs": 60}
 	EOF
 }
