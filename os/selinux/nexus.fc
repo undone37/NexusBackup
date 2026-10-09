@@ -25,6 +25,8 @@
 /var/lib/nexus/chunkstore(/.*)?			gen_context(system_u:object_r:nexus_store_t,s0)
 /var/lib/nexus/offsite(/.*)?			gen_context(system_u:object_r:nexus_store_t,s0)
 /var/lib/nexus/scheduler(/.*)?			gen_context(system_u:object_r:nexus_store_t,s0)
+/var/lib/nexus/scheduler/secrets\.key	--	gen_context(system_u:object_r:nexus_scheduler_secret_t,s0)
+/var/lib/nexus/webapi(/.*)?			gen_context(system_u:object_r:nexus_webapi_var_lib_t,s0)
 /var/lib/nexus/escrow(/.*)?			gen_context(system_u:object_r:nexus_escrow_t,s0)
 /var/lib/nexus/update(/.*)?			gen_context(system_u:object_r:nexus_update_t,s0)
 

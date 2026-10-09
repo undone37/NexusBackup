@@ -120,7 +120,8 @@ Decisions (user, 2026-10-09): Web UI = TypeScript SPA on the REST API; MFA = TOT
   - fixed: shipped files kept the build host's 0664/0775 → final Containerfile step strips group/world write in /etc and /usr and asserts none remain
   - fixed: download-only staged update lost on a power cut → `nexus-update` re-stages on the next tick (test `test_staged_update_lost_on_power_cut_is_staged_again`)
   - open: source SSH key management (appliance should generate its key + show pubkey); QEMU own uid; nexus-update/greenboot/bootc unconfined (stock); nftables reload empties sets until next sync (≤ 30 min)
-- [ ] H-2 fix (sealed catalog secrets, TOTP seed encryption, re-auth for credential changes) — agent running
+- [x] H-2 fixed: `catalog::secret` — source/offsite secrets sealed to the scheduler (crypto_box X25519, `sealed:v1:`, bound to owner + field + endpoint digest; web-api seals, cannot open; 503 without public key), scheduler key `secrets.key` 0600 + `secrets.pub` for web-api, legacy plaintext migrated + audited; TOTP seeds `enc:v1:` XChaCha20-Poly1305 with web-api-only `totp.key` (setup creates it); M-5: credential changes need current password + fresh TOTP (403, rate-limited, audited); SELinux: `nexus_scheduler_secret_t` (scheduler only) + `nexus_webapi_var_lib_t` (web-api + setup only) with neverallows; e2e m5 passed
+  - residual: scheduler uid (shared with connectors/QEMU) can open source secrets; web-api uid can decrypt TOTP seeds; back up `totp.key`/`secrets.key` with appliance config
 
 ## M6 status
 Hardened image builds, boots and runs the full flow under SELinux enforcing; signed A/B updates with rollback verified in a VM; internal review done, external pentest scope ready (`docs/pentest-scope.md`). Missing for "1.0 + first production tenant": H-2 (running), release key ceremony (custodian), real Storage Box run, external pentest (user commissions), first production tenant (user).

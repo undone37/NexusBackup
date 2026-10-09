@@ -84,6 +84,10 @@ type nexus_etc_t;		# /etc/nexus (scheduler.json, alerts.json, smtp-password)
 files_config_file(nexus_etc_t)
 type nexus_webapi_secret_t;	# TLS key/cert, metrics token
 files_config_file(nexus_webapi_secret_t)
+type nexus_webapi_var_lib_t;	# web-api state: totp.key (encrypts TOTP seeds, review H-2)
+files_type(nexus_webapi_var_lib_t)
+type nexus_scheduler_secret_t;	# scheduler secrets.key (opens sealed catalog secrets, review H-2)
+files_type(nexus_scheduler_secret_t)
 type nexus_sshkey_t;		# appliance SSH/SFTP keys + known_hosts
 files_config_file(nexus_sshkey_t)
 type nexus_unit_file_t;		# nexus-*.service/.path/.timer
@@ -395,3 +399,17 @@ allow nexus_nftsync_t iptables_t:process2 { nnp_transition nosuid_transition };
 allow iptables_t nexus_nftsync_t:fd use;
 allow iptables_t nexus_nftsync_t:fifo_file rw_inherited_fifo_file_perms;
 allow iptables_t nexus_nftsync_t:process sigchld;
+
+########################################
+# Review H-2: sealed catalog secrets
+# The scheduler alone creates and reads its sealing key (created with O_EXCL, no temp file).
+manage_files_pattern(nexus_scheduler_t, nexus_store_t, nexus_scheduler_secret_t)
+filetrans_pattern(nexus_scheduler_t, nexus_store_t, nexus_scheduler_secret_t, file, "secrets.key")
+neverallow { nexus_domain -nexus_scheduler_t } nexus_scheduler_secret_t:file { read open };
+# web-api state dir holds the TOTP seed key; setup creates it on first boot (as root,
+# chowned to nexus-webapi), web-api creates it only if missing and no seed is encrypted yet.
+manage_files_pattern(nexus_webapi_t, nexus_webapi_var_lib_t, nexus_webapi_var_lib_t)
+manage_dirs_pattern(nexus_setup_t, nexus_webapi_var_lib_t, nexus_webapi_var_lib_t)
+manage_files_pattern(nexus_setup_t, nexus_webapi_var_lib_t, nexus_webapi_var_lib_t)
+filetrans_pattern(nexus_setup_t, nexus_var_lib_t, nexus_webapi_var_lib_t, dir, "webapi")
+neverallow { nexus_domain -nexus_webapi_t -nexus_setup_t } nexus_webapi_var_lib_t:file { read open };
