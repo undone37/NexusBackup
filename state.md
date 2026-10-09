@@ -100,11 +100,17 @@ Decisions (user, 2026-10-09): test against a local SFTP container mimicking Stor
 - [x] Integration fixes (main): keyd protocol `ensure <tenant>` (create DEK v1 on first use) + `escrow <tenant>`; scheduler ensures keys for all catalog tenants each tick and refreshes escrow before offsite; setup also enables nexus-keyd; web-api unit without PrivateUsers (group-shared catalog); scheduler unit Wants keyd
 - [x] `web/` Svelte 5 + Vite + TS SPA (5 exact-pinned devDeps, 0 vulns): login, dashboard (local/offsite/verified per guest), snapshots (restore, instant recover, file browse → tar/zip download), jobs with live log, config CRUD (write-only secrets, own QR encoder), approvals with diff, audit + verify, alerts; CSP-clean (headless Chrome, 16 flows), 42 kB gzip JS; mock API for `npm run dev`
   - gaps: no structured `jobs.result` (UI parses files_list from the log), audit paging only forward, offsite SSH key as file path (no inline secrets)
-- [ ] M5 end-to-end: setup (script) → web-api + scheduler + keyd → configure lab PVE source/policy/group via API → backup → offsite → file download
+- [x] Contract gaps closed: catalog v3 `jobs.result` (files_list entries, files_get token/format, backup snapshots), `GET /audit?before=&order=desc` (UI newest first)
+- [x] M5 end-to-end (`lab/e2e/m5.sh all`, 5:06): setup (script) → keyd + web-api (TLS, cert verified) + scheduler + SFTP testbox → tenant/source/policy/group via REST only → scheduled backup VM 100 + CT 200 (88–90 s) → retention → offsite (595 MB, 19 packs, 2 s) → snapshots local ✓ offsite ✓ → operator file download CT (ct200) + VM via micro-VM (testvm100), other user 404 → verify → quorum weaken policy (admin 403 on approve, SO approves → executed; reject path) → audit verify ok (53 entries); headless Chrome against real backend 10/10, 0 CSP issues
+  - bugs fixed: keyd mlockall(MCL_FUTURE) under low RLIMIT_MEMLOCK broke argon2 allocations; stale node index → "reuses dirty bitmap but no base" → index now pushed before each VM backup; in-memory catalog skipped migrations
+  - lab appliance SSH key now at /home/ah/nexus-lab/appliance_ed25519
+
+## M5 status
+**Reached (dev setup):** appliance operable end to end via REST/UI without shell access. Not yet exercised: real systemd units with separate users/groups on the appliance image, real network setup, real Storage Box.
 - [x] `crates/catalog`: SQLite WAL schema v1 with migrations, append-only audit table (triggers) + length-prefixed sha256 hash chain + verify, `catalog::auth` (argon2id ≥12 chars, TOTP RFC 6238 ±1 step, otpauth URI)
 Decisions (user, 2026-10-09): Web UI = TypeScript SPA on the REST API; MFA = TOTP only at first; first boot = console TUI
 
-## Phase 6 — Hardened appliance release (starts after Phase 5 merge)
+## Phase 6 — Hardened appliance release (started 2026-10-09)
 Decisions (user, 2026-10-09): LUKS disk encryption deferred with TPM; cosign with offline key; updates as signed bootc images on ghcr.io; internal security review + scope doc, external pentest commissioned by the user
 
 ## Phase 7 — Additional sources (starts after Phase 6 merge)

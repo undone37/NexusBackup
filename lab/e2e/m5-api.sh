@@ -24,7 +24,7 @@ if [ -z "${LAB_TOKEN_SECRET:-}" ]; then # api-token = "<token id>=<secret>"
 	LAB_TOKEN_SECRET=$S/pve-token-secret
 	sed 's/^[^=]*=//' "$LAB/api-token" >"$LAB_TOKEN_SECRET"
 fi
-LAB_SSH_KEY=${LAB_SSH_KEY:-/tmp/claude-1000/-home-ah-NexusBackup-Appliance/ada15139-96a1-4c7f-9084-565666fa08b2/scratchpad/nbp/appkey}
+LAB_SSH_KEY=${LAB_SSH_KEY:-/home/ah/nexus-lab/appliance_ed25519}
 [ -r "$LAB_SSH_KEY" ] || { echo "LAB_SSH_KEY $LAB_SSH_KEY not readable" >&2; exit 1; }
 LAB_KNOWN_HOSTS=${LAB_KNOWN_HOSTS:-$LAB/known_hosts}
 TESTBOX=${TESTBOX:-$(git -C "$here" worktree list --porcelain | sed -n "1s/^worktree //p")/target/offsite-testbox}
