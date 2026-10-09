@@ -1,0 +1,7 @@
+# Signatures for the appliance image are cosign signatures stored next to the image
+# in the registry (tag sha256-<digest>.sig), not on a separate lookaside server.
+# The repository must match the scope in /etc/containers/policy.json and
+# NEXUS_IMAGE_REPO in /etc/nexus/update.conf (release/check-trust.sh checks this).
+docker:
+  ghcr.io/nexusbackup/appliance:
+    use-sigstore-attachments: true

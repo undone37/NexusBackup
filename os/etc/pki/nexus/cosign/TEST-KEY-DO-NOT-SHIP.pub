@@ -1,0 +1,8 @@
+NEXUS TEST KEY - DO NOT SHIP. Development builds trust this key; its private half
+(release/testkey/TEST-cosign.key, passphrase nexus-test-key) is public in the git repo.
+release/inject-keys.sh replaces this file with the real release key(s) for a release build,
+and release/check-trust.sh --release refuses any image that still contains it.
+-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEmSIOPU+thdLpMO8bep4BdHUP+hSi
+qaQR2uIDc109ZW+xC/iqASo5dr2GlyOiII+SE3TlHPG2NH/z1BoX3OzNuA==
+-----END PUBLIC KEY-----

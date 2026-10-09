@@ -1,0 +1,12 @@
+# Updates are staged by nexus-update and applied only in the maintenance window or on
+# admin request. The stock auto-updaters would reboot at any time (bootc upgrade --apply).
+# Presets are re-applied on first boot, so this must be a preset, not only a symlink.
+disable bootc-fetch-apply-updates.timer
+disable rpm-ostreed-automatic.timer
+disable podman-auto-update.timer
+enable nexus-update.timer
+enable nexus-update.path
+# Health-check-gated rollback (also in 90-default.preset; repeated so it cannot drift).
+enable greenboot-healthcheck.service
+enable greenboot-set-rollback-trigger.service
+enable greenboot-success.target

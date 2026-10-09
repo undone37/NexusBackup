@@ -1,0 +1,11 @@
+[Unit]
+Description=NexusBackup OS update requests from the control plane
+
+[Path]
+# The control plane writes /var/lib/nexus/update/request ("stage" | "apply" | "rollback");
+# nexus-update consumes (deletes) it.
+PathExists=/var/lib/nexus/update/request
+Unit=nexus-update.service
+
+[Install]
+WantedBy=paths.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=NexusBackup OS update agent tick (checks daily, applies in the maintenance window)
+
+[Timer]
+# Every 15 min: cheap unless a check is due (NEXUS_UPDATE_CHECK_HOURS) or the
+# maintenance window is open with an update staged.
+OnBootSec=10min
+OnCalendar=*:0/15
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target
