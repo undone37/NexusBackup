@@ -96,6 +96,8 @@ pub struct Config {
     pub alerts_config: PathBuf,
     /// outbound allow-list for nexus-nft-sync (skipped if its directory is missing)
     pub nft_allowed: PathBuf,
+    /// jobs wait this long after the allow-list changed (nexus-nft-sync applies it)
+    pub firewall_settle_secs: u64,
     /// full tick (scheduling, refresh, alerts)
     pub tick_secs: u64,
     /// between ticks: pick up newly queued jobs
@@ -142,6 +144,7 @@ impl Default for Config {
             agent_update_dir: "/usr/share/nexus/agent".into(),
             alerts_config: "/etc/nexus/alerts.json".into(),
             nft_allowed: nftsync::ALLOWED_FILE.into(),
+            firewall_settle_secs: 3,
             tick_secs: 30,
             poll_secs: 2,
             max_parallel: 4,
@@ -230,6 +233,9 @@ pub struct Scheduler {
     /// opens the sealed secrets in `sources.config` / `tenants.offsite`
     secrets: SchedulerKey,
     secrets_created: bool,
+    /// last allow-list check from start_jobs; jobs wait until a changed list is applied
+    fw_checked: Option<Instant>,
+    fw_settle: Option<Instant>,
 }
 
 /// Agent ids: 16 lowercase hex characters (chosen by the web-api).
@@ -325,6 +331,8 @@ impl Scheduler {
             keyed: HashSet::new(),
             dirty: BTreeSet::new(),
             last_refresh: i64::MIN,
+            fw_checked: None,
+            fw_settle: None,
             alert_cursor: 0,
             alert_tx,
             host: alerts::hostname(),
@@ -540,7 +548,7 @@ impl Scheduler {
             }
         }
         self.log_err(|s| s.check_offsite_lag(now));
-        self.log_err(|s| s.sync_firewall());
+        self.log_err(|s| s.sync_firewall().map(drop));
         self.deliver_alerts()
     }
 
@@ -664,7 +672,7 @@ impl Scheduler {
 
     /// Writes the outbound allow-list (sources, offsite boxes, alert delivery)
     /// for nexus-nft-sync; the file only changes when the destinations do.
-    fn sync_firewall(&self) -> Result<()> {
+    fn sync_firewall(&self) -> Result<bool> {
         let mut targets = Vec::new();
         {
             let c = self.db.conn();
@@ -689,13 +697,34 @@ impl Scheduler {
         if let Ok(a) = alerts::AlertsConfig::load(&self.cfg.alerts_config) {
             targets.extend(firewall::alert_targets(&a));
         }
-        if nftsync::write_allowed(&self.cfg.nft_allowed, firewall::resolve(&targets))? {
+        let changed = nftsync::write_allowed(&self.cfg.nft_allowed, firewall::resolve(&targets))?;
+        if changed {
             eprintln!(
                 "scheduler: firewall allow-list updated ({} destinations)",
                 targets.len()
             );
         }
-        Ok(())
+        Ok(changed)
+    }
+
+    /// Before jobs start: a destination added since the last tick (an agent created
+    /// and enrolled right away) must be in the firewall first, or the job fails with
+    /// "No route to host". At most every poll interval; when the list changed, jobs
+    /// wait `firewall_settle_secs` for nexus-nft-sync (path unit) to apply it.
+    fn firewall_ready(&mut self) -> bool {
+        let now = Instant::now();
+        if self
+            .fw_checked
+            .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(self.cfg.poll_secs.max(1)))
+        {
+            self.fw_checked = Some(now);
+            match self.sync_firewall() {
+                Ok(true) => self.fw_settle = Some(now + Duration::from_secs(self.cfg.firewall_settle_secs)),
+                Ok(false) => {}
+                Err(e) => eprintln!("<3>scheduler: firewall allow-list: {e:#}"),
+            }
+        }
+        self.fw_settle.is_none_or(|t| now >= t)
     }
 
     fn tenants(&self) -> Result<Vec<(String, Value)>> {
@@ -775,8 +804,12 @@ impl Scheduler {
         if self.running.len() >= self.cfg.max_parallel {
             return Ok(());
         }
+        let queued = self.queued()?;
+        if queued.is_empty() || !self.firewall_ready() {
+            return Ok(());
+        }
         let mut busy: HashSet<String> = self.running.values().cloned().collect();
-        for job in self.queued()? {
+        for job in queued {
             if self.running.len() >= self.cfg.max_parallel {
                 break;
             }

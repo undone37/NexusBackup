@@ -109,6 +109,7 @@ esac"#,
         agent_update_dir: p.join("agent-update"),
         alerts_config: p.join("alerts.json"),
         nft_allowed: p.join("nft/allowed.json"),
+        firewall_settle_secs: 0,
         alert_retry_secs: [0, 0],
         capacity_threshold: 2.0,
         ..Default::default()
@@ -183,6 +184,11 @@ esac"#,
 
     // enrollment: sealed digest opened into the 0600 job dir, fingerprint recorded, token gone
     let e = job(&db, "agent_enroll", json!({"agent_id": A}));
+    // the agent was created after the last tick: starting its job first puts it into the
+    // firewall allow-list (lab: enrollment right after creation failed, "No route to host")
+    s.start_jobs().unwrap();
+    let allowed = fs::read_to_string(p.join("nft/allowed.json")).unwrap();
+    assert!(allowed.contains("10.0.0.9") && allowed.contains("7444"), "{allowed}");
     run(&mut s);
     assert_eq!(state(&db, e).0, "ok", "{}", state(&db, e).1);
     assert_eq!(fs::read_to_string(p.join("token-copy")).unwrap(), digest);
