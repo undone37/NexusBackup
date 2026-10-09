@@ -10,7 +10,7 @@ policy_module(nexus, 1.0.0)
 #   init_t ── nexus_scheduler_exec_t ─> nexus_scheduler_t  catalog, stores, keyd, alerts out
 #               ├─ nexus_pve_exec_t ──> nexus_pve_t        PVE API + ssh (runs /usr/bin/ssh in-domain)
 #               │    └─ qemu_exec_t ──> nexus_restorevm_t  restore micro-VM: /dev/kvm, its two sockets
-#               ├─ nexus_offsite_exec_t > nexus_offsite_t  SFTP boxes, stores
+#               ├─ nexus_offsite_exec_t > nexus_offsite_t  SFTP boxes, S3 (https), stores
 #               ├─ nexus_agentctl_exec_t > nexus_agentctl_t  Linux/Windows agents (TCP 7444, mTLS),
 #               │                                          stores, agent CA (only this domain)
 #               └─ nexus_truenas_exec_t > nexus_truenas_t  TrueNAS API (wss 443) + ssh (in-domain), stores
@@ -309,8 +309,12 @@ allow nexus_restorevm_t nexus_pve_t:fifo_file rw_inherited_fifo_file_perms;
 allow nexus_restorevm_t nexus_pve_t:process sigchld;
 
 # --- nexus-offsite: SFTP to the boxes (Storage Box: 23 and 22; lab: unreserved)
+# and HTTPS to S3 endpoints (443 = http_port_t; MinIO/on-prem 9000 etc. =
+# unreserved). Trust anchors are compiled in or come from the job dir (ca_file),
+# so no access to the system certificate store is needed; DNS via nexus_job_domain.
 corenet_tcp_connect_telnetd_port(nexus_offsite_t)
 corenet_tcp_connect_ssh_port(nexus_offsite_t)
+corenet_tcp_connect_http_port(nexus_offsite_t)
 corenet_tcp_connect_all_unreserved_ports(nexus_offsite_t)
 # wrapped key escrow is uploaded with the packs
 read_files_pattern(nexus_offsite_t, nexus_escrow_t, nexus_escrow_t)

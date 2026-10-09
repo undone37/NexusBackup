@@ -245,3 +245,24 @@ fn main() -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The remote part of the job config the scheduler writes for S3.
+    #[test]
+    fn s3_job_config() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("s"), "SK\n").unwrap();
+        let cfg = serde_json::json!({"type": "s3", "endpoint": "https://minio.lan:9000", "region": "us-east-1",
+            "bucket": "nexus", "prefix": "t1", "access_key": "appliance", "secret_key_file": d.path().join("s"),
+            "path_style": true, "lock": true, "storage_class_packs": "STANDARD_IA"});
+        let r: RemoteCfg = serde_json::from_value(cfg.clone()).unwrap();
+        assert!(remote(&r, 4).unwrap().supports_locks());
+        let mut missing = cfg;
+        missing["secret_key_file"] = serde_json::json!(d.path().join("nope"));
+        let r: RemoteCfg = serde_json::from_value(missing).unwrap();
+        assert!(remote(&r, 4).is_err());
+    }
+}

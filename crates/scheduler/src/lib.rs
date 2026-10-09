@@ -42,8 +42,11 @@
 //! retention covers each dataset and (recursive) its children by prefix.
 //!
 //! `tenants.offsite`: `{ "remote": { "type": "sftp", "host": …, "user": …, "host_key": …,
-//! "key_file": "/path", "port"?, "base_dir"? } | { "type": "local", "path": … },
-//! "bwlimit"?: bytes/s, "uploaders"?: n }`. No `remote` = no offsite for this tenant.
+//! "key_file": "/path", "port"?, "base_dir"? } | { "type": "s3", "endpoint": "https://…",
+//! "region", "bucket", "prefix"?, "access_key", "secret_key" (sealed), "path_style"?,
+//! "ca_pem"?, "storage_class_packs"?, "storage_class_meta"?, "lock"? } (docs/s3-offsite.md)
+//! | { "type": "local", "path": … }, "bwlimit"?: bytes/s, "uploaders"?: n }`. No `remote` =
+//! no offsite for this tenant. The S3 secret key and CA go into 0600 files in the job dir.
 //!
 //! Job params beyond the contract: `source_id` may be given for `backup {vmid}`,
 //! restores and file jobs; without it the source is found via the tenant's
@@ -737,7 +740,7 @@ impl Scheduler {
             }
         }
         for (_, o) in self.tenants()? {
-            targets.extend(firewall::offsite_target(&o));
+            targets.extend(firewall::offsite_targets(&o));
         }
         if let Ok(a) = alerts::AlertsConfig::load(&self.cfg.alerts_config) {
             targets.extend(firewall::alert_targets(&a));
@@ -1548,6 +1551,17 @@ impl Scheduler {
             files.push(("offsite.key".to_owned(), k.into_bytes()));
             remote["key_file"] = json!(dir.join("offsite.key"));
             remote.as_object_mut().unwrap().remove("key_pem");
+        }
+        if remote["type"] == "s3" {
+            let r = remote.as_object_mut().unwrap();
+            if let Some(Value::String(k)) = r.remove("secret_key") {
+                files.push(("offsite-s3.secret".to_owned(), k.into_bytes()));
+                r.insert("secret_key_file".into(), json!(dir.join("offsite-s3.secret")));
+            }
+            if let Some(Value::String(ca)) = r.remove("ca_pem") {
+                files.push(("offsite-ca.pem".to_owned(), ca.into_bytes()));
+                r.insert("ca_file".into(), json!(dir.join("offsite-ca.pem")));
+            }
         }
         let g = self.offsite_gfs(tenant)?;
         let mut cfg = json!({

@@ -5,8 +5,13 @@
 //!
 //! Destinations: per source the PVE API (`connect_addr`, else `host:port`,
 //! default 8006) and the SSH endpoint of every node (default 22); per tenant
-//! the SFTP box (default 23); the webhook URL and SMTP relay of alerts.json.
+//! the SFTP box (default 23) or the S3 endpoint (default 443; with
+//! virtual-hosted addressing `<bucket>.<host>`); the webhook URL and SMTP
+//! relay of alerts.json.
 //! Names that do not resolve are skipped (and retried on the next tick).
+//! Names are resolved here, at sync time: endpoints whose DNS answers rotate
+//! through many addresses (AWS S3) can hand the job an address that is not
+//! in the set yet (see docs/s3-offsite.md, "Firewall").
 
 use crate::alerts::{AlertsConfig, SmtpTls};
 use nftsync::{Endpoint, Proto};
@@ -52,14 +57,32 @@ pub fn truenas_targets(src: &Value) -> Vec<(String, u16)> {
     out
 }
 
-/// (host, port) of a tenant's offsite remote (`tenants.offsite`), SFTP only.
-pub fn offsite_target(o: &Value) -> Option<(String, u16)> {
+/// (host, port) of a tenant's offsite remote (`tenants.offsite`): the SFTP
+/// box, or the S3 endpoint (the host the requests go to).
+pub fn offsite_targets(o: &Value) -> Vec<(String, u16)> {
     let r = &o["remote"];
-    if r["type"].as_str() != Some("sftp") {
-        return None;
+    match r["type"].as_str() {
+        Some("sftp") => {
+            let port = r["port"].as_u64().and_then(|p| u16::try_from(p).ok()).unwrap_or(23);
+            r["host"].as_str().map(|h| (h.to_owned(), port)).into_iter().collect()
+        }
+        Some("s3") => {
+            let Some(ep) = r["endpoint"].as_str().and_then(|e| e.strip_prefix("https://")) else {
+                return vec![];
+            };
+            let ep = ep.trim_end_matches('/');
+            let (host, port) = split_host_port(ep).unwrap_or_else(|| (ep.trim_matches(['[', ']']).to_owned(), 443));
+            if host.is_empty() {
+                return vec![];
+            }
+            let path_style = r["path_style"].as_bool().unwrap_or(false);
+            match r["bucket"].as_str() {
+                Some(b) if !path_style => vec![(format!("{b}.{host}"), port)],
+                _ => vec![(host, port)],
+            }
+        }
+        _ => vec![],
     }
-    let port = r["port"].as_u64().and_then(|p| u16::try_from(p).ok()).unwrap_or(23);
-    Some((r["host"].as_str()?.to_owned(), port))
 }
 
 /// (host, port) of the webhook and the SMTP relay.
@@ -133,12 +156,34 @@ mod tests {
             vec![("10.0.0.5".into(), 8006), ("2001:db8::1".into(), 22)]
         );
         assert_eq!(
-            offsite_target(&json!({"remote": {"type": "sftp", "host": "u1.your-storagebox.de"}})),
-            Some(("u1.your-storagebox.de".into(), 23))
+            offsite_targets(&json!({"remote": {"type": "sftp", "host": "u1.your-storagebox.de"}})),
+            vec![("u1.your-storagebox.de".into(), 23)]
         );
         assert_eq!(
-            offsite_target(&json!({"remote": {"type": "local", "path": "/x"}})),
-            None
+            offsite_targets(&json!({"remote": {"type": "local", "path": "/x"}})),
+            vec![]
+        );
+        assert_eq!(
+            offsite_targets(
+                &json!({"remote": {"type": "s3", "endpoint": "https://fsn1.your-objectstorage.com", "bucket": "nx"}})
+            ),
+            vec![("nx.fsn1.your-objectstorage.com".into(), 443)]
+        );
+        assert_eq!(
+            offsite_targets(
+                &json!({"remote": {"type": "s3", "endpoint": "https://minio.lan:9000/", "bucket": "nx", "path_style": true}})
+            ),
+            vec![("minio.lan".into(), 9000)]
+        );
+        assert_eq!(
+            offsite_targets(
+                &json!({"remote": {"type": "s3", "endpoint": "https://[2001:db8::5]:9000", "bucket": "nx", "path_style": true}})
+            ),
+            vec![("2001:db8::5".into(), 9000)]
+        );
+        assert_eq!(
+            offsite_targets(&json!({"remote": {"type": "s3", "endpoint": "http://plain", "bucket": "nx"}})),
+            vec![]
         );
         let a: AlertsConfig = serde_json::from_str(
             r#"{"webhook":{"url":"https://user@hooks.example:8443/x?y"},"smtp":{"host":"mail","from":"a@b.c","to":[]}}"#,

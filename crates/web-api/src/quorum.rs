@@ -32,14 +32,26 @@ pub const WEB_ACTIONS: &[&str] = &[
 
 const SECRET_KEYS: &[&str] = &["password_hash", "totp_secret"];
 
+/// Hides credentials in quorum params (shown in lists and the audit log):
+/// password hashes, TOTP seeds and sealed secrets (e.g. an S3 `secret_key`
+/// in a `tenant.update`), at any depth. The stored params keep them.
 pub fn redact(mut v: Value) -> Value {
-    if let Some(o) = v.as_object_mut() {
-        for k in SECRET_KEYS {
-            if let Some(x) = o.get_mut(*k) {
-                *x = json!("<redacted>");
+    fn walk(v: &mut Value) {
+        match v {
+            Value::Object(o) => {
+                for (k, x) in o.iter_mut() {
+                    if SECRET_KEYS.contains(&k.as_str()) || catalog::secret::SECRET_FIELDS.contains(&k.as_str()) {
+                        *x = json!("<redacted>");
+                    } else {
+                        walk(x);
+                    }
+                }
             }
+            Value::Array(a) => a.iter_mut().for_each(walk),
+            _ => {}
         }
     }
+    walk(&mut v);
     v
 }
 

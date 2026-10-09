@@ -334,6 +334,35 @@ fn sealed_secrets_migrated_opened_and_bound() {
     let o = s.offsite_config("t1", &p.dir).unwrap().unwrap();
     assert_eq!(o.iter().find(|f| f.0 == "offsite.key").unwrap().1, b"BOXKEY\n");
 
+    // S3 remote (sealed like the web-api does): secret key and CA as files
+    let pk = catalog::secret::SealKey::load(&pubf).unwrap();
+    let mut s3 = json!({"remote": {"type": "s3", "endpoint": "https://minio.lan:9000", "region": "us-east-1",
+                                    "bucket": "nexus", "path_style": true, "access_key": "appliance",
+                                    "secret_key": "S3KEY", "ca_pem": "-----BEGIN CERTIFICATE-----\nX\n", "lock": true},
+                        "uploaders": 2});
+    pk.seal_all(&catalog::secret::tenant_owner("t1"), &mut s3).unwrap();
+    s.db.conn()
+        .execute("UPDATE tenants SET offsite = ?1 WHERE name = 't1'", [s3.to_string()])
+        .unwrap();
+    let o = s.offsite_config("t1", &p.dir).unwrap().unwrap();
+    let file = |n: &str| o.iter().find(|f| f.0 == n).unwrap().1.clone();
+    assert_eq!(file("offsite-s3.secret"), b"S3KEY");
+    assert!(file("offsite-ca.pem").starts_with(b"-----BEGIN CERTIFICATE-----"));
+    let cfg: Value = serde_json::from_slice(&file("offsite.json")).unwrap();
+    let r = &cfg["remote"];
+    assert!(r.get("secret_key").is_none() && r.get("ca_pem").is_none(), "{r}");
+    assert_eq!(r["secret_key_file"], json!(p.dir.join("offsite-s3.secret")));
+    assert_eq!(r["ca_file"], json!(p.dir.join("offsite-ca.pem")));
+    assert_eq!((r["lock"].clone(), cfg["uploaders"].clone()), (json!(true), json!(2)));
+    // the sealed key does not follow another bucket
+    s.db.conn()
+        .execute(
+            "UPDATE tenants SET offsite = json_set(offsite, '$.remote.bucket', 'evil') WHERE name = 't1'",
+            [],
+        )
+        .unwrap();
+    assert!(s.offsite_config("t1", &p.dir).is_err());
+
     // a value sealed with the published key (what the web-api does) opens
     let pk = catalog::secret::SealKey::load(&pubf).unwrap();
     let mut cfg: Value = serde_json::from_str(&rows[1]).unwrap();

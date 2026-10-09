@@ -10,7 +10,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use catalog::rusqlite::{params, Connection, OptionalExtension};
-use catalog::secret::{source_owner, SealKey};
+use catalog::secret::{source_owner, tenant_owner, SealKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -73,11 +73,169 @@ fn empty() -> Value {
     json!({})
 }
 
-fn check_offsite(v: &Value) -> ApiResult<()> {
+/// S3 offsite remote (`tenants.offsite.remote` with `type: "s3"`,
+/// docs/s3-offsite.md). `secret_key` is write-only and sealed to the
+/// scheduler, bound to endpoint/region/bucket/access_key/path_style/ca_pem.
+#[derive(Deserialize, Serialize, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct S3Remote {
+    #[serde(rename = "type")]
+    kind: String,
+    endpoint: String,
+    region: String,
+    bucket: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    prefix: String,
+    access_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    secret_key: Option<String>,
+    /// echoed by clients from GET; ignored
+    #[serde(default, skip_serializing)]
+    #[allow(dead_code)]
+    secret_key_set: Option<bool>,
+    #[serde(default)]
+    path_style: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ca_pem: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    storage_class_packs: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    storage_class_meta: Option<String>,
+    #[serde(default)]
+    lock: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    conditional_put: Option<bool>,
+}
+
+/// Fields a stored S3 secret is bound to (see `catalog::secret`).
+const S3_BINDING: &[&str] = &["endpoint", "region", "bucket", "access_key", "path_style", "ca_pem"];
+
+fn printable(s: &str, max: usize) -> bool {
+    (1..=max).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_graphic())
+}
+
+impl S3Remote {
+    fn check(&self) -> ApiResult<()> {
+        let bad = |m: &str| Err(ApiError::bad(format!("offsite.remote.{m}")));
+        let ep = self.endpoint.strip_prefix("https://").unwrap_or("");
+        let ep = ep.strip_suffix('/').unwrap_or(ep);
+        let (h, port) = match ep.rsplit_once(':') {
+            Some((h, p)) if !ep.ends_with(']') => (h, Some(p)),
+            _ => (ep, None),
+        };
+        let host_ok = !h.is_empty()
+            && h.len() <= 253
+            && (h.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-')
+                || (h.starts_with('[') && h.ends_with(']') && h[1..h.len() - 1].parse::<std::net::Ipv6Addr>().is_ok()));
+        if !host_ok || port.is_some_and(|p| p.parse::<u16>().map_or(true, |p| p == 0)) {
+            return bad("endpoint: expected https://host[:port] (HTTPS only, no path)");
+        }
+        if !(1..=32).contains(&self.region.len())
+            || !self
+                .region
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+        {
+            return bad("region: 1..=32 of [a-z0-9-]");
+        }
+        let b = self.bucket.as_bytes();
+        if !(3..=63).contains(&b.len())
+            || !b
+                .iter()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-' || *c == b'.')
+            || !b[0].is_ascii_alphanumeric()
+            || !b[b.len() - 1].is_ascii_alphanumeric()
+            || self.bucket.contains("..")
+        {
+            return bad("bucket: 3..=63 of [a-z0-9.-]");
+        }
+        if !self.path_style && (self.bucket.contains('.') || h.starts_with('[')) {
+            return bad("path_style: required for bucket names with dots and IP endpoints");
+        }
+        if self.prefix.len() > 256
+            || (!self.prefix.is_empty()
+                && !self.prefix.split('/').all(|c| {
+                    !c.is_empty()
+                        && c != "."
+                        && c != ".."
+                        && c.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                }))
+        {
+            return bad("prefix: path components of [A-Za-z0-9._-], no leading or trailing /");
+        }
+        if !printable(&self.access_key, 128) {
+            return bad("access_key: 1..=128 printable characters");
+        }
+        if self.secret_key.as_deref().is_some_and(|s| !printable(s, 256)) {
+            return bad("secret_key: 1..=256 printable characters");
+        }
+        if let Some(ca) = &self.ca_pem {
+            if ca.len() > 64 << 10 || !ca.contains("-----BEGIN CERTIFICATE-----") || ca.contains("PRIVATE KEY") {
+                return bad("ca_pem: expected PEM certificate(s) (at most 64 KiB)");
+            }
+        }
+        for c in [&self.storage_class_packs, &self.storage_class_meta]
+            .into_iter()
+            .flatten()
+        {
+            if !(1..=32).contains(&c.len()) || !c.bytes().all(|b| b.is_ascii_uppercase() || b == b'_') {
+                return bad("storage_class: 1..=32 of [A-Z_]");
+            }
+            // archive classes need a restore request before a GET: DR and verify would fail
+            if matches!(c.as_str(), "GLACIER" | "DEEP_ARCHIVE") {
+                return bad("storage_class: GLACIER and DEEP_ARCHIVE are not readable without a restore; use e.g. GLACIER_IR or STANDARD_IA");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Validates `tenants.offsite`. An S3 remote is parsed strictly (its
+/// `secret_key` is the one inline secret allowed); anything else stays an
+/// opaque blob without inline secrets.
+fn check_offsite(v: &Value) -> ApiResult<Option<S3Remote>> {
     if !v.is_object() {
         return Err(ApiError::bad("offsite: must be an object"));
     }
-    opaque(v, "offsite", 16 << 10)
+    if v["remote"]["type"] != "s3" {
+        opaque(v, "offsite", 16 << 10)?;
+        return Ok(None);
+    }
+    let r: S3Remote =
+        serde_json::from_value(v["remote"].clone()).map_err(|e| ApiError::bad(format!("offsite.remote: {e}")))?;
+    r.check()?;
+    let mut rest = v.clone();
+    let rr = rest["remote"].as_object_mut().unwrap();
+    rr.remove("secret_key");
+    rr.remove("secret_key_set");
+    opaque(&rest, "offsite", 80 << 10)?;
+    Ok(Some(r))
+}
+
+/// The offsite config as stored: an S3 remote normalized, its secret sealed
+/// to the scheduler (bound to the tenant and the S3 endpoint fields).
+fn sealed_offsite(st: &St, tenant: &str, v: &Value, s3: Option<S3Remote>) -> ApiResult<Value> {
+    let Some(r) = s3 else { return Ok(v.clone()) };
+    let mut out = v.clone();
+    out["remote"] = serde_json::to_value(&r).map_err(anyhow::Error::from)?;
+    if r.secret_key.as_deref().is_some_and(|s| !catalog::secret::is_sealed(s)) {
+        st.seal_key()?.seal_all(&tenant_owner(tenant), &mut out)?;
+    }
+    Ok(out)
+}
+
+/// The offsite config as shown: `secret_key` replaced by `secret_key_set`.
+pub fn public_offsite(v: &Value) -> Value {
+    let mut v = v.clone();
+    if let Some(r) = v.get_mut("remote").and_then(Value::as_object_mut) {
+        if let Some(s) = r.remove("secret_key") {
+            r.insert(
+                "secret_key_set".into(),
+                json!(s.as_str().is_some_and(|s| !s.is_empty())),
+            );
+        }
+    }
+    v
 }
 
 pub async fn list_tenants(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>> {
@@ -86,7 +244,8 @@ pub async fn list_tenants(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Valu
     let rows = s
         .query_map([ctx.scope()], |r| {
             let o: String = r.get(1)?;
-            Ok(json!({"name": r.get::<_, String>(0)?, "offsite": serde_json::from_str::<Value>(&o).unwrap_or_default()}))
+            let o = serde_json::from_str::<Value>(&o).unwrap_or_default();
+            Ok(json!({"name": r.get::<_, String>(0)?, "offsite": public_offsite(&o)}))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(Value::Array(rows)))
@@ -95,18 +254,23 @@ pub async fn list_tenants(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Valu
 pub async fn create_tenant(State(st): State<St>, ctx: Ctx, J(r): J<TenantReq>) -> ApiResult<Response> {
     ctx.require(ADMIN)?;
     validate::name(&r.name, "name")?;
-    check_offsite(&r.offsite)?;
+    let s3 = check_offsite(&r.offsite)?;
+    if s3.as_ref().is_some_and(|s| s.secret_key.is_none()) {
+        return Err(ApiError::bad("offsite.remote.secret_key: required"));
+    }
+    let offsite = sealed_offsite(&st, &r.name, &r.offsite, s3)?;
     st.cat.conn().execute(
         "INSERT INTO tenants (name, offsite) VALUES (?1, ?2)",
-        params![r.name, r.offsite.to_string()],
+        params![r.name, offsite.to_string()],
     )?;
+    let shown = public_offsite(&offsite);
     st.audit(
         ctx.name(),
         "tenant.create",
         &format!("tenant/{}", r.name),
-        json!({"offsite": r.offsite}),
+        json!({"offsite": shown}),
     )?;
-    Ok(created(json!({"name": r.name, "offsite": r.offsite})))
+    Ok(created(json!({"name": r.name, "offsite": shown})))
 }
 
 /// `{name, offsite}` of a tenant as stored (quorum `old` snapshots compare against it).
@@ -128,23 +292,37 @@ pub async fn update_tenant(
     J(r): J<TenantUpdate>,
 ) -> ApiResult<Response> {
     ctx.require(ADMIN)?;
-    check_offsite(&r.offsite)?;
+    let mut s3 = check_offsite(&r.offsite)?;
     let old = tenant_value(&st.cat.conn(), &name)?.ok_or_else(ApiError::not_found)?;
+    if let Some(new) = s3.as_mut().filter(|s| s.secret_key.is_none()) {
+        // keeping the stored (sealed) secret only for the same S3 endpoint:
+        // otherwise an admin could send the write-only key to a host of their choice
+        let o = &old["offsite"]["remote"];
+        let n = serde_json::to_value(&*new).map_err(anyhow::Error::from)?;
+        if o["type"] != "s3" || !o["secret_key"].is_string() || S3_BINDING.iter().any(|k| o.get(*k) != n.get(*k)) {
+            return Err(ApiError::bad(
+                "offsite.remote.secret_key: required when endpoint, region, bucket, access_key, path_style or ca_pem change",
+            ));
+        }
+        new.secret_key = o["secret_key"].as_str().map(str::to_owned);
+    }
+    let offsite = sealed_offsite(&st, &name, &r.offsite, s3)?;
     let target = format!("tenant/{name}");
     let had_offsite = old["offsite"].as_object().is_some_and(|o| !o.is_empty());
-    if had_offsite && old["offsite"] != r.offsite {
-        let p = json!({"name": name, "offsite": r.offsite, "old": old});
+    if had_offsite && old["offsite"] != offsite {
+        let p = json!({"name": name, "offsite": offsite, "old": old});
         return gate(&st, &ctx, "tenant.update", &target, p);
     }
     let n = st.cat.conn().execute(
         "UPDATE tenants SET offsite = ?2 WHERE name = ?1",
-        params![name, r.offsite.to_string()],
+        params![name, offsite.to_string()],
     )?;
     if n == 0 {
         return Err(ApiError::not_found());
     }
-    st.audit(ctx.name(), "tenant.update", &target, json!({"offsite": r.offsite}))?;
-    Ok(Json(json!({"name": name, "offsite": r.offsite})).into_response())
+    let shown = public_offsite(&offsite);
+    st.audit(ctx.name(), "tenant.update", &target, json!({"offsite": shown}))?;
+    Ok(Json(json!({"name": name, "offsite": shown})).into_response())
 }
 
 /// A tenant can only be deleted once no source, group or user refers to it.

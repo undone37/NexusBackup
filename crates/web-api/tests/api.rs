@@ -6,7 +6,7 @@ use axum::extract::ConnectInfo;
 use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::Router;
 use catalog::rusqlite::params;
-use catalog::secret::{source_owner, SchedulerKey, TotpKey};
+use catalog::secret::{source_owner, tenant_owner, SchedulerKey, TotpKey};
 use catalog::Catalog;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
@@ -2571,5 +2571,151 @@ async fn truenas_sources() {
         )
         .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    t.finish();
+}
+
+fn s3_offsite(secret: Option<&str>) -> Value {
+    let mut r = json!({"type": "s3", "endpoint": "https://fsn1.your-objectstorage.com", "region": "fsn1",
+                       "bucket": "nexus-acme", "prefix": "appliance1", "access_key": "AKIA1",
+                       "storage_class_packs": "STANDARD_IA", "lock": true});
+    if let Some(s) = secret {
+        r["secret_key"] = json!(s);
+    }
+    json!({"remote": r, "uploaders": 4})
+}
+
+/// S3 offsite: strict validation, the secret key is sealed to the scheduler
+/// (bound to tenant + endpoint fields), never shown, kept on unchanged
+/// endpoints only, and changes go through the quorum like any offsite change.
+#[tokio::test]
+async fn tenant_s3_offsite_secret_is_sealed_and_bound() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let sam = t.login("sam").await;
+    let r = t
+        .post(
+            "/api/v1/tenants",
+            &admin,
+            json!({"name": "s3t", "offsite": s3_offsite(None)}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "secret required on create");
+    let r = t
+        .post(
+            "/api/v1/tenants",
+            &admin,
+            json!({"name": "s3t", "offsite": s3_offsite(Some("s3cr3t/KEY+x"))}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    assert_eq!(r.body["offsite"]["remote"]["secret_key_set"], true);
+    let stored = || {
+        serde_json::from_str::<Value>(&t.scalar::<String>("SELECT offsite FROM tenants WHERE name = 's3t'")).unwrap()
+    };
+    let mut v = stored();
+    assert!(v["remote"]["secret_key"].as_str().unwrap().starts_with("sealed:v1:"));
+    assert!(
+        t.sk.open_all(&tenant_owner("acme"), &mut v.clone()).is_err(),
+        "bound to the tenant"
+    );
+    t.sk.open_all(&tenant_owner("s3t"), &mut v).unwrap();
+    assert_eq!(v["remote"]["secret_key"], "s3cr3t/KEY+x");
+    for path in ["/api/v1/tenants", "/api/v1/audit"] {
+        let raw = String::from_utf8(t.get(path, &admin).await.raw).unwrap();
+        assert!(!raw.contains("s3cr3t") && !raw.contains("sealed:v1:"), "{path}: {raw}");
+    }
+
+    // unchanged config (as the UI sends it back, secret omitted): applies directly
+    let mut same = s3_offsite(None);
+    same["remote"]["secret_key_set"] = json!(true);
+    let r = t.put("/api/v1/tenants/s3t", &admin, json!({"offsite": same})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(stored(), {
+        let mut x = v.clone();
+        x["remote"]["secret_key"] = stored()["remote"]["secret_key"].clone();
+        x
+    });
+    // the secret does not follow a new endpoint / bucket / key id
+    for (f, val) in [
+        ("endpoint", json!("https://attacker.example")),
+        ("bucket", json!("other-bucket")),
+        ("access_key", json!("AKIA2")),
+        ("region", json!("nbg1")),
+    ] {
+        let mut moved = s3_offsite(None);
+        moved["remote"][f] = val;
+        let r = t.put("/api/v1/tenants/s3t", &admin, json!({"offsite": moved})).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{f}: {:?}", r.body);
+    }
+    // a prefix change keeps the key but needs a quorum (redirects the copy)
+    let mut moved = s3_offsite(None);
+    moved["remote"]["prefix"] = json!("elsewhere");
+    let r = t.put("/api/v1/tenants/s3t", &admin, json!({"offsite": moved})).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    for path in ["/api/v1/quorum", "/api/v1/audit"] {
+        let raw = String::from_utf8(t.get(path, &sam).await.raw).unwrap();
+        assert!(
+            raw.contains("elsewhere") && !raw.contains("sealed:v1:"),
+            "{path}: {raw}"
+        );
+    }
+    let q = t.scalar::<i64>("SELECT MAX(id) FROM quorum");
+    let r = t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({})).await;
+    assert_eq!(r.body["state"], "executed", "{:?}", r.body);
+    let mut v = stored();
+    assert_eq!(v["remote"]["prefix"], "elsewhere");
+    t.sk.open_all(&tenant_owner("s3t"), &mut v).unwrap();
+    assert_eq!(v["remote"]["secret_key"], "s3cr3t/KEY+x");
+
+    // validation
+    for (f, val) in [
+        ("endpoint", json!("http://s3.example.com")),
+        ("endpoint", json!("https://s3.example.com/path")),
+        ("endpoint", json!("https://user@s3.example.com")),
+        ("region", json!("EU Central")),
+        ("bucket", json!("Bad_Bucket")),
+        ("bucket", json!("with.dots")),
+        ("prefix", json!("../x")),
+        ("prefix", json!("/abs")),
+        ("access_key", json!("")),
+        ("secret_key", json!("has space")),
+        ("ca_pem", json!("-----BEGIN PRIVATE KEY-----")),
+        ("storage_class_packs", json!("DEEP_ARCHIVE")),
+        ("storage_class_meta", json!("lower")),
+        ("bogus", json!(1)),
+    ] {
+        let mut bad = s3_offsite(Some("k"));
+        bad["remote"][f] = val;
+        let r = t
+            .post("/api/v1/tenants", &admin, json!({"name": "bad", "offsite": bad}))
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{f}: {:?}", r.body);
+    }
+    let mut ok = s3_offsite(Some("k"));
+    ok["remote"]["bucket"] = json!("with.dots");
+    ok["remote"]["path_style"] = json!(true);
+    ok["remote"]["endpoint"] = json!("https://[2001:db8::1]:9000");
+    let r = t
+        .post("/api/v1/tenants", &admin, json!({"name": "ok", "offsite": ok}))
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    // other secrets in the blob are still refused
+    let mut extra = s3_offsite(Some("k"));
+    extra["password"] = json!("pw");
+    let r = t
+        .post("/api/v1/tenants", &admin, json!({"name": "extra", "offsite": extra}))
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+
+    // no scheduler public key: 503, nothing stored
+    std::fs::remove_file(&t.secrets_pub).unwrap();
+    let r = t
+        .post(
+            "/api/v1/tenants",
+            &admin,
+            json!({"name": "late", "offsite": s3_offsite(Some("k"))}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE);
     t.finish();
 }
