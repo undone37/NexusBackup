@@ -11,7 +11,8 @@ const USAGE: &str = "usage:
   keyd recover <dir>                    recovery key on stdin, re-seal KEK
   keyd tenant-create <dir> <tenant>
   keyd tenant-rotate <dir> <tenant>
-  keyd serve <dir> <socket> <allow-user>   allow-user: name or uid of chunkstore";
+  keyd serve <dir> <socket> <allow-user>   allow-user: name or uid of chunkstore
+  keyd export-escrow <dir> <tenant> <out-dir>   wrapped KEK + tenant DEKs for the offsite copy";
 
 fn stdin_line() -> io::Result<String> {
     let mut s = String::new();
@@ -49,6 +50,15 @@ fn run(args: &[String]) -> io::Result<()> {
             // umask 077 made it 0600; the chunkstore user connects via group nexus-keyd
             std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o660))?;
             keyd::serve(listener, Path::new(dir), uid)?
+        }
+        ["export-escrow", dir, tenant, out] => {
+            for (name, bytes) in keyd::export_escrow(Path::new(dir), tenant)? {
+                let p = Path::new(out).join(&name);
+                std::fs::create_dir_all(p.parent().unwrap())?;
+                std::fs::write(&p, bytes)?;
+                // wrapped blobs only, readable by the offsite uploader's group
+                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o640))?;
+            }
         }
         _ => return Err(io::Error::new(io::ErrorKind::InvalidInput, USAGE)),
     }

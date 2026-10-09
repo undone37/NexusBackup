@@ -81,11 +81,16 @@ Instant recovery and single-file restore (VM images via micro-VM; containers via
 - [x] `offsite::sftp::SftpRemote` (russh 0.64 / russh-sftp 3, ring backend): port 23, pinned host key (no TOFU), pool ≤10 (default 4), retries only on transport errors, pipelined range reads/writes, put = exclusive tmp + rename (never overwrites), remove_dir, statvfs usage; testbox `crates/offsite/testbox/run.sh` (OpenSSH chroot SFTP-only, 10-connection cap); 7 SFTP tests incl. engine test over SFTP pass (`eval "$(run.sh env)"`, skip otherwise); loopback 4 conns: put 540–735 MiB/s, get 740–1030 MiB/s
   - verify on real box: rename must refuse overwrite; openssh extensions availability; no sweep of orphan `*.tmp-*`
 - [x] keyd `export_escrow`/`import_escrow` (wrapped KEK + tenant DEKs for the box; DR test passes)
-- [ ] CLI `nexus-offsite` (upload incl. escrow, retention, gc, verify, check, list, restore, dr) + `keyd export-escrow` — **blocked in session: auto mode refused the command; resume outside auto mode**
-- [ ] systemd timer, DR drill over SFTP, final run against a real Storage Box
+- [x] CLI `nexus-offsite <cfg> upload|retention|gc|verify [n]|check|list|restore <src> <t>|dr <keyd-dir>` (remote `local` or `sftp`), `keyd export-escrow` (wrapped keys to `keys/` on the box on upload)
+- [x] `os/systemd/nexus-offsite.{service,timer}` (daily 02:00: upload, check, retention, gc, verify 3)
+- [x] DR drill over SFTP testbox with real lab data: upload 10 snapshots (670 MB, 26 packs) in 1.6 s loopback; check clean; verify 0 corrupt; fresh appliance + box + recovery key → `dr` (26 packs, 10 snapshots indexed) → restore vm-100 → disk sha256 identical to original; wrong recovery key refused
+- [ ] Final run against a real Hetzner Storage Box (user to provide; check rename-no-overwrite, extensions, WAN throughput)
+
+## M4 status
+Every snapshot can be uploaded and verified offsite (`check`/`verify`), and the DR drill from the (test) box on a fresh store succeeds. Open: per-snapshot "local ✓ / offsite ✓" view belongs to the UI (Phase 5); real Storage Box run pending.
 Decisions (user, 2026-10-09): test against a local SFTP container mimicking Storage Box first, real box later; SFTP via russh + russh-sftp
 
-## Phase 5 — Control plane and UI (starts after Phase 4 merge)
+## Phase 5 — Control plane and UI (next)
 Decisions (user, 2026-10-09): Web UI = TypeScript SPA on the REST API; MFA = TOTP only at first; first boot = console TUI
 
 ## Phase 6 — Hardened appliance release (starts after Phase 5 merge)

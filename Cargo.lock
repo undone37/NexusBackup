@@ -1504,11 +1504,13 @@ dependencies = [
  "anyhow",
  "chunkstore",
  "futures-util",
+ "keyd",
  "postcard",
  "rand 0.8.8",
  "russh",
  "russh-sftp",
  "serde",
+ "serde_json",
  "tempfile",
  "tokio",
 ]
