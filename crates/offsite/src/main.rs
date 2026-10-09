@@ -5,6 +5,7 @@ use anyhow::{bail, Context, Result};
 use chunkstore::retention::Gfs;
 use chunkstore::{Keyring, Options as StoreOptions, Store};
 use offsite::remote::{LocalDir, Remote};
+use offsite::s3::{S3Config, S3Remote};
 use offsite::sftp::{SftpConfig, SftpRemote};
 use offsite::target::{Options, Target};
 use serde::Deserialize;
@@ -47,6 +48,25 @@ enum RemoteCfg {
         host_key: String,
         base_dir: Option<String>,
     },
+    /// S3 with optional Object Lock (docs/s3-offsite.md). The secret key and
+    /// the trusted certificate(s) are files in the 0600 job dir.
+    S3 {
+        endpoint: String,
+        region: String,
+        bucket: String,
+        #[serde(default)]
+        prefix: String,
+        access_key: String,
+        secret_key_file: PathBuf,
+        #[serde(default)]
+        path_style: bool,
+        ca_file: Option<PathBuf>,
+        storage_class_packs: Option<String>,
+        storage_class_meta: Option<String>,
+        #[serde(default)]
+        lock: bool,
+        conditional_put: Option<bool>,
+    },
 }
 
 #[derive(Deserialize)]
@@ -73,6 +93,37 @@ fn remote(cfg: &RemoteCfg, connections: usize) -> Result<Box<dyn Remote>> {
             c.base_dir = base_dir.clone().unwrap_or_default();
             c.max_connections = connections;
             Box::new(SftpRemote::new(c)?)
+        }
+        RemoteCfg::S3 {
+            endpoint,
+            region,
+            bucket,
+            prefix,
+            access_key,
+            secret_key_file,
+            path_style,
+            ca_file,
+            storage_class_packs,
+            storage_class_meta,
+            lock,
+            conditional_put,
+        } => {
+            let secret = fs::read_to_string(secret_key_file).context("secret_key_file")?;
+            let mut c = S3Config::new(
+                endpoint,
+                region,
+                bucket,
+                access_key,
+                secret.trim_end_matches(['\r', '\n']),
+            );
+            c.prefix = prefix.clone();
+            c.path_style = *path_style;
+            c.ca_pem = ca_file.as_ref().map(fs::read).transpose().context("ca_file")?;
+            c.storage_class_packs = storage_class_packs.clone();
+            c.storage_class_meta = storage_class_meta.clone();
+            c.lock = *lock;
+            c.conditional_put = conditional_put.unwrap_or(true);
+            Box::new(S3Remote::new(c)?)
         }
     })
 }
@@ -148,10 +199,15 @@ fn main() -> Result<()> {
     });
     match (cmd.as_str(), rest) {
         ("upload", []) => {
-            for (name, bytes) in escrow_files(&cfg.escrow_dir)? {
-                t.put_if_missing(&format!("keys/{name}"), &bytes)?;
+            let escrow = escrow_files(&cfg.escrow_dir)?;
+            for (name, bytes) in &escrow {
+                t.put_if_missing(&format!("keys/{name}"), bytes)?;
             }
             let st = t.upload()?;
+            // the keys must outlive every locked snapshot (DR needs them)
+            for (name, _) in &escrow {
+                t.protect(&format!("keys/{name}"))?;
+            }
             println!(
                 "uploaded {} snapshots, {} packs, {} chunks, {} bytes",
                 st.snapshots, st.packs, st.chunks, st.bytes
@@ -159,6 +215,9 @@ fn main() -> Result<()> {
         }
         ("retention", []) => {
             let (k, d, l) = t.apply_retention(&gfs)?;
+            for (name, _) in escrow_files(&cfg.escrow_dir).unwrap_or_default() {
+                t.protect(&format!("keys/{name}"))?;
+            }
             println!("offsite retention: kept {k}, deleted {d}, still locked {l}");
         }
         ("gc", []) => println!("{:?}", t.gc()?),

@@ -11,6 +11,19 @@
 //! Ordering rules: a pack is uploaded before its local index copy is written
 //! (orphans are harmless, phantoms would lose data); a snapshot's manifest is
 //! uploaded after all its chunks and indexes; on deletion the manifest goes first.
+//!
+//! **Retention locks** (remotes with `supports_locks()`, i.e. S3 Object Lock in
+//! compliance mode): every object a snapshot needs is locked at least until
+//! the snapshot's offsite lock, before the snapshot counts as offsite:
+//! - new packs and the snapshot files are written with `put_locked`;
+//! - packs it shares with older snapshots are extended (`extend_lock`) when
+//!   their lock is shorter; a pack's lock is the max over its snapshots;
+//! - when retention extends a snapshot's offsite lock (GFS promotion), its
+//!   packs and files are extended on the remote first, then the local lock;
+//! - GC skips packs that are still locked (deleting them would only add a
+//!   delete marker and free nothing) and retries on a later run;
+//! - the lock applied to each pack is kept in `state/packs/<id>.lock`; DR
+//!   reads the locks back from the remote.
 
 use crate::pack::{self, Entry};
 use crate::remote::Remote;
@@ -65,6 +78,8 @@ pub struct GcStats {
     pub packs_deleted: usize,
     pub packs_repacked: usize,
     pub bytes_freed: u64,
+    /// dead or sparse packs left alone because their remote lock still runs
+    pub packs_locked: usize,
 }
 
 #[derive(Debug, Default)]
@@ -89,6 +104,8 @@ pub struct Target<'a> {
     inv: HashMap<ChunkId, Loc>,
     /// pack id -> (entries, total pack size)
     packs: BTreeMap<String, (Vec<Entry>, u64)>,
+    /// pack id -> remote lock date applied (locking remotes only)
+    pack_locks: HashMap<String, u64>,
 }
 
 /// Source / index names as the chunk store accepts them (`[A-Za-z0-9._-]`,
@@ -116,6 +133,7 @@ impl<'a> Target<'a> {
             opts,
             inv: HashMap::new(),
             packs: BTreeMap::new(),
+            pack_locks: HashMap::new(),
         };
         for e in fs::read_dir(t.state.join("packs"))? {
             let e = e?;
@@ -128,6 +146,11 @@ impl<'a> Target<'a> {
                 .parse()
                 .context("pack size file")?;
             let entries = pack::open_index(store.keys(), id, &raw)?;
+            let lock_file = t.state.join("packs").join(format!("{id}.lock"));
+            if let Ok(l) = fs::read_to_string(&lock_file) {
+                t.pack_locks
+                    .insert(id.to_owned(), l.trim().parse().context("pack lock file")?);
+            }
             t.add_pack(id.to_owned(), entries, size);
         }
         Ok(t)
@@ -147,11 +170,108 @@ impl<'a> Target<'a> {
         self.packs.insert(id, (entries, size));
     }
 
-    fn record_pack(&mut self, id: &str, sealed_idx: &[u8], entries: Vec<Entry>, size: u64) -> Result<()> {
+    fn record_pack(&mut self, id: &str, sealed_idx: &[u8], entries: Vec<Entry>, size: u64, lock: u64) -> Result<()> {
         let dir = self.state.join("packs");
         write_atomic(&dir.join(format!("{id}.size")), size.to_string().as_bytes())?;
+        if lock > 0 {
+            self.record_pack_lock(id, lock)?;
+        }
         write_atomic(&dir.join(format!("{id}.idx")), sealed_idx)?;
         self.add_pack(id.to_owned(), entries, size);
+        Ok(())
+    }
+
+    fn record_pack_lock(&mut self, id: &str, lock: u64) -> Result<()> {
+        write_atomic(
+            &self.state.join("packs").join(format!("{id}.lock")),
+            lock.to_string().as_bytes(),
+        )?;
+        self.pack_locks.insert(id.to_owned(), lock);
+        Ok(())
+    }
+
+    fn locks(&self) -> bool {
+        self.remote.supports_locks()
+    }
+
+    /// Remote lock of a pack as last applied (0 = none known).
+    pub fn pack_lock(&self, id: &str) -> u64 {
+        self.pack_locks.get(id).copied().unwrap_or(0)
+    }
+
+    /// Pack ids in the local inventory.
+    pub fn pack_ids(&self) -> Vec<String> {
+        self.packs.keys().cloned().collect()
+    }
+
+    /// Extends the remote lock of every pack in `packs` to at least `until`.
+    fn lock_packs(&mut self, packs: &HashSet<String>, until: u64) -> Result<()> {
+        let mut ids: Vec<String> = packs.iter().filter(|p| self.pack_lock(p) < until).cloned().collect();
+        ids.sort();
+        for id in ids {
+            self.remote
+                .extend_lock(&pack::remote_path(&id), until)
+                .with_context(|| format!("extend lock of pack {id}"))?;
+            self.record_pack_lock(&id, until)?;
+        }
+        Ok(())
+    }
+
+    /// Packs holding the chunks of an offsite snapshot (from the local state copy).
+    fn snapshot_packs(&self, source: &str, time: u64) -> Result<HashSet<String>> {
+        let dir = self.state.join(snap_key(source, time));
+        let m = self
+            .store
+            .decode_manifest(source, time, &fs::read(dir.join("manifest"))?)?;
+        let mut out = HashSet::new();
+        for name in &m.indexes {
+            let idx = self
+                .store
+                .decode_index(source, time, name, &fs::read(dir.join(format!("{name}.idx")))?)?;
+            for id in idx.chunk_ids() {
+                let loc = self
+                    .inv
+                    .get(id)
+                    .with_context(|| format!("{source}/{time}: chunk not in the offsite inventory"))?;
+                out.insert(loc.pack.clone());
+            }
+        }
+        Ok(out)
+    }
+
+    /// Remote lock extension of a snapshot (packs first, then its files).
+    fn lock_snapshot(&mut self, source: &str, time: u64, until: u64) -> Result<()> {
+        let packs = self.snapshot_packs(source, time)?;
+        self.lock_packs(&packs, until)?;
+        let key = snap_key(source, time);
+        for e in fs::read_dir(self.state.join(&key))? {
+            let name = e?.file_name().to_string_lossy().into_owned();
+            if name != "lock" {
+                self.remote
+                    .extend_lock(&format!("{key}/{name}"), until)
+                    .with_context(|| format!("extend lock of {key}/{name}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Longest offsite lock over all snapshots (0 without snapshots).
+    pub fn max_lock(&self) -> Result<u64> {
+        let mut m = 0;
+        for (s, t) in self.snapshots()? {
+            m = m.max(self.offsite_lock(&s, t)?);
+        }
+        Ok(m)
+    }
+
+    /// Locks an extra file (key escrow) as long as the longest-locked snapshot:
+    /// the copy is useless after DR without it.
+    pub fn protect(&self, path: &str) -> Result<()> {
+        if self.locks() {
+            self.remote
+                .extend_lock(path, self.max_lock()?)
+                .with_context(|| format!("extend lock of {path}"))?;
+        }
         Ok(())
     }
 
@@ -209,13 +329,21 @@ impl<'a> Target<'a> {
         // chunks not yet offsite, in index order (keeps a protection group's packs together)
         let mut seen = HashSet::new();
         let mut missing = Vec::new();
+        let mut shared_packs = HashSet::new();
         for name in &m.indexes {
             for id in self.store.load_index(m, name)?.chunk_ids() {
-                if !self.inv.contains_key(id) && seen.insert(*id) {
-                    missing.push(*id);
+                match self.inv.get(id) {
+                    Some(loc) => {
+                        shared_packs.insert(loc.pack.clone());
+                    }
+                    None if seen.insert(*id) => missing.push(*id),
+                    None => {}
                 }
             }
         }
+        let lock = if self.locks() { m.lock_until } else { 0 };
+        // older packs this snapshot shares must last as long as it does
+        self.lock_packs(&shared_packs, lock)?;
         let keys = self.store.keys();
         let (remote, uploaders) = (self.remote, self.opts.uploaders.max(1));
         let per_thread_bw = self.opts.bwlimit.map(|b| (b / uploaders as u64).max(1));
@@ -229,7 +357,11 @@ impl<'a> Target<'a> {
                         return;
                     };
                     let t0 = Instant::now();
-                    let r = remote.put(&pack::remote_path(&id), &bytes);
+                    let r = if lock > 0 {
+                        remote.put_locked(&pack::remote_path(&id), &bytes, lock)
+                    } else {
+                        remote.put(&pack::remote_path(&id), &bytes)
+                    };
                     if let (Ok(()), Some(bw)) = (&r, per_thread_bw) {
                         let want = Duration::from_secs_f64(bytes.len() as f64 / bw as f64);
                         std::thread::sleep(want.saturating_sub(t0.elapsed()));
@@ -259,7 +391,7 @@ impl<'a> Target<'a> {
                     st.packs += 1;
                     st.chunks += entries.len();
                     st.bytes += size;
-                    self.record_pack(&id, &idx, entries, size)?;
+                    self.record_pack(&id, &idx, entries, size, lock)?;
                 }
                 Err(e) => {
                     first_err.get_or_insert(anyhow::Error::from(e).context(format!("pack {id}")));
@@ -273,9 +405,19 @@ impl<'a> Target<'a> {
         let key = snap_key(&m.source, m.time);
         let files = self.store.snapshot_raw_files(m)?;
         for (name, bytes) in &files {
-            match self.remote.put(&format!("{key}/{name}"), bytes) {
+            let path = format!("{key}/{name}");
+            let r = if lock > 0 {
+                self.remote.put_locked(&path, bytes, lock)
+            } else {
+                self.remote.put(&path, bytes)
+            };
+            match r {
                 Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    if lock > 0 {
+                        self.remote.extend_lock(&path, lock)?;
+                    }
+                }
                 Err(e) => return Err(e.into()),
             }
         }
@@ -305,6 +447,11 @@ impl<'a> Target<'a> {
                     kept += 1;
                     let want = retention::lock_until(t, classes);
                     if want > lock {
+                        if self.locks() && want > now {
+                            // remote first: a local lock the remote does not enforce would lie
+                            self.lock_snapshot(&source, t, want)
+                                .with_context(|| format!("lock {source}/{t}"))?;
+                        }
                         write_atomic(&self.lock_path(&source, t), want.to_string().as_bytes())?;
                     }
                 } else if now < lock {
@@ -337,10 +484,12 @@ impl<'a> Target<'a> {
         Ok(())
     }
 
-    /// Chunks referenced by offsite snapshots. Unreadable state aborts (never sweep on an incomplete mark).
-    fn mark(&self) -> Result<HashSet<ChunkId>> {
-        let mut marked = HashSet::new();
+    /// Chunks referenced by offsite snapshots, with the longest offsite lock
+    /// among them. Unreadable state aborts (never sweep on an incomplete mark).
+    fn mark(&self) -> Result<HashMap<ChunkId, u64>> {
+        let mut marked: HashMap<ChunkId, u64> = HashMap::new();
         for (source, time) in self.snapshots()? {
+            let lock = self.offsite_lock(&source, time)?;
             let dir = self.state.join(snap_key(&source, time));
             let m = self
                 .store
@@ -349,7 +498,10 @@ impl<'a> Target<'a> {
                 let idx = self
                     .store
                     .decode_index(&source, time, name, &fs::read(dir.join(format!("{name}.idx")))?)?;
-                marked.extend(idx.chunk_ids().into_iter().copied());
+                for id in idx.chunk_ids() {
+                    let l = marked.entry(*id).or_default();
+                    *l = (*l).max(lock);
+                }
             }
         }
         Ok(marked)
@@ -359,14 +511,22 @@ impl<'a> Target<'a> {
     /// taken from the local store when present, else range-read from the box.
     pub fn gc(&mut self) -> Result<GcStats> {
         let marked = self.mark()?;
+        let now = self.store.compliance_now()?;
         let mut st = GcStats::default();
         let ids: Vec<String> = self.packs.keys().cloned().collect();
         for id in ids {
             let (entries, size) = self.packs[&id].clone();
-            let live: Vec<&Entry> = entries.iter().filter(|e| marked.contains(&e.id)).collect();
+            let live: Vec<&Entry> = entries.iter().filter(|e| marked.contains_key(&e.id)).collect();
             let live_bytes: u64 = live.iter().map(|e| e.len as u64).sum();
             let dead_share = 1.0 - live_bytes as f64 / size.max(1) as f64;
             if !live.is_empty() && dead_share <= self.opts.repack_threshold {
+                continue;
+            }
+            // still locked on the remote (recorded, or implied by a live snapshot's lock):
+            // deleting or repacking frees nothing before the lock ends
+            let live_lock = live.iter().map(|e| marked[&e.id]).max().unwrap_or(0);
+            if self.locks() && self.pack_lock(&id).max(live_lock) > now {
+                st.packs_locked += 1;
                 continue;
             }
             if !live.is_empty() {
@@ -383,14 +543,17 @@ impl<'a> Target<'a> {
                     b.add(e.id, &raw);
                 }
                 let (nid, bytes, idx, nentries) = b.finish(self.store.keys());
+                // the live snapshots' locks have ended (else the pack was skipped above)
                 self.remote.put(&pack::remote_path(&nid), &bytes)?;
-                self.record_pack(&nid, &idx, nentries, bytes.len() as u64)?;
+                self.record_pack(&nid, &idx, nentries, bytes.len() as u64, 0)?;
                 st.packs_repacked += 1;
             }
             // old pack: forget locally first, then delete remotely (orphan > phantom)
             let dir = self.state.join("packs");
             fs::remove_file(dir.join(format!("{id}.idx")))?;
             fs::remove_file(dir.join(format!("{id}.size")))?;
+            let _ = fs::remove_file(dir.join(format!("{id}.lock")));
+            self.pack_locks.remove(&id);
             let (old, _) = self.packs.remove(&id).unwrap();
             for e in old {
                 if self.inv.get(&e.id).is_some_and(|l| l.pack == id) {
@@ -535,7 +698,12 @@ impl<'a> Target<'a> {
                 }
                 let sealed = self.remote.get(&path, size - pack::FOOTER - ilen, Some(ilen))?;
                 let entries = pack::open_index(self.store.keys(), id, &sealed)?;
-                self.record_pack(id, &sealed, entries, size)?;
+                let lock = if self.locks() {
+                    self.remote.lock_of(&path)?.unwrap_or(0)
+                } else {
+                    0
+                };
+                self.record_pack(id, &sealed, entries, size, lock)?;
                 n += 1;
             }
         }
@@ -565,9 +733,18 @@ impl<'a> Target<'a> {
                     self.store.decode_index(&source, t, name, &blob)?;
                     idx.push((format!("{name}.idx"), blob));
                 }
+                // the remote lock carries extensions made by offsite retention
+                let remote_lock = if self.locks() {
+                    self.remote.lock_of(&format!("{key}/manifest"))?.unwrap_or(0)
+                } else {
+                    0
+                };
                 let local = self.state.join(&key);
                 fs::create_dir_all(&local)?;
-                write_atomic(&local.join("lock"), m.lock_until.to_string().as_bytes())?;
+                write_atomic(
+                    &local.join("lock"),
+                    m.lock_until.max(remote_lock).to_string().as_bytes(),
+                )?;
                 for (name, blob) in &idx {
                     write_atomic(&local.join(name), blob)?;
                 }

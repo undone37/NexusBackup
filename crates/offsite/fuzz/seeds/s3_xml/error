@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Error><Code>InvalidRequest</Code><Message>Object is WORM protected and cannot be overwritten</Message><Key>t1/packs/ab/x.pack</Key><BucketName>nexus</BucketName><Resource>/nexus/t1/packs/ab/x.pack</Resource><RequestId>186C8B2E9B5D2F07</RequestId><HostId>dd9025bab4ad464b049177c95eb6ebf374d3b3fd1af9251148b658df7ac2e3e8</HostId></Error>

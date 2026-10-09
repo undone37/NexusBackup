@@ -1,6 +1,12 @@
-//! Dumb remote storage (Hetzner Storage Box via SFTP, later S3). The box only
+//! Dumb remote storage (Hetzner Storage Box via SFTP, S3). The remote only
 //! stores files; all intelligence (inventory, retention, GC) is on the appliance.
 //! Paths are relative to the tenant's root on the remote, `/`-separated.
+//!
+//! Retention locks (S3 Object Lock, compliance mode) are an optional
+//! capability: `supports_locks()` says whether `put_locked` / `extend_lock`
+//! make objects undeletable until a date. Backends without locks keep the
+//! defaults (plain `put`, no-op extension) and rely on their own
+//! immutability layer (Storage Box snapshots).
 
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -19,9 +25,27 @@ pub trait Remote: Send + Sync {
     fn remove_dir(&self, _dir: &str) -> io::Result<()> {
         Ok(())
     }
+    /// True if the backend enforces retention locks: a locked object (version)
+    /// cannot be deleted or overwritten by anyone until its date.
+    fn supports_locks(&self) -> bool {
+        false
+    }
+    /// `put` with a retention lock until `retain_until` (unix seconds). Dates
+    /// in the past (or within a minute) store the object unlocked.
+    fn put_locked(&self, path: &str, data: &[u8], _retain_until: u64) -> io::Result<()> {
+        self.put(path, data)
+    }
+    /// Makes sure `path` stays locked at least until `until` (never shortens).
+    fn extend_lock(&self, _path: &str, _until: u64) -> io::Result<()> {
+        Ok(())
+    }
+    /// Current lock date of `path` (`None` = unlocked or no lock support).
+    fn lock_of(&self, _path: &str) -> io::Result<Option<u64>> {
+        Ok(None)
+    }
 }
 
-fn check(path: &str) -> io::Result<()> {
+pub(crate) fn check(path: &str) -> io::Result<()> {
     let ok =
         !path.is_empty() && !path.starts_with('/') && path.split('/').all(|c| !c.is_empty() && c != "." && c != "..");
     if ok {
