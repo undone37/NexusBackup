@@ -8,11 +8,11 @@
 #   m5.sh env     print exports for lab/e2e/m5-api.sh
 #   m5.sh all     setup + start + lab/e2e/m5-api.sh + lab/e2e/m5-ui.mjs (headless Chrome)
 # Then: lab/e2e/m5-api.sh (REST flow against the nested PVE lab + SFTP testbox).
-# env: ROOT (default target/m5-root), PORT (18443), BIN (target/release),
+# env: ROOT (default target/m5-root), PORT (18443), LISTEN (127.0.0.1), BIN (target/release),
 #      NEXUS_RESTORE_VM_DIR (default target/restore-vm, built by restore-vm/build.sh).
 # Logs: $ROOT/log/*.log. Build first:
 #   (cd web && npm ci --ignore-scripts && npm run build)
-#   cargo build --release -p keyd -p pve -p offsite -p web-api -p scheduler -p setup -p agent-conn -p truenas
+#   cargo build --release -p keyd -p pve -p offsite -p web-api -p scheduler -p setup -p agent-conn -p truenas -p nas
 # Linux agents (lab/linux/e2e.sh): signed agent bundles for `agent_update` go to $ROOT/agent-update.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -61,7 +61,7 @@ setup() {
 		 "runtime_dir": "$ROOT/run/scheduler", "state_dir": "$lib/scheduler",
 		 "pve_bin": "$BIN/nexus-pve", "offsite_bin": "$BIN/nexus-offsite",
 		 "agentctl_bin": "$BIN/nexus-agentctl", "agent_update_dir": "$ROOT/agent-update",
-		 "truenas_bin": "$BIN/nexus-truenas",
+		 "truenas_bin": "$BIN/nexus-truenas", "nas_bin": "$BIN/nexus-nas",
 		 "alerts_config": "$etc/alerts.json", "tick_secs": 5, "refresh_secs": 60}
 	EOF
 }
@@ -72,7 +72,7 @@ start() {
 	nohup "$BIN/keyd" serve "$lib/keyd" run/keyd.sock "$(id -u)" >log/keyd.log 2>&1 &
 	echo $! >run/keyd.pid
 	for _ in $(seq 50); do [ -S run/keyd.sock ] && break; sleep 0.1; done
-	NEXUS_WEBAPI_LISTEN=127.0.0.1:$PORT NEXUS_CATALOG=$lib/catalog/catalog.db \
+	NEXUS_WEBAPI_LISTEN=${LISTEN:-127.0.0.1}:$PORT NEXUS_CATALOG=$lib/catalog/catalog.db \
 		NEXUS_TLS_CERT=$etc/tls/cert.pem NEXUS_TLS_KEY=$etc/tls/key.pem \
 		NEXUS_SETUP_DONE=$lib/setup-done NEXUS_METRICS_TOKEN=$etc/metrics-token \
 		NEXUS_DOWNLOADS=$lib/downloads NEXUS_TOTP_KEY=$lib/webapi/totp.key \

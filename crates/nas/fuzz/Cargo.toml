@@ -1,0 +1,23 @@
+[package]
+name = "nas-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "AGPL-3.0-only"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+nas = { path = "..", default-features = false }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "helper_request"
+path = "fuzz_targets/helper_request.rs"
+test = false
+doc = false
+bench = false
