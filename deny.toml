@@ -9,9 +9,6 @@ all-features = false
 # docs/security-review.md and only reachable from the first-boot TUI (ratatui)
 ignore = [
     { id = "RUSTSEC-2023-0089", reason = "atomic-polyfill via postcard/heapless; no replacement upstream yet, no known vulnerability" },
-    { id = "RUSTSEC-2024-0436", reason = "paste (proc-macro, build time only) via ratatui" },
-    { id = "RUSTSEC-2026-0002", reason = "lru via ratatui layout cache: first-boot console TUI only, no untrusted input" },
-    { id = "RUSTSEC-2026-0253", reason = "lru via ratatui layout cache: first-boot console TUI only, no untrusted input" },
 ]
 
 [licenses]

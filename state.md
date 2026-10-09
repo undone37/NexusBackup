@@ -153,6 +153,8 @@ Decisions (user, 2026-10-09): order Linux agent → Windows agent → TrueNAS �
   - user accepted (2026-10-09) the privilege model — `nexusbackup` runs find/tar/realpath/zfs via passwordless sudo (root-equivalent), the forced command is the boundary (4 ops, configured datasets, nexus-* snapshots, canonical paths only)
   - limits: changed files re-read fully (no block delta), sparse files full transfer, dataset root ACL not recorded, entries in memory, cert renewal breaks pin, restore-to-dataset deferred
 
+- [x] Dependabot: lru upgraded 0.12.5 → 0.18.5 via ratatui 0.29 → 0.30.2 (first-boot TUI; builds unchanged, tests green); paste dropped; deny.toml ignores for lru/paste removed; cargo audit: only atomic-polyfill (unmaintained, allowed)
+
 ## Production gaps (deferred by user decision 2026-10-09: continue plan order first)
 SSH key management for sources, appliance config backup (catalog, totp.key, secrets.key), agent/TrueNAS cert renewal, minimal PVE token privileges, scale/soak tests on real hardware, multi-node PVE, GitHub push + CI + release, agent bundle in the image, TPM/LUKS, H-3 uid split; user-side: release key, real Storage Box, external pentest, pilot tenant
 
