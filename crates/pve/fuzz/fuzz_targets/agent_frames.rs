@@ -3,7 +3,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use pve::restorevm::{read_frame, Entry, Mount, TarSummary};
+use pve::restorevm::{parse_response, read_frame, Entry, Mount, TarSummary};
 
 fuzz_target!(|data: &[u8]| {
     let mut r = data;
@@ -20,10 +20,9 @@ fuzz_target!(|data: &[u8]| {
             Err(_) => break,
         }
     }
-    // the rest are response lines
+    // the rest are response lines, decoded like Vm::mounts / ls / TarStream::finish
     for line in r.split(|b| *b == b'\n') {
-        if let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(line) {
-            let ok = v["ok"].take();
+        if let Ok(ok) = parse_response(line) {
             let _ = serde_json::from_value::<Vec<Mount>>(ok.clone());
             let _ = serde_json::from_value::<Vec<Entry>>(ok.clone());
             let _ = serde_json::from_value::<TarSummary>(ok);

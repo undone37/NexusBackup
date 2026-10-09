@@ -238,11 +238,7 @@ impl Vm {
         if line.last() != Some(&b'\n') {
             bail!("agent closed the connection or sent an over-long line");
         }
-        let mut v: serde_json::Value = serde_json::from_slice(&line).context("agent response")?;
-        if let Some(e) = v.get("err") {
-            bail!("agent: {}", e.as_str().unwrap_or("?"));
-        }
-        Ok(v["ok"].take())
+        parse_response(&line)
     }
 
     pub fn mounts(&mut self) -> Result<Vec<Mount>> {
@@ -302,6 +298,19 @@ impl Drop for Vm {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// One agent response line: `{"ok": …}` → the value, `{"err": "…"}` → error.
+/// Anything else (the agent is untrusted once a guest file system got to it) is an error.
+pub fn parse_response(line: &[u8]) -> Result<serde_json::Value> {
+    let v: serde_json::Value = serde_json::from_slice(line).context("agent response")?;
+    let serde_json::Value::Object(mut o) = v else {
+        bail!("agent response is not an object");
+    };
+    if let Some(e) = o.get("err") {
+        bail!("agent: {}", e.as_str().unwrap_or("?"));
+    }
+    Ok(o.remove("ok").unwrap_or_default())
 }
 
 /// Tar stream from the agent (decoded frames).
@@ -515,4 +524,45 @@ pub fn cli(store: &Store, vmid: u32, time: u64, args: &[String]) -> Result<()> {
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression (fuzzing, agent_frames): `{"ok"}` lookup on a non-object
+    /// response (`5`, `[]`) panicked in serde_json's IndexMut.
+    #[test]
+    fn agent_responses() {
+        assert_eq!(parse_response(b"{\"ok\":[1]}\n").unwrap(), serde_json::json!([1]));
+        assert_eq!(parse_response(b"{}").unwrap(), serde_json::Value::Null);
+        assert!(parse_response(b"{\"err\":\"no such mount\"}").is_err());
+        for bad in [&b"5\n"[..], b"[]", b"\"ok\"", b"null", b"{"] {
+            assert!(parse_response(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn frames_decode() {
+        let wire = [
+            &3u32.to_be_bytes()[..],
+            b"abc",
+            &1u32.to_be_bytes(),
+            b"d",
+            &0u32.to_be_bytes(),
+            b"rest",
+        ]
+        .concat();
+        let (mut r, mut left, mut done, mut out, mut buf) = (&wire[..], 0, false, Vec::new(), [0u8; 2]);
+        loop {
+            let n = read_frame(&mut r, &mut left, &mut done, &mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n]);
+        }
+        assert_eq!((out.as_slice(), r), (&b"abcd"[..], &b"rest"[..]));
+        let huge = (MAX_FRAME + 1).to_be_bytes();
+        assert!(read_frame(&mut &huge[..], &mut 0, &mut false, &mut buf).is_err());
+    }
 }
