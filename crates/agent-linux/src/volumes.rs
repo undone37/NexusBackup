@@ -172,8 +172,14 @@ pub fn lv_info(device: &str) -> Option<LvInfo> {
     )
     .ok()?;
     let info = parse_lvs(&out)?;
-    // origin must be a plain/thin/raid/mirror/cache LV, not itself a snapshot or pool
-    matches!(info.attr.chars().next(), Some('-' | 'V' | 'r' | 'R' | 'm' | 'M' | 'C')).then_some(info)
+    can_snapshot(&info.attr).then_some(info)
+}
+
+/// The origin must be a plain/thin/raid/mirror/cache LV, or one that already has
+/// (thick) snapshots (`o`: e.g. a leftover or the admin's own), not itself a
+/// snapshot, a pool or an origin whose snapshot is being merged (`O`).
+fn can_snapshot(lv_attr: &str) -> bool {
+    matches!(lv_attr.chars().next(), Some('-' | 'o' | 'V' | 'r' | 'R' | 'm' | 'M' | 'C'))
 }
 
 /// btrfs: a read-only snapshot needs the mount point to be a subvolume root (inode 256).
@@ -206,6 +212,17 @@ pub fn list_volumes() -> Vec<Volume> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lv_attrs_that_can_be_snapshotted() {
+        // lab: once a thick snapshot existed, the origin (`owi-aos---`) was read live
+        for a in ["-wi-ao----", "owi-aos---", "Vwi-aotz--", "rwi-aor---", "Cwi-aoC---"] {
+            assert!(can_snapshot(a), "{a}");
+        }
+        for a in ["swi-a-s---", "twi-aotz--", "Owi-a-s---", ""] {
+            assert!(!can_snapshot(a), "{a}");
+        }
+    }
 
     const MI: &str = "\
 22 1 253:1 / / rw,relatime shared:1 - xfs /dev/mapper/rl-root rw,attr2
