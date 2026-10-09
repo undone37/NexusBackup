@@ -159,6 +159,13 @@ fn rand_u64() -> u64 {
     u64::from_le_bytes(b)
 }
 
+/// XFS lists its on-disk ACLs to root as `trusted.SGI_ACL_FILE` / `trusted.SGI_ACL_DEFAULT`
+/// next to `system.posix_acl_*`. They duplicate the POSIX ACLs and are meaningless (plain
+/// trusted xattrs) on any other file system, so they are neither backed up nor restored.
+pub fn fs_internal_xattr(name: &[u8]) -> bool {
+    name == b"trusted.SGI_ACL_FILE" || name == b"trusted.SGI_ACL_DEFAULT"
+}
+
 pub fn open_nofollow(p: &Path) -> io::Result<File> {
     let o = |noatime: bool| {
         fs::OpenOptions::new()
@@ -340,7 +347,7 @@ impl<'a> Scanner<'a> {
         match sys::lxattrs(src) {
             Ok(x) => {
                 let mut total = 0;
-                for (k, v) in x {
+                for (k, v) in x.into_iter().filter(|(k, _)| !fs_internal_xattr(k)) {
                     total += k.len() + v.len();
                     if total > MAX_XATTR {
                         self.error(format!(
@@ -563,6 +570,14 @@ mod tests {
     fn xattr_set(p: &Path, k: &str, v: &[u8]) -> io::Result<()> {
         let f = File::open(p)?;
         sys::fsetxattr(std::os::fd::AsRawFd::as_raw_fd(&f), k.as_bytes(), v)
+    }
+
+    #[test]
+    fn xfs_acl_xattrs_are_not_backed_up() {
+        assert!(fs_internal_xattr(b"trusted.SGI_ACL_FILE"));
+        assert!(fs_internal_xattr(b"trusted.SGI_ACL_DEFAULT"));
+        assert!(!fs_internal_xattr(b"system.posix_acl_access"));
+        assert!(!fs_internal_xattr(b"trusted.overlay.opaque"));
     }
 
     #[test]

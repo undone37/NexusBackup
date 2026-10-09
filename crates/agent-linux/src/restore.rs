@@ -269,7 +269,7 @@ impl Restore {
             }
             if !e.xattrs.is_empty() {
                 let node = openat_beneath(fd, tmp, libc::O_PATH, 0)?;
-                for (k, v) in &e.xattrs {
+                for (k, v) in e.xattrs.iter().filter(|(k, _)| !crate::scan::fs_internal_xattr(k)) {
                     if let Err(x) = sys::setxattr_opath(node.as_raw_fd(), k, v) {
                         self.error(&e.path, format!("xattr {}: {x}", String::from_utf8_lossy(k)));
                     }
@@ -364,7 +364,7 @@ impl Restore {
             }
             f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(e.mode & 0o7777))?;
             let mut xerr = vec![];
-            for (k, v) in &e.xattrs {
+            for (k, v) in e.xattrs.iter().filter(|(k, _)| !crate::scan::fs_internal_xattr(k)) {
                 if let Err(x) = sys::fsetxattr(f.as_raw_fd(), k, v) {
                     xerr.push(format!("xattr {}: {x}", String::from_utf8_lossy(k)));
                 }
@@ -437,7 +437,7 @@ impl Restore {
                     r => r?,
                 }
                 d.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(e.mode & 0o7777))?;
-                for (k, v) in &e.xattrs {
+                for (k, v) in e.xattrs.iter().filter(|(k, _)| !crate::scan::fs_internal_xattr(k)) {
                     if let Err(x) = sys::fsetxattr(d.as_raw_fd(), k, v) {
                         self.error(&e.path, format!("xattr {}: {x}", String::from_utf8_lossy(k)));
                     }
