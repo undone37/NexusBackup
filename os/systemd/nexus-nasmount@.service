@@ -1,0 +1,60 @@
+[Unit]
+Description=NexusBackup NAS mount helper (one read-only share mount, docs/nas-connector.md)
+# no default dependencies on later units: it only builds a mount and exits
+DefaultDependencies=no
+After=network-online.target
+Requires=nexus-nasmount.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/nexus/nexus-nasmount
+# fd 0 is the accepted connection; logs go to the journal, never to the peer
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+User=root
+Environment=NEXUS_NASMOUNT_ALLOW_USER=nexus-chunkstore
+# SMB Kerberos: kinit writes the ticket cache here; cifs.upcall (spawned by the
+# kernel) finds it through this variable in the helper's environment
+Environment=KRB5CCNAME=FILE:/run/nexus-nasmount.%i/ccache
+RuntimeDirectory=nexus-nasmount.%i
+RuntimeDirectoryMode=0700
+# a hung server must not keep the instance (the kernel client has its own timeouts)
+RuntimeMaxSec=300
+UMask=0077
+LimitCORE=0
+
+# Least privilege: building a mount needs CAP_SYS_ADMIN and nothing else. The
+# mount is created detached (fsopen/fsmount), handed over as an fd and never
+# attached anywhere, so no mount namespace a process lives in ever contains it.
+CapabilityBoundingSet=CAP_SYS_ADMIN
+AmbientCapabilities=
+NoNewPrivileges=yes
+SecureBits=noroot-locked
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+# The kernel client's connections (NFS/SMB) belong to the kernel, not to this
+# process, so they need no address family here; kinit (SMB Kerberos) talks to the KDC.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallArchitectures=native
+SystemCallFilter=@system-service @mount
+SystemCallFilter=~@resources @reboot @swap @module @raw-io @clock @cpu-emulation @debug @obsolete
+SystemCallErrorNumber=EPERM

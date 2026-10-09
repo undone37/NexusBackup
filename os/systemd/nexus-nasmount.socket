@@ -1,0 +1,20 @@
+[Unit]
+Description=NexusBackup NAS mount helper socket (docs/nas-connector.md)
+# enabled by the preset; harmless before first-boot setup (only the
+# nexus-chunkstore group may connect, and nothing of it runs yet)
+
+[Socket]
+# One connection = one mount request; every connection gets its own helper
+# instance (nexus-nasmount@.service), which exits after handing over the mount fd.
+ListenStream=/run/nexus-nasmount/mount.sock
+Accept=yes
+MaxConnections=16
+# only the scheduler's user (and its job domains, SELinux: nexus_nas_t) may connect
+SocketUser=root
+SocketGroup=nexus-chunkstore
+SocketMode=0660
+DirectoryMode=0755
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

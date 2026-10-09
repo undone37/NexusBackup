@@ -8,6 +8,8 @@
 /usr/libexec/nexus/nexus-offsite	--	gen_context(system_u:object_r:nexus_offsite_exec_t,s0)
 /usr/libexec/nexus/nexus-agentctl	--	gen_context(system_u:object_r:nexus_agentctl_exec_t,s0)
 /usr/libexec/nexus/nexus-truenas	--	gen_context(system_u:object_r:nexus_truenas_exec_t,s0)
+/usr/libexec/nexus/nexus-nas		--	gen_context(system_u:object_r:nexus_nas_exec_t,s0)
+/usr/libexec/nexus/nexus-nasmount	--	gen_context(system_u:object_r:nexus_nasmount_exec_t,s0)
 /usr/libexec/nexus/nexus-setup		--	gen_context(system_u:object_r:nexus_setup_exec_t,s0)
 /usr/libexec/nexus/nexus-nft-sync	--	gen_context(system_u:object_r:nexus_nftsync_exec_t,s0)
 
@@ -44,3 +46,5 @@
 /run/nexus-scheduler(/.*)?			gen_context(system_u:object_r:nexus_scheduler_var_run_t,s0)
 /run/nexus-nft(/.*)?				gen_context(system_u:object_r:nexus_nft_var_run_t,s0)
 /run/nexus-nft-sync(/.*)?			gen_context(system_u:object_r:nexus_nftsync_var_run_t,s0)
+/run/nexus-nasmount(/.*)?			gen_context(system_u:object_r:nexus_nasmount_var_run_t,s0)
+/run/nexus-nasmount\.[^/]+(/.*)?		gen_context(system_u:object_r:nexus_nasmount_var_run_t,s0)
