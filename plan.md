@@ -65,6 +65,7 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | Web UI dependencies | **Committed lockfile, `npm ci --ignore-scripts`, minimal deps; built assets embedded in the web-api binary** (decided 2026-10-09) | Supply-chain hygiene; no Node in the appliance image. |
 | MFA (Phase 5) | **TOTP only at first** (decided 2026-10-09) | WebAuthn follows later. |
 | First boot (Phase 5) | **Console TUI** (decided 2026-10-09) | Management API unreachable until setup is done; no default credentials. |
+| Disk encryption (Phase 6) | **Deferred together with TPM** (decided 2026-10-09) | Data stays AEAD-encrypted per chunk on disk; LUKS2 + TPM unlock come later. |
 | Release signing (Phase 6) | **cosign with an offline key** (decided 2026-10-09) | Appliance pins the public key; no dependency on external transparency services. |
 | Update source (Phase 6) | **Signed bootc images on ghcr.io** (decided 2026-10-09) | Pulled over HTTPS via an explicit nftables allow rule. |
 | Phase 7 order | **Linux agent → Windows agent → TrueNAS → NAS (NFS/SMB)** (decided 2026-10-09) | Agents share most code (protocol, chunking, enrollment). |

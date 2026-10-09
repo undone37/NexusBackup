@@ -105,7 +105,7 @@ Decisions (user, 2026-10-09): test against a local SFTP container mimicking Stor
 Decisions (user, 2026-10-09): Web UI = TypeScript SPA on the REST API; MFA = TOTP only at first; first boot = console TUI
 
 ## Phase 6 — Hardened appliance release (starts after Phase 5 merge)
-Decisions (user, 2026-10-09): cosign with offline key; updates as signed bootc images on ghcr.io; internal security review + scope doc, external pentest commissioned by the user
+Decisions (user, 2026-10-09): LUKS disk encryption deferred with TPM; cosign with offline key; updates as signed bootc images on ghcr.io; internal security review + scope doc, external pentest commissioned by the user
 
 ## Phase 7 — Additional sources (starts after Phase 6 merge)
 Decisions (user, 2026-10-09): order Linux agent → Windows agent → TrueNAS → NAS; Windows = build + unit tests only (no Windows VMs); agent trust = appliance CA + one-time enrollment token; Windows cross-build in podman (mingw-w64)
