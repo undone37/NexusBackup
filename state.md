@@ -64,6 +64,9 @@ Decisions (user, 2026-10-09): instant recovery via qcow2 overlay on the node bac
 - [ ] Instant recovery via qcow2 overlay (agent in worktree, running)
 - [ ] Restore micro-VM (Debian 13 + ZFS) for single-file restore from VM images (agent in worktree, running)
 
+## Phase 4 — Offsite (starts after Phase 3 merge)
+Decisions (user, 2026-10-09): test against a local SFTP container mimicking Storage Box first, real box later; SFTP via russh + russh-sftp
+
 ## Next
 
 

@@ -59,6 +59,8 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | Instant recovery | **qcow2 overlay on the node, backing = appliance NBD export over SSH; then live `qm disk move`** (decided 2026-10-09) | PVE refuses provider live-restore; writes stay local on the node; appliance stays read-only. |
 | Restore micro-VM | **Debian 13 kernel + initramfs, including ZFS** (decided 2026-10-09) | Appliance (RHEL-family) kernel lacks ntfs3/ZFS; ZFS (CDDL) is a separate component inside the micro-VM, not linked into AGPL code. |
 | File restore delivery (Phase 3) | **CLI download as tar/zip** (decided 2026-10-09) | Web UI download follows in Phase 5. |
+| Offsite test target (Phase 4) | **Local OpenSSH SFTP container mimicking Storage Box limits first**; real Storage Box later for a final run (decided 2026-10-09) | Fast, repeatable tests; no credentials needed during development. |
+| SFTP client | **Pure Rust: russh + russh-sftp** (decided 2026-10-09) | No C dependencies; host-key pinning, range reads, parallel connections under our control. |
 
 ---
 
