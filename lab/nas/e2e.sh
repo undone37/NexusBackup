@@ -58,6 +58,7 @@ step_data() {
 step_config() {
 	login admin "$ADMIN_PW" "$ADMIN_TOTP"
 	: >"$S/results"
+	: >"$S/committed"
 	api admin POST /tenants '{"name":"nas","offsite":{}}' >/dev/null
 	expect 201 "create tenant"
 	local out nfs smb many pw
@@ -123,6 +124,7 @@ finished() {
 		note "$label | job ${secs}s | consistent=$(jq -r .result.consistent <<<"$j") | ${c#committed }"
 	fi
 	echo "$j" >"$S/job-$id.json"
+	jq -r '.result.snapshots[]? | "\(.source) \(.time)"' <<<"$j" >>"$S/committed"
 }
 
 step_backup1() {
@@ -154,12 +156,16 @@ latest() {
 
 # download SOURCE FMT OUT
 download() {
-	local j id tok t
-	for _ in $(seq 60); do
+	local j id tok t want
+	# the newest snapshot this script committed for the source (the snapshot list is
+	# refreshed by the scheduler a few seconds after the backup)
+	want=$(awk -v s="$1" '$1 == s {t = $2} END {print t}' "$S/committed" 2>/dev/null)
+	for _ in $(seq 90); do
 		t=$(latest "$1")
-		[ -n "$t" ] && [ "$t" != null ] && break
+		[ -n "$t" ] && [ "$t" != null ] && { [ -z "$want" ] || [ "$t" = "$want" ]; } && break
 		sleep 2
 	done
+	[ -z "$want" ] || [ "$t" = "$want" ] || die "snapshot $1/$want not listed"
 	j=$(api admin POST /jobs "$(jq -nc --arg s "$1" --argjson t "$t" --arg f "$2" '{kind:"files_get", tenant:"nas", params:{source:$s, time:$t, paths:["/"], format:$f}}')")
 	expect 202 "files_get $1 $2"
 	id=$(jq -r .id <<<"$j")
