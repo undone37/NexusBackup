@@ -238,11 +238,7 @@ impl Vm {
         if line.last() != Some(&b'\n') {
             bail!("agent closed the connection or sent an over-long line");
         }
-        let mut v: serde_json::Value = serde_json::from_slice(&line).context("agent response")?;
-        if let Some(e) = v.get("err") {
-            bail!("agent: {}", e.as_str().unwrap_or("?"));
-        }
-        Ok(v["ok"].take())
+        parse_response(&line)
     }
 
     pub fn mounts(&mut self) -> Result<Vec<Mount>> {
@@ -304,6 +300,19 @@ impl Drop for Vm {
     }
 }
 
+/// One agent response line: `{"ok": …}` → the value, `{"err": "…"}` → error.
+/// Anything else (the agent is untrusted once a guest file system got to it) is an error.
+pub fn parse_response(line: &[u8]) -> Result<serde_json::Value> {
+    let v: serde_json::Value = serde_json::from_slice(line).context("agent response")?;
+    let serde_json::Value::Object(mut o) = v else {
+        bail!("agent response is not an object");
+    };
+    if let Some(e) = o.get("err") {
+        bail!("agent: {}", e.as_str().unwrap_or("?"));
+    }
+    Ok(o.remove("ok").unwrap_or_default())
+}
+
 /// Tar stream from the agent (decoded frames).
 pub struct TarStream<'a> {
     vm: &'a mut Vm,
@@ -313,29 +322,35 @@ pub struct TarStream<'a> {
 
 impl Read for TarStream<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.done || buf.is_empty() {
+        read_frame(&mut self.vm.r, &mut self.left, &mut self.done, buf)
+    }
+}
+
+/// Decodes the agent's `[u32 BE len][len bytes]` frames (zero length = end);
+/// `left` / `done` carry the state between calls.
+pub fn read_frame(r: &mut impl Read, left: &mut u32, done: &mut bool, buf: &mut [u8]) -> io::Result<usize> {
+    if *done || buf.is_empty() {
+        return Ok(0);
+    }
+    if *left == 0 {
+        let mut len = [0u8; 4];
+        r.read_exact(&mut len)?;
+        *left = u32::from_be_bytes(len);
+        if *left == 0 {
+            *done = true;
             return Ok(0);
         }
-        if self.left == 0 {
-            let mut len = [0u8; 4];
-            self.vm.r.read_exact(&mut len)?;
-            self.left = u32::from_be_bytes(len);
-            if self.left == 0 {
-                self.done = true;
-                return Ok(0);
-            }
-            if self.left > MAX_FRAME {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "agent frame too large"));
-            }
+        if *left > MAX_FRAME {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "agent frame too large"));
         }
-        let n = buf.len().min(self.left as usize);
-        let n = self.vm.r.read(&mut buf[..n])?;
-        if n == 0 {
-            return Err(io::ErrorKind::UnexpectedEof.into());
-        }
-        self.left -= n as u32;
-        Ok(n)
     }
+    let n = buf.len().min(*left as usize);
+    let n = r.read(&mut buf[..n])?;
+    if n == 0 {
+        return Err(io::ErrorKind::UnexpectedEof.into());
+    }
+    *left -= n as u32;
+    Ok(n)
 }
 
 impl TarStream<'_> {
@@ -509,4 +524,45 @@ pub fn cli(store: &Store, vmid: u32, time: u64, args: &[String]) -> Result<()> {
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression (fuzzing, agent_frames): `{"ok"}` lookup on a non-object
+    /// response (`5`, `[]`) panicked in serde_json's IndexMut.
+    #[test]
+    fn agent_responses() {
+        assert_eq!(parse_response(b"{\"ok\":[1]}\n").unwrap(), serde_json::json!([1]));
+        assert_eq!(parse_response(b"{}").unwrap(), serde_json::Value::Null);
+        assert!(parse_response(b"{\"err\":\"no such mount\"}").is_err());
+        for bad in [&b"5\n"[..], b"[]", b"\"ok\"", b"null", b"{"] {
+            assert!(parse_response(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn frames_decode() {
+        let wire = [
+            &3u32.to_be_bytes()[..],
+            b"abc",
+            &1u32.to_be_bytes(),
+            b"d",
+            &0u32.to_be_bytes(),
+            b"rest",
+        ]
+        .concat();
+        let (mut r, mut left, mut done, mut out, mut buf) = (&wire[..], 0, false, Vec::new(), [0u8; 2]);
+        loop {
+            let n = read_frame(&mut r, &mut left, &mut done, &mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n]);
+        }
+        assert_eq!((out.as_slice(), r), (&b"abcd"[..], &b"rest"[..]));
+        let huge = (MAX_FRAME + 1).to_be_bytes();
+        assert!(read_frame(&mut &huge[..], &mut 0, &mut false, &mut buf).is_err());
+    }
 }

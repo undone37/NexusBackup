@@ -46,10 +46,13 @@ impl ComplianceClock {
     // TPM NV monotonic counter is the upgrade if root-level tamper matters.
     pub fn open(path: PathBuf, slew: f64) -> io::Result<Self> {
         let t = match fs::read_to_string(&path) {
+            // `inf` / `NaN` parse as f64 but would expire every lock (or never advance)
             Ok(s) => s
                 .trim()
                 .parse::<f64>()
-                .map_err(|_| crate::crypto::invalid("corrupt clock file"))?,
+                .ok()
+                .filter(|t| t.is_finite() && *t >= 0.0)
+                .ok_or_else(|| crate::crypto::invalid("corrupt clock file"))?,
             Err(e) if e.kind() == io::ErrorKind::NotFound => sys_now(),
             Err(e) => return Err(e),
         };
@@ -95,6 +98,17 @@ mod tests {
     fn backward_jump_ignored_and_small_drift_tracked() {
         assert_eq!(step(1000.0, 10.0, 0.0, 0.01), 1010.0);
         assert_eq!(step(1000.0, 100.0, 1100.5, 0.01), 1100.5);
+    }
+
+    /// Regression (security review): `inf` in the clock file expired every lock.
+    #[test]
+    fn non_finite_clock_file_is_corrupt() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("clock");
+        for bad in ["inf", "+infinity", "NaN", "-5", "1e400"] {
+            fs::write(&p, bad).unwrap();
+            assert!(ComplianceClock::open(p.clone(), 0.01).is_err(), "{bad}");
+        }
     }
 
     #[test]

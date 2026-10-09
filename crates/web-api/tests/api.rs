@@ -1392,3 +1392,367 @@ async fn totp_code_cannot_be_replayed() {
     assert!(t.audit_actions().iter().filter(|a| *a == "auth.login_failed").count() == 1);
     t.st.cat.verify_audit().unwrap();
 }
+
+// ---------------------------------------------------------------- security review (docs/security-review.md)
+
+/// Every route × every role against the RBAC matrix of docs/control-plane.md:
+/// allowed roles never get 401/403, the others always 403, anonymous callers
+/// always 401. Every successful non-GET call appends to the audit log.
+#[tokio::test]
+async fn rbac_matrix_and_audit_completeness() {
+    let mut t = T::new();
+    let admin = t.login("alice").await;
+    let ids = seed(&t, &admin).await;
+    t.add_user("rbac-victim", "operator", None);
+    let victim = t.ids["rbac-victim"];
+    let sessions = [
+        ('A', t.login("alice").await),
+        ('S', t.login("sam").await),
+        ('O', t.login("otto").await),
+        ('T', t.login("tina").await),
+    ];
+    t.st.cat
+        .conn()
+        .execute(
+            "INSERT INTO alerts (ts, severity, kind, message) VALUES (1, 'warning', 'capacity', 'x')",
+            [],
+        )
+        .unwrap();
+    let alert = t.scalar::<i64>("SELECT MAX(id) FROM alerts");
+    // a pending request for the approve/reject rows
+    let r = t.delete(&format!("/api/v1/groups/{}", ids["grp_globex"]), &admin).await;
+    let qid = r.body["quorum_id"].as_i64().unwrap();
+    let (src, grp, pol, job) = (ids["src_acme"], ids["grp_acme"], ids["policy"], ids["job_acme"]);
+    let all = "ASOT";
+
+    let calls: Vec<(Method, String, Option<Value>, &str)> = vec![
+        (Method::GET, "/api/v1/auth/me".into(), None, all),
+        (Method::GET, "/api/v1/tenants".into(), None, all),
+        (
+            Method::POST,
+            "/api/v1/tenants".into(),
+            Some(json!({"name": "rbac-t"})),
+            "A",
+        ),
+        (
+            Method::PUT,
+            "/api/v1/tenants/acme".into(),
+            Some(json!({"offsite": {}})),
+            "A",
+        ),
+        (Method::DELETE, "/api/v1/tenants/globex".into(), None, "A"),
+        (Method::GET, "/api/v1/sources".into(), None, all),
+        (
+            Method::POST,
+            "/api/v1/sources".into(),
+            Some(json!({"tenant": "acme", "kind": "pve", "name": "rbac-s", "config": src_cfg(Some("x"))})),
+            "A",
+        ),
+        (
+            Method::PUT,
+            format!("/api/v1/sources/{src}"),
+            Some(json!({"name": "pve", "config": src_cfg(None)})),
+            "A",
+        ),
+        (Method::DELETE, format!("/api/v1/sources/{src}"), None, "A"),
+        (Method::GET, "/api/v1/policies".into(), None, all),
+        (
+            Method::POST,
+            "/api/v1/policies".into(),
+            Some(
+                json!({"name": "rbac-p", "schedule": "daily 02:00", "gfs": {"daily": 1, "weekly": 0, "monthly": 0, "yearly": 0}}),
+            ),
+            "A",
+        ),
+        (
+            Method::PUT,
+            format!("/api/v1/policies/{pol}"),
+            Some(policy(8, true)),
+            "A",
+        ),
+        (Method::DELETE, format!("/api/v1/policies/{pol}"), None, "A"),
+        (Method::GET, "/api/v1/groups".into(), None, all),
+        (
+            Method::POST,
+            "/api/v1/groups".into(),
+            Some(json!({"tenant": "acme", "source_id": src, "policy_id": pol, "name": "rbac-g", "guests": [100]})),
+            "A",
+        ),
+        (
+            Method::PUT,
+            format!("/api/v1/groups/{grp}"),
+            Some(json!({"source_id": src, "policy_id": pol, "name": "prod", "guests": [100, 101, 102]})),
+            "A",
+        ),
+        (Method::GET, "/api/v1/users".into(), None, all),
+        (
+            Method::POST,
+            "/api/v1/users".into(),
+            Some(json!({"name": "rbac-u", "password": PW, "role": "operator"})),
+            "A",
+        ),
+        (
+            Method::PUT,
+            format!("/api/v1/users/{victim}"),
+            Some(json!({"disabled": false})),
+            "A",
+        ),
+        (Method::GET, "/api/v1/snapshots".into(), None, all),
+        (Method::GET, "/api/v1/jobs".into(), None, all),
+        (Method::GET, format!("/api/v1/jobs/{job}"), None, all),
+        (
+            Method::POST,
+            "/api/v1/jobs".into(),
+            Some(json!({"kind": "backup", "tenant": "acme", "params": {"vmid": 100}})),
+            "AO",
+        ),
+        (
+            Method::POST,
+            "/api/v1/jobs".into(),
+            Some(
+                json!({"kind": "files_list", "tenant": "acme", "params": {"source": "vm-100", "time": 1000, "path": "/"}}),
+            ),
+            "AOT",
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/jobs/{job}/cancel"),
+            Some(json!({})),
+            "AO",
+        ),
+        (Method::GET, format!("/api/v1/downloads/{}", "ab".repeat(32)), None, all),
+        (Method::GET, "/api/v1/quorum".into(), None, "ASO"),
+        (Method::GET, "/api/v1/audit".into(), None, "AS"),
+        (Method::GET, "/api/v1/audit/verify".into(), None, "AS"),
+        (Method::GET, "/api/v1/alerts".into(), None, all),
+        (
+            Method::POST,
+            format!("/api/v1/alerts/{alert}/ack"),
+            Some(json!({})),
+            "ASO",
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/quorum/{qid}/reject"),
+            Some(json!({})),
+            "S",
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/quorum/{qid}/approve"),
+            Some(json!({})),
+            "S",
+        ),
+        (Method::POST, "/api/v1/auth/logout".into(), Some(json!({})), all),
+    ];
+
+    for (method, path, body, allowed) in calls {
+        // anonymous first, admin last: denied attempts never see the admin's changes
+        let r = t.call(method.clone(), &path, None, body.clone()).await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED, "anonymous {method} {path}");
+        for (role, s) in sessions.iter().rev() {
+            let before = t.scalar::<i64>("SELECT COUNT(*) FROM audit");
+            let r = t.call(method.clone(), &path, Some(s), body.clone()).await;
+            if allowed.contains(*role) {
+                assert!(
+                    r.status != StatusCode::FORBIDDEN && r.status != StatusCode::UNAUTHORIZED,
+                    "{role} {method} {path}: {} {:?}",
+                    r.status,
+                    r.body
+                );
+            } else {
+                assert_eq!(r.status, StatusCode::FORBIDDEN, "{role} {method} {path}: {:?}", r.body);
+            }
+            let after = t.scalar::<i64>("SELECT COUNT(*) FROM audit");
+            if method != Method::GET && r.status.is_success() {
+                assert!(
+                    after > before,
+                    "{role} {method} {path} succeeded without an audit entry"
+                );
+            }
+        }
+    }
+    // health stays public
+    assert_eq!(
+        t.call(Method::GET, "/api/v1/health", None, None).await.status,
+        StatusCode::OK
+    );
+    t.finish();
+}
+
+/// Approving a request whose object changed since it was made would apply a
+/// change nobody reviewed (the approver saw the diff against `old`).
+#[tokio::test]
+async fn quorum_refuses_stale_requests() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let sam = t.login("sam").await;
+    let pid = t.post("/api/v1/policies", &admin, policy(7, true)).await.body["id"]
+        .as_i64()
+        .unwrap();
+    let url = format!("/api/v1/policies/{pid}");
+    // request: daily 7 -> 6 (the approver sees only that)
+    let mut weak = policy(6, true);
+    weak["gfs"]["yearly"] = json!(1);
+    let qid = t.put(&url, &admin, weak).await.body["quorum_id"].as_i64().unwrap();
+    // meanwhile a direct (strengthening) change: yearly 1 -> 10
+    let mut strong = policy(7, true);
+    strong["gfs"]["yearly"] = json!(10);
+    assert_eq!(t.put(&url, &admin, strong).await.status, StatusCode::OK);
+    // approving would silently drop yearly back to 1
+    let r = t.post(&format!("/api/v1/quorum/{qid}/approve"), &sam, json!({})).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.body);
+    assert_eq!(
+        t.scalar::<i64>(&format!(
+            "SELECT json_extract(gfs, '$.yearly') FROM policies WHERE id = {pid}"
+        )),
+        10
+    );
+    assert_eq!(
+        t.scalar::<String>(&format!("SELECT state FROM quorum WHERE id = {qid}")),
+        "pending"
+    );
+    assert_eq!(
+        t.post(&format!("/api/v1/quorum/{qid}/reject"), &sam, json!({}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    t.finish();
+}
+
+/// Changing or removing an existing offsite target stops or redirects the
+/// offsite copy (a weakening outside the policy): quorum. A first setup is direct.
+#[tokio::test]
+async fn tenant_offsite_change_needs_quorum() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let sam = t.login("sam").await;
+    let box1 = json!({"remote": "sftp", "host": "u1.your-storagebox.de", "key": "/etc/nexus/ssh/box"});
+    let r = t.put("/api/v1/tenants/acme", &admin, json!({"offsite": box1})).await;
+    assert_eq!(r.status, StatusCode::OK, "first setup applies directly");
+    for new in [
+        json!({}),
+        json!({"remote": "sftp", "host": "evil.example", "key": "/etc/nexus/ssh/box"}),
+    ] {
+        let r = t.put("/api/v1/tenants/acme", &admin, json!({"offsite": new})).await;
+        assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    }
+    let offsite = |t: &T| t.scalar::<String>("SELECT offsite FROM tenants WHERE name = 'acme'");
+    assert_eq!(serde_json::from_str::<Value>(&offsite(&t)).unwrap(), box1);
+    let q = t.scalar::<i64>("SELECT MAX(id) FROM quorum");
+    let r = t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({})).await;
+    assert_eq!(r.body["state"], "executed", "{:?}", r.body);
+    assert_eq!(
+        serde_json::from_str::<Value>(&offsite(&t)).unwrap()["host"],
+        "evil.example"
+    );
+    // the other pending request is stale now
+    let r = t
+        .post(&format!("/api/v1/quorum/{}/approve", q - 1), &sam, json!({}))
+        .await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    t.finish();
+}
+
+/// The write-only PVE token must not follow an endpoint change: otherwise an
+/// admin could point the source at a host of their choice and receive it.
+#[tokio::test]
+async fn source_secret_does_not_follow_a_new_endpoint() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let ids = seed(&t, &admin).await;
+    let url = format!("/api/v1/sources/{}", ids["src_acme"]);
+    let mut moved = src_cfg(None);
+    moved["host"] = json!("attacker.example");
+    let r = t.put(&url, &admin, json!({"name": "pve", "config": moved})).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    let mut ca = src_cfg(None);
+    ca["ca_pem"] = json!("-----BEGIN CERTIFICATE-----\nMIIC\n-----END CERTIFICATE-----\n");
+    assert_eq!(
+        t.put(&url, &admin, json!({"name": "pve", "config": ca})).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    // same endpoint: keeping the secret is fine; new endpoint with a new secret too
+    let mut nodes = src_cfg(None);
+    nodes["storage"] = json!("other");
+    assert_eq!(
+        t.put(&url, &admin, json!({"name": "pve", "config": nodes}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    moved["token_secret"] = json!("new-secret");
+    assert_eq!(
+        t.put(&url, &admin, json!({"name": "pve", "config": moved}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    t.finish();
+}
+
+/// Inline SSH keys in opaque blobs were readable via GET /sources, GET /tenants
+/// (tenant users included) and the audit log.
+#[tokio::test]
+async fn inline_private_keys_are_refused() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let mut cfg = src_cfg(Some("x"));
+    cfg["nodes"]["pve1"]["key_pem"] = json!("KEY");
+    let r = t
+        .post(
+            "/api/v1/sources",
+            &admin,
+            json!({"tenant": "acme", "kind": "pve", "name": "a", "config": cfg}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n";
+    let r = t
+        .put(
+            "/api/v1/tenants/acme",
+            &admin,
+            json!({"offsite": {"remote": {"identity": pem}}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    t.finish();
+}
+
+/// Config CRUD and quorum decisions are appliance-wide, so a tenant-scoped
+/// admin would write across tenants and could lift its own scope.
+#[tokio::test]
+async fn privileged_accounts_are_never_tenant_scoped() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    for role in ["admin", "security_officer"] {
+        let r = t
+            .post(
+                "/api/v1/users",
+                &admin,
+                json!({"name": format!("scoped-{role}"), "password": PW, "role": role, "tenant": "acme"}),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{role}: {:?}", r.body);
+    }
+    // promoting a scoped operator keeps the scope -> refused; with the scope cleared -> quorum
+    let r = t
+        .post(
+            "/api/v1/users",
+            &admin,
+            json!({"name": "scoped-op", "password": PW, "role": "operator", "tenant": "acme"}),
+        )
+        .await;
+    let id = r.body["user"]["id"].as_i64().unwrap();
+    let url = format!("/api/v1/users/{id}");
+    assert_eq!(
+        t.put(&url, &admin, json!({"role": "admin"})).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    let r = t.put(&url, &admin, json!({"role": "admin", "tenant": null})).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let q = t.get("/api/v1/quorum?state=pending", &admin).await.body;
+    assert_eq!(q[0]["params"]["role"], "admin", "the approver sees the resulting role");
+    t.finish();
+}

@@ -1,0 +1,52 @@
+[package]
+name = "pve-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "AGPL-3.0-only"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+pve = { path = ".." }
+chunkstore = { path = "../../chunkstore" }
+tempfile = "3"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# restore-vm agent (included by path, it is a bin-only crate)
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "ct_records"
+path = "fuzz_targets/ct_records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tar_files"
+path = "fuzz_targets/tar_files.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent_frames"
+path = "fuzz_targets/agent_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent_request"
+path = "fuzz_targets/agent_request.rs"
+test = false
+doc = false
+bench = false

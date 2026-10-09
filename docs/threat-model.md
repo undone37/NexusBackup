@@ -1,29 +1,48 @@
-# Threat Model (v0.1)
+# Threat Model (v0.2)
 
 Scope: the appliance, its sources and the offsite tier, as described in `plan.md`.
+v0.2 (2026-10-09): updated after the internal security review
+(`docs/security-review.md`); T12/T13 added, mitigations point to code, residual
+risks reflect the current implementation. External test scope: `docs/pentest-scope.md`.
 
 ## Assets
 1. Backup data and indexes (confidentiality, integrity, availability).
 2. Tenant DEKs, appliance KEK, recovery key.
 3. Credentials the appliance holds for sources and Storage Boxes (tier-0).
-4. Retention guarantees (locks, compliance clock, audit log).
+4. Retention guarantees (locks, compliance clock, quorum, audit log).
+5. Root on the protected PVE nodes (the node plugin runs as root).
 
 ## Adversaries and mitigations
 
 | # | Adversary / scenario | Goal | Mitigations | Residual risk |
 |---|---|---|---|---|
-| T1 | Ransomware on a source (PVE node, server) | Destroy or encrypt backups | Pull model: sources hold no appliance credentials and the appliance has no inbound data port; SSH `restrict`/forced command/`permitopen`. | Encrypted data gets backed up; detect via change-rate anomaly alerts (later). |
-| T2 | Compromised admin account | Delete backups, shorten retention | Locks only extendable (storage layer, `extend_lock`/`delete_snapshot`); quorum for destructive actions and GC > 20 %; MFA; hash-chained audit log to SIEM. | Two colluding roles. |
-| T3 | System time manipulation (`date`, rogue NTP) | Expire locks early | Compliance clock with bounded forward slew (ADR-011); NTS for chrony. | +1 % drift; root edit of the clock file (SELinux; TPM NV counter later). |
-| T4 | Storage provider / Storage Box compromise | Read or fingerprint data | Per-tenant keyed chunk IDs, AEAD on everything, meaningless file names. | Traffic and size analysis. |
+| T1 | Ransomware on a source (PVE node, server) | Destroy or encrypt backups | Pull model: sources hold no appliance credentials and the appliance has no inbound data port; SSH `restrict`/forced command with strict argument regexes (`pve-plugin/helper`). | Encrypted data gets backed up; detect via change-rate anomaly alerts (later). |
+| T2 | Compromised admin account | Delete backups, shorten retention, stop offsite | Locks only extendable (`Store::extend_lock`/`delete_snapshot`); quorum for destructive/weakening actions incl. group moves, tenant offsite changes, privileged account changes; stale approvals refused; write-only secrets do not follow endpoint changes; TOTP; hash-chained audit log; RBAC matrix test. | Two colluding roles; admin can still stop *future* backups (remove guests from groups, break source config) — detected by the lag/failed-job alerts, not prevented; own password/TOTP reset without re-authentication. |
+| T3 | System time manipulation (`date`, rogue NTP) | Expire locks early | Compliance clock with bounded forward slew (ADR-011), non-finite values refused; NTS for chrony. | +1 % drift; deleting the clock file (uid `nexus-chunkstore` or root) re-trusts system time once; TPM NV counter later. |
+| T4 | Storage provider / Storage Box compromise (passive) | Read or fingerprint data | Per-tenant keyed chunk IDs, AEAD on everything (AAD binds tenant + context), meaningless file names. | Traffic and size analysis (compression before encryption leaks sizes). |
 | T5 | Storage Box deletion (by a compromised appliance) | Destroy the offsite copy | Box snapshots set up in the Hetzner console (no API key on the appliance); offsite inventory monitoring. | ~6-week detection window. |
-| T6 | Compromised appliance (root) | Reach the whole infrastructure | Least-privilege source credentials, separate management network, SELinux domains, no interactive root, nftables egress allow-list. | Source data readable within scope; this is inherent to the pull model. |
-| T7 | Disk / hardware theft | Read data | LUKS2 sealed to TPM + Secure Boot; chunk AEAD as a second layer. | Cold-boot attack on a running system. |
+| T6 | Compromised appliance (root) | Reach the whole infrastructure | Least-privilege source credentials, separate management network, SELinux domains, no interactive root, nftables egress allow-list. | Source data readable within scope (inherent to the pull model); root on PVE nodes via restore (T13). Several services share one uid today (review H-3). |
+| T7 | Disk / hardware theft | Read data | Chunk AEAD; LUKS2 + TPM **deferred**. | KEK is a plain 0600 file (review H-1): disk theft = all tenant data. Cold-boot attack. |
 | T8 | Bit rot / tampered chunks | Silent corruption | AEAD tag + keyed-hash re-check on every read; rolling verify; offsite sampled verify. | Corruption is detected, not repaired, without a second copy. |
 | T9 | Crash / power loss during a write | Corrupt store | Commit protocol (ADR-012), GC aborts on an unreadable manifest/index, grace period. | Backups longer than the grace period. |
-| T10 | Malicious agent / NBD / SFTP peer | Exploit parsers | Rust, fuzzing of network parsers, mTLS for agents, restore micro-VM for foreign file systems. | Kernel NBD/FS bugs (confined to the micro-VM). |
-| T11 | Path traversal via source / index names | Write outside the store | `check_name` allows only `[A-Za-z0-9._-]` without a leading dot. | — |
+| T10 | Malicious agent / NBD / SFTP peer, malicious guest content | Exploit parsers, plant files on the user's machine | Rust, cargo-fuzz targets for every network-facing parser (`crates/*/fuzz`, `lab/fuzz/run.sh`), mTLS for agents (later), restore micro-VM for foreign file systems, file-restore downloads drop `..`/NUL names and entries below symlinks. | Kernel NBD/FS bugs (confined to the micro-VM, but QEMU shares the scheduler uid today); restored disks are parsed by the node kernel (`/dev/nbdX`); unbounded tar long names / NBD extent lists (memory DoS of one job). |
+| T11 | Path traversal via source / index names | Write outside the store | `check_name` allows only `[A-Za-z0-9._-]` without a leading dot; offsite listings validated the same way (pack ids = 32 hex). | — |
+| T12 | Malicious Storage Box (active: crafted listings, packs, footers, extra files) | Crash DR/verify, plant data, cause local data loss | Every pack index / manifest / index authenticated before use, only files named by the authenticated manifest are kept, foreign names reported as unknown, footers range-checked, downloads bounded by the recorded pack size; fuzz target `hostile_box` asserts no local loss and no writes outside the state dir. | Denial of DR / offsite (the box can delete anyway, T5); memory DoS via huge manifests. |
+| T13 | Stolen appliance SSH key (helper user `nexusbackup`) or compromised appliance → PVE node | Root on the node | Forced command + `restrict`, root-owned `authorized_keys`; sticky rendezvous and state dirs; root writes only into root-owned dirs with `O_EXCL|O_NOFOLLOW`; restore drops `lxc.*`/`args`/`hookscript` keys from catalog configs; CT staging dir must be a private root-owned dir. | Helper can still DoS jobs (predictable names) and read the live NBD export it is given; restored guest disks touch the node kernel (`/dev/nbdX`, udev, LVM autoactivation); no `from=` restriction in `authorized_keys` by default. |
+
+## Process isolation (plan §4.2) — state after review
+
+| Rule | Status |
+|---|---|
+| web-api never touches chunks or keys | ✓ (own uid `nexus-webapi`, no keyd access) — but it can read/write the whole catalog incl. PVE token secrets and TOTP seeds (review H-2) |
+| connectors have no key material | ✗ `nexus-pve` / `nexus-offsite` open the chunk store in-process with DEKs from keyd (accepted deviation, see state.md) |
+| chunkstore is the only process with DEKs | ✗ scheduler, nexus-pve, nexus-offsite hold DEKs (same uid `nexus-chunkstore`); now non-dumpable |
+| offsite sees only encrypted data | ✗ same as above |
+| keyd is the only process with TPM access | ✓ (TPM not used yet) |
+| per-service user, sandbox, SELinux domain | partial: scheduler + QEMU without own user/domain; see `docs/security-review.md` §2 |
 
 ## Open items
-- Key handling in `keyd` (TPM sealing, memory locking, process isolation) — not implemented yet.
+- TPM sealing of the KEK / LUKS2 (deferred by decision) — biggest residual risk (T7).
+- Split the `nexus-chunkstore` uid: scheduler, nexus-pve, nexus-offsite, restore-VM QEMU each with own user + SELinux domain; keyd ACL per uid.
+- Anchor the audit chain off-box (journal forwarding, HMAC/checkpoints).
 - Insider at the hosting provider combined with an appliance compromise.

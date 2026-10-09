@@ -1,0 +1,33 @@
+[package]
+name = "offsite-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "AGPL-3.0-only"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+chunkstore = { path = "../../chunkstore" }
+offsite = { path = ".." }
+postcard = { version = "1", features = ["use-std"] }
+tempfile = "3"
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "pack_parse"
+path = "fuzz_targets/pack_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hostile_box"
+path = "fuzz_targets/hostile_box.rs"
+test = false
+doc = false
+bench = false

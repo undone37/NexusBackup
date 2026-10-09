@@ -1,0 +1,1 @@
+jobs{"kind": "files_get", "tenant": "acme", "params": {"source": "vm-100", "time": 1000, "paths": ["/vda1/etc"], "format": "zip"}}

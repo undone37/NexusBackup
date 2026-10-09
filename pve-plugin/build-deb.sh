@@ -89,7 +89,7 @@ if [ "$1" = configure ]; then
     if [ ! -e /var/lib/nexusbackup/.ssh/authorized_keys ]; then
         install -o root -g root -m 0644 /dev/null /var/lib/nexusbackup/.ssh/authorized_keys
     fi
-    # Per-storage state dirs (/var/lib/nexusbackup/<storeid>, 0770 root:nexusbackup)
+    # Per-storage state dirs (/var/lib/nexusbackup/<storeid>, 1770 root:nexusbackup)
     # are created by the plugin's activate_storage.
 
     systemd-tmpfiles --create /usr/lib/tmpfiles.d/nexusbackup-pve.conf || true
