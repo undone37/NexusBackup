@@ -160,4 +160,9 @@ RUN usermod -L root \
       nexus-nft-sync.path nexus-nft-sync.timer \
  && ! systemctl is-enabled -q nexus-web-api.service nexus-scheduler.service nexus-keyd.service
 
+# COPY keeps the build host's modes (umask 002 → 0664/0775): strip group/world
+# write from everything shipped in /etc and /usr (base image docs excepted).
+RUN find /etc /usr -xdev \( -type f -o -type d \) -perm /022 -not -path '/usr/share/doc/*' \
+      -exec chmod go-w {} + \
+ && test -z "$(find /etc /usr -xdev \( -type f -o -type d \) -perm /022 -not -path '/usr/share/doc/*')"
 RUN bootc container lint
