@@ -92,7 +92,9 @@ Decisions (user, 2026-10-09): test against a local SFTP container mimicking Stor
 
 ## Phase 5 — Control plane and UI (started 2026-10-09)
 - [x] Contract `docs/control-plane.md` (processes/trust boundaries, catalog schema, audit chain, RBAC matrix, quorum actions, REST API, security headers, scheduler, first boot)
-- [ ] Agents running (worktrees): web-api (axum/rustls/auth/RBAC/quorum/metrics), scheduler (policy engine, job runner, alerts; replaces the systemd timers), Svelte UI (`web/`), first-boot TUI (`crates/setup`)
+- [x] `crates/web-api` (`nexus-web-api`): axum + rustls (TLS1.2/1.3, h2), all contract endpoints, cookie sessions (sha256 stored, 30 min idle/12 h), CSRF, login rate limit/lockout (in-memory), constant-time compares, argon2 dummy hash for unknown users, RBAC + tenant scoping, quorum (four-eyes, 72 h expiry, extra gates: weaker policy via group move, privileged account creation/re-enable/demote/reset), write-only secrets, audit on every mutation, CSP + security headers, /metrics (bearer), SPA embedded from web/dist (placeholder if missing), sd_notify; 15 integration tests
+  - open: TOTP code replay within its window (needs per-user last-step column → catalog migration v2); config change + audit not one transaction; install binary as /usr/libexec/nexus/web-api
+- [ ] Agents running (worktrees): scheduler (policy engine, job runner, alerts; replaces the systemd timers), Svelte UI (`web/`), first-boot TUI (`crates/setup`)
 - [x] `crates/catalog`: SQLite WAL schema v1 with migrations, append-only audit table (triggers) + length-prefixed sha256 hash chain + verify, `catalog::auth` (argon2id ≥12 chars, TOTP RFC 6238 ±1 step, otpauth URI)
 Decisions (user, 2026-10-09): Web UI = TypeScript SPA on the REST API; MFA = TOTP only at first; first boot = console TUI
 
