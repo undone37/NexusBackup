@@ -35,6 +35,7 @@ RUN systemd-sysusers /usr/lib/sysusers.d/nexus.conf
 # Service units. Not enabled yet: the binaries under /usr/libexec/nexus/ are not
 # shipped in the image until the services exist.
 COPY systemd/nexus-chunkstore.service systemd/nexus-keyd.service systemd/nexus-web-api.service \
+     systemd/nexus-setup.service \
      /usr/lib/systemd/system/
 RUN install -d -m 0755 /usr/libexec/nexus
 
@@ -49,8 +50,8 @@ RUN chronyd -p -f /etc/chrony.conf >/dev/null
 # The preset file also governs first-boot preset-all, so sshd stays off.
 COPY systemd/10-nexus.preset /usr/lib/systemd/system-preset/10-nexus.preset
 RUN usermod -L root \
- && systemctl preset sshd.service sshd.socket nftables.service chronyd.service \
+ && systemctl preset sshd.service sshd.socket nftables.service chronyd.service nexus-setup.service \
  && ! systemctl is-enabled -q sshd.service \
- && systemctl is-enabled -q nftables.service chronyd.service
+ && systemctl is-enabled -q nftables.service chronyd.service nexus-setup.service
 
 RUN bootc container lint
