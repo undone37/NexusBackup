@@ -1448,6 +1448,7 @@ impl Scheduler {
                     match store.load_index(&m, i)? {
                         chunkstore::Index::Fixed { size, .. } => n += size,
                         chunkstore::Index::Dynamic { entries } => n += entries.iter().map(|e| e.size).sum::<u64>(),
+                        chunkstore::Index::Tree { entries } => n += entries.iter().map(|e| e.size).sum::<u64>(),
                     }
                 }
                 Some(n as i64)

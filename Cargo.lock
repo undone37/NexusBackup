@@ -56,6 +56,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-proto"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "hmac 0.12.1",
+ "postcard",
+ "serde",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"

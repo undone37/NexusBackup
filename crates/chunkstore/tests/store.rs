@@ -318,3 +318,38 @@ fn retention_prunes_unlocked_and_extends_locks() {
     let (_, deleted, locked) = s.apply_retention("vm-1", &gfs1).unwrap();
     assert_eq!((deleted, locked), (0, 2), "14-day locks from the first run hold");
 }
+
+#[test]
+fn tree_index_roundtrip_and_old_variants_still_decode() {
+    use chunkstore::{TreeEntry, TreeKind};
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), 0, 0);
+    let (chunks, size) = s.store_file(&b"hello agent"[..]).unwrap();
+    let tree = Index::Tree {
+        entries: vec![TreeEntry {
+            path: b"etc/motd".to_vec(),
+            kind: TreeKind::File,
+            mode: 0o100644,
+            uid: 0,
+            gid: 0,
+            size,
+            mtime_ns: 1,
+            ctime_ns: 2,
+            inode: 3,
+            rdev: 0,
+            link_target: None,
+            xattrs: vec![],
+            chunks: chunks.clone(),
+            inconsistent: false,
+        }],
+    };
+    let fixed = s.store_image(&image(1)[..], 65536).unwrap();
+    let m = s
+        .commit_snapshot("host-a", 1, &[("root", tree.clone()), ("disk", fixed.clone())])
+        .unwrap();
+    assert_eq!(s.load_index(&m, "root").unwrap(), tree);
+    assert_eq!(s.load_index(&m, "disk").unwrap(), fixed, "Fixed (variant 0) unaffected");
+    assert_eq!(tree.chunk_ids(), chunks.iter().collect::<Vec<_>>());
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert_eq!(s.gc(true).unwrap().deleted, 0, "tree chunks are marked");
+}

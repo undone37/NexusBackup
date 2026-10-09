@@ -59,6 +59,41 @@ pub enum Index {
     },
     /// File tree.
     Dynamic { entries: Vec<FileEntry> },
+    /// Host file tree with full metadata (agents, docs/agent-protocol.md). Appended
+    /// last: postcard encodes the variant index, so older indexes still decode.
+    Tree { entries: Vec<TreeEntry> },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum TreeKind {
+    File,
+    Dir,
+    Symlink,
+    Hardlink,
+    Device,
+    Fifo,
+    Socket,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct TreeEntry {
+    /// relative to the backed-up root, raw bytes
+    pub path: Vec<u8>,
+    pub kind: TreeKind,
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub size: u64,
+    pub mtime_ns: i64,
+    pub ctime_ns: i64,
+    pub inode: u64,
+    pub rdev: u64,
+    pub link_target: Option<Vec<u8>>,
+    pub xattrs: Vec<(Vec<u8>, Vec<u8>)>,
+    /// keyed chunk IDs (the appliance maps the agent's plain hashes)
+    pub chunks: Vec<ChunkId>,
+    /// changed while read without a snapshot (fallback mode)
+    pub inconsistent: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -75,6 +110,7 @@ impl Index {
         match self {
             Index::Fixed { chunks, .. } => chunks.iter().collect(),
             Index::Dynamic { entries } => entries.iter().flat_map(|e| &e.chunks).collect(),
+            Index::Tree { entries } => entries.iter().flat_map(|e| &e.chunks).collect(),
         }
     }
 }
