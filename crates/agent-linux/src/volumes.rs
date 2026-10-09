@@ -1,0 +1,254 @@
+//! Mounted file systems (`/proc/self/mountinfo`) and their snapshot capability.
+
+use agent_proto::{SnapshotKind, Volume};
+use std::os::unix::fs::MetadataExt;
+use std::path::{Component, Path, PathBuf};
+use std::process::Command;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mount {
+    pub mountpoint: PathBuf,
+    /// path inside the file system that is mounted (btrfs subvolume, bind mounts)
+    pub root: String,
+    pub fstype: String,
+    pub source: String,
+}
+
+/// File systems that hold host data and can be backed up.
+const DATA_FS: &[&str] = &[
+    "ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "f2fs", "jfs", "reiserfs", "vfat", "exfat", "ntfs3", "bcachefs",
+];
+
+fn unescape(s: &str) -> String {
+    // mountinfo escapes space, tab, newline and backslash as \ooo
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\' && i + 3 < b.len() && b[i + 1..i + 4].iter().all(|c| (b'0'..=b'7').contains(c)) {
+            out.push((b[i + 1] - b'0') * 64 + (b[i + 2] - b'0') * 8 + (b[i + 3] - b'0'));
+            i += 4;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+pub fn parse_mountinfo(text: &str) -> Vec<Mount> {
+    let mut out: Vec<Mount> = Vec::new();
+    for line in text.lines() {
+        let f: Vec<&str> = line.split(' ').collect();
+        let Some(sep) = f.iter().position(|x| *x == "-") else {
+            continue;
+        };
+        if f.len() < sep + 3 || sep < 6 {
+            continue;
+        }
+        let m = Mount {
+            mountpoint: PathBuf::from(unescape(f[4])),
+            root: unescape(f[3]),
+            fstype: f[sep + 1].to_string(),
+            source: unescape(f[sep + 2]),
+        };
+        // a later mount on the same mount point hides the earlier one
+        out.retain(|o| o.mountpoint != m.mountpoint);
+        out.push(m);
+    }
+    out
+}
+
+pub fn mounts() -> Vec<Mount> {
+    std::fs::read_to_string("/proc/self/mountinfo")
+        .map(|t| parse_mountinfo(&t))
+        .unwrap_or_default()
+}
+
+pub fn is_data_fs(m: &Mount) -> bool {
+    DATA_FS.contains(&m.fstype.as_str())
+}
+
+/// The mount containing `path` (longest mount point prefix, component-wise).
+pub fn containing<'a>(mounts: &'a [Mount], path: &Path) -> Option<&'a Mount> {
+    mounts
+        .iter()
+        .filter(|m| path.starts_with(&m.mountpoint))
+        .max_by_key(|m| m.mountpoint.components().count())
+}
+
+/// Normalised absolute path: must start with `/`, no `..`, `.` removed.
+pub fn normalize(p: &str) -> Result<PathBuf, String> {
+    let path = Path::new(p);
+    if !path.is_absolute() {
+        return Err(format!("path {p} is not absolute"));
+    }
+    let mut out = PathBuf::from("/");
+    for c in path.components() {
+        match c {
+            Component::RootDir | Component::CurDir => {}
+            Component::Normal(n) => out.push(n),
+            Component::ParentDir | Component::Prefix(_) => return Err(format!("path {p} contains ..")),
+        }
+    }
+    Ok(out)
+}
+
+pub fn tool(name: &str) -> Option<PathBuf> {
+    ["/usr/sbin", "/sbin", "/usr/bin", "/bin", "/usr/local/sbin"]
+        .iter()
+        .map(|d| Path::new(d).join(name))
+        .find(|p| p.is_file())
+}
+
+/// Run a host tool, returning stdout or a message with stderr.
+pub fn run_tool(name: &str, args: &[&str]) -> Result<String, String> {
+    let bin = tool(name).ok_or_else(|| format!("{name} not found"))?;
+    let out = Command::new(&bin)
+        .args(args)
+        .env_clear()
+        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+        .env("LC_ALL", "C")
+        .env("LVM_SUPPRESS_FD_WARNINGS", "1")
+        .output()
+        .map_err(|e| format!("{name}: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(format!(
+            "{name} {}: {} {}",
+            args.join(" "),
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LvInfo {
+    pub vg: String,
+    pub lv: String,
+    pub attr: String,
+    pub size: u64,
+}
+
+impl LvInfo {
+    pub fn thin(&self) -> bool {
+        self.attr.starts_with('V')
+    }
+}
+
+pub fn parse_lvs(out: &str) -> Option<LvInfo> {
+    let line = out.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let f: Vec<&str> = line.split('|').map(str::trim).collect();
+    if f.len() < 4 {
+        return None;
+    }
+    Some(LvInfo {
+        vg: f[0].into(),
+        lv: f[1].into(),
+        attr: f[2].into(),
+        size: f[3].parse().ok()?,
+    })
+}
+
+pub fn lv_info(device: &str) -> Option<LvInfo> {
+    if !device.starts_with("/dev/") {
+        return None;
+    }
+    let out = run_tool(
+        "lvs",
+        &[
+            "--noheadings",
+            "--nosuffix",
+            "--units",
+            "b",
+            "--separator",
+            "|",
+            "-o",
+            "vg_name,lv_name,lv_attr,lv_size",
+            device,
+        ],
+    )
+    .ok()?;
+    let info = parse_lvs(&out)?;
+    // origin must be a plain/thin/raid/mirror/cache LV, not itself a snapshot or pool
+    matches!(info.attr.chars().next(), Some('-' | 'V' | 'r' | 'R' | 'm' | 'M' | 'C')).then_some(info)
+}
+
+/// btrfs: a read-only snapshot needs the mount point to be a subvolume root (inode 256).
+fn btrfs_subvolume_root(mp: &Path) -> bool {
+    std::fs::metadata(mp).map(|m| m.ino() == 256).unwrap_or(false)
+}
+
+pub fn snapshot_kind(m: &Mount) -> SnapshotKind {
+    match m.fstype.as_str() {
+        "zfs" if tool("zfs").is_some() => SnapshotKind::Zfs,
+        "btrfs" if tool("btrfs").is_some() && btrfs_subvolume_root(&m.mountpoint) => SnapshotKind::Btrfs,
+        _ if lv_info(&m.source).is_some() => SnapshotKind::Lvm,
+        _ => SnapshotKind::None,
+    }
+}
+
+pub fn list_volumes() -> Vec<Volume> {
+    mounts()
+        .into_iter()
+        .filter(is_data_fs)
+        .map(|m| Volume {
+            snapshot: snapshot_kind(&m),
+            mountpoint: m.mountpoint.to_string_lossy().into_owned(),
+            device: m.source,
+            fstype: m.fstype,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MI: &str = "\
+22 1 253:1 / / rw,relatime shared:1 - xfs /dev/mapper/rl-root rw,attr2
+23 22 0:5 / /proc rw - proc proc rw
+24 22 253:2 / /home\\040dir rw shared:2 - ext4 /dev/mapper/vg-home rw
+25 22 0:40 /@data /data rw - btrfs /dev/sdb1 rw,subvol=/@data
+26 22 0:41 / /tank rw - zfs tank/ds rw,xattr
+27 22 0:42 / /run rw - tmpfs tmpfs rw
+28 22 253:3 / /data rw - ext4 /dev/sdc1 rw
+";
+
+    #[test]
+    fn mountinfo_parsing_and_lookup() {
+        let m = parse_mountinfo(MI);
+        assert_eq!(m.len(), 6, "overmounted /data replaced");
+        let home = m
+            .iter()
+            .find(|x| x.fstype == "ext4" && x.source == "/dev/mapper/vg-home")
+            .unwrap();
+        assert_eq!(home.mountpoint, PathBuf::from("/home dir"));
+        let data = m.iter().find(|x| x.mountpoint == Path::new("/data")).unwrap();
+        assert_eq!(data.source, "/dev/sdc1");
+        assert_eq!(
+            containing(&m, Path::new("/home dir/a")).unwrap().source,
+            "/dev/mapper/vg-home"
+        );
+        assert_eq!(
+            containing(&m, Path::new("/home")).unwrap().source,
+            "/dev/mapper/rl-root"
+        );
+        assert_eq!(containing(&m, Path::new("/tank/x")).unwrap().source, "tank/ds");
+        let data_fs: Vec<_> = m.iter().filter(|x| is_data_fs(x)).map(|x| x.fstype.as_str()).collect();
+        assert_eq!(data_fs, ["xfs", "ext4", "zfs", "ext4"]);
+    }
+
+    #[test]
+    fn lvs_and_normalize() {
+        let i = parse_lvs("  vg|home|Vwi-aotz--|10737418240\n").unwrap();
+        assert!(i.thin());
+        assert_eq!(i.size, 10 << 30);
+        assert!(!parse_lvs("  vg|root|-wi-ao----|1073741824").unwrap().thin());
+        assert_eq!(normalize("/a/./b/").unwrap(), PathBuf::from("/a/b"));
+        assert!(normalize("/a/../b").is_err());
+        assert!(normalize("a/b").is_err());
+    }
+}

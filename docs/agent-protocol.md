@@ -21,7 +21,9 @@ them to keyed chunk IDs in a local index that never leaves the appliance.
 3. The appliance connects (TLS without cert validation, but TLS 1.3 only) and both sides prove knowledge of
    the token bound to *this* TLS session:
    `proof = HMAC-SHA256(key = token, msg = role || TLS-exporter("nexus-agent enroll", 32 bytes))`,
-   `role` = `"appliance"` / `"agent"`. A man in the middle has a different exporter on each leg and cannot
+   `role` = `"appliance"` / `"agent"`. Since neither side keeps the plain token, the HMAC key `token` is
+   `agent_proto::token_hash(T)` = lowercase hex `sha256(T.trim())` on both sides; the exporter context is
+   empty (rustls `export_keying_material(.., EXPORTER_LABEL, None)`). A man in the middle has a different exporter on each leg and cannot
    relay the proofs. The appliance sends its proof first; the agent answers with its proof and a CSR
    (`Enroll` / `EnrollReply`).
 4. The appliance signs the CSR (agent id in CN, serverAuth), returns the agent cert + CA cert

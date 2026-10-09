@@ -1,0 +1,28 @@
+#!/bin/sh
+# NexusBackup pre-backup hook: dump all PostgreSQL databases (pg_dumpall) into a
+# directory that is part of the backed-up paths.
+#
+# Enable (as root):
+#   cp 10-postgresql.example 10-postgresql
+#   chown root:root 10-postgresql && chmod 0700 10-postgresql
+#   nexus-agent hooks test
+# and add the dump directory (default /var/backups/nexus) to the agent's backup paths
+# in the appliance UI. The dump is written as plain SQL (no compression) so unchanged
+# tables deduplicate between backups.
+#
+# Environment from the agent: NEXUS_JOB, NEXUS_PHASE=pre. A non-zero exit aborts the
+# backup (nothing is snapshotted) and runs the post hooks.
+set -eu
+
+DUMP_DIR=/var/backups/nexus/postgresql
+PG_USER=postgres
+
+install -d -m 0700 -o root -g root "$DUMP_DIR"
+tmp="$DUMP_DIR/.pg_dumpall.sql.tmp"
+trap 'rm -f "$tmp"' EXIT
+# runs as the postgres OS user (peer authentication); output is written by root.
+# setpriv (util-linux) needs no PAM session, unlike su/runuser.
+cd /
+setpriv --reuid="$PG_USER" --regid="$PG_USER" --init-groups -- pg_dumpall --clean --if-exists >"$tmp"
+mv -f "$tmp" "$DUMP_DIR/pg_dumpall.sql"
+echo "pg_dumpall: $(wc -c <"$DUMP_DIR/pg_dumpall.sql") bytes"

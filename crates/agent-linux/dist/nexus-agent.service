@@ -1,0 +1,85 @@
+# NexusBackup Linux agent (docs/agent-linux.md). Listens for the appliance on TCP 7444
+# (mTLS after enrollment); never connects out.
+#
+# Hardening rationale: this is a root backup/restore agent. It must read every file
+# (backup), write anywhere below a restore target (restore, including / with explicit
+# confirmation), create and mount snapshots, and replace its own binary (self-update).
+# Everything that does not contradict those duties is switched off; each setting that
+# is deliberately NOT used is listed with its reason at the end of this file.
+[Unit]
+Description=NexusBackup agent
+After=network-online.target local-fs.target
+Wants=network-online.target
+# `nexus-agent init --token <T>` creates the key; without it there is nothing to serve
+ConditionPathExists=/etc/nexus-agent/agent.key
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/sbin/nexus-agent run
+Restart=on-failure
+RestartSec=5s
+# 75 = a signed self-update was installed; restart into the new binary
+RestartForceExitStatus=75
+UMask=0077
+LimitNOFILE=65536
+# backups are background work
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+# Capabilities (bounding set; everything else is dropped, including CAP_NET_ADMIN,
+# CAP_SYS_MODULE, CAP_SYS_PTRACE, CAP_SYS_BOOT, CAP_SYS_TIME, CAP_BPF):
+#   CAP_DAC_READ_SEARCH  read every file and directory for the backup
+#   CAP_DAC_OVERRIDE     restore into directories/files of other users before chown
+#   CAP_FOWNER           set modes/times/xattrs on files not owned by root, O_NOATIME reads
+#   CAP_CHOWN            restore owners
+#   CAP_FSETID           keep setuid/setgid bits when restoring modes
+#   CAP_SETFCAP          restore security.capability xattrs (file capabilities)
+#   CAP_MKNOD            restore device nodes
+#   CAP_SYS_ADMIN        snapshots: mount/umount, private mount namespace, device-mapper
+#                        (LVM), btrfs subvolume snapshot, /dev/zfs; trusted.* and
+#                        security.* xattrs
+#   CAP_IPC_LOCK         LVM locks its memory while devices are suspended
+#   CAP_SETUID/SETGID    hooks drop privileges (setpriv --reuid=postgres pg_dumpall)
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_FOWNER CAP_CHOWN CAP_FSETID CAP_SETFCAP CAP_MKNOD CAP_SYS_ADMIN CAP_IPC_LOCK CAP_SETUID CAP_SETGID
+# snapshot mounts below /run/nexus-agent stay invisible to the host (the agent also
+# unshares its own mount namespace when started outside systemd)
+PrivateMounts=yes
+RuntimeDirectory=nexus-agent
+RuntimeDirectoryMode=0700
+StateDirectory=nexus-agent
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+# dm-snapshot / dm-thin-pool are loaded at boot via /etc/modules-load.d/nexus-agent.conf
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectControlGroups=yes
+RestrictNamespaces=mnt
+# TCP listener, local DB sockets for hooks, netlink for LVM/udev
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=~@clock @cpu-emulation @debug @module @obsolete @raw-io @reboot @swap
+# Optional: accept connections only from the appliance (the agent already requires
+# its mTLS client certificate):
+#IPAddressDeny=any
+#IPAddressAllow=192.0.2.10
+
+# Deliberately not used:
+#   ProtectSystem=      restore may write anywhere (incl. /etc, /usr with confirmation)
+#                       and self-update replaces /usr/local/sbin/nexus-agent
+#   ProtectHome=        /home and /root must be backed up and restorable
+#   PrivateTmp=         /tmp and /var/tmp are backed up as they are on the host
+#   PrivateDevices=     LVM/ZFS need /dev/mapper, /dev/zfs and the block devices
+#   RestrictSUIDSGID=   restoring setuid/setgid files is part of a faithful restore
+#   MemoryDenyWriteExecute=  inherited by hooks; DB tools / interpreters may need JIT
+#   PrivateIPC=         LVM synchronises with udev through SysV semaphores
+#   DynamicUser=, User=nexus...  reading and restoring all files requires root
+
+[Install]
+WantedBy=multi-user.target

@@ -265,6 +265,17 @@ pub fn enroll_proof(token: &str, role: &str, exporter: &[u8; 32]) -> [u8; 32] {
     mac.finalize().into_bytes().into()
 }
 
+/// What both sides store instead of the enrollment token: lowercase hex of
+/// `sha256(token.trim())`. Neither side keeps the plain token after `init` / creation,
+/// so this string is the HMAC key passed to [`enroll_proof`] on both sides.
+pub fn token_hash(token: &str) -> String {
+    use sha2::Digest;
+    Sha256::digest(token.trim().as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// Constant-time comparison of two proofs.
 pub fn proof_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
@@ -332,5 +343,11 @@ mod tests {
         assert!(!proof_eq(&a, &enroll_proof("TOKEN", "agent", &ex)));
         assert!(!proof_eq(&a, &enroll_proof("OTHER", "appliance", &ex)));
         assert!(!proof_eq(&a, &enroll_proof("TOKEN", "appliance", &[8u8; 32])));
+    }
+
+    #[test]
+    fn token_hash_is_hex_sha256_of_trimmed_token() {
+        let h = token_hash(" abc\n");
+        assert_eq!(h, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     }
 }

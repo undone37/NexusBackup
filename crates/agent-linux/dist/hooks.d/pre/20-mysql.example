@@ -1,0 +1,36 @@
+#!/bin/sh
+# NexusBackup pre-backup hook: consistent dump of all MySQL / MariaDB databases
+# (InnoDB via --single-transaction, no global lock held during the dump).
+#
+# Enable (as root):
+#   cp 20-mysql.example 20-mysql
+#   chown root:root 20-mysql && chmod 0700 20-mysql
+#   nexus-agent hooks test
+# and add the dump directory (default /var/backups/nexus) to the agent's backup paths.
+#
+# Credentials: root usually connects via the unix socket (auth_socket / unix_socket).
+# Otherwise create /etc/nexus-agent/mysql.cnf (root:root 0600):
+#   [client]
+#   user=backup
+#   password=...
+set -eu
+
+DUMP_DIR=/var/backups/nexus/mysql
+CNF=/etc/nexus-agent/mysql.cnf
+
+if command -v mariadb-dump >/dev/null 2>&1; then
+	DUMP=mariadb-dump
+else
+	DUMP=mysqldump
+fi
+set --
+# --defaults-extra-file must be the first option
+[ -f "$CNF" ] && set -- "--defaults-extra-file=$CNF"
+
+install -d -m 0700 -o root -g root "$DUMP_DIR"
+tmp="$DUMP_DIR/.all-databases.sql.tmp"
+trap 'rm -f "$tmp"' EXIT
+"$DUMP" "$@" --all-databases --single-transaction --quick --routines --events --triggers \
+	--hex-blob --flush-privileges >"$tmp"
+mv -f "$tmp" "$DUMP_DIR/all-databases.sql"
+echo "$DUMP: $(wc -c <"$DUMP_DIR/all-databases.sql") bytes"

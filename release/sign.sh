@@ -12,6 +12,9 @@
 #   offline:  release/sign.sh sign-payload payload.json payload.sig     (runs with --network none)
 #   online:   release/sign.sh attach IMAGE@sha256:... payload.json payload.sig
 #
+# Linux agent binaries (self-update, docs/agent-linux.md), offline, --network none:
+#   release/sign.sh sign-blob nexus-agent nexus-agent.sig
+#
 # Key selection (environment):
 #   COSIGN_KEY=/path/to/cosign.key   encrypted key file from `cosign generate-key-pair`
 #                                    (default ./cosign.key); passphrase from
@@ -76,6 +79,19 @@ sign-payload)
 		-v "$out_dir:/out" -- "$COSIGN_IMAGE" sign-blob --yes --tlog-upload=false \
 		--key "$KEY_ARG" --output-signature "/out/$(basename "$3")" /in/payload.json >/dev/null
 	echo "signature written to $3; carry it back with the payload" >&2
+	;;
+sign-blob)
+	[ $# = 3 ] || die "usage: sign-blob FILE OUT.sig"
+	[ -f "$2" ] || die "$2 not found"
+	key_opts
+	in=$(realpath "$2")
+	echo "signing $2 (sha256 $(sha256sum "$in" | cut -d' ' -f1))" >&2
+	# cosign prints the base64 DER signature on stdout
+	NEXUS_TOOL_NET=none tool_run "${KEY_PODMAN[@]}" -v "$in:/in/blob:ro" -- "$COSIGN_IMAGE" \
+		sign-blob --yes --tlog-upload=false --key "$KEY_ARG" /in/blob >"$3.tmp"
+	[ -s "$3.tmp" ] || die "no signature produced"
+	mv "$3.tmp" "$3"
+	echo "signature written to $3" >&2
 	;;
 attach)
 	[ $# = 4 ] || die "usage: attach IMAGE@sha256:... PAYLOAD.json PAYLOAD.sig"
