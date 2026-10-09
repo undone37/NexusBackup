@@ -30,12 +30,14 @@ fn opaque(v: &Value, what: &str, max: usize) -> ApiResult<()> {
         match v {
             Value::Object(o) => o.iter().any(|(k, v)| {
                 let k = k.to_ascii_lowercase();
-                ["secret", "password", "passphrase", "private"]
+                ["secret", "password", "passphrase", "private", "key_pem"]
                     .iter()
                     .any(|s| k.contains(s))
                     || has_secret(v)
             }),
             Value::Array(a) => a.iter().any(has_secret),
+            // a PEM private key under any other name
+            Value::String(s) => s.contains("PRIVATE KEY"),
             _ => false,
         }
     }

@@ -1692,6 +1692,34 @@ async fn source_secret_does_not_follow_a_new_endpoint() {
     t.finish();
 }
 
+/// Inline SSH keys in opaque blobs were readable via GET /sources, GET /tenants
+/// (tenant users included) and the audit log.
+#[tokio::test]
+async fn inline_private_keys_are_refused() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let mut cfg = src_cfg(Some("x"));
+    cfg["nodes"]["pve1"]["key_pem"] = json!("KEY");
+    let r = t
+        .post(
+            "/api/v1/sources",
+            &admin,
+            json!({"tenant": "acme", "kind": "pve", "name": "a", "config": cfg}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n";
+    let r = t
+        .put(
+            "/api/v1/tenants/acme",
+            &admin,
+            json!({"offsite": {"remote": {"identity": pem}}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    t.finish();
+}
+
 /// Config CRUD and quorum decisions are appliance-wide, so a tenant-scoped
 /// admin would write across tenants and could lift its own scope.
 #[tokio::test]
