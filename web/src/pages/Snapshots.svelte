@@ -51,6 +51,12 @@
     return id ? (agents.find((a) => a.id === id) ?? null) : null;
   };
 
+  // NFS/SMB share snapshots (`share-<source id>`): show the source's name.
+  const shareName = (s: Snapshot) => {
+    const m = /^share-(\d+)$/.exec(s.source);
+    return m ? (sources.find((x) => x.id === Number(m[1]))?.name ?? null) : null;
+  };
+
   function applyFilter(e: SubmitEvent) {
     e.preventDefault();
     navigate('/snapshots' + qs({ tenant, source: source.trim() }));
@@ -160,10 +166,12 @@
         <tbody>
           {#each snaps as s (`${s.tenant}/${s.source}/${s.time}`)}
             {@const ag = agentOf(s)}
+            {@const sh = shareName(s)}
             <tr>
               <td>
                 <span class="mono">{s.source}</span>
                 {#if ag}<div class="muted">{t.snap.agent(ag.name)}</div>{/if}
+                {#if sh}<div class="muted">{t.snap.share(sh)}</div>{/if}
               </td>
               <td>{s.tenant}</td>
               <td class="nowrap">{fmtTime(s.time)}</td>
@@ -176,8 +184,8 @@
                 <td class="actions">
                   {#if hostAgentId(s.source)}
                     <button type="button" class="small" onclick={() => openRestoreFiles(s)}>{t.snap.restorePath}</button>
-                  {:else if s.source.startsWith('nas-')}
-                    <!-- TrueNAS datasets: file download only (docs/truenas-connector.md) -->
+                  {:else if s.source.startsWith('nas-') || s.source.startsWith('share-')}
+                    <!-- TrueNAS datasets and NFS/SMB shares: file download only (docs/truenas-connector.md, docs/nas-connector.md) -->
                   {:else}
                     <button type="button" class="small" onclick={() => openRestore(s, 'restore')}>{t.snap.restore}</button>
                   {/if}

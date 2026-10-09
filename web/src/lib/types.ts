@@ -86,6 +86,42 @@ export interface TrueNasSourceConfig {
   authorized_keys?: string;
 }
 
+/**
+ * Config of an `nfs` or `smb` share source (docs/nas-connector.md). Optional
+ * fields are omitted when unset; SMB secrets (`password`, `keytab` base64) are
+ * write-only (`password_set` / `keytab_set` in answers).
+ */
+export interface ShareSourceConfig {
+  host: string;
+  port?: number;
+  /** NFS: 3 | 4.0 | 4.1 | 4.2; SMB: 2.1 | 3 | 3.0 | 3.02 | 3.1.1 */
+  version?: string;
+  /** NFS export path */
+  export?: string;
+  /** NFSv3 mountd port */
+  mount_port?: number;
+  /** SMB */
+  share?: string;
+  user?: string;
+  domain?: string;
+  sec?: 'ntlmssp' | 'krb5';
+  sign?: boolean;
+  seal?: boolean;
+  password?: string;
+  password_set?: boolean;
+  keytab?: string;
+  keytab_set?: boolean;
+  principal?: string;
+  /** NAS snapshot directory below the share root */
+  snapshot_dir?: string;
+  snapshot_prefix?: string;
+  snapshot_order?: 'name' | 'mtime';
+  excludes?: string[];
+  threads?: number;
+  xattrs?: boolean;
+  timeout_secs?: number;
+}
+
 interface SourceBase {
   id: number;
   tenant: string;
@@ -94,7 +130,10 @@ interface SourceBase {
 export type PveSource = SourceBase & { kind: 'pve'; config: SourceConfig };
 export type LinuxSource = SourceBase & { kind: 'linux'; config: LinuxSourceConfig };
 export type TrueNasSource = SourceBase & { kind: 'truenas'; config: TrueNasSourceConfig };
-export type Source = PveSource | LinuxSource | TrueNasSource;
+export type NfsSource = SourceBase & { kind: 'nfs'; config: ShareSourceConfig };
+export type SmbSource = SourceBase & { kind: 'smb'; config: ShareSourceConfig };
+export type ShareSource = NfsSource | SmbSource;
+export type Source = PveSource | LinuxSource | TrueNasSource | NfsSource | SmbSource;
 export type SourceKind = Source['kind'];
 
 /** Linux backup agent (docs/agent-protocol.md). `id` is 16 hex chars. */
@@ -146,7 +185,7 @@ export interface Group {
   source_id: number;
   policy_id: number;
   name: string;
-  /** pve: VM/CT IDs; linux: exactly `[source.config.agent_id]`; truenas: datasets of the source */
+  /** pve: VM/CT IDs; linux: exactly `[source.config.agent_id]`; truenas: datasets of the source; nfs/smb: none (the share) */
   guests: (number | string)[];
 }
 
@@ -188,9 +227,12 @@ export interface JobResult {
   size?: number;
   expires?: number;
   /** backup: committed snapshots (+ source/time when exactly one) */
-  snapshots?: { source: string; time: number }[];
+  snapshots?: { source: string; time: number; consistent?: boolean; transferred_bytes?: number }[];
   source?: string;
   time?: number;
+  /** agent / share backups: false = no snapshot of the source (live read) or files changed while read */
+  consistent?: boolean;
+  transferred_bytes?: number;
 }
 
 export interface Job {

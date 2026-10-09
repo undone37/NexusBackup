@@ -61,7 +61,27 @@
     recursive: false,
     sudo: true,
     zfs_sudo: true,
+    // nfs / smb shares
+    version: '4.2',
+    export: '',
+    mount_port: 20048,
+    share: '',
+    sh_user: '',
+    domain: '',
+    sec: 'ntlmssp' as 'ntlmssp' | 'krb5',
+    password: '',
+    keytab: '',
+    principal: '',
+    sign: true,
+    seal: false,
+    snapshot_dir: '',
+    snapshot_prefix: '',
+    snapshot_order: 'name' as 'name' | 'mtime',
+    threads: 16,
+    xattrs: true,
+    timeout_secs: 60,
   });
+  const isShare = $derived(f.kind === 'nfs' || f.kind === 'smb');
   const tenantAgents = $derived(agents.filter((a) => a.tenant === f.tenant));
   // Keep the agent selection valid when the tenant changes.
   $effect(() => {
@@ -79,12 +99,13 @@
     const c = x?.kind === 'pve' ? x.config : undefined;
     const l = x?.kind === 'linux' ? x.config : undefined;
     const n = x?.kind === 'truenas' ? x.config : undefined;
+    const sh = x?.kind === 'nfs' || x?.kind === 'smb' ? x.config : undefined;
     f = {
       kind: x?.kind ?? 'pve',
       tenant: x?.tenant ?? tenants[0]?.name ?? '',
       name: x?.name ?? '',
-      host: c?.host ?? n?.host ?? '',
-      port: c?.port ?? n?.port ?? 8006,
+      host: c?.host ?? n?.host ?? sh?.host ?? '',
+      port: c?.port ?? n?.port ?? sh?.port ?? (x?.kind === 'nfs' ? 2049 : x?.kind === 'smb' ? 445 : 8006),
       ca_pem: c?.ca_pem ?? n?.ca_pem ?? '',
       token_id: c?.token_id ?? '',
       token_secret: '',
@@ -93,7 +114,7 @@
       fleecing_storage: c?.fleecing_storage ?? '',
       agent_id: l?.agent_id ?? '',
       paths: (l?.paths ?? []).join('\n'),
-      excludes: (l?.excludes ?? []).join('\n'),
+      excludes: (l?.excludes ?? sh?.excludes ?? []).join('\n'),
       hooks: l?.hooks ?? false,
       connect_addr: n?.connect_addr ?? '',
       tn_user: n?.user ?? 'nexusbackup',
@@ -108,14 +129,105 @@
       recursive: n?.recursive ?? false,
       sudo: n?.sudo ?? true,
       zfs_sudo: n?.zfs_sudo ?? true,
+      version: sh?.version ?? (x?.kind === 'smb' ? '3' : '4.2'),
+      export: sh?.export ?? '',
+      mount_port: sh?.mount_port ?? 20048,
+      share: sh?.share ?? '',
+      sh_user: sh?.user ?? '',
+      domain: sh?.domain ?? '',
+      sec: sh?.sec ?? 'ntlmssp',
+      password: '',
+      keytab: '',
+      principal: sh?.principal ?? '',
+      sign: sh?.sign ?? true,
+      seal: sh?.seal ?? false,
+      snapshot_dir: sh?.snapshot_dir ?? '',
+      snapshot_prefix: sh?.snapshot_prefix ?? '',
+      snapshot_order: sh?.snapshot_order ?? 'name',
+      threads: sh?.threads ?? 16,
+      xattrs: sh?.xattrs ?? true,
+      timeout_secs: sh?.timeout_secs ?? 60,
     };
+    lastKind = f.kind;
     open = true;
   }
 
-  // New TrueNAS sources default to the HTTPS port.
+  // New sources default to the port and protocol version of their kind.
+  const defaultPorts: Record<string, number> = { pve: 8006, linux: 8006, truenas: 443, nfs: 2049, smb: 445 };
+  let lastKind = 'pve';
   $effect(() => {
-    if (open && !editing && f.kind === 'truenas' && f.port === 8006) f.port = 443;
+    if (!open || editing || f.kind === lastKind) return;
+    if (f.port === defaultPorts[lastKind]) f.port = defaultPorts[f.kind] ?? f.port;
+    if (f.kind === 'nfs' && !['3', '4.0', '4.1', '4.2'].includes(f.version)) f.version = '4.2';
+    if (f.kind === 'smb' && !['2.1', '3', '3.0', '3.02', '3.1.1'].includes(f.version)) f.version = '3';
+    lastKind = f.kind;
   });
+  // SMB 2.1 has no encryption.
+  $effect(() => {
+    if (f.kind === 'smb' && f.version === '2.1' && f.seal) f.seal = false;
+  });
+
+  /** Keytab file -> base64 (sent once, write-only). */
+  async function pickKeytab(e: Event) {
+    const file = (e.currentTarget as HTMLInputElement).files?.[0];
+    if (!file) {
+      f.keytab = '';
+      return;
+    }
+    const b = new Uint8Array(await file.arrayBuffer());
+    let bin = '';
+    for (const x of b) bin += String.fromCharCode(x);
+    f.keytab = btoa(bin);
+  }
+
+  /**
+   * Config of an nfs/smb source, or null (after telling the user) when invalid.
+   * Only set fields are sent: the API refuses SMB fields on NFS sources and vice versa.
+   */
+  function shareConfig(): Record<string, unknown> | null {
+    const excludes = lines(f.excludes);
+    if (excludes.length > 256) {
+      notify('error', t.sources.excludesInvalid);
+      return null;
+    }
+    const config: Record<string, unknown> = {
+      host: f.host.trim(),
+      port: Number(f.port),
+      version: f.version,
+      excludes,
+      threads: Number(f.threads),
+      xattrs: f.xattrs,
+      timeout_secs: Number(f.timeout_secs),
+    };
+    if (f.snapshot_dir.trim()) {
+      config.snapshot_dir = f.snapshot_dir.trim();
+      if (f.snapshot_prefix.trim()) config.snapshot_prefix = f.snapshot_prefix.trim();
+      config.snapshot_order = f.snapshot_order;
+    }
+    if (f.kind === 'nfs') {
+      if (!f.export.trim().startsWith('/')) {
+        notify('error', t.sources.sh.exportInvalid);
+        return null;
+      }
+      config.export = f.export.trim();
+      if (f.version === '3') config.mount_port = Number(f.mount_port);
+      return config;
+    }
+    config.share = f.share.trim();
+    if (f.sh_user.trim()) config.user = f.sh_user.trim();
+    if (f.domain.trim()) config.domain = f.domain.trim();
+    config.sec = f.sec;
+    config.sign = f.sign;
+    config.seal = f.version !== '2.1' && f.seal;
+    // Write-only secrets: only sent when entered.
+    if (f.sec === 'krb5') {
+      config.principal = f.principal.trim();
+      if (f.keytab) config.keytab = f.keytab;
+    } else if (f.password) {
+      config.password = f.password;
+    }
+    return config;
+  }
 
   /** Config of a truenas source, or null (after telling the user) when invalid. */
   function truenasConfig(): Record<string, unknown> | null {
@@ -189,7 +301,14 @@
 
   async function save(e: SubmitEvent) {
     e.preventDefault();
-    const config = f.kind === 'linux' ? linuxConfig() : f.kind === 'truenas' ? truenasConfig() : pveConfig();
+    const config =
+      f.kind === 'linux'
+        ? linuxConfig()
+        : f.kind === 'truenas'
+          ? truenasConfig()
+          : f.kind === 'nfs' || f.kind === 'smb'
+            ? shareConfig()
+            : pveConfig();
     if (!config) return;
     const r = editing
       ? await act(put<Source>(`/sources/${editing.id}`, { name: f.name, config }), t.saved)
@@ -247,6 +366,17 @@
                 <td class="mono" title={x.config?.excludes?.length ? `${t.sources.excludes}: ${x.config.excludes.join(' ')}` : undefined}
                   >{(x.config?.paths ?? []).join(' ')}</td
                 >
+              {:else if x.kind === 'nfs'}
+                <td class="mono">{x.config?.host}:{x.config?.export}</td>
+                <td class="mono">NFS {x.config?.version ?? '4.2'}{x.config?.snapshot_dir ? ` · ${x.config.snapshot_dir}` : ''}</td>
+              {:else if x.kind === 'smb'}
+                <td class="mono">//{x.config?.host}/{x.config?.share}</td>
+                <td class="mono"
+                  >SMB {x.config?.version ?? '3'} · {x.config?.sec ?? 'ntlmssp'}{x.config?.seal ? ' · seal' : ''}{x.config
+                    ?.snapshot_dir
+                    ? ` · ${x.config.snapshot_dir}`
+                    : ''}</td
+                >
               {:else if x.kind === 'truenas'}
                 <td class="mono">{x.config?.host}:{x.config?.port}</td>
                 <td class="mono">{(x.config?.datasets ?? []).join(' ')}{x.config?.recursive ? ' (+)' : ''}</td>
@@ -275,6 +405,8 @@
           <option value="pve">{t.sources.kinds.pve}</option>
           <option value="linux">{t.sources.kinds.linux}</option>
           <option value="truenas">{t.sources.kinds.truenas}</option>
+          <option value="nfs">{t.sources.kinds.nfs}</option>
+          <option value="smb">{t.sources.kinds.smb}</option>
         </select>
       </div>
       <div class="field">
@@ -297,6 +429,131 @@
             {#each tenantAgents as a (a.id)}<option value={a.id}>{a.name} ({a.host})</option>{/each}
           </select>
           {#if !tenantAgents.length}<div class="hint" id="s-agent-hint">{t.sources.noAgents}</div>{/if}
+        </div>
+      {:else if isShare}
+        <div class="field">
+          <label for="n-host">{t.sources.sh.host}</label>
+          <input id="n-host" bind:value={f.host} required spellcheck="false" />
+        </div>
+        <div class="field">
+          <label for="n-port">{t.sources.sh.port}</label>
+          <input id="n-port" type="number" min="1" max="65535" bind:value={f.port} required />
+        </div>
+        <div class="field">
+          <label for="n-ver">{t.sources.sh.version}</label>
+          <select id="n-ver" bind:value={f.version}>
+            {#each f.kind === 'nfs' ? ['4.2', '4.1', '4.0', '3'] : ['3', '3.1.1', '3.02', '3.0', '2.1'] as v (v)}
+              <option value={v}>{f.kind === 'nfs' ? 'NFS' : 'SMB'} {v}</option>
+            {/each}
+          </select>
+        </div>
+        {#if f.kind === 'nfs'}
+          <div class="field">
+            <label for="n-exp">{t.sources.sh.export}</label>
+            <input id="n-exp" class="mono" bind:value={f.export} required spellcheck="false" placeholder="/srv/share" />
+          </div>
+          {#if f.version === '3'}
+            <div class="field">
+              <label for="n-mp">{t.sources.sh.mountPort}</label>
+              <input
+                id="n-mp"
+                type="number"
+                min="1"
+                max="65535"
+                bind:value={f.mount_port}
+                required
+                aria-describedby="n-mp-hint"
+              />
+              <div class="hint" id="n-mp-hint">{t.sources.sh.mountPortHint}</div>
+            </div>
+          {/if}
+        {:else}
+          <div class="field">
+            <label for="n-share">{t.sources.sh.share}</label>
+            <input id="n-share" bind:value={f.share} required spellcheck="false" />
+          </div>
+          <div class="field">
+            <label for="n-auth">{t.sources.sh.auth}</label>
+            <select id="n-auth" bind:value={f.sec}>
+              <option value="ntlmssp">{t.sources.sh.auths.ntlmssp}</option>
+              <option value="krb5">{t.sources.sh.auths.krb5}</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="n-user">{t.sources.sh.user}</label>
+            <input id="n-user" bind:value={f.sh_user} required={f.sec === 'ntlmssp'} spellcheck="false" />
+          </div>
+          <div class="field">
+            <label for="n-dom">{t.sources.sh.domain}</label>
+            <input id="n-dom" bind:value={f.domain} spellcheck="false" />
+          </div>
+          {#if f.sec === 'ntlmssp'}
+            <div class="field">
+              <label for="n-pw">{t.sources.sh.password}</label>
+              <input
+                id="n-pw"
+                type="password"
+                bind:value={f.password}
+                autocomplete="new-password"
+                required={!(editing?.kind === 'smb' && editing.config?.password_set)}
+                aria-describedby="n-pw-hint"
+              />
+              <div class="hint" id="n-pw-hint">
+                {editing?.kind === 'smb' && editing.config?.password_set ? t.writeOnlyKeep : t.writeOnlyHint}
+              </div>
+            </div>
+          {:else}
+            <div class="field">
+              <label for="n-princ">{t.sources.sh.principal}</label>
+              <input id="n-princ" class="mono" bind:value={f.principal} required spellcheck="false" />
+            </div>
+            <div class="field">
+              <label for="n-kt">{t.sources.sh.keytab}</label>
+              <input
+                id="n-kt"
+                type="file"
+                onchange={pickKeytab}
+                required={!(editing?.kind === 'smb' && editing.config?.keytab_set)}
+                aria-describedby="n-kt-hint"
+              />
+              <div class="hint" id="n-kt-hint">
+                {editing?.kind === 'smb' && editing.config?.keytab_set ? t.sources.sh.keytabSet : t.writeOnlyHint}
+              </div>
+            </div>
+          {/if}
+        {/if}
+        <div class="field">
+          <label for="n-sd">{t.sources.sh.snapshotDir}</label>
+          <input
+            id="n-sd"
+            class="mono"
+            bind:value={f.snapshot_dir}
+            spellcheck="false"
+            placeholder=".zfs/snapshot"
+            aria-describedby="n-sd-hint"
+          />
+          <div class="hint" id="n-sd-hint">{t.sources.sh.snapshotDirHint}</div>
+        </div>
+        {#if f.snapshot_dir.trim()}
+          <div class="field">
+            <label for="n-sp">{t.sources.sh.snapshotPrefix}</label>
+            <input id="n-sp" class="mono" bind:value={f.snapshot_prefix} spellcheck="false" placeholder="auto-" />
+          </div>
+          <div class="field">
+            <label for="n-so">{t.sources.sh.snapshotOrder}</label>
+            <select id="n-so" bind:value={f.snapshot_order}>
+              <option value="name">{t.sources.sh.orders.name}</option>
+              <option value="mtime">{t.sources.sh.orders.mtime}</option>
+            </select>
+          </div>
+        {/if}
+        <div class="field">
+          <label for="n-thr">{t.sources.sh.threads}</label>
+          <input id="n-thr" type="number" min="1" max="64" bind:value={f.threads} required />
+        </div>
+        <div class="field">
+          <label for="n-to">{t.sources.sh.timeout}</label>
+          <input id="n-to" type="number" min="1" max="600" bind:value={f.timeout_secs} required />
         </div>
       {:else if f.kind === 'truenas'}
         <div class="field">
@@ -412,6 +669,30 @@
         >
         <div class="hint" id="s-hooks-hint">{t.sources.hooksHint}</div>
       </div>
+    {:else if isShare}
+      {#if f.kind === 'smb'}
+        <div class="field">
+          <label class="inline-check"><input type="checkbox" bind:checked={f.sign} />{t.sources.sh.sign}</label>
+          <label class="inline-check"
+            ><input type="checkbox" bind:checked={f.seal} disabled={f.version === '2.1'} />{t.sources.sh.seal}</label
+          >
+        </div>
+      {/if}
+      <div class="field">
+        <label class="inline-check"><input type="checkbox" bind:checked={f.xattrs} />{t.sources.sh.xattrs}</label>
+      </div>
+      <div class="field">
+        <label for="n-excl">{t.sources.sh.excludes}</label>
+        <textarea
+          id="n-excl"
+          bind:value={f.excludes}
+          spellcheck="false"
+          placeholder={'*.tmp\n/scratch/**'}
+          aria-describedby="n-excl-hint"
+        ></textarea>
+        <div class="hint" id="n-excl-hint">{t.sources.sh.excludesHint}</div>
+      </div>
+      <p class="muted">{f.kind === 'nfs' ? t.sources.sh.nfsHint : t.sources.sh.shareHint}</p>
     {:else if f.kind === 'truenas'}
       <div class="field">
         <label for="t-ds">{t.sources.tn.datasets}</label>
