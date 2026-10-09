@@ -66,6 +66,10 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | First boot (Phase 5) | **Console TUI** (decided 2026-10-09) | Management API unreachable until setup is done; no default credentials. |
 | Release signing (Phase 6) | **cosign with an offline key** (decided 2026-10-09) | Appliance pins the public key; no dependency on external transparency services. |
 | Update source (Phase 6) | **Signed bootc images on ghcr.io** (decided 2026-10-09) | Pulled over HTTPS via an explicit nftables allow rule. |
+| Phase 7 order | **Linux agent → Windows agent → TrueNAS → NAS (NFS/SMB)** (decided 2026-10-09) | Agents share most code (protocol, chunking, enrollment). |
+| Windows testing (Phase 7) | **Build + unit tests only, no Windows test VMs for now** (decided 2026-10-09) | Real Windows testing later; plan's test matrix for Windows is deferred. |
+| Agent trust (Phase 7) | **Appliance-run private CA + one-time enrollment token**, agent pins appliance cert (decided 2026-10-09) | Agent never connects out; mTLS only. |
+| Windows build (Phase 7) | **Cross-compile in a podman container (mingw-w64)** (decided 2026-10-09) | No host installs. |
 | Penetration test (Phase 6) | **Internal security review + scope document; external test commissioned by the project owner** (decided 2026-10-09) | Plan requirement kept; external test before first production tenant. |
 
 ---
