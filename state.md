@@ -51,7 +51,7 @@ Decisions: PVE 9.x only · NBD over SSH stdio (forced command) · .deb via dpkg-
   - bug found + fixed: PVE API workers run perl -T; catalog sizes/device names, readdir and glob results reached lvcreate/qemu-nbd/unlink tainted → untainted by strict captures; `t/plugin.t` now runs under `-T` with an exec regression check (fails on old code)
 - [x] Plugin `api()` reports running APIVER within tested range 11..14 (user decision), no more "older storage API" warning
 - [x] `backup-all` via appliance CLI after lab reboot: full re-read (bitmap lost), 62 s
-- [ ] LXC file-level backup → M2
+- [ ] LXC backup/restore: tar stream via helper, FastCDC into dynamic index, restore via staging dir (agent in worktree, running) → M2
 
 ## Next
 
