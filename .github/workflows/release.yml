@@ -1,0 +1,134 @@
+name: release
+# Tag v* -> build the bootc appliance image, push it to ghcr.io, attach an SBOM, and
+# open a DRAFT GitHub release with the digest. CI does NOT sign: the release key is
+# offline. The release manager signs the printed digest with release/sign.sh, checks
+# it with release/verify.sh and moves the channel tag with release/promote.sh
+# (docs/release.md).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # draft release with SBOM + metadata
+  packages: write # push to ghcr.io
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The Containerfile and its build context (see os/README.md).
+  CONTAINERFILE: os/Containerfile
+  BUILD_CONTEXT: os
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+      image: ${{ steps.push.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Release constants
+        run: grep -E '^[A-Z_][A-Z0-9_]*=' release/config.env >> "$GITHUB_ENV"
+
+      - name: Tag must be a version
+        run: |
+          [[ $GITHUB_REF_NAME =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] ||
+            { echo "tag $GITHUB_REF_NAME is not vX.Y.Z[-pre]"; exit 1; }
+          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Unit tests (update agent, health check)
+        run: python3 -m unittest discover -s os/greenboot/tests -v
+
+      - name: Pin the release public key(s), drop the TEST key
+        run: release/inject-keys.sh
+
+      - name: Build
+        run: |
+          podman build --pull=always \
+            --build-arg NEXUS_VERSION="$VERSION" \
+            --build-arg NEXUS_IMAGE_REPO="$NEXUS_IMAGE_REPO" \
+            --label org.opencontainers.image.version="$VERSION" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            -f "$CONTAINERFILE" -t localhost/nexus-os:release "$BUILD_CONTEXT"
+
+      - name: bootc container lint
+        run: podman run --rm localhost/nexus-os:release bootc container lint
+
+      - name: The image trusts exactly the release key(s)
+        run: |
+          img=localhost/nexus-os:release
+          podman run --rm "$img" cat /etc/containers/policy.json | diff - os/etc/containers/policy.json
+          for k in release/keys/*.pub; do
+            podman run --rm "$img" cat "/etc/pki/nexus/cosign/$(basename "$k")" | diff - "$k"
+          done
+          if podman run --rm "$img" grep -rl "NEXUS TEST KEY" /etc /usr/etc 2>/dev/null; then
+            echo "TEST key in the release image"; exit 1
+          fi
+          podman run --rm "$img" sh -c 'systemctl is-enabled nexus-update.timer greenboot-healthcheck.service &&
+            test "$(systemctl is-enabled bootc-fetch-apply-updates.timer)" = masked'
+
+      - name: Push (version tag only; appliances follow the channel tag set by promote.sh)
+        id: push
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          podman push --digestfile digest localhost/nexus-os:release "docker://$NEXUS_IMAGE_REPO:$GITHUB_REF_NAME"
+          d=$(cat digest)
+          [[ $d =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$d" >> "$GITHUB_OUTPUT"
+          echo "image=$NEXUS_IMAGE_REPO@$d" >> "$GITHUB_OUTPUT"
+          echo "IMAGE_REF=$NEXUS_IMAGE_REPO@$d" >> "$GITHUB_ENV"
+
+      - name: SBOM (syft) and metadata
+        run: |
+          mkdir -p out
+          podman run --rm --user 0 -v "$PWD/out:/out" \
+            -e SYFT_REGISTRY_AUTH_AUTHORITY=ghcr.io \
+            -e SYFT_REGISTRY_AUTH_USERNAME="${{ github.actor }}" \
+            -e SYFT_REGISTRY_AUTH_PASSWORD="${{ secrets.GITHUB_TOKEN }}" \
+            "$SYFT_IMAGE" scan "registry:$IMAGE_REF" -o spdx-json=/out/sbom.spdx.json
+          base=$(podman image inspect --format '{{.Digest}}' "$POLICY_CHECK_IMAGE" 2>/dev/null || true)
+          jq -n --arg v "$VERSION" --arg tag "$GITHUB_REF_NAME" --arg img "$IMAGE_REF" \
+            --arg commit "$GITHUB_SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --arg base "quay.io/almalinuxorg/almalinux-bootc:10@$base" \
+            --arg keys "$(cd release/keys && sha256sum -- *.pub)" \
+            '{version: $v, tag: $tag, image: $img, git_commit: $commit, workflow_run: $run,
+              base_image: $base, pinned_keys_sha256: ($keys | split("\n")),
+              signed: false, sign_with: "release/sign.sh sign \($img)"}' > out/release-metadata.json
+          cat out/release-metadata.json
+
+      - name: Attach SBOM to the image (OCI referrer)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman run --rm -i --user 0 -v "$PWD/out:/out:ro" -w /out \
+            "$ORAS_IMAGE" attach --username "${{ github.actor }}" --password-stdin \
+            --artifact-type application/spdx+json "$IMAGE_REF" sbom.spdx.json:application/spdx+json
+
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat > notes.md <<EOF
+          Image: \`$IMAGE_REF\`
+
+          **Not signed yet.** Appliances reject this image until the release manager runs, with the offline key:
+
+          \`\`\`sh
+          release/sign.sh sign $IMAGE_REF      # or the air-gapped payload/sign-payload/attach steps
+          release/verify.sh --policy $IMAGE_REF
+          release/promote.sh $IMAGE_REF stable
+          \`\`\`
+
+          Then publish this draft. See docs/release.md.
+          EOF
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md out/sbom.spdx.json out/release-metadata.json
+          {
+            echo "### $GITHUB_REF_NAME built, NOT signed"
+            echo
+            echo "\`$IMAGE_REF\`"
+            echo
+            echo "Next: \`release/sign.sh sign $IMAGE_REF\` (offline key), \`release/verify.sh --policy\`, \`release/promote.sh\`."
+          } >> "$GITHUB_STEP_SUMMARY"
