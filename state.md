@@ -160,6 +160,7 @@ SSH key management for sources, appliance config backup (catalog, totp.key, secr
 
 ## Phase 8 — Replication + S3 (after NAS merge)
 Decisions (user, 2026-10-09): MinIO for dev/tests, real provider later; own minimal SigV4 client; replication = secondary pulls via mTLS endpoint on primary's 8443
+- [ ] After Phase 8: add repository README.md (user request 2026-10-09)
 
 ## Next
 
