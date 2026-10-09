@@ -155,8 +155,8 @@ lab/truenas/e2e.sh` and `lab/appliance/e2e.sh check`.
 ## Appliance replication lab (`lab/appliance/replication.sh`, docs/replication.md)
 
 Two appliance VMs from the same bootc image, both SELinux enforcing, on separate QEMU user networks:
-A (primary, `$BASE/repl-a`, 8443 → 127.0.0.1:28471) backs up PVE lab VM 100; B (secondary,
-`$BASE/repl-b`, 8443 → 127.0.0.1:28472) pulls from A through the host (`10.0.2.2:28471`). Needs the PVE
+A (primary, `$LABDIR/repl-a`, 8443 → 127.0.0.1:28471) backs up PVE lab VM 100; B (secondary,
+`$LABDIR/repl-b`, 8443 → 127.0.0.1:28472) pulls from A through the host (`10.0.2.2:28471`). Needs the PVE
 lab running and ~6 GB free RAM (A 2.5 GB, B 3 GB).
 
 ```sh

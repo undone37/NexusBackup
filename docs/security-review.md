@@ -43,6 +43,7 @@ The targets are cargo-fuzz (libFuzzer) crates under `crates/<crate>/fuzz/`. Each
 | `keyd/keyd_request` | keyd socket request lines (`<t>`, `ensure <t>`, `escrow <t>`, ≤128 bytes) against a fresh keyd dir, plus the escrow-answer decoder. | Nothing is created outside `tenants/<valid>/`. DEK answers are whole 36-byte records. Escrow only returns `kek.recovery` + this tenant's DEKs. |
 | `web-api/validators` | Name / schedule / source / path / host / role / GFS validators. | Accepted values keep the properties the other components rely on. |
 | `web-api/api_router` | The whole axum router: method × path × body × {anonymous, admin, SO, operator, tenant_user, scoped operator}. | No 5xx. Anonymous callers never get past auth on `/api/v1`. The audit chain verifies. |
+| `replication/hostile_primary` | Everything a hostile primary sends to a secondary: HTTP/1.1 heads, Content-Length and chunked bodies on one keep-alive connection, the JSON answers, the chunk frames (docs/replication.md). | Bodies stay within the requested limit; frames return only the requested id and at most `MAX_CHUNK` bytes. |
 
 ### 1.2 How to run
 
@@ -345,9 +346,10 @@ Reviewed with the implementation (2026-10-10):
   `insert_chunk_raw` = AEAD + keyed hash); the manifest is committed last; the secondary never deletes
   because the primary did; sizes are bounded (files 256 MiB, chunks 4 MiB + header, listing 64 MiB,
   HTTP heads 16 KiB). Test `tampered_chunk_is_not_imported`.
-- **Open (L-3):** no fuzz target yet for the secondary's HTTP/1.1 + chunk-frame parser
-  (`replication::http`, `client::fetch_chunks`) against a hostile primary; no per-peer bandwidth
-  limit on the primary (concurrency is limited to 8 requests per peer).
+- Fuzz target `replication/hostile_primary` covers the secondary's HTTP/1.1 client and the chunk
+  frames (§1.1).
+- **Open (L-4):** no per-peer bandwidth limit on the primary (concurrency is limited to 8 requests
+  per peer; the secondary has `bwlimit`).
 
 ---
 

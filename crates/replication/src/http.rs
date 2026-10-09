@@ -121,17 +121,35 @@ pub fn client_config(
     Ok(Arc::new(cfg))
 }
 
-pub struct Conn {
-    s: StreamOwned<ClientConnection, TcpStream>,
-    rbuf: Vec<u8>,
+pub type TlsStream = StreamOwned<ClientConnection, TcpStream>;
+
+/// One HTTP/1.1 connection; `S` is the TLS stream (generic for the fuzz target).
+pub struct Conn<S = TlsStream> {
+    s: S,
+    /// read buffer: `rbuf[rpos..rlen]` is unread
+    rbuf: Box<[u8]>,
     rpos: usize,
+    rlen: usize,
     /// a response body was not read to its end: the connection cannot be reused
     dirty: bool,
 }
 
 const MAX_HEAD: usize = 16 << 10;
 
-impl Conn {
+impl<S: Read + Write> Conn<S> {
+    /// HTTP over an already established stream (tests, fuzzing).
+    pub fn over(s: S) -> Conn<S> {
+        Conn {
+            s,
+            rbuf: vec![0u8; 64 << 10].into_boxed_slice(),
+            rpos: 0,
+            rlen: 0,
+            dirty: false,
+        }
+    }
+}
+
+impl Conn<TlsStream> {
     pub fn connect(t: &Target, cfg: Arc<ClientConfig>) -> Result<Conn> {
         let addrs: Vec<SocketAddr> = match t.connect_addr {
             Some(a) => vec![a],
@@ -175,33 +193,32 @@ impl Conn {
                 t.port
             );
         }
-        Ok(Conn {
-            s,
-            rbuf: Vec::new(),
-            rpos: 0,
-            dirty: false,
-        })
+        Ok(Conn::over(s))
     }
 
     pub fn exporter(&self, label: &[u8]) -> Result<[u8; 32]> {
         Ok(self.s.conn.export_keying_material([0u8; 32], label, None)?)
     }
+}
 
+impl<S: Read + Write> Conn<S> {
     fn fill(&mut self) -> io::Result<usize> {
-        if self.rpos == self.rbuf.len() {
-            self.rbuf.resize(64 << 10, 0);
-            let n = self.s.read(&mut self.rbuf)?;
-            self.rbuf.truncate(n);
+        if self.rpos == self.rlen {
+            self.rlen = self.s.read(&mut self.rbuf)?;
             self.rpos = 0;
         }
-        Ok(self.rbuf.len() - self.rpos)
+        Ok(self.rlen - self.rpos)
     }
 
     fn read_some(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        // large reads with an empty buffer go straight to the caller (chunk data)
+        if self.rpos == self.rlen && out.len() >= self.rbuf.len() {
+            return self.s.read(out);
+        }
         if self.fill()? == 0 {
             return Ok(0);
         }
-        let n = out.len().min(self.rbuf.len() - self.rpos);
+        let n = out.len().min(self.rlen - self.rpos);
         out[..n].copy_from_slice(&self.rbuf[self.rpos..self.rpos + n]);
         self.rpos += n;
         Ok(n)
@@ -230,7 +247,7 @@ impl Conn {
     }
 
     /// Sends a request and reads the response head; the body is read through the result.
-    pub fn request(&mut self, method: &str, path: &str, ctype: Option<&str>, body: &[u8]) -> Result<Response<'_>> {
+    pub fn request(&mut self, method: &str, path: &str, ctype: Option<&str>, body: &[u8]) -> Result<Response<'_, S>> {
         if self.dirty {
             bail!("connection has an unread response body");
         }
@@ -249,7 +266,9 @@ impl Conn {
         let status: u16 = status_line
             .strip_prefix("HTTP/1.1 ")
             .and_then(|r| r.get(..3))
+            .filter(|c| c.bytes().all(|b| b.is_ascii_digit()))
             .and_then(|c| c.parse().ok())
+            .filter(|s| (100..600).contains(s))
             .ok_or_else(|| anyhow!("malformed HTTP status line {status_line:?}"))?;
         let (mut len, mut chunked, mut total) = (None, false, 0);
         loop {
@@ -288,13 +307,13 @@ enum Body {
     Chunked { left: u64, done: bool },
 }
 
-pub struct Response<'a> {
-    conn: &'a mut Conn,
+pub struct Response<'a, S = TlsStream> {
+    conn: &'a mut Conn<S>,
     pub status: u16,
     body: Body,
 }
 
-impl Response<'_> {
+impl<S: Read + Write> Response<'_, S> {
     fn finished(&self) -> bool {
         matches!(self.body, Body::Length(0) | Body::Chunked { done: true, .. })
     }
@@ -338,7 +357,7 @@ pub fn error_text(status: u16, body: &[u8]) -> String {
     format!("primary answered {status}: {msg}")
 }
 
-impl Read for Response<'_> {
+impl<S: Read + Write> Read for Response<'_, S> {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
         if out.is_empty() {
             return Ok(0);

@@ -13,19 +13,19 @@
 #   replication.sh restore         stop A, B: list + download /etc/hostname from vm-100 (micro-VM)
 #   replication.sh check           AVCs / domains on both (lab/appliance/e2e.sh check)
 #   replication.sh stop            power off both VMs
-# env: IMG (localhost/nexus-os:repl-lab), BASE (/home/ah/nexus-lab: PVE lab keys), PORT_A (28471),
+# env: IMG (localhost/nexus-os:repl-lab), LABDIR (/home/ah/nexus-lab: PVE lab keys), PORT_A (28471),
 #      PORT_B (28472), MEM_A (2560), MEM_B (3072)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 IMG=${IMG:-localhost/nexus-os:repl-lab}
-BASE=${BASE:-/home/ah/nexus-lab}
+LABDIR=${LABDIR:-/home/ah/nexus-lab}
 PORT_A=${PORT_A:-28471}
 PORT_B=${PORT_B:-28472}
 MEM_A=${MEM_A:-2560}
 MEM_B=${MEM_B:-3072}
-LA=$BASE/repl-a
-LB=$BASE/repl-b
+LA=$LABDIR/repl-a
+LB=$LABDIR/repl-b
 T0=$(date +%s)
 log() { printf '[%4ss] %s\n' $(($(date +%s) - T0)) "$*" >&2; }
 die() {
@@ -48,12 +48,12 @@ disks() {
 		mkdir -p "$d/appliance/work"
 		# PVE lab credentials where e2e.sh / m5-api.sh expect them ($LAB/...)
 		for f in appliance_ed25519 appliance_ed25519.pub lab_ed25519 lab_ed25519.pub known_hosts api-token; do
-			ln -sfn "$BASE/$f" "$d/$f"
+			ln -sfn "$LABDIR/$f" "$d/$f"
 		done
 	done
 	# reuse the installer root of the shared lab if it is current (12 GB sparse)
-	if [ ! -f "$LA/appliance/work/installer.raw" ] && [ -f "$BASE/appliance/work/installer.raw" ]; then
-		cp --sparse=always "$BASE/appliance/work/installer."{raw,vmlinuz,initrd,id} "$LA/appliance/work/"
+	if [ ! -f "$LA/appliance/work/installer.raw" ] && [ -f "$LABDIR/appliance/work/installer.raw" ]; then
+		cp --sparse=always "$LABDIR/appliance/work/installer."{raw,vmlinuz,initrd,id} "$LA/appliance/work/"
 	fi
 	LAB=$LA "$here/build-disk.sh" "$IMG" "$LA/appliance/appliance.qcow2"
 	cp --sparse=always "$LA/appliance/appliance.qcow2" "$LB/appliance/appliance.qcow2"
@@ -102,9 +102,9 @@ primary() {
 		login admin "$ADMIN_PW" "$ADMIN_TOTP"
 		local ca tok cfg src pol grp r j
 		ca=$S/pve-root-ca.pem
-		ssh -o BatchMode=yes -p 10022 -i "$BASE/lab_ed25519" -o UserKnownHostsFile="$BASE/known_hosts" root@localhost \
+		ssh -o BatchMode=yes -p 10022 -i "$LABDIR/lab_ed25519" -o UserKnownHostsFile="$LABDIR/known_hosts" root@localhost \
 			cat /etc/pve/pve-root-ca.pem >"$ca"
-		tok=$(sed 's/^[^=]*=//' "$BASE/api-token" | tr -d '\n')
+		tok=$(sed 's/^[^=]*=//' "$LABDIR/api-token" | tr -d '\n')
 		api admin POST /tenants '{"name":"lab"}' >/dev/null
 		expect 201 "create tenant"
 		cfg=$(jq -nc --rawfile ca "$ca" --arg tok "$tok" \
@@ -137,8 +137,8 @@ backup2() {
 		login admin "$ADMIN_PW" "$ADMIN_TOTP"
 		# shellcheck disable=SC1091
 		. "$S/ids"
-		ssh -o BatchMode=yes -i "$BASE/lab_ed25519" -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no \
-			-o ProxyCommand="ssh -o BatchMode=yes -W %h:%p -p 10022 -i $BASE/lab_ed25519 -o UserKnownHostsFile=$BASE/known_hosts root@localhost" \
+		ssh -o BatchMode=yes -i "$LABDIR/lab_ed25519" -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no \
+			-o ProxyCommand="ssh -o BatchMode=yes -W %h:%p -p 10022 -i $LABDIR/lab_ed25519 -o UserKnownHostsFile=$LABDIR/known_hosts root@localhost" \
 			debian@10.10.10.100 \
 			'sudo sh -c "date > /etc/nexus-repl-marker; dd if=/dev/urandom of=/var/tmp/repl-blob bs=1M count=64 status=none; sync"' ||
 			log "could not change VM 100 (continuing with an unchanged guest)"
@@ -260,7 +260,7 @@ check() {
 			if [ -S "$CONSOLE" ] && [ -f "$LAB/appliance/qemu.pid" ] && kill -0 "$(cat "$LAB/appliance/qemu.pid")" 2>/dev/null; then
 				log "== $x"
 				"$here/e2e.sh" check
-				con run 'echo "== nexus AVCs since boot:"; ausearch -m avc,user_avc,selinux_err -ts boot 2>/dev/null | grep -c nexus; ps -eZ | grep -E "replica"'
+				con run 'echo "== AVCs/SELinux errors with a nexus context since boot:"; ausearch -m avc,user_avc,selinux_err -ts boot 2>/dev/null | grep -E "(s|t)context=[^ ]*nexus_|context=[^ ]*nexus_" | wc -l; ausearch -m avc,user_avc,selinux_err -ts boot 2>/dev/null | grep -E "context=[^ ]*nexus_" | tail -5; ps -eZ | grep -E "replica"'
 			else
 				log "$x is not running"
 			fi

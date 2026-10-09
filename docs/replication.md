@@ -237,7 +237,38 @@ Audit actions: `replication_peer.create|enrolled|delete`, `replication.key_expor
 - nftables: the scheduler adds every replication source's `host:port` to the outbound allow-list. The
   primary needs no rule (8443 inbound already exists).
 
-## 11. Open items
+## 11. Tests and lab results
+
+In-process (`crates/web-api/tests/replication.rs`, two appliances in temp dirs with real keyd, replicad,
+the web-api TLS server and the nexus-replica client): enrollment (incl. a TLS-terminating man in the
+middle → refused, wrong code, wrong pin, single use), revocation on an open keep-alive connection, tenant
+scope and path traversal, connection kinds (browser ALPN never reaches the peer API, peer ALPN without
+certificate fails), incremental sync (1 changed chunk → 1 chunk transferred), tampered chunk → nothing
+imported, restore on the secondary with only its keyd after the primary is gone, primary deletion not
+propagated, key export only after a second person's approval, rotation → key mismatch until re-export,
+web-api without replicad serves nothing. Scheduler: `replication_jobs` (enroll/sync jobs, schedule,
+results, alerts, lag, no keyd `ensure`, no backups in replicated tenants). keyd: export/import rules.
+Fuzz target `replication/hostile_primary` (secondary's HTTP client + chunk frames): found a lax status
+parser (fixed), then 25.6 M executions clean.
+
+Lab (`lab/appliance/replication.sh`, 2026-10-10): two appliance VMs from the same bootc image, SELinux
+enforcing, QEMU user networking; the secondary reached the primary as `10.0.2.2:28471` (host forward of
+the primary's 8443), the scheduler put exactly that into the nftables allow-list.
+- Primary: PVE lab VM 100 (4 GiB disk) backed up (95 s, 383 MB sealed).
+- Enrollment through the real 8443 with the pinned certificate; the keyd fingerprint shown in the key
+  export request on the primary matched the secondary's (`8576:219c:…`).
+- Initial sync: 307 chunks, 383 MB sealed in 2.1 s (**181 MB/s**, every chunk AEAD + keyed-hash verified
+  on insert; both VMs on one host, loopback through QEMU user networking).
+- Incremental (64 MiB written in the guest, second backup): 27 chunks / 71 MB fetched, 293 reused,
+  160 MB/s.
+- Primary VM powered off → file download of `/etc/hostname` from the replicated vm-100 snapshot on the
+  secondary (restore micro-VM, store-only nexus-pve configuration, secondary keyd only): `testvm100`.
+- Domains: `nexus_replicad_t` on both, the sync jobs left `nexus_replica_key_t` files (type transition
+  of `nexus_replica_t`); **0 AVCs/SELinux errors with a nexus context on either appliance** (the base
+  image logs three unrelated bootc/podman denials under `unconfined_service_t` at boot).
+  `systemd-analyze security nexus-replicad`: 0.4 SAFE.
+
+## 12. Open items
 - Bandwidth limit on the primary side (per peer); the secondary has `bwlimit`.
 - Re-keying a peer certificate needs delete + new peer (quorum) — no in-place renewal yet (10-year certs).
 - Chained replication (secondary → tertiary) works for tenants the secondary does not hold local keys for,

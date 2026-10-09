@@ -432,6 +432,33 @@ fn sync_inner(
     Ok(())
 }
 
+/// One frame of a `POST …/chunks` answer: `id(32) ‖ u32 BE len ‖ sealed bytes`.
+/// The id must be the one requested next; lengths are bounded before allocating.
+/// (The sealed bytes are verified by the caller's `insert_chunk_raw`.)
+pub fn read_chunk_frame(r: &mut impl Read, want: &ChunkId) -> Result<Vec<u8>> {
+    let mut head = [0u8; 36];
+    r.read_exact(&mut head).context("chunk stream truncated")?;
+    if head[..32] != want[..] {
+        bail!("the primary answered chunks out of order");
+    }
+    let len = u32::from_be_bytes(head[32..].try_into().unwrap());
+    if len == MISSING {
+        bail!(
+            "chunk {} is missing on the primary (removed by its GC since the listing?): retry the sync",
+            hex(want)
+        );
+    }
+    if u64::from(len) > MAX_CHUNK {
+        return Err(anyhow::Error::new(VerifyFailed(format!(
+            "chunk {} exceeds the size limit",
+            hex(want)
+        ))));
+    }
+    let mut data = vec![0u8; len as usize];
+    r.read_exact(&mut data).context("chunk stream truncated")?;
+    Ok(data)
+}
+
 /// Downloads `ids` over `p.parallel` connections; every chunk is verified
 /// (AEAD + keyed hash) by `insert_chunk_raw` before it is stored.
 fn fetch_chunks(
@@ -467,33 +494,14 @@ fn fetch_chunks(
                             .request("POST", &path, Some("application/octet-stream"), &body)?
                             .ok()?;
                         for want in &batch {
-                            let mut head = [0u8; 36];
-                            r.read_exact(&mut head).context("chunk stream truncated")?;
-                            if head[..32] != want[..] {
-                                bail!("the primary answered chunks out of order");
-                            }
-                            let len = u32::from_be_bytes(head[32..].try_into().unwrap());
-                            if len == MISSING {
-                                bail!(
-                                    "chunk {} is missing on the primary (removed by its GC since the listing?): retry the sync",
-                                    hex(want)
-                                );
-                            }
-                            if u64::from(len) > MAX_CHUNK {
-                                return Err(anyhow::Error::new(VerifyFailed(format!(
-                                    "chunk {} exceeds the size limit",
-                                    hex(want)
-                                ))));
-                            }
-                            let mut data = vec![0u8; len as usize];
-                            r.read_exact(&mut data).context("chunk stream truncated")?;
+                            let data = read_chunk_frame(&mut r, want)?;
                             store
                                 .insert_chunk_raw(want, &data)
                                 .map_err(verify(format!("chunk {}", hex(want))))?;
                             count.fetch_add(1, Ordering::Relaxed);
-                            bytes.fetch_add(u64::from(len), Ordering::Relaxed);
+                            bytes.fetch_add(data.len() as u64, Ordering::Relaxed);
                             if let Some(l) = limiter {
-                                l.account(u64::from(len));
+                                l.account(data.len() as u64);
                             }
                         }
                         let mut extra = [0u8; 1];
