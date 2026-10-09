@@ -348,7 +348,7 @@ struct CatalogArchive {
     protected: bool,
 }
 
-fn read_config(store: &Store, m: &Manifest, file: &str) -> Result<Option<String>> {
+pub(crate) fn read_config(store: &Store, m: &Manifest, file: &str) -> Result<Option<String>> {
     let Index::Dynamic { entries } = store.load_index(m, "config")? else {
         bail!("config index is not dynamic")
     };

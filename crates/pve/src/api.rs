@@ -112,6 +112,32 @@ impl Api {
         upid.as_str().map(str::to_owned).context("restore returned no UPID")
     }
 
+    /// POST returning a task UPID.
+    pub fn post_task(&self, path: &str, form: &[(&str, &str)]) -> Result<String> {
+        let upid = self.post(path, form)?;
+        upid.as_str()
+            .map(str::to_owned)
+            .with_context(|| format!("POST {path} returned no UPID"))
+    }
+
+    /// Runs a task to completion; fails with the task log unless it ended "OK".
+    pub fn run_task(&self, node: &str, upid: &str, timeout: Duration) -> Result<()> {
+        let exit = self.wait_task(node, upid, timeout)?;
+        if exit != "OK" {
+            let log = self.task_log(node, upid).unwrap_or_default();
+            bail!("task ended with {exit}: {}", log.join("\n"));
+        }
+        Ok(())
+    }
+
+    /// Current (non-pending) VM configuration.
+    pub fn vm_config(&self, node: &str, vmid: u32) -> Result<serde_json::Map<String, Value>> {
+        match self.get(&format!("/nodes/{node}/qemu/{vmid}/config"))? {
+            Value::Object(m) => Ok(m),
+            v => bail!("unexpected VM config: {v}"),
+        }
+    }
+
     /// `None` while running, `Some(exitstatus)` when stopped ("OK" = success).
     pub fn task_status(&self, node: &str, upid: &str) -> Result<Option<String>> {
         let st = self.get(&format!("/nodes/{node}/tasks/{upid}/status"))?;

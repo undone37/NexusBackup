@@ -4,8 +4,9 @@
 #
 # Backup-only storage. All data lives on the NexusBackup appliance, which pulls
 # it from the node over SSH (see docs/pve-connector.md). The node only keeps a
-# catalog (index.json) pushed by the appliance. Nothing in this module makes a
-# network connection.
+# catalog (index.json) pushed by the appliance, plus the qcow2 overlays of
+# instant recovery volumes (ir/...). Nothing in this module makes a network
+# connection.
 package PVE::Storage::Custom::NexusBackupPlugin;
 
 use strict;
@@ -24,6 +25,10 @@ our $STATEDIR = '/var/lib/nexusbackup';
 our $RUNDIR = '/run/nexusbackup/jobs';
 our $RESTOREDIR = '/run/nexusbackup/restore';
 our $GROUP = 'nexusbackup';
+# Instant recovery: qcow2 overlays (root only) and the helper's NBD sockets
+# that serve as their backing files.
+our $IRDIR = '/var/lib/nexusbackup/ir';
+our $IRRUNDIR = '/run/nexusbackup/ir';
 
 my $INDEX_MAX = 64 * 1024 * 1024;
 my $DEFAULT_JOB_TIMEOUT = 21600;
@@ -157,6 +162,106 @@ sub find_archive {
 }
 
 # ---------------------------------------------------------------------------
+# instant recovery volumes: ir/<vmid>/<archive>.<device>.qcow2
+#
+# A node-local qcow2 overlay owned by the target VM <vmid>. Its backing file is
+# the appliance's read-only NBD export of <device>, reached through the
+# helper's socket (ir-serve). Guest writes stay in the overlay until
+# `qm disk move` copies the disk to real storage and frees the volume.
+
+my $IR_VOLNAME_RE = qr!^ir/(\d{1,9})/((nexus-\d{1,9}-\d{1,12})\.([a-z0-9\-]{1,64})\.qcow2)\z!;
+my $IR_FILE_RE = qr!^((nexus-\d{1,9}-\d{1,12})\.([a-z0-9\-]{1,64})\.qcow2)\z!;
+# Seconds QEMU holds guest I/O while the appliance's export is unreachable
+# (reconnect), and waits for a listener when opening the backing file.
+our $IR_RECONNECT_DELAY = 60;
+our $IR_OPEN_TIMEOUT = 60;
+
+# Returns untainted ($vmid, $file, $archive, $device) or () if not an IR volume.
+sub parse_ir_volname {
+    my ($volname) = @_;
+    return () if !defined($volname) || $volname !~ $IR_VOLNAME_RE;
+    return ($1, $2, $3, $4);
+}
+
+sub untaint_storeid {
+    my ($storeid) = @_;
+    ($storeid) = ($storeid // '') =~ m/^([a-z][a-z0-9\-_.]{0,99})\z/i
+        or die "invalid storage id\n";
+    return $storeid;
+}
+
+sub ir_overlay_path {
+    my ($class, $storeid, $vmid, $file) = @_;
+    return "$IRDIR/" . untaint_storeid($storeid) . "/$vmid/$file";
+}
+
+# QEMU backing file spec of an overlay: raw over the helper's NBD socket.
+sub ir_backing_spec {
+    my ($class, $vmid, $archive, $device) = @_;
+    my $spec = {
+        driver => 'raw',
+        file => {
+            driver => 'nbd',
+            server => { type => 'unix', path => "$IRRUNDIR/$vmid.$archive.$device.sock" },
+            export => $device,
+            'reconnect-delay' => $IR_RECONNECT_DELAY + 0,
+            'open-timeout' => $IR_OPEN_TIMEOUT + 0,
+        },
+    };
+    return 'json:' . JSON->new->canonical->encode($spec);
+}
+
+# Real directory owned by us, not writable by group/others; created 0700 if missing.
+my $ensure_private_dir = sub {
+    my ($dir) = @_;
+    mkdir($dir, 0700) or $!{EEXIST} or die "mkdir $dir: $!\n";
+    my @st = lstat($dir) or die "stat $dir: $!\n";
+    die "$dir must be a directory owned by uid $> without group/other write access\n"
+        if !-d _ || -l _ || $st[4] != $> || ($st[2] & 022);
+};
+
+# Creates the overlay if missing (root; called from activate_volume). The size
+# comes from the catalog, the backing file only from the volume name.
+sub ir_create_overlay {
+    my ($class, $storeid, $vmid, $file, $archive, $device) = @_;
+
+    my $path = $class->ir_overlay_path($storeid, $vmid, $file);
+    my $sdir = "$IRDIR/" . untaint_storeid($storeid);
+    $ensure_private_dir->($_) for ($IRDIR, $sdir, "$sdir/$vmid");
+
+    if (lstat($path)) {
+        die "instant recovery overlay '$path' is not a regular file\n" if !-f _ || -l _;
+        return $path;
+    }
+
+    my $a = $class->find_archive($storeid, "backup/$archive")
+        or die "archive '$archive' not found in NexusBackup catalog of '$storeid'\n";
+    die "archive '$archive' is not a VM backup\n" if $a->{type} ne 'qemu';
+    my $size = $class->ir_volume_size($storeid, $archive, $device);
+    die "archive '$archive' has no device '$device'\n" if !$size;
+
+    my $tmp = "$sdir/$vmid/.$file.$$.tmp";
+    unlink($tmp);
+    my @cmd = ('qemu-img', 'create', '-q', '-f', 'qcow2', '-u', '-F', 'raw',
+        '-b', $class->ir_backing_spec($vmid, $archive, $device), $tmp, $size);
+    if (system(@cmd) != 0) {
+        my $code = $? >> 8;
+        unlink($tmp);
+        die "qemu-img create of '$path' failed (exit $code)\n";
+    }
+    rename($tmp, $path) or do { my $err = $!; unlink($tmp); die "rename to $path: $err\n" };
+    return $path;
+}
+
+sub ir_volume_size {
+    my ($class, $storeid, $archive, $device) = @_;
+    my $a = $class->find_archive($storeid, "backup/$archive") or return undef;
+    # untaint (perl -T): PVE passes it on to e.g. lvcreate when moving the disk
+    my ($size) = ($a->{device_sizes}->{$device} // '') =~ m/^(\d{1,20})\z/;
+    return $size;
+}
+
+# ---------------------------------------------------------------------------
 # configuration
 
 # Highest storage API version tested (PVE 9.2). Report the running version
@@ -174,7 +279,8 @@ sub type {
 
 sub plugindata {
     return {
-        content => [{ backup => 1, none => 1 }, { backup => 1 }],
+        # 'images' only for instant recovery overlays (alloc_image refuses)
+        content => [{ backup => 1, images => 1, none => 1 }, { backup => 1 }],
         features => { 'backup-provider' => 1 },
         'sensitive-properties' => {},
     };
@@ -225,6 +331,9 @@ sub parse_volname {
     if ($volname =~ m!^backup/(nexus-(\d+)-\d+)$!) {
         return ('backup', $1, $2, undef, undef, undef, 'nexus');
     }
+    if (my ($vmid, $file) = parse_ir_volname($volname)) {
+        return ('images', $file, $vmid, undef, undef, 0, 'qcow2');
+    }
 
     die "unable to parse NexusBackup volume name '$volname'\n";
 }
@@ -232,7 +341,8 @@ sub parse_volname {
 sub filesystem_path {
     my ($class, $scfg, $volname, $snapname) = @_;
     die "volume snapshots are not supported on NexusBackup storage\n" if $snapname;
-    my (undef, $name, $vmid) = $class->parse_volname($volname);
+    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+    die "instant recovery volume path needs the storage id\n" if $vtype ne 'backup';
     # Not a real file: the data lives on the appliance.
     my $path = "/var/lib/nexusbackup/archives/$name";
     return wantarray ? ($path, $vmid, 'backup') : $path;
@@ -240,18 +350,52 @@ sub filesystem_path {
 
 sub path {
     my ($class, $scfg, $volname, $storeid, $snapname) = @_;
+    if (my ($vmid, $file) = parse_ir_volname($volname)) {
+        die "volume snapshots are not supported on NexusBackup storage\n" if $snapname;
+        my $path = $class->ir_overlay_path($storeid, $vmid, $file);
+        return wantarray ? ($path, $vmid, 'images') : $path;
+    }
     return $class->filesystem_path($scfg, $volname, $snapname);
 }
 
+# Instant recovery overlays present on this node.
 sub list_images {
     my ($class, $storeid, $scfg, $vmid, $vollist, $cache) = @_;
-    return [];
+
+    my $res = [];
+    my $sdir = "$IRDIR/" . untaint_storeid($storeid);
+    opendir(my $dh, $sdir) or return $res;
+    for my $owner (sort readdir($dh)) {
+        ($owner) = $owner =~ m/^(\d{1,9})\z/ or next; # untaint (perl -T)
+        next if defined($vmid) && $owner != $vmid;
+        opendir(my $vd, "$sdir/$owner") or next;
+        for my $f (sort readdir($vd)) {
+            my ($file, $archive, $device) = $f =~ $IR_FILE_RE or next;
+            my $volid = "$storeid:ir/$owner/$file";
+            next if $vollist && !grep { $_ eq $volid } @$vollist;
+            my @st = stat("$sdir/$owner/$file") or next;
+            push @$res, {
+                volid => $volid,
+                format => 'qcow2',
+                vmid => $owner + 0,
+                size => $class->ir_volume_size($storeid, $archive, $device) // 0,
+                used => $st[12] * 512,
+                ctime => $st[9],
+            };
+        }
+        closedir($vd);
+    }
+    closedir($dh);
+    return $res;
 }
 
 sub list_volumes {
     my ($class, $storeid, $scfg, $vmid, $content_types) = @_;
 
     my $res = [];
+    if (grep { $_ eq 'images' } ($content_types // [])->@*) {
+        push @$res, map { { $_->%*, content => 'images' } } $class->list_images($storeid, $scfg, $vmid)->@*;
+    }
     return $res if !grep { $_ eq 'backup' } ($content_types // [])->@*;
 
     my $index = eval { $class->read_index($storeid) } // { archives => [] };
@@ -276,6 +420,20 @@ sub list_volumes {
 sub volume_size_info {
     my ($class, $scfg, $storeid, $volname, $timeout) = @_;
 
+    if (my ($vmid, $file, $archive, $device) = parse_ir_volname($volname)) {
+        my $size = $class->ir_volume_size($storeid, $archive, $device);
+        my $path = $class->ir_overlay_path($storeid, $vmid, $file);
+        my @st = stat($path);
+        if (!$size && @st && defined(&PVE::Storage::Plugin::file_size_info)) {
+            # archive already gone from the catalog: ask the overlay itself
+            # (qemu-img info does not open the backing file)
+            $size = PVE::Storage::Plugin::file_size_info($path, $timeout, 'qcow2');
+        }
+        die "volume '$storeid:$volname' not found\n" if !$size;
+        my $used = @st ? $st[12] * 512 : 0;
+        return wantarray ? ($size, 'qcow2', $used, undef, @st ? $st[9] : undef) : $size;
+    }
+
     $class->parse_volname($volname);
     my $a = $class->find_archive($storeid, $volname)
         or die "volume '$storeid:$volname' not found in NexusBackup catalog\n";
@@ -296,9 +454,15 @@ sub update_volume_attribute {
     die $DELETE_MSG;
 }
 
+# Only instant recovery overlays can be freed (qm disk move --delete, qm destroy);
+# backups never.
 sub free_image {
     my ($class, $storeid, $scfg, $volname, $isBase, $format) = @_;
-    die $DELETE_MSG;
+    my ($vmid, $file) = parse_ir_volname($volname) or die $DELETE_MSG;
+    my $path = $class->ir_overlay_path($storeid, $vmid, $file);
+    unlink($path) or $!{ENOENT} or die "unable to delete '$path': $!\n";
+    rmdir("$IRDIR/" . untaint_storeid($storeid) . "/$vmid"); # if empty
+    return undef;
 }
 
 # Retention is the appliance's job. Must never die: vzdump calls this after
@@ -358,6 +522,9 @@ sub deactivate_storage {
 sub activate_volume {
     my ($class, $storeid, $scfg, $volname, $snapname, $cache) = @_;
     die "volume snapshots are not supported on NexusBackup storage\n" if $snapname;
+    if (my ($vmid, $file, $archive, $device) = parse_ir_volname($volname)) {
+        $class->ir_create_overlay($storeid, $vmid, $file, $archive, $device);
+    }
     return 1;
 }
 

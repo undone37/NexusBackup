@@ -12,6 +12,8 @@ Status: v1 (2026-10-08). PVE 9.x only. API facts: `docs/pve-backup-provider-api.
 | `/run/nexusbackup/jobs/`, `/run/nexusbackup/restore/` | rendezvous dirs, `1770 root:nexusbackup` (tmpfiles.d; sticky so the helper cannot replace root's files) |
 | `/var/lib/nexusbackup/<storeid>/index.json` | catalog pushed by the appliance, `0640 nexusbackup:nexusbackup` (written by the helper) |
 | `/var/tmp/nexusbackup/<archive>/` | container restore staging dir (root only, parent `0700`), removed by `restore_container_cleanup` |
+| `/run/nexusbackup/ir/` | instant recovery: the helper's listening NBD sockets `<vmid>.<archive>.<device>.sock`, `1770 root:nexusbackup` (tmpfiles.d) |
+| `/var/lib/nexusbackup/ir/<storeid>/<vmid>/<archive>.<device>.qcow2` | instant recovery overlays (guest writes), created by the plugin as root; every level `0700 root` (checked before use) |
 
 `authorized_keys` of `nexusbackup`:
 `restrict,command="/usr/lib/nexusbackup/helper" ssh-ed25519 AAAA… nexus-appliance`
@@ -21,13 +23,16 @@ storage.cfg:
 ```
 nexusbackup: nexus
 	nexus-fleecing-storage local-lvm
-	content backup
+	content backup,images
 ```
+`images` is only needed for instant recovery: the storage then holds the IR overlay volumes
+(`alloc_image` still refuses, so the GUI cannot create ordinary disks on it).
 Fleecing is mandatory for provider VM backups; the appliance passes
 `fleecing=enabled=1,storage=<fleecing-storage>` when triggering vzdump.
 
 ## Names
 - archive name (returned by `backup_init`): `nexus-<vmid>-<unixtime>`; volname `backup/nexus-<vmid>-<unixtime>`; `parse_volname` returns vmid as owner.
+- instant recovery volume: `ir/<target vmid>/<archive>.<device>.qcow2` (vtype `images`, format `qcow2`, owner = target vmid, e.g. `nexus:ir/903/nexus-100-1760000000.drive-scsi0.qcow2`).
 - Appliance snapshot: source `vm-<vmid>`, time `<unixtime>`, one fixed index per device named like the device (`drive-scsi0`, …), plus dynamic index `config` with files `qemu-server.conf` and (optional) `firewall.fw`.
 - Container snapshot: source `ct-<vmid>`, time `<unixtime>`, dynamic index `root.tar` with one entry `root.tar` (size = tar stream length, FastCDC chunks), plus dynamic index `config` with `pct.conf` and (optional) `firewall.fw`.
 
@@ -80,6 +85,7 @@ Plugin uses it for `list_volumes`, `archive_get_guest_config`, `archive_get_fire
 | `restore-serve <archive> <device>` | VM restore: listen on `/run/nexusbackup/restore/<archive>.<device>.sock`, accept one connection, pipe it ⇄ stdio |
 | `ct-stream <vmid>` | container backup: requires a job with `type` `lxc`; connect to `/run/nexusbackup/jobs/<vmid>.ct.sock` (path derived, not read from the job) and pipe stdio ⇄ socket |
 | `ct-restore-serve <archive>` | container restore: requires a request with `type` `lxc`; listen on `/run/nexusbackup/restore/<archive>.ct.sock` (tmp name + rename, `0660`), accept one connection (600 s), pipe it ⇄ stdio |
+| `ir-serve <vmid> <archive> <device>` | instant recovery: listen on `/run/nexusbackup/ir/<vmid>.<archive>.<device>.sock` (tmp name + `0660` + rename over any older socket), print `listening`, wait for one connection without timeout (ends with exit 0 on stdin EOF, exit 1 if the appliance sends data first), close the listener, print `accepted`, pipe the connection ⇄ stdio. Removes the path only while it is still its own socket |
 | anything else | exit 2, log to syslog |
 Arguments are validated: vmid `^\d{1,9}$`, storeid `^[a-z][a-z0-9\-_.]{1,99}$`, archive `^nexus-\d{1,9}-\d{1,12}$`, device `^[a-z0-9\-]{1,64}$`.
 
@@ -143,6 +149,83 @@ No side can block forever: the child's accept and answer waits use the job timeo
 6. `restore_container_cleanup`: `rm -rf --one-file-system` the staging dir, remove request and socket.
 
 The staging dir needs free space on the node's `/var/tmp` equal to the container's data.
+
+## Instant recovery flow (VMs)
+The VM boots on the node from qcow2 overlays whose backing file is the appliance's read-only
+NBD export; guest writes go into the overlays on the node; a live `qm disk move` (drive-mirror)
+then copies each disk to real storage and frees the overlay. The appliance stays read-only and
+initiates every connection; the key stays `restrict`ed.
+
+Lab-verified PVE 9.2 behaviour this relies on:
+- qemu-server generates `-blockdev` for a qcow2 volume without a `backing` key (unless the storage
+  reports snapshot method `mixed`), so QEMU opens the backing file named in the qcow2 header.
+  PVE only rejects backing files for *untrusted* images (imports), not on VM start or disk move.
+- `qemu-img info` (PVE's `file_size_info`) does not open the backing file.
+- The backing file is `json:{"driver":"raw","file":{"driver":"nbd","server":{"type":"unix","path":"/run/nexusbackup/ir/<vmid>.<archive>.<device>.sock"},"export":"<device>","reconnect-delay":60,"open-timeout":60}}`
+  (a plain `json:{"driver":"nbd",…}` with backing format raw fails: "A block device must be specified for file").
+  QEMU holds one NBD connection per disk; after a server outage it reconnects by itself and
+  re-runs paused requests (`reconnect-delay`), `open-timeout` bridges short listener gaps at open.
+- `qm disk move <vmid> <disk> <storage> --delete 1` on the running VM mirrors through the backing
+  chain, switches to the new volume, drops the NBD connection and calls `free_image` on the overlay.
+
+Steps (`nexus-pve <cfg> instant-recover <vmid> <time> <node> <target> <storage> [--link-down]`):
+1. Appliance reads `qemu-server.conf` from the snapshot and rewrites it (`crate::ir::ir_config`):
+   every disk with a `#qmdump#map:<key>:<device>:…` line becomes `<storeid>:ir/<target>/<archive>.<device>.qcow2`
+   (options kept, `size=` dropped); disks without a map line (`backup=0`) are left out; the cloud-init
+   drive is recreated as `<storage>:cloudinit`; ISO CD-ROMs are kept; NIC MACs are dropped (PVE assigns
+   new ones), `--link-down` adds `link_down=1` to every NIC; `vmgenid` (root-only via the API) and a
+   UUID-only `smbios1` are dropped so PVE generates new ones; `meta`, `lock`, `parent`, `onboot`,
+   `unusedN`, snapshot sections and the description are dropped. Templates and VMs with
+   `tpmstate0` (swtpm needs a local raw image) are refused.
+2. Appliance refuses an existing target vmid, pushes the catalog (the plugin sizes overlays from it).
+3. Per device the appliance keeps one idle `ir-serve <target> <archive> <device>` SSH session; it reads
+   `listening`, then waits for `accepted`, hands that session to an NBD server thread
+   (`nbd::server::serve` over the snapshot's fixed index) and immediately starts the next listener.
+   So every connection QEMU makes (VM start, reconnect, offline move via `qemu-img convert`) is
+   served, sequential or concurrent, each over its own session.
+4. Once all sockets are published: `POST /nodes/<node>/qemu` with the rewritten config, then
+   `POST /nodes/<node>/qemu/<target>/status/start`.
+   Plugin `activate_volume` (root) creates the overlay if missing: checks that `ir/`, `ir/<storeid>/`,
+   `ir/<storeid>/<vmid>/` are real directories owned by root without group/other write, takes the
+   size from the catalog (`device_sizes`, untainted), runs `qemu-img create -f qcow2 -u -F raw -b <json above>`
+   into a temp name and renames. An existing overlay (guest writes) is reused; a symlink is refused.
+   The backing path is derived from the volume name only, never from the catalog or the appliance.
+5. Per disk: `POST /nodes/<node>/qemu/<target>/move_disk disk=<key> storage=<storage> delete=1`,
+   waited for one after another. A failed move is reported, but serving continues.
+6. Appliance polls `GET /nodes/<node>/qemu/<target>/config` (5 s) until no value references
+   `<storeid>:ir/<target>/` (including `unusedN`), or the VM is gone; then it kills all its sessions.
+   Idle helpers see stdin EOF and remove their own socket; nothing else is left on the node.
+7. Plugin `free_image` deletes only `ir/` overlays (and the empty vmid dir); backups stay undeletable.
+   `list_images`/`list_volumes` (content `images`) report the overlays of this storage on this node.
+
+`nexus-pve <cfg> ir-serve <node> <target>` resumes serving for a VM that still references IR
+volumes (derives archive and devices from its config) and returns once they are gone.
+
+Lab (nested PVE 9.2.2, Debian 13 VM, 4 GiB disk, appliance and node on one host, SSH via localhost):
+VM running 4.4–4.5 s after the command started (catalog push, listener, create, start); live move to
+local-lvm 24–30 s for 4 GiB (~140–170 MiB/s through the SSH relay while the guest boots). With
+`--link-down` the guest's login prompt appeared after 160 s, because cloud-init waits for
+`systemd-networkd-wait-online` (2 min) before getty; without cloud-init the prompt came within seconds.
+
+### Failure modes
+| Event | Behaviour |
+|---|---|
+| Appliance dies / network to the node breaks | The SSH sessions end (a session whose appliance end died ends at the next request QEMU sends); QEMU loses the NBD connection and keeps reconnecting. Reads of blocks that are not in the overlay are held up to `reconnect-delay` (60 s) and re-run after a reconnect; after that they fail with EIO until a server is back (the guest may then remount read-only or crash). Data already in the overlay is unaffected. Restart with `nexus-pve <cfg> ir-serve <node> <target>`. Lab (SIGKILL of the appliance): (a) monitor reads of uncopied blocks blocked 16 s and finished once `ir-serve` was back (started 11 s after the kill); (b) killed during the drive-mirror: the mirror stalled at 18.6 %, continued after `ir-serve` reconnected, the task ended OK and the moved disk matched the snapshot except 11 MiB written by the guest. |
+| Disk move fails | Reported by `instant-recover` (non-zero exit at the end), the appliance keeps serving; retry `qm disk move … --delete 1` (GUI/CLI) or destroy the VM. |
+| Node reboot (not tested) | `/run/nexusbackup/ir` is recreated empty; the overlay (guest writes) survives in `/var/lib/nexusbackup/ir`. Starting the VM needs the appliance serving (`ir-serve <node> <target>`), otherwise the open fails after `open-timeout`. The overlay must not be removed manually while the VM references it. |
+| Double serving (two appliance processes) | Each new listener renames its socket over the path; QEMU connects to whichever listener is current; old idle listeners never take the path back. Both serve identical read-only data, so this is harmless. |
+| VM stopped/destroyed during IR | Not possible while a move runs (the move holds the config lock; `qm stop` times out). Otherwise `qm destroy` frees the overlays via `free_image` and the appliance stops once the VM is gone (lab-verified with `ir-serve`). |
+| Overlay growth | Guest writes accumulate on the node's root file system until the move finishes. |
+
+### Privileges
+No root-only operation is needed. The token needs on `/vms/<target>`: `VM.Allocate`, `VM.Config.Disk`,
+`VM.Config.CDROM`, `VM.Config.CPU`, `VM.Config.Memory`, `VM.Config.Network`, `VM.Config.HWType`,
+`VM.Config.Options`, `VM.Config.Cloudinit`, `VM.PowerMgmt`, `VM.Audit` (PVEVMAdmin covers them);
+`Datastore.AllocateSpace` on the target storage (disk move, cloud-init drive); `SDN.Use` on the bridge's
+zone. Using the IR volumes needs no privilege on the NexusBackup storage: PVE allows a VM to use
+volumes it owns (`check_volume_access`, owner = target vmid). `vmgenid` can only be set by root,
+hence it is never sent. Lab token: PVEVMAdmin + PVEDatastoreAdmin + PVEAuditor on `/`,
+PVESDNUser on `/sdn/zones/localnetwork` (unchanged).
 
 ## Known issues
 - `api()` returns 11 → every PVE CLI call prints "implementing an older storage API" (current APIVER 14). Decide: return `PVE::Storage::APIVER` within a tested range.

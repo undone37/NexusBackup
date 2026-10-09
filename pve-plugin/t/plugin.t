@@ -537,4 +537,81 @@ ok(!eval { $prov->restore_container_init('backup/nexus-101-1760000100', 'nexus',
     ok(!-e "$tmp/stage/$rarch" && !-e "$tmp/restore/$rarch.json", 'cleaned up after timeout');
 }
 
+# --- instant recovery overlays ------------------------------------------------
+$PVE::Storage::Custom::NexusBackupPlugin::IRDIR = "$tmp/ir";
+$PVE::Storage::Custom::NexusBackupPlugin::IRRUNDIR = '/run/nexusbackup/ir';
+{
+    my $vol = 'ir/903/nexus-101-1760000100.drive-scsi0.qcow2';
+    my $volid = "nexus:$vol";
+    my $overlay = "$tmp/ir/nexus/903/nexus-101-1760000100.drive-scsi0.qcow2";
+    ok($P->plugindata()->{content}->[0]->{images}, 'images content offered');
+    is_deeply([$P->parse_volname($vol)],
+        ['images', 'nexus-101-1760000100.drive-scsi0.qcow2', '903', undef, undef, 0, 'qcow2'],
+        'parse_volname ir');
+    for my $bad ('ir/903/../x.qcow2', 'ir/abc/nexus-101-1760000100.drive-scsi0.qcow2',
+        'ir/903/nexus-101-1760000100.drive-scsi0', 'ir/903/nexus-101-1760000100.Drive.qcow2',
+        'ir/903/sub/nexus-101-1760000100.drive-scsi0.qcow2', "$vol\n") {
+        ok(!eval { $P->parse_volname($bad); 1 }, "parse_volname rejects '$bad'");
+    }
+    is_deeply([$P->path($scfg, $vol, 'nexus')], [$overlay, '903', 'images'], 'path of ir volume');
+    my $isize = $P->volume_size_info($scfg, taint('nexus'), taint($vol));
+    is($isize, 6144, 'ir size from catalog');
+    ok(!Scalar::Util::tainted($isize), 'ir size untainted (PVE passes it to lvcreate)');
+    is_deeply($P->list_images('nexus', $scfg, 903), [], 'no overlay before activation');
+
+    ok(eval { $P->activate_volume(taint('nexus'), $scfg, taint($vol)); 1 }, 'activate creates overlay')
+        or diag($@);
+    ok(-f $overlay, 'overlay exists');
+    is((stat("$tmp/ir/nexus/903"))[2] & 0777, 0700, 'overlay dir private');
+    my $info = JSON->new->decode(scalar(`qemu-img info --output=json $overlay`));
+    is($info->{format}, 'qcow2', 'overlay format');
+    is($info->{'virtual-size'}, 6144, 'overlay size');
+    is($info->{'backing-filename-format'}, 'raw', 'backing format raw');
+    is($info->{'backing-filename'},
+        'json:{"driver":"raw","file":{"driver":"nbd","export":"drive-scsi0","open-timeout":60,'
+        . '"reconnect-delay":60,"server":{"path":"/run/nexusbackup/ir/903.nexus-101-1760000100.drive-scsi0.sock",'
+        . '"type":"unix"}}}', 'backing = helper socket of this vmid/archive/device');
+    my $mtime = (stat($overlay))[9];
+    utime(1, 1, $overlay);
+    ok(eval { $P->activate_volume('nexus', $scfg, $vol); 1 }, 're-activate');
+    is((stat($overlay))[9], 1, 'existing overlay (guest writes) kept');
+    ok(!grep({ /\.tmp$/ } glob("$tmp/ir/nexus/903/.*")), 'no temp files left');
+
+    my $l = $P->list_images('nexus', $scfg, 903);
+    is(scalar(@$l), 1, 'list_images: one overlay');
+    is_deeply([@{ $l->[0] }{qw(volid format vmid size)}], [$volid, 'qcow2', 903, 6144], 'list_images entry');
+    is_deeply($P->list_images('nexus', $scfg, 904), [], 'list_images filters by vmid');
+    is_deeply($P->list_images('nexus', $scfg, undef, ['nexus:other']), [], 'list_images filters by vollist');
+    is_deeply([map { "$_->{content}:$_->{volid}" } $P->list_volumes('nexus', $scfg, 903, ['images'])->@*],
+        ["images:$volid"], 'list_volumes images');
+    ok(!grep({ $_->{content} eq 'images' } $P->list_volumes('nexus', $scfg, undef, ['backup'])->@*),
+        'list_volumes backup only');
+    is_deeply($P->list_images('other', $scfg, 903), [], 'overlays are per storage');
+
+    like((eval { $P->activate_volume('nexus', $scfg, 'ir/903/nexus-101-1760000100.drive-efidisk0.qcow2') } // $@),
+        qr/has no device/, 'unknown device refused');
+    like((eval { $P->activate_volume('nexus', $scfg, 'ir/903/nexus-200-1760000300.drive-scsi0.qcow2') } // $@),
+        qr/not a VM backup/, 'container archive refused');
+    like((eval { $P->activate_volume('nexus', $scfg, 'ir/903/nexus-101-1.drive-scsi0.qcow2') } // $@),
+        qr/not found in NexusBackup catalog/, 'unknown archive refused');
+
+    my $link = "$tmp/ir/nexus/903/nexus-101-1760000100.drive-sata0.qcow2";
+    symlink('/etc/passwd', $link) or die;
+    like((eval { $P->activate_volume('nexus', $scfg, 'ir/903/nexus-101-1760000100.drive-sata0.qcow2') } // $@),
+        qr/not a regular file/, 'symlinked overlay refused');
+    unlink($link);
+    chmod(0770, "$tmp/ir/nexus/903");
+    like((eval { $P->activate_volume('nexus', $scfg, $vol) } // $@),
+        qr/without group\/other write access/, 'group-writable overlay dir refused');
+    chmod(0700, "$tmp/ir/nexus/903");
+
+    like((eval { $P->free_image('nexus', $scfg, 'backup/nexus-101-1760000100') } // $@),
+        qr/deletion is managed by the NexusBackup appliance/, 'backups stay undeletable');
+    ok(eval { $P->free_image(taint('nexus'), $scfg, taint($vol)); 1 }, 'free_image ir') or diag($@);
+    ok(!-e $overlay && !-e "$tmp/ir/nexus/903", 'overlay and empty vmid dir removed');
+    ok(eval { $P->free_image('nexus', $scfg, $vol); 1 }, 'free_image of a missing overlay is fine');
+    like((eval { $P->alloc_image('nexus', $scfg, 903, 'qcow2', undef, 1024) } // $@),
+        qr/cannot hold disk images/, 'alloc_image still refused');
+}
+
 done_testing();
