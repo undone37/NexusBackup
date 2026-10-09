@@ -61,7 +61,8 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | File restore delivery (Phase 3) | **CLI download as tar/zip** (decided 2026-10-09) | Web UI download follows in Phase 5. |
 | Offsite test target (Phase 4) | **Local OpenSSH SFTP container mimicking Storage Box limits first**; real Storage Box later for a final run (decided 2026-10-09) | Fast, repeatable tests; no credentials needed during development. |
 | SFTP client | **Pure Rust: russh + russh-sftp** (decided 2026-10-09) | No C dependencies; host-key pinning, range reads, parallel connections under our control. |
-| Web UI (Phase 5) | **SPA in TypeScript** (Svelte/React; decided 2026-10-09) on the REST API | Richer UI; needs a Node build in CI/image and strict CSP/XSS care. |
+| Web UI (Phase 5) | **Svelte 5 + Vite SPA in TypeScript** (decided 2026-10-09) on the REST API | Small bundles, no inline scripts (strict CSP). |
+| Web UI dependencies | **Committed lockfile, `npm ci --ignore-scripts`, minimal deps; built assets embedded in the web-api binary** (decided 2026-10-09) | Supply-chain hygiene; no Node in the appliance image. |
 | MFA (Phase 5) | **TOTP only at first** (decided 2026-10-09) | WebAuthn follows later. |
 | First boot (Phase 5) | **Console TUI** (decided 2026-10-09) | Management API unreachable until setup is done; no default credentials. |
 | Release signing (Phase 6) | **cosign with an offline key** (decided 2026-10-09) | Appliance pins the public key; no dependency on external transparency services. |
