@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const DAY: i64 = 86400;
+const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 fn keys(t: &str) -> Keyring {
     Keyring::new(t, &[(1, [42; 32])])
@@ -168,7 +169,7 @@ esac"#,
 
     let src = json!({"host": "pve1", "port": 8006, "ca_pem": "-----BEGIN CERTIFICATE-----", "token_id": "nexus@pve!b",
                      "token_secret": "TOPSECRET", "storage": "nexus", "fleecing_storage": "local-lvm",
-                     "nodes": {"pve1": {"host": "10.0.0.5", "key": "/etc/nexus/ssh/id", "known_hosts": "/etc/nexus/ssh/kh"}}});
+                     "nodes": [{"name": "pve1", "host": "10.0.0.5", "key": "/etc/nexus/ssh/id", "known_hosts": "/etc/nexus/ssh/kh"}]});
     let offsite = json!({"remote": {"type": "sftp", "host": "box", "user": "u1", "host_key": "ssh-ed25519 AAAA",
                                     "key_pem": "-----BEGIN OPENSSH PRIVATE KEY-----"}, "uploaders": 2});
     db.conn()
@@ -219,6 +220,11 @@ esac"#,
     let kinds: Vec<(&str, &str)> = jobs.iter().map(|j| (j.0.as_str(), j.1.as_str())).collect();
     assert_eq!(kinds, [("backup", "ok"), ("retention", "ok"), ("offsite", "ok")]);
     assert!(jobs.iter().all(|j| j.2 == "scheduler"));
+    let bp: String = q(&db, "SELECT params FROM jobs WHERE kind='backup'");
+    assert_eq!(
+        bp, r#"{"group_id":1}"#,
+        "web-api's last-backup metric needs {{group_id}}"
+    );
     let log: String = q(&db, "SELECT log FROM jobs WHERE kind='backup'");
     assert!(
         log.contains("backup-all") && log.contains("committed vm-100/1"),
@@ -308,7 +314,7 @@ esac"#,
     db.conn()
         .execute(
             "INSERT INTO jobs (kind, tenant, params, state, requested_by, created) VALUES ('files_get','acme',?1,'queued','bob',1)",
-            [json!({"source": "vm-100", "time": times[0], "paths": ["/etc/hosts"], "format": "zip"}).to_string()],
+            [json!({"source": "vm-100", "time": times[0], "paths": ["/etc/hosts"], "format": "zip", "download_token": TOKEN}).to_string()],
         )
         .unwrap();
     db.conn()
@@ -324,7 +330,7 @@ esac"#,
     ))
     .unwrap();
     let token = gp["result"]["token"].as_str().unwrap();
-    assert_eq!(token.len(), 32);
+    assert_eq!(token, TOKEN, "the web-api's token names the file");
     let file = p.join("downloads").join(format!("{token}.zip"));
     assert_eq!(fs::read_to_string(&file).unwrap(), "payload\n");
     assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o640);

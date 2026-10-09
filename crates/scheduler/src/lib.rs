@@ -9,25 +9,27 @@
 //! offsite inventory `<offsite_state_base>/<tenant>`, key escrow (output of
 //! `keyd export-escrow`) `<escrow_base>/<tenant>`.
 //!
-//! `sources.config` (kind `pve`):
+//! `sources.config` (kind `pve`, as written by the web-api):
 //! ```json
-//! { "api": { "host": "pve1", "port": 8006, "ca_pem": "-----BEGIN…", "token_id": "nexus@pve!backup",
-//!            "token_secret": "…", "connect_addr": "10.0.0.5:8006" },
-//!   "storage": "nexus", "fleecing_storage": "local-lvm",
-//!   "nodes": { "pve1": { "host": "10.0.0.5", "port": 22, "key_pem": "-----BEGIN OPENSSH…",
-//!                        "known_hosts_text": "10.0.0.5 ssh-ed25519 AAAA…" } } }
+//! { "host": "pve1", "port": 8006, "connect_addr": "10.0.0.5:8006", "ca_pem": "-----BEGIN…",
+//!   "token_id": "nexus@pve!backup", "token_secret": "…", "storage": "nexus", "fleecing_storage": "local-lvm",
+//!   "nodes": { "pve1": { "host": "10.0.0.5", "port": 22, "key": "/etc/nexus/ssh/pve1",
+//!                        "known_hosts": "/etc/nexus/ssh/known_hosts" } } }
 //! ```
-//! The API fields may also sit at top level (flat form). Nodes may give file
-//! paths (`key`, `known_hosts`) instead of the inline `key_pem` / `known_hosts_text`.
+//! `nodes` may also be an array of `{ "name": …, … }`. The API fields may sit
+//! under `"api"` instead; nodes may carry inline `key_pem` / `known_hosts_text`
+//! (the web-api refuses inline secrets, so normally paths). `ca_pem` and
+//! `token_secret` are written to 0600 files in the job dir.
 //!
 //! `tenants.offsite`: `{ "remote": { "type": "sftp", "host": …, "user": …, "host_key": …,
-//! "key_pem": "…" | "key_file": "/path", "port"?, "base_dir"? } | { "type": "local", "path": … },
+//! "key_file": "/path", "port"?, "base_dir"? } | { "type": "local", "path": … },
 //! "bwlimit"?: bytes/s, "uploaders"?: n }`. No `remote` = no offsite for this tenant.
 //!
-//! Job params (`jobs.params`) beyond the contract: `source_id` may be given for
-//! `backup {vmid}`, restores and file jobs; without it the source is found via the
-//! tenant's groups (or the tenant's only source). `instant_recover` takes
-//! `link_down: bool`. Results are written back into `params.result`.
+//! Job params beyond the contract: `source_id` may be given for `backup {vmid}`,
+//! restores and file jobs; without it the source is found via the tenant's
+//! groups (or the tenant's only source). `instant_recover` takes `link_down`.
+//! `files_get` writes `<downloads>/<download_token>.<format>` (token set by the
+//! web-api). Results are written back into `params.result`.
 
 pub mod alerts;
 pub mod run;
@@ -202,8 +204,17 @@ fn gfs_of(v: &Value) -> Gfs {
     }
 }
 
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
+/// `<download_token>.<format>`: token = 64 hex chars chosen by the web-api.
+fn download_file(p: &Value) -> Result<String> {
+    let token = p["download_token"].as_str().unwrap_or_default();
+    if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("files_get needs a download_token (64 hex characters)");
+    }
+    let ext = match p["format"].as_str().unwrap_or("tar") {
+        f @ ("tar" | "zip") => f,
+        f => bail!("invalid format {f:?}"),
+    };
+    Ok(format!("{token}.{ext}"))
 }
 
 impl Scheduler {
@@ -472,7 +483,7 @@ impl Scheduler {
                 now,
             )?;
             if sched.due(last, now) {
-                self.insert_job("backup", &g.tenant, &json!({"group_id": g.id, "scheduled": true}))?;
+                self.insert_job("backup", &g.tenant, &json!({"group_id": g.id}))?;
             }
         }
         Ok(())
@@ -502,7 +513,7 @@ impl Scheduler {
                     now,
                 )?;
                 if sched.due(last, now) {
-                    self.insert_job(kind, &tenant, &json!({"scheduled": true}))?;
+                    self.insert_job(kind, &tenant, &json!({}))?;
                 }
             }
         }
@@ -555,7 +566,6 @@ impl Scheduler {
         if self.running.len() >= self.cfg.max_parallel {
             return Ok(());
         }
-        self.assign_downloads()?;
         let mut busy: HashSet<String> = self.running.values().cloned().collect();
         for job in self.queued()? {
             if self.running.len() >= self.cfg.max_parallel {
@@ -707,11 +717,11 @@ impl Scheduler {
                 Some(serde_json::from_str(out).unwrap_or_else(|_| json!({"output": out})))
             }
             "files_get" => {
-                let file = job.params["_file"].as_str()?;
-                let path = self.cfg.downloads.join(file);
+                let file = download_file(&job.params).ok()?;
+                let path = self.cfg.downloads.join(&file);
                 let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o640));
                 let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                let token = file.split('.').next().unwrap_or_default();
+                let token = job.params["download_token"].as_str().unwrap_or_default();
                 let r = json!({"token": token, "file": file, "size": size,
                                "expires": catalog::now() + self.cfg.download_ttl_secs});
                 log.push_str(&format!("[scheduler] download ready: {r}\n"));
@@ -866,7 +876,15 @@ impl Scheduler {
             ("token".to_owned(), s(api, "token_secret")?.into_bytes()),
         ];
         let mut nodes = serde_json::Map::new();
-        for (name, n) in src["nodes"].as_object().into_iter().flatten() {
+        let node_list: Vec<(String, &Value)> = match &src["nodes"] {
+            Value::Object(m) => m.iter().map(|(k, v)| (k.clone(), v)).collect(),
+            Value::Array(a) => a
+                .iter()
+                .map(|n| (n["name"].as_str().unwrap_or_default().to_owned(), n))
+                .collect(),
+            _ => Vec::new(),
+        };
+        for (name, n) in &node_list {
             if !valid_name(name) {
                 bail!("source {source_id}: invalid node name {name:?}");
             }
@@ -902,7 +920,8 @@ impl Scheduler {
                 "token_secret_file": dir.join("token"),
             },
             "storage": s(&src, "storage")?,
-            "fleecing_storage": s(&src, "fleecing_storage")?,
+            // optional in the web-api; VM backups fail in PVE without it
+            "fleecing_storage": src["fleecing_storage"].as_str().unwrap_or_default(),
             "nodes": nodes,
             "vmids": vmids,
         });
@@ -1032,6 +1051,17 @@ impl Scheduler {
                 plan.files = self.pve_config(tenant, source_id, &dir, &vmids)?;
                 plan.steps.push(pve(vec!["backup-all".into()]));
             }
+            "retention" if p["group_id"].is_null() && p["vmid"].is_null() && p["source"].is_null() => {
+                // manual retention for the whole tenant: every group with its own GFS
+                for g in self.groups()?.into_iter().filter(|g| g.tenant == tenant) {
+                    let sources = g
+                        .guests
+                        .iter()
+                        .flat_map(|v| [format!("vm-{v}"), format!("ct-{v}")])
+                        .collect();
+                    plan.steps.push(Step::Retention { sources, gfs: g.gfs });
+                }
+            }
             "retention" => {
                 let (source_id, vmids, gfs) = match p["group_id"].as_i64() {
                     Some(g) => {
@@ -1039,7 +1069,10 @@ impl Scheduler {
                         (g.source_id, g.guests, g.gfs)
                     }
                     None => {
-                        let v = u32::try_from(num(p, "vmid")?).context("vmid")?;
+                        let v = match p["source"].as_str() {
+                            Some(s) => guest(s)?.1,
+                            None => u32::try_from(num(p, "vmid")?).context("vmid")?,
+                        };
                         let gfs = self
                             .groups()?
                             .into_iter()
@@ -1131,14 +1164,7 @@ impl Scheduler {
                     args.push("ls".into());
                     args.push(check_path(p["path"].as_str().unwrap_or("/"))?);
                 } else {
-                    let ext = match p["format"].as_str().unwrap_or("tar") {
-                        f @ ("tar" | "zip") => f,
-                        f => bail!("invalid format {f:?}"),
-                    };
-                    let file = p["_file"]
-                        .as_str()
-                        .filter(|f| f.len() == 32 + 1 + ext.len() && f.ends_with(ext))
-                        .context("download file not assigned")?;
+                    let file = download_file(p)?;
                     let out = self.cfg.downloads.join(file);
                     let paths: Vec<String> = p["paths"]
                         .as_array()
@@ -1416,35 +1442,6 @@ impl Scheduler {
     }
 
     // ------------------------------------------------------------ downloads
-
-    /// Assigns the download file (unguessable token) when a files_get job is
-    /// first seen; called before planning so the name survives in `params`.
-    fn assign_downloads(&self) -> Result<()> {
-        let c = self.db.conn();
-        let mut st = c.prepare(
-            "SELECT id, params FROM jobs WHERE kind='files_get' AND state='queued' AND json_extract(params,'$._file') IS NULL",
-        )?;
-        let rows: Vec<(i64, String)> = st
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<std::result::Result<_, _>>()?;
-        for (id, p) in rows {
-            let mut p: Value = serde_json::from_str(&p).unwrap_or(json!({}));
-            if !p.is_object() {
-                p = json!({});
-            }
-            let ext = if p["format"].as_str() == Some("zip") {
-                "zip"
-            } else {
-                "tar"
-            };
-            p["_file"] = json!(format!("{}.{ext}", hex(&rand::random::<[u8; 16]>())));
-            c.execute(
-                "UPDATE jobs SET params=?1 WHERE id=?2 AND state='queued'",
-                params![p.to_string(), id],
-            )?;
-        }
-        Ok(())
-    }
 
     fn expire_downloads(&self, now: i64) -> Result<()> {
         for e in fs::read_dir(&self.cfg.downloads)? {
