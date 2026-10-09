@@ -210,8 +210,10 @@ static SERVICE_PATHS: std::sync::Mutex<Option<Paths>> = std::sync::Mutex::new(No
 
 define_windows_service!(ffi_service_main, service_main);
 
-fn service_main(_args: Vec<OsString>) {
-    let status = |state, code: u32| ServiceStatus {
+static STATUS_HANDLE: std::sync::OnceLock<service_control_handler::ServiceStatusHandle> = std::sync::OnceLock::new();
+
+fn svc_status(state: ServiceState, code: u32) -> ServiceStatus {
+    ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: state,
         controls_accepted: if state == ServiceState::Running {
@@ -223,17 +225,27 @@ fn service_main(_args: Vec<OsString>) {
         checkpoint: 0,
         wait_hint: Duration::from_secs(10),
         process_id: None,
-    };
+    }
+}
+
+fn service_main(_args: Vec<OsString>) {
     let handler = move |c| match c {
-        // non-persistent shadow copies vanish with the process; nothing to flush
-        ServiceControl::Stop | ServiceControl::Shutdown => std::process::exit(0),
+        // a requested stop is reported as such (no restart by the failure actions);
+        // non-persistent shadow copies vanish with the process, nothing to flush
+        ServiceControl::Stop | ServiceControl::Shutdown => {
+            if let Some(h) = STATUS_HANDLE.get() {
+                let _ = h.set_service_status(svc_status(ServiceState::Stopped, 0));
+            }
+            std::process::exit(0)
+        }
         ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
         _ => ServiceControlHandlerResult::NotImplemented,
     };
     let Ok(h) = service_control_handler::register(SERVICE_NAME, handler) else {
         return;
     };
-    let _ = h.set_service_status(status(ServiceState::Running, 0));
+    let _ = STATUS_HANDLE.set(h);
+    let _ = h.set_service_status(svc_status(ServiceState::Running, 0));
     let paths = SERVICE_PATHS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -247,7 +259,7 @@ fn service_main(_args: Vec<OsString>) {
             1
         }
     };
-    let _ = h.set_service_status(status(ServiceState::Stopped, code));
+    let _ = h.set_service_status(svc_status(ServiceState::Stopped, code));
 }
 
 /// A service has no console: stderr goes to `state\\nexus-agent.log` (rotated at

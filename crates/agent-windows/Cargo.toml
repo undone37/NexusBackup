@@ -42,4 +42,5 @@ features = [
 ]
 
 [dev-dependencies]
+agent-proto = { path = "../agent-proto" }
 tempfile = "3"

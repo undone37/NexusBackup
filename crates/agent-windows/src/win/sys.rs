@@ -25,6 +25,9 @@ pub const DELETE: u32 = 0x1_0000;
 pub const WRITE_DAC: u32 = 0x4_0000;
 pub const WRITE_OWNER: u32 = 0x8_0000;
 pub const OPEN_EXISTING: u32 = 3;
+/// FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES: attribute-only opens do not take part in
+/// share-mode checks, so a pinning handle must request data access
+pub const PIN_DIR_ACCESS: u32 = 0x1 | 0x80;
 pub const SHARE_ALL: u32 = 7;
 /// read + write, never delete: a held directory cannot be renamed or replaced
 pub const SHARE_NO_DELETE: u32 = 3;

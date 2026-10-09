@@ -55,6 +55,30 @@ pub struct Job {
     excludes: Excludes,
 }
 
+/// A requested path must not pass through a symlink or junction below its volume's
+/// mount point: inside a shadow copy such a link would resolve to the *live* file
+/// system (or another volume) and the data would silently not come from the snapshot.
+fn through_link(p: &WinPath, mount: &WinPath) -> Result<(), String> {
+    for k in mount.comps.len() + 1..p.comps.len() {
+        let prefix = WinPath {
+            drive: p.drive,
+            comps: p.comps[..k].to_vec(),
+        };
+        let Ok(h) = sys::open_meta(std::path::Path::new(&prefix.verbatim()), 0) else {
+            return Ok(()); // missing: reported by the scan
+        };
+        let t = sys::tag_info(&h).map_err(|e| format!("{}: {e}", prefix.win32()))?;
+        if t.FileAttributes & crate::meta::FILE_ATTRIBUTE_REPARSE_POINT != 0 && crate::meta::is_link_tag(t.ReparseTag) {
+            return Err(format!(
+                "{} goes through the link {}; select the link target instead",
+                p.win32(),
+                prefix.win32()
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl Platform for Windows {
     type Job = Job;
     type Restore = restore::Restore;
@@ -99,6 +123,7 @@ impl Platform for Windows {
         let mut by_path: Vec<(WinPath, usize)> = vec![];
         for p in kept {
             let v = volumes::containing(&p).map_err(|e| bad(format!("{}: {e}", p.win32())))?;
+            through_link(&p, &v.mount).map_err(bad)?;
             let i = match vols.iter().position(|x| x.vol.guid == v.guid) {
                 Some(i) => i,
                 None => {
@@ -194,10 +219,7 @@ impl Platform for Windows {
             let rel = p.strip_prefix(&vols[i].vol.mount).unwrap_or_default().join("\\");
             let (src, live) = match &devices[i] {
                 Some(d) => (PathBuf::from(format!("{d}\\{rel}")), false),
-                None => (
-                    PathBuf::from(format!("{}\\", p.verbatim().trim_end_matches('\\'))),
-                    true,
-                ),
+                None => (PathBuf::from(p.verbatim()), true),
             };
             roots.push(Root {
                 entry: p.entry_path(),

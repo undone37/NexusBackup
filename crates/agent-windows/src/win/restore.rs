@@ -46,7 +46,7 @@ impl Namespace for Ns<'_> {
     fn root(&mut self) -> io::Result<Held> {
         let h = sys::open(
             self.root,
-            sys::FILE_READ_ATTRIBUTES,
+            sys::PIN_DIR_ACCESS,
             sys::SHARE_NO_DELETE,
             sys::OPEN_EXISTING,
             sys::FLAG_BACKUP | sys::FLAG_OPEN_REPARSE,
@@ -61,7 +61,7 @@ impl Namespace for Ns<'_> {
         let p = parent.path.join(os(name)?);
         let h = match sys::open(
             &p,
-            sys::FILE_READ_ATTRIBUTES,
+            sys::PIN_DIR_ACCESS,
             sys::SHARE_NO_DELETE,
             sys::OPEN_EXISTING,
             sys::FLAG_BACKUP | sys::FLAG_OPEN_REPARSE,
@@ -188,32 +188,58 @@ impl WinFs {
         Ok(h)
     }
 
-    /// Security descriptor, attributes, times on an open object.
-    fn apply_meta(&self, h: &Handle, e: &Entry, with_sd: bool, warn: &mut Vec<String>) -> io::Result<()> {
-        if with_sd {
-            if let Some(sd) = meta::xattr(&e.xattrs, meta::X_SD) {
-                match SdInfo::parse(sd) {
-                    Ok(info) => {
-                        if let Err(x) = sys::set_security(h, info.apply_flags(self.sacl_ok), sd) {
-                            // retry without owner/SACL (e.g. foreign SIDs or missing privilege)
-                            let f = info.apply_flags(false)
-                                & !(meta::OWNER_SECURITY_INFORMATION | meta::GROUP_SECURITY_INFORMATION);
-                            match sys::set_security(h, f, sd) {
-                                Ok(()) => warn.push(format!("security descriptor applied without owner/SACL: {x}")),
-                                Err(y) => warn.push(format!("security descriptor: {y}")),
-                            }
-                        }
+    /// Security descriptor (validated first; on failure retried without owner and SACL).
+    fn apply_sd(&self, h: &Handle, e: &Entry, warn: &mut Vec<String>) {
+        let Some(sd) = meta::xattr(&e.xattrs, meta::X_SD) else {
+            return;
+        };
+        match SdInfo::parse(sd) {
+            Ok(info) => {
+                if let Err(x) = sys::set_security(h, info.apply_flags(self.sacl_ok), sd) {
+                    // e.g. SIDs unknown on this host or a missing privilege
+                    let f = info.apply_flags(false)
+                        & !(meta::OWNER_SECURITY_INFORMATION | meta::GROUP_SECURITY_INFORMATION);
+                    match sys::set_security(h, f, sd) {
+                        Ok(()) => warn.push(format!("security descriptor applied without owner/SACL: {x}")),
+                        Err(y) => warn.push(format!("security descriptor: {y}")),
                     }
-                    Err(x) => warn.push(x),
                 }
             }
+            Err(x) => warn.push(x),
         }
+    }
+
+    /// Attributes and times (after the rename: a read-only temp file could not be
+    /// removed on error).
+    fn apply_basic(&self, h: &Handle, e: &Entry) -> io::Result<()> {
         let attrs = meta::attrs_of(&e.xattrs).unwrap_or(meta::FILE_ATTRIBUTE_ARCHIVE) & meta::RESTORABLE_ATTRS;
         let created = meta::created_of(&e.xattrs).unwrap_or(0);
         let written = meta::unix_ns_to_filetime(e.mtime_ns);
         // FILE_ATTRIBUTE_NORMAL if nothing else is set (0 = "leave unchanged")
         let attrs = if attrs == 0 { meta::FILE_ATTRIBUTE_NORMAL } else { attrs };
         sys::set_basic(h, created, written, attrs)
+    }
+
+    /// A read-only destination cannot be replaced by a rename: clear the flag first
+    /// (the object itself, never what a link points to).
+    fn clear_readonly(&self, dir: &Held, name: &OsString) -> io::Result<()> {
+        let h = match sys::open(
+            &dir.path.join(name),
+            sys::FILE_READ_ATTRIBUTES | sys::FILE_WRITE_ATTRIBUTES,
+            sys::SHARE_ALL,
+            sys::OPEN_EXISTING,
+            sys::FLAG_BACKUP | sys::FLAG_OPEN_REPARSE,
+        ) {
+            Ok(h) => h,
+            Err(e) if sys::is_not_found(&e) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        let b = sys::basic_info(&h)?;
+        if b.FileAttributes & FILE_ATTRIBUTE_READONLY == 0 {
+            return Ok(());
+        }
+        let a = b.FileAttributes & !FILE_ATTRIBUTE_READONLY;
+        sys::set_basic(&h, 0, 0, if a == 0 { meta::FILE_ATTRIBUTE_NORMAL } else { a })
     }
 
     fn write_stream(&mut self, t: &Tmp, e: &Entry) -> io::Result<()> {
@@ -373,9 +399,11 @@ impl RestoreFs for WinFs {
             | if self.sacl_ok { sys::ACCESS_SYSTEM_SECURITY } else { 0 };
         let h = self.open_in(d, &t.tmp, access)?;
         let r = (|| {
-            self.apply_meta(&h, e, true, warn)?;
+            self.apply_sd(&h, e, warn);
+            self.clear_readonly(d, &t.name)?;
             sys::rename_replace(&h, &d.path.join(&t.name))?;
-            self.check_beneath(&h)
+            self.check_beneath(&h)?;
+            self.apply_basic(&h, e)
         })();
         if r.is_err() {
             let _ = sys::delete_by_handle(&h);
@@ -433,8 +461,11 @@ impl RestoreFs for WinFs {
         let h = self.open_in(d, &tmp, access)?;
         let r = (|| {
             sys::set_reparse(&h, &reparse)?;
-            self.apply_meta(&h, e, true, warn)?;
-            sys::rename_replace(&h, &d.path.join(os(&name)?))
+            self.apply_sd(&h, e, warn);
+            let name = os(&name)?;
+            self.clear_readonly(d, &name)?;
+            sys::rename_replace(&h, &d.path.join(name))?;
+            self.apply_basic(&h, e)
         })();
         if r.is_err() {
             let _ = sys::delete_by_handle(&h);
@@ -465,9 +496,12 @@ impl RestoreFs for WinFs {
         let tmp = self.tmp_name();
         sys::hard_link(&d.path.join(&tmp), &target)?;
         let h = self.open_in(d, &tmp, sys::FILE_READ_ATTRIBUTES | sys::DELETE)?;
-        sys::rename_replace(&h, &d.path.join(os(&name)?)).inspect_err(|_| {
-            let _ = sys::delete_by_handle(&h);
-        })
+        let name = os(&name)?;
+        self.clear_readonly(d, &name)
+            .and_then(|_| sys::rename_replace(&h, &d.path.join(name)))
+            .inspect_err(|_| {
+                let _ = sys::delete_by_handle(&h);
+            })
     }
 
     fn dir_metadata(&mut self, e: &Entry, existed: bool, warn: &mut Vec<String>) -> io::Result<()> {
@@ -484,8 +518,10 @@ impl RestoreFs for WinFs {
             return Err(invalid("directory was replaced by a reparse point"));
         }
         // the security of a directory that was already there changes only with Always
-        let with_sd = !existed || self.overwrite == Overwrite::Always;
-        self.apply_meta(&h, e, with_sd, warn)
+        if !existed || self.overwrite == Overwrite::Always {
+            self.apply_sd(&h, e, warn);
+        }
+        self.apply_basic(&h, e)
     }
 
     fn finish(&mut self) {}
