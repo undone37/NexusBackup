@@ -313,29 +313,35 @@ pub struct TarStream<'a> {
 
 impl Read for TarStream<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.done || buf.is_empty() {
+        read_frame(&mut self.vm.r, &mut self.left, &mut self.done, buf)
+    }
+}
+
+/// Decodes the agent's `[u32 BE len][len bytes]` frames (zero length = end);
+/// `left` / `done` carry the state between calls.
+pub fn read_frame(r: &mut impl Read, left: &mut u32, done: &mut bool, buf: &mut [u8]) -> io::Result<usize> {
+    if *done || buf.is_empty() {
+        return Ok(0);
+    }
+    if *left == 0 {
+        let mut len = [0u8; 4];
+        r.read_exact(&mut len)?;
+        *left = u32::from_be_bytes(len);
+        if *left == 0 {
+            *done = true;
             return Ok(0);
         }
-        if self.left == 0 {
-            let mut len = [0u8; 4];
-            self.vm.r.read_exact(&mut len)?;
-            self.left = u32::from_be_bytes(len);
-            if self.left == 0 {
-                self.done = true;
-                return Ok(0);
-            }
-            if self.left > MAX_FRAME {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "agent frame too large"));
-            }
+        if *left > MAX_FRAME {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "agent frame too large"));
         }
-        let n = buf.len().min(self.left as usize);
-        let n = self.vm.r.read(&mut buf[..n])?;
-        if n == 0 {
-            return Err(io::ErrorKind::UnexpectedEof.into());
-        }
-        self.left -= n as u32;
-        Ok(n)
     }
+    let n = buf.len().min(*left as usize);
+    let n = r.read(&mut buf[..n])?;
+    if n == 0 {
+        return Err(io::ErrorKind::UnexpectedEof.into());
+    }
+    *left -= n as u32;
+    Ok(n)
 }
 
 impl TarStream<'_> {

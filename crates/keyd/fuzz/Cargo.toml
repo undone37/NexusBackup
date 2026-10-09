@@ -1,0 +1,24 @@
+[package]
+name = "keyd-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "AGPL-3.0-only"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+keyd = { path = ".." }
+tempfile = "3"
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "keyd_request"
+path = "fuzz_targets/keyd_request.rs"
+test = false
+doc = false
+bench = false

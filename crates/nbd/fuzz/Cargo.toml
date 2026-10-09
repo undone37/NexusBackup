@@ -1,0 +1,31 @@
+[package]
+name = "nbd-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "AGPL-3.0-only"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+nbd = { path = ".." }
+
+# not part of the main workspace (nightly + sanitizers); see docs/security-review.md
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "nbd_client"
+path = "fuzz_targets/nbd_client.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nbd_server"
+path = "fuzz_targets/nbd_server.rs"
+test = false
+doc = false
+bench = false

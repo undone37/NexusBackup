@@ -1,0 +1,1 @@
+{"cmd": "tar", "paths": ["/vda1/etc", "/lvm/vg0-root/home", "/zfs/tank+data/x"]}

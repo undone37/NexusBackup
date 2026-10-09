@@ -273,19 +273,25 @@ fn handle(mut s: UnixStream, dir: &Path, allow_uid: u32) -> io::Result<()> {
         ));
     }
     s.set_read_timeout(Some(Duration::from_secs(5)))?;
+    s.set_write_timeout(Some(Duration::from_secs(5)))?;
     let mut line = String::new();
     BufReader::new(&s).take(128).read_line(&mut line)?;
+    s.write_all(&answer(dir, &line)?)
+}
+
+/// The answer to one request line (see `serve`); errors mean "no answer".
+pub fn answer(dir: &Path, line: &str) -> io::Result<Zeroizing<Vec<u8>>> {
     let line = line.trim_end_matches('\n');
     let tenant = match line.split_once(' ') {
         Some(("escrow", t)) => {
-            let mut out = Vec::new();
+            let mut out = Zeroizing::new(Vec::new());
             for (name, bytes) in export_escrow(dir, t)? {
                 out.extend_from_slice(&(name.len() as u16).to_be_bytes());
                 out.extend_from_slice(name.as_bytes());
                 out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
                 out.extend_from_slice(&bytes);
             }
-            return s.write_all(&out);
+            return Ok(out);
         }
         Some(("ensure", t)) => {
             if versions(dir, t)?.is_empty() {
@@ -303,7 +309,7 @@ fn handle(mut s: UnixStream, dir: &Path, allow_uid: u32) -> io::Result<()> {
         out.extend_from_slice(&v.to_le_bytes());
         out.extend_from_slice(&k[..]);
     }
-    s.write_all(&out)
+    Ok(out)
 }
 
 /// chunkstore side: fetch all DEK versions of a tenant and build its keyring.
@@ -326,7 +332,12 @@ pub fn fetch_escrow(socket: &Path, tenant: &str) -> io::Result<Vec<(String, Vec<
     if buf.is_empty() {
         return Err(err(io::ErrorKind::PermissionDenied, "keyd refused the request"));
     }
-    let (mut out, mut r) = (Vec::new(), &buf[..]);
+    parse_escrow(&buf)
+}
+
+/// Decodes an `escrow` answer: N x (u16 BE name len, name, u32 BE len, bytes).
+pub fn parse_escrow(buf: &[u8]) -> io::Result<Vec<(String, Vec<u8>)>> {
+    let (mut out, mut r) = (Vec::new(), buf);
     let bad = || err(io::ErrorKind::InvalidData, "malformed escrow answer");
     while !r.is_empty() {
         let n = u16::from_be_bytes(r.get(..2).ok_or_else(bad)?.try_into().unwrap()) as usize;
