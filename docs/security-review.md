@@ -314,6 +314,41 @@ The `hostile_box` fuzzer asserts this.
 
 **Open (L-2):** no size cap on manifest/index downloads during DR (memory DoS); `LocalDir::get` allocates the requested length.
 
+### 3.10 Appliance replication (Phase 8, docs/replication.md)
+
+Reviewed with the implementation (2026-10-10):
+- **Port 8443 surface.** Client certificates are requested only when the ClientHello offers
+  `nexus-replication/1` (rustls `Acceptor`, config chosen by ALPN); browsers never get a
+  CertificateRequest. Peer connections reach only `/replication/v1/*` (middleware), ordinary
+  connections never reach it (403). Chain validation is not trusted alone: every request
+  re-checks the fingerprint in `replication_peers` (state `enrolled`) — revocation works on open
+  keep-alive connections (test `tenant_scope_revocation_and_connection_kinds`).
+- **Isolation.** The web-api crate depends on the replication crate without the `daemons`
+  feature, so it cannot link the chunk store or the keyd client (test asserts the manifest; the
+  image builds `-p replication` in a separate cargo invocation so features do not unify). Data
+  comes from nexus-replicad: read-only store access (SELinux neverallow on writes, systemd
+  `ProtectSystem=strict`), no keyd (neverallow connectto + `InaccessiblePaths=`), no network
+  (`PrivateNetwork=yes`). Accepted: replicad trusts the web-api for the peer identity it forwards
+  (a compromised web-api gets ciphertext of any tenant, no keys).
+- **Enrollment.** Token 128 bit, single use, valid 24 h after the quorum approval, digest sealed to
+  replicad (the web-api cannot open it), 5 failed proofs void it. The secondary pins the primary
+  certificate before sending anything; proofs bind the TLS exporter of each leg (MITM test).
+  The CSR contributes only its public key; the secondary checks that the issued certificate
+  carries its key and CN.
+- **Keys.** DEKs leave keyd only as a sealed box to the secondary keyd's X25519 key, only for an
+  approved `replication.key_export` request (second person, names the keyd key fingerprint),
+  executed by the scheduler, which re-checks peer state, key and scope. The secondary keyd binds
+  imported tenants to the primary's certificate fingerprint (`origin`), refuses tenants with local
+  keys, differing key versions and local rotation. Accepted: keyd trusts its caller uid for the
+  quorum check (that uid holds DEKs anyway, T6/H-3).
+- **Hostile primary.** Everything is verified before it is written (`decode_manifest`/`decode_index`,
+  `insert_chunk_raw` = AEAD + keyed hash); the manifest is committed last; the secondary never deletes
+  because the primary did; sizes are bounded (files 256 MiB, chunks 4 MiB + header, listing 64 MiB,
+  HTTP heads 16 KiB). Test `tampered_chunk_is_not_imported`.
+- **Open (L-3):** no fuzz target yet for the secondary's HTTP/1.1 + chunk-frame parser
+  (`replication::http`, `client::fetch_chunks`) against a hostile primary; no per-peer bandwidth
+  limit on the primary (concurrency is limited to 8 requests per peer).
+
 ---
 
 ## 4. Findings

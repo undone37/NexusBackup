@@ -9,6 +9,11 @@ console TUI first boot. Plan §11.
 | `nexus-web-api` (axum, rustls, port 8443) | `nexus-webapi` | catalog DB, downloads dir (read), `secrets.pub` (read), TOTP key `/var/lib/nexus/webapi/totp.key` (0600, own) | keys, chunks, sources, plaintext source secrets |
 | `nexus-scheduler` | `nexus-chunkstore` | catalog DB, keyd socket, chunk store, `nexus-pve` / `nexus-offsite` / `nexus-agentctl` / `nexus-truenas` (spawned), agent CA `/var/lib/nexus/scheduler/agent-ca/` (keys 0600), secrets key `/var/lib/nexus/scheduler/secrets.key` (0600, own) | HTTP clients |
 | `nexus-setup` (console TUI, first boot) | root | keyd CLI, catalog DB, TLS files, creates the TOTP key | network until configured |
+| `nexus-replicad` (docs/replication.md) | `nexus-chunkstore` (group `nexus-replicad`, domain `nexus_replicad_t`) | tenant stores **read-only**, replication CA + token-sealing key `/var/lib/nexus/replicad`, its socket `/run/nexus-replicad/replicad.sock` (web-api uid only) | keyd, catalog, network |
+
+The web-api also connects to the replicad socket and reads `/run/nexus-replicad/ca.pem` (replication CA
+certificate, verifies peer client certificates) and `seal.pub` (enrollment token digests are sealed to
+replicad); it streams replicad's answers to replication peers without opening store files.
 
 - The **catalog** is SQLite (WAL) at `/var/lib/nexus/catalog/catalog.db`, group `nexus-catalog` (both web-api and scheduler).
 - The web-api only writes *intent*: config rows, job requests, quorum decisions. The scheduler executes jobs and reports state back into the catalog.
@@ -38,8 +43,12 @@ console TUI first boot. Plan §11.
 | `quorum` | id, action, params (JSON), requested_by, created, decided_by, decided_at, state (`pending`,`approved`,`rejected`,`executed`,`expired`) |
 | `audit` | seq PK, ts, actor, action, target, details (JSON), prev_hash, hash |
 | `alerts` | id, ts, severity, kind, message, acked_by |
+| `replication_peers` (v6, primary) | id (16 hex), name, tenants (JSON), state (`pending`,`approved`,`enrolled`,`revoked`), cert_sha256, keyd_pub, token_hash (`sealed:v1:` to replicad), token_expires, enroll_failures, key_exports (JSON, DEKs sealed to the peer's keyd), created, created_by, enrolled_at, last_seen, revoked |
+| `replication_sources` (v6, secondary) | id, name, url (`host:port`), peer_id, cert_pin, tenants (JSON), schedule, gfs, bwlimit, token_hash (`sealed:v1:` to the scheduler), state (`enrolling`,`enrolled`,`failed`), cert_sha256, keyd_pub, created, last_sync, status (JSON per tenant) |
 
-Job kinds: `backup` {group_id | vmid}, `restore` {source, time, node, target, storage}, `restore_ct`, `instant_recover`, `files_list` {source,time,path}, `files_get` {source,time,paths,format} (also for `host-<agent_id>` snapshots), `offsite`, `retention`, `gc`, `verify`; Linux agents (docs/agent-protocol.md): `backup` {agent_id}, `restore_files` {source: host-<id>, time, paths, target, overwrite: never|if_older|always, confirm, agent_id}, `agent_update` {agent_id}, `agent_enroll` {agent_id}; TrueNAS (docs/truenas-connector.md): `backup` {group_id} (guests = datasets), `files_list` / `files_get` / `retention` {source: nas-<source-id>-<pool.dataset>} (download only, no `restore_files`).
+`snapshots.origin` (v6): NULL for local backups, else the replication source the snapshot came from.
+
+Job kinds: `backup` {group_id | vmid}, `restore` {source, time, node, target, storage}, `restore_ct`, `instant_recover`, `files_list` {source,time,path}, `files_get` {source,time,paths,format} (also for `host-<agent_id>` snapshots), `offsite`, `retention`, `gc`, `verify`; Linux agents (docs/agent-protocol.md): `backup` {agent_id}, `restore_files` {source: host-<id>, time, paths, target, overwrite: never|if_older|always, confirm, agent_id}, `agent_update` {agent_id}, `agent_enroll` {agent_id}; TrueNAS (docs/truenas-connector.md): `backup` {group_id} (guests = datasets), `files_list` / `files_get` / `retention` {source: nas-<source-id>-<pool.dataset>} (download only, no `restore_files`); replication (docs/replication.md): `replica_enroll` {replication_source_id}, `replica_sync` {replication_source_id, tenant} (secondary, spawn `nexus-replica`; not accepted by `POST /jobs`).
 
 Catalog migrations stay backward compatible for one release (docs/release.md): v4 adds `agents` and rebuilds `sources` with the wider kind CHECK (same rows and ids, run with foreign keys off and checked with `foreign_key_check`); the previous release skips the unknown migration and fails jobs of `linux` sources as unsupported. v5 rebuilds `sources` the same way for kind `truenas`.
 
@@ -54,10 +63,12 @@ Every mutating API call and every job state change appends one entry (`catalog::
 | sources, policies, groups, tenants, users CRUD | ✓ | — | — | — |
 | run backups / restores / file restore (incl. `restore_files`) | ✓ | — | ✓ | own (restores only) |
 | agents CRUD, enrollment, `agent_update` | ✓ | — | — | — |
+| replication peers / sources: create, key export request, revoke/delete, settings | ✓ | — | — | — |
+| replication peers / sources: read; replication source "sync now" | ✓ | read | ✓ | — |
 | approve/reject quorum requests | — | ✓ | — | — |
 | audit log, verify chain | ✓ | ✓ | — | — |
 
-**Quorum (four-eyes)** — these never execute directly; they create a `quorum` row that a *different* user with role `security_officer` must approve within 72 h: weakening a policy (any GFS value lowered, offsite disabled), deleting a group/source/tenant/policy/agent, deleting snapshots manually, GC deleting > 20 % of chunks (raised by the scheduler), granting `admin`/`security_officer`, disabling a user who is the last admin/security_officer.
+**Quorum (four-eyes)** — these never execute directly; they create a `quorum` row that a *different* user with role `security_officer` must approve within 72 h: weakening a policy (any GFS value lowered, offsite disabled), deleting a group/source/tenant/policy/agent, deleting snapshots manually, GC deleting > 20 % of chunks (raised by the scheduler), granting `admin`/`security_officer`, disabling a user who is the last admin/security_officer; replication (docs/replication.md): creating a replication peer (`replication_peer.create`, exposes the tenants' data), exporting DEKs to a peer (`replication.key_export`, executed by the scheduler), revoking a peer, deleting an enrolled replication source, lowering a replication source's GFS.
 
 ## REST API (`/api/v1`, JSON)
 Auth: `POST /auth/login {name, password, totp}` → `Set-Cookie: nx_session=…; HttpOnly; Secure; SameSite=Strict; Path=/` + body `{csrf, user}`. Every non-GET request needs header `X-CSRF-Token`. `POST /auth/logout`, `GET /auth/me` → `{user, csrf}` (lets the SPA recover its CSRF token after a reload; same-origin + SameSite=Strict keeps it from other sites). Sessions expire after 30 min idle / 12 h absolute. Login rate limit: 5 failures per user or IP per 15 min → 15 min lockout (audited).
@@ -81,6 +92,10 @@ Auth: `POST /auth/login {name, password, totp}` → `Set-Cookie: nx_session=…;
 | `GET /quorum`, `POST /quorum/{id}/approve`, `POST /quorum/{id}/reject` | security_officer (approve: not the requester) | |
 | `GET /audit?after=&before=&order=&limit=`, `GET /audit/verify` | admin, security_officer | oldest first after `after` (default); newest first with `before` or `order=desc` |
 | `GET /alerts`, `POST /alerts/{id}/ack` | read / operator+ | |
+| `GET/POST /replication/peers`, `POST /replication/peers/{id}/export-keys`, `DELETE /replication/peers/{id}` | read / admin (POST, export, DELETE → quorum) | POST answers 202 `{quorum_id, peer, code}`: the enrollment code is shown once |
+| `GET/POST /replication/sources`, `PUT/DELETE /replication/sources/{id}`, `POST /replication/sources/{id}/enroll`, `POST /replication/sources/{id}/sync` | read / admin (sync: operator too) | details in docs/replication.md §9 |
+
+Peer API `/replication/v1/*` (not under `/api/v1`): only on TLS connections with the replication ALPN and an enrolled client certificate (docs/replication.md §3, §6).
 
 Errors: `{error: "message"}` with 400/401/403/404/409/429, and 503 for secret writes while the scheduler's public key is missing. Quorum-gated requests answer **202** `{quorum_id}`.
 
@@ -106,7 +121,9 @@ Headers on every response: `Content-Security-Policy: default-src 'self'; script-
 ## Scheduler
 Tick every 30 s: (1) queue `backup` jobs for groups whose policy schedule is due (once per period); after each successful backup: `retention` for that source, then `offsite` if the policy says so; (2) run queued jobs FIFO, at most one per source at a time, by spawning `nexus-pve` / `nexus-offsite` / `nexus-agentctl` / `nexus-truenas` with a generated config (0600, in a private runtime dir) and capturing output into `jobs.log`; (3) refresh `snapshots`; (4) daily `gc` + `verify`; a GC that needs quorum raises a `quorum` request and an alert; (5) alerts: failed job, offsite lag > 48 h, verify failure, inventory anomaly, capacity > 75 %, agent backup without a consistent view (`backup_inconsistent`, warning). Agent jobs are exclusive per agent (`agent:<id>`); agent backups are refused before they start if the agent is not enrolled; `agent-info`/`enrolled` lines of `nexus-agentctl` update `agents` (last_seen, version, os; fingerprint, token cleared). The firewall allow-list includes every agent's host:port and the API (`connect_addr`, else host:port) and SSH endpoint of every TrueNAS source. TrueNAS backups are exclusive per source; the job dir gets the pinned certificate, API key, SSH key and a `known_hosts` built from the pinned host key (0600); retention after a TrueNAS backup covers each dataset of the group and its child datasets (`nas-<id>-<pool.ds>` and the prefix `nas-<id>-<pool.ds>.`). Alert delivery: webhook URL + SMTP from `/etc/nexus/alerts.json`.
 
+Replication (docs/replication.md): on the primary the scheduler executes approved `replication.key_export` requests (keyd `export-for`, blob into `replication_peers.key_exports`, quorum → `executed`). On the secondary it queues `replica_sync` per enrolled replication source and tenant on the source's schedule (exclusive per tenant, `tenant:<t>`), spawns `nexus-replica` (`enrolled` / `replicated` / `key-mismatch` / `verify-failed` lines update `replication_sources` and raise `replication_keys` / `replication_verify` alerts), raises `replication_lag` (no successful sync for 48 h), adds every primary's `host:port` to the firewall allow-list, never asks keyd to `ensure` a replicated tenant, and refuses backups into replicated tenants. File restores of replicated VM/CT snapshots without a local PVE source use a store-only `nexus-pve` configuration.
+
 ## First boot (`nexus-setup`, console TUI)
-Network (NetworkManager, static/DHCP on the management NIC) → admin account + TOTP enrollment (QR in terminal, code confirmation) → `keyd init`: recovery key shown once, re-entry of 3 random groups required → TLS certificate (self-signed, SAN = hostname + IPs; fingerprint shown) → metrics token → `/var/lib/nexus/setup-done` → enable `nexus-web-api`, `nexus-scheduler`, `nexus-keyd`.
+Network (NetworkManager, static/DHCP on the management NIC) → admin account + TOTP enrollment (QR in terminal, code confirmation) → `keyd init`: recovery key shown once, re-entry of 3 random groups required → TLS certificate (self-signed, SAN = hostname + IPs; fingerprint shown) → metrics token → `/var/lib/nexus/setup-done` → enable `nexus-web-api`, `nexus-scheduler`, `nexus-keyd`, `nexus-replicad`.
 
 Tenant keys: tenants are created in the UI; the scheduler asks keyd `ensure <tenant>` (keyd creates DEK v1 on first use, only for the chunkstore uid) and refreshes the wrapped escrow files via `escrow <tenant>` before each offsite run.

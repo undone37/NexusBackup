@@ -183,9 +183,11 @@ Snapshots appear in the secondary's catalog (`snapshots.origin` = replication so
 secondary, DR) work with the secondary's keyd only; for replicated tenants without a local PVE source the
 scheduler gives `nexus-pve` a store-only configuration (file listing/download, dump).
 
-Replicated tenants are exclusive: the secondary refuses local sources/groups/agents in them, and refuses a
-replication source for a tenant that has local sources or keys. The scheduler never creates a DEK for them
-(`ensure` is skipped until keys are imported).
+Replicated tenants take no local backups: the secondary refuses groups, agents and `backup` jobs in them,
+and refuses a replication source for a tenant that has groups, agents or local keys (keyd refuses the
+import into a tenant with local DEKs). A source may be added to a replicated tenant as a **restore target**
+(e.g. the DR site's PVE cluster for full VM restores). The scheduler never creates a DEK for them (`ensure`
+is skipped; jobs that open the store wait until the first sync imported the keys).
 
 **Alerts (secondary)**: `replication_lag` (warning, no successful sync of a source/tenant for > 48 h),
 `replication_keys` (critical, key version mismatch / no export), `replication_verify` (critical,
