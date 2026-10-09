@@ -104,6 +104,16 @@ step_config() {
 	expect 201 "create source"
 	api admin GET "/sources" | jq -e '.[0].config.token_secret_set == true and (.[0].config.token_secret == null)' >/dev/null ||
 		die "token secret leaked or not set"
+	# review H-2: the catalog holds the token only sealed to the scheduler, the TOTP seeds encrypted
+	python3 - "$ROOT/var/lib/nexus/catalog/catalog.db" "$LAB_TOKEN_SECRET" <<-'PY' || die "plaintext secret in the catalog"
+		import json, sqlite3, sys
+		db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+		tok = open(sys.argv[2]).read().strip()
+		for (c,) in db.execute("SELECT config FROM sources"):
+		    assert tok not in c and json.loads(c)["token_secret"].startswith("sealed:v1:"), "source"
+		for (s,) in db.execute("SELECT totp_secret FROM users"):
+		    assert s.startswith("enc:v1:"), "totp seed"
+	PY
 	# daily schedule (UTC) at the next full minute that is >= 40 s away
 	local at
 	at=$(date -u -d "@$((($(date +%s) + 100) / 60 * 60))" +%H:%M)

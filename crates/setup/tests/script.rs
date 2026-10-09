@@ -66,6 +66,15 @@ impl Env {
         );
         (out, o, e)
     }
+    /// Decrypts a stored TOTP seed with the web-api key setup created.
+    fn seed(&self, name: &str, stored: &str) -> String {
+        assert!(stored.starts_with("enc:v1:"), "seed stored encrypted: {stored}");
+        catalog::secret::TotpKey::load(&self.p("var/lib/nexus/webapi/totp.key"))
+            .unwrap()
+            .decrypt(name, stored)
+            .unwrap()
+            .to_string()
+    }
     fn catalog(&self) -> Catalog {
         Catalog::open(&self.p("var/lib/nexus/catalog/catalog.db")).unwrap()
     }
@@ -180,8 +189,28 @@ fn full_run_then_refuse_then_reconfigure_network() {
     assert_eq!((u[0].0.as_str(), u[0].1.as_str()), ("admin", "admin"));
     assert_eq!((u[1].0.as_str(), u[1].1.as_str()), ("officer", "security_officer"));
     assert!(auth::verify_password(PW_ADMIN, &u[0].2) && auth::verify_password(PW_SO, &u[1].2));
-    assert_eq!(u[0].3, e.admin_secret);
-    assert_eq!(u[1].3, e.so_secret);
+    assert_eq!(e.seed("admin", &u[0].3), e.admin_secret);
+    assert_eq!(e.seed("officer", &u[1].3), e.so_secret);
+    // TOTP seeds: no plaintext copy in any file under root; key 0600 in a 0700 dir
+    // (owner nexus-webapi when run as root; the test runs unprivileged)
+    for f in walk_all(&e.root) {
+        let data = fs::read(&f).unwrap();
+        for sec in [&e.admin_secret, &e.so_secret] {
+            assert!(
+                !data.windows(sec.len()).any(|w| w == sec.as_bytes()),
+                "plaintext TOTP seed in {}",
+                f.display()
+            );
+        }
+    }
+    let key = e.p("var/lib/nexus/webapi/totp.key");
+    assert_eq!(mode(&key), 0o600);
+    assert_eq!(mode(&e.p("var/lib/nexus/webapi")), 0o700);
+    assert_eq!(fs::read(&key).unwrap().len(), 32);
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(fs::metadata(&key).unwrap().uid(), unsafe { libc::geteuid() });
+    }
 
     // audit chain: intact, every entry by `setup`, one per step
     let n = c.verify_audit().unwrap();
@@ -197,6 +226,7 @@ fn full_run_then_refuse_then_reconfigure_network() {
         "setup.keyd.confirmed",
         "setup.tls",
         "setup.metrics_token",
+        "setup.totp_key",
         "setup.done",
     ] {
         assert!(actions.contains(&want), "{want} missing in {actions:?}");
@@ -319,7 +349,7 @@ fn explicit_replace_updates_the_existing_admin() {
     assert_eq!(u.len(), 2);
     assert_eq!((u[0].0.as_str(), u[0].1.as_str()), ("root-admin", "admin"));
     assert!(auth::verify_password("a brand new admin password", &u[0].2));
-    assert_eq!(u[0].3, new_secret);
+    assert_eq!(e.seed("root-admin", &u[0].3), new_secret);
     let a = audit_actions(&c);
     let r = a.iter().find(|(_, act, _)| act == "setup.user.replace").unwrap();
     assert_eq!(r.2["previous_name"], "admin");

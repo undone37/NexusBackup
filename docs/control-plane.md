@@ -6,22 +6,30 @@ console TUI first boot. Plan §11.
 ## Processes and trust boundaries
 | Process | User | Talks to | Never touches |
 |---|---|---|---|
-| `nexus-web-api` (axum, rustls, port 8443) | `nexus-webapi` | catalog DB, downloads dir (read) | keys, chunks, sources |
-| `nexus-scheduler` | `nexus-chunkstore` | catalog DB, keyd socket, chunk store, `nexus-pve` / `nexus-offsite` (spawned) | HTTP clients |
-| `nexus-setup` (console TUI, first boot) | root | keyd CLI, catalog DB, TLS files | network until configured |
+| `nexus-web-api` (axum, rustls, port 8443) | `nexus-webapi` | catalog DB, downloads dir (read), `secrets.pub` (read), TOTP key `/var/lib/nexus/webapi/totp.key` (0600, own) | keys, chunks, sources, plaintext source secrets |
+| `nexus-scheduler` | `nexus-chunkstore` | catalog DB, keyd socket, chunk store, `nexus-pve` / `nexus-offsite` (spawned), secrets key `/var/lib/nexus/scheduler/secrets.key` (0600, own) | HTTP clients |
+| `nexus-setup` (console TUI, first boot) | root | keyd CLI, catalog DB, TLS files, creates the TOTP key | network until configured |
 
 - The **catalog** is SQLite (WAL) at `/var/lib/nexus/catalog/catalog.db`, group `nexus-catalog` (both web-api and scheduler).
 - The web-api only writes *intent*: config rows, job requests, quorum decisions. The scheduler executes jobs and reports state back into the catalog.
 - File-restore downloads: the scheduler writes the tar/zip into `/var/lib/nexus/downloads/<token>.<ext>` (group-readable by web-api, expiring after 24 h), and web-api streams it.
 - `nexus-web-api` refuses to start until `/var/lib/nexus/setup-done` exists (systemd `ConditionPathExists`).
+- **Secrets at rest** (review H-2, `catalog::secret`):
+  - Source/offsite credentials (`token_secret`, `key_pem`) are stored as `sealed:v1:<base64>`, sealed to the scheduler (X25519 sealed box).
+    - The scheduler creates `/var/lib/nexus/scheduler/secrets.key` (0600) on first start (config `secrets_key`). It writes the public key to `/var/lib/nexus/catalog/secrets.pub` (0640, group `nexus-catalog`; config `secrets_pub`, web-api env `NEXUS_SECRETS_PUB`) at every start.
+    - The web-api seals on write and never decrypts. Secret writes answer 503 while `secrets.pub` is missing.
+    - Each sealed value is bound to its location: source id or tenant, field, and the endpoint fields next to it. The scheduler opens it only in memory for the 0600 job config and seals legacy plaintext at startup (audit `secret.migrate`).
+  - TOTP seeds are stored as `enc:v1:<base64>` (XChaCha20-Poly1305, AAD = user name) with the web-api-only key `/var/lib/nexus/webapi/totp.key` (0600 `nexus-webapi`, env `NEXUS_TOTP_KEY`).
+    - nexus-setup creates the key. The web-api creates it only if it is missing and no encrypted seed exists.
+    - Legacy plaintext seeds are encrypted at web-api startup (audit `secret.migrate`).
 
 ## Catalog schema (crate `catalog`, migrations in code)
 | Table | Columns (main) |
 |---|---|
-| `users` | id, name UNIQUE, password_hash (argon2id), totp_secret (base32), role, tenant (NULL = all), disabled, created |
+| `users` | id, name UNIQUE, password_hash (argon2id), totp_secret (`enc:v1:…`, legacy: base32), role, tenant (NULL = all), disabled, created, totp_last_step (v2) |
 | `sessions` | id_hash (sha256 of cookie), user_id, csrf, created, last_seen |
 | `tenants` | name PK, offsite (JSON: remote config, bwlimit, uploaders) |
-| `sources` | id, tenant, kind (`pve`), name, config (JSON: api host/port/ca_pem/token_id, token_secret, nodes, storage, fleecing_storage) |
+| `sources` | id, tenant, kind (`pve`), name, config (JSON: api host/port/ca_pem/token_id, token_secret (`sealed:v1:…`), nodes, storage, fleecing_storage) |
 | `policies` | id, name, schedule (`daily HH:MM`, `hourly MM`), gfs (JSON {daily,weekly,monthly,yearly}), offsite (bool) |
 | `groups` | id, tenant, source_id, policy_id, name, guests (JSON [vmid]) |
 | `jobs` | id, kind, tenant, params (JSON), state (`queued`,`running`,`ok`,`failed`,`cancelled`), requested_by, created, started, finished, log, result (JSON, NULL until finished ok; v3) |
@@ -58,7 +66,7 @@ Auth: `POST /auth/login {name, password, totp}` → `Set-Cookie: nx_session=…;
 | `GET/POST /sources`, `PUT/DELETE /sources/{id}` | admin (DELETE → quorum) | secrets write-only (never returned) |
 | `GET/POST /policies`, `PUT/DELETE /policies/{id}` | admin (weakening PUT / DELETE → quorum) | |
 | `GET/POST /groups`, `PUT/DELETE /groups/{id}` | admin (DELETE → quorum) | |
-| `GET/POST /users`, `PUT /users/{id}` | admin (privileged role grants → quorum) | POST returns the TOTP provisioning URI once |
+| `GET/POST /users`, `PUT /users/{id}` | admin (privileged role grants → quorum) | POST returns the TOTP provisioning URI once; `password` / `reset_totp` on PUT need re-authentication (see Clarifications) |
 | `GET /snapshots?tenant=&source=` | read | local/offsite/lock/verified per snapshot |
 | `GET /jobs?state=&kind=`, `GET /jobs/{id}` (incl. log) | read | `result` = structured job result (see Clarifications) |
 | `POST /jobs` `{kind, tenant, params}` | per kind (see RBAC) | returns job id; 202 |
@@ -68,7 +76,7 @@ Auth: `POST /auth/login {name, password, totp}` → `Set-Cookie: nx_session=…;
 | `GET /audit?after=&before=&order=&limit=`, `GET /audit/verify` | admin, security_officer | oldest first after `after` (default); newest first with `before` or `order=desc` |
 | `GET /alerts`, `POST /alerts/{id}/ack` | read / operator+ | |
 
-Errors: `{error: "message"}` with 400/401/403/404/409/429. Quorum-gated requests answer **202** `{quorum_id}`.
+Errors: `{error: "message"}` with 400/401/403/404/409/429, and 503 for secret writes while the scheduler's public key is missing. Quorum-gated requests answer **202** `{quorum_id}`.
 
 Headers on every response: `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Strict-Transport-Security: max-age=31536000`. The SPA is served from `/` (index.html fallback for client routes), assets from `/assets/*` (embedded at build time from `web/dist`).
 
@@ -79,6 +87,10 @@ Headers on every response: `Content-Security-Policy: default-src 'self'; script-
 - File restore: the web-api adds `download_token` (64 hex) to `files_get` params and returns it in the 202 body; the scheduler writes `/var/lib/nexus/downloads/<token>.<format>` (`format` = `tar`|`zip`). `GET /downloads/{token}` serves it only to the job's `requested_by`, only if younger than 24 h; the scheduler deletes it.
 - Quorum execution: on approval the web-api itself applies `tenant.delete`, `source.delete`, `policy.delete`, `policy.update`, `group.delete`, `group.update`, `user.update` (state → `executed`). Any other action (e.g. `gc` raised by the scheduler with `requested_by = "scheduler"`) only becomes `approved`; the scheduler executes it and sets `executed`. Pending requests older than 72 h become `expired` (audited).
 - Also quorum-gated: moving a group to a policy that is weaker in any dimension (`group.update`); creating an admin/security_officer (account is created *disabled*, the quorum request enables it; the TOTP URI is returned at creation); re-enabling such an account; demoting as well as disabling the last enabled admin/security_officer; resetting another admin's/security_officer's password or TOTP. Quorum params never expose password hashes or TOTP secrets.
+- Re-authentication (review M-5): `PUT /users/{id}` with `password` or `reset_totp: true` (own account or another user's) must also carry `current_password` and `current_totp` of the *acting* user.
+  - Missing fields → 400.
+  - Wrong password or code, or a replayed code (the TOTP step is consumed as at login) → 403, audited as `auth.reauth_failed` (actor = acting user, details `reason`, `for`).
+  - Failures count toward the login rate limiter (per user and per IP). A lockout answers 429 and also blocks login.
 - Job results (`jobs.result`, written by the scheduler when a job finishes `ok`, returned as `result` by `GET /jobs` and `GET /jobs/{id}`): `files_list` → `{"entries": [{name, kind, size, mtime, mode?, link?}, …]}` (the JSON `nexus-pve … ls` prints); `files_get` → `{"download_token", "format", "entries": n, "size": bytes, "expires": unix}`; `backup` → `{"snapshots": [{"source", "time"}, …]}` plus top-level `source`/`time` when exactly one guest was committed. Other kinds: `null`.
 - Audit paging: `GET /audit?after=<seq>` returns entries with `seq > after` oldest first; `?order=desc` (no cursor) starts at the newest entry, `?before=<seq>` returns `seq < before` newest first (pages backwards; `order=asc` with `before` is 400). `limit` defaults to 500, max 1000.
 - `GET /quorum` is readable by admin, security_officer and operator. Tenant-scoped users (`users.tenant` set) see only their tenant's rows in every list (`users` included); `alerts` has no tenant column, so they get an empty list.

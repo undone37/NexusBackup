@@ -33,6 +33,12 @@
   let open = $state(false);
   let editing: User | null = $state(null);
   let f = $state({ name: '', password: '', role: 'operator' as Role, tenant: '', disabled: false });
+  // Re-authentication of the acting user: every password / authenticator change
+  // (own or another user's) needs the current password and a fresh TOTP code.
+  let re = $state({ password: '', totp: '' });
+  const reauth = () => ({ current_password: re.password, current_totp: re.totp.trim() });
+  let resetFor: User | null = $state(null);
+  let resetOpen = $state(false);
   const privileged = $derived(f.role === 'admin' || f.role === 'security_officer');
 
   // TOTP enrollment (shown once after create / reset)
@@ -43,6 +49,7 @@
   function edit(x: User | null) {
     editing = x;
     f = { name: x?.name ?? '', password: '', role: x?.role ?? 'operator', tenant: x?.tenant ?? '', disabled: x?.disabled ?? false };
+    re = { password: '', totp: '' };
     open = true;
   }
 
@@ -63,7 +70,7 @@
       showEnroll(f.name, r);
     } else {
       const body: Record<string, unknown> = { role: f.role, tenant, disabled: f.disabled };
-      if (f.password) body.password = f.password;
+      if (f.password) Object.assign(body, { password: f.password }, reauth());
       const r = await act(put<UserResp>(`/users/${editing.id}`, body), t.saved);
       if (!r) return;
       open = false;
@@ -71,9 +78,21 @@
     load();
   }
 
-  async function resetTotp(x: User) {
-    if (!confirm(t.users.resetConfirm)) return;
-    showEnroll(x.name, await act(put<UserResp>(`/users/${x.id}`, { reset_totp: true }), t.saved));
+  function resetTotp(x: User) {
+    resetFor = x;
+    re = { password: '', totp: '' };
+    resetOpen = true;
+  }
+
+  async function confirmReset(e: SubmitEvent) {
+    e.preventDefault();
+    const x = resetFor;
+    if (!x) return;
+    const r = await act(put<UserResp>(`/users/${x.id}`, { reset_totp: true, ...reauth() }), t.saved);
+    re = { password: '', totp: '' };
+    if (!r) return;
+    resetOpen = false;
+    showEnroll(x.name, r);
   }
 
   async function copy(text: string) {
@@ -158,6 +177,13 @@
         <div class="hint" id="u-tenant-hint">{t.users.tenantHint}</div>
       </div>
     </div>
+    {#if editing && f.password}
+      <fieldset>
+        <legend>{t.users.reauth}</legend>
+        <p class="muted">{t.users.reauthHint}</p>
+        {@render reauthFields('u')}
+      </fieldset>
+    {/if}
     {#if privileged && editing?.role !== f.role}<p class="banner info">{t.users.privilegedHint}</p>{/if}
     {#if editing}
       <div class="field">
@@ -167,6 +193,39 @@
     <div class="form-actions">
       <button type="button" onclick={() => (open = false)}>{t.cancel}</button>
       <button type="submit" class="primary">{editing ? t.save : t.create}</button>
+    </div>
+  </form>
+</Modal>
+
+{#snippet reauthFields(id: string)}
+  <div class="form-grid">
+    <div class="field">
+      <label for="{id}-cur-pw">{t.users.currentPassword}</label>
+      <input id="{id}-cur-pw" type="password" bind:value={re.password} required autocomplete="current-password" />
+    </div>
+    <div class="field">
+      <label for="{id}-cur-totp">{t.users.currentTotp}</label>
+      <input
+        id="{id}-cur-totp"
+        bind:value={re.totp}
+        required
+        inputmode="numeric"
+        pattern="[0-9]{6}"
+        maxlength="6"
+        autocomplete="one-time-code"
+      />
+    </div>
+  </div>
+{/snippet}
+
+<Modal bind:open={resetOpen} title="{t.users.resetTotp}: {resetFor?.name ?? ''}">
+  <form onsubmit={confirmReset}>
+    <p>{t.users.resetConfirm}</p>
+    <p class="muted">{t.users.reauthHint}</p>
+    {@render reauthFields('r')}
+    <div class="form-actions">
+      <button type="button" onclick={() => (resetOpen = false)}>{t.cancel}</button>
+      <button type="submit" class="primary">{t.users.resetTotp}</button>
     </div>
   </form>
 </Modal>

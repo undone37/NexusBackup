@@ -223,6 +223,11 @@ export const en = {
     secret: 'Secret',
     resetTotp: 'Reset authenticator',
     resetConfirm: 'Issue a new authenticator secret? The old one stops working immediately.',
+    reauth: 'Confirm it is you',
+    reauthHint:
+      'Changing a password or authenticator needs your own current password and a fresh code from your authenticator app.',
+    currentPassword: 'Your current password',
+    currentTotp: 'Your authenticator code',
     privilegedHint: 'Granting Administrator or Security officer requires security-officer approval.',
     copy: 'Copy',
     copied: 'Copied.',

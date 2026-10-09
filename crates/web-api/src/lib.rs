@@ -10,6 +10,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use catalog::secret::{SealKey, TotpKey};
 use catalog::Catalog;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -36,6 +37,10 @@ pub struct Config {
     pub setup_done: PathBuf,
     pub metrics_token: PathBuf,
     pub downloads: PathBuf,
+    /// web-api-only key for TOTP seeds (0600 nexus-webapi)
+    pub totp_key: PathBuf,
+    /// scheduler public key: source/offsite secrets are sealed to it
+    pub secrets_pub: PathBuf,
 }
 
 impl Config {
@@ -51,6 +56,8 @@ impl Config {
             setup_done: p("NEXUS_SETUP_DONE", "/var/lib/nexus/setup-done"),
             metrics_token: p("NEXUS_METRICS_TOKEN", "/etc/nexus/metrics-token"),
             downloads: p("NEXUS_DOWNLOADS", "/var/lib/nexus/downloads"),
+            totp_key: p("NEXUS_TOTP_KEY", "/var/lib/nexus/webapi/totp.key"),
+            secrets_pub: p("NEXUS_SECRETS_PUB", "/var/lib/nexus/catalog/secrets.pub"),
         })
     }
 }
@@ -62,17 +69,52 @@ pub struct AppState {
     pub downloads: PathBuf,
     pub limiter: Mutex<auth::Limiter>,
     pub failed_logins: AtomicU64,
+    /// encrypts / decrypts `users.totp_secret`
+    pub totp: TotpKey,
+    /// published scheduler public key; read on every secret write (the
+    /// scheduler may start after the web-api). `None` = secret writes refused.
+    pub secrets_pub: Option<PathBuf>,
 }
 
 impl AppState {
+    /// Tests / fuzzing: ephemeral TOTP key, no scheduler public key.
     pub fn new(cat: Catalog, metrics_token: Option<String>, downloads: PathBuf) -> Arc<Self> {
+        Self::with_keys(cat, metrics_token, downloads, TotpKey::generate(), None)
+    }
+
+    pub fn with_keys(
+        cat: Catalog,
+        metrics_token: Option<String>,
+        downloads: PathBuf,
+        totp: TotpKey,
+        secrets_pub: Option<PathBuf>,
+    ) -> Arc<Self> {
         Arc::new(AppState {
             cat,
             metrics_token,
             downloads,
             limiter: Mutex::new(auth::Limiter::default()),
             failed_logins: AtomicU64::new(0),
+            totp,
+            secrets_pub,
         })
+    }
+
+    /// The scheduler's public key, or 503 if it has not been published yet.
+    pub fn seal_key(&self) -> ApiResult<SealKey> {
+        let unavailable = |why: String| {
+            eprintln!("<4>web-api: {why}");
+            ApiError(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "cannot store secrets: the scheduler has not published its public key yet (start nexus-scheduler and retry)"
+                    .into(),
+            )
+        };
+        let p = self
+            .secrets_pub
+            .as_ref()
+            .ok_or_else(|| unavailable("no scheduler public key configured".into()))?;
+        SealKey::load(p).map_err(|e| unavailable(format!("{e:#}")))
     }
 
     /// Appends an audit entry. Must not be called while holding `cat.conn()`.
@@ -83,6 +125,68 @@ impl AppState {
 }
 
 pub type St = Arc<AppState>;
+
+/// Re-encrypts legacy plaintext TOTP seeds (users and pending `user.update`
+/// quorum params) with the web-api key; one audit entry per changed row.
+pub fn migrate_totp_seeds(st: &AppState) -> anyhow::Result<usize> {
+    use catalog::rusqlite::params;
+    use catalog::secret::is_encrypted_totp;
+    let users: Vec<(i64, String, String)> = {
+        let c = st.cat.conn();
+        let mut q = c.prepare("SELECT id, name, totp_secret FROM users")?;
+        let r = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        r.collect::<Result<_, _>>()?
+    };
+    let mut n = 0;
+    for (id, name, seed) in users.into_iter().filter(|u| !is_encrypted_totp(&u.2)) {
+        let enc = st.totp.encrypt(&name, &seed)?;
+        let changed = st.cat.conn().execute(
+            "UPDATE users SET totp_secret = ?1 WHERE id = ?2 AND totp_secret = ?3",
+            params![enc, id, seed],
+        )?;
+        if changed == 1 {
+            st.cat.audit(
+                "web-api",
+                "secret.migrate",
+                &format!("user/{name}"),
+                &json!({"encrypted": ["totp_secret"]}),
+            )?;
+            n += 1;
+        }
+    }
+    let pending: Vec<(i64, String)> = {
+        let c = st.cat.conn();
+        let mut q = c.prepare("SELECT id, params FROM quorum WHERE state = 'pending' AND action = 'user.update'")?;
+        let r = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        r.collect::<Result<_, _>>()?
+    };
+    for (id, raw) in pending {
+        let Ok(mut p) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        let (Some(seed), Some(name)) = (p["totp_secret"].as_str(), p["name"].as_str()) else {
+            continue;
+        };
+        if is_encrypted_totp(seed) {
+            continue;
+        }
+        p["totp_secret"] = json!(st.totp.encrypt(name, seed)?);
+        let changed = st.cat.conn().execute(
+            "UPDATE quorum SET params = ?1 WHERE id = ?2 AND params = ?3 AND state = 'pending'",
+            params![p.to_string(), id, raw],
+        )?;
+        if changed == 1 {
+            st.cat.audit(
+                "web-api",
+                "secret.migrate",
+                &format!("quorum/{id}"),
+                &json!({"encrypted": ["totp_secret"]}),
+            )?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
 
 // ---------------------------------------------------------------- errors
 

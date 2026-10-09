@@ -72,11 +72,14 @@ start() {
 	NEXUS_WEBAPI_LISTEN=127.0.0.1:$PORT NEXUS_CATALOG=$lib/catalog/catalog.db \
 		NEXUS_TLS_CERT=$etc/tls/cert.pem NEXUS_TLS_KEY=$etc/tls/key.pem \
 		NEXUS_SETUP_DONE=$lib/setup-done NEXUS_METRICS_TOKEN=$etc/metrics-token \
-		NEXUS_DOWNLOADS=$lib/downloads \
+		NEXUS_DOWNLOADS=$lib/downloads NEXUS_TOTP_KEY=$lib/webapi/totp.key \
+		NEXUS_SECRETS_PUB=$lib/catalog/secrets.pub \
 		nohup "$BIN/nexus-web-api" >log/web-api.log 2>&1 &
 	echo $! >run/web-api.pid
 	NEXUS_RESTORE_VM_DIR=$RVM nohup "$BIN/nexus-scheduler" --config "$etc/scheduler.json" >log/scheduler.log 2>&1 &
 	echo $! >run/scheduler.pid
+	# secret writes need the scheduler's public key (published at its start)
+	for _ in $(seq 50); do [ -s "$lib/catalog/secrets.pub" ] && break; sleep 0.1; done
 	for _ in $(seq 50); do
 		curl -skf "https://127.0.0.1:$PORT/health" >/dev/null && break
 		sleep 0.1

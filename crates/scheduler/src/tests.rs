@@ -200,7 +200,8 @@ fn crash_recovery() {
             .query_row("SELECT action FROM audit ORDER BY seq DESC LIMIT 1", [], |r| r.get(0))
             .unwrap();
     assert_eq!(a, "job.failed");
-    assert_eq!(s.db.verify_audit().unwrap(), 1);
+    // key creation + sealing the 3 legacy source configs + the failed job
+    assert_eq!(s.db.verify_audit().unwrap(), 5);
 }
 
 #[test]
@@ -261,4 +262,117 @@ fn generated_config_keeps_secrets_in_files() {
     assert_eq!(cfg["store"], json!(e.cfg.store_base.join("t1")));
     assert_eq!(cfg["nodes"]["n1"]["key"], json!(p.dir.join("node-n1.key")));
     assert!(!String::from_utf8_lossy(&p.files[4].1).contains("s3cret"));
+}
+
+/// Review H-2: legacy plaintext secrets are sealed at startup (audited), the
+/// job config gets the plaintext only in its 0600 files, and a sealed blob
+/// neither follows a copy to another source nor an endpoint change.
+#[test]
+fn sealed_secrets_migrated_opened_and_bound() {
+    let e = env(4);
+    e.db.conn()
+        .execute(
+            "UPDATE tenants SET offsite = ?1 WHERE name = 't1'",
+            [
+                json!({"remote": {"type": "sftp", "host": "box", "user": "u", "host_key": "hk", "key_pem": "BOXKEY"}})
+                    .to_string(),
+            ],
+        )
+        .unwrap();
+    let s = sched(&e);
+    let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    let key = e.cfg.state_dir.join("secrets.key");
+    assert_eq!(mode(&key), 0o600);
+    let pubf = e.cfg.catalog.parent().unwrap().join("secrets.pub");
+    assert_eq!(mode(&pubf), 0o640);
+
+    let rows: Vec<String> = {
+        let c = s.db.conn();
+        let mut st = c
+            .prepare("SELECT config FROM sources UNION ALL SELECT offsite FROM tenants")
+            .unwrap();
+        let r = st.query_map([], |r| r.get(0)).unwrap();
+        r.collect::<std::result::Result<_, _>>().unwrap()
+    };
+    for r in &rows {
+        assert!(
+            !r.contains("s3cret") && !r.contains("KEY\"") && !r.contains("BOXKEY"),
+            "{r}"
+        );
+    }
+    assert_eq!(rows.iter().filter(|r| r.contains("sealed:v1:")).count(), 4);
+    let migrated: Vec<(String, String)> = {
+        let c = s.db.conn();
+        let mut st = c
+            .prepare("SELECT target, details FROM audit WHERE action = 'secret.migrate' ORDER BY seq")
+            .unwrap();
+        let r = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        r.collect::<std::result::Result<_, _>>().unwrap()
+    };
+    let targets: Vec<&str> = migrated.iter().map(|m| m.0.as_str()).collect();
+    assert_eq!(targets, ["source/1", "source/2", "source/3", "tenant/t1"]);
+    assert!(migrated[0].1.contains("/api/token_secret") && migrated[0].1.contains("/nodes/n1/key_pem"));
+    assert!(!migrated.iter().any(|m| m.1.contains("s3cret")));
+
+    // job config: plaintext only inside the private job dir
+    let job = |id, tenant: &str, g: i64| Job {
+        id,
+        kind: "backup".into(),
+        tenant: tenant.into(),
+        params: json!({"group_id": g}),
+    };
+    let p = s.plan(&job(9, "t1", 1)).unwrap();
+    run::write_private(&p.dir, &p.files).unwrap();
+    assert_eq!(fs::read(p.dir.join("token")).unwrap(), b"s3cret");
+    assert_eq!(fs::read(p.dir.join("node-n1.key")).unwrap(), b"KEY\n");
+    for f in ["token", "node-n1.key", "pve.json"] {
+        assert_eq!(mode(&p.dir.join(f)), 0o600, "{f}");
+    }
+    assert!(!fs::read_to_string(p.dir.join("pve.json"))
+        .unwrap()
+        .contains("sealed:v1:"));
+    let o = s.offsite_config("t1", &p.dir).unwrap().unwrap();
+    assert_eq!(o.iter().find(|f| f.0 == "offsite.key").unwrap().1, b"BOXKEY\n");
+
+    // a value sealed with the published key (what the web-api does) opens
+    let pk = catalog::secret::SealKey::load(&pubf).unwrap();
+    let mut cfg: Value = serde_json::from_str(&rows[1]).unwrap();
+    cfg["api"]["token_secret"] = json!("n3w");
+    pk.seal_all(&catalog::secret::source_owner(2), &mut cfg).unwrap();
+    s.db.conn()
+        .execute("UPDATE sources SET config = ?1 WHERE id = 2", [cfg.to_string()])
+        .unwrap();
+    let p = s.plan(&job(10, "t1", 2)).unwrap();
+    assert_eq!(p.files.iter().find(|f| f.0 == "token").unwrap().1, b"n3w");
+
+    // the sealed config of source 1 copied to source 3 (tenant t2) does not open
+    s.db.conn()
+        .execute(
+            "UPDATE sources SET config = (SELECT config FROM sources WHERE id = 1) WHERE id = 3",
+            [],
+        )
+        .unwrap();
+    let err = format!("{:#}", s.plan(&job(11, "t2", 4)).err().unwrap());
+    assert!(err.contains("another location"), "{err}");
+    // nor does source 2's after its endpoint was changed in the catalog
+    s.db.conn()
+        .execute(
+            "UPDATE sources SET config = json_set(config, '$.api.host', 'attacker.example') WHERE id = 2",
+            [],
+        )
+        .unwrap();
+    let err = format!("{:#}", s.plan(&job(12, "t1", 2)).err().unwrap());
+    assert!(err.contains("another location"), "{err}");
+
+    // restart: same key, nothing left to migrate
+    drop(s);
+    let s = sched(&e);
+    let n: i64 =
+        s.db.conn()
+            .query_row("SELECT COUNT(*) FROM audit WHERE action LIKE 'secret.%'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+    assert_eq!(n, 5, "key_create + 4 migrations, none added by the restart");
+    assert!(s.plan(&job(13, "t1", 1)).is_ok());
 }
