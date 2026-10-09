@@ -61,13 +61,18 @@ Scheduled (systemd timer + `backup-all`) incremental-forever backups of VMs and 
 ## Phase 3 — Restore features (started 2026-10-09)
 Decisions (user, 2026-10-09): instant recovery via qcow2 overlay on the node backed by the appliance NBD export (writes stay local, then `qm disk move`); restore micro-VM = Debian 13 kernel + initramfs incl. ZFS (CDDL, separate component); single-file restore delivered as CLI download (tar/zip)
 - [x] File restore from container snapshots: `Store::chunk_reader` (streaming Read over chunks), `pve::files` (list one dir, extract selected paths from a tar stream as tar or zip; zip keeps modes + mtimes, tar keeps owners/modes/mtimes, no xattrs), CLI `nexus-pve ct-files <vmid> <time> ls [dir] | get <out.tar|out.zip> <path>...`; lab: marker sha256 from CT 200 snapshot matches
-- [ ] Instant recovery via qcow2 overlay (agent in worktree, running)
+- [x] Instant recovery (`crates/pve/src/ir.rs`, plugin `ir/` image volumes, helper `ir-serve`): node-local qcow2 overlay (created as root by the storage plugin in `activate_volume`, backing = json raw-over-nbd to a socket served by `ir-serve` over SSH, reconnect-delay 60), VM created via API from the rewritten backup config, then live `move_disk delete=1`; storage `nexus` now `content backup,images` (alloc refused, only `ir/` volumes freeable)
+  - lab: running after 4.5 s, 4 GiB moved in 24–30 s (~150 MiB/s); marker present; block compare differs only in guest writes; appliance SIGKILL idle/during mirror → stalls, resumes after `nexus-pve ir-serve`; reproduced after merge (VM 904: 4.5 s / 26.2 s)
+  - limits: no TPM-state VMs; guest writes accumulate on node root FS until move finishes; `--link-down` recommended when the original still runs
+
+## M3 status
+Instant recovery and single-file restore (VM images via micro-VM; containers via tar) demonstrated in the lab. Test matrix partial: Linux guests on PVE + filesystem fixtures (ext4/xfs/ntfs3/btrfs/vfat/LVM/ZFS); no Windows guest images (user decision: no Windows VMs).
 - [x] Restore micro-VM (`restore-vm/`, `pve::restorevm`): Debian 13 kernel 6.12 + ZFS 2.3.9 initramfs (12+12 MB, rootless podman build ~3 min cold / 16 s cached, reproducible, manifest.txt), static musl agent as PID 1 mounting everything read-only without journal replay (ext/xfs/btrfs/ntfs3/vfat/LVM/ZFS), openat2(RESOLVE_IN_ROOT) path confinement; appliance serves disks read-only via NBD, QEMU with -sandbox, no NIC; CLI `nexus-pve files <vmid> <time> mounts|ls|get <out.tar|zip> <paths>`
   - test `cargo test --release -p pve --test restore_vm` (8 filesystems incl. LVM + ZFS, 100 MiB file sha256, tar + zip) passes; first `mounts` 5.8 s; `get` ~260–315 MiB/s
   - lab: real VM 100 snapshot → mounts (ext4 + vfat) in 2.4 s, /etc/hostname extracted as zip
   - open: QEMU runs as the caller (own user/SELinux domain/cgroup limits TBD); no encrypted volumes, zvols, duplicate pool/VG names; appliance image needs qemu-kvm
 
-## Phase 4 — Offsite (starts after Phase 3 merge)
+## Phase 4 — Offsite (started 2026-10-09)
 Decisions (user, 2026-10-09): test against a local SFTP container mimicking Storage Box first, real box later; SFTP via russh + russh-sftp
 
 ## Phase 5 — Control plane and UI (starts after Phase 4 merge)
