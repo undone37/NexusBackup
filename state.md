@@ -78,8 +78,11 @@ Instant recovery and single-file restore (VM images via micro-VM; containers via
 - [x] Pack format `offsite::pack` (byte-identical sealed chunks + sealed index bound to pack id + footer; self-describing)
 - [x] `offsite::target::Target` (one box per tenant): upload with N parallel uploaders + bandwidth limit, ordering (pack before local record; manifest last), resumable per pack; independent offsite retention with offsite locks (extend-only, compliance clock); GC with repack threshold (orphan-before-phantom deletion order, abort on unreadable state); sampled verify; inventory check (missing vs unknown); restore from box into local store (chunks verified on insert); `rebuild_from_remote` (DR from box + keys only); `put_if_missing` for key escrow
   - tests with LocalDir: upload/dedup/idempotence, DR into fresh store bit-exact, retention + lock hold, forced repack, verify, second DR after GC, deleted-pack detection, wrong tenant key refused
-- [ ] SFTP backend (russh-sftp) + Storage-Box-like test container (agent running) — must implement new `Remote::remove_dir`
-- [ ] CLI (`nexus-offsite`?), key escrow upload, scheduler integration, DR tool
+- [x] `offsite::sftp::SftpRemote` (russh 0.64 / russh-sftp 3, ring backend): port 23, pinned host key (no TOFU), pool ≤10 (default 4), retries only on transport errors, pipelined range reads/writes, put = exclusive tmp + rename (never overwrites), remove_dir, statvfs usage; testbox `crates/offsite/testbox/run.sh` (OpenSSH chroot SFTP-only, 10-connection cap); 7 SFTP tests incl. engine test over SFTP pass (`eval "$(run.sh env)"`, skip otherwise); loopback 4 conns: put 540–735 MiB/s, get 740–1030 MiB/s
+  - verify on real box: rename must refuse overwrite; openssh extensions availability; no sweep of orphan `*.tmp-*`
+- [x] keyd `export_escrow`/`import_escrow` (wrapped KEK + tenant DEKs for the box; DR test passes)
+- [ ] CLI `nexus-offsite` (upload incl. escrow, retention, gc, verify, check, list, restore, dr) + `keyd export-escrow` — **blocked in session: auto mode refused the command; resume outside auto mode**
+- [ ] systemd timer, DR drill over SFTP, final run against a real Storage Box
 Decisions (user, 2026-10-09): test against a local SFTP container mimicking Storage Box first, real box later; SFTP via russh + russh-sftp
 
 ## Phase 5 — Control plane and UI (starts after Phase 4 merge)

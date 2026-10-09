@@ -154,6 +154,54 @@ pub fn tenant_deks(dir: &Path, tenant: &str) -> io::Result<Vec<(u32, Key)>> {
         .collect()
 }
 
+/// Escrow files for the offsite copy: `kek.recovery` (KEK under the offline
+/// recovery key) and the tenant's DEKs (under the KEK). All wrapped, no secret in clear.
+pub fn export_escrow(dir: &Path, tenant: &str) -> io::Result<Vec<(String, Vec<u8>)>> {
+    let mut out = vec![("kek.recovery".to_owned(), fs::read(dir.join("kek.recovery"))?)];
+    let td = tenant_dir(dir, tenant)?;
+    for v in versions(dir, tenant)? {
+        out.push((
+            format!("tenants/{tenant}/dek.{v}"),
+            fs::read(td.join(format!("dek.{v}")))?,
+        ));
+    }
+    Ok(out)
+}
+
+/// DR on a fresh appliance: installs escrow files; follow with `recover()`.
+/// Refuses to replace an existing, different `kek.recovery`.
+pub fn import_escrow(dir: &Path, files: &[(String, Vec<u8>)]) -> io::Result<()> {
+    fs::create_dir_all(dir.join("tenants"))?;
+    for (name, bytes) in files {
+        let target = match name.split('/').collect::<Vec<_>>().as_slice() {
+            ["kek.recovery"] => dir.join("kek.recovery"),
+            ["tenants", t, f] if f.strip_prefix("dek.").is_some_and(|v| v.parse::<u32>().is_ok()) => {
+                let td = tenant_dir(dir, t)?;
+                fs::create_dir_all(&td)?;
+                td.join(f)
+            }
+            _ => {
+                return Err(err(
+                    io::ErrorKind::InvalidInput,
+                    format!("unexpected escrow file {name:?}"),
+                ))
+            }
+        };
+        match fs::read(&target) {
+            Ok(existing) if existing == *bytes => continue,
+            Ok(_) => {
+                return Err(err(
+                    io::ErrorKind::AlreadyExists,
+                    format!("{name} exists with different content"),
+                ))
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => write_atomic(&target, bytes)?,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 /// umask 077, no core dumps / ptrace by same uid, keys never swapped (best effort).
 pub fn harden_process() {
     unsafe {
@@ -274,6 +322,31 @@ mod tests {
             .map(|(v, k)| (v, *k))
             .collect();
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn escrow_roundtrip_dr() {
+        let a = tempfile::tempdir().unwrap();
+        let rk = init(a.path()).unwrap();
+        create_tenant(a.path(), "acme").unwrap();
+        rotate_tenant(a.path(), "acme").unwrap();
+        let esc = export_escrow(a.path(), "acme").unwrap();
+        assert_eq!(esc.len(), 3);
+        let b = tempfile::tempdir().unwrap();
+        import_escrow(b.path(), &esc).unwrap();
+        import_escrow(b.path(), &esc).unwrap(); // idempotent
+        assert!(tenant_deks(b.path(), "acme").is_err(), "no KEK before recover");
+        recover(b.path(), &rk).unwrap();
+        let k = |d: &Path| {
+            tenant_deks(d, "acme")
+                .unwrap()
+                .into_iter()
+                .map(|(v, k)| (v, *k))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(k(a.path()), k(b.path()));
+        assert!(import_escrow(b.path(), &[("../x".into(), vec![])]).is_err());
+        assert!(import_escrow(b.path(), &[("kek.recovery".into(), vec![1])]).is_err());
     }
 
     #[test]
