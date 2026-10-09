@@ -606,6 +606,12 @@ impl Session<'_> {
     fn release(&mut self, job: u64, success: bool) -> Option<String> {
         let mut j = self.jobs.remove(&job)?;
         let mut text = String::new();
+        // the locator keeps the last read file open: close it first, or the snapshot
+        // stays busy (lazy umount) and lvremove fails with "contains a filesystem in use"
+        let cache = j.scan.take().map(|(loc, cache)| {
+            drop(loc);
+            cache
+        });
         for snap in &mut j.snaps {
             for e in snap.release(&self.agent.paths) {
                 log(&e);
@@ -613,7 +619,7 @@ impl Session<'_> {
             }
         }
         if success {
-            if let Some((_, cache)) = &j.scan {
+            if let Some(cache) = &cache {
                 if let Err(e) = cache.commit(&self.agent.paths) {
                     text.push_str(&format!("metadata cache not saved: {e}\n"));
                 }

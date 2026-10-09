@@ -76,7 +76,20 @@ impl Item {
                     _ => Ok(()),
                 }
             }
-            Item::Lvm(n) => run_tool("lvremove", &["-f", "-y", n]).map(drop),
+            Item::Lvm(n) => {
+                // udev may still probe the device right after the umount: retry briefly
+                let mut r = run_tool("lvremove", &["-f", "-y", n]).map(drop);
+                for _ in 0..5 {
+                    match &r {
+                        Err(e) if e.contains("in use") => {
+                            std::thread::sleep(std::time::Duration::from_millis(400));
+                            r = run_tool("lvremove", &["-f", "-y", n]).map(drop);
+                        }
+                        _ => break,
+                    }
+                }
+                r
+            }
             Item::Zfs(n) => run_tool("zfs", &["destroy", n]).map(drop),
             Item::Btrfs(p) => run_tool("btrfs", &["subvolume", "delete", &p.to_string_lossy()]).map(drop),
         }
@@ -173,7 +186,15 @@ pub fn prepare(paths: &Paths, settings: &Settings, job: u64, idx: usize, mount: 
         items: vec![],
     };
     let res = match kind {
-        SnapshotKind::None => return (snap, None),
+        SnapshotKind::None => {
+            let note = format!(
+                "no snapshot support for {} ({} on {}), reading live",
+                mount.mountpoint.display(),
+                mount.fstype,
+                mount.source
+            );
+            return (snap, Some(note));
+        }
         SnapshotKind::Lvm => lvm(paths, settings, job, idx, &mut snap),
         SnapshotKind::Zfs => zfs(paths, job, &mut snap),
         SnapshotKind::Btrfs => btrfs(paths, job, &mut snap),
