@@ -220,11 +220,8 @@ fn lvm(paths: &Paths, settings: &Settings, job: u64, idx: usize, snap: &mut Snap
         run_tool("lvcreate", &["-q", "-s", "-kn", "-n", &name, &origin])?;
         run_tool("lvchange", &["-q", "-ay", "-K", &full])?;
     } else {
-        let size = (lv.size / 100 * settings.lvm_snapshot_percent as u64).max(64 << 20);
-        run_tool(
-            "lvcreate",
-            &["-q", "-s", "-L", &format!("{size}b"), "-n", &name, &origin],
-        )?;
+        let size = thick_snapshot_size(lv.size, settings.lvm_snapshot_percent);
+        run_tool("lvcreate", &["-q", "-s", "-L", &size, "-n", &name, &origin])?;
     }
     let dir = paths.run.join(job.to_string()).join(idx.to_string());
     ensure_dir(&dir, 0o700).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -247,6 +244,14 @@ fn lvm(paths: &Paths, settings: &Settings, job: u64, idx: usize, snap: &mut Snap
     }
     snap.root = dir.join(snap.mount.root.trim_start_matches('/'));
     Ok(full)
+}
+
+/// `lvcreate -L` argument for a thick snapshot: `percent` of the origin, at least
+/// 64 MiB, in whole MiB (lvcreate rejects byte sizes that are not a multiple of 512
+/// and rounds up to the extent size itself).
+fn thick_snapshot_size(origin_bytes: u64, percent: u32) -> String {
+    let bytes = (origin_bytes / 100 * percent as u64).max(64 << 20);
+    format!("{}m", bytes.div_ceil(1 << 20))
 }
 
 fn zfs(paths: &Paths, job: u64, snap: &mut Snap) -> Result<String, String> {
@@ -382,6 +387,14 @@ mod tests {
         let msgs = cleanup_leftovers(&p);
         assert!(msgs.iter().any(|m| m.contains("not ours")), "{msgs:?}");
         assert_eq!(leftover_count(&p), 0);
+    }
+
+    #[test]
+    fn thick_snapshot_size_is_whole_mib() {
+        // 10 % of a 3 GiB LV is not a multiple of 512 bytes (lab: Debian root on LVM)
+        assert_eq!(thick_snapshot_size(3 << 30, 10), "308m");
+        assert_eq!(thick_snapshot_size(100 << 20, 10), "64m");
+        assert_eq!(thick_snapshot_size(10 << 30, 100), "10240m");
     }
 
     // Root-only snapshot provider tests: run in a VM as root with the matching
