@@ -179,7 +179,10 @@ pub fn lv_info(device: &str) -> Option<LvInfo> {
 /// (thick) snapshots (`o`: e.g. a leftover or the admin's own), not itself a
 /// snapshot, a pool or an origin whose snapshot is being merged (`O`).
 fn can_snapshot(lv_attr: &str) -> bool {
-    matches!(lv_attr.chars().next(), Some('-' | 'o' | 'V' | 'r' | 'R' | 'm' | 'M' | 'C'))
+    matches!(
+        lv_attr.chars().next(),
+        Some('-' | 'o' | 'V' | 'r' | 'R' | 'm' | 'M' | 'C')
+    )
 }
 
 /// btrfs: a read-only snapshot needs the mount point to be a subvolume root (inode 256).
@@ -202,7 +205,9 @@ pub fn parse_subvolume_list(out: &str, mount_root: &str) -> Vec<PathBuf> {
             };
             let rel = Path::new(rel);
             let ok = !rel.as_os_str().is_empty()
-                && rel.components().all(|c| matches!(c, Component::Normal(n) if n != crate::snapshot::BTRFS_DIR));
+                && rel
+                    .components()
+                    .all(|c| matches!(c, Component::Normal(n) if n != crate::snapshot::BTRFS_DIR));
             ok.then(|| rel.to_path_buf())
         })
         .collect()

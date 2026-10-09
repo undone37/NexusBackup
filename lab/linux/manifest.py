@@ -6,7 +6,7 @@
 Per entry: kind, permission bits (incl. setuid/sticky), uid, gid, size, mtime in ns,
 sha256 (regular files), link target (symlinks), device numbers, hard-link group (the
 first path of the group), every xattr (user.*, security.capability, POSIX ACLs as
-system.posix_acl_*; security.selinux is left out because a restore target may get a
+system.posix_acl_*; security.selinux and XFS's trusted.SGI_ACL_* are left out: a restore target may get a
 different label by policy). Not compared: atime, ctime, inode numbers.
 """
 import hashlib
@@ -15,7 +15,8 @@ import stat
 import sys
 
 root = os.fsencode(sys.argv[1])
-SKIP_XATTRS = {b"security.selinux"}
+# XFS shows its on-disk ACLs to root as trusted.SGI_ACL_*: duplicates of system.posix_acl_*
+SKIP_XATTRS = {b"security.selinux", b"trusted.SGI_ACL_FILE", b"trusted.SGI_ACL_DEFAULT"}
 
 
 def esc(b):

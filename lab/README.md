@@ -76,3 +76,53 @@ LAB_SSH_KEY=<appliance key of the node> lab/e2e/m5.sh all   # ~5 min; logs in ta
 lab/e2e/m5.sh stop
 ```
 Single steps: `lab/e2e/m5-api.sh check restore` etc. (see the script header).
+
+## Linux agent lab (`lab/linux/`)
+
+Small VMs from official cloud images, one at a time (1.5–2 GB RAM each), QEMU user
+networking with host forwards on 127.0.0.1 (ssh 2240+N, agent 17440+N; the appliance VM
+reaches them as 10.0.2.2:<port>), cloud-init NoCloud seed ISO (genisoimage/xorriso), user
+`lab` with the lab key and passwordless sudo. Images are checksum-verified and cached in
+`$LAB/linux/images`, VM state in `$LAB/linux/<vm>`. No root on the host.
+
+| VM | Distro | Storage under test | DB |
+|---|---|---|---|
+| `deb-lvm` (N=1) | Debian 13 | root moved onto LVM (thick, ext4; reboot during provisioning), `/var/lib/postgresql` thick LV ext4, `/srv/xfs` XFS on a thin LV; old root partition at `/srv/plain` | PostgreSQL |
+| `alma-xfs` (2) | AlmaLinux 10 (SELinux enforcing) | XFS LVs: `/srv/xfs`, `/var/lib/mysql`, `/var/backups` | MariaDB |
+| `ubuntu-zfs` (3) | Ubuntu 24.04 | pool `tank` (posixacl, xattr=sa): `/srv/zfs`, `/home` | – |
+| `fedora-btrfs` (4) | Fedora 44 Cloud (SELinux enforcing) | btrfs subvolumes root/home/var + nested subvolume `/srv/btrfs` | – |
+| `deb-plain` (5) | Debian 13 | ext4 on a partition, no LVM (fallback mode) | MariaDB |
+
+Every VM gets the sample tree of `provision/common.sh` (owners, setuid/sticky, ns mtimes,
+user xattrs, access + default ACLs, file capabilities, hard links, symlinks, fifo, sparse
+file, UTF-8/space/newline names, 24 MiB random file).
+
+```sh
+lab/pve/stop.sh                                   # if RAM is tight
+COSIGN_KEY=release/testkey/TEST-cosign.key COSIGN_PASSWORD=nexus-test-key \
+  crates/agent-linux/dist/build-bundle.sh --test-key --sign
+lab/linux/bump-bundle.sh 0.1.1                    # signed newer bundle for the update test
+cargo build --release -p keyd -p web-api -p scheduler -p setup -p agent-conn
+lab/linux/e2e.sh appliance                        # dev control plane (m5.sh) on https://127.0.0.1:18453
+lab/linux/vm.sh deb-lvm up                        # fetch, create, boot, provision (~2 min)
+lab/linux/snapshot-tests.sh deb-lvm               # #[ignore] root snapshot tests, musl test binary
+lab/linux/e2e.sh deb-lvm                          # agent backup incr restore download db update
+lab/linux/vm.sh deb-lvm stop
+```
+
+`e2e.sh` steps: `agent` (POST /agents, `install.sh --token -` on the VM, enroll job, token
+single use), `backup` (hook example enabled, linux source + policy + group, waits for the
+*scheduled* backup; `consistent` must match the VM, deb-plain also needs the
+`backup_inconsistent` alert), `incr` (4 KiB overwrite, 2 MiB append, new file, chmod,
+delete; deb-plain: a file rewritten during the read must be counted inconsistent),
+`restore` (wrong confirm → 400, restore to `/restore/<t>`, `manifest.py` comparison of
+content, owners, modes, mtimes, xattrs, ACLs, hard links; second restore with
+`overwrite=never` writes nothing), `download` (tar + zip; content, owner/mode and PAX
+xattrs/ACLs), `db` (restore the dump dir, drop the database, load the dump, count rows),
+`update` (new binary with a foreign signature refused, signed 0.1.1 accepted, same
+version refused, backup afterwards), `reinstall` (upgrade the agent from `$BUNDLE` in
+place). Results as `key=value` in `$ROOT/run/api/<vm>.results`.
+
+Against the appliance VM (SELinux enforcing): `PVE=0 LAB=... lab/appliance/e2e.sh boot setup`,
+then `ROOT=$LAB/appliance/root PORT=<port> AGENT_HOST=10.0.2.2 UPDATE_DIR= lab/linux/e2e.sh <vm>`
+and `lab/appliance/e2e.sh check` for AVCs (see docs/agent-linux.md, "Lab results").

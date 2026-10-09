@@ -18,7 +18,9 @@
 # env: ROOT (target/linux-root; appliance VM: $LAB/appliance/root), PORT (18453; VM: 28443),
 #      AGENT_HOST (127.0.0.1; the appliance VM reaches the lab VMs as 10.0.2.2),
 #      BUNDLE (target/agent-dist/nexus-agent-<v>-x86_64.tar.gz), BUMP (target/agent-bump/src/target/agent-dist/nexus-agent-0.1.1-x86_64),
-#      UPDATE_DIR (agent_update_dir of the scheduler: $ROOT/agent-update; empty = skip update)
+#      UPDATE_DIR (agent_update_dir of the scheduler: $ROOT/agent-update; empty = skip update;
+#        "appliance-vm" = /usr/share/nexus/agent in the appliance VM via its console (CONSOLE),
+#        made writable with `bootc usr-overlay`, lab only)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -82,6 +84,7 @@ esac
 
 step_agent() {
 	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	LOGGED=1
 	api admin GET /tenants | jq -e --arg t "$TENANT" '.[] | select(.name==$t)' >/dev/null ||
 		{ api admin POST /tenants "$(jq -nc --arg t "$TENANT" '{name:$t}')" >/dev/null && expect 201 "create tenant"; }
 	local r id tok
@@ -99,7 +102,15 @@ step_agent() {
 	vm "cd /tmp && rm -rf nexus-agent-*-x86_64/ && tar xzf $(basename "$BUNDLE") && cd nexus-agent-*-x86_64 && echo $tok | sudo ./install.sh --token -" | sed 's/^/  vm: /' >&2
 	vm 'systemctl is-active nexus-agent' >/dev/null || die "service not active"
 	result install_s $((SECONDS - t0))
-	t0=$SECONDS
+	step_enroll
+}
+
+# enroll job for the agent of $VM (part of `agent`; alone: retry after a failed enrollment)
+step_enroll() {
+	state
+	[ -n "${AGENT:-}" ] || die "no agent for $VM (step agent)"
+	[ -n "${LOGGED:-}" ] || login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	local id=$AGENT r t0=$SECONDS
 	r=$(api admin POST "/agents/$id/enroll")
 	expect 202 "enroll"
 	local j
@@ -203,7 +214,7 @@ step_backup() {
 	if [ "$CONSISTENT" = false ]; then
 		local a=""
 		for _ in $(seq 60); do
-			a=$(api admin GET /alerts | jq -c --arg id "$AGENT" '[.[] | select(.kind=="backup_inconsistent")] | .[0] // empty')
+			a=$(api admin GET /alerts | jq -c --arg id "$AGENT" '[.[] | select(.kind=="backup_inconsistent" and (.message | contains("host-" + $id)))] | .[0] // empty')
 			[ -n "$a" ] && break
 			sleep 2
 		done
@@ -224,12 +235,23 @@ step_incr() {
 		dd if=/dev/urandom bs=1M count=2 status=none >> $d/medium.bin &&
 		dd if=/dev/urandom of=$d/new.bin bs=1M count=1 status=none && chmod 0600 $d/docs/note-3.txt &&
 		rm -f $d/docs/note-4.txt && sync'"
+	if [ "$CONSISTENT" = false ]; then
+		# no snapshot: a file rewritten while it is read must be flagged inconsistent
+		vm "sudo mkdir -p /home/lab/busy && sudo systemd-run -q --unit=nexus-lab-busy sh -c 'while :; do dd if=/dev/urandom of=/home/lab/busy/busy.bin bs=1M count=16 conv=notrunc status=none; done'"
+	fi
 	local r j
 	r=$(api admin POST /jobs "$(jq -nc --arg t "$TENANT" --arg a "$AGENT" '{kind:"backup", tenant:$t, params:{agent_id:$a}}')")
 	expect 202 "manual backup"
 	j=$(wait_job admin "$(jq -r .id <<<"$r")" 1800)
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "incremental backup: $(jq -r .log <<<"$j" | tail -n 30)"
 	record_backup incr "$j"
+	if [ "$CONSISTENT" = false ]; then
+		vm 'sudo systemctl stop nexus-lab-busy'
+		local inc
+		inc=$(job_line "$j" '^inconsistent ' | sed -n 's/.*(\([0-9]*\) files changed while read.*/\1/p')
+		result incr_inconsistent_files "$inc"
+		[ "${inc:-0}" -ge 1 ] || log "warning: the busy file was not caught changing during the read"
+	fi
 	local xb
 	xb=$(grep '^incr_xfer_bytes=' "$R" | cut -d= -f2)
 	# changed data ~3 MiB + chunk boundaries + hook dumps; a full re-transfer would be far more
@@ -348,6 +370,16 @@ step_db() {
 	result db_restore "$DB dump restored, 200000 rows ($((SECONDS - t0)) s)"
 }
 
+# upd_put FILE NAME: into the scheduler's agent_update_dir
+upd_put() {
+	if [ "$UPDATE_DIR" = appliance-vm ]; then
+		"$repo/lab/appliance/con.py" put "$1" "/usr/share/nexus/agent/$2" 0644 >/dev/null
+		"$repo/lab/appliance/con.py" run "restorecon /usr/share/nexus/agent/$2" >/dev/null
+	else
+		install -m 0644 "$1" "$UPDATE_DIR/$2"
+	fi
+}
+
 step_update() {
 	state
 	[ -n "$UPDATE_DIR" ] || {
@@ -358,13 +390,17 @@ step_update() {
 	login admin "$ADMIN_PW" "$ADMIN_TOTP"
 	local cur r j
 	cur=$(api admin GET /agents | jq -r --arg id "$AGENT" '.[] | select(.id==$id) | .version')
-	mkdir -p "$UPDATE_DIR"
+	if [ "$UPDATE_DIR" = appliance-vm ]; then
+		"$repo/lab/appliance/con.py" run 'bootc usr-overlay >/dev/null 2>&1; install -d -m 0755 /usr/share/nexus/agent' >/dev/null
+	else
+		mkdir -p "$UPDATE_DIR"
+	fi
 	local old
 	old=$(dirname "$BUNDLE")/$(basename "$BUNDLE" .tar.gz)
 	# 1. the new binary with the signature of another binary: the agent refuses it
-	install -m 0644 "$BUMP/nexus-agent" "$UPDATE_DIR/nexus-agent"
-	install -m 0644 "$old/nexus-agent.sig" "$UPDATE_DIR/nexus-agent.sig"
-	echo 0.1.1 >"$UPDATE_DIR/nexus-agent.version"
+	upd_put "$BUMP/nexus-agent" nexus-agent
+	upd_put "$old/nexus-agent.sig" nexus-agent.sig
+	upd_put "$BUMP/nexus-agent.version" nexus-agent.version
 	r=$(api admin POST /jobs "$(jq -nc --arg t "$TENANT" --arg a "$AGENT" '{kind:"agent_update", tenant:$t, params:{agent_id:$a}}')")
 	expect 202 "agent_update (bad signature)"
 	j=$(wait_job admin "$(jq -r .id <<<"$r")" 300)
@@ -373,7 +409,7 @@ step_update() {
 	vm 'sudo journalctl -u nexus-agent -n 3 --no-pager -o cat' | sed 's/^/  vm: /' >&2
 	result update_bad_sig refused
 	# 2. properly signed 0.1.1
-	install -m 0644 "$BUMP/nexus-agent.sig" "$UPDATE_DIR/nexus-agent.sig"
+	upd_put "$BUMP/nexus-agent.sig" nexus-agent.sig
 	local t0=$SECONDS
 	r=$(api admin POST /jobs "$(jq -nc --arg t "$TENANT" --arg a "$AGENT" '{kind:"agent_update", tenant:$t, params:{agent_id:$a}}')")
 	j=$(wait_job admin "$(jq -r .id <<<"$r")" 300)

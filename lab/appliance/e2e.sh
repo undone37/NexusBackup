@@ -10,6 +10,8 @@
 #   e2e.sh check     domains (ps -eZ), AVCs, firewall sets, systemd-analyze security
 #   e2e.sh all       everything above in order
 # env: IMG (localhost/nexus-os:dev; the lab image is $IMG-lab), LAB (/home/ah/nexus-lab), PORT (28443), ROOT (host-side state: $LAB/appliance/root)
+#      PVE=0: no PVE lab (setup skips the node key + known_hosts; for lab/linux/e2e.sh agent runs)
+#      CONSOLE (serial console socket, default $LAB/appliance/console.sock)
 # Prereqs: lab/pve/start.sh (pve1 on 127.0.0.1:18006/10022), crates/offsite/testbox/run.sh start.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -18,6 +20,8 @@ LAB=${LAB:-/home/ah/nexus-lab}
 export PORT=${PORT:-28443}
 IMG=${IMG:-localhost/nexus-os:dev}
 export ROOT=${ROOT:-$LAB/appliance/root}
+export CONSOLE=${CONSOLE:-$LAB/appliance/console.sock}
+PVE=${PVE:-1}
 con() { "$here/con.py" "$@"; }
 T0=$(date +%s)
 log() { printf '[%4ss] %s\n' $(($(date +%s) - T0)) "$*" >&2; }
@@ -63,14 +67,18 @@ setup() {
 		  admin: {name: "admin", password: $ap, totp_secret: $as, totp_code: $ac},
 		  security_officer: {name: "so", password: $sp, totp_secret: $so, totp_code: $sc}}' >"$ROOT/answers.json"
 
-	log "lab keys: PVE node key + known_hosts, SFTP testbox key"
-	con run 'install -d -m 0700 /run/nexus-lab' >/dev/null
-	con put "$LAB/appliance_ed25519" /etc/nexus/ssh/pve1 0600 >/dev/null
-	con put "$TESTBOX/client_ed25519" /etc/nexus/ssh/offsite 0600 >/dev/null
-	ssh -o BatchMode=yes -p 10022 -i "$LAB/lab_ed25519" -o UserKnownHostsFile="$LAB/known_hosts" root@localhost \
-		cat /etc/ssh/ssh_host_ed25519_key.pub | awk '{print "[10.0.2.2]:10022 " $1 " " $2}' >"$ROOT/known_hosts"
-	con put "$ROOT/known_hosts" /etc/nexus/ssh/known_hosts 0644 >/dev/null
-	con run 'chown nexus-chunkstore: /etc/nexus/ssh/pve1 /etc/nexus/ssh/offsite && restorecon -RF /etc/nexus/ssh && ls -lZ /etc/nexus/ssh'
+	if [ "$PVE" = 1 ]; then
+		log "lab keys: PVE node key + known_hosts, SFTP testbox key"
+		con run 'install -d -m 0700 /run/nexus-lab' >/dev/null
+		con put "$LAB/appliance_ed25519" /etc/nexus/ssh/pve1 0600 >/dev/null
+		con put "$TESTBOX/client_ed25519" /etc/nexus/ssh/offsite 0600 >/dev/null
+		ssh -o BatchMode=yes -p 10022 -i "$LAB/lab_ed25519" -o UserKnownHostsFile="$LAB/known_hosts" root@localhost \
+			cat /etc/ssh/ssh_host_ed25519_key.pub | awk '{print "[10.0.2.2]:10022 " $1 " " $2}' >"$ROOT/known_hosts"
+		con put "$ROOT/known_hosts" /etc/nexus/ssh/known_hosts 0644 >/dev/null
+		con run 'chown nexus-chunkstore: /etc/nexus/ssh/pve1 /etc/nexus/ssh/offsite && restorecon -RF /etc/nexus/ssh && ls -lZ /etc/nexus/ssh'
+	else
+		log "PVE=0: no PVE node key / known_hosts"
+	fi
 
 	log "first boot: nexus-setup.service with --script (drop-in in /run, lab only)"
 	con put "$ROOT/answers.json" /etc/nexus/lab-answers.json 0600 >/dev/null
