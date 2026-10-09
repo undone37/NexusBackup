@@ -51,7 +51,16 @@ Decisions: PVE 9.x only · NBD over SSH stdio (forced command) · .deb via dpkg-
   - bug found + fixed: PVE API workers run perl -T; catalog sizes/device names, readdir and glob results reached lvcreate/qemu-nbd/unlink tainted → untainted by strict captures; `t/plugin.t` now runs under `-T` with an exec regression check (fails on old code)
 - [x] Plugin `api()` reports running APIVER within tested range 11..14 (user decision), no more "older storage API" warning
 - [x] `backup-all` via appliance CLI after lab reboot: full re-read (bitmap lost), 62 s
-- [ ] LXC backup/restore: tar stream via helper, FastCDC into dynamic index, restore via staging dir (agent in worktree, running) → M2
+- [x] LXC backup/restore (`crates/pve/src/ct.rs`, plugin, helper `ct-stream`/`ct-restore-serve`): node streams tar (records C=config, D=data, E=status) from the CT's user namespace via a socket created in backup_container_prepare; appliance chunks with FastCDC into `ct-<vmid>` (`root.tar` + `config`), commits, then answers `ok` in-band; restore extracts into /var/tmp/nexusbackup staging dir → `directory` mechanism
+  - lab: CT 200 first backup 11.9 s (679 MB tar, 956 chunks), second 9.7 s with 0 new chunks; restore to CT 902 6.9 s, marker sha256 + modes/owners (shadow, setuid, user files) identical; abort mid-stream clean; `backup-all` handles VMs + CTs
+  - limitations: restore needs staging space in node /var/tmp; every CT backup reads the full tree
+
+## M2 status
+Scheduled (systemd timer + `backup-all`) incremental-forever backups of VMs and CTs on a PVE 9 cluster with full restore: **reached in the lab** (single-node nested cluster; multi-node cluster untested).
+
+## Phase 3 — Restore features (started 2026-10-09)
+Decisions (user, 2026-10-09): instant recovery via qcow2 overlay on the node backed by the appliance NBD export (writes stay local, then `qm disk move`); restore micro-VM = Debian 13 kernel + initramfs incl. ZFS (CDDL, separate component); single-file restore delivered as CLI download (tar/zip)
+- [ ] Instant recovery: verify PVE accepts an NBD-backed qcow2 overlay + live `qm disk move`, then build
 
 ## Next
 

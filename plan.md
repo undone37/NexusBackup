@@ -56,6 +56,9 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | PVE support | **PVE 9.x only** (decided 2026-10-08) | One API version to track; 8.4 not targeted. |
 | PVE NBD transport | **NBD piped over SSH stdio via forced command** (decided 2026-10-08) | `restrict`ed key without any forwarding; `permitopen` cannot limit Unix-socket forwards. |
 | PVE test lab | **Nested PVE 9 VM in QEMU on the dev machine** (decided 2026-10-08) | No host installs; reproducible lab scripts. |
+| Instant recovery | **qcow2 overlay on the node, backing = appliance NBD export over SSH; then live `qm disk move`** (decided 2026-10-09) | PVE refuses provider live-restore; writes stay local on the node; appliance stays read-only. |
+| Restore micro-VM | **Debian 13 kernel + initramfs, including ZFS** (decided 2026-10-09) | Appliance (RHEL-family) kernel lacks ntfs3/ZFS; ZFS (CDDL) is a separate component inside the micro-VM, not linked into AGPL code. |
+| File restore delivery (Phase 3) | **CLI download as tar/zip** (decided 2026-10-09) | Web UI download follows in Phase 5. |
 
 ---
 
