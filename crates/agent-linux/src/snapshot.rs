@@ -173,7 +173,7 @@ pub fn prepare(paths: &Paths, settings: &Settings, job: u64, idx: usize, mount: 
         items: vec![],
     };
     let res = match kind {
-        SnapshotKind::None => return (snap, None),
+        SnapshotKind::None | SnapshotKind::Vss => return (snap, None),
         SnapshotKind::Lvm => lvm(paths, settings, job, idx, &mut snap),
         SnapshotKind::Zfs => zfs(paths, job, &mut snap),
         SnapshotKind::Btrfs => btrfs(paths, job, &mut snap),

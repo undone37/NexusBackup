@@ -1,26 +1,20 @@
-//! Walk prepared roots, emit `Entry`s, chunk changed files (FastCDC + plain BLAKE3).
-//!
-//! Chunk data is not kept in memory: the [`Locator`] remembers where each chunk can be
-//! read again (file + offset; in fallback mode a bounded spool file holds exactly the
-//! bytes that were hashed). `Want` re-reads and verifies `blake3(data) == hash` before
-//! sending. Memory per chunk ≈ 40 bytes (8-byte hash prefix key + location).
+//! Walk prepared roots, emit `Entry`s, chunk changed files (FastCDC + plain BLAKE3,
+//! `agent_core::chunk`; the [`Locator`] serves `Want` later).
 
 use crate::cache::{Cache, Cached};
 use crate::glob::Excludes;
 use crate::snapshot::BTRFS_DIR;
 use crate::sys;
-use agent_proto::{Entry, Hash, Kind, ScanStats, CDC_AVG, CDC_MAX, CDC_MIN, MAX_PATH, MAX_XATTR};
+use agent_core::chunk::{self, ChunkList};
+use agent_proto::{Entry, Kind, ScanStats, MAX_PATH, MAX_XATTR};
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, File, Metadata};
+use std::fs::{self, Metadata};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{FileExt, FileTypeExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 const MAX_ERRORS: usize = 1000;
-type ChunkList = Vec<(Hash, u32)>;
-/// candidate locations kept per chunk hash (identical files share chunks)
-const MAX_LOCS: usize = 4;
 
 #[derive(Clone, Debug)]
 pub struct Root {
@@ -32,145 +26,7 @@ pub struct Root {
     pub live: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Loc {
-    file: u32,
-    offset: u64,
-    len: u32,
-    spooled: Option<u64>,
-}
-
-struct Spool {
-    f: File,
-    used: u64,
-    max: u64,
-}
-
-/// Where to find each chunk again for `Want`.
-#[derive(Default)]
-pub struct Locator {
-    files: Vec<PathBuf>,
-    map: HashMap<u64, Vec<(Hash, Loc)>>,
-    spool: Option<Spool>,
-    open: Option<(u32, File)>,
-}
-
-fn key(h: &Hash) -> u64 {
-    u64::from_le_bytes(h[..8].try_into().expect("8 bytes"))
-}
-
-impl Locator {
-    /// `spool_dir`: fallback chunk spool (unlinked right after creation, so a crash
-    /// leaves nothing behind); `max` bytes at most.
-    pub fn new(spool_dir: Option<&Path>, max: u64) -> io::Result<Locator> {
-        let spool = match spool_dir {
-            Some(d) if max > 0 => {
-                crate::config::ensure_dir(d, 0o700)?;
-                let p = d.join(format!("spool.{}.{}", std::process::id(), rand_u64()));
-                let f = fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .custom_flags(libc::O_NOFOLLOW)
-                    .open(&p)?;
-                fs::remove_file(&p)?;
-                Some(Spool { f, used: 0, max })
-            }
-            _ => None,
-        };
-        Ok(Locator {
-            spool,
-            ..Default::default()
-        })
-    }
-
-    fn add_file(&mut self, p: PathBuf) -> u32 {
-        self.files.push(p);
-        (self.files.len() - 1) as u32
-    }
-
-    fn add(&mut self, h: &Hash, mut loc: Loc, spool_data: Option<&[u8]>) -> io::Result<()> {
-        let locs = self.map.entry(key(h)).or_default();
-        let same: Vec<&Loc> = locs.iter().filter(|(x, _)| x == h).map(|(_, l)| l).collect();
-        if same.len() >= MAX_LOCS || same.iter().any(|l| l.spooled.is_some()) {
-            return Ok(());
-        }
-        if let (Some(data), Some(s)) = (spool_data, self.spool.as_mut()) {
-            if s.used + data.len() as u64 <= s.max {
-                s.f.write_all_at(data, s.used)?;
-                loc.spooled = Some(s.used);
-                s.used += data.len() as u64;
-            }
-        }
-        locs.push((*h, loc));
-        Ok(())
-    }
-
-    pub fn chunks(&self) -> usize {
-        self.map.values().map(|v| v.len()).sum()
-    }
-
-    pub fn spooled_bytes(&self) -> u64 {
-        self.spool.as_ref().map_or(0, |s| s.used)
-    }
-
-    /// Read a chunk again and verify its hash. `None` if no location still holds it
-    /// (unknown hash, or the live file changed since the scan).
-    pub fn get(&mut self, h: &Hash) -> Option<Vec<u8>> {
-        let locs: Vec<Loc> = self
-            .map
-            .get(&key(h))?
-            .iter()
-            .filter(|(x, _)| x == h)
-            .map(|(_, l)| *l)
-            .collect();
-        for loc in locs {
-            let mut buf = vec![0u8; loc.len as usize];
-            let ok = match loc.spooled {
-                Some(off) => self
-                    .spool
-                    .as_ref()
-                    .is_some_and(|s| s.f.read_exact_at(&mut buf, off).is_ok()),
-                None => self
-                    .file(loc.file)
-                    .is_some_and(|f| f.read_exact_at(&mut buf, loc.offset).is_ok()),
-            };
-            if ok && blake3::hash(&buf).as_bytes() == h {
-                return Some(buf);
-            }
-        }
-        None
-    }
-
-    fn file(&mut self, idx: u32) -> Option<&File> {
-        if self.open.as_ref().map(|(i, _)| *i) != Some(idx) {
-            let p = self.files.get(idx as usize)?;
-            let f = open_nofollow(p).ok()?;
-            self.open = Some((idx, f));
-        }
-        self.open.as_ref().map(|(_, f)| f)
-    }
-}
-
-fn rand_u64() -> u64 {
-    let mut b = [0u8; 8];
-    let _ = ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut b);
-    u64::from_le_bytes(b)
-}
-
-pub fn open_nofollow(p: &Path) -> io::Result<File> {
-    let o = |noatime: bool| {
-        fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | if noatime { libc::O_NOATIME } else { 0 })
-            .open(p)
-    };
-    match o(true) {
-        Err(e) if e.raw_os_error() == Some(libc::EPERM) => o(false),
-        r => r,
-    }
-}
+pub use agent_core::chunk::{open_read as open_nofollow, Locator};
 
 pub fn mtime_ns(m: &Metadata) -> i64 {
     m.mtime() * 1_000_000_000 + m.mtime_nsec()
@@ -395,25 +251,11 @@ impl<'a> Scanner<'a> {
 
     /// Fill `e.chunks`: from the cache if unchanged, otherwise by reading the file.
     fn file(&mut self, root: &Root, host: &Path, src: &Path, md: &Metadata, e: &mut Entry) -> bool {
-        let cached = self
-            .cache
-            .and_then(|c| c.lookup(&e.path, e.size, e.mtime_ns, e.ctime_ns, e.inode))
-            .filter(|c| c.chunks.iter().map(|(_, l)| *l as u64).sum::<u64>() == c.size)
-            .cloned();
+        let cached = chunk::reuse(self.cache, &e.path, e.size, e.mtime_ns, e.ctime_ns, e.inode);
         let idx = self.locator.add_file(src.to_path_buf());
         if let Some(c) = cached {
-            let mut off = 0;
-            for (h, l) in &c.chunks {
-                let loc = Loc {
-                    file: idx,
-                    offset: off,
-                    len: *l,
-                    spooled: None,
-                };
-                if let Err(err) = self.locator.add(h, loc, None) {
-                    self.error(format!("{}: {err}", host.display()));
-                }
-                off += *l as u64;
+            if let Err(err) = self.locator.add_list(idx, &c.chunks) {
+                self.error(format!("{}: {err}", host.display()));
             }
             e.chunks = c.chunks.clone();
             e.unchanged = true;
@@ -455,21 +297,7 @@ impl<'a> Scanner<'a> {
         if opened.dev() != pre.dev() || opened.ino() != pre.ino() {
             return Err(io::Error::other("replaced while scanning"));
         }
-        let mut chunks = vec![];
-        let mut total = 0u64;
-        for c in fastcdc::v2020::StreamCDC::new(&f, CDC_MIN, CDC_AVG, CDC_MAX) {
-            let c = c.map_err(io::Error::other)?;
-            let h = *blake3::hash(&c.data).as_bytes();
-            let loc = Loc {
-                file: idx,
-                offset: c.offset,
-                len: c.length as u32,
-                spooled: None,
-            };
-            self.locator.add(&h, loc, root.live.then_some(&c.data[..]))?;
-            chunks.push((h, c.length as u32));
-            total += c.length as u64;
-        }
+        let (chunks, total) = chunk::chunk_file(&mut self.locator, idx, &f, root.live)?;
         let post = f.metadata()?;
         let changed = total != pre.size()
             || post.size() != pre.size()
@@ -561,7 +389,7 @@ mod tests {
     }
 
     fn xattr_set(p: &Path, k: &str, v: &[u8]) -> io::Result<()> {
-        let f = File::open(p)?;
+        let f = fs::File::open(p)?;
         sys::fsetxattr(std::os::fd::AsRawFd::as_raw_fd(&f), k.as_bytes(), v)
     }
 

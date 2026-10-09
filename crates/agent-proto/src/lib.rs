@@ -28,6 +28,27 @@ pub enum SnapshotKind {
     Zfs,
     Btrfs,
     None,
+    /// Windows Volume Shadow Copy (appended in v1.1, additive)
+    Vss,
+}
+
+/// One VSS writer's part in a Windows backup (`WritersReport`, additive in v1.1).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct VssWriter {
+    /// writer name, e.g. "SqlServerWriter", "Microsoft Exchange Writer", "NTDS"
+    pub name: String,
+    /// writer class id (GUID, `{...}`)
+    pub class_id: String,
+    /// instance name ("" if none)
+    pub instance: String,
+    /// writer components were added to the backup (the writer was asked to freeze)
+    pub participated: bool,
+    /// final state after `BackupComplete`, e.g. "stable", "failed_at_prepare_snapshot"
+    pub state: String,
+    /// writer failure HRESULT as hex text ("" = none) and VSS error name
+    pub failure: String,
+    /// true for SQL Server / Exchange / AD writers (the UI warns if they did not take part)
+    pub application: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -200,6 +221,16 @@ pub enum Message {
         code: u32,
         message: String,
     },
+    // --- v1.1, appended (old peers never send/receive these) ---
+    /// Appliance → agent after `Prepared`, only if `HelloReply.caps` contains
+    /// `"vss-writers"`: which VSS writers took part in the job's snapshot.
+    Writers {
+        job: u64,
+    },
+    WritersReport {
+        job: u64,
+        writers: Vec<VssWriter>,
+    },
 }
 
 fn bad(msg: impl Into<String>) -> io::Error {
@@ -335,6 +366,33 @@ mod tests {
         )
         .unwrap();
         assert!(read_msg(&mut &buf[..]).is_err());
+    }
+
+    #[test]
+    fn appended_variants_keep_old_encodings() {
+        // v1 tags must not move: Error is still the last v1 variant (index 25)
+        let old = postcard::to_stdvec(&Message::Error {
+            code: 1,
+            message: String::new(),
+        })
+        .unwrap();
+        assert_eq!(old[0], 25);
+        assert_eq!(postcard::to_stdvec(&SnapshotKind::None).unwrap(), vec![3]);
+        let m = Message::WritersReport {
+            job: 1,
+            writers: vec![VssWriter {
+                name: "SqlServerWriter".into(),
+                class_id: "{a65faa63-5ea8-4ebc-9dbd-a0c4db26912a}".into(),
+                instance: String::new(),
+                participated: true,
+                state: "stable".into(),
+                failure: String::new(),
+                application: true,
+            }],
+        };
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &m).unwrap();
+        assert_eq!(read_msg(&mut &buf[..]).unwrap(), m);
     }
 
     #[test]

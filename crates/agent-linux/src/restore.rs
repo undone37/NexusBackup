@@ -1,20 +1,19 @@
-//! Restore to a path. Everything is written strictly below `target`:
-//! every path component is opened with `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS |
-//! RESOLVE_NO_MAGICLINKS)` + `O_NOFOLLOW` relative to the previous one, entry paths with
-//! empty, `.` or `..` components are refused, and new files are created under a
-//! temporary name (`O_EXCL`) and renamed into place, so a symlink planted at the
-//! destination is replaced, never followed.
+//! Restore to a path (Linux file system side of `agent_core::restore`). Everything is
+//! written strictly below `target`: every path component is opened with
+//! `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS)` + `O_NOFOLLOW`
+//! relative to the previous one, entry paths with empty, `.` or `..` components are
+//! refused, and new files are created under a temporary name (`O_EXCL`) and renamed
+//! into place, so a symlink planted at the destination is replaced, never followed.
 //!
-//! Order: the appliance sends all `RestoreEntries` first, then the chunk data
-//! (`RestoreChunk`, any order, each hash at least once), then `RestoreEnd`. Hardlinks
-//! and directory metadata are applied at the end.
+//! Order and bookkeeping (chunk placement, overwrite policy, hard links and directory
+//! metadata last) live in `agent_core::restore::Stream`.
 //!
 //! Restoring onto `/` is refused unless `overwrite = Always` and a confirmation token is
 //! given; every restore logs its confirmation token to the journal.
 
 use crate::sys::{self, openat_beneath};
-use agent_proto::{Entry, Hash, Kind, Overwrite, ScanStats, MAX_PATH};
-use std::collections::HashMap;
+use agent_core::restore::{parent_bytes, Existing, RestoreFs, Stream};
+use agent_proto::{Entry, Hash, Kind, Overwrite, ScanStats};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
@@ -23,45 +22,33 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
-struct Pending {
-    entry: Entry,
-    /// parent directory (relative path bytes) and temp name
-    parent: Vec<u8>,
-    name: OsString,
-    tmp: OsString,
-    remaining: usize,
-}
-
-pub struct Restore {
-    root: OwnedFd,
-    pub target: PathBuf,
-    overwrite: Overwrite,
-    files: Vec<Option<Pending>>,
-    want: HashMap<Hash, Vec<(usize, u64, u32)>>,
-    dirs: Vec<Entry>,
-    links: Vec<Entry>,
-    open: Option<(usize, File)>,
-    pub stats: ScanStats,
-    /// existing destinations left alone by the overwrite policy
-    pub kept: u64,
-    seq: u64,
-}
-
 fn err(msg: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidInput, msg.into())
+    agent_core::restore::invalid(msg)
 }
 
 /// Split an entry path into validated components.
 pub fn components(path: &[u8]) -> io::Result<Vec<&OsStr>> {
-    if path.is_empty() || path.len() > MAX_PATH || path.contains(&0) {
-        return Err(err("invalid path"));
-    }
-    let comps: Vec<&OsStr> = path.split(|b| *b == b'/').map(OsStr::from_bytes).collect();
-    if comps.iter().any(|c| c.is_empty() || *c == "." || *c == "..") {
-        return Err(err(format!("refusing path {}", String::from_utf8_lossy(path))));
-    }
-    Ok(comps)
+    Ok(agent_core::restore::components(path)?
+        .into_iter()
+        .map(OsStr::from_bytes)
+        .collect())
 }
+
+/// A regular file being restored: parent directory (relative path bytes) and names.
+pub struct Tmp {
+    parent: Vec<u8>,
+    name: OsString,
+    tmp: OsString,
+}
+
+pub struct LinuxFs {
+    root: OwnedFd,
+    pub target: PathBuf,
+    seq: u64,
+}
+
+/// A restore in progress (`agent_core::restore::Stream` over [`LinuxFs`]).
+pub struct Restore(pub Stream<LinuxFs>);
 
 impl Restore {
     /// Validate the target and open it. `/` (or anything resolving to it) needs
@@ -89,30 +76,53 @@ impl Restore {
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(Restore {
+        let fs = LinuxFs {
             // SAFETY: freshly opened fd.
             root: unsafe { std::os::fd::FromRawFd::from_raw_fd(fd) },
             target: canon,
-            overwrite,
-            files: vec![],
-            want: HashMap::new(),
-            dirs: vec![],
-            links: vec![],
-            open: None,
-            stats: ScanStats::default(),
-            kept: 0,
             seq: 0,
-        })
+        };
+        Ok(Restore(Stream::new(fs, overwrite)))
     }
 
-    fn error(&mut self, path: &[u8], e: impl std::fmt::Display) {
-        if self.stats.errors.len() < 1000 {
-            self.stats
-                .errors
-                .push(format!("{}: {e}", String::from_utf8_lossy(path)));
-        }
+    pub fn target(&self) -> &Path {
+        &self.0.fs.target
     }
 
+    pub fn entries(&mut self, batch: Vec<Entry>) {
+        self.0.entries(batch)
+    }
+
+    pub fn chunk(&mut self, hash: Hash, data: &[u8]) {
+        self.0.chunk(hash, data)
+    }
+
+    pub fn end(self) -> ScanStats {
+        self.0.end()
+    }
+}
+
+impl agent_core::server::RestoreJob for Restore {
+    fn entries(&mut self, batch: Vec<Entry>) {
+        self.0.entries(batch)
+    }
+    fn chunk(&mut self, hash: Hash, data: &[u8]) {
+        self.0.chunk(hash, data)
+    }
+    fn end(self) -> ScanStats {
+        self.0.end()
+    }
+    fn target(&self) -> String {
+        self.0.fs.target.display().to_string()
+    }
+}
+
+fn not_root_eperm(x: &io::Error) -> bool {
+    // unprivileged restores keep the restoring user's ownership
+    x.raw_os_error() == Some(libc::EPERM) && sys::geteuid() != 0
+}
+
+impl LinuxFs {
     /// Open the directory `comps` below the target, creating missing directories (0700;
     /// their real metadata arrives with their own entries).
     fn open_dir(&self, comps: &[&OsStr], create: bool) -> io::Result<OwnedFd> {
@@ -146,121 +156,26 @@ impl Restore {
         OsString::from(format!(".nexus-restore.{}.{}", std::process::id(), self.seq))
     }
 
-    /// Overwrite policy for an existing destination. Ok(true) = go ahead.
-    fn may_replace(&self, dir: &OwnedFd, name: &OsStr, e: &Entry) -> io::Result<bool> {
-        let st = match sys::fstatat_nofollow(dir.as_raw_fd(), name) {
-            Err(x) if x.raw_os_error() == Some(libc::ENOENT) => return Ok(true),
-            r => r?,
+    fn open_tmp_in(&self, t: &Tmp, flags: i32) -> io::Result<(OwnedFd, File)> {
+        let comps = if t.parent.is_empty() {
+            vec![]
+        } else {
+            components(&t.parent)?
         };
-        let is_dir = st.st_mode & libc::S_IFMT == libc::S_IFDIR;
-        if e.kind == Kind::Dir {
-            return Ok(is_dir || self.overwrite == Overwrite::Always);
-        }
-        if is_dir {
-            return Err(err("a directory is in the way (not removed)"));
-        }
-        Ok(match self.overwrite {
-            Overwrite::Never => false,
-            Overwrite::Always => true,
-            Overwrite::IfOlder => st.st_mtime * 1_000_000_000 + st.st_mtime_nsec < e.mtime_ns,
-        })
+        let dir = self.open_dir(&comps, false)?;
+        let f = openat_beneath(dir.as_raw_fd(), &t.tmp, flags, 0)?;
+        Ok((dir, f.into()))
     }
 
-    pub fn entries(&mut self, batch: Vec<Entry>) {
-        for e in batch {
-            let path = e.path.clone();
-            if let Err(x) = self.entry(e) {
-                self.error(&path, x);
-            }
+    fn chown_at(&self, fd: i32, name: &OsStr, e: &Entry) -> io::Result<()> {
+        match sys::fchownat_nofollow(fd, name, e.uid, e.gid) {
+            Err(x) if not_root_eperm(&x) => Ok(()),
+            r => r,
         }
-    }
-
-    fn entry(&mut self, e: Entry) -> io::Result<()> {
-        if e.kind == Kind::Hardlink {
-            components(e.link_target.as_deref().unwrap_or_default())?;
-            self.links.push(e);
-            return Ok(());
-        }
-        // the appliance may send the root itself as "" / "."; it is the target
-        if e.path.is_empty() || e.path == b"." {
-            return Ok(());
-        }
-        let (dir, name) = self.parent_of(&e.path)?;
-        if !self.may_replace(&dir, &name, &e)? {
-            // policy decision, not an error (errors fail the restore job)
-            self.kept += 1;
-            return Ok(());
-        }
-        let fd = dir.as_raw_fd();
-        match e.kind {
-            Kind::Dir => {
-                match sys::fstatat_nofollow(fd, &name) {
-                    Ok(st) if st.st_mode & libc::S_IFMT == libc::S_IFDIR => {}
-                    Ok(_) => {
-                        sys::unlinkat(fd, &name, false)?;
-                        sys::mkdirat(fd, &name, 0o700)?;
-                    }
-                    Err(_) => sys::mkdirat(fd, &name, 0o700)?,
-                }
-                self.stats.dirs += 1;
-                self.dirs.push(e);
-            }
-            Kind::File => {
-                let sum: u64 = e.chunks.iter().map(|(_, l)| *l as u64).sum();
-                if sum != e.size {
-                    return Err(err("chunk lengths do not add up to the size"));
-                }
-                let tmp = self.tmp_name();
-                let f: File = openat_beneath(fd, &tmp, libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL, 0o600)?.into();
-                f.set_len(e.size)?;
-                drop(f);
-                let idx = self.files.len();
-                let mut off = 0;
-                for (h, l) in &e.chunks {
-                    self.want.entry(*h).or_default().push((idx, off, *l));
-                    off += *l as u64;
-                }
-                let parent = parent_bytes(&e.path);
-                let p = Pending {
-                    remaining: e.chunks.len(),
-                    parent,
-                    name,
-                    tmp,
-                    entry: e,
-                };
-                self.stats.files += 1;
-                if p.remaining == 0 {
-                    self.files.push(None);
-                    self.finish(p)?;
-                } else {
-                    self.files.push(Some(p));
-                }
-            }
-            Kind::Symlink => {
-                let target = e.link_target.clone().ok_or_else(|| err("symlink without target"))?;
-                let tmp = self.tmp_name();
-                sys::symlinkat(&target, fd, &tmp)?;
-                self.place(&dir, &tmp, &name, &e)?;
-            }
-            Kind::Device | Kind::Fifo | Kind::Socket => {
-                let t = match e.kind {
-                    Kind::Fifo => libc::S_IFIFO,
-                    Kind::Socket => libc::S_IFSOCK,
-                    // devices keep their type bits in `mode` (see scan.rs)
-                    _ if e.mode & libc::S_IFMT == libc::S_IFBLK => libc::S_IFBLK,
-                    _ => libc::S_IFCHR,
-                };
-                let tmp = self.tmp_name();
-                sys::mknodat(fd, &tmp, t | (e.mode & 0o7777), e.rdev)?;
-                self.place(&dir, &tmp, &name, &e)?;
-            }
-            Kind::Hardlink => unreachable!(),
-        }
-        Ok(())
     }
 
     /// Metadata on a freshly created non-regular node, then rename into place.
-    fn place(&mut self, dir: &OwnedFd, tmp: &OsStr, name: &OsStr, e: &Entry) -> io::Result<()> {
+    fn place(&self, dir: &OwnedFd, tmp: &OsStr, name: &OsStr, e: &Entry, warn: &mut Vec<String>) -> io::Result<()> {
         let fd = dir.as_raw_fd();
         let r = (|| {
             self.chown_at(fd, tmp, e)?;
@@ -271,7 +186,7 @@ impl Restore {
                 let node = openat_beneath(fd, tmp, libc::O_PATH, 0)?;
                 for (k, v) in &e.xattrs {
                     if let Err(x) = sys::setxattr_opath(node.as_raw_fd(), k, v) {
-                        self.error(&e.path, format!("xattr {}: {x}", String::from_utf8_lossy(k)));
+                        warn.push(format!("xattr {}: {x}", String::from_utf8_lossy(k)));
                     }
                 }
             }
@@ -283,182 +198,161 @@ impl Restore {
         }
         r
     }
+}
 
-    fn chown_at(&mut self, fd: i32, name: &OsStr, e: &Entry) -> io::Result<()> {
-        match sys::fchownat_nofollow(fd, name, e.uid, e.gid) {
-            // unprivileged restores keep the restoring user's ownership
-            Err(x) if x.raw_os_error() == Some(libc::EPERM) && sys::geteuid() != 0 => Ok(()),
-            r => r,
-        }
+impl RestoreFs for LinuxFs {
+    type Tmp = Tmp;
+    type Writer = File;
+
+    fn target_display(&self) -> String {
+        self.target.display().to_string()
     }
 
-    pub fn chunk(&mut self, hash: Hash, data: &[u8]) {
-        if blake3::hash(data).as_bytes() != &hash {
-            self.error(b"<chunk>", format!("hash mismatch for {}", hex::encode(hash)));
-            return;
-        }
-        let Some(places) = self.want.remove(&hash) else { return };
-        for (idx, off, len) in places {
-            if len as usize != data.len() {
-                let p = self.files[idx]
-                    .as_ref()
-                    .map(|p| p.entry.path.clone())
-                    .unwrap_or_default();
-                self.error(&p, "chunk length mismatch");
-                continue;
-            }
-            if let Err(x) = self.write_at(idx, off, data) {
-                let p = self.files[idx]
-                    .as_ref()
-                    .map(|p| p.entry.path.clone())
-                    .unwrap_or_default();
-                self.error(&p, x);
-                continue;
-            }
-            self.stats.bytes += len as u64;
-            let done = self.files[idx].as_mut().is_some_and(|p| {
-                p.remaining -= 1;
-                p.remaining == 0
-            });
-            if done {
-                let p = self.files[idx].take().expect("pending");
-                if self.open.as_ref().is_some_and(|(i, _)| *i == idx) {
-                    self.open = None;
-                }
-                let path = p.entry.path.clone();
-                if let Err(x) = self.finish(p) {
-                    self.error(&path, x);
-                }
-            }
-        }
+    fn check_path(&self, path: &[u8]) -> io::Result<()> {
+        components(path).map(drop)
     }
 
-    fn open_tmp(&self, p: &Pending, flags: i32) -> io::Result<(OwnedFd, File)> {
-        let comps = if p.parent.is_empty() {
-            vec![]
-        } else {
-            components(&p.parent)?
+    fn existing(&mut self, path: &[u8]) -> io::Result<Existing> {
+        let (dir, name) = self.parent_of(path)?;
+        let st = match sys::fstatat_nofollow(dir.as_raw_fd(), &name) {
+            Err(x) if x.raw_os_error() == Some(libc::ENOENT) => return Ok(Existing::Missing),
+            r => r?,
         };
-        let dir = self.open_dir(&comps, false)?;
-        let f = openat_beneath(dir.as_raw_fd(), &p.tmp, flags, 0)?;
-        Ok((dir, f.into()))
+        Ok(if st.st_mode & libc::S_IFMT == libc::S_IFDIR {
+            Existing::Dir
+        } else {
+            Existing::Other {
+                mtime_ns: st.st_mtime * 1_000_000_000 + st.st_mtime_nsec,
+            }
+        })
     }
 
-    fn write_at(&mut self, idx: usize, off: u64, data: &[u8]) -> io::Result<()> {
-        if self.open.as_ref().map(|(i, _)| *i) != Some(idx) {
-            let p = self.files[idx].as_ref().ok_or_else(|| err("file already completed"))?;
-            let (_, f) = self.open_tmp(p, libc::O_WRONLY)?;
-            self.open = Some((idx, f));
+    fn make_dir(&mut self, e: &Entry, existing: Existing) -> io::Result<()> {
+        let (dir, name) = self.parent_of(&e.path)?;
+        let fd = dir.as_raw_fd();
+        match existing {
+            Existing::Dir => Ok(()),
+            Existing::Other { .. } => {
+                sys::unlinkat(fd, &name, false)?;
+                sys::mkdirat(fd, &name, 0o700)
+            }
+            Existing::Missing => sys::mkdirat(fd, &name, 0o700),
         }
-        self.open.as_ref().expect("opened").1.write_all_at(data, off)
+    }
+
+    fn create_file(&mut self, e: &Entry) -> io::Result<Tmp> {
+        let (dir, name) = self.parent_of(&e.path)?;
+        let tmp = self.tmp_name();
+        let f: File = openat_beneath(
+            dir.as_raw_fd(),
+            &tmp,
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+            0o600,
+        )?
+        .into();
+        f.set_len(e.size)?;
+        Ok(Tmp {
+            parent: parent_bytes(&e.path).to_vec(),
+            name,
+            tmp,
+        })
+    }
+
+    fn open_tmp(&mut self, t: &Tmp) -> io::Result<File> {
+        Ok(self.open_tmp_in(t, libc::O_WRONLY)?.1)
+    }
+
+    fn write_at(&mut self, w: &File, off: u64, data: &[u8]) -> io::Result<()> {
+        w.write_all_at(data, off)
     }
 
     /// Owner, mode, xattrs, times on the temp file, then rename over the destination.
-    fn finish(&mut self, p: Pending) -> io::Result<()> {
-        let (dir, f) = self.open_tmp(&p, libc::O_WRONLY)?;
-        let e = &p.entry;
+    fn commit_file(&mut self, t: Tmp, e: &Entry, warn: &mut Vec<String>) -> io::Result<()> {
+        let (dir, f) = self.open_tmp_in(&t, libc::O_WRONLY)?;
         let r = (|| {
             match std::os::unix::fs::fchown(&f, Some(e.uid), Some(e.gid)) {
-                Err(x) if x.raw_os_error() == Some(libc::EPERM) && sys::geteuid() != 0 => {}
+                Err(x) if not_root_eperm(&x) => {}
                 r => r?,
             }
             f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(e.mode & 0o7777))?;
-            let mut xerr = vec![];
             for (k, v) in &e.xattrs {
                 if let Err(x) = sys::fsetxattr(f.as_raw_fd(), k, v) {
-                    xerr.push(format!("xattr {}: {x}", String::from_utf8_lossy(k)));
+                    warn.push(format!("xattr {}: {x}", String::from_utf8_lossy(k)));
                 }
             }
             set_times(&f, e.mtime_ns)?;
-            sys::renameat(dir.as_raw_fd(), &p.tmp, dir.as_raw_fd(), &p.name)?;
-            Ok::<_, io::Error>(xerr)
+            sys::renameat(dir.as_raw_fd(), &t.tmp, dir.as_raw_fd(), &t.name)
         })();
-        match r {
-            Ok(xerr) => {
-                for x in xerr {
-                    self.error(&e.path, x);
-                }
-                Ok(())
-            }
-            Err(x) => {
-                let _ = sys::unlinkat(dir.as_raw_fd(), &p.tmp, false);
-                Err(x)
-            }
+        if r.is_err() {
+            let _ = sys::unlinkat(dir.as_raw_fd(), &t.tmp, false);
+        }
+        r
+    }
+
+    fn discard(&mut self, t: Tmp) {
+        if let Ok((dir, _)) = self.open_tmp_in(&t, libc::O_RDONLY) {
+            let _ = sys::unlinkat(dir.as_raw_fd(), &t.tmp, false);
         }
     }
 
-    /// Hardlinks, incomplete files, directory metadata (deepest first), sync.
-    pub fn end(mut self) -> ScanStats {
-        self.open = None;
-        for i in 0..self.files.len() {
-            if let Some(p) = self.files[i].take() {
-                if let Ok((dir, _)) = self.open_tmp(&p, libc::O_RDONLY) {
-                    let _ = sys::unlinkat(dir.as_raw_fd(), &p.tmp, false);
-                }
-                self.error(
-                    &p.entry.path,
-                    format!("incomplete: {} chunk(s) never received", p.remaining),
-                );
+    fn create_other(&mut self, e: &Entry, warn: &mut Vec<String>) -> io::Result<()> {
+        let (dir, name) = self.parent_of(&e.path)?;
+        let fd = dir.as_raw_fd();
+        let tmp = self.tmp_name();
+        match e.kind {
+            Kind::Symlink => {
+                let target = e.link_target.clone().ok_or_else(|| err("symlink without target"))?;
+                sys::symlinkat(&target, fd, &tmp)?;
             }
-        }
-        for e in std::mem::take(&mut self.links) {
-            let r = (|| -> io::Result<bool> {
-                let target = e.link_target.as_deref().unwrap_or_default();
-                let (tdir, tname) = self.parent_of(target)?;
-                let (dir, name) = self.parent_of(&e.path)?;
-                if !self.may_replace(&dir, &name, &e)? {
-                    return Ok(false);
-                }
-                let tmp = self.tmp_name();
-                sys::linkat(tdir.as_raw_fd(), &tname, dir.as_raw_fd(), &tmp)?;
-                sys::renameat(dir.as_raw_fd(), &tmp, dir.as_raw_fd(), &name).inspect_err(|_| {
-                    let _ = sys::unlinkat(dir.as_raw_fd(), &tmp, false);
-                })?;
-                Ok(true)
-            })();
-            match r {
-                Ok(true) => self.stats.files += 1,
-                Ok(false) => self.kept += 1,
-                Err(x) => self.error(&e.path, x),
-            }
-        }
-        let mut dirs = std::mem::take(&mut self.dirs);
-        dirs.sort_by_key(|e| std::cmp::Reverse(e.path.iter().filter(|b| **b == b'/').count()));
-        for e in dirs {
-            let r = (|| {
-                let comps = components(&e.path)?;
-                let d: File = {
-                    let (last, parents) = comps.split_last().expect("non-empty");
-                    let parent = self.open_dir(parents, false)?;
-                    openat_beneath(parent.as_raw_fd(), last, libc::O_RDONLY | libc::O_DIRECTORY, 0)?.into()
+            Kind::Device | Kind::Fifo | Kind::Socket => {
+                let t = match e.kind {
+                    Kind::Fifo => libc::S_IFIFO,
+                    Kind::Socket => libc::S_IFSOCK,
+                    // devices keep their type bits in `mode` (see scan.rs)
+                    _ if e.mode & libc::S_IFMT == libc::S_IFBLK => libc::S_IFBLK,
+                    _ => libc::S_IFCHR,
                 };
-                match std::os::unix::fs::fchown(&d, Some(e.uid), Some(e.gid)) {
-                    Err(x) if x.raw_os_error() == Some(libc::EPERM) && sys::geteuid() != 0 => {}
-                    r => r?,
-                }
-                d.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(e.mode & 0o7777))?;
-                for (k, v) in &e.xattrs {
-                    if let Err(x) = sys::fsetxattr(d.as_raw_fd(), k, v) {
-                        self.error(&e.path, format!("xattr {}: {x}", String::from_utf8_lossy(k)));
-                    }
-                }
-                set_times(&d, e.mtime_ns)
-            })();
-            if let Err(x) = r {
-                self.error(&e.path, x);
+                sys::mknodat(fd, &tmp, t | (e.mode & 0o7777), e.rdev)?;
+            }
+            _ => return Err(err("unexpected entry kind")),
+        }
+        self.place(&dir, &tmp, &name, e, warn)
+    }
+
+    fn hardlink(&mut self, e: &Entry) -> io::Result<()> {
+        let target = e.link_target.as_deref().unwrap_or_default();
+        let (tdir, tname) = self.parent_of(target)?;
+        let (dir, name) = self.parent_of(&e.path)?;
+        let tmp = self.tmp_name();
+        sys::linkat(tdir.as_raw_fd(), &tname, dir.as_raw_fd(), &tmp)?;
+        sys::renameat(dir.as_raw_fd(), &tmp, dir.as_raw_fd(), &name).inspect_err(|_| {
+            let _ = sys::unlinkat(dir.as_raw_fd(), &tmp, false);
+        })
+    }
+
+    fn dir_metadata(&mut self, e: &Entry, _existed: bool, warn: &mut Vec<String>) -> io::Result<()> {
+        let comps = components(&e.path)?;
+        let d: File = {
+            let (last, parents) = comps.split_last().expect("non-empty");
+            let parent = self.open_dir(parents, false)?;
+            openat_beneath(parent.as_raw_fd(), last, libc::O_RDONLY | libc::O_DIRECTORY, 0)?.into()
+        };
+        match std::os::unix::fs::fchown(&d, Some(e.uid), Some(e.gid)) {
+            Err(x) if not_root_eperm(&x) => {}
+            r => r?,
+        }
+        d.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(e.mode & 0o7777))?;
+        for (k, v) in &e.xattrs {
+            if let Err(x) = sys::fsetxattr(d.as_raw_fd(), k, v) {
+                warn.push(format!("xattr {}: {x}", String::from_utf8_lossy(k)));
             }
         }
-        if self.kept > 0 {
-            eprintln!(
-                "nexus-agent: restore to {}: {} existing entries kept ({:?})",
-                self.target.display(),
-                self.kept,
-                self.overwrite
-            );
-        }
+        set_times(&d, e.mtime_ns)
+    }
+
+    fn finish(&mut self) {
         // SAFETY: syncfs on our own fd.
         unsafe { libc::syncfs(self.root.as_raw_fd()) };
-        self.stats
     }
 }
 
@@ -472,14 +366,6 @@ fn set_times(f: &File, mtime_ns: i64) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
-}
-
-/// parent directory of an entry path ("" for top-level entries)
-fn parent_bytes(p: &[u8]) -> Vec<u8> {
-    p.iter()
-        .rposition(|b| *b == b'/')
-        .map(|i| p[..i].to_vec())
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

@@ -1,13 +1,18 @@
-//! File layout and `agent.conf` settings.
+//! File layout and `agent.conf` settings (shared by all agents).
 //!
-//! `/etc/nexus-agent` (0700 root): `agent.conf`, `token` (sha256 of the enrollment token),
-//! `agent.key` (private key, 0600), `enroll.crt` (self-signed, enrollment mode),
+//! Linux: `/etc/nexus-agent` (0700 root): `agent.conf`, `token` (sha256 of the enrollment
+//! token), `agent.key` (private key, 0600), `enroll.crt` (self-signed, enrollment mode),
 //! `agent.crt` + `ca.crt` + `agent.id` (after enrollment), `hooks.d/{pre,post}/`,
 //! `release-keys/*.pub` (pinned cosign keys for self-update).
 //! `/var/lib/nexus-agent` (0700): `enroll.failures`, `cache/`, `spool/`, `snapshots.journal`.
+//!
+//! Windows: the same names below `%ProgramData%\NexusAgent\config` and `...\state`; the
+//! directory `%ProgramData%\NexusAgent` carries a protected ACL (SYSTEM + Administrators
+//! only) that every file inherits, so the Unix `mode` arguments are ignored there.
 
 use std::fs;
 use std::io::{self, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -24,11 +29,23 @@ pub struct Paths {
 }
 
 impl Default for Paths {
+    #[cfg(not(windows))]
     fn default() -> Self {
         Paths {
             config: DEFAULT_CONFIG.into(),
             state: DEFAULT_STATE.into(),
             run: DEFAULT_RUN.into(),
+        }
+    }
+
+    #[cfg(windows)]
+    fn default() -> Self {
+        let base = PathBuf::from(std::env::var_os("ProgramData").unwrap_or_else(|| "C:\\ProgramData".into()))
+            .join("NexusAgent");
+        Paths {
+            config: base.join("config"),
+            state: base.join("state"),
+            run: base.join("run"),
         }
     }
 }
@@ -148,7 +165,8 @@ impl Settings {
     }
 }
 
-/// Write a file atomically (temp file + fsync + rename) with the given mode.
+/// Write a file atomically (temp file + fsync + rename) with the given mode (Unix; on
+/// Windows the file inherits the protected ACL of its directory).
 pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> io::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let tmp = dir.join(format!(
@@ -157,13 +175,15 @@ pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> io::Result<()> {
         std::process::id()
     ));
     let _ = fs::remove_file(&tmp);
-    let mut f = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(mode)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&tmp)?;
+    let mut o = fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    o.mode(mode).custom_flags(libc::O_NOFOLLOW);
+    #[cfg(not(unix))]
+    let _ = mode;
+    let mut f = o.open(&tmp)?;
     f.write_all(data)?;
+    #[cfg(unix)]
     f.set_permissions(fs::Permissions::from_mode(mode))?;
     f.sync_all()?;
     drop(f);
@@ -174,10 +194,16 @@ pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> io::Result<()> {
     Ok(())
 }
 
-/// Create a directory (and parents) and force its mode.
+/// Create a directory (and parents) and force its mode (Unix only, see above).
 pub fn ensure_dir(path: &Path, mode: u32) -> io::Result<()> {
     fs::create_dir_all(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+    #[cfg(unix)]
+    return fs::set_permissions(path, fs::Permissions::from_mode(mode));
+    #[cfg(not(unix))]
+    {
+        let _ = mode;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

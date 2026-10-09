@@ -58,6 +58,8 @@ pub fn name(m: &Message) -> &'static str {
         Message::Update { .. } => "Update",
         Message::UpdateDone => "UpdateDone",
         Message::Error { .. } => "Error",
+        Message::Writers { .. } => "Writers",
+        Message::WritersReport { .. } => "WritersReport",
     }
 }
 
