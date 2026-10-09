@@ -41,6 +41,14 @@
 //! 0600 files in the job dir); snapshots are `nas-<source>-<pool.dataset>`,
 //! retention covers each dataset and (recursive) its children by prefix.
 //!
+//! `sources.config` (kinds `nfs` / `smb`, docs/nas-connector.md): one share
+//! (`host`, `port`, `version`, NFS `export`/`mount_port`, SMB `share`/`user`/
+//! `domain`/`sec`/`sign`/`seal` with the sealed `password` or `keytab` +
+//! `principal`), `snapshot_dir`/`snapshot_prefix`/`snapshot_order`, `excludes`,
+//! `threads`, `xattrs`, `timeout_secs`. Groups have no guests; backups spawn
+//! `nexus-nas <job>/nas.json backup` (SMB secret as a 0600 file in the job dir;
+//! the connector asks `nexus-nasmount` for the mount), snapshots are `share-<source>`.
+//!
 //! `tenants.offsite`: `{ "remote": { "type": "sftp", "host": …, "user": …, "host_key": …,
 //! "key_file": "/path", "port"?, "base_dir"? } | { "type": "local", "path": … },
 //! "bwlimit"?: bytes/s, "uploaders"?: n }`. No `remote` = no offsite for this tenant.
@@ -99,6 +107,10 @@ pub struct Config {
     pub agentctl_bin: PathBuf,
     /// TrueNAS connector (crate truenas)
     pub truenas_bin: PathBuf,
+    /// NFS/SMB connector (crate nas)
+    pub nas_bin: PathBuf,
+    /// socket of the NAS mount helper (nexus-nasmount.socket)
+    pub nas_mount_socket: PathBuf,
     /// appliance CA for agents (created by nexus-agentctl on first use); default `<state_dir>/agent-ca`
     pub agent_ca_dir: Option<PathBuf>,
     /// signed agent binaries for `agent_update` (nexus-agent, .sig, .version)
@@ -151,6 +163,8 @@ impl Default for Config {
             offsite_bin: "/usr/libexec/nexus/nexus-offsite".into(),
             agentctl_bin: "/usr/libexec/nexus/nexus-agentctl".into(),
             truenas_bin: "/usr/libexec/nexus/nexus-truenas".into(),
+            nas_bin: "/usr/libexec/nexus/nexus-nas".into(),
+            nas_mount_socket: nas::MOUNT_SOCKET.into(),
             agent_ca_dir: None,
             agent_update_dir: "/usr/share/nexus/agent".into(),
             alerts_config: "/etc/nexus/alerts.json".into(),
@@ -220,6 +234,8 @@ struct GroupRow {
     agents: Vec<String>,
     /// datasets (truenas sources: the group's guests are dataset names)
     datasets: Vec<String>,
+    /// nfs/smb source: the group backs up the share itself (`share-<source>`)
+    share: bool,
     schedule: String,
     gfs: Gfs,
     offsite: bool,
@@ -257,13 +273,15 @@ fn valid_agent_id(s: &str) -> bool {
 }
 
 /// Snapshot sources of a group: `vm-/ct-<vmid>` for PVE, `host-<agent>` for Linux agents,
-/// `nas-<source>-<dataset>` for TrueNAS (children of recursive datasets: [`group_prefixes`]).
+/// `nas-<source>-<dataset>` for TrueNAS (children of recursive datasets: [`group_prefixes`]),
+/// `share-<source>` for NFS/SMB shares.
 fn group_sources(g: &GroupRow) -> Vec<String> {
     g.guests
         .iter()
         .flat_map(|v| [format!("vm-{v}"), format!("ct-{v}")])
         .chain(g.agents.iter().map(|a| format!("host-{a}")))
         .chain(g.datasets.iter().map(|d| truenas::source_name(g.source_id as u64, d)))
+        .chain(g.share.then(|| nas::source_name(g.source_id as u64)))
         .collect()
 }
 
@@ -631,8 +649,11 @@ impl Scheduler {
         let rows = st.query_map([], |r| {
             let guests: Vec<Value> = serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default();
             let gfs: String = r.get(5)?;
-            let nas = r.get::<_, String>(7)? == "truenas";
+            let kind = r.get::<_, String>(7)?;
+            let nas = kind == "truenas";
+            let share = kind == "nfs" || kind == "smb";
             Ok(GroupRow {
+                share,
                 datasets: if nas {
                     guests
                         .iter()
@@ -648,7 +669,7 @@ impl Scheduler {
                     .iter()
                     .filter_map(|g| g.as_u64().and_then(|v| u32::try_from(v).ok()))
                     .collect(),
-                agents: if nas {
+                agents: if nas || share {
                     Vec::new()
                 } else {
                     guests
@@ -725,6 +746,16 @@ impl Scheduler {
             for cfg in st.query_map([], |r| r.get::<_, String>(0))? {
                 if let Ok(v) = serde_json::from_str::<Value>(&cfg?) {
                     targets.extend(firewall::truenas_targets(&v));
+                }
+            }
+        }
+        {
+            let c = self.db.conn();
+            let mut st = c.prepare("SELECT kind, config FROM sources WHERE kind IN ('nfs','smb')")?;
+            for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+                let (kind, cfg) = row?;
+                if let Ok(v) = serde_json::from_str::<Value>(&cfg) {
+                    targets.extend(firewall::share_targets(&kind, &v));
                 }
             }
         }
@@ -956,8 +987,12 @@ impl Scheduler {
         }
         self.agent_bookkeeping(&job, &log)?;
         if ok && job.kind == "backup" {
-            // agent backups without snapshots / with failed hooks are usable but not crash-consistent
-            for l in log.lines().filter(|l| l.starts_with("inconsistent host-")) {
+            // agent backups without snapshots / with failed hooks, share backups without a NAS
+            // snapshot or with files changed while read: usable but not crash-consistent
+            for l in log
+                .lines()
+                .filter(|l| l.starts_with("inconsistent host-") || l.starts_with("inconsistent share-"))
+            {
                 let what = l.trim_start_matches("inconsistent ");
                 let src = what.split('/').next().unwrap_or_default();
                 self.alert(
@@ -1127,6 +1162,18 @@ impl Scheduler {
                         let mut v = json!({"source": s, "time": t.parse::<i64>().ok()?});
                         if s.starts_with("nas-") {
                             // `…, <n> bytes transferred[, full read …]` (nexus-truenas)
+                            if let Some(n) = rest
+                                .split_once(" bytes transferred")
+                                .and_then(|(a, _)| a.rsplit(' ').next())
+                                .and_then(|n| n.parse::<u64>().ok())
+                            {
+                                v["transferred_bytes"] = json!(n);
+                            }
+                        }
+                        if s.starts_with("share-") {
+                            // `…, <n> bytes transferred, …` and `inconsistent <id>: …` (nexus-nas)
+                            let bad = format!("inconsistent {id}:");
+                            v["consistent"] = json!(!log.lines().any(|x| x.starts_with(&bad)));
                             if let Some(n) = rest
                                 .split_once(" bytes transferred")
                                 .and_then(|(a, _)| a.rsplit(' ').next())
@@ -1463,6 +1510,95 @@ impl Scheduler {
         Ok(plan)
     }
 
+    /// nexus-nas config (docs/nas-connector.md); the SMB password / keytab go
+    /// into 0600 files in the job dir (the connector hands them to the mount
+    /// helper, which gives the password to the kernel as one mount parameter).
+    fn share_config(&self, tenant: &str, source_id: i64, dir: &Path) -> Result<Files> {
+        let kind: String = self
+            .db
+            .conn()
+            .query_row(
+                "SELECT kind FROM sources WHERE id=?1 AND tenant=?2",
+                params![source_id, tenant],
+                |r| r.get(0),
+            )
+            .optional()?
+            .with_context(|| format!("source {source_id} not found in tenant {tenant}"))?;
+        if kind != "nfs" && kind != "smb" {
+            bail!("source {source_id} is not a share source");
+        }
+        let src = self.source_of(tenant, source_id, &kind)?;
+        let mut files: Files = Vec::new();
+        let mut share = json!({
+            "kind": kind,
+            "host": src["host"].as_str().with_context(|| format!("source {source_id}: missing host"))?,
+            "sign": src["sign"].as_bool().unwrap_or(true),
+            "seal": src["seal"].as_bool().unwrap_or(false),
+            "timeout_secs": src["timeout_secs"].as_u64().unwrap_or(60),
+        });
+        for k in [
+            "port",
+            "version",
+            "export",
+            "mount_port",
+            "share",
+            "user",
+            "domain",
+            "sec",
+            "principal",
+        ] {
+            if !src[k].is_null() {
+                share[k] = src[k].clone();
+            }
+        }
+        if let Some(p) = src["password"].as_str() {
+            files.push(("smb-password".into(), p.as_bytes().to_vec()));
+            share["password_file"] = json!(dir.join("smb-password"));
+        }
+        if let Some(k) = src["keytab"].as_str() {
+            use base64::Engine;
+            let raw = base64::engine::general_purpose::STANDARD
+                .decode(k)
+                .with_context(|| format!("source {source_id}: keytab is not base64"))?;
+            files.push(("smb.keytab".into(), raw));
+            share["keytab_file"] = json!(dir.join("smb.keytab"));
+        }
+        let mut cfg = json!({
+            "tenant": tenant,
+            "store": self.cfg.store_base.join(tenant),
+            "keyd_socket": self.cfg.keyd_socket,
+            "source_id": source_id,
+            "mount_socket": self.cfg.nas_mount_socket,
+            "share": share,
+            "excludes": src["excludes"].as_array().cloned().unwrap_or_default(),
+            "threads": src["threads"].as_u64().unwrap_or(16),
+            "xattrs": src["xattrs"].as_bool().unwrap_or(true),
+        });
+        for k in ["snapshot_dir", "snapshot_prefix", "snapshot_order"] {
+            if src[k].is_string() {
+                cfg[k] = src[k].clone();
+            }
+        }
+        files.push(("nas.json".into(), serde_json::to_vec_pretty(&cfg)?));
+        Ok(files)
+    }
+
+    /// Backup of an NFS/SMB share (one nexus-nas run; exclusive per source).
+    fn plan_share_backup(&self, mut plan: Plan, source_id: i64) -> Result<Plan> {
+        plan.key = format!("source:{source_id}");
+        plan.files = self.share_config(&plan.tenant, source_id, &plan.dir)?;
+        plan.steps.push(Step::Cli {
+            bin: self.cfg.nas_bin.clone(),
+            args: vec![
+                plan.dir.join("nas.json").to_string_lossy().into_owned(),
+                "backup".into(),
+            ],
+            alert: None,
+            capture: false,
+        });
+        Ok(plan)
+    }
+
     fn offsite_cfg(&self, tenant: &str) -> Result<Option<Value>> {
         let o: Option<String> = self
             .db
@@ -1731,6 +1867,9 @@ impl Scheduler {
                         if !g.datasets.is_empty() {
                             return self.plan_truenas_backup(plan, g.source_id, &g.datasets);
                         }
+                        if g.share {
+                            return self.plan_share_backup(plan, g.source_id);
+                        }
                         if !g.agents.is_empty() {
                             return self.plan_agent_backups(job, plan, g.source_id, &g.agents);
                         }
@@ -1804,11 +1943,26 @@ impl Scheduler {
                     gfs,
                 });
             }
+            "retention" if p["source"].as_str().is_some_and(|s| s.starts_with("share-")) => {
+                let source = ident(p, "source")?;
+                let sid = nas::parse_source_name(source).with_context(|| format!("invalid source {source:?}"))?;
+                let gfs = self
+                    .groups()?
+                    .into_iter()
+                    .find(|g| g.tenant == tenant && g.share && g.source_id as u64 == sid)
+                    .map_or_else(Gfs::default, |g| g.gfs);
+                plan.key = format!("source:{sid}");
+                plan.steps.push(Step::Retention {
+                    sources: vec![source.to_owned()],
+                    prefixes: Vec::new(),
+                    gfs,
+                });
+            }
             "retention" => {
                 let (source_id, vmids, gfs) = match p["group_id"].as_i64() {
                     Some(g) => {
                         let g = group(g)?;
-                        if !g.agents.is_empty() || !g.datasets.is_empty() {
+                        if !g.agents.is_empty() || !g.datasets.is_empty() || g.share {
                             plan.key = format!("source:{}", g.source_id);
                             plan.steps.push(Step::Retention {
                                 sources: group_sources(&g),
@@ -2019,6 +2173,41 @@ impl Scheduler {
                 }
                 plan.steps.push(Step::Cli {
                     bin: self.cfg.truenas_bin.clone(),
+                    args,
+                    alert: None,
+                    capture: true,
+                });
+            }
+            "files_list" | "files_get" if p["source"].as_str().is_some_and(|s| s.starts_with("share-")) => {
+                let source = ident(p, "source")?;
+                let sid = nas::parse_source_name(source).with_context(|| format!("invalid source {source:?}"))?;
+                plan.key = format!("guest:{tenant}/{source}");
+                // download only from the store: no mount, no secrets
+                let cfg = json!({
+                    "tenant": tenant,
+                    "store": self.cfg.store_base.join(tenant),
+                    "keyd_socket": self.cfg.keyd_socket,
+                    "source_id": sid,
+                });
+                plan.files.push(("nas.json".into(), serde_json::to_vec_pretty(&cfg)?));
+                let mut args = vec![
+                    dir.join("nas.json").to_string_lossy().into_owned(),
+                    "files".into(),
+                    source.to_owned(),
+                    num(p, "time")?.to_string(),
+                ];
+                if job.kind == "files_list" {
+                    args.push("ls".into());
+                    args.push(file_arg(p["path"].as_str().unwrap_or("/"))?);
+                } else {
+                    let out = self.cfg.downloads.join(download_file(p)?);
+                    args.push("get".into());
+                    args.push(out.to_string_lossy().into_owned());
+                    args.extend(file_paths(p)?);
+                    plan.download = Some(out);
+                }
+                plan.steps.push(Step::Cli {
+                    bin: self.cfg.nas_bin.clone(),
                     args,
                     alert: None,
                     capture: true,

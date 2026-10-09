@@ -500,6 +500,205 @@ impl TrueNasConfig {
     }
 }
 
+/// NFS or SMB share source (docs/nas-connector.md); one share per source. SMB
+/// secrets (`password`, or `keytab` as base64 for `sec: "krb5"`) are write-only
+/// and sealed, bound to `host`/`port`/`user`.
+#[derive(Deserialize, Serialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ShareConfig {
+    host: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    port: Option<u16>,
+    /// NFS: 3 | 4.0 | 4.1 | 4.2 (default 4.2); SMB: 2.1 | 3 | 3.0 | 3.02 | 3.1.1 (default 3)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    /// NFS export path
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    export: Option<String>,
+    /// NFSv3 mountd port (default 20048; no portmapper)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mount_port: Option<u16>,
+    /// SMB share name
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    share: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    user: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    domain: Option<String>,
+    /// SMB: ntlmssp (default) | krb5
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sec: Option<String>,
+    /// SMB: require signing (default true)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sign: Option<bool>,
+    /// SMB 3: require encryption (default false)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    seal: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    password: Option<String>,
+    /// base64 keytab (sec krb5)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    keytab: Option<String>,
+    /// Kerberos principal `user@REALM` (sec krb5)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    principal: Option<String>,
+    /// NAS snapshot directory below the share root (`.zfs/snapshot`, `.snapshot`, `~snapshot`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    snapshot_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    snapshot_prefix: Option<String>,
+    /// name (default) | mtime
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    snapshot_order: Option<String>,
+    #[serde(default)]
+    excludes: Vec<String>,
+    /// scan threads (1..=64, default 16)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    threads: Option<u32>,
+    /// back up xattrs/ACLs (default true)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    xattrs: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timeout_secs: Option<u32>,
+}
+
+impl ShareConfig {
+    /// The helper request this config produces (secrets replaced by placeholders
+    /// when they are kept from the stored config), checked like the helper does.
+    fn check(&self, kind: &str) -> ApiResult<()> {
+        use nas::proto::{Request, Sec};
+        let bad = |m: String| ApiError::bad(m);
+        if !nas::valid_host(&self.host) {
+            return Err(bad("host: invalid host name or address".into()));
+        }
+        let addr: std::net::IpAddr = "192.0.2.1".parse().unwrap();
+        let mut r = match kind {
+            "nfs" => {
+                if self.share.is_some()
+                    || self.user.is_some()
+                    || self.domain.is_some()
+                    || self.sec.is_some()
+                    || self.sign.is_some()
+                    || self.seal.is_some()
+                    || self.password.is_some()
+                    || self.keytab.is_some()
+                    || self.principal.is_some()
+                {
+                    return Err(bad(
+                        "config: share, user, domain, sec, sign, seal, password, keytab and principal are SMB fields"
+                            .into(),
+                    ));
+                }
+                let export = self.export.as_deref().ok_or_else(|| bad("export: required".into()))?;
+                if !nas::valid_export(export) {
+                    return Err(bad(
+                        "export: absolute path without `,` `\"` `'` `\\`, `.`/`..` or control characters".into(),
+                    ));
+                }
+                let mut r = Request::nfs(&self.host, addr, export);
+                if let Some(p) = self.mount_port {
+                    r.mount_port = p;
+                }
+                r
+            }
+            _ => {
+                if self.export.is_some() || self.mount_port.is_some() {
+                    return Err(bad("config: export and mount_port are NFS fields".into()));
+                }
+                let share = self.share.as_deref().ok_or_else(|| bad("share: required".into()))?;
+                if !nas::valid_share(share) {
+                    return Err(bad("share: 1..=80 characters, none of \\ / : * ? \" < > | , =".into()));
+                }
+                let mut r = Request::smb(
+                    &self.host,
+                    addr,
+                    share,
+                    self.user.as_deref().unwrap_or(""),
+                    "placeholder",
+                );
+                r.domain = self.domain.clone().unwrap_or_default();
+                r.sign = self.sign.unwrap_or(true);
+                r.seal = self.seal.unwrap_or(false);
+                match self.sec.as_deref().unwrap_or("ntlmssp") {
+                    "ntlmssp" => {
+                        if self.keytab.is_some() || self.principal.is_some() {
+                            return Err(bad("keytab, principal: only with sec krb5".into()));
+                        }
+                        if let Some(p) = &self.password {
+                            if !nas::valid_password(p) {
+                                return Err(bad("password: 1..=256 bytes, no NUL".into()));
+                            }
+                        }
+                    }
+                    "krb5" => {
+                        if self.password.is_some() {
+                            return Err(bad("password: not with sec krb5 (keytab)".into()));
+                        }
+                        r.sec = Sec::Krb5;
+                        r.password = None;
+                        r.keytab = Some(vec![5, 2]);
+                        r.principal = self.principal.clone();
+                        if let Some(k) = &self.keytab {
+                            use base64::Engine;
+                            let raw = base64::engine::general_purpose::STANDARD
+                                .decode(k)
+                                .map_err(|_| bad("keytab: base64 of the keytab file".into()))?;
+                            if raw.is_empty() || raw.len() > nas::proto::MAX_KEYTAB || raw[0] != 5 {
+                                return Err(bad("keytab: not a keytab (at most 64 KiB)".into()));
+                            }
+                        }
+                    }
+                    _ => return Err(bad("sec: ntlmssp or krb5".into())),
+                }
+                r
+            }
+        };
+        if let Some(v) = &self.version {
+            r.version = v.clone();
+        }
+        if let Some(p) = self.port {
+            r.port = p;
+        }
+        if let Some(t) = self.timeout_secs {
+            r.timeout_secs = t;
+        }
+        r.check().map_err(|e| bad(format!("config: {e:#}")))?;
+        if let Some(d) = &self.snapshot_dir {
+            if !nas::valid_rel_dir(d) {
+                return Err(bad(
+                    "snapshot_dir: relative directory below the share root (e.g. .zfs/snapshot)".into(),
+                ));
+            }
+        }
+        if let Some(p) = &self.snapshot_prefix {
+            validate::text(p, "snapshot_prefix", 128)?;
+            if p.contains('/') {
+                return Err(bad("snapshot_prefix: a name prefix, no `/`".into()));
+            }
+        }
+        if !matches!(self.snapshot_order.as_deref(), None | Some("name") | Some("mtime")) {
+            return Err(bad("snapshot_order: name or mtime".into()));
+        }
+        if self.excludes.len() > 256 {
+            return Err(bad("excludes: at most 256 patterns".into()));
+        }
+        for x in &self.excludes {
+            if x.is_empty() || x.contains(['\n', '\r']) {
+                return Err(bad("excludes: one non-empty pattern per entry".into()));
+            }
+            validate::text(x, "excludes", 4096)?;
+        }
+        if self.threads.is_some_and(|t| !(1..=64).contains(&t)) {
+            return Err(bad("threads: 1..=64".into()));
+        }
+        Ok(())
+    }
+
+    fn has_secret(&self) -> bool {
+        self.password.is_some() || self.keytab.is_some()
+    }
+}
+
 fn parse_config<T: serde::de::DeserializeOwned>(v: Value) -> ApiResult<T> {
     serde_json::from_value(v).map_err(|e| ApiError::bad(format!("config: {e}")))
 }
@@ -621,7 +820,50 @@ pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -
             )?;
             return Ok(created(out));
         }
-        _ => return Err(ApiError::bad("kind: `pve`, `linux` or `truenas`")),
+        kind @ ("nfs" | "smb") => {
+            let cfg: ShareConfig = parse_config(r.config)?;
+            cfg.check(kind)?;
+            if kind == "smb" && !cfg.has_secret() {
+                return Err(ApiError::bad(
+                    "config.password (or config.keytab with sec krb5): required",
+                ));
+            }
+            if cfg.sec.as_deref() == Some("krb5") && (cfg.keytab.is_none() || cfg.principal.is_none()) {
+                return Err(ApiError::bad(
+                    "config.keytab and config.principal: required with sec krb5",
+                ));
+            }
+            let pk = st.seal_key()?;
+            let (id, out) = {
+                let mut c = st.cat.conn();
+                if !exists(&c, "SELECT 1 FROM tenants WHERE name = ?1", [&r.tenant])? {
+                    return Err(ApiError::bad("tenant: does not exist"));
+                }
+                // the sealed secret is bound to the row id: insert, then seal, in one transaction
+                let tx = c.transaction()?;
+                tx.execute(
+                    "INSERT INTO sources (tenant, kind, name, config) VALUES (?1, ?2, ?3, '{}')",
+                    params![r.tenant, kind, r.name],
+                )?;
+                let id = tx.last_insert_rowid();
+                let mut v = serde_json::to_value(&cfg).map_err(anyhow::Error::from)?;
+                pk.seal_all(&source_owner(id), &mut v)?;
+                tx.execute(
+                    "UPDATE sources SET config = ?2 WHERE id = ?1",
+                    params![id, v.to_string()],
+                )?;
+                tx.commit()?;
+                (id, source_json(&c, id)?)
+            };
+            st.audit(
+                ctx.name(),
+                "source.create",
+                &format!("source/{id}"),
+                json!({"tenant": r.tenant, "kind": kind, "name": r.name, "config": out["config"]}),
+            )?;
+            return Ok(created(out));
+        }
+        _ => return Err(ApiError::bad("kind: `pve`, `linux`, `truenas`, `nfs` or `smb`")),
     }
     let r = PveSourceReq {
         config: parse_config(r.config)?,
@@ -731,6 +973,48 @@ pub async fn update_source(
                     ));
                 }
                 cfg.ssh.key_pem = old["ssh"]["key_pem"].as_str().map(str::to_owned);
+            }
+            let mut v = serde_json::to_value(&cfg).map_err(anyhow::Error::from)?;
+            pk.seal_all(&source_owner(id), &mut v)?;
+            c.execute(
+                "UPDATE sources SET name = ?2, config = ?3 WHERE id = ?1",
+                params![id, r.name, v.to_string()],
+            )?;
+            source_json(&c, id)?
+        };
+        st.audit(
+            ctx.name(),
+            "source.update",
+            &format!("source/{id}"),
+            json!({"name": r.name, "config": out["config"]}),
+        )?;
+        return Ok(Json(out));
+    }
+    if kind == "nfs" || kind == "smb" {
+        let mut cfg: ShareConfig = parse_config(r.config)?;
+        cfg.check(&kind)?;
+        let pk = st.seal_key()?;
+        let out = {
+            let c = st.cat.conn();
+            let old: String = c
+                .query_row("SELECT config FROM sources WHERE id = ?1", [id], |r| r.get(0))
+                .optional()?
+                .ok_or_else(ApiError::not_found)?;
+            let old: Value = serde_json::from_str(&old).unwrap_or_default();
+            if kind == "smb" && !cfg.has_secret() {
+                // keeping the stored secret is only allowed for the same server and user
+                // (see PVE below); a change of sec needs the new kind of secret anyway
+                let new = serde_json::to_value(&cfg).map_err(anyhow::Error::from)?;
+                if ["host", "port", "user", "sec", "principal"]
+                    .iter()
+                    .any(|k| old.get(*k) != new.get(*k))
+                {
+                    return Err(ApiError::bad(
+                        "config.password / config.keytab: required when host, port, user, sec or principal change",
+                    ));
+                }
+                cfg.password = old["password"].as_str().map(str::to_owned);
+                cfg.keytab = old["keytab"].as_str().map(str::to_owned);
             }
             let mut v = serde_json::to_value(&cfg).map_err(anyhow::Error::from)?;
             pk.seal_all(&source_owner(id), &mut v)?;
@@ -1028,6 +1312,13 @@ fn check_group(
             ));
         }
         *guests = vec![agent];
+    } else if kind == "nfs" || kind == "smb" {
+        // a share source is one share: the group backs up the source itself
+        if !guests.is_empty() {
+            return Err(ApiError::bad(
+                "guests: a share source's group lists no guests (the share is the source)",
+            ));
+        }
     } else if kind == "truenas" {
         // guests = datasets of the source (empty = all of them)
         let cfg: Value = serde_json::from_str(&config).unwrap_or_default();

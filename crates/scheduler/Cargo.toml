@@ -7,7 +7,9 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 catalog = { path = "../catalog" }
+nas = { path = "../nas", default-features = false }
 truenas = { path = "../truenas", default-features = false }
 chunkstore = { path = "../chunkstore" }
 keyd = { path = "../keyd" }

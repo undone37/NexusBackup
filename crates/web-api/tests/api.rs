@@ -2573,3 +2573,173 @@ async fn truenas_sources() {
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
     t.finish();
 }
+
+/// NFS/SMB share sources (docs/nas-connector.md): admin only, SMB password /
+/// keytab write-only and sealed (kept on update only for the same server and
+/// user), validation of every field the mount helper sees, groups without
+/// guests, `share-<id>` snapshots for file jobs (download only).
+#[tokio::test]
+async fn share_sources() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let op = t.login("otto").await;
+    let src =
+        |kind: &str, cfg: Value| json!({"tenant": "acme", "kind": kind, "name": format!("{kind}1"), "config": cfg});
+    let nfs = json!({"host": "nas.lab", "export": "/srv/share", "version": "4.2", "snapshot_dir": ".zfs/snapshot",
+                     "snapshot_prefix": "auto-", "excludes": ["*.tmp"], "threads": 8});
+    let smb = json!({"host": "fs1.lab", "share": "Data Files", "user": "backup", "domain": "LAB",
+                     "password": "s3cr3t,pw=x", "version": "3.1.1", "seal": true});
+    assert_eq!(
+        t.post("/api/v1/sources", &op, src("nfs", nfs.clone())).await.status,
+        StatusCode::FORBIDDEN
+    );
+    let r = t.post("/api/v1/sources", &admin, src("nfs", nfs.clone())).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    let nfs_id = r.body["id"].as_i64().unwrap();
+    assert_eq!(r.body["config"]["export"], "/srv/share");
+    let r = t.post("/api/v1/sources", &admin, src("smb", smb.clone())).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    let sid = r.body["id"].as_i64().unwrap();
+    assert_eq!(r.body["config"]["password_set"], true);
+    assert!(r.body["config"]["password"].is_null());
+    let raw = String::from_utf8(t.get("/api/v1/sources", &admin).await.raw).unwrap();
+    assert!(!raw.contains("s3cr3t") && !raw.contains("sealed:v1:"), "{raw}");
+    let stored = t.scalar::<String>(&format!("SELECT config FROM sources WHERE id = {sid}"));
+    let mut v: Value = serde_json::from_str(&stored).unwrap();
+    assert!(v["password"].as_str().unwrap().starts_with("sealed:v1:"));
+    t.sk.open_all(&source_owner(sid), &mut v).unwrap();
+    assert_eq!(v["password"], "s3cr3t,pw=x");
+
+    // SMB without a secret is refused; update keeps it for the same server and user only
+    let mut nopw = smb.clone();
+    nopw.as_object_mut().unwrap().remove("password");
+    let r = t
+        .post(
+            "/api/v1/sources",
+            &admin,
+            json!({"tenant": "acme", "kind": "smb", "name": "x", "config": nopw}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let url = format!("/api/v1/sources/{sid}");
+    let mut upd = nopw.clone();
+    upd["seal"] = json!(false);
+    let r = t.put(&url, &admin, json!({"name": "smb1", "config": upd})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.body["config"]["password_set"], true);
+    for (k, val) in [
+        ("host", json!("evil.lab")),
+        ("user", json!("other")),
+        ("port", json!(4455)),
+    ] {
+        let mut m = nopw.clone();
+        m[k] = val;
+        let r = t.put(&url, &admin, json!({"name": "smb1", "config": m})).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{k}");
+        assert!(r.body["error"].as_str().unwrap().contains("password"), "{:?}", r.body);
+    }
+
+    // validation (what reaches the mount helper)
+    for (kind, field, val) in [
+        ("nfs", "export", json!("/srv/share,rw")),
+        ("nfs", "export", json!("relative")),
+        ("nfs", "export", json!("/srv/../etc")),
+        ("nfs", "version", json!("2")),
+        ("nfs", "host", json!("nas lab")),
+        ("nfs", "host", json!("-o")),
+        ("nfs", "share", json!("x")),
+        ("nfs", "password", json!("x")),
+        ("nfs", "snapshot_dir", json!("../x")),
+        ("nfs", "snapshot_dir", json!("/abs")),
+        ("nfs", "snapshot_order", json!("random")),
+        ("nfs", "threads", json!(0)),
+        ("nfs", "timeout_secs", json!(9999)),
+        ("nfs", "unknown", json!(1)),
+        ("smb", "share", json!("a/b")),
+        ("smb", "share", json!("a,b")),
+        ("smb", "user", json!("dom\\user")),
+        ("smb", "version", json!("1.0")),
+        ("smb", "sec", json!("ntlm")),
+        ("smb", "domain", json!("a b")),
+        ("smb", "export", json!("/x")),
+        ("smb", "password", json!("")),
+        ("smb", "keytab", json!("AAAA")),
+    ] {
+        let mut c = if kind == "nfs" { nfs.clone() } else { smb.clone() };
+        c[field] = val;
+        let r = t
+            .post(
+                "/api/v1/sources",
+                &admin,
+                json!({"tenant": "acme", "kind": kind, "name": "v", "config": c}),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{kind} {field}: {:?}", r.body);
+    }
+    let mut seal21 = smb.clone();
+    seal21["version"] = json!("2.1");
+    let r = t
+        .post(
+            "/api/v1/sources",
+            &admin,
+            json!({"tenant": "acme", "kind": "smb", "name": "v", "config": seal21}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "seal needs SMB 3");
+    // Kerberos: keytab (base64, sealed) + principal instead of a password
+    let mut k = smb.clone();
+    k.as_object_mut().unwrap().remove("password");
+    k["sec"] = json!("krb5");
+    k["keytab"] = json!("BQIAAAA=");
+    k["principal"] = json!("backup@LAB.EXAMPLE");
+    let r = t
+        .post(
+            "/api/v1/sources",
+            &admin,
+            json!({"tenant": "acme", "kind": "smb", "name": "k", "config": k}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    assert_eq!(r.body["config"]["keytab_set"], true);
+
+    // groups: no guests
+    let pol = t.post("/api/v1/policies", &admin, policy(7, false)).await.body["id"]
+        .as_i64()
+        .unwrap();
+    let group = |name: &str, s: i64, guests: Value| json!({"tenant": "acme", "source_id": s, "policy_id": pol, "name": name, "guests": guests});
+    let g = t
+        .post("/api/v1/groups", &admin, group("share", nfs_id, json!([])))
+        .await;
+    assert_eq!(g.status, StatusCode::CREATED, "{:?}", g.body);
+    let g = t
+        .post("/api/v1/groups", &admin, group("share2", sid, json!([100])))
+        .await;
+    assert_eq!(g.status, StatusCode::BAD_REQUEST);
+
+    // file jobs on share-<id> snapshots; no restore to the share (download only)
+    let snap = format!("share-{sid}");
+    t.st.cat
+        .conn()
+        .execute(
+            "INSERT INTO snapshots (tenant, source, time, size, local, offsite) VALUES ('acme', ?1, 1000, 1, 1, 0)",
+            [&snap],
+        )
+        .unwrap();
+    let files = |source: &str| json!({"kind": "files_list", "tenant": "acme", "params": {"source": source, "time": 1000, "path": "/"}});
+    let r = t.post("/api/v1/jobs", &op, files(&snap)).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    for bad in ["share-x", "share-01", "share-"] {
+        let r = t.post("/api/v1/jobs", &admin, files(bad)).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &admin,
+            json!({"kind": "restore_files", "tenant": "acme", "params": {"source": snap, "time": 1000,
+                   "paths": ["/a"], "target": "/r", "overwrite": "never", "confirm": "x"}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    t.finish();
+}

@@ -52,6 +52,32 @@ pub fn truenas_targets(src: &Value) -> Vec<(String, u16)> {
     out
 }
 
+/// (host, port) pairs of an NFS/SMB share source (docs/nas-connector.md). The
+/// kernel client's connections leave from the appliance like any other, so the
+/// allow-list covers them: NFS the NFS port (default 2049; v4.x needs nothing
+/// else) and for v3 the mountd port (default 20048; the helper mounts with
+/// `mountport=`, no portmapper/rpcbind 111 and `nolock`, no NLM/statd); SMB the
+/// SMB port (default 445). SMB Kerberos also needs the KDC (88) — not derivable
+/// from the source; it goes into `/etc/nexus/allowed-hosts`.
+pub fn share_targets(kind: &str, src: &Value) -> Vec<(String, u16)> {
+    let port = |k: &str, def: u16| src[k].as_u64().and_then(|p| u16::try_from(p).ok()).unwrap_or(def);
+    let Some(h) = src["host"].as_str() else {
+        return Vec::new();
+    };
+    let h = h.trim_matches(['[', ']']).to_owned();
+    match kind {
+        "nfs" => {
+            let mut out = vec![(h.clone(), port("port", 2049))];
+            if src["version"].as_str() == Some("3") {
+                out.push((h, port("mount_port", 20048)));
+            }
+            out
+        }
+        "smb" => vec![(h, port("port", 445))],
+        _ => Vec::new(),
+    }
+}
+
 /// (host, port) of a tenant's offsite remote (`tenants.offsite`), SFTP only.
 pub fn offsite_target(o: &Value) -> Option<(String, u16)> {
     let r = &o["remote"];

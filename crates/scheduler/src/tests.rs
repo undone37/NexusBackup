@@ -528,3 +528,119 @@ fn truenas_jobs() {
         .collect();
     assert_eq!(left.len(), 3, "{left:?}");
 }
+
+/// NFS/SMB shares: backup of a share group via nexus-nas (SMB password opened
+/// into a 0600 job file, never in nas.json), retention of `share-<id>`, file
+/// jobs without secrets, firewall endpoints, result with consistency.
+#[test]
+fn share_jobs() {
+    let e = env(4);
+    let smb = json!({"host": "fs1", "port": 10445, "share": "Data", "user": "backup", "password": "pw,1",
+                     "version": "3.1.1", "seal": true, "snapshot_dir": "~snapshot", "excludes": ["*.tmp"], "threads": 8});
+    let nfs = json!({"host": "10.0.0.7", "export": "/srv/share", "version": "3", "mount_port": 12048});
+    e.db.conn()
+        .execute_batch(&format!(
+            "INSERT INTO sources (id, tenant, kind, name, config) VALUES (6,'t1','smb','fs1','{smb}'), (7,'t1','nfs','nfs1','{nfs}');
+             INSERT INTO policies (id, name, schedule, gfs, offsite) VALUES (2,'q','daily 22:00','{{\"daily\":9}}',0);
+             INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (6,'t1',6,2,'fs1','[]'), (7,'t1',7,1,'nfs1','[]');"
+        ))
+        .unwrap();
+    let s = sched(&e);
+    let raw: String =
+        s.db.conn()
+            .query_row("SELECT config FROM sources WHERE id = 6", [], |r| r.get(0))
+            .unwrap();
+    assert!(!raw.contains("pw,1") && raw.contains("sealed:v1:"), "{raw}");
+    let job = |id, kind: &str, p: Value| Job {
+        id,
+        kind: kind.into(),
+        tenant: "t1".into(),
+        params: p,
+    };
+    let p = s.plan(&job(30, "backup", json!({"group_id": 6}))).unwrap();
+    assert_eq!(p.key, "source:6");
+    let names: Vec<&str> = p.files.iter().map(|f| f.0.as_str()).collect();
+    assert_eq!(names, ["smb-password", "nas.json"]);
+    assert_eq!(p.files[0].1, b"pw,1");
+    let cfg: Value = serde_json::from_slice(&p.files[1].1).unwrap();
+    assert!(!String::from_utf8_lossy(&p.files[1].1).contains("pw,1"));
+    assert_eq!(cfg["share"]["password_file"], json!(p.dir.join("smb-password")));
+    assert_eq!(
+        (
+            &cfg["share"]["kind"],
+            &cfg["share"]["share"],
+            &cfg["share"]["seal"],
+            &cfg["share"]["sign"]
+        ),
+        (&json!("smb"), &json!("Data"), &json!(true), &json!(true))
+    );
+    assert_eq!(
+        (&cfg["snapshot_dir"], &cfg["threads"], &cfg["source_id"]),
+        (&json!("~snapshot"), &json!(8), &json!(6))
+    );
+    assert_eq!(cfg["mount_socket"], json!(nas::MOUNT_SOCKET));
+    match &p.steps[..] {
+        [Step::Cli { bin, args, .. }] => {
+            assert_eq!(bin, &e.cfg.nas_bin);
+            assert_eq!(args[1], "backup");
+        }
+        st => panic!("{st:?}"),
+    }
+    let p = s.plan(&job(31, "backup", json!({"group_id": 7}))).unwrap();
+    assert_eq!(p.files.len(), 1, "NFS: no secret files");
+    let p = s
+        .plan(&job(32, "retention", json!({"group_id": 6, "chain": true})))
+        .unwrap();
+    assert!(
+        matches!(&p.steps[..], [Step::Retention { sources, gfs, .. }] if sources == &["share-6"] && gfs.daily == 9)
+    );
+    let p = s.plan(&job(33, "retention", json!({"source": "share-6"}))).unwrap();
+    assert!(
+        matches!(&p.steps[..], [Step::Retention { sources, gfs, .. }] if sources == &["share-6"] && gfs.daily == 9)
+    );
+    let p = s
+        .plan(&job(
+            34,
+            "files_get",
+            json!({"source": "share-6", "time": 5, "paths": ["/a"], "format": "zip", "download_token": "ab".repeat(32)}),
+        ))
+        .unwrap();
+    assert_eq!(p.files.len(), 1);
+    assert!(!String::from_utf8_lossy(&p.files[0].1).contains("pw"));
+    match &p.steps[..] {
+        [Step::Cli { bin, args, capture, .. }] => {
+            assert!(*capture && bin == &e.cfg.nas_bin);
+            assert_eq!(&args[1..5], ["files", "share-6", "5", "get"]);
+        }
+        st => panic!("{st:?}"),
+    }
+    assert!(s
+        .plan(&job(
+            35,
+            "files_list",
+            json!({"source": "share-06", "time": 1, "path": "/"})
+        ))
+        .is_err());
+    // firewall: SMB port; NFSv3 adds mountd (no portmapper)
+    assert_eq!(firewall::share_targets("smb", &smb), vec![("fs1".to_owned(), 10445)]);
+    assert_eq!(
+        firewall::share_targets("nfs", &nfs),
+        vec![("10.0.0.7".to_owned(), 2049), ("10.0.0.7".to_owned(), 12048)]
+    );
+    assert_eq!(
+        firewall::share_targets("nfs", &json!({"host": "n", "export": "/x"})),
+        vec![("n".to_owned(), 2049)]
+    );
+    // result: transferred bytes and consistency from nexus-nas output
+    let mut log = String::from(
+        "committed share-6/100 in 1.0s: 5 entries, 2 files read (10 bytes), 0 unchanged files reused (0 bytes), 2 new chunks (10 bytes), 10 bytes transferred, 0 inconsistent, 0 errors, 5 entries/s, live share (no NAS snapshot)\n\
+         inconsistent share-6/100: consistent=false (no NAS snapshot; 0 files changed while read; 0 entries unreadable)\n",
+    );
+    let r = s
+        .result(&job(36, "backup", json!({"group_id": 6})), None, &mut log)
+        .unwrap();
+    assert_eq!(
+        (&r["source"], &r["transferred_bytes"], &r["consistent"]),
+        (&json!("share-6"), &json!(10), &json!(false))
+    );
+}
