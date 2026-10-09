@@ -2,12 +2,17 @@
 Description=NexusBackup web UI and REST API (management port 8443/tcp)
 After=network-online.target
 Wants=network-online.target
+# nexus-setup creates this as its last step (docs/control-plane.md)
+ConditionPathExists=/var/lib/nexus/setup-done
 
 [Service]
 Type=notify
 ExecStart=/usr/libexec/nexus/web-api
 User=nexus-webapi
 Group=nexus-webapi
+# catalog DB (rw, WAL) and file-restore downloads (read) are group-shared
+SupplementaryGroups=nexus-catalog
+ReadWritePaths=/var/lib/nexus/catalog
 Restart=on-failure
 
 StateDirectory=nexus/webapi
