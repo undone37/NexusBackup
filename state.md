@@ -90,7 +90,9 @@ Instant recovery and single-file restore (VM images via micro-VM; containers via
 Every snapshot can be uploaded and verified offsite (`check`/`verify`), and the DR drill from the (test) box on a fresh store succeeds. Open: per-snapshot "local ✓ / offsite ✓" view belongs to the UI (Phase 5); real Storage Box run pending.
 Decisions (user, 2026-10-09): test against a local SFTP container mimicking Storage Box first, real box later; SFTP via russh + russh-sftp
 
-## Phase 5 — Control plane and UI (next)
+## Phase 5 — Control plane and UI (started 2026-10-09)
+- [x] Contract `docs/control-plane.md` (processes/trust boundaries, catalog schema, audit chain, RBAC matrix, quorum actions, REST API, security headers, scheduler, first boot)
+- [x] `crates/catalog`: SQLite WAL schema v1 with migrations, append-only audit table (triggers) + length-prefixed sha256 hash chain + verify, `catalog::auth` (argon2id ≥12 chars, TOTP RFC 6238 ±1 step, otpauth URI)
 Decisions (user, 2026-10-09): Web UI = TypeScript SPA on the REST API; MFA = TOTP only at first; first boot = console TUI
 
 ## Phase 6 — Hardened appliance release (starts after Phase 5 merge)

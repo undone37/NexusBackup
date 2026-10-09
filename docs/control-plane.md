@@ -1,0 +1,79 @@
+# Control Plane — Contract (Phase 5)
+
+Status: v1 (2026-10-09). Decisions: Svelte 5 + Vite SPA (assets embedded in web-api), TOTP-only MFA,
+console TUI first boot. Plan §11.
+
+## Processes and trust boundaries
+| Process | User | Talks to | Never touches |
+|---|---|---|---|
+| `nexus-web-api` (axum, rustls, port 8443) | `nexus-webapi` | catalog DB, downloads dir (read) | keys, chunks, sources |
+| `nexus-scheduler` | `nexus-chunkstore` | catalog DB, keyd socket, chunk store, `nexus-pve` / `nexus-offsite` (spawned) | HTTP clients |
+| `nexus-setup` (console TUI, first boot) | root | keyd CLI, catalog DB, TLS files | network until configured |
+
+- The **catalog** is SQLite (WAL) at `/var/lib/nexus/catalog/catalog.db`, group `nexus-catalog` (both web-api and scheduler).
+- The web-api only writes *intent*: config rows, job requests, quorum decisions. The scheduler executes jobs and reports state back into the catalog.
+- File-restore downloads: the scheduler writes the tar/zip into `/var/lib/nexus/downloads/<token>.<ext>` (group-readable by web-api, expiring after 24 h), and web-api streams it.
+- `nexus-web-api` refuses to start until `/var/lib/nexus/setup-done` exists (systemd `ConditionPathExists`).
+
+## Catalog schema (crate `catalog`, migrations in code)
+| Table | Columns (main) |
+|---|---|
+| `users` | id, name UNIQUE, password_hash (argon2id), totp_secret (base32), role, tenant (NULL = all), disabled, created |
+| `sessions` | id_hash (sha256 of cookie), user_id, csrf, created, last_seen |
+| `tenants` | name PK, offsite (JSON: remote config, bwlimit, uploaders) |
+| `sources` | id, tenant, kind (`pve`), name, config (JSON: api host/port/ca_pem/token_id, token_secret, nodes, storage, fleecing_storage) |
+| `policies` | id, name, schedule (`daily HH:MM`, `hourly MM`), gfs (JSON {daily,weekly,monthly,yearly}), offsite (bool) |
+| `groups` | id, tenant, source_id, policy_id, name, guests (JSON [vmid]) |
+| `jobs` | id, kind, tenant, params (JSON), state (`queued`,`running`,`ok`,`failed`,`cancelled`), requested_by, created, started, finished, log |
+| `snapshots` | tenant, source (`vm-100`/`ct-200`), time, size, local, offsite, lock_until, verified — refreshed by scheduler |
+| `quorum` | id, action, params (JSON), requested_by, created, decided_by, decided_at, state (`pending`,`approved`,`rejected`,`executed`,`expired`) |
+| `audit` | seq PK, ts, actor, action, target, details (JSON), prev_hash, hash |
+| `alerts` | id, ts, severity, kind, message, acked_by |
+
+Job kinds: `backup` {group_id | vmid}, `restore` {source, time, node, target, storage}, `restore_ct`, `instant_recover`, `files_list` {source,time,path}, `files_get` {source,time,paths,format}, `offsite`, `retention`, `gc`, `verify`.
+
+## Audit log
+`hash = sha256(prev_hash || seq || ts || actor || action || target || details)`, hex; `prev_hash` of seq 1 = 64×"0".
+Every mutating API call and every job state change appends one entry (`catalog::Catalog::audit`). `GET /api/v1/audit/verify` recomputes the chain. Entries are forwarded to syslog (RFC 5424 via the local journal; TLS forwarding is configured in the OS).
+
+## Roles (RBAC)
+| Capability | admin | security_officer | operator | tenant_user |
+|---|---|---|---|---|
+| read everything (own tenant for tenant_user) | ✓ | ✓ | ✓ | own |
+| sources, policies, groups, tenants, users CRUD | ✓ | — | — | — |
+| run backups / restores / file restore | ✓ | — | ✓ | own (restores only) |
+| approve/reject quorum requests | — | ✓ | — | — |
+| audit log, verify chain | ✓ | ✓ | — | — |
+
+**Quorum (four-eyes)** — these never execute directly; they create a `quorum` row that a *different* user with role `security_officer` must approve within 72 h: weakening a policy (any GFS value lowered, offsite disabled), deleting a group/source/tenant/policy, deleting snapshots manually, GC deleting > 20 % of chunks (raised by the scheduler), granting `admin`/`security_officer`, disabling a user who is the last admin/security_officer.
+
+## REST API (`/api/v1`, JSON)
+Auth: `POST /auth/login {name, password, totp}` → `Set-Cookie: nx_session=…; HttpOnly; Secure; SameSite=Strict; Path=/` + body `{csrf, user}`. Every non-GET request needs header `X-CSRF-Token`. `POST /auth/logout`, `GET /auth/me`. Sessions expire after 30 min idle / 12 h absolute. Login rate limit: 5 failures per user or IP per 15 min → 15 min lockout (audited).
+
+| Method + path | Role | Notes |
+|---|---|---|
+| `GET /health` | none | `{ok}` |
+| `GET /metrics` | bearer token from `/etc/nexus/metrics-token` | Prometheus text |
+| `GET/POST /tenants`, `PUT/DELETE /tenants/{name}` | admin (DELETE → quorum) | |
+| `GET/POST /sources`, `PUT/DELETE /sources/{id}` | admin (DELETE → quorum) | secrets write-only (never returned) |
+| `GET/POST /policies`, `PUT/DELETE /policies/{id}` | admin (weakening PUT / DELETE → quorum) | |
+| `GET/POST /groups`, `PUT/DELETE /groups/{id}` | admin (DELETE → quorum) | |
+| `GET/POST /users`, `PUT /users/{id}` | admin (privileged role grants → quorum) | POST returns the TOTP provisioning URI once |
+| `GET /snapshots?tenant=&source=` | read | local/offsite/lock/verified per snapshot |
+| `GET /jobs?state=&kind=`, `GET /jobs/{id}` (incl. log) | read | |
+| `POST /jobs` `{kind, tenant, params}` | per kind (see RBAC) | returns job id; 202 |
+| `POST /jobs/{id}/cancel` | operator/admin | queued only |
+| `GET /downloads/{token}` | requester only | streams file, deleted after 24 h |
+| `GET /quorum`, `POST /quorum/{id}/approve`, `POST /quorum/{id}/reject` | security_officer (approve: not the requester) | |
+| `GET /audit?after=`, `GET /audit/verify` | admin, security_officer | |
+| `GET /alerts`, `POST /alerts/{id}/ack` | read / operator+ | |
+
+Errors: `{error: "message"}` with 400/401/403/404/409/429. Quorum-gated requests answer **202** `{quorum_id}`.
+
+Headers on every response: `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Strict-Transport-Security: max-age=31536000`. The SPA is served from `/` (index.html fallback for client routes), assets from `/assets/*` (embedded at build time from `web/dist`).
+
+## Scheduler
+Tick every 30 s: (1) queue `backup` jobs for groups whose policy schedule is due (once per period); after each successful backup: `retention` for that source, then `offsite` if the policy says so; (2) run queued jobs FIFO, at most one per source at a time, by spawning `nexus-pve` / `nexus-offsite` with a generated config (0600, in a private runtime dir) and capturing output into `jobs.log`; (3) refresh `snapshots`; (4) daily `gc` + `verify`; a GC that needs quorum raises a `quorum` request and an alert; (5) alerts: failed job, offsite lag > 48 h, verify failure, inventory anomaly, capacity > 75 %. Alert delivery: webhook URL + SMTP from `/etc/nexus/alerts.json`.
+
+## First boot (`nexus-setup`, console TUI)
+Network (NetworkManager, static/DHCP on the management NIC) → admin account + TOTP enrollment (QR in terminal, code confirmation) → `keyd init`: recovery key shown once, re-entry of 3 random groups required → TLS certificate (self-signed, SAN = hostname + IPs; fingerprint shown) → metrics token → `/var/lib/nexus/setup-done` → enable `nexus-web-api`, `nexus-scheduler`.
