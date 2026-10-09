@@ -203,7 +203,7 @@ pub fn prepare(paths: &Paths, settings: &Settings, job: u64, idx: usize, mount: 
         items: vec![],
     };
     let res = match kind {
-        SnapshotKind::None => {
+        SnapshotKind::None | SnapshotKind::Vss => {
             let note = format!(
                 "no snapshot support for {} ({} on {}), reading live",
                 mount.mountpoint.display(),

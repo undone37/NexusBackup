@@ -1,7 +1,11 @@
 # Linux agent (`nexus-agent`)
 
 Static musl binary for all distributions (crate `crates/agent-linux`), implementing
-`docs/agent-protocol.md`. It listens (TCP 7444, TLS 1.3, ALPN `nexus-agent/1`) and never
+`docs/agent-protocol.md`. The platform-independent half (TLS/enrollment/mTLS server,
+session state machine, FastCDC + BLAKE3 chunking, metadata cache, `Want` serving,
+restore stream handling, update signature checks) lives in `crates/agent-core` and is
+shared with the Windows agent (docs/agent-windows.md); `agent-linux` implements its
+`Platform` and `RestoreFs` traits. It listens (TCP 7444, TLS 1.3, ALPN `nexus-agent/1`) and never
 connects out.
 
 ## Install
@@ -109,8 +113,9 @@ limited to what backup/restore/snapshots need, `PrivateMounts`, `ProtectKernel*`
 
 `cargo test -p agent-linux` (no root): scan/metadata/hardlinks/xattrs, cache, fallback
 inconsistency + spool, excludes, mount boundaries, hook permission checks and timeouts,
-restore confinement (symlink attacks), cosign signature verification (real `cosign
-sign-blob` fixture made with the TEST key) and update checks, plus `tests/e2e.rs`: fake
+restore confinement (symlink attacks), update checks (the cosign signature
+verification with the real `cosign sign-blob` fixture made with the TEST key is in
+`agent-core`, fixture in `crates/agent-core/tests/fixtures/`), plus `tests/e2e.rs`: fake
 appliance with a test CA — MITM on enrollment, lock after 5 failures, mTLS client checks,
 enrollment → backup → incremental backup → restore with byte + metadata comparison; `tests/interop.rs`:
 the real agent against the real `agent-conn` library (enroll, backup into a chunk store,

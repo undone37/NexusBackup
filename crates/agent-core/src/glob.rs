@@ -10,6 +10,8 @@
 #[derive(Clone, Debug, Default)]
 pub struct Excludes {
     pats: Vec<(Vec<u8>, bool)>, // (pattern, anchored on the full path)
+    /// ASCII case-insensitive matching (Windows file systems)
+    fold: bool,
 }
 
 impl Excludes {
@@ -32,11 +34,29 @@ impl Excludes {
                 }
             })
             .collect();
-        Excludes { pats }
+        Excludes { pats, fold: false }
+    }
+
+    /// Same patterns, matched ASCII case-insensitively (NTFS/ReFS names).
+    pub fn new_case_insensitive(patterns: &[String]) -> Excludes {
+        let mut e = Excludes::new(patterns);
+        for (p, _) in &mut e.pats {
+            p.make_ascii_lowercase();
+        }
+        e.fold = true;
+        e
     }
 
     /// `abs` is the absolute host path (starting with `/`).
     pub fn matches(&self, abs: &[u8]) -> bool {
+        if self.fold {
+            let lower = abs.to_ascii_lowercase();
+            return self.matches_exact(&lower);
+        }
+        self.matches_exact(abs)
+    }
+
+    fn matches_exact(&self, abs: &[u8]) -> bool {
         let name = abs.rsplit(|b| *b == b'/').next().unwrap_or(abs);
         self.pats
             .iter()
@@ -98,5 +118,10 @@ mod tests {
         assert!(!e.matches(b"/srv/a/b/node_modules2"));
         assert!(!e.matches(b"/srv/a/xnode_modules"));
         assert!(!Excludes::new(&[]).matches(b"/x"));
+        assert!(!e.matches(b"/TMP/A.TMP"), "case-sensitive by default");
+        let w = Excludes::new_case_insensitive(&["*.TMP".into(), "/C/Users/*/AppData/Local/Temp".into()]);
+        assert!(w.matches(b"/C/x/a.tmp"));
+        assert!(w.matches(b"/c/users/Alice/appdata/local/TEMP"));
+        assert!(!w.matches(b"/C/Users/Alice/AppData/Local/Templates"));
     }
 }
