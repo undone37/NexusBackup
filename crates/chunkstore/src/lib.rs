@@ -2,6 +2,7 @@
 
 pub mod clock;
 pub mod crypto;
+pub mod retention;
 pub mod store;
 
 pub use crypto::{ChunkId, Keyring};

@@ -565,6 +565,32 @@ impl Store {
         fs::remove_dir_all(&dir)
     }
 
+    /// Applies GFS retention to one source: kept snapshots get their locks
+    /// extended per class, the rest are deleted unless still locked.
+    /// Returns (kept, deleted, still_locked).
+    pub fn apply_retention(&self, source: &str, gfs: &crate::retention::Gfs) -> io::Result<(usize, usize, usize)> {
+        let snaps: Vec<Manifest> = self
+            .list_snapshots()?
+            .into_iter()
+            .filter(|m| m.source == source)
+            .collect();
+        let keep = crate::retention::keep(&snaps.iter().map(|m| m.time).collect::<Vec<_>>(), gfs);
+        let (mut deleted, mut locked) = (0, 0);
+        for m in &snaps {
+            match keep.get(&m.time) {
+                Some(classes) => {
+                    self.extend_lock(source, m.time, crate::retention::lock_until(m.time, classes))?;
+                }
+                None => match self.delete_snapshot(source, m.time) {
+                    Ok(()) => deleted += 1,
+                    Err(e) if e.kind() == io::ErrorKind::PermissionDenied => locked += 1,
+                    Err(e) => return Err(e),
+                },
+            }
+        }
+        Ok((keep.len(), deleted, locked))
+    }
+
     /// All chunk IDs referenced by committed snapshots. Any unreadable
     /// manifest or index is an error: never sweep on an incomplete mark.
     fn mark(&self) -> io::Result<HashSet<ChunkId>> {

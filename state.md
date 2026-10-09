@@ -73,6 +73,9 @@ Instant recovery and single-file restore (VM images via micro-VM; containers via
   - open: QEMU runs as the caller (own user/SELinux domain/cgroup limits TBD); no encrypted volumes, zvols, duplicate pool/VG names; appliance image needs qemu-kvm
 
 ## Phase 4 — Offsite (started 2026-10-09)
+- [x] `crates/offsite` skeleton: `Remote` trait (append-only put, range get, list, delete), `LocalDir`, shared `conformance()` test
+- [x] GFS retention `chunkstore::retention` (period-based, union of classes, UTC periods, lock per class 14d/28d/183d/730d) + `Store::apply_retention` (extend locks of kept, delete unlocked rest) — shared by local and offsite
+- [ ] SFTP backend (russh-sftp) + Storage-Box-like test container (agent running)
 Decisions (user, 2026-10-09): test against a local SFTP container mimicking Storage Box first, real box later; SFTP via russh + russh-sftp
 
 ## Phase 5 — Control plane and UI (starts after Phase 4 merge)
