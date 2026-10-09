@@ -5,7 +5,7 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use std::fs::File;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Component, Path};
 use tar::EntryType;
 use zip::write::SimpleFileOptions;
 
@@ -41,6 +41,60 @@ pub struct Entry {
 fn norm(p: &Path) -> String {
     let s = p.to_string_lossy();
     s.trim_start_matches("./").trim_matches('/').to_owned()
+}
+
+/// Archive-relative form of an entry name for the download: absolute names
+/// become relative, `.` is dropped; `None` for names with `..` (they would
+/// escape the directory the user extracts into).
+fn safe_rel(p: &Path) -> Option<String> {
+    let mut parts = Vec::new();
+    for c in p.components() {
+        match c {
+            Component::Normal(s) => parts.push(s.to_string_lossy()),
+            Component::RootDir | Component::CurDir => {}
+            Component::ParentDir | Component::Prefix(_) => return None,
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// Entry names and hard-link targets of a hostile stream (compromised container
+/// or restore VM) are sanitized: names with `..` are skipped, and so is anything
+/// below an earlier symlink entry (it would be written through the link).
+#[derive(Default)]
+struct Guard {
+    links: Vec<String>,
+}
+
+impl Guard {
+    fn admit(&mut self, e: &tar::Entry<impl Read>) -> Result<Option<(String, Option<String>)>> {
+        let Some(path) = safe_rel(&e.path()?) else {
+            eprintln!("files: skipping unsafe entry {:?}", e.path()?);
+            return Ok(None);
+        };
+        if self
+            .links
+            .iter()
+            .any(|l| path.strip_prefix(l.as_str()).is_some_and(|r| r.starts_with('/')))
+        {
+            eprintln!("files: skipping {path:?} below a symlink");
+            return Ok(None);
+        }
+        let link = match (e.header().entry_type(), e.link_name()?) {
+            (EntryType::Link, Some(l)) => match safe_rel(&l) {
+                Some(l) => Some(l),
+                None => {
+                    eprintln!("files: skipping hard link {path:?} to {l:?}");
+                    return Ok(None);
+                }
+            },
+            (_, l) => l.map(|l| l.to_string_lossy().into_owned()),
+        };
+        if e.header().entry_type() == EntryType::Symlink {
+            self.links.push(path.clone());
+        }
+        Ok(Some((path, link)))
+    }
 }
 
 /// Requested paths are relative to the archive root; `..` is rejected.
@@ -121,14 +175,15 @@ pub fn extract(r: impl Read, paths: &[String], fmt: Format, out: File) -> Result
     match fmt {
         Format::Tar => {
             let mut b = tar::Builder::new(out);
+            let mut guard = Guard::default();
             for e in archive.entries()? {
                 let mut e = e?;
-                let path = norm(&e.path()?);
+                let Some((path, link)) = guard.admit(&e)? else { continue };
                 if path.is_empty() || !selected(&path, &sel) {
                     continue;
                 }
                 let mut h = e.header().clone();
-                match e.link_name()? {
+                match link {
                     Some(link) => b.append_link(&mut h, &path, link)?,
                     None => b.append_data(&mut h, &path, &mut e)?,
                 }
@@ -138,9 +193,10 @@ pub fn extract(r: impl Read, paths: &[String], fmt: Format, out: File) -> Result
         }
         Format::Zip => {
             let mut z = zip::ZipWriter::new(out);
+            let mut guard = Guard::default();
             for e in archive.entries()? {
                 let mut e = e?;
-                let path = norm(&e.path()?);
+                let Some((path, link)) = guard.admit(&e)? else { continue };
                 if path.is_empty() || !selected(&path, &sel) {
                     continue;
                 }
@@ -154,12 +210,7 @@ pub fn extract(r: impl Read, paths: &[String], fmt: Format, out: File) -> Result
                 match h.entry_type() {
                     EntryType::Directory => z.add_directory(path, opts)?,
                     EntryType::Symlink | EntryType::Link => {
-                        let target = e
-                            .link_name()?
-                            .context("link without target")?
-                            .to_string_lossy()
-                            .into_owned();
-                        z.add_symlink(path, target, opts)?
+                        z.add_symlink(path, link.context("link without target")?, opts)?
                     }
                     EntryType::Regular | EntryType::Continuous => {
                         z.start_file(path, opts)?;
@@ -229,6 +280,56 @@ mod tests {
         assert_eq!(etc[1].link.as_deref(), Some("/usr/share/zoneinfo/UTC"));
         assert_eq!((etc[0].size, etc[0].uid), (6, 1000));
         assert!(list(&sample()[..], "../x").is_err());
+    }
+
+    /// Raw tar entry; the name bytes bypass the tar crate's own path checks.
+    fn raw(b: &mut tar::Builder<Vec<u8>>, name: &str, t: EntryType, data: &[u8], link: Option<&str>) {
+        let mut h = tar::Header::new_old();
+        h.as_old_mut().name[..name.len()].copy_from_slice(name.as_bytes());
+        if let Some(l) = link {
+            h.as_old_mut().linkname[..l.len()].copy_from_slice(l.as_bytes());
+        }
+        h.set_entry_type(t);
+        h.set_mode(0o644);
+        h.set_size(data.len() as u64);
+        h.set_cksum();
+        b.append(&h, data).unwrap();
+    }
+
+    /// Regression (fuzzing, tar_files): a hostile stream (compromised CT or
+    /// restore VM) put `../` names and write-through-symlink entries into the
+    /// user's download (zip slip on the machine that extracts it).
+    #[test]
+    fn hostile_names_are_dropped() {
+        let mut b = tar::Builder::new(Vec::new());
+        raw(&mut b, "../../etc/cron.d/evil", EntryType::Regular, b"x", None);
+        raw(&mut b, "a/../../b", EntryType::Regular, b"x", None);
+        raw(&mut b, "/abs/ok", EntryType::Regular, b"abs", None);
+        raw(&mut b, "lnk", EntryType::Symlink, b"", Some("/etc"));
+        raw(&mut b, "lnk/passwd", EntryType::Regular, b"pw", None);
+        raw(&mut b, "hl", EntryType::Link, b"", Some("../../etc/shadow"));
+        raw(&mut b, "keep/me", EntryType::Regular, b"ok", None);
+        let tar = b.into_inner().unwrap();
+        let d = tempfile::tempdir().unwrap();
+        for fmt in [Format::Tar, Format::Zip] {
+            let p = d.path().join("o");
+            let n = extract(&tar[..], &[String::new()], fmt, File::create(&p).unwrap()).unwrap();
+            assert_eq!(n, 3, "abs/ok, lnk, keep/me");
+            let names: Vec<String> = match fmt {
+                Format::Tar => tar::Archive::new(File::open(&p).unwrap())
+                    .entries()
+                    .unwrap()
+                    .map(|e| e.unwrap().path().unwrap().to_string_lossy().into_owned())
+                    .collect(),
+                Format::Zip => {
+                    let z = zip::ZipArchive::new(File::open(&p).unwrap()).unwrap();
+                    z.file_names().map(str::to_owned).collect()
+                }
+            };
+            let mut names = names;
+            names.sort();
+            assert_eq!(names, ["abs/ok", "keep/me", "lnk"]);
+        }
     }
 
     #[test]
