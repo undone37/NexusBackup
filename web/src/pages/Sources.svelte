@@ -47,6 +47,20 @@
     paths: '',
     excludes: '',
     hooks: false,
+    // truenas
+    connect_addr: '',
+    tn_user: 'nexusbackup',
+    ssh_host: '',
+    ssh_port: 22,
+    ssh_user: 'nexusbackup',
+    host_key: '',
+    key_pem: '',
+    public_key: '',
+    from: '',
+    datasets: '',
+    recursive: false,
+    sudo: true,
+    zfs_sudo: true,
   });
   const tenantAgents = $derived(agents.filter((a) => a.tenant === f.tenant));
   // Keep the agent selection valid when the tenant changes.
@@ -64,13 +78,14 @@
     editing = x;
     const c = x?.kind === 'pve' ? x.config : undefined;
     const l = x?.kind === 'linux' ? x.config : undefined;
+    const n = x?.kind === 'truenas' ? x.config : undefined;
     f = {
       kind: x?.kind ?? 'pve',
       tenant: x?.tenant ?? tenants[0]?.name ?? '',
       name: x?.name ?? '',
-      host: c?.host ?? '',
-      port: c?.port ?? 8006,
-      ca_pem: c?.ca_pem ?? '',
+      host: c?.host ?? n?.host ?? '',
+      port: c?.port ?? n?.port ?? 8006,
+      ca_pem: c?.ca_pem ?? n?.ca_pem ?? '',
       token_id: c?.token_id ?? '',
       token_secret: '',
       nodes: JSON.stringify(c?.nodes ?? {}, null, 2),
@@ -80,8 +95,59 @@
       paths: (l?.paths ?? []).join('\n'),
       excludes: (l?.excludes ?? []).join('\n'),
       hooks: l?.hooks ?? false,
+      connect_addr: n?.connect_addr ?? '',
+      tn_user: n?.user ?? 'nexusbackup',
+      ssh_host: n?.ssh.host ?? '',
+      ssh_port: n?.ssh.port ?? 22,
+      ssh_user: n?.ssh.user ?? 'nexusbackup',
+      host_key: n?.ssh.host_key ?? '',
+      key_pem: '',
+      public_key: n?.ssh.public_key ?? '',
+      from: n?.ssh.from ?? '',
+      datasets: (n?.datasets ?? []).join('\n'),
+      recursive: n?.recursive ?? false,
+      sudo: n?.sudo ?? true,
+      zfs_sudo: n?.zfs_sudo ?? true,
     };
     open = true;
+  }
+
+  // New TrueNAS sources default to the HTTPS port.
+  $effect(() => {
+    if (open && !editing && f.kind === 'truenas' && f.port === 8006) f.port = 443;
+  });
+
+  /** Config of a truenas source, or null (after telling the user) when invalid. */
+  function truenasConfig(): Record<string, unknown> | null {
+    const datasets = lines(f.datasets);
+    if (!datasets.length || datasets.length > 64) {
+      notify('error', t.sources.tn.datasetsInvalid);
+      return null;
+    }
+    const ssh: Record<string, unknown> = {
+      host: f.ssh_host || f.host,
+      port: Number(f.ssh_port),
+      user: f.ssh_user,
+      host_key: f.host_key.trim(),
+    };
+    if (f.public_key.trim()) ssh.public_key = f.public_key.trim();
+    if (f.from.trim()) ssh.from = f.from.trim();
+    // Write-only secrets: only sent when entered.
+    if (f.key_pem.trim()) ssh.key_pem = f.key_pem.trim() + '\n';
+    const config: Record<string, unknown> = {
+      host: f.host,
+      port: Number(f.port),
+      ca_pem: f.ca_pem,
+      user: f.tn_user,
+      ssh,
+      datasets,
+      recursive: f.recursive,
+      sudo: f.sudo,
+      zfs_sudo: f.zfs_sudo,
+    };
+    if (f.connect_addr.trim()) config.connect_addr = f.connect_addr.trim();
+    if (f.token_secret) config.token_secret = f.token_secret;
+    return config;
   }
 
   /** Config of a linux source, or null (after telling the user) when invalid. */
@@ -123,14 +189,20 @@
 
   async function save(e: SubmitEvent) {
     e.preventDefault();
-    const config = f.kind === 'linux' ? linuxConfig() : pveConfig();
+    const config = f.kind === 'linux' ? linuxConfig() : f.kind === 'truenas' ? truenasConfig() : pveConfig();
     if (!config) return;
     const r = editing
-      ? await act(put(`/sources/${editing.id}`, { name: f.name, config }), t.saved)
-      : await act(post('/sources', { tenant: f.tenant, kind: f.kind, name: f.name, config }), t.created);
+      ? await act(put<Source>(`/sources/${editing.id}`, { name: f.name, config }), t.saved)
+      : await act(post<Source>('/sources', { tenant: f.tenant, kind: f.kind, name: f.name, config }), t.created);
     if (r) {
-      open = false;
       load();
+      // TrueNAS: keep the dialog open with the authorized_keys line to paste on TrueNAS
+      const s = r.data as Source;
+      if (!r.quorum && s?.kind === 'truenas' && s.config?.authorized_keys) {
+        edit(s);
+        return;
+      }
+      open = false;
     }
   }
 
@@ -175,6 +247,9 @@
                 <td class="mono" title={x.config?.excludes?.length ? `${t.sources.excludes}: ${x.config.excludes.join(' ')}` : undefined}
                   >{(x.config?.paths ?? []).join(' ')}</td
                 >
+              {:else if x.kind === 'truenas'}
+                <td class="mono">{x.config?.host}:{x.config?.port}</td>
+                <td class="mono">{(x.config?.datasets ?? []).join(' ')}{x.config?.recursive ? ' (+)' : ''}</td>
               {:else}
                 <td class="mono">{x.config?.host}:{x.config?.port}</td>
                 <td class="mono">{x.config?.token_id}</td>
@@ -199,6 +274,7 @@
         <select id="s-kind" bind:value={f.kind} disabled={!!editing} required>
           <option value="pve">{t.sources.kinds.pve}</option>
           <option value="linux">{t.sources.kinds.linux}</option>
+          <option value="truenas">{t.sources.kinds.truenas}</option>
         </select>
       </div>
       <div class="field">
@@ -221,6 +297,53 @@
             {#each tenantAgents as a (a.id)}<option value={a.id}>{a.name} ({a.host})</option>{/each}
           </select>
           {#if !tenantAgents.length}<div class="hint" id="s-agent-hint">{t.sources.noAgents}</div>{/if}
+        </div>
+      {:else if f.kind === 'truenas'}
+        <div class="field">
+          <label for="t-host">{t.sources.tn.host}</label>
+          <input id="t-host" bind:value={f.host} required spellcheck="false" />
+        </div>
+        <div class="field">
+          <label for="t-port">{t.sources.tn.port}</label>
+          <input id="t-port" type="number" min="1" max="65535" bind:value={f.port} required />
+        </div>
+        <div class="field">
+          <label for="t-ca">{t.sources.tn.connectAddr}</label>
+          <input id="t-ca" class="mono" bind:value={f.connect_addr} spellcheck="false" />
+        </div>
+        <div class="field">
+          <label for="t-user">{t.sources.tn.user}</label>
+          <input id="t-user" class="mono" bind:value={f.tn_user} required spellcheck="false" />
+        </div>
+        <div class="field">
+          <label for="t-key">{t.sources.tn.apiKey}</label>
+          <input
+            id="t-key"
+            type="password"
+            bind:value={f.token_secret}
+            autocomplete="new-password"
+            required={!editing}
+            aria-describedby="t-key-hint"
+          />
+          <div class="hint" id="t-key-hint">
+            {editing?.kind === 'truenas' && editing.config?.token_secret_set ? t.writeOnlyKeep : t.writeOnlyHint}
+          </div>
+        </div>
+        <div class="field">
+          <label for="t-sh">{t.sources.tn.sshHost}</label>
+          <input id="t-sh" bind:value={f.ssh_host} placeholder={f.host} spellcheck="false" />
+        </div>
+        <div class="field">
+          <label for="t-sp">{t.sources.tn.sshPort}</label>
+          <input id="t-sp" type="number" min="1" max="65535" bind:value={f.ssh_port} required />
+        </div>
+        <div class="field">
+          <label for="t-su">{t.sources.tn.sshUser}</label>
+          <input id="t-su" class="mono" bind:value={f.ssh_user} required spellcheck="false" />
+        </div>
+        <div class="field">
+          <label for="t-from">{t.sources.tn.from}</label>
+          <input id="t-from" class="mono" bind:value={f.from} spellcheck="false" />
         </div>
       {:else}
         <div class="field">
@@ -289,6 +412,63 @@
         >
         <div class="hint" id="s-hooks-hint">{t.sources.hooksHint}</div>
       </div>
+    {:else if f.kind === 'truenas'}
+      <div class="field">
+        <label for="t-ds">{t.sources.tn.datasets}</label>
+        <textarea
+          id="t-ds"
+          class="mono"
+          bind:value={f.datasets}
+          required
+          spellcheck="false"
+          placeholder={'tank/data\ntank/smb'}
+          aria-describedby="t-ds-hint"
+        ></textarea>
+        <div class="hint" id="t-ds-hint">{t.sources.tn.datasetsHint}</div>
+      </div>
+      <div class="field">
+        <label class="inline-check"><input type="checkbox" bind:checked={f.recursive} />{t.sources.tn.recursive}</label>
+        <label class="inline-check"><input type="checkbox" bind:checked={f.sudo} />{t.sources.tn.sudo}</label>
+        <label class="inline-check"><input type="checkbox" bind:checked={f.zfs_sudo} />{t.sources.tn.zfsSudo}</label>
+      </div>
+      <div class="field">
+        <label for="t-cert">{t.sources.tn.cert}</label>
+        <textarea id="t-cert" class="mono" bind:value={f.ca_pem} required spellcheck="false" aria-describedby="t-cert-hint"
+        ></textarea>
+        <div class="hint" id="t-cert-hint">{t.sources.tn.certHint}</div>
+      </div>
+      <div class="field">
+        <label for="t-hk">{t.sources.tn.hostKey}</label>
+        <input id="t-hk" class="mono" bind:value={f.host_key} required spellcheck="false" aria-describedby="t-hk-hint" />
+        <div class="hint" id="t-hk-hint">{t.sources.tn.hostKeyHint}</div>
+      </div>
+      <div class="field">
+        <label for="t-pem">{t.sources.tn.keyPem}</label>
+        <textarea
+          id="t-pem"
+          class="mono"
+          bind:value={f.key_pem}
+          required={!editing}
+          spellcheck="false"
+          autocomplete="off"
+          aria-describedby="t-pem-hint"
+        ></textarea>
+        <div class="hint" id="t-pem-hint">
+          {editing?.kind === 'truenas' && editing.config?.ssh?.key_pem_set ? t.writeOnlyKeep : t.writeOnlyHint}
+        </div>
+      </div>
+      <div class="field">
+        <label for="t-pub">{t.sources.tn.publicKey}</label>
+        <input id="t-pub" class="mono" bind:value={f.public_key} spellcheck="false" />
+      </div>
+      {#if editing?.kind === 'truenas' && editing.config?.authorized_keys}
+        <div class="field">
+          <label for="t-ak">{t.sources.tn.authorizedKeys}</label>
+          <textarea id="t-ak" class="mono" readonly value={editing.config.authorized_keys} aria-describedby="t-ak-hint"
+          ></textarea>
+          <div class="hint" id="t-ak-hint">{t.sources.tn.authorizedKeysHint}</div>
+        </div>
+      {/if}
     {:else}
       <div class="field">
         <label for="s-ca">{t.sources.caPem}</label>

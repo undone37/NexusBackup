@@ -54,6 +54,38 @@ export interface LinuxSourceConfig {
   hooks: boolean;
 }
 
+/** Config of a `truenas` source (docs/truenas-connector.md). Secrets are write-only. */
+export interface TrueNasSourceConfig {
+  host: string;
+  port: number;
+  connect_addr?: string;
+  /** the TrueNAS certificate (pinned) and/or its CA */
+  ca_pem: string;
+  /** TrueNAS user owning the API key (privilege: SNAPSHOT_WRITE, SNAPSHOT_DELETE, DATASET_READ) */
+  user: string;
+  /** API key: write-only */
+  token_secret?: string;
+  token_secret_set?: boolean;
+  ssh: {
+    host: string;
+    port: number;
+    user: string;
+    /** pinned SSH host key `ssh-ed25519 AAAA…` */
+    host_key: string;
+    /** appliance private key: write-only */
+    key_pem?: string;
+    key_pem_set?: boolean;
+    public_key?: string;
+    from?: string;
+  };
+  datasets: string[];
+  recursive: boolean;
+  sudo: boolean;
+  zfs_sudo: boolean;
+  /** returned by the API: the line for the TrueNAS user's "SSH public key" field */
+  authorized_keys?: string;
+}
+
 interface SourceBase {
   id: number;
   tenant: string;
@@ -61,7 +93,8 @@ interface SourceBase {
 }
 export type PveSource = SourceBase & { kind: 'pve'; config: SourceConfig };
 export type LinuxSource = SourceBase & { kind: 'linux'; config: LinuxSourceConfig };
-export type Source = PveSource | LinuxSource;
+export type TrueNasSource = SourceBase & { kind: 'truenas'; config: TrueNasSourceConfig };
+export type Source = PveSource | LinuxSource | TrueNasSource;
 export type SourceKind = Source['kind'];
 
 /** Linux backup agent (docs/agent-protocol.md). `id` is 16 hex chars. */
@@ -113,7 +146,7 @@ export interface Group {
   source_id: number;
   policy_id: number;
   name: string;
-  /** pve: VM/CT IDs; linux: exactly `[source.config.agent_id]` */
+  /** pve: VM/CT IDs; linux: exactly `[source.config.agent_id]`; truenas: datasets of the source */
   guests: (number | string)[];
 }
 

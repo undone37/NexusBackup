@@ -7,7 +7,7 @@
   import { fmtAgo, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import { kindLabel } from '../lib/jobs';
-  import type { Agent, Alert, Group, Job, Policy, QuorumRequest, Snapshot } from '../lib/types';
+  import type { Agent, Alert, Group, Job, Policy, QuorumRequest, Snapshot, Source } from '../lib/types';
   import Check from '../components/Check.svelte';
   import JobState from '../components/JobState.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
@@ -18,6 +18,7 @@
   let failed: Job[] = $state([]);
   let alerts: Alert[] = $state([]);
   let agents: Agent[] = $state([]);
+  let sources: Source[] = $state([]);
   let pending: number | null = $state(null);
   let error: string | null = $state(null);
   let loaded = $state(false);
@@ -41,9 +42,9 @@
       error = errText(e);
     }
     try {
-      agents = await get<Agent[]>('/agents');
+      [agents, sources] = await Promise.all([get<Agent[]>('/agents'), get<Source[]>('/sources')]);
     } catch {
-      /* agent names are cosmetic here */
+      /* agent names / source kinds are cosmetic here */
     }
     if (can.viewQuorum(session.user)) {
       try {
@@ -72,12 +73,18 @@
     return m;
   });
 
-  // Snapshot source names a guest can have: VM/CT IDs (pve) or agent ids (linux hosts).
-  const sourcesOf = (guest: number | string) =>
-    typeof guest === 'string' ? [`host-${guest}`] : [`vm-${guest}`, `ct-${guest}`];
+  // Snapshot source names a guest can have: VM/CT IDs (pve), agent ids (linux hosts)
+  // or datasets (truenas: `nas-<source>-<pool.dataset>`).
+  const isNas = (g: Group) => sources.find((s) => s.id === g.source_id)?.kind === 'truenas';
+  const sourcesOf = (g: Group, guest: number | string) =>
+    typeof guest === 'string'
+      ? isNas(g)
+        ? [`nas-${g.source_id}-${guest.replaceAll('/', '.')}`]
+        : [`host-${guest}`]
+      : [`vm-${guest}`, `ct-${guest}`];
 
   function lastFor(g: Group, guest: number | string): Snapshot | undefined {
-    for (const s of sourcesOf(guest)) {
+    for (const s of sourcesOf(g, guest)) {
       const hit = latest.get(`${g.tenant}/${s}`);
       if (hit) return hit;
     }
@@ -85,13 +92,14 @@
   }
   // Newest snapshot of a guest that is offsite / verified (the latest one may still be uploading).
   function newestWhere(g: Group, guest: number | string, pred: (s: Snapshot) => boolean): Snapshot | undefined {
-    const names = sourcesOf(guest);
+    const names = sourcesOf(g, guest);
     return snaps
       .filter((s) => s.tenant === g.tenant && names.includes(s.source) && pred(s))
       .sort((a, b) => b.time - a.time)[0];
   }
   function guestLabel(g: Group, guest: number | string) {
-    if (typeof guest === 'string') return agents.find((a) => a.id === guest)?.name ?? `host-${guest}`;
+    if (typeof guest === 'string')
+      return isNas(g) ? guest : (agents.find((a) => a.id === guest)?.name ?? `host-${guest}`);
     return lastFor(g, guest)?.source ?? String(guest);
   }
   const showAlerts = $derived(can.viewAlerts(session.user));

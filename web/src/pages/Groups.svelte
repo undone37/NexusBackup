@@ -39,12 +39,17 @@
 
   let open = $state(false);
   let editing: Group | null = $state(null);
-  let f = $state({ tenant: '', name: '', source_id: 0, policy_id: 0, guests: '' });
+  let f = $state({ tenant: '', name: '', source_id: 0, policy_id: 0, guests: '', datasets: [] as string[] });
   const tenantSources = $derived(sources.filter((s) => s.tenant === f.tenant));
   // A linux source backs up exactly one host: guests = [its agent id], no VM/CT IDs.
   const linuxSource = $derived.by(() => {
     const s = sources.find((x) => x.id === Number(f.source_id));
     return s?.kind === 'linux' ? s : null;
+  });
+  // A truenas source: guests = a subset of its datasets (none = all).
+  const nasSource = $derived.by(() => {
+    const s = sources.find((x) => x.id === Number(f.source_id));
+    return s?.kind === 'truenas' ? s : null;
   });
   // Keep the source selection valid when the tenant changes.
   $effect(() => {
@@ -60,6 +65,7 @@
       source_id: x?.source_id ?? sources.find((s) => s.tenant === tenant)?.id ?? 0,
       policy_id: x?.policy_id ?? policies[0]?.id ?? 0,
       guests: (x?.guests ?? []).filter((g) => typeof g === 'number').join(', '),
+      datasets: (x?.guests ?? []).filter((g): g is string => typeof g === 'string'),
     };
     open = true;
   }
@@ -69,6 +75,8 @@
     let guests: (number | string)[];
     if (linuxSource) {
       guests = [linuxSource.config.agent_id];
+    } else if (nasSource) {
+      guests = f.datasets.filter((d) => nasSource.config.datasets.includes(d));
     } else {
       guests = f.guests.split(/[\s,]+/).filter(Boolean).map(Number);
       if (guests.some((g) => !Number.isInteger(g) || Number(g) < 100)) {
@@ -165,6 +173,13 @@
     </div>
     {#if linuxSource}
       <p class="muted">{t.groups.linuxGuest(agentName(linuxSource.config.agent_id))}</p>
+    {:else if nasSource}
+      <fieldset class="field">
+        <legend>{t.groups.datasets}</legend>
+        {#each nasSource.config.datasets as d (d)}
+          <label class="inline-check mono"><input type="checkbox" value={d} bind:group={f.datasets} />{d}</label>
+        {/each}
+      </fieldset>
     {:else}
       <div class="field">
         <label for="g-guests">{t.groups.guests}</label>

@@ -176,6 +176,8 @@
                 <td class="actions">
                   {#if hostAgentId(s.source)}
                     <button type="button" class="small" onclick={() => openRestoreFiles(s)}>{t.snap.restorePath}</button>
+                  {:else if s.source.startsWith('nas-')}
+                    <!-- TrueNAS datasets: file download only (docs/truenas-connector.md) -->
                   {:else}
                     <button type="button" class="small" onclick={() => openRestore(s, 'restore')}>{t.snap.restore}</button>
                   {/if}
