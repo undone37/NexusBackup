@@ -4,4 +4,8 @@ disable sshd.service
 disable sshd.socket
 enable nftables.service
 enable chronyd.service
-# nexus-*.service are enabled here once their binaries ship in the image.
+# First-boot wizard on tty1; inert until /usr/libexec/nexus/nexus-setup ships
+# (ConditionPathExists) and after /var/lib/nexus/setup-done exists.
+enable nexus-setup.service
+# The other nexus-*.service are enabled here once their binaries ship in the image;
+# nexus-web-api and nexus-scheduler are enabled by nexus-setup itself.

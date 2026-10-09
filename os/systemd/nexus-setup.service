@@ -1,0 +1,60 @@
+[Unit]
+Description=NexusBackup first-boot setup wizard (console, tty1)
+# Runs until the wizard has written setup-done and never again afterwards.
+# `nexus-setup --force-reconfigure-network` is run by hand from a console.
+ConditionPathExists=!/var/lib/nexus/setup-done
+ConditionPathExists=/usr/libexec/nexus/nexus-setup
+After=systemd-user-sessions.service systemd-sysusers.service systemd-vconsole-setup.service
+After=NetworkManager.service plymouth-quit-wait.service
+Wants=NetworkManager.service
+# Same pattern as Fedora's initial-setup: getty@tty1 waits for this oneshot,
+# so the wizard owns tty1 until setup is done (tty2.. keep their gettys).
+Before=getty@tty1.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=infinity
+# Quitting the wizard (exit 3) or an error starts it again until setup-done exists.
+ExecStart=/bin/sh -c 'while [ ! -e /var/lib/nexus/setup-done ]; do /usr/libexec/nexus/nexus-setup || { echo "nexus-setup exited ($?), restarting; details: journalctl -u nexus-setup"; sleep 3; }; done'
+
+StandardInput=tty-force
+StandardOutput=tty
+# Audit lines and errors go to the journal, not over the TUI.
+StandardError=journal
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+# Disallocating the VT afterwards drops anything left in its scrollback.
+TTYVTDisallocate=yes
+Environment=TERM=linux
+
+# Holds the recovery key and passwords briefly: no core dumps, memory locked.
+LimitCORE=0
+LimitMEMLOCK=infinity
+UMask=0077
+
+# Needs root: writes /etc/nexus and /var/lib/nexus, chowns to the service users,
+# and drives NetworkManager, hostnamed and systemd over D-Bus.
+StateDirectory=nexus
+StateDirectoryMode=0755
+ConfigurationDirectory=nexus
+ConfigurationDirectoryMode=0755
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+IPAddressDeny=any
+
+[Install]
+WantedBy=multi-user.target
