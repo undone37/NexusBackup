@@ -3,7 +3,7 @@
   import { get, post, put, del, act, errText } from '../lib/api';
   import { notify } from '../lib/notify.svelte';
   import { t } from '../lib/i18n';
-  import type { Group, Policy, Source, Tenant } from '../lib/types';
+  import type { Agent, Group, Policy, Source, Tenant } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
 
@@ -11,16 +11,18 @@
   let tenants: Tenant[] = $state([]);
   let sources: Source[] = $state([]);
   let policies: Policy[] = $state([]);
+  let agents: Agent[] = $state([]);
   let error: string | null = $state(null);
   let loaded = $state(false);
 
   async function load() {
     try {
-      [items, tenants, sources, policies] = await Promise.all([
+      [items, tenants, sources, policies, agents] = await Promise.all([
         get<Group[]>('/groups'),
         get<Tenant[]>('/tenants'),
         get<Source[]>('/sources'),
         get<Policy[]>('/policies'),
+        get<Agent[]>('/agents'),
       ]);
       error = null;
     } catch (e) {
@@ -32,11 +34,18 @@
 
   const sourceName = (id: number) => sources.find((s) => s.id === id)?.name ?? `#${id}`;
   const policyName = (id: number) => policies.find((p) => p.id === id)?.name ?? `#${id}`;
+  const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
+  const guestText = (g: number | string) => (typeof g === 'string' ? agentName(g) : String(g));
 
   let open = $state(false);
   let editing: Group | null = $state(null);
   let f = $state({ tenant: '', name: '', source_id: 0, policy_id: 0, guests: '' });
   const tenantSources = $derived(sources.filter((s) => s.tenant === f.tenant));
+  // A linux source backs up exactly one host: guests = [its agent id], no VM/CT IDs.
+  const linuxSource = $derived.by(() => {
+    const s = sources.find((x) => x.id === Number(f.source_id));
+    return s?.kind === 'linux' ? s : null;
+  });
   // Keep the source selection valid when the tenant changes.
   $effect(() => {
     if (open && !tenantSources.some((s) => s.id === f.source_id)) f.source_id = tenantSources[0]?.id ?? 0;
@@ -50,18 +59,22 @@
       name: x?.name ?? '',
       source_id: x?.source_id ?? sources.find((s) => s.tenant === tenant)?.id ?? 0,
       policy_id: x?.policy_id ?? policies[0]?.id ?? 0,
-      guests: (x?.guests ?? []).join(', '),
+      guests: (x?.guests ?? []).filter((g) => typeof g === 'number').join(', '),
     };
     open = true;
   }
 
   async function save(e: SubmitEvent) {
     e.preventDefault();
-    const parts = f.guests.split(/[\s,]+/).filter(Boolean);
-    const guests = parts.map(Number);
-    if (guests.some((g) => !Number.isInteger(g) || g < 100)) {
-      notify('error', t.groups.guests);
-      return;
+    let guests: (number | string)[];
+    if (linuxSource) {
+      guests = [linuxSource.config.agent_id];
+    } else {
+      guests = f.guests.split(/[\s,]+/).filter(Boolean).map(Number);
+      if (guests.some((g) => !Number.isInteger(g) || Number(g) < 100)) {
+        notify('error', t.groups.guests);
+        return;
+      }
     }
     // The tenant is fixed after creation (PUT rejects unknown fields, incl. tenant).
     const body = { name: f.name, source_id: Number(f.source_id), policy_id: Number(f.policy_id), guests };
@@ -111,7 +124,7 @@
               <td>{x.tenant}</td>
               <td>{sourceName(x.source_id)}</td>
               <td>{policyName(x.policy_id)}</td>
-              <td class="mono">{x.guests.join(', ')}</td>
+              <td class="mono">{x.guests.map(guestText).join(', ')}</td>
               <td class="actions">
                 <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
                 <button type="button" class="small danger" onclick={() => remove(x)}>{t.delete}</button>
@@ -150,10 +163,14 @@
         </select>
       </div>
     </div>
-    <div class="field">
-      <label for="g-guests">{t.groups.guests}</label>
-      <input id="g-guests" class="mono" bind:value={f.guests} placeholder="100, 101, 200" />
-    </div>
+    {#if linuxSource}
+      <p class="muted">{t.groups.linuxGuest(agentName(linuxSource.config.agent_id))}</p>
+    {:else}
+      <div class="field">
+        <label for="g-guests">{t.groups.guests}</label>
+        <input id="g-guests" class="mono" bind:value={f.guests} placeholder="100, 101, 200" />
+      </div>
+    {/if}
     <div class="form-actions">
       <button type="button" onclick={() => (open = false)}>{t.cancel}</button>
       <button type="submit" class="primary">{editing ? t.save : t.create}</button>

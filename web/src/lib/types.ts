@@ -29,6 +29,7 @@ export interface Tenant {
   offsite: TenantOffsite;
 }
 
+/** Config of a `pve` source. */
 export interface SourceConfig {
   host: string;
   port: number;
@@ -42,13 +43,54 @@ export interface SourceConfig {
   fleecing_storage: string;
 }
 
-export interface Source {
+/** Config of a `linux` source (a host with an enrolled backup agent). No secrets. */
+export interface LinuxSourceConfig {
+  agent_id: string;
+  /** absolute paths, 1..=64 */
+  paths: string[];
+  /** glob patterns, 0..=256 */
+  excludes: string[];
+  /** run the agent's pre/post hooks */
+  hooks: boolean;
+}
+
+interface SourceBase {
   id: number;
   tenant: string;
-  kind: 'pve';
   name: string;
-  config: SourceConfig;
 }
+export type PveSource = SourceBase & { kind: 'pve'; config: SourceConfig };
+export type LinuxSource = SourceBase & { kind: 'linux'; config: LinuxSourceConfig };
+export type Source = PveSource | LinuxSource;
+export type SourceKind = Source['kind'];
+
+/** Linux backup agent (docs/agent-protocol.md). `id` is 16 hex chars. */
+export interface Agent {
+  id: string;
+  tenant: string;
+  name: string;
+  host: string;
+  port: number;
+  /** null = not enrolled yet */
+  enrolled_at: number | null;
+  cert_sha256: string | null;
+  /** expiry of the current one-time enrollment token (null = none) */
+  token_expires: number | null;
+  last_seen: number | null;
+  version: string | null;
+  os: string | null;
+}
+
+/** One-time enrollment token: only in the answer of POST /agents and POST /agents/{id}/token. */
+export interface AgentToken {
+  token: string;
+  install_command: string;
+  token_expires: number;
+}
+
+export type AgentStatus = 'enrolled' | 'pending' | 'expired';
+
+export type Overwrite = 'never' | 'if_older' | 'always';
 
 export interface Gfs {
   daily: number;
@@ -71,7 +113,8 @@ export interface Group {
   source_id: number;
   policy_id: number;
   name: string;
-  guests: number[];
+  /** pve: VM/CT IDs; linux: exactly `[source.config.agent_id]` */
+  guests: (number | string)[];
 }
 
 export type JobState = 'queued' | 'running' | 'ok' | 'failed' | 'cancelled';
@@ -85,15 +128,20 @@ export type JobKind =
   | 'offsite'
   | 'retention'
   | 'gc'
-  | 'verify';
+  | 'verify'
+  | 'restore_files'
+  | 'agent_update'
+  | 'agent_enroll';
 
-/** One entry of `nexus-pve files … ls` (crates/pve/src/files.rs `Entry`). */
+/** One entry of `nexus-pve files … ls` (crates/pve/src/files.rs `Entry`); agents use the same shape. */
 export interface FileEntry {
   name: string;
   kind: 'file' | 'dir' | 'symlink' | 'hardlink' | 'other';
   size: number;
   mtime: number;
   mode?: number;
+  uid?: number;
+  gid?: number;
   link?: string | null;
 }
 

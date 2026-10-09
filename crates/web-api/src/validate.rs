@@ -71,8 +71,33 @@ pub fn vmid(v: u32) -> ApiResult<()> {
     }
 }
 
-/// `vm-<vmid>` or `ct-<vmid>`.
+/// Agent ids (chosen by `POST /agents`): 16 lowercase hex characters.
+pub fn agent_id(s: &str) -> ApiResult<()> {
+    if s.len() == 16 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        Ok(())
+    } else {
+        Err(ApiError::bad("agent_id: expected 16 lowercase hex characters"))
+    }
+}
+
+/// Absolute path on a host without `.`/`..` components (restore targets).
+pub fn host_path(s: &str, what: &str) -> ApiResult<()> {
+    guest_path(s).map_err(|_| {
+        ApiError::bad(format!(
+            "{what}: must be absolute, at most 4096 bytes, without control characters"
+        ))
+    })?;
+    if s.split('/').any(|c| c == "." || c == "..") {
+        return Err(ApiError::bad(format!("{what}: `.` and `..` are not allowed")));
+    }
+    Ok(())
+}
+
+/// `vm-<vmid>`, `ct-<vmid>` or `host-<agent_id>`.
 pub fn source_ref(s: &str) -> ApiResult<()> {
+    if let Some(a) = s.strip_prefix("host-") {
+        return agent_id(a).map_err(|_| ApiError::bad("source: expected vm-<vmid>, ct-<vmid> or host-<agent_id>"));
+    }
     let ok = s
         .strip_prefix("vm-")
         .or_else(|| s.strip_prefix("ct-"))
@@ -87,7 +112,9 @@ pub fn source_ref(s: &str) -> ApiResult<()> {
     if ok {
         Ok(())
     } else {
-        Err(ApiError::bad("source: expected vm-<vmid> or ct-<vmid>"))
+        Err(ApiError::bad(
+            "source: expected vm-<vmid>, ct-<vmid> or host-<agent_id>",
+        ))
     }
 }
 
@@ -165,6 +192,12 @@ mod tests {
         }
         assert!(source_ref("vm-100").is_ok() && source_ref("ct-999").is_ok());
         assert!(source_ref("vm-99").is_err() && source_ref("vm-0100").is_err() && source_ref("xx-100").is_err());
+        assert!(source_ref("host-0123456789abcdef").is_ok() && source_ref("host-0123456789ABCDEF").is_err());
+        assert!(
+            host_path("/srv/x", "t").is_ok()
+                && host_path("/srv/../etc", "t").is_err()
+                && host_path("srv", "t").is_err()
+        );
         let g = Gfs {
             daily: 7,
             weekly: 4,

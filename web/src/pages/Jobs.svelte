@@ -4,11 +4,11 @@
   import { route, navigate, href } from '../lib/router.svelte';
   import { fmtAgo, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
+  import { JOB_KINDS, kindLabel } from '../lib/jobs';
   import type { Job } from '../lib/types';
   import JobState from '../components/JobState.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
 
-  const KINDS = ['backup', 'restore', 'restore_ct', 'instant_recover', 'files_list', 'files_get', 'offsite', 'retention', 'gc', 'verify'];
   const STATES = ['queued', 'running', 'ok', 'failed', 'cancelled'];
 
   let jobs: Job[] = $state([]);
@@ -64,7 +64,7 @@
     <label for="j-kind">{t.kind}</label>
     <select id="j-kind" bind:value={kind} onchange={filter}>
       <option value="">{t.jobs.anyKind}</option>
-      {#each KINDS as k (k)}<option value={k}>{k}</option>{/each}
+      {#each JOB_KINDS as k (k)}<option value={k}>{kindLabel(k)}</option>{/each}
     </select>
   </div>
 </div>
@@ -94,7 +94,7 @@
           {#each jobs as j (j.id)}
             <tr>
               <td><a href={href(`/jobs/${j.id}`)}>#{j.id}</a></td>
-              <td>{j.kind}</td>
+              <td>{kindLabel(j.kind)}</td>
               <td>{j.tenant}</td>
               <td><JobState state={j.state} /></td>
               <td>{j.requested_by}</td>

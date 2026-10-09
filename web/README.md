@@ -47,7 +47,8 @@ src/lib/api.ts         fetch wrapper: X-CSRF-Token, 401 handling, 202 {quorum_id
 src/lib/i18n.ts        every user-visible string (English for now; add a German object of the same shape)
 src/lib/roles.ts       UI mirror of the RBAC table (only hides controls; the server decides)
 src/pages/*            Login, Dashboard, Snapshots, Files, Jobs, JobDetail, Alerts, Quorum,
-                       Audit, Tenants, Sources, Policies, Groups, Users
+                       Audit, Tenants, Sources, Agents, Policies, Groups, Users
+src/components/RestoreFiles.svelte  "restore to path" dialog for host snapshots (Snapshots + Files)
 ```
 
 ## Security notes
@@ -84,5 +85,11 @@ src/pages/*            Login, Dashboard, Snapshots, Files, Jobs, JobDetail, Aler
   (`job.result.entries`, written by the scheduler).
 - **Downloads.** For `files_get`, the UI takes `download_token` from the 202
   body, polls the job, then links to `/api/v1/downloads/<token>`.
+- **Agents.** The one-time enrollment token and install command from `POST /agents` and
+  `POST /agents/{id}/token` are shown once in a dialog and dropped from memory when it closes.
+  "Enroll" is offered only while `token_expires` is in the future (otherwise the server answers 409).
+- **Host snapshots.** Snapshots of Linux hosts are named `host-<agent id>`. The file browser handles them
+  like `vm-`/`ct-` snapshots. "Restore to path" posts a `restore_files` job. The user must type the target
+  agent's name, which is sent as `confirm`.
 - **Audit paging.** The audit page loads newest first (`?order=desc&limit=100`)
   and pages backwards with `?before=<oldest seq shown>`.

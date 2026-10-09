@@ -58,7 +58,30 @@ const SCHEMA_V2: &str = "ALTER TABLE users ADD COLUMN totp_last_step INTEGER NOT
 /// v3: structured job results (JSON, NULL until the job finished ok).
 const SCHEMA_V3: &str = "ALTER TABLE jobs ADD COLUMN result TEXT;";
 
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3];
+/// v4: Linux agents (docs/agent-protocol.md). New table `agents`; source kind
+/// `linux` — SQLite cannot alter a CHECK, so `sources` is rebuilt (same ids,
+/// rows and constraints, wider CHECK). Runs with foreign keys off (see
+/// `Catalog::open`) and is checked with `foreign_key_check` before commit.
+/// Backward compatible for one release (docs/release.md): the previous
+/// release skips unknown migrations (`user_version` 4 > 3), never reads
+/// `agents`, and treats `linux` sources as unsupported (their jobs fail with
+/// an alert, nothing else changes).
+/// `agents.token_hash` holds the enrollment token digest sealed to the
+/// scheduler (`sealed:v1:`, `catalog::secret`), cleared after enrollment.
+const SCHEMA_V4: &str = r#"
+CREATE TABLE agents (
+  id TEXT PRIMARY KEY, tenant TEXT NOT NULL REFERENCES tenants(name), name TEXT NOT NULL, host TEXT NOT NULL,
+  port INTEGER NOT NULL, cert_sha256 TEXT, enrolled_at INTEGER, token_hash TEXT, token_expires INTEGER,
+  last_seen INTEGER, version TEXT, os TEXT, UNIQUE (tenant, name));
+CREATE TABLE sources_v4 (
+  id INTEGER PRIMARY KEY, tenant TEXT NOT NULL REFERENCES tenants(name), kind TEXT NOT NULL CHECK (kind IN ('pve','linux')),
+  name TEXT NOT NULL, config TEXT NOT NULL, UNIQUE (tenant, name));
+INSERT INTO sources_v4 (id, tenant, kind, name, config) SELECT id, tenant, kind, name, config FROM sources;
+DROP TABLE sources;
+ALTER TABLE sources_v4 RENAME TO sources;
+"#;
+
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4];
 
 pub fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
@@ -82,15 +105,26 @@ impl Catalog {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "FULL")?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
+        // Migrations may rebuild tables (SQLite's 12-step ALTER procedure): foreign
+        // keys off while they run (the pragma is a no-op inside a transaction),
+        // integrity checked with foreign_key_check before each commit.
+        conn.pragma_update(None, "foreign_keys", "OFF")?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         for (i, m) in MIGRATIONS.iter().enumerate().skip(version as usize) {
             let tx = conn.unchecked_transaction()?;
             tx.execute_batch(m)?;
+            let broken: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?;
+            if broken > 0 {
+                bail!(
+                    "catalog migration {} would break {broken} foreign key references",
+                    i + 1
+                );
+            }
             tx.pragma_update(None, "user_version", (i + 1) as i64)?;
             tx.commit()?;
         }
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         Ok(Catalog { conn: Mutex::new(conn) })
     }
 
@@ -171,6 +205,92 @@ mod tests {
         assert_eq!(c.verify_audit().unwrap(), 1);
         let v: i64 = c.conn().pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
         assert_eq!(v, MIGRATIONS.len() as i64);
+    }
+
+    /// v4 rebuilds `sources` (wider kind CHECK): rows, ids, foreign keys and
+    /// constraints survive; linux sources and agents become possible.
+    #[test]
+    fn migration_v4_keeps_pve_sources() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        {
+            // a v3 catalog as the previous release left it
+            let c = Connection::open(&p).unwrap();
+            c.pragma_update(None, "foreign_keys", "ON").unwrap();
+            for (i, m) in MIGRATIONS[..3].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                r#"INSERT INTO tenants (name) VALUES ('acme');
+                 INSERT INTO sources (id, tenant, kind, name, config) VALUES (7, 'acme', 'pve', 'cluster', '{"host":"pve1"}');
+                 INSERT INTO policies (id, name, schedule, gfs) VALUES (1, 'p', 'daily 22:00', '{}');
+                 INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (3, 'acme', 7, 1, 'g', '[100]');"#,
+            )
+            .unwrap();
+            assert!(c
+                .execute(
+                    "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', 'linux', 'x', '{}')",
+                    []
+                )
+                .is_err());
+        }
+        let c = Catalog::open(&p).unwrap();
+        let v: i64 = c.conn().pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, 4);
+        let fk: i64 = c.conn().pragma_query_value(None, "foreign_keys", |r| r.get(0)).unwrap();
+        assert_eq!(fk, 1, "foreign keys back on");
+        let row: (i64, String, String, String) = c
+            .conn()
+            .query_row("SELECT id, kind, name, config FROM sources", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .unwrap();
+        assert_eq!(row, (7, "pve".into(), "cluster".into(), r#"{"host":"pve1"}"#.into()));
+        let conn = c.conn();
+        // the group still references source 7: deleting a referenced source is refused
+        assert!(conn.execute("DELETE FROM sources WHERE id = 7", []).is_err());
+        conn.execute(
+            "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', 'linux', 'web01', '{}')",
+            [],
+        )
+        .unwrap();
+        let ins = |sql: &str| conn.execute(sql, []).is_err();
+        assert!(ins(
+            "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', 'esx', 'e', '{}')"
+        ));
+        assert!(
+            ins("INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', 'pve', 'cluster', '{}')"),
+            "UNIQUE (tenant, name) kept"
+        );
+        assert!(
+            ins("INSERT INTO sources (tenant, kind, name, config) VALUES ('nope', 'pve', 'n', '{}')"),
+            "tenant foreign key kept"
+        );
+        assert!(!ins(
+            "INSERT INTO agents (id, tenant, name, host, port) VALUES ('0123456789abcdef', 'acme', 'web01', 'h', 7444)"
+        ));
+        assert!(ins(
+            "INSERT INTO agents (id, tenant, name, host, port) VALUES ('x', 'nope', 'a', 'h', 1)"
+        ));
+        let sql: String = conn
+            .query_row("SELECT sql FROM sqlite_master WHERE name = 'groups'", [], |r| r.get(0))
+            .unwrap();
+        assert!(sql.contains("REFERENCES sources(id)"), "{sql}");
+        drop(conn);
+        drop(c);
+        // the previous release (3 migrations) runs none on the v4 file and can read it
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..3].iter().skip(v as usize).count(), 0);
+        let n: i64 = old
+            .query_row(
+                "SELECT COUNT(*) FROM sources s JOIN groups g ON g.source_id = s.id",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
     }
 
     #[test]

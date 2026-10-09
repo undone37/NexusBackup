@@ -197,6 +197,11 @@ Caveats:
   before the health verdict. A migration that the previous release cannot open makes
   the rollback fail too. Rule: migrations stay backward compatible for one release
   (old binaries ignore new columns/tables); destructive cleanups run one release later.
+  Example v4 (Linux agents): new table `agents`, and `sources` rebuilt with the same
+  columns, ids and constraints but a wider `kind` CHECK (SQLite cannot alter a CHECK).
+  An older release skips the migration (`user_version` 4 > its last), reads `sources`
+  unchanged and fails jobs of `linux` sources as unsupported. Test:
+  `catalog::tests::migration_v4_keeps_pve_sources`.
 - Appliances installed before greenboot was in the image have no `08_greenboot.cfg` in
   `/boot` until `bootupctl update`. 1.0 ships greenboot from the first install.
 

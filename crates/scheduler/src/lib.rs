@@ -27,6 +27,12 @@
 //! They are opened in memory when a job config is generated. Legacy plaintext
 //! values are sealed at startup (audit `secret.migrate`).
 //!
+//! `sources.config` (kind `linux`): `{ "agent_id", "paths", "excludes", "hooks" }`;
+//! the agent endpoint, fingerprint and sealed enrollment token digest live in
+//! `agents`. Agent jobs spawn `nexus-agentctl` (crate agent-conn) with
+//! `agent-<id>.json` in the job dir; groups of linux sources list agent ids
+//! as guests, their snapshots are `host-<agent_id>`.
+//!
 //! `tenants.offsite`: `{ "remote": { "type": "sftp", "host": …, "user": …, "host_key": …,
 //! "key_file": "/path", "port"?, "base_dir"? } | { "type": "local", "path": … },
 //! "bwlimit"?: bytes/s, "uploaders"?: n }`. No `remote` = no offsite for this tenant.
@@ -81,6 +87,12 @@ pub struct Config {
     pub state_dir: PathBuf,
     pub pve_bin: PathBuf,
     pub offsite_bin: PathBuf,
+    /// Linux agent connector (crate agent-conn)
+    pub agentctl_bin: PathBuf,
+    /// appliance CA for agents (created by nexus-agentctl on first use); default `<state_dir>/agent-ca`
+    pub agent_ca_dir: Option<PathBuf>,
+    /// signed agent binaries for `agent_update` (nexus-agent, .sig, .version)
+    pub agent_update_dir: PathBuf,
     pub alerts_config: PathBuf,
     /// outbound allow-list for nexus-nft-sync (skipped if its directory is missing)
     pub nft_allowed: PathBuf,
@@ -125,6 +137,9 @@ impl Default for Config {
             state_dir: lib.join("scheduler"),
             pve_bin: "/usr/libexec/nexus/nexus-pve".into(),
             offsite_bin: "/usr/libexec/nexus/nexus-offsite".into(),
+            agentctl_bin: "/usr/libexec/nexus/nexus-agentctl".into(),
+            agent_ca_dir: None,
+            agent_update_dir: "/usr/share/nexus/agent".into(),
             alerts_config: "/etc/nexus/alerts.json".into(),
             nft_allowed: nftsync::ALLOWED_FILE.into(),
             tick_secs: 30,
@@ -152,11 +167,43 @@ pub struct Job {
     pub params: Value,
 }
 
+struct AgentRow {
+    id: String,
+    tenant: String,
+    name: String,
+    host: String,
+    port: u16,
+    cert_sha256: Option<String>,
+    token_hash: Option<String>,
+    token_expires: Option<i64>,
+}
+
+/// A path argument for the file CLIs (never an option).
+fn file_arg(s: &str) -> Result<String> {
+    if s.is_empty() || s.starts_with('-') || s.contains('\0') || s.len() > 4096 {
+        bail!("invalid path {s:?}");
+    }
+    Ok(s.to_owned())
+}
+
+fn file_paths(p: &Value) -> Result<Vec<String>> {
+    p["paths"]
+        .as_array()
+        .filter(|a| !a.is_empty() && a.len() <= 1000)
+        .context("paths must be a non-empty list")?
+        .iter()
+        .map(|v| file_arg(v.as_str().unwrap_or_default()))
+        .collect()
+}
+
 struct GroupRow {
     id: i64,
     tenant: String,
     source_id: i64,
+    /// vmids (pve sources)
     guests: Vec<u32>,
+    /// agent ids (linux sources: the group's guests are strings)
+    agents: Vec<String>,
     schedule: String,
     gfs: Gfs,
     offsite: bool,
@@ -183,6 +230,20 @@ pub struct Scheduler {
     /// opens the sealed secrets in `sources.config` / `tenants.offsite`
     secrets: SchedulerKey,
     secrets_created: bool,
+}
+
+/// Agent ids: 16 lowercase hex characters (chosen by the web-api).
+fn valid_agent_id(s: &str) -> bool {
+    s.len() == 16 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Snapshot sources of a group: `vm-/ct-<vmid>` for PVE, `host-<agent>` for Linux agents.
+fn group_sources(g: &GroupRow) -> Vec<String> {
+    g.guests
+        .iter()
+        .flat_map(|v| [format!("vm-{v}"), format!("ct-{v}")])
+        .chain(g.agents.iter().map(|a| format!("host-{a}")))
+        .collect()
 }
 
 fn valid_name(s: &str) -> bool {
@@ -537,13 +598,20 @@ impl Scheduler {
              FROM groups g JOIN policies p ON p.id = g.policy_id ORDER BY g.id",
         )?;
         let rows = st.query_map([], |r| {
-            let guests: String = r.get(3)?;
+            let guests: Vec<Value> = serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default();
             let gfs: String = r.get(5)?;
             Ok(GroupRow {
                 id: r.get(0)?,
                 tenant: r.get(1)?,
                 source_id: r.get(2)?,
-                guests: serde_json::from_str(&guests).unwrap_or_default(),
+                guests: guests
+                    .iter()
+                    .filter_map(|g| g.as_u64().and_then(|v| u32::try_from(v).ok()))
+                    .collect(),
+                agents: guests
+                    .iter()
+                    .filter_map(|g| g.as_str().filter(|a| valid_agent_id(a)).map(str::to_owned))
+                    .collect(),
                 schedule: r.get(4)?,
                 gfs: gfs_of(&serde_json::from_str(&gfs).unwrap_or(Value::Null)),
                 offsite: r.get::<_, i64>(6)? != 0,
@@ -605,6 +673,14 @@ impl Scheduler {
                 if let Ok(v) = serde_json::from_str::<Value>(&cfg?) {
                     targets.extend(firewall::source_targets(&v));
                 }
+            }
+        }
+        {
+            let c = self.db.conn();
+            let mut st = c.prepare("SELECT host, port FROM agents")?;
+            for a in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u16>(1)?)))? {
+                let (h, p) = a?;
+                targets.push((h.trim_matches(['[', ']']).to_owned(), p));
             }
         }
         for (_, o) in self.tenants()? {
@@ -800,6 +876,20 @@ impl Scheduler {
         if matches!(job.kind.as_str(), "backup" | "retention" | "offsite" | "gc") {
             self.dirty.insert(job.tenant.clone());
         }
+        self.agent_bookkeeping(&job, &log)?;
+        if ok && job.kind == "backup" {
+            // agent backups without snapshots / with failed hooks are usable but not crash-consistent
+            for l in log.lines().filter(|l| l.starts_with("inconsistent host-")) {
+                let what = l.trim_start_matches("inconsistent ");
+                let src = what.split('/').next().unwrap_or_default();
+                self.alert(
+                    "warning",
+                    "backup_inconsistent",
+                    &format!("backup job {} ({}): snapshot {what}", job.id, job.tenant),
+                    Some(&format!("backup job {} ({}): snapshot {src}", job.id, job.tenant)),
+                )?;
+            }
+        }
         if let Some(q) = job.params["quorum_id"].as_i64() {
             self.db.conn().execute(
                 "UPDATE quorum SET state='executed' WHERE id=?1 AND state='approved'",
@@ -837,6 +927,76 @@ impl Scheduler {
                     None,
                 )?;
             }
+        }
+        Ok(())
+    }
+
+    /// Agent state from nexus-agentctl's log lines: `agent-info {json}` (version,
+    /// OS, last seen; any job) and `enrolled {json}` (fingerprint; recorded even if
+    /// the job failed afterwards: the agent has consumed its token).
+    fn agent_bookkeeping(&self, job: &Job, log: &str) -> Result<()> {
+        // jobs naming one agent only update that one; group backups any of the tenant's
+        let Some(expected) = job.params["agent_id"]
+            .as_str()
+            .filter(|a| valid_agent_id(a))
+            .map(str::to_owned)
+        else {
+            return self.agent_info_lines(job, log, None);
+        };
+        self.agent_info_lines(job, log, Some(&expected))?;
+        if job.kind != "agent_enroll" {
+            return Ok(());
+        }
+        for l in log.lines() {
+            let Some(v) = l
+                .strip_prefix("enrolled ")
+                .and_then(|j| serde_json::from_str::<Value>(j).ok())
+            else {
+                continue;
+            };
+            let fp = v["cert_sha256"].as_str().unwrap_or_default();
+            if v["agent_id"].as_str() != Some(expected.as_str())
+                || fp.len() != 64
+                || !fp.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                continue;
+            }
+            let n = self.db.conn().execute(
+                "UPDATE agents SET cert_sha256=?2, enrolled_at=?3, token_hash=NULL, token_expires=NULL, last_seen=?3 \
+                 WHERE id=?1 AND tenant=?4",
+                params![expected, fp, catalog::now(), job.tenant],
+            )?;
+            if n == 1 {
+                self.db.audit(
+                    ACTOR,
+                    "agent.enrolled",
+                    &format!("agent/{expected}"),
+                    &json!({"job": job.id, "cert_sha256": fp}),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn agent_info_lines(&self, job: &Job, log: &str, only: Option<&str>) -> Result<()> {
+        for l in log.lines() {
+            let Some(v) = l
+                .strip_prefix("agent-info ")
+                .and_then(|j| serde_json::from_str::<Value>(j).ok())
+            else {
+                continue;
+            };
+            let Some(id) = v["agent_id"].as_str().filter(|a| valid_agent_id(a)) else {
+                continue;
+            };
+            if only.is_some_and(|o| o != id) {
+                continue;
+            }
+            let short = |k: &str| v[k].as_str().map(|s| s.chars().take(128).collect::<String>());
+            self.db.conn().execute(
+                "UPDATE agents SET last_seen=?2, version=?3, os=?4 WHERE id=?1 AND tenant=?5",
+                params![id, catalog::now(), short("version"), short("os"), job.tenant],
+            )?;
         }
         Ok(())
     }
@@ -896,6 +1056,16 @@ impl Scheduler {
                 }
                 Some(r)
             }
+            // `restored {json}` / `enrolled {json}` (nexus-agentctl)
+            "restore_files" | "agent_enroll" => {
+                let pfx = if job.kind == "restore_files" {
+                    "restored "
+                } else {
+                    "enrolled "
+                };
+                log.lines()
+                    .find_map(|l| serde_json::from_str::<Value>(l.strip_prefix(pfx)?).ok())
+            }
             _ => None,
         }
     }
@@ -904,7 +1074,7 @@ impl Scheduler {
         match job.kind.as_str() {
             "backup" => {
                 let mut p = json!({"chain": true});
-                for k in ["group_id", "source_id", "vmid"] {
+                for k in ["group_id", "source_id", "vmid", "agent_id"] {
                     if !job.params[k].is_null() {
                         p[k] = job.params[k].clone();
                     }
@@ -912,9 +1082,13 @@ impl Scheduler {
                 self.insert_job("retention", &job.tenant, &p)?;
             }
             "retention" if job.params["chain"].as_bool() == Some(true) => {
-                let wants = match job.params["group_id"].as_i64() {
-                    Some(g) => self.groups()?.iter().any(|r| r.id == g && r.offsite),
-                    None => job.params["vmid"].as_u64().is_some_and(|v| {
+                let wants = match (job.params["group_id"].as_i64(), job.params["agent_id"].as_str()) {
+                    (Some(g), _) => self.groups()?.iter().any(|r| r.id == g && r.offsite),
+                    (None, Some(a)) => self
+                        .groups()?
+                        .iter()
+                        .any(|g| g.tenant == job.tenant && g.offsite && g.agents.iter().any(|x| x == a)),
+                    (None, None) => job.params["vmid"].as_u64().is_some_and(|v| {
                         self.groups().is_ok_and(|gs| {
                             gs.iter()
                                 .any(|g| g.tenant == job.tenant && g.offsite && g.guests.contains(&(v as u32)))
@@ -1022,7 +1196,7 @@ impl Scheduler {
         }
         let ids: Vec<i64> = {
             let c = self.db.conn();
-            let mut st = c.prepare("SELECT id FROM sources WHERE tenant=?1")?;
+            let mut st = c.prepare("SELECT id FROM sources WHERE tenant=?1 AND kind='pve'")?;
             let rows = st.query_map([&job.tenant], |r| r.get(0))?;
             rows.collect::<std::result::Result<_, _>>()?
         };
@@ -1208,6 +1382,123 @@ impl Scheduler {
         Ok(Some(files))
     }
 
+    fn agent(&self, tenant: &str, id: &str) -> Result<AgentRow> {
+        if !valid_agent_id(id) {
+            bail!("invalid agent id {id:?}");
+        }
+        let a = self
+            .db
+            .conn()
+            .query_row(
+                "SELECT id, tenant, name, host, port, cert_sha256, token_hash, token_expires FROM agents WHERE id=?1",
+                [id],
+                |r| {
+                    Ok(AgentRow {
+                        id: r.get(0)?,
+                        tenant: r.get(1)?,
+                        name: r.get(2)?,
+                        host: r.get(3)?,
+                        port: r.get(4)?,
+                        cert_sha256: r.get(5)?,
+                        token_hash: r.get(6)?,
+                        token_expires: r.get(7)?,
+                    })
+                },
+            )
+            .optional()?
+            .with_context(|| format!("agent {id} not found"))?;
+        if a.tenant != tenant {
+            bail!("agent {id} belongs to another tenant");
+        }
+        Ok(a)
+    }
+
+    /// The linux source (id, config) that backs up `agent` in `tenant`.
+    fn agent_source(&self, tenant: &str, agent: &str) -> Result<(i64, Value)> {
+        let (id, cfg): (i64, String) = self
+            .db
+            .conn()
+            .query_row(
+                "SELECT id, config FROM sources WHERE tenant=?1 AND kind='linux' \
+                 AND json_extract(config,'$.agent_id')=?2 ORDER BY id LIMIT 1",
+                params![tenant, agent],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+            .with_context(|| format!("no linux source for agent {agent} in tenant {tenant}"))?;
+        Ok((id, serde_json::from_str(&cfg).context("source config")?))
+    }
+
+    /// nexus-agentctl config: store, keys, CA, job id, agent endpoint + pin, extra keys.
+    fn agentctl_base(&self, tenant: &str, job: &Job, a: Option<&AgentRow>, extra: Value) -> Value {
+        let mut cfg = json!({
+            "tenant": tenant,
+            "store": self.cfg.store_base.join(tenant),
+            "keyd_socket": self.cfg.keyd_socket,
+            "ca_dir": self.cfg.agent_ca_path(),
+            "job": job.id,
+        });
+        if let Some(a) = a {
+            cfg["agent"] = json!({"id": a.id, "host": a.host, "port": a.port, "cert_sha256": a.cert_sha256});
+        }
+        if let (Some(c), Some(e)) = (cfg.as_object_mut(), extra.as_object()) {
+            c.extend(e.clone());
+        }
+        cfg
+    }
+
+    /// (config file, step) for `nexus-agentctl <agent-<id>.json> <cmd>`.
+    fn agentctl(
+        &self,
+        dir: &Path,
+        job: &Job,
+        a: &AgentRow,
+        cmd: &str,
+        extra: Value,
+    ) -> Result<((String, Vec<u8>), Step)> {
+        let name = format!("agent-{}.json", a.id);
+        let cfg = self.agentctl_base(&job.tenant, job, Some(a), extra);
+        let step = Step::Cli {
+            bin: self.cfg.agentctl_bin.clone(),
+            args: vec![dir.join(&name).to_string_lossy().into_owned(), cmd.to_owned()],
+            alert: None,
+            capture: false,
+        };
+        Ok(((name, serde_json::to_vec_pretty(&cfg)?), step))
+    }
+
+    /// Backups of Linux agents (one step per agent; the source says what to back up).
+    fn plan_agent_backups(&self, job: &Job, mut plan: Plan, source_id: i64, agents: &[String]) -> Result<Plan> {
+        let (kind, cfg): (String, String) = self.db.conn().query_row(
+            "SELECT kind, config FROM sources WHERE id=?1 AND tenant=?2",
+            params![source_id, job.tenant],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if kind != "linux" {
+            bail!("source {source_id} is not a linux source");
+        }
+        let src: Value = serde_json::from_str(&cfg).context("source config")?;
+        plan.key = match agents {
+            [one] => format!("agent:{one}"),
+            _ => format!("source:{source_id}"),
+        };
+        for id in agents {
+            let a = self.agent(&job.tenant, id)?;
+            if a.cert_sha256.is_none() {
+                bail!("agent {} ({}) is not enrolled", a.name, a.id);
+            }
+            let backup = json!({"paths": src["paths"], "excludes": src["excludes"].as_array().cloned().unwrap_or_default(),
+                                "hooks": src["hooks"].as_bool().unwrap_or(false)});
+            let (f, step) = self.agentctl(&plan.dir, job, &a, "backup", json!({"backup": backup}))?;
+            plan.files.push(f);
+            plan.steps.push(step);
+        }
+        if plan.steps.is_empty() {
+            bail!("nothing to back up: no agents");
+        }
+        Ok(plan)
+    }
+
     pub fn plan(&self, job: &Job) -> Result<Plan> {
         let tenant = job.tenant.as_str();
         if !valid_name(tenant) {
@@ -1248,12 +1539,19 @@ impl Scheduler {
         };
         match job.kind.as_str() {
             "backup" => {
-                let (source_id, vmids) = match p["group_id"].as_i64() {
-                    Some(g) => {
+                let (source_id, vmids) = match (p["group_id"].as_i64(), p["agent_id"].as_str()) {
+                    (Some(g), _) => {
                         let g = group(g)?;
+                        if !g.agents.is_empty() {
+                            return self.plan_agent_backups(job, plan, g.source_id, &g.agents);
+                        }
                         (g.source_id, g.guests)
                     }
-                    None => {
+                    (None, Some(a)) => {
+                        let (sid, _) = self.agent_source(tenant, a)?;
+                        return self.plan_agent_backups(job, plan, sid, &[a.to_owned()]);
+                    }
+                    (None, None) => {
                         let v = u32::try_from(num(p, "vmid")?).context("vmid")?;
                         (self.resolve_source(job, Some(v))?, vec![v])
                     }
@@ -1268,18 +1566,41 @@ impl Scheduler {
             "retention" if p["group_id"].is_null() && p["vmid"].is_null() && p["source"].is_null() => {
                 // manual retention for the whole tenant: every group with its own GFS
                 for g in self.groups()?.into_iter().filter(|g| g.tenant == tenant) {
-                    let sources = g
-                        .guests
-                        .iter()
-                        .flat_map(|v| [format!("vm-{v}"), format!("ct-{v}")])
-                        .collect();
+                    let sources = group_sources(&g);
                     plan.steps.push(Step::Retention { sources, gfs: g.gfs });
                 }
+            }
+            "retention" if !p["agent_id"].is_null() || p["source"].as_str().is_some_and(|s| s.starts_with("host-")) => {
+                let a = match p["agent_id"].as_str() {
+                    Some(a) => a,
+                    None => p["source"].as_str().unwrap_or_default().trim_start_matches("host-"),
+                };
+                if !valid_agent_id(a) {
+                    bail!("invalid agent id {a:?}");
+                }
+                let gfs = self
+                    .groups()?
+                    .into_iter()
+                    .find(|g| g.tenant == tenant && g.agents.iter().any(|x| x == a))
+                    .map_or_else(Gfs::default, |g| g.gfs);
+                plan.key = format!("agent:{a}");
+                plan.steps.push(Step::Retention {
+                    sources: vec![format!("host-{a}")],
+                    gfs,
+                });
             }
             "retention" => {
                 let (source_id, vmids, gfs) = match p["group_id"].as_i64() {
                     Some(g) => {
                         let g = group(g)?;
+                        if !g.agents.is_empty() {
+                            plan.key = format!("source:{}", g.source_id);
+                            plan.steps.push(Step::Retention {
+                                sources: group_sources(&g),
+                                gfs: g.gfs,
+                            });
+                            return Ok(plan);
+                        }
                         (g.source_id, g.guests, g.gfs)
                     }
                     None => {
@@ -1357,6 +1678,95 @@ impl Scheduler {
                 }
                 plan.steps.push(pve(args));
             }
+            "restore_files" => {
+                let src = ident(p, "source")?;
+                let src_agent = src
+                    .strip_prefix("host-")
+                    .filter(|a| valid_agent_id(a))
+                    .with_context(|| format!("restore_files needs a host-<agent> snapshot, not {src:?}"))?;
+                let target = p["agent_id"].as_str().unwrap_or(src_agent);
+                let a = self.agent(tenant, target)?;
+                plan.key = format!("agent:{}", a.id);
+                let paths: Vec<Value> = p["paths"]
+                    .as_array()
+                    .filter(|x| !x.is_empty() && x.len() <= 1000 && x.iter().all(Value::is_string))
+                    .context("paths must be a non-empty list")?
+                    .clone();
+                let restore = json!({
+                    "source_agent": src_agent, "time": num(p, "time")?, "paths": paths,
+                    "target": p["target"].as_str().context("missing parameter target")?,
+                    "overwrite": p["overwrite"].as_str().unwrap_or("never"),
+                    "confirm": p["confirm"].as_str().context("missing parameter confirm")?,
+                });
+                let (f, step) = self.agentctl(&dir, job, &a, "restore", json!({"restore": restore}))?;
+                plan.files.push(f);
+                plan.steps.push(step);
+            }
+            "agent_update" => {
+                let a = self.agent(tenant, p["agent_id"].as_str().unwrap_or_default())?;
+                plan.key = format!("agent:{}", a.id);
+                let (f, step) = self.agentctl(
+                    &dir,
+                    job,
+                    &a,
+                    "update",
+                    json!({"update_dir": self.cfg.agent_update_dir}),
+                )?;
+                plan.files.push(f);
+                plan.steps.push(step);
+            }
+            "agent_enroll" => {
+                let a = self.agent(tenant, p["agent_id"].as_str().unwrap_or_default())?;
+                plan.key = format!("agent:{}", a.id);
+                let sealed = a
+                    .token_hash
+                    .as_deref()
+                    .context("agent has no enrollment token (create a new token first)")?;
+                if a.token_expires.is_none_or(|e| e <= catalog::now()) {
+                    bail!("the enrollment token of agent {} expired (create a new token)", a.name);
+                }
+                let digest = self
+                    .secrets
+                    .open(&catalog::secret::agent_token_location(&a.id, &a.host, a.port), sealed)
+                    .with_context(|| format!("agent {}", a.id))?;
+                plan.files.push(("token".into(), digest.as_bytes().to_vec()));
+                let (f, step) = self.agentctl(&dir, job, &a, "enroll", json!({"token_file": dir.join("token")}))?;
+                plan.files.push(f);
+                plan.steps.push(step);
+            }
+            "files_list" | "files_get" if p["source"].as_str().is_some_and(|s| s.starts_with("host-")) => {
+                let source = ident(p, "source")?;
+                let agent = source.trim_start_matches("host-");
+                if !valid_agent_id(agent) {
+                    bail!("invalid source {source:?}");
+                }
+                plan.key = format!("guest:{tenant}/{source}");
+                let cfg = self.agentctl_base(tenant, job, None, json!({}));
+                plan.files
+                    .push(("agentctl.json".into(), serde_json::to_vec_pretty(&cfg)?));
+                let mut args = vec![
+                    dir.join("agentctl.json").to_string_lossy().into_owned(),
+                    "files".into(),
+                    agent.to_owned(),
+                    num(p, "time")?.to_string(),
+                ];
+                if job.kind == "files_list" {
+                    args.push("ls".into());
+                    args.push(file_arg(p["path"].as_str().unwrap_or("/"))?);
+                } else {
+                    let out = self.cfg.downloads.join(download_file(p)?);
+                    args.push("get".into());
+                    args.push(out.to_string_lossy().into_owned());
+                    args.extend(file_paths(p)?);
+                    plan.download = Some(out);
+                }
+                plan.steps.push(Step::Cli {
+                    bin: self.cfg.agentctl_bin.clone(),
+                    args,
+                    alert: None,
+                    capture: true,
+                });
+            }
             "files_list" | "files_get" => {
                 let source = ident(p, "source")?;
                 let (ct, vmid) = guest(source)?;
@@ -1368,28 +1778,15 @@ impl Scheduler {
                     vmid.to_string(),
                     num(p, "time")?.to_string(),
                 ];
-                let check_path = |s: &str| -> Result<String> {
-                    if s.is_empty() || s.starts_with('-') || s.contains('\0') || s.len() > 4096 {
-                        bail!("invalid path {s:?}");
-                    }
-                    Ok(s.to_owned())
-                };
                 if job.kind == "files_list" {
                     args.push("ls".into());
-                    args.push(check_path(p["path"].as_str().unwrap_or("/"))?);
+                    args.push(file_arg(p["path"].as_str().unwrap_or("/"))?);
                 } else {
                     let file = download_file(p)?;
                     let out = self.cfg.downloads.join(file);
-                    let paths: Vec<String> = p["paths"]
-                        .as_array()
-                        .filter(|a| !a.is_empty() && a.len() <= 1000)
-                        .context("paths must be a non-empty list")?
-                        .iter()
-                        .map(|v| check_path(v.as_str().unwrap_or_default()))
-                        .collect::<Result<_>>()?;
                     args.push("get".into());
                     args.push(out.to_string_lossy().into_owned());
-                    args.extend(paths);
+                    args.extend(file_paths(p)?);
                     plan.download = Some(out);
                 }
                 let mut step = pve(args);
@@ -1623,11 +2020,7 @@ impl Scheduler {
     fn check_offsite_lag(&self, now: i64) -> Result<()> {
         let mut protected: BTreeMap<String, HashSet<String>> = BTreeMap::new();
         for g in self.groups()?.into_iter().filter(|g| g.offsite) {
-            let e = protected.entry(g.tenant).or_default();
-            for v in g.guests {
-                e.insert(format!("vm-{v}"));
-                e.insert(format!("ct-{v}"));
-            }
+            protected.entry(g.tenant.clone()).or_default().extend(group_sources(&g));
         }
         for (tenant, sources) in protected {
             if self.offsite_cfg(&tenant)?.is_none() {
@@ -1671,6 +2064,11 @@ impl Scheduler {
 }
 
 impl Config {
+    pub fn agent_ca_path(&self) -> PathBuf {
+        self.agent_ca_dir
+            .clone()
+            .unwrap_or_else(|| self.state_dir.join("agent-ca"))
+    }
     pub fn secrets_key_path(&self) -> PathBuf {
         self.secrets_key
             .clone()
