@@ -64,6 +64,9 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | Web UI (Phase 5) | **SPA in TypeScript** (Svelte/React; decided 2026-10-09) on the REST API | Richer UI; needs a Node build in CI/image and strict CSP/XSS care. |
 | MFA (Phase 5) | **TOTP only at first** (decided 2026-10-09) | WebAuthn follows later. |
 | First boot (Phase 5) | **Console TUI** (decided 2026-10-09) | Management API unreachable until setup is done; no default credentials. |
+| Release signing (Phase 6) | **cosign with an offline key** (decided 2026-10-09) | Appliance pins the public key; no dependency on external transparency services. |
+| Update source (Phase 6) | **Signed bootc images on ghcr.io** (decided 2026-10-09) | Pulled over HTTPS via an explicit nftables allow rule. |
+| Penetration test (Phase 6) | **Internal security review + scope document; external test commissioned by the project owner** (decided 2026-10-09) | Plan requirement kept; external test before first production tenant. |
 
 ---
 
