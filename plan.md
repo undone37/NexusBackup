@@ -232,11 +232,20 @@ Tenant DEK (one per tenant; used for chunk ID keying, chunk AEAD, index encrypti
 
 Dirty bitmaps are managed by PVE; the appliance only consumes them. Note: bitmaps are lost on VM/host restart; the next backup then reads the full disk but still transfers only changed chunks.
 
+**Implementation findings (Phase 2, details in `docs/pve-connector.md` and `docs/pve-backup-provider-api.md`):**
+- Provider VM backups require **fleecing** on a local thin storage of the node (`nexus-fleecing-storage`); VM templates cannot be backed up this way.
+- The exports are snapshot-access: only dirty areas are readable. The appliance reads dirty byte extents and completes partly dirty chunks from the previous snapshot.
+- QEMU commits the bitmap as soon as `backup_vm` returns, before vzdump's post-steps, so the appliance commits its snapshot **before** releasing `backup_vm`, and keeps it even if vzdump later reports failure. Retention is appliance-only: the node plugin never prunes or deletes.
+- Nodes must answer listing/config queries offline: the appliance pushes an `index.json` catalog to every node after each run.
+- PVE API workers run Perl in taint mode; all plugin input from files must be untainted.
+- Full VM restore: PVE only accepts a file/block device as source, so the node attaches the appliance's NBD export (served over the SSH session) to `/dev/nbdX` with its own `qemu-nbd`. Live restore is refused by PVE for providers.
+- Token privileges (lab, to be minimized): VM.Backup, Datastore.AllocateSpace on backup + fleecing storage, SDN.Use on the bridge zone for restore.
+
 **SSH hardening on nodes:** dedicated user, key restricted in `authorized_keys` with `restrict` (no forwarding of any kind), forced command that only offers: read job status, pipe a named NBD export of the current job, signal completion. (`permitopen` cannot restrict Unix-socket forwarding, hence stdio piping instead of `ssh -L`.)
 
-**Instant recovery:** appliance opens an SSH **reverse** tunnel (`ssh -R`) exposing its NBD server as a local socket on the node; the VM starts from that disk, data is migrated to PVE storage in the background. Direction of the TCP connection remains appliance → node.
+**Instant recovery:** the appliance's NBD server is exposed on the node over the SSH session (helper relay to a local socket, as for full restore — no `ssh -R`, the key stays `restrict`ed); the VM starts from that disk, data is migrated to PVE storage in the background. Direction of the TCP connection remains appliance → node. **Open for Phase 3:** PVE refuses provider live-restore, so the VM must be started from the attached device by other means (e.g. a temporary VM config on `/dev/nbdX` + `qm disk move`).
 
-**Containers (LXC):** file-level via the provider API directory mechanism, chunked with FastCDC.
+**Containers (LXC):** file-level via the provider API directory mechanism: the node streams the container directory as one tar stream (keeps owners, ACLs, xattrs, device nodes, hardlinks) through the SSH helper; the appliance chunks the stream with FastCDC into a dynamic index (same model as PBS pxar). Restore streams it back; the node extracts into a staging directory (`directory` restore mechanism, unprivileged only).
 
 **Deliverable:** `.deb` package for the on-node plugin, built with `dpkg-deb`; supports **PVE 9.x only** (decided 2026-10-08; 8.4 is not targeted).
 
