@@ -210,11 +210,22 @@ xattrs). Results (2026-10-09, TrueNAS 25.10.7, dev control plane):
 |---|---|---|---|---|
 | scheduled full | 2014 files read, 176.3 MB transferred, 75.5 MB new | 3.15 MB | 10.4 KB | 19 s |
 | scheduled incremental | 7 files read, 2005 reused, **67.3 MB** transferred (64 MiB file changed in place), 1.4 MB new | 10.5 KB | 150 B | 2.3 s |
-| no changes | 0 files read, ~190 KB (walk) | 216 B | 150 B | 1.5 s |
+| no changes | 0 files read, 2012 reused, 168 KB transferred (the walk) | 214 B | 150 B | 1.5 s |
 
 Downloads (tar and zip of the whole dataset) matched the sha256 of all 2014 files on TrueNAS; ACL/xattr
 values matched `getfattr`; after each run TrueNAS kept exactly one `nexus-<source>-<time>` snapshot per
 dataset (the last backup's).
+
+The same `e2e.sh` through the **appliance VM** (bootc image, real units/users, SELinux enforcing,
+nftables egress; `PVE=0 lab/appliance/e2e.sh boot setup`, then `APPL_HOST=10.0.2.2`): identical
+results (full 176.3 MB / incremental 67.3 MB / downloads equal / rotation correct / 17 probes),
+**zero AVCs** (`ausearch` since boot: no matches), the egress allow-list contained exactly the TrueNAS
+API and SSH endpoints, the catalog held the API key and SSH key only as `sealed:v1:`.
+Headless Chrome against the real SPA (`lab/truenas/ui.mjs`): dashboard rows per dataset, source dialog
+with the line to paste and empty secret fields, dataset checkboxes in groups, snapshots without a
+restore button, file browser on a `nas-` snapshot: 6/6, no CSP or console problems.
+Fuzzing (`lab/fuzz/run.sh 600 1 truenas:hostile_stream`): 15 M executions of the diff, walk, tar and
+fill parsers on hostile input, no crash.
 
 ## 8. Limitations and open points
 - **Needs a decision**: the privilege model (sudo for find/tar/realpath/zfs behind the forced command,
