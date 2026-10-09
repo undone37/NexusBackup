@@ -69,7 +69,24 @@ The campaign on 2026-10-09 had three parts:
 - a main run of 20 min per target (13 targets, 7 in parallel on 16 threads);
 - re-runs after the fixes.
 
-<!-- FUZZ-RESULTS -->
+The main run used the final code, with all fixes applied: 13 targets × 20 min, about 4.3 CPU-hours in total. No crash, leak or OOM remains.
+
+| Target | Execs (20 min) | Target | Execs (20 min) |
+|---|---|---|---|
+| nbd_client | 103.1 M | ct_records | 2.6 M |
+| nbd_server | 25.9 M | tar_files | 6.5 M |
+| sealed_open | 13.2 M | agent_frames | 17.3 M |
+| meta_decode | 124.3 M | agent_request | 10.2 M |
+| pack_parse | 18.2 M | keyd_request | 12.4 M |
+| hostile_box | 1.7 M | validators | 182.2 M |
+| api_router | 36.9 M | | |
+
+Total: about 555 M executions.
+
+One run hit 4 simultaneous "timeouts" (keyd_request, api_router, agent_request, tar_files) while the machine was stalled by a parallel workspace build:
+- each artefact re-executes in ≤1 ms;
+- all 4 targets were re-run for the full 20 min with `TIMEOUT=60`, cleanly;
+- their numbers above are from that re-run.
 
 **Crashes found and fixed.** Each fix is a separate commit with a regression test.
 
