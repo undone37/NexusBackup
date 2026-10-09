@@ -2,7 +2,7 @@
 Description=NexusBackup scheduler (policies, job runner, retention, GC, verify, offsite, alerts)
 # Replaces nexus-pve-backup.{service,timer} and nexus-offsite.{service,timer}.
 After=network-online.target nexus-keyd.service
-Wants=network-online.target
+Wants=network-online.target nexus-keyd.service
 ConditionPathExists=/var/lib/nexus/setup-done
 
 [Service]

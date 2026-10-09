@@ -234,8 +234,12 @@ fn peer_uid(s: &UnixStream) -> io::Result<u32> {
     Ok(cred.uid)
 }
 
-/// Protocol: client sends `<tenant>\n`; keyd answers N x (u32 LE version, 32-byte DEK)
-/// and closes. Any error closes the connection without an answer.
+/// Protocol (one request per connection, only the allowed uid):
+/// - `<tenant>\n` → N x (u32 LE version, 32-byte DEK)
+/// - `ensure <tenant>\n` → same, creating DEK v1 first if the tenant has none
+/// - `escrow <tenant>\n` → wrapped escrow files: N x (u16 BE name len, name, u32 BE len, bytes)
+///
+/// Any error closes the connection without an answer.
 // ponytail: sequential accept loop; requests only happen at chunkstore start.
 pub fn serve(listener: UnixListener, dir: &Path, allow_uid: u32) -> io::Result<()> {
     for conn in listener.incoming() {
@@ -257,7 +261,29 @@ fn handle(mut s: UnixStream, dir: &Path, allow_uid: u32) -> io::Result<()> {
     s.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut line = String::new();
     BufReader::new(&s).take(128).read_line(&mut line)?;
-    let deks = tenant_deks(dir, line.trim_end_matches('\n'))?;
+    let line = line.trim_end_matches('\n');
+    let tenant = match line.split_once(' ') {
+        Some(("escrow", t)) => {
+            let mut out = Vec::new();
+            for (name, bytes) in export_escrow(dir, t)? {
+                out.extend_from_slice(&(name.len() as u16).to_be_bytes());
+                out.extend_from_slice(name.as_bytes());
+                out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+                out.extend_from_slice(&bytes);
+            }
+            return s.write_all(&out);
+        }
+        Some(("ensure", t)) => {
+            if versions(dir, t)?.is_empty() {
+                create_tenant(dir, t)?;
+                eprintln!("keyd: created DEK v1 for tenant {t}");
+            }
+            t
+        }
+        Some(_) => return Err(err(io::ErrorKind::InvalidInput, "unknown request")),
+        None => line,
+    };
+    let deks = tenant_deks(dir, tenant)?;
     let mut out = Zeroizing::new(Vec::with_capacity(deks.len() * 36));
     for (v, k) in &deks {
         out.extend_from_slice(&v.to_le_bytes());
@@ -268,8 +294,40 @@ fn handle(mut s: UnixStream, dir: &Path, allow_uid: u32) -> io::Result<()> {
 
 /// chunkstore side: fetch all DEK versions of a tenant and build its keyring.
 pub fn fetch_keyring(socket: &Path, tenant: &str) -> io::Result<Keyring> {
+    request_keyring(socket, tenant, tenant)
+}
+
+/// Like `fetch_keyring`, but keyd creates the tenant's first DEK if it has none
+/// (scheduler: tenants are created in the UI, keys appear on first use).
+pub fn ensure_keyring(socket: &Path, tenant: &str) -> io::Result<Keyring> {
+    request_keyring(socket, &format!("ensure {tenant}"), tenant)
+}
+
+/// Wrapped escrow files of a tenant (see `export_escrow`), for the offsite copy.
+pub fn fetch_escrow(socket: &Path, tenant: &str) -> io::Result<Vec<(String, Vec<u8>)>> {
     let mut s = UnixStream::connect(socket)?;
-    s.write_all(format!("{tenant}\n").as_bytes())?;
+    s.write_all(format!("escrow {tenant}\n").as_bytes())?;
+    let mut buf = Vec::new();
+    s.read_to_end(&mut buf)?;
+    if buf.is_empty() {
+        return Err(err(io::ErrorKind::PermissionDenied, "keyd refused the request"));
+    }
+    let (mut out, mut r) = (Vec::new(), &buf[..]);
+    let bad = || err(io::ErrorKind::InvalidData, "malformed escrow answer");
+    while !r.is_empty() {
+        let n = u16::from_be_bytes(r.get(..2).ok_or_else(bad)?.try_into().unwrap()) as usize;
+        let name = String::from_utf8(r.get(2..2 + n).ok_or_else(bad)?.to_vec()).map_err(|_| bad())?;
+        r = &r[2 + n..];
+        let len = u32::from_be_bytes(r.get(..4).ok_or_else(bad)?.try_into().unwrap()) as usize;
+        out.push((name, r.get(4..4 + len).ok_or_else(bad)?.to_vec()));
+        r = &r[4 + len..];
+    }
+    Ok(out)
+}
+
+fn request_keyring(socket: &Path, request: &str, tenant: &str) -> io::Result<Keyring> {
+    let mut s = UnixStream::connect(socket)?;
+    s.write_all(format!("{request}\n").as_bytes())?;
     let mut buf = Zeroizing::new(Vec::new());
     s.read_to_end(&mut buf)?;
     if buf.is_empty() || buf.len() % 36 != 0 {
@@ -322,6 +380,28 @@ mod tests {
             .map(|(v, k)| (v, *k))
             .collect();
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn socket_ensure_and_escrow() {
+        let d = tempfile::tempdir().unwrap();
+        init(d.path()).unwrap();
+        let sock = d.path().join("k.sock");
+        let me = unsafe { libc::getuid() };
+        let l = UnixListener::bind(&sock).unwrap();
+        let dir = d.path().to_owned();
+        let srv = std::thread::spawn(move || {
+            for _ in 0..4 {
+                let _ = handle(l.accept().unwrap().0, &dir, me);
+            }
+        });
+        assert!(fetch_keyring(&sock, "newco").is_err(), "plain get does not create");
+        let a = ensure_keyring(&sock, "newco").unwrap();
+        let b = ensure_keyring(&sock, "newco").unwrap();
+        assert_eq!(a.chunk_id(b"x"), b.chunk_id(b"x"), "ensure is idempotent");
+        let esc = fetch_escrow(&sock, "newco").unwrap();
+        assert_eq!(esc, export_escrow(d.path(), "newco").unwrap());
+        srv.join().unwrap();
     }
 
     #[test]

@@ -152,6 +152,8 @@ pub struct Scheduler {
     rx: Receiver<Finished>,
     /// first time an item without scheduled history was seen (no immediate run)
     first_seen: HashMap<String, i64>,
+    /// tenants whose keys are known to exist in keyd
+    keyed: HashSet<String>,
     dirty: BTreeSet<String>,
     last_refresh: i64,
     alert_cursor: i64,
@@ -235,6 +237,7 @@ impl Scheduler {
             tx,
             rx,
             first_seen: HashMap::new(),
+            keyed: HashSet::new(),
             dirty: BTreeSet::new(),
             last_refresh: i64::MIN,
             alert_cursor: 0,
@@ -253,7 +256,8 @@ impl Scheduler {
         Self::new(
             cfg,
             db,
-            Arc::new(move |t: &str| keyd::fetch_keyring(&sock, t)),
+            // ensure: tenants are created in the UI; keyd creates their first DEK on first use
+            Arc::new(move |t: &str| keyd::ensure_keyring(&sock, t)),
             Options::default,
         )
     }
@@ -361,6 +365,7 @@ impl Scheduler {
     pub fn tick(&mut self, now: i64) -> Result<()> {
         self.now = now;
         self.collect();
+        self.log_err(|s| s.ensure_tenant_keys());
         self.log_err(|s| s.expire_downloads(catalog::now()));
         self.log_err(|s| s.queue_approved_gc());
         self.log_err(|s| s.queue_scheduled(now));
@@ -960,10 +965,47 @@ impl Scheduler {
             .unwrap_or_default())
     }
 
+    /// Spawned CLIs only *fetch* keys, so every catalog tenant gets its DEK
+    /// created (via the keyring source = keyd `ensure`) before its first job.
+    fn ensure_tenant_keys(&mut self) -> Result<()> {
+        let tenants: Vec<String> = {
+            let c = self.db.conn();
+            let mut st = c.prepare("SELECT name FROM tenants")?;
+            let rows = st.query_map([], |r| r.get(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        for t in tenants {
+            if self.keyed.contains(&t) {
+                continue;
+            }
+            (self.ctx.keys)(&t).with_context(|| format!("keys for tenant {t}"))?;
+            self.keyed.insert(t);
+        }
+        Ok(())
+    }
+
+    /// Refreshes the tenant's wrapped escrow files from keyd (new DEK versions
+    /// after a rotation reach the box with the next upload).
+    fn refresh_escrow(&self, tenant: &str) {
+        let Ok(files) = keyd::fetch_escrow(&self.cfg.keyd_socket, tenant) else {
+            return; // tests / keyd down: nexus-offsite reports a missing escrow dir itself
+        };
+        let dir = self.cfg.escrow_base.join(tenant);
+        for (name, bytes) in files {
+            let p = dir.join(&name);
+            let ok = p.parent().is_some_and(|d| fs::create_dir_all(d).is_ok())
+                && chunkstore::store::write_atomic(&p, &bytes).is_ok();
+            if !ok {
+                eprintln!("<4>scheduler: cannot write escrow file {}", p.display());
+            }
+        }
+    }
+
     fn offsite_config(&self, tenant: &str, dir: &Path) -> Result<Option<Files>> {
         let Some(o) = self.offsite_cfg(tenant)? else {
             return Ok(None);
         };
+        self.refresh_escrow(tenant);
         let mut files = Vec::new();
         let mut remote = o["remote"].clone();
         if let Some(k) = remote["key_pem"].as_str() {

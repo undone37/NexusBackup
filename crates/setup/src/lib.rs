@@ -32,7 +32,9 @@ pub mod tui;
 pub const ACTOR: &str = "setup";
 /// NetworkManager connection profile owned by the appliance.
 pub const NM_CONNECTION: &str = "nexus-mgmt";
-pub const SERVICES: [&str; 2] = ["nexus-web-api.service", "nexus-scheduler.service"];
+/// `[0]` is restarted after a network reconfiguration (new TLS SAN). keyd is
+/// needed by the scheduler (tenant keys); it requires `keyd init` (done in setup).
+pub const SERVICES: [&str; 3] = ["nexus-web-api.service", "nexus-scheduler.service", "nexus-keyd.service"];
 pub const WEB_PORT: u16 = 8443;
 
 // ---------------------------------------------------------------- paths
@@ -982,7 +984,7 @@ impl Setup {
         let mut args = vec!["enable", "--now"];
         args.extend(SERVICES);
         self.cmd("systemctl", &args)
-            .context("setup is complete, but starting the services failed; run: systemctl enable --now nexus-web-api nexus-scheduler")?;
+            .context("setup is complete, but starting the services failed; run: systemctl enable --now nexus-web-api nexus-scheduler nexus-keyd")?;
         Ok(())
     }
 
