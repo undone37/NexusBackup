@@ -15,9 +15,9 @@ The rest are listed with recommendations (§4).
 **Summary**
 - No critical findings.
 - **6 high:**
-  - 3 fixed: H-F1 zip slip in file-restore downloads; H-F2 and H-F3, two root-on-node paths in the PVE plugin.
-  - 3 open design items, all already known deferrals: H-1 file-based KEK; H-2 plaintext secrets in the catalog; H-3 one uid shared by scheduler, CLIs and QEMU.
-- **Medium:** 11 fixed, 7 open.
+  - 4 fixed: H-F1 zip slip in file-restore downloads; H-F2 and H-F3, two root-on-node paths in the PVE plugin; H-2 plaintext secrets in the catalog (fixed after the review, see §4).
+  - 2 open design items, both already known deferrals: H-1 file-based KEK; H-3 one uid shared by scheduler, CLIs and QEMU.
+- **Medium:** 12 fixed (M-5 after the review), 6 open.
 - Fuzzing found 5 distinct crash classes and 1 logic flaw. All are fixed with regression tests.
 
 ---
@@ -121,7 +121,7 @@ Code references are to this repository. "Gap" lists what is missing or only part
 - The audit chain is in `crates/catalog/src/lib.rs`. The RBAC matrix and audit completeness are checked by the test `rbac_matrix_and_audit_completeness`.
 - **Gaps:**
   - M-6: an admin can stop *future* backups by removing guests or breaking a source. There is no quorum for this; it is only detected by the failed-job and lag alerts.
-  - M-5: an admin can reset their own password or TOTP without re-authenticating.
+  - ~~M-5~~ fixed: every password / TOTP change (own or another user's) needs the actor's current password and a fresh TOTP code.
   - M-1: the audit chain is not anchored off-box.
 
 **T3 – time manipulation**
@@ -140,7 +140,7 @@ Code references are to this repository. "Gap" lists what is missing or only part
 - PVE TLS is pinned to the cluster CA (`crates/pve/src/api.rs`). SSH host keys are pinned with `StrictHostKeyChecking=yes` (`backup.rs`). The offsite host key is pinned, with no TOFU (`offsite/src/sftp.rs`).
 - nftables default-deny in and out (`os/nftables.conf`). sshd is disabled and root is locked (`os/Containerfile`, preset).
 - **Gaps:**
-  - H-2: catalog secrets.
+  - H-2 (fixed): source/offsite secrets are sealed to the scheduler, TOTP seeds encrypted with a web-api key; residual risk in §4.
   - H-3: shared uid.
   - M-2: the egress sets are never populated.
   - M-7: the lab PVE token is broader than needed.
@@ -179,7 +179,7 @@ Code references are to this repository. "Gap" lists what is missing or only part
 
 | Process | User | Sandbox (unit in `os/systemd/`) | SELinux domain | Holds DEKs | Notes |
 |---|---|---|---|---|---|
-| nexus-web-api | nexus-webapi (+nexus-catalog) | strict, NoNewPrivileges, empty caps, @system-service ~@privileged ~@resources, MDWE, LimitCORE=0, SocketBindAllow 8443 | `nexus_webapi_t` | no | can read and write the whole catalog (H-2) |
+| nexus-web-api | nexus-webapi (+nexus-catalog) | strict, NoNewPrivileges, empty caps, @system-service ~@privileged ~@resources, MDWE, LimitCORE=0, SocketBindAllow 8443 | `nexus_webapi_t` | TOTP key | can read and write the whole catalog, but source/offsite secrets only as `sealed:v1:` blobs it cannot open (H-2 fixed) |
 | nexus-scheduler | **nexus-chunkstore** (+nexus-catalog) | strict, NoNewPrivileges, empty caps, @system-service only, no MDWE (QEMU TCG), /dev/kvm | **none** | **yes** (in-process stores) | spawns nexus-pve, nexus-offsite and QEMU under the same uid (H-3) |
 | nexus-pve / nexus-offsite | same as scheduler (children) | inherited | none | yes | now non-dumpable (9fba584) |
 | restore-VM QEMU | same as scheduler | inherited + QEMU `-sandbox on,…` + no NIC | none | no (but same uid as DEK holders) | H-3 |
@@ -203,7 +203,7 @@ Code references are to this repository. "Gap" lists what is missing or only part
 
 **Findings:**
 - L-1: the lockout is per user name, so anyone can lock an admin out for 15 min (accepted, documented).
-- M-5: a user can change their own credentials without the current password.
+- M-5 (fixed): credential changes did not need the current password. Now `PUT /users/{id}` with `password` or `reset_totp` requires `current_password` + `current_totp` of the acting user, with the login checks (replay, rate limiter, audit `auth.reauth_failed`).
 
 ### 3.2 RBAC matrix vs. implementation
 
@@ -252,9 +252,9 @@ Every mutating endpoint audits; this is now covered by the test.
 **Fixed:**
 - Inline `key_pem` / PEM private keys in opaque blobs were accepted, and therefore readable via GET and the audit log (4c8099d).
 - The DEK-holding processes were dumpable (9fba584).
+- H-2: PVE token secrets and TOTP seeds were in plaintext in the catalog (1042aaf, `crates/catalog/src/secret.rs`).
 
 **Open:**
-- H-2: PVE token secrets and TOTP seeds are in plaintext in the catalog, which is writable by web-api and the scheduler.
 - L-6: `nexus-offsite dr` keeps the recovery key and DEKs in non-zeroized buffers, and the PVE auth header is not marked sensitive.
 - L-7: job logs carry raw remote error text and are readable by tenant users.
 
@@ -336,6 +336,8 @@ The `hostile_box` fuzzer asserts this.
 | M-F9 | medium | DEK-holding processes dumpable / ptrace-able by the same uid (incl. QEMU) | 9fba584 |
 | M-F10 | medium | CT restore staging dir in `/var/tmp` not ownership-checked (local user → root on the node) | e76d279 |
 | M-F11 | medium | Offsite `verify_sample` downloaded an unbounded size; SFTP range overflow | 2beeae3 |
+| H-2 | high | Catalog held PVE token secrets and TOTP seeds in plaintext (web-api RCE → every PVE token and TOTP seed). See "H-2 design" below. | 1042aaf |
+| M-5 | medium | Own password/TOTP change without re-authentication (a hijacked session becomes persistent) | 1042aaf |
 | L-F1 | low | Non-object agent response panicked nexus-pve | 60bb445 |
 | L-F2 | low | `tenant: null` did not clear a user's tenant scope | a18c526 |
 | L-F3 | low | keyd: no write timeout on the single-threaded socket loop | 8bd8755 |
@@ -345,13 +347,11 @@ The `hostile_box` fuzzer asserts this.
 | ID | Sev | Finding | Recommendation |
 |---|---|---|---|
 | H-1 | high | KEK stored as a plain 0600 file (`keyd::seal`); no LUKS. Disk theft = all data. *Accepted deferral (user decision 2026-10-08/09).* | TPM2 sealing to PCRs + LUKS2 before production. Until then keep appliance disks in controlled locations and keep the KEK out of images and backups. |
-| H-2 | high | Catalog holds PVE token secrets and TOTP seeds in plaintext. web-api and the scheduler have full read/write (SQLite has no privileges), so a web-api RCE yields every PVE token and every TOTP seed and can rewrite the audit chain. | Move source/offsite credentials to a scheduler-only store (0600) or encrypt them with a keyd-held key. The web-api only *writes* secrets, ideally via a scheduler socket. Encrypt TOTP seeds at rest. Make web-api's catalog access a narrower API. |
 | H-3 | high | scheduler, nexus-pve, nexus-offsite and restore-VM QEMU share uid `nexus-chunkstore` and have no SELinux domain. keyd hands DEKs to that uid. | Separate users (`nexus-scheduler`, `nexus-pve`, `nexus-offsite`, `nexus-restorevm`). QEMU in a transient unit (PrivateNetwork, DeviceAllow=/dev/kvm) with its own domain. keyd ACL per uid. Domain transitions in `os/selinux`. |
 | M-1 | medium | Audit chain unkeyed and not anchored off-box. The journal echo lacks details. No log forwarding config. | HMAC chain with a keyd key or signed checkpoints. Journal/rsyslog TLS forwarding in the image. Single audit writer. Include the head hash in each offsite upload. |
 | M-2 | medium | nftables egress sets are never populated (no code writes them). The firewall blocks DNS/NTS/PVE/SFTP, which invites flushing it. | Root helper or setup generates the sets from the catalog and chrony config (Phase 6 "nftables automation"). |
 | M-3 | medium | Deleting the clock file makes the store trust system time once. | Fail closed when snapshots exist and the clock is missing, or seed from the newest manifest. Give the clock file its own owner. TPM NV counter later. |
 | M-4 | medium | VM restore attaches guest-controlled disk content to the node kernel (`/dev/nbdX`): partition parsing, udev/blkid, LVM autoactivation. | `nbd max_part=0`, LVM `global_filter` reject `/dev/nbd*`, udev rule to skip probing. Better: a userspace NBD source for `qemu-img` if PVE allows. |
-| M-5 | medium | Own password/TOTP change without re-authentication (a hijacked session becomes persistent). | Require the current password (and TOTP) for self-service credential changes. |
 | M-6 | medium | An admin can stop *future* protection without a quorum: remove guests from groups, break source config, change schedules. | Quorum for removing guests or deleting coverage, or at least a "coverage reduced" alert to the SO. |
 | M-7 | medium | Lab PVE token has lab-wide roles. Least-privilege role set not defined. | Define and document the minimal PVE privileges (VM.Backup, Datastore.Allocate*, Sys.Audit on nodes, SDN for restore) and test with them. |
 | L-1 | low | Per-user login lockout lets anyone lock out a known admin for 15 min. | Accepted. Optionally exempt known-good IPs or add a progressive delay instead. |
@@ -369,6 +369,19 @@ The `hostile_box` fuzzer asserts this.
 | I-2 | info | `os/Containerfile` does not install `nexus-scheduler.service`. `os/README.md` claims `PrivateUsers=yes` for web-api. `docs/pve-connector.md` says 0770 for dirs that are 1770. | Fix in the respective owners' trees. |
 
 ---
+
+
+### H-2 design (fixed)
+
+- **Source / offsite credentials** (`token_secret`, `key_pem` anywhere in `sources.config` / `tenants.offsite`) are sealed to the scheduler: libsodium `crypto_box_seal` (X25519 + XSalsa20-Poly1305, crate `crypto_box`), stored as `sealed:v1:<base64>`. The scheduler owns the private key (`/var/lib/nexus/scheduler/secrets.key`, 0600, created on first start, audit `secret.key_create`) and publishes the public key (`/var/lib/nexus/catalog/secrets.pub`, 0640, group `nexus-catalog`). The web-api seals on write and refuses secret writes with 503 while the public key is missing. It cannot decrypt.
+- **Binding:** the sealed plaintext is `location NUL secret`, and the location is checked on open. The location is `source/<id>` or `tenant/<name>/offsite`, plus the JSON pointer of the field, plus a digest of the endpoint fields next to it (`host`, `port`, `connect_addr`, `ca_pem`, `token_id`, `user`, `host_key`). A blob copied to another source or field does not open. Neither does a token whose source was pointed at another host or CA directly in the catalog.
+- The scheduler opens secrets only in memory while generating the 0600 job config. Legacy plaintext values are sealed at scheduler startup (audit `secret.migrate`, per row, field pointers only).
+- **TOTP seeds** use XChaCha20-Poly1305 with a web-api-only key (`/var/lib/nexus/webapi/totp.key`, 0600 `nexus-webapi`, created by nexus-setup). The AAD is the user name. Seeds are stored as `enc:v1:<base64>`, including the `totp_secret` of pending `user.update` quorum params. Legacy plaintext seeds keep working and are encrypted at web-api startup (audit `secret.migrate`). The web-api creates a missing key itself only while no encrypted seed exists.
+- **Residual risk:**
+  - Root, or anything running as the scheduler uid (`nexus-chunkstore`: scheduler, nexus-pve, nexus-offsite, restore-VM QEMU; see H-3), can read `secrets.key` and decrypt every source/offsite secret.
+  - The web-api uid can decrypt every TOTP seed. A web-api RCE still yields second factors, but no longer PVE tokens or SSH keys.
+  - A catalog writer (web-api RCE) can still delete or replace sealed secrets (denial of backups) and rewrite unsealed config such as storage and nodes. It can also seal its *own* token for an attacker endpoint. That only sends the attacker's own credential to the attacker.
+  - The catalog stays writable by both uids (audit chain: M-1).
 
 ## 5. Supply chain
 

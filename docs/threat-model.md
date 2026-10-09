@@ -34,7 +34,7 @@ risks reflect the current implementation. External test scope: `docs/pentest-sco
 
 | Rule | Status |
 |---|---|
-| web-api never touches chunks or keys | ✓ (own uid `nexus-webapi`, no keyd access) — but it can read/write the whole catalog incl. PVE token secrets and TOTP seeds (review H-2) |
+| web-api never touches chunks or keys | ✓ (own uid `nexus-webapi`, no keyd access). It can read/write the catalog, but source/offsite secrets only as `sealed:v1:` blobs sealed to the scheduler key (it holds only the public key). TOTP seeds are encrypted with the web-api's own key (review H-2 fixed). Residual: root and the scheduler uid can open source secrets; the web-api uid can decrypt TOTP seeds. |
 | connectors have no key material | ✗ `nexus-pve` / `nexus-offsite` open the chunk store in-process with DEKs from keyd (accepted deviation, see state.md) |
 | chunkstore is the only process with DEKs | ✗ scheduler, nexus-pve, nexus-offsite hold DEKs (same uid `nexus-chunkstore`); now non-dumpable |
 | offsite sees only encrypted data | ✗ same as above |
