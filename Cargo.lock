@@ -3087,6 +3087,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "truenas",
 ]
 
 [[package]]
@@ -4049,6 +4050,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "tower",
+ "truenas",
 ]
 
 [[package]]
