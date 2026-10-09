@@ -1,4 +1,4 @@
-//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | restore-ct <vmid> <time> <node> <target> <storage> | dump <vmid> <time> <device> | push-index | list`.
+//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | restore-ct <vmid> <time> <node> <target> <storage> | instant-recover <vmid> <time> <node> <target> <storage> [--link-down] | ir-serve <node> <target> | dump <vmid> <time> <device> | push-index | list`.
 //! `backup-all` backs up every guest in `vmids`, VM or container (type from /cluster/resources).
 
 use anyhow::{bail, Context, Result};
@@ -37,7 +37,7 @@ struct ApiFile {
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
-        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | restore-ct <vmid> <time> <node> <target> <storage> | dump <vmid> <time> <device> | push-index | list");
+        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | restore-ct <vmid> <time> <node> <target> <storage> | instant-recover <vmid> <time> <node> <target> <storage> [--link-down] | ir-serve <node> <target> | dump <vmid> <time> <device> | push-index | list");
     };
     let cfg: Config = serde_json::from_slice(&fs::read(cfg_path)?).context("config")?;
     let keys = keyd::fetch_keyring(&cfg.keyd_socket, &cfg.tenant).context("keyd")?;
@@ -93,6 +93,31 @@ fn main() -> Result<()> {
             let exit = cluster.restore_vm(&store, vmid.parse()?, time.parse()?, node, target.parse()?, storage)?;
             println!("restore finished: {exit}");
         }
+        ("instant-recover", [vmid, time, node, target, storage, opts @ ..]) => {
+            let link_down = match opts {
+                [] => false,
+                [o] if o == "--link-down" => true,
+                _ => bail!("instant-recover: unknown options {opts:?}"),
+            };
+            let r = cluster.instant_recover(
+                &store,
+                vmid.parse()?,
+                time.parse()?,
+                node,
+                target.parse()?,
+                storage,
+                link_down,
+            )?;
+            println!("VM running after {:.1?}", r.running_after);
+            for (disk, d) in &r.moves {
+                println!("{disk} moved in {d:.1?}");
+            }
+            if !r.move_errors.is_empty() {
+                bail!("disk moves failed: {}", r.move_errors.join("; "));
+            }
+        }
+        // resume serving an instant recovery (e.g. after an appliance restart)
+        ("ir-serve", [node, target]) => cluster.ir_resume(&store, node, target.parse()?)?,
         ("backup-all", []) => {
             // ponytail: sequential, one guest at a time; parallel per node when windows get tight
             let failed: Vec<u32> = vmids

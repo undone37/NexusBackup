@@ -38,6 +38,9 @@ d /run/nexusbackup      0750 root nexusbackup -
 d /run/nexusbackup/jobs 1770 root nexusbackup -
 # Restore requests (root) and the helper's listening NBD sockets (nexusbackup).
 d /run/nexusbackup/restore 1770 root nexusbackup -
+# Instant recovery: the helper's listening NBD sockets, the backing files of the
+# qcow2 overlays the storage plugin keeps in /var/lib/nexusbackup/ir (root only).
+d /run/nexusbackup/ir 1770 root nexusbackup -
 EOF
 
 cat > "$STAGE/DEBIAN/control" <<EOF

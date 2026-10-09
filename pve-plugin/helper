@@ -20,13 +20,19 @@
 #                               (backup_container streams the tar records)
 #   ct-restore-serve <archive>  like restore-serve, for a container restore
 #                               request (the plugin connects and reads the tar)
+#   ir-serve <vmid> <archive> <device>
+#                               instant recovery: listen on
+#                               /run/nexusbackup/ir/<vmid>.<archive>.<device>.sock
+#                               (backing file of the VM's qcow2 overlay), print
+#                               "listening", accept one connection (no timeout;
+#                               ends on stdin EOF), print "accepted", pipe it <-> stdio
 # Anything else: exit 2 and log to syslog.
 #
 # Exit codes: 0 ok, 1 runtime failure, 2 invalid command or arguments.
 #
-# TEST-ONLY: NEXUSBACKUP_RUNDIR, NEXUSBACKUP_RESTOREDIR and NEXUSBACKUP_STATEDIR
-# override /run/nexusbackup/jobs, /run/nexusbackup/restore and
-# /var/lib/nexusbackup for pve-plugin/t/helper.t. They are ignored when running
+# TEST-ONLY: NEXUSBACKUP_RUNDIR, NEXUSBACKUP_RESTOREDIR, NEXUSBACKUP_IRDIR and
+# NEXUSBACKUP_STATEDIR override /run/nexusbackup/jobs, /run/nexusbackup/restore,
+# /run/nexusbackup/ir and /var/lib/nexusbackup for pve-plugin/t/helper.t. They are ignored when running
 # under sshd (SSH_CONNECTION set), and sshd does not pass client environment by
 # default.
 
@@ -47,6 +53,7 @@ my $under_sshd = defined($ENV{SSH_CONNECTION});
 my $RUNDIR = (!$under_sshd && $ENV{NEXUSBACKUP_RUNDIR}) || '/run/nexusbackup/jobs';
 my $STATEDIR = (!$under_sshd && $ENV{NEXUSBACKUP_STATEDIR}) || '/var/lib/nexusbackup';
 my $RESTOREDIR = (!$under_sshd && $ENV{NEXUSBACKUP_RESTOREDIR}) || '/run/nexusbackup/restore';
+my $IRDIR = (!$under_sshd && $ENV{NEXUSBACKUP_IRDIR}) || '/run/nexusbackup/ir';
 
 my $INDEX_MAX = 64 * 1024 * 1024;
 my $BUFSIZE = 1024 * 1024;
@@ -268,6 +275,61 @@ sub cmd_ct_restore_serve {
     serve_one($label, "$RESTOREDIR/$archive.ct.sock", "$RESTOREDIR/.$archive.ct.$$.sock");
 }
 
+# Instant recovery: QEMU on the node opens the backing NBD export of an overlay
+# (created by the storage plugin) through this socket; it may connect several
+# times (VM start, reconnects, offline disk move). Each SSH session serves one
+# connection; the appliance keeps one idle session listening per device and
+# starts the next one when it reads "accepted". The newest listener renames its
+# socket over the path; a listener only removes the path while it is its own.
+sub cmd_ir_serve {
+    my ($vmid, $archive, $device) = @_;
+    my $label = "ir-serve $vmid $archive $device";
+    my $path = "$IRDIR/$vmid.$archive.$device.sock";
+    my $tmp = "$IRDIR/.$vmid.$archive.$device.$$.sock";
+
+    unlink($tmp);
+    my $listen = IO::Socket::UNIX->new(Type => SOCK_STREAM, Local => $tmp, Listen => 8)
+        or fail(1, "$label: listen on $tmp failed: $!");
+    my @id = (stat($tmp))[0, 1];
+    if (!chmod(0660, $tmp) || !rename($tmp, $path)) {
+        my $err = $!;
+        unlink($tmp);
+        fail(1, "$label: publishing socket failed: $err");
+    }
+    my $release = sub {
+        my @cur = (stat($path))[0, 1];
+        unlink($path) if @cur && $cur[0] == $id[0] && $cur[1] == $id[1];
+    };
+    binmode(STDOUT);
+    STDOUT->autoflush(1);
+    print STDOUT "listening\n";
+
+    # Wait for QEMU without a timeout, but end as soon as the appliance goes away
+    # (stdin EOF). The appliance sends nothing before "accepted".
+    my $sel = IO::Select->new($listen, \*STDIN);
+    my $conn;
+    while (!$conn) {
+        for my $fh ($sel->can_read()) {
+            if ($fh == $listen) {
+                $conn = $listen->accept();
+                next;
+            }
+            my $n = sysread(STDIN, my $buf, 1);
+            next if !defined($n) && $!{EINTR};
+            $release->();
+            fail(1, "$label: unexpected input before a connection") if $n;
+            slog('info', "$label: appliance closed the session");
+            exit(0);
+        }
+    }
+    close($listen); # further connects are refused until the next listener renames in
+    $release->();
+    print STDOUT "accepted\n";
+    slog('info', "$label: accepted connection");
+
+    pipe_stdio($conn, $label);
+}
+
 sub cmd_done {
     my ($vmid, $status, @msg) = @_;
 
@@ -374,6 +436,10 @@ if ($cmd eq 'job' || $cmd eq 'nbd') {
 } elsif ($cmd eq 'ct-restore-serve') {
     usage_error($printable) if @args != 1 || $args[0] !~ $ARCHIVE_RE;
     cmd_ct_restore_serve($args[0]);
+} elsif ($cmd eq 'ir-serve') {
+    usage_error($printable)
+        if @args != 3 || $args[0] !~ $VMID_RE || $args[1] !~ $ARCHIVE_RE || $args[2] !~ $DEVICE_RE;
+    cmd_ir_serve(@args);
 } else {
     usage_error($printable);
 }

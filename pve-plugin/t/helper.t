@@ -342,6 +342,77 @@ is(code(cmd => "restore-serve $archive drive-efidisk0"), 1, 'restore-serve: wron
     ok(!defined($rest) || $rest eq '', 'restore-serve: no trailing output');
 }
 
+# --- instant recovery: ir-serve -------------------------------------------------
+my $irdir = "$tmp/ir";
+mkdir($irdir) or die;
+$ENV{NEXUSBACKUP_IRDIR} = $irdir;
+for my $c ('ir-serve', 'ir-serve 903', "ir-serve 903 $archive", "ir-serve x $archive drive-scsi0",
+    "ir-serve 903 ../x drive-scsi0", "ir-serve 903 $archive Drive", "ir-serve 903 $archive drive-scsi0 x",
+    "ir-serve 903 $archive ../drive") {
+    is(code(cmd => $c), 2, "rejects '$c'");
+}
+{
+    my $isock = "$irdir/903.$archive.drive-scsi0.sock";
+    my $start = sub {
+        my $err = gensym;
+        local $ENV{SSH_ORIGINAL_COMMAND} = "ir-serve 903 $archive drive-scsi0";
+        my $pid = open3(my $in, my $out, $err, $^X, $helper);
+        binmode($in);
+        binmode($out);
+        $in->autoflush(1);
+        return ($pid, $in, $out);
+    };
+    local $SIG{ALRM} = sub { die "timeout\n" };
+    alarm(30);
+
+    # listener A, then B replaces it; A ends on stdin EOF and leaves B's socket alone
+    my ($pa, $ina, $outa) = $start->();
+    is(scalar(<$outa>), "listening\n", 'ir-serve: announces listening');
+    ok(-S $isock, 'ir-serve: socket published');
+    is((stat($isock))[2] & 0777, 0660, 'ir-serve: socket mode 0660');
+    my $ino_a = (stat($isock))[1];
+    my ($pb, $inb, $outb) = $start->();
+    is(scalar(<$outb>), "listening\n", 'ir-serve: second listener');
+    isnt((stat($isock))[1], $ino_a, 'ir-serve: newest listener owns the path');
+    close($ina);
+    waitpid($pa, 0);
+    is($? >> 8, 0, 'ir-serve: idle listener exits 0 on stdin EOF');
+    ok(-S $isock, "ir-serve: idle listener does not remove another listener's socket");
+
+    # QEMU connects to B
+    my $client = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => $isock);
+    ok($client, 'ir-serve: client connects');
+    is(scalar(<$outb>), "accepted\n", 'ir-serve: announces accepted');
+    ok(!-e $isock, 'ir-serve: socket removed after accept');
+    print {$inb} "hello from appliance";
+    my $got = '';
+    sysread($client, $got, 100) while length($got) < 20;
+    is($got, 'hello from appliance', 'ir-serve: appliance -> client');
+    syswrite($client, 'request');
+    my $buf = '';
+    sysread($outb, $buf, 100) while length($buf) < 7;
+    is($buf, 'request', 'ir-serve: client -> appliance');
+    close($client);
+    waitpid($pb, 0);
+    is($? >> 8, 0, 'ir-serve: exits 0 when the client disconnects');
+
+    # a listener that is idle when the appliance goes away removes its socket
+    my ($pc, $inc, $outc) = $start->();
+    is(scalar(<$outc>), "listening\n", 'ir-serve: third listener');
+    close($inc);
+    waitpid($pc, 0);
+    ok(!-e $isock, 'ir-serve: own socket removed on stdin EOF');
+
+    # the appliance must not talk before "accepted"
+    my ($pd, $ind, $outd) = $start->();
+    is(scalar(<$outd>), "listening\n", 'ir-serve: fourth listener');
+    print {$ind} "x";
+    waitpid($pd, 0);
+    is($? >> 8, 1, 'ir-serve: input before a connection is refused');
+    ok(!-e $isock, 'ir-serve: socket removed after refusal');
+    alarm(0);
+}
+
 # --- containers: ct-stream / ct-restore-serve ----------------------------------
 for my $c ('ct-stream', 'ct-stream x', 'ct-stream 200 1', 'ct-stream ../200', 'ct-restore-serve',
     'ct-restore-serve nexus-200', "ct-restore-serve $archive x", 'ct-restore-serve ../x') {
