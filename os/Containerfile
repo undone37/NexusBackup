@@ -165,10 +165,10 @@ RUN chronyd -p -f /etc/chrony.conf >/dev/null
 # only); sshd off. The preset file also governs the first-boot preset-all.
 RUN usermod -L root \
  && systemctl preset sshd.service sshd.socket nftables.service chronyd.service \
-      nexus-setup.service nexus-nft-sync.service nexus-nft-sync.path nexus-nft-sync.timer \
+      nexus-setup.service nexus-nft-sync.service nexus-nft-sync.path nexus-nft-sync.timer nexus-nasmount.socket \
  && ! systemctl is-enabled -q sshd.service \
  && systemctl is-enabled -q nftables.service chronyd.service nexus-setup.service \
-      nexus-nft-sync.path nexus-nft-sync.timer \
+      nexus-nft-sync.path nexus-nft-sync.timer nexus-nasmount.socket \
  && ! systemctl is-enabled -q nexus-web-api.service nexus-scheduler.service nexus-keyd.service
 
 # COPY keeps the build host's modes (umask 002 → 0664/0775): strip group/world

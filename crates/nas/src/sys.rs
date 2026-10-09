@@ -6,6 +6,7 @@
 use std::ffi::{CStr, CString};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const RESOLVE_NO_XDEV: u64 = 0x01;
 pub const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
@@ -38,8 +39,84 @@ struct OpenHow {
     resolve: u64,
 }
 
-/// `openat2(dirfd, path, flags | O_NOFOLLOW | O_CLOEXEC, resolve)`.
+/// openat2 is unavailable: the kernel is older than 5.6, or a seccomp filter
+/// refuses it (systemd's `RestrictSUIDSGID=` answers ENOSYS for openat2, whose
+/// mode argument it cannot inspect — the scheduler's unit, inherited by jobs).
+static NO_OPENAT2: AtomicBool = AtomicBool::new(false);
+
+/// `openat2(dirfd, path, flags | O_NOFOLLOW | O_CLOEXEC, resolve)`; without
+/// openat2 the same confinement component by component (see [`open_walk`]).
 pub fn openat2(dirfd: RawFd, path: &[u8], flags: libc::c_int, resolve: u64) -> io::Result<OwnedFd> {
+    if !NO_OPENAT2.load(Ordering::Relaxed) {
+        match raw_openat2(dirfd, path, flags, resolve) {
+            Err(e) if e.raw_os_error() == Some(libc::ENOSYS) => NO_OPENAT2.store(true, Ordering::Relaxed),
+            r => return r,
+        }
+    }
+    open_walk(dirfd, path, flags, resolve)
+}
+
+/// Tests: use the [`open_walk`] fallback from now on (as under a seccomp filter).
+#[doc(hidden)]
+pub fn disable_openat2() {
+    NO_OPENAT2.store(true, Ordering::Relaxed);
+}
+
+/// The openat2 confinement with plain `openat`: the path is split into
+/// components (no empty, `.` or `..` component: never above `dirfd`), each is
+/// opened with `O_NOFOLLOW` (a symlink anywhere fails), and with
+/// `RESOLVE_NO_XDEV` every opened component must be on `dirfd`'s mount.
+pub fn open_walk(dirfd: RawFd, path: &[u8], flags: libc::c_int, resolve: u64) -> io::Result<OwnedFd> {
+    let einval = || io::Error::from_raw_os_error(libc::EINVAL);
+    let base = if resolve & RESOLVE_NO_XDEV != 0 {
+        Some(fstatx(dirfd, false)?)
+    } else {
+        None
+    };
+    let comps: Vec<&[u8]> = if path == b"." {
+        vec![b"."]
+    } else {
+        let c: Vec<&[u8]> = path.split(|b| *b == b'/').collect();
+        if c.iter().any(|c| c.is_empty() || *c == b"." || *c == b"..") {
+            return Err(einval());
+        }
+        c
+    };
+    let mut cur: Option<OwnedFd> = None;
+    for (i, c) in comps.iter().enumerate() {
+        let last = i + 1 == comps.len();
+        let fl = if last {
+            flags
+        } else {
+            libc::O_RDONLY | libc::O_DIRECTORY
+        };
+        let name = cstr(c)?;
+        let at = cur.as_ref().map_or(dirfd, |f| f.as_raw_fd());
+        // SAFETY: openat with a valid C string.
+        let r = unsafe {
+            libc::openat(
+                at,
+                name.as_ptr(),
+                fl | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NOCTTY,
+            )
+        };
+        if r < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: fresh fd owned by us.
+        let fd = unsafe { OwnedFd::from_raw_fd(r) };
+        if let Some(b) = &base {
+            let s = fstatx(fd.as_raw_fd(), false)?;
+            if s.dev != b.dev || s.mnt_id != b.mnt_id {
+                return Err(io::Error::from_raw_os_error(libc::EXDEV));
+            }
+        }
+        cur = Some(fd);
+    }
+    cur.ok_or_else(einval)
+}
+
+fn raw_openat2(dirfd: RawFd, path: &[u8], flags: libc::c_int, resolve: u64) -> io::Result<OwnedFd> {
     let p = cstr(path)?;
     let how = OpenHow {
         flags: (flags | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NOCTTY) as u64,
@@ -272,4 +349,36 @@ pub fn fxattrs(fd: RawFd, extra: &[&str], buf: &mut Vec<u8>) -> io::Result<Vec<(
         out.push((name, buf[..n as usize].to_vec()));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn open_walk_is_confined_like_openat2() {
+        let d = tempfile::tempdir().unwrap();
+        fs::create_dir_all(d.path().join("a/b")).unwrap();
+        fs::write(d.path().join("a/b/f"), "x").unwrap();
+        std::os::unix::fs::symlink("b", d.path().join("a/lnk")).unwrap();
+        std::os::unix::fs::symlink("/etc", d.path().join("etc")).unwrap();
+        let root = crate::mount::open_local(d.path()).unwrap();
+        let r = root.as_raw_fd();
+        for f in [open_walk, openat2] {
+            assert!(f(r, b"a/b/f", libc::O_RDONLY, CONFINED).is_ok());
+            assert!(f(r, b".", libc::O_RDONLY | libc::O_DIRECTORY, CONFINED).is_ok());
+            for bad in [&b"a/lnk/f"[..], b"etc/passwd", b"etc", b"../x", b"/etc/passwd"] {
+                assert!(
+                    f(r, bad, libc::O_RDONLY, CONFINED).is_err(),
+                    "{}",
+                    String::from_utf8_lossy(bad)
+                );
+            }
+        }
+        // stricter than openat2 (which allows `..` that stays beneath): no `..`, `.` or empty components
+        for bad in [&b"a/../a/b/f"[..], b"a//b", b"a/./b"] {
+            assert!(open_walk(r, bad, libc::O_RDONLY, CONFINED).is_err());
+        }
+    }
 }

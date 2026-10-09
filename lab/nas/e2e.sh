@@ -2,9 +2,10 @@
 # NAS shares end to end through the control plane, REST only (what the UI does):
 # NFS (v4.2 and v3) and SMB (3.1.1, signed + encrypted) sources on the NAS lab VM.
 #
-#   e2e.sh [step...]   default: config backup1 download modify backup2 churn snapshot many alerts summary
+#   e2e.sh [step...]   default: data config backup1 download modify backup2 churn snapshot many alerts summary
 #
 # Steps:
+#   data      fresh /srv/share (data.sh init)
 #   config    tenant `nas`, sources nfs1 (NFS 4.2 /srv/share), smb1 (SMB 3.1.1 share, seal),
 #             many1 (NFS 3 /srv/many, 1M small files), policy (daily, first slot ~2 min ahead), groups
 #   backup1   the scheduled backup of nfs1, manual backups of smb1 (full); job results + rates
@@ -47,6 +48,11 @@ note() { echo "$*" >>"$S/results"; log "$*"; }
 src_nfs() {
 	jq -nc --arg h "$NAS_HOST" --argjson p "$NFS_PORT" \
 		'{host:$h, port:$p, version:"4.2", export:"/srv/share", excludes:["*.tmp"]}'
+}
+
+step_data() {
+	vmdata init >&2
+	log "fresh test data in /srv/share (data.sh init)"
 }
 
 step_config() {
@@ -109,7 +115,7 @@ finished() {
 	local id=$1 label=${2:-} j
 	j=$(wait_job admin "$id" 7200)
 	jq -r .log <<<"$j" | grep -E '^(mounted|reading|committed|inconsistent|no snapshot|error)' | head -20 >&2 || true
-	[ "$(jq -r .state <<<"$j")" = ok ] || die "job $id: $(jq -r .log <<<"$j" | tail -5)"
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "job $id: $(jq -r .log <<<"$j" | tail -12)"
 	if [ -n "$label" ]; then
 		local c secs
 		c=$(jq -r .log <<<"$j" | grep '^committed ' | head -1)
@@ -286,7 +292,7 @@ step_summary() {
 	cat "$S/results"
 }
 
-steps=${*:-config backup1 download modify backup2 churn snapshot many alerts summary}
+steps=${*:-data config backup1 download modify backup2 churn snapshot many alerts summary}
 for s in $steps; do
 	log "== $s"
 	"step_$s"

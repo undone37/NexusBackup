@@ -144,6 +144,22 @@ fn scan_is_deterministic_and_complete() {
     }
 }
 
+/// Under the scheduler's seccomp filter openat2 answers ENOSYS: the
+/// component-wise fallback must produce the same tree.
+#[test]
+fn scan_without_openat2_is_the_same() {
+    let d = tempfile::tempdir().unwrap();
+    let share = d.path().join("share");
+    tree(&share);
+    let root = mount::open_local(&share).unwrap();
+    let st = store(&d.path().join("store"));
+    let (a, _) = scan::scan(&st, &root, &opts(4), None, &quiet).unwrap();
+    nas::sys::disable_openat2();
+    let (b, r) = scan::scan(&st, &root, &opts(4), None, &quiet).unwrap();
+    assert_eq!(r.error_count, 0, "{:?}", r.errors);
+    assert_eq!(a, b);
+}
+
 #[test]
 fn incremental_reuses_unchanged_files_and_rereads_changes() {
     let d = tempfile::tempdir().unwrap();

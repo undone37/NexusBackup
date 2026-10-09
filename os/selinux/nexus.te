@@ -530,7 +530,8 @@ neverallow nexus_nasmount_t { nexus_store_t nexus_keyd_var_lib_t nexus_catalog_t
 # (job domain rules: job dir, store, keyd); file downloads.
 allow nexus_nas_t nexus_nasmount_var_run_t:dir search_dir_perms;
 allow nexus_nas_t nexus_nasmount_var_run_t:sock_file write;
-allow nexus_nas_t init_t:unix_stream_socket connectto;
+# systemd creates the listening socket in the service domain (socket activation)
+allow nexus_nas_t nexus_nasmount_t:unix_stream_socket connectto;
 allow nexus_nas_t nexus_nasmount_t:fd use;
 allow nexus_nas_t { nfs_t cifs_t }:filesystem getattr;
 allow nexus_nas_t { nfs_t cifs_t }:dir list_dir_perms;
