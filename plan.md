@@ -61,6 +61,9 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | File restore delivery (Phase 3) | **CLI download as tar/zip** (decided 2026-10-09) | Web UI download follows in Phase 5. |
 | Offsite test target (Phase 4) | **Local OpenSSH SFTP container mimicking Storage Box limits first**; real Storage Box later for a final run (decided 2026-10-09) | Fast, repeatable tests; no credentials needed during development. |
 | SFTP client | **Pure Rust: russh + russh-sftp** (decided 2026-10-09) | No C dependencies; host-key pinning, range reads, parallel connections under our control. |
+| Web UI (Phase 5) | **SPA in TypeScript** (Svelte/React; decided 2026-10-09) on the REST API | Richer UI; needs a Node build in CI/image and strict CSP/XSS care. |
+| MFA (Phase 5) | **TOTP only at first** (decided 2026-10-09) | WebAuthn follows later. |
+| First boot (Phase 5) | **Console TUI** (decided 2026-10-09) | Management API unreachable until setup is done; no default credentials. |
 
 ---
 
@@ -358,7 +361,7 @@ Monthly and yearly restore points dominate capacity. Real change rates must be m
 ### 11.1 API and UI
 
 - REST API with `axum`; the Web UI consumes the same API (everything the UI can do is scriptable).
-- Authentication: local accounts with WebAuthn or TOTP; OIDC later.
+- Authentication: local accounts with TOTP (WebAuthn later, decided 2026-10-09); OIDC later.
 - Session hardening, rate limiting, CSRF protection, strict CSP.
 
 ### 11.2 Roles (initial RBAC)

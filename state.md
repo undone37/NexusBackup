@@ -67,6 +67,9 @@ Decisions (user, 2026-10-09): instant recovery via qcow2 overlay on the node bac
 ## Phase 4 — Offsite (starts after Phase 3 merge)
 Decisions (user, 2026-10-09): test against a local SFTP container mimicking Storage Box first, real box later; SFTP via russh + russh-sftp
 
+## Phase 5 — Control plane and UI (starts after Phase 4 merge)
+Decisions (user, 2026-10-09): Web UI = TypeScript SPA on the REST API; MFA = TOTP only at first; first boot = console TUI
+
 ## Next
 
 
