@@ -5,6 +5,7 @@
 #   data.sh modify   round-2 changes: in-place edit, renames (file + dir), deletes, new files,
 #                    new hardlink, chmod/chown, xattr-only and ACL-only changes
 #   data.sh sums     sha256 of every regular file per dataset (for comparisons), sorted
+#   data.sh xattrs   getfattr dump (hex) of every entry per dataset
 set -euo pipefail
 S="sudo -n"
 case "${1:-}" in
@@ -53,6 +54,13 @@ modify)
   $S setfattr -n user.comment -v "changed comment" docs/README.txt
   $S setfacl -m u:1003:r acl/file
   cd /mnt/tank/data/projects; $S sh -c 'echo v2 >> p1/plan.md'
+  ;;
+xattrs)
+  # every xattr (incl. POSIX ACLs and system.nfs4_acl_xdr), hex, per dataset
+  for ds in data data/projects smb; do
+    echo "== $ds"
+    (cd "/mnt/tank/$ds" && $S getfattr -R -P -d -m - -e hex . 2>/dev/null | grep -v '^$' || true)
+  done
   ;;
 sums)
   for ds in data data/projects smb; do

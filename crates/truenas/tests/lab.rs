@@ -138,5 +138,47 @@ fn lab_backup_round() {
             println!("verified {} files of {}", exp.len(), d.dataset);
         }
     }
+    // xattrs (POSIX ACLs, NFSv4 ACLs, user.*) against `getfattr -d -m - -e hex` on TrueNAS
+    if let Ok(f) = std::env::var("NEXUS_TRUENAS_XATTRS") {
+        let text = std::fs::read_to_string(f).unwrap();
+        let mut want: BTreeMap<(String, String), Vec<(String, String)>> = BTreeMap::new();
+        let (mut ds, mut file) = (String::new(), String::new());
+        for l in text.lines() {
+            if let Some(d) = l.strip_prefix("== ") {
+                ds = format!("tank/{d}");
+            } else if let Some(p) = l.strip_prefix("# file: ") {
+                file = p.to_owned();
+            } else if let Some((k, v)) = l.split_once("=0x") {
+                want.entry((ds.clone(), file.clone()))
+                    .or_default()
+                    .push((k.to_owned(), v.to_owned()));
+            }
+        }
+        let mut checked = 0;
+        for d in &r.committed {
+            let m = store.load_manifest(&d.source, d.time).unwrap();
+            let Index::Tree { entries } = store.load_index(&m, "tree").unwrap() else {
+                panic!()
+            };
+            for e in &entries {
+                let p = String::from_utf8_lossy(&e.path).into_owned();
+                let mut got: Vec<(String, String)> = e
+                    .xattrs
+                    .iter()
+                    .map(|(k, v)| (String::from_utf8_lossy(k).into_owned(), v.iter().map(|b| format!("{b:02x}")).collect()))
+                    .collect();
+                got.sort();
+                let mut exp = want.get(&(d.dataset.clone(), p.clone())).cloned().unwrap_or_default();
+                exp.sort();
+                if p.contains('\\') || p.contains('\n') || e.kind == TreeKind::Symlink {
+                    continue; // getfattr escapes such names; symlinks are not read
+                }
+                assert_eq!(got, exp, "{}: {p}", d.dataset);
+                checked += usize::from(!exp.is_empty());
+            }
+        }
+        println!("verified xattrs of {checked} entries");
+        assert!(checked >= 3);
+    }
     api.close();
 }
