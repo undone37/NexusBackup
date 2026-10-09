@@ -1,7 +1,7 @@
 //! Config CRUD: tenants, sources, policies, groups, users (admin only for
 //! writes; destructive or weakening changes go through the quorum).
 
-use crate::auth::{Ctx, User, USER_COLS};
+use crate::auth::{reauth, ClientIp, Ctx, User, USER_COLS};
 use crate::quorum::{accepted, gate, request};
 use crate::validate::{self, Gfs};
 use crate::{ApiError, ApiResult, St, J};
@@ -10,6 +10,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use catalog::rusqlite::{params, Connection, OptionalExtension};
+use catalog::secret::{source_owner, SealKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -235,6 +236,14 @@ impl PveConfig {
     }
 }
 
+/// The config as stored: secrets sealed to the scheduler (review H-2), bound
+/// to the source id and endpoint. Already sealed values (kept on update) stay.
+fn sealed_config(pk: &SealKey, id: i64, cfg: &PveConfig) -> ApiResult<String> {
+    let mut v = serde_json::to_value(cfg).map_err(anyhow::Error::from)?;
+    pk.seal_all(&source_owner(id), &mut v)?;
+    Ok(v.to_string())
+}
+
 /// Removes the secret, adds `token_secret_set`.
 fn public_config(raw: &str) -> Value {
     let mut v: Value = serde_json::from_str(raw).unwrap_or_default();
@@ -299,16 +308,24 @@ pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -
     if r.config.token_secret.is_none() {
         return Err(ApiError::bad("config.token_secret: required"));
     }
+    let pk = st.seal_key()?;
     let (id, out) = {
-        let c = st.cat.conn();
+        let mut c = st.cat.conn();
         if !exists(&c, "SELECT 1 FROM tenants WHERE name = ?1", [&r.tenant])? {
             return Err(ApiError::bad("tenant: does not exist"));
         }
-        c.execute(
-            "INSERT INTO sources (tenant, kind, name, config) VALUES (?1, ?2, ?3, ?4)",
-            params![r.tenant, r.kind, r.name, serde_json::to_string(&r.config).unwrap()],
+        // the sealed secret is bound to the row id: insert, then seal, in one transaction
+        let tx = c.transaction()?;
+        tx.execute(
+            "INSERT INTO sources (tenant, kind, name, config) VALUES (?1, ?2, ?3, '{}')",
+            params![r.tenant, r.kind, r.name],
         )?;
-        let id = c.last_insert_rowid();
+        let id = tx.last_insert_rowid();
+        tx.execute(
+            "UPDATE sources SET config = ?2 WHERE id = ?1",
+            params![id, sealed_config(&pk, id, &r.config)?],
+        )?;
+        tx.commit()?;
         (id, source_json(&c, id)?)
     };
     st.audit(
@@ -329,6 +346,7 @@ pub async fn update_source(
     ctx.require(ADMIN)?;
     validate::name(&r.name, "name")?;
     r.config.check()?;
+    let pk = st.seal_key()?;
     let out = {
         let c = st.cat.conn();
         let old: String = c
@@ -348,11 +366,13 @@ pub async fn update_source(
                     "config.token_secret: required when host, port, connect_addr, ca_pem or token_id change",
                 ));
             }
+            // kept as stored: sealed (bound to this source and the unchanged endpoint)
             r.config.token_secret = old["token_secret"].as_str().map(str::to_owned);
         }
+        let config = sealed_config(&pk, id, &r.config)?;
         c.execute(
             "UPDATE sources SET name = ?2, config = ?3 WHERE id = ?1",
-            params![id, r.name, serde_json::to_string(&r.config).unwrap()],
+            params![id, r.name, config],
         )?;
         source_json(&c, id)?
     };
@@ -740,6 +760,11 @@ pub struct UserUpdate {
     password: Option<String>,
     #[serde(default)]
     reset_totp: bool,
+    /// re-authentication of the acting user, required with `password` / `reset_totp`
+    #[serde(default)]
+    current_password: Option<String>,
+    #[serde(default)]
+    current_totp: Option<String>,
 }
 
 /// `Option<Value>` that keeps an explicit `null` as `Some(Null)` (serde maps
@@ -803,12 +828,13 @@ pub async fn create_user(State(st): State<St>, ctx: Ctx, J(r): J<UserReq>) -> Ap
     let pw_hash = hash(r.password).await?;
     let secret = catalog::auth::new_totp_secret();
     let uri = catalog::auth::totp_uri(&secret, &r.name)?;
+    let enc = st.totp.encrypt(&r.name, &secret)?;
     let gated = validate::privileged(&r.role);
     let user = {
         let c = st.cat.conn();
         c.execute(
             "INSERT INTO users (name, password_hash, totp_secret, role, tenant, disabled, created) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![r.name, pw_hash, secret, r.role, r.tenant, gated, catalog::now()],
+            params![r.name, pw_hash, enc, r.role, r.tenant, gated, catalog::now()],
         )?;
         User::load(&c, c.last_insert_rowid())?
     };
@@ -857,14 +883,29 @@ pub fn apply_user_update(c: &Connection, p: &Value) -> ApiResult<()> {
 /// Quorum-gated: granting admin/security_officer (incl. re-enabling such an
 /// account), disabling or demoting the last enabled admin/security_officer,
 /// and resetting another privileged user's password or TOTP (account takeover).
+/// Any password / TOTP change (own or another user's) first re-authenticates
+/// the acting user (`current_password` + `current_totp`, review M-5).
 pub async fn update_user(
     State(st): State<St>,
     ctx: Ctx,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
-    J(r): J<UserUpdate>,
+    J(mut r): J<UserUpdate>,
 ) -> ApiResult<Response> {
     ctx.require(ADMIN)?;
     let old = User::load(&st.cat.conn(), id)?;
+    if r.password.is_some() || r.reset_totp {
+        let purpose = format!("credentials of user/{}", old.name);
+        reauth(
+            &st,
+            &ctx,
+            &ip,
+            r.current_password.take(),
+            r.current_totp.take(),
+            &purpose,
+        )
+        .await?;
+    }
     let role = r.role.clone().unwrap_or_else(|| old.role.clone());
     validate::role(&role)?;
     let tenant: Option<String> = match &r.tenant {
@@ -913,7 +954,8 @@ pub async fn update_user(
     if r.reset_totp {
         let s = catalog::auth::new_totp_secret();
         extra["totp_uri"] = json!(catalog::auth::totp_uri(&s, &old.name)?);
-        p["totp_secret"] = json!(s);
+        // encrypted already in the quorum params, bound to this user's name
+        p["totp_secret"] = json!(st.totp.encrypt(&old.name, &s)?);
     }
     let target = format!("user/{}", old.name);
     if grant || removes_last || cred_reset {

@@ -21,6 +21,12 @@
 //! (the web-api refuses inline secrets, so normally paths). `ca_pem` and
 //! `token_secret` are written to 0600 files in the job dir.
 //!
+//! Secrets (`token_secret`, `key_pem`, see `catalog::secret`) are stored as
+//! `sealed:v1:` values sealed to the scheduler key (`Config::secrets_key`); the
+//! web-api only has the public key (`Config::secrets_pub`, written at start).
+//! They are opened in memory when a job config is generated. Legacy plaintext
+//! values are sealed at startup (audit `secret.migrate`).
+//!
 //! `tenants.offsite`: `{ "remote": { "type": "sftp", "host": …, "user": …, "host_key": …,
 //! "key_file": "/path", "port"?, "base_dir"? } | { "type": "local", "path": … },
 //! "bwlimit"?: bytes/s, "uploaders"?: n }`. No `remote` = no offsite for this tenant.
@@ -37,6 +43,7 @@ pub mod schedule;
 
 use anyhow::{bail, Context, Result};
 use catalog::rusqlite::{params, OptionalExtension};
+use catalog::secret::{source_owner, tenant_owner, SchedulerKey};
 use catalog::Catalog;
 use chunkstore::retention::Gfs;
 use chunkstore::Options;
@@ -93,6 +100,12 @@ pub struct Config {
     pub capacity_threshold: f64,
     /// retry delays of alert delivery
     pub alert_retry_secs: [u64; 2],
+    /// private key that opens sealed source/offsite secrets (0600, created on
+    /// first start); default `<state_dir>/secrets.key`
+    pub secrets_key: Option<PathBuf>,
+    /// public key published for the web-api (0640, catalog group); default
+    /// `secrets.pub` next to the catalog
+    pub secrets_pub: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -121,6 +134,8 @@ impl Default for Config {
             offsite_lag_secs: 48 * 3600,
             capacity_threshold: 0.75,
             alert_retry_secs: [10, 60],
+            secrets_key: None,
+            secrets_pub: None,
         }
     }
 }
@@ -161,6 +176,9 @@ pub struct Scheduler {
     host: String,
     /// time of the current tick: `created` of queued jobs (due computation)
     now: i64,
+    /// opens the sealed secrets in `sources.config` / `tenants.offsite`
+    secrets: SchedulerKey,
+    secrets_created: bool,
 }
 
 fn valid_name(s: &str) -> bool {
@@ -222,6 +240,8 @@ fn download_file(p: &Value) -> Result<String> {
 impl Scheduler {
     pub fn new(cfg: Config, db: Arc<Catalog>, keys: KeySource, store_options: fn() -> Options) -> Result<Self> {
         let (tx, rx) = channel();
+        let (secrets, secrets_created) =
+            SchedulerKey::load_or_create(&cfg.secrets_key_path()).context("scheduler secrets key")?;
         let alerts_cfg = alerts::AlertsConfig::load(&cfg.alerts_config)?;
         let alert_tx = alerts::spawn_delivery(alerts_cfg, cfg.alert_retry_secs.map(Duration::from_secs));
         let ctx = Arc::new(Ctx {
@@ -244,6 +264,8 @@ impl Scheduler {
             alert_tx,
             host: alerts::hostname(),
             now: catalog::now(),
+            secrets,
+            secrets_created,
         };
         s.startup()?;
         Ok(s)
@@ -294,6 +316,8 @@ impl Scheduler {
             }
         }
         fs::create_dir_all(&self.cfg.state_dir)?;
+        self.publish_secrets_key()?;
+        self.migrate_secrets()?;
         self.alert_cursor = match fs::read_to_string(self.cursor_path()) {
             Ok(s) => s.trim().parse().unwrap_or(0),
             Err(_) => self
@@ -302,6 +326,69 @@ impl Scheduler {
                 .query_row("SELECT COALESCE(MAX(id), 0) FROM alerts", [], |r| r.get(0))?,
         };
         self.recover()
+    }
+
+    /// Writes the public key for the web-api (group of the catalog dir, 0640).
+    fn publish_secrets_key(&mut self) -> Result<()> {
+        let path = self.cfg.secrets_pub_path();
+        let gid = self
+            .cfg
+            .catalog
+            .parent()
+            .and_then(|p| fs::metadata(p).ok())
+            .map(|m| m.gid());
+        self.secrets
+            .write_public(&path, gid)
+            .or_else(|_| self.secrets.write_public(&path, None))
+            .with_context(|| format!("publishing {}", path.display()))?;
+        if std::mem::take(&mut self.secrets_created) {
+            self.db.audit(
+                ACTOR,
+                "secret.key_create",
+                "scheduler/secrets.key",
+                &json!({"public": self.secrets.public().to_base64()}),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Seals legacy plaintext secrets in `sources.config` / `tenants.offsite`
+    /// to the scheduler key (review H-2); one audit entry per changed row.
+    pub fn migrate_secrets(&self) -> Result<()> {
+        let pk = self.secrets.public();
+        for (table, key) in [("sources", "id"), ("tenants", "name")] {
+            let col = if table == "sources" { "config" } else { "offsite" };
+            let rows: Vec<(String, String)> = {
+                let c = self.db.conn();
+                let mut st = c.prepare(&format!("SELECT CAST({key} AS TEXT), {col} FROM {table}"))?;
+                let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                rows.collect::<std::result::Result<_, _>>()?
+            };
+            for (k, raw) in rows {
+                let Ok(mut v) = serde_json::from_str::<Value>(&raw) else {
+                    continue;
+                };
+                let (owner, target) = if table == "sources" {
+                    (source_owner(k.parse()?), format!("source/{k}"))
+                } else {
+                    (tenant_owner(&k), format!("tenant/{k}"))
+                };
+                let fields = pk.seal_all(&owner, &mut v)?;
+                if fields.is_empty() {
+                    continue;
+                }
+                // compare-and-swap: a concurrent web-api write wins (and seals itself)
+                let n = self.db.conn().execute(
+                    &format!("UPDATE {table} SET {col} = ?1 WHERE CAST({key} AS TEXT) = ?2 AND {col} = ?3"),
+                    params![v.to_string(), k, raw],
+                )?;
+                if n == 1 {
+                    self.db
+                        .audit(ACTOR, "secret.migrate", &target, &json!({"sealed": fields}))?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn cursor_path(&self) -> PathBuf {
@@ -869,7 +956,12 @@ impl Scheduler {
         if kind != "pve" {
             bail!("source {id}: unsupported kind {kind}");
         }
-        serde_json::from_str(&cfg).context("source config")
+        let mut v: Value = serde_json::from_str(&cfg).context("source config")?;
+        // in memory only: the plaintext goes into the 0600 job dir and nowhere else
+        self.secrets
+            .open_all(&source_owner(id), &mut v)
+            .with_context(|| format!("source {id}"))?;
+        Ok(v)
     }
 
     /// Source of a job: explicit `source_id`, else the group containing the
@@ -976,7 +1068,10 @@ impl Scheduler {
             .conn()
             .query_row("SELECT offsite FROM tenants WHERE name=?1", [tenant], |r| r.get(0))
             .optional()?;
-        let v: Value = o.map(|s| serde_json::from_str(&s)).transpose()?.unwrap_or(Value::Null);
+        let mut v: Value = o.map(|s| serde_json::from_str(&s)).transpose()?.unwrap_or(Value::Null);
+        self.secrets
+            .open_all(&tenant_owner(tenant), &mut v)
+            .with_context(|| format!("offsite config of tenant {tenant}"))?;
         Ok(v["remote"].is_object().then_some(v))
     }
 
@@ -1530,6 +1625,22 @@ impl Scheduler {
             }
         }
         Ok(())
+    }
+}
+
+impl Config {
+    pub fn secrets_key_path(&self) -> PathBuf {
+        self.secrets_key
+            .clone()
+            .unwrap_or_else(|| self.state_dir.join("secrets.key"))
+    }
+    pub fn secrets_pub_path(&self) -> PathBuf {
+        self.secrets_pub.clone().unwrap_or_else(|| {
+            self.catalog
+                .parent()
+                .unwrap_or(Path::new("/var/lib/nexus/catalog"))
+                .join("secrets.pub")
+        })
     }
 }
 

@@ -67,7 +67,18 @@ fn env() -> &'static Env {
         }
         let downloads = dir.path().join("downloads");
         std::fs::create_dir(&downloads).unwrap();
-        let st = web_api::AppState::new(cat, Some("metrics-token".into()), downloads);
+        // the scheduler's public key is published: secret writes succeed (no 503)
+        let secrets_pub = dir.path().join("secrets.pub");
+        catalog::secret::SchedulerKey::generate()
+            .write_public(&secrets_pub, None)
+            .unwrap();
+        let st = web_api::AppState::with_keys(
+            cat,
+            Some("metrics-token".into()),
+            downloads,
+            catalog::secret::TotpKey::generate(),
+            Some(secrets_pub),
+        );
         Env {
             rt: tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap(),
             app: web_api::router(st.clone()),

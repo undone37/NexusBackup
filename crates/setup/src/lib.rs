@@ -15,6 +15,7 @@
 //! | finish | `setup-done` exists |
 
 use anyhow::{anyhow, bail, Context, Result};
+use catalog::secret::TotpKey;
 use catalog::{auth, Catalog};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -45,6 +46,8 @@ pub struct Paths {
     pub keyd_dir: PathBuf,
     pub tls_dir: PathBuf,
     pub metrics_token: PathBuf,
+    /// web-api-only key for TOTP seeds (0600 nexus-webapi)
+    pub totp_key: PathBuf,
     pub setup_done: PathBuf,
     pub lock: PathBuf,
     /// Read-only NIC enumeration; not prefixed by `--root`.
@@ -59,6 +62,7 @@ impl Paths {
             keyd_dir: p("var/lib/nexus/keyd"),
             tls_dir: p("etc/nexus/tls"),
             metrics_token: p("etc/nexus/metrics-token"),
+            totp_key: p("var/lib/nexus/webapi/totp.key"),
             setup_done: p("var/lib/nexus/setup-done"),
             lock: p("var/lib/nexus/.setup.lock"),
             sys_class_net: PathBuf::from("/sys/class/net"),
@@ -786,6 +790,8 @@ impl Setup {
             bail!("TOTP code is not valid (check the authenticator app and the appliance clock)");
         }
         let hash = Zeroizing::new(auth::hash_password(password)?);
+        // stored encrypted with the web-api's key, bound to the account name
+        let seed = self.totp_key()?.encrypt(name, totp_secret)?;
         let other: Option<String> = self
             .cat
             .conn()
@@ -816,7 +822,7 @@ impl Setup {
             Some((id, old)) => {
                 self.cat.conn().execute(
                     "UPDATE users SET name = ?1, password_hash = ?2, totp_secret = ?3, disabled = 0 WHERE id = ?4",
-                    catalog::rusqlite::params![name, *hash, totp_secret, id],
+                    catalog::rusqlite::params![name, *hash, seed, id],
                 )?;
                 self.audit(
                     "setup.user.replace",
@@ -828,7 +834,7 @@ impl Setup {
                 self.cat.conn().execute(
                     "INSERT INTO users (name, password_hash, totp_secret, role, tenant, disabled, created)
                      VALUES (?1, ?2, ?3, ?4, NULL, 0, ?5)",
-                    catalog::rusqlite::params![name, *hash, totp_secret, role.as_str(), catalog::now()],
+                    catalog::rusqlite::params![name, *hash, seed, role.as_str(), catalog::now()],
                 )?;
                 self.audit(
                     "setup.user.create",
@@ -837,6 +843,21 @@ impl Setup {
                 )
             }
         }
+    }
+
+    /// The web-api's TOTP key, created if missing (0600, owner nexus-webapi,
+    /// parent dir 0700). Only setup (root) and the web-api can read it.
+    fn totp_key(&self) -> Result<TotpKey> {
+        let p = &self.paths.totp_key;
+        let (k, created) = TotpKey::open_or_create(p, &self.cat)?;
+        if created {
+            if let Some(dir) = p.parent() {
+                self.own(dir, Some("nexus-webapi"), Some("nexus-webapi"))?;
+            }
+            self.own(p, Some("nexus-webapi"), Some("nexus-webapi"))?;
+            self.audit("setup.totp_key", "webapi/totp.key", json!({"created": true}))?;
+        }
+        Ok(k)
     }
 
     // ---- 4. keyd + recovery key

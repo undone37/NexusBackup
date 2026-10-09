@@ -9,6 +9,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod auth;
+pub mod secret;
 pub use rusqlite;
 
 const SCHEMA_V1: &str = r#"

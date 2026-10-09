@@ -63,7 +63,21 @@ async fn main() -> Result<()> {
             cfg.metrics_token.display()
         );
     }
-    let st = AppState::new(cat, token, cfg.downloads.clone());
+    let (totp, created) = catalog::secret::TotpKey::open_or_create(&cfg.totp_key, &cat)
+        .with_context(|| format!("{}", cfg.totp_key.display()))?;
+    if created {
+        cat.audit(
+            "web-api",
+            "secret.key_create",
+            "webapi/totp.key",
+            &serde_json::json!({}),
+        )?;
+    }
+    let st = AppState::with_keys(cat, token, cfg.downloads.clone(), totp, Some(cfg.secrets_pub.clone()));
+    let migrated = web_api::migrate_totp_seeds(&st)?;
+    if migrated > 0 {
+        eprintln!("<5>web-api: encrypted {migrated} legacy TOTP seed(s)");
+    }
     let app = web_api::router(st.clone());
     let acceptor = tls(&cfg)?;
 

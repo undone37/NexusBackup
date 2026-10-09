@@ -1,7 +1,7 @@
 //! Login (argon2id + TOTP via `catalog::auth`), cookie sessions, CSRF, RBAC
 //! context and the login rate limiter.
 
-use crate::{ct_eq, random_hex, sha256_hex, validate, ApiError, ApiResult, St, J};
+use crate::{ct_eq, random_hex, sha256_hex, validate, ApiError, ApiResult, AppState, St, J};
 use axum::extract::{ConnectInfo, FromRequestParts, State};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderValue, Method, StatusCode};
@@ -213,6 +213,142 @@ pub struct LoginReq {
     totp: String,
 }
 
+/// Password, enabled state and TOTP code (the step is not consumed yet).
+/// Blocking (argon2): call from `spawn_blocking`.
+fn check_credentials(
+    st: &AppState,
+    u: &User,
+    hash: &str,
+    stored_seed: &str,
+    last_step: i64,
+    password: &str,
+    totp: &str,
+) -> Result<i64, &'static str> {
+    if password.len() > 1024 {
+        return Err("password too long");
+    }
+    if !catalog::auth::verify_password(password, hash) {
+        return Err("password");
+    }
+    if u.disabled {
+        return Err("disabled");
+    }
+    let seed = st.totp.decrypt(&u.name, stored_seed).map_err(|e| {
+        eprintln!("<3>web-api: {e:#}");
+        "totp seed undecryptable"
+    })?;
+    match catalog::auth::totp_step(&seed, totp) {
+        None => Err("totp"),
+        Some(s) if (s as i64) <= last_step => Err("totp replay"),
+        Some(s) => Ok(s as i64),
+    }
+}
+
+/// Consumes the TOTP step atomically: a concurrent use of the same code loses.
+fn consume_step(st: &AppState, user_id: i64, step: i64) -> ApiResult<bool> {
+    Ok(st.cat.conn().execute(
+        "UPDATE users SET totp_last_step = ?1 WHERE id = ?2 AND totp_last_step < ?1",
+        params![step, user_id],
+    )? == 1)
+}
+
+/// Counts a failed login / re-authentication (per user and per IP), audits it
+/// and the lockouts it triggers.
+fn record_failure(
+    st: &AppState,
+    (actor, action, target): (&str, &str, &str),
+    (ukey, ikey, ip): (&str, &str, &str),
+    details: serde_json::Value,
+) -> ApiResult<()> {
+    let now = catalog::now();
+    st.failed_logins.fetch_add(1, Ordering::Relaxed);
+    let (lock_user, lock_ip) = {
+        let mut l = st.limiter.lock().unwrap();
+        (l.fail(ukey, now), l.fail(ikey, now))
+    };
+    st.audit(actor, action, target, details)?;
+    if lock_user {
+        st.audit(
+            "web-api",
+            "auth.lockout",
+            target,
+            json!({"ip": ip, "until": now + LOCKOUT_SECS}),
+        )?;
+    }
+    if lock_ip {
+        st.audit(
+            "web-api",
+            "auth.lockout",
+            &format!("ip/{ip}"),
+            json!({"until": now + LOCKOUT_SECS}),
+        )?;
+    }
+    Ok(())
+}
+
+fn locked_out(st: &AppState, ukey: &str, ikey: &str) -> bool {
+    let (l, now) = (st.limiter.lock().unwrap(), catalog::now());
+    l.locked(ukey, now) || l.locked(ikey, now)
+}
+
+/// Re-authentication of the acting user (security review M-5): changing a
+/// password or TOTP secret (own or another user's) needs the actor's current
+/// password and a fresh TOTP code. Same checks as login: replayed codes are
+/// refused, failures count toward the login rate limiter and are audited
+/// (`auth.reauth_failed`). Answers 403 (not 401: the session stays valid).
+pub async fn reauth(
+    st: &St,
+    ctx: &Ctx,
+    ip: &str,
+    password: Option<String>,
+    totp: Option<String>,
+    purpose: &str,
+) -> ApiResult<()> {
+    let (Some(password), Some(totp)) = (password, totp) else {
+        return Err(ApiError::bad(
+            "current_password and current_totp are required to change a password or authenticator",
+        ));
+    };
+    let (ukey, ikey) = (format!("user:{}", ctx.name()), format!("ip:{ip}"));
+    if locked_out(st, &ukey, &ikey) {
+        st.failed_logins.fetch_add(1, Ordering::Relaxed);
+        return Err(ApiError(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many failed authentication attempts, try again later".into(),
+        ));
+    }
+    let (hash, seed, last_step): (String, String, i64) = st.cat.conn().query_row(
+        "SELECT password_hash, totp_secret, totp_last_step FROM users WHERE id = ?1",
+        [ctx.user.id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    let (st2, u) = (st.clone(), ctx.user.clone());
+    let mut verdict =
+        tokio::task::spawn_blocking(move || check_credentials(&st2, &u, &hash, &seed, last_step, &password, &totp))
+            .await
+            .map_err(|e| anyhow::anyhow!("reauth task: {e}"))?;
+    if let Ok(step) = verdict {
+        if !consume_step(st, ctx.user.id, step)? {
+            verdict = Err("totp replay");
+        }
+    }
+    if let Err(reason) = verdict {
+        let target = format!("user/{}", ctx.name());
+        record_failure(
+            st,
+            (ctx.name(), "auth.reauth_failed", &target),
+            (&ukey, &ikey, ip),
+            json!({"ip": ip, "reason": reason, "for": purpose}),
+        )?;
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "re-authentication failed: wrong current password or TOTP code".into(),
+        ));
+    }
+    st.limiter.lock().unwrap().clear(&ukey);
+    Ok(())
+}
+
 fn dummy_hash() -> &'static str {
     static H: OnceLock<String> = OnceLock::new();
     H.get_or_init(|| catalog::auth::hash_password(&random_hex()).expect("argon2"))
@@ -259,42 +395,22 @@ pub async fn login(State(st): State<St>, ClientIp(ip): ClientIp, J(r): J<LoginRe
     } else {
         None
     };
-    let (password, totp) = (r.password, r.totp);
-    let (user, mut verdict) = tokio::task::spawn_blocking(move || {
-        if password.len() > 1024 {
-            return (None, Err("password too long"));
+    let (password, totp, st2) = (r.password, r.totp, st.clone());
+    let (user, mut verdict) = tokio::task::spawn_blocking(move || match row {
+        Some((u, hash, secret, last_step)) => {
+            let v = check_credentials(&st2, &u, &hash, &secret, last_step, &password, &totp);
+            (Some(u), v)
         }
-        match row {
-            Some((u, hash, secret, last_step)) => {
-                let v = if !catalog::auth::verify_password(&password, &hash) {
-                    Err("password")
-                } else if u.disabled {
-                    Err("disabled")
-                } else {
-                    match catalog::auth::totp_step(&secret, &totp) {
-                        None => Err("totp"),
-                        Some(s) if (s as i64) <= last_step => Err("totp replay"),
-                        Some(s) => Ok(s as i64),
-                    }
-                };
-                (Some(u), v)
-            }
-            None => {
-                // same cost as a real check: no user enumeration by timing
-                catalog::auth::verify_password(&password, dummy_hash());
-                (None, Err("unknown user"))
-            }
+        None => {
+            // same cost as a real check: no user enumeration by timing
+            catalog::auth::verify_password(&password, dummy_hash());
+            (None, Err("unknown user"))
         }
     })
     .await
     .map_err(|e| anyhow::anyhow!("login task: {e}"))?;
-    // consume the TOTP step atomically: a concurrent login with the same code loses
     if let (Some(u), Ok(step)) = (&user, verdict) {
-        let n = st.cat.conn().execute(
-            "UPDATE users SET totp_last_step = ?1 WHERE id = ?2 AND totp_last_step < ?1",
-            params![step, u.id],
-        )?;
-        if n == 0 {
+        if !consume_step(&st, u.id, step)? {
             verdict = Err("totp replay");
         }
     }
@@ -303,33 +419,12 @@ pub async fn login(State(st): State<St>, ClientIp(ip): ClientIp, J(r): J<LoginRe
     let user = match (user, verdict) {
         (Some(u), Ok(())) => u,
         (_, Err(reason)) => {
-            st.failed_logins.fetch_add(1, Ordering::Relaxed);
-            let (lock_user, lock_ip) = {
-                let mut l = st.limiter.lock().unwrap();
-                (l.fail(&ukey, now), l.fail(&ikey, now))
-            };
-            st.audit(
-                "anonymous",
-                "auth.login_failed",
-                &target,
+            record_failure(
+                &st,
+                ("anonymous", "auth.login_failed", &target),
+                (&ukey, &ikey, &ip),
                 json!({"ip": ip, "reason": reason}),
             )?;
-            if lock_user {
-                st.audit(
-                    "web-api",
-                    "auth.lockout",
-                    &target,
-                    json!({"ip": ip, "until": now + LOCKOUT_SECS}),
-                )?;
-            }
-            if lock_ip {
-                st.audit(
-                    "web-api",
-                    "auth.lockout",
-                    &format!("ip/{ip}"),
-                    json!({"until": now + LOCKOUT_SECS}),
-                )?;
-            }
             return Err(ApiError(
                 StatusCode::UNAUTHORIZED,
                 "invalid name, password or TOTP code".into(),

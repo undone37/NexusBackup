@@ -6,6 +6,7 @@ use axum::extract::ConnectInfo;
 use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::Router;
 use catalog::rusqlite::params;
+use catalog::secret::{source_owner, SchedulerKey, TotpKey};
 use catalog::Catalog;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
@@ -28,6 +29,9 @@ struct T {
     st: Arc<AppState>,
     secrets: HashMap<String, String>,
     ids: HashMap<String, i64>,
+    /// the scheduler's private key (opens what the web-api sealed)
+    sk: SchedulerKey,
+    secrets_pub: std::path::PathBuf,
     _dir: tempfile::TempDir,
 }
 
@@ -56,12 +60,23 @@ impl T {
         }
         let downloads = dir.path().join("downloads");
         std::fs::create_dir(&downloads).unwrap();
-        let st = AppState::new(cat, Some(METRICS_TOKEN.into()), downloads);
+        let sk = SchedulerKey::generate();
+        let secrets_pub = dir.path().join("secrets.pub");
+        sk.write_public(&secrets_pub, None).unwrap();
+        let st = AppState::with_keys(
+            cat,
+            Some(METRICS_TOKEN.into()),
+            downloads,
+            TotpKey::generate(),
+            Some(secrets_pub.clone()),
+        );
         let mut t = T {
             app: web_api::router(st.clone()),
             st,
             secrets: HashMap::new(),
             ids: HashMap::new(),
+            sk,
+            secrets_pub,
             _dir: dir,
         };
         for (n, role, tenant) in [
@@ -79,10 +94,11 @@ impl T {
 
     fn add_user(&mut self, name: &str, role: &str, tenant: Option<&str>) {
         let secret = catalog::auth::new_totp_secret();
+        let enc = self.st.totp.encrypt(name, &secret).unwrap();
         let c = self.st.cat.conn();
         c.execute(
             "INSERT INTO users (name, password_hash, totp_secret, role, tenant, created) VALUES (?1,?2,?3,?4,?5,0)",
-            params![name, pw_hash(), secret, role, tenant],
+            params![name, pw_hash(), enc, role, tenant],
         )
         .unwrap();
         self.ids.insert(name.into(), c.last_insert_rowid());
@@ -159,6 +175,13 @@ impl T {
             .execute("UPDATE users SET totp_last_step = 0 WHERE name = ?1", [name])
             .unwrap();
         catalog::auth::totp_now(&self.secrets[name]).unwrap()
+    }
+
+    /// `body` plus the re-authentication fields of `name` (fresh code).
+    fn reauth(&self, name: &str, mut body: Value) -> Value {
+        body["current_password"] = json!(PW);
+        body["current_totp"] = json!(self.code(name));
+        body
     }
 
     async fn login(&self, name: &str) -> S {
@@ -932,6 +955,8 @@ async fn privileged_user_grants_need_quorum() {
             .conn()
             .query_row("SELECT totp_secret FROM users WHERE id = ?1", [ada], |r| r.get(0))
             .unwrap();
+    assert!(secret.starts_with("enc:v1:"), "TOTP seed stored encrypted");
+    let secret = t.st.totp.decrypt("ada", &secret).unwrap().to_string();
     t.secrets.insert("ada".into(), secret);
     assert_eq!(
         t.try_login("ada", &t.code("ada"), Some("10.1.1.1")).await.status,
@@ -987,7 +1012,7 @@ async fn privileged_user_grants_need_quorum() {
         .put(
             &format!("/api/v1/users/{}", t.ids["sam"]),
             &admin,
-            json!({"reset_totp": true, "password": "a brand new password"}),
+            t.reauth("alice", json!({"reset_totp": true, "password": "a brand new password"})),
         )
         .await;
     assert_eq!(r.status, StatusCode::ACCEPTED);
@@ -997,7 +1022,11 @@ async fn privileged_user_grants_need_quorum() {
     assert!(raw.contains("<redacted>") && !raw.contains("$argon2id$"));
     // a plain operator reset is direct
     let r = t
-        .put(&format!("/api/v1/users/{olga}"), &admin, json!({"reset_totp": true}))
+        .put(
+            &format!("/api/v1/users/{olga}"),
+            &admin,
+            t.reauth("alice", json!({"reset_totp": true})),
+        )
         .await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.body["totp_uri"].is_string());
@@ -1039,10 +1068,14 @@ async fn source_secrets_are_write_only() {
         .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     assert!(!String::from_utf8_lossy(&r.raw).contains("s3cr3t"));
+    // stored sealed to the scheduler; only its private key opens it
     let stored = |t: &T| {
-        t.scalar::<String>(&format!(
-            "SELECT json_extract(config, '$.token_secret') FROM sources WHERE id = {id}"
-        ))
+        let raw = t.scalar::<String>(&format!("SELECT config FROM sources WHERE id = {id}"));
+        assert!(!raw.contains("s3cr3t") && !raw.contains("n3w-token"), "{raw}");
+        let mut v: Value = serde_json::from_str(&raw).unwrap();
+        assert!(v["token_secret"].as_str().unwrap().starts_with("sealed:v1:"));
+        t.sk.open_all(&source_owner(id), &mut v).unwrap();
+        v["token_secret"].as_str().unwrap().to_owned()
     };
     assert_eq!(stored(&t), "s3cr3t-token");
     t.put(
@@ -1754,5 +1787,236 @@ async fn privileged_accounts_are_never_tenant_scoped() {
     assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
     let q = t.get("/api/v1/quorum?state=pending", &admin).await.body;
     assert_eq!(q[0]["params"]["role"], "admin", "the approver sees the resulting role");
+    t.finish();
+}
+
+// ---------------------------------------------------------------- H-2 / M-5
+
+/// Review H-2: the catalog only ever holds the sealed token; GETs and the
+/// audit log never show it; without the scheduler's public key secret writes
+/// are refused with 503 instead of storing plaintext.
+#[tokio::test]
+async fn source_secrets_are_sealed_to_the_scheduler() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let ids = seed(&t, &admin).await;
+    let rows: Vec<(i64, String)> = {
+        let c = t.st.cat.conn();
+        let mut q = c.prepare("SELECT id, config FROM sources").unwrap();
+        let r = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        r.collect::<Result<_, _>>().unwrap()
+    };
+    assert_eq!(rows.len(), 2);
+    for (id, raw) in &rows {
+        assert!(!raw.contains("s3cr3t"), "{raw}");
+        let mut v: Value = serde_json::from_str(raw).unwrap();
+        assert!(v["token_secret"].as_str().unwrap().starts_with("sealed:v1:"));
+        // bound to its source: the other source's id does not open it
+        let other = rows.iter().find(|r| r.0 != *id).unwrap().0;
+        assert!(t.sk.open_all(&source_owner(other), &mut v.clone()).is_err());
+        t.sk.open_all(&source_owner(*id), &mut v).unwrap();
+        assert_eq!(v["token_secret"], "s3cr3t-token");
+    }
+    for path in ["/api/v1/sources", "/api/v1/audit", "/api/v1/tenants"] {
+        let raw = String::from_utf8(t.get(path, &admin).await.raw).unwrap();
+        assert!(!raw.contains("s3cr3t") && !raw.contains("sealed:v1:"), "{path}: {raw}");
+    }
+
+    // no public key published (scheduler never started): 503, nothing written
+    std::fs::remove_file(&t.secrets_pub).unwrap();
+    let before = t.scalar::<String>("SELECT group_concat(config) FROM sources");
+    let r = t
+        .post(
+            "/api/v1/sources",
+            &admin,
+            json!({"tenant": "acme", "kind": "pve", "name": "new", "config": src_cfg(Some("x-token"))}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE, "{:?}", r.body);
+    assert!(r.body["error"].as_str().unwrap().contains("nexus-scheduler"));
+    let url = format!("/api/v1/sources/{}", ids["src_acme"]);
+    let r = t
+        .put(&url, &admin, json!({"name": "pve", "config": src_cfg(Some("x-token"))}))
+        .await;
+    assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE, "{:?}", r.body);
+    assert_eq!(t.scalar::<String>("SELECT group_concat(config) FROM sources"), before);
+    assert_eq!(t.scalar::<i64>("SELECT COUNT(*) FROM sources"), 2);
+    t.finish();
+}
+
+/// Review M-5: password / TOTP changes need the actor's current password and
+/// a fresh TOTP code; failures are audited, count toward the login limiter,
+/// and a code cannot be used twice.
+#[tokio::test]
+async fn credential_changes_need_reauthentication() {
+    let mut t = T::new();
+    t.add_user("olga", "operator", None);
+    let admin = t.login("alice").await;
+    let url = format!("/api/v1/users/{}", t.ids["olga"]);
+    let olga_hash =
+        |t: &T| t.scalar::<String>(&format!("SELECT password_hash FROM users WHERE id = {}", t.ids["olga"]));
+    let before = olga_hash(&t);
+
+    // missing
+    for body in [
+        json!({"password": "a brand new password"}),
+        json!({"reset_totp": true, "current_password": PW}),
+        json!({"reset_totp": true, "current_totp": "123456"}),
+    ] {
+        let r = t.put(&url, &admin, body).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+        assert!(r.body["error"].as_str().unwrap().contains("current_password"));
+    }
+    // wrong password, wrong code
+    let mut wrong_pw = t.reauth("alice", json!({"password": "a brand new password"}));
+    wrong_pw["current_password"] = json!("not the password");
+    assert_eq!(t.put(&url, &admin, wrong_pw).await.status, StatusCode::FORBIDDEN);
+    let code = t.code("alice");
+    let wrong_totp =
+        json!({"password": "a brand new password", "current_password": PW, "current_totp": wrong_code(&code)});
+    assert_eq!(t.put(&url, &admin, wrong_totp).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(olga_hash(&t), before);
+    let reasons: Vec<String> = {
+        let c = t.st.cat.conn();
+        let mut q = c
+            .prepare("SELECT json_extract(details, '$.reason') FROM audit WHERE action = 'auth.reauth_failed' AND actor = 'alice' ORDER BY seq")
+            .unwrap();
+        let r = q.query_map([], |r| r.get(0)).unwrap();
+        r.collect::<Result<_, _>>().unwrap()
+    };
+    assert_eq!(reasons, ["password", "totp"]);
+
+    // correct: applied; the same code a second time is a replay
+    let code = t.code("alice");
+    let ok = json!({"password": "a brand new password", "current_password": PW, "current_totp": code});
+    let r = t.put(&url, &admin, ok.clone()).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_ne!(olga_hash(&t), before);
+    let r = t.put(&url, &admin, ok).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{:?}", r.body);
+    assert_eq!(
+        t.scalar::<String>("SELECT json_extract(details, '$.reason') FROM audit WHERE action = 'auth.reauth_failed' ORDER BY seq DESC LIMIT 1"),
+        "totp replay"
+    );
+    // TOTP reset: new seed stored encrypted for olga
+    let r = t
+        .put(&url, &admin, t.reauth("alice", json!({"reset_totp": true})))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let seed = t.scalar::<String>(&format!("SELECT totp_secret FROM users WHERE id = {}", t.ids["olga"]));
+    assert!(seed.starts_with("enc:v1:"));
+    let uri = r.body["totp_uri"].as_str().unwrap();
+    let plain = t.st.totp.decrypt("olga", &seed).unwrap();
+    assert!(uri.contains(&format!("secret={}", plain.as_str())));
+    // role changes alone need no re-authentication
+    assert_eq!(
+        t.put(&url, &admin, json!({"disabled": true})).await.status,
+        StatusCode::OK
+    );
+
+    // own password: re-authenticated, then the own sessions end
+    let me = format!("/api/v1/users/{}", t.ids["alice"]);
+    let r = t
+        .put(
+            &me,
+            &admin,
+            t.reauth("alice", json!({"password": "another new password"})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(t.get("/api/v1/auth/me", &admin).await.status, StatusCode::UNAUTHORIZED);
+
+    // failures count toward the login limiter (all test requests share one IP:
+    // the 3 failures above + 2 = 5 → lockout)
+    t.add_user("adam", "admin", None);
+    let admin = t.login("adam").await;
+    for _ in 0..2 {
+        let mut b = t.reauth("adam", json!({"reset_totp": true}));
+        b["current_password"] = json!("not the password");
+        assert_eq!(t.put(&url, &admin, b).await.status, StatusCode::FORBIDDEN);
+    }
+    assert!(t.audit_actions().iter().any(|a| a == "auth.lockout"));
+    // locked: even correct credentials are refused, for re-auth and login alike
+    let r = t.put(&url, &admin, t.reauth("adam", json!({"reset_totp": true}))).await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", r.body);
+    assert_eq!(
+        t.try_login("adam", &t.code("adam"), None).await.status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    t.finish();
+}
+
+/// TOTP seeds: encrypted with the web-api key (bound to the user name);
+/// legacy plaintext seeds keep working and are encrypted by the startup
+/// migration (audited), pending quorum params included.
+#[tokio::test]
+async fn totp_seeds_encrypted_and_legacy_migrated() {
+    let mut t = T::new();
+    // legacy rows written before the key existed
+    let legacy = catalog::auth::new_totp_secret();
+    {
+        let c = t.st.cat.conn();
+        c.execute(
+            "INSERT INTO users (name, password_hash, totp_secret, role, created) VALUES ('leg', ?1, ?2, 'operator', 0)",
+            params![pw_hash(), legacy],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO quorum (action, params, requested_by, created, state) VALUES ('user.update', ?1, 'alice', ?2, 'pending')",
+            params![json!({"id": 1, "name": "sam", "totp_secret": legacy}).to_string(), catalog::now()],
+        )
+        .unwrap();
+    }
+    t.secrets.insert("leg".into(), legacy.clone());
+    t.login("leg").await;
+
+    assert_eq!(web_api::migrate_totp_seeds(&t.st).unwrap(), 2);
+    assert_eq!(web_api::migrate_totp_seeds(&t.st).unwrap(), 0, "idempotent");
+    assert_eq!(
+        t.scalar::<i64>("SELECT COUNT(*) FROM users WHERE totp_secret NOT LIKE 'enc:v1:%'"),
+        0
+    );
+    let q = t.scalar::<String>("SELECT params FROM quorum");
+    assert!(!q.contains(&legacy) && q.contains("enc:v1:"));
+    let targets: Vec<String> = {
+        let c = t.st.cat.conn();
+        let mut s = c
+            .prepare("SELECT target FROM audit WHERE action = 'secret.migrate' ORDER BY seq")
+            .unwrap();
+        let r = s.query_map([], |r| r.get(0)).unwrap();
+        r.collect::<Result<_, _>>().unwrap()
+    };
+    assert_eq!(targets, ["user/leg", "quorum/1"]);
+    t.login("leg").await;
+
+    // a seed copied to another user does not decrypt for them
+    t.st.cat
+        .conn()
+        .execute(
+            "UPDATE users SET totp_secret = (SELECT totp_secret FROM users WHERE name = 'leg') WHERE name = 'otto'",
+            [],
+        )
+        .unwrap();
+    t.secrets.insert("otto".into(), legacy);
+    assert_eq!(
+        t.try_login("otto", &t.code("otto"), Some("10.2.2.2")).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // the key file is created only while no seed depends on a lost key
+    let d = tempfile::tempdir().unwrap();
+    let key = d.path().join("webapi/totp.key");
+    assert!(TotpKey::open_or_create(&key, &t.st.cat)
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("restore the key file"));
+    assert!(!key.exists());
+    let empty = Catalog::open_memory().unwrap();
+    let (_, created) = TotpKey::open_or_create(&key, &empty).unwrap();
+    assert!(created);
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(std::fs::metadata(&key).unwrap().permissions().mode() & 0o777, 0o600);
+    assert!(!TotpKey::open_or_create(&key, &t.st.cat).unwrap().1);
     t.finish();
 }

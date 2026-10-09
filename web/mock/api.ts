@@ -549,6 +549,15 @@ on('PUT', '/users/:id', async (c, [id]) => {
   const u = need(c.user, 'admin');
   const x = find(db.users, (y) => y.id === Number(id), 'user');
   const b = c.body;
+  // re-authentication of the acting user for password / authenticator changes
+  if (b.password || b.reset_totp) {
+    if (!b.current_password || !b.current_totp)
+      throw new HttpError(400, 'current_password and current_totp are required to change a password or authenticator');
+    if (b.current_password !== u.password || !/^\d{6}$/.test(String(b.current_totp))) {
+      await audit(u.name, 'auth.reauth_failed', `user/${u.id}`, {});
+      throw new HttpError(403, 're-authentication failed: wrong current password or TOTP code');
+    }
+  }
   const p: Json = { id: x.id, name: x.name };
   if (b.role !== undefined) p.role = b.role;
   if (b.tenant !== undefined) p.tenant = b.tenant || null;
