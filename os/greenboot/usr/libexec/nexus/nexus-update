@@ -360,8 +360,15 @@ def tick(c, now=None):
         if req == "rollback":
             result = rollback(c)
         else:
+            # bootc keeps a download-only staged deployment in runtime state: an
+            # unclean power cut loses it. Re-stage at once instead of waiting a check interval.
+            had = (prev.get("staged") or {}).get("digest")
+            lost = bool(had) and not prev.get("applying") and not summary(bootc_status())["staged"]
+            if lost:
+                log(f"staged update {had} is gone (power loss before apply?); staging again")
             check_due = (
                 req == "stage"
+                or lost
                 or not st["last_check"]
                 or now.timestamp() - st["last_check"] >= float(c["NEXUS_UPDATE_CHECK_HOURS"]) * 3600
             )

@@ -117,7 +117,8 @@ Decisions (user, 2026-10-09): Web UI = TypeScript SPA on the REST API; MFA = TOT
   - nftables egress automation: scheduler writes /run/nexus-nft/allowed.json → `nexus-nft-sync` (crate nftsync, CAP_NET_ADMIN only) applies sets; unconfigured destinations dropped + logged
   - systemd-analyze security: keyd 0.4, web-api 1.3, scheduler 1.6, nft-sync 1.8, setup 1.9
   - A2 VM test passed: signature enforcement switch, unsigned rejected, signed v2 applied (greenboot green), failing v3 rolled back to v2 and not reapplied
-  - open: download-only staged update lost on power cycle; source SSH key management (appliance should generate its key + show pubkey); QEMU own uid; nexus-update/greenboot/bootc unconfined (stock); nftables reload empties sets until next sync (≤ 30 min); /etc/nexus/update.conf 0664
+  - fixed: download-only staged update lost on a power cut → `nexus-update` re-stages on the next tick (test `test_staged_update_lost_on_power_cut_is_staged_again`)
+  - open: source SSH key management (appliance should generate its key + show pubkey); QEMU own uid; nexus-update/greenboot/bootc unconfined (stock); nftables reload empties sets until next sync (≤ 30 min); /etc/nexus/update.conf 0664
 - [ ] H-2 fix (sealed catalog secrets, TOTP seed encryption, re-auth for credential changes) — agent running
 
 ## M6 status

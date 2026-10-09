@@ -189,6 +189,20 @@ class Agent(unittest.TestCase):
         self.assertTrue(s["staged"]["download_only"])
         self.assertIn("staged sha256:bbb", s["last_result"]["result"])
 
+    def test_staged_update_lost_on_power_cut_is_staged_again(self):
+        self.registry_serves("sha256:bbb", "1.1.0")
+        self.tick(utc(2026, 10, 9, 12, 0))
+        self.calls()
+        # power cut: the runtime-only staged deployment is gone, booted is unchanged
+        st = json.loads((self.d / "state.json").read_text())
+        st["status"]["staged"] = None
+        (self.d / "state.json").write_text(json.dumps(st))
+        self.tick(utc(2026, 10, 9, 12, 15))  # check interval (1000 h) not due
+        self.assertEqual(self.calls(), ["bootc upgrade --quiet --download-only"])
+        self.assertEqual(self.status()["staged"]["digest"], "sha256:bbb")
+        self.tick(utc(2026, 10, 9, 12, 30))
+        self.assertEqual(self.calls(), [], "nothing lost any more: no extra fetch")
+
     def test_check_interval(self):
         os.environ["NEXUS_UPDATE_CHECK_HOURS"] = "24"
         self.tick(utc(2026, 10, 9, 12, 0))
