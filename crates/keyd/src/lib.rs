@@ -202,12 +202,26 @@ pub fn import_escrow(dir: &Path, files: &[(String, Vec<u8>)]) -> io::Result<()> 
     Ok(())
 }
 
+/// Below this RLIMIT_MEMLOCK, `MCL_FUTURE` would turn larger allocations (argon2
+/// in nexus-setup needs ~19 MiB) into aborts, so only current pages are locked.
+const MIN_MEMLOCK_FOR_FUTURE: u64 = 64 << 20;
+
 /// umask 077, no core dumps / ptrace by same uid, keys never swapped (best effort).
 pub fn harden_process() {
     unsafe {
         libc::umask(0o077);
         libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
-        if libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) != 0 {
+        let mut lim: libc::rlimit = std::mem::zeroed();
+        let enough = libc::geteuid() == 0
+            || (libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut lim) == 0
+                && (lim.rlim_cur == libc::RLIM_INFINITY || lim.rlim_cur >= MIN_MEMLOCK_FOR_FUTURE));
+        let flags = if enough {
+            libc::MCL_CURRENT | libc::MCL_FUTURE
+        } else {
+            eprintln!("keyd: warning: RLIMIT_MEMLOCK below 64 MiB, locking current pages only; raise LimitMEMLOCK");
+            libc::MCL_CURRENT
+        };
+        if libc::mlockall(flags) != 0 {
             eprintln!(
                 "keyd: warning: mlockall failed ({}), raise LimitMEMLOCK",
                 io::Error::last_os_error()
