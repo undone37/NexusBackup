@@ -48,21 +48,35 @@ EKU and `CN=nexus-appliance:<id>` (optionally pinned). `Hello` must be the first
 ## Backup
 
 - `Prepare`: run pre hooks (if `hooks`), then one snapshot per affected volume:
-  LVM thin (`lvcreate -s -kn`), LVM thick (`lvcreate -s -L <pct of origin>`), mounted
+  LVM thin (`lvcreate -s -kn`), LVM thick (`lvcreate -s -L <pct of origin, whole MiB, ≥ 64 MiB>`;
+  origins that already have snapshots are fine), mounted
   read-only below `/run/nexus-agent/<job>/<n>` in the agent's private mount namespace (XFS
   `nouuid`, retry with `norecovery`; ext3/4 retry with `noload`); ZFS (`zfs snapshot`, read via
   `.zfs/snapshot/`); btrfs (read-only snapshot in `<mountpoint>/.nexus-snapshots/`, skipped by
   the scan). If a volume cannot be snapshotted the agent reads it live and `consistent` is
-  `false` (reason in `hook_log`). A failing pre hook fails `Prepare` (post hooks still run).
+  `false` (reason in `hook_log`, also "no snapshot support for <mountpoint> (<fs> on <dev>)").
+  A failing pre hook fails `Prepare` (post hooks still run).
+- Nested btrfs subvolumes (`btrfs subvolume create` inside a mounted subvolume; not in
+  mountinfo) are volumes of their own, like mount points: a btrfs snapshot does not contain
+  them (they appear as empty directories). A requested path inside one is read from that
+  subvolume's own snapshot; one that is only *below* a requested path is left out with a
+  note in the job log (add it to the paths). Discovery: `btrfs subvolume list -o`, recursive.
 - Every created object is recorded in `snapshots.journal` before creation; release removes
   it, and service start removes leftovers (journal + any LV / ZFS snapshot named
-  `nexus-snap-*`). A connection that closes without `Release` releases its jobs as failed.
+  `nexus-snap-*`; objects that are already gone count as removed). A connection that closes
+  without `Release` releases its jobs as failed. Files kept open for `Want` are closed
+  before the snapshots are released (agent-core), and `lvremove` is retried briefly while
+  udev may still hold the device.
 - Entry paths are host paths without the leading `/` (`etc/passwd`), so several volumes in
   one job never collide. The walk does not descend into other mounts (it keeps the mount
   point directory itself) unless that mount is also requested; excludes are shell globs
   (`*.tmp` on the name, `/var/cache/**` on the full path).
 - Device entries keep their file type bits (`S_IFBLK`/`S_IFCHR`) in `mode`; all other
   entries carry permission bits (`& 0o7777`).
+- xattrs: everything `llistxattr` returns (user, trusted, security incl. SELinux labels and
+  capabilities, `system.posix_acl_*`) except XFS's `trusted.SGI_ACL_FILE/DEFAULT` (the
+  on-disk form of the POSIX ACLs, listed to root; meaningless on other file systems), which
+  is neither backed up nor restored.
 - Fallback (no snapshot): a file whose size/mtime/ctime changed while it was read is
   `inconsistent` (and not put in the metadata cache). Chunk data read during the scan is
   spooled (bounded by `spool_max_bytes`, unlinked file) so `Want` returns exactly the bytes
@@ -107,7 +121,10 @@ See the comments in `crates/agent-linux/dist/nexus-agent.service`: capability bo
 limited to what backup/restore/snapshots need, `PrivateMounts`, `ProtectKernel*`,
 `RestrictNamespaces=mnt`, syscall deny list. Not used, with reasons: `ProtectSystem`,
 `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `RestrictSUIDSGID`, `MemoryDenyWriteExecute`,
-`PrivateIPC`. `systemd-analyze security`: 4.3.
+`PrivateIPC`. `systemd-analyze security`: 4.3. No `User=root` (root is the default): with an
+explicit `User=` and `NoNewPrivileges=yes`, systemd 257 drops `CAP_SETUID` from the
+permitted set and the DB hook examples (`setpriv --reuid=postgres`) fail. `SuccessExitStatus=75`
+next to `RestartForceExitStatus=75`: a self-update restart is not logged as a failure.
 
 ## Tests
 
@@ -131,3 +148,49 @@ sudo NEXUS_TEST_BTRFS=/mnt/b cargo test -p agent-linux btrfs_snapshot -- --ignor
 
 Each writes a marker file, snapshots, changes the file, checks the snapshot still shows
 the old content, releases, and checks that nothing is left in the journal.
+`lab/linux/snapshot-tests.sh <vm>` builds the static test binary
+(`cargo test -p agent-linux --lib --no-run --target x86_64-unknown-linux-musl`; the
+integration tests need SQLite and do not link for musl) and runs these in a lab VM.
+
+## Lab results (2026-10-09, `lab/linux/`, see lab/README.md)
+
+Real distributions from official cloud images, agent 0.1.0 static musl bundle (`install.sh
+--token -`), the dev control plane (keyd, web-api, scheduler, `nexus-agentctl`) on the host,
+one VM at a time (2 vCPU, 1.5–2 GB). Every row: root snapshot tests ok, enrollment, a
+*scheduled* backup, an incremental one, restore to a new path with byte + owner/mode/mtime/
+xattr/ACL/hard-link/file-capability comparison (all entries identical), tar + zip download
+(content, owners, PAX xattrs/ACLs), DB restore from the hook dump, signed self-update
+0.1.0 → 0.1.1 (foreign signature and same version refused), backup after the update.
+Times: job duration (scheduler, s); bytes: transferred chunk bytes.
+
+| VM | Distro / kernel | Volumes (snapshot) | consistent | full: entries, data → transferred, s | incremental: transferred, s | restore s | update s | snapshot tests |
+|---|---|---|---|---|---|---|---|---|
+| deb-lvm | Debian 13, 6.12 cloud | `/` LVM thick ext4 (root on LVM), `/var/lib/postgresql` LVM thick ext4, `/srv/xfs` LVM thin XFS | true | 3331, 280 MB → 127 MB, 17 | 10.0 MB, 2 | 2 | 9 | 3 × ok (0.5–0.6 s) |
+| alma-xfs | AlmaLinux 10.2, 6.12 EL (SELinux enforcing, agent in `unconfined_service_t`, no AVCs) | `/srv/xfs`, `/var/lib/mysql`, `/var/backups` LVM thick XFS | true | 443, 325 MB → 85 MB, 5 | 4.5 MB, 1 | 2 | 8 | 2 × ok (0.4 s) |
+| ubuntu-zfs | Ubuntu 24.04, 6.8 generic | `/home`, `/srv/zfs` ZFS datasets (posixacl, xattr=sa) | true | 464, 191 MB → 57 MB, 3 | 4.2 MB, 0 | 4 | 8 | 2 × ok (0.2 s) |
+| fedora-btrfs | Fedora 44 Cloud, 6.19 (SELinux enforcing) | `/` + `/home` btrfs subvolumes, `/srv/btrfs` nested subvolume | true | 2200, 213 MB → 78 MB, 9 | 5.5 MB, 0 | 2 | 8 | 2 × ok (0.2 s) |
+| deb-plain | Debian 13, 6.12 cloud | `/` ext4 on a partition (no LVM) | false + `backup_inconsistent` alert; a file rewritten during the read counted inconsistent | 1742, 292 MB → 76 MB, 5 | 21.7 MB (incl. the 16 MiB busy file), 1 | 1 | 7 | – (fallback) |
+
+Data includes sparse 64 MiB files and DB dumps; transferred < data because of in-backup
+dedup and zero chunks. Incremental: 4 KiB overwritten in a 24 MiB file, 2 MiB appended, a new
+1 MiB file, a chmod, a delete, plus the hook dump and DB files. Through the **appliance VM
+under SELinux enforcing** (deb-lvm via 10.0.2.2:17441; `nexus-agentctl` in
+`nexus_agentctl_t`, CA files `nexus_agent_ca_t`, 7444 = `nexus_agent_port_t`): enroll,
+scheduled backup (full 7 s, 153 MB transferred), incremental, restore, tar/zip, DB restore,
+signed update with `/usr/share/nexus/agent` (lab: `bootc usr-overlay`) — zero AVCs since boot
+(`lab/appliance/e2e.sh check`), first-boot wizard in `nexus_setup_t`.
+
+Found and fixed in the lab: thick LVM snapshot size not a multiple of 512 (every thick
+snapshot of a 3 GiB root failed → live read); `User=root` + `NoNewPrivileges` dropped
+`CAP_SETUID` (DB hooks failed); the open `Want` file kept the snapshot busy (`lvremove`:
+"contains a filesystem in use", leftover LVs); origins with snapshots (`o` attr) read live
+without a note; journal entries for vanished objects retried forever; XFS
+`trusted.SGI_ACL_*` restored as junk onto other file systems; nested btrfs subvolumes backed
+up as empty directories (silent data loss); `/usr/local/sbin` not in sudo's `secure_path` on
+EL/Fedora (install hints); scheduler started agent jobs before the firewall allowed the new
+agent ("No route to host"); agent backup job result lacked `consistent`/transferred bytes.
+
+Not covered by the lab: root on LVM for EL (Alma's data LVs only), thin-pool exhaustion
+during a backup, ZFS child datasets below a requested path (they are mounts: not included
+unless requested, as documented), very large trees (entry list in memory), certificate
+renewal, agent host/port changes, IPv6, openSUSE (btrfs with snapper's `/.snapshots`).

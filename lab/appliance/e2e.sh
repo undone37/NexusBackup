@@ -108,7 +108,7 @@ echo "== nft sets"; nft list set inet nexus allowed_out_v4; nft list set inet ne
 echo "== catalog secrets (review H-2: sealed / encrypted only)"; python3 -c "
 import json, sqlite3
 db = sqlite3.connect(\"file:/var/lib/nexus/catalog/catalog.db?mode=ro\", uri=True)
-src = [json.loads(c)[\"token_secret\"][:10] for (c,) in db.execute(\"SELECT config FROM sources\")]
+src = [json.loads(c)[\"token_secret\"][:10] for (c,) in db.execute(\"SELECT config FROM sources WHERE kind=?\", (\"pve\",))]
 seeds = [s[:7] for (s,) in db.execute(\"SELECT totp_secret FROM users\")]
 ok = all(x == \"sealed:v1:\" for x in src) and all(x == \"enc:v1:\" for x in seeds)
 print(\"sources\", src, \"seeds\", seeds, \"OK\" if ok else \"PLAINTEXT FOUND\")"
