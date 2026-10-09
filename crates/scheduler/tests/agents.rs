@@ -83,7 +83,7 @@ case "$1" in
           echo 'enrolled {{"agent_id":"'$id'","cert_sha256":"{FP}","appliance_id":"x"}}';;
   backup) if [ -e $D/fail-backup ]; then echo "agent error 500: snapshot failed" >&2; exit 1; fi
           echo 'agent-info {{"agent_id":"'$id'","version":"1.0.1","os":"Debian 13"}}'
-          echo "committed host-$id/5000 in 1s: 3 entries"
+          echo "committed host-$id/5000 in 1.0s: 3 entries, 30 bytes, 0 unchanged files, 2 chunks transferred (30 bytes, 2 new)"
           if [ -e $D/inconsistent ]; then echo "inconsistent host-$id/5000: consistent=false (2 files changed while read without a snapshot)"; fi;;
   restore) echo 'restored {{"target":"/srv","files":2,"dirs":1,"bytes":10,"errors":0}}';;
   update) echo "updating";;
@@ -227,6 +227,8 @@ esac"#,
     assert_eq!(c["job"], b);
     let r: Value = serde_json::from_str(&q::<String>(&db, &format!("SELECT result FROM jobs WHERE id={b}"))).unwrap();
     assert_eq!(r["source"], format!("host-{A}"));
+    assert_eq!(r["consistent"], true);
+    assert_eq!(r["transferred_bytes"], 30);
     let ret: String = q(&db, "SELECT log FROM jobs WHERE kind='retention'");
     assert!(ret.contains(&format!("retention host-{A}")), "{ret}");
     assert_eq!(
@@ -245,6 +247,12 @@ esac"#,
         ),
         1
     );
+    let r: Value = serde_json::from_str(&q::<String>(
+        &db,
+        "SELECT result FROM jobs WHERE kind='backup' ORDER BY id DESC LIMIT 1",
+    ))
+    .unwrap();
+    assert_eq!(r["consistent"], false, "{r}");
     fs::remove_file(p.join("inconsistent")).unwrap();
 
     // failed agent backup: critical alert

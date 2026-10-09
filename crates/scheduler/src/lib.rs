@@ -1038,21 +1038,36 @@ impl Scheduler {
             }
             "backup" => {
                 // `committed <source>/<time>` per guest (nexus-pve backup-all)
+                // nexus-agentctl adds `… chunks transferred (<n> bytes, …)` and an
+                // `inconsistent <source>/<time>: …` line for a backup without a consistent view
                 let snaps: Vec<Value> = log
                     .lines()
                     .filter_map(|l| {
-                        let (s, t) = l
-                            .strip_prefix("committed ")?
-                            .split_whitespace()
-                            .next()?
-                            .rsplit_once('/')?;
-                        Some(json!({"source": s, "time": t.parse::<i64>().ok()?}))
+                        let rest = l.strip_prefix("committed ")?;
+                        let id = rest.split_whitespace().next()?;
+                        let (s, t) = id.rsplit_once('/')?;
+                        let mut v = json!({"source": s, "time": t.parse::<i64>().ok()?});
+                        if s.starts_with("host-") {
+                            let bad = format!("inconsistent {id}:");
+                            v["consistent"] = json!(!log.lines().any(|x| x.starts_with(&bad)));
+                            if let Some(n) = rest
+                                .split_once("chunks transferred (")
+                                .and_then(|(_, x)| x.split_once(" bytes"))
+                                .and_then(|(n, _)| n.parse::<u64>().ok())
+                            {
+                                v["transferred_bytes"] = json!(n);
+                            }
+                        }
+                        Some(v)
                     })
                     .collect();
                 let mut r = json!({ "snapshots": snaps });
                 if let [one] = snaps.as_slice() {
-                    r["source"] = one["source"].clone();
-                    r["time"] = one["time"].clone();
+                    for k in ["source", "time", "consistent", "transferred_bytes"] {
+                        if !one[k].is_null() {
+                            r[k] = one[k].clone();
+                        }
+                    }
                 }
                 Some(r)
             }
