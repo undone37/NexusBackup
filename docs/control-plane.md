@@ -48,7 +48,7 @@ Every mutating API call and every job state change appends one entry (`catalog::
 **Quorum (four-eyes)** — these never execute directly; they create a `quorum` row that a *different* user with role `security_officer` must approve within 72 h: weakening a policy (any GFS value lowered, offsite disabled), deleting a group/source/tenant/policy, deleting snapshots manually, GC deleting > 20 % of chunks (raised by the scheduler), granting `admin`/`security_officer`, disabling a user who is the last admin/security_officer.
 
 ## REST API (`/api/v1`, JSON)
-Auth: `POST /auth/login {name, password, totp}` → `Set-Cookie: nx_session=…; HttpOnly; Secure; SameSite=Strict; Path=/` + body `{csrf, user}`. Every non-GET request needs header `X-CSRF-Token`. `POST /auth/logout`, `GET /auth/me`. Sessions expire after 30 min idle / 12 h absolute. Login rate limit: 5 failures per user or IP per 15 min → 15 min lockout (audited).
+Auth: `POST /auth/login {name, password, totp}` → `Set-Cookie: nx_session=…; HttpOnly; Secure; SameSite=Strict; Path=/` + body `{csrf, user}`. Every non-GET request needs header `X-CSRF-Token`. `POST /auth/logout`, `GET /auth/me` → `{user, csrf}` (lets the SPA recover its CSRF token after a reload; same-origin + SameSite=Strict keeps it from other sites). Sessions expire after 30 min idle / 12 h absolute. Login rate limit: 5 failures per user or IP per 15 min → 15 min lockout (audited).
 
 | Method + path | Role | Notes |
 |---|---|---|
