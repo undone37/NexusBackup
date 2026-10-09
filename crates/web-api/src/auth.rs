@@ -244,13 +244,14 @@ pub async fn login(State(st): State<St>, ClientIp(ip): ClientIp, J(r): J<LoginRe
         st.cat
             .conn()
             .query_row(
-                &format!("SELECT {USER_COLS}, password_hash, totp_secret FROM users WHERE name = ?1"),
+                &format!("SELECT {USER_COLS}, password_hash, totp_secret, totp_last_step FROM users WHERE name = ?1"),
                 [&r.name],
                 |row| {
                     Ok((
                         User::from_row(row, 0)?,
                         row.get::<_, String>(6)?,
                         row.get::<_, String>(7)?,
+                        row.get::<_, i64>(8)?,
                     ))
                 },
             )
@@ -259,20 +260,22 @@ pub async fn login(State(st): State<St>, ClientIp(ip): ClientIp, J(r): J<LoginRe
         None
     };
     let (password, totp) = (r.password, r.totp);
-    let (user, verdict) = tokio::task::spawn_blocking(move || {
+    let (user, mut verdict) = tokio::task::spawn_blocking(move || {
         if password.len() > 1024 {
             return (None, Err("password too long"));
         }
         match row {
-            Some((u, hash, secret)) => {
+            Some((u, hash, secret, last_step)) => {
                 let v = if !catalog::auth::verify_password(&password, &hash) {
                     Err("password")
-                } else if !catalog::auth::totp_check(&secret, &totp) {
-                    Err("totp")
                 } else if u.disabled {
                     Err("disabled")
                 } else {
-                    Ok(())
+                    match catalog::auth::totp_step(&secret, &totp) {
+                        None => Err("totp"),
+                        Some(s) if (s as i64) <= last_step => Err("totp replay"),
+                        Some(s) => Ok(s as i64),
+                    }
                 };
                 (Some(u), v)
             }
@@ -285,6 +288,17 @@ pub async fn login(State(st): State<St>, ClientIp(ip): ClientIp, J(r): J<LoginRe
     })
     .await
     .map_err(|e| anyhow::anyhow!("login task: {e}"))?;
+    // consume the TOTP step atomically: a concurrent login with the same code loses
+    if let (Some(u), Ok(step)) = (&user, verdict) {
+        let n = st.cat.conn().execute(
+            "UPDATE users SET totp_last_step = ?1 WHERE id = ?2 AND totp_last_step < ?1",
+            params![step, u.id],
+        )?;
+        if n == 0 {
+            verdict = Err("totp replay");
+        }
+    }
+    let verdict = verdict.map(|_| ());
 
     let user = match (user, verdict) {
         (Some(u), Ok(())) => u,
