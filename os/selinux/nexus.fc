@@ -7,6 +7,7 @@
 /usr/libexec/nexus/nexus-pve		--	gen_context(system_u:object_r:nexus_pve_exec_t,s0)
 /usr/libexec/nexus/nexus-offsite	--	gen_context(system_u:object_r:nexus_offsite_exec_t,s0)
 /usr/libexec/nexus/nexus-agentctl	--	gen_context(system_u:object_r:nexus_agentctl_exec_t,s0)
+/usr/libexec/nexus/nexus-truenas	--	gen_context(system_u:object_r:nexus_truenas_exec_t,s0)
 /usr/libexec/nexus/nexus-setup		--	gen_context(system_u:object_r:nexus_setup_exec_t,s0)
 /usr/libexec/nexus/nexus-nft-sync	--	gen_context(system_u:object_r:nexus_nftsync_exec_t,s0)
 

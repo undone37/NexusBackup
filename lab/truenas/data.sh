@@ -10,6 +10,8 @@ set -euo pipefail
 S="sudo -n"
 case "${1:-}" in
 init)
+  # a fresh start: no connector snapshots left from earlier runs
+  for s in $(zfs list -H -t snapshot -o name -r tank | grep '@nexus-' || true); do $S zfs destroy "$s"; done
   for ds in data data/projects smb other; do
     $S find "/mnt/tank/$ds" -mindepth 1 -maxdepth 1 ! -name projects -exec rm -rf {} +
   done

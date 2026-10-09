@@ -11,8 +11,9 @@ policy_module(nexus, 1.0.0)
 #               ├─ nexus_pve_exec_t ──> nexus_pve_t        PVE API + ssh (runs /usr/bin/ssh in-domain)
 #               │    └─ qemu_exec_t ──> nexus_restorevm_t  restore micro-VM: /dev/kvm, its two sockets
 #               ├─ nexus_offsite_exec_t > nexus_offsite_t  SFTP boxes, stores
-#               └─ nexus_agentctl_exec_t > nexus_agentctl_t  Linux/Windows agents (TCP 7444, mTLS),
-#                                                          stores, agent CA (only this domain)
+#               ├─ nexus_agentctl_exec_t > nexus_agentctl_t  Linux/Windows agents (TCP 7444, mTLS),
+#               │                                          stores, agent CA (only this domain)
+#               └─ nexus_truenas_exec_t > nexus_truenas_t  TrueNAS API (wss 443) + ssh (in-domain), stores
 #   init_t ── nexus_setup_exec_t ─────> nexus_setup_t      first boot (root): nmcli/hostnamectl/systemctl
 #   init_t ── nexus_nftsync_exec_t ───> nexus_nftsync_t    root oneshot ── iptables_exec_t ──> iptables_t
 #
@@ -63,6 +64,7 @@ nexus_daemon(nftsync)
 nexus_job(pve)
 nexus_job(offsite)
 nexus_job(agentctl)
+nexus_job(truenas)
 
 # restore micro-VM (EL's qemu-kvm, entered from nexus_pve_t only)
 type nexus_restorevm_t, nexus_domain;
@@ -244,6 +246,7 @@ auth_read_passwd(nexus_scheduler_t)
 domtrans_pattern(nexus_scheduler_t, nexus_pve_exec_t, nexus_pve_t)
 domtrans_pattern(nexus_scheduler_t, nexus_offsite_exec_t, nexus_offsite_t)
 domtrans_pattern(nexus_scheduler_t, nexus_agentctl_exec_t, nexus_agentctl_t)
+domtrans_pattern(nexus_scheduler_t, nexus_truenas_exec_t, nexus_truenas_t)
 # the scheduler runs with NoNewPrivileges, inherited by its jobs
 allow nexus_scheduler_t nexus_job_domain:process2 { nnp_transition nosuid_transition };
 allow nexus_scheduler_t nexus_job_domain:process { sigkill signal };
@@ -452,3 +455,24 @@ manage_files_pattern(nexus_agentctl_t, nexus_downloads_t, nexus_downloads_t)
 allow nexus_agentctl_t nexus_downloads_t:dir rw_dir_perms;
 # signed agent binaries for agent_update (/usr/share/nexus/agent)
 files_read_usr_files(nexus_agentctl_t)
+
+########################################
+# nexus-truenas (crate truenas, docs/truenas-connector.md): TrueNAS JSON-RPC API over
+# wss (certificate pinned from the job dir), /usr/bin/ssh to the restricted user's
+# forced command (key + pinned host key from the job dir), tree snapshots in the
+# tenant store (job domain rules: job dir, store, keyd), file downloads. No catalog.
+
+# API on 443 (http_port_t) or another configured port; SSH on 22 or unreserved (NAT)
+corenet_tcp_connect_http_port(nexus_truenas_t)
+corenet_tcp_connect_ssh_port(nexus_truenas_t)
+corenet_tcp_connect_all_unreserved_ports(nexus_truenas_t)
+# /usr/bin/ssh runs in this domain (no transition to the user-oriented ssh_t)
+can_exec(nexus_truenas_t, ssh_exec_t)
+corecmd_search_bin(nexus_truenas_t)
+# ssh: system crypto policy and ssh_config under /etc
+files_read_etc_files(nexus_truenas_t)
+# ssh looks for ~/.ssh of a user whose home is / ; nothing to find
+files_dontaudit_search_home(nexus_truenas_t)
+# files get: tar/zip downloads for the web-api
+manage_files_pattern(nexus_truenas_t, nexus_downloads_t, nexus_downloads_t)
+allow nexus_truenas_t nexus_downloads_t:dir rw_dir_perms;
