@@ -202,6 +202,15 @@ pub fn import_escrow(dir: &Path, files: &[(String, Vec<u8>)]) -> io::Result<()> 
     Ok(())
 }
 
+/// For every process that holds tenant DEKs (scheduler, nexus-pve,
+/// nexus-offsite): no core dumps and no ptrace / `/proc/<pid>/mem` access by
+/// other processes of the same uid (e.g. a restore-VM QEMU after an escape).
+pub fn deny_dumps() {
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+    }
+}
+
 /// Below this RLIMIT_MEMLOCK, `MCL_FUTURE` would turn larger allocations (argon2
 /// in nexus-setup needs ~19 MiB) into aborts, so only current pages are locked.
 const MIN_MEMLOCK_FOR_FUTURE: u64 = 64 << 20;

@@ -98,6 +98,7 @@ fn escrow_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>> {
 }
 
 fn main() -> Result<()> {
+    keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
         bail!("usage: nexus-offsite <config.json> upload | retention | gc | verify [packs] | check | list | restore <source> <time> | dr <keyd-dir>");
