@@ -1,52 +1,171 @@
-# NexusBackup appliance OS image (Phase 0 skeleton)
+# NexusBackup appliance OS image
 
 bootc image on `quay.io/almalinuxorg/almalinux-bootc:10` (AlmaLinux 10.2). Note that
 `quay.io/almalinux/almalinux-bootc` does not exist (the registry returns unauthorized);
-the official image lives under `almalinuxorg`. See plan.md §4.2 and §12.
+the official image lives under `almalinuxorg`. See plan.md §4.2 and §12, signed updates and
+rollback in docs/release.md.
 
 ## Build
 
 ```sh
-podman build -t nexus-os:dev os/
+podman build -f os/Containerfile -t localhost/nexus-os:dev .     # context = repository root
 ```
 
-The build fails if the SELinux module does not compile or install, if the file contexts
-do not resolve, if `chrony.conf` does not parse, if sshd is still enabled, or if
-`bootc container lint` fails.
+One multi-stage build, no host toolchain needed:
+
+| Stage | Base | Output |
+|---|---|---|
+| `web` | `node:22-trixie-slim` | `npm ci --ignore-scripts && npm run build` → `web/dist` |
+| `rust` | the bootc base (glibc of the target) + rustup `RUST_VERSION` (1.93.0) | `cargo build --release --locked` of keyd, nexus-pve, nexus-offsite, nexus-web-api (SPA embedded), nexus-scheduler, nexus-setup, nexus-nft-sync; static musl restore agent. Registry and target dir are podman cache mounts (`--build-arg JOBS=n` limits rustc jobs) |
+| `restorevm` | `debian:trixie` | the `restore-vm/Containerfile` steps (keep in sync; shares its layer cache) + `mkinitrd.sh` → `vmlinuz`, `initrd.img`, `manifest.txt` |
+| `selinux` | the bootc base + `selinux-policy-devel` | `nexus.pp` |
+| final | the bootc base | see below; ends with `bootc container lint` |
+
+Measured on the dev machine (16 threads, `JOBS=6`): first build 4 min 12 s (Debian
+builder layers already cached; a fully cold build adds the ~3 min ZFS DKMS compile),
+image 1.83 GB (base 1.49 GB; + qemu-kvm-core, audit, greenboot, binaries 40 MB, restore
+VM 24 MB). After a source change only the Rust stage reruns (~1–2 min with the cache
+mounts).
+
+The build fails if the SELinux module does not compile, install or resolve its file
+contexts, if `qemu-kvm` lacks the `nbd` block driver, if `chrony.conf` does not parse,
+if sshd or keyd/web-api/scheduler are enabled, if the containers signature policy is
+not valid JSON, or if `bootc container lint` fails.
 
 ## What is in the image
 
-| File | Installed as | Purpose |
+| Source | Installed as | Purpose |
 |---|---|---|
-| `Containerfile` | — | Two stages: `selinux-build` compiles `nexus.pp` with `selinux-policy-devel`; that tooling stays out of the final image |
-| `selinux/nexus.{te,fc}` | module `nexus` | Domains `nexus_chunkstore_t`, `nexus_keyd_t`, `nexus_webapi_t`, each with its own exec, `var_lib` and `var_run` types. Only `nexus_keyd_t` gets `tpm_device_t` (enforced by a `neverallow`). chunkstore may connect to the keyd socket. web-api may bind `http_port_t` (8443 already has that type) |
-| `sysusers.d/nexus.conf` | `/usr/lib/sysusers.d/` | Static users `nexus-keyd`, `nexus-chunkstore`, `nexus-webapi`. chunkstore is in group `nexus-keyd` so it can reach the keyd socket. keyd is in `tss` so it can open `/dev/tpmrm0`. Group `nexus-catalog` (webapi, chunkstore = scheduler) owns the catalog DB |
-| `systemd/nexus-*.service` | `/usr/lib/systemd/system/` | Sandboxed units, installed but **not enabled** until the binaries in `/usr/libexec/nexus/` ship |
-| `systemd/nexus-setup.service` | `/usr/lib/systemd/system/` | First-boot wizard on tty1 (see below). Enabled by the preset; inert until `/usr/libexec/nexus/nexus-setup` exists and once `/var/lib/nexus/setup-done` exists |
-| `systemd/10-nexus.preset` | `/usr/lib/systemd/system-preset/` | sshd disabled, nftables and chronyd enabled. This also holds for the first-boot `preset-all`, which would otherwise re-enable sshd through `90-default.preset` |
-| `nftables.conf` | `/etc/sysconfig/nftables.conf` | Default-deny in and out. Inbound: only 8443/tcp, loopback, established/related, ND, DHCP replies. Outbound: only the sets `allowed_out_v4/v6` (addr . proto . port), `dns_servers_*`, `nts_servers_*`. All sets are empty, and the control plane fills them at runtime |
-| `chrony.conf` | `/etc/chrony.conf` | NTS only (`authselectmode require`, `minsources 2`), no NTP server port, no UDP command port |
+| `rust` stage | `/usr/libexec/nexus/{keyd,nexus-pve,nexus-offsite,nexus-web-api,nexus-scheduler,nexus-setup,nexus-nft-sync}` | the services and the CLIs the scheduler spawns (names = cargo binary names, used by the units and the scheduler defaults) |
+| `restorevm` stage | `/usr/lib/nexus/restore-vm/{vmlinuz,initrd.img,manifest.txt}` | restore micro-VM (default `image_dir` of `pve::restorevm`) |
+| `qemu-kvm-core` | `/usr/libexec/qemu-kvm` | runs the micro-VM (`NEXUS_QEMU` in the scheduler unit) |
+| `audit` | auditd | AVC denials and security events in `/var/log/audit` (`ausearch -m avc`) |
+| `greenboot` | greenboot units | health-gated rollback (docs/release.md) |
+| `sysusers.d/nexus.conf` | `/usr/lib/sysusers.d/` | users `nexus-keyd`, `nexus-chunkstore` (scheduler and its jobs), `nexus-webapi`; groups `nexus-keyd` (keyd socket), `nexus-catalog` (catalog, downloads, update control); `nexus-chunkstore` ∈ `nexus-keyd`, `nexus-catalog`, `kvm` |
+| `tmpfiles.d/nexus.conf` | `/usr/lib/tmpfiles.d/` | state dirs with owner/mode: catalog 2770 root:nexus-catalog, downloads 2750 nexus-chunkstore:nexus-catalog, keyd 0700 nexus-keyd, chunkstore/offsite/escrow/scheduler 0700 nexus-chunkstore (one 0700 store per tenant below chunkstore, created by the scheduler), `/etc/nexus/ssh` 0750 root:nexus-chunkstore, `/run/nexus-nft` |
+| `systemd/*.service,.path,.timer` | `/usr/lib/systemd/system/` | see "Units" |
+| `systemd/10-nexus.preset` | `/usr/lib/systemd/system-preset/` | sshd off; nftables, chronyd, nexus-setup, nexus-nft-sync.{service,path,timer} on; keyd/web-api/scheduler off (nexus-setup enables them) |
+| `nftables.conf` | `/etc/sysconfig/nftables.conf` | default deny in and out, allow-list sets (see "Firewall") |
+| `etc/` | `/etc/` | `chrony.conf` (NTS only) and the update/signing files (containers policy, cosign key, update.conf, greenboot.conf, presets, tmpfiles for `/var/lib/nexus/update`) |
+| `greenboot/usr/` | `/usr/` | `nexus-update` agent, `nexus-health` check and their units (`greenboot/tests/` stays out) |
+| `selinux/nexus.{te,fc}` | module `nexus` | see "SELinux" |
 
 The root account is locked (`usermod -L`). Emergency access is through the local console only.
+`bootc install` is not given an SSH key.
 
-### Unit hardening (`systemd-analyze security --offline=true`, systemd 257 in the image)
+## Units
 
-| Unit | Exposure | Notes |
+| Unit | User | Domain | Notes |
+|---|---|---|---|
+| `nexus-keyd.service` | nexus-keyd | `nexus_keyd_t` | socket `/run/nexus-keyd/keyd.sock` (dir 0750, group nexus-keyd), `PrivateNetwork`, no devices (TPM deferred) |
+| `nexus-web-api.service` | nexus-webapi (+nexus-catalog) | `nexus_webapi_t` | `Type=notify`, binds only tcp:8443, catalog rw, downloads read, update control rw |
+| `nexus-scheduler.service` | nexus-chunkstore (+nexus-catalog, nexus-keyd, kvm) | `nexus_scheduler_t` | spawns `nexus-pve` (`nexus_pve_t`) and `nexus-offsite` (`nexus_offsite_t`); nexus-pve spawns QEMU (`nexus_restorevm_t`); `DeviceAllow=/dev/kvm`; writes the firewall allow-list |
+| `nexus-setup.service` | root | `nexus_setup_t` | first boot on tty1; capabilities CHOWN, FOWNER, DAC_OVERRIDE only |
+| `nexus-nft-sync.{service,path,timer}` | root | `nexus_nftsync_t` → `iptables_t` | CAP_NET_ADMIN only; see "Firewall" |
+
+### Hardening scores (`systemd-analyze security`, in the booted VM, systemd 257)
+
+| Unit | Exposure | What is left |
 |---|---|---|
-| `nexus-chunkstore.service` | **0.4 SAFE** | `PrivateNetwork`, AF_UNIX only, `PrivateDevices` |
-| `nexus-keyd.service` | **0.6 SAFE** | `PrivateNetwork`, AF_UNIX only, `DevicePolicy=closed` + `DeviceAllow=/dev/tpmrm0 rw`, `SupplementaryGroups=tss` |
-| `nexus-web-api.service` | **1.1 OK** | Needs AF_INET/AF_INET6. `SocketBindAllow=tcp:8443` only, `PrivateUsers=yes` |
-| `nexus-scheduler.service` | **1.7 OK** | Spawns `nexus-pve`/`nexus-offsite` (PVE API/SSH, SFTP, webhook/SMTP: AF_INET/AF_INET6). File restore runs QEMU, so `DeviceAllow=/dev/kvm`, no `MemoryDenyWriteExecute` and no `~@privileged @resources`. Replaces the former `nexus-pve-backup` and `nexus-offsite` timers |
+| `nexus-keyd.service` | **0.4 SAFE** | no `RootDirectory`, no `PrivateUsers` (the peer-uid check needs the scheduler's real uid) |
+| `nexus-web-api.service` | **1.3 OK** | AF_INET/AF_INET6 on the host network (listens on 8443), supplementary group nexus-catalog, no `PrivateUsers` (group-shared catalog) |
+| `nexus-scheduler.service` | **1.6 OK** | network (PVE API/SSH, SFTP, webhook/SMTP), `/dev/kvm`, `@chown` (chgrp of downloads/ to nexus-catalog; no CAP_CHOWN), supplementary groups |
+| `nexus-setup.service` | **1.9 OK** | root with CAP_CHOWN/FOWNER/DAC_OVERRIDE (writes into keyd's 0700 dir and chowns to the service users), drives NetworkManager/hostnamed/systemd over D-Bus, owns tty1 |
+| `nexus-nft-sync.service` | **1.8 OK** | root with CAP_NET_ADMIN on the host network namespace (it edits the host firewall), resolves the NTS names |
 
-The first three units use `ProtectSystem=strict`, `NoNewPrivileges`, `PrivateTmp`, an empty
-`CapabilityBoundingSet`, `SystemCallFilter=@system-service ~@privileged @resources` and
-`MemoryDenyWriteExecute`. `systemd-analyze verify` reports only the missing binaries.
-The remaining score comes from not using `RootDirectory` and, for chunkstore and keyd,
-not using `PrivateUsers`. `PrivateUsers` is left off because it would hide the
-supplementary groups (`nexus-keyd`, `tss`) that the socket and TPM access depend on.
+All five units: `NoNewPrivileges`, `ProtectSystem=strict` with explicit `ReadWritePaths`,
+`ProtectHome`, `PrivateTmp`, `PrivateIPC`, `ProtectKernel*`, `ProtectControlGroups`,
+`ProtectProc=invisible` (not setup), `RestrictNamespaces`, `RestrictSUIDSGID`,
+`LockPersonality`, `MemoryDenyWriteExecute` (also for the scheduler: QEMU under KVM maps
+no W+X memory), `SystemCallFilter=@system-service` minus `@privileged @resources`
+(setup: minus `@resources`), empty or minimal `CapabilityBoundingSet`.
+
+## SELinux (`selinux/nexus.te`, `nexus.fc`)
+
+Enforcing, no permissive domains, no nexus process in an unconfined domain. Each
+process enters its domain only through its own exec type; every transition is
+NNP-safe (`nnp_transition`, because all units set `NoNewPrivileges`):
+
+```
+init_t ─ keyd ──────────> nexus_keyd_t       own state + socket; no network
+init_t ─ nexus-web-api ─> nexus_webapi_t     8443 (http_port_t), catalog, downloads (read), TLS key, update control
+init_t ─ nexus-scheduler > nexus_scheduler_t catalog, stores, escrow, keyd socket, alerts (http/smtp/unreserved ports)
+          ├ nexus-pve ──> nexus_pve_t        PVE API (8006, unreserved) + /usr/bin/ssh in-domain (ssh_port_t), stores, downloads
+          │   └ qemu-kvm > nexus_restorevm_t kernel/initrd, /dev/kvm, its two sockets + console log in nexus-pve's /tmp dir
+          └ nexus-offsite > nexus_offsite_t  SFTP (telnetd_port_t 23, ssh_port_t, unreserved), stores, escrow (read)
+init_t ─ nexus-setup ───> nexus_setup_t      catalog, keyd init, TLS/metrics token, setup-done; D-Bus to NM/hostnamed/systemd;
+                                             enable + start only nexus_unit_file_t units
+init_t ─ nexus-nft-sync > nexus_nftsync_t ─ nft ─> iptables_t (script on a pipe)
+```
+
+Data types are private: `nexus_keyd_var_lib_t` (keys; `neverallow` for everyone but keyd
+and setup), `nexus_catalog_t`, `nexus_downloads_t`, `nexus_store_t`, `nexus_escrow_t`,
+`nexus_webapi_secret_t` (TLS key, metrics token), `nexus_sshkey_t` (`/etc/nexus/ssh`),
+`nexus_scheduler_var_run_t` (job configs with secrets; web-api has a `neverallow` on it
+and on stores, keys and SSH keys), `nexus_nft_var_run_t`, `nexus_update_t`,
+`nexus_restorevm_image_t`. Every rule carries a comment with its reason. Only keyd may
+ever touch `tpm_device_t` (`neverallow`). The OS update agent, greenboot and bootc stay
+in the base policy's domains (bootc/ostree need the unconfined service domain, like the
+stock `bootc-fetch-apply-updates.service`).
+
+AVC iterations (lab VM, see below): (1) first boot: every `NoNewPrivileges` unit needs
+`nnp_transition` into its domain (setup and nft-sync ran in `init_t` and failed); (2) all
+nexus domains permissive for one complete run (setup, backup VM 100 + CT 200, retention,
+offsite to the SFTP testbox, file restore of CT and VM via the micro-VM, verify, quorum,
+audit) to collect every denial at once: userdbd lookups and the setup lock file (setup),
+self-connect to its own NBD socket and the restore-VM image dir (nexus-pve), `map` of
+the initramfs (QEMU); (3) the same flow enforcing: no denials; (4) fresh image, fresh
+disk, the whole flow enforcing from the first boot: no denials.
+
+## Firewall (`nftables.conf`, `nexus-nft-sync`)
+
+Inbound: only 8443/tcp, loopback, established/related, ND, DHCP replies. Outbound:
+default deny with `reject` (logged as `nexus-out-drop:`); allowed only to the sets
+`allowed_out_v4/v6` (addr . proto . port), `dns_servers_*` (53) and `nts_servers_*`
+(4460/tcp, 123/udp). The sets are filled at runtime (plan §12.1):
+
+- `nexus-scheduler` writes `/run/nexus-nft/allowed.json` (0644) on each tick when it
+  changes: every configured destination resolved to addresses (per source the PVE API
+  `connect_addr` or host:8006 and every node's SSH endpoint; per tenant the SFTP box,
+  default port 23; webhook URL and SMTP relay from `/etc/nexus/alerts.json`).
+- `nexus-nft-sync.path` (PathChanged on that file and on `/etc/resolv.conf`) and a
+  30 min timer start `nexus-nft-sync` (root, CAP_NET_ADMIN only). It accepts only IP
+  literals, tcp/udp and ports from the file (max 4096 entries; no loopback, multicast or
+  unspecified addresses), adds the resolvers from resolv.conf, resolves the NTS names of
+  `chrony.conf` and the static `host port [proto]` lines of the optional root-owned
+  `/etc/nexus/allowed-hosts`, and applies everything in one `nft -f -` transaction.
+- It removes only elements it added itself (state in `/run/nexus-nft-sync/state.json`,
+  `destroy element`), so the 443/tcp elements that `nexus-update` adds for a registry
+  fetch survive a sync. After a reboot the first run flushes and refills.
+
+Verified in the VM: before the source existed the backup failed with "No route to
+host" (rejected); after the REST config the sets held 10.0.2.2 . tcp . {18006, 10022,
+2223} and backup/offsite ran; `curl https://1.1.1.1` and `10.0.2.2:8006` (not
+configured) were rejected and logged.
 
 To check `nftables.conf` without root, use a container network namespace:
 `podman run --rm --cap-add NET_ADMIN -v $PWD/os/nftables.conf:/n.conf:ro,Z <image> nft -c -f /n.conf`.
+
+## Lab VM (`lab/appliance/`, no root on the host)
+
+bootc-image-builder and `bootc install --via-loopback` need loop devices and mounts,
+i.e. root. `build-disk.sh` instead boots an installer VM under unprivileged QEMU/KVM
+(the plain bootc base image as an ext4 root made with `mke2fs -d <tarball>`, with its
+own kernel + initramfs) and runs `podman run --privileged … bootc install to-disk`
+there, as root inside the VM, onto a virtio disk; the image arrives as an oci-archive
+on a second ext4 disk. About 2 min, 1.7 GB qcow2.
+
+```sh
+lab/appliance/e2e.sh all   # image, disk, boot, setup, api (lab/e2e/m5-api.sh), check
+```
+
+`Containerfile.lab` adds only a root autologin on ttyS0 for `con.py` (drives the serial
+console); never ship it. `run.sh` boots with BIOS, serial console on a unix socket,
+8443 forwarded to 127.0.0.1:28443, optional `TPM=1` (swtpm). From the VM the host is
+10.0.2.2 (nested PVE 18006/10022, SFTP testbox 2223). The first boot runs the real
+`nexus-setup.service` (a runtime drop-in switches it to `--script` with the answers in
+`/etc/nexus/lab-answers.json`, deleted afterwards): DHCP via nmcli, hostname, accounts,
+keyd init, TLS, `systemctl enable --now` of the services.
 
 ## First boot (`nexus-setup`, crate `crates/setup`)
 
@@ -103,12 +222,42 @@ stdout (the caller's pipe, which is the only way it can be recorded) and answers
 group challenge itself. Keep answer files on tmpfs, since they contain passwords and
 TOTP secrets.
 
+## Signed update + rollback in the VM (`lab/appliance/update-lab.sh`)
+
+docs/release.md "Lab test procedure", run on 2026-10-09 with registry:2 on
+127.0.0.1:5055, `R=nexus-lab-registry:5055/nexusbackup/appliance`, the TEST cosign key,
+images from `Containerfile.update-lab` (lab layer: autologin, insecure lab registry,
+`/etc/nexus/allowed-hosts` = `10.0.2.2 5055` so nexus-nft-sync opens the registry,
+`NEXUS_UPDATE_EGRESS=none`):
+
+1. v1 (0.0.1) signed + promoted, installed (origin `$R:stable`): `bootc status`
+   signature none; `nexus-update stage` → "switching origin … (signature enforced)",
+   spec signature `containerPolicy`.
+2. Unsigned v2 pushed to `:stable` (skopeo, no signature): `nexus-update stage` →
+   "A signature was required, but no signature exists", nothing staged.
+3. v2 signed + promoted: `echo stage > /var/lib/nexus/update/request` → staged, download-only.
+   ACPI power cycle → still v1, **but the staged deployment was gone** (status `staged: null`,
+   `apply` → "nothing staged"; only `UpdateVersion` remained); see open items. Staged again,
+   `echo apply > …/request` → rebooted into v2, `greenboot-healthcheck` green,
+   `boot_success=1`.
+4. v3 = v2 + `/usr/lib/greenboot/check/required.d/00-fail.sh` (exit 1), signed + promoted,
+   staged + applied → red boots, greenboot rolled back → v2 booted (rollback = v3, green);
+   next tick: "update … did not stick … not applying it again", `failed_digests` = [v3].
+
+Not run (time): maintenance window/inhibit, downgrade guard. Findings: the
+registries.conf location remap (`prefix` → `location = "10.0.2.2:5055"`) pulls the image
+but finds no sigstore attachment, so the lab resolves the registry name through
+`/etc/hosts` instead (`update-lab.sh vm-prep`).
+
 ## Deferred (and why)
 
-- **LUKS2 + TPM2 enrolment (§12.2):** this needs the real disk layout (system mirror, metadata NVMe, data RAID). It also needs measured-boot PCR policy from a signed image and Secure Boot. It belongs in first boot / disk initialization, not in the image.
-- **A/B update channel with health-gated rollback:** bootc already provides the A/B deployments (`bootc upgrade` / `rollback`). The health checks (greenboot-style) need running services to check, and the update channel needs a registry plus CI.
-- **Image signing:** this needs CI and key management (cosign/sigstore policy in `/etc/containers/policy.json`). Signing a local dev build proves nothing.
-- **First-boot disk initialization (§12.5):** the wizard (above) covers network, accounts and MFA, keys, TLS and the metrics token. Data-disk setup (RAID/LUKS2/TPM enrolment) still waits for the real disk layout (see LUKS2 below).
-- **Filling the nftables sets and enabling the nexus units:** this is done by the control plane and by the service binaries once they exist.
-- **SELinux rule completeness:** the policy has only the rules known to be needed. It still has to be refined under enforcing mode against the real binaries (AVC review, no broad allows).
-- **Restore micro-VM (single-file restore from VM images, `restore-vm/`):** the image needs `qemu-kvm` (EL: `/usr/libexec/qemu-kvm`, set `NEXUS_QEMU`; check that its block layer still has the `nbd` driver and seccomp `-sandbox` support) and the `restore-vm/build.sh` output (`vmlinuz`, `initrd.img`) under `/usr/lib/nexus/restore-vm/` (`NEXUS_RESTORE_VM_DIR`). QEMU should run as its own service user in its own SELinux domain (e.g. `svirt_t`-like, sockets in a private directory, `/dev/kvm` only), not in the domain of the restore service.
+- **LUKS2 + TPM2 enrolment (§12.2):** deferred together with TPM (user decision); needs the real disk layout and a measured-boot PCR policy. keyd's unit and policy keep the TPM hooks as comments.
+- **SSH key management for sources:** in the lab the PVE node key and known_hosts are placed in `/etc/nexus/ssh` (0600 nexus-chunkstore) by hand; the appliance should generate its own key pair and show the public key in the UI.
+- **First-boot disk initialization (§12.5):** waits for the real disk layout.
+- **Instant recovery under enforcing** was not exercised in the VM (optional in this phase); `ir-serve` uses the same ssh/NBD paths as restore.
+- **Download-only staging across a power cycle** (A2, nexus-update): the staged
+  download-only deployment did not survive an ACPI power-off/boot in the lab (bootc 1.16.4).
+- **bootc's SELinux probe** (`chcon … invalid_bootcinstall_testlabel_t` in
+  `unconfined_service_t`, `mac_admin` denied) shows up in `ausearch` on every
+  nexus-update/bootc run; harmless, not a nexus domain.
+- **nftables reload:** `systemctl reload nftables` empties the sets until the next nft-sync trigger (timer ≤ 30 min or any config change).

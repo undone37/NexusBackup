@@ -92,9 +92,9 @@ api() {
 }
 
 check() {
-	con run 'getenforce; echo "== domains"; ps -eZ -o label,user,pid,comm | grep -E "nexus|keyd|qemu" | grep -v grep
-echo "== permissive domains"; semodule -lfull | grep -i permissive; semanage permissive -l 2>/dev/null
-echo "== AVCs since boot"; ausearch -m avc,user_avc,selinux_err -ts boot 2>/dev/null | audit2allow 2>/dev/null || echo none
+	con run 'getenforce; echo "== domains"; ps -e -o label,user,pid,comm | grep -E "nexus|keyd|qemu" | grep -v grep
+echo "== permissive types in the loaded policy (nexus: none expected)"; cd /tmp && semodule -E permissivedomains >/dev/null && grep -c typepermissive permissivedomains.cil; grep nexus permissivedomains.cil; rm -f permissivedomains.cil; semodule -l | grep -i nexus
+echo "== AVCs since boot (ausearch)"; ausearch -m avc,user_avc,selinux_err -ts boot 2>&1 | tail -n 20
 echo "== nft sets"; nft list set inet nexus allowed_out_v4; nft list set inet nexus dns_servers_v4; nft list set inet nexus nts_servers_v4
 echo "== security"; for u in nexus-keyd nexus-web-api nexus-scheduler nexus-setup nexus-nft-sync; do printf "%s " $u; systemd-analyze security $u.service 2>/dev/null | tail -1; done' 300
 }

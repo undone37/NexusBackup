@@ -1,0 +1,19 @@
+# LAB ONLY: update/rollback test images (docs/release.md "Lab test procedure").
+# On top of an appliance image built with --build-arg NEXUS_IMAGE_REPO=$R:
+#  - root autologin on ttyS0 (con.py),
+#  - the lab registry nexus-lab-registry:5055 over plain HTTP (the VM needs
+#    "10.0.2.2 nexus-lab-registry" in /etc/hosts: update-lab.sh vm-prep),
+#  - the firewall opens 10.0.2.2:5055 through /etc/nexus/allowed-hosts (nexus-nft-sync),
+#    so nexus-update needs no egress handling (NEXUS_UPDATE_EGRESS=none),
+#  - FAIL=1 adds a required greenboot check that always fails (rollback test).
+ARG IMAGE
+FROM ${IMAGE}
+COPY autologin.conf /usr/lib/systemd/system/serial-getty@ttyS0.service.d/lab-autologin.conf
+COPY registries-lab.conf /etc/containers/registries.conf.d/50-nexus-lab.conf
+RUN sed -i 's/^NEXUS_UPDATE_EGRESS=.*/NEXUS_UPDATE_EGRESS=none/' /etc/nexus/update.conf \
+ && echo "10.0.2.2 5055 tcp   # lab registry" > /etc/nexus/allowed-hosts
+ARG FAIL=0
+RUN if [ "$FAIL" = 1 ]; then printf '#!/bin/sh\necho "lab: forced health check failure" >&2\nexit 1\n' \
+      > /usr/lib/greenboot/check/required.d/00-fail.sh && chmod 0755 /usr/lib/greenboot/check/required.d/00-fail.sh; fi
+ARG NEXUS_VERSION=0.0.1
+LABEL org.opencontainers.image.version=${NEXUS_VERSION}
