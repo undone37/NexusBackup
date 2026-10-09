@@ -97,9 +97,19 @@ export interface FileEntry {
   link?: string | null;
 }
 
-/** Proposed structured job result (see README "Contract gaps"); not sent by web-api v1. */
+/** Structured job result (`jobs.result`, docs/control-plane.md); null until the job finished ok. */
 export interface JobResult {
-  entries?: FileEntry[];
+  /** files_list: directory entries */
+  entries?: FileEntry[] | number;
+  /** files_get */
+  download_token?: string;
+  format?: 'tar' | 'zip';
+  size?: number;
+  expires?: number;
+  /** backup: committed snapshots (+ source/time when exactly one) */
+  snapshots?: { source: string; time: number }[];
+  source?: string;
+  time?: number;
 }
 
 export interface Job {

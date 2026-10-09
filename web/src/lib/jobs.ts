@@ -24,23 +24,10 @@ export async function runJob(
   }
 }
 
-/**
- * Directory entries of a finished `files_list` job. web-api v1 has no structured
- * result column: `nexus-pve … ls` prints a JSON array into the job log, possibly
- * surrounded by progress lines, so the array is cut out of the log.
- */
+/** Directory entries of a finished `files_list` job (structured `job.result`). */
 export function fileEntries(job: Job): FileEntry[] {
-  if (job.result?.entries) return job.result.entries;
-  const log = job.log ?? '';
-  const start = log.search(/^\[/m);
-  const end = log.lastIndexOf(']');
-  if (start < 0 || end < start) return [];
-  try {
-    const v = JSON.parse(log.slice(start, end + 1));
-    return Array.isArray(v) ? v : [];
-  } catch {
-    return [];
-  }
+  const e = job.result?.entries;
+  return Array.isArray(e) ? e : [];
 }
 
 export const downloadUrl = (token: string) => `/api/v1/downloads/${encodeURIComponent(token)}`;
