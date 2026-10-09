@@ -1,0 +1,1321 @@
+//! In-process integration tests: the axum Router is driven with
+//! `tower::ServiceExt::oneshot` (no TLS, no sockets).
+
+use axum::body::Body;
+use axum::extract::ConnectInfo;
+use axum::http::{header, HeaderMap, Method, Request, StatusCode};
+use axum::Router;
+use catalog::rusqlite::params;
+use catalog::Catalog;
+use http_body_util::BodyExt;
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::{Arc, OnceLock};
+use tower::ServiceExt;
+use web_api::{AppState, CSP};
+
+const PW: &str = "correct horse battery";
+const METRICS_TOKEN: &str = "metrics-secret-token";
+
+fn pw_hash() -> &'static str {
+    static H: OnceLock<String> = OnceLock::new();
+    H.get_or_init(|| catalog::auth::hash_password(PW).unwrap())
+}
+
+struct T {
+    app: Router,
+    st: Arc<AppState>,
+    secrets: HashMap<String, String>,
+    ids: HashMap<String, i64>,
+    _dir: tempfile::TempDir,
+}
+
+#[derive(Clone)]
+struct S {
+    cookie: String,
+    csrf: String,
+}
+
+#[derive(Debug)]
+struct R {
+    status: StatusCode,
+    headers: HeaderMap,
+    body: Value,
+    raw: Vec<u8>,
+}
+
+impl T {
+    fn new() -> T {
+        let dir = tempfile::tempdir().unwrap();
+        let cat = Catalog::open(&dir.path().join("catalog.db")).unwrap();
+        for t in ["acme", "globex"] {
+            cat.conn()
+                .execute("INSERT INTO tenants (name) VALUES (?1)", [t])
+                .unwrap();
+        }
+        let downloads = dir.path().join("downloads");
+        std::fs::create_dir(&downloads).unwrap();
+        let st = AppState::new(cat, Some(METRICS_TOKEN.into()), downloads);
+        let mut t = T {
+            app: web_api::router(st.clone()),
+            st,
+            secrets: HashMap::new(),
+            ids: HashMap::new(),
+            _dir: dir,
+        };
+        for (n, role, tenant) in [
+            ("alice", "admin", None),
+            ("sam", "security_officer", None),
+            ("sue", "security_officer", None),
+            ("otto", "operator", None),
+            ("tina", "tenant_user", Some("acme")),
+            ("tom", "tenant_user", Some("globex")),
+        ] {
+            t.add_user(n, role, tenant);
+        }
+        t
+    }
+
+    fn add_user(&mut self, name: &str, role: &str, tenant: Option<&str>) {
+        let secret = catalog::auth::new_totp_secret();
+        let c = self.st.cat.conn();
+        c.execute(
+            "INSERT INTO users (name, password_hash, totp_secret, role, tenant, created) VALUES (?1,?2,?3,?4,?5,0)",
+            params![name, pw_hash(), secret, role, tenant],
+        )
+        .unwrap();
+        self.ids.insert(name.into(), c.last_insert_rowid());
+        self.secrets.insert(name.into(), secret);
+    }
+
+    async fn send(&self, req: Request<Body>) -> R {
+        let res = self.app.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let headers = res.headers().clone();
+        let raw = res.into_body().collect().await.unwrap().to_bytes().to_vec();
+        let body = serde_json::from_slice(&raw).unwrap_or(Value::Null);
+        R {
+            status,
+            headers,
+            body,
+            raw,
+        }
+    }
+
+    fn req(method: Method, path: &str, s: Option<&S>, body: Option<&Value>) -> Request<Body> {
+        let mut b = Request::builder().method(method.clone()).uri(path);
+        if let Some(s) = s {
+            b = b.header(header::COOKIE, format!("nx_session={}", s.cookie));
+            if method != Method::GET {
+                b = b.header("x-csrf-token", &s.csrf);
+            }
+        }
+        match body {
+            Some(v) => b
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(v.to_string()))
+                .unwrap(),
+            None => b.body(Body::empty()).unwrap(),
+        }
+    }
+
+    async fn call(&self, method: Method, path: &str, s: Option<&S>, body: Option<Value>) -> R {
+        self.send(Self::req(method, path, s, body.as_ref())).await
+    }
+    async fn get(&self, path: &str, s: &S) -> R {
+        self.call(Method::GET, path, Some(s), None).await
+    }
+    async fn post(&self, path: &str, s: &S, body: Value) -> R {
+        self.call(Method::POST, path, Some(s), Some(body)).await
+    }
+    async fn put(&self, path: &str, s: &S, body: Value) -> R {
+        self.call(Method::PUT, path, Some(s), Some(body)).await
+    }
+    async fn delete(&self, path: &str, s: &S) -> R {
+        self.call(Method::DELETE, path, Some(s), None).await
+    }
+
+    async fn try_login(&self, name: &str, totp: &str, ip: Option<&str>) -> R {
+        let mut req = Self::req(
+            Method::POST,
+            "/api/v1/auth/login",
+            None,
+            Some(&json!({"name": name, "password": PW, "totp": totp})),
+        );
+        if let Some(ip) = ip {
+            req.extensions_mut()
+                .insert(ConnectInfo(SocketAddr::new(ip.parse().unwrap(), 50000)));
+        }
+        self.send(req).await
+    }
+
+    fn code(&self, name: &str) -> String {
+        catalog::auth::totp_now(&self.secrets[name]).unwrap()
+    }
+
+    async fn login(&self, name: &str) -> S {
+        let r = self.try_login(name, &self.code(name), None).await;
+        assert_eq!(r.status, StatusCode::OK, "{name}: {:?}", r.body);
+        let sc = r.headers[header::SET_COOKIE].to_str().unwrap().to_owned();
+        let cookie = sc
+            .strip_prefix("nx_session=")
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        S {
+            cookie,
+            csrf: r.body["csrf"].as_str().unwrap().to_owned(),
+        }
+    }
+
+    fn audit_actions(&self) -> Vec<String> {
+        let c = self.st.cat.conn();
+        let mut s = c.prepare("SELECT action FROM audit ORDER BY seq").unwrap();
+        s.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    fn scalar<V: catalog::rusqlite::types::FromSql>(&self, sql: &str) -> V {
+        self.st.cat.conn().query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    /// Every test ends with an intact audit chain.
+    fn finish(self) {
+        let n = self.st.cat.verify_audit().expect("audit chain verifies");
+        assert!(n > 0);
+    }
+}
+
+fn wrong_code(c: &str) -> String {
+    format!("{:06}", (c.parse::<u32>().unwrap() + 500_000) % 1_000_000)
+}
+
+fn src_cfg(secret: Option<&str>) -> Value {
+    let mut v = json!({
+        "host": "pve1.lab.local", "port": 8006,
+        "ca_pem": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+        "token_id": "nexus@pve!backup",
+        "nodes": {"pve1": {"host": "10.0.0.1", "port": 22, "key": "/etc/nexus/ssh/id", "known_hosts": "/etc/nexus/ssh/kh"}},
+        "storage": "local-lvm"
+    });
+    if let Some(s) = secret {
+        v["token_secret"] = json!(s);
+    }
+    v
+}
+
+fn policy(daily: u32, offsite: bool) -> Value {
+    json!({"name": "std", "schedule": "daily 01:30",
+           "gfs": {"daily": daily, "weekly": 4, "monthly": 12, "yearly": 1}, "offsite": offsite})
+}
+
+/// tenant acme + globex each with one source, a policy, a group, a snapshot and a job.
+async fn seed(t: &T, admin: &S) -> HashMap<&'static str, i64> {
+    let mut ids = HashMap::new();
+    let p = t.post("/api/v1/policies", admin, policy(7, true)).await;
+    assert_eq!(p.status, StatusCode::CREATED, "{:?}", p.body);
+    ids.insert("policy", p.body["id"].as_i64().unwrap());
+    for (tenant, key_s, key_g) in [("acme", "src_acme", "grp_acme"), ("globex", "src_globex", "grp_globex")] {
+        let s = t
+            .post(
+                "/api/v1/sources",
+                admin,
+                json!({"tenant": tenant, "kind": "pve", "name": "pve", "config": src_cfg(Some("s3cr3t-token"))}),
+            )
+            .await;
+        assert_eq!(s.status, StatusCode::CREATED, "{:?}", s.body);
+        let sid = s.body["id"].as_i64().unwrap();
+        ids.insert(key_s, sid);
+        let g = t
+            .post(
+                "/api/v1/groups",
+                admin,
+                json!({"tenant": tenant, "source_id": sid, "policy_id": ids["policy"], "name": "prod", "guests": [101, 100, 101]}),
+            )
+            .await;
+        assert_eq!(g.status, StatusCode::CREATED, "{:?}", g.body);
+        assert_eq!(g.body["guests"], json!([100, 101]));
+        ids.insert(key_g, g.body["id"].as_i64().unwrap());
+        t.st.cat
+            .conn()
+            .execute(
+                "INSERT INTO snapshots (tenant, source, time, size, local, offsite) VALUES (?1, 'vm-100', 1000, 5, 1, 0)",
+                [tenant],
+            )
+            .unwrap();
+    }
+    for (tenant, key) in [("acme", "job_acme"), ("globex", "job_globex")] {
+        let j = t
+            .post(
+                "/api/v1/jobs",
+                admin,
+                json!({"kind": "backup", "tenant": tenant, "params": {"vmid": 100}}),
+            )
+            .await;
+        assert_eq!(j.status, StatusCode::ACCEPTED, "{:?}", j.body);
+        ids.insert(key, j.body["id"].as_i64().unwrap());
+    }
+    ids
+}
+
+// ---------------------------------------------------------------- auth
+
+#[tokio::test]
+async fn login_with_totp_me_and_logout() {
+    let t = T::new();
+    let r = t.try_login("alice", &t.code("alice"), None).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let sc = r.headers[header::SET_COOKIE].to_str().unwrap();
+    for flag in ["HttpOnly", "Secure", "SameSite=Strict", "Path=/"] {
+        assert!(sc.contains(flag), "{sc}");
+    }
+    assert_eq!(r.body["user"]["name"], "alice");
+    assert_eq!(r.body["user"]["role"], "admin");
+    assert!(r.body["user"].get("password_hash").is_none() && r.body["user"].get("totp_secret").is_none());
+
+    let s = t.login("alice").await;
+    // the DB only holds the hash of the cookie
+    let stored: i64 =
+        t.st.cat
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id_hash = ?1",
+                [web_api::sha256_hex(s.cookie.as_bytes())],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert_eq!(stored, 1);
+    let n: i64 =
+        t.st.cat
+            .conn()
+            .query_row("SELECT COUNT(*) FROM sessions WHERE id_hash = ?1", [&s.cookie], |r| {
+                r.get(0)
+            })
+            .unwrap();
+    assert_eq!(n, 0);
+
+    let me = t.get("/api/v1/auth/me", &s).await;
+    assert_eq!(me.status, StatusCode::OK);
+    assert_eq!(me.body["user"]["name"], "alice");
+    assert_eq!(me.body["csrf"], json!(s.csrf));
+
+    let out = t.post("/api/v1/auth/logout", &s, json!({})).await;
+    assert_eq!(out.status, StatusCode::OK);
+    assert_eq!(t.get("/api/v1/auth/me", &s).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        t.call(Method::GET, "/api/v1/auth/me", None, None).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let a = t.audit_actions();
+    assert!(a.contains(&"auth.login".into()) && a.contains(&"auth.logout".into()));
+    t.finish();
+}
+
+#[tokio::test]
+async fn wrong_totp_wrong_password_unknown_user() {
+    let t = T::new();
+    let r = t.try_login("alice", &wrong_code(&t.code("alice")), None).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    assert!(r.headers.get(header::SET_COOKIE).is_none());
+    let r = t
+        .call(
+            Method::POST,
+            "/api/v1/auth/login",
+            None,
+            Some(json!({"name": "alice", "password": "wrong password!!", "totp": t.code("alice")})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    let r = t.try_login("nobody", "123456", None).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(t.audit_actions(), vec!["auth.login_failed"; 3]);
+    let reasons: Vec<String> = {
+        let c = t.st.cat.conn();
+        let mut s = c
+            .prepare("SELECT json_extract(details, '$.reason') FROM audit ORDER BY seq")
+            .unwrap();
+        s.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(reasons, ["totp", "password", "unknown user"]);
+    t.finish();
+}
+
+#[tokio::test]
+async fn lockout_per_user_and_per_ip() {
+    let t = T::new();
+    // per user: 5 failures from different IPs lock the account
+    for i in 0..5 {
+        let r = t
+            .try_login("otto", &wrong_code(&t.code("otto")), Some(&format!("10.0.0.{}", i + 1)))
+            .await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    }
+    let r = t.try_login("otto", &t.code("otto"), Some("10.9.9.9")).await;
+    assert_eq!(
+        r.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "correct credentials rejected while locked"
+    );
+    assert!(r.body["error"].is_string());
+    // other users from those IPs are unaffected
+    assert_eq!(
+        t.try_login("alice", &t.code("alice"), Some("10.0.0.1")).await.status,
+        StatusCode::OK
+    );
+
+    // per IP: 5 failures for different names from one address
+    for n in ["a1", "a2", "a3", "a4", "a5"] {
+        assert_eq!(
+            t.try_login(n, "000000", Some("192.0.2.7")).await.status,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        t.try_login("alice", &t.code("alice"), Some("192.0.2.7")).await.status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        t.try_login("alice", &t.code("alice"), Some("192.0.2.8")).await.status,
+        StatusCode::OK
+    );
+
+    let lockouts: Vec<String> = {
+        let c = t.st.cat.conn();
+        let mut s = c
+            .prepare("SELECT target FROM audit WHERE action = 'auth.lockout' ORDER BY seq")
+            .unwrap();
+        s.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(lockouts, ["user/otto", "ip/192.0.2.7"]);
+    t.finish();
+}
+
+#[tokio::test]
+async fn session_idle_and_absolute_expiry() {
+    let t = T::new();
+    let s = t.login("otto").await;
+    let h = web_api::sha256_hex(s.cookie.as_bytes());
+    let now = catalog::now();
+    t.st.cat
+        .conn()
+        .execute(
+            "UPDATE sessions SET last_seen = ?1 WHERE id_hash = ?2",
+            params![now - 31 * 60, h],
+        )
+        .unwrap();
+    assert_eq!(t.get("/api/v1/auth/me", &s).await.status, StatusCode::UNAUTHORIZED);
+
+    let s = t.login("otto").await;
+    let h = web_api::sha256_hex(s.cookie.as_bytes());
+    t.st.cat
+        .conn()
+        .execute(
+            "UPDATE sessions SET created = ?1 WHERE id_hash = ?2",
+            params![now - 12 * 3600 - 1, h],
+        )
+        .unwrap();
+    assert_eq!(t.get("/api/v1/auth/me", &s).await.status, StatusCode::UNAUTHORIZED);
+
+    // disabling a user ends their session
+    let s = t.login("otto").await;
+    let admin = t.login("alice").await;
+    let r = t
+        .put(
+            &format!("/api/v1/users/{}", t.ids["otto"]),
+            &admin,
+            json!({"disabled": true}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(t.get("/api/v1/auth/me", &s).await.status, StatusCode::UNAUTHORIZED);
+    t.finish();
+}
+
+#[tokio::test]
+async fn csrf_required_on_non_get() {
+    let t = T::new();
+    let s = t.login("alice").await;
+    let body = json!({"name": "initech"});
+    let mut req = T::req(Method::POST, "/api/v1/tenants", None, Some(&body));
+    req.headers_mut()
+        .insert(header::COOKIE, format!("nx_session={}", s.cookie).parse().unwrap());
+    let r = t.send(req).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    assert!(r.body["error"].as_str().unwrap().contains("CSRF"));
+
+    let bad = S {
+        csrf: "0".repeat(64),
+        ..s.clone()
+    };
+    assert_eq!(
+        t.post("/api/v1/tenants", &bad, body.clone()).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        t.delete("/api/v1/tenants/acme", &bad).await.status,
+        StatusCode::FORBIDDEN
+    );
+    // logout is protected as well
+    let mut req = T::req(Method::POST, "/api/v1/auth/logout", None, None);
+    req.headers_mut()
+        .insert(header::COOKIE, format!("nx_session={}", s.cookie).parse().unwrap());
+    assert_eq!(t.send(req).await.status, StatusCode::FORBIDDEN);
+
+    assert_eq!(t.post("/api/v1/tenants", &s, body).await.status, StatusCode::CREATED);
+    t.finish();
+}
+
+// ---------------------------------------------------------------- RBAC
+
+#[tokio::test]
+async fn rbac_denials_per_role() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let ids = seed(&t, &admin).await;
+    let op = t.login("otto").await;
+    let so = t.login("sam").await;
+    let tu = t.login("tina").await;
+    let forbidden = StatusCode::FORBIDDEN;
+
+    // operator: no config CRUD, no audit, no quorum decisions; runs jobs
+    assert_eq!(
+        t.post("/api/v1/tenants", &op, json!({"name": "x"})).await.status,
+        forbidden
+    );
+    assert_eq!(t.post("/api/v1/policies", &op, policy(1, true)).await.status, forbidden);
+    assert_eq!(
+        t.put(
+            &format!("/api/v1/groups/{}", ids["grp_acme"]),
+            &op,
+            json!({"source_id": ids["src_acme"], "policy_id": ids["policy"], "name": "p", "guests": []})
+        )
+        .await
+        .status,
+        forbidden
+    );
+    assert_eq!(t.get("/api/v1/audit", &op).await.status, forbidden);
+    assert_eq!(t.get("/api/v1/audit/verify", &op).await.status, forbidden);
+    assert_eq!(
+        t.post("/api/v1/quorum/1/approve", &op, json!({})).await.status,
+        forbidden
+    );
+    let j = t
+        .post(
+            "/api/v1/jobs",
+            &op,
+            json!({"kind": "backup", "tenant": "acme", "params": {"group_id": ids["grp_acme"]}}),
+        )
+        .await;
+    assert_eq!(j.status, StatusCode::ACCEPTED, "{:?}", j.body);
+    let cancel = format!("/api/v1/jobs/{}/cancel", j.body["id"]);
+    assert_eq!(t.post(&cancel, &tu, json!({})).await.status, forbidden);
+    assert_eq!(t.post(&cancel, &so, json!({})).await.status, forbidden);
+    assert_eq!(t.post(&cancel, &op, json!({})).await.status, StatusCode::OK);
+    assert_eq!(
+        t.post(&cancel, &op, json!({})).await.status,
+        StatusCode::CONFLICT,
+        "queued only"
+    );
+
+    // security officer: reads + audit + quorum, but no jobs and no CRUD
+    assert_eq!(
+        t.post(
+            "/api/v1/jobs",
+            &so,
+            json!({"kind": "backup", "tenant": "acme", "params": {"vmid": 100}})
+        )
+        .await
+        .status,
+        forbidden
+    );
+    assert_eq!(
+        t.post(
+            "/api/v1/sources",
+            &so,
+            json!({"tenant": "acme", "kind": "pve", "name": "x", "config": src_cfg(Some("x"))})
+        )
+        .await
+        .status,
+        forbidden
+    );
+    assert_eq!(
+        t.post(
+            "/api/v1/users",
+            &so,
+            json!({"name": "x", "password": PW, "role": "operator"})
+        )
+        .await
+        .status,
+        forbidden
+    );
+    assert_eq!(t.get("/api/v1/audit", &so).await.status, StatusCode::OK);
+    assert_eq!(t.get("/api/v1/audit/verify", &so).await.body["ok"], json!(true));
+    assert_eq!(t.get("/api/v1/sources", &so).await.status, StatusCode::OK);
+
+    // admin cannot decide quorum requests
+    assert_eq!(
+        t.post("/api/v1/quorum/1/approve", &admin, json!({})).await.status,
+        forbidden
+    );
+    assert_eq!(
+        t.post("/api/v1/quorum/1/reject", &admin, json!({})).await.status,
+        forbidden
+    );
+    assert_eq!(t.get("/api/v1/audit", &admin).await.status, StatusCode::OK);
+
+    // tenant user: no backups, no CRUD, no audit, no quorum
+    assert_eq!(
+        t.post(
+            "/api/v1/jobs",
+            &tu,
+            json!({"kind": "backup", "tenant": "acme", "params": {"vmid": 100}})
+        )
+        .await
+        .status,
+        forbidden
+    );
+    assert_eq!(
+        t.post("/api/v1/jobs", &tu, json!({"kind": "gc", "tenant": "acme"}))
+            .await
+            .status,
+        forbidden
+    );
+    assert_eq!(t.post("/api/v1/policies", &tu, policy(1, true)).await.status, forbidden);
+    assert_eq!(t.get("/api/v1/audit", &tu).await.status, forbidden);
+    assert_eq!(t.get("/api/v1/quorum", &tu).await.status, forbidden);
+    assert_eq!(t.post("/api/v1/alerts/1/ack", &tu, json!({})).await.status, forbidden);
+
+    // alerts: operator+ may acknowledge
+    t.st.cat
+        .conn()
+        .execute(
+            "INSERT INTO alerts (ts, severity, kind, message) VALUES (1, 'warning', 'capacity', 'store > 75 %')",
+            [],
+        )
+        .unwrap();
+    assert_eq!(t.get("/api/v1/alerts", &op).await.body.as_array().unwrap().len(), 1);
+    assert_eq!(
+        t.post("/api/v1/alerts/1/ack", &op, json!({})).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        t.post("/api/v1/alerts/1/ack", &so, json!({})).await.status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(t.get("/api/v1/alerts?acked=false", &op).await.body, json!([]));
+    t.finish();
+}
+
+#[tokio::test]
+async fn tenant_user_isolation() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let ids = seed(&t, &admin).await;
+    let tina = t.login("tina").await;
+    t.st.cat
+        .conn()
+        .execute(
+            "INSERT INTO alerts (ts, severity, kind, message) VALUES (1, 'error', 'job', 'globex backup failed')",
+            [],
+        )
+        .unwrap();
+
+    let only_acme = |v: &Value, key: &str| {
+        let a = v.as_array().unwrap();
+        assert!(!a.is_empty());
+        assert!(a.iter().all(|x| x[key] == "acme"), "{v}");
+    };
+    only_acme(&t.get("/api/v1/sources", &tina).await.body, "tenant");
+    only_acme(&t.get("/api/v1/groups", &tina).await.body, "tenant");
+    only_acme(&t.get("/api/v1/jobs", &tina).await.body, "tenant");
+    assert_eq!(t.get("/api/v1/jobs?tenant=globex", &tina).await.body, json!([]));
+    only_acme(&t.get("/api/v1/snapshots", &tina).await.body, "tenant");
+    assert_eq!(t.get("/api/v1/snapshots?tenant=globex", &tina).await.body, json!([]));
+    only_acme(&t.get("/api/v1/users", &tina).await.body, "tenant");
+    assert_eq!(
+        t.get("/api/v1/tenants", &tina).await.body,
+        json!([{"name": "acme", "offsite": {}}])
+    );
+    assert_eq!(t.get("/api/v1/alerts", &tina).await.body, json!([]));
+
+    assert_eq!(
+        t.get(&format!("/api/v1/jobs/{}", ids["job_globex"]), &tina)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        t.get(&format!("/api/v1/jobs/{}", ids["job_acme"]), &tina).await.status,
+        StatusCode::OK
+    );
+
+    let restore = |tenant: &str| {
+        json!({"kind": "restore", "tenant": tenant,
+        "params": {"source": "vm-100", "time": 1000, "node": "pve1", "target": 900, "storage": "local-lvm"}})
+    };
+    assert_eq!(
+        t.post("/api/v1/jobs", &tina, restore("globex")).await.status,
+        StatusCode::FORBIDDEN
+    );
+    let r = t.post("/api/v1/jobs", &tina, restore("acme")).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    // unknown snapshot
+    let mut bad = restore("acme");
+    bad["params"]["time"] = json!(1001);
+    assert_eq!(t.post("/api/v1/jobs", &tina, bad).await.status, StatusCode::NOT_FOUND);
+    t.finish();
+}
+
+// ---------------------------------------------------------------- quorum
+
+#[tokio::test]
+async fn quorum_policy_weakening_and_approval() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let sam = t.login("sam").await;
+    let sue = t.login("sue").await;
+    let p = t.post("/api/v1/policies", &admin, policy(7, true)).await;
+    let pid = p.body["id"].as_i64().unwrap();
+    let url = format!("/api/v1/policies/{pid}");
+    let daily = |t: &T| {
+        t.scalar::<i64>(&format!(
+            "SELECT json_extract(gfs, '$.daily') FROM policies WHERE id = {pid}"
+        ))
+    };
+
+    // strengthening applies directly
+    let r = t.put(&url, &admin, policy(14, true)).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(daily(&t), 14);
+    // a neutral change (schedule) too
+    let mut p2 = policy(14, true);
+    p2["schedule"] = json!("hourly 15");
+    assert_eq!(t.put(&url, &admin, p2).await.status, StatusCode::OK);
+
+    // weakening is gated
+    let r = t.put(&url, &admin, policy(3, true)).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    let qid = r.body["quorum_id"].as_i64().unwrap();
+    assert_eq!(daily(&t), 14, "not applied yet");
+    assert_eq!(
+        t.put(&url, &admin, policy(14, false)).await.status,
+        StatusCode::ACCEPTED,
+        "offsite off is weakening"
+    );
+
+    let list = t.get("/api/v1/quorum?state=pending", &sam).await.body;
+    assert_eq!(list.as_array().unwrap().len(), 2);
+    assert_eq!(list[1]["action"], "policy.update");
+    assert_eq!(list[1]["requested_by"], "alice");
+
+    let r = t.post(&format!("/api/v1/quorum/{qid}/approve"), &sam, json!({})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.body["state"], "executed");
+    assert_eq!(daily(&t), 3);
+    assert_eq!(
+        t.post(&format!("/api/v1/quorum/{qid}/approve"), &sue, json!({}))
+            .await
+            .status,
+        StatusCode::CONFLICT
+    );
+
+    // reject the offsite one
+    let r = t
+        .post(&format!("/api/v1/quorum/{}/reject", qid + 1), &sue, json!({}))
+        .await;
+    assert_eq!(r.body["state"], "rejected");
+    assert_eq!(
+        t.scalar::<i64>(&format!("SELECT offsite FROM policies WHERE id = {pid}")),
+        1
+    );
+
+    // the requester cannot approve their own request
+    let now = catalog::now();
+    t.st.cat.conn().execute(
+        "INSERT INTO quorum (action, params, requested_by, created, state) VALUES ('gc', '{\"delete_pct\":35}', 'sam', ?1, 'pending')",
+        [now],
+    ).unwrap();
+    let own = t.scalar::<i64>("SELECT MAX(id) FROM quorum");
+    let r = t.post(&format!("/api/v1/quorum/{own}/approve"), &sam, json!({})).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    // scheduler actions are only marked approved
+    let r = t.post(&format!("/api/v1/quorum/{own}/approve"), &sue, json!({})).await;
+    assert_eq!(r.body["state"], "approved");
+    assert_eq!(
+        t.scalar::<String>(&format!("SELECT decided_by FROM quorum WHERE id = {own}")),
+        "sue"
+    );
+
+    // expiry after 72 h
+    t.st.cat.conn().execute(
+        "INSERT INTO quorum (action, params, requested_by, created, state) VALUES ('policy.delete', ?1, 'alice', ?2, 'pending')",
+        params![json!({"id": pid}).to_string(), now - 72 * 3600 - 1],
+    ).unwrap();
+    let old = t.scalar::<i64>("SELECT MAX(id) FROM quorum");
+    let r = t.post(&format!("/api/v1/quorum/{old}/approve"), &sue, json!({})).await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    assert_eq!(
+        t.scalar::<String>(&format!("SELECT state FROM quorum WHERE id = {old}")),
+        "expired"
+    );
+    assert_eq!(
+        t.scalar::<i64>("SELECT COUNT(*) FROM policies"),
+        1,
+        "expired delete not executed"
+    );
+
+    let a = t.audit_actions();
+    for x in [
+        "quorum.request",
+        "quorum.approve",
+        "quorum.reject",
+        "quorum.expire",
+        "policy.update",
+    ] {
+        assert!(a.contains(&x.to_string()), "{x}");
+    }
+    t.finish();
+}
+
+#[tokio::test]
+async fn quorum_deletes_and_group_policy_swap() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let ids = seed(&t, &admin).await;
+    let sam = t.login("sam").await;
+
+    // a weaker policy for a group is a weakening; a stronger one is not
+    let mut weak = policy(1, false);
+    weak["name"] = json!("weak");
+    let weak_id = t.post("/api/v1/policies", &admin, weak).await.body["id"]
+        .as_i64()
+        .unwrap();
+    let mut strong = policy(30, true);
+    strong["name"] = json!("strong");
+    let strong_id = t.post("/api/v1/policies", &admin, strong).await.body["id"]
+        .as_i64()
+        .unwrap();
+    let g = |pid: i64| json!({"source_id": ids["src_acme"], "policy_id": pid, "name": "prod", "guests": [100]});
+    let gurl = format!("/api/v1/groups/{}", ids["grp_acme"]);
+    assert_eq!(t.put(&gurl, &admin, g(weak_id)).await.status, StatusCode::ACCEPTED);
+    assert_eq!(t.put(&gurl, &admin, g(strong_id)).await.status, StatusCode::OK);
+
+    // deleting a referenced source is refused up front
+    let surl = format!("/api/v1/sources/{}", ids["src_globex"]);
+    assert_eq!(t.delete(&surl, &admin).await.status, StatusCode::CONFLICT);
+    // group delete → quorum → approve → gone; then the source
+    let r = t.delete(&format!("/api/v1/groups/{}", ids["grp_globex"]), &admin).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    assert_eq!(t.scalar::<i64>("SELECT COUNT(*) FROM groups"), 2);
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    assert_eq!(
+        t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({}))
+            .await
+            .body["state"],
+        "executed"
+    );
+    assert_eq!(t.scalar::<i64>("SELECT COUNT(*) FROM groups"), 1);
+    let r = t.delete(&surl, &admin).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    assert_eq!(
+        t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(t.scalar::<i64>("SELECT COUNT(*) FROM sources"), 1);
+
+    // tenant with users can't be deleted; an empty one is gated
+    assert_eq!(
+        t.delete("/api/v1/tenants/acme", &admin).await.status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        t.post("/api/v1/tenants", &admin, json!({"name": "initech"}))
+            .await
+            .status,
+        StatusCode::CREATED
+    );
+    let r = t.delete("/api/v1/tenants/initech", &admin).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    assert_eq!(
+        t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        t.scalar::<i64>("SELECT COUNT(*) FROM tenants WHERE name = 'initech'"),
+        0
+    );
+    // policy delete is gated too
+    let r = t.delete(&format!("/api/v1/policies/{weak_id}"), &admin).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    t.finish();
+}
+
+#[tokio::test]
+async fn privileged_user_grants_need_quorum() {
+    let mut t = T::new();
+    let admin = t.login("alice").await;
+    let sam = t.login("sam").await;
+
+    let r = t
+        .post(
+            "/api/v1/users",
+            &admin,
+            json!({"name": "olga", "password": PW, "role": "operator"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    assert!(r.body["totp_uri"]
+        .as_str()
+        .unwrap()
+        .starts_with("otpauth://totp/NexusBackup:olga?"));
+    let olga = r.body["user"]["id"].as_i64().unwrap();
+    assert_eq!(
+        t.post(
+            "/api/v1/users",
+            &admin,
+            json!({"name": "short", "password": "short", "role": "operator"})
+        )
+        .await
+        .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        t.post(
+            "/api/v1/users",
+            &admin,
+            json!({"name": "tu", "password": PW, "role": "tenant_user"})
+        )
+        .await
+        .status,
+        StatusCode::BAD_REQUEST,
+        "tenant required"
+    );
+
+    // new admin: created disabled + quorum
+    let r = t
+        .post(
+            "/api/v1/users",
+            &admin,
+            json!({"name": "ada", "password": PW, "role": "admin"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    assert!(r.body["totp_uri"].is_string() && r.body["user"]["disabled"] == json!(true));
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    let ada = r.body["user"]["id"].as_i64().unwrap();
+    let secret: String =
+        t.st.cat
+            .conn()
+            .query_row("SELECT totp_secret FROM users WHERE id = ?1", [ada], |r| r.get(0))
+            .unwrap();
+    t.secrets.insert("ada".into(), secret);
+    assert_eq!(
+        t.try_login("ada", &t.code("ada"), Some("10.1.1.1")).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    t.login("ada").await;
+
+    // promoting an operator is gated, demoting/disabling a non-last admin is not
+    let r = t
+        .put(
+            &format!("/api/v1/users/{olga}"),
+            &admin,
+            json!({"role": "security_officer"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    assert_eq!(
+        t.scalar::<String>(&format!("SELECT role FROM users WHERE id = {olga}")),
+        "operator"
+    );
+    assert_eq!(
+        t.put(&format!("/api/v1/users/{ada}"), &admin, json!({"disabled": true}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    // re-enabling an admin is a grant
+    assert_eq!(
+        t.put(&format!("/api/v1/users/{ada}"), &admin, json!({"disabled": false}))
+            .await
+            .status,
+        StatusCode::ACCEPTED
+    );
+    // alice is now the last enabled admin
+    assert_eq!(
+        t.put(
+            &format!("/api/v1/users/{}", t.ids["alice"]),
+            &admin,
+            json!({"disabled": true})
+        )
+        .await
+        .status,
+        StatusCode::ACCEPTED
+    );
+    // resetting a security officer's credentials is gated; the quorum list hides the new secrets
+    let r = t
+        .put(
+            &format!("/api/v1/users/{}", t.ids["sam"]),
+            &admin,
+            json!({"reset_totp": true, "password": "a brand new password"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    assert!(r.body["totp_uri"].is_string());
+    let list = t.get("/api/v1/quorum?state=pending", &sam).await;
+    let raw = String::from_utf8(list.raw).unwrap();
+    assert!(raw.contains("<redacted>") && !raw.contains("$argon2id$"));
+    // a plain operator reset is direct
+    let r = t
+        .put(&format!("/api/v1/users/{olga}"), &admin, json!({"reset_totp": true}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.body["totp_uri"].is_string());
+
+    let users = t.get("/api/v1/users", &admin).await;
+    let raw = String::from_utf8(users.raw).unwrap();
+    assert!(!raw.contains("password_hash") && !raw.contains("totp_secret") && !raw.contains("$argon2"));
+    t.finish();
+}
+
+// ---------------------------------------------------------------- secrets, validation
+
+#[tokio::test]
+async fn source_secrets_are_write_only() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let r = t
+        .post(
+            "/api/v1/sources",
+            &admin,
+            json!({"tenant": "acme", "kind": "pve", "name": "pve", "config": src_cfg(Some("s3cr3t-token"))}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    let id = r.body["id"].as_i64().unwrap();
+    assert!(!String::from_utf8_lossy(&r.raw).contains("s3cr3t"));
+    assert_eq!(r.body["config"]["token_secret_set"], json!(true));
+    let all = t.get("/api/v1/sources", &admin).await;
+    assert!(!String::from_utf8_lossy(&all.raw).contains("s3cr3t"));
+    assert_eq!(all.body[0]["config"]["token_id"], "nexus@pve!backup");
+
+    // update without a secret keeps the stored one; with one replaces it
+    let r = t
+        .put(
+            &format!("/api/v1/sources/{id}"),
+            &admin,
+            json!({"name": "pve-main", "config": src_cfg(None)}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert!(!String::from_utf8_lossy(&r.raw).contains("s3cr3t"));
+    let stored = |t: &T| {
+        t.scalar::<String>(&format!(
+            "SELECT json_extract(config, '$.token_secret') FROM sources WHERE id = {id}"
+        ))
+    };
+    assert_eq!(stored(&t), "s3cr3t-token");
+    t.put(
+        &format!("/api/v1/sources/{id}"),
+        &admin,
+        json!({"name": "pve-main", "config": src_cfg(Some("n3w-token"))}),
+    )
+    .await;
+    assert_eq!(stored(&t), "n3w-token");
+    // creating without a secret is refused, so is an inline secret in opaque blobs
+    assert_eq!(
+        t.post(
+            "/api/v1/sources",
+            &admin,
+            json!({"tenant": "acme", "kind": "pve", "name": "x", "config": src_cfg(None)})
+        )
+        .await
+        .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        t.put(
+            "/api/v1/tenants/acme",
+            &admin,
+            json!({"offsite": {"type": "sftp", "password": "pw"}})
+        )
+        .await
+        .status,
+        StatusCode::BAD_REQUEST
+    );
+    // nor do secrets end up in the audit log or the audit API
+    let audit = t.get("/api/v1/audit", &admin).await;
+    assert!(!String::from_utf8_lossy(&audit.raw).contains("s3cr3t"));
+    t.finish();
+}
+
+#[tokio::test]
+async fn input_validation() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let bad = StatusCode::BAD_REQUEST;
+    for sched in ["daily 25:00", "weekly 01:00", "hourly 7", ""] {
+        let mut p = policy(7, true);
+        p["schedule"] = json!(sched);
+        assert_eq!(t.post("/api/v1/policies", &admin, p).await.status, bad, "{sched}");
+    }
+    let mut p = policy(1001, true);
+    assert_eq!(t.post("/api/v1/policies", &admin, p.clone()).await.status, bad);
+    p["gfs"]["daily"] = json!(-1);
+    assert_eq!(t.post("/api/v1/policies", &admin, p.clone()).await.status, bad);
+    p["gfs"]["daily"] = json!(1000);
+    p["name"] = json!("../etc");
+    assert_eq!(t.post("/api/v1/policies", &admin, p.clone()).await.status, bad);
+    p["name"] = json!("ok");
+    p["extra"] = json!(1);
+    assert_eq!(
+        t.post("/api/v1/policies", &admin, p.clone()).await.status,
+        bad,
+        "unknown fields"
+    );
+    p.as_object_mut().unwrap().remove("extra");
+    assert_eq!(
+        t.post("/api/v1/policies", &admin, p.clone()).await.status,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        t.post("/api/v1/policies", &admin, p).await.status,
+        StatusCode::CONFLICT,
+        "duplicate name"
+    );
+    assert_eq!(
+        t.post("/api/v1/tenants", &admin, json!({"name": "a".repeat(65)}))
+            .await
+            .status,
+        bad
+    );
+    assert_eq!(
+        t.post("/api/v1/tenants", &admin, json!({"name": ".hidden"}))
+            .await
+            .status,
+        bad
+    );
+
+    // wrong content type and malformed JSON
+    let mut req = T::req(Method::POST, "/api/v1/tenants", Some(&admin), None);
+    *req.body_mut() = Body::from("name=x");
+    req.headers_mut().insert(
+        header::CONTENT_TYPE,
+        "application/x-www-form-urlencoded".parse().unwrap(),
+    );
+    let r = t.send(req).await;
+    assert_eq!(r.status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert!(r.body["error"].is_string());
+    let mut req = T::req(Method::POST, "/api/v1/tenants", Some(&admin), None);
+    *req.body_mut() = Body::from("{");
+    req.headers_mut()
+        .insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+    assert_eq!(t.send(req).await.status, bad);
+
+    // jobs: unknown kind, bad params, group of another tenant
+    let ids = seed(&t, &admin).await;
+    for (kind, params) in [
+        ("frobnicate", json!({})),
+        ("backup", json!({"vmid": 5})),
+        ("backup", json!({"vmid": 100, "group_id": ids["grp_acme"]})),
+        ("backup", json!({"group_id": ids["grp_globex"]})),
+        (
+            "files_get",
+            json!({"source": "vm-100", "time": 1000, "paths": ["etc/passwd"], "format": "tar"}),
+        ),
+        (
+            "files_get",
+            json!({"source": "vm-100", "time": 1000, "paths": ["/etc"], "format": "rar"}),
+        ),
+        (
+            "files_get",
+            json!({"source": "vm-100", "time": 1000, "paths": ["/etc"], "format": "tar", "download_token": "0".repeat(64)}),
+        ),
+        (
+            "restore_ct",
+            json!({"source": "vm-100", "time": 1000, "node": "pve1", "target": 900, "storage": "x"}),
+        ),
+    ] {
+        let r = t
+            .post(
+                "/api/v1/jobs",
+                &admin,
+                json!({"kind": kind, "tenant": "acme", "params": params}),
+            )
+            .await;
+        assert_eq!(r.status, bad, "{kind} {params}: {:?}", r.body);
+    }
+    // group with a source of another tenant
+    let r = t.post("/api/v1/groups", &admin, json!({"tenant": "acme", "source_id": ids["src_globex"], "policy_id": ids["policy"], "name": "x", "guests": []})).await;
+    assert_eq!(r.status, bad);
+    let r = t.post("/api/v1/groups", &admin, json!({"tenant": "acme", "source_id": ids["src_acme"], "policy_id": ids["policy"], "name": "x", "guests": [99]})).await;
+    assert_eq!(r.status, bad);
+    t.finish();
+}
+
+// ---------------------------------------------------------------- downloads, metrics, headers, SPA
+
+#[tokio::test]
+async fn downloads_only_for_the_requester() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    seed(&t, &admin).await;
+    let tina = t.login("tina").await;
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &tina,
+            json!({"kind": "files_get", "tenant": "acme",
+        "params": {"source": "vm-100", "time": 1000, "paths": ["/etc/hosts"], "format": "tar"}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let token = r.body["download_token"].as_str().unwrap().to_owned();
+    let url = format!("/api/v1/downloads/{token}");
+    assert_eq!(
+        t.get(&url, &tina).await.status,
+        StatusCode::NOT_FOUND,
+        "not written yet"
+    );
+    std::fs::write(t.st.downloads.join(format!("{token}.tar")), b"tar bytes").unwrap();
+    let r = t.get(&url, &tina).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.raw, b"tar bytes");
+    assert_eq!(r.headers[header::CONTENT_TYPE], "application/x-tar");
+    assert!(r.headers[header::CONTENT_DISPOSITION]
+        .to_str()
+        .unwrap()
+        .starts_with("attachment"));
+    assert_eq!(t.get(&url, &admin).await.status, StatusCode::NOT_FOUND);
+    let tom = t.login("tom").await;
+    assert_eq!(t.get(&url, &tom).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        t.get("/api/v1/downloads/..%2Fcatalog.db", &tina).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert!(t.audit_actions().contains(&"download.get".into()));
+    t.finish();
+}
+
+#[tokio::test]
+async fn metrics_with_bearer_token() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let ids = seed(&t, &admin).await;
+    t.st.cat
+        .conn()
+        .execute(
+            "UPDATE jobs SET state = 'ok', finished = 4242, params = ?1 WHERE id = ?2",
+            params![json!({"group_id": ids["grp_acme"]}).to_string(), ids["job_acme"]],
+        )
+        .unwrap();
+    t.try_login("alice", "000000", Some("10.0.0.1")).await;
+    let r = t.call(Method::GET, "/metrics", None, None).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    let mut req = T::req(Method::GET, "/api/v1/metrics", None, None);
+    req.headers_mut()
+        .insert(header::AUTHORIZATION, "Bearer wrong".parse().unwrap());
+    assert_eq!(t.send(req).await.status, StatusCode::UNAUTHORIZED);
+    let mut req = T::req(Method::GET, "/metrics", None, None);
+    req.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {METRICS_TOKEN}").parse().unwrap(),
+    );
+    let r = t.send(req).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let text = String::from_utf8(r.raw).unwrap();
+    for line in [
+        "nexus_jobs{state=\"queued\"} 1",
+        "nexus_jobs{state=\"ok\"} 1",
+        "nexus_snapshots{tenant=\"acme\",location=\"local\"} 1",
+        "nexus_snapshots{tenant=\"acme\",location=\"offsite\"} 0",
+        "nexus_last_successful_backup_timestamp_seconds{tenant=\"acme\",group=\"prod\"} 4242",
+        "nexus_last_successful_backup_timestamp_seconds{tenant=\"globex\",group=\"prod\"} 0",
+        "nexus_failed_logins_total 1",
+    ] {
+        assert!(text.contains(line), "{line}\n{text}");
+    }
+    assert!(text.contains("nexus_audit_entries "));
+    t.finish();
+}
+
+fn assert_security_headers(r: &R) {
+    assert_eq!(r.headers[header::CONTENT_SECURITY_POLICY], CSP);
+    assert_eq!(r.headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    assert_eq!(r.headers[header::REFERRER_POLICY], "no-referrer");
+    assert_eq!(r.headers[header::STRICT_TRANSPORT_SECURITY], "max-age=31536000");
+}
+
+#[tokio::test]
+async fn security_headers_and_spa_fallback() {
+    let t = T::new();
+    assert_eq!(
+        CSP,
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    );
+    let h = t.call(Method::GET, "/api/v1/health", None, None).await;
+    assert_eq!(h.status, StatusCode::OK);
+    assert_eq!(h.body, json!({"ok": true}));
+    assert_security_headers(&h);
+    assert_eq!(h.headers[header::CACHE_CONTROL], "no-store");
+
+    let r = t.call(Method::GET, "/api/v1/nope", None, None).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    assert!(r.body["error"].is_string());
+    assert_security_headers(&r);
+    let r = t.call(Method::GET, "/api/v1/sources", None, None).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    assert_security_headers(&r);
+    let r = t.try_login("alice", "123", None).await;
+    assert_security_headers(&r);
+
+    for route in ["/", "/jobs/12", "/restore/acme/vm-100"] {
+        let r = t.call(Method::GET, route, None, None).await;
+        assert_eq!(r.status, StatusCode::OK, "{route}");
+        assert!(r.headers[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html"));
+        assert!(String::from_utf8_lossy(&r.raw).to_lowercase().contains("<html"));
+        assert_eq!(r.headers[header::CACHE_CONTROL], "no-cache");
+        assert_security_headers(&r);
+    }
+    let r = t.call(Method::GET, "/assets/missing-abc123.js", None, None).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    assert_security_headers(&r);
+    assert_eq!(
+        t.call(Method::POST, "/somewhere", None, None).await.status,
+        StatusCode::METHOD_NOT_ALLOWED
+    );
+    // embedded hashed assets (only when web/dist existed at build time)
+    for (path, bytes) in web_api::spa::ASSETS.iter().filter(|(p, _)| p.starts_with("assets/")) {
+        let r = t.call(Method::GET, &format!("/{path}"), None, None).await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(&r.raw[..], *bytes);
+        assert_eq!(r.headers[header::CACHE_CONTROL], "public, max-age=31536000, immutable");
+        assert_security_headers(&r);
+    }
+}
