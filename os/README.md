@@ -35,8 +35,9 @@ The root account is locked (`usermod -L`). Emergency access is through the local
 | `nexus-chunkstore.service` | **0.4 SAFE** | `PrivateNetwork`, AF_UNIX only, `PrivateDevices` |
 | `nexus-keyd.service` | **0.6 SAFE** | `PrivateNetwork`, AF_UNIX only, `DevicePolicy=closed` + `DeviceAllow=/dev/tpmrm0 rw`, `SupplementaryGroups=tss` |
 | `nexus-web-api.service` | **1.1 OK** | Needs AF_INET/AF_INET6. `SocketBindAllow=tcp:8443` only, `PrivateUsers=yes` |
+| `nexus-scheduler.service` | **1.7 OK** | Spawns `nexus-pve`/`nexus-offsite` (PVE API/SSH, SFTP, webhook/SMTP: AF_INET/AF_INET6). File restore runs QEMU, so `DeviceAllow=/dev/kvm`, no `MemoryDenyWriteExecute` and no `~@privileged @resources`. Replaces the former `nexus-pve-backup` and `nexus-offsite` timers |
 
-All three units use `ProtectSystem=strict`, `NoNewPrivileges`, `PrivateTmp`, an empty
+The first three units use `ProtectSystem=strict`, `NoNewPrivileges`, `PrivateTmp`, an empty
 `CapabilityBoundingSet`, `SystemCallFilter=@system-service ~@privileged @resources` and
 `MemoryDenyWriteExecute`. `systemd-analyze verify` reports only the missing binaries.
 The remaining score comes from not using `RootDirectory` and, for chunkstore and keyd,

@@ -1,0 +1,64 @@
+[Unit]
+Description=NexusBackup scheduler (policies, job runner, retention, GC, verify, offsite, alerts)
+# Replaces nexus-pve-backup.{service,timer} and nexus-offsite.{service,timer}.
+After=network-online.target nexus-keyd.service
+Wants=network-online.target
+ConditionPathExists=/var/lib/nexus/setup-done
+
+[Service]
+Type=exec
+ExecStart=/usr/libexec/nexus/nexus-scheduler
+User=nexus-chunkstore
+Group=nexus-chunkstore
+# catalog DB (group nexus-catalog); keyd socket via nexus-chunkstore's membership in nexus-keyd
+SupplementaryGroups=nexus-catalog
+Restart=on-failure
+# SIGTERM ends running jobs with the scheduler; they are marked failed on the next start.
+KillMode=control-group
+
+# chunk stores, offsite inventories, alert cursor, file-restore downloads
+# (the scheduler sets downloads/ to 2750 in the catalog group at start)
+StateDirectory=nexus/chunkstore nexus/offsite nexus/scheduler nexus/downloads
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/nexus/catalog
+# generated job configs with secrets: private, wiped at start
+RuntimeDirectory=nexus-scheduler
+RuntimeDirectoryMode=0700
+UMask=0077
+LimitMEMLOCK=64M
+LimitCORE=0
+
+# PVE API/SSH, offsite SFTP, webhook/SMTP; keyd over AF_UNIX
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# file restore boots the restore micro-VM (QEMU): /dev/kvm when present, TCG needs W+X
+# memory, so MemoryDenyWriteExecute stays off for this unit.
+DevicePolicy=closed
+DeviceAllow=/dev/kvm rw
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# no ~@privileged: chgrp of downloads/ and spawned ssh/QEMU need parts of it
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
