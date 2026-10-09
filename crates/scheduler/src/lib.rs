@@ -29,7 +29,7 @@
 //! restores and file jobs; without it the source is found via the tenant's
 //! groups (or the tenant's only source). `instant_recover` takes `link_down`.
 //! `files_get` writes `<downloads>/<download_token>.<format>` (token set by the
-//! web-api). Results are written back into `params.result`.
+//! web-api). Structured results go into `jobs.result` (see [`Scheduler::finish`]).
 
 pub mod alerts;
 pub mod run;
@@ -650,20 +650,18 @@ impl Scheduler {
     /// Records a finished job, then queues follow-ups and raises alerts.
     pub fn finish(&mut self, f: Finished) -> Result<()> {
         self.running.remove(&f.id);
-        let mut job = self.job(f.id)?;
+        let job = self.job(f.id)?;
         let ok = f.outcome == Outcome::Ok;
         let mut log = f.log;
-        if ok {
-            if let Some(r) = self.result(&job, f.stdout.as_deref(), &mut log) {
-                if let Value::Object(m) = &mut job.params {
-                    m.insert("result".into(), r);
-                }
-            }
-        }
+        let result = if ok {
+            self.result(&job, f.stdout.as_deref(), &mut log)
+        } else {
+            None
+        };
         let state = if ok { "ok" } else { "failed" };
         self.db.conn().execute(
-            "UPDATE jobs SET state=?1, finished=?2, log=?3, params=?4 WHERE id=?5",
-            params![state, catalog::now(), log, job.params.to_string(), job.id],
+            "UPDATE jobs SET state=?1, finished=?2, log=?3, result=?4 WHERE id=?5",
+            params![state, catalog::now(), log, result.map(|r| r.to_string()), job.id],
         )?;
         self.db.audit(
             ACTOR,
@@ -715,21 +713,59 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Structured result of a successful job (`jobs.result`, docs/control-plane.md).
     fn result(&self, job: &Job, stdout: Option<&str>, log: &mut String) -> Option<Value> {
         match job.kind.as_str() {
             "files_list" => {
                 let out = stdout.unwrap_or_default();
-                Some(serde_json::from_str(out).unwrap_or_else(|_| json!({"output": out})))
+                match serde_json::from_str::<Value>(out) {
+                    Ok(entries @ Value::Array(_)) => Some(json!({ "entries": entries })),
+                    _ => {
+                        log.push_str(out);
+                        log.push_str("[scheduler] unexpected listing output (no JSON array)\n");
+                        None
+                    }
+                }
             }
             "files_get" => {
+                let out = stdout.unwrap_or_default();
+                log.push_str(out);
                 let file = download_file(&job.params).ok()?;
                 let path = self.cfg.downloads.join(&file);
                 let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o640));
                 let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                let token = job.params["download_token"].as_str().unwrap_or_default();
-                let r = json!({"token": token, "file": file, "size": size,
-                               "expires": catalog::now() + self.cfg.download_ttl_secs});
-                log.push_str(&format!("[scheduler] download ready: {r}\n"));
+                // `<n> entries written to <out>` (nexus-pve files/ct-files get)
+                let entries = out
+                    .lines()
+                    .find_map(|l| l.split_once(" entries written to ")?.0.trim().parse::<u64>().ok());
+                let r = json!({
+                    "download_token": job.params["download_token"],
+                    "format": job.params["format"].as_str().unwrap_or("tar"),
+                    "entries": entries,
+                    "size": size,
+                    "expires": catalog::now() + self.cfg.download_ttl_secs,
+                });
+                log.push_str(&format!("[scheduler] download ready: {file} ({size} bytes)\n"));
+                Some(r)
+            }
+            "backup" => {
+                // `committed <source>/<time>` per guest (nexus-pve backup-all)
+                let snaps: Vec<Value> = log
+                    .lines()
+                    .filter_map(|l| {
+                        let (s, t) = l
+                            .strip_prefix("committed ")?
+                            .split_whitespace()
+                            .next()?
+                            .rsplit_once('/')?;
+                        Some(json!({"source": s, "time": t.parse::<i64>().ok()?}))
+                    })
+                    .collect();
+                let mut r = json!({ "snapshots": snaps });
+                if let [one] = snaps.as_slice() {
+                    r["source"] = one["source"].clone();
+                    r["time"] = one["time"].clone();
+                }
                 Some(r)
             }
             _ => None,
@@ -1222,7 +1258,7 @@ impl Scheduler {
                 }
                 let mut step = pve(args);
                 if let Step::Cli { capture, .. } = &mut step {
-                    *capture = job.kind == "files_list";
+                    *capture = true; // files_list: JSON listing, files_get: entry count
                 }
                 plan.steps.push(step);
             }

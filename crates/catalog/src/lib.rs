@@ -54,7 +54,10 @@ CREATE TABLE alerts (
 /// v2: TOTP replay protection (last accepted 30 s step per user).
 const SCHEMA_V2: &str = "ALTER TABLE users ADD COLUMN totp_last_step INTEGER NOT NULL DEFAULT 0;";
 
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2];
+/// v3: structured job results (JSON, NULL until the job finished ok).
+const SCHEMA_V3: &str = "ALTER TABLE jobs ADD COLUMN result TEXT;";
+
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3];
 
 pub fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
@@ -94,7 +97,9 @@ impl Catalog {
         let c = Catalog {
             conn: Mutex::new(Connection::open_in_memory()?),
         };
-        c.conn().execute_batch(SCHEMA_V1)?;
+        for m in MIGRATIONS {
+            c.conn().execute_batch(m)?;
+        }
         Ok(c)
     }
 

@@ -112,6 +112,8 @@ pub async fn metrics(State(st): State<St>, headers: HeaderMap) -> ApiResult<Resp
 #[serde(deny_unknown_fields)]
 pub struct AuditFilter {
     after: Option<i64>,
+    before: Option<i64>,
+    order: Option<String>,
     limit: Option<u32>,
 }
 
@@ -119,13 +121,26 @@ const AUDITORS: &[&str] = &["admin", "security_officer"];
 
 pub async fn list_audit(State(st): State<St>, ctx: Ctx, Q(f): Q<AuditFilter>) -> ApiResult<Json<Value>> {
     ctx.require(AUDITORS)?;
+    // ascending from `after` (default); newest first with `before` or `order=desc`
+    let desc = match f.order.as_deref() {
+        None => f.before.is_some(),
+        Some("desc") => true,
+        Some("asc") if f.before.is_none() => false,
+        Some(_) => return Err(ApiError::bad("order: asc or desc (before implies desc)")),
+    };
     let c = st.cat.conn();
     let rows = c
-        .prepare(
-            "SELECT seq, ts, actor, action, target, details, prev_hash, hash FROM audit WHERE seq > ?1 ORDER BY seq LIMIT ?2",
-        )?
+        .prepare(&format!(
+            "SELECT seq, ts, actor, action, target, details, prev_hash, hash FROM audit \
+             WHERE seq > ?1 AND seq < ?2 ORDER BY seq {} LIMIT ?3",
+            if desc { "DESC" } else { "ASC" }
+        ))?
         .query_map(
-            catalog::rusqlite::params![f.after.unwrap_or(0), f.limit.unwrap_or(500).min(1000)],
+            catalog::rusqlite::params![
+                f.after.unwrap_or(0),
+                f.before.unwrap_or(i64::MAX),
+                f.limit.unwrap_or(500).min(1000)
+            ],
             |r| {
                 let d: String = r.get(5)?;
                 Ok(json!({

@@ -24,7 +24,7 @@ console TUI first boot. Plan §11.
 | `sources` | id, tenant, kind (`pve`), name, config (JSON: api host/port/ca_pem/token_id, token_secret, nodes, storage, fleecing_storage) |
 | `policies` | id, name, schedule (`daily HH:MM`, `hourly MM`), gfs (JSON {daily,weekly,monthly,yearly}), offsite (bool) |
 | `groups` | id, tenant, source_id, policy_id, name, guests (JSON [vmid]) |
-| `jobs` | id, kind, tenant, params (JSON), state (`queued`,`running`,`ok`,`failed`,`cancelled`), requested_by, created, started, finished, log |
+| `jobs` | id, kind, tenant, params (JSON), state (`queued`,`running`,`ok`,`failed`,`cancelled`), requested_by, created, started, finished, log, result (JSON, NULL until finished ok; v3) |
 | `snapshots` | tenant, source (`vm-100`/`ct-200`), time, size, local, offsite, lock_until, verified — refreshed by scheduler |
 | `quorum` | id, action, params (JSON), requested_by, created, decided_by, decided_at, state (`pending`,`approved`,`rejected`,`executed`,`expired`) |
 | `audit` | seq PK, ts, actor, action, target, details (JSON), prev_hash, hash |
@@ -60,12 +60,12 @@ Auth: `POST /auth/login {name, password, totp}` → `Set-Cookie: nx_session=…;
 | `GET/POST /groups`, `PUT/DELETE /groups/{id}` | admin (DELETE → quorum) | |
 | `GET/POST /users`, `PUT /users/{id}` | admin (privileged role grants → quorum) | POST returns the TOTP provisioning URI once |
 | `GET /snapshots?tenant=&source=` | read | local/offsite/lock/verified per snapshot |
-| `GET /jobs?state=&kind=`, `GET /jobs/{id}` (incl. log) | read | |
+| `GET /jobs?state=&kind=`, `GET /jobs/{id}` (incl. log) | read | `result` = structured job result (see Clarifications) |
 | `POST /jobs` `{kind, tenant, params}` | per kind (see RBAC) | returns job id; 202 |
 | `POST /jobs/{id}/cancel` | operator/admin | queued only |
 | `GET /downloads/{token}` | requester only | streams file, deleted after 24 h |
 | `GET /quorum`, `POST /quorum/{id}/approve`, `POST /quorum/{id}/reject` | security_officer (approve: not the requester) | |
-| `GET /audit?after=`, `GET /audit/verify` | admin, security_officer | |
+| `GET /audit?after=&before=&order=&limit=`, `GET /audit/verify` | admin, security_officer | oldest first after `after` (default); newest first with `before` or `order=desc` |
 | `GET /alerts`, `POST /alerts/{id}/ack` | read / operator+ | |
 
 Errors: `{error: "message"}` with 400/401/403/404/409/429. Quorum-gated requests answer **202** `{quorum_id}`.
@@ -79,6 +79,8 @@ Headers on every response: `Content-Security-Policy: default-src 'self'; script-
 - File restore: the web-api adds `download_token` (64 hex) to `files_get` params and returns it in the 202 body; the scheduler writes `/var/lib/nexus/downloads/<token>.<format>` (`format` = `tar`|`zip`). `GET /downloads/{token}` serves it only to the job's `requested_by`, only if younger than 24 h; the scheduler deletes it.
 - Quorum execution: on approval the web-api itself applies `tenant.delete`, `source.delete`, `policy.delete`, `policy.update`, `group.delete`, `group.update`, `user.update` (state → `executed`). Any other action (e.g. `gc` raised by the scheduler with `requested_by = "scheduler"`) only becomes `approved`; the scheduler executes it and sets `executed`. Pending requests older than 72 h become `expired` (audited).
 - Also quorum-gated: moving a group to a policy that is weaker in any dimension (`group.update`); creating an admin/security_officer (account is created *disabled*, the quorum request enables it; the TOTP URI is returned at creation); re-enabling such an account; demoting as well as disabling the last enabled admin/security_officer; resetting another admin's/security_officer's password or TOTP. Quorum params never expose password hashes or TOTP secrets.
+- Job results (`jobs.result`, written by the scheduler when a job finishes `ok`, returned as `result` by `GET /jobs` and `GET /jobs/{id}`): `files_list` → `{"entries": [{name, kind, size, mtime, mode?, link?}, …]}` (the JSON `nexus-pve … ls` prints); `files_get` → `{"download_token", "format", "entries": n, "size": bytes, "expires": unix}`; `backup` → `{"snapshots": [{"source", "time"}, …]}` plus top-level `source`/`time` when exactly one guest was committed. Other kinds: `null`.
+- Audit paging: `GET /audit?after=<seq>` returns entries with `seq > after` oldest first; `?order=desc` (no cursor) starts at the newest entry, `?before=<seq>` returns `seq < before` newest first (pages backwards; `order=asc` with `before` is 400). `limit` defaults to 500, max 1000.
 - `GET /quorum` is readable by admin, security_officer and operator. Tenant-scoped users (`users.tenant` set) see only their tenant's rows in every list (`users` included); `alerts` has no tenant column, so they get an empty list.
 
 ## Scheduler
