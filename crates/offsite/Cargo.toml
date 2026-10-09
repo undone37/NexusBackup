@@ -8,6 +8,9 @@ rust-version.workspace = true
 [dependencies]
 anyhow = "1"
 chunkstore = { path = "../chunkstore" }
+postcard = { version = "1", features = ["use-std"] }
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 tempfile = "3"

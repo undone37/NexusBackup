@@ -260,6 +260,21 @@ impl Store {
         })
     }
 
+    pub fn keys(&self) -> &Keyring {
+        &self.keys
+    }
+
+    /// Decodes a sealed manifest / index file of `source/time` (offsite copies).
+    pub fn decode_manifest(&self, source: &str, time: u64, sealed: &[u8]) -> io::Result<Manifest> {
+        let ctx = format!("manifest:{source}/{time}");
+        postcard::from_bytes(&self.keys.open(ctx.as_bytes(), sealed)?.1).map_err(invalid_ser)
+    }
+
+    pub fn decode_index(&self, source: &str, time: u64, name: &str, sealed: &[u8]) -> io::Result<Index> {
+        let ctx = format!("index:{source}/{time}/{name}");
+        postcard::from_bytes(&self.keys.open(ctx.as_bytes(), sealed)?.1).map_err(invalid_ser)
+    }
+
     pub fn compliance_now(&self) -> io::Result<u64> {
         self.clock.now()
     }
@@ -281,29 +296,52 @@ impl Store {
     /// Returns (chunk id, newly stored).
     pub fn insert_chunk(&self, data: &[u8]) -> io::Result<(ChunkId, bool)> {
         let id = self.keys.chunk_id(data);
-        let path = self.chunk_path(&id);
+        let new = self.store_sealed(&id, || Ok(self.keys.seal_chunk(&id, data)))?;
+        Ok((id, new))
+    }
+
+    /// Inserts an already sealed chunk (offsite restore / DR). It is fully
+    /// verified (AEAD + keyed hash) before it is accepted.
+    pub fn insert_chunk_raw(&self, id: &ChunkId, sealed: &[u8]) -> io::Result<bool> {
+        self.store_sealed(id, || {
+            self.keys.open_chunk(id, sealed)?;
+            Ok(sealed.to_vec())
+        })
+    }
+
+    /// The sealed bytes of a chunk exactly as stored (offsite packs).
+    pub fn read_chunk_raw(&self, id: &ChunkId) -> io::Result<Vec<u8>> {
+        fs::read(self.chunk_path(id))
+    }
+
+    fn store_sealed(&self, id: &ChunkId, sealed: impl FnOnce() -> io::Result<Vec<u8>>) -> io::Result<bool> {
+        let path = self.chunk_path(id);
         {
             let _g = self.chunk_lock.lock().unwrap();
             if Self::touch(&path)? {
-                return Ok((id, false));
+                return Ok(false);
             }
         }
         // seal + write outside the lock; only the rename is serialized against GC
-        let sealed = self.keys.seal_chunk(&id, data);
+        let sealed = sealed()?;
         let dir = path.parent().unwrap();
         fs::create_dir_all(dir)?;
-        let tmp = dir.join(format!("{}.tmp{}", hex(&id), rand::random::<u32>()));
+        let tmp = dir.join(format!("{}.tmp{}", hex(id), rand::random::<u32>()));
         let mut f = File::create(&tmp)?;
         f.write_all(&sealed)?;
         f.sync_all()?;
         let _g = self.chunk_lock.lock().unwrap();
         if Self::touch(&path)? {
             fs::remove_file(&tmp)?;
-            return Ok((id, false));
+            return Ok(false);
         }
         fs::rename(&tmp, &path)?;
         self.dirty_dirs.lock().unwrap().insert(dir.to_owned());
-        Ok((id, true))
+        Ok(true)
+    }
+
+    pub fn has_chunk(&self, id: &ChunkId) -> bool {
+        self.chunk_path(id).exists()
     }
 
     pub fn image_reader<'a>(&'a self, index: &'a Index) -> io::Result<ImageReader<'a>> {
@@ -498,6 +536,55 @@ impl Store {
         Ok(m)
     }
 
+    /// Sealed files of a committed snapshot, manifest last: `(file name, bytes)`.
+    pub fn snapshot_raw_files(&self, m: &Manifest) -> io::Result<Vec<(String, Vec<u8>)>> {
+        let dir = self.snap_dir(&m.source, m.time);
+        let mut out = Vec::new();
+        for name in &m.indexes {
+            let f = format!("{name}.idx");
+            out.push((f.clone(), fs::read(dir.join(&f))?));
+        }
+        out.push(("manifest".into(), fs::read(dir.join("manifest"))?));
+        Ok(out)
+    }
+
+    /// Imports a snapshot from sealed files (offsite restore / DR). Every file
+    /// is verified before anything is written; the manifest is written last.
+    /// The imported manifest keeps its lock; chunks must be inserted separately.
+    pub fn import_snapshot_raw(&self, source: &str, time: u64, files: &[(String, Vec<u8>)]) -> io::Result<Manifest> {
+        check_name(source)?;
+        let raw = |name: &str| {
+            files
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, b)| b)
+                .ok_or_else(|| invalid(format!("snapshot file {name} missing")))
+        };
+        let ctx = format!("manifest:{source}/{time}");
+        let m: Manifest =
+            postcard::from_bytes(&self.keys.open(ctx.as_bytes(), raw("manifest")?)?.1).map_err(invalid_ser)?;
+        for name in &m.indexes {
+            check_name(name)?;
+            let ctx = format!("index:{source}/{time}/{name}");
+            self.keys.open(ctx.as_bytes(), raw(&format!("{name}.idx"))?)?;
+        }
+        let dir = self.snap_dir(source, time);
+        if dir.join("manifest").exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("snapshot {source}/{time} exists"),
+            ));
+        }
+        fs::create_dir_all(&dir)?;
+        sync_dir(&self.root.join("snapshots"))?;
+        for name in &m.indexes {
+            write_atomic(&dir.join(format!("{name}.idx")), raw(&format!("{name}.idx"))?)?;
+        }
+        write_atomic(&dir.join("manifest"), raw("manifest")?)?;
+        sync_dir(dir.parent().unwrap())?;
+        Ok(m)
+    }
+
     pub fn load_manifest(&self, source: &str, time: u64) -> io::Result<Manifest> {
         check_name(source)?;
         let ctx = format!("manifest:{source}/{time}");
@@ -563,6 +650,32 @@ impl Store {
         fs::remove_file(dir.join("manifest"))?;
         sync_dir(&dir)?;
         fs::remove_dir_all(&dir)
+    }
+
+    /// Applies GFS retention to one source: kept snapshots get their locks
+    /// extended per class, the rest are deleted unless still locked.
+    /// Returns (kept, deleted, still_locked).
+    pub fn apply_retention(&self, source: &str, gfs: &crate::retention::Gfs) -> io::Result<(usize, usize, usize)> {
+        let snaps: Vec<Manifest> = self
+            .list_snapshots()?
+            .into_iter()
+            .filter(|m| m.source == source)
+            .collect();
+        let keep = crate::retention::keep(&snaps.iter().map(|m| m.time).collect::<Vec<_>>(), gfs);
+        let (mut deleted, mut locked) = (0, 0);
+        for m in &snaps {
+            match keep.get(&m.time) {
+                Some(classes) => {
+                    self.extend_lock(source, m.time, crate::retention::lock_until(m.time, classes))?;
+                }
+                None => match self.delete_snapshot(source, m.time) {
+                    Ok(()) => deleted += 1,
+                    Err(e) if e.kind() == io::ErrorKind::PermissionDenied => locked += 1,
+                    Err(e) => return Err(e),
+                },
+            }
+        }
+        Ok((keep.len(), deleted, locked))
     }
 
     /// All chunk IDs referenced by committed snapshots. Any unreadable

@@ -15,6 +15,10 @@ pub trait Remote: Send + Sync {
     /// Entries of a directory: `(name, size, is_dir)`; missing dir = empty.
     fn list(&self, dir: &str) -> io::Result<Vec<(String, u64, bool)>>;
     fn delete(&self, path: &str) -> io::Result<()>;
+    /// Removes an empty directory (best effort; backends without directories may ignore it).
+    fn remove_dir(&self, _dir: &str) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn check(path: &str) -> io::Result<()> {
@@ -89,6 +93,10 @@ impl Remote for LocalDir {
 
     fn delete(&self, path: &str) -> io::Result<()> {
         fs::remove_file(self.p(path)?)
+    }
+
+    fn remove_dir(&self, dir: &str) -> io::Result<()> {
+        fs::remove_dir(self.p(dir)?)
     }
 }
 

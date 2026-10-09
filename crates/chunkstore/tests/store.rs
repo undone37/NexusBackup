@@ -288,3 +288,33 @@ fn chunk_reader_streams_file() {
     s.chunk_reader(&chunks).read_to_end(&mut out).unwrap();
     assert_eq!(out, data);
 }
+
+#[test]
+fn retention_prunes_unlocked_and_extends_locks() {
+    use chunkstore::retention::Gfs;
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), 0, 0);
+    let day = 86400;
+    let base = s.compliance_now().unwrap() - 10 * day; // last 10 days
+    for i in 0..10 {
+        s.commit_snapshot("vm-1", base + i * day, &[] as &[(&str, Index)])
+            .unwrap();
+    }
+    let gfs = Gfs {
+        daily: 3,
+        weekly: 0,
+        monthly: 0,
+        yearly: 0,
+    };
+    assert_eq!(s.apply_retention("vm-1", &gfs).unwrap(), (3, 7, 0));
+    let left: Vec<u64> = s.list_snapshots().unwrap().iter().map(|m| m.time).collect();
+    assert_eq!(left, vec![base + 7 * day, base + 8 * day, base + 9 * day]);
+    assert_eq!(
+        s.load_manifest("vm-1", base + 9 * day).unwrap().lock_until,
+        base + 9 * day + 14 * day
+    );
+    // locked snapshots survive a stricter policy
+    let gfs1 = Gfs { daily: 1, ..gfs };
+    let (_, deleted, locked) = s.apply_retention("vm-1", &gfs1).unwrap();
+    assert_eq!((deleted, locked), (0, 2), "14-day locks from the first run hold");
+}
