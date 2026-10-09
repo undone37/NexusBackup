@@ -23,6 +23,8 @@ Restart=on-failure
 RestartSec=5s
 # 75 = a signed self-update was installed; restart into the new binary
 RestartForceExitStatus=75
+# ... and that exit is not a failure (no "Failed with result 'exit-code'" per update)
+SuccessExitStatus=75
 UMask=0077
 LimitNOFILE=65536
 # backups are background work

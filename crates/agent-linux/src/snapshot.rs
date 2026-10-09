@@ -64,7 +64,16 @@ impl Item {
         }
     }
 
+    /// Removing something that no longer exists succeeds: the journal records items
+    /// before they are created, and an admin may have removed a leftover by hand.
     fn remove(&self) -> Result<(), String> {
+        match self.remove_once() {
+            Err(e) if already_gone(&e) => Ok(()),
+            r => r,
+        }
+    }
+
+    fn remove_once(&self) -> Result<(), String> {
         match self {
             Item::Mount(p) => {
                 let r = sys::umount(p);
@@ -91,9 +100,17 @@ impl Item {
                 r
             }
             Item::Zfs(n) => run_tool("zfs", &["destroy", n]).map(drop),
+            Item::Btrfs(p) if fs::symlink_metadata(p).is_err() => Ok(()),
             Item::Btrfs(p) => run_tool("btrfs", &["subvolume", "delete", &p.to_string_lossy()]).map(drop),
         }
     }
+}
+
+/// lvremove / zfs destroy messages for objects that do not exist.
+fn already_gone(err: &str) -> bool {
+    err.contains("Failed to find logical volume")
+        || err.contains("could not find any snapshots to destroy")
+        || err.contains("dataset does not exist")
 }
 
 fn journal_read(paths: &Paths) -> Vec<Item> {
@@ -407,6 +424,27 @@ mod tests {
         journal_add(&p, &Item::Lvm("vg/root".into())).unwrap();
         let msgs = cleanup_leftovers(&p);
         assert!(msgs.iter().any(|m| m.contains("not ours")), "{msgs:?}");
+        assert_eq!(leftover_count(&p), 0);
+    }
+
+    #[test]
+    fn removing_what_is_gone_succeeds() {
+        // lab: two leftovers removed by hand stayed in the journal and were retried
+        // (and logged as failures) at every start
+        assert!(already_gone(
+            "lvremove -f -y vg/nexus-snap-3-1: exit status: 5 Failed to find logical volume \"vg/nexus-snap-3-1\""
+        ));
+        assert!(already_gone(
+            "zfs destroy tank/a@nexus-snap-1: exit status: 1 could not find any snapshots to destroy; check snapshot names."
+        ));
+        assert!(!already_gone(
+            "lvremove: exit status: 5 Logical volume vg/x contains a filesystem in use."
+        ));
+        let t = tempfile::tempdir().unwrap();
+        let p = paths(t.path());
+        ensure_dir(&p.state, 0o700).unwrap();
+        journal_add(&p, &Item::Btrfs(t.path().join(BTRFS_DIR).join("nexus-snap-7"))).unwrap();
+        assert!(cleanup_leftovers(&p).iter().all(|m| m.starts_with("removed leftover")));
         assert_eq!(leftover_count(&p), 0);
     }
 
