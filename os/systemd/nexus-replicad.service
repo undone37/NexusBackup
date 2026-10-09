@@ -1,0 +1,61 @@
+[Unit]
+Description=NexusBackup replication service (serves sealed snapshots read-only to the web-api, docs/replication.md)
+ConditionPathExists=/var/lib/nexus/setup-done
+
+[Service]
+Type=exec
+ExecStart=/usr/libexec/nexus/nexus-replicad /var/lib/nexus/replicad /run/nexus-replicad/replicad.sock /var/lib/nexus/chunkstore nexus-webapi
+# The tenant stores are 0700/0600 nexus-chunkstore: same uid, but its own SELinux
+# domain (nexus_replicad_t) with read-only access to them and no keyd access.
+User=nexus-chunkstore
+Group=nexus-replicad
+Restart=on-failure
+
+# Socket + published ca.pem / seal.pub: 0750 nexus-chunkstore:nexus-replicad; the
+# web-api is a member of nexus-replicad; replicad also checks the peer uid.
+RuntimeDirectory=nexus-replicad
+RuntimeDirectoryMode=0750
+# replication CA key + token-sealing key (tmpfiles.d/nexus.conf: 0700)
+ReadWritePaths=/var/lib/nexus/replicad
+# stores stay read-only (ProtectSystem=strict); keys, catalog and the other
+# services' state are not even visible
+InaccessiblePaths=-/run/nexus-keyd -/var/lib/nexus/keyd -/var/lib/nexus/catalog -/var/lib/nexus/scheduler
+InaccessiblePaths=-/var/lib/nexus/escrow -/var/lib/nexus/offsite -/var/lib/nexus/downloads -/etc/nexus
+UMask=0027
+LimitCORE=0
+
+# No network at all: the web-api terminates TLS and forwards over the Unix socket.
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateIPC=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

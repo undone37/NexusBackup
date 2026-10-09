@@ -35,7 +35,13 @@ pub const ACTOR: &str = "setup";
 pub const NM_CONNECTION: &str = "nexus-mgmt";
 /// `[0]` is restarted after a network reconfiguration (new TLS SAN). keyd is
 /// needed by the scheduler (tenant keys); it requires `keyd init` (done in setup).
-pub const SERVICES: [&str; 3] = ["nexus-web-api.service", "nexus-scheduler.service", "nexus-keyd.service"];
+/// nexus-replicad serves replication peers through the web-api (docs/replication.md).
+pub const SERVICES: [&str; 4] = [
+    "nexus-web-api.service",
+    "nexus-scheduler.service",
+    "nexus-keyd.service",
+    "nexus-replicad.service",
+];
 pub const WEB_PORT: u16 = 8443;
 
 // ---------------------------------------------------------------- paths
@@ -1005,7 +1011,7 @@ impl Setup {
         let mut args = vec!["enable", "--now"];
         args.extend(SERVICES);
         self.cmd("systemctl", &args)
-            .context("setup is complete, but starting the services failed; run: systemctl enable --now nexus-web-api nexus-scheduler nexus-keyd")?;
+            .context("setup is complete, but starting the services failed; run: systemctl enable --now nexus-web-api nexus-scheduler nexus-keyd nexus-replicad")?;
         Ok(())
     }
 

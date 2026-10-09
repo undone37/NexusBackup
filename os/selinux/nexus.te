@@ -61,10 +61,12 @@ nexus_daemon(webapi)
 nexus_daemon(scheduler)
 nexus_daemon(setup)
 nexus_daemon(nftsync)
+nexus_daemon(replicad)
 nexus_job(pve)
 nexus_job(offsite)
 nexus_job(agentctl)
 nexus_job(truenas)
+nexus_job(replica)
 
 # restore micro-VM (EL's qemu-kvm, entered from nexus_pve_t only)
 type nexus_restorevm_t, nexus_domain;
@@ -115,6 +117,12 @@ files_type(nexus_agent_ca_t)
 # backup agents listen on 7444/tcp (docs/agent-protocol.md)
 type nexus_agent_port_t;
 corenet_port(nexus_agent_port_t)
+type nexus_replicad_var_lib_t;	# replication CA key + token-sealing key (nexus-replicad only)
+files_type(nexus_replicad_var_lib_t)
+type nexus_replicad_var_run_t;	# replicad socket, published ca.pem / seal.pub (web-api reads)
+files_pid_file(nexus_replicad_var_run_t)
+type nexus_replica_key_t;	# secondary: client key + certificate per replication source (nexus-replica only)
+files_type(nexus_replica_key_t)
 
 ########################################
 # Common to all nexus domains: the basics of a Rust program on glibc.
@@ -153,8 +161,19 @@ neverallow nexus_restorevm_t self:{ tcp_socket udp_socket } create;
 # The agent CA keys sign agent certificates and authenticate the appliance to every
 # agent: only nexus-agentctl reads them (not even the scheduler that spawns it).
 neverallow { nexus_domain -nexus_agentctl_t } nexus_agent_ca_t:file { read open };
-# The web API never reads chunks, keys or the PVE/SFTP credentials.
-neverallow nexus_webapi_t { nexus_store_t nexus_keyd_var_lib_t nexus_sshkey_t nexus_scheduler_var_run_t }:file { read open };
+# The web API never reads chunks, keys or the PVE/SFTP credentials (nor the
+# replication CA key: it only gets the CA certificate from replicad's runtime dir).
+neverallow nexus_webapi_t { nexus_store_t nexus_keyd_var_lib_t nexus_sshkey_t nexus_scheduler_var_run_t nexus_replicad_var_lib_t nexus_replica_key_t }:file { read open };
+# Replication (docs/replication.md): replicad serves the stores read-only, never
+# reaches keyd and has no network; the replication CA key and the secondary's
+# client keys are private to replicad / nexus-replica.
+neverallow nexus_replicad_t nexus_store_t:file { write append create unlink rename setattr };
+neverallow nexus_replicad_t nexus_store_t:dir { write add_name remove_name rmdir create };
+neverallow nexus_replicad_t nexus_keyd_t:unix_stream_socket connectto;
+neverallow nexus_replicad_t { nexus_keyd_var_run_t nexus_catalog_t }:dir search;
+neverallow nexus_replicad_t self:{ tcp_socket udp_socket } create;
+neverallow { nexus_domain -nexus_replicad_t } nexus_replicad_var_lib_t:file { read open };
+neverallow { nexus_domain -nexus_replica_t } nexus_replica_key_t:file { read open };
 
 ########################################
 # keyd: own state + socket. No network (PrivateNetwork=yes in the unit as well).
@@ -476,3 +495,36 @@ files_dontaudit_search_home(nexus_truenas_t)
 # files get: tar/zip downloads for the web-api
 manage_files_pattern(nexus_truenas_t, nexus_downloads_t, nexus_downloads_t)
 allow nexus_truenas_t nexus_downloads_t:dir rw_dir_perms;
+
+########################################
+# Replication (docs/replication.md).
+#
+# nexus-replicad (primary): reads the tenant stores (sealed manifests, indexes,
+# chunks) and serves them to the web-api over its Unix socket; keeps the
+# replication CA and the token-sealing key; no network, no keyd, no catalog.
+
+list_dirs_pattern(nexus_replicad_t, nexus_store_t, nexus_store_t)
+read_files_pattern(nexus_replicad_t, nexus_store_t, nexus_store_t)
+manage_dirs_pattern(nexus_replicad_t, nexus_replicad_var_lib_t, nexus_replicad_var_lib_t)
+manage_files_pattern(nexus_replicad_t, nexus_replicad_var_lib_t, nexus_replicad_var_lib_t)
+# runtime dir (RuntimeDirectory=): socket, ca.pem, seal.pub (written via tmp + rename)
+manage_sock_files_pattern(nexus_replicad_t, nexus_replicad_var_run_t, nexus_replicad_var_run_t)
+manage_files_pattern(nexus_replicad_t, nexus_replicad_var_run_t, nexus_replicad_var_run_t)
+allow nexus_replicad_t nexus_replicad_var_run_t:dir rw_dir_perms;
+allow nexus_replicad_t self:unix_stream_socket { listen accept };
+# resolve the allowed peer user (nexus-webapi) to its uid
+auth_read_passwd(nexus_replicad_t)
+
+# web-api: connect to replicad only, read the published CA certificate + sealing key
+stream_connect_pattern(nexus_webapi_t, nexus_replicad_var_run_t, nexus_replicad_var_run_t, nexus_replicad_t)
+read_files_pattern(nexus_webapi_t, nexus_replicad_var_run_t, nexus_replicad_var_run_t)
+
+# nexus-replica (secondary, job domain like nexus-offsite: job dir, stores, keyd):
+# outbound TLS to the primary's management port (8443 = http_port_t; NAT-forwarded
+# lab ports are unreserved), its client key + certificate per replication source.
+domtrans_pattern(nexus_scheduler_t, nexus_replica_exec_t, nexus_replica_t)
+corenet_tcp_connect_http_port(nexus_replica_t)
+corenet_tcp_connect_all_unreserved_ports(nexus_replica_t)
+manage_dirs_pattern(nexus_replica_t, nexus_replica_key_t, nexus_replica_key_t)
+manage_files_pattern(nexus_replica_t, nexus_replica_key_t, nexus_replica_key_t)
+filetrans_pattern(nexus_replica_t, nexus_store_t, nexus_replica_key_t, dir, "replica")

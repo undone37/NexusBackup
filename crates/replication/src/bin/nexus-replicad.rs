@@ -35,7 +35,11 @@ fn main() -> Result<()> {
     let sock = Path::new(socket);
     let dir = sock.parent().context("socket path")?;
     // published files keep the runtime dir's group (nexus-replicad: the web-api)
-    let gid = std::fs::metadata(dir).ok().map(|m| m.gid());
+    // (no chown when it is our own group already: the unit's syscall filter has no @chown)
+    let gid = std::fs::metadata(dir)
+        .ok()
+        .map(|m| m.gid())
+        .filter(|g| *g != unsafe { libc::getegid() });
     r.publish(dir, gid).context("publishing ca.pem / seal.pub")?;
     let _ = std::fs::remove_file(sock);
     let l = UnixListener::bind(sock)?;

@@ -15,3 +15,4 @@ enable nexus-nft-sync.timer
 disable nexus-keyd.service
 disable nexus-web-api.service
 disable nexus-scheduler.service
+disable nexus-replicad.service

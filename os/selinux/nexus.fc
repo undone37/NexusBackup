@@ -8,6 +8,8 @@
 /usr/libexec/nexus/nexus-offsite	--	gen_context(system_u:object_r:nexus_offsite_exec_t,s0)
 /usr/libexec/nexus/nexus-agentctl	--	gen_context(system_u:object_r:nexus_agentctl_exec_t,s0)
 /usr/libexec/nexus/nexus-truenas	--	gen_context(system_u:object_r:nexus_truenas_exec_t,s0)
+/usr/libexec/nexus/nexus-replicad	--	gen_context(system_u:object_r:nexus_replicad_exec_t,s0)
+/usr/libexec/nexus/nexus-replica	--	gen_context(system_u:object_r:nexus_replica_exec_t,s0)
 /usr/libexec/nexus/nexus-setup		--	gen_context(system_u:object_r:nexus_setup_exec_t,s0)
 /usr/libexec/nexus/nexus-nft-sync	--	gen_context(system_u:object_r:nexus_nftsync_exec_t,s0)
 
@@ -29,6 +31,8 @@
 /var/lib/nexus/scheduler(/.*)?			gen_context(system_u:object_r:nexus_store_t,s0)
 /var/lib/nexus/scheduler/secrets\.key	--	gen_context(system_u:object_r:nexus_scheduler_secret_t,s0)
 /var/lib/nexus/scheduler/agent-ca(/.*)?		gen_context(system_u:object_r:nexus_agent_ca_t,s0)
+/var/lib/nexus/scheduler/replica(/.*)?		gen_context(system_u:object_r:nexus_replica_key_t,s0)
+/var/lib/nexus/replicad(/.*)?			gen_context(system_u:object_r:nexus_replicad_var_lib_t,s0)
 /var/lib/nexus/webapi(/.*)?			gen_context(system_u:object_r:nexus_webapi_var_lib_t,s0)
 /var/lib/nexus/escrow(/.*)?			gen_context(system_u:object_r:nexus_escrow_t,s0)
 /var/lib/nexus/update(/.*)?			gen_context(system_u:object_r:nexus_update_t,s0)
@@ -43,4 +47,5 @@
 /run/nexus-keyd(/.*)?				gen_context(system_u:object_r:nexus_keyd_var_run_t,s0)
 /run/nexus-scheduler(/.*)?			gen_context(system_u:object_r:nexus_scheduler_var_run_t,s0)
 /run/nexus-nft(/.*)?				gen_context(system_u:object_r:nexus_nft_var_run_t,s0)
+/run/nexus-replicad(/.*)?			gen_context(system_u:object_r:nexus_replicad_var_run_t,s0)
 /run/nexus-nft-sync(/.*)?			gen_context(system_u:object_r:nexus_nftsync_var_run_t,s0)
