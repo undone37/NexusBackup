@@ -77,7 +77,7 @@ fn new_token() -> String {
 }
 
 pub fn install_command(token: &str) -> String {
-    format!("nexus-agent init --token {token}")
+    format!("/usr/local/sbin/nexus-agent init --token {token}")
 }
 
 /// New token: digest sealed to the scheduler, bound to id + endpoint.

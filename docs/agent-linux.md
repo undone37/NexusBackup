@@ -14,7 +14,8 @@ echo '<token from the UI>' | sudo ./install.sh --token -          # on the serve
 
 `install.sh` installs `/usr/local/sbin/nexus-agent`, `/etc/systemd/system/nexus-agent.service`,
 `/etc/nexus-agent/{hooks.d/{pre,post},release-keys}` and, with a token, runs
-`nexus-agent init` and starts the service. Other commands: `nexus-agent status`,
+`nexus-agent init` and starts the service. Other commands (as root; with `sudo` use the full
+path `/usr/local/sbin/nexus-agent`, EL and Fedora keep `/usr/local/sbin` out of sudo's `secure_path`): `nexus-agent status`,
 `nexus-agent hooks test`, `nexus-agent init --token <T>` (re-enrollment; also clears the
 lock after 5 failed proofs), `nexus-agent run` (the service).
 

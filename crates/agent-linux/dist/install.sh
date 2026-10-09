@@ -99,5 +99,6 @@ cat <<EOF
 
 Allow TCP ${port:-7444} from the appliance only (firewalld: a rich rule with the
 appliance address; ufw: 'ufw allow from <appliance> to any port ${port:-7444} proto tcp').
-Database dumps: see $CONF/hooks.d/pre/*.example, then 'nexus-agent hooks test'.
+Database dumps: see $CONF/hooks.d/pre/*.example, then '$BIN hooks test'
+(full path: /usr/local/sbin is not in sudo's secure_path on EL/Fedora).
 EOF
