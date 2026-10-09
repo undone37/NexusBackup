@@ -11,13 +11,24 @@
 //! parsers with limits, validated paths, nothing from it reaches a shell or a
 //! file system path on the appliance.
 
+//!
+//! Without the `connector` feature only names/validation and the forced
+//! command generator are built (used by web-api and scheduler).
+
+#[cfg(feature = "connector")]
 pub mod api;
+#[cfg(feature = "connector")]
 pub mod backup;
+#[cfg(feature = "connector")]
 pub mod diff;
 pub mod fc;
+#[cfg(feature = "connector")]
 pub mod remote;
+#[cfg(feature = "connector")]
 pub mod stream;
+#[cfg(feature = "connector")]
 pub mod tree;
+#[cfg(feature = "connector")]
 pub mod walk;
 
 /// Index name inside a dataset snapshot (same as agent host snapshots).
@@ -78,7 +89,11 @@ pub fn parse_snap_name(source_id: u64, name: &str) -> Option<u64> {
 /// Relative path from TrueNAS: raw bytes, `/`-separated, no empty, `.` or `..`
 /// component, no NUL, at most [`MAX_PATH`] bytes.
 pub fn valid_rel_path(p: &[u8]) -> bool {
-    p.len() <= MAX_PATH && agent_conn::valid_rel_path(p)
+    !p.is_empty()
+        && p.len() <= MAX_PATH
+        && !p.contains(&0)
+        && p.split(|b| *b == b'/')
+            .all(|c| !c.is_empty() && c != b"." && c != b"..")
 }
 
 #[cfg(test)]

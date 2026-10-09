@@ -5,21 +5,28 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# the connector (API client, SSH streams, tree builder, CLI); without it only
+# names/validation and the forced-command generator (web-api, scheduler)
+default = ["connector"]
+connector = ["dep:agent-conn", "dep:chunkstore", "dep:keyd", "dep:libc", "dep:pem", "dep:rustls", "dep:serde", "dep:serde_json", "dep:tungstenite"]
+
 [dependencies]
-agent-conn = { path = "../agent-conn" }
+agent-conn = { path = "../agent-conn", optional = true }
 anyhow = "1"
-chunkstore = { path = "../chunkstore" }
-keyd = { path = "../keyd" }
-libc = "0.2"
-pem = "3"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+chunkstore = { path = "../chunkstore", optional = true }
+keyd = { path = "../keyd", optional = true }
+libc = { version = "0.2", optional = true }
+pem = { version = "3", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"], optional = true }
 
 [[bin]]
 name = "nexus-truenas"
 path = "src/main.rs"
+required-features = ["connector"]
 
 [dev-dependencies]
 sha2 = "0.10"

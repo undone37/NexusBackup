@@ -244,14 +244,41 @@ fn sealed_config(pk: &SealKey, id: i64, cfg: &PveConfig) -> ApiResult<String> {
     Ok(v.to_string())
 }
 
-/// Removes the secret, adds `token_secret_set`.
+/// Removes every secret (`token_secret`, `key_pem`, at any depth) and adds
+/// `<field>_set: bool` next to it (`token_secret_set` always, as before).
+/// TrueNAS sources also get `authorized_keys`, the line to paste on TrueNAS.
 fn public_config(raw: &str) -> Value {
+    fn strip(v: &mut Value) {
+        match v {
+            Value::Object(o) => {
+                for k in catalog::secret::SECRET_FIELDS {
+                    if let Some(s) = o.remove(*k) {
+                        o.insert(format!("{k}_set"), json!(s.as_str().is_some_and(|s| !s.is_empty())));
+                    }
+                }
+                o.values_mut().for_each(strip);
+            }
+            Value::Array(a) => a.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
     let mut v: Value = serde_json::from_str(raw).unwrap_or_default();
+    strip(&mut v);
     if let Some(o) = v.as_object_mut() {
-        let set = o
-            .remove("token_secret")
-            .is_some_and(|s| s.as_str().is_some_and(|s| !s.is_empty()));
-        o.insert("token_secret_set".into(), json!(set));
+        o.entry("token_secret_set").or_insert(json!(false));
+        if o.get("ssh").is_some_and(|s| s.get("public_key").is_some()) {
+            let mut c = Value::Object(o.clone());
+            c.as_object_mut().unwrap().remove("token_secret_set");
+            if let Some(s) = c["ssh"].as_object_mut() {
+                s.remove("key_pem_set");
+            }
+            if let Some(line) = serde_json::from_value::<TrueNasConfig>(c)
+                .ok()
+                .and_then(|t| t.authorized_keys())
+            {
+                o.insert("authorized_keys".into(), json!(line));
+            }
+        }
     }
     v
 }
@@ -298,6 +325,173 @@ impl LinuxConfig {
             }
         }
         Ok(())
+    }
+}
+
+fn https_port() -> u16 {
+    443
+}
+fn ssh_port() -> u16 {
+    22
+}
+fn truenas_user() -> String {
+    "nexusbackup".into()
+}
+
+/// SSH endpoint of a TrueNAS source. `key_pem` (the appliance's private key)
+/// is write-only and sealed, bound to host/port/user/host_key.
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct TrueNasSsh {
+    host: String,
+    #[serde(default = "ssh_port")]
+    port: u16,
+    #[serde(default = "truenas_user")]
+    user: String,
+    /// `ssh-ed25519 AAAA…` (pinned, no TOFU)
+    host_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    key_pem: Option<String>,
+    /// public half of `key_pem`: the web-api returns the authorized_keys line for it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    public_key: Option<String>,
+    /// `from="…"` of the authorized_keys line (appliance address as TrueNAS sees it)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    from: Option<String>,
+}
+
+/// TrueNAS source (docs/truenas-connector.md). `token_secret` = API key of
+/// `user` (write-only, sealed, bound to host/port/connect_addr/ca_pem/user).
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct TrueNasConfig {
+    host: String,
+    #[serde(default = "https_port")]
+    port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    connect_addr: Option<String>,
+    /// the TrueNAS certificate (pinned) and/or the CA that issued it
+    ca_pem: String,
+    #[serde(default = "truenas_user")]
+    user: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    token_secret: Option<String>,
+    ssh: TrueNasSsh,
+    datasets: Vec<String>,
+    #[serde(default)]
+    recursive: bool,
+    #[serde(default = "yes")]
+    sudo: bool,
+    #[serde(default = "yes")]
+    zfs_sudo: bool,
+}
+
+fn unix_user(s: &str, what: &str) -> ApiResult<()> {
+    let ok = (1..=32).contains(&s.len())
+        && s.bytes().next().is_some_and(|b| b.is_ascii_lowercase() || b == b'_')
+        && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-".contains(&b));
+    if ok {
+        Ok(())
+    } else {
+        Err(ApiError::bad(format!("{what}: expected a user name [a-z_][a-z0-9_-]{{0,31}}")))
+    }
+}
+
+/// `<type> <base64>` (an SSH public host key, no comment needed).
+fn ssh_public_key(s: &str, what: &str) -> ApiResult<()> {
+    let mut it = s.split_whitespace();
+    let ok = s.len() <= 8192
+        && it.next().is_some_and(|t| {
+            matches!(
+                t,
+                "ssh-ed25519" | "ecdsa-sha2-nistp256" | "ecdsa-sha2-nistp384" | "ecdsa-sha2-nistp521" | "ssh-rsa"
+            )
+        })
+        && it
+            .next()
+            .is_some_and(|b| b.bytes().all(|c| c.is_ascii_alphanumeric() || b"+/=".contains(&c)))
+        && !s.contains(['\n', '\r', '\0']);
+    if ok {
+        Ok(())
+    } else {
+        Err(ApiError::bad(format!("{what}: expected `ssh-ed25519 AAAA…`")))
+    }
+}
+
+impl TrueNasConfig {
+    fn fc(&self) -> truenas::fc::Fc {
+        truenas::fc::Fc {
+            datasets: self.datasets.clone(),
+            recursive: self.recursive,
+            sudo: self.sudo,
+            zfs_sudo: self.zfs_sudo,
+        }
+    }
+
+    fn check(&self) -> ApiResult<()> {
+        validate::host(&self.host)?;
+        validate::host(&self.ssh.host).map_err(|_| ApiError::bad("ssh.host: invalid host name or address"))?;
+        if self.port == 0 || self.ssh.port == 0 {
+            return Err(ApiError::bad("port: must be 1..=65535"));
+        }
+        if let Some(a) = &self.connect_addr {
+            a.parse::<std::net::SocketAddr>()
+                .map_err(|_| ApiError::bad("connect_addr: expected ip:port"))?;
+        }
+        if self.ca_pem.len() > 64 << 10 || !self.ca_pem.contains("-----BEGIN CERTIFICATE-----") {
+            return Err(ApiError::bad("ca_pem: expected a PEM certificate (at most 64 KiB)"));
+        }
+        unix_user(&self.user, "user")?;
+        unix_user(&self.ssh.user, "ssh.user")?;
+        if let Some(s) = &self.token_secret {
+            if s.is_empty() || s.len() > 256 || !s.bytes().all(|b| b.is_ascii_graphic()) {
+                return Err(ApiError::bad("token_secret: the API key, 1..=256 printable characters"));
+            }
+        }
+        ssh_public_key(&self.ssh.host_key, "ssh.host_key")?;
+        if let Some(k) = &self.ssh.key_pem {
+            if k.len() > 16 << 10 || !k.contains("PRIVATE KEY-----") {
+                return Err(ApiError::bad("ssh.key_pem: expected a PEM/OpenSSH private key (at most 16 KiB)"));
+            }
+        }
+        if self.datasets.is_empty() || self.datasets.len() > 64 {
+            return Err(ApiError::bad("datasets: 1..=64 datasets"));
+        }
+        for d in &self.datasets {
+            if !truenas::valid_dataset(d) {
+                return Err(ApiError::bad(format!(
+                    "datasets: {d:?} is not supported (pool/a/b, components of A-Z a-z 0-9 _ -)"
+                )));
+            }
+            if self
+                .datasets
+                .iter()
+                .filter(|o| truenas::under(d, o) || truenas::under(o, d))
+                .count()
+                > 1
+            {
+                return Err(ApiError::bad(format!("datasets: {d:?} overlaps another dataset")));
+            }
+        }
+        if let Some(p) = &self.ssh.public_key {
+            ssh_public_key(p, "ssh.public_key")?;
+            validate::text(p, "ssh.public_key", 8192)?;
+        }
+        // the forced command must be buildable from this config (also checks `from`)
+        truenas::fc::authorized_keys(
+            &self.fc(),
+            &truenas::fc::Tools::default(),
+            self.ssh.public_key.as_deref().unwrap_or("ssh-ed25519 AAAA"),
+            self.ssh.from.as_deref(),
+        )
+        .map_err(|e| ApiError::bad(format!("ssh: {e:#}")))?;
+        Ok(())
+    }
+
+    /// The line for the TrueNAS user's "SSH public key" field (None without public_key).
+    fn authorized_keys(&self) -> Option<String> {
+        let pk = self.ssh.public_key.as_deref()?;
+        truenas::fc::authorized_keys(&self.fc(), &truenas::fc::Tools::default(), pk, self.ssh.from.as_deref()).ok()
     }
 }
 
@@ -387,7 +581,42 @@ pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -
             )?;
             return Ok(created(out));
         }
-        _ => return Err(ApiError::bad("kind: `pve` or `linux`")),
+        "truenas" => {
+            let cfg: TrueNasConfig = parse_config(r.config)?;
+            cfg.check()?;
+            if cfg.token_secret.is_none() || cfg.ssh.key_pem.is_none() {
+                return Err(ApiError::bad("config.token_secret and config.ssh.key_pem: required"));
+            }
+            let pk = st.seal_key()?;
+            let (id, out) = {
+                let mut c = st.cat.conn();
+                if !exists(&c, "SELECT 1 FROM tenants WHERE name = ?1", [&r.tenant])? {
+                    return Err(ApiError::bad("tenant: does not exist"));
+                }
+                let tx = c.transaction()?;
+                tx.execute(
+                    "INSERT INTO sources (tenant, kind, name, config) VALUES (?1, 'truenas', ?2, '{}')",
+                    params![r.tenant, r.name],
+                )?;
+                let id = tx.last_insert_rowid();
+                let mut v = serde_json::to_value(&cfg).map_err(anyhow::Error::from)?;
+                pk.seal_all(&source_owner(id), &mut v)?;
+                tx.execute(
+                    "UPDATE sources SET config = ?2 WHERE id = ?1",
+                    params![id, v.to_string()],
+                )?;
+                tx.commit()?;
+                (id, source_json(&c, id)?)
+            };
+            st.audit(
+                ctx.name(),
+                "source.create",
+                &format!("source/{id}"),
+                json!({"tenant": r.tenant, "kind": "truenas", "name": r.name, "config": out["config"]}),
+            )?;
+            return Ok(created(out));
+        }
+        _ => return Err(ApiError::bad("kind: `pve`, `linux` or `truenas`")),
     }
     let r = PveSourceReq {
         config: parse_config(r.config)?,
@@ -452,6 +681,57 @@ pub async fn update_source(
             c.execute(
                 "UPDATE sources SET name = ?2, config = ?3 WHERE id = ?1",
                 params![id, r.name, json!(cfg).to_string()],
+            )?;
+            source_json(&c, id)?
+        };
+        st.audit(
+            ctx.name(),
+            "source.update",
+            &format!("source/{id}"),
+            json!({"name": r.name, "config": out["config"]}),
+        )?;
+        return Ok(Json(out));
+    }
+    if kind == "truenas" {
+        let mut cfg: TrueNasConfig = parse_config(r.config)?;
+        cfg.check()?;
+        let pk = st.seal_key()?;
+        let out = {
+            let c = st.cat.conn();
+            let old: String = c
+                .query_row("SELECT config FROM sources WHERE id = ?1", [id], |r| r.get(0))
+                .optional()?
+                .ok_or_else(ApiError::not_found)?;
+            let old: Value = serde_json::from_str(&old).unwrap_or_default();
+            let new = serde_json::to_value(&cfg).map_err(anyhow::Error::from)?;
+            // keeping a stored secret is only allowed for the same endpoint (see PVE below)
+            if cfg.token_secret.is_none() {
+                if ["host", "port", "connect_addr", "ca_pem", "user"]
+                    .iter()
+                    .any(|k| old.get(*k) != new.get(*k))
+                {
+                    return Err(ApiError::bad(
+                        "config.token_secret: required when host, port, connect_addr, ca_pem or user change",
+                    ));
+                }
+                cfg.token_secret = old["token_secret"].as_str().map(str::to_owned);
+            }
+            if cfg.ssh.key_pem.is_none() {
+                if ["host", "port", "user", "host_key"]
+                    .iter()
+                    .any(|k| old["ssh"].get(*k) != new["ssh"].get(*k))
+                {
+                    return Err(ApiError::bad(
+                        "config.ssh.key_pem: required when ssh.host, ssh.port, ssh.user or ssh.host_key change",
+                    ));
+                }
+                cfg.ssh.key_pem = old["ssh"]["key_pem"].as_str().map(str::to_owned);
+            }
+            let mut v = serde_json::to_value(&cfg).map_err(anyhow::Error::from)?;
+            pk.seal_all(&source_owner(id), &mut v)?;
+            c.execute(
+                "UPDATE sources SET name = ?2, config = ?3 WHERE id = ?1",
+                params![id, r.name, v.to_string()],
             )?;
             source_json(&c, id)?
         };
@@ -743,6 +1023,20 @@ fn check_group(
             ));
         }
         *guests = vec![agent];
+    } else if kind == "truenas" {
+        // guests = datasets of the source (empty = all of them)
+        let cfg: Value = serde_json::from_str(&config).unwrap_or_default();
+        let all: Vec<Value> = cfg["datasets"].as_array().cloned().unwrap_or_default();
+        if guests.is_empty() {
+            *guests = all;
+        } else if guests.iter().any(|g| !all.contains(g)) {
+            return Err(ApiError::bad(
+                "guests: a truenas source's group lists datasets of that source (or none = all)",
+            ));
+        } else {
+            guests.sort_by_key(|g| g.as_str().unwrap_or_default().to_owned());
+            guests.dedup();
+        }
     } else {
         let mut ids = Vec::with_capacity(guests.len());
         for g in guests.iter() {

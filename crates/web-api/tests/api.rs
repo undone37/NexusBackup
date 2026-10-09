@@ -2421,3 +2421,151 @@ async fn agent_jobs_rbac_and_confirmation() {
     );
     t.finish();
 }
+
+fn truenas_cfg(api_key: Option<&str>, key_pem: Option<&str>) -> Value {
+    let mut c = json!({
+        "host": "nas.lab", "port": 443, "connect_addr": "192.0.2.20:443",
+        "ca_pem": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+        "user": "nexusbackup",
+        "ssh": {"host": "192.0.2.20", "port": 22, "user": "nexusbackup",
+                "host_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHostKey",
+                "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIApplianceKey nexus@appliance",
+                "from": "192.0.2.10"},
+        "datasets": ["tank/data", "tank/smb"], "recursive": true
+    });
+    if let Some(k) = api_key {
+        c["token_secret"] = json!(k);
+    }
+    if let Some(k) = key_pem {
+        c["ssh"]["key_pem"] = json!(k);
+    }
+    c
+}
+
+/// TrueNAS sources: API key + SSH private key write-only and sealed (bound to
+/// their endpoints), authorized_keys line returned, group guests = datasets,
+/// `nas-<id>-<dataset>` snapshots accepted by file jobs, validation.
+#[tokio::test]
+async fn truenas_sources() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let key = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3Blbn\n-----END OPENSSH PRIVATE KEY-----\n";
+    let src = |cfg: Value| json!({"tenant": "acme", "kind": "truenas", "name": "nas", "config": cfg});
+    for cfg in [truenas_cfg(None, Some(key)), truenas_cfg(Some("1-abc"), None)] {
+        let r = t.post("/api/v1/sources", &admin, src(cfg)).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    }
+    let r = t
+        .post("/api/v1/sources", &admin, src(truenas_cfg(Some("1-s3cr3tapikey"), Some(key))))
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    let sid = r.body["id"].as_i64().unwrap();
+    let c = &r.body["config"];
+    assert_eq!(c["token_secret_set"], true);
+    assert_eq!(c["ssh"]["key_pem_set"], true);
+    let line = c["authorized_keys"].as_str().unwrap();
+    assert!(line.starts_with("restrict,from=\"192.0.2.10\",command=\""), "{line}");
+    assert!(line.ends_with("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIApplianceKey nexus@appliance"));
+    assert!(line.contains("A=\\\"tank/data tank/smb\\\""), "{line}");
+    let raw = String::from_utf8(t.get("/api/v1/sources", &admin).await.raw).unwrap();
+    assert!(
+        !raw.contains("s3cr3t") && !raw.contains("PRIVATE KEY") && !raw.contains("sealed:v1:"),
+        "{raw}"
+    );
+    let stored = t.scalar::<String>(&format!("SELECT config FROM sources WHERE id = {sid}"));
+    let mut v: Value = serde_json::from_str(&stored).unwrap();
+    assert!(v["token_secret"].as_str().unwrap().starts_with("sealed:v1:"));
+    assert!(v["ssh"]["key_pem"].as_str().unwrap().starts_with("sealed:v1:"));
+    t.sk.open_all(&source_owner(sid), &mut v).unwrap();
+    assert_eq!(v["token_secret"], "1-s3cr3tapikey");
+    assert_eq!(v["ssh"]["key_pem"], key);
+
+    // update without secrets: kept for the same endpoints, refused when they move
+    let url = format!("/api/v1/sources/{sid}");
+    let mut cfg = truenas_cfg(None, None);
+    cfg["recursive"] = json!(false);
+    let r = t.put(&url, &admin, json!({"name": "nas", "config": cfg})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.body["config"]["token_secret_set"], true);
+    assert_eq!(r.body["config"]["ssh"]["key_pem_set"], true);
+    let mut moved = truenas_cfg(None, None);
+    moved["ssh"]["host"] = json!("203.0.113.9");
+    let r = t.put(&url, &admin, json!({"name": "nas", "config": moved})).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(r.body["error"].as_str().unwrap().contains("ssh.key_pem"));
+    let mut moved = truenas_cfg(None, None);
+    moved["ca_pem"] = json!("-----BEGIN CERTIFICATE-----\nOTHER\n-----END CERTIFICATE-----\n");
+    let r = t.put(&url, &admin, json!({"name": "nas", "config": moved})).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(r.body["error"].as_str().unwrap().contains("token_secret"));
+
+    // validation
+    for (field, val) in [
+        ("datasets", json!([])),
+        ("datasets", json!(["tank/a b"])),
+        ("datasets", json!(["tank/a.b"])),
+        ("datasets", json!(["tank/a", "tank/a/b"])),
+        ("user", json!("Root!")),
+        ("ssh.user", json!("x;id")),
+        ("ssh.host_key", json!("not a key")),
+        ("ssh.public_key", json!("ssh-ed25519 AAAA\"evil")),
+        ("ssh.from", json!("1.2.3.4\",command=\"sh")),
+        ("ssh.key_pem", json!("no key")),
+        ("connect_addr", json!("nas:443")),
+        ("ca_pem", json!("x")),
+        ("token_secret", json!("with space")),
+        ("unknown", json!(1)),
+    ] {
+        let mut c = truenas_cfg(Some("1-k"), Some(key));
+        match field.split_once('.') {
+            Some((a, b)) => c[a][b] = val,
+            None => c[field] = val,
+        }
+        let r = t.post("/api/v1/sources", &admin, src(c)).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{field}: {:?}", r.body);
+    }
+
+    // groups: guests are datasets of the source (empty = all)
+    let pol = t.post("/api/v1/policies", &admin, policy(7, false)).await.body["id"]
+        .as_i64()
+        .unwrap();
+    let group = |name: &str, guests: Value| {
+        json!({"tenant": "acme", "source_id": sid, "policy_id": pol, "name": name, "guests": guests})
+    };
+    let g = t.post("/api/v1/groups", &admin, group("nas", json!([]))).await;
+    assert_eq!(g.status, StatusCode::CREATED, "{:?}", g.body);
+    assert_eq!(g.body["guests"], json!(["tank/data", "tank/smb"]));
+    let g = t.post("/api/v1/groups", &admin, group("nas2", json!(["tank/smb"]))).await;
+    assert_eq!(g.status, StatusCode::CREATED);
+    let g = t.post("/api/v1/groups", &admin, group("nas3", json!(["tank/other"]))).await;
+    assert_eq!(g.status, StatusCode::BAD_REQUEST);
+
+    // file jobs accept nas-<id>-<dataset> snapshots; restore_files does not (download only)
+    let snap = format!("nas-{sid}-tank.data");
+    t.st.cat
+        .conn()
+        .execute(
+            "INSERT INTO snapshots (tenant, source, time, size, local, offsite) VALUES ('acme', ?1, 1000, 1, 1, 0)",
+            [&snap],
+        )
+        .unwrap();
+    let files = |source: &str| {
+        json!({"kind": "files_list", "tenant": "acme", "params": {"source": source, "time": 1000, "path": "/"}})
+    };
+    let r = t.post("/api/v1/jobs", &admin, files(&snap)).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    for bad in ["nas-x-tank", "nas-1-tank..a", "nas-1-"] {
+        let r = t.post("/api/v1/jobs", &admin, files(bad)).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &admin,
+            json!({"kind": "restore_files", "tenant": "acme", "params": {"source": snap, "time": 1000,
+                   "paths": ["/a"], "target": "/r", "overwrite": "never", "confirm": "x"}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    t.finish();
+}

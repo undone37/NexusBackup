@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 anyhow = "1"
 catalog = { path = "../catalog" }
+truenas = { path = "../truenas", default-features = false }
 chunkstore = { path = "../chunkstore" }
 keyd = { path = "../keyd" }
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "rustls-tls"] }

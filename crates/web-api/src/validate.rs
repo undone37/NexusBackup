@@ -93,8 +93,13 @@ pub fn host_path(s: &str, what: &str) -> ApiResult<()> {
     Ok(())
 }
 
-/// `vm-<vmid>`, `ct-<vmid>` or `host-<agent_id>`.
+/// `vm-<vmid>`, `ct-<vmid>`, `host-<agent_id>` or `nas-<source-id>-<dataset>` (TrueNAS).
 pub fn source_ref(s: &str) -> ApiResult<()> {
+    if s.starts_with("nas-") {
+        return truenas::parse_source_name(s)
+            .map(|_| ())
+            .ok_or_else(|| ApiError::bad("source: expected nas-<source-id>-<pool.dataset>"));
+    }
     if let Some(a) = s.strip_prefix("host-") {
         return agent_id(a).map_err(|_| ApiError::bad("source: expected vm-<vmid>, ct-<vmid> or host-<agent_id>"));
     }

@@ -81,7 +81,20 @@ DROP TABLE sources;
 ALTER TABLE sources_v4 RENAME TO sources;
 "#;
 
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4];
+/// v5: TrueNAS sources (docs/truenas-connector.md): kind `truenas`, same
+/// rebuild as v4 (ids, rows, constraints kept; foreign keys checked). The
+/// previous release skips it and fails jobs of `truenas` sources as unsupported.
+const SCHEMA_V5: &str = r#"
+CREATE TABLE sources_v5 (
+  id INTEGER PRIMARY KEY, tenant TEXT NOT NULL REFERENCES tenants(name),
+  kind TEXT NOT NULL CHECK (kind IN ('pve','linux','truenas')),
+  name TEXT NOT NULL, config TEXT NOT NULL, UNIQUE (tenant, name));
+INSERT INTO sources_v5 (id, tenant, kind, name, config) SELECT id, tenant, kind, name, config FROM sources;
+DROP TABLE sources;
+ALTER TABLE sources_v5 RENAME TO sources;
+"#;
+
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5];
 
 pub fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
@@ -237,7 +250,7 @@ mod tests {
         }
         let c = Catalog::open(&p).unwrap();
         let v: i64 = c.conn().pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-        assert_eq!(v, 4);
+        assert_eq!(v, MIGRATIONS.len() as i64);
         let fk: i64 = c.conn().pragma_query_value(None, "foreign_keys", |r| r.get(0)).unwrap();
         assert_eq!(fk, 1, "foreign keys back on");
         let row: (i64, String, String, String) = c
@@ -291,6 +304,66 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    /// v5 rebuilds `sources` again (kind `truenas`): pve + linux rows, ids and
+    /// references survive; the previous release (4 migrations) can still read the file.
+    #[test]
+    fn migration_v5_adds_truenas_sources() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.pragma_update(None, "foreign_keys", "ON").unwrap();
+            for (i, m) in MIGRATIONS[..4].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                r#"INSERT INTO tenants (name) VALUES ('acme');
+                 INSERT INTO sources (id, tenant, kind, name, config) VALUES (7, 'acme', 'pve', 'cluster', '{}');
+                 INSERT INTO sources (id, tenant, kind, name, config) VALUES (9, 'acme', 'linux', 'web', '{"agent_id":"a"}');
+                 INSERT INTO policies (id, name, schedule, gfs) VALUES (1, 'p', 'daily 22:00', '{}');
+                 INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (3, 'acme', 9, 1, 'g', '["a"]');"#,
+            )
+            .unwrap();
+            assert!(c
+                .execute(
+                    "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', 'truenas', 'n', '{}')",
+                    []
+                )
+                .is_err());
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let rows: Vec<(i64, String)> = conn
+            .prepare("SELECT id, kind FROM sources ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows, vec![(7, "pve".into()), (9, "linux".into())]);
+        assert!(
+            conn.execute("DELETE FROM sources WHERE id = 9", []).is_err(),
+            "group reference kept"
+        );
+        conn.execute(
+            "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', 'truenas', 'nas1', '{}')",
+            [],
+        )
+        .unwrap();
+        assert!(conn
+            .execute(
+                "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', 'nfs', 'x', '{}')",
+                []
+            )
+            .is_err());
+        drop(conn);
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..4].iter().skip(v as usize).count(), 0);
     }
 
     #[test]

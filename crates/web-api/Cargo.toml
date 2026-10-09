@@ -15,6 +15,7 @@ anyhow = "1"
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }
 agent-proto = { path = "../agent-proto" }
 catalog = { path = "../catalog" }
+truenas = { path = "../truenas", default-features = false }
 hyper = "1"
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "http1", "http2", "service"] }
 rand = "0.8"
