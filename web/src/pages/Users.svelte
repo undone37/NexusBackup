@@ -1,0 +1,197 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { get, post, put, act, errText, type Outcome } from '../lib/api';
+  import { notify } from '../lib/notify.svelte';
+  import { ROLES } from '../lib/roles';
+  import { fmtTime } from '../lib/format';
+  import { t } from '../lib/i18n';
+  import type { Role, Tenant, User } from '../lib/types';
+  import Modal from '../components/Modal.svelte';
+  import Qr from '../components/Qr.svelte';
+  import ErrorBanner from '../components/ErrorBanner.svelte';
+
+  // POST /users -> {user, totp_uri}; PUT /users/{id} -> {user, totp_uri?}. Quorum-gated
+  // answers (202) carry the same fields next to quorum_id.
+  type UserResp = { user?: User; totp_uri?: string };
+
+  let items: User[] = $state([]);
+  let tenants: Tenant[] = $state([]);
+  let error: string | null = $state(null);
+  let loaded = $state(false);
+
+  async function load() {
+    try {
+      [items, tenants] = await Promise.all([get<User[]>('/users'), get<Tenant[]>('/tenants')]);
+      error = null;
+    } catch (e) {
+      error = errText(e);
+    }
+    loaded = true;
+  }
+  onMount(load);
+
+  let open = $state(false);
+  let editing: User | null = $state(null);
+  let f = $state({ name: '', password: '', role: 'operator' as Role, tenant: '', disabled: false });
+  const privileged = $derived(f.role === 'admin' || f.role === 'security_officer');
+
+  // TOTP enrollment (shown once after create / reset)
+  let enroll = $state<{ name: string; uri: string; pending: boolean } | null>(null);
+  let enrollOpen = $state(false);
+  const secret = $derived(enroll ? (new URL(enroll.uri).searchParams.get('secret') ?? '') : '');
+
+  function edit(x: User | null) {
+    editing = x;
+    f = { name: x?.name ?? '', password: '', role: x?.role ?? 'operator', tenant: x?.tenant ?? '', disabled: x?.disabled ?? false };
+    open = true;
+  }
+
+  function showEnroll(name: string, r: Outcome<UserResp> | null) {
+    if (r?.data.totp_uri) {
+      enroll = { name, uri: r.data.totp_uri, pending: r.quorum };
+      enrollOpen = true;
+    }
+  }
+
+  async function save(e: SubmitEvent) {
+    e.preventDefault();
+    const tenant = f.tenant || null;
+    if (!editing) {
+      const r = await act(post<UserResp>('/users', { name: f.name, password: f.password, role: f.role, tenant }), t.created);
+      if (!r) return;
+      open = false;
+      showEnroll(f.name, r);
+    } else {
+      const body: Record<string, unknown> = { role: f.role, tenant, disabled: f.disabled };
+      if (f.password) body.password = f.password;
+      const r = await act(put<UserResp>(`/users/${editing.id}`, body), t.saved);
+      if (!r) return;
+      open = false;
+    }
+    load();
+  }
+
+  async function resetTotp(x: User) {
+    if (!confirm(t.users.resetConfirm)) return;
+    showEnroll(x.name, await act(put<UserResp>(`/users/${x.id}`, { reset_totp: true }), t.saved));
+  }
+
+  async function copy(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      notify('ok', t.users.copied);
+    } catch {
+      /* clipboard unavailable (non-secure context): the text is selectable */
+    }
+  }
+</script>
+
+<div class="page-head">
+  <h1>{t.users.title}</h1>
+  <button type="button" class="primary" onclick={() => edit(null)}>{t.users.new}</button>
+</div>
+<ErrorBanner {error} />
+
+<div class="card">
+  {#if !loaded}
+    <p class="muted" aria-busy="true">{t.loading}</p>
+  {:else}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">{t.name}</th>
+            <th scope="col">{t.users.role}</th>
+            <th scope="col">{t.tenant}</th>
+            <th scope="col">{t.state}</th>
+            <th scope="col">{t.jobs.created}</th>
+            <th scope="col"><span class="visually-hidden">{t.actions}</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each items as x (x.id)}
+            <tr>
+              <td><strong>{x.name}</strong></td>
+              <td>{t.roles[x.role] ?? x.role}</td>
+              <td>{x.tenant ?? t.allTenants}</td>
+              <td>
+                <span class="chip {x.disabled ? 'bad' : 'ok'}">{x.disabled ? t.users.disabled : t.users.active}</span>
+              </td>
+              <td class="nowrap">{fmtTime(x.created)}</td>
+              <td class="actions">
+                <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
+                <button type="button" class="small" onclick={() => resetTotp(x)}>{t.users.resetTotp}</button>
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  {/if}
+</div>
+
+<Modal bind:open title={editing ? `${t.users.title}: ${editing.name}` : t.users.new}>
+  <form onsubmit={save}>
+    {#if !editing}
+      <div class="field">
+        <label for="u-name">{t.name}</label>
+        <input id="u-name" bind:value={f.name} required autocomplete="off" autocapitalize="none" spellcheck="false" />
+      </div>
+    {/if}
+    <div class="field">
+      <label for="u-pw">{editing ? t.users.passwordNew : t.users.password}</label>
+      <input id="u-pw" type="password" bind:value={f.password} minlength="12" required={!editing} autocomplete="new-password" />
+    </div>
+    <div class="form-grid">
+      <div class="field">
+        <label for="u-role">{t.users.role}</label>
+        <select id="u-role" bind:value={f.role}>
+          {#each ROLES as r (r)}<option value={r}>{t.roles[r]}</option>{/each}
+        </select>
+      </div>
+      <div class="field">
+        <label for="u-tenant">{t.tenant}</label>
+        <select id="u-tenant" bind:value={f.tenant} required={f.role === 'tenant_user'} aria-describedby="u-tenant-hint">
+          <option value="">{t.allTenants}</option>
+          {#each tenants as tn (tn.name)}<option value={tn.name}>{tn.name}</option>{/each}
+        </select>
+        <div class="hint" id="u-tenant-hint">{t.users.tenantHint}</div>
+      </div>
+    </div>
+    {#if privileged && editing?.role !== f.role}<p class="banner info">{t.users.privilegedHint}</p>{/if}
+    {#if editing}
+      <div class="field">
+        <label class="inline-check"><input type="checkbox" bind:checked={f.disabled} />{t.users.disabled}</label>
+      </div>
+    {/if}
+    <div class="form-actions">
+      <button type="button" onclick={() => (open = false)}>{t.cancel}</button>
+      <button type="submit" class="primary">{editing ? t.save : t.create}</button>
+    </div>
+  </form>
+</Modal>
+
+<Modal bind:open={enrollOpen} title="{t.users.enroll}: {enroll?.name ?? ''}">
+  {#if enroll}
+    <p>{t.users.enrollHint}</p>
+    {#if enroll.pending}<p class="banner pending">{t.users.enrollPending}</p>{/if}
+    <div class="qr-box">
+      <Qr text={enroll.uri} label="{t.users.enroll} {enroll.name}" />
+      <div>
+        <div class="field">
+          <span class="muted">{t.users.secret}</span>
+          <code class="secret">{secret}</code>
+          <button type="button" class="small" onclick={() => copy(secret)}>{t.users.copy}</button>
+        </div>
+        <div class="field">
+          <span class="muted">{t.users.uri}</span>
+          <code class="secret">{enroll.uri}</code>
+          <button type="button" class="small" onclick={() => copy(enroll!.uri)}>{t.users.copy}</button>
+        </div>
+      </div>
+    </div>
+    <div class="form-actions">
+      <button type="button" class="primary" onclick={() => (enrollOpen = false)}>{t.close}</button>
+    </div>
+  {/if}
+</Modal>
