@@ -8,6 +8,7 @@ use File::Basename qw(dirname);
 use File::Temp qw(tempdir);
 use IO::Socket::UNIX;
 use POSIX ();
+use Scalar::Util ();
 use Socket qw(SOCK_STREAM);
 use Test::More;
 
@@ -115,8 +116,9 @@ ok(!defined($prov->job_init(1760000000)), 'job_init');
 is_deeply($prov->backup_init(101, 'qemu', 1760000200), { 'archive-name' => 'nexus-101-1760000200' },
     'backup_init');
 is($prov->backup_get_mechanism(101, 'qemu'), 'nbd', 'mechanism qemu');
-like((eval { $prov->backup_get_mechanism(101, 'lxc') } // $@), qr/not supported in v1/,
-    'mechanism lxc dies');
+is($prov->backup_get_mechanism(101, 'lxc'), 'directory', 'mechanism lxc');
+like((eval { $prov->backup_get_mechanism(101, 'foo') } // $@), qr/unsupported guest type/,
+    'mechanism unknown type dies');
 is_deeply($prov->backup_vm_query_incremental(101, { 'drive-scsi0' => { size => 1 },
     'drive-scsi1' => { size => 1 } }), { 'drive-scsi0' => 'use', 'drive-scsi1' => 'new' },
     'query_incremental');
@@ -251,5 +253,288 @@ close($fh);
 $prov->backup_handle_log_file(101, $logf);
 is(do { local (@ARGV, $/) = ("$tmp/state/nexus/logs/nexus-101-1760000200.log"); <> },
     "INFO: hello\n", 'task log copied');
+
+# --- containers --------------------------------------------------------------
+# Inputs from vzdump/PVE are tainted in API workers; make ours tainted too.
+my $TAINTED = do { open(my $fh, '<', __FILE__) or die; my $l = <$fh>; close($fh); substr($l, 0, 0) };
+sub taint { return $_[0] . $TAINTED }
+ok(Scalar::Util::tainted(taint('x')), 'test inputs are tainted');
+
+put_index(JSON->new->encode({
+    version => 1,
+    archives => [
+        { volname => 'backup/nexus-101-1760000100', vmid => 101, ctime => 1760000100,
+          devices => ['drive-scsi0'], device_sizes => { 'drive-scsi0' => 6144 }, config => "cores: 2\n" },
+        { volname => 'backup/nexus-200-1760000300', vmid => 200, type => 'lxc', ctime => 1760000300,
+          size => 10240, devices => [], config => "arch: amd64\nunprivileged: 1\n", firewall => undef },
+        { volname => 'backup/nexus-201-1760000400', vmid => 201, type => 'bogus', ctime => 1760000400 },
+    ],
+}));
+my %sub = map { $_->{vmid} => $_->{subtype} } $P->list_volumes('nexus', $scfg, undef, ['backup'])->@*;
+is_deeply(\%sub, { 101 => 'qemu', 200 => 'lxc', 201 => 'qemu' }, 'list: subtype from catalog type');
+is_deeply([map { "$_->{vmid}:$_->{type}" } $P->prune_backups($scfg, 'nexus', {}, undef, 'lxc', 0, undef)->@*],
+    ['200:lxc'], 'prune lxc lists containers only');
+is(scalar(grep { $_->{vmid} == 200 } $P->prune_backups($scfg, 'nexus', {}, undef, 'qemu', 0, undef)->@*), 0,
+    'prune qemu skips containers');
+is(scalar($P->volume_size_info($scfg, 'nexus', 'backup/nexus-200-1760000300')), 10240, 'ct size');
+is($prov->archive_get_guest_config('backup/nexus-200-1760000300', 'nexus'), "arch: amd64\nunprivileged: 1\n",
+    'ct guest config');
+is_deeply([$prov->restore_get_mechanism('backup/nexus-200-1760000300', 'nexus')], ['directory', 'lxc'],
+    'restore mechanism lxc');
+is_deeply([$prov->restore_get_mechanism('backup/nexus-101-1760000100', 'nexus')], ['qemu-img', 'qemu'],
+    'restore mechanism qemu');
+is_deeply($prov->backup_vm_query_incremental(200, { 'drive-scsi0' => { size => 1 } }),
+    { 'drive-scsi0' => 'new' }, 'query_incremental ignores container archives');
+
+# tar command line
+{
+    my $cmd = PVE::BackupProvider::Plugin::NexusBackup::ct_tar_command(
+        { directory => taint('/mnt/vzsnap0'), sources => [taint('.'), taint('./data')],
+          'backup-user-id' => 100000 },
+        [taint('/tmp/?*'), taint('*.cache'), taint('/var/run/?*.pid')]);
+    is_deeply($cmd, ['tar', '--create', '--file=-', '--numeric-owner', '--xattrs', '--xattrs-include=*',
+        '--acls', '--sparse', '--one-file-system', '--preserve-permissions', '--warning=no-file-ignored',
+        '--directory=/mnt/vzsnap0', '--no-anchored', '--exclude=lost+found', '--exclude=*.cache',
+        '--anchored', '--exclude=./tmp/?*', '--exclude=./var/run/?*.pid', '--', '.', './data'],
+        'tar command (unprivileged, excludes, mount point source)');
+    ok(!grep({ Scalar::Util::tainted($_) } @$cmd), 'tar command is untainted');
+    my $priv = PVE::BackupProvider::Plugin::NexusBackup::ct_tar_command(
+        { directory => '/x', 'backup-user-id' => 0 }, []);
+    ok(!grep({ $_ eq '--exclude=lost+found' } @$priv), 'privileged: lost+found kept');
+    is($priv->[-1], '.', 'default source .');
+    for my $bad ({ directory => 'rel' }, { directory => "/x\n" }, { directory => '/x', sources => ['/etc'] },
+        { directory => '/x', sources => ['../x'] }) {
+        ok(!eval { PVE::BackupProvider::Plugin::NexusBackup::ct_tar_command($bad, []); 1 },
+            'invalid tar input rejected');
+    }
+    ok(!eval { PVE::BackupProvider::Plugin::NexusBackup::ct_tar_command({ directory => '/x' }, ["a\nb"]); 1 },
+        'invalid exclude pattern rejected');
+}
+
+# a small container root
+my $ctroot = "$tmp/ctroot";
+system('mkdir', '-p', "$ctroot/etc", "$ctroot/tmp", "$ctroot/home/u", "$ctroot/lost+found") == 0 or die;
+my %files = ("etc/shadow" => "root:*:1::::::\n", "home/u/marker" => "marker " . rand() . "\n",
+    "tmp/junk" => "x", "home/u/skip.me" => "y");
+for my $f (keys %files) {
+    open(my $fh, '>', "$ctroot/$f") or die;
+    print {$fh} $files{$f};
+    close($fh);
+}
+chmod(0640, "$ctroot/etc/shadow");
+chmod(0751, "$ctroot/home/u");
+symlink('marker', "$ctroot/home/u/link") or die;
+
+my $ct_info = sub {
+    return { directory => taint($_[0] // $ctroot), sources => [taint('.')], 'backup-user-id' => 100000,
+        'firewall-config' => "[OPTIONS]\nenable: 1\n" };
+};
+
+# Fake appliance for ct-stream: reads the records, stores the tar, answers $answer.
+sub ct_appliance {
+    my ($answer) = @_;
+    my $pid = fork() // die;
+    return $pid if $pid;
+    for (1 .. 100) {
+        last if -e "$jobs/200.json";
+        select(undef, undef, undef, 0.05);
+    }
+    my $job = eval { JSON->new->decode(do { local (@ARGV, $/) = ("$jobs/200.json"); <> }) } // POSIX::_exit(2);
+    POSIX::_exit(3) if $job->{type} ne 'lxc' || $job->{archive} ne 'nexus-200-1760000300'
+        || $job->{socket} ne "$jobs/200.ct.sock" || $job->{firewall} ne "[OPTIONS]\nenable: 1\n";
+    POSIX::_exit(4) if ((stat("$jobs/200.ct.sock"))[2] & 0777) != 0660;
+    my $c = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => "$jobs/200.ct.sock") or POSIX::_exit(5);
+    binmode($c);
+    my $read = sub {
+        my ($n) = @_;
+        my $buf = '';
+        while (length($buf) < $n) {
+            my $r = sysread($c, $buf, $n - length($buf), length($buf));
+            POSIX::_exit(6) if !$r;
+        }
+        return $buf;
+    };
+    my ($tar, $cfg, $end) = ('', undef, undef);
+    while (!defined($end)) {
+        my ($tag, $len) = unpack('aN', $read->(5));
+        my $data = $len ? $read->($len) : '';
+        if ($tag eq 'C') { $cfg = $data }
+        elsif ($tag eq 'D') { $tar .= $data }
+        elsif ($tag eq 'E') { $end = $data }
+        else { POSIX::_exit(7) }
+    }
+    open(my $out, '>', "$tmp/got.tar") or POSIX::_exit(8);
+    print {$out} $tar;
+    close($out);
+    open($out, '>', "$tmp/got.end") or POSIX::_exit(8);
+    print {$out} "$end\n" . ($cfg // '');
+    close($out);
+    syswrite($c, $answer) if defined($answer);
+    shutdown($c, 1);
+    my $rest;
+    1 while sysread($c, $rest, 4096); # node closes after reading the answer
+    POSIX::_exit(0);
+}
+
+# backup_container runs in a forked child (PVE: run_in_userns -> run_fork)
+sub run_ct_backup {
+    my ($info, $excl) = @_;
+    my $pid = fork() // die;
+    if (!$pid) {
+        eval { $prov->backup_container(200, "arch: amd64\n", $excl, $info) };
+        if (my $err = $@) {
+            open(my $fh, '>', "$tmp/ct.err");
+            print {$fh} $err;
+            close($fh);
+            POSIX::_exit(1);
+        }
+        POSIX::_exit(0);
+    }
+    waitpid($pid, 0);
+    my $rc = $? >> 8;
+    my $err = $rc ? do { local (@ARGV, $/) = ("$tmp/ct.err"); <> } : undef;
+    return ($rc, $err);
+}
+
+is_deeply($prov->backup_init(200, 'lxc', 1760000300), { 'archive-name' => 'nexus-200-1760000300' },
+    'backup_init lxc');
+{
+    my $app = ct_appliance("ok\n");
+    ok(eval { $prov->backup_container_prepare(200, $ct_info->()); 1 }, 'backup_container_prepare') or diag($@);
+    my ($rc, $err) = run_ct_backup($ct_info->(), [taint('/tmp/?*'), taint('skip.me')]);
+    is($rc, 0, 'backup_container ok') or diag($err);
+    waitpid($app, 0);
+    is($? >> 8, 0, 'fake appliance got a valid job, stream and status');
+    my $stats = $prov->backup_cleanup(200, 'lxc', 1, {});
+    is($stats->{stats}->{'archive-size'}, -s "$tmp/got.tar", 'archive-size = stream length');
+    ok(!-e "$jobs/200.json" && !-e "$jobs/200.ct.sock", 'job file and socket removed');
+    is(do { local (@ARGV, $/) = ("$tmp/got.end"); <> }, "ok\narch: amd64\n", 'status ok, config record');
+
+    my %list;
+    open(my $tl, '-|', 'tar', '--list', '--verbose', '--numeric-owner', '--file', "$tmp/got.tar") or die;
+    while (<$tl>) {
+        my ($mode, $path) = m/^(\S+)\s.*\s(\.\/\S*?)(?: -> \S+)?$/ or next;
+        $list{$path} = $mode;
+    }
+    close($tl);
+    is($list{'./etc/shadow'}, '-rw-r-----', 'shadow mode in stream');
+    is($list{'./home/u/'}, 'drwxr-x--x', 'dir mode in stream');
+    ok(exists $list{'./home/u/marker'} && exists $list{'./home/u/link'}, 'file and symlink in stream');
+    ok(!exists $list{'./tmp/junk'}, 'anchored exclude applied');
+    ok(exists $list{'./tmp/'}, 'excluded dir itself kept');
+    ok(!exists $list{'./home/u/skip.me'}, 'floating exclude applied');
+    ok(!grep({ m/lost\+found/ } keys %list), 'lost+found excluded (unprivileged)');
+}
+{
+    my $app = ct_appliance("fail store full\n");
+    $prov->backup_container_prepare(200, $ct_info->());
+    my ($rc, $err) = run_ct_backup($ct_info->(), []);
+    like($err // '', qr/appliance reported failure: store full/, 'appliance failure propagates');
+    waitpid($app, 0);
+    @log = ();
+    is_deeply($prov->backup_cleanup(200, 'lxc', 0, { error => $err }), {}, 'cleanup after failure');
+    ok(!(grep { $_->[1] =~ /snapshot is kept/ } @log), 'no committed snapshot claimed');
+    ok(!-e "$jobs/200.json" && !-e "$jobs/200.ct.sock", 'job files removed (fail)');
+}
+{
+    my $app = ct_appliance(undef); # closes without answering
+    $prov->backup_container_prepare(200, $ct_info->());
+    my ($rc, $err) = run_ct_backup($ct_info->("$tmp/does-not-exist"), []);
+    like($err // '', qr/tar failed/, 'tar failure dies');
+    waitpid($app, 0);
+    like(do { local (@ARGV, $/) = ("$tmp/got.end"); <> }, qr/^fail tar failed/, 'appliance sees E fail');
+    $prov->backup_cleanup(200, 'lxc', 0, {});
+}
+{
+    $prov->backup_container_prepare(200, $ct_info->());
+    my $t0 = time();
+    my ($rc, $err) = run_ct_backup($ct_info->(), []);
+    like($err // '', qr/timeout waiting for the NexusBackup appliance/, 'no appliance: timeout');
+    ok(time() - $t0 <= 6, 'timeout honours nexus-job-timeout');
+    $prov->backup_cleanup(200, 'lxc', 0, {});
+    ok(!-e "$jobs/200.json" && !-e "$jobs/200.ct.sock", 'job files removed (timeout)');
+}
+
+# --- container restore ---------------------------------------------------------
+$PVE::BackupProvider::Plugin::NexusBackup::STAGEDIR = "$tmp/stage";
+my $rarch = 'nexus-200-1760000300';
+my $tarbytes = do { local (@ARGV, $/) = ("$tmp/got.tar"); <> };
+# the failure case above overwrote got.tar; recreate a full stream
+{
+    my $app = ct_appliance("ok\n");
+    $prov->backup_container_prepare(200, $ct_info->());
+    run_ct_backup($ct_info->(), [taint('/tmp/?*')]);
+    waitpid($app, 0);
+    $prov->backup_cleanup(200, 'lxc', 1, {});
+    $tarbytes = do { local (@ARGV, $/) = ("$tmp/got.tar"); <> };
+}
+
+# Fake ct-restore-serve: waits for the request, listens, sends length + $data.
+sub ct_serve {
+    my ($len, $data) = @_;
+    my $pid = fork() // die;
+    return $pid if $pid;
+    for (1 .. 100) {
+        last if -e "$tmp/restore/$rarch.json";
+        select(undef, undef, undef, 0.05);
+    }
+    my $req = eval { JSON->new->decode(do { local (@ARGV, $/) = ("$tmp/restore/$rarch.json"); <> }) }
+        // POSIX::_exit(2);
+    POSIX::_exit(3) if $req->{type} ne 'lxc' || $req->{archive} ne $rarch;
+    my $l = IO::Socket::UNIX->new(Type => SOCK_STREAM, Local => "$tmp/restore/.x.sock", Listen => 1)
+        or POSIX::_exit(4);
+    rename("$tmp/restore/.x.sock", "$tmp/restore/$rarch.ct.sock") or POSIX::_exit(5);
+    my $c = $l->accept() or POSIX::_exit(6);
+    binmode($c);
+    my $buf = pack('NN', int($len / 4294967296), $len % 4294967296) . $data;
+    my $off = 0;
+    while ($off < length($buf)) {
+        my $w = syswrite($c, $buf, length($buf) - $off, $off);
+        last if !$w;
+        $off += $w;
+    }
+    close($c);
+    POSIX::_exit(0);
+}
+
+ok(!eval { $prov->restore_container_init('backup/nexus-101-1760000100', 'nexus', {}); 1 },
+    'restore_container_init refuses VM archives');
+{
+    my $srv = ct_serve(length($tarbytes), $tarbytes);
+    my $res = eval { $prov->restore_container_init("backup/$rarch", 'nexus', {}) };
+    is_deeply($res, { 'archive-directory' => "$tmp/stage/$rarch" }, 'restore_container_init') or diag($@);
+    waitpid($srv, 0);
+    is($? >> 8, 0, 'fake ct-restore-serve ok');
+    my $d = "$tmp/stage/$rarch";
+    is((stat($d))[2] & 07777, (stat($ctroot))[2] & 07777, 'staging dir gets the archived root mode');
+    is((stat("$tmp/stage"))[2] & 07777, 0700, 'staging root 0700');
+    is(do { local (@ARGV, $/) = ("$d/home/u/marker"); <> }, $files{'home/u/marker'}, 'marker restored');
+    is((stat("$d/etc/shadow"))[2] & 07777, 0640, 'shadow mode restored');
+    is((stat("$d/home/u"))[2] & 07777, 0751, 'dir mode restored');
+    is(readlink("$d/home/u/link"), 'marker', 'symlink restored');
+    ok(!-e "$d/tmp/junk", 'excluded file absent');
+    ok(!-e "$tmp/restore/$rarch.json", 'request removed');
+    ok(eval { $prov->restore_container_cleanup("backup/$rarch", 'nexus', {}); 1 }, 'cleanup') or diag($@);
+    ok(!-e $d, 'staging dir removed');
+}
+{
+    my $srv = ct_serve(length($tarbytes) + 100, $tarbytes); # truncated stream
+    like((eval { $prov->restore_container_init("backup/$rarch", 'nexus', {}) } // $@),
+        qr/closed the stream early/, 'truncated restore stream dies');
+    waitpid($srv, 0);
+    ok(!-e "$tmp/stage/$rarch" && !-e "$tmp/restore/$rarch.json", 'cleaned up after truncation');
+}
+{
+    my $srv = ct_serve(1024, "\x01" x 1024); # not a tar
+    like((eval { $prov->restore_container_init("backup/$rarch", 'nexus', {}) } // $@),
+        qr/tar extraction failed/, 'garbage stream dies');
+    waitpid($srv, 0);
+    ok(!-e "$tmp/stage/$rarch", 'cleaned up after tar failure');
+}
+{
+    like((eval { $prov->restore_container_init("backup/$rarch", 'nexus', {}) } // $@),
+        qr/timeout after 3s/, 'restore without appliance times out');
+    ok(!-e "$tmp/stage/$rarch" && !-e "$tmp/restore/$rarch.json", 'cleaned up after timeout');
+}
 
 done_testing();

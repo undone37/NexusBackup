@@ -89,6 +89,17 @@ pub struct Manifest {
     pub lock_until: u64,
 }
 
+/// Result of `Store::store_file_stats`.
+#[derive(Debug, Default)]
+pub struct FileStats {
+    pub chunks: Vec<ChunkId>,
+    /// bytes read from the stream
+    pub size: u64,
+    /// chunks (and their plain bytes) that were not in the store before
+    pub new_chunks: usize,
+    pub new_bytes: u64,
+}
+
 #[derive(Debug, Default)]
 pub struct GcStats {
     pub total: usize,
@@ -376,13 +387,24 @@ impl Store {
 
     /// FastCDC chunking of one file; returns (chunks, size).
     pub fn store_file(&self, r: impl Read) -> io::Result<(Vec<ChunkId>, u64)> {
-        let (mut chunks, mut size) = (Vec::new(), 0u64);
+        let s = self.store_file_stats(r)?;
+        Ok((s.chunks, s.size))
+    }
+
+    /// Like `store_file`, also counting the chunks that were not in the store yet.
+    pub fn store_file_stats(&self, r: impl Read) -> io::Result<FileStats> {
+        let mut s = FileStats::default();
         for c in fastcdc::v2020::StreamCDC::new(r, CDC_MIN, CDC_AVG, CDC_MAX) {
             let c = c.map_err(io::Error::other)?;
-            chunks.push(self.insert_chunk(&c.data)?.0);
-            size += c.length as u64;
+            let (id, new) = self.insert_chunk(&c.data)?;
+            s.chunks.push(id);
+            s.size += c.length as u64;
+            if new {
+                s.new_chunks += 1;
+                s.new_bytes += c.length as u64;
+            }
         }
-        Ok((chunks, size))
+        Ok(s)
     }
 
     pub fn write_chunks<'a>(&self, ids: impl IntoIterator<Item = &'a ChunkId>, mut w: impl Write) -> io::Result<()> {

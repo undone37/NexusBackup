@@ -5,7 +5,9 @@
 # backup_vm publishes the NBD export of the running backup as a job file in
 # /run/nexusbackup/jobs/ and blocks until the appliance, connected over SSH
 # through /usr/lib/nexusbackup/helper, has read the data, committed the
-# snapshot and written <vmid>.done. See docs/pve-connector.md.
+# snapshot and written <vmid>.done. backup_container streams the container as
+# one tar archive over a socket prepared by backup_container_prepare. See
+# docs/pve-connector.md.
 package PVE::BackupProvider::Plugin::NexusBackup;
 
 use strict;
@@ -15,12 +17,16 @@ use Fcntl qw(O_WRONLY O_CREAT O_EXCL);
 use File::Basename qw(dirname);
 use File::Copy qw(copy);
 use File::Path qw(make_path);
+use IO::Select;
+use IO::Socket::UNIX;
 use JSON;
+use Socket qw(SOCK_STREAM SHUT_WR);
 
 use base qw(PVE::BackupProvider::Plugin::Base);
 
-my $UNSUPPORTED_CT = "NexusBackup: container backups are not supported in v1\n";
-my $UNSUPPORTED_CT_RESTORE = "NexusBackup: container restore is not supported\n";
+# Staging area for container restores (root only; holds container-relative
+# uids, i.e. real root-owned setuid files, so it must never be world-reachable).
+our $STAGEDIR = '/var/tmp/nexusbackup';
 
 sub new {
     my ($class, $storage_plugin, $scfg, $storeid, $log_function) = @_;
@@ -82,6 +88,7 @@ sub ensure_rendezvous_dir {
 
 sub job_cleanup {
     my ($self) = @_;
+    $self->ct_cleanup($_) for keys %{ $self->{ct} // {} };
     return;
 }
 
@@ -99,7 +106,8 @@ sub backup_get_mechanism {
     my ($self, $vmid, $vmtype) = @_;
 
     return 'nbd' if $vmtype eq 'qemu';
-    die $UNSUPPORTED_CT;
+    return 'directory' if $vmtype eq 'lxc';
+    die "NexusBackup: unsupported guest type '$vmtype'\n";
 }
 
 sub backup_vm_query_incremental {
@@ -108,7 +116,7 @@ sub backup_vm_query_incremental {
     my %known;
     my $index = eval { $self->plugin()->read_index($self->{storeid}) } // { archives => [] };
     for my $a ($index->{archives}->@*) {
-        next if $a->{vmid} != $vmid;
+        next if $a->{vmid} != $vmid || $a->{type} ne 'qemu';
         $known{$_} = 1 for $a->{devices}->@*;
     }
 
@@ -251,6 +259,14 @@ sub backup_vm {
 sub backup_cleanup {
     my ($self, $vmid, $vmtype, $success, $info) = @_;
 
+    if (defined($vmid) && $self->{ct}->{$vmid}) {
+        if (defined(my $size = $self->ct_cleanup($vmid))) {
+            # the child reports the size only after the appliance committed
+            $self->{'archive-size'}->{$vmid} = $size;
+            $self->{'backup-vm-ok'}->{$vmid} = 1;
+        }
+    }
+
     if (!$success && defined($vmid) && $self->{'backup-vm-ok'}->{$vmid}) {
         # The appliance already committed the snapshot and QEMU commits the
         # bitmap regardless of later failures; the snapshot stays valid.
@@ -284,12 +300,218 @@ sub backup_handle_log_file {
     return;
 }
 
+# ---------------------------------------------------------------------------
+# Container backup (docs/pve-connector.md "Container backup flow").
+#
+# backup_container runs as the container's mapped root inside its user
+# namespace, in a forked child, and cannot traverse /run/nexusbackup. So the
+# privileged backup_container_prepare creates the listening socket (group
+# nexusbackup, 0660) and the job file; the child inherits the listening fd,
+# accepts the helper's `ct-stream` connection and sends records
+# (tag byte, u32 big-endian length, payload):
+#   'C' pct.conf (once, first), 'D' tar data (repeated), 'E' "ok" | "fail <msg>".
+# The appliance answers on the same connection with one line "ok" or
+# "fail <msg>" after it committed (or discarded) the snapshot.
+
+my $CT_RECORD_MAX = 1024 * 1024;
+
+my $ct_socket = sub {
+    my ($self, $vmid) = @_;
+    return $self->rundir() . "/$vmid.ct.sock";
+};
+
 sub backup_container_prepare {
-    die $UNSUPPORTED_CT;
+    my ($self, $vmid, $info) = @_;
+
+    ($vmid) = "$vmid" =~ m/^(\d{1,9})\z/ or die "invalid vmid\n";
+    my $archive = $self->{archive}->{$vmid} // die "backup_container_prepare called before backup_init\n";
+    my $gid = PVE::Storage::Custom::NexusBackupPlugin::nexus_group_gid();
+    my $dir = $self->rundir();
+    my $sock = $ct_socket->($self, $vmid);
+
+    $self->ct_cleanup($vmid); # stale state from an earlier, crashed job
+    $self->{'archive-size'}->{$vmid} = 0;
+    $self->{'backup-vm-ok'}->{$vmid} = 0;
+
+    eval {
+        my $listen = IO::Socket::UNIX->new(Type => SOCK_STREAM, Local => $sock, Listen => 1)
+            or die "unable to listen on $sock: $!\n";
+        my $ct = $self->{ct}->{$vmid} = { listen => $listen };
+        chown(-1, $gid, $sock) or die "unable to chgrp $sock: $!\n";
+        chmod(0660, $sock) or die "unable to chmod $sock: $!\n";
+        # the forked child reports the stream size back through this pipe
+        pipe($ct->{'size-r'}, $ct->{'size-w'}) or die "pipe: $!\n";
+
+        my $job = {
+            type => 'lxc',
+            vmid => $vmid + 0,
+            archive => $archive,
+            socket => $sock,
+            firewall => $info->{'firewall-config'},
+        };
+        $write_atomic->("$dir/$vmid.json", JSON->new->utf8->canonical->encode($job) . "\n", $gid);
+    };
+    if (my $err = $@) {
+        $self->ct_cleanup($vmid);
+        die $err;
+    }
+
+    $self->_log('warn', "bandwidth limit is not enforced by the node, the appliance applies"
+        . " its own limits") if $info->{'bandwidth-limit'};
+    $self->_log('info', "published container job $archive, waiting for the NexusBackup appliance"
+        . " (timeout " . $self->plugin()->job_timeout($self->{scfg}) . "s)");
+    return;
 }
 
+# Closes the listening socket and removes job file and socket (root, parent).
+# Returns the stream size reported by the child, if any.
+sub ct_cleanup {
+    my ($self, $vmid) = @_;
+
+    my $ct = delete $self->{ct}->{$vmid};
+    my $size;
+    if ($ct) {
+        close($ct->{listen}) if $ct->{listen};
+        if ($ct->{'size-r'}) {
+            close($ct->{'size-w'});
+            my $line = readline($ct->{'size-r'});
+            close($ct->{'size-r'});
+            ($size) = ($line // '') =~ m/^(\d{1,20})$/;
+        }
+    }
+    my $dir = $self->rundir();
+    unlink("$dir/$vmid.json", $ct_socket->($self, $vmid));
+    return $size;
+}
+
+# GNU tar command line for the container stream, mirroring PVE's own vzdump
+# tar invocation (exclude semantics, mount point sources). Pure; untaints.
+sub ct_tar_command {
+    my ($info, $exclude_patterns) = @_;
+
+    my ($dir) = ($info->{directory} // '') =~ m!^(/[^\0\n]*)\z! or die "invalid backup directory\n";
+    my @sources = map {
+        m!^(\.(?:/[^\0\n]*)?)\z! ? $1 : die "invalid backup source\n"
+    } ($info->{sources} // ['.'])->@*;
+    @sources = ('.') if !@sources;
+
+    my (@floating, @anchored);
+    for my $p (($exclude_patterns // [])->@*) {
+        my ($pat) = "$p" =~ m/^([^\0\n]{1,4096})\z/ or die "invalid exclude pattern\n";
+        if ($pat =~ m!^/!) {
+            push @anchored, "--exclude=.$pat";
+        } else {
+            push @floating, "--exclude=$pat";
+        }
+    }
+
+    my @cmd = ('tar', '--create', '--file=-', '--numeric-owner', '--xattrs', '--xattrs-include=*',
+        '--acls', '--sparse', '--one-file-system', '--preserve-permissions',
+        '--warning=no-file-ignored', "--directory=$dir", '--no-anchored');
+    # unprivileged: lost+found is 0700 real root and unreadable for the mapped root
+    push @cmd, '--exclude=lost+found' if ($info->{'backup-user-id'} // 0) != 0;
+    push @cmd, @floating, '--anchored', @anchored, '--', @sources;
+    return \@cmd;
+}
+
+my $write_all = sub {
+    my ($fh, $data, $what) = @_;
+    my $off = 0;
+    while ($off < length($data)) {
+        my $w = syswrite($fh, $data, length($data) - $off, $off);
+        if (!defined($w)) {
+            next if $!{EINTR};
+            die "write to $what failed: $!\n";
+        }
+        $off += $w;
+    }
+};
+
+my $send_record = sub {
+    my ($fh, $tag, $payload) = @_;
+    $write_all->($fh, $tag . pack('N', length($payload)) . $payload, 'the NexusBackup appliance');
+};
+
+# Waits until $fh is readable; dies after $deadline (epoch seconds).
+my $wait_readable = sub {
+    my ($fh, $deadline, $what) = @_;
+    my $sel = IO::Select->new($fh);
+    while (1) {
+        my $left = $deadline - time();
+        die "timeout waiting for $what\n" if $left <= 0;
+        return if $sel->can_read($left);
+    }
+};
+
 sub backup_container {
-    die $UNSUPPORTED_CT;
+    my ($self, $vmid, $guest_config, $exclude_patterns, $info) = @_;
+
+    my $ct = $self->{ct}->{$vmid} or die "backup_container called before backup_container_prepare\n";
+    my $timeout = $self->plugin()->job_timeout($self->{scfg});
+    my $deadline = time() + $timeout;
+    local $SIG{PIPE} = 'IGNORE';
+
+    my $cmd = ct_tar_command($info, $exclude_patterns);
+
+    $wait_readable->($ct->{listen}, $deadline, "the NexusBackup appliance (${timeout}s)");
+    my $conn = $ct->{listen}->accept() or die "accept failed: $!\n";
+    close($ct->{listen});
+    binmode($conn);
+
+    $send_record->($conn, 'C', $guest_config // '');
+
+    my $pid = open(my $tar, '-|', @$cmd) or die "unable to run tar: $!\n";
+    binmode($tar);
+    my ($buf, $total) = ('', 0);
+    eval {
+        while (1) {
+            my $n = sysread($tar, $buf, $CT_RECORD_MAX);
+            if (!defined($n)) {
+                next if $!{EINTR};
+                die "read from tar failed: $!\n";
+            }
+            last if $n == 0;
+            $send_record->($conn, 'D', $buf);
+            $total += $n;
+        }
+    };
+    if (my $err = $@) {
+        kill('TERM', $1) if "$pid" =~ m/^(\d+)\z/; # untaint (perl -T)
+        close($tar);
+        die $err;
+    }
+    close($tar);
+    my $status = $?;
+    if ($status != 0) {
+        my $msg = "tar failed (exit " . ($status >> 8) . ", signal " . ($status & 127) . ")";
+        eval { $send_record->($conn, 'E', "fail $msg") };
+        die "$msg\n";
+    }
+    $send_record->($conn, 'E', 'ok');
+
+    # the appliance commits the snapshot, then answers
+    my $answer = '';
+    while ($answer !~ m/\n/) {
+        $wait_readable->($conn, $deadline, "the NexusBackup appliance to commit");
+        my $n = sysread($conn, $answer, 4096, length($answer));
+        if (!defined($n)) {
+            next if $!{EINTR};
+            die "read from the NexusBackup appliance failed: $!\n";
+        }
+        die "NexusBackup appliance closed the connection without committing\n" if $n == 0;
+        die "invalid answer from the NexusBackup appliance\n" if length($answer) > 2048;
+    }
+    close($conn);
+    $answer =~ s/\n.*//s;
+    if ($answer =~ m/^fail(?:\s+(.*))?$/s) {
+        die "NexusBackup appliance reported failure: " . ($1 // 'no reason given') . "\n";
+    }
+    die "invalid answer from the NexusBackup appliance\n" if $answer ne 'ok';
+
+    print { $ct->{'size-w'} } "$total\n";
+    close($ct->{'size-w'});
+    $self->_log('info', "NexusBackup appliance committed $self->{archive}->{$vmid} ($total bytes)");
+    return;
 }
 
 sub archive_get_guest_config {
@@ -321,6 +543,8 @@ sub restoredir {
 
 sub restore_get_mechanism {
     my ($self, $volname) = @_;
+    my $a = $self->plugin()->find_archive($self->{storeid}, $volname);
+    return ('directory', 'lxc') if $a && $a->{type} eq 'lxc';
     return ('qemu-img', 'qemu');
 }
 
@@ -447,7 +671,121 @@ sub restore_vm_cleanup {
     return;
 }
 
-sub restore_container_init { die $UNSUPPORTED_CT_RESTORE }
-sub restore_container_cleanup { return }
+# ---------------------------------------------------------------------------
+# Container restore (docs/pve-connector.md "Container restore flow"): the
+# appliance serves the archive's tar stream over SSH (helper ct-restore-serve)
+# on a unix socket in the restore dir: u64 big-endian length, then exactly that
+# many bytes of tar. We extract it as root into a staging directory and hand
+# that to PVE (mechanism 'directory'), which re-tars it into the new
+# container's user namespace.
+
+my $ct_stage_dir = sub {
+    my ($self, $volname) = @_;
+    # parse_volname's capture untaints (restore runs in a perl -T API worker)
+    my (undef, $archive) = $self->plugin()->parse_volname($volname);
+    return ($archive, "$STAGEDIR/$archive");
+};
+
+sub restore_container_init {
+    my ($self, $volname, $storeid, $info) = @_;
+
+    my ($archive, $stage) = $ct_stage_dir->($self, $volname);
+    my $a = $self->plugin()->find_archive($self->{storeid}, $volname)
+        or die "archive '$volname' not found in NexusBackup catalog\n";
+    die "archive '$volname' is not a container backup\n" if $a->{type} ne 'lxc';
+
+    my $gid = PVE::Storage::Custom::NexusBackupPlugin::nexus_group_gid();
+    my $dir = $self->restoredir();
+    ensure_rendezvous_dir($dir, $gid);
+    my $json = "$dir/$archive.json";
+    my $sock = "$dir/$archive.ct.sock";
+    my $timeout = $self->plugin()->job_timeout($self->{scfg});
+    local $SIG{PIPE} = 'IGNORE';
+
+    eval {
+        unlink($sock);
+        if (!-d $STAGEDIR) {
+            mkdir($STAGEDIR, 0700) or die "unable to create $STAGEDIR: $!\n";
+        }
+        chmod(0700, $STAGEDIR) or die "unable to chmod $STAGEDIR: $!\n";
+        $self->restore_container_cleanup($volname, $storeid, {}) if -e $stage;
+        mkdir($stage, 0700) or die "unable to create $stage: $!\n";
+
+        my $req = { archive => $archive, type => 'lxc', socket => $sock };
+        $write_atomic->($json, JSON->new->utf8->canonical->encode($req) . "\n", $gid);
+        $self->_log('info', "container restore requested, waiting for the NexusBackup appliance"
+            . " (timeout ${timeout}s)");
+
+        my $deadline = time() + $timeout;
+        while (!-S $sock) {
+            die "timeout after ${timeout}s waiting for the NexusBackup appliance\n"
+                if time() >= $deadline;
+            sleep(1);
+        }
+        my $conn = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => $sock)
+            or die "unable to connect to $sock: $!\n";
+        binmode($conn);
+        unlink($json);
+
+        my $read = sub {
+            my ($want) = @_;
+            my $buf = '';
+            my $sel = IO::Select->new($conn);
+            while (length($buf) < $want) {
+                die "timeout reading from the NexusBackup appliance\n" if !$sel->can_read($timeout);
+                my $n = sysread($conn, $buf, $want - length($buf), length($buf));
+                if (!defined($n)) {
+                    next if $!{EINTR};
+                    die "read from the NexusBackup appliance failed: $!\n";
+                }
+                die "NexusBackup appliance closed the stream early\n" if $n == 0;
+            }
+            return $buf;
+        };
+
+        my ($hi, $lo) = unpack('NN', $read->(8));
+        my $size = $hi * 4294967296 + $lo;
+        $self->_log('info', "receiving $size bytes of tar into $stage");
+
+        my $pid = open(my $tar, '|-', 'tar', '--extract', '--file=-', '--numeric-owner',
+            '--xattrs', '--xattrs-include=*', '--acls', '--preserve-permissions',
+            "--directory=$stage") or die "unable to run tar: $!\n";
+        binmode($tar);
+        my $left = $size;
+        eval {
+            while ($left > 0) {
+                my $chunk = $read->($left > 1048576 ? 1048576 : $left);
+                $left -= length($chunk);
+                $write_all->($tar, $chunk, 'tar');
+            }
+        };
+        my $err = $@;
+        kill('TERM', $1) if $err && "$pid" =~ m/^(\d+)\z/; # untaint (perl -T)
+        close($tar);
+        my $status = $?;
+        close($conn);
+        die $err if $err;
+        die "tar extraction failed (exit " . ($status >> 8) . ")\n" if $status != 0;
+    };
+    if (my $err = $@) {
+        eval { $self->restore_container_cleanup($volname, $storeid, {}) };
+        die $err;
+    }
+
+    return { 'archive-directory' => $stage };
+}
+
+sub restore_container_cleanup {
+    my ($self, $volname, $storeid, $info) = @_;
+
+    my ($archive, $stage) = $ct_stage_dir->($self, $volname);
+    my $dir = $self->restoredir();
+    unlink("$dir/$archive.json", "$dir/$archive.ct.sock");
+    if (-e $stage) {
+        system('rm', '-rf', '--one-file-system', '--', $stage) == 0
+            or die "unable to remove $stage (exit " . ($? >> 8) . ")\n";
+    }
+    return;
+}
 
 1;

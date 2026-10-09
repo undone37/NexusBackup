@@ -17,3 +17,6 @@ serde_json = "1"
 [[bin]]
 name = "nexus-pve"
 path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = "3"

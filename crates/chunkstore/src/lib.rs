@@ -5,4 +5,4 @@ pub mod crypto;
 pub mod store;
 
 pub use crypto::{ChunkId, Keyring};
-pub use store::{FileEntry, Index, Manifest, Options, Store};
+pub use store::{FileEntry, FileStats, Index, Manifest, Options, Store};

@@ -342,4 +342,90 @@ is(code(cmd => "restore-serve $archive drive-efidisk0"), 1, 'restore-serve: wron
     ok(!defined($rest) || $rest eq '', 'restore-serve: no trailing output');
 }
 
+# --- containers: ct-stream / ct-restore-serve ----------------------------------
+for my $c ('ct-stream', 'ct-stream x', 'ct-stream 200 1', 'ct-stream ../200', 'ct-restore-serve',
+    'ct-restore-serve nexus-200', "ct-restore-serve $archive x", 'ct-restore-serve ../x') {
+    is(code(cmd => $c), 2, "rejects '$c'");
+}
+is(code(cmd => 'ct-stream 200'), 1, 'ct-stream: exit 1 without job');
+is(code(cmd => 'ct-stream 100'), 1, 'ct-stream: refuses a VM job');
+is(code(cmd => "ct-restore-serve $archive"), 1, 'ct-restore-serve: refuses a VM restore request');
+
+{
+    my $job = JSON->new->canonical->encode({ type => 'lxc', vmid => 200, archive => 'nexus-200-1760000000',
+        socket => "$rundir/200.ct.sock", firewall => undef }) . "\n";
+    open(my $fh, '>', "$rundir/200.json") or die;
+    print {$fh} $job;
+    close($fh);
+    ($rc, $out) = run_helper(cmd => 'job 200');
+    is($out, $job, 'job: prints a container job');
+    is(code(cmd => 'ct-stream 200'), 1, 'ct-stream: exit 1 while the socket is missing');
+
+    # node side (backup_container role): send a stream, then read the verdict
+    my $stream = join('', map { pack('N', int(rand(2**32))) } 1 .. (3 * 1024 * 1024));
+    my $l = IO::Socket::UNIX->new(Type => SOCK_STREAM, Local => "$rundir/200.ct.sock", Listen => 1) or die;
+    my $node = fork() // die;
+    if (!$node) {
+        my $c = $l->accept() or POSIX::_exit(2);
+        binmode($c);
+        my $off = 0;
+        while ($off < length($stream)) {
+            $off += syswrite($c, $stream, 1 << 20, $off) // POSIX::_exit(3);
+        }
+        my $answer = '';
+        while ($answer !~ /\n/) {
+            my $n = sysread($c, $answer, 100, length($answer));
+            POSIX::_exit(4) if !$n;
+        }
+        POSIX::_exit($answer eq "ok\n" ? 0 : 5);
+    }
+    close($l);
+    local $SIG{ALRM} = sub { die "timeout\n" };
+    alarm(60);
+    my ($code, $got) = eval { run_helper(cmd => 'ct-stream 200', stdin => "ok\n") };
+    alarm(0);
+    is($code, 0, 'ct-stream: exit 0');
+    ok(defined($got) && md5_hex($got) eq md5_hex($stream), 'ct-stream: stream arrives intact');
+    waitpid($node, 0);
+    is($? >> 8, 0, 'ct-stream: node received the verdict');
+    unlink("$rundir/200.json", "$rundir/200.ct.sock");
+}
+
+{
+    my $req = JSON->new->canonical->encode({ archive => $archive, type => 'lxc',
+        socket => "$restoredir/$archive.ct.sock" }) . "\n";
+    open(my $fh, '>', "$restoredir/$archive.json") or die;
+    print {$fh} $req;
+    close($fh);
+    is(code(cmd => "restore-serve $archive drive-scsi0"), 1, 'restore-serve: refuses a container request');
+
+    my $data = join('', map { pack('N', int(rand(2**32))) } 1 .. (2 * 1024 * 1024));
+    my $csock = "$restoredir/$archive.ct.sock";
+    # plugin side (restore_container_init role): connect, read everything
+    my $plugin = fork() // die;
+    if (!$plugin) {
+        for (1 .. 200) {
+            last if -S $csock;
+            select(undef, undef, undef, 0.05);
+        }
+        POSIX::_exit(2) if ((stat($csock))[2] & 0777) != 0660;
+        my $c = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => $csock) or POSIX::_exit(3);
+        binmode($c);
+        my $buf = '';
+        while (1) {
+            my $n = sysread($c, $buf, 1 << 20, length($buf));
+            last if !$n;
+        }
+        POSIX::_exit(md5_hex($buf) eq md5_hex($data) ? 0 : 4);
+    }
+    local $SIG{ALRM} = sub { die "timeout\n" };
+    alarm(60);
+    my ($code, $got) = eval { run_helper(cmd => "ct-restore-serve $archive", stdin => $data) };
+    alarm(0);
+    is($code, 0, 'ct-restore-serve: exit 0');
+    waitpid($plugin, 0);
+    is($? >> 8, 0, 'ct-restore-serve: plugin received the stream intact (socket 0660)');
+    ok(!-e $csock, 'ct-restore-serve: socket removed');
+}
+
 done_testing();
