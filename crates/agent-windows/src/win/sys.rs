@@ -8,9 +8,9 @@ use std::path::Path;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, LUID};
 use windows::Win32::Security::{
-    AdjustTokenPrivileges, GetKernelObjectSecurity, LookupPrivilegeValueW, SetKernelObjectSecurity,
-    LUID_AND_ATTRIBUTES, OBJECT_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SE_PRIVILEGE_ENABLED,
-    TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    AdjustTokenPrivileges, GetKernelObjectSecurity, GetSecurityDescriptorLength, LookupPrivilegeValueW,
+    SetKernelObjectSecurity, LUID_AND_ATTRIBUTES, OBJECT_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
 };
 use windows::Win32::Storage::FileSystem::*;
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -212,7 +212,9 @@ pub fn get_security(h: &Handle, flags: u32) -> io::Result<Vec<u8>> {
         };
         match r.map_err(io_err) {
             Ok(()) => {
-                buf.truncate(need.max(20) as usize);
+                // SAFETY: the buffer now holds a valid self-relative descriptor.
+                let len = unsafe { GetSecurityDescriptorLength(PSECURITY_DESCRIPTOR(buf.as_mut_ptr().cast())) };
+                buf.truncate((len as usize).min(buf.len()));
                 return Ok(buf);
             }
             Err(e) if e.raw_os_error() == Some(ERROR_INSUFFICIENT_BUFFER) => buf.resize(need as usize, 0),

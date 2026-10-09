@@ -94,6 +94,7 @@ const VSS_CTX_BACKUP: i32 = 0;
 const VSS_BT_COPY: i32 = 5;
 const VSS_OBJECT_SNAPSHOT_SET: i32 = 2;
 const VSS_S_ASYNC_FINISHED: i32 = 0x0004_230A;
+const VSS_S_ASYNC_CANCELLED: i32 = 0x0004_230B;
 
 fn hr_text(hr: HRESULT) -> String {
     let name = match hr.0 as u32 {
@@ -134,7 +135,7 @@ fn wait(what: &str, start: impl FnOnce(*mut Option<IVssAsync>) -> HRESULT) -> Re
         let mut hr = HRESULT(0);
         a.QueryStatus(&mut hr, std::ptr::null_mut())
             .map_err(|e| format!("VSS {what}: status: {e}"))?;
-        if hr.0 != VSS_S_ASYNC_FINISHED && hr.is_err() {
+        if hr.0 == VSS_S_ASYNC_CANCELLED || (hr.0 != VSS_S_ASYNC_FINISHED && hr.is_err()) {
             return Err(format!("VSS {what}: {}", hr_text(hr)));
         }
     }

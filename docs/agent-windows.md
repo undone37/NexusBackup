@@ -25,7 +25,7 @@ the podman volume `nexus-cargo-registry`). Release profile with LTO, `opt-level=
 stripped, `+crt-static` (imports only system DLLs; the script checks the import table).
 Output `target/agent-dist/windows/`: `nexus-agent.exe`, `nexus-agent.exe.sig`
 (`--sign`: `release/sign.sh sign-blob`), `nexus-agent.version`, `release-keys/`,
-`README.md`. Size 2026-10-09: **1 860 608 bytes (1.8 MiB)**, limit for in-band updates
+`README.md`. Size 2026-10-09: **1 863 680 bytes (1.8 MiB)**, limit for in-band updates
 8 MiB − 4 KiB (checked by the script). `--clippy` runs clippy `-D warnings` for the
 Windows target in the container (CI job `agent-windows`).
 

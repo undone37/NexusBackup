@@ -100,7 +100,8 @@ pub struct WinFs {
     overwrite: Overwrite,
     seq: u64,
     sacl_ok: bool,
-    /// base files restored in this run: path → (created, written, attrs)
+    /// files and directories restored in this run (their streams are written without
+    /// a policy check): path → (created, written, attrs)
     bases: HashMap<Vec<u8>, (i64, i64, u32)>,
 }
 
@@ -254,7 +255,8 @@ impl WinFs {
         }
         let b = sys::basic_info(&bh)?;
         if b.FileAttributes & FILE_ATTRIBUTE_READONLY != 0 {
-            sys::set_basic(&bh, 0, 0, b.FileAttributes & !FILE_ATTRIBUTE_READONLY)?;
+            let a = b.FileAttributes & !FILE_ATTRIBUTE_READONLY;
+            sys::set_basic(&bh, 0, 0, if a == 0 { meta::FILE_ATTRIBUTE_NORMAL } else { a })?;
         }
         let mut sp = base.into_os_string();
         sp.push(":");
@@ -343,15 +345,26 @@ impl RestoreFs for WinFs {
         let d = held.last().expect("root");
         let name = os(&name)?;
         match existing {
-            Existing::Dir => Ok(()),
+            Existing::Dir => {}
             Existing::Other { .. } => {
                 let h = self.open_in(d, &name, sys::DELETE)?;
                 sys::delete_by_handle(&h)?;
                 drop(h);
-                sys::create_dir(&d.path.join(&name))
+                sys::create_dir(&d.path.join(&name))?
             }
-            Existing::Missing => sys::create_dir(&d.path.join(&name)),
+            Existing::Missing => sys::create_dir(&d.path.join(&name))?,
         }
+        // streams of this directory may follow
+        let attrs = meta::attrs_of(&e.xattrs).unwrap_or(0) & meta::RESTORABLE_ATTRS;
+        self.bases.insert(
+            e.path.clone(),
+            (
+                meta::created_of(&e.xattrs).unwrap_or(0),
+                meta::unix_ns_to_filetime(e.mtime_ns),
+                if attrs == 0 { meta::FILE_ATTRIBUTE_NORMAL } else { attrs },
+            ),
+        );
+        Ok(())
     }
 
     fn create_file(&mut self, e: &Entry) -> io::Result<Tmp> {
