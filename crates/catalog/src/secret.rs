@@ -54,6 +54,12 @@ pub fn source_owner(id: i64) -> String {
     format!("source/{id}")
 }
 
+/// Location of an agent's sealed enrollment token digest (`agents.token_hash`):
+/// bound to the agent and its endpoint, so a changed host/port makes it unusable.
+pub fn agent_token_location(id: &str, host: &str, port: u16) -> String {
+    format!("agent/{id}/token@{host}:{port}")
+}
+
 /// Location owner of a tenant's offsite config.
 pub fn tenant_owner(name: &str) -> String {
     format!("tenant/{name}/offsite")

@@ -18,7 +18,7 @@ echo '<token from the UI>' | sudo ./install.sh --token -          # on the serve
 `nexus-agent hooks test`, `nexus-agent init --token <T>` (re-enrollment; also clears the
 lock after 5 failed proofs), `nexus-agent run` (the service).
 
-Files: `/etc/nexus-agent` (0700): `agent.conf`, `token` (`agent_proto::token_hash`, deleted
+Files: `/etc/nexus-agent` (0700): `agent.conf`, `token` (`agent_proto::token_digest`, deleted
 after enrollment), `agent.key` (0600), `enroll.crt`, `agent.crt`, `ca.crt`, `agent.id`.
 `/var/lib/nexus-agent` (0700): `enroll.failures`, `cache/committed.bin`, `snapshots.journal`,
 `spool/` (unlinked spool files only).
@@ -29,7 +29,7 @@ certificate CN `nexus-appliance:<id>`), `max_connections` (4). Unknown keys are 
 
 ## Enrollment and TLS
 
-As in the contract. The HMAC key is `token_hash(T)` (hex sha256 of the trimmed token) on
+As in the contract. The HMAC key is `token_digest(T)` (hex sha256 of the trimmed token) on
 both sides, because neither side keeps the plain token. Exporter context: none. Only proof
 failures count towards the lock (5); garbage before the proof just closes the connection.
 `EnrollDone` is accepted only if the certificate is for the agent's key, has
@@ -72,10 +72,14 @@ EKU and `CN=nexus-appliance:<id>` (optionally pinned). `Hello` must be the first
 
 ## Restore
 
-`RestoreBegin` needs a non-empty `confirm`, which is logged to the journal with the target
-and policy. The target is created if missing. `/` (also via symlinks) is refused unless
-`overwrite = Always`. Order: all `RestoreEntries`, then `RestoreChunk`s (any order, each hash
-at least once), then `RestoreEnd`. Every component is opened with
+`RestoreBegin` needs a non-empty `confirm` (the agent name typed in the UI; checked by the
+appliance), which is logged to the journal with the target and policy. The target is
+created if missing. `/` (also via symlinks) is refused unless `overwrite = Always`. Order as
+sent by `agent-conn`: each `RestoreEntries` batch is followed by its chunks (entry and chunk
+order, repeats resent); the agent places a chunk wherever a pending file needs that hash, so
+any order works as long as a file's entry precedes its chunks. A root entry `""`/`"."` is
+ignored. Destinations kept by the overwrite policy are logged, not reported as errors
+(errors fail the appliance job). Every component is opened with
 `openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_MAGICLINKS)`; files are created
 under a temporary name with `O_EXCL` and renamed over the destination (a planted symlink is
 replaced, never followed); existing directories in the way of a file are never removed.
@@ -107,7 +111,9 @@ inconsistency + spool, excludes, mount boundaries, hook permission checks and ti
 restore confinement (symlink attacks), cosign signature verification (real `cosign
 sign-blob` fixture made with the TEST key) and update checks, plus `tests/e2e.rs`: fake
 appliance with a test CA — MITM on enrollment, lock after 5 failures, mTLS client checks,
-enrollment → backup → incremental backup → restore with byte + metadata comparison.
+enrollment → backup → incremental backup → restore with byte + metadata comparison; `tests/interop.rs`:
+the real agent against the real `agent-conn` library (enroll, backup into a chunk store,
+second backup without transfer, mapping index lost → Want of unchanged files, restore).
 
 Root-only (`#[ignore]`), run in a VM:
 

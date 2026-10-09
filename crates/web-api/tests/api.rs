@@ -1438,6 +1438,14 @@ async fn rbac_matrix_and_audit_completeness() {
     let ids = seed(&t, &admin).await;
     t.add_user("rbac-victim", "operator", None);
     let victim = t.ids["rbac-victim"];
+    let (agent, _) = add_agent(&t, &admin).await;
+    t.st.cat
+        .conn()
+        .execute(
+            "INSERT INTO snapshots (tenant, source, time, size, local, offsite) VALUES ('acme', ?1, 2000, 5, 1, 0)",
+            [format!("host-{agent}")],
+        )
+        .unwrap();
     let sessions = [
         ('A', t.login("alice").await),
         ('S', t.login("sam").await),
@@ -1529,6 +1537,41 @@ async fn rbac_matrix_and_audit_completeness() {
             format!("/api/v1/users/{victim}"),
             Some(json!({"disabled": false})),
             "A",
+        ),
+        (Method::GET, "/api/v1/agents".into(), None, all),
+        (
+            Method::POST,
+            "/api/v1/agents".into(),
+            Some(json!({"tenant": "acme", "name": "rbac-a", "host": "h"})),
+            "A",
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/agents/{agent}/token"),
+            Some(json!({})),
+            "A",
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/agents/{agent}/enroll"),
+            Some(json!({})),
+            "A",
+        ),
+        (Method::DELETE, format!("/api/v1/agents/{agent}"), None, "A"),
+        (
+            Method::POST,
+            "/api/v1/jobs".into(),
+            Some(json!({"kind": "agent_update", "tenant": "acme", "params": {"agent_id": agent}})),
+            "A",
+        ),
+        (
+            Method::POST,
+            "/api/v1/jobs".into(),
+            Some(
+                json!({"kind": "restore_files", "tenant": "acme", "params": {"source": format!("host-{agent}"),
+                        "time": 2000, "paths": ["/etc"], "target": "/srv", "overwrite": "never", "confirm": "web01"}}),
+            ),
+            "AOT",
         ),
         (Method::GET, "/api/v1/snapshots".into(), None, all),
         (Method::GET, "/api/v1/jobs".into(), None, all),
@@ -2018,5 +2061,360 @@ async fn totp_seeds_encrypted_and_legacy_migrated() {
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(std::fs::metadata(&key).unwrap().permissions().mode() & 0o777, 0o600);
     assert!(!TotpKey::open_or_create(&key, &t.st.cat).unwrap().1);
+    t.finish();
+}
+
+// ---------------------------------------------------------------- agents
+
+/// Creates agent `web01` in acme; returns (id, token).
+async fn add_agent(t: &T, admin: &S) -> (String, String) {
+    let r = t
+        .post(
+            "/api/v1/agents",
+            admin,
+            json!({"tenant": "acme", "name": "web01", "host": "web01.lan"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    (
+        r.body["id"].as_str().unwrap().to_owned(),
+        r.body["token"].as_str().unwrap().to_owned(),
+    )
+}
+
+#[tokio::test]
+async fn agents_tokens_enrollment_and_deletion() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let r = t
+        .post(
+            "/api/v1/agents",
+            &admin,
+            json!({"tenant": "acme", "name": "web01", "host": "web01.lan"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    let id = r.body["id"].as_str().unwrap().to_owned();
+    let token = r.body["token"].as_str().unwrap().to_owned();
+    assert_eq!(id.len(), 16);
+    assert_eq!(token.len(), 26);
+    assert_eq!(r.body["port"], 7444);
+    assert_eq!(r.body["install_command"], format!("nexus-agent init --token {token}"));
+    assert!(r.body["enrolled_at"].is_null());
+
+    // the token is shown once: neither the list nor the audit log nor the catalog has it
+    for path in ["/api/v1/agents", "/api/v1/audit"] {
+        let raw = String::from_utf8(t.get(path, &admin).await.raw).unwrap();
+        assert!(
+            !raw.contains(&token) && !raw.contains("token_hash") && !raw.contains("sealed:v1:"),
+            "{path}"
+        );
+    }
+    let stored = t.scalar::<String>("SELECT token_hash FROM agents");
+    assert!(stored.starts_with("sealed:v1:"));
+    // sealed to the scheduler, bound to the agent and its endpoint
+    let digest =
+        t.sk.open(&catalog::secret::agent_token_location(&id, "web01.lan", 7444), &stored)
+            .unwrap();
+    assert_eq!(*digest, agent_proto::token_digest(&token));
+    assert!(t
+        .sk
+        .open(&catalog::secret::agent_token_location(&id, "evil.lan", 7444), &stored)
+        .is_err());
+
+    // validation and scoping
+    for bad in [
+        json!({"tenant": "acme", "name": "web01", "host": "x"}), // duplicate name
+        json!({"tenant": "nope", "name": "a", "host": "x"}),
+        json!({"tenant": "acme", "name": ".a", "host": "x"}),
+        json!({"tenant": "acme", "name": "a", "host": "x;rm"}),
+        json!({"tenant": "acme", "name": "a", "host": "x", "port": 0}),
+        json!({"tenant": "acme", "name": "a", "host": "x", "token": "mine"}),
+    ] {
+        let r = t.post("/api/v1/agents", &admin, bad.clone()).await;
+        assert!(
+            r.status == StatusCode::BAD_REQUEST || r.status == StatusCode::CONFLICT,
+            "{bad}: {:?}",
+            r.body
+        );
+    }
+    let tom = t.login("tom").await;
+    assert_eq!(t.get("/api/v1/agents", &tom).await.body, json!([]));
+    let tina = t.login("tina").await;
+    assert_eq!(t.get("/api/v1/agents", &tina).await.body.as_array().unwrap().len(), 1);
+
+    // enrollment job
+    let r = t.post(&format!("/api/v1/agents/{id}/enroll"), &admin, json!({})).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let job = r.body["id"].as_i64().unwrap();
+    let (kind, params): (String, String) =
+        t.st.cat
+            .conn()
+            .query_row("SELECT kind, params FROM jobs WHERE id = ?1", [job], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+    assert_eq!(
+        (kind.as_str(), params),
+        ("agent_enroll", json!({"agent_id": id}).to_string())
+    );
+    // expired token: 409 until a new one is issued
+    t.st.cat
+        .conn()
+        .execute("UPDATE agents SET token_expires = 1", [])
+        .unwrap();
+    let r = t.post(&format!("/api/v1/agents/{id}/enroll"), &admin, json!({})).await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    let r = t.post(&format!("/api/v1/agents/{id}/token"), &admin, json!({})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let token2 = r.body["token"].as_str().unwrap();
+    assert_ne!(token2, token);
+    assert!(r.body["token_expires"].as_i64().unwrap() > catalog::now());
+    let r = t.post(&format!("/api/v1/agents/{id}/enroll"), &admin, json!({})).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    assert_eq!(
+        t.post("/api/v1/agents/0000000000000000/enroll", &admin, json!({}))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    // linux source + group (guest = the agent)
+    let p = t.post("/api/v1/policies", &admin, policy(7, true)).await;
+    let pol = p.body["id"].as_i64().unwrap();
+    let cfg = json!({"agent_id": id, "paths": ["/etc", "/var/lib/postgresql"], "excludes": ["*.tmp"], "hooks": true});
+    let s = t
+        .post(
+            "/api/v1/sources",
+            &admin,
+            json!({"tenant": "acme", "kind": "linux", "name": "web01", "config": cfg}),
+        )
+        .await;
+    assert_eq!(s.status, StatusCode::CREATED, "{:?}", s.body);
+    assert_eq!(s.body["config"]["paths"], json!(["/etc", "/var/lib/postgresql"]));
+    let sid = s.body["id"].as_i64().unwrap();
+    for bad in [
+        json!({"agent_id": id, "paths": []}),
+        json!({"agent_id": id, "paths": ["etc"]}),
+        json!({"agent_id": id, "paths": ["/etc/../root"]}),
+        json!({"agent_id": id, "paths": ["/etc"], "excludes": ["a\nb"]}),
+        json!({"agent_id": "0000000000000000", "paths": ["/etc"]}),
+        json!({"agent_id": id, "paths": ["/etc"], "token_secret": "x"}),
+    ] {
+        let r = t
+            .post(
+                "/api/v1/sources",
+                &admin,
+                json!({"tenant": "acme", "kind": "linux", "name": "bad", "config": bad}),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}: {:?}", r.body);
+    }
+    // an agent of another tenant cannot be used
+    let r = t
+        .post(
+            "/api/v1/sources",
+            &admin,
+            json!({"tenant": "globex", "kind": "linux", "name": "x", "config": {"agent_id": id, "paths": ["/"]}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let r = t
+        .put(
+            &format!("/api/v1/sources/{sid}"),
+            &admin,
+            json!({"name": "web01", "config": {"agent_id": id, "paths": ["/"], "hooks": false}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let g = t
+        .post(
+            "/api/v1/groups",
+            &admin,
+            json!({"tenant": "acme", "source_id": sid, "policy_id": pol, "name": "hosts", "guests": []}),
+        )
+        .await;
+    assert_eq!(g.status, StatusCode::CREATED, "{:?}", g.body);
+    assert_eq!(g.body["guests"], json!([id]));
+    for bad in [json!([100]), json!(["fedcba9876543210"])] {
+        let r = t
+            .post(
+                "/api/v1/groups",
+                &admin,
+                json!({"tenant": "acme", "source_id": sid, "policy_id": pol, "name": "h2", "guests": bad}),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    }
+
+    // deletion: refused while a source uses the agent, then quorum
+    let r = t.delete(&format!("/api/v1/agents/{id}"), &admin).await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    t.st.cat
+        .conn()
+        .execute_batch(&format!("DELETE FROM groups; DELETE FROM sources WHERE id = {sid};"))
+        .unwrap();
+    let r = t.delete(&format!("/api/v1/agents/{id}"), &admin).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    assert_eq!(
+        t.scalar::<i64>("SELECT COUNT(*) FROM agents"),
+        1,
+        "not deleted before approval"
+    );
+    let sam = t.login("sam").await;
+    let r = t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({})).await;
+    assert_eq!(r.body["state"], "executed", "{:?}", r.body);
+    assert_eq!(t.scalar::<i64>("SELECT COUNT(*) FROM agents"), 0);
+    let actions = t.audit_actions();
+    for a in [
+        "agent.create",
+        "agent.token",
+        "agent.delete",
+        "quorum.approve",
+        "source.create",
+        "group.create",
+    ] {
+        assert!(actions.iter().any(|x| x == a), "{a} audited");
+    }
+    t.finish();
+}
+
+#[tokio::test]
+async fn agent_jobs_rbac_and_confirmation() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let (id, _) = add_agent(&t, &admin).await;
+    let src = format!("host-{id}");
+    t.st.cat
+        .conn()
+        .execute(
+            "INSERT INTO snapshots (tenant, source, time, size, local, offsite) VALUES ('acme', ?1, 2000, 5, 1, 0)",
+            [&src],
+        )
+        .unwrap();
+    let restore = |confirm: &str| {
+        json!({"kind": "restore_files", "tenant": "acme", "params": {"source": src, "time": 2000,
+               "paths": ["/etc"], "target": "/srv/restore", "overwrite": "never", "confirm": confirm}})
+    };
+    // the confirm token must be the target agent's name
+    let r = t.post("/api/v1/jobs", &admin, restore("yes")).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(r.body["error"].as_str().unwrap().contains("web01"));
+    for (who, want) in [
+        ("alice", StatusCode::ACCEPTED),
+        ("otto", StatusCode::ACCEPTED),
+        ("tina", StatusCode::ACCEPTED),
+        ("tom", StatusCode::FORBIDDEN),
+        ("sam", StatusCode::FORBIDDEN),
+    ] {
+        let s = t.login(who).await;
+        let r = t.post("/api/v1/jobs", &s, restore("web01")).await;
+        assert_eq!(r.status, want, "{who}: {:?}", r.body);
+    }
+    let p: String = t.scalar("SELECT params FROM jobs WHERE kind = 'restore_files' ORDER BY id LIMIT 1");
+    let p: Value = serde_json::from_str(&p).unwrap();
+    assert_eq!(p["agent_id"], id, "target agent made explicit");
+    for bad in [
+        json!({"source": src, "time": 2000, "paths": ["/etc"], "target": "srv", "overwrite": "never", "confirm": "web01"}),
+        json!({"source": src, "time": 2000, "paths": ["/etc"], "target": "/srv/../etc", "overwrite": "never", "confirm": "web01"}),
+        json!({"source": src, "time": 2000, "paths": ["/etc"], "target": "/srv", "overwrite": "sometimes", "confirm": "web01"}),
+        json!({"source": src, "time": 2000, "paths": [], "target": "/srv", "overwrite": "never", "confirm": "web01"}),
+        json!({"source": "vm-100", "time": 2000, "paths": ["/"], "target": "/srv", "overwrite": "never", "confirm": "web01"}),
+        json!({"source": src, "time": 2000, "paths": ["/"], "target": "/srv", "overwrite": "never", "confirm": "web01",
+               "agent_id": "0000000000000000"}),
+    ] {
+        let r = t
+            .post(
+                "/api/v1/jobs",
+                &admin,
+                json!({"kind": "restore_files", "tenant": "acme", "params": bad}),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    }
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &admin,
+            json!({"kind": "restore_files", "tenant": "acme", "params": {"source": src, "time": 1, "paths": ["/"],
+                   "target": "/srv", "overwrite": "never", "confirm": "web01"}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "no such snapshot");
+    // file downloads from host snapshots use the generic file jobs
+    let tina = t.login("tina").await;
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &tina,
+            json!({"kind": "files_get", "tenant": "acme", "params": {"source": src, "time": 2000,
+                   "paths": ["/etc/hostname"], "format": "tar"}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    // agent_update / agent_enroll: admin only
+    let upd = json!({"kind": "agent_update", "tenant": "acme", "params": {"agent_id": id}});
+    for (who, want) in [
+        ("otto", StatusCode::FORBIDDEN),
+        ("tina", StatusCode::FORBIDDEN),
+        ("alice", StatusCode::ACCEPTED),
+    ] {
+        let s = t.login(who).await;
+        let r = t.post("/api/v1/jobs", &s, upd.clone()).await;
+        assert_eq!(r.status, want, "{who}");
+    }
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &admin,
+            json!({"kind": "agent_update", "tenant": "globex", "params": {"agent_id": id}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "agent of another tenant");
+    // manual backup of one agent
+    let otto = t.login("otto").await;
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &otto,
+            json!({"kind": "backup", "tenant": "acme", "params": {"agent_id": id}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &admin,
+            json!({"kind": "backup", "tenant": "acme", "params": {"agent_id": id, "vmid": 100}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    // agent endpoints: admin only
+    assert_eq!(
+        t.post(
+            "/api/v1/agents",
+            &otto,
+            json!({"tenant": "acme", "name": "x", "host": "x"})
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    for path in [
+        format!("/api/v1/agents/{id}/token"),
+        format!("/api/v1/agents/{id}/enroll"),
+    ] {
+        assert_eq!(t.post(&path, &otto, json!({})).await.status, StatusCode::FORBIDDEN);
+    }
+    assert_eq!(
+        t.delete(&format!("/api/v1/agents/{id}"), &otto).await.status,
+        StatusCode::FORBIDDEN
+    );
+    // a tenant with an agent cannot be deleted
+    assert_eq!(
+        t.delete("/api/v1/tenants/acme", &admin).await.status,
+        StatusCode::CONFLICT
+    );
     t.finish();
 }

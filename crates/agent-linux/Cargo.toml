@@ -30,5 +30,8 @@ sha2 = "0.10"
 x509-parser = { version = "0.16", features = ["verify"] }
 
 [dev-dependencies]
+# interop test against the real appliance side (tests/interop.rs)
+agent-conn = { path = "../agent-conn" }
+chunkstore = { path = "../chunkstore" }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring", "x509-parser"] }
 tempfile = "3"

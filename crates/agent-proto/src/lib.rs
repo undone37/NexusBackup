@@ -265,10 +265,12 @@ pub fn enroll_proof(token: &str, role: &str, exporter: &[u8; 32]) -> [u8; 32] {
     mac.finalize().into_bytes().into()
 }
 
-/// What both sides store instead of the enrollment token: lowercase hex of
-/// `sha256(token.trim())`. Neither side keeps the plain token after `init` / creation,
-/// so this string is the HMAC key passed to [`enroll_proof`] on both sides.
-pub fn token_hash(token: &str) -> String {
+/// What both sides keep of the one-time enrollment token and use as the
+/// `token` argument of [`enroll_proof`]: lowercase hex SHA-256 of the trimmed
+/// token. The agent stores only this (`/etc/nexus-agent/token`), the appliance
+/// stores it sealed to its scheduler; the plaintext token exists only in the
+/// install command shown once.
+pub fn token_digest(token: &str) -> String {
     use sha2::Digest;
     Sha256::digest(token.trim().as_bytes())
         .iter()
@@ -343,11 +345,8 @@ mod tests {
         assert!(!proof_eq(&a, &enroll_proof("TOKEN", "agent", &ex)));
         assert!(!proof_eq(&a, &enroll_proof("OTHER", "appliance", &ex)));
         assert!(!proof_eq(&a, &enroll_proof("TOKEN", "appliance", &[8u8; 32])));
-    }
-
-    #[test]
-    fn token_hash_is_hex_sha256_of_trimmed_token() {
-        let h = token_hash(" abc\n");
-        assert_eq!(h, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        let d = token_digest("ABC\n");
+        assert_eq!(d, token_digest("ABC"));
+        assert_eq!(d, "b5d4045c3f466fa91fe2cc6abe79232a1a57cdf104f7a26e716e0a1e2789df78");
     }
 }

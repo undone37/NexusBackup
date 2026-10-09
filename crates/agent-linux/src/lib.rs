@@ -40,7 +40,7 @@ pub fn init(paths: &Paths, token: &str, port: Option<u16>) -> Result<String, Str
     }
     write_atomic(&paths.key(), key_pem.as_bytes(), 0o600).map_err(|e| io(&paths.key(), e))?;
     write_atomic(&paths.enroll_cert(), cert_pem.as_bytes(), 0o644).map_err(|e| io(&paths.enroll_cert(), e))?;
-    write_atomic(&paths.token(), agent_proto::token_hash(token).as_bytes(), 0o600)
+    write_atomic(&paths.token(), agent_proto::token_digest(token).as_bytes(), 0o600)
         .map_err(|e| io(&paths.token(), e))?;
     if let Some(port) = port {
         let mut text = fs::read_to_string(paths.conf()).unwrap_or_default();

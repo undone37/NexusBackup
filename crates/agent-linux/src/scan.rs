@@ -599,10 +599,7 @@ mod tests {
         fs::write(d.join("b"), b"bbbbb").unwrap();
         let (es, s2) = scan_dir(d, &[], Some(&cache), false);
         assert!(rel(&es, d, "a").unchanged);
-        assert_eq!(
-            rel(&es, d, "a").chunks,
-            cache.files.values().find(|c| c.size == 4).unwrap().chunks
-        );
+        assert_eq!(rel(&es, d, "a").chunks, vec![(*blake3::hash(b"aaaa").as_bytes(), 4)]);
         assert!(!rel(&es, d, "b").unchanged);
         assert_eq!(s2.stats.read_bytes, 5, "only the changed file is read");
         assert_eq!(s2.stats.unchanged, 1);

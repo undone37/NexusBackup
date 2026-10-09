@@ -167,7 +167,7 @@ fn enroll(addr: SocketAddr, agent_id: &str) -> Ca {
     let ca = ca("nexus test appliance CA");
     let mut s = handshake(addr, enroll_client(), "agent.invalid").unwrap();
     let ex = exporter(&s);
-    let key = token_hash(TOKEN);
+    let key = token_digest(TOKEN);
     write_msg(
         &mut s,
         &Message::Enroll {
@@ -608,7 +608,7 @@ fn enroll_backup_incremental_restore() {
     .unwrap();
     write_msg(&mut s, &Message::RestoreEnd).unwrap();
     match read_msg(&mut s).unwrap() {
-        Message::RestoreDone { stats } => assert!(stats.errors.iter().all(|e| e.contains("exists, kept"))),
+        Message::RestoreDone { stats } => assert!(stats.errors.is_empty(), "{:?}", stats.errors),
         m => panic!("unexpected {m:?}"),
     }
     // restore onto / without Always is refused
@@ -673,7 +673,7 @@ fn mitm_enrollment_fails(agent: SocketAddr) {
     write_msg(
         &mut s,
         &Message::Enroll {
-            proof: enroll_proof(&token_hash(TOKEN), "appliance", &ex),
+            proof: enroll_proof(&token_digest(TOKEN), "appliance", &ex),
         },
     )
     .unwrap();
@@ -742,7 +742,7 @@ fn enrollment_locks_after_five_failed_proofs_until_reinit() {
     let _ = write_msg(
         &mut s,
         &Message::Enroll {
-            proof: enroll_proof(&token_hash(TOKEN), "appliance", &ex),
+            proof: enroll_proof(&token_digest(TOKEN), "appliance", &ex),
         },
     );
     assert!(matches!(

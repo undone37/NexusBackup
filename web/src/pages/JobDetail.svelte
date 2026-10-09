@@ -4,7 +4,7 @@
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
   import { href } from '../lib/router.svelte';
-  import { terminal, downloadUrl } from '../lib/jobs';
+  import { terminal, downloadUrl, kindLabel } from '../lib/jobs';
   import { fmtTime, fmtValue } from '../lib/format';
   import { t } from '../lib/i18n';
   import type { Job } from '../lib/types';
@@ -65,7 +65,7 @@
     <section class="card">
       <dl class="kv">
         <dt>{t.kind}</dt>
-        <dd>{job.kind}</dd>
+        <dd>{kindLabel(job.kind)} <span class="muted mono">{job.kind}</span></dd>
         <dt>{t.state}</dt>
         <dd><JobState state={job.state} /></dd>
         <dt>{t.tenant}</dt>

@@ -13,7 +13,16 @@ use serde_json::{json, Value};
 
 const OPS: &[&str] = &["admin", "operator"];
 /// Kinds a tenant_user may request (restores only, own tenant).
-const RESTORE_KINDS: &[&str] = &["restore", "restore_ct", "instant_recover", "files_list", "files_get"];
+const RESTORE_KINDS: &[&str] = &[
+    "restore",
+    "restore_ct",
+    "instant_recover",
+    "files_list",
+    "files_get",
+    "restore_files",
+];
+/// Kinds only an admin may request (they change software or trust on a host).
+const ADMIN_KINDS: &[&str] = &["agent_update", "agent_enroll"];
 pub const DOWNLOAD_TTL_SECS: i64 = 24 * 3600;
 
 #[derive(Deserialize)]
@@ -32,6 +41,47 @@ struct BackupP {
     group_id: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     vmid: Option<u32>,
+    /// one Linux agent (its linux source)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent_id: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RestoreFilesP {
+    /// `host-<agent_id>`
+    source: String,
+    time: i64,
+    paths: Vec<String>,
+    /// absolute path on the target agent
+    target: String,
+    overwrite: String,
+    /// the target agent's name, typed by the user
+    confirm: String,
+    /// target agent (default: the snapshot's agent; same tenant)
+    #[serde(default)]
+    agent_id: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AgentP {
+    agent_id: String,
+}
+
+/// Name of an agent of `tenant`, or 400.
+fn agent_name(st: &St, tenant: &str, id: &str) -> ApiResult<String> {
+    validate::agent_id(id)?;
+    let n = st
+        .cat
+        .conn()
+        .query_row(
+            "SELECT name FROM agents WHERE id = ?1 AND tenant = ?2",
+            params![id, tenant],
+            |r| r.get(0),
+        )
+        .optional()?;
+    n.ok_or_else(|| ApiError::bad("agent_id: no such agent in this tenant"))
 }
 
 #[derive(Deserialize, Serialize)]
@@ -95,8 +145,11 @@ fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiResult<Value>
     Ok(match kind {
         "backup" => {
             let b: BackupP = parse(p)?;
-            match (b.group_id, b.vmid) {
-                (Some(g), None) => {
+            match (b.group_id, b.vmid, &b.agent_id) {
+                (None, None, Some(a)) => {
+                    agent_name(st, tenant, a)?;
+                }
+                (Some(g), None, None) => {
                     let ok = st
                         .cat
                         .conn()
@@ -108,10 +161,43 @@ fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiResult<Value>
                         .optional()?;
                     ok.ok_or_else(|| ApiError::bad("group_id: no such group in this tenant"))?;
                 }
-                (None, Some(v)) => validate::vmid(v)?,
-                _ => return Err(ApiError::bad("params: exactly one of group_id, vmid")),
+                (None, Some(v), None) => validate::vmid(v)?,
+                _ => return Err(ApiError::bad("params: exactly one of group_id, vmid, agent_id")),
             }
             json!(b)
+        }
+        "restore_files" => {
+            let mut r: RestoreFilesP = parse(p)?;
+            let src_agent = r
+                .source
+                .strip_prefix("host-")
+                .ok_or_else(|| ApiError::bad("source: restore_files needs a host-<agent_id> snapshot"))?
+                .to_owned();
+            snapshot_exists(st, tenant, &r.source, r.time)?;
+            if r.paths.is_empty() || r.paths.len() > 1000 {
+                return Err(ApiError::bad("paths: 1..=1000 entries"));
+            }
+            for x in &r.paths {
+                validate::host_path(x, "paths")?;
+            }
+            validate::host_path(&r.target, "target")?;
+            if !["never", "if_older", "always"].contains(&r.overwrite.as_str()) {
+                return Err(ApiError::bad("overwrite: never, if_older or always"));
+            }
+            let target_agent = r.agent_id.clone().unwrap_or(src_agent);
+            let name = agent_name(st, tenant, &target_agent)?;
+            if r.confirm != name {
+                return Err(ApiError::bad(format!(
+                    "confirm: type the target agent's name ({name}) to confirm the restore"
+                )));
+            }
+            r.agent_id = Some(target_agent);
+            json!(r)
+        }
+        "agent_update" | "agent_enroll" => {
+            let a: AgentP = parse(p)?;
+            agent_name(st, tenant, &a.agent_id)?;
+            json!(a)
         }
         "restore" | "restore_ct" | "instant_recover" => {
             let r: RestoreP = parse(p)?;
@@ -160,7 +246,8 @@ fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiResult<Value>
 /// 202 `{id}` (+ `download_token` for `files_get`).
 pub async fn create_job(State(st): State<St>, ctx: Ctx, J(r): J<JobReq>) -> ApiResult<Response> {
     let allowed = match ctx.user.role.as_str() {
-        "admin" | "operator" => true,
+        "admin" => true,
+        "operator" => !ADMIN_KINDS.contains(&r.kind.as_str()),
         "tenant_user" => RESTORE_KINDS.contains(&r.kind.as_str()),
         _ => false,
     };

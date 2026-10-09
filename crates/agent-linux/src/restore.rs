@@ -42,6 +42,8 @@ pub struct Restore {
     links: Vec<Entry>,
     open: Option<(usize, File)>,
     pub stats: ScanStats,
+    /// existing destinations left alone by the overwrite policy
+    pub kept: u64,
     seq: u64,
 }
 
@@ -98,6 +100,7 @@ impl Restore {
             links: vec![],
             open: None,
             stats: ScanStats::default(),
+            kept: 0,
             seq: 0,
         })
     }
@@ -178,13 +181,14 @@ impl Restore {
             self.links.push(e);
             return Ok(());
         }
+        // the appliance may send the root itself as "" / "."; it is the target
+        if e.path.is_empty() || e.path == b"." {
+            return Ok(());
+        }
         let (dir, name) = self.parent_of(&e.path)?;
         if !self.may_replace(&dir, &name, &e)? {
-            self.stats.errors.push(format!(
-                "{}: exists, kept ({:?})",
-                String::from_utf8_lossy(&e.path),
-                self.overwrite
-            ));
+            // policy decision, not an error (errors fail the restore job)
+            self.kept += 1;
             return Ok(());
         }
         let fd = dir.as_raw_fd();
@@ -398,21 +402,23 @@ impl Restore {
             }
         }
         for e in std::mem::take(&mut self.links) {
-            let r = (|| {
+            let r = (|| -> io::Result<bool> {
                 let target = e.link_target.as_deref().unwrap_or_default();
                 let (tdir, tname) = self.parent_of(target)?;
                 let (dir, name) = self.parent_of(&e.path)?;
                 if !self.may_replace(&dir, &name, &e)? {
-                    return Err(err(format!("exists, kept ({:?})", self.overwrite)));
+                    return Ok(false);
                 }
                 let tmp = self.tmp_name();
                 sys::linkat(tdir.as_raw_fd(), &tname, dir.as_raw_fd(), &tmp)?;
                 sys::renameat(dir.as_raw_fd(), &tmp, dir.as_raw_fd(), &name).inspect_err(|_| {
                     let _ = sys::unlinkat(dir.as_raw_fd(), &tmp, false);
-                })
+                })?;
+                Ok(true)
             })();
             match r {
-                Ok(()) => self.stats.files += 1,
+                Ok(true) => self.stats.files += 1,
+                Ok(false) => self.kept += 1,
                 Err(x) => self.error(&e.path, x),
             }
         }
@@ -441,6 +447,14 @@ impl Restore {
             if let Err(x) = r {
                 self.error(&e.path, x);
             }
+        }
+        if self.kept > 0 {
+            eprintln!(
+                "nexus-agent: restore to {}: {} existing entries kept ({:?})",
+                self.target.display(),
+                self.kept,
+                self.overwrite
+            );
         }
         // SAFETY: syncfs on our own fd.
         unsafe { libc::syncfs(self.root.as_raw_fd()) };
@@ -620,7 +634,7 @@ mod tests {
         let (f2, _) = entry("a/file", Kind::File, b"other");
         r.entries(vec![f2]);
         let s = r.end();
-        assert!(s.errors.iter().any(|e| e.contains("exists, kept")), "{:?}", s.errors);
+        assert!(s.errors.is_empty(), "kept by policy is not an error: {:?}", s.errors);
         assert_eq!(fs::read(base.join("a/file")).unwrap(), data);
     }
 

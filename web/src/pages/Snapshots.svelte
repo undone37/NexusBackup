@@ -6,14 +6,17 @@
   import { route, navigate, href } from '../lib/router.svelte';
   import { fmtBytes, fmtTime, fmtAgo } from '../lib/format';
   import { t } from '../lib/i18n';
-  import type { Snapshot, Source, Tenant } from '../lib/types';
+  import { hostAgentId } from '../lib/jobs';
+  import type { Agent, PveSource, Snapshot, Source, Tenant } from '../lib/types';
   import Check from '../components/Check.svelte';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
+  import RestoreFiles from '../components/RestoreFiles.svelte';
 
   let snaps: Snapshot[] = $state([]);
   let tenants: Tenant[] = $state([]);
   let sources: Source[] = $state([]);
+  let agents: Agent[] = $state([]);
   let error: string | null = $state(null);
   let loaded = $state(false);
 
@@ -37,7 +40,16 @@
     } catch {
       /* filters still work as free text */
     }
+    try {
+      agents = await get<Agent[]>('/agents');
+    } catch {
+      /* host snapshots then show only the agent id */
+    }
   });
+  const agentOf = (s: Snapshot) => {
+    const id = hostAgentId(s.source);
+    return id ? (agents.find((a) => a.id === id) ?? null) : null;
+  };
 
   function applyFilter(e: SubmitEvent) {
     e.preventDefault();
@@ -56,7 +68,8 @@
   let storage = $state('');
   let busy = $state(false);
 
-  const tenantSources = $derived(sources.filter((s) => sel && s.tenant === sel.tenant));
+  const pveSources = $derived(sources.filter((s): s is PveSource => s.kind === 'pve'));
+  const tenantSources = $derived(pveSources.filter((s) => sel && s.tenant === sel.tenant));
   const nodeNames = $derived([...new Set(tenantSources.flatMap((s) => Object.keys(s.config?.nodes ?? {})))]);
 
   function openRestore(s: Snapshot, m: 'restore' | 'instant') {
@@ -64,7 +77,7 @@
     mode = m;
     target = '';
     node = '';
-    storage = sources.find((x) => x.tenant === s.tenant)?.config?.storage ?? '';
+    storage = pveSources.find((x) => x.tenant === s.tenant)?.config?.storage ?? '';
     node = nodeNames[0] ?? '';
     dlgOpen = true;
   }
@@ -82,6 +95,14 @@
     busy = false;
     if (r) dlgOpen = false;
     if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
+  }
+
+  // Restore files of a host snapshot to a path (agents)
+  let rfOpen = $state(false);
+  let rfSnap: Snapshot | null = $state(null);
+  function openRestoreFiles(s: Snapshot) {
+    rfSnap = s;
+    rfOpen = true;
   }
 
   function browse(s: Snapshot) {
@@ -138,8 +159,12 @@
         </thead>
         <tbody>
           {#each snaps as s (`${s.tenant}/${s.source}/${s.time}`)}
+            {@const ag = agentOf(s)}
             <tr>
-              <td class="mono">{s.source}</td>
+              <td>
+                <span class="mono">{s.source}</span>
+                {#if ag}<div class="muted">{t.snap.agent(ag.name)}</div>{/if}
+              </td>
               <td>{s.tenant}</td>
               <td class="nowrap">{fmtTime(s.time)}</td>
               <td class="num">{fmtBytes(s.size)}</td>
@@ -149,7 +174,11 @@
               <td class="nowrap">{s.lock_until > now ? fmtTime(s.lock_until) : '—'}</td>
               {#if can.restore(session.user)}
                 <td class="actions">
-                  <button type="button" class="small" onclick={() => openRestore(s, 'restore')}>{t.snap.restore}</button>
+                  {#if hostAgentId(s.source)}
+                    <button type="button" class="small" onclick={() => openRestoreFiles(s)}>{t.snap.restorePath}</button>
+                  {:else}
+                    <button type="button" class="small" onclick={() => openRestore(s, 'restore')}>{t.snap.restore}</button>
+                  {/if}
                   {#if s.source.startsWith('vm-')}
                     <button type="button" class="small" onclick={() => openRestore(s, 'instant')}>{t.snap.instant}</button>
                   {/if}
@@ -194,5 +223,9 @@
     </form>
   {/if}
 </Modal>
+
+{#if rfSnap}
+  <RestoreFiles bind:open={rfOpen} tenant={rfSnap.tenant} source={rfSnap.source} time={rfSnap.time} paths={['/']} {agents} />
+{/if}
 
 <p class="muted"><a href={href('/jobs')}>{t.nav.jobs} →</a></p>

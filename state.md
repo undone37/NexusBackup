@@ -135,6 +135,9 @@ Decisions (user, 2026-10-09): LUKS disk encryption deferred with TPM; cosign wit
 ## Phase 7 — Additional sources (started 2026-10-09)
 Decisions (user, 2026-10-09): order Linux agent → Windows agent → TrueNAS → NAS; Windows = build + unit tests only (no Windows VMs); agent trust = appliance CA + one-time enrollment token; Windows cross-build in podman (mingw-w64); agent dedup via plain BLAKE3 + appliance-local mapping to keyed IDs
 - [x] Contract `docs/agent-protocol.md` (TLS 1.3 port 7444, mTLS after enrollment, token proofs bound to the TLS exporter = no TOFU/MITM, messages, no remote command execution, limits) + crate `agent-proto` (message types, framing with limits, enroll proofs) + `Index::Tree`/`TreeEntry` (full metadata, keyed chunk IDs; old variants still decode)
+- [ ] Linux agent `crates/agent-linux` (nexus-agent) — agent running
+- [ ] Appliance side `crates/agent-conn` (nexus-agentctl, CA, enrollment, mapping index, backup/restore) + catalog/web-api/scheduler/UI — agent running
+- [ ] Lab: Linux test VMs (LVM, XFS, ZFS, btrfs, fallback) end to end — after merge
 
 ## Next
 

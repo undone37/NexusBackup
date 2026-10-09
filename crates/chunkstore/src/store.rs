@@ -380,6 +380,14 @@ impl Store {
         self.chunk_path(id).exists()
     }
 
+    /// Reuse of a chunk that is referenced only by ID (e.g. via the agent mapping
+    /// index): true if it exists, and its mtime is bumped under the chunk lock so
+    /// a concurrent GC treats it as fresh until the referencing snapshot commits.
+    pub fn touch_chunk(&self, id: &ChunkId) -> io::Result<bool> {
+        let _g = self.chunk_lock.lock().unwrap();
+        Self::touch(&self.chunk_path(id))
+    }
+
     pub fn image_reader<'a>(&'a self, index: &'a Index) -> io::Result<ImageReader<'a>> {
         let Index::Fixed {
             chunk_size,
