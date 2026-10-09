@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { get, post, put, act, errText } from '../lib/api';
+  import { get, post, put, act, errText, type Outcome } from '../lib/api';
   import { notify } from '../lib/notify.svelte';
   import { ROLES } from '../lib/roles';
   import { fmtTime } from '../lib/format';
@@ -10,7 +10,9 @@
   import Qr from '../components/Qr.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
 
-  type WithUri = User & { totp_uri?: string };
+  // POST /users -> {user, totp_uri}; PUT /users/{id} -> {user, totp_uri?}. Quorum-gated
+  // answers (202) carry the same fields next to quorum_id.
+  type UserResp = { user?: User; totp_uri?: string };
 
   let items: User[] = $state([]);
   let tenants: Tenant[] = $state([]);
@@ -34,7 +36,7 @@
   const privileged = $derived(f.role === 'admin' || f.role === 'security_officer');
 
   // TOTP enrollment (shown once after create / reset)
-  let enroll = $state<{ name: string; uri: string } | null>(null);
+  let enroll = $state<{ name: string; uri: string; pending: boolean } | null>(null);
   let enrollOpen = $state(false);
   const secret = $derived(enroll ? (new URL(enroll.uri).searchParams.get('secret') ?? '') : '');
 
@@ -44,9 +46,9 @@
     open = true;
   }
 
-  function showEnroll(u: WithUri | null) {
-    if (u?.totp_uri) {
-      enroll = { name: u.name, uri: u.totp_uri };
+  function showEnroll(name: string, r: Outcome<UserResp> | null) {
+    if (r?.data.totp_uri) {
+      enroll = { name, uri: r.data.totp_uri, pending: r.quorum };
       enrollOpen = true;
     }
   }
@@ -55,14 +57,14 @@
     e.preventDefault();
     const tenant = f.tenant || null;
     if (!editing) {
-      const r = await act(post<WithUri>('/users', { name: f.name, password: f.password, role: f.role, tenant }), t.created);
+      const r = await act(post<UserResp>('/users', { name: f.name, password: f.password, role: f.role, tenant }), t.created);
       if (!r) return;
       open = false;
-      showEnroll(r.data);
+      showEnroll(f.name, r);
     } else {
       const body: Record<string, unknown> = { role: f.role, tenant, disabled: f.disabled };
       if (f.password) body.password = f.password;
-      const r = await act(put<User>(`/users/${editing.id}`, body), t.saved);
+      const r = await act(put<UserResp>(`/users/${editing.id}`, body), t.saved);
       if (!r) return;
       open = false;
     }
@@ -71,8 +73,7 @@
 
   async function resetTotp(x: User) {
     if (!confirm(t.users.resetConfirm)) return;
-    const r = await act(put<WithUri>(`/users/${x.id}`, { reset_totp: true }), t.saved);
-    showEnroll(r?.data ?? null);
+    showEnroll(x.name, await act(put<UserResp>(`/users/${x.id}`, { reset_totp: true }), t.saved));
   }
 
   async function copy(text: string) {
@@ -173,6 +174,7 @@
 <Modal bind:open={enrollOpen} title="{t.users.enroll}: {enroll?.name ?? ''}">
   {#if enroll}
     <p>{t.users.enrollHint}</p>
+    {#if enroll.pending}<p class="banner pending">{t.users.enrollPending}</p>{/if}
     <div class="qr-box">
       <Qr text={enroll.uri} label="{t.users.enroll} {enroll.name}" />
       <div>

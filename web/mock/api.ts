@@ -71,7 +71,6 @@ interface Job {
   started: number | null;
   finished: number | null;
   log: string;
-  result: Json | null;
   plan: string[];
   duration: number;
   fail?: string;
@@ -91,6 +90,7 @@ const db = {
   sessions: new Map<string, { userId: number; csrf: string; created: number; last: number }>(),
   downloads: new Map<string, { owner: string; filename: string; body: string; expires: number }>(),
   failures: new Map<string, { count: number; until: number }>(),
+  quorumSecrets: new Map<number, Json>(),
   seq: 100,
 };
 const nextId = () => ++db.seq;
@@ -116,7 +116,6 @@ function addJob(kind: string, tenant: string, params: Json, by: string, opts: Pa
     started: null,
     finished: null,
     log: '',
-    result: null,
     plan: planFor(kind, params),
     duration: { files_list: 3, files_get: 5, backup: 12, restore: 16, restore_ct: 12, instant_recover: 10 }[kind] ?? 8,
     ...opts,
@@ -178,17 +177,15 @@ function tick() {
         continue;
       }
       j.state = 'ok';
-      if (j.kind === 'files_list') j.result = { entries: listDir(String(j.params.path ?? '/')) };
+      // Like `nexus-pve files … ls`: the listing is a JSON array printed into the log.
+      if (j.kind === 'files_list') j.log += '\n' + JSON.stringify(listDir(String(j.params.path ?? '/')), null, 2);
       if (j.kind === 'files_get') {
-        const token = rand(16);
-        const filename = `${j.params.source}-${j.params.time}.${j.params.format}`;
-        db.downloads.set(token, {
+        db.downloads.set(String(j.params.download_token), {
           owner: j.requested_by,
-          filename,
+          filename: `${j.params.source}-${j.params.time}.${j.params.format}`,
           body: `mock archive of ${(j.params.paths ?? []).join(', ')}\n`,
           expires: t + 86400,
         });
-        j.result = { download: token, filename };
       }
       if (j.kind === 'backup') {
         const vm = j.params.vmid ?? db.groups.find((g) => g.id === j.params.group_id)?.guests[0];
@@ -205,7 +202,7 @@ function listDir(path: string): Json[] {
       { name: 'etc', kind: 'dir', size: 0, mtime: t },
       { name: 'home', kind: 'dir', size: 0, mtime: t },
       { name: 'var', kind: 'dir', size: 0, mtime: t },
-      { name: 'vmlinuz', kind: 'link', size: 0, mtime: t },
+      { name: 'vmlinuz', kind: 'symlink', size: 0, mtime: t, link: 'boot/vmlinuz-6.12.0' },
     ],
     '/etc': [
       { name: 'hostname', kind: 'file', size: 12, mtime: t },
@@ -249,7 +246,7 @@ function seed() {
     totp_secret: b32(),
   });
   db.users.push(mk('admin', 'admin'), mk('so', 'security_officer'), mk('so2', 'security_officer'), mk('op', 'operator'), mk('acme', 'tenant_user', 'acme'));
-  const off = (u: string) => ({ host: `${u}.your-storagebox.de`, port: 23, user: u, host_key: 'SHA256:mJ0kq7…', base_dir: 'nexus', bwlimit: null, uploaders: 4, ssh_key: 'SECRET' });
+  const off = (u: string) => ({ host: `${u}.your-storagebox.de`, port: 23, user: u, host_key: 'SHA256:mJ0kq7…', base_dir: 'nexus', bwlimit: null, uploaders: 4, key_file: `/etc/nexus/offsite/${u}.key` });
   db.tenants.push({ name: 'default', offsite: off('u123456') }, { name: 'acme', offsite: off('u654321') });
   const src = (tenant: string, name: string, host: string) => ({
     id: nextId(),
@@ -298,11 +295,11 @@ function seed() {
     { id: nextId(), ts: t - 90000, severity: 'info', kind: 'offsite_lag', message: 'Offsite copy for acme caught up', acked_by: 'op' },
   );
   db.quorum.push(
-    { id: nextId(), action: 'delete_group', params: { id: db.groups[1].id, name: 'development' }, requested_by: 'admin', created: t - 1800, decided_by: null, decided_at: null, state: 'pending' },
+    { id: nextId(), action: 'group.delete', params: { id: db.groups[1].id, name: 'development' }, requested_by: 'admin', created: t - 1800, decided_by: null, decided_at: null, state: 'pending' },
     {
       id: nextId(),
-      action: 'update_policy',
-      params: { id: gold.id, name: 'gold', before: { ...gold, gfs: { ...gold.gfs } }, after: { ...gold, gfs: { ...gold.gfs, daily: 7, yearly: 1 }, offsite: false } },
+      action: 'policy.update',
+      params: { ...gold, gfs: { ...gold.gfs, daily: 7, yearly: 1 }, offsite: false, old: { ...gold, gfs: { ...gold.gfs } } },
       requested_by: 'admin',
       created: t - 600,
       decided_by: null,
@@ -329,48 +326,58 @@ function find<T>(xs: T[], pred: (x: T) => boolean, what: string): T {
   return x;
 }
 
-async function quorum(u: User, action: string, params: Json): Promise<[number, Json]> {
+// 202 {quorum_id, ...extra} like web-api's `accepted()`.
+async function quorum(u: User, action: string, params: Json, extra: Json = {}): Promise<[number, Json]> {
   const q = { id: nextId(), action, params, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
   db.quorum.push(q);
   db.alerts.push({ id: nextId(), ts: now(), severity: 'info', kind: 'quorum', message: `Approval requested: ${action} by ${u.name}`, acked_by: null });
   await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action, params });
-  return [202, { quorum_id: q.id }];
+  return [202, { quorum_id: q.id, ...extra }];
 }
 
 function stripSource(s: (typeof db.sources)[number]) {
   const { token_secret, ...config } = s.config;
   return { ...s, config: { ...config, token_secret_set: !!token_secret } };
 }
-function stripTenant(t: (typeof db.tenants)[number]) {
-  const { ssh_key, ...offsite } = t.offsite;
-  return { ...t, offsite: { ...offsite, ssh_key_set: !!ssh_key } };
-}
 const weakens = (a: Json, b: Json) =>
   ['daily', 'weekly', 'monthly', 'yearly'].some((k) => Number(b.gfs?.[k]) < Number(a.gfs?.[k])) || (a.offsite && !b.offsite);
+// web-api refuses inline secrets in opaque JSON blobs (secrets live in files).
+function noInlineSecrets(v: unknown) {
+  if (v && typeof v === 'object')
+    for (const [k, x] of Object.entries(v)) {
+      if (/secret|password|passphrase|private/i.test(k)) throw new HttpError(400, `inline secret "${k}" not allowed; reference a file`);
+      noInlineSecrets(x);
+    }
+}
 
-function execute(action: string, p: Json) {
+function execute(qid: number, action: string, p: Json) {
+  const { old: _old, ...next } = p;
   switch (action) {
-    case 'delete_group':
+    case 'group.delete':
       db.groups = db.groups.filter((g) => g.id !== p.id);
       break;
-    case 'delete_source':
+    case 'source.delete':
       db.sources = db.sources.filter((g) => g.id !== p.id);
       break;
-    case 'delete_policy':
+    case 'policy.delete':
       db.policies = db.policies.filter((g) => g.id !== p.id);
       break;
-    case 'delete_tenant':
+    case 'tenant.delete':
       db.tenants = db.tenants.filter((g) => g.name !== p.name);
       break;
-    case 'update_policy':
-      Object.assign(find(db.policies, (x) => x.id === p.id, 'policy'), p.after);
+    case 'policy.update':
+      Object.assign(find(db.policies, (x) => x.id === p.id, 'policy'), next);
       break;
-    case 'update_user':
-      Object.assign(find(db.users, (x) => x.id === p.id, 'user'), p.after);
+    case 'group.update':
+      Object.assign(find(db.groups, (x) => x.id === p.id, 'group'), next);
       break;
-    case 'create_user':
-      db.users.push({ id: nextId(), created: now(), disabled: false, totp_secret: b32(), ...(p.user as any) });
+    case 'user.update': {
+      const { name: _n, id: _i, ...fields } = next;
+      const secrets = Object.fromEntries(Object.entries(db.quorumSecrets.get(qid) ?? {}).filter(([, v]) => v !== undefined));
+      Object.assign(find(db.users, (x) => x.id === p.id, 'user'), fields, secrets);
+      db.quorumSecrets.delete(qid);
       break;
+    }
   }
 }
 
@@ -416,26 +423,27 @@ on('GET', '/auth/me', (c) => {
 });
 
 // tenants
-on('GET', '/tenants', (c) => [200, db.tenants.filter((t) => !need(c.user).tenant || t.name === c.user!.tenant).map(stripTenant)]);
+const NAME_RE = /^(?!\.)[A-Za-z0-9._-]{1,64}$/;
+on('GET', '/tenants', (c) => [200, db.tenants.filter((t) => !need(c.user).tenant || t.name === c.user!.tenant)]);
 on('POST', '/tenants', async (c) => {
   const u = need(c.user, 'admin');
   const name = String(c.body.name ?? '').trim();
-  if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(name)) throw new HttpError(400, 'invalid tenant name');
+  if (!NAME_RE.test(name)) throw new HttpError(400, 'invalid tenant name');
   if (db.tenants.some((t) => t.name === name)) throw new HttpError(409, 'tenant exists');
+  noInlineSecrets(c.body.offsite);
   db.tenants.push({ name, offsite: c.body.offsite ?? {} });
   await audit(u.name, 'tenant.create', `tenant/${name}`, {});
-  return [201, { name }];
+  return [201, { name, offsite: c.body.offsite ?? {} }];
 });
 on('PUT', '/tenants/:name', async (c, [name]) => {
   const u = need(c.user, 'admin');
   const t = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant');
-  const off = { ...(c.body.offsite ?? {}) };
-  if (!off.ssh_key) off.ssh_key = t.offsite.ssh_key;
-  t.offsite = off;
+  noInlineSecrets(c.body.offsite);
+  t.offsite = { ...(c.body.offsite ?? {}) };
   await audit(u.name, 'tenant.update', `tenant/${t.name}`, {});
-  return [200, stripTenant(t)];
+  return [200, t];
 });
-on('DELETE', '/tenants/:name', (c, [name]) => quorum(need(c.user, 'admin'), 'delete_tenant', { name: decodeURIComponent(name) }));
+on('DELETE', '/tenants/:name', (c, [name]) => quorum(need(c.user, 'admin'), 'tenant.delete', { name: decodeURIComponent(name) }));
 
 // sources
 on('GET', '/sources', (c) => [200, byTenant(need(c.user), db.sources).map(stripSource)]);
@@ -443,7 +451,9 @@ on('POST', '/sources', async (c) => {
   const u = need(c.user, 'admin');
   const { tenant, name, config } = c.body;
   find(db.tenants, (t) => t.name === tenant, 'tenant');
-  if (!name) throw new HttpError(400, 'name required');
+  if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
+  if (!config?.token_secret) throw new HttpError(400, 'token_secret required');
+  noInlineSecrets(config.nodes);
   const s = { id: nextId(), tenant, kind: 'pve' as const, name, config: config ?? {} };
   db.sources.push(s);
   await audit(u.name, 'source.create', `source/${s.id}`, { name });
@@ -460,7 +470,7 @@ on('PUT', '/sources/:id', async (c, [id]) => {
 });
 on('DELETE', '/sources/:id', (c, [id]) => {
   const s = find(db.sources, (x) => x.id === Number(id), 'source');
-  return quorum(need(c.user, 'admin'), 'delete_source', { id: s.id, name: s.name });
+  return quorum(need(c.user, 'admin'), 'source.delete', { id: s.id, name: s.name });
 });
 
 // policies
@@ -477,14 +487,14 @@ on('PUT', '/policies/:id', async (c, [id]) => {
   const u = need(c.user, 'admin');
   const p = find(db.policies, (x) => x.id === Number(id), 'policy');
   const after = { name: c.body.name, schedule: c.body.schedule, gfs: c.body.gfs, offsite: !!c.body.offsite };
-  if (weakens(p, after)) return quorum(u, 'update_policy', { id: p.id, name: p.name, before: structuredClone(p), after });
+  if (weakens(p, after)) return quorum(u, 'policy.update', { id: p.id, ...after, old: structuredClone(p) });
   Object.assign(p, after);
   await audit(u.name, 'policy.update', `policy/${p.id}`, after);
   return [200, p];
 });
 on('DELETE', '/policies/:id', (c, [id]) => {
   const p = find(db.policies, (x) => x.id === Number(id), 'policy');
-  return quorum(need(c.user, 'admin'), 'delete_policy', { id: p.id, name: p.name });
+  return quorum(need(c.user, 'admin'), 'policy.delete', { id: p.id, name: p.name });
 });
 
 // groups
@@ -500,13 +510,18 @@ on('POST', '/groups', async (c) => {
 on('PUT', '/groups/:id', async (c, [id]) => {
   const u = need(c.user, 'admin');
   const g = find(db.groups, (x) => x.id === Number(id), 'group');
-  Object.assign(g, { name: c.body.name, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), guests: c.body.guests });
+  if ('tenant' in c.body) throw new HttpError(400, 'unknown field `tenant`');
+  const next = { name: c.body.name, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), guests: c.body.guests };
+  const from = find(db.policies, (p) => p.id === g.policy_id, 'policy');
+  const to = find(db.policies, (p) => p.id === next.policy_id, 'policy');
+  if (weakens(from, to)) return quorum(u, 'group.update', { id: g.id, tenant: g.tenant, ...next, old: structuredClone(g) });
+  Object.assign(g, next);
   await audit(u.name, 'group.update', `group/${g.id}`, g);
   return [200, g];
 });
 on('DELETE', '/groups/:id', (c, [id]) => {
   const g = find(db.groups, (x) => x.id === Number(id), 'group');
-  return quorum(need(c.user, 'admin'), 'delete_group', { id: g.id, name: g.name });
+  return quorum(need(c.user, 'admin'), 'group.delete', { id: g.id, name: g.name });
 });
 
 // users
@@ -517,36 +532,48 @@ on('POST', '/users', async (c) => {
   if (!name || !password || String(password).length < 12) throw new HttpError(400, 'name and a password of at least 12 characters required');
   if (db.users.some((x) => x.name === name)) throw new HttpError(409, 'user exists');
   if (role === 'tenant_user' && !tenant) throw new HttpError(400, 'tenant users need a tenant');
-  if (PRIV.includes(role)) return quorum(u, 'create_user', { user: { name, password, role, tenant: tenant || null } });
-  const n: User = { id: nextId(), name, password, role, tenant: tenant || null, disabled: false, created: now(), totp_secret: b32() };
+  // Privileged accounts are created disabled; the quorum request enables them.
+  // The TOTP URI is returned either way (it is only shown once).
+  const priv = PRIV.includes(role);
+  const n: User = { id: nextId(), name, password, role, tenant: tenant || null, disabled: priv, created: now(), totp_secret: b32() };
   db.users.push(n);
   await audit(u.name, 'user.create', `user/${n.id}`, { name, role });
-  return [201, { ...pub(n), totp_uri: totpUri(n.name, n.totp_secret) }];
+  const body = { user: pub(n), totp_uri: totpUri(n.name, n.totp_secret) };
+  if (priv) return quorum(u, 'user.update', { id: n.id, name, role, disabled: false }, body);
+  return [201, body];
 });
 on('PUT', '/users/:id', async (c, [id]) => {
   const u = need(c.user, 'admin');
   const x = find(db.users, (y) => y.id === Number(id), 'user');
   const b = c.body;
+  const p: Json = { id: x.id, name: x.name };
+  if (b.role !== undefined) p.role = b.role;
+  if (b.tenant !== undefined) p.tenant = b.tenant || null;
+  if (b.disabled !== undefined) p.disabled = !!b.disabled;
+  if (b.password) p.password = b.password;
+  const extra: Json = {};
   if (b.reset_totp) {
-    x.totp_secret = b32();
-    await audit(u.name, 'user.reset_totp', `user/${x.id}`, {});
-    return [200, { ...pub(x), totp_uri: totpUri(x.name, x.totp_secret) }];
+    p.totp_secret = b32();
+    extra.totp_uri = totpUri(x.name, p.totp_secret);
   }
-  const after: Json = {};
-  if (b.role !== undefined) after.role = b.role;
-  if (b.tenant !== undefined) after.tenant = b.tenant || null;
-  if (b.disabled !== undefined) after.disabled = !!b.disabled;
-  if (b.password) after.password = b.password;
-  const grants = after.role && after.role !== x.role && PRIV.includes(after.role);
-  const lastPriv =
-    after.disabled && !x.disabled && PRIV.includes(x.role) && db.users.filter((y) => y.role === x.role && !y.disabled).length <= 1;
-  if (grants || lastPriv) {
-    const { password: _pw, ...shown } = after;
-    return quorum(u, 'update_user', { id: x.id, name: x.name, before: { role: x.role, tenant: x.tenant, disabled: x.disabled }, after: shown });
+  const isPriv = PRIV.includes(x.role);
+  const enabledPeers = db.users.filter((y) => y.role === x.role && !y.disabled).length;
+  const gated =
+    (p.role && p.role !== x.role && PRIV.includes(p.role)) || // granting
+    (isPriv && x.disabled && p.disabled === false) || // re-enabling
+    (isPriv && !x.disabled && enabledPeers <= 1 && (p.disabled === true || (p.role && p.role !== x.role))) || // last one
+    (isPriv && x.id !== u.id && (b.password || b.reset_totp)); // credential reset of another privileged user
+  if (gated) {
+    // Credentials are applied on approval but never shown in the quorum params.
+    const { password, totp_secret, ...shown } = p;
+    const q = await quorum(u, 'user.update', shown, { ...extra, user: pub(x) });
+    db.quorumSecrets.set(q[1].quorum_id, { password, totp_secret });
+    return q;
   }
-  Object.assign(x, after);
-  await audit(u.name, 'user.update', `user/${x.id}`, { ...after, password: after.password ? '***' : undefined });
-  return [200, pub(x)];
+  const { id: _i, name: _n, ...fields } = p;
+  Object.assign(x, fields);
+  await audit(u.name, 'user.update', `user/${x.id}`, { ...fields, password: fields.password ? '***' : undefined, totp_secret: undefined });
+  return [200, { user: pub(x), ...extra }];
 });
 
 // snapshots / jobs / downloads
@@ -578,9 +605,12 @@ on('POST', '/jobs', async (c) => {
   const { kind, tenant, params = {} } = c.body;
   if (u.role === 'tenant_user' && (!RESTORE_KINDS.includes(kind) || tenant !== u.tenant)) throw new HttpError(403, 'tenant users may only restore within their tenant');
   find(db.tenants, (t) => t.name === tenant, 'tenant');
-  const j = addJob(kind, tenant, params, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
-  await audit(u.name, 'job.create', `job/${j.id}`, { kind, tenant, params });
-  return [202, { id: j.id }];
+  if (kind === 'files_list' && !String(params.path ?? '').startsWith('/')) throw new HttpError(400, 'path: must be absolute');
+  // Like web-api: files_get gets a server-generated download token, returned in the 202 body.
+  const p = kind === 'files_get' ? { ...params, download_token: rand(32) } : params;
+  const j = addJob(kind, tenant, p, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
+  await audit(u.name, 'job.create', `job/${j.id}`, { kind, tenant, params: p });
+  return [202, p.download_token ? { id: j.id, download_token: p.download_token } : { id: j.id }];
 });
 on('POST', '/jobs/:id/cancel', async (c, [id]) => {
   const u = need(c.user, 'admin', 'operator');
@@ -594,10 +624,9 @@ on('POST', '/jobs/:id/cancel', async (c, [id]) => {
 
 // quorum
 on('GET', '/quorum', (c) => {
-  const u = need(c.user);
+  need(c.user, 'admin', 'security_officer', 'operator');
   for (const q of db.quorum) if (q.state === 'pending' && now() - q.created > 72 * 3600) q.state = 'expired';
-  const xs = u.role === 'security_officer' ? db.quorum : db.quorum.filter((q) => q.requested_by === u.name);
-  return [200, [...xs].sort((a, b) => b.id - a.id)];
+  return [200, [...db.quorum].sort((a, b) => b.id - a.id).map((q) => ({ ...q, expires: q.created + 72 * 3600 }))];
 });
 for (const verb of ['approve', 'reject'] as const) {
   on('POST', `/quorum/:id/${verb}`, async (c, [id]) => {
@@ -608,7 +637,7 @@ for (const verb of ['approve', 'reject'] as const) {
     Object.assign(q, { decided_by: u.name, decided_at: now(), state: verb === 'approve' ? 'approved' : 'rejected' });
     await audit(u.name, `quorum.${verb}`, `quorum/${q.id}`, { action: q.action });
     if (verb === 'approve') {
-      execute(q.action, q.params);
+      execute(q.id, q.action, q.params);
       q.state = 'executed';
       await audit('system', q.action, `quorum/${q.id}`, q.params);
     }
@@ -634,9 +663,11 @@ on('GET', '/audit/verify', async (c) => {
 });
 
 // alerts
-on('GET', '/alerts', (c) => (need(c.user), [200, [...db.alerts].sort((a, b) => b.ts - a.ts)]));
+// Alerts have no tenant column: tenant-scoped users get an empty list.
+on('GET', '/alerts', (c) => [200, need(c.user).tenant ? [] : [...db.alerts].sort((a, b) => b.ts - a.ts)]);
 on('POST', '/alerts/:id/ack', async (c, [id]) => {
   const u = need(c.user, 'admin', 'operator', 'security_officer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
   const a = find(db.alerts, (x) => x.id === Number(id), 'alert');
   a.acked_by = u.name;
   await audit(u.name, 'alert.ack', `alert/${a.id}`, {});
@@ -718,7 +749,7 @@ export function mockApi(): Plugin {
   const ready = (async () => {
     await audit('setup', 'init', '-', {});
     await audit('admin', 'auth.login', 'session', {});
-    await audit('admin', 'quorum.request', 'quorum/1', { action: 'delete_group' });
+    await audit('admin', 'quorum.request', `quorum/${db.quorum[0].id}`, { action: db.quorum[0].action });
   })();
   const mw = (req: Req, res: Res, next: () => void) => {
     if (!req.url?.startsWith('/api/v1/')) return next();

@@ -234,7 +234,11 @@ main {
   main {
     padding: 1rem;
   }
-  .whoami small {
+  .topbar {
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+  }
+  .whoami {
     display: none;
   }
 }
@@ -339,6 +343,26 @@ th {
   color: var(--muted);
   font-weight: 600;
   white-space: nowrap;
+}
+tbody th {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.95rem;
+  color: var(--text);
+  white-space: normal;
+}
+tbody th .muted {
+  font-weight: 400;
+  font-size: 0.85rem;
+}
+select.auto {
+  width: auto;
+}
+td.mono {
+  white-space: nowrap;
+}
+td.mono.details {
+  white-space: normal;
 }
 tbody tr:hover {
   background: var(--surface-2);

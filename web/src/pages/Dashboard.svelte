@@ -38,7 +38,7 @@
     } catch (e) {
       error = errText(e);
     }
-    if (can.decideQuorum(session.user) || can.configure(session.user)) {
+    if (can.viewQuorum(session.user)) {
       try {
         pending = (await get<QuorumRequest[]>('/quorum')).filter((q) => q.state === 'pending').length;
       } catch {
@@ -68,15 +68,16 @@
   function lastFor(g: Group, vmid: number): Snapshot | undefined {
     return latest.get(`${g.tenant}/vm-${vmid}`) ?? latest.get(`${g.tenant}/ct-${vmid}`);
   }
-  // Last verified snapshot of a guest (any time), to show verification coverage.
-  function verifiedFor(g: Group, vmid: number): Snapshot | undefined {
+  // Newest snapshot of a guest that is offsite / verified (the latest one may still be uploading).
+  function newestWhere(g: Group, vmid: number, pred: (s: Snapshot) => boolean): Snapshot | undefined {
     return snaps
-      .filter((s) => s.tenant === g.tenant && (s.source === `vm-${vmid}` || s.source === `ct-${vmid}`) && s.verified)
+      .filter((s) => s.tenant === g.tenant && (s.source === `vm-${vmid}` || s.source === `ct-${vmid}`) && pred(s))
       .sort((a, b) => b.time - a.time)[0];
   }
   function guestLabel(g: Group, vmid: number) {
     return lastFor(g, vmid)?.source ?? String(vmid);
   }
+  const showAlerts = $derived(can.viewAlerts(session.user));
   const policyOf = (g: Group) => policies.find((p) => p.id === g.policy_id);
 
   function status(g: Group, s: Snapshot | undefined): 'ok' | 'stale' | 'missing' {
@@ -116,12 +117,14 @@
     </div>
     <a class="tile" class:bad={failed.length > 0} href={href('/jobs?state=failed')}>
       <div class="value">{failed.length}</div>
-      <div class="label">{t.dash.failedJobs} (7 d)</div>
+      <div class="label">{t.dash.failedRecent}</div>
     </a>
-    <a class="tile" class:warn={alerts.length > 0} href={href('/alerts')}>
-      <div class="value">{alerts.length}</div>
-      <div class="label">{t.dash.openAlerts}</div>
-    </a>
+    {#if showAlerts}
+      <a class="tile" class:warn={alerts.length > 0} href={href('/alerts')}>
+        <div class="value">{alerts.length}</div>
+        <div class="label">{t.dash.openAlerts}</div>
+      </a>
+    {/if}
     {#if pending !== null}
       <a class="tile" class:warn={pending > 0} href={href('/quorum')}>
         <div class="value">{pending}</div>
@@ -154,7 +157,8 @@
               {#each g.guests as v, i (v)}
                 {@const s = lastFor(g, v)}
                 {@const st = status(g, s)}
-                {@const ver = verifiedFor(g, v)}
+                {@const ver = newestWhere(g, v, (x) => !!x.verified)}
+                {@const off = newestWhere(g, v, (x) => x.offsite)}
                 <tr>
                   {#if i === 0}
                     <th scope="rowgroup" rowspan={g.guests.length}>
@@ -166,10 +170,12 @@
                   <td class="nowrap" title={fmtTime(s?.time)}>{fmtAgo(s?.time)}</td>
                   <td><Check on={s?.local} /></td>
                   <td>
-                    {#if policyOf(g)?.offsite === false}<span class="muted">n/a</span>{:else}<Check on={s?.offsite} />{/if}
+                    {#if policyOf(g)?.offsite === false}<span class="muted">{t.dash.na}</span>{:else}<Check on={off} />
+                      <span class="muted">{off ? fmtAgo(off.time) : ''}</span>{/if}
                   </td>
-                  <td>
-                    <Check on={ver} title={ver ? `${fmtTime(ver.time)} (${fmtAgo(ver.verified)})` : ''} />
+                  <td class="nowrap">
+                    <Check on={ver} title={ver ? `${t.dash.verified}: ${fmtTime(ver.verified)}` : ''} />
+                    <span class="muted">{ver ? fmtAgo(ver.time) : ''}</span>
                   </td>
                   <td><span class="chip {statusCls[st]}">{t.dash[st]}</span></td>
                   {#if can.backup(session.user) && i === 0}
@@ -207,7 +213,7 @@
         </table>
       {/if}
     </section>
-    <section class="card" aria-labelledby="oa">
+    {#if showAlerts}<section class="card" aria-labelledby="oa">
       <h2 id="oa">{t.dash.openAlerts} <a href={href('/alerts')} class="muted">{t.nav.alerts} →</a></h2>
       {#if alerts.length === 0}
         <p class="empty">{t.none}</p>
@@ -228,6 +234,6 @@
           </tbody>
         </table>
       {/if}
-    </section>
+    </section>{/if}
   </div>
 {/if}

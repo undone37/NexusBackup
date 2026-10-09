@@ -38,15 +38,16 @@
     } else out[prefix] = v;
     return out;
   }
+  // Update requests carry the new object with the previous one under `old`
+  // (web-api: policy.update, group.update); everything else is shown as key/value.
   function diff(q: QuorumRequest) {
-    const p = q.params ?? {};
-    if (!('before' in p) || !('after' in p)) return null;
-    const a = flat(p.before);
-    const b = flat(p.after);
-    const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].filter((k) => k in b);
-    return keys.map((k) => ({ k, before: a[k], after: b[k], changed: JSON.stringify(a[k]) !== JSON.stringify(b[k]) }));
+    const { old, ...next } = q.params ?? {};
+    if (!old || typeof old !== 'object') return null;
+    const a = flat(old);
+    const b = flat(next);
+    return Object.keys(b).map((k) => ({ k, before: a[k], after: b[k], changed: JSON.stringify(a[k]) !== JSON.stringify(b[k]) }));
   }
-  const others = (q: QuorumRequest) => Object.entries(q.params ?? {}).filter(([k]) => k !== 'before' && k !== 'after');
+  const others = (q: QuorumRequest) => (q.params && 'old' in q.params ? [] : Object.entries(q.params ?? {}));
   const humanize = (a: string) => a.replace(/[_.]/g, ' ');
 
   async function decide(q: QuorumRequest, verb: 'approve' | 'reject') {
@@ -81,6 +82,10 @@
         <dd><strong>{q.requested_by}</strong></dd>
         <dt>{t.quorum.requested}</dt>
         <dd>{fmtTime(q.created)} ({fmtAgo(q.created)})</dd>
+        {#if q.state === 'pending' && q.expires}
+          <dt>{t.quorum.expires}</dt>
+          <dd>{fmtTime(q.expires)}</dd>
+        {/if}
         {#if q.decided_by}
           <dt>{t.quorum.decided}</dt>
           <dd>{q.decided_by} · {fmtTime(q.decided_at)}</dd>

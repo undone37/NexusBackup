@@ -91,6 +91,8 @@ export const en = {
     stale: 'Overdue',
     missing: 'No backup',
     failedJobs: 'Failed jobs',
+    failedRecent: 'Failed jobs (7 days)',
+    na: 'n/a',
     openAlerts: 'Open alerts',
     pendingQuorum: 'Pending approvals',
     noGroups: 'No protection groups configured.',
@@ -167,7 +169,8 @@ export const en = {
     baseDir: 'Base directory',
     bwlimit: 'Bandwidth limit (KiB/s, empty = unlimited)',
     uploaders: 'Parallel uploads',
-    sshKey: 'SSH private key',
+    keyFile: 'SSH key file on the appliance',
+    keyFileHint: 'Path only — keys are installed on the appliance, never sent through the web UI.',
   },
   sources: {
     title: 'Sources',
@@ -214,6 +217,8 @@ export const en = {
     enroll: 'Authenticator enrollment',
     enrollHint:
       'Scan this code with an authenticator app (TOTP). It is shown only once — the user needs it to sign in.',
+    enrollPending:
+      'This change needs security-officer approval; the account / new code works only after it has been approved.',
     uri: 'Provisioning URI',
     secret: 'Secret',
     resetTotp: 'Reset authenticator',
@@ -230,6 +235,7 @@ export const en = {
     requester: 'Requested by',
     requested: 'Requested',
     decided: 'Decided by',
+    expires: 'Expires',
     change: 'Change',
     field: 'Field',
     before: 'Before',

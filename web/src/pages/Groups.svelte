@@ -63,8 +63,11 @@
       notify('error', t.groups.guests);
       return;
     }
-    const body = { tenant: f.tenant, name: f.name, source_id: Number(f.source_id), policy_id: Number(f.policy_id), guests };
-    const r = editing ? await act(put(`/groups/${editing.id}`, body), t.saved) : await act(post('/groups', body), t.created);
+    // The tenant is fixed after creation (PUT rejects unknown fields, incl. tenant).
+    const body = { name: f.name, source_id: Number(f.source_id), policy_id: Number(f.policy_id), guests };
+    const r = editing
+      ? await act(put(`/groups/${editing.id}`, body), t.saved)
+      : await act(post('/groups', { tenant: f.tenant, ...body }), t.created);
     if (r) {
       open = false;
       load();

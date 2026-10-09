@@ -2,7 +2,7 @@
   import { onDestroy } from 'svelte';
   import { errText } from '../lib/api';
   import { route, href } from '../lib/router.svelte';
-  import { runJob, downloadUrl } from '../lib/jobs';
+  import { runJob, downloadUrl, fileEntries } from '../lib/jobs';
   import { fmtBytes, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import type { FileEntry, Job } from '../lib/types';
@@ -52,9 +52,9 @@
     listing = true;
     entries = [];
     try {
-      const j = await runJob('files_list', tenant, { source, time, path: p }, ctl.signal);
-      if (!j || failed(j)) return;
-      const list = [...(j.result?.entries ?? [])].sort(
+      const r = await runJob('files_list', tenant, { source, time, path: p }, ctl.signal);
+      if (!r || failed(r.job)) return;
+      const list = fileEntries(r.job).sort(
         (a, b) => Number(b.kind === 'dir') - Number(a.kind === 'dir') || a.name.localeCompare(b.name),
       );
       cache.set(p, list);
@@ -82,9 +82,9 @@
     ready = null;
     error = null;
     try {
-      const j = await runJob('files_get', tenant, { source, time, paths: selected, format }, ctl.signal);
-      if (!j || failed(j)) return;
-      if (j.result?.download) ready = { token: j.result.download, filename: j.result.filename ?? `restore.${format}` };
+      const r = await runJob('files_get', tenant, { source, time, paths: selected, format }, ctl.signal);
+      if (!r || failed(r.job)) return;
+      if (r.token) ready = { token: r.token, filename: `${source}-${time}.${format}` };
     } catch (e) {
       error = errText(e);
     } finally {
@@ -148,7 +148,7 @@
                 {#if e.kind === 'dir'}
                   <button type="button" class="link" onclick={() => open(full)}>{e.name}/</button>
                 {:else}
-                  <span class="mono">{e.name}{e.kind === 'link' ? ' →' : ''}</span>
+                  <span class="mono">{e.name}{e.kind === 'symlink' ? ` → ${e.link ?? ''}` : ''}</span>
                 {/if}
               </td>
               <td class="num">{e.kind === 'file' ? fmtBytes(e.size) : ''}</td>

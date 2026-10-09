@@ -13,8 +13,12 @@ export class ApiError extends Error {
   }
 }
 
-/** Result of a mutating call: either done, or parked as a four-eyes quorum request (HTTP 202 {quorum_id}). */
-export type Outcome<T> = { quorum: false; data: T } | { quorum: true; quorumId: number };
+/**
+ * Result of a mutating call: either done, or parked as a four-eyes quorum request
+ * (HTTP 202 {quorum_id, ...}). Some quorum answers carry extra fields (e.g. `totp_uri`
+ * when creating a privileged user), so the body is kept in both cases.
+ */
+export type Outcome<T> = { quorum: false; data: T } | { quorum: true; quorumId: number; data: Partial<T> };
 
 async function request(method: string, path: string, body?: unknown): Promise<{ status: number; data: unknown }> {
   const headers: Record<string, string> = { Accept: 'application/json' };
@@ -61,7 +65,7 @@ export async function get<T>(path: string): Promise<T> {
 async function mutate<T>(method: string, path: string, body?: unknown): Promise<Outcome<T>> {
   const { status, data } = await request(method, path, body);
   if (status === 202 && data && typeof data === 'object' && 'quorum_id' in data) {
-    return { quorum: true, quorumId: Number((data as { quorum_id: unknown }).quorum_id) };
+    return { quorum: true, quorumId: Number((data as { quorum_id: unknown }).quorum_id), data: data as Partial<T> };
   }
   return { quorum: false, data: data as T };
 }
@@ -71,21 +75,21 @@ export const put = <T>(path: string, body: unknown) => mutate<T>('PUT', path, bo
 export const del = <T>(path: string) => mutate<T>('DELETE', path);
 
 /**
- * Runs a mutation and reports the outcome to the user. Returns `null` on error,
- * otherwise `{data}` — with `data: null` when the request is waiting for quorum.
+ * Runs a mutation and reports the outcome to the user ("pending approval" for 202
+ * {quorum_id}). Returns `null` on error, otherwise the outcome.
  */
 export async function act<T>(
   p: Promise<Outcome<T>>,
   okText: string | ((data: T) => string),
-): Promise<{ data: T | null } | null> {
+): Promise<Outcome<T> | null> {
   try {
     const o = await p;
     if (o.quorum) {
       notify('pending', t.quorumPending(o.quorumId));
-      return { data: null };
+      return o;
     }
     notify('ok', typeof okText === 'function' ? okText(o.data) : okText);
-    return { data: o.data };
+    return o;
   } catch (e) {
     notify('error', errText(e));
     return null;

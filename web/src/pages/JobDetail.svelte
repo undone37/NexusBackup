@@ -83,18 +83,16 @@
     <section class="card" aria-labelledby="jp">
       <h2 id="jp">{t.jobs.params}</h2>
       <dl class="kv">
-        {#each Object.entries(job.params ?? {}) as [k, v] (k)}
+        {#each Object.entries(job.params ?? {}).filter(([k]) => k !== 'download_token') as [k, v] (k)}
           <dt>{k}</dt>
           <dd class="mono">{k === 'time' && typeof v === 'number' ? `${v} (${fmtTime(v)})` : fmtValue(v)}</dd>
         {:else}
           <dd class="muted">—</dd>
         {/each}
       </dl>
-      {#if job.result?.download}
+      {#if job.kind === 'files_get' && job.state === 'ok' && typeof job.params.download_token === 'string' && job.requested_by === session.user?.name}
         <p>
-          <a class="button primary" href={downloadUrl(job.result.download)} download={job.result.filename}
-            >{t.files.get} {job.result.filename ?? ''}</a
-          >
+          <a class="button primary" href={downloadUrl(job.params.download_token)}>{t.files.get}</a>
         </p>
       {/if}
     </section>

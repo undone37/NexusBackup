@@ -26,28 +26,25 @@
   let name = $state('');
   let off: TenantOffsite = $state({});
   let bwlimit = $state('');
-  let sshKey = $state('');
 
   function edit(x: Tenant | null) {
     editing = x;
     name = x?.name ?? '';
-    off = { host: '', port: 23, user: '', host_key: '', base_dir: '', uploaders: 4, ...(x?.offsite ?? {}) };
+    off = { host: '', port: 23, user: '', key_file: '', host_key: '', base_dir: '', uploaders: 4, ...(x?.offsite ?? {}) };
     bwlimit = x?.offsite?.bwlimit ? String(x.offsite.bwlimit) : '';
-    sshKey = '';
     open = true;
   }
 
   async function save(e: SubmitEvent) {
     e.preventDefault();
-    const { ssh_key_set: _s, ssh_key: _k, ...rest } = off;
+    // The SSH key itself never goes through the API: the offsite config references a
+    // key file on the appliance (the web-api refuses inline secrets in this blob).
     const offsite: TenantOffsite = {
-      ...rest,
+      ...off,
       port: Number(off.port) || 23,
       uploaders: Number(off.uploaders) || 1,
       bwlimit: bwlimit ? Number(bwlimit) : null,
     };
-    // Write-only secret: only sent when entered; omitted = keep the stored key.
-    if (sshKey.trim()) offsite.ssh_key = sshKey.trim();
     const r = editing
       ? await act(put(`/tenants/${encodeURIComponent(editing.name)}`, { offsite }), t.saved)
       : await act(post('/tenants', { name, offsite }), t.created);
@@ -148,9 +145,9 @@
         </div>
       </div>
       <div class="field">
-        <label for="t-key">{t.tenants.sshKey}</label>
-        <textarea id="t-key" bind:value={sshKey} autocomplete="off" spellcheck="false" aria-describedby="t-key-hint"></textarea>
-        <div class="hint" id="t-key-hint">{editing?.offsite?.ssh_key_set ? t.writeOnlyKeep : t.writeOnlyHint}</div>
+        <label for="t-key">{t.tenants.keyFile}</label>
+        <input id="t-key" class="mono" bind:value={off.key_file} spellcheck="false" aria-describedby="t-key-hint" />
+        <div class="hint" id="t-key-hint">{t.tenants.keyFileHint}</div>
       </div>
     </fieldset>
     <div class="form-actions">

@@ -25,7 +25,6 @@
 
   type Allow = (u: User | null) => boolean;
   const always: Allow = (u) => !!u;
-  const quorumVisible: Allow = (u) => can.decideQuorum(u) || can.configure(u);
 
   // Routes; `nav` entries appear in the sidebar (filtered by role — the server still decides).
   const routes: { path: string; comp: Component<any>; allow: Allow; nav?: string; section?: 'config' }[] = [
@@ -34,8 +33,8 @@
     { path: '/files', comp: Files, allow: can.restore },
     { path: '/jobs', comp: Jobs, allow: always, nav: t.nav.jobs },
     { path: '/jobs/:id', comp: JobDetail, allow: always },
-    { path: '/alerts', comp: Alerts, allow: always, nav: t.nav.alerts },
-    { path: '/quorum', comp: Quorum, allow: quorumVisible, nav: t.nav.quorum },
+    { path: '/alerts', comp: Alerts, allow: can.viewAlerts, nav: t.nav.alerts },
+    { path: '/quorum', comp: Quorum, allow: can.viewQuorum, nav: t.nav.quorum },
     { path: '/audit', comp: Audit, allow: can.audit, nav: t.nav.audit },
     { path: '/tenants', comp: Tenants, allow: can.configure, nav: t.nav.tenants, section: 'config' },
     { path: '/sources', comp: Sources, allow: can.configure, nav: t.nav.sources, section: 'config' },

@@ -16,14 +16,12 @@ export interface TenantOffsite {
   host?: string;
   port?: number;
   user?: string;
+  /** path of the SSH private key on the appliance (no inline secrets in this blob) */
+  key_file?: string;
   host_key?: string;
   base_dir?: string;
   bwlimit?: number | null;
   uploaders?: number;
-  /** write-only: never returned by GET */
-  ssh_key?: string;
-  /** set by the server when a key is stored (proposed, see README) */
-  ssh_key_set?: boolean;
 }
 
 export interface Tenant {
@@ -89,18 +87,19 @@ export type JobKind =
   | 'gc'
   | 'verify';
 
+/** One entry of `nexus-pve files … ls` (crates/pve/src/files.rs `Entry`). */
 export interface FileEntry {
   name: string;
-  kind: 'file' | 'dir' | 'link';
+  kind: 'file' | 'dir' | 'symlink' | 'hardlink' | 'other';
   size: number;
   mtime: number;
+  mode?: number;
+  link?: string | null;
 }
 
-/** Proposed `jobs.result` (JSON) — see README "Contract gaps". */
+/** Proposed structured job result (see README "Contract gaps"); not sent by web-api v1. */
 export interface JobResult {
   entries?: FileEntry[];
-  download?: string;
-  filename?: string;
 }
 
 export interface Job {
@@ -137,6 +136,7 @@ export interface QuorumRequest {
   params: Record<string, unknown>;
   requested_by: string;
   created: number;
+  expires?: number;
   decided_by: string | null;
   decided_at: number | null;
   state: QuorumState;

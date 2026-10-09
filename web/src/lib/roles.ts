@@ -7,6 +7,9 @@ export const can = {
   restore: (u: User | null) => !!u && u.role !== 'security_officer',
   cancelJob: (u: User | null) => u?.role === 'admin' || u?.role === 'operator',
   decideQuorum: (u: User | null) => u?.role === 'security_officer',
+  viewQuorum: (u: User | null) => !!u && u.role !== 'tenant_user' && !u.tenant,
+  // Alerts are appliance-wide (no tenant column); tenant-scoped users get an empty list.
+  viewAlerts: (u: User | null) => !!u && !u.tenant,
   audit: (u: User | null) => u?.role === 'admin' || u?.role === 'security_officer',
   ackAlert: (u: User | null) => !!u && u.role !== 'tenant_user',
 };

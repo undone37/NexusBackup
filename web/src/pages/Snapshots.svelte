@@ -81,7 +81,7 @@
     const r = await act(post<{ id: number }>('/jobs', { kind, tenant: sel.tenant, params }), (d) => t.snap.jobStarted(d.id));
     busy = false;
     if (r) dlgOpen = false;
-    if (r?.data) navigate(`/jobs/${r.data.id}`);
+    if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
   }
 
   function browse(s: Snapshot) {
