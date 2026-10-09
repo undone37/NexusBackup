@@ -71,6 +71,8 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | Phase 7 order | **Linux agent → Windows agent → TrueNAS → NAS (NFS/SMB)** (decided 2026-10-09) | Agents share most code (protocol, chunking, enrollment). |
 | Agent dedup hashing (Phase 7) | **Agents send plain BLAKE3 chunk hashes; the appliance maps them to keyed chunk IDs in a local index** (decided 2026-10-09) | Source hosts never hold tenant key material; the unkeyed hashes never leave the appliance (not offsite). |
 | TrueNAS data path (Phase 7) | **ZFS snapshot via TrueNAS API, changed files streamed from `.zfs/snapshot` over a restricted SSH user (forced command)** (decided 2026-10-09) | No mounts on the appliance; nothing installed on TrueNAS beyond a key. |
+| TrueNAS privilege model (Phase 7) | **SSH user `nexusbackup` runs find/tar/realpath/zfs via passwordless sudo; the forced command is the security boundary** (accepted 2026-10-09) | Reading NAS data needs root (modes, NFSv4 ACLs); same trust level as the PVE helper. Snapshots named `nexus-<source>-<time>`; restore download-only in v1. |
+| Work order after Phase 7 TrueNAS | **Continue the plan order (NAS → Phase 8 → Phase 9); production hardening later** (decided 2026-10-09) | User decision; production gaps listed in state.md. |
 | NAS shares (Phase 7) | **Kernel NFS/SMB mounts, read-only, in a private mount namespace by a small privileged helper with its own SELinux domain** (decided 2026-10-09) | Mature, fast clients; isolation via namespace + SELinux. |
 | Windows testing (Phase 7) | **Build + unit tests only, no Windows test VMs for now** (decided 2026-10-09) | Real Windows testing later; plan's test matrix for Windows is deferred. |
 | Agent trust (Phase 7) | **Appliance-run private CA + one-time enrollment token**, agent pins appliance cert (decided 2026-10-09) | Agent never connects out; mTLS only. |
@@ -295,7 +297,7 @@ Dirty bitmaps are managed by PVE; the appliance only consumes them. Note: bitmap
 
 ### 7.5 TrueNAS Community (ZFS)
 
-- Appliance creates a ZFS snapshot via the TrueNAS API, determines changes against the previous snapshot, reads changed files from a read-only share on `.zfs/snapshot/…` or over a restricted SSH user.
+- Appliance creates a ZFS snapshot via the TrueNAS JSON-RPC API (API key with SNAPSHOT_WRITE/SNAPSHOT_DELETE/DATASET_READ), determines changes with `zfs diff` against the previous snapshot and reads changed files from `.zfs/snapshot/…` over a restricted SSH user (forced command; tools via sudo — see `docs/truenas-connector.md`).
 - The last backed-up snapshot is kept on TrueNAS as reference for the next run.
 - `zfs send` streams were considered and rejected (poor fit with dedup and forever-full).
 
