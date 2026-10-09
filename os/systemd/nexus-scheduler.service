@@ -1,6 +1,5 @@
 [Unit]
 Description=NexusBackup scheduler (policies, job runner, retention, GC, verify, offsite, alerts)
-# Replaces nexus-pve-backup.{service,timer} and nexus-offsite.{service,timer}.
 After=network-online.target nexus-keyd.service
 Wants=network-online.target nexus-keyd.service
 ConditionPathExists=/var/lib/nexus/setup-done
@@ -10,17 +9,21 @@ Type=exec
 ExecStart=/usr/libexec/nexus/nexus-scheduler
 User=nexus-chunkstore
 Group=nexus-chunkstore
-# catalog DB (group nexus-catalog); keyd socket via nexus-chunkstore's membership in nexus-keyd
+# catalog DB (group nexus-catalog); keyd socket via nexus-chunkstore's
+# membership in nexus-keyd (sysusers.d/nexus.conf)
 SupplementaryGroups=nexus-catalog
 Restart=on-failure
 # SIGTERM ends running jobs with the scheduler; they are marked failed on the next start.
 KillMode=control-group
+# The restore micro-VM (file restore from VM images) runs EL's QEMU.
+Environment=NEXUS_QEMU=/usr/libexec/qemu-kvm
 
-# chunk stores, offsite inventories, alert cursor, file-restore downloads
-# (the scheduler sets downloads/ to 2750 in the catalog group at start)
-StateDirectory=nexus/chunkstore nexus/offsite nexus/scheduler nexus/downloads
-StateDirectoryMode=0700
-ReadWritePaths=/var/lib/nexus/catalog
+# chunk stores, offsite inventories, key escrow, alert cursor, file-restore
+# downloads, catalog (all created by tmpfiles.d/nexus.conf with owners/modes);
+# /run/nexus-nft/allowed.json is the outbound allow-list for nexus-nft-sync.
+ReadWritePaths=/var/lib/nexus/catalog /var/lib/nexus/chunkstore /var/lib/nexus/offsite
+ReadWritePaths=/var/lib/nexus/escrow /var/lib/nexus/scheduler /var/lib/nexus/downloads
+ReadWritePaths=/run/nexus-nft
 # generated job configs with secrets: private, wiped at start
 RuntimeDirectory=nexus-scheduler
 RuntimeDirectoryMode=0700
@@ -28,10 +31,10 @@ UMask=0077
 LimitMEMLOCK=64M
 LimitCORE=0
 
-# PVE API/SSH, offsite SFTP, webhook/SMTP; keyd over AF_UNIX
+# PVE API/SSH, offsite SFTP, webhook/SMTP; keyd over AF_UNIX. Destinations are
+# enforced by the nftables allow-list, not here (they are configured at runtime).
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-# file restore boots the restore micro-VM (QEMU): /dev/kvm when present, TCG needs W+X
-# memory, so MemoryDenyWriteExecute stays off for this unit.
+# File restore boots the restore micro-VM with KVM: /dev/kvm only.
 DevicePolicy=closed
 DeviceAllow=/dev/kvm rw
 
@@ -41,6 +44,7 @@ AmbientCapabilities=
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+PrivateIPC=yes
 ProtectHostname=yes
 ProtectClock=yes
 ProtectKernelTunables=yes
@@ -53,11 +57,15 @@ RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
+# QEMU with KVM maps no W+X memory (TCG would need it; no TCG fallback here).
+MemoryDenyWriteExecute=yes
 RemoveIPC=yes
 KeyringMode=private
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-# no ~@privileged: chgrp of downloads/ and spawned ssh/QEMU need parts of it
+SystemCallFilter=~@privileged @resources
+# chgrp of downloads/ to nexus-catalog (no CAP_CHOWN, so only own files to own groups)
+SystemCallFilter=@chown
 SystemCallErrorNumber=EPERM
 
 [Install]

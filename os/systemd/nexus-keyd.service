@@ -1,8 +1,6 @@
 [Unit]
-Description=NexusBackup key daemon (sole TPM user, hands tenant keys to chunkstore)
-After=dev-tpmrm0.device
-Wants=dev-tpmrm0.device
-# Requires `keyd init /var/lib/nexus/keyd` from the first-boot wizard.
+Description=NexusBackup key daemon (KEK + tenant DEKs, hands keyrings to the scheduler)
+# Requires `keyd init` from the first-boot wizard (nexus-setup).
 ConditionPathExists=/var/lib/nexus/keyd/kek.recovery
 
 [Service]
@@ -10,14 +8,15 @@ Type=exec
 ExecStart=/usr/libexec/nexus/keyd serve /var/lib/nexus/keyd /run/nexus-keyd/keyd.sock nexus-chunkstore
 User=nexus-keyd
 Group=nexus-keyd
-SupplementaryGroups=tss
 Restart=on-failure
 
-# Socket for chunkstore: /run/nexus-keyd/keyd.sock, reachable by group nexus-keyd only.
+# Socket /run/nexus-keyd/keyd.sock: directory 0750 nexus-keyd:nexus-keyd, so only
+# members of group nexus-keyd (the scheduler user nexus-chunkstore) reach it; keyd
+# additionally checks the peer uid (SO_PEERCRED).
 RuntimeDirectory=nexus-keyd
 RuntimeDirectoryMode=0750
-StateDirectory=nexus/keyd
-StateDirectoryMode=0700
+# /var/lib/nexus/keyd (0700 nexus-keyd, tmpfiles.d/nexus.conf)
+ReadWritePaths=/var/lib/nexus/keyd
 UMask=0077
 
 # Keys live only in memory: allow mlock, never dump core.
@@ -29,16 +28,17 @@ PrivateNetwork=yes
 RestrictAddressFamilies=AF_UNIX
 IPAddressDeny=any
 
-# Only the TPM resource manager device is reachable.
-DevicePolicy=closed
-DeviceAllow=/dev/tpmrm0 rw
-
+# TPM sealing is deferred (state.md): no devices. With TPM this becomes
+# DevicePolicy=closed + DeviceAllow=/dev/tpmrm0 rw + SupplementaryGroups=tss.
+PrivateDevices=yes
+# No PrivateUsers=: the peer-uid check needs the real uid of the scheduler.
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+PrivateIPC=yes
 ProtectHostname=yes
 ProtectClock=yes
 ProtectKernelTunables=yes

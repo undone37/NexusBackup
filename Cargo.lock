@@ -1886,6 +1886,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nftsync"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nix"
 version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2819,6 +2828,7 @@ dependencies = [
  "keyd",
  "lettre",
  "libc",
+ "nftsync",
  "reqwest",
  "serde",
  "serde_json",

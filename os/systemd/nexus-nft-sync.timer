@@ -1,0 +1,10 @@
+[Unit]
+Description=NexusBackup firewall: re-resolve NTS servers periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30min
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

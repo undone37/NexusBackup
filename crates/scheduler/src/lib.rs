@@ -32,6 +32,7 @@
 //! web-api). Structured results go into `jobs.result` (see [`Scheduler::finish`]).
 
 pub mod alerts;
+pub mod firewall;
 pub mod run;
 pub mod schedule;
 
@@ -74,6 +75,8 @@ pub struct Config {
     pub pve_bin: PathBuf,
     pub offsite_bin: PathBuf,
     pub alerts_config: PathBuf,
+    /// outbound allow-list for nexus-nft-sync (skipped if its directory is missing)
+    pub nft_allowed: PathBuf,
     /// full tick (scheduling, refresh, alerts)
     pub tick_secs: u64,
     /// between ticks: pick up newly queued jobs
@@ -110,6 +113,7 @@ impl Default for Config {
             pve_bin: "/usr/libexec/nexus/nexus-pve".into(),
             offsite_bin: "/usr/libexec/nexus/nexus-offsite".into(),
             alerts_config: "/etc/nexus/alerts.json".into(),
+            nft_allowed: nftsync::ALLOWED_FILE.into(),
             tick_secs: 30,
             poll_secs: 2,
             max_parallel: 4,
@@ -380,6 +384,7 @@ impl Scheduler {
             }
         }
         self.log_err(|s| s.check_offsite_lag(now));
+        self.log_err(|s| s.sync_firewall());
         self.deliver_alerts()
     }
 
@@ -490,6 +495,34 @@ impl Scheduler {
             if sched.due(last, now) {
                 self.insert_job("backup", &g.tenant, &json!({"group_id": g.id}))?;
             }
+        }
+        Ok(())
+    }
+
+    /// Writes the outbound allow-list (sources, offsite boxes, alert delivery)
+    /// for nexus-nft-sync; the file only changes when the destinations do.
+    fn sync_firewall(&self) -> Result<()> {
+        let mut targets = Vec::new();
+        {
+            let c = self.db.conn();
+            let mut st = c.prepare("SELECT config FROM sources WHERE kind='pve'")?;
+            for cfg in st.query_map([], |r| r.get::<_, String>(0))? {
+                if let Ok(v) = serde_json::from_str::<Value>(&cfg?) {
+                    targets.extend(firewall::source_targets(&v));
+                }
+            }
+        }
+        for (_, o) in self.tenants()? {
+            targets.extend(firewall::offsite_target(&o));
+        }
+        if let Ok(a) = alerts::AlertsConfig::load(&self.cfg.alerts_config) {
+            targets.extend(firewall::alert_targets(&a));
+        }
+        if nftsync::write_allowed(&self.cfg.nft_allowed, firewall::resolve(&targets))? {
+            eprintln!(
+                "scheduler: firewall allow-list updated ({} destinations)",
+                targets.len()
+            );
         }
         Ok(())
     }

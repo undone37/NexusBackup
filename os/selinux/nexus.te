@@ -1,96 +1,367 @@
-policy_module(nexus, 0.1.0)
+policy_module(nexus, 1.0.0)
 
 ########################################
-# NexusBackup appliance policy (plan.md 4.2, ADR-004).
-# One domain per service; systemd (init_t) transitions into each domain
-# via its exec type. Rules are the minimum known to be needed today and
-# will be extended (never broadened with generic types) once the
-# binaries exist and run under enforcing mode.
+# NexusBackup appliance policy (plan.md 4.2, docs/control-plane.md).
+#
+# Every process runs in its own domain; entry only through its exec type:
+#
+#   init_t ── nexus_keyd_exec_t ──────> nexus_keyd_t       KEK + DEKs, unix socket, no network
+#   init_t ── nexus_webapi_exec_t ────> nexus_webapi_t     8443/tcp, catalog, downloads (read)
+#   init_t ── nexus_scheduler_exec_t ─> nexus_scheduler_t  catalog, stores, keyd, alerts out
+#               ├─ nexus_pve_exec_t ──> nexus_pve_t        PVE API + ssh (runs /usr/bin/ssh in-domain)
+#               │    └─ qemu_exec_t ──> nexus_restorevm_t  restore micro-VM: /dev/kvm, its two sockets
+#               └─ nexus_offsite_exec_t > nexus_offsite_t  SFTP boxes, stores
+#   init_t ── nexus_setup_exec_t ─────> nexus_setup_t      first boot (root): nmcli/hostnamectl/systemctl
+#   init_t ── nexus_nftsync_exec_t ───> nexus_nftsync_t    root oneshot ── iptables_exec_t ──> iptables_t
+#
+# Data types are private to the domains named in their rules; nothing is
+# shared through generic types (var_lib_t, etc_t, tmp_t). No domain is
+# permissive or unconfined. Every allow rule below states why it exists.
 ########################################
 
 gen_require(`
+	type iptables_t;
+	type init_t;
+	type ssh_exec_t;
+	type qemu_exec_t;
 	type tpm_device_t;
+	class service { start stop status reload enable disable };
+	class system { reload status };
 ')
 
 ########################################
-# Declarations
-
-type nexus_var_lib_t;
-files_type(nexus_var_lib_t)
-
-# chunkstore
-type nexus_chunkstore_t;
-type nexus_chunkstore_exec_t;
-init_daemon_domain(nexus_chunkstore_t, nexus_chunkstore_exec_t)
-type nexus_chunkstore_var_lib_t;
-files_type(nexus_chunkstore_var_lib_t)
-type nexus_chunkstore_var_run_t;
-files_pid_file(nexus_chunkstore_var_run_t)
-
-# keyd
-type nexus_keyd_t;
-type nexus_keyd_exec_t;
-init_daemon_domain(nexus_keyd_t, nexus_keyd_exec_t)
-type nexus_keyd_var_lib_t;
-files_type(nexus_keyd_var_lib_t)
-type nexus_keyd_var_run_t;
-files_pid_file(nexus_keyd_var_run_t)
-
-# web-api
-type nexus_webapi_t;
-type nexus_webapi_exec_t;
-init_daemon_domain(nexus_webapi_t, nexus_webapi_exec_t)
-type nexus_webapi_var_lib_t;
-files_type(nexus_webapi_var_lib_t)
-type nexus_webapi_var_run_t;
-files_pid_file(nexus_webapi_var_run_t)
+# Types
 
 attribute nexus_domain;
-typeattribute nexus_chunkstore_t nexus_domain;
-typeattribute nexus_keyd_t nexus_domain;
-typeattribute nexus_webapi_t nexus_domain;
+attribute nexus_job_domain;
+
+# nexus_daemon(name): domain + exec type, started by systemd
+define(`nexus_daemon',`
+	type nexus_$1_t, nexus_domain;
+	type nexus_$1_exec_t;
+	init_daemon_domain(nexus_$1_t, nexus_$1_exec_t)
+')
+# nexus_job(name): domain + exec type, entered only from nexus_scheduler_t
+define(`nexus_job',`
+	type nexus_$1_t, nexus_domain, nexus_job_domain;
+	type nexus_$1_exec_t;
+	domain_type(nexus_$1_t)
+	domain_entry_file(nexus_$1_t, nexus_$1_exec_t)
+	role system_r types nexus_$1_t;
+')
+
+nexus_daemon(keyd)
+nexus_daemon(webapi)
+nexus_daemon(scheduler)
+nexus_daemon(setup)
+nexus_daemon(nftsync)
+nexus_job(pve)
+nexus_job(offsite)
+
+# restore micro-VM (EL's qemu-kvm, entered from nexus_pve_t only)
+type nexus_restorevm_t, nexus_domain;
+domain_type(nexus_restorevm_t)
+domain_entry_file(nexus_restorevm_t, qemu_exec_t)
+role system_r types nexus_restorevm_t;
+type nexus_restorevm_image_t;
+files_type(nexus_restorevm_image_t)
+
+type nexus_var_lib_t;		# /var/lib/nexus, setup-done
+files_type(nexus_var_lib_t)
+type nexus_catalog_t;		# SQLite catalog (WAL)
+files_type(nexus_catalog_t)
+type nexus_downloads_t;		# file-restore downloads
+files_type(nexus_downloads_t)
+type nexus_keyd_var_lib_t;	# wrapped KEK + DEKs
+files_type(nexus_keyd_var_lib_t)
+type nexus_store_t;		# chunk stores, offsite inventories, scheduler state
+files_type(nexus_store_t)
+type nexus_escrow_t;		# wrapped key escrow uploaded to the boxes
+files_type(nexus_escrow_t)
+type nexus_etc_t;		# /etc/nexus (scheduler.json, alerts.json, smtp-password)
+files_config_file(nexus_etc_t)
+type nexus_webapi_secret_t;	# TLS key/cert, metrics token
+files_config_file(nexus_webapi_secret_t)
+type nexus_sshkey_t;		# appliance SSH/SFTP keys + known_hosts
+files_config_file(nexus_sshkey_t)
+type nexus_unit_file_t;		# nexus-*.service/.path/.timer
+systemd_unit_file(nexus_unit_file_t)
+type nexus_keyd_var_run_t;	# keyd socket
+files_pid_file(nexus_keyd_var_run_t)
+type nexus_scheduler_var_run_t;	# job dirs with generated configs + secrets
+files_pid_file(nexus_scheduler_var_run_t)
+type nexus_nft_var_run_t;	# outbound allow-list (scheduler -> nft-sync)
+files_pid_file(nexus_nft_var_run_t)
+type nexus_pve_tmp_t;		# restore micro-VM work dir (sockets, console log)
+files_tmp_file(nexus_pve_tmp_t)
 
 ########################################
-# Common to all nexus domains
+# Common to all nexus domains: the basics of a Rust program on glibc.
 
-allow nexus_domain self:process { signal_perms };
+# own signals (thread cancellation), pipes and socketpairs between threads
+allow nexus_domain self:process { signal_perms getsched };
 allow nexus_domain self:fifo_file rw_fifo_file_perms;
 allow nexus_domain self:unix_stream_socket create_stream_socket_perms;
-allow nexus_domain nexus_var_lib_t:dir search_dir_perms;
+# /proc/self (std::thread::available_parallelism reads cgroup + sched data), /proc/meminfo
+kernel_read_system_state(nexus_domain)
+# /sys/devices/system/cpu (available_parallelism), /sys/fs/cgroup quota
+dev_read_sysfs(nexus_domain)
+fs_read_cgroup_files(nexus_domain)
+# getrandom() falls back to /dev/urandom early in boot
+dev_read_urand(nexus_domain)
+# locale and time zone data
+miscfiles_read_localization(nexus_domain)
+# stderr -> journal
+logging_send_syslog_msg(nexus_domain)
+# search /var/lib for /var/lib/nexus and /run for the runtime dirs
 files_search_var_lib(nexus_domain)
 files_search_pids(nexus_domain)
-kernel_read_system_state(nexus_domain)
-miscfiles_read_localization(nexus_domain)
-logging_send_syslog_msg(nexus_domain)
-init_write_pid_socket(nexus_domain)
+allow nexus_domain nexus_var_lib_t:dir search_dir_perms;
+
+# Only keyd may ever touch the TPM (TPM sealing is deferred, the rule stays).
+neverallow { nexus_domain -nexus_keyd_t } tpm_device_t:chr_file *;
+# Key material: only keyd (and setup, which runs `keyd init` once) see it.
+neverallow { nexus_domain -nexus_keyd_t -nexus_setup_t } nexus_keyd_var_lib_t:file { read write open };
+# The web API never reads chunks, keys or the PVE/SFTP credentials.
+neverallow nexus_webapi_t { nexus_store_t nexus_keyd_var_lib_t nexus_sshkey_t nexus_scheduler_var_run_t }:file { read open };
 
 ########################################
-# chunkstore: own state + runtime dir, connects to keyd. No network, no devices.
-
-manage_dirs_pattern(nexus_chunkstore_t, nexus_chunkstore_var_lib_t, nexus_chunkstore_var_lib_t)
-manage_files_pattern(nexus_chunkstore_t, nexus_chunkstore_var_lib_t, nexus_chunkstore_var_lib_t)
-manage_dirs_pattern(nexus_chunkstore_t, nexus_chunkstore_var_run_t, nexus_chunkstore_var_run_t)
-manage_sock_files_pattern(nexus_chunkstore_t, nexus_chunkstore_var_run_t, nexus_chunkstore_var_run_t)
-stream_connect_pattern(nexus_chunkstore_t, nexus_keyd_var_run_t, nexus_keyd_var_run_t, nexus_keyd_t)
-
-########################################
-# keyd: own state + socket, the ONLY nexus domain with TPM access.
+# keyd: own state + socket. No network (PrivateNetwork=yes in the unit as well).
 
 manage_dirs_pattern(nexus_keyd_t, nexus_keyd_var_lib_t, nexus_keyd_var_lib_t)
 manage_files_pattern(nexus_keyd_t, nexus_keyd_var_lib_t, nexus_keyd_var_lib_t)
+# the listening socket in /run/nexus-keyd (dir created by systemd, RuntimeDirectory=)
 manage_sock_files_pattern(nexus_keyd_t, nexus_keyd_var_run_t, nexus_keyd_var_run_t)
-dev_rw_tpm(nexus_keyd_t)
-
-neverallow { nexus_domain -nexus_keyd_t } tpm_device_t:chr_file *;
+allow nexus_keyd_t self:unix_stream_socket { listen accept };
+# resolve the allowed peer user name (nexus-chunkstore) to its uid
+auth_read_passwd(nexus_keyd_t)
+# mlockall(): keys never reach swap
+allow nexus_keyd_t self:capability ipc_lock;
+# TPM sealing (deferred): dev_rw_tpm(nexus_keyd_t)
 
 ########################################
-# web-api: own state + runtime dir, listens on 8443/tcp (http_port_t).
-# Talks to scheduler/catalog/restore over their sockets (rules added with those services).
+# web-api: TLS on 8443, catalog (rw), downloads (read), its secrets (read).
 
-manage_dirs_pattern(nexus_webapi_t, nexus_webapi_var_lib_t, nexus_webapi_var_lib_t)
-manage_files_pattern(nexus_webapi_t, nexus_webapi_var_lib_t, nexus_webapi_var_lib_t)
-manage_sock_files_pattern(nexus_webapi_t, nexus_webapi_var_run_t, nexus_webapi_var_run_t)
 allow nexus_webapi_t self:tcp_socket create_stream_socket_perms;
+allow nexus_webapi_t self:tcp_socket { listen accept };
 corenet_tcp_bind_generic_node(nexus_webapi_t)
+# 8443 is http_port_t in the base policy
 corenet_tcp_bind_http_port(nexus_webapi_t)
-sysnet_read_config(nexus_webapi_t)
+# Type=notify: READY=1 to /run/systemd/notify
+init_write_pid_socket(nexus_webapi_t)
+init_dgram_send(nexus_webapi_t)
+# SQLite catalog: db, -wal, -shm, journal; locks
+manage_files_pattern(nexus_webapi_t, nexus_catalog_t, nexus_catalog_t)
+allow nexus_webapi_t nexus_catalog_t:dir rw_dir_perms;
+allow nexus_webapi_t nexus_catalog_t:file map;
+# GET /downloads/{token}: stream files the scheduler wrote
+read_files_pattern(nexus_webapi_t, nexus_downloads_t, nexus_downloads_t)
+# setup-done (ConditionPathExists and the binary's own check)
+read_files_pattern(nexus_webapi_t, nexus_var_lib_t, nexus_var_lib_t)
+# TLS key + cert, metrics token
+allow nexus_webapi_t nexus_etc_t:dir search_dir_perms;
+read_files_pattern(nexus_webapi_t, nexus_webapi_secret_t, nexus_webapi_secret_t)
+files_search_etc(nexus_webapi_t)
+
+########################################
+# scheduler: catalog, stores, keyd, job runner, alert delivery.
+
+# SQLite catalog (as web-api)
+manage_files_pattern(nexus_scheduler_t, nexus_catalog_t, nexus_catalog_t)
+allow nexus_scheduler_t nexus_catalog_t:dir rw_dir_perms;
+allow nexus_scheduler_t nexus_catalog_t:file map;
+# retention / gc / verify in-process; snapshot refresh; offsite inventory; alert cursor
+manage_dirs_pattern(nexus_scheduler_t, nexus_store_t, nexus_store_t)
+manage_files_pattern(nexus_scheduler_t, nexus_store_t, nexus_store_t)
+# escrow files from keyd for the offsite upload
+manage_dirs_pattern(nexus_scheduler_t, nexus_escrow_t, nexus_escrow_t)
+manage_files_pattern(nexus_scheduler_t, nexus_escrow_t, nexus_escrow_t)
+# downloads: chgrp/chmod of the dir at start, expiry deletes files written by nexus-pve
+manage_dirs_pattern(nexus_scheduler_t, nexus_downloads_t, nexus_downloads_t)
+manage_files_pattern(nexus_scheduler_t, nexus_downloads_t, nexus_downloads_t)
+allow nexus_scheduler_t nexus_downloads_t:dir setattr_dir_perms;
+allow nexus_scheduler_t self:capability { chown fowner };
+# setup-done (unit condition), /var/lib/nexus statfs for the capacity alert
+read_files_pattern(nexus_scheduler_t, nexus_var_lib_t, nexus_var_lib_t)
+fs_getattr_xattr_fs(nexus_scheduler_t)
+# job dirs with generated configs (0600) in /run/nexus-scheduler
+manage_dirs_pattern(nexus_scheduler_t, nexus_scheduler_var_run_t, nexus_scheduler_var_run_t)
+manage_files_pattern(nexus_scheduler_t, nexus_scheduler_var_run_t, nexus_scheduler_var_run_t)
+# outbound allow-list for nexus-nft-sync (atomic rename)
+manage_files_pattern(nexus_scheduler_t, nexus_nft_var_run_t, nexus_nft_var_run_t)
+# scheduler.json, alerts.json, smtp password file
+read_files_pattern(nexus_scheduler_t, nexus_etc_t, nexus_etc_t)
+files_search_etc(nexus_scheduler_t)
+# tenant keyrings (ensure/escrow) from keyd
+stream_connect_pattern(nexus_scheduler_t, nexus_keyd_var_run_t, nexus_keyd_var_run_t, nexus_keyd_t)
+# alert delivery: webhook (http/https or any unreserved port) and SMTP; DNS;
+# endpoint resolution for the allow-list. Destinations are limited by nftables.
+allow nexus_scheduler_t self:tcp_socket create_stream_socket_perms;
+allow nexus_scheduler_t self:udp_socket create_socket_perms;
+corenet_tcp_connect_http_port(nexus_scheduler_t)
+corenet_tcp_connect_smtp_port(nexus_scheduler_t)
+corenet_tcp_connect_all_unreserved_ports(nexus_scheduler_t)
+sysnet_dns_name_resolve(nexus_scheduler_t)
+# rustls roots for the webhook (system trust store)
+miscfiles_read_generic_certs(nexus_scheduler_t)
+# hostname for alert texts
+kernel_read_kernel_sysctls(nexus_scheduler_t)
+auth_read_passwd(nexus_scheduler_t)
+# spawn jobs: transition into their domains, collect their output, signal them
+domtrans_pattern(nexus_scheduler_t, nexus_pve_exec_t, nexus_pve_t)
+domtrans_pattern(nexus_scheduler_t, nexus_offsite_exec_t, nexus_offsite_t)
+allow nexus_scheduler_t nexus_job_domain:process { sigkill signal };
+allow nexus_job_domain nexus_scheduler_t:fd use;
+allow nexus_job_domain nexus_scheduler_t:fifo_file rw_inherited_fifo_file_perms;
+allow nexus_job_domain nexus_scheduler_t:process sigchld;
+corecmd_search_bin(nexus_scheduler_t)
+
+########################################
+# Jobs (nexus-pve, nexus-offsite): read their job dir, use the tenant store
+# and keyd. Same Unix user as the scheduler, different domains.
+
+allow nexus_job_domain nexus_scheduler_var_run_t:dir list_dir_perms;
+read_files_pattern(nexus_job_domain, nexus_scheduler_var_run_t, nexus_scheduler_var_run_t)
+manage_dirs_pattern(nexus_job_domain, nexus_store_t, nexus_store_t)
+manage_files_pattern(nexus_job_domain, nexus_store_t, nexus_store_t)
+stream_connect_pattern(nexus_job_domain, nexus_keyd_var_run_t, nexus_keyd_var_run_t, nexus_keyd_t)
+allow nexus_job_domain self:tcp_socket create_stream_socket_perms;
+allow nexus_job_domain self:udp_socket create_socket_perms;
+sysnet_dns_name_resolve(nexus_job_domain)
+auth_read_passwd(nexus_job_domain)
+# keys and known_hosts referenced by the source / offsite config
+allow nexus_job_domain nexus_etc_t:dir search_dir_perms;
+read_files_pattern(nexus_job_domain, nexus_sshkey_t, nexus_sshkey_t)
+files_search_etc(nexus_job_domain)
+
+# --- nexus-pve: PVE API (TLS, pinned CA from the job dir), ssh to the nodes,
+# file-restore downloads, the restore micro-VM.
+# PVE API is 8006 (unreserved); SSH is 22 or a NAT-forwarded unreserved port.
+corenet_tcp_connect_all_unreserved_ports(nexus_pve_t)
+corenet_tcp_connect_ssh_port(nexus_pve_t)
+# /usr/bin/ssh runs in this domain (no transition to the user-oriented ssh_t)
+can_exec(nexus_pve_t, ssh_exec_t)
+corecmd_search_bin(nexus_pve_t)
+# ssh: system crypto policy and ssh_config under /etc
+files_read_etc_files(nexus_pve_t)
+# ssh looks for ~/.ssh of a user whose home is / ; nothing to find
+files_dontaudit_search_home(nexus_pve_t)
+# files_get writes <downloads>/<token>.<fmt>
+manage_files_pattern(nexus_pve_t, nexus_downloads_t, nexus_downloads_t)
+allow nexus_pve_t nexus_downloads_t:dir rw_dir_perms;
+# restore micro-VM work dir under the private /tmp, sockets for NBD + agent
+files_search_tmp(nexus_pve_t)
+manage_dirs_pattern(nexus_pve_t, nexus_pve_tmp_t, nexus_pve_tmp_t)
+manage_files_pattern(nexus_pve_t, nexus_pve_tmp_t, nexus_pve_tmp_t)
+manage_sock_files_pattern(nexus_pve_t, nexus_pve_tmp_t, nexus_pve_tmp_t)
+files_tmp_filetrans(nexus_pve_t, nexus_pve_tmp_t, dir)
+allow nexus_pve_t self:unix_stream_socket { listen accept };
+# /dev/kvm probe (kvm_usable()) before choosing accel=kvm
+dev_rw_kvm(nexus_pve_t)
+# QEMU runs in its own domain; nexus-pve kills it when done
+domtrans_pattern(nexus_pve_t, qemu_exec_t, nexus_restorevm_t)
+allow nexus_pve_t nexus_restorevm_t:process { sigkill signal };
+allow nexus_restorevm_t nexus_pve_t:fd use;
+allow nexus_restorevm_t nexus_pve_t:fifo_file rw_inherited_fifo_file_perms;
+allow nexus_restorevm_t nexus_pve_t:process sigchld;
+
+# --- nexus-offsite: SFTP to the boxes (Storage Box: 23 and 22; lab: unreserved)
+corenet_tcp_connect_telnetd_port(nexus_offsite_t)
+corenet_tcp_connect_ssh_port(nexus_offsite_t)
+corenet_tcp_connect_all_unreserved_ports(nexus_offsite_t)
+# wrapped key escrow is uploaded with the packs
+read_files_pattern(nexus_offsite_t, nexus_escrow_t, nexus_escrow_t)
+list_dirs_pattern(nexus_offsite_t, nexus_escrow_t, nexus_escrow_t)
+
+########################################
+# Restore micro-VM (QEMU, -sandbox on, no NIC): kernel + initramfs, /dev/kvm,
+# the NBD and agent sockets and console log in nexus-pve's work dir. Nothing else:
+# no network, no other files, no devices.
+
+read_files_pattern(nexus_restorevm_t, nexus_restorevm_image_t, nexus_restorevm_image_t)
+list_dirs_pattern(nexus_restorevm_t, nexus_restorevm_image_t, nexus_restorevm_image_t)
+files_search_usr(nexus_restorevm_t)
+dev_rw_kvm(nexus_restorevm_t)
+stream_connect_pattern(nexus_restorevm_t, nexus_pve_tmp_t, nexus_pve_tmp_t, nexus_pve_t)
+# -serial file:<workdir>/console.log
+create_files_pattern(nexus_restorevm_t, nexus_pve_tmp_t, nexus_pve_tmp_t)
+rw_files_pattern(nexus_restorevm_t, nexus_pve_tmp_t, nexus_pve_tmp_t)
+files_search_tmp(nexus_restorevm_t)
+# QEMU binary, its module directory and firmware (SeaBIOS, option ROMs)
+files_read_usr_files(nexus_restorevm_t)
+corecmd_search_bin(nexus_restorevm_t)
+# guest RAM (memfd/anon), vCPU threads, -sandbox installs its seccomp filter
+allow nexus_restorevm_t self:process { setsched setrlimit };
+allow nexus_restorevm_t self:unix_dgram_socket create_socket_perms;
+fs_rw_tmpfs_files(nexus_restorevm_t)
+dev_read_rand(nexus_restorevm_t)
+
+########################################
+# setup (root, first boot): catalog, keyd init, TLS/metrics token, setup-done,
+# then nmcli / hostnamectl / systemctl over D-Bus and the systemd socket.
+
+allow nexus_setup_t self:capability { chown fowner dac_override dac_read_search ipc_lock };
+manage_dirs_pattern(nexus_setup_t, nexus_var_lib_t, nexus_var_lib_t)
+manage_files_pattern(nexus_setup_t, nexus_var_lib_t, nexus_var_lib_t)
+manage_dirs_pattern(nexus_setup_t, nexus_catalog_t, nexus_catalog_t)
+manage_files_pattern(nexus_setup_t, nexus_catalog_t, nexus_catalog_t)
+allow nexus_setup_t nexus_catalog_t:file map;
+# keyd init (KEK + recovery escrow) and chown to nexus-keyd
+manage_dirs_pattern(nexus_setup_t, nexus_keyd_var_lib_t, nexus_keyd_var_lib_t)
+manage_files_pattern(nexus_setup_t, nexus_keyd_var_lib_t, nexus_keyd_var_lib_t)
+# /etc/nexus/tls, metrics-token
+manage_dirs_pattern(nexus_setup_t, nexus_etc_t, nexus_etc_t)
+manage_dirs_pattern(nexus_setup_t, nexus_webapi_secret_t, nexus_webapi_secret_t)
+manage_files_pattern(nexus_setup_t, nexus_webapi_secret_t, nexus_webapi_secret_t)
+filetrans_pattern(nexus_setup_t, nexus_etc_t, nexus_webapi_secret_t, dir, "tls")
+filetrans_pattern(nexus_setup_t, nexus_etc_t, nexus_webapi_secret_t, file, "metrics-token")
+filetrans_pattern(nexus_setup_t, nexus_etc_t, nexus_webapi_secret_t, file, ".metrics-token.tmp")
+files_search_etc(nexus_setup_t)
+# user/group names for chown, hostname, NIC list in /sys/class/net
+auth_read_passwd(nexus_setup_t)
+kernel_read_kernel_sysctls(nexus_setup_t)
+kernel_read_network_state(nexus_setup_t)
+allow nexus_setup_t self:netlink_route_socket r_netlink_socket_perms;
+# the wizard's terminal (tty1), and the TUI's /dev/tty
+term_use_unallocated_ttys(nexus_setup_t)
+term_use_generic_ptys(nexus_setup_t)
+term_use_controlling_term(nexus_setup_t)
+# nmcli, hostnamectl (bin_t) and systemctl run in this domain
+corecmd_exec_bin(nexus_setup_t)
+systemd_exec_systemctl(nexus_setup_t)
+files_read_etc_files(nexus_setup_t)
+files_read_usr_files(nexus_setup_t)
+# D-Bus: NetworkManager (profile nexus-mgmt), hostnamed (set-hostname), systemd
+dbus_system_bus_client(nexus_setup_t)
+networkmanager_dbus_chat(nexus_setup_t)
+systemd_dbus_chat_hostnamed(nexus_setup_t)
+init_dbus_chat(nexus_setup_t)
+# systemctl enable --now: talk to PID 1, reload, enable + start the nexus units only
+init_stream_connect(nexus_setup_t)
+init_read_state(nexus_setup_t)
+allow nexus_setup_t init_t:system { reload status };
+allow nexus_setup_t nexus_unit_file_t:service { start status enable };
+allow nexus_setup_t nexus_unit_file_t:file read_file_perms;
+systemd_search_unit_dirs(nexus_setup_t)
+allow nexus_setup_t self:unix_dgram_socket create_socket_perms;
+
+########################################
+# nft-sync (root oneshot): read the allow-list, resolv.conf, chrony.conf;
+# resolve NTS names; run nft (iptables_t) with the script on stdin.
+
+allow nexus_nftsync_t nexus_nft_var_run_t:dir list_dir_perms;
+read_files_pattern(nexus_nftsync_t, nexus_nft_var_run_t, nexus_nft_var_run_t)
+sysnet_read_config(nexus_nftsync_t)
+# chrony.conf (etc_t) for the NTS server names
+files_read_etc_files(nexus_nftsync_t)
+# /etc/nexus/allowed-hosts (static OS destinations, e.g. the update registry)
+read_files_pattern(nexus_nftsync_t, nexus_etc_t, nexus_etc_t)
+sysnet_dns_name_resolve(nexus_nftsync_t)
+allow nexus_nftsync_t self:udp_socket create_socket_perms;
+allow nexus_nftsync_t self:tcp_socket create_stream_socket_perms;
+corecmd_search_bin(nexus_nftsync_t)
+iptables_domtrans(nexus_nftsync_t)
+# nft reads the script from our pipe and writes errors to our stderr
+allow iptables_t nexus_nftsync_t:fd use;
+allow iptables_t nexus_nftsync_t:fifo_file rw_inherited_fifo_file_perms;
+allow iptables_t nexus_nftsync_t:process sigchld;

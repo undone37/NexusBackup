@@ -7,23 +7,20 @@ ConditionPathExists=/var/lib/nexus/setup-done
 
 [Service]
 Type=notify
-ExecStart=/usr/libexec/nexus/web-api
+ExecStart=/usr/libexec/nexus/nexus-web-api
 User=nexus-webapi
 Group=nexus-webapi
-# catalog DB (rw, WAL) and file-restore downloads (read) are group-shared
+# catalog DB (rw, WAL) and file-restore downloads (read) are shared via group
+# nexus-catalog (tmpfiles.d/nexus.conf); TLS key 0600 nexus-webapi, metrics token
+# 0640 root:nexus-webapi (written by nexus-setup).
 SupplementaryGroups=nexus-catalog
 ReadWritePaths=/var/lib/nexus/catalog
 Restart=on-failure
-
-StateDirectory=nexus/webapi
-StateDirectoryMode=0700
-RuntimeDirectory=nexus-webapi
-RuntimeDirectoryMode=0750
 UMask=0077
 LimitCORE=0
 
-# Listens on 8443 (unprivileged port, no CAP_NET_BIND_SERVICE needed).
-# AF_UNIX for talking to scheduler/catalog/restore over local sockets.
+# Listens on 8443 (unprivileged port, no CAP_NET_BIND_SERVICE needed); no
+# outbound connections (the firewall's output chain only allows replies).
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SocketBindAllow=tcp:8443
 SocketBindDeny=any
@@ -36,6 +33,7 @@ ProtectSystem=strict
 ProtectHome=yes
 # no PrivateUsers=: the catalog is shared via the supplementary group nexus-catalog
 PrivateTmp=yes
+PrivateIPC=yes
 ProtectHostname=yes
 ProtectClock=yes
 ProtectKernelTunables=yes

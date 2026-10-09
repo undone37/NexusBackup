@@ -1,0 +1,12 @@
+[Unit]
+Description=NexusBackup firewall: watch the outbound allow-list and resolver config
+
+[Path]
+# written by nexus-scheduler (atomic rename) when configured destinations change
+PathChanged=/run/nexus-nft/allowed.json
+# rewritten by NetworkManager when the resolvers change
+PathChanged=/etc/resolv.conf
+Unit=nexus-nft-sync.service
+
+[Install]
+WantedBy=paths.target

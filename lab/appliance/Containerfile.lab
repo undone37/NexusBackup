@@ -1,0 +1,6 @@
+# LAB ONLY: the appliance image plus a root autologin on the serial console
+# (ttyS0), so lab/appliance/con.py can drive the VM. Nothing else differs from
+# the production image (same policy, units, firewall). Never ship this.
+ARG IMAGE=localhost/nexus-os:dev
+FROM ${IMAGE}
+COPY autologin.conf /usr/lib/systemd/system/serial-getty@ttyS0.service.d/lab-autologin.conf

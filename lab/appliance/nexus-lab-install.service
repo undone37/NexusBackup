@@ -1,0 +1,13 @@
+[Unit]
+Description=NexusBackup lab: install the appliance image onto the target disk
+After=local-fs.target systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/nexus-lab-install
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

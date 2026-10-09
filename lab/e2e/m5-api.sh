@@ -9,6 +9,9 @@
 #   node's /var/lib/nexusbackup/.ssh/authorized_keys with command="/usr/lib/nexusbackup/helper"),
 #   LAB_KNOWN_HOSTS, TESTBOX (SFTP testbox dir, crates/offsite/testbox/run.sh start),
 #   OFFSITE_KEY, OFFSITE_HOST_KEY (known_hosts line of the testbox)
+# Appliance VM (lab/appliance/e2e.sh): the paths/addresses the *appliance* uses differ from the host's:
+#   APPL_HOST (how the appliance reaches the dev host: 127.0.0.1, or 10.0.2.2 from the VM),
+#   APPL_SSH_KEY, APPL_KNOWN_HOSTS, APPL_OFFSITE_KEY (paths on the appliance; default = host paths)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 eval "$("$here/m5.sh" env)"
@@ -29,7 +32,13 @@ LAB_SSH_KEY=${LAB_SSH_KEY:-/home/ah/nexus-lab/appliance_ed25519}
 LAB_KNOWN_HOSTS=${LAB_KNOWN_HOSTS:-$LAB/known_hosts}
 TESTBOX=${TESTBOX:-$(git -C "$here" worktree list --porcelain | sed -n "1s/^worktree //p")/target/offsite-testbox}
 OFFSITE_KEY=${OFFSITE_KEY:-$TESTBOX/client_ed25519}
-OFFSITE_HOST_KEY=${OFFSITE_HOST_KEY:-"[127.0.0.1]:2223 $(cut -d' ' -f1,2 "$TESTBOX/hostkey/ssh_host_ed25519_key.pub")"}
+APPL_HOST=${APPL_HOST:-127.0.0.1}
+APPL_SSH_KEY=${APPL_SSH_KEY:-$LAB_SSH_KEY}
+APPL_KNOWN_HOSTS=${APPL_KNOWN_HOSTS:-$LAB_KNOWN_HOSTS}
+APPL_OFFSITE_KEY=${APPL_OFFSITE_KEY:-$OFFSITE_KEY}
+APPL_NODE_HOST=$APPL_HOST
+[ "$APPL_HOST" = 127.0.0.1 ] && APPL_NODE_HOST=localhost # the lab known_hosts names [localhost]:10022
+OFFSITE_HOST_KEY=${OFFSITE_HOST_KEY:-"[$APPL_HOST]:2223 $(cut -d' ' -f1,2 "$TESTBOX/hostkey/ssh_host_ed25519_key.pub")"}
 BASE=https://nexus-m5:$PORT/api/v1
 T0=$(date +%s)
 
@@ -83,13 +92,14 @@ wait_job() {
 
 step_config() {
 	login admin "$ADMIN_PW" "$ADMIN_TOTP"
-	api admin POST /tenants "$(jq -nc --arg k "$OFFSITE_KEY" --arg hk "$OFFSITE_HOST_KEY" \
-		'{name:"lab", offsite:{remote:{type:"sftp", host:"127.0.0.1", port:2223, user:"tenant", key_file:$k, host_key:$hk, base_dir:"m5"}, uploaders:4}}')" >/dev/null
+	api admin POST /tenants "$(jq -nc --arg k "$APPL_OFFSITE_KEY" --arg hk "$OFFSITE_HOST_KEY" --arg h "$APPL_HOST" \
+		'{name:"lab", offsite:{remote:{type:"sftp", host:$h, port:2223, user:"tenant", key_file:$k, host_key:$hk, base_dir:"m5"}, uploaders:4}}')" >/dev/null
 	expect 201 "create tenant"
 	local cfg
-	cfg=$(jq -nc --rawfile ca "$LAB_CA" --arg tok "$(tr -d '\n' <"$LAB_TOKEN_SECRET")" --arg key "$LAB_SSH_KEY" --arg kh "$LAB_KNOWN_HOSTS" \
-		'{host:"pve1", port:18006, connect_addr:"127.0.0.1:18006", ca_pem:$ca, token_id:"nexus@pve!appliance", token_secret:$tok,
-		  nodes:{pve1:{host:"localhost", port:10022, key:$key, known_hosts:$kh}}, storage:"nexus", fleecing_storage:"local-lvm"}')
+	cfg=$(jq -nc --rawfile ca "$LAB_CA" --arg tok "$(tr -d '\n' <"$LAB_TOKEN_SECRET")" --arg key "$APPL_SSH_KEY" --arg kh "$APPL_KNOWN_HOSTS" \
+		--arg addr "$APPL_HOST:18006" --arg nh "$APPL_NODE_HOST" \
+		'{host:"pve1", port:18006, connect_addr:$addr, ca_pem:$ca, token_id:"nexus@pve!appliance", token_secret:$tok,
+		  nodes:{pve1:{host:$nh, port:10022, key:$key, known_hosts:$kh}}, storage:"nexus", fleecing_storage:"local-lvm"}')
 	SRC=$(api admin POST /sources "$(jq -nc --argjson c "$cfg" '{tenant:"lab", kind:"pve", name:"pve1", config:$c}')" | jq -r .id)
 	expect 201 "create source"
 	api admin GET "/sources" | jq -e '.[0].config.token_secret_set == true and (.[0].config.token_secret == null)' >/dev/null ||

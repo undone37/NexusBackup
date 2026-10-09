@@ -1,0 +1,50 @@
+[Unit]
+Description=NexusBackup firewall: sync outbound allow-list sets (sources, offsite, alerts, DNS, NTS)
+# Started by nexus-nft-sync.path (allow-list or resolv.conf changed), the timer
+# (NTS names re-resolved) and at boot. Needs the nexus table (nftables.service).
+After=nftables.service network-online.target
+Requires=nftables.service
+Wants=network-online.target
+# Rate limit for bursts of path triggers.
+StartLimitIntervalSec=60
+StartLimitBurst=20
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/nexus/nexus-nft-sync
+
+# Root with CAP_NET_ADMIN only (nft netlink); reads the scheduler's JSON
+# (validated: IP literals, tcp/udp, ports), resolv.conf and chrony.conf; DNS
+# lookups for the NTS server names.
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+UMask=0077
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

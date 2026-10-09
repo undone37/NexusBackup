@@ -4,8 +4,8 @@ Description=NexusBackup first-boot setup wizard (console, tty1)
 # `nexus-setup --force-reconfigure-network` is run by hand from a console.
 ConditionPathExists=!/var/lib/nexus/setup-done
 ConditionPathExists=/usr/libexec/nexus/nexus-setup
-After=systemd-user-sessions.service systemd-sysusers.service systemd-vconsole-setup.service
-After=NetworkManager.service plymouth-quit-wait.service
+After=systemd-user-sessions.service systemd-sysusers.service systemd-tmpfiles-setup.service
+After=systemd-vconsole-setup.service NetworkManager.service plymouth-quit-wait.service
 Wants=NetworkManager.service
 # Same pattern as Fedora's initial-setup: getty@tty1 waits for this oneshot,
 # so the wizard owns tty1 until setup is done (tty2.. keep their gettys).
@@ -33,26 +33,39 @@ LimitCORE=0
 LimitMEMLOCK=infinity
 UMask=0077
 
-# Needs root: writes /etc/nexus and /var/lib/nexus, chowns to the service users,
-# and drives NetworkManager, hostnamed and systemd over D-Bus.
-StateDirectory=nexus
-StateDirectoryMode=0755
-ConfigurationDirectory=nexus
-ConfigurationDirectoryMode=0755
+# Runs as root: writes /etc/nexus and /var/lib/nexus (created by tmpfiles with
+# the service owners; root needs DAC override to write into keyd's 0700 dir),
+# chowns the files it creates to the service users, and drives NetworkManager,
+# hostnamed and systemd over D-Bus (those need uid 0, not capabilities).
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+AmbientCapabilities=
+ReadWritePaths=/var/lib/nexus /etc/nexus
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+PrivateIPC=yes
 NoNewPrivileges=yes
+# only terminals (the wizard's tty1 and /dev/tty)
+DevicePolicy=closed
+DeviceAllow=char-tty rw
+DeviceAllow=/dev/tty rw
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
+KeyringMode=private
 SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@resources
+SystemCallErrorNumber=EPERM
+# D-Bus (system bus) and sysfs NIC info only; the wizard opens no IP sockets.
 RestrictAddressFamilies=AF_UNIX AF_NETLINK
 IPAddressDeny=any
 

@@ -1,12 +1,38 @@
-/usr/libexec/nexus/chunkstore	--	gen_context(system_u:object_r:nexus_chunkstore_exec_t,s0)
-/usr/libexec/nexus/keyd		--	gen_context(system_u:object_r:nexus_keyd_exec_t,s0)
-/usr/libexec/nexus/web-api	--	gen_context(system_u:object_r:nexus_webapi_exec_t,s0)
+# NexusBackup file contexts (see nexus.te for who may do what).
 
-/var/lib/nexus			-d	gen_context(system_u:object_r:nexus_var_lib_t,s0)
-/var/lib/nexus/chunkstore(/.*)?		gen_context(system_u:object_r:nexus_chunkstore_var_lib_t,s0)
-/var/lib/nexus/keyd(/.*)?		gen_context(system_u:object_r:nexus_keyd_var_lib_t,s0)
-/var/lib/nexus/webapi(/.*)?		gen_context(system_u:object_r:nexus_webapi_var_lib_t,s0)
+# executables: one entry type per domain
+/usr/libexec/nexus/keyd			--	gen_context(system_u:object_r:nexus_keyd_exec_t,s0)
+/usr/libexec/nexus/nexus-web-api	--	gen_context(system_u:object_r:nexus_webapi_exec_t,s0)
+/usr/libexec/nexus/nexus-scheduler	--	gen_context(system_u:object_r:nexus_scheduler_exec_t,s0)
+/usr/libexec/nexus/nexus-pve		--	gen_context(system_u:object_r:nexus_pve_exec_t,s0)
+/usr/libexec/nexus/nexus-offsite	--	gen_context(system_u:object_r:nexus_offsite_exec_t,s0)
+/usr/libexec/nexus/nexus-setup		--	gen_context(system_u:object_r:nexus_setup_exec_t,s0)
+/usr/libexec/nexus/nexus-nft-sync	--	gen_context(system_u:object_r:nexus_nftsync_exec_t,s0)
 
-/run/nexus-chunkstore(/.*)?		gen_context(system_u:object_r:nexus_chunkstore_var_run_t,s0)
-/run/nexus-keyd(/.*)?			gen_context(system_u:object_r:nexus_keyd_var_run_t,s0)
-/run/nexus-webapi(/.*)?			gen_context(system_u:object_r:nexus_webapi_var_run_t,s0)
+# restore micro-VM kernel + initramfs (read by the confined QEMU only)
+/usr/lib/nexus/restore-vm(/.*)?			gen_context(system_u:object_r:nexus_restorevm_image_t,s0)
+
+# unit files: nexus-setup may enable/start these and nothing else
+/usr/lib/systemd/system/nexus-.*		gen_context(system_u:object_r:nexus_unit_file_t,s0)
+
+# state
+/var/lib/nexus				-d	gen_context(system_u:object_r:nexus_var_lib_t,s0)
+/var/lib/nexus/setup-done		--	gen_context(system_u:object_r:nexus_var_lib_t,s0)
+/var/lib/nexus/catalog(/.*)?			gen_context(system_u:object_r:nexus_catalog_t,s0)
+/var/lib/nexus/downloads(/.*)?			gen_context(system_u:object_r:nexus_downloads_t,s0)
+/var/lib/nexus/keyd(/.*)?			gen_context(system_u:object_r:nexus_keyd_var_lib_t,s0)
+/var/lib/nexus/chunkstore(/.*)?			gen_context(system_u:object_r:nexus_store_t,s0)
+/var/lib/nexus/offsite(/.*)?			gen_context(system_u:object_r:nexus_store_t,s0)
+/var/lib/nexus/scheduler(/.*)?			gen_context(system_u:object_r:nexus_store_t,s0)
+/var/lib/nexus/escrow(/.*)?			gen_context(system_u:object_r:nexus_escrow_t,s0)
+
+# configuration and secrets
+/etc/nexus(/.*)?				gen_context(system_u:object_r:nexus_etc_t,s0)
+/etc/nexus/tls(/.*)?				gen_context(system_u:object_r:nexus_webapi_secret_t,s0)
+/etc/nexus/metrics-token		--	gen_context(system_u:object_r:nexus_webapi_secret_t,s0)
+/etc/nexus/ssh(/.*)?				gen_context(system_u:object_r:nexus_sshkey_t,s0)
+
+# runtime
+/run/nexus-keyd(/.*)?				gen_context(system_u:object_r:nexus_keyd_var_run_t,s0)
+/run/nexus-scheduler(/.*)?			gen_context(system_u:object_r:nexus_scheduler_var_run_t,s0)
+/run/nexus-nft(/.*)?				gen_context(system_u:object_r:nexus_nft_var_run_t,s0)

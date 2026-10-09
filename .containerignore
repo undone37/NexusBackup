@@ -1,0 +1,9 @@
+# Build context of os/Containerfile is the repository root.
+.git
+.claude
+target
+**/target
+web/node_modules
+web/dist
+crates/*/fuzz/corpus
+crates/*/fuzz/artifacts

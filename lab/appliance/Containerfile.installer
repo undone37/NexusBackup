@@ -1,0 +1,10 @@
+# Installer VM for lab/appliance/build-disk.sh: the plain AlmaLinux bootc base
+# image, booted as an ordinary ext4 root file system inside an unprivileged QEMU
+# VM, where it runs `bootc install to-disk` (root inside the VM only). Lab only.
+ARG BASE=quay.io/almalinuxorg/almalinux-bootc:10
+FROM ${BASE}
+COPY install.sh /usr/libexec/nexus-lab-install
+COPY nexus-lab-install.service /usr/lib/systemd/system/nexus-lab-install.service
+RUN chmod 0755 /usr/libexec/nexus-lab-install \
+ && systemctl enable nexus-lab-install.service \
+ && systemctl mask bootc-fetch-apply-updates.timer

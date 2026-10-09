@@ -1,57 +1,142 @@
-# NexusBackup appliance OS image (plan.md 12.1, ADR-004).
-# Build: podman build -t nexus-os:dev os/
+# NexusBackup appliance OS image (plan.md 4.2, 12.1, ADR-004).
+# Build from the repository root (the context needs crates/, web/, restore-vm/, os/):
+#   podman build -f os/Containerfile -t localhost/nexus-os:dev .
+#
+# Stages: web (SPA) -> rust (workspace, on the target's glibc) -> restorevm
+# (micro-VM kernel + initramfs) -> selinux (policy module) -> final bootc image.
+# Only the final stage ends up in the image; compilers and devel packages do not.
 #
 # quay.io/almalinux/almalinux-bootc does not exist (unauthorized); the official
 # AlmaLinux bootc image lives under quay.io/almalinuxorg/.
 ARG BASE=quay.io/almalinuxorg/almalinux-bootc:10
+ARG NODE=docker.io/library/node:22-trixie-slim
+ARG DEBIAN=docker.io/library/debian:trixie
+ARG RUST_VERSION=1.93.0
 
-# ---- Stage 1: compile the SELinux policy module (devel tooling never reaches the image)
-FROM ${BASE} AS selinux-build
+# ---- Stage 1: web UI (web/dist is embedded into nexus-web-api at compile time)
+FROM ${NODE} AS web
+WORKDIR /src/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
+
+# ---- Stage 2: Rust workspace. Built on the base image so the binaries link
+# against the glibc they run with. The restore agent is a static musl binary.
+FROM ${BASE} AS rust
+ARG RUST_VERSION
+# parallel rustc jobs (memory: ~1 GB per job at the peak)
+ARG JOBS=8
+RUN dnf -y install --setopt=install_weak_deps=False gcc make \
+ && dnf clean all
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh \
+ && sh /tmp/rustup.sh -y --no-modify-path --profile minimal --default-toolchain ${RUST_VERSION} \
+      --target x86_64-unknown-linux-musl \
+ && rm /tmp/rustup.sh
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+COPY restore-vm/agent/ restore-vm/agent/
+COPY --from=web /src/web/dist web/dist
+# The cache mounts keep the registry and target dir across builds; the
+# binaries are copied out within the same RUN.
+RUN --mount=type=cache,target=/opt/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked -j ${JOBS} \
+      -p keyd -p pve -p offsite -p web-api -p scheduler -p setup -p nftsync \
+ && cargo build --release --locked -j ${JOBS} -p restorevm-agent --target x86_64-unknown-linux-musl \
+ && mkdir -p /out \
+ && cp target/release/keyd target/release/nexus-pve target/release/nexus-offsite \
+       target/release/nexus-web-api target/release/nexus-scheduler target/release/nexus-setup \
+       target/release/nexus-nft-sync /out/ \
+ && cp target/x86_64-unknown-linux-musl/release/nexus-restore-agent /out/agent
+
+# ---- Stage 3: restore micro-VM (Debian 13 kernel + ZFS initramfs, restore-vm/).
+# The RUN lines are those of restore-vm/Containerfile (keep in sync), so both
+# share podman's layer cache.
+FROM ${DEBIAN} AS restorevm
+ENV DEBIAN_FRONTEND=noninteractive
+RUN sed -i 's/^Components: main$/Components: main contrib/' /etc/apt/sources.list.d/debian.sources \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends linux-image-amd64 linux-headers-amd64 \
+      build-essential dkms kmod cpio zstd xz-utils ca-certificates
+RUN apt-get install -y --no-install-recommends zfs-dkms zfsutils-linux \
+ && KVER=$(basename /boot/vmlinuz-* | sed 's/^vmlinuz-//') \
+ && dkms autoinstall -k "$KVER" \
+ && modinfo -k "$KVER" zfs | grep -E '^(filename|version|vermagic)'
+RUN apt-get install -y --no-install-recommends lvm2 mdadm util-linux fdisk busybox-static \
+      e2fsprogs xfsprogs ntfs-3g btrfs-progs dosfstools
+ARG DEBIAN
+COPY restore-vm/ /src/
+COPY --from=rust /out/agent /out/agent
+RUN BASE_DIGEST=${DEBIAN} bash /src/mkinitrd.sh
+
+# ---- Stage 4: SELinux policy module (selinux-policy-devel never reaches the image)
+FROM ${BASE} AS selinux
 RUN dnf -y install --setopt=install_weak_deps=False selinux-policy-devel make \
  && dnf clean all
-COPY selinux/nexus.te selinux/nexus.fc /build/
+COPY os/selinux/nexus.te os/selinux/nexus.fc /build/
 RUN make -C /build -f /usr/share/selinux/devel/Makefile nexus.pp
 
-# ---- Stage 2: the appliance image
+# ---- Stage 5: the appliance image
 FROM ${BASE}
 
-# chrony and nftables are part of the base image; this asserts it without pulling extras.
-RUN dnf -y install --setopt=install_weak_deps=False chrony nftables \
+# chrony, nftables: part of the base, asserted. qemu-kvm-core: the restore
+# micro-VM (/usr/libexec/qemu-kvm, nbd block driver and seccomp built in).
+RUN dnf -y install --setopt=install_weak_deps=False chrony nftables qemu-kvm-core \
  && dnf clean all \
- && rm -rf /var/cache/dnf /var/lib/dnf /var/log/dnf* /var/log/hawkey.log
+ && rm -rf /var/cache/dnf /var/cache/ldconfig /var/lib/dnf /var/log/dnf* /var/log/hawkey.log \
+ && /usr/libexec/qemu-kvm -drive format=help | grep -qw nbd
 
-# SELinux module: install into the image's policy store and check labels resolve.
-COPY --from=selinux-build /build/nexus.pp /usr/share/selinux/packages/nexus/nexus.pp
+# Service users and groups (systemd-sysusers also runs at boot; running it here
+# puts them into the image's /etc/passwd and /etc/group).
+COPY os/sysusers.d/nexus.conf /usr/lib/sysusers.d/nexus.conf
+RUN systemd-sysusers /usr/lib/sysusers.d/nexus.conf
+
+# Binaries and the restore micro-VM.
+COPY --from=rust /out/keyd /out/nexus-pve /out/nexus-offsite /out/nexus-web-api \
+     /out/nexus-scheduler /out/nexus-setup /out/nexus-nft-sync /usr/libexec/nexus/
+COPY --from=restorevm /out/vmlinuz /out/initrd.img /out/manifest.txt /usr/lib/nexus/restore-vm/
+RUN chmod 0755 /usr/libexec/nexus /usr/libexec/nexus/* \
+ && chmod 0644 /usr/lib/nexus/restore-vm/*
+
+# SELinux module: install into the image's policy store, check that labels
+# resolve, and label what this stage added.
+COPY --from=selinux /build/nexus.pp /usr/share/selinux/packages/nexus/nexus.pp
 RUN semodule -i /usr/share/selinux/packages/nexus/nexus.pp \
  && semodule -l | grep -qx nexus \
  && matchpathcon /usr/libexec/nexus/keyd | grep -q nexus_keyd_exec_t \
- && matchpathcon /var/lib/nexus/chunkstore | grep -q nexus_chunkstore_var_lib_t
+ && matchpathcon /usr/libexec/nexus/nexus-web-api | grep -q nexus_webapi_exec_t \
+ && matchpathcon /usr/libexec/nexus/nexus-scheduler | grep -q nexus_scheduler_exec_t \
+ && matchpathcon /usr/lib/nexus/restore-vm/vmlinuz | grep -q nexus_restorevm_image_t \
+ && matchpathcon /var/lib/nexus/catalog | grep -q nexus_catalog_t
 
-# Service users (also created at boot by systemd-sysusers; created here so the
-# image's /etc/passwd already contains them).
-COPY sysusers.d/nexus.conf /usr/lib/sysusers.d/nexus.conf
-RUN systemd-sysusers /usr/lib/sysusers.d/nexus.conf
-
-# Service units. Not enabled yet: the binaries under /usr/libexec/nexus/ are not
-# shipped in the image until the services exist.
-COPY systemd/nexus-chunkstore.service systemd/nexus-keyd.service systemd/nexus-web-api.service \
-     systemd/nexus-setup.service \
-     /usr/lib/systemd/system/
-RUN install -d -m 0755 /usr/libexec/nexus
+# Systemd units, presets, tmpfiles (state dirs with owners and modes).
+COPY os/systemd/*.service os/systemd/*.path os/systemd/*.timer /usr/lib/systemd/system/
+COPY os/systemd/10-nexus.preset /usr/lib/systemd/system-preset/10-nexus.preset
+COPY os/tmpfiles.d/nexus.conf /usr/lib/tmpfiles.d/nexus.conf
 
 # Firewall: EL's nftables.service loads /etc/sysconfig/nftables.conf.
-COPY nftables.conf /etc/sysconfig/nftables.conf
+COPY os/nftables.conf /etc/sysconfig/nftables.conf
+
+# /etc overlay (chrony.conf, and the update/signing files: containers policy,
+# keys, greenboot checks, ...). Optional greenboot health checks.
+COPY os/etc/ /etc/
+RUN --mount=type=bind,source=os,target=/ctx \
+    if [ -d /ctx/greenboot ]; then mkdir -p /etc/greenboot && cp -a /ctx/greenboot/. /etc/greenboot/; fi
 
 # Time: NTS only (chronyd -p parses the config and fails on errors).
-COPY chrony.conf /etc/chrony.conf
 RUN chronyd -p -f /etc/chrony.conf >/dev/null
 
-# No interactive root; no SSH by default (break-glass enablement comes later).
-# The preset file also governs first-boot preset-all, so sshd stays off.
-COPY systemd/10-nexus.preset /usr/lib/systemd/system-preset/10-nexus.preset
+# No interactive root (locked password, emergency access on the local console
+# only); sshd off. The preset file also governs the first-boot preset-all.
 RUN usermod -L root \
- && systemctl preset sshd.service sshd.socket nftables.service chronyd.service nexus-setup.service \
+ && systemctl preset sshd.service sshd.socket nftables.service chronyd.service \
+      nexus-setup.service nexus-nft-sync.service nexus-nft-sync.path nexus-nft-sync.timer \
  && ! systemctl is-enabled -q sshd.service \
- && systemctl is-enabled -q nftables.service chronyd.service nexus-setup.service
+ && systemctl is-enabled -q nftables.service chronyd.service nexus-setup.service \
+      nexus-nft-sync.path nexus-nft-sync.timer \
+ && ! systemctl is-enabled -q nexus-web-api.service nexus-scheduler.service nexus-keyd.service
 
 RUN bootc container lint
