@@ -1,0 +1,16 @@
+# Storage-Box-like SFTP server for offsite tests (see run.sh). Mimics what the
+# appliance can rely on at Hetzner: SFTP only, key auth only, no shell, no
+# forwarding, a writable home as the start directory, max 10 connections.
+ARG BASE=docker.io/library/debian:trixie
+FROM ${BASE}
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        openssh-server procps && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_* \
+    && useradd -M -d /data -s /usr/sbin/nologin tenant && usermod -p '*' tenant \
+    && mkdir -p /srv/sftp/data /run/sshd && chown tenant:tenant /srv/sftp/data \
+    && chmod 755 /srv/sftp
+COPY sshd_config /etc/ssh/sshd_config
+COPY keys-cmd.sh /usr/local/sbin/keys-cmd
+COPY entrypoint.sh /usr/local/sbin/entrypoint
+RUN chmod 755 /usr/local/sbin/keys-cmd /usr/local/sbin/entrypoint
+EXPOSE 22
+ENTRYPOINT ["/usr/local/sbin/entrypoint"]
