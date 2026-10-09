@@ -12,7 +12,9 @@ fuzz_target!(|data: &[u8]| {
     let k = keys();
     let _ = pack::footer_index_len(data.get(..8).unwrap_or(data));
     let id = String::from_utf8_lossy(data.get(..data.len().min(40)).unwrap_or_default()).into_owned();
-    let _ = pack::remote_path(&id);
+    if pack::valid_id(&id) {
+        assert!(pack::remote_path(&id).starts_with("packs/"));
+    }
     assert!(pack::parse(&k, "00112233445566778899aabbccddeeff", data).is_err());
 
     // authentic pack: [u16 LE body len][body][index plaintext]

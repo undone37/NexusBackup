@@ -11,6 +11,9 @@ pub const TARGET_SIZE: usize = 32 << 20;
 const MAGIC: &[u8; 4] = b"NXP1";
 const TAIL: &[u8; 4] = b"NXPI";
 pub const FOOTER: u64 = 8;
+/// Upper bound for a sealed pack index (a 32 MiB pack holds far fewer entries);
+/// a box claiming more is lying and must not make us allocate it.
+pub const MAX_INDEX: u64 = 64 << 20;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Entry {
@@ -19,8 +22,15 @@ pub struct Entry {
     pub len: u32,
 }
 
+/// Pack ids are 32 lowercase hex digits (see `Builder::default`). Names from a
+/// box listing that do not match are foreign files, never pack ids.
+pub fn valid_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 pub fn remote_path(pack: &str) -> String {
-    format!("packs/{}/{pack}.pack", &pack[..2])
+    debug_assert!(valid_id(pack), "pack id {pack:?}");
+    format!("packs/{}/{pack}.pack", pack.get(..2).unwrap_or("__"))
 }
 
 pub struct Builder {
@@ -89,7 +99,9 @@ pub fn footer_index_len(footer: &[u8]) -> Result<u64> {
         footer.len() == FOOTER as usize && &footer[4..] == TAIL,
         "bad pack footer"
     );
-    Ok(u32::from_le_bytes(footer[..4].try_into().unwrap()) as u64)
+    let ilen = u32::from_le_bytes(footer[..4].try_into().unwrap()) as u64;
+    ensure!(ilen <= MAX_INDEX, "pack index of {ilen} bytes");
+    Ok(ilen)
 }
 
 /// Parses a whole downloaded pack and checks that every entry lies inside it.
@@ -105,7 +117,7 @@ pub fn parse(keys: &Keyring, pack: &str, bytes: &[u8]) -> Result<Vec<Entry>> {
     ensure!(
         entries
             .iter()
-            .all(|e| e.offset >= 4 && e.offset + e.len as u64 <= istart),
+            .all(|e| e.offset >= 4 && e.offset.checked_add(e.len as u64).is_some_and(|end| end <= istart)),
         "pack {pack}: entry out of range"
     );
     Ok(entries)

@@ -174,3 +174,56 @@ fn wrong_tenant_cannot_read_box() {
         "pack index does not open with another key"
     );
 }
+
+/// Regression (fuzzing, hostile_box): foreign names in a box listing made
+/// `remote_path` panic, a lying footer underflowed `size - FOOTER - ilen`, and
+/// every `*.idx` next to a manifest was copied into the local state.
+#[test]
+fn hostile_box_listing_and_footer() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("box");
+    let box_ = LocalDir(root.clone());
+    let a = store(&d.path().join("a"));
+    a.commit_snapshot("vm-1", 1, &[("disk", a.store_image(&image(0)[..], 65536).unwrap())])
+        .unwrap();
+    Target::open(&a, &box_, d.path().join("s"), Options::default())
+        .unwrap()
+        .upload()
+        .unwrap();
+    // junk planted by the box: short / non-hex / misplaced pack names, a hidden source,
+    // an unauthenticated extra index next to a real manifest
+    box_.put("packs/a/a.pack", b"x").unwrap();
+    box_.put("packs/zy/\u{e9}.pack", b"x").unwrap();
+    box_.put("packs/zz/ff112233445566778899aabbccddeeff.pack", b"x")
+        .unwrap();
+    box_.put("snapshots/.x/5/manifest", b"x").unwrap();
+    box_.put("snapshots/vm-1/1/evil.idx", b"not sealed").unwrap();
+
+    let b = store(&d.path().join("b"));
+    let mut t = Target::open(&b, &box_, d.path().join("s2"), Options::default()).unwrap();
+    t.rebuild_from_remote().unwrap();
+    assert!(!d.path().join("s2/snapshots/vm-1/1/evil.idx").exists());
+    assert!(!d.path().join("s2/snapshots/.x").exists());
+    let inv = t.check_inventory().unwrap();
+    assert!(inv.ok(), "{inv:?}");
+    assert_eq!(inv.unknown.len(), 3, "{inv:?}");
+    t.restore("vm-1", 1).unwrap();
+    assert_eq!(restored(&b, 1), image(0));
+
+    // a footer claiming an index larger than the pack is an error, not a panic
+    let (pp, _, _) = box_
+        .list("packs")
+        .unwrap()
+        .into_iter()
+        .find(|(p, _, _)| p.len() == 2 && p != "zy" && p != "zz")
+        .unwrap();
+    let (name, size, _) = box_.list(&format!("packs/{pp}")).unwrap()[0].clone();
+    let path = root.join(format!("packs/{pp}/{name}"));
+    let mut bytes = std::fs::read(&path).unwrap();
+    let n = bytes.len();
+    bytes[n - 8..n - 4].copy_from_slice(&(size as u32).to_le_bytes());
+    std::fs::write(&path, &bytes).unwrap();
+    let c = store(&d.path().join("c"));
+    let mut t = Target::open(&c, &box_, d.path().join("s3"), Options::default()).unwrap();
+    assert!(t.rebuild_from_remote().is_err());
+}

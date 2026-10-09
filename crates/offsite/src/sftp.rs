@@ -538,7 +538,9 @@ impl SftpRemote {
             .handle;
         let r = async {
             let end = match len {
-                Some(n) => offset + n,
+                Some(n) => offset
+                    .checked_add(n)
+                    .ok_or_else(|| E::Op(io::Error::new(io::ErrorKind::InvalidInput, "range overflows")))?,
                 None => c
                     .sftp
                     .fstat(h.as_str())
