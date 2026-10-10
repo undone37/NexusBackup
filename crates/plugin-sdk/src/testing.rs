@@ -2,7 +2,7 @@
 //! sandbox, or in-process on a thread — against the real host code
 //! (crate `plugin-host`) and a real chunk store in a temp dir.
 //!
-//! ```no_run
+//! ```ignore
 //! # use plugin_sdk::testing::Host;
 //! let h = Host::binary("manifest.json".as_ref(), env!("CARGO_BIN_EXE_my-plugin").as_ref(), "mykind").unwrap();
 //! let cfg = serde_json::json!({"path": "/data"});
