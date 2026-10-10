@@ -113,6 +113,7 @@
   <a class="button" href={href(`/snapshots?source=${encodeURIComponent(source)}`)}>{t.snap.title}</a>
 </div>
 <p class="muted">{tenant}{hostName ? ` · ${t.snap.agent(hostName)}` : ''}</p>
+{#if source.startsWith('plugin-')}<p class="muted">{t.files.streamsHint}</p>{/if}
 
 <ErrorBanner {error} />
 {#if failedJob}<p><a href={href(`/jobs/${failedJob}`)}>{t.jobs.detail(failedJob)}</a></p>{/if}

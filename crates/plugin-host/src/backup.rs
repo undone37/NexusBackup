@@ -1,0 +1,610 @@
+//! Backup op: validates the plugin's item stream and writes one snapshot.
+//!
+//! Ordering (anything else is a protocol violation and kills the plugin):
+//! `FileBegin` → `Data`* → `FileEnd` (data only for regular files, exactly
+//! `meta.size` bytes), `Unchanged` (only for a path of the base snapshot whose
+//! metadata matches — the chunk list is taken from the base snapshot, never from
+//! the plugin), `Stream` → `Data`* → `StreamEnd`, `BaseQuery` (answered with
+//! `BaseEntries`), `Log`/`Progress` at any time, finally `Done` outside any item.
+//! Paths are unique, relative, without `.`/`..`, not below [`plugin_proto::STREAMS_DIR`].
+//!
+//! Data is chunked with the store's FastCDC parameters as it arrives (≤ 4 MiB
+//! buffered per open item), sealed and deduplicated. Snapshot: `files`
+//! (`Index::Tree`), `streams` (`Index::Dynamic`, one entry per stream, if any),
+//! `state` (the plugin's state blob, if any); the manifest is written last.
+
+use crate::sandbox::Peer;
+use crate::{escape, level_name, meta_of, tree_kind, FILES_INDEX, STATE_INDEX, STREAMS_INDEX};
+use anyhow::{bail, Context, Result};
+use chunkstore::store::{CDC_AVG, CDC_MAX, CDC_MIN};
+use chunkstore::{ChunkId, FileEntry, Index, Store, TreeEntry, TreeKind};
+use plugin_proto::{BaseEntry, BaseInfo, Message, Meta, Op, API, MAX_FRAME, STREAMS_DIR};
+use std::collections::{HashMap, HashSet};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+/// Upper bounds the host enforces beyond the protocol's per-message limits.
+#[derive(Clone, Debug)]
+pub struct Bounds {
+    pub max_entries: usize,
+    pub max_streams: usize,
+    /// summed path bytes of one `BaseQuery`
+    pub max_query_bytes: usize,
+    /// plugin log text kept per job
+    pub max_log_bytes: usize,
+}
+
+impl Default for Bounds {
+    fn default() -> Self {
+        Bounds {
+            max_entries: 20_000_000,
+            max_streams: 100_000,
+            max_query_bytes: 1 << 20,
+            max_log_bytes: 4 << 20,
+        }
+    }
+}
+
+/// The previous snapshot of the same source.
+pub struct Base {
+    pub time: u64,
+    pub entries: Vec<TreeEntry>,
+    by_path: HashMap<Vec<u8>, usize>,
+    pub state: Option<Vec<u8>>,
+}
+
+impl Base {
+    pub fn get(&self, path: &[u8]) -> Option<&TreeEntry> {
+        self.by_path.get(path).map(|&i| &self.entries[i])
+    }
+}
+
+/// Newest committed snapshot of `source` (files index + state).
+pub fn load_base(store: &Store, source: &str) -> Result<Option<Base>> {
+    let Some(m) = store
+        .list_snapshots()?
+        .into_iter()
+        .filter(|m| m.source == source)
+        .max_by_key(|m| m.time)
+    else {
+        return Ok(None);
+    };
+    let entries = match store.load_index(&m, FILES_INDEX)? {
+        Index::Tree { entries } => entries,
+        _ => bail!("{source}/{}: `files` is not a tree index", m.time),
+    };
+    let by_path = entries.iter().enumerate().map(|(i, e)| (e.path.clone(), i)).collect();
+    Ok(Some(Base {
+        time: m.time,
+        entries,
+        by_path,
+        state: read_state(store, &m)?,
+    }))
+}
+
+/// The state blob stored with a snapshot.
+pub fn read_state(store: &Store, m: &chunkstore::Manifest) -> Result<Option<Vec<u8>>> {
+    if !m.indexes.iter().any(|i| i == STATE_INDEX) {
+        return Ok(None);
+    }
+    match store.load_index(m, STATE_INDEX)? {
+        Index::Dynamic { entries } => {
+            let Some(e) = entries.first() else { return Ok(None) };
+            let mut out = Vec::with_capacity(e.size as usize);
+            std::io::copy(&mut store.chunk_reader(&e.chunks), &mut out)?;
+            if out.len() > plugin_proto::MAX_STATE {
+                bail!("stored plugin state exceeds the limit");
+            }
+            Ok(Some(out))
+        }
+        _ => bail!("`state` is not a dynamic index"),
+    }
+}
+
+/// Push-based FastCDC with the store's parameters (same cut points as `Store::store_file`).
+pub(crate) struct Chunker {
+    buf: Vec<u8>,
+    start: usize,
+    pub chunks: Vec<ChunkId>,
+    pub size: u64,
+    pub new_bytes: u64,
+    pub new_chunks: u64,
+}
+
+impl Chunker {
+    pub fn new() -> Chunker {
+        Chunker {
+            buf: Vec::new(),
+            start: 0,
+            chunks: Vec::new(),
+            size: 0,
+            new_bytes: 0,
+            new_chunks: 0,
+        }
+    }
+
+    fn emit(&mut self, store: &Store, n: usize) -> std::io::Result<()> {
+        let data = &self.buf[self.start..self.start + n];
+        let (id, new) = store.insert_chunk(data)?;
+        self.chunks.push(id);
+        self.size += n as u64;
+        if new {
+            self.new_bytes += n as u64;
+            self.new_chunks += 1;
+        }
+        self.start += n;
+        Ok(())
+    }
+
+    fn cut(&self) -> usize {
+        let rest = &self.buf[self.start..];
+        fastcdc::v2020::FastCDC::new(rest, CDC_MIN, CDC_AVG, CDC_MAX)
+            .next()
+            .map_or(rest.len(), |c| c.length)
+    }
+
+    pub fn push(&mut self, store: &Store, data: &[u8]) -> std::io::Result<()> {
+        self.buf.extend_from_slice(data);
+        while self.buf.len() - self.start >= CDC_MAX as usize {
+            let n = self.cut();
+            self.emit(store, n)?;
+        }
+        if self.start > 0 && self.start * 2 >= self.buf.len() {
+            self.buf.drain(..self.start);
+            self.start = 0;
+        }
+        Ok(())
+    }
+
+    pub fn finish(mut self, store: &Store) -> std::io::Result<Chunker> {
+        while self.start < self.buf.len() {
+            let n = self.cut();
+            self.emit(store, n)?;
+        }
+        self.buf = Vec::new();
+        self.start = 0;
+        Ok(self)
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct Report {
+    pub source: String,
+    pub time: u64,
+    pub base: Option<u64>,
+    pub entries: u64,
+    pub files: u64,
+    pub streams: u64,
+    pub unchanged: u64,
+    /// logical bytes (files + streams)
+    pub bytes: u64,
+    /// bytes received from the plugin
+    pub transferred: u64,
+    /// bytes in chunks that were new to the store
+    pub new_bytes: u64,
+    pub consistent: bool,
+    pub summary: String,
+}
+
+/// Plugin log/progress output with a per-job budget.
+pub(crate) struct LogSink<'a> {
+    pub out: &'a mut dyn FnMut(&str),
+    pub left: usize,
+    pub last_progress: Option<Instant>,
+}
+
+impl LogSink<'_> {
+    pub fn log(&mut self, level: u8, text: &str) {
+        if self.left == 0 {
+            return;
+        }
+        self.left = self.left.saturating_sub(text.len() + 16);
+        (self.out)(&format!("plugin[{}]: {}", level_name(level), escape(text, 4000)));
+        if self.left == 0 {
+            (self.out)("plugin: [… further plugin log dropped (limit) …]");
+        }
+    }
+    pub fn progress(&mut self, done: u64, total: u64, text: &str) {
+        if self.last_progress.is_some_and(|t| t.elapsed().as_secs() < 10) {
+            return;
+        }
+        self.last_progress = Some(Instant::now());
+        (self.out)(&format!("progress {done}/{total}: {}", escape(text, 200)));
+    }
+}
+
+enum Open {
+    Idle,
+    File {
+        path: Vec<u8>,
+        meta: Meta,
+        kind: TreeKind,
+        chunker: Chunker,
+        got: u64,
+    },
+    Stream {
+        name: String,
+        chunker: Chunker,
+    },
+}
+
+/// Answer to a `BaseQuery` (xattrs dropped if the answer would not fit one frame).
+fn base_answer(base: Option<&Base>, paths: &[Vec<u8>]) -> Message {
+    let Some(b) = base else {
+        return Message::BaseEntries { entries: Vec::new() };
+    };
+    let mut entries: Vec<BaseEntry> = paths
+        .iter()
+        .filter_map(|p| {
+            b.get(p).map(|e| BaseEntry {
+                path: p.clone(),
+                meta: meta_of(e),
+            })
+        })
+        .collect();
+    let size: usize = entries
+        .iter()
+        .map(|e| {
+            e.path.len()
+                + 96
+                + e.meta.link_target.as_ref().map_or(0, Vec::len)
+                + e.meta.xattrs.iter().map(|(k, v)| k.len() + v.len() + 8).sum::<usize>()
+        })
+        .sum();
+    if size > MAX_FRAME - (64 << 10) {
+        for e in &mut entries {
+            e.meta.xattrs.clear();
+        }
+    }
+    Message::BaseEntries { entries }
+}
+
+/// Unchanged is only accepted for an entry of the base with the same type and metadata.
+fn same_meta(base: &TreeEntry, m: &Meta) -> bool {
+    let k = tree_kind(m.kind);
+    base.kind == k
+        && base.mode == m.mode
+        && base.uid == m.uid
+        && base.gid == m.gid
+        && base.mtime_ns == m.mtime_ns
+        && base.link_target == m.link_target
+        && (k != TreeKind::File || base.size == m.size)
+}
+
+pub struct Params<'a> {
+    pub job: u64,
+    pub kind: &'a str,
+    /// source config (JSON) with secrets opened
+    pub config: &'a str,
+    /// op parameters (JSON), e.g. `{"guest": "db1"}`
+    pub params: serde_json::Value,
+    pub source: &'a str,
+    pub bounds: Bounds,
+}
+
+/// Runs one backup (one plugin process = one snapshot of `p.source`).
+pub fn run(store: &Store, peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&str)) -> Result<Report> {
+    let base = load_base(store, p.source).context("loading the base snapshot")?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let mut r = Report {
+        source: p.source.to_owned(),
+        time: now.max(base.as_ref().map_or(0, |b| b.time + 1)),
+        base: base.as_ref().map(|b| b.time),
+        ..Default::default()
+    };
+    if let Some(b) = &base {
+        out(&format!("base {}/{} ({} entries)", p.source, b.time, b.entries.len()));
+    }
+    peer.send(&Message::Init {
+        api: API,
+        job: p.job,
+        kind: p.kind.to_owned(),
+        op: Op::Backup,
+        config: p.config.to_owned(),
+        params: p.params.to_string(),
+        base: base.as_ref().map(|b| BaseInfo { time: b.time }),
+        state: base.as_ref().and_then(|b| b.state.clone()),
+    })?;
+    let mut log = LogSink {
+        out,
+        left: p.bounds.max_log_bytes,
+        last_progress: None,
+    };
+    let mut entries: Vec<TreeEntry> = Vec::new();
+    let mut seen: HashMap<Vec<u8>, TreeKind> = HashMap::new();
+    let mut streams: Vec<FileEntry> = Vec::new();
+    let mut stream_names: HashSet<String> = HashSet::new();
+    let mut touched: HashSet<ChunkId> = HashSet::new();
+    let mut open = Open::Idle;
+    let (state, consistent, summary) = loop {
+        let m = peer.recv()?;
+        match m {
+            Message::Log { level, text } => log.log(level, &text),
+            Message::Progress { done, total, text } => log.progress(done, total, &text),
+            Message::BaseQuery { paths } => {
+                if paths.iter().map(Vec::len).sum::<usize>() > p.bounds.max_query_bytes {
+                    return Err(peer.violation("BaseQuery too large (> 1 MiB of paths)"));
+                }
+                peer.send(&base_answer(base.as_ref(), &paths))?;
+            }
+            Message::FileBegin { path, meta } => {
+                if !matches!(open, Open::Idle) {
+                    return Err(peer.violation("FileBegin inside another item"));
+                }
+                if path.split(|b| *b == b'/').next() == Some(STREAMS_DIR.as_bytes()) {
+                    return Err(peer.violation(&format!("path below the reserved {STREAMS_DIR}/")));
+                }
+                if seen.contains_key(&path) {
+                    return Err(peer.violation(&format!("path {:?} sent twice", String::from_utf8_lossy(&path))));
+                }
+                if entries.len() >= p.bounds.max_entries {
+                    return Err(peer.violation("too many entries"));
+                }
+                let kind = tree_kind(meta.kind);
+                match kind {
+                    TreeKind::Symlink if meta.link_target.as_ref().is_none_or(|t| t.is_empty()) => {
+                        return Err(peer.violation("symlink without target"));
+                    }
+                    TreeKind::Hardlink => {
+                        let ok = meta
+                            .link_target
+                            .as_deref()
+                            .is_some_and(|t| plugin_proto::valid_path(t) && seen.get(t) == Some(&TreeKind::File));
+                        if !ok {
+                            return Err(peer.violation("hard link to a file that was not sent before"));
+                        }
+                    }
+                    _ => {}
+                }
+                if meta.mode > 0o177777 {
+                    return Err(peer.violation("invalid mode"));
+                }
+                open = Open::File {
+                    path,
+                    meta,
+                    kind,
+                    chunker: Chunker::new(),
+                    got: 0,
+                };
+            }
+            Message::Data { bytes } => match &mut open {
+                Open::File {
+                    kind: TreeKind::File,
+                    meta,
+                    chunker,
+                    got,
+                    ..
+                } => {
+                    *got += bytes.len() as u64;
+                    if *got > meta.size {
+                        return Err(peer.violation("more data than the announced file size"));
+                    }
+                    r.transferred += bytes.len() as u64;
+                    chunker.push(store, &bytes)?;
+                }
+                Open::File { .. } => return Err(peer.violation("Data for an entry that is not a regular file")),
+                Open::Stream { chunker, .. } => {
+                    r.transferred += bytes.len() as u64;
+                    chunker.push(store, &bytes)?;
+                }
+                Open::Idle => return Err(peer.violation("Data outside a file or stream")),
+            },
+            Message::FileEnd => {
+                let Open::File {
+                    path,
+                    meta,
+                    kind,
+                    chunker,
+                    got,
+                } = std::mem::replace(&mut open, Open::Idle)
+                else {
+                    return Err(peer.violation("FileEnd without FileBegin"));
+                };
+                if kind == TreeKind::File && got != meta.size {
+                    return Err(peer.violation(&format!(
+                        "{:?}: {got} bytes received, {} announced",
+                        String::from_utf8_lossy(&path),
+                        meta.size
+                    )));
+                }
+                let c = chunker.finish(store)?;
+                r.new_bytes += c.new_bytes;
+                if kind == TreeKind::File {
+                    r.files += 1;
+                    r.bytes += c.size;
+                }
+                seen.insert(path.clone(), kind.clone());
+                entries.push(TreeEntry {
+                    path,
+                    size: if kind == TreeKind::File { c.size } else { 0 },
+                    kind,
+                    mode: meta.mode,
+                    uid: meta.uid,
+                    gid: meta.gid,
+                    mtime_ns: meta.mtime_ns,
+                    ctime_ns: meta.ctime_ns,
+                    inode: meta.inode,
+                    rdev: 0,
+                    link_target: meta.link_target,
+                    xattrs: meta.xattrs,
+                    chunks: c.chunks,
+                    inconsistent: false,
+                });
+            }
+            Message::Unchanged { path, meta } => {
+                if !matches!(open, Open::Idle) {
+                    return Err(peer.violation("Unchanged inside another item"));
+                }
+                if seen.contains_key(&path) {
+                    return Err(peer.violation("path sent twice"));
+                }
+                let shown = String::from_utf8_lossy(&path).into_owned();
+                let Some(b) = base.as_ref().and_then(|b| b.get(&path)) else {
+                    return Err(peer.violation(&format!("Unchanged {shown:?}: not in the base snapshot")));
+                };
+                if !same_meta(b, &meta) {
+                    return Err(
+                        peer.violation(&format!("Unchanged {shown:?}: metadata differs from the base snapshot"))
+                    );
+                }
+                for c in &b.chunks {
+                    // bump the chunk so a concurrent GC keeps it until this snapshot commits
+                    if touched.insert(*c) && !store.touch_chunk(c)? {
+                        bail!("{shown:?}: a chunk of the base snapshot is missing (run verify; the next backup should send the file again)");
+                    }
+                }
+                if b.kind == TreeKind::File {
+                    r.files += 1;
+                    r.bytes += b.size;
+                }
+                r.unchanged += 1;
+                seen.insert(path.clone(), b.kind.clone());
+                let mut e = b.clone();
+                e.ctime_ns = meta.ctime_ns;
+                e.inode = meta.inode;
+                e.xattrs = meta.xattrs;
+                entries.push(e);
+            }
+            Message::Stream { name } => {
+                if !matches!(open, Open::Idle) {
+                    return Err(peer.violation("Stream inside another item"));
+                }
+                if !stream_names.insert(name.clone()) {
+                    return Err(peer.violation(&format!("stream {name:?} sent twice")));
+                }
+                if streams.len() >= p.bounds.max_streams {
+                    return Err(peer.violation("too many streams"));
+                }
+                open = Open::Stream {
+                    name,
+                    chunker: Chunker::new(),
+                };
+            }
+            Message::StreamEnd => {
+                let Open::Stream { name, chunker } = std::mem::replace(&mut open, Open::Idle) else {
+                    return Err(peer.violation("StreamEnd without Stream"));
+                };
+                let c = chunker.finish(store)?;
+                r.new_bytes += c.new_bytes;
+                r.bytes += c.size;
+                r.streams += 1;
+                streams.push(FileEntry {
+                    path: name,
+                    mode: 0o600,
+                    size: c.size,
+                    mtime: r.time as i64,
+                    chunks: c.chunks,
+                });
+            }
+            Message::Done {
+                state,
+                consistent,
+                summary,
+            } => {
+                if !matches!(open, Open::Idle) {
+                    return Err(peer.violation("Done inside an item"));
+                }
+                break (state, consistent, summary);
+            }
+            Message::Error { code, message } => {
+                peer.finish();
+                bail!("plugin reported an error ({code}): {}", escape(&message, 2000));
+            }
+            other => return Err(peer.violation(&format!("unexpected message {}", msg_name(&other)))),
+        }
+    };
+    peer.finish();
+    r.entries = entries.len() as u64;
+    r.consistent = consistent;
+    r.summary = summary;
+    let mut idx = vec![(FILES_INDEX, Index::Tree { entries })];
+    if !streams.is_empty() {
+        idx.push((STREAMS_INDEX, Index::Dynamic { entries: streams }));
+    }
+    if let Some(s) = state {
+        let st = store.store_file_stats(&s[..])?;
+        idx.push((
+            STATE_INDEX,
+            Index::Dynamic {
+                entries: vec![FileEntry {
+                    path: "state".into(),
+                    mode: 0o600,
+                    size: st.size,
+                    mtime: r.time as i64,
+                    chunks: st.chunks,
+                }],
+            },
+        ));
+    }
+    store.commit_snapshot(p.source, r.time, &idx)?;
+    let id = format!("{}/{}", r.source, r.time);
+    log.left = usize::MAX;
+    (log.out)(&format!(
+        "committed {id}: {} entries ({} files, {} unchanged), {} streams, {} bytes, {} bytes transferred, {} bytes new, consistent={}",
+        r.entries, r.files, r.unchanged, r.streams, r.bytes, r.transferred, r.new_bytes, r.consistent
+    ));
+    if !r.consistent {
+        (log.out)(&format!(
+            "inconsistent {id}: the plugin reported no consistent view ({})",
+            escape(&r.summary, 500)
+        ));
+    }
+    if !r.summary.is_empty() {
+        (log.out)(&format!("summary {id}: {}", escape(&r.summary, 4000)));
+    }
+    Ok(r)
+}
+
+pub(crate) fn msg_name(m: &Message) -> &'static str {
+    match m {
+        Message::Init { .. } => "Init",
+        Message::Valid => "Valid",
+        Message::Invalid { .. } => "Invalid",
+        Message::Guests { .. } => "Guests",
+        Message::FileBegin { .. } => "FileBegin",
+        Message::Data { .. } => "Data",
+        Message::FileEnd => "FileEnd",
+        Message::Unchanged { .. } => "Unchanged",
+        Message::Stream { .. } => "Stream",
+        Message::StreamEnd => "StreamEnd",
+        Message::Done { .. } => "Done",
+        Message::BaseQuery { .. } => "BaseQuery",
+        Message::BaseEntries { .. } => "BaseEntries",
+        Message::NeedFiles { .. } => "NeedFiles",
+        Message::NeedStreams { .. } => "NeedStreams",
+        Message::NeedDone => "NeedDone",
+        Message::Progress { .. } => "Progress",
+        Message::MountReady { .. } => "MountReady",
+        Message::ReadFile { .. } => "ReadFile",
+        Message::FileData { .. } => "FileData",
+        Message::Unmount => "Unmount",
+        Message::Log { .. } => "Log",
+        Message::Error { .. } => "Error",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chunkstore::{Keyring, Options};
+
+    #[test]
+    fn push_chunker_matches_store_file() {
+        let d = tempfile::tempdir().unwrap();
+        let store = Store::open(d.path(), Keyring::new("t", &[(1, [7; 32])]), Options::default()).unwrap();
+        let mut data = vec![0u8; 9 << 20];
+        let mut x = 1u64;
+        for b in data.iter_mut() {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            *b = (x >> 33) as u8;
+        }
+        let (want, size) = store.store_file(&data[..]).unwrap();
+        let mut c = Chunker::new();
+        for piece in data.chunks(777_777) {
+            c.push(&store, piece).unwrap();
+        }
+        let c = c.finish(&store).unwrap();
+        assert_eq!((c.chunks, c.size), (want, size));
+        let empty = Chunker::new().finish(&store).unwrap();
+        assert!(empty.chunks.is_empty() && empty.size == 0);
+    }
+}

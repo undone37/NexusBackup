@@ -14,8 +14,15 @@ policy_module(nexus, 1.0.0)
 #               ├─ nexus_agentctl_exec_t > nexus_agentctl_t  Linux/Windows agents (TCP 7444, mTLS),
 #               │                                          stores, agent CA (only this domain)
 #               ├─ nexus_truenas_exec_t > nexus_truenas_t  TrueNAS API (wss 443) + ssh (in-domain), stores
-#               └─ nexus_nas_exec_t ──> nexus_nas_t        NFS/SMB shares: reads nfs_t/cifs_t through the
-#                                                          mount fd from nexus-nasmount, stores
+#               ├─ nexus_nas_exec_t ──> nexus_nas_t        NFS/SMB shares: reads nfs_t/cifs_t through the
+#               │                                          mount fd from nexus-nasmount, stores
+#               ├─ nexus_replica_exec_t > nexus_replica_t  secondary: pulls from a primary (TLS), stores
+#               └─ nexus_pluginhost_exec_t > nexus_pluginhost_t  plugin host (trusted): stores, keyd, downloads
+#                    └─ nexus_plugin_exec_t ──> nexus_plugin_t   plugin (UNTRUSTED code): TCP out, its install
+#                                                          dir, /usr, its private tmp; outside nexus_domain
+#   init_t ── nexus_plugininstall_exec_t > nexus_plugininstall_t  installer: catalog, staging (read/delete),
+#                                                          the only writer of plugin dirs + binaries
+#   init_t ── nexus_replicad_exec_t ──> nexus_replicad_t   replication server: stores read-only, no network
 #   init_t ── nexus_nasmount_exec_t ──> nexus_nasmount_t   root, CAP_SYS_ADMIN: one detached read-only
 #                                                          NFS/CIFS mount per socket connection
 #   init_t ── nexus_setup_exec_t ─────> nexus_setup_t      first boot (root): nmcli/hostnamectl/systemctl
@@ -35,6 +42,7 @@ gen_require(`
 	type tpm_device_t;
 	type nfs_t;
 	type cifs_t;
+	type net_conf_t;
 	class service { start stop status reload enable disable };
 	class system { reload status };
 ')
@@ -75,6 +83,25 @@ nexus_job(truenas)
 nexus_job(nas)
 nexus_daemon(nasmount)
 nexus_job(replica)
+nexus_job(pluginhost)
+nexus_daemon(plugininstall)
+
+# Plugin process (docs/plugin-system.md): untrusted third-party code. Deliberately
+# NOT in nexus_domain: that attribute grants every nexus service basics a plugin must
+# not inherit (search of /var/lib/nexus and /run, /proc system state, syslog socket,
+# unix sockets) and it would be covered by allow rules written for trusted services.
+# Its few basics are granted explicitly below.
+type nexus_plugin_t;
+domain_type(nexus_plugin_t)
+role system_r types nexus_plugin_t;
+type nexus_plugin_exec_t;	# /var/lib/nexus/plugins/<id>/<version>/bin/plugin (the only entry point)
+domain_entry_file(nexus_plugin_t, nexus_plugin_exec_t)
+type nexus_plugin_data_t;	# /var/lib/nexus/plugins: manifests, assets (written only by the installer)
+files_type(nexus_plugin_data_t)
+type nexus_plugin_staging_t;	# /var/lib/nexus/plugins-staging: uploaded bundles + signatures (web-api -> installer)
+files_type(nexus_plugin_staging_t)
+type nexus_plugin_tmp_t;	# per-job private tmp of a plugin (/tmp/nexus-plugin-<job>-<rand>, PrivateTmp of the scheduler)
+files_tmp_file(nexus_plugin_tmp_t)
 
 # restore micro-VM (EL's qemu-kvm, entered from nexus_pve_t only)
 type nexus_restorevm_t, nexus_domain;
@@ -598,3 +625,169 @@ corenet_tcp_connect_all_unreserved_ports(nexus_replica_t)
 manage_dirs_pattern(nexus_replica_t, nexus_replica_key_t, nexus_replica_key_t)
 manage_files_pattern(nexus_replica_t, nexus_replica_key_t, nexus_replica_key_t)
 filetrans_pattern(nexus_replica_t, nexus_store_t, nexus_replica_key_t, dir, "replica")
+
+########################################
+# Plugins (docs/plugin-system.md). Trust split: nexus-pluginhost (trusted job domain)
+# does everything security-relevant (chunking, sealing, store, keyd, downloads); the
+# plugin binary (nexus_plugin_t) is untrusted code that only talks to its source system
+# and streams to the host over stdin/stdout. The plugin runs as the scheduler's uid
+# (nexus-chunkstore), so this policy -- with Landlock, seccomp and rlimits set by
+# nexus-pluginhost and the nftables allow-list -- is the boundary.
+
+# --- nexus-pluginhost (job domain: job dir, stores, keyd, DNS like the other connectors)
+domtrans_pattern(nexus_scheduler_t, nexus_pluginhost_exec_t, nexus_pluginhost_t)
+# reads manifest.json and follows <id>/current to the installed version; opens bin/plugin
+# (fd for execveat; the domtrans_pattern below grants read + execute on it)
+list_dirs_pattern(nexus_pluginhost_t, nexus_plugin_data_t, nexus_plugin_data_t)
+read_files_pattern(nexus_pluginhost_t, nexus_plugin_data_t, nexus_plugin_data_t)
+read_lnk_files_pattern(nexus_pluginhost_t, nexus_plugin_data_t, nexus_plugin_data_t)
+# files get on plugin sources: tar/zip downloads for the web-api
+manage_files_pattern(nexus_pluginhost_t, nexus_downloads_t, nexus_downloads_t)
+allow nexus_pluginhost_t nexus_downloads_t:dir rw_dir_perms;
+# the plugin's private tmp dir below the scheduler's PrivateTmp /tmp: created with its
+# own type, wiped by the host after the job (including whatever the plugin left in it)
+files_search_tmp(nexus_pluginhost_t)
+files_tmp_filetrans(nexus_pluginhost_t, nexus_plugin_tmp_t, dir)
+manage_dirs_pattern(nexus_pluginhost_t, nexus_plugin_tmp_t, nexus_plugin_tmp_t)
+manage_files_pattern(nexus_pluginhost_t, nexus_plugin_tmp_t, nexus_plugin_tmp_t)
+manage_lnk_files_pattern(nexus_pluginhost_t, nexus_plugin_tmp_t, nexus_plugin_tmp_t)
+# sandbox set up in the forked child before execveat: setpgid (the host kills the
+# whole process group), lowered hard rlimits (setrlimit), nice 10 (setsched)
+allow nexus_pluginhost_t self:process { setpgid setrlimit setsched };
+
+# --- pluginhost -> plugin: entered only through nexus_plugin_exec_t
+domtrans_pattern(nexus_pluginhost_t, nexus_plugin_exec_t, nexus_plugin_t)
+# the scheduler's NoNewPrivileges is inherited, and the host sets NO_NEW_PRIVS itself
+allow nexus_pluginhost_t nexus_plugin_t:process2 { nnp_transition nosuid_transition };
+# timeouts / cancellation / end of job: kill the plugin's process group
+allow nexus_pluginhost_t nexus_plugin_t:process { sigkill signal };
+# rlimitinh: keep the lowered soft limits the host set (otherwise reset to init's soft
+# limits, capped by the hard limits). noatsecure: no AT_SECURE exec, which would clear
+# PR_SET_PDEATHSIG (the plugin must die with its host); the host clears the environment
+# anyway, so glibc's AT_SECURE environment filtering would have nothing to remove.
+allow nexus_pluginhost_t nexus_plugin_t:process { rlimitinh noatsecure };
+# domtrans_pattern gave the plugin: fd use, the host's pipes (stdin/stdout protocol,
+# stderr log), sigchld. The mount op hands over an NBD socketpair end (plugin-system.md).
+allow nexus_plugin_t nexus_pluginhost_t:unix_stream_socket { getattr getopt setopt read write shutdown };
+
+# --- nexus_plugin_t: what a sandboxed plugin process may do, and nothing else
+# own process: signals between its threads/children, pipes to tools it runs
+allow nexus_plugin_t self:process { signal_perms getsched };
+allow nexus_plugin_t self:fifo_file rw_fifo_file_perms;
+# its install dir (manifest, assets) and its own binary (re-exec in-domain allowed),
+# reached through /var/lib/nexus (search only: every other child has its own type)
+files_search_var_lib(nexus_plugin_t)
+allow nexus_plugin_t nexus_var_lib_t:dir search_dir_perms;
+list_dirs_pattern(nexus_plugin_t, nexus_plugin_data_t, nexus_plugin_data_t)
+read_files_pattern(nexus_plugin_t, nexus_plugin_data_t, nexus_plugin_data_t)
+read_lnk_files_pattern(nexus_plugin_t, nexus_plugin_data_t, nexus_plugin_data_t)
+can_exec(nexus_plugin_t, nexus_plugin_exec_t)
+# dynamically linked plugins: ld.so, ld.so.cache, the image's shared libraries
+libs_use_ld_so(nexus_plugin_t)
+libs_use_shared_libs(nexus_plugin_t)
+# client tools of the image (pg_dump, tar, sh, ...) run in this domain, no transition
+corecmd_exec_bin(nexus_plugin_t)
+corecmd_exec_shell(nexus_plugin_t)
+files_read_usr_files(nexus_plugin_t)
+files_list_usr(nexus_plugin_t)
+# /etc: generic config files (nsswitch.conf, hosts, crypto-policies, ...), locale and
+# time zone, the system trust store (TLS to the source), resolv.conf. Deliberately not
+# sysnet_read_config / sysnet_dns_name_resolve: on EL those search every runtime dir
+# (files_search_all_pids), which includes keyd's socket dir.
+files_read_etc_files(nexus_plugin_t)
+miscfiles_read_localization(nexus_plugin_t)
+miscfiles_read_generic_certs(nexus_plugin_t)
+allow nexus_plugin_t net_conf_t:dir list_dir_perms;
+read_files_pattern(nexus_plugin_t, net_conf_t, net_conf_t)
+read_lnk_files_pattern(nexus_plugin_t, net_conf_t, net_conf_t)
+# /dev/null (stdin of tools), /dev/zero, /dev/urandom (getrandom fallback)
+dev_rw_null(nexus_plugin_t)
+dev_rw_zero(nexus_plugin_t)
+dev_read_urand(nexus_plugin_t)
+# its private tmp dir (HOME=TMPDIR): files, dirs, symlinks; never executable (below)
+files_search_tmp(nexus_plugin_t)
+manage_dirs_pattern(nexus_plugin_t, nexus_plugin_tmp_t, nexus_plugin_tmp_t)
+manage_files_pattern(nexus_plugin_t, nexus_plugin_tmp_t, nexus_plugin_tmp_t)
+manage_lnk_files_pattern(nexus_plugin_t, nexus_plugin_tmp_t, nexus_plugin_tmp_t)
+# network: TCP client to any port (the ports a plugin may reach are limited by Landlock
+# to its manifest's endpoints and by the nftables allow-list to the configured hosts),
+# DNS over UDP, getaddrinfo's netlink route query (AI_ADDRCONFIG). No listen/accept.
+allow nexus_plugin_t self:tcp_socket create_socket_perms;
+allow nexus_plugin_t self:udp_socket create_socket_perms;
+allow nexus_plugin_t self:netlink_route_socket r_netlink_socket_perms;
+corenet_tcp_connect_all_ports(nexus_plugin_t)
+corenet_tcp_sendrecv_generic_if(nexus_plugin_t)
+corenet_udp_sendrecv_generic_if(nexus_plugin_t)
+corenet_tcp_sendrecv_generic_node(nexus_plugin_t)
+corenet_udp_sendrecv_generic_node(nexus_plugin_t)
+corenet_udp_sendrecv_dns_port(nexus_plugin_t)
+corenet_sendrecv_dns_client_packets(nexus_plugin_t)
+# std::thread::available_parallelism and glibc probe /proc and cgroup files: denied
+# quietly (Landlock denies them as well); the callers fall back.
+kernel_dontaudit_read_system_state(nexus_plugin_t)
+dev_dontaudit_search_sysfs(nexus_plugin_t)
+fs_dontaudit_search_cgroup_dirs(nexus_plugin_t)
+
+# Plugin boundary (neverallow: checked when the module is linked into the policy).
+# Entered only through its own exec type, and only from nexus-pluginhost.
+neverallow nexus_plugin_t ~nexus_plugin_exec_t:file entrypoint;
+neverallow { nexus_domain -nexus_pluginhost_t } nexus_plugin_t:process transition;
+# No nexus data: keys, stores, escrow, catalog, downloads, credentials, job configs
+# (secrets), web-api / scheduler secrets, agent CA, replication keys, /etc/nexus,
+# staged bundles, service sockets; not even a directory search into them.
+neverallow nexus_plugin_t { nexus_keyd_var_lib_t nexus_store_t nexus_escrow_t nexus_catalog_t nexus_downloads_t nexus_sshkey_t nexus_scheduler_var_run_t nexus_webapi_secret_t nexus_webapi_var_lib_t nexus_scheduler_secret_t nexus_agent_ca_t nexus_replicad_var_lib_t nexus_replica_key_t nexus_etc_t nexus_plugin_staging_t nexus_keyd_var_run_t nexus_replicad_var_run_t nexus_nasmount_var_run_t }:{ file lnk_file sock_file } { read write append open create unlink link rename setattr execute ioctl lock };
+neverallow nexus_plugin_t { nexus_keyd_var_lib_t nexus_keyd_var_run_t nexus_store_t nexus_escrow_t nexus_catalog_t nexus_downloads_t nexus_sshkey_t nexus_scheduler_var_run_t nexus_webapi_secret_t nexus_webapi_var_lib_t nexus_agent_ca_t nexus_replicad_var_lib_t nexus_replicad_var_run_t nexus_replica_key_t nexus_etc_t nexus_plugin_staging_t nexus_nasmount_var_run_t }:dir { search read write add_name };
+# No connection to any nexus service socket (keyd!), no capabilities, no server sockets.
+neverallow nexus_plugin_t nexus_domain:unix_stream_socket connectto;
+neverallow nexus_plugin_t nexus_domain:unix_dgram_socket sendto;
+neverallow nexus_plugin_t self:{ capability capability2 cap_userns cap2_userns } *;
+neverallow nexus_plugin_t self:tcp_socket { listen accept };
+# Its own code and data are read-only to it; nothing it writes is executable.
+neverallow nexus_plugin_t { nexus_plugin_data_t nexus_plugin_exec_t }:{ file lnk_file } { write append create unlink rename link setattr relabelfrom relabelto };
+neverallow nexus_plugin_t nexus_plugin_data_t:dir { write add_name remove_name create rmdir rename reparent setattr };
+neverallow nexus_plugin_t nexus_plugin_tmp_t:file { execute execute_no_trans entrypoint };
+# Only the installer writes installed plugins (not the host, not the web-api, not setup).
+neverallow { nexus_domain -nexus_plugininstall_t } { nexus_plugin_data_t nexus_plugin_exec_t }:{ file lnk_file } { write append create unlink rename link setattr relabelto };
+neverallow { nexus_domain -nexus_plugininstall_t } nexus_plugin_data_t:dir { write add_name remove_name create rmdir rename reparent setattr };
+
+# --- nexus-plugin-install (oneshot, user nexus-plugins, no network): verifies approved
+# bundles from the staging dir against the project + publisher keys, unpacks them into
+# /var/lib/nexus/plugins/<id>/.<version>.tmp, renames that to <version>, switches
+# <id>/current, records the result in the catalog and deletes the staged files.
+# SQLite catalog (WAL, as web-api)
+manage_files_pattern(nexus_plugininstall_t, nexus_catalog_t, nexus_catalog_t)
+allow nexus_plugininstall_t nexus_catalog_t:dir rw_dir_perms;
+allow nexus_plugininstall_t nexus_catalog_t:file map;
+# setup-done (unit condition and the binary's own check)
+read_files_pattern(nexus_plugininstall_t, nexus_var_lib_t, nexus_var_lib_t)
+# staged bundles + signatures: read, then delete (never create: that is the web-api)
+allow nexus_plugininstall_t nexus_plugin_staging_t:dir rw_dir_perms;
+allow nexus_plugininstall_t nexus_plugin_staging_t:file { read_file_perms unlink };
+# install tree: dirs, files, the current symlink; bin/plugin gets the exec type by its
+# name (the unpacker must create it under exactly that name, not a temp name + rename)
+manage_dirs_pattern(nexus_plugininstall_t, nexus_plugin_data_t, nexus_plugin_data_t)
+manage_files_pattern(nexus_plugininstall_t, nexus_plugin_data_t, nexus_plugin_data_t)
+manage_lnk_files_pattern(nexus_plugininstall_t, nexus_plugin_data_t, nexus_plugin_data_t)
+manage_files_pattern(nexus_plugininstall_t, nexus_plugin_data_t, nexus_plugin_exec_t)
+filetrans_pattern(nexus_plugininstall_t, nexus_plugin_data_t, nexus_plugin_exec_t, file, "plugin")
+# project plugin keys: /etc/pki/nexus/plugin-keys/*.pub (cert_t: public keys only)
+miscfiles_read_generic_certs(nexus_plugininstall_t)
+files_search_etc(nexus_plugininstall_t)
+# the installer never executes what it installs, and has no network
+neverallow nexus_plugininstall_t nexus_plugin_exec_t:file { execute execute_no_trans };
+neverallow nexus_plugininstall_t self:{ tcp_socket udp_socket } create;
+
+# --- web-api: upload (bundle + signature into staging, touches .trigger for
+# nexus-plugin-install.path), project keys (GET /plugin-keys), installed manifests
+allow nexus_webapi_t nexus_plugin_staging_t:dir rw_dir_perms;
+manage_files_pattern(nexus_webapi_t, nexus_plugin_staging_t, nexus_plugin_staging_t)
+miscfiles_read_generic_certs(nexus_webapi_t)
+list_dirs_pattern(nexus_webapi_t, nexus_plugin_data_t, nexus_plugin_data_t)
+read_files_pattern(nexus_webapi_t, nexus_plugin_data_t, nexus_plugin_data_t)
+read_lnk_files_pattern(nexus_webapi_t, nexus_plugin_data_t, nexus_plugin_data_t)
+
+# --- scheduler: resolves <id>/current and reads manifests before spawning the host
+# (never the binary: only nexus-pluginhost opens and executes it)
+list_dirs_pattern(nexus_scheduler_t, nexus_plugin_data_t, nexus_plugin_data_t)
+read_files_pattern(nexus_scheduler_t, nexus_plugin_data_t, nexus_plugin_data_t)
+read_lnk_files_pattern(nexus_scheduler_t, nexus_plugin_data_t, nexus_plugin_data_t)

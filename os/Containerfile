@@ -38,6 +38,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY restore-vm/agent/ restore-vm/agent/
+COPY plugins/ plugins/
 COPY --from=web /src/web/dist web/dist
 # The cache mounts keep the registry and target dir across builds; the
 # binaries are copied out within the same RUN.
@@ -45,16 +46,21 @@ RUN --mount=type=cache,target=/opt/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked -j ${JOBS} \
       -p keyd -p pve -p offsite -p web-api -p scheduler -p setup -p nftsync -p agent-conn -p truenas -p nas \
+      -p plugin-host -p plugin-manager \
  # separately: one build with -p web-api would unify features and link the replication
  # daemons (chunk store, keyd client) into nexus-web-api, which only needs the protocol types
  && cargo build --release --locked -j ${JOBS} -p replication \
+ # the console tool (verify/inspect bundles): separately, its `cli` feature must not
+ # unify into the other binaries
+ && cargo build --release --locked -j ${JOBS} -p plugin-sdk --features cli --bin nexus-plugin \
  && cargo build --release --locked -j ${JOBS} -p restorevm-agent --target x86_64-unknown-linux-musl \
  && mkdir -p /out \
  && cp target/release/keyd target/release/nexus-pve target/release/nexus-offsite \
        target/release/nexus-web-api target/release/nexus-scheduler target/release/nexus-setup \
        target/release/nexus-nft-sync target/release/nexus-agentctl target/release/nexus-truenas \
        target/release/nexus-nas target/release/nexus-nasmount \
-       target/release/nexus-replicad target/release/nexus-replica /out/ \
+       target/release/nexus-replicad target/release/nexus-replica \
+       target/release/nexus-pluginhost target/release/nexus-plugin-install target/release/nexus-plugin /out/ \
  && cp target/x86_64-unknown-linux-musl/release/nexus-restore-agent /out/agent
 
 # ---- Stage 3: restore micro-VM (Debian 13 kernel + ZFS initramfs, restore-vm/).
@@ -103,9 +109,13 @@ RUN systemd-sysusers /usr/lib/sysusers.d/nexus.conf
 # Binaries and the restore micro-VM.
 COPY --from=rust /out/keyd /out/nexus-pve /out/nexus-offsite /out/nexus-web-api \
      /out/nexus-scheduler /out/nexus-setup /out/nexus-nft-sync /out/nexus-agentctl /out/nexus-truenas \
-     /out/nexus-nas /out/nexus-nasmount /out/nexus-replicad /out/nexus-replica /usr/libexec/nexus/
+     /out/nexus-nas /out/nexus-nasmount /out/nexus-replicad /out/nexus-replica \
+     /out/nexus-pluginhost /out/nexus-plugin-install /usr/libexec/nexus/
+# plugin console tool (verify/inspect bundles); the test plugin (nexus-test-plugin) is never shipped
+COPY --from=rust /out/nexus-plugin /usr/bin/nexus-plugin
 COPY --from=restorevm /out/vmlinuz /out/initrd.img /out/manifest.txt /usr/lib/nexus/restore-vm/
-RUN chmod 0755 /usr/libexec/nexus /usr/libexec/nexus/* \
+RUN chmod 0755 /usr/libexec/nexus /usr/libexec/nexus/* /usr/bin/nexus-plugin \
+ && test -z "$(find /usr /etc -name 'nexus-test-plugin*')" \
  && chmod 0644 /usr/lib/nexus/restore-vm/*
 
 # SELinux module: install into the image's policy store, check that labels
@@ -130,7 +140,15 @@ RUN semodule -i /usr/share/selinux/packages/nexus/nexus.pp /usr/share/selinux/pa
  && matchpathcon /usr/libexec/nexus/nexus-web-api | grep -q nexus_webapi_exec_t \
  && matchpathcon /usr/libexec/nexus/nexus-scheduler | grep -q nexus_scheduler_exec_t \
  && matchpathcon /usr/lib/nexus/restore-vm/vmlinuz | grep -q nexus_restorevm_image_t \
- && matchpathcon /var/lib/nexus/catalog | grep -q nexus_catalog_t
+ && matchpathcon /var/lib/nexus/catalog | grep -q nexus_catalog_t \
+ && matchpathcon /usr/libexec/nexus/nexus-pluginhost | grep -q nexus_pluginhost_exec_t \
+ && matchpathcon /usr/libexec/nexus/nexus-plugin-install | grep -q nexus_plugininstall_exec_t \
+ && matchpathcon /var/lib/nexus/plugins | grep -q nexus_plugin_data_t \
+ && matchpathcon /var/lib/nexus/plugins/x/1.0.0/manifest.json | grep -q nexus_plugin_data_t \
+ && matchpathcon /var/lib/nexus/plugins/x/1.0.0/bin/plugin | grep -q nexus_plugin_exec_t \
+ && matchpathcon /var/lib/nexus/plugins/x/.1.0.0.tmp/bin/plugin | grep -q nexus_plugin_exec_t \
+ && matchpathcon /var/lib/nexus/plugins-staging/x.nxplugin | grep -q nexus_plugin_staging_t \
+ && matchpathcon /etc/pki/nexus/plugin-keys/x.pub | grep -q cert_t
 
 # Systemd units, presets, tmpfiles (state dirs with owners and modes).
 COPY os/systemd/*.service os/systemd/*.path os/systemd/*.timer os/systemd/*.socket /usr/lib/systemd/system/
@@ -158,6 +176,7 @@ RUN if [ "$NEXUS_IMAGE_REPO" != ghcr.io/nexusbackup/appliance ]; then \
         /etc/containers/registries.d/nexus-appliance.yaml /etc/nexus/update.conf; fi \
  && python3 -c 'import json; json.load(open("/etc/containers/policy.json"))' \
  && test -f /usr/lib/bootupd/grub2-static/configs.d/08_greenboot.cfg \
+ && ls /etc/pki/nexus/plugin-keys/*.pub >/dev/null \
  && systemctl preset nexus-update.timer nexus-update.path greenboot-healthcheck.service \
       greenboot-set-rollback-trigger.service greenboot-success.target \
  && systemctl is-enabled -q nexus-update.timer nexus-update.path greenboot-healthcheck.service \
@@ -174,9 +193,11 @@ RUN chronyd -p -f /etc/chrony.conf >/dev/null
 RUN usermod -L root \
  && systemctl preset sshd.service sshd.socket nftables.service chronyd.service \
       nexus-setup.service nexus-nft-sync.service nexus-nft-sync.path nexus-nft-sync.timer nexus-nasmount.socket \
+      nexus-plugin-install.service nexus-plugin-install.path \
  && ! systemctl is-enabled -q sshd.service \
  && systemctl is-enabled -q nftables.service chronyd.service nexus-setup.service \
       nexus-nft-sync.path nexus-nft-sync.timer nexus-nasmount.socket \
+      nexus-plugin-install.service nexus-plugin-install.path \
  && ! systemctl is-enabled -q nexus-web-api.service nexus-scheduler.service nexus-keyd.service
 
 # COPY keeps the build host's modes (umask 002 → 0664/0775): strip group/world

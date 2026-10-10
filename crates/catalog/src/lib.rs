@@ -132,8 +132,38 @@ CREATE TABLE replication_sources (
 ALTER TABLE snapshots ADD COLUMN origin TEXT;
 "#;
 
+/// v8: plugin system (docs/plugin-system.md). `plugins`: one row per uploaded
+/// (id, version) with the bundle / binary digests, the manifest as signed, the key
+/// that verified it, its lifecycle state and whether it is the `current` (active)
+/// version of its id; `plugin_keys`: publisher keys added with quorum (project keys
+/// come from the image). `sources.kind` additionally accepts `plugin:<kind>`: the
+/// same rebuild as v4–v6 (ids, rows, constraints kept; foreign keys checked). The
+/// previous release (v7) skips it and fails jobs of plugin sources as unsupported.
+const SCHEMA_V8: &str = r#"
+CREATE TABLE plugins (
+  id TEXT NOT NULL, version TEXT NOT NULL, name TEXT NOT NULL, publisher TEXT NOT NULL,
+  sha256 TEXT NOT NULL, bin_sha256 TEXT NOT NULL, size INTEGER NOT NULL, manifest TEXT NOT NULL, signer TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('pending','approved','installed','failed','rejected','removing','removed')),
+  current INTEGER NOT NULL DEFAULT 0 CHECK (current IN (0,1)),
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+  quorum_id INTEGER, uploaded_by TEXT NOT NULL, uploaded_at INTEGER NOT NULL, installed_at INTEGER, error TEXT,
+  PRIMARY KEY (id, version));
+CREATE UNIQUE INDEX plugins_current ON plugins(id) WHERE current = 1;
+CREATE TABLE plugin_keys (
+  fingerprint TEXT PRIMARY KEY, publisher TEXT NOT NULL, public_key TEXT NOT NULL,
+  added_by TEXT NOT NULL, approved_by TEXT, added_at INTEGER NOT NULL);
+CREATE TABLE sources_v8 (
+  id INTEGER PRIMARY KEY, tenant TEXT NOT NULL REFERENCES tenants(name),
+  kind TEXT NOT NULL CHECK (kind IN ('pve','linux','truenas','nfs','smb')
+    OR (kind GLOB 'plugin:[a-z0-9]*' AND kind NOT GLOB 'plugin:*[^a-z0-9-]*' AND length(kind) <= 39)),
+  name TEXT NOT NULL, config TEXT NOT NULL, UNIQUE (tenant, name));
+INSERT INTO sources_v8 (id, tenant, kind, name, config) SELECT id, tenant, kind, name, config FROM sources;
+DROP TABLE sources;
+ALTER TABLE sources_v8 RENAME TO sources;
+"#;
+
 const MIGRATIONS: &[&str] = &[
-    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
 ];
 
 pub fn now() -> i64 {
@@ -505,7 +535,7 @@ mod tests {
         let c = Catalog::open(&p).unwrap();
         let conn = c.conn();
         let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-        assert_eq!(v, 7);
+        assert_eq!(v, MIGRATIONS.len() as i64);
         let rows: Vec<(i64, String)> = conn
             .prepare("SELECT id, kind FROM sources ORDER BY id")
             .unwrap()
@@ -580,6 +610,124 @@ mod tests {
         assert_eq!(kinds, 4);
     }
 
+    /// v8 rebuilds `sources` again (kinds `plugin:<kind>`) on top of v7: a catalog
+    /// written by the v7 release (all earlier kinds, groups, replication rows)
+    /// migrates without losing rows, ids or references; the plugin tables exist;
+    /// the v7 release can still read the file afterwards.
+    #[test]
+    fn migration_v8_adds_plugins() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.pragma_update(None, "foreign_keys", "ON").unwrap();
+            for (i, m) in MIGRATIONS[..7].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                r#"INSERT INTO tenants (name) VALUES ('acme');
+                 INSERT INTO sources (id, tenant, kind, name, config) VALUES (7, 'acme', 'pve', 'cluster', '{"token_secret":"sealed:v1:x"}');
+                 INSERT INTO sources (id, tenant, kind, name, config) VALUES (8, 'acme', 'truenas', 'tn', '{}');
+                 INSERT INTO sources (id, tenant, kind, name, config) VALUES (9, 'acme', 'smb', 'share', '{}');
+                 INSERT INTO sources (id, tenant, kind, name, config) VALUES (10, 'acme', 'linux', 'web', '{"agent_id":"a"}');
+                 INSERT INTO sources (id, tenant, kind, name, config) VALUES (11, 'acme', 'nfs', 'filer', '{}');
+                 INSERT INTO policies (id, name, schedule, gfs) VALUES (1, 'p', 'daily 22:00', '{}');
+                 INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (3, 'acme', 8, 1, 'g', '["tank/a"]');
+                 INSERT INTO replication_sources (name, url, peer_id, cert_pin, tenants, schedule, state, created)
+                   VALUES ('prim', 'h:8443', 'p', 'aa', '[]', 'daily 01:00', 'enrolled', 1);"#,
+            )
+            .unwrap();
+            assert!(c
+                .execute(
+                    "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', 'plugin:postgresql', 'pg', '{}')",
+                    []
+                )
+                .is_err());
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, 8);
+        let rows: Vec<(i64, String, String)> = conn
+            .prepare("SELECT id, kind, config FROM sources ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[0], (7, "pve".into(), r#"{"token_secret":"sealed:v1:x"}"#.into()));
+        assert!(
+            conn.execute("DELETE FROM sources WHERE id = 8", []).is_err(),
+            "group reference kept"
+        );
+        let ok = |sql: &str| conn.execute(sql, []).is_ok();
+        for k in ["plugin:postgresql", "plugin:files", "plugin:a1-b2"] {
+            assert!(ok(&format!(
+                "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', '{k}', 'n-{k}', '{{}}')"
+            )));
+        }
+        for k in [
+            "plugin:",
+            "plugin:Pg",
+            "plugin:-x",
+            "plugin:a b",
+            "plugin:x/y",
+            "plugins:x",
+            "esx",
+        ] {
+            assert!(
+                !ok(&format!(
+                    "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', '{k}', 'bad', '{{}}')"
+                )),
+                "{k}"
+            );
+        }
+        assert!(!ok(&format!(
+            "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', 'plugin:{}', 'long', '{{}}')",
+            "a".repeat(33)
+        )));
+        assert!(ok(
+            "INSERT INTO plugins (id, version, name, publisher, sha256, bin_sha256, size, manifest, signer, state, uploaded_by, uploaded_at) \
+             VALUES ('pg', '1.0.0', 'PG', 'nexusbackup', 'a', 'b', 1, '{}', 'k', 'pending', 'admin', 1)"
+        ));
+        assert!(!ok(
+            "INSERT INTO plugins (id, version, name, publisher, sha256, bin_sha256, size, manifest, signer, state, uploaded_by, uploaded_at) \
+             VALUES ('pg', '1.0.1', 'PG', 'nexusbackup', 'a', 'b', 1, '{}', 'k', 'bogus', 'admin', 1)"
+        ));
+        assert!(ok("UPDATE plugins SET current = 1 WHERE id = 'pg'"));
+        assert!(ok(
+            "INSERT INTO plugins (id, version, name, publisher, sha256, bin_sha256, size, manifest, signer, state, uploaded_by, uploaded_at) \
+             VALUES ('pg', '1.0.1', 'PG', 'nexusbackup', 'a', 'b', 1, '{}', 'k', 'pending', 'admin', 1)"
+        ));
+        assert!(
+            !ok("UPDATE plugins SET current = 1 WHERE id = 'pg' AND version = '1.0.1'"),
+            "one current version per id"
+        );
+        assert!(ok(
+            "INSERT INTO plugin_keys (fingerprint, publisher, public_key, added_by, added_at) VALUES ('f', 'acme', 'pem', 'admin', 1)"
+        ));
+        drop(conn);
+        drop(c);
+        // the v7 release: nothing left to migrate, its queries still work
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..7].iter().skip(v as usize).count(), 0);
+        let n: i64 = old
+            .query_row(
+                "SELECT COUNT(*) FROM sources s JOIN groups g ON g.source_id = s.id",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        let n: i64 = old
+            .query_row("SELECT COUNT(*) FROM replication_sources", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
     /// A fresh catalog runs every migration: all source kinds and the
     /// replication tables exist.
     #[test]
@@ -591,14 +739,20 @@ mod tests {
         ] {
             let conn = c.conn();
             conn.execute("INSERT INTO tenants (name) VALUES ('t')", []).unwrap();
-            for k in ["pve", "linux", "truenas", "nfs", "smb"] {
+            for k in ["pve", "linux", "truenas", "nfs", "smb", "plugin:files"] {
                 conn.execute(
                     "INSERT INTO sources (tenant, kind, name, config) VALUES ('t', ?1, ?1, '{}')",
                     [k],
                 )
                 .unwrap();
             }
-            for t in ["agents", "replication_peers", "replication_sources"] {
+            for t in [
+                "agents",
+                "replication_peers",
+                "replication_sources",
+                "plugins",
+                "plugin_keys",
+            ] {
                 let n: i64 = conn
                     .query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get(0))
                     .unwrap();

@@ -20,6 +20,13 @@ SupplementaryGroups=nexus-replicad
 ReadWritePaths=/var/lib/nexus/catalog
 # OS update control (request/window/inhibit for nexus-update; 2770 root:nexus-catalog)
 ReadWritePaths=/var/lib/nexus/update
+# plugin uploads (docs/plugin-system.md): bundle + signature into the staging dir
+# (2770 nexus-webapi:nexus-plugins, read and deleted by nexus-plugin-install), then
+# .trigger for nexus-plugin-install.path; project keys and installed manifests read-only
+ReadWritePaths=/var/lib/nexus/plugins-staging
+Environment=NEXUS_PLUGIN_STAGING=/var/lib/nexus/plugins-staging
+Environment=NEXUS_PLUGIN_KEYS=/etc/pki/nexus/plugin-keys
+Environment=NEXUS_PLUGINS=/var/lib/nexus/plugins
 Restart=on-failure
 UMask=0077
 LimitCORE=0

@@ -1,0 +1,17 @@
+[package]
+name = "example-files"
+version = "1.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Example NexusBackup plugin: backs up a local directory (docs/plugin-sdk.md)"
+
+[dependencies]
+plugin-sdk = { path = "../../crates/plugin-sdk" }
+
+[dev-dependencies]
+plugin-sdk = { path = "../../crates/plugin-sdk", features = ["testing"] }
+serde_json = "1"
+tar = "0.4"
+tempfile = "3"

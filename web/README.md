@@ -49,6 +49,9 @@ src/lib/roles.ts       UI mirror of the RBAC table (only hides controls; the ser
 src/pages/*            Login, Dashboard, Snapshots, Files, Jobs, JobDetail, Alerts, Quorum,
                        Audit, Tenants, Sources, Agents, Policies, Groups, Users
 src/components/RestoreFiles.svelte  "restore to path" dialog for host snapshots (Snapshots + Files)
+src/components/SchemaForm.svelte    form generated from a plugin's config_schema / params_schema
+src/lib/schema.ts      form model + client-side validation of that JSON-Schema subset
+src/lib/plugins.ts     plugin kind lookup, plugin snapshot name parsing, version compare
 ```
 
 ## Security notes

@@ -20,9 +20,17 @@ export class ApiError extends Error {
  */
 export type Outcome<T> = { quorum: false; data: T } | { quorum: true; quorumId: number; data: Partial<T> };
 
+/** A request body sent as-is (e.g. a plugin bundle) with its own Content-Type and extra headers. */
+export interface RawBody {
+  raw: Blob | ArrayBuffer;
+  headers: Record<string, string>;
+}
+const isRaw = (b: unknown): b is RawBody => !!b && typeof b === 'object' && 'raw' in b && 'headers' in b;
+
 async function request(method: string, path: string, body?: unknown): Promise<{ status: number; data: unknown }> {
-  const headers: Record<string, string> = { Accept: 'application/json' };
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const raw = isRaw(body) ? body : null;
+  const headers: Record<string, string> = { Accept: 'application/json', ...(raw?.headers ?? {}) };
+  if (body !== undefined && !raw) headers['Content-Type'] = 'application/json';
   if (method !== 'GET' && session.csrf) headers['X-CSRF-Token'] = session.csrf;
   let r: Response;
   try {
@@ -31,7 +39,7 @@ async function request(method: string, path: string, body?: unknown): Promise<{ 
       headers,
       credentials: 'same-origin',
       cache: 'no-store',
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: raw ? raw.raw : body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
     throw new ApiError(0, t.err.network);
@@ -73,6 +81,9 @@ async function mutate<T>(method: string, path: string, body?: unknown): Promise<
 export const post = <T>(path: string, body: unknown = {}) => mutate<T>('POST', path, body);
 export const put = <T>(path: string, body: unknown) => mutate<T>('PUT', path, body);
 export const del = <T>(path: string) => mutate<T>('DELETE', path);
+/** POST of a raw body (`Content-Type` and extra headers in `headers`); CSRF header as usual. */
+export const postRaw = <T>(path: string, raw: Blob | ArrayBuffer, headers: Record<string, string>) =>
+  mutate<T>('POST', path, { raw, headers } satisfies RawBody);
 
 /**
  * Runs a mutation and reports the outcome to the user ("pending approval" for 202

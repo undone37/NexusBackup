@@ -1,0 +1,70 @@
+[Unit]
+Description=NexusBackup plugin installer (verifies and installs approved plugin bundles, docs/plugin-system.md)
+# Started by nexus-plugin-install.path (the web-api touches the trigger after a quorum
+# approval) and once at boot (finishes installs interrupted by a reboot).
+ConditionPathExists=/var/lib/nexus/setup-done
+StartLimitIntervalSec=60
+StartLimitBurst=20
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/nexus/nexus-plugin-install
+# Its own user: not root, and not the plugin runtime uid (nexus-chunkstore), so neither
+# a plugin nor nexus-pluginhost can modify an installed plugin (DAC: dirs 0555, files
+# 0444, bin/plugin 0555, owner nexus-plugins; SELinux: only nexus_plugininstall_t writes
+# nexus_plugin_data_t / nexus_plugin_exec_t).
+User=nexus-plugins
+Group=nexus-plugins
+# catalog DB (rw, WAL): plugin state, installed_at, error
+SupplementaryGroups=nexus-catalog
+Environment=NEXUS_CATALOG=/var/lib/nexus/catalog/catalog.db
+Environment=NEXUS_PLUGIN_STAGING=/var/lib/nexus/plugins-staging
+Environment=NEXUS_PLUGIN_KEYS=/etc/pki/nexus/plugin-keys
+Environment=NEXUS_PLUGINS=/var/lib/nexus/plugins
+# staging: 2770 nexus-webapi:nexus-plugins (reads + deletes bundles); install tree:
+# 0755 nexus-plugins (tmpfiles.d/nexus.conf)
+ReadWritePaths=/var/lib/nexus/catalog /var/lib/nexus/plugins /var/lib/nexus/plugins-staging
+# keys, stores and the other services' state are not even visible
+InaccessiblePaths=-/run/nexus-keyd -/var/lib/nexus/keyd -/var/lib/nexus/chunkstore -/var/lib/nexus/scheduler
+InaccessiblePaths=-/var/lib/nexus/escrow -/var/lib/nexus/offsite -/var/lib/nexus/downloads -/var/lib/nexus/replicad
+InaccessiblePaths=-/var/lib/nexus/webapi -/etc/nexus
+UMask=0022
+LimitCORE=0
+TimeoutStartSec=10min
+
+# No network at all: verification uses the keys from the image and the catalog.
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateIPC=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+# no setuid/setgid bits on anything it unpacks (the installer also clears them)
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

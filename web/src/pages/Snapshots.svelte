@@ -6,17 +6,22 @@
   import { route, navigate, href } from '../lib/router.svelte';
   import { fmtBytes, fmtTime, fmtAgo } from '../lib/format';
   import { t } from '../lib/i18n';
+  import { notify } from '../lib/notify.svelte';
   import { hostAgentId } from '../lib/jobs';
-  import type { Agent, PveSource, Snapshot, Source, Tenant } from '../lib/types';
+  import { parsePluginSnapshot, pluginKinds, snapshotKind } from '../lib/plugins';
+  import { buildValue, initValues, type FormValues } from '../lib/schema';
+  import type { Agent, Plugin, PluginRestore, PveSource, Snapshot, Source, Tenant } from '../lib/types';
   import Check from '../components/Check.svelte';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import RestoreFiles from '../components/RestoreFiles.svelte';
+  import SchemaForm from '../components/SchemaForm.svelte';
 
   let snaps: Snapshot[] = $state([]);
   let tenants: Tenant[] = $state([]);
   let sources: Source[] = $state([]);
   let agents: Agent[] = $state([]);
+  let plugins: Plugin[] = $state([]);
   let error: string | null = $state(null);
   let loaded = $state(false);
 
@@ -45,7 +50,62 @@
     } catch {
       /* host snapshots then show only the agent id */
     }
+    try {
+      plugins = await get<Plugin[]>('/plugins');
+    } catch {
+      /* plugin snapshots then offer only the file browser */
+    }
   });
+  const kinds = $derived(pluginKinds(plugins));
+
+  // Plugin snapshots (`plugin-<plugin id>-<source id>[-<guest>]`): restores of the source's kind.
+  const pluginOf = (s: Snapshot) => {
+    const p = parsePluginSnapshot(s.source);
+    if (!p) return null;
+    return {
+      ...p,
+      sourceName: sources.find((x) => x.id === p.sourceId)?.name ?? null,
+      kind: snapshotKind(s.source, sources, kinds)?.kind ?? null,
+    };
+  };
+
+  let prOpen = $state(false);
+  let prSnap: Snapshot | null = $state(null);
+  let prRestore: PluginRestore | null = $state(null);
+  let prValues: FormValues = $state({});
+  let prErrors: Record<string, string> = $state({});
+  let prMinutes = $state(60);
+  const isMount = (r: PluginRestore | null) => r?.id === 'mount';
+
+  function openPluginRestore(s: Snapshot, r: PluginRestore) {
+    prSnap = s;
+    prRestore = r;
+    prValues = initValues(r.params_schema);
+    prErrors = {};
+    prMinutes = 60;
+    prOpen = true;
+  }
+
+  async function startPluginRestore(e: SubmitEvent) {
+    e.preventDefault();
+    if (!prSnap || !prRestore) return;
+    const { value, errors } = buildValue(prRestore.params_schema, prValues);
+    prErrors = errors;
+    const minutes = Number(prMinutes);
+    if (Object.keys(errors).length || (isMount(prRestore) && !(Number.isInteger(minutes) && minutes >= 1 && minutes <= 1440))) {
+      notify('error', t.schema.invalid);
+      return;
+    }
+    busy = true;
+    const base = { source: prSnap.source, time: prSnap.time };
+    const job = isMount(prRestore)
+      ? { kind: 'plugin_mount', tenant: prSnap.tenant, params: { ...base, params: value, minutes } }
+      : { kind: 'plugin_restore', tenant: prSnap.tenant, params: { ...base, restore: prRestore.id, params: value } };
+    const r = await act(post<{ id: number }>('/jobs', job), (d) => t.snap.jobStarted(d.id));
+    busy = false;
+    if (r) prOpen = false;
+    if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
+  }
   const agentOf = (s: Snapshot) => {
     const id = hostAgentId(s.source);
     return id ? (agents.find((a) => a.id === id) ?? null) : null;
@@ -167,11 +227,20 @@
           {#each snaps as s (`${s.tenant}/${s.source}/${s.time}`)}
             {@const ag = agentOf(s)}
             {@const sh = shareName(s)}
+            {@const pl = pluginOf(s)}
+            {@const download = pl?.kind?.restores.find((r) => r.id === 'download')}
             <tr>
               <td>
                 <span class="mono">{s.source}</span>
                 {#if ag}<div class="muted">{t.snap.agent(ag.name)}</div>{/if}
                 {#if sh}<div class="muted">{t.snap.share(sh)}</div>{/if}
+                {#if pl}
+                  <div class="muted">
+                    {t.snap.plugin(pl.sourceName ?? `#${pl.sourceId}`)}{pl.kind ? ` · ${pl.kind.title}` : ''}{pl.guest
+                      ? ` · ${t.snap.pluginGuest(pl.guest)}`
+                      : ''}
+                  </div>
+                {/if}
                 {#if s.origin}<div><span class="chip info">{t.snap.replicatedFrom(s.origin)}</span></div>{/if}
               </td>
               <td>{s.tenant}</td>
@@ -185,6 +254,12 @@
                 <td class="actions">
                   {#if hostAgentId(s.source)}
                     <button type="button" class="small" onclick={() => openRestoreFiles(s)}>{t.snap.restorePath}</button>
+                  {:else if pl}
+                    {#each (pl.kind?.restores ?? []).filter((r) => r.id !== 'download') as r (r.id)}
+                      <button type="button" class="small" onclick={() => openPluginRestore(s, r)} title={r.app_specific ? t.snap.appSpecific : undefined}
+                        >{r.title}</button
+                      >
+                    {/each}
                   {:else if s.source.startsWith('nas-') || s.source.startsWith('share-')}
                     <!-- TrueNAS datasets and NFS/SMB shares: file download only (docs/truenas-connector.md, docs/nas-connector.md) -->
                   {:else}
@@ -193,7 +268,12 @@
                   {#if s.source.startsWith('vm-')}
                     <button type="button" class="small" onclick={() => openRestore(s, 'instant')}>{t.snap.instant}</button>
                   {/if}
-                  <button type="button" class="small" onclick={() => browse(s)}>{t.snap.browse}</button>
+                  <button
+                    type="button"
+                    class="small"
+                    onclick={() => browse(s)}
+                    title={pl && !pl.kind ? t.snap.pluginUnknown : undefined}>{download?.title ?? t.snap.browse}</button
+                  >
                 </td>
               {/if}
             </tr>
@@ -229,6 +309,37 @@
       </div>
       <div class="form-actions">
         <button type="button" onclick={() => (dlgOpen = false)}>{t.cancel}</button>
+        <button type="submit" class="primary" disabled={busy}>{t.snap.start}</button>
+      </div>
+    </form>
+  {/if}
+</Modal>
+
+<Modal
+  bind:open={prOpen}
+  title={prSnap && prRestore ? t.snap.pluginRestoreTitle(prRestore.title, prSnap.source) : ''}
+  wide
+>
+  {#if prSnap && prRestore}
+    <form onsubmit={startPluginRestore}>
+      <p class="muted">
+        {prSnap.tenant} · {fmtTime(prSnap.time)}
+        {#if prRestore.app_specific}<span class="chip info">{t.snap.appSpecific}</span>{/if}
+      </p>
+      {#if prRestore.params_schema && Object.keys(prRestore.params_schema.properties ?? {}).length}
+        <SchemaForm schema={prRestore.params_schema} bind:values={prValues} errors={prErrors} />
+      {:else if !isMount(prRestore)}
+        <p class="muted">{t.snap.noParams}</p>
+      {/if}
+      {#if isMount(prRestore)}
+        <div class="field">
+          <label for="pr-min">{t.snap.mountMinutes}</label>
+          <input id="pr-min" type="number" min="1" max="1440" step="1" bind:value={prMinutes} required aria-describedby="pr-min-hint" />
+          <div class="hint" id="pr-min-hint">{t.snap.mountMinutesHint}</div>
+        </div>
+      {/if}
+      <div class="form-actions">
+        <button type="button" onclick={() => (prOpen = false)}>{t.cancel}</button>
         <button type="submit" class="primary" disabled={busy}>{t.snap.start}</button>
       </div>
     </form>

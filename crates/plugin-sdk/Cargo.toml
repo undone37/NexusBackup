@@ -1,0 +1,28 @@
+[package]
+name = "plugin-sdk"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "SDK for NexusBackup plugins: Plugin trait, runner, sink/source helpers, test harness, nexus-plugin packaging CLI"
+
+[features]
+# test harness: the real host code + a temp chunk store (dev-dependency of plugins)
+testing = ["dep:plugin-host", "dep:chunkstore", "dep:tempfile", "dep:sha2"]
+# nexus-plugin pack|sign|verify|inspect|keygen
+cli = ["plugin-proto/bundle"]
+
+[dependencies]
+anyhow = "1"
+chunkstore = { path = "../chunkstore", optional = true }
+libc = "0.2"
+plugin-host = { path = "../plugin-host", optional = true }
+plugin-proto = { path = "../plugin-proto" }
+serde_json = "1"
+sha2 = { version = "0.10", optional = true }
+tempfile = { version = "3", optional = true }
+
+[[bin]]
+name = "nexus-plugin"
+path = "src/bin/nexus-plugin.rs"
+required-features = ["cli"]

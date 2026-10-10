@@ -1,0 +1,51 @@
+{
+  "id": "example-files",
+  "name": "Example: local directory",
+  "version": "1.0.0",
+  "publisher": "nexusbackup",
+  "api": 1,
+  "kinds": [
+    {
+      "kind": "files",
+      "title": "Directory (example plugin)",
+      "config_schema": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Directory",
+            "description": "Absolute path of the directory to back up (readable inside the plugin sandbox)",
+            "pattern": "^/.*",
+            "maxLength": 4096
+          },
+          "excludes": {
+            "type": "array",
+            "title": "Exclude patterns",
+            "items": { "type": "string", "maxLength": 255 }
+          }
+        }
+      },
+      "secret_fields": [],
+      "endpoints": [],
+      "guests": null,
+      "backup": { "incremental": true, "consistent": "none" },
+      "restores": [
+        { "id": "download", "title": "Download (tar/zip)" },
+        {
+          "id": "to_dir",
+          "title": "Restore to a directory",
+          "params_schema": {
+            "type": "object",
+            "required": ["target"],
+            "properties": {
+              "target": { "type": "string", "title": "Target directory (must exist, empty)", "pattern": "^/.*" },
+              "overwrite": { "type": "boolean", "title": "Replace existing files", "default": false }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "sandbox": { "network": "none", "tmp_mb": 64, "memory_mb": 256 }
+}

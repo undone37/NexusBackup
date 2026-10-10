@@ -1,15 +1,21 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
   import { notify } from '../lib/notify.svelte';
+  import { href } from '../lib/router.svelte';
   import { t } from '../lib/i18n';
-  import type { Agent, Source, SourceKind, Tenant } from '../lib/types';
+  import { runJob } from '../lib/jobs';
+  import { isPluginKind, pluginKinds, pointer } from '../lib/plugins';
+  import { buildValue, initValues, secretFlags, type FormValues } from '../lib/schema';
+  import type { Agent, Plugin, PluginSource, Source, SourceKind, Tenant } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
+  import SchemaForm from '../components/SchemaForm.svelte';
 
   let items: Source[] = $state([]);
   let tenants: Tenant[] = $state([]);
   let agents: Agent[] = $state([]);
+  let plugins: Plugin[] = $state([]);
   let error: string | null = $state(null);
   let loaded = $state(false);
 
@@ -24,12 +30,69 @@
     } catch (e) {
       error = errText(e);
     }
+    try {
+      plugins = await get<Plugin[]>('/plugins');
+    } catch {
+      /* no plugin kinds offered */
+    }
     loaded = true;
   }
   onMount(load);
 
+  // Plugin kinds (`plugin:<kind>`): new sources only for enabled plugins; existing ones
+  // stay editable while their plugin's current version is installed.
+  const kindsAll = $derived(pluginKinds(plugins));
+  const kindsEnabled = $derived([...pluginKinds(plugins, true).entries()]);
+  const kindTitle = (k: string) => t.sources.kinds[k] ?? kindsAll.get(k)?.kind.title ?? k;
+  const isPlugin = (x: Source): x is PluginSource => isPluginKind(x.kind);
+
+  /** First endpoint of a plugin source as host:port (from the manifest's JSON pointers). */
+  function endpointOf(x: PluginSource): string {
+    const ep = kindsAll.get(x.kind)?.kind.endpoints?.[0];
+    if (!ep) return '—';
+    const host = pointer(x.config, ep.host);
+    const port = ep.port ? (pointer(x.config, ep.port) ?? ep.default_port) : ep.default_port;
+    return host ? `${host}${port ? `:${port}` : ''}` : '—';
+  }
+  /** A few non-secret config values for the table. */
+  function summaryOf(x: PluginSource): string {
+    const secret = kindsAll.get(x.kind)?.kind.secret_fields ?? [];
+    return Object.entries(x.config ?? {})
+      .filter(([k, v]) => !k.endsWith('_set') && !secret.includes(k) && v !== '' && v !== null)
+      .slice(0, 3)
+      .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join(',') : String(v)}`)
+      .join(' · ');
+  }
+
+  // "Validate connection": plugin_validate job on the stored config.
+  const ctl = new AbortController();
+  onDestroy(() => ctl.abort());
+  let checks: Record<number, { busy: boolean; ok?: boolean; text?: string; job?: number }> = $state({});
+  async function validate(x: PluginSource) {
+    checks[x.id] = { busy: true };
+    try {
+      const r = await runJob('plugin_validate', x.tenant, { source_id: x.id }, ctl.signal);
+      if (!r) {
+        delete checks[x.id];
+        return;
+      }
+      const res = r.job.result;
+      checks[x.id] =
+        r.job.state !== 'ok'
+          ? { busy: false, ok: false, text: t.sources.validateFailed, job: r.job.id }
+          : res?.valid
+            ? { busy: false, ok: true, text: t.sources.valid, job: r.job.id }
+            : { busy: false, ok: false, text: t.sources.invalid(res?.field, res?.message), job: r.job.id };
+    } catch (e) {
+      checks[x.id] = { busy: false, ok: false, text: errText(e) };
+    }
+  }
+
   let open = $state(false);
   let editing: Source | null = $state(null);
+  // plugin config form (generated from the kind's config_schema)
+  let pv: FormValues = $state({});
+  let pErrors: Record<string, string> = $state({});
   let f = $state({
     kind: 'pve' as SourceKind,
     tenant: '',
@@ -80,6 +143,11 @@
     threads: 16,
     xattrs: true,
     timeout_secs: 60,
+  });
+  const pk = $derived(isPluginKind(f.kind) ? (kindsAll.get(f.kind) ?? null) : null);
+  const pSecretSet = $derived.by(() => {
+    const x = editing;
+    return x && isPlugin(x) ? secretFlags(x.config, pk?.kind.secret_fields ?? []) : {};
   });
   const isShare = $derived(f.kind === 'nfs' || f.kind === 'smb');
   const tenantAgents = $derived(agents.filter((a) => a.tenant === f.tenant));
@@ -148,6 +216,10 @@
       xattrs: sh?.xattrs ?? true,
       timeout_secs: sh?.timeout_secs ?? 60,
     };
+    const ps = x && isPlugin(x) ? x : null;
+    const k = ps ? kindsAll.get(ps.kind) : undefined;
+    pv = k && ps ? initValues(k.kind.config_schema, ps.config, k.kind.secret_fields ?? []) : {};
+    pErrors = {};
     lastKind = f.kind;
     open = true;
   }
@@ -157,6 +229,10 @@
   let lastKind = 'pve';
   $effect(() => {
     if (!open || editing || f.kind === lastKind) return;
+    if (isPluginKind(f.kind)) {
+      pv = initValues(kindsAll.get(f.kind)?.kind.config_schema);
+      pErrors = {};
+    }
     if (f.port === defaultPorts[lastKind]) f.port = defaultPorts[f.kind] ?? f.port;
     if (f.kind === 'nfs' && !['3', '4.0', '4.1', '4.2'].includes(f.version)) f.version = '4.2';
     if (f.kind === 'smb' && !['2.1', '3', '3.0', '3.02', '3.1.1'].includes(f.version)) f.version = '3';
@@ -299,10 +375,32 @@
     return config;
   }
 
+  /** Config of a plugin source from the generated form, or null when invalid. */
+  function pluginConfig(): Record<string, unknown> | null {
+    if (!pk) return null;
+    const secretFields = pk.kind.secret_fields ?? [];
+    let r = buildValue(pk.kind.config_schema, pv, { secretFields, secretSet: pSecretSet });
+    // Like the server: a stored secret is only kept while the endpoint (host/port) stays the same.
+    const old = editing && isPlugin(editing) ? editing.config : null;
+    const moved =
+      old &&
+      (pk.kind.endpoints ?? []).some((ep) =>
+        [ep.host, ep.port].some((ptr) => ptr && JSON.stringify(pointer(old, ptr)) !== JSON.stringify(pointer(r.value, ptr))),
+      );
+    if (moved) r = buildValue(pk.kind.config_schema, pv, { secretFields });
+    pErrors = r.errors;
+    if (Object.keys(r.errors).length) {
+      notify('error', t.schema.invalid);
+      return null;
+    }
+    return r.value;
+  }
+
   async function save(e: SubmitEvent) {
     e.preventDefault();
-    const config =
-      f.kind === 'linux'
+    const config = isPluginKind(f.kind)
+      ? pluginConfig()
+      : f.kind === 'linux'
         ? linuxConfig()
         : f.kind === 'truenas'
           ? truenasConfig()
@@ -360,8 +458,22 @@
             <tr>
               <td><strong>{x.name}</strong></td>
               <td>{x.tenant}</td>
-              <td>{t.sources.kinds[x.kind] ?? x.kind}</td>
-              {#if x.kind === 'linux'}
+              <td>{kindTitle(x.kind)}</td>
+              {#if isPlugin(x)}
+                {@const c = checks[x.id]}
+                <td class="mono">{endpointOf(x)}</td>
+                <td>
+                  <span class="mono">{summaryOf(x)}</span>
+                  {#if c?.busy}
+                    <div class="muted" role="status">{t.sources.validating}</div>
+                  {:else if c}
+                    <div role="status">
+                      <span class="chip {c.ok ? 'ok' : 'bad'}">{c.text}</span>
+                      {#if c.job}<a href={href(`/jobs/${c.job}`)}>{t.sources.job(c.job)}</a>{/if}
+                    </div>
+                  {/if}
+                </td>
+              {:else if x.kind === 'linux'}
                 <td>{t.sources.agent} <strong>{agentName(x.config?.agent_id)}</strong></td>
                 <td class="mono" title={x.config?.excludes?.length ? `${t.sources.excludes}: ${x.config.excludes.join(' ')}` : undefined}
                   >{(x.config?.paths ?? []).join(' ')}</td
@@ -385,6 +497,11 @@
                 <td class="mono">{x.config?.token_id}</td>
               {/if}
               <td class="actions">
+                {#if isPlugin(x)}
+                  <button type="button" class="small" disabled={checks[x.id]?.busy} onclick={() => validate(x)}
+                    >{t.sources.validate}</button
+                  >
+                {/if}
                 <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
                 <button type="button" class="small danger" onclick={() => remove(x)}>{t.delete}</button>
               </td>
@@ -407,6 +524,14 @@
           <option value="truenas">{t.sources.kinds.truenas}</option>
           <option value="nfs">{t.sources.kinds.nfs}</option>
           <option value="smb">{t.sources.kinds.smb}</option>
+          {#if kindsEnabled.length || (editing && isPlugin(editing))}
+            <optgroup label={t.sources.pluginKinds}>
+              {#each kindsEnabled as [k, info] (k)}<option value={k}>{info.kind.title}</option>{/each}
+              {#if editing && isPlugin(editing) && !kindsEnabled.some(([k]) => k === editing!.kind)}
+                <option value={editing.kind}>{t.sources.pluginDisabled(kindTitle(editing.kind))}</option>
+              {/if}
+            </optgroup>
+          {/if}
         </select>
       </div>
       <div class="field">
@@ -419,7 +544,9 @@
         <label for="s-name">{t.name}</label>
         <input id="s-name" bind:value={f.name} required />
       </div>
-      {#if f.kind === 'linux'}
+      {#if isPluginKind(f.kind)}
+        <!-- plugin settings follow below the grid -->
+      {:else if f.kind === 'linux'}
         <div class="field">
           <label for="s-agent">{t.sources.agent}</label>
           <select id="s-agent" bind:value={f.agent_id} 
@@ -638,7 +765,20 @@
         </div>
       {/if}
     </div>
-    {#if f.kind === 'linux'}
+    {#if isPluginKind(f.kind)}
+      {#if pk}
+        <p class="muted">{t.sources.pluginHint(pk.plugin.name, pk.plugin.version, pk.plugin.publisher)}</p>
+        <SchemaForm
+          schema={pk.kind.config_schema}
+          bind:values={pv}
+          errors={pErrors}
+          secretFields={pk.kind.secret_fields ?? []}
+          secretSet={pSecretSet}
+        />
+      {:else}
+        <p class="banner warn">{t.sources.noSchema}</p>
+      {/if}
+    {:else if f.kind === 'linux'}
       <div class="field">
         <label for="s-paths">{t.sources.paths}</label>
         <textarea
@@ -761,7 +901,7 @@
     {/if}
     <div class="form-actions">
       <button type="button" onclick={() => (open = false)}>{t.cancel}</button>
-      <button type="submit" class="primary" disabled={f.kind === 'linux' && !f.agent_id}>{editing ? t.save : t.create}</button>
+      <button type="submit" class="primary" disabled={(f.kind === 'linux' && !f.agent_id) || (isPluginKind(f.kind) && !pk)}>{editing ? t.save : t.create}</button>
     </div>
   </form>
 </Modal>

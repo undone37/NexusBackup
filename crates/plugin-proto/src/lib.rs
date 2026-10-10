@@ -305,11 +305,54 @@ fn valid_ident(s: &str, max: usize) -> bool {
         && !s.starts_with('-')
 }
 
+/// Plugin ids additionally have no empty and no all-digit `-` component, so a
+/// snapshot source name `plugin-<id>-<source id>[-<guest>]` parses unambiguously
+/// (the first all-digit component is the source id), see [`parse_source_name`].
+pub fn valid_plugin_id(s: &str) -> bool {
+    valid_ident(s, 32)
+        && s.split('-')
+            .all(|c| !c.is_empty() && !c.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Guest ids (ListGuests, group guests): `[A-Za-z0-9._-]{1,64}`, not starting with `.`/`-`;
+/// they become part of the snapshot source name.
+pub fn valid_guest_id(s: &str) -> bool {
+    (1..=64).contains(&s.len())
+        && !s.starts_with(['.', '-'])
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
+
+/// Snapshot source of a plugin source (`plugin-<id>-<source id>`) or of one of its
+/// guests (`plugin-<id>-<source id>-<guest>`).
+pub fn source_name(plugin: &str, source_id: u64, guest: Option<&str>) -> String {
+    match guest {
+        Some(g) => format!("plugin-{plugin}-{source_id}-{g}"),
+        None => format!("plugin-{plugin}-{source_id}"),
+    }
+}
+
+/// Inverse of [`source_name`]: (plugin id, source id, guest).
+pub fn parse_source_name(s: &str) -> Option<(String, u64, Option<String>)> {
+    let rest = s.strip_prefix("plugin-")?;
+    let parts: Vec<&str> = rest.split('-').collect();
+    let i = parts
+        .iter()
+        .position(|c| !c.is_empty() && c.len() <= 19 && c.bytes().all(|b| b.is_ascii_digit()))?;
+    let id = parts[..i].join("-");
+    let sid: u64 = parts[i].parse().ok()?;
+    let guest = (i + 1 < parts.len()).then(|| parts[i + 1..].join("-"));
+    (valid_plugin_id(&id) && guest.as_deref().is_none_or(valid_guest_id)).then_some((id, sid, guest))
+}
+
+/// Restore/download view: streams appear below this top-level directory; plugins
+/// may not use it as the first component of a file path.
+pub const STREAMS_DIR: &str = ".nexus-streams";
+
 impl Manifest {
     /// Static checks before a bundle is accepted (signature is checked separately).
     pub fn validate(&self) -> Result<(), String> {
-        if !valid_ident(&self.id, 32) {
-            return Err("id: [a-z0-9-]{2,32}".into());
+        if !valid_plugin_id(&self.id) {
+            return Err("id: [a-z0-9-]{2,32}, no empty or all-digit `-` component".into());
         }
         if self.api != API {
             return Err(format!("api {} not supported (appliance speaks {API})", self.api));
@@ -320,9 +363,43 @@ impl Manifest {
         if self.kinds.is_empty() {
             return Err("kinds: at least one".into());
         }
+        if self.name.is_empty() || self.name.len() > 64 || self.name.chars().any(char::is_control) {
+            return Err("name: 1..=64 printable characters".into());
+        }
+        if !valid_ident(&self.publisher, 32) {
+            return Err("publisher: [a-z0-9-]{2,32}".into());
+        }
+        let mut kinds = std::collections::HashSet::new();
         for k in &self.kinds {
             if !valid_ident(&k.kind, 32) {
                 return Err(format!("kind {:?}: [a-z0-9-]{{2,32}}", k.kind));
+            }
+            if !kinds.insert(k.kind.as_str()) {
+                return Err(format!("kind {}: listed twice", k.kind));
+            }
+            let mut ids = std::collections::HashSet::new();
+            for r in &k.restores {
+                let id_ok = (2..=32).contains(&r.id.len())
+                    && r.id
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+                if !id_ok || !ids.insert(r.id.as_str()) {
+                    return Err(format!(
+                        "kind {}: restore id {:?} invalid or listed twice",
+                        k.kind, r.id
+                    ));
+                }
+                if r.params_schema.as_ref().is_some_and(|p| !p.is_object()) {
+                    return Err(format!(
+                        "kind {}: restore {}: params_schema must be an object",
+                        k.kind, r.id
+                    ));
+                }
+            }
+            for f in &k.secret_fields {
+                if k.config_schema["properties"].get(f).is_none() {
+                    return Err(format!("kind {}: secret field {f:?} is not a config property", k.kind));
+                }
             }
             if !k.config_schema.is_object() {
                 return Err(format!("kind {}: config_schema must be an object", k.kind));
@@ -364,9 +441,42 @@ pub fn newer(a: &str, than: &str) -> bool {
     n(a) > n(than)
 }
 
+#[cfg(feature = "bundle")]
+pub mod bundle;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_names() {
+        assert_eq!(source_name("example-files", 5, None), "plugin-example-files-5");
+        assert_eq!(
+            parse_source_name("plugin-example-files-5"),
+            Some(("example-files".into(), 5, None))
+        );
+        assert_eq!(
+            parse_source_name("plugin-postgresql-12-db-1"),
+            Some(("postgresql".into(), 12, Some("db-1".into())))
+        );
+        assert_eq!(
+            parse_source_name(&source_name("pg", 7, Some("2024"))),
+            Some(("pg".into(), 7, Some("2024".into())))
+        );
+        for bad in [
+            "plugin-",
+            "plugin-x",
+            "plugin-5",
+            "vm-100",
+            "plugin-a-b",
+            "plugin-ab-1-.x",
+            "plugin-Ab-1",
+        ] {
+            assert_eq!(parse_source_name(bad), None, "{bad}");
+        }
+        assert!(valid_plugin_id("example-files") && !valid_plugin_id("pg-15") && !valid_plugin_id("a--b"));
+        assert!(valid_guest_id("db_1.x") && !valid_guest_id("-x") && !valid_guest_id("a/b") && !valid_guest_id(""));
+    }
 
     #[test]
     fn framing_and_limits() {
@@ -414,9 +524,10 @@ mod tests {
         let m: Manifest = serde_json::from_value(serde_json::json!({
             "id": "postgresql", "name": "PostgreSQL", "version": "1.0.0", "publisher": "nexusbackup", "api": 1,
             "kinds": [{"kind": "postgresql", "title": "PostgreSQL server",
-                       "config_schema": {"type": "object"}, "secret_fields": ["password"],
+                       "config_schema": {"type": "object", "properties": {"host": {"type": "string"}, "port": {"type": "integer"}, "password": {"type": "string"}}},
+                       "secret_fields": ["password"],
                        "endpoints": [{"host": "/host", "port": "/port", "default_port": 5432, "proto": "tcp"}],
-                       "restores": [{"id": "download", "title": "Download"}]}]
+                       "restores": [{"id": "download", "title": "Download"}, {"id": "to_target", "title": "Restore"}]}]
         }))
         .unwrap();
         assert_eq!(m.validate(), Ok(()));
@@ -430,6 +541,15 @@ mod tests {
         bad.api = 2;
         assert!(bad.validate().is_err());
         assert!(newer("1.10.0", "1.9.9") && !newer("1.0.0", "1.0.0"));
+        let mut bad = m.clone();
+        bad.id = "pg-15".into();
+        assert!(
+            bad.validate().is_err(),
+            "all-digit component makes source names ambiguous"
+        );
+        let mut bad = m.clone();
+        bad.kinds[0].secret_fields.push("nope".into());
+        assert!(bad.validate().is_err(), "secret fields must be config properties");
         assert_eq!(Manifest::source_kind("postgresql"), "plugin:postgresql");
     }
 }

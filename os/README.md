@@ -44,7 +44,7 @@ not valid JSON, or if `bootc container lint` fails.
 | `sysusers.d/nexus.conf` | `/usr/lib/sysusers.d/` | users `nexus-keyd`, `nexus-chunkstore` (scheduler and its jobs), `nexus-webapi`; groups `nexus-keyd` (keyd socket), `nexus-catalog` (catalog, downloads, update control); `nexus-chunkstore` ∈ `nexus-keyd`, `nexus-catalog`, `kvm` |
 | `tmpfiles.d/nexus.conf` | `/usr/lib/tmpfiles.d/` | state dirs with owner/mode: catalog 2770 root:nexus-catalog, downloads 2750 nexus-chunkstore:nexus-catalog, keyd 0700 nexus-keyd, chunkstore/offsite/escrow/scheduler 0700 nexus-chunkstore (one 0700 store per tenant below chunkstore, created by the scheduler), `/etc/nexus/ssh` 0750 root:nexus-chunkstore, `/run/nexus-nft` |
 | `systemd/*.service,.path,.timer` | `/usr/lib/systemd/system/` | see "Units" |
-| `systemd/10-nexus.preset` | `/usr/lib/systemd/system-preset/` | sshd off; nftables, chronyd, nexus-setup, nexus-nft-sync.{service,path,timer} on; keyd/web-api/scheduler off (nexus-setup enables them) |
+| `systemd/10-nexus.preset` | `/usr/lib/systemd/system-preset/` | sshd off; nftables, chronyd, nexus-setup, nexus-nft-sync.{service,path,timer}, nexus-plugin-install.{service,path} on; keyd/web-api/scheduler off (nexus-setup enables them) |
 | `nftables.conf` | `/etc/sysconfig/nftables.conf` | default deny in and out, allow-list sets (see "Firewall") |
 | `etc/` | `/etc/` | `chrony.conf` (NTS only) and the update/signing files (containers policy, cosign key, update.conf, greenboot.conf, presets, tmpfiles for `/var/lib/nexus/update`) |
 | `greenboot/usr/` | `/usr/` | `nexus-update` agent, `nexus-health` check and their units (`greenboot/tests/` stays out) |
@@ -62,6 +62,7 @@ The root account is locked (`usermod -L`). Emergency access is through the local
 | `nexus-scheduler.service` | nexus-chunkstore (+nexus-catalog, nexus-keyd, kvm) | `nexus_scheduler_t` | spawns `nexus-pve` (`nexus_pve_t`) and `nexus-offsite` (`nexus_offsite_t`); nexus-pve spawns QEMU (`nexus_restorevm_t`); `DeviceAllow=/dev/kvm`; writes the firewall allow-list |
 | `nexus-setup.service` | root | `nexus_setup_t` | first boot on tty1; capabilities CHOWN, FOWNER, DAC_OVERRIDE only |
 | `nexus-nft-sync.{service,path,timer}` | root | `nexus_nftsync_t` → `iptables_t` | CAP_NET_ADMIN only; see "Firewall" |
+| `nexus-plugin-install.{service,path}` | nexus-plugins (+nexus-catalog) | `nexus_plugininstall_t` | oneshot at boot and on `plugins-staging/.trigger`; `PrivateNetwork`; see "Plugins" |
 
 ### Hardening scores (`systemd-analyze security`, in the booted VM, systemd 257)
 
@@ -120,6 +121,52 @@ audit) to collect every denial at once: userdbd lookups and the setup lock file 
 self-connect to its own NBD socket and the restore-VM image dir (nexus-pve), `map` of
 the initramfs (QEMU); (3) the same flow enforcing: no denials; (4) fresh image, fresh
 disk, the whole flow enforcing from the first boot: no denials.
+
+## Plugins (runtime and installer, docs/plugin-system.md)
+
+A plugin is signed, untrusted code. Pieces in the image:
+
+- `/usr/libexec/nexus/nexus-pluginhost` (`nexus_pluginhost_t`, job domain spawned by the
+  scheduler as nexus-chunkstore): the trusted half (store, keyd, sealing, downloads). It
+  starts the plugin binary in a forked child with `NO_NEW_PRIVS`, its own process group,
+  `PR_SET_PDEATHSIG`, lowered rlimits, nice 10, Landlock (install dir, `/usr`, selected
+  `/etc`, its private tmp; TCP connect only to the manifest's ports) and a seccomp
+  allowlist, then `execveat`s `bin/plugin`. The scheduler unit therefore allows
+  `SystemCallFilter=@sandbox setrlimit prlimit64 setpriority` (lowering only, no
+  CAP_SYS_RESOURCE). `RestrictNamespaces=yes` stays: there are no user namespaces on the
+  appliance, the host's best-effort `unshare` fails and the plugin keeps the
+  nexus-chunkstore uid, so SELinux is the boundary between plugin and host. The plugin
+  also inherits the scheduler's `MemoryDenyWriteExecute` (no JIT) and its address
+  families (no AF_NETLINK: glibc's `AI_ADDRCONFIG` probe falls back).
+- `nexus_plugin_t` is entered only from `nexus_pluginhost_t` through `nexus_plugin_exec_t`
+  (`/var/lib/nexus/plugins/<id>/<version>/bin/plugin`) and is outside the `nexus_domain`
+  attribute. It may read its install tree, `/usr`, generic `/etc` files, the trust store
+  and `resolv.conf`, run the image's tools in-domain, manage its tmp dir
+  (`nexus_plugin_tmp_t`, `/tmp/nexus-plugin-<job>-<rand>` in the scheduler's PrivateTmp,
+  never executable) and make TCP connections to any port; nftables and Landlock limit the
+  destinations. `neverallow`s: no nexus data (keys, stores, escrow, catalog, downloads,
+  SSH keys, job configs, secrets, agent CA, replication keys, `/etc/nexus`, staging), not
+  even a directory search; no connect to any nexus socket; no capabilities; no
+  listen/accept; no write to its own code or data.
+- `/usr/libexec/nexus/nexus-plugin-install` (`nexus-plugin-install.service`, user
+  `nexus-plugins`, no network) is the only writer of the install tree (DAC: dirs 0555,
+  files 0444, owner nexus-plugins; SELinux: `neverallow` on `nexus_plugin_data_t` /
+  `nexus_plugin_exec_t` writes for every other nexus domain). It verifies approved
+  bundles from `/var/lib/nexus/plugins-staging` (2770 nexus-webapi:nexus-plugins) against
+  the project keys in `/etc/pki/nexus/plugin-keys/*.pub` and the publisher keys in the
+  catalog, unpacks into `<id>/.<version>.tmp/`, renames that to `<version>/`, switches the
+  `<id>/current` symlink and deletes the staged files. `bin/plugin` gets
+  `nexus_plugin_exec_t` by a name type transition (created under exactly that name).
+  `nexus-plugin-install.path` starts it when the web-api touches
+  `plugins-staging/.trigger` after a quorum approval.
+- `/usr/bin/nexus-plugin`: console tool (`verify`, `inspect` a bundle). The test plugin
+  `nexus-test-plugin` is never shipped (checked at image build).
+- Development images trust `plugin-keys/TEST-KEY-DO-NOT-SHIP.pub` (the TEST release key);
+  `release/inject-keys.sh` replaces it with `release/keys/*.pub` and
+  `release/check-trust.sh --release` refuses it.
+
+Lab: `lab/appliance/plugins.sh` (signed example bundle, quorum install, backups,
+download compared against the source dir, 0 nexus AVCs).
 
 ## Firewall (`nftables.conf`, `nexus-nft-sync`)
 

@@ -1,9 +1,13 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
   import { notify } from '../lib/notify.svelte';
+  import { href } from '../lib/router.svelte';
+  import { fmtBytes } from '../lib/format';
   import { t } from '../lib/i18n';
-  import type { Agent, Group, Policy, Source, Tenant } from '../lib/types';
+  import { runJob } from '../lib/jobs';
+  import { isPluginKind, pluginKinds } from '../lib/plugins';
+  import type { Agent, Group, Plugin, PluginGuest, Policy, Source, Tenant } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
 
@@ -12,6 +16,7 @@
   let sources: Source[] = $state([]);
   let policies: Policy[] = $state([]);
   let agents: Agent[] = $state([]);
+  let plugins: Plugin[] = $state([]);
   let error: string | null = $state(null);
   let loaded = $state(false);
 
@@ -28,9 +33,16 @@
     } catch (e) {
       error = errText(e);
     }
+    try {
+      plugins = await get<Plugin[]>('/plugins');
+    } catch {
+      /* plugin sources then offer no guest list */
+    }
     loaded = true;
   }
   onMount(load);
+  const kinds = $derived(pluginKinds(plugins));
+  const kindTitle = (k: string) => t.sources.kinds[k] ?? kinds.get(k)?.kind.title ?? '—';
 
   const sourceName = (id: number) => sources.find((s) => s.id === id)?.name ?? `#${id}`;
   const policyName = (id: number) => policies.find((p) => p.id === id)?.name ?? `#${id}`;
@@ -56,6 +68,45 @@
     const s = sources.find((x) => x.id === Number(f.source_id));
     return s?.kind === 'nfs' || s?.kind === 'smb' ? s : null;
   });
+  // A plugin source: guests are ids from the plugin's guest list (if its kind has one), else none.
+  const pluginSource = $derived.by(() => {
+    const s = sources.find((x) => x.id === Number(f.source_id));
+    return s && isPluginKind(s.kind) ? s : null;
+  });
+  const pluginGuests = $derived(pluginSource ? (kinds.get(pluginSource.kind)?.kind.guests ?? null) : null);
+  const GUEST_RE = /^[A-Za-z0-9._-]{1,64}$/;
+
+  // "Load <guests.title>": plugin_guests job against the source.
+  const ctl = new AbortController();
+  onDestroy(() => ctl.abort());
+  let guestList: { source: number; guests: PluginGuest[] } | null = $state(null);
+  let guestsBusy = $state(false);
+  let guestsJob: number | null = $state(null);
+  async function loadGuests() {
+    const s = pluginSource;
+    if (!s) return;
+    guestsBusy = true;
+    guestsJob = null;
+    try {
+      const r = await runJob('plugin_guests', s.tenant, { source_id: s.id }, ctl.signal);
+      if (r && r.job.state === 'ok') guestList = { source: s.id, guests: r.job.result?.guests ?? [] };
+      else if (r) {
+        guestsJob = r.job.id;
+        notify('error', t.groups.guestsFailed);
+      }
+    } catch (e) {
+      notify('error', errText(e));
+    } finally {
+      guestsBusy = false;
+    }
+  }
+  /** Loaded guests of the selected source plus already selected ids that were not listed. */
+  const guestChoices = $derived.by(() => {
+    const listed = guestList && guestList.source === Number(f.source_id) ? guestList.guests : [];
+    const extra = f.datasets.filter((g) => !listed.some((x) => x.id === g)).map((id) => ({ id, title: id }) as PluginGuest);
+    return [...listed, ...extra];
+  });
+
   // Keep the source selection valid when the tenant changes.
   $effect(() => {
     if (open && !tenantSources.some((s) => s.id === f.source_id)) f.source_id = tenantSources[0]?.id ?? 0;
@@ -72,14 +123,31 @@
       guests: (x?.guests ?? []).filter((g) => typeof g === 'number').join(', '),
       datasets: (x?.guests ?? []).filter((g): g is string => typeof g === 'string'),
     };
+    lastSource = f.source_id;
+    guestList = null;
     open = true;
   }
+  // Another source: the selected guests/datasets belonged to the old one.
+  let lastSource = 0;
+  $effect(() => {
+    if (!open || Number(f.source_id) === lastSource) return;
+    lastSource = Number(f.source_id);
+    f.datasets = [];
+  });
 
   async function save(e: SubmitEvent) {
     e.preventDefault();
     let guests: (number | string)[];
     if (linuxSource) {
       guests = [linuxSource.config.agent_id];
+    } else if (pluginSource) {
+      // (f.datasets holds the selected guest ids of a plugin source too)
+      guests = pluginGuests?.list ? f.datasets : [];
+      const bad = (guests as string[]).find((g) => !GUEST_RE.test(g));
+      if (bad) {
+        notify('error', t.groups.guestInvalid(bad));
+        return;
+      }
     } else if (shareSource) {
       guests = [];
     } else if (nasSource) {
@@ -142,7 +210,7 @@
               <td class="mono"
                 >{x.guests.length
                   ? x.guests.map(guestText).join(', ')
-                  : (t.sources.kinds[sources.find((s) => s.id === x.source_id)?.kind ?? ''] ?? '—')}</td
+                  : kindTitle(sources.find((s) => s.id === x.source_id)?.kind ?? '')}</td
               >
               <td class="actions">
                 <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
@@ -184,6 +252,30 @@
     </div>
     {#if linuxSource}
       <p class="muted">{t.groups.linuxGuest(agentName(linuxSource.config.agent_id))}</p>
+    {:else if pluginSource}
+      {#if pluginGuests?.list}
+        <fieldset class="field">
+          <legend>{t.groups.pluginGuests(pluginGuests.title)}</legend>
+          <div class="row">
+            <button type="button" class="small" disabled={guestsBusy} onclick={loadGuests}
+              >{guestsBusy ? t.groups.loadingGuests : t.groups.loadGuests(pluginGuests.title)}</button
+            >
+            {#if guestsJob}<a href={href(`/jobs/${guestsJob}`)}>{t.jobs.detail(guestsJob)}</a>{/if}
+          </div>
+          {#each guestChoices as g (g.id)}
+            <label class="inline-check"
+              ><input type="checkbox" value={g.id} bind:group={f.datasets} /><span class="mono">{g.id}</span
+              >{#if g.title !== g.id}<span>{g.title}</span>{/if}{#if g.size !== undefined}<span class="muted"
+                  >{fmtBytes(g.size)}</span
+                >{/if}</label
+            >
+          {:else}
+            <p class="hint">{t.groups.guestsLoadHint(pluginGuests.title)}</p>
+          {/each}
+        </fieldset>
+      {:else}
+        <p class="muted">{t.groups.wholeSource}</p>
+      {/if}
     {:else if shareSource}
       <p class="muted">{t.groups.wholeShare}</p>
     {:else if nasSource}

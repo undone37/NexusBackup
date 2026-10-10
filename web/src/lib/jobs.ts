@@ -16,6 +16,11 @@ export const JOB_KINDS: JobKind[] = [
   'verify',
   'agent_enroll',
   'agent_update',
+  'plugin_validate',
+  'plugin_guests',
+  'plugin_backup',
+  'plugin_restore',
+  'plugin_mount',
 ];
 
 /** Human-readable job kind (falls back to the raw kind for kinds the UI does not know yet). */

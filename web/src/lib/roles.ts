@@ -14,6 +14,8 @@ export const can = {
   ackAlert: (u: User | null) => !!u && u.role !== 'tenant_user',
   // Replication peers/sources are appliance-wide: not for tenant-scoped users.
   viewReplication: (u: User | null) => !!u && u.role !== 'tenant_user' && !u.tenant,
+  // Plugins are appliance-wide; admins change them, security officers / operators may look.
+  viewPlugins: (u: User | null) => !!u && u.role !== 'tenant_user',
   syncReplication: (u: User | null) => u?.role === 'admin' || u?.role === 'operator',
 };
 
