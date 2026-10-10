@@ -119,11 +119,18 @@ Code references are to this repository. "Gap" lists what is missing or only part
   - **changing an existing tenant offsite target** (new);
   - privileged account creation, re-enable, demote, disable-last and credential resets.
 - Approvals of objects that changed after the request are refused (new). The GC valve is at 20 % (`Store::gc`, scheduler quorum).
+- Approvals are optional (plan §2, 2026-10-10; `crates/web-api/src/approvals.rs`, catalog v9 `settings.approvals_enabled`):
+  - approvers are admins and security officers, never the requester;
+  - enabling is immediate; disabling is a quorum request `approvals.disable` (requester + one other approver);
+  - with approvals enabled, a user change that would leave fewer than two possible approvers (enabled, activated admins / security officers) is refused, and enabling needs a second possible approver (no deadlock);
+  - disabled: gated actions execute directly, audited with `"approvals": "disabled"`; a GC over the valve waits for an explicit admin confirmation (`POST /gc/approve-large`, honoured by the scheduler only while approvals are still disabled); replication DEK exports run on the admin's request (the scheduler accepts a self-decided export only while approvals are disabled).
+- Self-enrollment (`crates/web-api/src/activation.rs`): admins create accounts without credentials and get a one-time activation code (128 bit, 72 h, SHA-256 digest stored). For admin / security officer accounts with approvals enabled the code is split: part 1 to the requesting admin, part 2 to the approver; neither alone activates. An account waiting for activation with a code one admin knows cannot be promoted / enabled as privileged while approvals are enabled.
 - The audit chain is in `crates/catalog/src/lib.rs`. The RBAC matrix and audit completeness are checked by the test `rbac_matrix_and_audit_completeness`.
 - **Gaps:**
   - M-6: an admin can stop *future* backups by removing guests or breaking a source. There is no quorum for this; it is only detected by the failed-job and lag alerts.
   - ~~M-5~~ fixed: every password / TOTP change (own or another user's) needs the actor's current password and a fresh TOTP code.
   - M-1: the audit chain is not anchored off-box.
+  - **Accepted residual (user decision 2026-10-10):** with approvals disabled — the default for a single administrator — one admin can weaken policies, delete configuration, confirm a large GC and export DEKs to a replication peer. Retention locks still protect existing snapshots; everything is audited; the dashboard recommends enabling approvals once two people could approve. Accounts created while approvals were off were provisioned by one admin.
 
 **T3 – time manipulation**
 - `crates/chunkstore/src/clock.rs`: bounded forward slew, backward jumps ignored, persisted, and **non-finite values refused** (new). chrony is NTS-only with `minsources 2` (`os/chrony.conf`).
@@ -204,7 +211,8 @@ Code references are to this repository. "Gap" lists what is missing or only part
 
 **Findings:**
 - L-1: the lockout is per user name, so anyone can lock an admin out for 15 min (accepted, documented).
-- M-5 (fixed): credential changes did not need the current password. Now `PUT /users/{id}` with `password` or `reset_totp` requires `current_password` + `current_totp` of the acting user, with the login checks (replay, rate limiter, audit `auth.reauth_failed`).
+- M-5 (fixed): credential changes did not need the current password. Now `PUT /users/{id}` with `password` or `reset_totp` (own account only) or `new_activation` (another account) requires `current_password` + `current_totp` of the acting user, with the login checks (replay, rate limiter, audit `auth.reauth_failed`).
+- Self-enrollment (2026-10-10): `POST /auth/activate/begin|complete` (no session, like login). Wrong, expired or unknown codes answer the same 401, are audited (`auth.activate_failed`) and count toward the login limiter per user and per IP. The code is checked again at `complete`; password, cleared activation and consumed TOTP step are written in one conditional UPDATE (code and TOTP replays fail). The new TOTP seed is shown only to the person activating. A pending account has no valid password hash, so it cannot log in, and its sessions are refused.
 
 ### 3.2 RBAC matrix vs. implementation
 
@@ -230,7 +238,12 @@ The implementation matched the matrix. The gaps found were in *scoping*: tenant-
 | `tenant: null` on PUT /users | Deserialized as "keep" (functional bug). Fixed. |
 | User role change while an enable request is pending | The approver now always sees the resulting role. |
 | Approving your own request; renaming to bypass | Refused (by name); names are immutable and there is no user deletion. |
-| GC > 20 % | The scheduler raises a quorum (existing). |
+| GC > 20 % | The scheduler raises a quorum (existing); with approvals disabled it waits for an explicit, audited admin confirmation instead of running silently. |
+| Admin creates a privileged account and activates it themselves (sock puppet approver) | Prevented while approvals are enabled: the requester gets only part 1 of the activation code, the approver part 2. |
+| Admin issues an operator's code, activates it, then requests promotion | Promotion of an account still waiting with an admin-known code is refused (409); after the person activated, the approver must verify the person (out of band). |
+| Disabling approvals, then acting alone | Disabling is itself a quorum request needing a second approver. |
+| Disabling / demoting approvers until only the requester is left | Refused with approvals enabled (fewer than two possible approvers). |
+| Forging a confirmed GC through `POST /jobs` | `gc` params are `deny_unknown_fields` without `approved`/`confirmed_by`; the scheduler ignores `confirmed_by` while approvals are enabled. |
 
 ### 3.4 Audit completeness
 

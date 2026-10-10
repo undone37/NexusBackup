@@ -246,7 +246,7 @@ fn run_steps(plan: &Plan, ctx: &Ctx, log: &Arc<Mutex<BoundedLog>>, stdout: &mut 
             Step::Gc { approved } => match store.as_ref().unwrap().gc(*approved) {
                 Ok(st) => log.lock().unwrap().line(&format!(
                     "local gc{}: {} chunks, {} referenced, {} deleted, {} kept (grace)",
-                    if *approved { " (quorum approved)" } else { "" },
+                    if *approved { " (approved)" } else { "" },
                     st.total,
                     st.marked,
                     st.deleted,

@@ -17,7 +17,11 @@ npm run preview           # serves dist with the production CSP header + the moc
 
 Mock users: `admin`, `so`, `so2` (security officers), `op` (operator) and
 `acme` (tenant user of tenant `acme`). The password for all of them is `nexus`,
-and any 6-digit code works as the TOTP code.
+and any 6-digit code works as the TOTP code. The mock starts with approvals
+disabled (so the dashboard recommends enabling them) and one large GC waiting for
+confirmation. `newop` is an operator pending activation: on the sign-in page choose
+"Activate account" and enter the code `DEMO-ACTIVATE-NEWOP-2026` (any 6-digit
+authenticator code is accepted).
 
 To use a real web-api instead of the mock:
 `NEXUS_API=https://appliance:8443 npm run dev`. Vite then proxies `/api` and

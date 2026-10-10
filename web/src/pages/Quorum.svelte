@@ -1,22 +1,31 @@
 <script lang="ts">
   import { askConfirm } from '../lib/confirm.svelte';
   import { onMount } from 'svelte';
-  import { get, post, act, errText } from '../lib/api';
+  import { get, post, put, act, errText } from '../lib/api';
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
   import { fmtAgo, fmtTime, fmtValue } from '../lib/format';
   import { t } from '../lib/i18n';
-  import type { QuorumRequest } from '../lib/types';
+  import type { Activation, ApprovalsState, GcPending, QuorumRequest } from '../lib/types';
   import ErrorBanner from '../components/ErrorBanner.svelte';
+  import ActivationCode from '../components/ActivationCode.svelte';
 
   let items: QuorumRequest[] = $state([]);
   let error: string | null = $state(null);
   let loaded = $state(false);
   let onlyPending = $state(true);
 
+  let settings: ApprovalsState | null = $state(null);
+  let gc: GcPending[] = $state([]);
+  const isAdmin = $derived(session.user?.role === 'admin');
+
   async function load() {
     try {
-      items = await get<QuorumRequest[]>('/quorum');
+      [items, settings, gc] = await Promise.all([
+        get<QuorumRequest[]>('/quorum'),
+        get<ApprovalsState>('/settings/approvals'),
+        get<GcPending[]>('/gc/pending'),
+      ]);
       error = null;
     } catch (e) {
       error = errText(e);
@@ -54,7 +63,33 @@
   async function decide(q: QuorumRequest, verb: 'approve' | 'reject') {
     // approving executes an irreversible or weakening action: never on a single misclick
     if (verb === 'approve' && !(await askConfirm(t.quorum.approveConfirm(q.id, humanize(q.action), q.requested_by)))) return;
-    const ok = await act(post(`/quorum/${q.id}/${verb}`), verb === 'approve' ? t.quorum.approved : t.quorum.rejected);
+    const ok = await act(
+      post<{ activation?: Activation }>(`/quorum/${q.id}/${verb}`),
+      verb === 'approve' ? t.quorum.approved : t.quorum.rejected,
+    );
+    // approving a privileged account's activation releases the second half of its code to the approver
+    const a = ok && !ok.quorum ? ok.data.activation : undefined;
+    if (a) {
+      second = { name: a.name ?? String(q.params?.name ?? ''), activation: a };
+      secondOpen = true;
+    }
+    if (ok) load();
+  }
+
+  let second = $state<{ name: string; activation: Activation | null }>({ name: '', activation: null });
+  let secondOpen = $state(false);
+
+  async function toggle() {
+    if (!settings) return;
+    const enable = !settings.enabled;
+    if (!(await askConfirm(enable ? t.quorum.enableConfirm : t.quorum.disableConfirm))) return;
+    const ok = await act(put('/settings/approvals', { enabled: enable }), t.quorum.enabledDone);
+    if (ok) load();
+  }
+
+  async function runGc(g: GcPending) {
+    if (!(await askConfirm(t.quorum.gcConfirm(g.tenant)))) return;
+    const ok = await act(post<{ job_id: number }>('/gc/approve-large', { tenant: g.tenant }), (d) => t.quorum.gcQueued(d.job_id));
     if (ok) load();
   }
 </script>
@@ -66,6 +101,57 @@
 <p class="muted">{t.quorum.intro}</p>
 
 <ErrorBanner {error} />
+
+{#if settings}
+  <section class="card" aria-labelledby="q-settings">
+    <h2 id="q-settings">
+      <span>{t.quorum.settings}</span>
+      <span class="chip {settings.enabled ? 'ok' : 'warn'}">{settings.enabled ? t.quorum.on : t.quorum.off}</span>
+    </h2>
+    <p>{settings.enabled ? t.quorum.enabledText : t.quorum.disabledText}</p>
+    <p class="muted">{t.quorum.approvers(settings.possible_approvers)} {t.quorum.toggleHint}</p>
+    {#if settings.pending_disable}
+      <p class="banner pending">{t.quorum.disablePending(settings.pending_disable)}</p>
+    {:else if isAdmin}
+      <div class="form-actions">
+        <button type="button" class={settings.enabled ? 'danger' : 'primary'} onclick={toggle}>
+          {settings.enabled ? t.quorum.disable : t.quorum.enable}
+        </button>
+      </div>
+    {/if}
+  </section>
+{/if}
+
+{#if gc.length}
+  <section class="card" aria-labelledby="q-gc">
+    <h2 id="q-gc">{t.quorum.gcTitle}</h2>
+    <p class="muted">{t.quorum.gcIntro}</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">{t.tenant}</th>
+            <th scope="col">{t.quorum.reason}</th>
+            <th scope="col">{t.quorum.requested}</th>
+            <th scope="col"><span class="visually-hidden">{t.actions}</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each gc as g (g.tenant)}
+            <tr>
+              <td><strong>{g.tenant}</strong></td>
+              <td>{g.reason}</td>
+              <td class="nowrap">{fmtTime(g.created)}</td>
+              <td class="actions">
+                {#if isAdmin}<button type="button" class="small danger" onclick={() => runGc(g)}>{t.quorum.gcRun}</button>{/if}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{/if}
 
 {#if !loaded}
   <p class="muted" aria-busy="true">{t.loading}</p>
@@ -134,3 +220,5 @@
     </article>
   {/each}
 {/if}
+
+<ActivationCode bind:open={secondOpen} name={second.name} activation={second.activation} />

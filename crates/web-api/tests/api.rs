@@ -201,6 +201,57 @@ impl T {
         }
     }
 
+    /// Unauthenticated POST (activation), optionally from a given client IP.
+    async fn anon_post(&self, path: &str, body: Value, ip: Option<&str>) -> R {
+        let mut req = Self::req(Method::POST, path, None, Some(&body));
+        if let Some(ip) = ip {
+            req.extensions_mut()
+                .insert(ConnectInfo(SocketAddr::new(ip.parse().unwrap(), 50000)));
+        }
+        self.send(req).await
+    }
+
+    /// Self-enrollment as the person would do it: code → own authenticator →
+    /// own password (`PW`). Afterwards `login(name)` works.
+    async fn activate(&mut self, name: &str, code: &str, ip: Option<&str>) {
+        let r = self
+            .anon_post("/api/v1/auth/activate/begin", json!({"name": name, "code": code}), ip)
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "begin {name}: {:?}", r.body);
+        let secret = r.body["totp_secret"].as_str().unwrap().to_owned();
+        assert!(r.body["totp_uri"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("otpauth://totp/NexusBackup:{name}?")));
+        let r = self
+            .anon_post(
+                "/api/v1/auth/activate/complete",
+                json!({"name": name, "code": code, "password": PW,
+                       "totp": catalog::auth::totp_now(&secret).unwrap()}),
+                ip,
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "complete {name}: {:?}", r.body);
+        self.secrets.insert(name.into(), secret);
+        if let Ok(id) = self
+            .st
+            .cat
+            .conn()
+            .query_row("SELECT id FROM users WHERE name = ?1", [name], |r| r.get(0))
+        {
+            self.ids.insert(name.into(), id);
+        }
+    }
+
+    fn set_approvals(&self, on: bool) {
+        catalog::set_setting(
+            &self.st.cat.conn(),
+            "approvals_enabled",
+            if on { "true" } else { "false" },
+        )
+        .unwrap();
+    }
+
     fn audit_actions(&self) -> Vec<String> {
         let c = self.st.cat.conn();
         let mut s = c.prepare("SELECT action FROM audit ORDER BY seq").unwrap();
@@ -580,26 +631,27 @@ async fn rbac_denials_per_role() {
         forbidden
     );
     assert_eq!(
-        t.post(
-            "/api/v1/users",
-            &so,
-            json!({"name": "x", "password": PW, "role": "operator"})
-        )
-        .await
-        .status,
+        t.post("/api/v1/users", &so, json!({"name": "x", "role": "operator"}))
+            .await
+            .status,
         forbidden
     );
     assert_eq!(t.get("/api/v1/audit", &so).await.status, StatusCode::OK);
     assert_eq!(t.get("/api/v1/audit/verify", &so).await.body["ok"], json!(true));
     assert_eq!(t.get("/api/v1/sources", &so).await.status, StatusCode::OK);
 
-    // admin cannot decide quorum requests
+    // admins are approvers too (plan §2): an unknown request is 404, not 403;
+    // operators cannot decide
     assert_eq!(
-        t.post("/api/v1/quorum/1/approve", &admin, json!({})).await.status,
-        forbidden
+        t.post("/api/v1/quorum/999/approve", &admin, json!({})).await.status,
+        StatusCode::NOT_FOUND
     );
     assert_eq!(
-        t.post("/api/v1/quorum/1/reject", &admin, json!({})).await.status,
+        t.post("/api/v1/quorum/999/reject", &admin, json!({})).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        t.post("/api/v1/quorum/999/approve", &op, json!({})).await.status,
         forbidden
     );
     assert_eq!(t.get("/api/v1/audit", &admin).await.status, StatusCode::OK);
@@ -902,72 +954,91 @@ async fn privileged_user_grants_need_quorum() {
     let mut t = T::new();
     let admin = t.login("alice").await;
     let sam = t.login("sam").await;
+    let sue = t.login("sue").await;
 
+    // an operator: no password from the admin, no TOTP secret, a one-time code
     let r = t
-        .post(
-            "/api/v1/users",
-            &admin,
-            json!({"name": "olga", "password": PW, "role": "operator"}),
-        )
+        .post("/api/v1/users", &admin, json!({"name": "olga", "role": "operator"}))
         .await;
     assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
-    assert!(r.body["totp_uri"]
-        .as_str()
-        .unwrap()
-        .starts_with("otpauth://totp/NexusBackup:olga?"));
+    assert!(r.body.get("totp_uri").is_none());
+    let a = &r.body["activation"];
+    assert_eq!((a["part"].as_i64(), a["parts"].as_i64()), (Some(1), Some(1)));
+    assert_eq!(a["path"], "/#/activate?name=olga");
+    assert!(a["expires"].as_i64().unwrap() > catalog::now() + 71 * 3600);
+    assert_eq!(r.body["user"]["pending_activation"], json!(true));
     let olga = r.body["user"]["id"].as_i64().unwrap();
+    let olga_code = a["code"].as_str().unwrap().to_owned();
+    assert_eq!(olga_code.len(), 26, "128 bit base32");
+    let stored = t.scalar::<String>(&format!("SELECT activation_hash FROM users WHERE id = {olga}"));
+    assert!(!stored.contains(&olga_code), "stored hashed");
     assert_eq!(
         t.post(
             "/api/v1/users",
             &admin,
-            json!({"name": "short", "password": "short", "role": "operator"})
-        )
-        .await
-        .status,
-        StatusCode::BAD_REQUEST
-    );
-    assert_eq!(
-        t.post(
-            "/api/v1/users",
-            &admin,
-            json!({"name": "tu", "password": PW, "role": "tenant_user"})
+            json!({"name": "pw", "password": PW, "role": "operator"})
         )
         .await
         .status,
         StatusCode::BAD_REQUEST,
-        "tenant required"
-    );
-
-    // new admin: created disabled + quorum
-    let r = t
-        .post(
-            "/api/v1/users",
-            &admin,
-            json!({"name": "ada", "password": PW, "role": "admin"}),
-        )
-        .await;
-    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
-    assert!(r.body["totp_uri"].is_string() && r.body["user"]["disabled"] == json!(true));
-    let q = r.body["quorum_id"].as_i64().unwrap();
-    let ada = r.body["user"]["id"].as_i64().unwrap();
-    let secret: String =
-        t.st.cat
-            .conn()
-            .query_row("SELECT totp_secret FROM users WHERE id = ?1", [ada], |r| r.get(0))
-            .unwrap();
-    assert!(secret.starts_with("enc:v1:"), "TOTP seed stored encrypted");
-    let secret = t.st.totp.decrypt("ada", &secret).unwrap().to_string();
-    t.secrets.insert("ada".into(), secret);
-    assert_eq!(
-        t.try_login("ada", &t.code("ada"), Some("10.1.1.1")).await.status,
-        StatusCode::UNAUTHORIZED
+        "the admin cannot set a password"
     );
     assert_eq!(
-        t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({}))
+        t.post("/api/v1/users", &admin, json!({"name": "tu", "role": "tenant_user"}))
             .await
             .status,
-        StatusCode::OK
+        StatusCode::BAD_REQUEST,
+        "tenant required"
     );
+    // a pending account cannot log in, whatever the admin tries
+    assert_eq!(
+        t.try_login("olga", "000000", Some("10.1.1.2")).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    t.activate("olga", &olga_code, Some("10.1.1.3")).await;
+    t.login("olga").await;
+
+    // a new admin: created disabled + quorum; the requester gets part 1 only
+    let r = t
+        .post("/api/v1/users", &admin, json!({"name": "ada", "role": "admin"}))
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    assert_eq!(r.body["user"]["disabled"], json!(true));
+    assert_eq!(r.body["activation"]["parts"], 2);
+    assert_eq!(r.body["activation"]["expires"], Value::Null);
+    let part1 = r.body["activation"]["code"].as_str().unwrap().to_owned();
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    let begin = |code: String| {
+        let t = &t;
+        async move {
+            t.anon_post(
+                "/api/v1/auth/activate/begin",
+                json!({"name": "ada", "code": code}),
+                Some("10.2.0.1"),
+            )
+            .await
+            .status
+        }
+    };
+    assert_eq!(begin(part1.clone()).await, StatusCode::UNAUTHORIZED, "not approved yet");
+    // the requester cannot approve; the quorum list does not reveal the code digest
+    assert_eq!(
+        t.post(&format!("/api/v1/quorum/{q}/approve"), &admin, json!({}))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let list = String::from_utf8(t.get("/api/v1/quorum?state=pending", &sam).await.raw).unwrap();
+    assert!(list.contains("<redacted>"), "{list}");
+    let r = t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let a = &r.body["activation"];
+    assert_eq!((a["name"].as_str(), a["part"].as_i64()), (Some("ada"), Some(2)));
+    let part2 = a["code"].as_str().unwrap().to_owned();
+    // neither half alone activates: not the requesting admin, not the approver
+    assert_eq!(begin(part1.clone()).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(begin(part2.clone()).await, StatusCode::UNAUTHORIZED);
+    t.activate("ada", &format!("{part1} {part2}"), Some("10.2.0.2")).await;
     t.login("ada").await;
 
     // promoting an operator is gated, demoting/disabling a non-last admin is not
@@ -983,6 +1054,7 @@ async fn privileged_user_grants_need_quorum() {
         t.scalar::<String>(&format!("SELECT role FROM users WHERE id = {olga}")),
         "operator"
     );
+    let ada = t.ids["ada"];
     assert_eq!(
         t.put(&format!("/api/v1/users/{ada}"), &admin, json!({"disabled": true}))
             .await
@@ -1007,33 +1079,69 @@ async fn privileged_user_grants_need_quorum() {
         .status,
         StatusCode::ACCEPTED
     );
-    // resetting a security officer's credentials is gated; the quorum list hides the new secrets
+
+    // another user's password / authenticator: only by a new activation code
+    for body in [json!({"reset_totp": true}), json!({"password": "a brand new password"})] {
+        let r = t
+            .put(&format!("/api/v1/users/{olga}"), &admin, t.reauth("alice", body))
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    }
+    // a security officer's new activation is gated and split; the old
+    // credentials keep working until it is approved
     let r = t
         .put(
             &format!("/api/v1/users/{}", t.ids["sam"]),
             &admin,
-            t.reauth("alice", json!({"reset_totp": true, "password": "a brand new password"})),
+            t.reauth("alice", json!({"new_activation": true})),
         )
         .await;
-    assert_eq!(r.status, StatusCode::ACCEPTED);
-    assert!(r.body["totp_uri"].is_string());
-    let list = t.get("/api/v1/quorum?state=pending", &sam).await;
-    let raw = String::from_utf8(list.raw).unwrap();
-    assert!(raw.contains("<redacted>") && !raw.contains("$argon2id$"));
-    // a plain operator reset is direct
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    assert_eq!(r.body["activation"]["parts"], 2);
+    let sam1 = r.body["activation"]["code"].as_str().unwrap().to_owned();
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    t.login("sam").await;
+    let r = t.post(&format!("/api/v1/quorum/{q}/approve"), &sue, json!({})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let sam2 = r.body["activation"]["code"].as_str().unwrap().to_owned();
+    assert_eq!(
+        t.try_login("sam", &t.code("sam"), Some("10.1.1.4")).await.status,
+        StatusCode::UNAUTHORIZED,
+        "old credentials invalid after approval"
+    );
+    t.activate("sam", &format!("{sam1}{sam2}"), Some("10.1.1.5")).await;
+    t.login("sam").await;
+
+    // a plain operator's new activation is direct: old credentials stop at once
     let r = t
         .put(
             &format!("/api/v1/users/{olga}"),
             &admin,
-            t.reauth("alice", json!({"reset_totp": true})),
+            t.reauth("alice", json!({"new_activation": true})),
         )
         .await;
-    assert_eq!(r.status, StatusCode::OK);
-    assert!(r.body["totp_uri"].is_string());
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.body["activation"]["parts"], 1);
+    assert_eq!(r.body["user"]["pending_activation"], json!(true));
+    assert_eq!(
+        t.try_login("olga", &t.code("olga"), Some("10.1.1.6")).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    // ... and while it waits with a code the admin knows, it cannot be promoted
+    let r = t
+        .put(&format!("/api/v1/users/{olga}"), &admin, json!({"role": "admin"}))
+        .await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.body);
 
     let users = t.get("/api/v1/users", &admin).await;
     let raw = String::from_utf8(users.raw).unwrap();
-    assert!(!raw.contains("password_hash") && !raw.contains("totp_secret") && !raw.contains("$argon2"));
+    assert!(
+        !raw.contains("password_hash")
+            && !raw.contains("totp_secret")
+            && !raw.contains("$argon2")
+            && !raw.contains("activation_hash"),
+        "{raw}"
+    );
     t.finish();
 }
 
@@ -1460,8 +1568,10 @@ async fn rbac_matrix_and_audit_completeness() {
         )
         .unwrap();
     let alert = t.scalar::<i64>("SELECT MAX(id) FROM alerts");
-    // a pending request for the approve/reject rows
-    let r = t.delete(&format!("/api/v1/groups/{}", ids["grp_globex"]), &admin).await;
+    // a pending request for the approve/reject rows, made by another admin
+    t.add_user("adam", "admin", None);
+    let adam = t.login("adam").await;
+    let r = t.delete(&format!("/api/v1/groups/{}", ids["grp_globex"]), &adam).await;
     let qid = r.body["quorum_id"].as_i64().unwrap();
     let (src, grp, pol, job) = (ids["src_acme"], ids["grp_acme"], ids["policy"], ids["job_acme"]);
     let all = "ASOT";
@@ -1529,7 +1639,15 @@ async fn rbac_matrix_and_audit_completeness() {
         (
             Method::POST,
             "/api/v1/users".into(),
-            Some(json!({"name": "rbac-u", "password": PW, "role": "operator"})),
+            Some(json!({"name": "rbac-u", "role": "operator"})),
+            "A",
+        ),
+        (Method::GET, "/api/v1/settings/approvals".into(), None, "ASO"),
+        (Method::GET, "/api/v1/gc/pending".into(), None, "ASO"),
+        (
+            Method::POST,
+            "/api/v1/gc/approve-large".into(),
+            Some(json!({"tenant": "acme"})),
             "A",
         ),
         (
@@ -1611,13 +1729,13 @@ async fn rbac_matrix_and_audit_completeness() {
             Method::POST,
             format!("/api/v1/quorum/{qid}/reject"),
             Some(json!({})),
-            "S",
+            "AS",
         ),
         (
             Method::POST,
             format!("/api/v1/quorum/{qid}/approve"),
             Some(json!({})),
-            "S",
+            "AS",
         ),
         (Method::POST, "/api/v1/auth/logout".into(), Some(json!({})), all),
     ];
@@ -1800,14 +1918,14 @@ async fn inline_private_keys_are_refused() {
 /// admin would write across tenants and could lift its own scope.
 #[tokio::test]
 async fn privileged_accounts_are_never_tenant_scoped() {
-    let t = T::new();
+    let mut t = T::new();
     let admin = t.login("alice").await;
     for role in ["admin", "security_officer"] {
         let r = t
             .post(
                 "/api/v1/users",
                 &admin,
-                json!({"name": format!("scoped-{role}"), "password": PW, "role": role, "tenant": "acme"}),
+                json!({"name": format!("scoped-{role}"), "role": role, "tenant": "acme"}),
             )
             .await;
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{role}: {:?}", r.body);
@@ -1817,10 +1935,12 @@ async fn privileged_accounts_are_never_tenant_scoped() {
         .post(
             "/api/v1/users",
             &admin,
-            json!({"name": "scoped-op", "password": PW, "role": "operator", "tenant": "acme"}),
+            json!({"name": "scoped-op", "role": "operator", "tenant": "acme"}),
         )
         .await;
     let id = r.body["user"]["id"].as_i64().unwrap();
+    t.activate("scoped-op", r.body["activation"]["code"].as_str().unwrap(), None)
+        .await;
     let url = format!("/api/v1/users/{id}");
     assert_eq!(
         t.put(&url, &admin, json!({"role": "admin"})).await.status,
@@ -1887,9 +2007,10 @@ async fn source_secrets_are_sealed_to_the_scheduler() {
     t.finish();
 }
 
-/// Review M-5: password / TOTP changes need the actor's current password and
-/// a fresh TOTP code; failures are audited, count toward the login limiter,
-/// and a code cannot be used twice.
+/// Review M-5: credential changes (own password / authenticator, another
+/// user's new activation code) need the actor's current password and a fresh
+/// TOTP code; failures are audited, count toward the login limiter, and a code
+/// cannot be used twice.
 #[tokio::test]
 async fn credential_changes_need_reauthentication() {
     let mut t = T::new();
@@ -1902,21 +2023,20 @@ async fn credential_changes_need_reauthentication() {
 
     // missing
     for body in [
-        json!({"password": "a brand new password"}),
-        json!({"reset_totp": true, "current_password": PW}),
-        json!({"reset_totp": true, "current_totp": "123456"}),
+        json!({"new_activation": true}),
+        json!({"new_activation": true, "current_password": PW}),
+        json!({"new_activation": true, "current_totp": "123456"}),
     ] {
         let r = t.put(&url, &admin, body).await;
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
         assert!(r.body["error"].as_str().unwrap().contains("current_password"));
     }
     // wrong password, wrong code
-    let mut wrong_pw = t.reauth("alice", json!({"password": "a brand new password"}));
+    let mut wrong_pw = t.reauth("alice", json!({"new_activation": true}));
     wrong_pw["current_password"] = json!("not the password");
     assert_eq!(t.put(&url, &admin, wrong_pw).await.status, StatusCode::FORBIDDEN);
     let code = t.code("alice");
-    let wrong_totp =
-        json!({"password": "a brand new password", "current_password": PW, "current_totp": wrong_code(&code)});
+    let wrong_totp = json!({"new_activation": true, "current_password": PW, "current_totp": wrong_code(&code)});
     assert_eq!(t.put(&url, &admin, wrong_totp).await.status, StatusCode::FORBIDDEN);
     assert_eq!(olga_hash(&t), before);
     let reasons: Vec<String> = {
@@ -1931,26 +2051,28 @@ async fn credential_changes_need_reauthentication() {
 
     // correct: applied; the same code a second time is a replay
     let code = t.code("alice");
-    let ok = json!({"password": "a brand new password", "current_password": PW, "current_totp": code});
+    let ok = json!({"new_activation": true, "current_password": PW, "current_totp": code});
     let r = t.put(&url, &admin, ok.clone()).await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     assert_ne!(olga_hash(&t), before);
+    assert!(r.body["activation"]["code"].is_string());
     let r = t.put(&url, &admin, ok).await;
     assert_eq!(r.status, StatusCode::FORBIDDEN, "{:?}", r.body);
     assert_eq!(
         t.scalar::<String>("SELECT json_extract(details, '$.reason') FROM audit WHERE action = 'auth.reauth_failed' ORDER BY seq DESC LIMIT 1"),
         "totp replay"
     );
-    // TOTP reset: new seed stored encrypted for olga
-    let r = t
-        .put(&url, &admin, t.reauth("alice", json!({"reset_totp": true})))
-        .await;
+    // own TOTP reset: new seed stored encrypted, shown to the owner only
+    let me = format!("/api/v1/users/{}", t.ids["alice"]);
+    let r = t.put(&me, &admin, t.reauth("alice", json!({"reset_totp": true}))).await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
-    let seed = t.scalar::<String>(&format!("SELECT totp_secret FROM users WHERE id = {}", t.ids["olga"]));
+    let seed = t.scalar::<String>(&format!("SELECT totp_secret FROM users WHERE id = {}", t.ids["alice"]));
     assert!(seed.starts_with("enc:v1:"));
     let uri = r.body["totp_uri"].as_str().unwrap();
-    let plain = t.st.totp.decrypt("olga", &seed).unwrap();
-    assert!(uri.contains(&format!("secret={}", plain.as_str())));
+    let plain = t.st.totp.decrypt("alice", &seed).unwrap().to_string();
+    assert!(uri.contains(&format!("secret={plain}")));
+    t.secrets.insert("alice".into(), plain);
+    let admin = t.login("alice").await;
     // role changes alone need no re-authentication
     assert_eq!(
         t.put(&url, &admin, json!({"disabled": true})).await.status,
@@ -1958,7 +2080,6 @@ async fn credential_changes_need_reauthentication() {
     );
 
     // own password: re-authenticated, then the own sessions end
-    let me = format!("/api/v1/users/{}", t.ids["alice"]);
     let r = t
         .put(
             &me,
@@ -1974,13 +2095,15 @@ async fn credential_changes_need_reauthentication() {
     t.add_user("adam", "admin", None);
     let admin = t.login("adam").await;
     for _ in 0..2 {
-        let mut b = t.reauth("adam", json!({"reset_totp": true}));
+        let mut b = t.reauth("adam", json!({"new_activation": true}));
         b["current_password"] = json!("not the password");
         assert_eq!(t.put(&url, &admin, b).await.status, StatusCode::FORBIDDEN);
     }
     assert!(t.audit_actions().iter().any(|a| a == "auth.lockout"));
     // locked: even correct credentials are refused, for re-auth and login alike
-    let r = t.put(&url, &admin, t.reauth("adam", json!({"reset_totp": true}))).await;
+    let r = t
+        .put(&url, &admin, t.reauth("adam", json!({"new_activation": true})))
+        .await;
     assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", r.body);
     assert_eq!(
         t.try_login("adam", &t.code("adam"), None).await.status,
@@ -2889,5 +3012,533 @@ async fn tenant_s3_offsite_secret_is_sealed_and_bound() {
         )
         .await;
     assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE);
+    t.finish();
+}
+
+// ---------------------------------------------------------------- optional approvals, self-enrollment
+
+async fn approvals_of(t: &T, s: &S) -> Value {
+    t.get("/api/v1/settings/approvals", s).await.body
+}
+
+async fn create_op(t: &T, admin: &S, name: &str) -> String {
+    let r = t
+        .post("/api/v1/users", admin, json!({"name": name, "role": "operator"}))
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    r.body["activation"]["code"].as_str().unwrap().to_owned()
+}
+
+async fn act_begin(t: &T, name: &str, code: &str, ip: &str) -> R {
+    t.anon_post(
+        "/api/v1/auth/activate/begin",
+        json!({"name": name, "code": code}),
+        Some(ip),
+    )
+    .await
+}
+
+async fn act_complete(t: &T, body: Value, ip: &str) -> R {
+    t.anon_post("/api/v1/auth/activate/complete", body, Some(ip)).await
+}
+
+/// `true` if the answer is a direct execution with approvals disabled.
+fn direct(r: &R) -> bool {
+    r.status == StatusCode::OK && r.body["approvals"] == "disabled" && r.body["executed"] == json!(true)
+}
+
+/// Approvals disabled (plan §2): every quorum-gated action executes directly,
+/// audited with `"approvals": "disabled"`; no quorum row is created. Retention
+/// locks and write-only secrets are unaffected (not touched by the switch).
+#[tokio::test]
+async fn approvals_disabled_gated_actions_execute_directly() {
+    let mut t = T::new();
+    t.set_approvals(false);
+    let admin = t.login("alice").await;
+    let ids = seed(&t, &admin).await;
+
+    // weakening a policy
+    let purl = format!("/api/v1/policies/{}", ids["policy"]);
+    let r = t.put(&purl, &admin, policy(1, false)).await;
+    assert!(direct(&r), "{:?}", r.body);
+    let gfs: String = t.scalar(&format!("SELECT gfs FROM policies WHERE id = {}", ids["policy"]));
+    assert!(gfs.contains("\"daily\":1"), "{gfs}");
+    // moving a group to a weaker policy
+    let mut weak = policy(0, false);
+    weak["name"] = json!("weaker");
+    let weak_id = t.post("/api/v1/policies", &admin, weak).await.body["id"]
+        .as_i64()
+        .unwrap();
+    let gurl = format!("/api/v1/groups/{}", ids["grp_acme"]);
+    let r = t
+        .put(
+            &gurl,
+            &admin,
+            json!({"source_id": ids["src_acme"], "policy_id": weak_id, "name": "prod", "guests": [100]}),
+        )
+        .await;
+    assert!(direct(&r), "{:?}", r.body);
+    // deleting a group, a source, a policy, a tenant, an agent
+    let r = t.delete(&format!("/api/v1/groups/{}", ids["grp_globex"]), &admin).await;
+    assert!(direct(&r), "{:?}", r.body);
+    let r = t
+        .delete(&format!("/api/v1/sources/{}", ids["src_globex"]), &admin)
+        .await;
+    assert!(direct(&r), "{:?}", r.body);
+    let mut spare = policy(3, true);
+    spare["name"] = json!("spare");
+    let spare = t.post("/api/v1/policies", &admin, spare).await.body["id"]
+        .as_i64()
+        .unwrap();
+    let r = t.delete(&format!("/api/v1/policies/{spare}"), &admin).await;
+    assert!(direct(&r), "{:?}", r.body);
+    t.post("/api/v1/tenants", &admin, json!({"name": "initech"})).await;
+    let r = t.delete("/api/v1/tenants/initech", &admin).await;
+    assert!(direct(&r), "{:?}", r.body);
+    let (agent, _) = add_agent(&t, &admin).await;
+    let r = t.delete(&format!("/api/v1/agents/{agent}"), &admin).await;
+    assert!(direct(&r), "{:?}", r.body);
+    assert_eq!(t.scalar::<i64>("SELECT COUNT(*) FROM groups"), 1);
+    assert_eq!(t.scalar::<i64>("SELECT COUNT(*) FROM sources"), 1);
+    assert_eq!(
+        t.scalar::<i64>("SELECT COUNT(*) FROM tenants WHERE name = 'initech'"),
+        0
+    );
+    assert_eq!(t.scalar::<i64>("SELECT COUNT(*) FROM agents"), 0);
+
+    // users: a new admin is enabled at once; the admin gets the whole code
+    let r = t
+        .post("/api/v1/users", &admin, json!({"name": "ada", "role": "admin"}))
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    assert_eq!(r.body["user"]["disabled"], json!(false));
+    assert_eq!(r.body["activation"]["parts"], 1);
+    let ada_code = r.body["activation"]["code"].as_str().unwrap().to_owned();
+    t.activate("ada", &ada_code, Some("10.3.0.1")).await;
+    let ada = t.ids["ada"];
+    // promoting, disabling + re-enabling, a security officer's new activation
+    let otto = t.ids["otto"];
+    let r = t
+        .put(
+            &format!("/api/v1/users/{otto}"),
+            &admin,
+            json!({"role": "security_officer"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.body["user"]["role"], "security_officer");
+    let r = t
+        .put(&format!("/api/v1/users/{ada}"), &admin, json!({"disabled": true}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let r = t
+        .put(&format!("/api/v1/users/{ada}"), &admin, json!({"disabled": false}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let r = t
+        .put(
+            &format!("/api/v1/users/{}", t.ids["sam"]),
+            &admin,
+            t.reauth("alice", json!({"new_activation": true})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.body["activation"]["parts"], 1);
+    // the last enabled admin cannot be removed at all (nobody would administer)
+    let r = t
+        .put(&format!("/api/v1/users/{ada}"), &admin, json!({"disabled": true}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let r = t
+        .put(
+            &format!("/api/v1/users/{}", t.ids["alice"]),
+            &admin,
+            json!({"role": "operator"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.body);
+
+    assert_eq!(t.scalar::<i64>("SELECT COUNT(*) FROM quorum"), 0, "no quorum rows");
+    let audited: i64 = t.scalar("SELECT COUNT(*) FROM audit WHERE json_extract(details, '$.approvals') = 'disabled'");
+    // policy, group move, group, source, policy, tenant, agent, admin create,
+    // promotion, re-enable, SO activation
+    assert_eq!(audited, 11);
+    t.finish();
+}
+
+/// Enabling is immediate (any admin); disabling needs the requester plus one
+/// other admin or security officer; admins approve like security officers.
+#[tokio::test]
+async fn approvals_switch_enable_direct_disable_four_eyes() {
+    let mut t = T::new();
+    t.add_user("adam", "admin", None);
+    let admin = t.login("alice").await;
+    let adam = t.login("adam").await;
+    let op = t.login("otto").await;
+    let v = approvals_of(&t, &op).await;
+    assert_eq!(v["enabled"], json!(true), "existing catalogs keep approvals on");
+    assert_eq!(v["possible_approvers"], 4);
+    assert_eq!(v["recommend"], json!(false));
+    assert_eq!(
+        t.put("/api/v1/settings/approvals", &op, json!({"enabled": false}))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    // disabling: a request, not the change
+    let r = t
+        .put("/api/v1/settings/approvals", &admin, json!({"enabled": false}))
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    assert_eq!(approvals_of(&t, &admin).await["pending_disable"], json!(q));
+    assert_eq!(
+        t.put("/api/v1/settings/approvals", &adam, json!({"enabled": false}))
+            .await
+            .status,
+        StatusCode::CONFLICT,
+        "one pending request at a time"
+    );
+    assert_eq!(approvals_of(&t, &admin).await["enabled"], json!(true));
+    assert_eq!(
+        t.post(&format!("/api/v1/quorum/{q}/approve"), &admin, json!({}))
+            .await
+            .status,
+        StatusCode::FORBIDDEN,
+        "not by the requester"
+    );
+    assert_eq!(
+        t.post(&format!("/api/v1/quorum/{q}/approve"), &op, json!({}))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    // another admin is an approver
+    let r = t.post(&format!("/api/v1/quorum/{q}/approve"), &adam, json!({})).await;
+    assert_eq!((r.status, r.body["state"].as_str()), (StatusCode::OK, Some("executed")));
+    let v = approvals_of(&t, &admin).await;
+    assert_eq!(
+        (v["enabled"].as_bool(), v["recommend"].as_bool()),
+        (Some(false), Some(true))
+    );
+    // enabling: direct, audited
+    let r = t.put("/api/v1/settings/approvals", &op, json!({"enabled": true})).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    let r = t
+        .put("/api/v1/settings/approvals", &adam, json!({"enabled": true}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(approvals_of(&t, &admin).await["enabled"], json!(true));
+    let a = t.audit_actions();
+    assert!(a.contains(&"approvals.enable".to_string()) && a.contains(&"approvals.disable".to_string()));
+
+    // with approvals on, nobody may become the only possible approver:
+    // alice, adam, sam, sue → disable sue, adam (fine) → sam would leave alice alone
+    for u in ["sue", "adam"] {
+        let r = t
+            .put(
+                &format!("/api/v1/users/{}", t.ids[u]),
+                &admin,
+                json!({"disabled": true}),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "{u}: {:?}", r.body);
+    }
+    // sam is the last security officer: quorum; approving it would leave alice alone
+    let r = t
+        .put(
+            &format!("/api/v1/users/{}", t.ids["sam"]),
+            &admin,
+            json!({"disabled": true}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    let sam = t.login("sam").await;
+    let r = t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({})).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.body);
+    assert_eq!(
+        t.scalar::<i64>(&format!("SELECT disabled FROM users WHERE id = {}", t.ids["sam"])),
+        0
+    );
+    // alice is the last enabled admin: demoting her is a quorum request, as before
+    let r = t
+        .put(
+            &format!("/api/v1/users/{}", t.ids["alice"]),
+            &admin,
+            json!({"role": "operator"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "the last admin: quorum as before");
+    t.add_user("ann", "admin", None);
+    let r = t
+        .put(
+            &format!("/api/v1/users/{}", t.ids["ann"]),
+            &admin,
+            json!({"disabled": true}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "three approvers left before: fine");
+    t.add_user("bob", "security_officer", None);
+    let r = t
+        .put(
+            &format!("/api/v1/users/{}", t.ids["bob"]),
+            &admin,
+            json!({"role": "operator"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let r = t
+        .put(
+            &format!("/api/v1/users/{}", t.ids["sam"]),
+            &admin,
+            json!({"role": "operator"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "last security officer: quorum");
+
+    // enabling needs a second person: alone, approvals could never be disabled again
+    t.set_approvals(false);
+    let r = t
+        .put(
+            &format!("/api/v1/users/{}", t.ids["sam"]),
+            &admin,
+            json!({"disabled": true}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let r = t
+        .put("/api/v1/settings/approvals", &admin, json!({"enabled": true}))
+        .await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.body);
+    assert_eq!(
+        approvals_of(&t, &admin).await["recommend"],
+        json!(false),
+        "only one approver"
+    );
+    t.finish();
+}
+
+/// The appliance as a single-admin setup leaves it: approvals off, no banner;
+/// a second person is added directly, activates, and the banner appears.
+#[tokio::test]
+async fn single_admin_default_and_recommendation() {
+    let mut t = T::new();
+    t.set_approvals(false);
+    {
+        let c = t.st.cat.conn();
+        c.execute("DELETE FROM users WHERE name != 'alice' AND name != 'otto'", [])
+            .unwrap();
+    }
+    let admin = t.login("alice").await;
+    let v = t.get("/api/v1/settings/approvals", &admin).await.body;
+    assert_eq!(
+        v,
+        json!({"enabled": false, "possible_approvers": 1, "recommend": false, "pending_disable": null})
+    );
+    let r = t
+        .post(
+            "/api/v1/users",
+            &admin,
+            json!({"name": "sofia", "role": "security_officer"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    let code = r.body["activation"]["code"].as_str().unwrap().to_owned();
+    assert_eq!(
+        t.get("/api/v1/settings/approvals", &admin).await.body["recommend"],
+        json!(false),
+        "a pending account cannot approve yet"
+    );
+    t.activate("sofia", &code, Some("10.4.0.1")).await;
+    let v = t.get("/api/v1/settings/approvals", &admin).await.body;
+    assert_eq!(
+        (v["possible_approvers"].as_i64(), v["recommend"].as_bool()),
+        (Some(2), Some(true))
+    );
+    let r = t
+        .put("/api/v1/settings/approvals", &admin, json!({"enabled": true}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let sofia = t.login("sofia").await;
+    let r = t
+        .put("/api/v1/settings/approvals", &admin, json!({"enabled": false}))
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    assert_eq!(
+        t.post(&format!("/api/v1/quorum/{q}/approve"), &sofia, json!({}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        t.get("/api/v1/settings/approvals", &admin).await.body["enabled"],
+        json!(false)
+    );
+    t.finish();
+}
+
+/// Approvals disabled: a large GC waits for one admin's confirmation instead
+/// of a quorum request (the scheduler writes `gc_confirm/<tenant>`).
+#[tokio::test]
+async fn large_gc_confirmation_without_approvals() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let op = t.login("otto").await;
+    let pending = json!({"job": 7, "reason": "GC would delete 12 of 20 chunks", "created": 1});
+    catalog::set_setting(&t.st.cat.conn(), "gc_confirm/acme", &pending.to_string()).unwrap();
+    let r = t
+        .post("/api/v1/gc/approve-large", &admin, json!({"tenant": "acme"}))
+        .await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "approvals on: quorum instead");
+    t.set_approvals(false);
+    let list = t.get("/api/v1/gc/pending", &op).await.body;
+    assert_eq!(list[0]["tenant"], "acme");
+    assert_eq!(list[0]["job"], 7);
+    assert_eq!(
+        t.post("/api/v1/gc/approve-large", &op, json!({"tenant": "acme"}))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let r = t
+        .post("/api/v1/gc/approve-large", &admin, json!({"tenant": "acme"}))
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let job = r.body["job_id"].as_i64().unwrap();
+    let p: Value =
+        serde_json::from_str(&t.scalar::<String>(&format!("SELECT params FROM jobs WHERE id = {job}"))).unwrap();
+    assert_eq!(p, json!({"approved": true, "confirmed_by": "alice"}));
+    assert_eq!(t.get("/api/v1/gc/pending", &admin).await.body, json!([]));
+    assert_eq!(
+        t.post("/api/v1/gc/approve-large", &admin, json!({"tenant": "acme"}))
+            .await
+            .status,
+        StatusCode::CONFLICT,
+        "once"
+    );
+    assert!(t.audit_actions().contains(&"gc.approve_large".to_string()));
+    // the job API cannot forge the flag
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &admin,
+            json!({"kind": "gc", "tenant": "acme", "params": {"approved": true, "confirmed_by": "alice"}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    t.finish();
+}
+
+/// Activation: wrong code, expiry, rate limit, replay of the code and of the
+/// TOTP step, weak password, and the code is useless afterwards.
+#[tokio::test]
+async fn activation_edge_cases() {
+    let mut t = T::new();
+    let admin = t.login("alice").await;
+    // wrong code: 401, audited, no detail about why
+    let code = create_op(&t, &admin, "olga").await;
+    let r = act_begin(&t, "olga", "AAAAAAAAAAAAAAAAAAAAAAAAAA", "10.5.0.1").await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    let r2 = act_begin(&t, "nobody", &code, "10.5.0.1").await;
+    assert_eq!(
+        (r2.status, &r2.body),
+        (StatusCode::UNAUTHORIZED, &r.body),
+        "no user enumeration"
+    );
+    assert_eq!(
+        t.scalar::<String>("SELECT json_extract(details, '$.reason') FROM audit WHERE action = 'auth.activate_failed' ORDER BY seq LIMIT 1"),
+        "code"
+    );
+    // weak password, wrong TOTP: still pending
+    let r = act_begin(&t, "olga", &code, "10.5.0.2").await;
+    assert_eq!(r.status, StatusCode::OK);
+    let secret = r.body["totp_secret"].as_str().unwrap().to_owned();
+    let now = catalog::auth::totp_now(&secret).unwrap();
+    let r = act_complete(
+        &t,
+        json!({"name": "olga", "code": code, "password": "short", "totp": now}),
+        "10.5.0.2",
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    let r = act_complete(
+        &t,
+        json!({"name": "olga", "code": code, "password": PW, "totp": wrong_code(&now)}),
+        "10.5.0.2",
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        t.scalar::<i64>("SELECT COUNT(*) FROM users WHERE name = 'olga' AND activation_hash IS NOT NULL"),
+        1
+    );
+    // success; the TOTP step is consumed, the code is used up
+    let r = act_complete(
+        &t,
+        json!({"name": "olga", "code": code, "password": PW, "totp": now}),
+        "10.5.0.3",
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(
+        t.try_login("olga", &now, Some("10.5.0.4")).await.status,
+        StatusCode::UNAUTHORIZED,
+        "TOTP replay after activation"
+    );
+    assert_eq!(
+        act_begin(&t, "olga", &code, "10.5.0.5").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let r = act_complete(
+        &t,
+        json!({"name": "olga", "code": code, "password": PW, "totp": now}),
+        "10.5.0.5",
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED, "code replay");
+    t.secrets.insert("olga".into(), secret);
+    t.login("olga").await;
+    assert!(t.audit_actions().contains(&"user.activate".to_string()));
+
+    // expiry
+    let code = create_op(&t, &admin, "eve").await;
+    t.st.cat
+        .conn()
+        .execute(
+            "UPDATE users SET activation_expires = ?1 WHERE name = 'eve'",
+            [catalog::now() - 1],
+        )
+        .unwrap();
+    assert_eq!(
+        act_begin(&t, "eve", &code, "10.5.1.1").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        t.scalar::<String>("SELECT json_extract(details, '$.reason') FROM audit WHERE action = 'auth.activate_failed' ORDER BY seq DESC LIMIT 1"),
+        "expired"
+    );
+    // a disabled pending account cannot be activated
+    let code = create_op(&t, &admin, "dora").await;
+    let dora = t.scalar::<i64>("SELECT id FROM users WHERE name = 'dora'");
+    t.put(&format!("/api/v1/users/{dora}"), &admin, json!({"disabled": true}))
+        .await;
+    assert_eq!(
+        act_begin(&t, "dora", &code, "10.5.1.2").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // rate limit: 5 failures for one user → locked, even with the right code
+    let code = create_op(&t, &admin, "max").await;
+    for i in 0..5 {
+        let r = act_begin(&t, "max", "WRONGWRONGWRONGWRONGWRONG2", &format!("10.6.0.{i}")).await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(
+        act_begin(&t, "max", &code, "10.6.1.1").await.status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert!(t.audit_actions().contains(&"auth.lockout".to_string()));
     t.finish();
 }

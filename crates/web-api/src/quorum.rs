@@ -1,5 +1,8 @@
-//! Four-eyes approval. Gated requests are stored as `quorum` rows and answered
-//! with 202 `{quorum_id}`; a *different* security_officer approves within 72 h.
+//! Four-eyes approval (optional, plan §2 "Approval system"). With approvals
+//! enabled (setting `approvals_enabled`), gated requests are stored as `quorum`
+//! rows and answered with 202 `{quorum_id}`; a *different* admin or
+//! security_officer approves within 72 h. With approvals disabled the same
+//! requests execute directly (audited with `"approvals": "disabled"`).
 //!
 //! On approval the web-api itself executes the config actions listed in
 //! [`WEB_ACTIONS`] (state → `executed`). Every other action (e.g. `gc`, raised
@@ -38,9 +41,13 @@ pub const WEB_ACTIONS: &[&str] = &[
     "plugin.remove",
     "plugin_key.add",
     "plugin_key.remove",
+    "approvals.disable",
 ];
 
-const SECRET_KEYS: &[&str] = &["password_hash", "totp_secret"];
+/// Who may approve or reject requests (never their own: see [`approve`]).
+pub const APPROVERS: &[&str] = &["admin", "security_officer"];
+
+const SECRET_KEYS: &[&str] = &["password_hash", "totp_secret", "activation_hash"];
 
 /// Hides credentials in quorum params (shown in lists and the audit log):
 /// password hashes, TOTP seeds and sealed secrets (e.g. an S3 `secret_key`
@@ -65,23 +72,67 @@ pub fn redact(mut v: Value) -> Value {
     v
 }
 
-/// 202 `{quorum_id, ..extra}`.
-pub fn accepted(id: i64, extra: Value) -> Response {
-    let mut body = json!({"quorum_id": id});
+/// What became of a gated request.
+#[derive(Debug)]
+pub enum Outcome {
+    /// approvals enabled: a pending `quorum` row
+    Pending(i64),
+    /// approvals disabled: executed by the web-api (`quorum_id: None`) or, for
+    /// actions the scheduler executes, recorded as an `approved` quorum row;
+    /// `extra` is what an approver would have been shown
+    Direct { quorum_id: Option<i64>, extra: Value },
+}
+
+fn merge(body: &mut Value, extra: &Value) {
     if let (Some(b), Some(e)) = (body.as_object_mut(), extra.as_object()) {
         b.extend(e.clone());
     }
-    (StatusCode::ACCEPTED, Json(body)).into_response()
 }
 
-/// Creates a pending request (audited) and returns its id.
-pub fn request(st: &St, ctx: &Ctx, action: &str, target: &str, params: Value) -> ApiResult<i64> {
+/// Pending: 202 `{quorum_id, ..extra}`. Direct: 200 `{approvals: "disabled",
+/// executed, ..extra}` (+ `quorum_id`, `state: "approved"` for scheduler actions).
+pub fn accepted(o: Outcome, extra: Value) -> Response {
+    match o {
+        Outcome::Pending(id) => {
+            let mut body = json!({"quorum_id": id});
+            merge(&mut body, &extra);
+            (StatusCode::ACCEPTED, Json(body)).into_response()
+        }
+        Outcome::Direct { quorum_id, extra: done } => {
+            let mut body = json!({"approvals": "disabled", "executed": quorum_id.is_none()});
+            if let Some(id) = quorum_id {
+                body["quorum_id"] = json!(id);
+                body["state"] = json!("approved");
+            }
+            merge(&mut body, &done);
+            merge(&mut body, &extra);
+            (StatusCode::OK, Json(body)).into_response()
+        }
+    }
+}
+
+/// Whether quorum approvals are on (appliance setting, catalog v9).
+pub fn enabled(st: &St) -> ApiResult<bool> {
+    Ok(catalog::approvals_enabled(&st.cat.conn())?)
+}
+
+/// Gates `action`: a pending request (audited) when approvals are enabled,
+/// otherwise direct execution (see [`Outcome`]).
+pub fn request(st: &St, ctx: &Ctx, action: &str, target: &str, params: Value) -> ApiResult<Outcome> {
     request_as(st, ctx.name(), action, target, params)
 }
 
 /// Like [`request`] on behalf of `by` (e.g. the replication key export that
 /// enrollment requests for the peer's creator).
-pub fn request_as(st: &St, by: &str, action: &str, target: &str, params: Value) -> ApiResult<i64> {
+pub fn request_as(st: &St, by: &str, action: &str, target: &str, params: Value) -> ApiResult<Outcome> {
+    if !enabled(st)? {
+        return direct(st, by, action, target, params);
+    }
+    Ok(Outcome::Pending(pending(st, by, action, target, params)?))
+}
+
+/// A pending request regardless of the setting (`approvals.disable`).
+pub fn pending(st: &St, by: &str, action: &str, target: &str, params: Value) -> ApiResult<i64> {
     let id = {
         let c = st.cat.conn();
         c.execute(
@@ -99,7 +150,42 @@ pub fn request_as(st: &St, by: &str, action: &str, target: &str, params: Value) 
     Ok(id)
 }
 
-/// Creates a pending request and answers 202 `{quorum_id}`.
+/// Approvals disabled: executes `action` at once, still audited (actor = the
+/// requester, details `"approvals": "disabled"`). Actions the scheduler
+/// executes get an `approved` quorum row (decided by the requester) as their
+/// work item.
+fn direct(st: &St, by: &str, action: &str, target: &str, params: Value) -> ApiResult<Outcome> {
+    let (quorum_id, extra) = {
+        let mut c = st.cat.conn();
+        let tx = c.transaction()?;
+        let out = execute(&tx, action, &params, by, by)?;
+        let quorum_id = match out {
+            Some(_) => None,
+            None => {
+                let now = catalog::now();
+                tx.execute(
+                    "INSERT INTO quorum (action, params, requested_by, created, decided_by, decided_at, state)
+                     VALUES (?1, ?2, ?3, ?4, ?3, ?4, 'approved')",
+                    params![action, params.to_string(), by, now],
+                )?;
+                Some(tx.last_insert_rowid())
+            }
+        };
+        tx.commit()?;
+        (quorum_id, out.unwrap_or_else(|| json!({})))
+    };
+    let mut details = json!({"approvals": "disabled", "params": redact(params)});
+    if let Some(id) = quorum_id {
+        details["quorum_id"] = json!(id);
+    }
+    st.audit(by, action, target, details)?;
+    if quorum_id.is_none() {
+        crate::plugins::after_approve(st, action);
+    }
+    Ok(Outcome::Direct { quorum_id, extra })
+}
+
+/// Gates `action` and answers accordingly (see [`accepted`]).
 pub fn gate(st: &St, ctx: &Ctx, action: &str, target: &str, params: Value) -> ApiResult<Response> {
     Ok(accepted(request(st, ctx, action, target, params)?, json!({})))
 }
@@ -156,9 +242,10 @@ fn unchanged_since_request(c: &Connection, action: &str, p: &Value) -> ApiResult
     Ok(())
 }
 
-/// Applies an approved action inside the caller's transaction.
-/// Returns false for actions the scheduler executes.
-fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by: &str) -> ApiResult<bool> {
+/// Applies an approved action inside the caller's transaction. Returns `None`
+/// for actions the scheduler executes, else what the approver is shown (e.g.
+/// the second half of an activation code).
+fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by: &str) -> ApiResult<Option<Value>> {
     unchanged_since_request(c, action, p)?;
     match action {
         "tenant.update" => changed(c.execute(
@@ -193,7 +280,8 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
                 p["guests"].to_string()
             ],
         )?)?,
-        "user.update" => crate::resources::apply_user_update(c, p)?,
+        "user.update" => return crate::resources::apply_user_update(c, p).map(Some),
+        "approvals.disable" => catalog::set_setting(c, "approvals_enabled", "false")?,
         "agent.delete" => {
             let id = p["id"].as_str().unwrap_or_default();
             if crate::agents::agent_in_use(c, id)? {
@@ -201,11 +289,15 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
             }
             changed(c.execute("DELETE FROM agents WHERE id = ?1", [id])?)?
         }
-        a if a.starts_with("replication_") => return crate::replication::execute(c, a, p),
-        a if a.starts_with("plugin") => return crate::plugins::execute(c, a, p, approver, requested_by),
-        _ => return Ok(false),
+        a if a.starts_with("replication_") => {
+            return Ok(crate::replication::execute(c, a, p)?.then(|| json!({})));
+        }
+        a if a.starts_with("plugin") => {
+            return Ok(crate::plugins::execute(c, a, p, approver, requested_by)?.then(|| json!({})));
+        }
+        _ => return Ok(None),
     }
-    Ok(true)
+    Ok(Some(json!({})))
 }
 
 #[derive(Deserialize)]
@@ -258,7 +350,7 @@ fn load_pending(st: &St, id: i64) -> ApiResult<(String, Value, String)> {
 }
 
 pub async fn approve(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
-    ctx.require(&["security_officer"])?;
+    ctx.require(APPROVERS)?;
     expire(&st)?;
     let (action, p, requested_by) = load_pending(&st, id)?;
     if requested_by == ctx.name() {
@@ -267,18 +359,19 @@ pub async fn approve(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> Api
             "the requester cannot approve their own request".into(),
         ));
     }
-    let executed = {
+    let out = {
         let mut c = st.cat.conn();
         let tx = c.transaction()?;
-        let executed = execute(&tx, &action, &p, ctx.name(), &requested_by)?;
-        let state = if executed { "executed" } else { "approved" };
+        let out = execute(&tx, &action, &p, ctx.name(), &requested_by)?;
+        let state = if out.is_some() { "executed" } else { "approved" };
         changed(tx.execute(
             "UPDATE quorum SET state = ?2, decided_by = ?3, decided_at = ?4 WHERE id = ?1 AND state = 'pending'",
             params![id, state, ctx.name(), catalog::now()],
         )?)?;
         tx.commit()?;
-        executed
+        out
     };
+    let executed = out.is_some();
     let state = if executed { "executed" } else { "approved" };
     st.audit(
         ctx.name(),
@@ -295,11 +388,13 @@ pub async fn approve(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> Api
             json!({"approved_by": ctx.name(), "params": redact(p)}),
         )?;
     }
-    Ok(Json(json!({"id": id, "state": state})))
+    let mut body = json!({"id": id, "state": state});
+    merge(&mut body, &out.unwrap_or(Value::Null));
+    Ok(Json(body))
 }
 
 pub async fn reject(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
-    ctx.require(&["security_officer"])?;
+    ctx.require(APPROVERS)?;
     expire(&st)?;
     let (action, p, requested_by) = load_pending(&st, id)?;
     crate::plugins::after_reject(&st, &action, &p);

@@ -7,7 +7,7 @@
   import { fmtAgo, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import { kindLabel } from '../lib/jobs';
-  import type { Agent, Alert, Group, Job, Policy, QuorumRequest, Snapshot, Source } from '../lib/types';
+  import type { Agent, Alert, ApprovalsState, Group, Job, Policy, QuorumRequest, Snapshot, Source } from '../lib/types';
   import Check from '../components/Check.svelte';
   import JobState from '../components/JobState.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
@@ -20,6 +20,14 @@
   let agents: Agent[] = $state([]);
   let sources: Source[] = $state([]);
   let pending: number | null = $state(null);
+  let approvals: ApprovalsState | null = $state(null);
+  // The "enable approvals" recommendation can be dismissed for this browser session.
+  const DISMISS = 'nexus.approvalsBannerDismissed';
+  let dismissed = $state(sessionStorage.getItem(DISMISS) === '1');
+  function dismiss() {
+    sessionStorage.setItem(DISMISS, '1');
+    dismissed = true;
+  }
   let error: string | null = $state(null);
   let loaded = $state(false);
 
@@ -51,6 +59,11 @@
         pending = (await get<QuorumRequest[]>('/quorum')).filter((q) => q.state === 'pending').length;
       } catch {
         pending = null;
+      }
+      try {
+        approvals = await get<ApprovalsState>('/settings/approvals');
+      } catch {
+        approvals = null;
       }
     }
     loaded = true;
@@ -139,6 +152,12 @@
 
 <h1>{t.dash.title}</h1>
 <ErrorBanner {error} />
+{#if approvals?.recommend && !dismissed && can.configure(session.user)}
+  <div class="banner warn approvals-banner" role="status">
+    <span>{t.dash.approvalsBanner(approvals.possible_approvers)} <a href={href('/quorum')}>{t.dash.approvalsLink}</a></span>
+    <button type="button" class="small" onclick={dismiss}>{t.dash.dismiss}</button>
+  </div>
+{/if}
 
 {#if !loaded}
   <p class="muted" aria-busy="true">{t.loading}</p>

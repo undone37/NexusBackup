@@ -223,7 +223,7 @@ pub fn stage(staging: &Path, v: &Verified, bytes: &[u8], sig: &[u8]) -> std::io:
 }
 
 /// Web-api: records the upload as `pending` with its quorum request.
-pub fn record_pending(c: &Connection, v: &Verified, by: &str, quorum_id: i64) -> Result<(), Error> {
+pub fn record_pending(c: &Connection, v: &Verified, by: &str, quorum_id: Option<i64>) -> Result<(), Error> {
     let m = &v.bundle.manifest;
     c.execute(
         "INSERT INTO plugins (id, version, name, publisher, sha256, bin_sha256, size, manifest, signer, state, current, enabled,

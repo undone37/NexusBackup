@@ -30,9 +30,12 @@ export const en = {
   saved: 'Saved.',
   deleted: 'Deleted.',
   created: 'Created.',
-  confirmDelete: (what: string) => `Delete ${what}? Deletions require approval by a security officer.`,
+  confirmDelete: (what: string) => `Delete ${what}? When approvals are enabled, deletions need a second person (admin or security officer) to approve them.`,
   quorumPending: (id: number) =>
-    `Pending approval: request #${id} needs a second person (security officer) to approve it before it takes effect.`,
+    `Pending approval: request #${id} needs a second person (another admin or a security officer) to approve it before it takes effect.`,
+  approvalsOff: (ok: string) => `${ok} Approvals are disabled, so it took effect without a second person (audited).`,
+  approvalsOffScheduled: (id: number) =>
+    `Approvals are disabled: request #${id} was approved without a second person (audited); the scheduler executes it shortly.`,
   writeOnlyKeep: 'Stored — leave empty to keep the current value.',
   writeOnlyHint: 'Write-only: the appliance never shows it again.',
   roles: {
@@ -100,9 +103,43 @@ export const en = {
     totpHint: '6-digit code from your authenticator app',
     submit: 'Sign in',
     busy: 'Signing in…',
+    activateLink: 'Activate account',
+    activateQ: 'New account or new activation code?',
+  },
+  activate: {
+    title: 'Activate account',
+    intro:
+      'Your administrator created an account for you and gave you an activation code. You now choose your own password and set up your authenticator app — nobody else learns them.',
+    name: 'User name',
+    code: 'Activation code',
+    codeHint:
+      'If you received two parts, enter both one after the other — first the part from the administrator who created the account, then the part from the approver.',
+    next: 'Continue',
+    checking: 'Checking…',
+    stepCode: 'Code',
+    stepPassword: 'Password',
+    stepAuth: 'Authenticator',
+    password: 'New password',
+    passwordRepeat: 'Repeat password',
+    passwordHint: 'At least 12 characters.',
+    tooShort: 'The password needs at least 12 characters.',
+    mismatch: 'The passwords do not match.',
+    scan: 'Scan this QR code with an authenticator app (TOTP), or enter the secret manually. It is shown only to you.',
+    secret: 'Secret',
+    totp: 'Code from the authenticator app',
+    totpHint: 'Enter the 6-digit code to confirm the app works.',
+    finish: 'Activate',
+    finishing: 'Activating…',
+    back: 'Back',
+    done: 'Your account is active. Sign in with your user name, your new password and a code from your authenticator app.',
+    toLogin: 'Go to sign in',
   },
   dash: {
     title: 'Dashboard',
+    approvalsBanner: (n: number) =>
+      `Approvals are disabled although ${n} people could approve. Enable them so that destructive or weakening actions need a second person.`,
+    approvalsLink: 'Open approval settings',
+    dismiss: 'Dismiss',
     protection: 'Protection status',
     group: 'Group',
     guest: 'Guest',
@@ -428,7 +465,7 @@ export const en = {
       'A second appliance pulls sealed snapshots from this one over the management port with its own client certificate; this appliance holds no credentials for it. Tenant keys are handed over only after a second approval, sealed to the other appliance\'s key service.',
     peers: 'Peers (this appliance is the primary)',
     peersIntro:
-      'Secondaries that may pull the selected tenants. Creating a peer and exporting its keys both need security-officer approval.',
+      'Secondaries that may pull the selected tenants. With approvals enabled, creating a peer and exporting its keys both need approval by a second person.',
     newPeer: 'New peer',
     sources: 'Sources (this appliance is the secondary)',
     sourcesIntro:
@@ -451,11 +488,11 @@ export const en = {
     lastSeen: 'Last seen',
     exportKeys: 'Export keys',
     exportConfirm: (n: string) =>
-      `Request a (re-)export of the tenant keys to "${n}"? A security officer must approve it; compare the key service fingerprint with the secondary first.`,
+      `Request a (re-)export of the tenant keys to "${n}"? With approvals enabled a second person must approve it; compare the key service fingerprint with the secondary first.`,
     revokeWhat: (n: string) => `replication peer "${n}" (its certificate is refused immediately after approval)`,
     codeTitle: (n: string) => `Enrollment code for ${n}`,
     codeOnce:
-      'This code is shown only once. It becomes usable after a security officer approved the peer and stays valid for 24 hours from then.',
+      'This code is shown only once. It becomes usable once the peer is approved (immediately when approvals are disabled) and stays valid for 24 hours from then.',
     codeSteps:
       'On the secondary, open Replication → New replication source and enter this appliance\'s address, the code and this appliance\'s certificate fingerprint.',
     code: 'Enrollment code',
@@ -488,7 +525,7 @@ export const en = {
     monthly: 'Monthly',
     yearly: 'Yearly',
     offsite: 'Copy offsite',
-    weakenHint: 'Lowering retention or disabling offsite requires security-officer approval.',
+    weakenHint: 'Lowering retention or disabling offsite needs approval by a second person when approvals are enabled.',
   },
   groups: {
     title: 'Protection groups',
@@ -515,23 +552,46 @@ export const en = {
     tenantHint: 'Required for tenant users; empty = all tenants',
     password: 'Password',
     passwordNew: 'New password (leave empty to keep)',
+    passwordOwn: 'New password for your own account (leave empty to keep)',
+    pending: 'Pending activation',
+    pendingUntil: (d: string) => `code valid until ${d}`,
+    pendingApproval: 'waiting for the second code part',
+    expired: 'code expired',
+    newActivation: 'Issue new activation code',
+    newActivationConfirm:
+      'Issue a new activation code? The user’s current password and authenticator stop working; they set new ones themselves with the code.',
+    newActivationPriv:
+      'This is an administrator / security officer account: with approvals enabled you receive only the first half of the code; the approver receives the second half.',
+    activationTitle: (n: string) => `Activation code for ${n}`,
+    activationOnce: 'Shown only once. The appliance stores only a hash of it.',
+    activationHand:
+      'Give the user this code and the activation link. They choose their own password and set up their own authenticator; the code is valid for 72 hours and works only once.',
+    activationPart1:
+      'This is the FIRST HALF of the code. The account needs approval; the approver receives the second half. Give this half to the user yourself — the user needs both halves, so neither you nor the approver alone can activate the account.',
+    activationPart2:
+      'This is the SECOND HALF of the activation code. Give it to the user through a different channel than the first half (which the requesting administrator has). The user enters both halves; valid for 72 hours from now.',
+    activationLink: 'Activation link',
+    activationCode: 'Activation code',
+    activationPartLabel: (part: number, parts: number) => `Activation code (part ${part} of ${parts})`,
     disabled: 'Disabled',
     active: 'Active',
     enroll: 'Authenticator enrollment',
     enrollHint:
       'Scan this code with an authenticator app (TOTP). It is shown only once — the user needs it to sign in.',
-    enrollPending:
-      'This change needs security-officer approval; the account / new code works only after it has been approved.',
+    enrollPending: 'This change needs approval by a second person; the new code works only after it has been approved.',
     uri: 'Provisioning URI',
     secret: 'Secret',
     resetTotp: 'Reset authenticator',
-    resetConfirm: 'Issue a new authenticator secret? The old one stops working immediately.',
+    resetConfirm: 'Issue a new authenticator secret for your own account? The old one stops working immediately.',
     reauth: 'Confirm it is you',
     reauthHint:
       'Changing a password or authenticator needs your own current password and a fresh code from your authenticator app.',
     currentPassword: 'Your current password',
     currentTotp: 'Your authenticator code',
-    privilegedHint: 'Granting Administrator or Security officer requires security-officer approval.',
+    privilegedHint:
+      'With approvals enabled, granting Administrator or Security officer needs approval by a second person (another admin or a security officer).',
+    newHint:
+      'No password here: the appliance shows a one-time activation code; the user sets their own password and authenticator at first sign-in.',
     copy: 'Copy',
     copied: 'Copied.',
   },
@@ -624,7 +684,31 @@ export const en = {
       `Approve request #${id} (${action}) by ${by}? It is executed immediately and cannot be undone.`,
     title: 'Approvals',
     intro:
-      'Destructive or weakening actions wait here until a security officer other than the requester approves them (72 h).',
+      'Destructive or weakening actions wait here until another admin or a security officer (never the requester) approves them (72 h).',
+    settings: 'Approval requirement',
+    enabledText:
+      'Enabled: deleting, weakening retention, granting privileged roles, replication key exports and large garbage collections need a second person — another administrator or a security officer — to approve them.',
+    disabledText:
+      'Disabled: these actions take effect immediately; every one of them is still recorded in the audit log. Retention locks and write-only secrets protect existing backups either way.',
+    toggleHint:
+      'Enabling takes effect immediately. Disabling is itself a request that another administrator or security officer must approve.',
+    enable: 'Enable approvals',
+    disable: 'Disable approvals',
+    on: 'Enabled',
+    off: 'Disabled',
+    approvers: (n: number) => `${n} ${n === 1 ? 'person' : 'people'} can approve (enabled administrators and security officers).`,
+    disablePending: (id: number) => `Disabling is pending (request #${id}).`,
+    enableConfirm: 'Enable approvals now? From now on, destructive or weakening actions need a second person.',
+    disableConfirm: 'Request to disable approvals? Another administrator or security officer has to approve the request.',
+    enabledDone: 'Approvals enabled.',
+    gcTitle: 'Large garbage collections waiting for confirmation',
+    gcIntro:
+      'Approvals are disabled, so a garbage collection that would delete an unusually large share of the stored data does not run until an administrator confirms it.',
+    gcRun: 'Confirm and run GC',
+    gcConfirm: (tn: string) => `Run the large garbage collection for tenant "${tn}" now? Deleted chunks cannot be recovered.`,
+    gcQueued: (id: number) => `GC job #${id} queued.`,
+    reason: 'Reason',
+    secondHalfTitle: 'Second half of the activation code',
     action: 'Action',
     requester: 'Requested by',
     requested: 'Requested',
@@ -639,7 +723,7 @@ export const en = {
     approved: 'Approved.',
     rejected: 'Rejected.',
     onlyPending: 'Pending only',
-    ownRequest: 'You requested this — another security officer must decide.',
+    ownRequest: 'You requested this — another administrator or security officer must decide.',
     states: {
       pending: 'Pending',
       approved: 'Approved',

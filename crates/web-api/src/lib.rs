@@ -18,7 +18,9 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
+pub mod activation;
 pub mod agents;
+pub mod approvals;
 pub mod auth;
 pub mod jobs;
 pub mod ops;
@@ -179,7 +181,11 @@ pub fn migrate_totp_seeds(st: &AppState) -> anyhow::Result<usize> {
         r.collect::<Result<_, _>>()?
     };
     let mut n = 0;
-    for (id, name, seed) in users.into_iter().filter(|u| !is_encrypted_totp(&u.2)) {
+    // an empty seed belongs to an account pending activation (no authenticator yet)
+    for (id, name, seed) in users
+        .into_iter()
+        .filter(|u| !u.2.is_empty() && !is_encrypted_totp(&u.2))
+    {
         let enc = st.totp.encrypt(&name, &seed)?;
         let changed = st.cat.conn().execute(
             "UPDATE users SET totp_secret = ?1 WHERE id = ?2 AND totp_secret = ?3",
@@ -385,6 +391,14 @@ pub fn router(st: St) -> Router {
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(me))
+        .route("/auth/activate/begin", post(activation::begin))
+        .route("/auth/activate/complete", post(activation::complete))
+        .route(
+            "/settings/approvals",
+            get(approvals::get_approvals).put(approvals::set_approvals),
+        )
+        .route("/gc/pending", get(approvals::gc_pending))
+        .route("/gc/approve-large", post(approvals::gc_approve_large))
         .route("/tenants", get(list_tenants).post(create_tenant))
         .route("/tenants/{name}", put(update_tenant).delete(delete_tenant))
         .route("/sources", get(list_sources).post(create_source))

@@ -188,6 +188,9 @@ fn full_run_then_refuse_then_reconfigure_network() {
     assert_eq!(u.len(), 2);
     assert_eq!((u[0].0.as_str(), u[0].1.as_str()), ("admin", "admin"));
     assert_eq!((u[1].0.as_str(), u[1].1.as_str()), ("officer", "security_officer"));
+    // two people: approvals start enabled
+    assert!(catalog::approvals_enabled(&c.conn()).unwrap());
+    assert!(stdout.contains("approvals: enabled (two people)"), "{stdout}");
     assert!(auth::verify_password(PW_ADMIN, &u[0].2) && auth::verify_password(PW_SO, &u[1].2));
     assert_eq!(e.seed("admin", &u[0].3), e.admin_secret);
     assert_eq!(e.seed("officer", &u[1].3), e.so_secret);
@@ -287,6 +290,39 @@ fn walk_all(root: &Path) -> Vec<PathBuf> {
     let mut v = vec![];
     walk(root, &mut v);
     v
+}
+
+/// The second person is optional: a single administrator finishes setup with
+/// approvals disabled (and is told so); a security officer can still be added
+/// on a rerun before finishing.
+#[test]
+fn single_admin_starts_with_approvals_disabled() {
+    let e = env();
+    let mut ans = e.answers("192.0.2.10");
+    ans["second_person_later"] = json!(true);
+    let (out, _, stderr) = e.run(&ans, &[]);
+    assert!(!out.status.success(), "both given");
+    assert!(stderr.contains("not both"), "{stderr}");
+    ans.as_object_mut().unwrap().remove("security_officer");
+    let (out, stdout, stderr) = e.run(&ans, &[]);
+    assert!(out.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("Security officer: later. Approvals start DISABLED"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("approvals: DISABLED (single administrator)"),
+        "{stdout}"
+    );
+    let c = e.catalog();
+    assert_eq!(users(&c).len(), 1);
+    assert!(!catalog::approvals_enabled(&c.conn()).unwrap());
+    let a = audit_actions(&c);
+    assert!(a.iter().any(|(_, x, _)| x == "setup.second_person_later"));
+    assert!(a
+        .iter()
+        .any(|(_, x, d)| x == "setup.approvals" && d["enabled"] == json!(false)));
+    c.verify_audit().unwrap();
 }
 
 #[test]

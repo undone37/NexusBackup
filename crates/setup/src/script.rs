@@ -16,6 +16,10 @@
 //! }
 //! ```
 //! `"replace": true` in an account replaces an existing account of that role.
+//! The second person is optional: instead of `"security_officer"`, give
+//! `"second_person_later": true`; the appliance then starts with approvals
+//! disabled (single administrator) until a second person exists and an admin
+//! enables them in the web UI.
 
 use crate::{challenge, KeyState, NetConfig, Role, Setup, Step};
 use anyhow::{anyhow, bail, Result};
@@ -32,6 +36,9 @@ pub struct Answers {
     pub admin: Option<Account>,
     #[serde(default)]
     pub security_officer: Option<Account>,
+    /// no security officer now: approvals start disabled
+    #[serde(default)]
+    pub second_person_later: bool,
     #[serde(default)]
     pub recovery_key: Option<RecoveryAnswers>,
 }
@@ -86,6 +93,9 @@ fn account(s: &mut Setup, role: Role, a: Option<&Account>, out: &mut dyn Write) 
             return Ok(());
         }
         (None, Some(a)) => a,
+        (None, None) if role == Role::SecurityOfficer => {
+            bail!("answers lack \"security_officer\" (or set \"second_person_later\": true)")
+        }
         (None, None) => bail!("answers lack \"{}\"", role.as_str()),
     };
     crate::check_password_pair(&a.password, a.password_repeat.as_deref().unwrap_or(&a.password))?;
@@ -129,7 +139,22 @@ pub fn run(s: &mut Setup, ans: &Answers, force_network: bool, out: &mut dyn Writ
                 writeln!(out, "network: {} configured, addresses {ips:?}", net.nic)?;
             }
             Step::Admin => account(s, Role::Admin, ans.admin.as_ref(), out)?,
-            Step::SecurityOfficer => account(s, Role::SecurityOfficer, ans.security_officer.as_ref(), out)?,
+            Step::SecurityOfficer => match (&ans.security_officer, ans.second_person_later) {
+                (Some(_), true) => bail!("give either \"security_officer\" or \"second_person_later\", not both"),
+                (None, _) if done => match s.user_with_role(Role::SecurityOfficer)? {
+                    Some(name) => writeln!(out, "Security officer: {name} exists, kept")?,
+                    None => writeln!(out, "Security officer: later (chosen before)")?,
+                },
+                (None, true) => {
+                    s.second_person_later()?;
+                    writeln!(
+                        out,
+                        "Security officer: later. Approvals start DISABLED (single administrator); \
+                         add a second person in the web UI and enable approvals there"
+                    )?;
+                }
+                (a, false) => account(s, Role::SecurityOfficer, a.as_ref(), out)?,
+            },
             Step::RecoveryKey => match s.key_state()? {
                 KeyState::Confirmed => writeln!(out, "recovery key: already confirmed")?,
                 KeyState::Unconfirmed => {
@@ -175,6 +200,11 @@ pub fn run(s: &mut Setup, ans: &Answers, force_network: bool, out: &mut dyn Writ
             Step::Finish => {
                 s.finish()?;
                 flush_log(s, out)?;
+                if s.approvals_start_enabled()? {
+                    writeln!(out, "approvals: enabled (two people)")?;
+                } else {
+                    writeln!(out, "approvals: DISABLED (single administrator)")?;
+                }
                 writeln!(out, "setup complete")?;
             }
         }

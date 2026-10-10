@@ -33,9 +33,12 @@ pub struct User {
     pub tenant: Option<String>,
     pub disabled: bool,
     pub created: i64,
+    /// created or reset, waiting for the person to set their own credentials
+    pub pending_activation: bool,
+    pub activation_expires: Option<i64>,
 }
 
-pub const USER_COLS: &str = "id, name, role, tenant, disabled, created";
+pub const USER_COLS: &str = "id, name, role, tenant, disabled, created, activation_hash, activation_expires";
 
 impl User {
     pub fn from_row(r: &Row, off: usize) -> catalog::rusqlite::Result<Self> {
@@ -46,6 +49,8 @@ impl User {
             tenant: r.get(off + 3)?,
             disabled: r.get::<_, i64>(off + 4)? != 0,
             created: r.get(off + 5)?,
+            pending_activation: r.get::<_, Option<String>>(off + 6)?.is_some(),
+            activation_expires: r.get(off + 7)?,
         })
     }
 
@@ -109,11 +114,23 @@ impl FromRequestParts<St> for Ctx {
         let row = c
             .query_row(
                 &format!(
-                    "SELECT s.csrf, s.created, s.last_seen, {} FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id_hash = ?1",
-                    USER_COLS.split(", ").map(|c| format!("u.{c}")).collect::<Vec<_>>().join(", ")
+                    "SELECT s.csrf, s.created, s.last_seen, {} FROM sessions s JOIN users u ON u.id = s.user_id
+                     WHERE s.id_hash = ?1 AND u.activation_hash IS NULL",
+                    USER_COLS
+                        .split(", ")
+                        .map(|c| format!("u.{c}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 [&sid],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, User::from_row(r, 3)?)),
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                        User::from_row(r, 3)?,
+                    ))
+                },
             )
             .optional()?;
         let Some((csrf, created, last_seen, user)) = row else {
@@ -254,7 +271,7 @@ fn consume_step(st: &AppState, user_id: i64, step: i64) -> ApiResult<bool> {
 
 /// Counts a failed login / re-authentication (per user and per IP), audits it
 /// and the lockouts it triggers.
-fn record_failure(
+pub fn record_failure(
     st: &AppState,
     (actor, action, target): (&str, &str, &str),
     (ukey, ikey, ip): (&str, &str, &str),
@@ -286,7 +303,7 @@ fn record_failure(
     Ok(())
 }
 
-fn locked_out(st: &AppState, ukey: &str, ikey: &str) -> bool {
+pub fn locked_out(st: &AppState, ukey: &str, ikey: &str) -> bool {
     let (l, now) = (st.limiter.lock().unwrap(), catalog::now());
     l.locked(ukey, now) || l.locked(ikey, now)
 }
@@ -385,9 +402,9 @@ pub async fn login(State(st): State<St>, ClientIp(ip): ClientIp, J(r): J<LoginRe
                 |row| {
                     Ok((
                         User::from_row(row, 0)?,
-                        row.get::<_, String>(6)?,
-                        row.get::<_, String>(7)?,
-                        row.get::<_, i64>(8)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, i64>(10)?,
                     ))
                 },
             )

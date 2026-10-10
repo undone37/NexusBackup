@@ -8,11 +8,16 @@
 //! | Step | done when |
 //! |---|---|
 //! | network | audit `setup.network` exists (always redoable) |
-//! | admin / security officer | a user with that role exists (replace needs explicit confirmation) |
+//! | admin | a user with that role exists (replace needs explicit confirmation) |
+//! | second person (security officer) | a security officer exists, or audit `setup.second_person_later` |
 //! | recovery key | audit `setup.keyd.confirmed` (keyd is never re-initialised) |
 //! | TLS | audit `setup.tls` + cert/key files exist |
 //! | metrics token | token file exists + audit `setup.metrics_token` |
 //! | finish | `setup-done` exists |
+//!
+//! The second person is optional (plan §2 "Approval system", user decision
+//! 2026-10-10): with two people the appliance starts with approvals enabled;
+//! with a single administrator they start disabled (written at `finish`).
 
 use anyhow::{anyhow, bail, Context, Result};
 use catalog::secret::TotpKey;
@@ -172,7 +177,7 @@ impl Step {
         match self {
             Step::Network => "Management network",
             Step::Admin => "Administrator account + TOTP",
-            Step::SecurityOfficer => "Security officer account + TOTP",
+            Step::SecurityOfficer => "Second person: security officer (recommended)",
             Step::RecoveryKey => "Key service + recovery key",
             Step::Tls => "TLS certificate",
             Step::MetricsToken => "Metrics token",
@@ -692,7 +697,10 @@ impl Setup {
         Ok(match step {
             Step::Network => self.last_audit("setup.network")?.is_some(),
             Step::Admin => self.user_with_role(Role::Admin)?.is_some(),
-            Step::SecurityOfficer => self.user_with_role(Role::SecurityOfficer)?.is_some(),
+            Step::SecurityOfficer => {
+                self.user_with_role(Role::SecurityOfficer)?.is_some()
+                    || self.last_audit("setup.second_person_later")?.is_some()
+            }
             Step::RecoveryKey => self.key_state()? == KeyState::Confirmed,
             Step::Tls => self.tls_info()?.is_some(),
             Step::MetricsToken => {
@@ -851,6 +859,22 @@ impl Setup {
         }
     }
 
+    /// The operator chose to add the second person later (in the web UI):
+    /// approvals then start disabled.
+    pub fn second_person_later(&mut self) -> Result<()> {
+        self.audit(
+            "setup.second_person_later",
+            "appliance",
+            json!({"approvals": "disabled"}),
+        )
+    }
+
+    /// Whether approvals will start enabled: at least two people (enabled
+    /// admins / security officers) could approve requests.
+    pub fn approvals_start_enabled(&self) -> Result<bool> {
+        Ok(catalog::possible_approvers(&self.cat.conn())?.len() >= 2)
+    }
+
     /// The web-api's TOTP key, created if missing (0600, owner nexus-webapi,
     /// parent dir 0700). Only setup (root) and the web-api can read it.
     fn totp_key(&self) -> Result<TotpKey> {
@@ -1000,6 +1024,17 @@ impl Setup {
                 bail!("cannot finish: step {:?} is not complete", s.title());
             }
         }
+        let approvals = self.approvals_start_enabled()?;
+        catalog::set_setting(
+            &self.cat.conn(),
+            "approvals_enabled",
+            if approvals { "true" } else { "false" },
+        )?;
+        self.audit(
+            "setup.approvals",
+            "settings/approvals_enabled",
+            json!({"enabled": approvals}),
+        )?;
         self.audit("setup.done", "appliance", json!({"dry_run": self.dry_run}))?;
         self.write_file(
             &self.paths.setup_done,

@@ -1,8 +1,9 @@
 //! Config CRUD: tenants, sources, policies, groups, users (admin only for
 //! writes; destructive or weakening changes go through the quorum).
 
+use crate::activation;
 use crate::auth::{reauth, ClientIp, Ctx, User, USER_COLS};
-use crate::quorum::{accepted, gate, request};
+use crate::quorum::{accepted, gate, Outcome};
 use crate::validate::{self, Gfs};
 use crate::{ApiError, ApiResult, St, J};
 use axum::extract::{Path, State};
@@ -1680,11 +1681,11 @@ pub async fn delete_group(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -
 
 // ---------------------------------------------------------------- users
 
+/// No password: the person sets it at activation (crate::activation).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserReq {
     name: String,
-    password: String,
     role: String,
     #[serde(default)]
     tenant: Option<String>,
@@ -1700,11 +1701,17 @@ pub struct UserUpdate {
     tenant: Option<Value>,
     #[serde(default)]
     disabled: Option<bool>,
+    /// own account only
     #[serde(default)]
     password: Option<String>,
+    /// own account only
     #[serde(default)]
     reset_totp: bool,
-    /// re-authentication of the acting user, required with `password` / `reset_totp`
+    /// other accounts: invalidate the credentials, issue a new activation code
+    #[serde(default)]
+    new_activation: bool,
+    /// re-authentication of the acting user, required with `password` /
+    /// `reset_totp` / `new_activation`
     #[serde(default)]
     current_password: Option<String>,
     #[serde(default)]
@@ -1755,9 +1762,10 @@ pub async fn list_users(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>
     Ok(Json(json!(rows)))
 }
 
-/// Returns the TOTP provisioning URI exactly once. Creating an admin or
-/// security_officer creates the account *disabled* and raises a quorum
-/// request that enables it.
+/// Creates an account pending activation and returns its one-time activation
+/// code (shown once). With approvals enabled, an admin or security_officer is
+/// created *disabled* with a quorum request that enables it; the requester gets
+/// only part 1 of a split code, the approver part 2 (crate::activation).
 pub async fn create_user(State(st): State<St>, ctx: Ctx, J(r): J<UserReq>) -> ApiResult<Response> {
     ctx.require(ADMIN)?;
     validate::name(&r.name, "name")?;
@@ -1765,46 +1773,85 @@ pub async fn create_user(State(st): State<St>, ctx: Ctx, J(r): J<UserReq>) -> Ap
     if let Some(t) = &r.tenant {
         validate::name(t, "tenant")?;
     }
-    if r.password.len() > 1024 {
-        return Err(ApiError::bad("password: too long"));
-    }
     check_user_tenant(&st.cat.conn(), &r.role, r.tenant.as_deref())?;
-    let pw_hash = hash(r.password).await?;
-    let secret = catalog::auth::new_totp_secret();
-    let uri = catalog::auth::totp_uri(&secret, &r.name)?;
-    let enc = st.totp.encrypt(&r.name, &secret)?;
-    let gated = validate::privileged(&r.role);
+    let privileged = validate::privileged(&r.role);
+    let gated = privileged && crate::quorum::enabled(&st)?;
+    let (code, digest) = activation::new_part();
+    let now = catalog::now();
+    let (stored, expires) = if gated {
+        (activation::split_pending(&digest), None)
+    } else {
+        (digest.clone(), Some(now + activation::ACTIVATION_SECS))
+    };
     let user = {
         let c = st.cat.conn();
         c.execute(
-            "INSERT INTO users (name, password_hash, totp_secret, role, tenant, disabled, created) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![r.name, pw_hash, enc, r.role, r.tenant, gated, catalog::now()],
+            "INSERT INTO users (name, password_hash, totp_secret, role, tenant, disabled, created, activation_hash, activation_expires)
+             VALUES (?1, ?2, '', ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![r.name, catalog::NO_PASSWORD, r.role, r.tenant, gated, now, stored, expires],
         )?;
         User::load(&c, c.last_insert_rowid())?
     };
-    st.audit(
-        ctx.name(),
-        "user.create",
-        &format!("user/{}", user.name),
-        json!({"user": user}),
-    )?;
-    if gated {
-        let q = request(
-            &st,
-            &ctx,
-            "user.update",
-            &format!("user/{}", user.name),
-            json!({"id": user.id, "name": user.name, "role": user.role, "disabled": false}),
-        )?;
-        return Ok(accepted(q, json!({"user": user, "totp_uri": uri})));
+    let mut details = json!({"user": user});
+    if privileged && !gated {
+        details["approvals"] = json!("disabled");
     }
-    Ok(created(json!({"user": user, "totp_uri": uri})))
+    let target = format!("user/{}", user.name);
+    st.audit(ctx.name(), "user.create", &target, details)?;
+    if gated {
+        let q = crate::quorum::pending(
+            &st,
+            ctx.name(),
+            "user.update",
+            &target,
+            json!({"id": user.id, "name": user.name, "role": user.role, "disabled": false,
+                   "activation_hash": digest, "activation_split": true}),
+        )?;
+        return Ok(accepted(
+            Outcome::Pending(q),
+            json!({"user": user, "activation": activation::shown(&user.name, &code, 1, 2, None)}),
+        ));
+    }
+    Ok(created(
+        json!({"user": user, "activation": activation::shown(&user.name, &code, 1, 1, expires)}),
+    ))
+}
+
+/// The digest of a pending activation, if any.
+fn activation_digest(c: &Connection, id: i64) -> ApiResult<Option<String>> {
+    Ok(c.query_row("SELECT activation_hash FROM users WHERE id = ?1", [id], |r| r.get(0))?)
+}
+
+/// With approvals enabled, an account must not become an enabled admin or
+/// security officer while it waits for activation with a code that one admin
+/// knows in full: that admin could activate it and approve their own requests.
+fn refuse_known_code_grant(c: &Connection, user: &User, grant: bool, split: bool) -> ApiResult<()> {
+    if grant
+        && !split
+        && catalog::approvals_enabled(c)?
+        && activation_digest(c, user.id)?.is_some_and(|d| !d.contains(':'))
+    {
+        return Err(ApiError::conflict(
+            "the account is waiting for activation with a code an admin knows: let the person activate it first, \
+             or issue a new activation code together with the role change",
+        ));
+    }
+    Ok(())
 }
 
 /// Applies a (possibly approved) user change; ends the user's sessions.
-pub fn apply_user_update(c: &Connection, p: &Value) -> ApiResult<()> {
+/// Returns what the approver is shown (part 2 of a split activation code).
+/// With approvals enabled, refuses changes that would leave fewer than two
+/// people able to approve (nobody but the requester could approve anything,
+/// not even disabling approvals). Call inside a transaction.
+pub fn apply_user_update(c: &Connection, p: &Value) -> ApiResult<Value> {
     let id = p["id"].as_i64().ok_or_else(|| ApiError::bad("missing id"))?;
-    User::load(c, id).map_err(|_| ApiError::conflict("the object no longer exists"))?;
+    let before = User::load(c, id).map_err(|_| ApiError::conflict("the object no longer exists"))?;
+    let approvers_before = catalog::possible_approvers(c)?.len();
+    let role = p["role"].as_str().unwrap_or(&before.role);
+    let disabled = p["disabled"].as_bool().unwrap_or(before.disabled);
+    let grant = validate::privileged(role) && !disabled && (before.disabled || !validate::privileged(&before.role));
+    refuse_known_code_grant(c, &before, grant, p["activation_split"] == true)?;
     if let Some(r) = p["role"].as_str() {
         c.execute("UPDATE users SET role = ?2 WHERE id = ?1", params![id, r])?;
     }
@@ -1820,15 +1867,44 @@ pub fn apply_user_update(c: &Connection, p: &Value) -> ApiResult<()> {
     if let Some(s) = p["totp_secret"].as_str() {
         c.execute("UPDATE users SET totp_secret = ?2 WHERE id = ?1", params![id, s])?;
     }
+    let mut extra = json!({});
+    if let Some(h) = p["activation_hash"].as_str() {
+        let expires = catalog::now() + activation::ACTIVATION_SECS;
+        let stored = if p["activation_split"] == true {
+            let (code, h2) = activation::new_part();
+            extra["activation"] = activation::shown(&before.name, &code, 2, 2, Some(expires));
+            format!("{h}:{h2}")
+        } else {
+            h.to_owned()
+        };
+        // the old credentials stop working now
+        c.execute(
+            "UPDATE users SET password_hash = ?2, totp_secret = '', activation_hash = ?3, activation_expires = ?4 WHERE id = ?1",
+            params![id, catalog::NO_PASSWORD, stored, expires],
+        )?;
+    }
     c.execute("DELETE FROM sessions WHERE user_id = ?1", [id])?;
-    Ok(())
+    if catalog::approvals_enabled(c)? {
+        let after = catalog::possible_approvers(c)?.len();
+        if after < approvers_before && after < 2 {
+            return Err(ApiError::conflict(
+                "approvals are enabled and this change would leave fewer than two people (admins or security \
+                 officers) who can approve requests; add another one first, or disable approvals",
+            ));
+        }
+    }
+    Ok(extra)
 }
 
-/// Quorum-gated: granting admin/security_officer (incl. re-enabling such an
-/// account), disabling or demoting the last enabled admin/security_officer,
-/// and resetting another privileged user's password or TOTP (account takeover).
-/// Any password / TOTP change (own or another user's) first re-authenticates
-/// the acting user (`current_password` + `current_totp`, review M-5).
+/// Gated (quorum while approvals are enabled, else executed directly and
+/// audited with `"approvals": "disabled"`): granting admin/security_officer
+/// (incl. re-enabling such an account), disabling or demoting the last enabled
+/// admin/security_officer, and issuing a new activation code for a privileged
+/// account (split code: requester part 1, approver part 2). Without approvals
+/// the last enabled admin cannot be disabled or demoted at all.
+/// `password` / `reset_totp` change the acting user's own credentials;
+/// `new_activation` resets another user's. All three re-authenticate the
+/// acting user first (`current_password` + `current_totp`, review M-5).
 pub async fn update_user(
     State(st): State<St>,
     ctx: Ctx,
@@ -1838,7 +1914,23 @@ pub async fn update_user(
 ) -> ApiResult<Response> {
     ctx.require(ADMIN)?;
     let old = User::load(&st.cat.conn(), id)?;
-    if r.password.is_some() || r.reset_totp {
+    let own = id == ctx.user.id;
+    if (r.password.is_some() || r.reset_totp) && !own {
+        return Err(ApiError::bad(
+            "password and reset_totp change your own credentials; for another user issue a new activation code (new_activation)",
+        ));
+    }
+    if r.new_activation && own {
+        return Err(ApiError::bad(
+            "new_activation: not for your own account (change your password or authenticator instead)",
+        ));
+    }
+    if r.new_activation && (r.password.is_some() || r.reset_totp) {
+        return Err(ApiError::bad(
+            "new_activation cannot be combined with password or reset_totp",
+        ));
+    }
+    if r.password.is_some() || r.reset_totp || r.new_activation {
         let purpose = format!("credentials of user/{}", old.name);
         reauth(
             &st,
@@ -1862,6 +1954,7 @@ pub async fn update_user(
         Some(_) => return Err(ApiError::bad("tenant: string or null")),
     };
     let disabled = r.disabled.unwrap_or(old.disabled);
+    let approvals = crate::quorum::enabled(&st)?;
     let others_enabled: i64 = {
         let c = st.cat.conn();
         check_user_tenant(&c, &role, tenant.as_deref())?;
@@ -1874,9 +1967,14 @@ pub async fn update_user(
     let was_priv = validate::privileged(&old.role) && !old.disabled;
     let grant = validate::privileged(&role) && !disabled && !(was_priv && old.role == role);
     let removes_last = was_priv && (disabled || role != old.role) && others_enabled == 0;
-    let cred_reset = (r.password.is_some() || r.reset_totp)
-        && (validate::privileged(&old.role) || validate::privileged(&role))
-        && id != ctx.user.id;
+    let cred_reset = r.new_activation && (validate::privileged(&old.role) || validate::privileged(&role));
+    let gated = grant || removes_last || cred_reset;
+    if !approvals && removes_last && old.role == "admin" {
+        return Err(ApiError::conflict(
+            "the last enabled admin cannot be disabled or demoted",
+        ));
+    }
+    refuse_known_code_grant(&st.cat.conn(), &old, grant, r.new_activation)?;
 
     let mut p = json!({"id": id, "name": old.name});
     if role != old.role {
@@ -1901,19 +1999,38 @@ pub async fn update_user(
         // encrypted already in the quorum params, bound to this user's name
         p["totp_secret"] = json!(st.totp.encrypt(&old.name, &s)?);
     }
+    let split = approvals && gated && r.new_activation;
+    if r.new_activation {
+        let (code, digest) = activation::new_part();
+        p["activation_hash"] = json!(digest);
+        extra["activation"] = if split {
+            p["activation_split"] = json!(true);
+            activation::shown(&old.name, &code, 1, 2, None)
+        } else {
+            let expires = catalog::now() + activation::ACTIVATION_SECS;
+            activation::shown(&old.name, &code, 1, 1, Some(expires))
+        };
+    }
     let target = format!("user/{}", old.name);
-    if grant || removes_last || cred_reset {
+    if approvals && gated {
         // the approver sees (and approves) the role the account ends up with
         p["role"] = json!(role);
-        let q = request(&st, &ctx, "user.update", &target, p)?;
-        return Ok(accepted(q, extra));
+        let q = crate::quorum::pending(&st, ctx.name(), "user.update", &target, p)?;
+        return Ok(accepted(Outcome::Pending(q), extra));
     }
     let user = {
-        let c = st.cat.conn();
-        apply_user_update(&c, &p)?;
-        User::load(&c, id)?
+        let mut c = st.cat.conn();
+        let tx = c.transaction()?;
+        apply_user_update(&tx, &p)?;
+        let user = User::load(&tx, id)?;
+        tx.commit()?;
+        user
     };
-    st.audit(ctx.name(), "user.update", &target, crate::quorum::redact(p))?;
+    let mut details = crate::quorum::redact(p);
+    if gated {
+        details["approvals"] = json!("disabled");
+    }
+    st.audit(ctx.name(), "user.update", &target, details)?;
     extra["user"] = json!(user);
     Ok(Json(extra).into_response())
 }

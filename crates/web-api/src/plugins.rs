@@ -4,7 +4,7 @@
 //! subset the UI renders.
 
 use crate::auth::Ctx;
-use crate::quorum::{accepted, gate, request_as};
+use crate::quorum::{self, accepted, gate, request_as, Outcome};
 use crate::{ApiError, ApiResult, St};
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -96,7 +96,7 @@ pub async fn upload_plugin(State(st): State<St>, ctx: Ctx, headers: HeaderMap, b
     let paths = st.plugin_paths();
     let st2 = st.clone();
     let by = ctx.name().to_owned();
-    let (v, quorum_id) = tokio::task::spawn_blocking(move || -> ApiResult<_> {
+    let (v, outcome) = tokio::task::spawn_blocking(move || -> ApiResult<_> {
         let v = {
             let c = st2.cat.conn();
             plugin_manager::verify_upload(&c, &paths.keys, &body, sig.as_bytes()).map_err(merr)?
@@ -104,21 +104,28 @@ pub async fn upload_plugin(State(st): State<St>, ctx: Ctx, headers: HeaderMap, b
         plugin_manager::stage(&paths.staging, &v, &body, sig.as_bytes())
             .map_err(|e| anyhow::anyhow!("staging {}: {e}", paths.staging.display()))?;
         let m = &v.bundle.manifest;
-        let q = request_as(
-            &st2,
-            &by,
-            "plugin.install",
-            &format!("plugin/{}", m.id),
-            json!({"id": m.id, "version": m.version, "name": m.name, "publisher": m.publisher, "sha256": v.sha256,
+        let target = format!("plugin/{}", m.id);
+        let params = json!({"id": m.id, "version": m.version, "name": m.name, "publisher": m.publisher, "sha256": v.sha256,
                    "bin_sha256": v.bundle.bin_sha256(), "signer": v.signer, "upgrade_from": v.upgrade_from,
-                   "kinds": m.kinds.iter().map(|k| &k.kind).collect::<Vec<_>>(), "sandbox": m.sandbox}),
-        )?;
-        plugin_manager::record_pending(&st2.cat.conn(), &v, &by, q).map_err(merr)?;
+                   "kinds": m.kinds.iter().map(|k| &k.kind).collect::<Vec<_>>(), "sandbox": m.sandbox});
+        // the plugins row must exist before a direct (approvals disabled) execution approves it
+        let q = if quorum::enabled(&st2)? {
+            let id = quorum::pending(&st2, &by, "plugin.install", &target, params)?;
+            plugin_manager::record_pending(&st2.cat.conn(), &v, &by, Some(id)).map_err(merr)?;
+            Outcome::Pending(id)
+        } else {
+            plugin_manager::record_pending(&st2.cat.conn(), &v, &by, None).map_err(merr)?;
+            request_as(&st2, &by, "plugin.install", &target, params)?
+        };
         Ok((v, q))
     })
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))??;
     let m = &v.bundle.manifest;
+    let quorum_id = match &outcome {
+        Outcome::Pending(id) => Some(*id),
+        Outcome::Direct { quorum_id, .. } => *quorum_id,
+    };
     st.audit(
         ctx.name(),
         "plugin.upload",
@@ -127,7 +134,7 @@ pub async fn upload_plugin(State(st): State<St>, ctx: Ctx, headers: HeaderMap, b
     )?;
     let entry = row(&st.cat.conn(), &m.id, &m.version)?;
     Ok(accepted(
-        quorum_id,
+        outcome,
         json!({"plugin": entry, "upgrade_from": v.upgrade_from}),
     ))
 }

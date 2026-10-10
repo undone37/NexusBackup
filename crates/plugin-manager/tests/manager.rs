@@ -55,7 +55,7 @@ impl Env {
         let c = self.cat.conn();
         let v = verify_upload(&c, &self.paths.project_keys, b, sig.as_bytes())?;
         stage(&self.paths.staging, &v, b, sig.as_bytes()).unwrap();
-        record_pending(&c, &v, "admin", 1)?;
+        record_pending(&c, &v, "admin", Some(1))?;
         Ok(v)
     }
     fn install(&self, v: &Verified) {

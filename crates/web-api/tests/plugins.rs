@@ -529,3 +529,23 @@ async fn plugin_lifecycle_sources_and_jobs() {
     assert_eq!(r.status, StatusCode::FORBIDDEN);
     assert!(t.st.cat.verify_audit().unwrap() > 10);
 }
+
+/// Approvals disabled: the upload is approved at once (no quorum row) and the
+/// installer picks it up.
+#[tokio::test]
+async fn plugin_upload_without_approvals() {
+    let t = T::new();
+    catalog::set_setting(&t.st.cat.conn(), "approvals_enabled", "false").unwrap();
+    let admin = t.login("alice").await;
+    let b = bundle_of("1.0.0");
+    let sig = bundle::sign(&b, &t.project_key).unwrap();
+    let r = t.upload(&admin, &b, Some(&sig), "application/octet-stream").await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(
+        (r.body["approvals"].as_str(), r.body["executed"].as_bool()),
+        (Some("disabled"), Some(true))
+    );
+    assert_eq!(r.body["plugin"]["state"], "approved");
+    assert!(t.paths.staging.join(".trigger").exists());
+    assert_eq!(t.installer(), ["installed pgx 1.0.0"]);
+}

@@ -187,7 +187,9 @@ Clicked through Dashboard, Agents (create, new token), Replication (peer create,
 - noted for Phase 10 seeding: mock tenants lack the replicated tenant `globex`
 - second round (Users, Approvals, Audit): **bug** TOTP field on the Users page had `pattern="[0-9]{6}"` — Svelte evaluates `{6}`, so re-authentication only accepted codes like "x6" → `pattern={'[0-9]{6}'}`; approving a quorum request now needs a confirmation (irreversible actions); re-auth section, reject/approve, diff highlighting, audit redaction and chain verification work
 - design flaw (admin knows new users' credentials) → user decided 2026-10-10: self-enrollment at first sign-in (implementation running)
-- [ ] Optional approval system (user request 2026-10-10): off for single-user appliances, enable freely, disable = requester + 1 approver, approvers = admins + security officers, banner when more users exist; + self-enrollment — agent running
+- [x] Optional approval system (user request 2026-10-10): off for single-user appliances, enable freely, disable = requester + 1 approver, approvers = admins + security officers, banner when more users exist; + self-enrollment (activation codes, split codes for privileged roles). Merged with Phase 9: catalog v8 = plugins, v9 = settings + activation columns; quorum gating returns `Outcome` (pending / direct); plugin uploads with approvals disabled are recorded first and approved directly (test `plugin_upload_without_approvals`). Checks: cargo test (336 ok), clippy, prove, svelte-check/build, cargo deny.
+  - open: console recovery path when approvals deadlock (lost authenticator with two users)
+- [ ] SELinux: image build does not check neverallow rules; existing rules violate some (restorevm/nasmount `:file *`, replicad → keyd connect) — fix rules + enable checking
 
 ## Phase 9 — Plugin system (added 2026-10-10)
 Goal: extend with new data sources + restore functions (NetApp SVM, VMware ESXi/vCenter, PostgreSQL, …) via signed, sandboxed plugins on a versioned SDK; M9 = PostgreSQL plugin + one ported connector
