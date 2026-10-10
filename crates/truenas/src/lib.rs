@@ -12,23 +12,25 @@
 //! file system path on the appliance.
 
 //!
-//! Without the `connector` feature only names/validation and the forced
-//! command generator are built (used by web-api and scheduler).
+//! Without features only names/validation and the forced command generator
+//! are built (used by web-api and scheduler); `client` adds the API client,
+//! the SSH streams and their parsers (used by the plugin `plugins/truenas`),
+//! `connector` (default) the store backup and the CLI.
 
-#[cfg(feature = "connector")]
+#[cfg(feature = "client")]
 pub mod api;
 #[cfg(feature = "connector")]
 pub mod backup;
-#[cfg(feature = "connector")]
+#[cfg(feature = "client")]
 pub mod diff;
 pub mod fc;
-#[cfg(feature = "connector")]
+#[cfg(feature = "client")]
 pub mod remote;
-#[cfg(feature = "connector")]
+#[cfg(feature = "client")]
 pub mod stream;
-#[cfg(feature = "connector")]
+#[cfg(feature = "client")]
 pub mod tree;
-#[cfg(feature = "connector")]
+#[cfg(feature = "client")]
 pub mod walk;
 
 /// Index name inside a dataset snapshot (same as agent host snapshots).

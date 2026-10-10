@@ -123,44 +123,54 @@ pub fn fill<R: Read>(store: &Store, plan: &mut Plan, tar: &mut stream::Reader<R>
     let (mut bytes, mut new_chunks, mut new_bytes) = (0u64, 0usize, 0u64);
     for &i in &plan.need {
         let e = &mut plan.entries[i];
-        let m: Member = tar
-            .next_member()?
-            .with_context(|| format!("tar stream ended before {:?}", String::from_utf8_lossy(&e.path)))?;
-        if m.path != e.path {
-            bail!(
-                "tar member {:?} where {:?} was requested",
-                String::from_utf8_lossy(&m.path),
-                String::from_utf8_lossy(&e.path)
-            );
-        }
-        match (m.kind, &e.kind) {
-            (stream::Kind::File, TreeKind::File) => {
-                if m.size != e.size {
-                    bail!(
-                        "{:?}: {} bytes in the stream, {} in the walk",
-                        String::from_utf8_lossy(&e.path),
-                        m.size,
-                        e.size
-                    );
-                }
-                let st = store.store_file_stats(tar.data())?;
-                if st.size != e.size {
-                    bail!("{:?}: short content", String::from_utf8_lossy(&e.path));
-                }
-                e.chunks = st.chunks;
-                bytes += st.size;
-                new_chunks += st.new_chunks;
-                new_bytes += st.new_bytes;
+        let m = next_requested(tar, &e.path, &e.kind, e.size)?;
+        if m.kind == stream::Kind::File {
+            let st = store.store_file_stats(tar.data())?;
+            if st.size != e.size {
+                bail!("{:?}: short content", String::from_utf8_lossy(&e.path));
             }
-            (stream::Kind::Dir, TreeKind::Dir) => {}
-            _ => bail!("{:?}: type differs from the walk", String::from_utf8_lossy(&e.path)),
+            e.chunks = st.chunks;
+            bytes += st.size;
+            new_chunks += st.new_chunks;
+            new_bytes += st.new_bytes;
         }
         e.xattrs = m.xattrs;
     }
+    end_of_requested(tar)?;
+    Ok((bytes, new_chunks, new_bytes))
+}
+
+/// The next member of a `read` stream, which must be the requested `path` with
+/// the walk's type (regular file or directory) and, for files, size. The
+/// caller consumes a file's content via `tar.data()`.
+pub fn next_requested<R: Read>(tar: &mut stream::Reader<R>, path: &[u8], kind: &TreeKind, size: u64) -> Result<Member> {
+    let m: Member = tar
+        .next_member()?
+        .with_context(|| format!("tar stream ended before {:?}", String::from_utf8_lossy(path)))?;
+    if m.path != path {
+        bail!(
+            "tar member {:?} where {:?} was requested",
+            String::from_utf8_lossy(&m.path),
+            String::from_utf8_lossy(path)
+        );
+    }
+    match (&m.kind, kind) {
+        (stream::Kind::File, TreeKind::File) if m.size != size => bail!(
+            "{:?}: {} bytes in the stream, {size} in the walk",
+            String::from_utf8_lossy(path),
+            m.size
+        ),
+        (stream::Kind::File, TreeKind::File) | (stream::Kind::Dir, TreeKind::Dir) => Ok(m),
+        _ => bail!("{:?}: type differs from the walk", String::from_utf8_lossy(path)),
+    }
+}
+
+/// After the last requested member: nothing else may follow.
+pub fn end_of_requested<R: Read>(tar: &mut stream::Reader<R>) -> Result<()> {
     if tar.next_member()?.is_some() {
         bail!("tar stream has more members than requested");
     }
-    Ok((bytes, new_chunks, new_bytes))
+    Ok(())
 }
 
 #[cfg(test)]

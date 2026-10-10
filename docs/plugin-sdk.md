@@ -3,7 +3,8 @@
 A plugin adds a source type (and its restore functions) to the appliance without changing the core. It is a
 signed executable that the appliance starts in a sandbox for each operation and talks to over stdin/stdout. The
 binding contract is docs/plugin-system.md; this guide shows how to build one with crate `plugin-sdk`. The complete
-example is `plugins/example-files` (backs up a local directory, restores it into a directory).
+example is `plugins/example-files` (backs up a local directory, restores it into a directory); `plugins/truenas`
+is a real connector (API client + `ssh` in the sandbox, guests, incremental via the state blob, docs/truenas-connector.md §9).
 
 ## What a plugin does — and what it never sees
 
@@ -103,7 +104,8 @@ impl Plugin for Pg {
 fn main() { plugin_sdk::run(Pg) }
 ```
 
-- `Ctx`: `kind`, `op`, `config` (secrets opened), `params` (backup: `{"guest"}`; restore/mount: see contract),
+- `Ctx`: `kind`, `op`, `config` (secrets opened), `params` (backup: `{"guest", "source_id"}`; restore/mount: see
+  contract), `source_id()` (to name objects you create on the source system),
   `base_time` + `state` (your state blob of the previous snapshot / of the restored snapshot), `log`/`info`/`warn`,
   `progress`. Logs are escaped and shown in the job log.
 - Errors: return `Err(...)`; `plugin_sdk::error(code, msg)` sets the protocol error code. The job fails, nothing is
@@ -142,8 +144,9 @@ Your plugin runs as an unprivileged process: read-only access to its install dir
 under `/usr`, a private writable `$TMPDIR` (= `$HOME`, limited to `sandbox.tmp_mb`), TCP connections only to the
 ports of your endpoints (+ DNS), no TCP listening, no Unix sockets, no access to other processes, memory limited to
 `sandbox.memory_mb`, a cleared environment. Dynamically linked binaries must work with the appliance image's
-libraries (AlmaLinux 10, glibc 2.39); a static (musl) build is the safe choice. External tools (`pg_dump`) can be
-executed if the image ships them. Anything else fails with `EACCES`/`EPERM` — design for it, do not work around it.
+libraries (AlmaLinux 10, glibc 2.39); a static (musl) build is the safe choice. External tools (`pg_dump`, `ssh`)
+can be executed if the image ships them; they inherit the sandbox (`ssh`: key and `known_hosts` in `$TMPDIR`, pass
+them with `-i` / `-o UserKnownHostsFile=`, no agent). Anything else fails with `EACCES`/`EPERM` — design for it, do not work around it.
 
 Time limits: 24 h per operation, 15 min without any message (send `progress` during long silent phases).
 
@@ -157,7 +160,10 @@ let r = h.restore(&cfg, &b.source, b.time, "to_target", serde_json::json!({...})
 ```
 `Host::binary` runs your real binary in the real sandbox (Landlock + seccomp; no root needed);
 `Host::in_process(manifest, kind, || MyPlugin)` runs it on a thread for quick logic tests. `h.log()` shows the job
-log, `h.snapshot()` / `h.store()` give access to what was committed. See `plugins/example-files/tests/roundtrip.rs`.
+log, `h.snapshot()` / `h.store()` give access to what was committed. The sandbox opens the TCP ports of your
+endpoints as resolved in the config you pass (as on the appliance), so local test servers work. See
+`plugins/example-files/tests/roundtrip.rs` and `plugins/truenas/tests/plugin.rs` (mock API server over wss, local
+sshd).
 
 ## Packaging and signing
 ```sh

@@ -132,33 +132,8 @@ impl Run {
 
     /// TCP ports of the kind's endpoints, resolved in the source config.
     fn ports(&self) -> Option<Vec<u16>> {
-        let net = self
-            .manifest
-            .sandbox
-            .as_ref()
-            .and_then(|s| s["network"].as_str())
-            .unwrap_or("endpoints");
-        if net == "none" {
-            return Some(Vec::new());
-        }
         let cfg: Value = serde_json::from_str(&self.config).unwrap_or_default();
-        let k = self.manifest.kinds.iter().find(|k| k.kind == self.kind)?;
-        let mut ports: Vec<u16> = k
-            .endpoints
-            .iter()
-            .filter(|e| e.proto == "tcp" && cfg.pointer(&e.host).is_some())
-            .map(|e| {
-                e.port
-                    .as_deref()
-                    .and_then(|p| cfg.pointer(p))
-                    .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
-                    .and_then(|p| u16::try_from(p).ok())
-                    .unwrap_or(e.default_port)
-            })
-            .collect();
-        ports.sort_unstable();
-        ports.dedup();
-        Some(ports)
+        plugin_host::endpoint_ports(&self.manifest, &self.kind, &cfg)
     }
 
     fn timeouts(&self, op: Op) -> Timeouts {
@@ -279,7 +254,7 @@ fn main() -> Result<()> {
                             job: run.cfg.job,
                             kind: &run.kind,
                             config: &run.config,
-                            params: json!({ "guest": g }),
+                            params: json!({ "guest": g, "source_id": run.source_id }),
                             source: &source,
                             bounds: backup::Bounds::default(),
                         },

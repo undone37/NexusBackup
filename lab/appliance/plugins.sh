@@ -3,20 +3,22 @@
 # no PVE lab needed: the example plugin (plugins/example-files) backs up a directory
 # of the appliance itself.
 #   plugins.sh image    build $IMG + $IMG-lab (lab/appliance/e2e.sh image)
-#   plugins.sh bundle   build the example plugin on the host, pack it (nexus-plugin pack),
+#   plugins.sh bundle   build the plugin $PLUGIN on the host, pack it (nexus-plugin pack),
 #                       sign it with the TEST key (release/sign.sh sign-blob)
+#   plugins.sh install  bundle; tampered upload refused; upload (admin) -> quorum (so approves)
+#                       -> installed (e.g. PLUGIN=truenas for lab/truenas/e2e.sh KIND=plugin)
 #   plugins.sh disk     install the lab image onto $LAB/appliance/appliance.qcow2
 #   plugins.sh boot     boot it, wait for the console
 #   plugins.sh setup    first boot (e2e.sh setup with PVE=0)
-#   plugins.sh plugin   bundle; tampered upload refused; upload (admin) -> quorum (so approves)
-#                       -> installed; tenant + plugin source on $DATA; plugin_validate,
+#   plugins.sh plugin   install (example plugin); tenant + plugin source on $DATA; plugin_validate,
 #                       plugin_guests; group + policy; backup, second backup (incremental);
 #                       files_list + files_get, sha256 of every file against $DATA in the VM;
 #                       nexus_pluginhost_t / nexus_plugin_t observed during the backup
 #   plugins.sh check    e2e.sh check, install tree labels, 0 nexus AVCs since boot
 #   plugins.sh stop     power off
 # e.g. IMG=localhost/nexus-os:plugins lab/appliance/plugins.sh image disk boot setup plugin check stop
-# env: IMG (localhost/nexus-os:plugins), LAB (/home/ah/nexus-lab/plugins; the installer root is
+# env: PLUGIN (example-files: the directory below plugins/), IMG (localhost/nexus-os:plugins),
+#      LAB (/home/ah/nexus-lab/plugins; the installer root is
 #      reused from LABDIR=/home/ah/nexus-lab), PORT (28481), MEM (3072), DATA (/usr/share/doc:
 #      read-only data the plugin sandbox may read: Landlock allows /usr, SELinux usr_t),
 #      PLUGIN_TARGET (gnu: dynamically linked against glibc like the image's libraries, checked
@@ -32,7 +34,9 @@ export PORT=${PORT:-28481}
 export ROOT=$LAB/appliance/root CONSOLE=$LAB/appliance/console.sock PVE=0
 DATA=${DATA:-/usr/share/doc}
 PLUGIN_TARGET=${PLUGIN_TARGET:-gnu}
-MANIFEST=$repo/plugins/example-files/manifest.json
+PLUGIN=${PLUGIN:-example-files}
+MANIFEST=$repo/plugins/$PLUGIN/manifest.json
+PKG=$(sed -n 's/^name = "\(.*\)"/\1/p' "$repo/plugins/$PLUGIN/Cargo.toml" | head -n 1)
 OUT=$LAB/bundle
 T0=$(date +%s)
 con() { "$here/con.py" "$@"; }
@@ -45,14 +49,17 @@ bundle() {
 	ver=$(jq -r .version "$MANIFEST")
 	mkdir -p "$OUT"
 	[ "$PLUGIN_TARGET" = musl ] && tgt=(--target x86_64-unknown-linux-musl)
-	log "building the example plugin ($PLUGIN_TARGET)"
-	(cd "$repo" && cargo build --release -p example-files "${tgt[@]}")
-	bin=$repo/target/release/example-files
-	[ "$PLUGIN_TARGET" = musl ] && bin=$repo/target/x86_64-unknown-linux-musl/release/example-files
+	# ring's C code is freestanding: the host gcc works when no musl cross compiler is installed
+	[ "$PLUGIN_TARGET" = musl ] && ! command -v x86_64-linux-musl-gcc >/dev/null &&
+		export CC_x86_64_unknown_linux_musl=${CC_x86_64_unknown_linux_musl:-gcc}
+	log "building the plugin $PKG ($PLUGIN_TARGET)"
+	(cd "$repo" && cargo build --release -p "$PKG" "${tgt[@]}")
+	bin=$repo/target/release/$PKG
+	[ "$PLUGIN_TARGET" = musl ] && bin=$repo/target/x86_64-unknown-linux-musl/release/$PKG
 	if [ "$PLUGIN_TARGET" = gnu ]; then
 		maxglibc=$(objdump -T "$bin" | grep -o 'GLIBC_2\.[0-9]*' | sort -uV | tail -1)
 		[ "$(printf '%s\nGLIBC_2.39\n' "$maxglibc" | sort -V | tail -1)" = GLIBC_2.39 ] ||
-			die "example-files needs $maxglibc (> AlmaLinux 10's 2.39): use PLUGIN_TARGET=musl"
+			die "$PKG needs $maxglibc (> AlmaLinux 10's 2.39): use PLUGIN_TARGET=musl"
 		log "dynamically linked, needs up to $maxglibc"
 	fi
 	B=$OUT/$id-$ver.nxplugin
@@ -119,15 +126,13 @@ backup() {
 	log "domains during the backup: $(con run 'sort -u /run/nexus-lab-ps 2>/dev/null | sed "s/  */ /g"' | tr '\n' ';')"
 }
 
-plugin() {
+install() {
 	bundle
 	apienv
 	login admin "$ADMIN_PW" "$ADMIN_TOTP"
 	login so "$SO_PW" "$SO_TOTP"
-	local id kind r q st e src pol grp j snap time ents paths want have
-
+	local id r q st e
 	id=$(jq -r .id "$MANIFEST")
-	kind=$(jq -r '.kinds[0].kind' "$MANIFEST")
 	# a bundle that does not match its signature is refused before any quorum
 	cp "$B" "$OUT/tampered.nxplugin"
 	printf 'x' >>"$OUT/tampered.nxplugin"
@@ -152,7 +157,13 @@ plugin() {
 	[ "$st" = installed ] || die "plugin $id: state $st: $(jq -r .error <<<"$e"); $(con run 'journalctl -u nexus-plugin-install -o cat --no-pager | tail -n 20')"
 	log "installed: $(jq -c '{id, version, state, current, enabled, signer, bin_sha256}' <<<"$e")"
 	con run "ls -lZR /var/lib/nexus/plugins/$id | head -n 30; ls -la /var/lib/nexus/plugins-staging"
+}
 
+plugin() {
+	install
+	local id kind r src pol grp j snap time ents paths want have
+	id=$(jq -r .id "$MANIFEST")
+	kind=$(jq -r '.kinds[0].kind' "$MANIFEST")
 	api admin POST /tenants '{"name":"plugins"}' >/dev/null
 	expect 201 "create tenant"
 	src=$(api admin POST /sources "$(jq -nc --arg k "plugin:$kind" --arg p "$DATA" \
@@ -234,10 +245,10 @@ die() {
 	exit 1
 }
 
-[ $# -gt 0 ] || { sed -n '2,25p' "$0" >&2; exit 2; }
+[ $# -gt 0 ] || { sed -n '2,28p' "$0" >&2; exit 2; }
 for step in "$@"; do
 	case $step in
-	image | bundle | disk | boot | setup | plugin | check | stop) "$step" ;;
-	*) sed -n '2,25p' "$0" >&2; exit 2 ;;
+	image | bundle | install | disk | boot | setup | plugin | check | stop) "$step" ;;
+	*) sed -n '2,28p' "$0" >&2; exit 2 ;;
 	esac
 done

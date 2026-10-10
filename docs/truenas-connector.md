@@ -6,6 +6,8 @@ appliance, nothing installed on TrueNAS beyond a key; the appliance initiates ev
 
 Tested against **TrueNAS Community Edition 25.10.7** ("Goldeye", the current stable release on
 2026-10-09; 26.0 is in beta). Crate `crates/truenas` (binary `nexus-truenas`), lab `lab/truenas/`.
+Since Phase 9 the same connector also runs as the plugin `plugins/truenas` (source kind `plugin:truenas`, §9);
+the built-in kind `truenas` stays.
 
 ## 1. Research findings
 
@@ -242,3 +244,75 @@ fill parsers on hostile input, no crash.
 - Changing the source's datasets changes the `authorized_keys` line (must be pasted again).
 - The TrueNAS certificate pin breaks on certificate renewal (backups fail with a TLS error until the
   source is updated).
+
+## 9. The plugin `plugins/truenas` (Phase 9, M9)
+The connector on the plugin SDK (docs/plugin-system.md, docs/plugin-sdk.md): an untrusted, sandboxed process that
+talks to TrueNAS and streams files to `nexus-pluginhost`, which chunks, seals and commits. It never sees the store or
+the tenant keys (the built-in `nexus-truenas` holds both).
+
+**Shared code, not a copy.** The plugin depends on crate `truenas` with the feature `client` (API client `api`, SSH
+streams `remote`, parsers `diff`/`walk`/`stream`, `tree::changed_inodes` and the tar member checks
+`tree::next_requested`/`end_of_requested`, which `tree::fill` uses too). The forced command (`fc`) is the same, so
+the `authorized_keys` line is identical for the same datasets / `recursive` / `sudo` / `zfs_sudo` / `from`, and the
+TrueNAS setup (§3) is unchanged. Plugin-specific: config parsing, the guest ↔ dataset mapping, deriving the public
+key from the private key, and the planning against the *base snapshot* (below). The tests share the TrueNAS fake
+(`crates/truenas/tests/support/`).
+
+**Config** (flat, the generic plugin source form): `host`, `port` (443), `ca_pem`, `user`, `api_key` (secret),
+`ssh_host`, `ssh_port` (22), `ssh_user`, `ssh_host_key`, `ssh_private_key` (secret, OpenSSH format; the public key is
+derived from it), `ssh_from`, `datasets`, `recursive`, `sudo`, `zfs_sudo`. Secrets are sealed and write-only like all
+plugin secrets and bound to the endpoint fields (`host`/`port`, `ssh_host`/`ssh_port`). There is no `connect_addr`:
+the plugin connects to `host` (the certificate is pinned, so the name does not matter for the usual self-signed
+certificate) — the sandbox only allows the configured endpoint ports. `plugin_validate` logs the `authorized_keys`
+line and repeats it in its answer when the SSH check fails (the source form has no field for it).
+
+**Guests and snapshots.** `plugin_guests` lists the mounted file system datasets of the configured roots (with
+children if `recursive`) as guests `tank.data`, `tank.data.projects`, …; a group selects datasets (a group without
+guests fails: "select the datasets"). Each guest is one snapshot `plugin-truenas-<source>-<guest>` with the tree in
+index `files`; browsing and tar/zip downloads work like for every plugin snapshot.
+
+**Backup of one dataset** (one plugin process): ZFS snapshot `nexus-<source>-<time>` (non-recursive, `<source>` =
+the appliance source id the host now passes, docs/plugin-system.md v1.2) → reference = the ZFS snapshot recorded in
+the base snapshot's state blob (`{"dataset", "time"}`), if it still exists → `zfs diff`, `walk` → base metadata of all
+files/directories `zfs diff` does not name (`BaseQuery`, batches of 64) → in walk order: a file whose base entry at
+the same path has the same object number, mode, owner, size and mtime is sent as `Unchanged` (with the base's
+xattrs), a directory like that as an entry with the base's xattrs; everything else that has content/xattrs is read
+with one `read` (tar) and streamed; hard links, symlinks and special files are entries. Done carries the new state
+blob. Rotation: the plugin does not see the host's commit, so after a successful run it deletes every other
+`nexus-<source>-*` snapshot of the dataset *except* the reference and the new one; after a failure it deletes the new
+one. TrueNAS therefore keeps **two** snapshots per dataset (the built-in connector: one). A deleted reference or a
+lost state means a full read (logged), never a wrong backup.
+
+**Differences to the built-in connector**
+- One ZFS snapshot per dataset and run instead of one atomic recursive snapshot per root: datasets of one group are
+  each consistent, not consistent with each other.
+- Unchanged data is reused by *path* (the host's rule), not by ZFS object number: a renamed file or directory is read
+  and sent again (stored deduplicated, but transferred).
+- `ssh` runs in the plugin sandbox (docs/plugin-system.md v1.2): `/etc/ssh/ssh_config` and the crypto-policy include
+  are not readable there, so OpenSSH's built-in defaults apply.
+- Dataset names longer than 64 characters cannot be guests; a walk of a huge dataset must finish within the host's
+  15 minute idle limit (the walk sends no messages).
+- Same: download-only restore (§6), privilege model (§1), naming rules, hostile-input parsers.
+
+**Coexistence and migration.** Both kinds can exist side by side, also for the same TrueNAS and the same datasets:
+every source creates and deletes only its own `nexus-<its id>-*` snapshots, and the scheduler's firewall allow-list
+contains the endpoints of both. To move a source: install the plugin (signed bundle, quorum), create a
+`plugin:truenas` source with the same values (API key, appliance SSH key, pinned certificate and host key,
+datasets), run `plugin_validate` (the line is unchanged if the datasets/flags/`from` are the same; otherwise paste the
+new one — it then also limits the built-in source to the new datasets), create a group selecting the datasets with
+the same policy, and disable the built-in group. The first plugin backup per dataset is a full read into new
+snapshot sources (`plugin-truenas-…` instead of `nas-…`; FastCDC dedup stores almost nothing new). The old `nas-…`
+snapshots stay restorable until retention removes them or the built-in source is deleted; its last
+`nexus-<old id>-*` ZFS snapshot per dataset must then be deleted on TrueNAS by hand. There is no automatic
+conversion; the built-in kind is not deprecated.
+
+**Tests.** `cargo test -p truenas-plugin`: unit tests (config, state, public key, planning) and
+`tests/plugin.rs` — in-process against the shared fake (full / incremental / no-change / lost reference / foreign
+snapshots untouched / rotation one run later / hostile walk keeps the reference / wrong guests), and the plugin
+binary **in the real sandbox** (Landlock + seccomp) against a JSON-RPC-over-wss mock backed by the fake and a local
+unprivileged `sshd` running the real forced command (skipped without OpenSSH server).
+**Lab (pending, needs the TrueNAS VM: 8 GB RAM):**
+`NEXUS_TRUENAS_LAB=… NEXUS_TRUENAS_SUMS=… cargo test -p truenas-plugin --test lab -- --nocapture` (plugin binary in
+the sandbox against the VM, sums verified, two snapshots per dataset), and through the appliance VM
+(+3 GB): `PLUGIN=truenas lab/appliance/plugins.sh image disk boot setup install`, then
+`ROOT=$HOME/nexus-lab/plugins/appliance/root PORT=28481 KIND=plugin APPL_HOST=10.0.2.2 lab/truenas/e2e.sh`.

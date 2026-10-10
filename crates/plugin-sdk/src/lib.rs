@@ -121,7 +121,7 @@ pub struct Ctx {
     pub op: Op,
     /// the source config (secrets opened; keep them in memory)
     pub config: Value,
-    /// op parameters: backup `{"guest"}`, restore `{"restore", "params", "snapshot", "streams", "top", "files", "guest"?}`,
+    /// op parameters: backup `{"guest", "source_id"}`, restore `{"restore", "params", "snapshot", "streams", "top", "files", "guest"?}`,
     /// mount `{"params", "minutes", "snapshot", …}`
     pub params: Value,
     /// previous snapshot (backup) / the snapshot (restore, mount)
@@ -154,6 +154,11 @@ impl Ctx {
     /// The guest of this backup (groups with guests), if any.
     pub fn guest(&self) -> Option<&str> {
         self.params["guest"].as_str()
+    }
+    /// The appliance's id of the source being backed up (backup op): stable and unique per
+    /// appliance, e.g. to name objects the plugin creates on the source system.
+    pub fn source_id(&self) -> Option<u64> {
+        self.params["source_id"].as_u64()
     }
     /// A string config field.
     pub fn config_str(&self, key: &str) -> Result<&str> {

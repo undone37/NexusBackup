@@ -5,7 +5,10 @@
 #   e2e.sh [step...]   steps (default all): data config backup1 modify backup2 snapshots download rotation probe
 # Lab inputs ($LAB/truenas, written by provision.py): cert.pem, api-key, known_hosts, nexus_ed25519(.pub).
 # env: APPL_HOST (how the appliance reaches the dev host: 127.0.0.1 or 10.0.2.2 from the appliance VM),
-#      FROM (the appliance address TrueNAS sees; QEMU user networking: 10.0.2.2)
+#      FROM (the appliance address TrueNAS sees; QEMU user networking: 10.0.2.2),
+#      KIND (truenas: the built-in connector; plugin: source kind plugin:truenas, the plugin
+#      plugins/truenas installed with `PLUGIN=truenas lab/appliance/plugins.sh install`; then
+#      ROOT/PORT of that appliance VM, see docs/truenas-connector.md §9)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 e2e=$(cd "$here/../e2e" && pwd)
@@ -16,6 +19,12 @@ LAB=${LAB:-/home/ah/nexus-lab}
 D=$LAB/truenas
 APPL_HOST=${APPL_HOST:-127.0.0.1}
 FROM=${FROM:-10.0.2.2}
+KIND=${KIND:-truenas}
+case $KIND in
+truenas) PFX=nas- ;;
+plugin) PFX=plugin-truenas- ;;
+*) echo "KIND: truenas or plugin" >&2; exit 2 ;;
+esac
 # shellcheck source=lab/e2e/api-lib.sh
 . "$e2e/api-lib.sh"
 ids() { [ -f "$S/ids" ] && . "$S/ids"; }
@@ -25,27 +34,68 @@ step_data() {
 	log "test data created on TrueNAS"
 }
 
+# job USER KIND -> final job JSON of a plugin job on $SRC (dies unless the job ran)
+plugin_job() {
+	local r j
+	r=$(api "$1" POST /jobs "$(jq -nc --arg k "$2" --argjson s "$SRC" '{kind:$k, tenant:"nas", params:{source_id:$s}}')")
+	expect 202 "$2 job"
+	j=$(wait_job "$1" "$(jq -r .id <<<"$r")" 300)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "$2: $(jq -r .log <<<"$j" | tail -n 20)"
+	echo "$j"
+}
+
+# plugin:truenas source (flat config, secrets api_key + ssh_private_key); the admin takes the
+# authorized_keys line from the plugin_validate log; groups select datasets as guests ($GUESTS)
+config_plugin() {
+	local cfg out j line
+	cfg=$(jq -nc --rawfile ca "$D/cert.pem" --arg tok "$(tr -d '\n' <"$D/api-key")" --rawfile key "$D/nexus_ed25519" \
+		--arg hk "$1" --arg h "$APPL_HOST" --arg from "$FROM" \
+		'{host:$h, port:18444, ca_pem:$ca, user:"nexusbackup", api_key:$tok, ssh_host:$h, ssh_port:12222,
+		  ssh_user:"nexusbackup", ssh_host_key:$hk, ssh_private_key:$key, ssh_from:$from,
+		  datasets:["tank/data","tank/smb"], recursive:true}')
+	out=$(api admin POST /sources "$(jq -nc --argjson c "$cfg" '{tenant:"nas", kind:"plugin:truenas", name:"truenas-plugin", config:$c}')")
+	expect 201 "create plugin source"
+	SRC=$(jq -r .id <<<"$out")
+	jq -e '.config.api_key_set and .config.ssh_private_key_set and .config.api_key == null and .config.ssh_private_key == null' \
+		<<<"$out" >/dev/null || die "secrets leaked or not set: $(jq -c .config <<<"$out" | cut -c1-300)"
+	j=$(plugin_job admin plugin_validate)
+	line=$(jq -r .log <<<"$j" | sed -n 's/^.*plugin\[info\]: authorized_keys line for the "SSH public key" field of the TrueNAS user "nexusbackup": //p' | head -n 1)
+	[ -n "$line" ] || die "no authorized_keys line in the plugin_validate log: $(jq -r .log <<<"$j" | tail -n 5)"
+	printf '%s\n' "$line" >"$D/authorized_keys"
+	python3 "$here/provision.py" | tail -1
+	log "authorized_keys line from plugin_validate ($(wc -c <"$D/authorized_keys") bytes) installed on TrueNAS"
+	j=$(plugin_job admin plugin_validate)
+	jq -e '.result.valid == true' <<<"$j" >/dev/null || die "plugin_validate: $(jq -c .result <<<"$j")"
+	j=$(plugin_job admin plugin_guests)
+	GUESTS=$(jq -c '[.result.guests[].id]' <<<"$j")
+	[ "$GUESTS" = '["tank.data","tank.data.projects","tank.smb"]' ] || die "plugin_guests: $GUESTS"
+	log "plugin_validate ok, guests $GUESTS"
+}
+
 step_config() {
 	login admin "$ADMIN_PW" "$ADMIN_TOTP"
 	api admin POST /tenants '{"name":"nas","offsite":{}}' >/dev/null
 	expect 201 "create tenant"
-	local cfg hk
+	local cfg hk out
 	hk=$(awk '!/^#/ {print $2" "$3; exit}' "$D/known_hosts")
-	cfg=$(jq -nc --rawfile ca "$D/cert.pem" --arg tok "$(tr -d '\n' <"$D/api-key")" --rawfile key "$D/nexus_ed25519" \
-		--arg pub "$(cat "$D/nexus_ed25519.pub")" --arg hk "$hk" --arg h "$APPL_HOST" --arg from "$FROM" \
-		'{host:"truenas.local", port:18444, connect_addr:($h+":18444"), ca_pem:$ca, user:"nexusbackup", token_secret:$tok,
-		  ssh:{host:$h, port:12222, user:"nexusbackup", host_key:$hk, key_pem:$key, public_key:$pub, from:$from},
-		  datasets:["tank/data","tank/smb"], recursive:true}')
-	local out
-	out=$(api admin POST /sources "$(jq -nc --argjson c "$cfg" '{tenant:"nas", kind:"truenas", name:"truenas1", config:$c}')")
-	expect 201 "create source"
-	SRC=$(jq -r .id <<<"$out")
-	jq -e '.config.token_secret_set and .config.ssh.key_pem_set and .config.token_secret == null and .config.ssh.key_pem == null' \
-		<<<"$out" >/dev/null || die "secrets leaked or not set"
-	# the admin pastes the returned line into the TrueNAS user's "SSH public key" field
-	jq -r .config.authorized_keys <<<"$out" >"$D/authorized_keys"
-	python3 "$here/provision.py" | tail -1
-	log "authorized_keys line ($(wc -c <"$D/authorized_keys") bytes) installed on TrueNAS"
+	if [ "$KIND" = plugin ]; then
+		config_plugin "$hk"
+	else
+		cfg=$(jq -nc --rawfile ca "$D/cert.pem" --arg tok "$(tr -d '\n' <"$D/api-key")" --rawfile key "$D/nexus_ed25519" \
+			--arg pub "$(cat "$D/nexus_ed25519.pub")" --arg hk "$hk" --arg h "$APPL_HOST" --arg from "$FROM" \
+			'{host:"truenas.local", port:18444, connect_addr:($h+":18444"), ca_pem:$ca, user:"nexusbackup", token_secret:$tok,
+			  ssh:{host:$h, port:12222, user:"nexusbackup", host_key:$hk, key_pem:$key, public_key:$pub, from:$from},
+			  datasets:["tank/data","tank/smb"], recursive:true}')
+		out=$(api admin POST /sources "$(jq -nc --argjson c "$cfg" '{tenant:"nas", kind:"truenas", name:"truenas1", config:$c}')")
+		expect 201 "create source"
+		SRC=$(jq -r .id <<<"$out")
+		jq -e '.config.token_secret_set and .config.ssh.key_pem_set and .config.token_secret == null and .config.ssh.key_pem == null' \
+			<<<"$out" >/dev/null || die "secrets leaked or not set"
+		# the admin pastes the returned line into the TrueNAS user's "SSH public key" field
+		jq -r .config.authorized_keys <<<"$out" >"$D/authorized_keys"
+		python3 "$here/provision.py" | tail -1
+		log "authorized_keys line ($(wc -c <"$D/authorized_keys") bytes) installed on TrueNAS"
+	fi
 	[ ! -f "$ROOT/var/lib/nexus/catalog/catalog.db" ] ||
 		python3 - "$ROOT/var/lib/nexus/catalog/catalog.db" "$D/api-key" <<-'PY' || die "plaintext secret in the catalog"
 			import json, sqlite3, sys
@@ -56,15 +106,18 @@ step_config() {
 			    if k == "truenas":
 			        assert key not in c and "PRIVATE KEY" not in c
 			        assert v["token_secret"].startswith("sealed:v1:") and v["ssh"]["key_pem"].startswith("sealed:v1:")
+			    if k == "plugin:truenas":
+			        assert key not in c and "PRIVATE KEY" not in c
+			        assert v["api_key"].startswith("sealed:v1:") and v["ssh_private_key"].startswith("sealed:v1:")
 		PY
 	local at
 	at=$(date -u -d "@$((($(date +%s) + 100) / 60 * 60))" +%H:%M)
 	POL=$(api admin POST /policies "$(jq -nc --arg s "daily $at" '{name:"nas-daily", schedule:$s, gfs:{daily:14,weekly:4,monthly:6,yearly:1}, offsite:false}')" | jq -r .id)
 	expect 201 "create policy"
-	GRP=$(api admin POST /groups "$(jq -nc --argjson s "$SRC" --argjson p "$POL" '{tenant:"nas", source_id:$s, policy_id:$p, name:"nas-all", guests:[]}')" | jq -r .id)
+	GRP=$(api admin POST /groups "$(jq -nc --argjson s "$SRC" --argjson p "$POL" --argjson g "${GUESTS:-[]}" '{tenant:"nas", source_id:$s, policy_id:$p, name:"nas-all", guests:$g}')" | jq -r .id)
 	expect 201 "create group"
 	echo "SRC=$SRC POL=$POL GRP=$GRP" >"$S/ids"
-	log "tenant nas, truenas source $SRC, policy $POL (daily $at UTC), group $GRP $(api admin GET "/groups" | jq -c ".[] | select(.id==$GRP) | .guests")"
+	log "tenant nas, $KIND source $SRC, policy $POL (daily $at UTC), group $GRP $(api admin GET "/groups" | jq -c ".[] | select(.id==$GRP) | .guests")"
 }
 
 # waits for the next scheduled backup of the group (after job id $1) and its retention follow-up
@@ -121,7 +174,7 @@ step_snapshots() {
 	ids
 	login admin "$ADMIN_PW" "$ADMIN_TOTP"
 	for _ in $(seq 60); do
-		n=$(api admin GET "/snapshots?tenant=nas" | jq '[.[] | select(.source | startswith("nas-"))] | length')
+		n=$(api admin GET "/snapshots?tenant=nas" | jq --arg p "$PFX" '[.[] | select(.source | startswith($p))] | length')
 		[ "$n" -ge 6 ] && break
 		sleep 2
 	done
@@ -133,7 +186,7 @@ step_download() {
 	ids
 	login admin "$ADMIN_PW" "$ADMIN_TOTP"
 	python3 "$here/sh.py" "$here/data.sh" sums >"$S/sums.txt"
-	local src="nas-$SRC-tank.data" t id tok j
+	local src="$PFX$SRC-tank.data" t id tok j
 	t=$(api admin GET "/snapshots?tenant=nas&source=$src" | jq -r 'max_by(.time) | .time')
 	j=$(api admin POST /jobs "$(jq -nc --arg s "$src" --argjson t "$t" '{kind:"files_list", tenant:"nas", params:{source:$s, time:$t, path:"/docs"}}')")
 	expect 202 "files_list"
@@ -160,12 +213,20 @@ step_rotation() {
 		jq -r '.[].id' | sort >"$S/tn-snaps"
 	cat "$S/tn-snaps" >&2
 	local want
+	! grep -q "^tank/other@" "$S/tn-snaps" || die "unselected dataset snapshotted"
+	if [ "$KIND" = plugin ]; then
+		# the plugin rotates one backup later: the reference of the last backup + the last one
+		for ds in tank/data tank/data/projects tank/smb; do
+			[ "$(grep -c "^$ds@nexus-$SRC-" "$S/tn-snaps")" = 2 ] || die "$ds: expected two nexus-$SRC snapshots"
+		done
+		log "TrueNAS keeps the last two nexus-$SRC snapshots per dataset (reference + last)"
+		return
+	fi
 	want=$(api admin GET "/jobs/$B2" | jq -r '.result.snapshots[0].time')
 	for ds in tank/data tank/data/projects tank/smb; do
 		[ "$(grep -c "^$ds@nexus-$SRC-" "$S/tn-snaps")" = 1 ] || die "$ds: expected exactly one nexus-$SRC snapshot"
 		grep -qx "$ds@nexus-$SRC-$want" "$S/tn-snaps" || die "$ds: reference is not the last backup ($want)"
 	done
-	! grep -q "^tank/other@" "$S/tn-snaps" || die "unselected dataset snapshotted"
 	log "TrueNAS keeps exactly the last backed-up snapshot (nexus-$SRC-$want) per dataset"
 }
 

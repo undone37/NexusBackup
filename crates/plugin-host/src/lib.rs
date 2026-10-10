@@ -17,7 +17,7 @@ pub mod restore;
 pub mod sandbox;
 pub mod seccomp;
 
-use plugin_proto::{Kind, Meta};
+use plugin_proto::{Kind, Manifest, Meta};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -35,6 +35,36 @@ pub fn log_line(l: &str) {
     } else {
         println!("{l}");
     }
+}
+
+/// TCP ports of a kind's endpoints, resolved in the source config (the sandbox's
+/// Landlock connect rules). None: unknown kind; empty: `sandbox.network = "none"`.
+pub fn endpoint_ports(manifest: &Manifest, kind: &str, cfg: &serde_json::Value) -> Option<Vec<u16>> {
+    let net = manifest
+        .sandbox
+        .as_ref()
+        .and_then(|s| s["network"].as_str())
+        .unwrap_or("endpoints");
+    if net == "none" {
+        return Some(Vec::new());
+    }
+    let k = manifest.kinds.iter().find(|k| k.kind == kind)?;
+    let mut ports: Vec<u16> = k
+        .endpoints
+        .iter()
+        .filter(|e| e.proto == "tcp" && cfg.pointer(&e.host).is_some())
+        .map(|e| {
+            e.port
+                .as_deref()
+                .and_then(|p| cfg.pointer(p))
+                .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                .and_then(|p| u16::try_from(p).ok())
+                .unwrap_or(e.default_port)
+        })
+        .collect();
+    ports.sort_unstable();
+    ports.dedup();
+    Some(ports)
 }
 
 /// Index names of a plugin snapshot.

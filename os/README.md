@@ -141,7 +141,7 @@ A plugin is signed, untrusted code. Pieces in the image:
 - `nexus_plugin_t` is entered only from `nexus_pluginhost_t` through `nexus_plugin_exec_t`
   (`/var/lib/nexus/plugins/<id>/<version>/bin/plugin`) and is outside the `nexus_domain`
   attribute. It may read its install tree, `/usr`, generic `/etc` files, the trust store
-  and `resolv.conf`, run the image's tools in-domain, manage its tmp dir
+  and `resolv.conf`, run the image's tools (incl. `/usr/bin/ssh`, `ssh_exec_t`) in-domain, manage its tmp dir
   (`nexus_plugin_tmp_t`, `/tmp/nexus-plugin-<job>-<rand>` in the scheduler's PrivateTmp,
   never executable) and make TCP connections to any port; nftables and Landlock limit the
   destinations. `neverallow`s: no nexus data (keys, stores, escrow, catalog, downloads,

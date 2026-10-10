@@ -1,0 +1,26 @@
+[package]
+name = "truenas-plugin"
+version = "1.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+description = "NexusBackup plugin: the TrueNAS connector (crate truenas) on the plugin SDK (docs/truenas-connector.md §9)"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+chunkstore = { path = "../../crates/chunkstore" }
+pem = "3"
+plugin-sdk = { path = "../../crates/plugin-sdk" }
+serde_json = "1"
+truenas = { path = "../../crates/truenas", default-features = false, features = ["client"] }
+
+[dev-dependencies]
+libc = "0.2"
+plugin-sdk = { path = "../../crates/plugin-sdk", features = ["testing"] }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+sha2 = "0.10"
+tempfile = "3"
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }

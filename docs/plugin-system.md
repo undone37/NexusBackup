@@ -1,6 +1,7 @@
 # Plugin System — Contract (Phase 9)
 
-Status: v1 (2026-10-10), implementation notes v1.1 (2026-10-10, see "Implementation (v1.1)" at the end). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
+Status: v1 (2026-10-10), implementation notes v1.1 (2026-10-10, see "Implementation (v1.1)" at the end), additive
+v1.2 (2026-10-10, TrueNAS plugin, see "v1.2" at the end). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
 speaking a **versioned protocol**, with a **Rust SDK**; trust = **project release key + publisher keys an admin adds
 with quorum**; reference plugin **PostgreSQL**; the **TrueNAS** connector is ported to the SDK; the restore API covers
 **download, restore to original/alternate target, application-specific restore and mount/instant access**.
@@ -178,3 +179,23 @@ allow-list is global (TCP only), so manifest UDP endpoints are not opened.
 **Appliance:** job kinds and API as listed in docs/control-plane.md; a backup with `consistent = false` raises
 `backup_inconsistent` once per snapshot source; `restores[].params_schema` values end up in `jobs.params` (visible to
 operators) — restore parameters must not carry secrets in v1 (use source secrets).
+
+## v1.2 — additive changes for the TrueNAS plugin (2026-10-10)
+Found while porting the TrueNAS connector (`plugins/truenas`, docs/truenas-connector.md §9); protocol and API
+version unchanged (`api: 1`), older plugins are unaffected.
+- **Backup `Init.params` carries `source_id`** (`{"guest", "source_id"}`; SDK `Ctx::source_id()`): the appliance's
+  id of the source, stable and unique per appliance. A plugin that creates objects on the source system (TrueNAS:
+  ZFS snapshots `nexus-<source>-<time>`) names them with it, so two sources on the same system — or a plugin source
+  next to a built-in one — never touch each other's objects. (Previous-snapshot references need no new capability:
+  the plugin keeps its own reference in the `state` blob, which is returned with the base snapshot.)
+- **The SSH client may run in the sandbox:** SELinux `can_exec(nexus_plugin_t, ssh_exec_t)` (it already ran the
+  image's other tools in-domain). Nothing else changes: `ssh` inherits Landlock (TCP connect only to the endpoint
+  ports; key and `known_hosts` must live in the plugin's tmp dir; `/etc/ssh` is not readable, so the system
+  `ssh_config` is skipped), the seccomp allowlist (no AF_UNIX: no agent; glibc's NSS falls back to `/etc/passwd`)
+  and the rlimits. Tested by `plugins/truenas/tests/plugin.rs` (the binary in the real sandbox against a local
+  unprivileged sshd).
+- **Endpoint ports from the source config** are now one function (`plugin_host::endpoint_ports`) used by
+  `nexus-pluginhost` and the SDK's test harness; `testing::Host` previously opened only the manifest's
+  `default_port`s, so plugins whose test servers listen on other ports could not be tested in the sandbox.
+- Hint for plugin authors (no change): the host drops the xattrs of a whole `BaseEntries` answer that would not fit
+  one frame; plugins that rely on base xattrs (TrueNAS: unchanged directories) query small batches.

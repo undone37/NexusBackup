@@ -4207,6 +4207,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "truenas-plugin"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chunkstore",
+ "libc",
+ "pem",
+ "plugin-sdk",
+ "rcgen",
+ "rustls",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "truenas",
+ "tungstenite",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

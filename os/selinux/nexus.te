@@ -690,6 +690,9 @@ libs_use_shared_libs(nexus_plugin_t)
 # client tools of the image (pg_dump, tar, sh, ...) run in this domain, no transition
 corecmd_exec_bin(nexus_plugin_t)
 corecmd_exec_shell(nexus_plugin_t)
+# the SSH client (plugin truenas: forced-command streams) runs in this domain, no
+# transition to ssh_t; its key and known_hosts live in the plugin's tmp dir
+can_exec(nexus_plugin_t, ssh_exec_t)
 files_read_usr_files(nexus_plugin_t)
 files_list_usr(nexus_plugin_t)
 # /etc: generic config files (nsswitch.conf, hosts, crypto-policies, ...), locale and

@@ -1,0 +1,76 @@
+{
+  "id": "truenas",
+  "name": "TrueNAS (plugin)",
+  "version": "1.0.0",
+  "publisher": "nexusbackup",
+  "api": 1,
+  "kinds": [
+    {
+      "kind": "truenas",
+      "title": "TrueNAS datasets (plugin)",
+      "config_schema": {
+        "type": "object",
+        "required": ["host", "ca_pem", "api_key", "ssh_host", "ssh_host_key", "ssh_private_key", "datasets"],
+        "properties": {
+          "host": { "type": "string", "format": "hostname", "title": "TrueNAS API host" },
+          "port": { "type": "integer", "format": "port", "title": "API port", "default": 443 },
+          "ca_pem": {
+            "type": "string",
+            "title": "TrueNAS certificate (PEM, pinned) or its CA",
+            "maxLength": 65536
+          },
+          "user": {
+            "type": "string",
+            "title": "API user",
+            "default": "nexusbackup",
+            "pattern": "^[a-z_][a-z0-9_-]{0,31}$"
+          },
+          "api_key": { "type": "string", "format": "password", "title": "API key", "maxLength": 256 },
+          "ssh_host": { "type": "string", "format": "hostname", "title": "SSH host" },
+          "ssh_port": { "type": "integer", "format": "port", "title": "SSH port", "default": 22 },
+          "ssh_user": {
+            "type": "string",
+            "title": "SSH user",
+            "default": "nexusbackup",
+            "pattern": "^[a-z_][a-z0-9_-]{0,31}$"
+          },
+          "ssh_host_key": {
+            "type": "string",
+            "title": "TrueNAS SSH host key (ssh-ed25519 AAAA…, pinned)",
+            "pattern": "^(ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa) [A-Za-z0-9+/=]+( [^\\n\\r]*)?$",
+            "maxLength": 8192
+          },
+          "ssh_private_key": {
+            "type": "string",
+            "format": "password",
+            "title": "Appliance SSH private key (OpenSSH format)",
+            "maxLength": 16384
+          },
+          "ssh_from": {
+            "type": "string",
+            "title": "Appliance address as TrueNAS sees it (from= of the key line)",
+            "maxLength": 255
+          },
+          "datasets": {
+            "type": "array",
+            "title": "Datasets (pool/a/b)",
+            "maxItems": 64,
+            "items": { "type": "string", "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*(/[A-Za-z0-9_][A-Za-z0-9_-]*)*$", "maxLength": 200 }
+          },
+          "recursive": { "type": "boolean", "title": "Include child datasets", "default": false },
+          "sudo": { "type": "boolean", "title": "Read files via sudo (find, tar, realpath)", "default": true },
+          "zfs_sudo": { "type": "boolean", "title": "zfs diff via sudo", "default": true }
+        }
+      },
+      "secret_fields": ["api_key", "ssh_private_key"],
+      "endpoints": [
+        { "host": "/host", "port": "/port", "default_port": 443, "proto": "tcp" },
+        { "host": "/ssh_host", "port": "/ssh_port", "default_port": 22, "proto": "tcp" }
+      ],
+      "guests": { "title": "Datasets", "list": true },
+      "backup": { "incremental": true, "consistent": "snapshot" },
+      "restores": [{ "id": "download", "title": "Download (tar/zip)" }]
+    }
+  ],
+  "sandbox": { "network": "endpoints", "tmp_mb": 64, "memory_mb": 2048 }
+}

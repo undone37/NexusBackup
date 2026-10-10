@@ -6,10 +6,12 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-# the connector (API client, SSH streams, tree builder, CLI); without it only
+# the connector (client + store backup + CLI); without features only
 # names/validation and the forced-command generator (web-api, scheduler)
 default = ["connector"]
-connector = ["dep:agent-conn", "dep:chunkstore", "dep:keyd", "dep:libc", "dep:pem", "dep:rustls", "dep:serde", "dep:serde_json", "dep:tungstenite"]
+connector = ["client", "dep:agent-conn", "dep:keyd", "dep:serde"]
+# API client, SSH streams and their parsers, tree planning (plugins/truenas)
+client = ["dep:chunkstore", "dep:libc", "dep:pem", "dep:rustls", "dep:serde_json", "dep:tungstenite"]
 
 [dependencies]
 agent-conn = { path = "../agent-conn", optional = true }

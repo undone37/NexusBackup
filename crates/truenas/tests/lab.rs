@@ -10,6 +10,8 @@
 //! `zfs allow`; every regular file of the new trees must match the sums taken
 //! on TrueNAS. The store keeps its state between runs (incremental rounds).
 
+mod support;
+
 use chunkstore::{Index, Keyring, Options, Store, TreeKind};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -21,31 +23,6 @@ use truenas::remote::Ssh;
 fn cfg() -> Option<serde_json::Value> {
     let p = std::env::var("NEXUS_TRUENAS_LAB").ok()?;
     Some(serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap())
-}
-
-/// `== <dataset>` headers, then `sha256  ./path` lines.
-fn sums(text: &str) -> BTreeMap<String, BTreeMap<Vec<u8>, String>> {
-    let mut out: BTreeMap<String, BTreeMap<Vec<u8>, String>> = BTreeMap::new();
-    let mut cur = String::new();
-    for l in text.lines() {
-        if let Some(ds) = l.strip_prefix("== ") {
-            cur = format!("tank/{ds}");
-            continue;
-        }
-        // sha256sum escapes names with `\` or newline: leading `\`, then `\\` / `\n`
-        let (escaped, l) = match l.strip_prefix('\\') {
-            Some(r) => (true, r),
-            None => (false, l),
-        };
-        let (h, p) = l.split_once("  ./").unwrap();
-        let p = if escaped {
-            p.replace("\\\\", "\0").replace("\\n", "\n").replace('\0', "\\")
-        } else {
-            p.to_owned()
-        };
-        out.entry(cur.clone()).or_default().insert(p.into_bytes(), h.to_owned());
-    }
-    out
 }
 
 #[test]
@@ -100,7 +77,7 @@ fn lab_backup_round() {
         assert_eq!(ours, vec![truenas::snap_name(spec.source_id, r.time)], "{}", d.dataset);
     }
     if let Ok(f) = std::env::var("NEXUS_TRUENAS_SUMS") {
-        let want = sums(&std::fs::read_to_string(f).unwrap());
+        let want = support::sums(&std::fs::read_to_string(f).unwrap());
         for d in &r.committed {
             let m = store.load_manifest(&d.source, d.time).unwrap();
             let Index::Tree { entries } = store.load_index(&m, "tree").unwrap() else {
