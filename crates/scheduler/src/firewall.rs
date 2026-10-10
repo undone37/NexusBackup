@@ -83,6 +83,30 @@ pub fn share_targets(kind: &str, src: &Value) -> Vec<(String, u16)> {
     }
 }
 
+/// (host, port) of a plugin source: the manifest's `endpoints` (JSON pointers into
+/// the source config; port from the config or `default_port`). TCP only: the
+/// appliance allow-list is TCP (UDP endpoints of a manifest are not opened).
+pub fn plugin_targets(spec: &plugin_proto::KindSpec, cfg: &Value) -> Vec<(String, u16)> {
+    spec.endpoints
+        .iter()
+        .filter(|e| e.proto == "tcp")
+        .filter_map(|e| {
+            let host = cfg.pointer(&e.host)?.as_str()?.trim_matches(['[', ']']).to_owned();
+            if host.is_empty() {
+                return None;
+            }
+            let port = e
+                .port
+                .as_deref()
+                .and_then(|p| cfg.pointer(p))
+                .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                .and_then(|p| u16::try_from(p).ok())
+                .unwrap_or(e.default_port);
+            Some((host, port))
+        })
+        .collect()
+}
+
 /// (host, port) of a tenant's offsite remote (`tenants.offsite`): the SFTP
 /// box, or the S3 endpoint (the host the requests go to).
 pub fn offsite_targets(o: &Value) -> Vec<(String, u16)> {

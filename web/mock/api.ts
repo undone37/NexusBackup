@@ -43,9 +43,20 @@ const b32 = (n = 32) => {
 };
 const totpUri = (name: string, secret: string) =>
   `otpauth://totp/NexusBackup:${encodeURIComponent(name)}?secret=${secret}&issuer=NexusBackup&algorithm=SHA1&digits=6&period=30`;
-async function sha256(s: string) {
-  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+async function sha256(s: string | Uint8Array) {
+  const data = typeof s === 'string' ? new TextEncoder().encode(s) : s;
+  const d = await crypto.subtle.digest('SHA-256', data as unknown as BufferSource);
   return Array.from(new Uint8Array(d), (x) => x.toString(16).padStart(2, '0')).join('');
+}
+/** Dotted numeric version compare ("1.10.0" > "1.9.0"). */
+function cmpVersion(a: string, b: string): number {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return Math.sign(d);
+  }
+  return 0;
 }
 
 // ---------------------------------------------------------------- state
@@ -95,7 +106,8 @@ interface Job {
 const db = {
   users: [] as User[],
   tenants: [] as { name: string; offsite: Json }[],
-  sources: [] as { id: number; tenant: string; kind: 'pve' | 'linux' | 'nfs' | 'smb'; name: string; config: Json }[],
+  /** kind: pve | linux | nfs | smb | plugin:<kind> */
+  sources: [] as { id: number; tenant: string; kind: string; name: string; config: Json }[],
   agents: [] as Agent[],
   replPeers: [] as Json[],
   replSources: [] as Json[],
@@ -110,6 +122,9 @@ const db = {
   downloads: new Map<string, { owner: string; filename: string; body: string; expires: number }>(),
   failures: new Map<string, { count: number; until: number }>(),
   quorumSecrets: new Map<number, Json>(),
+  /** one entry per (plugin id, version), like GET /plugins */
+  plugins: [] as Json[],
+  pluginKeys: [] as Json[],
   seq: 100,
 };
 const nextId = () => ++db.seq;
@@ -160,7 +175,16 @@ function planFor(kind: string, p: Json): string[] {
       'post-backup hooks ok',
       'index written, snapshot committed',
     ];
+  const psrc = db.sources.find((s) => s.id === Number(p.source_id));
   switch (kind) {
+    case 'plugin_validate':
+      return [`starting nexus-pluginhost for ${psrc?.kind} (source ${psrc?.name})`, 'sandbox: landlock + seccomp active', 'Validate: connecting to the endpoint', 'done'];
+    case 'plugin_guests':
+      return [`starting nexus-pluginhost for ${psrc?.kind} (source ${psrc?.name})`, 'ListGuests', 'done'];
+    case 'plugin_restore':
+      return [`starting nexus-pluginhost: restore ${p.restore} of ${p.source} @ ${p.time}`, 'plugin requested 3 streams', 'streaming data to the plugin', `restore ${p.restore} finished`];
+    case 'plugin_mount':
+      return [`starting nexus-pluginhost: mount ${p.source} @ ${p.time} for ${p.minutes} min`, 'plugin answered MountReady', 'mounted'];
     case 'restore_files':
       return [
         `connecting to agent ${agName} over mTLS`,
@@ -235,6 +259,7 @@ function tick() {
       j.state = 'ok';
       // Like the scheduler: structured results in `job.result`.
       if (j.kind === 'files_list') j.result = { entries: listDir(String(j.params.path ?? '/'), String(j.params.source ?? '')) };
+      if (j.kind.startsWith('plugin_')) pluginResult(j, t);
       const ag = db.agents.find((a) => a.id === j.params.agent_id);
       if (j.kind === 'agent_enroll' && ag) {
         Object.assign(ag, { enrolled_at: t, cert_sha256: rand(32), token_expires: null, token_hash: null, last_seen: t });
@@ -251,6 +276,14 @@ function tick() {
           expires: t + 86400,
         });
       }
+      const pgroup = j.kind === 'backup' ? db.groups.find((g) => g.id === j.params.group_id) : undefined;
+      const psrc = db.sources.find((s) => s.id === pgroup?.source_id && s.kind.startsWith('plugin:'));
+      if (psrc && pgroup) {
+        const pid = pluginKind(psrc.kind)?.plugin.id ?? 'unknown';
+        const names = pgroup.guests.length ? pgroup.guests.map((g) => `plugin-${pid}-${psrc.id}-${g}`) : [`plugin-${pid}-${psrc.id}`];
+        for (const n of names) db.snapshots.push(snap(j.tenant, n, t, 300 << 20, true, false, null));
+        continue;
+      }
       if (j.kind === 'backup') {
         const vm = j.params.vmid ?? j.params.agent_id ?? db.groups.find((g) => g.id === j.params.group_id)?.guests[0];
         if (vm) db.snapshots.push(snap(j.tenant, guestName(vm), t, 64 << 30, true, false, null));
@@ -261,9 +294,44 @@ function tick() {
   }
 }
 
+/** Structured results of the plugin job kinds. */
+function pluginResult(j: Job, t: number) {
+  const p = j.params;
+  const src = db.sources.find((s) => s.id === Number(p.source_id));
+  if (j.kind === 'plugin_validate') {
+    const host = String(src?.config.host ?? '');
+    j.result = /bad|invalid/.test(host) ? { valid: false, field: 'host', message: `connection to ${host}:${src?.config.port} refused` } : { valid: true };
+    j.log += j.result.valid ? '\nValid' : `\nInvalid: ${j.result.field}: ${j.result.message}`;
+  } else if (j.kind === 'plugin_guests') {
+    j.result = {
+      guests: [
+        { id: 'shop', title: 'shop', size: 1_480 << 20 },
+        { id: 'crm', title: 'crm', size: 402 << 20 },
+        { id: 'analytics', title: 'analytics (reporting)', size: 9_830 * 2 ** 20 },
+      ],
+    };
+  } else if (j.kind === 'plugin_restore') {
+    j.result = { restore: p.restore, summary: `restored ${p.source} @ ${new Date(p.time * 1000).toISOString()} (${p.restore}): 3 streams, 1.4 GiB` };
+  } else if (j.kind === 'plugin_mount') {
+    const until = new Date((t + p.minutes * 60) * 1000).toISOString();
+    j.result = { info: `postgresql://nexus_ro@appliance.acme.lan:15432/${p.params?.database || 'postgres'} (read-only)`, summary: `mounted until ${until}` };
+  }
+}
+
 function listDir(path: string, source: string): Json[] {
   const t = now() - 86400 * 3;
   if (source.startsWith('host-')) return hostDir(path, t);
+  if (source.startsWith('plugin-postgresql-')) {
+    const f = (name: string, size: number) => ({ name, kind: 'file', size, mtime: t });
+    const d = (name: string) => ({ name, kind: 'dir', size: 0, mtime: t });
+    const tree: Record<string, Json[]> = {
+      '/': [d('.nexus-streams'), f('postgresql.conf', 29_811), f('pg_hba.conf', 5_002)],
+      '/.nexus-streams': [d('dump'), d('wal'), f('globals.sql', 4_212)],
+      '/.nexus-streams/dump': [f(`${source.split('-').pop()}.dump`, 1_412_331_520)],
+      '/.nexus-streams/wal': [f('000000010000000A00000041', 16 << 20), f('000000010000000A00000042', 16 << 20)],
+    };
+    return tree[path] ?? [];
+  }
   const tree: Record<string, Json[]> = {
     '/': [
       { name: 'etc', kind: 'dir', size: 0, mtime: t },
@@ -322,6 +390,218 @@ const snap = (tenant: string, source: string, time: number, size: number, local:
   lock_until: time + 7 * 86400,
   verified,
 });
+
+// ---------------------------------------------------------------- plugins (docs/plugin-system.md)
+
+const FILES_KIND = {
+  kind: 'files',
+  title: 'Files (example plugin)',
+  config_schema: {
+    type: 'object',
+    required: ['path'],
+    properties: {
+      path: { type: 'string', title: 'Directory', description: 'Absolute path the plugin backs up.', pattern: '^/', minLength: 1, maxLength: 4096 },
+      excludes: { type: 'array', title: 'Exclude patterns', description: 'Glob patterns, e.g. *.tmp.', items: { type: 'string', minLength: 1, maxLength: 256 } },
+    },
+  },
+  secret_fields: [],
+  endpoints: [],
+  guests: null,
+  backup: { incremental: true, consistent: 'none' },
+  restores: [
+    { id: 'download', title: 'Download (tar/zip)' },
+    {
+      id: 'to_dir',
+      title: 'Restore to directory',
+      params_schema: {
+        type: 'object',
+        required: ['target'],
+        properties: { target: { type: 'string', title: 'Target directory', description: 'Absolute path; must not exist yet.', pattern: '^/' } },
+      },
+    },
+  ],
+};
+const PG_TARGET = {
+  host: { type: 'string', title: 'Server', format: 'hostname', description: 'Default: the source server.' },
+  port: { type: 'integer', title: 'Port', format: 'port', default: 5432 },
+};
+const PG_KIND = {
+  kind: 'postgresql',
+  title: 'PostgreSQL server',
+  config_schema: {
+    type: 'object',
+    required: ['host', 'port', 'user', 'password'],
+    properties: {
+      host: { type: 'string', title: 'Server', format: 'hostname', description: 'Host name or IP address of the PostgreSQL server.' },
+      port: { type: 'integer', title: 'Port', format: 'port', minimum: 1, maximum: 65535, default: 5432 },
+      user: { type: 'string', title: 'User', minLength: 1, maxLength: 63, default: 'nexus_backup', description: 'Needs the pg_read_all_data and REPLICATION privileges.' },
+      password: { type: 'string', title: 'Password', format: 'password' },
+      sslmode: { type: 'string', title: 'TLS', enum: ['disable', 'require', 'verify-ca', 'verify-full'], default: 'verify-full' },
+      wal: { type: 'boolean', title: 'Archive WAL (point-in-time restore)', default: true },
+    },
+  },
+  secret_fields: ['password'],
+  endpoints: [{ host: '/host', port: '/port', default_port: 5432, proto: 'tcp' }],
+  guests: { title: 'Databases', list: true },
+  backup: { incremental: true, consistent: 'application' },
+  restores: [
+    { id: 'download', title: 'Download dumps (tar/zip)' },
+    {
+      id: 'to_target',
+      title: 'Restore to server',
+      params_schema: {
+        type: 'object',
+        required: ['database'],
+        properties: {
+          ...PG_TARGET,
+          database: { type: 'string', title: 'New database name', pattern: '^[a-z_][a-z0-9_]{0,62}$', description: 'Created on the target; must not exist.' },
+          owner: { type: 'string', title: 'Owner role (optional)', maxLength: 63 },
+        },
+      },
+    },
+    {
+      id: 'pitr',
+      title: 'Point-in-time restore',
+      app_specific: true,
+      params_schema: {
+        type: 'object',
+        required: ['target_time', 'data_dir'],
+        properties: {
+          target_time: { type: 'string', title: 'Recover to (UTC)', pattern: '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2})?Z$', description: 'e.g. 2026-10-09T14:30:00Z' },
+          ...PG_TARGET,
+          data_dir: { type: 'string', title: 'Empty data directory on the target', pattern: '^/' },
+        },
+      },
+    },
+    { id: 'mount', title: 'Mount read-only', params_schema: { type: 'object', properties: { database: { type: 'string', title: 'Database (optional)', maxLength: 63 } } } },
+  ],
+};
+const manifestOf = (id: string, name: string, version: string, kinds: Json[], sandbox: Json) => ({
+  id,
+  name,
+  version,
+  publisher: 'nexusbackup',
+  api: 1,
+  kinds: structuredClone(kinds),
+  sandbox,
+});
+const BUILTIN_KEY = {
+  fingerprint: 'sha256:6f1c0a8e2b4d93f7c5a1e0b29d8c47f3a6e5d4c3b2a1908f7e6d5c4b3a291807',
+  publisher: 'nexusbackup',
+  public_key: '-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEmockmockmockmockmockmockmockmo\nckmockmockmockmockmockmockmockmockmockmockmockmockmockmockmockmo==\n-----END PUBLIC KEY-----\n',
+  name: 'TEST-KEY-DO-NOT-SHIP.pub',
+  builtin: true,
+};
+function pluginEntry(m: Json, by: string, at: number, extra: Json = {}): Json {
+  return {
+    id: m.id,
+    name: m.name,
+    version: m.version,
+    publisher: m.publisher,
+    state: 'installed',
+    current: true,
+    enabled: true,
+    signer: BUILTIN_KEY.name,
+    sha256: rand(32),
+    bin_sha256: rand(32),
+    size: 4_812_288,
+    manifest: m,
+    uploaded_by: by,
+    uploaded_at: at,
+    installed_at: at + 3600,
+    error: null,
+    quorum_id: null,
+    ...extra,
+  };
+}
+const SANDBOX = { network: 'endpoints', tmp_mb: 1024, memory_mb: 1024, cpu_quota: 200 };
+/** Current installed version providing a source kind ("plugin:<kind>" or "<kind>"). */
+function pluginKind(kind: string): { plugin: Json; kind: Json } | null {
+  const k = kind.replace(/^plugin:/, '');
+  for (const p of db.plugins) {
+    if (!p.current || p.state !== 'installed') continue;
+    const def = p.manifest.kinds.find((x: Json) => x.kind === k);
+    if (def) return { plugin: p, kind: def };
+  }
+  return null;
+}
+const pointerGet = (o: Json, ptr: string) => (ptr ? ptr.replace(/^\//, '').split('/').reduce((a: any, k) => a?.[k], o) : undefined);
+
+/** Validates a value against the JSON-Schema subset (like the web-api; throws 400 "<path>: …"). */
+function schemaCheck(schema: Json | undefined, v: Json, prefix: string) {
+  const props: Json = schema?.properties ?? {};
+  if (!v || typeof v !== 'object' || Array.isArray(v)) throw new HttpError(400, `${prefix}: object required`);
+  for (const k of Object.keys(v)) if (!(k in props)) throw new HttpError(400, `${prefix}.${k}: unknown field`);
+  for (const r of schema?.required ?? []) if (v[r] === undefined) throw new HttpError(400, `${prefix}.${r}: required`);
+  const one = (path: string, p: Json, x: unknown) => {
+    const bad = (m: string) => {
+      throw new HttpError(400, `${path}: ${m}`);
+    };
+    if (p.type === 'string' && typeof x !== 'string') bad('string expected');
+    if (p.type === 'integer' && !Number.isInteger(x)) bad('integer expected');
+    if (p.type === 'boolean' && typeof x !== 'boolean') bad('boolean expected');
+    if (p.enum && !p.enum.includes(x)) bad(`one of ${p.enum.join(', ')}`);
+    if (typeof x === 'number') {
+      if (p.minimum !== undefined && x < p.minimum) bad(`minimum ${p.minimum}`);
+      if (p.maximum !== undefined && x > p.maximum) bad(`maximum ${p.maximum}`);
+      if (p.format === 'port' && (x < 1 || x > 65535)) bad('port 1-65535');
+    }
+    if (typeof x === 'string') {
+      if (p.minLength !== undefined && x.length < p.minLength) bad(`at least ${p.minLength} characters`);
+      if (p.maxLength !== undefined && x.length > p.maxLength) bad(`at most ${p.maxLength} characters`);
+      if (p.pattern && !new RegExp(p.pattern, 'u').test(x)) bad(`does not match ${p.pattern}`);
+      if (p.format === 'hostname' && !/^[A-Za-z0-9.:\[\]-]{1,253}$/.test(x)) bad('host name expected');
+    }
+  };
+  for (const [k, p] of Object.entries(props) as [string, Json][]) {
+    const x = v[k];
+    if (x === undefined) continue;
+    if (p.type === 'array') {
+      if (!Array.isArray(x)) throw new HttpError(400, `${prefix}.${k}: array expected`);
+      x.forEach((item, i) => one(`${prefix}.${k}[${i}]`, { type: 'string', ...(p.items ?? {}) }, item));
+    } else one(`${prefix}.${k}`, p, x);
+  }
+}
+
+/** Plugin source config: schema-checked; omitted secrets keep the stored ones unless an endpoint moved. */
+function pluginSourceConfig(kind: string, cfg: Json, old?: Json): Json {
+  const pk = pluginKind(kind);
+  if (!pk) throw new HttpError(400, `kind: no installed plugin provides ${kind}`);
+  const out = { ...(cfg ?? {}) };
+  const moved = (pk.kind.endpoints ?? []).some((ep: Json) =>
+    [ep.host, ep.port].some((ptr) => ptr && old && JSON.stringify(pointerGet(old, ptr)) !== JSON.stringify(pointerGet(out, ptr))),
+  );
+  for (const f of pk.kind.secret_fields ?? []) {
+    if ((out[f] === undefined || out[f] === '') && old?.[f] !== undefined) {
+      if (moved) throw new HttpError(400, `config.${f}: required (the endpoint changed)`);
+      out[f] = old[f];
+    }
+  }
+  schemaCheck(pk.kind.config_schema, out, 'config');
+  return out;
+}
+
+/** manifest.json of a .nxplugin (tar) bundle, or null. */
+function tarManifest(b: Uint8Array): Json | null {
+  const dec = new TextDecoder();
+  const str = (x: Uint8Array) => dec.decode(x).replace(/\0[\s\S]*$/, '');
+  for (let off = 0; off + 512 <= b.length; ) {
+    const hdr = b.subarray(off, off + 512);
+    if (hdr.every((x) => x === 0)) break;
+    const name = str(hdr.subarray(0, 100)).replace(/^\.\//, '');
+    const size = parseInt(str(hdr.subarray(124, 136)).trim() || '0', 8);
+    if (!Number.isFinite(size)) return null;
+    if (name === 'manifest.json') {
+      try {
+        return JSON.parse(dec.decode(b.subarray(off + 512, off + 512 + size)));
+      } catch {
+        return null;
+      }
+    }
+    off += 512 + Math.ceil(size / 512) * 512;
+  }
+  return null;
+}
 
 function seed() {
   const t = now();
@@ -401,6 +681,30 @@ function seed() {
     config: { host: 'fs01.acme.lan', port: 445, version: '3.1.1', share: 'Data', user: 'svc-backup', domain: 'ACME', sec: 'ntlmssp', sign: true, seal: true, password: 'SECRET', excludes: [], threads: 16, xattrs: true, timeout_secs: 60 } as Json,
   };
   db.sources.push(s4, s5);
+  // Plugins: example-files 1.0.0, postgresql 1.2.0 (1.1.0 still installed), publisher key of acme.
+  db.pluginKeys.push(BUILTIN_KEY, {
+    fingerprint: 'sha256:0b7e5f1d93a2c4e8f6a1b3d5c7e9f0a2b4c6d8e0f1a3b5c7d9e1f2a4b6c8d0e2',
+    publisher: 'acme-labs',
+    public_key: '-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEacmeacmeacmeacmeacmeacmeacmeac\nmeacmeacmeacmeacmeacmeacmeacmeacmeacmeacmeacmeacmeacmeacmeacme==\n-----END PUBLIC KEY-----\n',
+    added_by: 'admin',
+    approved_by: 'so',
+    added_at: t - 86400 * 40,
+    builtin: false,
+  });
+  db.plugins.push(
+    pluginEntry(manifestOf('example-files', 'Example files', '1.0.0', [FILES_KIND], { network: 'none', tmp_mb: 256, memory_mb: 256, cpu_quota: 100 }), 'admin', t - 86400 * 30),
+    pluginEntry(manifestOf('postgresql', 'PostgreSQL', '1.1.0', [PG_KIND], SANDBOX), 'admin', t - 86400 * 25, { current: false }),
+    pluginEntry(manifestOf('postgresql', 'PostgreSQL', '1.2.0', [PG_KIND], SANDBOX), 'admin', t - 86400 * 5),
+  );
+  const s6 = { id: nextId(), tenant: 'acme', kind: 'plugin:files', name: 'app-data', config: { path: '/srv/app', excludes: ['*.tmp'] } as Json };
+  const s7 = {
+    id: nextId(),
+    tenant: 'acme',
+    kind: 'plugin:postgresql',
+    name: 'pg-shop',
+    config: { host: 'db1.acme.lan', port: 5432, user: 'nexus_backup', password: 'SECRET', sslmode: 'verify-full', wal: true } as Json,
+  };
+  db.sources.push(s6, s7);
   db.groups.push(
     { id: nextId(), tenant: 'default', source_id: s1.id, policy_id: gold.id, name: 'production', guests: [100, 101, 200] },
     { id: nextId(), tenant: 'default', source_id: s1.id, policy_id: bronze.id, name: 'development', guests: [102] },
@@ -408,6 +712,8 @@ function seed() {
     { id: nextId(), tenant: 'acme', source_id: s3.id, policy_id: gold.id, name: 'acme-hosts', guests: [web01.id] },
     { id: nextId(), tenant: 'acme', source_id: s4.id, policy_id: gold.id, name: 'acme-filer', guests: [] },
     { id: nextId(), tenant: 'acme', source_id: s5.id, policy_id: bronze.id, name: 'acme-fs01', guests: [] },
+    { id: nextId(), tenant: 'acme', source_id: s6.id, policy_id: bronze.id, name: 'acme-app-data', guests: [] },
+    { id: nextId(), tenant: 'acme', source_id: s7.id, policy_id: gold.id, name: 'acme-databases', guests: ['shop', 'crm'] },
   );
   const day = (d: number) => Math.floor(t / 86400 - d) * 86400 + 3600;
   for (const [tenant, g, sz, skip] of [
@@ -428,6 +734,10 @@ function seed() {
     snap('acme', `share-${s4.id}`, day(1), 3 * 2 ** 30, true, true, day(1) + 7200),
     snap('acme', `share-${s4.id}`, day(0), 3 * 2 ** 30, true, false, null),
     snap('acme', `share-${s5.id}`, day(0), 900 << 20, true, false, null),
+    snap('acme', `plugin-example-files-${s6.id}`, day(0), 210 << 20, true, false, null),
+    snap('acme', `plugin-postgresql-${s7.id}-shop`, day(1), 1_400 << 20, true, true, day(1) + 7200),
+    snap('acme', `plugin-postgresql-${s7.id}-shop`, day(0), 1_420 << 20, true, false, null),
+    snap('acme', `plugin-postgresql-${s7.id}-crm`, day(0), 380 << 20, true, false, null),
   );
   const old = (j: Job, ago: number, state: string, log: string) => {
     Object.assign(j, { created: t - ago, started: t - ago + 2, finished: t - ago + 600, state, log, plan: [] });
@@ -487,6 +797,16 @@ async function quorum(u: User, action: string, params: Json, extra: Json = {}): 
 
 function stripSource(s: (typeof db.sources)[number]) {
   if (s.kind === 'linux') return s;
+  if (s.kind.startsWith('plugin:')) {
+    const secrets: string[] = pluginKind(s.kind)?.kind.secret_fields ?? Object.keys(s.config).filter((k) => /password|secret|key/.test(k));
+    const config: Json = {};
+    for (const [k, v] of Object.entries(s.config)) {
+      if (secrets.includes(k)) config[`${k}_set`] = v !== undefined && v !== '';
+      else config[k] = v;
+    }
+    for (const f of secrets) config[`${f}_set`] ??= false;
+    return { ...s, config };
+  }
   if (s.kind === 'nfs' || s.kind === 'smb') {
     const { password, keytab, ...config } = s.config;
     return s.kind === 'nfs' ? { ...s, config } : { ...s, config: { ...config, password_set: !!password, keytab_set: !!keytab } };
@@ -528,9 +848,36 @@ function publicOffsite(o: Json): Json {
   return { ...o, remote: { ...r, secret_key_set: true } };
 }
 
-function execute(qid: number, action: string, p: Json) {
+function execute(qid: number, action: string, p: Json, by = '', decider = '') {
   const { old: _old, ...next } = p;
+  const versions = (id: string) => db.plugins.filter((x) => x.id === id);
   switch (action) {
+    case 'plugin.install': {
+      const e = find(db.plugins, (x) => x.id === p.id && x.version === p.version, 'plugin version');
+      const prev = versions(p.id).find((x) => x.current);
+      for (const x of versions(p.id)) x.current = false;
+      Object.assign(e, { state: 'installed', current: true, enabled: prev ? prev.enabled : true, installed_at: now(), quorum_id: null });
+      break;
+    }
+    case 'plugin.disable':
+      for (const x of versions(p.id)) x.enabled = false;
+      break;
+    case 'plugin.activate': {
+      const e = find(db.plugins, (x) => x.id === p.id && x.version === p.version && x.state === 'installed', 'installed plugin version');
+      const prev = versions(p.id).find((x) => x.current);
+      for (const x of versions(p.id)) x.current = false;
+      Object.assign(e, { current: true, enabled: prev ? prev.enabled : true });
+      break;
+    }
+    case 'plugin.remove':
+      for (const x of versions(p.id)) Object.assign(x, { state: 'removed', current: false, enabled: false, quorum_id: null });
+      break;
+    case 'plugin_key.add':
+      db.pluginKeys.push({ fingerprint: p.fingerprint, publisher: p.publisher, public_key: p.public_key, added_by: by, approved_by: decider, added_at: now(), builtin: false });
+      break;
+    case 'plugin_key.remove':
+      db.pluginKeys = db.pluginKeys.filter((k) => k.builtin || k.fingerprint !== p.fingerprint);
+      break;
     case 'group.delete':
       db.groups = db.groups.filter((g) => g.id !== p.id);
       break;
@@ -564,7 +911,18 @@ function execute(qid: number, action: string, p: Json) {
 
 // ---------------------------------------------------------------- routes
 
-type Ctx = { method: string; path: string; query: URLSearchParams; body: Json; user: User | null; sid: string | null; res: Res };
+type Ctx = {
+  method: string;
+  path: string;
+  query: URLSearchParams;
+  body: Json;
+  /** POST /plugins: the raw request body */
+  raw: Uint8Array | null;
+  headers: Req['headers'];
+  user: User | null;
+  sid: string | null;
+  res: Res;
+};
 type Handler = (c: Ctx, m: string[]) => Promise<[number, unknown]> | [number, unknown];
 const routes: [string, RegExp, Handler][] = [];
 const on = (method: string, path: string, h: Handler) =>
@@ -657,7 +1015,15 @@ on('POST', '/sources', async (c) => {
   const { tenant, name, config, kind = 'pve' } = c.body;
   find(db.tenants, (t) => t.name === tenant, 'tenant');
   if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
-  if (!['pve', 'linux', 'nfs', 'smb'].includes(kind)) throw new HttpError(400, 'kind: must be pve, linux, nfs or smb');
+  if (String(kind).startsWith('plugin:')) {
+    const pk = pluginKind(kind);
+    if (!pk || !pk.plugin.enabled) throw new HttpError(400, `kind: no enabled plugin provides ${kind}`);
+    const s = { id: nextId(), tenant, kind, name, config: pluginSourceConfig(kind, config) };
+    db.sources.push(s);
+    await audit(u.name, 'source.create', `source/${s.id}`, { name, kind });
+    return [201, stripSource(s)];
+  }
+  if (!['pve', 'linux', 'nfs', 'smb'].includes(kind)) throw new HttpError(400, 'kind: must be pve, linux, nfs, smb or plugin:<kind>');
   if (kind === 'nfs' || kind === 'smb') {
     const cfg = shareConfig(kind, config);
     if (kind === 'smb' && !cfg.password && !cfg.keytab) throw new HttpError(400, 'config.password (or keytab): required');
@@ -682,6 +1048,11 @@ on('POST', '/sources', async (c) => {
 on('PUT', '/sources/:id', async (c, [id]) => {
   const u = need(c.user, 'admin');
   const s = find(db.sources, (x) => x.id === Number(id), 'source');
+  if (s.kind.startsWith('plugin:')) {
+    Object.assign(s, { name: c.body.name ?? s.name, config: pluginSourceConfig(s.kind, c.body.config, s.config) });
+    await audit(u.name, 'source.update', `source/${s.id}`, {});
+    return [200, stripSource(s)];
+  }
   if (s.kind === 'linux') {
     const cfg = linuxConfig(s.tenant, c.body.config);
     // Groups of this source back up exactly its agent.
@@ -740,6 +1111,11 @@ function checkGuests(src: (typeof db.sources)[number], guests: unknown) {
   if (src.kind === 'linux') {
     if (guests.length !== 1 || guests[0] !== src.config.agent_id)
       throw new HttpError(400, 'guests: a linux source needs exactly [its agent_id]');
+  } else if (src.kind.startsWith('plugin:')) {
+    if (!pluginKind(src.kind)?.kind.guests?.list) {
+      if (guests.length) throw new HttpError(400, 'guests: this plugin kind has no guests; must be []');
+    } else if (guests.some((g) => typeof g !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(g)))
+      throw new HttpError(400, 'guests: guest ids [A-Za-z0-9._-]{1,64} required');
   } else if (src.kind === 'nfs' || src.kind === 'smb') {
     if (guests.length) throw new HttpError(400, "guests: a share source's group lists no guests");
   } else if (guests.some((g) => !Number.isInteger(g) || g < 100)) throw new HttpError(400, 'guests: VM/CT IDs required');
@@ -976,6 +1352,107 @@ on('PUT', '/users/:id', async (c, [id]) => {
   return [200, { user: pub(x), ...extra }];
 });
 
+// plugins
+const PLUGIN_ID_RE = /^[a-z0-9-]{2,32}$/;
+const pluginVersions = (id: string) => db.plugins.filter((x) => x.id === id);
+const currentPlugin = (id: string) => find(pluginVersions(id), (x) => x.current && x.state === 'installed', 'installed plugin');
+on('GET', '/plugins', (c) => (need(c.user), [200, [...db.plugins].sort((a, b) => a.id.localeCompare(b.id) || cmpVersion(b.version, a.version))]));
+on('POST', '/plugins', async (c) => {
+  const u = need(c.user, 'admin');
+  if (!String(c.headers['content-type'] ?? '').startsWith('application/octet-stream'))
+    throw new HttpError(415, 'Content-Type must be application/octet-stream');
+  const raw = c.raw;
+  if (!raw?.length) throw new HttpError(400, 'empty bundle');
+  if (raw.length > 128 << 20) throw new HttpError(413, 'bundle larger than 128 MiB');
+  const sig = String(c.headers['x-plugin-signature'] ?? '').trim();
+  if (!sig) throw new HttpError(400, 'X-Plugin-Signature: required');
+  if (!/^[A-Za-z0-9+/]+=*$/.test(sig) || sig.length < 16) throw new HttpError(400, 'X-Plugin-Signature: base64 signature expected');
+  // Mock: a real manifest.json in the tar is used; anything else becomes a newer example-files version.
+  const bumpExample = (): Json => {
+    const ex = pluginVersions('example-files');
+    const top = ex.map((x) => x.version).sort(cmpVersion).pop() ?? '0.9.0';
+    const [a, b, p] = top.split('.').map(Number);
+    const base = ex[0]?.manifest ?? manifestOf('example-files', 'Example files', '1.0.0', [FILES_KIND], SANDBOX);
+    return { ...structuredClone(base), version: `${a}.${b}.${(p || 0) + 1}` };
+  };
+  const m: Json = tarManifest(raw) ?? bumpExample();
+  if (!PLUGIN_ID_RE.test(String(m.id ?? ''))) throw new HttpError(400, 'manifest.id: [a-z0-9-]{2,32} required');
+  if (m.api !== 1) throw new HttpError(400, `manifest.api: unsupported protocol version ${m.api}`);
+  if (!Array.isArray(m.kinds) || !m.kinds.length) throw new HttpError(400, 'manifest.kinds: at least one kind required');
+  // "verification": the publisher needs a trusted key; signatures starting with "bad" fail.
+  const key = db.pluginKeys.find((k) => k.publisher === m.publisher);
+  if (!key || /^bad/i.test(sig)) throw new HttpError(400, 'signature verification failed: no trusted key matches');
+  const live = pluginVersions(m.id).filter((x) => !['removed', 'rejected', 'failed'].includes(x.state));
+  if (live.some((x) => x.publisher !== m.publisher)) throw new HttpError(409, `plugin id ${m.id} belongs to another publisher`);
+  if (live.some((x) => x.state === 'pending' || x.state === 'approved')) throw new HttpError(409, 'another version of this plugin is waiting for approval');
+  const top = live.map((x) => x.version).sort(cmpVersion).pop();
+  if (top && cmpVersion(m.version, top) <= 0) throw new HttpError(409, `version ${m.version} is not newer than ${top}`);
+  for (const k of m.kinds) {
+    const other = pluginKind(k.kind);
+    if (other && other.plugin.id !== m.id) throw new HttpError(409, `kind ${k.kind} is provided by plugin ${other.plugin.id}`);
+  }
+  const upgrade_from = live.find((x) => x.current)?.version ?? null;
+  const e = pluginEntry(m, u.name, now(), {
+    state: 'pending',
+    current: false,
+    enabled: false,
+    signer: key.builtin ? key.name : key.fingerprint,
+    sha256: await sha256(raw),
+    size: raw.length,
+    installed_at: null,
+  });
+  db.plugins.push(e);
+  const [status, body] = await quorum(u, 'plugin.install', { id: m.id, version: m.version, publisher: m.publisher, sha256: e.sha256, signer: e.signer, upgrade_from }, { plugin: e, upgrade_from });
+  e.quorum_id = body.quorum_id;
+  return [status, body];
+});
+on('POST', '/plugins/:id/enable', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const e = currentPlugin(id);
+  e.enabled = true;
+  await audit(u.name, 'plugin.enable', `plugin/${id}`, { version: e.version });
+  return [200, e];
+});
+on('POST', '/plugins/:id/disable', (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const e = currentPlugin(id);
+  if (!e.enabled) throw new HttpError(409, 'plugin is already disabled');
+  return quorum(u, 'plugin.disable', { id, version: e.version });
+});
+on('POST', '/plugins/:id/activate', (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const e = find(pluginVersions(id), (x) => x.version === c.body.version && x.state === 'installed', 'installed plugin version');
+  if (e.current) throw new HttpError(409, 'version is already current');
+  return quorum(u, 'plugin.activate', { id, version: e.version, from: pluginVersions(id).find((x) => x.current)?.version ?? null });
+});
+on('DELETE', '/plugins/:id', (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const vs = pluginVersions(id).filter((x) => x.state === 'installed');
+  if (!vs.length) throw new HttpError(404, 'plugin not found');
+  const kinds = new Set(vs.flatMap((x) => x.manifest.kinds.map((k: Json) => `plugin:${k.kind}`)));
+  const used = db.sources.find((s) => kinds.has(s.kind));
+  if (used) throw new HttpError(409, `plugin kinds are used by source "${used.name}"`);
+  return quorum(u, 'plugin.remove', { id, versions: vs.map((x) => x.version) });
+});
+on('GET', '/plugin-keys', (c) => (need(c.user), [200, db.pluginKeys]));
+on('POST', '/plugin-keys', async (c) => {
+  const u = need(c.user, 'admin');
+  const publisher = String(c.body.publisher ?? '').trim();
+  const pem = String(c.body.public_key ?? '').trim();
+  if (!publisher || publisher.length > 64) throw new HttpError(400, 'publisher: required');
+  const m = /^-----BEGIN PUBLIC KEY-----\n([A-Za-z0-9+/=\n]+)\n-----END PUBLIC KEY-----$/.exec(pem);
+  if (!m) throw new HttpError(400, 'public_key: PEM "PUBLIC KEY" (ECDSA P-256) expected');
+  const fingerprint = `sha256:${await sha256(m[1].replace(/\n/g, ''))}`;
+  if (db.pluginKeys.some((k) => k.fingerprint === fingerprint)) throw new HttpError(409, 'key already trusted');
+  return quorum(u, 'plugin_key.add', { publisher, fingerprint, public_key: pem + '\n' });
+});
+on('DELETE', '/plugin-keys/:fp', (c, [fp]) => {
+  const u = need(c.user, 'admin');
+  const k = find(db.pluginKeys, (x) => x.fingerprint === decodeURIComponent(fp), 'plugin key');
+  if (k.builtin) throw new HttpError(409, 'project keys are part of the appliance image');
+  return quorum(u, 'plugin_key.remove', { fingerprint: k.fingerprint, publisher: k.publisher });
+});
+
 // snapshots / jobs / downloads
 on('GET', '/snapshots', (c) => {
   const u = need(c.user);
@@ -999,10 +1476,38 @@ on('GET', '/jobs/:id', (c, [id]) => {
   const u = need(c.user);
   return [200, pubJob(find(byTenant(u, db.jobs), (j) => j.id === Number(id), 'job'), true)];
 });
-const RESTORE_KINDS = ['restore', 'restore_ct', 'instant_recover', 'files_list', 'files_get', 'restore_files'];
+const RESTORE_KINDS = ['restore', 'restore_ct', 'instant_recover', 'files_list', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount'];
+/** Source + kind of a plugin snapshot name (plugin-<id>-<source id>[-<guest>]). */
+function pluginSnapshotKind(tenant: string, name: string) {
+  const parts = name.replace(/^plugin-/, '').split('-');
+  const i = parts.findIndex((x) => /^\d+$/.test(x));
+  const src = find(db.sources, (s) => s.id === Number(parts[i]) && s.tenant === tenant && s.kind.startsWith('plugin:'), 'plugin source');
+  const pk = pluginKind(src.kind);
+  if (!pk?.plugin.enabled) throw new HttpError(409, `plugin for ${src.kind} is not installed or disabled`);
+  return pk.kind;
+}
 const OVERWRITE = ['never', 'if_older', 'always'];
 function checkJob(u: User, kind: string, tenant: string, p: Json) {
   if (kind === 'agent_enroll') throw new HttpError(400, 'use POST /agents/{id}/enroll');
+  if (kind === 'plugin_validate' || kind === 'plugin_guests' || kind === 'plugin_backup') {
+    const src = find(db.sources, (s) => s.id === Number(p.source_id) && s.tenant === tenant && s.kind.startsWith('plugin:'), 'plugin source in tenant');
+    const pk = pluginKind(src.kind);
+    if (!pk?.plugin.enabled) throw new HttpError(409, `plugin for ${src.kind} is not installed or disabled`);
+    if (kind === 'plugin_guests' && !pk.kind.guests?.list) throw new HttpError(400, 'this plugin kind has no guest list');
+  }
+  if (kind === 'plugin_restore' || kind === 'plugin_mount') {
+    if (!String(p.source ?? '').startsWith('plugin-')) throw new HttpError(400, 'source: must be a plugin snapshot');
+    if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time)) throw new HttpError(404, 'snapshot not found');
+    const k = pluginSnapshotKind(tenant, p.source);
+    const rid = kind === 'plugin_mount' ? 'mount' : p.restore;
+    if (rid === 'download') throw new HttpError(400, 'restore: use files_get for downloads');
+    if (kind === 'plugin_restore' && rid === 'mount') throw new HttpError(400, 'restore: use plugin_mount');
+    const r = find(k.restores as Json[], (x) => x.id === rid, `restore ${rid} of ${k.kind}`);
+    if (r.params_schema) schemaCheck(r.params_schema, p.params ?? {}, 'params');
+    else if (Object.keys(p.params ?? {}).length) throw new HttpError(400, 'params: this restore takes none');
+    if (kind === 'plugin_mount' && !(Number.isInteger(p.minutes) && p.minutes >= 1 && p.minutes <= 1440))
+      throw new HttpError(400, 'minutes: 1..1440');
+  }
   if (kind === 'agent_update') {
     if (u.role !== 'admin') throw new HttpError(403, 'requires role admin');
     const a = find(db.agents, (x) => x.id === p.agent_id && x.tenant === tenant, 'agent in tenant');
@@ -1024,6 +1529,8 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
 on('POST', '/jobs', async (c) => {
   const u = need(c.user, 'admin', 'operator', 'tenant_user');
   const { kind, tenant, params = {} } = c.body;
+  if (typeof kind === 'string' && kind.startsWith('plugin_') && !['plugin_validate', 'plugin_guests', 'plugin_backup', 'plugin_restore', 'plugin_mount'].includes(kind))
+    throw new HttpError(400, `unknown job kind ${kind}`);
   if (u.role === 'tenant_user' && (!RESTORE_KINDS.includes(kind) || tenant !== u.tenant)) throw new HttpError(403, 'tenant users may only restore within their tenant');
   find(db.tenants, (t) => t.name === tenant, 'tenant');
   if (kind === 'files_list' && !String(params.path ?? '').startsWith('/')) throw new HttpError(400, 'path: must be absolute');
@@ -1031,6 +1538,7 @@ on('POST', '/jobs', async (c) => {
   // Like web-api: files_get gets a server-generated download token, returned in the 202 body.
   const p = kind === 'files_get' ? { ...params, download_token: rand(32) } : params;
   const j = addJob(kind, tenant, p, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
+  if (kind.startsWith('plugin_')) j.duration = { plugin_validate: 3, plugin_guests: 3, plugin_restore: 14, plugin_mount: 6 }[kind as string] ?? 10;
   await audit(u.name, 'job.create', `job/${j.id}`, { kind, tenant, params: p });
   return [202, p.download_token ? { id: j.id, download_token: p.download_token } : { id: j.id }];
 });
@@ -1058,8 +1566,12 @@ for (const verb of ['approve', 'reject'] as const) {
     if (q.requested_by === u.name) throw new HttpError(403, 'the requester cannot decide their own request');
     Object.assign(q, { decided_by: u.name, decided_at: now(), state: verb === 'approve' ? 'approved' : 'rejected' });
     await audit(u.name, `quorum.${verb}`, `quorum/${q.id}`, { action: q.action });
+    if (verb === 'reject' && q.action === 'plugin.install') {
+      const e = db.plugins.find((x) => x.id === q.params.id && x.version === q.params.version);
+      if (e) Object.assign(e, { state: 'rejected', quorum_id: null });
+    }
     if (verb === 'approve') {
-      execute(q.id, q.action, q.params);
+      execute(q.id, q.action, q.params, q.requested_by, u.name);
       q.state = 'executed';
       await audit('system', q.action, `quorum/${q.id}`, q.params);
     }
@@ -1102,14 +1614,14 @@ on('POST', '/alerts/:id/ack', async (c, [id]) => {
 
 // ---------------------------------------------------------------- server glue
 
-function readBody(req: Req): Promise<string> {
+function readBody(req: Req): Promise<Uint8Array & { toString(enc: string): string }> {
   return new Promise((resolve) => {
     const parts: Uint8Array[] = [];
     req.on('data', (c) => c && parts.push(c));
-    req.on('end', () => resolve(Buffer.concat(parts).toString('utf8')));
+    req.on('end', () => resolve(Buffer.concat(parts)));
   });
 }
-declare const Buffer: { concat(xs: Uint8Array[]): { toString(enc: string): string } };
+declare const Buffer: { concat(xs: Uint8Array[]): Uint8Array & { toString(enc: string): string } };
 
 async function handle(req: Req, res: Res) {
   tick();
@@ -1146,7 +1658,10 @@ async function handle(req: Req, res: Res) {
       res.setHeader('Content-Disposition', `attachment; filename="${d.filename}"`);
       return send(200, d.body, 'application/octet-stream');
     }
-    const text = method === 'GET' ? '' : await readBody(req);
+    const bytes = method === 'GET' ? null : await readBody(req);
+    // Plugin uploads are raw bundles, everything else JSON.
+    const raw = method === 'POST' && path === '/plugins' ? bytes : null;
+    const text = bytes && !raw ? bytes.toString('utf8') : '';
     let body: Json = {};
     if (text) {
       try {
@@ -1158,7 +1673,7 @@ async function handle(req: Req, res: Res) {
     for (const [m, re, h] of routes) {
       const mm = method === m ? re.exec(path) : null;
       if (!mm) continue;
-      const [status, out] = await h({ method, path, query: url.searchParams, body, user, sid, res }, mm.slice(1));
+      const [status, out] = await h({ method, path, query: url.searchParams, body, raw, headers: req.headers, user, sid, res }, mm.slice(1));
       return send(status, out);
     }
     throw new HttpError(404, 'no such endpoint');

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "restore-vm/agent"]
+members = ["crates/*", "plugins/*", "restore-vm/agent"]
 
 [workspace.package]
 edition = "2021"

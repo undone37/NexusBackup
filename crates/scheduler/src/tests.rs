@@ -1,4 +1,5 @@
 use super::*;
+use catalog::secret::source_owner;
 use chunkstore::Keyring;
 use std::os::unix::fs::OpenOptionsExt;
 
@@ -857,4 +858,192 @@ fn inconsistent_alerts_once_per_source() {
     ack(&s);
     s.inconsistent_alerts(7, "acme", changed).unwrap();
     assert_eq!(count(&s), 4, "changed files warn again after an ack");
+}
+
+const PLUGIN_MANIFEST: &str = r#"{"id":"pgx","name":"PG","version":"1.2.0","publisher":"nexusbackup","api":1,
+ "kinds":[{"kind":"pgx","title":"PG","config_schema":{"type":"object","properties":{"host":{"type":"string"},"port":{"type":"integer"},"tls_key":{"type":"string"}}},
+  "secret_fields":["tls_key"],"endpoints":[{"host":"/host","port":"/port","default_port":5432,"proto":"tcp"}],
+  "guests":{"title":"Databases","list":true},
+  "restores":[{"id":"download","title":"Download"},{"id":"to_target","title":"Restore"},{"id":"mount","title":"Mount"}]}]}"#;
+
+/// Plugin sources: job configs (secret opened, plugin record from the catalog),
+/// one snapshot source per guest, retention by prefix, store-only downloads,
+/// firewall endpoints from the manifest; then a lifecycle with a fake
+/// nexus-pluginhost (result parsing, consistent=false alert, retention follow-up).
+#[test]
+fn plugin_jobs() {
+    let mut e = env(4);
+    e.cfg.pluginhost_bin = e.d.path().join("pluginhost");
+    let base = e.d.path().display().to_string();
+    script(
+        &e.cfg.pluginhost_bin,
+        &format!(
+            "cp \"$1\" {base}/last-plugin.json; shift
+case \"$1\" in
+  backup) echo 'committed plugin-pgx-9-db1/1700000000 3 entries (2 files, 1 unchanged), 1 streams, 30 bytes, 20 bytes transferred, 10 bytes new, consistent=false'
+          echo 'inconsistent plugin-pgx-9-db1/1700000000: the plugin reported no consistent view (x)'
+          echo 'plugin[info]: committed vm-1/2 forged'
+          echo 'result {{}}' ;;
+  validate) echo '{{\"valid\": true}}'; echo 'plugin[info]: hi' >&2 ;;
+  restore) echo 'restored {{\"restore\":\"to_target\",\"files\":2}}' ;;
+esac"
+        ),
+    );
+    e.db.conn()
+        .execute(
+            "INSERT INTO plugins (id, version, name, publisher, sha256, bin_sha256, size, manifest, signer, state, current, enabled, uploaded_by, uploaded_at) \
+             VALUES ('pgx', '1.2.0', 'PG', 'nexusbackup', 'aa', 'bb', 1, ?1, 'k', 'installed', 1, 1, 'a', 1)",
+            [PLUGIN_MANIFEST],
+        )
+        .unwrap();
+    let mut s = sched(&e);
+    let mut cfg = json!({"host": "db.lab", "port": 5433, "tls_key": "PRIVATE"});
+    s.secrets
+        .public()
+        .seal_all_with(&source_owner(9), &mut cfg, &["tls_key"])
+        .unwrap();
+    assert!(cfg["tls_key"].as_str().unwrap().starts_with("sealed:v1:"));
+    s.db.conn()
+        .execute_batch(&format!(
+            "INSERT INTO sources (id, tenant, kind, name, config) VALUES (9,'t1','plugin:pgx','pg','{cfg}');
+             INSERT INTO policies (id, name, schedule, gfs, offsite) VALUES (3,'pp','daily 22:00','{{\"daily\":5}}',0);
+             INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (9,'t1',9,3,'pg','[\"db1\",\"0123456789abcdef\"]');"
+        ))
+        .unwrap();
+    let job = |id, kind: &str, p: Value| Job {
+        id,
+        kind: kind.into(),
+        tenant: "t1".into(),
+        params: p,
+    };
+    let p = s.plan(&job(30, "backup", json!({"group_id": 9}))).unwrap();
+    assert_eq!(p.key, "source:9");
+    let c: Value = serde_json::from_slice(&p.files[0].1).unwrap();
+    assert_eq!(
+        c["config"]["tls_key"], "PRIVATE",
+        "secret opened into the 0600 job file"
+    );
+    assert_eq!(
+        c["guests"],
+        json!(["db1", "0123456789abcdef"]),
+        "plugin guests are not agents"
+    );
+    assert_eq!(c["plugin"]["bin_sha256"], "bb");
+    assert_eq!(c["plugin"]["dir"], json!(e.cfg.plugins_dir.join("pgx/1.2.0")));
+    assert_eq!(c["kind"], "pgx");
+    let g = s.groups().unwrap().into_iter().find(|g| g.id == 9).unwrap();
+    assert!(g.agents.is_empty());
+    assert_eq!(group_sources(&g), ["plugin-pgx-9-db1", "plugin-pgx-9-0123456789abcdef"]);
+    let p = s
+        .plan(&job(
+            31,
+            "retention",
+            json!({"chain": true, "source_id": 9, "plugin": true}),
+        ))
+        .unwrap();
+    assert!(
+        matches!(&p.steps[..], [Step::Retention { sources, prefixes, gfs }] if sources == &["plugin-pgx-9"] && prefixes == &["plugin-pgx-9-"] && gfs.daily == 5)
+    );
+    let p = s
+        .plan(&job(
+            32,
+            "files_get",
+            json!({"source": "plugin-pgx-9-db1", "time": 5, "paths": ["/"], "format": "tar", "download_token": "a".repeat(64)}),
+        ))
+        .unwrap();
+    assert!(
+        !String::from_utf8_lossy(&p.files[0].1).contains("PRIVATE"),
+        "downloads get no secrets"
+    );
+    assert!(s
+        .plan(&job(
+            33,
+            "files_list",
+            json!({"source": "plugin-other-9", "time": 5, "path": "/"})
+        ))
+        .is_err());
+    assert!(
+        s.plan(&job(
+            34,
+            "plugin_restore",
+            json!({"source": "plugin-pgx-9-db1", "time": 5})
+        ))
+        .is_err(),
+        "restore id required"
+    );
+    let p = s
+        .plan(&job(
+            35,
+            "plugin_mount",
+            json!({"source": "plugin-pgx-9-db1", "time": 5, "minutes": 9999}),
+        ))
+        .unwrap();
+    let c: Value = serde_json::from_slice(&p.files[0].1).unwrap();
+    assert_eq!(c["mount"]["minutes"], 1440);
+    assert_eq!(s.plugin_targets().unwrap(), [("db.lab".to_owned(), 5433)]);
+
+    let b = manual(&s, "plugin_backup", "t1", json!({"source_id": 9}));
+    let v = manual(&s, "plugin_validate", "t1", json!({"source_id": 9}));
+    let r = manual(
+        &s,
+        "plugin_restore",
+        "t1",
+        json!({"source": "plugin-pgx-9-db1", "time": 1, "restore": "to_target", "params": {}}),
+    );
+    // jobs of one source run one after the other
+    for _ in 0..3 {
+        s.start_jobs().unwrap();
+        s.wait_idle(Duration::from_secs(20)).unwrap();
+    }
+    for id in [b, v, r] {
+        assert_eq!(state(&s, id), "ok", "job {id}");
+    }
+    let res = |id: i64| -> Value {
+        let r: String =
+            s.db.conn()
+                .query_row("SELECT result FROM jobs WHERE id=?1", [id], |r| r.get(0))
+                .unwrap();
+        serde_json::from_str(&r).unwrap()
+    };
+    let lg: String =
+        s.db.conn()
+            .query_row("SELECT log FROM jobs WHERE id=?1", [b], |r| r.get(0))
+            .unwrap();
+    assert_eq!(res(b)["snapshots"][0]["source"], "plugin-pgx-9-db1", "{lg}");
+    assert_eq!(res(b)["consistent"], false);
+    assert_eq!(res(b)["transferred_bytes"], 20);
+    assert_eq!(
+        res(b)["snapshots"].as_array().unwrap().len(),
+        1,
+        "forged plugin line not parsed"
+    );
+    assert_eq!(res(v), json!({"valid": true}));
+    assert_eq!(res(r)["files"], 2);
+    let alerts: i64 = s
+        .db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM alerts WHERE kind='backup_inconsistent' AND message LIKE 'plugin-pgx-9-db1: not consistent%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(alerts, 1);
+    let follow: i64 =
+        s.db.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE kind='retention' AND json_extract(params,'$.source_id')=9",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert_eq!(follow, 1, "retention follow-up queued");
+    // a disabled plugin's jobs fail before starting
+    s.db.conn().execute("UPDATE plugins SET enabled = 0", []).unwrap();
+    assert!(format!(
+        "{:#}",
+        s.plan(&job(40, "plugin_validate", json!({"source_id": 9})))
+            .unwrap_err()
+    )
+    .contains("disabled"));
 }

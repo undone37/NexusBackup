@@ -17,6 +17,9 @@ axum = { version = "0.8", default-features = false, features = ["http1", "http2"
 agent-proto = { path = "../agent-proto" }
 catalog = { path = "../catalog" }
 nas = { path = "../nas", default-features = false }
+plugin-manager = { path = "../plugin-manager" }
+plugin-proto = { path = "../plugin-proto", features = ["bundle"] }
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode"] }
 # protocol types only (no chunk store, no keyd): docs/replication.md §2
 repl_proto = { package = "replication", path = "../replication", default-features = false }
 truenas = { path = "../truenas", default-features = false }
@@ -34,6 +37,7 @@ tokio-util = { version = "0.7", features = ["io"] }
 tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
+plugin-manager = { path = "../plugin-manager" }
 http-body-util = "0.1"
 tempfile = "3"
 # tests/replication.rs: two appliances in one process (primary: replicad + keyd +

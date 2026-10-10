@@ -20,6 +20,8 @@ const RESTORE_KINDS: &[&str] = &[
     "files_list",
     "files_get",
     "restore_files",
+    "plugin_restore",
+    "plugin_mount",
 ];
 /// Kinds only an admin may request (they change software or trust on a host).
 const ADMIN_KINDS: &[&str] = &["agent_update", "agent_enroll"];
@@ -112,6 +114,29 @@ struct FilesGetP {
     /// set by the web-api: the scheduler writes `<downloads>/<token>.<format>`
     #[serde(default, skip_deserializing)]
     download_token: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PluginSourceP {
+    source_id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    guests: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PluginRestoreP {
+    /// `plugin-<plugin>-<source id>[-<guest>]`
+    source: String,
+    time: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    restore: Option<String>,
+    #[serde(default)]
+    params: Value,
+    /// plugin_mount: 1..=1440
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    minutes: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -232,6 +257,61 @@ fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiResult<Value>
             snapshot_exists(st, tenant, &f.source, f.time)?;
             f.download_token = random_hex();
             json!(f)
+        }
+        "plugin_validate" | "plugin_guests" | "plugin_backup" => {
+            let mut r: PluginSourceP = parse(p)?;
+            if kind == "plugin_backup" {
+                crate::replication::refuse_replicated(&st.cat.conn(), tenant)?;
+            }
+            let c = st.cat.conn();
+            let (_, spec) = crate::plugins::source_of(&c, tenant, r.source_id)?;
+            if kind != "plugin_backup" {
+                r.guests = None;
+            } else if let Some(g) = &r.guests {
+                let mut v: Vec<Value> = g.iter().map(|x| json!(x)).collect();
+                let k = format!("plugin:{}", spec.kind);
+                crate::plugins::check_guests(&c, &k, &mut v)?;
+                r.guests = Some(v.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect());
+            }
+            json!(r)
+        }
+        "plugin_restore" | "plugin_mount" => {
+            let mut r: PluginRestoreP = parse(p)?;
+            snapshot_exists(st, tenant, &r.source, r.time)?;
+            let (pid, sid, _) = plugin_proto::parse_source_name(&r.source)
+                .ok_or_else(|| ApiError::bad("source: a plugin-<plugin>-<source-id> snapshot"))?;
+            let (cur, spec) = crate::plugins::source_of(&st.cat.conn(), tenant, sid as i64)?;
+            if cur.id != pid {
+                return Err(ApiError::bad("source: the snapshot belongs to another plugin"));
+            }
+            let want = if kind == "plugin_mount" {
+                r.minutes = Some(r.minutes.unwrap_or(60));
+                if !(1..=1440).contains(&r.minutes.unwrap()) {
+                    return Err(ApiError::bad("minutes: 1..=1440"));
+                }
+                r.restore = None;
+                "mount".to_owned()
+            } else {
+                r.minutes = None;
+                r.restore.clone().ok_or_else(|| ApiError::bad("restore: required"))?
+            };
+            if want == "download" {
+                return Err(ApiError::bad("restore: download runs as files_get"));
+            }
+            let action = spec
+                .restores
+                .iter()
+                .find(|x| x.id == want)
+                .ok_or_else(|| ApiError::bad(format!("restore: {want} is not offered by this plugin")))?;
+            if r.params.is_null() {
+                r.params = json!({});
+            }
+            match &action.params_schema {
+                Some(schema) => crate::plugins::check_schema(schema, &r.params, "params", &[])?,
+                None if r.params.as_object().is_some_and(|o| o.is_empty()) => {}
+                None => return Err(ApiError::bad("params: this restore takes no parameters")),
+            }
+            json!(r)
         }
         "offsite" | "retention" | "gc" | "verify" => {
             let m: MaintP = parse(p)?;

@@ -785,3 +785,6 @@ tr.changed td {
     animation: none;
   }
 }
+.field .hint.bad {
+  color: var(--bad);
+}

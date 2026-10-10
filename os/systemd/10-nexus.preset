@@ -12,6 +12,10 @@ enable nexus-nft-sync.path
 enable nexus-nft-sync.timer
 # NAS mount helper (socket-activated per connection, docs/nas-connector.md).
 enable nexus-nasmount.socket
+# Plugin installer (path-triggered oneshot, also once at boot); inert until
+# /var/lib/nexus/setup-done exists (ConditionPathExists in the service).
+enable nexus-plugin-install.service
+enable nexus-plugin-install.path
 # nexus-keyd, nexus-web-api and nexus-scheduler are enabled by nexus-setup
 # (`systemctl enable --now`) as its last step.
 disable nexus-keyd.service

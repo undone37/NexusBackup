@@ -168,7 +168,12 @@ export type TrueNasSource = SourceBase & { kind: 'truenas'; config: TrueNasSourc
 export type NfsSource = SourceBase & { kind: 'nfs'; config: ShareSourceConfig };
 export type SmbSource = SourceBase & { kind: 'smb'; config: ShareSourceConfig };
 export type ShareSource = NfsSource | SmbSource;
-export type Source = PveSource | LinuxSource | TrueNasSource | NfsSource | SmbSource;
+/**
+ * Source of a plugin kind (`plugin:<kind>`, docs/plugin-system.md). `config` follows the kind's
+ * `config_schema`; secret fields are write-only (GET returns `<field>_set: boolean` instead).
+ */
+export type PluginSource = SourceBase & { kind: `plugin:${string}`; config: Record<string, unknown> };
+export type Source = PveSource | LinuxSource | TrueNasSource | NfsSource | SmbSource | PluginSource;
 export type SourceKind = Source['kind'];
 
 /** Linux backup agent (docs/agent-protocol.md). `id` is 16 hex chars. */
@@ -238,7 +243,12 @@ export type JobKind =
   | 'verify'
   | 'restore_files'
   | 'agent_update'
-  | 'agent_enroll';
+  | 'agent_enroll'
+  | 'plugin_validate'
+  | 'plugin_guests'
+  | 'plugin_backup'
+  | 'plugin_restore'
+  | 'plugin_mount';
 
 /** One entry of `nexus-pve files … ls` (crates/pve/src/files.rs `Entry`); agents use the same shape. */
 export interface FileEntry {
@@ -268,6 +278,18 @@ export interface JobResult {
   /** agent / share backups: false = no snapshot of the source (live read) or files changed while read */
   consistent?: boolean;
   transferred_bytes?: number;
+  /** plugin_validate */
+  valid?: boolean;
+  field?: string;
+  message?: string;
+  /** plugin_guests */
+  guests?: PluginGuest[];
+  /** plugin_restore: restore id */
+  restore?: string;
+  /** plugin_restore / plugin_mount */
+  summary?: string;
+  /** plugin_mount: how to reach the mount (plugin-defined) */
+  info?: unknown;
 }
 
 export interface Job {
@@ -390,4 +412,119 @@ export interface Alert {
 export interface LoginResponse {
   csrf: string;
   user: User;
+}
+
+// ---------------------------------------------------------------- plugins (docs/plugin-system.md)
+
+/** JSON-Schema subset of `config_schema` / `params_schema`. */
+export interface JsonSchema {
+  type?: 'object' | 'string' | 'integer' | 'boolean' | 'array';
+  properties?: Record<string, JsonSchema>;
+  required?: string[];
+  /** arrays: items are strings */
+  items?: JsonSchema;
+  enum?: (string | number)[];
+  minimum?: number;
+  maximum?: number;
+  pattern?: string;
+  minLength?: number;
+  maxLength?: number;
+  format?: 'hostname' | 'port' | 'password' | string;
+  title?: string;
+  description?: string;
+  default?: unknown;
+}
+
+export interface PluginRestore {
+  id: string;
+  title: string;
+  params_schema?: JsonSchema;
+  app_specific?: boolean;
+}
+
+export interface PluginEndpoint {
+  /** JSON pointers into the source config */
+  host: string;
+  port?: string;
+  default_port?: number;
+  proto?: string;
+}
+
+export interface PluginKind {
+  kind: string;
+  title: string;
+  config_schema: JsonSchema;
+  secret_fields?: string[];
+  endpoints?: PluginEndpoint[];
+  guests?: { title: string; list: boolean } | null;
+  backup?: { incremental?: boolean; consistent?: string };
+  restores: PluginRestore[];
+}
+
+export interface PluginSandbox {
+  network?: string;
+  tmp_mb?: number;
+  memory_mb?: number;
+  cpu_quota?: number;
+}
+
+export interface PluginManifest {
+  id: string;
+  name: string;
+  version: string;
+  publisher: string;
+  api: number;
+  kinds: PluginKind[];
+  sandbox?: PluginSandbox;
+}
+
+export type PluginState = 'pending' | 'approved' | 'installed' | 'failed' | 'rejected' | 'removing' | 'removed';
+
+/** One entry of GET /plugins per (id, version). */
+export interface Plugin {
+  id: string;
+  name: string;
+  version: string;
+  publisher: string;
+  state: PluginState;
+  current: boolean;
+  enabled: boolean;
+  /** key name / fingerprint that verified the signature */
+  signer: string;
+  sha256: string;
+  bin_sha256: string;
+  size: number;
+  manifest: PluginManifest;
+  uploaded_by: string;
+  uploaded_at: number;
+  installed_at: number | null;
+  error: string | null;
+  quorum_id: number | null;
+}
+
+/** 202 answer of POST /plugins. */
+export interface PluginUpload {
+  quorum_id: number;
+  plugin: Plugin;
+  upgrade_from: string | null;
+}
+
+export interface PluginKey {
+  fingerprint: string;
+  publisher: string;
+  /** PEM */
+  public_key: string;
+  builtin: boolean;
+  /** builtin (project) keys: file name */
+  name?: string;
+  added_by?: string;
+  approved_by?: string | null;
+  added_at?: number;
+}
+
+/** One guest of a plugin source (`plugin_guests` job result). */
+export interface PluginGuest {
+  id: string;
+  title: string;
+  size?: number;
 }

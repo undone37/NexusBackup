@@ -12,6 +12,8 @@
 /usr/libexec/nexus/nexus-nasmount	--	gen_context(system_u:object_r:nexus_nasmount_exec_t,s0)
 /usr/libexec/nexus/nexus-replicad	--	gen_context(system_u:object_r:nexus_replicad_exec_t,s0)
 /usr/libexec/nexus/nexus-replica	--	gen_context(system_u:object_r:nexus_replica_exec_t,s0)
+/usr/libexec/nexus/nexus-pluginhost	--	gen_context(system_u:object_r:nexus_pluginhost_exec_t,s0)
+/usr/libexec/nexus/nexus-plugin-install	--	gen_context(system_u:object_r:nexus_plugininstall_exec_t,s0)
 /usr/libexec/nexus/nexus-setup		--	gen_context(system_u:object_r:nexus_setup_exec_t,s0)
 /usr/libexec/nexus/nexus-nft-sync	--	gen_context(system_u:object_r:nexus_nftsync_exec_t,s0)
 
@@ -37,6 +39,11 @@
 /var/lib/nexus/replicad(/.*)?			gen_context(system_u:object_r:nexus_replicad_var_lib_t,s0)
 /var/lib/nexus/webapi(/.*)?			gen_context(system_u:object_r:nexus_webapi_var_lib_t,s0)
 /var/lib/nexus/escrow(/.*)?			gen_context(system_u:object_r:nexus_escrow_t,s0)
+# plugins: installed tree (written only by nexus-plugin-install), the binary of every
+# version incl. the unpack dir <id>/.<version>.tmp (both match [^/]+), uploads
+/var/lib/nexus/plugins(/.*)?			gen_context(system_u:object_r:nexus_plugin_data_t,s0)
+/var/lib/nexus/plugins/[^/]+/[^/]+/bin/plugin	--	gen_context(system_u:object_r:nexus_plugin_exec_t,s0)
+/var/lib/nexus/plugins-staging(/.*)?		gen_context(system_u:object_r:nexus_plugin_staging_t,s0)
 /var/lib/nexus/update(/.*)?			gen_context(system_u:object_r:nexus_update_t,s0)
 
 # configuration and secrets

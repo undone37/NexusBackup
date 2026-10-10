@@ -106,10 +106,23 @@ pub fn for_each_secret(
     v: &mut Value,
     f: &mut dyn FnMut(&str, &str, &mut String) -> Result<()>,
 ) -> Result<()> {
+    for_each_secret_with(owner, v, &[], f)
+}
+
+/// Like [`for_each_secret`], with more secret field names (a plugin's
+/// `secret_fields`, docs/plugin-system.md). Locations are computed the same way,
+/// so a field that is also in [`SECRET_FIELDS`] gets the same location either way.
+pub fn for_each_secret_with(
+    owner: &str,
+    v: &mut Value,
+    extra: &[&str],
+    f: &mut dyn FnMut(&str, &str, &mut String) -> Result<()>,
+) -> Result<()> {
     fn walk(
         owner: &str,
         ptr: &mut String,
         v: &mut Value,
+        extra: &[&str],
         f: &mut dyn FnMut(&str, &str, &mut String) -> Result<()>,
     ) -> Result<()> {
         match v {
@@ -120,10 +133,10 @@ pub fn for_each_secret(
                     ptr.push('/');
                     ptr.push_str(&k.replace('~', "~0").replace('/', "~1"));
                     match x {
-                        Value::String(s) if SECRET_FIELDS.contains(&k.as_str()) => {
+                        Value::String(s) if SECRET_FIELDS.contains(&k.as_str()) || extra.contains(&k.as_str()) => {
                             f(ptr, &format!("{owner}{ptr}@{b}"), s)?
                         }
-                        _ => walk(owner, ptr, x, f)?,
+                        _ => walk(owner, ptr, x, extra, f)?,
                     }
                     ptr.truncate(len);
                 }
@@ -132,7 +145,7 @@ pub fn for_each_secret(
                 for (i, x) in a.iter_mut().enumerate() {
                     let len = ptr.len();
                     ptr.push_str(&format!("/{i}"));
-                    walk(owner, ptr, x, f)?;
+                    walk(owner, ptr, x, extra, f)?;
                     ptr.truncate(len);
                 }
             }
@@ -140,7 +153,7 @@ pub fn for_each_secret(
         }
         Ok(())
     }
-    walk(owner, &mut String::new(), v, f)
+    walk(owner, &mut String::new(), v, extra, f)
 }
 
 // ---------------------------------------------------------------- key files
@@ -235,8 +248,13 @@ impl SealKey {
     /// Seals every plaintext secret field in `v` (already sealed values are kept).
     /// Returns the JSON pointers of the fields it sealed.
     pub fn seal_all(&self, owner: &str, v: &mut Value) -> Result<Vec<String>> {
+        self.seal_all_with(owner, v, &[])
+    }
+
+    /// [`Self::seal_all`] with more secret field names (plugin `secret_fields`).
+    pub fn seal_all_with(&self, owner: &str, v: &mut Value, extra: &[&str]) -> Result<Vec<String>> {
         let mut done = Vec::new();
-        for_each_secret(owner, v, &mut |ptr, loc, s| {
+        for_each_secret_with(owner, v, extra, &mut |ptr, loc, s| {
             if !is_sealed(s) {
                 *s = self.seal(loc, s)?;
                 done.push(ptr.to_owned());
@@ -316,7 +334,12 @@ impl SchedulerKey {
     /// Opens every sealed secret field in `v` in place (memory only). Legacy
     /// plaintext values are left as they are.
     pub fn open_all(&self, owner: &str, v: &mut Value) -> Result<()> {
-        for_each_secret(owner, v, &mut |_, loc, s| {
+        self.open_all_with(owner, v, &[])
+    }
+
+    /// [`Self::open_all`] with more secret field names (plugin `secret_fields`).
+    pub fn open_all_with(&self, owner: &str, v: &mut Value, extra: &[&str]) -> Result<()> {
+        for_each_secret_with(owner, v, extra, &mut |_, loc, s| {
             if is_sealed(s) {
                 *s = self.open(loc, s)?.to_string();
             }

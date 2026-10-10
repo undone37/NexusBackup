@@ -5,7 +5,7 @@
   import { can } from '../lib/roles';
   import { href } from '../lib/router.svelte';
   import { terminal, downloadUrl, kindLabel } from '../lib/jobs';
-  import { fmtTime, fmtValue } from '../lib/format';
+  import { fmtBytes, fmtTime, fmtValue } from '../lib/format';
   import { t } from '../lib/i18n';
   import type { Job } from '../lib/types';
   import JobState from '../components/JobState.svelte';
@@ -99,6 +99,62 @@
       {/if}
     </section>
   </div>
+  {@const res = job.result}
+  {#if res && job.kind.startsWith('plugin_') && job.kind !== 'plugin_backup'}
+    <section class="card" aria-labelledby="jr">
+      <h2 id="jr">{t.jobs.result}</h2>
+      {#if job.kind === 'plugin_validate'}
+        {#if res.valid}
+          <p class="banner ok">{t.jobs.valid}</p>
+        {:else}
+          <p class="banner error">
+            {t.jobs.invalid}{res.field ? ` (${res.field})` : ''}{res.message ? `: ${res.message}` : ''}
+          </p>
+        {/if}
+      {:else if job.kind === 'plugin_guests'}
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">{t.jobs.guestId}</th>
+                <th scope="col">{t.jobs.guestTitle}</th>
+                <th scope="col" class="num">{t.jobs.size}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each res.guests ?? [] as g (g.id)}
+                <tr>
+                  <td class="mono">{g.id}</td>
+                  <td>{g.title}</td>
+                  <td class="num">{fmtBytes(g.size)}</td>
+                </tr>
+              {:else}
+                <tr><td colspan="3" class="empty">{t.none}</td></tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {:else}
+        <dl class="kv">
+          {#if res.restore}
+            <dt>{t.jobs.restore}</dt>
+            <dd class="mono">{res.restore}</dd>
+          {/if}
+          {#if res.info !== undefined && res.info !== null}
+            <dt>{t.jobs.mountInfo}</dt>
+            <dd>
+              {#if typeof res.info === 'string'}<code class="secret">{res.info}</code>
+              {:else}<pre class="log">{JSON.stringify(res.info, null, 2)}</pre>{/if}
+            </dd>
+          {/if}
+          {#if res.summary}
+            <dt>{t.jobs.summary}</dt>
+            <dd>{res.summary}</dd>
+          {/if}
+        </dl>
+      {/if}
+    </section>
+  {/if}
   <section class="card" aria-labelledby="jl">
     <h2 id="jl">{t.jobs.log}</h2>
     <pre class="log" bind:this={logEl} aria-labelledby="jl">{job.log || '…'}</pre>

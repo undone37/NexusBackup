@@ -913,9 +913,16 @@ fn source_json(c: &Connection, id: i64) -> ApiResult<Value> {
         "SELECT id, tenant, kind, name, config FROM sources WHERE id = ?1",
         [id],
         |r| {
+            let kind: String = r.get(2)?;
+            let raw: String = r.get(4)?;
+            let config = if kind.starts_with("plugin:") {
+                crate::plugins::public_plugin_config(c, &kind, &raw)
+            } else {
+                public_config(&raw)
+            };
             Ok(
-                json!({"id": r.get::<_, i64>(0)?, "tenant": r.get::<_, String>(1)?, "kind": r.get::<_, String>(2)?,
-                      "name": r.get::<_, String>(3)?, "config": public_config(&r.get::<_, String>(4)?)}),
+                json!({"id": r.get::<_, i64>(0)?, "tenant": r.get::<_, String>(1)?, "kind": kind,
+                      "name": r.get::<_, String>(3)?, "config": config}),
             )
         },
     )?)
@@ -939,6 +946,17 @@ pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -
     validate::name(&r.name, "name")?;
     match r.kind.as_str() {
         "pve" => {}
+        kind if kind.starts_with("plugin:") => {
+            let id = crate::plugins::create_source(&st, &r.tenant, kind, &r.name, r.config)?;
+            let out = source_json(&st.cat.conn(), id)?;
+            st.audit(
+                ctx.name(),
+                "source.create",
+                &format!("source/{id}"),
+                json!({"tenant": r.tenant, "kind": kind, "name": r.name, "config": out["config"]}),
+            )?;
+            return Ok(created(out));
+        }
         "linux" => {
             let cfg: LinuxConfig = parse_config(r.config)?;
             let (id, out) = {
@@ -1040,7 +1058,11 @@ pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -
             )?;
             return Ok(created(out));
         }
-        _ => return Err(ApiError::bad("kind: `pve`, `linux`, `truenas`, `nfs` or `smb`")),
+        _ => {
+            return Err(ApiError::bad(
+                "kind: `pve`, `linux`, `truenas`, `nfs`, `smb` or `plugin:<kind>` of an installed plugin",
+            ))
+        }
     }
     let r = PveSourceReq {
         config: parse_config(r.config)?,
@@ -1097,6 +1119,17 @@ pub async fn update_source(
         })
         .optional()?
         .ok_or_else(ApiError::not_found)?;
+    if kind.starts_with("plugin:") {
+        crate::plugins::update_source(&st, id, &kind, &r.name, r.config)?;
+        let out = source_json(&st.cat.conn(), id)?;
+        st.audit(
+            ctx.name(),
+            "source.update",
+            &format!("source/{id}"),
+            json!({"name": r.name, "config": out["config"]}),
+        )?;
+        return Ok(Json(out));
+    }
     if kind == "linux" {
         let cfg: LinuxConfig = parse_config(r.config)?;
         let out = {
@@ -1480,7 +1513,9 @@ fn check_group(
         )
         .optional()?
         .ok_or_else(|| ApiError::bad("source_id: no such source in this tenant"))?;
-    if kind == "linux" {
+    if kind.starts_with("plugin:") {
+        crate::plugins::check_guests(c, &kind, guests)?;
+    } else if kind == "linux" {
         // the guest of a linux source is its agent (the source says what to back up)
         let agent = serde_json::from_str::<Value>(&config).unwrap_or_default()["agent_id"].clone();
         if guests.iter().any(|g| *g != agent) {

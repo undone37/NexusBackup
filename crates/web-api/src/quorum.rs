@@ -32,6 +32,12 @@ pub const WEB_ACTIONS: &[&str] = &[
     "replication_peer.delete",
     "replication_source.delete",
     "replication_source.update",
+    "plugin.install",
+    "plugin.disable",
+    "plugin.activate",
+    "plugin.remove",
+    "plugin_key.add",
+    "plugin_key.remove",
 ];
 
 const SECRET_KEYS: &[&str] = &["password_hash", "totp_secret"];
@@ -152,7 +158,7 @@ fn unchanged_since_request(c: &Connection, action: &str, p: &Value) -> ApiResult
 
 /// Applies an approved action inside the caller's transaction.
 /// Returns false for actions the scheduler executes.
-fn execute(c: &Connection, action: &str, p: &Value) -> ApiResult<bool> {
+fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by: &str) -> ApiResult<bool> {
     unchanged_since_request(c, action, p)?;
     match action {
         "tenant.update" => changed(c.execute(
@@ -196,6 +202,7 @@ fn execute(c: &Connection, action: &str, p: &Value) -> ApiResult<bool> {
             changed(c.execute("DELETE FROM agents WHERE id = ?1", [id])?)?
         }
         a if a.starts_with("replication_") => return crate::replication::execute(c, a, p),
+        a if a.starts_with("plugin") => return crate::plugins::execute(c, a, p, approver, requested_by),
         _ => return Ok(false),
     }
     Ok(true)
@@ -263,7 +270,7 @@ pub async fn approve(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> Api
     let executed = {
         let mut c = st.cat.conn();
         let tx = c.transaction()?;
-        let executed = execute(&tx, &action, &p)?;
+        let executed = execute(&tx, &action, &p, ctx.name(), &requested_by)?;
         let state = if executed { "executed" } else { "approved" };
         changed(tx.execute(
             "UPDATE quorum SET state = ?2, decided_by = ?3, decided_at = ?4 WHERE id = ?1 AND state = 'pending'",
@@ -280,6 +287,7 @@ pub async fn approve(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> Api
         json!({"action": action, "requested_by": requested_by, "state": state}),
     )?;
     if executed {
+        crate::plugins::after_approve(&st, &action);
         st.audit(
             &requested_by,
             &action,
@@ -293,7 +301,8 @@ pub async fn approve(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> Api
 pub async fn reject(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
     ctx.require(&["security_officer"])?;
     expire(&st)?;
-    let (action, _, requested_by) = load_pending(&st, id)?;
+    let (action, p, requested_by) = load_pending(&st, id)?;
+    crate::plugins::after_reject(&st, &action, &p);
     changed(st.cat.conn().execute(
         "UPDATE quorum SET state = 'rejected', decided_by = ?2, decided_at = ?3 WHERE id = ?1 AND state = 'pending'",
         params![id, ctx.name(), catalog::now()],

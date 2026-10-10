@@ -1,0 +1,11 @@
+[Unit]
+Description=NexusBackup plugin installer: watch for approved plugin bundles
+
+[Path]
+# touched by nexus-web-api once a plugin install/upgrade/remove/activate is approved
+# (quorum); the installer then processes everything pending in the catalog
+PathModified=/var/lib/nexus/plugins-staging/.trigger
+Unit=nexus-plugin-install.service
+
+[Install]
+WantedBy=paths.target

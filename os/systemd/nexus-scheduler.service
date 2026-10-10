@@ -26,6 +26,8 @@ ReadWritePaths=/var/lib/nexus/escrow /var/lib/nexus/scheduler /var/lib/nexus/dow
 ReadWritePaths=/run/nexus-nft
 # OS update control (maintenance window for nexus-update; 2770 root:nexus-catalog)
 ReadWritePaths=/var/lib/nexus/update
+# installed plugins (/var/lib/nexus/plugins) stay read-only (ProtectSystem=strict):
+# nexus-pluginhost runs them from there, only nexus-plugin-install writes them
 # generated job configs with secrets: private, wiped at start
 RuntimeDirectory=nexus-scheduler
 RuntimeDirectoryMode=0700
@@ -68,6 +70,12 @@ SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources
 # chgrp of downloads/ to nexus-catalog (no CAP_CHOWN, so only own files to own groups)
 SystemCallFilter=@chown
+# nexus-pluginhost sandboxes its plugin in the forked child before exec: Landlock
+# (landlock_*) and a seccomp filter (@sandbox), lowered rlimits (setrlimit, prlimit64;
+# lowering only: no CAP_SYS_RESOURCE) and nice 10 (setpriority). RestrictNamespaces=yes
+# stays: no user namespaces on the appliance, the host's best-effort unshare fails and
+# the plugin runs as nexus-chunkstore confined by SELinux (nexus_plugin_t) + Landlock.
+SystemCallFilter=@sandbox setrlimit prlimit64 setpriority
 SystemCallErrorNumber=EPERM
 
 [Install]
