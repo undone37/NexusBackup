@@ -168,12 +168,16 @@ SSH key management for sources, appliance config backup (catalog, totp.key, secr
 Decisions (user, 2026-10-09): MinIO for dev/tests, real provider later; own minimal SigV4 client; replication = secondary pulls via mTLS endpoint on primary's 8443
 - [x] S3 offsite backend (`crates/offsite/src/s3.rs`, own SigV4, no SDK): never-overwrite put (HEAD + If-None-Match), multipart > 64 MiB, ranged GET, ListObjectsV2, Object Lock compliance on write + PutObjectRetention extension, storage class per kind, bounded XML parser (fuzzed 3 M); engine lock-aware (packs locked to max referencing snapshot lock, extended before manifest/retention, GC skips locked packs, DR restores locks); sealed `secret_key`; UI target choice none/SFTP/S3 (+ fixed: UI stored SFTP config in a shape the scheduler ignored; bwlimit units); MinIO testbox (community image) 7/7 incl. full engine flow; docs/s3-offsite.md (MinIO/AWS/Hetzner/Wasabi, restricted policy, lifecycle) — merged
   - open: rotating-DNS endpoints vs firewall allow-list (AWS), real provider run, per-pack lock extension cost
-- [ ] Replication (`nexus-replicad`, `nexus-replica`, keyd export-for/import-sealed, ALPN-split mTLS on 8443, quorum-gated peer + key export, two-VM lab under enforcing: 181 MB/s initial sync, restore on secondary with primary off) — branch done; integration into main running (migration renumbered v6→v7, conflicts with NAS/S3)
+- [x] Replication merged (`nexus-replicad` read-only behind web-api ALPN-split mTLS on 8443, `nexus-replica` pull sync, keyd export-for/import-sealed, quorum-gated peer + key export, catalog v7 (renumbered from v6 during integration, migration tests), two-VM lab under enforcing: 181 MB/s initial sync, restore on secondary with primary off; lab rerun after integration pending (needs ≥ 10 GB free RAM): `IMG=localhost/nexus-os:merge-lab lab/appliance/replication.sh disks boot setup primary enroll sync check stop`)
+  - decisions to confirm with user: two quorum approvals (peer + key export), replicad runs as nexus-chunkstore (SELinux boundary), replicated tenants take no local backups
 - [x] LZ4 on the wire for agent chunks (user request 2026-10-10): agent-proto v1.2 (cap `lz4`, `WantLz4`/`ChunkLz4`/`RestoreChunkLz4`, appended), `lz4_flex` (pure Rust), only sent if ≥ 10 % smaller, size-bounded decompression + BLAKE3 check on the appliance, both directions; Linux + Windows agents via agent-core; interop: 8.18 MB raw → 5.01 MB on the wire (log file ~3.2 MB → ~13 KB, random data raw); agent binary 2.1 MB
   - note: `hooks::tests::timeout_kills_process_group_and_pre_stops_on_failure` is timing-sensitive under full parallel test load (passes alone)
 - [ ] NAS decisions to implement after integration: krb5 refused/hidden in v1, inconsistent alert once per source (+ always when files changed during read), access-model docs
 - [ ] Scale-out groundwork (plan §15 Phase 8: no multi-node yet) — architecture note
 - [ ] After Phase 8: add repository README.md (user request 2026-10-09)
+
+## Phase 9 — Plugin system (added 2026-10-10, before M365 = Phase 10)
+Goal: extend with new data sources + restore functions (NetApp SVM, VMware ESXi/vCenter, PostgreSQL, …) via signed, sandboxed plugins on a versioned SDK; M9 = PostgreSQL plugin + one ported connector
 
 ## Next
 

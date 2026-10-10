@@ -27,7 +27,7 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 - Windows block-level CBT (file-level with VSS + USN journal only).
 - NAS block-level or snapshot-based backup (file-level only).
 - S3/object storage as offsite tier (Hetzner Storage Box first; S3 is a later backend implementation).
-- Microsoft 365 (last phase, see roadmap).
+- Microsoft 365 (last phase, see roadmap; built as a plugin).
 - Long-term legal archiving (GoBD / HGB / AO retention of up to 10 years is the job of an archive/DMS, not of the backup system; this must be communicated to customers).
 
 ---
@@ -72,7 +72,7 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | Agent dedup hashing (Phase 7) | **Agents send plain BLAKE3 chunk hashes; the appliance maps them to keyed chunk IDs in a local index** (decided 2026-10-09) | Source hosts never hold tenant key material; the unkeyed hashes never leave the appliance (not offsite). |
 | TrueNAS data path (Phase 7) | **ZFS snapshot via TrueNAS API, changed files streamed from `.zfs/snapshot` over a restricted SSH user (forced command)** (decided 2026-10-09) | No mounts on the appliance; nothing installed on TrueNAS beyond a key. |
 | TrueNAS privilege model (Phase 7) | **SSH user `nexusbackup` runs find/tar/realpath/zfs via passwordless sudo; the forced command is the security boundary** (accepted 2026-10-09) | Reading NAS data needs root (modes, NFSv4 ACLs); same trust level as the PVE helper. Snapshots named `nexus-<source>-<time>`; restore download-only in v1. |
-| Work order after Phase 7 TrueNAS | **Continue the plan order (NAS → Phase 8 → Phase 9); production hardening later** (decided 2026-10-09) | User decision; production gaps listed in state.md. |
+| Work order after Phase 7 TrueNAS | **Continue the plan order (NAS → Phase 8 → Phase 9 plugin system → Phase 10 M365); production hardening later** (decided 2026-10-09; plugin phase inserted 2026-10-10) | User decision; production gaps listed in state.md. |
 | NAS read access (Phase 7) | **Documented server-side models: NFS read-only export to the appliance with `all_squash,anonuid=0,anongid=0`; SMB dedicated backup account (Backup Operators / Samba `admin users`)** (decided 2026-10-10) | Full read access without agents on the NAS. |
 | SMB Kerberos (Phase 7) | **Dropped from v1** (decided 2026-10-10) | NTLMSSP with signed + encrypted SMB3 only; Kerberos later with an AD lab. |
 | Missing NAS snapshot alerts (Phase 7) | **Warn once per source; afterwards a status badge; always alert when files actually changed during the read** (decided 2026-10-10) | Avoid alert fatigue. |
@@ -533,8 +533,26 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
 - S3 `PackBackend` with Object Lock, hot/cold tiering.
 - Scale-out groundwork (no multi-node yet).
 
-### Phase 9 — Microsoft 365 (after phase 8)
-- Separate project: Graph API connectors for Exchange, SharePoint, OneDrive, Teams.
+### Phase 9 — Plugin system (after phase 8; added 2026-10-10 by user request)
+- Goal: extend the appliance with **new data sources and restore functions without changing the core**, e.g. NetApp
+  (ONTAP SVM / vserver) backup, VMware ESXi / vCenter, PostgreSQL (logical and PITR), later Microsoft 365.
+- A plugin provides: source type (config schema for UI/API validation, secrets marked for sealing), backup (produce
+  snapshots into the chunk store through a stable, versioned SDK: file trees → `Index::Tree`, block devices → fixed
+  index, application data streams), change detection / incremental state, restore functions (download, restore to
+  target, application-specific restore, optional instant/mount), firewall endpoints, schedule/retention hooks, UI
+  metadata (forms, snapshot browser columns), health checks and alerts.
+- Must keep the security model: plugins never get tenant keys or catalog access directly; they run as spawned job
+  processes in their own sandbox (uid/SELinux domain/systemd sandboxing) and talk to the core through a narrow API;
+  plugins are signed (same offline release key or a separate plugin signing key) and versioned; the existing
+  connectors (PVE, agents, TrueNAS, NAS) should become plugins on the same SDK where practical (dogfooding).
+- Deliverables: plugin SDK crate + protocol, plugin manifest + packaging + signature verification, plugin manager
+  (install/upgrade/disable via UI with quorum), sandbox, reference plugins (at least one new source, e.g. PostgreSQL),
+  documentation for third-party plugin authors.
+- **Milestone M9:** a new source type (e.g. PostgreSQL) installed as a signed plugin, backed up, restored and shown in the
+  UI without core changes; one existing connector ported to the SDK.
+
+### Phase 10 — Microsoft 365 (after phase 9)
+- Separate project: Graph API connectors for Exchange, SharePoint, OneDrive, Teams — built as a plugin on the Phase 9 SDK.
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
