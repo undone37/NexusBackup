@@ -14,6 +14,9 @@ Group=nexus-webapi
 # nexus-catalog (tmpfiles.d/nexus.conf); TLS key 0600 nexus-webapi, metrics token
 # 0640 root:nexus-webapi (written by nexus-setup).
 SupplementaryGroups=nexus-catalog
+# replication (docs/replication.md): /run/nexus-replicad (socket, replication CA
+# certificate, sealing public key), 0750 nexus-chunkstore:nexus-replicad
+SupplementaryGroups=nexus-replicad
 ReadWritePaths=/var/lib/nexus/catalog
 # OS update control (request/window/inhibit for nexus-update; 2770 root:nexus-catalog)
 ReadWritePaths=/var/lib/nexus/update

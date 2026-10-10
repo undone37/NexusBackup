@@ -15,9 +15,14 @@ struct Config {
     store: PathBuf,
     tenant: String,
     keyd_socket: PathBuf,
-    api: ApiFile,
+    /// absent: store-only commands (`files`, `ct-files`, `dump`, `list`), e.g. for
+    /// replicated snapshots on a secondary without a PVE source (docs/replication.md)
+    api: Option<ApiFile>,
+    #[serde(default)]
     storage: String,
+    #[serde(default)]
     fleecing_storage: String,
+    #[serde(default)]
     nodes: BTreeMap<String, SshNode>,
     /// guests (VMs and containers) protected by `backup-all` (scheduled via systemd timer)
     #[serde(default)]
@@ -43,13 +48,33 @@ fn main() -> Result<()> {
     let cfg: Config = serde_json::from_slice(&fs::read(cfg_path)?).context("config")?;
     let keys = keyd::fetch_keyring(&cfg.keyd_socket, &cfg.tenant).context("keyd")?;
     let store = Store::open(&cfg.store, keys, Options::default())?;
+    match (cmd.as_str(), rest) {
+        ("ct-files", [vmid, time, cmd, args @ ..]) => return ct_files(&store, vmid, time, cmd, args),
+        ("dump", [vmid, time, device]) => {
+            // raw device image of a snapshot to stdout (verification / download restore)
+            let m = store.load_manifest(&pve::backup::source_name(vmid.parse()?), time.parse()?)?;
+            let idx = store.load_index(&m, device)?;
+            return store
+                .write_chunks(idx.chunk_ids(), std::io::BufWriter::new(std::io::stdout().lock()))
+                .map_err(Into::into);
+        }
+        ("files", [vmid, time, args @ ..]) => return pve::restorevm::cli(&store, vmid.parse()?, time.parse()?, args),
+        ("list", []) => {
+            println!("{}", serde_json::to_string_pretty(&pve::backup::build_index(&store)?)?);
+            return Ok(());
+        }
+        _ => {}
+    }
+    let Some(a) = cfg.api else {
+        bail!("{cmd}: this configuration has no PVE API (store-only)");
+    };
     let api = Api::new(&ApiConfig {
-        host: cfg.api.host,
-        port: cfg.api.port,
-        connect_addr: cfg.api.connect_addr,
-        ca_pem: fs::read(&cfg.api.ca_pem_file)?,
-        token_id: cfg.api.token_id,
-        token_secret: fs::read_to_string(&cfg.api.token_secret_file)?.trim().to_owned(),
+        host: a.host,
+        port: a.port,
+        connect_addr: a.connect_addr,
+        ca_pem: fs::read(&a.ca_pem_file)?,
+        token_id: a.token_id,
+        token_secret: fs::read_to_string(&a.token_secret_file)?.trim().to_owned(),
     })?;
     let vmids = cfg.vmids.clone();
     let cluster = Cluster {
@@ -140,32 +165,26 @@ fn main() -> Result<()> {
                 bail!("failed guests: {failed:?}");
             }
         }
-        ("ct-files", [vmid, time, cmd, args @ ..]) => {
-            let m = store.load_manifest(&format!("ct-{vmid}"), time.parse()?)?;
-            let root = pve::ct::root_tar(&store, &m)?;
-            let r = store.chunk_reader(&root.chunks);
-            match (cmd.as_str(), args) {
-                ("ls", [dir]) => println!("{}", serde_json::to_string_pretty(&pve::files::list(r, dir)?)?),
-                ("ls", []) => println!("{}", serde_json::to_string_pretty(&pve::files::list(r, "")?)?),
-                ("get", [out, paths @ ..]) if !paths.is_empty() => {
-                    let out = std::path::Path::new(out);
-                    let fmt = pve::files::Format::from_path(out)?;
-                    let n = pve::files::extract(r, paths, fmt, fs::File::create_new(out)?)?;
-                    println!("{n} entries written to {}", out.display());
-                }
-                _ => bail!("ct-files <vmid> <time> ls [dir] | get <out.tar|out.zip> <path>..."),
-            }
-        }
-        ("dump", [vmid, time, device]) => {
-            // raw device image of a snapshot to stdout (verification / download restore)
-            let m = store.load_manifest(&pve::backup::source_name(vmid.parse()?), time.parse()?)?;
-            let idx = store.load_index(&m, device)?;
-            store.write_chunks(idx.chunk_ids(), std::io::BufWriter::new(std::io::stdout().lock()))?;
-        }
-        ("files", [vmid, time, args @ ..]) => pve::restorevm::cli(&store, vmid.parse()?, time.parse()?, args)?,
         ("push-index", []) => cluster.push_index(&store)?,
-        ("list", []) => println!("{}", serde_json::to_string_pretty(&pve::backup::build_index(&store)?)?),
         _ => bail!("unknown command"),
+    }
+    Ok(())
+}
+
+fn ct_files(store: &Store, vmid: &str, time: &str, cmd: &str, args: &[String]) -> Result<()> {
+    let m = store.load_manifest(&format!("ct-{vmid}"), time.parse()?)?;
+    let root = pve::ct::root_tar(store, &m)?;
+    let r = store.chunk_reader(&root.chunks);
+    match (cmd, args) {
+        ("ls", [dir]) => println!("{}", serde_json::to_string_pretty(&pve::files::list(r, dir)?)?),
+        ("ls", []) => println!("{}", serde_json::to_string_pretty(&pve::files::list(r, "")?)?),
+        ("get", [out, paths @ ..]) if !paths.is_empty() => {
+            let out = std::path::Path::new(out);
+            let fmt = pve::files::Format::from_path(out)?;
+            let n = pve::files::extract(r, paths, fmt, fs::File::create_new(out)?)?;
+            println!("{n} entries written to {}", out.display());
+        }
+        _ => bail!("ct-files <vmid> <time> ls [dir] | get <out.tar|out.zip> <path>..."),
     }
     Ok(())
 }

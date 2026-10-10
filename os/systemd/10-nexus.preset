@@ -17,3 +17,4 @@ enable nexus-nasmount.socket
 disable nexus-keyd.service
 disable nexus-web-api.service
 disable nexus-scheduler.service
+disable nexus-replicad.service

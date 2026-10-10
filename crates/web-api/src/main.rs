@@ -1,32 +1,11 @@
-//! `nexus-web-api`: HTTPS (rustls) on 8443, REST API + embedded SPA.
+//! `nexus-web-api`: HTTPS (rustls) on 8443, REST API + embedded SPA, and the
+//! replication peer endpoint (docs/replication.md: ALPN-selected mTLS).
 //! Configuration via environment, see `web_api::Config::from_env`.
 
 use anyhow::{bail, Context, Result};
-use axum::extract::ConnectInfo;
-use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
-use hyper_util::server::conn::auto;
-use hyper_util::service::TowerToHyperService;
-use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use std::sync::Arc;
 use std::time::Duration;
-use tokio_rustls::TlsAcceptor;
-use tower::ServiceExt;
+use web_api::replication::ReplPaths;
 use web_api::{AppState, Config};
-
-fn tls(cfg: &Config) -> Result<TlsAcceptor> {
-    let certs = CertificateDer::pem_file_iter(&cfg.tls_cert)
-        .with_context(|| format!("{}", cfg.tls_cert.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .with_context(|| format!("{}", cfg.tls_cert.display()))?;
-    let key = PrivateKeyDer::from_pem_file(&cfg.tls_key).with_context(|| format!("{}", cfg.tls_key.display()))?;
-    let mut sc = rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-        .with_safe_default_protocol_versions()?
-        .with_no_client_auth()
-        .with_single_cert(certs, key)?;
-    sc.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    Ok(TlsAcceptor::from(Arc::new(sc)))
-}
 
 /// `sd_notify(READY=1)` for `Type=notify` without a libsystemd dependency.
 fn notify_ready() {
@@ -73,13 +52,23 @@ async fn main() -> Result<()> {
             &serde_json::json!({}),
         )?;
     }
-    let st = AppState::with_keys(cat, token, cfg.downloads.clone(), totp, Some(cfg.secrets_pub.clone()));
+    let st = AppState::with_replication(
+        cat,
+        token,
+        cfg.downloads.clone(),
+        totp,
+        Some(cfg.secrets_pub.clone()),
+        ReplPaths {
+            socket: Some(cfg.replicad_socket.clone()),
+            seal_pub: Some(cfg.replicad_pub.clone()),
+        },
+    );
     let migrated = web_api::migrate_totp_seeds(&st)?;
     if migrated > 0 {
         eprintln!("<5>web-api: encrypted {migrated} legacy TOTP seed(s)");
     }
     let app = web_api::router(st.clone());
-    let acceptor = tls(&cfg)?;
+    let tls = web_api::tls::Tls::load(&cfg.tls_cert, &cfg.tls_key, Some(cfg.replication_ca.clone()))?;
 
     // quorum expiry also runs inline on every quorum call; this keeps it
     // timely for metrics and the audit log
@@ -97,34 +86,9 @@ async fn main() -> Result<()> {
     eprintln!("<6>web-api: listening on https://{}", cfg.listen);
     notify_ready();
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    loop {
-        let (tcp, peer) = tokio::select! {
-            r = listener.accept() => match r {
-                Ok(x) => x,
-                Err(e) => {
-                    eprintln!("<4>web-api: accept: {e}");
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    continue;
-                }
-            },
-            _ = term.recv() => return Ok(()),
-        };
-        let (acceptor, app) = (acceptor.clone(), app.clone());
-        tokio::spawn(async move {
-            let Ok(Ok(tls)) = tokio::time::timeout(Duration::from_secs(10), acceptor.accept(tcp)).await else {
-                return;
-            };
-            let svc = app.map_request(move |mut req: axum::http::Request<hyper::body::Incoming>| {
-                req.extensions_mut().insert(ConnectInfo(peer));
-                req
-            });
-            let mut b = auto::Builder::new(TokioExecutor::new());
-            b.http1()
-                .timer(TokioTimer::new())
-                .header_read_timeout(Duration::from_secs(15));
-            let _ = b
-                .serve_connection(TokioIo::new(tls), TowerToHyperService::new(svc))
-                .await;
-        });
-    }
+    web_api::tls::serve(listener, tls, app, async move {
+        term.recv().await;
+    })
+    .await;
+    Ok(())
 }

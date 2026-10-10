@@ -45,12 +45,16 @@ RUN --mount=type=cache,target=/opt/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked -j ${JOBS} \
       -p keyd -p pve -p offsite -p web-api -p scheduler -p setup -p nftsync -p agent-conn -p truenas -p nas \
+ # separately: one build with -p web-api would unify features and link the replication
+ # daemons (chunk store, keyd client) into nexus-web-api, which only needs the protocol types
+ && cargo build --release --locked -j ${JOBS} -p replication \
  && cargo build --release --locked -j ${JOBS} -p restorevm-agent --target x86_64-unknown-linux-musl \
  && mkdir -p /out \
  && cp target/release/keyd target/release/nexus-pve target/release/nexus-offsite \
        target/release/nexus-web-api target/release/nexus-scheduler target/release/nexus-setup \
        target/release/nexus-nft-sync target/release/nexus-agentctl target/release/nexus-truenas \
-       target/release/nexus-nas target/release/nexus-nasmount /out/ \
+       target/release/nexus-nas target/release/nexus-nasmount \
+       target/release/nexus-replicad target/release/nexus-replica /out/ \
  && cp target/x86_64-unknown-linux-musl/release/nexus-restore-agent /out/agent
 
 # ---- Stage 3: restore micro-VM (Debian 13 kernel + ZFS initramfs, restore-vm/).
@@ -99,7 +103,7 @@ RUN systemd-sysusers /usr/lib/sysusers.d/nexus.conf
 # Binaries and the restore micro-VM.
 COPY --from=rust /out/keyd /out/nexus-pve /out/nexus-offsite /out/nexus-web-api \
      /out/nexus-scheduler /out/nexus-setup /out/nexus-nft-sync /out/nexus-agentctl /out/nexus-truenas \
-     /out/nexus-nas /out/nexus-nasmount /usr/libexec/nexus/
+     /out/nexus-nas /out/nexus-nasmount /out/nexus-replicad /out/nexus-replica /usr/libexec/nexus/
 COPY --from=restorevm /out/vmlinuz /out/initrd.img /out/manifest.txt /usr/lib/nexus/restore-vm/
 RUN chmod 0755 /usr/libexec/nexus /usr/libexec/nexus/* \
  && chmod 0644 /usr/lib/nexus/restore-vm/*
@@ -118,6 +122,10 @@ RUN semodule -i /usr/share/selinux/packages/nexus/nexus.pp /usr/share/selinux/pa
  && matchpathcon /usr/libexec/nexus/nexus-nas | grep -q nexus_nas_exec_t \
  && matchpathcon /usr/libexec/nexus/nexus-nasmount | grep -q nexus_nasmount_exec_t \
  && matchpathcon /run/nexus-nasmount/mount.sock | grep -q nexus_nasmount_var_run_t \
+ && matchpathcon /usr/libexec/nexus/nexus-replicad | grep -q nexus_replicad_exec_t \
+ && matchpathcon /usr/libexec/nexus/nexus-replica | grep -q nexus_replica_exec_t \
+ && matchpathcon /var/lib/nexus/replicad/ca.key | grep -q nexus_replicad_var_lib_t \
+ && matchpathcon /var/lib/nexus/scheduler/replica/1/client.key | grep -q nexus_replica_key_t \
  && matchpathcon /var/lib/nexus/scheduler/agent-ca/ca.key | grep -q nexus_agent_ca_t \
  && matchpathcon /usr/libexec/nexus/nexus-web-api | grep -q nexus_webapi_exec_t \
  && matchpathcon /usr/libexec/nexus/nexus-scheduler | grep -q nexus_scheduler_exec_t \

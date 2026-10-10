@@ -172,6 +172,7 @@
                 <span class="mono">{s.source}</span>
                 {#if ag}<div class="muted">{t.snap.agent(ag.name)}</div>{/if}
                 {#if sh}<div class="muted">{t.snap.share(sh)}</div>{/if}
+                {#if s.origin}<div><span class="chip info">{t.snap.replicatedFrom(s.origin)}</span></div>{/if}
               </td>
               <td>{s.tenant}</td>
               <td class="nowrap">{fmtTime(s.time)}</td>

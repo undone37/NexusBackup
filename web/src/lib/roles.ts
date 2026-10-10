@@ -12,6 +12,9 @@ export const can = {
   viewAlerts: (u: User | null) => !!u && !u.tenant,
   audit: (u: User | null) => u?.role === 'admin' || u?.role === 'security_officer',
   ackAlert: (u: User | null) => !!u && u.role !== 'tenant_user',
+  // Replication peers/sources are appliance-wide: not for tenant-scoped users.
+  viewReplication: (u: User | null) => !!u && u.role !== 'tenant_user' && !u.tenant,
+  syncReplication: (u: User | null) => u?.role === 'admin' || u?.role === 'operator',
 };
 
 export const ROLES: Role[] = ['admin', 'security_officer', 'operator', 'tenant_user'];

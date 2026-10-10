@@ -201,7 +201,15 @@ Caveats:
   columns, ids and constraints but a wider `kind` CHECK (SQLite cannot alter a CHECK).
   An older release skips the migration (`user_version` 4 > its last), reads `sources`
   unchanged and fails jobs of `linux` sources as unsupported. Test:
-  `catalog::tests::migration_v4_keeps_pve_sources`.
+  `catalog::tests::migration_v4_keeps_pve_sources`. v5 (TrueNAS) and v6 (NFS/SMB shares)
+  rebuild `sources` the same way (`migration_v6_adds_share_sources`). v7 (appliance
+  replication, docs/replication.md) is purely additive and runs after v6: tables
+  `replication_peers`, `replication_sources` and the nullable column `snapshots.origin`;
+  `sources` keeps v6's kind CHECK (pve, linux, truenas, nfs, smb). The v6 release skips
+  migration 7 (`user_version` 7 > 6), its `sources`/`snapshots` queries (and snapshot
+  inserts without `origin`) keep working, and it never reads the new tables. Test:
+  `catalog::tests::migration_v7_adds_replication` (a v6 catalog with share sources and
+  snapshots migrates, rows/ids/references survive, then reopened as v6).
 - Appliances installed before greenboot was in the image have no `08_greenboot.cfg` in
   `/boot` until `bootupctl update`. 1.0 ships greenboot from the first install.
 

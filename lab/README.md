@@ -172,3 +172,23 @@ MEM=6144 lab/appliance/run.sh start <disk>; PVE=0 lab/appliance/e2e.sh setup
 APPL=1 lab/nas/e2e.sh; ROOT=$LAB/appliance/root PORT=28443 node --experimental-websocket lab/nas/ui.mjs target/nas-ui
 lab/nas/devcp.sh stop; lab/nas/vm.sh stop
 ```
+
+## Appliance replication lab (`lab/appliance/replication.sh`, docs/replication.md)
+
+Two appliance VMs from the same bootc image, both SELinux enforcing, on separate QEMU user networks:
+A (primary, `$LABDIR/repl-a`, 8443 → 127.0.0.1:28471) backs up PVE lab VM 100; B (secondary,
+`$LABDIR/repl-b`, 8443 → 127.0.0.1:28472) pulls from A through the host (`10.0.2.2:28471`). Needs the PVE
+lab running and ~6 GB free RAM (A 2.5 GB, B 3 GB).
+
+```sh
+IMG=localhost/nexus-os:repl lab/appliance/e2e.sh image   # own tag: does not disturb other lab images
+lab/appliance/replication.sh disks      # install once, copy for A and B
+lab/appliance/replication.sh boot setup # first boot on both (A with the PVE keys)
+lab/appliance/replication.sh primary    # A: tenant lab, PVE source, group [100], backup
+lab/appliance/replication.sh enroll     # A: peer + approval; B: source + enrollment; A: key export approval
+lab/appliance/replication.sh sync       # B: pull (throughput in the log)
+lab/appliance/replication.sh backup2 sync   # incremental
+lab/appliance/replication.sh check      # domains, AVCs (0 nexus expected) on both
+lab/appliance/replication.sh restore    # stops A, then file download from vm-100 on B (micro-VM)
+lab/appliance/replication.sh check stop
+```

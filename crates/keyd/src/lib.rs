@@ -131,8 +131,16 @@ pub fn create_tenant(dir: &Path, tenant: &str) -> io::Result<u32> {
     add_dek(dir, tenant, 1)
 }
 
-/// New DEK version; older versions stay available for reading.
+/// New DEK version; older versions stay available for reading. Refused for
+/// tenants whose keys were imported from a replication primary (their DEKs are
+/// the primary's; a local version would be unknown there and break replication).
 pub fn rotate_tenant(dir: &Path, tenant: &str) -> io::Result<u32> {
+    if tenant_dir(dir, tenant)?.join(ORIGIN).exists() {
+        return Err(err(
+            io::ErrorKind::PermissionDenied,
+            format!("tenant {tenant} is replicated from a primary: rotate there and re-export the keys"),
+        ));
+    }
     let last = *versions(dir, tenant)?
         .last()
         .ok_or_else(|| err(io::ErrorKind::NotFound, format!("no tenant {tenant}")))?;
@@ -202,6 +210,145 @@ pub fn import_escrow(dir: &Path, files: &[(String, Vec<u8>)]) -> io::Result<()> 
     Ok(())
 }
 
+// ---------------------------------------------------------------- replication (docs/replication.md §5)
+
+/// X25519 secret key of this keyd for receiving DEK exports, wrapped under the KEK.
+const REPLICA_KEY: &str = "replica-x25519";
+/// `tenants/<t>/origin`: the tenant's DEKs were imported from this primary.
+const ORIGIN: &str = "origin";
+const EXPORT_MAGIC: &[u8; 8] = b"NXDEKX1\0";
+/// Upper bound for an export blob (a tenant with ~1000 key versions).
+pub const MAX_EXPORT: usize = 64 << 10;
+
+fn replica_secret(dir: &Path) -> io::Result<crypto_box::SecretKey> {
+    let kek = unseal(dir)?;
+    let path = dir.join(REPLICA_KEY);
+    let sk = match fs::read(&path) {
+        Ok(blob) => Zeroizing::new(unwrap_key(&kek, &blob, REPLICA_KEY)?),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let k = Zeroizing::new(generate_key());
+            write_atomic(&path, &wrap_key(&kek, &k, REPLICA_KEY))?;
+            k
+        }
+        Err(e) => return Err(e),
+    };
+    Ok(crypto_box::SecretKey::from_bytes(*sk))
+}
+
+/// Public key a primary seals DEK exports to (created on first use).
+pub fn replica_pubkey(dir: &Path) -> io::Result<[u8; 32]> {
+    Ok(*replica_secret(dir)?.public_key().as_bytes())
+}
+
+/// All DEK versions of `tenant`, sealed (anonymous X25519 box) to a secondary
+/// keyd's public key: `NXDEKX1\0 | u8 len | tenant | N x (u32 LE version, DEK)`.
+/// The caller (the scheduler) has checked the approved quorum request.
+pub fn export_for(dir: &Path, tenant: &str, peer_pub: &[u8; 32]) -> io::Result<Vec<u8>> {
+    let deks = tenant_deks(dir, tenant)?;
+    let mut pt = Zeroizing::new(Vec::with_capacity(9 + tenant.len() + deks.len() * 36));
+    pt.extend_from_slice(EXPORT_MAGIC);
+    pt.push(tenant.len() as u8);
+    pt.extend_from_slice(tenant.as_bytes());
+    for (v, k) in &deks {
+        pt.extend_from_slice(&v.to_le_bytes());
+        pt.extend_from_slice(&k[..]);
+    }
+    crypto_box::PublicKey::from_bytes(*peer_pub)
+        .seal(&mut rand::rngs::OsRng, &pt)
+        .map_err(|_| err(io::ErrorKind::Other, "sealing failed"))
+}
+
+/// Opens an export with this keyd's replication key: (tenant, DEKs).
+fn open_export(dir: &Path, blob: &[u8]) -> io::Result<(String, Vec<(u32, Key)>)> {
+    let bad = || err(io::ErrorKind::InvalidData, "malformed key export");
+    if blob.len() > MAX_EXPORT {
+        return Err(bad());
+    }
+    let pt = Zeroizing::new(
+        replica_secret(dir)?
+            .unseal(blob)
+            .map_err(|_| err(io::ErrorKind::InvalidData, "key export not sealed to this appliance"))?,
+    );
+    let rest = pt.strip_prefix(EXPORT_MAGIC.as_slice()).ok_or_else(bad)?;
+    let (&n, rest) = rest.split_first().ok_or_else(bad)?;
+    let tenant = std::str::from_utf8(rest.get(..n as usize).ok_or_else(bad)?).map_err(|_| bad())?;
+    let recs = &rest[n as usize..];
+    if recs.is_empty() || recs.len() % 36 != 0 {
+        return Err(bad());
+    }
+    let deks = recs
+        .chunks(36)
+        .map(|c| {
+            let mut k = Zeroizing::new([0u8; 32]);
+            k.copy_from_slice(&c[4..]);
+            (u32::from_le_bytes(c[..4].try_into().unwrap()), k)
+        })
+        .collect();
+    Ok((tenant.to_owned(), deks))
+}
+
+/// Imports a DEK export for `tenant` from the primary `origin` (its certificate
+/// fingerprint): every version is stored wrapped under this keyd's KEK. Refused
+/// if the tenant has local keys, keys from another origin, or a version with a
+/// different key; idempotent otherwise. Returns all versions now present.
+pub fn import_sealed(dir: &Path, tenant: &str, origin: &str, blob: &[u8]) -> io::Result<Vec<u32>> {
+    if origin.is_empty() || origin.len() > 128 || !origin.bytes().all(|b| b.is_ascii_alphanumeric() || b == b':') {
+        return Err(err(io::ErrorKind::InvalidInput, "invalid origin"));
+    }
+    let td = tenant_dir(dir, tenant)?;
+    let (t, deks) = open_export(dir, blob)?;
+    if t != tenant {
+        return Err(err(
+            io::ErrorKind::InvalidData,
+            format!("key export is for tenant {t:?}, not {tenant:?}"),
+        ));
+    }
+    let have = versions(dir, tenant)?;
+    match fs::read_to_string(td.join(ORIGIN)) {
+        Ok(o) if o.trim() == origin => {}
+        Ok(o) => {
+            return Err(err(
+                io::ErrorKind::PermissionDenied,
+                format!("tenant {tenant} is replicated from another primary ({})", o.trim()),
+            ))
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound && have.is_empty() => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Err(err(
+                io::ErrorKind::PermissionDenied,
+                format!("tenant {tenant} has local keys: it cannot be replicated into"),
+            ))
+        }
+        Err(e) => return Err(e),
+    }
+    let kek = unseal(dir)?;
+    let existing: Vec<(u32, Key)> = if have.is_empty() {
+        vec![]
+    } else {
+        tenant_deks(dir, tenant)?
+    };
+    for (v, k) in &deks {
+        if let Some((_, old)) = existing.iter().find(|(x, _)| x == v) {
+            if old[..] != k[..] {
+                return Err(err(
+                    io::ErrorKind::AlreadyExists,
+                    format!("tenant {tenant}: DEK v{v} differs from the imported one"),
+                ));
+            }
+        }
+    }
+    fs::create_dir_all(&td)?;
+    if have.is_empty() {
+        write_atomic(&td.join(ORIGIN), format!("{origin}\n").as_bytes())?;
+    }
+    for (v, k) in &deks {
+        if !have.contains(v) {
+            write_atomic(&td.join(format!("dek.{v}")), &wrap_key(&kek, k, &label(tenant, *v)))?;
+        }
+    }
+    versions(dir, tenant)
+}
+
 /// For every process that holds tenant DEKs (scheduler, nexus-pve,
 /// nexus-offsite): no core dumps and no ptrace / `/proc/<pid>/mem` access by
 /// other processes of the same uid (e.g. a restore-VM QEMU after an escape).
@@ -261,6 +408,9 @@ fn peer_uid(s: &UnixStream) -> io::Result<u32> {
 /// - `<tenant>\n` → N x (u32 LE version, 32-byte DEK)
 /// - `ensure <tenant>\n` → same, creating DEK v1 first if the tenant has none
 /// - `escrow <tenant>\n` → wrapped escrow files: N x (u16 BE name len, name, u32 BE len, bytes)
+/// - `replica-pubkey\n` → 32-byte X25519 public key for DEK exports (docs/replication.md)
+/// - `export-for <tenant> <peer-pubkey hex> <quorum id>\n` → DEK export sealed to that key
+/// - `import-sealed <tenant> <origin> <len>\n` + `len` bytes → N x u32 LE versions now present
 ///
 /// Any error closes the connection without an answer.
 // ponytail: sequential accept loop; requests only happen at chunkstore start.
@@ -283,14 +433,76 @@ fn handle(mut s: UnixStream, dir: &Path, allow_uid: u32) -> io::Result<()> {
     }
     s.set_read_timeout(Some(Duration::from_secs(5)))?;
     s.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let mut r = BufReader::new(&s);
     let mut line = String::new();
-    BufReader::new(&s).take(128).read_line(&mut line)?;
-    s.write_all(&answer(dir, &line)?)
+    (&mut r).take(256).read_line(&mut line)?;
+    let body = match body_len(&line)? {
+        Some(n) => {
+            let mut b = vec![0u8; n];
+            r.read_exact(&mut b)?;
+            b
+        }
+        None => Vec::new(),
+    };
+    s.write_all(&answer_with_body(dir, &line, &body)?)
 }
 
-/// The answer to one request line (see `serve`); errors mean "no answer".
+/// `import-sealed …` carries a body of the length given last on the line.
+fn body_len(line: &str) -> io::Result<Option<usize>> {
+    match line.trim_end_matches('\n').strip_prefix("import-sealed ") {
+        Some(rest) => {
+            let n: usize = rest
+                .rsplit(' ')
+                .next()
+                .and_then(|n| n.parse().ok())
+                .filter(|n| (1..=MAX_EXPORT).contains(n))
+                .ok_or_else(|| err(io::ErrorKind::InvalidInput, "invalid body length"))?;
+            Ok(Some(n))
+        }
+        None => Ok(None),
+    }
+}
+
+/// The answer to one request line without a body (see `serve`); errors mean "no answer".
 pub fn answer(dir: &Path, line: &str) -> io::Result<Zeroizing<Vec<u8>>> {
+    answer_with_body(dir, line, &[])
+}
+
+/// The answer to one request line and its body (`import-sealed`).
+pub fn answer_with_body(dir: &Path, line: &str, body: &[u8]) -> io::Result<Zeroizing<Vec<u8>>> {
     let line = line.trim_end_matches('\n');
+    if line == "replica-pubkey" {
+        return Ok(Zeroizing::new(replica_pubkey(dir)?.to_vec()));
+    }
+    if let Some(rest) = line.strip_prefix("export-for ") {
+        let [tenant, pk, quorum] = rest.split(' ').collect::<Vec<_>>()[..] else {
+            return Err(err(
+                io::ErrorKind::InvalidInput,
+                "export-for <tenant> <pubkey> <quorum>",
+            ));
+        };
+        let pk: [u8; 32] = parse_hex(pk).ok_or_else(|| err(io::ErrorKind::InvalidInput, "invalid public key"))?;
+        let q: u64 = quorum
+            .parse()
+            .map_err(|_| err(io::ErrorKind::InvalidInput, "invalid quorum id"))?;
+        let blob = export_for(dir, tenant, &pk)?;
+        eprintln!(
+            "keyd: exported DEKs of tenant {tenant} to replication peer key {} (quorum {q})",
+            hex(&pk)
+        );
+        return Ok(Zeroizing::new(blob));
+    }
+    if let Some(rest) = line.strip_prefix("import-sealed ") {
+        let [tenant, origin, _len] = rest.split(' ').collect::<Vec<_>>()[..] else {
+            return Err(err(
+                io::ErrorKind::InvalidInput,
+                "import-sealed <tenant> <origin> <len>",
+            ));
+        };
+        let vs = import_sealed(dir, tenant, origin, body)?;
+        eprintln!("keyd: imported DEKs of tenant {tenant} from {origin}: versions {vs:?}");
+        return Ok(Zeroizing::new(vs.iter().flat_map(|v| v.to_le_bytes()).collect()));
+    }
     let tenant = match line.split_once(' ') {
         Some(("escrow", t)) => {
             let mut out = Zeroizing::new(Vec::new());
@@ -357,6 +569,44 @@ pub fn parse_escrow(buf: &[u8]) -> io::Result<Vec<(String, Vec<u8>)>> {
         r = &r[4 + len..];
     }
     Ok(out)
+}
+
+fn request_raw(socket: &Path, line: &str, body: &[u8]) -> io::Result<Vec<u8>> {
+    let mut s = UnixStream::connect(socket)?;
+    s.write_all(format!("{line}\n").as_bytes())?;
+    s.write_all(body)?;
+    let mut buf = Vec::new();
+    s.read_to_end(&mut buf)?;
+    if buf.is_empty() {
+        return Err(err(io::ErrorKind::PermissionDenied, "keyd refused the request"));
+    }
+    Ok(buf)
+}
+
+/// Secondary: this appliance's X25519 public key for DEK exports.
+pub fn fetch_replica_pubkey(socket: &Path) -> io::Result<[u8; 32]> {
+    request_raw(socket, "replica-pubkey", &[])?
+        .try_into()
+        .map_err(|_| err(io::ErrorKind::InvalidData, "malformed keyd answer"))
+}
+
+/// Primary (scheduler, after an approved quorum request): DEKs of `tenant`
+/// sealed to a secondary keyd's public key.
+pub fn request_export(socket: &Path, tenant: &str, peer_pub: &[u8; 32], quorum_id: i64) -> io::Result<Vec<u8>> {
+    request_raw(
+        socket,
+        &format!("export-for {tenant} {} {quorum_id}", hex(peer_pub)),
+        &[],
+    )
+}
+
+/// Secondary (nexus-replica): import a DEK export received from the primary.
+pub fn request_import(socket: &Path, tenant: &str, origin: &str, blob: &[u8]) -> io::Result<Vec<u32>> {
+    let b = request_raw(socket, &format!("import-sealed {tenant} {origin} {}", blob.len()), blob)?;
+    if b.len() % 4 != 0 {
+        return Err(err(io::ErrorKind::InvalidData, "malformed keyd answer"));
+    }
+    Ok(b.chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect())
 }
 
 fn request_keyring(socket: &Path, request: &str, tenant: &str) -> io::Result<Keyring> {
@@ -461,6 +711,101 @@ mod tests {
         assert_eq!(k(a.path()), k(b.path()));
         assert!(import_escrow(b.path(), &[("../x".into(), vec![])]).is_err());
         assert!(import_escrow(b.path(), &[("kek.recovery".into(), vec![1])]).is_err());
+    }
+
+    fn deks(d: &Path, t: &str) -> Vec<(u32, [u8; 32])> {
+        tenant_deks(d, t).unwrap().into_iter().map(|(v, k)| (v, *k)).collect()
+    }
+
+    /// docs/replication.md §5: DEKs travel only sealed to the secondary keyd and
+    /// end up wrapped under the secondary's own KEK.
+    #[test]
+    fn replication_export_import() {
+        let (p, s) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        init(p.path()).unwrap();
+        init(s.path()).unwrap();
+        create_tenant(p.path(), "acme").unwrap();
+        create_tenant(p.path(), "other").unwrap();
+        create_tenant(s.path(), "local").unwrap();
+        let spk = replica_pubkey(s.path()).unwrap();
+        assert_eq!(spk, replica_pubkey(s.path()).unwrap(), "key pair is persistent");
+        let blob = export_for(p.path(), "acme", &spk).unwrap();
+        let raw: Vec<u8> = deks(p.path(), "acme").iter().flat_map(|(_, k)| k.to_vec()).collect();
+        assert!(!blob.windows(32).any(|w| w == &raw[..32]), "no DEK in clear");
+        // another keyd cannot open it
+        let x = tempfile::tempdir().unwrap();
+        init(x.path()).unwrap();
+        assert!(import_sealed(x.path(), "acme", "fp1", &blob).is_err());
+        // wrong tenant name, local tenant, invalid origin
+        assert!(import_sealed(s.path(), "other", "fp1", &blob).is_err());
+        assert!(import_sealed(s.path(), "local", "fp1", &export_for(p.path(), "acme", &spk).unwrap()).is_err());
+        assert!(import_sealed(s.path(), "acme", "../x", &blob).is_err());
+        assert_eq!(import_sealed(s.path(), "acme", "fp1", &blob).unwrap(), vec![1]);
+        assert_eq!(
+            import_sealed(s.path(), "acme", "fp1", &blob).unwrap(),
+            vec![1],
+            "idempotent"
+        );
+        assert_eq!(deks(s.path(), "acme"), deks(p.path(), "acme"));
+        assert!(
+            import_sealed(s.path(), "acme", "fp2", &blob).is_err(),
+            "another primary cannot take over"
+        );
+        assert!(
+            rotate_tenant(s.path(), "acme").is_err(),
+            "no local rotation of a replicated tenant"
+        );
+        // primary rotates: the re-export adds v2
+        rotate_tenant(p.path(), "acme").unwrap();
+        let blob2 = export_for(p.path(), "acme", &spk).unwrap();
+        assert_eq!(import_sealed(s.path(), "acme", "fp1", &blob2).unwrap(), vec![1, 2]);
+        assert_eq!(deks(s.path(), "acme"), deks(p.path(), "acme"));
+        // a primary that changed v1 under the same origin is refused
+        let p2 = tempfile::tempdir().unwrap();
+        init(p2.path()).unwrap();
+        create_tenant(p2.path(), "acme").unwrap();
+        assert!(import_sealed(s.path(), "acme", "fp1", &export_for(p2.path(), "acme", &spk).unwrap()).is_err());
+        // the wrapped files are under the secondary KEK, not the primary's
+        assert_ne!(
+            fs::read(s.path().join("tenants/acme/dek.1")).unwrap(),
+            fs::read(p.path().join("tenants/acme/dek.1")).unwrap()
+        );
+        assert!(import_sealed(s.path(), "acme", "fp1", &[0u8; 100]).is_err());
+    }
+
+    #[test]
+    fn replication_socket_verbs() {
+        let (p, s) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        init(p.path()).unwrap();
+        init(s.path()).unwrap();
+        create_tenant(p.path(), "acme").unwrap();
+        let me = unsafe { libc::getuid() };
+        let start = |dir: &Path, n: usize| {
+            let sock = dir.join("k.sock");
+            let l = UnixListener::bind(&sock).unwrap();
+            let dir = dir.to_owned();
+            let t = std::thread::spawn(move || {
+                for _ in 0..n {
+                    let _ = handle(l.accept().unwrap().0, &dir, me);
+                }
+            });
+            (sock, t)
+        };
+        let (ss, st) = start(s.path(), 3);
+        let (ps, pt) = start(p.path(), 2);
+        let spk = fetch_replica_pubkey(&ss).unwrap();
+        let blob = request_export(&ps, "acme", &spk, 7).unwrap();
+        assert!(request_export(&ps, "nope", &spk, 7).is_err());
+        assert_eq!(request_import(&ss, "acme", "fp1", &blob).unwrap(), vec![1]);
+        let ring = fetch_keyring(&ss, "acme").unwrap();
+        assert_eq!(
+            ring.chunk_id(b"x"),
+            Keyring::new("acme", &deks(p.path(), "acme")).chunk_id(b"x")
+        );
+        st.join().unwrap();
+        pt.join().unwrap();
+        assert!(body_len("import-sealed a b 0\n").is_err());
+        assert!(body_len(&format!("import-sealed a b {}\n", MAX_EXPORT + 1)).is_err());
     }
 
     #[test]
