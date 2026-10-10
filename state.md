@@ -176,8 +176,11 @@ Decisions (user, 2026-10-09): MinIO for dev/tests, real provider later; own mini
 - [ ] Scale-out groundwork (plan §15 Phase 8: no multi-node yet) — architecture note
 - [ ] After Phase 8: add repository README.md (user request 2026-10-09)
 
-## Phase 9 — Plugin system (added 2026-10-10, before M365 = Phase 10)
+## Phase 9 — Plugin system (added 2026-10-10)
 Goal: extend with new data sources + restore functions (NetApp SVM, VMware ESXi/vCenter, PostgreSQL, …) via signed, sandboxed plugins on a versioned SDK; M9 = PostgreSQL plugin + one ported connector
+
+## Phase 10 — End-user manual (added 2026-10-10, after plugin system; M365 = Phase 11)
+`manual/` folder, full end-user documentation in Markdown with reproducible screenshots of the web UI
 
 ## Next
 

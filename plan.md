@@ -72,7 +72,7 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | Agent dedup hashing (Phase 7) | **Agents send plain BLAKE3 chunk hashes; the appliance maps them to keyed chunk IDs in a local index** (decided 2026-10-09) | Source hosts never hold tenant key material; the unkeyed hashes never leave the appliance (not offsite). |
 | TrueNAS data path (Phase 7) | **ZFS snapshot via TrueNAS API, changed files streamed from `.zfs/snapshot` over a restricted SSH user (forced command)** (decided 2026-10-09) | No mounts on the appliance; nothing installed on TrueNAS beyond a key. |
 | TrueNAS privilege model (Phase 7) | **SSH user `nexusbackup` runs find/tar/realpath/zfs via passwordless sudo; the forced command is the security boundary** (accepted 2026-10-09) | Reading NAS data needs root (modes, NFSv4 ACLs); same trust level as the PVE helper. Snapshots named `nexus-<source>-<time>`; restore download-only in v1. |
-| Work order after Phase 7 TrueNAS | **Continue the plan order (NAS → Phase 8 → Phase 9 plugin system → Phase 10 M365); production hardening later** (decided 2026-10-09; plugin phase inserted 2026-10-10) | User decision; production gaps listed in state.md. |
+| Work order after Phase 7 TrueNAS | **Continue the plan order (NAS → Phase 8 → Phase 9 plugin system → Phase 10 end-user manual → Phase 11 M365); production hardening later** (decided 2026-10-09; plugin phase inserted 2026-10-10) | User decision; production gaps listed in state.md. |
 | NAS read access (Phase 7) | **Documented server-side models: NFS read-only export to the appliance with `all_squash,anonuid=0,anongid=0`; SMB dedicated backup account (Backup Operators / Samba `admin users`)** (decided 2026-10-10) | Full read access without agents on the NAS. |
 | SMB Kerberos (Phase 7) | **Dropped from v1** (decided 2026-10-10) | NTLMSSP with signed + encrypted SMB3 only; Kerberos later with an AD lab. |
 | Missing NAS snapshot alerts (Phase 7) | **Warn once per source; afterwards a status badge; always alert when files actually changed during the read** (decided 2026-10-10) | Avoid alert fatigue. |
@@ -551,7 +551,18 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
 - **Milestone M9:** a new source type (e.g. PostgreSQL) installed as a signed plugin, backed up, restored and shown in the
   UI without core changes; one existing connector ported to the SDK.
 
-### Phase 10 — Microsoft 365 (after phase 9)
+### Phase 10 — End-user documentation (after phase 9; added 2026-10-10 by user request)
+- New folder `manual/` with a complete end-user manual in Markdown for administrators, security officers, operators
+  and tenant users: concepts (forever-full, dedup, retention/GFS, locks, quorum, offsite, replication), installation
+  and first boot, every page of the web interface with **screenshots**, sources (PVE, Linux/Windows agents, TrueNAS,
+  NFS/SMB, plugins), policies and groups, restores (full, instant recovery, file restore, restore to path), offsite
+  targets (Storage Box, S3), replication, users/roles/MFA, approvals, audit, alerts, updates, disaster recovery
+  with the recovery key, troubleshooting and FAQ.
+- Screenshots are produced reproducibly by a script driving the real web UI (headless browser against the lab or
+  a seeded demo backend), so they can be regenerated for every release.
+- **Milestone M10:** manual complete, reviewed against the UI, screenshots regenerated from the current build.
+
+### Phase 11 — Microsoft 365 (after phase 10)
 - Separate project: Graph API connectors for Exchange, SharePoint, OneDrive, Teams — built as a plugin on the Phase 9 SDK.
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
