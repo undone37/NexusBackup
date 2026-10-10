@@ -164,7 +164,7 @@ SSH key management for sources, appliance config backup (catalog, totp.key, secr
   - open decisions (user): server read-access model (NFS ro export with all_squash anonuid=0 / SMB backup user), SMB Kerberos (ship cifs-utils+krb5 and test vs AD, or drop krb5 from v1), alert noise for shares without NAS snapshots
   - limits: entries in memory (0.56–0.73 GB at 1M files; appliance needs ≥ 6 GB for that), one chunk per small file, Samba mtime/owner limitations, sparse files full, no NFS Kerberos
 
-## Phase 8 — Replication + S3 (started 2026-10-09)
+## Phase 8 — Replication + S3 (done 2026-10-10)
 Decisions (user, 2026-10-09): MinIO for dev/tests, real provider later; own minimal SigV4 client; replication = secondary pulls via mTLS endpoint on primary's 8443
 - [x] S3 offsite backend (`crates/offsite/src/s3.rs`, own SigV4, no SDK): never-overwrite put (HEAD + If-None-Match), multipart > 64 MiB, ranged GET, ListObjectsV2, Object Lock compliance on write + PutObjectRetention extension, storage class per kind, bounded XML parser (fuzzed 3 M); engine lock-aware (packs locked to max referencing snapshot lock, extended before manifest/retention, GC skips locked packs, DR restores locks); sealed `secret_key`; UI target choice none/SFTP/S3 (+ fixed: UI stored SFTP config in a shape the scheduler ignored; bwlimit units); MinIO testbox (community image) 7/7 incl. full engine flow; docs/s3-offsite.md (MinIO/AWS/Hetzner/Wasabi, restricted policy, lifecycle) — merged
   - open: rotating-DNS endpoints vs firewall allow-list (AWS), real provider run, per-pack lock extension cost
@@ -174,7 +174,7 @@ Decisions (user, 2026-10-09): MinIO for dev/tests, real provider later; own mini
   - note: `hooks::tests::timeout_kills_process_group_and_pre_stops_on_failure` is timing-sensitive under full parallel test load (passes alone)
 - [x] NAS decisions implemented: web-api refuses `sec krb5` (UI offers NTLMSSP only; helper code kept), `backup_inconsistent` once per source for a missing snapshot / every time for files changed while read (agents + shares; test `inconsistent_alerts_once_per_source`), access models documented as the supported setup (docs/nas-connector.md)
 - [x] Scale-out groundwork: `docs/scale-out.md` (what is node-independent, what is node-local, sharding/leader direction, rules for new code)
-- [ ] After Phase 8: add repository README.md (user request 2026-10-09)
+- [x] Repository README.md (user request 2026-10-09): overview, honest status, sources/restores matrix, architecture, layout, build/test, labs, roadmap, security, license
 
 ## Phase 9 — Plugin system (added 2026-10-10)
 Goal: extend with new data sources + restore functions (NetApp SVM, VMware ESXi/vCenter, PostgreSQL, …) via signed, sandboxed plugins on a versioned SDK; M9 = PostgreSQL plugin + one ported connector
