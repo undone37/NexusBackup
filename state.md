@@ -166,6 +166,11 @@ SSH key management for sources, appliance config backup (catalog, totp.key, secr
 
 ## Phase 8 — Replication + S3 (started 2026-10-09)
 Decisions (user, 2026-10-09): MinIO for dev/tests, real provider later; own minimal SigV4 client; replication = secondary pulls via mTLS endpoint on primary's 8443
+- [x] S3 offsite backend (`crates/offsite/src/s3.rs`, own SigV4, no SDK): never-overwrite put (HEAD + If-None-Match), multipart > 64 MiB, ranged GET, ListObjectsV2, Object Lock compliance on write + PutObjectRetention extension, storage class per kind, bounded XML parser (fuzzed 3 M); engine lock-aware (packs locked to max referencing snapshot lock, extended before manifest/retention, GC skips locked packs, DR restores locks); sealed `secret_key`; UI target choice none/SFTP/S3 (+ fixed: UI stored SFTP config in a shape the scheduler ignored; bwlimit units); MinIO testbox (community image) 7/7 incl. full engine flow; docs/s3-offsite.md (MinIO/AWS/Hetzner/Wasabi, restricted policy, lifecycle) — merged
+  - open: rotating-DNS endpoints vs firewall allow-list (AWS), real provider run, per-pack lock extension cost
+- [ ] Replication (`nexus-replicad`, `nexus-replica`, keyd export-for/import-sealed, ALPN-split mTLS on 8443, quorum-gated peer + key export, two-VM lab under enforcing: 181 MB/s initial sync, restore on secondary with primary off) — branch done; integration into main running (migration renumbered v6→v7, conflicts with NAS/S3)
+- [ ] NAS decisions to implement after integration: krb5 refused/hidden in v1, inconsistent alert once per source (+ always when files changed during read), access-model docs
+- [ ] Scale-out groundwork (plan §15 Phase 8: no multi-node yet) — architecture note
 - [ ] After Phase 8: add repository README.md (user request 2026-10-09)
 
 ## Next
