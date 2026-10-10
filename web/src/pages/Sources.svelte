@@ -59,7 +59,8 @@
   function summaryOf(x: PluginSource): string {
     const secret = kindsAll.get(x.kind)?.kind.secret_fields ?? [];
     return Object.entries(x.config ?? {})
-      .filter(([k, v]) => !k.endsWith('_set') && !secret.includes(k) && v !== '' && v !== null)
+      // short single-line values only (no PEM blocks or long lists)
+      .filter(([k, v]) => !k.endsWith('_set') && !secret.includes(k) && v !== '' && v !== null && !String(v).includes('\n') && String(v).length <= 64)
       .slice(0, 3)
       .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join(',') : String(v)}`)
       .join(' · ');

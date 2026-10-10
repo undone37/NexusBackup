@@ -143,7 +143,8 @@
     mode = m;
     target = '';
     node = '';
-    storage = pveSources.find((x) => x.tenant === s.tenant)?.config?.storage ?? '';
+    // the source's `storage` is the NexusBackup storage itself, not a place for restored disks
+    storage = '';
     node = nodeNames[0] ?? '';
     dlgOpen = true;
   }
@@ -304,7 +305,7 @@
         </div>
         <div class="field">
           <label for="r-storage">{t.snap.storage}</label>
-          <input id="r-storage" bind:value={storage} required />
+          <input id="r-storage" bind:value={storage} required placeholder="local-lvm" />
         </div>
       </div>
       <div class="form-actions">

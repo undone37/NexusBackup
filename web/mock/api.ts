@@ -3,9 +3,17 @@
 //
 // Users (password "nexus", any 6-digit TOTP code): admin, so, so2, op, acme (tenant_user of "acme").
 // "newop" is pending activation: sign-in page → "Activate account", code DEMO-ACTIVATE-NEWOP-2026
-// (any 6-digit authenticator code is accepted). Approvals start disabled.
+// (any 6-digit authenticator code is accepted). Approvals start enabled with pending requests.
+//
+// The seed is a fictional demo appliance (also used for the manual's screenshots): tenants acme
+// (S3 Object Lock offsite, replicated to the peer "dr-site"), initech (Storage Box offsite) and globex
+// (replicated from the primary "hq-primary"). Only example domains (example.com/.net) and
+// documentation address ranges (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24) are used.
 
 import type { Plugin } from 'vite';
+// The real manifests of the shipped plugins, so the demo's forms and restores match them.
+import pgManifest from '../../plugins/postgresql/manifest.json' with { type: 'json' };
+import truenasManifest from '../../plugins/truenas/manifest.json' with { type: 'json' };
 
 interface Req {
   method?: string;
@@ -31,17 +39,34 @@ class HttpError extends Error {
   }
 }
 
-const now = () => Math.floor(Date.now() / 1000);
-const rand = (n: number) => {
+// Reproducible demo (manual screenshots, manual/tools/screenshots.mjs):
+//   NEXUS_MOCK_EPOCH=<unix seconds>  the mock clock starts there and runs at real speed
+//   NEXUS_MOCK_SEED=<integer>        ids, tokens, fingerprints and codes come from a seeded PRNG
+const EPOCH = Number(process.env.NEXUS_MOCK_EPOCH) || 0;
+const STARTED = Date.now();
+const now = () => Math.floor((EPOCH ? EPOCH * 1000 + (Date.now() - STARTED) : Date.now()) / 1000);
+const SEED = process.env.NEXUS_MOCK_SEED;
+let prng = (Number(SEED) || 1) >>> 0;
+/** mulberry32: deterministic bytes when NEXUS_MOCK_SEED is set, else crypto randomness */
+function randomBytes(n: number): Uint8Array {
   const b = new Uint8Array(n);
-  crypto.getRandomValues(b);
-  return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
-};
+  if (SEED === undefined) {
+    crypto.getRandomValues(b);
+    return b;
+  }
+  for (let i = 0; i < n; i++) {
+    prng = (prng + 0x6d2b79f5) >>> 0;
+    let x = prng;
+    x = Math.imul(x ^ (x >>> 15), x | 1);
+    x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
+    b[i] = ((x ^ (x >>> 14)) >>> 0) & 0xff;
+  }
+  return b;
+}
+const rand = (n: number) => Array.from(randomBytes(n), (x) => x.toString(16).padStart(2, '0')).join('');
 const b32 = (n = 32) => {
   const a = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-  const b = new Uint8Array(n);
-  crypto.getRandomValues(b);
-  return Array.from(b, (x) => a[x & 31]).join('');
+  return Array.from(randomBytes(n), (x) => a[x & 31]).join('');
 };
 const totpUri = (name: string, secret: string) =>
   `otpauth://totp/NexusBackup:${encodeURIComponent(name)}?secret=${secret}&issuer=NexusBackup&algorithm=SHA1&digits=6&period=30`;
@@ -136,10 +161,10 @@ const db = {
 };
 const nextId = () => ++db.seq;
 
-async function audit(actor: string, action: string, target: string, details: Json = {}) {
+async function audit(actor: string, action: string, target: string, details: Json = {}, at?: number) {
   const prev = db.audit.length ? db.audit[db.audit.length - 1].hash : '0'.repeat(64);
   const seq = db.audit.length + 1;
-  const ts = now();
+  const ts = at ?? now();
   const d = JSON.stringify(details);
   const hash = await sha256(prev + seq + ts + actor + action + target + d);
   db.audit.push({ seq, ts, actor, action, target, details, prev_hash: prev, hash });
@@ -192,6 +217,12 @@ function planFor(kind: string, p: Json): string[] {
       return [`starting nexus-pluginhost: restore ${p.restore} of ${p.source} @ ${p.time}`, 'plugin requested 3 streams', 'streaming data to the plugin', `restore ${p.restore} finished`];
     case 'plugin_mount':
       return [`starting nexus-pluginhost: mount ${p.source} @ ${p.time} for ${p.minutes} min`, 'plugin answered MountReady', 'mounted'];
+    case 'replica_sync': {
+      const rs = db.replSources.find((x) => x.id === p.replication_source_id);
+      return [`connecting to ${rs?.url} (pinned certificate, client certificate)`, `tenant ${p.tenant}: keys up to date`, 'fetching new snapshots, every chunk verified before import', 'replicated 1 snapshot'];
+    }
+    case 'replica_enroll':
+      return ['creating client key + CSR', 'connecting with the enrollment ALPN, primary certificate pinned', 'proofs exchanged, client certificate received', 'enrolled'];
     case 'restore_files':
       return [
         `connecting to agent ${agName} over mTLS`,
@@ -272,6 +303,12 @@ function tick() {
         Object.assign(ag, { enrolled_at: t, cert_sha256: rand(32), token_expires: null, token_hash: null, last_seen: t });
         Object.assign(ag, { version: '0.9.0', os: 'Debian GNU/Linux 13 (trixie)' });
       }
+      const rs = j.kind.startsWith('replica_') ? db.replSources.find((x) => x.id === j.params.replication_source_id) : undefined;
+      if (rs && j.kind === 'replica_enroll') Object.assign(rs, { state: 'enrolled', cert_sha256: rand(32), keyd_fingerprint: keydFp() });
+      if (rs && j.kind === 'replica_sync') {
+        rs.last_sync = t;
+        rs.status = { ...rs.status, [j.params.tenant]: { ...(rs.status?.[j.params.tenant] ?? {}), last_ok: t, last_error: null } };
+      }
       if (j.kind === 'agent_update' && ag) Object.assign(ag, { version: '0.9.1', last_seen: t });
       if (j.kind === 'restore_files' && ag) ag.last_seen = t;
       if (j.kind === 'files_get') {
@@ -292,10 +329,17 @@ function tick() {
         continue;
       }
       if (j.kind === 'backup') {
-        const vm = j.params.vmid ?? j.params.agent_id ?? db.groups.find((g) => g.id === j.params.group_id)?.guests[0];
-        if (vm) db.snapshots.push(snap(j.tenant, guestName(vm), t, 64 << 30, true, false, null));
-        const host = typeof vm === 'string' ? db.agents.find((a) => a.id === vm) : undefined;
-        if (host) host.last_seen = t;
+        // snapshot names per source kind: vm-/ct-<id>, host-<agent>, nas-<source>-<pool.dataset>, share-<source>
+        const g = db.groups.find((x) => x.id === j.params.group_id);
+        const gsrc = db.sources.find((x) => x.id === g?.source_id);
+        const names =
+          gsrc?.kind === 'nfs' || gsrc?.kind === 'smb'
+            ? [`share-${gsrc.id}`]
+            : gsrc?.kind === 'truenas'
+              ? (g!.guests.length ? g!.guests : gsrc.config.datasets).map((d: string) => `nas-${gsrc.id}-${String(d).replaceAll('/', '.')}`)
+              : (j.params.vmid ? [j.params.vmid] : j.params.agent_id ? [j.params.agent_id] : (g?.guests ?? [])).map(guestName);
+        for (const n of names) db.snapshots.push(snap(j.tenant, n, t, 64 << 30, true, false, null));
+        for (const a of db.agents) if (names.includes(`host-${a.id}`)) a.last_seen = t;
       }
     }
   }
@@ -309,6 +353,14 @@ function pluginResult(j: Job, t: number) {
     const host = String(src?.config.host ?? '');
     j.result = /bad|invalid/.test(host) ? { valid: false, field: 'host', message: `connection to ${host}:${src?.config.port} refused` } : { valid: true };
     j.log += j.result.valid ? '\nValid' : `\nInvalid: ${j.result.field}: ${j.result.message}`;
+  } else if (j.kind === 'plugin_guests' && src?.kind === 'plugin:truenas') {
+    j.result = {
+      guests: [
+        { id: 'tank.media', title: 'tank/media (/mnt/tank/media)' },
+        { id: 'tank.archive', title: 'tank/archive (/mnt/tank/archive)' },
+        { id: 'tank.vm-images', title: 'tank/vm-images (/mnt/tank/vm-images)' },
+      ],
+    };
   } else if (j.kind === 'plugin_guests') {
     j.result = {
       guests: [
@@ -321,21 +373,52 @@ function pluginResult(j: Job, t: number) {
     j.result = { restore: p.restore, summary: `restored ${p.source} @ ${new Date(p.time * 1000).toISOString()} (${p.restore}): 3 streams, 1.4 GiB` };
   } else if (j.kind === 'plugin_mount') {
     const until = new Date((t + p.minutes * 60) * 1000).toISOString();
-    j.result = { info: `postgresql://nexus_ro@appliance.acme.lan:15432/${p.params?.database || 'postgres'} (read-only)`, summary: `mounted until ${until}` };
+    j.result = { info: `postgresql://nexus_ro@appliance.example.com:15432/${p.params?.database || 'postgres'} (read-only)`, summary: `mounted until ${until}` };
   }
 }
 
 function listDir(path: string, source: string): Json[] {
   const t = now() - 86400 * 3;
-  if (source.startsWith('host-')) return hostDir(path, t);
-  if (source.startsWith('plugin-postgresql-')) {
-    const f = (name: string, size: number) => ({ name, kind: 'file', size, mtime: t });
-    const d = (name: string) => ({ name, kind: 'dir', size: 0, mtime: t });
+  if (source.startsWith('host-')) {
+    const win = db.agents.find((a) => `host-${a.id}` === source)?.os?.startsWith('Windows');
+    if (!win) return hostDir(path, t);
+    // Windows agent: volumes as top-level directories (/C, /D), docs/agent-windows.md
+    const wd = (name: string) => ({ name, kind: 'dir', size: 0, mode: 0o40755, mtime: t, uid: 0, gid: 0, link: null });
+    const wf = (name: string, size: number) => ({ name, kind: 'file', size, mode: 0o100644, mtime: t, uid: 0, gid: 0, link: null });
     const tree: Record<string, Json[]> = {
-      '/': [d('.nexus-streams'), f('postgresql.conf', 29_811), f('pg_hba.conf', 5_002)],
-      '/.nexus-streams': [d('dump'), d('wal'), f('globals.sql', 4_212)],
-      '/.nexus-streams/dump': [f(`${source.split('-').pop()}.dump`, 1_412_331_520)],
-      '/.nexus-streams/wal': [f('000000010000000A00000041', 16 << 20), f('000000010000000A00000042', 16 << 20)],
+      '/': [wd('C'), wd('D')],
+      '/C': [wd('Users')],
+      '/C/Users': [wd('alice'), wd('bob')],
+      '/C/Users/alice': [wd('Documents'), wf('NTUSER.DAT', 2_621_440)],
+      '/C/Users/alice/Documents': [wf('contract-draft.docx', 88_412), wf('travel-expenses.xlsx', 41_207)],
+      '/D': [wd('Shares')],
+      '/D/Shares': [wd('Finance'), wd('Sales')],
+      '/D/Shares/Finance': [wf('ledger-2026.xlsx', 1_204_221)],
+      '/D/Shares/Sales': [wf('pricelist.pdf', 512_004)],
+    };
+    return tree[path] ?? [];
+  }
+  const f = (name: string, size: number) => ({ name, kind: 'file', size, mtime: t });
+  const d = (name: string) => ({ name, kind: 'dir', size: 0, mtime: t });
+  if (source.startsWith('plugin-postgresql-')) {
+    // plugins/postgresql: a database snapshot holds the stream `<db>.sql`; the cluster snapshot data/ + wal/
+    const db_ = /^plugin-postgresql-\d+-(.+)$/.exec(source)?.[1];
+    const tree: Record<string, Json[]> = db_
+      ? { '/': [d('.nexus-streams')], '/.nexus-streams': [f(`${db_}.sql`, db_ === 'shop' ? 1_503_238_553 : 398_458_880)] }
+      : {
+          '/': [d('data'), d('wal')],
+          '/data': [d('base'), d('global'), d('pg_wal'), f('PG_VERSION', 3), f('backup_manifest', 412_771), f('postgresql.auto.conf', 88)],
+          '/wal': [f('00000001000000A200000041', 16 << 20), f('00000001000000A200000042', 16 << 20), f('00000001000000A200000043', 16 << 20)],
+        };
+    return tree[path] ?? [];
+  }
+  if (source.startsWith('nas-') || source.startsWith('share-') || source.startsWith('plugin-truenas-')) {
+    const tree: Record<string, Json[]> = {
+      '/': [d('2026'), d('templates'), f('README.txt', 1_204)],
+      '/2026': [d('Q3'), d('Q4')],
+      '/2026/Q3': [f('budget-2026-q3.xlsx', 482_133), f('roadmap.pdf', 2_811_204)],
+      '/2026/Q4': [f('budget-2026-q4.xlsx', 501_877), f('kickoff-slides.pdf', 7_340_032)],
+      '/templates': [f('letter.docx', 38_211), f('invoice.odt', 22_870)],
     };
     return tree[path] ?? [];
   }
@@ -394,7 +477,7 @@ const snap = (tenant: string, source: string, time: number, size: number, local:
   size,
   local,
   offsite,
-  lock_until: time + 7 * 86400,
+  lock_until: time + 14 * 86400,
   verified,
 });
 
@@ -426,61 +509,6 @@ const FILES_KIND = {
         properties: { target: { type: 'string', title: 'Target directory', description: 'Absolute path; must not exist yet.', pattern: '^/' } },
       },
     },
-  ],
-};
-const PG_TARGET = {
-  host: { type: 'string', title: 'Server', format: 'hostname', description: 'Default: the source server.' },
-  port: { type: 'integer', title: 'Port', format: 'port', default: 5432 },
-};
-const PG_KIND = {
-  kind: 'postgresql',
-  title: 'PostgreSQL server',
-  config_schema: {
-    type: 'object',
-    required: ['host', 'port', 'user', 'password'],
-    properties: {
-      host: { type: 'string', title: 'Server', format: 'hostname', description: 'Host name or IP address of the PostgreSQL server.' },
-      port: { type: 'integer', title: 'Port', format: 'port', minimum: 1, maximum: 65535, default: 5432 },
-      user: { type: 'string', title: 'User', minLength: 1, maxLength: 63, default: 'nexus_backup', description: 'Needs the pg_read_all_data and REPLICATION privileges.' },
-      password: { type: 'string', title: 'Password', format: 'password' },
-      sslmode: { type: 'string', title: 'TLS', enum: ['disable', 'require', 'verify-ca', 'verify-full'], default: 'verify-full' },
-      wal: { type: 'boolean', title: 'Archive WAL (point-in-time restore)', default: true },
-    },
-  },
-  secret_fields: ['password'],
-  endpoints: [{ host: '/host', port: '/port', default_port: 5432, proto: 'tcp' }],
-  guests: { title: 'Databases', list: true },
-  backup: { incremental: true, consistent: 'application' },
-  restores: [
-    { id: 'download', title: 'Download dumps (tar/zip)' },
-    {
-      id: 'to_target',
-      title: 'Restore to server',
-      params_schema: {
-        type: 'object',
-        required: ['database'],
-        properties: {
-          ...PG_TARGET,
-          database: { type: 'string', title: 'New database name', pattern: '^[a-z_][a-z0-9_]{0,62}$', description: 'Created on the target; must not exist.' },
-          owner: { type: 'string', title: 'Owner role (optional)', maxLength: 63 },
-        },
-      },
-    },
-    {
-      id: 'pitr',
-      title: 'Point-in-time restore',
-      app_specific: true,
-      params_schema: {
-        type: 'object',
-        required: ['target_time', 'data_dir'],
-        properties: {
-          target_time: { type: 'string', title: 'Recover to (UTC)', pattern: '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2})?Z$', description: 'e.g. 2026-10-09T14:30:00Z' },
-          ...PG_TARGET,
-          data_dir: { type: 'string', title: 'Empty data directory on the target', pattern: '^/' },
-        },
-      },
-    },
-    { id: 'mount', title: 'Mount read-only', params_schema: { type: 'object', properties: { database: { type: 'string', title: 'Database (optional)', maxLength: 63 } } } },
   ],
 };
 const manifestOf = (id: string, name: string, version: string, kinds: Json[], sandbox: Json) => ({
@@ -610,174 +638,355 @@ function tarManifest(b: Uint8Array): Json | null {
   return null;
 }
 
+/** keyd replication key fingerprint format (crates/replication key_fingerprint): 8 groups of 4 hex */
+const keydFp = () => rand(16).replace(/(.{4})(?=.)/g, '$1:');
+const DEMO_HOST_KEY = (n: string) => `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${n}DemoKeyForTheManual${'0'.repeat(Math.max(0, 20 - n.length))}`;
+
 function seed() {
   const t = now();
-  const mk = (name: string, role: Role, tenant: string | null = null): User => ({
+  /** midnight UTC `d` days ago + `hh` hours */
+  const day = (d: number, hh = 1) => Math.floor(t / 86400 - d) * 86400 + hh * 3600;
+  const mk = (name: string, role: Role, tenant: string | null = null, created = t - 86400 * 60): User => ({
     id: nextId(),
     name,
     role,
     tenant,
     disabled: false,
-    created: t - 86400 * 30,
+    created,
     password: 'nexus',
     totp_secret: b32(),
   });
-  db.users.push(mk('admin', 'admin'), mk('so', 'security_officer'), mk('so2', 'security_officer'), mk('op', 'operator'), mk('acme', 'tenant_user', 'acme'));
+  db.users.push(
+    mk('admin', 'admin', null, t - 86400 * 90),
+    mk('so', 'security_officer', null, t - 86400 * 90),
+    mk('so2', 'security_officer'),
+    mk('op', 'operator'),
+    mk('acme', 'tenant_user', 'acme'),
+  );
   const newop = mk('newop', 'operator');
   Object.assign(newop, { created: t - 3600, password: '', totp_secret: '', act: { parts: [normCode('DEMO-ACTIVATE-NEWOP-2026')], expires: t + 71 * 3600, failures: 0 } });
-  db.users.push(newop);
-  const off = (u: string) => ({
-    remote: { type: 'sftp', host: `${u}.your-storagebox.de`, port: 23, user: u, host_key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMock', base_dir: 'nexus', key_file: `/etc/nexus/offsite/${u}.key` },
-    bwlimit: null,
-    uploaders: 4,
-  });
-  const s3off = {
-    remote: { type: 's3', endpoint: 'https://fsn1.your-objectstorage.com', region: 'fsn1', bucket: 'nexus-acme', prefix: 'appliance1', access_key: 'NXAKMOCK', secret_key: 'sealed:mock', storage_class_packs: 'STANDARD_IA', path_style: false, lock: true },
-    bwlimit: null,
-    uploaders: 4,
-  };
-  db.tenants.push({ name: 'default', offsite: off('u123456') }, { name: 'acme', offsite: s3off });
-  const src = (tenant: string, name: string, host: string) => ({
+  const former = mk('former-op', 'operator', null, t - 86400 * 200);
+  former.disabled = true;
+  db.users.push(newop, former);
+
+  // Tenants: acme → S3 with Object Lock, initech → Storage Box (SFTP), globex → replicated from hq-primary.
+  db.tenants.push(
+    {
+      name: 'acme',
+      offsite: {
+        remote: {
+          type: 's3', endpoint: 'https://s3.eu-central.example.net', region: 'eu-central-1', bucket: 'nexus-acme', prefix: 'appliance1',
+          access_key: 'NXDEMOACCESSKEY0ACME', secret_key: 'sealed:demo', storage_class_packs: 'STANDARD_IA', path_style: false, lock: true,
+        },
+        bwlimit: null,
+        uploaders: 4,
+      },
+    },
+    {
+      name: 'initech',
+      offsite: {
+        remote: { type: 'sftp', host: 'u123456.storagebox.example.net', port: 23, user: 'u123456', host_key: DEMO_HOST_KEY('box'), base_dir: 'nexus', key_file: '/etc/nexus/offsite/initech.key' },
+        bwlimit: 20480 * 1024,
+        uploaders: 4,
+      },
+    },
+    { name: 'globex', offsite: {} },
+  );
+
+  const pve = (tenant: string, name: string, host: string, nodes: Record<string, string>, storage: string) => ({
     id: nextId(),
     tenant,
     kind: 'pve' as const,
     name,
-    config: { host, port: 8006, ca_pem: '', token_id: 'nexus@pve!backup', token_secret: 'SECRET', nodes: { pve1: { host, user: 'nexus' } }, storage: 'local-zfs', fleecing_storage: 'local-zfs' },
+    config: {
+      host, port: 8006, ca_pem: '-----BEGIN CERTIFICATE-----\n(PVE cluster CA, demo)\n-----END CERTIFICATE-----\n', token_id: 'nexus@pve!backup', token_secret: 'SECRET',
+      nodes: Object.fromEntries(Object.entries(nodes).map(([n, h]) => [n, { host: h, port: 22, key: '/etc/nexus/ssh/pve.key', known_hosts: '/etc/nexus/ssh/known_hosts' }])),
+      storage, fleecing_storage: 'local-lvm',
+    } as Json,
   });
-  const s1 = src('default', 'pve-cluster', '10.0.0.10');
-  const s2 = src('acme', 'acme-pve', '10.20.0.10');
-  db.sources.push(s1, s2);
+  // `storage` = ID of the NexusBackup storage on the cluster (pvesm add nexusbackup nexus …)
+  const sInitech = pve('initech', 'pve-cluster', '192.0.2.10', { pve1: '192.0.2.11', pve2: '192.0.2.12' }, 'nexus');
+  const sAcme = pve('acme', 'acme-pve', '198.51.100.10', { 'acme-pve1': '198.51.100.11' }, 'nexus');
+  // globex takes no local backups (replicated tenant): its DR cluster is only a restore target.
+  const sGlobex = pve('globex', 'globex-dr-pve', '203.0.113.20', { 'dr-pve1': '203.0.113.21' }, 'nexus');
+  db.sources.push(sInitech, sAcme, sGlobex);
+
   const gold = { id: nextId(), name: 'gold', schedule: 'daily 01:00', gfs: { daily: 14, weekly: 8, monthly: 12, yearly: 3 }, offsite: true };
+  const silver = { id: nextId(), name: 'silver', schedule: 'daily 22:00', gfs: { daily: 14, weekly: 4, monthly: 6, yearly: 2 }, offsite: true };
   const bronze = { id: nextId(), name: 'bronze', schedule: 'daily 03:30', gfs: { daily: 7, weekly: 4, monthly: 0, yearly: 0 }, offsite: false };
-  db.policies.push(gold, bronze);
-  // Linux backup agents: web01 enrolled (acme), db01 waiting for enrollment (default).
-  const agent = (tenant: string, name: string, host: string, enrolled: boolean): Agent => ({
+  const hourly = { id: nextId(), name: 'databases-hourly', schedule: 'hourly 15', gfs: { daily: 14, weekly: 4, monthly: 6, yearly: 1 }, offsite: true };
+  db.policies.push(gold, silver, bronze, hourly);
+
+  // Agents: web01 (Linux) and fs02 (Windows) enrolled in acme; db01 waits for enrollment, build01's token expired.
+  const agent = (tenant: string, name: string, host: string, state: 'enrolled' | 'pending' | 'expired', os: string | null = null): Agent => ({
     id: rand(8),
     tenant,
     name,
     host,
     port: 7444,
-    enrolled_at: enrolled ? t - 86400 * 20 : null,
-    cert_sha256: enrolled ? rand(32) : null,
-    token_expires: enrolled ? null : t + 86400 - 3600,
-    last_seen: enrolled ? t - 240 : null,
-    version: enrolled ? '0.9.0' : null,
-    os: enrolled ? 'Debian GNU/Linux 13 (trixie)' : null,
-    token_hash: enrolled ? null : rand(32),
+    enrolled_at: state === 'enrolled' ? t - 86400 * 20 : null,
+    cert_sha256: state === 'enrolled' ? rand(32) : null,
+    token_expires: state === 'pending' ? t + 86400 - 3600 : state === 'expired' ? t - 86400 * 2 : null,
+    last_seen: state === 'enrolled' ? t - 240 : null,
+    version: state === 'enrolled' ? '0.9.0' : null,
+    os: state === 'enrolled' ? os : null,
+    token_hash: state === 'enrolled' ? null : rand(32),
   });
-  const web01 = agent('acme', 'web01', '10.20.0.31', true);
-  db.agents.push(web01, agent('default', 'db01', 'db01.lan', false));
-  const s3 = {
+  const web01 = agent('acme', 'web01', '198.51.100.31', 'enrolled', 'Debian GNU/Linux 13 (trixie)');
+  const fs02 = agent('acme', 'fs02', 'fs02.acme.example.com', 'enrolled', 'Windows Server 2022 Standard (10.0.20348)');
+  db.agents.push(web01, fs02, agent('initech', 'db01', 'db01.initech.example.com', 'pending'), agent('initech', 'build01', '192.0.2.40', 'expired'));
+  const sWeb01 = {
     id: nextId(),
     tenant: 'acme',
     kind: 'linux' as const,
     name: 'web01-files',
-    config: { agent_id: web01.id, paths: ['/etc', '/home', '/var/www'], excludes: ['*.tmp', '/var/www/shop/cache/**'], hooks: true },
+    config: { agent_id: web01.id, paths: ['/etc', '/home', '/var/www'], excludes: ['*.tmp', '/var/www/shop/cache/**'], hooks: true } as Json,
   };
-  db.sources.push(s3);
+  const sFs02 = {
+    id: nextId(),
+    tenant: 'acme',
+    kind: 'linux' as const,
+    name: 'fs02-files',
+    config: { agent_id: fs02.id, paths: ['/C/Users', '/D/Shares'], excludes: ['C:\\Users\\*\\AppData\\Local\\Temp', '*.tmp'], hooks: false } as Json,
+  };
+  // TrueNAS (built-in connector, docs/truenas-connector.md)
+  const sNas01 = {
+    id: nextId(),
+    tenant: 'acme',
+    kind: 'truenas' as const,
+    name: 'nas01',
+    config: {
+      host: 'nas01.acme.example.com', port: 443, ca_pem: '-----BEGIN CERTIFICATE-----\n(TrueNAS certificate, demo)\n-----END CERTIFICATE-----\n', user: 'nexusbackup', token_secret: 'SECRET',
+      ssh: { host: 'nas01.acme.example.com', port: 22, user: 'nexusbackup', host_key: DEMO_HOST_KEY('nas01'), key_pem: 'SECRET', public_key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIApplianceDemoPublicKey000000000000 nexus-appliance', from: '198.51.100.5' },
+      datasets: ['tank/projects', 'tank/home'], recursive: false, sudo: true, zfs_sudo: true,
+    } as Json,
+  };
   // NFS/SMB shares (docs/nas-connector.md): one share per source, groups without guests.
-  const s4 = {
+  const sNfs = {
     id: nextId(),
     tenant: 'acme',
     kind: 'nfs' as const,
     name: 'filer-projects',
-    config: { host: 'filer.acme.lan', port: 2049, version: '4.2', export: '/export/projects', snapshot_dir: '.snapshot', snapshot_prefix: 'nightly.', snapshot_order: 'mtime', excludes: ['*.tmp'], threads: 16, xattrs: true, timeout_secs: 60 } as Json,
+    config: { host: 'filer.acme.example.com', port: 2049, version: '4.2', export: '/export/projects', snapshot_dir: '.snapshot', snapshot_prefix: 'nightly.', snapshot_order: 'name', excludes: ['*.tmp'], threads: 16, xattrs: true, timeout_secs: 60 } as Json,
   };
-  const s5 = {
+  const sSmb = {
     id: nextId(),
     tenant: 'acme',
     kind: 'smb' as const,
     name: 'fs01-data',
-    config: { host: 'fs01.acme.lan', port: 445, version: '3.1.1', share: 'Data', user: 'svc-backup', domain: 'ACME', sec: 'ntlmssp', sign: true, seal: true, password: 'SECRET', excludes: [], threads: 16, xattrs: true, timeout_secs: 60 } as Json,
+    config: { host: 'fs01.acme.example.com', port: 445, version: '3.1.1', share: 'Data', user: 'svc-backup', domain: 'ACME', sec: 'ntlmssp', sign: true, seal: true, password: 'SECRET', excludes: [], threads: 16, xattrs: true, timeout_secs: 60 } as Json,
   };
-  db.sources.push(s4, s5);
-  // Plugins: example-files 1.0.0, postgresql 1.2.0 (1.1.0 still installed), publisher key of acme.
+  db.sources.push(sWeb01, sFs02, sNas01, sNfs, sSmb);
+
+  // Plugins: PostgreSQL 1.0.0 installed, 1.1.0 uploaded and waiting for approval; TrueNAS plugin 1.0.0.
   db.pluginKeys.push(BUILTIN_KEY, {
     fingerprint: 'sha256:0b7e5f1d93a2c4e8f6a1b3d5c7e9f0a2b4c6d8e0f1a3b5c7d9e1f2a4b6c8d0e2',
-    publisher: 'acme-labs',
-    public_key: '-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEacmeacmeacmeacmeacmeacmeacmeac\nmeacmeacmeacmeacmeacmeacmeacmeacmeacmeacmeacmeacmeacmeacmeacme==\n-----END PUBLIC KEY-----\n',
+    publisher: 'example-labs',
+    public_key: '-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEexampleexampleexampleexampleexam\npleexampleexampleexampleexampleexampleexampleexampleexampleexample==\n-----END PUBLIC KEY-----\n',
     added_by: 'admin',
     approved_by: 'so',
     added_at: t - 86400 * 40,
     builtin: false,
   });
-  db.plugins.push(
-    pluginEntry(manifestOf('example-files', 'Example files', '1.0.0', [FILES_KIND], { network: 'none', tmp_mb: 256, memory_mb: 256, cpu_quota: 100 }), 'admin', t - 86400 * 30),
-    pluginEntry(manifestOf('postgresql', 'PostgreSQL', '1.1.0', [PG_KIND], SANDBOX), 'admin', t - 86400 * 25, { current: false }),
-    pluginEntry(manifestOf('postgresql', 'PostgreSQL', '1.2.0', [PG_KIND], SANDBOX), 'admin', t - 86400 * 5),
-  );
-  const s6 = { id: nextId(), tenant: 'acme', kind: 'plugin:files', name: 'app-data', config: { path: '/srv/app', excludes: ['*.tmp'] } as Json };
-  const s7 = {
+  const pgM = (v: string): Json => ({ ...structuredClone(pgManifest), version: v });
+  const pg110 = pluginEntry(pgM('1.1.0'), 'admin', t - 1500, { state: 'pending', current: false, enabled: false, installed_at: null });
+  db.plugins.push(pluginEntry(pgM('1.0.0'), 'admin', t - 86400 * 25), pg110, pluginEntry(structuredClone(truenasManifest) as Json, 'admin', t - 86400 * 12));
+  const sPg = {
     id: nextId(),
     tenant: 'acme',
     kind: 'plugin:postgresql',
     name: 'pg-shop',
-    config: { host: 'db1.acme.lan', port: 5432, user: 'nexus_backup', password: 'SECRET', sslmode: 'verify-full', wal: true } as Json,
+    config: {
+      host: 'db1.acme.example.com', port: 5432, user: 'nexus_backup', password: 'SECRET', sslmode: 'verify-full', ca_cert: '-----BEGIN CERTIFICATE-----\n(demo CA)\n-----END CERTIFICATE-----\n',
+      slot: 'nexusbackup', full_every_days: 7, restore_host: 'db2.acme.example.com', restore_port: 5432, restore_user: 'nexus_restore', restore_password: 'SECRET',
+      ssh_host: 'db2.acme.example.com', ssh_port: 22, ssh_user: 'postgres', ssh_key: 'SECRET', ssh_host_key: DEMO_HOST_KEY('db2'),
+    } as Json,
   };
-  db.sources.push(s6, s7);
+  const sNas02 = {
+    id: nextId(),
+    tenant: 'acme',
+    kind: 'plugin:truenas',
+    name: 'nas02',
+    config: {
+      host: 'nas02.acme.example.com', port: 443, ca_pem: '-----BEGIN CERTIFICATE-----\n(TrueNAS certificate, demo)\n-----END CERTIFICATE-----\n', user: 'nexusbackup', api_key: 'SECRET',
+      ssh_host: 'nas02.acme.example.com', ssh_port: 22, ssh_user: 'nexusbackup', ssh_host_key: DEMO_HOST_KEY('nas02'), ssh_private_key: 'SECRET', datasets: ['tank/media'], recursive: false, sudo: true, zfs_sudo: true,
+    } as Json,
+  };
+  db.sources.push(sPg, sNas02);
+
+  const grp = (tenant: string, source_id: number, policy_id: number, name: string, guests: (number | string)[]) => ({ id: nextId(), tenant, source_id, policy_id, name, guests });
+  const gProd = grp('initech', sInitech.id, gold.id, 'production', [100, 101, 200]);
+  const gDev = grp('initech', sInitech.id, bronze.id, 'development', [102]);
+  const gAcmeVms = grp('acme', sAcme.id, silver.id, 'acme-vms', [300, 301]);
+  const gSmb = grp('acme', sSmb.id, bronze.id, 'acme-fs01', []);
+  const gDbs = grp('acme', sPg.id, hourly.id, 'acme-databases', ['shop', 'crm']);
   db.groups.push(
-    { id: nextId(), tenant: 'default', source_id: s1.id, policy_id: gold.id, name: 'production', guests: [100, 101, 200] },
-    { id: nextId(), tenant: 'default', source_id: s1.id, policy_id: bronze.id, name: 'development', guests: [102] },
-    { id: nextId(), tenant: 'acme', source_id: s2.id, policy_id: gold.id, name: 'acme-all', guests: [300, 301] },
-    { id: nextId(), tenant: 'acme', source_id: s3.id, policy_id: gold.id, name: 'acme-hosts', guests: [web01.id] },
-    { id: nextId(), tenant: 'acme', source_id: s4.id, policy_id: gold.id, name: 'acme-filer', guests: [] },
-    { id: nextId(), tenant: 'acme', source_id: s5.id, policy_id: bronze.id, name: 'acme-fs01', guests: [] },
-    { id: nextId(), tenant: 'acme', source_id: s6.id, policy_id: bronze.id, name: 'acme-app-data', guests: [] },
-    { id: nextId(), tenant: 'acme', source_id: s7.id, policy_id: gold.id, name: 'acme-databases', guests: ['shop', 'crm'] },
+    gProd,
+    gDev,
+    gAcmeVms,
+    grp('acme', sWeb01.id, silver.id, 'acme-web01', [web01.id]),
+    grp('acme', sFs02.id, silver.id, 'acme-fs02', [fs02.id]),
+    grp('acme', sNas01.id, silver.id, 'acme-nas01', ['tank/projects', 'tank/home']),
+    grp('acme', sNfs.id, silver.id, 'acme-filer', []),
+    gSmb,
+    gDbs,
+    grp('acme', sPg.id, silver.id, 'acme-pg-cluster', []),
+    grp('acme', sNas02.id, silver.id, 'acme-nas02', ['tank.media']),
   );
-  const day = (d: number) => Math.floor(t / 86400 - d) * 86400 + 3600;
-  for (const [tenant, g, sz, skip] of [
-    ['default', 'vm-100', 40, 0],
-    ['default', 'vm-101', 120, 2],
-    ['default', 'ct-200', 8, 0],
-    ['default', 'vm-102', 30, 0],
-    ['acme', 'vm-300', 60, 0],
-    ['acme', 'vm-301', 25, 0],
-  ] as [string, string, number, number][]) {
-    for (let d = 9; d >= skip; d--) {
-      db.snapshots.push(snap(tenant, g, day(d), Math.round(sz * 2 ** 30), true, g !== 'vm-102' && d > 0, d > 1 ? day(d) + 7200 : null));
+
+  // Snapshots: up to 10 days of history; vm-101 has failed for two days.
+  const series = (tenant: string, source: string, gib: number, opts: { skip?: number; offsite?: boolean; hh?: number; origin?: string; days?: number } = {}) => {
+    const { skip = 0, offsite = true, hh = 1, origin, days = 9 } = opts;
+    for (let d = days; d >= skip; d--) {
+      const time = day(d, hh);
+      if (time > t) continue;
+      const s = snap(tenant, source, time, Math.round(gib * 2 ** 30 * (1 + (d % 3) * 0.01)), true, offsite && d > 0, d > 1 ? time + 7200 : null);
+      db.snapshots.push(origin ? { ...s, origin } : s);
+    }
+  };
+  series('initech', 'vm-100', 40);
+  series('initech', 'vm-101', 120, { skip: 2 });
+  series('initech', 'ct-200', 8);
+  series('initech', 'vm-102', 30, { offsite: false, hh: 3 });
+  series('acme', 'vm-300', 60, { hh: 22, skip: 1 });
+  series('acme', 'vm-301', 25, { hh: 22, skip: 1 });
+  series('acme', `host-${web01.id}`, 0.4, { hh: 22, skip: 1 });
+  series('acme', `host-${fs02.id}`, 210, { hh: 22, skip: 1, days: 6 });
+  series('acme', `nas-${sNas01.id}-tank.projects`, 1_800, { hh: 22, skip: 1, days: 5 });
+  series('acme', `nas-${sNas01.id}-tank.home`, 640, { hh: 22, skip: 1, days: 5 });
+  series('acme', `share-${sNfs.id}`, 3, { hh: 22, skip: 1, days: 5 });
+  series('acme', `share-${sSmb.id}`, 0.9, { hh: 3, offsite: false, days: 3 });
+  series('acme', `plugin-truenas-${sNas02.id}-tank.media`, 2_400, { hh: 22, skip: 1, days: 3 });
+  series('acme', `plugin-postgresql-${sPg.id}`, 14, { hh: 22, skip: 1, days: 4 });
+  for (const dbName of ['shop', 'crm']) {
+    for (let h = 0; h < 4; h++) {
+      const time = Math.floor(t / 3600 - h) * 3600 + 15 * 60;
+      if (time > t) continue;
+      db.snapshots.push(snap('acme', `plugin-postgresql-${sPg.id}-${dbName}`, time, (dbName === 'shop' ? 1_400 : 380) << 20, true, h > 1, h > 2 ? time + 1800 : null));
     }
   }
-  db.snapshots.push(
-    snap('acme', `host-${web01.id}`, day(1), 412 << 20, true, true, day(1) + 7200),
-    snap('acme', `host-${web01.id}`, day(0), 398 << 20, true, false, null),
-    snap('acme', `share-${s4.id}`, day(1), 3 * 2 ** 30, true, true, day(1) + 7200),
-    snap('acme', `share-${s4.id}`, day(0), 3 * 2 ** 30, true, false, null),
-    snap('acme', `share-${s5.id}`, day(0), 900 << 20, true, false, null),
-    snap('acme', `plugin-example-files-${s6.id}`, day(0), 210 << 20, true, false, null),
-    snap('acme', `plugin-postgresql-${s7.id}-shop`, day(1), 1_400 << 20, true, true, day(1) + 7200),
-    snap('acme', `plugin-postgresql-${s7.id}-shop`, day(0), 1_420 << 20, true, false, null),
-    snap('acme', `plugin-postgresql-${s7.id}-crm`, day(0), 380 << 20, true, false, null),
-  );
-  const old = (j: Job, ago: number, state: string, log: string) => {
-    Object.assign(j, { created: t - ago, started: t - ago + 2, finished: t - ago + 600, state, log, plan: [] });
+  // replicated from hq-primary (origin = replication source name), own retention on this appliance
+  for (const [g, gib] of [['vm-500', 80], ['vm-501', 35], ['ct-250', 6]] as [string, number][])
+    series('globex', g, gib, { hh: 4, origin: 'hq-primary', offsite: false });
+
+  // Jobs: finished history + one running offsite upload. `L` stamps log lines like the scheduler does.
+  const old = (j: Job, start: number, state: string, lines: string[], secs = 600, result: Json | null = null) => {
+    const log = lines.map((l, i) => `${new Date((start + 2 + Math.round((i * secs) / lines.length)) * 1000).toISOString()} ${l}`).join('\n');
+    Object.assign(j, { created: start, started: start + 2, finished: start + secs, state, log, plan: [], result });
+    return j;
   };
-  old(addJob('backup', 'default', { group_id: db.groups[0].id }, 'scheduler'), 86400, 'ok', 'backup finished: 3 guests');
-  old(addJob('backup', 'default', { vmid: 101 }, 'scheduler'), 7200, 'failed', 'starting backup of vm-101\nERROR: fleecing storage local-zfs full (98%)');
-  old(addJob('offsite', 'default', {}, 'scheduler'), 5000, 'ok', 'uploaded 412 chunks');
-  old(addJob('verify', 'default', {}, 'scheduler'), 4000, 'ok', 'verified 15912 chunks, 0 errors');
-  old(addJob('backup', 'acme', { group_id: db.groups[2].id }, 'scheduler'), 3600, 'ok', 'backup finished: 2 guests');
-  const running = addJob('offsite', 'acme', {}, 'scheduler', { duration: 120 });
+  const fleecing = 'vm-101: fleecing storage local-lvm on pve2 is full (98 %)';
+  const nightly = old(addJob('backup', 'initech', { group_id: gProd.id }, 'scheduler'), day(0, 1), 'failed', [
+    'starting backup of vm-100 via node pve1',
+    'dirty bitmap valid: incremental',
+    'reading 2.1 GiB dirty of 64 GiB',
+    'chunks: 512 new, 15,820 deduplicated',
+    'index written, snapshot committed',
+    'starting backup of vm-101 via node pve2',
+    `ERROR: ${fleecing}`,
+    'starting backup of ct-200 via node pve1',
+    'tar stream: 679 MB, 0 new chunks',
+    'index written, snapshot committed',
+    'backup finished: 2 of 3 guests ok',
+  ], 1460);
+  old(addJob('backup', 'initech', { group_id: gDev.id }, 'scheduler'), day(0, 3), 'ok', ['starting backup of vm-102', 'dirty bitmap valid: incremental', 'index written, snapshot committed', 'backup finished: 1 guest'], 300);
+  old(addJob('retention', 'initech', {}, 'scheduler'), day(0, 3) + 400, 'ok', ['GFS retention per group policy', 'kept 31 snapshots, locks extended', 'deleted 3 unlocked snapshots'], 20);
+  old(addJob('offsite', 'initech', {}, 'scheduler'), day(0, 2), 'ok', ['uploading to sftp u123456.storagebox.example.net:23', 'uploaded 412 chunks in 3 packs (1.2 GiB)', 'manifests uploaded', 'inventory check: 0 missing, 0 unknown'], 900);
+  old(addJob('verify', 'initech', {}, 'scheduler'), day(0, 5), 'ok', ['verifying chunk store part 3 of 7 (rolling)', 'verified 15,912 chunks: 0 missing, 0 corrupt', 'offsite: 3 sampled packs verified'], 1200);
+  old(addJob('backup', 'acme', { group_id: gAcmeVms.id }, 'scheduler'), day(1, 22), 'ok', ['starting backup of vm-300', 'index written, snapshot committed', 'starting backup of vm-301', 'index written, snapshot committed', 'backup finished: 2 guests'], 900);
+  const smbJob = old(addJob('backup', 'acme', { group_id: gSmb.id }, 'scheduler'), day(0, 3), 'ok', [
+    'mounting //fs01.acme.example.com/Data read-only (SMB 3.1.1, signed + encrypted)',
+    'no NAS snapshot directory configured: reading the live share',
+    'scan: 48,211 files, 921 MiB, 12 changed',
+    `inconsistent share-${sSmb.id}`,
+    'snapshot committed',
+  ], 640, { snapshots: [{ source: `share-${sSmb.id}`, time: day(0, 3), consistent: false }] });
+  old(addJob('replica_sync', 'globex', { replication_source_id: 1, tenant: 'globex' }, 'scheduler'), day(0, 4), 'ok', [
+    'connecting to backup-hq.example.com:8443 (pinned certificate, client certificate)',
+    'keys: up to date (version 1)',
+    '3 new snapshots on the primary, 3 kept by the local GFS',
+    'fetched 1,214 chunks (734 MB), every chunk verified before import',
+    'replicated 3 snapshots',
+  ], 480);
+  old(addJob('files_get', 'acme', { source: `host-${web01.id}`, time: day(2, 22), paths: ['/etc/nginx'], format: 'zip' }, 'acme'), t - 86400 - 7200, 'ok', ['reading the host snapshot', 'packing 1 path(s) as zip', 'archive ready'], 8);
+  const pitrTime = new Date((day(2, 22) + 3 * 3600) * 1000).toISOString().slice(0, 19).replace('T', ' ') + '+00';
+  old(addJob('plugin_restore', 'acme', { source: `plugin-postgresql-${sPg.id}`, time: day(2, 22), restore: 'pitr', params: { directory: '/var/lib/postgresql/restore-demo', target_time: pitrTime } }, 'admin'), t - 86400 - 3600, 'ok', [
+    'starting nexus-pluginhost: restore pitr (sandbox: landlock + seccomp)',
+    'streaming base backup data/ and 42 WAL segments to the plugin',
+    'restore host db2.acme.example.com: SSH host key matches the pinned key',
+    `recovery_target_time ${pitrTime} reached, server promoted`,
+    'restore pitr finished',
+  ], 260, { restore: 'pitr', summary: `new data directory /var/lib/postgresql/restore-demo on db2.acme.example.com, recovered to ${pitrTime}` });
+  const retry = old(addJob('backup', 'initech', { vmid: 101 }, 'admin'), t - 5400, 'failed', ['starting backup of vm-101 via node pve2', `ERROR: ${fleecing}`], 40);
+  old(addJob('backup', 'acme', { group_id: gDbs.id }, 'scheduler'), Math.floor(t / 3600) * 3600 + 15 * 60 > t ? Math.floor(t / 3600 - 1) * 3600 + 15 * 60 : Math.floor(t / 3600) * 3600 + 15 * 60, 'ok', [
+    'starting nexus-pluginhost: postgresql 1.0.0 (sandbox: landlock + seccomp)',
+    'database shop: consistent logical dump, 1.4 GiB',
+    'database crm: consistent logical dump, 380 MiB',
+    `snapshot committed: plugin-postgresql-${sPg.id}-shop`,
+    `snapshot committed: plugin-postgresql-${sPg.id}-crm`,
+  ], 120);
+  const running = addJob('offsite', 'acme', {}, 'scheduler', { duration: 240 });
+  running.plan = [
+    'uploading to s3 nexus-acme/appliance1 (Object Lock, compliance mode)',
+    'packs 1–4 of 11 uploaded, locked until their snapshots may be deleted',
+    'packs 5–8 of 11 uploaded',
+    'packs 9–11 of 11 uploaded',
+    'manifests uploaded',
+    'offsite copy complete',
+  ];
   running.created = t - 5;
+
+  // Alerts (messages as the scheduler writes them)
   db.alerts.push(
-    { id: nextId(), ts: t - 7000, severity: 'critical', kind: 'job_failed', message: 'Backup of vm-101 failed: fleecing storage full', acked_by: null },
-    { id: nextId(), ts: t - 3000, severity: 'warning', kind: 'capacity', message: 'Chunk store at 78 % capacity', acked_by: null },
-    { id: nextId(), ts: t - 90000, severity: 'info', kind: 'offsite_lag', message: 'Offsite copy for acme caught up', acked_by: 'op' },
-  );
-  db.gcPending.push({ tenant: 'acme', job: 4711, reason: 'GC would delete 34 % of the chunks (limit 20 %)', created: t - 5400 });
-  db.quorum.push(
-    { id: nextId(), action: 'group.delete', params: { id: db.groups[1].id, name: 'development' }, requested_by: 'admin', created: t - 1800, decided_by: null, decided_at: null, state: 'pending' },
+    { id: nextId(), ts: nightly.finished, severity: 'critical', kind: 'job_failed', message: `backup job ${nightly.id} (initech) failed: ${fleecing}`, acked_by: null },
+    { id: nextId(), ts: retry.finished, severity: 'critical', kind: 'job_failed', message: `backup job ${retry.id} (initech) failed: ${fleecing}`, acked_by: null },
+    { id: nextId(), ts: t - 3 * 3600, severity: 'warning', kind: 'capacity', message: 'store capacity above 75 % (now 78 %)', acked_by: null },
     {
-      id: nextId(),
-      action: 'policy.update',
-      params: { ...gold, gfs: { ...gold.gfs, daily: 7, yearly: 1 }, offsite: false, old: { ...gold, gfs: { ...gold.gfs } } },
-      requested_by: 'admin',
-      created: t - 600,
-      decided_by: null,
-      decided_at: null,
-      state: 'pending',
+      id: nextId(), ts: smbJob.finished, severity: 'warning', kind: 'backup_inconsistent',
+      message: `share-${sSmb.id} — read without a NAS snapshot: not point-in-time consistent (backup job ${smbJob.id}, tenant acme, snapshot share-${sSmb.id})`, acked_by: null,
     },
+    { id: nextId(), ts: t - 86400 * 3, severity: 'warning', kind: 'offsite_lag', message: 'offsite copy of tenant acme lags by 49 h (oldest snapshot not offsite: vm-300)', acked_by: 'op' },
+    { id: nextId(), ts: t - 86400 * 6, severity: 'warning', kind: 'replication_lag', message: 'replication of tenant globex from hq-primary lags: no successful sync for 50 h', acked_by: 'admin' },
   );
+
+  // Approvals are enabled. Pending: a large GC, deleting a group, weakening a policy, a plugin upgrade.
+  db.approvals = true;
+  const q = (action: string, params: Json, by: string, created: number, state = 'pending', decider: string | null = null) => {
+    const x = { id: nextId(), action, params, requested_by: by, created, decided_by: decider, decided_at: decider ? created + 900 : null, state };
+    db.quorum.push(x);
+    return x;
+  };
+  const peerId = 'a1b2c3d4e5f60718';
+  const peerKeyd = '8576:219c:4e1a:0b7d:9f32:c5e8:61aa:d403';
+  q('plugin_key.add', { publisher: 'example-labs', fingerprint: db.pluginKeys[1].fingerprint }, 'admin', t - 86400 * 41, 'executed', 'so');
+  q('replication_peer.create', { id: peerId, name: 'dr-site', tenants: ['acme'] }, 'admin', t - 86400 * 21, 'executed', 'so');
+  q('replication.key_export', { peer: peerId, keyd_fingerprint: peerKeyd, tenants: ['acme'] }, 'admin', t - 86400 * 20, 'executed', 'so2');
+  q('source.delete', { id: 42, name: 'old-esx-import' }, 'admin', t - 86400 * 9, 'rejected', 'so');
+  const gcq = q('gc_large', { tenant: 'initech', job: 4711, reason: 'GC would delete 34 % of the stored chunks (limit 20 %)' }, 'scheduler', t - 2 * 3600);
+  db.alerts.push({
+    id: nextId(), ts: gcq.created, severity: 'warning', kind: 'gc_quorum',
+    message: `GC for tenant initech needs approval by an admin or security officer (quorum request ${gcq.id}): GC would delete 34 % of the stored chunks (limit 20 %)`, acked_by: null,
+  });
+  q('group.delete', { id: gDev.id, name: 'development' }, 'admin', t - 1800);
+  q('policy.update', { ...gold, gfs: { ...gold.gfs, daily: 7, yearly: 1 }, offsite: false, old: { ...gold, gfs: { ...gold.gfs } } }, 'admin', t - 600);
+  const pq = q('plugin.install', { id: 'postgresql', version: '1.1.0', publisher: 'nexusbackup', sha256: pg110.sha256, signer: pg110.signer, upgrade_from: '1.0.0' }, 'admin', t - 1500);
+  pg110.quorum_id = pq.id;
+  // With approvals disabled, the scheduler would instead hold the large GC for an admin's confirmation.
+  db.gcPending.push({ tenant: 'initech', job: 4711, reason: 'GC would delete 34 % of the stored chunks (limit 20 %)', created: t - 2 * 3600 });
+
+  // Replication: this appliance is the primary for acme (peer dr-site) and the secondary for globex.
+  db.replPeers.push({
+    id: peerId, name: 'dr-site', tenants: ['acme'], state: 'enrolled', cert_sha256: rand(32),
+    keyd_fingerprint: peerKeyd, token_expires: null, enrolled_at: t - 86400 * 20, last_seen: t - 1800,
+    revoked: null, created: t - 86400 * 21, created_by: 'admin', keys: { acme: { versions: [1], created: t - 86400 * 20 } },
+    enroll_failures: 0,
+  });
+  db.replSources.push({
+    id: 1, name: 'hq-primary', url: 'backup-hq.example.com:8443', peer_id: '0f1e2d3c4b5a6978', cert_pin: rand(32),
+    tenants: ['globex'], schedule: 'daily 04:00', gfs: { daily: 14, weekly: 4, monthly: 6, yearly: 2 }, bwlimit: 50_000_000,
+    state: 'enrolled', cert_sha256: rand(32), keyd_fingerprint: keydFp(), created: t - 86400 * 30, last_sync: day(0, 4) + 480,
+    status: { globex: { last_ok: day(0, 4) + 480, last_error: null, imported: 3, bytes: 734003200, remote: 41, key_versions: [1] } },
+  });
 }
 
 // ---------------------------------------------------------------- helpers
@@ -821,7 +1030,8 @@ function find<T>(xs: T[], pred: (x: T) => boolean, what: string): T {
   return x;
 }
 
-const SCHEDULER_ACTIONS = ['replication.key_export'];
+// approved requests the scheduler executes (state stays `approved` until it has)
+const SCHEDULER_ACTIONS = ['replication.key_export', 'gc_large'];
 // 202 {quorum_id, ...extra} like web-api's `accepted()`; with approvals disabled the
 // action runs at once (200 {approvals: "disabled", executed}).
 async function quorum(u: User, action: string, params: Json, extra: Json = {}): Promise<[number, Json]> {
@@ -838,7 +1048,6 @@ async function quorum(u: User, action: string, params: Json, extra: Json = {}): 
   }
   const q = { id: nextId(), action, params, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
   db.quorum.push(q);
-  db.alerts.push({ id: nextId(), ts: now(), severity: 'info', kind: 'quorum', message: `Approval requested: ${action} by ${u.name}`, acked_by: null });
   await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action, params });
   return [202, { quorum_id: q.id, ...extra }];
 }
@@ -859,8 +1068,39 @@ function stripSource(s: (typeof db.sources)[number]) {
     const { password, keytab, ...config } = s.config;
     return s.kind === 'nfs' ? { ...s, config } : { ...s, config: { ...config, password_set: !!password, keytab_set: !!keytab } };
   }
+  if (s.kind === 'truenas') {
+    const { token_secret, ssh, ...rest } = s.config;
+    const { key_pem, ...sshPub } = ssh ?? {};
+    return { ...s, config: { ...rest, token_secret_set: !!token_secret, ssh: { ...sshPub, key_pem_set: !!key_pem }, authorized_keys: truenasKeyLine(s.config) } };
+  }
   const { token_secret, ...config } = s.config;
   return { ...s, config: { ...config, token_secret_set: !!token_secret } };
+}
+/** The authorized_keys line the web-api returns for a TrueNAS source (crates/truenas fc.rs, shortened script). */
+function truenasKeyLine(c: Json): string | undefined {
+  const pk = String(c.ssh?.public_key ?? '').trim();
+  if (!pk) return undefined;
+  const from = c.ssh?.from ? `,from="${c.ssh.from}"` : '';
+  const sudo = (b: boolean) => (b ? '/usr/bin/sudo -n' : '');
+  const script = `A=\\"${(c.datasets ?? []).join(' ')}\\" R=\\"${c.recursive ? 1 : ''}\\" S=\\"${sudo(c.sudo)}\\" Z=\\"${sudo(c.zfs_sudo)}\\"; case \\"$SSH_ORIGINAL_COMMAND\\" in …`;
+  return `restrict${from},command="${script}" ${pk}`;
+}
+/** truenas source config (docs/truenas-connector.md); secrets omitted on PUT keep the stored ones. */
+function truenasConfig(cfg: Json, old?: Json): Json {
+  const c = structuredClone(cfg ?? {});
+  if (!c.host) throw new HttpError(400, 'host: required');
+  if (!Array.isArray(c.datasets) || !c.datasets.length || c.datasets.length > 64) throw new HttpError(400, 'datasets: 1 to 64 dataset names required');
+  if (!String(c.ca_pem ?? '').includes('BEGIN CERTIFICATE')) throw new HttpError(400, 'ca_pem: PEM certificate required');
+  if (!c.token_secret) {
+    if (!old?.token_secret) throw new HttpError(400, 'token_secret (API key): required');
+    c.token_secret = old.token_secret;
+  }
+  c.ssh = { ...(c.ssh ?? {}) };
+  if (!c.ssh.key_pem) {
+    if (!old?.ssh?.key_pem) throw new HttpError(400, 'ssh.key_pem: required');
+    c.ssh.key_pem = old.ssh.key_pem;
+  }
+  return c;
 }
 const weakens = (a: Json, b: Json) =>
   ['daily', 'weekly', 'monthly', 'yearly'].some((k) => Number(b.gfs?.[k]) < Number(a.gfs?.[k])) || (a.offsite && !b.offsite);
@@ -937,6 +1177,9 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       break;
     case 'policy.delete':
       db.policies = db.policies.filter((g) => g.id !== p.id);
+      break;
+    case 'tenant.update':
+      find(db.tenants, (x) => x.name === p.name, 'tenant').offsite = structuredClone(p.offsite);
       break;
     case 'tenant.delete':
       db.tenants = db.tenants.filter((g) => g.name !== p.name);
@@ -1044,7 +1287,10 @@ on('POST', '/tenants', async (c) => {
 on('PUT', '/tenants/:name', async (c, [name]) => {
   const u = need(c.user, 'admin');
   const t = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant');
-  t.offsite = tenantOffsite(c.body.offsite, t.offsite);
+  const next = tenantOffsite(c.body.offsite, t.offsite);
+  if (Object.keys(t.offsite ?? {}).length && JSON.stringify(next) !== JSON.stringify(t.offsite))
+    return quorum(u, 'tenant.update', { name: t.name, offsite: publicOffsite(next), old: { name: t.name, offsite: publicOffsite(t.offsite) } });
+  t.offsite = next;
   await audit(u.name, 'tenant.update', `tenant/${t.name}`, {});
   return [200, { ...t, offsite: publicOffsite(t.offsite) }];
 });
@@ -1090,7 +1336,13 @@ on('POST', '/sources', async (c) => {
     await audit(u.name, 'source.create', `source/${s.id}`, { name, kind });
     return [201, stripSource(s)];
   }
-  if (!['pve', 'linux', 'nfs', 'smb'].includes(kind)) throw new HttpError(400, 'kind: must be pve, linux, nfs, smb or plugin:<kind>');
+  if (!['pve', 'linux', 'truenas', 'nfs', 'smb'].includes(kind)) throw new HttpError(400, 'kind: must be pve, linux, truenas, nfs, smb or plugin:<kind>');
+  if (kind === 'truenas') {
+    const s = { id: nextId(), tenant, kind: 'truenas' as const, name, config: truenasConfig(config) };
+    db.sources.push(s);
+    await audit(u.name, 'source.create', `source/${s.id}`, { name, kind });
+    return [201, stripSource(s)];
+  }
   if (kind === 'nfs' || kind === 'smb') {
     const cfg = shareConfig(kind, config);
     if (kind === 'smb' && !cfg.password && !cfg.keytab) throw new HttpError(400, 'config.password (or keytab): required');
@@ -1128,6 +1380,11 @@ on('PUT', '/sources/:id', async (c, [id]) => {
     await audit(u.name, 'source.update', `source/${s.id}`, {});
     return [200, stripSource(s)];
   }
+  if (s.kind === 'truenas') {
+    Object.assign(s, { name: c.body.name ?? s.name, config: truenasConfig(c.body.config, s.config) });
+    await audit(u.name, 'source.update', `source/${s.id}`, {});
+    return [200, stripSource(s)];
+  }
   if (s.kind === 'nfs' || s.kind === 'smb') {
     const cfg = shareConfig(s.kind, c.body.config);
     if (!cfg.password && !cfg.keytab) Object.assign(cfg, { password: s.config.password, keytab: s.config.keytab });
@@ -1143,6 +1400,7 @@ on('PUT', '/sources/:id', async (c, [id]) => {
 });
 on('DELETE', '/sources/:id', (c, [id]) => {
   const s = find(db.sources, (x) => x.id === Number(id), 'source');
+  if (db.groups.some((g) => g.source_id === s.id)) throw new HttpError(409, 'source is still used by groups');
   return quorum(need(c.user, 'admin'), 'source.delete', { id: s.id, name: s.name });
 });
 
@@ -1183,6 +1441,8 @@ function checkGuests(src: (typeof db.sources)[number], guests: unknown) {
       if (guests.length) throw new HttpError(400, 'guests: this plugin kind has no guests; must be []');
     } else if (guests.some((g) => typeof g !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(g)))
       throw new HttpError(400, 'guests: guest ids [A-Za-z0-9._-]{1,64} required');
+  } else if (src.kind === 'truenas') {
+    if (guests.some((g) => !src.config.datasets.includes(g))) throw new HttpError(400, 'guests: datasets of the source required');
   } else if (src.kind === 'nfs' || src.kind === 'smb') {
     if (guests.length) throw new HttpError(400, "guests: a share source's group lists no guests");
   } else if (guests.some((g) => !Number.isInteger(g) || g < 100)) throw new HttpError(400, 'guests: VM/CT IDs required');
@@ -1214,19 +1474,6 @@ on('DELETE', '/groups/:id', (c, [id]) => {
 });
 
 // replication (docs/replication.md): this appliance as primary (peers) and as secondary (sources)
-const hex = (n: number) => rand(n);
-db.replPeers.push({
-  id: 'a1b2c3d4e5f60718', name: 'dr-site', tenants: ['acme'], state: 'enrolled', cert_sha256: hex(32),
-  keyd_fingerprint: hex(32), token_expires: null, enrolled_at: now() - 86400 * 20, last_seen: now() - 1800,
-  revoked: null, created: now() - 86400 * 21, created_by: 'admin', keys: { acme: { versions: [1], created: now() - 86400 * 20 } },
-  enroll_failures: 0,
-});
-db.replSources.push({
-  id: 1, name: 'hq-primary', url: 'backup-hq.demo.lan:8443', peer_id: '0f1e2d3c4b5a6978', cert_pin: hex(32),
-  tenants: ['globex'], schedule: 'daily 04:00', gfs: { daily: 14, weekly: 4, monthly: 6, yearly: 2 }, bwlimit: null,
-  state: 'enrolled', cert_sha256: hex(32), keyd_fingerprint: hex(32), created: now() - 86400 * 30, last_sync: now() - 3600 * 7,
-  status: { globex: { last_ok: now() - 3600 * 7, last_error: null, imported: 2, bytes: 734003200, remote: 41, key_versions: [1] } },
-});
 const findPeer = (id: string) => find(db.replPeers, (p) => p.id === id, 'peer');
 const findRs = (id: string) => find(db.replSources, (r) => String(r.id) === id, 'replication source');
 on('GET', '/replication/peers', (c) => (need(c.user), [200, db.replPeers]));
@@ -1253,25 +1500,45 @@ on('POST', '/replication/peers/:id/export-keys', async (c, [id]) => {
 on('DELETE', '/replication/peers/:id', async (c, [id]) => {
   const u = need(c.user, 'admin');
   const p = findPeer(id);
+  if (p.state === 'revoked') throw new HttpError(409, 'the peer is already revoked');
   if (p.state === 'pending') {
-    db.replPeers.splice(db.replPeers.indexOf(p), 1);
-    return [200, { ok: true }];
+    Object.assign(p, { state: 'revoked', revoked: now(), token_expires: null });
+    await audit(u.name, 'replication_peer.delete', `replication_peer/${p.id}`, { name: p.name, state: 'pending' });
+    return [200, { id: p.id, state: 'revoked' }];
   }
   return quorum(u, 'replication_peer.delete', { id: p.id, name: p.name });
 });
+// like web-api: {name, url, code, fingerprint, tenants, schedule, gfs?, bwlimit?} → 201 + replica_enroll job
 on('POST', '/replication/sources', async (c) => {
   const u = need(c.user, 'admin');
-  const { name, url, cert_pin, tenants = [], schedule = 'daily 04:00', gfs = { daily: 14, weekly: 4, monthly: 6, yearly: 2 } } = c.body;
+  const { name, url, code, fingerprint, tenants = [], schedule = 'daily 04:00', gfs = { daily: 14, weekly: 4, monthly: 6, yearly: 2 }, bwlimit = null } = c.body;
   if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
   if (!/^[A-Za-z0-9.-]+:\d{1,5}$/.test(url ?? '')) throw new HttpError(400, 'url: host:port');
-  if (!/^[0-9a-f]{64}$/.test(cert_pin ?? '')) throw new HttpError(400, 'cert_pin: 64 hex');
+  const pin = String(fingerprint ?? '').replace(/:/g, '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(pin)) throw new HttpError(400, "fingerprint: SHA-256 of the primary's certificate (64 hex characters)");
+  if (!/^[0-9a-f]{16}\.[A-Z2-7]{26}$/.test(code ?? '')) throw new HttpError(400, 'code: expected <peer-id>.<token>');
+  if (!Array.isArray(tenants) || !tenants.length) throw new HttpError(400, 'tenants: at least one');
+  for (const tn of tenants) {
+    if (db.groups.some((g) => g.tenant === tn) || db.agents.some((a) => a.tenant === tn))
+      throw new HttpError(409, `tenant ${tn} has local groups or agents: replicated tenants take no local backups`);
+    if (!db.tenants.some((x) => x.name === tn)) db.tenants.push({ name: tn, offsite: {} });
+  }
   const r = {
-    id: nextId(), name, url, peer_id: '', cert_pin, tenants, schedule, gfs, bwlimit: null, state: 'enrolling',
+    id: nextId(), name, url, peer_id: code.split('.')[0], cert_pin: pin, tenants, schedule, gfs, bwlimit, state: 'enrolling',
     cert_sha256: null, keyd_fingerprint: null, created: now(), last_sync: null, status: {},
   };
   db.replSources.push(r);
+  const j = addJob('replica_enroll', tenants[0], { replication_source_id: r.id }, u.name);
   await audit(u.name, 'replication_source.create', `replication_source/${r.id}`, { name, url, tenants });
-  return [201, r];
+  return [201, { ...r, job: j.id }];
+});
+on('POST', '/replication/sources/:id/sync', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'operator');
+  const r = findRs(id);
+  if (r.state !== 'enrolled') throw new HttpError(409, 'replication source is not enrolled');
+  const jobs = (r.tenants as string[]).map((tn) => addJob('replica_sync', tn, { replication_source_id: r.id, tenant: tn }, u.name).id);
+  await audit(u.name, 'job.create', `replication_source/${r.id}`, { kind: 'replica_sync', jobs });
+  return [202, { jobs }];
 });
 on('POST', '/replication/sources/:id/enroll', async (c, [id]) => {
   const u = need(c.user, 'admin');
@@ -1599,7 +1866,7 @@ on('PUT', '/settings/approvals', async (c) => {
 });
 
 // large GC confirmation (approvals disabled)
-on('GET', '/gc/pending', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, db.gcPending]));
+on('GET', '/gc/pending', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, db.approvals ? [] : db.gcPending]));
 on('POST', '/gc/approve-large', async (c) => {
   const u = need(c.user, 'admin');
   if (db.approvals) throw new HttpError(409, 'approvals are enabled: a large GC needs a quorum approval');
@@ -1628,7 +1895,7 @@ on('GET', '/jobs', (c) => {
   const s = c.query.get('state');
   const k = c.query.get('kind');
   const xs = byTenant(u, db.jobs).filter((j) => (!s || j.state === s) && (!k || j.kind === k));
-  return [200, xs.sort((a, b) => b.id - a.id).slice(0, 200).map((j) => pubJob(j, false))];
+  return [200, xs.sort((a, b) => b.id - a.id).slice(0, 100).map((j) => pubJob(j, false))];
 });
 on('GET', '/jobs/:id', (c, [id]) => {
   const u = need(c.user);
@@ -1848,9 +2115,34 @@ export function mockApi(): Plugin {
   seed();
   // Audit entries for the seed, so the viewer and chain verification have data.
   const ready = (async () => {
-    await audit('setup', 'init', '-', {});
-    await audit('admin', 'auth.login', 'session', {});
-    await audit('admin', 'quorum.request', `quorum/${db.quorum[0].id}`, { action: db.quorum[0].action });
+    // a plausible history: first boot, configuration, approvals, replication, then the pending requests
+    const t = now();
+    const hist: [number, string, string, string, Json][] = [
+      [t - 86400 * 90, 'setup', 'setup.network', '-', { method: 'static', address: '198.51.100.5/24' }],
+      [t - 86400 * 90 + 60, 'setup', 'setup.keyd.init', '-', {}],
+      [t - 86400 * 90 + 120, 'setup', 'setup.keyd.confirmed', '-', { recovery_key: 'shown once, re-entered' }],
+      [t - 86400 * 90 + 180, 'setup', 'setup.tls', '-', { san: ['backup.example.com', '198.51.100.5'] }],
+      [t - 86400 * 90 + 240, 'setup', 'setup.done', '-', { users: ['admin', 'so'] }],
+      [t - 86400 * 89, 'admin', 'auth.login', 'session', {}],
+      [t - 86400 * 89 + 300, 'admin', 'tenant.create', 'tenant/acme', {}],
+      [t - 86400 * 89 + 400, 'admin', 'tenant.create', 'tenant/initech', {}],
+      [t - 86400 * 60, 'admin', 'settings.approvals', 'settings/approvals', { enabled: true }],
+      [t - 86400 * 41, 'admin', 'quorum.request', 'quorum/plugin_key.add', { action: 'plugin_key.add', publisher: 'example-labs' }],
+      [t - 86400 * 41 + 900, 'so', 'quorum.approve', 'quorum/plugin_key.add', { action: 'plugin_key.add' }],
+      [t - 86400 * 21, 'admin', 'quorum.request', 'quorum/replication_peer.create', { action: 'replication_peer.create', name: 'dr-site', tenants: ['acme'] }],
+      [t - 86400 * 21 + 900, 'so', 'quorum.approve', 'quorum/replication_peer.create', { action: 'replication_peer.create' }],
+      [t - 86400 * 20, 'system', 'replication_peer.enrolled', 'replication_peer/a1b2c3d4e5f60718', { name: 'dr-site' }],
+      [t - 86400 * 20 + 900, 'so2', 'quorum.approve', 'quorum/replication.key_export', { action: 'replication.key_export' }],
+      [t - 86400 * 9, 'so', 'quorum.reject', 'quorum/source.delete', { action: 'source.delete', name: 'old-esx-import' }],
+      [t - 86400 - 7200, 'acme', 'job.create', 'job/files_get', { kind: 'files_get', tenant: 'acme', paths: ['/etc/nginx'], format: 'zip' }],
+      [t - 86400 - 3600, 'admin', 'job.create', 'job/plugin_restore', { kind: 'plugin_restore', tenant: 'acme', restore: 'pitr' }],
+      [t - 5400, 'admin', 'job.create', 'job/backup', { kind: 'backup', tenant: 'initech', params: { vmid: 101 } }],
+      [t - 3605, 'unknown-user', 'auth.login_failed', 'session', {}],
+    ];
+    for (const q of [...db.quorum].filter((x) => x.state === 'pending').sort((a, b) => a.created - b.created))
+      hist.push([q.created, q.requested_by, 'quorum.request', `quorum/${q.id}`, { action: q.action, params: q.params }]);
+    hist.sort((a, b) => a[0] - b[0]);
+    for (const [ts, actor, action, target, details] of hist) await audit(actor, action, target, details, ts);
   })();
   const mw = (req: Req, res: Res, next: () => void) => {
     if (!req.url?.startsWith('/api/v1/')) return next();
