@@ -48,23 +48,7 @@ pub fn endpoint_ports(manifest: &Manifest, kind: &str, cfg: &serde_json::Value) 
     if net == "none" {
         return Some(Vec::new());
     }
-    let k = manifest.kinds.iter().find(|k| k.kind == kind)?;
-    let mut ports: Vec<u16> = k
-        .endpoints
-        .iter()
-        .filter(|e| e.proto == "tcp" && cfg.pointer(&e.host).is_some())
-        .map(|e| {
-            e.port
-                .as_deref()
-                .and_then(|p| cfg.pointer(p))
-                .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
-                .and_then(|p| u16::try_from(p).ok())
-                .unwrap_or(e.default_port)
-        })
-        .collect();
-    ports.sort_unstable();
-    ports.dedup();
-    Some(ports)
+    Some(manifest.kinds.iter().find(|k| k.kind == kind)?.tcp_ports(cfg))
 }
 
 /// Index names of a plugin snapshot.

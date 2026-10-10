@@ -1,0 +1,519 @@
+//! Logical dump of one database, generated from the system catalogs in one
+//! REPEATABLE READ, READ ONLY transaction (one consistent snapshot), and its restore.
+//!
+//! Format (`nexus-dump 1`): a plain SQL script psql can run (`psql -1 -f`), with a
+//! marker before every statement so the plugin's own restore needs no SQL parser:
+//! `-- nexus:sql <n>` + n bytes of SQL + `\n`, and `-- nexus:copy <n>` + n bytes
+//! `COPY … FROM stdin;` + `\n` + COPY text rows + `\.\n`.
+//!
+//! Covered: schemas, extensions, enum/domain/composite types, functions and
+//! procedures, sequences (+ values, OWNED BY), tables (UNLOGGED, defaults,
+//! identity, generated columns, collations, partitioning), views (dependency
+//! order) and materialized views, data, constraints, indexes, triggers.
+//! Not covered (reported as a warning when present): ownership/grants, comments,
+//! RLS policies, aggregates, operators, range types, rules, foreign tables, table
+//! inheritance, large objects, publications, event triggers, statistics objects.
+
+use crate::pg::{lit, Conn, Row};
+use anyhow::{bail, Context, Result};
+use std::collections::{HashMap, HashSet};
+use std::io::{BufRead, Write};
+
+const USER_NS: &str = "n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'";
+
+fn not_ext(catalog: &str, oid: &str) -> String {
+    format!(
+        "NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_catalog.{catalog}'::regclass \
+         AND d.objid = {oid} AND d.deptype = 'e')"
+    )
+}
+
+#[derive(Debug, Default)]
+pub struct DumpStats {
+    pub tables: u64,
+    pub rows: u64,
+    pub statements: u64,
+    /// object kinds present in the database that the dump does not contain
+    pub unsupported: Vec<String>,
+}
+
+struct Out<'a> {
+    w: &'a mut dyn Write,
+    st: DumpStats,
+}
+
+impl Out<'_> {
+    fn sql(&mut self, s: &str) -> Result<()> {
+        write!(self.w, "-- nexus:sql {}\n{s}\n", s.len())?;
+        self.st.statements += 1;
+        Ok(())
+    }
+}
+
+fn col(r: &Row, i: usize) -> &str {
+    r.get(i).and_then(|v| v.as_deref()).unwrap_or("")
+}
+
+fn has(r: &Row, i: usize) -> bool {
+    r.get(i).is_some_and(|v| v.is_some())
+}
+
+/// Writes the dump of the connection's database to `w`.
+pub fn dump(c: &mut Conn, w: &mut dyn Write) -> Result<DumpStats> {
+    c.exec("BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY")?;
+    // fully qualified names from every pg_get_*/format_type/regclass output; errors
+    // instead of silently filtered rows for tables with row level security
+    c.exec(
+        "SELECT pg_catalog.set_config('search_path', '', false); SET row_security = off; \
+         SET statement_timeout = 0; SET lock_timeout = 0; SET idle_in_transaction_session_timeout = 0",
+    )?;
+    let db = c.value("SELECT current_database()")?.unwrap_or_default();
+    let enc = c
+        .value("SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database()")?
+        .unwrap_or_else(|| "UTF8".into());
+    let mut o = Out {
+        w,
+        st: DumpStats::default(),
+    };
+    writeln!(o.w, "-- nexus:dump 1 encoding={enc}")?;
+    writeln!(
+        o.w,
+        "-- NexusBackup logical dump of database {db:?} (PostgreSQL {}).\n\
+         -- Restore into an empty database: psql -v ON_ERROR_STOP=1 --single-transaction -d <database> -f <file>",
+        c.server_version
+    )?;
+    o.sql(
+        "SET statement_timeout = 0; SET client_encoding = 'UTF8'; SET standard_conforming_strings = on; \
+         SET check_function_bodies = false; SET client_min_messages = warning; SET row_security = off; \
+         SELECT pg_catalog.set_config('search_path', '', false);",
+    )?;
+
+    // tables first: lock them against concurrent DROP/ALTER for the rest of the dump
+    let tables = c.query(&format!(
+        "SELECT c.oid, c.oid::regclass::text, c.relkind, c.relpersistence, \
+           (SELECT i.inhparent FROM pg_inherits i WHERE i.inhrelid = c.oid AND c.relispartition), \
+           (SELECT i.inhparent::regclass::text FROM pg_inherits i WHERE i.inhrelid = c.oid AND c.relispartition), \
+           pg_get_expr(c.relpartbound, c.oid), \
+           CASE WHEN c.relkind = 'p' THEN pg_get_partkeydef(c.oid) END, \
+           (SELECT string_agg(quote_ident(a.attname) || ' ' || format_type(a.atttypid, a.atttypmod) \
+               || CASE WHEN a.attcollation <> t.typcollation AND a.attcollation <> 0 THEN ' COLLATE ' || \
+                    (SELECT quote_ident(cn.nspname) || '.' || quote_ident(co.collname) FROM pg_collation co \
+                     JOIN pg_namespace cn ON cn.oid = co.collnamespace WHERE co.oid = a.attcollation) ELSE '' END \
+               || CASE WHEN a.attgenerated = 's' THEN ' GENERATED ALWAYS AS (' || pg_get_expr(ad.adbin, ad.adrelid) || ') STORED' \
+                       WHEN ad.adbin IS NOT NULL THEN ' DEFAULT ' || pg_get_expr(ad.adbin, ad.adrelid) ELSE '' END \
+               || CASE a.attidentity WHEN 'a' THEN ' GENERATED ALWAYS AS IDENTITY' \
+                       WHEN 'd' THEN ' GENERATED BY DEFAULT AS IDENTITY' ELSE '' END \
+               || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE '' END, ', ' ORDER BY a.attnum) \
+            FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid \
+            LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
+            WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped), \
+           (SELECT string_agg(quote_ident(a.attname), ', ' ORDER BY a.attnum) FROM pg_attribute a \
+            WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped AND a.attgenerated = '') \
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE c.relkind IN ('r', 'p') AND {USER_NS} AND {} ORDER BY c.oid",
+        not_ext("pg_class", "c.oid")
+    ))?;
+    if !tables.is_empty() {
+        let names: Vec<&str> = tables.iter().map(|t| col(t, 1)).collect();
+        c.exec(&format!("LOCK TABLE {} IN ACCESS SHARE MODE", names.join(", ")))?;
+    }
+    o.st.unsupported = unsupported(c)?;
+
+    for q in [
+        format!(
+            "SELECT 'CREATE SCHEMA IF NOT EXISTS ' || quote_ident(n.nspname) || ';' FROM pg_namespace n \
+             WHERE {USER_NS} AND {} ORDER BY n.nspname",
+            not_ext("pg_namespace", "n.oid")
+        ),
+        "SELECT 'CREATE EXTENSION IF NOT EXISTS ' || quote_ident(e.extname) || ' WITH SCHEMA ' || quote_ident(n.nspname) || ';' \
+         FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace ORDER BY e.oid"
+            .into(),
+        format!(
+            "SELECT 'CREATE TYPE ' || t.oid::regtype::text || ' AS ENUM (' || coalesce((SELECT string_agg(quote_literal(e.enumlabel), ', ' \
+             ORDER BY e.enumsortorder) FROM pg_enum e WHERE e.enumtypid = t.oid), '') || ');' \
+             FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.typtype = 'e' AND {USER_NS} AND {} ORDER BY t.oid",
+            not_ext("pg_type", "t.oid")
+        ),
+        format!(
+            "SELECT 'CREATE DOMAIN ' || t.oid::regtype::text || ' AS ' || format_type(t.typbasetype, t.typtypmod) \
+             || coalesce(' DEFAULT ' || t.typdefault, '') || CASE WHEN t.typnotnull THEN ' NOT NULL' ELSE '' END \
+             || coalesce((SELECT string_agg(' CONSTRAINT ' || quote_ident(k.conname) || ' ' || pg_get_constraintdef(k.oid), '' \
+                ORDER BY k.conname) FROM pg_constraint k WHERE k.contypid = t.oid AND k.contype = 'c'), '') || ';' \
+             FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.typtype = 'd' AND {USER_NS} AND {} ORDER BY t.oid",
+            not_ext("pg_type", "t.oid")
+        ),
+        format!(
+            "SELECT 'CREATE TYPE ' || t.oid::regtype::text || ' AS (' || coalesce((SELECT string_agg(quote_ident(a.attname) || ' ' \
+             || format_type(a.atttypid, a.atttypmod), ', ' ORDER BY a.attnum) FROM pg_attribute a \
+             WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped), '') || ');' \
+             FROM pg_type t JOIN pg_class c ON c.oid = t.typrelid JOIN pg_namespace n ON n.oid = t.typnamespace \
+             WHERE t.typtype = 'c' AND c.relkind = 'c' AND {USER_NS} AND {} ORDER BY t.oid",
+            not_ext("pg_type", "t.oid")
+        ),
+    ] {
+        for r in c.query(&q)? {
+            o.sql(col(&r, 0))?;
+        }
+    }
+
+    // functions with a string body (not checked at creation) before the tables that
+    // may use them in defaults/checks; SQL-standard bodies are checked → after views
+    let funcs = c.query(&format!(
+        "SELECT pg_get_functiondef(p.oid) || ';', p.prosqlbody IS NOT NULL FROM pg_proc p \
+         JOIN pg_namespace n ON n.oid = p.pronamespace WHERE p.prokind IN ('f', 'p', 'w') AND {USER_NS} AND {} ORDER BY p.oid",
+        not_ext("pg_proc", "p.oid")
+    ))?;
+    for f in funcs.iter().filter(|f| col(f, 1) == "f") {
+        o.sql(col(f, 0))?;
+    }
+
+    // sequences (identity sequences come with their column)
+    let seqs = c.query(&format!(
+        "SELECT c.oid::regclass::text, format_type(s.seqtypid, NULL), s.seqstart, s.seqincrement, s.seqmin, s.seqmax, \
+           s.seqcache, s.seqcycle, d.deptype, d.refobjid::regclass::text, a.attname, c.relpersistence \
+         FROM pg_sequence s JOIN pg_class c ON c.oid = s.seqrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
+         LEFT JOIN pg_depend d ON d.classid = 'pg_class'::regclass AND d.objid = s.seqrelid \
+           AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i') \
+         LEFT JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid \
+         WHERE {USER_NS} AND {} ORDER BY c.oid",
+        not_ext("pg_class", "c.oid")
+    ))?;
+    for s in seqs.iter().filter(|s| col(s, 8) != "i") {
+        o.sql(&format!(
+            "CREATE {}SEQUENCE {} AS {} START WITH {} INCREMENT BY {} MINVALUE {} MAXVALUE {} CACHE {}{};",
+            if col(s, 11) == "u" { "UNLOGGED " } else { "" },
+            col(s, 0),
+            col(s, 1),
+            col(s, 2),
+            col(s, 3),
+            col(s, 4),
+            col(s, 5),
+            col(s, 6),
+            if col(s, 7) == "t" { " CYCLE" } else { " NO CYCLE" }
+        ))?;
+    }
+
+    // tables, partitioned parents before their partitions
+    let mut done: HashSet<&str> = HashSet::new();
+    let mut left: Vec<&Row> = tables.iter().collect();
+    while !left.is_empty() {
+        let before = left.len();
+        let mut next = Vec::new();
+        for t in left {
+            if has(t, 4) && !done.contains(col(t, 4)) {
+                next.push(t);
+                continue;
+            }
+            let unlogged = if col(t, 3) == "u" { "UNLOGGED " } else { "" };
+            let body = if has(t, 4) {
+                format!(" PARTITION OF {} {}", col(t, 5), col(t, 6))
+            } else {
+                format!(" ({})", col(t, 8))
+            };
+            let part = if has(t, 7) {
+                format!(" PARTITION BY {}", col(t, 7))
+            } else {
+                String::new()
+            };
+            o.sql(&format!("CREATE {unlogged}TABLE {}{body}{part};", col(t, 1)))?;
+            done.insert(col(t, 0));
+        }
+        if next.len() == before {
+            bail!("partition hierarchy without a root (catalog changed?)");
+        }
+        left = next;
+    }
+    for s in seqs.iter().filter(|s| col(s, 8) == "a") {
+        o.sql(&format!(
+            "ALTER SEQUENCE {} OWNED BY {}.{};",
+            col(s, 0),
+            col(s, 9),
+            crate::pg::ident(col(s, 10))
+        ))?;
+    }
+
+    views(c, &mut o)?;
+    for f in funcs.iter().filter(|f| col(f, 1) == "t") {
+        o.sql(col(f, 0))?;
+    }
+
+    // data
+    for t in tables.iter().filter(|t| col(t, 2) == "r") {
+        let cols = if has(t, 9) {
+            format!(" ({})", col(t, 9))
+        } else {
+            String::new()
+        };
+        let head = format!("COPY {}{cols} FROM stdin;", col(t, 1));
+        write!(o.w, "-- nexus:copy {}\n{head}\n", head.len())?;
+        let mut rows = 0u64;
+        let w = &mut *o.w;
+        c.copy_out(&format!("COPY {}{cols} TO STDOUT", col(t, 1)), &mut |d| {
+            rows += 1;
+            w.write_all(d)?;
+            Ok(())
+        })?;
+        o.w.write_all(b"\\.\n")?;
+        o.st.tables += 1;
+        o.st.rows += rows;
+    }
+    for s in &seqs {
+        let v = c.query(&format!("SELECT last_value, is_called FROM {}", col(s, 0)))?;
+        let v = v.first().context("sequence without a row")?;
+        let target = if col(s, 8) == "i" {
+            format!(
+                "pg_catalog.pg_get_serial_sequence({}, {})",
+                lit(col(s, 9)),
+                lit(col(s, 10))
+            )
+        } else {
+            lit(col(s, 0))
+        };
+        o.sql(&format!(
+            "SELECT pg_catalog.setval({target}, {}, {});",
+            col(v, 0),
+            col(v, 1) == "t"
+        ))?;
+    }
+
+    // constraints (foreign keys last), indexes, triggers
+    let cons = c.query(&format!(
+        "SELECT 'ALTER TABLE ' || CASE WHEN c.relkind = 'p' THEN '' ELSE 'ONLY ' END || c.oid::regclass::text \
+           || ' ADD CONSTRAINT ' || quote_ident(k.conname) || ' ' || pg_get_constraintdef(k.oid) || ';', k.contype = 'f' \
+         FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE k.contype IN ('p', 'u', 'c', 'x', 'f') AND k.conparentid = 0 AND k.conislocal AND {USER_NS} AND {} \
+         ORDER BY k.contype = 'f', c.oid, k.conname",
+        not_ext("pg_class", "c.oid")
+    ))?;
+    for k in cons.iter().filter(|k| col(k, 1) == "f") {
+        o.sql(col(k, 0))?;
+    }
+    for r in c.query(&format!(
+        "SELECT pg_get_indexdef(i.indexrelid) || ';', c.relkind FROM pg_index i \
+         JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_class c ON c.oid = i.indrelid \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE NOT ic.relispartition AND NOT EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conindid = i.indexrelid \
+           AND k.contype IN ('p', 'u', 'x')) AND {USER_NS} AND {} ORDER BY ic.oid",
+        not_ext("pg_class", "c.oid")
+    ))? {
+        // an index of a partitioned table is created for all partitions
+        let def = if col(&r, 1) == "p" {
+            col(&r, 0).replacen(" ON ONLY ", " ON ", 1)
+        } else {
+            col(&r, 0).to_owned()
+        };
+        o.sql(&def)?;
+    }
+    for k in cons.iter().filter(|k| col(k, 1) == "t") {
+        o.sql(col(k, 0))?;
+    }
+    for r in c.query(&format!(
+        "SELECT pg_get_triggerdef(t.oid) || ';' FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid \
+         JOIN pg_namespace n ON n.oid = c.relnamespace WHERE NOT t.tgisinternal AND t.tgparentid = 0 \
+         AND {USER_NS} AND {} ORDER BY t.oid",
+        not_ext("pg_class", "c.oid")
+    ))? {
+        o.sql(col(&r, 0))?;
+    }
+    for r in c.query(&format!(
+        "SELECT 'REFRESH MATERIALIZED VIEW ' || c.oid::regclass::text || ';' FROM pg_class c \
+         JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind = 'm' AND c.relispopulated \
+         AND {USER_NS} AND {} ORDER BY c.oid",
+        not_ext("pg_class", "c.oid")
+    ))? {
+        o.sql(col(&r, 0))?;
+    }
+    c.exec("COMMIT")?;
+    o.w.write_all(b"-- nexus:end\n")?;
+    Ok(o.st)
+}
+
+/// Views and materialized views (WITH NO DATA), referenced views first.
+fn views(c: &mut Conn, o: &mut Out) -> Result<()> {
+    let rows = c.query(&format!(
+        "SELECT c.oid, c.oid::regclass::text, c.relkind, pg_get_viewdef(c.oid), array_to_string(c.reloptions, ', ') \
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE c.relkind IN ('v', 'm') AND {USER_NS} AND {} ORDER BY c.oid",
+        not_ext("pg_class", "c.oid")
+    ))?;
+    let mut deps: HashMap<String, Vec<String>> = HashMap::new();
+    for d in c.query(
+        "SELECT DISTINCT r.ev_class, d.refobjid FROM pg_rewrite r \
+         JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid \
+           AND d.refclassid = 'pg_class'::regclass AND d.refobjid <> r.ev_class \
+         JOIN pg_class rc ON rc.oid = d.refobjid WHERE rc.relkind IN ('v', 'm')",
+    )? {
+        deps.entry(col(&d, 0).into()).or_default().push(col(&d, 1).into());
+    }
+    let ours: HashSet<&str> = rows.iter().map(|r| col(r, 0)).collect();
+    let mut done: HashSet<String> = HashSet::new();
+    let mut left: Vec<&Row> = rows.iter().collect();
+    while !left.is_empty() {
+        // views cannot form a cycle; should the catalog say so, go on in oid order
+        let i = left
+            .iter()
+            .position(|v| {
+                deps.get(col(v, 0))
+                    .is_none_or(|d| d.iter().all(|x| done.contains(x) || !ours.contains(x.as_str())))
+            })
+            .unwrap_or(0);
+        let v = left.remove(i);
+        let with = if col(v, 4).is_empty() {
+            String::new()
+        } else {
+            format!(" WITH ({})", col(v, 4))
+        };
+        let def = col(v, 3).trim_end().trim_end_matches(';');
+        if col(v, 2) == "m" {
+            o.sql(&format!(
+                "CREATE MATERIALIZED VIEW {}{with} AS {def} WITH NO DATA;",
+                col(v, 1)
+            ))?;
+        } else {
+            o.sql(&format!("CREATE VIEW {}{with} AS {def};", col(v, 1)))?;
+        }
+        done.insert(col(v, 0).into());
+    }
+    Ok(())
+}
+
+/// Object kinds the dump does not cover, with counts (for a warning).
+fn unsupported(c: &mut Conn) -> Result<Vec<String>> {
+    let rows = c.query(&format!(
+        "SELECT 'row level security policies', count(*) FROM pg_policy \
+         UNION ALL SELECT 'aggregates', count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
+           WHERE p.prokind = 'a' AND {USER_NS} AND {p} \
+         UNION ALL SELECT 'operators', count(*) FROM pg_operator p JOIN pg_namespace n ON n.oid = p.oprnamespace \
+           WHERE {USER_NS} AND {o} \
+         UNION ALL SELECT 'range types', count(*) FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace \
+           WHERE t.typtype = 'r' AND {USER_NS} AND {t} \
+         UNION ALL SELECT 'rules', count(*) FROM pg_rewrite r JOIN pg_class c ON c.oid = r.ev_class \
+           JOIN pg_namespace n ON n.oid = c.relnamespace WHERE r.rulename <> '_RETURN' AND {USER_NS} \
+         UNION ALL SELECT 'foreign tables', count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+           WHERE c.relkind = 'f' AND {USER_NS} AND {c} \
+         UNION ALL SELECT 'inherited tables', count(*) FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid \
+           WHERE NOT c.relispartition AND c.relkind IN ('r', 'p') \
+         UNION ALL SELECT 'large objects', count(*) FROM pg_largeobject_metadata \
+         UNION ALL SELECT 'publications', count(*) FROM pg_publication \
+         UNION ALL SELECT 'event triggers', count(*) FROM pg_event_trigger \
+         UNION ALL SELECT 'statistics objects', count(*) FROM pg_statistic_ext s \
+           JOIN pg_namespace n ON n.oid = s.stxnamespace WHERE {USER_NS}",
+        p = not_ext("pg_proc", "p.oid"),
+        o = not_ext("pg_operator", "p.oid"),
+        t = not_ext("pg_type", "t.oid"),
+        c = not_ext("pg_class", "c.oid"),
+    ))?;
+    Ok(rows
+        .iter()
+        .filter(|r| col(r, 1) != "0")
+        .map(|r| format!("{} {}", col(r, 1), col(r, 0)))
+        .collect())
+}
+
+/// The dump's first line: its database encoding.
+pub fn read_header(r: &mut dyn BufRead) -> Result<String> {
+    let mut l = String::new();
+    r.read_line(&mut l)?;
+    let enc = l
+        .strip_prefix("-- nexus:dump 1 encoding=")
+        .context("not a NexusBackup dump (nexus-dump 1)")?
+        .trim();
+    if enc.is_empty() || !enc.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        bail!("invalid dump encoding {enc:?}");
+    }
+    Ok(enc.into())
+}
+
+#[derive(Debug, Default)]
+pub struct RestoreStats {
+    pub statements: u64,
+    pub tables: u64,
+    pub rows: u64,
+}
+
+/// Runs a dump (after [`read_header`]) in one transaction on `c`.
+pub fn restore(c: &mut Conn, r: &mut dyn BufRead) -> Result<RestoreStats> {
+    let mut st = RestoreStats::default();
+    let mut line = Vec::new();
+    let mut ended = false;
+    c.exec("BEGIN")?;
+    loop {
+        line.clear();
+        if r.read_until(b'\n', &mut line)? == 0 {
+            break;
+        }
+        let l = String::from_utf8_lossy(&line);
+        let l = l.trim_end_matches('\n');
+        if l == "-- nexus:end" {
+            ended = true;
+            break;
+        }
+        let (copy, n) = if let Some(n) = l.strip_prefix("-- nexus:sql ") {
+            (false, n)
+        } else if let Some(n) = l.strip_prefix("-- nexus:copy ") {
+            (true, n)
+        } else if l.is_empty() || l.starts_with("--") {
+            continue;
+        } else {
+            bail!("dump: unexpected line {:?}", l.chars().take(80).collect::<String>());
+        };
+        let n: usize = n.parse().context("dump: invalid length")?;
+        if n > 256 << 20 {
+            bail!("dump: statement too long");
+        }
+        let mut stmt = vec![0u8; n + 1];
+        r.read_exact(&mut stmt).context("dump: truncated")?;
+        if stmt.pop() != Some(b'\n') {
+            bail!("dump: statement not terminated");
+        }
+        let stmt = String::from_utf8(stmt).context("dump: statement not UTF-8")?;
+        let what = || stmt.chars().take(120).collect::<String>();
+        if !copy {
+            c.exec(&stmt).with_context(|| format!("restoring `{}`", what()))?;
+            st.statements += 1;
+            continue;
+        }
+        c.copy_in(&stmt).with_context(|| format!("restoring `{}`", what()))?;
+        let mut buf = Vec::with_capacity(1 << 20);
+        loop {
+            line.clear();
+            if r.read_until(b'\n', &mut line)? == 0 {
+                bail!("dump: COPY data not terminated");
+            }
+            if line == b"\\.\n" {
+                break;
+            }
+            st.rows += 1;
+            buf.extend_from_slice(&line);
+            if buf.len() >= 1 << 20 {
+                c.copy_data(&buf)?;
+                buf.clear();
+            }
+        }
+        if !buf.is_empty() {
+            c.copy_data(&buf)?;
+        }
+        c.copy_end().with_context(|| format!("restoring `{}`", what()))?;
+        st.tables += 1;
+    }
+    if !ended {
+        bail!("dump: truncated (no end marker)");
+    }
+    c.exec("COMMIT")?;
+    Ok(st)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header() {
+        let mut r: &[u8] = b"-- nexus:dump 1 encoding=UTF8\n-- x\n";
+        assert_eq!(read_header(&mut r).unwrap(), "UTF8");
+        let mut r: &[u8] = b"-- nexus:dump 1 encoding=x'; DROP\n";
+        assert!(read_header(&mut r).is_err());
+        let mut r: &[u8] = b"PGDMP";
+        assert!(read_header(&mut r).is_err());
+    }
+}

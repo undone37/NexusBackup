@@ -2740,6 +2740,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "postgresql"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "getrandom 0.2.17",
+ "hmac 0.12.1",
+ "md-5",
+ "plugin-sdk",
+ "russh",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tar",
+ "tempfile",
+ "tokio",
+ "webpki-roots",
+]
+
+[[package]]
 name = "potential_utf"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

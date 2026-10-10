@@ -1,7 +1,7 @@
 # Plugin System — Contract (Phase 9)
 
 Status: v1 (2026-10-10), implementation notes v1.1 (2026-10-10, see "Implementation (v1.1)" at the end), additive
-v1.2 (2026-10-10, TrueNAS plugin, see "v1.2" at the end). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
+v1.2 (2026-10-10, TrueNAS + PostgreSQL plugins, see "v1.2" at the end). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
 speaking a **versioned protocol**, with a **Rust SDK**; trust = **project release key + publisher keys an admin adds
 with quorum**; reference plugin **PostgreSQL**; the **TrueNAS** connector is ported to the SDK; the restore API covers
 **download, restore to original/alternate target, application-specific restore and mount/instant access**.
@@ -180,7 +180,7 @@ allow-list is global (TCP only), so manifest UDP endpoints are not opened.
 `backup_inconsistent` once per snapshot source; `restores[].params_schema` values end up in `jobs.params` (visible to
 operators) — restore parameters must not carry secrets in v1 (use source secrets).
 
-## v1.2 — additive changes for the TrueNAS plugin (2026-10-10)
+## v1.2 — additive changes for the TrueNAS and PostgreSQL plugins (2026-10-10)
 Found while porting the TrueNAS connector (`plugins/truenas`, docs/truenas-connector.md §9); protocol and API
 version unchanged (`api: 1`), older plugins are unaffected.
 - **Backup `Init.params` carries `source_id`** (`{"guest", "source_id"}`; SDK `Ctx::source_id()`): the appliance's
@@ -194,8 +194,18 @@ version unchanged (`api: 1`), older plugins are unaffected.
   `ssh_config` is skipped), the seccomp allowlist (no AF_UNIX: no agent; glibc's NSS falls back to `/etc/passwd`)
   and the rlimits. Tested by `plugins/truenas/tests/plugin.rs` (the binary in the real sandbox against a local
   unprivileged sshd).
-- **Endpoint ports from the source config** are now one function (`plugin_host::endpoint_ports`) used by
-  `nexus-pluginhost` and the SDK's test harness; `testing::Host` previously opened only the manifest's
+- **Endpoint ports from the source config** are now one function (`KindSpec::tcp_ports(config)` in `plugin-proto`,
+  wrapped by `plugin_host::endpoint_ports` for `sandbox.network`) used by `nexus-pluginhost` and the SDK's test harness; `testing::Host` previously opened only the manifest's
   `default_port`s, so plugins whose test servers listen on other ports could not be tested in the sandbox.
 - Hint for plugin authors (no change): the host drops the xattrs of a whole `BaseEntries` answer that would not fit
   one frame; plugins that rely on base xattrs (TrueNAS: unchanged directories) query small batches.
+- Optional endpoints (e.g. an alternate restore server, an SSH restore host) are a pattern: declare them, they
+  open only when configured.
+
+**PostgreSQL reference plugin (M9, `plugins/postgresql`):** guests = databases (logical dumps, stream `<db>.sql`),
+no guest = the whole cluster (base backup + WAL as files: `data/`, `wal/<segment>`; incrementals re-reference
+`data/` and earlier WAL via `Unchanged` from a front-coded path list in the state blob, so every snapshot is
+self-contained for point-in-time restore). Pure-Rust wire protocol client instead of `pg_dump`/`pg_basebackup`
+(not in the image, and they must match the server's major version); restores to targets declared as optional
+endpoints of the source (alternate PostgreSQL server; SSH restore host for the PITR data directory). Details and
+limits: plugins/postgresql/README.md. No other contract change.
