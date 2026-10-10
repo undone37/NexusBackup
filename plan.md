@@ -79,6 +79,8 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | S3 test target (Phase 8) | **Local MinIO (Object Lock compliance) for development; real provider for a final run later** (decided 2026-10-09) | No credentials needed during development. |
 | S3 client (Phase 8) | **Minimal own SigV4 client** (decided 2026-10-09) | Only the calls we need; few deps; fuzzable. |
 | Appliance replication (Phase 8) | **Secondary pulls via a replication endpoint on the primary's management port 8443, mTLS with an enrolled secondary's client cert** (decided 2026-10-09) | No new inbound port; serves sealed data read-only; primary holds no credentials for the secondary. |
+| Approval system (quorum) | **Optional.** Off by default when the appliance has a single user; enabling needs no approval; disabling needs the requester **plus one other approver**; approvers are **admins and security officers** (never the requester); when users are added later approvals stay off and the UI recommends enabling them (decided 2026-10-10) | Small installations stay usable; disabling the safety net still needs four eyes. Retention locks stay enforced regardless. |
+| User onboarding | **Self-enrollment at first sign-in**: the admin creates the account and gets a one-time activation code; the user sets their own password and authenticator (decided 2026-10-10) | The admin never learns another user's credentials (otherwise approvals are meaningless). |
 | Replication approvals (Phase 8) | **Two quorum approvals: create peer, then key export naming the secondary keyd fingerprint** (decided 2026-10-10) | Approver sees exactly which machine receives the keys. |
 | Replicated tenants (Phase 8) | **Read-only copies on the secondary: no local backups** (decided 2026-10-10) | Unambiguous key origin and retention. |
 | nexus-replicad identity (Phase 8) | **Runs as nexus-chunkstore, read-only enforced by its SELinux domain** (decided 2026-10-10) | Revisit with the planned uid split (review H-3). |
@@ -120,7 +122,7 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 - Full-disk encryption, TPM-sealed, Secure Boot measured.
 - Retention locks enforced in the storage layer; locks can only be extended, never shortened.
 - Tamper-resistant compliance clock, independent from system time.
-- Four-eyes (quorum) approval for destructive or weakening actions.
+- Four-eyes (quorum) approval for destructive or weakening actions — optional (off for single-user appliances; disabling needs two people).
 - Hash-chained audit log, forwarded to an external syslog/SIEM.
 - MFA (WebAuthn or TOTP) for all interactive accounts; OIDC later.
 - No interactive root; emergency access only via local console.
