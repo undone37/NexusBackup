@@ -754,7 +754,7 @@ impl ShareConfig {
     /// The helper request this config produces (secrets replaced by placeholders
     /// when they are kept from the stored config), checked like the helper does.
     fn check(&self, kind: &str) -> ApiResult<()> {
-        use nas::proto::{Request, Sec};
+        use nas::proto::Request;
         let bad = |m: String| ApiError::bad(m);
         if !nas::valid_host(&self.host) {
             return Err(bad("host: invalid host name or address".into()));
@@ -818,25 +818,14 @@ impl ShareConfig {
                             }
                         }
                     }
+                    // user decision 2026-10-10: no SMB Kerberos in v1 (cifs-utils/krb5 are not in the
+                    // image and it is untested); the mount helper keeps its krb5 support for later
                     "krb5" => {
-                        if self.password.is_some() {
-                            return Err(bad("password: not with sec krb5 (keytab)".into()));
-                        }
-                        r.sec = Sec::Krb5;
-                        r.password = None;
-                        r.keytab = Some(vec![5, 2]);
-                        r.principal = self.principal.clone();
-                        if let Some(k) = &self.keytab {
-                            use base64::Engine;
-                            let raw = base64::engine::general_purpose::STANDARD
-                                .decode(k)
-                                .map_err(|_| bad("keytab: base64 of the keytab file".into()))?;
-                            if raw.is_empty() || raw.len() > nas::proto::MAX_KEYTAB || raw[0] != 5 {
-                                return Err(bad("keytab: not a keytab (at most 64 KiB)".into()));
-                            }
-                        }
+                        return Err(bad(
+                            "sec krb5: not supported in this version (use ntlmssp with signed/encrypted SMB3)".into(),
+                        ))
                     }
-                    _ => return Err(bad("sec: ntlmssp or krb5".into())),
+                    _ => return Err(bad("sec: ntlmssp".into())),
                 }
                 r
             }

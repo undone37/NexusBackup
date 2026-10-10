@@ -2686,7 +2686,7 @@ async fn share_sources() {
         )
         .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST, "seal needs SMB 3");
-    // Kerberos: keytab (base64, sealed) + principal instead of a password
+    // Kerberos is not offered in v1 (user decision 2026-10-10)
     let mut k = smb.clone();
     k.as_object_mut().unwrap().remove("password");
     k["sec"] = json!("krb5");
@@ -2699,8 +2699,8 @@ async fn share_sources() {
             json!({"tenant": "acme", "kind": "smb", "name": "k", "config": k}),
         )
         .await;
-    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
-    assert_eq!(r.body["config"]["keytab_set"], true);
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    assert!(r.body["error"].as_str().unwrap().contains("krb5"));
 
     // groups: no guests
     let pol = t.post("/api/v1/policies", &admin, policy(7, false)).await.body["id"]

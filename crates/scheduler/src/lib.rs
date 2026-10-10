@@ -1014,21 +1014,7 @@ impl Scheduler {
             self.replica_bookkeeping(&job, &log, ok)?;
         }
         if ok && job.kind == "backup" {
-            // agent backups without snapshots / with failed hooks, share backups without a NAS
-            // snapshot or with files changed while read: usable but not crash-consistent
-            for l in log
-                .lines()
-                .filter(|l| l.starts_with("inconsistent host-") || l.starts_with("inconsistent share-"))
-            {
-                let what = l.trim_start_matches("inconsistent ");
-                let src = what.split('/').next().unwrap_or_default();
-                self.alert(
-                    "warning",
-                    "backup_inconsistent",
-                    &format!("backup job {} ({}): snapshot {what}", job.id, job.tenant),
-                    Some(&format!("backup job {} ({}): snapshot {src}", job.id, job.tenant)),
-                )?;
-            }
+            self.inconsistent_alerts(job.id, &job.tenant, &log)?;
         }
         if let Some(q) = job.params["quorum_id"].as_i64() {
             self.db.conn().execute(
@@ -2473,6 +2459,52 @@ impl Scheduler {
 
     /// Inserts an alert unless an unacknowledged one with the same kind and
     /// message prefix (`dedupe`, default the whole message) exists.
+    /// Agent / share backups without a consistent view (user decision 2026-10-10):
+    /// a missing snapshot alone warns ONCE per source (afterwards only the snapshot's
+    /// `consistent` flag shows it); files that really changed while read warn every
+    /// time (deduplicated while unacknowledged).
+    fn inconsistent_alerts(&self, job_id: i64, tenant: &str, log: &str) -> Result<()> {
+        for l in log
+            .lines()
+            .filter(|l| l.starts_with("inconsistent host-") || l.starts_with("inconsistent share-"))
+        {
+            let what = l.trim_start_matches("inconsistent ");
+            let src = what.split('/').next().unwrap_or_default();
+            let changed = changed_while_read(what);
+            let (key, detail) = if changed > 0 {
+                (
+                    format!("{src}: files changed while read"),
+                    format!("{changed} file(s) changed while read"),
+                )
+            } else {
+                (
+                    format!("{src}: no snapshot"),
+                    "read without a snapshot (not crash-consistent); reported once per source".into(),
+                )
+            };
+            if changed == 0 && self.ever_alerted("backup_inconsistent", &key)? {
+                continue;
+            }
+            self.alert(
+                "warning",
+                "backup_inconsistent",
+                &format!("{key} — {detail} (backup job {job_id}, tenant {tenant}, snapshot {what})"),
+                Some(&key),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Any alert (acknowledged or not) of `kind` whose message starts with `prefix`.
+    fn ever_alerted(&self, kind: &str, prefix: &str) -> Result<bool> {
+        let n: i64 = self.db.conn().query_row(
+            "SELECT COUNT(*) FROM alerts WHERE kind=?1 AND substr(message, 1, length(?2)) = ?2",
+            params![kind, prefix],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
     pub fn alert(&self, severity: &str, kind: &str, message: &str, dedupe: Option<&str>) -> Result<()> {
         let prefix = dedupe.unwrap_or(message);
         let c = self.db.conn();
@@ -2622,3 +2654,33 @@ pub fn load_config(path: &Path) -> Result<Config> {
 
 #[cfg(test)]
 mod tests;
+
+/// "N files changed while read" from an `inconsistent …` line of nexus-agentctl / nexus-nas.
+fn changed_while_read(line: &str) -> u64 {
+    line.split(" files changed while read")
+        .next()
+        .and_then(|head| head.rsplit(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod inconsistent_tests {
+    #[test]
+    fn parses_changed_count() {
+        use super::changed_while_read as c;
+        assert_eq!(
+            c("host-a/17: consistent=false (3 files changed while read without a snapshot)"),
+            3
+        );
+        assert_eq!(
+            c("share-2/9: consistent=false (no snapshot; 0 files changed while read; 1 entries unreadable)"),
+            0
+        );
+        assert_eq!(
+            c("share-2/9: consistent=false (no snapshot; 12 files changed while read; 0 entries unreadable)"),
+            12
+        );
+        assert_eq!(c("garbage"), 0);
+    }
+}

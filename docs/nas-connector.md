@@ -85,8 +85,9 @@ everything on Windows servers). `nolease`: the client keys leases per inode, and
 second name of a hard-linked file while the first is open (`EINVAL` on open, lab) — a one-pass reader
 gains nothing from leases anyway.
 
-### Reading every file (needs a decision, §9)
-The connector runs unprivileged, so it must be given read access by the server:
+### Reading every file (supported setup — decided 2026-10-10)
+The connector runs unprivileged, so the server must grant read access. These two server-side models are
+the **supported, documented setup** (user decision 2026-10-10); the admin configures them on the NAS:
 - **NFS** (AUTH_SYS sends the connector's uid): export the share read-only to the appliance with
   `ro,all_squash,anonuid=0,anongid=0` (every request of the appliance is root on the server — read
   everything, write nothing). Without it only world-readable files are backed up (unreadable ones are
@@ -180,7 +181,10 @@ read (<b> bytes), <n> unchanged files reused (<b> bytes), <n> new chunks (<b> by
 `error <path>: <op>: <errno>` (first 1000), `result {json}`. `local_root` (tests, no root) scans a
 local directory instead of mounting. `nexus-nasmount` is socket-activated only.
 
-## 6. SMB Kerberos (`sec=krb5`)
+## 6. SMB Kerberos (`sec=krb5`) — not offered in v1
+**Decision 2026-10-10: dropped from v1.** The web-api refuses `sec: "krb5"` and the UI offers only NTLMSSP
+(signed, optionally encrypted SMB3). The code below stays for a later release with an AD test lab.
+
 Implemented in API, scheduler and helper: the keytab (sealed) goes to the helper, which writes it 0600
 into its per-instance runtime dir, runs `kinit -k -t <keytab> <principal>` into
 `KRB5CCNAME=FILE:/run/nexus-nasmount.<instance>/ccache` (set by the unit, so the kernel's
@@ -254,10 +258,11 @@ path as the mounting process (`nfs_t:dir search` for the helper); one chunk file
 exhausted the inodes of a 16 GB ext4 (store moved to its own file system in the lab).
 
 ## 9. Limitations and decisions
-- **Needs a decision**: server-side read access (NFS export `ro,all_squash,anonuid=0,anongid=0` to the
-  appliance; SMB backup user with Backup Operators / Samba `admin users`), §1.
-- **Needs a decision**: SMB Kerberos — add `cifs-utils` + `krb5-workstation` to the image and test
-  against an AD DC, or drop `sec=krb5` from v1 (§6).
+- Decided 2026-10-10: server-side read access = the two documented models in §1 (NFS export
+  `ro,all_squash,anonuid=0,anongid=0`; SMB backup user with Backup Operators / Samba `admin users`).
+- Decided 2026-10-10: no SMB Kerberos in v1 (§6).
+- Decided 2026-10-10: shares without a NAS snapshot raise the `backup_inconsistent` warning **once per
+  source**; files that actually changed while read raise it every time (deduplicated while unacknowledged).
 - Download only (no restore to the share).
 - Entries in memory until the commit (~0.7 KB per entry); proposal: split/streamed tree index in the
   chunk store for 10M+ entry shares.

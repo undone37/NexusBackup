@@ -476,7 +476,6 @@
             <label for="n-auth">{t.sources.sh.auth}</label>
             <select id="n-auth" bind:value={f.sec}>
               <option value="ntlmssp">{t.sources.sh.auths.ntlmssp}</option>
-              <option value="krb5">{t.sources.sh.auths.krb5}</option>
             </select>
           </div>
           <div class="field">

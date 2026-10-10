@@ -822,3 +822,39 @@ esac"#,
     s.check_replication_lag(catalog::now() + 49 * 3600).unwrap();
     assert_eq!(lag(&s).len(), 2);
 }
+
+/// User decision 2026-10-10: a missing snapshot warns once per source (even after
+/// the alert was acknowledged), files changed while read warn again after an ack.
+#[test]
+fn inconsistent_alerts_once_per_source() {
+    let e = env(1);
+    let s = sched(&e);
+    let count = |s: &Scheduler| -> i64 {
+        s.db.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM alerts WHERE kind='backup_inconsistent'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let ack = |s: &Scheduler| {
+        s.db.conn().execute("UPDATE alerts SET acked_by='op'", []).unwrap();
+    };
+    let nosnap = "inconsistent share-6/100: consistent=false (no NAS snapshot; 0 files changed while read; 0 entries unreadable)\n";
+    let changed = "inconsistent share-6/101: consistent=false (no NAS snapshot; 4 files changed while read; 0 entries unreadable)\n";
+    s.inconsistent_alerts(1, "acme", nosnap).unwrap();
+    s.inconsistent_alerts(2, "acme", nosnap).unwrap();
+    assert_eq!(count(&s), 1, "missing snapshot: once");
+    ack(&s);
+    s.inconsistent_alerts(3, "acme", nosnap).unwrap();
+    assert_eq!(count(&s), 1, "still once after the ack");
+    s.inconsistent_alerts(4, "acme", "inconsistent share-7/1: consistent=false (no NAS snapshot; 0 files changed while read; 0 entries unreadable)\n").unwrap();
+    assert_eq!(count(&s), 2, "other source: its own first warning");
+    s.inconsistent_alerts(5, "acme", changed).unwrap();
+    s.inconsistent_alerts(6, "acme", changed).unwrap();
+    assert_eq!(count(&s), 3, "changed files: warned, deduplicated while unacknowledged");
+    ack(&s);
+    s.inconsistent_alerts(7, "acme", changed).unwrap();
+    assert_eq!(count(&s), 4, "changed files warn again after an ack");
+}
