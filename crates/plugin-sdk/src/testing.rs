@@ -147,7 +147,7 @@ impl Host {
         self.log.borrow().clone()
     }
 
-    fn peer(&self, op_secs: Duration) -> Result<Box<dyn Peer>> {
+    fn peer(&self, config: &Value, op_secs: Duration) -> Result<Box<dyn Peer>> {
         *self.job.borrow_mut() += 1;
         Ok(match &self.launch {
             Launch::Binary { dir, sha, manifest } => {
@@ -155,7 +155,7 @@ impl Host {
                     dir: dir.clone(),
                     bin_sha256: sha.clone(),
                     manifest: Some(manifest.clone()),
-                    tcp_ports: Some(self.ports()),
+                    tcp_ports: Some(self.ports(config)),
                     limits: Limits::from_manifest(self.manifest.sandbox.as_ref(), op_secs.as_secs()),
                     job: *self.job.borrow(),
                 };
@@ -173,12 +173,17 @@ impl Host {
         })
     }
 
-    fn ports(&self) -> Vec<u16> {
+    /// As `nexus-pluginhost`: the endpoint ports resolved in the source config.
+    fn ports(&self, config: &Value) -> Vec<u16> {
+        let net = self.manifest.sandbox.as_ref().and_then(|s| s["network"].as_str());
+        if net == Some("none") {
+            return Vec::new();
+        }
         self.manifest
             .kinds
             .iter()
             .find(|k| k.kind == self.kind)
-            .map(|k| k.endpoints.iter().map(|e| e.default_port).collect())
+            .map(|k| k.tcp_ports(config))
             .unwrap_or_default()
     }
 
@@ -196,13 +201,13 @@ impl Host {
 
     pub fn validate(&self, config: &Value) -> Result<Value> {
         let cfg = config.to_string();
-        let mut p = self.peer(self.timeout)?;
+        let mut p = self.peer(config, self.timeout)?;
         ops::validate(p.as_mut(), &self.ops_params(&cfg), &mut self.out())
     }
 
     pub fn guests(&self, config: &Value) -> Result<Value> {
         let cfg = config.to_string();
-        let mut p = self.peer(self.timeout)?;
+        let mut p = self.peer(config, self.timeout)?;
         ops::guests(p.as_mut(), &self.ops_params(&cfg), &mut self.out())
     }
 
@@ -210,7 +215,7 @@ impl Host {
     pub fn backup(&self, config: &Value, guest: Option<&str>) -> Result<backup::Report> {
         let cfg = config.to_string();
         let source = source_name(&self.manifest.id, self.source_id, guest);
-        let mut p = self.peer(self.timeout)?;
+        let mut p = self.peer(config, self.timeout)?;
         backup::run(
             &self.store,
             p.as_mut(),
@@ -240,7 +245,7 @@ impl Host {
     ) -> Result<restore::Report> {
         let cfg = config.to_string();
         let snap = self.snapshot(source, time)?;
-        let mut p = self.peer(self.timeout)?;
+        let mut p = self.peer(config, self.timeout)?;
         restore::run(
             &self.store,
             p.as_mut(),
@@ -260,7 +265,7 @@ impl Host {
     pub fn mount(&self, config: &Value, source: &str, time: u64, params: Value, duration: Duration) -> Result<Value> {
         let cfg = config.to_string();
         let snap = self.snapshot(source, time)?;
-        let mut p = self.peer(self.timeout + duration)?;
+        let mut p = self.peer(config, self.timeout + duration)?;
         ops::mount(
             &self.store,
             p.as_mut(),

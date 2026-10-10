@@ -348,6 +348,29 @@ pub fn parse_source_name(s: &str) -> Option<(String, u64, Option<String>)> {
 /// may not use it as the first component of a file path.
 pub const STREAMS_DIR: &str = ".nexus-streams";
 
+impl KindSpec {
+    /// TCP ports of the endpoints configured in `cfg` (port from the config, else
+    /// `default_port`): the plugin's connect allow-list (Landlock).
+    pub fn tcp_ports(&self, cfg: &serde_json::Value) -> Vec<u16> {
+        let mut ports: Vec<u16> = self
+            .endpoints
+            .iter()
+            .filter(|e| e.proto == "tcp" && cfg.pointer(&e.host).is_some())
+            .map(|e| {
+                e.port
+                    .as_deref()
+                    .and_then(|p| cfg.pointer(p))
+                    .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                    .and_then(|p| u16::try_from(p).ok())
+                    .unwrap_or(e.default_port)
+            })
+            .collect();
+        ports.sort_unstable();
+        ports.dedup();
+        ports
+    }
+}
+
 impl Manifest {
     /// Static checks before a bundle is accepted (signature is checked separately).
     pub fn validate(&self) -> Result<(), String> {
@@ -531,6 +554,10 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(m.validate(), Ok(()));
+        let k = &m.kinds[0];
+        assert_eq!(k.tcp_ports(&serde_json::json!({"host": "db", "port": 6432})), [6432]);
+        assert_eq!(k.tcp_ports(&serde_json::json!({"host": "db"})), [5432]);
+        assert!(k.tcp_ports(&serde_json::json!({})).is_empty(), "unconfigured endpoint");
         let mut bad = m.clone();
         bad.id = "Bad_ID".into();
         assert!(bad.validate().is_err());

@@ -1,6 +1,6 @@
 # Plugin System — Contract (Phase 9)
 
-Status: v1 (2026-10-10), implementation notes v1.1 (2026-10-10, see "Implementation (v1.1)" at the end). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
+Status: v1 (2026-10-10), implementation notes v1.1/v1.2 (2026-10-10, see "Implementation (v1.1)" at the end). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
 speaking a **versioned protocol**, with a **Rust SDK**; trust = **project release key + publisher keys an admin adds
 with quorum**; reference plugin **PostgreSQL**; the **TrueNAS** connector is ported to the SDK; the restore API covers
 **download, restore to original/alternate target, application-specific restore and mount/instant access**.
@@ -178,3 +178,17 @@ allow-list is global (TCP only), so manifest UDP endpoints are not opened.
 **Appliance:** job kinds and API as listed in docs/control-plane.md; a backup with `consistent = false` raises
 `backup_inconsistent` once per snapshot source; `restores[].params_schema` values end up in `jobs.params` (visible to
 operators) — restore parameters must not carry secrets in v1 (use source secrets).
+
+**Endpoint ports (v1.2, additive):** `KindSpec::tcp_ports(config)` (crate `plugin-proto`) resolves a kind's TCP
+endpoints in a source config — only endpoints whose host pointer is set, port from the config else `default_port`.
+`nexus-pluginhost` and the SDK test harness both use it (the harness used the `default_port`s before, so a plugin
+could not be tested against a server on another port). Optional endpoints (e.g. an alternate restore server, an
+SSH restore host) are therefore a pattern: declare them, they open only when configured.
+
+**PostgreSQL reference plugin (M9, `plugins/postgresql`):** guests = databases (logical dumps, stream `<db>.sql`),
+no guest = the whole cluster (base backup + WAL as files: `data/`, `wal/<segment>`; incrementals re-reference
+`data/` and earlier WAL via `Unchanged` from a front-coded path list in the state blob, so every snapshot is
+self-contained for point-in-time restore). Pure-Rust wire protocol client instead of `pg_dump`/`pg_basebackup`
+(not in the image, and they must match the server's major version); restores to targets declared as optional
+endpoints of the source (alternate PostgreSQL server; SSH restore host for the PITR data directory). Details and
+limits: plugins/postgresql/README.md. No other contract change.

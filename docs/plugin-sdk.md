@@ -155,9 +155,11 @@ h.read_paths.push(test_data_dir);              // sandbox exceptions for local t
 let b = h.backup(&serde_json::json!({...}), Some("guest1"))?;      // real host code, temp chunk store
 let r = h.restore(&cfg, &b.source, b.time, "to_target", serde_json::json!({...}))?;
 ```
-`Host::binary` runs your real binary in the real sandbox (Landlock + seccomp; no root needed);
+`Host::binary` runs your real binary in the real sandbox (Landlock + seccomp; no root needed; TCP to the endpoint
+ports the config resolves, as on the appliance);
 `Host::in_process(manifest, kind, || MyPlugin)` runs it on a thread for quick logic tests. `h.log()` shows the job
-log, `h.snapshot()` / `h.store()` give access to what was committed. See `plugins/example-files/tests/roundtrip.rs`.
+log, `h.snapshot()` / `h.store()` give access to what was committed. See `plugins/example-files/tests/roundtrip.rs`,
+and `plugins/postgresql/tests/pg.rs` for a plugin tested against a real server in podman.
 
 ## Packaging and signing
 ```sh
