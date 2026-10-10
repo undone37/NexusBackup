@@ -191,7 +191,7 @@ neverallow { nexus_domain -nexus_keyd_t -nexus_setup_t } nexus_keyd_var_lib_t:fi
 # The restore micro-VM (QEMU parsing untrusted guest disks) never reaches keys,
 # stores, the catalog, downloads, credentials or job configs, nor the keyd socket
 # (security review H-3: it shares the nexus-chunkstore uid, so MAC is the boundary).
-neverallow nexus_restorevm_t { nexus_keyd_var_lib_t nexus_store_t nexus_escrow_t nexus_catalog_t nexus_downloads_t nexus_sshkey_t nexus_scheduler_var_run_t nexus_webapi_secret_t }:file *;
+neverallow nexus_restorevm_t { nexus_keyd_var_lib_t nexus_store_t nexus_escrow_t nexus_catalog_t nexus_downloads_t nexus_sshkey_t nexus_scheduler_var_run_t nexus_webapi_secret_t }:file { read write append open create unlink link rename setattr execute ioctl lock };
 neverallow nexus_restorevm_t { nexus_keyd_var_run_t nexus_store_t nexus_catalog_t nexus_scheduler_var_run_t }:dir { search read write add_name };
 neverallow nexus_restorevm_t nexus_keyd_t:unix_stream_socket connectto;
 neverallow nexus_restorevm_t self:{ tcp_socket udp_socket } create;
@@ -206,7 +206,9 @@ neverallow nexus_webapi_t { nexus_store_t nexus_keyd_var_lib_t nexus_sshkey_t ne
 # client keys are private to replicad / nexus-replica.
 neverallow nexus_replicad_t nexus_store_t:file { write append create unlink rename setattr };
 neverallow nexus_replicad_t nexus_store_t:dir { write add_name remove_name rmdir create };
-neverallow nexus_replicad_t nexus_keyd_t:unix_stream_socket connectto;
+# (connectto between daemons is granted by the base policy's `daemon` attribute:
+# keyd's socket file is the boundary)
+neverallow nexus_replicad_t nexus_keyd_var_run_t:sock_file { write open };
 neverallow nexus_replicad_t { nexus_keyd_var_run_t nexus_catalog_t }:dir search;
 neverallow nexus_replicad_t self:{ tcp_socket udp_socket } create;
 neverallow { nexus_domain -nexus_replicad_t } nexus_replicad_var_lib_t:file { read open };
@@ -574,7 +576,7 @@ files_read_etc_files(nexus_nasmount_t)
 sysnet_dns_name_resolve(nexus_nasmount_t)
 corenet_tcp_connect_kerberos_port(nexus_nasmount_t)
 allow nexus_nasmount_t self:key { create write search view link setattr };
-neverallow nexus_nasmount_t { nexus_store_t nexus_keyd_var_lib_t nexus_catalog_t nexus_scheduler_var_run_t nexus_sshkey_t }:file *;
+neverallow nexus_nasmount_t { nexus_store_t nexus_keyd_var_lib_t nexus_catalog_t nexus_scheduler_var_run_t nexus_sshkey_t }:file { read write append open create unlink link rename setattr execute ioctl lock };
 
 # nexus-nas: connects to the helper, receives the mount fd and reads the share
 # through it (never mounts, never writes there); tree snapshots in the tenant store

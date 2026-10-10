@@ -89,6 +89,14 @@ RUN dnf -y install --setopt=install_weak_deps=False selinux-policy-devel make \
  && dnf clean all
 COPY os/selinux/nexus.te os/selinux/nexus.fc /build/
 RUN make -C /build -f /usr/share/selinux/devel/Makefile nexus.pp
+# neverallow check (semanage expand-check) in this throwaway stage: the distro's
+# own modules fail it (container policy), so the install result is ignored and
+# only violations of the nexus module's neverallows fail the build.
+COPY os/selinux/nexus-port.cil /build/
+RUN sed -i '/expand-check/d' /etc/selinux/semanage.conf \
+ && echo expand-check=1 >> /etc/selinux/semanage.conf \
+ && { semodule -i /build/nexus.pp /build/nexus-port.cil > /build/neverallow.log 2>&1 || true; } \
+ && ! grep -A4 'neverallow check failed at .*/nexus/cil' /build/neverallow.log
 
 # ---- Stage 5: the appliance image
 FROM ${BASE}

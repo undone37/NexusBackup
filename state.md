@@ -189,7 +189,7 @@ Clicked through Dashboard, Agents (create, new token), Replication (peer create,
 - design flaw (admin knows new users' credentials) → user decided 2026-10-10: self-enrollment at first sign-in (implementation running)
 - [x] Optional approval system (user request 2026-10-10): off for single-user appliances, enable freely, disable = requester + 1 approver, approvers = admins + security officers, banner when more users exist; + self-enrollment (activation codes, split codes for privileged roles). Merged with Phase 9: catalog v8 = plugins, v9 = settings + activation columns; quorum gating returns `Outcome` (pending / direct); plugin uploads with approvals disabled are recorded first and approved directly (test `plugin_upload_without_approvals`). Checks: cargo test (336 ok), clippy, prove, svelte-check/build, cargo deny.
   - open: console recovery path when approvals deadlock (lost authenticator with two users)
-- [ ] SELinux: image build does not check neverallow rules; existing rules violate some (restorevm/nasmount `:file *`, replicad → keyd connect) — fix rules + enable checking
+- [x] SELinux neverallows are checked in the image build (selinux stage, expand-check; only the nexus module's rules gate, the distro's container module fails its own). Fixed: restorevm/nasmount `:file *` → explicit perms (base grants `map` to all domains); replicad→keyd now forbidden on keyd's sock_file (base `daemon` attribute grants connectto). Full image build + VM labs still pending (RAM).
 
 ## Phase 9 — Plugin system (added 2026-10-10)
 Goal: extend with new data sources + restore functions (NetApp SVM, VMware ESXi/vCenter, PostgreSQL, …) via signed, sandboxed plugins on a versioned SDK; M9 = PostgreSQL plugin + one ported connector
