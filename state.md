@@ -183,6 +183,7 @@ Decisions (user, 2026-10-10): sandboxed processes + Rust SDK; trust = project ke
 
 ## Phase 10 — End-user manual (added 2026-10-10, after plugin system; M365 = Phase 11)
 `manual/` folder, full end-user documentation in Markdown with reproducible screenshots of the web UI
+Decisions (user, 2026-10-10): English; screenshots from seeded demo data via headless browser; start after Phase 9 merge
 
 ## Next
 
