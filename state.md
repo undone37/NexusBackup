@@ -195,6 +195,10 @@ Clicked through Dashboard, Agents (create, new token), Replication (peer create,
 Goal: extend with new data sources + restore functions (NetApp SVM, VMware ESXi/vCenter, PostgreSQL, …) via signed, sandboxed plugins on a versioned SDK; M9 = PostgreSQL plugin + one ported connector
 Decisions (user, 2026-10-10): sandboxed processes + Rust SDK; trust = project key + admin-added publisher keys (quorum); reference plugin PostgreSQL; port TrueNAS; restore API: download, restore to target, app-specific, mount/instant access
 - [x] Contract `docs/plugin-system.md` (trust split: untrusted plugin process ↔ trusted `nexus-pluginhost`; bundle + manifest + signature; quorum-gated lifecycle; protocol ops Validate/ListGuests/Backup/Restore/Mount; sandbox; SDK; catalog v8) + crate `plugin-proto` (messages, framing, limits, path/stream validation, manifest model + validation)
+- [x] Platform merged (905e819/373eaaa): `nexus-pluginhost` (Landlock + seccomp + rlimits, host ops), `plugin-sdk` + `nexus-plugin` CLI (scaffold/build/sign/test), example plugin `plugins/example-files`, `plugin-manager` + installer (signed bundles, quorum lifecycle, rollback), catalog v8, web-api/scheduler/UI integration, SELinux domains + units, fuzz target, docs/plugin-sdk.md
+- [ ] PostgreSQL reference plugin (M9)
+- [ ] TrueNAS connector ported to the plugin SDK (M9)
+- [ ] VM lab run: `IMG=localhost/nexus-os:plugins lab/appliance/plugins.sh image disk boot setup plugin check stop` (needs ≥10 GB free RAM)
 
 ## Phase 10 — End-user manual (added 2026-10-10, after plugin system; M365 = Phase 11)
 `manual/` folder, full end-user documentation in Markdown with reproducible screenshots of the web UI
