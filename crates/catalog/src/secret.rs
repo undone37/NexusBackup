@@ -36,11 +36,15 @@ pub const SEALED_PREFIX: &str = "sealed:v1:";
 pub const TOTP_PREFIX: &str = "enc:v1:";
 
 /// JSON keys whose string values are credentials (sealed to the scheduler).
-/// `password` / `keytab`: SMB shares (docs/nas-connector.md).
-pub const SECRET_FIELDS: &[&str] = &["token_secret", "key_pem", "password", "keytab"];
+/// `password` / `keytab`: SMB shares (docs/nas-connector.md); `secret_key`: S3 secret access key of an offsite remote.
+pub const SECRET_FIELDS: &[&str] = &["token_secret", "key_pem", "password", "keytab", "secret_key"];
 
 /// Sibling fields that define where a secret is sent; part of its location.
 pub const BINDING_FIELDS: &[&str] = &["host", "port", "connect_addr", "ca_pem", "token_id", "user", "host_key"];
+
+/// More binding fields (S3 offsite remotes). They join the digest only when
+/// present, so the locations of secrets sealed before they existed stay the same.
+pub const EXTRA_BINDING_FIELDS: &[&str] = &["endpoint", "bucket", "access_key", "path_style", "region"];
 
 pub fn is_sealed(v: &str) -> bool {
     v.starts_with(SEALED_PREFIX)
@@ -67,10 +71,16 @@ pub fn tenant_owner(name: &str) -> String {
 }
 
 fn binding(o: &Map<String, Value>) -> String {
-    let v: Vec<&Value> = BINDING_FIELDS
+    let mut v: Vec<Value> = BINDING_FIELDS
         .iter()
-        .map(|k| o.get(*k).unwrap_or(&Value::Null))
+        .map(|k| o.get(*k).cloned().unwrap_or(Value::Null))
         .collect();
+    for k in EXTRA_BINDING_FIELDS {
+        if let Some(x) = o.get(*k) {
+            v.push(Value::String((*k).to_owned()));
+            v.push(x.clone());
+        }
+    }
     let d = Sha256::digest(serde_json::to_string(&v).unwrap_or_default().as_bytes());
     d[..16].iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -460,6 +470,45 @@ mod tests {
         let mut legacy = json!({"remote": {"host": "box", "key_pem": "PLAIN"}});
         k.open_all(&tenant_owner("t"), &mut legacy).unwrap();
         assert_eq!(legacy["remote"]["key_pem"], "PLAIN");
+    }
+
+    #[test]
+    fn binding_digest_is_stable_and_covers_s3() {
+        // digest of a config without the extra fields: unchanged since v1
+        let o = json!({"host": "pve1", "port": 8006, "token_id": "a@pve!b"});
+        assert_eq!(binding(o.as_object().unwrap()), "7d546a9cc175d59904a518f280092a17");
+        // sha256(["pve1",8006,null,null,"a@pve!b",null,null])
+    }
+
+    #[test]
+    fn s3_secret_follows_neither_endpoint_nor_bucket() {
+        let k = SchedulerKey::generate();
+        let pk = k.public();
+        let mut cfg = json!({"remote": {"type": "s3", "endpoint": "https://s3.example", "region": "eu", "bucket": "b",
+                                         "access_key": "AK", "secret_key": "SK", "path_style": false}});
+        assert_eq!(
+            pk.seal_all(&tenant_owner("t"), &mut cfg).unwrap(),
+            ["/remote/secret_key"]
+        );
+        let mut open = cfg.clone();
+        k.open_all(&tenant_owner("t"), &mut open).unwrap();
+        assert_eq!(open["remote"]["secret_key"], "SK");
+        for (f, v) in [
+            ("endpoint", json!("https://attacker.example")),
+            ("bucket", json!("other")),
+            ("access_key", json!("AK2")),
+            ("path_style", json!(true)),
+            ("region", json!("us-east-1")),
+        ] {
+            let mut moved = cfg.clone();
+            moved["remote"][f] = v;
+            assert!(k.open_all(&tenant_owner("t"), &mut moved).is_err(), "{f}");
+        }
+        // prefix / storage classes / lock may change without re-entering the key
+        let mut same = cfg.clone();
+        same["remote"]["prefix"] = json!("x");
+        same["remote"]["lock"] = json!(true);
+        k.open_all(&tenant_owner("t"), &mut same).unwrap();
     }
 
     #[test]

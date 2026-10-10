@@ -1,8 +1,20 @@
 # offsite
 
 Offsite tier (plan §9): encrypted pack files on a dumb remote, one Hetzner
-Storage Box per tenant. `remote::Remote` is the storage contract;
-`remote::conformance()` is the shared test every backend must pass.
+Storage Box or S3 bucket per tenant. `remote::Remote` is the storage contract;
+`remote::conformance()` is the shared test every backend must pass. Remotes
+with retention locks (`supports_locks`, `put_locked`, `extend_lock`,
+`lock_of`) make `Target` lock every object until its snapshot may go.
+
+## S3 backend
+
+`s3::S3Remote`: own SigV4 client (reqwest blocking + rustls, no AWS SDK), Object
+Lock in compliance mode, multipart above 64 MiB, `If-None-Match: *` against
+overwrites. Setup, lock semantics, policies and the threat model delta:
+[docs/s3-offsite.md](../../docs/s3-offsite.md). Test server:
+`testbox-s3/run.sh start` (MinIO with an Object Lock bucket and a restricted
+user), then `eval "$(crates/offsite/testbox-s3/run.sh env)"` and
+`cargo test -p offsite --test s3`.
 
 ## SFTP backend
 

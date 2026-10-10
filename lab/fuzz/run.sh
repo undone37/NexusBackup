@@ -16,7 +16,7 @@ secs=${1:-600}
 par=${2:-4}
 shift $(($# < 2 ? $# : 2))
 all=(nbd:nbd_client nbd:nbd_server chunkstore:sealed_open chunkstore:meta_decode
-     offsite:pack_parse offsite:hostile_box pve:ct_records pve:tar_files pve:agent_frames
+     offsite:pack_parse offsite:hostile_box offsite:s3_xml pve:ct_records pve:tar_files pve:agent_frames
      pve:agent_request keyd:keyd_request web-api:validators web-api:api_router truenas:hostile_stream
      nas:helper_request)
 if [ $# -gt 0 ]; then targets=("$@"); else targets=("${all[@]}"); fi

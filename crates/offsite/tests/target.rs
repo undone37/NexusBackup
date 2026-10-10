@@ -1,55 +1,11 @@
+mod common;
+
 use chunkstore::retention::Gfs;
 use chunkstore::{Keyring, Options as StoreOptions, Store};
+use common::*;
+use offsite::pack;
 use offsite::remote::{LocalDir, Remote};
 use offsite::target::{Options, Target};
-use std::path::Path;
-
-fn keys() -> Keyring {
-    Keyring::new("tenant1", &[(1, [5; 32])])
-}
-
-fn store(dir: &Path) -> Store {
-    Store::open(
-        dir,
-        keys(),
-        StoreOptions {
-            min_lock_secs: 0,
-            gc_grace_secs: 0,
-            ..Default::default()
-        },
-    )
-    .unwrap()
-}
-
-/// 48 pseudo-random 64 KiB chunks; snapshot `v` changes chunk `v % 48`.
-fn image(v: u64) -> Vec<u8> {
-    let mut x = 0x2545F4914F6CDD1Du64;
-    (0..48 * 65536usize)
-        .map(|i| {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            if i / 65536 == (v % 48) as usize {
-                (x as u8) ^ (v as u8 | 1)
-            } else {
-                x as u8
-            }
-        })
-        .collect()
-}
-
-fn backup(s: &Store, t: u64, v: u64) {
-    let idx = s.store_image(&image(v)[..], 65536).unwrap();
-    s.commit_snapshot("vm-1", t, &[("disk", idx)]).unwrap();
-}
-
-fn restored(s: &Store, t: u64) -> Vec<u8> {
-    let m = s.load_manifest("vm-1", t).unwrap();
-    let mut out = Vec::new();
-    s.write_chunks(s.load_index(&m, "disk").unwrap().chunk_ids(), &mut out)
-        .unwrap();
-    out
-}
 
 #[test]
 fn upload_dr_retention_gc_verify() {
@@ -226,4 +182,130 @@ fn hostile_box_listing_and_footer() {
     let c = store(&d.path().join("c"));
     let mut t = Target::open(&c, &box_, d.path().join("s3"), Options::default()).unwrap();
     assert!(t.rebuild_from_remote().is_err());
+}
+
+fn gfs(daily: u32) -> Gfs {
+    Gfs {
+        daily,
+        weekly: 0,
+        monthly: 0,
+        yearly: 0,
+    }
+}
+
+/// Remote retention locks (S3 Object Lock semantics, enforced strictly by the
+/// `Locking` double): uploads lock packs and snapshot files until the
+/// snapshot's lock, shared packs are extended, retention extends remote locks
+/// before the local one, GC never tries to delete a locked object, DR reads
+/// the locks back.
+#[test]
+fn remote_locks_follow_offsite_locks() {
+    let d = tempfile::tempdir().unwrap();
+    let rem = Locking::new(&d.path().join("box"));
+    let a = store_locked(&d.path().join("a"), 3600);
+    let now = a.compliance_now().unwrap();
+    let opts = || Options {
+        uploaders: 2,
+        repack_threshold: 0.0,
+        ..Default::default()
+    };
+    let (t0, t1) = (now - 3 * DAY, now - 2 * DAY);
+    backup(&a, t0, 0);
+    let mut t = Target::open(&a, &rem, d.path().join("state"), opts()).unwrap();
+    t.upload().unwrap();
+    let first: Vec<String> = t.pack_ids();
+    assert_eq!(first.len(), 1);
+    let l0 = a.load_manifest("vm-1", t0).unwrap().lock_until;
+    assert!(l0 >= now + 3600);
+    assert_eq!(rem.lock(&pack::remote_path(&first[0])), Some(l0));
+    assert_eq!(rem.lock(&format!("snapshots/vm-1/{t0}/manifest")), Some(l0));
+    assert_eq!(rem.lock(&format!("snapshots/vm-1/{t0}/disk.idx")), Some(l0));
+
+    // the second snapshot shares the first pack: extended to its own lock
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    backup(&a, t1, 1);
+    t.upload().unwrap();
+    let l1 = a.load_manifest("vm-1", t1).unwrap().lock_until;
+    assert!(l1 > l0);
+    assert_eq!(rem.lock(&pack::remote_path(&first[0])), Some(l1));
+    let second: Vec<String> = t.pack_ids().into_iter().filter(|p| !first.contains(p)).collect();
+    assert_eq!(rem.lock(&pack::remote_path(&second[0])), Some(l1));
+    assert_eq!(t.pack_lock(&second[0]), l1);
+
+    // GFS promotion: 14-day locks, on the remote first
+    let (kept, deleted, _) = t.apply_retention(&gfs(2)).unwrap();
+    assert_eq!((kept, deleted), (2, 0));
+    let (w0, w1) = (t0 + 14 * DAY, t1 + 14 * DAY);
+    assert_eq!(rem.lock(&format!("snapshots/vm-1/{t0}/manifest")), Some(w0));
+    assert_eq!(rem.lock(&format!("snapshots/vm-1/{t1}/disk.idx")), Some(w1));
+    assert_eq!(
+        rem.lock(&pack::remote_path(&first[0])),
+        Some(w1),
+        "max over its snapshots"
+    );
+    assert_eq!(rem.lock(&pack::remote_path(&second[0])), Some(w1));
+
+    // GC: everything is locked, nothing is touched (threshold 0 would repack)
+    let g = t.gc().unwrap();
+    assert_eq!((g.packs_deleted, g.packs_repacked), (0, 0), "{g:?}");
+    assert!(g.packs_locked >= 1, "{g:?}");
+    // retention with nothing to keep: the locks hold
+    let (_, deleted, locked) = t.apply_retention(&gfs(0)).unwrap();
+    assert_eq!((deleted, locked), (0, 2));
+    assert_eq!(rem.refused(), 0, "the engine never tries to delete locked objects");
+
+    // escrow files are locked as long as the longest snapshot
+    t.put_if_missing("keys/kek.recovery", b"k").unwrap();
+    t.protect("keys/kek.recovery").unwrap();
+    assert_eq!(rem.lock("keys/kek.recovery"), Some(w1));
+
+    // DR: locks come back from the remote
+    let b = store(&d.path().join("b"));
+    let mut tb = Target::open(&b, &rem, d.path().join("state-b"), opts()).unwrap();
+    tb.rebuild_from_remote().unwrap();
+    assert_eq!(tb.pack_lock(&first[0]), w1);
+    assert_eq!(tb.max_lock().unwrap(), w1);
+    let (_, deleted, locked) = tb.apply_retention(&gfs(0)).unwrap();
+    assert_eq!((deleted, locked), (0, 2), "the DR copy knows the extended locks");
+    assert!(tb.check_inventory().unwrap().ok());
+    tb.restore("vm-1", t1).unwrap();
+    assert_eq!(restored(&b, t1), image(1));
+    assert_eq!(rem.refused(), 0);
+}
+
+/// Dead packs whose locks have ended are deleted; locked ones wait.
+#[test]
+fn gc_deletes_expired_and_skips_locked_packs() {
+    let d = tempfile::tempdir().unwrap();
+    let rem = Locking::new(&d.path().join("box"));
+    let a = store(&d.path().join("a"));
+    let now = a.compliance_now().unwrap();
+    let mut t = Target::open(
+        &a,
+        &rem,
+        d.path().join("state"),
+        Options {
+            repack_threshold: 0.0,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // one upload per snapshot: A = base with chunk 0', B = {1', base 0}, C = {2'}, D = {3'}
+    for v in 0..4 {
+        backup(&a, now - (5 - v) * DAY, v);
+        t.upload().unwrap();
+    }
+    assert_eq!(t.pack_count(), 4);
+    // keep the newest only: 14-day lock on the packs it needs (A, B, D)
+    let (kept, deleted, _) = t.apply_retention(&gfs(1)).unwrap();
+    assert_eq!((kept, deleted), (1, 3));
+    let g = t.gc().unwrap();
+    assert_eq!(g.packs_deleted, 1, "C: dead, never locked; {g:?}");
+    assert_eq!(
+        g.packs_locked, 3,
+        "A, B, D are repack candidates (threshold 0) but locked; {g:?}"
+    );
+    assert_eq!(rem.refused(), 0);
+    assert!(t.check_inventory().unwrap().ok());
+    assert_eq!(t.verify_sample(10).unwrap().1, 0);
 }

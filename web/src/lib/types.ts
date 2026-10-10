@@ -12,16 +12,51 @@ export interface User {
   created?: number;
 }
 
+/** Hetzner Storage Box (SFTP). */
+export interface SftpRemote {
+  type: 'sftp';
+  host: string;
+  port?: number;
+  user: string;
+  /** path of the SSH private key on the appliance (no inline SSH keys) */
+  key_file: string;
+  host_key: string;
+  base_dir?: string;
+}
+
+/** S3 with optional Object Lock (docs/s3-offsite.md). */
+export interface S3Remote {
+  type: 's3';
+  /** https://host[:port] */
+  endpoint: string;
+  region: string;
+  bucket: string;
+  prefix?: string;
+  access_key: string;
+  /** write-only: sealed to the scheduler, never returned by GET */
+  secret_key?: string;
+  secret_key_set?: boolean;
+  path_style?: boolean;
+  /** PEM: CA or pinned endpoint certificate (on-prem endpoints) */
+  ca_pem?: string;
+  storage_class_packs?: string;
+  storage_class_meta?: string;
+  /** bucket has Object Lock: compliance retention on every object */
+  lock?: boolean;
+}
+
+/** `tenants.offsite`; `{}` = no offsite copy. Older UI versions stored the SFTP fields flat. */
 export interface TenantOffsite {
+  remote?: SftpRemote | S3Remote;
+  /** bytes per second over all uploaders */
+  bwlimit?: number | null;
+  uploaders?: number;
   host?: string;
   port?: number;
   user?: string;
-  /** path of the SSH private key on the appliance (no inline secrets in this blob) */
   key_file?: string;
   host_key?: string;
   base_dir?: string;
-  bwlimit?: number | null;
-  uploaders?: number;
 }
 
 export interface Tenant {

@@ -334,8 +334,17 @@ function seed() {
     totp_secret: b32(),
   });
   db.users.push(mk('admin', 'admin'), mk('so', 'security_officer'), mk('so2', 'security_officer'), mk('op', 'operator'), mk('acme', 'tenant_user', 'acme'));
-  const off = (u: string) => ({ host: `${u}.your-storagebox.de`, port: 23, user: u, host_key: 'SHA256:mJ0kq7…', base_dir: 'nexus', bwlimit: null, uploaders: 4, key_file: `/etc/nexus/offsite/${u}.key` });
-  db.tenants.push({ name: 'default', offsite: off('u123456') }, { name: 'acme', offsite: off('u654321') });
+  const off = (u: string) => ({
+    remote: { type: 'sftp', host: `${u}.your-storagebox.de`, port: 23, user: u, host_key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMock', base_dir: 'nexus', key_file: `/etc/nexus/offsite/${u}.key` },
+    bwlimit: null,
+    uploaders: 4,
+  });
+  const s3off = {
+    remote: { type: 's3', endpoint: 'https://fsn1.your-objectstorage.com', region: 'fsn1', bucket: 'nexus-acme', prefix: 'appliance1', access_key: 'NXAKMOCK', secret_key: 'sealed:mock', storage_class_packs: 'STANDARD_IA', path_style: false, lock: true },
+    bwlimit: null,
+    uploaders: 4,
+  };
+  db.tenants.push({ name: 'default', offsite: off('u123456') }, { name: 'acme', offsite: s3off });
   const src = (tenant: string, name: string, host: string) => ({
     id: nextId(),
     tenant,
@@ -494,6 +503,29 @@ function noInlineSecrets(v: unknown) {
     }
 }
 
+// tenants.offsite: an S3 remote may carry its secret_key (write-only, "sealed" here); omitted on PUT = keep
+function tenantOffsite(body: Json, old?: Json): Json {
+  const o = structuredClone(body ?? {});
+  const r = o.remote;
+  if (r?.type !== 's3') {
+    noInlineSecrets(o);
+    return o;
+  }
+  const { secret_key, secret_key_set: _set, ...rest } = r;
+  noInlineSecrets({ ...o, remote: rest });
+  if (!/^https:\/\/[^/?#@ ]+\/?$/.test(String(r.endpoint ?? ''))) throw new HttpError(400, 'offsite.remote.endpoint: expected https://host[:port]');
+  const keep = old?.remote?.type === 's3' && ['endpoint', 'region', 'bucket', 'access_key'].every((k) => old.remote[k] === r[k]);
+  if (!secret_key && !keep) throw new HttpError(400, 'offsite.remote.secret_key: required');
+  o.remote = { ...rest, secret_key: secret_key ? `sealed:${secret_key.length}` : old!.remote.secret_key };
+  return o;
+}
+
+function publicOffsite(o: Json): Json {
+  if (!o?.remote?.secret_key) return o;
+  const { secret_key: _s, ...r } = o.remote;
+  return { ...o, remote: { ...r, secret_key_set: true } };
+}
+
 function execute(qid: number, action: string, p: Json) {
   const { old: _old, ...next } = p;
   switch (action) {
@@ -571,24 +603,23 @@ on('GET', '/auth/me', (c) => {
 
 // tenants
 const NAME_RE = /^(?!\.)[A-Za-z0-9._-]{1,64}$/;
-on('GET', '/tenants', (c) => [200, db.tenants.filter((t) => !need(c.user).tenant || t.name === c.user!.tenant)]);
+on('GET', '/tenants', (c) => [200, db.tenants.filter((t) => !need(c.user).tenant || t.name === c.user!.tenant).map((t) => ({ ...t, offsite: publicOffsite(t.offsite) }))]);
 on('POST', '/tenants', async (c) => {
   const u = need(c.user, 'admin');
   const name = String(c.body.name ?? '').trim();
   if (!NAME_RE.test(name)) throw new HttpError(400, 'invalid tenant name');
   if (db.tenants.some((t) => t.name === name)) throw new HttpError(409, 'tenant exists');
-  noInlineSecrets(c.body.offsite);
-  db.tenants.push({ name, offsite: c.body.offsite ?? {} });
+  const offsite = tenantOffsite(c.body.offsite);
+  db.tenants.push({ name, offsite });
   await audit(u.name, 'tenant.create', `tenant/${name}`, {});
-  return [201, { name, offsite: c.body.offsite ?? {} }];
+  return [201, { name, offsite: publicOffsite(offsite) }];
 });
 on('PUT', '/tenants/:name', async (c, [name]) => {
   const u = need(c.user, 'admin');
   const t = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant');
-  noInlineSecrets(c.body.offsite);
-  t.offsite = { ...(c.body.offsite ?? {}) };
+  t.offsite = tenantOffsite(c.body.offsite, t.offsite);
   await audit(u.name, 'tenant.update', `tenant/${t.name}`, {});
-  return [200, t];
+  return [200, { ...t, offsite: publicOffsite(t.offsite) }];
 });
 on('DELETE', '/tenants/:name', (c, [name]) => quorum(need(c.user, 'admin'), 'tenant.delete', { name: decodeURIComponent(name) }));
 

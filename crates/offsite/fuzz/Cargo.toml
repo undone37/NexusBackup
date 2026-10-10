@@ -31,3 +31,10 @@ path = "fuzz_targets/hostile_box.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "s3_xml"
+path = "fuzz_targets/s3_xml.rs"
+test = false
+doc = false
+bench = false
