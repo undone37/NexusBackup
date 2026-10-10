@@ -48,6 +48,18 @@ pub struct ReplPaths {
     pub socket: Option<PathBuf>,
     /// `/run/nexus-replicad/seal.pub`: enrollment token digests are sealed to it
     pub seal_pub: Option<PathBuf>,
+    /// this appliance's TLS certificate: its SHA-256 is shown when a peer is
+    /// created (the secondary pins it during enrollment)
+    pub tls_cert: Option<PathBuf>,
+}
+
+/// SHA-256 (hex) of the first certificate in a PEM file — the value a secondary pins.
+pub fn cert_fingerprint(path: &std::path::Path) -> anyhow::Result<String> {
+    use rustls::pki_types::{pem::PemObject, CertificateDer};
+    let cert = CertificateDer::pem_file_iter(path)?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("no certificate in {}", path.display()))??;
+    Ok(repl_proto::sha256_hex(&cert))
 }
 
 struct Session {
@@ -696,7 +708,11 @@ pub async fn create_peer(State(st): State<St>, ctx: Ctx, J(r): J<PeerReq>) -> Ap
         &format!("replication-peer/{id}"),
         json!({"id": id, "name": r.name, "tenants": r.tenants}),
     )?;
-    Ok(accepted(q, json!({"peer": peer, "code": format!("{id}.{token}")})))
+    let primary_cert_sha256 = st.repl.paths.tls_cert.as_deref().and_then(|p| cert_fingerprint(p).ok());
+    Ok(accepted(
+        q,
+        json!({"peer": peer, "code": format!("{id}.{token}"), "primary_cert_sha256": primary_cert_sha256}),
+    ))
 }
 
 #[derive(Deserialize, Default)]

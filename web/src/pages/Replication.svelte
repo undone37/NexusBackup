@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { askConfirm, askText } from '../lib/confirm.svelte';
   // Appliance replication (docs/replication.md): peers on the primary, sources on the secondary.
   import { onMount } from 'svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
@@ -52,7 +53,7 @@
     pf = { name: '', tenants: [] };
     peerOpen = true;
   }
-  let code: { name: string; code: string } | null = $state(null);
+  let code: { name: string; code: string; fingerprint: string | null } | null = $state(null);
   let codeOpen = $state(false);
   $effect(() => {
     if (!codeOpen) code = null;
@@ -60,23 +61,23 @@
   async function savePeer(e: SubmitEvent) {
     e.preventDefault();
     const r = await act(
-      post<{ peer: ReplicationPeer; code: string }>('/replication/peers', { name: pf.name.trim(), tenants: pf.tenants }),
+      post<{ peer: ReplicationPeer; code: string; primary_cert_sha256?: string | null }>('/replication/peers', { name: pf.name.trim(), tenants: pf.tenants }),
       t.created,
     );
     if (!r) return;
     peerOpen = false;
     if (r.data.code) {
-      code = { name: pf.name.trim(), code: r.data.code };
+      code = { name: pf.name.trim(), code: r.data.code, fingerprint: r.data.primary_cert_sha256 ?? null };
       codeOpen = true;
     }
     load();
   }
   async function exportKeys(p: ReplicationPeer) {
-    if (!confirm(t.repl.exportConfirm(p.name))) return;
+    if (!(await askConfirm(t.repl.exportConfirm(p.name)))) return;
     if (await act(post(`/replication/peers/${encodeURIComponent(p.id)}/export-keys`, {}), t.saved)) load();
   }
   async function revoke(p: ReplicationPeer) {
-    if (!confirm(t.confirmDelete(t.repl.revokeWhat(p.name)))) return;
+    if (!(await askConfirm(t.confirmDelete(t.repl.revokeWhat(p.name))))) return;
     if (await act(del(`/replication/peers/${encodeURIComponent(p.id)}`), t.deleted)) load();
   }
 
@@ -126,16 +127,16 @@
     if (r) load();
   }
   async function newCode(s: ReplicationSource) {
-    const c = prompt(t.repl.newCodePrompt);
+    const c = await askText(t.repl.newCodePrompt);
     if (!c) return;
     if (await act(post(`/replication/sources/${s.id}/enroll`, { code: c.trim() }), t.saved)) load();
   }
   async function removeSource(s: ReplicationSource) {
-    if (!confirm(t.confirmDelete(t.repl.deleteSourceWhat(s.name)))) return;
+    if (!(await askConfirm(t.confirmDelete(t.repl.deleteSourceWhat(s.name))))) return;
     if (await act(del(`/replication/sources/${s.id}`), t.deleted)) load();
   }
   async function setSchedule(s: ReplicationSource) {
-    const v = prompt(t.repl.schedule, s.schedule);
+    const v = await askText(t.repl.schedule, s.schedule);
     if (!v || v === s.schedule) return;
     if (await act(put(`/replication/sources/${s.id}`, { schedule: v.trim() }), t.saved)) load();
   }
@@ -305,6 +306,15 @@
       <span class="muted">{t.repl.code}</span>
       <code class="secret">{code.code}</code>
       <button type="button" class="small" onclick={() => copy(code!.code)}>{t.users.copy}</button>
+    </div>
+    <div class="field">
+      <span class="muted">{t.repl.primaryFingerprint}</span>
+      {#if code.fingerprint}
+        <code class="secret">{code.fingerprint}</code>
+        <button type="button" class="small" onclick={() => copy(code!.fingerprint!)}>{t.users.copy}</button>
+      {:else}
+        <span class="muted">{t.repl.primaryFingerprintUnknown}</span>
+      {/if}
     </div>
     <div class="form-actions">
       <button type="button" class="primary" onclick={() => (codeOpen = false)}>{t.close}</button>

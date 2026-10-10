@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { askConfirm } from '../lib/confirm.svelte';
   import { onMount } from 'svelte';
   import { get, post, del, act, errText } from '../lib/api';
   import { notify } from '../lib/notify.svelte';
@@ -63,7 +64,7 @@
   });
 
   async function newToken(a: Agent) {
-    if (!confirm(t.agents.newTokenConfirm(a.name))) return;
+    if (!(await askConfirm(t.agents.newTokenConfirm(a.name)))) return;
     const r = await act(post<AgentToken>(`/agents/${encodeURIComponent(a.id)}/token`), t.saved);
     if (!r) return;
     if (!r.quorum && r.data.token) showToken(a.name, r.data);
@@ -76,7 +77,7 @@
   }
 
   async function update(a: Agent) {
-    if (!confirm(t.agents.updateConfirm(a.name))) return;
+    if (!(await askConfirm(t.agents.updateConfirm(a.name)))) return;
     const r = await act(
       post<{ id: number }>('/jobs', { kind: 'agent_update', tenant: a.tenant, params: { agent_id: a.id } }),
       (d) => t.snap.jobStarted(d.id),
@@ -85,7 +86,7 @@
   }
 
   async function remove(a: Agent) {
-    if (!confirm(t.confirmDelete(t.agents.deleteWhat(a.name)))) return;
+    if (!(await askConfirm(t.confirmDelete(t.agents.deleteWhat(a.name))))) return;
     if (await act(del(`/agents/${encodeURIComponent(a.id)}`), t.deleted)) load();
   }
 

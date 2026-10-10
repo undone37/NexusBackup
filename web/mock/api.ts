@@ -97,6 +97,8 @@ const db = {
   tenants: [] as { name: string; offsite: Json }[],
   sources: [] as { id: number; tenant: string; kind: 'pve' | 'linux' | 'nfs' | 'smb'; name: string; config: Json }[],
   agents: [] as Agent[],
+  replPeers: [] as Json[],
+  replSources: [] as Json[],
   policies: [] as { id: number; name: string; schedule: string; gfs: Json; offsite: boolean }[],
   groups: [] as { id: number; tenant: string; source_id: number; policy_id: number; name: string; guests: (number | string)[] }[],
   jobs: [] as Job[],
@@ -768,6 +770,87 @@ on('DELETE', '/groups/:id', (c, [id]) => {
   return quorum(need(c.user, 'admin'), 'group.delete', { id: g.id, name: g.name });
 });
 
+// replication (docs/replication.md): this appliance as primary (peers) and as secondary (sources)
+const hex = (n: number) => rand(n);
+db.replPeers.push({
+  id: 'a1b2c3d4e5f60718', name: 'dr-site', tenants: ['acme'], state: 'enrolled', cert_sha256: hex(32),
+  keyd_fingerprint: hex(32), token_expires: null, enrolled_at: now() - 86400 * 20, last_seen: now() - 1800,
+  revoked: null, created: now() - 86400 * 21, created_by: 'admin', keys: { acme: { versions: [1], created: now() - 86400 * 20 } },
+  enroll_failures: 0,
+});
+db.replSources.push({
+  id: 1, name: 'hq-primary', url: 'backup-hq.demo.lan:8443', peer_id: '0f1e2d3c4b5a6978', cert_pin: hex(32),
+  tenants: ['globex'], schedule: 'daily 04:00', gfs: { daily: 14, weekly: 4, monthly: 6, yearly: 2 }, bwlimit: null,
+  state: 'enrolled', cert_sha256: hex(32), keyd_fingerprint: hex(32), created: now() - 86400 * 30, last_sync: now() - 3600 * 7,
+  status: { globex: { last_ok: now() - 3600 * 7, last_error: null, imported: 2, bytes: 734003200, remote: 41, key_versions: [1] } },
+});
+const findPeer = (id: string) => find(db.replPeers, (p) => p.id === id, 'peer');
+const findRs = (id: string) => find(db.replSources, (r) => String(r.id) === id, 'replication source');
+on('GET', '/replication/peers', (c) => (need(c.user), [200, db.replPeers]));
+on('GET', '/replication/sources', (c) => (need(c.user), [200, db.replSources]));
+on('POST', '/replication/peers', async (c) => {
+  const u = need(c.user, 'admin');
+  const { name, tenants = [] } = c.body;
+  if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
+  if (!Array.isArray(tenants) || !tenants.length) throw new HttpError(400, 'tenants: at least one');
+  const peer = {
+    id: rand(8), name, tenants, state: 'pending', cert_sha256: null, keyd_fingerprint: null, token_expires: now() + 86400,
+    enrolled_at: null, last_seen: null, revoked: null, created: now(), created_by: u.name, keys: {}, enroll_failures: 0,
+  };
+  db.replPeers.push(peer);
+  const [st, q] = await quorum(u, 'replication_peer.create', { id: peer.id, name, tenants });
+  return [st, { ...q, peer, code: `${peer.id}.${b32(26)}`, primary_cert_sha256: '9c4f1e2d7a0b3c5d6e8f9a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e4f5' }];
+});
+on('POST', '/replication/peers/:id/export-keys', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const p = findPeer(id);
+  if (p.state !== 'enrolled') throw new HttpError(409, 'peer is not enrolled');
+  return quorum(u, 'replication.key_export', { peer: p.id, keyd_fingerprint: p.keyd_fingerprint, tenants: p.tenants });
+});
+on('DELETE', '/replication/peers/:id', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const p = findPeer(id);
+  if (p.state === 'pending') {
+    db.replPeers.splice(db.replPeers.indexOf(p), 1);
+    return [200, { ok: true }];
+  }
+  return quorum(u, 'replication_peer.delete', { id: p.id, name: p.name });
+});
+on('POST', '/replication/sources', async (c) => {
+  const u = need(c.user, 'admin');
+  const { name, url, cert_pin, tenants = [], schedule = 'daily 04:00', gfs = { daily: 14, weekly: 4, monthly: 6, yearly: 2 } } = c.body;
+  if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
+  if (!/^[A-Za-z0-9.-]+:\d{1,5}$/.test(url ?? '')) throw new HttpError(400, 'url: host:port');
+  if (!/^[0-9a-f]{64}$/.test(cert_pin ?? '')) throw new HttpError(400, 'cert_pin: 64 hex');
+  const r = {
+    id: nextId(), name, url, peer_id: '', cert_pin, tenants, schedule, gfs, bwlimit: null, state: 'enrolling',
+    cert_sha256: null, keyd_fingerprint: null, created: now(), last_sync: null, status: {},
+  };
+  db.replSources.push(r);
+  await audit(u.name, 'replication_source.create', `replication_source/${r.id}`, { name, url, tenants });
+  return [201, r];
+});
+on('POST', '/replication/sources/:id/enroll', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const r = findRs(id);
+  if (!/^[0-9a-f]{16}\.[A-Z2-7]{26}$/.test(c.body.code ?? '')) throw new HttpError(400, 'code: <peer-id>.<token>');
+  r.peer_id = c.body.code.split('.')[0];
+  await audit(u.name, 'replication_source.enroll', `replication_source/${r.id}`, {});
+  return [202, { job: nextId() }];
+});
+on('PUT', '/replication/sources/:id', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const r = findRs(id);
+  if (c.body.schedule) r.schedule = c.body.schedule;
+  await audit(u.name, 'replication_source.update', `replication_source/${r.id}`, c.body);
+  return [200, r];
+});
+on('DELETE', '/replication/sources/:id', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const r = findRs(id);
+  return quorum(u, 'replication_source.delete', { id: r.id, name: r.name });
+});
+
 // agents
 const pubAgent = ({ token_hash: _h, ...a }: Agent) => a;
 const AGENT_ID_RE = /^[0-9a-f]{16}$/;
@@ -777,7 +860,7 @@ async function issueToken(a: Agent) {
   const token = b32(26);
   a.token_hash = await sha256(token);
   a.token_expires = now() + 86400;
-  return { token, install_command: `nexus-agent init --token ${token}`, token_expires: a.token_expires };
+  return { token, install_command: 'sudo /usr/local/sbin/nexus-agent init --token -', token_expires: a.token_expires };
 }
 on('GET', '/agents', (c) => [200, byTenant(need(c.user), db.agents).map(pubAgent)]);
 on('POST', '/agents', async (c) => {

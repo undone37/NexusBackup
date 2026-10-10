@@ -8,6 +8,7 @@
   import type { LoginResponse, User } from './lib/types';
   import logo from './favicon.svg';
   import Notices from './components/Notices.svelte';
+  import ConfirmDialog from './components/ConfirmDialog.svelte';
   import Login from './pages/Login.svelte';
   import Dashboard from './pages/Dashboard.svelte';
   import Snapshots from './pages/Snapshots.svelte';
@@ -143,3 +144,4 @@
   </div>
 {/if}
 <Notices />
+<ConfirmDialog />

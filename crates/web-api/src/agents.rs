@@ -76,8 +76,10 @@ pub fn new_token() -> String {
     out
 }
 
-pub fn install_command(token: &str) -> String {
-    format!("/usr/local/sbin/nexus-agent init --token {token}")
+/// The token is NOT part of the command (it would end up in `ps` and the shell
+/// history): `--token -` makes the agent read it from stdin, the admin pastes it.
+pub fn install_command(_token: &str) -> String {
+    "sudo /usr/local/sbin/nexus-agent init --token -".into()
 }
 
 /// New token: digest sealed to the scheduler, bound to id + endpoint.

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { askConfirm } from '../lib/confirm.svelte';
   import { onMount } from 'svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
   import { notify } from '../lib/notify.svelte';
@@ -326,7 +327,7 @@
   }
 
   async function remove(x: Source) {
-    if (!confirm(t.confirmDelete(`${t.groups.source} "${x.name}"`))) return;
+    if (!(await askConfirm(t.confirmDelete(`${t.groups.source} "${x.name}"`)))) return;
     if (await act(del(`/sources/${x.id}`), t.deleted)) load();
   }
 </script>
