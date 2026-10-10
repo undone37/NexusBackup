@@ -140,3 +140,15 @@ peer announced them.
 - Shared implementation: both agents use `crates/agent-core` (session state machine,
   enrollment, chunking, cache, restore stream, update checks); the agent metadata cache
   is format 2 (adds per-volume change-journal marks; format 1 still loads).
+
+## v1.2 — LZ4 on the wire (additive, 2026-10-10)
+- The agent advertises capability `lz4` in `HelloReply.caps` (all agents built on `agent-core`).
+- The appliance then asks with `WantLz4 { job, hashes }` instead of `Want`. For each chunk the agent tries one
+  LZ4 block compression (`lz4_flex`, pure Rust, one extra buffer of ≤ 4 MiB at a time) and sends
+  `ChunkLz4 { hash, raw_len, data }` if that saves at least 10 %, else the usual `Chunk` (already compressed or
+  encrypted data costs only the attempt).
+- Restore: the appliance sends `RestoreChunkLz4 { hash, raw_len, data }` the same way if the agent advertised `lz4`.
+- Receivers decompress with the output size fixed by `raw_len` (frame check: `raw_len` and `data` ≤ MAX_CHUNK), then
+  verify the BLAKE3 hash of the decompressed data as before. A `ChunkLz4` that was not asked for is refused.
+- Old peers never see the new messages (variants appended; negotiation by capability). Storage is unaffected: chunks are
+  stored zstd-compressed and sealed exactly as before.

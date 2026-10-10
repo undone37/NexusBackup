@@ -55,6 +55,11 @@ fn real_agent_with_agent_conn() {
     fs::write(data.join("db/data.bin"), rnd(5_000_000, 1)).unwrap();
     fs::write(data.join("db/copy.bin"), rnd(5_000_000, 1)).unwrap(); // dedup
     fs::write(data.join("empty"), b"").unwrap();
+    // compressible text: travels as ChunkLz4 (random .bin data above travels raw)
+    let log: Vec<u8> = (0..60_000)
+        .flat_map(|i| format!("2026-10-10T12:00:{:02} web01 nginx: GET /index.html 200\n", i % 60).into_bytes())
+        .collect();
+    fs::write(data.join("etc/app.log"), &log).unwrap();
     fs::hard_link(data.join("etc/hostname"), data.join("hostname.link")).unwrap();
     std::os::unix::fs::symlink("etc/hostname", data.join("host")).unwrap();
 
@@ -124,6 +129,13 @@ fn real_agent_with_agent_conn() {
     let r1 = run(1);
     assert!(!r1.consistent, "fallback mode without root");
     assert!(r1.wanted_chunks > 0);
+    // LZ4 on the wire: the ~3.2 MB log compresses to a fraction, random data goes raw
+    assert!(
+        r1.wire_bytes + 2_000_000 < r1.wanted_bytes,
+        "wire {} vs raw {}",
+        r1.wire_bytes,
+        r1.wanted_bytes
+    );
     assert!(r1.scan.errors.is_empty(), "{:?}", r1.scan.errors);
     // second backup: everything unchanged, nothing transferred
     std::thread::sleep(Duration::from_millis(1100)); // distinct snapshot time

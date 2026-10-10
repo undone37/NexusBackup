@@ -34,6 +34,8 @@ pub struct Report {
     /// chunks / bytes transferred (requested via Want)
     pub wanted_chunks: u64,
     pub wanted_bytes: u64,
+    /// bytes actually received for those chunks (smaller with LZ4 on the wire)
+    pub wire_bytes: u64,
     /// of those, not in the store before
     pub new_chunks: u64,
     /// agent: snapshots + hooks gave a consistent view
@@ -253,16 +255,36 @@ fn collect_and_commit(
         }
     }
     want.sort_unstable(); // deterministic order (tests, agent-side locality is the agent's job)
+    let lz4 = s.has_cap(agent_proto::CAP_LZ4);
     for batch in want.chunks(MAX_BATCH) {
-        s.send(&Message::Want {
-            job: spec.job,
-            hashes: batch.to_vec(),
+        let (job, hashes) = (spec.job, batch.to_vec());
+        s.send(&if lz4 {
+            Message::WantLz4 { job, hashes }
+        } else {
+            Message::Want { job, hashes }
         })?;
         let mut pending: HashSet<Hash> = batch.iter().copied().collect();
         let mut learned = Vec::with_capacity(batch.len());
         loop {
-            match s.recv()? {
+            let (hash, data, wire) = match s.recv()? {
                 Message::Chunk { hash, data } => {
+                    let n = data.len();
+                    (hash, data, n)
+                }
+                Message::ChunkLz4 { hash, raw_len, data } => {
+                    if !lz4 {
+                        bail!("agent sent ChunkLz4 although it was not asked to compress");
+                    }
+                    // size-bounded by raw_len (frame check: ≤ MAX_CHUNK); the hash check below covers content
+                    let raw = agent_proto::lz4_unpack(&data, raw_len)
+                        .with_context(|| format!("chunk {}: bad LZ4 data", hex(&hash)))?;
+                    (hash, raw, data.len())
+                }
+                Message::WantDone => break,
+                m => bail!("unexpected message during chunk transfer: {}", name(&m)),
+            };
+            {
+                {
                     if !pending.remove(&hash) {
                         bail!("agent sent chunk {} that was not requested (or twice)", hex(&hash));
                     }
@@ -280,12 +302,11 @@ fn collect_and_commit(
                     let (id, new) = store.insert_chunk(&data)?;
                     r.wanted_chunks += 1;
                     r.wanted_bytes += data.len() as u64;
+                    r.wire_bytes += wire as u64;
                     r.new_chunks += u64::from(new);
                     keyed.insert(hash, id);
                     learned.push((hash, id, data.len() as u32));
                 }
-                Message::WantDone => break,
-                m => bail!("unexpected message during chunk transfer: {}", name(&m)),
             }
         }
         if !pending.is_empty() {
@@ -294,8 +315,12 @@ fn collect_and_commit(
         map.put_all(&learned).context("mapping index")?;
     }
     log(&format!(
-        "transfer: {} chunks ({} bytes) requested, {} new in the store",
-        r.wanted_chunks, r.wanted_bytes, r.new_chunks
+        "transfer: {} chunks ({} bytes) requested, {} bytes on the wire{}, {} new in the store",
+        r.wanted_chunks,
+        r.wanted_bytes,
+        r.wire_bytes,
+        if lz4 { " (lz4)" } else { "" },
+        r.new_chunks
     ));
     let tree: Vec<TreeEntry> = entries
         .into_iter()

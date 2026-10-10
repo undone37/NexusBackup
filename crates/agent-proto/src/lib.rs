@@ -231,6 +231,44 @@ pub enum Message {
         job: u64,
         writers: Vec<VssWriter>,
     },
+    // --- v1.2, appended: LZ4 on the wire (only if HelloReply.caps contains CAP_LZ4) ---
+    /// Like `Want`, but the agent may answer with `ChunkLz4` for compressible chunks.
+    WantLz4 {
+        job: u64,
+        hashes: Vec<Hash>,
+    },
+    /// LZ4 block of a chunk; `hash`/`raw_len` describe the uncompressed data.
+    ChunkLz4 {
+        hash: Hash,
+        raw_len: u32,
+        data: Vec<u8>,
+    },
+    /// Restore direction, appliance → agent (agent advertised CAP_LZ4).
+    RestoreChunkLz4 {
+        hash: Hash,
+        raw_len: u32,
+        data: Vec<u8>,
+    },
+}
+
+/// Capability: the peer understands `WantLz4` / `ChunkLz4` / `RestoreChunkLz4`.
+pub const CAP_LZ4: &str = "lz4";
+
+/// LZ4-compresses a chunk for the wire if that saves at least 10 %; `None` =
+/// send it raw (already compressed/encrypted data costs only one fast attempt).
+pub fn lz4_pack(data: &[u8]) -> Option<Vec<u8>> {
+    let c = lz4_flex::block::compress(data);
+    (c.len() < data.len() - data.len() / 10).then_some(c)
+}
+
+/// Decompresses a wire chunk. The output size is fixed by `raw_len` (bounded by
+/// `check` to MAX_CHUNK), so a hostile peer cannot inflate memory use.
+pub fn lz4_unpack(data: &[u8], raw_len: u32) -> io::Result<Vec<u8>> {
+    let out = lz4_flex::block::decompress(data, raw_len as usize).map_err(|e| bad(format!("lz4: {e}")))?;
+    if out.len() != raw_len as usize {
+        return Err(bad("lz4: decompressed size differs from raw_len"));
+    }
+    Ok(out)
 }
 
 fn bad(msg: impl Into<String>) -> io::Error {
@@ -268,7 +306,14 @@ pub fn check(m: &Message) -> io::Result<()> {
         Message::Chunk { data, .. } | Message::RestoreChunk { data, .. } if data.len() > MAX_CHUNK => {
             return Err(bad("chunk too large"))
         }
-        Message::Want { hashes, .. } if hashes.len() > MAX_BATCH => return Err(bad("want list too long")),
+        Message::ChunkLz4 { raw_len, data, .. } | Message::RestoreChunkLz4 { raw_len, data, .. }
+            if *raw_len as usize > MAX_CHUNK || data.len() > MAX_CHUNK =>
+        {
+            return Err(bad("chunk too large"))
+        }
+        Message::Want { hashes, .. } | Message::WantLz4 { hashes, .. } if hashes.len() > MAX_BATCH => {
+            return Err(bad("want list too long"))
+        }
         _ => return Ok(()),
     };
     if entries.len() > MAX_BATCH {
@@ -393,6 +438,38 @@ mod tests {
         let mut buf = Vec::new();
         write_msg(&mut buf, &m).unwrap();
         assert_eq!(read_msg(&mut &buf[..]).unwrap(), m);
+    }
+
+    #[test]
+    fn lz4_wire_compression() {
+        let text = b"backup ".repeat(70_000);
+        let c = lz4_pack(&text).expect("compressible");
+        assert!(c.len() < text.len() / 10);
+        assert_eq!(lz4_unpack(&c, text.len() as u32).unwrap(), text);
+        let mut x = 0x9e3779b97f4a7c15u64;
+        let random: Vec<u8> = (0..65536)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect();
+        assert!(lz4_pack(&random).is_none(), "incompressible data goes raw");
+        assert!(lz4_unpack(&c, text.len() as u32 - 1).is_err(), "raw_len must match");
+        assert!(lz4_unpack(b"\xff\xff\xff", 1000).is_err(), "garbage refused");
+        // a lying raw_len above the limit is refused by the frame check before decompression
+        let mut buf = Vec::new();
+        write_msg(
+            &mut buf,
+            &Message::ChunkLz4 {
+                hash: [0; 32],
+                raw_len: MAX_CHUNK as u32 + 1,
+                data: c,
+            },
+        )
+        .unwrap();
+        assert!(read_msg(&mut &buf[..]).is_err());
     }
 
     #[test]

@@ -156,6 +156,14 @@ pub fn session_config(ca: &Ca, agent_id: &str, pin: Option<&str>) -> Result<Arc<
 /// One TLS connection to an agent; framing per agent-proto.
 pub struct Session {
     pub s: StreamOwned<ClientConnection, TcpStream>,
+    /// capabilities from `HelloReply` (empty until `hello`)
+    pub caps: Vec<String>,
+}
+
+impl Session {
+    pub fn has_cap(&self, cap: &str) -> bool {
+        self.caps.iter().any(|c| c == cap)
+    }
 }
 
 impl Session {
@@ -193,7 +201,7 @@ impl Session {
         if s.conn.alpn_protocol() != Some(ALPN) {
             bail!("{host}:{port}: agent did not negotiate ALPN nexus-agent/1");
         }
-        Ok(Session { s })
+        Ok(Session { s, caps: Vec::new() })
     }
 
     /// TLS exporter bound to this session (enrollment proofs).
@@ -236,6 +244,7 @@ impl Session {
                 if id != agent_id {
                     bail!("agent reports id {id:?}, expected {agent_id:?}");
                 }
+                self.caps = caps.clone();
                 Ok(AgentInfo {
                     agent_id: id,
                     os,

@@ -107,6 +107,7 @@ pub fn restore(
     log: &mut dyn FnMut(&str),
 ) -> Result<ScanStats> {
     let tree = load_tree(store, &spec.source_agent, spec.time)?;
+    let lz4 = s.has_cap(agent_proto::CAP_LZ4); // chunks compressed on the wire if the agent can decode them
     let sel = select(&tree, &spec.paths)?;
     s.send(&Message::RestoreBegin {
         job: spec.job,
@@ -157,10 +158,15 @@ pub fn restore(
             for id in &e.chunks {
                 let data = store.read_chunk(id)?;
                 bytes += data.len() as u64;
-                s.send(&Message::RestoreChunk {
-                    hash: *blake3::hash(&data).as_bytes(),
-                    data,
-                })?;
+                let hash = *blake3::hash(&data).as_bytes();
+                match lz4.then(|| agent_proto::lz4_pack(&data)).flatten() {
+                    Some(c) => s.send(&Message::RestoreChunkLz4 {
+                        hash,
+                        raw_len: data.len() as u32,
+                        data: c,
+                    })?,
+                    None => s.send(&Message::RestoreChunk { hash, data })?,
+                }
             }
         }
     }

@@ -472,7 +472,13 @@ impl<P: Platform> Session<'_, P> {
                 kernel: info.kernel,
                 hostname: info.hostname,
                 agent_version: info.agent_version,
-                caps: info.caps,
+                caps: {
+                    let mut c = info.caps;
+                    if !c.iter().any(|x| x == agent_proto::CAP_LZ4) {
+                        c.push(agent_proto::CAP_LZ4.into()); // wire compression lives in the shared core
+                    }
+                    c
+                },
             },
         )?;
         log(format!("session with appliance {}", self.appliance));
@@ -506,7 +512,8 @@ impl<P: Platform> Session<'_, P> {
                     None => error(s, E_UNKNOWN_JOB, format!("unknown job {job}"))?,
                 },
                 Message::Scan { job, base } => self.scan(s, job, base.map(|b| b.time))?,
-                Message::Want { job, hashes } => self.want(s, job, &hashes)?,
+                Message::Want { job, hashes } => self.want(s, job, &hashes, false)?,
+                Message::WantLz4 { job, hashes } => self.want(s, job, &hashes, true)?,
                 Message::Release { job, success } => match self.release(job, success) {
                     Some(hook_log) => write_msg(s, &Message::Released { job, hook_log })?,
                     None => error(s, E_UNKNOWN_JOB, format!("unknown job {job}"))?,
@@ -540,6 +547,13 @@ impl<P: Platform> Session<'_, P> {
                 Message::RestoreChunk { hash, data } => match self.restore.as_mut() {
                     Some(r) => r.chunk(hash, &data),
                     None => return error(s, E_BAD_REQUEST, "RestoreChunk without RestoreBegin"),
+                },
+                Message::RestoreChunkLz4 { hash, raw_len, data } => match self.restore.as_mut() {
+                    Some(r) => match agent_proto::lz4_unpack(&data, raw_len) {
+                        Ok(raw) => r.chunk(hash, &raw), // the restore verifies the hash
+                        Err(e) => return error(s, E_BAD_REQUEST, e.to_string()),
+                    },
+                    None => return error(s, E_BAD_REQUEST, "RestoreChunkLz4 without RestoreBegin"),
                 },
                 Message::RestoreEnd => match self.restore.take() {
                     Some(r) => {
@@ -667,14 +681,26 @@ impl<P: Platform> Session<'_, P> {
         write_msg(s, &Message::ScanDone { stats })
     }
 
-    fn want(&mut self, s: &mut Stream, job: u64, hashes: &[Hash]) -> io::Result<()> {
+    /// `lz4`: the appliance asked via `WantLz4`; compressible chunks go as `ChunkLz4`
+    /// (one fast attempt per chunk, a single extra buffer at a time).
+    fn want(&mut self, s: &mut Stream, job: u64, hashes: &[Hash], lz4: bool) -> io::Result<()> {
         let Some((loc, _)) = self.jobs.get_mut(&job).and_then(|j| j.scan.as_mut()) else {
             return error(s, E_UNKNOWN_JOB, format!("job {job} has no scan"));
         };
         let mut missing = vec![];
         for h in hashes {
             match loc.get(h) {
-                Some(data) => write_msg(s, &Message::Chunk { hash: *h, data })?,
+                Some(data) => match lz4.then(|| agent_proto::lz4_pack(&data)).flatten() {
+                    Some(c) => write_msg(
+                        s,
+                        &Message::ChunkLz4 {
+                            hash: *h,
+                            raw_len: data.len() as u32,
+                            data: c,
+                        },
+                    )?,
+                    None => write_msg(s, &Message::Chunk { hash: *h, data })?,
+                },
                 None => missing.push(hex::encode(h)),
             }
         }
