@@ -88,7 +88,14 @@ export async function act<T>(
       notify('pending', t.quorumPending(o.quorumId));
       return o;
     }
-    notify('ok', typeof okText === 'function' ? okText(o.data) : okText);
+    const ok = typeof okText === 'function' ? okText(o.data) : okText;
+    // Approvals disabled: a gated action answers 200 {approvals: "disabled", executed, quorum_id?}.
+    const d = o.data as { approvals?: string; executed?: boolean; quorum_id?: number } | null;
+    if (d && typeof d === 'object' && d.approvals === 'disabled') {
+      notify('ok', d.executed === false && d.quorum_id ? t.approvalsOffScheduled(d.quorum_id) : t.approvalsOff(ok));
+      return o;
+    }
+    notify('ok', ok);
     return o;
   } catch (e) {
     notify('error', errText(e));

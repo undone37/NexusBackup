@@ -911,3 +911,89 @@ fn secondary_source_api() {
     assert_eq!(st, StatusCode::OK);
     assert!(list[0].get("token_hash").is_none(), "token never returned");
 }
+
+/// Approvals disabled (plan §2): creating the peer, the key export after
+/// enrollment, a re-export and the revocation happen on the admin's request,
+/// audited with `"approvals": "disabled"`; the scheduler still executes the
+/// export (an `approved` quorum row decided by the requester is its work item).
+#[test]
+fn replication_without_approvals_runs_on_the_admins_request() {
+    let p = Primary::new();
+    catalog::set_setting(&p.st.cat.conn(), "approvals_enabled", "false").unwrap();
+    let now = catalog::now() as u64;
+    p.backup("acme", now - DAY, &image(5, 1 << 20));
+    let (s, b) = p.call(
+        Method::POST,
+        "/api/v1/replication/peers",
+        &p.admin,
+        Some(json!({"name": "dr", "tenants": ["acme"]})),
+    );
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(
+        (b["approvals"].as_str(), b["executed"].as_bool()),
+        (Some("disabled"), Some(true))
+    );
+    assert_eq!(b["peer"]["state"], "approved");
+    let peer_id = b["peer"]["id"].as_str().unwrap().to_owned();
+    let sec = Secondary::new();
+    sec.enroll(&p.target(), b["code"].as_str().unwrap()).unwrap();
+    // the export follows directly: no pending request, an approved work item
+    assert!(p.pending("replication.key_export").is_empty());
+    let (state, by, decided): (String, String, String) =
+        p.st.cat
+            .conn()
+            .query_row(
+                "SELECT state, requested_by, decided_by FROM quorum WHERE action = 'replication.key_export'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+    assert_eq!(
+        (state.as_str(), by.as_str(), decided.as_str()),
+        ("approved", "alice", "alice")
+    );
+    p.sched.borrow_mut().execute_key_exports().unwrap();
+    let t = p.target();
+    assert_eq!(sec.sync(&t, "acme").unwrap().imported.len(), 1);
+    // an explicit re-export: 200 with the work item's id
+    let (s, b) = p.call(
+        Method::POST,
+        &format!("/api/v1/replication/peers/{peer_id}/export-keys"),
+        &p.admin,
+        None,
+    );
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(
+        (b["state"].as_str(), b["executed"].as_bool()),
+        (Some("approved"), Some(false))
+    );
+    assert!(b["quorum_id"].is_i64());
+    // revocation: direct
+    let (s, b) = p.call(
+        Method::DELETE,
+        &format!("/api/v1/replication/peers/{peer_id}"),
+        &p.admin,
+        None,
+    );
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let state: String =
+        p.st.cat
+            .conn()
+            .query_row("SELECT state FROM replication_peers WHERE id = ?1", [&peer_id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+    assert_eq!(state, "revoked");
+    let disabled: i64 =
+        p.st.cat
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM audit WHERE json_extract(details, '$.approvals') = 'disabled'
+             AND action IN ('replication_peer.create', 'replication.key_export', 'replication_peer.delete')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert_eq!(disabled, 4, "create, export after enrollment, re-export, revoke");
+    assert!(sec.sync(&t, "acme").is_err(), "revoked");
+}

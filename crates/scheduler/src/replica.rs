@@ -370,7 +370,10 @@ impl Scheduler {
     }
 
     fn key_export(&mut self, qid: i64, p: &Value, by: &str, decided: Option<&str>) -> Result<()> {
-        if decided.is_none_or(|d| d == by) {
+        // decided by the requester: only an export made while approvals are
+        // disabled (web-api records it that way, plan §2), and only while they still are
+        let own = decided == Some(by) && !catalog::approvals_enabled(&self.db.conn())?;
+        if decided.is_none_or(|d| d == by) && !own {
             bail!("not approved by a second person");
         }
         let peer_id = p["peer_id"].as_str().context("params: peer_id")?;

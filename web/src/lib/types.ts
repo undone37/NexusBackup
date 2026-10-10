@@ -10,6 +10,33 @@ export interface User {
   tenant: string | null;
   disabled: boolean;
   created?: number;
+  pending_activation?: boolean;
+  activation_expires?: number | null;
+}
+
+/** One-time activation code (or half of it) as returned by user create / new_activation / approve. */
+export interface Activation {
+  name?: string;
+  code: string;
+  parts: number;
+  part: number;
+  expires: number | null;
+  /** "/#/activate?name=…" — prefix with location.origin */
+  path: string;
+}
+
+export interface ApprovalsState {
+  enabled: boolean;
+  possible_approvers: number;
+  recommend: boolean;
+  pending_disable: number | null;
+}
+
+export interface GcPending {
+  tenant: string;
+  job: number;
+  reason: string;
+  created: number;
 }
 
 /** Hetzner Storage Box (SFTP). */

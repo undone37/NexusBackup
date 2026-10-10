@@ -132,9 +132,65 @@ CREATE TABLE replication_sources (
 ALTER TABLE snapshots ADD COLUMN origin TEXT;
 "#;
 
+/// v8: reserved for the plugin system (Phase 9, developed on its own branch;
+/// its migration replaces this placeholder when the branches are merged).
+/// v9 does not depend on anything v8 creates.
+const SCHEMA_V8: &str = "";
+
+/// v9: optional approval system and self-enrollment (plan §2 "Approval system",
+/// "User onboarding"). `settings`: appliance-wide key/value settings;
+/// `approvals_enabled` starts `true` for existing catalogs (keeps the quorum
+/// behaviour; nexus-setup writes the value for a new appliance). `users`:
+/// one-time activation code digest (`activation_hash`, `sha256hex(code)`, or
+/// `sha256hex(part1):sha256hex(part2)` for split codes, `sha256hex(part1):?`
+/// while the second part is not issued yet) and its expiry. A pending account
+/// has `activation_hash` set and no usable password/TOTP. Purely additive: the
+/// previous release skips it (pending accounts cannot log in there either: their
+/// password hash is not a valid hash).
+const SCHEMA_V9: &str = r#"
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT OR IGNORE INTO settings (key, value) VALUES ('approvals_enabled', 'true');
+ALTER TABLE users ADD COLUMN activation_hash TEXT;
+ALTER TABLE users ADD COLUMN activation_expires INTEGER;
+"#;
+
 const MIGRATIONS: &[&str] = &[
-    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9,
 ];
+
+/// Placeholder password hash of accounts without a password (pending
+/// activation): not a PHC string, so no password ever verifies against it.
+pub const NO_PASSWORD: &str = "!pending-activation";
+
+/// Appliance setting (v9 `settings`).
+pub fn setting(c: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
+    c.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0))
+        .optional()
+}
+
+pub fn set_setting(c: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
+    c.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+/// Whether quorum approvals are on. A missing row counts as on (fail safe).
+pub fn approvals_enabled(c: &Connection) -> rusqlite::Result<bool> {
+    Ok(setting(c, "approvals_enabled")?.is_none_or(|v| v != "false"))
+}
+
+/// Users who could approve a quorum request: enabled, activated admins and
+/// security officers.
+pub fn possible_approvers(c: &Connection) -> rusqlite::Result<Vec<String>> {
+    c.prepare(
+        "SELECT name FROM users WHERE role IN ('admin','security_officer') AND disabled = 0
+         AND activation_hash IS NULL ORDER BY name",
+    )?
+    .query_map([], |r| r.get(0))?
+    .collect()
+}
 
 pub fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
@@ -505,7 +561,7 @@ mod tests {
         let c = Catalog::open(&p).unwrap();
         let conn = c.conn();
         let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-        assert_eq!(v, 7);
+        assert_eq!(v, MIGRATIONS.len() as i64);
         let rows: Vec<(i64, String)> = conn
             .prepare("SELECT id, kind FROM sources ORDER BY id")
             .unwrap()
@@ -578,6 +634,58 @@ mod tests {
             })
             .unwrap();
         assert_eq!(kinds, 4);
+    }
+
+    /// v9 (approvals setting, activation columns) on top of a v7 catalog as the
+    /// release before the plugin system left it: it needs nothing v8 creates.
+    /// Existing users stay active, approvals stay on (current behaviour), and
+    /// the v7 release can still read users afterwards.
+    #[test]
+    fn migration_v9_from_v7_keeps_approvals_on() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.pragma_update(None, "foreign_keys", "ON").unwrap();
+            for (i, m) in MIGRATIONS[..7].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO users (name, password_hash, totp_secret, role, created) VALUES ('admin', 'h', 's', 'admin', 1);
+                 INSERT INTO users (name, password_hash, totp_secret, role, created) VALUES ('so', 'h', 's', 'security_officer', 1);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+            assert_eq!(v, 9);
+            assert!(approvals_enabled(&conn).unwrap());
+            assert_eq!(possible_approvers(&conn).unwrap(), vec!["admin", "so"]);
+            set_setting(&conn, "approvals_enabled", "false").unwrap();
+            assert!(!approvals_enabled(&conn).unwrap());
+            conn.execute(
+                "UPDATE users SET activation_hash = 'x', activation_expires = 5 WHERE name = 'so'",
+                [],
+            )
+            .unwrap();
+            assert_eq!(possible_approvers(&conn).unwrap(), vec!["admin"]);
+            conn.execute("DELETE FROM settings", []).unwrap();
+            assert!(approvals_enabled(&conn).unwrap(), "a missing row counts as enabled");
+        }
+        drop(c);
+        // reopening runs nothing again; the v7 release reads the file
+        let c = Catalog::open(&p).unwrap();
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..7].iter().skip(v as usize).count(), 0);
+        let n: i64 = old
+            .query_row("SELECT COUNT(*) FROM users WHERE disabled = 0", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2);
     }
 
     /// A fresh catalog runs every migration: all source kinds and the

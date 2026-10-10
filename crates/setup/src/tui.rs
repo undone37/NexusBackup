@@ -172,6 +172,10 @@ enum Screen {
         existing: String,
         form: Form,
     },
+    /// second person now (security officer) or later (approvals start disabled)
+    SecondPerson {
+        form: Form,
+    },
     Account {
         role: Role,
         replace: bool,
@@ -316,7 +320,15 @@ impl App<'_> {
         self.screen = match self.s.next_step()? {
             Some(Step::Network) => self.network_screen(),
             Some(Step::Admin) => self.account_screen(Role::Admin, false),
-            Some(Step::SecurityOfficer) => self.account_screen(Role::SecurityOfficer, false),
+            Some(Step::SecurityOfficer) => Screen::SecondPerson {
+                form: Form::new(vec![Field::choice(
+                    "Second person",
+                    vec![
+                        "create it now (recommended)".into(),
+                        "later (approvals start DISABLED)".into(),
+                    ],
+                )]),
+            },
             Some(Step::RecoveryKey) => match self.s.key_state()? {
                 KeyState::Unconfirmed => Screen::FullKey {
                     form: Form::new(vec![Field::text("Recovery key", "")]),
@@ -438,6 +450,27 @@ impl App<'_> {
                     }
                 } else {
                     Screen::ConfirmReplace { role, existing, form }
+                }
+            }
+
+            Screen::SecondPerson { mut form } => {
+                if k.code == KeyCode::Esc {
+                    Screen::Overview { sel: 0 }
+                } else if form.handle(k) {
+                    if form.fields[0].choice == 0 {
+                        self.status = None;
+                        self.account_screen(Role::SecurityOfficer, false)
+                    } else {
+                        self.s.second_person_later()?;
+                        self.info(
+                            "No second person: approvals start DISABLED. Add one later in the web UI (Users) \
+                             and enable approvals (Approvals page).",
+                        );
+                        self.advance()?;
+                        return Ok(());
+                    }
+                } else {
+                    Screen::SecondPerson { form }
                 }
             }
 
@@ -730,8 +763,14 @@ impl App<'_> {
             l.push(format!(
                 "{:<18} {}",
                 format!("{}:", r.label()),
-                self.s.user_with_role(r)?.unwrap_or_default()
+                self.s.user_with_role(r)?.unwrap_or_else(|| "(none yet)".into())
             ));
+        }
+        if self.s.approvals_start_enabled()? {
+            l.push("Approvals:         enabled (two people)".into());
+        } else {
+            l.push("Approvals:         DISABLED - single administrator. Add a second person".into());
+            l.push("                   in the web UI (Users), then enable approvals.".into());
         }
         l.push(format!("Metrics token:     {}", self.s.paths.metrics_token.display()));
         Ok(l)
@@ -879,17 +918,37 @@ impl App<'_> {
                 )
             }
 
+            Screen::SecondPerson { form } => {
+                let mut l = vec![
+                    Line::from("Recommended: a second person (security officer) who approves destructive"),
+                    Line::from("or weakening changes: shorter retention, deletions, new admins. That"),
+                    Line::from("person sets their own password and authenticator at this console now."),
+                    Line::from(""),
+                    warn("Without a second person, approvals start DISABLED: such changes"),
+                    warn("run at once (audited; retention locks still protect existing backups)."),
+                    Line::from("You can add a second person later in the web UI and enable approvals."),
+                    Line::from(""),
+                ];
+                let top = y + l.len() as u16;
+                l.extend(form.lines(cursor, top, x));
+                (
+                    "Step 3: second person (recommended)".into(),
+                    l,
+                    "Left/Right: choose  Enter: next  Esc: overview".into(),
+                )
+            }
+
             Screen::Account { role, form, .. } => {
                 let mut l = match role {
                     Role::Admin => vec![
                         Line::from("The administrator configures sources, policies and users."),
-                        Line::from("Some changes (weakening retention, deleting data) need a second person."),
+                        Line::from("With approvals on, weakening or destructive changes need a second person."),
                     ],
                     Role::SecurityOfficer => vec![
                         warn("Four-eyes principle: this must be a DIFFERENT person than the administrator."),
-                        Line::from("The security officer approves quorum actions (shortening retention, deletions,"),
-                        Line::from("new admins). It is created now because granting this role later itself needs"),
-                        Line::from("a security officer's approval; without one, quorum could never work."),
+                        Line::from("The security officer approves requests (shortening retention, deletions,"),
+                        Line::from("new admins). That person enters their own password and authenticator."),
+                        Line::from("With two people, approvals start enabled."),
                     ],
                 };
                 l.push(Line::from(""));
@@ -1070,7 +1129,16 @@ impl App<'_> {
                     Line::from(""),
                     Line::from("Enter writes /var/lib/nexus/setup-done and starts nexus-web-api and"),
                     Line::from("nexus-scheduler. This console wizard does not start again afterwards."),
+                    Line::from(""),
                 ]);
+                if self.s.approvals_start_enabled().unwrap_or(false) {
+                    l.push(Line::from("Approvals: enabled (administrator + security officer)."));
+                } else {
+                    l.push(warn("Approvals: DISABLED - single administrator. Changes that weaken"));
+                    l.push(warn(
+                        "protection run without a second person until you add one + enable them.",
+                    ));
+                }
                 ("Step 7: finish".into(), l, "Enter: finish  Esc: overview".into())
             }
 

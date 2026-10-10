@@ -10,6 +10,7 @@
   import Notices from './components/Notices.svelte';
   import ConfirmDialog from './components/ConfirmDialog.svelte';
   import Login from './pages/Login.svelte';
+  import Activate from './pages/Activate.svelte';
   import Dashboard from './pages/Dashboard.svelte';
   import Snapshots from './pages/Snapshots.svelte';
   import Files from './pages/Files.svelte';
@@ -93,6 +94,9 @@
 
 {#if !session.ready}
   <p class="login muted" aria-busy="true">{t.loading}</p>
+{:else if route.path === '/activate'}
+  <!-- self-enrollment: reachable without a session -->
+  <Activate />
 {:else if !session.user}
   <Login />
 {:else}

@@ -2,17 +2,22 @@
   import { onMount } from 'svelte';
   import { get, post, put, act, errText, type Outcome } from '../lib/api';
   import { notify } from '../lib/notify.svelte';
+  import { session } from '../lib/session.svelte';
   import { ROLES } from '../lib/roles';
   import { fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
-  import type { Role, Tenant, User } from '../lib/types';
+  import type { Activation, Role, Tenant, User } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import Qr from '../components/Qr.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
+  import ActivationCode from '../components/ActivationCode.svelte';
 
-  // POST /users -> {user, totp_uri}; PUT /users/{id} -> {user, totp_uri?}. Quorum-gated
-  // answers (202) carry the same fields next to quorum_id.
-  type UserResp = { user?: User; totp_uri?: string };
+  // POST /users -> {user, activation}; PUT /users/{id} -> {user, totp_uri? (own account),
+  // activation? (new_activation)}. Quorum-gated answers (202) carry the same fields next to
+  // quorum_id; then `activation` is only the first half of the code.
+  type UserResp = { user?: User; totp_uri?: string; activation?: Activation };
+  const isSelf = (x: User | null) => !!x && x.id === session.user?.id;
+  const privRole = (r: string) => r === 'admin' || r === 'security_officer';
 
   let items: User[] = $state([]);
   let tenants: Tenant[] = $state([]);
@@ -33,6 +38,16 @@
   let open = $state(false);
   let editing: User | null = $state(null);
   let f = $state({ name: '', password: '', role: 'operator' as Role, tenant: '', disabled: false });
+  let actFor: User | null = $state(null);
+  let actOpen = $state(false);
+  let shown = $state<{ name: string; activation: Activation | null }>({ name: '', activation: null });
+  let shownOpen = $state(false);
+  function showActivation(name: string, r: Outcome<UserResp> | null) {
+    if (r?.data.activation) {
+      shown = { name, activation: r.data.activation };
+      shownOpen = true;
+    }
+  }
   // Re-authentication of the acting user: every password / authenticator change
   // (own or another user's) needs the current password and a fresh TOTP code.
   let re = $state({ password: '', totp: '' });
@@ -64,13 +79,13 @@
     e.preventDefault();
     const tenant = f.tenant || null;
     if (!editing) {
-      const r = await act(post<UserResp>('/users', { name: f.name, password: f.password, role: f.role, tenant }), t.created);
+      const r = await act(post<UserResp>('/users', { name: f.name, role: f.role, tenant }), t.created);
       if (!r) return;
       open = false;
-      showEnroll(f.name, r);
+      showActivation(f.name, r);
     } else {
       const body: Record<string, unknown> = { role: f.role, tenant, disabled: f.disabled };
-      if (f.password) Object.assign(body, { password: f.password }, reauth());
+      if (f.password && isSelf(editing)) Object.assign(body, { password: f.password }, reauth());
       const r = await act(put<UserResp>(`/users/${editing.id}`, body), t.saved);
       if (!r) return;
       open = false;
@@ -93,6 +108,34 @@
     if (!r) return;
     resetOpen = false;
     showEnroll(x.name, r);
+  }
+
+  function newActivation(x: User) {
+    actFor = x;
+    re = { password: '', totp: '' };
+    actOpen = true;
+  }
+
+  async function confirmActivation(e: SubmitEvent) {
+    e.preventDefault();
+    const x = actFor;
+    if (!x) return;
+    const r = await act(put<UserResp>(`/users/${x.id}`, { new_activation: true, ...reauth() }), t.saved);
+    re = { password: '', totp: '' };
+    if (!r) return;
+    actOpen = false;
+    showActivation(x.name, r);
+    load();
+  }
+
+  function stateOf(x: User): { cls: string; text: string } {
+    if (x.disabled) return { cls: 'bad', text: t.users.disabled };
+    if (x.pending_activation) {
+      const exp = x.activation_expires;
+      const sub = !exp ? t.users.pendingApproval : exp < Date.now() / 1000 ? t.users.expired : t.users.pendingUntil(fmtTime(exp));
+      return { cls: 'warn', text: `${t.users.pending} · ${sub}` };
+    }
+    return { cls: 'ok', text: t.users.active };
   }
 
   async function copy(text: string) {
@@ -134,12 +177,21 @@
               <td>{t.roles[x.role] ?? x.role}</td>
               <td>{x.tenant ?? t.allTenants}</td>
               <td>
-                <span class="chip {x.disabled ? 'bad' : 'ok'}">{x.disabled ? t.users.disabled : t.users.active}</span>
+                {#if x.disabled && x.pending_activation}
+                  <span class="chip bad">{t.users.disabled}</span> <span class="chip warn">{t.users.pending}</span>
+                {:else}
+                  {@const st = stateOf(x)}
+                  <span class="chip {st.cls}">{st.text}</span>
+                {/if}
               </td>
               <td class="nowrap">{fmtTime(x.created)}</td>
               <td class="actions">
                 <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
-                <button type="button" class="small" onclick={() => resetTotp(x)}>{t.users.resetTotp}</button>
+                {#if isSelf(x)}
+                  <button type="button" class="small" onclick={() => resetTotp(x)}>{t.users.resetTotp}</button>
+                {:else}
+                  <button type="button" class="small" onclick={() => newActivation(x)}>{t.users.newActivation}</button>
+                {/if}
               </td>
             </tr>
           {/each}
@@ -157,10 +209,14 @@
         <input id="u-name" bind:value={f.name} required autocomplete="off" autocapitalize="none" spellcheck="false" />
       </div>
     {/if}
-    <div class="field">
-      <label for="u-pw">{editing ? t.users.passwordNew : t.users.password}</label>
-      <input id="u-pw" type="password" bind:value={f.password} minlength="12" required={!editing} autocomplete="new-password" />
-    </div>
+    {#if !editing}
+      <p class="muted">{t.users.newHint}</p>
+    {:else if isSelf(editing)}
+      <div class="field">
+        <label for="u-pw">{t.users.passwordOwn}</label>
+        <input id="u-pw" type="password" bind:value={f.password} minlength="12" autocomplete="new-password" />
+      </div>
+    {/if}
     <div class="form-grid">
       <div class="field">
         <label for="u-role">{t.users.role}</label>
@@ -177,7 +233,7 @@
         <div class="hint" id="u-tenant-hint">{t.users.tenantHint}</div>
       </div>
     </div>
-    {#if editing && f.password}
+    {#if editing && f.password && isSelf(editing)}
       <fieldset>
         <legend>{t.users.reauth}</legend>
         <p class="muted">{t.users.reauthHint}</p>
@@ -229,6 +285,21 @@
     </div>
   </form>
 </Modal>
+
+<Modal bind:open={actOpen} title="{t.users.newActivation}: {actFor?.name ?? ''}">
+  <form onsubmit={confirmActivation}>
+    <p>{t.users.newActivationConfirm}</p>
+    {#if actFor && privRole(actFor.role)}<p class="banner info">{t.users.newActivationPriv}</p>{/if}
+    <p class="muted">{t.users.reauthHint}</p>
+    {@render reauthFields('a')}
+    <div class="form-actions">
+      <button type="button" onclick={() => (actOpen = false)}>{t.cancel}</button>
+      <button type="submit" class="primary">{t.users.newActivation}</button>
+    </div>
+  </form>
+</Modal>
+
+<ActivationCode bind:open={shownOpen} name={shown.name} activation={shown.activation} />
 
 <Modal bind:open={enrollOpen} title="{t.users.enroll}: {enroll?.name ?? ''}">
   {#if enroll}

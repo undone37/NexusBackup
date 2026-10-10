@@ -2,6 +2,8 @@
 // and `npm run preview`. Vite server middleware only — never part of the build output.
 //
 // Users (password "nexus", any 6-digit TOTP code): admin, so, so2, op, acme (tenant_user of "acme").
+// "newop" is pending activation: sign-in page → "Activate account", code DEMO-ACTIVATE-NEWOP-2026
+// (any 6-digit authenticator code is accepted). Approvals start disabled.
 
 import type { Plugin } from 'vite';
 
@@ -59,6 +61,9 @@ interface User {
   created: number;
   password: string;
   totp_secret: string;
+  /** pending activation: the code parts the user must enter (plain in the mock;
+   *  web-api stores only hashes), `null` while the second part is not issued yet */
+  act?: { parts: (string | null)[]; expires: number | null; failures: number } | null;
 }
 interface Agent {
   id: string;
@@ -110,6 +115,8 @@ const db = {
   downloads: new Map<string, { owner: string; filename: string; body: string; expires: number }>(),
   failures: new Map<string, { count: number; until: number }>(),
   quorumSecrets: new Map<number, Json>(),
+  approvals: false,
+  gcPending: [] as Json[],
   seq: 100,
 };
 const nextId = () => ++db.seq;
@@ -336,6 +343,9 @@ function seed() {
     totp_secret: b32(),
   });
   db.users.push(mk('admin', 'admin'), mk('so', 'security_officer'), mk('so2', 'security_officer'), mk('op', 'operator'), mk('acme', 'tenant_user', 'acme'));
+  const newop = mk('newop', 'operator');
+  Object.assign(newop, { created: t - 3600, password: '', totp_secret: '', act: { parts: [normCode('DEMO-ACTIVATE-NEWOP-2026')], expires: t + 71 * 3600, failures: 0 } });
+  db.users.push(newop);
   const off = (u: string) => ({
     remote: { type: 'sftp', host: `${u}.your-storagebox.de`, port: 23, user: u, host_key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMock', base_dir: 'nexus', key_file: `/etc/nexus/offsite/${u}.key` },
     bwlimit: null,
@@ -444,6 +454,7 @@ function seed() {
     { id: nextId(), ts: t - 3000, severity: 'warning', kind: 'capacity', message: 'Chunk store at 78 % capacity', acked_by: null },
     { id: nextId(), ts: t - 90000, severity: 'info', kind: 'offsite_lag', message: 'Offsite copy for acme caught up', acked_by: 'op' },
   );
+  db.gcPending.push({ tenant: 'acme', job: 4711, reason: 'GC would delete 34 % of the chunks (limit 20 %)', created: t - 5400 });
   db.quorum.push(
     { id: nextId(), action: 'group.delete', params: { id: db.groups[1].id, name: 'development' }, requested_by: 'admin', created: t - 1800, decided_by: null, decided_at: null, state: 'pending' },
     {
@@ -461,8 +472,32 @@ function seed() {
 
 // ---------------------------------------------------------------- helpers
 
-const pub = (u: User) => ({ id: u.id, name: u.name, role: u.role, tenant: u.tenant, disabled: u.disabled, created: u.created });
+const pub = (u: User) => ({
+  id: u.id,
+  name: u.name,
+  role: u.role,
+  tenant: u.tenant,
+  disabled: u.disabled,
+  created: u.created,
+  pending_activation: !!u.act,
+  activation_expires: u.act?.expires ?? null,
+});
 const PRIV: Role[] = ['admin', 'security_officer'];
+const ACT_SECS = 72 * 3600;
+const normCode = (s: string) => s.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+const newCode = () => b32(26).replace(/(.{4})(?=.)/g, '$1-');
+/** Admins and security officers that are enabled and activated: they can approve requests. */
+const approvers = (except?: (u: User) => boolean) => db.users.filter((u) => PRIV.includes(u.role) && !u.disabled && !u.act && !except?.(u));
+const activationPath = (name: string) => `/#/activate?name=${encodeURIComponent(name)}`;
+/** Starts (or restarts) the activation of `x`: old credentials stop working. Returns the code to show. */
+function startActivation(x: User, split: boolean): Json {
+  const code = newCode();
+  x.password = '';
+  x.totp_secret = '';
+  x.act = { parts: split ? [normCode(code), null] : [normCode(code)], expires: split ? null : now() + ACT_SECS, failures: 0 };
+  for (const [sid, s] of db.sessions) if (s.userId === x.id) db.sessions.delete(sid);
+  return { code, parts: split ? 2 : 1, part: 1, expires: x.act.expires, path: activationPath(x.name) };
+}
 
 function need(u: User | null, ...roles: Role[]): User {
   if (!u) throw new HttpError(401, 'not signed in');
@@ -476,8 +511,21 @@ function find<T>(xs: T[], pred: (x: T) => boolean, what: string): T {
   return x;
 }
 
-// 202 {quorum_id, ...extra} like web-api's `accepted()`.
+const SCHEDULER_ACTIONS = ['replication.key_export'];
+// 202 {quorum_id, ...extra} like web-api's `accepted()`; with approvals disabled the
+// action runs at once (200 {approvals: "disabled", executed}).
 async function quorum(u: User, action: string, params: Json, extra: Json = {}): Promise<[number, Json]> {
+  if (!db.approvals) {
+    if (SCHEDULER_ACTIONS.includes(action)) {
+      const q = { id: nextId(), action, params, requested_by: u.name, created: now(), decided_by: u.name, decided_at: now(), state: 'approved' };
+      db.quorum.push(q);
+      await audit(u.name, action, `quorum/${q.id}`, { approvals: 'disabled', params });
+      return [200, { approvals: 'disabled', executed: false, quorum_id: q.id, state: 'approved', ...extra }];
+    }
+    execute(0, action, params);
+    await audit(u.name, action, action, { approvals: 'disabled', params });
+    return [200, { approvals: 'disabled', executed: true, ...extra }];
+  }
   const q = { id: nextId(), action, params, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
   db.quorum.push(q);
   db.alerts.push({ id: nextId(), ts: now(), severity: 'info', kind: 'quorum', message: `Approval requested: ${action} by ${u.name}`, acked_by: null });
@@ -528,7 +576,7 @@ function publicOffsite(o: Json): Json {
   return { ...o, remote: { ...r, secret_key_set: true } };
 }
 
-function execute(qid: number, action: string, p: Json) {
+function execute(qid: number, action: string, p: Json): Json | void {
   const { old: _old, ...next } = p;
   switch (action) {
     case 'group.delete':
@@ -552,8 +600,27 @@ function execute(qid: number, action: string, p: Json) {
     case 'group.update':
       Object.assign(find(db.groups, (x) => x.id === p.id, 'group'), next);
       break;
+    case 'approvals.disable':
+      db.approvals = false;
+      break;
     case 'user.update': {
-      const { name: _n, id: _i, ...fields } = next;
+      const { name: _n, id: _i, activation, ...fields } = next;
+      const x = find(db.users, (y) => y.id === p.id, 'user');
+      if (activation === 'split') {
+        // the approver gets the second half of the activation code
+        const code = newCode();
+        if (x.act && x.act.parts.length === 2 && x.act.parts[1] === null) {
+          x.act.parts[1] = normCode(code);
+          x.act.expires = now() + ACT_SECS;
+        } else {
+          Object.assign(x, { password: '', totp_secret: '' });
+          x.act = { parts: [db.quorumSecrets.get(qid)?.part1 ?? '', normCode(code)], expires: now() + ACT_SECS, failures: 0 };
+          for (const [sid, s] of db.sessions) if (s.userId === x.id) db.sessions.delete(sid);
+        }
+        db.quorumSecrets.delete(qid);
+        Object.assign(x, fields);
+        return { activation: { name: x.name, code, parts: 2, part: 2, expires: x.act.expires, path: activationPath(x.name) } };
+      }
       const secrets = Object.fromEntries(Object.entries(db.quorumSecrets.get(qid) ?? {}).filter(([, v]) => v !== undefined));
       Object.assign(find(db.users, (x) => x.id === p.id, 'user'), fields, secrets);
       db.quorumSecrets.delete(qid);
@@ -577,7 +644,7 @@ on('POST', '/auth/login', async (c) => {
   const f = db.failures.get(name);
   if (f && f.until > now()) throw new HttpError(429, 'too many failed sign-ins; try again in 15 minutes');
   const u = db.users.find((x) => x.name === name);
-  if (!u || u.disabled || u.password !== password || !/^\d{6}$/.test(String(totp))) {
+  if (!u || u.disabled || u.act || !u.password || u.password !== password || !/^\d{6}$/.test(String(totp))) {
     const g = f && f.until === 0 ? f : { count: 0, until: 0 };
     g.count++;
     if (g.count >= 5) g.until = now() + 900;
@@ -919,26 +986,32 @@ on('DELETE', '/agents/:id', (c, [id]) => {
 on('GET', '/users', (c) => (need(c.user, 'admin'), [200, db.users.map(pub)]));
 on('POST', '/users', async (c) => {
   const u = need(c.user, 'admin');
-  const { name, password, role, tenant } = c.body;
-  if (!name || !password || String(password).length < 12) throw new HttpError(400, 'name and a password of at least 12 characters required');
+  const { name, role, tenant } = c.body;
+  if ('password' in c.body) throw new HttpError(400, 'unknown field `password`: users set their own password at activation');
+  if (!NAME_RE.test(String(name ?? ''))) throw new HttpError(400, 'invalid user name');
   if (db.users.some((x) => x.name === name)) throw new HttpError(409, 'user exists');
   if (role === 'tenant_user' && !tenant) throw new HttpError(400, 'tenant users need a tenant');
-  // Privileged accounts are created disabled; the quorum request enables them.
-  // The TOTP URI is returned either way (it is only shown once).
+  // With approvals on, privileged accounts are created disabled; the quorum request
+  // enables them. The requester gets only the first half of the activation code.
   const priv = PRIV.includes(role);
-  const n: User = { id: nextId(), name, password, role, tenant: tenant || null, disabled: priv, created: now(), totp_secret: b32() };
+  const gated = priv && db.approvals;
+  const n: User = { id: nextId(), name, password: '', role, tenant: tenant || null, disabled: gated, created: now(), totp_secret: '' };
   db.users.push(n);
+  const activation = startActivation(n, gated);
   await audit(u.name, 'user.create', `user/${n.id}`, { name, role });
-  const body = { user: pub(n), totp_uri: totpUri(n.name, n.totp_secret) };
-  if (priv) return quorum(u, 'user.update', { id: n.id, name, role, disabled: false }, body);
-  return [201, body];
+  if (gated) return quorum(u, 'user.update', { id: n.id, name, role, disabled: false, activation: 'split' }, { user: pub(n), activation });
+  return [201, { user: pub(n), activation }];
 });
 on('PUT', '/users/:id', async (c, [id]) => {
   const u = need(c.user, 'admin');
   const x = find(db.users, (y) => y.id === Number(id), 'user');
   const b = c.body;
-  // re-authentication of the acting user for password / authenticator changes
-  if (b.password || b.reset_totp) {
+  const own = x.id === u.id;
+  if ((b.password || b.reset_totp) && !own)
+    throw new HttpError(400, "password / reset_totp only for your own account; issue a new activation code (new_activation) for other users");
+  if (b.new_activation && own) throw new HttpError(400, 'new_activation: not for your own account');
+  // re-authentication of the acting user for credential changes
+  if (b.password || b.reset_totp || b.new_activation) {
     if (!b.current_password || !b.current_totp)
       throw new HttpError(400, 'current_password and current_totp are required to change a password or authenticator');
     if (b.current_password !== u.password || !/^\d{6}$/.test(String(b.current_totp))) {
@@ -947,9 +1020,9 @@ on('PUT', '/users/:id', async (c, [id]) => {
     }
   }
   const p: Json = { id: x.id, name: x.name };
-  if (b.role !== undefined) p.role = b.role;
+  if (b.role !== undefined && b.role !== x.role) p.role = b.role;
   if (b.tenant !== undefined) p.tenant = b.tenant || null;
-  if (b.disabled !== undefined) p.disabled = !!b.disabled;
+  if (b.disabled !== undefined && !!b.disabled !== x.disabled) p.disabled = !!b.disabled;
   if (b.password) p.password = b.password;
   const extra: Json = {};
   if (b.reset_totp) {
@@ -957,23 +1030,109 @@ on('PUT', '/users/:id', async (c, [id]) => {
     extra.totp_uri = totpUri(x.name, p.totp_secret);
   }
   const isPriv = PRIV.includes(x.role);
-  const enabledPeers = db.users.filter((y) => y.role === x.role && !y.disabled).length;
+  const removesApprover = isPriv && !x.disabled && !x.act && (p.disabled === true || (p.role && !PRIV.includes(p.role)) || (b.new_activation && db.approvals));
+  if (db.approvals && removesApprover && approvers((y) => y.id === x.id).length < 2)
+    throw new HttpError(409, 'approvals are enabled: this change would leave fewer than two people who can approve requests');
+  if (p.role && PRIV.includes(p.role) && x.act) throw new HttpError(409, 'the account must be activated before it can get a privileged role');
   const gated =
-    (p.role && p.role !== x.role && PRIV.includes(p.role)) || // granting
-    (isPriv && x.disabled && p.disabled === false) || // re-enabling
-    (isPriv && !x.disabled && enabledPeers <= 1 && (p.disabled === true || (p.role && p.role !== x.role))) || // last one
-    (isPriv && x.id !== u.id && (b.password || b.reset_totp)); // credential reset of another privileged user
+    db.approvals &&
+    ((p.role && PRIV.includes(p.role)) || // granting
+      (isPriv && x.disabled && p.disabled === false) || // re-enabling
+      (isPriv && b.new_activation)); // new credentials for another privileged user
   if (gated) {
     // Credentials are applied on approval but never shown in the quorum params.
     const { password, totp_secret, ...shown } = p;
+    if (b.new_activation) {
+      const code = newCode();
+      shown.activation = 'split';
+      extra.activation = { code, parts: 2, part: 1, expires: null, path: activationPath(x.name) };
+      const q = await quorum(u, 'user.update', shown, extra);
+      db.quorumSecrets.set(q[1].quorum_id, { part1: normCode(code) });
+      return q;
+    }
     const q = await quorum(u, 'user.update', shown, { ...extra, user: pub(x) });
     db.quorumSecrets.set(q[1].quorum_id, { password, totp_secret });
     return q;
   }
   const { id: _i, name: _n, ...fields } = p;
   Object.assign(x, fields);
-  await audit(u.name, 'user.update', `user/${x.id}`, { ...fields, password: fields.password ? '***' : undefined, totp_secret: undefined });
+  if (b.new_activation) extra.activation = startActivation(x, false);
+  await audit(u.name, 'user.update', `user/${x.id}`, { ...fields, password: fields.password ? '***' : undefined, totp_secret: undefined, new_activation: b.new_activation || undefined, approvals: db.approvals ? undefined : 'disabled' });
   return [200, { user: pub(x), ...extra }];
+});
+
+// self-enrollment (no session)
+async function checkActivation(name: string, code: string): Promise<User> {
+  const key = `act:${name}`;
+  const f = db.failures.get(key);
+  if (f && f.until > now()) throw new HttpError(429, 'too many failed activation attempts; try again in 15 minutes');
+  const x = db.users.find((y) => y.name === name);
+  const want = x?.act && !x.disabled && x.act.expires && x.act.expires > now() && !x.act.parts.includes(null) ? x.act.parts.join('') : null;
+  if (!want || normCode(code) !== want) {
+    const g = f && f.until === 0 ? f : { count: 0, until: 0 };
+    g.count++;
+    if (g.count >= 5) g.until = now() + 900;
+    db.failures.set(key, g);
+    await audit('anonymous', 'auth.activate_failed', `user/${name}`, {});
+    throw new HttpError(401, 'invalid name or activation code (or the code has expired)');
+  }
+  return x!;
+}
+const pendingTotp = new Map<string, string>();
+on('POST', '/auth/activate/begin', async (c) => {
+  const x = await checkActivation(String(c.body.name ?? ''), String(c.body.code ?? ''));
+  const secret = b32();
+  pendingTotp.set(x.name, secret);
+  await audit(x.name, 'user.activate_begin', `user/${x.id}`, {});
+  return [200, { name: x.name, totp_uri: totpUri(x.name, secret), totp_secret: secret }];
+});
+on('POST', '/auth/activate/complete', async (c) => {
+  const { name = '', code = '', password = '', totp = '' } = c.body;
+  const x = await checkActivation(String(name), String(code));
+  if (String(password).length < 12) throw new HttpError(400, 'password must have at least 12 characters');
+  const secret = pendingTotp.get(x.name);
+  if (!secret) throw new HttpError(409, 'start the activation first');
+  if (!/^\d{6}$/.test(String(totp))) throw new HttpError(401, 'invalid authenticator code');
+  Object.assign(x, { password, totp_secret: secret, act: null });
+  pendingTotp.delete(x.name);
+  db.failures.delete(`act:${x.name}`);
+  await audit(x.name, 'user.activate', `user/${x.id}`, {});
+  return [200, { ok: true }];
+});
+
+// approvals setting
+const approvalsState = () => {
+  const n = approvers().length;
+  const pend = db.quorum.find((q) => q.action === 'approvals.disable' && q.state === 'pending');
+  return { enabled: db.approvals, possible_approvers: n, recommend: !db.approvals && n >= 2, pending_disable: pend?.id ?? null };
+};
+on('GET', '/settings/approvals', (c) => (need(c.user), [200, approvalsState()]));
+on('PUT', '/settings/approvals', async (c) => {
+  const u = need(c.user, 'admin');
+  const want = !!c.body.enabled;
+  if (want === db.approvals) return [200, approvalsState()];
+  if (want) {
+    if (approvers((y) => y.id === u.id).length < 1)
+      throw new HttpError(409, 'nobody besides you could approve requests: add a second administrator or security officer first');
+    db.approvals = true;
+    await audit(u.name, 'settings.approvals', 'settings/approvals', { enabled: true });
+    return [200, approvalsState()];
+  }
+  if (approvalsState().pending_disable) throw new HttpError(409, 'a request to disable approvals is already pending');
+  return quorum(u, 'approvals.disable', { enabled: false });
+});
+
+// large GC confirmation (approvals disabled)
+on('GET', '/gc/pending', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, db.gcPending]));
+on('POST', '/gc/approve-large', async (c) => {
+  const u = need(c.user, 'admin');
+  if (db.approvals) throw new HttpError(409, 'approvals are enabled: a large GC needs a quorum approval');
+  const i = db.gcPending.findIndex((g) => g.tenant === c.body.tenant);
+  if (i < 0) throw new HttpError(409, 'no GC waits for confirmation in this tenant');
+  const [g] = db.gcPending.splice(i, 1);
+  const j = addJob('gc', g.tenant, { approved: true, confirmed_by: u.name }, u.name);
+  await audit(u.name, 'gc.approve_large', `tenant/${g.tenant}`, { job: j.id, approvals: 'disabled' });
+  return [202, { job_id: j.id }];
 });
 
 // snapshots / jobs / downloads
@@ -1052,18 +1211,20 @@ on('GET', '/quorum', (c) => {
 });
 for (const verb of ['approve', 'reject'] as const) {
   on('POST', `/quorum/:id/${verb}`, async (c, [id]) => {
-    const u = need(c.user, 'security_officer');
+    const u = need(c.user, 'admin', 'security_officer');
     const q = find(db.quorum, (x) => x.id === Number(id), 'quorum request');
     if (q.state !== 'pending') throw new HttpError(409, `request is ${q.state}`);
     if (q.requested_by === u.name) throw new HttpError(403, 'the requester cannot decide their own request');
     Object.assign(q, { decided_by: u.name, decided_at: now(), state: verb === 'approve' ? 'approved' : 'rejected' });
     await audit(u.name, `quorum.${verb}`, `quorum/${q.id}`, { action: q.action });
+    let extra: Json = {};
     if (verb === 'approve') {
-      execute(q.id, q.action, q.params);
+      if (SCHEDULER_ACTIONS.includes(q.action)) return [200, q];
+      extra = execute(q.id, q.action, q.params) ?? {};
       q.state = 'executed';
       await audit('system', q.action, `quorum/${q.id}`, q.params);
     }
-    return [200, q];
+    return [200, { ...q, ...extra }];
   });
 }
 
@@ -1134,7 +1295,7 @@ async function handle(req: Req, res: Res) {
         user = db.users.find((u) => u.id === sess.userId && !u.disabled) ?? null;
       }
     }
-    if (method !== 'GET' && path !== '/auth/login' && user && req.headers['x-csrf-token'] !== sess?.csrf) {
+    if (method !== 'GET' && path !== '/auth/login' && !path.startsWith('/auth/activate/') && user && req.headers['x-csrf-token'] !== sess?.csrf) {
       throw new HttpError(403, 'CSRF token missing or invalid');
     }
     const dl = /^\/downloads\/([0-9a-f]+)$/.exec(path);

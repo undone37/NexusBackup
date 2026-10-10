@@ -76,8 +76,10 @@ request**, even on an open keep-alive connection.
    (peer id 16 hex, token 128 bit base32) is shown **once**. The catalog keeps only the token digest
    (`agent_proto::token_digest`) sealed to replicad's public key (`sealed:v1:`, location
    `replication-peer/<id>/token`). The request is **quorum-gated** (`replication_peer.create`): it exposes
-   all data of the selected tenants. A security officer other than the requester approves → state
-   `approved`, token valid for 24 h from approval.
+   all data of the selected tenants. An admin or security officer other than the requester approves → state
+   `approved`, token valid for 24 h from approval. With approvals disabled (docs/control-plane.md "Quorum")
+   the peer is approved at once (answer 200 `{approvals: "disabled", …}`), and the key export after
+   enrollment is recorded as an `approved` request of the peer's creator that the scheduler executes.
 2. **Secondary admin** enters primary address (`host:port`), the code, the primary's TLS certificate
    SHA-256 fingerprint (shown by nexus-setup / the primary's UI), tenants (default: all of the peer's),
    schedule and GFS: `POST /api/v1/replication/sources`. The secondary web-api stores the token digest

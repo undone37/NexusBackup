@@ -2,6 +2,7 @@
   import { post, errText } from '../lib/api';
   import { setSession } from '../lib/session.svelte';
   import { t } from '../lib/i18n';
+  import { href } from '../lib/router.svelte';
   import type { LoginResponse } from '../lib/types';
   import logo from '../favicon.svg';
 
@@ -55,5 +56,6 @@
       <div class="hint" id="l-totp-hint">{t.login.totpHint}</div>
     </div>
     <button class="primary" type="submit" disabled={busy}>{busy ? t.login.busy : t.login.submit}</button>
+    <p class="muted">{t.login.activateQ} <a href={href('/activate')}>{t.login.activateLink}</a></p>
   </form>
 </div>

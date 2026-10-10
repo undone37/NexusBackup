@@ -708,6 +708,8 @@ pub async fn create_peer(State(st): State<St>, ctx: Ctx, J(r): J<PeerReq>) -> Ap
         &format!("replication-peer/{id}"),
         json!({"id": id, "name": r.name, "tenants": r.tenants}),
     )?;
+    // approvals disabled: already approved
+    let peer = peer_value(&st.cat.conn(), &id)?.unwrap_or(peer);
     let primary_cert_sha256 = st.repl.paths.tls_cert.as_deref().and_then(|p| cert_fingerprint(p).ok());
     Ok(accepted(
         q,

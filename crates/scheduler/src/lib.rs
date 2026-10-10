@@ -1286,7 +1286,41 @@ impl Scheduler {
         Ok(())
     }
 
+    /// A GC that would delete too much: a quorum request, or — with approvals
+    /// disabled (plan §2) — a `gc_confirm/<tenant>` setting that an admin
+    /// confirms (`POST /api/v1/gc/approve-large`). Never runs silently.
     fn request_gc_quorum(&mut self, job: &Job, message: &str) -> Result<()> {
+        let key = format!("gc_confirm/{}", job.tenant);
+        if !catalog::approvals_enabled(&self.db.conn())? {
+            let fresh = self.db.conn().execute(
+                "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
+                params![
+                    key,
+                    json!({"job": job.id, "reason": message, "created": catalog::now()}).to_string()
+                ],
+            )?;
+            if fresh == 0 {
+                return Ok(()); // already waiting for confirmation
+            }
+            self.db.audit(
+                ACTOR,
+                "gc.confirm_required",
+                &format!("tenant/{}", job.tenant),
+                &json!({"job": job.id, "reason": message, "approvals": "disabled"}),
+            )?;
+            return self.alert(
+                "warning",
+                "gc_confirm",
+                &format!(
+                    "GC for tenant {} was not run: {message}. Approvals are disabled, so an admin must confirm it \
+                     (Approvals page, or POST /api/v1/gc/approve-large)",
+                    job.tenant
+                ),
+                None,
+            );
+        }
+        // approvals were enabled again since: a stale confirmation no longer applies
+        self.db.conn().execute("DELETE FROM settings WHERE key = ?1", [&key])?;
         let open: i64 = self.db.conn().query_row(
             "SELECT COUNT(*) FROM quorum WHERE action='gc_large' AND state IN ('pending','approved') \
              AND json_extract(params,'$.tenant')=?1",
@@ -1318,7 +1352,7 @@ impl Scheduler {
             "warning",
             "gc_quorum",
             &format!(
-                "GC for tenant {} needs approval by a security officer (quorum request {id}): {message}",
+                "GC for tenant {} needs approval by an admin or security officer (quorum request {id}): {message}",
                 job.tenant
             ),
             None,
@@ -2053,8 +2087,11 @@ impl Scheduler {
                 plan.steps.push(offsite(&["retention"], None));
             }
             "gc" => {
+                // quorum-approved, or confirmed by one admin while approvals are disabled
+                // (only honoured while they still are)
+                let confirmed = p["confirmed_by"].is_string() && !catalog::approvals_enabled(&self.db.conn())?;
                 plan.steps.push(Step::Gc {
-                    approved: p["approved"].as_bool() == Some(true) && p["quorum_id"].is_i64(),
+                    approved: p["approved"].as_bool() == Some(true) && (p["quorum_id"].is_i64() || confirmed),
                 });
                 if let Some(f) = self.offsite_config(tenant, &dir)? {
                     plan.files = f;

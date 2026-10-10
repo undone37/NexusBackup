@@ -303,10 +303,7 @@ esac"#,
         )
         .unwrap();
     assert_eq!(st, "ok", "{log}");
-    assert!(
-        log.contains("quorum approved") && log.contains("offsite gc ok"),
-        "{log}"
-    );
+    assert!(log.contains("(approved)") && log.contains("offsite gc ok"), "{log}");
     assert!(gp.contains(&format!("\"quorum_id\":{qid}")));
     assert_eq!(q::<String>(&db, "SELECT state FROM quorum"), "executed");
     assert_eq!(
@@ -408,4 +405,143 @@ esac"#,
     );
     assert_eq!(audited, ours + 2 * jobs, "queue (own jobs) + start + finish");
     assert!(n > audited);
+}
+
+/// Approvals disabled (plan §2): a GC that would delete too much does not run
+/// and creates no quorum request; it waits for one admin's confirmation
+/// (`gc_confirm/<tenant>` + alert). A confirmed job is honoured only while
+/// approvals are still disabled.
+#[test]
+fn large_gc_without_approvals_needs_admin_confirmation() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path();
+    let cfg = Config {
+        catalog: p.join("catalog/catalog.db"),
+        store_base: p.join("store"),
+        offsite_state_base: p.join("offsite"),
+        escrow_base: p.join("escrow"),
+        downloads: p.join("downloads"),
+        runtime_dir: p.join("run"),
+        state_dir: p.join("state"),
+        pve_bin: p.join("nexus-pve"),
+        offsite_bin: p.join("nexus-offsite"),
+        alerts_config: p.join("alerts.json"),
+        maintenance: "daily 03:00".into(),
+        alert_retry_secs: [0, 0],
+        capacity_threshold: 2.0,
+        ..Default::default()
+    };
+    fs::create_dir_all(p.join("catalog")).unwrap();
+    let db = Arc::new(Catalog::open(&cfg.catalog).unwrap());
+    let store = Store::open(p.join("store/acme"), keys("acme"), opts()).unwrap();
+    for i in 0..5u64 {
+        let idx = store.store_image(&image(i)[..], 64 * 1024).unwrap();
+        store
+            .commit_snapshot("vm-100", 1000 + i, &[("drive-scsi0", idx)])
+            .unwrap();
+    }
+    drop(store);
+    fs::write(p.join("store/acme/clock"), format!("{}\n", catalog::now() + 120)).unwrap();
+    let store = Store::open(p.join("store/acme"), keys("acme"), opts()).unwrap();
+    for i in 0..3u64 {
+        store.delete_snapshot("vm-100", 1000 + i).unwrap();
+    }
+    drop(store);
+    db.conn()
+        .execute_batch(
+            "INSERT INTO tenants (name) VALUES ('acme');
+             UPDATE settings SET value = 'false' WHERE key = 'approvals_enabled';",
+        )
+        .unwrap();
+    let k: KeySource = Arc::new(|t: &str| Ok(keys(t)));
+    let mut s = Scheduler::new(cfg.clone(), db.clone(), k, opts).unwrap();
+    let now = catalog::now();
+    let gc = |params: Value| {
+        db.conn()
+            .execute(
+                "INSERT INTO jobs (kind, tenant, params, state, requested_by, created) VALUES ('gc','acme',?1,'queued','scheduler',1)",
+                [params.to_string()],
+            )
+            .unwrap();
+    };
+    let run = |s: &mut Scheduler| {
+        for _ in 0..10 {
+            s.tick(now).unwrap();
+            s.wait_idle(Duration::from_secs(30)).unwrap();
+            if q::<i64>(&db, "SELECT COUNT(*) FROM jobs WHERE state IN ('queued','running')") == 0 {
+                return;
+            }
+        }
+        panic!("jobs still queued");
+    };
+    let last = |db: &Catalog| -> (String, String) {
+        db.conn()
+            .query_row(
+                "SELECT state, log FROM jobs WHERE kind='gc' ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    };
+
+    // 1. disabled: not run, no quorum row, a confirmation entry + alert (once)
+    gc(json!({}));
+    run(&mut s);
+    assert_eq!(last(&db).0, "failed");
+    assert_eq!(q::<i64>(&db, "SELECT COUNT(*) FROM quorum"), 0);
+    let pending: Value = serde_json::from_str(&q::<String>(
+        &db,
+        "SELECT value FROM settings WHERE key='gc_confirm/acme'",
+    ))
+    .unwrap();
+    assert!(
+        pending["reason"].as_str().unwrap().contains("quorum approval required"),
+        "{pending}"
+    );
+    assert_eq!(q::<i64>(&db, "SELECT COUNT(*) FROM alerts WHERE kind='gc_confirm'"), 1);
+    assert_eq!(
+        q::<i64>(&db, "SELECT COUNT(*) FROM audit WHERE action='gc.confirm_required'"),
+        1
+    );
+    gc(json!({}));
+    run(&mut s);
+    assert_eq!(
+        q::<i64>(&db, "SELECT COUNT(*) FROM alerts WHERE kind='gc_confirm'"),
+        1,
+        "once"
+    );
+
+    // 2. approvals enabled again: an admin confirmation no longer counts; quorum instead
+    db.conn()
+        .execute("UPDATE settings SET value = 'true' WHERE key = 'approvals_enabled'", [])
+        .unwrap();
+    gc(json!({"approved": true, "confirmed_by": "admin"}));
+    run(&mut s);
+    assert_eq!(last(&db).0, "failed");
+    assert_eq!(
+        q::<i64>(
+            &db,
+            "SELECT COUNT(*) FROM quorum WHERE action='gc_large' AND state='pending'"
+        ),
+        1
+    );
+    assert_eq!(
+        q::<i64>(&db, "SELECT COUNT(*) FROM settings WHERE key LIKE 'gc_confirm/%'"),
+        0,
+        "stale confirmation removed"
+    );
+
+    // 3. disabled again: the admin's confirmation runs the GC
+    db.conn()
+        .execute(
+            "UPDATE settings SET value = 'false' WHERE key = 'approvals_enabled'",
+            [],
+        )
+        .unwrap();
+    gc(json!({"approved": true, "confirmed_by": "admin"}));
+    run(&mut s);
+    let (state, log) = last(&db);
+    assert_eq!(state, "ok", "{log}");
+    assert!(log.contains("local gc (approved)"), "{log}");
+    db.verify_audit().unwrap();
 }
