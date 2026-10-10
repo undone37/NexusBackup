@@ -185,6 +185,8 @@ Clicked through Dashboard, Agents (create, new token), Replication (peer create,
 - form grid: wrapping labels / hints misaligned inputs → subgrid rows (label | control | hint) for all 14 forms
 - texts: agents run on Linux **and Windows**; shorter Host label; input dialog title
 - noted for Phase 10 seeding: mock tenants lack the replicated tenant `globex`
+- second round (Users, Approvals, Audit): **bug** TOTP field on the Users page had `pattern="[0-9]{6}"` — Svelte evaluates `{6}`, so re-authentication only accepted codes like "x6" → `pattern={'[0-9]{6}'}`; approving a quorum request now needs a confirmation (irreversible actions); re-auth section, reject/approve, diff highlighting, audit redaction and chain verification work
+- **open design flaw (needs decision):** an admin who creates a user sets the password and sees the TOTP secret — for a security officer this undermines four-eyes (approval only delays it); proposal: self-enrollment on first sign-in
 
 ## Phase 9 — Plugin system (added 2026-10-10)
 Goal: extend with new data sources + restore functions (NetApp SVM, VMware ESXi/vCenter, PostgreSQL, …) via signed, sandboxed plugins on a versioned SDK; M9 = PostgreSQL plugin + one ported connector

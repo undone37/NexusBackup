@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { askConfirm } from '../lib/confirm.svelte';
   import { onMount } from 'svelte';
   import { get, post, act, errText } from '../lib/api';
   import { session } from '../lib/session.svelte';
@@ -51,6 +52,8 @@
   const humanize = (a: string) => a.replace(/[_.]/g, ' ');
 
   async function decide(q: QuorumRequest, verb: 'approve' | 'reject') {
+    // approving executes an irreversible or weakening action: never on a single misclick
+    if (verb === 'approve' && !(await askConfirm(t.quorum.approveConfirm(q.id, humanize(q.action), q.requested_by)))) return;
     const ok = await act(post(`/quorum/${q.id}/${verb}`), verb === 'approve' ? t.quorum.approved : t.quorum.rejected);
     if (ok) load();
   }

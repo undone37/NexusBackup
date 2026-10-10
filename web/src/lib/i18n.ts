@@ -476,6 +476,8 @@ export const en = {
     copied: 'Copied.',
   },
   quorum: {
+    approveConfirm: (id: number, action: string, by: string) =>
+      `Approve request #${id} (${action}) by ${by}? It is executed immediately and cannot be undone.`,
     title: 'Approvals',
     intro:
       'Destructive or weakening actions wait here until a security officer other than the requester approves them (72 h).',
