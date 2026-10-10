@@ -5,4 +5,4 @@ members = ["crates/*", "restore-vm/agent"]
 [workspace.package]
 edition = "2021"
 license = "AGPL-3.0-only"
-rust-version = "1.85"
+rust-version = "1.89"
