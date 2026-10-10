@@ -55,6 +55,9 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             let mut token = token.ok_or("init needs --token <T>")?;
             if token == "-" {
                 token.clear();
+                if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                    eprint!("One-time enrollment token: ");
+                }
                 std::io::stdin()
                     .read_line(&mut token)
                     .map_err(|e| format!("stdin: {e}"))?;

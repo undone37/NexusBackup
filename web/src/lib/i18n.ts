@@ -10,6 +10,10 @@ export const en = {
   no: 'No',
   save: 'Save',
   cancel: 'Cancel',
+  confirmTitle: 'Please confirm',
+  inputTitle: 'Please enter',
+  confirmOk: 'Confirm',
+  ok: 'OK',
   close: 'Close',
   create: 'Create',
   edit: 'Edit',
@@ -290,7 +294,7 @@ export const en = {
     kind: 'Source type',
     kinds: {
       pve: 'Proxmox VE cluster',
-      linux: 'Linux host (agent)',
+      linux: 'Linux or Windows host (agent)',
       truenas: 'TrueNAS (ZFS datasets)',
       nfs: 'NFS share',
       smb: 'SMB share',
@@ -388,8 +392,8 @@ export const en = {
     title: 'Agents',
     new: 'New agent',
     intro:
-      'Backup agents run on Linux hosts. Create an agent here, run the install command on the host, then enroll it; the appliance connects to the agent over mutual TLS.',
-    host: 'Host (address the appliance connects to)',
+      'Backup agents run on Linux and Windows hosts. Create an agent here, run the install command on the host, then enroll it; the appliance connects to the agent over mutual TLS.',
+    host: 'Host',
     hostShort: 'Address',
     port: 'Port',
     status: 'Status',
@@ -410,13 +414,15 @@ export const en = {
     tokenTitle: (n: string) => `Enrollment token for ${n}`,
     tokenOnce:
       'This token is shown only once. Copy it now — it cannot be displayed again. If it is lost, issue a new token.',
-    tokenSteps: '1. Run the install command on the host as root. 2. Click "Enroll" next to the agent.',
+    tokenSteps: '1. Run the install command on the host as root. 2. Paste the one-time token when asked and press Enter (it never appears in the process list or shell history). 3. Click "Enroll" next to the agent.',
     token: 'One-time token',
     installCommand: 'Install command',
     expires: 'Valid until',
     deleteWhat: (n: string) => `agent "${n}"`,
   },
   repl: {
+    primaryFingerprint: "This appliance's certificate fingerprint (SHA-256) — enter it on the secondary",
+    primaryFingerprintUnknown: 'not available (certificate not readable by the web API)',
     title: 'Replication',
     intro:
       'A second appliance pulls sealed snapshots from this one over the management port with its own client certificate; this appliance holds no credentials for it. Tenant keys are handed over only after a second approval, sealed to the other appliance\'s key service.',

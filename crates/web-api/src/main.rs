@@ -61,6 +61,7 @@ async fn main() -> Result<()> {
         ReplPaths {
             socket: Some(cfg.replicad_socket.clone()),
             seal_pub: Some(cfg.replicad_pub.clone()),
+            tls_cert: Some(cfg.tls_cert.clone()),
         },
     );
     let migrated = web_api::migrate_totp_seeds(&st)?;

@@ -42,15 +42,16 @@
 
 {#snippet hints(name: string, p: JsonSchema, id: string)}
   {@const h = hintOf(name, p)}
-  {#if errors[name]}<div class="hint bad" id="{id}-err">{errors[name]}</div>{/if}
-  {#if h}<div class="hint" id="{id}-hint">{h}</div>{/if}
+  <!-- one hint row per field (form-grid subgrid: label | control | hint) -->
+  {#if errors[name]}<div class="hint bad" id="{id}-err">{errors[name]}</div>
+  {:else if h}<div class="hint" id="{id}-hint">{h}</div>{/if}
 {/snippet}
 
 {#if scalars.length}
   <div class="form-grid">
     {#each scalars as [name, p] (name)}
       {@const id = `${uid}-${name}`}
-      {@const desc = [errors[name] ? `${id}-err` : '', hintOf(name, p) ? `${id}-hint` : ''].filter(Boolean).join(' ') || undefined}
+      {@const desc = errors[name] ? `${id}-err` : hintOf(name, p) ? `${id}-hint` : undefined}
       <div class="field">
         <label for={id}>{label(name, p)}</label>
         {#if p.enum}
@@ -105,7 +106,7 @@
 
 {#each wide as [name, p] (name)}
   {@const id = `${uid}-${name}`}
-  {@const desc = [errors[name] ? `${id}-err` : '', hintOf(name, p) ? `${id}-hint` : ''].filter(Boolean).join(' ') || undefined}
+  {@const desc = errors[name] ? `${id}-err` : hintOf(name, p) ? `${id}-hint` : undefined}
   <div class="field">
     {#if p.type === 'boolean'}
       <label class="inline-check"

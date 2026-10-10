@@ -471,6 +471,18 @@ textarea:focus {
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 0 0.85rem;
 }
+/* labels of different lengths (wrapping) and optional hints must not push inputs
+   out of line: every field spans three shared rows (label | control | hint) */
+.form-grid > .field {
+  display: grid;
+  grid-row: span 3;
+  grid-template-rows: subgrid;
+  row-gap: 0;
+}
+.form-grid > .field > label,
+.form-grid > .field > .muted:first-child {
+  align-self: end;
+}
 fieldset {
   border: 1px solid var(--border);
   border-radius: var(--radius);

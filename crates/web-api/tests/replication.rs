@@ -165,10 +165,26 @@ impl Primary {
             ReplPaths {
                 socket: Some(replicad_sock.clone()),
                 seal_pub: Some(p.join("run/seal.pub")),
+                tls_cert: Some(p.join("run/cert.pem")),
             },
         );
         let app = web_api::router(st.clone());
         let (certs, key, pin) = self_signed();
+        // the appliance certificate as PEM: its fingerprint is returned on peer creation
+        {
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(certs[0].as_ref());
+            let lines: Vec<&str> = b64
+                .as_bytes()
+                .chunks(64)
+                .map(|c| std::str::from_utf8(c).unwrap())
+                .collect();
+            let pem = format!(
+                "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+                lines.join("\n")
+            );
+            std::fs::write(p.join("run/cert.pem"), pem).unwrap();
+        }
         let tls = web_api::tls::Tls::new(certs, key, Some(p.join("run/ca.pem"))).unwrap();
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(4)
@@ -243,6 +259,11 @@ impl Primary {
             Some(json!({"name": name, "tenants": tenants})),
         );
         assert_eq!(s, StatusCode::ACCEPTED, "{b}");
+        assert_eq!(
+            b["primary_cert_sha256"],
+            self.pin.as_str(),
+            "admin sees the fingerprint the secondary must pin"
+        );
         self.approve(b["quorum_id"].as_i64().unwrap());
         (
             b["peer"]["id"].as_str().unwrap().to_owned(),

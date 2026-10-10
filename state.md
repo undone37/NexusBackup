@@ -176,6 +176,16 @@ Decisions (user, 2026-10-09): MinIO for dev/tests, real provider later; own mini
 - [x] Scale-out groundwork: `docs/scale-out.md` (what is node-independent, what is node-local, sharding/leader direction, rules for new code)
 - [x] Repository README.md (user request 2026-10-09): overview, honest status, sources/restores matrix, architecture, layout, build/test, labs, roadmap, security, license
 
+## UI browser test (Claude in Chrome, 2026-10-10, mock backend)
+Clicked through Dashboard, Agents (create, new token), Replication (peer create, schedule edit), Tenants (S3 form), Sources (PVE/SMB forms). Fixed:
+- **security:** agent install command contained the enrollment token (visible in `ps`/shell history) → API + mock now `sudo /usr/local/sbin/nexus-agent init --token -`, token pasted on stdin; agents prompt when interactive; test asserts the token is not in the command
+- replication peer dialog asked for "this appliance's certificate fingerprint" without showing it → API returns `primary_cert_sha256` (ReplPaths.tls_cert), UI shows + copy; test asserts it equals the pin
+- 10 native `confirm()` + 2 `prompt()` blocked the page (and automation / future manual screenshots) → shared in-page dialog (`askConfirm`/`askText`, `ConfirmDialog`)
+- mock API lacked replication endpoints → added with seed data (needed for Phase 10 screenshots)
+- form grid: wrapping labels / hints misaligned inputs → subgrid rows (label | control | hint) for all 14 forms
+- texts: agents run on Linux **and Windows**; shorter Host label; input dialog title
+- noted for Phase 10 seeding: mock tenants lack the replicated tenant `globex`
+
 ## Phase 9 — Plugin system (added 2026-10-10)
 Goal: extend with new data sources + restore functions (NetApp SVM, VMware ESXi/vCenter, PostgreSQL, …) via signed, sandboxed plugins on a versioned SDK; M9 = PostgreSQL plugin + one ported connector
 Decisions (user, 2026-10-10): sandboxed processes + Rust SDK; trust = project key + admin-added publisher keys (quorum); reference plugin PostgreSQL; port TrueNAS; restore API: download, restore to target, app-specific, mount/instant access
@@ -183,6 +193,7 @@ Decisions (user, 2026-10-10): sandboxed processes + Rust SDK; trust = project ke
 
 ## Phase 10 — End-user manual (added 2026-10-10, after plugin system; M365 = Phase 11)
 `manual/` folder, full end-user documentation in Markdown with reproducible screenshots of the web UI
+Decisions (user, 2026-10-10): English; screenshots from seeded demo data via headless browser; start after Phase 9 merge
 
 ## Next
 
