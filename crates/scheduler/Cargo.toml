@@ -16,6 +16,8 @@ keyd = { path = "../keyd" }
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "rustls-tls"] }
 libc = "0.2"
 nftsync = { path = "../nftsync" }
+plugin-manager = { path = "../plugin-manager" }
+plugin-proto = { path = "../plugin-proto" }
 replication = { path = "../replication", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 serde = { version = "1", features = ["derive"] }

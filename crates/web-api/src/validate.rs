@@ -95,6 +95,11 @@ pub fn host_path(s: &str, what: &str) -> ApiResult<()> {
 
 /// `vm-<vmid>`, `ct-<vmid>`, `host-<agent_id>`, `nas-<source-id>-<dataset>` (TrueNAS) or `share-<source-id>` (NFS/SMB).
 pub fn source_ref(s: &str) -> ApiResult<()> {
+    if s.starts_with("plugin-") {
+        return plugin_proto::parse_source_name(s)
+            .map(|_| ())
+            .ok_or_else(|| ApiError::bad("source: expected plugin-<plugin>-<source-id>[-<guest>]"));
+    }
     if s.starts_with("share-") {
         return nas::parse_source_name(s)
             .map(|_| ())

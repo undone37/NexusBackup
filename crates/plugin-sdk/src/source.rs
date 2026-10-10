@@ -16,6 +16,9 @@ pub struct FileItem {
     pub meta: Meta,
 }
 
+/// Callback over one received item: a file (with metadata) or a named stream, and its data.
+type ItemFn<'a> = dyn FnMut(Option<&FileItem>, Option<&str>, &mut dyn Read) -> Result<()> + 'a;
+
 pub struct Source {
     chan: Shared,
 }
@@ -60,11 +63,7 @@ impl Source {
         Source { chan }
     }
 
-    fn items(
-        &mut self,
-        req: Message,
-        f: &mut dyn FnMut(Option<&FileItem>, Option<&str>, &mut dyn Read) -> Result<()>,
-    ) -> Result<()> {
+    fn items(&mut self, req: Message, f: &mut ItemFn) -> Result<()> {
         self.chan
             .borrow_mut()
             .send(&req)
@@ -354,16 +353,15 @@ impl Mount {
             offset,
             len: len.min(plugin_proto::MAX_DATA as u32),
         })?;
-        loop {
-            match self.chan.borrow_mut().recv()? {
-                Message::FileData { bytes } => return Ok(Some(bytes)),
-                Message::Error { .. } => return Ok(None),
-                Message::Unmount => {
-                    self.unmounted = true;
-                    bail!("unmounted");
-                }
-                m => bail!("unexpected host message {m:?}"),
+        let m = self.chan.borrow_mut().recv()?;
+        match m {
+            Message::FileData { bytes } => Ok(Some(bytes)),
+            Message::Error { .. } => Ok(None),
+            Message::Unmount => {
+                self.unmounted = true;
+                bail!("unmounted")
             }
+            m => bail!("unexpected host message {m:?}"),
         }
     }
 

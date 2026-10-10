@@ -64,6 +64,7 @@
 
 pub mod alerts;
 pub mod firewall;
+mod plugins;
 pub mod replica;
 pub mod run;
 pub mod schedule;
@@ -113,6 +114,10 @@ pub struct Config {
     pub truenas_bin: PathBuf,
     /// NFS/SMB connector (crate nas)
     pub nas_bin: PathBuf,
+    /// plugin host (crate plugin-host, docs/plugin-system.md)
+    pub pluginhost_bin: PathBuf,
+    /// installed plugins (`<id>/<version>/`, written by nexus-plugin-install)
+    pub plugins_dir: PathBuf,
     /// socket of the NAS mount helper (nexus-nasmount.socket)
     pub nas_mount_socket: PathBuf,
     /// appliance CA for agents (created by nexus-agentctl on first use); default `<state_dir>/agent-ca`
@@ -176,6 +181,8 @@ impl Default for Config {
             agentctl_bin: "/usr/libexec/nexus/nexus-agentctl".into(),
             truenas_bin: "/usr/libexec/nexus/nexus-truenas".into(),
             nas_bin: "/usr/libexec/nexus/nexus-nas".into(),
+            pluginhost_bin: "/usr/libexec/nexus/nexus-pluginhost".into(),
+            plugins_dir: lib.join("plugins"),
             nas_mount_socket: nas::MOUNT_SOCKET.into(),
             agent_ca_dir: None,
             agent_update_dir: "/usr/share/nexus/agent".into(),
@@ -252,6 +259,8 @@ struct GroupRow {
     datasets: Vec<String>,
     /// nfs/smb source: the group backs up the share itself (`share-<source>`)
     share: bool,
+    /// plugin source: (plugin id, guest ids; empty = the source as a whole)
+    plugin: Option<(String, Vec<String>)>,
     schedule: String,
     gfs: Gfs,
     offsite: bool,
@@ -298,6 +307,17 @@ fn group_sources(g: &GroupRow) -> Vec<String> {
         .chain(g.agents.iter().map(|a| format!("host-{a}")))
         .chain(g.datasets.iter().map(|d| truenas::source_name(g.source_id as u64, d)))
         .chain(g.share.then(|| nas::source_name(g.source_id as u64)))
+        .chain(g.plugin.iter().flat_map(|(pid, guests)| {
+            let sid = g.source_id as u64;
+            if guests.is_empty() {
+                vec![plugin_proto::source_name(pid, sid, None)]
+            } else {
+                guests
+                    .iter()
+                    .map(|x| plugin_proto::source_name(pid, sid, Some(x)))
+                    .collect()
+            }
+        }))
         .collect()
 }
 
@@ -671,8 +691,23 @@ impl Scheduler {
             let kind = r.get::<_, String>(7)?;
             let nas = kind == "truenas";
             let share = kind == "nfs" || kind == "smb";
+            let plugin = kind.strip_prefix("plugin:").map(|k| {
+                (
+                    k.to_owned(),
+                    guests
+                        .iter()
+                        .filter_map(|g| {
+                            g.as_str()
+                                .filter(|x| plugin_proto::valid_guest_id(x))
+                                .map(str::to_owned)
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            });
+            let other = nas || share || plugin.is_some();
             Ok(GroupRow {
                 share,
+                plugin,
                 datasets: if nas {
                     guests
                         .iter()
@@ -684,11 +719,15 @@ impl Scheduler {
                 id: r.get(0)?,
                 tenant: r.get(1)?,
                 source_id: r.get(2)?,
-                guests: guests
-                    .iter()
-                    .filter_map(|g| g.as_u64().and_then(|v| u32::try_from(v).ok()))
-                    .collect(),
-                agents: if nas || share {
+                guests: if other {
+                    Vec::new()
+                } else {
+                    guests
+                        .iter()
+                        .filter_map(|g| g.as_u64().and_then(|v| u32::try_from(v).ok()))
+                        .collect()
+                },
+                agents: if other {
                     Vec::new()
                 } else {
                     guests
@@ -701,7 +740,16 @@ impl Scheduler {
                 offsite: r.get::<_, i64>(6)? != 0,
             })
         })?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
+        let mut rows: Vec<GroupRow> = rows.collect::<std::result::Result<_, _>>()?;
+        // plugin groups: kind -> id of the plugin that provides it
+        for g in rows.iter_mut() {
+            if let Some((kind, guests)) = g.plugin.take() {
+                if let Ok(Some(cur)) = plugin_manager::current_for_kind(&c, &kind) {
+                    g.plugin = Some((cur.id, guests));
+                }
+            }
+        }
+        Ok(rows)
     }
 
     /// `last_run` for an item: newest scheduler-queued job matching `filter`,
@@ -786,6 +834,7 @@ impl Scheduler {
                 targets.push((h.trim_matches(['[', ']']).to_owned(), p));
             }
         }
+        targets.extend(self.plugin_targets()?);
         for (_, o) in self.tenants()? {
             targets.extend(firewall::offsite_targets(&o));
         }
@@ -1005,7 +1054,7 @@ impl Scheduler {
         )?;
         if matches!(
             job.kind.as_str(),
-            "backup" | "retention" | "offsite" | "gc" | "replica_sync"
+            "backup" | "plugin_backup" | "retention" | "offsite" | "gc" | "replica_sync"
         ) {
             self.dirty.insert(job.tenant.clone());
         }
@@ -1013,7 +1062,7 @@ impl Scheduler {
         if job.kind.starts_with("replica_") {
             self.replica_bookkeeping(&job, &log, ok)?;
         }
-        if ok && job.kind == "backup" {
+        if ok && (job.kind == "backup" || job.kind == "plugin_backup") {
             self.inconsistent_alerts(job.id, &job.tenant, &log)?;
         }
         if let Some(q) = job.params["quorum_id"].as_i64() {
@@ -1170,7 +1219,26 @@ impl Scheduler {
                 log.push_str(&format!("[scheduler] download ready: {file} ({size} bytes)\n"));
                 Some(r)
             }
-            "backup" => {
+            "plugin_validate" | "plugin_guests" => {
+                let out = stdout.unwrap_or_default();
+                match serde_json::from_str::<Value>(out.trim()) {
+                    Ok(v @ Value::Object(_)) => Some(v),
+                    _ => {
+                        log.push_str("[scheduler] unexpected plugin host output (no JSON object)\n");
+                        None
+                    }
+                }
+            }
+            "plugin_restore" | "plugin_mount" => {
+                let pfx = if job.kind == "plugin_restore" {
+                    "restored "
+                } else {
+                    "unmounted "
+                };
+                log.lines()
+                    .find_map(|l| serde_json::from_str::<Value>(l.strip_prefix(pfx)?).ok())
+            }
+            "backup" | "plugin_backup" => {
                 // `committed <source>/<time>` per guest (nexus-pve backup-all)
                 // nexus-agentctl adds `… chunks transferred (<n> bytes, …)` and an
                 // `inconsistent <source>/<time>: …` line for a backup without a consistent view
@@ -1191,7 +1259,7 @@ impl Scheduler {
                                 v["transferred_bytes"] = json!(n);
                             }
                         }
-                        if s.starts_with("share-") {
+                        if s.starts_with("share-") || s.starts_with("plugin-") {
                             // `…, <n> bytes transferred, …` and `inconsistent <id>: …` (nexus-nas)
                             let bad = format!("inconsistent {id}:");
                             v["consistent"] = json!(!log.lines().any(|x| x.starts_with(&bad)));
@@ -1243,6 +1311,10 @@ impl Scheduler {
 
     fn follow_up(&mut self, job: &Job) -> Result<()> {
         match job.kind.as_str() {
+            "plugin_backup" => {
+                let p = json!({"chain": true, "source_id": job.params["source_id"], "plugin": true});
+                self.insert_job("retention", &job.tenant, &p)?;
+            }
             "backup" => {
                 let mut p = json!({"chain": true});
                 for k in ["group_id", "source_id", "vmid", "agent_id"] {
@@ -1255,6 +1327,12 @@ impl Scheduler {
             "retention" if job.params["chain"].as_bool() == Some(true) => {
                 let wants = match (job.params["group_id"].as_i64(), job.params["agent_id"].as_str()) {
                     (Some(g), _) => self.groups()?.iter().any(|r| r.id == g && r.offsite),
+                    (None, None) if job.params["plugin"] == true => {
+                        let sid = job.params["source_id"].as_i64();
+                        self.groups()?
+                            .iter()
+                            .any(|g| g.tenant == job.tenant && g.offsite && Some(g.source_id) == sid)
+                    }
                     (None, Some(a)) => self
                         .groups()?
                         .iter()
@@ -1906,6 +1984,11 @@ impl Scheduler {
                 .find(|g| g.id == id && g.tenant == tenant)
                 .with_context(|| format!("group {id} not found in tenant {tenant}"))
         };
+        if job.kind == "retention"
+            && (p["plugin"] == true || p["source"].as_str().is_some_and(|s| s.starts_with("plugin-")))
+        {
+            return self.plan_plugin_retention(job, plan);
+        }
         match job.kind.as_str() {
             "backup" => {
                 let (source_id, vmids) = match (p["group_id"].as_i64(), p["agent_id"].as_str()) {
@@ -1916,6 +1999,10 @@ impl Scheduler {
                         }
                         if g.share {
                             return self.plan_share_backup(plan, g.source_id);
+                        }
+                        if let Some((_, guests)) = &g.plugin {
+                            let guests = guests.clone();
+                            return self.plan_plugin_backup(job, plan, g.source_id, &guests);
                         }
                         if !g.agents.is_empty() {
                             return self.plan_agent_backups(job, plan, g.source_id, &g.agents);
@@ -1990,6 +2077,12 @@ impl Scheduler {
                     gfs,
                 });
             }
+            "plugin_validate" | "plugin_guests" | "plugin_backup" | "plugin_restore" | "plugin_mount" => {
+                return self.plan_plugin(job, plan);
+            }
+            "files_list" | "files_get" if p["source"].as_str().is_some_and(|s| s.starts_with("plugin-")) => {
+                return self.plan_plugin(job, plan);
+            }
             "retention" if p["source"].as_str().is_some_and(|s| s.starts_with("share-")) => {
                 let source = ident(p, "source")?;
                 let sid = nas::parse_source_name(source).with_context(|| format!("invalid source {source:?}"))?;
@@ -2009,7 +2102,7 @@ impl Scheduler {
                 let (source_id, vmids, gfs) = match p["group_id"].as_i64() {
                     Some(g) => {
                         let g = group(g)?;
-                        if !g.agents.is_empty() || !g.datasets.is_empty() || g.share {
+                        if !g.agents.is_empty() || !g.datasets.is_empty() || g.share || g.plugin.is_some() {
                             plan.key = format!("source:{}", g.source_id);
                             plan.steps.push(Step::Retention {
                                 sources: group_sources(&g),
@@ -2464,14 +2557,20 @@ impl Scheduler {
     /// `consistent` flag shows it); files that really changed while read warn every
     /// time (deduplicated while unacknowledged).
     fn inconsistent_alerts(&self, job_id: i64, tenant: &str, log: &str) -> Result<()> {
-        for l in log
-            .lines()
-            .filter(|l| l.starts_with("inconsistent host-") || l.starts_with("inconsistent share-"))
-        {
+        for l in log.lines().filter(|l| {
+            l.starts_with("inconsistent host-")
+                || l.starts_with("inconsistent share-")
+                || l.starts_with("inconsistent plugin-")
+        }) {
             let what = l.trim_start_matches("inconsistent ");
             let src = what.split('/').next().unwrap_or_default();
             let changed = changed_while_read(what);
-            let (key, detail) = if changed > 0 {
+            let (key, detail) = if src.starts_with("plugin-") {
+                (
+                    format!("{src}: not consistent"),
+                    "the plugin reported no consistent view of its source; reported once per source".into(),
+                )
+            } else if changed > 0 {
                 (
                     format!("{src}: files changed while read"),
                     format!("{changed} file(s) changed while read"),

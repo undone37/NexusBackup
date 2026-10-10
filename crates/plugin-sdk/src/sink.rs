@@ -135,14 +135,10 @@ impl Sink {
                     paths: paths[start..end].to_vec(),
                 },
             )?;
-            loop {
-                match self.chan.borrow_mut().recv()? {
-                    Message::BaseEntries { entries } => {
-                        out.extend(entries);
-                        break;
-                    }
-                    m => bail!("unexpected host message {m:?} (expected BaseEntries)"),
-                }
+            let m = self.chan.borrow_mut().recv()?;
+            match m {
+                Message::BaseEntries { entries } => out.extend(entries),
+                m => bail!("unexpected host message {m:?} (expected BaseEntries)"),
             }
             start = end;
         }

@@ -1,6 +1,6 @@
 # Plugin System — Contract (Phase 9)
 
-Status: v1 (2026-10-10). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
+Status: v1 (2026-10-10), implementation notes v1.1 (2026-10-10, see "Implementation (v1.1)" at the end). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
 speaking a **versioned protocol**, with a **Rust SDK**; trust = **project release key + publisher keys an admin adds
 with quorum**; reference plugin **PostgreSQL**; the **TrueNAS** connector is ported to the SDK; the restore API covers
 **download, restore to original/alternate target, application-specific restore and mount/instant access**.
@@ -107,3 +107,74 @@ pack|sign|verify` tooling.
 The PostgreSQL plugin (logical dumps per database + base backup + WAL for point-in-time restore) is installed as a
 signed bundle, configured, backed up on a schedule, restored to an alternate server and point-in-time restored, all in
 the UI without core changes; the TrueNAS connector runs as a plugin on the same SDK with its existing lab passing.
+
+## Implementation (v1.1) — clarifications and additive changes
+Built in crates `plugin-host` (`nexus-pluginhost`), `plugin-manager` (`nexus-plugin-install`), `plugin-sdk`
+(+ `nexus-plugin` packaging CLI), `plugins/example-files`; author guide: docs/plugin-sdk.md.
+
+**Manifest (stricter `Manifest::validate`, additive for authors):** plugin `id` must not have an empty or all-digit
+`-` component (so `plugin-<id>-<source>[-<guest>]` parses unambiguously: the first all-digit component is the source
+id); `publisher` is `[a-z0-9-]{2,32}` (`nexusbackup` = project keys only); kinds unique; restore ids
+`[a-z0-9_-]{2,32}`, unique per kind, `params_schema` an object; every `secret_fields` entry must be a property of
+`config_schema` (top-level). `sandbox.network`: `endpoints` (default) or `none`. Guest ids (ListGuests, groups):
+`[A-Za-z0-9._-]{1,64}`, not starting with `.`/`-` (invalid ones are dropped by the host).
+
+**Bundle crate feature:** `plugin-proto` feature `bundle` (reader/packer, P-256 signature verify/sign, key parsing).
+Reading is strict (only `manifest.json`, `bin/plugin` (ELF), `assets/…`; regular files and dirs; no `..`, no
+duplicates; ≤ 128 MiB). The signature is verified over the bundle bytes (= cosign `sign-blob` of the file).
+
+**Trust and installation:** project keys are `/etc/pki/nexus/plugin-keys/*.pub` (lab images: the release TEST key;
+`release/inject-keys.sh` puts the release key there). The publisher of the signing key must equal the manifest's
+`publisher`; an id belongs to the first publisher that installed it; versions must be strictly newer than every
+installed/approved one; a kind may only be provided by one plugin id. The web-api verifies, stages
+`<sha256>.nxplugin` + `.sig` in `/var/lib/nexus/plugins-staging` and records the row `pending`; approval
+(`plugin.install`) repeats the checks (`approved`) and touches `.trigger`; `nexus-plugin-install` (user
+`nexus-plugins`, not the plugin runtime uid; SELinux `nexus_plugininstall_t`, the only domain that may write
+`nexus_plugin_data_t`/`nexus_plugin_exec_t`) re-verifies against the catalog record, unpacks to
+`<id>/.<version>.tmp/` → `<id>/<version>/` (dirs 0555, files 0444, `bin/plugin` 0555), marks it `installed` +
+`current` and maintains the `<id>/current` symlink. `current` itself lives in the catalog (`plugin.activate` switches
+it). Disable (quorum) sets `enabled = 0`: jobs of its sources fail before starting; enable is a direct admin action.
+
+**Sandbox (as built):** the plugin runs as the job uid (`nexus-chunkstore`: the scheduler and its jobs have no
+privilege to switch uid, and the scheduler unit's `RestrictNamespaces=yes` forbids user namespaces — a user + IPC
+namespace is used where available, e.g. development hosts). The boundaries are SELinux `nexus_plugin_t` (entered
+only via `nexus_plugin_exec_t`, no nexus data types, no Unix sockets of nexus domains), **Landlock** (required: read +
+exec of the install dir, `/usr`, `/lib*`, `/bin`, `/sbin`; read of a few `/etc` files and the CA stores; rw of
+`/dev/null|zero|urandom` and the private tmp dir; TCP connect only to the endpoint ports of the source config + 53, no
+TCP bind; signals and abstract Unix sockets scoped to the sandbox — Landlock ABI ≥ 6, the appliance kernel has it),
+a **seccomp allowlist** (`socket()` only AF_INET/AF_INET6/AF_NETLINK-route; no ptrace, mount, namespaces, bpf,
+keyctl, modules, io_uring, set*id …), `NO_NEW_PRIVS`, `PR_SET_PDEATHSIG`, own process group, rlimits (`RLIMIT_DATA` =
+`memory_mb`, `RLIMIT_AS` = 4× (≥ 4 GiB), `RLIMIT_FSIZE` = `tmp_mb`, `RLIMIT_CPU` = op time limit, `RLIMIT_NOFILE`
+1024, no core), nice 10, a cleared environment (`PATH`, `HOME`=`TMPDIR`=tmp dir, `LANG`, `NEXUS_PLUGIN_JOB`) and a
+private tmp dir whose size is accounted (above `tmp_mb` the plugin is killed). `cpu_quota` is not enforced in v1 (no
+cgroup delegation to the scheduler). The binary is executed via `execveat` of the descriptor whose SHA-256 was
+checked against the catalog (no path race); `manifest.json` must equal the catalog's copy. The appliance's nftables
+allow-list is global (TCP only), so manifest UDP endpoints are not opened.
+
+**Protocol rules the host enforces (in addition to `plugin_proto::check`):**
+- Backup: `FileBegin` → `Data`* → `FileEnd`; data only for regular files and exactly `meta.size` bytes (the SDK pads
+  / truncates files that change while read and reports `consistent = false`); non-regular entries store size 0;
+  symlinks need a target; hard links name a regular file sent earlier; paths unique and not below the reserved
+  `.nexus-streams/`; `Unchanged` only for a path of the base snapshot whose type, mode, uid, gid, mtime, link target
+  (and size for files) match — the chunks are taken from the base entry and touched for GC; `Stream` names unique;
+  `Done` only between items. Any violation, an invalid frame, EOF before `Done`, the idle limit (900 s between
+  messages; validate/guests 120 s) or the op limit (24 h) kills the plugin's process group; nothing is committed.
+- `BaseQuery`: at most 1 MiB of paths; answered with exactly one `BaseEntries` (found paths only; xattrs are dropped
+  if the answer would not fit one frame).
+- `Done.state` (≤ 1 MiB) is stored as index `state` (one dynamic entry, sealed chunks) and returned as
+  `Init.state` of the next backup, and of restore/mount of that snapshot. Devices are stored without `rdev`.
+- Restore: `Init.params` = `{"restore", "params", "guest"?, "snapshot": {"source","time"}, "streams": [{"name","size"}],
+  "top": [top-level names], "files": n}`; `NeedFiles` paths name entries or subtrees; unknown paths/streams are skipped;
+  each answer ends with `NeedDone`. `download` never reaches a plugin: it is `files_list`/`files_get` (files + streams
+  below `.nexus-streams/<name>`).
+- Mount: after `MountReady` the plugin may stay quiet until the mount time (job param `minutes`, ≤ 24 h) ends, then
+  the host sends `Unmount` and expects `Done` within 120 s; `ReadFile` of a missing / non-regular file is answered with
+  `Error { code: 2 }`. The NBD socket for fixed indexes is not implemented in v1 (plugins snapshots have no fixed index).
+- Log/Progress/stderr of the plugin are escaped (control characters), truncated, prefixed (`plugin[level]: `,
+  `plugin stderr: `) and capped at 4 MiB / 1 MiB per job, so they can never forge the host's parseable lines
+  (`committed <source>/<time> …`, `inconsistent <source>/<time>: …`, `summary …`, `result {json}`, `restored {json}`,
+  `mount-ready {json}`, `unmounted {json}`).
+
+**Appliance:** job kinds and API as listed in docs/control-plane.md; a backup with `consistent = false` raises
+`backup_inconsistent` once per snapshot source; `restores[].params_schema` values end up in `jobs.params` (visible to
+operators) — restore parameters must not carry secrets in v1 (use source secrets).

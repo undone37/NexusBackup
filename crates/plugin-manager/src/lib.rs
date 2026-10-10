@@ -70,7 +70,9 @@ pub fn trusted_keys(c: &Connection, project_dir: &Path) -> Result<Vec<TrustedKey
         .prepare("SELECT fingerprint, publisher, public_key FROM plugin_keys ORDER BY added_at")
         .map_err(db)?;
     let rows = st
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+        .query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })
         .map_err(db)?;
     for row in rows {
         let (fp, publisher, pem) = row.map_err(db)?;
@@ -147,9 +149,7 @@ fn check_lifecycle(c: &Connection, m: &Manifest, pending_ok: bool) -> Result<Opt
                 "{} {} is not newer than {} (downgrades are refused)",
                 m.id, m.version, r.version
             )));
-        } else if r.state == "installed"
-            && upgrade_from.as_deref().is_none_or(|u| newer(&r.version, u))
-        {
+        } else if r.state == "installed" && upgrade_from.as_deref().is_none_or(|u| newer(&r.version, u)) {
             upgrade_from = Some(r.version.clone());
         }
     }
@@ -162,7 +162,9 @@ fn check_lifecycle(c: &Connection, m: &Manifest, pending_ok: bool) -> Result<Opt
         .map_err(db)?;
     for o in others {
         let (oid, om) = o.map_err(db)?;
-        let Ok(om) = serde_json::from_str::<Manifest>(&om) else { continue };
+        let Ok(om) = serde_json::from_str::<Manifest>(&om) else {
+            continue;
+        };
         if let Some(k) = m.kinds.iter().find(|k| om.kinds.iter().any(|x| x.kind == k.kind)) {
             return Err(conflict(format!("kind {} is already provided by plugin {oid}", k.kind)));
         }
@@ -292,7 +294,9 @@ pub fn sources_using(c: &Connection, id: &str) -> Result<i64, Error> {
     let mut n = 0;
     for k in kinds_of(c, id)? {
         n += c
-            .query_row("SELECT COUNT(*) FROM sources WHERE kind = ?1", [&k], |r| r.get::<_, i64>(0))
+            .query_row("SELECT COUNT(*) FROM sources WHERE kind = ?1", [&k], |r| {
+                r.get::<_, i64>(0)
+            })
             .map_err(db)?;
     }
     Ok(n)
@@ -311,7 +315,9 @@ pub struct Current {
 
 pub fn current_for_kind(c: &Connection, kind: &str) -> Result<Option<Current>, Error> {
     let mut st = c
-        .prepare("SELECT id, version, bin_sha256, manifest, enabled FROM plugins WHERE current = 1 AND state = 'installed'")
+        .prepare(
+            "SELECT id, version, bin_sha256, manifest, enabled FROM plugins WHERE current = 1 AND state = 'installed'",
+        )
         .map_err(db)?;
     let rows = st
         .query_map([], |r| {
@@ -326,7 +332,9 @@ pub fn current_for_kind(c: &Connection, kind: &str) -> Result<Option<Current>, E
         .map_err(db)?;
     for row in rows {
         let (id, version, bin_sha256, raw, enabled) = row.map_err(db)?;
-        let Ok(m) = serde_json::from_str::<Manifest>(&raw) else { continue };
+        let Ok(m) = serde_json::from_str::<Manifest>(&raw) else {
+            continue;
+        };
         if m.kinds.iter().any(|k| k.kind == kind) {
             return Ok(Some(Current {
                 id,
@@ -500,7 +508,12 @@ pub fn run_pending(cat: &Catalog, p: &Paths) -> anyhow::Result<Vec<String>> {
         let r = install_one(&cat.conn(), p, &id, &version);
         match r {
             Ok(()) => {
-                cat.audit(ACTOR, "plugin.installed", &format!("plugin/{id}"), &json!({"version": version}))?;
+                cat.audit(
+                    ACTOR,
+                    "plugin.installed",
+                    &format!("plugin/{id}"),
+                    &json!({"version": version}),
+                )?;
                 out.push(format!("installed {id} {version}"));
             }
             Err(e) => {
@@ -549,7 +562,9 @@ pub fn run_pending(cat: &Catalog, p: &Paths) -> anyhow::Result<Vec<String>> {
         rows.collect::<Result<_, _>>()?
     };
     for (id, v) in current {
-        if p.plugins.join(&id).join(&v).is_dir() && fs::read_link(p.plugins.join(&id).join("current")).ok() != Some(PathBuf::from(&v)) {
+        if p.plugins.join(&id).join(&v).is_dir()
+            && fs::read_link(p.plugins.join(&id).join("current")).ok() != Some(PathBuf::from(&v))
+        {
             set_current_link(&p.plugins, &id, Some(&v));
             out.push(format!("current {id} -> {v}"));
         }
@@ -595,5 +610,6 @@ pub fn row_json(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> 
     }))
 }
 
-pub const ROW_COLS: &str = "id, version, name, publisher, sha256, bin_sha256, size, manifest, signer, state, current, enabled, \
+pub const ROW_COLS: &str =
+    "id, version, name, publisher, sha256, bin_sha256, size, manifest, signer, state, current, enabled, \
                             quorum_id, uploaded_by, uploaded_at, installed_at, error";

@@ -539,7 +539,7 @@ pub fn run(store: &Store, peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&
     let id = format!("{}/{}", r.source, r.time);
     log.left = usize::MAX;
     (log.out)(&format!(
-        "committed {id}: {} entries ({} files, {} unchanged), {} streams, {} bytes, {} bytes transferred, {} bytes new, consistent={}",
+        "committed {id} {} entries ({} files, {} unchanged), {} streams, {} bytes, {} bytes transferred, {} bytes new, consistent={}",
         r.entries, r.files, r.unchanged, r.streams, r.bytes, r.transferred, r.new_bytes, r.consistent
     ));
     if !r.consistent {

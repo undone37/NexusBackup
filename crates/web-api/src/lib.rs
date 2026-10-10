@@ -22,6 +22,7 @@ pub mod agents;
 pub mod auth;
 pub mod jobs;
 pub mod ops;
+pub mod plugins;
 pub mod quorum;
 pub mod replication;
 pub mod resources;
@@ -87,6 +88,8 @@ pub struct AppState {
     pub secrets_pub: Option<PathBuf>,
     /// replication: replicad paths, per-peer limits and sessions
     pub repl: crate::replication::ReplState,
+    /// plugin staging / project keys / install dir (default: env or appliance paths)
+    pub plugins: std::sync::OnceLock<crate::plugins::PluginPaths>,
 }
 
 impl AppState {
@@ -108,6 +111,7 @@ impl AppState {
             totp,
             secrets_pub,
             repl: crate::replication::ReplState::new(repl),
+            plugins: std::sync::OnceLock::new(),
         })
     }
 
@@ -148,6 +152,10 @@ impl AppState {
             .as_ref()
             .ok_or_else(|| unavailable("no scheduler public key configured".into()))?;
         SealKey::load(p).map_err(|e| unavailable(format!("{e:#}")))
+    }
+
+    pub fn plugin_paths(&self) -> crate::plugins::PluginPaths {
+        self.plugins.get_or_init(Default::default).clone()
     }
 
     /// Appends an audit entry. Must not be called while holding `cat.conn()`.
@@ -403,6 +411,18 @@ pub fn router(st: St) -> Router {
         .route("/audit/verify", get(verify_audit))
         .route("/alerts", get(list_alerts))
         .route("/alerts/{id}/ack", post(ack_alert))
+        .route(
+            "/plugins",
+            get(plugins::list_plugins)
+                .post(plugins::upload_plugin)
+                .layer(axum::extract::DefaultBodyLimit::max(plugins::MAX_UPLOAD)),
+        )
+        .route("/plugins/{id}", axum::routing::delete(plugins::delete_plugin))
+        .route("/plugins/{id}/enable", post(plugins::enable_plugin))
+        .route("/plugins/{id}/disable", post(plugins::disable_plugin))
+        .route("/plugins/{id}/activate", post(plugins::activate_plugin))
+        .route("/plugin-keys", get(plugins::list_keys).post(plugins::add_key))
+        .route("/plugin-keys/{fp}", axum::routing::delete(plugins::delete_key))
         .route("/replication/peers", get(repl::list_peers).post(repl::create_peer))
         .route("/replication/peers/{id}", axum::routing::delete(repl::delete_peer))
         .route("/replication/peers/{id}/export-keys", post(repl::export_keys))
