@@ -7,7 +7,9 @@ rust-version.workspace = true
 
 [dependencies]
 chunkstore = { path = "../chunkstore" }
+crypto_box = { version = "0.9", features = ["seal"] }
 libc = "0.2"
+rand = "0.8"
 zeroize = "1"
 
 [dev-dependencies]

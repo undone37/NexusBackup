@@ -43,6 +43,7 @@ The targets are cargo-fuzz (libFuzzer) crates under `crates/<crate>/fuzz/`. Each
 | `keyd/keyd_request` | keyd socket request lines (`<t>`, `ensure <t>`, `escrow <t>`, ≤128 bytes) against a fresh keyd dir, plus the escrow-answer decoder. | Nothing is created outside `tenants/<valid>/`. DEK answers are whole 36-byte records. Escrow only returns `kek.recovery` + this tenant's DEKs. |
 | `web-api/validators` | Name / schedule / source / path / host / role / GFS validators. | Accepted values keep the properties the other components rely on. |
 | `web-api/api_router` | The whole axum router: method × path × body × {anonymous, admin, SO, operator, tenant_user, scoped operator}. | No 5xx. Anonymous callers never get past auth on `/api/v1`. The audit chain verifies. |
+| `replication/hostile_primary` | Everything a hostile primary sends to a secondary: HTTP/1.1 heads, Content-Length and chunked bodies on one keep-alive connection, the JSON answers, the chunk frames (docs/replication.md). | Bodies stay within the requested limit; frames return only the requested id and at most `MAX_CHUNK` bytes. |
 
 ### 1.2 How to run
 
@@ -313,6 +314,42 @@ Local data loss is excluded by construction:
 The `hostile_box` fuzzer asserts this.
 
 **Open (L-2):** no size cap on manifest/index downloads during DR (memory DoS); `LocalDir::get` allocates the requested length.
+
+### 3.10 Appliance replication (Phase 8, docs/replication.md)
+
+Reviewed with the implementation (2026-10-10):
+- **Port 8443 surface.** Client certificates are requested only when the ClientHello offers
+  `nexus-replication/1` (rustls `Acceptor`, config chosen by ALPN); browsers never get a
+  CertificateRequest. Peer connections reach only `/replication/v1/*` (middleware), ordinary
+  connections never reach it (403). Chain validation is not trusted alone: every request
+  re-checks the fingerprint in `replication_peers` (state `enrolled`) — revocation works on open
+  keep-alive connections (test `tenant_scope_revocation_and_connection_kinds`).
+- **Isolation.** The web-api crate depends on the replication crate without the `daemons`
+  feature, so it cannot link the chunk store or the keyd client (test asserts the manifest; the
+  image builds `-p replication` in a separate cargo invocation so features do not unify). Data
+  comes from nexus-replicad: read-only store access (SELinux neverallow on writes, systemd
+  `ProtectSystem=strict`), no keyd (neverallow connectto + `InaccessiblePaths=`), no network
+  (`PrivateNetwork=yes`). Accepted: replicad trusts the web-api for the peer identity it forwards
+  (a compromised web-api gets ciphertext of any tenant, no keys).
+- **Enrollment.** Token 128 bit, single use, valid 24 h after the quorum approval, digest sealed to
+  replicad (the web-api cannot open it), 5 failed proofs void it. The secondary pins the primary
+  certificate before sending anything; proofs bind the TLS exporter of each leg (MITM test).
+  The CSR contributes only its public key; the secondary checks that the issued certificate
+  carries its key and CN.
+- **Keys.** DEKs leave keyd only as a sealed box to the secondary keyd's X25519 key, only for an
+  approved `replication.key_export` request (second person, names the keyd key fingerprint),
+  executed by the scheduler, which re-checks peer state, key and scope. The secondary keyd binds
+  imported tenants to the primary's certificate fingerprint (`origin`), refuses tenants with local
+  keys, differing key versions and local rotation. Accepted: keyd trusts its caller uid for the
+  quorum check (that uid holds DEKs anyway, T6/H-3).
+- **Hostile primary.** Everything is verified before it is written (`decode_manifest`/`decode_index`,
+  `insert_chunk_raw` = AEAD + keyed hash); the manifest is committed last; the secondary never deletes
+  because the primary did; sizes are bounded (files 256 MiB, chunks 4 MiB + header, listing 64 MiB,
+  HTTP heads 16 KiB). Test `tampered_chunk_is_not_imported`.
+- Fuzz target `replication/hostile_primary` covers the secondary's HTTP/1.1 client and the chunk
+  frames (§1.1).
+- **Open (L-4):** no per-peer bandwidth limit on the primary (concurrency is limited to 8 requests
+  per peer; the secondary has `bwlimit`).
 
 ---
 

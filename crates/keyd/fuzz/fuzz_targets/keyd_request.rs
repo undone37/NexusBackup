@@ -1,5 +1,6 @@
 //! keyd socket protocol: request lines (`<tenant>`, `ensure <tenant>`,
-//! `escrow <tenant>`) as read from the socket (at most 128 bytes), and the
+//! `escrow <tenant>`, `replica-pubkey`, `export-for …`; `import-sealed` gets an
+//! empty body here) as read from the socket (at most 128 bytes), and the
 //! client-side escrow answer decoder. Invariants: no panic, nothing created
 //! outside `tenants/<valid name>/`, DEK answers are whole 36-byte records,
 //! escrow answers decode to wrapped files only.
@@ -20,7 +21,7 @@ fn check_tree(dir: &Path) {
     for e in fs::read_dir(dir).unwrap() {
         let n = e.unwrap().file_name().into_string().unwrap();
         assert!(
-            ["kek.local", "kek.recovery", "tenants"].contains(&n.as_str()),
+            ["kek.local", "kek.recovery", "tenants", "replica-x25519"].contains(&n.as_str()),
             "unexpected {n}"
         );
     }
@@ -43,7 +44,13 @@ fuzz_target!(|data: &[u8]| {
     match keyd::answer(d.path(), line) {
         Ok(out) => {
             let l = line.trim_end_matches('\n');
-            if let Some(t) = l.strip_prefix("escrow ") {
+            if l == "replica-pubkey" {
+                assert_eq!(out.len(), 32);
+            } else if let Some(rest) = l.strip_prefix("export-for ") {
+                // sealed box: 48 bytes overhead + magic, tenant and DEK records; never the DEK in clear
+                assert!(valid(rest.split(' ').next().unwrap()));
+                assert!(out.len() > 48 + 8 + 36);
+            } else if let Some(t) = l.strip_prefix("escrow ") {
                 assert!(valid(t));
                 let files = keyd::parse_escrow(&out).unwrap();
                 assert!(files

@@ -113,7 +113,7 @@ src += [json.loads(c)[\"ssh\"][\"key_pem\"][:10] for (c,) in db.execute(\"SELECT
 seeds = [s[:7] for (s,) in db.execute(\"SELECT totp_secret FROM users\")]
 ok = all(x == \"sealed:v1:\" for x in src) and all(x == \"enc:v1:\" for x in seeds)
 print(\"sources\", src, \"seeds\", seeds, \"OK\" if ok else \"PLAINTEXT FOUND\")"
-echo "== security"; for u in nexus-keyd nexus-web-api nexus-scheduler nexus-setup nexus-nft-sync; do printf "%s " $u; systemd-analyze security $u.service 2>/dev/null | tail -1; done' 300
+echo "== security"; for u in nexus-keyd nexus-web-api nexus-scheduler nexus-replicad nexus-setup nexus-nft-sync; do printf "%s " $u; systemd-analyze security $u.service 2>/dev/null | tail -1; done' 300
 }
 
 case ${1:-} in

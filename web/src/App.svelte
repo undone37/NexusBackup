@@ -20,6 +20,7 @@
   import Tenants from './pages/Tenants.svelte';
   import Sources from './pages/Sources.svelte';
   import Agents from './pages/Agents.svelte';
+  import Replication from './pages/Replication.svelte';
   import Policies from './pages/Policies.svelte';
   import Groups from './pages/Groups.svelte';
   import Users from './pages/Users.svelte';
@@ -40,6 +41,7 @@
     { path: '/tenants', comp: Tenants, allow: can.configure, nav: t.nav.tenants, section: 'config' },
     { path: '/sources', comp: Sources, allow: can.configure, nav: t.nav.sources, section: 'config' },
     { path: '/agents', comp: Agents, allow: can.configure, nav: t.nav.agents, section: 'config' },
+    { path: '/replication', comp: Replication, allow: can.viewReplication, nav: t.nav.replication, section: 'config' },
     { path: '/policies', comp: Policies, allow: can.configure, nav: t.nav.policies, section: 'config' },
     { path: '/groups', comp: Groups, allow: can.configure, nav: t.nav.groups, section: 'config' },
     { path: '/users', comp: Users, allow: can.configure, nav: t.nav.users, section: 'config' },

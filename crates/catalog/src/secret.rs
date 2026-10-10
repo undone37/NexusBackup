@@ -65,6 +65,19 @@ pub fn agent_token_location(id: &str, host: &str, port: u16) -> String {
     format!("agent/{id}/token@{host}:{port}")
 }
 
+/// Location of a replication peer's enrollment token digest on the primary
+/// (`replication_peers.token_hash`, sealed to nexus-replicad, docs/replication.md).
+pub fn replication_peer_token_location(id: &str) -> String {
+    format!("replication-peer/{id}/token")
+}
+
+/// Location of a replication source's enrollment token digest on the secondary
+/// (`replication_sources.token_hash`, sealed to the scheduler): bound to the
+/// primary's address, peer id and certificate pin.
+pub fn replication_source_token_location(id: i64, url: &str, peer_id: &str, pin: &str) -> String {
+    format!("replication-source/{id}/token@{url}/{peer_id}/{pin}")
+}
+
 /// Location owner of a tenant's offsite config.
 pub fn tenant_owner(name: &str) -> String {
     format!("tenant/{name}/offsite")

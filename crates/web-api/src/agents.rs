@@ -57,7 +57,7 @@ pub fn agent_value(c: &Connection, id: &str) -> ApiResult<Option<Value>> {
 }
 
 /// 128-bit token, RFC 4648 base32 without padding (26 characters).
-fn new_token() -> String {
+pub fn new_token() -> String {
     const A: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
     let b: [u8; 16] = rand::random();
     let mut out = String::new();
@@ -117,6 +117,7 @@ pub async fn create_agent(State(st): State<St>, ctx: Ctx, J(r): J<AgentReq>) -> 
             .query_row("SELECT 1 FROM tenants WHERE name = ?1", [&r.tenant], |_| Ok(()))
             .optional()?;
         tenant_ok.ok_or_else(|| ApiError::bad("tenant: does not exist"))?;
+        crate::replication::refuse_replicated(&c, &r.tenant)?;
         c.execute(
             "INSERT INTO agents (id, tenant, name, host, port, token_hash, token_expires) VALUES (?1,?2,?3,?4,?5,?6,?7)",
             params![id, r.tenant, r.name, r.host, r.port, sealed, expires],

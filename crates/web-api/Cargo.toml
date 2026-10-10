@@ -17,6 +17,8 @@ axum = { version = "0.8", default-features = false, features = ["http1", "http2"
 agent-proto = { path = "../agent-proto" }
 catalog = { path = "../catalog" }
 nas = { path = "../nas", default-features = false }
+# protocol types only (no chunk store, no keyd): docs/replication.md §2
+repl_proto = { package = "replication", path = "../replication", default-features = false }
 truenas = { path = "../truenas", default-features = false }
 hyper = "1"
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "http1", "http2", "service"] }
@@ -26,7 +28,7 @@ rustls-pki-types = { version = "1", features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "signal", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "signal", "time", "io-util"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tokio-util = { version = "0.7", features = ["io"] }
 tower = { version = "0.5", features = ["util"] }
@@ -34,3 +36,11 @@ tower = { version = "0.5", features = ["util"] }
 [dev-dependencies]
 http-body-util = "0.1"
 tempfile = "3"
+# tests/replication.rs: two appliances in one process (primary: replicad + keyd +
+# scheduler; secondary: the nexus-replica client library + keyd)
+repl_proto = { package = "replication", path = "../replication" }
+chunkstore = { path = "../chunkstore" }
+keyd = { path = "../keyd" }
+scheduler = { path = "../scheduler" }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+libc = "0.2"

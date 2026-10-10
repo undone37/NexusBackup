@@ -28,6 +28,10 @@ pub const WEB_ACTIONS: &[&str] = &[
     "group.update",
     "user.update",
     "agent.delete",
+    "replication_peer.create",
+    "replication_peer.delete",
+    "replication_source.delete",
+    "replication_source.update",
 ];
 
 const SECRET_KEYS: &[&str] = &["password_hash", "totp_secret"];
@@ -66,16 +70,22 @@ pub fn accepted(id: i64, extra: Value) -> Response {
 
 /// Creates a pending request (audited) and returns its id.
 pub fn request(st: &St, ctx: &Ctx, action: &str, target: &str, params: Value) -> ApiResult<i64> {
+    request_as(st, ctx.name(), action, target, params)
+}
+
+/// Like [`request`] on behalf of `by` (e.g. the replication key export that
+/// enrollment requests for the peer's creator).
+pub fn request_as(st: &St, by: &str, action: &str, target: &str, params: Value) -> ApiResult<i64> {
     let id = {
         let c = st.cat.conn();
         c.execute(
             "INSERT INTO quorum (action, params, requested_by, created, state) VALUES (?1, ?2, ?3, ?4, 'pending')",
-            params![action, params.to_string(), ctx.name(), catalog::now()],
+            params![action, params.to_string(), by, catalog::now()],
         )?;
         c.last_insert_rowid()
     };
     st.audit(
-        ctx.name(),
+        by,
         "quorum.request",
         &format!("quorum/{id}"),
         json!({"action": action, "target": target, "params": redact(params)}),
@@ -185,6 +195,7 @@ fn execute(c: &Connection, action: &str, p: &Value) -> ApiResult<bool> {
             }
             changed(c.execute("DELETE FROM agents WHERE id = ?1", [id])?)?
         }
+        a if a.starts_with("replication_") => return crate::replication::execute(c, a, p),
         _ => return Ok(false),
     }
     Ok(true)
