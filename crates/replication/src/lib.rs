@@ -53,7 +53,7 @@ pub fn hex(b: &[u8]) -> String {
 }
 
 pub fn unhex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())
@@ -271,7 +271,7 @@ pub struct EnrollOutcome {
 
 /// Parses the 32-byte chunk ids of a `POST …/chunks` body.
 pub fn parse_ids(body: &[u8]) -> Result<Vec<String>, String> {
-    if body.is_empty() || body.len() % 32 != 0 || body.len() / 32 > MAX_IDS {
+    if body.is_empty() || !body.len().is_multiple_of(32) || body.len() / 32 > MAX_IDS {
         return Err(format!("body must be 1..={MAX_IDS} chunk ids of 32 bytes"));
     }
     Ok(body.chunks(32).map(hex).collect())

@@ -276,7 +276,7 @@ impl Reparse {
         let (so, sl, po, pl) = (f(0), f(2), f(4), f(6));
         let path = &data[hdr..];
         let get = |o: usize, l: usize| -> Result<Vec<u16>, String> {
-            if o % 2 != 0 || l % 2 != 0 {
+            if !o.is_multiple_of(2) || !l.is_multiple_of(2) {
                 return Err("odd name offset".into());
             }
             Ok(u16s(path.get(o..o + l).ok_or("reparse name out of range")?))
