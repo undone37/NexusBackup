@@ -173,7 +173,7 @@ Decisions (user, 2026-10-09): MinIO for dev/tests, real provider later; own mini
 - [x] LZ4 on the wire for agent chunks (user request 2026-10-10): agent-proto v1.2 (cap `lz4`, `WantLz4`/`ChunkLz4`/`RestoreChunkLz4`, appended), `lz4_flex` (pure Rust), only sent if ≥ 10 % smaller, size-bounded decompression + BLAKE3 check on the appliance, both directions; Linux + Windows agents via agent-core; interop: 8.18 MB raw → 5.01 MB on the wire (log file ~3.2 MB → ~13 KB, random data raw); agent binary 2.1 MB
   - note: `hooks::tests::timeout_kills_process_group_and_pre_stops_on_failure` is timing-sensitive under full parallel test load (passes alone)
 - [x] NAS decisions implemented: web-api refuses `sec krb5` (UI offers NTLMSSP only; helper code kept), `backup_inconsistent` once per source for a missing snapshot / every time for files changed while read (agents + shares; test `inconsistent_alerts_once_per_source`), access models documented as the supported setup (docs/nas-connector.md)
-- [ ] Scale-out groundwork (plan §15 Phase 8: no multi-node yet) — architecture note
+- [x] Scale-out groundwork: `docs/scale-out.md` (what is node-independent, what is node-local, sharding/leader direction, rules for new code)
 - [ ] After Phase 8: add repository README.md (user request 2026-10-09)
 
 ## Phase 9 — Plugin system (added 2026-10-10)
