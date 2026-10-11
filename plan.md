@@ -92,6 +92,10 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | M365 scope (Phase 11) | **Exchange mailboxes (mail, calendar, contacts), OneDrive, SharePoint sites (document libraries), Teams (channel messages + team files)** (decided 2026-10-11) | Full first release; Teams messages need Microsoft's protected/metered export APIs (tenant approval). |
 | M365 authentication (Phase 11) | **Entra app registration, application permissions, certificate credential; private key stored as a sealed source secret; no client secrets** (decided 2026-10-11) | No expiring bearer secret. |
 | M365 restores (Phase 11) | **Download, restore to original (new folder, no overwrite by default), restore to another user/site** (decided 2026-10-11) | Covers leaver scenarios. |
+| UI redesign (Phase 12) | **Enterprise console look: dark navy icon sidebar, light card-based content, dense tables, status colors; dark mode (follows the OS, manual toggle)** (decided 2026-10-11) | User: current UI not professional enough. |
+| Management dashboard (Phase 12) | **KPIs + charts for protection & SLA (protected/unprotected, RPO compliance, last good backup age), job success trends (7/30 days, failures by source type), capacity & efficiency (used/free, growth + forecast to full, dedup/compression), offsite & replication (lag, lock coverage, restore tests)** (decided 2026-10-11) | Management needs KPIs at a glance. |
+| OIDC (Phase 12) | **Generic OIDC (Entra ID, Keycloak, Okta, Authentik, …) in addition to local auth; IdP groups/claims mapped to appliance roles and tenants; MFA enforced by the IdP; local accounts remain as break-glass** (decided 2026-10-11) | Central identity management. |
+| Phase 12 order | **After Phase 11 (M365)** (decided 2026-10-11) | |
 | NAS shares (Phase 7) | **Kernel NFS/SMB mounts, read-only, in a private mount namespace by a small privileged helper with its own SELinux domain** (decided 2026-10-09) | Mature, fast clients; isolation via namespace + SELinux. |
 | Windows testing (Phase 7) | **Build + unit tests only, no Windows test VMs for now** (decided 2026-10-09) | Real Windows testing later; plan's test matrix for Windows is deferred. |
 | Agent trust (Phase 7) | **Appliance-run private CA + one-time enrollment token**, agent pins appliance cert (decided 2026-10-09) | Agent never connects out; mTLS only. |
@@ -577,6 +581,13 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
 
 ### Phase 11 — Microsoft 365 (after phase 10)
 - Separate project: Graph API connectors for Exchange, SharePoint, OneDrive, Teams — built as a plugin on the Phase 9 SDK.
+
+### Phase 12 — Professional UI, management dashboard, OIDC (after phase 11; added 2026-10-11 by user request)
+- Redesign of the web UI in an enterprise-console style (icon sidebar, cards, dense tables), dark mode (OS preference + toggle).
+- Management dashboard with KPIs and charts: protection & SLA, job success trends, capacity & efficiency (incl. forecast),
+  offsite & replication; backed by an aggregated metrics API (no client-side full scans).
+- OIDC login (authorization code + PKCE) next to local accounts; group/claim → role/tenant mapping; local break-glass admins.
+- Manual screenshots regenerated (Phase 10 script); docs/control-plane.md + threat model updated for OIDC.
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
