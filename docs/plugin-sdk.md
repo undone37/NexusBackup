@@ -4,7 +4,9 @@ A plugin adds a source type (and its restore functions) to the appliance without
 signed executable that the appliance starts in a sandbox for each operation and talks to over stdin/stdout. The
 binding contract is docs/plugin-system.md; this guide shows how to build one with crate `plugin-sdk`. The complete
 example is `plugins/example-files` (backs up a local directory, restores it into a directory); `plugins/truenas`
-is a real connector (API client + `ssh` in the sandbox, guests, incremental via the state blob, docs/truenas-connector.md §9).
+is a real connector (API client + `ssh` in the sandbox, guests, incremental via the state blob, docs/truenas-connector.md §9);
+`plugins/m365` is a cloud connector (HTTPS API with fixed default hosts, certificate auth, delta queries, `base_list`,
+a mock server in its tests, docs/m365.md).
 
 ## What a plugin does — and what it never sees
 
@@ -64,7 +66,9 @@ Rules (checked by `nexus-plugin pack` and again by the appliance):
 - `secret_fields`: top-level properties that are write-only and sealed at rest; your plugin receives them in clear in
   `ctx.config` (memory only — never log them).
 - `endpoints`: JSON pointers into the config. They open the appliance firewall (TCP) for this source and are the
-  only TCP ports your process can connect to (plus DNS). `sandbox.network: "none"` = no network.
+  only TCP ports your process can connect to (plus DNS). `"default_host"` (v1.3) names a fixed DNS host used when
+  the config field is empty (cloud APIs: `{"host": "/graph_host", "default_host": "graph.microsoft.com",
+  "default_port": 443, "proto": "tcp"}`). `sandbox.network: "none"` = no network.
 - `guests`: `{"title", "list": true}` if a group selects guests; implement `list_guests`. Every guest gets its own
   snapshot (`plugin-<id>-<source>-<guest>`); guest ids are `[A-Za-z0-9._-]{1,64}`.
 - `restores`: `download` is mandatory and done by the appliance (files + your streams below `.nexus-streams/`).
@@ -123,6 +127,9 @@ fn main() { plugin_sdk::run(Pg) }
   mtime, link target and size against **its own** base entry and reuses its data; a wrong claim fails the backup
   (it never takes chunk ids from you).
 - `sink.base(&paths)` — metadata of these paths in the base snapshot (to decide `unchanged`).
+- `sink.base_list()` — every entry of the base snapshot in path order with full metadata (v1.3). Keep your own ids
+  in xattrs and rebuild your previous view from it instead of storing item lists in the 1 MiB state blob
+  (`plugins/m365`).
 - `sink.walk_dir(root, &WalkOptions { excludes, xattrs })` — a local directory tree with all of the above
   (deterministic order, hard links, xattrs, glob excludes, unchanged by size+mtime+ctime+inode+mode+owner).
 - `sink.stream(name)` — application data (`[A-Za-z0-9._/-]`, unique); bounded 1 MiB buffer; `finish()`.
@@ -131,6 +138,8 @@ Paths are relative, `/`-separated bytes without `.`/`..`, unique, ≤ 4096 bytes
 
 ### Restoring (`Source`)
 - `src.files(&paths, |item, data| …)` — entries at/below the paths (`ctx.params["top"]` lists the top level).
+  If the callback returns an error, the SDK drains the rest of the answer and then returns it, so your error
+  message reaches the job log.
 - `src.streams(&names, |name, data| …)` — `ctx.params["streams"]` lists the snapshot's streams.
 - `src.restore_tree(&paths, target_dir, &RestoreOptions { overwrite, owners, xattrs })` — safe local restore
   (component-wise `openat` with `O_NOFOLLOW`, exclusive create, metadata, hard links, directory times last).

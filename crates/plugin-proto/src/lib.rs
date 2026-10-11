@@ -154,6 +154,12 @@ pub enum Message {
         code: u32,
         message: String,
     },
+    // v1.3 (appended: older variants keep their wire index)
+    /// The base snapshot's entries in path order (bytes) after `after`; answered
+    /// with one `BaseEntries` page (empty = end). Backup only.
+    BaseList {
+        after: Option<Vec<u8>>,
+    },
 }
 
 fn bad(msg: impl Into<String>) -> io::Error {
@@ -230,6 +236,7 @@ pub fn check(m: &Message) -> io::Result<()> {
         Message::NeedStreams { names } if names.len() > MAX_BATCH || names.iter().any(|n| !valid_stream_name(n)) => {
             Err(bad("invalid stream list"))
         }
+        Message::BaseList { after: Some(p) } if !valid_path(p) => Err(bad("invalid path")),
         Message::NeedFiles { paths } | Message::BaseQuery { paths }
             if paths.len() > MAX_BATCH || paths.iter().any(|p| !valid_path(p)) =>
         {
@@ -258,6 +265,10 @@ pub struct Endpoint {
     pub port: Option<String>,
     pub default_port: u16,
     pub proto: String,
+    /// v1.3: host used when the config has no (or an empty) value at `host`, e.g. a
+    /// fixed cloud API host that a config field may override (national clouds, tests)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_host: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -349,26 +360,54 @@ pub fn parse_source_name(s: &str) -> Option<(String, u64, Option<String>)> {
 pub const STREAMS_DIR: &str = ".nexus-streams";
 
 impl KindSpec {
-    /// TCP ports of the endpoints configured in `cfg` (port from the config, else
-    /// `default_port`): the plugin's connect allow-list (Landlock).
-    pub fn tcp_ports(&self, cfg: &serde_json::Value) -> Vec<u16> {
-        let mut ports: Vec<u16> = self
-            .endpoints
+    /// (host, port) of the TCP endpoints configured in `cfg`: host from the config
+    /// (else `default_host`; unconfigured endpoints without one are skipped), port from
+    /// the config (else `default_port`). The appliance firewall opens these.
+    pub fn tcp_targets(&self, cfg: &serde_json::Value) -> Vec<(String, u16)> {
+        self.endpoints
             .iter()
-            .filter(|e| e.proto == "tcp" && cfg.pointer(&e.host).is_some())
-            .map(|e| {
-                e.port
+            .filter(|e| e.proto == "tcp")
+            .filter_map(|e| {
+                let host = cfg
+                    .pointer(&e.host)
+                    .and_then(|v| v.as_str())
+                    .map(|h| h.trim_matches(['[', ']']))
+                    .filter(|h| !h.is_empty())
+                    .or(e.default_host.as_deref())?
+                    .to_owned();
+                let port = e
+                    .port
                     .as_deref()
                     .and_then(|p| cfg.pointer(p))
                     .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
                     .and_then(|p| u16::try_from(p).ok())
-                    .unwrap_or(e.default_port)
+                    .unwrap_or(e.default_port);
+                Some((host, port))
             })
-            .collect();
+            .collect()
+    }
+
+    /// TCP ports of [`KindSpec::tcp_targets`]: the plugin's connect allow-list (Landlock).
+    pub fn tcp_ports(&self, cfg: &serde_json::Value) -> Vec<u16> {
+        let mut ports: Vec<u16> = self.tcp_targets(cfg).into_iter().map(|(_, p)| p).collect();
         ports.sort_unstable();
         ports.dedup();
         ports
     }
+}
+
+/// Host names a manifest may name literally (`default_host`): DNS names only
+/// (no IP literals, no wildcards), so the firewall resolves them like config hosts.
+fn valid_fixed_host(h: &str) -> bool {
+    (1..=253).contains(&h.len())
+        && h.split('.').count() >= 2
+        && h.split('.').all(|l| {
+            (1..=63).contains(&l.len())
+                && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+        })
+        && !h.bytes().all(|b| b.is_ascii_digit() || b == b'.')
 }
 
 impl Manifest {
@@ -439,6 +478,9 @@ impl Manifest {
                 }
                 if e.proto != "tcp" && e.proto != "udp" {
                     return Err(format!("kind {}: endpoint proto tcp|udp", k.kind));
+                }
+                if e.default_host.as_deref().is_some_and(|h| !valid_fixed_host(h)) {
+                    return Err(format!("kind {}: endpoint default_host must be a DNS name", k.kind));
                 }
             }
         }
@@ -537,6 +579,15 @@ mod tests {
         let mut buf = Vec::new();
         write_msg(&mut buf, &Message::Stream { name: "../x".into() }).unwrap();
         assert!(read_msg(&mut &buf[..]).is_err());
+        for (after, ok) in [
+            (None, true),
+            (Some(b"mail/Inbox".to_vec()), true),
+            (Some(b"../x".to_vec()), false),
+        ] {
+            let mut buf = Vec::new();
+            write_msg(&mut buf, &Message::BaseList { after }).unwrap();
+            assert_eq!(read_msg(&mut &buf[..]).is_ok(), ok);
+        }
         let mut big = ((MAX_FRAME + 1) as u32).to_be_bytes().to_vec();
         big.extend([0u8; 8]);
         assert!(read_msg(&mut &big[..]).is_err());
@@ -558,6 +609,32 @@ mod tests {
         assert_eq!(k.tcp_ports(&serde_json::json!({"host": "db", "port": 6432})), [6432]);
         assert_eq!(k.tcp_ports(&serde_json::json!({"host": "db"})), [5432]);
         assert!(k.tcp_ports(&serde_json::json!({})).is_empty(), "unconfigured endpoint");
+        assert!(k.tcp_ports(&serde_json::json!({"host": ""})).is_empty(), "empty host");
+        // v1.3: fixed default hosts (overridable by the config field the pointer names)
+        let mut fixed = m.clone();
+        fixed.kinds[0].endpoints.push(Endpoint {
+            host: "/api_host".into(),
+            port: Some("/port".into()),
+            default_port: 443,
+            proto: "tcp".into(),
+            default_host: Some("graph.microsoft.com".into()),
+        });
+        assert_eq!(fixed.validate(), Ok(()));
+        let f = &fixed.kinds[0];
+        assert_eq!(
+            f.tcp_targets(&serde_json::json!({})),
+            [("graph.microsoft.com".into(), 443)]
+        );
+        assert_eq!(
+            f.tcp_targets(&serde_json::json!({"host": "db", "api_host": "127.0.0.1", "port": 8443})),
+            [("db".into(), 8443), ("127.0.0.1".into(), 8443)]
+        );
+        assert_eq!(f.tcp_ports(&serde_json::json!({"api_host": ""})), [443]);
+        for bad_host in ["1.2.3.4", "*.example.com", "localhost", "a..b", "-a.b", "a b.c"] {
+            let mut bad = fixed.clone();
+            bad.kinds[0].endpoints[1].default_host = Some(bad_host.into());
+            assert!(bad.validate().is_err(), "{bad_host}");
+        }
         let mut bad = m.clone();
         bad.id = "Bad_ID".into();
         assert!(bad.validate().is_err());

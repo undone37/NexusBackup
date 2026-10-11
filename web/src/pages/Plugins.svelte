@@ -193,7 +193,7 @@
         <dt>{t.plugins.endpoints}</dt>
         <dd class="mono">
           {#each k.endpoints ?? [] as ep, i (i)}
-            <div>{ep.proto ?? 'tcp'} {ep.host}{ep.port ? `:${ep.port}` : ''}{ep.default_port ? ` (${ep.default_port})` : ''}</div>
+            <div>{ep.proto ?? 'tcp'} {ep.host}{ep.port ? `:${ep.port}` : ''}{ep.default_port ? ` (${ep.default_port})` : ''}{ep.default_host ? ` — ${t.plugins.defaultHost(ep.default_host)}` : ''}</div>
           {:else}{t.plugins.noEndpoints}{/each}
         </dd>
         <dt>{t.plugins.guests}</dt>

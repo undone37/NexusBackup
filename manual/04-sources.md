@@ -36,6 +36,7 @@ Open **Configuration → Sources**. Only administrators see this page.
 | **NFS share** | `nfs` | NFS (TCP 2049; NFSv3 also mountd, default 20048) | tar/zip download |
 | **SMB share** | `smb` | SMB (TCP 445) | tar/zip download |
 | plugin kinds (e.g. **PostgreSQL server (14 or newer)**) | `plugin:<kind>` | the endpoints the plugin declares (PostgreSQL: 5432; optional restore server and SSH host) | per plugin |
+| **Microsoft 365 tenant (Exchange, OneDrive, SharePoint, Teams)** (plugin) | `plugin:m365` | `graph.microsoft.com`, `login.microsoftonline.com` and your two SharePoint hosts (TCP 443) | download; restore to the original or another user/site/team (new folder) |
 
 Restores are described in [06 Restores](06-restores.md).
 
@@ -393,7 +394,7 @@ A share's group has no guest selection: it backs up the whole share. Snapshots a
 Limits: all entries are held in memory until the commit (about 0.5–0.7 KB per entry: plan RAM for shares with
 millions of files). Over SMB to Samba, a same-size rewrite with a restored mtime is not detected.
 
-## Plugin sources (PostgreSQL)
+## Plugin sources (PostgreSQL, Microsoft 365)
 
 Kinds provided by installed and **enabled** plugins appear in the **Source type** list under **Plugins**. The form
 is generated from the plugin's configuration schema, and fields declared as secret are write-only. A note under
@@ -446,3 +447,78 @@ What the group selects decides the backup type:
 > roles. Each backup warns about the ones present; use a cluster backup where they matter. Point-in-time restore
 > of clusters with extra tablespaces is not supported (use the download). The plugin passed integration tests
 > against real PostgreSQL servers. A run on the appliance image (signed bundle, UI) is still pending.
+
+### Microsoft 365 (Exchange, OneDrive, SharePoint, Teams)
+
+The **Microsoft 365** plugin (`m365`) backs up a Microsoft 365 tenant through Microsoft Graph: Exchange mailboxes
+(mail, calendars, contacts), OneDrive, SharePoint document libraries, and Teams (team files and, optionally,
+channel messages). It signs in as an **app registration** in your Entra ID with a **certificate**. There is no
+password and no client secret. Details and limits: `docs/m365.md` in the repository.
+
+Prepare Entra ID once (a Global or Application Administrator does this):
+
+1. Entra admin center → **App registrations** → **New registration**: "Accounts in this organizational directory
+   only", no redirect URI. Note the **Application (client) ID** and the **Directory (tenant) ID**.
+2. Create a certificate on any computer with OpenSSL:
+
+   ```sh
+   openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 730 \
+     -subj "/CN=NexusBackup M365" -keyout nexus-m365.key -out nexus-m365.crt
+   ```
+
+   In the app registration, open **Certificates & secrets → Certificates → Upload certificate** and upload
+   `nexus-m365.crt`. Do not create a client secret.
+3. **API permissions → Add a permission → Microsoft Graph → Application permissions**, then **Grant admin
+   consent**:
+
+   | Workload | Needed for backups | Also needed for restores |
+   |---|---|---|
+   | always | `User.Read.All` | |
+   | Exchange mailboxes | `Mail.Read`, `Calendars.Read`, `Contacts.Read` | `Mail.ReadWrite`, `Calendars.ReadWrite`, `Contacts.ReadWrite` |
+   | OneDrive, SharePoint, Teams files | `Sites.Read.All`, `Files.Read.All` | `Sites.ReadWrite.All`, `Files.ReadWrite.All` |
+   | Teams | `Team.ReadBasic.All`, `Channel.ReadBasic.All` | |
+   | Teams channel messages | `ChannelMessage.Read.All` | `Teamwork.Migrate.All`, `Channel.Create` |
+
+4. Only if you want **Teams channel messages**: Microsoft treats the export of channel messages as a *protected
+   API*. Request access for your app through the form linked from https://aka.ms/teamsgraph/requestaccess.
+   Approval can take several days. Until then, leave **Teams: channel messages** off. Team files are backed up
+   without it.
+
+Create the source with **Source type** **Microsoft 365 tenant (Exchange, OneDrive, SharePoint, Teams)**. Form
+fields (from the plugin manifest):
+
+- **Tenant ID (GUID) or primary domain**, **Application (client) ID of the app registration**
+- **Certificate (PEM, uploaded to the app registration)** and **Private key of the certificate (PEM, RSA,
+  unencrypted)**: paste the contents of `nexus-m365.crt` and `nexus-m365.key`. Both are write-only and sealed.
+  Delete the key file afterwards.
+- The workloads: **Exchange mailboxes (mail, calendars, contacts)**, **OneDrive**, **SharePoint sites (document
+  libraries)**, **Teams: team files**, **Teams: channel messages (protected Microsoft API, needs Microsoft's
+  approval)** (off by default), and **Teams export payment model**: `B` (backup use, billed by Microsoft through an
+  Azure subscription linked to the app), `A` (security/compliance licences) or `evaluation` (a small free monthly
+  quota, for tests).
+- **SharePoint host** (`contoso.sharepoint.com`) and **OneDrive host** (`contoso-my.sharepoint.com`): needed for
+  OneDrive, SharePoint and Teams files. If you enter wrong values, validation tells you the right ones.
+- Leave **Graph host**, **Sign-in host**, **HTTPS port** and **Additional CA certificate** empty. They exist for
+  national clouds and test setups.
+
+Click **Validate connection**. The plugin signs in, logs the certificate's SHA-1 thumbprint (compare it with the
+one in the app registration) and makes one test call per enabled workload. A missing permission is reported
+next to the workload with the permission names. A sign-in failure shows Microsoft's error code (for example
+`AADSTS700027` when the certificate is not uploaded to the app).
+
+In the protection group, click **Load …** and tick the **users** (mailbox + OneDrive), **sites** and **teams** to
+back up. Each becomes its own snapshot (`plugin-m365-<source>-u.…`, `-s.…`, `-t.…`). A group without any ticked
+object is refused: the plugin never backs up a whole tenant as one snapshot. Backups after the first one are
+incremental: the plugin asks Microsoft only for what changed (mail folders and drives) or compares the lists
+(calendars, contacts, Teams messages), and unchanged items are not downloaded again.
+
+> **Caution:** the app's application permissions are tenant-wide. To limit which mailboxes it can read, use
+> Exchange Online *RBAC for Applications*. When the certificate approaches its expiry date, upload a new one,
+> enter both new fields in the source, then remove the old certificate from the app.
+>
+> **Status:** The plugin passed its integration tests against a local Microsoft Graph simulation. A run against a
+> real Microsoft 365 tenant is still pending. Not covered in this version: modified occurrences of recurring
+> meetings, event attachments, contact photos, archive mailboxes, public folders, file versions and sharing
+> permissions, SharePoint lists and subsites, private/shared channel sites (back them up as sites), and 1:1 or
+> group chats.
+

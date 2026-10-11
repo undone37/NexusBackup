@@ -634,6 +634,7 @@ export const en = {
         .filter(Boolean)
         .join(' · ') || '—',
     endpoints: 'Network endpoints',
+    defaultHost: (host: string) => `default host ${host}`,
     noEndpoints: 'none',
     guests: 'Guests',
     restores: 'Restores',

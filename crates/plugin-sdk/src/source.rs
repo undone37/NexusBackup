@@ -68,6 +68,9 @@ impl Source {
             .borrow_mut()
             .send(&req)
             .map_err(|e| anyhow!("host connection: {e}"))?;
+        // after a failed callback the rest of the answer is drained, so the host reads
+        // the plugin's Error instead of failing on a closed pipe
+        let mut failed: Option<anyhow::Error> = None;
         loop {
             let m = self.chan.borrow_mut().recv()?;
             let mut r = DataReader {
@@ -76,14 +79,18 @@ impl Source {
                 pos: 0,
                 end: false,
             };
-            match m {
+            let res = match m {
+                Message::FileBegin { .. } | Message::Stream { .. } if failed.is_some() => Ok(()),
                 Message::FileBegin { path, meta } => {
                     let item = FileItem { path, meta };
-                    f(Some(&item), None, &mut r)?;
+                    f(Some(&item), None, &mut r)
                 }
-                Message::Stream { name } => f(None, Some(&name), &mut r)?,
-                Message::NeedDone => return Ok(()),
+                Message::Stream { name } => f(None, Some(&name), &mut r),
+                Message::NeedDone => return failed.map_or(Ok(()), Err),
                 m => bail!("unexpected host message {m:?}"),
+            };
+            if let Err(e) = res {
+                failed = Some(e);
             }
             // whatever the callback did not read
             io::copy(&mut r, &mut io::sink())?;

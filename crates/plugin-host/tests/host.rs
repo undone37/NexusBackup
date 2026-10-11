@@ -135,6 +135,11 @@ fn backup_incremental_restore_download() {
     let s2 = Snapshot::load(&e.store, "plugin-testplug-1", r2.time).unwrap();
     assert_eq!(s2.files[0].chunks, snap.files[0].chunks);
 
+    // v1.3 BaseList: the whole base in path order, then an empty page
+    std::thread::sleep(Duration::from_millis(1100));
+    let (r3, _) = e.backup(json!({"mode": "ok", "content": "hello world", "base_list": true}));
+    assert_eq!(r3.unwrap().summary, r#"listed [["a.txt",11]]"#);
+
     // restore: the plugin receives exactly the snapshot content
     let mut p = e.proc(30, 10);
     let rr = restore::run(

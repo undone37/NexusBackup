@@ -29,7 +29,7 @@ The snapshot name tells you what was backed up. The buttons follow from it:
 | `host-<agent id>` | Linux/Windows host (agent) | **Restore to path**, **Browse files** |
 | `nas-<source>-<pool.dataset>` | TrueNAS dataset (built-in connector) | **Browse files** (download only) |
 | `share-<source>` | NFS / SMB share | **Browse files** (download only) |
-| `plugin-<plugin>-<source>[-<guest>]` | plugin source, e.g. PostgreSQL | the plugin's restores, plus its download button |
+| `plugin-<plugin>-<source>[-<guest>]` | plugin source, e.g. PostgreSQL or Microsoft 365 | the plugin's restores, plus its download button |
 
 Use the **Tenant** and **Guest (e.g. vm-100)** filters to narrow the list. Each row shows **Local**,
 **Offsite** and **Verified** marks and the **Locked until** date. A locked snapshot cannot be deleted
@@ -203,6 +203,64 @@ server.
 
 > **Status:** Tested against PostgreSQL 14, 17 and 18 in the plugin's container test box. A run on the
 > appliance image (VM lab) is still pending.
+
+## Microsoft 365 restores
+
+Microsoft 365 snapshots (`plugin-m365-<source>-u.…` for a user, `-s.…` for a site, `-t.…` for a team) offer three
+restores. None of them overwrites anything in Microsoft 365: restores always write into a **new** folder,
+calendar or channel.
+
+| Snapshot | Contains (folders in the file browser) |
+|---|---|
+| user (`u.…`) | `mail/` (one `.eml` per message), `calendar/` (one `.ics` per event), `contacts/` (one `.vcf` per contact), `onedrive/` (the files) |
+| site (`s.…`) | `libraries/<library>/` (the files) |
+| team (`t.…`) | `files/` (the team's files), `channels/<channel>/` (one `.json` per conversation, if channel messages are backed up) |
+
+### Download
+
+Click the download button (**Download (mail .eml, events .ics, contacts .vcf, files, threads .json)**), select
+folders or single items and prepare a tar or zip archive as described in
+[Browse files and download them](#browse-files-and-download-them-tar-or-zip). Mail opens in any mail client,
+`.ics` files in any calendar, `.vcf` files in any address book. Names containing `/` or `%` are shown encoded
+(`Projects%2F2026` is the folder `Projects/2026`).
+
+### Restore to the original user, site or team
+
+1. Click **Restore to the original user / site / team (into a new folder)** on the snapshot.
+2. Optionally fill in **Only these snapshot paths**, one per line, e.g. `mail/Inbox` or
+   `onedrive/Documents/Contracts` (empty = everything), and **New folder** (empty = `Restored <date> <time>`). The
+   folder must not exist yet.
+3. Click **Start**.
+
+Where the items end up:
+
+- **Mail**: a new top-level mail folder with that name, containing the backed-up folder structure.
+- **Calendars**: a new calendar `<folder> – <calendar name>` per backed-up calendar. Restored events have **no
+  attendees**, so nobody receives invitations. The attendee list is still in the `.ics` file of the backup.
+- **Contacts**: a new contact folder with one subfolder per backed-up contact folder.
+- **OneDrive, team files**: the new folder in the user's OneDrive or the team's document library.
+- **SharePoint libraries**: the new folder inside the library of the same name. If the target site has no such
+  library, `<folder>/<library>/…` in its default document library.
+- **Teams conversations**: a new channel `<channel> (restored <date> <time>)` per backed-up channel. Messages
+  appear with their original author and time. Deleted messages and messages from bots are skipped.
+
+### Restore to another user, site or team
+
+Use **Restore to another user / site / team (into a new folder)**, for example to give a successor the mailbox
+and OneDrive of a person who left. In addition to the fields above, enter the **Target**:
+
+- for a user snapshot: the other user's sign-in name (`jane@contoso.com`) or object ID;
+- for a site snapshot: the site's address (`https://contoso.sharepoint.com/sites/archive`) or Graph site ID;
+- for a team snapshot: the team's ID or its exact name.
+
+The target must be of the same kind as the snapshot (a user's mailbox cannot be restored into a site). The job
+fails with "target … not found" if the target does not exist.
+
+The app registration needs the write permissions listed in [04 Sources](04-sources.md#microsoft-365-exchange-onedrive-sharepoint-teams)
+for restores, and for Teams conversations also `Teamwork.Migrate.All` and `Channel.Create`.
+
+> **Status:** Tested against a local Microsoft Graph simulation only. A run against a real Microsoft 365 tenant is
+> still pending; it also checks whether restored mails show up as drafts in Outlook.
 
 ## Follow a restore job
 

@@ -7,6 +7,7 @@ back up, restore). Shipped plugins:
 | Plugin | Source kind | What it does |
 |---|---|---|
 | **PostgreSQL** (`postgresql`) | **PostgreSQL server (14 or newer)** | logical dumps per database; cluster base backup + WAL; restore to a server; point-in-time restore |
+| **Microsoft 365** (`m365`) | **Microsoft 365 tenant (Exchange, OneDrive, SharePoint, Teams)** | mail, calendars, contacts, OneDrive, SharePoint libraries, Teams files and channel messages; download, restore to the original or another user/site/team (see [04 Sources](04-sources.md#microsoft-365-exchange-onedrive-sharepoint-teams)) |
 | **TrueNAS (plugin)** (`truenas`) | **TrueNAS datasets (plugin)** | the TrueNAS connector on the plugin SDK (see [04 Sources](04-sources.md#truenas-as-a-plugin-plugintruenas)) |
 
 The repository also contains `plugins/example-files`, an example for plugin authors. It is not a product

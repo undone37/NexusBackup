@@ -477,6 +477,8 @@ export interface PluginEndpoint {
   port?: string;
   default_port?: number;
   proto?: string;
+  /** fixed host used when the config field is empty (contract v1.3) */
+  default_host?: string;
 }
 
 export interface PluginKind {

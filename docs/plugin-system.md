@@ -1,7 +1,8 @@
 # Plugin System — Contract (Phase 9)
 
 Status: v1 (2026-10-10), implementation notes v1.1 (2026-10-10, see "Implementation (v1.1)" at the end), additive
-v1.2 (2026-10-10, TrueNAS + PostgreSQL plugins, see "v1.2" at the end). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
+v1.2 (2026-10-10, TrueNAS + PostgreSQL plugins, see "v1.2" at the end), additive v1.3 (2026-10-11, Microsoft 365
+plugin, see "v1.3" at the end). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
 speaking a **versioned protocol**, with a **Rust SDK**; trust = **project release key + publisher keys an admin adds
 with quorum**; reference plugin **PostgreSQL**; the **TrueNAS** connector is ported to the SDK; the restore API covers
 **download, restore to original/alternate target, application-specific restore and mount/instant access**.
@@ -209,3 +210,29 @@ self-contained for point-in-time restore). Pure-Rust wire protocol client instea
 (not in the image, and they must match the server's major version); restores to targets declared as optional
 endpoints of the source (alternate PostgreSQL server; SSH restore host for the PITR data directory). Details and
 limits: plugins/postgresql/README.md. No other contract change.
+
+## v1.3 — additive changes for the Microsoft 365 plugin (2026-10-11)
+Found while building `plugins/m365` (docs/m365.md); protocol and API version unchanged (`api: 1`). Plugins built
+for v1.2 run unchanged; a plugin that uses `BaseList` needs a v1.3 host (the appliance ships host and SDK together).
+- **Fixed endpoint hosts:** an endpoint may name `"default_host"` — used when the config has no (or an empty)
+  value at its `host` pointer. So a cloud API (`graph.microsoft.com`, `login.microsoftonline.com`) is opened
+  without a form field the admin must fill, while the pointed-to config field can still override it (national
+  clouds, test setups). `Manifest::validate` accepts DNS names only (no IP literals, no wildcards, at least two
+  labels). One function resolves endpoints for both the firewall and the sandbox: `KindSpec::tcp_targets(config)`
+  (host from the config, else `default_host`; port from the config, else `default_port`; endpoints without a host
+  are skipped), `KindSpec::tcp_ports` = its ports (the Landlock allow-list), used by the scheduler's allow-list
+  (replacing its own copy) and by `nexus-pluginhost`/the SDK harness. Behaviour change for v1.2 manifests: an
+  endpoint whose host field is present but empty no longer opens its port. The web UI shows `default_host` in the
+  plugin details.
+- **`BaseList { after }` (plugin → host, backup only):** the base snapshot's entries in path order (bytes) after
+  `after` (from the start if absent), answered with one `BaseEntries` page as large as fits one frame with full
+  metadata incl. xattrs (≤ `MAX_BATCH` entries; at least one); an empty page ends the listing; without a base the
+  answer is empty. The variant is appended to `Message`, so existing variants keep their wire index. SDK:
+  `Sink::base_list()` returns the whole base. Use: plugins that rebuild their previous view of the source from the
+  base snapshot instead of the 1 MiB state blob — the M365 plugin keeps each item's Graph id in an xattr and finds
+  previous path/version per id, so per-item lists of large mailboxes and drives never go into the state blob (only
+  the Graph delta links do). Tested: `crates/plugin-host/tests/host.rs` (test plugin pages through the base),
+  `plugins/m365/tests/m365.rs`.
+- **SDK, restores:** when a `Source::files`/`streams` callback fails, the SDK reads the rest of the host's answer
+  (until `NeedDone`) before returning the error, so the host receives the plugin's `Error` (shown in the job log)
+  instead of failing on a closed pipe. No host change.

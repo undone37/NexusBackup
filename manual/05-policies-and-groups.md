@@ -66,7 +66,7 @@ kind of source:
 | Linux or Windows host (agent) | the agent's host, with the paths configured in the source (nothing to select) |
 | TrueNAS (ZFS datasets) | the datasets you tick; none ticked = all datasets of the source |
 | NFS share / SMB share | the whole share (nothing to select) |
-| Plugin source with guests (e.g. PostgreSQL) | the guests you tick after **Load …**; none ticked = the whole source |
+| Plugin source with guests (e.g. PostgreSQL) | the guests you tick after **Load …**; none ticked = the whole source (Microsoft 365: at least one user, site or team must be ticked) |
 | Plugin source without guests | the whole source as configured |
 
 ![A protection group of Proxmox VE guests](images/group-pve.png)
