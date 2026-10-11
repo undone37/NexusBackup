@@ -5,6 +5,12 @@ pinned in `/etc/pki/nexus/cosign/` (`/etc/containers/policy.json`, docs/release.
 Whoever holds that private key can push code that runs as root on every appliance.
 Treat it like a CA root key.
 
+## Current keys
+
+| Key | Fingerprint (sha256 of the DER public key) | Created | Status |
+|---|---|---|---|
+| `nexus-release-2026-alpha.pub` | `604da4971a486f1c75f27e8b680ceb5fefe9f4ebbf391d2dc75fd5cd9728beae` | 2026-10-11 | **alpha only, weak custody**: generated on the networked development machine (cosign in a container with `--network none`, passphrase typed only by the maintainer), single custodian, no standby key. Signs 0.0.1-alpha. Must be replaced by an offline key (ceremony below) via the rotation procedure before any beta / production release. |
+
 ## Roles
 
 - **Key custodians (2 people):** generate the key together, each holds one of the two
