@@ -271,6 +271,8 @@ export const en = {
       plugin_backup: 'Plugin backup',
       plugin_restore: 'Plugin restore',
       plugin_mount: 'Plugin mount',
+      replica_enroll: 'Enroll at primary',
+      replica_sync: 'Replication sync',
     } as Record<string, string>,
     result: 'Result',
     valid: 'The source is reachable and the credentials work.',
@@ -326,7 +328,7 @@ export const en = {
     tokenId: 'API token ID',
     tokenSecret: 'API token secret',
     nodes: 'Nodes (JSON: name → SSH settings)',
-    storage: 'Restore storage',
+    storage: 'NexusBackup storage ID on PVE',
     fleecing: 'Fleecing storage',
     kind: 'Source type',
     kinds: {
@@ -540,7 +542,7 @@ export const en = {
     wholeSource: 'Backs up the whole source as configured (this plugin kind has no guest selection).',
     loadGuests: (title: string) => `Load ${title}`,
     loadingGuests: 'Asking the source…',
-    pluginGuests: (title: string) => `${title} (none selected = all)`,
+    pluginGuests: (title: string) => `${title} (none selected = the whole source)`,
     guestsFailed: 'Listing failed — see the job log.',
     guestsLoadHint: (title: string) => `Click "Load ${title}" to list what the source offers.`,
     guestInvalid: (g: string) => `Invalid guest ID "${g}".`,
@@ -598,10 +600,10 @@ export const en = {
   plugins: {
     title: 'Plugins',
     intro:
-      'Plugins add source kinds. They are signed executables that run sandboxed and only see the systems their sources point to. Installing, upgrading, disabling and removing a plugin and changing publisher keys need security-officer approval.',
+      'Plugins add source kinds. They are signed executables that run sandboxed and only see the systems their sources point to. Installing, upgrading, disabling and removing a plugin and changing publisher keys need approval by a second person (another administrator or a security officer) when approvals are enabled.',
     install: 'Install plugin',
     installIntro:
-      'Upload a signed bundle (.nxplugin) and its detached signature (.sig, base64 as printed by "nexus-plugin sign" or "cosign sign-blob"). The appliance verifies it against the trusted keys; a security officer must approve the installation.',
+      'Upload a signed bundle (.nxplugin) and its detached signature (.sig, base64 as printed by "nexus-plugin sign" or "cosign sign-blob"). The appliance verifies it against the trusted keys; with approvals enabled, another administrator or a security officer must approve the installation.',
     bundle: 'Plugin bundle (.nxplugin)',
     signature: 'Signature (.sig)',
     signatureText: 'Signature (base64)',
@@ -611,7 +613,7 @@ export const en = {
     upload: 'Upload and verify',
     uploading: 'Uploading…',
     uploaded: 'Signature verified',
-    waiting: (id: number) => `Request #${id} is waiting for a security officer. The plugin is installed after approval.`,
+    waiting: (id: number) => `Request #${id} is waiting for another administrator or a security officer. The plugin is installed after approval.`,
     upgradeFrom: 'Upgrade from',
     newInstall: 'new installation',
     publisher: 'Publisher',
@@ -659,14 +661,14 @@ export const en = {
     disable: 'Disable',
     enabledOk: 'Plugin enabled.',
     disableConfirm: (n: string) =>
-      `Disable the plugin "${n}"? Backups of its sources stop until it is enabled again. A security officer must approve.`,
+      `Disable the plugin "${n}"? Backups of its sources stop until it is enabled again. With approvals enabled, a second person must approve.`,
     activate: 'Make current',
     activateConfirm: (n: string, v: string) =>
-      `Switch "${n}" to version ${v}? A security officer must approve.`,
+      `Switch "${n}" to version ${v}? With approvals enabled, a second person must approve.`,
     removeWhat: (n: string) => `plugin "${n}" (all versions; refused while sources of its kinds exist)`,
     keys: 'Publisher keys',
     keysIntro:
-      'Signatures are checked against the project keys shipped with the appliance and the publisher keys added here. Adding or removing a key needs security-officer approval.',
+      'Signatures are checked against the project keys shipped with the appliance and the publisher keys added here. Adding or removing a key needs approval by a second person when approvals are enabled.',
     fingerprint: 'Fingerprint',
     keyName: 'Key',
     builtin: 'project key',

@@ -7,6 +7,7 @@
   import { fmtAgo, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import { kindLabel } from '../lib/jobs';
+  import { parsePluginSnapshot } from '../lib/plugins';
   import type { Agent, Alert, ApprovalsState, Group, Job, Policy, QuorumRequest, Snapshot, Source } from '../lib/types';
   import Check from '../components/Check.svelte';
   import JobState from '../components/JobState.svelte';
@@ -87,21 +88,38 @@
   });
 
   // Snapshot source names a guest can have: VM/CT IDs (pve), agent ids (linux hosts),
-  // datasets (truenas: `nas-<source>-<pool.dataset>`) or the share itself (nfs/smb:
-  // `share-<source>`, the group has no guests: one row for the share).
+  // datasets (truenas: `nas-<source>-<pool.dataset>`), the share itself (nfs/smb:
+  // `share-<source>`, the group has no guests: one row for the share) or plugin guests
+  // (`plugin-<plugin id>-<source>[-<guest>]`; a group without guests backs up the whole source).
   const kindOf = (g: Group) => sources.find((s) => s.id === g.source_id)?.kind;
   const isNas = (g: Group) => kindOf(g) === 'truenas';
   const isShare = (g: Group) => kindOf(g) === 'nfs' || kindOf(g) === 'smb';
+  const isPlugin = (g: Group) => !!kindOf(g)?.startsWith('plugin:');
   const SHARE = '\u0000share';
-  const guestsOf = (g: Group): (number | string)[] => (isShare(g) ? [SHARE] : g.guests);
-  const sourcesOf = (g: Group, guest: number | string) =>
-    guest === SHARE
-      ? [`share-${g.source_id}`]
-      : typeof guest === 'string'
-        ? isNas(g)
-          ? [`nas-${g.source_id}-${guest.replaceAll('/', '.')}`]
-          : [`host-${guest}`]
-        : [`vm-${guest}`, `ct-${guest}`];
+  const guestsOf = (g: Group): (number | string)[] =>
+    isShare(g) || (isPlugin(g) && !g.guests.length) ? [SHARE] : g.guests;
+  // plugin snapshot names per source and guest ('' = whole source), from the snapshot list
+  const pluginNames = $derived.by(() => {
+    const m = new Map<string, Set<string>>();
+    for (const s of snaps) {
+      const p = parsePluginSnapshot(s.source);
+      if (!p) continue;
+      const k = `${s.tenant}/${p.sourceId}/${p.guest ?? ''}`;
+      if (!m.has(k)) m.set(k, new Set());
+      m.get(k)!.add(s.source);
+    }
+    return m;
+  });
+  const sourcesOf = (g: Group, guest: number | string): string[] =>
+    isPlugin(g)
+      ? [...(pluginNames.get(`${g.tenant}/${g.source_id}/${guest === SHARE ? '' : guest}`) ?? [])]
+      : guest === SHARE
+        ? [`share-${g.source_id}`]
+        : typeof guest === 'string'
+          ? isNas(g)
+            ? [`nas-${g.source_id}-${guest.replaceAll('/', '.')}`]
+            : [`host-${guest}`]
+          : [`vm-${guest}`, `ct-${guest}`];
 
   function lastFor(g: Group, guest: number | string): Snapshot | undefined {
     for (const s of sourcesOf(g, guest)) {
@@ -120,7 +138,7 @@
   function guestLabel(g: Group, guest: number | string) {
     if (guest === SHARE) return sources.find((s) => s.id === g.source_id)?.name ?? `share-${g.source_id}`;
     if (typeof guest === 'string')
-      return isNas(g) ? guest : (agents.find((a) => a.id === guest)?.name ?? `host-${guest}`);
+      return isNas(g) || isPlugin(g) ? guest : (agents.find((a) => a.id === guest)?.name ?? `host-${guest}`);
     return lastFor(g, guest)?.source ?? String(guest);
   }
   const showAlerts = $derived(can.viewAlerts(session.user));

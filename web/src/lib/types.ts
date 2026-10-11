@@ -275,7 +275,9 @@ export type JobKind =
   | 'plugin_guests'
   | 'plugin_backup'
   | 'plugin_restore'
-  | 'plugin_mount';
+  | 'plugin_mount'
+  | 'replica_enroll'
+  | 'replica_sync';
 
 /** One entry of `nexus-pve files … ls` (crates/pve/src/files.rs `Entry`); agents use the same shape. */
 export interface FileEntry {
