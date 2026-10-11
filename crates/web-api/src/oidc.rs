@@ -29,7 +29,7 @@ use crate::auth::{locked_out, new_session, record_failure, ClientIp, Ctx, User, 
 use crate::quorum::{accepted, request};
 use crate::{ct_eq, random_hex, sha256_hex, validate, ApiError, ApiResult, St, J, Q};
 use axum::extract::State;
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -211,11 +211,13 @@ fn validate_settings(c: &Connection, s: &Settings) -> ApiResult<()> {
 }
 
 /// The redirect URI registered at the IdP: this appliance's callback, from the
-/// request's Host header (the IdP compares it with its registration).
-fn redirect_uri(h: &HeaderMap) -> String {
-    let host = h
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
+/// address the browser used (the IdP compares it with its registration). HTTP/2
+/// carries it as `:authority` (the request URI), HTTP/1.1 as the Host header.
+fn redirect_uri(uri: &Uri, h: &HeaderMap) -> String {
+    let host = uri
+        .authority()
+        .map(|a| a.as_str())
+        .or_else(|| h.get(header::HOST).and_then(|v| v.to_str().ok()))
         .filter(|s| {
             (1..=255).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b".-:[]".contains(&b))
         })
@@ -260,10 +262,10 @@ fn default_groups_claim() -> String {
     Settings::default().groups_claim
 }
 
-pub async fn get_settings(State(st): State<St>, ctx: Ctx, headers: HeaderMap) -> ApiResult<Json<Value>> {
+pub async fn get_settings(State(st): State<St>, ctx: Ctx, uri: Uri, headers: HeaderMap) -> ApiResult<Json<Value>> {
     ctx.require(&["admin", "security_officer"])?;
     let s = load(&st.cat.conn())?.unwrap_or_default();
-    Ok(Json(public(&s, &redirect_uri(&headers))))
+    Ok(Json(public(&s, &redirect_uri(&uri, &headers))))
 }
 
 /// Changes who can sign in: quorum `oidc.update` while approvals are enabled.
@@ -895,7 +897,7 @@ pub struct StartQuery {
 }
 
 /// `GET /auth/oidc/start?next=/path` → 302 to the IdP.
-pub async fn start(State(st): State<St>, headers: HeaderMap, Q(q): Q<StartQuery>) -> ApiResult<Response> {
+pub async fn start(State(st): State<St>, uri: Uri, headers: HeaderMap, Q(q): Q<StartQuery>) -> ApiResult<Response> {
     let s = load(&st.cat.conn())?.unwrap_or_default();
     if !s.enabled {
         return Ok(fail("disabled"));
@@ -910,7 +912,7 @@ pub async fn start(State(st): State<St>, headers: HeaderMap, Q(q): Q<StartQuery>
     let (state, nonce, binder) = (random_hex(), random_hex(), random_hex());
     let verifier = URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>());
     let challenge = URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(verifier.as_bytes()));
-    let redirect_uri = redirect_uri(&headers);
+    let redirect_uri = redirect_uri(&uri, &headers);
     let now = catalog::now();
     {
         let mut p = st.oidc.pending.lock().unwrap();
@@ -1127,6 +1129,26 @@ pub async fn callback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// HTTP/2 has no Host header (the browser's address is the URI authority);
+    /// HTTP/1.1 sends a path-only URI plus Host; hostile values fall back.
+    #[test]
+    fn redirect_uri_from_authority_or_host() {
+        let h2: Uri = "https://nexus-m5:28481/api/v1/auth/oidc/start".parse().unwrap();
+        assert_eq!(
+            redirect_uri(&h2, &HeaderMap::new()),
+            "https://nexus-m5:28481/api/v1/auth/oidc/callback"
+        );
+        let mut h = HeaderMap::new();
+        h.insert(header::HOST, HeaderValue::from_static("backup.example.com"));
+        let h1: Uri = "/api/v1/auth/oidc/start".parse().unwrap();
+        assert_eq!(
+            redirect_uri(&h1, &h),
+            "https://backup.example.com/api/v1/auth/oidc/callback"
+        );
+        h.insert(header::HOST, HeaderValue::from_static("evil.example/x?"));
+        assert_eq!(redirect_uri(&h1, &h), "https://localhost/api/v1/auth/oidc/callback");
+    }
 
     #[test]
     fn next_is_same_origin_only() {

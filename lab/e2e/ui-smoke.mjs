@@ -1,7 +1,7 @@
 // UI smoke test against a real appliance (not the mock): signs in as admin and as security officer in
 // headless Chrome, opens every page and every Settings tab in light and dark theme, and fails on
 // uncaught exceptions, console errors, CSP violations and /api answers >= 400.
-//   ROOT=<appliance root> PORT=<api port> node lab/e2e/ui-smoke.mjs [out-dir]
+//   ROOT=<appliance root> PORT=<api port> node --experimental-websocket lab/e2e/ui-smoke.mjs [out-dir]   (node 20)
 // ROOT holds secrets.env (ADMIN_PW/ADMIN_TOTP/SO_PW/SO_TOTP) and etc/nexus/tls/cert.pem (pinned).
 import { spawn, execSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';

@@ -17,6 +17,9 @@
 #   plugins.sh pg       PLUGIN=postgresql: install; plugins/postgresql/testbox (host 10.0.2.2 from the VM);
 #                       validate, guests, backup of database labdb, restore to_target on the alternate
 #                       server (labdb_copy), contents compared with the original
+#   plugins.sh oidc     single sign-on against crates/web-api/tests/oidc-testbox (TLS=1, Keycloak as kc.nexus-lab):
+#                       settings via quorum, connection test from the appliance (egress + SELinux), browser-less
+#                       logins: kc-alice -> admin, kc-tina -> tenant user, kc-nobody -> refused (oidc_error=denied)
 #   plugins.sh check    e2e.sh check, install tree labels, 0 nexus AVCs since boot
 #   plugins.sh stop     power off
 # e.g. IMG=localhost/nexus-os:plugins lab/appliance/plugins.sh image disk boot setup plugin check stop
@@ -253,6 +256,71 @@ echo "== domains seen during backups"; sort -u /run/nexus-lab-ps 2>/dev/null | s
 	log "check: 0 nexus AVCs since boot"
 }
 
+# single sign-on against the Keycloak testbox (host 127.0.0.1, VM 10.0.2.2, both as kc.nexus-lab)
+oidc() {
+	local tb=$repo/crates/web-api/tests/oidc-testbox/run.sh r q j loc form u
+	TLS=1 env -u PORT "$tb" start >/dev/null
+	eval "$(TLS=1 env -u PORT "$tb" env)"
+	local kport=${NEXUS_OIDC_ISSUER##*:}
+	kport=${kport%%/*}
+	con run "grep -q kc.nexus-lab /etc/hosts || echo '10.0.2.2 kc.nexus-lab' >>/etc/hosts" >/dev/null
+	apienv
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	login so "$SO_PW" "$SO_TOTP"
+	api admin POST /tenants '{"name":"sso"}' >/dev/null
+	r=$(api admin PUT /settings/oidc "$(jq -nc --arg i "$NEXUS_OIDC_ISSUER" --arg c "$NEXUS_OIDC_CLIENT_ID" \
+		--arg sct "$NEXUS_OIDC_CLIENT_SECRET" --arg ca "$(cat "$NEXUS_OIDC_CA")" \
+		'{enabled:true, issuer:$i, client_id:$c, client_secret:$sct, ca_pem:$ca, scopes:["openid","profile","email"],
+		  username_claim:"preferred_username", groups_claim:"groups", label:"Sign in with Keycloak",
+		  mappings:[{group:"/nexus-admins", role:"admin", tenants:[]}, {group:"/acme-users", role:"tenant_user", tenants:["sso"]}]}')")
+	case $(status) in
+	202)
+		q=$(jq -r .quorum_id <<<"$r")
+		api so POST "/quorum/$q/approve" '{}' >/dev/null
+		expect 200 "approve oidc.update"
+		log "oidc settings saved via quorum #$q"
+		;;
+	200) log "oidc settings saved (approvals disabled)" ;;
+	*) die "PUT /settings/oidc: HTTP $(status) $r" ;;
+	esac
+	# the scheduler adds the IdP to the egress allow-list on its next tick (≤ 30 s)
+	for _ in $(seq 20); do
+		r=$(api admin POST /settings/oidc/test '{}')
+		expect 200 "oidc test"
+		jq -e '[.[] | startswith("ok")] | all' <<<"$r" >/dev/null && break
+		sleep 5
+	done
+	jq -e '[.[] | startswith("ok")] | all' <<<"$r" >/dev/null || die "oidc test from the appliance: $r"
+	log "oidc test from the appliance: $(jq -c . <<<"$r")"
+	# browser-less sign-in: appliance start -> Keycloak login form -> callback -> session
+	local K=(curl -s --resolve "kc.nexus-lab:$kport:127.0.0.1" --cacert "$NEXUS_OIDC_CA")
+	local A=(curl -s --resolve "nexus-m5:$PORT:127.0.0.1" --cacert "$ROOT/etc/nexus/tls/cert.pem")
+	sso() { # USER PASSWORD -> prints the final appliance redirect location; session in $S/sso-$1.jar
+		rm -f "$S/sso-$1.jar" "$S/kc-$1.jar"
+		loc=$("${A[@]}" -c "$S/sso-$1.jar" -o /dev/null -w '%{redirect_url}' "$BASE/auth/oidc/start?next=/")
+		[[ $loc == https://kc.nexus-lab:* ]] || die "oidc start for $1: redirect to '$loc'"
+		form=$("${K[@]}" -c "$S/kc-$1.jar" "$loc" | grep -o 'action="[^"]*"' | head -n 1 | sed 's/^action="//; s/"$//; s/&amp;/\&/g')
+		[ -n "$form" ] || die "no Keycloak login form for $1"
+		loc=$("${K[@]}" -b "$S/kc-$1.jar" -c "$S/kc-$1.jar" -o /dev/null -w '%{redirect_url}' \
+			--data-urlencode "username=$1" --data-urlencode "password=$2" --data-urlencode credentialId= "$form")
+		[[ $loc == https://nexus-m5:$PORT/api/v1/auth/oidc/callback* ]] || die "Keycloak login of $1: redirect to '$loc'"
+		"${A[@]}" -b "$S/sso-$1.jar" -c "$S/sso-$1.jar" -o /dev/null -w '%{redirect_url}' "$loc"
+	}
+	loc=$(sso kc-alice alice-testbox-pw)
+	u=$("${A[@]}" -b "$S/sso-kc-alice.jar" "$BASE/auth/me")
+	[ "$(jq -r '.name + " " + .role' <<<"$u")" = "kc-alice admin" ] || die "kc-alice after SSO ($loc): $u"
+	log "kc-alice signed in via SSO: $(jq -c '{name, role, auth}' <<<"$u")"
+	loc=$(sso kc-tina tina-testbox-pw)
+	u=$("${A[@]}" -b "$S/sso-kc-tina.jar" "$BASE/auth/me")
+	[ "$(jq -r '.name + " " + .role + " " + (.tenant // "")' <<<"$u")" = "kc-tina tenant_user sso" ] || die "kc-tina after SSO ($loc): $u"
+	log "kc-tina signed in via SSO: $(jq -c '{name, role, tenant, auth}' <<<"$u")"
+	loc=$(sso kc-nobody nobody-testbox-pw)
+	[[ $loc == *"oidc_error=denied"* ]] || die "kc-nobody: want oidc_error=denied, got '$loc'"
+	log "kc-nobody refused: $loc"
+	r=$(api admin GET '/audit?limit=50')
+	log "audit: $(jq -c '[.[] | select(.action | startswith("auth.oidc") or startswith("user.oidc")) | .action + " " + .actor] | .[:6]' <<<"$r")"
+}
+
 # PostgreSQL reference plugin against plugins/postgresql/testbox (QEMU user net: 10.0.2.2 = host)
 pg() {
 	[ "$PLUGIN" = postgresql ] || die "pg: run with PLUGIN=postgresql"
@@ -318,7 +386,7 @@ die() {
 [ $# -gt 0 ] || { sed -n '2,28p' "$0" >&2; exit 2; }
 for step in "$@"; do
 	case $step in
-	image | bundle | install | disk | boot | setup | plugin | pg | check | stop) "$step" ;;
+	image | bundle | install | disk | boot | setup | plugin | pg | oidc | check | stop) "$step" ;;
 	*) sed -n '2,28p' "$0" >&2; exit 2 ;;
 	esac
 done
