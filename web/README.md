@@ -17,11 +17,19 @@ npm run preview           # serves dist with the production CSP header + the moc
 
 Mock users: `admin`, `so`, `so2` (security officers), `op` (operator) and
 `acme` (tenant user of tenant `acme`). The password for all of them is `nexus`,
-and any 6-digit code works as the TOTP code. The mock starts with approvals
-disabled (so the dashboard recommends enabling them) and one large GC waiting for
-confirmation. `newop` is an operator pending activation: on the sign-in page choose
-"Activate account" and enter the code `DEMO-ACTIVATE-NEWOP-2026` (any 6-digit
-authenticator code is accepted).
+and any 6-digit code works as the TOTP code. `newop` is an operator pending
+activation: on the sign-in page choose "Activate account" and enter the code
+`DEMO-ACTIVATE-NEWOP-2026` (any 6-digit authenticator code is accepted);
+`former-op` is disabled.
+
+The mock is seeded with a fictional demo appliance that the manual's screenshots
+use (`manual/tools/screenshots.mjs`): tenants `acme` (S3 Object Lock offsite,
+replicated to the peer `dr-site`), `initech` (Storage Box offsite) and `globex`
+(replicated from `hq-primary`); Proxmox VE, Linux and Windows agent, TrueNAS
+(built-in and plugin), NFS, SMB and PostgreSQL sources; jobs incl. failures,
+alerts, and pending approvals (approvals start enabled). Only example domains and
+documentation IP ranges are used. `NEXUS_MOCK_EPOCH=<unix seconds>` fixes the mock
+clock's start and `NEXUS_MOCK_SEED=<n>` makes ids, tokens and codes deterministic.
 
 To use a real web-api instead of the mock:
 `NEXUS_API=https://appliance:8443 npm run dev`. Vite then proxies `/api` and

@@ -78,7 +78,7 @@ the peer's creator. The request names the secondary's **Key service fingerprint*
 
 - compare it with the **Key service fingerprint** shown for the source on the secondary's **Replication**
   page;
-- only then approve it on **Approvals** (see [10-approvals-and-audit.md](10-approvals-and-audit.md)).
+- only then approve it on **Approvals** (see [10 Approvals and audit](10-approvals-and-audit.md)).
 
 The primary's scheduler then seals each tenant key to the secondary's key service. The secondary imports the
 keys at its next sync and stores them under its own key-encryption key. Until the export is approved, syncs
@@ -103,7 +103,7 @@ versions under **Keys exported**.
   while approvals are enabled.
 - Restores use only the secondary's keys and work while the primary is down. Browse and download work as
   usual. For full VM/CT restores, add a PVE source of the DR site to the replicated tenant as a restore
-  target ([06-restores.md](06-restores.md#restores-on-a-replication-secondary)).
+  target ([06 Restores](06-restores.md#restores-on-a-replication-secondary)).
 - The secondary uploads replicated snapshots offsite only if you give the tenant an offsite target on the
   secondary (untested in the lab).
 
@@ -136,13 +136,13 @@ valid for 10 years).
 | `replication_verify` | critical | a fetched object failed verification; nothing was imported |
 | `job_failed` | critical | a sync or enrollment job failed |
 
-See [11-alerts-and-monitoring.md](11-alerts-and-monitoring.md).
+See [11 Alerts and monitoring](11-alerts-and-monitoring.md).
 
 ## Using the secondary for disaster recovery
 
 If the primary is lost, the secondary already holds restorable copies of the replicated tenants, with its own
-keys and its own recovery key. Restore from it as described in [06-restores.md](06-restores.md). To rebuild
-an appliance from an offsite copy instead, see [14-disaster-recovery.md](14-disaster-recovery.md).
+keys and its own recovery key. Restore from it as described in [06 Restores](06-restores.md). To rebuild
+an appliance from an offsite copy instead, see [14 Disaster recovery](14-disaster-recovery.md).
 
 Known limits: no bandwidth limit on the primary side (only the secondary's **Bandwidth limit**). Chained
 replication (secondary to a third appliance) is not tested.

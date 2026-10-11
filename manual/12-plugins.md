@@ -7,7 +7,7 @@ back up, restore). Shipped plugins:
 | Plugin | Source kind | What it does |
 |---|---|---|
 | **PostgreSQL** (`postgresql`) | **PostgreSQL server (14 or newer)** | logical dumps per database; cluster base backup + WAL; restore to a server; point-in-time restore |
-| **TrueNAS (plugin)** (`truenas`) | **TrueNAS datasets (plugin)** | the TrueNAS connector on the plugin SDK (see [04-sources.md](04-sources.md#truenas-as-a-plugin-plugintruenas)) |
+| **TrueNAS (plugin)** (`truenas`) | **TrueNAS datasets (plugin)** | the TrueNAS connector on the plugin SDK (see [04 Sources](04-sources.md#truenas-as-a-plugin-plugintruenas)) |
 
 The repository also contains `plugins/example-files`, an example for plugin authors. It is not a product
 feature.
@@ -75,7 +75,7 @@ another administrator or a security officer (never the uploader) approves the `p
 approval, the installer verifies the bundle again, unpacks it read-only and makes the new version **current**.
 
 With approvals disabled, the upload is recorded and approved at once. The upload is audited either way. See
-[10-approvals-and-audit.md](10-approvals-and-audit.md).
+[10 Approvals and audit](10-approvals-and-audit.md).
 
 Uploading a newer version of an installed plugin is an upgrade: the dialog shows **Upgrade from** with the
 previous version. The new version becomes current after approval, and existing sources keep working with it.
@@ -114,10 +114,10 @@ plugin to be installed and enabled.
 ## Using plugin sources
 
 Once a plugin is installed and enabled, its source kinds appear under **Plugins** in **Configuration → Sources →
-New source → Source type**. The form is generated from the plugin's schema. See [04-sources.md](04-sources.md).
+New source → Source type**. The form is generated from the plugin's schema. See [04 Sources](04-sources.md).
 In protection groups you select the plugin's guests, for example databases, with **Load …** (see
-[05-policies-and-groups.md](05-policies-and-groups.md)). In **Snapshots**, every restore the plugin declares
-appears as a button. Download is provided by the appliance itself. See [06-restores.md](06-restores.md).
+[05 Policies and protection groups](05-policies-and-groups.md)). In **Snapshots**, every restore the plugin declares
+appears as a button. Download is provided by the appliance itself. See [06 Restores](06-restores.md).
 
 Plugin snapshots are named `plugin-<plugin id>-<source id>[-<guest>]`. Retention, offsite copies and replication
 treat them like any other snapshot.

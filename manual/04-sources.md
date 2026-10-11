@@ -3,7 +3,7 @@
 A **source** is a system the appliance backs up: a Proxmox VE cluster, a host with a backup agent, a TrueNAS
 system, an NFS or SMB share, or a system handled by a plugin (for example PostgreSQL). Each source belongs to
 exactly one tenant. A source by itself does not take any backups. A protection group selects what to back up
-from it and which policy applies (see [05-policies-and-groups.md](05-policies-and-groups.md)).
+from it and which policy applies (see [05 Policies and protection groups](05-policies-and-groups.md)).
 
 The appliance **pulls** all data. It opens every connection itself: sources never connect to the appliance and
 hold no credentials for it. The appliance's outbound firewall is default-deny. The scheduler adds the endpoints
@@ -24,7 +24,7 @@ Open **Configuration → Sources**. Only administrators see this page.
   (host, port and, where present, user). If you change those fields, enter the secret again.
 - **Delete** removes a source. It is refused while protection groups still use the source, so delete or move
   those groups first. With approvals enabled, a second person must approve the deletion (see
-  [10-approvals-and-audit.md](10-approvals-and-audit.md)).
+  [10 Approvals and audit](10-approvals-and-audit.md)).
 - For plugin sources, **Validate connection** runs a short validation job. It shows **Connection OK** or the field
   and message the plugin reported, plus a link to the job.
 
@@ -37,7 +37,7 @@ Open **Configuration → Sources**. Only administrators see this page.
 | **SMB share** | `smb` | SMB (TCP 445) | tar/zip download |
 | plugin kinds (e.g. **PostgreSQL server (14 or newer)**) | `plugin:<kind>` | the endpoints the plugin declares (PostgreSQL: 5432; optional restore server and SSH host) | per plugin |
 
-Restores are described in [06-restores.md](06-restores.md).
+Restores are described in [06 Restores](06-restores.md).
 
 ## Proxmox VE
 
@@ -317,7 +317,7 @@ backups fail with a TLS error until you update the source.
 
 The same connector also exists as the plugin **TrueNAS (plugin)** (source kind **TrueNAS datasets (plugin)**). It
 uses the same TrueNAS setup and forced command, but runs sandboxed without access to the store or keys (see
-[12-plugins.md](12-plugins.md)). Differences:
+[12 Plugins](12-plugins.md)). Differences:
 
 - one ZFS snapshot per dataset instead of one atomic recursive snapshot per root
 - TrueNAS keeps two `nexus-*` snapshots per dataset
@@ -398,7 +398,7 @@ millions of files). Over SMB to Samba, a same-size rewrite with a restored mtime
 Kinds provided by installed and **enabled** plugins appear in the **Source type** list under **Plugins**. The form
 is generated from the plugin's configuration schema, and fields declared as secret are write-only. A note under
 the form names the plugin, its version and its publisher. The plugin only gets network access to the endpoints
-its source config declares. Installing plugins: [12-plugins.md](12-plugins.md).
+its source config declares. Installing plugins: [12 Plugins](12-plugins.md).
 
 ![PostgreSQL source form](images/source-postgresql.png)
 

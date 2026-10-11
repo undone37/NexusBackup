@@ -3,7 +3,7 @@
 Each tenant can have one offsite target: a **Hetzner Storage Box (SFTP)** or an **S3 object storage** bucket.
 The appliance uploads the tenant's snapshots there, encrypted and deduplicated. The copy is
 **self-describing**: with the storage credentials and the recovery key, a fresh appliance can restore it
-without the original one ([14-disaster-recovery.md](14-disaster-recovery.md)).
+without the original one ([14 Disaster recovery](14-disaster-recovery.md)).
 
 > **Status:** The offsite engine was tested against a local SFTP container that mimics the Storage Box limits
 > and against MinIO with Object Lock. A final run against a real Hetzner Storage Box and a real S3 provider is
@@ -22,7 +22,7 @@ whether a known file is stored.
 
 ## When uploads run
 
-The **Copy offsite** setting of a policy ([05-policies-and-groups.md](05-policies-and-groups.md)) decides
+The **Copy offsite** setting of a policy ([05 Policies and protection groups](05-policies-and-groups.md)) decides
 whether a group's snapshots go offsite. After every successful backup, the scheduler runs retention for that
 source, then an **Offsite copy** job for the tenant. That job:
 
@@ -40,7 +40,7 @@ the appliance is never just mirrored to the target. Offsite locks are extend-onl
 
 The **Offsite** column on **Dashboard** and **Snapshots** shows which snapshots are offsite. The alert
 `offsite_lag` fires when a snapshot of a tenant has not reached the target for more than 48 hours
-([11-alerts-and-monitoring.md](11-alerts-and-monitoring.md)).
+([11 Alerts and monitoring](11-alerts-and-monitoring.md)).
 
 ## Configure the target of a tenant
 
@@ -55,7 +55,7 @@ Fields for both target types:
 - **Parallel uploads**: 1–8 in the form, default 4.
 
 Changing or removing a target that is already configured needs approval by a second person while approvals
-are enabled ([10-approvals-and-audit.md](10-approvals-and-audit.md)). Setting the first target does not.
+are enabled ([10 Approvals and audit](10-approvals-and-audit.md)). Setting the first target does not.
 
 ## Hetzner Storage Box (SFTP)
 

@@ -70,6 +70,7 @@ designs), [`docs/adr.md`](docs/adr.md) (architecture decisions), [`docs/threat-m
 | `restore-vm/` | restore micro-VM image (Debian kernel + initramfs, ZFS) and its agent |
 | `os/` | bootc Containerfile, systemd units, SELinux policy, nftables, update/health checks |
 | `release/` | signing (cosign, offline key), verification, promotion |
+| `manual/` | end-user manual (Markdown, English) with screenshots; `manual/tools/screenshots.mjs` regenerates them |
 | `lab/` | reproducible labs: nested PVE, appliance VMs, Linux/TrueNAS/NAS VMs, fuzzing, e2e scripts |
 
 ## Build and test
@@ -98,7 +99,7 @@ appliance image in a VM with SELinux enforcing, end-to-end flow, signed updates,
 Phases 0–8 are implemented (foundations, chunk store, Proxmox, restore features, offsite, control plane, hardened
 image, additional sources, replication + S3). Next: **Phase 9 plugin system** (new sources and restore functions as
 signed, sandboxed plugins — e.g. NetApp SVM, VMware ESXi/vCenter, PostgreSQL), **Phase 10 end-user manual**
-(`manual/`, with screenshots), **Phase 11 Microsoft 365** (as a plugin). Production readiness work is tracked in
+(`manual/`, with screenshots; drafted), **Phase 11 Microsoft 365** (as a plugin). Production readiness work is tracked in
 `state.md`.
 
 ## Security

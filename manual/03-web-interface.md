@@ -102,7 +102,7 @@ The buttons depend on the snapshot type and your role: **Restore**, **Instant re
 **Browse files** opens the file browser for one snapshot. Click directories to open them, use the breadcrumb or
 **.. (Up one level)** to go back. Select files and directories with the check boxes, choose **tar** or **zip** and click
 **Prepare download**. When the archive is ready, a **Download** button appears. Details:
-[06 Restores](06-restores.md#downloading-files).
+[06 Restores](06-restores.md#browse-files-and-download-them-tar-or-zip).
 
 ![File browser with two selected entries and a prepared download](images/files-download.png)
 

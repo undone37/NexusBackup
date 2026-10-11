@@ -33,7 +33,7 @@ The snapshot name tells you what was backed up. The buttons follow from it:
 
 Use the **Tenant** and **Guest (e.g. vm-100)** filters to narrow the list. Each row shows **Local**,
 **Offsite** and **Verified** marks and the **Locked until** date. A locked snapshot cannot be deleted
-before that date (see [01-concepts.md](01-concepts.md)).
+before that date (see [01 Concepts](01-concepts.md)).
 
 ## Restore a VM or container (full restore)
 
@@ -155,7 +155,7 @@ Plugin snapshots offer the restores declared by the plugin. Restores marked **ap
 than copy files. The download button of a plugin uses its own title. In the file browser, application
 streams such as database dumps and WAL appear under `.nexus-streams/`.
 
-The PostgreSQL plugin ([12-plugins.md](12-plugins.md)) produces two kinds of snapshots:
+The PostgreSQL plugin ([12 Plugins](12-plugins.md)) produces two kinds of snapshots:
 
 | Snapshot | Contains | Useful restores |
 |---|---|---|
@@ -207,7 +207,7 @@ server.
 ## Follow a restore job
 
 Every restore is a job. The dialog opens the job page, which refreshes every 2 s while the job runs. All jobs
-are listed on **Jobs** (see [03-web-interface.md](03-web-interface.md)).
+are listed on **Jobs** (see [03 The web interface](03-web-interface.md)).
 
 ![A running job with its live log](images/job-running.png)
 
@@ -222,7 +222,7 @@ PVE nodes, its enrolled agents and the plugin's servers.
 ## Restores on a replication secondary
 
 Snapshots that came from another appliance are marked **Replicated from <source>**
-([08-replication.md](08-replication.md)). They restore with the secondary's own keys, even when the primary is
+([08 Replication to a second appliance](08-replication.md)). They restore with the secondary's own keys, even when the primary is
 gone:
 
 - **Browse files** and downloads work without any source in the tenant.
@@ -237,7 +237,7 @@ The web UI has no restore from the offsite tier. Restores always read the local 
 bring a snapshot back from the Storage Box or bucket into the local store
 (`nexus-offsite <config.json> restore <source> <time>`), but this is a command-line tool. No UI or API job
 exposes it in this version. Rebuilding an appliance from the offsite copy is covered in
-[14-disaster-recovery.md](14-disaster-recovery.md).
+[14 Disaster recovery](14-disaster-recovery.md).
 
 > **Status:** Offsite restore and DR were verified with the SFTP test box and MinIO, not yet against a real
 > Hetzner Storage Box or a real S3 provider.
