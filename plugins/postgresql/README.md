@@ -56,4 +56,4 @@ time and to the end, started and queried. `PG=14 cargo test -p postgresql --test
 ## Packaging
 Build against glibc ≤ 2.39 (e.g. in an AlmaLinux 10 container, like the image's builder stage) or statically for
 `x86_64-unknown-linux-musl` (needs a musl C toolchain for `ring`), then `nexus-plugin pack manifest.json <binary>
-postgresql-1.0.0.nxplugin` and sign it (docs/plugin-sdk.md, lab/appliance/plugins.sh).
+postgresql-1.1.0.nxplugin` and sign it (docs/plugin-sdk.md, lab/appliance/plugins.sh).
