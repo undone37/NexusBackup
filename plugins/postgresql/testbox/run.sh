@@ -33,7 +33,7 @@ secrets() {
 		openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj /CN=pg-testbox \
 			-keyout "$dir/box/server.key" -out "$dir/server.csr" 2>/dev/null
 		openssl x509 -req -in "$dir/server.csr" -CA "$dir/ca.crt" -CAkey "$dir/ca.key" -CAcreateserial -days 3650 \
-			-extfile <(echo "subjectAltName=IP:127.0.0.1,DNS:localhost") -out "$dir/box/server.crt" 2>/dev/null
+			-extfile <(echo "subjectAltName=IP:127.0.0.1,IP:10.0.2.2,DNS:localhost") -out "$dir/box/server.crt" 2>/dev/null
 	fi
 	[ -f "$dir/postgres.secret" ] || head -c 24 /dev/urandom | base64 | tr -d '/+=' >"$dir/postgres.secret"
 	[ -f "$dir/nexus.secret" ] || head -c 24 /dev/urandom | base64 | tr -d '/+=' >"$dir/nexus.secret"

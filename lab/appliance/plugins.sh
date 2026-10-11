@@ -14,6 +14,9 @@
 #                       plugin_guests; group + policy; backup, second backup (incremental);
 #                       files_list + files_get, sha256 of every file against $DATA in the VM;
 #                       nexus_pluginhost_t / nexus_plugin_t observed during the backup
+#   plugins.sh pg       PLUGIN=postgresql: install; plugins/postgresql/testbox (host 10.0.2.2 from the VM);
+#                       validate, guests, backup of database labdb, restore to_target on the alternate
+#                       server (labdb_copy), contents compared with the original
 #   plugins.sh check    e2e.sh check, install tree labels, 0 nexus AVCs since boot
 #   plugins.sh stop     power off
 # e.g. IMG=localhost/nexus-os:plugins lab/appliance/plugins.sh image disk boot setup plugin check stop
@@ -107,7 +110,7 @@ upload() {
 # job USER KIND PARAMS [timeout] -> final job JSON (dies unless ok)
 job() {
 	local r j
-	r=$(api "$1" POST /jobs "$(jq -nc --arg k "$2" --argjson p "$3" '{kind:$k, tenant:"plugins", params:$p}')")
+	r=$(api "$1" POST /jobs "$(jq -nc --arg k "$2" --arg t "${TENANT:-plugins}" --argjson p "$3" '{kind:$k, tenant:$t, params:$p}')")
 	expect 202 "$2 job"
 	j=$(wait_job "$1" "$(jq -r .id <<<"$r")" "${4:-900}")
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "$2: $(jq -r .log <<<"$j" | tail -n 30)"
@@ -118,12 +121,12 @@ job() {
 backup() {
 	local r j
 	con run 'rm -f /run/nexus-lab-ps; setsid sh -c "for i in \$(seq 600); do ps -eo label,comm | grep -E \"nexus_plugin(host)?_t\" >>/run/nexus-lab-ps; sleep 0.2; done" </dev/null >/dev/null 2>&1 &' >/dev/null
-	r=$(api admin POST /jobs "$(jq -nc --argjson g "$1" '{kind:"backup", tenant:"plugins", params:{group_id:$g}}')")
+	r=$(api admin POST /jobs "$(jq -nc --arg t "${TENANT:-plugins}" --argjson g "$1" '{kind:"backup", tenant:$t, params:{group_id:$g}}')")
 	expect 202 "backup job"
 	j=$(wait_job admin "$(jq -r .id <<<"$r")" 1800)
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "backup: $(jq -r .log <<<"$j" | tail -n 30)"
 	log "backup job $(jq -r .id <<<"$j") ok in $(jq '.finished - .started' <<<"$j") s: $(jq -c .result <<<"$j")"
-	jq -r .log <<<"$j" | grep "not backed up" | while read -r l; do log "$l"; done
+	{ jq -r .log <<<"$j" | grep "not backed up" || true; } | while read -r l; do log "$l"; done
 	jq -r .log <<<"$j" | sed -n 's/^.*not backed up: \(.*\): [^:]*$/\1/p' >"$S/skipped"
 	log "domains during the backup: $(con run 'sort -u /run/nexus-lab-ps 2>/dev/null | sed "s/  */ /g"' | tr '\n' ';')"
 }
@@ -250,6 +253,60 @@ echo "== domains seen during backups"; sort -u /run/nexus-lab-ps 2>/dev/null | s
 	log "check: 0 nexus AVCs since boot"
 }
 
+# PostgreSQL reference plugin against plugins/postgresql/testbox (QEMU user net: 10.0.2.2 = host)
+pg() {
+	[ "$PLUGIN" = postgresql ] || die "pg: run with PLUGIN=postgresql"
+	local TENANT=pg
+	install
+	local tb=$repo/plugins/postgresql/testbox/run.sh src pol grp j snap time want have r
+	env -u PORT "$tb" start >/dev/null # PORT is the appliance API port here
+	eval "$(env -u PORT "$tb" env)"
+	psql_tb() { podman exec -u postgres "$1" psql -v ON_ERROR_STOP=1 -qtAX -d "$2" -c "$3"; }
+	psql_tb nexus-pg-testbox postgres 'DROP DATABASE IF EXISTS labdb WITH (FORCE)'
+	psql_tb nexus-pg-testbox-alt postgres 'DROP DATABASE IF EXISTS labdb_copy WITH (FORCE)'
+	psql_tb nexus-pg-testbox postgres 'CREATE DATABASE labdb'
+	psql_tb nexus-pg-testbox labdb "CREATE TABLE t (id int PRIMARY KEY, v text, j jsonb);
+		INSERT INTO t SELECT g, md5(g::text), jsonb_build_object('g', g) FROM generate_series(1, 20000) g;
+		CREATE INDEX t_v ON t (v); CREATE VIEW tv AS SELECT id, v FROM t WHERE id % 2 = 0;"
+	want=$(psql_tb nexus-pg-testbox labdb "SELECT md5(string_agg(t::text, ',' ORDER BY id)) FROM t")
+	api admin POST /tenants '{"name":"pg"}' >/dev/null
+	expect 201 "create tenant"
+	src=$(api admin POST /sources "$(jq -nc --arg pw "$NEXUS_PG_PASSWORD" --arg sp "$NEXUS_PG_SUPER_PASSWORD" \
+		--arg ca "$(cat "$NEXUS_PG_CA")" --argjson port "$NEXUS_PG_PORT" --argjson alt "$NEXUS_PG_ALT_PORT" \
+		'{tenant:"pg", kind:"plugin:postgresql", name:"pg-lab", config:{host:"10.0.2.2", port:$port, user:"nexus",
+		password:$pw, sslmode:"verify-full", ca_cert:$ca, restore_host:"10.0.2.2", restore_port:$alt,
+		restore_user:"postgres", restore_password:$sp, databases_include:["labdb"]}}')" | jq -r .id)
+	expect 201 "create postgresql source"
+	j=$(job admin plugin_validate "$(jq -nc --argjson s "$src" '{source_id:$s}')" 300)
+	jq -e '.result.valid == true' <<<"$j" >/dev/null || die "plugin_validate: $(jq -c .result <<<"$j")"
+	j=$(job admin plugin_guests "$(jq -nc --argjson s "$src" '{source_id:$s}')" 300)
+	log "plugin_guests: $(jq -c '[.result.guests[].id]' <<<"$j")"
+	pol=$(api admin POST /policies '{"name":"pg","schedule":"daily 04:44","gfs":{"daily":7,"weekly":0,"monthly":0,"yearly":0},"offsite":false}' | jq -r .id)
+	expect 201 "create policy"
+	grp=$(api admin POST /groups "$(jq -nc --argjson s "$src" --argjson p "$pol" \
+		'{tenant:"pg", source_id:$s, policy_id:$p, name:"labdb", guests:["labdb"]}')" | jq -r .id)
+	expect 201 "create group"
+	backup "$grp"
+	for _ in $(seq 60); do
+		snap=$(api admin GET '/snapshots?tenant=pg' | jq -c '[.[] | select(.source | endswith("-labdb"))] | sort_by(.time)')
+		[ "$(jq length <<<"$snap")" -ge 1 ] && break
+		sleep 1
+	done
+	[ "$(jq length <<<"$snap")" -ge 1 ] || die "no labdb snapshot: $snap"
+	time=$(jq -r '.[-1].time' <<<"$snap")
+	snap=$(jq -r '.[-1].source' <<<"$snap")
+	r=$(api admin POST /jobs "$(jq -nc --arg s "$snap" --argjson t "$time" \
+		'{kind:"plugin_restore", tenant:"pg", params:{source:$s, time:$t, restore:"to_target", params:{database:"labdb_copy", server:"alternate"}}}')")
+	expect 202 "plugin_restore"
+	j=$(wait_job admin "$(jq -r .id <<<"$r")" 900)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "plugin_restore: $(jq -r .log <<<"$j" | tail -n 30)"
+	log "plugin_restore: $(jq -c .result <<<"$j")"
+	have=$(psql_tb nexus-pg-testbox-alt labdb_copy "SELECT md5(string_agg(t::text, ',' ORDER BY id)) FROM t")
+	[ "$have" = "$want" ] || die "restored table differs: $have != $want"
+	[ "$(psql_tb nexus-pg-testbox-alt labdb_copy 'SELECT count(*) FROM tv')" = 10000 ] || die "view missing after restore"
+	log "pg: labdb backed up and restored to the alternate server as labdb_copy, contents identical ($want)"
+}
+
 stop() { "$here/run.sh" stop; }
 
 log() { printf '[%4ss] %s\n' $(($(date +%s) - T0)) "$*" >&2; }
@@ -261,7 +318,7 @@ die() {
 [ $# -gt 0 ] || { sed -n '2,28p' "$0" >&2; exit 2; }
 for step in "$@"; do
 	case $step in
-	image | bundle | install | disk | boot | setup | plugin | check | stop) "$step" ;;
+	image | bundle | install | disk | boot | setup | plugin | pg | check | stop) "$step" ;;
 	*) sed -n '2,28p' "$0" >&2; exit 2 ;;
 	esac
 done
