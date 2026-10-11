@@ -28,12 +28,15 @@ expect() { [ "$(status)" = "$1" ] || die "$2: HTTP $(status) $(cat "$S/body")"; 
 # login USER PASSWORD TOTP_SECRET (waits for a fresh TOTP step: codes are single-use)
 login() {
 	local u=$1 pw=$2 sec=$3 code
+	# per appliance, not per script: the web-api refuses a TOTP code reused by any client
+	local last=${ROOT:-$S}/run/lastcode-$u
+	mkdir -p "${last%/*}"
 	code=$(python3 "$api_lib/totp.py" "$sec")
-	if [ -f "$S/$u.lastcode" ] && [ "$(cat "$S/$u.lastcode")" = "$code" ]; then
+	if [ -f "$last" ] && [ "$(cat "$last")" = "$code" ]; then
 		sleep $((30 - $(date +%s) % 30 + 1))
 		code=$(python3 "$api_lib/totp.py" "$sec")
 	fi
-	echo "$code" >"$S/$u.lastcode"
+	echo "$code" >"$last"
 	rm -f "$S/$u.jar"
 	api "$u" POST /auth/login "$(jq -nc --arg n "$u" --arg p "$pw" --arg t "$code" '{name:$n,password:$p,totp:$t}')" |
 		jq -r .csrf >"$S/$u.csrf"
