@@ -243,3 +243,11 @@ Decisions (user, 2026-10-11, plan.md §2): local Graph mock now, real M365 test 
 - [x] CI fixes: clippy 1.99 `as_chunks`, audit job `checks: write`, postcard without heapless (atomic-polyfill gone)
 - [ ] Push + tag `v0.0.1-alpha` after Phase 12 (user decision); sign the digest with release/sign.sh (maintainer passphrase); publish the draft release with gh
 - [ ] Before beta: offline key ceremony + standby key, rotate away from the alpha key
+
+## Phase 12 — Professional UI, KPI dashboard, OIDC (started 2026-10-11)
+Decisions: plan.md §2 (UI redesign, dashboard KPIs, OIDC + JIT provisioning, branding, UI deps). Contract: docs/phase12-contract.md
+Also in scope (user 2026-10-11: "fix all of them"): Snapshots page restore filtering (manifest `applies_to`), long plugin restore buttons, pages for alert delivery / appliance SSH keys / updates, break-glass for a sole admin (console + recovery key), manual + screenshots updated
+- [x] Phase 11 merged into main (377 tests ok, clippy/deny/web/prove clean); CI: sandbox tests need unprivileged userns on Ubuntu 24.04 runners (sysctl step added)
+- [ ] Backend (agent): dashboard API + capacity samples (catalog v10), OIDC (Keycloak lab), alert/ssh-key/update settings APIs, applies_to, break-glass
+- [ ] Frontend (agent): enterprise-console redesign, dark mode, KPI dashboard (SVG charts), new settings pages, mock per contract
+- [ ] Integration: real-API run in the appliance VM, Claude-in-Chrome click-through, manual + screenshots regenerated
