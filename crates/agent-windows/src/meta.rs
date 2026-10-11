@@ -252,7 +252,7 @@ pub fn is_link_tag(tag: u32) -> bool {
 }
 
 fn u16s(b: &[u8]) -> Vec<u16> {
-    b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect()
+    b.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect()
 }
 
 impl Reparse {

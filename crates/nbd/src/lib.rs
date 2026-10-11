@@ -309,7 +309,7 @@ impl<R: Read, W: Write> Client<R, W> {
                 if ty != REPLY_BLOCK_STATUS || p.len() < 4 || u32::from_be_bytes(p[..4].try_into().unwrap()) != id {
                     return Ok(()); // other contexts / NONE
                 }
-                for d in p[4..].chunks_exact(8) {
+                for d in p[4..].as_chunks::<8>().0 {
                     // servers may overshoot the requested range: clip, never step past it
                     let l = (u32::from_be_bytes(d[..4].try_into().unwrap()) as u64).min(len - got);
                     if l > 0 {

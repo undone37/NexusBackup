@@ -8,7 +8,6 @@ all-features = false
 # unmaintained/unsound crates are reported; the ones below are reviewed in
 # docs/security-review.md and only reachable from the first-boot TUI (ratatui)
 ignore = [
-    { id = "RUSTSEC-2023-0089", reason = "atomic-polyfill via postcard/heapless; no replacement upstream yet, no known vulnerability" },
 ]
 
 [licenses]

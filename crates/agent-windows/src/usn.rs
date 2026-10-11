@@ -88,8 +88,10 @@ pub fn parse_records(buf: &[u8]) -> Result<(i64, Vec<Record>), String> {
             let name = r
                 .get(name_off..name_off + name_len)
                 .ok_or_else(|| format!("USN record at {o}: name out of range"))?
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_le_bytes(*c))
                 .collect();
             out.push(Record {
                 file_id,

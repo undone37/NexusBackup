@@ -12,7 +12,7 @@ fastcdc = "3"
 libc = "0.2"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
-postcard = { version = "1", features = ["use-std"] }
+postcard = { version = "1", default-features = false, features = ["use-std"] }
 zeroize = { version = "1", features = ["derive"] }
 zstd = "0.13"
 

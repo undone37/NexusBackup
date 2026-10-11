@@ -8,7 +8,7 @@ rust-version.workspace = true
 [dependencies]
 hmac = "0.12"
 lz4_flex = { version = "0.11", default-features = false, features = ["std"] }
-postcard = { version = "1", features = ["use-std"] }
+postcard = { version = "1", default-features = false, features = ["use-std"] }
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 

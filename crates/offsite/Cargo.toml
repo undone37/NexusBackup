@@ -10,7 +10,7 @@ anyhow = "1"
 chunkstore = { path = "../chunkstore" }
 keyd = { path = "../keyd" }
 serde_json = "1"
-postcard = { version = "1", features = ["use-std"] }
+postcard = { version = "1", default-features = false, features = ["use-std"] }
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 futures-util = "0.3"

@@ -183,8 +183,10 @@ pub fn streams(h: &Handle) -> io::Result<Vec<(Vec<u16>, u64)>> {
         let name = b
             .get(o + 24..o + 24 + name_len)
             .ok_or_else(|| io::Error::other("stream name out of range"))?
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
             .collect();
         out.push((name, size));
         if next == 0 {

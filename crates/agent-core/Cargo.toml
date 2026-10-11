@@ -12,7 +12,7 @@ base64 = "0.22"
 blake3 = "1"
 fastcdc = "3"
 hex = "0.4"
-postcard = { version = "1", features = ["use-std"] }
+postcard = { version = "1", default-features = false, features = ["use-std"] }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
