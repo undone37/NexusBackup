@@ -700,6 +700,8 @@ files_list_usr(nexus_plugin_t)
 # sysnet_read_config / sysnet_dns_name_resolve: on EL those search every runtime dir
 # (files_search_all_pids), which includes keyd's socket dir.
 files_read_etc_files(nexus_plugin_t)
+# /etc/passwd + /etc/group (passwd_file_t, no hashes): ssh in the sandbox resolves its own uid
+allow nexus_plugin_t passwd_file_t:file read_file_perms;
 miscfiles_read_localization(nexus_plugin_t)
 miscfiles_read_generic_certs(nexus_plugin_t)
 allow nexus_plugin_t net_conf_t:dir list_dir_perms;
