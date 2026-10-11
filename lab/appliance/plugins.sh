@@ -238,9 +238,12 @@ check() {
 echo "== install tree labels (bin/plugin must be nexus_plugin_exec_t)"; find /var/lib/nexus/plugins -maxdepth 4 -exec ls -dZ {} + | head -n 20
 ls -Z /usr/libexec/nexus/nexus-pluginhost /usr/libexec/nexus/nexus-plugin-install /usr/bin/nexus-plugin
 echo "== domains seen during backups"; sort -u /run/nexus-lab-ps 2>/dev/null | sed "s/  */ /g"' 120
-	local n
-	n=$(con run 'ausearch -m avc,user_avc,selinux_err -ts boot 2>/dev/null | grep -cE "context=[^ ]*nexus_" || true' | tr -d '\r\n')
-	con run 'ausearch -m avc,user_avc,selinux_err -ts boot 2>/dev/null | grep -E "context=[^ ]*nexus_" | tail -n 10' || true
+	# expected: nexus_plugin_t denied on the files the backup reported as "not backed up"
+	local n ok=''
+	[ -s "$ROOT/run/api/skipped" ] && ok=$(sed 's/.*/scontext=system_u:system_r:nexus_plugin_t:s0 .*path="&"|path="&".*scontext=system_u:system_r:nexus_plugin_t:s0 /' "$ROOT/run/api/skipped" | paste -sd'|')
+	local q="ausearch -m avc,user_avc,selinux_err -ts boot 2>/dev/null | grep -E 'context=[^ ]*nexus_' | grep -vE '${ok:-^$}'"
+	n=$(con run "$q | wc -l" | tr -d '\r\n')
+	con run "$q | tail -n 10" || true
 	[ "$n" = 0 ] || die "$n AVC/SELinux error records with a nexus context since boot"
 	con run 'grep -q nexus_pluginhost_t /run/nexus-lab-ps && grep -q nexus_plugin_t /run/nexus-lab-ps' >/dev/null ||
 		log "WARN: nexus_pluginhost_t / nexus_plugin_t not observed (job too short for the 0.2 s poll?)"
