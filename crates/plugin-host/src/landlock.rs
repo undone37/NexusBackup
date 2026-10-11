@@ -159,7 +159,13 @@ impl Ruleset {
         let fd = unsafe { OwnedFd::from_raw_fd(fd) };
         let mut st: libc::stat = unsafe { std::mem::zeroed() };
         if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } != 0 {
-            return Err(io::Error::last_os_error());
+            // O_PATH opens without permission checks; SELinux denies the getattr (e.g.
+            // /dev/random for nexus_pluginhost_t): the plugin could not use it either
+            let e = io::Error::last_os_error();
+            return match e.kind() {
+                io::ErrorKind::PermissionDenied => Ok(false),
+                _ => Err(e),
+            };
         }
         let mut access = access & self.handled_fs;
         if st.st_mode & libc::S_IFMT != libc::S_IFDIR {

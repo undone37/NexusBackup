@@ -128,7 +128,8 @@ const SYSTEM_R: &[&str] = &[
     "/etc/alternatives",
     "/sys/devices/system/cpu",
 ];
-const SYSTEM_RW: &[&str] = &["/dev/null", "/dev/zero", "/dev/urandom", "/dev/random", "/dev/full"];
+// ponytail: no /dev/random: SELinux lets nexus_plugin_t read only /dev/urandom
+const SYSTEM_RW: &[&str] = &["/dev/null", "/dev/zero", "/dev/urandom", "/dev/full"];
 
 /// Summary of the applied sandbox (logged into the job log).
 #[derive(Debug, Clone, Default)]
