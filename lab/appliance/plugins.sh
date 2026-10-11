@@ -124,6 +124,7 @@ backup() {
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "backup: $(jq -r .log <<<"$j" | tail -n 30)"
 	log "backup job $(jq -r .id <<<"$j") ok in $(jq '.finished - .started' <<<"$j") s: $(jq -c .result <<<"$j")"
 	jq -r .log <<<"$j" | grep "not backed up" | while read -r l; do log "$l"; done
+	jq -r .log <<<"$j" | sed -n 's/^.*not backed up: \(.*\): [^:]*$/\1/p' >"$S/skipped"
 	log "domains during the backup: $(con run 'sort -u /run/nexus-lab-ps 2>/dev/null | sed "s/  */ /g"' | tr '\n' ';')"
 }
 
@@ -223,9 +224,10 @@ plugin() {
 	# compare file contents (sha256 of every regular file; paths may carry a prefix in the tar)
 	have=$(cd "$S/restored" && find . -type f -print0 | xargs -0r sha256sum | cut -d' ' -f1 | sort | sha256sum | cut -c1-16)
 	have="$have $(find "$S/restored" -type f | wc -l)"
-	# only files nexus_plugin_t may read (usr_t): e.g. *.cgi docs are httpd_sys_script_exec_t,
-	# the backup skips them with a "not backed up" warning
-	want=$(con run "cd '$DATA' && h=\$(find . -type f -context '*:usr_t:*' -print0 | xargs -0r sha256sum | cut -d' ' -f1 | sort | sha256sum | cut -c1-16); echo \"\$h \$(find . -type f -context '*:usr_t:*' | wc -l)\"" | tr -d '\r\n')
+	# minus the files the backup reported as "not backed up" (SELinux labels nexus_plugin_t
+	# may not read, e.g. *.cgi docs are httpd_sys_script_exec_t)
+	skip=$(sed "s|^$DATA/|./|; s|.*|! -path '&'|" "$S/skipped" | tr '\n' ' ')
+	want=$(con run "cd '$DATA' && h=\$(find . -type f $skip -print0 | xargs -0r sha256sum | cut -d' ' -f1 | sort | sha256sum | cut -c1-16); echo \"\$h \$(find . -type f $skip | wc -l)\"" | tr -d '\r\n')
 	[ "$have" = "$want" ] || die "download differs from $DATA in the VM: have $have, want $want"
 	log "files_get: $(echo "$have" | cut -d' ' -f2) files, sha256 identical to $DATA in the VM"
 }
