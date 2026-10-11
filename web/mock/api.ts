@@ -2126,15 +2126,15 @@ function seedPhase12(t: number) {
     sshKey('offsite', 'Offsite SFTP targets (Storage Box)', t - 86400 * 88),
   ];
   db.updates = {
-    booted: { version: '0.0.1-alpha', digest: `sha256:${rand(32)}`, since: t - 86400 * 12 },
+    booted: { version: '0.0.2-alpha', digest: `sha256:${rand(32)}`, since: t - 86400 * 12 },
     staged: null,
-    available: { version: '0.0.2-alpha', digest: `sha256:${rand(32)}` },
+    available: { version: '0.0.3-alpha', digest: `sha256:${rand(32)}` },
     channel: 'stable',
     window: 'Sun 03:00 120',
     last_check: t - 5 * 3600,
     status: 'idle',
     error: null,
-    rollback: { version: '0.0.1-alpha.3', digest: `sha256:${rand(32)}` },
+    rollback: { version: '0.0.1-alpha', digest: `sha256:${rand(32)}` },
     checking_since: 0,
   };
   // a single-sign-on user (Keycloak group nexus-operators): no password, no TOTP on the appliance
