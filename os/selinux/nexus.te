@@ -786,8 +786,9 @@ neverallow nexus_plugininstall_t self:{ tcp_socket udp_socket } create;
 # nexus-plugin-install.path), project keys (GET /plugin-keys), installed manifests
 allow nexus_webapi_t nexus_plugin_staging_t:dir rw_dir_perms;
 manage_files_pattern(nexus_webapi_t, nexus_plugin_staging_t, nexus_plugin_staging_t)
-# systemd's PathModified watch reads the trigger file; not needed for the unit to fire
-dontaudit init_t nexus_plugin_staging_t:file read;
+# nexus-plugin-install.path (PathModified=.trigger): systemd needs an inotify watch on the
+# existing file (read + watch); without it only the first creation ever fires the installer
+allow init_t nexus_plugin_staging_t:file { getattr read watch };
 miscfiles_read_generic_certs(nexus_webapi_t)
 list_dirs_pattern(nexus_webapi_t, nexus_plugin_data_t, nexus_plugin_data_t)
 read_files_pattern(nexus_webapi_t, nexus_plugin_data_t, nexus_plugin_data_t)
