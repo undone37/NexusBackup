@@ -10,6 +10,7 @@
   import type { Agent, AgentToken, Tenant } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
+  import IconPlus from '@lucide/svelte/icons/plus';
 
   let items: Agent[] = $state([]);
   let tenants: Tenant[] = $state([]);
@@ -102,9 +103,9 @@
 
 <div class="page-head">
   <h1>{t.agents.title}</h1>
-  <button type="button" class="primary" onclick={create}>{t.agents.new}</button>
+  <button type="button" class="primary" onclick={create}><IconPlus aria-hidden="true" />{t.agents.new}</button>
+  <p class="lede">{t.agents.intro}</p>
 </div>
-<p class="muted">{t.agents.intro}</p>
 <ErrorBanner {error} />
 
 <div class="card">

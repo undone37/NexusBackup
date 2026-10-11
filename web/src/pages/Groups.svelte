@@ -11,6 +11,7 @@
   import type { Agent, Group, Plugin, PluginGuest, Policy, Source, Tenant } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
+  import IconPlus from '@lucide/svelte/icons/plus';
 
   let items: Group[] = $state([]);
   let tenants: Tenant[] = $state([]);
@@ -179,7 +180,8 @@
 
 <div class="page-head">
   <h1>{t.groups.title}</h1>
-  <button type="button" class="primary" onclick={() => edit(null)}>{t.groups.new}</button>
+  <button type="button" class="primary" onclick={() => edit(null)}><IconPlus aria-hidden="true" />{t.groups.new}</button>
+  <p class="lede">{t.groups.lede}</p>
 </div>
 <ErrorBanner {error} />
 

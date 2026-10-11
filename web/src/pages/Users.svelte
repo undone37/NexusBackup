@@ -11,6 +11,7 @@
   import Qr from '../components/Qr.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import ActivationCode from '../components/ActivationCode.svelte';
+  import IconPlus from '@lucide/svelte/icons/plus';
 
   // POST /users -> {user, activation}; PUT /users/{id} -> {user, totp_uri? (own account),
   // activation? (new_activation)}. Quorum-gated answers (202) carry the same fields next to
@@ -18,6 +19,8 @@
   type UserResp = { user?: User; totp_uri?: string; activation?: Activation };
   const isSelf = (x: User | null) => !!x && x.id === session.user?.id;
   const privRole = (r: string) => r === 'admin' || r === 'security_officer';
+  // single-sign-on accounts: role / tenants follow the IdP group mapping, credentials live at the IdP
+  const isSso = (x: User | null) => x?.auth === 'oidc';
 
   let items: User[] = $state([]);
   let tenants: Tenant[] = $state([]);
@@ -84,7 +87,7 @@
       open = false;
       showActivation(f.name, r);
     } else {
-      const body: Record<string, unknown> = { role: f.role, tenant, disabled: f.disabled };
+      const body: Record<string, unknown> = isSso(editing) ? { disabled: f.disabled } : { role: f.role, tenant, disabled: f.disabled };
       if (f.password && isSelf(editing)) Object.assign(body, { password: f.password }, reauth());
       const r = await act(put<UserResp>(`/users/${editing.id}`, body), t.saved);
       if (!r) return;
@@ -150,7 +153,8 @@
 
 <div class="page-head">
   <h1>{t.users.title}</h1>
-  <button type="button" class="primary" onclick={() => edit(null)}>{t.users.new}</button>
+  <button type="button" class="primary" onclick={() => edit(null)}><IconPlus aria-hidden="true" />{t.users.new}</button>
+  <p class="lede">{t.users.lede}</p>
 </div>
 <ErrorBanner {error} />
 
@@ -183,11 +187,14 @@
                   {@const st = stateOf(x)}
                   <span class="chip {st.cls}">{st.text}</span>
                 {/if}
+                {#if isSso(x)}<span class="chip accent sso-badge" title={t.users.ssoHint}>{t.users.sso}</span>{/if}
               </td>
               <td class="nowrap">{fmtTime(x.created)}</td>
               <td class="actions">
                 <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
-                {#if isSelf(x)}
+                {#if isSso(x)}
+                  <!-- password and authenticator are managed by the identity provider -->
+                {:else if isSelf(x)}
                   <button type="button" class="small" onclick={() => resetTotp(x)}>{t.users.resetTotp}</button>
                 {:else}
                   <button type="button" class="small" onclick={() => newActivation(x)}>{t.users.newActivation}</button>
@@ -211,6 +218,8 @@
     {/if}
     {#if !editing}
       <p class="muted">{t.users.newHint}</p>
+    {:else if isSso(editing)}
+      <p class="banner info">{t.users.ssoHint}</p>
     {:else if isSelf(editing)}
       <div class="field">
         <label for="u-pw">{t.users.passwordOwn}</label>
@@ -220,13 +229,13 @@
     <div class="form-grid">
       <div class="field">
         <label for="u-role">{t.users.role}</label>
-        <select id="u-role" bind:value={f.role}>
+        <select id="u-role" bind:value={f.role} disabled={isSso(editing)}>
           {#each ROLES as r (r)}<option value={r}>{t.roles[r]}</option>{/each}
         </select>
       </div>
       <div class="field">
         <label for="u-tenant">{t.tenant}</label>
-        <select id="u-tenant" bind:value={f.tenant} required={f.role === 'tenant_user'} aria-describedby="u-tenant-hint">
+        <select id="u-tenant" bind:value={f.tenant} required={f.role === 'tenant_user'} disabled={isSso(editing)} aria-describedby="u-tenant-hint">
           <option value="">{t.allTenants}</option>
           {#each tenants as tn (tn.name)}<option value={tn.name}>{tn.name}</option>{/each}
         </select>

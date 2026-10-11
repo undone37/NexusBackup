@@ -12,6 +12,7 @@
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import SchemaForm from '../components/SchemaForm.svelte';
+  import IconPlus from '@lucide/svelte/icons/plus';
 
   let items: Source[] = $state([]);
   let tenants: Tenant[] = $state([]);
@@ -433,7 +434,8 @@
 
 <div class="page-head">
   <h1>{t.sources.title}</h1>
-  <button type="button" class="primary" onclick={() => edit(null)}>{t.sources.new}</button>
+  <button type="button" class="primary" onclick={() => edit(null)}><IconPlus aria-hidden="true" />{t.sources.new}</button>
+  <p class="lede">{t.sources.lede}</p>
 </div>
 <ErrorBanner {error} />
 

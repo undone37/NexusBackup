@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { t } from '../lib/i18n';
+  import IconX from '@lucide/svelte/icons/x';
 
   let {
     open = $bindable(false),
@@ -24,7 +25,7 @@
   {#if open}
     <header>
       <h2 id="{id}-title">{title}</h2>
-      <button type="button" class="icon" aria-label={t.close} onclick={() => (open = false)}>×</button>
+      <button type="button" class="icon" aria-label={t.close} onclick={() => (open = false)}><IconX aria-hidden="true" /></button>
     </header>
     <div class="body">
       {@render children()}

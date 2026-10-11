@@ -3,7 +3,8 @@
   import { route, href } from '../lib/router.svelte';
   import { t } from '../lib/i18n';
   import Qr from '../components/Qr.svelte';
-  import logo from '../favicon.svg';
+  import Logo from '../components/Logo.svelte';
+  import AuthHero from '../components/AuthHero.svelte';
 
   // Self-enrollment at first sign-in: name + one-time activation code → own password →
   // own authenticator (QR shown only here) → confirm with a code. The code never goes
@@ -65,13 +66,15 @@
 </script>
 
 <div class="login">
+  <AuthHero />
+  <div class="pane">
   <div class="card" aria-labelledby="act-title">
-    <div class="brand"><img src={logo} alt="" />{t.app}</div>
+    <div class="brand"><Logo />{t.app}</div>
     <h1 id="act-title">{t.activate.title}</h1>
     {#if step < 4}
       <ol class="steps">
         {#each steps as s, i (s)}
-          <li aria-current={step === i + 1 ? 'step' : undefined}>{i + 1}. {s}</li>
+          <li aria-current={step === i + 1 ? 'step' : undefined}>{s}</li>
         {/each}
       </ol>
     {/if}
@@ -157,4 +160,5 @@
       <p><a href={href('/')}>{t.activate.toLogin}</a></p>
     {/if}
   </div>
+</div>
 </div>

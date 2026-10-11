@@ -6,6 +6,7 @@
   import type { Tenant, TenantOffsite, SftpRemote, S3Remote } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
+  import IconPlus from '@lucide/svelte/icons/plus';
 
   let items: Tenant[] = $state([]);
   let error: string | null = $state(null);
@@ -135,7 +136,8 @@
 
 <div class="page-head">
   <h1>{t.tenants.title}</h1>
-  <button type="button" class="primary" onclick={() => edit(null)}>{t.tenants.new}</button>
+  <button type="button" class="primary" onclick={() => edit(null)}><IconPlus aria-hidden="true" />{t.tenants.new}</button>
+  <p class="lede">{t.tenants.lede}</p>
 </div>
 <ErrorBanner {error} />
 

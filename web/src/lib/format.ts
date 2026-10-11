@@ -32,3 +32,40 @@ export function fmtValue(v: unknown): string {
   if (typeof v === 'string') return v;
   return JSON.stringify(v);
 }
+
+/** 0.991 -> "99.1 %" (whole numbers and >= 99.95 % without decimals). */
+export function fmtPct(r: number | null | undefined, digits = 1): string {
+  if (r === null || r === undefined || !Number.isFinite(r)) return '—';
+  const v = r * 100;
+  return `${v >= 99.95 || Number.isInteger(v) ? Math.round(v) : v.toFixed(digits)} %`;
+}
+
+/** 4.217 -> "4.2×" */
+export function fmtRatio(x: number | null | undefined): string {
+  return x === null || x === undefined || !Number.isFinite(x) ? '—' : `${x < 10 ? x.toFixed(x < 2 ? 2 : 1) : Math.round(x)}×`;
+}
+
+/** Seconds as a short duration: "45 s", "15 min", "3 h", "2 d". */
+export function fmtDuration(s: number | null | undefined): string {
+  if (s === null || s === undefined || !Number.isFinite(s)) return '—';
+  if (s < 90) return `${Math.round(s)} s`;
+  if (s < 5400) return `${Math.round(s / 60)} min`;
+  if (s < 172800) return `${Math.round(s / 3600)} h`;
+  return `${Math.round(s / 86400)} d`;
+}
+
+const dayFmt = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+const dayLong = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
+/** "2026-10-10" -> "Oct 10" (`long`: "Sat, Oct 10"); days are UTC calendar days. */
+export function fmtDay(day: string, long = false): string {
+  const d = new Date(`${day}T00:00:00Z`);
+  return Number.isNaN(d.getTime()) ? day : (long ? dayLong : dayFmt).format(d);
+}
+
+/** A "nice" axis maximum (1, 2, 2.5, 5 × 10^n) at or above `v`. */
+export function niceMax(v: number): number {
+  if (!(v > 0)) return 1;
+  const p = 10 ** Math.floor(Math.log10(v));
+  for (const m of [1, 1.2, 1.6, 2, 2.4, 3, 4, 5, 6, 8, 10]) if (m * p >= v) return m * p;
+  return 10 * p;
+}

@@ -14,7 +14,9 @@ window.addEventListener('hashchange', () => {
   route.path = r.path;
   route.query = r.query;
   // Move focus to the main landmark so keyboard/screen-reader users land on the new page.
-  document.getElementById('main')?.focus();
+  // (without scrolling: the sticky top bar would cover the page heading) and start at the top.
+  document.getElementById('main')?.focus({ preventScroll: true });
+  window.scrollTo(0, 0);
 });
 
 export function navigate(path: string) {

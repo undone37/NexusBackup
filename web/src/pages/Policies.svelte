@@ -7,6 +7,7 @@
   import Check from '../components/Check.svelte';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
+  import IconPlus from '@lucide/svelte/icons/plus';
 
   const GFS: (keyof Gfs)[] = ['daily', 'weekly', 'monthly', 'yearly'];
 
@@ -61,7 +62,8 @@
 
 <div class="page-head">
   <h1>{t.policies.title}</h1>
-  <button type="button" class="primary" onclick={() => edit(null)}>{t.policies.new}</button>
+  <button type="button" class="primary" onclick={() => edit(null)}><IconPlus aria-hidden="true" />{t.policies.new}</button>
+  <p class="lede">{t.policies.lede}</p>
 </div>
 <ErrorBanner {error} />
 
