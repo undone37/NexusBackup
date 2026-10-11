@@ -1,7 +1,8 @@
 # 11 Alerts and monitoring
 
 The appliance watches its own work and raises **alerts** when something needs attention. You see them on the
-**Alerts** page and the Dashboard, and the appliance can send them by webhook and email.
+**Alerts** page, behind the bell in the top bar and on the Dashboard, and the appliance can send them by webhook and
+e-mail (**Settings → Alert delivery**).
 
 ## The Alerts page
 
@@ -9,7 +10,9 @@ The appliance watches its own work and raises **alerts** when something needs at
 
 Alerts are listed newest first with **Severity** (`critical`, `warning`, `info`), **Time**, **Kind** and
 **Message**. Click **Acknowledge** when you have handled an alert; the appliance records who acknowledged it.
-**Show acknowledged** also lists handled alerts. The Dashboard's **Open alerts** tile counts the unacknowledged ones.
+**Show acknowledged** also lists handled alerts. The bell in the top bar and the counter next to **Alerts** in the
+sidebar show the number of unacknowledged alerts (red when one of them is critical); the Dashboard lists the newest
+under **Open alerts**.
 
 Administrators, operators and security officers can acknowledge alerts. Alerts are appliance-wide: accounts limited to
 one tenant do not see them.
@@ -33,11 +36,39 @@ duplicate; after you acknowledge it, a condition that persists (for example a fu
 | `replication_keys` | critical | (secondary) the primary uses a tenant key version this appliance does not have, or a key export failed | export the keys again on the primary and have it approved |
 | `replication_verify` | critical | (secondary) replicated data failed verification; nothing was imported | check the primary; the next sync retries |
 | `config` | warning | the scheduler cannot use a group or replication source configuration | fix the configuration named in the message |
+| `break_glass` | critical | an administrator account was reset on the console with the recovery key (`nexus-setup recover-admin`) | make sure the recovery was planned (check the audit entry `user.break_glass`), then acknowledge it; until then every administrator sees a red banner. See [14 Disaster recovery](14-disaster-recovery.md#break-glass-the-only-administrator-lost-their-authenticator) |
 
-## Delivery by webhook and email
+## Delivery by webhook and e-mail
 
-The scheduler delivers every new alert to a webhook and/or by email, configured in the file
-`/etc/nexus/alerts.json` on the appliance:
+The scheduler delivers every new alert to a webhook and/or by e-mail. Administrators set this up under
+**Configuration → Settings → Alert delivery**; security officers see the tab read-only.
+
+![Settings: Alert delivery with webhook, e-mail and a successful test](images/settings-alerts.png)
+
+1. **Webhook**: enter the **Webhook URL (HTTPS)**. It receives one JSON `POST` per alert. Leave it empty to turn the
+   webhook off.
+2. **E-mail (SMTP)**: tick **Send alerts by e-mail** and fill in **SMTP server**, **Port** (e.g. 587), **Sender
+   address**, **Use STARTTLS**, **Recipients (one per line)** and, if the relay needs it, **SMTP user (optional)** and
+   **SMTP password**. The password is write-only ("Stored — leave empty to keep the current value.").
+3. **Send alerts of**: **Info and above**, **Warning and above** (default) or **Critical only**. Alerts below that
+   severity appear only in the web interface.
+4. Click **Save**, then **Send test**. The test sends one test alert through every configured channel, using the
+   saved settings, and shows the result per channel, e.g. **Webhook** "ok" and **E-mail** "ok", or "error: …" with
+   the reason.
+
+Details:
+
+- The webhook receives a JSON `POST` with `id`, `ts` (Unix time), `severity`, `kind`, `message` and `host`
+  (the appliance's name). E-mails have the subject `[NexusBackup <host>] <severity>: <kind>`.
+- Delivery is retried a few times (after 10 and 60 seconds). The webhook host and the SMTP relay are added to the
+  outbound firewall allow-list automatically.
+- The settings are stored in the catalog; the SMTP password is sealed like other secrets.
+
+### Fallback: the file `/etc/nexus/alerts.json`
+
+Appliances set up before the **Alert delivery** tab existed may have the file `/etc/nexus/alerts.json`. The settings
+in the web interface take precedence; the file is used only when nothing is configured there. The file can also set
+HTTP headers for the webhook (e.g. a bearer token) and implicit TLS for SMTP, which the web interface does not offer:
 
 ```json
 {
@@ -50,16 +81,13 @@ The scheduler delivers every new alert to a webhook and/or by email, configured 
 }
 ```
 
-- Both parts are optional. Without the file, alerts only appear in the web interface.
+- Both parts are optional.
 - `tls` is `starttls` (default), `tls` (implicit TLS, usually port 465) or `none` (only for a local relay).
-- The webhook receives a JSON `POST` with `id`, `ts` (Unix time), `severity`, `kind`, `message` and `host`
-  (the appliance's name). Emails have the subject `[NexusBackup <host>] <severity>: <kind>`.
-- Delivery is retried a few times (after 10 and 60 seconds). The webhook host and the SMTP relay are added to the
-  outbound firewall allow-list automatically.
+- The file has to be placed on the appliance from the console, which the hardened image does not make easy (see
+  [02 Installation](02-installation.md)).
 
-> **Status:** There is no web interface for alert delivery yet. The file has to be placed on the appliance from the
-> console, which the hardened image does not make easy (see [02 Installation](02-installation.md)). Plan this during
-> installation.
+> **Status:** The **Alert delivery** tab was tested against the demo backend; its appliance-side part is still being
+> integrated. Until it is, delivery works only through `/etc/nexus/alerts.json`.
 
 ## Metrics (Prometheus)
 
@@ -88,7 +116,8 @@ pending approvals older than a day, a sudden rise in failed sign-ins, and the ap
 
 ## Daily checklist for operators
 
-1. Dashboard: every guest **Protected**, the **Failed jobs** tile at 0.
+1. Dashboard: **RPO breaches** at 0, **Objects needing attention** empty ("Every object is within its RPO."), no
+   new entries under **Failed jobs**.
 2. **Alerts**: handle and acknowledge new alerts.
 3. **Jobs**: no job stuck in **Queued** for hours (a long-running job of the same source blocks the next one).
 4. **Approvals**: tell the approvers about pending requests (they expire after 72 hours).

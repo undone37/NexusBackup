@@ -28,6 +28,35 @@ Open **Configuration → Sources**. Only administrators see this page.
 - For plugin sources, **Validate connection** runs a short validation job. It shows **Connection OK** or the field
   and message the plugin reported, plus a link to the job.
 
+## Appliance SSH keys
+
+The appliance signs in to some sources over SSH with its own keys: Proxmox VE nodes, TrueNAS systems and offsite
+SFTP targets. **Configuration → Settings → Appliance SSH keys** lists these keys. Administrators, security officers
+and operators can see them; only administrators rotate them.
+
+![Settings: Appliance SSH keys](images/settings-ssh-keys.png)
+
+Each key shows its name (e.g. `pve`), what it is **Used for**, its **Fingerprint**, when it was **Created** and the
+**Public key** with a **Copy** button. Only the public halves are shown; the private keys never leave the appliance.
+Copy the public key from here when you set up a source (for example into `authorized_keys` on a Proxmox VE node, see
+below), and compare the fingerprint when you check a source.
+
+To replace a key (for example once a year, or when you suspect it leaked):
+
+1. Click **Rotate** and confirm. With approvals enabled, this is an approval request (`ssh key rotate`) that another
+   administrator or security officer must approve. The appliance creates a new key. The old one stays valid and is
+   shown below the new one as **Old key, still valid until retired**; **Rotate** is unavailable until it is retired.
+2. Install the new public key (**Current key**, **Copy**) on every source that uses this key, next to the old one.
+3. Run a backup of each of these sources (**Back up now** on the Dashboard) to check that the new key works.
+4. Click **Retire old key** and confirm. Sources that only trust the old key stop working. Then remove the old public
+   key from the sources.
+
+The built-in TrueNAS source still uses the key pair you enter in its form (see [TrueNAS](#truenas)).
+
+> **Status:** The **Appliance SSH keys** tab was tested against the demo backend; generating, rotating and retiring
+> keys on the appliance is still being integrated. Until then the tab may stay empty, and the key files are placed on
+> the appliance by hand as described below.
+
 | Source type (UI) | Kind | Appliance connects to | Restores |
 |---|---|---|---|
 | **Proxmox VE cluster** | `pve` | PVE API (TCP 8006) and SSH (TCP 22) on every node | full VM/CT, instant recovery, file download |
@@ -69,7 +98,8 @@ reloads the PVE daemons. The node never connects to the appliance.
 
 ### 2. Allow the appliance's SSH key
 
-The appliance reaches each node as `nexusbackup` over SSH. On every node, put the appliance's public key into
+The appliance reaches each node as `nexusbackup` over SSH. Copy the public key `pve` from **Settings → Appliance SSH
+keys** (see [Appliance SSH keys](#appliance-ssh-keys)). On every node, put it into
 `/var/lib/nexusbackup/.ssh/authorized_keys` (root-owned) with exactly these options:
 
 ```text
@@ -78,10 +108,10 @@ restrict,command="/usr/lib/nexusbackup/helper" ssh-ed25519 AAAA… nexus-applian
 
 `restrict` allows no forwarding of any kind. Backup data flows over the SSH session's stdio.
 
-> **Status:** Appliance SSH key management is a known production gap. The appliance does not yet generate a key
-> pair or show its public key. The private key and a `known_hosts` file must exist as files on the appliance,
-> and the source refers to them by path (see the **Nodes** field below). The web UI refuses inline private keys
-> in this field.
+> **Status:** Showing and rotating the appliance's keys in **Settings → Appliance SSH keys** is new and still being
+> integrated on the appliance side. The source still refers to the private key and a `known_hosts` file by path
+> (see the **Nodes** field below); until the appliance generates the key, both must exist as files on the appliance.
+> The web UI refuses inline private keys in this field.
 
 ### 3. Add the NexusBackup storage in PVE
 

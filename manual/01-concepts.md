@@ -123,8 +123,8 @@ Approvals are **optional**:
 
 - An appliance set up with an administrator *and* a security officer starts with approvals **enabled**.
 - An appliance with a single administrator starts with approvals **disabled**: there is nobody who could approve.
-- Any administrator can enable approvals once a second possible approver exists. Disabling them is itself a request
-  that someone else must approve.
+- Any administrator can enable approvals (**Settings → Approvals**) once a second possible approver exists. Disabling
+  them is itself a request that someone else must approve.
 - With approvals disabled, the same actions take effect immediately but are still recorded in the audit log.
   Retention locks, write-only secrets and re-authentication protect existing backups either way.
 
@@ -139,7 +139,9 @@ Details: [10 Approvals and audit](10-approvals-and-audit.md).
 | **Operator** | runs backups and restores, acknowledges alerts; does not configure |
 | **Tenant user** | sees one tenant and restores its data |
 
-Every interactive account uses a password and a TOTP authenticator. Details: [09 Users and access](09-users-and-access.md).
+Every local account uses a password and a TOTP authenticator. With single sign-on (OpenID Connect), people can
+instead sign in through the organization's identity provider, which then enforces multi-factor authentication; their
+role and tenants follow group mappings. Details: [09 Users and access](09-users-and-access.md).
 
 ## Offsite copies
 

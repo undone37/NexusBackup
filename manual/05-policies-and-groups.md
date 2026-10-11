@@ -47,8 +47,11 @@ Rules:
   **Copy offsite**, the **offsite copy** of the tenant.
 - Garbage collection and verification run once a day per tenant (daily maintenance at 03:00 UTC).
 
-The Dashboard considers a guest **Overdue** when its newest snapshot is older than 26 hours (2 hours with an hourly
-schedule).
+The schedule also sets the recovery point objective (RPO) the Dashboard measures against: 24 hours for a daily
+schedule, 1 hour for an hourly one. Its key figures count an object as **RPO breached** when the last good backup is
+older than 1.5 × the RPO (36 hours or 90 minutes). The **Protection status** table below them uses a simpler rule:
+a guest is **Overdue** when its newest snapshot is older than 26 hours (2 hours with an hourly schedule). See
+[03 The web interface](03-web-interface.md#dashboard).
 
 ## Protection groups
 
@@ -106,4 +109,7 @@ does with `acme-databases` and `acme-pg-cluster`. See [04 Sources](04-sources.md
 - Put guests with the same recovery requirements into one group; a group's backup runs them one after the other.
 - Use an hourly schedule (`hourly MM`) only where one backup run is short. A logical PostgreSQL dump, for example,
   reads the whole database on every run (storage stays small thanks to deduplication).
-- Check the Dashboard the morning after you create a group: every guest should be **Protected**.
+- Check the Dashboard the morning after you create a group: every guest should be **Protected**, and nothing of the
+  group should appear under **Objects needing attention**.
+- Objects counted as **Not in a group** on the Dashboard are known to the appliance (e.g. VMs of a connected cluster)
+  but not backed up; add them to a group or decide consciously to leave them out.

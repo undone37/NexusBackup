@@ -117,8 +117,11 @@ plugin to be installed and enabled.
 Once a plugin is installed and enabled, its source kinds appear under **Plugins** in **Configuration → Sources →
 New source → Source type**. The form is generated from the plugin's schema. See [04 Sources](04-sources.md).
 In protection groups you select the plugin's guests, for example databases, with **Load …** (see
-[05 Policies and protection groups](05-policies-and-groups.md)). In **Snapshots**, every restore the plugin declares
-appears as a button. Download is provided by the appliance itself. See [06 Restores](06-restores.md).
+[05 Policies and protection groups](05-policies-and-groups.md)). In **Snapshots**, the restores the plugin declares
+appear in the snapshot's **Restore** menu. A plugin can limit a restore to guest snapshots (e.g. one database) or to
+source snapshots (the whole source, e.g. a PostgreSQL cluster); the menu then offers it only on that kind (manifest
+v1.4, `applies_to`). Download is provided by the appliance itself and appears as the plugin's download button instead
+of **Browse files**. See [06 Restores](06-restores.md).
 
 Plugin snapshots are named `plugin-<plugin id>-<source id>[-<guest>]`. Retention, offsite copies and replication
 treat them like any other snapshot.

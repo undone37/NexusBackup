@@ -12,15 +12,16 @@ The appliance is an image-based system (bootc). An update replaces the whole rea
 3. A new image is **downloaded and staged only**. An unplanned reboot or power loss does not apply it; if a staged
    download is lost, the appliance downloads it again on the next check.
 4. The staged image is applied (reboot) in the **maintenance window**, by default Sunday 03:00–05:00 UTC, or when an
-   administrator requests it on the console.
+   administrator requests it (**Stage now** under **Settings → Updates**, or on the console).
 5. After the reboot a health check runs. If it fails three boots in a row, the appliance **rolls back** to the
    previous image automatically.
 
 The update agent (`nexus-update`) runs every 15 minutes. For the download it opens the firewall for the registry
 hosts (`ghcr.io`, `pkg-containers.githubusercontent.com`, TCP 443) and closes it again afterwards.
 
-> **Status:** There is **no web UI for updates yet** (no status page, no "apply" or "rollback" button, no approval
-> for them). Updates are controlled on the local console as root (see the console-access gap in
+> **Status:** The **Updates** tab in the web interface (below) shows the status and offers **Check now** and
+> **Stage now**; it was tested against the demo backend, and its appliance-side part is still being integrated.
+> Rollback and the maintenance window are set on the local console as root (see the console-access gap in
 > [02 Installation](02-installation.md#known-gaps-after-installation)); without action the appliance applies staged
 > updates in the maintenance window on its own. The signing chain, unsigned-image rejection,
 > staged-only download, apply on request and automatic rollback were tested in a lab VM with a local registry and
@@ -39,7 +40,34 @@ check: the key is pinned in the image (`/etc/pki/nexus/cosign/`).
 - **No retry of a failed update:** an image that was rolled back is remembered and not applied again automatically.
   It waits for a fixed release.
 
-## Check the update status
+## Updates in the web interface
+
+Open **Configuration → Settings → Updates**. Administrators, security officers and operators see the status; only
+administrators see the buttons.
+
+![Settings: Updates with an available update](images/settings-updates.png)
+
+| Line | Meaning |
+|---|---|
+| status chip | **Up to date**, **Update available**, **Checking…**, **Staged** or **Error** (the error text is shown above the box) |
+| **Running version** | the booted image: version, digest and since when it runs |
+| **Staged, boots next** | an image that is downloaded and verified and boots at the next reboot; "none" if there is none |
+| **Available** | a newer signed image in the channel, or "No newer image available." |
+| **Rollback image** | the previous image the appliance can boot back into |
+| **Channel** | the release channel, e.g. `stable` |
+| **Maintenance window** | when staged updates are applied, e.g. "Sun 03:00, 120 min" (UTC) |
+| **Last check** | when the appliance last looked for a new image |
+
+- **Check now** looks for a new image immediately instead of waiting for the next scheduled check. The status shows
+  **Checking…** until it is done.
+- **Stage now** (shown when an update is available and nothing is staged yet) installs the available version now
+  instead of waiting for the maintenance window: after you confirm, the appliance stages it and reboots into it. With
+  approvals enabled this is an approval request (`update apply`) that another administrator or security officer must
+  approve first. The same rules as for `nexus-update apply` below apply: make sure no restore is running.
+
+The web interface does not change the maintenance window and has no rollback button; use the console commands below.
+
+## Check the update status on the console
 
 On the local console, as root:
 
@@ -77,7 +105,7 @@ An invalid line falls back to the default window (and is logged).
 
 ## Roll back
 
-Automatic rollback happens when the health check fails after an update. The check (`nexus-health`, run by greenboot)
+**Settings → Updates** shows the **Rollback image**, i.e. the image a rollback boots into. Automatic rollback happens when the health check fails after an update. The check (`nexus-health`, run by greenboot)
 requires:
 
 - enough free disk space on `/var/lib/nexus`, `/var` and `/boot`;

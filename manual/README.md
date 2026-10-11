@@ -18,6 +18,7 @@ appliance.
 | **Security officers** (approve, audit) | 01, 09, 10, 14 |
 | **Operators** (daily operation, restores) | 03, 06, 11, 15 |
 | **Tenant users** (restore own data) | 03 (Signing in, Snapshots, Files), 06, 09 (Activating your account) |
+| **Managers** (status at a glance) | 03 (Dashboard: key figures, RPO, charts) |
 
 ## Contents
 
@@ -25,7 +26,8 @@ appliance.
    locks, compliance clock, approvals, offsite, replication, roles
 2. [Installation and first boot](02-installation.md): sizing, image, the `nexus-setup` wizard, recovery key, first
    sign-in, firewall
-3. [The web interface](03-web-interface.md): every page with screenshots
+3. [The web interface](03-web-interface.md): layout and navigation, light/dark theme, the KPI dashboard (RPO,
+   capacity forecast, data reduction, lock coverage), every page and the Settings tabs, with screenshots
 4. [Sources](04-sources.md): Proxmox VE, Linux/Windows agents, TrueNAS (built-in and plugin), NFS/SMB shares,
    PostgreSQL, Microsoft 365 and other plugin sources
 5. [Policies and protection groups](05-policies-and-groups.md): schedules, retention, what gets backed up
@@ -33,12 +35,16 @@ appliance.
    restore and point-in-time restore, Microsoft 365 restores
 7. [Offsite copies](07-offsite.md): Hetzner Storage Box (SFTP), S3 with Object Lock
 8. [Replication to a second appliance](08-replication.md)
-9. [Users and access](09-users-and-access.md): roles, MFA, activation codes
-10. [Approvals and audit](10-approvals-and-audit.md)
-11. [Alerts and monitoring](11-alerts-and-monitoring.md): alert kinds, webhook/email, Prometheus metrics
+9. [Users and access](09-users-and-access.md): roles, MFA, activation codes, single sign-on (OIDC) with Keycloak and
+   Microsoft Entra ID examples
+10. [Approvals and audit](10-approvals-and-audit.md): what needs approval, deciding requests, the approval setting,
+    the audit log
+11. [Alerts and monitoring](11-alerts-and-monitoring.md): alert kinds, delivery by webhook/e-mail (Settings), Prometheus
+    metrics
 12. [Plugins](12-plugins.md): installing, upgrading and removing signed plugins
-13. [Updates and rollback](13-updates.md)
-14. [Disaster recovery](14-disaster-recovery.md): the recovery key, recovery from offsite or a secondary
+13. [Updates and rollback](13-updates.md): Settings → Updates, console commands, maintenance window, agents
+14. [Disaster recovery](14-disaster-recovery.md): the recovery key, recovery from offsite or a secondary, break-glass
+    for a locked-out sole administrator
 15. [Troubleshooting and FAQ](15-troubleshooting-faq.md)
 
 ## Conventions

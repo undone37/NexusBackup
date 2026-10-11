@@ -98,7 +98,7 @@ The wizard recommends a **second person**: a security officer who approves destr
   (different from the administrator's name) and authenticator, exactly as in step 2. With two people, approvals
   start **enabled**.
 - **later:** approvals start **disabled**. Every action still takes effect and is recorded in the audit log. You can
-  add a second person in the web UI (**Users**) and enable approvals there afterwards (see
+  add a second person in the web UI (**Users**) and enable approvals afterwards under **Settings → Approvals** (see
   [09 Users and access](09-users-and-access.md)).
 
 ### Step 4: key service and recovery key
@@ -164,7 +164,8 @@ Open `https://<host name or IP>:8443/` in a browser on the management network, f
 `https://backup.example.com:8443/`. The browser warns about the self-signed certificate: compare the fingerprint it
 shows with the one you wrote down in step 5, then accept it.
 
-Sign in with your user name, password and the current code from your authenticator app.
+Sign in with your user name, password and the current code from your authenticator app (under **or with an
+appliance account**; the **Sign in with …** button appears only after single sign-on has been set up).
 
 ![Sign-in page](images/login.png)
 
@@ -174,6 +175,8 @@ Next steps:
 2. Add sources: [04 Sources](04-sources.md).
 3. Create policies and protection groups: [05 Policies and groups](05-policies-and-groups.md).
 4. Create accounts for the other people: [09 Users and access](09-users-and-access.md).
+5. Under **Settings**: set up alert delivery ([11 Alerts](11-alerts-and-monitoring.md#delivery-by-webhook-and-e-mail))
+   and, optionally, single sign-on ([09 Users and access](09-users-and-access.md#single-sign-on-oidc)).
 
 ## Network and firewall
 
@@ -196,13 +199,14 @@ Next steps:
 
 These are open production items (see `state.md`, "Production gaps"):
 
-- **Console root shell:** several maintenance tasks in this manual (updates, network change, SSH key files, disaster
-  recovery) need a root shell on the local console. The image locks the root password and has no documented
-  break-glass procedure yet; the lab VMs use a lab-only console autologin. Plan how you will get emergency access
+- **Console root shell:** several maintenance tasks in this manual (update rollback and maintenance window, network
+  change, SSH key files, disaster recovery, the break-glass reset of a locked-out administrator) need a root shell on
+  the local console. The image locks the root password and has no documented way to get a root shell yet; the lab VMs use a lab-only console autologin. Plan how you will get emergency access
   (for example booting a rescue system) before you rely on it.
 
-- **SSH keys for Proxmox VE nodes:** the appliance does not create its own SSH key pair yet. The PVE source refers to
-  a private key file and a `known_hosts` file under `/etc/nexus/ssh/` on the appliance (for example
+- **SSH keys for Proxmox VE nodes:** **Settings → Appliance SSH keys** shows and rotates the appliance's keys, but
+  its appliance-side part is still being integrated, so the appliance does not create its own key pair yet. The PVE
+  source refers to a private key file and a `known_hosts` file under `/etc/nexus/ssh/` on the appliance (for example
   `/etc/nexus/ssh/pve.key`). These files must be placed there by root on the console (owner `nexus-chunkstore`, mode
   0600). For TrueNAS sources the key is entered in the web UI instead (see [04 Sources](04-sources.md)).
 - **SFTP keys for the Storage Box** are also files on the appliance; the web UI only takes the path.

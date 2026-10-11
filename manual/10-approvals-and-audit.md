@@ -16,6 +16,9 @@ a different administrator or security officer must approve:
 | Storage | a garbage collection that would delete more than 20 % of a tenant's chunks (`gc_large`, requested by `scheduler`) |
 | Replication | creating a peer, exporting tenant keys to it, revoking a peer, deleting an enrolled replication source, lowering a replication source's retention |
 | Plugins | installing or upgrading a plugin, switching to another installed version, disabling or removing a plugin, adding or removing a publisher key |
+| Single sign-on | saving the single sign-on settings (identity provider, client secret, group mappings), because it changes who can sign in (`oidc update`) |
+| Appliance SSH keys | rotating an appliance SSH key (`ssh key rotate`) |
+| Updates | **Stage now**: installing an available appliance update without waiting for the maintenance window (`update apply`) |
 | Approvals | disabling the approval requirement itself (`approvals disable`) |
 
 Rules:
@@ -28,7 +31,9 @@ Rules:
 
 ## Deciding requests
 
-Open **Approvals**. By default only pending requests are listed; clear **Pending only** to see the history.
+Open **Approvals** in the sidebar, or click the stamp icon in the top bar; both show the number of pending requests.
+By default only pending requests are listed; clear **Pending only** to see the history. The chip next to it shows
+whether approvals are **Enabled** or **Disabled**; **Approval settings** opens **Settings → Approvals**.
 
 ![Approvals as seen by a security officer](images/approvals.png)
 
@@ -58,13 +63,18 @@ Operators can read the page but not decide.
 
 ## Enabling and disabling approvals
 
-The **Approval requirement** box at the top of the Approvals page shows the current setting and how many people can
-approve (enabled, activated administrators and security officers).
+The approval requirement is switched under **Configuration → Settings → Approvals** (or **Approval settings** on the
+Approvals page). The **Approval requirement** box shows the current setting (**Enabled** or **Disabled**), what it
+means, and how many people can approve (enabled, activated administrators and security officers). Only
+administrators see the button; security officers and operators see the box read-only.
+
+![Settings: Approvals, with approvals enabled](images/settings-approvals.png)
 
 - **Enable approvals** (administrators): takes effect immediately. It is refused unless at least one other person
   could approve; otherwise nothing could ever be approved again.
 - **Disable approvals** (administrators): creates a request that another administrator or security officer must
-  approve. Only one such request can be pending.
+  approve. Only one such request can be pending; while it is, the box says "Disabling is pending (request #N)." with
+  a link to **Approvals**.
 - After setup, approvals are enabled if the wizard created an administrator and a security officer, and disabled if
   there is a single administrator (see [02 Installation](02-installation.md)).
 
@@ -94,6 +104,10 @@ What is recorded:
 - every change made through the web interface or API (create, update, delete, job requests), including the
   parameters, with secrets replaced by `<redacted>`;
 - sign-ins, failed sign-ins (`auth.login_failed`), failed re-authentication (`auth.reauth_failed`), activations;
+- single sign-on: sign-ins (`auth.oidc_login`), refusals (`auth.oidc_denied`), accounts created at first sign-in
+  (`user.oidc_created`) and settings changes (`settings.oidc`);
+- a break-glass recovery of an administrator on the console (`user.break_glass`, see
+  [14 Disaster recovery](14-disaster-recovery.md#break-glass-the-only-administrator-lost-their-authenticator));
 - approval requests, decisions and executions (`quorum.request`, `quorum.approve`, `quorum.reject`, then the action
   itself with actor `system` or the scheduler);
 - job state changes and scheduler events (e.g. `gc.confirm_required`, replication sessions on the primary,

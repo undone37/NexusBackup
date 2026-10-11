@@ -1,7 +1,7 @@
 # 06 Restores
 
-Every restore starts on the **Snapshots** page. Pick a snapshot, choose the restore type, and the appliance queues
-a job. The job's detail page shows its log live. The appliance initiates every connection, as it does for
+Every restore starts on the **Snapshots** page. Pick a snapshot, open its **Restore** menu (or **Browse files**),
+choose the restore type, and the appliance queues a job. The job's detail page shows its log live. The appliance initiates every connection, as it does for
 backups. It reaches PVE nodes, agents and database servers. Nothing on the source side reaches the appliance.
 
 ## Who may restore
@@ -16,20 +16,30 @@ backups. It reaches PVE nodes, agents and database servers. Nothing on the sourc
 Restores never need an approval. They write only to new
 targets or to targets you confirm explicitly. Existing backups are never touched.
 
-![Snapshots of tenant initech with restore buttons](images/snapshots.png)
+![Snapshots of tenant initech with Browse files and the Restore menu](images/snapshots.png)
 
-## Which restore buttons a snapshot offers
+## Which restores a snapshot offers
 
-The snapshot name tells you what was backed up. The buttons follow from it:
+Each snapshot row has a **Browse files** button and a **Restore** menu. Click **Restore** to see the restores that fit
+the snapshot; each entry has a short explanation below its name.
 
-| Snapshot name | Source | Buttons |
-|---|---|---|
-| `vm-<id>` | Proxmox VE virtual machine | **Restore**, **Instant recover**, **Browse files** |
-| `ct-<id>` | Proxmox VE container | **Restore**, **Browse files** |
-| `host-<agent id>` | Linux/Windows host (agent) | **Restore to path**, **Browse files** |
-| `nas-<source>-<pool.dataset>` | TrueNAS dataset (built-in connector) | **Browse files** (download only) |
-| `share-<source>` | NFS / SMB share | **Browse files** (download only) |
-| `plugin-<plugin>-<source>[-<guest>]` | plugin source, e.g. PostgreSQL or Microsoft 365 | the plugin's restores, plus its download button |
+![The Restore menu of a VM snapshot](images/snapshot-restore-menu.png)
+
+The snapshot name tells you what was backed up. The menu follows from it:
+
+| Snapshot name | Source | **Restore** menu | Other button |
+|---|---|---|---|
+| `vm-<id>` | Proxmox VE virtual machine | **Full restore to a new VM / container**, **Instant recover** | **Browse files** |
+| `ct-<id>` | Proxmox VE container | **Full restore to a new VM / container** | **Browse files** |
+| `host-<agent id>` | Linux/Windows host (agent) | **Restore to path** | **Browse files** |
+| `nas-<source>-<pool.dataset>` | TrueNAS dataset (built-in connector) | none (download only) | **Browse files** |
+| `share-<source>` | NFS / SMB share | none (download only) | **Browse files** |
+| `plugin-<plugin>-<source>[-<guest>]` | plugin source, e.g. PostgreSQL or Microsoft 365 | the plugin's restores that apply to this kind of snapshot (see below) | the plugin's download button, e.g. **Download (tar/zip)** |
+
+Plugin snapshots come in two kinds: a **guest** snapshot (`plugin-<plugin>-<source>-<guest>`, e.g. one database or
+one mailbox) and a **source** snapshot (`plugin-<plugin>-<source>`, the whole source, e.g. a PostgreSQL cluster). A
+plugin declares for each of its restores whether it applies to guest snapshots, source snapshots or both, and the
+menu offers only the matching ones. The appliance refuses a restore that does not match the snapshot kind.
 
 Use the **Tenant** and **Guest (e.g. vm-100)** filters to narrow the list. Each row shows **Local**,
 **Offsite** and **Verified** marks and the **Locked until** date. A locked snapshot cannot be deleted
@@ -37,7 +47,7 @@ before that date (see [01 Concepts](01-concepts.md)).
 
 ## Restore a VM or container (full restore)
 
-1. On **Snapshots**, click **Restore** on the snapshot.
+1. On **Snapshots**, open **Restore** on the snapshot and choose **Full restore to a new VM / container**.
 2. Fill in the dialog:
    - **Target node**: the PVE node that runs the restore. The list offers the nodes of the tenant's PVE
      sources.
@@ -65,7 +75,7 @@ What happens:
 
 Instant recovery boots the VM straight from the backup, then moves its disks to real storage while it runs.
 
-1. Click **Instant recover** on a `vm-` snapshot.
+1. Open **Restore** on a `vm-` snapshot and choose **Instant recover**.
 2. Enter **Target node**, **New VM/CT ID** and **Target storage** (the storage the disks move to).
 3. Click **Start**.
 
@@ -121,7 +131,7 @@ To download:
 
 For `host-` snapshots, the agent writes the files back onto a host.
 
-1. Either click **Restore to path** on the snapshot (restores everything), or open **Browse files**, select
+1. Either open **Restore** on the snapshot and choose **Restore to path** (restores everything), or open **Browse files**, select
    paths and click **Restore to path** (with nothing selected the button reads **Restore everything to
    path**).
 2. Fill in the dialog:
@@ -151,23 +161,28 @@ with **Always overwrite**. EFS-encrypted files are not supported.
 
 ## Plugin restores (PostgreSQL)
 
-Plugin snapshots offer the restores declared by the plugin. Restores marked **application-specific** do more
-than copy files. The download button of a plugin uses its own title. In the file browser, application
+Plugin snapshots offer the restores declared by the plugin in their **Restore** menu. Restores marked
+**application-specific** do more than copy files. The download button of a plugin uses its own title and replaces
+**Browse files**. In the file browser, application
 streams such as database dumps and WAL appear under `.nexus-streams/`.
 
 The PostgreSQL plugin ([12 Plugins](12-plugins.md)) produces two kinds of snapshots:
 
 | Snapshot | Contains | Useful restores |
 |---|---|---|
-| `plugin-postgresql-<source>-<db>` | logical dump of one database (stream `<db>.sql`) | **Restore database dump to a server**, download |
-| `plugin-postgresql-<source>` (group without databases) | the whole cluster: `data/` (base backup) and `wal/` | **Point-in-time restore (new data directory via SSH)**, download |
+| `plugin-postgresql-<source>-<db>` (database snapshot) | logical dump of one database (stream `<db>.sql`) | **Restore database dump to a server**, download |
+| `plugin-postgresql-<source>` (cluster snapshot, group without databases) | the whole cluster: `data/` (base backup) and `wal/` | **Point-in-time restore (new data directory via SSH)**, download |
 
-The snapshot list shows every restore of the plugin on every PostgreSQL snapshot. Use the dump restore on
-database snapshots and the point-in-time restore on cluster snapshots.
+The **Restore** menu offers the dump restore only on database snapshots and the point-in-time restore only on cluster
+snapshots.
+
+> **Status:** The per-snapshot filtering needs plugin manifests that declare it (manifest v1.4, `applies_to`). With
+> an older plugin version the menu shows every restore of the plugin on every snapshot of it; then use the dump
+> restore on database snapshots and the point-in-time restore on cluster snapshots.
 
 ### Restore a database dump to a server
 
-1. Click **Restore database dump to a server** on a database snapshot.
+1. Open **Restore** on a database snapshot and choose **Restore database dump to a server**.
 2. Enter the **Target database**, choose **Server** (`source` = the backed-up server, `alternate` = the
    **Alternate restore server** configured in the source), and tick **Restore into an existing database**
    only if you really want that.
@@ -181,7 +196,7 @@ objects (a warning in each backup log names those present). Use a cluster backup
 
 ### Point-in-time restore
 
-1. Click **Point-in-time restore (new data directory via SSH)** on a cluster snapshot.
+1. Open **Restore** on a cluster snapshot and choose **Point-in-time restore (new data directory via SSH)**.
 2. Enter the **New data directory on the restore host (must not exist)**, optionally a time to recover to
    (e.g. `2026-10-10 14:30:00+00`; empty = the end of the backup), and optionally a port.
 3. Click **Start**.
@@ -207,7 +222,7 @@ server.
 ## Microsoft 365 restores
 
 Microsoft 365 snapshots (`plugin-m365-<source>-u.…` for a user, `-s.…` for a site, `-t.…` for a team) offer three
-restores. None of them overwrites anything in Microsoft 365: restores always write into a **new** folder,
+restores (download and two restores in the **Restore** menu). None of them overwrites anything in Microsoft 365: restores always write into a **new** folder,
 calendar or channel.
 
 | Snapshot | Contains (folders in the file browser) |
@@ -226,7 +241,7 @@ folders or single items and prepare a tar or zip archive as described in
 
 ### Restore to the original user, site or team
 
-1. Click **Restore to the original user / site / team (into a new folder)** on the snapshot.
+1. Open **Restore** on the snapshot and choose **Restore to the original user / site / team (into a new folder)**.
 2. Optionally fill in **Only these snapshot paths**, one per line, e.g. `mail/Inbox` or
    `onedrive/Documents/Contracts` (empty = everything), and **New folder** (empty = `Restored <date> <time>`). The
    folder must not exist yet.
@@ -246,7 +261,7 @@ Where the items end up:
 
 ### Restore to another user, site or team
 
-Use **Restore to another user / site / team (into a new folder)**, for example to give a successor the mailbox
+Use **Restore → Restore to another user / site / team (into a new folder)**, for example to give a successor the mailbox
 and OneDrive of a person who left. In addition to the fields above, enter the **Target**:
 
 - for a user snapshot: the other user's sign-in name (`jane@contoso.com`) or object ID;

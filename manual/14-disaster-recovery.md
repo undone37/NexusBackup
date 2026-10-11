@@ -16,6 +16,7 @@ lost (hardware failure, fire, ransomware on the management network) and how the 
 | Appliance lost, tenant has an offsite target | recovery key + offsite credentials (SFTP key or S3 access key) + new hardware | Storage Box or S3 bucket ([07 Offsite](07-offsite.md)) |
 | Appliance lost, tenant is replicated | the secondary appliance (it has its own keys) | the secondary's local store ([08 Replication](08-replication.md)) |
 | Single snapshot damaged locally | nothing extra | `verify` finds it; restore an older snapshot, or fetch it from offsite (below) |
+| The only administrator lost the authenticator or password | recovery key + local console | [Break-glass](#break-glass-the-only-administrator-lost-their-authenticator) (below) |
 
 ### The recovery key
 
@@ -123,13 +124,65 @@ primary: replicated tenants take no new backups on the secondary. To protect the
 > **Status:** Restore on a secondary with the primary powered off was tested in the two-appliance lab (file download
 > from a replicated VM snapshot). A full VM restore on the secondary was not part of that test.
 
+## Break-glass: the only administrator lost their authenticator
+
+Normally another administrator issues a new activation code ([09 Users and access](09-users-and-access.md#lost-password-or-authenticator)).
+If there is no other administrator who can sign in, reset the account on the appliance's console with the
+**recovery key**. Nobody can do this over the network.
+
+You need:
+
+- a root shell on the appliance's local console (physical console or the hypervisor's console);
+- the written recovery key (the same key as at setup, see [The recovery key](#the-recovery-key)).
+
+Procedure:
+
+1. On the console, as root, run:
+
+   ```sh
+   nexus-setup recover-admin --user admin
+   ```
+
+   `--user` names the administrator account to reset (here `admin`).
+2. Enter the recovery key when asked. A wrong key is refused.
+3. The command resets the account to **Pending activation**: its old password and authenticator stop working. It prints a new **one-time activation code**.
+4. If approvals are enabled and at least two people could approve, the command refuses, because the reset bypasses
+   the four-eyes rule. If those people really cannot help (for example a security officer exists but no other
+   administrator), repeat it with `--force-solo`. The recovery is then flagged as a solo action in the audit log and
+   the alert; tell the security officer.
+5. In a browser, open the sign-in page, click **Activate account** and activate the account with the user name and the
+   code: choose a new password and set up a new authenticator
+   ([09 Users and access](09-users-and-access.md#activating-your-account)).
+
+What the appliance records:
+
+- the audit entry `user.break_glass`;
+- a critical alert of kind `break_glass`, sent through the configured alert delivery
+  ([11 Alerts and monitoring](11-alerts-and-monitoring.md));
+- a red banner for every administrator in the web interface: "Break-glass recovery was used: … Check the audit log,
+  then acknowledge." with **Open audit log** and **Acknowledge**. It stays until an administrator acknowledges it.
+
+After the recovery, check the audit log for anything unexpected, acknowledge the banner, and create a second
+administrator so this is not needed again.
+
+Single sign-on accounts cannot be recovered this way: their sign-in is handled by the identity provider. If the
+identity provider is unavailable, sign in with a local administrator account (see
+[09 Users and access](09-users-and-access.md#single-sign-on-oidc)); if none can sign in, use the procedure above on a
+local administrator account.
+
+> **Status:** `nexus-setup recover-admin` is specified (docs/phase12-contract.md) and the web interface shows the
+> banner, but the console command is still being implemented and is not in the current image. It also needs a root
+> shell on the console, which the hardened image does not provide yet (see
+> [02 Installation](02-installation.md#known-gaps-after-installation)). Until both exist, the only protection is a
+> second administrator.
+
 ## What is not recovered
 
 The offsite copy and the replica contain **backup data and tenant keys only**. They do not contain the appliance
 configuration. After a total loss you must recreate by hand:
 
-- the catalog: tenants, sources, policies, protection groups, users and their roles, approval settings, alerts and
-  job history, and the **audit log** (it lives only in the catalog; forwarding it off the appliance is not
+- the catalog: tenants, sources, policies, protection groups, users and their roles, the settings (approvals, alert
+  delivery, single sign-on), alerts and job history, and the **audit log** (it lives only in the catalog; forwarding it off the appliance is not
   implemented yet, see [10 Approvals and audit](10-approvals-and-audit.md));
 - `totp.key` (the key that encrypts the users' TOTP seeds) and `secrets.key` (the scheduler's key for source and
   offsite secrets): users must enroll again and all source passwords, API tokens and keys must be entered again;

@@ -15,7 +15,8 @@ are in the audit log (`auth.login_failed`).
 
 **Lost authenticator or password.**
 Another administrator issues a new activation code (see [09 Users and access](09-users-and-access.md#lost-password-or-authenticator)).
-There is no recovery path for the only administrator yet.
+If you are the only administrator, use the console break-glass procedure with the recovery key
+([14 Disaster recovery](14-disaster-recovery.md#break-glass-the-only-administrator-lost-their-authenticator)).
 
 **Activation code rejected.**
 The code is valid for 72 hours and only once. For administrators and security officers with approvals enabled, the
@@ -23,7 +24,50 @@ code has two parts and works only after the approval; enter both parts. Ask for 
 
 **Approvals show "Disabled" right after installation.**
 First boot was finished with "second person later". Add an administrator or security officer under **Users**, let
-them activate the account, then click **Enable approvals** on **Approvals**.
+them activate the account, then click **Enable approvals** under **Settings → Approvals**.
+
+**The page is dark (or light) although I want the other theme.**
+By default the interface follows the light/dark setting of your operating system. Click the theme button in the top
+bar (sun, moon, or half sun) until its tooltip shows the theme you want: it cycles through **Theme: follow the
+system**, **Theme: light** and **Theme: dark**. The choice is stored in this browser only; a private window or another
+browser starts again with the system setting.
+
+**A red "Break-glass recovery was used" banner appears.**
+Someone reset an administrator account on the console with the recovery key. Open the audit log (`user.break_glass`),
+make sure the recovery was planned, then click **Acknowledge**
+([14 Disaster recovery](14-disaster-recovery.md#break-glass-the-only-administrator-lost-their-authenticator)).
+
+<a id="single-sign-on"></a>
+## Single sign-on
+
+If a sign-in through the identity provider (IdP) fails, the appliance returns to its sign-in page and shows the reason
+in a red box:
+
+| Message | Meaning | Fix |
+|---|---|---|
+| "Your organization account has no access to this appliance (no matching group mapping). Ask an administrator." | none of the user's groups matches a group mapping (code `denied`); an existing single sign-on account is disabled | add the user to a mapped group at the IdP, or add a mapping under **Settings → Single sign-on**. Check that the IdP sends the groups claim, and in the form the mapping expects (Entra ID sends group object IDs, Keycloak group names without path) |
+| "Single sign-on is turned off on this appliance." | **Allow single sign-on** is off (code `disabled`) | an administrator turns it on, or users sign in with an appliance account |
+| "The sign-in took too long. Please try again." | more than 10 minutes passed between leaving for the IdP and coming back (code `expired`) | try again |
+| "The sign-in could not be verified (state mismatch). Please try again." | the answer did not belong to the sign-in this browser started (code `state`): e.g. two sign-ins in parallel tabs, a bookmarked IdP page, blocked cookies, or the appliance opened under a different address than the registered redirect URI | close other sign-in tabs, allow cookies for the appliance, and always open the appliance under the address registered at the IdP |
+| "The identity provider reported an error. Please try again or contact your administrator." | the IdP refused or cancelled the sign-in (code `idp`), e.g. the user cancelled, is not assigned to the application, or failed MFA | check the IdP's sign-in log |
+| "The answer of the identity provider could not be verified. Contact your administrator." | the ID token failed a check (code `token`): issuer, audience (client ID), expiry, nonce or signature; or the client secret is wrong | compare **Issuer URL** and **Client ID** with the IdP, enter the client secret again (expired Entra ID secrets are a common cause), check the appliance clock, and run **Test connection** |
+| "Single sign-on failed (…). Please try again or contact your administrator." | another error | the appliance's audit log and the IdP's log name the cause |
+
+**The "Sign in with …" button is missing.**
+Single sign-on is not set up or not allowed (**Settings → Single sign-on**, **Allow single sign-on**), or a change of
+these settings is still waiting for approval.
+
+**Test connection fails.**
+The appliance cannot fetch `<issuer>/.well-known/openid-configuration` or the signing keys: wrong **Issuer URL** (for
+Entra ID it ends in `/v2.0`, for Keycloak in `/realms/<realm>`), or the IdP is not reachable from the appliance. The
+test uses the saved settings: save first.
+
+**A single sign-on user cannot sign in with the user name and password form.**
+Expected: single sign-on accounts have no appliance password or authenticator. Use **Sign in with …**.
+
+**A single sign-on user has the wrong role or tenant.**
+Role and tenants are set from the mappings at every sign-in; the highest-privileged matching mapping wins. Check the
+user's groups at the IdP and the mappings, then let the user sign out and in again.
 
 ## Backups
 
@@ -35,9 +79,15 @@ thin storage (e.g. `local-lvm`) and free up space there.
 Expected: the dirty bitmap is lost when QEMU restarts, so the disk is read once completely. Only changed chunks are
 stored.
 
-**A guest shows "Overdue" on the Dashboard.**
-Its newest snapshot is older than 26 hours (2 hours with an hourly policy). Look for failed backup jobs of its group,
-or a job of the same source that blocks the queue.
+**A guest shows "Overdue" on the Dashboard, or an object appears under "Objects needing attention".**
+"Overdue" in the **Protection status** table: its newest snapshot is older than 26 hours (2 hours with an hourly
+policy). **Breached** under **Objects needing attention**: the last good backup is older than 1.5 × the policy period
+(36 hours for daily, 90 minutes for hourly). **Never**: the object is in a group but was never backed up successfully.
+Look for failed backup jobs of its group, or a job of the same source that blocks the queue.
+
+**The Dashboard says "Key figures are not available right now".**
+The appliance could not compute the key figures. The **Protection status** table below still works. If it persists,
+the appliance-side dashboard service may not be available on your version yet.
 
 **A job stays "Queued" for a long time.**
 Only one job per source runs at a time. A long backup or restore of the same source delays the next job. Queued jobs
@@ -95,7 +145,12 @@ The PVE API token lacks `SDN.Use` on the bridge's zone. Grant `PVESDNUser` on `/
 storage.
 
 **Instant recovery refused.**
-The VM has a TPM state (`tpmstate0`) or is a template. Use a full **Restore**.
+The VM has a TPM state (`tpmstate0`) or is a template. Use **Restore → Full restore to a new VM / container**.
+
+**A plugin restore is missing from the Restore menu.**
+The menu offers only the restores that apply to this kind of snapshot. PostgreSQL, for example, offers the dump
+restore only on database snapshots (`plugin-postgresql-<source>-<db>`) and the point-in-time restore only on cluster
+snapshots (`plugin-postgresql-<source>`). Security officers see no **Restore** menu at all.
 
 **Instant-recovered VM hangs or gets I/O errors.**
 The connection between the node and the appliance was interrupted before the disk move finished. Restore
@@ -108,6 +163,13 @@ duplicate pool or volume-group names). Restore the whole VM instead.
 
 **Download link gone or answers 403/404.**
 Prepared downloads expire after 24 hours and can be fetched only by the user who requested them. Prepare it again.
+
+## Alerts
+
+**Send test under Settings → Alert delivery shows "error: …".**
+The text after "error:" comes from the mail server or webhook. Common causes: wrong port or STARTTLS setting, a relay
+that requires **SMTP user (optional)** and **SMTP password**, a sender address the relay does not accept, or a
+webhook URL that is not HTTPS. The test uses the saved settings: save first.
 
 ## Offsite and replication
 
@@ -145,7 +207,8 @@ Check the target's own snapshots (Storage Box) or object versions (S3) and the a
 
 **An update does not install.**
 Updates are applied only in the maintenance window or on request, are postponed while jobs run, and a version that was
-rolled back is not applied again. Check with `nexus-update status` on the console (see [13 Updates](13-updates.md)).
+rolled back is not applied again. Check **Settings → Updates** or `nexus-update status` on the console (see
+[13 Updates](13-updates.md)).
 
 **The appliance runs the old version after an update.**
 The health check failed after the reboot and the appliance rolled back automatically. The reason is in the journal of

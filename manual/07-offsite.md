@@ -78,9 +78,13 @@ The SSH private key never goes through the web UI: the tenant settings hold only
 refuses inline secrets there. Add the matching public key to the box's authorized keys (Storage Box: enable
 SSH support, then `.ssh/authorized_keys` on the box).
 
-> **Status (gap):** The appliance has no UI or API to create or install this key file yet. "SSH key management
-> for sources" is an open production item in `state.md`. In the lab the key is placed on the appliance file
-> system directly. Plan for this until key management is implemented.
+**Settings → Appliance SSH keys** lists the appliance's SSH keys with their public halves, fingerprints and a
+**Copy** button, and lets administrators rotate them (see [04 Sources](04-sources.md#appliance-ssh-keys)). Copy the
+public key for offsite SFTP targets from there.
+
+> **Status (gap):** The **Appliance SSH keys** tab is still being integrated on the appliance side, and the tenant
+> settings still take a key file path. Until the appliance creates the key itself, the key file is placed on the
+> appliance file system directly (as in the lab). Plan for this until key management is complete.
 
 **Immutability on a Storage Box.** A box has no object lock. The appliance never overwrites files and deletes
 only through delayed GC. Protection against a compromised appliance comes from the box's own snapshots. Turn
