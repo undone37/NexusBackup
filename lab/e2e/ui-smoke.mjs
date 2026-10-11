@@ -55,6 +55,10 @@ const spki = execSync(
 const chrome = spawn('google-chrome', ['--headless=new', '--remote-debugging-port=9335', `--user-data-dir=${OUT}/profile`,
   '--no-first-run', '--window-size=1440,900', '--host-resolver-rules=MAP nexus-m5 127.0.0.1',
   `--ignore-certificate-errors-spki-list=${spki}`, 'about:blank'], { stdio: 'ignore' });
+// never leave Chrome behind (it would keep the debugging port with another appliance's certificate pin)
+process.on('exit', () => chrome.kill());
+process.on('uncaughtException', (e) => { console.error(e); process.exit(2); });
+process.on('unhandledRejection', (e) => { console.error(e); process.exit(2); });
 await sleep(1500);
 const page = (await (await fetch('http://127.0.0.1:9335/json')).json()).find((t) => t.type === 'page');
 const ws = new WebSocket(page.webSocketDebuggerUrl);
@@ -114,7 +118,11 @@ const signIn = async (user, pw, secret) => {
   await cdp('Network.clearBrowserCookies');
   await cdp('Page.navigate', { url: 'about:blank' });
   await cdp('Page.navigate', { url: BASE + '#/login' });
-  if (!(await until(`return !!document.querySelector('#l-name')`))) throw new Error('no sign-in form');
+  if (!(await until(`return !!document.querySelector('#l-name')`))) {
+    const r = await cdp('Page.captureScreenshot', { format: 'png' });
+    writeFileSync(`${OUT}/no-sign-in-form.png`, Buffer.from(r.result.data, 'base64'));
+    throw new Error(`no sign-in form at ${await ev('return location.href')}: ${(await ev('return document.body?.innerText ?? ""')).slice(0, 300)}`);
+  }
   const code = await freshCode(user, secret);
   await ev(`$fill('#l-name', ${JSON.stringify(user)}); $fill('#l-pw', ${JSON.stringify(pw)}); $fill('#l-totp', '${code}');
             document.querySelector('form').requestSubmit();`);

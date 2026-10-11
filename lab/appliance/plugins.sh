@@ -308,12 +308,12 @@ oidc() {
 	}
 	loc=$(sso kc-alice alice-testbox-pw)
 	u=$("${A[@]}" -b "$S/sso-kc-alice.jar" "$BASE/auth/me")
-	[ "$(jq -r '.name + " " + .role' <<<"$u")" = "kc-alice admin" ] || die "kc-alice after SSO ($loc): $u"
-	log "kc-alice signed in via SSO: $(jq -c '{name, role, auth}' <<<"$u")"
+	[ "$(jq -r '.user.name + " " + .user.role' <<<"$u")" = "kc-alice admin" ] || die "kc-alice after SSO ($loc): $u"
+	log "kc-alice signed in via SSO: $(jq -c '.user | {name, role, auth}' <<<"$u")"
 	loc=$(sso kc-tina tina-testbox-pw)
 	u=$("${A[@]}" -b "$S/sso-kc-tina.jar" "$BASE/auth/me")
-	[ "$(jq -r '.name + " " + .role + " " + (.tenant // "")' <<<"$u")" = "kc-tina tenant_user sso" ] || die "kc-tina after SSO ($loc): $u"
-	log "kc-tina signed in via SSO: $(jq -c '{name, role, tenant, auth}' <<<"$u")"
+	[ "$(jq -r '.user.name + " " + .user.role + " " + (.user.tenant // "")' <<<"$u")" = "kc-tina tenant_user sso" ] || die "kc-tina after SSO ($loc): $u"
+	log "kc-tina signed in via SSO: $(jq -c '.user | {name, role, tenant, auth}' <<<"$u")"
 	loc=$(sso kc-nobody nobody-testbox-pw)
 	[[ $loc == *"oidc_error=denied"* ]] || die "kc-nobody: want oidc_error=denied, got '$loc'"
 	log "kc-nobody refused: $loc"
