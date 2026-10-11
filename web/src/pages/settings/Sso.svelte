@@ -30,7 +30,7 @@
     issuer: '',
     client_id: '',
     client_secret: '',
-    scopes: 'openid profile email groups',
+    scopes: 'openid profile email',
     username_claim: 'preferred_username',
     groups_claim: 'groups',
     label: '',
@@ -47,7 +47,7 @@
       username_claim: o.username_claim ?? 'preferred_username',
       groups_claim: o.groups_claim ?? 'groups',
       label: o.label ?? '',
-      mappings: (o.mappings ?? []).map((m) => ({ group: m.group, role: m.role, tenants: (m.tenants ?? []).join(', ') })),
+      mappings: (o.mappings ?? []).map((m) => ({ group: m.group, role: m.role, tenants: m.tenants?.[0] ?? '' })),
     };
     secretSet = !!o.client_secret_set;
   }
@@ -73,7 +73,7 @@
   async function save(e: SubmitEvent) {
     e.preventDefault();
     const scopes = split(f.scopes);
-    const mappings = f.mappings.map((m) => ({ group: m.group.trim(), role: m.role, tenants: split(m.tenants) }));
+    const mappings = f.mappings.map((m) => ({ group: m.group.trim(), role: m.role, tenants: m.role === 'tenant_user' && m.tenants ? [m.tenants] : [] }));
     if (
       !/^https:\/\/\S+$/.test(f.issuer.trim()) ||
       !f.client_id.trim() ||
@@ -213,21 +213,20 @@
               <select bind:value={m.role} aria-labelledby="{id}-h-r">
                 {#each ROLES as r (r)}<option value={r}>{t.roles[r]}</option>{/each}
               </select>
-              <input
-                bind:value={m.tenants}
-                list="{id}-tenants"
-                aria-labelledby="{id}-h-t"
-                required={m.role === 'tenant_user'}
-                placeholder={m.role === 'tenant_user' ? 'acme' : t.allTenants}
-                autocomplete="off"
-                spellcheck="false"
-              />
+              <!-- an appliance user has one tenant: only tenant users get one, the other roles see all -->
+              <select bind:value={m.tenants} aria-labelledby="{id}-h-t" required={m.role === 'tenant_user'} disabled={m.role !== 'tenant_user'}>
+                {#if m.role === 'tenant_user'}
+                  <option value="" disabled>{t.settings.oidc.pickTenant}</option>
+                  {#each tenants as tn (tn.name)}<option value={tn.name}>{tn.name}</option>{/each}
+                {:else}
+                  <option value="">{t.allTenants}</option>
+                {/if}
+              </select>
               <button type="button" class="icon" aria-label={t.settings.oidc.removeMapping(m.group)} onclick={() => f.mappings.splice(i, 1)}
                 ><IconTrash aria-hidden="true" /></button
               >
             {/each}
           </div>
-          <datalist id="{id}-tenants">{#each tenants as tn (tn.name)}<option value={tn.name}></option>{/each}</datalist>
         {/if}
       </section>
 

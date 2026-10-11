@@ -196,8 +196,9 @@
 
   function status(g: Group, s: Snapshot | undefined): 'ok' | 'stale' | 'missing' {
     if (!s) return 'missing';
-    const hourly = policyOf(g)?.schedule.startsWith('hourly');
-    const maxAge = hourly ? 2 * 3600 : 26 * 3600;
+    // same rule as the KPIs (docs/phase12-contract.md §1): breach after 1.5 × the policy period (RPO)
+    const rpo = policyOf(g)?.schedule.startsWith('hourly') ? 3600 : 86400;
+    const maxAge = 1.5 * rpo;
     return Date.now() / 1000 - s.time > maxAge ? 'stale' : 'ok';
   }
   const statusCls = { ok: 'ok', stale: 'warn', missing: 'bad' };

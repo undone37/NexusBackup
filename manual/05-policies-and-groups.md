@@ -49,8 +49,8 @@ Rules:
 
 The schedule also sets the recovery point objective (RPO) the Dashboard measures against: 24 hours for a daily
 schedule, 1 hour for an hourly one. Its key figures count an object as **RPO breached** when the last good backup is
-older than 1.5 × the RPO (36 hours or 90 minutes). The **Protection status** table below them uses a simpler rule:
-a guest is **Overdue** when its newest snapshot is older than 26 hours (2 hours with an hourly schedule). See
+older than 1.5 × the RPO (36 hours or 90 minutes). The **Protection status** table below them uses the same
+rule: a guest is **Overdue** when its newest snapshot is older than 1.5 × the policy period. See
 [03 The web interface](03-web-interface.md#dashboard).
 
 ## Protection groups

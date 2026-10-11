@@ -621,8 +621,11 @@ async function main() {
     }],
     ['login-sso', async () => {
       jar.clear();
+      // a real IdP redirect is a full page load: a hash change alone keeps the old session state
+      await cdp('Page.navigate', { url: 'about:blank' });
+      await sleep(200);
       await cdp('Page.navigate', { url: BASE + '#/login?oidc_error=denied' });
-      await until(`return !!document.querySelector('#l-name') && !!document.querySelector('a.sso')`, 'sign-in form with single sign-on');
+      await until(`return !!document.querySelector('#l-name') && !!document.querySelector('a.sso') && !!document.querySelector('.banner.error')`, 'sign-in form with the single sign-on error');
       await shot('login-sso-error');
       // the mock has no identity provider: the button signs in as the single-sign-on user lwagner
       await ev(`document.querySelector('a.sso').click(); return true;`);

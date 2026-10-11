@@ -157,11 +157,15 @@ example Microsoft Entra ID, Keycloak, Okta or Authentik.
 How it works:
 
 - **Accounts are created at the first sign-in** ("just in time"). Nobody has to create them on the appliance.
-- **Role and tenants come from group mappings.** You map IdP groups to appliance roles and tenants. At every sign-in
-  the appliance reads the user's groups from the IdP's answer and sets the account's role and tenants again, so a
-  change at the IdP takes effect at the next sign-in.
+- **Role and tenant come from group mappings.** You map IdP groups to appliance roles (and, for tenant users, one
+  tenant). At every sign-in the appliance reads the user's groups from the IdP's answer and sets the account's role
+  and tenant again, so a change at the IdP takes effect at the next sign-in.
 - **No matching mapping = no access.** If none of the user's groups is mapped, the sign-in is refused, an existing
   account is disabled, and the refusal is audited (`auth.oidc_denied`).
+- **An administrator's "Disabled" wins.** An SSO account an administrator disabled stays disabled: the next SSO
+  sign-in is refused and does not enable it again; only an administrator can.
+- **SSO accounts never take over local accounts.** Accounts are matched by the IdP's subject, not by name. If a local
+  account already has the same user name, the SSO sign-in is refused (audited as `auth.oidc_denied`).
 - **The highest privilege wins.** If several mappings match, the user gets the role of the highest-privileged one:
   Administrator, then Security officer, then Operator, then Tenant user.
 - **Multi-factor authentication is the IdP's job.** Single sign-on accounts have no password and no authenticator on
@@ -201,8 +205,8 @@ Audit entries: `auth.oidc_login` (sign-in), `user.oidc_created` (first sign-in),
    browser flow that requires OTP or WebAuthn.
 6. The **Issuer URL** is `https://<keycloak host>/realms/<realm>`, e.g. `https://idp.example.com/realms/nexus`.
 
-The appliance's defaults fit Keycloak: scopes `openid profile email groups`, user name claim `preferred_username`,
-groups claim `groups`.
+The appliance's defaults fit Keycloak: scopes `openid profile email` (the `groups` client scope added as **Default**
+in step 4 is included without being requested), user name claim `preferred_username`, groups claim `groups`.
 
 ### Example: Microsoft Entra ID
 
@@ -218,9 +222,9 @@ groups claim `groups`.
    recommended when users are in many groups) and, for the ID token, **Group ID**. The `groups` claim then contains
    the groups' **object IDs** (e.g. `3f2b6c1e-…`); use these object IDs as **IdP group** in the mappings. Users in
    more than 200 groups get no groups claim unless you limit it to groups assigned to the application.
-5. In **Settings → Single sign-on**, set **Scopes** to `openid profile email` (Entra ID has no `groups` scope; the
-   claim comes from the token configuration). Keep **User name claim** `preferred_username` (the user's sign-in name)
-   and **Groups claim** `groups`.
+5. In **Settings → Single sign-on**, keep the default **Scopes** `openid profile email` (Entra ID has no `groups`
+   scope; the claim comes from the token configuration), **User name claim** `preferred_username` (the user's
+   sign-in name, e.g. `anna@example.com`; SSO user names may contain `@`) and **Groups claim** `groups`.
 6. Require MFA with a Conditional Access policy for the NexusBackup application. Optionally set **Assignment
    required** on the enterprise application, so that only assigned users and groups can sign in at all.
 
@@ -237,13 +241,14 @@ Open **Configuration → Settings → Single sign-on** (administrators; security
    | **Issuer URL** | the IdP's issuer (`https://…`). The appliance reads `/.well-known/openid-configuration` below it. |
    | **Client ID**, **Client secret** | from the IdP registration. The secret is write-only ("Stored — leave empty to keep the current value."). |
    | **Redirect URI to register at the identity provider** | read-only; **Copy** it into the IdP registration |
-   | **Scopes** | space separated, must include `openid`; default `openid profile email groups` |
+   | **Scopes** | space separated, must include `openid`; default `openid profile email` |
    | **User name claim** | the claim that becomes the appliance user name; default `preferred_username` |
    | **Groups claim** | the claim with the user's groups; default `groups` |
    | **Button text on the sign-in page** | e.g. `Sign in with Keycloak` (required, at most 64 characters) |
 
 2. Under **Group mappings**, click **Add mapping** for each group: **IdP group** (the group name or ID exactly as the
-   IdP sends it), **Role**, and **Tenants (comma separated, empty = all)**. Tenant-user mappings need a tenant. The
+   IdP sends it), **Role**, and, for the role **Tenant user** only, the one **Tenant** the user may see (an appliance
+   account belongs to one tenant or to all; the other roles always see all tenants). The
    bin icon removes a mapping. While the list is empty, the page warns "No mappings yet: nobody can sign in with
    single sign-on."
 3. Click **Save**. With approvals enabled, saving creates an approval request (`oidc.update`) because it changes who

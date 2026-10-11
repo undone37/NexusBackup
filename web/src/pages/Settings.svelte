@@ -12,8 +12,9 @@
 
   // Tabs per role (docs/phase12-contract.md: alerts + SSO readable by admins and security officers,
   // SSH keys + updates also by operators; only admins change anything — the server decides).
-  const officer = (u: User | null) => u?.role === 'admin' || u?.role === 'security_officer';
-  const staff = (u: User | null) => officer(u) || u?.role === 'operator';
+  // appliance-wide settings: never for tenant-scoped accounts (as the route guard in App.svelte)
+  const officer = (u: User | null) => !u?.tenant && (u?.role === 'admin' || u?.role === 'security_officer');
+  const staff = (u: User | null) => officer(u) || (!u?.tenant && u?.role === 'operator');
   const TABS: { id: string; comp: Component<any>; allow: (u: User | null) => boolean }[] = [
     { id: 'approvals', comp: Approvals, allow: staff },
     { id: 'alerts', comp: AlertDelivery, allow: officer },

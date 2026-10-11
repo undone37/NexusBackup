@@ -2104,7 +2104,7 @@ function seedPhase12(t: number) {
     issuer: 'https://idp.example.com/realms/nexus',
     client_id: 'nexusbackup',
     client_secret: 'sealed:demo',
-    scopes: ['openid', 'profile', 'email', 'groups'],
+    scopes: ['openid', 'profile', 'email'],
     username_claim: 'preferred_username',
     groups_claim: 'groups',
     label: 'Sign in with Keycloak',

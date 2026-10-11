@@ -12,7 +12,7 @@ The appliance is an image-based system (bootc). An update replaces the whole rea
 3. A new image is **downloaded and staged only**. An unplanned reboot or power loss does not apply it; if a staged
    download is lost, the appliance downloads it again on the next check.
 4. The staged image is applied (reboot) in the **maintenance window**, by default Sunday 03:00–05:00 UTC, or when an
-   administrator requests it (**Stage now** under **Settings → Updates**, or on the console).
+   administrator requests it (**Install now** under **Settings → Updates**, or on the console).
 5. After the reboot a health check runs. If it fails three boots in a row, the appliance **rolls back** to the
    previous image automatically.
 
@@ -20,7 +20,7 @@ The update agent (`nexus-update`) runs every 15 minutes. For the download it ope
 hosts (`ghcr.io`, `pkg-containers.githubusercontent.com`, TCP 443) and closes it again afterwards.
 
 > **Status:** The **Updates** tab in the web interface (below) shows the status and offers **Check now** and
-> **Stage now**; it was tested against the demo backend, and its appliance-side part is still being integrated.
+> **Install now**; it was tested against the demo backend, and its appliance-side part is still being integrated.
 > Rollback and the maintenance window are set on the local console as root (see the console-access gap in
 > [02 Installation](02-installation.md#known-gaps-after-installation)); without action the appliance applies staged
 > updates in the maintenance window on its own. The signing chain, unsigned-image rejection,
@@ -60,7 +60,7 @@ administrators see the buttons.
 
 - **Check now** looks for a new image immediately instead of waiting for the next scheduled check. The status shows
   **Checking…** until it is done.
-- **Stage now** (shown when an update is available and nothing is staged yet) installs the available version now
+- **Install now** (shown when an update is available and nothing is staged yet) installs the available version now
   instead of waiting for the maintenance window: after you confirm, the appliance stages it and reboots into it. With
   approvals enabled this is an approval request (`update apply`) that another administrator or security officer must
   approve first. The same rules as for `nexus-update apply` below apply: make sure no restore is running.

@@ -43,10 +43,13 @@ make sure the recovery was planned, then click **Acknowledge**
 If a sign-in through the identity provider (IdP) fails, the appliance returns to its sign-in page and shows the reason
 in a red box:
 
+![Sign-in page with a single sign-on error](images/login-sso-error.png)
+
 | Message | Meaning | Fix |
 |---|---|---|
 | "Your organization account has no access to this appliance (no matching group mapping). Ask an administrator." | none of the user's groups matches a group mapping (code `denied`); an existing single sign-on account is disabled | add the user to a mapped group at the IdP, or add a mapping under **Settings → Single sign-on**. Check that the IdP sends the groups claim, and in the form the mapping expects (Entra ID sends group object IDs, Keycloak group names without path) |
 | "Single sign-on is turned off on this appliance." | **Allow single sign-on** is off (code `disabled`) | an administrator turns it on, or users sign in with an appliance account |
+| "Your account on this appliance is disabled. Ask an administrator." | an administrator disabled this single sign-on account (code `account_disabled`); signing in again does not enable it | an administrator clears **Disabled** on the **Users** page |
 | "The sign-in took too long. Please try again." | more than 10 minutes passed between leaving for the IdP and coming back (code `expired`) | try again |
 | "The sign-in could not be verified (state mismatch). Please try again." | the answer did not belong to the sign-in this browser started (code `state`): e.g. two sign-ins in parallel tabs, a bookmarked IdP page, blocked cookies, or the appliance opened under a different address than the registered redirect URI | close other sign-in tabs, allow cookies for the appliance, and always open the appliance under the address registered at the IdP |
 | "The identity provider reported an error. Please try again or contact your administrator." | the IdP refused or cancelled the sign-in (code `idp`), e.g. the user cancelled, is not assigned to the application, or failed MFA | check the IdP's sign-in log |
@@ -80,8 +83,7 @@ Expected: the dirty bitmap is lost when QEMU restarts, so the disk is read once 
 stored.
 
 **A guest shows "Overdue" on the Dashboard, or an object appears under "Objects needing attention".**
-"Overdue" in the **Protection status** table: its newest snapshot is older than 26 hours (2 hours with an hourly
-policy). **Breached** under **Objects needing attention**: the last good backup is older than 1.5 × the policy period
+"Overdue" in the **Protection status** table: its newest snapshot is older than 1.5 × the policy period (36 hours daily, 90 minutes hourly). **Breached** under **Objects needing attention**: the last good backup is older than 1.5 × the policy period
 (36 hours for daily, 90 minutes for hourly). **Never**: the object is in a group but was never backed up successfully.
 Look for failed backup jobs of its group, or a job of the same source that blocks the queue.
 

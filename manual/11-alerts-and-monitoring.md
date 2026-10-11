@@ -109,7 +109,7 @@ Series:
 | `nexus_audit_entries` | number of audit log entries |
 | `nexus_quorum_pending` | pending approval requests |
 
-Useful alerting rules in your monitoring system: no successful backup of a group for more than 26 hours, any
+Useful alerting rules in your monitoring system: no successful backup of a group for more than 36 hours (1.5 × a daily RPO), any
 pending approvals older than a day, a sudden rise in failed sign-ins, and the appliance not answering `/health`.
 
 `GET /health` (no token) answers `{"ok": true}` while the web API runs.

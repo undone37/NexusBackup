@@ -158,7 +158,7 @@ If the key figures cannot be loaded, a banner says so; the table below still wor
 database). The columns show the time of the last backup and whether the newest copies are **Local**, **Offsite** and
 **Verified**. **Offsite** shows *n/a* when the group's policy does not copy offsite. **Status** is **Protected**,
 **Overdue** or **No backup**; this column uses a simpler rule than the key figures: **Overdue** means the newest
-snapshot is older than 26 hours (2 hours for hourly policies). Administrators and operators can start a backup of the
+snapshot is older than 1.5 × the policy period (36 hours for daily, 90 minutes for hourly policies; the same rule as the RPO KPIs). Administrators and operators can start a backup of the
 whole group with **Back up now**.
 
 Below the table are the most recent **Failed jobs** (last 7 days) and **Open alerts**.
@@ -312,7 +312,7 @@ when approvals are enabled.
 | **Alert delivery** | webhook and e-mail (SMTP) for alerts, minimum severity, **Send test** | [11 Alerts and monitoring](11-alerts-and-monitoring.md#delivery-by-webhook-and-e-mail) |
 | **Single sign-on** | the OpenID Connect identity provider, group mappings, **Test connection** | [09 Users and access](09-users-and-access.md#single-sign-on-oidc) |
 | **Appliance SSH keys** | the public keys the appliance signs in to sources with; **Copy**, **Rotate**, **Retire old key** | [04 Sources](04-sources.md#appliance-ssh-keys) |
-| **Updates** | running, staged, available and rollback image; **Check now**, **Stage now** | [13 Updates](13-updates.md#updates-in-the-web-interface) |
+| **Updates** | running, staged, available and rollback image; **Check now**, **Install now** | [13 Updates](13-updates.md#updates-in-the-web-interface) |
 
 ![Settings: Approvals](images/settings-approvals.png)
 

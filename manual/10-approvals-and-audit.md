@@ -18,7 +18,7 @@ a different administrator or security officer must approve:
 | Plugins | installing or upgrading a plugin, switching to another installed version, disabling or removing a plugin, adding or removing a publisher key |
 | Single sign-on | saving the single sign-on settings (identity provider, client secret, group mappings), because it changes who can sign in (`oidc update`) |
 | Appliance SSH keys | rotating an appliance SSH key (`ssh key rotate`) |
-| Updates | **Stage now**: installing an available appliance update without waiting for the maintenance window (`update apply`) |
+| Updates | **Install now**: installing an available appliance update without waiting for the maintenance window (`update apply`) |
 | Approvals | disabling the approval requirement itself (`approvals disable`) |
 
 Rules:
