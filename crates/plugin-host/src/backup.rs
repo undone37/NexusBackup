@@ -4,8 +4,9 @@
 //! `FileBegin` → `Data`* → `FileEnd` (data only for regular files, exactly
 //! `meta.size` bytes), `Unchanged` (only for a path of the base snapshot whose
 //! metadata matches — the chunk list is taken from the base snapshot, never from
-//! the plugin), `Stream` → `Data`* → `StreamEnd`, `BaseQuery` (answered with
-//! `BaseEntries`), `Log`/`Progress` at any time, finally `Done` outside any item.
+//! the plugin), `Stream` → `Data`* → `StreamEnd`, `BaseQuery` / `BaseList`
+//! (answered with `BaseEntries`), `Log`/`Progress` at any time, finally `Done`
+//! outside any item.
 //! Paths are unique, relative, without `.`/`..`, not below [`plugin_proto::STREAMS_DIR`].
 //!
 //! Data is chunked with the store's FastCDC parameters as it arrives (≤ 4 MiB
@@ -18,7 +19,7 @@ use crate::{escape, level_name, meta_of, tree_kind, FILES_INDEX, STATE_INDEX, ST
 use anyhow::{bail, Context, Result};
 use chunkstore::store::{CDC_AVG, CDC_MAX, CDC_MIN};
 use chunkstore::{ChunkId, FileEntry, Index, Store, TreeEntry, TreeKind};
-use plugin_proto::{BaseEntry, BaseInfo, Message, Meta, Op, API, MAX_FRAME, STREAMS_DIR};
+use plugin_proto::{BaseEntry, BaseInfo, Message, Meta, Op, API, MAX_BATCH, MAX_FRAME, STREAMS_DIR};
 use std::collections::{HashMap, HashSet};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -49,6 +50,8 @@ pub struct Base {
     pub time: u64,
     pub entries: Vec<TreeEntry>,
     by_path: HashMap<Vec<u8>, usize>,
+    /// entry indexes in path order (built on the first `BaseList`)
+    sorted: std::cell::OnceCell<Vec<usize>>,
     pub state: Option<Vec<u8>>,
 }
 
@@ -56,6 +59,40 @@ impl Base {
     pub fn get(&self, path: &[u8]) -> Option<&TreeEntry> {
         self.by_path.get(path).map(|&i| &self.entries[i])
     }
+
+    /// One `BaseList` page: entries after `after` in path order, as many as fit one
+    /// frame with their full metadata (at least one; ≤ `MAX_BATCH`).
+    fn list_page(&self, after: Option<&[u8]>) -> Vec<BaseEntry> {
+        let sorted = self.sorted.get_or_init(|| {
+            let mut v: Vec<usize> = (0..self.entries.len()).collect();
+            v.sort_by(|&a, &b| self.entries[a].path.cmp(&self.entries[b].path));
+            v
+        });
+        let start = after.map_or(0, |a| sorted.partition_point(|&i| self.entries[i].path.as_slice() <= a));
+        let mut out = Vec::new();
+        let mut bytes = 0;
+        for &i in &sorted[start..] {
+            let e = &self.entries[i];
+            let size = entry_size(&e.path, &meta_of(e));
+            if out.len() >= MAX_BATCH || (!out.is_empty() && bytes + size > MAX_FRAME - (64 << 10)) {
+                break;
+            }
+            bytes += size;
+            out.push(BaseEntry {
+                path: e.path.clone(),
+                meta: meta_of(e),
+            });
+        }
+        out
+    }
+}
+
+/// Upper bound of an entry's encoded size in a `BaseEntries` frame.
+fn entry_size(path: &[u8], m: &Meta) -> usize {
+    path.len()
+        + 96
+        + m.link_target.as_ref().map_or(0, Vec::len)
+        + m.xattrs.iter().map(|(k, v)| k.len() + v.len() + 8).sum::<usize>()
 }
 
 /// Newest committed snapshot of `source` (files index + state).
@@ -77,6 +114,7 @@ pub fn load_base(store: &Store, source: &str) -> Result<Option<Base>> {
         time: m.time,
         entries,
         by_path,
+        sorted: std::cell::OnceCell::new(),
         state: read_state(store, &m)?,
     }))
 }
@@ -241,15 +279,7 @@ fn base_answer(base: Option<&Base>, paths: &[Vec<u8>]) -> Message {
             })
         })
         .collect();
-    let size: usize = entries
-        .iter()
-        .map(|e| {
-            e.path.len()
-                + 96
-                + e.meta.link_target.as_ref().map_or(0, Vec::len)
-                + e.meta.xattrs.iter().map(|(k, v)| k.len() + v.len() + 8).sum::<usize>()
-        })
-        .sum();
+    let size: usize = entries.iter().map(|e| entry_size(&e.path, &e.meta)).sum();
     if size > MAX_FRAME - (64 << 10) {
         for e in &mut entries {
             e.meta.xattrs.clear();
@@ -325,6 +355,10 @@ pub fn run(store: &Store, peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&
                     return Err(peer.violation("BaseQuery too large (> 1 MiB of paths)"));
                 }
                 peer.send(&base_answer(base.as_ref(), &paths))?;
+            }
+            Message::BaseList { after } => {
+                let entries = base.as_ref().map_or_else(Vec::new, |b| b.list_page(after.as_deref()));
+                peer.send(&Message::BaseEntries { entries })?;
             }
             Message::FileBegin { path, meta } => {
                 if !matches!(open, Open::Idle) {
@@ -579,6 +613,7 @@ pub(crate) fn msg_name(m: &Message) -> &'static str {
         Message::Unmount => "Unmount",
         Message::Log { .. } => "Log",
         Message::Error { .. } => "Error",
+        Message::BaseList { .. } => "BaseList",
     }
 }
 

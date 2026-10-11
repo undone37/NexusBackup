@@ -2117,6 +2117,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
 
 [[package]]
+name = "m365-plugin"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chunkstore",
+ "pem",
+ "plugin-sdk",
+ "rcgen",
+ "reqwest",
+ "ring",
+ "rustls",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

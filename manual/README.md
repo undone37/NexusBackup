@@ -1,8 +1,9 @@
 # NexusBackup Appliance — User Manual
 
 This manual describes how to install, operate and use the NexusBackup appliance: an open-source backup appliance that
-pulls data from Proxmox VE, Linux and Windows hosts, TrueNAS, NFS/SMB shares and plugin sources such as PostgreSQL,
-stores it as deduplicated, encrypted forever-full snapshots, and keeps copies offsite and on a second appliance.
+pulls data from Proxmox VE, Linux and Windows hosts, TrueNAS, NFS/SMB shares and plugin sources such as PostgreSQL and
+Microsoft 365, stores it as deduplicated, encrypted forever-full snapshots, and keeps copies offsite and on a second
+appliance.
 
 > **Status:** NexusBackup is **lab-proven, not production-ready**. All functions described here run end to end in a
 > nested lab with SELinux enforcing. Real hardware, scale tests, a real Hetzner Storage Box run, the external
@@ -26,10 +27,10 @@ stores it as deduplicated, encrypted forever-full snapshots, and keeps copies of
    sign-in, firewall
 3. [The web interface](03-web-interface.md): every page with screenshots
 4. [Sources](04-sources.md): Proxmox VE, Linux/Windows agents, TrueNAS (built-in and plugin), NFS/SMB shares,
-   PostgreSQL and other plugin sources
+   PostgreSQL, Microsoft 365 and other plugin sources
 5. [Policies and protection groups](05-policies-and-groups.md): schedules, retention, what gets backed up
 6. [Restores](06-restores.md): full VM/CT restore, instant recovery, file download, restore to path, PostgreSQL dump
-   restore and point-in-time restore
+   restore and point-in-time restore, Microsoft 365 restores
 7. [Offsite copies](07-offsite.md): Hetzner Storage Box (SFTP), S3 with Object Lock
 8. [Replication to a second appliance](08-replication.md)
 9. [Users and access](09-users-and-access.md): roles, MFA, activation codes

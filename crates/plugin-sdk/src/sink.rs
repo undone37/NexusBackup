@@ -145,6 +145,30 @@ impl Sink {
         Ok(out)
     }
 
+    /// Every entry of the base snapshot in path order, with full metadata (paged by
+    /// the host; contract v1.3). For plugins that rebuild their previous view of the
+    /// source from the base (e.g. item ids kept in xattrs) instead of the state blob.
+    pub fn base_list(&mut self) -> Result<Vec<BaseEntry>> {
+        let mut out: Vec<BaseEntry> = Vec::new();
+        if !self.has_base {
+            return Ok(out);
+        }
+        loop {
+            send(
+                &self.chan,
+                &Message::BaseList {
+                    after: out.last().map(|e| e.path.clone()),
+                },
+            )?;
+            let m = self.chan.borrow_mut().recv()?;
+            match m {
+                Message::BaseEntries { entries } if entries.is_empty() => return Ok(out),
+                Message::BaseEntries { entries } => out.extend(entries),
+                m => bail!("unexpected host message {m:?} (expected BaseEntries)"),
+            }
+        }
+    }
+
     /// An application stream (dump, WAL segment, …); write to it, then `finish()`.
     pub fn stream(&mut self, name: &str) -> Result<StreamWriter> {
         if !plugin_proto::valid_stream_name(name) {

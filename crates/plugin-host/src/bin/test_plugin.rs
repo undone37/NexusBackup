@@ -175,6 +175,25 @@ fn main() {
                 },
             );
             let content = cfg["content"].as_str().unwrap_or("hello").as_bytes().to_vec();
+            // v1.3 BaseList: page 1 has the base's entries, the page after the last is empty
+            let mut listed = Vec::new();
+            if base.is_some() && cfg["base_list"].as_bool() == Some(true) {
+                let mut after = None;
+                loop {
+                    send(&mut w, &Message::BaseList { after: after.clone() });
+                    w.flush().unwrap();
+                    let Ok(Message::BaseEntries { entries }) = read_msg(&mut r) else {
+                        std::process::exit(3);
+                    };
+                    let Some(last) = entries.last() else { break };
+                    after = Some(last.path.clone());
+                    listed.extend(
+                        entries
+                            .into_iter()
+                            .map(|e| (String::from_utf8_lossy(&e.path).into_owned(), e.meta.size)),
+                    );
+                }
+            }
             if base.is_some() && cfg["unchanged"].as_bool() == Some(true) {
                 send(
                     &mut w,
@@ -204,7 +223,11 @@ fn main() {
                 &Message::Done {
                     state: Some(format!("lsn-{params}").into_bytes()),
                     consistent: cfg["consistent"].as_bool().unwrap_or(true),
-                    summary: "1 file, 1 stream".into(),
+                    summary: if listed.is_empty() {
+                        "1 file, 1 stream".into()
+                    } else {
+                        format!("listed {}", json!(listed))
+                    },
                 },
             );
         }

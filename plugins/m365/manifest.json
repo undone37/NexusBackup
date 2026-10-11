@@ -1,0 +1,142 @@
+{
+  "id": "m365",
+  "name": "Microsoft 365",
+  "version": "1.0.0",
+  "publisher": "nexusbackup",
+  "api": 1,
+  "kinds": [
+    {
+      "kind": "m365",
+      "title": "Microsoft 365 tenant (Exchange, OneDrive, SharePoint, Teams)",
+      "config_schema": {
+        "type": "object",
+        "required": ["tenant_id", "client_id", "certificate", "private_key"],
+        "properties": {
+          "tenant_id": {
+            "type": "string",
+            "title": "Tenant ID (GUID) or primary domain",
+            "pattern": "^[A-Za-z0-9.-]{3,253}$"
+          },
+          "client_id": {
+            "type": "string",
+            "title": "Application (client) ID of the app registration",
+            "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+          },
+          "certificate": {
+            "type": "string",
+            "format": "password",
+            "title": "Certificate (PEM, uploaded to the app registration)",
+            "maxLength": 16384
+          },
+          "private_key": {
+            "type": "string",
+            "format": "password",
+            "title": "Private key of the certificate (PEM, RSA, unencrypted)",
+            "maxLength": 16384
+          },
+          "exchange": { "type": "boolean", "title": "Exchange mailboxes (mail, calendars, contacts)", "default": true },
+          "onedrive": { "type": "boolean", "title": "OneDrive", "default": true },
+          "sharepoint": { "type": "boolean", "title": "SharePoint sites (document libraries)", "default": true },
+          "teams": { "type": "boolean", "title": "Teams: team files", "default": true },
+          "teams_messages": {
+            "type": "boolean",
+            "title": "Teams: channel messages (protected Microsoft API, needs Microsoft's approval)",
+            "default": false
+          },
+          "teams_export_model": {
+            "type": "string",
+            "title": "Teams export payment model",
+            "enum": ["B", "A", "evaluation"],
+            "default": "B",
+            "description": "B = backup (metered, Azure billing on the app); A = security/compliance licences; evaluation = small monthly free quota"
+          },
+          "sharepoint_host": {
+            "type": "string",
+            "format": "hostname",
+            "title": "SharePoint host (contoso.sharepoint.com; OneDrive, SharePoint, Teams files)"
+          },
+          "onedrive_host": {
+            "type": "string",
+            "format": "hostname",
+            "title": "OneDrive host (contoso-my.sharepoint.com)"
+          },
+          "graph_host": {
+            "type": "string",
+            "format": "hostname",
+            "title": "Graph host (empty = graph.microsoft.com; national clouds, test setups)"
+          },
+          "login_host": {
+            "type": "string",
+            "format": "hostname",
+            "title": "Sign-in host (empty = login.microsoftonline.com)"
+          },
+          "port": { "type": "integer", "format": "port", "title": "HTTPS port (test setups only)", "default": 443 },
+          "ca_cert": {
+            "type": "string",
+            "title": "Additional CA certificate (PEM; test setups, TLS inspection)",
+            "maxLength": 65536
+          }
+        }
+      },
+      "secret_fields": ["certificate", "private_key"],
+      "endpoints": [
+        { "host": "/graph_host", "default_host": "graph.microsoft.com", "port": "/port", "default_port": 443, "proto": "tcp" },
+        { "host": "/login_host", "default_host": "login.microsoftonline.com", "port": "/port", "default_port": 443, "proto": "tcp" },
+        { "host": "/sharepoint_host", "port": "/port", "default_port": 443, "proto": "tcp" },
+        { "host": "/onedrive_host", "port": "/port", "default_port": 443, "proto": "tcp" }
+      ],
+      "guests": { "title": "Users (mailbox + OneDrive), sites and teams", "list": true },
+      "backup": { "incremental": true, "consistent": "item" },
+      "restores": [
+        { "id": "download", "title": "Download (mail .eml, events .ics, contacts .vcf, files, threads .json)" },
+        {
+          "id": "to_original",
+          "title": "Restore to the original user / site / team (into a new folder)",
+          "params_schema": {
+            "type": "object",
+            "properties": {
+              "paths": {
+                "type": "array",
+                "title": "Only these snapshot paths (e.g. mail/Inbox, onedrive/Documents; empty = everything)",
+                "items": { "type": "string", "maxLength": 4096 },
+                "maxItems": 1000
+              },
+              "folder": {
+                "type": "string",
+                "title": "New folder (empty = \"Restored <date> <time>\"; must not exist)",
+                "pattern": "^[^\"*:<>?/\\\\|#%]{1,100}$"
+              }
+            }
+          }
+        },
+        {
+          "id": "to_other",
+          "title": "Restore to another user / site / team (into a new folder)",
+          "params_schema": {
+            "type": "object",
+            "required": ["target"],
+            "properties": {
+              "target": {
+                "type": "string",
+                "title": "Target: user (UPN or id), site (URL or id) or team (id or name)",
+                "maxLength": 1024
+              },
+              "paths": {
+                "type": "array",
+                "title": "Only these snapshot paths (empty = everything)",
+                "items": { "type": "string", "maxLength": 4096 },
+                "maxItems": 1000
+              },
+              "folder": {
+                "type": "string",
+                "title": "New folder (empty = \"Restored <date> <time>\"; must not exist)",
+                "pattern": "^[^\"*:<>?/\\\\|#%]{1,100}$"
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "sandbox": { "network": "endpoints", "tmp_mb": 256, "memory_mb": 2048 }
+}

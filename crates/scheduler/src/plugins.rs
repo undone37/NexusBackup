@@ -239,7 +239,9 @@ impl Scheduler {
                 .iter()
                 .find(|k| kind.ends_with(&format!(":{}", k.kind)))
             {
-                out.extend(crate::firewall::plugin_targets(spec, &v));
+                // manifest endpoints resolved in the config (fixed `default_host`s included);
+                // TCP only: the appliance allow-list is TCP (UDP endpoints are not opened)
+                out.extend(spec.tcp_targets(&v));
             }
         }
         Ok(out)
