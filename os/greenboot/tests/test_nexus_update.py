@@ -17,7 +17,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SCRIPT = HERE.parent / "usr/libexec/nexus/nexus-update"
-REPO = "ghcr.io/nexusbackup/appliance"
+REPO = "ghcr.io/undone37/nexusbackup"
 
 FAKE_BOOTC = r'''#!PYTHON
 # Fake bootc: state in $FAKE_DIR/state.json, calls logged to $FAKE_DIR/calls.

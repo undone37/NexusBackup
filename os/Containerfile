@@ -169,7 +169,7 @@ COPY os/tmpfiles.d/nexus.conf /usr/lib/tmpfiles.d/nexus.conf
 COPY os/nftables.conf /etc/sysconfig/nftables.conf
 
 # Signed OS updates and health-gated rollback (docs/release.md).
-ARG NEXUS_IMAGE_REPO=ghcr.io/nexusbackup/appliance
+ARG NEXUS_IMAGE_REPO=ghcr.io/undone37/nexusbackup
 ARG NEXUS_VERSION=0.0.0-dev
 # greenboot only; NOT greenboot-default-health-checks (its DNS check fails behind default-deny)
 RUN dnf -y install --setopt=install_weak_deps=False greenboot \
@@ -181,8 +181,8 @@ RUN dnf -y install --setopt=install_weak_deps=False greenboot \
 # and their units (os/greenboot/usr only, never os/greenboot/tests).
 COPY os/etc/ /etc/
 COPY os/greenboot/usr/ /usr/
-RUN if [ "$NEXUS_IMAGE_REPO" != ghcr.io/nexusbackup/appliance ]; then \
-      sed -i "s|ghcr.io/nexusbackup/appliance|$NEXUS_IMAGE_REPO|" /etc/containers/policy.json \
+RUN if [ "$NEXUS_IMAGE_REPO" != ghcr.io/undone37/nexusbackup ]; then \
+      sed -i "s|ghcr.io/undone37/nexusbackup|$NEXUS_IMAGE_REPO|" /etc/containers/policy.json \
         /etc/containers/registries.d/nexus-appliance.yaml /etc/nexus/update.conf; fi \
  && python3 -c 'import json; json.load(open("/etc/containers/policy.json"))' \
  && test -f /usr/lib/bootupd/grub2-static/configs.d/08_greenboot.cfg \

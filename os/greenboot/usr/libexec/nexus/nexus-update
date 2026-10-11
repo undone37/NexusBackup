@@ -38,7 +38,7 @@ import time
 
 CONF = os.environ.get("NEXUS_UPDATE_CONF", "/etc/nexus/update.conf")
 CONF_DEFAULTS = {
-    "NEXUS_IMAGE_REPO": "ghcr.io/nexusbackup/appliance",
+    "NEXUS_IMAGE_REPO": "ghcr.io/undone37/nexusbackup",
     "NEXUS_UPDATE_TAG": "stable",
     "NEXUS_UPDATE_WINDOW": "Sun 03:00 120",
     "NEXUS_UPDATE_CHECK_HOURS": "24",

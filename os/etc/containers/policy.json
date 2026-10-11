@@ -6,7 +6,7 @@
     ],
     "transports": {
         "docker": {
-            "ghcr.io/nexusbackup/appliance": [
+            "ghcr.io/undone37/nexusbackup": [
                 {
                     "type": "sigstoreSigned",
                     "keyPaths": [

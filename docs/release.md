@@ -7,7 +7,7 @@ through an explicit nftables allow rule.
 
 ```
  tag vX.Y.Z ──► CI (release.yml): build, bootc lint, push :vX.Y.Z, SBOM, draft release
-                  │ prints ghcr.io/nexusbackup/appliance@sha256:D   (NOT signed)
+                  │ prints ghcr.io/undone37/nexusbackup@sha256:D   (NOT signed)
                   ▼
  release manager: release/sign.sh (offline key) ─► verify.sh --policy ─► promote.sh D stable
                   │                                           (:stable now names D)
@@ -22,7 +22,7 @@ through an explicit nftables allow rule.
 
 | File (in the image) | Content |
 |---|---|
-| `/etc/containers/policy.json` | `default: reject`. Exactly one scope: `docker` / `ghcr.io/nexusbackup/appliance` → `sigstoreSigned`, `keyPaths` = pinned keys, `signedIdentity: matchRepository`. No `insecureAcceptAnything` anywhere, no Rekor/Fulcio |
+| `/etc/containers/policy.json` | `default: reject`. Exactly one scope: `docker` / `ghcr.io/undone37/nexusbackup` → `sigstoreSigned`, `keyPaths` = pinned keys, `signedIdentity: matchRepository`. No `insecureAcceptAnything` anywhere, no Rekor/Fulcio |
 | `/etc/containers/registries.d/nexus-appliance.yaml` | `use-sigstore-attachments: true` for that repository: signatures are read from the cosign tag `sha256-<digest>.sig` in the same registry |
 | `/etc/pki/nexus/cosign/*.pub` | Pinned cosign public key(s): one, or two during a rotation (release/keygen.md). Development trees pin `TEST-KEY-DO-NOT-SHIP.pub` |
 | `/etc/nexus/update.conf` | `NEXUS_IMAGE_REPO`, channel tag, default maintenance window, egress mode |
@@ -62,8 +62,8 @@ deployment's origin decides whether the policy is consulted:
 `bootc upgrade` keeps the origin's mode. So the signed mode must be set once, and
 it then holds for every later upgrade:
 
-- at install time: `bootc install to-disk --enforce-container-sigpolicy --target-imgref ghcr.io/nexusbackup/appliance:stable ...`, or
-- afterwards: `bootc switch --enforce-container-sigpolicy ghcr.io/nexusbackup/appliance:stable`.
+- at install time: `bootc install to-disk --enforce-container-sigpolicy --target-imgref ghcr.io/undone37/nexusbackup:stable ...`, or
+- afterwards: `bootc switch --enforce-container-sigpolicy ghcr.io/undone37/nexusbackup:stable`.
 
 `nexus-update stage` checks this every time. If the spec image is not
 `NEXUS_IMAGE_REPO:NEXUS_UPDATE_TAG` with signature `containerPolicy`, it runs the
@@ -93,19 +93,19 @@ podman is the only host tool needed, plus `jq`/`openssl` for check-trust.
 2. Sign the digest from the draft/job summary with the offline key:
    ```sh
    # key machine with registry access:
-   COSIGN_KEY=/media/escrow/nexus-release-2026a.key release/sign.sh sign ghcr.io/nexusbackup/appliance@sha256:D
+   COSIGN_KEY=/media/escrow/nexus-release-2026a.key release/sign.sh sign ghcr.io/undone37/nexusbackup@sha256:D
    # or fully air-gapped (only payload.json and payload.sig cross the gap):
-   release/sign.sh payload ghcr.io/nexusbackup/appliance@sha256:D payload.json        # online
+   release/sign.sh payload ghcr.io/undone37/nexusbackup@sha256:D payload.json        # online
    COSIGN_KEY=... release/sign.sh sign-payload payload.json payload.sig                 # offline, --network none
-   release/sign.sh attach ghcr.io/nexusbackup/appliance@sha256:D payload.json payload.sig  # online
+   release/sign.sh attach ghcr.io/undone37/nexusbackup@sha256:D payload.json payload.sig  # online
    ```
    Everything runs with `--tlog-upload=false`. `sign.sh` accepts only `IMAGE@sha256:`
    references in `NEXUS_IMAGE_REPO`. A PKCS#11 token works via `COSIGN_PKCS11_URI` (needs
    a cosign build with PKCS#11, see sign.sh).
-3. `release/verify.sh --policy ghcr.io/nexusbackup/appliance@sha256:D` runs cosign
+3. `release/verify.sh --policy ghcr.io/undone37/nexusbackup@sha256:D` runs cosign
    verify against the pinned keys without a tlog, then fetches through skopeo with the
    appliance's own policy.json and registries.d, which is exactly the check bootc makes.
-4. `release/promote.sh ghcr.io/nexusbackup/appliance@sha256:D stable` verifies again,
+4. `release/promote.sh ghcr.io/undone37/nexusbackup@sha256:D stable` verifies again,
    then points `:stable` at the digest (skopeo, `--preserve-digests`, copied under the
    appliance policy, so an unsigned digest cannot be promoted). Appliances pick it up at
    their next check. Publish the draft release.

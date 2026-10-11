@@ -8,7 +8,7 @@ The appliance is an image-based system (bootc). An update replaces the whole rea
 `/var` and the configuration in `/etc` stay. The appliance keeps the previous image and can boot back into it.
 
 1. The project builds a release image and the release manager **signs** it with an offline cosign key.
-2. The appliance checks the release channel (`ghcr.io/nexusbackup/appliance:stable`) once a day.
+2. The appliance checks the release channel (`ghcr.io/undone37/nexusbackup:stable`) once a day.
 3. A new image is **downloaded and staged only**. An unplanned reboot or power loss does not apply it; if a staged
    download is lost, the appliance downloads it again on the next check.
 4. The staged image is applied (reboot) in the **maintenance window**, by default Sunday 03:00–05:00 UTC, or when an

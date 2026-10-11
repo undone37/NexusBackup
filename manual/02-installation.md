@@ -47,7 +47,7 @@ podman build -f os/Containerfile -t localhost/nexus-os:dev .      # build (repos
 podman run --rm --privileged --pid=host -v /dev:/dev -v /var/lib/containers:/var/lib/containers \
   --security-opt label=type:unconfined_t localhost/nexus-os:dev \
   bootc install to-disk --wipe --filesystem xfs \
-  --enforce-container-sigpolicy --target-imgref ghcr.io/nexusbackup/appliance:stable /dev/sdX
+  --enforce-container-sigpolicy --target-imgref ghcr.io/undone37/nexusbackup:stable /dev/sdX
 ```
 
 `--target-imgref` names the image the appliance follows for updates. `--enforce-container-sigpolicy` makes the

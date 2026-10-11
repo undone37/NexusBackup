@@ -3,5 +3,5 @@
 # The repository must match the scope in /etc/containers/policy.json and
 # NEXUS_IMAGE_REPO in /etc/nexus/update.conf (release/check-trust.sh checks this).
 docker:
-  ghcr.io/nexusbackup/appliance:
+  ghcr.io/undone37/nexusbackup:
     use-sigstore-attachments: true
