@@ -2,7 +2,7 @@
 
 Status: v1 (2026-10-10), implementation notes v1.1 (2026-10-10, see "Implementation (v1.1)" at the end), additive
 v1.2 (2026-10-10, TrueNAS + PostgreSQL plugins, see "v1.2" at the end), additive v1.3 (2026-10-11, Microsoft 365
-plugin, see "v1.3" at the end). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
+plugin, see "v1.3" at the end), additive v1.4 (2026-10-11, restores per snapshot kind, see "v1.4" at the end). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
 speaking a **versioned protocol**, with a **Rust SDK**; trust = **project release key + publisher keys an admin adds
 with quorum**; reference plugin **PostgreSQL**; the **TrueNAS** connector is ported to the SDK; the restore API covers
 **download, restore to original/alternate target, application-specific restore and mount/instant access**.
@@ -236,3 +236,15 @@ for v1.2 run unchanged; a plugin that uses `BaseList` needs a v1.3 host (the app
 - **SDK, restores:** when a `Source::files`/`streams` callback fails, the SDK reads the rest of the host's answer
   (until `NeedDone`) before returning the error, so the host receives the plugin's `Error` (shown in the job log)
   instead of failing on a closed pipe. No host change.
+
+## v1.4 — restores per snapshot kind (2026-10-11, docs/phase12-contract.md §6)
+Manifest only; protocol and API version unchanged (`api: 1`). A restore spec may name `"applies_to"`: `"guest"`
+(offered only on snapshots of one guest, `plugin-<p>-<sid>-<guest>`), `"source"` (only on whole-source snapshots,
+`plugin-<p>-<sid>`) or `"any"` (default; also when the field is absent, so v1.3 manifests behave as before).
+`Manifest::validate` refuses other values. Enforced twice: the web-api refuses a `plugin_restore` job whose
+snapshot kind does not match (400), and `nexus-pluginhost restore` refuses it before the plugin starts (an older
+web-api cannot bypass it). `GET /plugins` returns the manifest as signed, so the UI reads `applies_to` from there
+and offers a restore only where it applies. PostgreSQL: `to_target` (a database dump) = `guest`, `pitr` (base backup
++ WAL of the cluster) = `source`. A v1.3 host ignores the field (it would offer and run both restores everywhere,
+failing inside the plugin as before). Tested: `crates/plugin-proto` (validation, shipped PostgreSQL manifest),
+`crates/web-api/tests/plugins.rs` (refusal at the API).

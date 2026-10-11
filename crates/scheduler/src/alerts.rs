@@ -1,5 +1,7 @@
-//! Alert delivery: webhook (JSON POST) and SMTP, configured in
-//! `/etc/nexus/alerts.json`:
+//! Alert delivery: webhook (JSON POST) and SMTP. Configured in the catalog
+//! (setting `alerts`, written by `PUT /settings/alerts`, SMTP password sealed to
+//! the scheduler; docs/phase12-contract.md §3) or, when that setting is absent,
+//! in `/etc/nexus/alerts.json` (kept as fallback):
 //!
 //! ```json
 //! { "webhook": { "url": "https://hooks.example/nexus", "headers": { "Authorization": "Bearer …" } },
@@ -11,16 +13,34 @@
 //! endpoint never stalls the tick loop.
 
 use anyhow::{Context, Result};
+use catalog::secret::SchedulerKey;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Sender};
 use std::time::Duration;
 
 #[derive(Deserialize, Default, Clone)]
 pub struct AlertsConfig {
     pub webhook: Option<Webhook>,
     pub smtp: Option<Smtp>,
+    /// catalog setting only: alerts below this severity are not delivered
+    #[serde(skip)]
+    pub min_severity: Option<String>,
+}
+
+/// Owner of the sealed SMTP password in the catalog setting (as the web-api seals it).
+pub const SETTING_OWNER: &str = "settings/alerts";
+/// Catalog setting key.
+pub const SETTING_KEY: &str = "alerts";
+
+fn rank(severity: &str) -> u8 {
+    match severity {
+        "critical" => 2,
+        "warning" => 1,
+        _ => 0,
+    }
 }
 
 #[derive(Deserialize, Clone)]
@@ -40,6 +60,9 @@ pub struct Smtp {
     pub to: Vec<String>,
     pub username: Option<String>,
     pub password_file: Option<PathBuf>,
+    /// catalog setting: the opened password (never serialized)
+    #[serde(skip)]
+    pub password: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Copy, Default, PartialEq, Debug)]
@@ -62,6 +85,60 @@ pub struct Alert {
 }
 
 impl AlertsConfig {
+    /// From the catalog setting `alerts` (`{webhook_url, smtp: {host, port,
+    /// starttls, from, to, user, password (sealed)}, min_severity}`).
+    pub fn from_setting(mut v: Value, key: &SchedulerKey) -> Result<Self> {
+        key.open_all(SETTING_OWNER, &mut v)?;
+        let webhook = v["webhook_url"].as_str().map(|u| Webhook {
+            url: u.to_owned(),
+            headers: BTreeMap::new(),
+        });
+        let s = &v["smtp"];
+        let smtp = s["host"].as_str().map(|host| {
+            let port = s["port"].as_u64().and_then(|p| u16::try_from(p).ok());
+            Smtp {
+                host: host.to_owned(),
+                port,
+                tls: match (s["starttls"].as_bool().unwrap_or(true), port) {
+                    (true, _) => SmtpTls::Starttls,
+                    (false, Some(465)) => SmtpTls::Tls,
+                    (false, _) => SmtpTls::None,
+                },
+                from: s["from"].as_str().unwrap_or_default().to_owned(),
+                to: s["to"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                    .unwrap_or_default(),
+                username: s["user"].as_str().map(str::to_owned),
+                password_file: None,
+                password: s["password"].as_str().map(str::to_owned),
+            }
+        });
+        Ok(AlertsConfig {
+            webhook,
+            smtp,
+            min_severity: v["min_severity"].as_str().map(str::to_owned),
+        })
+    }
+
+    /// The catalog setting if present, else the file.
+    pub fn current(db: &catalog::Catalog, key: &SchedulerKey, file: &Path) -> Result<Self> {
+        let setting = catalog::setting(&db.conn(), SETTING_KEY)?;
+        match setting {
+            Some(raw) => Self::from_setting(serde_json::from_str(&raw)?, key),
+            None => Self::load(file),
+        }
+    }
+
+    /// Whether an alert of `severity` goes out (test alerts always do).
+    pub fn wants(&self, a: &Alert) -> bool {
+        a.kind == "test"
+            || self
+                .min_severity
+                .as_deref()
+                .is_none_or(|m| rank(&a.severity) >= rank(m))
+    }
+
     /// Missing file = no delivery (alerts still land in the catalog).
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read(path) {
@@ -106,7 +183,9 @@ pub fn send_mail(s: &Smtp, a: &Alert) -> Result<()> {
     if let Some(p) = s.port {
         t = t.port(p);
     }
-    if let (Some(u), Some(pf)) = (&s.username, &s.password_file) {
+    if let (Some(u), Some(pw)) = (&s.username, &s.password) {
+        t = t.credentials(Credentials::new(u.clone(), pw.clone()));
+    } else if let (Some(u), Some(pf)) = (&s.username, &s.password_file) {
         let pw = std::fs::read_to_string(pf).with_context(|| format!("{}", pf.display()))?;
         t = t.credentials(Credentials::new(u.clone(), pw.trim().to_owned()));
     }
@@ -114,12 +193,40 @@ pub fn send_mail(s: &Smtp, a: &Alert) -> Result<()> {
     Ok(())
 }
 
-/// Background delivery with retries (0 s, 10 s, 60 s). Returns the sender.
-pub fn spawn_delivery(cfg: AlertsConfig, backoff: [Duration; 2]) -> Sender<Alert> {
-    let (tx, rx): (Sender<Alert>, Receiver<Alert>) = channel();
+/// One `test` alert through each configured channel, no retries: one member
+/// per configured channel (`webhook`, `smtp`), `"ok"` or `"error: …"`.
+pub fn test(cfg: &AlertsConfig, host: &str) -> Value {
+    let a = Alert {
+        id: 0,
+        ts: catalog::now(),
+        severity: "info".into(),
+        kind: "test".into(),
+        message: "Test alert from the NexusBackup appliance (Settings → Alert delivery).".into(),
+        host: host.to_owned(),
+    };
+    let res = |r: Result<()>| match r {
+        Ok(()) => json!("ok"),
+        Err(e) => json!(format!("error: {e:#}")),
+    };
+    let mut out = serde_json::Map::new();
+    if let Some(w) = &cfg.webhook {
+        out.insert("webhook".into(), res(send_webhook(w, &a)));
+    }
+    if let Some(s) = &cfg.smtp {
+        out.insert("smtp".into(), res(send_mail(s, &a)));
+    }
+    Value::Object(out)
+}
+
+/// Background delivery with retries (0 s, 10 s, 60 s), each alert with the
+/// configuration current when it was raised. Returns the sender.
+pub fn spawn_delivery(backoff: [Duration; 2]) -> Sender<(AlertsConfig, Alert)> {
+    let (tx, rx) = channel::<(AlertsConfig, Alert)>();
     std::thread::spawn(move || {
-        for a in rx {
-            deliver(&cfg, &a, backoff);
+        for (cfg, a) in rx {
+            if cfg.wants(&a) {
+                deliver(&cfg, &a, backoff);
+            }
         }
     });
     tx
@@ -166,5 +273,39 @@ mod tests {
             .unwrap()
             .webhook
             .is_none());
+    }
+
+    /// The catalog form (web-api `PUT /settings/alerts`): sealed password opened,
+    /// TLS mode from `starttls` + port, severity filter.
+    #[test]
+    fn catalog_setting() {
+        let k = SchedulerKey::generate();
+        let mut v = json!({"webhook_url": "https://hooks.example/x", "min_severity": "warning",
+                           "smtp": {"host": "mail.example", "port": 465, "starttls": false, "from": "a@b.example",
+                                    "to": ["ops@b.example"], "user": "nexus", "password": "pw"}});
+        k.public().seal_all(SETTING_OWNER, &mut v).unwrap();
+        assert!(v["smtp"]["password"].as_str().unwrap().starts_with("sealed:v1:"));
+        let c = AlertsConfig::from_setting(v.clone(), &k).unwrap();
+        let s = c.smtp.as_ref().unwrap();
+        assert_eq!(
+            (s.tls, s.password.as_deref(), s.port),
+            (SmtpTls::Tls, Some("pw"), Some(465))
+        );
+        assert_eq!(c.webhook.as_ref().unwrap().url, "https://hooks.example/x");
+        let a = |sev: &str, kind: &str| Alert {
+            id: 1,
+            ts: 0,
+            severity: sev.into(),
+            kind: kind.into(),
+            message: String::new(),
+            host: String::new(),
+        };
+        assert!(!c.wants(&a("info", "x")) && c.wants(&a("warning", "x")) && c.wants(&a("critical", "x")));
+        assert!(c.wants(&a("info", "test")));
+        // a password moved to another host does not open
+        v["smtp"]["host"] = json!("evil.example");
+        assert!(AlertsConfig::from_setting(v, &k).is_err());
+        let c = AlertsConfig::from_setting(json!({"smtp": {"host": "m", "from": "a@b.c", "to": []}}), &k).unwrap();
+        assert_eq!(c.smtp.unwrap().tls, SmtpTls::Starttls);
     }
 }

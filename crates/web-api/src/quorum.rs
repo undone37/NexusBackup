@@ -42,12 +42,14 @@ pub const WEB_ACTIONS: &[&str] = &[
     "plugin_key.add",
     "plugin_key.remove",
     "approvals.disable",
+    "oidc.update",
+    "update.apply",
 ];
 
 /// Who may approve or reject requests (never their own: see [`approve`]).
 pub const APPROVERS: &[&str] = &["admin", "security_officer"];
 
-const SECRET_KEYS: &[&str] = &["password_hash", "totp_secret", "activation_hash"];
+const SECRET_KEYS: &[&str] = &["password_hash", "totp_secret", "activation_hash", "client_secret"];
 
 /// Hides credentials in quorum params (shown in lists and the audit log):
 /// password hashes, TOTP seeds and sealed secrets (e.g. an S3 `secret_key`
@@ -174,13 +176,14 @@ fn direct(st: &St, by: &str, action: &str, target: &str, params: Value) -> ApiRe
         tx.commit()?;
         (quorum_id, out.unwrap_or_else(|| json!({})))
     };
-    let mut details = json!({"approvals": "disabled", "params": redact(params)});
+    let mut details = json!({"approvals": "disabled", "params": redact(params.clone())});
     if let Some(id) = quorum_id {
         details["quorum_id"] = json!(id);
     }
     st.audit(by, action, target, details)?;
     if quorum_id.is_none() {
         crate::plugins::after_approve(st, action);
+        crate::settings::after_approve(st, action, by, &params);
     }
     Ok(Outcome::Direct { quorum_id, extra })
 }
@@ -282,6 +285,9 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         )?)?,
         "user.update" => return crate::resources::apply_user_update(c, p).map(Some),
         "approvals.disable" => catalog::set_setting(c, "approvals_enabled", "false")?,
+        "oidc.update" => crate::oidc::execute(c, p)?,
+        // the request file for nexus-update is written after the commit (settings::after_approve)
+        "update.apply" => {}
         "agent.delete" => {
             let id = p["id"].as_str().unwrap_or_default();
             if crate::agents::agent_in_use(c, id)? {
@@ -381,6 +387,7 @@ pub async fn approve(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> Api
     )?;
     if executed {
         crate::plugins::after_approve(&st, &action);
+        crate::settings::after_approve(&st, &action, &requested_by, &p);
         st.audit(
             &requested_by,
             &action,

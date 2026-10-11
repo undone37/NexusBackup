@@ -58,22 +58,7 @@ pub fn agent_value(c: &Connection, id: &str) -> ApiResult<Option<Value>> {
 
 /// 128-bit token, RFC 4648 base32 without padding (26 characters).
 pub fn new_token() -> String {
-    const A: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-    let b: [u8; 16] = rand::random();
-    let mut out = String::new();
-    let (mut acc, mut bits) = (0u32, 0);
-    for x in b {
-        acc = (acc << 8) | u32::from(x);
-        bits += 8;
-        while bits >= 5 {
-            out.push(A[((acc >> (bits - 5)) & 31) as usize] as char);
-            bits -= 5;
-        }
-    }
-    if bits > 0 {
-        out.push(A[((acc << (5 - bits)) & 31) as usize] as char);
-    }
-    out
+    catalog::auth::new_code()
 }
 
 /// The token is NOT part of the command (it would end up in `ps` and the shell

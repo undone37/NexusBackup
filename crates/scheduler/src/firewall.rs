@@ -136,6 +136,34 @@ pub fn alert_targets(a: &AlertsConfig) -> Vec<(String, u16)> {
     out
 }
 
+/// (host, port) of an http(s) URL.
+fn url_target(u: &str) -> Option<(String, u16)> {
+    let url = reqwest::Url::parse(u).ok()?;
+    matches!(url.scheme(), "https" | "http").then_some(())?;
+    Some((
+        url.host_str()?.trim_matches(['[', ']']).to_owned(),
+        url.port_or_known_default()?,
+    ))
+}
+
+/// OIDC (docs/phase12-contract.md §2): the issuer (discovery) and the token and
+/// JWKS endpoints of the last discovery (`settings.oidc_endpoints`, recorded by
+/// the web-api), while OIDC is configured. The browser reaches the authorization
+/// endpoint itself.
+pub fn oidc_targets(c: &catalog::rusqlite::Connection) -> anyhow::Result<Vec<(String, u16)>> {
+    let mut out = Vec::new();
+    let Some(s) = catalog::setting(c, "oidc")?.and_then(|v| serde_json::from_str::<Value>(&v).ok()) else {
+        return Ok(out);
+    };
+    out.extend(s["issuer"].as_str().and_then(url_target));
+    if let Some(e) = catalog::setting(c, "oidc_endpoints")?.and_then(|v| serde_json::from_str::<Value>(&v).ok()) {
+        for k in ["token_endpoint", "jwks_uri"] {
+            out.extend(e[k].as_str().and_then(url_target).filter(|t| !out.contains(t)));
+        }
+    }
+    Ok(out)
+}
+
 /// `host:port` / `[v6]:port` → (host, port); None without a valid port.
 fn split_host_port(s: &str) -> Option<(String, u16)> {
     let (h, p) = s.rsplit_once(':')?;
@@ -223,6 +251,25 @@ mod tests {
         assert_eq!(alert_targets(&a), vec![("2001:db8::2".into(), 80)]);
         assert_eq!(split_host_port("[2001:db8::1]:23"), Some(("2001:db8::1".into(), 23)));
         assert_eq!(split_host_port("2001:db8::1"), None);
+    }
+
+    #[test]
+    fn oidc() {
+        let c = catalog::Catalog::open_memory().unwrap();
+        let conn = c.conn();
+        assert!(oidc_targets(&conn).unwrap().is_empty());
+        catalog::set_setting(&conn, "oidc", r#"{"issuer": "https://idp.example.com/realms/nexus"}"#).unwrap();
+        assert_eq!(oidc_targets(&conn).unwrap(), vec![("idp.example.com".into(), 443)]);
+        catalog::set_setting(
+            &conn,
+            "oidc_endpoints",
+            r#"{"token_endpoint": "https://idp.example.com/t", "jwks_uri": "https://keys.example.com:8443/k"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            oidc_targets(&conn).unwrap(),
+            vec![("idp.example.com".into(), 443), ("keys.example.com".into(), 8443)]
+        );
     }
 
     #[test]

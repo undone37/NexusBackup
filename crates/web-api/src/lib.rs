@@ -22,12 +22,15 @@ pub mod activation;
 pub mod agents;
 pub mod approvals;
 pub mod auth;
+pub mod dashboard;
 pub mod jobs;
+pub mod oidc;
 pub mod ops;
 pub mod plugins;
 pub mod quorum;
 pub mod replication;
 pub mod resources;
+pub mod settings;
 pub mod spa;
 pub mod tls;
 pub mod validate;
@@ -92,6 +95,12 @@ pub struct AppState {
     pub repl: crate::replication::ReplState,
     /// plugin staging / project keys / install dir (default: env or appliance paths)
     pub plugins: std::sync::OnceLock<crate::plugins::PluginPaths>,
+    /// OS update control dir (default: env `NEXUS_UPDATE_DIR` or /var/lib/nexus/update)
+    pub update_dir: std::sync::OnceLock<PathBuf>,
+    /// `GET /dashboard` answers, ≤ 60 s old
+    pub dashboard: crate::dashboard::Cache,
+    /// OIDC discovery/JWKS cache and pending logins
+    pub oidc: crate::oidc::OidcState,
 }
 
 impl AppState {
@@ -114,6 +123,9 @@ impl AppState {
             secrets_pub,
             repl: crate::replication::ReplState::new(repl),
             plugins: std::sync::OnceLock::new(),
+            update_dir: std::sync::OnceLock::new(),
+            dashboard: Default::default(),
+            oidc: Default::default(),
         })
     }
 
@@ -393,6 +405,20 @@ pub fn router(st: St) -> Router {
         .route("/auth/me", get(me))
         .route("/auth/activate/begin", post(activation::begin))
         .route("/auth/activate/complete", post(activation::complete))
+        .route("/auth/oidc", get(oidc::info))
+        .route("/auth/oidc/start", get(oidc::start))
+        .route("/auth/oidc/callback", get(oidc::callback))
+        .route("/dashboard", get(dashboard::dashboard))
+        .route("/settings/oidc", get(oidc::get_settings).put(oidc::put_settings))
+        .route("/settings/oidc/test", post(oidc::test_settings))
+        .route("/settings/alerts", get(settings::get_alerts).put(settings::put_alerts))
+        .route("/settings/alerts/test", post(settings::test_alerts))
+        .route("/ssh-keys", get(settings::list_ssh_keys))
+        .route("/ssh-keys/{name}/rotate", post(settings::rotate_ssh_key))
+        .route("/ssh-keys/{name}/retire", post(settings::retire_ssh_key))
+        .route("/updates", get(settings::get_updates))
+        .route("/updates/check", post(settings::check_updates))
+        .route("/updates/apply", post(settings::apply_update))
         .route(
             "/settings/approvals",
             get(approvals::get_approvals).put(approvals::set_approvals),

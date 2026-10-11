@@ -357,6 +357,10 @@ fn totp_aad(user: &str) -> Vec<u8> {
     [b"nexus totp v1\0user/".as_slice(), user.as_bytes()].concat()
 }
 
+fn labeled_aad(label: &str) -> Vec<u8> {
+    [b"nexus webapi v1\0".as_slice(), label.as_bytes()].concat()
+}
+
 impl TotpKey {
     pub fn from_bytes(b: [u8; 32]) -> Self {
         TotpKey(Zeroizing::new(b))
@@ -410,6 +414,45 @@ impl TotpKey {
             )
             .map_err(|_| anyhow!("encrypting TOTP seed failed"))?;
         Ok(format!("{TOTP_PREFIX}{}", B64.encode([&nonce[..], &ct].concat())))
+    }
+
+    /// Another web-api-only secret (the OIDC client secret): `enc:v1:`, bound to
+    /// `label` (AAD distinct from every TOTP seed's).
+    pub fn encrypt_labeled(&self, label: &str, secret: &str) -> Result<String> {
+        let nonce: [u8; 24] = rand::random();
+        let ct = self
+            .cipher()
+            .encrypt(
+                XNonce::from_slice(&nonce),
+                Payload {
+                    msg: secret.as_bytes(),
+                    aad: &labeled_aad(label),
+                },
+            )
+            .map_err(|_| anyhow!("encrypting {label} failed"))?;
+        Ok(format!("{TOTP_PREFIX}{}", B64.encode([&nonce[..], &ct].concat())))
+    }
+
+    pub fn decrypt_labeled(&self, label: &str, stored: &str) -> Result<Zeroizing<String>> {
+        let b = stored
+            .strip_prefix(TOTP_PREFIX)
+            .and_then(|b| B64.decode(b).ok())
+            .filter(|b| b.len() >= 24 + 16)
+            .ok_or_else(|| anyhow!("{label}: malformed"))?;
+        let pt = Zeroizing::new(
+            self.cipher()
+                .decrypt(
+                    XNonce::from_slice(&b[..24]),
+                    Payload {
+                        msg: &b[24..],
+                        aad: &labeled_aad(label),
+                    },
+                )
+                .map_err(|_| anyhow!("{label}: cannot decrypt (wrong key or tampered)"))?,
+        );
+        Ok(Zeroizing::new(
+            String::from_utf8(pt.to_vec()).map_err(|_| anyhow!("{label}: not UTF-8"))?,
+        ))
     }
 
     /// The base32 seed of `user`. Legacy plaintext values are returned as they are.
@@ -561,6 +604,18 @@ mod tests {
         assert!(k.decrypt("alice", "enc:v1:AAAA").is_err());
         // legacy plaintext
         assert_eq!(*k.decrypt("alice", "JBSWY3DPEHPK3PXP").unwrap(), "JBSWY3DPEHPK3PXP");
+    }
+
+    #[test]
+    fn labeled_roundtrip_is_bound_to_label_and_key() {
+        let k = TotpKey::generate();
+        let e = k.encrypt_labeled("oidc/client_secret", "s3cret").unwrap();
+        assert_eq!(&*k.decrypt_labeled("oidc/client_secret", &e).unwrap(), "s3cret");
+        assert!(k.decrypt_labeled("other", &e).is_err());
+        assert!(TotpKey::generate().decrypt_labeled("oidc/client_secret", &e).is_err());
+        // never readable as a TOTP seed of a user named like the label
+        assert!(k.decrypt("oidc/client_secret", &e).is_err());
+        assert!(k.decrypt_labeled("x", "plain").is_err());
     }
 
     #[test]

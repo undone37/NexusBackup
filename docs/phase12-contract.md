@@ -90,3 +90,52 @@ the **recovery key** (as at setup), resets the chosen admin to "pending activati
 activation code; with approvals on and ≥ 2 approvers it refuses unless `--force-solo` (then flagged).
 Audited (`user.break_glass`), alert `break_glass` (critical), UI banner until acknowledged.
 Documented in manual/14-disaster-recovery.md ("Break-glass").
+
+## Implementation notes and deviations (backend, 2026-10-11)
+Clarifications agreed with the UI (integrator) and choices where this contract was open. **Deviations are marked ⚠.**
+- §1 `protection`: `objects = protected + unprotected`, `protected = sla_ok + sla_breach + never`; `never` = in a
+  group, no successful backup; `unprotected` = known object in no group. Known objects without a group: enrolled
+  agents and the guests of the last `plugin_guests` listing per plugin source (no PVE guest inventory exists in the
+  catalog yet, so unprotected PVE guests are not counted). `worst` sorts `never`, then `breach`, then by age.
+  `jobs` counts `backup` / `plugin_backup` jobs finished in the window; `warning` = finished ok with
+  `consistent: false`; `failed_by_kind` uses the source kind (`pve`, `linux`, `plugin:<kind>`, …).
+  `capacity.used/total/free` = the store file system (scheduler, setting `capacity`); `physical` = bytes in the
+  tenant stores, `logical` = local snapshot sizes (latest daily sample); `dedup` / `compression` are always `null`
+  (not measured separately yet), `reduction` = logical / physical. Tenant users get their tenant's `used`
+  (= physical) and `null` for total/free/forecast/replication lag. `offsite.lock_coverage` = share of the local
+  snapshots in scope under a retention lock. Additive: `break_glass` (see §7).
+- §2: ⚠ the client secret is encrypted with the web-api's own key (`enc:v1:`), not sealed to the scheduler — the
+  web-api must send it to the token endpoint. Additive settings fields: `ca_pem` (private IdP CA), GET-only
+  `redirect_uri` (to register at the IdP). Default scopes `["openid", "profile", "email"]` (no `groups` scope:
+  Entra has none; Keycloak needs a group mapper / client scope), groups claim `groups`. ⚠ Mappings: `tenants` stays
+  an array but holds 0 or 1 entries — `tenant_user` exactly one, admin / security_officer / operator none (all
+  tenants); anything else → 400 on PUT. Claims come from the ID token (configure the IdP to put the groups claim
+  there). Accounts are matched by (issuer, `sub`), never by name; the name is `username_claim` as it is (may
+  contain `@`, e.g. an Entra UPN; ≤ 128 characters, printable, no whitespace); if any account with that name exists
+  already (a local one in particular) the login is refused (`denied`, audit reason `name_conflict`) — never merged.
+  "No mapping matches" refuses (`denied`) and disables the account; a disabled account (by an admin or that rule)
+  is refused with `account_disabled` and is never re-enabled by a login — only by an admin. Error codes:
+  `disabled` (single sign-on turned off on this appliance), `account_disabled`, `expired` (pending login older than
+  10 min), `state`, `idp`, `token`, `denied` (no mapping, name conflict, unusable name, rate limit; details in the
+  audit entry `auth.oidc_denied`). `next`: `/` or a same-origin path incl. fragment (`/#/jobs`).
+  Also audited: `user.oidc_updated` (role/tenant changed at login), `settings.oidc_test`.
+  `POST /settings/oidc/test` → flat `{"discovery": "ok" | "error: …", "jwks": "ok: <n> keys" | "error: …"}`.
+- §3: `POST /settings/alerts/test` → flat `{"webhook"?: "ok" | "error: …", "smtp"?: …}`, one member per
+  configured channel (the scheduler sends; the endpoint waits up to 45 s, else 202 `{job_id}`). `starttls: false`
+  means implicit TLS on port 465, plain SMTP otherwise. Changing SMTP host/port/user requires the password again.
+- §4: lists only key files below `/etc/nexus/ssh` that the configuration uses and that exist: PVE node keys
+  (`nodes.*.key` of PVE sources, purpose "Proxmox VE nodes (forced command)") and SFTP offsite keys
+  (`remote.key_file`, "Storage Box offsite (SFTP)"); TrueNAS sources keep their own per-source key pair (shown on
+  the source). The appliance generates a key only when rotating (ed25519, OpenSSH format). ⚠ After a rotation the entry shows the **new** key (to install on the
+  sources) and the old one as `previous: {public_key, fingerprint, created}` (still the one in use) until
+  `retire`; one entry per name. Retire → 202 `{job_id}` (job `ssh_key_retire`), 409 without a rotation.
+- §5: `staged` and `rollback` have the shape of `booted` (`{version, digest, since}`). `available` is set when an
+  image newer than the booted one was found; status `staged` = downloaded, reboot pending (maintenance window).
+  `POST /updates/apply` = install now: stage the available update if it is not staged yet and reboot into it
+  outside the window (quorum `update.apply` while approvals are on); `checking`
+  while a check/apply request waits for `nexus-update`. `nexus-update status --json` prints this view; the
+  web-api reads the same view from `status.json` (`api` member). Additive: `applying`, `pending_request`.
+- §6: enforced by the web-api and by `nexus-pluginhost`; docs/plugin-system.md "v1.4".
+- §7: the banner follows the unacknowledged `break_glass` alert (kind `break_glass`, critical); `GET /auth/me` and
+  `GET /dashboard` also return `break_glass: {at, user, alert, forced_solo}`. Only admin / security_officer can
+  acknowledge that alert.

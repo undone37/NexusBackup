@@ -249,6 +249,14 @@ read_files_pattern(nexus_webapi_t, nexus_downloads_t, nexus_downloads_t)
 manage_files_pattern(nexus_webapi_t, nexus_update_t, nexus_update_t)
 # setup-done (ConditionPathExists and the binary's own check)
 read_files_pattern(nexus_webapi_t, nexus_var_lib_t, nexus_var_lib_t)
+# OIDC sign-in (docs/phase12-contract.md §2): discovery, JWKS and token requests to
+# the identity provider (443 = http_port_t; IdPs on other ports are unreserved).
+# Destinations are limited by the nftables allow-list (issuer, token and JWKS hosts);
+# trust anchors are compiled in or come from the OIDC settings (no system store).
+corenet_tcp_connect_http_port(nexus_webapi_t)
+corenet_tcp_connect_all_unreserved_ports(nexus_webapi_t)
+allow nexus_webapi_t self:udp_socket create_socket_perms;
+sysnet_dns_name_resolve(nexus_webapi_t)
 # TLS key + cert, metrics token
 allow nexus_webapi_t nexus_etc_t:dir search_dir_perms;
 read_files_pattern(nexus_webapi_t, nexus_webapi_secret_t, nexus_webapi_secret_t)
@@ -284,6 +292,10 @@ manage_files_pattern(nexus_scheduler_t, nexus_update_t, nexus_update_t)
 manage_files_pattern(nexus_scheduler_t, nexus_nft_var_run_t, nexus_nft_var_run_t)
 # scheduler.json, alerts.json, smtp password file
 read_files_pattern(nexus_scheduler_t, nexus_etc_t, nexus_etc_t)
+# the appliance's own SSH keys (docs/phase12-contract.md §4): generated, rotated
+# (<name>.next) and retired (rename over <name>) in /etc/nexus/ssh; the scheduler
+# publishes only the public halves to the catalog
+manage_files_pattern(nexus_scheduler_t, nexus_sshkey_t, nexus_sshkey_t)
 files_search_etc(nexus_scheduler_t)
 # tenant keyrings (ensure/escrow) from keyd
 stream_connect_pattern(nexus_scheduler_t, nexus_keyd_var_run_t, nexus_keyd_var_run_t, nexus_keyd_t)

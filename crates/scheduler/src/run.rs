@@ -81,6 +81,17 @@ pub enum Step {
         part: u64,
         parts: u64,
     },
+    /// In-process work without the store (appliance jobs): `Ok` output becomes
+    /// the captured stdout, `Err` goes to the log and fails the job.
+    Func(InProc),
+}
+
+pub struct InProc(pub Box<dyn Fn() -> Result<String, String> + Send>);
+
+impl std::fmt::Debug for InProc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("InProc")
+    }
 }
 
 #[derive(Debug)]
@@ -168,7 +179,10 @@ pub fn execute(id: i64, plan: &Plan, ctx: &Ctx) -> Finished {
 }
 
 fn run_steps(plan: &Plan, ctx: &Ctx, log: &Arc<Mutex<BoundedLog>>, stdout: &mut Option<String>) -> Outcome {
-    let needs_store = plan.steps.iter().any(|s| !matches!(s, Step::Cli { .. }));
+    let needs_store = plan
+        .steps
+        .iter()
+        .any(|s| !matches!(s, Step::Cli { .. } | Step::Func(_)));
     let store = if needs_store {
         match (ctx.keys)(&plan.tenant).and_then(|k| Store::open(&plan.store, k, (ctx.store_options)())) {
             Ok(s) => Some(s),
@@ -243,6 +257,13 @@ fn run_steps(plan: &Plan, ctx: &Ctx, log: &Arc<Mutex<BoundedLog>>, stdout: &mut 
                     }
                 }
             }
+            Step::Func(InProc(f)) => match f() {
+                Ok(out) => *stdout = Some(out),
+                Err(e) => {
+                    log.lock().unwrap().line(&format!("[scheduler] {e}"));
+                    return failed;
+                }
+            },
             Step::Gc { approved } => match store.as_ref().unwrap().gc(*approved) {
                 Ok(st) => log.lock().unwrap().line(&format!(
                     "local gc{}: {} chunks, {} referenced, {} deleted, {} kept (grace)",

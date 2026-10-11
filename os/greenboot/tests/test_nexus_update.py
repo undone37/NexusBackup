@@ -282,6 +282,15 @@ class Agent(unittest.TestCase):
         self.tick(utc(2026, 10, 9, 12, 30))
         self.assertEqual(self.calls(), [])
 
+    def test_apply_request_stages_and_installs_now(self):
+        self.tick()  # up to date
+        self.calls()
+        self.registry_serves("sha256:bbb", "1.1.0")
+        (self.d / "ctl/request").write_text("apply\n")
+        self.tick(utc(2026, 10, 9, 13, 0))  # outside the window, check interval not due
+        self.assertEqual(self.calls(), ["bootc upgrade --quiet --download-only", "bootc upgrade --from-downloaded --apply"])
+        self.assertEqual(self.status()["applying"], "sha256:bbb")
+
     def test_nothing_staged_apply_is_noop(self):
         (self.d / "ctl/request").write_text("apply")
         self.tick()
@@ -348,6 +357,46 @@ class Agent(unittest.TestCase):
         self.assertTrue(any("127.0.0.1 . tcp . 443" in a for a in adds))
         i = c.index("bootc upgrade --quiet --download-only")
         self.assertTrue(c.index(adds[0]) < i < c.index(dels[0]))
+
+    def test_api_view_for_the_web_ui(self):
+        self.tick()
+        a = self.status()["api"]
+        self.assertEqual(a["status"], "idle")
+        self.assertEqual(a["booted"]["digest"], "sha256:aaa")
+        self.assertEqual(a["booted"]["version"], "1.0.0")
+        self.assertIsNone(a["staged"])
+        self.assertIsNone(a["available"])
+        self.assertEqual(a["channel"], "stable")
+        self.assertEqual(a["window"], "Sun 03:00 120")
+        self.assertIsInstance(a["last_check"], int)
+        self.registry_serves("sha256:bbb", "1.1.0")
+        self.tick(utc(2026, 10, 9, 12, 0) + dt.timedelta(days=50))
+        a = self.status()["api"]
+        self.assertEqual(a["status"], "staged")
+        self.assertEqual(a["staged"]["digest"], "sha256:bbb")
+        self.assertEqual(a["available"], {"version": "1.1.0", "digest": "sha256:bbb"})
+        (self.d / "fail").touch()
+        self.tick(utc(2026, 10, 9, 12, 0) + dt.timedelta(days=100))
+        a = self.status()["api"]
+        self.assertEqual(a["status"], "error")
+        self.assertIn("simulated failure", a["error"])
+
+    def test_status_json_command(self):
+        import contextlib
+        import io
+
+        self.tick()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(self.u.main(["nexus-update", "status", "--json"]), 0)
+        a = json.loads(out.getvalue())
+        self.assertEqual(a["status"], "idle")
+        self.assertEqual(a["window"], "Sun 03:00 120")
+        self.assertEqual(a["channel"], "stable")
+        self.assertEqual(self.u.main(["nexus-update", "tick", "--json"]), 2)
+        self.assertEqual(self.u.window_text({"days": ["mon", "thu"], "start_utc": "01:30", "minutes": 60}), "Mon,Thu 01:30 60")
+        self.assertEqual(self.u.epoch("2026-10-11T00:00:00Z"), 1791676800)
+        self.assertIsNone(self.u.epoch("garbage"))
 
     def test_status_file_is_not_world_readable(self):
         self.tick()

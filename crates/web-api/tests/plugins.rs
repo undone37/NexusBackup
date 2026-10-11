@@ -55,7 +55,7 @@ fn manifest(version: &str) -> Vec<u8> {
             "endpoints": [{"host": "/host", "port": "/port", "default_port": 5432, "proto": "tcp"}],
             "guests": {"title": "Databases", "list": true},
             "restores": [{"id": "download", "title": "Download"},
-                         {"id": "to_target", "title": "Restore", "params_schema": {"type": "object", "required": ["database"],
+                         {"id": "to_target", "title": "Restore", "applies_to": "guest", "params_schema": {"type": "object", "required": ["database"],
                             "properties": {"database": {"type": "string", "pattern": "^[a-z]+$"}}}},
                          {"id": "mount", "title": "Mount", "params_schema": {"type": "object", "properties": {}}}]}]
     }))
@@ -423,6 +423,28 @@ async fn plugin_lifecycle_sources_and_jobs() {
         )
         .await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    // manifest v1.4 applies_to: to_target is a per-database (guest) restore, not
+    // offered on a whole-source snapshot
+    t.st.cat
+        .conn()
+        .execute(
+            "INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('acme', ?1, 100, 1, 0)",
+            [format!("plugin-pgx-{sid}")],
+        )
+        .unwrap();
+    let r = t
+        .call(
+            Method::POST,
+            "/api/v1/jobs",
+            &tina,
+            Some(job(
+                "plugin_restore",
+                json!({"source": format!("plugin-pgx-{sid}"), "time": 100, "restore": "to_target", "params": {"database": "app"}}),
+            )),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    assert!(r.body["error"].as_str().unwrap().contains("guest"), "{:?}", r.body);
     let r = t
         .call(
             Method::POST,

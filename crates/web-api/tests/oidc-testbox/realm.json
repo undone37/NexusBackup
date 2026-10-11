@@ -1,0 +1,64 @@
+{
+  "realm": "nexus",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": false,
+  "groups": [
+    { "name": "nexus-admins" },
+    { "name": "acme-users" },
+    { "name": "unrelated" }
+  ],
+  "users": [
+    {
+      "username": "kc-alice", "enabled": true, "emailVerified": true,
+      "email": "alice@nexus.test", "firstName": "Alice", "lastName": "Admin",
+      "credentials": [{ "type": "password", "value": "alice-testbox-pw", "temporary": false }],
+      "groups": ["/nexus-admins", "/acme-users"]
+    },
+    {
+      "username": "kc-tina", "enabled": true, "emailVerified": true,
+      "email": "tina@nexus.test", "firstName": "Tina", "lastName": "Tenant",
+      "credentials": [{ "type": "password", "value": "tina-testbox-pw", "temporary": false }],
+      "groups": ["/acme-users"]
+    },
+    {
+      "username": "kc-nobody", "enabled": true, "emailVerified": true,
+      "email": "nobody@nexus.test", "firstName": "No", "lastName": "Body",
+      "credentials": [{ "type": "password", "value": "nobody-testbox-pw", "temporary": false }],
+      "groups": ["/unrelated"]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "nexusbackup",
+      "name": "NexusBackup appliance (testbox)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "nexus-testbox-client-secret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["https://nexus.test/api/v1/auth/oidc/callback"],
+      "webOrigins": [],
+      "attributes": { "pkce.code.challenge.method": "S256" },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": {
+            "claim.name": "groups",
+            "full.path": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "false",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}

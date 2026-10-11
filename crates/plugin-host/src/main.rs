@@ -287,10 +287,20 @@ fn main() -> Result<()> {
             let guest = run.snapshot_of(s)?;
             let id = s.id.clone().context("config: restore.id missing")?;
             let kind = run.manifest.kinds.iter().find(|k| k.kind == run.kind).unwrap();
-            if id == "download" || !kind.restores.iter().any(|r| r.id == id) {
+            let Some(action) = kind.restores.iter().find(|r| r.id == id).filter(|_| id != "download") else {
                 bail!(
                     "restore {id:?} is not offered by kind {} (download runs as files_get)",
                     run.kind
+                );
+            };
+            // manifest v1.4 `applies_to`: a guest restore never runs on a whole-source
+            // snapshot and vice versa
+            if !action.applies(guest.is_some()) {
+                bail!(
+                    "restore {id:?} applies to {} snapshots, {} is a {} snapshot",
+                    action.applies_to.as_deref().unwrap_or("any"),
+                    s.source,
+                    if guest.is_some() { "guest" } else { "source" }
                 );
             }
             let store = open_store(&run.cfg)?;

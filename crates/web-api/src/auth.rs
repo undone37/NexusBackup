@@ -36,9 +36,11 @@ pub struct User {
     /// created or reset, waiting for the person to set their own credentials
     pub pending_activation: bool,
     pub activation_expires: Option<i64>,
+    /// `local` (password + TOTP) or `oidc` (signs in at the IdP, catalog v10)
+    pub auth: String,
 }
 
-pub const USER_COLS: &str = "id, name, role, tenant, disabled, created, activation_hash, activation_expires";
+pub const USER_COLS: &str = "id, name, role, tenant, disabled, created, activation_hash, activation_expires, auth";
 
 impl User {
     pub fn from_row(r: &Row, off: usize) -> catalog::rusqlite::Result<Self> {
@@ -51,6 +53,7 @@ impl User {
             created: r.get(off + 5)?,
             pending_activation: r.get::<_, Option<String>>(off + 6)?.is_some(),
             activation_expires: r.get(off + 7)?,
+            auth: r.get(off + 8)?,
         })
     }
 
@@ -244,6 +247,11 @@ fn check_credentials(
     if password.len() > 1024 {
         return Err("password too long");
     }
+    if u.auth != "local" {
+        // same cost as a real check; OIDC accounts sign in at the IdP only
+        catalog::auth::verify_password(password, dummy_hash());
+        return Err("oidc account");
+    }
     if !catalog::auth::verify_password(password, hash) {
         return Err("password");
     }
@@ -402,9 +410,9 @@ pub async fn login(State(st): State<St>, ClientIp(ip): ClientIp, J(r): J<LoginRe
                 |row| {
                     Ok((
                         User::from_row(row, 0)?,
-                        row.get::<_, String>(8)?,
                         row.get::<_, String>(9)?,
-                        row.get::<_, i64>(10)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, i64>(11)?,
                     ))
                 },
             )
@@ -451,24 +459,29 @@ pub async fn login(State(st): State<St>, ClientIp(ip): ClientIp, J(r): J<LoginRe
     };
     st.limiter.lock().unwrap().clear(&ukey);
 
-    let (token, csrf) = (random_hex(), random_hex());
-    {
-        let c = st.cat.conn();
-        c.execute(
-            "DELETE FROM sessions WHERE last_seen < ?1 OR created < ?2",
-            params![now - IDLE_SECS, now - ABSOLUTE_SECS],
-        )?;
-        c.execute(
-            "INSERT INTO sessions (id_hash, user_id, csrf, created, last_seen) VALUES (?1, ?2, ?3, ?4, ?4)",
-            params![sha256_hex(token.as_bytes()), user.id, csrf, now],
-        )?;
-    }
+    let (cookie, csrf) = new_session(&st, user.id)?;
     st.audit(&user.name, "auth.login", &target, json!({"ip": ip}))?;
-    let cookie = format!("{COOKIE}={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={ABSOLUTE_SECS}");
     let mut res = Json(json!({"csrf": csrf, "user": user})).into_response();
-    res.headers_mut()
-        .insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
+    res.headers_mut().insert(header::SET_COOKIE, cookie);
     Ok(res)
+}
+
+/// A new session for `user_id` (local login and OIDC callback alike):
+/// the `Set-Cookie` value and the CSRF token. Expired sessions are purged.
+pub fn new_session(st: &AppState, user_id: i64) -> ApiResult<(HeaderValue, String)> {
+    let now = catalog::now();
+    let (token, csrf) = (random_hex(), random_hex());
+    let c = st.cat.conn();
+    c.execute(
+        "DELETE FROM sessions WHERE last_seen < ?1 OR created < ?2",
+        params![now - IDLE_SECS, now - ABSOLUTE_SECS],
+    )?;
+    c.execute(
+        "INSERT INTO sessions (id_hash, user_id, csrf, created, last_seen) VALUES (?1, ?2, ?3, ?4, ?4)",
+        params![sha256_hex(token.as_bytes()), user_id, csrf, now],
+    )?;
+    let cookie = format!("{COOKIE}={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={ABSOLUTE_SECS}");
+    Ok((HeaderValue::from_str(&cookie).unwrap(), csrf))
 }
 
 pub async fn logout(State(st): State<St>, ctx: Ctx) -> ApiResult<Response> {
@@ -487,7 +500,10 @@ pub async fn logout(State(st): State<St>, ctx: Ctx) -> ApiResult<Response> {
     Ok(res)
 }
 
-/// `{user, csrf}` — lets the SPA recover its CSRF token after a reload.
-pub async fn me(ctx: Ctx) -> Json<serde_json::Value> {
-    Json(json!({"user": ctx.user, "csrf": ctx.csrf}))
+/// `{user, csrf, break_glass}` — lets the SPA recover its CSRF token after a
+/// reload; `break_glass` (`{at, user, alert, forced_solo}` or null) drives the
+/// banner after a console recovery until the alert is acknowledged.
+pub async fn me(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<serde_json::Value>> {
+    let bg = crate::dashboard::break_glass(&st.cat.conn(), &ctx)?;
+    Ok(Json(json!({"user": ctx.user, "csrf": ctx.csrf, "break_glass": bg})))
 }

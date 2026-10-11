@@ -23,6 +23,27 @@ pub fn verify_password(pw: &str, hash: &str) -> bool {
     PasswordHash::new(hash).is_ok_and(|h| Argon2::default().verify_password(pw.as_bytes(), &h).is_ok())
 }
 
+/// One-time code (agent enrollment tokens, activation codes): 128 bit from the
+/// OS CSPRNG, base32 without padding (26 characters).
+pub fn new_code() -> String {
+    const A: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let b: [u8; 16] = rand::random();
+    let mut out = String::new();
+    let (mut acc, mut bits) = (0u32, 0);
+    for x in b {
+        acc = (acc << 8) | u32::from(x);
+        bits += 8;
+        while bits >= 5 {
+            out.push(A[((acc >> (bits - 5)) & 31) as usize] as char);
+            bits -= 5;
+        }
+    }
+    if bits > 0 {
+        out.push(A[((acc << (5 - bits)) & 31) as usize] as char);
+    }
+    out
+}
+
 /// New random TOTP secret (base32, 160 bit).
 pub fn new_totp_secret() -> String {
     Secret::generate_secret().to_encoded().to_string()

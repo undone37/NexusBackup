@@ -68,6 +68,7 @@ mod plugins;
 pub mod replica;
 pub mod run;
 pub mod schedule;
+pub mod sshkeys;
 
 use anyhow::{bail, Context, Result};
 use catalog::rusqlite::{params, OptionalExtension};
@@ -162,6 +163,9 @@ pub struct Config {
     pub replica_parallel: usize,
     /// alert when a replicated tenant had no successful sync for this long
     pub replication_lag_secs: i64,
+    /// the appliance's own SSH keys (generated here, docs/phase12-contract.md §4);
+    /// skipped when the directory is missing
+    pub ssh_dir: PathBuf,
 }
 
 impl Default for Config {
@@ -206,6 +210,7 @@ impl Default for Config {
             replica_dir: None,
             replica_parallel: 4,
             replication_lag_secs: 48 * 3600,
+            ssh_dir: "/etc/nexus/ssh".into(),
         }
     }
 }
@@ -280,7 +285,7 @@ pub struct Scheduler {
     dirty: BTreeSet<String>,
     last_refresh: i64,
     alert_cursor: i64,
-    alert_tx: Sender<alerts::Alert>,
+    alert_tx: Sender<(alerts::AlertsConfig, alerts::Alert)>,
     host: String,
     /// time of the current tick: `created` of queued jobs (due computation)
     now: i64,
@@ -327,6 +332,23 @@ fn group_prefixes(g: &GroupRow) -> Vec<String> {
         .iter()
         .map(|d| format!("{}.", truenas::source_name(g.source_id as u64, d)))
         .collect()
+}
+
+/// Bytes of the regular files below `dir` (no symlinks followed).
+fn dir_bytes(dir: &Path) -> u64 {
+    let mut n = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            match e.file_type() {
+                Ok(t) if t.is_dir() => stack.push(e.path()),
+                Ok(t) if t.is_file() => n += e.metadata().map(|m| m.len()).unwrap_or(0),
+                _ => {}
+            }
+        }
+    }
+    n
 }
 
 fn valid_name(s: &str) -> bool {
@@ -390,8 +412,9 @@ impl Scheduler {
         let (tx, rx) = channel();
         let (secrets, secrets_created) =
             SchedulerKey::load_or_create(&cfg.secrets_key_path()).context("scheduler secrets key")?;
-        let alerts_cfg = alerts::AlertsConfig::load(&cfg.alerts_config)?;
-        let alert_tx = alerts::spawn_delivery(alerts_cfg, cfg.alert_retry_secs.map(Duration::from_secs));
+        // the configuration is read again for every batch (catalog setting or file)
+        alerts::AlertsConfig::load(&cfg.alerts_config)?;
+        let alert_tx = alerts::spawn_delivery(cfg.alert_retry_secs.map(Duration::from_secs));
         let ctx = Arc::new(Ctx {
             keys,
             store_options,
@@ -435,6 +458,9 @@ impl Scheduler {
     }
 
     fn startup(&mut self) -> Result<()> {
+        if let Err(e) = self.publish_ssh_keys() {
+            eprintln!("<3>scheduler: appliance SSH keys: {e:#}");
+        }
         // runtime dir: private, and no secrets of a crashed predecessor left behind
         fs::create_dir_all(&self.cfg.runtime_dir)?;
         fs::set_permissions(&self.cfg.runtime_dir, fs::Permissions::from_mode(0o700))?;
@@ -619,6 +645,7 @@ impl Scheduler {
         self.log_err(|s| s.queue_maintenance(now));
         self.log_err(|s| s.queue_replication(now));
         self.log_err(|s| s.execute_key_exports());
+        self.log_err(|s| s.queue_ssh_rotations());
         self.log_err(|s| s.start_jobs());
         let all = now.saturating_sub(self.last_refresh) >= self.cfg.refresh_secs;
         if all || !self.dirty.is_empty() {
@@ -626,6 +653,8 @@ impl Scheduler {
             if all {
                 self.last_refresh = now;
                 self.log_err(|s| s.check_capacity());
+                self.log_err(|s| s.sample_capacity(now));
+                self.log_err(|s| s.publish_ssh_keys());
             }
         }
         self.log_err(|s| s.check_offsite_lag(now));
@@ -842,9 +871,10 @@ impl Scheduler {
         }
         // secondary: the primaries' management ports (docs/replication.md §10)
         targets.extend(self.replication_targets()?);
-        if let Ok(a) = alerts::AlertsConfig::load(&self.cfg.alerts_config) {
+        if let Ok(a) = self.alerts_config() {
             targets.extend(firewall::alert_targets(&a));
         }
+        targets.extend(firewall::oidc_targets(&self.db.conn())?);
         let changed = nftsync::write_allowed(&self.cfg.nft_allowed, firewall::resolve(&targets))?;
         if changed {
             eprintln!(
@@ -1046,7 +1076,13 @@ impl Scheduler {
         let state = if ok { "ok" } else { "failed" };
         self.db.conn().execute(
             "UPDATE jobs SET state=?1, finished=?2, log=?3, result=?4 WHERE id=?5",
-            params![state, catalog::now(), log, result.map(|r| r.to_string()), job.id],
+            params![
+                state,
+                catalog::now(),
+                log,
+                result.as_ref().map(|r| r.to_string()),
+                job.id
+            ],
         )?;
         self.db.audit(
             ACTOR,
@@ -1061,6 +1097,22 @@ impl Scheduler {
             self.dirty.insert(job.tenant.clone());
         }
         self.agent_bookkeeping(&job, &log)?;
+        if job.kind.starts_with("ssh_key_") {
+            self.publish_ssh_keys()?;
+            if ok {
+                let action = if job.kind == "ssh_key_rotate" {
+                    "ssh_key.rotate"
+                } else {
+                    "ssh_key.retired"
+                };
+                self.db.audit(
+                    ACTOR,
+                    action,
+                    &format!("ssh_key/{}", job.params["name"].as_str().unwrap_or_default()),
+                    result.as_ref().unwrap_or(&Value::Null),
+                )?;
+            }
+        }
         if job.kind.starts_with("replica_") {
             self.replica_bookkeeping(&job, &log, ok)?;
         }
@@ -1221,6 +1273,7 @@ impl Scheduler {
                 log.push_str(&format!("[scheduler] download ready: {file} ({size} bytes)\n"));
                 Some(r)
             }
+            "alert_test" | "ssh_key_rotate" | "ssh_key_retire" => serde_json::from_str(stdout.unwrap_or_default()).ok(),
             "plugin_validate" | "plugin_guests" => {
                 let out = stdout.unwrap_or_default();
                 match serde_json::from_str::<Value>(out.trim()) {
@@ -1970,6 +2023,9 @@ impl Scheduler {
     }
 
     pub fn plan(&self, job: &Job) -> Result<Plan> {
+        if let Some(plan) = self.plan_appliance(job)? {
+            return Ok(plan);
+        }
         let tenant = job.tenant.as_str();
         if !valid_name(tenant) {
             bail!("invalid tenant {tenant:?}");
@@ -2677,12 +2733,180 @@ impl Scheduler {
             })?;
             rows.collect::<std::result::Result<_, _>>()?
         };
-        if let Some(last) = rows.last() {
-            self.alert_cursor = last.id;
-            fs::write(self.cursor_path(), format!("{}\n", last.id))?;
-        }
+        let Some(last) = rows.last() else {
+            return Ok(());
+        };
+        self.alert_cursor = last.id;
+        fs::write(self.cursor_path(), format!("{}\n", last.id))?;
+        let cfg = self.alerts_config().unwrap_or_else(|e| {
+            eprintln!("<3>scheduler: alert delivery configuration: {e:#}");
+            alerts::AlertsConfig::default()
+        });
         for a in rows {
-            let _ = self.alert_tx.send(a);
+            let _ = self.alert_tx.send((cfg.clone(), a));
+        }
+        Ok(())
+    }
+
+    /// Alert delivery: the catalog setting (web UI), else `/etc/nexus/alerts.json`.
+    fn alerts_config(&self) -> Result<alerts::AlertsConfig> {
+        alerts::AlertsConfig::current(&self.db, &self.secrets, &self.cfg.alerts_config)
+    }
+
+    // ------------------------------------------------------------ appliance jobs
+
+    /// Jobs of no tenant (tenant `-`, queued by the web-api settings pages):
+    /// `alert_test`, `ssh_key_rotate` {name, quorum_id}, `ssh_key_retire` {name}.
+    /// They run in-process; their stdout (a JSON object) becomes the result.
+    fn plan_appliance(&self, job: &Job) -> Result<Option<Plan>> {
+        let step: Box<dyn Fn() -> Result<String, String> + Send> = match job.kind.as_str() {
+            "alert_test" => {
+                let cfg = self.alerts_config()?;
+                let host = self.host.clone();
+                Box::new(move || Ok(alerts::test(&cfg, &host).to_string()))
+            }
+            "ssh_key_rotate" | "ssh_key_retire" => {
+                let name = ident(&job.params, "name")?.to_owned();
+                let dir = self.cfg.ssh_dir.clone();
+                let rotate = job.kind == "ssh_key_rotate";
+                Box::new(move || {
+                    let r = if rotate {
+                        sshkeys::rotate(&dir, &name).map(|fp| json!({"name": name, "next": fp}))
+                    } else {
+                        sshkeys::retire(&dir, &name).map(|(old, new)| json!({"name": name, "old": old, "new": new}))
+                    };
+                    r.map(|v| v.to_string()).map_err(|e| format!("{e:#}"))
+                })
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(Plan {
+            key: format!("appliance:{}", job.kind),
+            tenant: job.tenant.clone(),
+            store: PathBuf::new(),
+            dir: self.job_dir(job.id),
+            files: Vec::new(),
+            steps: vec![Step::Func(run::InProc(step))],
+            download: None,
+        }))
+    }
+
+    /// Key files below `ssh_dir` the configuration uses: PVE node keys (`nodes.*.key`)
+    /// and SFTP offsite keys (`remote.key_file`), with what uses them.
+    fn used_ssh_keys(&self) -> Result<Vec<(String, String)>> {
+        let mut used: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
+        let mut add = |path: Option<&str>, purpose: &'static str| {
+            let Some(p) = path.map(Path::new) else { return };
+            if p.parent() == Some(self.cfg.ssh_dir.as_path()) {
+                if let Some(n) = p.file_name().and_then(|n| n.to_str()) {
+                    used.entry(n.to_owned()).or_default().insert(purpose);
+                }
+            }
+        };
+        let pve: Vec<String> = {
+            let c = self.db.conn();
+            let mut st = c.prepare("SELECT config FROM sources WHERE kind='pve'")?;
+            let rows = st.query_map([], |r| r.get(0))?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+        for cfg in pve {
+            let v: Value = serde_json::from_str(&cfg).unwrap_or(Value::Null);
+            let nodes: Vec<&Value> = match &v["nodes"] {
+                Value::Object(m) => m.values().collect(),
+                Value::Array(a) => a.iter().collect(),
+                _ => Vec::new(),
+            };
+            for n in nodes {
+                add(n["key"].as_str(), sshkeys::PURPOSE_PVE);
+            }
+        }
+        for (_, o) in self.tenants()? {
+            if o["remote"]["type"] == "sftp" {
+                add(o["remote"]["key_file"].as_str(), sshkeys::PURPOSE_OFFSITE);
+            }
+        }
+        Ok(used
+            .into_iter()
+            .map(|(n, p)| (n, p.into_iter().collect::<Vec<_>>().join("; ")))
+            .collect())
+    }
+
+    /// Public halves of the keys in use into the catalog (`GET /ssh-keys`).
+    fn publish_ssh_keys(&self) -> Result<()> {
+        if !self.cfg.ssh_dir.is_dir() {
+            return Ok(());
+        }
+        let used = self.used_ssh_keys()?;
+        let names: Vec<String> = used.iter().map(|u| u.0.clone()).collect();
+        sshkeys::ensure(&self.cfg.ssh_dir, &names)?;
+        let v = sshkeys::list(&self.cfg.ssh_dir, &used).to_string();
+        let c = self.db.conn();
+        if catalog::setting(&c, sshkeys::SETTING)?.as_deref() != Some(v.as_str()) {
+            catalog::set_setting(&c, sshkeys::SETTING, &v)?;
+        }
+        Ok(())
+    }
+
+    /// Approved `ssh_key.rotate` requests become `ssh_key_rotate` jobs. A request
+    /// decided by its own requester (approvals were disabled) only while
+    /// approvals are still disabled.
+    fn queue_ssh_rotations(&mut self) -> Result<()> {
+        let rows: Vec<(i64, String, String, Option<String>)> = {
+            let c = self.db.conn();
+            let mut st = c.prepare(
+                "SELECT q.id, q.params, q.requested_by, q.decided_by FROM quorum q \
+                 WHERE q.action='ssh_key.rotate' AND q.state='approved' \
+                 AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind='ssh_key_rotate' AND json_extract(j.params,'$.quorum_id')=q.id)",
+            )?;
+            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+        for (id, p, by, decided) in rows {
+            if decided.as_deref() == Some(by.as_str()) && catalog::approvals_enabled(&self.db.conn())? {
+                continue;
+            }
+            let p: Value = serde_json::from_str(&p).unwrap_or(Value::Null);
+            let Some(name) = p["name"].as_str() else { continue };
+            self.insert_job("ssh_key_rotate", "-", &json!({"name": name, "quorum_id": id}))?;
+        }
+        Ok(())
+    }
+
+    /// Daily capacity sample per tenant (catalog v10 `capacity_samples`, the
+    /// dashboard's growth chart and forecast): physical = bytes in the tenant's
+    /// store, logical = sizes of its local snapshots. Plus the store file
+    /// system's total / used / free (setting `capacity`).
+    fn sample_capacity(&self, now: i64) -> Result<()> {
+        let path = std::ffi::CString::new(self.cfg.store_base.as_os_str().as_encoded_bytes())?;
+        let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::statvfs(path.as_ptr(), &mut st) } == 0 && st.f_blocks > 0 {
+            let f = st.f_frsize;
+            let (total, free) = (st.f_blocks * f, st.f_bavail * f);
+            let v = json!({"total": total, "used": total.saturating_sub(st.f_bfree * f), "free": free, "at": now});
+            catalog::set_setting(&self.db.conn(), "capacity", &v.to_string())?;
+        }
+        let day = schedule::day(now);
+        for (tenant, _) in self.tenants()? {
+            let done: bool = self.db.conn().query_row(
+                "SELECT COUNT(*) FROM capacity_samples WHERE day = ?1 AND tenant = ?2",
+                params![day, tenant],
+                |r| r.get::<_, i64>(0),
+            )? > 0;
+            let root = self.cfg.store_base.join(&tenant);
+            if done || !valid_name(&tenant) || !root.is_dir() {
+                continue;
+            }
+            let used = dir_bytes(&root);
+            let c = self.db.conn();
+            let logical: i64 = c.query_row(
+                "SELECT COALESCE(SUM(size), 0) FROM snapshots WHERE tenant = ?1 AND local = 1",
+                [&tenant],
+                |r| r.get(0),
+            )?;
+            c.execute(
+                "INSERT OR REPLACE INTO capacity_samples (day, tenant, used, logical) VALUES (?1, ?2, ?3, ?4)",
+                params![day, tenant, used as i64, logical],
+            )?;
         }
         Ok(())
     }

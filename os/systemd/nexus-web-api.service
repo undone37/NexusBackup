@@ -31,8 +31,10 @@ Restart=on-failure
 UMask=0077
 LimitCORE=0
 
-# Listens on 8443 (unprivileged port, no CAP_NET_BIND_SERVICE needed); no
-# outbound connections (the firewall's output chain only allows replies).
+# Listens on 8443 (unprivileged port, no CAP_NET_BIND_SERVICE needed). Outbound
+# only to the OIDC identity provider (discovery, JWKS, token endpoint; the
+# scheduler puts those hosts on the firewall allow-list); everything else is
+# dropped by the nftables output chain.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SocketBindAllow=tcp:8443
 SocketBindDeny=any
