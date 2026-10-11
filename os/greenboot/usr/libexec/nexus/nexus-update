@@ -9,15 +9,20 @@
 #   nexus-update apply      reboot into the staged image now
 #   nexus-update rollback   make the previous deployment the default and reboot
 #   nexus-update status     print the status JSON (also written to the control dir)
+#   nexus-update status --json
+#                           print the web UI view (docs/phase12-contract.md §5; also the
+#                           "api" member of status.json, which nexus-web-api reads)
 #
 # Control directory (default /var/lib/nexus/update, 2770 root:nexus-catalog, see
 # tmpfiles.d/nexus-update.conf) is the interface for web-api and scheduler:
-#   request      written by the control plane: one word, "stage" | "apply" | "rollback";
+#   request      written by the control plane: one word, "stage" | "apply" | "rollback"
+#                ("apply" = install now: stage first if nothing is staged, then reboot into it);
 #                consumed (deleted) by the next tick, which nexus-update.path starts at once
 #   window       optional override of NEXUS_UPDATE_WINDOW, e.g. "Sun 03:00 120" or "off"
 #   inhibit      present and younger than 6 h: automatic (window) apply is postponed;
 #                the scheduler touches it while jobs run. Admin "apply" ignores it.
-#   status.json  written here (0640): booted/staged/rollback image, last check, last result
+#   status.json  written here (0640): booted/staged/rollback image, last check, last result,
+#                and "api" (the view GET /api/v1/updates returns)
 #
 # Signature enforcement: bootc only consults /etc/containers/policy.json when the
 # deployment's origin is "ostree-image-signed" (bootc status: signature "containerPolicy").
@@ -315,6 +320,55 @@ def rollback(c):
 # ---------------------------------------------------------------- status / tick
 
 
+def epoch(ts):
+    """bootc image timestamp (RFC 3339) -> unix seconds, None if unknown."""
+    if not ts:
+        return None
+    try:
+        return int(dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
+
+
+def window_text(w):
+    """status["window"] dict -> 'Sun 03:00 120' ('off' when disabled)."""
+    if not w:
+        return "off"
+    days = w.get("days") or []
+    d = "daily" if len(days) == 7 else ",".join(x.capitalize() for x in sorted(days, key=DAYS.index))
+    return f"{d} {w.get('start_utc')} {w.get('minutes')}"
+
+
+def api_view(st):
+    """The contract view of a status dict (docs/phase12-contract.md §5)."""
+
+    def img(e):
+        if not e:
+            return None
+        return {"version": e.get("version"), "digest": e.get("digest"), "since": epoch(e.get("timestamp"))}
+
+    booted, staged = st.get("booted"), st.get("staged")
+    last = st.get("last_result") or {}
+    error = last.get("result") if str(last.get("result") or "").startswith("error") else None
+    error = error or st.get("bootc_error")
+    available = None
+    if staged and staged.get("digest") != (booted or {}).get("digest"):
+        available = {"version": staged.get("version"), "digest": staged.get("digest")}
+    channel = st.get("channel") or ""
+    return {
+        "booted": img(booted),
+        "staged": img(staged),
+        "available": available,
+        "channel": channel.rsplit(":", 1)[-1] if channel else None,
+        "window": window_text(st.get("window")),
+        "last_check": st.get("last_check"),
+        "status": "error" if error else ("staged" if staged else "idle"),
+        "error": error,
+        "rollback": img(st.get("rollback")),
+        "applying": st.get("applying"),
+    }
+
+
 def status_path(c):
     return os.path.join(c["NEXUS_UPDATE_DIR"], "status.json")
 
@@ -366,8 +420,11 @@ def tick(c, now=None):
             lost = bool(had) and not prev.get("applying") and not summary(bootc_status())["staged"]
             if lost:
                 log(f"staged update {had} is gone (power loss before apply?); staging again")
+            # "apply" = install now: fetch first when nothing is staged yet
+            install_now = req == "apply" and not summary(bootc_status())["staged"]
             check_due = (
                 req == "stage"
+                or install_now
                 or lost
                 or not st["last_check"]
                 or now.timestamp() - st["last_check"] >= float(c["NEXUS_UPDATE_CHECK_HOURS"]) * 3600
@@ -400,6 +457,7 @@ def tick(c, now=None):
         st.update(summary(bootc_status()))
     except (Error, ValueError) as e:
         st["bootc_error"] = str(e)
+    st["api"] = api_view(st)
     write_status(c, st)
     return 1 if result and result.startswith("error") else 0
 
@@ -409,13 +467,20 @@ def log(msg):
 
 
 def main(argv):
-    if len(argv) != 2 or argv[1] not in ("tick", "stage", "apply", "rollback", "status"):
-        print("usage: nexus-update tick|stage|apply|rollback|status", file=sys.stderr)
+    as_json = argv[2:] == ["--json"] and argv[1:2] == ["status"]
+    if not (len(argv) == 2 or as_json) or argv[1] not in ("tick", "stage", "apply", "rollback", "status"):
+        print("usage: nexus-update tick|stage|apply|rollback|status [--json]", file=sys.stderr)
         return 2
     c = load_conf()
     cmd = argv[1]
     if cmd == "status":
-        print(json.dumps({**read_status(c), **summary(bootc_status())}, indent=1, sort_keys=True))
+        st = {**read_status(c), **summary(bootc_status())}
+        if as_json:
+            win = effective_window(c)
+            st["window"] = None if win is None else {"days": sorted(DAYS[i] for i in win[0]), "start_utc": f"{win[1] // 60:02d}:{win[1] % 60:02d}", "minutes": win[2]}
+            st["channel"] = f"{c['NEXUS_IMAGE_REPO']}:{c['NEXUS_UPDATE_TAG']}"
+            st = api_view(st)
+        print(json.dumps(st, indent=1, sort_keys=True))
         return 0
     os.makedirs(c["NEXUS_UPDATE_DIR"], exist_ok=True)
     with open(c["NEXUS_UPDATE_LOCK"], "w") as lock:

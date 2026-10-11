@@ -26,6 +26,10 @@ truenas = { path = "../truenas", default-features = false }
 hyper = "1"
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "http1", "http2", "service"] }
 rand = "0.8"
+# OIDC: discovery, JWKS and token requests to the IdP (rustls, no redirects)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# OIDC: ID token signatures (RS256 / PS256 / ES256)
+ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 serde = { version = "1", features = ["derive"] }

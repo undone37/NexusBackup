@@ -179,13 +179,30 @@ ALTER TABLE users ADD COLUMN activation_hash TEXT;
 ALTER TABLE users ADD COLUMN activation_expires INTEGER;
 "#;
 
+/// v10 (Phase 12, docs/phase12-contract.md): daily capacity samples per tenant
+/// (written by the scheduler's refresh, read by `GET /dashboard`) and OIDC users
+/// (`users.auth` = `local` | `oidc`, `users.oidc_sub` = the IdP's `iss` + `sub`).
+/// Purely additive: the previous release skips it; OIDC accounts cannot log in
+/// there (their password hash is not a valid hash, no TOTP seed).
+const SCHEMA_V10: &str = r#"
+CREATE TABLE IF NOT EXISTS capacity_samples (
+  day TEXT NOT NULL, tenant TEXT NOT NULL, used INTEGER NOT NULL, logical INTEGER NOT NULL,
+  PRIMARY KEY (day, tenant));
+ALTER TABLE users ADD COLUMN auth TEXT NOT NULL DEFAULT 'local' CHECK (auth IN ('local','oidc'));
+ALTER TABLE users ADD COLUMN oidc_sub TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS users_oidc_sub ON users(oidc_sub) WHERE oidc_sub IS NOT NULL;
+"#;
+
 const MIGRATIONS: &[&str] = &[
-    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9,
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
 /// activation): not a PHC string, so no password ever verifies against it.
 pub const NO_PASSWORD: &str = "!pending-activation";
+
+/// Placeholder password hash of OIDC accounts (v10): they never log in locally.
+pub const OIDC_PASSWORD: &str = "!oidc";
 
 /// Appliance setting (v9 `settings`).
 pub fn setting(c: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
@@ -804,7 +821,7 @@ mod tests {
         {
             let conn = c.conn();
             let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-            assert_eq!(v, 9);
+            assert_eq!(v, MIGRATIONS.len() as i64);
             assert!(approvals_enabled(&conn).unwrap());
             assert_eq!(possible_approvers(&conn).unwrap(), vec!["admin", "so"]);
             set_setting(&conn, "approvals_enabled", "false").unwrap();
@@ -829,6 +846,78 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM users WHERE disabled = 0", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 2);
+    }
+
+    /// v10 (capacity samples, OIDC users) on top of a v9 catalog: existing users
+    /// become `local`, OIDC subjects are unique, samples have one row per day and
+    /// tenant, and the v9 release can still read and write users afterwards.
+    #[test]
+    fn migration_v10_from_v9() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.pragma_update(None, "foreign_keys", "ON").unwrap();
+            for (i, m) in MIGRATIONS[..9].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO users (name, password_hash, totp_secret, role, created) VALUES ('admin', 'h', 's', 'admin', 1);
+                 INSERT INTO settings (key, value) VALUES ('approvals_enabled', 'false')
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+            assert_eq!(v, 10);
+            let auth: String = conn
+                .query_row("SELECT auth FROM users WHERE name = 'admin'", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(auth, "local");
+            assert!(!approvals_enabled(&conn).unwrap(), "settings kept");
+            let ok = |sql: &str| conn.execute(sql, []).is_ok();
+            assert!(ok(
+                "INSERT INTO users (name, password_hash, totp_secret, role, created, auth, oidc_sub) \
+                 VALUES ('kc-alice', '!oidc', '', 'operator', 2, 'oidc', 'https://idp|1')"
+            ));
+            assert!(
+                !ok(
+                    "INSERT INTO users (name, password_hash, totp_secret, role, created, auth, oidc_sub) \
+                     VALUES ('kc-bob', '!oidc', '', 'operator', 2, 'oidc', 'https://idp|1')"
+                ),
+                "one account per subject"
+            );
+            assert!(!ok(
+                "INSERT INTO users (name, password_hash, totp_secret, role, created, auth) VALUES ('x', 'h', '', 'operator', 2, 'saml')"
+            ));
+            assert!(ok(
+                "INSERT INTO capacity_samples (day, tenant, used, logical) VALUES ('2026-10-11', 'acme', 1, 2)"
+            ));
+            assert!(!ok(
+                "INSERT INTO capacity_samples (day, tenant, used, logical) VALUES ('2026-10-11', 'acme', 3, 4)"
+            ));
+        }
+        drop(c);
+        // the v9 release: nothing left to migrate, its user queries still work
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..9].iter().skip(v as usize).count(), 0);
+        old.execute(
+            "INSERT INTO users (name, password_hash, totp_secret, role, tenant, disabled, created, activation_hash, activation_expires) \
+             VALUES ('op', 'h', '', 'operator', NULL, 0, 3, NULL, NULL)",
+            [],
+        )
+        .unwrap();
+        let n: i64 = old
+            .query_row("SELECT COUNT(*) FROM users WHERE activation_hash IS NULL", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 3);
     }
 
     /// A fresh catalog runs every migration: all source kinds and the

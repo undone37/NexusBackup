@@ -89,6 +89,7 @@
         {
           "id": "to_target",
           "title": "Restore database dump to a server",
+          "applies_to": "guest",
           "params_schema": {
             "type": "object",
             "required": ["database"],
@@ -108,6 +109,7 @@
           "id": "pitr",
           "title": "Point-in-time restore (new data directory via SSH)",
           "app_specific": true,
+          "applies_to": "source",
           "params_schema": {
             "type": "object",
             "required": ["directory"],

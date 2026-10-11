@@ -32,6 +32,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use zeroize::Zeroizing;
 
+pub mod recover;
 pub mod script;
 pub mod tui;
 

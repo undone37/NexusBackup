@@ -278,7 +278,7 @@ fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiResult<Value>
         "plugin_restore" | "plugin_mount" => {
             let mut r: PluginRestoreP = parse(p)?;
             snapshot_exists(st, tenant, &r.source, r.time)?;
-            let (pid, sid, _) = plugin_proto::parse_source_name(&r.source)
+            let (pid, sid, guest) = plugin_proto::parse_source_name(&r.source)
                 .ok_or_else(|| ApiError::bad("source: a plugin-<plugin>-<source-id> snapshot"))?;
             let (cur, spec) = crate::plugins::source_of(&st.cat.conn(), tenant, sid as i64)?;
             if cur.id != pid {
@@ -303,6 +303,12 @@ fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiResult<Value>
                 .iter()
                 .find(|x| x.id == want)
                 .ok_or_else(|| ApiError::bad(format!("restore: {want} is not offered by this plugin")))?;
+            if !action.applies(guest.is_some()) {
+                return Err(ApiError::bad(format!(
+                    "restore: {want} applies to {} snapshots only",
+                    action.applies_to.as_deref().unwrap_or("any")
+                )));
+            }
             if r.params.is_null() {
                 r.params = json!({});
             }
@@ -569,6 +575,17 @@ pub async fn ack_alert(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> A
     if ctx.scope().is_some() {
         return Err(ApiError::forbidden());
     }
+    let kind: Option<String> = st
+        .cat
+        .conn()
+        .query_row("SELECT kind FROM alerts WHERE id = ?1", [id], |r| r.get(0))
+        .optional()?;
+    // a console recovery of an admin account (nexus-setup recover-admin) is
+    // acknowledged by someone who could have approved it, which ends the banner
+    let break_glass = kind.as_deref() == Some("break_glass");
+    if break_glass {
+        ctx.require(&["admin", "security_officer"])?;
+    }
     {
         let c = st.cat.conn();
         let n = c.execute(
@@ -586,6 +603,11 @@ pub async fn ack_alert(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> A
             });
         }
     }
-    st.audit(ctx.name(), "alert.ack", &format!("alert/{id}"), json!({}))?;
+    if break_glass {
+        st.cat
+            .conn()
+            .execute("DELETE FROM settings WHERE key = 'break_glass'", [])?;
+    }
+    st.audit(ctx.name(), "alert.ack", &format!("alert/{id}"), json!({"kind": kind}))?;
     Ok(Json(json!({"id": id, "acked_by": ctx.name()})))
 }

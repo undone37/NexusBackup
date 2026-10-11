@@ -3454,6 +3454,7 @@ dependencies = [
  "base64 0.22.1",
  "catalog",
  "chunkstore",
+ "ed25519-dalek",
  "keyd",
  "lettre",
  "libc",
@@ -3461,12 +3462,15 @@ dependencies = [
  "nftsync",
  "plugin-manager",
  "plugin-proto",
+ "rand 0.8.8",
  "replication",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "truenas",
+ "zeroize",
 ]
 
 [[package]]
@@ -4443,6 +4447,8 @@ dependencies = [
  "rcgen",
  "regex",
  "replication",
+ "reqwest",
+ "ring",
  "rustls",
  "rustls-pki-types",
  "scheduler",

@@ -4,6 +4,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: nexus-setup [options]
+       nexus-setup recover-admin [--user NAME] [--force-solo] [--root DIR] [--catalog FILE] [--keyd-dir DIR]
+                                break-glass: reset a local admin account to pending activation with a new
+                                one-time code; asks for the recovery key (stdin)
   --root DIR                    prefix for every written path (dev/tests)    env NEXUS_SETUP_ROOT
   --dry-run                     print nmcli/hostnamectl/systemctl, run none   env NEXUS_SETUP_DRY_RUN=1
   --script FILE                 non-interactive, answers from JSON (see crate docs)
@@ -119,8 +122,57 @@ fn run(o: Opts) -> Result<ExitCode> {
     }
 }
 
+/// `recover-admin` (docs/phase12-contract.md §7): break-glass on the console.
+fn recover_admin(args: &[String]) -> Result<ExitCode> {
+    let (mut user, mut force_solo, mut rest) = (None, false, Vec::new());
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--user" => user = Some(it.next().context("--user needs a value")?.clone()),
+            "--force-solo" => force_solo = true,
+            _ => rest.push(a.clone()),
+        }
+    }
+    let o = parse(&rest)?;
+    if o.dry_run || o.script.is_some() || o.force_network {
+        bail!("recover-admin takes only --user, --force-solo and path options");
+    }
+    if o.root == std::path::Path::new("/") && unsafe { libc::geteuid() } != 0 {
+        bail!("must run as root on the appliance console");
+    }
+    eprint!("Recovery key (as printed at first boot): ");
+    let mut key = zeroize::Zeroizing::new(String::new());
+    std::io::stdin().read_line(&mut key)?;
+    let r = setup::recover::recover_admin(&o.paths, user.as_deref(), force_solo, &key)?;
+    println!("Account {} was reset and waits for activation.", r.user);
+    println!();
+    println!("One-time activation code (valid 72 h, shown only now):");
+    println!("  {}", r.code);
+    println!();
+    println!(
+        "Open https://<appliance>:{}/#/activate?name={} → enter the code, set a new password and enroll an authenticator.",
+        setup::WEB_PORT,
+        r.user
+    );
+    if r.forced_solo {
+        println!("Recorded as --force-solo: approvals are enabled and other approvers exist.");
+    }
+    println!("This was audited (user.break_glass) and raised a critical alert; the web UI shows a banner until it is acknowledged.");
+    Ok(ExitCode::SUCCESS)
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "recover-admin") {
+        keyd::harden_process();
+        return match recover_admin(&args[1..]) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("nexus-setup recover-admin: {e:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!("{USAGE}");
         return ExitCode::SUCCESS;

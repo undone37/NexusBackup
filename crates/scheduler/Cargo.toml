@@ -12,6 +12,11 @@ catalog = { path = "../catalog" }
 nas = { path = "../nas", default-features = false }
 truenas = { path = "../truenas", default-features = false }
 chunkstore = { path = "../chunkstore" }
+# the appliance's own SSH keys (ed25519, OpenSSH format; src/sshkeys.rs)
+ed25519-dalek = "3"
+rand = "0.8"
+sha2 = "0.10"
+zeroize = "1"
 keyd = { path = "../keyd" }
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "rustls-tls"] }
 libc = "0.2"

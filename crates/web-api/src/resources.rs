@@ -1915,6 +1915,16 @@ pub async fn update_user(
     ctx.require(ADMIN)?;
     let old = User::load(&st.cat.conn(), id)?;
     let own = id == ctx.user.id;
+    if old.auth == "oidc" {
+        let role_change = r.role.as_ref().is_some_and(|x| *x != old.role);
+        let tenant_change = r.tenant.as_ref().is_some_and(|t| t.as_str() != old.tenant.as_deref());
+        if r.password.is_some() || r.reset_totp || r.new_activation || role_change || tenant_change {
+            return Err(ApiError::bad(
+                "OIDC account: credentials, role and tenant come from the identity provider (mappings); \
+                 only `disabled` can be changed here",
+            ));
+        }
+    }
     if (r.password.is_some() || r.reset_totp) && !own {
         return Err(ApiError::bad(
             "password and reset_totp change your own credentials; for another user issue a new activation code (new_activation)",

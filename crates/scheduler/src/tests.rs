@@ -1047,3 +1047,204 @@ esac"
     )
     .contains("disabled"));
 }
+
+fn result_of(s: &Scheduler, id: i64) -> Value {
+    let r: Option<String> =
+        s.db.conn()
+            .query_row("SELECT result FROM jobs WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+    r.map(|r| serde_json::from_str(&r).unwrap()).unwrap_or(Value::Null)
+}
+
+/// Phase 12 §3: the alert test sends through the channels of the catalog
+/// setting (the sealed SMTP password stays with the scheduler) and reports per channel.
+#[test]
+fn alert_test_uses_catalog_setting() {
+    use std::io::{Read, Write};
+    let e = env(4);
+    let mut s = sched(&e);
+    let none = manual(&s, "alert_test", "-", json!({}));
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert_eq!(state(&s, none), "ok");
+    assert_eq!(result_of(&s, none), json!({}), "nothing configured, nothing tested");
+    // a webhook receiver on loopback that answers 204 and records the body
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let got = std::thread::spawn(move || {
+        let (mut c, _) = l.accept().unwrap();
+        let mut buf = vec![0u8; 8192];
+        let mut req = Vec::new();
+        while !String::from_utf8_lossy(&req).contains("\"kind\":\"test\"") {
+            let n = c.read(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            req.extend_from_slice(&buf[..n]);
+        }
+        c.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+            .unwrap();
+        String::from_utf8_lossy(&req).into_owned()
+    });
+    // SMTP to a closed port: an error per channel, not a failed job
+    let dead = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut v = json!({"webhook_url": format!("http://127.0.0.1:{port}/hook"), "min_severity": "warning",
+                       "smtp": {"host": "127.0.0.1", "port": dead, "starttls": false, "from": "a@b.example",
+                                "to": ["ops@b.example"], "user": "nexus", "password": "pw"}});
+    s.secrets.public().seal_all(alerts::SETTING_OWNER, &mut v).unwrap();
+    catalog::set_setting(&s.db.conn(), "alerts", &v.to_string()).unwrap();
+    let id = manual(&s, "alert_test", "-", json!({}));
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(60)).unwrap();
+    assert_eq!(state(&s, id), "ok");
+    let r = result_of(&s, id);
+    assert_eq!(r["webhook"], "ok", "{r}");
+    assert!(r["smtp"].as_str().unwrap().starts_with("error: "), "{r}");
+    assert!(got.join().unwrap().contains("\"severity\":\"info\""));
+    // the allow-list follows the setting, not alerts.json
+    let targets = firewall::alert_targets(&s.alerts_config().unwrap());
+    assert_eq!(targets, vec![("127.0.0.1".into(), port), ("127.0.0.1".into(), dead)]);
+}
+
+/// Phase 12 §4: keys generated at start and published; an approved rotation
+/// becomes a job that adds `<name>.next`; retire swaps it in.
+#[test]
+fn ssh_keys_rotate_and_retire() {
+    let mut e = env(4);
+    let dir = e.d.path().join("ssh");
+    fs::create_dir(&dir).unwrap();
+    e.cfg.ssh_dir = dir.clone();
+    // keys in use: a PVE node key and an SFTP offsite key, both hand-placed
+    for name in ["pve", "offsite"] {
+        let (pem, _) = sshkeys::generate("lab");
+        fs::write(dir.join(name), pem.as_bytes()).unwrap();
+    }
+    let node = json!({"nodes": {"n1": {"host": "10.0.0.1", "key": dir.join("pve")}}});
+    e.db.conn()
+        .execute("UPDATE sources SET config = ?1 WHERE id = 1", [node.to_string()])
+        .unwrap();
+    let offsite = json!({"remote": {"type": "sftp", "host": "box", "key_file": dir.join("offsite")}});
+    e.db.conn()
+        .execute(
+            "UPDATE tenants SET offsite = ?1 WHERE name = 't1'",
+            [offsite.to_string()],
+        )
+        .unwrap();
+    fs::write(dir.join("unused"), "x").unwrap();
+    let mut s = sched(&e);
+    // listed by name (offsite, pve); reversed here: [pve, offsite]
+    let published = |s: &Scheduler| -> Value {
+        let mut v: Vec<Value> =
+            serde_json::from_str(&catalog::setting(&s.db.conn(), "ssh_keys").unwrap().unwrap()).unwrap();
+        v.reverse();
+        json!(v)
+    };
+    let keys = published(&s);
+    assert_eq!(keys.as_array().unwrap().len(), 2, "only keys in use: {keys}");
+    assert_eq!(
+        (keys[0]["name"].as_str(), keys[1]["name"].as_str()),
+        (Some("pve"), Some("offsite"))
+    );
+    assert_eq!(keys[1]["purpose"], sshkeys::PURPOSE_OFFSITE);
+    assert!(keys[0]["public_key"].as_str().unwrap().starts_with("ssh-ed25519 "));
+    let fp = keys[0]["fingerprint"].clone();
+    // approved by someone else: executed even with approvals on
+    s.db.conn()
+        .execute(
+            "INSERT INTO quorum (action, params, requested_by, created, decided_by, decided_at, state) \
+             VALUES ('ssh_key.rotate', '{\"name\":\"pve\"}', 'alice', 1, 'sam', 2, 'approved')",
+            [],
+        )
+        .unwrap();
+    // decided by its requester (approvals were off) while approvals are on: not executed
+    s.db.conn()
+        .execute(
+            "INSERT INTO quorum (action, params, requested_by, created, decided_by, decided_at, state) \
+             VALUES ('ssh_key.rotate', '{\"name\":\"offsite\"}', 'alice', 1, 'alice', 2, 'approved')",
+            [],
+        )
+        .unwrap();
+    s.tick(catalog::now()).unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    let keys = published(&s);
+    assert_eq!(keys[0]["previous"]["fingerprint"], fp, "old key still in use");
+    let next = keys[0]["fingerprint"].clone();
+    assert_ne!(next, fp);
+    assert!(
+        keys[1]["previous"].is_null(),
+        "self-approved rotation waits while approvals are on"
+    );
+    let q: String =
+        s.db.conn()
+            .query_row("SELECT state FROM quorum WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+    assert_eq!(q, "executed");
+    s.tick(catalog::now()).unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    let n: i64 =
+        s.db.conn()
+            .query_row("SELECT COUNT(*) FROM jobs WHERE kind = 'ssh_key_rotate'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+    assert_eq!(n, 1, "one job per approval");
+    let id = manual(&s, "ssh_key_retire", "-", json!({"name": "pve"}));
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert_eq!(state(&s, id), "ok");
+    assert_eq!(result_of(&s, id)["new"], next);
+    let keys = published(&s);
+    assert_eq!(keys[0]["fingerprint"], next);
+    assert!(keys[0]["previous"].is_null());
+    // nothing to retire: the job fails
+    let id = manual(&s, "ssh_key_retire", "-", json!({"name": "pve"}));
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert_eq!(state(&s, id), "failed");
+}
+
+/// Phase 12 §1: one capacity sample per tenant and day, plus the file system figures.
+#[test]
+fn capacity_samples_daily() {
+    let e = env(4);
+    let s = sched(&e);
+    let t1 = e.cfg.store_base.join("t1");
+    fs::create_dir_all(t1.join("chunks")).unwrap();
+    fs::write(t1.join("chunks/a"), vec![0u8; 1000]).unwrap();
+    fs::write(t1.join("keycheck"), b"x").unwrap();
+    s.db.conn()
+        .execute(
+            "INSERT INTO snapshots (tenant, source, time, size, local, offsite) VALUES ('t1', 'vm-100', 5, 4000, 1, 0)",
+            [],
+        )
+        .unwrap();
+    let now = 1_791_750_000;
+    s.sample_capacity(now).unwrap();
+    let one = |sql: &str| -> i64 { s.db.conn().query_row(sql, [], |r| r.get(0)).unwrap() };
+    let row: (String, i64, i64) =
+        s.db.conn()
+            .query_row(
+                "SELECT day, used, logical FROM capacity_samples WHERE tenant = 't1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+    assert_eq!(row, ("2026-10-11".into(), 1001, 4000));
+    // once per day: a second refresh the same day keeps the sample
+    fs::write(t1.join("chunks/b"), vec![0u8; 5000]).unwrap();
+    s.sample_capacity(now + 3600).unwrap();
+    assert_eq!(one("SELECT used FROM capacity_samples WHERE tenant = 't1'"), 1001);
+    s.sample_capacity(now + 86400).unwrap();
+    assert_eq!(one("SELECT COUNT(*) FROM capacity_samples WHERE tenant = 't1'"), 2);
+    let fsv: Value = serde_json::from_str(&catalog::setting(&s.db.conn(), "capacity").unwrap().unwrap()).unwrap();
+    assert!(fsv["total"].as_u64().unwrap() > 0 && fsv["free"].as_u64().is_some());
+    assert_eq!(
+        one("SELECT COUNT(*) FROM capacity_samples WHERE tenant = 't2'"),
+        0,
+        "no store, no sample"
+    );
+}

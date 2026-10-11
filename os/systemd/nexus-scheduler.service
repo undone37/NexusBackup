@@ -26,6 +26,8 @@ ReadWritePaths=/var/lib/nexus/escrow /var/lib/nexus/scheduler /var/lib/nexus/dow
 ReadWritePaths=/run/nexus-nft
 # OS update control (maintenance window for nexus-update; 2770 root:nexus-catalog)
 ReadWritePaths=/var/lib/nexus/update
+# the appliance's own SSH keys: generated, rotated, retired (0750 nexus-chunkstore)
+ReadWritePaths=/etc/nexus/ssh
 # installed plugins (/var/lib/nexus/plugins) stay read-only (ProtectSystem=strict):
 # nexus-pluginhost runs them from there, only nexus-plugin-install writes them
 # generated job configs with secrets: private, wiped at start
@@ -35,7 +37,7 @@ UMask=0077
 LimitMEMLOCK=64M
 LimitCORE=0
 
-# PVE API/SSH, offsite SFTP, webhook/SMTP; keyd over AF_UNIX. Destinations are
+# PVE API/SSH, offsite SFTP, webhook/SMTP (alerts.json or the catalog setting); keyd over AF_UNIX. Destinations are
 # enforced by the nftables allow-list, not here (they are configured at runtime).
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 # File restore boots the restore micro-VM with KVM: /dev/kvm only.

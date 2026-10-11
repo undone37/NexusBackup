@@ -279,6 +279,25 @@ pub struct RestoreAction {
     pub params_schema: Option<serde_json::Value>,
     #[serde(default)]
     pub app_specific: bool,
+    /// v1.4: which snapshots the restore is offered for: `guest`
+    /// (`plugin-<p>-<sid>-<guest>`), `source` (`plugin-<p>-<sid>`) or `any` (default)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applies_to: Option<String>,
+}
+
+/// Values of [`RestoreAction::applies_to`].
+pub const APPLIES_TO: &[&str] = &["guest", "source", "any"];
+
+impl RestoreAction {
+    /// Whether the restore may run on a snapshot of a guest (`true`) or of the
+    /// whole source (`false`).
+    pub fn applies(&self, guest_snapshot: bool) -> bool {
+        match self.applies_to.as_deref() {
+            Some("guest") => guest_snapshot,
+            Some("source") => !guest_snapshot,
+            _ => true,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -448,6 +467,12 @@ impl Manifest {
                 if !id_ok || !ids.insert(r.id.as_str()) {
                     return Err(format!(
                         "kind {}: restore id {:?} invalid or listed twice",
+                        k.kind, r.id
+                    ));
+                }
+                if r.applies_to.as_deref().is_some_and(|a| !APPLIES_TO.contains(&a)) {
+                    return Err(format!(
+                        "kind {}: restore {}: applies_to must be guest, source or any",
                         k.kind, r.id
                     ));
                 }
@@ -655,5 +680,39 @@ mod tests {
         bad.kinds[0].secret_fields.push("nope".into());
         assert!(bad.validate().is_err(), "secret fields must be config properties");
         assert_eq!(Manifest::source_kind("postgresql"), "plugin:postgresql");
+        // v1.4: applies_to
+        let r = &m.kinds[0].restores[1];
+        assert!(r.applies(true) && r.applies(false), "default any");
+        let mut v14 = m.clone();
+        v14.kinds[0].restores[1].applies_to = Some("guest".into());
+        assert_eq!(v14.validate(), Ok(()));
+        let r = &v14.kinds[0].restores[1];
+        assert!(r.applies(true) && !r.applies(false));
+        v14.kinds[0].restores[1].applies_to = Some("source".into());
+        let r = &v14.kinds[0].restores[1];
+        assert!(!r.applies(true) && r.applies(false));
+        v14.kinds[0].restores[1].applies_to = Some("guests".into());
+        assert!(v14.validate().is_err());
+        // older manifests (no field) serialize as before
+        assert!(!serde_json::to_string(&m).unwrap().contains("applies_to"));
+    }
+
+    /// The shipped PostgreSQL manifest: dumps restore per database, PITR per cluster.
+    #[test]
+    fn postgresql_manifest_applies_to() {
+        let m: Manifest = serde_json::from_str(include_str!("../../../plugins/postgresql/manifest.json")).unwrap();
+        assert_eq!(m.validate(), Ok(()));
+        let r = |id: &str| {
+            m.kinds[0]
+                .restores
+                .iter()
+                .find(|r| r.id == id)
+                .unwrap()
+                .applies_to
+                .clone()
+        };
+        assert_eq!(r("to_target").as_deref(), Some("guest"));
+        assert_eq!(r("pitr").as_deref(), Some("source"));
+        assert_eq!(r("download"), None);
     }
 }
