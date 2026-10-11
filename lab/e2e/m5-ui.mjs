@@ -36,7 +36,7 @@ const totp = (secret, step) => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // codes are single-use per 30 s step and user: wait for a step nobody used yet
 const freshCode = async (user, secret) => {
-  const f = `${ROOT}/run/api/${user}.lastcode`;
+  const f = `${ROOT}/run/lastcode-${user}`; // shared with lab/e2e/api-lib.sh
   let step = Math.floor(Date.now() / 30000);
   if (existsSync(f) && readFileSync(f, 'utf8').trim() === totp(secret, step)) {
     await sleep((step + 1) * 30000 - Date.now() + 500);
