@@ -594,6 +594,8 @@ impl Scheduler {
                     self.now = catalog::now();
                     self.log_err(|s| s.finish(f));
                 }
+                // a job for a tenant created since the last tick needs its DEK first
+                self.log_err(|s| s.ensure_tenant_keys());
                 self.log_err(|s| s.start_jobs());
             }
         }
