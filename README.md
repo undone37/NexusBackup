@@ -30,6 +30,8 @@ offline recovery key.
 | Linux hosts | `nexus-agent` (static musl binary): LVM thin/thick, ZFS, btrfs snapshots or flagged live read; source-side dedup; LZ4 on the wire; DB dump hooks | restore to path, tar/zip download |
 | Windows Server 2016+ | `nexus-agent.exe`: VSS (copy-only) + USN journal *(built and unit-tested only, never run on Windows)* | restore to path, tar/zip download |
 | TrueNAS Community (SCALE) | JSON-RPC API snapshots + `zfs diff`, changed files over a restricted SSH user | tar/zip download |
+| PostgreSQL 14+ (plugin) | pure-Rust wire protocol: logical dump per database; base backup + WAL for point-in-time restore | restore to the source or an alternate server, PITR data directory over SSH, download |
+| Microsoft 365 (plugin) | Microsoft Graph with an Entra app certificate: mailboxes (mail, calendar, contacts), OneDrive, SharePoint libraries, Teams | download, restore to the original or another user/site/team (new folder, never overwrite) |
 | NFS / SMB shares | read-only kernel mounts via a detached-mount helper (CAP_SYS_ADMIN only), parallel scan | tar/zip download |
 
 Offsite tiers: **Hetzner Storage Box (SFTP)** and **S3 with Object Lock** (own SigV4 client). Replication to a
@@ -64,6 +66,7 @@ designs), [`docs/adr.md`](docs/adr.md) (architecture decisions), [`docs/threat-m
 | `crates/nbd` | NBD client and read-only server |
 | `crates/agent-proto`, `agent-core`, `agent-linux`, `agent-windows`, `agent-conn` | agent protocol, shared agent core, agents, appliance side |
 | `crates/truenas`, `crates/nas` | TrueNAS and NFS/SMB connectors |
+| `crates/plugin-proto`, `plugin-host`, `plugin-sdk`, `plugin-manager`, `plugins/` | plugin protocol, sandbox host, SDK + `nexus-plugin` CLI, installer; plugins (example-files, PostgreSQL, TrueNAS, Microsoft 365) |
 | `crates/offsite` | offsite engine (packs, retention, GC, DR), SFTP and S3 backends |
 | `crates/replication` | second-appliance replication |
 | `crates/nftsync` | egress firewall sync |
@@ -96,11 +99,13 @@ appliance image in a VM with SELinux enforcing, end-to-end flow, signed updates,
 `lab/e2e` (control-plane end-to-end through the REST API and a headless browser).
 
 ## Roadmap
-Phases 0–8 are implemented (foundations, chunk store, Proxmox, restore features, offsite, control plane, hardened
-image, additional sources, replication + S3). Next: **Phase 9 plugin system** (new sources and restore functions as
-signed, sandboxed plugins — e.g. NetApp SVM, VMware ESXi/vCenter, PostgreSQL), **Phase 10 end-user manual**
-(`manual/`, with screenshots; drafted), **Phase 11 Microsoft 365** (as a plugin). Production readiness work is tracked in
-`state.md`.
+Phases 0–11 are implemented: foundations, chunk store, Proxmox, restore features, offsite, control plane, hardened
+image, additional sources, replication + S3, **plugin system** (signed, sandboxed plugins on a Rust SDK; reference
+plugins PostgreSQL, TrueNAS and Microsoft 365), **end-user manual** ([`manual/`](manual)) and **Microsoft 365**
+(Exchange, OneDrive, SharePoint, Teams as a plugin; tested against a Graph mock, a real-tenant run is pending).
+Next: **Phase 12** — professional UI redesign with dark mode, a KPI dashboard for management, OIDC single sign-on
+([`docs/phase12-contract.md`](docs/phase12-contract.md)), then release **0.0.1-alpha**. Production readiness work
+is tracked in `state.md`.
 
 ## Security
 Please report vulnerabilities privately to the maintainers (do not open public issues). The threat model, the
