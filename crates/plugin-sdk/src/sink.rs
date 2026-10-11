@@ -179,7 +179,7 @@ impl Sink {
         let mut names: Vec<_> = match fs::read_dir(dir) {
             Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.file_name())).collect(),
             Err(e) => {
-                st.errors += 1;
+                st.error(dir, &e);
                 return Err(anyhow!("{}: {e}", dir.display()));
             }
         };
@@ -199,7 +199,7 @@ impl Sink {
             match fs::symlink_metadata(&full) {
                 Ok(m) => children.push((p, full, m)),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => st.vanished += 1,
-                Err(_) => st.errors += 1,
+                Err(e) => st.error(&full, &e),
             }
         }
         let base: HashMap<Vec<u8>, Meta> = if self.has_base {
@@ -219,8 +219,8 @@ impl Sink {
                     st.vanished += 1;
                     continue;
                 }
-                Err(_) => {
-                    st.errors += 1;
+                Err(e) => {
+                    st.error(&full, &e);
                     continue;
                 }
             };
@@ -264,8 +264,8 @@ impl Sink {
                                 st.vanished += 1;
                                 continue;
                             }
-                            Err(_) => {
-                                st.errors += 1;
+                            Err(e) => {
+                                st.error(&full, &e);
                                 continue;
                             }
                         }
@@ -341,6 +341,17 @@ pub struct WalkStats {
     pub excluded: u64,
     pub vanished: u64,
     pub errors: u64,
+    /// the first 20 errors (`path: error`), for the job log
+    pub messages: Vec<String>,
+}
+
+impl WalkStats {
+    fn error(&mut self, path: &Path, e: &io::Error) {
+        self.errors += 1;
+        if self.errors <= 20 {
+            self.messages.push(format!("{}: {e}", path.display()));
+        }
+    }
 }
 
 /// Bounded buffer (1 MiB) in front of `Data` frames; `finish()` sends `StreamEnd`.

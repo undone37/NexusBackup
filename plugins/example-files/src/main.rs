@@ -51,6 +51,9 @@ impl Plugin for ExampleFiles {
                 xattrs: true,
             },
         )?;
+        for m in &st.messages {
+            ctx.warn(format!("not backed up: {m}"));
+        }
         Ok(BackupResult {
             state: Some(format!("runs={}", runs + 1).into_bytes()),
             // a live directory without a file system snapshot: not crash-consistent
