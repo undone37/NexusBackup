@@ -151,8 +151,10 @@
   }
 </script>
 
-<h1>{t.repl.title}</h1>
-<p class="muted">{t.repl.intro}</p>
+<div class="page-head">
+  <h1>{t.repl.title}</h1>
+  <p class="lede">{t.repl.intro}</p>
+</div>
 <ErrorBanner {error} />
 
 <section class="card">

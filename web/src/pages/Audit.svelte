@@ -50,6 +50,7 @@
   <button type="button" class="primary" onclick={runVerify} disabled={verifying}>
     {verifying ? t.audit.verifying : t.audit.verify}
   </button>
+  <p class="lede">{t.audit.lede}</p>
 </div>
 
 {#if verify}

@@ -1,7 +1,8 @@
 <script lang="ts">
   import { askConfirm } from '../lib/confirm.svelte';
   import { onMount } from 'svelte';
-  import { get, post, put, act, errText } from '../lib/api';
+  import { get, post, act, errText } from '../lib/api';
+  import { href } from '../lib/router.svelte';
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
   import { fmtAgo, fmtTime, fmtValue } from '../lib/format';
@@ -79,14 +80,6 @@
   let second = $state<{ name: string; activation: Activation | null }>({ name: '', activation: null });
   let secondOpen = $state(false);
 
-  async function toggle() {
-    if (!settings) return;
-    const enable = !settings.enabled;
-    if (!(await askConfirm(enable ? t.quorum.enableConfirm : t.quorum.disableConfirm))) return;
-    const ok = await act(put('/settings/approvals', { enabled: enable }), t.quorum.enabledDone);
-    if (ok) load();
-  }
-
   async function runGc(g: GcPending) {
     if (!(await askConfirm(t.quorum.gcConfirm(g.tenant)))) return;
     const ok = await act(post<{ job_id: number }>('/gc/approve-large', { tenant: g.tenant }), (d) => t.quorum.gcQueued(d.job_id));
@@ -96,31 +89,17 @@
 
 <div class="page-head">
   <h1>{t.quorum.title}</h1>
-  <label class="inline-check"><input type="checkbox" bind:checked={onlyPending} />{t.quorum.onlyPending}</label>
+  <div class="tools">
+    {#if settings}
+      <span class="chip {settings.enabled ? 'ok' : 'warn'}">{settings.enabled ? t.quorum.on : t.quorum.off}</span>
+      <a href={href('/settings?tab=approvals')}>{t.quorum.settingsLink}</a>
+    {/if}
+    <label class="inline-check"><input type="checkbox" bind:checked={onlyPending} />{t.quorum.onlyPending}</label>
+  </div>
+  <p class="lede">{t.quorum.intro}</p>
 </div>
-<p class="muted">{t.quorum.intro}</p>
 
 <ErrorBanner {error} />
-
-{#if settings}
-  <section class="card" aria-labelledby="q-settings">
-    <h2 id="q-settings">
-      <span>{t.quorum.settings}</span>
-      <span class="chip {settings.enabled ? 'ok' : 'warn'}">{settings.enabled ? t.quorum.on : t.quorum.off}</span>
-    </h2>
-    <p>{settings.enabled ? t.quorum.enabledText : t.quorum.disabledText}</p>
-    <p class="muted">{t.quorum.approvers(settings.possible_approvers)} {t.quorum.toggleHint}</p>
-    {#if settings.pending_disable}
-      <p class="banner pending">{t.quorum.disablePending(settings.pending_disable)}</p>
-    {:else if isAdmin}
-      <div class="form-actions">
-        <button type="button" class={settings.enabled ? 'danger' : 'primary'} onclick={toggle}>
-          {settings.enabled ? t.quorum.disable : t.quorum.enable}
-        </button>
-      </div>
-    {/if}
-  </section>
-{/if}
 
 {#if gc.length}
   <section class="card" aria-labelledby="q-gc">

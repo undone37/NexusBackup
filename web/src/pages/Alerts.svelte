@@ -39,6 +39,7 @@
 <div class="page-head">
   <h1>{t.alerts.title}</h1>
   <label class="inline-check"><input type="checkbox" bind:checked={showAcked} />{t.alerts.showAcked}</label>
+  <p class="lede">{t.alerts.lede}</p>
 </div>
 
 <ErrorBanner {error} />

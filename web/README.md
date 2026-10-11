@@ -20,7 +20,9 @@ Mock users: `admin`, `so`, `so2` (security officers), `op` (operator) and
 and any 6-digit code works as the TOTP code. `newop` is an operator pending
 activation: on the sign-in page choose "Activate account" and enter the code
 `DEMO-ACTIVATE-NEWOP-2026` (any 6-digit authenticator code is accepted);
-`former-op` is disabled.
+`former-op` is disabled. `lwagner` is a single-sign-on (OIDC) operator: the mock
+has no identity provider, so "Sign in with Keycloak" on the sign-in page signs
+in as `lwagner` directly.
 
 The mock is seeded with a fictional demo appliance that the manual's screenshots
 use (`manual/tools/screenshots.mjs`): tenants `acme` (S3 Object Lock offsite,
@@ -37,16 +39,19 @@ does not verify the self-signed certificate.
 
 ## Dependencies
 
-There are no runtime dependencies. All five packages are build-time
-devDependencies, pinned to exact versions:
+All packages are pinned to exact versions and end up in `dist` (nothing is
+loaded from third parties at run time):
 
 | package | purpose |
 |---|---|
 | `svelte` | compiler and runtime (the runtime gets bundled) |
 | `vite`, `@sveltejs/vite-plugin-svelte` | build and dev server |
 | `typescript`, `svelte-check` | type checking (`npm run check`) |
+| `@lucide/svelte` (ISC) | icons; each icon is imported by path, only the used ones are bundled |
+| `@fontsource-variable/ibm-plex-sans`, `@fontsource/ibm-plex-mono` (OFL) | UI fonts; `app.css` references only the Latin / Latin Extended `.woff2` files |
 
-The app has no router library, no UI kit, no CSS framework, no web fonts and no
+The app has no router library, no UI kit, no CSS framework, no chart library
+(the dashboard charts in `src/components/charts` are hand-written SVG) and no
 QR library. `src/lib/qr.ts` is a small QR encoder (byte mode, ECC level M,
 versions 1–40). Its output was checked by decoding it with OpenCV.
 
@@ -58,8 +63,14 @@ src/main.ts, App.svelte  shell, role-aware navigation, hash router (#/path?query
 src/lib/api.ts         fetch wrapper: X-CSRF-Token, 401 handling, 202 {quorum_id} -> "pending approval"
 src/lib/i18n.ts        every user-visible string (English for now; add a German object of the same shape)
 src/lib/roles.ts       UI mirror of the RBAC table (only hides controls; the server decides)
-src/pages/*            Login, Dashboard, Snapshots, Files, Jobs, JobDetail, Alerts, Quorum,
-                       Audit, Tenants, Sources, Agents, Policies, Groups, Users
+src/app.css            design tokens (navy + teal palette, light-dark() pairs) and all global styles
+src/lib/theme.svelte.ts  light / dark / follow the OS (top-bar toggle, stored per browser)
+src/components/Logo.svelte + src/favicon.svg  the logo mark (replace both to rebrand)
+src/pages/*            Login, Dashboard (KPIs, GET /dashboard), Snapshots, Files, Jobs, JobDetail, Alerts,
+                       Quorum, Audit, Tenants, Sources, Agents, Policies, Groups, Users, Plugins, Settings
+src/pages/settings/*   Settings tabs: Approvals, Alert delivery, Single sign-on (OIDC), SSH keys, Updates
+src/components/charts/*  StackedBars, TrendLine, Ring (donut), HBars: SVG, tooltips, hidden data tables
+src/components/Menu.svelte  action menu (native popover) used for the snapshot restore options
 src/components/RestoreFiles.svelte  "restore to path" dialog for host snapshots (Snapshots + Files)
 src/components/SchemaForm.svelte    form generated from a plugin's config_schema / params_schema
 src/lib/schema.ts      form model + client-side validation of that JSON-Schema subset
@@ -74,7 +85,10 @@ src/lib/plugins.ts     plugin kind lookup, plugin snapshot name parsing, version
   - The module-preload polyfill is turned off.
   - `assetsInlineLimit: 0`, so no asset is inlined as a data URI.
   - The Svelte component CSS ends up in the single external `.css` file.
-  - The code uses no `style=` attributes, `style:` directives or Svelte transitions, which would inject `<style>` elements.
+  - The code uses no `style=` attributes and no Svelte transitions (they would inject `<style>` elements).
+    Positions that depend on data (chart tooltips, the popover menu) use `style:` directives with
+    dynamic values only: Svelte applies them through the CSSOM (`element.style…`), which CSP does not
+    restrict. Static `style:` values would be compiled into the template markup and blocked.
   - There is no `eval` or `new Function`. Svelte creates DOM from templates via `<template>.innerHTML`, which CSP allows because the templates contain no inline handlers or styles.
 
   `npm run preview` serves `dist` with the same CSP header. A headless-Chrome run
@@ -95,6 +109,15 @@ src/lib/plugins.ts     plugin kind lookup, plugin snapshot name parsing, version
   it and notes that the account only works after approval.
 
 ## Assumptions about the API (web-api v1)
+
+- **Phase 12 (docs/phase12-contract.md).** Where the contract leaves a shape open, the UI assumes:
+  `POST /settings/oidc/test` and `POST /settings/alerts/test` answer `{ <check>: "ok[: detail]" | "error: …" }`;
+  after `POST /ssh-keys/{name}/rotate` the old key comes back as `previous: {public_key, fingerprint, created}`
+  of the entry (two entries with the same name are handled too, newest = current); `staged` / `rollback` of
+  `GET /updates` look like `booted`; the break-glass banner shows the unacknowledged alert of kind
+  `break_glass` (admins) and acknowledges it with `POST /alerts/{id}/ack`; OIDC error codes `denied`,
+  `disabled`, `expired`, `state`, `idp` and `token` have their own texts, others a generic one.
+  The dashboard derives "not in a group" as `objects - sla_ok - sla_breach - never`.
 
 - **File browsing.** `files_list` results come from the structured job result
   (`job.result.entries`, written by the scheduler).

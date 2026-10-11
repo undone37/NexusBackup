@@ -219,8 +219,8 @@
 <div class="page-head">
   <h1>{t.plugins.title}</h1>
   {#if admin}<button type="button" class="primary" onclick={newInstall}>{t.plugins.install}</button>{/if}
+  <p class="lede">{t.plugins.intro}</p>
 </div>
-<p class="muted">{t.plugins.intro}</p>
 {#if !admin}<p class="banner info">{t.plugins.readOnly}</p>{/if}
 <ErrorBanner {error} />
 

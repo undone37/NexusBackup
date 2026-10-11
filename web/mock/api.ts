@@ -100,6 +100,9 @@ interface User {
   /** pending activation: the code parts the user must enter (plain in the mock;
    *  web-api stores only hashes), `null` while the second part is not issued yet */
   act?: { parts: (string | null)[]; expires: number | null; failures: number } | null;
+  /** Phase 12: `oidc` = signs in through the IdP only (no password / TOTP here) */
+  auth?: 'local' | 'oidc';
+  oidc_sub?: string;
 }
 interface Agent {
   id: string;
@@ -158,6 +161,11 @@ const db = {
   approvals: false,
   gcPending: [] as Json[],
   seq: 100,
+  /** Phase 12 settings (docs/phase12-contract.md) */
+  oidc: {} as Json,
+  alertSettings: {} as Json,
+  sshKeys: [] as Json[],
+  updates: {} as Json,
 };
 const nextId = () => ++db.seq;
 
@@ -638,6 +646,13 @@ function tarManifest(b: Uint8Array): Json | null {
   return null;
 }
 
+/** Manifest v1.4 `applies_to` (docs/phase12-contract.md §6), added when the shipped manifest lacks it. */
+function withAppliesTo(m: Json): Json {
+  const def: Record<string, string> = { to_target: 'guest', pitr: 'source' };
+  for (const k of m.kinds ?? []) for (const r of k.restores ?? []) if (!r.applies_to && def[r.id]) r.applies_to = def[r.id];
+  return m;
+}
+
 /** keyd replication key fingerprint format (crates/replication key_fingerprint): 8 groups of 4 hex */
 const keydFp = () => rand(16).replace(/(.{4})(?=.)/g, '$1:');
 const DEMO_HOST_KEY = (n: string) => `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${n}DemoKeyForTheManual${'0'.repeat(Math.max(0, 20 - n.length))}`;
@@ -788,7 +803,7 @@ function seed() {
     added_at: t - 86400 * 40,
     builtin: false,
   });
-  const pgM = (v: string): Json => ({ ...structuredClone(pgManifest), version: v });
+  const pgM = (v: string): Json => withAppliesTo({ ...structuredClone(pgManifest), version: v });
   const pg110 = pluginEntry(pgM('1.1.0'), 'admin', t - 1500, { state: 'pending', current: false, enabled: false, installed_at: null });
   db.plugins.push(pluginEntry(pgM('1.0.0'), 'admin', t - 86400 * 25), pg110, pluginEntry(structuredClone(truenasManifest) as Json, 'admin', t - 86400 * 12));
   const sPg = {
@@ -987,6 +1002,7 @@ function seed() {
     state: 'enrolled', cert_sha256: rand(32), keyd_fingerprint: keydFp(), created: t - 86400 * 30, last_sync: day(0, 4) + 480,
     status: { globex: { last_ok: day(0, 4) + 480, last_error: null, imported: 3, bytes: 734003200, remote: 41, key_versions: [1] } },
   });
+  seedPhase12(t);
 }
 
 // ---------------------------------------------------------------- helpers
@@ -1000,6 +1016,7 @@ const pub = (u: User) => ({
   created: u.created,
   pending_activation: !!u.act,
   activation_expires: u.act?.expires ?? null,
+  auth: u.auth ?? 'local',
 });
 const PRIV: Role[] = ['admin', 'security_officer'];
 const ACT_SECS = 72 * 3600;
@@ -1192,6 +1209,16 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       break;
     case 'approvals.disable':
       db.approvals = false;
+      break;
+    case 'oidc.update':
+      db.oidc = { ...db.oidc, ...next, client_secret: db.quorumSecrets.get(qid)?.client_secret ?? db.oidc.client_secret };
+      db.quorumSecrets.delete(qid);
+      break;
+    case 'ssh_key.rotate':
+      rotateSshKey(p.name);
+      break;
+    case 'update.apply':
+      if (db.updates.available) Object.assign(db.updates, { staged: { ...db.updates.available, since: now() }, status: 'staged' });
       break;
     case 'user.update': {
       const { name: _n, id: _i, activation, ...fields } = next;
@@ -1650,6 +1677,8 @@ on('PUT', '/users/:id', async (c, [id]) => {
   const x = find(db.users, (y) => y.id === Number(id), 'user');
   const b = c.body;
   const own = x.id === u.id;
+  if (x.auth === 'oidc' && (b.password || b.reset_totp || b.new_activation || (b.role !== undefined && b.role !== x.role) || (b.tenant !== undefined && (b.tenant || null) !== x.tenant)))
+    throw new HttpError(409, 'single sign-on account: role and tenants come from the group mapping, credentials from the identity provider');
   if ((b.password || b.reset_totp) && !own)
     throw new HttpError(400, "password / reset_totp only for your own account; issue a new activation code (new_activation) for other users");
   if (b.new_activation && own) throw new HttpError(400, 'new_activation: not for your own account');
@@ -1928,6 +1957,9 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
     if (rid === 'download') throw new HttpError(400, 'restore: use files_get for downloads');
     if (kind === 'plugin_restore' && rid === 'mount') throw new HttpError(400, 'restore: use plugin_mount');
     const r = find(k.restores as Json[], (x) => x.id === rid, `restore ${rid} of ${k.kind}`);
+    const isGuest = /^plugin-.+?-\d+-.+$/.test(p.source);
+    if ((r.applies_to === 'guest' && !isGuest) || (r.applies_to === 'source' && isGuest))
+      throw new HttpError(400, `restore ${rid} applies to ${r.applies_to} snapshots only`);
     if (r.params_schema) schemaCheck(r.params_schema, p.params ?? {}, 'params');
     else if (Object.keys(p.params ?? {}).length) throw new HttpError(400, 'params: this restore takes none');
     if (kind === 'plugin_mount' && !(Number.isInteger(p.minutes) && p.minutes >= 1 && p.minutes <= 1440))
@@ -2037,6 +2069,426 @@ on('POST', '/alerts/:id/ack', async (c, [id]) => {
   a.acked_by = u.name;
   await audit(u.name, 'alert.ack', `alert/${a.id}`, {});
   return [200, a];
+});
+
+// ---------------------------------------------------------------- Phase 12 (docs/phase12-contract.md)
+
+const sshPub = (comment: string) => `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${b64(randomBytes(24))} ${comment}`;
+function b64(b: Uint8Array): string {
+  const a = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let out = '';
+  for (let i = 0; i < b.length; i += 3) {
+    const n = (b[i] << 16) | ((b[i + 1] ?? 0) << 8) | (b[i + 2] ?? 0);
+    out += a[(n >> 18) & 63] + a[(n >> 12) & 63] + (i + 1 < b.length ? a[(n >> 6) & 63] : '') + (i + 2 < b.length ? a[n & 63] : '');
+  }
+  return out;
+}
+const sshKey = (name: string, purpose: string, created: number) => ({
+  name,
+  purpose,
+  public_key: sshPub(`nexus-${name}@backup.example.com`),
+  fingerprint: `SHA256:${b64(randomBytes(32))}`,
+  created,
+  previous: null as Json | null,
+});
+function rotateSshKey(name: string) {
+  const k = find(db.sshKeys, (x) => x.name === name, 'ssh key');
+  const fresh = sshKey(k.name, k.purpose, now());
+  Object.assign(k, { ...fresh, previous: { public_key: k.public_key, fingerprint: k.fingerprint, created: k.created } });
+}
+
+/** Runs after the main seed so the ids and random values of the older demo data stay the same. */
+function seedPhase12(t: number) {
+  db.oidc = {
+    enabled: true,
+    issuer: 'https://idp.example.com/realms/nexus',
+    client_id: 'nexusbackup',
+    client_secret: 'sealed:demo',
+    scopes: ['openid', 'profile', 'email', 'groups'],
+    username_claim: 'preferred_username',
+    groups_claim: 'groups',
+    label: 'Sign in with Keycloak',
+    mappings: [
+      { group: 'nexus-admins', role: 'admin', tenants: [] },
+      { group: 'nexus-security', role: 'security_officer', tenants: [] },
+      { group: 'nexus-operators', role: 'operator', tenants: [] },
+      { group: 'acme-backup-users', role: 'tenant_user', tenants: ['acme'] },
+    ],
+  };
+  db.alertSettings = {
+    webhook_url: 'https://hooks.example.com/services/nexus-backup',
+    smtp: { host: 'mail.example.com', port: 587, starttls: true, from: 'nexus@example.com', to: ['ops@example.com', 'backup-team@example.com'], user: 'nexus', password: 'sealed:demo' },
+    min_severity: 'warning',
+  };
+  db.sshKeys = [
+    sshKey('pve', 'Proxmox VE nodes (forced command)', t - 86400 * 90),
+    sshKey('truenas', 'TrueNAS systems (forced command, read-only)', t - 86400 * 70),
+    sshKey('offsite', 'Offsite SFTP targets (Storage Box)', t - 86400 * 88),
+  ];
+  db.updates = {
+    booted: { version: '0.0.1-alpha', digest: `sha256:${rand(32)}`, since: t - 86400 * 12 },
+    staged: null,
+    available: { version: '0.0.2-alpha', digest: `sha256:${rand(32)}` },
+    channel: 'stable',
+    window: 'Sun 03:00 120',
+    last_check: t - 5 * 3600,
+    status: 'idle',
+    error: null,
+    rollback: { version: '0.0.1-alpha.3', digest: `sha256:${rand(32)}` },
+    checking_since: 0,
+  };
+  // a single-sign-on user (Keycloak group nexus-operators): no password, no TOTP on the appliance
+  db.users.push({
+    id: nextId(), name: 'lwagner', role: 'operator', tenant: null, disabled: false, created: t - 86400 * 6,
+    password: '', totp_secret: '', auth: 'oidc', oidc_sub: 'f3c1a9e2-5b7d-4e08-9a61-2d4c8b0e7f15',
+  });
+  // the break-glass alert of an earlier console recovery, acknowledged (the UI banner shows open ones)
+  db.alerts.push({
+    id: nextId(), ts: t - 86400 * 58, severity: 'critical', kind: 'break_glass',
+    message: 'administrator "admin" was reset to pending activation at the console (nexus-setup recover-admin).', acked_by: 'so',
+  });
+}
+
+// ---- dashboard KPIs (§1). The job history before the seed is synthetic but deterministic.
+const DAY = 86400;
+const isoDay = (ts: number) => new Date(ts * 1000).toISOString().slice(0, 10);
+const hash = (...xs: number[]) => xs.reduce((h, x) => Math.imul(h ^ x, 2654435761) >>> 0, 0x9e3779b9) >>> 0;
+/** friendly names of the demo VMs / containers */
+const GUEST_NAMES: Record<string, string> = {
+  'initech/100': 'erp-app', 'initech/101': 'erp-db', 'initech/200': 'proxy', 'initech/102': 'dev-sandbox', 'initech/103': 'legacy-ftp',
+  'acme/300': 'shop-web', 'acme/301': 'shop-api', 'acme/302': 'test-web',
+};
+interface Obj { source: string; name: string; kind: string; tenant: string; rpo_s: number; inGroup: boolean; names: string[] }
+
+function protectedObjects(u: User): Obj[] {
+  const out: Obj[] = [];
+  for (const g of byTenant(u, db.groups)) {
+    const src = db.sources.find((s) => s.id === g.source_id);
+    const pol = db.policies.find((p) => p.id === g.policy_id);
+    if (!src || !pol) continue;
+    const rpo_s = pol.schedule.startsWith('hourly') ? 3600 : DAY;
+    const add = (source: string, name: string, names = [source]) => out.push({ source, name, kind: src.kind, tenant: g.tenant, rpo_s, inGroup: true, names });
+    if (src.kind === 'pve')
+      for (const v of g.guests) add(guestName(v), `${GUEST_NAMES[`${g.tenant}/${v}`] ?? 'guest'} (${v})`, [`vm-${v}`, `ct-${v}`]);
+    else if (src.kind === 'linux') for (const a of g.guests) add(`host-${a}`, db.agents.find((x) => x.id === a)?.name ?? String(a));
+    else if (src.kind === 'truenas')
+      for (const d of g.guests.length ? g.guests : src.config.datasets) add(`nas-${src.id}-${String(d).replaceAll('/', '.')}`, `${src.name}: ${d}`);
+    else if (src.kind === 'nfs' || src.kind === 'smb') add(`share-${src.id}`, src.name);
+    else if (src.kind.startsWith('plugin:')) {
+      const pid = pluginKind(src.kind)?.plugin.id ?? src.kind.slice(7);
+      if (g.guests.length) for (const x of g.guests) add(`plugin-${pid}-${src.id}-${x}`, `${src.name}: ${x}`);
+      else add(`plugin-${pid}-${src.id}`, src.name);
+    }
+  }
+  // known guests that are in no protection group (cached PVE / plugin guest lists)
+  const extra: Obj[] = [
+    { source: 'vm-103', name: 'legacy-ftp (103)', kind: 'pve', tenant: 'initech', rpo_s: DAY, inGroup: false, names: ['vm-103'] },
+    { source: 'vm-302', name: 'test-web (302)', kind: 'pve', tenant: 'acme', rpo_s: DAY, inGroup: false, names: ['vm-302'] },
+  ];
+  const pg = db.sources.find((s) => s.kind === 'plugin:postgresql');
+  if (pg) extra.push({ source: `plugin-postgresql-${pg.id}-analytics`, name: `${pg.name}: analytics`, kind: pg.kind, tenant: pg.tenant, rpo_s: DAY, inGroup: false, names: [] });
+  return [...out, ...extra.filter((o) => !u.tenant || o.tenant === u.tenant)];
+}
+
+/** Synthetic daily job counts of one tenant (scheduler runs per group + offsite / verify / retention). */
+function tenantDay(tenant: string, dayStart: number, t: number) {
+  const groups = db.groups.filter((g) => g.tenant === tenant);
+  const hourly = groups.filter((g) => db.policies.find((p) => p.id === g.policy_id)?.schedule.startsWith('hourly')).length;
+  const tn = db.tenants.find((x) => x.name === tenant);
+  const extra = (tn?.offsite?.remote ? 1 : 0) + (groups.length ? 2 : 0) + (db.replSources.some((r) => r.tenants.includes(tenant)) ? 1 : 0);
+  const frac = Math.min(1, Math.max(0, (t - dayStart) / DAY));
+  const base = Math.round((groups.length - hourly + hourly * 24 + extra) * frac);
+  const kinds = [...new Set(groups.map((g) => db.sources.find((s) => s.id === g.source_id)?.kind ?? 'pve'))];
+  const h = hash(dayStart / DAY, [...tenant].reduce((a, c) => a + c.charCodeAt(0), 0));
+  let failed = groups.length && frac === 1 ? (h % 11 === 0 ? 2 : h % 4 === 0 ? 1 : 0) : 0;
+  const fkind = kinds[(h >>> 7) % Math.max(1, kinds.length)] ?? 'pve';
+  // acme backs up an SMB share without NAS snapshots daily: one "not point-in-time consistent" warning
+  const warning = groups.some((g) => db.sources.find((s) => s.id === g.source_id)?.kind === 'smb') && frac > 0.15 ? 1 : 0;
+  // the seeded vm-101 failures (initech): yesterday's nightly run, today's run and the manual retry
+  const real = db.jobs.filter((j) => j.tenant === tenant && j.state === 'failed' && (j.finished ?? 0) >= dayStart && (j.finished ?? 0) < dayStart + DAY);
+  if (tenant === 'initech' && t - dayStart >= DAY && t - dayStart < 2 * DAY) failed = Math.max(failed, 1);
+  const byKind: Record<string, number> = {};
+  if (real.length) byKind.pve = real.length;
+  else if (failed) byKind[tenant === 'initech' && t - dayStart < 2 * DAY ? 'pve' : fkind] = failed;
+  failed = real.length || failed;
+  return { ok: Math.max(0, base - failed - warning), warning, failed, byKind };
+}
+
+function dashboard(u: User, days: number) {
+  const t = now();
+  const today = Math.floor(t / DAY) * DAY;
+  const tenants = db.tenants.map((x) => x.name).filter((n) => !u.tenant || n === u.tenant);
+  const snaps = byTenant(u, db.snapshots as any[]);
+
+  // protection
+  const objs = protectedObjects(u).map((o) => {
+    const last = snaps.filter((s) => s.tenant === o.tenant && o.names.includes(s.source)).reduce((m, s) => Math.max(m, s.time), 0) || null;
+    const age_s = last ? t - last : null;
+    const sla = !last ? 'never' : (age_s as number) > o.rpo_s * 1.5 ? 'breach' : 'ok';
+    return { ...o, last_ok: last, age_s, sla };
+  });
+  const inGroup = objs.filter((o) => o.inGroup);
+  const prot = {
+    objects: objs.length,
+    protected: inGroup.filter((o) => o.sla !== 'never').length,
+    unprotected: objs.length - inGroup.filter((o) => o.sla !== 'never').length,
+    sla_ok: inGroup.filter((o) => o.sla === 'ok').length,
+    sla_breach: inGroup.filter((o) => o.sla === 'breach').length,
+    never: inGroup.filter((o) => o.sla === 'never').length,
+    worst: inGroup
+      .sort((a, b) => Number(b.sla !== 'ok') - Number(a.sla !== 'ok') || (b.age_s ?? Infinity) / b.rpo_s - (a.age_s ?? Infinity) / a.rpo_s)
+      .slice(0, 10)
+      .map(({ source, name, kind, tenant, last_ok, age_s, rpo_s, sla }) => ({ source, name, kind, tenant, last_ok, age_s, rpo_s, sla })),
+  };
+
+  // jobs per day
+  const per_day = [];
+  const byKind: Record<string, number> = {};
+  for (let d = days - 1; d >= 0; d--) {
+    const start = today - d * DAY;
+    const row = { day: isoDay(start), ok: 0, warning: 0, failed: 0 };
+    for (const tn of tenants) {
+      const x = tenantDay(tn, start, t);
+      row.ok += x.ok;
+      row.warning += x.warning;
+      row.failed += x.failed;
+      for (const [k, v] of Object.entries(x.byKind)) byKind[k] = (byKind[k] ?? 0) + v;
+    }
+    per_day.push(row);
+  }
+  const sum = per_day.reduce((a, r) => ({ ok: a.ok + r.ok, warning: a.warning + r.warning, failed: a.failed + r.failed }), { ok: 0, warning: 0, failed: 0 });
+  const total = sum.ok + sum.warning + sum.failed;
+
+  // capacity: 64 TiB store, 78 % used today (see the capacity alert), growing ~0.11 %/day
+  const TOTAL = 64 * 2 ** 40;
+  const allBytes = (db.snapshots as any[]).reduce((a, s) => a + s.size, 0) || 1;
+  const share = u.tenant ? snaps.reduce((a, s) => a + s.size, 0) / allBytes : 1;
+  const usedAt = (d: number) => {
+    const wobble = ((hash(d, 7) % 1000) / 1000 - 0.5) * 0.004;
+    return Math.round(TOTAL * (0.78 - 0.0011 * d + wobble));
+  };
+  const sample = (n: number) => Array.from({ length: n }, (_, i) => n - 1 - i).map((d) => ({ d, used: usedAt(d) }));
+  // forecast: linear regression over the last 30 days of the whole store (when the shared pool is full)
+  const reg = sample(30);
+  const mx = reg.reduce((a, p) => a - p.d, 0) / reg.length;
+  const my = reg.reduce((a, p) => a + p.used, 0) / reg.length;
+  const slope = reg.reduce((a, p) => a + (-p.d - mx) * (p.used - my), 0) / reg.reduce((a, p) => a + (-p.d - mx) ** 2, 0);
+  const fit = my + slope * (0 - mx);
+  const forecast = slope > 0 ? Math.round((TOTAL - fit) / slope) : null;
+  const used = usedAt(0);
+  const reduction = 4.2;
+  const capacity = {
+    total: TOTAL,
+    used: Math.round(used * share),
+    free: TOTAL - used,
+    logical: Math.round(used * share * 0.97 * reduction),
+    physical: Math.round(used * share * 0.97),
+    reduction,
+    dedup: 3.1,
+    compression: +(reduction / 3.1).toFixed(2),
+    per_day: sample(days).map((p) => ({ day: isoDay(today - p.d * DAY), used: Math.round(p.used * share), logical: Math.round(p.used * share * 0.97 * reduction) })),
+    forecast_full_days: forecast,
+  };
+
+  // offsite + replication
+  const offT = tenants.filter((n) => db.tenants.find((x) => x.name === n)?.offsite?.remote);
+  const lags = offT.map((n) => t - (snaps.filter((s) => s.tenant === n && s.offsite).reduce((m, s) => Math.max(m, s.time), 0) || t - 30 * DAY));
+  const replLags = [
+    ...db.replSources.flatMap((r) => r.tenants.filter((n: string) => tenants.includes(n)).map((n: string) => t - (r.status?.[n]?.last_ok ?? r.created))),
+    ...db.replPeers.filter((p) => p.state === 'enrolled' && p.tenants.some((n: string) => tenants.includes(n))).map((p) => t - (p.last_seen ?? p.created)),
+  ];
+  const verified = snaps.map((s) => s.verified).filter(Boolean) as number[];
+  const offsite = {
+    tenants: offT.length,
+    lag_max_s: lags.length ? Math.max(...lags) : null,
+    lagging: lags.filter((l) => l > 1.5 * DAY).length,
+    lock_coverage: snaps.length ? snaps.filter((s) => s.lock_until > t).length / snaps.length : null,
+    replication_lag_max_s: replLags.length ? Math.max(...replLags) : null,
+    last_verify: verified.length ? Math.max(...verified) : null,
+    verify_failed: 0,
+  };
+  return {
+    generated: t,
+    days,
+    protection: prot,
+    jobs: {
+      success_rate: total ? +((sum.ok + sum.warning) / total).toFixed(4) : null,
+      total,
+      ...sum,
+      per_day,
+      failed_by_kind: Object.entries(byKind).map(([kind, failed]) => ({ kind, failed })).sort((a, b) => b.failed - a.failed),
+    },
+    capacity,
+    offsite,
+  };
+}
+const dashCache = new Map<string, { at: number; body: Json }>();
+on('GET', '/dashboard', (c) => {
+  const u = need(c.user);
+  const days = c.query.get('days') === '7' ? 7 : 30;
+  const key = `${u.tenant ?? '*'}/${days}`;
+  const hit = dashCache.get(key);
+  if (hit && now() - hit.at < 60) return [200, hit.body];
+  const body = dashboard(u, days);
+  dashCache.set(key, { at: now(), body });
+  return [200, body];
+});
+
+// ---- OIDC (§2). The mock has no identity provider: "start" goes straight to the callback, which
+// signs in as the SSO demo user lwagner (Keycloak groups: nexus-operators).
+const MAPPING_ROLES = ['admin', 'security_officer', 'operator', 'tenant_user'];
+const pubOidc = () => {
+  const { client_secret, ...rest } = db.oidc;
+  return { ...structuredClone(rest), client_secret_set: !!client_secret };
+};
+on('GET', '/auth/oidc', () => [200, db.oidc.enabled ? { enabled: true, label: db.oidc.label } : { enabled: false }]);
+on('GET', '/auth/oidc/start', (c) => {
+  if (!db.oidc.enabled) {
+    c.res.setHeader('Location', '/#/login?oidc_error=disabled');
+    return [302, ''];
+  }
+  const next = String(c.query.get('next') ?? '/');
+  c.res.setHeader('Location', `/api/v1/auth/oidc/callback?code=${rand(16)}&state=${encodeURIComponent(next)}`);
+  return [302, ''];
+});
+on('GET', '/auth/oidc/callback', async (c) => {
+  const claims = { sub: 'f3c1a9e2-5b7d-4e08-9a61-2d4c8b0e7f15', preferred_username: 'lwagner', groups: ['nexus-operators', 'staff'] };
+  const fail = async (code: string) => {
+    await audit(claims.preferred_username, 'auth.oidc_denied', 'session', { reason: code });
+    c.res.setHeader('Location', `/#/login?oidc_error=${code}`);
+    return [302, ''] as [number, unknown];
+  };
+  if (!db.oidc.enabled) return fail('disabled');
+  const hits = (db.oidc.mappings as Json[]).filter((m) => claims.groups.includes(m.group));
+  if (!hits.length) return fail('denied');
+  const best = hits.sort((a, b) => MAPPING_ROLES.indexOf(a.role) - MAPPING_ROLES.indexOf(b.role))[0];
+  let x = db.users.find((y) => y.auth === 'oidc' && y.oidc_sub === claims.sub);
+  if (!x) {
+    x = { id: nextId(), name: claims.preferred_username, role: best.role, tenant: null, disabled: false, created: now(), password: '', totp_secret: '', auth: 'oidc', oidc_sub: claims.sub };
+    db.users.push(x);
+    await audit('system', 'user.oidc_created', `user/${x.id}`, { name: x.name, role: x.role });
+  }
+  Object.assign(x, { role: best.role, tenant: best.tenants?.[0] ?? null });
+  if (x.disabled) return fail('denied');
+  const sid = rand(32);
+  db.sessions.set(sid, { userId: x.id, csrf: rand(16), created: now(), last: now() });
+  c.res.setHeader('Set-Cookie', `nx_session=${sid}; HttpOnly; SameSite=Lax; Path=/`);
+  await audit(x.name, 'auth.oidc_login', 'session', { groups: claims.groups });
+  const state = decodeURIComponent(String(c.query.get('state') ?? '/'));
+  c.res.setHeader('Location', state.startsWith('/') && !state.startsWith('//') ? state : '/');
+  return [302, ''];
+});
+on('GET', '/settings/oidc', (c) => (need(c.user, 'admin', 'security_officer'), [200, pubOidc()]));
+on('PUT', '/settings/oidc', async (c) => {
+  const u = need(c.user, 'admin');
+  const b = c.body;
+  if (typeof b.issuer !== 'string' || !/^https:\/\/[^\s/]+/.test(b.issuer)) throw new HttpError(400, 'issuer: https URL required');
+  if (!String(b.client_id ?? '').trim()) throw new HttpError(400, 'client_id: required');
+  if (!Array.isArray(b.scopes) || !b.scopes.includes('openid')) throw new HttpError(400, 'scopes: must include openid');
+  if (!String(b.label ?? '').trim()) throw new HttpError(400, 'label: required');
+  if (!Array.isArray(b.mappings)) throw new HttpError(400, 'mappings: array required');
+  for (const m of b.mappings) {
+    if (!String(m.group ?? '').trim()) throw new HttpError(400, 'mappings: group required');
+    if (!MAPPING_ROLES.includes(m.role)) throw new HttpError(400, `mappings: unknown role ${m.role}`);
+    if (!Array.isArray(m.tenants) || m.tenants.some((n: string) => !db.tenants.some((x) => x.name === n))) throw new HttpError(400, 'mappings: unknown tenant');
+    if (m.role === 'tenant_user' && !m.tenants.length) throw new HttpError(400, 'mappings: tenant users need a tenant');
+  }
+  const next = {
+    enabled: !!b.enabled, issuer: b.issuer, client_id: String(b.client_id).trim(), scopes: b.scopes, label: String(b.label).trim(),
+    username_claim: String(b.username_claim || 'preferred_username'), groups_claim: String(b.groups_claim || 'groups'), mappings: b.mappings,
+  };
+  const secret = b.client_secret ? String(b.client_secret) : undefined;
+  if (db.approvals) {
+    const q = await quorum(u, 'oidc.update', { ...next, client_secret_changed: !!secret });
+    if (secret) db.quorumSecrets.set(q[1].quorum_id, { client_secret: secret });
+    return q;
+  }
+  Object.assign(db.oidc, next, secret ? { client_secret: secret } : {});
+  await audit(u.name, 'settings.oidc', 'settings/oidc', { enabled: next.enabled, issuer: next.issuer, approvals: 'disabled' });
+  return [200, pubOidc()];
+});
+on('POST', '/settings/oidc/test', (c) => {
+  need(c.user, 'admin');
+  const host = /^https:\/\/([^/]+)/.exec(String(db.oidc.issuer))?.[1] ?? '';
+  if (/bad|invalid/.test(host)) return [200, { discovery: `error: ${host}: connection refused`, jwks: 'error: discovery failed' }];
+  return [200, { discovery: `ok: ${db.oidc.issuer}/.well-known/openid-configuration`, jwks: 'ok: 2 signing keys (RS256)' }];
+});
+
+// ---- alert delivery (§3)
+const pubAlerts = () => {
+  const a = structuredClone(db.alertSettings);
+  if (a.smtp) {
+    a.smtp.password_set = !!a.smtp.password;
+    delete a.smtp.password;
+  }
+  return a;
+};
+on('GET', '/settings/alerts', (c) => (need(c.user, 'admin', 'security_officer'), [200, pubAlerts()]));
+on('PUT', '/settings/alerts', async (c) => {
+  const u = need(c.user, 'admin');
+  const b = c.body;
+  if (b.webhook_url && !/^https:\/\/\S+$/.test(String(b.webhook_url))) throw new HttpError(400, 'webhook_url: https URL required');
+  if (!['info', 'warning', 'critical'].includes(b.min_severity)) throw new HttpError(400, 'min_severity: info, warning or critical');
+  let smtp = null;
+  if (b.smtp) {
+    const s = b.smtp;
+    if (!String(s.host ?? '').trim()) throw new HttpError(400, 'smtp.host: required');
+    if (!(Number.isInteger(s.port) && s.port > 0 && s.port < 65536)) throw new HttpError(400, 'smtp.port: 1..65535');
+    if (!Array.isArray(s.to) || !s.to.length || s.to.some((x: string) => !/^[^@\s]+@[^@\s]+$/.test(x))) throw new HttpError(400, 'smtp.to: e-mail addresses required');
+    if (!/^[^@\s]+@[^@\s]+$/.test(String(s.from ?? ''))) throw new HttpError(400, 'smtp.from: e-mail address required');
+    smtp = { host: s.host, port: s.port, starttls: !!s.starttls, from: s.from, to: s.to, user: String(s.user ?? ''), password: s.password || db.alertSettings.smtp?.password || '' };
+  }
+  db.alertSettings = { webhook_url: b.webhook_url || null, smtp, min_severity: b.min_severity };
+  await audit(u.name, 'settings.alerts', 'settings/alerts', { webhook: !!b.webhook_url, smtp: !!smtp, min_severity: b.min_severity });
+  return [200, pubAlerts()];
+});
+on('POST', '/settings/alerts/test', async (c) => {
+  const u = need(c.user, 'admin');
+  const a = db.alertSettings;
+  const out: Json = {};
+  if (a.webhook_url) out.webhook = /bad|invalid/.test(a.webhook_url) ? 'error: HTTP 404 from the webhook' : 'ok';
+  if (a.smtp) out.smtp = /bad|invalid/.test(a.smtp.host) ? `error: ${a.smtp.host}:${a.smtp.port}: connection refused` : 'ok';
+  await audit(u.name, 'settings.alerts_test', 'settings/alerts', out);
+  return [200, out];
+});
+
+// ---- appliance SSH keys (§4)
+on('GET', '/ssh-keys', (c) => (need(c.user, 'admin', 'operator', 'security_officer'), [200, db.sshKeys]));
+on('POST', '/ssh-keys/:name/rotate', (c, [name]) => {
+  const u = need(c.user, 'admin');
+  const k = find(db.sshKeys, (x) => x.name === name, 'ssh key');
+  if (k.previous) throw new HttpError(409, 'retire the old key first');
+  return quorum(u, 'ssh_key.rotate', { name: k.name, fingerprint: k.fingerprint });
+});
+on('POST', '/ssh-keys/:name/retire', async (c, [name]) => {
+  const u = need(c.user, 'admin');
+  const k = find(db.sshKeys, (x) => x.name === name, 'ssh key');
+  if (!k.previous) throw new HttpError(409, 'there is no old key to retire');
+  const old = k.previous.fingerprint;
+  k.previous = null;
+  await audit(u.name, 'ssh_key.retire', `ssh_key/${name}`, { fingerprint: old });
+  return [200, k];
+});
+
+// ---- updates (§5)
+const pubUpdates = () => {
+  const x = db.updates;
+  if (x.status === 'checking' && now() - x.checking_since >= 3) Object.assign(x, { status: x.staged ? 'staged' : 'idle', last_check: now() });
+  const { checking_since: _c, ...rest } = x;
+  return rest;
+};
+on('GET', '/updates', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, pubUpdates()]));
+on('POST', '/updates/check', async (c) => {
+  const u = need(c.user, 'admin');
+  Object.assign(db.updates, { status: 'checking', checking_since: now() });
+  await audit(u.name, 'update.check', 'updates', {});
+  return [202, pubUpdates()];
+});
+on('POST', '/updates/apply', (c) => {
+  const u = need(c.user, 'admin');
+  if (!db.updates.available) throw new HttpError(409, 'no update available');
+  if (db.updates.staged) throw new HttpError(409, 'an update is already staged');
+  return quorum(u, 'update.apply', { version: db.updates.available.version, digest: db.updates.available.digest });
 });
 
 // ---------------------------------------------------------------- server glue

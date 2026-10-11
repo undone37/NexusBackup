@@ -50,6 +50,7 @@
 <div class="page-head">
   <h1>{t.jobs.title}</h1>
   <button type="button" onclick={load}>{t.refresh}</button>
+  <p class="lede">{t.jobs.lede}</p>
 </div>
 
 <div class="filters" role="search">

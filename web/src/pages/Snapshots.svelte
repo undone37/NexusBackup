@@ -3,12 +3,12 @@
   import { get, post, act, errText, qs } from '../lib/api';
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
-  import { route, navigate, href } from '../lib/router.svelte';
+  import { route, navigate } from '../lib/router.svelte';
   import { fmtBytes, fmtTime, fmtAgo } from '../lib/format';
   import { t } from '../lib/i18n';
   import { notify } from '../lib/notify.svelte';
   import { hostAgentId } from '../lib/jobs';
-  import { parsePluginSnapshot, pluginKinds, snapshotKind } from '../lib/plugins';
+  import { parsePluginSnapshot, pluginKinds, restoreApplies, snapshotKind } from '../lib/plugins';
   import { buildValue, initValues, type FormValues } from '../lib/schema';
   import type { Agent, Plugin, PluginRestore, PveSource, Snapshot, Source, Tenant } from '../lib/types';
   import Check from '../components/Check.svelte';
@@ -16,6 +16,12 @@
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import RestoreFiles from '../components/RestoreFiles.svelte';
   import SchemaForm from '../components/SchemaForm.svelte';
+  import Menu, { type MenuItem } from '../components/Menu.svelte';
+  import IconFolder from '@lucide/svelte/icons/folder-open';
+  import IconRestore from '@lucide/svelte/icons/archive-restore';
+  import IconZap from '@lucide/svelte/icons/zap';
+  import IconHost from '@lucide/svelte/icons/hard-drive';
+  import IconPlugin from '@lucide/svelte/icons/puzzle';
 
   let snaps: Snapshot[] = $state([]);
   let tenants: Tenant[] = $state([]);
@@ -172,6 +178,23 @@
     rfOpen = true;
   }
 
+  // Restore options of a snapshot, offered in one menu (long plugin restore titles fit there).
+  function restoreItems(s: Snapshot): MenuItem[] {
+    if (hostAgentId(s.source))
+      return [{ label: t.snap.restorePath, hint: t.snap.restorePathHint, icon: IconHost, onselect: () => openRestoreFiles(s) }];
+    const pl = pluginOf(s);
+    if (pl)
+      return (pl.kind?.restores ?? [])
+        .filter((r) => r.id !== 'download' && restoreApplies(r, pl.guest))
+        .map((r) => ({ label: r.title, hint: r.app_specific ? t.snap.appSpecific : undefined, icon: IconPlugin, onselect: () => openPluginRestore(s, r) }));
+    // TrueNAS datasets and NFS/SMB shares: file download only (docs/truenas-connector.md, docs/nas-connector.md)
+    if (s.source.startsWith('nas-') || s.source.startsWith('share-')) return [];
+    const items: MenuItem[] = [{ label: t.snap.fullRestore, hint: t.snap.fullRestoreHint, icon: IconRestore, onselect: () => openRestore(s, 'restore') }];
+    if (s.source.startsWith('vm-'))
+      items.push({ label: t.snap.instant, hint: t.snap.instantHintShort, icon: IconZap, onselect: () => openRestore(s, 'instant') });
+    return items;
+  }
+
   function browse(s: Snapshot) {
     navigate('/files' + qs({ tenant: s.tenant, source: s.source, time: s.time, path: '/' }));
   }
@@ -179,6 +202,7 @@
 
 <div class="page-head">
   <h1>{t.snap.title}</h1>
+  <p class="lede">{t.snap.lede}</p>
 </div>
 
 <form class="filters" onsubmit={applyFilter} role="search">
@@ -230,6 +254,7 @@
             {@const sh = shareName(s)}
             {@const pl = pluginOf(s)}
             {@const download = pl?.kind?.restores.find((r) => r.id === 'download')}
+            {@const items = restoreItems(s)}
             <tr>
               <td>
                 <span class="mono">{s.source}</span>
@@ -253,28 +278,15 @@
               <td class="nowrap">{s.lock_until > now ? fmtTime(s.lock_until) : '—'}</td>
               {#if can.restore(session.user)}
                 <td class="actions">
-                  {#if hostAgentId(s.source)}
-                    <button type="button" class="small" onclick={() => openRestoreFiles(s)}>{t.snap.restorePath}</button>
-                  {:else if pl}
-                    {#each (pl.kind?.restores ?? []).filter((r) => r.id !== 'download') as r (r.id)}
-                      <button type="button" class="small" onclick={() => openPluginRestore(s, r)} title={r.app_specific ? t.snap.appSpecific : undefined}
-                        >{r.title}</button
-                      >
-                    {/each}
-                  {:else if s.source.startsWith('nas-') || s.source.startsWith('share-')}
-                    <!-- TrueNAS datasets and NFS/SMB shares: file download only (docs/truenas-connector.md, docs/nas-connector.md) -->
-                  {:else}
-                    <button type="button" class="small" onclick={() => openRestore(s, 'restore')}>{t.snap.restore}</button>
-                  {/if}
-                  {#if s.source.startsWith('vm-')}
-                    <button type="button" class="small" onclick={() => openRestore(s, 'instant')}>{t.snap.instant}</button>
-                  {/if}
                   <button
                     type="button"
                     class="small"
                     onclick={() => browse(s)}
-                    title={pl && !pl.kind ? t.snap.pluginUnknown : undefined}>{download?.title ?? t.snap.browse}</button
+                    title={pl && !pl.kind ? t.snap.pluginUnknown : undefined}><IconFolder aria-hidden="true" />{download?.title ?? t.snap.browse}</button
                   >
+                  {#if items.length}
+                    <Menu label={t.snap.restoreMenu} ariaLabel={t.snap.restoreMenuLabel(s.source)} {items} />
+                  {/if}
                 </td>
               {/if}
             </tr>
@@ -351,4 +363,3 @@
   <RestoreFiles bind:open={rfOpen} tenant={rfSnap.tenant} source={rfSnap.source} time={rfSnap.time} paths={['/']} {agents} />
 {/if}
 
-<p class="muted"><a href={href('/jobs')}>{t.nav.jobs} →</a></p>

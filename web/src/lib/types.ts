@@ -12,6 +12,8 @@ export interface User {
   created?: number;
   pending_activation?: boolean;
   activation_expires?: number | null;
+  /** Phase 12: `oidc` users sign in through the IdP (no password / TOTP here) */
+  auth?: 'local' | 'oidc';
 }
 
 /** One-time activation code (or half of it) as returned by user create / new_activation / approve. */
@@ -469,6 +471,8 @@ export interface PluginRestore {
   title: string;
   params_schema?: JsonSchema;
   app_specific?: boolean;
+  /** manifest v1.4: which snapshots the restore applies to (default `any`) */
+  applies_to?: 'guest' | 'source' | 'any';
 }
 
 export interface PluginEndpoint {
@@ -558,4 +562,135 @@ export interface PluginGuest {
   id: string;
   title: string;
   size?: number;
+}
+
+// ---------------------------------------------------------------- Phase 12 (docs/phase12-contract.md)
+
+export type Sla = 'ok' | 'breach' | 'never';
+
+/** GET /dashboard?days=7|30 (§1). Byte counts; ratios and forecasts are null when unknown. */
+export interface Dashboard {
+  generated: number;
+  days: number;
+  protection: {
+    objects: number;
+    protected: number;
+    unprotected: number;
+    sla_ok: number;
+    sla_breach: number;
+    never: number;
+    worst: {
+      source: string;
+      name: string;
+      kind: string;
+      tenant: string;
+      last_ok: number | null;
+      age_s: number | null;
+      rpo_s: number;
+      sla: Sla;
+    }[];
+  };
+  jobs: {
+    success_rate: number | null;
+    total: number;
+    ok: number;
+    warning: number;
+    failed: number;
+    per_day: { day: string; ok: number; warning: number; failed: number }[];
+    failed_by_kind: { kind: string; failed: number }[];
+  };
+  capacity: {
+    total: number;
+    used: number;
+    free: number;
+    logical: number;
+    physical: number;
+    reduction: number | null;
+    dedup: number | null;
+    compression: number | null;
+    per_day: { day: string; used: number; logical: number }[];
+    forecast_full_days: number | null;
+  };
+  offsite: {
+    tenants: number;
+    lag_max_s: number | null;
+    lagging: number;
+    lock_coverage: number | null;
+    replication_lag_max_s: number | null;
+    last_verify: number | null;
+    verify_failed: number;
+  };
+}
+
+/** GET /auth/oidc (no session). */
+export interface OidcPublic {
+  enabled: boolean;
+  label?: string;
+}
+
+export interface OidcMapping {
+  group: string;
+  role: Role;
+  tenants: string[];
+}
+
+/** GET/PUT /settings/oidc (§2). `client_secret` is write-only. */
+export interface OidcSettings {
+  enabled: boolean;
+  issuer: string;
+  client_id: string;
+  client_secret_set?: boolean;
+  client_secret?: string;
+  scopes: string[];
+  username_claim: string;
+  groups_claim: string;
+  label: string;
+  mappings: OidcMapping[];
+}
+
+/** GET/PUT /settings/alerts (§3). `smtp.password` is write-only. */
+export interface AlertSettings {
+  webhook_url: string | null;
+  smtp: {
+    host: string;
+    port: number;
+    starttls: boolean;
+    from: string;
+    to: string[];
+    user: string;
+    password_set?: boolean;
+    password?: string;
+  } | null;
+  min_severity: 'info' | 'warning' | 'critical';
+}
+
+/** GET /ssh-keys (§4): public halves only. */
+export interface SshKey {
+  name: string;
+  purpose: string;
+  public_key: string;
+  fingerprint: string;
+  created: number;
+  /** assumption: after a rotation the old key, still valid until retired */
+  previous?: { public_key: string; fingerprint: string; created: number } | null;
+}
+
+export interface UpdateImage {
+  version: string;
+  digest?: string;
+  since?: number;
+}
+
+/** GET /updates (§5): `nexus-update status --json`. */
+export interface UpdatesStatus {
+  booted: UpdateImage;
+  staged: UpdateImage | null;
+  available: UpdateImage | null;
+  channel: string;
+  /** "Sun 03:00 120" = weekday, start, minutes */
+  window: string;
+  last_check: number;
+  status: 'idle' | 'checking' | 'staged' | 'error' | string;
+  error: string | null;
+  rollback: UpdateImage | null;
 }

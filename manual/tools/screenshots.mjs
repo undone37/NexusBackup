@@ -347,7 +347,14 @@ async function main() {
         web01,
       });
       await go('/', 900);
-      await shot('dashboard');
+      await shot('dashboard', { height: 1660 });
+    }],
+    ['dashboard-dark', async () => {
+      await cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }, { name: 'prefers-reduced-motion', value: 'reduce' }] });
+      await go('/', 900);
+      await shot('dashboard-dark', { height: 1660 });
+      await cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }, { name: 'prefers-reduced-motion', value: 'reduce' }] });
+      await sleep(300);
     }],
     ['jobs', async () => {
       await go('/jobs');
@@ -380,11 +387,16 @@ async function main() {
       await shot('snapshots');
       await go(`/snapshots?source=vm-100`);
       await ev(`$rowClick('vm-100', 'Restore'); return true;`);
+      await until(`return !!$button('Full restore')`, 'restore menu');
+      await shot('snapshot-restore-menu');
+      await ev(`$click('Full restore'); return true;`);
       await until(`return !!document.querySelector('dialog[open] #r-target')`, 'restore dialog');
       await ev(`$fill('#r-target', '9100'); $fill('#r-storage', 'local-lvm'); return true;`);
       await shot('snapshot-restore-vm');
       await closeDialogs();
-      await ev(`$rowClick('vm-100', 'Instant recover'); return true;`);
+      await ev(`$rowClick('vm-100', 'Restore'); return true;`);
+      await until(`return !!$button('Instant recover')`, 'restore menu');
+      await ev(`$click('Instant recover'); return true;`);
       await until(`return !!document.querySelector('dialog[open] #r-target')`, 'instant recover dialog');
       await ev(`$fill('#r-target', '9101'); $fill('#r-storage', 'local-lvm'); return true;`);
       await shot('snapshot-instant-recover');
@@ -420,14 +432,18 @@ async function main() {
     }],
     ['plugin-restores', async () => {
       await go(`/snapshots?source=plugin-postgresql-${data.pgId}`);
-      await ev(`$rowClick('plugin-postgresql-${data.pgId}', 'Point-in-time restore'); return true;`);
+      await ev(`$rowClick('plugin-postgresql-${data.pgId}', 'Restore'); return true;`);
+      await until(`return !!$button('Point-in-time restore')`, 'restore menu');
+      await ev(`$click('Point-in-time restore'); return true;`);
       await until(`return !!document.querySelector('dialog[open] input')`, 'PITR dialog');
       await ev(`const ins = $scope().querySelectorAll('input'); const set = (i, v) => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, v); i.dispatchEvent(new Event('input', { bubbles: true })); };
         set(ins[0], '/var/lib/postgresql/18/restore-1013'); set(ins[1], '2026-10-13 21:40:00+00'); return true;`);
       await shot('snapshot-pg-pitr');
       await closeDialogs();
       await go(`/snapshots?source=plugin-postgresql-${data.pgId}-shop`);
-      await ev(`$rowClick('plugin-postgresql-${data.pgId}-shop', 'Restore database dump'); return true;`);
+      await ev(`$rowClick('plugin-postgresql-${data.pgId}-shop', 'Restore'); return true;`);
+      await until(`return !!$button('Restore database dump')`, 'restore menu');
+      await ev(`$click('Restore database dump'); return true;`);
       await until(`return !!document.querySelector('dialog[open] input')`, 'dump restore dialog');
       await ev(`const i = $scope().querySelector('input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, 'shop_restored'); i.dispatchEvent(new Event('input', { bubbles: true })); return true;`);
       await shot('snapshot-pg-to-target');
@@ -548,6 +564,20 @@ async function main() {
       await shot('plugin-install');
       await closeDialogs();
     }],
+    ['settings', async () => {
+      await go('/settings?tab=approvals');
+      await shot('settings-approvals');
+      await go('/settings?tab=alerts');
+      await ev(`$click('Send test'); return true;`);
+      await until(`return !!document.querySelector('.test-result')`, 'alert test result');
+      await shot('settings-alerts', { height: 1250 });
+      await go('/settings?tab=sso');
+      await shot('settings-sso', { height: 1500 });
+      await go('/settings?tab=ssh');
+      await shot('settings-ssh-keys');
+      await go('/settings?tab=updates');
+      await shot('settings-updates');
+    }],
     ['approvals', async () => {
       await go('/quorum');
       await shot('approvals-admin', { height: 1400 });
@@ -574,7 +604,7 @@ async function main() {
     ['approvals-off', async () => {
       // switch approvals off (a request by admin, approved by a security officer) for the remaining pictures
       await login('admin');
-      await go('/quorum');
+      await go('/settings?tab=approvals');
       await ev(`$click('Disable approvals'); return true;`);
       await confirmOk();
       await login('so');
@@ -588,6 +618,22 @@ async function main() {
       await ev(`const c = document.querySelector('.page-head input[type=checkbox]'); if (c?.checked) c.click(); return true;`);
       await sleep(300);
       await shot('approvals-disabled');
+    }],
+    ['login-sso', async () => {
+      jar.clear();
+      await cdp('Page.navigate', { url: BASE + '#/login?oidc_error=denied' });
+      await until(`return !!document.querySelector('#l-name') && !!document.querySelector('a.sso')`, 'sign-in form with single sign-on');
+      await shot('login-sso-error');
+      // the mock has no identity provider: the button signs in as the single-sign-on user lwagner
+      await ev(`document.querySelector('a.sso').click(); return true;`);
+      await until(`return !!document.querySelector('.topbar') && document.body.innerText.includes('lwagner')`, 'single sign-on');
+      await settle();
+      await login('admin');
+      await go('/users');
+      await ev(`$rowClick('lwagner', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #u-role')`, 'user dialog');
+      await shot('user-sso');
+      await closeDialogs();
     }],
     ['activate', async () => {
       jar.clear();

@@ -111,8 +111,8 @@
 <div class="page-head">
   <h1>{t.files.title(source, fmtTime(time))}</h1>
   <a class="button" href={href(`/snapshots?source=${encodeURIComponent(source)}`)}>{t.snap.title}</a>
+  <p class="lede">{tenant}{hostName ? ` · ${t.snap.agent(hostName)}` : ''}</p>
 </div>
-<p class="muted">{tenant}{hostName ? ` · ${t.snap.agent(hostName)}` : ''}</p>
 {#if source.startsWith('plugin-')}<p class="muted">{t.files.streamsHint}</p>{/if}
 
 <ErrorBanner {error} />
