@@ -242,7 +242,7 @@ export const en = {
     compression: 'Compression',
     total: 'Total',
     worst: 'Objects needing attention',
-    worstSub: 'RPO breaches and objects that were never backed up first',
+    worstSub: 'RPO breaches and objects in a group that were never backed up',
     object: 'Object',
     sourceKind: 'Type',
     lastOk: 'Last good backup',

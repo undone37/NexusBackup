@@ -7,8 +7,8 @@
   import { fmtAgo, fmtBytes, fmtDuration, fmtPct, fmtRatio, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import { kindLabel } from '../lib/jobs';
-  import { parsePluginSnapshot } from '../lib/plugins';
-  import type { Agent, Alert, ApprovalsState, Dashboard as DashboardData, Group, Job, Policy, Snapshot, Source } from '../lib/types';
+  import { parsePluginSnapshot, pluginKinds, type KindInfo } from '../lib/plugins';
+  import type { Agent, Alert, ApprovalsState, Dashboard as DashboardData, Group, Job, Plugin, Policy, Snapshot, Source } from '../lib/types';
   import Check from '../components/Check.svelte';
   import JobState from '../components/JobState.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
@@ -53,8 +53,12 @@
   const os = $derived(kpi?.offsite);
   const jb = $derived(kpi?.jobs);
   const usedShare = $derived(cap && cap.total > 0 ? cap.used / cap.total : null);
-  const kindName = (k: string) => t.dash.kinds[k] ?? (k.startsWith('plugin:') ? `Plugin ${k.slice(7)}` : k);
-  const worstKind = (k: string) => (k.startsWith('plugin') ? t.dash.kinds.plugin : (t.dash.kinds[k] ?? k));
+  let kinds: Map<string, KindInfo> = $state(new Map());
+  // plugin kinds by their plugin name (e.g. "PostgreSQL"), else the generic label
+  const kindName = (k: string) => t.dash.kinds[k] ?? kinds.get(k)?.plugin.name ?? (k.startsWith('plugin') ? t.dash.kinds.plugin : k);
+  const worstKind = kindName;
+  // only what needs action; healthy objects are counted in the protection chart
+  const attention = $derived(pr?.worst.filter((w) => w.sla !== 'ok') ?? []);
   const slaCls: Record<string, string> = { ok: 'ok', breach: 'bad', never: 'warn' };
   const toneOf = (bad: boolean, warn: boolean): '' | 'bad' | 'warn' => (bad ? 'bad' : warn ? 'warn' : '');
 
@@ -95,7 +99,9 @@
       error = errText(e);
     }
     try {
-      [agents, sources] = await Promise.all([get<Agent[]>('/agents'), get<Source[]>('/sources')]);
+      let plugins: Plugin[];
+      [agents, sources, plugins] = await Promise.all([get<Agent[]>('/agents'), get<Source[]>('/sources'), get<Plugin[]>('/plugins')]);
+      kinds = pluginKinds(plugins);
     } catch {
       /* agent names / source kinds are cosmetic here */
     }
@@ -347,7 +353,7 @@
     </section>
     <section class="card span-8" aria-labelledby="c-worst">
       <div class="card-head"><div><h2 id="c-worst">{t.dash.worst}</h2><div class="sub">{t.dash.worstSub}</div></div></div>
-      {#if pr.worst.length === 0}
+      {#if attention.length === 0}
         <p class="empty">{t.dash.allGood}</p>
       {:else}
         <div class="table-wrap">
@@ -363,7 +369,7 @@
               </tr>
             </thead>
             <tbody>
-              {#each pr.worst as w (`${w.tenant}/${w.source}`)}
+              {#each attention as w (`${w.tenant}/${w.source}`)}
                 <tr>
                   <td>{w.name}<div class="muted mono">{w.source}</div></td>
                   {#if !session.user?.tenant}<td>{w.tenant}</td>{/if}
