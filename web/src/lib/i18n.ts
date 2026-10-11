@@ -735,6 +735,7 @@ export const en = {
     } as Record<string, string>,
     readOnly: 'Read-only: only administrators change these settings.',
     test: 'Send test',
+    testConnection: 'Test connection',
     testing: 'Testing…',
     al: {
       intro:

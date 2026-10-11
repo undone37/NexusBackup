@@ -12,7 +12,7 @@
   import IconPlus from '@lucide/svelte/icons/plus';
   import IconTrash from '@lucide/svelte/icons/trash';
   import IconCopy from '@lucide/svelte/icons/copy';
-  import IconSend from '@lucide/svelte/icons/send';
+  import IconSend from '@lucide/svelte/icons/plug-zap';
 
   const id = $props.id();
   const admin = $derived(session.user?.role === 'admin');
@@ -235,7 +235,7 @@
         <p class="muted">{t.settings.oidc.quorumHint}</p>
         <div class="form-actions">
           <button type="button" onclick={test} disabled={testing} title={t.settings.oidc.testIntro}
-            ><IconSend aria-hidden="true" />{testing ? t.settings.testing : t.settings.test}</button
+            ><IconSend aria-hidden="true" />{testing ? t.settings.testing : t.settings.testConnection}</button
           >
           <button type="submit" class="primary" disabled={busy}>{t.save}</button>
         </div>
