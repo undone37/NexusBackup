@@ -1056,7 +1056,7 @@ const PLUGIN_MANIFEST: &str = r#"{"id":"pgx","name":"PG","version":"1.2.0","publ
  "kinds":[{"kind":"pgx","title":"PG","config_schema":{"type":"object","properties":{"host":{"type":"string"},"port":{"type":"integer"},"tls_key":{"type":"string"}}},
   "secret_fields":["tls_key"],"endpoints":[{"host":"/host","port":"/port","default_port":5432,"proto":"tcp"}],
   "guests":{"title":"Databases","list":true},
-  "restores":[{"id":"download","title":"Download"},{"id":"to_target","title":"Restore"},{"id":"mount","title":"Mount"}]}]}"#;
+  "restores":[{"id":"download","title":"Download"},{"id":"to_target","title":"Restore"},{"id":"to_other","title":"Other","target_source":true},{"id":"mount","title":"Mount"}]}]}"#;
 
 /// Plugin sources: job configs (secret opened, plugin record from the catalog),
 /// one snapshot source per guest, retention by prefix, store-only downloads,
@@ -1173,6 +1173,46 @@ esac"
     let c: Value = serde_json::from_slice(&p.files[0].1).unwrap();
     assert_eq!(c["mount"]["minutes"], 1440);
     assert_eq!(s.plugin_targets().unwrap(), [("db.lab".to_owned(), 5433)]);
+
+    // contract v1.6: restore with another source of the same tenant and kind (its secrets opened)
+    let mut cfg10 = json!({"host": "db10.lab", "tls_key": "OTHER"});
+    s.secrets
+        .public()
+        .seal_all_with(&source_owner(10), &mut cfg10, &["tls_key"])
+        .unwrap();
+    s.db.conn()
+        .execute(
+            "INSERT INTO sources (id, tenant, kind, name, config) VALUES (10,'t1','plugin:pgx','pg-new',?1)",
+            [cfg10.to_string()],
+        )
+        .unwrap();
+    let other = |restore: &str, target: i64| {
+        job(
+            36,
+            "plugin_restore",
+            json!({"source": "plugin-pgx-9-db1", "time": 5, "restore": restore, "target_source_id": target}),
+        )
+    };
+    let p = s.plan(&other("to_other", 10)).unwrap();
+    let c: Value = serde_json::from_slice(&p.files[0].1).unwrap();
+    assert_eq!(
+        (
+            &c["source_id"],
+            &c["restore"]["target"]["source_id"],
+            &c["restore"]["target"]["config"]["tls_key"]
+        ),
+        (&json!(9), &json!(10), &json!("OTHER"))
+    );
+    assert!(
+        s.plan(&other("to_target", 10)).is_err(),
+        "restore without target_source"
+    );
+    assert!(s.plan(&other("to_other", 99)).is_err(), "unknown source");
+    s.db.conn()
+        .execute("UPDATE sources SET tenant = 't2' WHERE id = 10", [])
+        .unwrap();
+    assert!(s.plan(&other("to_other", 10)).is_err(), "source of another tenant");
+    s.db.conn().execute("DELETE FROM sources WHERE id = 10", []).unwrap();
 
     let b = manual(&s, "plugin_backup", "t1", json!({"source_id": 9}));
     let v = manual(&s, "plugin_validate", "t1", json!({"source_id": 9}));
