@@ -411,6 +411,7 @@
 </form>
 
 <ErrorBanner {error} />
+{#if session.vault}<p class="banner pending" role="status">{t.vault.restoreHint}</p>{/if}
 
 <div class="card">
   {#if !loaded}
@@ -584,7 +585,7 @@
       </fieldset>
       <div class="form-actions">
         <button type="button" onclick={() => (dlgOpen = false)}>{t.cancel}</button>
-        <button type="submit" class="primary" disabled={busy}>{t.snap.start}</button>
+        <button type="submit" class="primary" disabled={busy}>{session.vault ? t.vault.requestRestore : t.snap.start}</button>
       </div>
     </form>
   {/if}
@@ -657,7 +658,7 @@
     </div>
     <div class="form-actions">
       <button type="button" onclick={() => (manyOpen = false)}>{t.cancel}</button>
-      <button type="submit" class="primary" disabled={busy || !manyPicked.length}>{t.snap.start}</button>
+      <button type="submit" class="primary" disabled={busy || !manyPicked.length}>{session.vault ? t.vault.requestRestore : t.snap.start}</button>
     </div>
   </form>
 </Modal>
@@ -697,7 +698,7 @@
       {/if}
       <div class="form-actions">
         <button type="button" onclick={() => (prOpen = false)}>{t.cancel}</button>
-        <button type="submit" class="primary" disabled={busy}>{t.snap.start}</button>
+        <button type="submit" class="primary" disabled={busy}>{session.vault ? t.vault.requestRestore : t.snap.start}</button>
       </div>
     </form>
   {/if}

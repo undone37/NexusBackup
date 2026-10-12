@@ -75,8 +75,10 @@
   const kindName = (k: string) => t.dash.kinds[k] ?? kinds.get(k)?.plugin.name ?? (k.startsWith('plugin') ? t.dash.kinds.plugin : k);
   const worstKind = kindName;
   // only what needs action; healthy objects are counted in the protection chart
-  const attention = $derived(pr?.worst.filter((w) => w.sla !== 'ok') ?? []);
-  const slaCls: Record<string, string> = { ok: 'ok', breach: 'bad', never: 'warn', paused: 'plain' };
+  const attention = $derived(pr?.worst.filter((w) => w.sla !== 'ok' && w.sla !== 'deactivated') ?? []);
+  const slaCls: Record<string, string> = { ok: 'ok', breach: 'bad', never: 'warn', paused: 'plain', deactivated: 'plain' };
+  // Phase 17f: deactivated tenants (no backups on purpose: never a breach)
+  const offTenants = $derived(pr?.deactivated_tenants ?? []);
   const toneOf = (bad: boolean, warn: boolean): '' | 'bad' | 'warn' => (bad ? 'bad' : warn ? 'warn' : '');
 
   let groups: Group[] = $state([]);
@@ -251,7 +253,8 @@
   const showAlerts = $derived(can.viewAlerts(session.user));
   const policyOf = (g: Group) => policies.find((p) => p.id === g.policy_id);
 
-  function status(g: Group, s: Snapshot | undefined): 'ok' | 'stale' | 'missing' | 'paused' {
+  function status(g: Group, s: Snapshot | undefined): 'ok' | 'stale' | 'missing' | 'paused' | 'deactivated' {
+    if (offTenants.includes(g.tenant)) return 'deactivated';
     if (!s) return 'missing';
     // same rule as the KPIs (docs/phase12-contract.md §1): breach after 1.5 × the policy period (RPO)
     const rpo = schedulePeriod(policyOf(g)?.schedule ?? '');
@@ -260,7 +263,7 @@
     // paused on purpose (Phase 13b): not overdue
     return isPaused(g.paused_until) || isPaused(g.maintenance_until) ? 'paused' : 'stale';
   }
-  const statusCls = { ok: 'ok', stale: 'bad', missing: 'bad', paused: 'plain' };
+  const statusCls = { ok: 'ok', stale: 'bad', missing: 'bad', paused: 'plain', deactivated: 'plain' };
 
 
   let bnOpen = $state(false);
@@ -294,6 +297,9 @@
   <div class="banner warn few-approvers" role="status">
     <span>{t.access.fewApprovers(approvals.possible_approvers)} <a href={href('/settings?tab=approvals')}>{t.dash.approvalsLink}</a></span>
   </div>
+{/if}
+{#if offTenants.length}
+  <p class="banner" role="status">{t.tdis.dashBanner(offTenants)}{#if session.user?.role === 'admin'} <a href={href('/tenants')}>{t.tenants.title}</a>{/if}</p>
 {/if}
 {#if kpiError}<p class="banner warn" role="status">{kpiError}</p>{/if}
 
@@ -559,7 +565,7 @@
                     <span class="muted">{ver ? fmtAgo(ver.time) : ''}</span>
                   </td>
                   <td>{#if s}<ConsistencyBadge level={s.consistency} />{/if}</td>
-                  <td><span class="chip {statusCls[st]}">{st === 'paused' ? t.runctl.paused : t.dash[st]}</span></td>
+                  <td><span class="chip {statusCls[st]}">{st === 'paused' ? t.runctl.paused : st === 'deactivated' ? t.tdis.deactivated : t.dash[st]}</span></td>
                   {#if can.backup(session.user) && i === 0}
                     <td class="actions" rowspan={guestsOf(g).length}>
                       <button type="button" class="small" onclick={() => backupNow(g)}><IconPlay aria-hidden="true" />{t.dash.runBackup}</button>

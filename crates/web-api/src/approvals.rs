@@ -86,6 +86,7 @@ pub async fn set_approvals(State(st): State<St>, ctx: Ctx, J(r): J<ApprovalsReq>
         )?;
         return Ok(Json(json!({"enabled": true})).into_response());
     }
+    crate::vault::refuse(&st.cat.conn(), "requests to disable approvals")?;
     let open: i64 = st.cat.conn().query_row(
         "SELECT COUNT(*) FROM quorum WHERE action = 'approvals.disable' AND state = 'pending'",
         [],

@@ -149,6 +149,12 @@ pub fn disable_approvals(paths: &Paths, recovery_key: &str) -> Result<i64> {
         if !catalog::approvals_enabled(&tx)? {
             bail!("approvals are already disabled");
         }
+        if catalog::vault::enabled(&tx)? {
+            bail!(
+                "vault mode is on: approvals stay enabled. Reset approver accounts with recover-admin instead, \
+                 or switch vault mode off first (approved vault.disable, then nexus-setup vault-disable)"
+            );
+        }
         let approvers = catalog::possible_approvers(&tx)?;
         catalog::set_setting(&tx, "approvals_enabled", "false")?;
         tx.execute(
@@ -174,6 +180,67 @@ pub fn disable_approvals(paths: &Paths, recovery_key: &str) -> Result<i64> {
         &json!({"enabled": false, "possible_approvers": approvers, "alert": alert}),
     )?;
     Ok(alert)
+}
+
+/// `nexus-setup vault-disable` (Phase 17c): the second half of switching vault
+/// mode off. Needs a `vault.disable` request approved in the web UI within the
+/// last 72 h and the recovery key (checked against keyd's escrow like
+/// `recover-admin`; the web-api never sees it). Turns the profile off, marks
+/// the request executed, audits `vault.disable` (actor `console`) and raises the
+/// warning alert `vault_disabled`. Returns the quorum id.
+pub fn vault_disable(paths: &Paths, recovery_key: &str) -> Result<i64> {
+    if !paths.setup_done.exists() {
+        bail!("the appliance is not set up yet");
+    }
+    keyd::check_recovery_key(&paths.keyd_dir, recovery_key.trim())
+        .map_err(|e| anyhow::anyhow!("recovery key rejected: {e}"))?;
+    let cat = Catalog::open(&paths.catalog).with_context(|| format!("opening {}", paths.catalog.display()))?;
+    let (id, requested_by, approved_by) = {
+        let mut c = cat.conn();
+        let tx = c.transaction()?;
+        if !catalog::vault::enabled(&tx)? {
+            bail!("vault mode is not on");
+        }
+        let req: Option<(i64, String, String)> = tx
+            .query_row(
+                "SELECT id, requested_by, decided_by FROM quorum WHERE action = ?1 AND state = 'approved'
+                 AND decided_at > ?2 ORDER BY id DESC LIMIT 1",
+                params![
+                    catalog::vault::DISABLE,
+                    catalog::now() - catalog::vault::DISABLE_VALID_SECS
+                ],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((id, requested_by, approved_by)) = req else {
+            bail!(
+                "no approved vault.disable request from the last 72 hours: an admin requests it in \
+                 Settings → Vault and another approver approves it first"
+            );
+        };
+        catalog::vault::store(&tx, &catalog::vault::Vault::default())?;
+        tx.execute("UPDATE quorum SET state = 'executed' WHERE id = ?1", [id])?;
+        tx.execute(
+            "INSERT INTO alerts (ts, last_ts, severity, kind, key, message) VALUES (?1, ?1, 'warning', 'vault_disabled',
+             'vault_disabled', ?2)",
+            params![
+                catalog::now(),
+                format!(
+                    "vault mode was switched off at the console with the recovery key (request {id} by {requested_by}, \
+                     approved by {approved_by})"
+                )
+            ],
+        )?;
+        tx.commit()?;
+        (id, requested_by, approved_by)
+    };
+    cat.audit(
+        ACTOR,
+        catalog::vault::DISABLE,
+        "settings/vault_mode",
+        &json!({"quorum_id": id, "requested_by": requested_by, "approved_by": approved_by}),
+    )?;
+    Ok(id)
 }
 
 /// `nexus-setup reset-firewall` (Phase 16c; `reset-mgmt-allow` is the 14d
@@ -328,6 +395,83 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn vault_disable_needs_an_approved_request_and_the_recovery_key() {
+        let (_d, paths, rk) = appliance();
+        let cat = Catalog::open(&paths.catalog).unwrap();
+        assert!(vault_disable(&paths, &rk).unwrap_err().to_string().contains("not on"));
+        let on = catalog::vault::Vault {
+            enabled: true,
+            since: Some(1),
+            by: Some("root-admin".into()),
+        };
+        catalog::vault::store(&cat.conn(), &on).unwrap();
+        catalog::set_setting(&cat.conn(), "approvals_enabled", "true").unwrap();
+        assert!(
+            disable_approvals(&paths, &rk)
+                .unwrap_err()
+                .to_string()
+                .contains("vault mode"),
+            "approvals stay on in vault mode"
+        );
+        assert!(vault_disable(&paths, &rk)
+            .unwrap_err()
+            .to_string()
+            .contains("no approved"));
+        let now = catalog::now();
+        cat.conn()
+            .execute(
+                "INSERT INTO quorum (action, params, requested_by, created, decided_by, decided_at, state)
+                 VALUES ('vault.disable', '{}', 'root-admin', ?1, 'sam', ?2, 'approved')",
+                params![now - 80 * 3600, now - 73 * 3600],
+            )
+            .unwrap();
+        assert!(
+            vault_disable(&paths, &rk)
+                .unwrap_err()
+                .to_string()
+                .contains("no approved"),
+            "approval older than 72 h"
+        );
+        cat.conn()
+            .execute(
+                "INSERT INTO quorum (action, params, requested_by, created, decided_by, decided_at, state)
+                 VALUES ('vault.disable', '{}', 'root-admin', ?1, 'sam', ?1, 'approved')",
+                [now],
+            )
+            .unwrap();
+        let wrong = keyd::format_recovery_key(&[9; 32]);
+        assert!(vault_disable(&paths, &wrong)
+            .unwrap_err()
+            .to_string()
+            .contains("recovery key"));
+        assert!(catalog::vault::enabled(&cat.conn()).unwrap());
+        let id = vault_disable(&paths, &rk).unwrap();
+        assert!(!catalog::vault::enabled(&cat.conn()).unwrap());
+        let state: String = cat
+            .conn()
+            .query_row("SELECT state FROM quorum WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(state, "executed");
+        let n: i64 = cat
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM audit WHERE action = 'vault.disable' AND actor = 'console'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        let alert: i64 = cat
+            .conn()
+            .query_row("SELECT COUNT(*) FROM alerts WHERE kind = 'vault_disabled'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(alert, 1);
+        assert!(vault_disable(&paths, &rk).is_err(), "already off");
     }
 
     #[test]

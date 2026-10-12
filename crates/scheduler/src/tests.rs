@@ -1949,6 +1949,8 @@ mod restore_files;
 mod runctl;
 /// Phase 15g file search and name index jobs.
 mod search;
+/// Phase 17f tenant deactivation.
+mod tenants;
 
 /// Phase 15d: the connector's `consistency` line ends up in the job result and
 /// `snapshots.consistency`; the policy's `require_consistency` warns (one alert

@@ -244,6 +244,11 @@ If the lost appliance replicated a tenant to a second appliance, the data is alr
 
 ![Replicated snapshots on the secondary](images/snapshots-replicated.png)
 
+If the secondary runs in **vault mode** ([08 Replication](08-replication.md#vault-mode-secondary-only)), every
+restore and download is a request that a second person approves first: plan for two people (an administrator or
+operator who requests, an administrator or security officer who approves). Vault mode stays on during the recovery;
+switching it off needs the recovery key at the console (`nexus-setup vault-disable`) and is not needed for restores.
+
 The secondary keeps its own retention and never deletes because the primary deleted. It cannot be "promoted" to a
 primary: replicated tenants take no new backups on the secondary. To protect the sources again, set up a primary
 (the repaired or a new appliance) and configure the tenant there.

@@ -102,6 +102,11 @@ export interface Tenant {
   offsite: TenantOffsite;
   /** soft storage quota in bytes (Phase 13d); null = none */
   quota_bytes?: number | null;
+  /** Phase 17f: deactivated (no backups, offsite, replication; its accounts are refused) */
+  disabled?: boolean;
+  disabled_at?: number | null;
+  disabled_by?: string | null;
+  disabled_reason?: string | null;
 }
 
 /** Config of a `pve` source. */
@@ -668,6 +673,26 @@ export interface LoginResponse {
   user: User;
   /** a console root shell is running (14c; GET /auth/me) */
   console_shell?: ConsoleShell | null;
+  /** Phase 17c: vault mode is on (restores and downloads need approval) */
+  vault_mode?: boolean;
+}
+
+/** `GET /vault` (Phase 17c); `checks` and the requests only for appliance-wide roles. */
+export interface VaultState {
+  enabled: boolean;
+  since: number | null;
+  by: string | null;
+  ready?: boolean;
+  checks?: {
+    secondary: { ok: boolean; sources: number };
+    no_local_tenants: { ok: boolean; tenants: string[] };
+    no_peers: { ok: boolean; peers: number };
+    approvals: { ok: boolean };
+    web_restricted: { ok: boolean; allow: string[] };
+  };
+  pending_enable?: number | null;
+  pending_disable?: number | null;
+  approved_disable?: number | null;
 }
 
 // ---------------------------------------------------------------- console root access (14c)
@@ -849,7 +874,7 @@ export interface PluginGuest {
 
 // ---------------------------------------------------------------- Phase 12 (docs/phase12-contract.md)
 
-export type Sla = 'ok' | 'breach' | 'never' | 'paused';
+export type Sla = 'ok' | 'breach' | 'never' | 'paused' | 'deactivated';
 
 /** GET /dashboard?days=7|30 (§1). Byte counts; ratios and forecasts are null when unknown. */
 export interface Dashboard {
@@ -865,6 +890,9 @@ export interface Dashboard {
     sla_breach: number;
     /** behind the RPO, but every group of the object is paused (no breach) */
     sla_paused?: number;
+    /** Phase 17f: objects of deactivated tenants, and those tenants */
+    sla_deactivated?: number;
+    deactivated_tenants?: string[];
     never: number;
     /** Phase 13c: what no group protects (inventory guests, agents, shares), at most 200 */
     unprotected_list?: {
