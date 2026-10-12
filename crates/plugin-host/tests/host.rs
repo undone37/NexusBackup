@@ -122,6 +122,7 @@ fn backup_incremental_restore_download() {
         log.contains("plugin[info]: line1\\ncommitted vm-1/2: forged\\u{1b}[31m"),
         "{log}"
     );
+    assert_eq!(r.meta, None);
     let snap = Snapshot::load(&e.store, "plugin-testplug-1", r.time).unwrap();
     assert_eq!(snap.files.len(), 1);
     assert_eq!(snap.streams[0].path, "dump/db.sql");
@@ -233,6 +234,19 @@ fn validate_guests_mount() {
     let s: Value = serde_json::from_str(r["summary"].as_str().unwrap()).unwrap();
     assert_eq!(s, json!({"read": "bcd", "missing_error": true}));
     assert!(out.iter().any(|l| l.starts_with("mount-ready ")));
+}
+
+/// v1.6 snapshot metadata: one JSON object per backup, returned in the report.
+#[test]
+fn snapshot_meta() {
+    let e = env();
+    let m = json!({"recoverable": {"from_time": 1, "to_lsn": "0/3000000"}});
+    let (r, _) = e.backup(json!({"mode": "ok", "meta": m}));
+    assert_eq!(r.unwrap().meta, Some(m.clone()));
+    let (r, _) = e.backup(json!({"mode": "ok", "meta": m, "meta_twice": true}));
+    assert!(format!("{:#}", r.unwrap_err()).contains("SnapshotMeta sent twice"));
+    let (r, _) = e.backup(json!({"mode": "ok", "meta": [1]}));
+    assert!(format!("{:#}", r.unwrap_err()).contains("snapshot metadata"));
 }
 
 /// Every protocol violation fails the backup, kills the plugin and commits nothing.

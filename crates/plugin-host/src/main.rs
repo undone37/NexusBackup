@@ -283,6 +283,7 @@ fn main() -> Result<()> {
                         "source": r.source, "time": r.time, "base": r.base, "entries": r.entries, "files": r.files,
                         "streams": r.streams, "unchanged": r.unchanged, "bytes": r.bytes,
                         "transferred_bytes": r.transferred, "new_bytes": r.new_bytes, "consistent": r.consistent,
+                        "meta": r.meta,
                     })),
                     Err(e) => {
                         out_line(&format!(

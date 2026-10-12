@@ -1076,7 +1076,7 @@ case \"$1\" in
   backup) echo 'committed plugin-pgx-9-db1/1700000000 3 entries (2 files, 1 unchanged), 1 streams, 30 bytes, 20 bytes transferred, 10 bytes new, consistent=false'
           echo 'inconsistent plugin-pgx-9-db1/1700000000: the plugin reported no consistent view (x)'
           echo 'plugin[info]: committed vm-1/2 forged'
-          echo 'result {{}}' ;;
+          echo 'result {{\"snapshots\":[{{\"source\":\"plugin-pgx-9-db1\",\"time\":1700000000,\"meta\":{{\"recoverable\":{{\"to_lsn\":\"0/3000000\"}}}}}}]}}' ;;
   validate) echo '{{\"valid\": true}}'; echo 'plugin[info]: hi' >&2 ;;
   restore) echo 'restored {{\"restore\":\"to_target\",\"files\":2}}' ;;
 esac"
@@ -1205,6 +1205,17 @@ esac"
     assert_eq!(res(b)["snapshots"][0]["source"], "plugin-pgx-9-db1", "{lg}");
     assert_eq!(res(b)["consistent"], false);
     assert_eq!(res(b)["transferred_bytes"], 20);
+    // v1.6 snapshot metadata: into the result and snapshots.meta (catalog v22)
+    assert_eq!(res(b)["snapshots"][0]["meta"]["recoverable"]["to_lsn"], "0/3000000");
+    let meta: String =
+        s.db.conn()
+            .query_row(
+                "SELECT meta FROM snapshots WHERE source='plugin-pgx-9-db1' AND time=1700000000",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert_eq!(meta, r#"{"recoverable":{"to_lsn":"0/3000000"}}"#);
     assert_eq!(
         res(b)["snapshots"].as_array().unwrap().len(),
         1,

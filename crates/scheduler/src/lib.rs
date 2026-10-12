@@ -86,6 +86,7 @@ mod runctl;
 pub mod schedule;
 pub mod search;
 mod selection;
+mod snapmeta;
 pub mod sshkeys;
 pub mod stats;
 
@@ -1169,6 +1170,9 @@ impl Scheduler {
         } else {
             self.failed_result(&job, &log)
         };
+        if ok && job.kind == "plugin_backup" {
+            self.meta_bookkeeping(&job, result.as_ref())?;
+        }
         if ok && (job.kind == "backup" || job.kind == "plugin_backup") {
             // snapshots.consistency + policy `require_consistency` (crate::consistency)
             if let Some(why) = self.consistency_bookkeeping(&job, result.as_ref())? {
@@ -1501,6 +1505,7 @@ impl Scheduler {
                     })
                     .collect();
                 self.add_consistency(&job.tenant, log, &mut snaps);
+                snapmeta::attach(log, &mut snaps);
                 let mut r = json!({ "snapshots": snaps });
                 if let [one] = snaps.as_slice() {
                     for k in ["source", "time", "consistent", "consistency", "transferred_bytes"] {

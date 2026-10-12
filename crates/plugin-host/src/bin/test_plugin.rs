@@ -218,6 +218,12 @@ fn main() {
                 },
             );
             send(&mut w, &Message::StreamEnd);
+            if let Some(m) = cfg.get("meta") {
+                // v1.6; twice when asked to (a violation)
+                for _ in 0..if cfg["meta_twice"] == true { 2 } else { 1 } {
+                    send(&mut w, &Message::SnapshotMeta { json: m.to_string() });
+                }
+            }
             send(
                 &mut w,
                 &Message::Done {

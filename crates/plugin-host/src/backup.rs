@@ -221,6 +221,8 @@ pub struct Report {
     pub new_bytes: u64,
     pub consistent: bool,
     pub summary: String,
+    /// v1.6 `SnapshotMeta` (a JSON object), kept in the appliance catalog
+    pub meta: Option<serde_json::Value>,
 }
 
 /// Plugin log/progress output with a per-job budget.
@@ -530,6 +532,12 @@ pub fn run(store: &Store, peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&
                     chunks: c.chunks,
                 });
             }
+            Message::SnapshotMeta { json } => {
+                if r.meta.is_some() {
+                    return Err(peer.violation("SnapshotMeta sent twice"));
+                }
+                r.meta = Some(serde_json::from_str(&json).map_err(|_| peer.violation("SnapshotMeta: bad JSON"))?);
+            }
             Message::Done {
                 state,
                 consistent,
@@ -617,6 +625,7 @@ pub(crate) fn msg_name(m: &Message) -> &'static str {
         Message::Error { .. } => "Error",
         Message::BaseList { .. } => "BaseList",
         Message::TaggedGuests { .. } => "TaggedGuests",
+        Message::SnapshotMeta { .. } => "SnapshotMeta",
     }
 }
 

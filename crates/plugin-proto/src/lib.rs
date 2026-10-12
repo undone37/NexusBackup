@@ -201,7 +201,17 @@ pub enum Message {
     TaggedGuests {
         list: Vec<TaggedGuest>,
     },
+    // v1.6 (appended)
+    /// Metadata of the snapshot being written (plugin → host, backup only, at most
+    /// once, before `Done`): a JSON object of at most `MAX_SNAPSHOT_META` bytes that
+    /// the appliance keeps with the snapshot in its catalog (e.g. PostgreSQL's
+    /// recoverable range, shown in the restore dialog).
+    SnapshotMeta {
+        json: String,
+    },
 }
+
+pub const MAX_SNAPSHOT_META: usize = 16 << 10;
 
 fn bad(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
@@ -299,6 +309,12 @@ pub fn check(m: &Message) -> io::Result<()> {
         }
         Message::Log { text, .. } | Message::Error { message: text, .. } if text.len() > 64 << 10 => {
             Err(bad("log text too long"))
+        }
+        Message::SnapshotMeta { json }
+            if json.len() > MAX_SNAPSHOT_META
+                || !serde_json::from_str::<serde_json::Value>(json).is_ok_and(|v| v.is_object()) =>
+        {
+            Err(bad("snapshot metadata: a JSON object of at most 16 KiB"))
         }
         _ => Ok(()),
     }
@@ -619,6 +635,23 @@ mod tests {
     /// v1.5 tags are a new appended variant: a v1.4 plugin's `Guests` frame is byte
     /// for byte what it was (old plugins keep working), `TaggedGuests` round-trips and
     /// its limits hold.
+    /// v1.6: `SnapshotMeta` is appended (after `TaggedGuests`); only small JSON objects pass.
+    #[test]
+    fn snapshot_meta() {
+        let m = Message::SnapshotMeta {
+            json: r#"{"recoverable":{"from_time":1}}"#.into(),
+        };
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &m).unwrap();
+        assert_eq!(buf[4], 25, "wire index: after TaggedGuests (24)");
+        assert_eq!(read_msg(&mut &buf[..]).unwrap(), m);
+        for bad in ["[1]", "nope", r#""x""#] {
+            assert!(check(&Message::SnapshotMeta { json: bad.into() }).is_err(), "{bad}");
+        }
+        let big = format!(r#"{{"a":"{}"}}"#, "x".repeat(MAX_SNAPSHOT_META));
+        assert!(check(&Message::SnapshotMeta { json: big }).is_err());
+    }
+
     #[test]
     fn tagged_guests_are_wire_compatible() {
         let g = Guest {

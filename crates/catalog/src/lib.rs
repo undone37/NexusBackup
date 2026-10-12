@@ -453,10 +453,16 @@ ALTER TABLE agents ADD COLUMN cert_sha256_next TEXT;
 ALTER TABLE agents ADD COLUMN limits TEXT NOT NULL DEFAULT '{}';
 "#;
 
+/// v22 (Phase 18b): `snapshots.meta` — the plugin's snapshot metadata (protocol
+/// v1.6 `SnapshotMeta`, a JSON object, e.g. PostgreSQL's recoverable range), set
+/// from the backup job's result. Generic: any plugin may use it. Additive (the
+/// previous release never reads it; the snapshot refresh keeps it).
+const SCHEMA_V22: &str = "ALTER TABLE snapshots ADD COLUMN meta TEXT;";
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
-    SCHEMA_V20, SCHEMA_V21,
+    SCHEMA_V20, SCHEMA_V21, SCHEMA_V22,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1266,6 +1272,32 @@ mod tests {
     /// exclude no disks and run one guest at a time, policies have no global file
     /// filters, agents have no limits and an unknown certificate validity. The
     /// previous release still reads and writes groups, policies and agents.
+    #[test]
+    fn migration_v22_snapshot_meta() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V22).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('acme', 'plugin-postgresql-1', 5, 1, 0);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let m: Option<String> = conn
+            .query_row("SELECT meta FROM snapshots WHERE time = 5", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(m, None);
+        conn.execute("UPDATE snapshots SET meta = '{\"a\":1}' WHERE time = 5", [])
+            .unwrap();
+    }
+
     #[test]
     fn migration_v21_selection_agents() {
         let d = tempfile::tempdir().unwrap();

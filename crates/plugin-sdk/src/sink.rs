@@ -114,6 +114,15 @@ impl Sink {
         )
     }
 
+    /// v1.6: metadata the appliance keeps with this snapshot in its catalog (a JSON
+    /// object ≤ 16 KiB, at most once per backup; needs a v1.6 host).
+    pub fn snapshot_meta(&mut self, meta: &serde_json::Value) -> Result<()> {
+        if !meta.is_object() {
+            bail!("snapshot metadata must be a JSON object");
+        }
+        send(&self.chan, &Message::SnapshotMeta { json: meta.to_string() })
+    }
+
     /// Metadata of these paths in the base snapshot (missing paths are omitted).
     pub fn base(&mut self, paths: &[Vec<u8>]) -> Result<Vec<BaseEntry>> {
         if !self.has_base || paths.is_empty() {
