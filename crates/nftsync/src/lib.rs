@@ -12,15 +12,22 @@
 //!   (written by NetworkManager),
 //! - `nts_servers_v4/v6` from the `server`/`pool` lines with `nts` in
 //!   /etc/chrony.conf, resolved after the DNS sets are in place,
-//! - `mgmt_allowed_v4/v6` (inbound: who may open connections to the management
-//!   port 8443) from the file's `mgmt` CIDRs (catalog setting `mgmt_allow`);
-//!   an empty list means any address (`0.0.0.0/0`, `::/0`, as in the image), a
-//!   file without `mgmt` leaves the sets alone. Always flushed and refilled in
-//!   the same transaction (interval sets: no partial state, no lockout window).
+//! - `in_<service>_v4/v6` (inbound, Phase 16c: who may open connections to a
+//!   service of [`INBOUND_SERVICES`]) from the file's `inbound` rules (catalog
+//!   setting `inbound`): enabled with an empty list = any address (`0.0.0.0/0`,
+//!   `::/0`), enabled with a list = those CIDRs, disabled = nobody. A service
+//!   missing from the file keeps its sets. Always flushed and refilled in the
+//!   same transaction (interval sets: no partial state, no lockout window).
 //!
-//! The root side never interprets anything but IP literals, protocol names and
-//! port numbers from the unprivileged file; the nft script is built from parsed
-//! values only, so no text from the file reaches nft.
+//! `nexus-nft-sync --status` (and every sync) writes [`STATUS_FILE`] for the
+//! web UI: the effective inbound and outbound sets and the recent blocked
+//! inbound attempts, which the input chain records in the dynamic sets
+//! `in_drops_v4/v6` (source . protocol . port, 24 h timeout, refreshed per
+//! packet, with a packet counter).
+//!
+//! The root side never interprets anything but IP literals, protocol names,
+//! port numbers and the fixed service ids from the unprivileged file; the nft
+//! script is built from parsed values only, so no text from the file reaches nft.
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -30,6 +37,9 @@ use std::io::Write as _;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::path::Path;
 use std::process::{Command, Stdio};
+
+pub mod status;
+pub use status::STATUS_FILE;
 
 pub const ALLOWED_FILE: &str = "/run/nexus-nft/allowed.json";
 pub const TABLE: &str = "inet nexus";
@@ -65,13 +75,36 @@ pub struct Endpoint {
 #[serde(deny_unknown_fields)]
 pub struct Allowed {
     pub endpoints: Vec<Endpoint>,
-    /// management allow-list (CIDRs); `None` = not managed, empty = any
+    /// inbound rules per service id; `None` = not managed
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mgmt: Option<Vec<String>>,
+    pub inbound: Option<BTreeMap<String, InboundRule>>,
 }
 
-/// Upper bound of management CIDRs accepted from the file.
-pub const MAX_MGMT: usize = 64;
+/// Services with `in_<id>_v4/v6` sets in os/nftables.conf (catalog::firewall
+/// registry, available services only).
+pub const INBOUND_SERVICES: &[&str] = &["web", "icmp"];
+
+/// Who may reach one service: `allow` empty = any address.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct InboundRule {
+    pub enabled: bool,
+    pub allow: Vec<String>,
+}
+
+/// The file's `inbound` map from `(service, enabled, allow)` (as
+/// `catalog::firewall::Inbound::effective` yields them).
+pub fn inbound_map<S: Into<String>>(
+    rules: impl IntoIterator<Item = (S, bool, Vec<String>)>,
+) -> BTreeMap<String, InboundRule> {
+    rules
+        .into_iter()
+        .map(|(id, enabled, allow)| (id.into(), InboundRule { enabled, allow }))
+        .collect()
+}
+
+/// Upper bound of CIDRs per service accepted from the file.
+pub const MAX_ALLOW: usize = 64;
 
 /// `addr/prefix` or a bare address, host bits cleared; `None` if invalid. The
 /// result is formatted from the parsed value only (no text reaches nft).
@@ -94,18 +127,34 @@ pub fn parse_cidr(s: &str) -> Option<(IpAddr, u8)> {
     Some((addr, prefix))
 }
 
-/// The `mgmt_allowed_v4/v6` sets for a management allow-list (empty = any).
-pub fn mgmt_state(list: &[(IpAddr, u8)]) -> State {
+/// The `in_<service>_v4/v6` sets of one service: enabled with no CIDRs = any
+/// address, disabled = empty (nobody). `service` must be one of
+/// [`INBOUND_SERVICES`] (the caller checks; the set names are fixed).
+pub fn inbound_state(service: &str, enabled: bool, list: &[(IpAddr, u8)]) -> State {
     let mut v4: BTreeSet<String> = BTreeSet::new();
     let mut v6: BTreeSet<String> = BTreeSet::new();
-    for (a, p) in list {
-        if a.is_ipv4() { &mut v4 } else { &mut v6 }.insert(format!("{a}/{p}"));
+    if enabled {
+        for (a, p) in list {
+            if a.is_ipv4() { &mut v4 } else { &mut v6 }.insert(format!("{a}/{p}"));
+        }
+        if list.is_empty() {
+            v4.insert("0.0.0.0/0".into());
+            v6.insert("::/0".into());
+        }
     }
-    if list.is_empty() {
-        v4.insert("0.0.0.0/0".into());
-        v6.insert("::/0".into());
+    State::from([(format!("in_{service}_v4"), v4), (format!("in_{service}_v6"), v6)])
+}
+
+/// The sets of every rule in `inbound` (validated: known services, CIDRs).
+pub fn inbound_states(inbound: &BTreeMap<String, InboundRule>) -> State {
+    let mut st = State::new();
+    for (id, r) in inbound {
+        if let Some(svc) = INBOUND_SERVICES.iter().find(|s| *s == id) {
+            let nets: Vec<(IpAddr, u8)> = r.allow.iter().filter_map(|c| parse_cidr(c)).collect();
+            st.extend(inbound_state(svc, r.enabled, &nets));
+        }
     }
-    State::from([("mgmt_allowed_v4".into(), v4), ("mgmt_allowed_v6".into(), v6)])
+    st
 }
 
 /// Addresses that never belong into an outbound allow-list.
@@ -129,22 +178,18 @@ impl Allowed {
                 );
             }
         }
-        if let Some(m) = &a.mgmt {
-            if m.len() > MAX_MGMT {
-                bail!("allowed.json: {} management CIDRs (max {MAX_MGMT})", m.len());
+        for (id, r) in a.inbound.iter().flatten() {
+            if !INBOUND_SERVICES.contains(&id.as_str()) {
+                bail!("allowed.json: unknown inbound service {id:?}");
             }
-            if let Some(bad) = m.iter().find(|c| parse_cidr(c).is_none()) {
-                bail!("allowed.json: refused management CIDR {bad:?}");
+            if r.allow.len() > MAX_ALLOW {
+                bail!("allowed.json: {id}: {} CIDRs (max {MAX_ALLOW})", r.allow.len());
+            }
+            if let Some(bad) = r.allow.iter().find(|c| parse_cidr(c).is_none()) {
+                bail!("allowed.json: {id}: refused CIDR {bad:?}");
             }
         }
         Ok(a)
-    }
-
-    /// The parsed management CIDRs (validated by [`Allowed::parse`]).
-    pub fn mgmt_nets(&self) -> Option<Vec<(IpAddr, u8)>> {
-        self.mgmt
-            .as_ref()
-            .map(|m| m.iter().filter_map(|c| parse_cidr(c)).collect())
     }
 
     /// Missing file = no endpoints (scheduler not running yet).
@@ -167,27 +212,40 @@ impl Allowed {
 /// Writes `allowed.json` atomically when its content differs (sorted, deduplicated).
 /// Returns whether it was written. A missing parent directory means the
 /// firewall sync is not installed (development): nothing is written.
-/// `mgmt`: the management allow-list (invalid entries dropped, empty = any).
+/// `inbound`: the inbound rules (unknown services and invalid entries dropped).
 pub fn write_allowed(
     path: &Path,
     endpoints: impl IntoIterator<Item = Endpoint>,
-    mgmt: Option<&[String]>,
+    inbound: Option<&BTreeMap<String, InboundRule>>,
 ) -> Result<bool> {
     let set: BTreeSet<Endpoint> = endpoints
         .into_iter()
         .filter(|e| usable(&e.addr) && e.port != 0)
         .collect();
-    let mgmt = mgmt.map(|m| {
-        let nets: BTreeSet<String> = m
-            .iter()
-            .filter_map(|c| parse_cidr(c))
-            .map(|(a, p)| format!("{a}/{p}"))
-            .collect();
-        nets.into_iter().take(MAX_MGMT).collect()
+    let inbound = inbound.map(|m| {
+        m.iter()
+            .filter(|(id, _)| INBOUND_SERVICES.contains(&id.as_str()))
+            .map(|(id, r)| {
+                let nets: BTreeSet<String> = r
+                    .allow
+                    .iter()
+                    .filter_map(|c| parse_cidr(c))
+                    .map(|(a, p)| format!("{a}/{p}"))
+                    .collect();
+                let allow = nets.into_iter().take(MAX_ALLOW).collect();
+                (
+                    id.clone(),
+                    InboundRule {
+                        enabled: r.enabled,
+                        allow,
+                    },
+                )
+            })
+            .collect()
     });
     let a = Allowed {
         endpoints: set.into_iter().take(MAX_ENDPOINTS).collect(),
-        mgmt,
+        inbound,
     };
     let mut data = serde_json::to_vec_pretty(&a)?;
     data.push(b'\n');
@@ -336,8 +394,8 @@ pub fn desired(dns: Option<&[IpAddr]>, nts: Option<&[IpAddr]>, allowed: Option<&
         );
         st.insert("allowed_out_v4".into(), v4);
         st.insert("allowed_out_v6".into(), v6);
-        if let Some(m) = a.mgmt_nets() {
-            st.extend(mgmt_state(&m));
+        if let Some(m) = &a.inbound {
+            st.extend(inbound_states(m));
         }
     }
     st
@@ -353,7 +411,7 @@ pub fn script(prev: Option<&State>, want: &State) -> String {
     let mut out = String::new();
     for (set, elems) in want {
         // interval sets (auto-merge): elements cannot be removed one by one reliably
-        let prev = prev.filter(|_| !set.starts_with("mgmt_"));
+        let prev = prev.filter(|_| !set.starts_with("in_"));
         match prev {
             None => {
                 let _ = writeln!(out, "flush set {TABLE} {set}");
@@ -464,7 +522,7 @@ mod tests {
                     port: 23,
                 },
             ],
-            mgmt: None,
+            inbound: None,
         };
         let dns: Vec<IpAddr> = vec!["10.0.2.3".parse().unwrap()];
         let want = desired(Some(&dns), None, Some(&a));
@@ -479,7 +537,7 @@ mod tests {
         // incremental: only our own stale elements go, nothing is flushed
         let a2 = Allowed {
             endpoints: vec![a.endpoints[2]],
-            mgmt: None,
+            inbound: None,
         };
         let s = script(Some(&want), &desired(Some(&dns), None, Some(&a2)));
         assert_eq!(
@@ -504,20 +562,42 @@ mod tests {
         ] {
             assert_eq!(parse_cidr(bad), None, "{bad}");
         }
-        assert!(Allowed::parse(br#"{"endpoints":[],"mgmt":["10.0.0.0/8 } ; flush ruleset"]}"#).is_err());
-        let a = Allowed::parse(br#"{"endpoints":[],"mgmt":["192.0.2.0/24","2001:db8::/32"]}"#).unwrap();
+        for bad in [
+            r#"{"endpoints":[],"inbound":{"web":{"enabled":true,"allow":["10.0.0.0/8 } ; flush ruleset"]}}}"#,
+            r#"{"endpoints":[],"inbound":{"web } ; flush ruleset":{"enabled":true,"allow":[]}}}"#,
+            r#"{"endpoints":[],"inbound":{"ssh":{"enabled":true,"allow":[]}}}"#,
+            r#"{"endpoints":[],"inbound":{"web":{"enabled":true,"allow":[],"x":1}}}"#,
+            r#"{"endpoints":[],"mgmt":[]}"#,
+        ] {
+            assert!(Allowed::parse(bad.as_bytes()).is_err(), "{bad}");
+        }
+        let many: Vec<String> = (0..=MAX_ALLOW).map(|n| format!("10.0.{n}.0/24")).collect();
+        let j = serde_json::json!({"endpoints": [], "inbound": {"web": {"enabled": true, "allow": many}}});
+        assert!(Allowed::parse(j.to_string().as_bytes()).is_err(), "too many");
+        let a = Allowed::parse(
+            br#"{"endpoints":[],"inbound":{"web":{"enabled":true,"allow":["192.0.2.0/24","2001:db8::/32"]},
+                "icmp":{"enabled":false,"allow":["192.0.2.0/24"]}}}"#,
+        )
+        .unwrap();
         let want = desired(None, None, Some(&a));
         // the previous state does not matter: always flushed and refilled
         let s = script(Some(&want), &want);
-        assert!(s.contains(
-            "flush set inet nexus mgmt_allowed_v4\nadd element inet nexus mgmt_allowed_v4 { 192.0.2.0/24 }\n"
-        ));
-        assert!(s.contains("add element inet nexus mgmt_allowed_v6 { 2001:db8::/32 }\n"));
-        // empty = any; without `mgmt` the sets are not touched
-        let open = script(None, &mgmt_state(&[]));
-        assert!(open.contains("{ 0.0.0.0/0 }") && open.contains("{ ::/0 }"));
+        assert_eq!(
+            s,
+            "flush set inet nexus in_icmp_v4\nflush set inet nexus in_icmp_v6\n\
+             flush set inet nexus in_web_v4\nadd element inet nexus in_web_v4 { 192.0.2.0/24 }\n\
+             flush set inet nexus in_web_v6\nadd element inet nexus in_web_v6 { 2001:db8::/32 }\n"
+        );
+        // enabled + empty = any; a v4-only list closes v6; disabled = nobody
+        let open = script(None, &inbound_state("web", true, &[]));
+        assert!(open.contains("in_web_v4 { 0.0.0.0/0 }") && open.contains("in_web_v6 { ::/0 }"));
+        let v4 = inbound_state("icmp", true, &[parse_cidr("10.0.0.0/8").unwrap()]);
+        assert_eq!(v4["in_icmp_v4"].len(), 1);
+        assert!(v4["in_icmp_v6"].is_empty());
+        assert!(inbound_state("icmp", false, &[]).values().all(BTreeSet::is_empty));
+        // without `inbound` the sets are not touched
         let a = Allowed::parse(br#"{"endpoints":[]}"#).unwrap();
-        assert!(!script(None, &desired(None, None, Some(&a))).contains("mgmt"));
+        assert!(!script(None, &desired(None, None, Some(&a))).contains("in_"));
     }
 
     #[test]
@@ -536,9 +616,19 @@ mod tests {
         assert!(!write_allowed(&p, [e], None).unwrap());
         assert_eq!(Allowed::load(&p).unwrap().endpoints, vec![e]);
         assert!(!write_allowed(&d.join("missing/allowed.json"), [e], None).unwrap());
-        let m = ["10.1.2.3/16".to_owned(), "bad".to_owned()];
+        let rule = |allow: &[&str]| InboundRule {
+            enabled: true,
+            allow: allow.iter().map(|s| s.to_string()).collect(),
+        };
+        let m = BTreeMap::from([
+            ("web".to_owned(), rule(&["10.1.2.3/16", "bad", "10.1.0.0/16"])),
+            ("telnet".to_owned(), rule(&[])),
+        ]);
         assert!(write_allowed(&p, [e], Some(&m)).unwrap());
-        assert_eq!(Allowed::load(&p).unwrap().mgmt, Some(vec!["10.1.0.0/16".to_owned()]));
+        assert_eq!(
+            Allowed::load(&p).unwrap().inbound,
+            Some(BTreeMap::from([("web".to_owned(), rule(&["10.1.0.0/16"]))]))
+        );
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

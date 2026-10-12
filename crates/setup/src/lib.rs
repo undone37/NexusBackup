@@ -230,7 +230,7 @@ pub fn check_start(paths: &Paths, force_reconfigure_network: bool) -> Result<()>
         bail!(
             "setup already completed ({} exists); use --force-reconfigure-network to change the management network, \
              recover-admin for a lost admin login, disable-approvals when nobody else can approve, \
-             reset-mgmt-allow after a management allow-list lockout",
+             reset-firewall after an inbound firewall lockout",
             paths.setup_done.display()
         );
     }

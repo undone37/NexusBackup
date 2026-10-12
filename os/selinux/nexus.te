@@ -159,6 +159,8 @@ type nexus_update_t;		# OS update control dir (nexus-update reads it as root)
 files_type(nexus_update_t)
 type nexus_nftsync_var_run_t;	# nft-sync: elements it added last time
 files_pid_file(nexus_nftsync_var_run_t)
+type nexus_nftstatus_var_run_t;	# nft-sync status for the web UI: effective sets, blocked attempts (web-api reads)
+files_pid_file(nexus_nftstatus_var_run_t)
 type nexus_pve_tmp_t;		# restore micro-VM work dir (sockets, console log)
 files_tmp_file(nexus_pve_tmp_t)
 type nexus_agent_ca_t;		# appliance CA for agents: CA + client keys (nexus-agentctl only)
@@ -509,6 +511,8 @@ allow nexus_setup_t self:unix_dgram_socket create_socket_perms;
 allow nexus_nftsync_t nexus_nft_var_run_t:dir list_dir_perms;
 # its own state (RuntimeDirectory=nexus-nft-sync)
 manage_files_pattern(nexus_nftsync_t, nexus_nftsync_var_run_t, nexus_nftsync_var_run_t)
+# status.json for the web UI (/run/nexus-nft-status, tmpfiles: 0755 root; temp file + rename)
+manage_files_pattern(nexus_nftsync_t, nexus_nftstatus_var_run_t, nexus_nftstatus_var_run_t)
 read_files_pattern(nexus_nftsync_t, nexus_nft_var_run_t, nexus_nft_var_run_t)
 sysnet_read_config(nexus_nftsync_t)
 # chrony.conf (etc_t) for the NTS server names
@@ -660,6 +664,8 @@ auth_read_passwd(nexus_replicad_t)
 # web-api: connect to replicad only, read the published CA certificate + sealing key
 stream_connect_pattern(nexus_webapi_t, nexus_replicad_var_run_t, nexus_replicad_var_run_t, nexus_replicad_t)
 read_files_pattern(nexus_webapi_t, nexus_replicad_var_run_t, nexus_replicad_var_run_t)
+# Settings -> Firewall: the effective sets and blocked attempts nexus-nft-sync publishes
+read_files_pattern(nexus_webapi_t, nexus_nftstatus_var_run_t, nexus_nftstatus_var_run_t)
 
 # nexus-replica (secondary, job domain like nexus-offsite: job dir, stores, keyd):
 # outbound TLS to the primary's management port (8443 = http_port_t; NAT-forwarded

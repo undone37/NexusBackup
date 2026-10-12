@@ -1762,6 +1762,13 @@ async fn rbac_matrix_and_audit_completeness() {
             Some(json!({"mgmt_allow": ["10.0.0.0/8"], "force": true, "confirm": "unknown"})),
             "A",
         ),
+        (Method::GET, "/api/v1/firewall".into(), None, "AS"),
+        (
+            Method::PUT,
+            "/api/v1/firewall/inbound/icmp".into(),
+            Some(json!({"allow": ["10.0.0.0/8"], "enabled": true})),
+            "A",
+        ),
         (Method::GET, "/api/v1/quorum".into(), None, "ASO"),
         (Method::GET, "/api/v1/audit".into(), None, "AS"),
         (Method::GET, "/api/v1/audit/verify".into(), None, "AS"),

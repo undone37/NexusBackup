@@ -804,6 +804,18 @@ async function main() {
       await shot('dashboard-viewer');
       await login('admin');
     }],
+    // Phase 16c: Settings → Firewall (inbound services, blocked attempts, automatic outbound) + edit dialog
+    ['firewall', async () => {
+      await go('/settings?tab=firewall');
+      await until(`return document.body.innerText.includes('Recent blocked attempts')`, 'firewall tab');
+      await shot('settings-firewall', { height: 1700 });
+      await ev(`$rowClick('Web UI and API', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #fw-allow')`, 'firewall dialog');
+      await ev(`$fill('#fw-allow', '10.20.0.0/16'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #fw-confirm')`, 'lock-out warning');
+      await shot('firewall-edit', { height: 1000 });
+      await closeDialogs();
+    }],
     ['approvals', async () => {
       await go('/quorum');
       await shot('approvals-admin', { height: 1400 });

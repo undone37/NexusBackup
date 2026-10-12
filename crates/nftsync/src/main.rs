@@ -1,16 +1,19 @@
-//! `nexus-nft-sync [--dry-run] [--allowed FILE] [--hosts FILE] [--resolv FILE] [--chrony FILE] [--nft BIN]`
-//! Root oneshot (nexus-nft-sync.service): refreshes the outbound allow-list
-//! sets of `table inet nexus` (see the crate docs). `--dry-run` prints the nft
-//! script instead of applying it.
+//! `nexus-nft-sync [--dry-run | --status] [--allowed FILE] [--hosts FILE] [--resolv FILE] [--chrony FILE] [--nft BIN]`
+//! Root oneshot (nexus-nft-sync.service): refreshes the allow-list sets of
+//! `table inet nexus` (see the crate docs). `--dry-run` prints the nft script
+//! instead of applying it; `--status` (nexus-nft-status.service, every minute)
+//! only writes the status file for the web UI, which every sync also does.
 
 use anyhow::{bail, Result};
 use nftsync::{
-    apply, desired, parse_chrony, parse_hosts, parse_resolv, resolve, resolve_hosts, script, Allowed, State,
-    ALLOWED_FILE,
+    apply, desired, parse_chrony, parse_hosts, parse_resolv, resolve, resolve_hosts, script, status, Allowed, State,
+    ALLOWED_FILE, STATUS_FILE,
 };
 use std::path::PathBuf;
 
 fn main() -> Result<()> {
+    let mut status_file = PathBuf::from(STATUS_FILE);
+    let mut status_only = false;
     let mut allowed = PathBuf::from(ALLOWED_FILE);
     let mut hosts = PathBuf::from("/etc/nexus/allowed-hosts");
     let mut resolv = PathBuf::from("/etc/resolv.conf");
@@ -29,11 +32,16 @@ fn main() -> Result<()> {
             "--chrony" => chrony = val(),
             "--nft" => nft = val(),
             "--state" => state = val(),
+            "--status-file" => status_file = val(),
+            "--status" => status_only = true,
             "--dry-run" => dry = true,
             _ => bail!(
-                "usage: nexus-nft-sync [--dry-run] [--allowed F] [--hosts F] [--resolv F] [--chrony F] [--nft BIN] [--state F]"
+                "usage: nexus-nft-sync [--dry-run | --status] [--allowed F] [--hosts F] [--resolv F] [--chrony F] [--nft BIN] [--state F] [--status-file F]"
             ),
         }
+    }
+    if status_only {
+        return status::refresh(&nft, &status_file);
     }
     let mut allowed = Allowed::load(&allowed)?;
     let from_scheduler = allowed.endpoints.len();
@@ -76,5 +84,11 @@ fn main() -> Result<()> {
         nts.map_or(0, <[_]>::len),
         if nts.is_none() { " (NTS sets kept)" } else { "" }
     );
+    if !dry {
+        // the web UI shows the new state right away (not fatal: the timer retries)
+        if let Err(e) = status::refresh(&nft, &status_file) {
+            eprintln!("<4>nexus-nft-sync: status: {e:#}");
+        }
+    }
     Ok(())
 }

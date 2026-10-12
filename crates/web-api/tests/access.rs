@@ -670,3 +670,119 @@ async fn dormant_setting_and_approver_warning() {
         (json!(2), json!(true))
     );
 }
+
+/// Phase 16c: inbound firewall per service. Every change needs approval; the
+/// web service is guarded against locking the requester out; the 14d list
+/// migrates into `web`; the effective state comes from nexus-nft-sync's status.
+#[tokio::test]
+async fn inbound_firewall_rules() {
+    let t = T::new();
+    let (alice, sam, otto) = (t.login("alice").await, t.login("sam").await, t.login("otto").await);
+    let status = t._dir.path().join("status.json");
+    t.st.nft_status.set(status.clone()).unwrap();
+    // the 14d allow-list is web's list
+    t.exec(r#"INSERT INTO settings (key, value) VALUES ('mgmt_allow', '["192.0.2.0/24"]')"#);
+    let fw = t.get("/api/v1/firewall", &alice).await;
+    assert_eq!(fw.status, StatusCode::OK, "{:?}", fw.body);
+    let ids: Vec<&str> = fw.body["services"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["web", "icmp", "ssh"]);
+    let web = &fw.body["services"][0];
+    assert_eq!(
+        (web["allow"].clone(), web["enabled"].clone()),
+        (json!(["192.0.2.0/24"]), json!(true))
+    );
+    assert_eq!(fw.body["services"][2]["available"], false);
+    assert_eq!(
+        (fw.body["status_stale"].clone(), fw.body["outbound"].clone()),
+        (json!(true), Value::Null)
+    );
+    assert_eq!(fw.body["client_allowed"], true);
+    // effective state + blocked attempts from the status file
+    let now = catalog::now();
+    let st = json!({"ts": now, "sets": {"in_web_v4": ["192.0.2.0/24"], "in_web_v6": [], "in_icmp_v4": [],
+        "in_icmp_v6": [], "allowed_out_v4": ["10.0.2.2 . tcp . 8006"], "allowed_out_v6": [],
+        "dns_servers_v4": ["10.0.2.3"]},
+        "drops": [{"src": "198.51.100.9", "proto": "tcp", "port": 22, "last_seen": now, "packets": 4}]});
+    std::fs::write(&status, st.to_string()).unwrap();
+    let fw = t.get("/api/v1/firewall", &sam).await.body;
+    assert_eq!(
+        fw["services"][0]["effective"],
+        json!({"v4": ["192.0.2.0/24"], "v6": []})
+    );
+    assert_eq!(fw["services"][2]["effective"], Value::Null);
+    assert_eq!(fw["outbound"]["endpoints"], json!(["10.0.2.2 . tcp . 8006"]));
+    assert_eq!(fw["outbound"]["dns"], json!(["10.0.2.3"]));
+    assert_eq!(fw["drops"][0]["port"], 22);
+    assert_eq!(fw["status_stale"], false);
+    // validation
+    let url = |s: &str| format!("/api/v1/firewall/inbound/{s}");
+    let lockout = json!({"allow": ["10.0.0.0/8"], "force": true, "confirm": "10.0.0.1"});
+    for (svc, body, code) in [
+        ("ssh", json!({"allow": []}), StatusCode::CONFLICT),
+        ("telnet", json!({"allow": []}), StatusCode::NOT_FOUND),
+        ("web", json!({"allow": [], "enabled": false}), StatusCode::BAD_REQUEST),
+        ("icmp", json!({"allow": ["10.0.0.0/33"]}), StatusCode::BAD_REQUEST),
+        ("web", json!({"allow": ["10.0.0.0/8"]}), StatusCode::CONFLICT),
+        ("web", lockout, StatusCode::CONFLICT),
+    ] {
+        let r = t.put(&url(svc), &alice, body.clone()).await;
+        assert_eq!(r.status, code, "{svc} {body}: {:?}", r.body);
+    }
+    let r = t.put(&url("icmp"), &alice, json!({"allow": [], "x": 1})).await;
+    assert!(r.status.is_client_error(), "unknown field");
+    let many: Vec<String> = (0..65).map(|n| format!("10.0.{n}.0/24")).collect();
+    assert_eq!(
+        t.put(&url("icmp"), &alice, json!({"allow": many})).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    // RBAC: admins change, security officers read, operators neither
+    for s in [&sam, &otto] {
+        let r = t.put(&url("icmp"), s, json!({"allow": []})).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN);
+    }
+    assert_eq!(t.get("/api/v1/firewall", &otto).await.status, StatusCode::FORBIDDEN);
+    // ping: no lock-out guard; duplicates collapse; approval
+    let body = json!({"allow": ["198.51.100.7/24", "198.51.100.0/24"], "enabled": true});
+    let r = t.put(&url("icmp"), &alice, body).await;
+    let q = r.body["quorum_id"].clone();
+    let fw = t.get("/api/v1/firewall", &alice).await.body;
+    assert_eq!(fw["services"][1]["pending"], q);
+    assert_eq!(t.approve(&r, &sam).await.body["state"], "executed");
+    let fw = t.get("/api/v1/firewall", &alice).await.body;
+    let icmp = &fw["services"][1];
+    assert_eq!(
+        (icmp["allow"].clone(), icmp["enabled"].clone()),
+        (json!(["198.51.100.0/24"]), json!(true))
+    );
+    // web: the requester's address keeps it; typed override; a stale request is refused
+    let keep = t
+        .put(&url("web"), &alice, json!({"allow": ["192.0.2.10", "10.0.0.0/8"]}))
+        .await;
+    let forced_body = json!({"allow": ["10.0.0.0/8"], "force": true, "confirm": "192.0.2.10"});
+    let forced = t.put(&url("web"), &alice, forced_body.clone()).await;
+    assert_eq!(t.approve(&forced, &sam).await.body["state"], "executed");
+    assert_eq!(t.approve(&keep, &sam).await.status, StatusCode::CONFLICT);
+    let fw = t.get("/api/v1/firewall", &alice).await.body;
+    assert_eq!(
+        (fw["services"][0]["allow"].clone(), fw["client_allowed"].clone()),
+        (json!(["10.0.0.0/8"]), json!(false))
+    );
+    // the 14d setting mirrors web; the change is in the audit chain
+    assert_eq!(
+        t.one::<String>("SELECT value FROM settings WHERE key = 'mgmt_allow'"),
+        r#"["10.0.0.0/8"]"#
+    );
+    assert!(
+        t.one::<i64>(
+            "SELECT COUNT(*) FROM audit WHERE action = 'quorum.request' AND details LIKE '%firewall.inbound%'"
+        ) >= 3
+    );
+    // unchanged: nothing to approve
+    let r = t.put(&url("web"), &alice, forced_body).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+}

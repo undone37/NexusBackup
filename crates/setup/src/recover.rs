@@ -18,6 +18,7 @@ use catalog::rusqlite::{params, OptionalExtension};
 use catalog::Catalog;
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 pub const ACTOR: &str = "console";
 /// as for codes issued in the web UI
@@ -175,48 +176,46 @@ pub fn disable_approvals(paths: &Paths, recovery_key: &str) -> Result<i64> {
     Ok(alert)
 }
 
-/// `nexus-setup reset-mgmt-allow` (Phase 14d): someone locked themselves out
-/// with the management allow-list (Settings → Security). Clears the setting
-/// (empty = any address), audited `security.mgmt_allow_reset` (actor
-/// `console`) with a warning alert; returns the list that was removed. The
-/// caller also opens the firewall sets at once ([`open_mgmt_firewall`]); the
-/// scheduler rewrites the firewall file on its next tick either way.
-pub fn reset_mgmt_allow(paths: &Paths) -> Result<Vec<String>> {
+/// `nexus-setup reset-firewall` (Phase 16c; `reset-mgmt-allow` is the 14d
+/// name): someone locked themselves out with the inbound firewall (Settings →
+/// Firewall). Clears every service's source list (any address again; the
+/// on/off switches stay), audited `firewall.reset` (actor `console`) with the
+/// warning alert `firewall_reset`; returns the lists that were removed. The
+/// caller also loads the sets at once ([`open_firewall`]); the scheduler
+/// rewrites the firewall file on its next tick either way.
+pub fn reset_firewall(paths: &Paths) -> Result<BTreeMap<String, Vec<String>>> {
     if !paths.setup_done.exists() {
-        bail!("the appliance is not set up yet: there is no allow-list to reset");
+        bail!("the appliance is not set up yet: there is no firewall policy to reset");
     }
     let cat = Catalog::open(&paths.catalog).with_context(|| format!("opening {}", paths.catalog.display()))?;
     let old = {
         let mut c = cat.conn();
         let tx = c.transaction()?;
-        let old = catalog::access::mgmt_allow(&tx)?;
-        catalog::set_setting(&tx, catalog::access::MGMT_ALLOW, "[]")?;
+        let old = catalog::firewall::reset(&tx)?;
+        let was: Vec<String> = old.iter().map(|(s, l)| format!("{s}: {}", l.join(", "))).collect();
         tx.execute(
-            "INSERT INTO alerts (ts, last_ts, severity, kind, key, message) VALUES (?1, ?1, 'warning', 'mgmt_allow_reset',
-             'mgmt_allow_reset', ?2)",
+            "INSERT INTO alerts (ts, last_ts, severity, kind, key, message) VALUES (?1, ?1, 'warning', 'firewall_reset',
+             'firewall_reset', ?2)",
             params![
                 catalog::now(),
                 format!(
-                    "the management allow-list ({}) was cleared at the console: the web UI is reachable from any address again",
-                    if old.is_empty() { "empty".to_owned() } else { old.join(", ") }
+                    "the inbound firewall restrictions ({}) were cleared at the console: every service is reachable from any address again",
+                    if was.is_empty() { "none".to_owned() } else { was.join("; ") }
                 )
             ],
         )?;
         tx.commit()?;
         old
     };
-    cat.audit(
-        ACTOR,
-        "security.mgmt_allow_reset",
-        "settings/mgmt_allow",
-        &json!({"old": old}),
-    )?;
+    cat.audit(ACTOR, "firewall.reset", "settings/inbound", &json!({"old": old}))?;
     Ok(old)
 }
 
-/// Opens `mgmt_allowed_v4/v6` to any address right away (root, real appliance).
-pub fn open_mgmt_firewall(nft: &std::path::Path) -> Result<()> {
-    nftsync::apply(nft, &nftsync::script(None, &nftsync::mgmt_state(&[])))
+/// Loads the inbound sets of the (reset) policy right away (root, real appliance).
+pub fn open_firewall(paths: &Paths, nft: &std::path::Path) -> Result<()> {
+    let cat = Catalog::open(&paths.catalog)?;
+    let inbound = nftsync::inbound_map(catalog::firewall::load(&cat.conn())?.effective());
+    nftsync::apply(nft, &nftsync::script(None, &nftsync::inbound_states(&inbound)))
 }
 
 #[cfg(test)]
@@ -332,21 +331,44 @@ mod tests {
     }
 
     #[test]
-    fn resets_the_management_allow_list() {
+    fn resets_the_inbound_firewall() {
         let (_d, paths, _rk) = appliance();
+        // a 14d list (migrated on read) and a restricted ping
         catalog::set_setting(
             &Catalog::open(&paths.catalog).unwrap().conn(),
             catalog::access::MGMT_ALLOW,
             r#"["192.0.2.0/24"]"#,
         )
         .unwrap();
-        assert_eq!(reset_mgmt_allow(&paths).unwrap(), vec!["192.0.2.0/24"]);
+        {
+            let cat = Catalog::open(&paths.catalog).unwrap();
+            let mut i = catalog::firewall::load(&cat.conn()).unwrap();
+            i.services.insert(
+                "icmp".into(),
+                catalog::firewall::Rule {
+                    allow: vec!["198.51.100.0/24".into()],
+                    enabled: Some(true),
+                },
+            );
+            catalog::firewall::store(&cat.conn(), &i).unwrap();
+        }
+        let old = reset_firewall(&paths).unwrap();
+        assert_eq!(old["web"], ["192.0.2.0/24"]);
+        assert_eq!(old["icmp"], ["198.51.100.0/24"]);
         let cat = Catalog::open(&paths.catalog).unwrap();
         assert!(catalog::access::mgmt_allow(&cat.conn()).unwrap().is_empty());
+        let i = catalog::firewall::load(&cat.conn()).unwrap();
+        assert_eq!(
+            i.rule("icmp"),
+            catalog::firewall::Rule {
+                allow: vec![],
+                enabled: Some(true)
+            }
+        );
         let n: i64 = cat
             .conn()
             .query_row(
-                "SELECT COUNT(*) FROM audit WHERE action = 'security.mgmt_allow_reset' AND actor = 'console'",
+                "SELECT COUNT(*) FROM audit WHERE action = 'firewall.reset' AND actor = 'console'",
                 [],
                 |r| r.get(0),
             )
@@ -356,7 +378,7 @@ mod tests {
             .conn()
             .query_row("SELECT kind FROM alerts ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(kind, "mgmt_allow_reset");
+        assert_eq!(kind, "firewall_reset");
     }
 
     #[test]

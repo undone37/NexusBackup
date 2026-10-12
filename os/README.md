@@ -61,7 +61,7 @@ The root account is locked (`usermod -L`). Emergency access is through the local
 | `nexus-web-api.service` | nexus-webapi (+nexus-catalog) | `nexus_webapi_t` | `Type=notify`, binds only tcp:8443, catalog rw, downloads read, update control rw |
 | `nexus-scheduler.service` | nexus-chunkstore (+nexus-catalog, nexus-keyd, kvm) | `nexus_scheduler_t` | spawns `nexus-pve` (`nexus_pve_t`) and `nexus-offsite` (`nexus_offsite_t`); nexus-pve spawns QEMU (`nexus_restorevm_t`); `DeviceAllow=/dev/kvm`; writes the firewall allow-list |
 | `nexus-setup.service` | root | `nexus_setup_t` | first boot on tty1; capabilities CHOWN, FOWNER, DAC_OVERRIDE only |
-| `nexus-nft-sync.{service,path,timer}` | root | `nexus_nftsync_t` → `iptables_t` | CAP_NET_ADMIN only; see "Firewall" |
+| `nexus-nft-sync.{service,path,timer}`, `nexus-nft-status.{service,timer}` | root | `nexus_nftsync_t` → `iptables_t` | CAP_NET_ADMIN only; see "Firewall" |
 | `nexus-plugin-install.{service,path}` | nexus-plugins (+nexus-catalog) | `nexus_plugininstall_t` | oneshot at boot and on `plugins-staging/.trigger`; `PrivateNetwork`; see "Plugins" |
 | `nexus-diag.{service,path}` | root (+nexus-catalog) | `nexus_diag_t` → `journalctl_t`, `chronyc_t`, `iptables_t` | oneshot on `/var/lib/nexus/diag/request.json` (web-api, Settings → Diagnostics): self-checks + redacted support bundle into `/var/lib/nexus/diag/<id>/` (2770 root:nexus-webapi, pruned after 24 h); no inet sockets (`RestrictAddressFamilies=AF_UNIX AF_NETLINK`, `IPAddressDeny=any`; not `PrivateNetwork`, nft must list the host ruleset); bounding set NET_ADMIN, DAC_OVERRIDE, DAC_READ_SEARCH for the tools in their own domains (the policy grants nexus_diag_t no capability). `nexus-update` runs `nexus-diag checks` before staging/applying (in its own unconfined domain) |
 | `nexus-disks.{service,path,timer}` | root (+nexus-webapi) | `nexus_disks_t` | oneshot every 5 min and on `/var/lib/nexus/disks/req-*.json` (web-api, Configuration → Hardware): inventory, SMART, md arrays into `status.json`; approved layout requests (mdadm, mkfs.xfs, xfs_growfs, the store's mount unit); `PrivateNetwork`; bounding set SYS_RAWIO, SYS_ADMIN, DAC_READ_SEARCH (docs/hardware.md) |
@@ -177,7 +177,10 @@ download compared against the source dir, 0 nexus AVCs).
 
 ## Firewall (`nftables.conf`, `nexus-nft-sync`)
 
-Inbound: only 8443/tcp, loopback, established/related, ND, DHCP replies. Outbound:
+Inbound (Phase 16c, docs/control-plane.md "Inbound firewall"): loopback, established/related,
+ND, DHCP replies, and the services 8443/tcp (`in_web_v4/v6`) and ping (`in_icmp_v4/v6`) from their
+source sets (Settings -> Firewall); everything else is recorded in `in_drops_v4/v6` (24 h) and
+logged rate-limited as `nexus-in-drop:`. Outbound:
 default deny with `reject` (logged as `nexus-out-drop:`); allowed only to the sets
 `allowed_out_v4/v6` (addr . proto . port), `dns_servers_*` (53) and `nts_servers_*`
 (4460/tcp, 123/udp). The sets are filled at runtime (plan §12.1):
@@ -195,6 +198,11 @@ default deny with `reject` (logged as `nexus-out-drop:`); allowed only to the se
 - It removes only elements it added itself (state in `/run/nexus-nft-sync/state.json`,
   `destroy element`), so the 443/tcp elements that `nexus-update` adds for a registry
   fetch survive a sync. After a reboot the first run flushes and refills.
+- The file's `inbound` rules (per service: enabled, CIDRs) fill the interval sets
+  `in_<service>_v4/v6` (always flushed and refilled in the same transaction; enabled + empty
+  = any). `nexus-nft-status.timer` (every minute) runs `nexus-nft-sync --status`, which lists
+  the table (`nft -j`) and writes `/run/nexus-nft-status/status.json` (0644) for the web UI:
+  the managed sets and the recent blocked inbound attempts.
 
 Verified in the VM: before the source existed the backup failed with "No route to
 host" (rejected); after the REST config the sets held 10.0.2.2 . tcp . {18006, 10022,

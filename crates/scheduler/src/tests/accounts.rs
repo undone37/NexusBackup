@@ -3,18 +3,27 @@ use super::*;
 
 const DAY: i64 = 86400;
 
-/// The management allow-list (setting `mgmt_allow`) goes into the firewall file.
+/// The inbound policy (setting `inbound`, or the 14d `mgmt_allow` before it
+/// exists) goes into the firewall file, every available service explicitly.
 #[test]
-fn mgmt_allow_list_reaches_the_firewall_file() {
+fn inbound_rules_reach_the_firewall_file() {
     let mut e = env(1);
     fs::create_dir_all(e.d.path().join("nft")).unwrap();
     e.cfg.nft_allowed = e.d.path().join("nft/allowed.json");
     let s = sched(&e);
-    let mgmt = |s: &Scheduler| {
+    let inbound = |s: &Scheduler| {
         s.sync_firewall().unwrap();
-        nftsync::Allowed::load(&s.cfg.nft_allowed).unwrap().mgmt
+        let m = nftsync::Allowed::load(&s.cfg.nft_allowed).unwrap().inbound.unwrap();
+        m.into_iter()
+            .map(|(k, r)| (k, (r.enabled, r.allow)))
+            .collect::<Vec<_>>()
     };
-    assert_eq!(mgmt(&s), Some(vec![]), "empty = any");
+    let v = |l: &[&str]| l.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        inbound(&s),
+        [("icmp".into(), (false, v(&[]))), ("web".into(), (true, v(&[])))],
+        "defaults: web from any address, no ping"
+    );
     catalog::set_setting(
         &s.db.conn(),
         catalog::access::MGMT_ALLOW,
@@ -22,8 +31,21 @@ fn mgmt_allow_list_reaches_the_firewall_file() {
     )
     .unwrap();
     assert_eq!(
-        mgmt(&s),
-        Some(vec!["10.1.0.0/16".to_owned(), "2001:db8::/32".to_owned()])
+        inbound(&s)[1],
+        ("web".into(), (true, v(&["10.1.0.0/16", "2001:db8::/32"])))
+    );
+    catalog::set_setting(
+        &s.db.conn(),
+        catalog::firewall::SETTING,
+        r#"{"services":{"icmp":{"allow":["192.0.2.0/24"],"enabled":true}}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        inbound(&s),
+        [
+            ("icmp".into(), (true, v(&["192.0.2.0/24"]))),
+            ("web".into(), (true, v(&[])))
+        ]
     );
 }
 

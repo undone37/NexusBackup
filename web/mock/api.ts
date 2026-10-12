@@ -240,13 +240,17 @@ const db = {
   } as Json,
   /** last delivery error per sink (none = the forwarder keeps up) */
   forwardErr: {} as Record<string, string>,
-  /** Phase 14d settings `session`, `dormant_days`, `login_banner`, `mgmt_allow` */
+  /** Phase 14d settings `session`, `dormant_days`, `login_banner` (`mgmt_allow` = firewall.web.allow since 16c) */
   security: {
     session: { idle_min: 30, absolute_h: 12 },
     dormant_days: 90,
     login_banner: 'Authorised use only. Activity on this appliance is recorded in a tamper-evident audit log.',
-    mgmt_allow: ['198.51.100.0/24', '192.0.2.0/24'] as string[],
   },
+  /** Phase 16c setting `inbound`: per-service source lists (empty = any) */
+  firewall: {
+    web: { allow: ['198.51.100.0/24', '192.0.2.0/24'], enabled: true },
+    icmp: { allow: [] as string[], enabled: false },
+  } as Record<string, { allow: string[]; enabled: boolean }>,
   /** Phase 14e setting `reports` (scheduled reports) */
   reports: [] as Json[],
   /** Phase 16a/b: nexus-disks status (GET /hardware) */
@@ -1574,7 +1578,12 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       db.security.session = structuredClone(p.session);
       break;
     case 'security.mgmt_allow':
-      db.security.mgmt_allow = [...p.mgmt_allow];
+      db.firewall.web.allow = [...p.mgmt_allow];
+      break;
+    case 'firewall.inbound':
+      if (JSON.stringify(db.firewall[p.service]) !== JSON.stringify(p.old))
+        throw new HttpError(409, 'the rule changed since this request was made; reject it and request the change again');
+      db.firewall[p.service] = structuredClone(p.rule);
       break;
     case 'settings.forwarding':
       db.forwarding = structuredClone(p.forwarding);
@@ -2515,12 +2524,13 @@ const inCidr = (ip: string, c: string) => {
 };
 const securityState = () => {
   const pend = (a: string) => db.quorum.find((q) => q.action === a && q.state === 'pending')?.id ?? null;
-  const allow = db.security.mgmt_allow;
+  const allow = db.firewall.web.allow;
   return {
     ...structuredClone(db.security),
+    mgmt_allow: [...allow],
     client_ip: CLIENT_IP,
     client_allowed: !allow.length || allow.some((c) => inCidr(CLIENT_IP, c)),
-    pending: { session: pend('security.session'), mgmt_allow: pend('security.mgmt_allow') },
+    pending: { session: pend('security.session'), mgmt_allow: fwPending('web') },
   };
 };
 on('GET', '/auth/banner', () => [200, { banner: db.security.login_banner }]);
@@ -2591,22 +2601,70 @@ on('PUT', '/settings/banner', async (c) => {
   await audit(u.name, 'security.login_banner', 'settings/login_banner', { banner: text });
   return [200, { banner: text }];
 });
-on('PUT', '/settings/mgmt-allow', async (c) => {
-  const u = need(c.user, 'admin');
-  const raw: unknown[] = Array.isArray(c.body.mgmt_allow) ? c.body.mgmt_allow : [];
-  if (raw.length > 64) throw new HttpError(400, 'mgmt_allow: at most 64 entries');
+// Phase 16c: inbound firewall (Settings → Firewall); the 14d route is an alias for `web`
+const FW_SERVICES = [
+  { id: 'web', ports: '8443/tcp', lockout: true, available: true, can_disable: false },
+  { id: 'icmp', ports: 'icmp echo', lockout: false, available: true, can_disable: true },
+  { id: 'ssh', ports: '22/tcp', lockout: true, available: false, can_disable: true },
+];
+const fwPending = (id: string) =>
+  db.quorum.filter((q) => q.action === 'firewall.inbound' && q.state === 'pending' && q.params.service === id).pop()?.id ?? null;
+const fwSets = (id: string) => {
+  const r = db.firewall[id];
+  if (!r.enabled) return { v4: [], v6: [] };
+  if (!r.allow.length) return { v4: ['0.0.0.0/0'], v6: ['::/0'] };
+  return { v4: r.allow.filter((c) => !c.includes(':')), v6: r.allow.filter((c) => c.includes(':')) };
+};
+async function fwRequest(u: User, id: string, raw: unknown, enabled: unknown, force: unknown, confirm: unknown): Promise<[number, Json]> {
+  const svc = FW_SERVICES.find((s) => s.id === id);
+  if (!svc) throw new HttpError(404, 'not found');
+  if (!svc.available) throw new HttpError(409, `${id}: nothing listens on ${svc.ports} on this appliance, so there is nothing to restrict`);
+  if (enabled === false && !svc.can_disable) throw new HttpError(400, `${id} cannot be switched off, only restricted to source addresses`);
+  const entries: unknown[] = Array.isArray(raw) ? raw : [];
+  if (entries.length > 64) throw new HttpError(400, 'allow: at most 64 entries');
   const list: string[] = [];
-  for (const s of raw) {
+  for (const s of entries) {
     const x = cidr(String(s));
-    if (!x) throw new HttpError(400, `mgmt_allow: "${s}" is not an address or CIDR (10.0.0.0/8)`);
+    if (!x) throw new HttpError(400, `allow: "${s}" is not an address or CIDR (10.0.0.0/8)`);
     if (!list.includes(x)) list.push(x);
   }
-  const old = db.security.mgmt_allow;
-  if (JSON.stringify(list) === JSON.stringify(old)) return [200, { mgmt_allow: list }];
+  const old = structuredClone(db.firewall[id]);
+  const rule = { allow: list, enabled: typeof enabled === 'boolean' ? enabled : old.enabled };
+  if (JSON.stringify(rule) === JSON.stringify(old)) return [200, { service: id, rule }];
   const ok = !list.length || list.some((x) => inCidr(CLIENT_IP, x));
-  if (!ok && !(c.body.force && String(c.body.confirm ?? '').trim() === CLIENT_IP))
-    throw new HttpError(409, `mgmt_allow does not contain your address ${CLIENT_IP}: you would lose access to the web UI; add it, or confirm with force and confirm = "${CLIENT_IP}"`);
-  return quorum(u, 'security.mgmt_allow', { mgmt_allow: list, old, requested_from: CLIENT_IP });
+  if (svc.lockout && !ok && !(force && String(confirm ?? '').trim() === CLIENT_IP))
+    throw new HttpError(409, `the list for ${id} does not contain your address ${CLIENT_IP}: you would lose access to the web UI; add it, or confirm with force and confirm = "${CLIENT_IP}"`);
+  return quorum(u, 'firewall.inbound', { service: id, rule, old, requested_from: CLIENT_IP });
+}
+on('PUT', '/settings/mgmt-allow', async (c) => fwRequest(need(c.user, 'admin'), 'web', c.body.mgmt_allow, undefined, c.body.force, c.body.confirm));
+on('PUT', '/firewall/inbound/:id', async (c, [id]) => fwRequest(need(c.user, 'admin'), id, c.body.allow, c.body.enabled, c.body.force, c.body.confirm));
+on('GET', '/firewall', (c) => {
+  need(c.user, 'admin', 'security_officer');
+  const t = now();
+  return [
+    200,
+    {
+      services: FW_SERVICES.map((s) => {
+        const r = db.firewall[s.id] ?? { allow: [], enabled: false };
+        return { ...s, enabled: r.enabled, allow: [...r.allow], effective: s.available ? fwSets(s.id) : null, pending: s.available ? fwPending(s.id) : null };
+      }),
+      client_ip: CLIENT_IP,
+      client_allowed: !db.firewall.web.allow.length || db.firewall.web.allow.some((x) => inCidr(CLIENT_IP, x)),
+      status_ts: t - 20,
+      status_stale: false,
+      outbound: {
+        endpoints: ['192.0.2.20 . tcp . 8006', '192.0.2.20 . tcp . 22', '192.0.2.21 . tcp . 22', '198.51.100.40 . tcp . 23', '203.0.113.9 . tcp . 6514'],
+        dns: ['192.0.2.53'],
+        nts: ['162.159.200.1', '192.53.103.108'],
+      },
+      drops: [
+        { src: '203.0.113.77', proto: 'tcp', port: 22, last_seen: t - 300, packets: 41 },
+        { src: '203.0.113.77', proto: 'tcp', port: 3389, last_seen: t - 310, packets: 6 },
+        { src: '192.0.2.150', proto: 'tcp', port: 8443, last_seen: t - 3600, packets: 3 },
+        { src: '2001:db8:4::17', proto: 'udp', port: 161, last_seen: t - 7200, packets: 12 },
+      ],
+    },
+  ];
 });
 
 // approvals setting
