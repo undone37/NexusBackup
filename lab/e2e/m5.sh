@@ -12,7 +12,7 @@
 #      NEXUS_RESTORE_VM_DIR (default target/restore-vm, built by restore-vm/build.sh).
 # Logs: $ROOT/log/*.log. Build first:
 #   (cd web && npm ci --ignore-scripts && npm run build)
-#   cargo build --release -p keyd -p pve -p offsite -p web-api -p scheduler -p setup -p agent-conn -p truenas -p nas
+#   cargo build --release -p keyd -p pve -p offsite -p web-api -p scheduler -p setup -p agent-conn -p truenas -p nas -p webtls
 # Linux agents (lab/linux/e2e.sh): signed agent bundles for `agent_update` go to $ROOT/agent-update.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -76,9 +76,13 @@ start() {
 		NEXUS_TLS_CERT=$etc/tls/cert.pem NEXUS_TLS_KEY=$etc/tls/key.pem \
 		NEXUS_SETUP_DONE=$lib/setup-done NEXUS_METRICS_TOKEN=$etc/metrics-token \
 		NEXUS_DOWNLOADS=$lib/downloads NEXUS_TOTP_KEY=$lib/webapi/totp.key \
-		NEXUS_SECRETS_PUB=$lib/catalog/secrets.pub \
+		NEXUS_SECRETS_PUB=$lib/catalog/secrets.pub NEXUS_TLS_REQ_DIR=$lib/tls \
 		nohup "$BIN/nexus-web-api" >log/web-api.log 2>&1 &
 	echo $! >run/web-api.pid
+	# web certificate helper (on the appliance: nexus-tls.path); here a polling loop
+	mkdir -p "$lib/tls"
+	nohup sh -c "while sleep 0.5; do '$BIN/nexus-tls' --tls '$etc/tls' --req '$lib/tls'; done" >log/nexus-tls.log 2>&1 &
+	echo $! >run/nexus-tls.pid
 	NEXUS_RESTORE_VM_DIR=$RVM nohup "$BIN/nexus-scheduler" --config "$etc/scheduler.json" >log/scheduler.log 2>&1 &
 	echo $! >run/scheduler.pid
 	# secret writes need the scheduler's public key (published at its start)
@@ -91,7 +95,7 @@ start() {
 }
 
 stop() {
-	for p in scheduler web-api keyd; do
+	for p in scheduler nexus-tls web-api keyd; do
 		[ -f "$ROOT/run/$p.pid" ] && kill "$(cat "$ROOT/run/$p.pid")" 2>/dev/null || true
 		rm -f "$ROOT/run/$p.pid"
 	done

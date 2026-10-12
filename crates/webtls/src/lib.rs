@@ -293,7 +293,9 @@ pub fn validate(chain_pem: &str, key_pem: &str, names: &[String], now: i64) -> R
 
     let key = rcgen::KeyPair::from_pem(key_pem).context("pending key")?;
     if leaf.public_key().raw != key.public_key_der().as_slice() {
-        let other = certs[1..].iter().any(|c| c.public_key().raw == key.public_key_der().as_slice());
+        let other = certs[1..]
+            .iter()
+            .any(|c| c.public_key().raw == key.public_key_der().as_slice());
         bail!(if other {
             "wrong order: the certificate for this appliance's key must come first (leaf, then intermediates)"
         } else {
@@ -302,7 +304,10 @@ pub fn validate(chain_pem: &str, key_pem: &str, names: &[String], now: i64) -> R
     }
     for (i, w) in certs.windows(2).enumerate() {
         if !issued(&w[0], &w[1]) {
-            let elsewhere = certs.iter().enumerate().any(|(j, c)| j != i + 1 && j != i && issued(&w[0], c));
+            let elsewhere = certs
+                .iter()
+                .enumerate()
+                .any(|(j, c)| j != i + 1 && j != i && issued(&w[0], c));
             bail!(
                 "{}: certificate {} ({}) was not issued by certificate {} ({})",
                 if elsewhere { "wrong order" } else { "not a chain" },
@@ -444,8 +449,7 @@ pub fn csr(p: &Paths, cn: &str, sans: &[String]) -> Result<Value> {
 
 /// `install`: validated chain + pending key become `web.pem`.
 pub fn install(p: &Paths, chain_pem: &str, now: i64) -> Result<Value> {
-    let key = read_small(&p.pending().join("key.pem"), 16 * 1024)?
-        .context("no pending key: generate a CSR first")?;
+    let key = read_small(&p.pending().join("key.pem"), 16 * 1024)?.context("no pending key: generate a CSR first")?;
     let key = String::from_utf8(key).context("pending key")?;
     let pending: Pending = serde_json::from_slice(
         &read_small(&p.pending().join("request.json"), 64 * 1024)?.context("pending request missing")?,
@@ -545,7 +549,8 @@ pub fn status(p: &Paths) -> Result<Value> {
         .transpose()?
         .and_then(|c| c.into_iter().next());
     let web = read_small(&p.web(), max)?.map(|b| chain_info(&b)).transpose()?;
-    let pending: Option<Pending> = read_small(&p.pending_info(), 64 * 1024)?.and_then(|b| serde_json::from_slice(&b).ok());
+    let pending: Option<Pending> =
+        read_small(&p.pending_info(), 64 * 1024)?.and_then(|b| serde_json::from_slice(&b).ok());
     let csr = read_small(&p.csr(), 64 * 1024)?.map(|b| String::from_utf8_lossy(&b).into_owned());
     let has_prev = p.prev().exists();
     Ok(json!({

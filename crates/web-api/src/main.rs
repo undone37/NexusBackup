@@ -83,8 +83,10 @@ async fn main() -> Result<()> {
     tokio::spawn({
         let st = st.clone();
         async move {
-            for i in 0u64.. {
-                if i % 60 == 0 {
+            let mut minutes = 0u64;
+            loop {
+                minutes += 1;
+                if minutes % 60 == 1 {
                     if let Err(e) = web_api::certs::publish_status(&st) {
                         eprintln!("<4>web-api: certificate status: {}", e.1);
                     }

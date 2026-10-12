@@ -1,7 +1,7 @@
 use super::*;
 use rcgen::{
-    BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
-    KeyUsagePurpose, SanType,
+    BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
+    KeyPair, KeyUsagePurpose, SanType,
 };
 
 /// 2026-06-01, inside the default validity below
@@ -110,7 +110,11 @@ fn wrong_order_and_missing_intermediate() {
 
 #[test]
 fn key_must_match() {
-    let (root, key, other) = (ca("Root", None), KeyPair::generate().unwrap(), KeyPair::generate().unwrap());
+    let (root, key, other) = (
+        ca("Root", None),
+        KeyPair::generate().unwrap(),
+        KeyPair::generate().unwrap(),
+    );
     let l = leaf(&other, &root, Leaf::default());
     let e = err(validate(&pems(&[&l, &root.cert]), &key.serialize_pem(), &names(), NOW));
     assert!(e.contains("does not belong to the pending key"), "{e}");
@@ -197,7 +201,8 @@ fn csr_install_revert() {
     assert!(revert(&p).is_err(), "nothing to revert");
 
     // the web-api's request file, answered by process()
-    let req = json!({"id": "01", "op": "csr", "cn": "backup.example.com", "sans": ["198.51.100.5", "BACKUP.example.com"]});
+    let req =
+        json!({"id": "01", "op": "csr", "cn": "backup.example.com", "sans": ["198.51.100.5", "BACKUP.example.com"]});
     fs::write(p.request(), req.to_string()).unwrap();
     assert!(process(&p).unwrap());
     assert!(!p.request().exists());
@@ -212,7 +217,18 @@ fn csr_install_revert() {
     let key = KeyPair::from_pem(&fs::read_to_string(p.pending().join("key.pem")).unwrap()).unwrap();
     let mut l = leaf(&key, &root, Leaf::default());
     // a failed install keeps the pending key
-    let bad = install(&p, &pems(&[&leaf(&key, &root, Leaf { sans: &["x.example.com"], ..Default::default() })]), NOW);
+    let bad = install(
+        &p,
+        &pems(&[&leaf(
+            &key,
+            &root,
+            Leaf {
+                sans: &["x.example.com"],
+                ..Default::default()
+            },
+        )]),
+        NOW,
+    );
     assert!(bad.is_err() && p.pending().join("key.pem").exists());
     install(&p, &pems(&[&l, &root.cert]), NOW).unwrap();
     assert!(!p.pending().exists() && !p.csr().exists());
@@ -244,7 +260,11 @@ fn csr_install_revert() {
     assert_eq!(first(&p), fingerprint(l.der()));
 
     // errors are answered, not fatal
-    fs::write(p.request(), json!({"id": "02", "op": "install", "chain_pem": "x"}).to_string()).unwrap();
+    fs::write(
+        p.request(),
+        json!({"id": "02", "op": "install", "chain_pem": "x"}).to_string(),
+    )
+    .unwrap();
     assert!(process(&p).unwrap());
     let r: Value = serde_json::from_slice(&fs::read(p.result()).unwrap()).unwrap();
     assert_eq!(r["ok"], false);

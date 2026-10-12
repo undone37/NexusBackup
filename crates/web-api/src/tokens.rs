@@ -283,12 +283,7 @@ pub struct CreateReq {
 /// Local accounts re-authenticate (password + TOTP): a stolen session must not
 /// turn into a credential that outlives it. OIDC accounts need a session that
 /// is at most 15 minutes old instead.
-pub async fn create(
-    State(st): State<St>,
-    ctx: Ctx,
-    ClientIp(ip): ClientIp,
-    J(r): J<CreateReq>,
-) -> ApiResult<Response> {
+pub async fn create(State(st): State<St>, ctx: Ctx, ClientIp(ip): ClientIp, J(r): J<CreateReq>) -> ApiResult<Response> {
     validate::name(&r.name, "name")?;
     if !(1..=MAX_DAYS).contains(&r.days) {
         return Err(ApiError::bad(format!("days: 1..={MAX_DAYS}")));
@@ -296,23 +291,32 @@ pub async fn create(
     match r.scope.as_str() {
         "read" => {}
         "operator" if effective("operator", &ctx.user.role).1 => {}
-        "operator" => return Err(ApiError::bad("scope: operator tokens need the admin, operator or tenant user role")),
+        "operator" => {
+            return Err(ApiError::bad(
+                "scope: operator tokens need the admin, operator or tenant user role",
+            ))
+        }
         _ => return Err(ApiError::bad("scope: read or operator")),
     }
-    let n: i64 = st
-        .cat
-        .conn()
-        .query_row("SELECT COUNT(*) FROM api_tokens WHERE user_id = ?1", [ctx.user.id], |r| r.get(0))?;
+    let n: i64 = st.cat.conn().query_row(
+        "SELECT COUNT(*) FROM api_tokens WHERE user_id = ?1",
+        [ctx.user.id],
+        |r| r.get(0),
+    )?;
     if n >= MAX_PER_USER {
-        return Err(ApiError::conflict(format!("at most {MAX_PER_USER} tokens per user: revoke one first")));
+        return Err(ApiError::conflict(format!(
+            "at most {MAX_PER_USER} tokens per user: revoke one first"
+        )));
     }
     if ctx.user.auth == "local" {
         reauth(&st, &ctx, &ip, r.current_password, r.current_totp, "token.create").await?;
     } else {
-        let created: i64 = st
-            .cat
-            .conn()
-            .query_row("SELECT created FROM sessions WHERE id_hash = ?1", [&ctx.sid], |r| r.get(0))?;
+        let created: i64 =
+            st.cat
+                .conn()
+                .query_row("SELECT created FROM sessions WHERE id_hash = ?1", [&ctx.sid], |r| {
+                    r.get(0)
+                })?;
         if catalog::now() - created > OIDC_FRESH_SECS {
             return Err(ApiError(
                 StatusCode::FORBIDDEN,
@@ -364,6 +368,11 @@ pub async fn revoke(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> ApiR
         ctx.require(&["admin"]).map_err(|_| ApiError::not_found())?;
     }
     st.cat.conn().execute("DELETE FROM api_tokens WHERE id = ?1", [id])?;
-    st.audit(ctx.name(), "token.revoke", &format!("token/{user}/{name}"), json!({"id": id}))?;
+    st.audit(
+        ctx.name(),
+        "token.revoke",
+        &format!("token/{user}/{name}"),
+        json!({"id": id}),
+    )?;
     Ok(Json(json!({"ok": true})))
 }

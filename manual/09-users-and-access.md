@@ -148,6 +148,66 @@ the web interface. Use the console break-glass procedure with the recovery key: 
 > **Status:** Local accounts support only TOTP authenticators. WebAuthn (security keys) is planned; with single
 > sign-on, the identity provider can require security keys.
 
+## API tokens
+
+Scripts, monitoring and automation (Grafana, Ansible, a CI job that tests restores) call the REST API with an **API
+token** instead of a session: `Authorization: Bearer nxt_…`. Every user manages their own tokens under **My account**
+(click your name at the top right).
+
+![My account: API tokens](images/account-tokens.png)
+
+**Create a token:** **New token**, then:
+
+| Field | Content |
+|---|---|
+| **Name** | what the token is for, e.g. `grafana` (unique per user) |
+| **Scope** | **Read only** or **Operator** (see below) |
+| **Valid for** | 7, 30, 90, 180 days or 1 year. Every token expires; there are no tokens without an end date. |
+| **Your current password**, **Your authenticator code** | local accounts confirm it is really you, as for a password change. Single sign-on accounts instead need a session that is at most 15 minutes old (sign in again first). |
+
+![Creating a token](images/token-new.png)
+
+After **Create** the token is shown **once**. Copy it into your script or secret store; the appliance keeps only a
+hash of it and cannot show it again. The dialog shows a `curl` example.
+
+![The new token, shown once](images/token-created.png)
+
+**Scopes.** A token never has more rights than its user:
+
+- **Read only:** GET requests on the dashboard, storage, tenants, sources and their inventory, policies, groups,
+  agents, snapshots, jobs, alerts, approvals (the list), the audit log and its verification, replication and plugins
+  (what the user's role may read).
+- **Operator:** in addition, start jobs (backups, restores, verify, …) and cancel them, pause and resume protection
+  groups, start and end source maintenance, acknowledge alerts and start a replication sync. An administrator's
+  operator token acts as an operator; a tenant user's stays a tenant user in their tenant. Security officers can
+  create read-only tokens only.
+
+**Never with a token**, whatever the scope: approving or rejecting requests, changing settings, users or tokens,
+installing plugins or keys, the certificate, downloading files (also no `files_get` or mount jobs), exporting
+replication keys, OS updates, deleting anything, signing in or out. Endpoints are open to tokens only if they are on
+the token allow-list, so a new endpoint is closed to tokens until it is reviewed.
+
+**Revoke** removes a token at once. Tokens stop working when they expire, when their user is disabled or reset
+(pending activation), or when the user is deleted. The table shows when and from which address each token was last
+used. Administrators see and revoke every user's tokens at the end of the **Users** page.
+
+![Users: API tokens of all users](images/users-tokens.png)
+
+Audit entries made with a token name the user and the token, e.g. `admin via token grafana`; creating and revoking
+are audited (`token.create`, `token.revoke`). An `info` alert reminds of tokens in their last 7 days
+([11 Alerts](11-alerts-and-monitoring.md#expiry-warnings)).
+
+Example:
+
+```sh
+curl -H "Authorization: Bearer nxt_5ed9920e_9a80…" https://backup.example.com:8443/api/v1/dashboard
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind": "backup", "tenant": "acme", "params": {"group_id": 1}}' https://backup.example.com:8443/api/v1/jobs
+```
+
+No CSRF header is needed with a token. The Prometheus `/metrics` endpoint keeps its own token
+([11 Alerts](11-alerts-and-monitoring.md#metrics-prometheus)).
+
 ## Single sign-on (OIDC)
 
 With single sign-on, people sign in with the account of your organization's identity provider (IdP) through OpenID
@@ -240,6 +300,7 @@ Open **Configuration → Settings → Single sign-on** (administrators; security
    |---|---|
    | **Issuer URL** | the IdP's issuer (`https://…`). The appliance reads `/.well-known/openid-configuration` below it. |
    | **Client ID**, **Client secret** | from the IdP registration. The secret is write-only ("Stored — leave empty to keep the current value."). |
+   | **Client secret expires (optional)** | the date the IdP lets the secret expire (Entra ID: at most 2 years). The appliance warns 90, 30 and 7 days before ([11 Alerts](11-alerts-and-monitoring.md#expiry-warnings)). |
    | **Redirect URI to register at the identity provider** | read-only; **Copy** it into the IdP registration |
    | **Scopes** | space separated, must include `openid`; default `openid profile email` |
    | **User name claim** | the claim that becomes the appliance user name; default `preferred_username` |

@@ -67,7 +67,10 @@ impl Scheduler {
         let imported = tls["web"]["imported"] == json!(true);
         for (k, what) in [
             ("web", "The web certificate"),
-            ("identity", "The self-signed appliance certificate (pinned by replication secondaries)"),
+            (
+                "identity",
+                "The self-signed appliance certificate (pinned by replication secondaries)",
+            ),
         ] {
             // without an import the web certificate is the identity one: one alert
             if k == "web" && !imported {
@@ -81,7 +84,12 @@ impl Scheduler {
         let mut q = c.prepare("SELECT id, tenant, name, enrolled_at FROM agents WHERE enrolled_at IS NOT NULL")?;
         let agents = q
             .query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?))
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         let mut first = catalog::setting(&c, AGENT_CA_SETTING)?.and_then(|s| s.parse::<i64>().ok());
@@ -107,7 +115,9 @@ impl Scheduler {
             "SELECT id, name, enrolled_at FROM replication_peers WHERE state = 'enrolled' AND enrolled_at IS NOT NULL",
         )?;
         let peers = q
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         for (id, name, at) in peers {
             v.push(item(
@@ -160,13 +170,18 @@ impl Scheduler {
         let items = self.expiry_items(now)?;
         let open: HashMap<String, String> = {
             let c = self.db.conn();
-            let mut q = c.prepare("SELECT key, severity FROM alerts WHERE resolved_at IS NULL AND key LIKE 'cert_expiry:%'")?;
+            let mut q =
+                c.prepare("SELECT key, severity FROM alerts WHERE resolved_at IS NULL AND key LIKE 'cert_expiry:%'")?;
             let r = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
             r.collect::<Result<_, _>>()?
         };
         let mut due = HashSet::new();
         for it in &items {
-            let sev = if it.token { Some("info") } else { severity(it.not_after, now) };
+            let sev = if it.token {
+                Some("info")
+            } else {
+                severity(it.not_after, now)
+            };
             let Some(sev) = sev else { continue };
             let key = format!("{PREFIX}{}", it.key);
             // once per level: a repeat would only count up every refresh

@@ -11,6 +11,7 @@
   import Qr from '../components/Qr.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import ActivationCode from '../components/ActivationCode.svelte';
+  import ApiTokens from '../components/ApiTokens.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
 
   // POST /users -> {user, activation}; PUT /users/{id} -> {user, totp_uri? (own account),
@@ -207,6 +208,8 @@
     </div>
   {/if}
 </div>
+
+{#if session.user?.role === 'admin'}<ApiTokens all />{/if}
 
 <Modal bind:open title={editing ? `${t.users.title}: ${editing.name}` : t.users.new}>
   <form onsubmit={save}>

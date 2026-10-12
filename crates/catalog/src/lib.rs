@@ -1156,13 +1156,17 @@ mod tests {
         let conn = c.conn();
         let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
         assert_eq!(v, MIGRATIONS.len() as i64);
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM api_tokens", [], |r| r.get(0)).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM api_tokens", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 0);
         let ins = "INSERT INTO api_tokens (user_id, name, prefix, hash, scope, expires, created) VALUES (1, ?1, ?2, 'h', ?3, 10, 0)";
         conn.execute(ins, ["ci", "abcd1234", "read"]).unwrap();
         assert!(conn.execute(ins, ["x", "ffff0000", "admin"]).is_err(), "scope checked");
         conn.execute("DELETE FROM users WHERE id = 1", []).unwrap();
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM api_tokens", [], |r| r.get(0)).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM api_tokens", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 0, "tokens follow their user");
     }
 

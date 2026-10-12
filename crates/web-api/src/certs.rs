@@ -88,7 +88,9 @@ async fn helper(st: &AppState, mut req: Value) -> ApiResult<Value> {
         }
         let _ = std::fs::remove_file(p.result());
         if v["ok"] != json!(true) {
-            return Err(ApiError::bad(v["error"].as_str().unwrap_or("nexus-tls failed").to_owned()));
+            return Err(ApiError::bad(
+                v["error"].as_str().unwrap_or("nexus-tls failed").to_owned(),
+            ));
         }
         return Ok(v);
     }

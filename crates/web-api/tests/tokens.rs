@@ -136,7 +136,9 @@ impl T {
             .method(Method::POST)
             .uri("/api/v1/auth/login")
             .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(json!({"name": name, "password": PW, "totp": code}).to_string()))
+            .body(Body::from(
+                json!({"name": name, "password": PW, "totp": code}).to_string(),
+            ))
             .unwrap();
         let res = self.app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
@@ -194,7 +196,8 @@ async fn create_list_and_revoke() {
     // re-authentication required (local account)
     let r = post(&alice, json!({"name": "ci", "scope": "read", "days": 30})).await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
-    let wrong = json!({"name": "ci", "scope": "read", "days": 30, "current_password": "nope", "current_totp": t.code("alice")});
+    let wrong =
+        json!({"name": "ci", "scope": "read", "days": 30, "current_password": "nope", "current_totp": t.code("alice")});
     assert_eq!(post(&alice, wrong).await.status, StatusCode::FORBIDDEN);
     for (bad, what) in [
         (json!({"name": "ci", "scope": "read", "days": 366}), "days"),
@@ -207,7 +210,8 @@ async fn create_list_and_revoke() {
         assert_eq!(post(&alice, b).await.status, StatusCode::BAD_REQUEST, "{what}");
     }
     // a security officer's tokens are read-only
-    let so_op = json!({"name": "x", "scope": "operator", "days": 30, "current_password": PW, "current_totp": t.code("sam")});
+    let so_op =
+        json!({"name": "x", "scope": "operator", "days": 30, "current_password": PW, "current_totp": t.code("sam")});
     assert_eq!(post(&sam, so_op).await.status, StatusCode::BAD_REQUEST);
 
     let tok = t.token("alice", &alice, "ci", "operator").await;
@@ -216,22 +220,45 @@ async fn create_list_and_revoke() {
     // shown once: stored hashed, never listed
     let hash: String = t.one("SELECT hash FROM api_tokens WHERE name = 'ci'");
     assert!(!tok.contains(&hash) && hash.len() == 64);
-    let r = t.call(Method::GET, "/api/v1/auth/tokens", Some(Auth::Session(&alice)), None).await;
+    let r = t
+        .call(Method::GET, "/api/v1/auth/tokens", Some(Auth::Session(&alice)), None)
+        .await;
     assert_eq!(r.body.as_array().unwrap().len(), 1, "own tokens only: {:?}", r.body);
     let row = &r.body[0];
-    assert_eq!((row["name"].as_str(), row["scope"].as_str()), (Some("ci"), Some("operator")));
+    assert_eq!(
+        (row["name"].as_str(), row["scope"].as_str()),
+        (Some("ci"), Some("operator"))
+    );
     assert!(row.get("hash").is_none() && row.get("token").is_none());
     assert!(!r.body.to_string().contains(&hash));
-    let all = t.call(Method::GET, "/api/v1/auth/tokens?all=true", Some(Auth::Session(&alice)), None).await;
+    let all = t
+        .call(
+            Method::GET,
+            "/api/v1/auth/tokens?all=true",
+            Some(Auth::Session(&alice)),
+            None,
+        )
+        .await;
     assert_eq!(all.body.as_array().unwrap().len(), 2);
-    let r = t.call(Method::GET, "/api/v1/auth/tokens?all=true", Some(Auth::Session(&otto)), None).await;
+    let r = t
+        .call(
+            Method::GET,
+            "/api/v1/auth/tokens?all=true",
+            Some(Auth::Session(&otto)),
+            None,
+        )
+        .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
     // duplicate name
-    let dup = json!({"name": "ci", "scope": "read", "days": 30, "current_password": PW, "current_totp": t.code("alice")});
+    let dup =
+        json!({"name": "ci", "scope": "read", "days": 30, "current_password": PW, "current_totp": t.code("alice")});
     assert_eq!(post(&alice, dup).await.status, StatusCode::CONFLICT);
 
     // used: last_used / last_ip recorded
-    assert_eq!(t.bearer(Method::GET, "/api/v1/dashboard", &tok, None).await.status, StatusCode::OK);
+    assert_eq!(
+        t.bearer(Method::GET, "/api/v1/dashboard", &tok, None).await.status,
+        StatusCode::OK
+    );
     let used: Option<i64> = t.one("SELECT last_used FROM api_tokens WHERE name = 'ci'");
     assert!(used.is_some());
 
@@ -240,12 +267,20 @@ async fn create_list_and_revoke() {
     let otto_id: i64 = t.one("SELECT id FROM api_tokens WHERE name = 'mon'");
     assert_eq!(t.del(&otto, alice_id).await, StatusCode::NOT_FOUND);
     assert_eq!(t.del(&alice, otto_id).await, StatusCode::OK);
-    assert_eq!(t.bearer(Method::GET, "/api/v1/dashboard", &other, None).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        t.bearer(Method::GET, "/api/v1/dashboard", &other, None).await.status,
+        StatusCode::UNAUTHORIZED
+    );
     assert_eq!(t.del(&alice, alice_id).await, StatusCode::OK);
-    assert_eq!(t.bearer(Method::GET, "/api/v1/dashboard", &tok, None).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        t.bearer(Method::GET, "/api/v1/dashboard", &tok, None).await.status,
+        StatusCode::UNAUTHORIZED
+    );
     let n: i64 = t.one("SELECT COUNT(*) FROM audit WHERE action IN ('token.create', 'token.revoke')");
     assert_eq!(n, 4);
-    let n: i64 = t.one("SELECT COUNT(*) FROM audit WHERE action = 'token.revoke' AND actor = 'alice' AND target = 'token/otto/mon'");
+    let n: i64 = t.one(
+        "SELECT COUNT(*) FROM audit WHERE action = 'token.revoke' AND actor = 'alice' AND target = 'token/otto/mon'",
+    );
     assert_eq!(n, 1);
 }
 
@@ -260,7 +295,10 @@ async fn scope_matrix_and_allow_list() {
     // an admin's operator token acts as operator
     let me = t.bearer(Method::GET, "/api/v1/auth/me", &op, None).await;
     assert_eq!(me.body["user"]["role"], "operator", "{:?}", me.body);
-    assert_eq!(t.bearer(Method::GET, "/api/v1/auth/me", &read, None).await.body["user"]["role"], "admin");
+    assert_eq!(
+        t.bearer(Method::GET, "/api/v1/auth/me", &read, None).await.body["user"]["role"],
+        "admin"
+    );
 
     // operator work, without a CSRF header; audited as "alice via token ops"
     let backup = json!({"kind": "backup", "tenant": "acme", "params": {"group_id": 1}});
@@ -271,7 +309,14 @@ async fn scope_matrix_and_allow_list() {
     assert_eq!(actor, "alice via token ops");
     let by: String = t.one("SELECT requested_by FROM jobs ORDER BY id DESC LIMIT 1");
     assert_eq!(by, "alice", "identity stays the user (four-eyes checks compare names)");
-    let r = t.bearer(Method::POST, &format!("/api/v1/jobs/{job}/cancel"), &op, Some(json!({}))).await;
+    let r = t
+        .bearer(
+            Method::POST,
+            &format!("/api/v1/jobs/{job}/cancel"),
+            &op,
+            Some(json!({})),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     for (m, p) in [
         (Method::POST, "/api/v1/groups/1/pause"),
@@ -282,17 +327,43 @@ async fn scope_matrix_and_allow_list() {
     }
     // downloads and mounts never through a token, even as a job
     let files = json!({"kind": "files_get", "tenant": "acme", "params": {}});
-    assert_eq!(t.bearer(Method::POST, "/api/v1/jobs", &op, Some(files)).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        t.bearer(Method::POST, "/api/v1/jobs", &op, Some(files)).await.status,
+        StatusCode::FORBIDDEN
+    );
     // admin-only job kinds: the token is operator
     let enroll = json!({"kind": "agent_enroll", "tenant": "acme", "params": {}});
-    assert_eq!(t.bearer(Method::POST, "/api/v1/jobs", &op, Some(enroll)).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        t.bearer(Method::POST, "/api/v1/jobs", &op, Some(enroll)).await.status,
+        StatusCode::FORBIDDEN
+    );
 
     // read scope: GET only
-    for p in ["/api/v1/dashboard", "/api/v1/jobs", "/api/v1/snapshots", "/api/v1/alerts", "/api/v1/audit"] {
-        assert_eq!(t.bearer(Method::GET, p, &read, None).await.status, StatusCode::OK, "{p}");
+    for p in [
+        "/api/v1/dashboard",
+        "/api/v1/jobs",
+        "/api/v1/snapshots",
+        "/api/v1/alerts",
+        "/api/v1/audit",
+    ] {
+        assert_eq!(
+            t.bearer(Method::GET, p, &read, None).await.status,
+            StatusCode::OK,
+            "{p}"
+        );
     }
-    assert_eq!(t.bearer(Method::POST, "/api/v1/jobs", &read, Some(backup)).await.status, StatusCode::FORBIDDEN);
-    let r = t.bearer(Method::POST, &format!("/api/v1/jobs/{job}/cancel"), &read, Some(json!({}))).await;
+    assert_eq!(
+        t.bearer(Method::POST, "/api/v1/jobs", &read, Some(backup)).await.status,
+        StatusCode::FORBIDDEN
+    );
+    let r = t
+        .bearer(
+            Method::POST,
+            &format!("/api/v1/jobs/{job}/cancel"),
+            &read,
+            Some(json!({})),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
 
     // never, whatever the scope: approvals, settings, users, tokens, plugins,
@@ -338,10 +409,19 @@ async fn scope_matrix_and_allow_list() {
 
     // a tenant user's operator token stays a tenant user, in its tenant
     let r = t.bearer(Method::GET, "/api/v1/tenants", &tina, None).await;
-    let names: Vec<&str> = r.body.as_array().unwrap().iter().map(|x| x["name"].as_str().unwrap()).collect();
+    let names: Vec<&str> = r
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["name"].as_str().unwrap())
+        .collect();
     assert_eq!(names, vec!["acme"]);
     let b = json!({"kind": "backup", "tenant": "acme", "params": {"group_id": 1}});
-    assert_eq!(t.bearer(Method::POST, "/api/v1/jobs", &tina, Some(b)).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        t.bearer(Method::POST, "/api/v1/jobs", &tina, Some(b)).await.status,
+        StatusCode::FORBIDDEN
+    );
 
     // the session still works next to a token (and still needs its CSRF header)
     let r = t
@@ -360,19 +440,34 @@ async fn expired_wrong_and_disabled() {
     let (head, secret) = tok.rsplit_once('_').unwrap();
     let wrong = format!("{head}_{}", secret.replace('a', "b").replace('0', "1"));
     assert_eq!(t.dash(&wrong).await, StatusCode::UNAUTHORIZED);
-    assert_eq!(t.dash(&format!("nxt_00000000_{secret}")).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        t.dash(&format!("nxt_00000000_{secret}")).await,
+        StatusCode::UNAUTHORIZED
+    );
     assert_eq!(t.dash("nxt_garbage").await, StatusCode::UNAUTHORIZED);
     // expired
-    t.st.cat.conn().execute("UPDATE api_tokens SET expires = 1", []).unwrap();
-    assert_eq!(t.dash(&tok).await, StatusCode::UNAUTHORIZED);
-    t.st.cat.conn().execute("UPDATE api_tokens SET expires = 4102444800", []).unwrap();
-    assert_eq!(t.dash(&tok).await, StatusCode::OK);
-    // disabled user, user pending activation (reset)
-    t.st.cat.conn().execute("UPDATE users SET disabled = 1 WHERE name = 'alice'", []).unwrap();
+    t.st.cat
+        .conn()
+        .execute("UPDATE api_tokens SET expires = 1", [])
+        .unwrap();
     assert_eq!(t.dash(&tok).await, StatusCode::UNAUTHORIZED);
     t.st.cat
         .conn()
-        .execute("UPDATE users SET disabled = 0, activation_hash = 'x' WHERE name = 'alice'", [])
+        .execute("UPDATE api_tokens SET expires = 4102444800", [])
+        .unwrap();
+    assert_eq!(t.dash(&tok).await, StatusCode::OK);
+    // disabled user, user pending activation (reset)
+    t.st.cat
+        .conn()
+        .execute("UPDATE users SET disabled = 1 WHERE name = 'alice'", [])
+        .unwrap();
+    assert_eq!(t.dash(&tok).await, StatusCode::UNAUTHORIZED);
+    t.st.cat
+        .conn()
+        .execute(
+            "UPDATE users SET disabled = 0, activation_hash = 'x' WHERE name = 'alice'",
+            [],
+        )
         .unwrap();
     assert_eq!(t.dash(&tok).await, StatusCode::UNAUTHORIZED);
     t.st.cat

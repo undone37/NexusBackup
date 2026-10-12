@@ -113,7 +113,13 @@ impl T {
         }
     }
 
-    async fn call(&self, method: Method, path: &str, s: Option<&(String, String)>, body: Option<Value>) -> (StatusCode, Value) {
+    async fn call(
+        &self,
+        method: Method,
+        path: &str,
+        s: Option<&(String, String)>,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
         let mut b = Request::builder().method(method).uri(path);
         if let Some((cookie, csrf)) = s {
             b = b
@@ -139,7 +145,9 @@ impl T {
             .method(Method::POST)
             .uri("/api/v1/auth/login")
             .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(json!({"name": name, "password": PW, "totp": code}).to_string()))
+            .body(Body::from(
+                json!({"name": name, "password": PW, "totp": code}).to_string(),
+            ))
             .unwrap();
         let res = self.app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
@@ -164,18 +172,27 @@ async fn csr_install_and_revert() {
     assert_eq!(v["active"], "self_signed");
     let identity = v["identity"]["sha256"].as_str().unwrap().to_owned();
     assert_eq!(v["pins"]["replication_identity"], identity);
-    assert_eq!(t.call(Method::GET, "/api/v1/certificate", Some(&otto), None).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(
+        t.call(Method::GET, "/api/v1/certificate", Some(&otto), None).await.0,
+        StatusCode::FORBIDDEN
+    );
     let csr = json!({"cn": "backup.example.com", "sans": ["198.51.100.5"]});
-    let (s, _) = t.call(Method::POST, "/api/v1/certificate/csr", Some(&sam), Some(csr.clone())).await;
+    let (s, _) = t
+        .call(Method::POST, "/api/v1/certificate/csr", Some(&sam), Some(csr.clone()))
+        .await;
     assert_eq!(s, StatusCode::FORBIDDEN, "security officers only look");
 
-    let (s, v) = t.call(Method::POST, "/api/v1/certificate/csr", Some(&alice), Some(csr)).await;
+    let (s, v) = t
+        .call(Method::POST, "/api/v1/certificate/csr", Some(&alice), Some(csr))
+        .await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert!(v["csr_pem"].as_str().unwrap().contains("CERTIFICATE REQUEST"));
     let (_, st) = t.call(Method::GET, "/api/v1/certificate", Some(&alice), None).await;
     assert_eq!(st["pending"]["sans"], json!(["backup.example.com", "198.51.100.5"]));
     let bad = json!({"cn": "bad name"});
-    let (s, v) = t.call(Method::POST, "/api/v1/certificate/csr", Some(&alice), Some(bad)).await;
+    let (s, v) = t
+        .call(Method::POST, "/api/v1/certificate/csr", Some(&alice), Some(bad))
+        .await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
     assert!(v["error"].as_str().unwrap().contains("DNS name"), "{v}");
 
@@ -183,14 +200,27 @@ async fn csr_install_and_revert() {
     let (root, key) = (ca(), t.pending_key());
     let short = signed(&key, &["backup.example.com"], &root);
     let (s, v) = t
-        .call(Method::POST, "/api/v1/certificate/install", Some(&alice), Some(json!({"chain_pem": short.pem()})))
+        .call(
+            Method::POST,
+            "/api/v1/certificate/install",
+            Some(&alice),
+            Some(json!({"chain_pem": short.pem()})),
+        )
         .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
-    assert!(v["error"].as_str().unwrap().contains("does not cover 198.51.100.5"), "{v}");
+    assert!(
+        v["error"].as_str().unwrap().contains("does not cover 198.51.100.5"),
+        "{v}"
+    );
     let leaf = signed(&key, &["backup.example.com", "198.51.100.5"], &root);
     let chain = format!("{}{}", leaf.pem(), root.0.pem());
     let (s, v) = t
-        .call(Method::POST, "/api/v1/certificate/install", Some(&alice), Some(json!({"chain_pem": chain})))
+        .call(
+            Method::POST,
+            "/api/v1/certificate/install",
+            Some(&alice),
+            Some(json!({"chain_pem": chain})),
+        )
         .await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["chain"].as_array().unwrap().len(), 2);
@@ -199,21 +229,29 @@ async fn csr_install_and_revert() {
     assert_eq!(st["chain"][0]["sha256"], webtls::fingerprint(leaf.der()));
     assert_eq!(st["identity"]["sha256"], identity, "the pinned identity is unchanged");
     assert!(st["pending"].is_null());
-    let published: String = t
-        .st
-        .cat
-        .conn()
-        .query_row("SELECT value FROM settings WHERE key = 'tls_status'", [], |r| r.get(0))
-        .unwrap();
+    let published: String =
+        t.st.cat
+            .conn()
+            .query_row("SELECT value FROM settings WHERE key = 'tls_status'", [], |r| r.get(0))
+            .unwrap();
     let published: Value = serde_json::from_str(&published).unwrap();
     assert_eq!(published["web"]["imported"], true);
     assert_eq!(published["web"]["sha256"], webtls::fingerprint(leaf.der()));
 
-    let (s, v) = t.call(Method::POST, "/api/v1/certificate/revert", Some(&alice), Some(json!({}))).await;
+    let (s, v) = t
+        .call(
+            Method::POST,
+            "/api/v1/certificate/revert",
+            Some(&alice),
+            Some(json!({})),
+        )
+        .await;
     assert_eq!((s, v["active"].as_str()), (StatusCode::OK, Some("self_signed")));
     let actions: Vec<String> = {
         let c = t.st.cat.conn();
-        let mut q = c.prepare("SELECT action FROM audit WHERE action LIKE 'tls.%' ORDER BY seq").unwrap();
+        let mut q = c
+            .prepare("SELECT action FROM audit WHERE action LIKE 'tls.%' ORDER BY seq")
+            .unwrap();
         q.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
     };
     assert_eq!(actions, vec!["tls.csr", "tls.install", "tls.revert"]);
@@ -316,7 +354,11 @@ async fn resolver_reloads_imported_certificate() {
     let (fp, alpn) = handshake(port, repl_proto::ALPN_ENROLL).await;
     assert_eq!((fp, alpn.as_deref()), (id_fp.clone(), Some(repl_proto::ALPN_ENROLL)));
     // a broken file keeps the current certificate
-    write(format!("{}{}", leaf.pem(), KeyPair::generate().unwrap().serialize_pem()));
+    write(format!(
+        "{}{}",
+        leaf.pem(),
+        KeyPair::generate().unwrap().serialize_pem()
+    ));
     assert_eq!(handshake(port, b"h2").await.0, leaf_fp, "mismatched key: kept");
     // reverted to self-signed
     std::fs::remove_file(&web).unwrap();

@@ -64,7 +64,8 @@ hidden; open it with the **Menu** button at the top left.
 - the **Approvals** button (stamp icon) with the number of pending requests, for roles that see approvals;
 - the **Alerts** button (bell icon) with the number of open alerts, for roles that see alerts;
 - the **theme** button (see below);
-- your user name and role, and for tenant-scoped accounts your tenant (e.g. "Tenant user · acme");
+- your user name and role, and for tenant-scoped accounts your tenant (e.g. "Tenant user · acme"). Click it to
+  open **My account** with your API tokens ([09 Users and access](09-users-and-access.md#api-tokens));
 - **Sign out** (arrow icon).
 
 **Theme (light / dark).** By default the interface follows your operating system's light or dark setting. The theme
@@ -385,6 +386,7 @@ when approvals are enabled.
 | **Appliance SSH keys** | the public keys the appliance signs in to sources with; **Copy**, **Rotate**, **Retire old key** | [04 Sources](04-sources.md#appliance-ssh-keys) |
 | **Updates** | running, staged, available and rollback image; **Check now**, **Install now** | [13 Updates](13-updates.md#updates-in-the-web-interface) |
 | **Anomaly detection** | thresholds of the change-rate `anomaly` alert | [11 Alerts and monitoring](11-alerts-and-monitoring.md#change-rate-anomalies) |
+| **Certificate** | the web certificate (chain, fingerprints, expiry), a certificate request generated on the appliance, importing the signed certificate, reverting | [02 Installation](02-installation.md#use-your-own-certificate) |
 
 ![Settings: Approvals](images/settings-approvals.png)
 
@@ -397,6 +399,8 @@ when approvals are enabled.
 ![Settings: Updates](images/settings-updates.png)
 
 ![Settings: Anomaly detection](images/settings-anomaly.png)
+
+![Settings: Certificate](images/settings-certificate.png)
 
 ## Messages and dialogs
 

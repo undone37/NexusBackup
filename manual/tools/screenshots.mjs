@@ -646,6 +646,31 @@ async function main() {
       await go('/settings?tab=updates');
       await shot('settings-updates');
     }],
+    // Phase 14d: API tokens (My account, Users) and the web certificate
+    ['tokens', async () => {
+      await go('/account');
+      await shot('account-tokens');
+      await ev(`$click('New token'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] select')`, 'token dialog');
+      await ev(`$fill('input[maxlength="64"]', 'grafana'); $fill('input[type=password]', 'nexus'); $fill('input[inputmode=numeric]', '492039'); return true;`);
+      await shot('token-new', { height: 1000 });
+      await ev(`$click('Create', document.querySelector('dialog[open]')); return true;`);
+      await until(`return document.body.innerText.includes('shown only once')`, 'token shown once');
+      await shot('token-created');
+      await closeDialogs();
+      await go('/users');
+      await ev(`[...document.querySelectorAll('section.card')].pop()?.scrollIntoView(); return true;`);
+      await shot('users-tokens', { scrolled: true });
+    }],
+    ['certificate', async () => {
+      await go('/settings?tab=certificate');
+      await until(`return document.body.innerText.includes('SHA-256 fingerprint')`, 'certificate tab');
+      await shot('settings-certificate', { height: 1400 });
+      await ev(`$click('Generate request'); return true;`);
+      await until(`return document.body.innerText.includes('Pending request')`, 'pending CSR');
+      await ev(`document.querySelector('textarea[placeholder^="-----BEGIN"]').scrollIntoView(); return true;`);
+      await shot('certificate-csr', { height: 1400, scrolled: true });
+    }],
     ['approvals', async () => {
       await go('/quorum');
       await shot('approvals-admin', { height: 1400 });
