@@ -128,7 +128,9 @@ COPY --from=rust /out/nexus-plugin /usr/bin/nexus-plugin
 COPY --from=restorevm /out/vmlinuz /out/initrd.img /out/manifest.txt /usr/lib/nexus/restore-vm/
 RUN chmod 0755 /usr/libexec/nexus /usr/libexec/nexus/* /usr/bin/nexus-plugin \
  && test -z "$(find /usr /etc -name 'nexus-test-plugin*')" \
- && chmod 0644 /usr/lib/nexus/restore-vm/*
+ && chmod 0644 /usr/lib/nexus/restore-vm/* \
+ && ln -s ../libexec/nexus/nexus-setup /usr/sbin/nexus-setup
+# (the console recovery commands of the manual, e.g. `nexus-setup reset-firewall`, run by name in the root shell)
 
 # SELinux module: install into the image's policy store, check that labels
 # resolve, and label what this stage added.

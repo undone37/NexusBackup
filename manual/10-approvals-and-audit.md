@@ -18,7 +18,7 @@ a different administrator or security officer must approve:
 | Replication | creating a peer, exporting tenant keys to it, revoking a peer, deleting an enrolled replication source, lowering a replication source's retention |
 | Plugins | installing or upgrading a plugin, switching to another installed version, disabling or removing a plugin, adding or removing a publisher key |
 | Single sign-on | saving the single sign-on settings (identity provider, client secret, group mappings), because it changes who can sign in (`oidc update`) |
-| Access | longer session timeouts (`security session`); every change of the management allow-list (`security mgmt allow`), see [09 Users and access](09-users-and-access.md#sessions-and-sign-in-protection) and [02 Installation](02-installation.md#management-allow-list) |
+| Access | longer session timeouts (`security session`); every change of an inbound firewall rule (`firewall inbound`: the approver sees the service, the old and new source lists, whether it is switched on, and the requester's address), see [09 Users and access](09-users-and-access.md#sessions-and-sign-in-protection) and [02 Installation](02-installation.md#inbound-firewall) |
 | Appliance SSH keys | rotating an appliance SSH key (`ssh key rotate`) |
 | Updates | **Install now**: installing an available appliance update without waiting for the maintenance window (`update apply`) |
 | Monitoring | weakening anomaly detection (`settings anomaly`); disabling or removing an enabled forwarding sink, or changing its destination, certificate trust or headers (`settings forwarding`, see [Forwarding](#forwarding-to-a-siem)) |

@@ -248,49 +248,77 @@ way: generate a new request, install the new certificate.
 
 ## Network and firewall
 
-- **Inbound:** only TCP 8443 (web UI, REST API and, for replication peers, the replication endpoint), by default
-  from any address; the [management allow-list](#management-allow-list) restricts it. Everything else is dropped.
-- **Outbound:** blocked by default. The scheduler keeps an allow-list of every destination you configure (PVE API
-  and node SSH, agents, TrueNAS, NFS/SMB servers, plugin endpoints, offsite targets, replication primaries, the alert
-  webhook and SMTP relay). A small privileged helper (`nexus-nft-sync`) applies it to the firewall within seconds of
-  a change, and every 30 minutes. DNS servers and the NTS time servers are allowed automatically. Blocked connections
-  are logged with the prefix `nexus-out-drop:`.
+- **Inbound:** only the services in **Settings → Firewall**, each restricted to the source networks you set there
+  (see [Inbound firewall](#inbound-firewall)). Out of the box that is TCP 8443 (web UI, REST API, `/metrics` and the
+  replication endpoint) from any address; ping is off. Everything else is dropped, recorded (shown in **Settings →
+  Firewall → Recent blocked attempts**) and logged rate-limited with the prefix `nexus-in-drop:`.
+- **Outbound:** blocked by default and **not configurable**: the scheduler keeps an allow-list of every destination
+  you configure (PVE API and node SSH, agents, TrueNAS, NFS/SMB servers, plugin endpoints, offsite targets,
+  replication primaries, the alert webhook and SMTP relay, forwarding receivers, the identity provider). A small
+  privileged helper (`nexus-nft-sync`) applies it to the firewall within seconds of a change, and every 30 minutes.
+  DNS servers and the NTS time servers are allowed automatically. **Settings → Firewall → Outbound (automatic)** shows
+  the current list. Blocked connections are logged with the prefix `nexus-out-drop:`.
 - Extra static destinations can be listed by root on the console in `/etc/nexus/allowed-hosts`, one
   `host port [proto]` per line.
 - The sources never connect to the appliance. The appliance connects to them (pull model).
 
-> **Status:** `systemctl reload nftables` empties the allow-list until the next sync (at most 30 minutes, or the next
-> configuration change). Outbound rules work with resolved IP addresses, which is fragile for endpoints behind
-> rotating DNS (for example large S3 providers or CDNs).
+> **Status:** `systemctl reload nftables` empties the allow-lists until the next sync (at most 30 minutes, or the next
+> configuration change); the inbound rules start with the defaults (web UI from any address) until then. Outbound
+> rules work with resolved IP addresses, which is fragile for endpoints behind rotating DNS (for example large S3
+> providers or CDNs).
 
-### Management allow-list
+<a id="management-allow-list"></a>
 
-**Settings → Security → Management allow-list** (administrators) limits who may open connections to port 8443:
-enter networks or addresses, one per line (`192.0.2.0/24`, `2001:db8:10::/48`, `198.51.100.7`); an empty list
-means any address. IPv4 and IPv6 are separate: a list with only IPv4 networks blocks all IPv6 clients. Connections
-that are already open are not cut.
+### Inbound firewall
 
-- Include every place that needs the web UI or the API: administrators' and operators' networks, monitoring that
-  scrapes `/metrics`, and the **secondary appliances of a replication** (they pull from this appliance on 8443).
-- Every change is an approval request (`security.mgmt_allow`) while approvals are enabled. The page shows your own
-  address and whether the saved list allows it. A list that does not contain your address is refused unless you
-  type your address to confirm that you will lose access from here.
-- The scheduler writes the approved list into the firewall file and `nexus-nft-sync` loads it into the sets
-  `mgmt_allowed_v4` / `mgmt_allowed_v6` within seconds (at boot the image starts with "any" until the scheduler
-  has written the list, a few seconds after start).
+![Settings → Firewall](images/settings-firewall.png)
+
+**Settings → Firewall** (administrators change, security officers read) lists the services the appliance listens on:
+
+| Service | Port | Default | Note |
+|---|---|---|---|
+| Web UI and API | 8443/tcp | any address | also `/metrics` and replication: secondaries pull from this port. One TLS port, so the firewall cannot tell these apart: they are restricted together. Cannot be switched off. |
+| Ping | ICMP / ICMPv6 echo request | off | rate-limited to 10 per second |
+| SSH | 22/tcp | — | not running: there is no SSH server on the appliance. Listed so that future services appear in the same place. |
+
+**Edit** opens the rule of a service: enter networks or addresses, one per line (`192.0.2.0/24`,
+`2001:db8:10::/48`, `198.51.100.7`); an empty list means any address. Up to 64 entries; duplicates are merged and
+host bits cleared (`192.0.2.77/24` becomes `192.0.2.0/24`). IPv4 and IPv6 are separate: a list with only IPv4
+networks blocks all IPv6 clients. Connections that are already open are not cut.
+
+![Editing the web rule: the lock-out warning](images/firewall-edit.png)
+
+- For the web service, include every place that needs the web UI or the API: administrators' and operators'
+  networks, monitoring that scrapes `/metrics`, and the **secondary appliances of a replication**.
+- Every change is an approval request (`firewall inbound`) while approvals are enabled; the row shows "approval
+  pending" until it is decided. After the approval the scheduler writes the rule into the firewall file and
+  `nexus-nft-sync` loads it within seconds. The column **In effect** shows what the firewall holds now (refreshed
+  every minute).
+- The page shows your own address. A web list that does not contain it is refused unless you type your address to
+  confirm that you will lose access from here.
+- Always allowed, whatever the rules: replies to connections the appliance opened itself, loopback, IPv6 neighbour
+  discovery and DHCP replies.
+- **Recent blocked attempts** lists, per source address and port, the connection attempts the firewall dropped in
+  the last 24 hours (unicast TCP and UDP, at most 256 per address family) with the time of the last one and a packet
+  count.
+
+The Phase 14 management allow-list (**Settings → Security**) is now the web service's rule: an existing list is
+taken over unchanged, and `PUT /settings/mgmt-allow` still works (it requests a change of the web rule).
 
 **Locked out?** On the local console, as root:
 
 ```sh
-nexus-setup reset-mgmt-allow
+nexus-setup reset-firewall
 ```
 
-clears the list (any address again) and opens the firewall at once. It is audited (`security.mgmt_allow_reset`,
-actor `console`) and raises a warning alert `mgmt_allow_reset`. Then set a correct list in the web interface.
+clears every service's source list (any address again; ping stays on or off) and loads the firewall at once. It is
+audited (`firewall.reset`, actor `console`) and raises the warning alert `firewall_reset`. Then set correct lists in
+the web interface. The old name `nexus-setup reset-mgmt-allow` does the same.
 
-> **Status:** The allow-list is tested in the API, the scheduler and the firewall-set generator, and the nftables
-> rules were checked with `nft`; a run on the appliance image (lab) is pending. The console commands need a root
-> shell on the console (see [Known gaps after installation](#known-gaps-after-installation)).
+> **Status:** The inbound rules are tested in the API, the scheduler, the firewall-set generator and the console reset;
+> the nftables rules and the status reader were checked with `nft` 1.1.5 in the appliance image's userland. A run
+> on the appliance (lab step `firewall` of `lab/e2e/m5-api.sh`) is pending. The console commands need a root shell
+> on the console (see [Known gaps after installation](#known-gaps-after-installation)).
 
 ## Known gaps after installation
 

@@ -54,7 +54,7 @@ pub const SERVICES: &[Service] = &[
     },
     Service {
         id: "icmp",
-        ports: "icmp, icmpv6 echo-request",
+        ports: "icmp echo",
         lockout: false,
         available: true,
         default_enabled: false,

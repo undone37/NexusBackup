@@ -1050,6 +1050,41 @@ export interface SecuritySettings {
   pending: { session: number | null; mgmt_allow: number | null };
 }
 
+/** Phase 16c: one inbound service of GET /firewall (allow empty = any address). */
+export interface FirewallService {
+  id: string;
+  ports: string;
+  lockout: boolean;
+  available: boolean;
+  can_disable: boolean;
+  enabled: boolean;
+  allow: string[];
+  /** what nftables holds now (nexus-nft-sync status); null = unknown */
+  effective: { v4: string[]; v6: string[] } | null;
+  pending: number | null;
+}
+
+/** Phase 16c: a recent blocked inbound attempt. */
+export interface FirewallDrop {
+  src: string;
+  proto: string;
+  port: number;
+  last_seen: number;
+  packets: number;
+}
+
+/** Phase 16c: GET /firewall. */
+export interface FirewallState {
+  services: FirewallService[];
+  client_ip: string;
+  client_allowed: boolean;
+  status_ts: number | null;
+  status_stale: boolean;
+  /** automatic outbound allow-list (read-only) */
+  outbound: { endpoints: string[]; dns: string[]; nts: string[] } | null;
+  drops: FirewallDrop[];
+}
+
 /** Phase 14d: an API token (`nxt_…`); the secret is only in the create answer. */
 export interface ApiToken {
   id: number;

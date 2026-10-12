@@ -9,14 +9,12 @@
   import SessionTable from '../../components/SessionTable.svelte';
 
   // Phase 14d settings (docs/control-plane.md "Access"). The server gates: longer session
-  // timeouts and every allow-list change need approval; the rest applies directly (audited).
+  // timeouts need approval (the allow-list moved to Settings → Firewall); the rest applies directly (audited).
   let cur: SecuritySettings | null = $state(null);
   let error: string | null = $state(null);
   let sess = $state({ idle_min: 30, absolute_h: 12 });
   let dormant = $state(0);
   let banner = $state('');
-  let mgmt = $state('');
-  let confirmIp = $state('');
   let sessions: SessionInfo[] = $state([]);
   const isAdmin = $derived(session.user?.role === 'admin');
 
@@ -26,8 +24,6 @@
       sess = { ...cur.session };
       dormant = cur.dormant_days;
       banner = cur.login_banner;
-      mgmt = cur.mgmt_allow.join('\n');
-      confirmIp = '';
       if (isAdmin) sessions = await get<SessionInfo[]>('/sessions');
       error = null;
     } catch (e) {
@@ -35,26 +31,6 @@
     }
   }
   onMount(load);
-
-  const mgmtList = $derived(
-    mgmt
-      .split(/[\s,]+/)
-      .map((x) => x.trim())
-      .filter(Boolean),
-  );
-  // client-side hint only (exact CIDR matching happens on the server)
-  const lockout = $derived.by(() => {
-    const ip = cur?.client_ip ?? '';
-    return mgmtList.length > 0 && !mgmtList.some((c) => c === ip || covers(c, ip));
-  });
-
-  function covers(c: string, ip: string): boolean {
-    const [net, p] = c.split('/');
-    if (!/^\d+\.\d+\.\d+\.\d+$/.test(net ?? '') || !/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return false;
-    const n = (s: string) => s.split('.').reduce((a, x) => a * 256 + Number(x), 0);
-    const size = 2 ** (32 - Number(p ?? 32));
-    return Math.floor(n(net) / size) === Math.floor(n(ip) / size);
-  }
 
   async function saveSession(e: SubmitEvent) {
     e.preventDefault();
@@ -68,11 +44,6 @@
     e.preventDefault();
     if (await act(put('/settings/banner', { banner }), t.saved)) load();
   }
-  async function saveMgmt(e: SubmitEvent) {
-    e.preventDefault();
-    const body = lockout ? { mgmt_allow: mgmtList, force: true, confirm: confirmIp.trim() } : { mgmt_allow: mgmtList };
-    if (await act(put('/settings/mgmt-allow', body), t.saved)) load();
-  }
 </script>
 
 <ErrorBanner {error} />
@@ -81,29 +52,7 @@
 {:else}
   <section class="card settings-section" aria-labelledby="sec-mgmt">
     <div class="card-head"><h2 id="sec-mgmt">{t.access.mgmt}</h2></div>
-    <p>{t.access.mgmtHint}</p>
-    <p class="muted">
-      {cur.mgmt_allow.length ? cur.mgmt_allow.join(', ') : t.access.mgmtAny} · {t.access.mgmtYou(cur.client_ip, cur.client_allowed)}
-    </p>
-    {#if cur.pending.mgmt_allow}
-      <p class="banner pending"><span>{t.access.pending(cur.pending.mgmt_allow)} <a href={href('/quorum')}>{t.nav.quorum}</a></span></p>
-    {/if}
-    <form onsubmit={saveMgmt}>
-      <fieldset disabled={!isAdmin}>
-        <div class="field">
-          <label for="sec-mgmt-list">{t.access.mgmtField}</label>
-          <textarea id="sec-mgmt-list" rows="4" bind:value={mgmt} spellcheck="false" autocapitalize="none"></textarea>
-        </div>
-        {#if lockout && isAdmin}
-          <p class="banner warn" role="alert">{t.access.mgmtLockout(cur.client_ip)}</p>
-          <div class="field">
-            <label for="sec-mgmt-confirm">{t.access.mgmtConfirm}</label>
-            <input id="sec-mgmt-confirm" bind:value={confirmIp} required autocomplete="off" spellcheck="false" />
-          </div>
-        {/if}
-      </fieldset>
-      {#if isAdmin}<div class="form-actions"><button type="submit" class="primary">{t.save}</button></div>{/if}
-    </form>
+    <p>{t.access.mgmtHint} <a href={href('/settings?tab=firewall')}>{t.access.mgmtLink}</a></p>
   </section>
 
   <section class="card settings-section" aria-labelledby="sec-sess">

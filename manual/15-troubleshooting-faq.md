@@ -32,6 +32,17 @@ bar (sun, moon, or half sun) until its tooltip shows the theme you want: it cycl
 system**, **Theme: light** and **Theme: dark**. The choice is stored in this browser only; a private window or another
 browser starts again with the system setting.
 
+**The web UI does not load any more after a firewall change (connection times out).**
+The approved source list of the web service in **Settings → Firewall** no longer contains your address (for example
+you changed networks, or connect through a VPN or proxy with another address). From an address that is still in
+the list, correct the list. If nobody can connect, open a root shell on the appliance console (tty2, with the recovery
+key when nobody can request a console code, see
+[14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console)) and run
+`nexus-setup reset-firewall`: every source list is cleared (any address again) at once, audited (`firewall.reset`)
+with the warning alert `firewall_reset`. Then set a correct list
+([02 Installation](02-installation.md#inbound-firewall)). **Settings → Firewall → Recent blocked attempts** shows
+which address was dropped.
+
 **A red "Break-glass recovery was used" banner appears.**
 Someone reset an administrator account on the console with the recovery key. Open the audit log (`user.break_glass`),
 make sure the recovery was planned, then click **Acknowledge**
