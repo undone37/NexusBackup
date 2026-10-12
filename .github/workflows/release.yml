@@ -118,6 +118,7 @@ jobs:
 
           \`\`\`sh
           release/sign.sh sign $IMAGE_REF      # or the air-gapped payload/sign-payload/attach steps
+          git worktree add --detach ../rel $GITHUB_REF_NAME && cd ../rel && release/inject-keys.sh   # pin the release key, as the image does
           release/verify.sh --policy $IMAGE_REF
           release/promote.sh $IMAGE_REF stable
           \`\`\`

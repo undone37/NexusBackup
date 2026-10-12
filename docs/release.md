@@ -102,7 +102,11 @@ podman is the only host tool needed, plus `jq`/`openssl` for check-trust.
    Everything runs with `--tlog-upload=false`. `sign.sh` accepts only `IMAGE@sha256:`
    references in `NEXUS_IMAGE_REPO`. A PKCS#11 token works via `COSIGN_PKCS11_URI` (needs
    a cosign build with PKCS#11, see sign.sh).
-3. `release/verify.sh --policy ghcr.io/undone37/nexusbackup@sha256:D` runs cosign
+3. Run steps 3 and 4 in a checkout of the release tag with the release keys pinned
+   (`git worktree add --detach ../rel vX && cd ../rel && release/inject-keys.sh`). A plain
+   checkout pins the development TEST key, so verify.sh there fails with "not signed by
+   TEST-KEY-DO-NOT-SHIP.pub".
+   `release/verify.sh --policy ghcr.io/undone37/nexusbackup@sha256:D` runs cosign
    verify against the pinned keys without a tlog, then fetches through skopeo with the
    appliance's own policy.json and registries.d, which is exactly the check bootc makes.
 4. `release/promote.sh ghcr.io/undone37/nexusbackup@sha256:D stable` verifies again,
