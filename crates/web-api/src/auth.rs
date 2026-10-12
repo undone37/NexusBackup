@@ -174,7 +174,11 @@ impl FromRequestParts<St> for Ctx {
             return Err(ApiError(StatusCode::UNAUTHORIZED, "account expired".into()));
         }
         let lim = catalog::access::session_limits(&c)?;
-        if user.disabled || now - last_seen > lim.idle_secs() || now - created > lim.absolute_secs() {
+        if user.disabled
+            || now - last_seen > lim.idle_secs()
+            || now - created > lim.absolute_secs()
+            || crate::tenants::blocked(&c, &user)?
+        {
             c.execute("DELETE FROM sessions WHERE id_hash = ?1", [&sid])?;
             return Err(ApiError(StatusCode::UNAUTHORIZED, "session expired".into()));
         }
@@ -468,6 +472,11 @@ pub async fn login(
     } else {
         None
     };
+    // accounts of a deactivated tenant sign in no more (Phase 17f): as disabled
+    let mut row = row;
+    if let Some((u, ..)) = row.as_mut() {
+        u.disabled |= crate::tenants::blocked(&st.cat.conn(), u)?;
+    }
     let (password, totp, st2) = (r.password, r.totp, st.clone());
     let (user, mut verdict) = tokio::task::spawn_blocking(move || match row {
         Some((u, hash, secret, last_step)) => {
@@ -570,7 +579,8 @@ pub async fn logout(State(st): State<St>, ctx: Ctx) -> ApiResult<Response> {
 pub async fn me(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<serde_json::Value>> {
     let bg = crate::dashboard::break_glass(&st.cat.conn(), &ctx)?;
     let shell = crate::console::shell_banner(&st.cat.conn(), &ctx)?;
+    let vault = catalog::vault::enabled(&st.cat.conn())?;
     Ok(Json(
-        json!({"user": ctx.user, "csrf": ctx.csrf, "break_glass": bg, "console_shell": shell}),
+        json!({"user": ctx.user, "csrf": ctx.csrf, "break_glass": bg, "console_shell": shell, "vault_mode": vault}),
     ))
 }

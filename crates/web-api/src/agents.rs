@@ -96,6 +96,7 @@ pub async fn list_agents(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value
 
 pub async fn create_agent(State(st): State<St>, ctx: Ctx, J(r): J<AgentReq>) -> ApiResult<Response> {
     ctx.require(ADMIN)?;
+    crate::vault::refuse(&st.cat.conn(), "new agents")?;
     validate::name(&r.name, "name")?;
     validate::host(&r.host)?;
     if r.port == 0 {

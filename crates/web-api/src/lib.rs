@@ -50,9 +50,11 @@ pub mod settings;
 pub mod spa;
 pub mod storage;
 pub mod tenant_key;
+pub mod tenants;
 pub mod tls;
 pub mod tokens;
 pub mod validate;
+pub mod vault;
 
 /// Runtime configuration. Defaults are the appliance paths; every value can be
 /// overridden through an environment variable (used by tests and the lab).
@@ -574,6 +576,8 @@ pub fn router(st: St) -> Router {
         .merge(firewall::routes())
         .merge(holds::routes())
         .merge(hardware::routes())
+        .merge(tenants::routes())
+        .merge(vault::routes())
         .fallback(api_not_found);
     // peer API: only on replication TLS connections (see `connection_scope`)
     let peer = Router::new()

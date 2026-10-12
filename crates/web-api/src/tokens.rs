@@ -223,6 +223,7 @@ fn authenticate(st: &St, token: &str, ip: &str) -> ApiResult<Option<TokenAuth>> 
         || expires <= now
         || user.disabled
         || user.expired(now)
+        || crate::tenants::blocked(&c, &user)?
     {
         return Ok(None);
     }

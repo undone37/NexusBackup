@@ -90,6 +90,7 @@ mod selection;
 pub mod sshkeys;
 pub mod stats;
 mod tenant_key;
+mod tenants;
 
 use anyhow::{bail, Context, Result};
 use catalog::rusqlite::{params, OptionalExtension};
@@ -729,6 +730,7 @@ impl Scheduler {
         self.log_err(|s| s.check_replication_lag(now));
         self.log_err(|s| s.check_forwarding(now));
         self.log_err(|s| s.check_disks(now));
+        self.log_err(|s| s.check_disabled_tenants());
         self.log_err(|s| s.sync_firewall().map(drop));
         self.deliver_alerts()
     }
@@ -881,7 +883,8 @@ impl Scheduler {
     }
 
     fn queue_scheduled(&mut self, now: i64) -> Result<()> {
-        for g in self.groups()? {
+        let off = self.disabled_tenants()?;
+        for g in self.groups()?.into_iter().filter(|g| !off.contains(&g.tenant)) {
             let ctl = self.control(g.id)?;
             let sched = match Schedule::parse(&g.schedule).and_then(|s| s.in_tz(&ctl.tz)) {
                 Ok(s) => s,
@@ -1601,7 +1604,11 @@ impl Scheduler {
                     [&job.tenant],
                     |r| r.get(0),
                 )?;
-                if wants && pending == 0 && self.offsite_cfg(&job.tenant)?.is_some() {
+                if wants
+                    && pending == 0
+                    && self.offsite_cfg(&job.tenant)?.is_some()
+                    && !catalog::tenants::disabled(&self.db.conn(), &job.tenant)?
+                {
                     self.insert_job("offsite", &job.tenant, &json!({"chain": true}))?;
                 }
             }
@@ -2261,6 +2268,7 @@ impl Scheduler {
         // replicated tenants (docs/replication.md §7): no local backups, and nothing
         // that opens the store before the primary's DEKs were imported (keyd
         // `ensure` would create a local DEK and block the import)
+        self.refuse_disabled(tenant, &job.kind)?;
         let replicated = self.replicated_tenants()?.contains_key(tenant);
         if replicated && job.kind == "backup" {
             bail!("tenant {tenant} is replicated from a primary: no local backups");

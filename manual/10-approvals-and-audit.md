@@ -22,7 +22,9 @@ a different administrator or security officer must approve:
 | Appliance SSH keys | rotating an appliance SSH key (`ssh key rotate`) |
 | Updates | **Install now**: installing an available appliance update without waiting for the maintenance window (`update apply`) |
 | Monitoring | weakening anomaly detection (`settings anomaly`); disabling or removing an enabled forwarding sink, or changing its destination, certificate trust or headers (`settings forwarding`, see [Forwarding](#forwarding-to-a-siem)) |
-| Approvals | disabling the approval requirement itself (`approvals disable`) |
+| Approvals | disabling the approval requirement itself (`approvals disable`; refused while vault mode is on) |
+| Tenants | deactivating a tenant (`tenant disable`, with the reason; backups stop). Reactivating needs no approval |
+| Vault mode | switching it on (`vault enable`) and off (`vault disable`, then the recovery key at the console); while it is on, every restore, mount and download (`vault restore`, the approver sees the jobs and their parameters). See [08 Replication](08-replication.md#vault-mode-secondary-only) |
 | Tenant recovery key | creating or replacing a tenant's recovery key (`tenant recovery_key`, **Tenants → Recovery key**): after the approval the requester shows the key once; see [14 Disaster recovery](14-disaster-recovery.md#the-tenant-recovery-key-optional) |
 | Console access | a root shell on the appliance console (`console unlock`, **Settings → Console access**): after the approval the requester shows the one-time code once; see [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console) |
 
@@ -80,7 +82,7 @@ administrators see the button; security officers and operators see the box read-
 - **Enable approvals** (administrators): takes effect immediately. It is refused unless at least one other person
   could approve; otherwise nothing could ever be approved again.
 - **Disable approvals** (administrators): creates a request that another administrator or security officer must
-  approve. Only one such request can be pending; while it is, the box says "Disabling is pending (request #N)." with
+  approve. Refused while vault mode is on (approvals are forced on there). Only one such request can be pending; while it is, the box says "Disabling is pending (request #N)." with
   a link to **Approvals**.
 - After setup, approvals are enabled if the wizard created an administrator and a security officer, and disabled if
   there is a single administrator (see [02 Installation](02-installation.md)).
@@ -133,6 +135,9 @@ Go through these steps in order; stop at the first that works.
    acknowledged. Then create and activate the new approvers on **Users** (without approvals that takes effect
    directly), and switch **Enable approvals** on again in **Settings → Approvals**; enabling is immediate.
    Pending requests are not executed by this; they expire or are decided after approvals are on again.
+   On a secondary in **vault mode** this command is refused: approvals stay on. Use step 3 for each missing
+   approver instead (with `--force-solo`), or switch vault mode off first (approved request, then
+   `nexus-setup vault-disable`).
 
 The console steps need root on the appliance console **and** the recovery key; both are recorded and alerted, so
 they cannot be used unnoticed.

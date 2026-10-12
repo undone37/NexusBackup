@@ -544,9 +544,14 @@ pub async fn create_job(State(st): State<St>, ctx: Ctx, J(r): J<JobReq>) -> ApiR
         .query_row("SELECT 1 FROM tenants WHERE name = ?1", [&r.tenant], |_| Ok(()))
         .optional()?;
     tenant_ok.ok_or_else(|| ApiError::bad("tenant: does not exist"))?;
+    crate::tenants::refuse_paused(&st.cat.conn(), &r.tenant, &r.kind)?;
     let params = check_params(&st, &r.kind, &r.tenant, r.params)?;
     if params.get("replace").is_some() {
         return request_replace(&st, &ctx, &r.kind, &r.tenant, params).map(|o| crate::quorum::accepted(o, json!({})));
+    }
+    // vault mode: restores and downloads only through approval (`vault.restore`)
+    if let Some(res) = crate::vault::gate_jobs(&st, &ctx, &r.tenant, &[(r.kind.as_str(), &params)])? {
+        return Ok(res);
     }
     let id = {
         let c = st.cat.conn();
@@ -613,10 +618,17 @@ pub struct JobFilter {
 
 fn job_json(r: &catalog::rusqlite::Row, with_log: bool) -> catalog::rusqlite::Result<Value> {
     let p: String = r.get(3)?;
+    let raw = serde_json::from_str::<Value>(&p).unwrap_or_default();
+    // sealed values (an `offsite_attach` recovery key until the scheduler takes it) never leave;
+    // the download token stays visible here (only its requester can use it, see `download`) —
+    // quorum::redact hides it from approval lists (vault mode, 17c)
+    let mut params = crate::quorum::redact(raw.clone());
+    if let Some(tok) = raw.get("download_token") {
+        params["download_token"] = tok.clone();
+    }
     let mut v = json!({
         "id": r.get::<_, i64>(0)?, "kind": r.get::<_, String>(1)?, "tenant": r.get::<_, String>(2)?,
-        // sealed values (an `offsite_attach` recovery key until the scheduler takes it) never leave
-        "params": crate::quorum::redact(serde_json::from_str::<Value>(&p).unwrap_or_default()),
+        "params": params,
         "state": r.get::<_, String>(4)?,
         "requested_by": r.get::<_, String>(5)?, "created": r.get::<_, i64>(6)?,
         "started": r.get::<_, Option<i64>>(7)?, "finished": r.get::<_, Option<i64>>(8)?,

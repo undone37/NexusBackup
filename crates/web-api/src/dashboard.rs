@@ -112,12 +112,13 @@ pub fn forecast_days(samples: &[(f64, f64)], free: Option<i64>) -> Option<i64> {
 fn protection(c: &Connection, scope: Option<&str>, now: i64) -> ApiResult<Value> {
     // the protected objects and their SLA state (shared with the protection / sla reports)
     let objs = reports::protection::assess(c, scope, now)?;
-    let (mut ok, mut breach, mut never, mut paused) = (0, 0, 0, 0);
+    let (mut ok, mut breach, mut never, mut paused, mut deactivated) = (0, 0, 0, 0, 0);
     let mut list: Vec<(u8, i64, Value)> = Vec::new();
     for s in &objs {
         match s.sla {
             "never" => never += 1,
             "paused" => paused += 1,
+            "deactivated" => deactivated += 1,
             "breach" => breach += 1,
             _ => ok += 1,
         }
@@ -190,11 +191,18 @@ fn protection(c: &Connection, scope: Option<&str>, now: i64) -> ApiResult<Value>
     }
     let unprotected = open.len();
     open.truncate(UNPROTECTED_LIST);
+    let mut off: Vec<String> = catalog::tenants::all_disabled(c)?
+        .into_iter()
+        .filter(|t| scope.is_none_or(|s| s == t))
+        .collect();
+    off.sort();
     let protected = objs.len();
     Ok(json!({
         "objects": protected + unprotected, "protected": protected, "unprotected": unprotected,
         "unprotected_list": open,
-        "sla_ok": ok, "sla_breach": breach, "sla_paused": paused, "never": never, "worst": worst,
+        "sla_ok": ok, "sla_breach": breach, "sla_paused": paused, "sla_deactivated": deactivated, "never": never,
+        "worst": worst,
+        "deactivated_tenants": off,
     }))
 }
 

@@ -185,6 +185,9 @@ pub fn request(st: &St, ctx: &Ctx, ip: &str, service: &str, r: &InboundReq) -> A
     if new == old {
         return Ok(Json(json!({"service": service, "rule": new})).into_response());
     }
+    if service == "web" && new.allow.is_empty() {
+        crate::vault::refuse(&st.cat.conn(), "an unrestricted web inbound rule")?;
+    }
     let confirmed = r.force && r.confirm.trim() == ip;
     if svc.lockout && !access::allows(&new.allow, ip) && !confirmed {
         return Err(ApiError::conflict(format!(
@@ -220,6 +223,9 @@ pub fn execute(c: &Connection, p: &Value) -> ApiResult<()> {
         ));
     }
     let rule: Rule = serde_json::from_value(p["rule"].clone()).map_err(|_| ApiError::bad("quorum params: rule"))?;
+    if service == "web" && rule.allow.is_empty() {
+        crate::vault::refuse(c, "an unrestricted web inbound rule")?;
+    }
     inbound.services.insert(service.to_owned(), rule);
     firewall::store(c, &inbound)?;
     Ok(())
