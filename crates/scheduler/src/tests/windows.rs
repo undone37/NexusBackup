@@ -173,6 +173,9 @@ fn closed_vault() {
     s.now += 3600;
     s.queue_replication(s.now).unwrap();
     assert_eq!(syncs(&s), 2);
+    // 17f: a source whose only tenant is deactivated is not reachable either
+    exec(&s, "UPDATE tenants SET disabled = 1 WHERE name = 'r1'");
+    assert!(s.replication_targets().unwrap().is_empty());
 }
 
 /// Phase 17a: an offsite upload that would start inside a pause window of its

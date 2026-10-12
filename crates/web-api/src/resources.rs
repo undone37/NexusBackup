@@ -195,7 +195,7 @@ impl S3Remote {
 /// Validates `tenants.offsite`. An S3 remote is parsed strictly (its
 /// `secret_key` is the one inline secret allowed); anything else stays an
 /// opaque blob without inline secrets.
-fn check_offsite(v: &Value) -> ApiResult<Option<S3Remote>> {
+pub(crate) fn check_offsite(v: &Value) -> ApiResult<Option<S3Remote>> {
     if !v.is_object() {
         return Err(ApiError::bad("offsite: must be an object"));
     }
@@ -252,7 +252,7 @@ fn offsite_tightened(old: &Value, new: &Value) -> bool {
 
 /// The offsite config as stored: an S3 remote normalized, its secret sealed
 /// to the scheduler (bound to the tenant and the S3 endpoint fields).
-fn sealed_offsite(st: &St, tenant: &str, v: &Value, s3: Option<S3Remote>) -> ApiResult<Value> {
+pub(crate) fn sealed_offsite(st: &St, tenant: &str, v: &Value, s3: Option<S3Remote>) -> ApiResult<Value> {
     let Some(r) = s3 else { return Ok(v.clone()) };
     let mut out = v.clone();
     out["remote"] = serde_json::to_value(&r).map_err(anyhow::Error::from)?;
@@ -278,14 +278,18 @@ pub fn public_offsite(v: &Value) -> Value {
 
 pub async fn list_tenants(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>> {
     let c = st.cat.conn();
-    let mut s =
-        c.prepare("SELECT name, offsite, quota_bytes FROM tenants WHERE ?1 IS NULL OR name = ?1 ORDER BY name")?;
+    let mut s = c.prepare(
+        "SELECT name, offsite, quota_bytes, disabled, disabled_at, disabled_by, disabled_reason FROM tenants
+         WHERE ?1 IS NULL OR name = ?1 ORDER BY name",
+    )?;
     let rows = s
         .query_map([ctx.scope()], |r| {
             let o: String = r.get(1)?;
             let o = serde_json::from_str::<Value>(&o).unwrap_or_default();
             Ok(json!({"name": r.get::<_, String>(0)?, "offsite": public_offsite(&o),
-                      "quota_bytes": r.get::<_, Option<i64>>(2)?}))
+                      "quota_bytes": r.get::<_, Option<i64>>(2)?, "disabled": r.get::<_, bool>(3)?,
+                      "disabled_at": r.get::<_, Option<i64>>(4)?, "disabled_by": r.get::<_, Option<String>>(5)?,
+                      "disabled_reason": r.get::<_, Option<String>>(6)?}))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(Value::Array(rows)))
@@ -293,6 +297,7 @@ pub async fn list_tenants(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Valu
 
 pub async fn create_tenant(State(st): State<St>, ctx: Ctx, J(r): J<TenantReq>) -> ApiResult<Response> {
     ctx.require(ADMIN)?;
+    crate::vault::refuse(&st.cat.conn(), "new tenants")?;
     validate::name(&r.name, "name")?;
     let s3 = check_offsite(&r.offsite)?;
     if s3.as_ref().is_some_and(|s| s.secret_key.is_none()) {
@@ -1004,6 +1009,7 @@ pub async fn list_sources(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Valu
 
 pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -> ApiResult<Response> {
     ctx.require(ADMIN)?;
+    crate::vault::refuse(&st.cat.conn(), "new sources")?;
     validate::name(&r.name, "name")?;
     match r.kind.as_str() {
         "pve" => {}
@@ -1823,6 +1829,7 @@ pub async fn list_groups(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value
 
 pub async fn create_group(State(st): State<St>, ctx: Ctx, J(mut r): J<GroupReq>) -> ApiResult<Response> {
     ctx.require(ADMIN)?;
+    crate::vault::refuse(&st.cat.conn(), "new protection groups")?;
     let out = {
         let c = st.cat.conn();
         crate::replication::refuse_replicated(&c, &r.tenant)?;

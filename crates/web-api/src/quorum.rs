@@ -55,12 +55,21 @@ pub const WEB_ACTIONS: &[&str] = &[
     "disks.add_spare",
     "disks.replace",
     "disks.grow",
+    catalog::vault::ENABLE,
+    catalog::vault::RESTORE,
+    catalog::tenants::DISABLE_ACTION,
 ];
 
 /// Who may approve or reject requests (never their own: see [`approve`]).
 pub const APPROVERS: &[&str] = &["admin", "security_officer"];
 
-const SECRET_KEYS: &[&str] = &["password_hash", "totp_secret", "activation_hash", "client_secret"];
+const SECRET_KEYS: &[&str] = &[
+    "password_hash",
+    "totp_secret",
+    "activation_hash",
+    "client_secret",
+    "download_token",
+];
 
 /// Hides credentials in quorum params (shown in lists and the audit log):
 /// password hashes, TOTP seeds and sealed secrets (e.g. an S3 `secret_key`
@@ -332,7 +341,17 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
             )?;
         }
         "user.update" => return crate::resources::apply_user_update(c, p).map(Some),
-        "approvals.disable" => catalog::set_setting(c, "approvals_enabled", "false")?,
+        "approvals.disable" => {
+            if catalog::vault::enabled(c)? {
+                return Err(ApiError::conflict("vault mode is on: approvals cannot be disabled"));
+            }
+            catalog::set_setting(c, "approvals_enabled", "false")?
+        }
+        catalog::vault::ENABLE => crate::vault::execute_enable(c, requested_by)?,
+        // carried out at the console with the recovery key (nexus-setup vault-disable)
+        catalog::vault::DISABLE => return Ok(None),
+        catalog::vault::RESTORE => return crate::vault::execute_restore(c, p, requested_by).map(Some),
+        catalog::tenants::DISABLE_ACTION => crate::tenants::execute_disable(c, p, requested_by)?,
         "oidc.update" => crate::oidc::execute(c, p)?,
         // the request file for nexus-update is written after the commit (settings::after_approve)
         "update.apply" => {}

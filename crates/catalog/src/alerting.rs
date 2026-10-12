@@ -40,7 +40,7 @@ const HINTS: &[(&str, &str)] = &[
     ("consistency", "A snapshot is less consistent than the policy requires. Enable the QEMU guest agent (VMs), hooks or VSS (agents), or snapshots on the source; resolves with the next snapshot that meets the policy."),
     ("replication_lag", "Replication from the primary is behind. Check the network path to the primary and the replica_sync job logs. Resolves after the next successful sync."),
     ("replication_verify", "Replicated data failed verification and was not imported. Check the primary's store and run the sync again."),
-    ("vault_closed", "The replication source was closed with Close vault now: no syncs, the primary is not reachable from here. Nothing to do while that is intended; reopening needs approval (Replication page). Resolves when the source is reopened."),
+    ("vault_closed", "A replication source was closed with Close vault (pause pulling now): no syncs, the primary is not reachable from here. Nothing to do while that is intended; reopening needs approval (Replication page). Resolves when the source is reopened."),
     ("replication_keys", "The tenant keys on this secondary do not match the primary. Re-export the keys on the primary (needs approval)."),
     ("break_glass", "An administrator account was reset, or approvals were switched off, at the console. Confirm with the person who did it, then acknowledge to clear the banner."),
     ("cert_expiry", "A certificate, secret or API token expires soon. Renew it as the message says (web certificate: Settings → Certificate; agents and replication secondaries: enroll again; IdP secret: Settings → Single sign-on; tokens: create a new one). Resolves once renewed."),
@@ -51,6 +51,8 @@ const HINTS: &[(&str, &str)] = &[
     ("report", "A scheduled report could not be mailed. Check the SMTP server under Settings → Alert delivery (reachable, credentials) and the report's recipients on the Reports page, then use Send now. Resolves after the next successful send."),
     ("legal_hold_advisory", "The primary holds this replicated snapshot under a legal hold. Holds are not applied here automatically: a security officer applies it with Apply hold (Alerts or Snapshots page). Resolves once applied or when the primary releases its hold."),
     ("disk", "A disk or RAID array needs attention (SMART failing, bad sectors, temperature, NVMe wear, degraded or rebuilding array). Open Configuration → Hardware; replace a failed disk as the troubleshooting chapter describes. Resolves when the disk or array is healthy again."),
+    ("tenant_disabled", "The tenant is deactivated (Tenants page): no backups, offsite copies or replication run for it and its accounts cannot sign in; its other alerts are suppressed. Retention keeps running. Reactivate it on the Tenants page when it is needed again."),
+    ("vault_disabled", "Vault mode was switched off at the console with the recovery key after an approved request. Confirm with the people who requested and approved it (audit: vault.disable)."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
 

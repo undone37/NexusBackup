@@ -74,6 +74,7 @@ pub mod forward;
 mod holds;
 mod inventory;
 mod lifecycle;
+mod offsite_ui;
 pub mod orphans;
 mod plugins;
 mod renewal;
@@ -89,6 +90,7 @@ mod selection;
 pub mod sshkeys;
 pub mod stats;
 mod tenant_key;
+mod tenants;
 mod windows;
 
 use anyhow::{bail, Context, Result};
@@ -167,6 +169,9 @@ pub struct Config {
     pub refresh_secs: i64,
     pub download_ttl_secs: i64,
     pub offsite_lag_secs: i64,
+    /// a snapshot fetched back from offsite (`offsite_restore`) is locked
+    /// locally at least this long, so local retention keeps it (default 7 days)
+    pub offsite_fetch_keep_secs: u64,
     /// alert above this used share of the store file system
     pub capacity_threshold: f64,
     /// retry delays of alert delivery
@@ -232,6 +237,7 @@ impl Default for Config {
             refresh_secs: 900,
             download_ttl_secs: 86400,
             offsite_lag_secs: 48 * 3600,
+            offsite_fetch_keep_secs: 7 * 86400,
             capacity_threshold: 0.75,
             alert_retry_secs: [10, 60],
             secrets_key: None,
@@ -726,6 +732,7 @@ impl Scheduler {
         self.log_err(|s| s.check_replication_lag(now));
         self.log_err(|s| s.check_forwarding(now));
         self.log_err(|s| s.check_disks(now));
+        self.log_err(|s| s.check_disabled_tenants());
         self.log_err(|s| s.sync_firewall().map(drop));
         self.deliver_alerts()
     }
@@ -878,7 +885,8 @@ impl Scheduler {
     }
 
     fn queue_scheduled(&mut self, now: i64) -> Result<()> {
-        for g in self.groups()? {
+        let off = self.disabled_tenants()?;
+        for g in self.groups()?.into_iter().filter(|g| !off.contains(&g.tenant)) {
             let ctl = self.control(g.id)?;
             let sched = match Schedule::parse(&g.schedule).and_then(|s| s.in_tz(&ctl.tz)) {
                 Ok(s) => s,
@@ -955,6 +963,8 @@ impl Scheduler {
         for (_, o) in self.tenants()? {
             targets.extend(firewall::offsite_targets(&o));
         }
+        // approved "attach an offsite copy" requests: the target before the tenant exists
+        targets.extend(self.attach_targets()?);
         // secondary: the primaries' management ports (docs/replication.md §10)
         targets.extend(self.replication_targets()?);
         if let Ok(a) = self.alerts_config() {
@@ -1207,9 +1217,19 @@ impl Scheduler {
         }
         if matches!(
             job.kind.as_str(),
-            "backup" | "plugin_backup" | "retention" | "offsite" | "gc" | "replica_sync" | "snapshot_delete"
+            "backup"
+                | "plugin_backup"
+                | "retention"
+                | "offsite"
+                | "gc"
+                | "replica_sync"
+                | "snapshot_delete"
+                | "offsite_restore"
         ) {
             self.dirty.insert(job.tenant.clone());
+        }
+        if job.kind == "offsite_attach" {
+            self.attach_bookkeeping(&job, ok)?;
         }
         self.agent_bookkeeping(&job, &log)?;
         if job.kind.starts_with("ssh_key_") {
@@ -1440,6 +1460,13 @@ impl Scheduler {
             "alert_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" | "file_search" | "file_index" => {
                 serde_json::from_str(stdout.unwrap_or_default()).ok()
             }
+            "offsite_list" => match serde_json::from_str::<Value>(stdout.unwrap_or_default().trim()) {
+                Ok(s @ Value::Array(_)) => Some(json!({ "snapshots": s })),
+                _ => {
+                    log.push_str("[scheduler] unexpected offsite listing (no JSON array)\n");
+                    None
+                }
+            },
             "plugin_validate" | "plugin_guests" | "inventory" => {
                 let out = stdout.unwrap_or_default();
                 match serde_json::from_str::<Value>(out.trim()) {
@@ -1571,7 +1598,11 @@ impl Scheduler {
                     [&job.tenant],
                     |r| r.get(0),
                 )?;
-                if wants && pending == 0 && self.offsite_cfg(&job.tenant)?.is_some() {
+                if wants
+                    && pending == 0
+                    && self.offsite_cfg(&job.tenant)?.is_some()
+                    && !catalog::tenants::disabled(&self.db.conn(), &job.tenant)?
+                {
                     self.insert_job("offsite", &job.tenant, &json!({"chain": true}))?;
                 }
             }
@@ -2043,6 +2074,11 @@ impl Scheduler {
             return Ok(None);
         };
         self.refresh_escrow(tenant);
+        self.offsite_files(tenant, &o, dir).map(Some)
+    }
+
+    /// Job dir files for nexus-offsite from an opened offsite config `o`.
+    fn offsite_files(&self, tenant: &str, o: &Value, dir: &Path) -> Result<Files> {
         let mut files = Vec::new();
         let mut remote = o["remote"].clone();
         if let Some(k) = remote["key_pem"].as_str() {
@@ -2088,7 +2124,7 @@ impl Scheduler {
             }
         }
         files.push(("offsite.json".into(), serde_json::to_vec_pretty(&cfg)?));
-        Ok(Some(files))
+        Ok(files)
     }
 
     fn agent(&self, tenant: &str, id: &str) -> Result<AgentRow> {
@@ -2232,6 +2268,7 @@ impl Scheduler {
         // replicated tenants (docs/replication.md §7): no local backups, and nothing
         // that opens the store before the primary's DEKs were imported (keyd
         // `ensure` would create a local DEK and block the import)
+        self.refuse_disabled(tenant, &job.kind)?;
         let replicated = self.replicated_tenants()?.contains_key(tenant);
         if replicated && job.kind == "backup" {
             bail!("tenant {tenant} is replicated from a primary: no local backups");
@@ -2278,6 +2315,9 @@ impl Scheduler {
         };
         if job.kind == "file_search" || job.kind == "file_index" {
             return self.plan_files_index(job, plan);
+        }
+        if job.kind.starts_with("offsite_") {
+            return self.plan_offsite_ui(job, plan); // offsite_ui.rs
         }
         if job.kind == "retention"
             && (p["plugin"] == true || p["source"].as_str().is_some_and(|s| s.starts_with("plugin-")))

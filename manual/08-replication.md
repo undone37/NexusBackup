@@ -14,7 +14,7 @@ disaster-recovery site.
 > **Status:** Replication runs in a two-VM lab (two appliance images, SELinux enforcing): enrollment through the
 > real port 8443, initial sync about 181 MB/s, incremental sync, file restore on the secondary with the primary
 > powered off. A lab rerun after the latest integration is still pending (`state.md`). Sync windows, bandwidth
-> windows and **Close vault now** are covered by automated tests; their run in the two-VM lab is still pending.
+> windows and **Close vault (pause pulling now)** are covered by automated tests; their run in the two-VM lab is still pending.
 
 ![Replication page: peers and sources](images/replication.png)
 
@@ -28,7 +28,7 @@ pulls from. One appliance can be both, for different tenants.
 |---|---|
 | Create, revoke peers; request a key export; create, change, delete replication sources | **Administrator** |
 | **Sync now** | Administrator, Operator |
-| **Close vault now**; **Request reopening** | Administrator, Security officer |
+| **Close vault (pause pulling now)**; **Request reopening** | Administrator, Security officer |
 | View the page | Administrator, Security officer, Operator (tenant users do not see it) |
 | Approve peer creation, key export, revocation; reopening a closed vault | another Administrator or a Security officer |
 
@@ -117,14 +117,15 @@ removing or shortening a pause, a higher rate or another time zone needs approva
 approvals are enabled ([10 Approvals and audit](10-approvals-and-audit.md)). Choose the sync window so that the
 schedule's runs fall into it; the `replication_lag` alert still fires after 48 hours without a successful sync.
 
-## Close vault now
+## Close vault (pause pulling now)
 
-**Close vault now** on a source (administrator or security officer) cuts the secondary off from that primary
-immediately, for example when the primary may be compromised:
+**Close vault (pause pulling now)** on a source (administrator or security officer) cuts the secondary off from that primary
+immediately, for example when the primary may be compromised. It acts on this one replication source only and is
+not the same as [vault mode](#vault-mode-secondary-only), the appliance-wide profile below; both can be used together.
 
 - the firewall target of the primary is removed within a few seconds, a running sync is cancelled, queued syncs
   are dropped and no new ones start;
-- the row shows **Vault closed** with who closed it and since when; the info alert `vault_closed` stays open
+- the row shows **Closed (pulling paused)** with who closed it and since when; the info alert `vault_closed` stays open
   while it is closed (no `replication_lag` warnings meanwhile);
 - closing needs no approval (it only adds protection) and is recorded in the audit log
   (`replication_source.close`).
@@ -188,9 +189,55 @@ valid for 10 years).
 | `replication_verify` | critical | a fetched object failed verification; nothing was imported |
 | `job_failed` | critical | a sync or enrollment job failed |
 | `legal_hold_advisory` | warning | the primary holds a replicated snapshot under a legal hold (below) |
-| `vault_closed` | info | the source was closed with **Close vault now**; resolves when it is reopened |
+| `vault_closed` | info | the source was closed with **Close vault (pause pulling now)**; resolves when it is reopened |
 
 See [11 Alerts and monitoring](11-alerts-and-monitoring.md).
+
+## Vault mode (secondary only)
+
+Vault mode turns a secondary into a locked copy that one stolen administrator account cannot empty or read out
+unnoticed. It is a one-way profile: switching it off needs an approval **and** the recovery key at the console.
+
+Open **Configuration → Settings → Vault**. The tab lists the preconditions; **Request vault mode** (administrators)
+is available only when all of them are met:
+
+- this appliance is a replication secondary (at least one replication source);
+- every tenant is replicated (no local backup tenants);
+- it has no replication peers (it is nobody's primary);
+- approvals are enabled;
+- the web inbound rule is restricted (**Settings → Firewall**, service **Web UI and API**: a source list).
+
+![Settings: Vault with its preconditions](images/settings-vault.png)
+
+The request needs approval by another administrator or security officer; the preconditions are checked again then.
+While vault mode is on (a **Vault mode** badge in the top bar):
+
+- approvals cannot be disabled, neither in the web interface nor with `nexus-setup disable-approvals`;
+- every restore, instant recovery, file restore to a host, plugin restore or mount and every file download becomes a
+  request (`vault restore`, shown with the job and its parameters). The buttons read **Request restore** /
+  **Request download**. After approval the job starts as the requester; a download is then on the job's page.
+  Browsing the files of a snapshot needs no approval;
+- no new tenants, sources, protection groups, agents or replication peers can be added (the secondary only receives
+  replication). New replication sources can still be added;
+- the web inbound rule cannot be emptied (any address).
+
+**Switching vault mode off:**
+
+1. An administrator clicks **Request to switch off** on the Vault tab.
+2. Another administrator or security officer approves the `vault disable` request.
+3. Within 72 hours, someone with the recovery key runs, as root on the appliance console:
+
+   ```
+   nexus-setup vault-disable
+   ```
+
+   It asks for the recovery key, switches vault mode off, audits `vault.disable` (actor `console`) and raises the
+   warning alert `vault_disabled`. The web interface never asks for the recovery key: the web service has no access
+   to the key escrow. A root shell on the console is opened as described in
+   [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console).
+
+> **Status:** Vault mode is covered by API and unit tests (preconditions, enforced approvals, restores through
+> approval, the console step). It was not yet run in the two-appliance lab.
 
 ## Using the secondary for disaster recovery
 

@@ -95,12 +95,14 @@ impl Scheduler {
     }
 
     /// `host:port` of every replication source (outbound allow-list), only
-    /// while it is open and inside its sync window (Phase 17a/b).
+    /// while it is open, inside its sync window (Phase 17a/b) and has a tenant
+    /// that is not deactivated (17f: those get no syncs either).
     pub(crate) fn replication_targets(&self) -> Result<Vec<(String, u16)>> {
+        let off = self.disabled_tenants()?;
         Ok(self
             .replication_sources()?
             .iter()
-            .filter(|s| s.open(self.now))
+            .filter(|s| s.open(self.now) && s.tenants.iter().any(|t| !off.contains(t)))
             .filter_map(|s| {
                 let (h, p) = s.url.rsplit_once(':')?;
                 Some((h.trim_matches(['[', ']']).to_owned(), p.parse().ok()?))
@@ -110,6 +112,7 @@ impl Scheduler {
 
     /// Secondary: one `replica_sync` per enrolled source and tenant when due.
     pub(crate) fn queue_replication(&mut self, now: i64) -> Result<()> {
+        let off = self.disabled_tenants()?;
         for s in self.replication_sources()? {
             if s.state != "enrolled" || !s.open(now) {
                 continue;
@@ -126,7 +129,7 @@ impl Scheduler {
                     continue;
                 }
             };
-            for t in &s.tenants {
+            for t in s.tenants.iter().filter(|t| !off.contains(*t)) {
                 let active: i64 = self.db.conn().query_row(
                     "SELECT COUNT(*) FROM jobs WHERE kind='replica_sync' AND tenant=?1 AND state IN ('queued','running') \
                      AND json_extract(params,'$.replication_source_id')=?2",

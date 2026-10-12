@@ -30,6 +30,8 @@ export const can = {
   viewHardware: (u: User | null) => !!u && u.role !== 'tenant_user' && !u.tenant,
   manageHardware: (u: User | null) => u?.role === 'admin',
   scanHardware: (u: User | null) => u?.role === 'admin' || u?.role === 'operator',
+  // Attach an offsite copy (17d): an admin or a security officer requests, another one approves.
+  attachOffsite: (u: User | null) => u?.role === 'admin' || u?.role === 'security_officer',
 };
 
 export const ROLES: Role[] = ['admin', 'security_officer', 'operator', 'tenant_user', 'viewer'];

@@ -20,6 +20,8 @@ pub mod inventory;
 pub mod schedule;
 pub mod secret;
 pub mod tenant_key;
+pub mod tenants;
+pub mod vault;
 pub use rusqlite;
 
 const SCHEMA_V1: &str = r#"
@@ -454,14 +456,27 @@ ALTER TABLE agents ADD COLUMN cert_sha256_next TEXT;
 ALTER TABLE agents ADD COLUMN limits TEXT NOT NULL DEFAULT '{}';
 "#;
 
-/// v22 (Phase 17a/b, docs/replication.md "Windows and closing the vault"):
+/// v22 (Phase 17f, tenant deactivation, docs/control-plane.md "Tenant
+/// deactivation"): `tenants.disabled` (+ when, by whom, why). A deactivated
+/// tenant takes no backups, offsite copies or replication syncs, its accounts
+/// and their API tokens are refused, its alerts are suppressed (one info
+/// `tenant_disabled`); retention keeps running. Purely additive: the previous
+/// release ignores the columns (the tenant runs again).
+const SCHEMA_V22: &str = r#"
+ALTER TABLE tenants ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1));
+ALTER TABLE tenants ADD COLUMN disabled_at INTEGER;
+ALTER TABLE tenants ADD COLUMN disabled_by TEXT;
+ALTER TABLE tenants ADD COLUMN disabled_reason TEXT;
+"#;
+
+/// v23 (Phase 17a/b, docs/replication.md "Windows and closing the vault"):
 /// `replication_sources.windows` (bandwidth windows `[{days, from, to, action:
 /// pause|limit, rate_bytes?}]`), `sync_window` (`[{days, from, to}]`: syncs and the
 /// firewall target only inside; empty = always), `timezone` (of both, IANA),
 /// `closed_until` ("close vault now": NULL = open, -1 = until reopened, else a
 /// unix time), `closed_by` / `closed_at`. Purely additive: the previous release
 /// skips the columns (it would sync around the clock again).
-const SCHEMA_V22: &str = r#"
+const SCHEMA_V23: &str = r#"
 ALTER TABLE replication_sources ADD COLUMN windows TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE replication_sources ADD COLUMN sync_window TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE replication_sources ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC';
@@ -473,7 +488,7 @@ ALTER TABLE replication_sources ADD COLUMN closed_at INTEGER;
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
-    SCHEMA_V20, SCHEMA_V21, SCHEMA_V22,
+    SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1199,14 +1214,14 @@ mod tests {
         assert_eq!(n, 3);
     }
 
-    /// v22 (replication windows, close vault) on top of the previous catalog:
+    /// v23 (replication windows, close vault) on top of the previous catalog:
     /// existing sources sync always and are open; the previous release still
     /// inserts and updates sources.
     #[test]
-    fn migration_v22_replication_windows() {
+    fn migration_v23_replication_windows() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.db");
-        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V22).unwrap();
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V23).unwrap();
         {
             let c = Connection::open(&p).unwrap();
             for (i, m) in MIGRATIONS[..before].iter().enumerate() {
@@ -1324,6 +1339,51 @@ mod tests {
         let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
         assert_eq!(MIGRATIONS[..before].iter().skip(v as usize).count(), 0);
         old.execute("INSERT INTO tenants (name) VALUES ('beta')", []).unwrap();
+    }
+
+    /// v22 (tenant deactivation) on top of the previous catalog: every tenant is
+    /// active; the flag accepts only 0/1; the previous release still creates
+    /// and reads tenants afterwards.
+    #[test]
+    fn migration_v22_tenant_disabled() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V22).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch("INSERT INTO tenants (name) VALUES ('acme');").unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let t: (i64, Option<i64>, Option<String>, Option<String>) = conn
+                .query_row(
+                    "SELECT disabled, disabled_at, disabled_by, disabled_reason FROM tenants WHERE name = 'acme'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .unwrap();
+            assert_eq!(t, (0, None, None, None));
+            assert!(!tenants::disabled(&conn, "acme").unwrap());
+            assert!(conn.execute("UPDATE tenants SET disabled = 2", []).is_err());
+            conn.execute("UPDATE tenants SET disabled = 1 WHERE name = 'acme'", [])
+                .unwrap();
+            assert!(tenants::disabled(&conn, "acme").unwrap());
+            assert!(!tenants::disabled(&conn, "nope").unwrap());
+            assert_eq!(tenants::all_disabled(&conn).unwrap().len(), 1);
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..before].iter().skip(v as usize).count(), 0);
+        old.execute_batch(
+            "INSERT INTO tenants (name, offsite) VALUES ('globex', '{}'); SELECT name, offsite FROM tenants;",
+        )
+        .unwrap();
     }
 
     /// v21 (disk/file selection, agents) on top of the previous catalog: groups

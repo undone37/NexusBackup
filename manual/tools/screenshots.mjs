@@ -525,6 +525,27 @@ async function main() {
       await shot('snapshot-pg-to-target');
       await closeDialogs();
     }],
+    // Phase 18a: Microsoft 365 source with further app registrations; restore into another M365 tenant
+    ['m365', async () => {
+      const sources = (await api('GET', '/sources')).body;
+      const m = sources.find((s) => s.name === 'm365-acme');
+      const target = sources.find((s) => s.name === 'm365-acme-new');
+      const src = `plugin-m365-${m.id}-u.0c9d1c7a-1111-4222-8333-444455556666`;
+      await go('/sources');
+      await ev(`$rowClick('m365-acme', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] form')`, 'M365 source dialog');
+      await sleep(300);
+      await shot('source-m365', { height: 2100 });
+      await closeDialogs();
+      await go(`/snapshots?source=${src}`);
+      await ev(`$rowClick('${src}', 'Restore'); return true;`);
+      await until(`return !!$button('Restore to another user')`, 'restore menu');
+      await ev(`$click('Restore to another user'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #pr-target')`, 'restore dialog with target source');
+      await ev(`$fill('#pr-target', '${target.id}'); const i = $scope().querySelector('input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, 'alice@acmegroup.example'); i.dispatchEvent(new Event('input', { bubbles: true })); return true;`);
+      await shot('snapshot-m365-other-tenant');
+      await closeDialogs();
+    }],
     ['storage', async () => {
       await go('/storage');
       await until(`return !!document.querySelector('#s-group-table')`, 'storage page');
@@ -571,6 +592,23 @@ async function main() {
       await ev(`$rowClick('initech', 'Edit'); return true;`);
       await until(`return !!document.querySelector('dialog[open] #t-host')`, 'tenant dialog');
       await shot('tenant-sftp', { height: 1250 });
+      await closeDialogs();
+    }],
+    // Phase 17d: offsite-only snapshots, a tenant's offsite copy, attaching an offsite copy (two steps)
+    ['offsite', async () => {
+      await go('/snapshots?tenant=initech&where=offsite');
+      await shot('snapshots-offsite');
+      await go('/tenants?offsite=initech');
+      await until(`return document.querySelector('dialog[open]')?.innerText.includes('missing on the target')`, 'offsite listing', 30000);
+      await shot('tenant-offsite-copy', { height: 1100 });
+      await closeDialogs();
+      await ev(`[...document.querySelectorAll('.page-head button')].find((b) => b.innerText.includes('Attach offsite copy')).click(); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #t-host')`, 'attach dialog');
+      await shot('tenant-attach', { height: 1150 });
+      await closeDialogs();
+      await ev(`$rowClick('umbrella', 'Enter recovery key'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #att-key')`, 'recovery key dialog');
+      await shot('tenant-attach-key');
       await closeDialogs();
     }],
     ['sources', async () => {
@@ -839,6 +877,21 @@ async function main() {
       await shot('firewall-edit', { height: 1000 });
       await closeDialogs();
     }],
+    // Phase 17c: Settings → Vault (the demo appliance is a primary: preconditions not met)
+    ['vault', async () => {
+      await go('/settings?tab=vault');
+      await until(`return document.body.innerText.includes('Preconditions')`, 'vault tab');
+      await shot('settings-vault', { height: 1000 });
+    }],
+    // Phase 17f: deactivate a tenant (reason dialog; the request then needs approval)
+    ['tenant-deactivate', async () => {
+      await go('/tenants');
+      await ev(`$rowClick('globex', 'Deactivate'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input')`, 'deactivate reason dialog');
+      await ev(`$fill('dialog[open] input', 'contract paused until 2027-01'); return true;`);
+      await shot('tenant-deactivate');
+      await closeDialogs();
+    }],
     ['approvals', async () => {
       await go('/quorum');
       await shot('approvals-admin', { height: 1400 });
@@ -888,7 +941,7 @@ async function main() {
     ['vault-close', async () => {
       await login('so');
       await go('/replication');
-      await ev(`$rowClick('hq-primary', 'Close vault now'); return true;`);
+      await ev(`$rowClick('hq-primary', 'Close vault (pause pulling now)'); return true;`);
       await confirmOk();
       await settle();
       await shot('replication-closed');

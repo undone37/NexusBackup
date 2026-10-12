@@ -31,13 +31,23 @@ fn tenant_files(remote: &dyn Remote, tenant: &str, keep: impl Fn(&str) -> bool) 
     Ok(out)
 }
 
-/// Appliance-wide DR: installs `kek.recovery` and the tenant's wrapped DEKs
-/// into `keyd_dir` and re-seals the KEK with the appliance recovery key.
-pub fn appliance_keys(remote: &dyn Remote, tenant: &str, keyd_dir: &Path, recovery_key: &str) -> Result<Deks> {
+/// The appliance escrow of `tenant` on the remote, named as keyd stores it:
+/// `kek.recovery` and `tenants/<t>/dek.<v>` (also for the web UI attach, Phase 17d).
+pub fn appliance_escrow(remote: &dyn Remote, tenant: &str) -> Result<Vec<(String, Vec<u8>)>> {
     let mut files = vec![("kek.recovery".to_owned(), remote.get("keys/kek.recovery", 0, None)?)];
     for (n, b) in tenant_files(remote, tenant, |n| n.starts_with("dek."))? {
         files.push((format!("tenants/{tenant}/{n}"), b));
     }
+    if files.len() == 1 {
+        bail!("the offsite target holds no escrowed keys of tenant {tenant}");
+    }
+    Ok(files)
+}
+
+/// Appliance-wide DR: installs `kek.recovery` and the tenant's wrapped DEKs
+/// into `keyd_dir` and re-seals the KEK with the appliance recovery key.
+pub fn appliance_keys(remote: &dyn Remote, tenant: &str, keyd_dir: &Path, recovery_key: &str) -> Result<Deks> {
+    let files = appliance_escrow(remote, tenant)?;
     keyd::import_escrow(keyd_dir, &files)?;
     keyd::recover(keyd_dir, recovery_key)?;
     Ok(keyd::tenant_deks(keyd_dir, tenant)?

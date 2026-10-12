@@ -15,6 +15,7 @@ import type { Plugin } from 'vite';
 // The real manifests of the shipped plugins, so the demo's forms and restores match them.
 import pgManifest from '../../plugins/postgresql/manifest.json' with { type: 'json' };
 import truenasManifest from '../../plugins/truenas/manifest.json' with { type: 'json' };
+import m365Manifest from '../../plugins/m365/manifest.json' with { type: 'json' };
 // Phase 13b: the schedule grammar and blackout check the UI uses as well.
 import {
   bandwidthWeaker,
@@ -198,7 +199,16 @@ interface InvRow {
 
 const db = {
   users: [] as User[],
-  tenants: [] as { name: string; offsite: Json; quota_bytes?: number | null }[],
+  tenants: [] as {
+    name: string;
+    offsite: Json;
+    quota_bytes?: number | null;
+    // Phase 17f: deactivated tenants
+    disabled?: boolean;
+    disabled_at?: number | null;
+    disabled_by?: string | null;
+    disabled_reason?: string | null;
+  }[],
   /** kind: pve | linux | nfs | smb | plugin:<kind> */
   sources: [] as { id: number; tenant: string; kind: string; name: string; config: Json; maintenance_until?: number | null }[],
   agents: [] as Agent[],
@@ -234,6 +244,8 @@ const db = {
   plugins: [] as Json[],
   pluginKeys: [] as Json[],
   approvals: false,
+  // Phase 17c setting `vault_mode`
+  vault: { enabled: false, since: null as number | null, by: null as string | null },
   gcPending: [] as Json[],
   seq: 100,
   /** Phase 12 settings (docs/phase12-contract.md) */
@@ -389,6 +401,20 @@ function planFor(kind: string, p: Json): string[] {
       ];
     case 'files_list':
       return [`mounting ${src} @ ${p.time} read-only in restore micro-VM`, `listing ${p.path}`, 'done'];
+    case 'offsite_list':
+      return ['$ nexus-offsite offsite.json list --json', 'reading the offsite inventory and the target listing', 'done'];
+    case 'offsite_restore':
+      return [
+        `$ nexus-offsite offsite.json restore ${src} ${p.time} 604800`,
+        'fetching 412 chunks from 9 packs (chunks verified on insert)',
+        `restored ${src}/${p.time} into the local store, kept locally for at least 604800 s`,
+      ];
+    case 'offsite_attach':
+      return [
+        '$ nexus-offsite offsite.json attach recovery.key',
+        'keys of tenant imported: versions [1, 2]',
+        'attach: keys recovered, 37 packs and 5 snapshots indexed',
+      ];
     case 'files_get':
       return [`mounting ${src} @ ${p.time}`, `packing ${(p.paths ?? []).length} path(s) as ${p.format}`, 'archive ready'];
     case 'restore':
@@ -455,6 +481,7 @@ function tick() {
       if (j.kind.startsWith('plugin_')) pluginResult(j, t);
       if (j.kind === 'inventory' || j.kind === 'plugin_guests') inventoryResult(j, t);
       if (j.kind === 'report_send') reportSent(j);
+      if (j.kind.startsWith('offsite_')) offsiteResult(j, t);
       const ag = db.agents.find((a) => a.id === j.params.agent_id);
       if (j.kind === 'agent_enroll' && ag) {
         Object.assign(ag, { enrolled_at: t, cert_sha256: rand(32), token_expires: null, token_hash: null, last_seen: t });
@@ -508,6 +535,39 @@ function tick() {
         for (const a of db.agents) if (names.includes(`host-${a.id}`)) a.last_seen = t;
       }
     }
+  }
+}
+
+/** Phase 17d: what the scheduler does after the offsite jobs (crates/scheduler/src/offsite_ui.rs). */
+function offsiteResult(j: Job, t: number) {
+  if (j.kind === 'offsite_list') {
+    const snaps = db.snapshots
+      .filter((s) => s.tenant === j.tenant && s.offsite)
+      .sort((a, b) => a.source.localeCompare(b.source) || a.time - b.time);
+    // the demo target lost one manifest (initech): "missing on the target"
+    const lost = j.tenant === 'initech' ? snaps.find((s) => s.source === 'vm-100' && s.local) : undefined;
+    j.result = {
+      snapshots: snaps.map((s) => ({
+        source: s.source,
+        time: s.time,
+        size: s.size,
+        lock_until: s.time + (s.local ? 14 : 183) * DAY,
+        inventory: true,
+        remote: s !== lost,
+        local: s.local,
+      })),
+    };
+  }
+  if (j.kind === 'offsite_restore') {
+    const s = db.snapshots.find((x) => x.tenant === j.tenant && x.source === j.params.source && x.time === j.params.time);
+    if (s) Object.assign(s, { local: true, lock_until: t + 7 * DAY });
+  }
+  if (j.kind === 'offsite_attach') {
+    const q = db.quorum.find((x) => x.id === j.params.attach_quorum);
+    if (!q || db.tenants.some((x) => x.name === j.tenant)) return;
+    q.state = 'executed';
+    db.tenants.push({ name: j.tenant, offsite: q.params.offsite });
+    for (const d of [1, 2, 8, 35, 66]) db.snapshots.push(snap(j.tenant, 'vm-100', t - d * DAY, 32 << 30, false, true, null));
   }
 }
 
@@ -764,7 +824,10 @@ function schemaCheck(schema: Json | undefined, v: Json, prefix: string) {
     if (x === undefined) continue;
     if (p.type === 'array') {
       if (!Array.isArray(x)) throw new HttpError(400, `${prefix}.${k}: array expected`);
-      x.forEach((item, i) => one(`${prefix}.${k}[${i}]`, { type: 'string', ...(p.items ?? {}) }, item));
+      if (p.maxItems !== undefined && x.length > p.maxItems) throw new HttpError(400, `${prefix}.${k}: too many items`);
+      // contract v1.6: lists of objects
+      if (p.items?.type === 'object') x.forEach((item, i) => schemaCheck(p.items, item, `${prefix}.${k}[${i}]`));
+      else x.forEach((item, i) => one(`${prefix}.${k}[${i}]`, { type: 'string', ...(p.items ?? {}) }, item));
     } else one(`${prefix}.${k}`, p, x);
   }
 }
@@ -782,6 +845,22 @@ function pluginSourceConfig(kind: string, cfg: Json, old?: Json): Json {
       if (moved) throw new HttpError(400, `config.${f}: required (the endpoint changed)`);
       out[f] = old[f];
     }
+  }
+  // lists of objects: an item keeps its stored secrets while its other fields stay the same at its position
+  const secrets: string[] = pk.kind.secret_fields ?? [];
+  const plain = (o: Json) => JSON.stringify(Object.entries(o ?? {}).filter(([k]) => !secrets.includes(k)));
+  for (const [k, v] of Object.entries(out)) {
+    if (!Array.isArray(v) || !v.some((x) => x && typeof x === 'object')) continue;
+    out[k] = v.map((item: Json, i: number) => {
+      const prev = old?.[k]?.[i];
+      const it = Object.fromEntries(Object.entries(item).filter(([, x]) => x !== '' && x !== null && x !== undefined));
+      if (!prev || plain(it) !== plain(prev)) return it;
+      for (const f of secrets) if (it[f] === undefined && prev[f] !== undefined) {
+        if (moved) throw new HttpError(400, `config.${k}[${i}].${f}: required (the endpoint changed)`);
+        it[f] = prev[f];
+      }
+      return it;
+    });
   }
   schemaCheck(pk.kind.config_schema, out, 'config');
   return out;
@@ -1086,6 +1165,8 @@ function seed() {
   series('initech', 'vm-100', 40);
   series('initech', 'vm-101', 120, { skip: 2 });
   series('initech', 'ct-200', 8);
+  // Phase 17d: older monthlies of vm-100 only offsite (local retention pruned them)
+  for (const d of [35, 66, 97]) db.snapshots.push(snap('initech', 'vm-100', day(d, 1), Math.round(39.6 * 2 ** 30), false, true, d === 35 ? day(d, 1) + 7200 : null));
   series('initech', 'vm-102', 30, { offsite: false, hh: 3 });
   series('acme', 'vm-300', 60, { hh: 22, skip: 1 });
   series('acme', 'vm-301', 25, { hh: 22, skip: 1 });
@@ -1216,6 +1297,11 @@ function seed() {
   q('replication_peer.create', { id: peerId, name: 'dr-site', tenants: ['acme'] }, 'admin', t - 86400 * 21, 'executed', 'so');
   q('replication.key_export', { peer: peerId, keyd_fingerprint: peerKeyd, tenants: ['acme'] }, 'admin', t - 86400 * 20, 'executed', 'so2');
   q('source.delete', { id: 42, name: 'old-esx-import' }, 'admin', t - 86400 * 9, 'rejected', 'so');
+  // Phase 17d: an approved "attach offsite copy" waiting for the requester's recovery key
+  q('tenant.attach_offsite', {
+    name: 'umbrella',
+    offsite: { remote: { type: 'sftp', host: 'u654321.storagebox.example.net', port: 23, user: 'u654321', host_key: DEMO_HOST_KEY('umb'), base_dir: 'nexus', key_file: '/etc/nexus/ssh/offsite' } },
+  }, 'admin', t - 2 * 3600, 'approved', 'so');
   const gcq = q('gc_large', { tenant: 'initech', job: 4711, reason: 'GC would delete 34 % of the stored chunks (limit 20 %)' }, 'scheduler', t - 2 * 3600);
   db.alerts.push(
     mkAlert({
@@ -1257,6 +1343,32 @@ function seed() {
   seedTenantKeys(t);
   seedHolds(t);
   seedHardware(t);
+  seedM365(t);
+}
+
+/** Phase 18a: Microsoft 365 plugin with two apps, a second M365 tenant as restore target (tenant migration). */
+function seedM365(t: number) {
+  db.plugins.push(pluginEntry(structuredClone(m365Manifest) as Json, 'admin', t - 86400 * 8));
+  const m365 = (name: string, domain: string, sp: string, apps: number) => ({
+    id: nextId(),
+    tenant: 'acme',
+    kind: 'plugin:m365',
+    name,
+    config: {
+      tenant_id: domain, client_id: '6f1c0a8e-2b4d-43f7-a5a1-e0b29d8c47f3', certificate: 'SECRET', private_key: 'SECRET',
+      apps: Array.from({ length: apps }, (_, i) => ({ client_id: `${i + 2}a3b4c5d-6e7f-4081-92a3-b4c5d6e7f801`, certificate: 'SECRET' })),
+      exchange: true, onedrive: true, sharepoint: true, teams: true, teams_messages: false, chats: false, teams_export_model: 'B',
+      sharepoint_host: `${sp}.sharepoint.com`, onedrive_host: `${sp}-my.sharepoint.com`,
+    } as Json,
+  });
+  const a = m365('m365-acme', 'acme.onmicrosoft.com', 'acme', 2);
+  const b = m365('m365-acme-new', 'acmegroup.onmicrosoft.com', 'acmegroup', 0);
+  db.sources.push(a, b);
+  for (const [g, gib, hh] of [['u.0c9d1c7a-1111-4222-8333-444455556666', 6.2, 2], ['u.5b2e4f10-aaaa-4bbb-8ccc-ddddeeeeffff', 3.4, 2]] as [string, number, number][])
+    for (let d = 4; d >= 0; d--) {
+      const time = Math.floor(t / 86400 - d) * 86400 + hh * 3600;
+      if (time <= t) db.snapshots.push(snap('acme', `plugin-m365-${a.id}-${g}`, time, Math.round(gib * 2 ** 30), true, d > 0, d > 1 ? time + 7200 : null));
+    }
 }
 
 // ---------------------------------------------------------------- run control (Phase 13b)
@@ -1428,7 +1540,9 @@ function find<T>(xs: T[], pred: (x: T) => boolean, what: string): T {
 
 // approved requests the scheduler executes (state stays `approved` until it has)
 // (console.unlock: nobody executes it; the requester then fetches the code once, 14c)
-const SCHEDULER_ACTIONS = ['replication.key_export', 'gc_large', 'console.unlock', 'tenant.recovery_key'];
+// (tenant.attach_offsite: the requester then submits the recovery key, the scheduler runs the attach, 17d)
+// (vault.disable: completed at the console with the recovery key, 17c)
+const SCHEDULER_ACTIONS = ['replication.key_export', 'gc_large', 'console.unlock', 'tenant.recovery_key', 'tenant.attach_offsite', 'vault.disable'];
 // 202 {quorum_id, ...extra} like web-api's `accepted()`; with approvals disabled the
 // action runs at once (200 {approvals: "disabled", executed}).
 async function quorum(u: User, action: string, params: Json, extra: Json = {}): Promise<[number, Json]> {
@@ -1459,6 +1573,12 @@ function stripSource(s: (typeof db.sources)[number]) {
       else config[k] = v;
     }
     for (const f of secrets) config[`${f}_set`] ??= false;
+    // lists of objects (contract v1.6): `<field>_set` per item
+    for (const [k, v] of Object.entries(config))
+      if (Array.isArray(v) && v.some((x) => x && typeof x === 'object'))
+        config[k] = v.map((item: Json) =>
+          Object.fromEntries(Object.entries(item).map(([f, x]) => (secrets.includes(f) ? [`${f}_set`, x !== undefined && x !== ''] : [f, x]))),
+        );
     return { ...s, config };
   }
   if (s.kind === 'nfs' || s.kind === 'smb') {
@@ -1633,8 +1753,23 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       Object.assign(find(db.groups, (x) => x.id === p.id, 'group'), next);
       break;
     case 'approvals.disable':
+      if (db.vault.enabled) throw new HttpError(409, 'vault mode is on: approvals cannot be disabled');
       db.approvals = false;
       break;
+    case 'vault.enable':
+      Object.assign(db.vault, { enabled: true, since: now(), by });
+      break;
+    case 'vault.restore': {
+      // queued as the requester (their downloads stay theirs)
+      const ids = (p.jobs as Json[]).map((j) => addJob(j.kind, p.tenant, j.params, by).id);
+      return { job_ids: ids };
+    }
+    case 'tenant.disable': {
+      const x = find(db.tenants, (y) => y.name === p.name, 'tenant');
+      Object.assign(x, { disabled: true, disabled_at: now(), disabled_by: by, disabled_reason: p.reason });
+      for (const [sid, s] of db.sessions) if (db.users.find((y) => y.id === s.userId)?.tenant === p.name) db.sessions.delete(sid);
+      break;
+    }
     case 'oidc.update':
       db.oidc = { ...db.oidc, ...next, client_secret: db.quorumSecrets.get(qid)?.client_secret ?? db.oidc.client_secret };
       db.quorumSecrets.delete(qid);
@@ -1723,7 +1858,7 @@ on('POST', '/auth/login', async (c) => {
   if (f && f.until > now()) throw new HttpError(429, 'too many failed sign-ins; try again in 15 minutes');
   const u = db.users.find((x) => x.name === name);
   const expired = !!u?.expires && u.expires <= now();
-  if (!u || u.disabled || expired || u.act || !u.password || u.password !== password || !/^\d{6}$/.test(String(totp))) {
+  if (!u || u.disabled || tenantOff(u.tenant) || expired || u.act || !u.password || u.password !== password || !/^\d{6}$/.test(String(totp))) {
     const g = f && f.until === 0 ? f : { count: 0, until: 0 };
     g.count++;
     if (g.count >= 5) g.until = now() + 900;
@@ -1748,7 +1883,10 @@ on('POST', '/auth/logout', (c) => {
 });
 on('GET', '/auth/me', (c) => {
   const u = need(c.user);
-  return [200, { user: pub(u), csrf: db.sessions.get(c.sid!)!.csrf, console_shell: u.tenant || u.role === 'tenant_user' ? null : consoleShell }];
+  return [
+    200,
+    { user: pub(u), csrf: db.sessions.get(c.sid!)!.csrf, console_shell: u.tenant || u.role === 'tenant_user' ? null : consoleShell, vault_mode: db.vault.enabled },
+  ];
 });
 
 // tenants
@@ -1756,6 +1894,7 @@ const NAME_RE = /^(?!\.)[A-Za-z0-9._-]{1,64}$/;
 on('GET', '/tenants', (c) => [200, db.tenants.filter((t) => !need(c.user).tenant || t.name === c.user!.tenant).map((t) => ({ ...t, offsite: publicOffsite(t.offsite) }))]);
 on('POST', '/tenants', async (c) => {
   const u = need(c.user, 'admin');
+  vaultRefuse('new tenants');
   const name = String(c.body.name ?? '').trim();
   if (!NAME_RE.test(name)) throw new HttpError(400, 'invalid tenant name');
   if (db.tenants.some((t) => t.name === name)) throw new HttpError(409, 'tenant exists');
@@ -1780,6 +1919,119 @@ on('PUT', '/tenants/:name', async (c, [name]) => {
   return [200, { ...t, offsite: publicOffsite(t.offsite) }];
 });
 on('DELETE', '/tenants/:name', (c, [name]) => quorum(need(c.user, 'admin'), 'tenant.delete', { name: decodeURIComponent(name) }));
+// Phase 17d: attach an existing offsite copy (web-api offsite.rs): request → approval → recovery key once
+const ATTACH = 'tenant.attach_offsite';
+const attachOpen = (q: Json) => q.action === ATTACH && (q.state === 'pending' || (q.state === 'approved' && q.decided_at >= now() - 72 * 3600));
+on('POST', '/tenants/attach', async (c) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  const name = String(c.body.name ?? '').trim();
+  if (!NAME_RE.test(name)) throw new HttpError(400, 'invalid tenant name');
+  const r = c.body.offsite?.remote;
+  if (r?.type !== 'sftp' && r?.type !== 's3') throw new HttpError(400, 'offsite.remote: an SFTP (host, user, key_file, host_key) or S3 target');
+  if (r.type === 's3' && !r.secret_key) throw new HttpError(400, 'offsite.remote.secret_key: required');
+  if (db.tenants.some((t) => t.name === name)) throw new HttpError(409, 'a tenant with this name exists');
+  const open = db.quorum.find((q) => attachOpen(q) && q.params.name === name);
+  if (open) throw new HttpError(409, `an attach request for this tenant is open (#${open.id})`);
+  return quorum(u, ATTACH, { name, offsite: publicOffsite(tenantOffsite(c.body.offsite)) }, { name });
+});
+on('POST', '/tenants/attach/:id/run', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  const q = find(db.quorum, (x) => x.id === Number(id) && x.action === ATTACH, 'attach request');
+  if (q.requested_by !== u.name) throw new HttpError(403, 'only the requester of the attach submits the recovery key');
+  if (q.state !== 'approved') throw new HttpError(409, `request is ${q.state}`);
+  if (!attachOpen(q)) throw new HttpError(409, 'the approval is older than 72 h: request the attach again');
+  if (db.jobs.some((j) => j.kind === 'offsite_attach' && j.params.attach_quorum === q.id && (j.state === 'queued' || j.state === 'running')))
+    throw new HttpError(409, 'this attach is already running');
+  const hex = String(c.body.recovery_key ?? '').replace(/[^0-9a-zA-Z]/g, '');
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new HttpError(400, 'recovery_key: 64 hex digits (16 groups of 4)');
+  // the key itself is never kept (web-api: sealed to the scheduler, removed when the job starts)
+  const j = addJob('offsite_attach', q.params.name, { attach_quorum: q.id }, u.name);
+  await audit(u.name, 'tenant.attach_offsite.run', `tenant/${q.params.name}`, { quorum_id: q.id, job: j.id });
+  return [202, { id: j.id }];
+});
+
+// Phase 17f: tenant deactivation (web-api `tenants.rs`): approval to deactivate, reactivation at once
+function tenantOff(name: string | null | undefined): boolean {
+  return !!name && !!db.tenants.find((x) => x.name === name)?.disabled;
+}
+const PAUSED_KINDS = ['backup', 'plugin_backup', 'offsite', 'replica_sync'];
+on('POST', '/tenants/:name/deactivate', async (c, [name]) => {
+  const u = need(c.user, 'admin');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  const x = find(db.tenants, (y) => y.name === decodeURIComponent(name), 'tenant');
+  const reason = String(c.body.reason ?? '').trim();
+  if (!reason || reason.length > 500 || /[\u0000-\u001f]/.test(reason)) throw new HttpError(400, 'reason: 1 to 500 characters, one line');
+  if (x.disabled) throw new HttpError(409, 'tenant is already deactivated');
+  if (db.quorum.some((q) => q.action === 'tenant.disable' && q.state === 'pending' && q.params.name === x.name))
+    throw new HttpError(409, 'a request to deactivate this tenant is already pending');
+  return quorum(u, 'tenant.disable', { name: x.name, reason });
+});
+on('POST', '/tenants/:name/reactivate', async (c, [name]) => {
+  const u = need(c.user, 'admin');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  const x = find(db.tenants, (y) => y.name === decodeURIComponent(name), 'tenant');
+  if (!x.disabled) throw new HttpError(409, 'tenant is not deactivated');
+  const was = x.disabled_reason;
+  Object.assign(x, { disabled: false, disabled_at: null, disabled_by: null, disabled_reason: null });
+  await audit(u.name, 'tenant.enable', `tenant/${x.name}`, { was_reason: was });
+  return [200, { name: x.name, disabled: false }];
+});
+
+// Phase 17c: vault mode (web-api `vault.rs`)
+const VAULT_KINDS = ['restore', 'restore_ct', 'instant_recover', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount', 'offsite_restore'];
+function vaultRefuse(what: string) {
+  if (db.vault.enabled) throw new HttpError(409, `vault mode is on: ${what} are not allowed on this appliance (Settings → Vault)`);
+}
+function vaultChecks() {
+  const replicated = new Set(db.replSources.flatMap((s) => s.tenants as string[]));
+  const local = db.tenants.map((x) => x.name).filter((n) => !replicated.has(n));
+  const web: string[] = db.firewall.web?.allow ?? [];
+  return {
+    secondary: { ok: db.replSources.length > 0, sources: db.replSources.length },
+    no_local_tenants: { ok: !local.length, tenants: local },
+    no_peers: { ok: !db.replPeers.length, peers: db.replPeers.length },
+    approvals: { ok: db.approvals },
+    web_restricted: { ok: web.length > 0, allow: web },
+  };
+}
+const vaultPending = (action: string) => db.quorum.filter((q) => q.action === action && q.state === 'pending').pop()?.id ?? null;
+on('GET', '/vault', (c) => {
+  const u = need(c.user);
+  const out: Json = { ...db.vault };
+  if (!u.tenant && ['admin', 'security_officer', 'operator'].includes(u.role)) {
+    const checks = vaultChecks();
+    Object.assign(out, {
+      checks,
+      ready: Object.values(checks).every((x) => x.ok),
+      pending_enable: vaultPending('vault.enable'),
+      pending_disable: vaultPending('vault.disable'),
+      approved_disable:
+        db.quorum.filter((q) => q.action === 'vault.disable' && q.state === 'approved' && (q.decided_at ?? 0) > now() - 72 * 3600).pop()?.id ?? null,
+    });
+  }
+  return [200, out];
+});
+on('PUT', '/vault', async (c) => {
+  const u = need(c.user, 'admin');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  const want = !!c.body.enabled;
+  if (want === db.vault.enabled) return [200, { enabled: want }];
+  const action = want ? 'vault.enable' : 'vault.disable';
+  if (vaultPending(action)) throw new HttpError(409, `a ${action} request is already pending`);
+  if (want && !Object.values(vaultChecks()).every((x) => x.ok)) throw new HttpError(409, 'vault mode cannot be enabled: a precondition is not met');
+  const q = { id: nextId(), action, params: { enabled: want }, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
+  db.quorum.push(q);
+  await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action, params: q.params });
+  return [202, { quorum_id: q.id }];
+});
+/** Vault mode: restores and downloads become one `vault.restore` request. */
+async function vaultGate(u: User, tenant: string, jobs: { kind: string; params: Json }[]): Promise<Reply | null> {
+  if (!db.vault.enabled || !jobs.some((j) => VAULT_KINDS.includes(j.kind))) return null;
+  const q = { id: nextId(), action: 'vault.restore', params: { tenant, jobs }, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
+  db.quorum.push(q);
+  await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action: q.action, params: q.params });
+  return [202, { quorum_id: q.id, vault: true }];
+}
 
 // sources
 on('GET', '/sources', (c) => [200, byTenant(need(c.user), db.sources).map(stripSource)]);
@@ -1831,6 +2083,7 @@ function shareConfig(kind: string, cfg: Json): Json {
 
 on('POST', '/sources', async (c) => {
   const u = need(c.user, 'admin');
+  vaultRefuse('new sources');
   const { tenant, name, config, kind = 'pve' } = c.body;
   find(db.tenants, (t) => t.name === tenant, 'tenant');
   if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
@@ -2053,6 +2306,7 @@ const disksAdded = (a: Record<string, string[]> = {}, b: Record<string, string[]
   Object.entries(b).some(([k, l]) => l.some((d) => !(a[k] ?? []).includes(d)));
 on('POST', '/groups', async (c) => {
   const u = need(c.user, 'admin');
+  vaultRefuse('new protection groups');
   const g: MockGroup = { id: nextId(), tenant: c.body.tenant, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), name: c.body.name, guests: c.body.guests ?? [], mode: 'explicit', selector: [], exclude: [], timezone: checkTz(c.body.timezone), paused_until: null };
   const src = find(db.sources, (s) => s.id === g.source_id && s.tenant === g.tenant, 'source in tenant');
   Object.assign(g, checkMode(src, c.body), groupSelection(src, c.body));
@@ -2142,6 +2396,7 @@ on('GET', '/replication/peers', (c) => (need(c.user, 'admin', 'security_officer'
 on('GET', '/replication/sources', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, db.replSources]));
 on('POST', '/replication/peers', async (c) => {
   const u = need(c.user, 'admin');
+  vaultRefuse('replication peers (serving as a primary)');
   const { name, tenants = [] } = c.body;
   if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
   if (!Array.isArray(tenants) || !tenants.length) throw new HttpError(400, 'tenants: at least one');
@@ -2199,7 +2454,7 @@ on('POST', '/replication/sources/:id/sync', async (c, [id]) => {
   const u = need(c.user, 'admin', 'operator');
   const r = findRs(id);
   if (r.state !== 'enrolled') throw new HttpError(409, 'replication source is not enrolled');
-  if (isPaused(r.closed_until)) throw new HttpError(409, 'the vault is closed: reopen the replication source first');
+  if (isPaused(r.closed_until)) throw new HttpError(409, 'the replication source is closed (pulling paused): request reopening first');
   if (!syncOpen(r.sync_window ?? [], r.timezone ?? 'UTC')) throw new HttpError(409, 'outside the sync window: the primary is not reachable now');
   const jobs = (r.tenants as string[]).map((tn) => addJob('replica_sync', tn, { replication_source_id: r.id, tenant: tn }, u.name).id);
   await audit(u.name, 'job.create', `replication_source/${r.id}`, { kind: 'replica_sync', jobs });
@@ -2280,6 +2535,7 @@ async function issueToken(a: Agent) {
 on('GET', '/agents', (c) => [200, byTenant(need(c.user), db.agents).map(pubAgent)]);
 on('POST', '/agents', async (c) => {
   const u = need(c.user, 'admin');
+  vaultRefuse('new agents');
   const { tenant, name, host, port = 7444 } = c.body;
   find(db.tenants, (t) => t.name === tenant, 'tenant');
   if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
@@ -2717,6 +2973,7 @@ async function fwRequest(u: User, id: string, raw: unknown, enabled: unknown, fo
   const old = structuredClone(db.firewall[id]);
   const rule = { allow: list, enabled: typeof enabled === 'boolean' ? enabled : old.enabled };
   if (JSON.stringify(rule) === JSON.stringify(old)) return [200, { service: id, rule }];
+  if (id === 'web' && !list.length) vaultRefuse('an unrestricted web inbound rule');
   const ok = !list.length || list.some((x) => inCidr(CLIENT_IP, x));
   if (svc.lockout && !ok && !(force && String(confirm ?? '').trim() === CLIENT_IP))
     throw new HttpError(409, `the list for ${id} does not contain your address ${CLIENT_IP}: you would lose access to the web UI; add it, or confirm with force and confirm = "${CLIENT_IP}"`);
@@ -2771,6 +3028,7 @@ on('PUT', '/settings/approvals', async (c) => {
     await audit(u.name, 'settings.approvals', 'settings/approvals', { enabled: true });
     return [200, approvalsState()];
   }
+  vaultRefuse('requests to disable approvals');
   if (approvalsState().pending_disable) throw new HttpError(409, 'a request to disable approvals is already pending');
   return quorum(u, 'approvals.disable', { enabled: false });
 });
@@ -2827,7 +3085,7 @@ on('GET', '/jobs/:id', (c, [id]) => {
   const u = need(c.user);
   return [200, pubJob(find(byTenant(u, db.jobs), (j) => j.id === Number(id), 'job'), true)];
 });
-const RESTORE_KINDS = ['restore', 'restore_ct', 'instant_recover', 'files_list', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount'];
+const RESTORE_KINDS = ['restore', 'restore_ct', 'instant_recover', 'files_list', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount', 'offsite_list', 'offsite_restore'];
 /** Source + kind of a plugin snapshot name (plugin-<id>-<source id>[-<guest>]). */
 function pluginSnapshotKind(tenant: string, name: string) {
   const parts = name.replace(/^plugin-/, '').split('-');
@@ -2853,6 +3111,15 @@ function checkRestore(kind: string, tenant: string, p: Json) {
   if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time)) throw new HttpError(404, 'no such snapshot');
 }
 function checkJob(u: User, kind: string, tenant: string, p: Json) {
+  // Phase 17d: browse the offsite copy, fetch an offsite-only snapshot back (web-api jobs.rs)
+  if (kind === 'offsite_list' || kind === 'offsite_restore') {
+    if (!db.tenants.find((x) => x.name === tenant)?.offsite?.remote) throw new HttpError(400, 'tenant: has no offsite target');
+    if (kind === 'offsite_restore') {
+      const s = db.snapshots.find((x) => x.tenant === tenant && x.source === p.source && x.time === p.time && x.offsite);
+      if (!s) throw new HttpError(404, 'no such offsite snapshot');
+      if (s.local) throw new HttpError(409, 'the snapshot is in the local store already');
+    }
+  }
   if (kind === 'restore' || kind === 'restore_ct' || kind === 'instant_recover') checkRestore(kind, tenant, p);
   if (kind === 'agent_enroll') throw new HttpError(400, 'use POST /agents/{id}/enroll');
   if (kind === 'inventory') {
@@ -2880,6 +3147,15 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
     else if (Object.keys(p.params ?? {}).length) throw new HttpError(400, 'params: this restore takes none');
     if (kind === 'plugin_mount' && !(Number.isInteger(p.minutes) && p.minutes >= 1 && p.minutes <= 1440))
       throw new HttpError(400, 'minutes: 1..1440');
+    // contract v1.6: restore with another source of the same tenant and kind
+    if (p.target_source_id !== undefined) {
+      if (kind === 'plugin_mount') throw new HttpError(400, 'target_source_id: restores only');
+      if (!r.target_source) throw new HttpError(400, `target_source_id: restore ${rid} cannot run into another source`);
+      const own = db.sources.find((s) => s.id === Number(/^plugin-.+?-(\d+)/.exec(p.source)?.[1]));
+      const tgt = db.sources.find((s) => s.id === Number(p.target_source_id) && s.tenant === tenant);
+      if (!tgt) throw new HttpError(400, 'target_source_id: no such plugin source in this tenant');
+      if (tgt.kind !== own?.kind) throw new HttpError(400, `target_source_id: not a ${own?.kind} source`);
+    }
   }
   if (kind === 'agent_update' || kind === 'agent_renew') {
     if (u.role !== 'admin') throw new HttpError(403, 'requires role admin');
@@ -2913,6 +3189,7 @@ on('POST', '/jobs', async (c) => {
   if (kind === 'files_list' && !String(params.path ?? '').startsWith('/')) throw new HttpError(400, 'path: must be absolute');
   checkJob(u, kind, tenant, params);
   if (kind === 'files_get' && !canDownload(u)) throw new HttpError(403, 'this account may not download files');
+  if (PAUSED_KINDS.includes(kind) && tenantOff(tenant)) throw new HttpError(409, `tenant ${tenant} is deactivated: no ${kind} jobs until it is reactivated`);
   if (kind === 'backup') backupGuests(params);
   if (params.replace) {
     // Phase 15a: an approval request (`restore.replace`), never a plain job; not for tenant users
@@ -2922,9 +3199,12 @@ on('POST', '/jobs', async (c) => {
   }
   // Like web-api: files_get gets a server-generated download token, returned in the 202 body.
   const p = kind === 'files_get' ? { ...params, download_token: rand(32) } : params;
+  const gated = await vaultGate(u, tenant, [{ kind, params: p }]);
+  if (gated) return gated;
   const j = addJob(kind, tenant, p, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
   if (kind.startsWith('plugin_')) j.duration = { plugin_validate: 3, plugin_guests: 3, plugin_restore: 14, plugin_mount: 6 }[kind as string] ?? 10;
   if (kind === 'inventory') j.duration = 3;
+  if (kind === 'offsite_list') j.duration = 3;
   await audit(u.name, 'job.create', `job/${j.id}`, { kind, tenant, params: p });
   return [202, p.download_token ? { id: j.id, download_token: p.download_token } : { id: j.id }];
 });
@@ -2950,6 +3230,8 @@ on('POST', '/restores', async (c) => {
     }
     return { kind, p };
   });
+  const gated = await vaultGate(u, b.tenant, jobs.map(({ kind, p }) => ({ kind, params: p })));
+  if (gated) return gated;
   const ids = jobs.map(({ kind, p }) => addJob(kind, b.tenant, p, u.name).id);
   await audit(u.name, 'job.create_many', `tenant/${b.tenant}`, { ids, jobs });
   return [202, { ids }];
@@ -3402,7 +3684,7 @@ function dashboard(u: User, days: number) {
   const objs = protectedObjects(u).map((o) => {
     const last = snaps.filter((s) => s.tenant === o.tenant && o.names.includes(s.source)).reduce((m, s) => Math.max(m, s.time), 0) || null;
     const age_s = last ? t - last : null;
-    const sla = !last ? 'never' : (age_s as number) > o.rpo_s * 1.5 ? (o.paused ? 'paused' : 'breach') : 'ok';
+    const sla = tenantOff(o.tenant) ? 'deactivated' : !last ? 'never' : (age_s as number) > o.rpo_s * 1.5 ? (o.paused ? 'paused' : 'breach') : 'ok';
     return { ...o, last_ok: last, age_s, sla };
   });
   const inGroup = objs.filter((o) => o.inGroup);
@@ -3413,12 +3695,14 @@ function dashboard(u: User, days: number) {
     sla_ok: inGroup.filter((o) => o.sla === 'ok').length,
     sla_breach: inGroup.filter((o) => o.sla === 'breach').length,
     sla_paused: inGroup.filter((o) => o.sla === 'paused').length,
+    sla_deactivated: inGroup.filter((o) => o.sla === 'deactivated').length,
+    deactivated_tenants: tenants.filter((n) => tenantOff(n)),
     never: inGroup.filter((o) => o.sla === 'never').length,
     unprotected_list: objs
       .filter((o) => !o.inGroup)
       .map((o) => ({ tenant: o.tenant, kind: o.kind, source_id: o.sourceId ?? null, source: o.sourceName ?? '', guest: o.source, name: o.name })),
     worst: inGroup
-      .sort((a, b) => Number(!['ok', 'paused'].includes(b.sla)) - Number(!['ok', 'paused'].includes(a.sla)) || (b.age_s ?? Infinity) / b.rpo_s - (a.age_s ?? Infinity) / a.rpo_s)
+      .sort((a, b) => Number(!['ok', 'paused', 'deactivated'].includes(b.sla)) - Number(!['ok', 'paused', 'deactivated'].includes(a.sla)) || (b.age_s ?? Infinity) / b.rpo_s - (a.age_s ?? Infinity) / a.rpo_s)
       .slice(0, 10)
       .map(({ source, name, kind, tenant, last_ok, age_s, rpo_s, sla }) => ({ source, name, kind, tenant, last_ok, age_s, rpo_s, sla })),
   };
@@ -4755,7 +5039,7 @@ async function handle(req: Req, res: Res) {
       if (now() - sess.last > lim.idle_min * 60 || now() - sess.created > lim.absolute_h * 3600) db.sessions.delete(sid!);
       else {
         sess.last = now();
-        user = db.users.find((u) => u.id === sess.userId && !u.disabled && !(u.expires && u.expires <= now())) ?? null;
+        user = db.users.find((u) => u.id === sess.userId && !u.disabled && !tenantOff(u.tenant) && !(u.expires && u.expires <= now())) ?? null;
       }
     }
     if (method !== 'GET' && path !== '/auth/login' && !path.startsWith('/auth/activate/') && user && req.headers['x-csrf-token'] !== sess?.csrf) {
