@@ -67,6 +67,7 @@ mod accounts;
 pub mod alerts;
 pub mod anomaly;
 pub mod consistency;
+pub mod disks;
 pub mod expiry;
 pub mod firewall;
 pub mod forward;
@@ -191,6 +192,8 @@ pub struct Config {
     pub inventory_secs: i64,
     /// audit / alert forwarding round (forward.rs); 0 = no forwarder thread
     pub forward_poll_secs: u64,
+    /// nexus-disks status and operations (disks.rs; skipped while there is no status)
+    pub disks_dir: PathBuf,
 }
 
 impl Default for Config {
@@ -239,6 +242,7 @@ impl Default for Config {
             cancel_grace_secs: 30,
             inventory_secs: 3600,
             forward_poll_secs: 5,
+            disks_dir: catalog::hardware::DIR.into(),
         }
     }
 }
@@ -718,6 +722,7 @@ impl Scheduler {
         self.log_err(|s| s.check_offsite_lag(now));
         self.log_err(|s| s.check_replication_lag(now));
         self.log_err(|s| s.check_forwarding(now));
+        self.log_err(|s| s.check_disks(now));
         self.log_err(|s| s.sync_firewall().map(drop));
         self.deliver_alerts()
     }

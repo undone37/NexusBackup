@@ -15,6 +15,7 @@
     ApprovalsState,
     Dashboard as DashboardData,
     Group,
+    Hardware,
     Inventory,
     Job,
     Plugin,
@@ -41,6 +42,7 @@
   import IconCloud from '@lucide/svelte/icons/cloud-upload';
   import IconLock from '@lucide/svelte/icons/lock';
   import IconPlay from '@lucide/svelte/icons/play';
+  import IconHardware from '@lucide/svelte/icons/server-cog';
 
   // ---- key figures (GET /dashboard, docs/phase12-contract.md §1)
   const DAYS = 'nexus.dashDays';
@@ -131,11 +133,23 @@
     loaded = true;
   }
 
+  // ---- hardware health (16a; GET /hardware, appliance-wide roles only)
+  let hwSum = $state<Hardware['summary'] | null>(null);
+  async function loadHw() {
+    if (can.viewHardware(session.user)) hwSum = await get<Hardware>('/hardware').then((h) => h.summary).catch(() => hwSum);
+  }
+  const hwTone = (s: Hardware['summary']): '' | 'ok' | 'warn' | 'bad' =>
+    s.state === 'critical' ? 'bad' : s.state === 'warning' ? 'warn' : s.state === 'ok' ? 'ok' : '';
+
   onMount(() => {
     load();
     loadKpi();
+    loadHw();
     const iv = setInterval(load, 30000);
-    const iv2 = setInterval(loadKpi, 60000);
+    const iv2 = setInterval(() => {
+      loadKpi();
+      loadHw();
+    }, 60000);
     return () => {
       clearInterval(iv);
       clearInterval(iv2);
@@ -284,7 +298,7 @@
 {#if kpiError}<p class="banner warn" role="status">{kpiError}</p>{/if}
 
 {#if kpi && pr && jb && cap && os}
-  <section class="kpis" aria-label={t.dash.title}>
+  <section class="kpis" class:nine={!!hwSum} aria-label={t.dash.title}>
     <KpiTile
       icon={IconShield}
       label={t.dash.kProtection}
@@ -346,6 +360,22 @@
       meter={os.lock_coverage}
       tone={toneOf(os.verify_failed > 0, os.lock_coverage !== null && os.lock_coverage < 1)}
     />
+    {#if hwSum}
+      <KpiTile
+        icon={IconHardware}
+        label={t.hw.tile}
+        value={hwSum.state === 'ok'
+          ? t.hw.tileOk
+          : hwSum.state === 'unknown'
+            ? t.dash.unknown
+            : hwSum.critical
+              ? t.hw.summary.critical(hwSum.critical)
+              : t.hw.summary.warning(hwSum.warnings)}
+        sub={hwSum.state === 'unknown' ? t.hw.summary.unknown : t.hw.tileSub(hwSum.disks, hwSum.arrays)}
+        tone={hwTone(hwSum)}
+        href={href('/hardware')}
+      />
+    {/if}
   </section>
 
   <div class="dash-grid">
@@ -591,3 +621,12 @@
 {/if}
 
 <BackupNow bind:open={bnOpen} group={bnGroup} label={(v) => (bnGroup ? guestLabel(bnGroup, v) : String(v))} />
+
+<style>
+  /* with the hardware tile: nine key figures, 3 × 3 on wide screens */
+  @media (min-width: 1181px) {
+    .kpis.nine {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+</style>

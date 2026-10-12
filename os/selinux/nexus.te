@@ -31,6 +31,8 @@ policy_module(nexus, 1.0.0)
 #                                                          certificate (the only writer), no network
 #   init_t ── nexus_diag_exec_t ──────> nexus_diag_t       root oneshot, diagnostics: reads journal/audit/
 #                                                          nft/chrony/catalog, writes its dir, no network
+#   init_t ── nexus_disks_exec_t ─────> nexus_disks_t      root oneshot, disks: SMART, mdadm, mkfs/xfs_growfs,
+#                                                          the store's mount unit; no network, no keys
 #   init_t ── nexus_consolegate_exec_t > nexus_consolegate_t  console gate on tty2 (root): unlock code or
 #                                                          recovery key ── shell_exec_t ──> unconfined_t
 #                                                          (the emergency root shell; the only way there)
@@ -1049,3 +1051,111 @@ neverallow { nexus_domain -nexus_consolegate_t } unconfined_t:process { transiti
 neverallow { nexus_domain -nexus_webapi_t } nexus_console_unlock_t:file { create write append rename link setattr relabelto };
 neverallow { nexus_domain -nexus_webapi_t -nexus_consolegate_t } nexus_console_unlock_t:file { read open };
 neverallow nexus_plugin_t { nexus_console_unlock_t nexus_consolegate_var_run_t }:file { read write append open create unlink link rename setattr execute ioctl lock };
+
+########################################
+# Disks (Phase 16a/b, os/greenboot/usr/libexec/nexus/nexus-disks, docs/hardware.md): root
+# oneshot started by nexus-disks.timer (every 5 minutes) and nexus-disks.path (requests of the
+# web-api in /var/lib/nexus/disks). Inventory (lsblk, /sys, udev db), SMART (smartctl: ATA
+# pass-through and NVMe admin commands), md arrays (/proc/mdstat, mdadm), and the approved
+# layout operations: mdadm create/add/remove/replace/grow, mkfs.xfs, xfs_growfs, the store's
+# mount unit in /etc/systemd/system and stopping/starting the services that use the store.
+# All tools run in this domain. It lists the store's directories (to see that it holds no
+# files) and never opens a file in it; it never touches keys, the catalog or credentials; no
+# network.
+
+nexus_daemon(disks)
+type nexus_disks_var_lib_t;	# /var/lib/nexus/disks: requests (web-api), status/ops/state (nexus-disks)
+files_type(nexus_disks_var_lib_t)
+gen_require(`
+	type mdadm_exec_t;
+	type mdadm_var_run_t;
+	type systemd_unit_file_t;
+	type mount_t;
+	type fs_t;
+')
+
+# python3 with the standard library; lsblk (bin_t), smartctl, wipefs / blkid / mkfs.xfs /
+# xfs_growfs (fsadm_exec_t) and mdadm in this domain
+corecmd_exec_bin(nexus_disks_t)
+fstools_exec(nexus_disks_t)
+can_exec(nexus_disks_t, mdadm_exec_t)
+libs_use_ld_so(nexus_disks_t)
+libs_use_shared_libs(nexus_disks_t)
+libs_read_lib_files(nexus_disks_t)
+files_read_usr_files(nexus_disks_t)
+files_read_etc_files(nexus_disks_t)
+files_read_etc_runtime_files(nexus_disks_t)
+auth_read_passwd(nexus_disks_t)
+dev_read_urand(nexus_disks_t)
+kernel_read_kernel_sysctls(nexus_disks_t)
+# its control dir: consumes req-*.json, writes status/ops/state and the mkfs protofile
+manage_dirs_pattern(nexus_disks_t, nexus_disks_var_lib_t, nexus_disks_var_lib_t)
+manage_files_pattern(nexus_disks_t, nexus_disks_var_lib_t, nexus_disks_var_lib_t)
+# ATA pass-through (SMART), md ioctls / NVMe admin commands / xfs_growfs; listing the store
+# (0700 nexus-chunkstore) without a DAC override
+allow nexus_disks_t self:capability { sys_rawio sys_admin dac_read_search };
+# disks and md devices (block and NVMe character devices: fixed_disk_device_t)
+storage_raw_rw_fixed_disk(nexus_disks_t)
+storage_getattr_fixed_disk_dev(nexus_disks_t)
+storage_getattr_removable_dev(nexus_disks_t)
+# lsblk / mdadm: /sys/block (mdadm writes md/* attributes), udev's database, /proc/mdstat,
+# mountinfo; the md personality (raid456) is loaded on demand by the kernel
+dev_rw_sysfs(nexus_disks_t)
+udev_read_db(nexus_disks_t)
+udev_read_pid_files(nexus_disks_t)
+kernel_read_system_state(nexus_disks_t)
+kernel_read_software_raid_state(nexus_disks_t)
+kernel_request_load_module(nexus_disks_t)
+fs_getattr_all_fs(nexus_disks_t)
+# mdadm: /etc/mdadm.conf (if any), its map in /run/mdadm
+raid_read_conf_files(nexus_disks_t)
+files_search_pids(nexus_disks_t)
+allow nexus_disks_t mdadm_var_run_t:dir manage_dir_perms;
+allow nexus_disks_t mdadm_var_run_t:file manage_file_perms;
+# the store: directories listed (empty before the array is created), xfs_growfs on the mount
+# point; never a file opened (neverallow below)
+list_dirs_pattern(nexus_disks_t, nexus_store_t, nexus_store_t)
+allow nexus_disks_t nexus_store_t:{ file lnk_file } getattr;
+allow nexus_disks_t nexus_store_t:dir ioctl;
+allow nexus_disks_t nexus_store_t:filesystem getattr;
+# the store's mount unit /etc/systemd/system/var-lib-nexus-chunkstore.mount (temp file +
+# rename) gets nexus_unit_file_t; nothing else in /etc/systemd/system is writable
+files_search_etc(nexus_disks_t)
+allow nexus_disks_t systemd_unit_file_t:dir rw_dir_perms;
+allow nexus_disks_t nexus_unit_file_t:file { create_file_perms write_file_perms rename unlink setattr };
+filetrans_pattern(nexus_disks_t, systemd_unit_file_t, nexus_unit_file_t, file, "var-lib-nexus-chunkstore.mount")
+filetrans_pattern(nexus_disks_t, systemd_unit_file_t, nexus_unit_file_t, file, "var-lib-nexus-chunkstore.mount.tmp")
+# systemctl: daemon-reload, enable --now the mount unit, stop/start the scheduler and
+# replicad around the mount, is-active (private socket of PID 1, as root)
+systemd_exec_systemctl(nexus_disks_t)
+init_stream_connect(nexus_disks_t)
+init_read_state(nexus_disks_t)
+allow nexus_disks_t init_t:system { status reload };
+allow nexus_disks_t nexus_unit_file_t:service { start stop status enable };
+allow nexus_disks_t nexus_unit_file_t:file read_file_perms;
+allow nexus_disks_t self:unix_dgram_socket create_socket_perms;
+
+# The data array is mounted with context=nexus_store_t (every file of the store has that
+# label anyway): mount (from the mount unit) relabels the XFS superblock, files associate
+allow mount_t fs_t:filesystem relabelfrom;
+allow mount_t nexus_store_t:filesystem { relabelto relabelfrom mount unmount getattr };
+allow nexus_store_t self:filesystem associate;
+# statvfs of the store (capacity, disk checks) on its own file system
+allow { nexus_scheduler_t nexus_job_domain nexus_replicad_t nexus_diag_t } nexus_store_t:filesystem getattr;
+
+# web-api: req-<id>.json (tmp + rename) in, status.json / ops.json out
+allow nexus_webapi_t nexus_disks_var_lib_t:dir rw_dir_perms;
+manage_files_pattern(nexus_webapi_t, nexus_disks_var_lib_t, nexus_disks_var_lib_t)
+# scheduler: `disk` alerts from status.json, audit of ops.json; nexus-diag: its disk check
+read_files_pattern(nexus_scheduler_t, nexus_disks_var_lib_t, nexus_disks_var_lib_t)
+read_files_pattern(nexus_diag_t, nexus_disks_var_lib_t, nexus_disks_var_lib_t)
+# nexus-disks.path (PathExistsGlob=req-*.json): systemd watches the dir and reads the matches
+allow init_t nexus_disks_var_lib_t:dir { getattr search read watch };
+allow init_t nexus_disks_var_lib_t:file { getattr read watch };
+
+# no network; never reads or writes keys, the catalog, credentials or store contents; only it
+# (and the web-api, for requests) writes its dir
+neverallow nexus_disks_t self:{ tcp_socket udp_socket rawip_socket sctp_socket } create;
+neverallow nexus_disks_t { nexus_keyd_var_lib_t nexus_catalog_t nexus_escrow_t nexus_sshkey_t nexus_scheduler_secret_t nexus_webapi_secret_t nexus_webapi_var_lib_t nexus_agent_ca_t nexus_replicad_var_lib_t nexus_replica_key_t nexus_downloads_t nexus_etc_t nexus_store_t }:file { read write append open create unlink link rename setattr };
+neverallow nexus_disks_t { nexus_keyd_var_run_t nexus_scheduler_var_run_t nexus_replicad_var_run_t }:sock_file { write open };
+neverallow { nexus_domain -nexus_disks_t -nexus_webapi_t } nexus_disks_var_lib_t:file { write append create unlink rename };

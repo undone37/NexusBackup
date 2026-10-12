@@ -14,6 +14,7 @@ pub mod auth;
 pub mod console;
 pub mod firewall;
 pub mod forwarding;
+pub mod hardware;
 pub mod holds;
 pub mod inventory;
 pub mod schedule;

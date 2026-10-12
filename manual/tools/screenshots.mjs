@@ -533,6 +533,23 @@ async function main() {
       await until(`return !!document.querySelector('#an-f')`, 'anomaly settings');
       await shot('settings-anomaly');
     }],
+    ['hardware', async () => {
+      // Phase 16a/b: disks, SMART, the degraded data array rebuilding onto its hot spare
+      await go('/hardware');
+      await until(`return !!document.querySelector('#hw-arrays-h') && document.body.innerText.includes('WD-WX12D3456704')`, 'hardware page');
+      await shot('hardware', { height: 1500 });
+      await ev(`$rowClick('WD-WX12D3456703', 'Details'); return true;`);
+      await until(`return document.querySelector('dialog[open]')?.innerText.includes('Current_Pending_Sector')`, 'SMART detail');
+      await shot('hardware-smart', { height: 1300 });
+      await closeDialogs();
+      // replace the failed member sdf by the empty disk sdh (typed serial; needs approval)
+      await ev(`$click('Replace disk'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #hw-confirm')`, 'replace dialog');
+      await ev(`$fill('#hw-new', 'WD-WX12D3456706'); $fill('#hw-confirm', 'WD-WX12D3456706'); return true;`);
+      await sleep(200);
+      await shot('hardware-replace', { height: 1100 });
+      await closeDialogs();
+    }],
     ['reports', async () => {
       await go('/reports');
       await until(`return !!document.querySelector('#r-sched') && document.body.innerText.includes('weekly-ops')`, 'reports page');

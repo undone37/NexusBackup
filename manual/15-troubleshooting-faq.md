@@ -286,7 +286,47 @@ try again a minute later.
 | <a id="check-selinux"></a>`selinux` SELinux mode | Whether SELinux enforces the service confinement. Permissive or disabled is critical. | The appliance always boots enforcing. If this fails, the kernel command line was changed; contact support. |
 | <a id="check-systemd-failed"></a>`systemd.failed` Failed system services | Services that have failed. A failed key daemon, web-api, scheduler or replication daemon is an error, any other failed unit a warning. | The bundle's journal names the reason. A reboot restarts all services. |
 | <a id="check-bootc"></a>`bootc` OS image (bootc) | Booted, staged and rollback image as the update agent last saw them; a queued rollback or an unsigned origin is a warning. | An unsigned origin is fixed by the next update check. A queued rollback takes effect at the next reboot. |
-| <a id="check-smart"></a>`smart` Disk health (SMART) | Not part of the image: the check is skipped (most appliances run as virtual machines, where the hypervisor watches the disks). | Watch the disks on the hypervisor or the hardware's management controller. |
+| <a id="check-smart"></a>`smart` Disk health (SMART) | The last scan of `nexus-disks` (**Configuration → Hardware**): a disk SMART reports as failing or a failed array is an error, a degraded array or bad sectors a warning, a status older than an hour a warning. Skipped before the first scan. In a virtual machine most disks have no SMART; the hypervisor watches them. | See [Replacing a disk](#replacing-a-disk). If the status is old, check `systemctl status nexus-disks.timer` on the console. |
+
+## Disks and RAID
+
+**Configuration → Hardware** shows the disks, their SMART health and the RAID arrays; problems raise `disk` alerts
+([11 Alerts](11-alerts-and-monitoring.md#alert-kinds)).
+
+![SMART details of a disk with pending and reallocated sectors](images/hardware-smart.png)
+
+**A disk shows pending or reallocated sectors (warning).** The disk has found unreadable spots and replaced some of
+them. Run a **long self-test** in its **Details**. If the counts keep growing (the alert becomes critical, "growing")
+or the self-test fails, replace the disk soon, while the array is still complete.
+
+**SMART health "failed" (critical).** The disk predicts its own failure: replace it now.
+
+**No SMART data.** Virtual disks and some RAID controllers do not pass SMART through; the hypervisor or the
+controller's management interface watches them instead.
+
+### Replacing a disk
+
+When a member of the data array fails, the array keeps working **degraded** (RAID6 survives two failed disks,
+RAID5 and RAID1 one). Replace the disk soon:
+
+1. Install the new disk (same size or larger) next to the old one if there is a free slot; otherwise pull the
+   failed disk first (compare the serial number on its label with the one shown as **faulty**). The new disk must be
+   **empty**: no partitions, no file system. Click **Rescan** so it appears with the role **Empty**.
+2. On the array, click **Replace disk**. Choose the new disk and, under **Member to replace**, the failed member (it is
+   preselected). Type the new disk's serial number and submit.
+3. A second person approves the request on **Approvals**.
+4. The appliance removes the failed member and adds the new disk; the array shows **recovering** with a progress
+   bar (several hours for large disks). Backups continue meanwhile, a little slower. The `disk` alerts resolve
+   themselves when the rebuild has finished.
+
+![Replacing a failed disk: the new disk is chosen and its serial number typed](images/hardware-replace.png)
+
+If a spare was configured, the rebuild starts on its own when a member fails; replace the failed disk afterwards and
+**Add spare** with the new one.
+
+**The request was refused.** **Recent operations** shows why, for example "is not empty: in_use, has partitions"
+(the disk still holds an old partition table: wipe it on another machine, or use a different disk) or "is smaller
+than the array members".
 
 ## FAQ
 

@@ -1,0 +1,933 @@
+#!/usr/bin/python3 -I
+# NexusBackup disks (Phase 16a/b, docs/hardware.md): disk inventory, SMART, md arrays, and the
+# data-array layout (mdadm + XFS) requested from the web UI.
+#
+#   nexus-disks tick   what nexus-disks.service runs (nexus-disks.timer every 5 minutes, and
+#                      nexus-disks.path when the web-api queues a request): handle the queued
+#                      requests, finish pending grows, write status.json
+#   nexus-disks scan   print the status as JSON (console; changes nothing)
+#
+# Control directory (default /var/lib/nexus/disks, 2771 root:nexus-webapi, tmpfiles.d/nexus-disks.conf):
+#   req-<id>.json  written by the web-api (tmp + rename), at most 4 KiB, consumed (deleted) here:
+#                  {"id": <32 hex>, "op": ..., "by": <user>, "quorum_id": <int|null>, ...}
+#                  scan                                       re-read everything incl. SMART now
+#                  selftest      disk: <serial>, type: short|long
+#                  create_array  role: data, level: raid1|raid5|raid6|raid10, disks: [<serial>...]
+#                  add_spare     array: <md uuid>, disk: <serial>
+#                  replace       array: <md uuid>, disk: <serial>, failed: <serial>|null
+#                  grow          array: <md uuid>, disk: <serial>
+#                  The destructive ops (create_array, add_spare, replace, grow) are only queued by
+#                  the web-api after an approved request with the disk serials typed in; this helper
+#                  checks every precondition again (empty disks, never system disks, store empty).
+#   status.json    inventory, SMART, arrays, store (0644: the scheduler raises `disk` alerts from it)
+#   ops.json       the last operations with their outcome (0644: the scheduler audits them)
+#   state.json     arrays waiting for xfs_growfs after a reshape
+#
+# Roles: system (holds a mounted file system or swap, or is part of an array that does), data /
+# metadata (member of the array nexus-data / nexus-metadata), in_use (partitions, signatures, LVM,
+# another array), empty (usable for a new array, a spare or a replacement).
+#
+# The data array: mdadm (metadata 1.2, internal bitmap), XFS with the store's owner and mode set
+# by mkfs (protofile), mounted at /var/lib/nexus/chunkstore by a mount unit in /etc/systemd/system
+# (bootc keeps /etc; the label comes from the context= mount option). Created only while the store
+# holds no files; the scheduler and replicad are stopped around the mount. The metadata role is a
+# follow-up (docs/hardware.md): it would move the live catalog, which this helper may not write.
+#
+# Runs as root in its own SELinux domain (nexus_disks_t): block devices, mdadm, mkfs/xfs_growfs,
+# the store's mount unit; no network, never reads keys, the catalog or store contents. Every path
+# and tool can be overridden through NEXUS_DISKS_* environment variables (tests). Stdlib only.
+
+import json
+import os
+import pwd
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import time
+
+DEFAULTS = {
+    "DIR": "/var/lib/nexus/disks",
+    "STORE": "/var/lib/nexus/chunkstore",
+    "STORE_USER": "nexus-chunkstore",
+    # every file of the store has this label (nexus.fc); the mount option keeps it that way
+    "STORE_CONTEXT": "system_u:object_r:nexus_store_t:s0",
+    "STORE_SERVICES": "nexus-scheduler.service nexus-replicad.service",
+    "UNIT_DIR": "/etc/systemd/system",
+    "MDSTAT": "/proc/mdstat",
+    "DEV": "/dev",
+    "SMART_INTERVAL": "3600",
+    "TIMEOUT": "120",
+    "LSBLK": "lsblk",
+    "SMARTCTL": "smartctl",
+    "MDADM": "mdadm",
+    "WIPEFS": "wipefs",
+    "BLKID": "blkid",
+    "MKFS_XFS": "mkfs.xfs",
+    "XFS_GROWFS": "xfs_growfs",
+    "SYSTEMCTL": "systemctl",
+}
+MOUNT_UNIT = "var-lib-nexus-chunkstore.mount"  # systemd-escape --path of STORE
+ARRAY_NAMES = {"nexus-data": "data", "nexus-metadata": "metadata"}
+LEVELS = {"data": ("raid1", "raid5", "raid6", "raid10"), "metadata": ("raid1", "raid10")}
+MIN_DISKS = {"raid1": 2, "raid5": 3, "raid6": 4, "raid10": 4}
+GROWABLE = ("raid5", "raid6")
+OPS = ("scan", "selftest", "create_array", "add_spare", "replace", "grow")
+KEEP_OPS = 30
+SERIAL_RE = re.compile(r"[\x21-\x7e]{1,80}")
+UUID_RE = re.compile(r"[0-9a-f]{8}(?::[0-9a-f]{8}){3}")
+
+
+def cfg(name):
+    return os.environ.get("NEXUS_DISKS_" + name, DEFAULTS[name])
+
+
+def log(msg):
+    print(f"nexus-disks: {msg}", file=sys.stderr, flush=True)
+
+
+def tool_key(name):
+    return name.upper().replace(".", "_").replace("-", "_")
+
+
+def run(*argv, timeout=None, stdin=None):
+    """(exit code, stdout, stderr); 127 when the tool is missing. Never raises."""
+    try:
+        p = subprocess.run(
+            [cfg(tool_key(argv[0])), *argv[1:]],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            input=stdin,
+            stdin=None if stdin is not None else subprocess.DEVNULL,
+            timeout=timeout or float(cfg("TIMEOUT")),
+            env={**os.environ, "LC_ALL": "C", "TZ": "UTC", "SYSTEMD_COLORS": "0", "SYSTEMD_PAGER": ""},
+        )
+        return p.returncode, p.stdout, p.stderr
+    except FileNotFoundError:
+        return 127, "", f"{argv[0]}: not installed"
+    except subprocess.TimeoutExpired:
+        return 124, "", f"{argv[0]}: timed out"
+
+
+class Refused(Exception):
+    """A precondition does not hold: nothing was changed."""
+
+
+def must(*argv, timeout=None):
+    rc, out, err = run(*argv, timeout=timeout)
+    if rc != 0:
+        raise RuntimeError(f"{' '.join(argv[:3])} failed (exit {rc}): {(err or out).strip()[:400]}")
+    return out
+
+
+def have(name):
+    return shutil.which(cfg(tool_key(name))) is not None
+
+
+# ---------------------------------------------------------------- parsers
+
+
+def flat(node):
+    yield node
+    for c in node.get("children") or []:
+        yield from flat(c)
+
+
+def mounts(node):
+    mp = node.get("mountpoints")
+    if mp is None:
+        mp = [node.get("mountpoint")]
+    return [m for m in mp if m]
+
+
+def parse_lsblk(text):
+    """The whole disks of `lsblk -J -b -O` (loop, rom, zram and empty devices left out)."""
+    out = []
+    for n in json.loads(text).get("blockdevices") or []:
+        if n.get("type") != "disk" or not int(n.get("size") or 0):
+            continue
+        if re.match(r"(zram|ram|loop)\d", n.get("name") or ""):
+            continue
+        out.append(n)
+    return out
+
+
+def parse_mdstat(text):
+    """/proc/mdstat: {md: {active, level, members: [{dev, slot, flag}], status, action, progress,
+    finish_min, speed_kbs}}. flag: F (faulty), S (spare), R (replacement), W (write-mostly), ''."""
+    arrays, cur = {}, None
+    for line in text.splitlines():
+        m = re.match(r"^(md\w+)\s*:\s*(active|inactive)(?:\s+\((?:read-only|auto-read-only)\))?\s*(.*)$", line)
+        if m:
+            words = m.group(3).split()
+            level = words[0] if words and not re.match(r"\w+\[\d+\]", words[0]) else None
+            members = []
+            for w in words[1:] if level else words:
+                mm = re.match(r"^([\w.-]+)\[(\d+)\](?:\((\w)\))?$", w)
+                if mm:
+                    members.append({"dev": mm.group(1), "slot": int(mm.group(2)), "flag": mm.group(3) or ""})
+            cur = arrays[m.group(1)] = {
+                "active": m.group(2) == "active", "level": level, "members": members, "status": None,
+                "action": None, "progress": None, "finish_min": None, "speed_kbs": None,
+            }
+            continue
+        if cur is None:
+            continue
+        if not line.strip():
+            cur = None
+            continue
+        st = re.search(r"\[(\d+)/(\d+)\]\s+\[([U_]+)\]", line)
+        if st:
+            cur["status"] = st.group(3)
+        pr = re.search(r"(recovery|resync|reshape|check|repair)\s*=\s*([\d.]+)%", line)
+        if pr:
+            cur["action"], cur["progress"] = pr.group(1), float(pr.group(2))
+            f = re.search(r"finish=([\d.]+)min", line)
+            s = re.search(r"speed=(\d+)K/sec", line)
+            cur["finish_min"] = float(f.group(1)) if f else None
+            cur["speed_kbs"] = int(s.group(1)) if s else None
+        pd = re.search(r"(recovery|resync|reshape|check)\s*=\s*(DELAYED|PENDING)", line)
+        if pd:
+            cur["action"], cur["progress"] = pd.group(1), 0.0
+    return arrays
+
+
+def kib(v):
+    """'1046528 (1022.00 MiB 1071.64 MB)' -> bytes."""
+    m = re.match(r"\s*(\d+)", v or "")
+    return int(m.group(1)) * 1024 if m else None
+
+
+def parse_mdadm_detail(text):
+    """`mdadm --detail /dev/mdX` (text): level, state words, counts, name, uuid, rebuild status,
+    bitmap, and the device table ({number, raid_device, state: [words], dev})."""
+    fields, devs, table = {}, [], False
+    for line in text.splitlines():
+        if re.match(r"^\s*Number\s+Major\s+Minor\s+RaidDevice\s+State", line):
+            table = True
+            continue
+        if table:
+            w = line.split()
+            if len(w) < 5:
+                continue
+            dev = w[-1] if w[-1].startswith("/dev/") else None
+            words = w[4:-1] if dev else w[4:]
+            devs.append({
+                "number": None if w[0] == "-" else int(w[0]),
+                "raid_device": None if w[3] == "-" else int(w[3]),
+                "state": words,
+                "dev": dev,
+            })
+            continue
+        m = re.match(r"^\s*([A-Za-z][A-Za-z ]*?)\s+:\s?(.*)$", line)
+        if m:
+            fields[m.group(1).strip()] = m.group(2).strip()
+    num = lambda k: int(fields[k]) if fields.get(k, "").isdigit() else None
+    name = (fields.get("Name") or "").split()[0] if fields.get("Name") else None
+    progress = None
+    for k in ("Rebuild Status", "Resync Status", "Reshape Status", "Check Status"):
+        m = re.match(r"(\d+)%", fields.get(k, ""))
+        if m:
+            progress = float(m.group(1))
+    return {
+        "level": fields.get("Raid Level"),
+        "state_words": [s.strip() for s in fields.get("State", "").split(",") if s.strip()],
+        "raid_devices": num("Raid Devices"),
+        "active_devices": num("Active Devices"),
+        "working_devices": num("Working Devices"),
+        "failed_devices": num("Failed Devices"),
+        "spare_devices": num("Spare Devices"),
+        "array_size": kib(fields.get("Array Size")),
+        "used_dev_size": kib(fields.get("Used Dev Size")),
+        "md_name": name,
+        "uuid": fields.get("UUID"),
+        "bitmap": fields.get("Intent Bitmap"),
+        "progress": progress,
+        "devices": devs,
+    }
+
+
+def _raw(a):
+    r = a.get("raw") or {}
+    return r.get("value")
+
+
+def parse_smart(j, rc):
+    """`smartctl -j -a` (ATA, SCSI or NVMe) and its exit status -> the summary the UI and the
+    alert rules use. Exit bits 0/1: command line / open failed (no data at all)."""
+    s = {
+        "available": False, "health": None, "temperature": None, "power_on_hours": None,
+        "reallocated": None, "pending": None, "offline_uncorrectable": None,
+        "percentage_used": None, "media_errors": None, "critical_warning": None, "available_spare": None,
+        "self_test": None, "attributes": [], "error": None, "standby": False,
+    }
+    msgs = [m.get("string", "") for m in (j.get("smartctl") or {}).get("messages") or []]
+    if any("STANDBY" in m.upper() for m in msgs):
+        s["standby"] = True
+    if rc & 0b11 or "smart_status" not in j:
+        s["error"] = "; ".join(msgs)[:300] or "SMART is not available on this device"
+        return s
+    s["available"] = True
+    s["health"] = "passed" if j["smart_status"].get("passed") else "failed"
+    s["temperature"] = (j.get("temperature") or {}).get("current")
+    s["power_on_hours"] = (j.get("power_on_time") or {}).get("hours")
+    for a in (j.get("ata_smart_attributes") or {}).get("table") or []:
+        raw = _raw(a)
+        s["attributes"].append({
+            "id": a.get("id"), "name": a.get("name"), "value": a.get("value"), "worst": a.get("worst"),
+            "thresh": a.get("thresh"), "raw": (a.get("raw") or {}).get("string", raw),
+            "failing": (a.get("when_failed") or "") not in ("", "-"),
+        })
+        if a.get("id") == 5:
+            s["reallocated"] = raw
+        elif a.get("id") == 197:
+            s["pending"] = raw
+        elif a.get("id") == 198:
+            s["offline_uncorrectable"] = raw
+    if "scsi_grown_defect_list" in j:
+        s["reallocated"] = j["scsi_grown_defect_list"]
+    nv = j.get("nvme_smart_health_information_log")
+    if nv:
+        s["percentage_used"] = nv.get("percentage_used")
+        s["media_errors"] = nv.get("media_errors")
+        s["critical_warning"] = nv.get("critical_warning")
+        s["available_spare"] = nv.get("available_spare")
+        if s["temperature"] is None:
+            s["temperature"] = nv.get("temperature")
+        if s["power_on_hours"] is None:
+            s["power_on_hours"] = nv.get("power_on_hours")
+        for k in ("critical_warning", "temperature", "available_spare", "available_spare_threshold",
+                  "percentage_used", "data_units_read", "data_units_written", "power_cycles",
+                  "power_on_hours", "unsafe_shutdowns", "media_errors", "num_err_log_entries"):
+            if k in nv:
+                s["attributes"].append({"id": None, "name": k, "value": None, "worst": None, "thresh": None, "raw": nv[k], "failing": False})
+    s["self_test"] = self_test(j)
+    return s
+
+
+def self_test(j):
+    """{running, remaining (%), last: {type, status, passed, hours}} or None."""
+    running, remaining, last = False, None, None
+    ata = ((j.get("ata_smart_data") or {}).get("self_test") or {}).get("status") or {}
+    if ata:
+        # status value 0xF? = in progress, the low nibble counts tenths remaining
+        running = (ata.get("value", 0) >> 4) == 0xF
+        remaining = ata.get("remaining_percent") if running else None
+    table = ((j.get("ata_smart_self_test_log") or {}).get("standard") or {}).get("table") or []
+    if table:
+        t = table[0]
+        st = t.get("status") or {}
+        last = {"type": (t.get("type") or {}).get("string"), "status": st.get("string"),
+                "passed": bool(st.get("passed")), "hours": t.get("lifetime_hours")}
+    nv = j.get("nvme_self_test_log")
+    if nv:
+        op = (nv.get("current_self_test_operation") or {}).get("value", 0)
+        running = op != 0
+        if running and nv.get("current_self_test_completion_percent") is not None:
+            remaining = 100 - nv["current_self_test_completion_percent"]
+        for t in nv.get("table") or []:
+            res = t.get("self_test_result") or {}
+            last = {"type": (t.get("self_test_code") or {}).get("string"), "status": res.get("string"),
+                    "passed": res.get("value") == 0, "hours": t.get("power_on_hours")}
+            break
+    if not ata and not table and not nv:
+        return None
+    return {"running": running, "remaining": remaining, "last": last}
+
+
+# ---------------------------------------------------------------- inventory
+
+
+def disk_type(n):
+    if n.get("tran") == "nvme" or (n.get("name") or "").startswith("nvme"):
+        return "nvme"
+    return "hdd" if n.get("rota") in (True, "1", 1) else "ssd"
+
+
+def owners(tree):
+    """Device name -> whole disk name, for the disks and their partitions (array members)."""
+    own = {}
+    for d in tree:
+        own[d["name"]] = d["name"]
+        for c in d.get("children") or []:
+            if c.get("type") == "part":
+                own[c["name"]] = d["name"]
+    return own
+
+
+def build_arrays(mdstat, details, tree, store):
+    arrays = []
+    md_nodes = {}
+    for d in tree:
+        for x in flat(d):
+            if (x.get("type") or "").startswith("raid") or (x.get("name") or "").startswith("md"):
+                md_nodes.setdefault(x.get("name"), x)
+    serial_of = {d["name"]: (d.get("serial") or "").strip() or None for d in tree}
+    own = owners(tree)
+    disk_of = lambda dev: own.get(os.path.basename(dev), os.path.basename(dev))
+    for md, st in sorted(mdstat.items()):
+        det = details.get(md) or {}
+        node = md_nodes.get(md) or {}
+        mnt = sorted({m for x in flat(node) for m in mounts(x)}) if node else []
+        md_name = (det.get("md_name") or "").split(":")[-1] or None
+        role = ARRAY_NAMES.get(md_name)
+        if mnt and any(m != store for m in mnt):
+            role = "system"
+        words = det.get("state_words") or []
+        degraded = "degraded" in words or ("_" in (st.get("status") or ""))
+        if not st["active"] or any(w in ("FAILED", "Not Started", "inactive") for w in words):
+            state = "failed" if "FAILED" in words else "inactive"
+        elif st.get("action") == "recovery" or "recovering" in words:
+            state = "recovering"
+        elif st.get("action") == "reshape" or "reshaping" in words:
+            state = "reshaping"
+        elif st.get("action") == "resync" or "resyncing" in words:
+            state = "resyncing"
+        elif degraded:
+            state = "degraded"
+        else:
+            state = "clean"
+        members = []
+        rows = det.get("devices")
+        if rows:
+            for r in rows:
+                w = r["state"]
+                if "removed" in w:
+                    mstate = "removed"
+                elif "faulty" in w:
+                    mstate = "faulty"
+                elif "rebuilding" in w:
+                    mstate = "rebuilding"
+                elif "spare" in w:
+                    mstate = "spare"
+                else:
+                    mstate = "active"
+                disk = disk_of(r["dev"]) if r["dev"] else None
+                members.append({"disk": disk, "dev": os.path.basename(r["dev"]) if r["dev"] else None,
+                                "serial": serial_of.get(disk), "state": mstate, "slot": r["raid_device"]})
+        else:
+            for m in st["members"]:
+                disk = disk_of(m["dev"])
+                mstate = {"F": "faulty", "S": "spare"}.get(m["flag"], "active")
+                members.append({"disk": disk, "dev": m["dev"], "serial": serial_of.get(disk), "state": mstate, "slot": m["slot"]})
+        progress = st.get("progress") if st.get("progress") is not None else det.get("progress")
+        action = {"recovery": "recover"}.get(st.get("action"), st.get("action"))
+        fs = None
+        if node.get("fstype"):
+            fs = {"type": node.get("fstype"), "uuid": node.get("uuid"),
+                  "size": int(node["fssize"]) if node.get("fssize") else None,
+                  "used": int(node["fsused"]) if node.get("fsused") else None}
+        arrays.append({
+            "name": md, "path": f"/dev/{md}", "md_name": md_name, "uuid": det.get("uuid"), "role": role,
+            "level": det.get("level") or st.get("level"), "state": state, "degraded": degraded,
+            "state_detail": ", ".join(words) or None,
+            "raid_devices": det.get("raid_devices"), "active_devices": det.get("active_devices"),
+            "failed_devices": det.get("failed_devices"), "spare_devices": det.get("spare_devices"),
+            "size": int(node["size"]) if node.get("size") else det.get("array_size"),
+            "used_dev_size": det.get("used_dev_size"), "bitmap": det.get("bitmap"),
+            "action": action, "progress": progress, "finish_minutes": st.get("finish_min"),
+            "members": members, "mounts": mnt, "fs": fs,
+        })
+    return arrays
+
+
+def build_disks(tree, arrays):
+    member_of = {}
+    for a in arrays:
+        for m in a["members"]:
+            if m["disk"]:
+                member_of[m["disk"]] = a
+    disks = []
+    for n in tree:
+        a = member_of.get(n["name"])
+        nodes = list(flat(n))
+        role, why = "empty", None
+        if a:
+            role = {"data": "data", "metadata": "metadata", "system": "system"}.get(a["role"], "in_use")
+            if role == "in_use":
+                why = f"member of {a['name']}"
+        elif any(mounts(x) for x in nodes):
+            role = "system"
+        elif n.get("children"):
+            kinds = sorted({c.get("type") for c in n["children"]})
+            role, why = "in_use", "has partitions" if kinds == ["part"] else "in use (" + ", ".join(kinds) + ")"
+        elif n.get("fstype"):
+            role, why = "in_use", f"contains a {n['fstype']} signature"
+        elif n.get("ro") in (True, "1", 1):
+            role, why = "in_use", "read-only device"
+        disks.append({
+            "name": n["name"], "path": n.get("path") or f"/dev/{n['name']}",
+            "model": (n.get("model") or "").strip() or None, "serial": (n.get("serial") or "").strip() or None,
+            "wwn": n.get("wwn"), "size": int(n.get("size") or 0), "type": disk_type(n), "transport": n.get("tran"),
+            "rotational": n.get("rota") in (True, "1", 1), "removable": n.get("rm") in (True, "1", 1),
+            "role": role, "array": a["name"] if a else None, "why": why, "smart": None,
+        })
+    return disks
+
+
+def store_empty(path):
+    """True when the store holds no files (directories only), None when it cannot be read."""
+
+    def fail(e):
+        raise e
+
+    try:
+        for root, dirs, files in os.walk(path, onerror=fail):
+            if files or any(os.path.islink(os.path.join(root, d)) for d in dirs):
+                return False
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return None
+    return True
+
+
+def smart_for(disk, prev, now, force):
+    """SMART of one disk: fresh when forced, older than SMART_INTERVAL or a self-test runs;
+    otherwise the previous scan's."""
+    old = prev.get(disk["serial"] or disk["name"])
+    fresh = force or not old or now - old.get("checked", 0) >= float(cfg("SMART_INTERVAL")) or \
+        (old.get("self_test") or {}).get("running")
+    if not fresh:
+        return old
+    rc, out, err = run("smartctl", "-j", "-a", "-n", "standby", disk["path"])
+    try:
+        j = json.loads(out) if out.strip() else {}
+    except ValueError:
+        j = {}
+    s = parse_smart(j, rc if j else (rc or 2))
+    if s["standby"] and old:  # a sleeping disk is not woken up: keep the last reading
+        return {**old, "standby": True}
+    if not j and not s["error"]:
+        s["error"] = (err or "no output").strip()[:300]
+    s["checked"] = now
+    return s
+
+
+def wipefs_signatures(path):
+    rc, out, _ = run("wipefs", "--noheadings", "--output", "TYPE", path)
+    return sorted({l.strip() for l in out.splitlines() if l.strip()}) if rc == 0 else None
+
+
+def scan(prev, force_smart=False, now=None, signatures=True):
+    now = int(now or time.time())
+    store = cfg("STORE")
+    tools = {"smartctl": have("smartctl"), "mdadm": have("mdadm")}
+    rc, out, err = run("lsblk", "-J", "-b", "-O")
+    if rc != 0:
+        raise RuntimeError(f"lsblk failed: {(err or out).strip()[:200]}")
+    tree = parse_lsblk(out)
+    try:
+        with open(cfg("MDSTAT")) as f:
+            mdstat = parse_mdstat(f.read())
+    except FileNotFoundError:
+        mdstat = {}
+    details = {}
+    if tools["mdadm"]:
+        for md in mdstat:
+            rc, out, _ = run("mdadm", "--detail", f"{cfg('DEV')}/{md}")
+            if out.strip():
+                details[md] = parse_mdadm_detail(out)
+    arrays = build_arrays(mdstat, details, tree, store)
+    disks = build_disks(tree, arrays)
+    prev_smart = {(d.get("serial") or d["name"]): d["smart"] for d in prev.get("disks") or [] if d.get("smart")}
+    for d in disks:
+        if tools["smartctl"]:
+            d["smart"] = smart_for(d, prev_smart, now, force_smart)
+        if d["role"] == "empty" and signatures:
+            sig = wipefs_signatures(d["path"])
+            if sig:
+                d["role"], d["why"] = "in_use", "contains a signature: " + ", ".join(sig)
+        if d["role"] == "empty" and (d["smart"] or {}).get("health") == "failed":
+            d["role"], d["why"] = "in_use", "SMART reports the disk as failing"
+    on = next((a for a in arrays if store in a["mounts"]), None)
+    return {
+        "version": 1,
+        "scanned": now,
+        "smart_scanned": now if force_smart or not prev.get("smart_scanned") or now - prev["smart_scanned"] >= float(cfg("SMART_INTERVAL")) else prev["smart_scanned"],
+        "tools": tools,
+        "store": {"path": store, "array": on["name"] if on else None, "array_uuid": on["uuid"] if on else None,
+                  "mounted": os.path.ismount(store), "empty": store_empty(store)},
+        "disks": disks,
+        "arrays": arrays,
+    }
+
+
+# ---------------------------------------------------------------- operations
+
+
+def find_disk(status, serial):
+    for d in status["disks"]:
+        if d["serial"] == serial:
+            return d
+    raise Refused(f"no disk with serial {serial}")
+
+
+def find_array(status, uuid):
+    for a in status["arrays"]:
+        if a["uuid"] == uuid:
+            return a
+    raise Refused(f"no array with UUID {uuid}")
+
+
+def usable(d, min_size=None):
+    """Refuses everything but an empty, healthy, non-system disk (checked again right before use)."""
+    if d["role"] != "empty":
+        raise Refused(f"disk {d['serial']} ({d['name']}) is not empty: {d['role']}" + (f", {d['why']}" if d["why"] else ""))
+    sig = wipefs_signatures(d["path"])
+    if sig is None or sig:
+        raise Refused(f"disk {d['serial']} ({d['name']}) " + ("could not be checked for signatures" if sig is None else "contains a signature: " + ", ".join(sig)))
+    if min_size and d["size"] < min_size:
+        raise Refused(f"disk {d['serial']} ({d['name']}) is smaller than the array members ({d['size']} < {min_size} bytes)")
+    return d["path"]
+
+
+def managed(a):
+    if a["role"] not in ("data", "metadata"):
+        raise Refused(f"{a['name']} is not a NexusBackup data or metadata array (role {a['role']}): shown only")
+    return f"{cfg('DEV')}/{a['name']}"
+
+
+def op_selftest(req, status):
+    d = find_disk(status, req["disk"])
+    rc, out, err = run("smartctl", "-t", req["type"], d["path"])
+    if rc & 0b111:
+        raise RuntimeError(f"smartctl -t {req['type']} failed (exit {rc}): {(err or out).strip()[-300:]}")
+    m = re.search(r"Please wait (\d+) minutes", out)
+    return f"{req['type']} self-test started on {d['serial']}" + (f", about {m.group(1)} minutes" if m else "")
+
+
+def stop_store_services():
+    """Stops the services that use the store; returns those that were running."""
+    units = cfg("STORE_SERVICES").split()
+    active = [u for u in units if run("systemctl", "is-active", "--quiet", u)[0] == 0]
+    if active:
+        must("systemctl", "--no-ask-password", "stop", *active, timeout=600)
+    return active
+
+
+def mount_unit(fs_uuid):
+    opts = "noatime,nodev,nosuid,noexec"
+    if cfg("STORE_CONTEXT"):
+        opts += f",context={cfg('STORE_CONTEXT')}"
+    services = " ".join(cfg("STORE_SERVICES").split())
+    return (
+        "# Written by nexus-disks (docs/hardware.md): the NexusBackup data array.\n"
+        "[Unit]\n"
+        "Description=NexusBackup store on the data array\n"
+        f"Before={services}\n\n"
+        "[Mount]\n"
+        f"What=/dev/disk/by-uuid/{fs_uuid}\n"
+        f"Where={cfg('STORE')}\n"
+        "Type=xfs\n"
+        f"Options={opts}\n\n"
+        "[Install]\n"
+        "WantedBy=local-fs.target\n"
+        "# the store must never fall back to the root file system\n"
+        f"RequiredBy={services}\n"
+    )
+
+
+def wait_for(path, secs=30):
+    end = time.time() + secs
+    while not os.path.exists(path):
+        if time.time() > end:
+            raise RuntimeError(f"{path} did not appear")
+        time.sleep(0.5)
+    return os.path.realpath(path)
+
+
+def op_create_array(req, status):
+    role, level = req["role"], req["level"]
+    if role != "data":
+        raise Refused("only the data role can be created; the metadata tier is a follow-up (docs/hardware.md)")
+    if any(a["md_name"] == "nexus-data" for a in status["arrays"]):
+        raise Refused("a data array exists already: grow it or add spares")
+    store = status["store"]
+    if store["mounted"] or store["array"]:
+        raise Refused(f"{cfg('STORE')} is a mount point already")
+    if store["empty"] is not True:
+        raise Refused("the store is not empty (or cannot be read): a data array is only created while the store holds no "
+                      "backups; moving an existing store is not supported (docs/hardware.md)")
+    if os.path.exists(os.path.join(cfg("UNIT_DIR"), MOUNT_UNIT)):
+        raise Refused(f"{MOUNT_UNIT} exists already")
+    serials = req["disks"]
+    if len(serials) < MIN_DISKS[level]:
+        raise Refused(f"{level} needs at least {MIN_DISKS[level]} disks")
+    if level == "raid10" and len(serials) % 2:
+        raise Refused("raid10 needs an even number of disks")
+    paths = [usable(find_disk(status, s)) for s in serials]
+    user = pwd.getpwnam(cfg("STORE_USER"))
+    md = f"{cfg('DEV')}/md/nexus-data"
+    must("mdadm", "--create", md, "--run", "--name=nexus-data", "--metadata=1.2", f"--level={level}",
+         f"--raid-devices={len(paths)}", "--bitmap=internal", *paths, timeout=600)
+    dev = wait_for(md)
+    # the store's root directory: owner and mode as tmpfiles.d sets them (0700 nexus-chunkstore)
+    proto = os.path.join(cfg("DIR"), ".mkfs-proto")
+    with open(proto, "w") as f:
+        f.write(f"nexus-store\n0 0\nd--700 {user.pw_uid} {user.pw_gid}\n$\n")
+    try:
+        must("mkfs.xfs", "-q", "-L", "nexus-data", "-p", proto, dev, timeout=1800)
+    finally:
+        os.unlink(proto)
+    fs_uuid = must("blkid", "-p", "-s", "UUID", "-o", "value", dev).strip()
+    if not re.fullmatch(r"[0-9a-fA-F-]{8,64}", fs_uuid):
+        raise RuntimeError(f"no file system UUID on {dev}: {fs_uuid!r}")
+    stopped = stop_store_services()
+    try:
+        if store_empty(cfg("STORE")) is not True:
+            raise Refused("the store received files meanwhile; the array is created but not mounted")
+        unit = os.path.join(cfg("UNIT_DIR"), MOUNT_UNIT)
+        with open(unit + ".tmp", "w") as f:
+            f.write(mount_unit(fs_uuid))
+        os.chmod(unit + ".tmp", 0o644)
+        os.replace(unit + ".tmp", unit)
+        must("systemctl", "--no-ask-password", "daemon-reload")
+        must("systemctl", "--no-ask-password", "enable", "--now", MOUNT_UNIT, timeout=300)
+        if run("systemctl", "is-active", "--quiet", MOUNT_UNIT)[0] != 0:
+            raise RuntimeError(f"{MOUNT_UNIT} is not active: see journalctl -u {MOUNT_UNIT}")
+    finally:
+        if stopped:
+            rc, out, err = run("systemctl", "--no-ask-password", "start", *stopped, timeout=600)
+            if rc:
+                log(f"restarting {' '.join(stopped)} failed: {(err or out).strip()}")
+    return f"{level} {os.path.basename(dev)} from {len(paths)} disks, XFS {fs_uuid}, mounted at {cfg('STORE')}; the initial sync runs in the background"
+
+
+def op_add_spare(req, status):
+    a = find_array(status, req["array"])
+    md = managed(a)
+    p = usable(find_disk(status, req["disk"]), a["used_dev_size"])
+    must("mdadm", "--manage", md, "--add", p)
+    return f"{req['disk']} added to {a['name']}" + (" (rebuild started)" if a["degraded"] else " as a hot spare")
+
+
+def op_replace(req, status):
+    a = find_array(status, req["array"])
+    md = managed(a)
+    p = usable(find_disk(status, req["disk"]), a["used_dev_size"])
+    failed = req.get("failed")
+    if failed:
+        old = next((m for m in a["members"] if m["serial"] == failed), None)
+        if not old:
+            raise Refused(f"{failed} is not a member of {a['name']}")
+        if old["state"] == "faulty":
+            must("mdadm", "--manage", md, "--remove", f"{cfg('DEV')}/{old['dev']}")
+            must("mdadm", "--manage", md, "--add", p)
+            return f"{failed} removed from {a['name']}, {req['disk']} added: rebuild started"
+        if old["state"] != "active":
+            raise Refused(f"{failed} is {old['state']} in {a['name']}")
+        # a working but failing member (SMART): copied to the new disk before it is dropped
+        must("mdadm", "--manage", md, "--add", p)
+        must("mdadm", "--manage", md, "--replace", f"{cfg('DEV')}/{old['dev']}", "--with", p)
+        return f"{failed} is being replaced by {req['disk']} in {a['name']} (stays in the array until the copy is complete)"
+    faulty = [m for m in a["members"] if m["state"] == "faulty"]
+    if not faulty and not a["degraded"]:
+        raise Refused(f"{a['name']} has no failed member: add the disk as a spare, or name the member to replace")
+    if faulty:
+        must("mdadm", "--manage", md, "--remove", "failed")
+    must("mdadm", "--manage", md, "--add", p)
+    return f"{req['disk']} added to {a['name']}: rebuild started" + (f" (removed: {', '.join(m['serial'] or m['dev'] for m in faulty)})" if faulty else "")
+
+
+def op_grow(req, status, state):
+    a = find_array(status, req["array"])
+    md = managed(a)
+    if (a["level"] or "") not in GROWABLE:
+        raise Refused(f"{a['name']} is {a['level']}: only raid5 and raid6 grow by a disk (add a spare instead)")
+    if a["state"] != "clean" or a["degraded"]:
+        raise Refused(f"{a['name']} is {a['state']}: grow only a clean array")
+    if not a["mounts"]:
+        raise Refused(f"{a['name']} is not mounted")
+    p = usable(find_disk(status, req["disk"]), a["used_dev_size"])
+    n = (a["raid_devices"] or 0) + 1
+    must("mdadm", "--manage", md, "--add", p)
+    bitmap = (a["bitmap"] or "").lower() == "internal"
+    if bitmap:  # older kernels refuse to reshape with a bitmap; added back after the reshape
+        must("mdadm", "--grow", md, "--bitmap=none")
+    must("mdadm", "--grow", md, f"--raid-devices={n}", timeout=600)
+    state.setdefault("growfs", {})[a["uuid"]] = {"mount": a["mounts"][0], "bitmap": bitmap, "op": req["id"], "since": int(time.time())}
+    return f"{a['name']} reshaping to {n} devices; the file system grows when the reshape has finished"
+
+
+def finish_grows(status, state, record):
+    """xfs_growfs (and the bitmap back) once the reshape of a grown array has finished."""
+    for uuid, g in list((state.get("growfs") or {}).items()):
+        a = next((x for x in status["arrays"] if x["uuid"] == uuid), None)
+        if a is None:
+            continue
+        # the reshape shows up in /proc/mdstat shortly after `mdadm --grow`: look from the next tick on
+        if a["action"] or a["state"] != "clean" or time.time() - g.get("since", 0) < 60:
+            continue
+        rec = {"id": g["op"] + "-fs", "op": "growfs", "by": "nexus-disks", "quorum_id": None, "created": int(time.time()),
+               "params": {"array": uuid}, "state": "running", "error": None, "detail": None}
+        try:
+            if g.get("bitmap"):
+                must("mdadm", "--grow", f"{cfg('DEV')}/{a['name']}", "--bitmap=internal")
+            must("xfs_growfs", g["mount"], timeout=1800)
+            rec["state"], rec["detail"] = "done", f"file system on {a['name']} grown to the new array size"
+        except Exception as e:
+            rec["state"], rec["error"] = "error", f"{type(e).__name__}: {e}"
+        rec["finished"] = int(time.time())
+        record(rec)
+        del state["growfs"][uuid]
+
+
+# ---------------------------------------------------------------- requests
+
+
+def read_small(path, limit=4096):
+    """A control file written by a less privileged user: no symlinks, regular file only."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        return os.read(fd, limit + 1).decode("utf-8", "replace")
+    finally:
+        os.close(fd)
+
+
+def serial(v):
+    if not isinstance(v, str) or not SERIAL_RE.fullmatch(v):
+        raise ValueError("bad disk serial")
+    return v
+
+
+def parse_request(s):
+    """Validated request dict, or raises ValueError."""
+    if s is None or len(s) > 4096:
+        raise ValueError("missing or oversized request")
+    r = json.loads(s)
+    if not isinstance(r, dict):
+        raise ValueError("request is not an object")
+    if not re.fullmatch(r"[0-9a-f]{32}", str(r.get("id", ""))):
+        raise ValueError("bad id")
+    op = r.get("op")
+    if op not in OPS:
+        raise ValueError("bad op")
+    by = r.get("by")
+    if not isinstance(by, str) or not re.fullmatch(r"[A-Za-z0-9._@ -]{1,96}", by):
+        raise ValueError("bad by")
+    q = r.get("quorum_id")
+    if q is not None and (not isinstance(q, int) or isinstance(q, bool)):
+        raise ValueError("bad quorum_id")
+    out = {"id": r["id"], "op": op, "by": by, "quorum_id": q}
+    if op == "selftest":
+        if r.get("type") not in ("short", "long"):
+            raise ValueError("bad self-test type")
+        out.update(disk=serial(r.get("disk")), type=r["type"])
+    elif op == "create_array":
+        if r.get("role") not in LEVELS or r.get("level") not in LEVELS.get(r.get("role"), ()):
+            raise ValueError("bad role or level")
+        ds = r.get("disks")
+        if not isinstance(ds, list) or not 2 <= len(ds) <= 32 or len(set(map(str, ds))) != len(ds):
+            raise ValueError("bad disks")
+        out.update(role=r["role"], level=r["level"], disks=[serial(d) for d in ds])
+    elif op in ("add_spare", "replace", "grow"):
+        if not isinstance(r.get("array"), str) or not UUID_RE.fullmatch(r["array"]):
+            raise ValueError("bad array")
+        out.update(array=r["array"], disk=serial(r.get("disk")))
+        if op == "replace":
+            out["failed"] = None if r.get("failed") is None else serial(r["failed"])
+    return out
+
+
+def read_json(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def write_json(path, data, mode=0o644):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=1, sort_keys=True)
+        f.write("\n")
+    # the scheduler (another user) reads status.json and ops.json: explicit mode, whatever the umask
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def tick():
+    d = cfg("DIR")
+    status_path, ops_path, state_path = (os.path.join(d, n) for n in ("status.json", "ops.json", "state.json"))
+    prev = read_json(status_path, {})
+    ops = read_json(ops_path, [])
+    state = read_json(state_path, {})
+
+    def record(rec):
+        nonlocal ops
+        ops = [o for o in ops if o.get("id") != rec["id"]] + [rec]
+        ops = ops[-KEEP_OPS:]
+        write_json(ops_path, ops)
+
+    reqs = sorted(
+        (n for n in os.listdir(d) if re.fullmatch(r"req-[0-9a-f]{32}\.json", n)),
+        key=lambda n: os.lstat(os.path.join(d, n)).st_mtime,
+    )[:20]
+    force = False
+    for name in reqs:
+        p = os.path.join(d, name)
+        s = read_small(p)
+        try:
+            os.unlink(p)  # consume first: a failing request cannot re-trigger the path unit forever
+        except FileNotFoundError:
+            pass
+        try:
+            req = parse_request(s)
+        except (ValueError, TypeError) as e:
+            log(f"ignoring {name}: {e}")
+            continue
+        params = {k: v for k, v in req.items() if k not in ("id", "op", "by", "quorum_id")}
+        rec = {**{k: req[k] for k in ("id", "op", "by", "quorum_id")}, "params": params, "created": int(time.time()),
+               "state": "running", "error": None, "detail": None}
+        if req["op"] == "scan":
+            force = True
+            rec.update(state="done", detail="rescan requested", finished=int(time.time()))
+            record(rec)
+            continue
+        record(rec)
+        try:
+            cur = scan(prev, now=time.time())
+            if req["op"] == "grow":
+                rec["detail"] = op_grow(req, cur, state)
+                write_json(state_path, state, 0o600)
+            else:
+                rec["detail"] = {"selftest": op_selftest, "create_array": op_create_array,
+                                 "add_spare": op_add_spare, "replace": op_replace}[req["op"]](req, cur)
+            rec["state"] = "done"
+            force = force or req["op"] == "selftest"
+        except Refused as e:
+            rec["state"], rec["error"] = "refused", str(e)
+        except Exception as e:
+            rec["state"], rec["error"] = "error", f"{type(e).__name__}: {e}"
+        rec["finished"] = int(time.time())
+        record(rec)
+        log(f"{req['op']} {req['id']} by {req['by']}: {rec['state']} {rec['error'] or rec['detail']}")
+    status = scan(prev, force_smart=force)
+    if state.get("growfs"):
+        finish_grows(status, state, record)
+        write_json(state_path, state, 0o600)
+    write_json(status_path, status)
+    return 0
+
+
+def main(argv):
+    if argv[1:] == ["scan"]:
+        print(json.dumps(scan(read_json(os.path.join(cfg("DIR"), "status.json"), {}), signatures=False), indent=1))
+        return 0
+    if argv[1:] == ["tick"]:
+        return tick()
+    print("usage: nexus-disks tick|scan", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

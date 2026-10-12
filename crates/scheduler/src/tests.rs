@@ -1893,6 +1893,7 @@ fn inventory_jobs_and_auto_protect() {
 /// Phase 14d account housekeeping and the management allow-list.
 mod accounts;
 /// Phase 14d certificate / secret / token expiry alerts.
+mod disks;
 mod expiry;
 /// Phase 14a audit / alert forwarding.
 mod forward;

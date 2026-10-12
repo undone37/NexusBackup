@@ -18,6 +18,7 @@
 /usr/libexec/nexus/nexus-nft-sync	--	gen_context(system_u:object_r:nexus_nftsync_exec_t,s0)
 /usr/libexec/nexus/nexus-tls		--	gen_context(system_u:object_r:nexus_tls_exec_t,s0)
 /usr/libexec/nexus/nexus-diag		--	gen_context(system_u:object_r:nexus_diag_exec_t,s0)
+/usr/libexec/nexus/nexus-disks		--	gen_context(system_u:object_r:nexus_disks_exec_t,s0)
 /usr/libexec/nexus/nexus-console-gate	--	gen_context(system_u:object_r:nexus_consolegate_exec_t,s0)
 
 # restore micro-VM kernel + initramfs (read by the confined QEMU only)
@@ -25,6 +26,8 @@
 
 # unit files: nexus-setup may enable/start these and nothing else
 /usr/lib/systemd/system/nexus-.*		gen_context(system_u:object_r:nexus_unit_file_t,s0)
+# the store's mount unit, written by nexus-disks (Phase 16b)
+/etc/systemd/system/var-lib-nexus-chunkstore\.mount	--	gen_context(system_u:object_r:nexus_unit_file_t,s0)
 
 # state
 /var/lib/nexus				-d	gen_context(system_u:object_r:nexus_var_lib_t,s0)
@@ -50,6 +53,7 @@
 /var/lib/nexus/update(/.*)?			gen_context(system_u:object_r:nexus_update_t,s0)
 /var/lib/nexus/tls(/.*)?			gen_context(system_u:object_r:nexus_tls_req_t,s0)
 /var/lib/nexus/diag(/.*)?			gen_context(system_u:object_r:nexus_diag_var_lib_t,s0)
+/var/lib/nexus/disks(/.*)?			gen_context(system_u:object_r:nexus_disks_var_lib_t,s0)
 /var/lib/nexus/console-unlock(/.*)?		gen_context(system_u:object_r:nexus_console_unlock_t,s0)
 
 # configuration and secrets

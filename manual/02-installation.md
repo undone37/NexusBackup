@@ -5,9 +5,11 @@ present at the console during first boot.
 
 > **Status:** The appliance image and the first-boot wizard run end to end in the lab (a VM with SELinux
 > enforcing). Release 0.0.1-alpha is published (signed image and installer ISO), but there is **no tested
-> installation on physical hardware** yet. The disk layout of plan §12.2 (mirrored system disks, NVMe metadata
-> tier, RAID6 data tier), full-disk encryption with LUKS2 and TPM, and first-boot disk initialization are **not
-> implemented yet**. Treat this chapter as the procedure for test installations.
+> installation on physical hardware** yet. Of the disk layout of plan §12.2, the **data array** (RAID over the data
+> disks, created in the web UI, see [Data disks](#data-disks)) is implemented and tested against fake tools; its run
+> in the lab VM (`lab/appliance/disks.sh`) is pending. Mirrored system disks are set up by the installer only as far
+> as the installer supports it, the NVMe metadata tier is a follow-up, and full-disk encryption with LUKS2 and TPM is
+> **not implemented yet**. Treat this chapter as the procedure for test installations.
 
 ## Before you start
 
@@ -319,6 +321,62 @@ the web interface. The old name `nexus-setup reset-mgmt-allow` does the same.
 > the nftables rules and the status reader were checked with `nft` 1.1.5 in the appliance image's userland. A run
 > on the appliance (lab step `firewall` of `lab/e2e/m5-api.sh`) is pending. The console commands need a root shell
 > on the console (see [Known gaps after installation](#known-gaps-after-installation)).
+
+## Data disks
+
+Until you create a data array, the backups (the chunk store, `/var/lib/nexus/chunkstore`) live on the system disk.
+On hardware with separate data disks, create the **data array** right after first boot, **before the first backup**:
+the appliance builds it only while the store is empty.
+
+**Configuration → Hardware** lists every disk with its model, serial number, size, type, role and SMART health,
+and the RAID arrays with their state:
+
+![Configuration → Hardware: disks with SMART health, the data array rebuilding after a disk failure](images/hardware.png)
+
+| Role | Meaning |
+|---|---|
+| **System** | holds the operating system (a mounted file system or swap, or the system mirror): shown only, never changed here |
+| **Data** / **Metadata** | member of the data array (`nexus-data`) / the metadata array (`nexus-metadata`) |
+| **In use** | has partitions, a file system or RAID signature, or belongs to another array: the appliance does not touch it |
+| **Empty** | no partitions and no signatures: can become part of an array, a spare or a replacement |
+
+To create the data array (administrator):
+
+1. Click **Create data array**, choose the RAID level and tick the empty disks. **RAID6** (at least 4 disks; two
+   may fail) is the recommendation for the data tier; RAID5 (3+), RAID10 (4+, an even number) and RAID1 (2) are
+   offered too. The dialog shows the usable capacity.
+2. Type the **serial numbers** of all selected disks into the confirmation field. They are printed on the disks and
+   shown in the table; typing them makes sure the right disks are overwritten.
+3. Submit. The request needs **approval** by a second person (another administrator or a security officer), like
+   every other destructive change ([10 Approvals and audit](10-approvals-and-audit.md)).
+4. After approval the appliance checks again that the disks are empty and the store holds no files, then creates
+   the array (mdadm, metadata 1.2, internal write-intent bitmap), formats it with XFS, stops the scheduler and the
+   replication service, mounts the array as the store with a mount unit that survives OS updates, and starts them
+   again. The initial synchronisation runs in the background (the array shows **resyncing** with its progress);
+   backups can start at once. **Recent operations** on the page shows the outcome; it is recorded in the audit log
+   (`disks.create_array`, `hardware.op`).
+
+**Afterwards:**
+
+- **Add spare** adds an empty disk as a hot spare: it takes over automatically when a member fails.
+- **Replace disk** swaps a failed member for an empty disk (see
+  [15 Troubleshooting](15-troubleshooting-faq.md#replacing-a-disk)). A working member with SMART warnings can be
+  replaced the same way: it is copied to the new disk first and stays in the array until the copy is complete.
+- **Grow** adds one disk to a RAID5 or RAID6 array. The reshape takes hours and runs in the background; the file
+  system grows when it has finished.
+- **Run short / long self-test** in a disk's **Details** starts a SMART self-test (administrators, audited); the disk
+  stays in use. The result appears under **Last self-test** after the next scan.
+
+All of these need the typed serial number of the new disk and approval. The appliance never changes system disks,
+disks with partitions or signatures, or arrays it did not create.
+
+> **Status:** Implemented in the web UI, the API, the scheduler (alerts) and the root helper `nexus-disks` with its
+> SELinux domain; the helper's logic is tested against recorded tool output. The lab run in a VM with extra disks
+> (`lab/appliance/disks.sh`) is pending.
+>
+> **Not supported:** moving an existing store onto a new array (create the array before the first backup), the
+> **metadata tier** (catalog on an NVMe mirror; NVMe disks are shown and monitored, but the catalog stays on the
+> system disk), shrinking an array or changing its RAID level.
 
 ## Known gaps after installation
 

@@ -1144,3 +1144,101 @@ export interface ScheduledReports {
   /** an SMTP server is configured (Settings → Alert delivery) */
   smtp: boolean;
 }
+
+/** Phase 16a/b hardware (GET /hardware, from nexus-disks; docs/hardware.md). */
+export type HwSeverity = 'info' | 'warning' | 'critical';
+export interface HwIssue {
+  severity: HwSeverity;
+  message: string;
+}
+export interface HwSelfTest {
+  running: boolean;
+  remaining: number | null;
+  last: { type: string; status: string; passed: boolean; hours: number | null } | null;
+}
+export interface HwSmart {
+  available: boolean;
+  health: 'passed' | 'failed' | null;
+  temperature: number | null;
+  power_on_hours: number | null;
+  reallocated: number | null;
+  pending: number | null;
+  offline_uncorrectable: number | null;
+  percentage_used: number | null;
+  media_errors: number | null;
+  critical_warning: number | null;
+  available_spare: number | null;
+  self_test: HwSelfTest | null;
+  attributes: { id: number | null; name: string; value: number | null; worst: number | null; thresh: number | null; raw: string | number; failing: boolean }[];
+  error: string | null;
+  standby: boolean;
+  checked: number;
+}
+export type HwRole = 'system' | 'data' | 'metadata' | 'in_use' | 'empty';
+export interface HwDisk {
+  name: string;
+  path: string;
+  model: string | null;
+  serial: string | null;
+  wwn: string | null;
+  size: number;
+  type: 'hdd' | 'ssd' | 'nvme';
+  transport: string | null;
+  rotational: boolean;
+  removable: boolean;
+  role: HwRole;
+  array: string | null;
+  why: string | null;
+  issues: HwIssue[];
+  smart: HwSmart | null;
+}
+export type HwMemberState = 'active' | 'spare' | 'rebuilding' | 'faulty' | 'removed';
+export interface HwArray {
+  name: string;
+  path: string;
+  md_name: string | null;
+  uuid: string | null;
+  role: 'data' | 'metadata' | 'system' | null;
+  level: string | null;
+  state: 'clean' | 'degraded' | 'recovering' | 'resyncing' | 'reshaping' | 'failed' | 'inactive';
+  degraded: boolean;
+  state_detail: string | null;
+  raid_devices: number | null;
+  active_devices: number | null;
+  failed_devices: number | null;
+  spare_devices: number | null;
+  size: number | null;
+  used_dev_size: number | null;
+  bitmap: string | null;
+  action: 'recover' | 'resync' | 'reshape' | 'check' | 'repair' | null;
+  progress: number | null;
+  finish_minutes: number | null;
+  members: { disk: string | null; dev: string | null; serial: string | null; state: HwMemberState; slot: number | null }[];
+  mounts: string[];
+  fs: { type: string; uuid: string; size: number | null; used: number | null } | null;
+  issues: HwIssue[];
+}
+export interface HwOp {
+  id: string;
+  op: 'scan' | 'selftest' | 'create_array' | 'add_spare' | 'replace' | 'grow' | 'growfs';
+  state: 'queued' | 'running' | 'done' | 'refused' | 'error';
+  by: string;
+  quorum_id: number | null;
+  created: number | null;
+  finished: number | null;
+  detail: string | null;
+  error: string | null;
+  params: Record<string, unknown>;
+}
+export interface Hardware {
+  available: boolean;
+  stale: boolean;
+  scanned: number | null;
+  smart_scanned: number | null;
+  tools: { smartctl: boolean; mdadm: boolean };
+  store: { path: string; array: string | null; array_uuid: string | null; mounted: boolean; empty: boolean | null };
+  summary: { state: 'ok' | 'warning' | 'critical' | 'unknown'; disks: number; arrays: number; warnings: number; critical: number };
+  disks: HwDisk[];
+  arrays: HwArray[];
+  ops: HwOp[];
+}

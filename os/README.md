@@ -47,7 +47,7 @@ not valid JSON, or if `bootc container lint` fails.
 | `systemd/10-nexus.preset` | `/usr/lib/systemd/system-preset/` | sshd off; nftables, chronyd, nexus-setup, nexus-nft-sync.{service,path,timer}, nexus-plugin-install.{service,path} on; keyd/web-api/scheduler off (nexus-setup enables them) |
 | `nftables.conf` | `/etc/sysconfig/nftables.conf` | default deny in and out, allow-list sets (see "Firewall") |
 | `etc/` | `/etc/` | `chrony.conf` (NTS only) and the update/signing files (containers policy, cosign key, update.conf, greenboot.conf, presets, tmpfiles for `/var/lib/nexus/update` and `/var/lib/nexus/diag`) |
-| `greenboot/usr/` | `/usr/` | `nexus-update` agent, `nexus-health` check, `nexus-diag` (self-checks, support bundles) and their units (`greenboot/tests/` stays out) |
+| `greenboot/usr/` | `/usr/` | `nexus-update` agent, `nexus-health` check, `nexus-diag` (self-checks, support bundles), `nexus-disks` (disks, SMART, data array) and their units (`greenboot/tests/` stays out) |
 | `selinux/nexus.{te,fc}` | module `nexus` | see "SELinux" |
 
 The root account is locked (`usermod -L`). Emergency access is through the local console only.
@@ -64,6 +64,7 @@ The root account is locked (`usermod -L`). Emergency access is through the local
 | `nexus-nft-sync.{service,path,timer}`, `nexus-nft-status.{service,timer}` | root | `nexus_nftsync_t` → `iptables_t` | CAP_NET_ADMIN only; see "Firewall" |
 | `nexus-plugin-install.{service,path}` | nexus-plugins (+nexus-catalog) | `nexus_plugininstall_t` | oneshot at boot and on `plugins-staging/.trigger`; `PrivateNetwork`; see "Plugins" |
 | `nexus-diag.{service,path}` | root (+nexus-catalog) | `nexus_diag_t` → `journalctl_t`, `chronyc_t`, `iptables_t` | oneshot on `/var/lib/nexus/diag/request.json` (web-api, Settings → Diagnostics): self-checks + redacted support bundle into `/var/lib/nexus/diag/<id>/` (2770 root:nexus-webapi, pruned after 24 h); no inet sockets (`RestrictAddressFamilies=AF_UNIX AF_NETLINK`, `IPAddressDeny=any`; not `PrivateNetwork`, nft must list the host ruleset); bounding set NET_ADMIN, DAC_OVERRIDE, DAC_READ_SEARCH for the tools in their own domains (the policy grants nexus_diag_t no capability). `nexus-update` runs `nexus-diag checks` before staging/applying (in its own unconfined domain) |
+| `nexus-disks.{service,path,timer}` | root (+nexus-webapi) | `nexus_disks_t` | oneshot every 5 min and on `/var/lib/nexus/disks/req-*.json` (web-api, Configuration → Hardware): inventory, SMART, md arrays into `status.json`; approved layout requests (mdadm, mkfs.xfs, xfs_growfs, the store's mount unit); `PrivateNetwork`; bounding set SYS_RAWIO, SYS_ADMIN, DAC_READ_SEARCH (docs/hardware.md) |
 
 ### Hardening scores (`systemd-analyze security`, in the booted VM, systemd 257)
 
@@ -101,6 +102,8 @@ init_t ─ nexus-nft-sync > nexus_nftsync_t ─ nft ─> iptables_t (script on a
 init_t ─ nexus-diag ────> nexus_diag_t       read-only: catalog, update status, web cert, audit log (ausearch), systemd state;
                                              journalctl > journalctl_t, chronyc > chronyc_t, nft > iptables_t; writes only
                                              nexus_diag_var_lib_t; neverallow: inet sockets, keyd socket, keys/stores/credentials
+init_t ─ nexus-disks ───> nexus_disks_t      disks (smartctl, mdadm, mkfs.xfs, xfs_growfs in-domain), its dir, the store's
+                                             mount unit, systemctl on nexus units; neverallow: inet, keys/catalog/store files
 ```
 
 Data types are private: `nexus_keyd_var_lib_t` (keys; `neverallow` for everyone but keyd

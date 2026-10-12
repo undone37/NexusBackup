@@ -1,0 +1,67 @@
+[Unit]
+Description=NexusBackup disks: inventory, SMART, RAID arrays and the data-array layout (docs/hardware.md)
+# Started by nexus-disks.timer (scan every 5 minutes, SMART hourly) and by nexus-disks.path
+# (requests from the web-api: rescan, self-test, and the approved layout operations).
+StartLimitIntervalSec=60
+StartLimitBurst=20
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/nexus/nexus-disks tick
+# root, because it reads and writes block devices (smartctl, mdadm, mkfs.xfs, xfs_growfs) and
+# installs the store's mount unit; SELinux (nexus_disks_t) limits it to that. Capabilities:
+# SYS_RAWIO (ATA pass-through for SMART), SYS_ADMIN (md ioctls, NVMe admin commands,
+# xfs_growfs), DAC_READ_SEARCH (list the store, 0700 nexus-chunkstore, to see that it holds no
+# files; the policy allows directory listing only). No DAC override: request files are read
+# through the group.
+SupplementaryGroups=nexus-webapi
+CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
+AmbientCapabilities=
+UMask=0022
+TimeoutStartSec=30min
+# `mdadm --grow` may leave a process that follows the reshape: it survives this oneshot
+KillMode=process
+
+ProtectSystem=strict
+# its control dir, and the store's mount unit (bootc keeps /etc across updates)
+ReadWritePaths=/var/lib/nexus/disks /etc/systemd/system
+# mdadm's map of assembled arrays
+ReadWritePaths=-/run/mdadm
+# xfs_growfs needs the mounted store writable in this namespace (it only issues the grow
+# ioctl; DAC 0700 nexus-chunkstore and SELinux keep the store's contents closed)
+ReadWritePaths=-/var/lib/nexus/chunkstore
+# key material, credentials, the catalog and job state are not even visible
+InaccessiblePaths=-/var/lib/nexus/keyd -/var/lib/nexus/escrow -/var/lib/nexus/offsite -/var/lib/nexus/catalog
+InaccessiblePaths=-/var/lib/nexus/scheduler -/var/lib/nexus/replicad -/var/lib/nexus/webapi -/etc/nexus
+InaccessiblePaths=-/run/nexus-keyd -/run/nexus-scheduler -/var/lib/nexus/downloads -/var/lib/nexus/plugins-staging
+InaccessiblePaths=-/var/lib/nexus/diag -/var/lib/nexus/tls -/var/lib/nexus/console-unlock
+
+# No network (systemctl and udev queries use unix sockets).
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+IPAddressDeny=any
+
+# Not PrivateDevices= / ProtectKernelTunables=: it works on the real disks, and mdadm writes
+# /sys/block/md*/md/*.
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+PrivateIPC=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+LimitCORE=0
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@clock @module @reboot @swap @obsolete @cpu-emulation
+SystemCallErrorNumber=EPERM
+Nice=5

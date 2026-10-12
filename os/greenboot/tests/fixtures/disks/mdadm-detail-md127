@@ -1,0 +1,28 @@
+/dev/md127:
+           Version : 1.2
+     Creation Time : Fri Aug  7 14:02:10 2026
+        Raid Level : raid1
+        Array Size : 242531456 (231.30 GiB 248.35 GB)
+     Used Dev Size : 242531456 (231.30 GiB 248.35 GB)
+      Raid Devices : 2
+     Total Devices : 2
+       Persistence : Superblock is persistent
+
+     Intent Bitmap : Internal
+
+       Update Time : Mon Oct 12 08:40:59 2026
+             State : clean
+    Active Devices : 2
+   Working Devices : 2
+    Failed Devices : 0
+     Spare Devices : 0
+
+Consistency Policy : bitmap
+
+              Name : localhost:root
+              UUID : 9a8b7c6d:5e4f3a2b:1c0d9e8f:7a6b5c4d
+            Events : 2210
+
+    Number   Major   Minor   RaidDevice State
+       0       8        3        0      active sync   /dev/sda3
+       1       8       19        1      active sync   /dev/sdb3

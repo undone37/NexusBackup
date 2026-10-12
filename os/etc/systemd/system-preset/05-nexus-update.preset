@@ -8,6 +8,11 @@ enable nexus-update.timer
 enable nexus-update.path
 # Diagnostics requests from the web UI (self-checks, support bundle; also the pre-update checks' tool).
 enable nexus-diag.path
+# Disks: inventory, SMART, RAID state (timer) and requests from the web UI (Phase 16a/b).
+enable nexus-disks.timer
+enable nexus-disks.path
+# nexus-disks reads SMART itself (hourly, never waking a sleeping disk); no second poller
+disable smartd.service
 # Health-check-gated rollback (also in 90-default.preset; repeated so it cannot drift).
 enable greenboot-healthcheck.service
 enable greenboot-set-rollback-trigger.service
