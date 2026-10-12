@@ -2517,6 +2517,65 @@ async fn agent_jobs_rbac_and_confirmation() {
         )
         .await;
     assert_eq!(r.status, StatusCode::NOT_FOUND, "no such snapshot");
+
+    // Phase 15b: NAS share, TrueNAS, VM and CT snapshots onto an agent of the same tenant
+    // (agent_id required); never onto an agent of another tenant, never for viewers
+    t.st.cat
+        .conn()
+        .execute_batch(
+            "INSERT INTO snapshots (tenant, source, time, size, local, offsite) VALUES
+               ('acme','share-3',2000,5,1,0), ('acme','nas-3-tank.data',2000,5,1,0),
+               ('acme','vm-100',2000,5,1,0), ('acme','ct-200',2000,5,1,0), ('globex','share-4',2000,5,1,0);
+             INSERT INTO agents (id, tenant, name, host, port) VALUES ('fedcba9876543210','globex','gx01','gx.lan',7444);",
+        )
+        .unwrap();
+    let to_host = |source: &str, agent: Option<&str>, confirm: &str| {
+        let mut p = json!({"source": source, "time": 2000, "paths": ["/data"], "target": "/srv/r",
+                           "overwrite": "if_older", "confirm": confirm});
+        if let Some(a) = agent {
+            p["agent_id"] = json!(a);
+        }
+        json!({"kind": "restore_files", "tenant": "acme", "params": p})
+    };
+    let tina = t.login("tina").await;
+    for source in ["share-3", "nas-3-tank.data", "vm-100", "ct-200"] {
+        let r = t.post("/api/v1/jobs", &tina, to_host(source, Some(&id), "web01")).await;
+        assert_eq!(r.status, StatusCode::ACCEPTED, "{source}: {:?}", r.body);
+        let r = t.post("/api/v1/jobs", &admin, to_host(source, None, "web01")).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{source} without agent_id");
+        assert!(r.body["error"].as_str().unwrap().contains("agent_id"));
+    }
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &admin,
+            to_host("share-3", Some("fedcba9876543210"), "gx01"),
+        )
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::BAD_REQUEST,
+        "agent of another tenant: {:?}",
+        r.body
+    );
+    let mut x = to_host("share-4", Some(&id), "web01");
+    x["tenant"] = json!("globex");
+    let r = t.post("/api/v1/jobs", &admin, x).await;
+    assert_eq!(
+        r.status,
+        StatusCode::BAD_REQUEST,
+        "acme's agent for a globex snapshot: {:?}",
+        r.body
+    );
+    let r = t
+        .post("/api/v1/jobs", &admin, to_host("share-3", Some(&id), "gx01"))
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "confirm = target agent's name");
+    let tom = t.login("tom").await;
+    let r = t
+        .post("/api/v1/jobs", &tom, to_host("share-3", Some(&id), "web01"))
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "tenant user of another tenant");
     // file downloads from host snapshots use the generic file jobs
     let tina = t.login("tina").await;
     let r = t
@@ -2722,7 +2781,7 @@ async fn truenas_sources() {
         .await;
     assert_eq!(g.status, StatusCode::BAD_REQUEST);
 
-    // file jobs accept nas-<id>-<dataset> snapshots; restore_files does not (download only)
+    // file jobs accept nas-<id>-<dataset> snapshots; restore_files needs a target agent (Phase 15b)
     let snap = format!("nas-{sid}-tank.data");
     t.st.cat
         .conn()
@@ -2753,7 +2812,7 @@ async fn truenas_sources() {
 /// NFS/SMB share sources (docs/nas-connector.md): admin only, SMB password /
 /// keytab write-only and sealed (kept on update only for the same server and
 /// user), validation of every field the mount helper sees, groups without
-/// guests, `share-<id>` snapshots for file jobs (download only).
+/// guests, `share-<id>` snapshots for file jobs.
 #[tokio::test]
 async fn share_sources() {
     let t = T::new();
@@ -2892,7 +2951,7 @@ async fn share_sources() {
         .await;
     assert_eq!(g.status, StatusCode::BAD_REQUEST);
 
-    // file jobs on share-<id> snapshots; no restore to the share (download only)
+    // file jobs on share-<id> snapshots; restore_files needs a target agent (Phase 15b)
     let snap = format!("share-{sid}");
     t.st.cat
         .conn()

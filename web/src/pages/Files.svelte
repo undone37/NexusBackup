@@ -2,7 +2,7 @@
   import { onDestroy } from 'svelte';
   import { get, errText } from '../lib/api';
   import { route, href } from '../lib/router.svelte';
-  import { runJob, downloadUrl, fileEntries, hostAgentId } from '../lib/jobs';
+  import { runJob, downloadUrl, fileEntries, hostAgentId, restorableToHost } from '../lib/jobs';
   import { fmtBytes, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import { can } from '../lib/roles';
@@ -95,12 +95,16 @@
     }
   }
 
-  // Host snapshots (`host-<agent id>`) can also be restored onto a path of an agent.
+  // Files can also be restored onto a path of an agent of the tenant (host snapshots: by
+  // default the host they came from). VM/CT files need a selection: the restore micro-VM
+  // lists file systems, not one root.
   const agentId = hostAgentId(source);
+  const toHost = can.restore(session.user) && restorableToHost(source);
+  const guest = /^(vm|ct)-/.test(source);
   let agents: Agent[] = $state([]);
   let restoreOpen = $state(false);
   const hostName = $derived(agents.find((a) => a.id === agentId)?.name);
-  if (agentId)
+  if (toHost)
     get<Agent[]>('/agents')
       .then((xs) => (agents = xs))
       .catch(() => {
@@ -197,13 +201,13 @@
     {:else}
       <span class="muted">{t.access.noDownload}</span>
     {/if}
-    {#if agentId}
-      <button type="button" onclick={() => (restoreOpen = true)} aria-describedby="restore-hint">
-        {selected.length ? t.snap.restorePath : t.files.restoreAll}
+    {#if toHost}
+      <button type="button" onclick={() => (restoreOpen = true)} aria-describedby="restore-hint" disabled={guest && !selected.length}>
+        {selected.length ? (agentId ? t.snap.restorePath : t.files.restoreToHost) : t.files.restoreAll}
       </button>
     {/if}
   </div>
-  {#if agentId}<p class="muted" id="restore-hint">{t.files.restoreHint}</p>{/if}
+  {#if toHost}<p class="muted" id="restore-hint">{guest ? t.files.restoreHintSelect : t.files.restoreHint}</p>{/if}
   {#if selected.length}
     <ul class="mono">
       {#each selected as s (s)}<li>{s}</li>{/each}
@@ -211,7 +215,7 @@
   {/if}
 </div>
 
-{#if agentId}
+{#if toHost}
   <RestoreFiles
     bind:open={restoreOpen}
     {tenant}

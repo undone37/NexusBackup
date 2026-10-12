@@ -5,6 +5,8 @@
 //! "Appliance side"). Machine-readable lines on stdout (parsed from the job log):
 //! `agent-info {json}` after every successful Hello, `enrolled {json}`,
 //! `committed host-<id>/<time>`, `inconsistent host-<id>/<time>: …`,
+//! `restore` reads any file-tree snapshot of the tenant (`restore.source`) or,
+//! for VM/CT files, the tar `restore.tar` written by `nexus-pve` (then removed);
 //! `restored {json}`; `files … ls` prints the JSON listing only.
 
 use agent_conn::backup::{self, Spec as BackupSpec};
@@ -13,7 +15,7 @@ use agent_conn::files::{self, Format};
 use agent_conn::map::MapDb;
 use agent_conn::restore::{self, parse_overwrite, Spec as RestoreSpec};
 use agent_conn::tls::{session_config, AgentInfo, Session};
-use agent_conn::{enroll, update, valid_agent_id};
+use agent_conn::{enroll, tarbridge, update, valid_agent_id};
 use anyhow::{bail, Context, Result};
 use chunkstore::{Options, Store};
 use serde::Deserialize;
@@ -76,12 +78,27 @@ struct BackupCfg {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RestoreCfg {
-    source_agent: String,
+    /// `host-<agent>`, `nas-…`, `share-…`, `plugin-…` (file trees), or `vm-…`/`ct-…` with `tar`
+    source: String,
     time: u64,
     paths: Vec<String>,
     target: String,
     overwrite: String,
     confirm: String,
+    /// VM/CT files: the selection as a tar, written by `nexus-pve … get` into the
+    /// downloads directory (removed here when done)
+    #[serde(default)]
+    tar: Option<PathBuf>,
+}
+
+/// Removes the staging tar of a VM/CT file restore on every exit path.
+struct RemoveOnDrop(Option<PathBuf>);
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        if let Some(p) = &self.0 {
+            let _ = fs::remove_file(p);
+        }
+    }
 }
 
 impl Config {
@@ -223,24 +240,37 @@ fn main() -> Result<()> {
         }
         ("restore", []) => {
             let rc = cfg.restore.as_ref().context("config: restore missing")?;
-            if !valid_agent_id(&rc.source_agent) {
-                bail!("invalid source agent id");
+            let _staging = RemoveOnDrop(rc.tar.clone());
+            if rc.tar.is_none() && restore::tree_index(&rc.source).is_none() {
+                bail!("invalid source {:?}: not a file-tree snapshot", rc.source);
             }
             let ca = Ca::load_or_create(&cfg.ca_dir)?;
-            let store = cfg.store()?;
-            let map = MapDb::open(cfg.store.as_deref().unwrap())?;
-            let (mut s, _) = cfg.session(&ca)?;
             let spec = RestoreSpec {
                 job: cfg.job,
-                source_agent: rc.source_agent.clone(),
+                source: rc.source.clone(),
                 time: rc.time,
                 paths: rc.paths.clone(),
                 target: rc.target.clone(),
                 overwrite: parse_overwrite(&rc.overwrite)?,
                 confirm: rc.confirm.clone(),
+                target_agent: cfg.agent()?.id.clone(),
             };
-            let st = restore::restore(&store, &map, &mut s, &spec, &mut |l| println!("{l}"))?;
-            s.close();
+            let st = match &rc.tar {
+                Some(tar) => {
+                    let (mut s, _) = cfg.session(&ca)?;
+                    let st = tarbridge::restore_tar(&mut s, tar, &spec, &mut |l| println!("{l}"))?;
+                    s.close();
+                    st
+                }
+                None => {
+                    let store = cfg.store()?;
+                    let map = MapDb::open(cfg.store.as_deref().unwrap())?;
+                    let (mut s, _) = cfg.session(&ca)?;
+                    let st = restore::restore(&store, &map, &mut s, &spec, &mut |l| println!("{l}"))?;
+                    s.close();
+                    st
+                }
+            };
             println!(
                 "restored {}",
                 json!({"target": rc.target, "files": st.files, "dirs": st.dirs, "bytes": st.bytes, "errors": st.errors.len()})

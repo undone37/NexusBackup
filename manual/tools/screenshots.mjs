@@ -340,10 +340,12 @@ async function main() {
       const newest = (src) => snaps.filter((s) => s.source === src).sort((a, b) => b.time - a.time)[0];
       Object.assign(data, {
         vm100: newest('vm-100'),
+        vm300: newest('vm-300'),
         host: newest(`host-${web01.id}`),
         pgCluster: newest(`plugin-postgresql-${pg.id}`),
         pgShop: newest(`plugin-postgresql-${pg.id}-shop`),
         pgId: pg.id,
+        share: newest(`share-${sources.find((s) => s.kind === 'nfs').id}`),
         web01,
       });
       await go('/', 900);
@@ -457,6 +459,32 @@ async function main() {
       await ev(`$fill('input[placeholder="/srv/restore"]', '/srv/restore'); $fill('dialog[open] select', 'if_older'); return true;`);
       await ev(`const i = [...$scope().querySelectorAll('input.mono')].pop(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, 'web01'); i.dispatchEvent(new Event('input', { bubbles: true })); return true;`);
       await shot('restore-to-path', { height: 1000 });
+      await closeDialogs();
+    }],
+    // Phase 15b: a NAS share snapshot and VM files onto a host with an agent
+    ['restore-to-host', async () => {
+      const confirmAgent = `const sel = $scope().querySelector('select[id$="-agent"]'); const name = sel.selectedOptions[0].textContent.split(' (')[0].trim();
+        const i = [...$scope().querySelectorAll('input.mono')].pop(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, name); i.dispatchEvent(new Event('input', { bubbles: true })); return true;`;
+      await go(`/snapshots?source=${data.share.source}`);
+      await ev(`$rowClick('${data.share.source}', 'Restore'); return true;`);
+      await until(`return !!$button('Restore to a host')`, 'restore menu');
+      await ev(`$click('Restore to a host'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input[placeholder="/srv/restore"]')`, 'restore-to-host dialog');
+      await ev(`$fill('input[placeholder="/srv/restore"]', '/srv/restore/projects'); return true;`);
+      await ev(confirmAgent);
+      await shot('restore-to-host', { height: 1100 });
+      await closeDialogs();
+      const s = data.vm300; // acme: the tenant with enrolled agents
+      await go(`/files?tenant=${s.tenant}&source=${s.source}&time=${s.time}&path=/`);
+      await until(`return !!$button('etc/')`, 'file listing', 30000);
+      await ev(`$click('etc/'); return true;`);
+      await until(`return !!document.querySelector('input[aria-label="Select hostname"]')`, '/etc listing', 30000);
+      await ev(`document.querySelector('input[aria-label="Select nginx"]').click(); return true;`);
+      await ev(`$click('Restore to a host'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input[placeholder="/srv/restore"]')`, 'VM files dialog');
+      await ev(`$fill('input[placeholder="/srv/restore"]', '/srv/restore/vm-300'); return true;`);
+      await ev(confirmAgent);
+      await shot('restore-vm-files-to-host', { height: 1100 });
       await closeDialogs();
     }],
     ['plugin-restores', async () => {

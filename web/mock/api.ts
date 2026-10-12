@@ -307,10 +307,19 @@ function planFor(kind: string, p: Json): string[] {
       return ['creating client key + CSR', 'connecting with the enrollment ALPN, primary certificate pinned', 'proofs exchanged, client certificate received', 'enrolled'];
     case 'restore_files':
       return [
+        ...(/^(vm|ct)-/.test(src)
+          ? [
+              `nexus-pve ${src.startsWith('ct-') ? 'ct-files' : 'files'} ${src.slice(3)} ${p.time} get <downloads>/restore-<job>.tar ${(p.paths ?? []).join(' ')}`,
+              'restore VM booted in 1.9s, 2 file systems mounted read-only',
+            ]
+          : []),
         `connecting to agent ${agName} over mTLS`,
         `RestoreBegin target=${p.target} overwrite=${p.overwrite} confirm="${p.confirm}"`,
         `reading ${src} @ ${p.time}: ${(p.paths ?? []).join(', ')}`,
         'restored 1,284 files (48.2 MiB), skipped 3 existing files',
+        ...(src === `host-${p.agent_id}`
+          ? []
+          : ['restore to another host: skipped 0 entries (devices, sockets, alternate data streams) and 12 xattrs the target cannot take']),
         `restore to ${p.target} finished`,
       ];
     case 'agent_enroll':
@@ -2533,7 +2542,11 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
     if (a.enrolled_at === null) throw new HttpError(409, 'agent is not enrolled');
   }
   if (kind === 'restore_files') {
-    if (!String(p.source ?? '').startsWith('host-')) throw new HttpError(400, 'source: must be a host snapshot (host-<agent id>)');
+    const src = String(p.source ?? '');
+    // Phase 15b: host, TrueNAS, share, plugin (with a download restore), VM and CT snapshots
+    if (!/^(host|nas|share|plugin|vm|ct)-/.test(src)) throw new HttpError(400, 'source: not a snapshot with files');
+    if (!src.startsWith('host-') && !p.agent_id) throw new HttpError(400, 'agent_id: choose the agent to restore to');
+    if (src.startsWith('host-') && !p.agent_id) p.agent_id = src.slice(5);
     if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time))
       throw new HttpError(404, 'snapshot not found');
     if (!Array.isArray(p.paths) || !p.paths.length || p.paths.some((x: unknown) => typeof x !== 'string' || !x.startsWith('/')))

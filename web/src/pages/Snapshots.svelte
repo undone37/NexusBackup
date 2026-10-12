@@ -184,16 +184,24 @@
   function restoreItems(s: Snapshot): MenuItem[] {
     if (hostAgentId(s.source))
       return [{ label: t.snap.restorePath, hint: t.snap.restorePathHint, icon: IconHost, onselect: () => openRestoreFiles(s) }];
+    // any file tree onto a host with an agent of the tenant (Phase 15b)
+    const toHost: MenuItem = { label: t.snap.restoreToHost, hint: t.snap.restoreToHostHint, icon: IconHost, onselect: () => openRestoreFiles(s) };
     const pl = pluginOf(s);
-    if (pl)
-      return (pl.kind?.restores ?? [])
+    if (pl) {
+      const items: MenuItem[] = (pl.kind?.restores ?? [])
         .filter((r) => r.id !== 'download' && restoreApplies(r, pl.guest))
         .map((r) => ({ label: r.title, hint: r.app_specific ? t.snap.appSpecific : undefined, icon: IconPlugin, onselect: () => openPluginRestore(s, r) }));
-    // TrueNAS datasets and NFS/SMB shares: file download only (docs/truenas-connector.md, docs/nas-connector.md)
-    if (s.source.startsWith('nas-') || s.source.startsWith('share-')) return [];
+      // plugins with a download restore keep plain files in their snapshots
+      if (pl.kind?.restores.some((r) => r.id === 'download')) items.push(toHost);
+      return items;
+    }
+    // TrueNAS datasets and NFS/SMB shares (docs/truenas-connector.md, docs/nas-connector.md)
+    if (s.source.startsWith('nas-') || s.source.startsWith('share-')) return [toHost];
     const items: MenuItem[] = [{ label: t.snap.fullRestore, hint: t.snap.fullRestoreHint, icon: IconRestore, onselect: () => openRestore(s, 'restore') }];
     if (s.source.startsWith('vm-'))
       items.push({ label: t.snap.instant, hint: t.snap.instantHintShort, icon: IconZap, onselect: () => openRestore(s, 'instant') });
+    // VM/CT files: chosen in the file browser (restore micro-VM), then restored onto a host
+    items.push({ label: t.snap.restoreFilesToHost, hint: t.snap.restoreFilesToHostHint, icon: IconHost, onselect: () => browse(s) });
     return items;
   }
 

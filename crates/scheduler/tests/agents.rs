@@ -295,10 +295,38 @@ esac"#,
     let c: Value = serde_json::from_str(&fs::read_to_string(p.join("last-restore.json")).unwrap()).unwrap();
     assert_eq!(
         c["restore"],
-        json!({"source_agent": A, "time": 4000, "paths": ["/etc"], "target": "/srv", "overwrite": "if_older", "confirm": "web01"})
+        json!({"source": format!("host-{A}"), "time": 4000, "paths": ["/etc"], "target": "/srv", "overwrite": "if_older", "confirm": "web01"})
     );
     let res: Value = serde_json::from_str(&q::<String>(&db, &format!("SELECT result FROM jobs WHERE id={r}"))).unwrap();
     assert_eq!(res["files"], 2);
+
+    // restore_files from a NAS share snapshot onto agent A (Phase 15b); a target agent
+    // is required, and it must be enrolled
+    let ok = job(
+        &db,
+        "restore_files",
+        json!({"source": "share-1", "time": 4000, "paths": ["/docs"], "target": "/srv/share",
+               "overwrite": "never", "confirm": "web01", "agent_id": A}),
+    );
+    let no_agent = job(
+        &db,
+        "restore_files",
+        json!({"source": "share-1", "time": 4000, "paths": ["/"], "target": "/srv", "confirm": "web01"}),
+    );
+    let not_enrolled = job(
+        &db,
+        "restore_files",
+        json!({"source": "nas-1-tank.data", "time": 4000, "paths": ["/"], "target": "/srv",
+               "confirm": "db01", "agent_id": B}),
+    );
+    run(&mut s);
+    assert_eq!(state(&db, ok).0, "ok", "{}", state(&db, ok).1);
+    let c: Value = serde_json::from_str(&fs::read_to_string(p.join("last-restore.json")).unwrap()).unwrap();
+    assert_eq!(c["restore"]["source"], "share-1");
+    assert_eq!(c["agent"]["id"], A);
+    assert!(c["restore"]["tar"].is_null());
+    assert!(state(&db, no_agent).1.contains("needs a target agent"));
+    assert!(state(&db, not_enrolled).1.contains("not enrolled"));
 
     // file listing / download of a host snapshot
     let l = job(
