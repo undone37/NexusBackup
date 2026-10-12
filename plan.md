@@ -111,6 +111,10 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | Alert lifecycle (13f) | **Alerts keyed; repeat while open bumps count; ack = seen (still open), resolve = closed (by people with a note, or automatically on the success path, audited); reminders for open unacked alerts every 24 h, severity rise re-delivered; changed-files inconsistency alerts still warn again after an ack (2026-10-10 decision kept); rules with tenants match only those tenants; webhook header values write-only** (decided 2026-10-12) | Less noise, clear state, routing per team. |
 | Auto-protect (13c) | **Inventory refreshed by an `inventory` job per source (default hourly; PVE needs VM.Audit); auto groups (`all`/`tags`, exclude wins) protect nothing until the first refresh and never fall back to "whole source"; plugin protocol v1.5 adds a separate `TaggedGuests` message (postcard is not self-describing, old plugins keep working); M365 Entra-group tags deferred to 17a (needs GroupMember.Read.All)** (decided 2026-10-12) | New guests protected without manual edits; wire compatibility. |
 | Run control (13b) | **Schedules (every Nh, weekdays, monthly) in the group's time zone (chrono-tz); retries only for failed guests, `job_failed` after the last attempt; adding a blackout window = weakening (approval), removing not; retries not held by blackout, none while paused; pause/maintenance via API for operators, UI admin-only; retention/GC/verify not interrupted by cancel (after the current step); replication schedules stay UTC** (decided 2026-10-12) | Fewer false alarms, controllable runs. |
+| Reports (14e) | **Shared crate `crates/reports` (dashboard, Storage page and reports use the same code); CSV RFC 4180, no BOM, formula-injection guard; protection/storage show the current state, SLA breaches from snapshot + job history; scheduled reports weekly/monthly only (no hourly), via the alerts SMTP server** (decided 2026-10-12) | One source of truth for figures. |
+| Diagnostics (14b) | **Root helper `nexus-diag` (path unit, own SELinux domain, no network); 15 checks; checks: admin + SO, bundles/downloads: admin; checker fails open, only failed checks with severity ≥ 3 block an update (rollback never gated); no smartmontools in the image (SMART check skips)** (decided 2026-10-12) | Support without a shell; safe updates. |
+| Console gate details (14c) | **Code fetched once by POST (CSRF cannot burn it); recovery key works even with approvals on (it is the break-glass path); binary `/usr/libexec/nexus/nexus-console-gate`; shell via `systemd-run --scope` with RuntimeMaxSec, `unconfined_t` only through the gate; no per-command audit inside the shell** (decided 2026-10-12) | Emergency access that is time-boxed and loud. |
+| File index (Phase 15, moved from 18) | **Per-tenant index, written at snapshot commit, sealed with the tenant key and stored in the tenant's store (no file names in plaintext in the catalog); removed with the snapshot** (decided 2026-10-12) | Find a file to restore without knowing which snapshot holds it. |
 | Legal hold (Phase 15) | **Set by the security officer alone (adds protection); release needs approval; advisory to secondaries** (decided 2026-10-12) | Incident tool beyond retention locks. |
 | API tokens (Phase 14) | **Scoped read/operator, expiring, hashed; can never approve, change settings/users/tokens or download** (decided 2026-10-12) | Automation without weakening four-eyes. |
 | Vault mode (Phase 16) | **One-way profile for secondaries; switching off needs approval + recovery key** (decided 2026-10-12) | Protects the vault copy against one stolen admin account. |
@@ -622,6 +626,9 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
   management IP allow-list; scheduled CSV/HTML reports. Release 0.1.0-alpha afterwards.
 
 ### Phase 15 — Restore and protection
+- **File search (moved here from Phase 18 on 2026-10-12 by user request):** per-tenant file index, built at
+  snapshot commit, sealed with the tenant key in the tenant's store; search by name/wildcard across snapshots,
+  results lead straight to download / restore; VM-disk indexing opt-in per group.
 - Restore options (link down, power-on, name, multi-guest, replace original safely); restore into hosts through an
   agent for any file snapshot; legal hold; consistency per snapshot; disk/file selection; agent cert renewal,
   re-registration, throttling; parallel guests per group.
@@ -637,7 +644,7 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
   PostgreSQL: WAL-only frequent runs, recoverable range, start after restore, tablespace remap, LSN targets, HA.
 
 ### Phase 18 — Tier 3
-- File-name search across snapshots (VM opt-in, M365 metadata); Linux bare-metal recovery / P2V via rescue ISO;
+- (file search moved to Phase 15) M365 item metadata search; Linux bare-metal recovery / P2V via rescue ISO;
   tenant-admin role; mbox/eml then PST export. Not planned: failover (decision above).
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.

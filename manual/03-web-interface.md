@@ -67,9 +67,9 @@ hidden; open it with the **Menu** button at the top left.
 - the **Approvals** button (stamp icon) with the number of pending requests, for roles that see approvals;
 - the **Alerts** button (bell icon) with the number of open alerts, for roles that see alerts;
 - the **theme** button (see below);
-- your user name and role, and for tenant-scoped accounts your tenant (e.g. "Tenant user · acme"); click it to open
-  **My account** with your sessions (see
-  [09 Users and access](09-users-and-access.md#your-sessions-my-account));
+- your user name and role, and for tenant-scoped accounts your tenant (e.g. "Tenant user · acme"). Click it to
+  open **My account** with your sessions and API tokens ([09 Users and access](09-users-and-access.md#your-sessions-my-account),
+  [API tokens](09-users-and-access.md#api-tokens));
 - **Sign out** (arrow icon).
 
 **Theme (light / dark).** By default the interface follows your operating system's light or dark setting. The theme
@@ -389,7 +389,11 @@ where they are switched on and off. See [10 Approvals and audit](10-approvals-an
 ![Audit log after verifying the chain](images/audit.png)
 
 Every recorded action, newest first. **Verify chain** recomputes the hash chain over all entries; **Load more** pages
-back in time. See [10 Approvals and audit](10-approvals-and-audit.md#audit-log).
+back in time. The filter bar narrows the list by **Actor** (exact), **Action** (prefix, e.g. `user.`), **Target**
+(contains) and a **From** / **To** day range; **Export CSV** downloads the matching entries with their hashes
+(recorded as `audit.export`). The **Forwarding** box shows each configured syslog / HTTPS sink: destination, state
+(up to date, entries behind, failing, disabled), the last delivered entry against the newest, the last delivery and
+the last error. See [10 Approvals and audit](10-approvals-and-audit.md#audit-log).
 
 ## Configuration pages
 
@@ -424,9 +428,9 @@ back in time. See [10 Approvals and audit](10-approvals-and-audit.md#audit-log).
 ## Settings
 
 **Configuration → Settings** holds the appliance-wide settings. Only administrators change them; security officers
-see every tab read-only ("Read-only: only administrators change these settings."), operators see **Approvals**,
-**Appliance SSH keys** and **Updates**; viewers and tenant users see no settings. Changes that weaken protection or
-change who can sign in need a second person when approvals are enabled.
+see every tab read-only ("Read-only: only administrators change these settings.") and can run the self-checks under
+**Diagnostics**, operators see **Approvals**, **Appliance SSH keys** and **Updates**; viewers and tenant users see no settings. Changes that weaken protection or change who can sign in need a second person
+when approvals are enabled.
 
 | Tab | What it is for | Chapter |
 |---|---|---|
@@ -436,6 +440,10 @@ change who can sign in need a second person when approvals are enabled.
 | **Appliance SSH keys** | the public keys the appliance signs in to sources with; **Copy**, **Rotate**, **Retire old key** | [04 Sources](04-sources.md#appliance-ssh-keys) |
 | **Updates** | running, staged, available and rollback image; **Check now**, **Install now** | [13 Updates](13-updates.md#updates-in-the-web-interface) |
 | **Anomaly detection** | thresholds of the change-rate `anomaly` alert | [11 Alerts and monitoring](11-alerts-and-monitoring.md#change-rate-anomalies) |
+| **Certificate** | the web certificate (chain, fingerprints, expiry), a certificate request generated on the appliance, importing the signed certificate, reverting | [02 Installation](02-installation.md#use-your-own-certificate) |
+| **Forwarding** | the syslog-over-TLS and HTTPS (JSON) sinks that receive the audit log, alert events and finished jobs; **Send test message** | [10 Approvals and audit](10-approvals-and-audit.md#forwarding-to-a-siem) |
+| **Diagnostics** | **Run checks** (self-checks with a help link each; the same checks gate updates), **Create bundle** (redacted support bundle for a time range, administrators only, downloadable for 24 h) | [15 Troubleshooting](15-troubleshooting-faq.md#diagnostics-and-support-bundles) |
+| **Console access** | requests for an emergency root shell on the appliance console, **Show code** (once), **Revoke** (administrators and security officers only) | [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console) |
 | **Security** | management allow-list, session timeouts, dormant accounts, login banner; sessions of all users (administrators) | [02 Installation](02-installation.md#management-allow-list), [09 Users and access](09-users-and-access.md#sessions-and-sign-in-protection) |
 
 ![Settings: Approvals](images/settings-approvals.png)
@@ -449,6 +457,11 @@ change who can sign in need a second person when approvals are enabled.
 ![Settings: Updates](images/settings-updates.png)
 
 ![Settings: Anomaly detection](images/settings-anomaly.png)
+
+![Settings: Certificate](images/settings-certificate.png)
+![Settings: Forwarding](images/settings-forwarding.png)
+![Settings: Diagnostics](images/settings-diagnostics.png)
+![Settings: Console access](images/settings-console.png)
 
 ![Settings: Security](images/settings-security.png)
 

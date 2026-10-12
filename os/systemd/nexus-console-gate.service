@@ -1,0 +1,39 @@
+[Unit]
+Description=NexusBackup emergency console gate (tty2): root shell only with an unlock code or the recovery key
+# Replaces the getty on tty2 (root's password is locked, so no login was possible
+# there anyway; getty@tty2 and autovt@tty2 are masked in the image). Before setup
+# is done it only points to tty1.
+After=systemd-user-sessions.service systemd-vconsole-setup.service plymouth-quit-wait.service
+Conflicts=getty@tty2.service autovt@tty2.service
+
+[Service]
+ExecStart=/usr/libexec/nexus/nexus-console-gate
+# EOF on the terminal or an error: a fresh gate (the failed-attempt limit survives in
+# the runtime dir)
+Restart=always
+RestartSec=2
+StandardInput=tty
+StandardOutput=tty
+StandardError=journal
+TTYPath=/dev/tty2
+TTYReset=yes
+# also ends the shell of a gate that died (its scope is stopped by the next gate)
+TTYVHangup=yes
+TTYVTDisallocate=yes
+Environment=TERM=linux
+RuntimeDirectory=nexus-console-gate
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+# the recovery key passes through here
+LimitCORE=0
+LimitMEMLOCK=infinity
+
+# Deliberately NOT sandboxed (no ProtectSystem=, NoNewPrivileges=, CapabilityBoundingSet=,
+# namespaces): the root shell it starts inherits all of that, and an emergency shell must
+# be able to repair the system. The gate itself is confined by SELinux instead
+# (nexus_consolegate_t, os/selinux/nexus.te): catalog, keyd escrow (read), the unlock
+# codes (read + delete), tty2, systemd-run --scope; only bash run from it becomes
+# unconfined_t, and no other nexus domain can make that transition.
+
+[Install]
+WantedBy=multi-user.target

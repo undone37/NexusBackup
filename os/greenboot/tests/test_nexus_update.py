@@ -54,6 +54,13 @@ json.dump(st, open(os.path.join(d, "state.json"), "w"))
 
 LOGGER = '#!/bin/sh\necho "$(basename "$0") $*" >> "$FAKE_DIR/calls"\n'
 
+# Fake nexus-diag: prints $FAKE_DIR/checks.json (default: no checks), counts its runs.
+FAKE_DIAG = r'''#!/bin/sh
+echo "$*" >> "$FAKE_DIR/diag-calls"
+[ -e "$FAKE_DIR/diag-crash" ] && { echo "Traceback: boom" >&2; exit 1; }
+if [ -e "$FAKE_DIR/checks.json" ]; then cat "$FAKE_DIR/checks.json"; else echo "[]"; fi
+'''
+
 
 def load():
     loader = importlib.machinery.SourceFileLoader("nexus_update", str(SCRIPT))
@@ -115,6 +122,8 @@ class Agent(unittest.TestCase):
         for t in ("nft", "systemctl"):
             (self.d / t).write_text(LOGGER)
             (self.d / t).chmod(0o755)
+        (self.d / "nexus-diag").write_text(FAKE_DIAG)
+        (self.d / "nexus-diag").chmod(0o755)
         self.env = {
             "FAKE_DIR": str(self.d),
             "NEXUS_UPDATE_CONF": str(self.d / "none.conf"),
@@ -124,6 +133,7 @@ class Agent(unittest.TestCase):
             "NEXUS_UPDATE_DIR": str(self.d / "ctl"),
             "NEXUS_UPDATE_LOCK": str(self.d / "lock"),
             "NEXUS_UPDATE_EGRESS": "none",
+            "NEXUS_UPDATE_DIAG": str(self.d / "nexus-diag"),
             # only the first tick checks, unless a test says otherwise
             "NEXUS_UPDATE_CHECK_HOURS": "1000",
         }
@@ -397,6 +407,114 @@ class Agent(unittest.TestCase):
         self.assertEqual(self.u.window_text({"days": ["mon", "thu"], "start_utc": "01:30", "minutes": 60}), "Mon,Thu 01:30 60")
         self.assertEqual(self.u.epoch("2026-10-11T00:00:00Z"), 1791676800)
         self.assertIsNone(self.u.epoch("garbage"))
+
+    # ------------------------------------------------------------ pre-update checks (14b)
+
+    def checks(self, *failing, severity=3):
+        cs = [{"id": "selinux", "title": "SELinux mode", "status": "pass", "severity": 1, "detail": "enforcing",
+               "manual": "15-troubleshooting-faq.md#check-selinux"}]
+        cs += [{"id": i, "title": i, "status": "fail", "severity": severity, "detail": f"{i} is broken",
+                "manual": f"15-troubleshooting-faq.md#check-{i.replace('.', '-')}"} for i in failing]
+        (self.d / "checks.json").write_text(json.dumps(cs))
+
+    def diag_runs(self):
+        p = self.d / "diag-calls"
+        n = len(p.read_text().splitlines()) if p.exists() else 0
+        p.unlink(missing_ok=True)
+        return n
+
+    def test_failing_check_refuses_staging(self):
+        self.registry_serves("sha256:bbb", "1.1.0")
+        self.checks("disk.var", "time.sync")
+        self.assertEqual(self.tick(), 0, "a refusal is not a failed unit (that would block the next check)")
+        self.assertEqual(self.calls(), [])
+        s = self.status()
+        self.assertTrue(s["last_result"]["result"].startswith("refused: pre-update checks failed: disk.var: disk.var is broken"))
+        a = s["api"]
+        self.assertEqual((a["status"], a["error"]), ("blocked", None))
+        self.assertEqual([b["id"] for b in a["blocked"]], ["disk.var", "time.sync"])
+        self.assertEqual(a["blocked"][0]["manual"], "15-troubleshooting-faq.md#check-disk-var")
+        # fixed: the next check stages, the block is gone
+        self.checks()
+        (self.d / "ctl/request").write_text("stage")
+        self.tick(utc(2026, 10, 9, 12, 15))
+        self.assertEqual(self.calls(), ["bootc upgrade --quiet --download-only"])
+        a = self.status()["api"]
+        self.assertEqual((a["status"], a["blocked"]), ("staged", []))
+
+    def test_warnings_do_not_block(self):
+        self.registry_serves("sha256:bbb", "1.1.0")
+        self.checks("tls.cert", severity=2)
+        self.tick()
+        self.assertEqual(self.calls(), ["bootc upgrade --quiet --download-only"])
+
+    def test_failing_check_refuses_apply_in_window_and_on_request(self):
+        self.registry_serves("sha256:bbb", "1.1.0")
+        self.tick()
+        self.calls()
+        self.checks("catalog.integrity", severity=4)
+        self.tick(utc(2026, 10, 11, 3, 30))  # window open, staged
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.status()["api"]["status"], "blocked")
+        self.assertIsNone(self.status()["applying"])
+        (self.d / "ctl/request").write_text("apply")
+        self.tick(utc(2026, 10, 11, 3, 45))
+        self.assertEqual(self.calls(), [])
+        # rollback is recovery: never gated
+        (self.d / "ctl/request").write_text("rollback")
+        self.tick(utc(2026, 10, 11, 4, 0))
+        self.assertEqual(self.calls(), ["bootc rollback", "systemctl reboot"])
+
+    def test_checks_run_once_per_tick_and_only_when_needed(self):
+        self.registry_serves("sha256:bbb", "1.1.0")
+        (self.d / "ctl/request").write_text("apply")
+        self.tick()  # stage + apply in one tick
+        self.assertEqual(self.diag_runs(), 1)
+        self.reboot_into("sha256:bbb")
+        (self.d / "next.json").unlink()
+        self.tick(utc(2026, 10, 9, 12, 15))  # nothing due
+        self.assertEqual(self.diag_runs(), 0)
+
+    def test_broken_checker_fails_open(self):
+        self.registry_serves("sha256:bbb", "1.1.0")
+        (self.d / "diag-crash").touch()
+        self.tick()
+        self.assertEqual(self.calls(), ["bootc upgrade --quiet --download-only"])
+        self.assertIn("boom", self.status()["checks"]["error"])
+        os.environ["NEXUS_UPDATE_DIAG"] = str(self.d / "missing")
+        try:
+            (self.d / "ctl/request").write_text("stage")
+            self.tick(utc(2026, 10, 9, 12, 15))
+            self.assertEqual(self.status()["checks"]["blocking"], [])
+        finally:
+            os.environ["NEXUS_UPDATE_DIAG"] = str(self.d / "nexus-diag")
+
+    def test_checks_off(self):
+        self.registry_serves("sha256:bbb", "1.1.0")
+        self.checks("selinux.x")
+        os.environ["NEXUS_UPDATE_DIAG"] = "off"
+        try:
+            self.tick()
+        finally:
+            os.environ["NEXUS_UPDATE_DIAG"] = str(self.d / "nexus-diag")
+        self.assertEqual(self.calls(), ["bootc upgrade --quiet --download-only"])
+        self.assertEqual(self.diag_runs(), 0)
+
+    def test_console_commands_run_the_checks(self):
+        import contextlib
+        import io
+
+        self.registry_serves("sha256:bbb", "1.1.0")
+        self.checks("disk.root")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self.u.main(["nexus-update", "stage"]), 1)
+        self.assertIn("pre-update checks failed: disk.root", err.getvalue())
+        self.assertEqual(self.calls(), [])
+        self.checks()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.u.main(["nexus-update", "stage"]), 0)
+        self.assertEqual(self.calls(), ["bootc upgrade --quiet --download-only"])
 
     def test_status_file_is_not_world_readable(self):
         self.tick()

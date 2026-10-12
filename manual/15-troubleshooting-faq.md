@@ -212,9 +212,70 @@ Updates are applied only in the maintenance window or on request, are postponed 
 rolled back is not applied again. Check **Settings → Updates** or `nexus-update status` on the console (see
 [13 Updates](13-updates.md)).
 
+**An update shows "Blocked by checks".**
+Before it downloads or installs an update the appliance runs its self-checks. A failed check of severity **error** or
+**critical** stops the update (see [Diagnostics and support bundles](#diagnostics-and-support-bundles) below). The
+**Updates** tab lists the failed checks with a link to their entry here. Fix the cause, then click **Check now**.
+
 **The appliance runs the old version after an update.**
 The health check failed after the reboot and the appliance rolled back automatically. The reason is in the journal of
 the greenboot health check.
+
+<a id="diagnostics-and-support-bundles"></a>
+## Diagnostics and support bundles
+
+The appliance has no shell access. To find out what is wrong, use **Configuration → Settings → Diagnostics**
+(administrators and security officers; only administrators create support bundles).
+
+> **Status:** New in this release. The checks, the redaction and the web interface are covered by unit and API tests
+> and were tested against the demo backend; the run on a real appliance (SELinux confinement, journal and audit
+> access) is not lab-tested yet.
+
+![Settings: Diagnostics](images/settings-diagnostics.png)
+
+**Self-checks.** **Run checks** checks disks, time, firewall, key daemon, web certificate, audit log, catalog, SELinux,
+services and the OS image, and lists the result of each with a **Help** link to its entry below. Each failed check has a
+severity: **warning**, **error** or **critical**. The same checks run before every update: a failed check of severity
+**error** or **critical** stops the update ([13 Updates](13-updates.md#pre-update-checks)). Running the checks is
+recorded in the audit log (`diag.checks`).
+
+**Support bundle.** Choose a time range (at most 31 days, default the last 24 hours) and click **Create bundle**. After
+a minute the bundle appears under **Your bundles** with a **Download** button. It is a `.tar.gz` file with:
+
+- the journal of the NexusBackup services, the time sync and the firewall for the range, and all warnings and errors;
+- SELinux denials, firewall drops, chrony status, failed services, the NexusBackup units and the firewall ruleset;
+- the update status (booted, staged and rollback image, last result);
+- catalog statistics: row counts per table and the number of audit entries per action, never their contents;
+- the result of the self-checks, and a `manifest.json`.
+
+Before the bundle is written, passwords, tokens, keys, certificates, cookies, authenticator secrets and passwords in
+URLs are replaced by `[REDACTED]`. **Host names and IP addresses are kept**: support needs them to follow connections
+and firewall drops. Check the bundle before you send it if your addresses must not leave the company. Only the
+administrator who created a bundle can download it, for 24 hours; then it is deleted. Creating and downloading are
+recorded in the audit log (`diag.bundle`, `download.get`).
+
+**Only one request at a time.** "A diagnostics request is waiting to run" means another request has not started yet;
+try again a minute later.
+
+### The checks
+
+| Check | What it checks | What to do |
+|---|---|---|
+| <a id="check-disk-store"></a>`disk.store` Disk space: chunk store | Used space of the file system that holds the backups (`/var/lib/nexus/chunkstore`). Warning from 85 %, error from 95 %. | Let retention free space (**Storage** shows growth per tenant), shorten the retention of large groups, delete expired snapshots or add disk space. A full store makes backups fail. |
+| <a id="check-disk-var"></a>`disk.var` Disk space: /var | Used space of `/var` (journal, catalog, downloads, update staging). Warning from 85 %, error from 95 %. | An update needs free space in `/var` to download the new image. If `/var` and the store share one file system, free space in the store. |
+| <a id="check-disk-root"></a>`disk.root` Disk space: /sysroot | Used space of the OS file system (`/sysroot`, which holds the OS images). | Usually caused by old deployments; it is freed when the next update replaces the rollback image. Contact support if it stays above 95 %. |
+| <a id="check-disk-boot"></a>`disk.boot` Disk space: /boot | Used space of `/boot` (kernels of the booted and the rollback image). | As for `/sysroot`; an update cannot be staged without room for its kernel. |
+| <a id="check-time-sync"></a>`time.sync` Time synchronisation | Whether chrony has a synchronised clock (stratum, offset). Not synchronised = error; an offset above 1 s = warning. | Check that the NTS servers are reachable (DNS works, outbound UDP 123 and TCP 4460 to the servers are allowed by your firewall) and wait a few minutes after boot. Certificate checks, sign-in codes and retention locks rely on the clock. |
+| <a id="check-time-nts"></a>`time.nts` Authenticated time sources (NTS) | Whether the time sources are authenticated with NTS. | The appliance accepts only NTS sources. A warning means none could be authenticated yet: usually blocked TCP 4460 to the NTS servers. |
+| <a id="check-egress"></a>`egress` Outbound firewall | Whether the default-deny output chain and its allow-list sets are loaded, and whether the allow-list sync runs. | An error means the firewall table is missing: reboot the appliance. A warning about the sync means destinations you add (sources, offsite targets, alert webhooks) are not opened; reboot and check the journal of `nexus-nft-sync`. |
+| <a id="check-keyd"></a>`keyd` Key daemon | Whether the key daemon runs and its socket exists. Without it no backup and no restore works (critical). | Reboot the appliance. If it stays down, create a support bundle and contact support; do not reinstall (the key store is on this appliance and in the recovery escrow). |
+| <a id="check-tls-cert"></a>`tls.cert` Web certificate | Expiry of the web interface's certificate. Expires within 30 days = warning, expired = error. | The self-signed certificate of the first-boot wizard is valid for 10 years, so this normally concerns an imported certificate: replace it before it expires. Browsers and the replication secondary refuse an expired certificate. |
+| <a id="check-audit-chain"></a>`audit.chain` Audit log hash chain | Recomputes the hash chain of the audit log. A broken chain means the catalog was modified outside the appliance (critical). | Do not change anything. Open **Audit log**, note the reported entry number, create a support bundle and treat it as a security incident. |
+| <a id="check-catalog-integrity"></a>`catalog.integrity` Catalog integrity | SQLite `quick_check` of the catalog database (critical when it fails). | Usually a disk problem. Create a support bundle and contact support; the catalog can be rebuilt from the stores and the offsite copies ([14 Disaster recovery](14-disaster-recovery.md)). |
+| <a id="check-selinux"></a>`selinux` SELinux mode | Whether SELinux enforces the service confinement. Permissive or disabled is critical. | The appliance always boots enforcing. If this fails, the kernel command line was changed; contact support. |
+| <a id="check-systemd-failed"></a>`systemd.failed` Failed system services | Services that have failed. A failed key daemon, web-api, scheduler or replication daemon is an error, any other failed unit a warning. | The bundle's journal names the reason. A reboot restarts all services. |
+| <a id="check-bootc"></a>`bootc` OS image (bootc) | Booted, staged and rollback image as the update agent last saw them; a queued rollback or an unsigned origin is a warning. | An unsigned origin is fixed by the next update check. A queued rollback takes effect at the next reboot. |
+| <a id="check-smart"></a>`smart` Disk health (SMART) | Not part of the image: the check is skipped (most appliances run as virtual machines, where the hypervisor watches the disks). | Watch the disks on the hypervisor or the hardware's management controller. |
 
 ## FAQ
 

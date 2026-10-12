@@ -192,3 +192,20 @@ lab/appliance/replication.sh check      # domains, AVCs (0 nexus expected) on bo
 lab/appliance/replication.sh restore    # stops A, then file download from vm-100 on B (micro-VM)
 lab/appliance/replication.sh check stop
 ```
+
+## Forwarding lab (`lab/appliance/forwarding.sh`, docs/control-plane.md "Forwarding")
+
+Audit / alert forwarding of an installed appliance VM (after `lab/appliance/e2e.sh boot setup`, `PVE=0` is
+enough) to `lab/forwarding/testbox` (rootless podman, image built from `quay.io/centos/centos:stream10`:
+rsyslog with TLS on 127.0.0.1:16514 and an HTTPS JSON sink on 127.0.0.1:18445, lab CA in
+`target/forwarding-testbox/`; the VM reaches both at 10.0.2.2).
+
+```sh
+lab/appliance/forwarding.sh all     # testbox, both sinks via the API, test message, every seq + hash at both
+                                    # receivers (no gaps), outage + backlog, quorum for disabling, audit.csv
+lab/appliance/e2e.sh check          # 0 nexus AVCs
+lab/appliance/forwarding.sh stop
+```
+
+Without a VM, the formatting against a real rsyslog: `lab/forwarding/testbox/run.sh start`,
+`eval "$(lab/forwarding/testbox/run.sh env)"`, `cargo test -p scheduler --lib testbox -- --ignored`.

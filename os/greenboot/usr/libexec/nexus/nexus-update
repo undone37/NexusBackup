@@ -30,6 +30,14 @@
 # fetched with skopeo --insecure-policy. stage therefore refuses `bootc upgrade` on such
 # a host and runs `bootc switch --enforce-container-sigpolicy <repo>:<tag>` instead, which
 # fixes the origin for every later upgrade.
+#
+# Pre-update checks (Phase 14b): before it stages or applies an image, nexus-update runs
+# `nexus-diag checks` and refuses while a check with severity >= 3 fails (disk full,
+# clock not synchronised, catalog or audit chain broken, SELinux not enforcing, ...).
+# The refusal is the last result ("refused: ..."), the api view shows status "blocked"
+# with the failing checks. Rollback is never blocked. If nexus-diag itself cannot run,
+# the update goes ahead (a broken checker must not block the update that fixes it).
+# NEXUS_UPDATE_DIAG=off (environment or update.conf) skips the checks.
 
 import datetime as dt
 import fcntl
@@ -51,6 +59,7 @@ CONF_DEFAULTS = {
     "NEXUS_UPDATE_HOSTS": "ghcr.io pkg-containers.githubusercontent.com",
     "NEXUS_UPDATE_DIR": "/var/lib/nexus/update",
     "NEXUS_UPDATE_LOCK": "/run/nexus-update.lock",
+    "NEXUS_UPDATE_DIAG": "/usr/libexec/nexus/nexus-diag",
 }
 REQUESTS = ("stage", "apply", "rollback")
 INHIBIT_MAX_AGE = 6 * 3600
@@ -59,6 +68,10 @@ DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 class Error(Exception):
     pass
+
+
+class Refused(Error):
+    """A pre-update check with severity >= 3 failed."""
 
 
 def load_conf(path=CONF):
@@ -249,6 +262,32 @@ class Egress:
         self.added = []
 
 
+def prechecks(c, st):
+    """Runs `nexus-diag checks`, records the blocking ones in st["checks"] and raises
+    Refused if there are any. Fails open when the checker itself cannot run."""
+    now = int(time.time())
+    if c["NEXUS_UPDATE_DIAG"] == "off":
+        st["checks"] = {"time": now, "skipped": True, "blocking": []}
+        return
+    try:
+        p = subprocess.run([c["NEXUS_UPDATE_DIAG"], "checks"], capture_output=True, text=True, timeout=900)
+        cs = json.loads(p.stdout) if p.returncode == 0 else None
+        if not isinstance(cs, list):
+            raise ValueError(f"exit {p.returncode}: {(p.stderr or p.stdout).strip()[-200:]}")
+    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        log(f"pre-update checks unavailable ({e}); continuing without them")
+        st["checks"] = {"time": now, "error": str(e)[:300], "blocking": []}
+        return
+    bad = [
+        {k: x.get(k) for k in ("id", "title", "severity", "detail", "manual")}
+        for x in cs
+        if isinstance(x, dict) and x.get("status") == "fail" and (x.get("severity") or 0) >= 3
+    ]
+    st["checks"] = {"time": now, "blocking": bad}
+    if bad:
+        raise Refused("pre-update checks failed: " + "; ".join(f"{x['id']}: {x['detail']}" for x in bad))
+
+
 def stage(c):
     target = f"{c['NEXUS_IMAGE_REPO']}:{c['NEXUS_UPDATE_TAG']}"
     s = summary(bootc_status())
@@ -351,6 +390,7 @@ def api_view(st):
     last = st.get("last_result") or {}
     error = last.get("result") if str(last.get("result") or "").startswith("error") else None
     error = error or st.get("bootc_error")
+    refused = str(last.get("result") or "").startswith("refused")
     available = None
     if staged and staged.get("digest") != (booted or {}).get("digest"):
         available = {"version": staged.get("version"), "digest": staged.get("digest")}
@@ -362,8 +402,10 @@ def api_view(st):
         "channel": channel.rsplit(":", 1)[-1] if channel else None,
         "window": window_text(st.get("window")),
         "last_check": st.get("last_check"),
-        "status": "error" if error else ("staged" if staged else "idle"),
+        "status": "error" if error else ("blocked" if refused else ("staged" if staged else "idle")),
         "error": error,
+        # the checks that refused the last stage / apply (manual: chapter 15 anchors)
+        "blocked": ((st.get("checks") or {}).get("blocking") or []) if refused else [],
         "rollback": img(st.get("rollback")),
         "applying": st.get("applying"),
     }
@@ -398,10 +440,17 @@ def tick(c, now=None):
     now = now or dt.datetime.now(dt.timezone.utc)
     d = c["NEXUS_UPDATE_DIR"]
     prev = read_status(c)
-    st = {k: prev.get(k) for k in ("last_check", "last_result", "failed_digests", "applying")}
+    st = {k: prev.get(k) for k in ("last_check", "last_result", "failed_digests", "applying", "checks")}
     st["failed_digests"] = st["failed_digests"] or []
     req = take_request(d)
     result = None
+    checked = []
+
+    def gate():  # pre-update checks, at most once per tick
+        if not checked:
+            checked.append(True)
+            prechecks(c, st)
+
     try:
         if st["applying"]:
             booted = (summary(bootc_status())["booted"] or {}).get("digest")
@@ -431,13 +480,19 @@ def tick(c, now=None):
             )
             if check_due:
                 st["last_check"] = int(now.timestamp())
+                gate()
                 result = stage(c)
             win = effective_window(c)
             if req == "apply":
+                gate()
                 result = apply(c, st, force=True)
             elif in_window(win, now) and not inhibited(d, now.timestamp()):
                 if summary(bootc_status())["staged"]:
+                    gate()
                     result = apply(c, st)
+    except Refused as e:
+        result = f"refused: {e}"
+        log(result)
     except Error as e:
         result = f"error: {e}"
         log(result)
@@ -488,8 +543,11 @@ def main(argv):
         if cmd == "tick":
             return tick(c)
         try:
+            if cmd != "rollback":  # NEXUS_UPDATE_DIAG=off nexus-update ... skips the checks
+                st = read_status(c)
+                prechecks(c, st)
             if cmd == "apply":  # an admin on the console: like the "apply" request
-                print(apply(c, force=True))
+                print(apply(c, st, force=True))
             else:
                 print({"stage": stage, "rollback": rollback}[cmd](c))
             return 0

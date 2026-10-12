@@ -90,10 +90,13 @@ impl User {
 /// An authenticated request. Extracting it validates the session cookie,
 /// enforces idle/absolute expiry, refreshes `last_seen` and — for every
 /// method other than GET/HEAD — checks the `X-CSRF-Token` header.
+/// API token requests (`crate::tokens`, authenticated by its middleware) carry
+/// `token`, no session (`sid`, `csrf` empty) and the role capped by the scope.
 pub struct Ctx {
     pub user: User,
     pub sid: String,
     pub csrf: String,
+    pub token: Option<crate::tokens::TokenRef>,
 }
 
 impl Ctx {
@@ -129,6 +132,14 @@ fn session_cookie(parts: &Parts) -> Option<String> {
 impl FromRequestParts<St> for Ctx {
     type Rejection = ApiError;
     async fn from_request_parts(parts: &mut Parts, st: &St) -> Result<Self, ApiError> {
+        if let Some(t) = parts.extensions.get::<crate::tokens::TokenAuth>() {
+            return Ok(Ctx {
+                user: t.user.clone(),
+                sid: String::new(),
+                csrf: String::new(),
+                token: Some(t.token.clone()),
+            });
+        }
         let token = session_cookie(parts).ok_or_else(ApiError::unauthorized)?;
         let sid = sha256_hex(token.as_bytes());
         let now = catalog::now();
@@ -184,7 +195,12 @@ impl FromRequestParts<St> for Ctx {
             "UPDATE sessions SET last_seen = ?1 WHERE id_hash = ?2",
             params![now, sid],
         )?;
-        Ok(Ctx { user, sid, csrf })
+        Ok(Ctx {
+            user,
+            sid,
+            csrf,
+            token: None,
+        })
     }
 }
 
@@ -549,8 +565,12 @@ pub async fn logout(State(st): State<St>, ctx: Ctx) -> ApiResult<Response> {
 
 /// `{user, csrf, break_glass}` — lets the SPA recover its CSRF token after a
 /// reload; `break_glass` (`{at, user, alert, forced_solo}` or null) drives the
-/// banner after a console recovery until the alert is acknowledged.
+/// banner after a console recovery until the alert is acknowledged;
+/// `console_shell` the banner while a console root shell runs (14c).
 pub async fn me(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<serde_json::Value>> {
     let bg = crate::dashboard::break_glass(&st.cat.conn(), &ctx)?;
-    Ok(Json(json!({"user": ctx.user, "csrf": ctx.csrf, "break_glass": bg})))
+    let shell = crate::console::shell_banner(&st.cat.conn(), &ctx)?;
+    Ok(Json(
+        json!({"user": ctx.user, "csrf": ctx.csrf, "break_glass": bg, "console_shell": shell}),
+    ))
 }

@@ -213,8 +213,17 @@ const db = {
   alertSettings: {} as Json,
   sshKeys: [] as Json[],
   updates: {} as Json,
+  /** Phase 14b diagnostics runs (GET /diagnostics) */
+  diag: [] as Json[],
   /** Phase 13e setting `anomaly` */
   anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30 } as Json,
+  /** Phase 14a setting `forwarding` (header values: plaintext here, null in responses) */
+  forwarding: {
+    syslog: { enabled: true, host: 'siem.example.com', port: 6514, ca_pem: null, pin_sha256: '3f'.repeat(32), app_name: 'nexus', facility: 13 },
+    https: null,
+  } as Json,
+  /** last delivery error per sink (none = the forwarder keeps up) */
+  forwardErr: {} as Record<string, string>,
   /** Phase 14d settings `session`, `dormant_days`, `login_banner`, `mgmt_allow` */
   security: {
     session: { idle_min: 30, absolute_h: 12 },
@@ -1140,7 +1149,10 @@ function seed() {
   seedPhase12(t);
   seedPhase13a(t);
   seedRunControl(t);
+  seedPhase14d2(t);
   seedReports(t);
+  seedDiag(t);
+  seedConsole(t);
 }
 
 // ---------------------------------------------------------------- run control (Phase 13b)
@@ -1290,7 +1302,8 @@ function find<T>(xs: T[], pred: (x: T) => boolean, what: string): T {
 }
 
 // approved requests the scheduler executes (state stays `approved` until it has)
-const SCHEDULER_ACTIONS = ['replication.key_export', 'gc_large'];
+// (console.unlock: nobody executes it; the requester then fetches the code once, 14c)
+const SCHEDULER_ACTIONS = ['replication.key_export', 'gc_large', 'console.unlock'];
 // 202 {quorum_id, ...extra} like web-api's `accepted()`; with approvals disabled the
 // action runs at once (200 {approvals: "disabled", executed}).
 async function quorum(u: User, action: string, params: Json, extra: Json = {}): Promise<[number, Json]> {
@@ -1455,6 +1468,9 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'security.mgmt_allow':
       db.security.mgmt_allow = [...p.mgmt_allow];
       break;
+    case 'settings.forwarding':
+      db.forwarding = structuredClone(p.forwarding);
+      break;
     case 'policy.update':
       Object.assign(find(db.policies, (x) => x.id === p.id, 'policy'), next);
       break;
@@ -1561,7 +1577,7 @@ on('POST', '/auth/logout', (c) => {
 });
 on('GET', '/auth/me', (c) => {
   const u = need(c.user);
-  return [200, { user: pub(u), csrf: db.sessions.get(c.sid!)!.csrf }];
+  return [200, { user: pub(u), csrf: db.sessions.get(c.sid!)!.csrf, console_shell: u.tenant || u.role === 'tenant_user' ? null : consoleShell }];
 });
 
 // tenants
@@ -2594,14 +2610,57 @@ for (const verb of ['approve', 'reject'] as const) {
 }
 
 // audit
+// filters as the web-api: actor exact, action prefix, target substring, from/to unix seconds
+function auditFiltered(q: URLSearchParams): Json[] {
+  const after = Number(q.get('after') ?? 0);
+  const before = q.get('before');
+  const [actor, action, target] = ['actor', 'action', 'target'].map((k) => q.get(k) || null);
+  const from = q.get('from') ? Number(q.get('from')) : null;
+  const to = q.get('to') ? Number(q.get('to')) : null;
+  return db.audit.filter(
+    (e) =>
+      e.seq > after &&
+      (before === null || e.seq < Number(before)) &&
+      (!actor || e.actor === actor) &&
+      (!action || e.action.startsWith(action)) &&
+      (!target || e.target.includes(target)) &&
+      (from === null || e.ts >= from) &&
+      (to === null || e.ts <= to),
+  );
+}
 on('GET', '/audit', (c) => {
   need(c.user, 'admin', 'security_officer');
-  const after = Number(c.query.get('after') ?? 0);
   const before = c.query.get('before');
   const limit = Math.min(Number(c.query.get('limit') ?? 500), 1000);
   const desc = before !== null || c.query.get('order') === 'desc';
-  const xs = db.audit.filter((e) => e.seq > after && (before === null || e.seq < Number(before)));
+  const xs = auditFiltered(c.query);
   return [200, (desc ? [...xs].reverse() : xs).slice(0, limit)];
+});
+async function auditCsv(u: User, q: URLSearchParams): Promise<string> {
+  const shown: Json = {};
+  for (const k of ['actor', 'action', 'target', 'from', 'to', 'after', 'before']) if (q.get(k)) shown[k] = /^(from|to|after|before)$/.test(k) ? Number(q.get(k)) : q.get(k);
+  const rows = auditFiltered(q);
+  await audit(u.name, 'audit.export', 'audit', shown);
+  const f = (s: string) => (/[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
+  return ['seq,ts,actor,action,target,details,prev_hash,hash', ...rows.map((e) => [e.seq, e.ts, f(e.actor), f(e.action), f(e.target), f(JSON.stringify(e.details)), e.prev_hash, e.hash].join(','))].join('\r\n') + '\r\n';
+}
+on('GET', '/audit/forwarding', (c) => {
+  need(c.user, 'admin', 'security_officer');
+  const head = db.audit.length;
+  const f = db.forwarding;
+  const sinks = (['syslog', 'https'] as const)
+    .filter((k) => f[k])
+    .map((k) => {
+      const err = db.forwardErr[k];
+      const dest = k === 'syslog' ? `${f.syslog.host}:${f.syslog.port}` : f.https.url;
+      return {
+        sink: k, dest, enabled: f[k].enabled,
+        audit_seq: !f[k].enabled ? Math.max(0, head - 12) : err ? Math.max(0, head - 3) : head,
+        event_seq: err ? 40 : 42,
+        last_ok: now() - (err ? 1500 : 4), last_error: err ?? null, last_error_ts: err ? now() - 20 : null, failing_since: err ? now() - 1500 : null,
+      };
+    });
+  return [200, { head_seq: head, sinks }];
 });
 on('GET', '/audit/verify', async (c) => {
   need(c.user, 'admin', 'security_officer');
@@ -2643,7 +2702,7 @@ const alertFor = (c: Ctx, id: string) => {
   const u = need(c.user, 'admin', 'operator', 'security_officer');
   if (u.tenant) throw new HttpError(403, 'forbidden');
   const a = find(db.alerts, (x) => x.id === Number(id), 'alert');
-  if (a.kind === 'break_glass') need(c.user, 'admin', 'security_officer');
+  if (['break_glass', 'console_unlock', 'console_root_shell'].includes(a.kind)) need(c.user, 'admin', 'security_officer');
   return { u, a };
 };
 on('POST', '/alerts/:id/ack', async (c, [id]) => {
@@ -3075,6 +3134,74 @@ on('PUT', '/settings/anomaly', async (c) => {
   return [200, next];
 });
 
+// ---- forwarding (14a): header values write-only; weakening an enabled sink needs approval
+function pubForwarding(f: Json = db.forwarding): Json {
+  const v = structuredClone(f);
+  if (v.https) v.https.headers = Object.fromEntries(Object.keys(v.https.headers ?? {}).map((k) => [k, null]));
+  return v;
+}
+on('GET', '/settings/forwarding', (c) => (need(c.user, 'admin', 'security_officer'), [200, pubForwarding()]));
+on('PUT', '/settings/forwarding', async (c) => {
+  const u = need(c.user, 'admin');
+  const old = db.forwarding;
+  const pin = (v: unknown, w: string) => {
+    if (v === null || v === undefined || String(v).trim() === '') return null;
+    const h = String(v).replace(/:/g, '').trim();
+    if (!/^[0-9a-fA-F]{64}$/.test(h)) throw new HttpError(400, `${w}.pin_sha256: 64 hex digits (SHA-256 of the certificate)`);
+    return h.toLowerCase();
+  };
+  const pem = (v: unknown, w: string) => {
+    if (v === null || v === undefined || String(v).trim() === '') return null;
+    if (!String(v).includes('-----BEGIN CERTIFICATE-----')) throw new HttpError(400, `${w}.ca_pem: PEM certificate(s), at most 64 KiB`);
+    return String(v);
+  };
+  const s = c.body.syslog;
+  const h = c.body.https;
+  let syslog: Json | null = null;
+  if (s) {
+    if (!/^[A-Za-z0-9.:[\]-]{1,253}$/.test(s.host ?? '')) throw new HttpError(400, 'syslog.host: host name or IP address');
+    const facility = s.facility ?? 13;
+    if (!(Number.isInteger(facility) && facility >= 0 && facility <= 23)) throw new HttpError(400, 'syslog.facility: 0..=23');
+    const app = s.app_name ?? 'nexus';
+    if (!/^[!-~]{1,48}$/.test(app)) throw new HttpError(400, 'syslog.app_name: 1..=48 printable ASCII characters, no spaces');
+    syslog = { enabled: s.enabled ?? true, host: s.host, port: s.port ?? 6514, ca_pem: pem(s.ca_pem, 'syslog'), pin_sha256: pin(s.pin_sha256, 'syslog'), app_name: app, facility };
+  }
+  let https: Json | null = null;
+  if (h) {
+    if (!/^https:\/\/[^/@\s]+(\/\S*)?$/.test(h.url ?? '')) throw new HttpError(400, 'https.url: https://host[:port]/path, without user info');
+    const batch = h.batch_max ?? 100;
+    if (!(Number.isInteger(batch) && batch >= 1 && batch <= 1000)) throw new HttpError(400, 'https.batch_max: 1..=1000');
+    const headers: Json = {};
+    for (const [k, v] of Object.entries(h.headers ?? {})) {
+      if (v === null) {
+        const prev = old.https?.url === h.url ? old.https.headers?.[k] : undefined;
+        if (prev === undefined) throw new HttpError(400, `https.headers: a value for ${k} is required (new header or URL changed)`);
+        headers[k] = prev;
+      } else headers[k] = v;
+    }
+    https = { enabled: h.enabled ?? true, url: h.url, headers, batch_max: batch, ca_pem: pem(h.ca_pem, 'https'), pin_sha256: pin(h.pin_sha256, 'https') };
+  }
+  const next = { syslog, https };
+  const same = (a: Json, b: Json | null, keys: string[]) => !!a && !!b && b.enabled && keys.every((k) => JSON.stringify(a[k]) === JSON.stringify(b[k]));
+  const weaker =
+    (old.syslog?.enabled && !same(old.syslog, syslog, ['host', 'port', 'ca_pem', 'pin_sha256'])) ||
+    (old.https?.enabled && !same(old.https, https, ['url', 'ca_pem', 'pin_sha256', 'headers']));
+  if (weaker) return quorum(u, 'settings.forwarding', { forwarding: next, old: pubForwarding(old) });
+  db.forwarding = next;
+  const shown = pubForwarding();
+  await audit(u.name, 'settings.forwarding', 'settings/forwarding', shown);
+  return [200, shown];
+});
+on('POST', '/settings/forwarding/test', async (c) => {
+  const u = need(c.user, 'admin');
+  const f = db.forwarding;
+  const out: Json = {};
+  if (f.syslog) out.syslog = /bad|invalid/.test(f.syslog.host) ? `error: connecting ${f.syslog.host}:${f.syslog.port}: connection refused` : 'ok';
+  if (f.https) out.https = /bad|invalid/.test(f.https.url) ? 'error: HTTP status client error (401 Unauthorized)' : 'ok';
+  if (!f.syslog && !f.https) out.forwarding = 'error: no sink configured';
+  await audit(u.name, 'job.create', 'job/0', { kind: 'forward_test', params: {} });
+  return [200, out];
+});
 // ---- Phase 14e reports: CSV downloads and scheduled reports (docs/control-plane.md "Reports")
 const REPORT_TYPES = ['protection', 'failed', 'sla', 'storage'];
 const isoTime = (ts: number | null | undefined) => (ts ? new Date(ts * 1000).toISOString().replace('.000Z', 'Z') : '');
@@ -3344,6 +3471,7 @@ on('PUT', '/settings/oidc', async (c) => {
   const next = {
     enabled: !!b.enabled, issuer: b.issuer, client_id: String(b.client_id).trim(), scopes: b.scopes, label: String(b.label).trim(),
     username_claim: String(b.username_claim || 'preferred_username'), groups_claim: String(b.groups_claim || 'groups'), mappings: b.mappings,
+    client_secret_expires: typeof b.client_secret_expires === 'number' && b.client_secret_expires > 0 ? b.client_secret_expires : null,
   };
   const secret = b.client_secret ? String(b.client_secret) : undefined;
   if (db.approvals) {
@@ -3497,6 +3625,206 @@ on('POST', '/updates/apply', (c) => {
   return quorum(u, 'update.apply', { version: db.updates.available.version, digest: db.updates.available.digest });
 });
 
+// ---------------------------------------------------------------- Phase 14d: API tokens, web certificate
+
+const p14 = {
+  tokens: [] as { id: number; user_id: number; name: string; prefix: string; scope: 'read' | 'operator'; expires: number; created: number; last_used: number | null; last_ip: string | null }[],
+  cert: {
+    identity: null as Json | null,
+    web: null as Json[] | null,
+    prev: null as Json[] | null,
+    pending: null as Json | null,
+  },
+};
+const fpHex = () => rand(32).toUpperCase().replace(/(..)(?=.)/g, '$1:');
+const certInfo = (subject: string, issuer: string, sans: string[], from: number, to: number, selfSigned = false, ca = false): Json => ({
+  subject, issuer, sans, not_before: from, not_after: to, sha256: fpHex(), self_signed: selfSigned, ca,
+});
+const pemOf = (label: string, n: number) => {
+  const body = b64(randomBytes(n)).replace(/(.{64})/g, '$1\n').trim();
+  return `-----BEGIN ${label}-----\n${body}\n-----END ${label}-----\n`;
+};
+
+function seedPhase14d2(t: number) {
+  const admin = db.users.find((u) => u.name === 'admin')!;
+  const op = db.users.find((u) => u.name === 'op')!;
+  p14.tokens.push(
+    { id: nextId(), user_id: admin.id, name: 'monitoring', prefix: rand(4), scope: 'read', expires: t + 86400 * 300, created: t - 86400 * 65, last_used: t - 240, last_ip: '198.51.100.20' },
+    { id: nextId(), user_id: admin.id, name: 'ci-restore-test', prefix: rand(4), scope: 'operator', expires: t + 86400 * 5, created: t - 86400 * 85, last_used: t - 86400 * 2, last_ip: '198.51.100.31' },
+    { id: nextId(), user_id: op.id, name: 'ansible', prefix: rand(4), scope: 'operator', expires: t + 86400 * 120, created: t - 86400 * 10, last_used: null, last_ip: null },
+  );
+  const sans = ['backup.example.com', '198.51.100.5'];
+  p14.cert.identity = certInfo('CN=backup.example.com, O=NexusBackup appliance', 'CN=backup.example.com, O=NexusBackup appliance', sans, t - 86400 * 455, t + 86400 * 3200, true);
+  p14.cert.web = [
+    certInfo('CN=backup.example.com', 'CN=Example Corp Issuing CA 1, O=Example Corp', sans, t - 86400 * 40, t + 86400 * 325),
+    certInfo('CN=Example Corp Issuing CA 1, O=Example Corp', 'CN=Example Corp Root CA, O=Example Corp', [], t - 86400 * 900, t + 86400 * 2700, false, true),
+  ];
+  db.alerts.push(
+    mkAlert({ ts: t - 86400 * 3, severity: 'info', kind: 'cert_expiry', key: `cert_expiry:token:${p14.tokens[1].id}`, message: 'API token ci-restore-test of admin expires in 5 day(s)' }),
+    mkAlert({ ts: t - 86400 * 6, severity: 'warning', kind: 'cert_expiry', key: 'cert_expiry:oidc_secret', message: 'The OIDC client secret (create a new one at the IdP, enter it in Settings → Single sign-on) expires in 24 day(s)' }),
+  );
+  db.oidc.client_secret_expires = t + 86400 * 24;
+}
+
+const pubToken = (x: (typeof p14.tokens)[number]) => ({
+  id: x.id, user: db.users.find((u) => u.id === x.user_id)?.name ?? '?', name: x.name, prefix: x.prefix, scope: x.scope,
+  expires: x.expires, created: x.created, last_used: x.last_used, last_ip: x.last_ip,
+});
+on('GET', '/auth/tokens', (c) => {
+  const u = need(c.user);
+  const all = c.query.get('all') === 'true';
+  if (all) need(c.user, 'admin');
+  return [200, p14.tokens.filter((x) => all || x.user_id === u.id).map(pubToken).sort((a, b) => a.user.localeCompare(b.user) || a.name.localeCompare(b.name))];
+});
+on('POST', '/auth/tokens', async (c) => {
+  const u = need(c.user);
+  const { name = '', scope = '', days = 0, current_password, current_totp } = c.body;
+  if (!NAME_RE.test(String(name))) throw new HttpError(400, 'name: must match [A-Za-z0-9._-]{1,64} without a leading dot');
+  if (!Number.isInteger(days) || days < 1 || days > 365) throw new HttpError(400, 'days: 1..=365');
+  if (scope !== 'read' && scope !== 'operator') throw new HttpError(400, 'scope: read or operator');
+  if (scope === 'operator' && (u.role === 'security_officer' || u.role === 'viewer')) throw new HttpError(400, 'scope: operator tokens need the admin, operator or tenant user role');
+  if (u.auth !== 'oidc' && (current_password !== u.password || !/^\d{6}$/.test(String(current_totp ?? ''))))
+    throw new HttpError(current_password === undefined ? 400 : 403, 're-authentication failed: wrong current password or TOTP code');
+  if (p14.tokens.some((x) => x.user_id === u.id && x.name === name)) throw new HttpError(409, 'conflicts with existing data (duplicate name or still referenced)');
+  const secret = rand(32);
+  const x = { id: nextId(), user_id: u.id, name, prefix: rand(4), scope, expires: now() + days * 86400, created: now(), last_used: null, last_ip: null };
+  p14.tokens.push(x);
+  await audit(u.name, 'token.create', `token/${u.name}/${name}`, { id: x.id, prefix: x.prefix, scope, expires: x.expires });
+  return [201, { ...pubToken(x), token: `nxt_${x.prefix}_${secret}` }];
+});
+on('DELETE', '/auth/tokens/:id', async (c, [id]) => {
+  const u = need(c.user);
+  const x = p14.tokens.find((t) => String(t.id) === id && (t.user_id === u.id || u.role === 'admin'));
+  if (!x) throw new HttpError(404, 'not found');
+  p14.tokens.splice(p14.tokens.indexOf(x), 1);
+  await audit(u.name, 'token.revoke', `token/${pubToken(x).user}/${x.name}`, { id: x.id });
+  return [200, { ok: true }];
+});
+
+const certStatus = () => {
+  const c = p14.cert;
+  return {
+    active: c.web ? 'imported' : 'self_signed',
+    chain: structuredClone(c.web ?? [c.identity]),
+    identity: structuredClone(c.identity),
+    pending: structuredClone(c.pending),
+    can_revert: !!c.web || !!c.prev,
+    previous: !!c.prev,
+    pins: { replication_identity: c.identity?.sha256 ?? null, replication_peers: db.replPeers.filter((p) => p.state === 'enrolled').length },
+  };
+};
+const MOCK_NAME_RE = /^(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$|^[0-9.:a-f]+$/;
+on('GET', '/certificate', (c) => (need(c.user, 'admin', 'security_officer'), [200, certStatus()]));
+on('POST', '/certificate/csr', async (c) => {
+  const u = need(c.user, 'admin');
+  const cn = String(c.body.cn ?? '').trim().toLowerCase();
+  const sans = [cn, ...(Array.isArray(c.body.sans) ? c.body.sans.map((s: unknown) => String(s).trim().toLowerCase()) : [])].filter((s, i, a) => s && a.indexOf(s) === i);
+  for (const s of sans) if (!MOCK_NAME_RE.test(s)) throw new HttpError(400, `cn: "${s}" is neither a DNS name nor an IP address`);
+  p14.cert.pending = { cn, sans, created: now(), csr_pem: pemOf('CERTIFICATE REQUEST', 300) };
+  await audit(u.name, 'tls.csr', 'tls/web', { pending: { cn, sans } });
+  return [200, { csr_pem: p14.cert.pending.csr_pem, pending: p14.cert.pending }];
+});
+on('POST', '/certificate/install', async (c) => {
+  const u = need(c.user, 'admin');
+  const pem = String(c.body.chain_pem ?? '');
+  const p = p14.cert.pending;
+  if (!p) throw new HttpError(400, 'no pending key: generate a CSR first');
+  const n = (pem.match(/-----BEGIN CERTIFICATE-----/g) ?? []).length;
+  if (!n) throw new HttpError(400, 'no certificate found (paste PEM: -----BEGIN CERTIFICATE-----)');
+  const t = now();
+  const chain = [certInfo(`CN=${p.cn}`, 'CN=Example Corp Issuing CA 1, O=Example Corp', p.sans, t - 3600, t + 86400 * 397)];
+  if (n > 1) chain.push(certInfo('CN=Example Corp Issuing CA 1, O=Example Corp', 'CN=Example Corp Root CA, O=Example Corp', [], t - 86400 * 900, t + 86400 * 2700, false, true));
+  const warnings = n > 1 ? ['the issuer CN=Example Corp Root CA, O=Example Corp is not included: clients must trust it (or the root above it) already'] : [];
+  p14.cert.prev = p14.cert.web;
+  p14.cert.web = chain;
+  p14.cert.pending = null;
+  await audit(u.name, 'tls.install', 'tls/web', { subject: chain[0].subject, sha256: chain[0].sha256, not_after: chain[0].not_after, warnings });
+  return [200, { chain, warnings }];
+});
+on('POST', '/certificate/revert', async (c) => {
+  const u = need(c.user, 'admin');
+  const k = p14.cert;
+  if (!k.web && !k.prev) throw new HttpError(400, 'nothing to revert: the self-signed certificate is in use and there is no previous one');
+  [k.web, k.prev] = [k.prev, k.web];
+  const active = k.web ? 'imported' : 'self_signed';
+  await audit(u.name, 'tls.revert', 'tls/web', { active });
+  return [200, { active }];
+});
+
+// ---- diagnostics (Phase 14b): nexus-diag picks a request up after ~1 s and finishes after ~3 s
+function diagChecks(t: number): Json[] {
+  const c = (id: string, title: string, status: string, severity: number, detail: string) =>
+    ({ id, title, status, severity, detail, manual: `15-troubleshooting-faq.md#check-${id.replace(/\./g, '-')}` });
+  const day = (d: number) => new Date((t + d * 86400) * 1000).toISOString().slice(0, 10);
+  return [
+    c('disk.store', 'Disk space: /var/lib/nexus/chunkstore', 'pass', 1, '/var/lib/nexus/chunkstore: 58 % used, 1.7 TiB of 4.0 TiB free'),
+    c('disk.var', 'Disk space: /var', 'pass', 1, '/var: 58 % used, 1.7 TiB of 4.0 TiB free'),
+    c('disk.root', 'Disk space: /sysroot', 'pass', 1, '/sysroot: 31 % used, 27.5 GiB of 40.0 GiB free'),
+    c('disk.boot', 'Disk space: /boot', 'pass', 1, '/boot: 42 % used, 557 MiB of 960 MiB free'),
+    c('time.sync', 'Time synchronisation', 'pass', 1, 'stratum 2, offset +0.4 ms, normal, reference C035676C'),
+    c('time.nts', 'Authenticated time sources (NTS)', 'pass', 1, '4 NTS source(s)'),
+    c('egress', 'Outbound firewall', 'pass', 1, 'default-deny output chain loaded, allow-list sync active'),
+    c('keyd', 'Key daemon', 'pass', 1, 'key daemon running, socket present'),
+    c('tls.cert', 'Web certificate', 'warn', 2, `web certificate expires on ${day(21)} (21 days)`),
+    c('audit.chain', 'Audit log hash chain', 'pass', 1, `${db.audit.length} entries, hash chain intact`),
+    c('catalog.integrity', 'Catalog integrity', 'pass', 1, 'quick_check ok'),
+    c('selinux', 'SELinux mode', 'pass', 1, 'enforcing'),
+    c('systemd.failed', 'Failed system services', 'pass', 1, 'no failed units'),
+    c('bootc', 'OS image (bootc)', 'pass', 1, `booted ${db.updates.booted?.version}, rollback ${db.updates.rollback?.version}`),
+    c('smart', 'Disk health (SMART)', 'skip', 1, 'smartctl not installed'),
+  ];
+}
+function seedDiag(t: number) {
+  db.diag.push({ id: rand(16), kind: 'checks', by: 'admin', state: 'done', since: null, until: null, created: t - 2 * 3600 - 6, finished: t - 2 * 3600, error: null, checks: diagChecks(t), bundle: null });
+}
+function diagView(u: User, x: Json): Json | null {
+  if (x.kind === 'bundle' && x.by !== u.name) return null;
+  const t = now();
+  if (x.state === 'queued' && t - x.queued >= 1) x.state = 'running';
+  if (x.state === 'running' && t - x.queued >= 3) {
+    Object.assign(x, { state: 'done', created: x.queued, finished: t, checks: diagChecks(t) });
+    if (x.kind === 'bundle') {
+      const token = rand(32);
+      const body = `nexus-support bundle (mock) ${x.id}: ${new Date(x.since * 1000).toISOString()} .. ${new Date(x.until * 1000).toISOString()}\n`;
+      db.downloads.set(token, { owner: x.by, filename: `nexus-support-${x.id}.tar.gz`, body, expires: t + 86400 });
+      x.bundle = { bytes: 184_320 + Math.floor(Math.random() * 40_000), url: `/api/v1/downloads/${token}` };
+    }
+  }
+  const { queued: _q, ...rest } = x;
+  return { ...rest, expires: x.created ? x.created + 86400 : undefined };
+}
+const diagSubmit = async (u: User, kind: string, since: number | null, until: number | null) => {
+  if (db.diag.some((x) => x.state === 'queued')) throw new HttpError(409, 'a diagnostics request is waiting to run; try again in a minute');
+  const x = { id: rand(16), kind, by: u.name, state: 'queued', since, until, created: null, finished: null, error: null, checks: null, bundle: null, queued: now() };
+  db.diag.unshift(x);
+  await audit(u.name, `diag.${kind}`, `diag/${x.id}`, kind === 'bundle' ? { since, until } : {});
+  return [202, { id: x.id, state: 'queued' }] as [number, Json];
+};
+const diagReader = (c: { user: User | null }) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  if (u.tenant) throw new HttpError(403, 'appliance-wide');
+  return u;
+};
+on('GET', '/diagnostics', (c) => {
+  const u = diagReader(c);
+  return [200, { items: db.diag.map((x) => diagView(u, x)).filter(Boolean) }];
+});
+on('POST', '/diagnostics/checks', (c) => diagSubmit(diagReader(c), 'checks', null, null));
+on('POST', '/diagnostics/bundle', (c) => {
+  const u = need(c.user, 'admin');
+  const until = c.body.until ?? now();
+  const since = c.body.since ?? until - 86400;
+  if (!(since < until) || until > now() + 3600) throw new HttpError(400, 'since must be before until, and until not in the future');
+  if (until - since > 31 * 86400) throw new HttpError(400, 'the time range is limited to 31 days');
+  return diagSubmit(u, 'bundle', since, until);
+});
+on('GET', '/diagnostics/:id', (c, [id]) => {
+  const u = diagReader(c);
+  const v = diagView(u, find(db.diag, (x) => x.id === id, 'diagnostics run'));
+  if (!v) throw new HttpError(404, 'diagnostics run not found');
+  return [200, v];
+});
+
 // ---------------------------------------------------------------- server glue
 
 function readBody(req: Req): Promise<Uint8Array & { toString(enc: string): string }> {
@@ -3545,6 +3873,11 @@ async function handle(req: Req, res: Res) {
       res.setHeader('Content-Disposition', `attachment; filename="${d.filename}"`);
       return send(200, d.body, 'application/octet-stream');
     }
+    if (path === '/audit.csv' && method === 'GET') {
+      const u = need(user, 'admin', 'security_officer');
+      res.setHeader('Content-Disposition', 'attachment; filename="nexus-audit.csv"');
+      return send(200, await auditCsv(u, url.searchParams), 'text/csv; charset=utf-8');
+    }
     const bytes = method === 'GET' ? null : await readBody(req);
     // Plugin uploads are raw bundles, everything else JSON.
     const raw = method === 'POST' && path === '/plugins' ? bytes : null;
@@ -3570,6 +3903,115 @@ async function handle(req: Req, res: Res) {
     return send(500, { error: 'internal error' });
   }
 }
+
+// ---------------------------------------------------------------- console root access (14c)
+// web-api: crates/web-api/src/console.rs; the gate on tty2 is simulated by POST /mock/console-gate.
+const CONSOLE_TTL = 24 * 3600;
+let consoleShell: Json | null = null;
+/** quorum id -> code hash (issued), plus what the gate / a revocation did with it */
+const consoleCodes = new Map<number, { hash: string; outcome: 'used' | 'revoked' | null }>();
+const consoleNorm = (s: string) =>
+  s.toUpperCase().replace(/[\s-]/g, '').replace(/O/g, '0').replace(/[IL]/g, '1');
+function consoleStatus(q: Json, t = now()): string {
+  const fresh = q.decided_at && q.decided_at + CONSOLE_TTL > t;
+  if (q.state === 'pending' || q.state === 'rejected') return q.state;
+  if (q.state === 'approved') return fresh ? 'approved' : 'expired';
+  if (q.state === 'executed') return consoleCodes.get(q.id)?.outcome ?? (fresh ? 'issued' : 'expired');
+  return 'expired';
+}
+const consoleRows = () => db.quorum.filter((q) => q.action === 'console.unlock').sort((a, b) => b.id - a.id);
+const consoleView = (q: Json) => ({
+  id: q.id, hours: q.params.hours, reason: q.params.reason, requested_by: q.requested_by, created: q.created,
+  decided_by: q.decided_by, decided_at: q.decided_at, code_expires: q.decided_at ? q.decided_at + CONSOLE_TTL : null,
+  status: consoleStatus(q),
+});
+function consoleAdmin(c: Ctx, ...roles: Role[]): User {
+  const u = need(c.user, ...roles);
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  return u;
+}
+function seedConsole(t: number) {
+  // an earlier, used console session: approved by the security officer
+  const q = {
+    id: nextId(), action: 'console.unlock', params: { hours: 2, reason: 'Storage controller firmware: collect vendor logs (case 4711)' },
+    requested_by: 'admin', created: t - 86400 * 33, decided_by: 'so', decided_at: t - 86400 * 33 + 1200, state: 'executed',
+  };
+  db.quorum.push(q);
+  consoleCodes.set(q.id, { hash: 'seeded', outcome: 'used' });
+  db.alerts.push(
+    mkAlert({
+      ts: t - 86400 * 33 + 1500, severity: 'critical', kind: 'console_root_shell',
+      message: `root shell opened on the appliance console with one-time code #${q.id} (requested by admin, approved by so; reason: ${q.params.reason}), for up to 2 h`,
+      acked_by: 'so', resolved_at: t - 86400 * 33 + 9000, resolved_by: 'so', note: 'Vendor logs collected, shell closed after 40 min.',
+    }),
+  );
+}
+on('GET', '/console/unlock', (c) => {
+  consoleAdmin(c, 'admin', 'security_officer');
+  return [200, consoleRows().slice(0, 50).map(consoleView)];
+});
+on('POST', '/console/unlock', async (c) => {
+  const u = consoleAdmin(c, 'admin');
+  const hours = Number(c.body.hours);
+  const reason = String(c.body.reason ?? '').trim();
+  if (!Number.isInteger(hours) || hours < 1 || hours > 8) throw new HttpError(400, 'hours: 1 to 8');
+  if (!reason || reason.length > 500) throw new HttpError(400, 'reason: 1 to 500 characters');
+  return quorum(u, 'console.unlock', { hours, reason });
+});
+on('POST', '/console/unlock/:id/code', async (c, [id]) => {
+  const u = consoleAdmin(c, 'admin');
+  const q = find(consoleRows(), (x) => x.id === Number(id), 'console unlock request');
+  if (q.requested_by !== u.name) throw new HttpError(403, 'only the requester sees the code');
+  const st = consoleStatus(q);
+  if (['issued', 'used', 'revoked'].includes(st)) throw new HttpError(409, 'the code of this request was already shown');
+  if (st !== 'approved') throw new HttpError(409, `request is ${st}`);
+  const a = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  const code = Array.from({ length: 4 }, () => Array.from(randomBytes(5), (x) => a[x & 31]).join('')).join('-');
+  consoleCodes.set(q.id, { hash: await sha256(consoleNorm(code)), outcome: null });
+  q.state = 'executed';
+  const solo = q.decided_by === q.requested_by;
+  db.alerts.push(
+    mkAlert({
+      ts: now(), severity: 'critical', kind: 'console_unlock',
+      message: `console unlock code issued to ${u.name} for a root shell of up to ${q.params.hours} h on the appliance console (${solo ? 'approvals disabled' : `approved by ${q.decided_by}`}; reason: ${q.params.reason})`,
+    }),
+  );
+  const expires = q.decided_at + CONSOLE_TTL;
+  await audit(u.name, 'console.unlock_code', `console-unlock/${q.id}`, { hours: q.params.hours, approved_by: q.decided_by, expires });
+  return [200, { id: q.id, code, hours: q.params.hours, expires }];
+});
+on('DELETE', '/console/unlock/:id', async (c, [id]) => {
+  const u = consoleAdmin(c, 'admin', 'security_officer');
+  const q = find(consoleRows(), (x) => x.id === Number(id), 'console unlock request');
+  const st = consoleStatus(q);
+  if (st !== 'approved' && st !== 'issued') throw new HttpError(409, `request is ${st}`);
+  q.state = 'executed';
+  consoleCodes.set(q.id, { hash: consoleCodes.get(q.id)?.hash ?? '', outcome: 'revoked' });
+  await audit(u.name, 'console.unlock_revoke', `console-unlock/${q.id}`, { was: st });
+  return [200, { id: q.id, status: 'revoked' }];
+});
+// MOCK ONLY (no such endpoint on the appliance): what the console gate on tty2 does with a code,
+// for the demo and the manual's pictures. {code} opens a shell, {end: true} ends it.
+on('POST', '/mock/console-gate', async (c) => {
+  if (c.body.end) {
+    if (consoleShell) await audit('console', 'console.root_shell_end', 'console', { how: 'exit', unlock: consoleShell.unlock });
+    consoleShell = null;
+    return [200, { ok: true }];
+  }
+  const h = await sha256(consoleNorm(String(c.body.code ?? '')));
+  const q = consoleRows().find((x) => consoleCodes.get(x.id)?.hash === h && consoleStatus(x) === 'issued');
+  if (!q) throw new HttpError(403, 'not accepted');
+  consoleCodes.get(q.id)!.outcome = 'used';
+  const at = now();
+  const alert = mkAlert({
+    ts: at, severity: 'critical', kind: 'console_root_shell',
+    message: `root shell opened on the appliance console with one-time code #${q.id} (requested by ${q.requested_by}, approved by ${q.decided_by}; reason: ${q.params.reason}), for up to ${q.params.hours} h`,
+  });
+  db.alerts.push(alert);
+  consoleShell = { at, until: at + q.params.hours * 3600, method: 'code', unlock: q.id, requested_by: q.requested_by, alert: alert.id };
+  await audit('console', 'console.root_shell', `console-unlock/${q.id}`, { method: 'code', hours: q.params.hours, unlock: q.id });
+  return [200, consoleShell];
+});
 
 export function mockApi(): Plugin {
   seed();
@@ -3598,11 +4040,18 @@ export function mockApi(): Plugin {
       [t - 86400 - 3600, 'admin', 'job.create', 'job/plugin_restore', { kind: 'plugin_restore', tenant: 'acme', restore: 'pitr' }],
       [t - 5400, 'admin', 'job.create', 'job/backup', { kind: 'backup', tenant: 'initech', params: { vmid: 101 } }],
       [t - 3605, 'unknown-user', 'auth.login_failed', 'session', {}],
+      [t - 86400 * 8, 'admin', 'settings.forwarding', 'settings/forwarding', { syslog: { host: 'siem.example.com', port: 6514 }, https: null }],
     ];
+    // the scheduler's daily anchor (head seq + hash leave the box with the forwarding)
+    for (let d = 7; d >= 1; d--) hist.push([t - 86400 * d - 3000, 'scheduler', 'audit.anchor', 'audit/chain', { head_seq: 0, head_hash: '' }]);
     for (const q of [...db.quorum].filter((x) => x.state === 'pending').sort((a, b) => a.created - b.created))
       hist.push([q.created, q.requested_by, 'quorum.request', `quorum/${q.id}`, { action: q.action, params: q.params }]);
     hist.sort((a, b) => a[0] - b[0]);
-    for (const [ts, actor, action, target, details] of hist) await audit(actor, action, target, details, ts);
+    for (const [ts, actor, action, target, details] of hist) {
+      const head = db.audit[db.audit.length - 1];
+      const d = action === 'audit.anchor' ? { head_seq: head?.seq ?? 0, head_hash: head?.hash ?? '0'.repeat(64) } : details;
+      await audit(actor, action, target, d, ts);
+    }
   })();
   const mw = (req: Req, res: Res, next: () => void) => {
     if (!req.url?.startsWith('/api/v1/')) return next();

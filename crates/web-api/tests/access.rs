@@ -1,6 +1,86 @@
 //! Phase 14d access controls: viewer role, download privilege, account expiry,
 //! session list / revoke, configurable timeouts, login banner, management
-//! allow-list, dormant-account setting and the approver-count warning.
+//! allow-list, dormant-account setting and the approver-count warning; API
+//! tokens follow the account state.
+
+impl T {
+    /// An API token for `name` written straight into the catalog (bypasses the
+    /// create checks, e.g. an operator scope for a viewer).
+    fn token(&self, name: &str, scope: &str) -> String {
+        let (prefix, secret) = (format!("{:08x}", self.ids[name]), "s".repeat(40));
+        self.exec(&format!(
+            "INSERT INTO api_tokens (user_id, name, prefix, hash, scope, expires, created)
+             VALUES ({}, 't', '{prefix}', '{}', '{scope}', {}, 1)",
+            self.ids[name],
+            web_api::sha256_hex(secret.as_bytes()),
+            catalog::now() + 3600
+        ));
+        format!("nxt_{prefix}_{secret}")
+    }
+
+    async fn bearer(&self, method: Method, path: &str, tok: &str, body: Option<Value>) -> StatusCode {
+        let b = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::AUTHORIZATION, format!("Bearer {tok}"));
+        let req = match body {
+            Some(v) => b
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(v.to_string()))
+                .unwrap(),
+            None => b.body(Body::empty()).unwrap(),
+        };
+        self.app.clone().oneshot(req).await.unwrap().status()
+    }
+}
+
+/// API tokens follow the account checks: expired or disabled (also dormant-disabled)
+/// owners make them invalid, a viewer's token stays read-only whatever its scope.
+#[tokio::test]
+async fn api_tokens_follow_account_state() {
+    let t = T::new();
+    let job =
+        json!({"kind": "files_list", "tenant": "acme", "params": {"source": "vm-100", "time": 1000, "path": "/"}});
+    let vic = t.token("vic", "operator");
+    assert_eq!(
+        t.bearer(Method::GET, "/api/v1/snapshots", &vic, None).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        t.bearer(Method::POST, "/api/v1/jobs", &vic, Some(job.clone())).await,
+        StatusCode::FORBIDDEN,
+        "viewer token stays read-only"
+    );
+    let s = t.login("vic").await;
+    let r = t
+        .post(
+            "/api/v1/auth/tokens",
+            &s,
+            json!({"name": "x", "scope": "operator", "days": 1, "current_password": PW, "current_totp": t.code("vic")}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    let otto = t.token("otto", "operator");
+    assert_eq!(
+        t.bearer(Method::POST, "/api/v1/jobs", &otto, Some(job)).await,
+        StatusCode::ACCEPTED
+    );
+    let id = t.ids["otto"];
+    t.exec(&format!("UPDATE users SET expires = 1 WHERE id = {id}"));
+    assert_eq!(
+        t.bearer(Method::GET, "/api/v1/snapshots", &otto, None).await,
+        StatusCode::UNAUTHORIZED,
+        "expired owner"
+    );
+    t.exec(&format!(
+        "UPDATE users SET expires = NULL, disabled = 1 WHERE id = {id}"
+    ));
+    assert_eq!(
+        t.bearer(Method::GET, "/api/v1/snapshots", &otto, None).await,
+        StatusCode::UNAUTHORIZED,
+        "disabled (or dormant-disabled) owner"
+    );
+}
 
 use axum::body::Body;
 use axum::extract::ConnectInfo;

@@ -24,7 +24,11 @@ pub mod agents;
 pub mod alerts;
 pub mod approvals;
 pub mod auth;
+pub mod certs;
+pub mod console;
 pub mod dashboard;
+pub mod diag;
+pub mod forwarding;
 pub mod inventory;
 pub mod jobs;
 pub mod oidc;
@@ -39,6 +43,7 @@ pub mod settings;
 pub mod spa;
 pub mod storage;
 pub mod tls;
+pub mod tokens;
 pub mod validate;
 
 /// Runtime configuration. Defaults are the appliance paths; every value can be
@@ -103,10 +108,16 @@ pub struct AppState {
     pub plugins: std::sync::OnceLock<crate::plugins::PluginPaths>,
     /// OS update control dir (default: env `NEXUS_UPDATE_DIR` or /var/lib/nexus/update)
     pub update_dir: std::sync::OnceLock<PathBuf>,
+    /// diagnostics control dir (default: env `NEXUS_DIAG_DIR` or /var/lib/nexus/diag)
+    pub diag_dir: std::sync::OnceLock<PathBuf>,
+    /// console unlock codes (default: env `NEXUS_CONSOLE_UNLOCK_DIR` or /var/lib/nexus/console-unlock)
+    pub console_dir: std::sync::OnceLock<PathBuf>,
     /// `GET /dashboard` answers, ≤ 60 s old
     pub dashboard: crate::dashboard::Cache,
     /// OIDC discovery/JWKS cache and pending logins
     pub oidc: crate::oidc::OidcState,
+    /// web certificate files and the nexus-tls request dir (default: appliance paths)
+    pub tls: std::sync::OnceLock<webtls::Paths>,
 }
 
 impl AppState {
@@ -130,8 +141,11 @@ impl AppState {
             repl: crate::replication::ReplState::new(repl),
             plugins: std::sync::OnceLock::new(),
             update_dir: std::sync::OnceLock::new(),
+            diag_dir: std::sync::OnceLock::new(),
+            console_dir: std::sync::OnceLock::new(),
             dashboard: Default::default(),
             oidc: Default::default(),
+            tls: std::sync::OnceLock::new(),
         })
     }
 
@@ -179,8 +193,11 @@ impl AppState {
     }
 
     /// Appends an audit entry. Must not be called while holding `cat.conn()`.
+    /// During an API token request the token's user is recorded as
+    /// `<user> via token <name>`.
     pub fn audit(&self, actor: &str, action: &str, target: &str, details: serde_json::Value) -> Result<(), ApiError> {
-        self.cat.audit(actor, action, target, &details)?;
+        self.cat
+            .audit(&crate::tokens::audit_actor(actor), action, target, &details)?;
         Ok(())
     }
 }
@@ -411,6 +428,12 @@ pub fn router(st: St) -> Router {
         .route("/auth/me", get(me))
         .route("/auth/activate/begin", post(activation::begin))
         .route("/auth/activate/complete", post(activation::complete))
+        .route("/auth/tokens", get(tokens::list).post(tokens::create))
+        .route("/auth/tokens/{id}", axum::routing::delete(tokens::revoke))
+        .route("/certificate", get(certs::get_status))
+        .route("/certificate/csr", post(certs::csr))
+        .route("/certificate/install", post(certs::install))
+        .route("/certificate/revert", post(certs::revert))
         .route("/auth/oidc", get(oidc::info))
         .route("/auth/oidc/start", get(oidc::start))
         .route("/auth/oidc/callback", get(oidc::callback))
@@ -434,6 +457,11 @@ pub fn router(st: St) -> Router {
         .route("/updates", get(settings::get_updates))
         .route("/updates/check", post(settings::check_updates))
         .route("/updates/apply", post(settings::apply_update))
+        .route("/diagnostics", get(diag::list))
+        .route("/diagnostics/checks", post(diag::run_checks))
+        .route("/diagnostics/bundle", post(diag::create_bundle))
+        .route("/diagnostics/{id}", get(diag::get_one))
+        .route("/diagnostics/{id}/download", get(diag::download))
         .route(
             "/settings/approvals",
             get(approvals::get_approvals).put(approvals::set_approvals),
@@ -469,10 +497,20 @@ pub fn router(st: St) -> Router {
         .route("/jobs/{id}/cancel", post(cancel_job))
         .route("/downloads/{token}", get(download))
         .route("/quorum", get(list_quorum))
+        .route("/console/unlock", get(console::list).post(console::request_unlock))
+        .route("/console/unlock/{id}", axum::routing::delete(console::revoke))
+        .route("/console/unlock/{id}/code", post(console::fetch_code))
         .route("/quorum/{id}/approve", post(approve))
         .route("/quorum/{id}/reject", post(reject))
         .route("/audit", get(list_audit))
         .route("/audit/verify", get(verify_audit))
+        .route("/audit.csv", get(export_audit))
+        .route("/audit/forwarding", get(forwarding::status))
+        .route(
+            "/settings/forwarding",
+            get(forwarding::get_settings).put(forwarding::put_settings),
+        )
+        .route("/settings/forwarding/test", post(forwarding::test))
         .route("/alerts", get(alerts::list_alerts))
         .route("/alerts/{id}/ack", post(alerts::ack_alert))
         .route("/alerts/{id}/resolve", post(alerts::resolve_alert))
@@ -524,6 +562,7 @@ pub fn router(st: St) -> Router {
         .route("/metrics", get(metrics))
         .fallback(spa::serve)
         .layer(axum::extract::DefaultBodyLimit::max(1 << 20))
+        .layer(middleware::from_fn_with_state(st.clone(), tokens::layer))
         .layer(middleware::from_fn(connection_scope))
         .layer(middleware::from_fn(security_headers))
         .with_state(st)

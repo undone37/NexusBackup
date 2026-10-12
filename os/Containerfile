@@ -48,7 +48,7 @@ RUN --mount=type=cache,target=/opt/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked -j ${JOBS} \
       -p keyd -p pve -p offsite -p web-api -p scheduler -p setup -p nftsync -p agent-conn -p truenas -p nas \
-      -p plugin-host -p plugin-manager \
+      -p plugin-host -p plugin-manager -p webtls \
  # separately: one build with -p web-api would unify features and link the replication
  # daemons (chunk store, keyd client) into nexus-web-api, which only needs the protocol types
  && cargo build --release --locked -j ${JOBS} -p replication \
@@ -59,10 +59,12 @@ RUN --mount=type=cache,target=/opt/cargo/registry \
  && mkdir -p /out \
  && cp target/release/keyd target/release/nexus-pve target/release/nexus-offsite \
        target/release/nexus-web-api target/release/nexus-scheduler target/release/nexus-setup \
+       target/release/nexus-console-gate \
        target/release/nexus-nft-sync target/release/nexus-agentctl target/release/nexus-truenas \
        target/release/nexus-nas target/release/nexus-nasmount \
        target/release/nexus-replicad target/release/nexus-replica \
-       target/release/nexus-pluginhost target/release/nexus-plugin-install target/release/nexus-plugin /out/ \
+       target/release/nexus-pluginhost target/release/nexus-plugin-install target/release/nexus-plugin \
+       target/release/nexus-tls /out/ \
  && cp target/x86_64-unknown-linux-musl/release/nexus-restore-agent /out/agent
 
 # ---- Stage 3: restore micro-VM (Debian 13 kernel + ZFS initramfs, restore-vm/).
@@ -118,9 +120,9 @@ RUN systemd-sysusers /usr/lib/sysusers.d/nexus.conf
 
 # Binaries and the restore micro-VM.
 COPY --from=rust /out/keyd /out/nexus-pve /out/nexus-offsite /out/nexus-web-api \
-     /out/nexus-scheduler /out/nexus-setup /out/nexus-nft-sync /out/nexus-agentctl /out/nexus-truenas \
+     /out/nexus-scheduler /out/nexus-setup /out/nexus-console-gate /out/nexus-nft-sync /out/nexus-agentctl /out/nexus-truenas \
      /out/nexus-nas /out/nexus-nasmount /out/nexus-replicad /out/nexus-replica \
-     /out/nexus-pluginhost /out/nexus-plugin-install /usr/libexec/nexus/
+     /out/nexus-pluginhost /out/nexus-plugin-install /out/nexus-tls /usr/libexec/nexus/
 # plugin console tool (verify/inspect bundles); the test plugin (nexus-test-plugin) is never shipped
 COPY --from=rust /out/nexus-plugin /usr/bin/nexus-plugin
 COPY --from=restorevm /out/vmlinuz /out/initrd.img /out/manifest.txt /usr/lib/nexus/restore-vm/
@@ -149,6 +151,8 @@ RUN semodule -i /usr/share/selinux/packages/nexus/nexus.pp /usr/share/selinux/pa
  && matchpathcon /var/lib/nexus/scheduler/agent-ca/ca.key | grep -q nexus_agent_ca_t \
  && matchpathcon /usr/libexec/nexus/nexus-web-api | grep -q nexus_webapi_exec_t \
  && matchpathcon /usr/libexec/nexus/nexus-scheduler | grep -q nexus_scheduler_exec_t \
+ && matchpathcon /usr/libexec/nexus/nexus-console-gate | grep -q nexus_consolegate_exec_t \
+ && matchpathcon /var/lib/nexus/console-unlock/1.json | grep -q nexus_console_unlock_t \
  && matchpathcon /usr/lib/nexus/restore-vm/vmlinuz | grep -q nexus_restorevm_image_t \
  && matchpathcon /var/lib/nexus/catalog | grep -q nexus_catalog_t \
  && matchpathcon /usr/libexec/nexus/nexus-pluginhost | grep -q nexus_pluginhost_exec_t \
@@ -158,7 +162,14 @@ RUN semodule -i /usr/share/selinux/packages/nexus/nexus.pp /usr/share/selinux/pa
  && matchpathcon /var/lib/nexus/plugins/x/1.0.0/bin/plugin | grep -q nexus_plugin_exec_t \
  && matchpathcon /var/lib/nexus/plugins/x/.1.0.0.tmp/bin/plugin | grep -q nexus_plugin_exec_t \
  && matchpathcon /var/lib/nexus/plugins-staging/x.nxplugin | grep -q nexus_plugin_staging_t \
- && matchpathcon /etc/pki/nexus/plugin-keys/x.pub | grep -q cert_t
+ && matchpathcon /etc/pki/nexus/plugin-keys/x.pub | grep -q cert_t \
+ && matchpathcon /usr/libexec/nexus/nexus-tls | grep -q nexus_tls_exec_t \
+ && matchpathcon /etc/nexus/tls/web.pem | grep -q nexus_tls_web_t \
+ && matchpathcon /etc/nexus/tls/key.pem | grep -q nexus_webapi_secret_t \
+ && matchpathcon /etc/nexus/tls/pending/key.pem | grep -q nexus_tls_pending_t \
+ && matchpathcon /var/lib/nexus/tls/request.json | grep -q nexus_tls_req_t \
+ && matchpathcon /usr/libexec/nexus/nexus-diag | grep -q nexus_diag_exec_t \
+ && matchpathcon /var/lib/nexus/diag/0123/bundle.tar.gz | grep -q nexus_diag_var_lib_t
 
 # Systemd units, presets, tmpfiles (state dirs with owners and modes).
 COPY os/systemd/*.service os/systemd/*.path os/systemd/*.timer os/systemd/*.socket /usr/lib/systemd/system/
@@ -177,7 +188,7 @@ RUN dnf -y install --setopt=install_weak_deps=False greenboot \
 
 # /etc overlay: chrony.conf, containers signature policy + registry config, cosign
 # key, update.conf, greenboot.conf, presets. Must come AFTER the greenboot install
-# (overrides /etc/greenboot/greenboot.conf). Then the update agent, health check
+# (overrides /etc/greenboot/greenboot.conf). Then the update agent, diagnostics, health check
 # and their units (os/greenboot/usr only, never os/greenboot/tests).
 COPY os/etc/ /etc/
 COPY os/greenboot/usr/ /usr/
@@ -187,9 +198,9 @@ RUN if [ "$NEXUS_IMAGE_REPO" != ghcr.io/undone37/nexusbackup ]; then \
  && python3 -c 'import json; json.load(open("/etc/containers/policy.json"))' \
  && test -f /usr/lib/bootupd/grub2-static/configs.d/08_greenboot.cfg \
  && ls /etc/pki/nexus/plugin-keys/*.pub >/dev/null \
- && systemctl preset nexus-update.timer nexus-update.path greenboot-healthcheck.service \
+ && systemctl preset nexus-update.timer nexus-update.path nexus-diag.path greenboot-healthcheck.service \
       greenboot-set-rollback-trigger.service greenboot-success.target \
- && systemctl is-enabled -q nexus-update.timer nexus-update.path greenboot-healthcheck.service \
+ && systemctl is-enabled -q nexus-update.timer nexus-update.path nexus-diag.path greenboot-healthcheck.service \
       greenboot-set-rollback-trigger.service \
  && test "$(systemctl is-enabled bootc-fetch-apply-updates.timer)" = masked \
  && test "$(systemctl is-enabled rpm-ostreed-automatic.timer)" = masked
@@ -198,16 +209,20 @@ LABEL org.opencontainers.image.version=${NEXUS_VERSION}
 # Time: NTS only (chronyd -p parses the config and fails on errors).
 RUN chronyd -p -f /etc/chrony.conf >/dev/null
 
-# No interactive root (locked password, emergency access on the local console
-# only); sshd off. The preset file also governs the first-boot preset-all.
+# No interactive root (locked password; emergency access only through the console
+# gate on tty2, which replaces that VT's getty: Phase 14c); sshd off. The preset
+# file also governs the first-boot preset-all.
 RUN usermod -L root \
- && systemctl preset sshd.service sshd.socket nftables.service chronyd.service \
+ && ln -sf /dev/null /etc/systemd/system/getty@tty2.service \
+ && ln -sf /dev/null /etc/systemd/system/autovt@tty2.service \
+ && systemctl preset sshd.service sshd.socket nftables.service chronyd.service nexus-console-gate.service \
       nexus-setup.service nexus-nft-sync.service nexus-nft-sync.path nexus-nft-sync.timer nexus-nasmount.socket \
-      nexus-plugin-install.service nexus-plugin-install.path \
+      nexus-plugin-install.service nexus-plugin-install.path nexus-tls.path \
  && ! systemctl is-enabled -q sshd.service \
- && systemctl is-enabled -q nftables.service chronyd.service nexus-setup.service \
+ && systemctl is-enabled -q nftables.service chronyd.service nexus-setup.service nexus-console-gate.service \
       nexus-nft-sync.path nexus-nft-sync.timer nexus-nasmount.socket \
-      nexus-plugin-install.service nexus-plugin-install.path \
+      nexus-plugin-install.service nexus-plugin-install.path nexus-tls.path \
+ && test "$(systemctl is-enabled getty@tty2.service)" = masked \
  && ! systemctl is-enabled -q nexus-web-api.service nexus-scheduler.service nexus-keyd.service
 
 # COPY keeps the build host's modes (umask 002 → 0664/0775): strip group/world

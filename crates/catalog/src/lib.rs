@@ -11,6 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub mod access;
 pub mod alerting;
 pub mod auth;
+pub mod console;
+pub mod forwarding;
 pub mod inventory;
 pub mod schedule;
 pub mod secret;
@@ -284,7 +286,70 @@ ALTER TABLE jobs ADD COLUMN cancel_by TEXT;
 ALTER TABLE jobs ADD COLUMN sla_alerted INTEGER NOT NULL DEFAULT 0;
 "#;
 
-/// v15 (Phase 14d, access, docs/control-plane.md "Access"): `users` rebuilt for a
+/// v15 (Phase 14d, API tokens, docs/control-plane.md "API tokens"): one row per
+/// token `nxt_<prefix>_<secret>`. `prefix` (8 hex) finds the row, `hash` is the
+/// SHA-256 (hex) of the 256-bit random secret (high entropy: a plain hash is
+/// enough, no password KDF needed); the secret itself is never stored.
+/// `scope` caps what the token may do (`read` or `operator`, never more than
+/// the owner's role), `expires` is mandatory (at most 365 days). Deleting the
+/// user deletes their tokens. Purely additive.
+const SCHEMA_V15: &str = r#"
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, prefix TEXT NOT NULL UNIQUE, hash TEXT NOT NULL,
+  scope TEXT NOT NULL CHECK (scope IN ('read','operator')), expires INTEGER NOT NULL,
+  created INTEGER NOT NULL, last_used INTEGER, last_ip TEXT, UNIQUE (user_id, name));
+"#;
+
+/// v16 (Phase 14a, forwarding, docs/control-plane.md "Forwarding"): the
+/// forwarder follows `audit` by `seq`; alert and job events have no such
+/// sequence (alert rows change, jobs finish out of id order), so triggers write
+/// them to the outbox `forward_events` (strictly increasing `seq`, payload =
+/// the row as JSON at that moment): alert raised / escalated / acknowledged /
+/// resolved, job finished. `forward_state`: per sink (`syslog`, `https`) the
+/// destination, the last delivered audit seq and event seq, and the delivery
+/// status. Purely additive: the previous release skips it; the triggers keep
+/// filling the outbox there (pruned again after the upgrade).
+const SCHEMA_V16: &str = r#"
+CREATE TABLE IF NOT EXISTS forward_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, type TEXT NOT NULL CHECK (type IN ('alert','job')),
+  payload TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS forward_state (
+  sink TEXT PRIMARY KEY, dest TEXT NOT NULL, audit_seq INTEGER NOT NULL DEFAULT 0, event_seq INTEGER NOT NULL DEFAULT 0,
+  last_ok INTEGER, last_error TEXT, last_error_ts INTEGER, failing_since INTEGER);
+CREATE TRIGGER IF NOT EXISTS forward_alert_raised AFTER INSERT ON alerts BEGIN
+  INSERT INTO forward_events (ts, type, payload) VALUES (CAST(strftime('%s','now') AS INTEGER), 'alert',
+    json_object('event','raised','id',NEW.id,'ts',NEW.ts,'severity',NEW.severity,'kind',NEW.kind,'key',NEW.key,
+                'message',NEW.message,'tenant',NEW.tenant));
+END;
+CREATE TRIGGER IF NOT EXISTS forward_alert_escalated AFTER UPDATE OF severity ON alerts
+  WHEN NEW.severity <> OLD.severity BEGIN
+  INSERT INTO forward_events (ts, type, payload) VALUES (CAST(strftime('%s','now') AS INTEGER), 'alert',
+    json_object('event','escalated','id',NEW.id,'ts',NEW.ts,'severity',NEW.severity,'kind',NEW.kind,'key',NEW.key,
+                'message',NEW.message,'tenant',NEW.tenant,'count',NEW.count));
+END;
+CREATE TRIGGER IF NOT EXISTS forward_alert_acked AFTER UPDATE OF acked_by ON alerts
+  WHEN OLD.acked_by IS NULL AND NEW.acked_by IS NOT NULL BEGIN
+  INSERT INTO forward_events (ts, type, payload) VALUES (CAST(strftime('%s','now') AS INTEGER), 'alert',
+    json_object('event','acknowledged','id',NEW.id,'ts',NEW.ts,'severity',NEW.severity,'kind',NEW.kind,'key',NEW.key,
+                'message',NEW.message,'tenant',NEW.tenant,'by',NEW.acked_by));
+END;
+CREATE TRIGGER IF NOT EXISTS forward_alert_resolved AFTER UPDATE OF resolved_at ON alerts
+  WHEN OLD.resolved_at IS NULL AND NEW.resolved_at IS NOT NULL BEGIN
+  INSERT INTO forward_events (ts, type, payload) VALUES (CAST(strftime('%s','now') AS INTEGER), 'alert',
+    json_object('event','resolved','id',NEW.id,'ts',NEW.ts,'severity',NEW.severity,'kind',NEW.kind,'key',NEW.key,
+                'message',NEW.message,'tenant',NEW.tenant,'by',NEW.resolved_by,'auto',NEW.auto,'note',NEW.note,
+                'count',NEW.count));
+END;
+CREATE TRIGGER IF NOT EXISTS forward_job_finished AFTER UPDATE OF state ON jobs
+  WHEN NEW.state IN ('ok','failed','cancelled') AND OLD.state NOT IN ('ok','failed','cancelled') BEGIN
+  INSERT INTO forward_events (ts, type, payload) VALUES (CAST(strftime('%s','now') AS INTEGER), 'job',
+    json_object('id',NEW.id,'kind',NEW.kind,'tenant',NEW.tenant,'state',NEW.state,'requested_by',NEW.requested_by,
+                'created',NEW.created,'started',NEW.started,'finished',NEW.finished,'attempt',NEW.attempt));
+END;
+"#;
+
+/// v17 (Phase 14d, access, docs/control-plane.md "Access"): `users` rebuilt for a
 /// wider role CHECK (`viewer`: read-only; `tenant_admin`: reserved for Phase 18c,
 /// not accepted by the web-api yet) plus `can_download` (NULL = the role's
 /// default, see [`access::role_can_download`]; 0/1 = set by an admin), `expires`
@@ -293,38 +358,40 @@ ALTER TABLE jobs ADD COLUMN sla_alerted INTEGER NOT NULL DEFAULT 0;
 /// `dormant_days` counts from the upgrade). `sessions` rebuilt with a numeric
 /// `id` (listed and revoked by it; the cookie digest never leaves the server),
 /// the client `ip` and `user_agent`. Same rebuild procedure as v4 (ids, rows and
-/// constraints kept; foreign keys checked). The previous release skips it and
+/// constraints kept; foreign keys checked). `users` is never renamed away: a
+/// rename would rewrite the `api_tokens` (v15) foreign key to the old name; the new
+/// table is renamed to `users` instead, so `api_tokens.user_id` stays valid. The previous release skips it and
 /// treats `viewer` accounts like unknown roles (every role check fails).
-const SCHEMA_V15: &str = r#"
-CREATE TABLE users_v15 (
+const SCHEMA_V17: &str = r#"
+CREATE TABLE users_v17 (
   id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, totp_secret TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('admin','security_officer','operator','tenant_user','viewer','tenant_admin')),
   tenant TEXT, disabled INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL,
   totp_last_step INTEGER NOT NULL DEFAULT 0, activation_hash TEXT, activation_expires INTEGER,
   auth TEXT NOT NULL DEFAULT 'local' CHECK (auth IN ('local','oidc')), oidc_sub TEXT,
   can_download INTEGER CHECK (can_download IN (0,1)), expires INTEGER, last_login INTEGER);
-INSERT INTO users_v15 (id, name, password_hash, totp_secret, role, tenant, disabled, created, totp_last_step,
+INSERT INTO users_v17 (id, name, password_hash, totp_secret, role, tenant, disabled, created, totp_last_step,
   activation_hash, activation_expires, auth, oidc_sub, last_login)
   SELECT id, name, password_hash, totp_secret, role, tenant, disabled, created, totp_last_step,
   activation_hash, activation_expires, auth, oidc_sub,
   CASE WHEN activation_hash IS NULL THEN CAST(strftime('%s', 'now') AS INTEGER) END FROM users;
-CREATE TABLE sessions_v15 (
+CREATE TABLE sessions_v17 (
   id INTEGER PRIMARY KEY, id_hash TEXT NOT NULL UNIQUE, user_id INTEGER NOT NULL REFERENCES users(id),
   csrf TEXT NOT NULL, created INTEGER NOT NULL, last_seen INTEGER NOT NULL,
   ip TEXT NOT NULL DEFAULT '', user_agent TEXT NOT NULL DEFAULT '');
-INSERT INTO sessions_v15 (id_hash, user_id, csrf, created, last_seen)
+INSERT INTO sessions_v17 (id_hash, user_id, csrf, created, last_seen)
   SELECT id_hash, user_id, csrf, created, last_seen FROM sessions;
 DROP TABLE sessions;
 DROP TABLE users;
-ALTER TABLE users_v15 RENAME TO users;
-ALTER TABLE sessions_v15 RENAME TO sessions;
+ALTER TABLE users_v17 RENAME TO users;
+ALTER TABLE sessions_v17 RENAME TO sessions;
 CREATE UNIQUE INDEX IF NOT EXISTS users_oidc_sub ON users(oidc_sub) WHERE oidc_sub IS NOT NULL;
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 "#;
 
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
-    SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15,
+    SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1091,16 +1158,16 @@ mod tests {
         old.execute("INSERT INTO tenants (name) VALUES ('beta')", []).unwrap();
     }
 
-    /// v15 (access) on top of the previous catalog: users keep ids, roles and
+    /// v17 (access) on top of the previous catalog: users keep ids, roles and
     /// credentials, get `can_download` NULL (role default), no expiry and a
     /// `last_login` (activated accounts only); sessions survive with a numeric
     /// id; `viewer` is accepted, unknown roles still are not. The previous
     /// release still logs in (reads users, inserts sessions) afterwards.
     #[test]
-    fn migration_v15_access() {
+    fn migration_v17_access() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.db");
-        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V15).unwrap();
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V17).unwrap();
         {
             let c = Connection::open(&p).unwrap();
             c.pragma_update(None, "foreign_keys", "ON").unwrap();
@@ -1115,7 +1182,9 @@ mod tests {
                    VALUES (8, 'pend', '!', '', 'tenant_user', 'acme', 2, 'abc');
                  INSERT INTO users (id, name, password_hash, totp_secret, role, created, auth, oidc_sub)
                    VALUES (9, 'sso', '!oidc', '', 'operator', 3, 'oidc', 'iss|1');
-                 INSERT INTO sessions (id_hash, user_id, csrf, created, last_seen) VALUES ('h1', 7, 'c', 10, 11);",
+                 INSERT INTO sessions (id_hash, user_id, csrf, created, last_seen) VALUES ('h1', 7, 'c', 10, 11);
+                 INSERT INTO api_tokens (user_id, name, prefix, hash, scope, expires, created)
+                   VALUES (7, 'ci', 'abcd0123', 'h', 'read', 99, 1);",
             )
             .unwrap();
         }
@@ -1133,6 +1202,31 @@ mod tests {
                 .unwrap();
             assert_eq!((step, dl, exp), (42, None, None));
             assert!(ll.is_some_and(|t| t > 1_700_000_000));
+            // the v15 api_tokens foreign key still points at the rebuilt `users`
+            let (tu, fk): (i64, i64) = conn
+                .query_row(
+                    "SELECT (SELECT user_id FROM api_tokens WHERE prefix = 'abcd0123'),
+                            (SELECT COUNT(*) FROM pragma_foreign_key_check)",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!((tu, fk), (7, 0), "api_tokens survive, foreign keys clean");
+            let fk_sql: String = conn
+                .query_row("SELECT sql FROM sqlite_master WHERE name = 'api_tokens'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert!(fk_sql.contains("REFERENCES users(id)"), "{fk_sql}");
+            assert!(
+                conn.execute(
+                    "INSERT INTO api_tokens (user_id, name, prefix, hash, scope, expires, created)
+                     VALUES (999, 'x', 'ffff0000', 'h', 'read', 99, 1)",
+                    []
+                )
+                .is_err(),
+                "the token foreign key is enforced against the new users table"
+            );
             let ll: Option<i64> = conn
                 .query_row("SELECT last_login FROM users WHERE id = 8", [], |r| r.get(0))
                 .unwrap();
@@ -1251,6 +1345,42 @@ mod tests {
              INSERT INTO jobs (kind, tenant, params, state, requested_by, created) VALUES ('backup', 'acme', '{}', 'queued', 's', 2);",
         )
         .unwrap();
+    }
+
+    /// v15 (API tokens) on top of the previous catalog: the table starts empty,
+    /// the scope is checked and tokens follow their user (ON DELETE CASCADE).
+    #[test]
+    fn migration_v15_api_tokens() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V15).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO users (id, name, password_hash, totp_secret, role, created) VALUES (1, 'a', 'x', '', 'admin', 0);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, MIGRATIONS.len() as i64);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM api_tokens", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+        let ins = "INSERT INTO api_tokens (user_id, name, prefix, hash, scope, expires, created) VALUES (1, ?1, ?2, 'h', ?3, 10, 0)";
+        conn.execute(ins, ["ci", "abcd1234", "read"]).unwrap();
+        assert!(conn.execute(ins, ["x", "ffff0000", "admin"]).is_err(), "scope checked");
+        conn.execute("DELETE FROM users WHERE id = 1", []).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM api_tokens", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "tokens follow their user");
     }
 
     /// A fresh catalog runs every migration: all source kinds and the
@@ -1466,5 +1596,87 @@ mod tests {
         .unwrap();
         let n: i64 = old.query_row("SELECT COUNT(*) FROM groups", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 2);
+    }
+
+    /// v16 (forwarding outbox) on top of the previous catalog: the outbox and
+    /// the delivery state start empty; alert raise / ack / resolve and job
+    /// completion each add one event, in order; the previous release still
+    /// writes alerts and jobs afterwards.
+    #[test]
+    fn migration_v16_forwarding_outbox() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V16).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO jobs (kind, tenant, params, state, requested_by, created) VALUES ('backup','t','{}','running','s',1);
+                 INSERT INTO alerts (ts, severity, kind, message) VALUES (1, 'info', 'x', 'old');",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+            assert_eq!(v, MIGRATIONS.len() as i64);
+            let n = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+            assert_eq!(n("SELECT COUNT(*) FROM forward_events"), 0);
+            assert_eq!(n("SELECT COUNT(*) FROM forward_state"), 0);
+            conn.execute_batch(
+                "INSERT INTO alerts (ts, last_ts, severity, kind, key, message) VALUES (5, 5, 'warning', 'k', 'k:1', 'm');
+                 UPDATE alerts SET count = count + 1 WHERE key = 'k:1';
+                 UPDATE alerts SET severity = 'critical' WHERE key = 'k:1';
+                 UPDATE alerts SET acked_by = 'alice' WHERE key = 'k:1';
+                 UPDATE alerts SET resolved_at = 9, resolved_by = 'alice' WHERE key = 'k:1';
+                 UPDATE jobs SET log = 'x';
+                 UPDATE jobs SET state = 'ok', finished = 7;
+                 UPDATE jobs SET state = 'ok';",
+            )
+            .unwrap();
+            let ev: Vec<(String, String)> = conn
+                .prepare("SELECT type, payload FROM forward_events ORDER BY seq")
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            let events: Vec<(String, String)> = ev
+                .iter()
+                .map(|(t, p)| {
+                    let v: serde_json::Value = serde_json::from_str(p).unwrap();
+                    let e = v["event"]
+                        .as_str()
+                        .map_or_else(|| v["state"].to_string(), str::to_owned);
+                    (t.clone(), e)
+                })
+                .collect();
+            let want = [
+                ("alert", "raised"),
+                ("alert", "escalated"),
+                ("alert", "acknowledged"),
+                ("alert", "resolved"),
+                ("job", "\"ok\""),
+            ];
+            assert_eq!(events, want.map(|(a, b)| (a.to_owned(), b.to_owned())).to_vec());
+            let job: serde_json::Value = serde_json::from_str(&ev[4].1).unwrap();
+            assert_eq!(
+                (job["finished"].as_i64(), job["kind"].as_str()),
+                (Some(7), Some("backup"))
+            );
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..before].iter().skip(v as usize).count(), 0);
+        old.execute_batch(
+            "INSERT INTO alerts (ts, severity, kind, message) VALUES (2, 'info', 'y', 'older release');
+             INSERT INTO jobs (kind, tenant, params, state, requested_by, created) VALUES ('gc','t','{}','queued','s',2);",
+        )
+        .unwrap();
     }
 }

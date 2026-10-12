@@ -16,6 +16,9 @@
 /usr/libexec/nexus/nexus-plugin-install	--	gen_context(system_u:object_r:nexus_plugininstall_exec_t,s0)
 /usr/libexec/nexus/nexus-setup		--	gen_context(system_u:object_r:nexus_setup_exec_t,s0)
 /usr/libexec/nexus/nexus-nft-sync	--	gen_context(system_u:object_r:nexus_nftsync_exec_t,s0)
+/usr/libexec/nexus/nexus-tls		--	gen_context(system_u:object_r:nexus_tls_exec_t,s0)
+/usr/libexec/nexus/nexus-diag		--	gen_context(system_u:object_r:nexus_diag_exec_t,s0)
+/usr/libexec/nexus/nexus-console-gate	--	gen_context(system_u:object_r:nexus_consolegate_exec_t,s0)
 
 # restore micro-VM kernel + initramfs (read by the confined QEMU only)
 /usr/lib/nexus/restore-vm(/.*)?			gen_context(system_u:object_r:nexus_restorevm_image_t,s0)
@@ -45,10 +48,17 @@
 /var/lib/nexus/plugins/[^/]+/[^/]+/bin/plugin	--	gen_context(system_u:object_r:nexus_plugin_exec_t,s0)
 /var/lib/nexus/plugins-staging(/.*)?		gen_context(system_u:object_r:nexus_plugin_staging_t,s0)
 /var/lib/nexus/update(/.*)?			gen_context(system_u:object_r:nexus_update_t,s0)
+/var/lib/nexus/tls(/.*)?			gen_context(system_u:object_r:nexus_tls_req_t,s0)
+/var/lib/nexus/diag(/.*)?			gen_context(system_u:object_r:nexus_diag_var_lib_t,s0)
+/var/lib/nexus/console-unlock(/.*)?		gen_context(system_u:object_r:nexus_console_unlock_t,s0)
 
 # configuration and secrets
 /etc/nexus(/.*)?				gen_context(system_u:object_r:nexus_etc_t,s0)
 /etc/nexus/tls(/.*)?				gen_context(system_u:object_r:nexus_webapi_secret_t,s0)
+# imported chain + key (web.pem, web.pem.prev and their temp names): written by nexus-tls only
+/etc/nexus/tls/web\..*			--	gen_context(system_u:object_r:nexus_tls_web_t,s0)
+# key of a pending CSR: nexus-tls only (not even the web-api)
+/etc/nexus/tls/pending(/.*)?			gen_context(system_u:object_r:nexus_tls_pending_t,s0)
 /etc/nexus/metrics-token		--	gen_context(system_u:object_r:nexus_webapi_secret_t,s0)
 /etc/nexus/ssh(/.*)?				gen_context(system_u:object_r:nexus_sshkey_t,s0)
 
@@ -60,3 +70,4 @@
 /run/nexus-nft-sync(/.*)?			gen_context(system_u:object_r:nexus_nftsync_var_run_t,s0)
 /run/nexus-nasmount(/.*)?			gen_context(system_u:object_r:nexus_nasmount_var_run_t,s0)
 /run/nexus-nasmount\.[^/]+(/.*)?		gen_context(system_u:object_r:nexus_nasmount_var_run_t,s0)
+/run/nexus-console-gate(/.*)?			gen_context(system_u:object_r:nexus_consolegate_var_run_t,s0)

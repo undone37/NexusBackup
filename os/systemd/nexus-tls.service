@@ -1,0 +1,58 @@
+[Unit]
+Description=NexusBackup web certificate helper (CSR on the appliance, chain validation, install, docs/control-plane.md)
+# Started by nexus-tls.path when the web-api writes /var/lib/nexus/tls/request.json.
+ConditionPathExists=/var/lib/nexus/setup-done
+StartLimitIntervalSec=60
+StartLimitBurst=20
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/nexus/nexus-tls
+# Root, but without any capability: it owns /etc/nexus/tls (0755 root) and the
+# request dir (0770 root:nexus-webapi). Group nexus-webapi: web.pem / web.pem.prev
+# are created 0640 root:nexus-webapi, so the web-api can read them and nobody
+# else; the pending CSR key stays 0600 root (and nexus_tls_pending_t).
+User=root
+Group=nexus-webapi
+ReadWritePaths=/etc/nexus/tls /var/lib/nexus/tls
+# the other services' state is not even visible
+InaccessiblePaths=-/run/nexus-keyd -/var/lib/nexus/keyd -/var/lib/nexus/chunkstore -/var/lib/nexus/scheduler
+InaccessiblePaths=-/var/lib/nexus/escrow -/var/lib/nexus/offsite -/var/lib/nexus/downloads -/var/lib/nexus/replicad
+InaccessiblePaths=-/var/lib/nexus/webapi -/var/lib/nexus/catalog -/etc/nexus/ssh -/etc/nexus/metrics-token
+# 0027: web.pem 0640 / csr.pem + result.json 0640 (group nexus-webapi), key 0600
+UMask=0027
+LimitCORE=0
+TimeoutStartSec=60
+
+# No network: it only parses PEM and generates a key.
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateIPC=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM

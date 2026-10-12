@@ -15,7 +15,8 @@ die() {
 # api USER METHOD PATH [JSON] -> body on stdout, HTTP status in $S/status
 api() {
 	local u=$1 m=$2 p=$3 d=${4:-}
-	local args=(-s --cacert "$ROOT/etc/nexus/tls/cert.pem" --resolve "nexus-m5:$PORT:127.0.0.1"
+	# API_CA: another trust anchor (an imported web certificate, Phase 14d)
+	local args=(-s --cacert "${API_CA:-$ROOT/etc/nexus/tls/cert.pem}" --resolve "nexus-m5:$PORT:127.0.0.1"
 		-b "$S/$u.jar" -c "$S/$u.jar" -X "$m" -o "$S/body" -w '%{http_code}')
 	[ "$m" = GET ] || args+=(-H "X-CSRF-Token: $(cat "$S/$u.csrf" 2>/dev/null || true)") # none for anonymous calls
 	[ -z "$d" ] || args+=(-H 'Content-Type: application/json' --data-binary "$d")
@@ -25,9 +26,9 @@ api() {
 status() { cat "$S/status"; }
 expect() { [ "$(status)" = "$1" ] || die "$2: HTTP $(status) $(cat "$S/body")"; }
 
-# login USER PASSWORD TOTP_SECRET (waits for a fresh TOTP step: codes are single-use)
-login() {
-	local u=$1 pw=$2 sec=$3 code
+# fresh_code USER TOTP_SECRET -> a TOTP code not used before (waits for the next step if needed)
+fresh_code() {
+	local u=$1 sec=$2 code
 	# per appliance, not per script: the web-api refuses a TOTP code reused by any client
 	local last=${ROOT:-$S}/run/lastcode-$u
 	mkdir -p "${last%/*}"
@@ -37,6 +38,13 @@ login() {
 		code=$(python3 "$api_lib/totp.py" "$sec")
 	fi
 	echo "$code" >"$last"
+	echo "$code"
+}
+
+# login USER PASSWORD TOTP_SECRET (waits for a fresh TOTP step: codes are single-use)
+login() {
+	local u=$1 pw=$2 sec=$3 code
+	code=$(fresh_code "$u" "$sec")
 	rm -f "$S/$u.jar"
 	api "$u" POST /auth/login "$(jq -nc --arg n "$u" --arg p "$pw" --arg t "$code" '{name:$n,password:$p,totp:$t}')" |
 		jq -r .csrf >"$S/$u.csrf"

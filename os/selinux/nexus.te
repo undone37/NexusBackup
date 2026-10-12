@@ -27,10 +27,18 @@ policy_module(nexus, 1.0.0)
 #                                                          NFS/CIFS mount per socket connection
 #   init_t ── nexus_setup_exec_t ─────> nexus_setup_t      first boot (root): nmcli/hostnamectl/systemctl
 #   init_t ── nexus_nftsync_exec_t ───> nexus_nftsync_t    root oneshot ── iptables_exec_t ──> iptables_t
+#   init_t ── nexus_tls_exec_t ───────> nexus_tls_t        root oneshot, no caps: CSR key, imported web
+#                                                          certificate (the only writer), no network
+#   init_t ── nexus_diag_exec_t ──────> nexus_diag_t       root oneshot, diagnostics: reads journal/audit/
+#                                                          nft/chrony/catalog, writes its dir, no network
+#   init_t ── nexus_consolegate_exec_t > nexus_consolegate_t  console gate on tty2 (root): unlock code or
+#                                                          recovery key ── shell_exec_t ──> unconfined_t
+#                                                          (the emergency root shell; the only way there)
 #
 # Data types are private to the domains named in their rules; nothing is
 # shared through generic types (var_lib_t, etc_t, tmp_t). No domain is
-# permissive or unconfined. Every allow rule below states why it exists.
+# permissive or unconfined (the console gate's root shell is unconfined_t by
+# design, Phase 14c). Every allow rule below states why it exists.
 ########################################
 
 gen_require(`
@@ -43,6 +51,8 @@ gen_require(`
 	type nfs_t;
 	type cifs_t;
 	type net_conf_t;
+	type unconfined_t;
+	role system_r;
 	class service { start stop status reload enable disable };
 	class system { reload status };
 ')
@@ -85,6 +95,8 @@ nexus_daemon(nasmount)
 nexus_job(replica)
 nexus_job(pluginhost)
 nexus_daemon(plugininstall)
+nexus_daemon(consolegate)
+nexus_daemon(tls)
 
 # Plugin process (docs/plugin-system.md): untrusted third-party code. Deliberately
 # NOT in nexus_domain: that attribute grants every nexus service basics a plugin must
@@ -160,6 +172,16 @@ type nexus_replicad_var_run_t;	# replicad socket, published ca.pem / seal.pub (w
 files_pid_file(nexus_replicad_var_run_t)
 type nexus_replica_key_t;	# secondary: client key + certificate per replication source (nexus-replica only)
 files_type(nexus_replica_key_t)
+type nexus_console_unlock_t;	# console unlock codes (hashes): web-api writes, the console gate reads + deletes
+files_type(nexus_console_unlock_t)
+type nexus_consolegate_var_run_t;	# console gate: failed attempts (RuntimeDirectory=nexus-console-gate)
+files_pid_file(nexus_consolegate_var_run_t)
+type nexus_tls_web_t;		# /etc/nexus/tls/web.pem(.prev): imported chain + key (nexus-tls writes, web-api reads)
+files_config_file(nexus_tls_web_t)
+type nexus_tls_pending_t;	# /etc/nexus/tls/pending: key of a pending CSR (nexus-tls only)
+files_type(nexus_tls_pending_t)
+type nexus_tls_req_t;		# /var/lib/nexus/tls: requests (web-api) and answers (nexus-tls)
+files_type(nexus_tls_req_t)
 
 ########################################
 # Common to all nexus domains: the basics of a Rust program on glibc.
@@ -186,8 +208,10 @@ allow nexus_domain nexus_var_lib_t:dir search_dir_perms;
 
 # Only keyd may ever touch the TPM (TPM sealing is deferred, the rule stays).
 neverallow { nexus_domain -nexus_keyd_t } tpm_device_t:chr_file *;
-# Key material: only keyd (and setup, which runs `keyd init` once) see it.
-neverallow { nexus_domain -nexus_keyd_t -nexus_setup_t } nexus_keyd_var_lib_t:file { read write open };
+# Key material: only keyd (and setup, which runs `keyd init` once) see it; the
+# console gate reads it to check the recovery key (as recover-admin does).
+neverallow { nexus_domain -nexus_keyd_t -nexus_setup_t -nexus_consolegate_t } nexus_keyd_var_lib_t:file { read open };
+neverallow { nexus_domain -nexus_keyd_t -nexus_setup_t } nexus_keyd_var_lib_t:file write;
 # The restore micro-VM (QEMU parsing untrusted guest disks) never reaches keys,
 # stores, the catalog, downloads, credentials or job configs, nor the keyd socket
 # (security review H-3: it shares the nexus-chunkstore uid, so MAC is the boundary).
@@ -306,6 +330,8 @@ allow nexus_scheduler_t self:udp_socket create_socket_perms;
 corenet_tcp_connect_http_port(nexus_scheduler_t)
 corenet_tcp_connect_smtp_port(nexus_scheduler_t)
 corenet_tcp_connect_all_unreserved_ports(nexus_scheduler_t)
+# audit / alert forwarding (forward.rs): syslog over TLS (6514, syslog_tls_port_t)
+corenet_tcp_connect_syslog_tls_port(nexus_scheduler_t)
 sysnet_dns_name_resolve(nexus_scheduler_t)
 # rustls roots for the webhook (system trust store)
 miscfiles_read_generic_certs(nexus_scheduler_t)
@@ -757,8 +783,8 @@ neverallow { nexus_domain -nexus_pluginhost_t } nexus_plugin_t:process transitio
 # No nexus data: keys, stores, escrow, catalog, downloads, credentials, job configs
 # (secrets), web-api / scheduler secrets, agent CA, replication keys, /etc/nexus,
 # staged bundles, service sockets; not even a directory search into them.
-neverallow nexus_plugin_t { nexus_keyd_var_lib_t nexus_store_t nexus_escrow_t nexus_catalog_t nexus_downloads_t nexus_sshkey_t nexus_scheduler_var_run_t nexus_webapi_secret_t nexus_webapi_var_lib_t nexus_scheduler_secret_t nexus_agent_ca_t nexus_replicad_var_lib_t nexus_replica_key_t nexus_etc_t nexus_plugin_staging_t nexus_keyd_var_run_t nexus_replicad_var_run_t nexus_nasmount_var_run_t }:{ file lnk_file sock_file } { read write append open create unlink link rename setattr execute ioctl lock };
-neverallow nexus_plugin_t { nexus_keyd_var_lib_t nexus_keyd_var_run_t nexus_store_t nexus_escrow_t nexus_catalog_t nexus_downloads_t nexus_sshkey_t nexus_scheduler_var_run_t nexus_webapi_secret_t nexus_webapi_var_lib_t nexus_agent_ca_t nexus_replicad_var_lib_t nexus_replicad_var_run_t nexus_replica_key_t nexus_etc_t nexus_plugin_staging_t nexus_nasmount_var_run_t }:dir { search read write add_name };
+neverallow nexus_plugin_t { nexus_keyd_var_lib_t nexus_store_t nexus_escrow_t nexus_catalog_t nexus_downloads_t nexus_sshkey_t nexus_scheduler_var_run_t nexus_webapi_secret_t nexus_tls_web_t nexus_tls_pending_t nexus_tls_req_t nexus_webapi_var_lib_t nexus_scheduler_secret_t nexus_agent_ca_t nexus_replicad_var_lib_t nexus_replica_key_t nexus_etc_t nexus_plugin_staging_t nexus_keyd_var_run_t nexus_replicad_var_run_t nexus_nasmount_var_run_t }:{ file lnk_file sock_file } { read write append open create unlink link rename setattr execute ioctl lock };
+neverallow nexus_plugin_t { nexus_keyd_var_lib_t nexus_keyd_var_run_t nexus_store_t nexus_escrow_t nexus_catalog_t nexus_downloads_t nexus_sshkey_t nexus_scheduler_var_run_t nexus_webapi_secret_t nexus_tls_web_t nexus_tls_pending_t nexus_tls_req_t nexus_webapi_var_lib_t nexus_agent_ca_t nexus_replicad_var_lib_t nexus_replicad_var_run_t nexus_replica_key_t nexus_etc_t nexus_plugin_staging_t nexus_nasmount_var_run_t }:dir { search read write add_name };
 # No connection to any nexus service socket (keyd!), no capabilities, no server sockets.
 neverallow nexus_plugin_t nexus_domain:unix_stream_socket connectto;
 neverallow nexus_plugin_t nexus_domain:unix_dgram_socket sendto;
@@ -816,3 +842,187 @@ read_lnk_files_pattern(nexus_webapi_t, nexus_plugin_data_t, nexus_plugin_data_t)
 list_dirs_pattern(nexus_scheduler_t, nexus_plugin_data_t, nexus_plugin_data_t)
 read_files_pattern(nexus_scheduler_t, nexus_plugin_data_t, nexus_plugin_data_t)
 read_lnk_files_pattern(nexus_scheduler_t, nexus_plugin_data_t, nexus_plugin_data_t)
+
+########################################
+# Web certificate (docs/control-plane.md "Web certificate"): nexus-tls (root oneshot,
+# no capabilities, no network) answers the web-api's requests in /var/lib/nexus/tls:
+# a CSR (new key into /etc/nexus/tls/pending), installing a validated chain as
+# web.pem (temp file + rename, previous kept as web.pem.prev) and reverting. It never
+# writes the self-signed identity certificate or its key (nexus_webapi_secret_t),
+# which replication secondaries pin; the web-api reads web.pem and never the pending key.
+
+# requests in, answers out
+allow nexus_tls_t nexus_tls_req_t:dir rw_dir_perms;
+manage_files_pattern(nexus_tls_t, nexus_tls_req_t, nexus_tls_req_t)
+read_files_pattern(nexus_tls_t, nexus_var_lib_t, nexus_var_lib_t)
+# /etc/nexus/tls: add and remove its own entries only
+files_search_etc(nexus_tls_t)
+allow nexus_tls_t nexus_etc_t:dir search_dir_perms;
+allow nexus_tls_t nexus_webapi_secret_t:dir rw_dir_perms;
+manage_files_pattern(nexus_tls_t, nexus_webapi_secret_t, nexus_tls_web_t)
+filetrans_pattern(nexus_tls_t, nexus_webapi_secret_t, nexus_tls_web_t, file, "web.pem")
+filetrans_pattern(nexus_tls_t, nexus_webapi_secret_t, nexus_tls_web_t, file, "web.tmp")
+filetrans_pattern(nexus_tls_t, nexus_webapi_secret_t, nexus_tls_web_t, file, "web.pem.tmp")
+filetrans_pattern(nexus_tls_t, nexus_webapi_secret_t, nexus_tls_web_t, file, "web.pem.prev")
+filetrans_pattern(nexus_tls_t, nexus_webapi_secret_t, nexus_tls_web_t, file, "web.pem.prev.tmp")
+filetrans_pattern(nexus_tls_t, nexus_webapi_secret_t, nexus_tls_web_t, file, "web.pem.prev.new")
+manage_dirs_pattern(nexus_tls_t, nexus_tls_pending_t, nexus_tls_pending_t)
+manage_files_pattern(nexus_tls_t, nexus_tls_pending_t, nexus_tls_pending_t)
+filetrans_pattern(nexus_tls_t, nexus_webapi_secret_t, nexus_tls_pending_t, dir, "pending")
+
+# web-api: writes requests (temp file + rename), reads and deletes answers, serves web.pem
+allow nexus_webapi_t nexus_tls_req_t:dir rw_dir_perms;
+manage_files_pattern(nexus_webapi_t, nexus_tls_req_t, nexus_tls_req_t)
+read_files_pattern(nexus_webapi_t, nexus_webapi_secret_t, nexus_tls_web_t)
+# nexus-tls.path (PathExists=request.json): systemd watches the request dir
+allow init_t nexus_tls_req_t:dir { getattr search read watch };
+allow init_t nexus_tls_req_t:file getattr;
+
+# Only nexus-tls writes the imported certificate and reads the pending key; it never
+# writes the identity certificate/key, has no network and no capabilities.
+neverallow { nexus_domain -nexus_tls_t } nexus_tls_web_t:file { write append create unlink rename link setattr relabelto };
+neverallow { nexus_domain -nexus_tls_t } nexus_tls_pending_t:file { read write open create unlink relabelto };
+neverallow nexus_tls_t nexus_webapi_secret_t:file { write append create unlink rename link setattr };
+neverallow nexus_tls_t self:{ tcp_socket udp_socket } create;
+neverallow nexus_tls_t self:capability *;
+
+# Diagnostics (Phase 14b, os/greenboot/usr/libexec/nexus/nexus-diag): root oneshot started
+# by nexus-diag.path when the web-api writes /var/lib/nexus/diag/request.json. Self-checks
+# and a redacted support bundle: reads the journal (journalctl_t), the audit log, the
+# nftables ruleset (iptables_t), chrony (chronyc_t), systemd state, the catalog (read-only),
+# the update status and the web certificate; writes only its control dir. No network.
+
+nexus_daemon(diag)
+type nexus_diag_var_lib_t;	# /var/lib/nexus/diag: requests (web-api) and results (nexus-diag)
+files_type(nexus_diag_var_lib_t)
+
+# the script runs under /usr/bin/python3 (bin_t) with the standard library from /usr;
+# ausearch (bin_t) runs in this domain; nexus-health (bin_t) is imported for the audit chain
+corecmd_exec_bin(nexus_diag_t)
+libs_use_ld_so(nexus_diag_t)
+libs_use_shared_libs(nexus_diag_t)
+libs_read_lib_files(nexus_diag_t)
+files_read_usr_files(nexus_diag_t)
+files_read_etc_files(nexus_diag_t)
+# import ssl: OpenSSL configuration under /etc/pki; ausearch -i: user names
+miscfiles_read_generic_certs(nexus_diag_t)
+auth_read_passwd(nexus_diag_t)
+# its control dir: consumes request.json, writes <id>/{status,checks}.json and the bundle,
+# prunes old results
+manage_dirs_pattern(nexus_diag_t, nexus_diag_var_lib_t, nexus_diag_var_lib_t)
+manage_files_pattern(nexus_diag_t, nexus_diag_var_lib_t, nexus_diag_var_lib_t)
+# setup-done
+read_files_pattern(nexus_diag_t, nexus_var_lib_t, nexus_var_lib_t)
+# catalog, read-only (mode=ro, readonly_shm: the -shm file is opened O_RDONLY): quick_check,
+# audit chain, row counts
+list_dirs_pattern(nexus_diag_t, nexus_catalog_t, nexus_catalog_t)
+read_files_pattern(nexus_diag_t, nexus_catalog_t, nexus_catalog_t)
+allow nexus_diag_t nexus_catalog_t:file map;
+# update status.json (bootc booted/staged/rollback as nexus-update last saw it)
+list_dirs_pattern(nexus_diag_t, nexus_update_t, nexus_update_t)
+read_files_pattern(nexus_diag_t, nexus_update_t, nexus_update_t)
+# keyd: the socket exists (never connects)
+allow nexus_diag_t nexus_keyd_var_run_t:dir search_dir_perms;
+allow nexus_diag_t nexus_keyd_var_run_t:sock_file getattr;
+# web certificate expiry: cert.pem shares the type of the TLS key and the metrics token;
+# DAC keeps the key closed (0600 nexus-webapi; this domain has no DAC override) and the
+# script opens only cert.pem
+files_search_etc(nexus_diag_t)
+allow nexus_diag_t nexus_etc_t:dir search_dir_perms;
+read_files_pattern(nexus_diag_t, nexus_webapi_secret_t, nexus_webapi_secret_t)
+# disk usage: statfs of the store, /var, /sysroot, /boot
+fs_getattr_all_fs(nexus_diag_t)
+allow nexus_diag_t nexus_store_t:dir getattr;
+files_getattr_boot_dirs(nexus_diag_t)
+# SELinux mode (/sys/fs/selinux/enforce)
+selinux_get_enforce_mode(nexus_diag_t)
+# audit log: ausearch reads auditd.conf and /var/log/audit
+logging_read_audit_config(nexus_diag_t)
+logging_read_audit_log(nexus_diag_t)
+logging_map_audit_log(nexus_diag_t)
+# failed units, is-active: systemctl over the private socket, status of PID 1 and units
+systemd_exec_systemctl(nexus_diag_t)
+init_stream_connect(nexus_diag_t)
+init_read_state(nexus_diag_t)
+allow nexus_diag_t init_t:system status;
+systemd_status_all_unit_files(nexus_diag_t)
+# journal (journalctl), chrony (chronyc), nftables (nft list): each tool in its own domain;
+# the unit has NoNewPrivileges=yes; output comes back through our pipes
+journalctl_domtrans(nexus_diag_t)
+chronyd_domtrans_chronyc(nexus_diag_t)
+iptables_domtrans(nexus_diag_t)
+allow nexus_diag_t { journalctl_t chronyc_t iptables_t }:process2 { nnp_transition nosuid_transition };
+allow { journalctl_t chronyc_t iptables_t } nexus_diag_t:fd use;
+allow { journalctl_t chronyc_t iptables_t } nexus_diag_t:fifo_file rw_inherited_fifo_file_perms;
+allow { journalctl_t chronyc_t iptables_t } nexus_diag_t:process sigchld;
+
+# no network; never writes the catalog, update control or anything outside its dir; never
+# reads keys, stores, credentials or job configs; never talks to keyd
+neverallow nexus_diag_t self:{ tcp_socket udp_socket rawip_socket sctp_socket } create;
+neverallow nexus_diag_t { nexus_catalog_t nexus_update_t nexus_var_lib_t nexus_webapi_secret_t nexus_etc_t }:file { write append create unlink rename setattr };
+neverallow nexus_diag_t { nexus_keyd_var_lib_t nexus_store_t nexus_escrow_t nexus_sshkey_t nexus_scheduler_var_run_t nexus_scheduler_secret_t nexus_webapi_var_lib_t nexus_agent_ca_t nexus_replicad_var_lib_t nexus_replica_key_t nexus_downloads_t }:file { read open };
+neverallow nexus_diag_t nexus_keyd_var_run_t:sock_file { write open };
+# only nexus-diag writes results (the web-api writes requests into the top dir, reads results)
+neverallow { nexus_domain -nexus_diag_t -nexus_webapi_t } nexus_diag_var_lib_t:file { read write open };
+
+# web-api: request.json (tmp + rename) into the control dir, status / checks / bundle out
+allow nexus_webapi_t nexus_diag_var_lib_t:dir rw_dir_perms;
+manage_files_pattern(nexus_webapi_t, nexus_diag_var_lib_t, nexus_diag_var_lib_t)
+# Console gate (Phase 14c, nexus-console-gate.service on tty2, root): accepts a
+# one-time unlock code (issued by the web-api after an approved console.unlock) or
+# the recovery key, records the shell in the catalog and starts it with
+# `systemd-run --scope -p RuntimeMaxSec=` (systemd stops the scope when the time is
+# up). Executing bash moves the shell to unconfined_t: the emergency root shell.
+
+allow nexus_consolegate_t self:capability { chown fowner dac_override dac_read_search ipc_lock };
+# catalog (audit, alert, banner setting); SQLite running as root chowns the -wal/-shm
+# it creates to the database's owner
+manage_files_pattern(nexus_consolegate_t, nexus_catalog_t, nexus_catalog_t)
+allow nexus_consolegate_t nexus_catalog_t:dir rw_dir_perms;
+allow nexus_consolegate_t nexus_catalog_t:file map;
+# setup-done
+read_files_pattern(nexus_consolegate_t, nexus_var_lib_t, nexus_var_lib_t)
+# recovery key check: kek.recovery unwrapped with the typed key must equal kek.local
+list_dirs_pattern(nexus_consolegate_t, nexus_keyd_var_lib_t, nexus_keyd_var_lib_t)
+read_files_pattern(nexus_consolegate_t, nexus_keyd_var_lib_t, nexus_keyd_var_lib_t)
+# unlock codes: read, and delete when used or expired (never create: that is the web-api)
+allow nexus_consolegate_t nexus_console_unlock_t:dir rw_dir_perms;
+allow nexus_consolegate_t nexus_console_unlock_t:file { read_file_perms unlink };
+# failed attempts across restarts of the gate
+manage_files_pattern(nexus_consolegate_t, nexus_consolegate_var_run_t, nexus_consolegate_var_run_t)
+# tty2 (echo off for the recovery key, foreground process group after the shell)
+term_use_unallocated_ttys(nexus_consolegate_t)
+term_use_controlling_term(nexus_consolegate_t)
+# a pty from `systemd-run --pty` in an admin's root shell (lab/appliance/console-gate.sh)
+userdom_use_user_ptys(nexus_consolegate_t)
+term_use_generic_ptys(nexus_consolegate_t)
+# systemd-run --scope / systemctl stop <scope> run in this domain and talk to PID 1
+# (private socket as root, or the system bus): create the transient scope, stop it
+corecmd_exec_bin(nexus_consolegate_t)
+systemd_exec_systemctl(nexus_consolegate_t)
+files_read_etc_files(nexus_consolegate_t)
+files_read_usr_files(nexus_consolegate_t)
+init_stream_connect(nexus_consolegate_t)
+init_read_state(nexus_consolegate_t)
+dbus_system_bus_client(nexus_consolegate_t)
+init_dbus_chat(nexus_consolegate_t)
+init_start_transient_unit(nexus_consolegate_t)
+allow nexus_consolegate_t init_t:service { stop status };
+allow nexus_consolegate_t init_t:system status;
+allow nexus_consolegate_t self:unix_dgram_socket create_socket_perms;
+# The shell: systemd-run execs /bin/bash in place -> unconfined_t (system_u:system_r,
+# the gate's identity and role; a shell entry point of unconfined_t as for logins)
+corecmd_shell_domtrans(nexus_consolegate_t, unconfined_t)
+corecmd_shell_entry_type(unconfined_t)
+role system_r types unconfined_t;
+
+# --- web-api: writes the code files (tmp + rename), revokes (deletes) them
+allow nexus_webapi_t nexus_console_unlock_t:dir rw_dir_perms;
+manage_files_pattern(nexus_webapi_t, nexus_console_unlock_t, nexus_console_unlock_t)
+
+# Only the console gate reaches unconfined_t; only the web-api issues codes, only it
+# and the gate read them.
+neverallow { nexus_domain -nexus_consolegate_t } unconfined_t:process { transition dyntransition };
+neverallow { nexus_domain -nexus_webapi_t } nexus_console_unlock_t:file { create write append rename link setattr relabelto };
+neverallow { nexus_domain -nexus_webapi_t -nexus_consolegate_t } nexus_console_unlock_t:file { read open };
+neverallow nexus_plugin_t { nexus_console_unlock_t nexus_consolegate_var_run_t }:file { read write append open create unlink link rename setattr execute ioctl lock };

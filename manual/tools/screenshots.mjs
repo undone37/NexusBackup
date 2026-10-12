@@ -400,6 +400,11 @@ async function main() {
       await until(`return document.body.innerText.includes('Chain intact')`, 'audit verification');
       await shot('audit');
     }],
+    ['forwarding', async () => {
+      await go('/settings?tab=forwarding');
+      await until(`return !!document.querySelector('#fw-host')`, 'forwarding settings');
+      await shot('settings-forwarding', { height: 1300 });
+    }],
     ['snapshots', async () => {
       await go('/snapshots?tenant=initech');
       await shot('snapshots');
@@ -656,6 +661,60 @@ async function main() {
       await shot('settings-ssh-keys');
       await go('/settings?tab=updates');
       await shot('settings-updates');
+      // Phase 14b: self-checks (seeded run) and a support bundle the mock finishes after ~3 s
+      await go('/settings?tab=diagnostics');
+      await until(`return !!document.querySelector('#diag-checks-h') && document.querySelectorAll('tbody tr').length > 10`, 'diagnostics checks');
+      await ev(`$click('Create bundle'); return true;`);
+      await until(`return [...document.querySelectorAll('.chip')].some((c) => c.textContent.trim() === 'Ready')`, 'support bundle ready');
+      await shot('settings-diagnostics', { height: 1700 });
+    }],
+    ['console', async () => {
+      // emergency console root access (14c): request, approval, the code shown once, the banner while the shell runs
+      const r = await api('POST', '/console/unlock', { hours: 2, reason: 'Storage driver debugging with the vendor (case 5120)' });
+      if (r.status === 202) {
+        await login('so');
+        await api('POST', `/quorum/${r.body.quorum_id}/approve`);
+        await login('admin');
+      }
+      await go('/settings?tab=console');
+      await until(`return !!$button('Show code')`, 'console access requests');
+      await shot('settings-console');
+      await ev(`$rowClick('Storage driver debugging', 'Show code'); return true;`);
+      await confirmOk();
+      await until(`return !!document.querySelector('dialog[open] .console-code')`, 'console code');
+      const code = await ev(`return document.querySelector('dialog[open] .console-code').textContent;`);
+      await shot('console-code');
+      await closeDialogs();
+      // the mock stands in for the gate on tty2
+      await api('POST', '/mock/console-gate', { code });
+      await go('/', 900);
+      await shot('console-shell-banner');
+      await api('POST', '/mock/console-gate', { end: true });
+    }],
+    // Phase 14d: API tokens (My account, Users) and the web certificate
+    ['tokens', async () => {
+      await go('/account');
+      await shot('account-tokens');
+      await ev(`$click('New token'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] select')`, 'token dialog');
+      await ev(`$fill('input[maxlength="64"]', 'grafana'); $fill('input[type=password]', 'nexus'); $fill('input[inputmode=numeric]', '492039'); return true;`);
+      await shot('token-new', { height: 1000 });
+      await ev(`$click('Create', document.querySelector('dialog[open]')); return true;`);
+      await until(`return document.body.innerText.includes('shown only once')`, 'token shown once');
+      await shot('token-created');
+      await closeDialogs();
+      await go('/users');
+      await ev(`[...document.querySelectorAll('section.card')].pop()?.scrollIntoView(); return true;`);
+      await shot('users-tokens', { scrolled: true });
+    }],
+    ['certificate', async () => {
+      await go('/settings?tab=certificate');
+      await until(`return document.body.innerText.includes('SHA-256 fingerprint')`, 'certificate tab');
+      await shot('settings-certificate', { height: 1400 });
+      await ev(`$click('Generate request'); return true;`);
+      await until(`return document.body.innerText.includes('Pending request')`, 'pending CSR');
+      await ev(`document.querySelector('textarea[placeholder^="-----BEGIN"]').scrollIntoView(); return true;`);
+      await shot('certificate-csr', { height: 1400, scrolled: true });
     }],
     // Phase 14d: Settings → Security, My account → Sessions, download privilege / expiry, the viewer role
     ['access', async () => {

@@ -69,14 +69,28 @@ async fn main() -> Result<()> {
         eprintln!("<5>web-api: encrypted {migrated} legacy TOTP seed(s)");
     }
     let app = web_api::router(st.clone());
-    let tls = web_api::tls::Tls::load(&cfg.tls_cert, &cfg.tls_key, Some(cfg.replication_ca.clone()))?;
+    // web certificate files next to the identity certificate (NEXUS_TLS_CERT)
+    let _ = st.tls.set(webtls::Paths {
+        tls: cfg.tls_cert.parent().map_or_else(|| webtls::TLS_DIR.into(), Into::into),
+        req: std::env::var_os("NEXUS_TLS_REQ_DIR").map_or_else(|| webtls::REQ_DIR.into(), Into::into),
+    });
+    let web = web_api::certs::paths(&st).web();
+    let tls = web_api::tls::Tls::load(&cfg.tls_cert, &cfg.tls_key, Some(web), Some(cfg.replication_ca.clone()))?;
 
     // quorum expiry also runs inline on every quorum call; this keeps it
-    // timely for metrics and the audit log
+    // timely for metrics and the audit log. Hourly: the certificate dates the
+    // scheduler's expiry alerts read.
     tokio::spawn({
         let st = st.clone();
         async move {
+            let mut minutes = 0u64;
             loop {
+                minutes += 1;
+                if minutes % 60 == 1 {
+                    if let Err(e) = web_api::certs::publish_status(&st) {
+                        eprintln!("<4>web-api: certificate status: {}", e.1);
+                    }
+                }
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 let _ = web_api::quorum::expire(&st);
             }

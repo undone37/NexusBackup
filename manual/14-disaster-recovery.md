@@ -17,6 +17,7 @@ lost (hardware failure, fire, ransomware on the management network) and how the 
 | Appliance lost, tenant is replicated | the secondary appliance (it has its own keys) | the secondary's local store ([08 Replication](08-replication.md)) |
 | Single snapshot damaged locally | nothing extra | `verify` finds it; restore an older snapshot, or fetch it from offsite (below) |
 | The only administrator lost the authenticator or password | recovery key + local console | [Break-glass](#break-glass-the-only-administrator-lost-their-authenticator) (below) |
+| A root shell is needed on the appliance (repairs, rollback, the break-glass reset) | a one-time code approved by a second person, or the recovery key + local console | [Emergency root shell on the console](#emergency-root-shell-on-the-console) (below) |
 
 ### The recovery key
 
@@ -124,6 +125,71 @@ primary: replicated tenants take no new backups on the secondary. To protect the
 > **Status:** Restore on a secondary with the primary powered off was tested in the two-appliance lab (file download
 > from a replicated VM snapshot). A full VM restore on the secondary was not part of that test.
 
+## Emergency root shell on the console
+
+The appliance has no root password and no SSH server. Tasks that need root (the network change, update rollback, SSH
+key files, the offsite recovery above, the break-glass reset below) are done on the **local console**: the physical
+screen and keyboard, or the hypervisor's console of a virtual appliance. **tty2** (press **Alt+F2**; in a graphical
+VM console **Ctrl+Alt+F2**) shows the console gate instead of a login prompt:
+
+```
+NexusBackup appliance: emergency console
+...
+Unlock code or recovery key:
+```
+
+It accepts one of two things.
+
+**A one-time code (normal case).**
+
+1. An administrator opens **Configuration → Settings → Console access**, chooses the **Shell duration** (1 to
+   8 hours), enters a **Reason** and clicks **Request**.
+2. With approvals enabled, another administrator or a security officer approves the request `console unlock` on the
+   **Approvals** page ([10 Approvals and audit](10-approvals-and-audit.md)). With approvals disabled the request is
+   approved at once (still audited and alerted).
+3. The requester clicks **Show code** and confirms. The code (4 groups of 5 characters, for example
+   `7K3QD-1M9ZX-ABCDE-FGHJK`) is shown **once**; the appliance keeps only its hash. Showing it raises the critical
+   alert `console_unlock`. The code must be used within **24 hours of the approval**.
+4. At the console, on tty2, type the code (case, spaces and dashes do not matter) and press Enter. A root shell
+   opens for the approved duration. The code works once.
+
+![Settings: Console access](images/settings-console.png)
+
+![The one-time code, shown once](images/console-code.png)
+
+An administrator or a security officer can **Revoke** an approved or shown code that is no longer needed; it stops
+working at once.
+
+**The recovery key (when nobody can approve or the web interface is down).** Type the recovery key (16 groups of 4
+hex digits) at the same prompt, then the shell duration in hours (1 to 8, default 1). It is checked against the key
+service exactly like at first boot. Use this only when the code path is impossible: the recovery key also decrypts
+every backup ([The recovery key](#the-recovery-key)).
+
+While the shell runs:
+
+- it is a full root shell (SELinux `unconfined_t`), limited to the chosen duration: when the time is up the
+  appliance ends the shell and everything started from it. Leave it earlier with `exit`;
+- the critical alert `console_root_shell` is raised and delivered through the alert channels
+  ([11 Alerts and monitoring](11-alerts-and-monitoring.md));
+- every administrator, security officer and operator sees a red banner in the web interface ("Root shell running on
+  the console: since …, ends at the latest …"), until the shell ends;
+- the audit log records `console.root_shell` (who requested and approved the code, or `recovery_key`) and, at the
+  end, `console.root_shell_end` with the duration. Rejected input is recorded as `console.unlock_failed`.
+
+![The banner while a console root shell runs](images/console-shell-banner.png)
+
+After **5** rejected attempts within **15 minutes** the gate refuses further attempts until the oldest of them is
+15 minutes old (and waits a few seconds after each rejected attempt). Before first boot setup is complete the gate
+only points to the setup wizard on tty1.
+
+Everything done in the shell is the operator's responsibility and is not recorded command by command. Agree with
+the approver what will be done, and close the shell as soon as the task is finished. Afterwards check the audit log
+and acknowledge the alerts (administrators and security officers).
+
+> **Status:** Implemented in Phase 14 (console gate `nexus-console-gate` on tty2, the web interface, unit and API
+> tests). The appliance VM test (`lab/appliance/console-gate.sh`) drives a second instance of the gate over the
+> serial console, because the lab VM has no screen for tty2. It has not been used on real hardware yet.
+
 ## Break-glass: the only administrator lost their authenticator
 
 Normally another administrator issues a new activation code ([09 Users and access](09-users-and-access.md#lost-password-or-authenticator)).
@@ -132,7 +198,8 @@ If there is no other administrator who can sign in, reset the account on the app
 
 You need:
 
-- a root shell on the appliance's local console (physical console or the hypervisor's console);
+- a root shell on the appliance's local console (physical console or the hypervisor's console): with nobody else to
+  approve a code, open it with the recovery key ([Emergency root shell on the console](#emergency-root-shell-on-the-console));
 - the written recovery key (the same key as at setup, see [The recovery key](#the-recovery-key)).
 
 Procedure:
@@ -170,11 +237,9 @@ identity provider is unavailable, sign in with a local administrator account (se
 [09 Users and access](09-users-and-access.md#single-sign-on-oidc)); if none can sign in, use the procedure above on a
 local administrator account.
 
-> **Status:** `nexus-setup recover-admin` is specified (docs/phase12-contract.md) and the web interface shows the
-> banner, but the console command is still being implemented and is not in the current image. It also needs a root
-> shell on the console, which the hardened image does not provide yet (see
-> [02 Installation](02-installation.md#known-gaps-after-installation)). Until both exist, the only protection is a
-> second administrator.
+> **Status:** `nexus-setup recover-admin` is part of the image (unit-tested). The root shell it needs comes from the
+> console gate ([above](#emergency-root-shell-on-the-console)); the two together have not been run on real hardware.
+> A second administrator remains the better protection.
 
 ## What is not recovered
 

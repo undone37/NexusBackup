@@ -9,6 +9,10 @@ rust-version.workspace = true
 name = "nexus-setup"
 path = "src/main.rs"
 
+[[bin]]
+name = "nexus-console-gate"
+path = "src/gate_main.rs"
+
 [dependencies]
 anyhow = "1"
 catalog = { path = "../catalog" }

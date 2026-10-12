@@ -87,6 +87,10 @@ pub struct Settings {
     /// additive: PEM CA certificate(s) of an IdP with a private CA
     #[serde(default)]
     pub ca_pem: Option<String>,
+    /// additive (Phase 14d): when the client secret expires at the IdP (unix
+    /// time, entered by the admin); the scheduler alerts 90/30/7 days before
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret_expires: Option<i64>,
 }
 
 impl Default for Settings {
@@ -102,6 +106,7 @@ impl Default for Settings {
             label: "Sign in with SSO".into(),
             mappings: vec![],
             ca_pem: None,
+            client_secret_expires: None,
         }
     }
 }
@@ -254,6 +259,8 @@ pub struct SettingsReq {
     mappings: Vec<Mapping>,
     #[serde(default)]
     ca_pem: Option<String>,
+    #[serde(default)]
+    client_secret_expires: Option<i64>,
 }
 
 fn default_scopes() -> Vec<String> {
@@ -297,6 +304,7 @@ pub async fn put_settings(State(st): State<St>, ctx: Ctx, J(r): J<SettingsReq>) 
         label: r.label,
         mappings: r.mappings,
         ca_pem: r.ca_pem.filter(|p| !p.trim().is_empty()),
+        client_secret_expires: r.client_secret_expires.filter(|t| *t > 0),
     };
     validate_settings(&st.cat.conn(), &new)?;
     let p = json!({"settings": new, "old": old});

@@ -65,7 +65,9 @@
 mod accounts;
 pub mod alerts;
 pub mod anomaly;
+pub mod expiry;
 pub mod firewall;
+pub mod forward;
 mod inventory;
 mod lifecycle;
 pub mod orphans;
@@ -178,6 +180,8 @@ pub struct Config {
     pub cancel_grace_secs: u64,
     /// guest inventory refresh per source (auto-protect groups); 0 = off
     pub inventory_secs: i64,
+    /// audit / alert forwarding round (forward.rs); 0 = no forwarder thread
+    pub forward_poll_secs: u64,
 }
 
 impl Default for Config {
@@ -225,6 +229,7 @@ impl Default for Config {
             ssh_dir: "/etc/nexus/ssh".into(),
             cancel_grace_secs: 30,
             inventory_secs: 3600,
+            forward_poll_secs: 5,
         }
     }
 }
@@ -313,6 +318,8 @@ pub struct Scheduler {
     fw_settle: Option<Instant>,
     /// running jobs that got SIGTERM (cancel requested), for the SIGKILL deadline
     cancel_sent: HashMap<i64, Instant>,
+    /// UTC day of the last `audit.anchor` (forward.rs; None = not read yet)
+    anchor_day: Option<i64>,
 }
 
 /// Agent ids: 16 lowercase hex characters (chosen by the web-api).
@@ -433,6 +440,10 @@ impl Scheduler {
         // the configuration is read again for every batch (catalog setting or file)
         alerts::AlertsConfig::load(&cfg.alerts_config)?;
         let alert_tx = alerts::spawn_delivery(cfg.alert_retry_secs.map(Duration::from_secs));
+        if cfg.forward_poll_secs > 0 {
+            let poll = Duration::from_secs(cfg.forward_poll_secs);
+            forward::spawn(db.clone(), secrets.clone(), alerts::hostname(), poll);
+        }
         let ctx = Arc::new(Ctx {
             keys,
             store_options,
@@ -453,6 +464,7 @@ impl Scheduler {
             fw_checked: None,
             fw_settle: None,
             cancel_sent: HashMap::new(),
+            anchor_day: None,
             alert_tx,
             host: alerts::hostname(),
             now: catalog::now(),
@@ -675,11 +687,14 @@ impl Scheduler {
                 self.log_err(|s| s.check_quotas());
                 self.log_err(|s| s.publish_ssh_keys());
                 self.log_err(|s| s.prune_alerts(now));
+                self.log_err(|s| s.check_expiry(now));
+                self.log_err(|s| forward::prune_outbox(&s.db, now));
                 self.log_err(|s| s.check_accounts(now));
             }
         }
         self.log_err(|s| s.check_offsite_lag(now));
         self.log_err(|s| s.check_replication_lag(now));
+        self.log_err(|s| s.check_forwarding(now));
         self.log_err(|s| s.sync_firewall().map(drop));
         self.deliver_alerts()
     }
@@ -911,6 +926,8 @@ impl Scheduler {
             targets.extend(firewall::alert_targets(&a));
         }
         targets.extend(firewall::oidc_targets(&self.db.conn())?);
+        let fwd = catalog::forwarding::Forwarding::load(&self.db.conn())?;
+        targets.extend(firewall::forward_targets(&fwd));
         // inbound: the management allow-list (Settings → Security; empty = any)
         let mgmt = catalog::access::mgmt_allow(&self.db.conn())?;
         let changed = nftsync::write_allowed(&self.cfg.nft_allowed, firewall::resolve(&targets), Some(&mgmt))?;
@@ -2851,7 +2868,7 @@ impl Scheduler {
     // ------------------------------------------------------------ appliance jobs
 
     /// Jobs of no tenant (tenant `-`, queued by the web-api settings pages):
-    /// `alert_test` {rule?}, `report_send` {name, from, to}, `ssh_key_rotate` {name, quorum_id}, `ssh_key_retire` {name}.
+    /// `alert_test` {rule?}, `forward_test` {}, `report_send` {name, from, to}, `ssh_key_rotate` {name, quorum_id}, `ssh_key_retire` {name}.
     /// They run in-process; their stdout (a JSON object) becomes the result.
     fn plan_appliance(&self, job: &Job) -> Result<Option<Plan>> {
         let step: Box<dyn Fn() -> Result<String, String> + Send> = match job.kind.as_str() {
@@ -2860,6 +2877,11 @@ impl Scheduler {
                 let host = self.host.clone();
                 let rule = job.params["rule"].as_str().map(str::to_owned);
                 Box::new(move || Ok(alerts::test(&cfg, &host, rule.as_deref()).to_string()))
+            }
+            "forward_test" => {
+                let cfg = catalog::forwarding::Forwarding::load(&self.db.conn())?;
+                let (key, host) = (self.secrets.clone(), self.host.clone());
+                Box::new(move || Ok(forward::test(&cfg, &key, &host).to_string()))
             }
             "report_send" => self.report_step(job),
             "ssh_key_rotate" | "ssh_key_retire" => {

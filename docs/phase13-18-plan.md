@@ -176,6 +176,11 @@ existing rules: record decisions in plan.md, update state.md and commit after ev
 
 ## Phase 15: Restore and protection (Tier 2)
 
+- **15g. Per-tenant file index and search (moved here from 18a by user request, 2026-10-12).** A sealed index per
+  tenant and source, written at snapshot commit from the Tree entries (path, size, mtime, snapshot); search API +
+  search field (name/wildcard, filters tenant/source/date); results open download or restore; entries go with
+  their snapshot; VM disks opt-in via the restorevm micro-VM listing.
+
 - **15a. Restore options.**
   - `RestoreP` (`web-api/src/jobs.rs:89`) gains `link_down` (the backend already exists, `pve/src/ir.rs:115`),
     `start`, `name` (prefix or name) and `pool`.

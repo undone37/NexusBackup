@@ -56,6 +56,7 @@ pub async fn dashboard(State(st): State<St>, ctx: Ctx, Q(q): Q<DashQuery>) -> Ap
     };
     // not cached: an acknowledgement must hide the banner at once
     body["break_glass"] = break_glass(&st.cat.conn(), &ctx)?;
+    body["console_shell"] = crate::console::shell_banner(&st.cat.conn(), &ctx)?;
     Ok(Json(body))
 }
 

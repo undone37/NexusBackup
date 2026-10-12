@@ -6,9 +6,11 @@
   import { t } from '../lib/i18n';
   import type { SessionInfo } from '../lib/types';
   import ErrorBanner from '../components/ErrorBanner.svelte';
+  import ApiTokens from '../components/ApiTokens.svelte';
   import SessionTable from '../components/SessionTable.svelte';
 
-  // My account (Phase 14d): who I am and where I am signed in; every user may end their own sessions.
+  // My account (Phase 14d): who I am, where I am signed in (every user may end their own
+  // sessions) and my API tokens.
   let sessions: SessionInfo[] = $state([]);
   let error: string | null = $state(null);
   let loaded = $state(false);
@@ -27,7 +29,7 @@
 </script>
 
 <div class="page-head">
-  <h1>{t.access.account}</h1>
+  <h1>{t.account.title}</h1>
   <p class="lede">{t.access.accountLede}</p>
 </div>
 <ErrorBanner {error} />
@@ -60,3 +62,5 @@
     <SessionTable {sessions} onchange={load} />
   {/if}
 </section>
+
+<ApiTokens />

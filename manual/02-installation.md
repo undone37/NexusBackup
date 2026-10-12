@@ -80,7 +80,8 @@ appliance accept only signed updates from that repository right away.
 
 The installed system has:
 
-- a locked root account and **no SSH server**: emergency access is through the local console only;
+- a locked root account and **no SSH server**: emergency access is through the local console only, on tty2 with a
+  one-time code or the recovery key (see [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console));
 - SELinux enforcing; every service in its own user, systemd sandbox and SELinux domain;
 - a firewall that blocks everything except the management port (see [Network and firewall](#network-and-firewall)).
 
@@ -141,7 +142,8 @@ again: type it in full (64 hex digits, dashes optional) or reinstall the applian
 The wizard creates a self-signed certificate (ECDSA P-256, valid for 10 years) for the host name and the management
 IP addresses, and shows its **SHA-256 fingerprint**. Write it down. You compare it when your browser warns about
 the certificate on first sign-in. A secondary appliance for replication also needs it (see
-[08 Replication](08-replication.md)).
+[08 Replication](08-replication.md)). Later you can replace it in the browser with a certificate from your own CA
+([Use your own certificate](#use-your-own-certificate)); the self-signed one stays in place for replication.
 
 ### Step 6: metrics token
 
@@ -162,9 +164,10 @@ Run this on the local console as root:
 nexus-setup --force-reconfigure-network
 ```
 
-It redoes only the network step, creates a **new TLS certificate** (the addresses in it change, so the fingerprint
-changes too) and restarts the web API. Tell everybody who pinned the old fingerprint, for example the secondary
-appliance of a replication.
+It redoes only the network step, creates a **new self-signed TLS certificate** (the addresses in it change, so the
+fingerprint changes too) and restarts the web API. Tell everybody who pinned the old fingerprint, for example the
+secondary appliance of a replication. An imported certificate (next section) is not touched: if the new addresses are
+not in it, generate a new request and import a new certificate.
 
 ## Store the recovery key
 
@@ -197,6 +200,51 @@ Next steps:
 4. Create accounts for the other people: [09 Users and access](09-users-and-access.md).
 5. Under **Settings**: set up alert delivery ([11 Alerts](11-alerts-and-monitoring.md#delivery-notification-rules))
    and, optionally, single sign-on ([09 Users and access](09-users-and-access.md#single-sign-on-oidc)).
+
+## Use your own certificate
+
+Browsers warn about the self-signed certificate. To get rid of the warning, have your CA (an internal company CA or
+a public one) issue a certificate for the appliance. An administrator does this under **Settings → Certificate**; a
+security officer can look at it.
+
+![Settings → Certificate: the imported chain, its fingerprints and the request form](images/settings-certificate.png)
+
+1. **Generate a request.** Under **1. Certificate request (CSR)** check the common name (the host name people use in
+   the browser) and the additional names (one per line: further DNS names and the IP addresses you use). The form is
+   pre-filled with the names of the current certificate. **Generate request** creates a new private key **on the
+   appliance**. The key never leaves it, not even into the web UI. Copy the request (PEM, `-----BEGIN CERTIFICATE
+   REQUEST-----`) and give it to your CA.
+
+   ![A pending certificate request](images/certificate-csr.png)
+
+2. **Install the answer.** Paste the issued certificate followed by the intermediate CA certificates (PEM; the root
+   is optional), or load the file, and click **Install certificate**. The appliance checks before using it:
+   - the certificate belongs to the key of the pending request;
+   - the chain is in order (certificate, then each issuer) and every certificate is signed by the next one;
+   - every certificate is valid today;
+   - the names cover all names of the request (a wildcard like `*.example.com` covers one level);
+   - the certificate allows TLS server authentication and is no CA certificate.
+
+   If a check fails, the message says which one and nothing changes. If the root is not included, the appliance warns
+   that clients must trust it already. New connections get the new certificate right away; the web API is not
+   restarted.
+3. **Revert.** **Back to the previous certificate** switches to the certificate installed before; with no previous
+   one, **Back to self-signed** returns to the certificate from the setup wizard. Clicking it again undoes the revert.
+
+What it does not change:
+
+- **Replication** secondaries pin the fingerprint of the self-signed certificate. Replication connections keep
+  getting the self-signed certificate, so an import does not break them, and you do not need to tell anybody a new
+  fingerprint. The page shows the pinned fingerprint.
+- **Agents** do not check this certificate: the appliance proves itself to agents with its agent-CA client
+  certificate.
+
+Each step is in the audit log (`tls.csr`, `tls.install`, `tls.revert`). The appliance warns 90, 30 and 7 days
+before the certificate expires ([11 Alerts](11-alerts-and-monitoring.md#expiry-warnings)). Renewing works the same
+way: generate a new request, install the new certificate.
+
+> **Status:** there is no ACME (Let's Encrypt) client: the appliance has no inbound access from the internet and no
+> default outbound access. Certificates are requested and installed by hand.
 
 ## Network and firewall
 
@@ -250,8 +298,10 @@ These are open production items (see `state.md`, "Production gaps"):
 
 - **Console root shell:** several maintenance tasks in this manual (update rollback and maintenance window, network
   change, SSH key files, disaster recovery, the break-glass reset of a locked-out administrator) need a root shell on
-  the local console. The image locks the root password and has no documented way to get a root shell yet; the lab VMs use a lab-only console autologin. Plan how you will get emergency access
-  (for example booting a rescue system) before you rely on it.
+  the local console. The root password stays locked; the shell opens on **tty2** with a one-time code that a second
+  person approved, or with the recovery key, for at most 8 hours, audited and alerted (see
+  [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console)). Remaining gap: the procedure
+  has not been used on real hardware yet (see the status note there).
 
 - **SSH keys for Proxmox VE nodes:** **Settings → Appliance SSH keys** shows and rotates the appliance's keys, but
   its appliance-side part is still being integrated, so the appliance does not create its own key pair yet. The PVE
@@ -263,4 +313,5 @@ These are open production items (see `state.md`, "Production gaps"):
   `secrets.key` are not backed up automatically (see [14 Disaster recovery](14-disaster-recovery.md)).
 - **Disk encryption:** LUKS2 with TPM unlock is deferred. Backup data is always encrypted per chunk, but the master
   key file (`kek.local`) is protected only by file permissions and SELinux, not by a TPM.
-- **Certificate renewal** for agents and TrueNAS pins is not automated.
+- **Certificate renewal** for agents and TrueNAS pins is not automated. The appliance warns before agent,
+  replication and web certificates expire ([11 Alerts](11-alerts-and-monitoring.md#expiry-warnings)).

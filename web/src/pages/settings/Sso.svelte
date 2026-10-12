@@ -35,6 +35,8 @@
     groups_claim: 'groups',
     label: '',
     mappings: [] as Row[],
+    // YYYY-MM-DD or '' (Phase 14d: expiry alerts 90/30/7 days before)
+    secret_expires: '',
   });
 
   function fill(o: OidcSettings) {
@@ -48,6 +50,7 @@
       groups_claim: o.groups_claim ?? 'groups',
       label: o.label ?? '',
       mappings: (o.mappings ?? []).map((m) => ({ group: m.group, role: m.role, tenants: m.tenants?.[0] ?? '' })),
+      secret_expires: o.client_secret_expires ? new Date(o.client_secret_expires * 1000).toISOString().slice(0, 10) : '',
     };
     secretSet = !!o.client_secret_set;
   }
@@ -93,6 +96,7 @@
       groups_claim: f.groups_claim.trim(),
       label: f.label.trim(),
       mappings,
+      client_secret_expires: f.secret_expires ? Date.parse(`${f.secret_expires}T00:00:00Z`) / 1000 : null,
       ...(f.client_secret ? { client_secret: f.client_secret } : {}),
     };
     busy = true;
@@ -152,6 +156,11 @@
             <label for="{id}-sec">{t.settings.oidc.clientSecret}</label>
             <input id="{id}-sec" type="password" bind:value={f.client_secret} autocomplete="new-password" aria-describedby="{id}-sec-hint" />
             <div class="hint" id="{id}-sec-hint">{secretSet ? t.writeOnlyKeep : t.writeOnlyHint}</div>
+          </div>
+          <div class="field">
+            <label for="{id}-secexp">{t.settings.oidc.secretExpires}</label>
+            <input id="{id}-secexp" type="date" bind:value={f.secret_expires} aria-describedby="{id}-secexp-hint" />
+            <div class="hint" id="{id}-secexp-hint">{t.settings.oidc.secretExpiresHint}</div>
           </div>
         </div>
         <div class="field">

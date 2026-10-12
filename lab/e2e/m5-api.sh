@@ -2,7 +2,8 @@
 # M5 flow over the REST API only (what the UI does): curl with cookie jar +
 # X-CSRF-Token, TLS verified against the appliance certificate.
 #   lab/e2e/m5.sh setup && lab/e2e/m5.sh start && lab/e2e/m5-api.sh [step...]
-# steps (default: all): config wait-backup check restore verify quorum phase13 access audit
+# steps (default: all): config wait-backup check restore verify quorum phase13 phase14d2 access diag audit
+#   (not in the default: console, console-check; lab/appliance/console-gate.sh runs them)
 # Lab inputs (env, defaults = dev machine, see lab/README.md):
 #   LAB (/home/ah/nexus-lab), LAB_CA (default: fetched from the node), LAB_TOKEN_SECRET (file;
 #   default: secret part of $LAB/api-token), LAB_SSH_KEY (private key whose public half is in the
@@ -359,6 +360,158 @@ step_access() {
 	log "access settings ok"
 }
 
+# Phase 14d (2): API tokens (scope, allow-list, revoke, audit actor) and the web certificate import through
+# nexus-tls (CSR on the appliance, signed by a throwaway lab CA, served without restart, reverted).
+step_phase14d2() {
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	local r tok id d=$S/phase14d2
+	mkdir -p "$d"
+	r=$(api admin POST /auth/tokens "$(jq -nc --arg p "$ADMIN_PW" --arg t "$(fresh_code admin "$ADMIN_TOTP")" \
+		'{name:"lab-read", scope:"read", days:1, current_password:$p, current_totp:$t}')")
+	expect 201 "create token"
+	tok=$(jq -r .token <<<"$r")
+	id=$(jq -r .id <<<"$r")
+	bearer() { # METHOD PATH [JSON]: no cookie, no CSRF header
+		curl -s --cacert "$ROOT/etc/nexus/tls/cert.pem" --resolve "nexus-m5:$PORT:127.0.0.1" -H "Authorization: Bearer $tok" \
+			-X "$1" ${3:+-H 'Content-Type: application/json' --data-binary "$3"} -o "$S/body" -w '%{http_code}' "$BASE$2" >"$S/status"
+	}
+	bearer GET /dashboard
+	expect 200 "read token: GET /dashboard"
+	bearer POST /jobs '{"kind":"verify","tenant":"lab","params":{}}'
+	expect 403 "read token: POST /jobs"
+	bearer GET /settings/approvals
+	expect 403 "token: settings"
+	api admin GET "/audit?order=desc&limit=30" | jq -e 'any(.[]; .action == "token.create" and .actor == "admin")' >/dev/null ||
+		die "token.create not audited"
+	api admin DELETE "/auth/tokens/$id" >/dev/null
+	expect 200 "revoke token"
+	bearer GET /dashboard
+	expect 401 "revoked token"
+	log "API token: read scope enforced, revoked"
+
+	r=$(api admin POST /certificate/csr '{"cn":"nexus-m5","sans":[]}')
+	expect 200 "CSR (nexus-tls)"
+	jq -r .csr_pem <<<"$r" >"$d/req.csr"
+	openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout "$d/ca.key" -out "$d/ca.pem" -days 2 \
+		-subj /CN=nexus-lab-ca -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign 2>/dev/null
+	printf 'extendedKeyUsage=serverAuth\nkeyUsage=critical,digitalSignature\n' >"$d/ext"
+	openssl x509 -req -in "$d/req.csr" -CA "$d/ca.pem" -CAkey "$d/ca.key" -CAcreateserial -days 1 -copy_extensions copy \
+		-extfile "$d/ext" -out "$d/leaf.pem" 2>/dev/null
+	grep -q "DNS:nexus-m5" <(openssl x509 -in "$d/leaf.pem" -noout -ext subjectAltName 2>/dev/null) ||
+		die "the signed certificate lacks the CSR's SAN"
+	# the leaf alone (root not included: accepted with a warning)
+	r=$(api admin POST /certificate/install "$(jq -nc --rawfile c "$d/leaf.pem" '{chain_pem:$c}')")
+	expect 200 "install certificate"
+	log "installed: $(jq -c '{sha256: .chain[0].sha256, warnings}' <<<"$r")"
+	# served right away (no restart), verified against the lab CA; the identity no longer verifies
+	curl -sf --cacert "$d/ca.pem" --resolve "nexus-m5:$PORT:127.0.0.1" "https://nexus-m5:$PORT/health" >/dev/null ||
+		die "imported certificate not served"
+	! curl -sf --cacert "$ROOT/etc/nexus/tls/cert.pem" --resolve "nexus-m5:$PORT:127.0.0.1" "https://nexus-m5:$PORT/health" >/dev/null ||
+		die "still the self-signed certificate"
+	log "imported certificate served without a restart"
+	API_CA=$d/ca.pem api admin POST /certificate/revert '{}' >/dev/null
+	expect 200 "revert certificate"
+	curl -sf --cacert "$ROOT/etc/nexus/tls/cert.pem" --resolve "nexus-m5:$PORT:127.0.0.1" "https://nexus-m5:$PORT/health" >/dev/null ||
+		die "self-signed certificate not back after revert"
+	api admin GET /certificate | jq -e '.active == "self_signed"' >/dev/null || die "certificate status after revert"
+	log "reverted to the self-signed certificate"
+}
+
+# Phase 14b on the real appliance (nexus-diag, root, nexus_diag_t): self-checks and a redacted
+# support bundle through Settings -> Diagnostics. Dev mode (no appliance) has no nexus-diag: skipped.
+step_diag() {
+	if [ "$APPL_HOST" = 127.0.0.1 ]; then
+		log "diag: needs the appliance VM (lab/appliance/e2e.sh api diag), skipped"
+		return
+	fi
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	login so "$SO_PW" "$SO_TOTP"
+	local id r
+	wait_diag() { # <user> <id> -> the finished result
+		for _ in $(seq 180); do
+			r=$(api "$1" GET "/diagnostics/$2")
+			case $(jq -r .state <<<"$r") in done | error) echo "$r"; return ;; esac
+			sleep 1
+		done
+		die "diagnostics $2 did not finish: $r"
+	}
+	id=$(api so POST /diagnostics/checks '{}' | jq -r .id)
+	expect 202 "run checks (security officer)"
+	r=$(wait_diag so "$id")
+	[ "$(jq -r .state <<<"$r")" = "done" ] || die "checks: $(jq -c . <<<"$r")"
+	jq -r '.checks[] | "  \(.status)\t\(.severity)\t\(.id): \(.detail)"' <<<"$r" >&2
+	# a healthy lab appliance: nothing that would block an update, and every check really ran
+	jq -e '[.checks[] | select(.status == "fail" and .severity >= 3)] == []' <<<"$r" >/dev/null ||
+		die "blocking checks failed: $(jq -c '[.checks[] | select(.status == "fail")]' <<<"$r")"
+	jq -e '[.checks[] | select(.detail | startswith("check could not run"))] == []' <<<"$r" >/dev/null ||
+		die "checks that crashed (SELinux denial?): $(jq -c '[.checks[] | select(.detail | startswith("check could not run"))]' <<<"$r")"
+	for c in time.sync egress keyd audit.chain catalog.integrity selinux systemd.failed; do
+		jq -e --arg c "$c" '.checks[] | select(.id == $c) | .status == "pass"' <<<"$r" >/dev/null ||
+			die "check $c: $(jq -c --arg c "$c" '.checks[] | select(.id == $c)' <<<"$r")"
+	done
+	api so POST /diagnostics/bundle '{}' >/dev/null
+	expect 403 "support bundle as security officer"
+	id=$(api admin POST /diagnostics/bundle "$(jq -nc --argjson u "$(date +%s)" '{since: ($u - 3600), until: $u}')" | jq -r .id)
+	expect 202 "create support bundle"
+	r=$(wait_diag admin "$id")
+	[ "$(jq -r .state <<<"$r")" = "done" ] || die "bundle: $(jq -c . <<<"$r")"
+	api admin GET "/diagnostics/$id/download" >/dev/null # body lands in $S/body
+	expect 200 "download support bundle"
+	local t=$S/bundle
+	rm -rf "$t" && mkdir -p "$t" && tar -xzf "$S/body" -C "$t"
+	t=$(find "$t" -mindepth 1 -maxdepth 1 -type d -name 'nexus-support-*') # the bundle's top directory
+	for f in manifest.json checks.json journal-nexus.txt avc.txt nft-drops.txt chrony.txt catalog-stats.json update-status.json; do
+		[ -s "$t/$f" ] || die "bundle lacks $f"
+	done
+	grep -q 'nexus-web-api' "$t/journal-nexus.txt" || die "bundle journal has no nexus-web-api lines"
+	grep -q 'Reference ID' "$t/chrony.txt" || die "bundle chrony.txt: $(head -5 "$t/chrony.txt")"
+	! grep -rqE 'BEGIN [A-Z ]*PRIVATE KEY|nx_session=[0-9a-f]{16}' "$t" || die "unredacted secret in the bundle"
+	log "support bundle $id: $(jq -r .bundle.bytes <<<"$r") bytes, $(find "$t" -type f | wc -l) files"
+	api so GET "/diagnostics/$id/download" >/dev/null
+	expect 403 "bundle download by the security officer"
+}
+
+# 14c: console.unlock through the quorum, the code shown once ($S/console-code for
+# lab/appliance/console-gate.sh, which types it at a lab instance of the gate)
+step_console() {
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	local r id
+	r=$(api admin POST /console/unlock '{"hours":1,"reason":"lab: console gate e2e"}')
+	id=$(jq -r .quorum_id <<<"$r")
+	if [ "$(status)" = 202 ]; then
+		api admin POST "/console/unlock/$id/code" >/dev/null
+		expect 409 "code before the approval"
+		login so "$SO_PW" "$SO_TOTP"
+		api so POST "/quorum/$id/approve" >/dev/null
+		expect 200 "so approves console.unlock"
+		api so POST "/console/unlock/$id/code" >/dev/null
+		expect 403 "the code is for the requester only"
+	else
+		expect 200 "console.unlock with approvals disabled"
+	fi
+	api admin POST "/console/unlock/$id/code" | jq -r .code >"$S/console-code"
+	expect 200 "fetch the code"
+	echo "$id" >"$S/console-id"
+	api admin POST "/console/unlock/$id/code" >/dev/null
+	expect 409 "the code is shown once"
+	api admin GET /console/unlock | jq -e --argjson id "$id" '.[] | select(.id == $id) | .status == "issued"' >/dev/null ||
+		die "request $id not issued"
+	log "console.unlock #$id approved, code shown once ($S/console-code)"
+}
+
+# after lab/appliance/console-gate.sh: the code was used, the banner is gone, the alerts are open
+step_console_check() {
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	local id
+	id=$(cat "$S/console-id")
+	api admin GET /console/unlock | jq -e --argjson id "$id" '.[] | select(.id == $id) | .status == "used"' >/dev/null ||
+		die "request $id: $(api admin GET /console/unlock | jq -c --argjson id "$id" '.[] | select(.id == $id)')"
+	api admin GET /auth/me | jq -e '.console_shell == null' >/dev/null || die "console banner still set"
+	api admin GET "/alerts?state=open" | jq -e '[.[] | select(.kind == "console_root_shell")] | length >= 2' >/dev/null ||
+		die "console_root_shell alerts missing"
+	log "console request #$id used, banner cleared, console_root_shell alerts open"
+}
+
 step_audit() {
 	login so "$SO_PW" "$SO_TOTP"
 	api so GET /audit/verify | jq -c . >&2
@@ -367,7 +520,7 @@ step_audit() {
 }
 
 steps=("$@")
-[ ${#steps[@]} -gt 0 ] || steps=(config wait-backup check restore verify quorum phase13 access audit)
+[ ${#steps[@]} -gt 0 ] || steps=(config wait-backup check restore verify quorum phase13 phase14d2 access diag audit)
 for s in "${steps[@]}"; do
 	log "== $s"
 	"step_${s//-/_}"

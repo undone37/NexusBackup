@@ -10,6 +10,8 @@ console TUI first boot. Plan §11.
 | `nexus-scheduler` | `nexus-chunkstore` | catalog DB, keyd socket, chunk store, `nexus-pve` / `nexus-offsite` / `nexus-agentctl` / `nexus-truenas` / `nexus-nas` / `nexus-replica` (spawned), agent CA `/var/lib/nexus/scheduler/agent-ca/` (keys 0600), secrets key `/var/lib/nexus/scheduler/secrets.key` (0600, own) | HTTP clients |
 | `nexus-nasmount` (socket-activated per connection, docs/nas-connector.md) | root, `CAP_SYS_ADMIN` only | its socket `/run/nexus-nasmount/mount.sock` (group `nexus-chunkstore`): one request, one detached read-only NFS/CIFS mount whose fd goes back to `nexus-nas` | files, catalog, keys, chunks; it never attaches a mount anywhere |
 | `nexus-setup` (console TUI, first boot) | root | keyd CLI, catalog DB, TLS files, creates the TOTP key | network until configured |
+| `nexus-console-gate` (tty2, Phase 14c) | root, domain `nexus_consolegate_t` | catalog DB (audit, alerts, banner setting), keyd files (recovery key check, read), `/var/lib/nexus/console-unlock` (read + delete), PID 1 (transient scope); starts the root shell (`unconfined_t`) | network |
+| `nexus-tls` (oneshot, `nexus-tls.path`, Phase 14d) | root, no capabilities, group `nexus-webapi` | its request dir `/var/lib/nexus/tls` (0770 root:nexus-webapi), `/etc/nexus/tls/web.pem*` and `pending/` | network, catalog, the identity certificate/key `cert.pem`/`key.pem` (SELinux `nexus_tls_t`) |
 | `nexus-replicad` (docs/replication.md) | `nexus-chunkstore` (group `nexus-replicad`, domain `nexus_replicad_t`) | tenant stores **read-only**, replication CA + token-sealing key `/var/lib/nexus/replicad`, its socket `/run/nexus-replicad/replicad.sock` (web-api uid only) | keyd, catalog, network |
 
 The web-api also connects to the replicad socket and reads `/run/nexus-replicad/ca.pem` (replication CA
@@ -52,6 +54,8 @@ replicad); it streams replicad's answers to replication peers without opening st
 | `snapshots` | tenant, source (`vm-100`/`ct-200`/`host-<agent_id>`/`nas-<id>-<dataset>`/`share-<id>`), time, size, local, offsite, lock_until, verified — refreshed by scheduler |
 | `quorum` | id, action, params (JSON), requested_by, created, decided_by, decided_at, state (`pending`,`approved`,`rejected`,`executed`,`expired`) |
 | `audit` | seq PK, ts, actor, action, target, details (JSON), prev_hash, hash |
+| `forward_events` (v16) | seq PK AUTOINCREMENT, ts, type (`alert`,`job`), payload (JSON of the row at that moment) — outbox written by triggers on `alerts` (raised / escalated / acknowledged / resolved) and `jobs` (state → ok/failed/cancelled); pruned when every enabled sink has it and it is older than a day |
+| `forward_state` (v16) | sink PK (`syslog`,`https`), dest, audit_seq, event_seq (last delivered), last_ok, last_error, last_error_ts, failing_since |
 | `alerts` | id, ts (first seen), severity, kind, message (latest), acked_by; v12 (13f lifecycle): key (dedup key, one open alert per key), tenant, count, last_ts, resolved_at, resolved_by, note, auto (resolved by the scheduler), notified_ts (last delivery; NULL = due) |
 | `replication_peers` (v7, primary) | id (16 hex), name, tenants (JSON), state (`pending`,`approved`,`enrolled`,`revoked`), cert_sha256, keyd_pub, token_hash (`sealed:v1:` to replicad), token_expires, enroll_failures, key_exports (JSON, DEKs sealed to the peer's keyd), created, created_by, enrolled_at, last_seen, revoked |
 | `replication_sources` (v7, secondary) | id, name, url (`host:port`), peer_id, cert_pin, tenants (JSON), schedule, gfs, bwlimit, token_hash (`sealed:v1:` to the scheduler), state (`enrolling`,`enrolled`,`failed`), cert_sha256, keyd_pub, created, last_sync, status (JSON per tenant) |
@@ -66,7 +70,12 @@ Catalog migrations stay backward compatible for one release (docs/release.md): v
 
 ## Audit log
 `hash = sha256(prev_hash || seq || ts || actor || action || target || details)`, hex; `prev_hash` of seq 1 = 64×"0".
-Every mutating API call and every job state change appends one entry (`catalog::Catalog::audit`). `GET /api/v1/audit/verify` recomputes the chain. Entries are forwarded to syslog (RFC 5424 via the local journal; TLS forwarding is configured in the OS).
+Every mutating API call and every job state change appends one entry (`catalog::Catalog::audit`). `GET /api/v1/audit/verify` recomputes the chain. Each entry is also logged to the journal (`nexus-audit seq=… hash=…`, without details). Once per UTC day the scheduler appends `audit.anchor` (actor `scheduler`, target `audit/chain`, details `{head_seq, head_hash}` of the newest entry).
+
+### Forwarding (Phase 14a)
+Setting `forwarding` (`catalog::forwarding`): `{syslog: {enabled, host, port=6514, ca_pem?, pin_sha256?, app_name="nexus", facility=13}?, https: {enabled, url (https), headers {name: sealed value}, batch_max=100, ca_pem?, pin_sha256?}?}`. Header values are sealed to the scheduler at `settings/forwarding/https/<header>@<url>` and write-only (null in GET; null in PUT = keep, refused when the URL changes). TLS trust: `ca_pem` (CA → chain + host name verified; a certificate in it also counts as an exact pin), `pin_sha256` (SHA-256 of the leaf DER), neither = web PKI roots; no insecure mode. Weakening (an enabled sink disabled or removed; host/port/url, ca_pem, pin_sha256 or headers of an enabled sink changed) → quorum `settings.forwarding` (`{forwarding, old}`, executed by the web-api, refused when the setting changed since the request); anything else applies directly (audit `settings.forwarding`, headers null).
+
+Scheduler thread `forward.rs` (every `forward_poll_secs`, default 5): per enabled sink, cursor row in `forward_state` (reset to 0/0 when `dest` changes, so a new destination gets the whole chain), up to 20 batches per round of audit entries `seq > audit_seq` first, then outbox events `seq > event_seq`; the cursor advances only after the batch was delivered (at least once, in order per stream, never skipped). Syslog: one TLS connection per batch (≤ 200 messages), RFC 5424 `<PRI>1 TIMESTAMP HOST APP - MSGID [nexus@32473 …] MSG` with RFC 5425 octet counting (`LEN SP MSG`), MSGID `audit` (SD `seq hash actor action target`), `alert` (`outbox_seq id event severity kind key tenant`), `job` (`outbox_seq id kind tenant state requested_by`), `test`; delivered = close_notify sent and the receiver closed without a reset. `32473` is the documentation PEN (RFC 5612), constant `catalog::forwarding::PEN`. HTTPS: POST of a JSON array (`{type: audit, seq, ts, actor, action, target, details, prev_hash, hash, host}`, `{type: alert|job, …payload, outbox_seq, event_ts, host[, alert_url]}`), 2xx = delivered. Failure: `last_error`, `failing_since` recorded, retry after 10 s doubling to 5 min; the tick raises `forwarding:<sink>` (warning, kind `forwarding`) after 15 min and resolves it once `failing_since` is cleared (delivered) or the sink is disabled. The allow-list gets every configured sink (syslog host:port, URL host:port). SELinux: `nexus_scheduler_t` may connect to `syslog_tls_port_t` (6514) besides http and unreserved ports. Job `forward_test` (appliance, in-process): one test record to every configured sink → `{syslog?, https?: "ok" | "error: …"}`.
 
 ## Roles (RBAC)
 | Capability | admin | security_officer | operator | tenant_user | viewer (v15) |
@@ -91,6 +100,7 @@ Every mutating API call and every job state change appends one entry (`catalog::
 | acknowledge the break-glass alert (other alerts: operator+) | ✓ | ✓ | — | — | — |
 | own sessions: list, end (`/auth/sessions`) | ✓ | ✓ | ✓ | ✓ | ✓ |
 | all sessions: list, end one / a user's / all others (re-auth) | ✓ | — | — | — | — |
+| console access (14c): request + show own code / list, revoke codes; acknowledge `console_*` alerts | ✓, ✓ | list, revoke; ack | — | — | — |
 
 Viewers (Phase 14d) are read-only like a tenant user who cannot restore; with a tenant they see that tenant, without
 one all tenants (an auditor or a wall display). They are deliberately kept out of the appliance-plane reads that
@@ -135,23 +145,28 @@ Auth: `POST /auth/login {name, password, totp}` → `Set-Cookie: nx_session=…;
 | `POST /jobs/{id}/cancel` | operator/admin | queued → `cancelled` at once; running → `{state: "cancelling"}`, sets `jobs.cancel_by` (the scheduler stops it, see Run control); 409 otherwise |
 | `GET /downloads/{token}` | requester only | streams file, deleted after 24 h |
 | `GET /quorum`, `POST /quorum/{id}/approve`, `POST /quorum/{id}/reject` | admin, security_officer (approve: not the requester) | approve → `{id, state}`, plus `activation` (part 2 of a split activation code) for a `user.update` that creates or resets a privileged account |
-| `GET /audit?after=&before=&order=&limit=`, `GET /audit/verify` | admin, security_officer | oldest first after `after` (default); newest first with `before` or `order=desc` |
+| `GET /audit?after=&before=&order=&limit=&actor=&action=&target=&from=&to=`, `GET /audit/verify` | admin, security_officer | oldest first after `after` (default); newest first with `before` or `order=desc`; filters (14a): `actor` exact, `action` prefix, `target` substring, `from`/`to` unix seconds inclusive, empty = any |
 | `GET /alerts?state=open\|resolved\|all&id=&acked=`, `POST /alerts/{id}/ack`, `POST /alerts/{id}/resolve` | read / operator+ (`break_glass`: admin, security_officer) | 13f: rows carry `first_ts`, `last_ts`, `count`, `tenant`, `hint`, `resolved_*`, `note`, `auto`; ack/resolve take an optional `{note}`; resolve also acknowledges; both audited |
 | `GET/POST /replication/peers`, `POST /replication/peers/{id}/export-keys`, `DELETE /replication/peers/{id}` | read / admin (POST, export, DELETE → quorum) | POST answers 202 `{quorum_id, peer, code}`: the enrollment code is shown once |
 | `GET/POST /replication/sources`, `PUT/DELETE /replication/sources/{id}`, `POST /replication/sources/{id}/enroll`, `POST /replication/sources/{id}/sync` | read / admin (sync: operator too) | details in docs/replication.md §9 |
 | `GET /plugins`, `POST /plugins`, `POST /plugins/{id}/enable`, `POST /plugins/{id}/disable`, `POST /plugins/{id}/activate`, `DELETE /plugins/{id}` | read: everyone / admin (upload, disable, activate, DELETE → quorum; enable direct) | upload: raw bundle (`application/octet-stream`, ≤ 128 MiB) + `X-Plugin-Signature` → 202 `{quorum_id, plugin, upgrade_from}`; DELETE 409 while sources of its kinds exist (docs/plugin-system.md) |
 | `GET/POST /plugin-keys`, `DELETE /plugin-keys/{fingerprint}` | admin, security_officer, operator read / admin (POST, DELETE → quorum) | project keys (image) are listed `builtin` and cannot be removed |
-| `GET /dashboard?days=7` or `30` | all (tenant users: own tenant) | Phase 12 KPIs (docs/phase12-contract.md §1), cached ≤ 60 s per scope; plus `break_glass`; `capacity.dedup` / `capacity.compression` from `backup_stats` |
+| `GET /dashboard?days=7` or `30` | all (tenant users: own tenant) | Phase 12 KPIs (docs/phase12-contract.md §1), cached ≤ 60 s per scope; plus `break_glass` and `console_shell` (14c); `capacity.dedup` / `capacity.compression` from `backup_stats` |
 | `GET /storage` | all (tenant users: own tenant) | storage accounting per tenant and group, growth 7/30/90 d (docs/storage-accounting.md) |
 | `GET /reports/{protection,failed,sla,storage}.csv?from=&to=&tenant=` | all (also `viewer` once it exists; tenant users: own tenant, another `tenant` → 403) | Phase 14e, see Reports; `from` / `to` = `YYYY-MM-DD` (UTC, `to` inclusive) or unix seconds, default the last 7 days, at most 400 days; `text/csv; charset=utf-8`, `Content-Disposition: attachment; filename="nexus-<type>[-<tenant>]-<day>.csv"`; audited `report.export {type, from, to, tenant, rows}` |
 | `GET` / `PUT /settings/reports`, `POST /settings/reports/{name}/send` | read: admin, security_officer; write, send: admin | setting `reports`: `{reports: [{name, types, schedule, timezone, recipients, tenant}]}`; GET adds `last` (latest `report_send` job) per report and `smtp` (server configured); PUT replaces the list (direct, audited `settings.reports`; non-empty list needs the SMTP server of `alerts`); send → 202 `{job_id}` (one period up to now), 409 while one is queued or running |
 | `PUT /tenants/{name}/quota` `{quota_bytes}` | admin | soft quota (null = none); direct, audited `tenant.quota` |
+| `GET /console/unlock`, `POST /console/unlock` `{hours 1..8, reason}`, `POST /console/unlock/{id}/code`, `DELETE /console/unlock/{id}` | read + revoke: admin, security_officer; request + code: admin (code: the requester only); appliance-wide accounts only | 14c, see "Console root shell": POST → quorum `console.unlock` (approved, never executed by anyone); `/code` shows the code once (`console.unlock_code`, critical alert `console_unlock`), 409 when pending, already shown, revoked or > 24 h after the approval; DELETE revokes an approved or shown code (`console.unlock_revoke`). List rows: `{id, hours, reason, requested_by, created, decided_by, decided_at, code_expires, status}` with status `pending/rejected/expired/approved/issued/used/revoked` |
 | `GET` / `PUT /settings/anomaly` | read: admin, security_officer; write: admin | anomaly thresholds; weakening is gated (`settings.anomaly`) |
+| `GET` / `PUT /settings/forwarding`, `POST /settings/forwarding/test` | read: admin, security_officer; write / test: admin | syslog / HTTPS sinks (see Audit log → Forwarding); weakening is gated (`settings.forwarding`); test = job `forward_test`, waits ≤ 45 s (else 202 `{job_id}`) |
+| `GET /audit/forwarding` | admin, security_officer | `{head_seq, sinks: [{sink, dest, enabled, audit_seq, event_seq, last_ok, last_error, last_error_ts, failing_since}]}` per configured sink |
+| `GET /audit.csv?actor=&action=&target=&from=&to=&after=&before=` | admin, security_officer | the filtered entries oldest first, streamed in pages of 1000, columns `seq,ts,actor,action,target,details,prev_hash,hash` (RFC 4180 quoting, values unchanged); audited `audit.export` with the filters; `order`/`limit` → 400 |
 | `GET /auth/oidc`, `GET /auth/oidc/start?next=`, `GET /auth/oidc/callback` | none | OIDC sign-in (§2, see Clarifications) |
 | `GET/PUT /settings/oidc`, `POST /settings/oidc/test` | read: admin, security_officer / admin (PUT → quorum `oidc.update`) | client secret write-only (`client_secret_set`); GET adds `redirect_uri` to register at the IdP; test → `{discovery, jwks}` |
 | `GET/PUT /settings/alerts`, `POST /settings/alerts/test` | read: admin, security_officer / admin | §3, 13f: `{smtp, rules: [{name, min_severity, kinds, tenants, channels: {email, webhook: {url, headers, template}}}], reminder_hours, retention_days}` (settings `alerts`, `alert_rules`, `alert_reminder_hours`, `alert_retention_days`); the pre-13f body `{webhook_url, smtp.to, min_severity}` is still accepted as one rule `default`; SMTP password and header values write-only, sealed to the scheduler; templates must render to JSON; test `{rule?}` → `{webhook?, email?}` for one rule, `{"<rule>/<channel>": …}` for all (scheduler job `alert_test`; 202 `{job_id}` if it takes over 45 s) |
 | `GET /ssh-keys`, `POST /ssh-keys/{name}/rotate`, `POST /ssh-keys/{name}/retire` | admin, operator, security_officer read / admin (rotate → quorum `ssh_key.rotate`) | §4; only key files below `/etc/nexus/ssh` that PVE node or SFTP offsite configurations use; after a rotation the entry shows the new key and the old one as `previous` (still in use) until retire → 202 `{job_id}` (`ssh_key_retire`); 409 without a rotation |
-| `GET /updates`, `POST /updates/check`, `POST /updates/apply` | admin, security_officer, operator read / admin (apply → quorum `update.apply`) | §5; check/apply write the request file for `nexus-update.path` (apply = install now: stage if needed, reboot outside the window); status `checking` while a request waits |
+| `GET /updates`, `POST /updates/check`, `POST /updates/apply` | admin, security_officer, operator read / admin (apply → quorum `update.apply`) | §5; check/apply write the request file for `nexus-update.path` (apply = install now: stage if needed, reboot outside the window); status `checking` while a request waits, `blocked` (+ `blocked: [check]`) when failed pre-update checks refused the last stage/apply (docs/release.md) |
+| `GET /diagnostics`, `GET /diagnostics/{id}`, `POST /diagnostics/checks`, `POST /diagnostics/bundle {since?, until?}`, `GET /diagnostics/{id}/download` | admin, security_officer (not tenant-scoped); bundle + download: admin | 14b: POST writes `request.json` `{id, kind, by, since, until}` into `/var/lib/nexus/diag` for `nexus-diag.path` (one at a time: 409 while a request younger than 10 min waits), 202 `{id, state: "queued"}`, audited `diag.checks` / `diag.bundle`; results `{id, kind, by, state queued\|running\|done\|error, since, until, created, finished, error, expires, checks: [{id, title, status pass\|warn\|fail\|skip, severity 1–4, detail, manual}], bundle: {bytes, url}}`; a bundle is visible to and downloadable by its requester only, for 24 h (`download.get`, target `diag/<id>`); range ≤ 31 days, default the last 24 h |
 
 Peer API `/replication/v1/*` (not under `/api/v1`): only on TLS connections with the replication ALPN and an enrolled client certificate (docs/replication.md §3, §6).
 
@@ -187,6 +202,57 @@ Headers on every response: `Content-Security-Policy: default-src 'self'; script-
 - Appliance jobs (Phase 12) carry tenant `-` and are queued by the settings endpoints only (`POST /jobs` refuses them): `alert_test` → result `{webhook?, smtp?}` (`"ok"` / `"error: …"`), `ssh_key_rotate` {name, quorum_id} → `{name, next}`, `ssh_key_retire` {name} → `{name, old, new}`, `report_send` {name, from, to} → `{name, types, tenant, recipients, from, to, attachments, rows}` (Phase 14e). Tenant users never see them.
 - Break-glass (§7): `nexus-setup recover-admin` raises the alert `break_glass` (critical) and writes `settings.break_glass`; the UI shows its banner while that alert is unacknowledged. `GET /auth/me` and `GET /dashboard` additionally return `break_glass: {at, user, alert, forced_solo}` (admin, security_officer, operator). Only an admin or security officer can acknowledge that alert (`POST /alerts/{id}/ack`, which also removes the setting).
 - `GET /quorum` is readable by admin, security_officer and operator. Tenant-scoped users (`users.tenant` set) see only their tenant's rows in every list (`users` included); most alerts have no tenant and may name other tenants, so they get an empty alert list.
+
+## API tokens (Phase 14d, `crates/web-api/src/tokens.rs`, catalog v15)
+- Format `nxt_<prefix>_<secret>`: prefix 8 hex (finds the row), secret 256 bit hex. `api_tokens.hash` = SHA-256 of
+  the secret: the secret is random and long, so a fast hash suffices (no KDF); the secret is returned once, by
+  `POST /auth/tokens`, and never stored. `expires` is mandatory (1–365 days); the owner (`user_id`, ON DELETE
+  CASCADE), `scope` (`read` | `operator`), `last_used` / `last_ip` (written at most once a minute).
+- `Authorization: Bearer nxt_…` is handled by a middleware in front of the router (other bearer tokens, e.g. the
+  metrics token, pass untouched). Valid = known prefix, constant-time hash match, not expired, user enabled and not
+  pending activation. It then puts `TokenAuth` (user with capped role + token) into the request; `Ctx` uses it
+  instead of the cookie (no session, **no CSRF header**: a browser never adds this header by itself).
+- Effective role: `operator` scope → admin/operator users act as `operator`, tenant users stay `tenant_user`;
+  `read` scope (and any security officer token) keeps the user's role but only GET. Default deny: only the routes
+  on the token allow-list are reachable (`tokens::READ` for GET, `tokens::OPERATE` for POST with operator scope:
+  `/jobs`, `/jobs/{id}/cancel`, group pause/resume, source maintenance, alert ack, replication sync); everything
+  else answers 403 "API tokens cannot use this endpoint". Never on the list: approvals, settings, users, tokens,
+  plugins and keys, certificate, downloads, replication keys/peers, updates, deletes, login/logout. `POST /jobs`
+  also refuses `files_get` and `plugin_mount` for tokens.
+- Audit: `AppState::audit` records the actor as `<user> via token <name>` during a token request (task-local);
+  `jobs.requested_by` and quorum `requested_by` stay the plain user name (four-eyes comparisons).
+- `GET /auth/tokens` own (`?all=true`: admin, all users), `POST /auth/tokens {name, scope, days, current_password,
+  current_totp}` (re-authentication like a password change; OIDC accounts instead need a session ≤ 15 min old;
+  at most 20 per user) → 201 with `token`, `DELETE /auth/tokens/{id}` own or (admin) any. Audited `token.create`,
+  `token.revoke`.
+
+## Web certificate (Phase 14d, crate `webtls`, `crates/web-api/src/certs.rs`)
+- `/etc/nexus/tls/cert.pem` + `key.pem`: the self-signed **identity** from nexus-setup. Replication secondaries pin
+  its SHA-256 (`replication_sources.cert_pin`), and connections with a replication ALPN always get it.
+- `/etc/nexus/tls/web.pem`: an imported chain + its key in one file (one rename swaps both), served to every other
+  connection by `tls::WebCert` (rustls `ResolvesServerCert`: one `stat` per handshake, reload on mtime/size/inode
+  change, a broken file keeps the current certificate, missing file = identity). HTTP/2 ALPN unchanged. So an
+  import breaks no pin; agents never see this certificate (they verify the appliance's agent-CA client cert).
+- `nexus-tls` handles `request.json` (`{id, op: csr|install|revert, …}`, written by the web-api with a temp file +
+  rename) and answers in `result.json`; the web-api waits up to 30 s (503 otherwise). `csr {cn, sans}`: new P-256
+  key into `pending/key.pem` (0600 root, SELinux `nexus_tls_pending_t`; never leaves the helper), CSR returned and
+  kept as `csr.pem` + `pending.json` for the UI. `install {chain_pem}`: `webtls::validate` (leaf key = pending
+  key, leaf first and each certificate signed by the next, intermediates are CAs, all valid now, leaf not a CA,
+  EKU serverAuth and KU digitalSignature if present, SANs cover every requested name, wildcards one label), then
+  `web.pem.prev` = old `web.pem`, `web.pem` written atomically (0640 root:nexus-webapi). `revert` swaps `web.pem`
+  and `web.pem.prev` (no previous = remove, i.e. back to the identity).
+- `GET /certificate` (admin, security_officer): active, chain (subject, issuer, SANs, validity, SHA-256), identity,
+  pending CSR, pins. `POST /certificate/csr|install|revert` (admin), audited `tls.csr`, `tls.install`,
+  `tls.revert`. The web-api publishes `{web, identity}` dates to the setting `tls_status` (start, hourly, after a
+  change) for the scheduler's expiry alerts.
+
+## Expiry alerts (Phase 14d, `crates/scheduler/src/expiry.rs`)
+With every full refresh (15 min): kind `cert_expiry`, key `cert_expiry:<what>` (`web`, `identity`, `agent:<id>`,
+`agent_ca`, `replication_peer:<id>`, `oidc_secret`, `token:<id>`); info ≤ 90 days, warning ≤ 30, critical ≤ 7 or
+expired; raised once per level (escalated in place), resolved when no longer due. Agent and peer certificates are
+not stored (only fingerprints): their dates are enrollment + 10 years (agent-conn / replication `ca.rs`); the agent
+CA's first enrollment is remembered in the setting `agent_ca_created`. The IdP secret date is the optional
+`settings.oidc.client_secret_expires`. Tokens: info during their last 7 days.
 
 ## Scheduler
 Inventory (Phase 13c, `crates/scheduler/src/inventory.rs`): every tick, a source of kind pve / truenas / plugin
@@ -268,10 +334,39 @@ Replication (docs/replication.md): on the primary the scheduler executes approve
   - `dormant_days` (`PUT /settings/dormant {days}`; 0 = off, the default, else 30–3650; audited `security.dormant`): the scheduler's refresh disables accounts with `COALESCE(last_login, created)` older than that (activated, unexpired, enabled accounts), never the last enabled local admin and, with approvals enabled, never an approver if fewer than two would remain; audited `user.dormant_disabled` (actor `scheduler`), info alert `account_dormant:<name>`. v15 backfills `last_login` with the upgrade time.
   - `login_banner` (`PUT /settings/banner {banner}`; ≤ 2000 characters, no control characters except newline and tab; audited `security.login_banner`); public `GET /auth/banner` → `{banner}`; the login page shows it as text (newlines kept, never HTML).
   - `mgmt_allow` (`PUT /settings/mgmt-allow {mgmt_allow: [cidr], force?, confirm?}`; ≤ 64 entries, canonical network form, empty = any): every change is quorum `security.mgmt_allow` (params `{mgmt_allow, old, requested_from}`; refused on approval if the setting changed since). A list that does not contain the requester's address is refused (409) unless `force` and `confirm` = that address. The scheduler writes the list into `allowed.json` (`mgmt`), `nexus-nft-sync` validates it (CIDR literals only) and flushes + refills the interval sets `mgmt_allowed_v4/v6` of `os/nftables.conf` in the same transaction as the outbound sets (empty list → `0.0.0.0/0`, `::/0`; a file without `mgmt` leaves them alone). The input rule accepts new 8443 connections only from these sets; established/related traffic is untouched. The image starts with "any" until the scheduler has written the file. Replication secondaries must be in the list (they pull from 8443).
+- **API tokens** (`tokens.rs`): a token of an expired or disabled (also dormant-disabled) user is refused (401) like its sessions; a viewer cannot create an `operator` token and a viewer token in the catalog stays read-only (`effective` keeps the role, no writes); tokens never download (`can_download` is cleared for token requests).
 - **Console recovery**: `nexus-setup reset-mgmt-allow` (root) clears `mgmt_allow`, opens the sets at once (`nft -f -`), audits `security.mgmt_allow_reset` (actor `console`) and raises the warning alert `mgmt_allow_reset`. `nexus-setup disable-approvals` (root + recovery key, like `recover-admin`) switches approvals off when nobody else can approve any more: audited `approvals.break_glass`, critical alert `break_glass` (banner for admins until acknowledged).
 
 ## Break-glass (`nexus-setup recover-admin`, Phase 12 §7)
 Console only (root): `nexus-setup recover-admin [--user NAME] [--force-solo]` asks for the recovery key (checked against keyd's `kek.recovery` as at first boot), resets a local admin account to pending activation (old password and authenticator invalid at once, sessions ended, account enabled) and prints a new one-time activation code (72 h). Without `--user` the only local admin is chosen. With approvals enabled and at least two possible approvers it refuses unless `--force-solo` (recorded in the alert, the audit entry and the banner). Audited `user.break_glass` (actor `console`), critical alert `break_glass`, setting `break_glass`.
+
+## Console root shell (Phase 14c)
+Root's password is locked and there is no sshd; the only root shell is the console gate `nexus-console-gate`
+(crates/setup, `nexus-console-gate.service` on tty2, which replaces getty@tty2/autovt@tty2, both masked). It accepts:
+- a one-time code: `console.unlock` quorum request (admin; another admin or security officer approves; with approvals
+  disabled it is approved at once). The requester fetches the code once (`POST /console/unlock/{id}/code`, quorum
+  `approved` → `executed`); the web-api writes `{id, hash, hours, requested_by, approved_by, reason, issued,
+  expires}` to `/var/lib/nexus/console-unlock/<id>.json` (0700 nexus-webapi; tmp + rename), `hash` = SHA-256 of the
+  normalized code (Crockford base32, 4×5 characters = 100 bits; `catalog::console`), `expires` = approval + 24 h. The
+  gate deletes the file when the code is used (one-time) and expired files on every round;
+- the recovery key (keyd `check_recovery_key`, as `recover-admin`), with a duration of 1–8 h asked at the console.
+
+Failures: audited `console.unlock_failed`; 5 per 15 min, 2/4/8/16 s delay after the 1st–4th (state in
+`/run/nexus-console-gate`, kept across restarts of the gate). Success: audit `console.root_shell` (actor `console`,
+target `console-unlock/<id>` or `console`; method, hours, until, requester/approver), critical alert
+`console_root_shell`, setting `console_shell_active` `{at, until, method, unlock, requested_by, alert, unit}`
+(`GET /auth/me` and `GET /dashboard` return it as `console_shell` to appliance-wide roles: the UI banner). The shell
+is `systemd-run --scope --unit nexus-console-shell-<at> -p RuntimeMaxSec=<hours> -- /bin/bash --login` on tty2:
+systemd stops the scope (every process in it) when the time is up, and the gate stops it when bash exits. Then
+`console.root_shell_end` (`how`: exit / timeout / …) and the setting is removed; a gate that restarts during a shell
+clears the setting (`how: "gate restarted"`) and stops the old scope (TTYVHangup= already hung up its terminal).
+`console_unlock` / `console_root_shell` alerts are acknowledged by admin or security officer only.
+
+SELinux: the gate runs as `nexus_consolegate_t` (catalog, keyd files read, unlock files read + unlink, tty, PID 1
+over the private socket for the transient scope); executing bash transitions to `unconfined_t` (role system_r).
+neverallow: no other nexus domain transitions to `unconfined_t`; only `nexus_webapi_t` creates or writes the unlock
+files, only it and the gate read them. The unit is deliberately unsandboxed (the shell inherits the unit's
+namespaces and capability bounding set).
 
 ## First boot (`nexus-setup`, console TUI)
 Network (NetworkManager, static/DHCP on the management NIC) → admin account + TOTP enrollment (QR in terminal, code confirmation) → second person: "create it now (recommended)" = security officer account + TOTP, entered at the console by that person, or "later" (audit `setup.second_person_later`; script mode `"second_person_later": true`) → `keyd init`: recovery key shown once, re-entry of 3 random groups required → TLS certificate (self-signed, SAN = hostname + IPs; fingerprint shown) → metrics token → `/var/lib/nexus/setup-done` (writes `settings.approvals_enabled`: enabled with two people, **disabled with a single administrator** — the TUI and the script output say so; audit `setup.approvals`) → enable `nexus-web-api`, `nexus-scheduler`, `nexus-keyd`, `nexus-replicad` (`nexus-nasmount.socket` is enabled by the image preset).

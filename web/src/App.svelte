@@ -6,7 +6,7 @@
   import { can } from './lib/roles';
   import { t } from './lib/i18n';
   import { theme, setTheme, nextTheme } from './lib/theme.svelte';
-  import type { Alert, LoginResponse, QuorumRequest, User } from './lib/types';
+  import type { Alert, ConsoleShell, LoginResponse, QuorumRequest, User } from './lib/types';
   import Logo from './components/Logo.svelte';
   import Notices from './components/Notices.svelte';
   import ConfirmDialog from './components/ConfirmDialog.svelte';
@@ -57,6 +57,8 @@
   import IconCollapse from '@lucide/svelte/icons/panel-left-close';
   import IconExpand from '@lucide/svelte/icons/panel-left-open';
   import IconGlass from '@lucide/svelte/icons/shield-alert';
+  import IconTerminal from '@lucide/svelte/icons/square-terminal';
+  import { fmtTime } from './lib/format';
 
   type Allow = (u: User | null) => boolean;
   type Section = 'monitor' | 'governance' | 'config';
@@ -130,10 +132,13 @@
   const openAlerts = $derived(alerts.filter((a) => !a.acked_by));
   const critical = $derived(openAlerts.some((a) => a.severity === 'critical'));
   const glass = $derived(session.user?.role === 'admin' ? openAlerts.find((a) => a.kind === 'break_glass') : undefined);
+  // A root shell running on the appliance console (14c; GET /auth/me), for every appliance-wide role.
+  let shell: ConsoleShell | null = $state(null);
   async function refreshCounts() {
     const u = session.user;
     if (!u) return;
     if (can.viewAlerts(u)) alerts = await get<Alert[]>('/alerts?state=open').catch(() => alerts);
+    if (can.viewQuorum(u)) shell = await get<LoginResponse>('/auth/me').then((m) => m.console_shell ?? null).catch(() => shell);
     if (can.viewQuorum(u))
       pendingApprovals = await get<QuorumRequest[]>('/quorum')
         .then((q) => q.filter((x) => x.state === 'pending').length)
@@ -162,6 +167,7 @@
     try {
       const me = await get<LoginResponse>('/auth/me');
       setSession(me.user, me.csrf);
+      shell = me.console_shell ?? null;
     } catch {
       setSession(null, null);
     }
@@ -266,7 +272,7 @@
         <button type="button" class="icon-btn theme-toggle" aria-label={themeLabel} title={themeLabel} onclick={() => setTheme(nextTheme(theme.choice))}>
           {#if theme.choice === 'light'}<IconSun aria-hidden="true" />{:else if theme.choice === 'dark'}<IconMoon aria-hidden="true" />{:else}<IconSystem aria-hidden="true" />{/if}
         </button>
-        <a class="whoami" href={href('/account')} title={t.access.account}>
+        <a class="whoami" href={href('/account')} title={t.account.title} aria-current={route.path === '/account' ? 'page' : undefined}>
           <span class="avatar" aria-hidden="true">{session.user.name.slice(0, 2)}</span>
           <span class="who">
             <strong>{session.user.name}</strong>
@@ -276,6 +282,20 @@
         <button type="button" class="icon-btn" onclick={logout} aria-label={t.nav.logout} title={t.nav.logout}><IconLogout aria-hidden="true" /></button>
       </header>
 
+      {#if shell}
+        <div class="glass" role="alert">
+          <IconTerminal aria-hidden="true" />
+          <p>
+            <strong>{t.console.active}:</strong>
+            {t.console.activeText(
+              fmtTime(shell.at),
+              fmtTime(shell.until),
+              shell.method === 'code' ? t.console.viaCode(shell.unlock, shell.requested_by) : t.console.viaRecovery,
+            )}
+            <a href={href('/audit')}>{t.glass.audit}</a>
+          </p>
+        </div>
+      {/if}
       {#if glass}
         <div class="glass" role="alert">
           <IconGlass aria-hidden="true" />

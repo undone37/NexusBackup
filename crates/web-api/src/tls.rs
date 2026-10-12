@@ -5,6 +5,11 @@
 //! - `nexus-replication-enroll/1`: TLS 1.3, no client certificate; requests
 //!   carry [`ReplConn::Enroll`] with this session's TLS exporter.
 //! - anything else: the normal UI/API configuration (no CertificateRequest).
+//!
+//! Replication connections always get the self-signed identity certificate
+//! (`cert.pem`, pinned by secondaries); UI/API connections get the imported
+//! `web.pem` when there is one ([`WebCert`], reloaded when the file changes),
+//! so importing a CA-signed certificate breaks no pin.
 
 use anyhow::{Context, Result};
 use axum::extract::ConnectInfo;
@@ -14,9 +19,11 @@ use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::server::WebPkiClientVerifier;
+use rustls::server::{ClientHello, ResolvesServerCert, WebPkiClientVerifier};
+use rustls::sign::CertifiedKey;
 use rustls::{RootCertStore, ServerConfig};
 use std::future::Future;
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -31,10 +38,85 @@ pub enum ReplConn {
     Peer { fp: String },
 }
 
+/// Certificate for UI/API connections: the imported chain + key file (`web.pem`,
+/// written by nexus-tls) or, without one, the identity certificate. One `stat`
+/// per handshake notices a replaced file (mtime, size, inode); a file that does
+/// not load keeps the previous certificate in use.
+#[derive(Debug)]
+pub struct WebCert {
+    identity: Arc<CertifiedKey>,
+    path: Option<PathBuf>,
+    cur: Mutex<(Option<FileId>, Arc<CertifiedKey>)>,
+}
+
+type FileId = (SystemTime, u64, u64);
+
+impl WebCert {
+    pub fn new(identity: Arc<CertifiedKey>, path: Option<PathBuf>) -> WebCert {
+        let w = WebCert {
+            cur: Mutex::new((None, identity.clone())),
+            identity,
+            path,
+        };
+        w.current();
+        w
+    }
+
+    /// The certificate served now (reloaded if the file changed).
+    pub fn current(&self) -> Arc<CertifiedKey> {
+        let Some(path) = &self.path else {
+            return self.identity.clone();
+        };
+        let id = std::fs::metadata(path)
+            .ok()
+            .map(|m| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len(), m.ino()));
+        let mut cur = self.cur.lock().unwrap();
+        if cur.0 == id {
+            return cur.1.clone();
+        }
+        let next = match id {
+            None => Ok(self.identity.clone()),
+            Some(_) => load_web(path).map(Arc::new),
+        };
+        match next {
+            Ok(k) => {
+                match id {
+                    Some(_) => eprintln!("<5>web-api: serving the imported certificate {}", path.display()),
+                    None => eprintln!("<5>web-api: serving the self-signed certificate"),
+                }
+                *cur = (id, k);
+            }
+            Err(e) => {
+                eprintln!("<4>web-api: {}: {e:#}; keeping the current certificate", path.display());
+                cur.0 = id;
+            }
+        }
+        cur.1.clone()
+    }
+}
+
+impl ResolvesServerCert for WebCert {
+    fn resolve(&self, _: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        Some(self.current())
+    }
+}
+
+/// Chain + private key from one PEM file.
+fn load_web(path: &std::path::Path) -> Result<CertifiedKey> {
+    let pem = std::fs::read(path)?;
+    let certs = CertificateDer::pem_slice_iter(&pem).collect::<Result<Vec<_>, _>>()?;
+    if certs.is_empty() {
+        anyhow::bail!("no certificate");
+    }
+    let key = PrivateKeyDer::from_pem_slice(&pem)?;
+    Ok(CertifiedKey::from_der(certs, key, &provider())?)
+}
+
 pub struct Tls {
     certs: Vec<CertificateDer<'static>>,
     key: PrivateKeyDer<'static>,
     normal: Arc<ServerConfig>,
+    pub web: Arc<WebCert>,
     enroll: Arc<ServerConfig>,
     /// replication CA certificate (published by nexus-replicad)
     repl_ca: Option<PathBuf>,
@@ -46,13 +128,19 @@ fn provider() -> Arc<rustls::crypto::CryptoProvider> {
 }
 
 impl Tls {
-    pub fn load(cert: &std::path::Path, key: &std::path::Path, repl_ca: Option<PathBuf>) -> Result<Arc<Tls>> {
+    /// `web`: the imported certificate file (`web.pem`), served to UI/API clients when present.
+    pub fn load(
+        cert: &std::path::Path,
+        key: &std::path::Path,
+        web: Option<PathBuf>,
+        repl_ca: Option<PathBuf>,
+    ) -> Result<Arc<Tls>> {
         let certs = CertificateDer::pem_file_iter(cert)
             .with_context(|| format!("{}", cert.display()))?
             .collect::<Result<Vec<_>, _>>()
             .with_context(|| format!("{}", cert.display()))?;
         let key = PrivateKeyDer::from_pem_file(key).with_context(|| format!("{}", key.display()))?;
-        Self::new(certs, key, repl_ca)
+        Self::with_web(certs, key, web, repl_ca)
     }
 
     pub fn new(
@@ -60,10 +148,21 @@ impl Tls {
         key: PrivateKeyDer<'static>,
         repl_ca: Option<PathBuf>,
     ) -> Result<Arc<Tls>> {
+        Self::with_web(certs, key, None, repl_ca)
+    }
+
+    pub fn with_web(
+        certs: Vec<CertificateDer<'static>>,
+        key: PrivateKeyDer<'static>,
+        web: Option<PathBuf>,
+        repl_ca: Option<PathBuf>,
+    ) -> Result<Arc<Tls>> {
+        let identity = Arc::new(CertifiedKey::from_der(certs.clone(), key.clone_key(), &provider())?);
+        let web = Arc::new(WebCert::new(identity, web));
         let mut normal = ServerConfig::builder_with_provider(provider())
             .with_safe_default_protocol_versions()?
             .with_no_client_auth()
-            .with_single_cert(certs.clone(), key.clone_key())?;
+            .with_cert_resolver(web.clone());
         normal.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         let mut enroll = ServerConfig::builder_with_provider(provider())
             .with_protocol_versions(&[&rustls::version::TLS13])?
@@ -74,6 +173,7 @@ impl Tls {
             certs,
             key,
             normal: Arc::new(normal),
+            web,
             enroll: Arc::new(enroll),
             repl_ca,
             peer: Mutex::new(None),

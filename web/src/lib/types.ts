@@ -488,6 +488,28 @@ export interface AuditEntry {
   hash: string;
 }
 
+/** Setting `forwarding` (GET/PUT /settings/forwarding); header values are write-only (null = stored). */
+export interface ForwardingSettings {
+  syslog: { enabled: boolean; host: string; port: number; ca_pem: string | null; pin_sha256: string | null; app_name: string; facility: number } | null;
+  https: { enabled: boolean; url: string; headers: Record<string, string | null>; batch_max: number; ca_pem: string | null; pin_sha256: string | null } | null;
+}
+
+/** GET /audit/forwarding: delivery state per configured sink. */
+export interface ForwardingStatus {
+  head_seq: number;
+  sinks: {
+    sink: 'syslog' | 'https';
+    dest: string;
+    enabled: boolean;
+    audit_seq: number;
+    event_seq: number;
+    last_ok: number | null;
+    last_error: string | null;
+    last_error_ts: number | null;
+    failing_since: number | null;
+  }[];
+}
+
 export interface AuditVerify {
   ok: boolean;
   entries?: number;
@@ -519,6 +541,37 @@ export interface Alert {
 export interface LoginResponse {
   csrf: string;
   user: User;
+  /** a console root shell is running (14c; GET /auth/me) */
+  console_shell?: ConsoleShell | null;
+}
+
+// ---------------------------------------------------------------- console root access (14c)
+
+export type ConsoleUnlockStatus = 'pending' | 'rejected' | 'expired' | 'approved' | 'issued' | 'used' | 'revoked';
+export interface ConsoleUnlock {
+  id: number;
+  hours: number;
+  reason: string;
+  requested_by: string;
+  created: number;
+  decided_by: string | null;
+  decided_at: number | null;
+  code_expires: number | null;
+  status: ConsoleUnlockStatus;
+}
+export interface ConsoleCode {
+  id: number;
+  code: string;
+  hours: number;
+  expires: number;
+}
+export interface ConsoleShell {
+  at: number;
+  until: number;
+  method: 'code' | 'recovery_key';
+  unlock: number | null;
+  requested_by: string | null;
+  alert: number;
 }
 
 // ---------------------------------------------------------------- plugins (docs/plugin-system.md)
@@ -735,6 +788,8 @@ export interface OidcSettings {
   groups_claim: string;
   label: string;
   mappings: OidcMapping[];
+  /** Phase 14d: when the client secret expires at the IdP (unix time; expiry alerts) */
+  client_secret_expires?: number | null;
 }
 
 export type Severity = 'info' | 'warning' | 'critical';
@@ -795,9 +850,39 @@ export interface UpdatesStatus {
   /** "Sun 03:00 120" = weekday, start, minutes */
   window: string;
   last_check: number;
-  status: 'idle' | 'checking' | 'staged' | 'error' | string;
+  status: 'idle' | 'checking' | 'staged' | 'error' | 'blocked' | string;
   error: string | null;
   rollback: UpdateImage | null;
+  /** pre-update checks that refused the last stage / apply (status "blocked") */
+  blocked?: Pick<DiagCheck, 'id' | 'title' | 'severity' | 'detail' | 'manual'>[];
+}
+
+/** One self-check of nexus-diag (Settings → Diagnostics, pre-update checks). */
+export interface DiagCheck {
+  id: string;
+  title: string;
+  status: 'pass' | 'warn' | 'fail' | 'skip';
+  /** 1 info, 2 warning, 3 error, 4 critical (>= 3 failing blocks updates) */
+  severity: 1 | 2 | 3 | 4;
+  detail: string;
+  /** anchor in the user manual, e.g. "15-troubleshooting-faq.md#check-disk-var" */
+  manual: string;
+}
+
+/** GET /diagnostics/{id} */
+export interface DiagRun {
+  id: string;
+  kind: 'checks' | 'bundle';
+  by: string;
+  state: 'queued' | 'running' | 'done' | 'error';
+  since: number | null;
+  until: number | null;
+  created: number | null;
+  finished: number | null;
+  error: string | null;
+  expires?: number;
+  checks: DiagCheck[] | null;
+  bundle: { bytes: number; url: string } | null;
 }
 
 /** Summed `backup_stats` of kept snapshots (GET /storage, docs/storage-accounting.md). */
@@ -855,6 +940,45 @@ export interface SecuritySettings {
   client_ip: string;
   client_allowed: boolean;
   pending: { session: number | null; mgmt_allow: number | null };
+}
+
+/** Phase 14d: an API token (`nxt_…`); the secret is only in the create answer. */
+export interface ApiToken {
+  id: number;
+  user: string;
+  name: string;
+  prefix: string;
+  scope: 'read' | 'operator';
+  expires: number;
+  created: number;
+  last_used: number | null;
+  last_ip: string | null;
+  /** POST /auth/tokens only: shown once */
+  token?: string;
+}
+
+/** Phase 14d: one certificate of the served chain (GET /certificate). */
+export interface CertInfo {
+  subject: string;
+  issuer: string;
+  sans: string[];
+  not_before: number;
+  not_after: number;
+  /** SHA-256, upper case, colon separated */
+  sha256: string;
+  self_signed: boolean;
+  ca: boolean;
+}
+
+export interface CertStatus {
+  active: 'imported' | 'self_signed';
+  chain: CertInfo[];
+  /** the self-signed identity certificate replication secondaries pin */
+  identity: CertInfo | null;
+  pending: { cn: string; sans: string[]; created: number; csr_pem: string | null } | null;
+  can_revert: boolean;
+  previous: boolean;
+  pins: { replication_identity: string | null; replication_peers: number };
 }
 
 /** Phase 14e reports (GET /reports/{type}.csv). */
