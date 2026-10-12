@@ -20,6 +20,7 @@ a different administrator or security officer must approve:
 | Appliance SSH keys | rotating an appliance SSH key (`ssh key rotate`) |
 | Updates | **Install now**: installing an available appliance update without waiting for the maintenance window (`update apply`) |
 | Approvals | disabling the approval requirement itself (`approvals disable`) |
+| Console access | a root shell on the appliance console (`console unlock`, **Settings → Console access**): after the approval the requester shows the one-time code once; see [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console) |
 
 Rules:
 
@@ -108,6 +109,10 @@ What is recorded:
   (`user.oidc_created`) and settings changes (`settings.oidc`);
 - a break-glass recovery of an administrator on the console (`user.break_glass`, see
   [14 Disaster recovery](14-disaster-recovery.md#break-glass-the-only-administrator-lost-their-authenticator));
+- emergency console access: the one-time code shown (`console.unlock_code`) or revoked (`console.unlock_revoke`),
+  rejected codes at the console (`console.unlock_failed`), and every root shell with its start and end
+  (`console.root_shell`, `console.root_shell_end`, actor `console`; see
+  [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console));
 - approval requests, decisions and executions (`quorum.request`, `quorum.approve`, `quorum.reject`, then the action
   itself with actor `system` or the scheduler);
 - job state changes and scheduler events (e.g. `gc.confirm_required`, replication sessions on the primary,

@@ -26,7 +26,7 @@ The bell in the top bar and the counter next to **Alerts** in the sidebar count 
 acknowledged (red when one of them is critical). The Dashboard lists the newest of them under **Open alerts**.
 
 Administrators, operators and security officers can acknowledge and resolve alerts. Only administrators and
-security officers can close a `break_glass` alert. Alerts are appliance-wide: accounts limited to one tenant do not see
+security officers can close a `break_glass`, `console_unlock` or `console_root_shell` alert. Alerts are appliance-wide: accounts limited to one tenant do not see
 them.
 
 ### Life of an alert
@@ -74,6 +74,8 @@ log (`alert.ack`, `alert.resolve`).
 | `anomaly` | critical | a backup added far more new data than usual for its source, or new data that suddenly does not compress (see [Change-rate anomalies](#change-rate-anomalies)) | — | check the source for mass changes or encryption (ransomware) before the last good snapshot expires; the message names it |
 | `quota` | warning at 80 %, critical at 100 % | a tenant's store reached 80 % or 100 % of its soft quota (**Tenants**); one alert per tenant, escalated at 100 % | usage is back under 80 % | review retention or what the tenant backs up, or raise the quota; backups continue either way |
 | `break_glass` | critical | an administrator account was reset on the console with the recovery key (`nexus-setup recover-admin`) | — | make sure the recovery was planned (check the audit entry `user.break_glass`), then acknowledge it; until then every administrator sees a red banner. See [14 Disaster recovery](14-disaster-recovery.md#break-glass-the-only-administrator-lost-their-authenticator) |
+| `console_unlock` | critical | a one-time code for a root shell on the console was shown to its requester (**Settings → Console access**) | — | make sure the request was planned; revoke the code there if not. See [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console) |
+| `console_root_shell` | critical | a root shell was opened on the appliance console with a one-time code or the recovery key; while it runs every administrator, security officer and operator sees a red banner | — | confirm with the requester (or whoever holds the recovery key) what was done, check the audit log (`console.root_shell`, `console.root_shell_end`), then acknowledge |
 
 ## Change-rate anomalies
 

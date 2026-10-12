@@ -385,6 +385,7 @@ when approvals are enabled.
 | **Appliance SSH keys** | the public keys the appliance signs in to sources with; **Copy**, **Rotate**, **Retire old key** | [04 Sources](04-sources.md#appliance-ssh-keys) |
 | **Updates** | running, staged, available and rollback image; **Check now**, **Install now** | [13 Updates](13-updates.md#updates-in-the-web-interface) |
 | **Anomaly detection** | thresholds of the change-rate `anomaly` alert | [11 Alerts and monitoring](11-alerts-and-monitoring.md#change-rate-anomalies) |
+| **Console access** | requests for an emergency root shell on the appliance console, **Show code** (once), **Revoke** (administrators and security officers only) | [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console) |
 
 ![Settings: Approvals](images/settings-approvals.png)
 
@@ -397,6 +398,8 @@ when approvals are enabled.
 ![Settings: Updates](images/settings-updates.png)
 
 ![Settings: Anomaly detection](images/settings-anomaly.png)
+
+![Settings: Console access](images/settings-console.png)
 
 ## Messages and dialogs
 

@@ -856,6 +856,9 @@ manage_files_pattern(nexus_consolegate_t, nexus_consolegate_var_run_t, nexus_con
 # tty2 (echo off for the recovery key, foreground process group after the shell)
 term_use_unallocated_ttys(nexus_consolegate_t)
 term_use_controlling_term(nexus_consolegate_t)
+# a pty from `systemd-run --pty` in an admin's root shell (lab/appliance/console-gate.sh)
+userdom_use_user_ptys(nexus_consolegate_t)
+term_use_generic_ptys(nexus_consolegate_t)
 # systemd-run --scope / systemctl stop <scope> run in this domain and talk to PID 1
 # (private socket as root, or the system bus): create the transient scope, stop it
 corecmd_exec_bin(nexus_consolegate_t)
