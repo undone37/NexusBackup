@@ -1,4 +1,4 @@
-//! Optional per-tenant recovery key (Phase 17e, docs/key-management.md
+//! Optional per-tenant recovery key (Phase 17e, docs/control-plane.md
 //! "Tenant recovery key"). Lets one tenant rebuild its data from its offsite
 //! copy without the appliance-wide recovery key.
 //!

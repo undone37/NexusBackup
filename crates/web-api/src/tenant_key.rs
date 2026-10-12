@@ -1,4 +1,4 @@
-//! Optional per-tenant recovery key (Phase 17e, docs/key-management.md
+//! Optional per-tenant recovery key (Phase 17e, docs/control-plane.md
 //! "Tenant recovery key"). An admin of the tenant (appliance-wide or scoped
 //! to it) requests `tenant.recovery_key`; a second person approves it while
 //! approvals are enabled (the row stays `approved`, executed nowhere). The

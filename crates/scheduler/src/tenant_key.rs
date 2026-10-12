@@ -1,4 +1,4 @@
-//! Tenant recovery key (Phase 17e, docs/key-management.md): before each
+//! Tenant recovery key (Phase 17e, docs/control-plane.md): before each
 //! offsite run the tenant's public key from the catalog goes to keyd, which
 //! seals every DEK version to it; the sealed files then travel with the
 //! normal escrow. A replaced or removed key's files leave the escrow dir (and

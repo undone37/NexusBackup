@@ -1,4 +1,4 @@
-//! Optional per-tenant recovery key (Phase 17e, docs/key-management.md
+//! Optional per-tenant recovery key (Phase 17e, docs/control-plane.md
 //! "Tenant recovery key"). The web-api generates the key when the approved
 //! requester opens it (shown once, never stored) and keeps only its X25519
 //! public key in the setting [`setting_key`]; the scheduler hands that to keyd,
