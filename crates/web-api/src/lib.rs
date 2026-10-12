@@ -23,6 +23,7 @@ pub mod agents;
 pub mod approvals;
 pub mod auth;
 pub mod dashboard;
+pub mod inventory;
 pub mod jobs;
 pub mod oidc;
 pub mod ops;
@@ -429,6 +430,7 @@ pub fn router(st: St) -> Router {
         .route("/tenants/{name}", put(update_tenant).delete(delete_tenant))
         .route("/sources", get(list_sources).post(create_source))
         .route("/sources/{id}", put(update_source).delete(delete_source))
+        .route("/sources/{id}/inventory", get(inventory::list))
         .route("/policies", get(list_policies).post(create_policy))
         .route("/policies/{id}", put(update_policy).delete(delete_policy))
         .route("/groups", get(list_groups).post(create_group))
