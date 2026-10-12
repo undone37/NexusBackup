@@ -3,6 +3,8 @@
 .claude
 target
 **/target
+# source modules named target (not build output)
+!crates/offsite/src/target
 web/node_modules
 web/dist
 crates/*/fuzz/corpus
