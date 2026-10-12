@@ -195,7 +195,7 @@ Next steps:
 2. Add sources: [04 Sources](04-sources.md).
 3. Create policies and protection groups: [05 Policies and groups](05-policies-and-groups.md).
 4. Create accounts for the other people: [09 Users and access](09-users-and-access.md).
-5. Under **Settings**: set up alert delivery ([11 Alerts](11-alerts-and-monitoring.md#delivery-by-webhook-and-e-mail))
+5. Under **Settings**: set up alert delivery ([11 Alerts](11-alerts-and-monitoring.md#delivery-notification-rules))
    and, optionally, single sign-on ([09 Users and access](09-users-and-access.md#single-sign-on-oidc)).
 
 ## Network and firewall

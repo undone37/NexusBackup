@@ -1647,6 +1647,18 @@ a.kpi:hover {
 .dash-grid > .span-6 {
   grid-column: span 6;
 }
+/* "Not in a group" drill-down (Phase 13c) */
+.open-list summary {
+  cursor: pointer;
+}
+.open-list summary h2 {
+  display: inline;
+  margin-right: 0.5rem;
+}
+.open-list summary .sub {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
 .dash-grid > .span-12 {
   grid-column: span 12;
 }

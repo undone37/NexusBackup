@@ -242,12 +242,14 @@ pub fn public_offsite(v: &Value) -> Value {
 
 pub async fn list_tenants(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>> {
     let c = st.cat.conn();
-    let mut s = c.prepare("SELECT name, offsite FROM tenants WHERE ?1 IS NULL OR name = ?1 ORDER BY name")?;
+    let mut s =
+        c.prepare("SELECT name, offsite, quota_bytes FROM tenants WHERE ?1 IS NULL OR name = ?1 ORDER BY name")?;
     let rows = s
         .query_map([ctx.scope()], |r| {
             let o: String = r.get(1)?;
             let o = serde_json::from_str::<Value>(&o).unwrap_or_default();
-            Ok(json!({"name": r.get::<_, String>(0)?, "offsite": public_offsite(&o)}))
+            Ok(json!({"name": r.get::<_, String>(0)?, "offsite": public_offsite(&o),
+                      "quota_bytes": r.get::<_, Option<i64>>(2)?}))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(Value::Array(rows)))
@@ -1529,10 +1531,22 @@ pub struct GroupReq {
     source_id: i64,
     policy_id: i64,
     name: String,
+    #[serde(default)]
     guests: Vec<Value>,
-    /// the schedule's and blackout windows' time zone (IANA)
+    /// `explicit` (default), `all` or `tags` (crate::inventory::check_mode)
+    #[serde(default = "explicit")]
+    mode: String,
+    #[serde(default)]
+    selector: Vec<String>,
+    #[serde(default)]
+    exclude: Vec<Value>,
+    /// the schedule's and blackout windows' time zone (IANA, Phase 13b)
     #[serde(default = "utc")]
     timezone: String,
+}
+
+fn explicit() -> String {
+    "explicit".into()
 }
 
 fn utc() -> String {
@@ -1545,9 +1559,23 @@ pub struct GroupUpdate {
     source_id: i64,
     policy_id: i64,
     name: String,
+    #[serde(default)]
     guests: Vec<Value>,
+    #[serde(default = "explicit")]
+    mode: String,
+    #[serde(default)]
+    selector: Vec<String>,
+    #[serde(default)]
+    exclude: Vec<Value>,
     #[serde(default = "utc")]
     timezone: String,
+}
+
+/// The auto-protect fields of a group request (mode, selector, exclude).
+struct Auto<'a> {
+    mode: &'a mut String,
+    selector: &'a mut Vec<String>,
+    exclude: &'a mut Vec<Value>,
 }
 
 fn check_group(
@@ -1557,6 +1585,7 @@ fn check_group(
     policy_id: i64,
     name: &str,
     guests: &mut Vec<Value>,
+    a: Auto,
 ) -> ApiResult<()> {
     validate::name(name, "name")?;
     if guests.len() > 1000 {
@@ -1570,7 +1599,9 @@ fn check_group(
         )
         .optional()?
         .ok_or_else(|| ApiError::bad("source_id: no such source in this tenant"))?;
-    if kind.starts_with("plugin:") {
+    if crate::inventory::check_mode(c, &kind, guests, a.mode, a.selector, a.exclude)? {
+        // guests come from the inventory at run time
+    } else if kind.starts_with("plugin:") {
         crate::plugins::check_guests(c, &kind, guests)?;
     } else if kind == "linux" {
         // the guest of a linux source is its agent (the source says what to back up)
@@ -1589,12 +1620,10 @@ fn check_group(
             ));
         }
     } else if kind == "truenas" {
-        // guests = datasets of the source (empty = all of them)
+        // guests = datasets of the source (none = all of them: mode `all`, check_mode)
         let cfg: Value = serde_json::from_str(&config).unwrap_or_default();
         let all: Vec<Value> = cfg["datasets"].as_array().cloned().unwrap_or_default();
-        if guests.is_empty() {
-            *guests = all;
-        } else if guests.iter().any(|g| !all.contains(g)) {
+        if guests.iter().any(|g| !all.contains(g)) {
             return Err(ApiError::bad(
                 "guests: a truenas source's group lists datasets of that source (or none = all)",
             ));
@@ -1623,16 +1652,18 @@ fn check_group(
 }
 
 fn group_row(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
-    let guests: String = r.get(5)?;
+    let list = |i: usize| -> catalog::rusqlite::Result<Value> {
+        Ok(serde_json::from_str::<Value>(&r.get::<_, String>(i)?).unwrap_or_default())
+    };
     Ok(
         json!({"id": r.get::<_, i64>(0)?, "tenant": r.get::<_, String>(1)?, "source_id": r.get::<_, i64>(2)?,
-              "policy_id": r.get::<_, i64>(3)?, "name": r.get::<_, String>(4)?,
-              "guests": serde_json::from_str::<Value>(&guests).unwrap_or_default(),
-              "timezone": r.get::<_, String>(6)?}),
+              "policy_id": r.get::<_, i64>(3)?, "name": r.get::<_, String>(4)?, "guests": list(5)?,
+              "mode": r.get::<_, String>(6)?, "selector": list(7)?, "exclude": list(8)?,
+              "timezone": r.get::<_, String>(9)?}),
     )
 }
 
-const GROUP_COLS: &str = "id, tenant, source_id, policy_id, name, guests, timezone";
+const GROUP_COLS: &str = "id, tenant, source_id, policy_id, name, guests, mode, selector, exclude, timezone";
 
 /// A group as `group_row` (quorum `old` snapshots compare against it).
 pub fn group_value(c: &Connection, id: i64) -> ApiResult<Option<Value>> {
@@ -1657,23 +1688,38 @@ pub async fn list_groups(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value
 
 pub async fn create_group(State(st): State<St>, ctx: Ctx, J(mut r): J<GroupReq>) -> ApiResult<Response> {
     ctx.require(ADMIN)?;
-    let out =
-        {
-            let c = st.cat.conn();
-            crate::replication::refuse_replicated(&c, &r.tenant)?;
-            check_group(&c, &r.tenant, r.source_id, r.policy_id, &r.name, &mut r.guests)?;
-            validate::timezone(&r.timezone)?;
-            c.execute(
-            "INSERT INTO groups (tenant, source_id, policy_id, name, guests, timezone) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![r.tenant, r.source_id, r.policy_id, r.name, json!(r.guests).to_string(), r.timezone],
-        )?;
-            let id = c.last_insert_rowid();
-            c.query_row(
-                &format!("SELECT {GROUP_COLS} FROM groups WHERE id = ?1"),
-                [id],
-                group_row,
-            )?
+    let out = {
+        let c = st.cat.conn();
+        crate::replication::refuse_replicated(&c, &r.tenant)?;
+        let a = Auto {
+            mode: &mut r.mode,
+            selector: &mut r.selector,
+            exclude: &mut r.exclude,
         };
+        check_group(&c, &r.tenant, r.source_id, r.policy_id, &r.name, &mut r.guests, a)?;
+        validate::timezone(&r.timezone)?;
+        c.execute(
+            "INSERT INTO groups (tenant, source_id, policy_id, name, guests, mode, selector, exclude, timezone) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                r.tenant,
+                r.source_id,
+                r.policy_id,
+                r.name,
+                json!(r.guests).to_string(),
+                r.mode,
+                json!(r.selector).to_string(),
+                json!(r.exclude).to_string(),
+                r.timezone
+            ],
+        )?;
+        let id = c.last_insert_rowid();
+        c.query_row(
+            &format!("SELECT {GROUP_COLS} FROM groups WHERE id = ?1"),
+            [id],
+            group_row,
+        )?
+    };
     st.audit(ctx.name(), "group.create", &format!("group/{}", out["id"]), out.clone())?;
     Ok(created(out))
 }
@@ -1698,7 +1744,12 @@ pub async fn update_group(
             .optional()?
             .ok_or_else(ApiError::not_found)?;
         let tenant = old["tenant"].as_str().unwrap_or_default().to_owned();
-        check_group(&c, &tenant, r.source_id, r.policy_id, &r.name, &mut r.guests)?;
+        let a = Auto {
+            mode: &mut r.mode,
+            selector: &mut r.selector,
+            exclude: &mut r.exclude,
+        };
+        check_group(&c, &tenant, r.source_id, r.policy_id, &r.name, &mut r.guests, a)?;
         validate::timezone(&r.timezone)?;
         let old_pid = old["policy_id"].as_i64().unwrap_or_default();
         let weakening = old_pid != r.policy_id
@@ -1709,7 +1760,8 @@ pub async fn update_group(
         (old, weakening)
     };
     let new = json!({"id": id, "tenant": old["tenant"], "source_id": r.source_id, "policy_id": r.policy_id,
-                     "name": r.name, "guests": r.guests, "timezone": r.timezone});
+                     "name": r.name, "guests": r.guests, "mode": r.mode, "selector": r.selector, "exclude": r.exclude,
+                     "timezone": r.timezone});
     let target = format!("group/{id}");
     if weakening {
         let mut p = new.clone();
@@ -1717,13 +1769,17 @@ pub async fn update_group(
         return gate(&st, &ctx, "group.update", &target, p);
     }
     st.cat.conn().execute(
-        "UPDATE groups SET source_id = ?2, policy_id = ?3, name = ?4, guests = ?5, timezone = ?6 WHERE id = ?1",
+        "UPDATE groups SET source_id = ?2, policy_id = ?3, name = ?4, guests = ?5, mode = ?6, selector = ?7, \
+         exclude = ?8, timezone = ?9 WHERE id = ?1",
         params![
             id,
             r.source_id,
             r.policy_id,
             r.name,
             json!(r.guests).to_string(),
+            r.mode,
+            json!(r.selector).to_string(),
+            json!(r.exclude).to_string(),
             r.timezone
         ],
     )?;

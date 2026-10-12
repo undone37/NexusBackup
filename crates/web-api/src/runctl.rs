@@ -33,8 +33,20 @@ fn until(r: &PauseReq) -> ApiResult<i64> {
     }
 }
 
+/// The group's guests as the scheduler resolves them (auto-protect groups, 13c).
+fn resolved_guests(c: &Connection, group_id: i64) -> ApiResult<Vec<Value>> {
+    let (sid, kind, mode, guests, sel, ex): (i64, String, String, String, String, String) = c.query_row(
+        "SELECT g.source_id, s.kind, g.mode, g.guests, g.selector, g.exclude FROM groups g
+         JOIN sources s ON s.id = g.source_id WHERE g.id = ?1",
+        [group_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+    )?;
+    Ok(catalog::inventory::resolve(c, sid, &kind, &mode, &guests, &sel, &ex)?)
+}
+
 /// Adds the run state to listed groups: `paused_until`, `maintenance_until`
-/// (of the source) and `blackout_active` (a window of the policy is active now).
+/// (of the source), `blackout_active` (a window of the policy is active now) and
+/// `resolved_guests` (what a backup of the group covers now).
 pub fn group_states(c: &Connection, mut rows: Vec<Value>) -> ApiResult<Vec<Value>> {
     let now = catalog::now();
     for g in rows.iter_mut() {
@@ -51,6 +63,7 @@ pub fn group_states(c: &Connection, mut rows: Vec<Value>) -> ApiResult<Vec<Value
         g["paused_until"] = json!(paused);
         g["maintenance_until"] = json!(maint);
         g["blackout_active"] = json!(active.is_some());
+        g["resolved_guests"] = json!(resolved_guests(c, g["id"].as_i64().unwrap_or_default())?);
     }
     Ok(rows)
 }
@@ -138,11 +151,7 @@ pub fn backup_guests(
     guests: Option<Vec<Value>>,
     failed_only: bool,
 ) -> ApiResult<Option<Vec<Value>>> {
-    let all: Vec<Value> = c
-        .query_row("SELECT guests FROM groups WHERE id = ?1", [group_id], |r| {
-            r.get::<_, String>(0)
-        })
-        .map(|g| serde_json::from_str(&g).unwrap_or_default())?;
+    let all = resolved_guests(c, group_id)?;
     if failed_only {
         if guests.is_some() {
             return Err(ApiError::bad("params: guests or failed_only, not both"));

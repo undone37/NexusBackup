@@ -20,9 +20,11 @@ use std::sync::{Arc, Mutex};
 
 pub mod activation;
 pub mod agents;
+pub mod alerts;
 pub mod approvals;
 pub mod auth;
 pub mod dashboard;
+pub mod inventory;
 pub mod jobs;
 pub mod oidc;
 pub mod ops;
@@ -33,6 +35,7 @@ pub mod resources;
 pub mod runctl;
 pub mod settings;
 pub mod spa;
+pub mod storage;
 pub mod tls;
 pub mod validate;
 
@@ -410,6 +413,9 @@ pub fn router(st: St) -> Router {
         .route("/auth/oidc/start", get(oidc::start))
         .route("/auth/oidc/callback", get(oidc::callback))
         .route("/dashboard", get(dashboard::dashboard))
+        .route("/storage", get(storage::storage))
+        .route("/tenants/{name}/quota", put(storage::put_quota))
+        .route("/settings/anomaly", get(storage::get_anomaly).put(storage::put_anomaly))
         .route("/settings/oidc", get(oidc::get_settings).put(oidc::put_settings))
         .route("/settings/oidc/test", post(oidc::test_settings))
         .route("/settings/alerts", get(settings::get_alerts).put(settings::put_alerts))
@@ -430,6 +436,7 @@ pub fn router(st: St) -> Router {
         .route("/tenants/{name}", put(update_tenant).delete(delete_tenant))
         .route("/sources", get(list_sources).post(create_source))
         .route("/sources/{id}", put(update_source).delete(delete_source))
+        .route("/sources/{id}/inventory", get(inventory::list))
         .route("/policies", get(list_policies).post(create_policy))
         .route("/policies/{id}", put(update_policy).delete(delete_policy))
         .route("/groups", get(list_groups).post(create_group))
@@ -445,6 +452,10 @@ pub fn router(st: St) -> Router {
         .route("/agents/{id}/token", post(new_agent_token))
         .route("/agents/{id}/enroll", post(enroll_agent))
         .route("/snapshots", get(list_snapshots))
+        .route(
+            "/snapshots/{tenant}/{source}/{time}",
+            axum::routing::delete(delete_snapshot),
+        )
         .route("/jobs", get(list_jobs).post(create_job))
         .route("/jobs/{id}", get(get_job))
         .route("/jobs/{id}/cancel", post(cancel_job))
@@ -454,8 +465,9 @@ pub fn router(st: St) -> Router {
         .route("/quorum/{id}/reject", post(reject))
         .route("/audit", get(list_audit))
         .route("/audit/verify", get(verify_audit))
-        .route("/alerts", get(list_alerts))
-        .route("/alerts/{id}/ack", post(ack_alert))
+        .route("/alerts", get(alerts::list_alerts))
+        .route("/alerts/{id}/ack", post(alerts::ack_alert))
+        .route("/alerts/{id}/resolve", post(alerts::resolve_alert))
         .route(
             "/plugins",
             get(plugins::list_plugins)

@@ -356,6 +356,13 @@ async function main() {
       await cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }, { name: 'prefers-reduced-motion', value: 'reduce' }] });
       await sleep(300);
     }],
+    // Phase 13c: the "Not in a group" drill-down (guests from the inventory no group protects)
+    ['dashboard-unprotected', async () => {
+      await go('/', 900);
+      await until(`return !!document.querySelector('.open-list details')`, 'not-in-a-group list');
+      await ev(`const d = document.querySelector('.open-list details'); d.open = true; window.scrollTo(0, d.getBoundingClientRect().top + window.scrollY - 80); return true;`);
+      await shot('dashboard-unprotected', { scrolled: true });
+    }],
     ['jobs', async () => {
       await go('/jobs');
       await shot('jobs');
@@ -374,7 +381,18 @@ async function main() {
     }],
     ['alerts', async () => {
       await go('/alerts');
+      await ev(`$row('store capacity').querySelector('details').open = true; return true;`);
       await shot('alerts');
+      await ev(`$click('All'); return true;`);
+      await settle();
+      await shot('alerts-all');
+      await ev(`$click('Open'); return true;`);
+      await settle();
+      await ev(`$rowClick('store capacity', 'Resolve'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #al-note')`, 'resolve dialog');
+      await ev(`$fill('#al-note', 'Old daily snapshots of initech pruned, GC ran: 61 % used.'); return true;`);
+      await shot('alert-resolve');
+      await closeDialogs();
     }],
     ['audit', async () => {
       await go('/audit');
@@ -403,6 +421,12 @@ async function main() {
       await closeDialogs();
       await go('/snapshots?tenant=globex');
       await shot('snapshots-replicated');
+      // an unlocked snapshot of a guest in no group (Phase 13a): Delete asks first
+      await go('/snapshots?source=vm-103');
+      await ev(`$rowClick('vm-103', 'Delete'); return true;`);
+      await until(`return !!$button('Confirm')`, 'confirmation dialog');
+      await shot('snapshot-delete');
+      await closeDialogs();
     }],
     ['files', async () => {
       const s = data.vm100;
@@ -449,6 +473,14 @@ async function main() {
       await shot('snapshot-pg-to-target');
       await closeDialogs();
     }],
+    ['storage', async () => {
+      await go('/storage');
+      await until(`return !!document.querySelector('#s-group-table')`, 'storage page');
+      await shot('storage', { height: 1500 });
+      await go('/settings?tab=anomaly');
+      await until(`return !!document.querySelector('#an-f')`, 'anomaly settings');
+      await shot('settings-anomaly');
+    }],
     ['tenants', async () => {
       await go('/tenants');
       await shot('tenants');
@@ -479,6 +511,11 @@ async function main() {
       await edit('filer-projects', 'source-nfs', 1150);
       await edit('fs01-data', 'source-smb', 1250);
       await edit('pg-shop', 'source-postgresql', 2000);
+      // Phase 13c: guest inventory of the PVE cluster
+      await ev(`$rowClick('pve-cluster', 'Inventory'); return true;`);
+      await until(`return document.querySelector('dialog[open]')?.innerText.includes('build-runner')`, 'inventory');
+      await shot('source-inventory');
+      await closeDialogs();
     }],
     ['agents', async () => {
       await go('/agents');
@@ -537,6 +574,11 @@ async function main() {
       await until(`return !!document.querySelector('dialog[open] #g-guests')`, 'PVE group dialog');
       await shot('group-pve');
       await closeDialogs();
+      // Phase 13c: auto-protect by PVE pool with one exclusion
+      await ev(`$rowClick('development', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input[value="105"]')`, 'auto-protect group dialog');
+      await shot('group-auto', { height: 1250 });
+      await closeDialogs();
       // run control (Phase 13b): back up now (inside a blackout window), pause
       await ev(`$rowClick('development', 'Back up now'); return true;`);
       await until(`return !!document.querySelector('dialog[open] input[value="failed"]')`, 'back up now dialog');
@@ -590,9 +632,13 @@ async function main() {
       await go('/settings?tab=approvals');
       await shot('settings-approvals');
       await go('/settings?tab=alerts');
-      await ev(`$click('Send test'); return true;`);
+      await ev(`$rowClick('acme-chat', 'Send test'); return true;`);
       await until(`return !!document.querySelector('.test-result')`, 'alert test result');
       await shot('settings-alerts', { height: 1250 });
+      await ev(`$rowClick('acme-chat', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] textarea.mono')`, 'rule editor');
+      await shot('settings-alert-rule', { height: 1400 });
+      await closeDialogs();
       await go('/settings?tab=sso');
       await shot('settings-sso', { height: 1500 });
       await go('/settings?tab=ssh');

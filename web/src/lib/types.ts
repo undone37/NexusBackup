@@ -93,6 +93,8 @@ export interface TenantOffsite {
 export interface Tenant {
   name: string;
   offsite: TenantOffsite;
+  /** soft storage quota in bytes (Phase 13d); null = none */
+  quota_bytes?: number | null;
 }
 
 /** Config of a `pve` source. */
@@ -262,7 +264,7 @@ export interface Group {
   source_id: number;
   policy_id: number;
   name: string;
-  /** pve: VM/CT IDs; linux: exactly `[source.config.agent_id]`; truenas: datasets of the source; nfs/smb: none (the share) */
+  /** pve: VM/CT IDs; linux: exactly `[source.config.agent_id]`; truenas: datasets of the source; nfs/smb: none (the share). Empty for mode all/tags. */
   guests: (number | string)[];
   /** IANA zone of the schedule and blackout windows */
   timezone: string;
@@ -271,6 +273,39 @@ export interface Group {
   /** of the group's source */
   maintenance_until?: number | null;
   blackout_active?: boolean;
+  /** GET /groups only: the guests a backup covers now (mode all/tags resolved from the inventory) */
+  resolved_guests?: (number | string)[];
+  /** Phase 13c: explicit = `guests`; all = every inventory guest of the source; tags = guests with any `selector` tag */
+  mode: GroupMode;
+  /** mode tags: `pool:x`, `tag:y`, `node:n`, `type:qemu`, … */
+  selector: string[];
+  /** guest ids never protected by this group (mode all/tags) */
+  exclude: string[];
+}
+
+export type GroupMode = 'explicit' | 'all' | 'tags';
+
+/** One guest of `GET /sources/{id}/inventory`. */
+export interface InventoryGuest {
+  guest: string;
+  name: string;
+  kind: string;
+  tags: string[];
+  seen: number;
+  /** set when the guest was no longer listed */
+  gone: number | null;
+  /** names of the groups protecting it */
+  groups: string[];
+}
+
+export interface Inventory {
+  source_id: number;
+  kind: string;
+  /** false: the source kind has no inventory (linux, nfs, smb, plugin kinds without guests) */
+  inventory: boolean;
+  /** last successful listing; null = never */
+  refreshed: number | null;
+  guests: InventoryGuest[];
 }
 
 export type JobState = 'queued' | 'running' | 'ok' | 'failed' | 'cancelled';
@@ -294,7 +329,8 @@ export type JobKind =
   | 'plugin_restore'
   | 'plugin_mount'
   | 'replica_enroll'
-  | 'replica_sync';
+  | 'replica_sync'
+  | 'inventory';
 
 /** One entry of `nexus-pve files … ls` (crates/pve/src/files.rs `Entry`); agents use the same shape. */
 export interface FileEntry {
@@ -451,13 +487,26 @@ export interface AuditVerify {
   error?: string;
 }
 
+/** GET /alerts (13f lifecycle): `ts` = `first_ts`; open while `resolved_at` is null. */
 export interface Alert {
   id: number;
   ts: number;
+  first_ts: number;
+  last_ts: number;
+  count: number;
   severity: 'info' | 'warning' | 'critical';
   kind: string;
+  key: string | null;
+  tenant: string | null;
   message: string;
+  /** English "what to do" (the UI prefers t.alerts.hints[kind]) */
+  hint: string;
   acked_by: string | null;
+  resolved_at: number | null;
+  resolved_by: string | null;
+  note: string | null;
+  /** resolved by the appliance (the problem went away) */
+  auto: boolean;
 }
 
 export interface LoginResponse {
@@ -582,6 +631,8 @@ export interface PluginGuest {
   id: string;
   title: string;
   size?: number;
+  /** v1.5: e.g. `type:user`, `license:none` */
+  tags?: string[];
 }
 
 // ---------------------------------------------------------------- Phase 12 (docs/phase12-contract.md)
@@ -601,6 +652,15 @@ export interface Dashboard {
     /** behind the RPO, but every group of the object is paused (no breach) */
     sla_paused?: number;
     never: number;
+    /** Phase 13c: what no group protects (inventory guests, agents, shares), at most 200 */
+    unprotected_list?: {
+      tenant: string;
+      kind: string;
+      source_id: number | null;
+      source: string;
+      guest: string | null;
+      name: string;
+    }[];
     worst: {
       source: string;
       name: string;
@@ -670,20 +730,36 @@ export interface OidcSettings {
   mappings: OidcMapping[];
 }
 
-/** GET/PUT /settings/alerts (§3). `smtp.password` is write-only. */
+export type Severity = 'info' | 'warning' | 'critical';
+
+/** One notification rule (13f). Webhook header values are write-only: null = keep. */
+export interface AlertRule {
+  name: string;
+  min_severity: Severity;
+  /** empty = every kind / tenant */
+  kinds: string[];
+  tenants: string[];
+  channels: {
+    email: string[];
+    webhook: { url: string; headers: Record<string, string | null>; template: string | null } | null;
+  };
+}
+
+/** GET/PUT /settings/alerts (§3, 13f). `smtp.password` is write-only. */
 export interface AlertSettings {
-  webhook_url: string | null;
   smtp: {
     host: string;
     port: number;
     starttls: boolean;
     from: string;
-    to: string[];
     user: string;
     password_set?: boolean;
     password?: string;
   } | null;
-  min_severity: 'info' | 'warning' | 'critical';
+  rules: AlertRule[];
+  /** 0 = never remind */
+  reminder_hours: number;
+  retention_days: Record<Severity, number>;
 }
 
 /** GET /ssh-keys (§4): public halves only. */
@@ -715,4 +791,38 @@ export interface UpdatesStatus {
   status: 'idle' | 'checking' | 'staged' | 'error' | string;
   error: string | null;
   rollback: UpdateImage | null;
+}
+
+/** Summed `backup_stats` of kept snapshots (GET /storage, docs/storage-accounting.md). */
+export interface StorageSum {
+  snapshots: number;
+  logical: number;
+  data_in: number;
+  stored: number;
+  saved: number;
+  dedup: number | null;
+  compression: number | null;
+  reduction: number | null;
+}
+
+export interface StorageGrowth {
+  d7: number | null;
+  d30: number | null;
+  d90: number | null;
+}
+
+export interface Storage {
+  generated: number;
+  totals: StorageSum & { snapshots_all: number; used: number; growth: StorageGrowth };
+  tenants: (StorageSum & { tenant: string; quota_bytes: number | null; used: number | null; quota_used: number | null; growth: StorageGrowth })[];
+  groups: (StorageSum & { tenant: string; group_id: number | null; group: string | null; sources: number })[];
+  per_day: { day: string; used: number; logical: number }[];
+}
+
+/** Setting `anomaly` (GET/PUT /settings/anomaly). */
+export interface AnomalySettings {
+  enabled: boolean;
+  factor: number;
+  history: number;
+  floor_bytes: number;
 }

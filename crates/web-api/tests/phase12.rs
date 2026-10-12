@@ -361,7 +361,8 @@ async fn alert_settings_sealed_and_write_only() {
     let otto = t.login("otto").await;
     let r = t.get("/api/v1/settings/alerts", &sam).await;
     assert_eq!(r.status, StatusCode::OK);
-    assert_eq!(r.body["min_severity"], "warning");
+    assert_eq!(r.body["rules"], json!([]));
+    assert_eq!(r.body["reminder_hours"], 24);
     assert_eq!(
         t.get("/api/v1/settings/alerts", &otto).await.status,
         StatusCode::FORBIDDEN
@@ -377,6 +378,10 @@ async fn alert_settings_sealed_and_write_only() {
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     assert_eq!(r.body["smtp"]["password_set"], true);
     assert!(r.body["smtp"].get("password").is_none());
+    // the pre-13f form is stored as one rule (13f)
+    assert_eq!(r.body["rules"][0]["name"], "default");
+    assert_eq!(r.body["rules"][0]["min_severity"], "critical");
+    assert_eq!(r.body["rules"][0]["channels"]["email"], json!(["ops@example.com"]));
     let raw = catalog::setting(&t.st.cat.conn(), "alerts").unwrap().unwrap();
     assert!(!raw.contains("smtp-s3cret"));
     let stored: Value = serde_json::from_str(&raw).unwrap();
@@ -1130,4 +1135,427 @@ async fn oidc_state_binding_replay_and_redirects() {
             "{bad}"
         );
     }
+}
+
+// ---------------------------------------------------------------- snapshot delete (Phase 13a)
+
+#[tokio::test]
+async fn snapshot_delete_refuses_locked_and_needs_approval() {
+    let t = T::new();
+    let now = catalog::now();
+    t.exec(&format!(
+        "INSERT INTO snapshots (tenant, source, time, size, local, offsite, lock_until, origin) VALUES
+           ('acme', 'vm-100', 1, 10, 1, 0, 0, NULL),
+           ('acme', 'vm-100', 2, 10, 1, 1, {}, NULL),
+           ('acme', 'vm-100', 3, 10, 0, 1, 0, NULL),
+           ('acme', 'vm-100', 4, 10, 1, 0, 0, 'prim'),
+           ('globex', 'vm-700', 1, 10, 1, 0, 0, NULL);",
+        now + 3600
+    ));
+    let alice = t.login("alice").await;
+    let otto = t.login("otto").await;
+    let tina = t.login("tina").await;
+    let sam = t.login("sam").await;
+    let del = |path: &str, s: &S| T::req(Method::DELETE, path, Some(s), None);
+    for (who, path, want) in [
+        (&otto, "/api/v1/snapshots/acme/vm-100/1", StatusCode::FORBIDDEN),
+        (&tina, "/api/v1/snapshots/acme/vm-100/1", StatusCode::FORBIDDEN),
+        (&alice, "/api/v1/snapshots/acme/vm-100/9", StatusCode::NOT_FOUND),
+        (&alice, "/api/v1/snapshots/acme/vm-100/2", StatusCode::CONFLICT), // locked
+        (&alice, "/api/v1/snapshots/acme/vm-100/3", StatusCode::CONFLICT), // offsite only
+        (&alice, "/api/v1/snapshots/acme/vm-100/4", StatusCode::CONFLICT), // replicated
+        (&alice, "/api/v1/snapshots/acme/..%2Fx/1", StatusCode::BAD_REQUEST),
+    ] {
+        let r = t.send(del(path, who)).await;
+        assert_eq!(r.status, want, "{path}: {:?}", r.body);
+    }
+    assert_eq!(t.audit_count("quorum.request"), 0, "refused before any request");
+    // approvals on: a request another approver approves for the scheduler
+    let r = t.send(del("/api/v1/snapshots/acme/vm-100/1", &alice)).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    let r = t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({})).await;
+    assert_eq!(r.body["state"], "approved", "the scheduler deletes it");
+    let p: String =
+        t.st.cat
+            .conn()
+            .query_row("SELECT params FROM quorum WHERE id = ?1", [q], |r| r.get(0))
+            .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&p).unwrap(),
+        json!({"tenant": "acme", "source": "vm-100", "time": 1})
+    );
+    // approvals off: an approved work item at once
+    t.approvals(false);
+    let r = t.send(del("/api/v1/snapshots/globex/vm-700/1", &alice)).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(
+        (r.body["approvals"].as_str(), r.body["state"].as_str()),
+        (Some("disabled"), Some("approved"))
+    );
+    assert_eq!(t.audit_count("snapshot.delete"), 1);
+}
+
+// ------------------------------------------------- storage accounting (13d/e)
+
+/// `GET /storage`: figures from `backup_stats` of kept snapshots, per tenant
+/// and group (ungrouped bucket), growth from capacity samples, tenant scoping;
+/// real dedup / compression on the dashboard; quotas; anomaly settings.
+#[tokio::test]
+async fn storage_accounting_quota_and_anomaly_settings() {
+    let t = T::new();
+    let now = catalog::now();
+    let day = 86400;
+    t.exec(
+        r#"INSERT INTO sources (id, tenant, kind, name, config) VALUES (1, 'acme', 'pve', 'pve-a', '{}'), (2, 'globex', 'pve', 'pve-g', '{}');
+           INSERT INTO policies (id, name, schedule, gfs, offsite) VALUES (1, 'daily', 'daily 22:00', '{}', 0);
+           INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES
+             (1, 'acme', 1, 1, 'web', '[100]'), (2, 'globex', 2, 1, 'g2', '[200]');
+           INSERT INTO snapshots (tenant, source, time, size, local, offsite) VALUES
+             ('acme', 'vm-100', 1, 1000, 1, 0), ('acme', 'vm-100', 2, 1000, 1, 0), ('acme', 'ct-555', 1, 400, 1, 0),
+             ('globex', 'vm-200', 1, 900, 1, 0), ('acme', 'vm-100', 9, 1000, 1, 0);
+           INSERT INTO backup_stats (tenant, source, time, read, logical, new_chunks, new_plain, new_stored) VALUES
+             ('acme', 'vm-100', 1, 1000, 1000, 4, 500, 250),
+             ('acme', 'vm-100', 2, 100, 1000, 1, 100, 50),
+             ('acme', 'ct-555', 1, 400, 400, 2, 400, 400),
+             ('acme', 'vm-100', 3, 100, 1000, 1, 100, 50),
+             ('globex', 'vm-200', 1, 900, 900, 3, 300, 100);"#,
+    );
+    // vm-100/3 is gone (no snapshot row), vm-100/9 has no stats (older release)
+    for (i, used) in [(95, 100), (31, 200), (8, 300), (0, 450)] {
+        t.st.cat
+            .conn()
+            .execute(
+                "INSERT INTO capacity_samples (day, tenant, used, logical) VALUES (?1, 'acme', ?2, 0)",
+                params![web_api::dashboard::day(now - i * day), used],
+            )
+            .unwrap();
+    }
+    let alice = t.login("alice").await;
+    let r = t.get("/api/v1/storage", &alice).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let tot = &r.body["totals"];
+    assert_eq!(
+        (&tot["logical"], &tot["data_in"], &tot["stored"], &tot["saved"]),
+        (&json!(3300), &json!(1300), &json!(800), &json!(2500))
+    );
+    assert_eq!((&tot["snapshots"], &tot["snapshots_all"]), (&json!(4), &json!(5)));
+    assert_eq!(tot["compression"], json!(1300.0 / 800.0));
+    let acme = r.body["tenants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["tenant"] == "acme")
+        .unwrap();
+    assert_eq!(acme["dedup"], json!(2400.0 / 1000.0));
+    assert_eq!(acme["used"], json!(450));
+    // growth: vs. the newest sample at least 7 / 30 / 90 days old
+    assert_eq!(acme["growth"], json!({"d7": 150, "d30": 250, "d90": 350}));
+    let groups = r.body["groups"].as_array().unwrap();
+    let web = groups.iter().find(|g| g["group"] == "web").unwrap();
+    assert_eq!((&web["logical"], &web["sources"]), (&json!(2000), &json!(1)));
+    let loose = groups
+        .iter()
+        .find(|g| g["tenant"] == "acme" && g["group_id"].is_null())
+        .unwrap();
+    assert_eq!(loose["stored"], json!(400), "ct-555 is in no group");
+    // dashboard tile: real ratios
+    let d = t.get("/api/v1/dashboard?days=7", &alice).await;
+    assert_eq!(d.body["capacity"]["dedup"], json!(3300.0 / 1300.0));
+    assert_eq!(d.body["capacity"]["compression"], json!(1300.0 / 800.0));
+    // tenant users: their tenant only
+    let tina = t.login("tina").await;
+    let r = t.get("/api/v1/storage", &tina).await;
+    assert_eq!(r.body["tenants"].as_array().unwrap().len(), 1);
+    assert_eq!(r.body["totals"]["logical"], json!(2400));
+    assert!(r.body["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|g| g["tenant"] == "acme"));
+
+    // quota: admin only, soft (no approval), audited, shown in the tenant list
+    assert_eq!(
+        t.put("/api/v1/tenants/acme/quota", &tina, json!({"quota_bytes": 1}))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        t.put("/api/v1/tenants/acme/quota", &alice, json!({"quota_bytes": 0}))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        t.put("/api/v1/tenants/nope/quota", &alice, json!({"quota_bytes": 5}))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    let r = t
+        .put("/api/v1/tenants/acme/quota", &alice, json!({"quota_bytes": 500}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(t.audit_count("tenant.quota"), 1);
+    let l = t.get("/api/v1/tenants", &alice).await;
+    assert_eq!(l.body[0]["quota_bytes"], json!(500));
+    let r = t.get("/api/v1/storage", &alice).await;
+    assert_eq!(r.body["tenants"][0]["quota_used"], json!(0.9));
+    t.put("/api/v1/tenants/acme/quota", &alice, json!({"quota_bytes": null}))
+        .await;
+    assert_eq!(
+        t.get("/api/v1/tenants", &alice).await.body[0]["quota_bytes"],
+        Value::Null
+    );
+
+    // anomaly thresholds: defaults; stricter applies, weaker needs approval
+    let r = t.get("/api/v1/settings/anomaly", &alice).await;
+    assert_eq!(
+        r.body,
+        json!({"enabled": true, "factor": 3.0, "history": 14, "floor_bytes": 1u64 << 30})
+    );
+    let otto = t.login("otto").await;
+    assert_eq!(
+        t.get("/api/v1/settings/anomaly", &otto).await.status,
+        StatusCode::FORBIDDEN
+    );
+    let strict = json!({"enabled": true, "factor": 2.0, "history": 14, "floor_bytes": 1u64 << 30});
+    let r = t.put("/api/v1/settings/anomaly", &alice, strict.clone()).await;
+    assert_eq!((r.status, &r.body), (StatusCode::OK, &strict));
+    for bad in [
+        json!({"enabled": true, "factor": 1.0, "history": 14, "floor_bytes": 1u64 << 30}),
+        json!({"enabled": true, "factor": 3.0, "history": 2, "floor_bytes": 1u64 << 30}),
+        json!({"enabled": true, "factor": 3.0, "history": 14, "floor_bytes": 1}),
+    ] {
+        assert_eq!(
+            t.put("/api/v1/settings/anomaly", &alice, bad.clone()).await.status,
+            StatusCode::BAD_REQUEST,
+            "{bad}"
+        );
+    }
+    let off = json!({"enabled": false, "factor": 2.0, "history": 14, "floor_bytes": 1u64 << 30});
+    let r = t.put("/api/v1/settings/anomaly", &alice, off.clone()).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    assert_eq!(t.get("/api/v1/settings/anomaly", &alice).await.body, strict);
+    let sam = t.login("sam").await;
+    let r = t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({})).await;
+    assert_eq!(r.body["state"], "executed", "{:?}", r.body);
+    assert_eq!(t.get("/api/v1/settings/anomaly", &alice).await.body, off);
+}
+
+// ---------------------------------------------------------------- 13f: alert lifecycle and rules
+
+/// Acknowledge (seen, open) and resolve (closed) with notes, filters, RBAC, audit.
+#[tokio::test]
+async fn alert_ack_and_resolve() {
+    let t = T::new();
+    t.exec(
+        "INSERT INTO alerts (id, ts, last_ts, count, severity, kind, key, tenant, message) VALUES
+           (1, 10, 50, 3, 'critical', 'job_failed', 'job_failed:acme/backup/group/1', 'acme', 'backup job 9 failed'),
+           (2, 20, 20, 1, 'warning', 'capacity', 'capacity', NULL, 'store capacity above 75 %');",
+    );
+    let otto = t.login("otto").await;
+    let tina = t.login("tina").await;
+    let sam = t.login("sam").await;
+    let all = t.get("/api/v1/alerts", &otto).await.body;
+    assert_eq!(all.as_array().unwrap().len(), 2);
+    let a1 = &all[1];
+    assert_eq!(
+        (a1["count"].as_i64(), a1["first_ts"].as_i64(), a1["last_ts"].as_i64()),
+        (Some(3), Some(10), Some(50))
+    );
+    assert_eq!(a1["tenant"], "acme");
+    assert!(a1["hint"].as_str().unwrap().contains("job log"));
+    assert_eq!(
+        t.get("/api/v1/alerts", &tina).await.body,
+        json!([]),
+        "tenant users see none"
+    );
+    assert_eq!(
+        t.get("/api/v1/alerts?state=bogus", &otto).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    // acknowledge with a note: still open
+    let r = t
+        .post("/api/v1/alerts/1/ack", &otto, json!({"note": "looking into it"}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let open = t.get("/api/v1/alerts?state=open", &otto).await.body;
+    assert_eq!(open.as_array().unwrap().len(), 2);
+    assert_eq!(open[1]["note"], "looking into it");
+    assert_eq!(
+        t.post("/api/v1/alerts/1/ack", &sam, json!({})).await.status,
+        StatusCode::CONFLICT
+    );
+    // resolve; tenant users may not
+    assert_eq!(
+        t.post("/api/v1/alerts/2/resolve", &tina, json!({})).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        t.post("/api/v1/alerts/1/resolve", &otto, json!({"note": "x".repeat(1001)}))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    let r = t
+        .post("/api/v1/alerts/1/resolve", &otto, json!({"note": "source back online"}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(
+        t.post("/api/v1/alerts/1/resolve", &otto, json!({})).await.status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        t.post("/api/v1/alerts/2/resolve", &sam, json!({})).await.status,
+        StatusCode::OK
+    );
+    let done = t.get("/api/v1/alerts?state=resolved&id=1", &otto).await.body;
+    assert_eq!(done.as_array().unwrap().len(), 1);
+    assert_eq!(
+        (done[0]["resolved_by"].as_str(), done[0]["auto"].as_bool()),
+        (Some("otto"), Some(false))
+    );
+    assert_eq!(done[0]["note"], "source back online");
+    let two = t.get("/api/v1/alerts?state=resolved&id=2", &otto).await.body;
+    assert_eq!(two[0]["acked_by"], "sam", "resolving acknowledges too");
+    assert!(t
+        .get("/api/v1/alerts?state=open", &otto)
+        .await
+        .body
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(t.audit_count("alert.ack"), 1);
+    assert_eq!(t.audit_count("alert.resolve"), 2);
+    assert_eq!(
+        t.post("/api/v1/alerts/99/resolve", &otto, json!({})).await.status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+/// Rules: validation (templates must render to JSON), header values sealed and
+/// write-only (kept while the URL stays), test per rule, RBAC.
+#[tokio::test]
+async fn alert_rules_validation_and_secrets() {
+    let t = T::new();
+    let alice = t.login("alice").await;
+    let sam = t.login("sam").await;
+    let tmpl = r#"{"text": "[{{severity}}] {{kind}}: {{message}}\n{{hint}} <{{alert_url}}|open> ({{count}}x)"}"#;
+    let body = json!({
+        "smtp": {"host": "mail.example.com", "port": 587, "starttls": true, "from": "nexus@example.com"},
+        "rules": [
+            {"name": "ops", "min_severity": "warning", "channels": {"email": ["ops@example.com"]}},
+            {"name": "acme-chat", "min_severity": "info", "kinds": ["job_failed", "verify"], "tenants": ["acme"],
+             "channels": {"webhook": {"url": "https://hooks.slack.example/services/T/B/x",
+                                      "headers": {"Authorization": "Bearer s3cret-token"}, "template": tmpl}}}
+        ],
+        "reminder_hours": 12,
+        "retention_days": {"info": 7, "warning": 90, "critical": 365}
+    });
+    assert_eq!(
+        t.put("/api/v1/settings/alerts", &sam, body.clone()).await.status,
+        StatusCode::FORBIDDEN
+    );
+    let r = t.put("/api/v1/settings/alerts", &alice, body.clone()).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(
+        r.body["rules"][1]["channels"]["webhook"]["headers"],
+        json!({"Authorization": null})
+    );
+    assert_eq!(r.body["reminder_hours"], 12);
+    assert_eq!(r.body["retention_days"]["info"], 7);
+    let raw = catalog::setting(&t.st.cat.conn(), "alert_rules").unwrap().unwrap();
+    assert!(!raw.contains("s3cret-token"));
+    let rules: Vec<catalog::alerting::Rule> = serde_json::from_str(&raw).unwrap();
+    let w = rules[1].channels.webhook.as_ref().unwrap();
+    let opened =
+        t.sk.open(
+            &catalog::alerting::header_location("acme-chat", "Authorization", &w.url),
+            &w.headers["Authorization"],
+        )
+        .unwrap();
+    assert_eq!(opened.as_str(), "Bearer s3cret-token");
+    // GET is the same view, for security officers too
+    assert_eq!(t.get("/api/v1/settings/alerts", &sam).await.body, r.body);
+    // null keeps the value while the URL stays; a new URL needs it again
+    let mut keep = body.clone();
+    keep["rules"][1]["channels"]["webhook"]["headers"]["Authorization"] = Value::Null;
+    assert_eq!(
+        t.put("/api/v1/settings/alerts", &alice, keep.clone()).await.status,
+        StatusCode::OK
+    );
+    let again = catalog::setting(&t.st.cat.conn(), "alert_rules").unwrap().unwrap();
+    assert_eq!(again, raw);
+    keep["rules"][1]["channels"]["webhook"]["url"] = json!("https://evil.example/x");
+    assert_eq!(
+        t.put("/api/v1/settings/alerts", &alice, keep).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    let with = |f: &dyn Fn(&mut Value)| {
+        let mut b = body.clone();
+        f(&mut b);
+        b
+    };
+    for bad in [
+        with(&|b| b["rules"][1]["channels"]["webhook"]["template"] = json!(r#"{"text": {{message}}}"#)),
+        with(&|b| b["rules"][1]["channels"]["webhook"]["template"] = json!(r#"{"text": "{{password}}"}"#)),
+        with(&|b| b["rules"][1]["channels"]["webhook"]["url"] = json!("ftp://x")),
+        with(&|b| b["rules"][1]["channels"]["webhook"]["headers"] = json!({"Bad Header": "x"})),
+        with(&|b| b["rules"][1]["channels"]["webhook"]["headers"] = json!({"Host": "x"})),
+        with(&|b| b["rules"][0]["min_severity"] = json!("debug")),
+        with(&|b| b["rules"][0]["name"] = json!("acme-chat")),
+        with(&|b| b["rules"][0]["name"] = json!("../x")),
+        with(&|b| b["rules"][0]["channels"]["email"] = json!(["not-a-mail"])),
+        with(&|b| b["rules"][0]["tenants"] = json!(["a b"])),
+        with(&|b| b["smtp"] = Value::Null),
+        with(&|b| b["smtp"]["to"] = json!(["x@example.com"])),
+        with(&|b| b["reminder_hours"] = json!(-1)),
+        with(&|b| b["retention_days"] = json!({"debug": 3})),
+        with(&|b| b["rules"][0]["channels"]["sms"] = json!(["+49"])),
+    ] {
+        assert_eq!(
+            t.put("/api/v1/settings/alerts", &alice, bad.clone()).await.status,
+            StatusCode::BAD_REQUEST,
+            "{bad}"
+        );
+    }
+    // test one rule: the scheduler job carries the rule name
+    let st = t.st.clone();
+    let fake = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let n = st
+                .cat
+                .conn()
+                .execute(
+                    "UPDATE jobs SET state = 'ok', result = '{\"webhook\": \"ok\"}' \
+                     WHERE kind = 'alert_test' AND json_extract(params, '$.rule') = 'acme-chat'",
+                    [],
+                )
+                .unwrap();
+            if n > 0 {
+                break;
+            }
+        }
+    });
+    let r = t
+        .post("/api/v1/settings/alerts/test", &alice, json!({"rule": "acme-chat"}))
+        .await;
+    fake.await.unwrap();
+    assert_eq!((r.status, r.body.clone()), (StatusCode::OK, json!({"webhook": "ok"})));
+    assert_eq!(
+        t.post("/api/v1/settings/alerts/test", &alice, json!({"rule": "../x"}))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    let audit: String =
+        t.st.cat
+            .conn()
+            .query_row("SELECT group_concat(details) FROM audit", [], |r| r.get(0))
+            .unwrap();
+    assert!(!audit.contains("s3cret-token") && !audit.contains("sealed:v1:"));
 }

@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
   import { t } from '../lib/i18n';
+  import { fmtBytes } from '../lib/format';
   import type { Tenant, TenantOffsite, SftpRemote, S3Remote } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
@@ -58,6 +59,9 @@
   let secretSet = $state(false);
   let uploaders = $state(4);
   let bwlimit = $state('');
+  // soft quota in GiB (null = none); saved separately (PUT /tenants/{name}/quota, applies at once)
+  const GIB = 2 ** 30;
+  let quota: number | null = $state(null);
 
   function edit(x: Tenant | null) {
     editing = x;
@@ -86,6 +90,7 @@
     }
     uploaders = x?.offsite?.uploaders ?? 4;
     bwlimit = x?.offsite?.bwlimit ? String(Math.round(x.offsite.bwlimit / 1024)) : '';
+    quota = x?.quota_bytes ? +(x.quota_bytes / GIB).toFixed(2) : null;
     open = true;
   }
 
@@ -122,6 +127,9 @@
     const r = editing
       ? await act(put(`/tenants/${encodeURIComponent(editing.name)}`, { offsite: o }), t.saved)
       : await act(post('/tenants', { name, offsite: o }), t.created);
+    const q = quota ? Math.round(quota * GIB) : null;
+    if (r && q !== (editing?.quota_bytes ?? null))
+      await act(put(`/tenants/${encodeURIComponent(editing?.name ?? name)}/quota`, { quota_bytes: q }), t.storage.quotaSaved);
     if (r) {
       open = false;
       load();
@@ -154,6 +162,7 @@
             <th scope="col">{t.name}</th>
             <th scope="col">{t.tenants.offsite}</th>
             <th scope="col">{t.tenants.uploaders}</th>
+            <th scope="col">{t.storage.quota}</th>
             <th scope="col"><span class="visually-hidden">{t.actions}</span></th>
           </tr>
         </thead>
@@ -167,6 +176,7 @@
                 {#if r?.type === 's3' && r.lock}<span class="chip ok">{t.tenants.locked}</span>{/if}
               </td>
               <td>{r ? (x.offsite?.uploaders ?? 4) : '—'}</td>
+              <td>{x.quota_bytes ? fmtBytes(x.quota_bytes) : '—'}</td>
               <td class="actions">
                 <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
                 <button type="button" class="small danger" onclick={() => remove(x)}>{t.delete}</button>
@@ -187,6 +197,11 @@
         <input id="t-name" bind:value={name} required pattern="[a-z0-9][a-z0-9\-]*" maxlength="32" />
       </div>
     {/if}
+    <div class="field">
+      <label for="t-quota">{t.storage.quotaField}</label>
+      <input id="t-quota" type="number" min="0.001" step="any" bind:value={quota} aria-describedby="t-quota-hint" />
+      <div class="hint" id="t-quota-hint">{t.storage.quotaHint}</div>
+    </div>
     <fieldset>
       <legend>{t.tenants.offsite}</legend>
       <div class="field">

@@ -44,6 +44,7 @@ pub const WEB_ACTIONS: &[&str] = &[
     "approvals.disable",
     "oidc.update",
     "update.apply",
+    "settings.anomaly",
 ];
 
 /// Who may approve or reject requests (never their own: see [`approve`]).
@@ -235,6 +236,7 @@ fn unchanged_since_request(c: &Connection, action: &str, p: &Value) -> ApiResult
         "policy.update" => crate::resources::policy_value(c, int(p, "id")?)?,
         "group.update" => crate::resources::group_value(c, int(p, "id")?)?,
         "tenant.update" => crate::resources::tenant_value(c, p["name"].as_str().unwrap_or_default())?,
+        "settings.anomaly" => crate::storage::anomaly_value(c)?,
         _ => return Ok(()),
     };
     if current.as_ref() != Some(&p["old"]) {
@@ -278,13 +280,18 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
             ],
         )?)?,
         "group.update" => changed(c.execute(
-            "UPDATE groups SET source_id = ?2, policy_id = ?3, name = ?4, guests = ?5, timezone = ?6 WHERE id = ?1",
+            "UPDATE groups SET source_id = ?2, policy_id = ?3, name = ?4, guests = ?5, mode = ?6, selector = ?7, \
+             exclude = ?8, timezone = ?9 WHERE id = ?1",
             params![
                 int(p, "id")?,
                 int(p, "source_id")?,
                 int(p, "policy_id")?,
                 p["name"].as_str(),
                 p["guests"].to_string(),
+                // requests made before v12 carry no mode: explicit
+                p["mode"].as_str().unwrap_or("explicit"),
+                p.get("selector").unwrap_or(&json!([])).to_string(),
+                p.get("exclude").unwrap_or(&json!([])).to_string(),
                 p["timezone"].as_str().unwrap_or("UTC")
             ],
         )?)?,
@@ -293,6 +300,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         "oidc.update" => crate::oidc::execute(c, p)?,
         // the request file for nexus-update is written after the commit (settings::after_approve)
         "update.apply" => {}
+        "settings.anomaly" => catalog::set_setting(c, crate::storage::ANOMALY_SETTING, &p["anomaly"].to_string())?,
         "agent.delete" => {
             let id = p["id"].as_str().unwrap_or_default();
             if crate::agents::agent_in_use(c, id)? {

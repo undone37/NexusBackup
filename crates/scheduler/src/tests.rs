@@ -47,6 +47,7 @@ fn env(max_parallel: usize) -> Env {
         offsite_bin: p.join("pve"),
         alerts_config: p.join("alerts.json"),
         max_parallel,
+        inventory_secs: 0, // inventory_jobs turns it on
         ..Default::default()
     };
     let db = Arc::new(Catalog::open_memory().unwrap());
@@ -855,10 +856,199 @@ fn inconsistent_alerts_once_per_source() {
     assert_eq!(count(&s), 2, "other source: its own first warning");
     s.inconsistent_alerts(5, "acme", changed).unwrap();
     s.inconsistent_alerts(6, "acme", changed).unwrap();
-    assert_eq!(count(&s), 3, "changed files: warned, deduplicated while unacknowledged");
+    assert_eq!(count(&s), 3, "changed files: warned, deduplicated while open");
+    let max_count = |s: &Scheduler| -> i64 {
+        s.db.conn()
+            .query_row(
+                "SELECT MAX(count) FROM alerts WHERE kind='backup_inconsistent'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(max_count(&s), 2, "the repeat counted on the open alert");
+    // user decision 2026-10-10: changed files warn again after an ack (13f: the
+    // seen alert is closed and a new one raised)
     ack(&s);
     s.inconsistent_alerts(7, "acme", changed).unwrap();
-    assert_eq!(count(&s), 4, "changed files warn again after an ack");
+    assert_eq!(count(&s), 4, "changed files warn again after the ack");
+    s.inconsistent_alerts(8, "acme", changed).unwrap();
+    assert_eq!(count(&s), 4, "counted while the new one is unacknowledged");
+}
+
+/// 13f lifecycle: a repeat counts on the open alert, a higher severity and the
+/// reminder interval deliver it again, the success path resolves it (audited),
+/// the next failure opens a new one; resolved alerts are pruned per severity.
+#[test]
+fn alert_lifecycle() {
+    let e = env(1);
+    let mut s = sched(&e);
+    let due = |s: &mut Scheduler| -> Vec<i64> {
+        let before: Vec<i64> = {
+            let c = s.db.conn();
+            let mut st = c
+                .prepare("SELECT id FROM alerts WHERE notified_ts IS NULL ORDER BY id")
+                .unwrap();
+            st.query_map([], |r| r.get(0)).unwrap().map(|x| x.unwrap()).collect()
+        };
+        s.deliver_alerts().unwrap();
+        before
+    };
+    let row = |s: &Scheduler, key: &str| -> (i64, i64, String, Option<i64>, i64) {
+        s.db.conn()
+            .query_row(
+                "SELECT id, count, severity, resolved_at, auto FROM alerts WHERE key = ?1 ORDER BY id DESC LIMIT 1",
+                [key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap()
+    };
+    s.raise(
+        "warning",
+        "offsite_lag",
+        "offsite_lag:acme",
+        "lags by 49 h",
+        Some("acme"),
+    )
+    .unwrap();
+    assert_eq!(due(&mut s).len(), 1);
+    s.raise(
+        "warning",
+        "offsite_lag",
+        "offsite_lag:acme",
+        "lags by 50 h",
+        Some("acme"),
+    )
+    .unwrap();
+    let (id, n, sev, resolved, _) = row(&s, "offsite_lag:acme");
+    assert_eq!((n, sev.as_str(), resolved), (2, "warning", None));
+    assert!(due(&mut s).is_empty(), "a repeat is not delivered again");
+    // escalation: delivered again, same row
+    s.raise(
+        "critical",
+        "offsite_lag",
+        "offsite_lag:acme",
+        "lags by 99 h",
+        Some("acme"),
+    )
+    .unwrap();
+    assert_eq!(due(&mut s), [id]);
+    assert_eq!(row(&s, "offsite_lag:acme").2, "critical");
+    // reminder after 24 h while unacknowledged, not once acknowledged
+    s.db.conn()
+        .execute("UPDATE alerts SET notified_ts = notified_ts - 25 * 3600", [])
+        .unwrap();
+    s.deliver_alerts().unwrap();
+    let t: i64 =
+        s.db.conn()
+            .query_row("SELECT notified_ts FROM alerts WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+    assert!(t > catalog::now() - 60, "reminded");
+    s.db.conn()
+        .execute(
+            "UPDATE alerts SET notified_ts = notified_ts - 25 * 3600, acked_by = 'op'",
+            [],
+        )
+        .unwrap();
+    s.deliver_alerts().unwrap();
+    let t2: i64 =
+        s.db.conn()
+            .query_row("SELECT notified_ts FROM alerts WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+    assert!(t2 < catalog::now() - 3600, "acknowledged: no reminder");
+    // resolve: closed automatically and audited; the next failure is a new alert
+    s.resolve("offsite_lag:acme").unwrap();
+    let (_, _, _, resolved, auto) = row(&s, "offsite_lag:acme");
+    assert!(resolved.is_some() && auto == 1);
+    let audits: i64 =
+        s.db.conn()
+            .query_row("SELECT COUNT(*) FROM audit WHERE action = 'alert.resolve'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+    assert_eq!(audits, 1);
+    s.resolve("offsite_lag:acme").unwrap();
+    s.raise("warning", "offsite_lag", "offsite_lag:acme", "lags again", Some("acme"))
+        .unwrap();
+    let (id2, n, _, resolved, _) = row(&s, "offsite_lag:acme");
+    assert!(id2 > id && n == 1 && resolved.is_none());
+    // pruning: resolved info alerts after 14 days, warnings after 180 (setting overrides)
+    s.raise("info", "x", "x:1", "old info", None).unwrap();
+    s.raise("warning", "y", "y:1", "old warning", None).unwrap();
+    let old = catalog::now() - 20 * 86400;
+    s.db.conn()
+        .execute(
+            "UPDATE alerts SET resolved_at = ?1 WHERE key IN ('x:1', 'y:1', 'offsite_lag:acme')",
+            [old],
+        )
+        .unwrap();
+    s.prune_alerts(catalog::now()).unwrap();
+    let keys = |s: &Scheduler| -> Vec<String> {
+        let c = s.db.conn();
+        let mut st = c.prepare("SELECT key FROM alerts ORDER BY id").unwrap();
+        st.query_map([], |r| r.get(0)).unwrap().map(|x| x.unwrap()).collect()
+    };
+    assert_eq!(keys(&s), ["offsite_lag:acme", "offsite_lag:acme", "y:1"]);
+    catalog::set_setting(&s.db.conn(), "alert_retention_days", r#"{"warning": 10}"#).unwrap();
+    s.prune_alerts(catalog::now()).unwrap();
+    assert_eq!(
+        keys(&s),
+        ["offsite_lag:acme"],
+        "the escalated (critical) one is kept 180 days"
+    );
+}
+
+/// A failed job raises `job_failed:<tenant>/<kind>/<target>` with the tenant;
+/// a repeat counts, the next successful run of the same job resolves it.
+#[test]
+fn job_failure_resolved_by_success() {
+    let e = env(1);
+    let mut s = sched(&e);
+    let job = Job {
+        id: 1,
+        kind: "backup".into(),
+        tenant: "acme".into(),
+        params: json!({"group_id": 1}),
+    };
+    let key = lifecycle::job_failed_key(&job);
+    assert_eq!(key, "job_failed:acme/backup/group/1");
+    let other = Job {
+        params: json!({"source_id": 3, "source": "vm-100"}),
+        kind: "restore".into(),
+        ..job.clone()
+    };
+    assert_eq!(
+        lifecycle::job_failed_key(&other),
+        "job_failed:acme/restore/source/3/vm-100"
+    );
+    let by_vmid = Job {
+        params: json!({"vmid": 101}),
+        ..job.clone()
+    };
+    assert_eq!(lifecycle::job_failed_key(&by_vmid), "job_failed:acme/backup/vmid/101");
+    for _ in 0..2 {
+        let id = manual(&s, "backup", "acme", json!({"group_id": 1}));
+        let j = s.job(id).unwrap();
+        s.fail_unstartable(&j, "no route to host").unwrap();
+    }
+    let (count, tenant, open): (i64, String, bool) =
+        s.db.conn()
+            .query_row(
+                "SELECT count, tenant, resolved_at IS NULL FROM alerts WHERE key = ?1",
+                [&key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+    assert_eq!((count, tenant.as_str(), open), (2, "acme", true));
+    s.resolve_after_ok(&job).unwrap();
+    let open: i64 =
+        s.db.conn()
+            .query_row("SELECT COUNT(*) FROM alerts WHERE resolved_at IS NULL", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+    assert_eq!(open, 0);
+    s.deliver_alerts().unwrap();
 }
 
 const PLUGIN_MANIFEST: &str = r#"{"id":"pgx","name":"PG","version":"1.2.0","publisher":"nexusbackup","api":1,
@@ -1102,13 +1292,87 @@ fn alert_test_uses_catalog_setting() {
     s.start_jobs().unwrap();
     s.wait_idle(Duration::from_secs(60)).unwrap();
     assert_eq!(state(&s, id), "ok");
+    // the pre-13f setting is read as one rule `default`
     let r = result_of(&s, id);
-    assert_eq!(r["webhook"], "ok", "{r}");
-    assert!(r["smtp"].as_str().unwrap().starts_with("error: "), "{r}");
-    assert!(got.join().unwrap().contains("\"severity\":\"info\""));
+    assert_eq!(r["default/webhook"], "ok", "{r}");
+    assert!(r["default/email"].as_str().unwrap().starts_with("error: "), "{r}");
+    let body = got.join().unwrap();
+    assert!(
+        body.contains("\"severity\":\"info\"") && body.contains("\"hint\":"),
+        "{body}"
+    );
     // the allow-list follows the setting, not alerts.json
     let targets = firewall::alert_targets(&s.alerts_config().unwrap());
     assert_eq!(targets, vec![("127.0.0.1".into(), port), ("127.0.0.1".into(), dead)]);
+}
+
+/// 13f rules: only matching rules deliver; a webhook template renders with
+/// JSON escaping and the sealed header is sent; every rule webhook is an egress target.
+#[test]
+fn rule_webhook_template_delivery() {
+    use std::io::{Read, Write};
+    let e = env(1);
+    let mut s = sched(&e);
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let got = std::thread::spawn(move || {
+        let (mut c, _) = l.accept().unwrap();
+        let mut buf = vec![0u8; 8192];
+        let mut req = Vec::new();
+        while !String::from_utf8_lossy(&req).ends_with('}') {
+            let n = c.read(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            req.extend_from_slice(&buf[..n]);
+        }
+        c.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+            .unwrap();
+        String::from_utf8_lossy(&req).into_owned()
+    });
+    let url = format!("http://127.0.0.1:{port}/hook");
+    let sealed = s
+        .secrets
+        .public()
+        .seal(
+            &catalog::alerting::header_location("acme-chat", "X-Token", &url),
+            "t0ken",
+        )
+        .unwrap();
+    let rules = json!([
+        {"name": "globex-only", "min_severity": "info", "tenants": ["globex"],
+         "channels": {"webhook": {"url": "https://hooks.example:8443/x"}}},
+        {"name": "acme-chat", "min_severity": "warning", "tenants": ["acme"], "kinds": ["job_failed"],
+         "channels": {"webhook": {"url": url, "headers": {"X-Token": sealed},
+            "template": "{\"text\": \"[{{severity}}] {{message}} ({{count}}x) {{alert_url}}\"}"}}}
+    ]);
+    catalog::set_setting(&s.db.conn(), "alert_rules", &rules.to_string()).unwrap();
+    s.raise("info", "job_failed", "k:1", "below the rule's severity", Some("acme"))
+        .unwrap();
+    s.raise(
+        "critical",
+        "job_failed",
+        "k:2",
+        "backup \"nightly\" failed:\nno route",
+        Some("acme"),
+    )
+    .unwrap();
+    s.deliver_alerts().unwrap();
+    let req = got.join().unwrap();
+    assert!(req.to_ascii_lowercase().contains("x-token: t0ken"), "{req}");
+    let body = &req[req.find("\r\n\r\n").unwrap() + 4..];
+    let v: Value = serde_json::from_str(body).unwrap();
+    let text = v["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("[critical] backup \"nightly\" failed:\nno route (1x) https://"),
+        "{text}"
+    );
+    assert!(text.ends_with("/#/alerts?id=2"), "{text}");
+    let targets = firewall::alert_targets(&s.alerts_config().unwrap());
+    assert_eq!(
+        targets,
+        vec![("hooks.example".into(), 8443), ("127.0.0.1".into(), port)]
+    );
 }
 
 /// Phase 12 §4: keys generated at start and published; an approved rotation
@@ -1250,5 +1514,380 @@ fn capacity_samples_daily() {
     );
 }
 
+/// Phase 13a: the gc job prunes sources no group covers (setting `orphan_gfs`),
+/// alerts once per orphan and audits what it deleted; approved `snapshot.delete`
+/// requests become `snapshot_delete` jobs (refused while locked).
+#[test]
+fn orphan_sweep_and_snapshot_delete() {
+    let e = env(4);
+    let mut s = sched(&e);
+    let st = chunkstore::Store::open(
+        e.cfg.store_base.join("t1"),
+        Keyring::new("t1", &[(1, [7; 32])]),
+        test_opts(),
+    )
+    .unwrap();
+    let day = 86400;
+    for src in ["vm-100", "vm-999", "ct-201"] {
+        for t in [day, 2 * day, 3 * day] {
+            st.commit_snapshot(src, t, &[("tree", chunkstore::Index::Tree { entries: vec![] })])
+                .unwrap();
+        }
+    }
+    catalog::set_setting(
+        &s.db.conn(),
+        orphans::ORPHAN_GFS,
+        r#"{"daily":1,"weekly":0,"monthly":0,"yearly":0}"#,
+    )
+    .unwrap();
+    let left = |src: &str| -> Vec<u64> {
+        st.list_snapshots()
+            .unwrap()
+            .into_iter()
+            .filter(|m| m.source == src)
+            .map(|m| m.time)
+            .collect()
+    };
+    let one = |s: &Scheduler, sql: &str| -> i64 { s.db.conn().query_row(sql, [], |r| r.get(0)).unwrap() };
+    for _ in 0..2 {
+        let id = manual(&s, "gc", "t1", json!({}));
+        s.start_jobs().unwrap();
+        s.wait_idle(Duration::from_secs(20)).unwrap();
+        assert_eq!(state(&s, id), "ok");
+    }
+    assert_eq!(left("vm-100").len(), 3, "group-covered source untouched");
+    assert_eq!(left("vm-999"), vec![3 * day]);
+    assert_eq!(left("ct-201"), vec![3 * day]);
+    assert_eq!(
+        one(&s, "SELECT COUNT(*) FROM alerts WHERE kind = 'orphaned'"),
+        2,
+        "once per source"
+    );
+    let msg: String =
+        s.db.conn()
+            .query_row(
+                "SELECT message FROM alerts WHERE kind = 'orphaned' ORDER BY id LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert!(msg.starts_with("t1/ct-201 is in no protection group"), "{msg}");
+    assert_eq!(
+        one(&s, "SELECT COUNT(*) FROM audit WHERE action = 'retention.orphans'"),
+        1,
+        "audited only when something was deleted"
+    );
+    // replicated tenants keep the replication source's retention
+    s.db.conn()
+        .execute(
+            "INSERT INTO replication_sources (id, name, url, peer_id, cert_pin, tenants, schedule, state, created) \
+             VALUES (1, 'p', '10.0.2.2:28443', '0123456789abcdef', 'PIN', '[\"t1\"]', 'hourly 00', 'enrolled', 0)",
+            [],
+        )
+        .unwrap();
+    assert!(s.orphan_step("t1").unwrap().is_none());
+    s.db.conn().execute("DELETE FROM replication_sources", []).unwrap();
+
+    // approved deletes: one unlocked, one locked; a self-decided one waits while approvals are on
+    st.extend_lock("vm-100", 2 * day, u64::MAX / 2).unwrap();
+    for (t, by) in [(day, "sam"), (2 * day, "sam"), (3 * day, "alice")] {
+        let p = json!({"tenant": "t1", "source": "vm-100", "time": t});
+        s.db.conn()
+            .execute(
+                "INSERT INTO quorum (action, params, requested_by, created, decided_by, decided_at, state) \
+                 VALUES ('snapshot.delete', ?1, 'alice', 1, ?2, 2, 'approved')",
+                params![p.to_string(), by],
+            )
+            .unwrap();
+    }
+    catalog::set_setting(&s.db.conn(), "approvals_enabled", "true").unwrap();
+    s.queue_snapshot_deletes().unwrap();
+    s.queue_snapshot_deletes().unwrap();
+    assert_eq!(
+        one(&s, "SELECT COUNT(*) FROM jobs WHERE kind = 'snapshot_delete'"),
+        2,
+        "one job per approval"
+    );
+    for _ in 0..2 {
+        // one per tenant at a time
+        s.start_jobs().unwrap();
+        s.wait_idle(Duration::from_secs(20)).unwrap();
+    }
+    assert_eq!(left("vm-100"), vec![2 * day, 3 * day]);
+    assert_eq!(
+        one(
+            &s,
+            "SELECT COUNT(*) FROM jobs WHERE kind = 'snapshot_delete' AND state = 'failed'"
+        ),
+        1
+    );
+    assert_eq!(one(&s, "SELECT COUNT(*) FROM quorum WHERE state = 'executed'"), 2);
+    assert_eq!(
+        one(&s, "SELECT COUNT(*) FROM audit WHERE action = 'snapshot.delete'"),
+        1
+    );
+}
+
+fn alerts_of(s: &Scheduler, kind: &str) -> Vec<(String, String)> {
+    let c = s.db.conn();
+    let mut q = c
+        .prepare("SELECT severity, message FROM alerts WHERE kind = ?1 ORDER BY id")
+        .unwrap();
+    let rows = q.query_map([kind], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    rows.map(Result::unwrap).collect()
+}
+
+fn stats_line(source: &str, time: i64, plain: u64, stored: u64) -> String {
+    format!(
+        "nexus-stats {}\n",
+        json!({"source": source, "time": time, "read": plain, "logical": 100 * plain,
+               "new_chunks": 1, "new_plain": plain, "new_stored": stored})
+    )
+}
+
+/// Phase 13d/e: a backup job's `nexus-stats` lines land in `backup_stats`
+/// (idempotent), and a run far above the source's median raises one critical
+/// `anomaly` alert naming the last snapshot before it.
+#[test]
+fn backup_stats_and_anomaly_alert() {
+    let e = env(1);
+    let mut s = sched(&e);
+    fs::remove_file(e.d.path().join("pve")).unwrap();
+    script(
+        &e.d.path().join("pve"),
+        &format!(
+            "echo 'committed vm-100/1000'; echo '{}'",
+            stats_line("vm-100", 1000, 5 << 20, 2 << 20).trim()
+        ),
+    );
+    let id = manual(&s, "backup", "t1", json!({"group_id": 1}));
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert_eq!(state(&s, id), "ok");
+    let row = |t: i64| -> (i64, i64, i64) {
+        s.db.conn()
+            .query_row(
+                "SELECT logical, new_plain, new_stored FROM backup_stats WHERE tenant='t1' AND source='vm-100' AND time=?1",
+                [t],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+    };
+    assert_eq!(row(1000), (500 << 20, 5 << 20, 2 << 20));
+    // a repeat of the same snapshot updates in place
+    s.record_stats("t1", &stats_line("vm-100", 1000, 6 << 20, 3 << 20))
+        .unwrap();
+    assert_eq!(row(1000).1, 6 << 20);
+
+    // history: 5 runs of ~1 GiB, snapshot 1004 kept
+    const G: u64 = 1 << 30;
+    for t in 1001..=1004 {
+        s.record_stats("t1", &stats_line("vm-100", t, G, G / 2)).unwrap();
+    }
+    s.db.conn()
+        .execute(
+            "INSERT INTO snapshots (tenant, source, time, size, local, offsite) VALUES ('t1', 'vm-100', 1004, 1, 1, 0)",
+            [],
+        )
+        .unwrap();
+    assert!(alerts_of(&s, "anomaly").is_empty(), "not enough history yet");
+    // 5 points now (6 MiB, 1 GiB × 4): median 1 GiB, limit 3 GiB
+    s.record_stats("t1", &stats_line("vm-100", 1005, 3 * G, 3 * G / 2))
+        .unwrap();
+    assert!(alerts_of(&s, "anomaly").is_empty(), "at the limit");
+    s.record_stats("t1", &stats_line("vm-100", 1006, 10 * G, 5 * G))
+        .unwrap();
+    let a = alerts_of(&s, "anomaly");
+    assert_eq!(a.len(), 1);
+    assert_eq!(a[0].0, "critical");
+    assert!(
+        a[0].1
+            .starts_with("change-rate anomaly on t1/vm-100: snapshot 1006: 10.0 GiB new data")
+            && a[0].1.ends_with("last snapshot before: vm-100/1004"),
+        "{}",
+        a[0].1
+    );
+    // disabled by the setting
+    catalog::set_setting(&s.db.conn(), "anomaly", r#"{"enabled": false}"#).unwrap();
+    s.db.conn().execute("UPDATE alerts SET acked_by='op'", []).unwrap();
+    s.record_stats("t1", &stats_line("vm-100", 1007, 50 * G, 25 * G))
+        .unwrap();
+    assert_eq!(alerts_of(&s, "anomaly").len(), 1);
+}
+
+/// Phase 13d: soft quota alerts from the latest capacity sample: warning at
+/// 80 %, critical at 100 %; tenants without a quota never alert.
+#[test]
+fn quota_alerts() {
+    let e = env(1);
+    let s = sched(&e);
+    let c = || s.db.conn();
+    c().execute_batch(
+        "UPDATE tenants SET quota_bytes = 1000 WHERE name = 't1';
+         INSERT INTO capacity_samples (day, tenant, used, logical) VALUES
+           ('2026-10-01', 't1', 100, 1), ('2026-10-02', 't1', 850, 1), ('2026-10-02', 't2', 999999, 1);",
+    )
+    .unwrap();
+    s.check_quotas().unwrap();
+    s.check_quotas().unwrap();
+    let a = alerts_of(&s, "quota");
+    assert_eq!(a.len(), 1, "deduplicated: {a:?}");
+    assert_eq!(a[0].0, "warning");
+    assert!(
+        a[0].1.starts_with("tenant t1 uses over 80 % of its storage quota"),
+        "{}",
+        a[0].1
+    );
+    c().execute(
+        "INSERT INTO capacity_samples (day, tenant, used, logical) VALUES ('2026-10-03', 't1', 1200, 1)",
+        [],
+    )
+    .unwrap();
+    s.check_quotas().unwrap();
+    // 13f: the same key escalates the open alert instead of adding one
+    let a = alerts_of(&s, "quota");
+    assert_eq!(a.len(), 1);
+    assert_eq!(a[0].0, "critical");
+    assert!(a[0].1.contains("120 %"), "{}", a[0].1);
+    // back under 80 %: resolved by the scheduler
+    c().execute(
+        "INSERT INTO capacity_samples (day, tenant, used, logical) VALUES ('2026-10-04', 't1', 100, 1)",
+        [],
+    )
+    .unwrap();
+    s.check_quotas().unwrap();
+    let open: i64 = c()
+        .query_row(
+            "SELECT COUNT(*) FROM alerts WHERE kind='quota' AND resolved_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(open, 0);
+}
+
+/// Phase 13c: inventory jobs per source (periodic, not doubled), `all` / `tags`
+/// groups resolved from the inventory for plans and retention (exclude wins),
+/// newly protected guests audited, gone guests dropped, failures one warning.
+#[test]
+fn inventory_jobs_and_auto_protect() {
+    let mut e = env(4);
+    let p = e.d.path().to_owned();
+    script(
+        &p.join("pve-inv"),
+        &format!(
+            "echo \"$@\" >> {0}/inv-calls\ncase \"$2\" in inventory) cat {0}/inv.json || exit 1 ;; *) echo done ;; esac",
+            p.display()
+        ),
+    );
+    e.cfg.pve_bin = p.join("pve-inv");
+    e.cfg.inventory_secs = 3600;
+    let inv = |ids: &[(u32, &str)]| {
+        let g: Vec<Value> = ids
+            .iter()
+            .map(|(v, t)| json!({"id": v.to_string(), "title": format!("vm{v}"), "kind": "qemu", "tags": [t]}))
+            .collect();
+        fs::write(p.join("inv.json"), json!({ "guests": g }).to_string()).unwrap();
+    };
+    inv(&[(100, "pool:prod"), (101, "pool:prod"), (102, "tag:web")]);
+    e.db.conn()
+        .execute_batch(
+            r#"UPDATE groups SET mode='all', guests='[]', exclude='["101"]' WHERE id=1;
+               UPDATE groups SET mode='tags', guests='[]', selector='["pool:prod"]' WHERE id=3;"#,
+        )
+        .unwrap();
+    let mut s = sched(&e);
+    let jobs = |s: &Scheduler| -> i64 {
+        s.db.conn()
+            .query_row("SELECT COUNT(*) FROM jobs WHERE kind='inventory'", [], |r| r.get(0))
+            .unwrap()
+    };
+    let t0 = 1_000_000;
+    s.now = t0;
+    s.queue_inventory(t0).unwrap();
+    s.queue_inventory(t0).unwrap();
+    assert_eq!(jobs(&s), 3, "one per pve source, not doubled");
+    // before the first listing an auto group protects nothing
+    let g1 = |s: &Scheduler| s.groups().unwrap().into_iter().find(|g| g.id == 1).unwrap();
+    assert!(g1(&s).guests.is_empty() && g1(&s).auto);
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    let n: i64 =
+        s.db.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM inventory WHERE source_id=1 AND gone IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert_eq!(n, 3);
+    assert_eq!(g1(&s).guests, vec![100, 102], "all minus exclude");
+    let g3 = s.groups().unwrap().into_iter().find(|g| g.id == 3).unwrap();
+    assert_eq!(g3.guests, vec![100, 101], "tags");
+    assert_eq!(group_sources(&g3), ["vm-100", "ct-100", "vm-101", "ct-101"]);
+    let audited: i64 = s
+        .db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM audit WHERE action='group.auto_protect' AND target='group/1' AND details LIKE '%102%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(audited, 1);
+    // the backup plan backs up the resolved set
+    let job = Job {
+        id: 99,
+        kind: "backup".into(),
+        tenant: "t1".into(),
+        params: json!({"group_id": 1}),
+    };
+    let plan = s.plan(&job).unwrap();
+    let cfg: Value = serde_json::from_slice(&plan.files.iter().find(|f| f.0 == "pve.json").unwrap().1).unwrap();
+    assert_eq!(cfg["vmids"], json!([100, 102]));
+    // within the interval nothing is queued; afterwards the next round
+    s.queue_inventory(t0 + 60).unwrap();
+    assert_eq!(jobs(&s), 3);
+    // 102 disappears: no longer selected, row kept as gone
+    inv(&[(100, "pool:prod"), (101, "pool:prod")]);
+    s.now = t0 + 3601;
+    s.queue_inventory(t0 + 3601).unwrap();
+    assert_eq!(jobs(&s), 6);
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert_eq!(g1(&s).guests, vec![100]);
+    let gone: Option<i64> =
+        s.db.conn()
+            .query_row(
+                "SELECT gone FROM inventory WHERE source_id=1 AND guest='102'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert!(gone.is_some());
+    // an unreachable source: a warning, once while open
+    fs::remove_file(p.join("inv.json")).unwrap();
+    for i in 0..2 {
+        let id = manual(&s, "inventory", "t1", json!({"source_id": 1}));
+        s.start_jobs().unwrap();
+        s.wait_idle(Duration::from_secs(20)).unwrap();
+        assert_eq!(state(&s, id), "failed", "run {i}");
+    }
+    let (n, sev): (i64, String) =
+        s.db.conn()
+            .query_row(
+                "SELECT COUNT(*), MAX(severity) FROM alerts WHERE kind='inventory_refresh'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+    assert_eq!((n, sev.as_str()), (1, "warning"));
+    // the failed listing kept the last inventory
+    assert_eq!(g1(&s).guests, vec![100]);
+    // inventory of another tenant's source is refused
+    let id = manual(&s, "inventory", "t2", json!({"source_id": 1}));
+    s.start_jobs().unwrap();
+    assert_eq!(state(&s, id), "failed");
+}
 /// Phase 13b run control (pause, blackout, retries, SLA, cancel).
 mod runctl;

@@ -17,6 +17,7 @@
   import { can } from '../lib/roles';
   import { fmtTime } from '../lib/format';
   import { isPaused } from '../lib/schedule';
+  import Inventory from '../components/Inventory.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
 
   let items: Source[] = $state([]);
@@ -75,6 +76,12 @@
   // "Validate connection": plugin_validate job on the stored config.
   const ctl = new AbortController();
   onDestroy(() => ctl.abort());
+  // guest inventory (Phase 13c): PVE, TrueNAS and plugin kinds that list guests
+  const hasInventory = (x: Source) =>
+    x.kind === 'pve' || x.kind === 'truenas' || (isPlugin(x) && !!kindsAll.get(x.kind)?.kind.guests?.list);
+  let invOf: Source | null = $state(null);
+  let invOpen = $state(false);
+
   let checks: Record<number, { busy: boolean; ok?: boolean; text?: string; job?: number }> = $state({});
   async function validate(x: PluginSource) {
     checks[x.id] = { busy: true };
@@ -530,6 +537,9 @@
                     >{t.sources.validate}</button
                   >
                 {/if}
+                {#if hasInventory(x)}
+                  <button type="button" class="small" onclick={() => ((invOf = x), (invOpen = true))}>{t.inventory.open}</button>
+                {/if}
                 {#if can.backup(session.user)}
                   {#if isPaused(x.maintenance_until)}
                     <button type="button" class="small" onclick={() => endMaintenance(x)}>{t.runctl.endMaintenance}</button>
@@ -955,3 +965,6 @@
   submit={t.runctl.startMaintenance}
   onsubmit={maintenance}
 />
+<Modal bind:open={invOpen} title={t.inventory.title(invOf?.name ?? '')} wide>
+  {#if invOf}<Inventory source={invOf} />{/if}
+</Modal>

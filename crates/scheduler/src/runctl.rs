@@ -292,14 +292,15 @@ impl Scheduler {
             rows.collect::<std::result::Result<_, _>>()?
         };
         for (id, tenant, group, started, sla) in rows {
-            self.alert(
+            self.raise(
                 "warning",
                 "sla_missed",
+                &format!("sla_missed:{id}"),
                 &format!(
                     "backup job {id} of group {group} ({tenant}) still running after {} min (SLA {sla} min)",
                     (now - started) / 60
                 ),
-                None,
+                Some(&tenant),
             )?;
             self.db
                 .conn()
@@ -309,42 +310,54 @@ impl Scheduler {
     }
 
     /// Groups paused (or sources in maintenance) for more than 7 days or
-    /// indefinitely: one `paused` warning per pause.
+    /// indefinitely: one `paused` warning per pause (key
+    /// `paused:<group|source>:<id>:<until>`); resolved automatically once the
+    /// group is resumed / the maintenance ended or changed.
     pub(crate) fn check_paused(&self, now: i64) -> Result<()> {
-        let rows: Vec<(String, String, String, i64)> = {
+        let rows: Vec<(String, i64, String, String, Option<i64>)> = {
             let c = self.db.conn();
             let mut st = c.prepare(
-                "SELECT 'group', id, name || ' (' || tenant || ')', paused_until FROM groups \
-                 WHERE paused_until = -1 OR paused_until > ?1 \
-                 UNION ALL SELECT 'source', id, name || ' (' || tenant || ')', maintenance_until FROM sources \
-                 WHERE maintenance_until = -1 OR maintenance_until > ?1",
+                "SELECT 'group', id, name || ' (' || tenant || ')', tenant, paused_until FROM groups \
+                 UNION ALL SELECT 'source', id, name || ' (' || tenant || ')', tenant, maintenance_until FROM sources",
             )?;
-            let rows = st.query_map([now + 7 * 86400], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, i64>(1)?.to_string(),
-                    r.get(2)?,
-                    r.get(3)?,
-                ))
-            })?;
+            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?;
             rows.collect::<std::result::Result<_, _>>()?
         };
-        for (what, id, name, until) in rows {
-            let until = if until == -1 {
+        for (what, id, name, tenant, until) in rows {
+            let long = until.filter(|u| *u == -1 || *u > now + 7 * 86400);
+            let key = long.map(|u| format!("paused:{what}:{id}:{u}"));
+            // open alerts of an earlier (or ended) pause of this group / source
+            let stale: Vec<String> = {
+                let c = self.db.conn();
+                let mut st =
+                    c.prepare("SELECT key FROM alerts WHERE kind = 'paused' AND resolved_at IS NULL AND key LIKE ?1")?;
+                let rows = st.query_map([format!("paused:{what}:{id}:%")], |r| r.get::<_, String>(0))?;
+                rows.collect::<std::result::Result<_, _>>()?
+            };
+            for k in stale.iter().filter(|k| Some(*k) != key.as_ref()) {
+                self.resolve(k)?;
+            }
+            let (Some(key), Some(u)) = (key, long) else { continue };
+            let seen: i64 = self
+                .db
+                .conn()
+                .query_row("SELECT COUNT(*) FROM alerts WHERE key = ?1", [&key], |r| r.get(0))?;
+            if seen > 0 {
+                continue; // raised before (maybe resolved by a person): not again for this pause
+            }
+            let until = if u == -1 {
                 "further notice".to_owned()
             } else {
-                schedule::day(until)
+                schedule::day(u)
             };
             let state = if what == "group" { "paused" } else { "in maintenance" };
-            let prefix = format!("{what} {id} {name} {state} until {until}");
-            if !self.ever_alerted("paused", &prefix)? {
-                self.alert(
-                    "warning",
-                    "paused",
-                    &format!("{prefix}: no scheduled backups meanwhile"),
-                    None,
-                )?;
-            }
+            self.raise(
+                "warning",
+                "paused",
+                &key,
+                &format!("{what} {id} {name} {state} until {until}: no scheduled backups meanwhile"),
+                Some(&tenant),
+            )?;
         }
         Ok(())
     }

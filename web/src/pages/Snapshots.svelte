@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { get, post, act, errText, qs } from '../lib/api';
+  import { get, post, del, act, errText, qs } from '../lib/api';
+  import { askConfirm } from '../lib/confirm.svelte';
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
   import { route, navigate } from '../lib/router.svelte';
@@ -22,6 +23,7 @@
   import IconZap from '@lucide/svelte/icons/zap';
   import IconHost from '@lucide/svelte/icons/hard-drive';
   import IconPlugin from '@lucide/svelte/icons/puzzle';
+  import IconTrash from '@lucide/svelte/icons/trash-2';
 
   let snaps: Snapshot[] = $state([]);
   let tenants: Tenant[] = $state([]);
@@ -195,6 +197,14 @@
     return items;
   }
 
+  // Manual delete (approval `snapshot.delete`): local, unlocked, not replicated snapshots only.
+  const deletable = (s: Snapshot) => can.configure(session.user) && s.local && !s.origin && s.lock_until <= now;
+  async function remove(s: Snapshot) {
+    if (!(await askConfirm(t.snap.deleteConfirm(s.source, fmtTime(s.time))))) return;
+    const path = `/snapshots/${encodeURIComponent(s.tenant)}/${encodeURIComponent(s.source)}/${s.time}`;
+    await act(del(path), t.snap.deleteQueued);
+  }
+
   function browse(s: Snapshot) {
     navigate('/files' + qs({ tenant: s.tenant, source: s.source, time: s.time, path: '/' }));
   }
@@ -286,6 +296,11 @@
                   >
                   {#if items.length}
                     <Menu label={t.snap.restoreMenu} ariaLabel={t.snap.restoreMenuLabel(s.source)} {items} />
+                  {/if}
+                  {#if deletable(s)}
+                    <button type="button" class="small danger" onclick={() => remove(s)} aria-label={t.snap.deleteLabel(s.source, fmtTime(s.time))}
+                      ><IconTrash aria-hidden="true" />{t.delete}</button
+                    >
                   {/if}
                 </td>
               {/if}

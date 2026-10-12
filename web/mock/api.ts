@@ -144,9 +144,32 @@ interface Job {
   cancel_at?: number;
 }
 
+interface MockGroup {
+  id: number;
+  tenant: string;
+  source_id: number;
+  policy_id: number;
+  name: string;
+  guests: (number | string)[];
+  mode: 'explicit' | 'all' | 'tags';
+  selector: string[];
+  exclude: string[];
+  /** Phase 13b */
+  timezone?: string;
+  paused_until?: number | null;
+}
+interface InvRow {
+  guest: string;
+  name: string;
+  kind: string;
+  tags: string[];
+  seen: number;
+  gone: number | null;
+}
+
 const db = {
   users: [] as User[],
-  tenants: [] as { name: string; offsite: Json }[],
+  tenants: [] as { name: string; offsite: Json; quota_bytes?: number | null }[],
   /** kind: pve | linux | nfs | smb | plugin:<kind> */
   sources: [] as { id: number; tenant: string; kind: string; name: string; config: Json; maintenance_until?: number | null }[],
   agents: [] as Agent[],
@@ -162,16 +185,9 @@ const db = {
     blackout?: BlackoutWindow[];
     sla_minutes?: number | null;
   }[],
-  groups: [] as {
-    id: number;
-    tenant: string;
-    source_id: number;
-    policy_id: number;
-    name: string;
-    guests: (number | string)[];
-    timezone?: string;
-    paused_until?: number | null;
-  }[],
+  groups: [] as MockGroup[],
+  /** Phase 13c: guest inventory per source id (GET /sources/{id}/inventory) */
+  inventory: new Map<number, InvRow[]>(),
   jobs: [] as Job[],
   snapshots: [] as Json[],
   quorum: [] as Json[],
@@ -192,6 +208,8 @@ const db = {
   alertSettings: {} as Json,
   sshKeys: [] as Json[],
   updates: {} as Json,
+  /** Phase 13e setting `anomaly` */
+  anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30 } as Json,
 };
 const nextId = () => ++db.seq;
 
@@ -247,6 +265,12 @@ function planFor(kind: string, p: Json): string[] {
       return [`starting nexus-pluginhost for ${psrc?.kind} (source ${psrc?.name})`, 'sandbox: landlock + seccomp active', 'Validate: connecting to the endpoint', 'done'];
     case 'plugin_guests':
       return [`starting nexus-pluginhost for ${psrc?.kind} (source ${psrc?.name})`, 'ListGuests', 'done'];
+    case 'inventory':
+      return psrc?.kind === 'pve'
+        ? [`nexus-pve inventory: GET /cluster/resources?type=vm on ${psrc.config.host}`, `${db.inventory.get(psrc.id)?.length ?? 0} guests`, 'inventory updated']
+        : psrc?.kind === 'truenas'
+          ? [`datasets of source ${psrc.name} (catalog)`, 'inventory updated']
+          : [`starting nexus-pluginhost for ${psrc?.kind} (source ${psrc?.name})`, 'ListGuests', 'inventory updated'];
     case 'plugin_restore':
       return [`starting nexus-pluginhost: restore ${p.restore} of ${p.source} @ ${p.time}`, 'plugin requested 3 streams', 'streaming data to the plugin', `restore ${p.restore} finished`];
     case 'plugin_mount':
@@ -337,6 +361,7 @@ function tick() {
       // Like the scheduler: structured results in `job.result`.
       if (j.kind === 'files_list') j.result = { entries: listDir(String(j.params.path ?? '/'), String(j.params.source ?? '')) };
       if (j.kind.startsWith('plugin_')) pluginResult(j, t);
+      if (j.kind === 'inventory' || j.kind === 'plugin_guests') inventoryResult(j, t);
       const ag = db.agents.find((a) => a.id === j.params.agent_id);
       if (j.kind === 'agent_enroll' && ag) {
         Object.assign(ag, { enrolled_at: t, cert_sha256: rand(32), token_expires: null, token_hash: null, last_seen: t });
@@ -363,7 +388,8 @@ function tick() {
       const psrc = db.sources.find((s) => s.id === pgroup?.source_id && s.kind.startsWith('plugin:'));
       if (psrc && pgroup) {
         const pid = pluginKind(psrc.kind)?.plugin.id ?? 'unknown';
-        const names = pgroup.guests.length ? pgroup.guests.map((g) => `plugin-${pid}-${psrc.id}-${g}`) : [`plugin-${pid}-${psrc.id}`];
+        const guests = resolveGuests(pgroup);
+        const names = guests.length ? guests.map((g) => `plugin-${pid}-${psrc.id}-${g}`) : pgroup.mode === 'explicit' ? [`plugin-${pid}-${psrc.id}`] : [];
         for (const n of names) db.snapshots.push(snap(j.tenant, n, t, 300 << 20, true, false, null));
         continue;
       }
@@ -375,8 +401,8 @@ function tick() {
           gsrc?.kind === 'nfs' || gsrc?.kind === 'smb'
             ? [`share-${gsrc.id}`]
             : gsrc?.kind === 'truenas'
-              ? (g!.guests.length ? g!.guests : gsrc.config.datasets).map((d: string) => `nas-${gsrc.id}-${String(d).replaceAll('/', '.')}`)
-              : (j.params.vmid ? [j.params.vmid] : j.params.agent_id ? [j.params.agent_id] : (g?.guests ?? [])).map(guestName);
+              ? resolveGuests(g!).map((d) => `nas-${gsrc.id}-${String(d).replaceAll('/', '.')}`)
+              : (j.params.vmid ? [j.params.vmid] : j.params.agent_id ? [j.params.agent_id] : g ? resolveGuests(g) : []).map(guestName);
         for (const n of names) db.snapshots.push(snap(j.tenant, n, t, 64 << 30, true, false, null));
         for (const a of db.agents) if (names.includes(`host-${a.id}`)) a.last_seen = t;
       }
@@ -735,6 +761,7 @@ function seed() {
         bwlimit: 20480 * 1024,
         uploaders: 4,
       },
+      quota_bytes: 32 * 2 ** 40,
     },
     { name: 'globex', offsite: {} },
   );
@@ -860,9 +887,12 @@ function seed() {
   };
   db.sources.push(sPg, sNas02);
 
-  const grp = (tenant: string, source_id: number, policy_id: number, name: string, guests: (number | string)[]) => ({ id: nextId(), tenant, source_id, policy_id, name, guests });
+  const grp = (tenant: string, source_id: number, policy_id: number, name: string, guests: (number | string)[], auto: Partial<MockGroup> = {}): MockGroup => ({
+    id: nextId(), tenant, source_id, policy_id, name, guests, mode: 'explicit', selector: [], exclude: [], ...auto,
+  });
   const gProd = grp('initech', sInitech.id, gold.id, 'production', [100, 101, 200]);
-  const gDev = grp('initech', sInitech.id, bronze.id, 'development', [102]);
+  // auto-protect (Phase 13c): every guest of the PVE pool "dev" except the build runner
+  const gDev = grp('initech', sInitech.id, bronze.id, 'development', [], { mode: 'tags', selector: ['pool:dev'], exclude: ['105'] });
   const gAcmeVms = grp('acme', sAcme.id, silver.id, 'acme-vms', [300, 301]);
   const gSmb = grp('acme', sSmb.id, bronze.id, 'acme-fs01', []);
   const gDbs = grp('acme', sPg.id, hourly.id, 'acme-databases', ['shop', 'crm']);
@@ -872,13 +902,44 @@ function seed() {
     gAcmeVms,
     grp('acme', sWeb01.id, silver.id, 'acme-web01', [web01.id]),
     grp('acme', sFs02.id, silver.id, 'acme-fs02', [fs02.id]),
-    grp('acme', sNas01.id, silver.id, 'acme-nas01', ['tank/projects', 'tank/home']),
+    grp('acme', sNas01.id, silver.id, 'acme-nas01', [], { mode: 'all' }),
     grp('acme', sNfs.id, silver.id, 'acme-filer', []),
     gSmb,
     gDbs,
     grp('acme', sPg.id, silver.id, 'acme-pg-cluster', []),
     grp('acme', sNas02.id, silver.id, 'acme-nas02', ['tank.media']),
   );
+  // guest inventory (scheduler `inventory` jobs, 20 minutes ago)
+  const inv = (sid: number, rows: [string, string, string, string[]][]) =>
+    db.inventory.set(sid, rows.map(([guest, name, kind, tags]) => ({ guest, name, kind, tags, seen: t - 1200, gone: null })));
+  const vm = (node: string, ...more: string[]) => ['type:qemu', `node:${node}`, ...more];
+  inv(sInitech.id, [
+    ['100', 'erp-app', 'qemu', vm('pve1', 'pool:prod', 'tag:erp')],
+    ['101', 'erp-db', 'qemu', vm('pve1', 'pool:prod', 'tag:erp')],
+    ['102', 'dev-sandbox', 'qemu', vm('pve2', 'pool:dev')],
+    ['103', 'legacy-ftp', 'qemu', vm('pve2')],
+    ['105', 'build-runner', 'qemu', vm('pve2', 'pool:dev', 'tag:ci')],
+    ['200', 'proxy', 'lxc', ['type:lxc', 'node:pve1', 'pool:prod', 'tag:web']],
+  ]);
+  inv(sAcme.id, [
+    ['300', 'shop-web', 'qemu', vm('acme-pve1', 'tag:shop')],
+    ['301', 'shop-api', 'qemu', vm('acme-pve1', 'tag:shop')],
+    ['302', 'test-web', 'qemu', vm('acme-pve1', 'tag:test')],
+  ]);
+  inv(sNas01.id, [
+    ['tank/projects', 'tank/projects', 'dataset', ['pool:tank']],
+    ['tank/home', 'tank/home', 'dataset', ['pool:tank']],
+  ]);
+  inv(sPg.id, [
+    ['shop', 'shop', '', []],
+    ['crm', 'crm', '', []],
+    ['analytics', 'analytics (reporting)', '', []],
+  ]);
+  inv(sNas02.id, [
+    ['tank.media', 'tank/media (/mnt/tank/media)', '', []],
+    ['tank.archive', 'tank/archive (/mnt/tank/archive)', '', []],
+    ['tank.vm-images', 'tank/vm-images (/mnt/tank/vm-images)', '', []],
+  ]);
 
   // Snapshots: up to 10 days of history; vm-101 has failed for two days.
   const series = (tenant: string, source: string, gib: number, opts: { skip?: number; offsite?: boolean; hh?: number; origin?: string; days?: number } = {}) => {
@@ -983,16 +1044,31 @@ function seed() {
   running.created = t - 5;
 
   // Alerts (messages as the scheduler writes them)
+  // (13f lifecycle: repeats counted on the open alert, success paths resolve them)
   db.alerts.push(
-    { id: nextId(), ts: nightly.finished, severity: 'critical', kind: 'job_failed', message: `backup job ${nightly.id} (initech) failed: ${fleecing}`, acked_by: null },
-    { id: nextId(), ts: retry.finished, severity: 'critical', kind: 'job_failed', message: `backup job ${retry.id} (initech) failed: ${fleecing}`, acked_by: null },
-    { id: nextId(), ts: t - 3 * 3600, severity: 'warning', kind: 'capacity', message: 'store capacity above 75 % (now 78 %)', acked_by: null },
-    {
-      id: nextId(), ts: smbJob.finished, severity: 'warning', kind: 'backup_inconsistent',
-      message: `share-${sSmb.id} — read without a NAS snapshot: not point-in-time consistent (backup job ${smbJob.id}, tenant acme, snapshot share-${sSmb.id})`, acked_by: null,
-    },
-    { id: nextId(), ts: t - 86400 * 3, severity: 'warning', kind: 'offsite_lag', message: 'offsite copy of tenant acme lags by 49 h (oldest snapshot not offsite: vm-300)', acked_by: 'op' },
-    { id: nextId(), ts: t - 86400 * 6, severity: 'warning', kind: 'replication_lag', message: 'replication of tenant globex from hq-primary lags: no successful sync for 50 h', acked_by: 'admin' },
+    mkAlert({
+      ts: nightly.finished! - 2 * 86400, last_ts: nightly.finished, count: 3, severity: 'critical', kind: 'job_failed',
+      key: `job_failed:initech/backup/group/${gProd.id}`, tenant: 'initech', message: `backup job ${nightly.id} (initech) failed: ${fleecing}`,
+    }),
+    mkAlert({
+      ts: retry.finished, severity: 'critical', kind: 'job_failed', key: 'job_failed:initech/backup/vmid/101', tenant: 'initech',
+      message: `backup job ${retry.id} (initech) failed: ${fleecing}`,
+    }),
+    mkAlert({ ts: t - 3 * 86400, last_ts: t - 1800, count: 147, severity: 'warning', kind: 'capacity', key: 'capacity', message: 'store capacity above 75 % (now 78 %)' }),
+    mkAlert({
+      ts: smbJob.finished, severity: 'warning', kind: 'backup_inconsistent', key: `backup_inconsistent:share-${sSmb.id}: no snapshot`,
+      message: `share-${sSmb.id} — read without a NAS snapshot: not point-in-time consistent (backup job ${smbJob.id}, tenant acme, snapshot share-${sSmb.id})`,
+      acked_by: 'op', note: 'Storage team enables NAS snapshots on fs01 next week.',
+    }),
+    mkAlert({
+      ts: t - 86400 * 3, last_ts: t - 86400 * 2, count: 96, severity: 'warning', kind: 'offsite_lag', key: 'offsite_lag:acme', tenant: 'acme',
+      message: 'offsite copy of tenant acme lags by 73 h (oldest snapshot not offsite: 1759500000)', resolved_at: t - 86400 * 2 + 300, resolved_by: 'scheduler', auto: true,
+    }),
+    mkAlert({
+      ts: t - 86400 * 6, last_ts: t - 86400 * 5, count: 40, severity: 'warning', kind: 'replication_lag', key: 'replication_lag:hq-primary:globex', tenant: 'globex',
+      message: 'replication of tenant globex from hq-primary lags: no successful sync for 50 h', acked_by: 'admin',
+      resolved_at: t - 86400 * 5, resolved_by: 'admin', note: 'Primary was in a maintenance window; the next sync caught up.',
+    }),
   );
 
   // Approvals are enabled. Pending: a large GC, deleting a group, weakening a policy, a plugin upgrade.
@@ -1009,10 +1085,12 @@ function seed() {
   q('replication.key_export', { peer: peerId, keyd_fingerprint: peerKeyd, tenants: ['acme'] }, 'admin', t - 86400 * 20, 'executed', 'so2');
   q('source.delete', { id: 42, name: 'old-esx-import' }, 'admin', t - 86400 * 9, 'rejected', 'so');
   const gcq = q('gc_large', { tenant: 'initech', job: 4711, reason: 'GC would delete 34 % of the stored chunks (limit 20 %)' }, 'scheduler', t - 2 * 3600);
-  db.alerts.push({
-    id: nextId(), ts: gcq.created, severity: 'warning', kind: 'gc_quorum',
-    message: `GC for tenant initech needs approval by an admin or security officer (quorum request ${gcq.id}): GC would delete 34 % of the stored chunks (limit 20 %)`, acked_by: null,
-  });
+  db.alerts.push(
+    mkAlert({
+      ts: gcq.created, severity: 'warning', kind: 'gc_quorum', key: 'gc_quorum:initech', tenant: 'initech',
+      message: `GC for tenant initech needs approval by an admin or security officer (quorum request ${gcq.id}): GC would delete 34 % of the stored chunks (limit 20 %)`,
+    }),
+  );
   q('group.delete', { id: gDev.id, name: 'development' }, 'admin', t - 1800);
   q('policy.update', { ...gold, gfs: { ...gold.gfs, daily: 7, yearly: 1 }, offsite: false, old: { ...gold, gfs: { ...gold.gfs } } }, 'admin', t - 600);
   const pq = q('plugin.install', { id: 'postgresql', version: '1.1.0', publisher: 'nexusbackup', sha256: pg110.sha256, signer: pg110.signer, upgrade_from: '1.0.0' }, 'admin', t - 1500);
@@ -1034,6 +1112,7 @@ function seed() {
     status: { globex: { last_ok: day(0, 4) + 480, last_error: null, imported: 3, bytes: 734003200, remote: 41, key_versions: [1] } },
   });
   seedPhase12(t);
+  seedPhase13a(t);
   seedRunControl(t);
 }
 
@@ -1072,6 +1151,7 @@ function groupState(g: (typeof db.groups)[number]) {
     paused_until: g.paused_until ?? null,
     maintenance_until: src?.maintenance_until ?? null,
     blackout_active: blackoutActive(pol?.blackout ?? [], g.timezone ?? 'UTC', now()),
+    resolved_guests: resolveGuests(g),
   };
 }
 
@@ -1092,7 +1172,7 @@ function backupGuests(p: Json) {
     if (Array.isArray(last.result?.failed_guests)) p.guests = last.result.failed_guests;
     return;
   }
-  if (p.guests !== undefined && (!Array.isArray(p.guests) || !p.guests.length || p.guests.some((x: unknown) => !g.guests.includes(x as never))))
+  if (p.guests !== undefined && (!Array.isArray(p.guests) || !p.guests.length || p.guests.some((x: unknown) => !resolveGuests(g).includes(x as never))))
     throw new HttpError(400, "guests: a non-empty subset of the group's guests");
 }
 
@@ -1128,8 +1208,11 @@ function seedRunControl(t: number) {
     Object.assign(third, { created: (second.finished ?? t) + 1, not_before: t + 8 * 60 });
   }
   db.alerts.push(
-    { id: nextId(), ts: t - 7 * 3600, severity: 'warning', kind: 'paused', message: `group ${nas02.id} acme-nas02 (acme) paused until further notice: no scheduled backups meanwhile`, acked_by: null },
-    { id: nextId(), ts: t - 26 * 3600, severity: 'warning', kind: 'sla_missed', message: `backup job 4690 of group acme-databases (acme) still running after 21 min (SLA 20 min)`, acked_by: 'op' },
+    mkAlert({ ts: t - 7 * 3600, severity: 'warning', kind: 'paused', key: `paused:group:${nas02.id}:-1`, tenant: 'acme', message: `group ${nas02.id} acme-nas02 (acme) paused until further notice: no scheduled backups meanwhile` }),
+    mkAlert({
+      ts: t - 26 * 3600, severity: 'warning', kind: 'sla_missed', key: 'sla_missed:4690', tenant: 'acme', resolved_at: t - 25 * 3600, resolved_by: 'op',
+      message: `backup job 4690 of group acme-databases (acme) still running after 21 min (SLA 20 min)`,
+    }),
   );
 }
 
@@ -1332,6 +1415,9 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'tenant.delete':
       db.tenants = db.tenants.filter((g) => g.name !== p.name);
       break;
+    case 'settings.anomaly':
+      db.anomaly = structuredClone(p.anomaly);
+      break;
     case 'policy.update':
       Object.assign(find(db.policies, (x) => x.id === p.id, 'policy'), next);
       break;
@@ -1348,6 +1434,13 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'ssh_key.rotate':
       rotateSshKey(p.name);
       break;
+    case 'snapshot.delete': {
+      // the scheduler's `snapshot_delete` job; an offsite copy stays (offsite retention)
+      const x = find(db.snapshots, (y) => y.tenant === p.tenant && y.source === p.source && y.time === p.time, 'snapshot');
+      if (x.offsite) x.local = false;
+      else db.snapshots = db.snapshots.filter((y) => y !== x);
+      break;
+    }
     case 'update.apply':
       if (db.updates.available) Object.assign(db.updates, { staged: { ...db.updates.available, since: now() }, status: 'staged' });
       break;
@@ -1587,6 +1680,87 @@ on('DELETE', '/policies/:id', (c, [id]) => {
 
 // groups
 on('GET', '/groups', (c) => [200, byTenant(need(c.user), db.groups).map(groupState)]);
+
+// ---- Phase 13c: guest inventory and auto-protect groups (crates/web-api/src/inventory.rs)
+function hasInventory(src: (typeof db.sources)[number]): boolean {
+  return src.kind === 'pve' || src.kind === 'truenas' || (src.kind.startsWith('plugin:') && !!pluginKind(src.kind)?.kind.guests?.list);
+}
+/** Guests of a group as the scheduler resolves them: explicit list, or the inventory (all / tags); exclude wins. */
+function resolveGuests(g: MockGroup): (number | string)[] {
+  const ex = new Set((g.exclude ?? []).map(String));
+  if (!g.mode || g.mode === 'explicit') return g.guests.filter((x) => !ex.has(String(x)));
+  const pve = db.sources.find((s) => s.id === g.source_id)?.kind === 'pve';
+  return (db.inventory.get(g.source_id) ?? [])
+    .filter((r) => r.gone === null && !ex.has(r.guest) && (g.mode === 'all' || r.tags.some((x) => g.selector.includes(x))))
+    .map((r) => (pve ? Number(r.guest) : r.guest));
+}
+/** Names of the groups protecting `guest` of a source (a plugin group without guests: the whole source). */
+function coveringGroups(sid: number, guest: string): string[] {
+  return db.groups
+    .filter((g) => g.source_id === sid)
+    .filter((g) => resolveGuests(g).map(String).includes(guest) || (g.mode === 'explicit' && !g.guests.length && !!db.sources.find((s) => s.id === sid)?.kind.startsWith('plugin:')))
+    .map((g) => g.name)
+    .sort();
+}
+const TAG_RE = /^[^\s\x00-\x1f\x7f](?:[^\x00-\x1f\x7f]{0,126}[^\s\x00-\x1f\x7f])?$/;
+function checkMode(src: (typeof db.sources)[number], b: Json): Pick<MockGroup, 'mode' | 'selector' | 'exclude'> {
+  let mode = b.mode ?? 'explicit';
+  const selector: string[] = b.selector ?? [];
+  const exclude: unknown[] = b.exclude ?? [];
+  if (!['explicit', 'all', 'tags'].includes(mode)) throw new HttpError(400, 'mode: explicit, all or tags');
+  if (src.kind === 'truenas' && mode === 'explicit' && !(b.guests ?? []).length) mode = 'all';
+  if (mode === 'explicit') {
+    if (selector.length || exclude.length) throw new HttpError(400, 'selector, exclude: only for groups of mode all or tags');
+    return { mode, selector: [], exclude: [] };
+  }
+  if (!hasInventory(src)) throw new HttpError(400, 'mode: this source has no guest inventory (linux, nfs, smb and plugin kinds without a guest list: explicit only)');
+  if ((b.guests ?? []).length) throw new HttpError(400, 'guests: a group of mode all or tags lists no guests (they come from the inventory)');
+  if (mode === 'all' && selector.length) throw new HttpError(400, 'selector: only for mode tags');
+  if (mode === 'tags' && (!selector.length || selector.length > 50)) throw new HttpError(400, 'selector: 1..=50 tags');
+  const bad = selector.find((x) => typeof x !== 'string' || !TAG_RE.test(x));
+  if (bad !== undefined) throw new HttpError(400, `selector: invalid tag ${JSON.stringify(bad)}`);
+  const ids = exclude.map(String);
+  if (src.kind === 'pve' && ids.some((x) => !/^[1-9]\d{2,8}$/.test(x))) throw new HttpError(400, 'exclude: VM/CT IDs of this source');
+  return { mode, selector: [...new Set(selector)].sort(), exclude: [...new Set(ids)].sort() };
+}
+on('GET', '/sources/:id/inventory', (c, [id]) => {
+  const u = need(c.user);
+  const src = db.sources.find((s) => s.id === Number(id) && (!u.tenant || s.tenant === u.tenant));
+  if (!src) throw new HttpError(404, 'not found');
+  const refreshed = db.jobs.filter((j) => ['inventory', 'plugin_guests'].includes(j.kind) && j.state === 'ok' && Number(j.params.source_id) === src.id).reduce((m, j) => Math.max(m, j.finished ?? 0), 0);
+  const rows = db.inventory.get(src.id) ?? [];
+  return [
+    200,
+    {
+      source_id: src.id,
+      kind: src.kind,
+      inventory: hasInventory(src),
+      refreshed: refreshed || (rows.length ? Math.max(...rows.map((r) => r.seen)) : null),
+      guests: rows
+        .slice()
+        .sort((a, b) => Number(a.gone !== null) - Number(b.gone !== null) || a.guest.length - b.guest.length || a.guest.localeCompare(b.guest))
+        .map((r) => ({ ...r, groups: r.gone === null ? coveringGroups(src.id, r.guest) : [] })),
+    },
+  ];
+});
+/** `inventory` / `plugin_guests` finished: the listing replaces the source's inventory (rows of gone guests are kept). */
+function inventoryResult(j: Job, t: number) {
+  const sid = Number(j.params.source_id);
+  const rows = db.inventory.get(sid) ?? [];
+  if (j.kind === 'plugin_guests' && Array.isArray(j.result?.guests)) {
+    const listed = new Set<string>();
+    for (const g of j.result.guests) {
+      listed.add(g.id);
+      const r = rows.find((x) => x.guest === g.id);
+      if (r) Object.assign(r, { name: g.title, tags: g.tags ?? [], seen: t, gone: null });
+      else rows.push({ guest: g.id, name: g.title, kind: '', tags: g.tags ?? [], seen: t, gone: null });
+    }
+    for (const r of rows) if (!listed.has(r.guest) && r.gone === null) r.gone = t;
+  } else for (const r of rows) if (r.gone === null) r.seen = t;
+  db.inventory.set(sid, rows);
+  if (j.kind === 'inventory')
+    j.result = { guests: rows.filter((r) => r.gone === null).map((r) => ({ id: r.guest, title: r.name, kind: r.kind, tags: r.tags })) };
+}
 // pve: guests are VM/CT IDs; linux: exactly [source.config.agent_id].
 function checkGuests(src: (typeof db.sources)[number], guests: unknown) {
   if (!Array.isArray(guests)) throw new HttpError(400, 'guests: array required');
@@ -1606,17 +1780,10 @@ function checkGuests(src: (typeof db.sources)[number], guests: unknown) {
 }
 on('POST', '/groups', async (c) => {
   const u = need(c.user, 'admin');
-  const g = {
-    id: nextId(),
-    tenant: c.body.tenant,
-    source_id: Number(c.body.source_id),
-    policy_id: Number(c.body.policy_id),
-    name: c.body.name,
-    guests: c.body.guests ?? [],
-    timezone: checkTz(c.body.timezone),
-    paused_until: null,
-  };
-  checkGuests(find(db.sources, (s) => s.id === g.source_id && s.tenant === g.tenant, 'source in tenant'), g.guests);
+  const g: MockGroup = { id: nextId(), tenant: c.body.tenant, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), name: c.body.name, guests: c.body.guests ?? [], mode: 'explicit', selector: [], exclude: [], timezone: checkTz(c.body.timezone), paused_until: null };
+  const src = find(db.sources, (s) => s.id === g.source_id && s.tenant === g.tenant, 'source in tenant');
+  Object.assign(g, checkMode(src, c.body));
+  if (g.mode === 'explicit') checkGuests(src, g.guests);
   db.groups.push(g);
   await audit(u.name, 'group.create', `group/${g.id}`, g);
   return [201, g];
@@ -1625,8 +1792,9 @@ on('PUT', '/groups/:id', async (c, [id]) => {
   const u = need(c.user, 'admin');
   const g = find(db.groups, (x) => x.id === Number(id), 'group');
   if ('tenant' in c.body) throw new HttpError(400, 'unknown field `tenant`');
-  const next = { name: c.body.name, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), guests: c.body.guests, timezone: checkTz(c.body.timezone) };
-  checkGuests(find(db.sources, (s) => s.id === next.source_id && s.tenant === g.tenant, 'source in tenant'), next.guests);
+  const src = find(db.sources, (s) => s.id === Number(c.body.source_id) && s.tenant === g.tenant, 'source in tenant');
+  const next = { name: c.body.name, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), guests: c.body.guests ?? [], ...checkMode(src, c.body), timezone: checkTz(c.body.timezone) };
+  if (next.mode === 'explicit') checkGuests(src, next.guests);
   const from = find(db.policies, (p) => p.id === g.policy_id, 'policy');
   const to = find(db.policies, (p) => p.id === next.policy_id, 'policy');
   if (weakens(from, to)) return quorum(u, 'group.update', { id: g.id, tenant: g.tenant, ...next, old: structuredClone(g) });
@@ -1651,13 +1819,20 @@ on('POST', '/groups/:id/pause', async (c, [id]) => {
   g.paused_until = pauseUntil(c.body ?? {});
   await audit(u.name, 'group.pause', `group/${g.id}`, { tenant: g.tenant, paused_until: g.paused_until });
   if (g.paused_until === -1 || g.paused_until > now() + 7 * DAY)
-    db.alerts.push({ id: nextId(), ts: now(), severity: 'warning', kind: 'paused', message: `group ${g.id} ${g.name} (${g.tenant}) paused until ${g.paused_until === -1 ? 'further notice' : isoDay(g.paused_until)}: no scheduled backups meanwhile`, acked_by: null });
+    db.alerts.push(
+      mkAlert({
+        ts: now(), severity: 'warning', kind: 'paused', key: `paused:group:${g.id}:${g.paused_until}`, tenant: g.tenant,
+        message: `group ${g.id} ${g.name} (${g.tenant}) paused until ${g.paused_until === -1 ? 'further notice' : isoDay(g.paused_until)}: no scheduled backups meanwhile`,
+      }),
+    );
   return [200, { id: g.id, paused_until: g.paused_until }];
 });
 on('POST', '/groups/:id/resume', async (c, [id]) => {
   const u = need(c.user, 'admin', 'operator');
   const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
   g.paused_until = null;
+  // like the scheduler's next tick: the group's `paused` warning resolves itself
+  for (const a of db.alerts) if (a.kind === 'paused' && !a.resolved_at && String(a.key).startsWith(`paused:group:${g.id}:`)) Object.assign(a, { resolved_at: now(), resolved_by: 'scheduler', auto: true });
   await audit(u.name, 'group.resume', `group/${g.id}`, { tenant: g.tenant, paused_until: null });
   return [200, { id: g.id, paused_until: null }];
 });
@@ -2084,6 +2259,16 @@ on('POST', '/gc/approve-large', async (c) => {
 });
 
 // snapshots / jobs / downloads
+on('DELETE', '/snapshots/:tenant/:source/:time', (c, [tenant, source, time]) => {
+  const u = need(c.user, 'admin');
+  const [tn, src, tm] = [decodeURIComponent(tenant), decodeURIComponent(source), Number(time)];
+  if (u.tenant && u.tenant !== tn) throw new HttpError(403, 'forbidden');
+  const x = find(db.snapshots as any[], (y) => y.tenant === tn && y.source === src && y.time === tm, 'snapshot');
+  if (!x.local) throw new HttpError(409, 'only the offsite copy is left: it follows the offsite retention');
+  if (x.origin) throw new HttpError(409, "replicated snapshot: it follows the replication source's retention");
+  if (x.lock_until > now()) throw new HttpError(409, `snapshot is locked until ${x.lock_until} (unix time)`);
+  return quorum(u, 'snapshot.delete', { tenant: tn, source: src, time: tm });
+});
 on('GET', '/snapshots', (c) => {
   const u = need(c.user);
   const tq = c.query.get('tenant');
@@ -2120,6 +2305,10 @@ function pluginSnapshotKind(tenant: string, name: string) {
 const OVERWRITE = ['never', 'if_older', 'always'];
 function checkJob(u: User, kind: string, tenant: string, p: Json) {
   if (kind === 'agent_enroll') throw new HttpError(400, 'use POST /agents/{id}/enroll');
+  if (kind === 'inventory') {
+    const src = find(db.sources, (s) => s.id === Number(p.source_id) && s.tenant === tenant, 'source in tenant');
+    if (!hasInventory(src)) throw new HttpError(400, 'source_id: this source has no guest inventory');
+  }
   if (kind === 'plugin_validate' || kind === 'plugin_guests' || kind === 'plugin_backup') {
     const src = find(db.sources, (s) => s.id === Number(p.source_id) && s.tenant === tenant && s.kind.startsWith('plugin:'), 'plugin source in tenant');
     const pk = pluginKind(src.kind);
@@ -2174,6 +2363,7 @@ on('POST', '/jobs', async (c) => {
   const p = kind === 'files_get' ? { ...params, download_token: rand(32) } : params;
   const j = addJob(kind, tenant, p, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
   if (kind.startsWith('plugin_')) j.duration = { plugin_validate: 3, plugin_guests: 3, plugin_restore: 14, plugin_mount: 6 }[kind as string] ?? 10;
+  if (kind === 'inventory') j.duration = 3;
   await audit(u.name, 'job.create', `job/${j.id}`, { kind, tenant, params: p });
   return [202, p.download_token ? { id: j.id, download_token: p.download_token } : { id: j.id }];
 });
@@ -2244,16 +2434,54 @@ on('GET', '/audit/verify', async (c) => {
   return [200, { ok: true, entries: db.audit.length }];
 });
 
-// alerts
-// Alerts have no tenant column: tenant-scoped users get an empty list.
-on('GET', '/alerts', (c) => [200, need(c.user).tenant ? [] : [...db.alerts].sort((a, b) => b.ts - a.ts)]);
-on('POST', '/alerts/:id/ack', async (c, [id]) => {
+// alerts (13f lifecycle). They may name other tenants: tenant-scoped users get an empty list.
+// (a function declaration: the seed runs before the module's consts are initialised)
+function mkAlert(a: Json): Json {
+  // the API's English hint; the UI shows its own i18n text per kind
+  const hint = a.kind === 'job_failed' ? 'Open the job log on the Jobs page, fix the cause and run the job again.' : 'See the alerts chapter of the user manual.';
+  return {
+    id: nextId(), first_ts: a.ts, last_ts: a.ts, count: 1, key: `${a.kind}:${a.message}`, tenant: null, hint,
+    acked_by: null, resolved_at: null, resolved_by: null, note: null, auto: false, ...a,
+  };
+}
+on('GET', '/alerts', (c) => {
+  if (need(c.user).tenant) return [200, []];
+  const s = c.query.get('state') ?? 'all';
+  if (!['open', 'resolved', 'all'].includes(s)) throw new HttpError(400, 'state: open, resolved or all');
+  const id = Number(c.query.get('id') ?? 0);
+  const rows = db.alerts
+    .filter((a) => s === 'all' || (s === 'open') === !a.resolved_at)
+    .filter((a) => !id || a.id === id);
+  return [200, rows.sort((a, b) => b.id - a.id)];
+});
+const alertNote = (b: Json) => {
+  const n = typeof b?.note === 'string' ? b.note.trim() : '';
+  if (n.length > 1000) throw new HttpError(400, 'note: up to 1000 characters');
+  return n || null;
+};
+const alertFor = (c: Ctx, id: string) => {
   const u = need(c.user, 'admin', 'operator', 'security_officer');
   if (u.tenant) throw new HttpError(403, 'forbidden');
   const a = find(db.alerts, (x) => x.id === Number(id), 'alert');
+  if (a.kind === 'break_glass') need(c.user, 'admin', 'security_officer');
+  return { u, a };
+};
+on('POST', '/alerts/:id/ack', async (c, [id]) => {
+  const { u, a } = alertFor(c, id);
+  const note = alertNote(c.body);
+  if (a.acked_by) throw new HttpError(409, 'already acknowledged');
   a.acked_by = u.name;
-  await audit(u.name, 'alert.ack', `alert/${a.id}`, {});
-  return [200, a];
+  if (note) a.note = note;
+  await audit(u.name, 'alert.ack', `alert/${a.id}`, { kind: a.kind, note });
+  return [200, { id: a.id, acked_by: u.name }];
+});
+on('POST', '/alerts/:id/resolve', async (c, [id]) => {
+  const { u, a } = alertFor(c, id);
+  const note = alertNote(c.body);
+  if (a.resolved_at) throw new HttpError(409, 'already resolved');
+  Object.assign(a, { resolved_at: now(), resolved_by: u.name, auto: false, acked_by: a.acked_by ?? u.name }, note ? { note } : {});
+  await audit(u.name, 'alert.resolve', `alert/${a.id}`, { kind: a.kind, note });
+  return [200, { id: a.id, resolved_by: u.name }];
 });
 
 // ---------------------------------------------------------------- Phase 12 (docs/phase12-contract.md)
@@ -2282,6 +2510,18 @@ function rotateSshKey(name: string) {
   Object.assign(k, { ...fresh, previous: { public_key: k.public_key, fingerprint: k.fingerprint, created: k.created } });
 }
 
+/** Phase 13a: legacy-ftp (vm-103) left its group; its old snapshots are unlocked and pruned as orphans. */
+function seedPhase13a(t: number) {
+  for (const d of [100, 70, 40]) {
+    const time = Math.floor(t / 86400 - d) * 86400 + 3 * 3600;
+    db.snapshots.push(snap('initech', 'vm-103', time, 18 * 2 ** 30, true, d > 40, time + 3600));
+  }
+  db.alerts.push({
+    id: nextId(), ts: t - 86400 * 2 + 3 * 3600, severity: 'info', kind: 'orphaned',
+    message: 'initech/vm-103 is in no protection group; pruned with the default retention', acked_by: null,
+  });
+}
+
 /** Runs after the main seed so the ids and random values of the older demo data stay the same. */
 function seedPhase12(t: number) {
   db.oidc = {
@@ -2301,9 +2541,26 @@ function seedPhase12(t: number) {
     ],
   };
   db.alertSettings = {
-    webhook_url: 'https://hooks.example.com/services/nexus-backup',
-    smtp: { host: 'mail.example.com', port: 587, starttls: true, from: 'nexus@example.com', to: ['ops@example.com', 'backup-team@example.com'], user: 'nexus', password: 'sealed:demo' },
-    min_severity: 'warning',
+    smtp: { host: 'mail.example.com', port: 587, starttls: true, from: 'nexus@example.com', user: 'nexus', password: 'sealed:demo' },
+    rules: [
+      { name: 'ops-team', min_severity: 'warning', kinds: [], tenants: [], channels: { email: ['ops@example.com', 'backup-team@example.com'], webhook: null } },
+      {
+        name: 'acme-chat', min_severity: 'info', kinds: ['job_failed', 'verify', 'offsite_lag'], tenants: ['acme'],
+        channels: {
+          email: [],
+          webhook: {
+            url: 'https://hooks.slack.com/services/T0000/B0000/acme', headers: {},
+            template: '{"text": ":rotating_light: [{{severity}}] {{kind}} on {{host}}: {{message}}\\n{{hint}}\\n<{{alert_url}}|Open alert> (seen {{count}}x)"}',
+          },
+        },
+      },
+      {
+        name: 'siem', min_severity: 'critical', kinds: [], tenants: [],
+        channels: { email: [], webhook: { url: 'https://siem.example.com/api/events', headers: { Authorization: 'sealed:demo' }, template: null } },
+      },
+    ],
+    reminder_hours: 24,
+    retention_days: { info: 14, warning: 180, critical: 180 },
   };
   db.sshKeys = [
     sshKey('pve', 'Proxmox VE nodes (forced command)', t - 86400 * 90),
@@ -2328,10 +2585,13 @@ function seedPhase12(t: number) {
     password: '', totp_secret: '', auth: 'oidc', oidc_sub: 'f3c1a9e2-5b7d-4e08-9a61-2d4c8b0e7f15',
   });
   // the break-glass alert of an earlier console recovery, acknowledged (the UI banner shows open ones)
-  db.alerts.push({
-    id: nextId(), ts: t - 86400 * 58, severity: 'critical', kind: 'break_glass',
-    message: 'administrator "admin" was reset to pending activation at the console (nexus-setup recover-admin).', acked_by: 'so',
-  });
+  db.alerts.push(
+    mkAlert({
+      ts: t - 86400 * 58, severity: 'critical', kind: 'break_glass',
+      message: 'administrator "admin" was reset to pending activation at the console (nexus-setup recover-admin).', acked_by: 'so',
+      resolved_at: t - 86400 * 58 + 3600, resolved_by: 'so', note: 'Confirmed with J. Weber (lost TOTP device).',
+    }),
+  );
 }
 
 // ---- dashboard KPIs (§1). The job history before the seed is synthetic but deterministic.
@@ -2343,7 +2603,7 @@ const GUEST_NAMES: Record<string, string> = {
   'initech/100': 'erp-app', 'initech/101': 'erp-db', 'initech/200': 'proxy', 'initech/102': 'dev-sandbox', 'initech/103': 'legacy-ftp',
   'acme/300': 'shop-web', 'acme/301': 'shop-api', 'acme/302': 'test-web',
 };
-interface Obj { source: string; name: string; kind: string; tenant: string; rpo_s: number; inGroup: boolean; names: string[]; paused?: boolean }
+interface Obj { source: string; name: string; kind: string; tenant: string; rpo_s: number; inGroup: boolean; names: string[]; sourceName?: string; sourceId?: number | null; paused?: boolean }
 
 function protectedObjects(u: User): Obj[] {
   const out: Obj[] = [];
@@ -2354,26 +2614,31 @@ function protectedObjects(u: User): Obj[] {
     const rpo_s = schedulePeriod(pol.schedule);
     const paused = isPaused(g.paused_until, now()) || isPaused(src.maintenance_until, now());
     const add = (source: string, name: string, names = [source]) => out.push({ source, name, kind: src.kind, tenant: g.tenant, rpo_s, inGroup: true, names, paused });
+    const guests = resolveGuests(g);
     if (src.kind === 'pve')
-      for (const v of g.guests) add(guestName(v), `${GUEST_NAMES[`${g.tenant}/${v}`] ?? 'guest'} (${v})`, [`vm-${v}`, `ct-${v}`]);
-    else if (src.kind === 'linux') for (const a of g.guests) add(`host-${a}`, db.agents.find((x) => x.id === a)?.name ?? String(a));
-    else if (src.kind === 'truenas')
-      for (const d of g.guests.length ? g.guests : src.config.datasets) add(`nas-${src.id}-${String(d).replaceAll('/', '.')}`, `${src.name}: ${d}`);
+      for (const v of guests) add(guestName(v), `${GUEST_NAMES[`${g.tenant}/${v}`] ?? 'guest'} (${v})`, [`vm-${v}`, `ct-${v}`]);
+    else if (src.kind === 'linux') for (const a of guests) add(`host-${a}`, db.agents.find((x) => x.id === a)?.name ?? String(a));
+    else if (src.kind === 'truenas') for (const d of guests) add(`nas-${src.id}-${String(d).replaceAll('/', '.')}`, `${src.name}: ${d}`);
     else if (src.kind === 'nfs' || src.kind === 'smb') add(`share-${src.id}`, src.name);
     else if (src.kind.startsWith('plugin:')) {
       const pid = pluginKind(src.kind)?.plugin.id ?? src.kind.slice(7);
-      if (g.guests.length) for (const x of g.guests) add(`plugin-${pid}-${src.id}-${x}`, `${src.name}: ${x}`);
-      else add(`plugin-${pid}-${src.id}`, src.name);
+      if (guests.length) for (const x of guests) add(`plugin-${pid}-${src.id}-${x}`, `${src.name}: ${x}`);
+      else if (g.mode === 'explicit') add(`plugin-${pid}-${src.id}`, src.name);
     }
   }
-  // known guests that are in no protection group (cached PVE / plugin guest lists)
-  const extra: Obj[] = [
-    { source: 'vm-103', name: 'legacy-ftp (103)', kind: 'pve', tenant: 'initech', rpo_s: DAY, inGroup: false, names: ['vm-103'] },
-    { source: 'vm-302', name: 'test-web (302)', kind: 'pve', tenant: 'acme', rpo_s: DAY, inGroup: false, names: ['vm-302'] },
-  ];
-  const pg = db.sources.find((s) => s.kind === 'plugin:postgresql');
-  if (pg) extra.push({ source: `plugin-postgresql-${pg.id}-analytics`, name: `${pg.name}: analytics`, kind: pg.kind, tenant: pg.tenant, rpo_s: DAY, inGroup: false, names: [] });
-  return [...out, ...extra.filter((o) => !u.tenant || o.tenant === u.tenant)];
+  // inventory guests in no group of their source (and enrolled agents without a group)
+  const extra: Obj[] = [];
+  for (const [sid, rows] of db.inventory) {
+    const src = db.sources.find((s) => s.id === sid);
+    if (!src || (u.tenant && src.tenant !== u.tenant)) continue;
+    for (const r of rows)
+      if (r.gone === null && !coveringGroups(sid, r.guest).length)
+        extra.push({ source: r.guest, name: src.kind === 'pve' ? `${r.name} (${r.guest})` : `${src.name}: ${r.name}`, kind: src.kind, tenant: src.tenant, rpo_s: DAY, inGroup: false, names: [], sourceName: src.name, sourceId: src.id } as Obj);
+  }
+  for (const a of byTenant(u, db.agents))
+    if (!out.some((o) => o.source === `host-${a.id}`))
+      extra.push({ source: a.id, name: a.name, kind: 'linux', tenant: a.tenant, rpo_s: DAY, inGroup: false, names: [], sourceName: a.name, sourceId: null } as Obj);
+  return [...out, ...extra];
 }
 
 /** Synthetic daily job counts of one tenant (scheduler runs per group + offsite / verify / retention). */
@@ -2422,6 +2687,9 @@ function dashboard(u: User, days: number) {
     sla_breach: inGroup.filter((o) => o.sla === 'breach').length,
     sla_paused: inGroup.filter((o) => o.sla === 'paused').length,
     never: inGroup.filter((o) => o.sla === 'never').length,
+    unprotected_list: objs
+      .filter((o) => !o.inGroup)
+      .map((o) => ({ tenant: o.tenant, kind: o.kind, source_id: o.sourceId ?? null, source: o.sourceName ?? '', guest: o.source, name: o.name })),
     worst: inGroup
       .sort((a, b) => Number(!['ok', 'paused'].includes(b.sla)) - Number(!['ok', 'paused'].includes(a.sla)) || (b.age_s ?? Infinity) / b.rpo_s - (a.age_s ?? Infinity) / a.rpo_s)
       .slice(0, 10)
@@ -2450,10 +2718,7 @@ function dashboard(u: User, days: number) {
   const TOTAL = 64 * 2 ** 40;
   const allBytes = (db.snapshots as any[]).reduce((a, s) => a + s.size, 0) || 1;
   const share = u.tenant ? snaps.reduce((a, s) => a + s.size, 0) / allBytes : 1;
-  const usedAt = (d: number) => {
-    const wobble = ((hash(d, 7) % 1000) / 1000 - 0.5) * 0.004;
-    return Math.round(TOTAL * (0.78 - 0.0011 * d + wobble));
-  };
+  const usedAt = storeUsedAt;
   const sample = (n: number) => Array.from({ length: n }, (_, i) => n - 1 - i).map((d) => ({ d, used: usedAt(d) }));
   // forecast: linear regression over the last 30 days of the whole store (when the shared pool is full)
   const reg = sample(30);
@@ -2463,7 +2728,9 @@ function dashboard(u: User, days: number) {
   const fit = my + slope * (0 - mx);
   const forecast = slope > 0 ? Math.round((TOTAL - fit) / slope) : null;
   const used = usedAt(0);
-  const reduction = 4.2;
+  // ratios from the (synthetic) backup statistics, as the real API does
+  const st = storageStats(u).totals;
+  const reduction = +(st.reduction ?? 1).toFixed(2);
   const capacity = {
     total: TOTAL,
     used: Math.round(used * share),
@@ -2471,8 +2738,8 @@ function dashboard(u: User, days: number) {
     logical: Math.round(used * share * 0.97 * reduction),
     physical: Math.round(used * share * 0.97),
     reduction,
-    dedup: 3.1,
-    compression: +(reduction / 3.1).toFixed(2),
+    dedup: st.dedup,
+    compression: st.compression,
     per_day: sample(days).map((p) => ({ day: isoDay(today - p.d * DAY), used: Math.round(p.used * share), logical: Math.round(p.used * share * 0.97 * reduction) })),
     forecast_full_days: forecast,
   };
@@ -2509,6 +2776,125 @@ function dashboard(u: User, days: number) {
     offsite,
   };
 }
+// ---- storage accounting (Phase 13d/e, docs/storage-accounting.md). Synthetic per-snapshot
+// statistics: a source's first snapshot writes ~55 % of its size (the rest deduplicates against
+// other guests), later ones its daily change rate; compression by source type. Scaled so that
+// Stored matches the store size the dashboard shows.
+const STORE_TOTAL = 64 * 2 ** 40;
+function storeUsedAt(d: number) {
+  const wobble = ((hash(d, 7) % 1000) / 1000 - 0.5) * 0.004;
+  return Math.round(STORE_TOTAL * (0.78 - 0.0011 * d + wobble));
+}
+const COMPRESSION: [string, number][] = [['plugin-postgresql-', 3.2], ['plugin-', 1.8], ['host-', 2.1], ['share-', 1.25], ['nas-', 1.4], ['', 1.7]];
+interface Sum { snapshots: number; logical: number; data_in: number; stored: number }
+function sumJson(s: Sum, k = 1) {
+  const r = (a: number, b: number) => (b > 0 ? +(a / b).toFixed(3) : null);
+  const [l, d, st] = [s.logical * k, s.data_in * k, s.stored * k].map(Math.round);
+  return { snapshots: s.snapshots, logical: l, data_in: d, stored: st, saved: Math.max(0, l - st), dedup: r(l, d), compression: r(d, st), reduction: r(l, st) };
+}
+function groupOfSource(tenant: string, source: string): (typeof db.groups)[number] | undefined {
+  return db.groups.find((g) => {
+    if (g.tenant !== tenant) return false;
+    const src = db.sources.find((s) => s.id === g.source_id);
+    if (!src) return false;
+    if (src.kind === 'pve') return g.guests.some((v) => source === `vm-${v}` || source === `ct-${v}`);
+    if (src.kind === 'linux') return g.guests.some((a) => source === `host-${a}`);
+    if (src.kind === 'nfs' || src.kind === 'smb') return source === `share-${src.id}`;
+    if (src.kind === 'truenas') return source.startsWith(`nas-${src.id}-`);
+    const m = /^plugin-[a-z0-9]+-(\d+)(?:-(.+))?$/.exec(source);
+    return !!m && Number(m[1]) === src.id && (!g.guests.length || g.guests.includes(m[2] ?? ''));
+  });
+}
+function storageStats(u: User) {
+  const t = now();
+  // replicated snapshots (origin set) carry no statistics, like on a real appliance
+  const kept = (db.snapshots as Json[]).filter((s) => s.local);
+  const snaps = kept.filter((s) => !s.origin).sort((a, b) => a.time - b.time);
+  const seen = new Set<string>();
+  const zero = (): Sum => ({ snapshots: 0, logical: 0, data_in: 0, stored: 0 });
+  const all = zero();
+  const perTenant = new Map<string, Sum>();
+  const perGroup = new Map<string, { tenant: string; group_id: number | null; group: string | null; sum: Sum; sources: Set<string> }>();
+  for (const s of snaps) {
+    const key = `${s.tenant}/${s.source}`;
+    const rate = 0.02 + (hash(s.source.length, s.time % 97) % 5) / 100;
+    const dataIn = s.size * (seen.has(key) ? rate : 0.55);
+    seen.add(key);
+    const comp = COMPRESSION.find(([p]) => s.source.startsWith(p))![1];
+    const g = groupOfSource(s.tenant, s.source);
+    const gk = `${s.tenant}/${g?.id ?? '-'}`;
+    if (!perGroup.has(gk)) perGroup.set(gk, { tenant: s.tenant, group_id: g?.id ?? null, group: g?.name ?? null, sum: zero(), sources: new Set() });
+    if (!perTenant.has(s.tenant)) perTenant.set(s.tenant, zero());
+    const pg = perGroup.get(gk)!;
+    pg.sources.add(s.source);
+    for (const x of [all, perTenant.get(s.tenant)!, pg.sum]) {
+      x.snapshots += 1;
+      x.logical += s.size;
+      x.data_in += dataIn;
+      x.stored += dataIn / comp;
+    }
+  }
+  // the whole store: Stored ≈ 97 % of the bytes on disk (the rest is indexes and manifests)
+  const sizeOf = (n?: string) => kept.filter((s) => !n || s.tenant === n).reduce((a, s) => a + s.size, 0);
+  const allBytes = sizeOf() || 1;
+  const k = (storeUsedAt(0) * 0.97 * (all.logical / allBytes)) / (all.stored || 1);
+  const tenants = db.tenants.map((x) => x.name).filter((n) => !u.tenant || n === u.tenant);
+  const usedOf = (n: string) => Math.round((storeUsedAt(0) * sizeOf(n)) / allBytes);
+  const total = u.tenant ? (perTenant.get(u.tenant) ?? zero()) : all;
+  const growth = (used: number) => {
+    const at = (d: number) => Math.round(used - (used * (0.78 - 0.0011 * d)) / 0.78);
+    return { d7: at(7), d30: at(30), d90: at(90) };
+  };
+  const usedTotal = tenants.reduce((a, n) => a + usedOf(n), 0);
+  const share = usedTotal / storeUsedAt(0);
+  const tot = sumJson(total, k);
+  return {
+    generated: t,
+    totals: { ...tot, snapshots_all: kept.filter((s) => !u.tenant || s.tenant === u.tenant).length, used: usedTotal, growth: growth(usedTotal) },
+    tenants: tenants.map((n) => {
+      const used = usedOf(n);
+      const q = db.tenants.find((x) => x.name === n)?.quota_bytes ?? null;
+      return { tenant: n, ...sumJson(perTenant.get(n) ?? zero(), k), used, quota_bytes: q, quota_used: q ? +(used / q).toFixed(4) : null, growth: growth(used) };
+    }),
+    groups: [...perGroup.values()]
+      .filter((g) => !u.tenant || g.tenant === u.tenant)
+      .sort((a, b) => a.tenant.localeCompare(b.tenant) || (a.group_id ?? 1e9) - (b.group_id ?? 1e9))
+      .map((g) => ({ tenant: g.tenant, group_id: g.group_id, group: g.group, sources: g.sources.size, ...sumJson(g.sum, k) })),
+    per_day: Array.from({ length: 90 }, (_, i) => 89 - i).map((d) => {
+      const used = Math.round(storeUsedAt(d) * share);
+      return { day: isoDay(Math.floor(t / DAY) * DAY - d * DAY), used, logical: Math.round(used * 0.97 * (tot.reduction ?? 1)) };
+    }),
+  };
+}
+on('GET', '/storage', (c) => [200, storageStats(need(c.user))]);
+on('PUT', '/tenants/:name/quota', async (c, [name]) => {
+  const u = need(c.user, 'admin');
+  const x = find(db.tenants, (y) => y.name === decodeURIComponent(name), 'tenant');
+  const q = c.body.quota_bytes;
+  if (q !== null && !(Number.isInteger(q) && q > 0)) throw new HttpError(400, 'quota_bytes: a positive number of bytes, or null');
+  x.quota_bytes = q;
+  await audit(u.name, 'tenant.quota', `tenant/${x.name}`, { name: x.name, quota_bytes: q });
+  return [200, { name: x.name, quota_bytes: q }];
+});
+on('GET', '/settings/anomaly', (c) => (need(c.user, 'admin', 'security_officer'), [200, db.anomaly]));
+on('PUT', '/settings/anomaly', async (c) => {
+  const u = need(c.user, 'admin');
+  const { enabled, factor, history, floor_bytes, ...rest } = c.body;
+  if (Object.keys(rest).length) throw new HttpError(400, `unknown field \`${Object.keys(rest)[0]}\``);
+  if (typeof enabled !== 'boolean') throw new HttpError(400, 'enabled: boolean required');
+  if (!(factor >= 1.5 && factor <= 100)) throw new HttpError(400, 'factor: 1.5..=100');
+  if (!(Number.isInteger(history) && history >= 5 && history <= 100)) throw new HttpError(400, 'history: 5..=100 runs');
+  if (!(Number.isInteger(floor_bytes) && floor_bytes >= 2 ** 20 && floor_bytes <= 2 ** 50)) throw new HttpError(400, 'floor_bytes: 1 MiB..=1 PiB');
+  const next = { enabled, factor, history, floor_bytes };
+  const old = db.anomaly;
+  // weakening the detection (a ransomware signal) needs approval
+  if ((old.enabled && !enabled) || factor > old.factor || floor_bytes > old.floor_bytes)
+    return quorum(u, 'settings.anomaly', { anomaly: next, old: structuredClone(old) });
+  db.anomaly = next;
+  await audit(u.name, 'settings.anomaly', 'settings/anomaly', next);
+  return [200, next];
+});
+
 const dashCache = new Map<string, { at: number; body: Json }>();
 on('GET', '/dashboard', (c) => {
   const u = need(c.user);
@@ -2601,43 +2987,101 @@ on('POST', '/settings/oidc/test', (c) => {
   return [200, { discovery: `ok: ${db.oidc.issuer}/.well-known/openid-configuration`, jwks: 'ok: 2 signing keys (RS256)' }];
 });
 
-// ---- alert delivery (§3)
+// ---- alert delivery (§3; 13f notification rules)
 const pubAlerts = () => {
   const a = structuredClone(db.alertSettings);
   if (a.smtp) {
     a.smtp.password_set = !!a.smtp.password;
     delete a.smtp.password;
   }
+  for (const r of a.rules) {
+    const h = r.channels.webhook?.headers;
+    if (h) for (const k of Object.keys(h)) h[k] = null;
+  }
   return a;
 };
+const TEMPLATE_FIELDS = ['id', 'ts', 'first_ts', 'last_ts', 'count', 'severity', 'kind', 'message', 'hint', 'tenant', 'host', 'alert_url'];
+/** Like catalog::alerting::check_template: placeholders JSON-escaped, the result must be JSON. */
+function checkTemplate(tpl: string): string | null {
+  const sample: Json = { id: 42, ts: 1, first_ts: 1, last_ts: 2, count: 3, severity: 'critical', kind: 'job_failed', message: 'a "quoted"\nline', hint: 'x', tenant: '', host: 'nexus', alert_url: 'https://nexus/#/alerts?id=42' };
+  let bad: string | null = null;
+  const out = tpl.replace(/\{\{([^}]*)\}\}/g, (_, f: string) => {
+    const k = f.trim();
+    if (!TEMPLATE_FIELDS.includes(k)) bad = `unknown placeholder {{${k}}}`;
+    return JSON.stringify(String(sample[k] ?? '')).slice(1, -1);
+  });
+  if (bad) return bad;
+  try {
+    JSON.parse(out);
+    return null;
+  } catch (e) {
+    return `does not render to valid JSON: ${(e as Error).message}`;
+  }
+}
+const mailRe = /^[^@\s]+@[^@\s]+$/;
 on('GET', '/settings/alerts', (c) => (need(c.user, 'admin', 'security_officer'), [200, pubAlerts()]));
 on('PUT', '/settings/alerts', async (c) => {
   const u = need(c.user, 'admin');
   const b = c.body;
-  if (b.webhook_url && !/^https:\/\/\S+$/.test(String(b.webhook_url))) throw new HttpError(400, 'webhook_url: https URL required');
-  if (!['info', 'warning', 'critical'].includes(b.min_severity)) throw new HttpError(400, 'min_severity: info, warning or critical');
+  const old = db.alertSettings;
   let smtp = null;
   if (b.smtp) {
     const s = b.smtp;
     if (!String(s.host ?? '').trim()) throw new HttpError(400, 'smtp.host: required');
     if (!(Number.isInteger(s.port) && s.port > 0 && s.port < 65536)) throw new HttpError(400, 'smtp.port: 1..65535');
-    if (!Array.isArray(s.to) || !s.to.length || s.to.some((x: string) => !/^[^@\s]+@[^@\s]+$/.test(x))) throw new HttpError(400, 'smtp.to: e-mail addresses required');
-    if (!/^[^@\s]+@[^@\s]+$/.test(String(s.from ?? ''))) throw new HttpError(400, 'smtp.from: e-mail address required');
-    smtp = { host: s.host, port: s.port, starttls: !!s.starttls, from: s.from, to: s.to, user: String(s.user ?? ''), password: s.password || db.alertSettings.smtp?.password || '' };
+    if (!mailRe.test(String(s.from ?? ''))) throw new HttpError(400, 'smtp.from: a mail address');
+    smtp = { host: s.host, port: s.port, starttls: !!s.starttls, from: s.from, user: String(s.user ?? ''), password: s.password || old.smtp?.password || '' };
   }
-  db.alertSettings = { webhook_url: b.webhook_url || null, smtp, min_severity: b.min_severity };
-  await audit(u.name, 'settings.alerts', 'settings/alerts', { webhook: !!b.webhook_url, smtp: !!smtp, min_severity: b.min_severity });
-  return [200, pubAlerts()];
+  const rules = (b.rules ?? []) as Json[];
+  const names = new Set<string>();
+  for (const r of rules) {
+    const what = (m: string) => new HttpError(400, `rule ${r.name}: ${m}`);
+    if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(String(r.name)) || names.has(r.name)) throw new HttpError(400, 'rules.name: unique, [A-Za-z0-9._-]{1,64}');
+    names.add(r.name);
+    if (!['info', 'warning', 'critical'].includes(r.min_severity)) throw what('min_severity: info, warning or critical');
+    const email = r.channels?.email ?? [];
+    if (email.some((x: string) => !mailRe.test(x))) throw what('email: up to 16 mail addresses');
+    if (email.length && !smtp) throw what('email needs the SMTP server (smtp)');
+    const w = r.channels?.webhook;
+    if (w) {
+      if (!/^https?:\/\/[^@\s/]+\S*$/.test(String(w.url))) throw what('webhook.url: http(s)://host[:port]/path, without user info');
+      if (w.template) {
+        const e = checkTemplate(w.template);
+        if (e) throw what(`webhook.template: ${e}`);
+      }
+      const prev = old.rules.find((o: Json) => o.name === r.name)?.channels.webhook;
+      for (const [h, v] of Object.entries(w.headers ?? {})) {
+        if (v === null && !(prev && prev.url === w.url && prev.headers?.[h])) throw what(`webhook.headers: a value for ${h} is required (new header or URL changed)`);
+        if (v === '') throw what('webhook.headers: values of 1..=4096 printable characters');
+        w.headers[h] = v === null ? prev.headers[h] : 'sealed:demo';
+      }
+    }
+  }
+  const reminder = Number(b.reminder_hours ?? 24);
+  if (!(reminder >= 0 && reminder <= 720)) throw new HttpError(400, 'reminder_hours: 0 (never) ..= 720');
+  db.alertSettings = { smtp, rules, reminder_hours: reminder, retention_days: b.retention_days ?? old.retention_days };
+  const shown = pubAlerts();
+  await audit(u.name, 'settings.alerts', 'settings/alerts', shown);
+  return [200, shown];
 });
 on('POST', '/settings/alerts/test', async (c) => {
   const u = need(c.user, 'admin');
   const a = db.alertSettings;
+  const only = c.body?.rule as string | undefined;
   const out: Json = {};
-  if (a.webhook_url) out.webhook = /bad|invalid/.test(a.webhook_url) ? 'error: HTTP 404 from the webhook' : 'ok';
-  if (a.smtp) out.smtp = /bad|invalid/.test(a.smtp.host) ? `error: ${a.smtp.host}:${a.smtp.port}: connection refused` : 'ok';
-  await audit(u.name, 'settings.alerts_test', 'settings/alerts', out);
+  const rules = a.rules.filter((r: Json) => !only || r.name === only);
+  if (only && !rules.length) out.rule = `error: no rule named ${only}`;
+  for (const r of rules) {
+    const key = (ch: string) => (only ? ch : `${r.name}/${ch}`);
+    const w = r.channels.webhook;
+    if (w) out[key('webhook')] = /bad|invalid/.test(w.url) ? 'error: HTTP 404 from the webhook' : 'ok';
+    if (r.channels.email.length)
+      out[key('email')] = !a.smtp ? 'error: no SMTP server configured' : /bad|invalid/.test(a.smtp.host) ? `error: ${a.smtp.host}:${a.smtp.port}: connection refused` : 'ok';
+  }
+  await audit(u.name, 'job.create', 'job/0', { kind: 'alert_test', params: only ? { rule: only } : {} });
   return [200, out];
 });
+
 
 // ---- appliance SSH keys (§4)
 on('GET', '/ssh-keys', (c) => (need(c.user, 'admin', 'operator', 'security_officer'), [200, db.sshKeys]));

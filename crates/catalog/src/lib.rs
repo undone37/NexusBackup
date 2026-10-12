@@ -8,7 +8,9 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod alerting;
 pub mod auth;
+pub mod inventory;
 pub mod schedule;
 pub mod secret;
 pub use rusqlite;
@@ -194,7 +196,70 @@ ALTER TABLE users ADD COLUMN oidc_sub TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS users_oidc_sub ON users(oidc_sub) WHERE oidc_sub IS NOT NULL;
 "#;
 
-/// v11 (Phase 13b, run control, docs/control-plane.md "Run control"):
+/// v11 (Phase 13d, docs/storage-accounting.md): per-snapshot backup statistics
+/// (`nexus-stats` lines of the connectors, parsed by the scheduler) and a soft
+/// storage quota per tenant (NULL = none; only alerts, never blocks a backup).
+/// Purely additive: the previous release skips it.
+const SCHEMA_V11: &str = r#"
+CREATE TABLE IF NOT EXISTS backup_stats (
+  tenant TEXT NOT NULL, source TEXT NOT NULL, time INTEGER NOT NULL,
+  read INTEGER NOT NULL, logical INTEGER NOT NULL, new_chunks INTEGER NOT NULL,
+  new_plain INTEGER NOT NULL, new_stored INTEGER NOT NULL,
+  PRIMARY KEY (tenant, source, time));
+ALTER TABLE tenants ADD COLUMN quota_bytes INTEGER;
+"#;
+
+/// v12 (Phase 13f, alert lifecycle): an alert is raised under a `key`; a repeat
+/// while it is open (`resolved_at` NULL) bumps `count` / `last_ts` instead of
+/// adding a row, the success path resolves it (`auto` = 1, by the scheduler),
+/// people acknowledge (seen, still open) or resolve it with a `note`.
+/// `notified_ts` = last delivery (NULL = due; replaces the scheduler's cursor
+/// file). Backfill: key = kind:message (capacity, offsite_lag and gc_quorum get
+/// the keys the scheduler now uses), acknowledged alerts count as resolved
+/// (that is what an ack meant before), everything counts as delivered. Purely
+/// additive: the previous release skips it and keeps inserting and
+/// acknowledging rows (count 1, key NULL).
+const SCHEMA_V12: &str = r#"
+ALTER TABLE alerts ADD COLUMN key TEXT;
+ALTER TABLE alerts ADD COLUMN tenant TEXT;
+ALTER TABLE alerts ADD COLUMN count INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE alerts ADD COLUMN last_ts INTEGER;
+ALTER TABLE alerts ADD COLUMN resolved_at INTEGER;
+ALTER TABLE alerts ADD COLUMN resolved_by TEXT;
+ALTER TABLE alerts ADD COLUMN note TEXT;
+ALTER TABLE alerts ADD COLUMN auto INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE alerts ADD COLUMN notified_ts INTEGER;
+UPDATE alerts SET last_ts = ts, key = kind || ':' || substr(message, 1, 200),
+  notified_ts = CAST(strftime('%s', 'now') AS INTEGER);
+UPDATE alerts SET key = 'capacity' WHERE kind = 'capacity';
+UPDATE alerts SET key = 'offsite_lag:' || substr(message, 24, instr(message, ' lags') - 24)
+  WHERE kind = 'offsite_lag' AND message LIKE 'offsite copy of tenant % lags%';
+UPDATE alerts SET key = 'gc_quorum:' || substr(message, 15, instr(message, ' needs') - 15)
+  WHERE kind = 'gc_quorum' AND message LIKE 'GC for tenant % needs%';
+UPDATE alerts SET resolved_at = ts, resolved_by = acked_by WHERE acked_by IS NOT NULL;
+CREATE INDEX IF NOT EXISTS alerts_open ON alerts(key) WHERE resolved_at IS NULL;
+"#;
+
+/// v13 (Phase 13c, auto-protect): `inventory` = the guests the scheduler last
+/// listed per source (PVE `/cluster/resources`, TrueNAS datasets, plugin
+/// `ListGuests`), with tags (`pool:x`, `tag:y`, `node:n`, `type:qemu`, …);
+/// guests no longer listed keep their row with `gone` set. `groups.mode`:
+/// `explicit` (the `guests` list, as before), `all` (every inventory guest of the
+/// source) or `tags` (guests with any tag in `selector`); `exclude` (guest ids)
+/// always wins. See [`inventory`]. Purely additive: the previous release skips it
+/// and treats every group as explicit (an `all`/`tags` group has `guests = []`
+/// there: nothing to back up, a failed job and an alert).
+const SCHEMA_V13: &str = r#"
+CREATE TABLE IF NOT EXISTS inventory (
+  source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE, guest TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '', tags TEXT NOT NULL DEFAULT '[]',
+  seen INTEGER NOT NULL, gone INTEGER, PRIMARY KEY (source_id, guest));
+ALTER TABLE groups ADD COLUMN mode TEXT NOT NULL DEFAULT 'explicit' CHECK (mode IN ('explicit','all','tags'));
+ALTER TABLE groups ADD COLUMN selector TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE groups ADD COLUMN exclude TEXT NOT NULL DEFAULT '[]';
+"#;
+
+/// v14 (Phase 13b, run control, docs/control-plane.md "Run control"):
 /// `policies.retry` (`{count, delay_min}`), `policies.blackout`
 /// (`[{days, from, to, abort}]`, evaluated in the group's time zone),
 /// `policies.sla_minutes` (NULL = no run-time SLA); `groups.paused_until` and
@@ -204,7 +269,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS users_oidc_sub ON users(oidc_sub) WHERE oidc_s
 /// `jobs.cancel_by` (cancel request of a running job: web-api writes it, the
 /// scheduler stops the child and sets `cancelled`), `jobs.sla_alerted`.
 /// Purely additive: the previous release skips it and never reads the columns.
-const SCHEMA_V11: &str = r#"
+const SCHEMA_V14: &str = r#"
 ALTER TABLE policies ADD COLUMN retry TEXT NOT NULL DEFAULT '{"count":3,"delay_min":5}';
 ALTER TABLE policies ADD COLUMN blackout TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE policies ADD COLUMN sla_minutes INTEGER;
@@ -220,7 +285,7 @@ ALTER TABLE jobs ADD COLUMN sla_alerted INTEGER NOT NULL DEFAULT 0;
 
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
-    SCHEMA_V11,
+    SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -946,18 +1011,60 @@ mod tests {
         assert_eq!(n, 3);
     }
 
-    /// v11 (run control) on top of a v10 catalog: existing policies get the
-    /// default retry (3 x 5 min), no blackout and no SLA; groups run in UTC and
-    /// are not paused; jobs are attempt 1. The v10 release still reads and
-    /// writes policies, groups and jobs afterwards.
+    /// v11 (backup stats, tenant quotas) on top of the previous catalog: existing
+    /// tenants have no quota, stats have one row per snapshot, and the previous
+    /// release still reads and writes tenants afterwards.
     #[test]
-    fn migration_v11_run_control() {
+    fn migration_v11_backup_stats_and_quota() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V11).unwrap();
         {
             let c = Connection::open(&p).unwrap();
             c.pragma_update(None, "foreign_keys", "ON").unwrap();
-            for (i, m) in MIGRATIONS[..10].iter().enumerate() {
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute("INSERT INTO tenants (name) VALUES ('acme')", []).unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+            assert_eq!(v, MIGRATIONS.len() as i64);
+            let q: Option<i64> = conn
+                .query_row("SELECT quota_bytes FROM tenants WHERE name = 'acme'", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(q, None);
+            conn.execute("UPDATE tenants SET quota_bytes = 1000 WHERE name = 'acme'", [])
+                .unwrap();
+            let ins =
+                "INSERT INTO backup_stats (tenant, source, time, read, logical, new_chunks, new_plain, new_stored) \
+                       VALUES ('acme', 'vm-100', 1, 10, 20, 1, 5, 3)";
+            conn.execute(ins, []).unwrap();
+            assert!(conn.execute(ins, []).is_err(), "one row per snapshot");
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..before].iter().skip(v as usize).count(), 0);
+        old.execute("INSERT INTO tenants (name) VALUES ('beta')", []).unwrap();
+    }
+
+    /// v14 (run control) on top of the previous catalog: existing policies get the
+    /// default retry (3 x 5 min), no blackout and no SLA; groups run in UTC and
+    /// are not paused; jobs are attempt 1. The previous release still reads and
+    /// writes policies, groups and jobs afterwards.
+    #[test]
+    fn migration_v14_run_control() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V14).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            c.pragma_update(None, "foreign_keys", "ON").unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
                 c.execute_batch(m).unwrap();
                 c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
             }
@@ -1003,7 +1110,7 @@ mod tests {
         drop(c);
         let old = Connection::open(&p).unwrap();
         let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-        assert_eq!(MIGRATIONS[..10].iter().skip(v as usize).count(), 0);
+        assert_eq!(MIGRATIONS[..before].iter().skip(v as usize).count(), 0);
         old.execute_batch(
             "INSERT INTO policies (name, schedule, gfs, offsite) VALUES ('q', 'hourly 5', '{}', 0);
              INSERT INTO groups (tenant, source_id, policy_id, name, guests) VALUES ('acme', 7, 2, 'h', '[]');
@@ -1089,5 +1196,141 @@ mod tests {
                 .is_err(),
             "foreign keys enforced"
         );
+    }
+
+    /// v12 (alert lifecycle) on top of a v10 catalog: keys and last_ts are
+    /// backfilled, acknowledged alerts count as resolved, everything as
+    /// delivered, and the previous release still inserts and acknowledges.
+    #[test]
+    fn migration_v12_alert_lifecycle() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let pos = MIGRATIONS.iter().position(|m| *m == SCHEMA_V12).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..pos].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO alerts (id, ts, severity, kind, message, acked_by) VALUES
+                   (1, 100, 'warning', 'capacity', 'store capacity above 75 % (now 80 %)', NULL),
+                   (2, 200, 'warning', 'offsite_lag', 'offsite copy of tenant acme lags by 49 h (oldest …)', NULL),
+                   (3, 300, 'warning', 'gc_quorum', 'GC for tenant initech needs approval by an admin', 'so'),
+                   (4, 400, 'critical', 'job_failed', 'backup job 9 (acme) failed: x', NULL);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            type Row = (String, i64, i64, Option<i64>, Option<String>, i64);
+            let rows: Vec<Row> = conn
+                .prepare("SELECT key, last_ts, count, resolved_at, resolved_by, notified_ts FROM alerts ORDER BY id")
+                .unwrap()
+                .query_map([], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+                })
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            let keys: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+            assert_eq!(
+                keys,
+                [
+                    "capacity",
+                    "offsite_lag:acme",
+                    "gc_quorum:initech",
+                    "job_failed:backup job 9 (acme) failed: x"
+                ]
+            );
+            assert_eq!((rows[1].1, rows[1].2), (200, 1));
+            assert_eq!(
+                (rows[2].3, rows[2].4.as_deref()),
+                (Some(300), Some("so")),
+                "ack = resolved"
+            );
+            assert_eq!(rows[0].3, None, "unacknowledged stays open");
+            assert!(rows.iter().all(|r| r.5 > 0), "nothing redelivered");
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..pos].iter().skip(v as usize).count(), 0);
+        old.execute_batch(
+            "INSERT INTO alerts (ts, severity, kind, message) VALUES (500, 'info', 'x', 'y');
+             UPDATE alerts SET acked_by = 'op' WHERE id = 1;",
+        )
+        .unwrap();
+        let n: i64 = old
+            .query_row("SELECT count FROM alerts WHERE id = 5", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    /// v13 (inventory, group modes) on top of the previous schema: existing groups
+    /// stay `explicit`, modes are checked, inventory rows go with their source, and
+    /// the previous release still reads and writes groups afterwards.
+    #[test]
+    fn migration_v13_inventory_and_group_modes() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let prev = MIGRATIONS.len() - 1;
+        {
+            let c = Connection::open(&p).unwrap();
+            c.pragma_update(None, "foreign_keys", "ON").unwrap();
+            for (i, m) in MIGRATIONS[..prev].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO tenants (name) VALUES ('t');
+                 INSERT INTO sources (id, tenant, kind, name, config) VALUES (1,'t','pve','p','{}'), (2,'t','truenas','n','{}');
+                 INSERT INTO policies (id, name, schedule, gfs) VALUES (1,'p','daily 22:00','{}');
+                 INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (1,'t',1,1,'g','[100]');",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+            assert_eq!(v, MIGRATIONS.len() as i64);
+            let (mode, sel, ex): (String, String, String) = conn
+                .query_row("SELECT mode, selector, exclude FROM groups WHERE id = 1", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+                .unwrap();
+            assert_eq!((mode.as_str(), sel.as_str(), ex.as_str()), ("explicit", "[]", "[]"));
+            let ok = |sql: &str| conn.execute(sql, []).is_ok();
+            assert!(!ok("UPDATE groups SET mode = 'some' WHERE id = 1"));
+            assert!(ok(
+                "INSERT INTO groups (tenant, source_id, policy_id, name, guests, mode, selector) VALUES ('t',2,1,'n','[]','tags','[\"pool:tank\"]')"
+            ));
+            assert!(ok(
+                "INSERT INTO inventory (source_id, guest, name, kind, tags, seen) VALUES (1,'100','web','qemu','[]',1)"
+            ));
+            assert!(!ok(
+                "INSERT INTO inventory (source_id, guest, name, kind, tags, seen) VALUES (9,'100','web','qemu','[]',1)"
+            ));
+            conn.execute_batch("DELETE FROM groups WHERE source_id = 1; DELETE FROM sources WHERE id = 1;")
+                .unwrap();
+            let n: i64 = conn
+                .query_row("SELECT COUNT(*) FROM inventory", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "inventory rows go with their source");
+        }
+        drop(c);
+        // the previous release: nothing left to migrate, its group queries still work
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..prev].iter().skip(v as usize).count(), 0);
+        old.execute(
+            "INSERT INTO groups (tenant, source_id, policy_id, name, guests) VALUES ('t',2,1,'old','[\"tank\"]')",
+            [],
+        )
+        .unwrap();
+        let n: i64 = old.query_row("SELECT COUNT(*) FROM groups", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
     }
 }

@@ -21,6 +21,9 @@
     }
   });
 
+  // auto-protect groups (13c): what the group covers now
+  const guests = $derived(group?.resolved_guests ?? group?.guests ?? []);
+
   async function run(e: SubmitEvent) {
     e.preventDefault();
     const g = group;
@@ -30,7 +33,7 @@
       return;
     }
     const params: Record<string, unknown> = { group_id: g.id };
-    if (mode === 'some') params.guests = g.guests.filter((x) => picked.includes(x));
+    if (mode === 'some') params.guests = guests.filter((x) => picked.includes(x));
     if (mode === 'failed') params.failed_only = true;
     if (await act(post('/jobs', { kind: 'backup', tenant: g.tenant, params }), t.dash.backupQueued)) open = false;
   }
@@ -43,11 +46,11 @@
       <fieldset class="field">
         <legend>{t.groups.guestsShort}</legend>
         <label class="inline-check"><input type="radio" name="bn-mode" value="all" bind:group={mode} />{t.runctl.allGuests}</label>
-        {#if group.guests.length > 1}
+        {#if guests.length > 1}
           <label class="inline-check"><input type="radio" name="bn-mode" value="some" bind:group={mode} />{t.runctl.someGuests}</label>
           {#if mode === 'some'}
             <div class="guests">
-              {#each group.guests as g (g)}
+              {#each guests as g (g)}
                 <label class="inline-check mono"><input type="checkbox" value={g} bind:group={picked} />{label(g)}</label>
               {/each}
             </div>

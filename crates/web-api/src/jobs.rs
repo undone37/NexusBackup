@@ -1,4 +1,4 @@
-//! Job requests, snapshots, downloads, alerts.
+//! Job requests, snapshots, downloads (alerts: `alerts.rs`).
 
 use crate::auth::Ctx;
 use crate::{random_hex, validate, ApiError, ApiResult, St, J, Q};
@@ -128,6 +128,13 @@ struct PluginSourceP {
     source_id: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     guests: Option<Vec<String>>,
+}
+
+/// `inventory`: refresh the guest inventory of one source (crate::inventory).
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct InventoryP {
+    source_id: i64,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -326,6 +333,22 @@ fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiResult<Value>
                 Some(schema) => crate::plugins::check_schema(schema, &r.params, "params", &[])?,
                 None if r.params.as_object().is_some_and(|o| o.is_empty()) => {}
                 None => return Err(ApiError::bad("params: this restore takes no parameters")),
+            }
+            json!(r)
+        }
+        "inventory" => {
+            let r: InventoryP = parse(p)?;
+            let c = st.cat.conn();
+            let kind: String = c
+                .query_row(
+                    "SELECT kind FROM sources WHERE id = ?1 AND tenant = ?2",
+                    params![r.source_id, tenant],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| ApiError::bad("source_id: no such source in this tenant"))?;
+            if !crate::inventory::has_inventory(&c, &kind) {
+                return Err(ApiError::bad("source_id: this source has no guest inventory"));
             }
             json!(r)
         }
@@ -569,75 +592,52 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
     Ok(Json(Value::Array(rows)))
 }
 
-// ---------------------------------------------------------------- alerts
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AlertFilter {
-    acked: Option<bool>,
-}
-
-/// Alerts are appliance-wide (no tenant column) and may name other tenants,
-/// so tenant-scoped users get an empty list.
-pub async fn list_alerts(State(st): State<St>, ctx: Ctx, Q(f): Q<AlertFilter>) -> ApiResult<Json<Value>> {
-    if ctx.scope().is_some() {
-        return Ok(Json(json!([])));
-    }
-    let c = st.cat.conn();
-    let rows = c
-        .prepare(
-            "SELECT id, ts, severity, kind, message, acked_by FROM alerts
-             WHERE ?1 IS NULL OR (acked_by IS NOT NULL) = ?1 ORDER BY id DESC LIMIT 1000",
-        )?
-        .query_map([f.acked], |r| {
-            Ok(json!({
-                "id": r.get::<_, i64>(0)?, "ts": r.get::<_, i64>(1)?, "severity": r.get::<_, String>(2)?,
-                "kind": r.get::<_, String>(3)?, "message": r.get::<_, String>(4)?,
-                "acked_by": r.get::<_, Option<String>>(5)?,
-            }))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(Json(Value::Array(rows)))
-}
-
-pub async fn ack_alert(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
-    ctx.require(&["admin", "security_officer", "operator"])?;
-    if ctx.scope().is_some() {
+/// Deletes one local snapshot (admin, approval action `snapshot.delete`, executed
+/// by the scheduler). Refused at once while it is locked, when only the offsite
+/// copy is left (offsite retention) and for replicated snapshots (the
+/// replication source's retention; a deleted one would be fetched again).
+pub async fn delete_snapshot(
+    State(st): State<St>,
+    ctx: Ctx,
+    Path((tenant, source, time)): Path<(String, String, i64)>,
+) -> ApiResult<Response> {
+    ctx.require(&["admin"])?;
+    validate::name(&tenant, "tenant")?;
+    validate::source_ref(&source)?;
+    if !ctx.sees(&tenant) {
         return Err(ApiError::forbidden());
     }
-    let kind: Option<String> = st
+    let row: Option<(bool, i64, Option<String>)> = st
         .cat
         .conn()
-        .query_row("SELECT kind FROM alerts WHERE id = ?1", [id], |r| r.get(0))
+        .query_row(
+            "SELECT local, lock_until, origin FROM snapshots WHERE tenant = ?1 AND source = ?2 AND time = ?3",
+            params![tenant, source, time],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
         .optional()?;
-    // a console recovery of an admin account (nexus-setup recover-admin) is
-    // acknowledged by someone who could have approved it, which ends the banner
-    let break_glass = kind.as_deref() == Some("break_glass");
-    if break_glass {
-        ctx.require(&["admin", "security_officer"])?;
+    let (local, lock_until, origin) = row.ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no such snapshot".into()))?;
+    if !local {
+        return Err(ApiError::conflict(
+            "only the offsite copy is left: it follows the offsite retention",
+        ));
     }
-    {
-        let c = st.cat.conn();
-        let n = c.execute(
-            "UPDATE alerts SET acked_by = ?2 WHERE id = ?1 AND acked_by IS NULL",
-            params![id, ctx.name()],
-        )?;
-        if n == 0 {
-            let found = c
-                .query_row("SELECT 1 FROM alerts WHERE id = ?1", [id], |_| Ok(()))
-                .optional()?;
-            return Err(if found.is_some() {
-                ApiError::conflict("already acknowledged")
-            } else {
-                ApiError::not_found()
-            });
-        }
+    if origin.is_some() {
+        return Err(ApiError::conflict(
+            "replicated snapshot: it follows the replication source's retention",
+        ));
     }
-    if break_glass {
-        st.cat
-            .conn()
-            .execute("DELETE FROM settings WHERE key = 'break_glass'", [])?;
+    if lock_until > catalog::now() {
+        return Err(ApiError::conflict(format!(
+            "snapshot is locked until {lock_until} (unix time)"
+        )));
     }
-    st.audit(ctx.name(), "alert.ack", &format!("alert/{id}"), json!({"kind": kind}))?;
-    Ok(Json(json!({"id": id, "acked_by": ctx.name()})))
+    let o = crate::quorum::request(
+        &st,
+        &ctx,
+        "snapshot.delete",
+        &format!("snapshot/{tenant}/{source}/{time}"),
+        json!({"tenant": tenant, "source": source, "time": time}),
+    )?;
+    Ok(crate::quorum::accepted(o, json!({})))
 }

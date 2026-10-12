@@ -6,8 +6,8 @@
 //! Destinations: per source the PVE API (`connect_addr`, else `host:port`,
 //! default 8006) and the SSH endpoint of every node (default 22); per tenant
 //! the SFTP box (default 23) or the S3 endpoint (default 443; with
-//! virtual-hosted addressing `<bucket>.<host>`); the webhook URL and SMTP
-//! relay of alerts.json.
+//! virtual-hosted addressing `<bucket>.<host>`); the webhook URL of every
+//! alert rule and the SMTP relay.
 //! Names that do not resolve are skipped (and retried on the next tick).
 //! Names are resolved here, at sync time: endpoints whose DNS answers rotate
 //! through many addresses (AWS S3) can hand the job an address that is not
@@ -111,18 +111,21 @@ pub fn offsite_targets(o: &Value) -> Vec<(String, u16)> {
     }
 }
 
-/// (host, port) of the webhook and the SMTP relay.
+/// (host, port) of every alert rule's webhook and of the SMTP relay.
 pub fn alert_targets(a: &AlertsConfig) -> Vec<(String, u16)> {
-    let mut out = Vec::new();
-    if let Some(w) = &a.webhook {
+    let mut out: Vec<(String, u16)> = Vec::new();
+    for w in a.rules.iter().filter_map(|r| r.channels.webhook.as_ref()) {
         let (scheme, rest) = w.url.split_once("://").unwrap_or(("https", &w.url));
         let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
         let authority = authority.rsplit('@').next().unwrap_or_default();
         let def = if scheme.eq_ignore_ascii_case("http") { 80 } else { 443 };
-        if let Some(hp) = split_host_port(authority) {
-            out.push(hp);
-        } else if !authority.is_empty() {
-            out.push((authority.trim_matches(['[', ']']).to_owned(), def));
+        let t = match split_host_port(authority) {
+            Some(hp) => hp,
+            None if !authority.is_empty() => (authority.trim_matches(['[', ']']).to_owned(), def),
+            None => continue,
+        };
+        if !out.contains(&t) {
+            out.push(t);
         }
     }
     if let Some(s) = &a.smtp {

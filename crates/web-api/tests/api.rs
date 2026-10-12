@@ -727,7 +727,7 @@ async fn tenant_user_isolation() {
     only_acme(&t.get("/api/v1/users", &tina).await.body, "tenant");
     assert_eq!(
         t.get("/api/v1/tenants", &tina).await.body,
-        json!([{"name": "acme", "offsite": {}}])
+        json!([{"name": "acme", "offsite": {}, "quota_bytes": null}])
     );
     assert_eq!(t.get("/api/v1/alerts", &tina).await.body, json!([]));
 
@@ -2654,14 +2654,18 @@ async fn truenas_sources() {
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{field}: {:?}", r.body);
     }
 
-    // groups: guests are datasets of the source (empty = all)
+    // groups: guests are datasets of the source (empty = all: mode `all`, resolved at
+    // run time from the inventory instead of frozen at save time, Phase 13c)
     let pol = t.post("/api/v1/policies", &admin, policy(7, false)).await.body["id"]
         .as_i64()
         .unwrap();
     let group = |name: &str, guests: Value| json!({"tenant": "acme", "source_id": sid, "policy_id": pol, "name": name, "guests": guests});
     let g = t.post("/api/v1/groups", &admin, group("nas", json!([]))).await;
     assert_eq!(g.status, StatusCode::CREATED, "{:?}", g.body);
-    assert_eq!(g.body["guests"], json!(["tank/data", "tank/smb"]));
+    assert_eq!(
+        (g.body["guests"].clone(), g.body["mode"].clone()),
+        (json!([]), json!("all"))
+    );
     let g = t
         .post("/api/v1/groups", &admin, group("nas2", json!(["tank/smb"])))
         .await;

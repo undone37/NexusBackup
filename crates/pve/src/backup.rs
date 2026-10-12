@@ -130,11 +130,12 @@ impl Cluster {
             .with_context(|| format!("guest {vmid} not found in cluster"))
     }
 
-    /// Backs up a VM or a container, whichever `vmid` is. Returns the manifest.
-    pub fn backup_guest(&self, store: &Store, vmid: u32) -> Result<Manifest> {
+    /// Backs up a VM or a container, whichever `vmid` is. Returns the manifest
+    /// and the bytes read from the guest.
+    pub fn backup_guest(&self, store: &Store, vmid: u32) -> Result<(Manifest, u64)> {
         match self.guest(vmid)?.1.as_str() {
             "qemu" => self.backup_vm(store, vmid),
-            "lxc" => Ok(self.backup_ct(store, vmid)?.0),
+            "lxc" => self.backup_ct(store, vmid).map(|(m, st)| (m, st.size)),
             t => bail!("guest {vmid} has unsupported type {t}"),
         }
     }
@@ -147,7 +148,8 @@ impl Cluster {
 
     /// One full backup run of a VM. The snapshot is committed before the node is
     /// told `done ok`, because QEMU commits the dirty bitmap when backup_vm returns.
-    pub fn backup_vm(&self, store: &Store, vmid: u32) -> Result<Manifest> {
+    /// Returns the manifest and the bytes read over NBD (dirty extents only when incremental).
+    pub fn backup_vm(&self, store: &Store, vmid: u32) -> Result<(Manifest, u64)> {
         let (node, kind) = self.guest(vmid)?;
         if kind != "qemu" {
             bail!("guest {vmid} is not a VM ({kind})");
@@ -198,19 +200,20 @@ impl Cluster {
         }
     }
 
-    fn pull(&self, store: &Store, ssh: &SshNode, vmid: u32, job: &Job) -> Result<Manifest> {
+    fn pull(&self, store: &Store, ssh: &SshNode, vmid: u32, job: &Job) -> Result<(Manifest, u64)> {
         let time = job.time()?;
         let source = source_name(vmid);
         let prev = store.list_snapshots()?.into_iter().rfind(|m| m.source == source);
-        let (mut names, mut indexes) = (Vec::new(), Vec::new());
+        let (mut names, mut indexes, mut read) = (Vec::new(), Vec::new(), 0);
         for dev in &job.devices {
             let base = match (dev.bitmap_mode.as_str(), &prev) {
                 ("reuse", Some(m)) if m.indexes.contains(&dev.name) => Some(store.load_index(m, &dev.name)?),
                 ("reuse", _) => bail!("{}: PVE reuses a dirty bitmap but no base snapshot exists", dev.name),
                 _ => None,
             };
-            let idx =
+            let (idx, n) =
                 pull_device(store, ssh, vmid, dev, base.as_ref()).with_context(|| format!("device {}", dev.name))?;
+            read += n;
             names.push(dev.name.as_str());
             indexes.push(idx);
         }
@@ -221,7 +224,7 @@ impl Cluster {
         names.push("config");
         indexes.push(Index::Dynamic { entries });
         let refs: Vec<(&str, Index)> = names.into_iter().zip(indexes).collect();
-        Ok(store.commit_snapshot(&source, time, &refs)?)
+        Ok((store.commit_snapshot(&source, time, &refs)?, read))
     }
 
     /// Full restore of snapshot `vm-<vmid>/<time>` as VM `target` on `node`. PVE pulls
@@ -286,7 +289,8 @@ impl Drop for Kill {
     }
 }
 
-fn pull_device(store: &Store, ssh: &SshNode, vmid: u32, dev: &Device, base: Option<&Index>) -> Result<Index> {
+/// Returns the device index and the bytes read from the export.
+fn pull_device(store: &Store, ssh: &SshNode, vmid: u32, dev: &Device, base: Option<&Index>) -> Result<(Index, u64)> {
     let mut child = Kill(
         ssh.cmd(&format!("nbd {vmid}"))
             .stdin(Stdio::piped())
@@ -309,9 +313,13 @@ fn pull_device(store: &Store, ssh: &SshNode, vmid: u32, dev: &Device, base: Opti
         Some(ctx) => nbd::flagged(&c.block_status(ctx)?, 1),
         None => vec![(0, dev.size)],
     };
-    let idx = store.store_image_extents(base, IMAGE_CHUNK_SIZE, dev.size, &dirty, |off, buf| c.read_at(off, buf))?;
+    let mut read = 0;
+    let idx = store.store_image_extents(base, IMAGE_CHUNK_SIZE, dev.size, &dirty, |off, buf| {
+        read += buf.len() as u64;
+        c.read_at(off, buf)
+    })?;
     c.disconnect()?;
-    Ok(idx)
+    Ok((idx, read))
 }
 
 fn serve_device(store: &Store, ssh: &SshNode, archive: &str, device: &str, idx: &Index) -> Result<()> {

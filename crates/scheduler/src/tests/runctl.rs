@@ -54,6 +54,24 @@ fn paused_maintenance_and_blackout_skip_scheduled_runs() {
     s.check_paused(s.now).unwrap();
     s.check_paused(s.now).unwrap();
     assert_eq!(count(&s, "SELECT COUNT(*) FROM alerts WHERE kind='paused'"), 2);
+    // resumed: the warning resolves itself
+    exec(&s, "UPDATE groups SET paused_until = NULL WHERE id = 1");
+    s.check_paused(s.now).unwrap();
+    assert_eq!(
+        count(
+            &s,
+            "SELECT COUNT(*) FROM alerts WHERE kind='paused' AND resolved_at IS NULL"
+        ),
+        1,
+        "source 3 still in maintenance"
+    );
+    assert_eq!(
+        count(
+            &s,
+            "SELECT COUNT(*) FROM alerts WHERE key='paused:group:1:-1' AND auto=1"
+        ),
+        1
+    );
 
     // a blackout window over the slot (Berlin time) holds the run until it ends
     exec(
@@ -153,6 +171,48 @@ fn retries_failed_guests_then_alerts() {
     assert!(msg.contains("failed after 3 attempts"), "{msg}");
     let calls = fs::read_to_string(e.d.path().join("calls")).unwrap();
     assert_eq!(calls, "\"vmids\":[100,101]\n\"vmids\":[101]\n\"vmids\":[101]\n");
+    // a later successful run of the group resolves the job_failed alert (13f lifecycle)
+    connector(&e, "echo 'committed vm-100/9'; echo 'committed vm-101/9'");
+    let ok = manual(&s, "backup", "t1", json!({"group_id": 1}));
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert_eq!(state(&s, ok), "ok");
+    assert_eq!(
+        count(
+            &s,
+            "SELECT COUNT(*) FROM alerts WHERE kind='job_failed' AND resolved_at IS NULL"
+        ),
+        0
+    );
+}
+
+#[test]
+fn retry_that_succeeds_leaves_no_alert() {
+    let e = env(4);
+    // the first attempt fails, the retry succeeds
+    connector(
+        &e,
+        &format!(
+            "if [ -e {0}/failed ]; then echo 'committed vm-100/5'; exit 0; fi; touch {0}/failed; exit 1",
+            e.d.path().display()
+        ),
+    );
+    let mut s = sched(&e);
+    let a = manual(&s, "backup", "t1", json!({"group_id": 1}));
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert_eq!(state(&s, a), "failed");
+    exec(&s, "UPDATE jobs SET not_before = 0");
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert_eq!(
+        count(
+            &s,
+            "SELECT COUNT(*) FROM jobs WHERE kind='backup' AND attempt=2 AND state='ok'"
+        ),
+        1
+    );
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM alerts WHERE kind='job_failed'"), 0);
 }
 
 #[test]

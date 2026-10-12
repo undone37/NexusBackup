@@ -211,7 +211,10 @@ fn validate_guests_mount() {
     assert_eq!(r["valid"], false);
     assert_eq!(r["message"], "cannot connect\\nfake");
     let r = ops::guests(&mut e.proc(30, 10), &p, &mut |l| log.push(l.to_owned())).unwrap();
-    assert_eq!(r["guests"], json!([{"id": "db1", "title": "Database 1", "size": 42}]));
+    assert_eq!(
+        r["guests"],
+        json!([{"id": "db1", "title": "Database 1", "size": 42, "tags": []}])
+    );
     assert!(log.iter().any(|l| l.contains("../evil") && l.contains("dropped")));
 
     let (b, _) = e.backup(json!({"mode": "ok", "content": "abcdef"}));

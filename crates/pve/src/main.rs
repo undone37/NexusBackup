@@ -1,4 +1,4 @@
-//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | restore-ct <vmid> <time> <node> <target> <storage> | instant-recover <vmid> <time> <node> <target> <storage> [--link-down] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>... | ct-files <vmid> <time> ls [dir]|get <out> <path>... | push-index | list`.
+//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | restore-ct <vmid> <time> <node> <target> <storage> | instant-recover <vmid> <time> <node> <target> <storage> [--link-down] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>... | ct-files <vmid> <time> ls [dir]|get <out> <path>... | push-index | list | inventory`.
 //! `backup-all` backs up every guest in `vmids`, VM or container (type from /cluster/resources).
 
 use anyhow::{bail, Context, Result};
@@ -43,9 +43,15 @@ fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
-        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | restore-ct <vmid> <time> <node> <target> <storage> | instant-recover <vmid> <time> <node> <target> <storage> [--link-down] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>... | ct-files <vmid> <time> ls [dir]|get <out> <path>... | push-index | list | task-stop <upid>");
+        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | restore-ct <vmid> <time> <node> <target> <storage> | instant-recover <vmid> <time> <node> <target> <storage> [--link-down] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>... | ct-files <vmid> <time> ls [dir]|get <out> <path>... | push-index | list | inventory | task-stop <upid>");
     };
     let cfg: Config = serde_json::from_slice(&fs::read(cfg_path)?).context("config")?;
+    if let ("inventory", []) = (cmd.as_str(), rest) {
+        // the cluster's guests (auto-protect, docs/control-plane.md): API only, no store or keys
+        let a = cfg.api.context("inventory: this configuration has no PVE API")?;
+        println!("{}", pve::inventory::list(&api(a)?)?);
+        return Ok(());
+    }
     let keys = keyd::fetch_keyring(&cfg.keyd_socket, &cfg.tenant).context("keyd")?;
     let store = Store::open(&cfg.store, keys, Options::default())?;
     match (cmd.as_str(), rest) {
@@ -68,14 +74,7 @@ fn main() -> Result<()> {
     let Some(a) = cfg.api else {
         bail!("{cmd}: this configuration has no PVE API (store-only)");
     };
-    let api = Api::new(&ApiConfig {
-        host: a.host,
-        port: a.port,
-        connect_addr: a.connect_addr,
-        ca_pem: fs::read(&a.ca_pem_file)?,
-        token_id: a.token_id,
-        token_secret: fs::read_to_string(&a.token_secret_file)?.trim().to_owned(),
-    })?;
+    let api = api(a)?;
     let vmids = cfg.vmids.clone();
     let cluster = Cluster {
         api,
@@ -86,7 +85,8 @@ fn main() -> Result<()> {
     match (cmd.as_str(), rest) {
         ("backup", [vmid]) => {
             let t = std::time::Instant::now();
-            let m = cluster.backup_vm(&store, vmid.parse()?)?;
+            let before = store.written();
+            let (m, read) = cluster.backup_vm(&store, vmid.parse()?)?;
             println!(
                 "committed {}/{} in {:.1?}, indexes {:?}",
                 m.source,
@@ -94,10 +94,12 @@ fn main() -> Result<()> {
                 t.elapsed(),
                 m.indexes
             );
+            println!("{}", store.stats_line(&m, read, store.written().since(before))?);
             cluster.push_index(&store)?;
         }
         ("backup-ct", [vmid]) => {
             let t = std::time::Instant::now();
+            let before = store.written();
             let (m, st) = cluster.backup_ct(&store, vmid.parse()?)?;
             println!(
                 "committed {}/{} in {:.1?}: tar stream {} bytes, {} chunks, {} new chunks ({} bytes new)",
@@ -109,6 +111,7 @@ fn main() -> Result<()> {
                 st.new_chunks,
                 st.new_bytes
             );
+            println!("{}", store.stats_line(&m, st.size, store.written().since(before))?);
             cluster.push_index(&store)?;
         }
         ("restore-ct", [vmid, time, node, target, storage]) => {
@@ -149,14 +152,21 @@ fn main() -> Result<()> {
             let failed: Vec<u32> = vmids
                 .iter()
                 .copied()
-                .filter(|&vmid| match cluster.backup_guest(&store, vmid) {
-                    Ok(m) => {
-                        println!("committed {}/{}", m.source, m.time);
-                        false
-                    }
-                    Err(e) => {
-                        eprintln!("backup of guest {vmid} failed: {e:#}");
-                        true
+                .filter(|&vmid| {
+                    let before = store.written();
+                    match cluster.backup_guest(&store, vmid) {
+                        Ok((m, read)) => {
+                            println!("committed {}/{}", m.source, m.time);
+                            match store.stats_line(&m, read, store.written().since(before)) {
+                                Ok(l) => println!("{l}"),
+                                Err(e) => eprintln!("stats of {}/{}: {e}", m.source, m.time),
+                            }
+                            false
+                        }
+                        Err(e) => {
+                            eprintln!("backup of guest {vmid} failed: {e:#}");
+                            true
+                        }
                     }
                 })
                 .collect();
@@ -171,6 +181,17 @@ fn main() -> Result<()> {
         _ => bail!("unknown command"),
     }
     Ok(())
+}
+
+fn api(a: ApiFile) -> Result<Api> {
+    Api::new(&ApiConfig {
+        host: a.host,
+        port: a.port,
+        connect_addr: a.connect_addr,
+        ca_pem: fs::read(&a.ca_pem_file)?,
+        token_id: a.token_id,
+        token_secret: fs::read_to_string(&a.token_secret_file)?.trim().to_owned(),
+    })
 }
 
 fn ct_files(store: &Store, vmid: &str, time: &str, cmd: &str, args: &[String]) -> Result<()> {

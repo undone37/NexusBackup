@@ -30,7 +30,7 @@ pub mod source;
 pub mod testing;
 
 pub use plugin_proto as proto;
-pub use plugin_proto::{BaseEntry, Guest, Kind, Meta, Op};
+pub use plugin_proto::{BaseEntry, Guest, Kind, Meta, Op, TaggedGuest};
 pub use sink::{Sink, StreamWriter, WalkOptions, WalkStats};
 pub use source::{FileItem, Mount, RestoreOptions, RestoreStats, Source};
 
@@ -175,6 +175,12 @@ pub trait Plugin {
     fn list_guests(&mut self, _ctx: &Ctx) -> Result<Vec<Guest>> {
         Ok(Vec::new())
     }
+    /// Guests with tags (`type:user`, `pool:x`, …) that auto-protect groups select on
+    /// (contract v1.5). Default: [`Plugin::list_guests`] without tags. Without any tag
+    /// the answer stays a v1.4 `Guests` message (runs on older hosts too).
+    fn list_tagged_guests(&mut self, ctx: &Ctx) -> Result<Vec<TaggedGuest>> {
+        Ok(self.list_guests(ctx)?.into_iter().map(TaggedGuest::from).collect())
+    }
     fn backup(&mut self, ctx: &Ctx, sink: &mut Sink) -> Result<BackupResult>;
     /// A restore of the manifest's `restores[]` (`ctx.params["restore"]`); returns a summary.
     fn restore(&mut self, ctx: &Ctx, src: &mut Source) -> Result<String>;
@@ -243,7 +249,15 @@ pub fn run_with<P: Plugin>(mut p: P, r: Box<dyn Read + Send>, w: Box<dyn Write +
             Validation::Valid => Message::Valid,
             Validation::Invalid { field, message } => Message::Invalid { field, message },
         }),
-        Op::ListGuests => p.list_guests(&ctx).map(|list| Message::Guests { list }),
+        Op::ListGuests => p.list_tagged_guests(&ctx).map(|list| {
+            if list.iter().all(|g| g.tags.is_empty()) {
+                Message::Guests {
+                    list: list.into_iter().map(Guest::from).collect(),
+                }
+            } else {
+                Message::TaggedGuests { list }
+            }
+        }),
         Op::Backup => {
             let mut sink = Sink::new(chan.clone(), ctx.base_time.is_some());
             p.backup(&ctx, &mut sink).map(|mut b| {

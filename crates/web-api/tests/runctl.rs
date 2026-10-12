@@ -412,6 +412,21 @@ async fn backup_now_guests_failed_only_and_cancel_running() {
             .status,
         StatusCode::CONFLICT
     );
+    // an auto-protect group (13c): the guests are the resolved inventory guests
+    t.exec(
+        "UPDATE groups SET mode = 'all', guests = '[]', exclude = '[\"501\"]' WHERE id = 1;
+         INSERT INTO inventory (source_id, guest, seen) VALUES (1, '500', 1), (1, '501', 1), (1, '502', 1);",
+    );
+    let r = t
+        .post("/api/v1/jobs", &otto, job(json!({"group_id": 1, "guests": [502]})))
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    for g in [101, 501] {
+        let r = t
+            .post("/api/v1/jobs", &otto, job(json!({"group_id": 1, "guests": [g]})))
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{g}");
+    }
 }
 
 #[test]

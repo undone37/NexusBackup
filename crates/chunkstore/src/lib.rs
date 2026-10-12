@@ -6,4 +6,4 @@ pub mod retention;
 pub mod store;
 
 pub use crypto::{ChunkId, Keyring};
-pub use store::{FileEntry, FileStats, Index, Manifest, Options, Store, TreeEntry, TreeKind};
+pub use store::{FileEntry, FileStats, Index, Manifest, Options, Store, TreeEntry, TreeKind, Written};

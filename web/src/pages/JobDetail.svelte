@@ -126,13 +126,14 @@
             {t.jobs.invalid}{res.field ? ` (${res.field})` : ''}{res.message ? `: ${res.message}` : ''}
           </p>
         {/if}
-      {:else if job.kind === 'plugin_guests'}
+      {:else if job.kind === 'plugin_guests' || job.kind === 'inventory'}
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
                 <th scope="col">{t.jobs.guestId}</th>
                 <th scope="col">{t.jobs.guestTitle}</th>
+                <th scope="col">{t.inventory.tags}</th>
                 <th scope="col" class="num">{t.jobs.size}</th>
               </tr>
             </thead>
@@ -141,10 +142,11 @@
                 <tr>
                   <td class="mono">{g.id}</td>
                   <td>{g.title}</td>
+                  <td class="mono">{(g.tags ?? []).join(' ')}</td>
                   <td class="num">{fmtBytes(g.size)}</td>
                 </tr>
               {:else}
-                <tr><td colspan="3" class="empty">{t.none}</td></tr>
+                <tr><td colspan="4" class="empty">{t.none}</td></tr>
               {/each}
             </tbody>
           </table>

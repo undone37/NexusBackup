@@ -9,7 +9,9 @@ own data.
 > **Status:** The web interface was redesigned in this release (new layout, dark mode, KPI dashboard, **Settings**
 > page, single sign-on). The new pages were tested against the demo backend. The appliance-side parts of the KPI
 > dashboard, single sign-on, alert delivery, appliance SSH keys, updates and break-glass recovery are still being
-> integrated; until an appliance runs them, those pages show an error or no data there.
+> integrated; until an appliance runs them, those pages show an error or no data there. The **Storage** page and the
+> dashboard's deduplication and compression factors need backups taken with this release (earlier ones carry no
+> statistics).
 
 ## Signing in
 
@@ -79,7 +81,7 @@ The sidebar shows only what your role may use. The server checks every request a
 
 | Page | Administrator | Security officer | Operator | Tenant user |
 |---|---|---|---|---|
-| Dashboard, Snapshots, Jobs | ✓ | ✓ | ✓ | ✓ (own tenant) |
+| Dashboard, Snapshots, Storage, Jobs | ✓ | ✓ | ✓ | ✓ (own tenant) |
 | Alerts | ✓ | ✓ | ✓ | — |
 | Approvals | ✓ | ✓ (decides) | ✓ (read) | — |
 | Audit log | ✓ | ✓ | — | — |
@@ -116,8 +118,21 @@ for the browser session). The key figures refresh every minute, the table below 
 - **Paused**: behind the RPO, but every group of the object is paused or its source is in maintenance. Not counted as
   a breach (see [05](05-policies-and-groups.md#pausing-a-group)).
 - **Never backed up**: the object is in a protection group but has no successful backup yet.
-- **Not in a group**: the appliance knows the object (e.g. a VM on a connected Proxmox VE cluster, a database of a
-  PostgreSQL source) but no protection group covers it. Nothing backs it up.
+- **Not in a group**: the appliance knows the object (a guest in the inventory of a source, e.g. a VM on a connected
+  Proxmox VE cluster or a database of a PostgreSQL source; an enrolled agent; an NFS/SMB source) but no protection
+  group covers it. Nothing backs it up. Guests a group excludes count here too.
+
+Storage figures (here and on the [Storage](#storage) page) use four terms:
+
+- **Logical**: the full size of every kept snapshot, as if each were a complete copy. Ten daily snapshots of a 100 GiB
+  VM are 1 TiB logical.
+- **Data in**: the new, unique data the backups added to the store, before compression. Data that another snapshot
+  (of any source of the tenant) already stored is not counted again.
+- **Stored**: what that new data takes up on disk after compression and encryption.
+- **Saved**: Logical minus Stored.
+
+**Deduplication** = Logical ÷ Data in, **Compression** = Data in ÷ Stored; their product is the data reduction of the
+measured backups.
 
 ### Key figures
 
@@ -127,7 +142,7 @@ for the browser session). The key figures refresh every minute, the table below 
 | **RPO breaches** | number of objects whose last good backup is older than 1.5 × RPO; below: how many are within RPO and how many were **never backed up** | red: any breach; amber: objects never backed up. See **Objects needing attention** |
 | **Job success rate** | share of jobs in the period that finished OK; below: failed jobs, warnings, total. Click it to see the failed jobs | below 95 % (red), any failure (amber) |
 | **Storage used** | how full the local chunk store is; below: free and total space | above 75 % (amber; the `capacity` alert fires), above 90 % (red) |
-| **Data reduction** | logical data ÷ stored data, e.g. **4.2×** = 4.2 TiB of backed-up data need 1 TiB of disk; below: the deduplication and compression factors (their product is the total) | a sudden drop: new data that does not deduplicate (e.g. encrypted or compressed files) |
+| **Data reduction** | logical data ÷ the measured store size, e.g. **4.2×** = 4.2 TiB of backed-up data need 1 TiB of disk; below: the **Deduplication** and **Compression** factors from the backup statistics (see the terms above; their product can differ a little from the tile, which uses the measured store size) | a sudden drop: new data that does not deduplicate (e.g. encrypted or compressed files); the `anomaly` alert watches this per source |
 | **Forecast to full** | days until the store is full if it keeps growing like in the last 30 days (a straight line through the daily usage, the "linear trend"); **Not growing** when usage is flat or falling, or fewer than 7 days of samples exist; **> 2 years** for very long horizons | below 90 days (amber), below 30 days (red): add storage or review retention |
 | **Offsite lag** | how far the offsite copy of the most-behind tenant trails; below: how many tenants with an offsite target are lagging, and the replication lag. "no offsite copies" when no tenant has an offsite target. Click it to open **Replication** | any lagging tenant (amber); see the `offsite_lag` alert |
 | **Lock coverage** | share of snapshots under an immutable retention lock; below: the last verification and failed verifications | below 100 % (amber), any failed verification (red) |
@@ -144,12 +159,17 @@ data reduction factor before the first backup).
 - **Capacity trend**: stored data per day (after deduplication and compression), the linear forecast as a dashed line
   and the store's capacity as a dotted red line. The chip at the top right ("full in 197 days") repeats the forecast.
 - **Data reduction**: a ring of **Stored** against **Saved** space, with the **Logical** size and the
-  **Deduplication** and **Compression** factors below it.
+  **Deduplication** and **Compression** factors below it. **Storage** opens the [Storage](#storage) page.
 - **Failures by source type**: failed jobs in the period per source type (Proxmox VE, SMB shares, TrueNAS, agent
   hosts, plugins by name, …). Shows where problems cluster.
 - **Objects needing attention**: up to 10 objects with an RPO breach or that were never backed up, worst first:
   **Object**, **Tenant**, **Type**, **Last good backup**, **RPO** and the **SLA** chip (**Breached** or **Never**).
   "Every object is within its RPO." when there is nothing to do.
+- **Not in a group (N)**: shown when something is unprotected. Click it to open the list: **Object** (name and guest
+  ID), **Tenant**, **Type** and **Source**. **Open protection groups** leads to the groups, where an
+  [auto-protect group](05-policies-and-groups.md#auto-protect-all-guests-or-guests-by-tag) can cover them for good.
+
+![The "Not in a group" list on the Dashboard](images/dashboard-unprotected.png)
 
 Hover over a bar or ring segment to see its value. Screen readers get each chart as a table.
 
@@ -171,6 +191,37 @@ When approvals are disabled although two or more people could approve, administr
 enable them, with a link **Open approval settings**. **Dismiss** hides it for the current browser session.
 
 ![Dashboard with the approvals recommendation banner](images/dashboard-approvals-off.png)
+
+## Storage
+
+**Monitor → Storage** shows what the backups take up, per tenant and per protection group (terms: see
+[Terms used on the dashboard](#terms-used-on-the-dashboard)). Tenant-scoped accounts see their tenant only.
+
+![Storage](images/storage.png)
+
+- The tiles at the top sum up **Logical**, **Data in** (with the deduplication factor), **Stored** (with the
+  compression factor) and **Saved** (with the total data reduction).
+- **Store size, last 90 days**: the measured size of the store per day; the chip shows the growth over 30 days (hover
+  for 7 and 90 days).
+- **By protection group** (chart): the groups that store the most.
+- **By tenant**: **Store size** (measured once a day), the **Soft quota** (share used, amber from 80 %, red from
+  100 %; set on **Tenants**), Logical, Data in, Stored, the two factors and the growth over 7, 30 and 90 days.
+- **By protection group** (table): the same per group. Snapshots of sources that are in no group (any more) are
+  summed up as **Not in a group**. A source in several groups counts for the first one.
+
+How the figures are obtained: every backup reports how much it read, the snapshot's logical size and the new data it
+wrote (plain and stored). The page sums these up for the snapshots that are still kept. Two limits:
+
+- A chunk counts for the snapshot that wrote it first. When that snapshot expires, its chunks drop out of the sums
+  even if later snapshots still use them. Stored can therefore be lower than the measured **Store size**, and the
+  factors lean high on old data; the store size is always measured.
+- Snapshots taken before this release and replicated snapshots carry no statistics. The note below the table says how
+  many of the kept snapshots are covered.
+
+**Soft quotas**: administrators set a tenant's quota in GiB on **Tenants** (**Edit**, **Soft storage quota**). The
+appliance raises a `quota` warning at 80 % and a critical alert at 100 % of the measured store size (see
+[11 Alerts and monitoring](11-alerts-and-monitoring.md#alert-kinds)). A quota never stops a backup; it applies
+without approval.
 
 ## Snapshots
 
@@ -206,6 +257,9 @@ Each row has two controls (not for security officers, who cannot restore):
 | `host-` | **Restore to path** |
 | `plugin-…` | the plugin's restores that apply to this kind of snapshot, e.g. **Restore database dump to a server** only on database snapshots and **Point-in-time restore** only on cluster snapshots of PostgreSQL |
 | `nas-`, `share-` | no menu: download only |
+
+Administrators also see **Delete** on snapshots whose retention lock has expired, that have a local copy and that were
+not replicated from another appliance (see [06 Restores](06-restores.md#deleting-a-snapshot)).
 
 See [06 Restores](06-restores.md).
 
@@ -258,9 +312,13 @@ parameters. While the job runs, the log refreshes every 2 seconds (**Live — re
 
 Alerts the appliance raised, newest first: failed jobs, verification failures, capacity above 75 %, offsite or
 replication lag over 48 hours, inconsistent backups, garbage collections waiting for approval, break-glass recovery
-and more. **Acknowledge** marks an alert as handled (recorded with your name); **Show acknowledged** shows those
-again. The bell in the top bar counts the open alerts. Where alerts are sent (webhook, e-mail) is set under
-**Settings → Alert delivery**. See [11 Alerts and monitoring](11-alerts-and-monitoring.md).
+and more. A problem that repeats while its alert is open is counted on that alert (**Seen**: "147 times").
+**What to do** under each message gives a short hint. **Acknowledge** says someone is on it (recorded with your name
+and an optional note); the alert stays open. **Resolve** closes it with an optional note. Most alerts resolve
+themselves when the next run succeeds (badge **auto-resolved**). The switch at the top shows **Open**, **Resolved** or
+**All** alerts. The bell in the top bar counts the open alerts nobody has acknowledged. Where alerts are sent
+(notification rules for e-mail and webhooks) is set under **Settings → Alert delivery**. See
+[11 Alerts and monitoring](11-alerts-and-monitoring.md).
 
 **Break-glass banner.** If someone used the console recovery for a locked-out administrator, every administrator
 sees a red banner under the top bar: "Break-glass recovery was used: … Check the audit log, then acknowledge." with
@@ -286,7 +344,7 @@ back in time. See [10 Approvals and audit](10-approvals-and-audit.md#audit-log).
 
 | Page | What you do there | Chapter |
 |---|---|---|
-| **Tenants** | create tenants, set each tenant's offsite target | [07 Offsite copies](07-offsite.md) |
+| **Tenants** | create tenants, set each tenant's offsite target and soft storage quota | [07 Offsite copies](07-offsite.md), [Storage](#storage) |
 | **Sources** | connect Proxmox VE, agent hosts, TrueNAS, NFS/SMB shares and plugin sources | [04 Sources](04-sources.md) |
 | **Agents** | register Linux/Windows backup agents, issue enrollment tokens, update agents | [04 Sources](04-sources.md) |
 | **Replication** | pair this appliance with a second appliance | [08 Replication](08-replication.md) |
@@ -294,7 +352,7 @@ back in time. See [10 Approvals and audit](10-approvals-and-audit.md#audit-log).
 | **Protection groups** | which guests of a source are backed up with which policy | [05 Policies and protection groups](05-policies-and-groups.md) |
 | **Users** | accounts, roles, activation codes; single sign-on accounts are marked **Single sign-on** | [09 Users and access](09-users-and-access.md) |
 | **Plugins** | install, upgrade and remove plugins; publisher keys | [12 Plugins](12-plugins.md) |
-| **Settings** | appliance-wide settings in five tabs (below) | see below |
+| **Settings** | appliance-wide settings in six tabs (below) | see below |
 
 ![Tenants](images/tenants.png)
 
@@ -322,10 +380,11 @@ when approvals are enabled.
 | Tab | What it is for | Chapter |
 |---|---|---|
 | **Approvals** | the **Approval requirement**: enable or disable four-eyes approvals | [10 Approvals and audit](10-approvals-and-audit.md#enabling-and-disabling-approvals) |
-| **Alert delivery** | webhook and e-mail (SMTP) for alerts, minimum severity, **Send test** | [11 Alerts and monitoring](11-alerts-and-monitoring.md#delivery-by-webhook-and-e-mail) |
+| **Alert delivery** | notification rules (severity, kinds, tenants → e-mail recipients, webhook with optional template), **Send test** per rule, the SMTP server, reminders and retention | [11 Alerts and monitoring](11-alerts-and-monitoring.md#delivery-notification-rules) |
 | **Single sign-on** | the OpenID Connect identity provider, group mappings, **Test connection** | [09 Users and access](09-users-and-access.md#single-sign-on-oidc) |
 | **Appliance SSH keys** | the public keys the appliance signs in to sources with; **Copy**, **Rotate**, **Retire old key** | [04 Sources](04-sources.md#appliance-ssh-keys) |
 | **Updates** | running, staged, available and rollback image; **Check now**, **Install now** | [13 Updates](13-updates.md#updates-in-the-web-interface) |
+| **Anomaly detection** | thresholds of the change-rate `anomaly` alert | [11 Alerts and monitoring](11-alerts-and-monitoring.md#change-rate-anomalies) |
 
 ![Settings: Approvals](images/settings-approvals.png)
 
@@ -336,6 +395,8 @@ when approvals are enabled.
 ![Settings: Appliance SSH keys](images/settings-ssh-keys.png)
 
 ![Settings: Updates](images/settings-updates.png)
+
+![Settings: Anomaly detection](images/settings-anomaly.png)
 
 ## Messages and dialogs
 

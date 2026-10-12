@@ -314,6 +314,7 @@ pub struct Params<'a> {
 /// Runs one backup (one plugin process = one snapshot of `p.source`).
 pub fn run(store: &Store, peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&str)) -> Result<Report> {
     let base = load_base(store, p.source).context("loading the base snapshot")?;
+    let written = store.written();
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let mut r = Report {
         source: p.source.to_owned(),
@@ -569,13 +570,14 @@ pub fn run(store: &Store, peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&
             },
         ));
     }
-    store.commit_snapshot(p.source, r.time, &idx)?;
+    let m = store.commit_snapshot(p.source, r.time, &idx)?;
     let id = format!("{}/{}", r.source, r.time);
     log.left = usize::MAX;
     (log.out)(&format!(
         "committed {id} {} entries ({} files, {} unchanged), {} streams, {} bytes, {} bytes transferred, {} bytes new, consistent={}",
         r.entries, r.files, r.unchanged, r.streams, r.bytes, r.transferred, r.new_bytes, r.consistent
     ));
+    (log.out)(&store.stats_line(&m, r.transferred, store.written().since(written))?);
     if !r.consistent {
         (log.out)(&format!(
             "inconsistent {id}: the plugin reported no consistent view ({})",
@@ -614,6 +616,7 @@ pub(crate) fn msg_name(m: &Message) -> &'static str {
         Message::Log { .. } => "Log",
         Message::Error { .. } => "Error",
         Message::BaseList { .. } => "BaseList",
+        Message::TaggedGuests { .. } => "TaggedGuests",
     }
 }
 
