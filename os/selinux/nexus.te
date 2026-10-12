@@ -832,6 +832,9 @@ manage_files_pattern(nexus_webapi_t, nexus_plugin_staging_t, nexus_plugin_stagin
 # nexus-plugin-install.path (PathModified=.trigger): systemd needs an inotify watch on the
 # existing file (read + watch); without it only the first creation ever fires the installer
 allow init_t nexus_plugin_staging_t:file { getattr read watch };
+# the same for the PathExists units of nexus-tls and nexus-diag: systemd (init_t) reads
+# and watches the request file it waits for (found in the VM: helpers never started)
+allow init_t { nexus_tls_req_t nexus_diag_var_lib_t }:file { getattr read watch };
 miscfiles_read_generic_certs(nexus_webapi_t)
 list_dirs_pattern(nexus_webapi_t, nexus_plugin_data_t, nexus_plugin_data_t)
 read_files_pattern(nexus_webapi_t, nexus_plugin_data_t, nexus_plugin_data_t)
@@ -893,6 +896,10 @@ neverallow nexus_tls_t self:capability *;
 # the update status and the web certificate; writes only its control dir. No network.
 
 nexus_daemon(diag)
+# nexus-update (root, unconfined_service_t: its script is bin_t) runs the checks before it
+# stages an update: same domain as from the path unit (found in the VM: chronyc denied)
+domtrans_pattern(unconfined_service_t, nexus_diag_exec_t, nexus_diag_t)
+allow unconfined_service_t nexus_diag_t:process2 { nnp_transition nosuid_transition };
 type nexus_diag_var_lib_t;	# /var/lib/nexus/diag: requests (web-api) and results (nexus-diag)
 files_type(nexus_diag_var_lib_t)
 

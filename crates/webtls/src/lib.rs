@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::IpAddr;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use x509_parser::extensions::GeneralName;
 use x509_parser::prelude::{FromDer, X509Certificate};
@@ -400,6 +400,8 @@ pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> Result<()> {
         .mode(mode)
         .open(&tmp)
         .with_context(|| format!("{}", tmp.display()))?;
+    // the writer's umask (web-api: 0077) must not narrow the mode the other side needs
+    f.set_permissions(fs::Permissions::from_mode(mode))?;
     f.write_all(data)?;
     f.sync_all()?;
     fs::rename(&tmp, path).with_context(|| format!("{}", path.display()))?;
