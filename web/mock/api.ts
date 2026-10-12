@@ -138,7 +138,7 @@ interface Job {
 
 const db = {
   users: [] as User[],
-  tenants: [] as { name: string; offsite: Json }[],
+  tenants: [] as { name: string; offsite: Json; quota_bytes?: number | null }[],
   /** kind: pve | linux | nfs | smb | plugin:<kind> */
   sources: [] as { id: number; tenant: string; kind: string; name: string; config: Json }[],
   agents: [] as Agent[],
@@ -166,6 +166,8 @@ const db = {
   alertSettings: {} as Json,
   sshKeys: [] as Json[],
   updates: {} as Json,
+  /** Phase 13e setting `anomaly` */
+  anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30 } as Json,
 };
 const nextId = () => ++db.seq;
 
@@ -704,6 +706,7 @@ function seed() {
         bwlimit: 20480 * 1024,
         uploaders: 4,
       },
+      quota_bytes: 32 * 2 ** 40,
     },
     { name: 'globex', offsite: {} },
   );
@@ -1200,6 +1203,9 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       break;
     case 'tenant.delete':
       db.tenants = db.tenants.filter((g) => g.name !== p.name);
+      break;
+    case 'settings.anomaly':
+      db.anomaly = structuredClone(p.anomaly);
       break;
     case 'policy.update':
       Object.assign(find(db.policies, (x) => x.id === p.id, 'policy'), next);
@@ -2263,10 +2269,7 @@ function dashboard(u: User, days: number) {
   const TOTAL = 64 * 2 ** 40;
   const allBytes = (db.snapshots as any[]).reduce((a, s) => a + s.size, 0) || 1;
   const share = u.tenant ? snaps.reduce((a, s) => a + s.size, 0) / allBytes : 1;
-  const usedAt = (d: number) => {
-    const wobble = ((hash(d, 7) % 1000) / 1000 - 0.5) * 0.004;
-    return Math.round(TOTAL * (0.78 - 0.0011 * d + wobble));
-  };
+  const usedAt = storeUsedAt;
   const sample = (n: number) => Array.from({ length: n }, (_, i) => n - 1 - i).map((d) => ({ d, used: usedAt(d) }));
   // forecast: linear regression over the last 30 days of the whole store (when the shared pool is full)
   const reg = sample(30);
@@ -2276,7 +2279,9 @@ function dashboard(u: User, days: number) {
   const fit = my + slope * (0 - mx);
   const forecast = slope > 0 ? Math.round((TOTAL - fit) / slope) : null;
   const used = usedAt(0);
-  const reduction = 4.2;
+  // ratios from the (synthetic) backup statistics, as the real API does
+  const st = storageStats(u).totals;
+  const reduction = +(st.reduction ?? 1).toFixed(2);
   const capacity = {
     total: TOTAL,
     used: Math.round(used * share),
@@ -2284,8 +2289,8 @@ function dashboard(u: User, days: number) {
     logical: Math.round(used * share * 0.97 * reduction),
     physical: Math.round(used * share * 0.97),
     reduction,
-    dedup: 3.1,
-    compression: +(reduction / 3.1).toFixed(2),
+    dedup: st.dedup,
+    compression: st.compression,
     per_day: sample(days).map((p) => ({ day: isoDay(today - p.d * DAY), used: Math.round(p.used * share), logical: Math.round(p.used * share * 0.97 * reduction) })),
     forecast_full_days: forecast,
   };
@@ -2322,6 +2327,125 @@ function dashboard(u: User, days: number) {
     offsite,
   };
 }
+// ---- storage accounting (Phase 13d/e, docs/storage-accounting.md). Synthetic per-snapshot
+// statistics: a source's first snapshot writes ~55 % of its size (the rest deduplicates against
+// other guests), later ones its daily change rate; compression by source type. Scaled so that
+// Stored matches the store size the dashboard shows.
+const STORE_TOTAL = 64 * 2 ** 40;
+function storeUsedAt(d: number) {
+  const wobble = ((hash(d, 7) % 1000) / 1000 - 0.5) * 0.004;
+  return Math.round(STORE_TOTAL * (0.78 - 0.0011 * d + wobble));
+}
+const COMPRESSION: [string, number][] = [['plugin-postgresql-', 3.2], ['plugin-', 1.8], ['host-', 2.1], ['share-', 1.25], ['nas-', 1.4], ['', 1.7]];
+interface Sum { snapshots: number; logical: number; data_in: number; stored: number }
+function sumJson(s: Sum, k = 1) {
+  const r = (a: number, b: number) => (b > 0 ? +(a / b).toFixed(3) : null);
+  const [l, d, st] = [s.logical * k, s.data_in * k, s.stored * k].map(Math.round);
+  return { snapshots: s.snapshots, logical: l, data_in: d, stored: st, saved: Math.max(0, l - st), dedup: r(l, d), compression: r(d, st), reduction: r(l, st) };
+}
+function groupOfSource(tenant: string, source: string): (typeof db.groups)[number] | undefined {
+  return db.groups.find((g) => {
+    if (g.tenant !== tenant) return false;
+    const src = db.sources.find((s) => s.id === g.source_id);
+    if (!src) return false;
+    if (src.kind === 'pve') return g.guests.some((v) => source === `vm-${v}` || source === `ct-${v}`);
+    if (src.kind === 'linux') return g.guests.some((a) => source === `host-${a}`);
+    if (src.kind === 'nfs' || src.kind === 'smb') return source === `share-${src.id}`;
+    if (src.kind === 'truenas') return source.startsWith(`nas-${src.id}-`);
+    const m = /^plugin-[a-z0-9]+-(\d+)(?:-(.+))?$/.exec(source);
+    return !!m && Number(m[1]) === src.id && (!g.guests.length || g.guests.includes(m[2] ?? ''));
+  });
+}
+function storageStats(u: User) {
+  const t = now();
+  // replicated snapshots (origin set) carry no statistics, like on a real appliance
+  const kept = (db.snapshots as Json[]).filter((s) => s.local);
+  const snaps = kept.filter((s) => !s.origin).sort((a, b) => a.time - b.time);
+  const seen = new Set<string>();
+  const zero = (): Sum => ({ snapshots: 0, logical: 0, data_in: 0, stored: 0 });
+  const all = zero();
+  const perTenant = new Map<string, Sum>();
+  const perGroup = new Map<string, { tenant: string; group_id: number | null; group: string | null; sum: Sum; sources: Set<string> }>();
+  for (const s of snaps) {
+    const key = `${s.tenant}/${s.source}`;
+    const rate = 0.02 + (hash(s.source.length, s.time % 97) % 5) / 100;
+    const dataIn = s.size * (seen.has(key) ? rate : 0.55);
+    seen.add(key);
+    const comp = COMPRESSION.find(([p]) => s.source.startsWith(p))![1];
+    const g = groupOfSource(s.tenant, s.source);
+    const gk = `${s.tenant}/${g?.id ?? '-'}`;
+    if (!perGroup.has(gk)) perGroup.set(gk, { tenant: s.tenant, group_id: g?.id ?? null, group: g?.name ?? null, sum: zero(), sources: new Set() });
+    if (!perTenant.has(s.tenant)) perTenant.set(s.tenant, zero());
+    const pg = perGroup.get(gk)!;
+    pg.sources.add(s.source);
+    for (const x of [all, perTenant.get(s.tenant)!, pg.sum]) {
+      x.snapshots += 1;
+      x.logical += s.size;
+      x.data_in += dataIn;
+      x.stored += dataIn / comp;
+    }
+  }
+  // the whole store: Stored ≈ 97 % of the bytes on disk (the rest is indexes and manifests)
+  const sizeOf = (n?: string) => kept.filter((s) => !n || s.tenant === n).reduce((a, s) => a + s.size, 0);
+  const allBytes = sizeOf() || 1;
+  const k = (storeUsedAt(0) * 0.97 * (all.logical / allBytes)) / (all.stored || 1);
+  const tenants = db.tenants.map((x) => x.name).filter((n) => !u.tenant || n === u.tenant);
+  const usedOf = (n: string) => Math.round((storeUsedAt(0) * sizeOf(n)) / allBytes);
+  const total = u.tenant ? (perTenant.get(u.tenant) ?? zero()) : all;
+  const growth = (used: number) => {
+    const at = (d: number) => Math.round(used - (used * (0.78 - 0.0011 * d)) / 0.78);
+    return { d7: at(7), d30: at(30), d90: at(90) };
+  };
+  const usedTotal = tenants.reduce((a, n) => a + usedOf(n), 0);
+  const share = usedTotal / storeUsedAt(0);
+  const tot = sumJson(total, k);
+  return {
+    generated: t,
+    totals: { ...tot, snapshots_all: kept.filter((s) => !u.tenant || s.tenant === u.tenant).length, used: usedTotal, growth: growth(usedTotal) },
+    tenants: tenants.map((n) => {
+      const used = usedOf(n);
+      const q = db.tenants.find((x) => x.name === n)?.quota_bytes ?? null;
+      return { tenant: n, ...sumJson(perTenant.get(n) ?? zero(), k), used, quota_bytes: q, quota_used: q ? +(used / q).toFixed(4) : null, growth: growth(used) };
+    }),
+    groups: [...perGroup.values()]
+      .filter((g) => !u.tenant || g.tenant === u.tenant)
+      .sort((a, b) => a.tenant.localeCompare(b.tenant) || (a.group_id ?? 1e9) - (b.group_id ?? 1e9))
+      .map((g) => ({ tenant: g.tenant, group_id: g.group_id, group: g.group, sources: g.sources.size, ...sumJson(g.sum, k) })),
+    per_day: Array.from({ length: 90 }, (_, i) => 89 - i).map((d) => {
+      const used = Math.round(storeUsedAt(d) * share);
+      return { day: isoDay(Math.floor(t / DAY) * DAY - d * DAY), used, logical: Math.round(used * 0.97 * (tot.reduction ?? 1)) };
+    }),
+  };
+}
+on('GET', '/storage', (c) => [200, storageStats(need(c.user))]);
+on('PUT', '/tenants/:name/quota', async (c, [name]) => {
+  const u = need(c.user, 'admin');
+  const x = find(db.tenants, (y) => y.name === decodeURIComponent(name), 'tenant');
+  const q = c.body.quota_bytes;
+  if (q !== null && !(Number.isInteger(q) && q > 0)) throw new HttpError(400, 'quota_bytes: a positive number of bytes, or null');
+  x.quota_bytes = q;
+  await audit(u.name, 'tenant.quota', `tenant/${x.name}`, { name: x.name, quota_bytes: q });
+  return [200, { name: x.name, quota_bytes: q }];
+});
+on('GET', '/settings/anomaly', (c) => (need(c.user, 'admin', 'security_officer'), [200, db.anomaly]));
+on('PUT', '/settings/anomaly', async (c) => {
+  const u = need(c.user, 'admin');
+  const { enabled, factor, history, floor_bytes, ...rest } = c.body;
+  if (Object.keys(rest).length) throw new HttpError(400, `unknown field \`${Object.keys(rest)[0]}\``);
+  if (typeof enabled !== 'boolean') throw new HttpError(400, 'enabled: boolean required');
+  if (!(factor >= 1.5 && factor <= 100)) throw new HttpError(400, 'factor: 1.5..=100');
+  if (!(Number.isInteger(history) && history >= 5 && history <= 100)) throw new HttpError(400, 'history: 5..=100 runs');
+  if (!(Number.isInteger(floor_bytes) && floor_bytes >= 2 ** 20 && floor_bytes <= 2 ** 50)) throw new HttpError(400, 'floor_bytes: 1 MiB..=1 PiB');
+  const next = { enabled, factor, history, floor_bytes };
+  const old = db.anomaly;
+  // weakening the detection (a ransomware signal) needs approval
+  if ((old.enabled && !enabled) || factor > old.factor || floor_bytes > old.floor_bytes)
+    return quorum(u, 'settings.anomaly', { anomaly: next, old: structuredClone(old) });
+  db.anomaly = next;
+  await audit(u.name, 'settings.anomaly', 'settings/anomaly', next);
+  return [200, next];
+});
+
 const dashCache = new Map<string, { at: number; body: Json }>();
 on('GET', '/dashboard', (c) => {
   const u = need(c.user);

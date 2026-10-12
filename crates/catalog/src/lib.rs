@@ -887,7 +887,7 @@ mod tests {
         {
             let conn = c.conn();
             let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-            assert_eq!(v, 10);
+            assert_eq!(v, MIGRATIONS.len() as i64);
             let auth: String = conn
                 .query_row("SELECT auth FROM users WHERE name = 'admin'", [], |r| r.get(0))
                 .unwrap();

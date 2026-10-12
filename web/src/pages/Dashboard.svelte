@@ -326,7 +326,10 @@
       <TrendLine data={cap.per_day} total={cap.total} forecastDays={cap.forecast_full_days} title={t.dash.capChart} />
     </section>
     <section class="card span-4" aria-labelledby="c-red">
-      <div class="card-head"><div><h2 id="c-red">{t.dash.redChart}</h2><div class="sub">{t.dash.redChartSub}</div></div></div>
+      <div class="card-head">
+        <div><h2 id="c-red">{t.dash.redChart}</h2><div class="sub">{t.dash.redChartSub}</div></div>
+        <a href={href('/storage')}>{t.nav.storage}</a>
+      </div>
       <Ring
         title={t.dash.redChart}
         big={fmtRatio(cap.reduction)}

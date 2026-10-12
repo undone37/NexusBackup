@@ -60,8 +60,11 @@ impl Sum {
     }
 }
 
-/// `backup_stats` of locally kept snapshots: (tenant, source, logical, new_plain, new_stored).
-fn rows(c: &Connection, scope: Option<&str>) -> ApiResult<Vec<(String, String, i64, i64, i64)>> {
+/// (tenant, source, logical, new_plain, new_stored)
+type Row = (String, String, i64, i64, i64);
+
+/// `backup_stats` of locally kept snapshots.
+fn rows(c: &Connection, scope: Option<&str>) -> ApiResult<Vec<Row>> {
     Ok(c.prepare(
         "SELECT b.tenant, b.source, b.logical, b.new_plain, b.new_stored FROM backup_stats b
          JOIN snapshots s ON s.tenant = b.tenant AND s.source = b.source AND s.time = b.time AND s.local = 1
