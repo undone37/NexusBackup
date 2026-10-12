@@ -319,7 +319,7 @@ step_legal_hold() {
 	login admin "$ADMIN_PW" "$ADMIN_TOTP"
 	login so "$SO_PW" "$SO_TOTP"
 	local t r j
-	t=$(api so GET "/snapshots?tenant=lab&source=vm-100" | jq -r '[.[] | select(.local) | .time] | min')
+	t=$(api so GET "/snapshots?tenant=lab&source=vm-100" | jq -r '[.[] | select(.local and .hold == null) | .time] | min') # rerun-safe: one not held yet
 	api admin POST "/snapshots/lab/vm-100/$t/hold" '{"reason":"lab"}' >/dev/null
 	expect 403 "admin may not set a legal hold"
 	api so POST "/snapshots/lab/vm-100/$t/hold" '{"reason":"lab case 15c"}' >/dev/null
@@ -342,7 +342,7 @@ step_legal_hold() {
 	expect 403 "requester may not approve the release"
 	api so POST "/quorum/$(jq -r .quorum_id <<<"$r")/approve" >/dev/null
 	expect 200 "so approves the release"
-	api so GET "/holds?tenant=lab" | jq -e '.[0].state == "released" and .[0].approved_by == "so"' >/dev/null ||
+	api so GET "/holds?tenant=lab" | jq -e --argjson t "$t" 'any(.[]; .time == $t and .state == "released" and .approved_by == "so")' >/dev/null ||
 		die "hold not released: $(api so GET '/holds?tenant=lab' | jq -c '.[0]')"
 	api so GET "/audit?order=desc&limit=50" | jq -e '[.[].action] | index("snapshot.hold") != null and index("snapshot.hold_release") != null' >/dev/null ||
 		die "legal hold not audited"
