@@ -18,6 +18,8 @@ pub const CACHE_SECS: u64 = 60;
 const WORST: usize = 10;
 /// an object breaches its SLA when its last good backup is older than RPO × 1.5
 const SLA_FACTOR: f64 = 1.5;
+/// `unprotected_list` lists at most this many objects
+const UNPROTECTED_LIST: usize = 200;
 /// minimum samples for a capacity forecast (contract: `null` below 7)
 const MIN_SAMPLES: usize = 7;
 const DAY: i64 = 86400;
@@ -138,30 +140,32 @@ struct Obj {
 }
 
 fn protection(c: &Connection, scope: Option<&str>, now: i64) -> ApiResult<Value> {
-    let rows: Vec<(String, i64, String, String, String, String, String)> = c
+    type Row = (String, i64, Vec<Value>, String, String, String, String, bool);
+    let rows: Vec<Row> = c
         .prepare(
-            "SELECT g.tenant, g.source_id, g.guests, p.schedule, s.kind, s.name, s.config
+            "SELECT g.tenant, g.source_id, g.guests, p.schedule, s.kind, s.name, s.config, g.mode, g.selector, g.exclude
              FROM groups g JOIN policies p ON p.id = g.policy_id JOIN sources s ON s.id = g.source_id
              WHERE ?1 IS NULL OR g.tenant = ?1 ORDER BY g.id",
         )?
         .query_map([scope], |r| {
-            Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-                r.get(6)?,
-            ))
+            let (sid, kind, mode): (i64, String, String) = (r.get(1)?, r.get(4)?, r.get(7)?);
+            // the scheduler's resolution (explicit list or inventory, catalog::inventory)
+            let guests = catalog::inventory::resolve(
+                c,
+                sid,
+                &kind,
+                &mode,
+                &r.get::<_, String>(2)?,
+                &r.get::<_, String>(8)?,
+                &r.get::<_, String>(9)?,
+            )?;
+            let auto = catalog::inventory::auto(&mode);
+            Ok((r.get(0)?, sid, guests, r.get(3)?, kind, r.get(5)?, r.get(6)?, auto))
         })?
         .collect::<Result<_, _>>()?;
     // object key (tenant, first source) → object; one object in several groups counts once (shortest RPO)
     let mut objs: BTreeMap<(String, String), Obj> = BTreeMap::new();
-    // plugin source id → whole source protected / protected guest ids
-    let mut plugin_cover: HashMap<i64, (bool, HashSet<String>)> = HashMap::new();
-    for (tenant, sid, guests, schedule, kind, sname, cfg) in rows {
-        let guests: Vec<Value> = serde_json::from_str(&guests).unwrap_or_default();
+    for (tenant, sid, guests, schedule, kind, sname, cfg, auto) in rows {
         let strs = || guests.iter().filter_map(Value::as_str).map(str::to_owned);
         let mut add: Vec<(Vec<String>, String)> = Vec::new();
         match kind.as_str() {
@@ -177,7 +181,7 @@ fn protection(c: &Connection, scope: Option<&str>, now: i64) -> ApiResult<Value>
             }
             "truenas" => {
                 let mut ds: Vec<String> = strs().collect();
-                if ds.is_empty() {
+                if ds.is_empty() && !auto {
                     let cfg: Value = serde_json::from_str(&cfg).unwrap_or(Value::Null);
                     ds = cfg["datasets"]
                         .as_array()
@@ -195,16 +199,13 @@ fn protection(c: &Connection, scope: Option<&str>, now: i64) -> ApiResult<Value>
                     continue;
                 };
                 let g: Vec<String> = strs().collect();
-                let cover = plugin_cover.entry(sid).or_default();
-                if g.is_empty() {
-                    cover.0 = true;
+                if g.is_empty() && !auto {
                     add.push((
                         vec![plugin_proto::source_name(&cur.id, sid as u64, None)],
                         sname.clone(),
                     ));
                 }
                 for x in g {
-                    cover.1.insert(x.clone());
                     add.push((
                         vec![plugin_proto::source_name(&cur.id, sid as u64, Some(&x))],
                         format!("{sname} {x}"),
@@ -271,53 +272,61 @@ fn protection(c: &Connection, scope: Option<&str>, now: i64) -> ApiResult<Value>
     list.sort_by_key(|(rank, age, _)| (*rank, *age));
     let worst: Vec<Value> = list.into_iter().take(WORST).map(|(_, _, v)| v).collect();
 
-    // unprotected: enrolled agents no group backs up, plugin guests (last
-    // `plugin_guests` listing per source) outside every group of their source
+    // unprotected: enrolled agents no group backs up, share sources without a group,
+    // inventory guests (PVE, TrueNAS, plugins) outside every group of their source
     let protected_hosts: HashSet<String> = objs.values().flat_map(|o| o.sources.clone()).collect();
-    let agents: Vec<String> = c
-        .prepare("SELECT id FROM agents WHERE ?1 IS NULL OR tenant = ?1")?
-        .query_map([scope], |r| r.get(0))?
+    let mut open: Vec<Value> = Vec::new();
+    let agents: Vec<(String, String, String)> = c
+        .prepare("SELECT tenant, id, name FROM agents WHERE ?1 IS NULL OR tenant = ?1 ORDER BY tenant, name")?
+        .query_map([scope], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<Result<_, _>>()?;
-    let mut unprotected = agents
-        .iter()
-        .filter(|a| !protected_hosts.contains(&format!("host-{a}")))
-        .count();
-    let listings: Vec<(String, String)> = c
-        .prepare(
-            "SELECT params, result FROM jobs WHERE kind = 'plugin_guests' AND state = 'ok' AND result IS NOT NULL
-             AND (?1 IS NULL OR tenant = ?1) ORDER BY id DESC LIMIT 500",
-        )?
-        .query_map([scope], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<Result<_, _>>()?;
-    let mut seen = HashSet::new();
-    let sources: HashSet<i64> = c
-        .prepare("SELECT id FROM sources")?
-        .query_map([], |r| r.get(0))?
-        .collect::<Result<_, _>>()?;
-    for (p, r) in listings {
-        let p: Value = serde_json::from_str(&p).unwrap_or(Value::Null);
-        let Some(sid) = p["source_id"].as_i64() else { continue };
-        if !seen.insert(sid) || !sources.contains(&sid) {
-            continue;
+    for (tenant, id, name) in agents {
+        if !protected_hosts.contains(&format!("host-{id}")) {
+            open.push(
+                json!({"tenant": tenant, "kind": "linux", "source_id": null, "source": name,
+                             "guest": id, "name": name}),
+            );
         }
-        let (whole, guests) = plugin_cover.get(&sid).cloned().unwrap_or_default();
-        if whole {
-            continue;
-        }
-        let r: Value = serde_json::from_str(&r).unwrap_or(Value::Null);
-        unprotected += r["guests"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|g| g["id"].as_str())
-                    .filter(|id| !guests.contains(*id))
-                    .count()
-            })
-            .unwrap_or(0);
     }
+    let shares: Vec<(String, i64, String, String)> = c
+        .prepare(
+            "SELECT tenant, id, kind, name FROM sources WHERE kind IN ('nfs','smb') AND (?1 IS NULL OR tenant = ?1)
+             AND id NOT IN (SELECT source_id FROM groups) ORDER BY tenant, name",
+        )?
+        .query_map([scope], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        .collect::<Result<_, _>>()?;
+    for (tenant, sid, kind, name) in shares {
+        open.push(
+            json!({"tenant": tenant, "kind": kind, "source_id": sid, "source": name, "guest": null, "name": name}),
+        );
+    }
+    let cover = crate::inventory::coverage(c, scope)?;
+    let inv: Vec<(String, i64, String, String, String, String)> = c
+        .prepare(
+            "SELECT s.tenant, s.id, s.kind, s.name, i.guest, i.name FROM inventory i JOIN sources s ON s.id = i.source_id
+             WHERE i.gone IS NULL AND (?1 IS NULL OR s.tenant = ?1) ORDER BY s.tenant, s.name, length(i.guest), i.guest",
+        )?
+        .query_map([scope], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+        })?
+        .collect::<Result<_, _>>()?;
+    for (tenant, sid, kind, sname, guest, name) in inv {
+        let covered = cover
+            .get(&sid)
+            .is_some_and(|(whole, ids)| !whole.is_empty() || ids.contains_key(&guest));
+        if !covered {
+            open.push(
+                json!({"tenant": tenant, "kind": kind, "source_id": sid, "source": sname,
+                             "guest": guest, "name": name}),
+            );
+        }
+    }
+    let unprotected = open.len();
+    open.truncate(UNPROTECTED_LIST);
     let protected = objs.len();
     Ok(json!({
         "objects": protected + unprotected, "protected": protected, "unprotected": unprotected,
+        "unprotected_list": open,
         "sla_ok": ok, "sla_breach": breach, "never": never, "worst": worst,
     }))
 }

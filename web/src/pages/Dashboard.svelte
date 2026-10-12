@@ -8,7 +8,19 @@
   import { t } from '../lib/i18n';
   import { kindLabel } from '../lib/jobs';
   import { parsePluginSnapshot, pluginKinds, type KindInfo } from '../lib/plugins';
-  import type { Agent, Alert, ApprovalsState, Dashboard as DashboardData, Group, Job, Plugin, Policy, Snapshot, Source } from '../lib/types';
+  import type {
+    Agent,
+    Alert,
+    ApprovalsState,
+    Dashboard as DashboardData,
+    Group,
+    Inventory,
+    Job,
+    Plugin,
+    Policy,
+    Snapshot,
+    Source,
+  } from '../lib/types';
   import Check from '../components/Check.svelte';
   import JobState from '../components/JobState.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
@@ -90,6 +102,7 @@
         get<Alert[]>('/alerts?state=open'),
       ]);
       groups = g;
+      loadResolved(g);
       policies = p;
       snaps = s;
       failed = j.filter((x) => (x.finished ?? x.created) > Date.now() / 1000 - 7 * 86400);
@@ -126,6 +139,29 @@
     };
   });
 
+  // Guests of auto-protect groups (mode all / tags, Phase 13c) from the inventory of their source.
+  let resolved: Map<number, (number | string)[]> = $state(new Map());
+  async function loadResolved(gs: Group[]) {
+    const auto = gs.filter((g) => g.mode && g.mode !== 'explicit');
+    const m = new Map<number, (number | string)[]>();
+    for (const sid of new Set(auto.map((g) => g.source_id))) {
+      try {
+        const inv = await get<Inventory>(`/sources/${sid}/inventory`);
+        const pve = inv.kind === 'pve';
+        for (const g of auto.filter((x) => x.source_id === sid))
+          m.set(
+            g.id,
+            inv.guests.filter((x) => x.gone === null && x.groups.includes(g.name)).map((x) => (pve ? Number(x.guest) : x.guest)),
+          );
+      } catch {
+        /* shown without guests */
+      }
+    }
+    resolved = m;
+  }
+  const notCovered = $derived(pr?.unprotected_list ?? []);
+  const NOT_COVERED_SHOWN = 50;
+
   // Latest snapshot per tenant/guest.
   const latest = $derived.by(() => {
     const m = new Map<string, Snapshot>();
@@ -147,7 +183,11 @@
   const isPlugin = (g: Group) => !!kindOf(g)?.startsWith('plugin:');
   const SHARE = '\u0000share';
   const guestsOf = (g: Group): (number | string)[] =>
-    isShare(g) || (isPlugin(g) && !g.guests.length) ? [SHARE] : g.guests;
+    g.mode && g.mode !== 'explicit'
+      ? (resolved.get(g.id) ?? [])
+      : isShare(g) || (isPlugin(g) && !g.guests.length)
+        ? [SHARE]
+        : g.guests;
   // plugin snapshot names per source and guest ('' = whole source), from the snapshot list
   const pluginNames = $derived.by(() => {
     const m = new Map<string, Set<string>>();
@@ -390,6 +430,40 @@
         </div>
       {/if}
     </section>
+    {#if notCovered.length}
+      <section class="card span-12 open-list" aria-labelledby="c-open">
+        <details>
+          <summary
+            ><h2 id="c-open">{t.dash.notInGroup(pr?.unprotected ?? notCovered.length)}</h2>
+            <span class="sub">{t.dash.notInGroupSub}</span></summary
+          >
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">{t.dash.object}</th>
+                  {#if !session.user?.tenant}<th scope="col">{t.tenant}</th>{/if}
+                  <th scope="col">{t.dash.sourceKind}</th>
+                  <th scope="col">{t.groups.source}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each notCovered.slice(0, NOT_COVERED_SHOWN) as o, i (i)}
+                  <tr>
+                    <td>{o.name}{#if o.guest && o.guest !== o.name}<div class="muted mono">{o.guest}</div>{/if}</td>
+                    {#if !session.user?.tenant}<td>{o.tenant}</td>{/if}
+                    <td>{kindName(o.kind)}</td>
+                    <td>{o.source}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+          {#if (pr?.unprotected ?? 0) > NOT_COVERED_SHOWN}<p class="muted">{t.dash.notInGroupMore((pr?.unprotected ?? 0) - NOT_COVERED_SHOWN)}</p>{/if}
+          {#if can.configure(session.user)}<p><a href={href('/groups')}>{t.dash.openGroups}</a></p>{/if}
+        </details>
+      </section>
+    {/if}
   </div>
 {:else if !kpiError}
   <p class="muted" aria-busy="true">{t.loading}</p>

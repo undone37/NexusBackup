@@ -65,9 +65,9 @@ kind of source:
 
 | Source kind | What the group backs up |
 |---|---|
-| Proxmox VE cluster | the VMs and containers you list in **Guests (VM/CT IDs, comma separated)**, e.g. `100, 101, 200` |
+| Proxmox VE cluster | the VMs and containers you list in **Guests (VM/CT IDs, comma separated)**, e.g. `100, 101, 200`, or all of them / those with given tags ([auto-protect](#auto-protect-all-guests-or-guests-by-tag)) |
 | Linux or Windows host (agent) | the agent's host, with the paths configured in the source (nothing to select) |
-| TrueNAS (ZFS datasets) | the datasets you tick; none ticked = all datasets of the source |
+| TrueNAS (ZFS datasets) | the datasets you tick; none ticked = **All guests**: every dataset of the source, including datasets added to the source later |
 | NFS share / SMB share | the whole share (nothing to select) |
 | Plugin source with guests (e.g. PostgreSQL) | the guests you tick after **Load …**; none ticked = the whole source (Microsoft 365: at least one user, site or team must be ticked) |
 | Plugin source without guests | the whole source as configured |
@@ -91,9 +91,54 @@ For PostgreSQL the choice matters:
 You can create two groups on the same PostgreSQL source (one with databases, one without) to get both, as the demo
 does with `acme-databases` and `acme-pg-cluster`. See [04 Sources](04-sources.md) and [06 Restores](06-restores.md).
 
+### Auto-protect: all guests or guests by tag
+
+For sources with a guest inventory (Proxmox VE clusters, TrueNAS sources and plugin sources whose kind lists guests,
+such as PostgreSQL or Microsoft 365) the group dialog offers **What to protect**:
+
+| Choice | The group protects |
+|---|---|
+| **Selected guests** | exactly the guests you list or tick (as before) |
+| **All guests** | every guest the source lists, now and in future |
+| **By tag or pool** | every guest with at least one of the ticked **Tags** |
+
+The guests come from the source's **inventory** (see [04 Sources](04-sources.md#guest-inventory)), which the
+appliance refreshes every hour and when you click **Refresh inventory**. A new VM in a selected pool, or a new
+Microsoft 365 user, is therefore backed up from the first backup after the next refresh, without anyone editing the
+group. The audit log records it (`group.auto_protect`, with the new guests); guests that disappear from the source
+are no longer selected (their snapshots stay).
+
+Tags you can select:
+
+| Tag | Meaning |
+|---|---|
+| `pool:<pool>` | member of the Proxmox VE resource pool (TrueNAS: the ZFS pool of the dataset) |
+| `tag:<tag>` | Proxmox VE tag of the VM or container |
+| `node:<node>` | Proxmox VE node the guest runs on (changes with migrations) |
+| `type:qemu`, `type:lxc` | Proxmox VE VM or container |
+| `type:user`, `type:site`, `type:team` | Microsoft 365 object type |
+| `license:none` | Microsoft 365 user without any license |
+
+The tag list shows the tags the inventory currently contains; type a tag and click **Add tag** to select one that no
+guest has yet. **Exclusions** lists the guests the selection matches: ticked guests are never backed up by this group,
+even if they match (exclusions always win). The line below shows how many guests the group protects right now.
+
+![An auto-protect group: PVE pool "dev" without the build runner](images/group-auto.png)
+
+Notes:
+
+- Before the first inventory refresh an **All guests** or **By tag or pool** group protects nothing. Its backup fails
+  with "nothing to back up" and raises a `job_failed` alert; click **Refresh inventory** after creating the group.
+- `node:` tags follow migrations: a group selecting `node:pve1` loses a VM that moves to another node. Prefer pools and
+  PVE tags.
+- Agent hosts and NFS/SMB shares have no inventory: their groups are always **Selected guests**.
+- When the inventory cannot be refreshed (source unreachable), the last listing stays in effect and an
+  `inventory_refresh` warning is raised (once while it is open).
+- Microsoft 365 tags by Entra group (`group:<name>`) are not available yet.
+
 ### Changing and deleting groups
 
-- **Edit** lets you change the name, source, policy and guests. Moving a group to a policy that is weaker in any
+- **Edit** lets you change the name, source, policy, guests, the **What to protect** choice, tags and exclusions. Moving a group to a policy that is weaker in any
   respect (a lower retention value or no offsite copy) needs approval, like weakening the policy itself.
 - **Delete** needs approval when approvals are enabled. Deleting a group stops future backups. Existing snapshots are
   not deleted.
@@ -125,5 +170,7 @@ info alert names it (see [11 Alerts and monitoring](11-alerts-and-monitoring.md)
   reads the whole database on every run (storage stays small thanks to deduplication).
 - Check the Dashboard the morning after you create a group: every guest should be **Protected**, and nothing of the
   group should appear under **Objects needing attention**.
-- Objects counted as **Not in a group** on the Dashboard are known to the appliance (e.g. VMs of a connected cluster)
-  but not backed up; add them to a group or decide consciously to leave them out.
+- Objects counted as **Not in a group** on the Dashboard are known to the appliance (from the inventory of each
+  source, enrolled agents and NFS/SMB sources) but not backed up. The Dashboard lists them under **Not in a group**;
+  add them to a group, use an **All guests** group, or decide consciously to leave them out (an exclusion documents
+  that decision).

@@ -50,7 +50,15 @@ impl Scheduler {
         Ok((cur, k, v))
     }
 
-    fn plugin_cfg(&self, job: &Job, cur: &Current, kind: &str, sid: i64, config: Value, extra: Value) -> Result<Files> {
+    pub(crate) fn plugin_cfg(
+        &self,
+        job: &Job,
+        cur: &Current,
+        kind: &str,
+        sid: i64,
+        config: Value,
+        extra: Value,
+    ) -> Result<Files> {
         let mut cfg = json!({
             "tenant": job.tenant,
             "store": self.cfg.store_base.join(&job.tenant),
@@ -71,7 +79,7 @@ impl Scheduler {
         Ok(vec![("plugin.json".into(), serde_json::to_vec_pretty(&cfg)?)])
     }
 
-    fn host_step(&self, plan: &Plan, args: &[String], capture: bool) -> Step {
+    pub(crate) fn host_step(&self, plan: &Plan, args: &[String], capture: bool) -> Step {
         Step::Cli {
             bin: self.cfg.pluginhost_bin.clone(),
             args: std::iter::once(plan.dir.join("plugin.json").to_string_lossy().into_owned())
@@ -138,12 +146,16 @@ impl Scheduler {
                 let guests: Vec<String> = match p["guests"].as_array() {
                     Some(a) => a.iter().filter_map(|g| g.as_str().map(str::to_owned)).collect(),
                     // default: the guests of the source's first group, else the whole source
-                    None => self
+                    None => match self
                         .groups()?
                         .into_iter()
                         .find(|g| g.tenant == job.tenant && g.source_id == sid)
-                        .and_then(|g| g.plugin.map(|x| x.1))
-                        .unwrap_or_default(),
+                    {
+                        Some(g) if g.auto && g.plugin.as_ref().is_none_or(|x| x.1.is_empty()) => {
+                            bail!("nothing to back up: no guests match the group (inventory)")
+                        }
+                        g => g.and_then(|g| g.plugin.map(|x| x.1)).unwrap_or_default(),
+                    },
                 };
                 return self.plan_plugin_backup(job, plan, sid, &guests);
             }

@@ -276,13 +276,18 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
             ],
         )?)?,
         "group.update" => changed(c.execute(
-            "UPDATE groups SET source_id = ?2, policy_id = ?3, name = ?4, guests = ?5 WHERE id = ?1",
+            "UPDATE groups SET source_id = ?2, policy_id = ?3, name = ?4, guests = ?5, mode = ?6, selector = ?7, \
+             exclude = ?8 WHERE id = ?1",
             params![
                 int(p, "id")?,
                 int(p, "source_id")?,
                 int(p, "policy_id")?,
                 p["name"].as_str(),
-                p["guests"].to_string()
+                p["guests"].to_string(),
+                // requests made before v12 carry no mode: explicit
+                p["mode"].as_str().unwrap_or("explicit"),
+                p.get("selector").unwrap_or(&json!([])).to_string(),
+                p.get("exclude").unwrap_or(&json!([])).to_string()
             ],
         )?)?,
         "user.update" => return crate::resources::apply_user_update(c, p).map(Some),

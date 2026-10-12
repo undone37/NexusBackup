@@ -136,6 +136,26 @@ interface Job {
   fail?: string;
 }
 
+interface MockGroup {
+  id: number;
+  tenant: string;
+  source_id: number;
+  policy_id: number;
+  name: string;
+  guests: (number | string)[];
+  mode: 'explicit' | 'all' | 'tags';
+  selector: string[];
+  exclude: string[];
+}
+interface InvRow {
+  guest: string;
+  name: string;
+  kind: string;
+  tags: string[];
+  seen: number;
+  gone: number | null;
+}
+
 const db = {
   users: [] as User[],
   tenants: [] as { name: string; offsite: Json; quota_bytes?: number | null }[],
@@ -145,7 +165,9 @@ const db = {
   replPeers: [] as Json[],
   replSources: [] as Json[],
   policies: [] as { id: number; name: string; schedule: string; gfs: Json; offsite: boolean }[],
-  groups: [] as { id: number; tenant: string; source_id: number; policy_id: number; name: string; guests: (number | string)[] }[],
+  groups: [] as MockGroup[],
+  /** Phase 13c: guest inventory per source id (GET /sources/{id}/inventory) */
+  inventory: new Map<number, InvRow[]>(),
   jobs: [] as Job[],
   snapshots: [] as Json[],
   quorum: [] as Json[],
@@ -223,6 +245,12 @@ function planFor(kind: string, p: Json): string[] {
       return [`starting nexus-pluginhost for ${psrc?.kind} (source ${psrc?.name})`, 'sandbox: landlock + seccomp active', 'Validate: connecting to the endpoint', 'done'];
     case 'plugin_guests':
       return [`starting nexus-pluginhost for ${psrc?.kind} (source ${psrc?.name})`, 'ListGuests', 'done'];
+    case 'inventory':
+      return psrc?.kind === 'pve'
+        ? [`nexus-pve inventory: GET /cluster/resources?type=vm on ${psrc.config.host}`, `${db.inventory.get(psrc.id)?.length ?? 0} guests`, 'inventory updated']
+        : psrc?.kind === 'truenas'
+          ? [`datasets of source ${psrc.name} (catalog)`, 'inventory updated']
+          : [`starting nexus-pluginhost for ${psrc?.kind} (source ${psrc?.name})`, 'ListGuests', 'inventory updated'];
     case 'plugin_restore':
       return [`starting nexus-pluginhost: restore ${p.restore} of ${p.source} @ ${p.time}`, 'plugin requested 3 streams', 'streaming data to the plugin', `restore ${p.restore} finished`];
     case 'plugin_mount':
@@ -308,6 +336,7 @@ function tick() {
       // Like the scheduler: structured results in `job.result`.
       if (j.kind === 'files_list') j.result = { entries: listDir(String(j.params.path ?? '/'), String(j.params.source ?? '')) };
       if (j.kind.startsWith('plugin_')) pluginResult(j, t);
+      if (j.kind === 'inventory' || j.kind === 'plugin_guests') inventoryResult(j, t);
       const ag = db.agents.find((a) => a.id === j.params.agent_id);
       if (j.kind === 'agent_enroll' && ag) {
         Object.assign(ag, { enrolled_at: t, cert_sha256: rand(32), token_expires: null, token_hash: null, last_seen: t });
@@ -334,7 +363,8 @@ function tick() {
       const psrc = db.sources.find((s) => s.id === pgroup?.source_id && s.kind.startsWith('plugin:'));
       if (psrc && pgroup) {
         const pid = pluginKind(psrc.kind)?.plugin.id ?? 'unknown';
-        const names = pgroup.guests.length ? pgroup.guests.map((g) => `plugin-${pid}-${psrc.id}-${g}`) : [`plugin-${pid}-${psrc.id}`];
+        const guests = resolveGuests(pgroup);
+        const names = guests.length ? guests.map((g) => `plugin-${pid}-${psrc.id}-${g}`) : pgroup.mode === 'explicit' ? [`plugin-${pid}-${psrc.id}`] : [];
         for (const n of names) db.snapshots.push(snap(j.tenant, n, t, 300 << 20, true, false, null));
         continue;
       }
@@ -346,8 +376,8 @@ function tick() {
           gsrc?.kind === 'nfs' || gsrc?.kind === 'smb'
             ? [`share-${gsrc.id}`]
             : gsrc?.kind === 'truenas'
-              ? (g!.guests.length ? g!.guests : gsrc.config.datasets).map((d: string) => `nas-${gsrc.id}-${String(d).replaceAll('/', '.')}`)
-              : (j.params.vmid ? [j.params.vmid] : j.params.agent_id ? [j.params.agent_id] : (g?.guests ?? [])).map(guestName);
+              ? resolveGuests(g!).map((d) => `nas-${gsrc.id}-${String(d).replaceAll('/', '.')}`)
+              : (j.params.vmid ? [j.params.vmid] : j.params.agent_id ? [j.params.agent_id] : g ? resolveGuests(g) : []).map(guestName);
         for (const n of names) db.snapshots.push(snap(j.tenant, n, t, 64 << 30, true, false, null));
         for (const a of db.agents) if (names.includes(`host-${a.id}`)) a.last_seen = t;
       }
@@ -832,9 +862,12 @@ function seed() {
   };
   db.sources.push(sPg, sNas02);
 
-  const grp = (tenant: string, source_id: number, policy_id: number, name: string, guests: (number | string)[]) => ({ id: nextId(), tenant, source_id, policy_id, name, guests });
+  const grp = (tenant: string, source_id: number, policy_id: number, name: string, guests: (number | string)[], auto: Partial<MockGroup> = {}): MockGroup => ({
+    id: nextId(), tenant, source_id, policy_id, name, guests, mode: 'explicit', selector: [], exclude: [], ...auto,
+  });
   const gProd = grp('initech', sInitech.id, gold.id, 'production', [100, 101, 200]);
-  const gDev = grp('initech', sInitech.id, bronze.id, 'development', [102]);
+  // auto-protect (Phase 13c): every guest of the PVE pool "dev" except the build runner
+  const gDev = grp('initech', sInitech.id, bronze.id, 'development', [], { mode: 'tags', selector: ['pool:dev'], exclude: ['105'] });
   const gAcmeVms = grp('acme', sAcme.id, silver.id, 'acme-vms', [300, 301]);
   const gSmb = grp('acme', sSmb.id, bronze.id, 'acme-fs01', []);
   const gDbs = grp('acme', sPg.id, hourly.id, 'acme-databases', ['shop', 'crm']);
@@ -844,13 +877,44 @@ function seed() {
     gAcmeVms,
     grp('acme', sWeb01.id, silver.id, 'acme-web01', [web01.id]),
     grp('acme', sFs02.id, silver.id, 'acme-fs02', [fs02.id]),
-    grp('acme', sNas01.id, silver.id, 'acme-nas01', ['tank/projects', 'tank/home']),
+    grp('acme', sNas01.id, silver.id, 'acme-nas01', [], { mode: 'all' }),
     grp('acme', sNfs.id, silver.id, 'acme-filer', []),
     gSmb,
     gDbs,
     grp('acme', sPg.id, silver.id, 'acme-pg-cluster', []),
     grp('acme', sNas02.id, silver.id, 'acme-nas02', ['tank.media']),
   );
+  // guest inventory (scheduler `inventory` jobs, 20 minutes ago)
+  const inv = (sid: number, rows: [string, string, string, string[]][]) =>
+    db.inventory.set(sid, rows.map(([guest, name, kind, tags]) => ({ guest, name, kind, tags, seen: t - 1200, gone: null })));
+  const vm = (node: string, ...more: string[]) => ['type:qemu', `node:${node}`, ...more];
+  inv(sInitech.id, [
+    ['100', 'erp-app', 'qemu', vm('pve1', 'pool:prod', 'tag:erp')],
+    ['101', 'erp-db', 'qemu', vm('pve1', 'pool:prod', 'tag:erp')],
+    ['102', 'dev-sandbox', 'qemu', vm('pve2', 'pool:dev')],
+    ['103', 'legacy-ftp', 'qemu', vm('pve2')],
+    ['105', 'build-runner', 'qemu', vm('pve2', 'pool:dev', 'tag:ci')],
+    ['200', 'proxy', 'lxc', ['type:lxc', 'node:pve1', 'pool:prod', 'tag:web']],
+  ]);
+  inv(sAcme.id, [
+    ['300', 'shop-web', 'qemu', vm('acme-pve1', 'tag:shop')],
+    ['301', 'shop-api', 'qemu', vm('acme-pve1', 'tag:shop')],
+    ['302', 'test-web', 'qemu', vm('acme-pve1', 'tag:test')],
+  ]);
+  inv(sNas01.id, [
+    ['tank/projects', 'tank/projects', 'dataset', ['pool:tank']],
+    ['tank/home', 'tank/home', 'dataset', ['pool:tank']],
+  ]);
+  inv(sPg.id, [
+    ['shop', 'shop', '', []],
+    ['crm', 'crm', '', []],
+    ['analytics', 'analytics (reporting)', '', []],
+  ]);
+  inv(sNas02.id, [
+    ['tank.media', 'tank/media (/mnt/tank/media)', '', []],
+    ['tank.archive', 'tank/archive (/mnt/tank/archive)', '', []],
+    ['tank.vm-images', 'tank/vm-images (/mnt/tank/vm-images)', '', []],
+  ]);
 
   // Snapshots: up to 10 days of history; vm-101 has failed for two days.
   const series = (tenant: string, source: string, gib: number, opts: { skip?: number; offsite?: boolean; hh?: number; origin?: string; days?: number } = {}) => {
@@ -1488,6 +1552,87 @@ on('DELETE', '/policies/:id', (c, [id]) => {
 
 // groups
 on('GET', '/groups', (c) => [200, byTenant(need(c.user), db.groups)]);
+
+// ---- Phase 13c: guest inventory and auto-protect groups (crates/web-api/src/inventory.rs)
+function hasInventory(src: (typeof db.sources)[number]): boolean {
+  return src.kind === 'pve' || src.kind === 'truenas' || (src.kind.startsWith('plugin:') && !!pluginKind(src.kind)?.kind.guests?.list);
+}
+/** Guests of a group as the scheduler resolves them: explicit list, or the inventory (all / tags); exclude wins. */
+function resolveGuests(g: MockGroup): (number | string)[] {
+  const ex = new Set((g.exclude ?? []).map(String));
+  if (!g.mode || g.mode === 'explicit') return g.guests.filter((x) => !ex.has(String(x)));
+  const pve = db.sources.find((s) => s.id === g.source_id)?.kind === 'pve';
+  return (db.inventory.get(g.source_id) ?? [])
+    .filter((r) => r.gone === null && !ex.has(r.guest) && (g.mode === 'all' || r.tags.some((x) => g.selector.includes(x))))
+    .map((r) => (pve ? Number(r.guest) : r.guest));
+}
+/** Names of the groups protecting `guest` of a source (a plugin group without guests: the whole source). */
+function coveringGroups(sid: number, guest: string): string[] {
+  return db.groups
+    .filter((g) => g.source_id === sid)
+    .filter((g) => resolveGuests(g).map(String).includes(guest) || (g.mode === 'explicit' && !g.guests.length && !!db.sources.find((s) => s.id === sid)?.kind.startsWith('plugin:')))
+    .map((g) => g.name)
+    .sort();
+}
+const TAG_RE = /^[^\s\x00-\x1f\x7f](?:[^\x00-\x1f\x7f]{0,126}[^\s\x00-\x1f\x7f])?$/;
+function checkMode(src: (typeof db.sources)[number], b: Json): Pick<MockGroup, 'mode' | 'selector' | 'exclude'> {
+  let mode = b.mode ?? 'explicit';
+  const selector: string[] = b.selector ?? [];
+  const exclude: unknown[] = b.exclude ?? [];
+  if (!['explicit', 'all', 'tags'].includes(mode)) throw new HttpError(400, 'mode: explicit, all or tags');
+  if (src.kind === 'truenas' && mode === 'explicit' && !(b.guests ?? []).length) mode = 'all';
+  if (mode === 'explicit') {
+    if (selector.length || exclude.length) throw new HttpError(400, 'selector, exclude: only for groups of mode all or tags');
+    return { mode, selector: [], exclude: [] };
+  }
+  if (!hasInventory(src)) throw new HttpError(400, 'mode: this source has no guest inventory (linux, nfs, smb and plugin kinds without a guest list: explicit only)');
+  if ((b.guests ?? []).length) throw new HttpError(400, 'guests: a group of mode all or tags lists no guests (they come from the inventory)');
+  if (mode === 'all' && selector.length) throw new HttpError(400, 'selector: only for mode tags');
+  if (mode === 'tags' && (!selector.length || selector.length > 50)) throw new HttpError(400, 'selector: 1..=50 tags');
+  const bad = selector.find((x) => typeof x !== 'string' || !TAG_RE.test(x));
+  if (bad !== undefined) throw new HttpError(400, `selector: invalid tag ${JSON.stringify(bad)}`);
+  const ids = exclude.map(String);
+  if (src.kind === 'pve' && ids.some((x) => !/^[1-9]\d{2,8}$/.test(x))) throw new HttpError(400, 'exclude: VM/CT IDs of this source');
+  return { mode, selector: [...new Set(selector)].sort(), exclude: [...new Set(ids)].sort() };
+}
+on('GET', '/sources/:id/inventory', (c, [id]) => {
+  const u = need(c.user);
+  const src = db.sources.find((s) => s.id === Number(id) && (!u.tenant || s.tenant === u.tenant));
+  if (!src) throw new HttpError(404, 'not found');
+  const refreshed = db.jobs.filter((j) => ['inventory', 'plugin_guests'].includes(j.kind) && j.state === 'ok' && Number(j.params.source_id) === src.id).reduce((m, j) => Math.max(m, j.finished ?? 0), 0);
+  const rows = db.inventory.get(src.id) ?? [];
+  return [
+    200,
+    {
+      source_id: src.id,
+      kind: src.kind,
+      inventory: hasInventory(src),
+      refreshed: refreshed || (rows.length ? Math.max(...rows.map((r) => r.seen)) : null),
+      guests: rows
+        .slice()
+        .sort((a, b) => Number(a.gone !== null) - Number(b.gone !== null) || a.guest.length - b.guest.length || a.guest.localeCompare(b.guest))
+        .map((r) => ({ ...r, groups: r.gone === null ? coveringGroups(src.id, r.guest) : [] })),
+    },
+  ];
+});
+/** `inventory` / `plugin_guests` finished: the listing replaces the source's inventory (rows of gone guests are kept). */
+function inventoryResult(j: Job, t: number) {
+  const sid = Number(j.params.source_id);
+  const rows = db.inventory.get(sid) ?? [];
+  if (j.kind === 'plugin_guests' && Array.isArray(j.result?.guests)) {
+    const listed = new Set<string>();
+    for (const g of j.result.guests) {
+      listed.add(g.id);
+      const r = rows.find((x) => x.guest === g.id);
+      if (r) Object.assign(r, { name: g.title, tags: g.tags ?? [], seen: t, gone: null });
+      else rows.push({ guest: g.id, name: g.title, kind: '', tags: g.tags ?? [], seen: t, gone: null });
+    }
+    for (const r of rows) if (!listed.has(r.guest) && r.gone === null) r.gone = t;
+  } else for (const r of rows) if (r.gone === null) r.seen = t;
+  db.inventory.set(sid, rows);
+  if (j.kind === 'inventory')
+    j.result = { guests: rows.filter((r) => r.gone === null).map((r) => ({ id: r.guest, title: r.name, kind: r.kind, tags: r.tags })) };
+}
 // pve: guests are VM/CT IDs; linux: exactly [source.config.agent_id].
 function checkGuests(src: (typeof db.sources)[number], guests: unknown) {
   if (!Array.isArray(guests)) throw new HttpError(400, 'guests: array required');
@@ -1507,8 +1652,10 @@ function checkGuests(src: (typeof db.sources)[number], guests: unknown) {
 }
 on('POST', '/groups', async (c) => {
   const u = need(c.user, 'admin');
-  const g = { id: nextId(), tenant: c.body.tenant, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), name: c.body.name, guests: c.body.guests ?? [] };
-  checkGuests(find(db.sources, (s) => s.id === g.source_id && s.tenant === g.tenant, 'source in tenant'), g.guests);
+  const g: MockGroup = { id: nextId(), tenant: c.body.tenant, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), name: c.body.name, guests: c.body.guests ?? [], mode: 'explicit', selector: [], exclude: [] };
+  const src = find(db.sources, (s) => s.id === g.source_id && s.tenant === g.tenant, 'source in tenant');
+  Object.assign(g, checkMode(src, c.body));
+  if (g.mode === 'explicit') checkGuests(src, g.guests);
   db.groups.push(g);
   await audit(u.name, 'group.create', `group/${g.id}`, g);
   return [201, g];
@@ -1517,8 +1664,9 @@ on('PUT', '/groups/:id', async (c, [id]) => {
   const u = need(c.user, 'admin');
   const g = find(db.groups, (x) => x.id === Number(id), 'group');
   if ('tenant' in c.body) throw new HttpError(400, 'unknown field `tenant`');
-  const next = { name: c.body.name, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), guests: c.body.guests };
-  checkGuests(find(db.sources, (s) => s.id === next.source_id && s.tenant === g.tenant, 'source in tenant'), next.guests);
+  const src = find(db.sources, (s) => s.id === Number(c.body.source_id) && s.tenant === g.tenant, 'source in tenant');
+  const next = { name: c.body.name, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), guests: c.body.guests ?? [], ...checkMode(src, c.body) };
+  if (next.mode === 'explicit') checkGuests(src, next.guests);
   const from = find(db.policies, (p) => p.id === g.policy_id, 'policy');
   const to = find(db.policies, (p) => p.id === next.policy_id, 'policy');
   if (weakens(from, to)) return quorum(u, 'group.update', { id: g.id, tenant: g.tenant, ...next, old: structuredClone(g) });
@@ -1984,6 +2132,10 @@ function pluginSnapshotKind(tenant: string, name: string) {
 const OVERWRITE = ['never', 'if_older', 'always'];
 function checkJob(u: User, kind: string, tenant: string, p: Json) {
   if (kind === 'agent_enroll') throw new HttpError(400, 'use POST /agents/{id}/enroll');
+  if (kind === 'inventory') {
+    const src = find(db.sources, (s) => s.id === Number(p.source_id) && s.tenant === tenant, 'source in tenant');
+    if (!hasInventory(src)) throw new HttpError(400, 'source_id: this source has no guest inventory');
+  }
   if (kind === 'plugin_validate' || kind === 'plugin_guests' || kind === 'plugin_backup') {
     const src = find(db.sources, (s) => s.id === Number(p.source_id) && s.tenant === tenant && s.kind.startsWith('plugin:'), 'plugin source in tenant');
     const pk = pluginKind(src.kind);
@@ -2037,6 +2189,7 @@ on('POST', '/jobs', async (c) => {
   const p = kind === 'files_get' ? { ...params, download_token: rand(32) } : params;
   const j = addJob(kind, tenant, p, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
   if (kind.startsWith('plugin_')) j.duration = { plugin_validate: 3, plugin_guests: 3, plugin_restore: 14, plugin_mount: 6 }[kind as string] ?? 10;
+  if (kind === 'inventory') j.duration = 3;
   await audit(u.name, 'job.create', `job/${j.id}`, { kind, tenant, params: p });
   return [202, p.download_token ? { id: j.id, download_token: p.download_token } : { id: j.id }];
 });
@@ -2269,7 +2422,7 @@ const GUEST_NAMES: Record<string, string> = {
   'initech/100': 'erp-app', 'initech/101': 'erp-db', 'initech/200': 'proxy', 'initech/102': 'dev-sandbox', 'initech/103': 'legacy-ftp',
   'acme/300': 'shop-web', 'acme/301': 'shop-api', 'acme/302': 'test-web',
 };
-interface Obj { source: string; name: string; kind: string; tenant: string; rpo_s: number; inGroup: boolean; names: string[] }
+interface Obj { source: string; name: string; kind: string; tenant: string; rpo_s: number; inGroup: boolean; names: string[]; sourceName?: string; sourceId?: number | null }
 
 function protectedObjects(u: User): Obj[] {
   const out: Obj[] = [];
@@ -2279,26 +2432,31 @@ function protectedObjects(u: User): Obj[] {
     if (!src || !pol) continue;
     const rpo_s = pol.schedule.startsWith('hourly') ? 3600 : DAY;
     const add = (source: string, name: string, names = [source]) => out.push({ source, name, kind: src.kind, tenant: g.tenant, rpo_s, inGroup: true, names });
+    const guests = resolveGuests(g);
     if (src.kind === 'pve')
-      for (const v of g.guests) add(guestName(v), `${GUEST_NAMES[`${g.tenant}/${v}`] ?? 'guest'} (${v})`, [`vm-${v}`, `ct-${v}`]);
-    else if (src.kind === 'linux') for (const a of g.guests) add(`host-${a}`, db.agents.find((x) => x.id === a)?.name ?? String(a));
-    else if (src.kind === 'truenas')
-      for (const d of g.guests.length ? g.guests : src.config.datasets) add(`nas-${src.id}-${String(d).replaceAll('/', '.')}`, `${src.name}: ${d}`);
+      for (const v of guests) add(guestName(v), `${GUEST_NAMES[`${g.tenant}/${v}`] ?? 'guest'} (${v})`, [`vm-${v}`, `ct-${v}`]);
+    else if (src.kind === 'linux') for (const a of guests) add(`host-${a}`, db.agents.find((x) => x.id === a)?.name ?? String(a));
+    else if (src.kind === 'truenas') for (const d of guests) add(`nas-${src.id}-${String(d).replaceAll('/', '.')}`, `${src.name}: ${d}`);
     else if (src.kind === 'nfs' || src.kind === 'smb') add(`share-${src.id}`, src.name);
     else if (src.kind.startsWith('plugin:')) {
       const pid = pluginKind(src.kind)?.plugin.id ?? src.kind.slice(7);
-      if (g.guests.length) for (const x of g.guests) add(`plugin-${pid}-${src.id}-${x}`, `${src.name}: ${x}`);
-      else add(`plugin-${pid}-${src.id}`, src.name);
+      if (guests.length) for (const x of guests) add(`plugin-${pid}-${src.id}-${x}`, `${src.name}: ${x}`);
+      else if (g.mode === 'explicit') add(`plugin-${pid}-${src.id}`, src.name);
     }
   }
-  // known guests that are in no protection group (cached PVE / plugin guest lists)
-  const extra: Obj[] = [
-    { source: 'vm-103', name: 'legacy-ftp (103)', kind: 'pve', tenant: 'initech', rpo_s: DAY, inGroup: false, names: ['vm-103'] },
-    { source: 'vm-302', name: 'test-web (302)', kind: 'pve', tenant: 'acme', rpo_s: DAY, inGroup: false, names: ['vm-302'] },
-  ];
-  const pg = db.sources.find((s) => s.kind === 'plugin:postgresql');
-  if (pg) extra.push({ source: `plugin-postgresql-${pg.id}-analytics`, name: `${pg.name}: analytics`, kind: pg.kind, tenant: pg.tenant, rpo_s: DAY, inGroup: false, names: [] });
-  return [...out, ...extra.filter((o) => !u.tenant || o.tenant === u.tenant)];
+  // inventory guests in no group of their source (and enrolled agents without a group)
+  const extra: Obj[] = [];
+  for (const [sid, rows] of db.inventory) {
+    const src = db.sources.find((s) => s.id === sid);
+    if (!src || (u.tenant && src.tenant !== u.tenant)) continue;
+    for (const r of rows)
+      if (r.gone === null && !coveringGroups(sid, r.guest).length)
+        extra.push({ source: r.guest, name: src.kind === 'pve' ? `${r.name} (${r.guest})` : `${src.name}: ${r.name}`, kind: src.kind, tenant: src.tenant, rpo_s: DAY, inGroup: false, names: [], sourceName: src.name, sourceId: src.id } as Obj);
+  }
+  for (const a of byTenant(u, db.agents))
+    if (!out.some((o) => o.source === `host-${a.id}`))
+      extra.push({ source: a.id, name: a.name, kind: 'linux', tenant: a.tenant, rpo_s: DAY, inGroup: false, names: [], sourceName: a.name, sourceId: null } as Obj);
+  return [...out, ...extra];
 }
 
 /** Synthetic daily job counts of one tenant (scheduler runs per group + offsite / verify / retention). */
@@ -2346,6 +2504,9 @@ function dashboard(u: User, days: number) {
     sla_ok: inGroup.filter((o) => o.sla === 'ok').length,
     sla_breach: inGroup.filter((o) => o.sla === 'breach').length,
     never: inGroup.filter((o) => o.sla === 'never').length,
+    unprotected_list: objs
+      .filter((o) => !o.inGroup)
+      .map((o) => ({ tenant: o.tenant, kind: o.kind, source_id: o.sourceId ?? null, source: o.sourceName ?? '', guest: o.source, name: o.name })),
     worst: inGroup
       .sort((a, b) => Number(b.sla !== 'ok') - Number(a.sla !== 'ok') || (b.age_s ?? Infinity) / b.rpo_s - (a.age_s ?? Infinity) / a.rpo_s)
       .slice(0, 10)

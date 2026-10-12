@@ -112,6 +112,7 @@ esac"#,
         firewall_settle_secs: 0,
         alert_retry_secs: [0, 0],
         capacity_threshold: 2.0,
+        inventory_secs: 0,
         ..Default::default()
     };
     fs::create_dir_all(p.join("catalog")).unwrap();

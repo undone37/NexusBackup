@@ -54,6 +54,41 @@ pub struct Guest {
     pub size: Option<u64>,
 }
 
+/// v1.5: a guest with tags (`type:user`, `pool:x`, …) that auto-protect groups
+/// select on (docs/plugin-system.md "v1.5"). Sent as [`Message::TaggedGuests`].
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct TaggedGuest {
+    pub id: String,
+    pub title: String,
+    pub size: Option<u64>,
+    pub tags: Vec<String>,
+}
+
+/// Tags per guest and bytes per tag (`TaggedGuests`).
+pub const MAX_GUEST_TAGS: usize = 64;
+pub const MAX_TAG: usize = 128;
+
+impl From<Guest> for TaggedGuest {
+    fn from(g: Guest) -> Self {
+        TaggedGuest {
+            id: g.id,
+            title: g.title,
+            size: g.size,
+            tags: Vec::new(),
+        }
+    }
+}
+
+impl From<TaggedGuest> for Guest {
+    fn from(g: TaggedGuest) -> Self {
+        Guest {
+            id: g.id,
+            title: g.title,
+            size: g.size,
+        }
+    }
+}
+
 /// What the host knows about the previous snapshot of this source.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct BaseInfo {
@@ -160,6 +195,12 @@ pub enum Message {
     BaseList {
         after: Option<Vec<u8>>,
     },
+    // v1.5 (appended)
+    /// Answer to `ListGuests` with tags; plugins without tags keep sending `Guests`
+    /// (the SDK does that), so they still run on a v1.4 host.
+    TaggedGuests {
+        list: Vec<TaggedGuest>,
+    },
 }
 
 fn bad(msg: impl Into<String>) -> io::Error {
@@ -243,6 +284,13 @@ pub fn check(m: &Message) -> io::Result<()> {
             Err(bad("invalid path list"))
         }
         Message::BaseEntries { entries } if entries.len() > MAX_BATCH => Err(bad("too many entries")),
+        Message::TaggedGuests { list }
+            if list
+                .iter()
+                .any(|g| g.tags.len() > MAX_GUEST_TAGS || g.tags.iter().any(|t| t.len() > MAX_TAG)) =>
+        {
+            Err(bad("too many or too long guest tags"))
+        }
         Message::Done { state: Some(s), .. } | Message::Init { state: Some(s), .. } if s.len() > MAX_STATE => {
             Err(bad("state blob too large"))
         }
@@ -566,6 +614,37 @@ mod tests {
         }
         assert!(valid_plugin_id("example-files") && !valid_plugin_id("pg-15") && !valid_plugin_id("a--b"));
         assert!(valid_guest_id("db_1.x") && !valid_guest_id("-x") && !valid_guest_id("a/b") && !valid_guest_id(""));
+    }
+
+    /// v1.5 tags are a new appended variant: a v1.4 plugin's `Guests` frame is byte
+    /// for byte what it was (old plugins keep working), `TaggedGuests` round-trips and
+    /// its limits hold.
+    #[test]
+    fn tagged_guests_are_wire_compatible() {
+        let g = Guest {
+            id: "db".into(),
+            title: "D".into(),
+            size: Some(5),
+        };
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &Message::Guests { list: vec![g.clone()] }).unwrap();
+        // length 9 | variant 3 | 1 guest | "db" | "D" | Some(5)
+        assert_eq!(buf, [0, 0, 0, 9, 3, 1, 2, b'd', b'b', 1, b'D', 1, 5]);
+        assert_eq!(
+            read_msg(&mut &buf[..]).unwrap(),
+            Message::Guests { list: vec![g.clone()] }
+        );
+        let mut t = TaggedGuest::from(g.clone());
+        t.tags = vec!["type:user".into(), "license:none".into()];
+        let m = Message::TaggedGuests { list: vec![t.clone()] };
+        buf.clear();
+        write_msg(&mut buf, &m).unwrap();
+        assert_eq!(read_msg(&mut &buf[..]).unwrap(), m);
+        assert_eq!(Guest::from(t.clone()), g);
+        t.tags = vec!["x".repeat(MAX_TAG + 1)];
+        assert!(check(&Message::TaggedGuests { list: vec![t.clone()] }).is_err());
+        t.tags = vec!["t".into(); MAX_GUEST_TAGS + 1];
+        assert!(check(&Message::TaggedGuests { list: vec![t] }).is_err());
     }
 
     #[test]

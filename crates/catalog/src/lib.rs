@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod alerting;
 pub mod auth;
+pub mod inventory;
 pub mod secret;
 pub use rusqlite;
 
@@ -238,9 +239,28 @@ UPDATE alerts SET resolved_at = ts, resolved_by = acked_by WHERE acked_by IS NOT
 CREATE INDEX IF NOT EXISTS alerts_open ON alerts(key) WHERE resolved_at IS NULL;
 "#;
 
+/// v13 (Phase 13c, auto-protect): `inventory` = the guests the scheduler last
+/// listed per source (PVE `/cluster/resources`, TrueNAS datasets, plugin
+/// `ListGuests`), with tags (`pool:x`, `tag:y`, `node:n`, `type:qemu`, …);
+/// guests no longer listed keep their row with `gone` set. `groups.mode`:
+/// `explicit` (the `guests` list, as before), `all` (every inventory guest of the
+/// source) or `tags` (guests with any tag in `selector`); `exclude` (guest ids)
+/// always wins. See [`inventory`]. Purely additive: the previous release skips it
+/// and treats every group as explicit (an `all`/`tags` group has `guests = []`
+/// there: nothing to back up, a failed job and an alert).
+const SCHEMA_V13: &str = r#"
+CREATE TABLE IF NOT EXISTS inventory (
+  source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE, guest TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '', tags TEXT NOT NULL DEFAULT '[]',
+  seen INTEGER NOT NULL, gone INTEGER, PRIMARY KEY (source_id, guest));
+ALTER TABLE groups ADD COLUMN mode TEXT NOT NULL DEFAULT 'explicit' CHECK (mode IN ('explicit','all','tags'));
+ALTER TABLE groups ADD COLUMN selector TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE groups ADD COLUMN exclude TEXT NOT NULL DEFAULT '[]';
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
-    SCHEMA_V11, SCHEMA_V12,
+    SCHEMA_V11, SCHEMA_V12, SCHEMA_V13,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1154,5 +1174,71 @@ mod tests {
             .query_row("SELECT count FROM alerts WHERE id = 5", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    /// v13 (inventory, group modes) on top of the previous schema: existing groups
+    /// stay `explicit`, modes are checked, inventory rows go with their source, and
+    /// the previous release still reads and writes groups afterwards.
+    #[test]
+    fn migration_v13_inventory_and_group_modes() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let prev = MIGRATIONS.len() - 1;
+        {
+            let c = Connection::open(&p).unwrap();
+            c.pragma_update(None, "foreign_keys", "ON").unwrap();
+            for (i, m) in MIGRATIONS[..prev].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO tenants (name) VALUES ('t');
+                 INSERT INTO sources (id, tenant, kind, name, config) VALUES (1,'t','pve','p','{}'), (2,'t','truenas','n','{}');
+                 INSERT INTO policies (id, name, schedule, gfs) VALUES (1,'p','daily 22:00','{}');
+                 INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (1,'t',1,1,'g','[100]');",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+            assert_eq!(v, MIGRATIONS.len() as i64);
+            let (mode, sel, ex): (String, String, String) = conn
+                .query_row("SELECT mode, selector, exclude FROM groups WHERE id = 1", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+                .unwrap();
+            assert_eq!((mode.as_str(), sel.as_str(), ex.as_str()), ("explicit", "[]", "[]"));
+            let ok = |sql: &str| conn.execute(sql, []).is_ok();
+            assert!(!ok("UPDATE groups SET mode = 'some' WHERE id = 1"));
+            assert!(ok(
+                "INSERT INTO groups (tenant, source_id, policy_id, name, guests, mode, selector) VALUES ('t',2,1,'n','[]','tags','[\"pool:tank\"]')"
+            ));
+            assert!(ok(
+                "INSERT INTO inventory (source_id, guest, name, kind, tags, seen) VALUES (1,'100','web','qemu','[]',1)"
+            ));
+            assert!(!ok(
+                "INSERT INTO inventory (source_id, guest, name, kind, tags, seen) VALUES (9,'100','web','qemu','[]',1)"
+            ));
+            conn.execute_batch("DELETE FROM groups WHERE source_id = 1; DELETE FROM sources WHERE id = 1;")
+                .unwrap();
+            let n: i64 = conn
+                .query_row("SELECT COUNT(*) FROM inventory", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "inventory rows go with their source");
+        }
+        drop(c);
+        // the previous release: nothing left to migrate, its group queries still work
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..prev].iter().skip(v as usize).count(), 0);
+        old.execute(
+            "INSERT INTO groups (tenant, source_id, policy_id, name, guests) VALUES ('t',2,1,'old','[\"tank\"]')",
+            [],
+        )
+        .unwrap();
+        let n: i64 = old.query_row("SELECT COUNT(*) FROM groups", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
     }
 }

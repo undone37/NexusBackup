@@ -18,7 +18,7 @@ use auth::{Bad, Credential};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use base64::Engine;
 use graph::{Graph, Settings};
-use plugin_sdk::{error, BackupResult, Ctx, Guest as SdkGuest, Plugin, Result, Sink, Source, Validation};
+use plugin_sdk::{error, BackupResult, Ctx, Plugin, Result, Sink, Source, TaggedGuest as SdkGuest, Validation};
 use serde_json::Value;
 
 pub const GRAPH_HOST: &str = "graph.microsoft.com";
@@ -387,19 +387,28 @@ impl Plugin for M365 {
         Ok(Validation::Valid)
     }
 
-    fn list_guests(&mut self, ctx: &Ctx) -> Result<Vec<SdkGuest>> {
+    /// Users, sites and teams, tagged `type:user|site|team` (auto-protect groups);
+    /// users without any license also `license:none` (`assignedLicenses` needs no
+    /// permission beyond User.Read.All). Entra group tags (`group:<name>`) would need
+    /// GroupMember.Read.All: not done (plan 17a).
+    fn list_tagged_guests(&mut self, ctx: &Ctx) -> Result<Vec<SdkGuest>> {
         let (c, mut g) = connect(ctx)?;
         let mut out = Vec::new();
         if c.exchange || c.onedrive {
             g.pages(
-                "/users?$select=id,displayName,userPrincipalName,userType&$top=999",
+                "/users?$select=id,displayName,userPrincipalName,userType,assignedLicenses&$top=999",
                 &[],
                 |u| {
                     if u["userType"].as_str().is_some_and(|t| t != "Member") {
                         return Ok(());
                     }
                     if let Some(id) = u["id"].as_str().filter(|i| guid_ok(i)) {
+                        let mut tags = vec!["type:user".to_owned()];
+                        if u["assignedLicenses"].as_array().is_some_and(|l| l.is_empty()) {
+                            tags.push("license:none".into());
+                        }
                         out.push(SdkGuest {
+                            tags,
                             id: Guest::User(id.into()).id(),
                             title: format!(
                                 "User: {} ({})",
@@ -425,6 +434,7 @@ impl Plugin for M365 {
                     }
                     if let Some(gst) = site_guest(id) {
                         out.push(SdkGuest {
+                            tags: vec!["type:site".into()],
                             id: gst.id(),
                             title: format!(
                                 "Site: {} ({})",
@@ -442,6 +452,7 @@ impl Plugin for M365 {
             g.pages("/teams?$select=id,displayName&$top=999", &[], |t| {
                 if let Some(id) = t["id"].as_str().filter(|i| guid_ok(i)) {
                     out.push(SdkGuest {
+                        tags: vec!["type:team".into()],
                         id: Guest::Team(id.into()).id(),
                         title: format!("Team: {}", t["displayName"].as_str().unwrap_or_default()),
                         size: None,

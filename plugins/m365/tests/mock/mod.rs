@@ -836,8 +836,14 @@ impl Tenant {
                     .users
                     .iter()
                     .map(|u| {
+                        // licensed: users with a mailbox or OneDrive
+                        let lic: Vec<Value> = if u.mailbox || u.drive.is_some() {
+                            vec![json!({"skuId": "6fd2c87f-b296-42f0-b197-1e91e994b900"})]
+                        } else {
+                            Vec::new()
+                        };
                         json!({"id": u.id, "displayName": u.name, "userPrincipalName": u.upn,
-                                    "userType": if u.member { "Member" } else { "Guest" }})
+                                    "userType": if u.member { "Member" } else { "Guest" }, "assignedLicenses": lic})
                     })
                     .collect();
                 self.page(req, all, None)

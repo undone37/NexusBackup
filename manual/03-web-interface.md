@@ -115,8 +115,9 @@ for the browser session). The key figures refresh every minute, the table below 
   policy, 90 minutes for an hourly one. The half period is slack for a long or delayed backup.
 - **RPO breached**: the last good backup is older than 1.5 × the RPO.
 - **Never backed up**: the object is in a protection group but has no successful backup yet.
-- **Not in a group**: the appliance knows the object (e.g. a VM on a connected Proxmox VE cluster, a database of a
-  PostgreSQL source) but no protection group covers it. Nothing backs it up.
+- **Not in a group**: the appliance knows the object (a guest in the inventory of a source, e.g. a VM on a connected
+  Proxmox VE cluster or a database of a PostgreSQL source; an enrolled agent; an NFS/SMB source) but no protection
+  group covers it. Nothing backs it up. Guests a group excludes count here too.
 
 Storage figures (here and on the [Storage](#storage) page) use four terms:
 
@@ -161,6 +162,11 @@ data reduction factor before the first backup).
 - **Objects needing attention**: up to 10 objects with an RPO breach or that were never backed up, worst first:
   **Object**, **Tenant**, **Type**, **Last good backup**, **RPO** and the **SLA** chip (**Breached** or **Never**).
   "Every object is within its RPO." when there is nothing to do.
+- **Not in a group (N)**: shown when something is unprotected. Click it to open the list: **Object** (name and guest
+  ID), **Tenant**, **Type** and **Source**. **Open protection groups** leads to the groups, where an
+  [auto-protect group](05-policies-and-groups.md#auto-protect-all-guests-or-guests-by-tag) can cover them for good.
+
+![The "Not in a group" list on the Dashboard](images/dashboard-unprotected.png)
 
 Hover over a bar or ring segment to see its value. Screen readers get each chart as a table.
 

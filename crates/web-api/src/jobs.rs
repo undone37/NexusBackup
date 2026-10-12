@@ -124,6 +124,13 @@ struct PluginSourceP {
     guests: Option<Vec<String>>,
 }
 
+/// `inventory`: refresh the guest inventory of one source (crate::inventory).
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct InventoryP {
+    source_id: i64,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct PluginRestoreP {
@@ -316,6 +323,22 @@ fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiResult<Value>
                 Some(schema) => crate::plugins::check_schema(schema, &r.params, "params", &[])?,
                 None if r.params.as_object().is_some_and(|o| o.is_empty()) => {}
                 None => return Err(ApiError::bad("params: this restore takes no parameters")),
+            }
+            json!(r)
+        }
+        "inventory" => {
+            let r: InventoryP = parse(p)?;
+            let c = st.cat.conn();
+            let kind: String = c
+                .query_row(
+                    "SELECT kind FROM sources WHERE id = ?1 AND tenant = ?2",
+                    params![r.source_id, tenant],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| ApiError::bad("source_id: no such source in this tenant"))?;
+            if !crate::inventory::has_inventory(&c, &kind) {
+                return Err(ApiError::bad("source_id: this source has no guest inventory"));
             }
             json!(r)
         }

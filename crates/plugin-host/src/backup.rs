@@ -616,6 +616,7 @@ pub(crate) fn msg_name(m: &Message) -> &'static str {
         Message::Log { .. } => "Log",
         Message::Error { .. } => "Error",
         Message::BaseList { .. } => "BaseList",
+        Message::TaggedGuests { .. } => "TaggedGuests",
     }
 }
 

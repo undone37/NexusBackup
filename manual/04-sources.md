@@ -27,6 +27,31 @@ Open **Configuration → Sources**. Only administrators see this page.
   [10 Approvals and audit](10-approvals-and-audit.md)).
 - For plugin sources, **Validate connection** runs a short validation job. It shows **Connection OK** or the field
   and message the plugin reported, plus a link to the job.
+- **Inventory** (Proxmox VE, TrueNAS and plugin sources that list guests) shows the source's guest inventory, see
+  below.
+
+### Guest inventory
+
+The appliance lists the guests of every Proxmox VE, TrueNAS and guest-listing plugin source once an hour (job
+**Refresh guest inventory**) and keeps the result as the source's **inventory**:
+
+| Source | Guests | Tags |
+|---|---|---|
+| Proxmox VE | every VM and container the API token can see (`/cluster/resources`), without templates | `type:qemu`/`type:lxc`, `node:<node>`, `pool:<pool>`, `tag:<PVE tag>` |
+| TrueNAS | the datasets configured in the source | `pool:<ZFS pool>` |
+| Plugin sources (PostgreSQL, Microsoft 365, …) | what the plugin lists (databases; users, sites, teams) | what the plugin reports, e.g. Microsoft 365 `type:user`, `license:none` |
+
+**Inventory** opens the list: **Guest** (ID), **Name**, **Type**, **Tags** and **Protected by** (the groups covering
+the guest, or **not in a group**). Guests the source no longer lists stay in the list, greyed out, as **gone since …**;
+groups no longer select them. **Refresh inventory** (administrators and operators) lists the guests now, e.g. right
+after you created VMs.
+
+![Guest inventory of a Proxmox VE cluster](images/source-inventory.png)
+
+The inventory feeds the [auto-protect groups](05-policies-and-groups.md#auto-protect-all-guests-or-guests-by-tag)
+(**All guests**, **By tag or pool**) and the Dashboard's **Not in a group** count. The Proxmox VE token sees only guests
+it has `VM.Audit` on (the lab roles below grant it on `/`). If a refresh fails, the last inventory stays in effect and
+an `inventory_refresh` warning is raised.
 
 ## Appliance SSH keys
 
@@ -174,7 +199,8 @@ Example for **Nodes**:
 }
 ```
 
-Then create a protection group with the VM/CT IDs to back up.
+Then create a protection group with the VM/CT IDs to back up, or one that protects all guests or the guests of a pool
+or tag ([auto-protect](05-policies-and-groups.md#auto-protect-all-guests-or-guests-by-tag)).
 
 Limits: VM templates cannot be backed up (fleecing). Container restores need staging space in the node's
 `/var/tmp`, and every container backup reads the full tree. After a VM or host restart the dirty bitmap is lost,

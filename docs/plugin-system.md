@@ -2,7 +2,7 @@
 
 Status: v1 (2026-10-10), implementation notes v1.1 (2026-10-10, see "Implementation (v1.1)" at the end), additive
 v1.2 (2026-10-10, TrueNAS + PostgreSQL plugins, see "v1.2" at the end), additive v1.3 (2026-10-11, Microsoft 365
-plugin, see "v1.3" at the end), additive v1.4 (2026-10-11, restores per snapshot kind, see "v1.4" at the end). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
+plugin, see "v1.3" at the end), additive v1.4 (2026-10-11, restores per snapshot kind, see "v1.4" at the end), additive v1.5 (2026-10-12, tagged guests, see "v1.5"). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
 speaking a **versioned protocol**, with a **Rust SDK**; trust = **project release key + publisher keys an admin adds
 with quorum**; reference plugin **PostgreSQL**; the **TrueNAS** connector is ported to the SDK; the restore API covers
 **download, restore to original/alternate target, application-specific restore and mount/instant access**.
@@ -236,6 +236,19 @@ for v1.2 run unchanged; a plugin that uses `BaseList` needs a v1.3 host (the app
 - **SDK, restores:** when a `Source::files`/`streams` callback fails, the SDK reads the rest of the host's answer
   (until `NeedDone`) before returning the error, so the host receives the plugin's `Error` (shown in the job log)
   instead of failing on a closed pipe. No host change.
+
+## v1.5 — tagged guests (2026-10-12, Phase 13c auto-protect)
+Additive; `api: 1` unchanged. New struct `TaggedGuest {id, title, size, tags}` and the appended message
+`TaggedGuests { list }` (plugin → host, answer to `ListGuests`; older variants keep their wire index, a v1.4
+`Guests` frame is byte for byte unchanged). Postcard is not self-describing, so a field could not be added to
+`Guest` itself. SDK: `Plugin::list_tagged_guests` (default: `list_guests` without tags); the SDK sends `Guests` when
+no guest has a tag, so such plugins keep running on a v1.4 host, and `TaggedGuests` otherwise (needs a v1.5 host).
+Limits: 64 tags per guest, 128 bytes each (`check`); the host keeps only printable, trimmed tags and returns them in
+`{"guests": [{id, title, size, tags}]}`. The scheduler stores them in the guest inventory (docs/control-plane.md
+"Inventory"); groups of mode `tags` select on them. Microsoft 365 emits `type:user|site|team` and `license:none`
+(users without `assignedLicenses`, read with the existing User.Read.All); Entra group tags (`group:<name>`) would
+need GroupMember.Read.All and are left for 17a. Tested: `crates/plugin-proto` (wire compatibility, limits),
+`plugins/m365/tests/m365.rs` (tags).
 
 ## v1.4 — restores per snapshot kind (2026-10-11, docs/phase12-contract.md §6)
 Manifest only; protocol and API version unchanged (`api: 1`). A restore spec may name `"applies_to"`: `"guest"`
