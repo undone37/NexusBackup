@@ -52,6 +52,8 @@ const HINTS: &[(&str, &str)] = &[
     ("clock_skew", "System time and the compliance clock (retention locks) differ. A lag after a restart is normal: the compliance clock catches up slowly and locks last longer meanwhile. A jump while running or a clock that is ahead means system time was changed by hand or a time source is wrong: check Diagnostics (time.sync, time.nts) and the audit log. Resolves when the difference is below a minute."),
     ("fleecing_space", "The fleecing storage of a Proxmox node (usually local-lvm) is nearly full. A full LVM-thin pool pauses every VM on it, so guests are skipped below the guard and a running backup is cancelled below the critical level. Free space in that storage (or use a larger one as the source's fleecing storage) and adjust the guard on the source if needed. Resolves when a backup finds enough space again."),
     ("disk", "A disk or RAID array needs attention (SMART failing, bad sectors, temperature, NVMe wear, degraded or rebuilding array). Open Configuration → Hardware; replace a failed disk as the troubleshooting chapter describes. Resolves when the disk or array is healthy again."),
+    ("tenant_disabled", "The tenant is deactivated (Tenants page): no backups, offsite copies or replication run for it and its accounts cannot sign in; its other alerts are suppressed. Retention keeps running. Reactivate it on the Tenants page when it is needed again."),
+    ("vault_disabled", "Vault mode was switched off at the console with the recovery key after an approved request. Confirm with the people who requested and approved it (audit: vault.disable)."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
 
@@ -73,6 +75,7 @@ const CATEGORY: &[(&str, &str)] = &[
     ("clock_skew", "security"),
     ("gc_quorum", "security"),
     ("gc_confirm", "security"),
+    ("vault_disabled", "security"),
     ("job_failed", "backup"),
     ("sla_missed", "backup"),
     ("paused", "backup"),
@@ -357,6 +360,8 @@ mod tests {
             ("quota", "system"),
             ("forwarding", "system"),
             ("report", "system"),
+            ("vault_disabled", "security"),
+            ("tenant_disabled", "system"),
             ("something_new", "system"),
         ] {
             assert_eq!(category(kind), cat, "{kind}");

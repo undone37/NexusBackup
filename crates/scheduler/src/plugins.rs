@@ -140,6 +140,27 @@ impl Scheduler {
         Ok(sid)
     }
 
+    /// Restore into another source (manifest `target_source`): a plugin source of the
+    /// same tenant and kind; the host runs the plugin with its config (secrets opened).
+    fn plugin_restore_target(&self, job: &Job, cur: &Current, kind: &str, tid: i64) -> Result<Value> {
+        let (tcur, tkind, tcfg) = self.plugin_source(&job.tenant, tid)?;
+        if tkind != kind || tcur.id != cur.id {
+            bail!("target source {tid} is not a {kind} source");
+        }
+        let rid = job.params["restore"].as_str().unwrap_or_default();
+        let allowed = cur
+            .manifest
+            .kinds
+            .iter()
+            .filter(|k| k.kind == kind)
+            .flat_map(|k| &k.restores)
+            .any(|r| r.id == rid && r.target_source);
+        if !allowed {
+            bail!("restore {rid:?} cannot run into another source");
+        }
+        Ok(json!({"source_id": tid, "config": tcfg}))
+    }
+
     pub(crate) fn plan_plugin(&self, job: &Job, mut plan: Plan) -> Result<Plan> {
         let p = &job.params;
         match job.kind.as_str() {
@@ -184,6 +205,9 @@ impl Scheduler {
                 let (extra, op) = if job.kind == "plugin_restore" {
                     let mut s = snap;
                     s["id"] = json!(p["restore"].as_str().context("missing parameter restore")?);
+                    if let Some(tid) = p["target_source_id"].as_i64() {
+                        s["target"] = self.plugin_restore_target(job, &cur, &kind, tid)?;
+                    }
                     (json!({ "restore": s }), "restore")
                 } else {
                     let mut s = snap;

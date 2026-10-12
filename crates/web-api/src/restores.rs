@@ -89,6 +89,10 @@ pub async fn restore_many(State(st): State<St>, ctx: Ctx, J(r): J<RestoreMany>) 
         let p = check_params(&st, kind, &r.tenant, p).map_err(|e| ApiError(e.0, format!("{}: {}", it.source, e.1)))?;
         jobs.push((kind, p));
     }
+    let wrapped: Vec<(&str, &Value)> = jobs.iter().map(|(k, p)| (*k, p)).collect();
+    if let Some(res) = crate::vault::gate_jobs(&st, &ctx, &r.tenant, &wrapped)? {
+        return Ok(res);
+    }
     let ids = {
         let mut c = st.cat.conn();
         let tx = c.transaction()?;

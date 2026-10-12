@@ -1,7 +1,7 @@
 {
   "id": "m365",
   "name": "Microsoft 365",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "nexusbackup",
   "api": 1,
   "kinds": [
@@ -34,6 +34,29 @@
             "title": "Private key of the certificate (PEM, RSA, unencrypted)",
             "maxLength": 16384
           },
+          "apps": {
+            "type": "array",
+            "title": "Further app registrations (used round-robin; a throttled app hands over to the next)",
+            "description": "Same application permissions as the first app. Certificate: certificate and private key in one PEM.",
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "required": ["client_id", "certificate"],
+              "properties": {
+                "client_id": {
+                  "type": "string",
+                  "title": "Application (client) ID",
+                  "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+                },
+                "certificate": {
+                  "type": "string",
+                  "format": "password",
+                  "title": "Certificate and private key (PEM, RSA, unencrypted)",
+                  "maxLength": 32768
+                }
+              }
+            }
+          },
           "exchange": { "type": "boolean", "title": "Exchange mailboxes (mail, calendars, contacts)", "default": true },
           "onedrive": { "type": "boolean", "title": "OneDrive", "default": true },
           "sharepoint": { "type": "boolean", "title": "SharePoint sites (document libraries)", "default": true },
@@ -43,9 +66,14 @@
             "title": "Teams: channel messages (protected Microsoft API, needs Microsoft's approval)",
             "default": false
           },
+          "chats": {
+            "type": "boolean",
+            "title": "Users: 1:1 and group chats (protected, metered Microsoft API; download only)",
+            "default": false
+          },
           "teams_export_model": {
             "type": "string",
-            "title": "Teams export payment model",
+            "title": "Teams export payment model (channel messages and chats)",
             "enum": ["B", "A", "evaluation"],
             "default": "B",
             "description": "B = backup (metered, Azure billing on the app); A = security/compliance licences; evaluation = small monthly free quota"
@@ -111,7 +139,8 @@
         },
         {
           "id": "to_other",
-          "title": "Restore to another user / site / team (into a new folder)",
+          "title": "Restore to another user / site / team (into a new folder; also into another Microsoft 365 tenant)",
+          "target_source": true,
           "params_schema": {
             "type": "object",
             "required": ["target"],

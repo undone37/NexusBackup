@@ -3,17 +3,18 @@
 This chapter is for **administrators** and **security officers**. It explains what you need when the appliance is
 lost (hardware failure, fire, ransomware on the management network) and how the backups are recovered.
 
-> **Status:** Disaster recovery from an offsite copy is a **console/CLI procedure**, proven in lab drills only (a
-> fresh store, an SFTP test box and MinIO with Object Lock; the restored VM disk was bit-identical). It is **not
-> integrated** into the first-boot wizard or the web UI, it has not been run on real hardware or against a real
-> Hetzner Storage Box, and it does **not** restore the appliance configuration (see
-> [What is not recovered](#what-is-not-recovered)). Practise it before you depend on it.
+> **Status:** A tenant's offsite copy can be attached to a running appliance in the web UI
+> ([Attach an offsite copy in the web UI](#attach-an-offsite-copy-in-the-web-ui)); the console procedure stays as the
+> fallback. Both are proven in integration tests and lab drills only (a fresh store, an SFTP test box and MinIO with
+> Object Lock); neither has been run on real hardware or against a real Hetzner Storage Box, and neither restores the
+> appliance configuration (see [What is not recovered](#what-is-not-recovered)). Practise it before you depend on it.
 
 ## What protects you
 
 | Scenario | What you need | Where the data comes from |
 |---|---|---|
 | Appliance lost, tenant has an offsite target | recovery key + offsite credentials (SFTP key or S3 access key) + new hardware | Storage Box or S3 bucket ([07 Offsite](07-offsite.md)) |
+| A customer (tenant) rebuilds its own data elsewhere, without the appliance recovery key | that tenant's **tenant recovery key** + its offsite credentials + an appliance set up with the image | the tenant's offsite target ([Recover one tenant with its tenant recovery key](#recover-one-tenant-with-its-tenant-recovery-key)) |
 | Appliance lost, tenant is replicated | the secondary appliance (it has its own keys) | the secondary's local store ([08 Replication](08-replication.md)) |
 | Single snapshot damaged locally | nothing extra | `verify` finds it; restore an older snapshot, or fetch it from offsite (below) |
 | The only administrator lost the authenticator or password | recovery key + local console | [Break-glass](#break-glass-the-only-administrator-lost-their-authenticator) (below) |
@@ -69,6 +70,34 @@ system do not offer a shell either.
 > mode and the kernel arguments). The appliance VM test `lab/appliance/grub-lock.sh` drives the GRUB menu over the
 > serial console; it has not been used on real hardware yet.
 
+### The tenant recovery key (optional)
+
+The appliance recovery key opens **every** tenant. A managed service provider usually cannot hand it to one
+customer. For that case a tenant can get its own **tenant recovery key**: it opens only that tenant's data keys
+in its offsite copy, never other tenants' and never the appliance's key.
+
+1. On **Tenants**, click **Recovery key** in the tenant's row. The dialog shows whether the tenant has a key (with
+   its **Key ID** and since when) and the recent requests.
+2. **Generate tenant recovery key** (or **Replace tenant recovery key**). An administrator requests it; while
+   approvals are enabled, a second person (another administrator or a security officer) approves it on
+   **Approvals** ([10 Approvals and audit](10-approvals-and-audit.md)).
+3. After the approval, the requester opens the dialog again and clicks **Show key once** within 24 hours. The key
+   (16 groups of 4 hex digits, like the appliance recovery key) is generated at this moment and shown **once**. The
+   appliance keeps only its public part: nobody can display it again. Hand it to the customer through a safe channel
+   and store it apart from the appliance recovery key.
+
+![Tenant recovery key requests](images/tenant-key.png)
+
+![Tenant recovery key, shown once](images/tenant-key-shown.png)
+
+- Before the next offsite run the key service seals all of the tenant's data keys to the new key; the run uploads
+  them to `keys/tenants/<tenant>/tenant-escrow.*`. Data keys created later (key rotation) are sealed automatically,
+  without the key. A tenant without an offsite target gets nothing offsite.
+- **Replacing** needs an approval again. The old key no longer receives new data keys, and the next offsite run
+  removes its files from the target (on S3 with Object Lock the old objects stay until their lock ends).
+- Who holds the key and the tenant's offsite credentials can read that tenant's offsite copy. Treat it like the
+  recovery key, for one tenant.
+
 ## Incident: hold the good snapshots first
 
 When a source was encrypted or tampered with, or a legal case needs its backups, keep the snapshots before anything
@@ -84,10 +113,58 @@ restore points on schedule.
 4. When the case is closed, request **Release hold** for each snapshot; a second approver confirms it. Retention then
    prunes them on its normal schedule.
 
-## Recover a tenant from the offsite copy
+## Attach an offsite copy in the web UI
 
-Run these steps on the local console of the new machine, as root, with the appliance image installed. One run
-recovers **one tenant** (each tenant has its own offsite target).
+Use this on a new appliance that went through first boot normally (it has its own recovery key). You need:
+
+- the **original tenant name** (exactly as on the lost appliance);
+- the **offsite target** settings: for a Storage Box host, port, user, base directory and the **pinned host key**
+  (from your records, not from the network), plus an SSH key file on the new appliance that the box accepts (add
+  its public key to the box, see [07 Offsite copies](07-offsite.md#hetzner-storage-box-sftp)); for S3 endpoint,
+  region, bucket, prefix, access key and secret key;
+- the **recovery key of the lost appliance** (not the new one's);
+- a second administrator or security officer to approve.
+
+Steps:
+
+1. **Configuration → Tenants → Attach offsite copy** (administrator or security officer). Enter the original name and
+   the target as for a new tenant, then **Attach offsite copy**. The request goes to **Approvals**; it does not contain
+   the recovery key.
+
+   ![Attach an existing offsite copy](images/tenant-attach.png)
+
+2. A **different** administrator or security officer approves it. From now on the appliance may reach the target
+   (outbound firewall), for 72 hours.
+3. Back on **Tenants**, under **Attach requests**, the requester clicks **Enter recovery key**, types the lost
+   appliance's recovery key and clicks **Attach now**. Only the requester sees this button, and only within 72 hours
+   of the approval.
+
+   ![Entering the recovery key once](images/tenant-attach-key.png)
+
+4. An **Attach offsite copy** job runs. It fetches the escrowed tenant keys from the target, opens them with the
+   recovery key and stores them encrypted with this appliance's own keys, then indexes every pack and snapshot on the
+   target. When it has finished, the tenant exists with this offsite target and its snapshots appear on
+   **Snapshots** as **offsite only**.
+5. **Fetch from offsite** the snapshots you need and restore them as usual
+   ([06 Restores](06-restores.md#restore-from-the-offsite-copy)). Restore the newest snapshot of each guest first.
+6. Configure the sources, policies and protection groups again ([04 Sources](04-sources.md),
+   [05 Policies and protection groups](05-policies-and-groups.md)). New backups go into the same store and the same
+   offsite target.
+
+The recovery key is sent once, sealed so that only the scheduler can open it, and handed to the key service; it is
+never stored, logged or shown in the audit log. A wrong key fails the job: enter it again (the approval stays valid
+for 72 hours). Every step is audited (`tenant.attach_offsite` …).
+
+**Keep the old recovery key.** The offsite target keeps the lost appliance's key escrow, so the old recovery key stays
+the key for this tenant's offsite copy (also for a later disaster). Do not rotate the attached tenant's keys.
+
+> **Status:** Tested in integration tests (two key services, a local target; the scheduler and API flow with a fake
+> offsite tool) and as a lab procedure on a second appliance VM; not yet against a real Storage Box or S3 provider.
+
+## Recover a tenant from the offsite copy (console)
+
+The fallback when the web UI cannot be used. Run these steps on the local console of the new machine, as root, with
+the appliance image installed. One run recovers **one tenant** (each tenant has its own offsite target).
 
 1. **Prepare an empty key directory and store.** The DR command imports the escrow into a key directory that does
    not have a different `kek.recovery` yet. It refuses to overwrite the keys of an appliance that already ran its own
@@ -154,6 +231,39 @@ recovers **one tenant** (each tenant has its own offsite target).
 > key service and the setup wizard, so these commands may need adjustments there. If you face a real disaster, contact the project before you
 > run first boot on the replacement hardware.
 
+## Recover one tenant with its tenant recovery key
+
+For a tenant that has a [tenant recovery key](#the-tenant-recovery-key-optional). It runs on **another appliance
+that has been set up** (first boot done, so its key service has its own master key), for example the customer's own
+appliance. The appliance recovery key of the original appliance is not needed, and nothing of other tenants is
+unlocked.
+
+1. Do **not** create the tenant on the new appliance yet: the scheduler would give it a new data key, and the import
+   below refuses a tenant that already has different keys.
+2. Write the job configuration as in [Recover a tenant from the offsite copy](#recover-a-tenant-from-the-offsite-copy-console),
+   step 2.
+3. Recover the tenant's keys with the tenant recovery key (read from standard input, never typed on the command line):
+
+   ```sh
+   /usr/libexec/nexus/nexus-offsite /root/dr/initech.json dr --tenant-key /var/lib/nexus/keyd
+   ```
+
+   This reads only `keys/tenants/<tenant>/tenant-escrow.*` from the target, opens the files of this key, checks
+   that they belong to this tenant, stores the data keys under this appliance's own master key and indexes every
+   pack and snapshot. Output: `DR: keys recovered with the tenant recovery key, <n> packs and <m> snapshots
+   indexed`. A wrong key, another tenant's name, or a tenant that already has different keys here is refused.
+   The command runs as root: hand the new key files to the key service afterwards with
+   `chown -R nexus-keyd:nexus-keyd /var/lib/nexus/keyd/tenants/initech && restorecon -R /var/lib/nexus/keyd`.
+4. Create the tenant with the **same name** (**Tenants → New tenant**); it uses the imported keys. Continue with
+   steps 5 and 6 above (list, restore, bring the data back).
+5. Give the tenant a **new** offsite target (or another prefix) on the new appliance. The old target's key escrow
+   belongs to the old appliance; do not upload into it from the new one.
+
+> **Status:** The tenant-level DR is tested against a local directory target (key import, other tenants refused,
+> the appliance escrow untouched, a restored disk compared with the original) and the key rotation and replacement
+> in unit tests. It has not been run on an installed appliance, from the web UI, or against a real Storage Box or
+> S3 provider. There is no **Tenants → Attach** flow for it in the web UI yet.
+
 ## Recover from a replicated secondary
 
 If the lost appliance replicated a tenant to a second appliance, the data is already there:
@@ -165,6 +275,11 @@ If the lost appliance replicated a tenant to a second appliance, the data is alr
    targets, but no protection groups or agents).
 
 ![Replicated snapshots on the secondary](images/snapshots-replicated.png)
+
+If the secondary runs in **vault mode** ([08 Replication](08-replication.md#vault-mode-secondary-only)), every
+restore and download is a request that a second person approves first: plan for two people (an administrator or
+operator who requests, an administrator or security officer who approves). Vault mode stays on during the recovery;
+switching it off needs the recovery key at the console (`nexus-setup vault-disable`) and is not needed for restores.
 
 The secondary keeps its own retention and never deletes because the primary deleted. It cannot be "promoted" to a
 primary: replicated tenants take no new backups on the secondary. To protect the sources again, set up a primary

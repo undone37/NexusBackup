@@ -230,6 +230,20 @@ impl Host {
         restore_id: &str,
         params: Value,
     ) -> Result<restore::Report> {
+        self.restore_into(config, None, source, time, restore_id, params)
+    }
+
+    /// Restore into another source (manifest `target_source`): `config` is the
+    /// target source's config, `target_source_id` its id.
+    pub fn restore_into(
+        &self,
+        config: &Value,
+        target_source_id: Option<u64>,
+        source: &str,
+        time: u64,
+        restore_id: &str,
+        params: Value,
+    ) -> Result<restore::Report> {
         let cfg = config.to_string();
         let snap = self.snapshot(source, time)?;
         let mut p = self.peer(self.timeout, config)?;
@@ -244,6 +258,7 @@ impl Host {
                 restore: restore_id,
                 params,
                 max_log_bytes: 4 << 20,
+                target_source_id,
             },
             &mut self.out(),
         )

@@ -39,13 +39,13 @@ replicad); it streams replicad's answers to replication peers without opening st
 | Table | Columns (main) |
 |---|---|
 | `users` | id, name UNIQUE, password_hash (argon2id; `!pending-activation` while pending), totp_secret (`enc:v1:…`, legacy: base32; empty until the person enrolls), role, tenant (NULL = all), disabled, created, totp_last_step (v2), activation_hash + activation_expires (v9: digest of the one-time activation code, NULL = active; see Self-enrollment), auth (v10: `local` or `oidc`; OIDC accounts have password_hash `!oidc` and no TOTP seed), oidc_sub (v10: `<issuer>\|<sub>`, unique where set); v15 (table rebuilt): role CHECK adds `viewer` and `tenant_admin` (reserved for Phase 18c, refused by the API), can_download (NULL = role default: admin/operator/tenant_user yes, others no), expires (NULL = never), last_login |
-| `settings` (v9) | key PK, value: `approvals_enabled` (`true`/`false`), `gc_confirm/<tenant>` (JSON `{job, reason, created}`: a large GC waiting for an admin's confirmation while approvals are disabled); Phase 12: `oidc` (OIDC settings incl. mappings, client secret `enc:v1:`), `oidc_endpoints` (token + JWKS URL of the last discovery, for the allow-list), `alerts` (alert delivery, SMTP password sealed), `ssh_keys` (public halves published by the scheduler), `capacity` (store file system `{total, used, free, at}`, scheduler), `break_glass` (`{at, user, alert, forced_solo}` until the alert is acknowledged) |
+| `settings` (v9) | key PK, value: `approvals_enabled` (`true`/`false`), `gc_confirm/<tenant>` (JSON `{job, reason, created}`: a large GC waiting for an admin's confirmation while approvals are disabled); Phase 12: `oidc` (OIDC settings incl. mappings, client secret `enc:v1:`), `oidc_endpoints` (token + JWKS URL of the last discovery, for the allow-list), `alerts` (alert delivery, SMTP password sealed), `ssh_keys` (public halves published by the scheduler), `capacity` (store file system `{total, used, free, at}`, scheduler), `break_glass` (`{at, user, alert, forced_solo}` until the alert is acknowledged); Phase 17c: `vault_mode` (`{enabled, since, by}`, see "Vault mode") |
 | `backup_stats` (v11) | tenant, source, time, read, logical, new_chunks, new_plain, new_stored; PK (tenant, source, time); one row per committed snapshot from the connectors' `nexus-stats` lines (docs/storage-accounting.md). Also v11: `tenants.quota_bytes` (nullable soft quota) |
 | `capacity_samples` (v10) | day (`YYYY-MM-DD` UTC), tenant, used (bytes in the tenant's store), logical (sizes of its local snapshots); PK (day, tenant); one row per tenant and day, written by the scheduler's refresh |
 | `sessions` | id_hash (sha256 of cookie), user_id, csrf, created, last_seen; v15 (rebuilt): id (numeric, listed and revoked by it; the digest never leaves the server), ip, user_agent |
 | `tenants` | name PK, offsite (JSON: remote config, bwlimit, uploaders) |
 | `sources` | id, tenant, kind (`pve`, `linux` since v4, `truenas` since v5, `nfs`/`smb` since v6), name, config (pve JSON: api host/port/ca_pem/token_id, token_secret (`sealed:v1:…`), nodes, storage, fleecing_storage; linux JSON: agent_id, paths, excludes, hooks; truenas JSON (docs/truenas-connector.md): host, port, connect_addr, ca_pem (pinned certificate or CA), user, token_secret (API key, sealed), ssh {host, port, user, host_key, key_pem (sealed), public_key, from}, datasets, recursive, sudo, zfs_sudo; nfs/smb JSON (docs/nas-connector.md): host, port, version, NFS export/mount_port, SMB share/user/domain/sec/sign/seal/password (sealed)/keytab (sealed)/principal, snapshot_dir/snapshot_prefix/snapshot_order, excludes, threads, xattrs, timeout_secs) |
-| `tenants` | name PK, offsite (JSON: `remote` = `{type: "sftp", host, port, user, key_file, host_key, base_dir}` or `{type: "s3", endpoint, region, bucket, prefix, access_key, secret_key (sealed), path_style, ca_pem, storage_class_packs, storage_class_meta, lock}` (docs/s3-offsite.md), bwlimit (bytes/s), uploaders) |
+| `tenants` | name PK, quota_bytes (v11), disabled / disabled_at / disabled_by / disabled_reason (v22, see "Tenant deactivation"), offsite (JSON: `remote` = `{type: "sftp", host, port, user, key_file, host_key, base_dir}` or `{type: "s3", endpoint, region, bucket, prefix, access_key, secret_key (sealed), path_style, ca_pem, storage_class_packs, storage_class_meta, lock}` (docs/s3-offsite.md), bwlimit (bytes/s), uploaders) |
 | `sources` | id, tenant, kind (`pve`, `linux` since v4, `truenas` since v5), name, config (pve JSON: api host/port/ca_pem/token_id, token_secret (`sealed:v1:…`), nodes, storage, fleecing_storage; linux JSON: agent_id, paths, excludes, hooks; truenas JSON (docs/truenas-connector.md): host, port, connect_addr, ca_pem (pinned certificate or CA), user, token_secret (API key, sealed), ssh {host, port, user, host_key, key_pem (sealed), public_key, from}, datasets, recursive, sudo, zfs_sudo) |
 | `agents` (v4) | id (16 hex), tenant, name, host, port, cert_sha256, enrolled_at, token_hash (`sealed:v1:` token digest, NULL after enrollment), token_expires, last_seen, version, os; v21: cert_issued / cert_expires (validity of the presented certificate, from `agent-cert` lines), cert_sha256_next (renewed certificate issued but not confirmed: a second accepted pin), limits (JSON `{bwlimit, nice}`) |
 | `policies` | id, name, schedule (`daily HH:MM`, `hourly MM`, `every Nh [at MM]`, `Mon,Wed HH:MM` / `Mon-Fri HH:MM`, `monthly D HH:MM`; `catalog::schedule`), gfs (JSON {daily,weekly,monthly,yearly}), offsite (bool); v14: retry (JSON {count, delay_min}, default 3 × 5 min), blackout (JSON [{days, from, to, abort}]), sla_minutes (NULL = none) |
@@ -465,6 +465,99 @@ not in the store: the store's retention lock (`Manifest.lock_until`) can only gr
   named in the message) and `legal_hold_advisory`; the UI offers **Hold last good snapshot** / **Apply hold** there.
 - API tokens: `GET /holds` is readable with `read` scope; setting and releasing are closed to tokens.
 
+## Offsite in the UI (Phase 17d, `scheduler/src/offsite_ui.rs`, `web-api/src/offsite.rs`, `offsite/src/target/browse.rs`)
+No catalog migration. Job kinds (RBAC like restores: admin, operator, tenant_user in its tenant; never viewer or
+security officer; closed to API tokens like every new route/kind not on the allow-list):
+- `offsite_list {}`: `nexus-offsite <cfg> list --json` → result `{snapshots: [{source, time, size, lock_until,
+  inventory, remote, local}]}`: every snapshot of the offsite inventory (logical size from its sealed indexes, offsite
+  lock) plus every snapshot whose manifest is on the target, cross-checked: `remote: false` = the inventory knows it
+  but the target lost its manifest; `inventory: false` = on the target but unknown here; `local` = a copy is in the
+  store. Refused (400) for tenants without an offsite target.
+- `offsite_restore {source, time}`: only for a catalog row with `offsite=1, local=0` (409 if local, 404 otherwise);
+  `nexus-offsite <cfg> restore <source> <time> <keep>` fetches the snapshot (chunks verified on insert, manifest
+  last) and extends its **store lock** to compliance-now + `offsite_fetch_keep_secs` (scheduler config, default 7 days;
+  locks only grow, a longer lock stays). That is the "pulled back" protection: local retention counts it as still
+  locked and prunes it after the keep time; it needs no catalog flag. An approved `snapshot.delete` is refused for the
+  same time. The finished job marks the tenant dirty, the refresh sets `local=1`; the daily name-index backfill adds
+  it to the file search. Plan key `tenant:<t>` (serialised with the tenant's offsite upload).
+- UI: Snapshots filter **Copies** (all / local / offsite only, client side), **Fetch from offsite** on offsite-only
+  rows instead of Browse/Restore; Tenants → **Offsite copy** (the listing, fetch per row; `?offsite=<tenant>`).
+
+## Attach an offsite copy (Phase 17d, DR without the console)
+A tenant's offsite copy written by another (lost) appliance is attached to a running appliance:
+1. `POST /tenants/attach {name, offsite}` (admin or security officer): the original tenant name (DEK labels, AADs and
+   the escrow path are bound to it) and the target as for a new tenant (`check_offsite`; SFTP needs host + user,
+   S3 its `secret_key`, sealed to the scheduler with `tenant_owner(name)`). Refused if the tenant exists or an attach
+   for it is pending / approved within the window. Quorum action **`tenant.attach_offsite`** `{name, offsite}` — no
+   key in it (approvers read quorum params). Approved by a different admin or security officer; it is not executed by
+   the web-api (state stays `approved`).
+2. `POST /tenants/attach/{quorum_id}/run {recovery_key}` (only the requester, ≤ 72 h after the approval
+   (`ATTACH_WINDOW_SECS`), tenant still absent, no attach job queued/running for the request): the key (keyd's format,
+   normalised) is sealed to the scheduler at location `attach/<quorum id>/<tenant>/recovery-key`
+   (`catalog::secret::attach_key_location`) into an `offsite_attach {attach_quorum, recovery_key}` job (`tenant` = the
+   new name); audited `tenant.attach_offsite.run` `{quorum_id, job}` (never the key). `GET /jobs` redacts sealed
+   values. With approvals disabled step 1 yields an `approved` row at once.
+3. Scheduler: planning first removes `recovery_key` from the job row (`json_remove`, whatever happens next), checks
+   the request (approved, inside the window, same tenant, tenant absent), opens the key (bound to that request) and
+   the request's offsite config, and writes the job dir (0700 in the scheduler's runtime dir; `recovery.key` 0600).
+   `nexus-offsite <cfg> attach <dir>/recovery.key` reads and deletes the file, fetches `keys/kek.recovery` and
+   `keys/tenants/<t>/dek.*` from the target and sends key + escrow to keyd (`attach-escrow <tenant> <len>` + body, see
+   `keyd::attach_escrow`): keyd opens the *old* KEK with the recovery key, unwraps the DEKs, re-wraps them under its
+   own KEK (nothing of the old KEK or the recovery key is stored; refused if the tenant has other keys here or a
+   replication origin; idempotent), then the inventory is rebuilt from the target (`rebuild_from_remote`). On success
+   the scheduler inserts the tenant (offsite config from the request), sets the request `executed`, audits
+   `tenant.attach_offsite` (`requested_by`, `approved_by`, job) and refreshes: the snapshots appear offsite-only and
+   can be fetched and restored. A failed run (wrong key) leaves the request `approved`: the requester may submit the
+   key again inside the window. Job retries never apply (the key is used once).
+4. Egress: while a `tenant.attach_offsite` request is approved, not executed and inside the window, its target is in
+   the outbound allow-list (`Scheduler::attach_targets` in `sync_firewall`), before the tenant exists.
+- The target keeps the **old** appliance's escrow (`put_if_missing` never overwrites it): the old recovery key stays the
+  key for this offsite copy. Do not rotate an attached tenant's DEKs (keyd CLI only): the new version would be wrapped
+  under this appliance's KEK, which the old `kek.recovery` on the target does not open (17e per-tenant recovery keys).
+- Sources, policies and groups are not attached: configure them again; backups then continue into the same store and
+  target (dedup against the rebuilt inventory).
+
+## Vault mode (Phase 17c, `web-api/src/vault.rs`, `catalog::vault`, setting `vault_mode`)
+A one-way profile for a replication secondary (user decision 2026-10-12): `{enabled, since, by}`.
+- **Enable:** admin, quorum action `vault.enable` (always a pending request), executed by the web-api after the
+  preconditions are checked again: ≥ 1 replication source; every tenant replicated (`replication::replicated_tenant`);
+  no `replication_peers` rows (also pending ones); approvals enabled; `inbound.web.allow` non-empty. `GET /vault`
+  lists them (`checks`, `ready`) for admins, security officers and operators; everybody gets `{enabled, since, by}`,
+  and `GET /auth/me` carries `vault_mode` (top-bar badge).
+- **Enforced while on:** `PUT /settings/approvals {enabled: false}` refused, and an `approvals.disable` request made
+  earlier cannot be approved; `nexus-setup disable-approvals` refuses too. `POST /jobs` and `POST /restores` with a
+  kind in `vault::GATED_KINDS` (`restore`, `restore_ct`, `instant_recover`, `files_get`, `restore_files`,
+  `plugin_restore`, `plugin_mount`, `offsite_restore`) store one `vault.restore` request `{tenant, jobs: [{kind,
+  params}]}` (params validated as for a direct job; `download_token` redacted in quorum lists) and answer 202
+  `{quorum_id, vault: true}`; on approval the web-api inserts the jobs with `requested_by` = the requester (so the
+  download stays theirs) and answers `{job_ids}`. `files_list` stays direct. `POST /tenants`, `/sources`, `/groups`,
+  `/agents`, `/replication/peers` → 409; a `web` inbound list may not become empty (request and execution).
+- **Disable:** admin, quorum action `vault.disable`, never executed by the web-api (state stays `approved`). Within
+  72 h, root at the console runs `nexus-setup vault-disable`: it checks the recovery key against keyd's escrow (as
+  `recover-admin`), finds the newest approved `vault.disable` of the last 72 h, sets `vault_mode` off, marks the
+  request `executed`, audits `vault.disable` (actor `console`, `{quorum_id, requested_by, approved_by}`) and raises
+  the warning alert `vault_disabled`. Decision: the console variant instead of a keyd `verify_recovery` request —
+  the web-api never talks to keyd (docs/replication.md) and would become a recovery-key oracle; the console step
+  needs root at the console (console gate) in addition to the key, like every other recovery-key action.
+- API tokens: `/vault` is not on the allow-list.
+
+## Tenant deactivation (Phase 17f, `web-api/src/tenants.rs`, `catalog::tenants`, catalog v22)
+`tenants.disabled` (0/1), `disabled_at`, `disabled_by` (requester), `disabled_reason`.
+- `POST /tenants/{name}/deactivate {reason}` (admin, appliance-wide): quorum action `tenant.disable`
+  `{name, reason}` (backups stop: a weakening of protection), executed by the web-api: flags the tenant and deletes
+  the sessions of every account with `users.tenant` = it. `POST /tenants/{name}/reactivate` (admin): immediate,
+  audited `tenant.enable` `{was_reason}`. `GET /tenants` returns the four fields.
+- Accounts scoped to a deactivated tenant: login refused (as `disabled`), sessions rejected, API tokens rejected,
+  OIDC sign-in refused (`tenant_disabled`); the users rows are unchanged.
+- Jobs: `POST /jobs` refuses `backup`, `plugin_backup`, `offsite`, `replica_sync` for it; `POST
+  /replication/sources/{id}/sync` skips it. Scheduler: no scheduled group backups (`queue_scheduled`), no replication
+  syncs (`queue_replication`), no chained offsite job; queued jobs of those kinds fail unstarted (`plan`). Retention,
+  GC, verify and file index keep running; restores stay possible for appliance-wide roles.
+- Alerts: `raise` drops every alert with that tenant except the info `tenant_disabled:<tenant>` (raised every tick
+  while deactivated, resolved on reactivation).
+- Dashboard / reports: objects of the tenant have SLA state `deactivated` (counted as `sla_deactivated`, never a
+  breach; also `paused` for the SLA report's breach intervals); `protection.deactivated_tenants` lists them.
+
 ## Break-glass (`nexus-setup recover-admin`, Phase 12 §7)
 Console only (root): `nexus-setup recover-admin [--user NAME] [--force-solo]` asks for the recovery key (checked against keyd's `kek.recovery` as at first boot), resets a local admin account to pending activation (old password and authenticator invalid at once, sessions ended, account enabled) and prints a new one-time activation code (72 h). Without `--user` the only local admin is chosen. With approvals enabled and at least two possible approvers it refuses unless `--force-solo` (recorded in the alert, the audit entry and the banner). Audited `user.break_glass` (actor `console`), critical alert `break_glass`, setting `break_glass`.
 
@@ -524,6 +617,44 @@ Without it, anyone at the console could edit the kernel command line in GRUB (`i
   password (found in the image: `root::0:0` in the initramfs `/etc/passwd`). The image build asserts all of it.
 - Not covered: firmware (BIOS/UEFI) settings and booting another medium; set a firmware password and the boot order
   on real hardware (manual chapter 2). Lab: `lab/appliance/grub-lock.sh`.
+
+## Tenant recovery key (Phase 17e, `keyd::tenant_key`, `catalog::tenant_key`, `web-api/src/tenant_key.rs`)
+Optional second escrow of one tenant's DEKs, so that tenant can rebuild its data from its offsite copy on another
+appliance **without** the appliance recovery key (which opens every tenant).
+
+- **Key.** 32 random bytes (OS RNG), written like the appliance recovery key: 16 groups of 4 hex digits (256 bits).
+  The bytes are used directly as an **X25519 secret key**; the public key is `X25519(key, basepoint)`. Key id `kid` =
+  the first 16 hex digits of the public key.
+- **Generation, show once.** `tenant.recovery_key` quorum request (admin; while approvals are enabled another admin or
+  security officer approves; the row stays `approved`, nobody executes it). The requester opens it once within 24 h:
+  `POST /tenants/{t}/recovery-key/{id}/show` generates the key in the web-api (`catalog::tenant_key::generate`),
+  claims the row (`approved` → `executed`, exactly once), stores **only the public key** in the setting
+  `tenant_recovery_key:<t>` `{public, kid, set_at, requested_by, approved_by, quorum}` and returns the key in the
+  answer. It is never written anywhere; the audit entry `tenant.recovery_key_shown` carries `kid` and the replaced
+  `kid` (a test scans audit, quorum params, settings and alerts for the key). A new request while one is pending or
+  approved is refused (409). Opening a new key **replaces** the old one. `GET /tenants/{t}/recovery-key` (admin,
+  security officer): the status (`kid`, since, by, approved by) and the last 20 requests. Not open to API tokens.
+- **Sealing without the secret.** Before each offsite run the scheduler sends the public key from the catalog to keyd
+  (`tenant-recovery <t> <pubkey hex | none>`); keyd keeps it as `tenants/<t>/tenant-recovery.pub` and writes, per DEK
+  version `v`, `tenants/<t>/tenant-escrow.<kid>.<v>` = libsodium-style **sealed box** (crypto_box 0.9 `seal`:
+  ephemeral X25519 + XSalsa20-Poly1305, nonce = BLAKE2b(epk ‖ pk); the primitive already used for replication DEK
+  exports) of `NXTRK1\0\0 ‖ u8 len ‖ tenant ‖ u32 LE v ‖ DEK`. Every later DEK version (`keyd tenant-rotate`, a
+  replica import, a tenant-level DR install) is sealed the moment keyd stores it, using only the public key. A changed
+  or removed key deletes the old `tenant-escrow.*` files first; the scheduler drops them from the escrow dir.
+- **Offsite.** The files travel with the normal escrow (`escrow <t>` answer) to `keys/tenants/<t>/tenant-escrow.<kid>.<v>`
+  (put if missing; locked like the other escrow files on S3 with Object Lock). The `kid` in the name means a replaced
+  key never collides with the old files; after the upload `nexus-offsite` deletes `tenant-escrow.*` objects of other
+  key ids (best effort: a locked object version stays until its lock ends, only a delete marker is added).
+- **Tenant-level DR.** `nexus-offsite <cfg> dr --tenant-key <keyd-dir>` (key on stdin, never on the command line) on
+  an appliance whose keyd is initialized (own KEK): lists `keys/tenants/<t>/`, opens the `tenant-escrow.<kid>.*`
+  files of this key, checks the sealed tenant name and version against the file name and `<t>`, stores the DEKs
+  wrapped under the local KEK (refused if the tenant already has a different DEK for a version) and rebuilds the
+  offsite inventory. `kek.recovery` and other tenants' files are never read. The appliance-wide `dr` skips the
+  tenant escrow files.
+- **What the appliance holds:** the public key only (catalog + keyd dir). Root on the appliance gets the DEKs anyway
+  (KEK), so the public key adds nothing there.
+- Continuing offsite copies from the rebuilt appliance into the **same** target is not supported (its `kek.recovery`
+  belongs to the old appliance): give the rebuilt tenant a new target or prefix.
 
 ## First boot (`nexus-setup`, console TUI)
 Network (NetworkManager, static/DHCP on the management NIC) → admin account + TOTP enrollment (QR in terminal, code confirmation) → second person: "create it now (recommended)" = security officer account + TOTP, entered at the console by that person, or "later" (audit `setup.second_person_later`; script mode `"second_person_later": true`) → `keyd init`: recovery key shown once, re-entry of 3 random groups required → TLS certificate (self-signed, SAN = hostname + IPs; fingerprint shown) → metrics token → `/var/lib/nexus/setup-done` (writes `settings.approvals_enabled`: enabled with two people, **disabled with a single administrator** — the TUI and the script output say so; audit `setup.approvals`) → enable `nexus-web-api`, `nexus-scheduler`, `nexus-keyd`, `nexus-replicad` (`nexus-nasmount.socket` is enabled by the image preset).

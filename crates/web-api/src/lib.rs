@@ -34,6 +34,7 @@ pub mod hardware;
 pub mod holds;
 pub mod inventory;
 pub mod jobs;
+pub mod offsite;
 pub mod oidc;
 pub mod ops;
 pub mod plugins;
@@ -48,9 +49,12 @@ pub mod selection;
 pub mod settings;
 pub mod spa;
 pub mod storage;
+pub mod tenant_key;
+pub mod tenants;
 pub mod tls;
 pub mod tokens;
 pub mod validate;
+pub mod vault;
 
 /// Runtime configuration. Defaults are the appliance paths; every value can be
 /// overridden through an environment variable (used by tests and the lab).
@@ -458,6 +462,11 @@ pub fn router(st: St) -> Router {
         )
         .route("/settings/reports/{name}/send", post(reports::send_now))
         .route("/tenants/{name}/quota", put(storage::put_quota))
+        .route(
+            "/tenants/{tenant}/recovery-key",
+            get(tenant_key::get).post(tenant_key::request_key),
+        )
+        .route("/tenants/{tenant}/recovery-key/{id}/show", post(tenant_key::show))
         .route("/settings/anomaly", get(storage::get_anomaly).put(storage::put_anomaly))
         .route("/settings/oidc", get(oidc::get_settings).put(oidc::put_settings))
         .route("/settings/oidc/test", post(oidc::test_settings))
@@ -487,6 +496,8 @@ pub fn router(st: St) -> Router {
         .route("/gc/pending", get(approvals::gc_pending))
         .route("/gc/approve-large", post(approvals::gc_approve_large))
         .route("/tenants", get(list_tenants).post(create_tenant))
+        .route("/tenants/attach", post(offsite::request_attach))
+        .route("/tenants/attach/{id}/run", post(offsite::run_attach))
         .route("/tenants/{name}", put(update_tenant).delete(delete_tenant))
         .route("/sources", get(list_sources).post(create_source))
         .route("/sources/{id}", put(update_source).delete(delete_source))
@@ -565,6 +576,8 @@ pub fn router(st: St) -> Router {
         .merge(firewall::routes())
         .merge(holds::routes())
         .merge(hardware::routes())
+        .merge(tenants::routes())
+        .merge(vault::routes())
         .fallback(api_not_found);
     // peer API: only on replication TLS connections (see `connection_scope`)
     let peer = Router::new()

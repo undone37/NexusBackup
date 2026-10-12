@@ -83,6 +83,7 @@ impl Scheduler {
 
     /// Secondary: one `replica_sync` per enrolled source and tenant when due.
     pub(crate) fn queue_replication(&mut self, now: i64) -> Result<()> {
+        let off = self.disabled_tenants()?;
         for s in self.replication_sources()? {
             if s.state != "enrolled" {
                 continue;
@@ -99,7 +100,7 @@ impl Scheduler {
                     continue;
                 }
             };
-            for t in &s.tenants {
+            for t in s.tenants.iter().filter(|t| !off.contains(*t)) {
                 let active: i64 = self.db.conn().query_row(
                     "SELECT COUNT(*) FROM jobs WHERE kind='replica_sync' AND tenant=?1 AND state IN ('queued','running') \
                      AND json_extract(params,'$.replication_source_id')=?2",

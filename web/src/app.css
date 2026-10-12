@@ -397,6 +397,17 @@ svg.lucide {
 .topbar .spacer {
   flex: 1;
 }
+/* Phase 17c: vault mode badge */
+.topbar .vault-badge {
+  text-decoration: none;
+}
+.topbar .vault-badge::before {
+  display: none;
+}
+.topbar .vault-badge svg {
+  width: 14px;
+  height: 14px;
+}
 .topbar .brand {
   display: none;
 }

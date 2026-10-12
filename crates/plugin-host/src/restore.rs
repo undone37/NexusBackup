@@ -93,6 +93,16 @@ impl Snapshot {
     }
 }
 
+/// Init params of a restore beyond the snapshot: the restore id, the user's
+/// params and, for a restore into another source, `target_source_id`.
+fn restore_extra(p: &Params) -> Value {
+    let mut v = json!({"restore": p.restore, "params": p.params});
+    if let Some(t) = p.target_source_id {
+        v["target_source_id"] = json!(t);
+    }
+    v
+}
+
 /// Sends `chunks` as `Data` frames (≤ MAX_DATA each).
 fn send_chunks(store: &Store, peer: &mut dyn Peer, chunks: &[chunkstore::ChunkId]) -> Result<u64> {
     let mut n = 0;
@@ -115,6 +125,8 @@ pub struct Params<'a> {
     /// user parameters (validated against the restore's params_schema by the web-api)
     pub params: Value,
     pub max_log_bytes: usize,
+    /// restore with another source's config (`target_source` restores): its id
+    pub target_source_id: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -139,9 +151,7 @@ pub fn run(
         kind: p.kind.to_owned(),
         op: Op::Restore,
         config: p.config.to_owned(),
-        params: snap
-            .init_params(json!({"restore": p.restore, "params": p.params}))
-            .to_string(),
+        params: snap.init_params(restore_extra(p)).to_string(),
         base: Some(BaseInfo { time: snap.time }),
         state: snap.state.clone(),
     })?;

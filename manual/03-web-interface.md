@@ -92,7 +92,8 @@ The sidebar shows only what your role may use. The server checks every request a
 | Alerts | ✓ | ✓ | ✓ | — | read (without a tenant) |
 | Approvals | ✓ | ✓ (decides) | ✓ (read) | — | — |
 | Audit log | ✓ | ✓ | — | — | — |
-| Tenants, Sources, Agents, Policies, Protection groups, Users | ✓ | — | — | — | — |
+| Tenants | ✓ | **Attach offsite copy** only | — | — | — |
+| Sources, Agents, Policies, Protection groups, Users | ✓ | — | — | — | — |
 | Replication, Plugins | ✓ | read | read | — | — |
 | Hardware | ✓ (changes need approval) | read | read, **Rescan** | — | read (without a tenant) |
 | Settings | ✓ (all tabs) | read (all tabs) | read (Approvals, Appliance SSH keys, Updates) | — | — |
@@ -418,7 +419,7 @@ the last error. See [10 Approvals and audit](10-approvals-and-audit.md#audit-log
 
 | Page | What you do there | Chapter |
 |---|---|---|
-| **Tenants** | create tenants, set each tenant's offsite target and soft storage quota | [07 Offsite copies](07-offsite.md), [Storage](#storage) |
+| **Tenants** | create tenants, set each tenant's offsite target and soft storage quota; deactivate and reactivate a tenant ([09](09-users-and-access.md#deactivating-a-tenant)); **Recovery key**: the optional tenant recovery key ([14](14-disaster-recovery.md#the-tenant-recovery-key-optional)) | [07 Offsite copies](07-offsite.md), [Storage](#storage) |
 | **Sources** | connect Proxmox VE, agent hosts, TrueNAS, NFS/SMB shares and plugin sources | [04 Sources](04-sources.md) |
 | **Agents** | register Linux/Windows backup agents, issue enrollment tokens, update agents | [04 Sources](04-sources.md) |
 | **Replication** | pair this appliance with a second appliance | [08 Replication](08-replication.md) |
@@ -465,6 +466,7 @@ when approvals are enabled.
 | **Console access** | requests for an emergency root shell on the appliance console, **Show code** (once), **Revoke** (administrators and security officers only) | [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console) |
 | **Security** | session timeouts, dormant accounts, login banner; sessions of all users (administrators); a link to the firewall | [09 Users and access](09-users-and-access.md#sessions-and-sign-in-protection) |
 | **Firewall** | inbound rules per service (who may reach the web UI, ping), recent blocked attempts, the automatic outbound allow-list (read-only) | [02 Installation](02-installation.md#inbound-firewall) |
+| **Vault** | vault mode of a replication secondary: its preconditions, the request to switch it on, the two-step switch-off (administrators, security officers and operators read it) | [08 Replication](08-replication.md#vault-mode-secondary-only) |
 
 ![Settings: Approvals](images/settings-approvals.png)
 

@@ -620,7 +620,19 @@ The **Microsoft 365** plugin (`m365`) backs up a Microsoft 365 tenant through Mi
 channel messages). It signs in as an **app registration** in your Entra ID with a **certificate**. There is no
 password and no client secret. Details and limits: `docs/m365.md` in the repository.
 
-Prepare Entra ID once (a Global or Application Administrator does this):
+Prepare Entra ID once (a Global or Application Administrator does this). The quickest way is one of the helper
+scripts in the repository, run on your own admin computer (never on the appliance):
+
+- `plugins/m365/tools/register-app.sh` needs the Azure CLI and OpenSSL. Sign in with
+  `az login --tenant contoso.onmicrosoft.com --allow-no-subscriptions`, then run
+  `./register-app.sh` (add `--chats` or `--teams-messages` for those workloads, `--backup-only` for read-only
+  permissions).
+- `plugins/m365/tools/register-app.ps1 -TenantId contoso.onmicrosoft.com` needs PowerShell 7.3 or later with the
+  `Microsoft.Graph` module (same switches: `-Chats`, `-TeamsMessages`, `-BackupOnly`).
+
+Both create the app registration and a certificate, grant the permissions of the table below with admin consent,
+and print the tenant ID, client ID, the SharePoint and OneDrive hosts and the paths of the certificate and key
+files to paste into the form. Delete the output folder afterwards. To do it by hand instead:
 
 1. Entra admin center → **App registrations** → **New registration**: "Accounts in this organizational directory
    only", no redirect URI. Note the **Application (client) ID** and the **Directory (tenant) ID**.
@@ -643,11 +655,14 @@ Prepare Entra ID once (a Global or Application Administrator does this):
    | OneDrive, SharePoint, Teams files | `Sites.Read.All`, `Files.Read.All` | `Sites.ReadWrite.All`, `Files.ReadWrite.All` |
    | Teams | `Team.ReadBasic.All`, `Channel.ReadBasic.All` | |
    | Teams channel messages | `ChannelMessage.Read.All` | `Teamwork.Migrate.All`, `Channel.Create` |
+   | 1:1 and group chats | `Chat.Read.All`, `Chat.ReadBasic.All` | (download only) |
 
 4. Only if you want **Teams channel messages**: Microsoft treats the export of channel messages as a *protected
    API*. Request access for your app through the form linked from https://aka.ms/teamsgraph/requestaccess.
    Approval can take several days. Until then, leave **Teams: channel messages** off. Team files are backed up
-   without it.
+   without it. **Chats** use the same kind of protected API and are **metered**: with payment model `B` Microsoft
+   bills every exported message to the Azure subscription linked to the app. Turn them on only if you must keep
+   chats.
 
 Create the source with **Source type** **Microsoft 365 tenant (Exchange, OneDrive, SharePoint, Teams)**. Form
 fields (from the plugin manifest):
@@ -658,17 +673,28 @@ fields (from the plugin manifest):
   Delete the key file afterwards.
 - The workloads: **Exchange mailboxes (mail, calendars, contacts)**, **OneDrive**, **SharePoint sites (document
   libraries)**, **Teams: team files**, **Teams: channel messages (protected Microsoft API, needs Microsoft's
-  approval)** (off by default), and **Teams export payment model**: `B` (backup use, billed by Microsoft through an
+  approval)** (off by default), **Users: 1:1 and group chats (protected, metered Microsoft API; download only)**
+  (off by default; each chat is saved as `.json` and as a readable `.html` page under `chats/` in the user's
+  snapshot), and **Teams export payment model (channel messages and chats)**: `B` (backup use, billed by Microsoft through an
   Azure subscription linked to the app), `A` (security/compliance licences) or `evaluation` (a small free monthly
   quota, for tests).
 - **SharePoint host** (`contoso.sharepoint.com`) and **OneDrive host** (`contoso-my.sharepoint.com`): needed for
   OneDrive, SharePoint and Teams files. If you enter wrong values, validation tells you the right ones.
+- **Further app registrations (used round-robin; a throttled app hands over to the next)**: optional. Microsoft
+  limits the request rate per app, so large tenants back up faster with two to four apps. Click **Add entry** per
+  app and enter its **Application (client) ID** and, in **Certificate and private key**, the certificate and the
+  key in one PEM (the helper scripts write it as `app.pem`). Every app needs the same permissions as the first.
+  Users, sites and teams are spread over the apps; when Microsoft throttles one app, the plugin continues with the
+  next one at once. If you remove an entry in the middle, enter the certificates of the entries after it again.
 - Leave **Graph host**, **Sign-in host**, **HTTPS port** and **Additional CA certificate** empty. They exist for
   national clouds and test setups.
 
+![Microsoft 365 source form with two further app registrations](images/source-m365.png)
+
 Click **Validate connection**. The plugin signs in, logs the certificate's SHA-1 thumbprint (compare it with the
 one in the app registration) and makes one test call per enabled workload. A missing permission is reported
-next to the workload with the permission names. A sign-in failure shows Microsoft's error code (for example
+next to the workload with the permission names. With further apps, validation signs in with each of them and
+names the failing one under **Further app registrations**. A sign-in failure shows Microsoft's error code (for example
 `AADSTS700027` when the certificate is not uploaded to the app).
 
 In the protection group, click **Load …** and tick the **users** (mailbox + OneDrive), **sites** and **teams** to
@@ -684,6 +710,7 @@ incremental: the plugin asks Microsoft only for what changed (mail folders and d
 > **Status:** The plugin passed its integration tests against a local Microsoft Graph simulation. A run against a
 > real Microsoft 365 tenant is still pending. Not covered in this version: modified occurrences of recurring
 > meetings, event attachments, contact photos, archive mailboxes, public folders, file versions and sharing
-> permissions, SharePoint lists and subsites, private/shared channel sites (back them up as sites), and 1:1 or
-> group chats.
+> permissions, SharePoint lists and subsites, private/shared channel sites (back them up as sites). Chats are
+> download only. Version 1.1 (further apps, chats, restore into another tenant, helper scripts) is also tested
+> against the simulation only; the PowerShell helper has not been run yet.
 

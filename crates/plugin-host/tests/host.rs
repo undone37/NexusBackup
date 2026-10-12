@@ -149,10 +149,12 @@ fn backup_incremental_restore_download() {
         &restore::Params {
             job: 2,
             kind: "test",
-            config: "{}",
+            // as for a restore into another source: its config, its id in the params
+            config: r#"{"who":"target"}"#,
             restore: "echo",
             params: json!({"target": "x"}),
             max_log_bytes: 1 << 20,
+            target_source_id: Some(7),
         },
         &mut |_| {},
     )
@@ -161,6 +163,10 @@ fn backup_incremental_restore_download() {
     assert_eq!(got["a.txt"], "hello world");
     assert_eq!(got["stream:dump/db.sql"], "CREATE TABLE t();");
     assert_eq!(got["params"]["target"], "x");
+    assert_eq!(
+        (&got["config"]["who"], &got["target_source_id"]),
+        (&json!("target"), &json!(7))
+    );
     assert_eq!((rr.files_sent, rr.streams_sent), (1, 1));
 
     // generic download view: files + streams below .nexus-streams/

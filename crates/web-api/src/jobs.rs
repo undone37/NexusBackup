@@ -22,6 +22,9 @@ const RESTORE_KINDS: &[&str] = &[
     "restore_files",
     "plugin_restore",
     "plugin_mount",
+    // Phase 17d: browse the offsite copy, fetch a snapshot back for a restore
+    "offsite_list",
+    "offsite_restore",
 ];
 /// Kinds only an admin may request (they change software or trust on a host).
 const ADMIN_KINDS: &[&str] = &["agent_update", "agent_enroll", "agent_renew"];
@@ -187,6 +190,33 @@ struct PluginRestoreP {
     /// plugin_mount: 1..=1440
     #[serde(default, skip_serializing_if = "Option::is_none")]
     minutes: Option<u64>,
+    /// plugin_restore into another source of the same tenant and kind (manifest
+    /// `target_source`, e.g. Microsoft 365 into another M365 tenant)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_source_id: Option<i64>,
+}
+
+/// `offsite_restore`: fetch one offsite-only snapshot back into the store.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OffsiteRestoreP {
+    source: String,
+    time: i64,
+}
+
+/// The tenant has an offsite target (`tenants.offsite.remote`).
+fn has_offsite(st: &St, tenant: &str) -> ApiResult<()> {
+    let o: Option<String> = st
+        .cat
+        .conn()
+        .query_row("SELECT offsite FROM tenants WHERE name = ?1", [tenant], |r| r.get(0))
+        .optional()?;
+    let o: Value = o.and_then(|o| serde_json::from_str(&o).ok()).unwrap_or_default();
+    if o["remote"].is_object() {
+        Ok(())
+    } else {
+        Err(ApiError::bad("tenant: has no offsite target"))
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -386,6 +416,9 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
                     return Err(ApiError::bad("minutes: 1..=1440"));
                 }
                 r.restore = None;
+                if r.target_source_id.is_some() {
+                    return Err(ApiError::bad("target_source_id: restores only"));
+                }
                 "mount".to_owned()
             } else {
                 r.minutes = None;
@@ -413,6 +446,19 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
                 None if r.params.as_object().is_some_and(|o| o.is_empty()) => {}
                 None => return Err(ApiError::bad("params: this restore takes no parameters")),
             }
+            if let Some(tid) = r.target_source_id {
+                // only sources of the same appliance tenant (source_of) and plugin kind
+                if !action.target_source {
+                    return Err(ApiError::bad(format!(
+                        "target_source_id: restore {want} cannot run into another source"
+                    )));
+                }
+                let (tcur, tspec) = crate::plugins::source_of(&st.cat.conn(), tenant, tid)
+                    .map_err(|_| ApiError::bad("target_source_id: no such plugin source in this tenant"))?;
+                if tcur.id != cur.id || tspec.kind != spec.kind {
+                    return Err(ApiError::bad(format!("target_source_id: not a {} source", spec.kind)));
+                }
+            }
             json!(r)
         }
         "inventory" => {
@@ -428,6 +474,33 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
                 .ok_or_else(|| ApiError::bad("source_id: no such source in this tenant"))?;
             if !crate::inventory::has_inventory(&c, &kind) {
                 return Err(ApiError::bad("source_id: this source has no guest inventory"));
+            }
+            json!(r)
+        }
+        "offsite_list" => {
+            let _: MaintP = parse(p)?;
+            has_offsite(st, tenant)?;
+            json!({})
+        }
+        "offsite_restore" => {
+            let r: OffsiteRestoreP = parse(p)?;
+            validate::source_ref(&r.source)?;
+            has_offsite(st, tenant)?;
+            let row: Option<(bool, bool)> = st
+                .cat
+                .conn()
+                .query_row(
+                    "SELECT local, offsite FROM snapshots WHERE tenant = ?1 AND source = ?2 AND time = ?3",
+                    params![tenant, r.source, r.time],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            match row {
+                None | Some((_, false)) => {
+                    return Err(ApiError(StatusCode::NOT_FOUND, "no such offsite snapshot".into()))
+                }
+                Some((true, _)) => return Err(ApiError::conflict("the snapshot is in the local store already")),
+                Some((false, true)) => {}
             }
             json!(r)
         }
@@ -471,9 +544,14 @@ pub async fn create_job(State(st): State<St>, ctx: Ctx, J(r): J<JobReq>) -> ApiR
         .query_row("SELECT 1 FROM tenants WHERE name = ?1", [&r.tenant], |_| Ok(()))
         .optional()?;
     tenant_ok.ok_or_else(|| ApiError::bad("tenant: does not exist"))?;
+    crate::tenants::refuse_paused(&st.cat.conn(), &r.tenant, &r.kind)?;
     let params = check_params(&st, &r.kind, &r.tenant, r.params)?;
     if params.get("replace").is_some() {
         return request_replace(&st, &ctx, &r.kind, &r.tenant, params).map(|o| crate::quorum::accepted(o, json!({})));
+    }
+    // vault mode: restores and downloads only through approval (`vault.restore`)
+    if let Some(res) = crate::vault::gate_jobs(&st, &ctx, &r.tenant, &[(r.kind.as_str(), &params)])? {
+        return Ok(res);
     }
     let id = {
         let c = st.cat.conn();
@@ -540,9 +618,18 @@ pub struct JobFilter {
 
 fn job_json(r: &catalog::rusqlite::Row, with_log: bool) -> catalog::rusqlite::Result<Value> {
     let p: String = r.get(3)?;
+    let raw = serde_json::from_str::<Value>(&p).unwrap_or_default();
+    // sealed values (an `offsite_attach` recovery key until the scheduler takes it) never leave;
+    // the download token stays visible here (only its requester can use it, see `download`) —
+    // quorum::redact hides it from approval lists (vault mode, 17c)
+    let mut params = crate::quorum::redact(raw.clone());
+    if let Some(tok) = raw.get("download_token") {
+        params["download_token"] = tok.clone();
+    }
     let mut v = json!({
         "id": r.get::<_, i64>(0)?, "kind": r.get::<_, String>(1)?, "tenant": r.get::<_, String>(2)?,
-        "params": serde_json::from_str::<Value>(&p).unwrap_or_default(), "state": r.get::<_, String>(4)?,
+        "params": params,
+        "state": r.get::<_, String>(4)?,
         "requested_by": r.get::<_, String>(5)?, "created": r.get::<_, i64>(6)?,
         "started": r.get::<_, Option<i64>>(7)?, "finished": r.get::<_, Option<i64>>(8)?,
         "result": r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),

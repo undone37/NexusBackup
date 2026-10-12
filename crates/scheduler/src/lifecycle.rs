@@ -43,6 +43,12 @@ impl Scheduler {
     /// Raises the alert `key`, or counts a repeat of the open one (message
     /// updated to the latest; a higher severity is delivered again).
     pub fn raise(&self, severity: &str, kind: &str, key: &str, message: &str, tenant: Option<&str>) -> Result<()> {
+        // a deactivated tenant raises only its `tenant_disabled` notice (Phase 17f)
+        if let Some(t) = tenant.filter(|_| kind != catalog::tenants::ALERT_KIND) {
+            if catalog::tenants::disabled(&self.db.conn(), t)? {
+                return Ok(());
+            }
+        }
         let key: String = key.chars().take(KEY_MAX).collect();
         let now = catalog::now();
         let c = self.db.conn();

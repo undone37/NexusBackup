@@ -236,7 +236,7 @@ pub fn check_start(paths: &Paths, force_reconfigure_network: bool) -> Result<()>
         bail!(
             "setup already completed ({} exists); use --force-reconfigure-network to change the management network, \
              recover-admin for a lost admin login, disable-approvals when nobody else can approve, \
-             reset-firewall after an inbound firewall lockout",
+             reset-firewall after an inbound firewall lockout, vault-disable to end vault mode",
             paths.setup_done.display()
         );
     }

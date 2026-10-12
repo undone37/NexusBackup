@@ -1,15 +1,21 @@
 // Form model + client-side validation for the JSON-Schema subset plugins use in
 // `config_schema` / `params_schema` (docs/plugin-system.md): an object with `properties`
-// and `required`; property types string | integer | boolean | array of strings; enum,
+// and `required`; property types string | integer | boolean | array of strings | array of objects of
+// such scalars (contract v1.6, e.g. M365 `apps`: one sub-form per item); enum,
 // minimum/maximum, pattern, minLength/maxLength, format hostname | port | password,
 // title/description/default. The server validates again; this only gives early feedback.
 
 import { t } from './i18n';
 import type { JsonSchema } from './types';
 
-/** Form state: strings/numbers/booleans as edited; arrays as newline-separated text. */
-export type FormValue = string | number | boolean | null | undefined;
+/** Form state: strings/numbers/booleans as edited; arrays as newline-separated text; lists of objects as items. */
+export type FormValue = string | number | boolean | null | undefined | FormItem[];
 export type FormValues = Record<string, FormValue>;
+/** One item of a list of objects: its values and which of its write-only fields are stored. */
+export interface FormItem {
+  values: FormValues;
+  set: Record<string, boolean>;
+}
 
 export interface SecretOpts {
   /** write-only fields (kind.secret_fields) */
@@ -20,7 +26,11 @@ export interface SecretOpts {
 
 export const properties = (s: JsonSchema | undefined): [string, JsonSchema][] => Object.entries(s?.properties ?? {});
 
+/** A list of objects (rendered as repeatable sub-forms). */
+export const isList = (p: JsonSchema) => p.type === 'array' && p.items?.type === 'object';
+
 export function supported(p: JsonSchema): boolean {
+  if (isList(p)) return properties(p.items).every(([, x]) => x.type !== 'array' && x.type !== 'object' && supported(x));
   if (p.type === 'array') return !p.items || p.items.type === undefined || p.items.type === 'string';
   return p.type === 'string' || p.type === 'integer' || p.type === 'boolean';
 }
@@ -39,6 +49,10 @@ export function initValues(s: JsonSchema | undefined, config?: Record<string, un
   for (const [k, p] of properties(s)) {
     const v = secretFields.includes(k) ? undefined : config ? config[k] : p.default;
     if (p.type === 'boolean') out[k] = typeof v === 'boolean' ? v : false;
+    else if (isList(p))
+      out[k] = Array.isArray(v)
+        ? v.map((x) => ({ values: initValues(p.items, x as Record<string, unknown>, secretFields), set: secretFlags(x as Record<string, unknown>, secretFields) }))
+        : [];
     else if (p.type === 'array') out[k] = Array.isArray(v) ? v.map(String).join('\n') : '';
     else if (p.type === 'integer') out[k] = typeof v === 'number' ? v : typeof v === 'string' && v !== '' ? Number(v) : null;
     else out[k] = v === undefined || v === null ? '' : String(v);
@@ -98,6 +112,18 @@ export function buildValue(
     const raw = values[k];
     if (p.type === 'boolean') {
       value[k] = !!raw;
+      continue;
+    }
+    if (isList(p)) {
+      // errors of item i's field f: `<k>.<i>.<f>`
+      const items = Array.isArray(raw) ? raw : [];
+      const list = items.map((it, i) => {
+        const r = buildValue(p.items, it.values, { secretFields, secretSet: it.set });
+        for (const [f, e] of Object.entries(r.errors)) errors[`${k}.${i}.${f}`] = e;
+        return r.value;
+      });
+      if (p.maxItems !== undefined && list.length > p.maxItems) errors[k] = t.schema.maxItems(p.maxItems);
+      if (list.length || req) value[k] = list;
       continue;
     }
     if (p.type === 'array') {
