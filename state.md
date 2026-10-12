@@ -244,7 +244,7 @@ Decisions (user, 2026-10-11, plan.md §2): local Graph mock now, real M365 test 
 - [x] Pushed main after Phase 12 (2026-10-12); CI fully green (rust incl. Keycloak/PostgreSQL/sandbox tests on the runner, web, audit, agent-windows); tag `v0.0.1-alpha` pushed → release workflow (image → ghcr.io/undone37/nexusbackup, SBOM, DRAFT release)
 - [x] Signed with the alpha key, verified with release trust, `:stable` promoted, published 2026-10-12 as a pre-release
 - [x] Installer ISO (`iso.yml`, bootc-image-builder anaconda-iso, 1.86 GB) attached to v0.0.1-alpha; `lab/appliance/iso-test.sh`: unattended UEFI install in QEMU, first boot into the nexus-setup wizard, SELinux enforcing
-- [ ] Make the ghcr.io package public (appliances pull anonymously)
+- [ ] ~~Make the ghcr.io package public~~ — decided 2026-10-12: repo + package stay private for now; test appliances need a pull credential (read:packages) for updates (Phase 14 add-on)
 - [ ] Before beta: offline key ceremony + standby key, rotate away from the alpha key
 
 ## Phase 12 — Professional UI, KPI dashboard, OIDC (started 2026-10-11)
