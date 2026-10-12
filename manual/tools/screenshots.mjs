@@ -116,7 +116,8 @@ async function main() {
       `--window-size=${W},${H}`,
       'about:blank',
     ],
-    { stdio: 'ignore' },
+    // --lang alone leaves date fields in the host locale (e.g. tt.mm.jjjj)
+    { stdio: 'ignore', env: { ...process.env, LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8', LANGUAGE: 'en_US' } },
   );
   const cleanup = async () => {
     const gone = new Promise((r) => (chrome.exitCode !== null ? r() : chrome.once('exit', r)));
