@@ -244,7 +244,7 @@ Decisions (user, 2026-10-11, plan.md §2): local Graph mock now, real M365 test 
 - [x] Pushed main after Phase 12 (2026-10-12); CI fully green (rust incl. Keycloak/PostgreSQL/sandbox tests on the runner, web, audit, agent-windows); tag `v0.0.1-alpha` pushed → release workflow (image → ghcr.io/undone37/nexusbackup, SBOM, DRAFT release)
 - [x] Signed with the alpha key, verified with release trust, `:stable` promoted, published 2026-10-12 as a pre-release
 - [x] Installer ISO (`iso.yml`, bootc-image-builder anaconda-iso, 1.86 GB) attached to v0.0.1-alpha; `lab/appliance/iso-test.sh`: unattended UEFI install in QEMU, first boot into the nexus-setup wizard, SELinux enforcing
-- [ ] Make the ghcr.io package public (appliances pull anonymously)
+- [ ] ~~Make the ghcr.io package public~~ — decided 2026-10-12: repo + package stay private for now; test appliances need a pull credential (read:packages) for updates (Phase 14 add-on)
 - [ ] Before beta: offline key ceremony + standby key, rotate away from the alpha key
 
 ## Phase 12 — Professional UI, KPI dashboard, OIDC (started 2026-10-11)
@@ -275,3 +275,13 @@ Parallel worktree agents (schema versions pre-assigned, renumbered on merge if n
 - [x] UI smoke on the real API: 84 page views (admin + SO, light + dark, incl. Storage and Settings → Anomaly), 0 problems; fixed: Data reduction tile empty before the first capacity sample (falls back to dedup × compression)
 
 **Phase 13 complete (2026-10-12).** Next: Phase 14 (security and operations), then release 0.1.0-alpha.
+
+## Phase 14 — Security and operations (started 2026-10-12)
+Six parallel worktree agents (each merges main into its branch before reporting):
+- [ ] 14a audit + alert forwarding (syslog TLS + HTTPS JSON, anchor), audit filters + CSV
+- [ ] 14b diagnostics bundle + self-checks (also before updates), `nexus-diag`
+- [ ] 14c emergency console root access (tty2 gate: approved one-time code or recovery key)
+- [ ] 14d1 viewer role, download privilege, expiry, sessions list/revoke, timeouts, dormant accounts, login banner, management allow-list, approver-count warning
+- [ ] 14d2 API tokens, web certificate import (CSR on the appliance), certificate expiry alerts
+- [ ] 14e reports: CSV downloads + scheduled HTML e-mail
+- [ ] merge, full suite, VM labs (PVE e2e, plugins, forwarding, console gate), screenshots, CI, release 0.1.0-alpha
