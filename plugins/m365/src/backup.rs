@@ -113,7 +113,7 @@ impl State {
                 .iter()
                 .map(|(k, v)| (k.len() + v.len() + 8, k.clone()))
                 .collect();
-            by_len.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+            by_len.sort_unstable_by_key(|e| std::cmp::Reverse(e.0));
             for (n, k) in by_len {
                 if size <= limit {
                     break;
