@@ -936,6 +936,7 @@ export const en = {
       diagnostics: 'Diagnostics',
       console: 'Console access',
       security: 'Security',
+      firewall: 'Firewall',
     } as Record<string, string>,
     fw: {
       intro:
@@ -1667,16 +1668,68 @@ export const en = {
     bannerHint: 'Shown on the sign-in page above the form, as plain text (line breaks kept, up to 2000 characters). Empty = none.',
     mgmt: 'Management allow-list',
     mgmtHint:
-      'Only these addresses (CIDRs) may open connections to the web UI and API (port 8443); empty = any address. Replication secondaries that pull from this appliance must be included. Every change needs approval. Locked out? On the console: nexus-setup reset-mgmt-allow.',
-    mgmtField: 'Allowed networks (one per line, e.g. 192.0.2.0/24)',
-    mgmtAny: 'Any address may connect.',
-    mgmtYou: (ip: string, ok: boolean) => `Your address: ${ip} — ${ok ? 'allowed' : 'NOT in the list'}.`,
-    mgmtLockout: (ip: string) =>
-      `This list does not contain your address ${ip}: after approval you can no longer reach the web UI from here. Type ${ip} to confirm anyway.`,
-    mgmtConfirm: 'Type your address to confirm',
+      'Who may open connections to the web UI and API (port 8443) is now set per service under Settings → Firewall, together with the other inbound rules.',
+    mgmtLink: 'Open Settings → Firewall',
     pending: (id: number) => `A change is waiting for approval (request #${id}).`,
     fewApprovers: (n: number) =>
       `Only ${n} ${n === 1 ? 'person' : 'people'} can approve requests. If one of them is unavailable, nothing can be approved (the requester never approves their own request). Add a third administrator or security officer; the user manual (chapter 10, "When approvers are unavailable") describes the way out.`,
+  },
+  firewall: {
+    intro:
+      'Inbound: who may open connections to the services of this appliance. Every service starts open to any address (ping starts off); restrict a service to the networks your administrators, monitoring and replication secondaries use. Every change needs approval. Outbound connections are not configured here: the appliance allows exactly the destinations its configuration needs (sources, offsite targets, alerting, DNS, time) and blocks everything else.',
+    services: 'Inbound services',
+    service: 'Service',
+    port: 'Port',
+    sources: 'Allowed sources',
+    inEffect: 'In effect',
+    any: 'Any address',
+    off: 'Off',
+    notRunning: 'Not running',
+    names: {
+      web: 'Web UI and API',
+      icmp: 'Ping',
+      ssh: 'SSH',
+    } as Record<string, string>,
+    descr: {
+      web: 'The web interface, the REST API, /metrics and replication (secondaries pull from here) share this port. Restricting it restricts all of them: include your monitoring and replication secondaries.',
+      icmp: 'Answers ICMP and ICMPv6 echo requests (rate-limited). Off by default.',
+      ssh: 'There is no SSH server on this appliance. Shown so that future services appear in one place.',
+    } as Record<string, string>,
+    you: (ip: string, ok: boolean) => `Your address: ${ip} — ${ok ? 'allowed to reach the web UI' : 'NOT allowed to reach the web UI (you are probably connected through a proxy or a tunnel)'}.`,
+    applying: 'being applied',
+    unknown: 'unknown',
+    edit: 'Edit',
+    editTitle: (name: string) => `Inbound rule: ${name}`,
+    enabled: 'Service reachable',
+    allowField: 'Allowed sources (one address or network per line, e.g. 192.0.2.0/24 or 2001:db8::/32); empty = any address',
+    invalid: (s: string) => `"${s}" is not an address or network.`,
+    duplicate: (s: string) => `"${s}" is listed twice.`,
+    tooMany: 'At most 64 entries.',
+    lockout: (ip: string) =>
+      `This list does not contain your address ${ip}: after approval you can no longer reach the web UI from here. Type ${ip} to confirm anyway. Locked out? On the console: nexus-setup reset-firewall.`,
+    confirm: 'Type your address to confirm',
+    approvalHint: 'Every change is an approval request; it takes effect within seconds of the approval.',
+    pending: (id: number) => `approval pending (#${id})`,
+    fixed:
+      'Always allowed: replies to connections the appliance opened itself, loopback, IPv6 neighbour discovery and DHCP replies. Everything else is dropped.',
+    reset: 'Locked out? On the appliance console (tty2, see Settings → Console access) run nexus-setup reset-firewall: it clears every source list (audited, warning alert).',
+    drops: 'Recent blocked attempts',
+    dropsHint: 'Connection attempts the firewall dropped in the last 24 hours, per source and port (unicast TCP and UDP; at most 256 per address family). The kernel log has them too, rate-limited, with the prefix nexus-in-drop.',
+    noDrops: 'No blocked attempts in the last 24 hours.',
+    source: 'Source',
+    target: 'Port',
+    lastSeen: 'Last attempt',
+    packets: 'Packets',
+    outbound: 'Outbound (automatic)',
+    outboundHint:
+      'Generated from the configuration and kept up to date by the appliance: every source, offsite target, alert and forwarding receiver, identity provider and replication primary, resolved to addresses. Read-only.',
+    endpoints: 'Destinations',
+    dns: 'DNS resolvers',
+    nts: 'Time servers (NTS)',
+    none: 'none',
+    stale: 'The firewall status is not current (it is refreshed every minute by the appliance). The values below may be outdated.',
+    asOf: (when: string) => `Status as of ${when}.`,
+    saved: 'Saved.',
   },
   console: {
     intro:

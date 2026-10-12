@@ -4,12 +4,9 @@
 //!
 //! - Session timeouts: tightening applies at once; longer timeouts need
 //!   approval (`security.session`).
-//! - Management allow-list: every change needs approval
-//!   (`security.mgmt_allow`); a list that does not contain the requesting
-//!   client's address is refused unless `force` and `confirm` = that address.
-//!   The scheduler writes the list into the firewall file, nexus-nft-sync loads
-//!   it into `mgmt_allowed_v4/v6` (empty list = any). The console resets it
-//!   (`nexus-setup reset-mgmt-allow`).
+//! - Management allow-list: since Phase 16c the inbound firewall's `web`
+//!   service (crate::firewall, approval `firewall.inbound`); the 14d route
+//!   `PUT /settings/mgmt-allow` and the `mgmt_allow` field stay as aliases.
 //! - Dormant accounts (`dormant_days`, 0 = off) and the login banner: admin,
 //!   direct, audited. The scheduler disables dormant accounts.
 
@@ -206,7 +203,7 @@ pub async fn get_security(State(st): State<St>, ctx: Ctx, ClientIp(ip): ClientIp
         "client_allowed": access::allows(&allow, &ip),
         "mgmt_allow": allow,
         "client_ip": ip,
-        "pending": {"session": pending(&c, "security.session")?, "mgmt_allow": pending(&c, "security.mgmt_allow")?},
+        "pending": {"session": pending(&c, "security.session")?, "mgmt_allow": crate::firewall::pending_for(&c, "web")?},
     })))
 }
 
@@ -289,42 +286,21 @@ pub struct MgmtReq {
     confirm: String,
 }
 
-/// Every change needs approval (the requester could lock everybody out, or
-/// open the management port to everyone).
+/// The 14d route: a change of the inbound firewall's `web` service
+/// (crate::firewall, approval `firewall.inbound`).
 pub async fn put_mgmt_allow(
     State(st): State<St>,
     ctx: Ctx,
     ClientIp(ip): ClientIp,
     J(r): J<MgmtReq>,
 ) -> ApiResult<Response> {
-    ctx.require(ADMIN)?;
-    if r.mgmt_allow.len() > access::MGMT_MAX {
-        return Err(ApiError::bad(format!(
-            "mgmt_allow: at most {} entries",
-            access::MGMT_MAX
-        )));
-    }
-    let mut list = Vec::new();
-    for s in &r.mgmt_allow {
-        let c = access::cidr_string(s)
-            .ok_or_else(|| ApiError::bad(format!("mgmt_allow: {s:?} is not an address or CIDR (10.0.0.0/8)")))?;
-        if !list.contains(&c) {
-            list.push(c);
-        }
-    }
-    let old = access::mgmt_allow(&st.cat.conn())?;
-    if list == old {
-        return Ok(Json(json!({"mgmt_allow": list})).into_response());
-    }
-    let confirmed = r.force && r.confirm.trim() == ip;
-    if !access::allows(&list, &ip) && !confirmed {
-        return Err(ApiError::conflict(format!(
-            "mgmt_allow does not contain your address {ip}: you would lose access to the web UI; \
-             add it, or confirm with force and confirm = \"{ip}\""
-        )));
-    }
-    let p = json!({"mgmt_allow": list, "old": old, "requested_from": ip});
-    gate(&st, &ctx, "security.mgmt_allow", "settings/mgmt_allow", p)
+    let req = crate::firewall::InboundReq {
+        allow: r.mgmt_allow,
+        enabled: None,
+        force: r.force,
+        confirm: r.confirm,
+    };
+    crate::firewall::request(&st, &ctx, &ip, "web", &req)
 }
 
 /// Approved `security.*` actions (crate::quorum), refused if the setting
@@ -332,7 +308,19 @@ pub async fn put_mgmt_allow(
 pub fn execute(c: &Connection, action: &str, p: &Value) -> ApiResult<()> {
     let (key, current, new) = match action {
         "security.session" => (access::SESSION, json!(access::session_limits(c)?), &p["session"]),
-        "security.mgmt_allow" => (access::MGMT_ALLOW, json!(access::mgmt_allow(c)?), &p["mgmt_allow"]),
+        // requested before Phase 16c: becomes the inbound policy's `web` list
+        "security.mgmt_allow" => {
+            if json!(access::mgmt_allow(c)?) != p["old"] {
+                return Err(ApiError::conflict(
+                    "the setting changed since this request was made; reject it and request the change again",
+                ));
+            }
+            let mut i = catalog::firewall::load(c)?;
+            let allow = serde_json::from_value(p["mgmt_allow"].clone()).unwrap_or_default();
+            i.services.entry("web".into()).or_default().allow = allow;
+            catalog::firewall::store(c, &i)?;
+            return Ok(());
+        }
         _ => return Err(ApiError::bad("unknown action")),
     };
     if current != p["old"] {

@@ -178,6 +178,8 @@ can approve.
 - Passwords are stored as Argon2id hashes; authenticator secrets are stored encrypted.
 - Single sign-on accounts get the same sessions as local accounts; their password and second factor are checked by
   the identity provider.
+- Who may reach the sign-in page at all is set per network in **Settings → Firewall** (the web service's source
+  list, an approval request for every change); see [02 Installation](02-installation.md#inbound-firewall).
 
 > **Status:** Local accounts support only TOTP authenticators. WebAuthn (security keys) is planned; with single
 > sign-on, the identity provider can require security keys.

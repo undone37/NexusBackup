@@ -128,7 +128,9 @@ COPY --from=rust /out/nexus-plugin /usr/bin/nexus-plugin
 COPY --from=restorevm /out/vmlinuz /out/initrd.img /out/manifest.txt /usr/lib/nexus/restore-vm/
 RUN chmod 0755 /usr/libexec/nexus /usr/libexec/nexus/* /usr/bin/nexus-plugin \
  && test -z "$(find /usr /etc -name 'nexus-test-plugin*')" \
- && chmod 0644 /usr/lib/nexus/restore-vm/*
+ && chmod 0644 /usr/lib/nexus/restore-vm/* \
+ && ln -s ../libexec/nexus/nexus-setup /usr/sbin/nexus-setup
+# (the console recovery commands of the manual, e.g. `nexus-setup reset-firewall`, run by name in the root shell)
 
 # SELinux module: install into the image's policy store, check that labels
 # resolve, and label what this stage added.
@@ -216,11 +218,11 @@ RUN usermod -L root \
  && ln -sf /dev/null /etc/systemd/system/getty@tty2.service \
  && ln -sf /dev/null /etc/systemd/system/autovt@tty2.service \
  && systemctl preset sshd.service sshd.socket nftables.service chronyd.service nexus-console-gate.service \
-      nexus-setup.service nexus-nft-sync.service nexus-nft-sync.path nexus-nft-sync.timer nexus-nasmount.socket \
+      nexus-setup.service nexus-nft-sync.service nexus-nft-sync.path nexus-nft-sync.timer nexus-nft-status.timer nexus-nasmount.socket \
       nexus-plugin-install.service nexus-plugin-install.path nexus-tls.path \
  && ! systemctl is-enabled -q sshd.service \
  && systemctl is-enabled -q nftables.service chronyd.service nexus-setup.service nexus-console-gate.service \
-      nexus-nft-sync.path nexus-nft-sync.timer nexus-nasmount.socket \
+      nexus-nft-sync.path nexus-nft-sync.timer nexus-nft-status.timer nexus-nasmount.socket \
       nexus-plugin-install.service nexus-plugin-install.path nexus-tls.path \
  && test "$(systemctl is-enabled getty@tty2.service)" = masked \
  && ! systemctl is-enabled -q nexus-web-api.service nexus-scheduler.service nexus-keyd.service

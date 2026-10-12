@@ -13,7 +13,8 @@ pub const SESSION: &str = "session";
 pub const DORMANT_DAYS: &str = "dormant_days";
 /// text shown on the login page (≤ [`BANNER_MAX`] characters)
 pub const LOGIN_BANNER: &str = "login_banner";
-/// JSON array of CIDRs allowed to reach the management port; empty = any
+/// JSON array of CIDRs allowed to reach the management port; empty = any.
+/// Since Phase 16c a mirror of the inbound policy's `web` list (crate::firewall).
 pub const MGMT_ALLOW: &str = "mgmt_allow";
 
 pub const BANNER_MAX: usize = 2000;
@@ -141,8 +142,15 @@ pub fn allows(list: &[String], ip: &str) -> bool {
         .any(|(net, p)| net.is_ipv4() == ip.is_ipv4() && mask(ip, p) == net)
 }
 
-/// The stored allow-list (canonical CIDRs; invalid entries dropped).
+/// The management allow-list: the inbound policy's `web` sources
+/// (crate::firewall, Phase 16c).
 pub fn mgmt_allow(c: &Connection) -> rusqlite::Result<Vec<String>> {
+    Ok(crate::firewall::load(c)?.rule("web").allow)
+}
+
+/// The 14d setting as stored (canonical CIDRs; invalid entries dropped):
+/// read by the inbound policy's migration only.
+pub fn legacy_mgmt_allow(c: &Connection) -> rusqlite::Result<Vec<String>> {
     Ok(crate::setting(c, MGMT_ALLOW)?
         .and_then(|v| serde_json::from_str::<Vec<String>>(&v).ok())
         .unwrap_or_default()

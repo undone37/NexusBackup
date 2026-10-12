@@ -3,7 +3,8 @@
 # X-CSRF-Token, TLS verified against the appliance certificate.
 #   lab/e2e/m5.sh setup && lab/e2e/m5.sh start && lab/e2e/m5-api.sh [step...]
 # steps (default: all): config wait-backup check restore verify quorum phase13 legal-hold phase14d2 access diag audit
-#   (not in the default: console, console-check; lab/appliance/console-gate.sh runs them)
+#   (not in the default: console, console-check; lab/appliance/console-gate.sh runs them; firewall: appliance VM
+#   only, uses lab/appliance/con.py for the console reset)
 # Lab inputs (env, defaults = dev machine, see lab/README.md):
 #   LAB (/home/ah/nexus-lab), LAB_CA (default: fetched from the node), LAB_TOKEN_SECRET (file;
 #   default: secret part of $LAB/api-token), LAB_SSH_KEY (private key whose public half is in the
@@ -546,6 +547,72 @@ step_console_check() {
 	api admin GET "/alerts?state=open" | jq -e '[.[] | select(.kind == "console_root_shell")] | length >= 2' >/dev/null ||
 		die "console_root_shell alerts missing"
 	log "console request #$id used, banner cleared, console_root_shell alerts open"
+}
+
+# 16c (appliance VM only, lab/appliance: needs con.py): inbound firewall per service. Restrict web to
+# 127.0.0.1 + 10.0.2.2 (the VM sees the host as 10.0.2.2), still reachable; then a list without the host
+# (typed override) locks us out; `nexus-setup reset-firewall` on the console brings access back.
+fw_reach() { # -> HTTP code of /health, 000 when the firewall drops us
+	curl -s -o /dev/null -w '%{http_code}' --max-time 5 --cacert "${API_CA:-$ROOT/etc/nexus/tls/cert.pem}" \
+		--resolve "nexus-m5:$PORT:127.0.0.1" "$BASE/health" || true
+}
+fw_wait() { # fw_wait JQ-FILTER WHAT: poll GET /firewall (effective state, status every minute) up to 150 s
+	for _ in $(seq 50); do
+		api admin GET /firewall | jq -e "$1" >/dev/null && return
+		sleep 3
+	done
+	die "firewall: $2: $(api admin GET /firewall | jq -c '{services: [.services[] | {id, allow, effective}], status_ts}')"
+}
+step_firewall() {
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	login so "$SO_PW" "$SO_TOTP"
+	local r ip approve
+	approve() { # approve QUORUM-ANSWER WHAT (approvals may be disabled: then it applied directly)
+		if [ "$(status)" = 202 ]; then
+			api so POST "/quorum/$(jq -r .quorum_id <<<"$1")/approve" >/dev/null
+			expect 200 "so approves $2"
+		else
+			expect 200 "$2 (approvals disabled)"
+		fi
+	}
+	r=$(api admin GET /firewall)
+	expect 200 "GET /firewall"
+	ip=$(jq -r .client_ip <<<"$r")
+	jq -e '[.services[].id] == ["web","icmp","ssh"] and (.services[2].available | not)' <<<"$r" >/dev/null ||
+		die "firewall services: $(jq -c .services <<<"$r")"
+	log "client address as the appliance sees it: $ip; outbound: $(jq -c .outbound <<<"$r")"
+	api admin PUT /firewall/inbound/ssh '{"allow":[]}' >/dev/null
+	expect 409 "ssh is not running"
+	r=$(api admin PUT /firewall/inbound/web "$(jq -nc --arg ip "$ip" '{allow: ["127.0.0.1/32", "10.0.2.2/32", $ip]}')")
+	approve "$r" "web from 127.0.0.1 + 10.0.2.2"
+	fw_wait '.services[0].effective.v4 | index("10.0.2.2") != null' "web restricted to the host"
+	[ "$(fw_reach)" = 200 ] || die "not reachable any more with the host in the list"
+	log "web restricted to 127.0.0.1, 10.0.2.2: still reachable"
+	# lock ourselves out (typed override), then the console reset
+	api admin PUT /firewall/inbound/web '{"allow":["192.0.2.0/24"]}' >/dev/null
+	expect 409 "a list without the requester's address"
+	r=$(api admin PUT /firewall/inbound/web "$(jq -nc --arg ip "$ip" '{allow: ["192.0.2.0/24"], force: true, confirm: $ip}')")
+	approve "$r" "web from 192.0.2.0/24 only (typed override)"
+	for _ in $(seq 30); do
+		[ "$(fw_reach)" = 000 ] && break
+		sleep 2
+	done
+	[ "$(fw_reach)" = 000 ] || die "still reachable after locking the host out"
+	log "locked out as expected; console: nexus-setup reset-firewall"
+	"$here/../appliance/con.py" run '/usr/libexec/nexus/nexus-setup reset-firewall' 120 >&2 || die "nexus-setup reset-firewall"
+	for _ in $(seq 30); do
+		[ "$(fw_reach)" = 200 ] && break
+		sleep 2
+	done
+	[ "$(fw_reach)" = 200 ] || die "not reachable after the console reset"
+	r=$(api admin GET /firewall)
+	jq -e '.services[0].allow == [] and .client_allowed' <<<"$r" >/dev/null || die "after reset: $(jq -c .services[0] <<<"$r")"
+	api admin GET "/alerts?state=open" | jq -e 'any(.[]; .kind == "firewall_reset")' >/dev/null || die "firewall_reset alert"
+	api so GET "/audit?order=desc&limit=50" | jq -e 'any(.[]; .action == "firewall.reset" and .actor == "console")' >/dev/null ||
+		die "firewall.reset audit entry"
+	# our dropped attempts show up as blocked (status refreshed every minute)
+	fw_wait 'any(.drops[]; .port == 8443)' "blocked attempts on 8443"
+	log "access back after the console reset; blocked attempts: $(api admin GET /firewall | jq -c '[.drops[] | select(.port == 8443)]')"
 }
 
 step_audit() {

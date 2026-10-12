@@ -12,6 +12,7 @@ pub mod access;
 pub mod alerting;
 pub mod auth;
 pub mod console;
+pub mod firewall;
 pub mod forwarding;
 pub mod holds;
 pub mod inventory;

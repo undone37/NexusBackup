@@ -1,5 +1,5 @@
 [Unit]
-Description=NexusBackup firewall: sync outbound allow-list sets (sources, offsite, alerts, DNS, NTS)
+Description=NexusBackup firewall: sync allow-list sets (inbound services; outbound sources, offsite, alerts, DNS, NTS)
 # Started by nexus-nft-sync.path (allow-list or resolv.conf changed), the timer
 # (NTS names re-resolved) and at boot. Needs the nexus table (nftables.service).
 After=nftables.service network-online.target
@@ -17,6 +17,8 @@ ExecStart=/usr/libexec/nexus/nexus-nft-sync
 RuntimeDirectory=nexus-nft-sync
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
+# status.json for the web UI (tmpfiles: 0755 root), also refreshed by nexus-nft-status.timer
+ReadWritePaths=-/run/nexus-nft-status
 
 # Root with CAP_NET_ADMIN only (nft netlink); reads the scheduler's JSON
 # (validated: IP literals, tcp/udp, ports), resolv.conf and chrony.conf; DNS

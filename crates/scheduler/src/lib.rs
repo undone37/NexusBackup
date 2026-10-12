@@ -955,9 +955,9 @@ impl Scheduler {
         targets.extend(firewall::oidc_targets(&self.db.conn())?);
         let fwd = catalog::forwarding::Forwarding::load(&self.db.conn())?;
         targets.extend(firewall::forward_targets(&fwd));
-        // inbound: the management allow-list (Settings → Security; empty = any)
-        let mgmt = catalog::access::mgmt_allow(&self.db.conn())?;
-        let changed = nftsync::write_allowed(&self.cfg.nft_allowed, firewall::resolve(&targets), Some(&mgmt))?;
+        // inbound: per-service source lists (Settings → Firewall; empty = any)
+        let inbound = nftsync::inbound_map(catalog::firewall::load(&self.db.conn())?.effective());
+        let changed = nftsync::write_allowed(&self.cfg.nft_allowed, firewall::resolve(&targets), Some(&inbound))?;
         if changed {
             eprintln!(
                 "scheduler: firewall allow-list updated ({} destinations)",

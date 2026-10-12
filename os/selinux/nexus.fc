@@ -68,6 +68,7 @@
 /run/nexus-nft(/.*)?				gen_context(system_u:object_r:nexus_nft_var_run_t,s0)
 /run/nexus-replicad(/.*)?			gen_context(system_u:object_r:nexus_replicad_var_run_t,s0)
 /run/nexus-nft-sync(/.*)?			gen_context(system_u:object_r:nexus_nftsync_var_run_t,s0)
+/run/nexus-nft-status(/.*)?			gen_context(system_u:object_r:nexus_nftstatus_var_run_t,s0)
 /run/nexus-nasmount(/.*)?			gen_context(system_u:object_r:nexus_nasmount_var_run_t,s0)
 /run/nexus-nasmount\.[^/]+(/.*)?		gen_context(system_u:object_r:nexus_nasmount_var_run_t,s0)
 /run/nexus-console-gate(/.*)?			gen_context(system_u:object_r:nexus_consolegate_var_run_t,s0)
