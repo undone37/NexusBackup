@@ -108,10 +108,14 @@ FROM ${BASE}
 # chrony, nftables: part of the base, asserted. qemu-kvm-core: the restore
 # micro-VM (/usr/libexec/qemu-kvm, nbd block driver and seccomp built in). audit:
 # auditd keeps AVC denials and other security events in /var/log/audit.
-RUN dnf -y install --setopt=install_weak_deps=False chrony nftables qemu-kvm-core audit \
+# smartmontools (smartctl, ~2.3 MB) and mdadm (~1.1 MB), both AlmaLinux BaseOS: disk health
+# and the data array of nexus-disks (Phase 16, docs/hardware.md); xfsprogs and util-linux
+# (mkfs.xfs, xfs_growfs, lsblk, wipefs, blkid) are part of the base, asserted.
+RUN dnf -y install --setopt=install_weak_deps=False chrony nftables qemu-kvm-core audit smartmontools mdadm \
  && dnf clean all \
  && rm -rf /var/cache/dnf /var/cache/ldconfig /var/lib/dnf /var/log/dnf* /var/log/hawkey.log \
- && /usr/libexec/qemu-kvm -drive format=help | grep -qw nbd
+ && /usr/libexec/qemu-kvm -drive format=help | grep -qw nbd \
+ && command -v smartctl mdadm mkfs.xfs xfs_growfs lsblk wipefs blkid >/dev/null
 
 # Service users and groups (systemd-sysusers also runs at boot; running it here
 # puts them into the image's /etc/passwd and /etc/group).
@@ -169,7 +173,9 @@ RUN semodule -i /usr/share/selinux/packages/nexus/nexus.pp /usr/share/selinux/pa
  && matchpathcon /etc/nexus/tls/pending/key.pem | grep -q nexus_tls_pending_t \
  && matchpathcon /var/lib/nexus/tls/request.json | grep -q nexus_tls_req_t \
  && matchpathcon /usr/libexec/nexus/nexus-diag | grep -q nexus_diag_exec_t \
- && matchpathcon /var/lib/nexus/diag/0123/bundle.tar.gz | grep -q nexus_diag_var_lib_t
+ && matchpathcon /var/lib/nexus/diag/0123/bundle.tar.gz | grep -q nexus_diag_var_lib_t \
+ && matchpathcon /usr/libexec/nexus/nexus-disks | grep -q nexus_disks_exec_t \
+ && matchpathcon /var/lib/nexus/disks/status.json | grep -q nexus_disks_var_lib_t
 
 # Systemd units, presets, tmpfiles (state dirs with owners and modes).
 COPY os/systemd/*.service os/systemd/*.path os/systemd/*.timer os/systemd/*.socket /usr/lib/systemd/system/
@@ -198,12 +204,15 @@ RUN if [ "$NEXUS_IMAGE_REPO" != ghcr.io/undone37/nexusbackup ]; then \
  && python3 -c 'import json; json.load(open("/etc/containers/policy.json"))' \
  && test -f /usr/lib/bootupd/grub2-static/configs.d/08_greenboot.cfg \
  && ls /etc/pki/nexus/plugin-keys/*.pub >/dev/null \
- && systemctl preset nexus-update.timer nexus-update.path nexus-diag.path greenboot-healthcheck.service \
+ && systemctl preset nexus-update.timer nexus-update.path nexus-diag.path nexus-disks.timer nexus-disks.path \
+      smartd.service greenboot-healthcheck.service \
       greenboot-set-rollback-trigger.service greenboot-success.target \
- && systemctl is-enabled -q nexus-update.timer nexus-update.path nexus-diag.path greenboot-healthcheck.service \
+ && systemctl is-enabled -q nexus-update.timer nexus-update.path nexus-diag.path nexus-disks.timer nexus-disks.path \
+      greenboot-healthcheck.service \
       greenboot-set-rollback-trigger.service \
  && test "$(systemctl is-enabled bootc-fetch-apply-updates.timer)" = masked \
- && test "$(systemctl is-enabled rpm-ostreed-automatic.timer)" = masked
+ && test "$(systemctl is-enabled rpm-ostreed-automatic.timer)" = masked \
+ && ! systemctl is-enabled -q smartd.service
 LABEL org.opencontainers.image.version=${NEXUS_VERSION}
 
 # Time: NTS only (chronyd -p parses the config and fails on errors).

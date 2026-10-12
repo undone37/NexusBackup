@@ -1,0 +1,11 @@
+[Unit]
+Description=NexusBackup disk requests from the web UI (rescan, SMART self-test, data-array layout)
+
+[Path]
+# nexus-web-api writes /var/lib/nexus/disks/req-<id>.json (tmp + rename); nexus-disks
+# consumes (deletes) them and records the outcome in ops.json.
+PathExistsGlob=/var/lib/nexus/disks/req-*.json
+Unit=nexus-disks.service
+
+[Install]
+WantedBy=paths.target

@@ -348,10 +348,11 @@ class Host(unittest.TestCase):
         self.assertIn("PROTO nexus-store|0 0|d--700 0 0|$|", calls)
         self.assertTrue(any(c.startswith("mkfs.xfs -q -L nexus-data -p ") for c in calls))
         order = [c for c in calls if c.startswith("systemctl") and "is-active --quiet nexus" not in c]
-        self.assertEqual(order, ["systemctl stop nexus-scheduler.service", "systemctl daemon-reload",
-                                 "systemctl enable --now var-lib-nexus-chunkstore.mount",
+        self.assertEqual(order, ["systemctl --no-ask-password stop nexus-scheduler.service",
+                                 "systemctl --no-ask-password daemon-reload",
+                                 "systemctl --no-ask-password enable --now var-lib-nexus-chunkstore.mount",
                                  "systemctl is-active --quiet var-lib-nexus-chunkstore.mount",
-                                 "systemctl start nexus-scheduler.service"])
+                                 "systemctl --no-ask-password start nexus-scheduler.service"])
         unit = (self.units / "var-lib-nexus-chunkstore.mount").read_text()
         self.assertIn("What=/dev/disk/by-uuid/0e7d8c9b-aaaa-4bbb-8ccc-1234567890ab\n", unit)
         self.assertIn(f"Where={self.store}\n", unit)
@@ -363,7 +364,7 @@ class Host(unittest.TestCase):
         ops = self.tick()
         self.assertEqual(ops[rid]["state"], "refused", ops[rid])
         self.assertIn(text, ops[rid]["error"])
-        self.assertFalse(any(c.startswith(("mdadm --create", "mkfs", "systemctl stop")) for c in self.calls()))
+        self.assertFalse(any(c.startswith(("mdadm --create", "mkfs", "systemctl --no-ask-password stop")) for c in self.calls()))
 
     def test_create_refuses_system_disk(self):
         self.fresh()

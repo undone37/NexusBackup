@@ -229,9 +229,11 @@ fn confirmed(confirm: &str, serials: &[String]) -> ApiResult<()> {
         .collect();
     let want: BTreeSet<&str> = serials.iter().map(String::as_str).collect();
     if typed != want {
-        return Err(ApiError::bad(
-            "type the serial numbers of the selected disks to confirm (they are overwritten)",
-        ));
+        return Err(ApiError::bad(if serials.len() == 1 {
+            "type the serial number of the new disk to confirm (it is overwritten)"
+        } else {
+            "type the serial numbers of the selected disks to confirm (they are overwritten)"
+        }));
     }
     Ok(())
 }

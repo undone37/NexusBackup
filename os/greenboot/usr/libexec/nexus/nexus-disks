@@ -604,7 +604,7 @@ def stop_store_services():
     units = cfg("STORE_SERVICES").split()
     active = [u for u in units if run("systemctl", "is-active", "--quiet", u)[0] == 0]
     if active:
-        must("systemctl", "stop", *active, timeout=600)
+        must("systemctl", "--no-ask-password", "stop", *active, timeout=600)
     return active
 
 
@@ -684,13 +684,13 @@ def op_create_array(req, status):
             f.write(mount_unit(fs_uuid))
         os.chmod(unit + ".tmp", 0o644)
         os.replace(unit + ".tmp", unit)
-        must("systemctl", "daemon-reload")
-        must("systemctl", "enable", "--now", MOUNT_UNIT, timeout=300)
+        must("systemctl", "--no-ask-password", "daemon-reload")
+        must("systemctl", "--no-ask-password", "enable", "--now", MOUNT_UNIT, timeout=300)
         if run("systemctl", "is-active", "--quiet", MOUNT_UNIT)[0] != 0:
             raise RuntimeError(f"{MOUNT_UNIT} is not active: see journalctl -u {MOUNT_UNIT}")
     finally:
         if stopped:
-            rc, out, err = run("systemctl", "start", *stopped, timeout=600)
+            rc, out, err = run("systemctl", "--no-ask-password", "start", *stopped, timeout=600)
             if rc:
                 log(f"restarting {' '.join(stopped)} failed: {(err or out).strip()}")
     return f"{level} {os.path.basename(dev)} from {len(paths)} disks, XFS {fs_uuid}, mounted at {cfg('STORE')}; the initial sync runs in the background"

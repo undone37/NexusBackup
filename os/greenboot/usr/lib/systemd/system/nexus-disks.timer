@@ -1,0 +1,10 @@
+[Unit]
+Description=NexusBackup disk inventory, SMART and RAID state every 5 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Unit=nexus-disks.service
+
+[Install]
+WantedBy=timers.target
