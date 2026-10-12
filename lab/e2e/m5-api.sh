@@ -318,7 +318,7 @@ step_phase13() {
 step_legal_hold() {
 	login admin "$ADMIN_PW" "$ADMIN_TOTP"
 	login so "$SO_PW" "$SO_TOTP"
-	local t r grp j
+	local t r j
 	t=$(api so GET "/snapshots?tenant=lab&source=vm-100" | jq -r '[.[] | select(.local) | .time] | min')
 	api admin POST "/snapshots/lab/vm-100/$t/hold" '{"reason":"lab"}' >/dev/null
 	expect 403 "admin may not set a legal hold"
@@ -326,8 +326,9 @@ step_legal_hold() {
 	expect 201 "so sets a legal hold"
 	api so GET "/snapshots?held=true" | jq -e --argjson t "$t" '.[] | select(.source == "vm-100" and .time == $t) | .hold.state == "active"' >/dev/null ||
 		die "held snapshot not listed"
-	grp=$(api admin GET /groups | jq -r '.[0].id')
-	r=$(api admin POST /jobs "$(jq -nc --argjson g "$grp" '{kind:"retention", tenant:"lab", params:{group_id:$g}}')")
+	# manual retention: whole tenant ({}) or one {source}
+	r=$(api admin POST /jobs '{"kind":"retention","tenant":"lab","params":{"source":"vm-100"}}')
+	expect 202 "retention job"
 	j=$(wait_job admin "$(jq -r .id <<<"$r")" 300)
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "retention job: $(jq -r .log <<<"$j" | tail -5)"
 	sleep 5
