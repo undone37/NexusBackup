@@ -245,7 +245,7 @@
     // paused on purpose (Phase 13b): not overdue
     return isPaused(g.paused_until) || isPaused(g.maintenance_until) ? 'paused' : 'stale';
   }
-  const statusCls = { ok: 'ok', stale: 'warn', missing: 'bad', paused: 'plain' };
+  const statusCls = { ok: 'ok', stale: 'bad', missing: 'bad', paused: 'plain' };
 
 
   let bnOpen = $state(false);

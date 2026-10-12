@@ -180,7 +180,7 @@ If the key figures cannot be loaded, a banner says so; the table below still wor
 **Protection status** lists every protection group with one row per guest (VM, container, host, dataset, share,
 database). The columns show the time of the last backup and whether the newest copies are **Local**, **Offsite** and
 **Verified**. **Offsite** shows *n/a* when the group's policy does not copy offsite. **Status** is **Protected**,
-**Overdue**, **Paused** (the group is paused or its source in maintenance) or **No backup**; this column uses a simpler rule than the key figures: **Overdue** means the newest
+**RPO breached**, **Paused** (the group is paused or its source in maintenance) or **No backup**; **RPO breached** means the newest
 snapshot is older than 1.5 × the policy period (36 hours for daily, 90 minutes for hourly policies; the same rule as the RPO KPIs). Administrators and operators can start a backup with **Back up now**:
 the whole group, selected guests or the guests that failed in the last run (see
 [05](05-policies-and-groups.md#back-up-now)).

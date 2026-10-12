@@ -1754,6 +1754,9 @@ a.kpi:hover {
 .chart .hbar {
   fill: var(--c-bad);
 }
+.chart .hbar.neutral {
+  fill: var(--accent);
+}
 .chart .hbar-track {
   fill: var(--c-track);
 }

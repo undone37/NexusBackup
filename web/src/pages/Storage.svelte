@@ -65,7 +65,7 @@
     <section class="card span-4" aria-labelledby="s-groups">
       <div class="card-head"><div><h2 id="s-groups">{t.storage.perGroup}</h2><div class="sub">{t.storage.stored}</div></div></div>
       {#if byStored.length}
-        <HBars title={t.storage.perGroup} items={byStored} fmt={fmtBytes} />
+        <HBars title={t.storage.perGroup} items={byStored} fmt={fmtBytes} tone="neutral" />
       {:else}
         <p class="empty">{t.storage.empty}</p>
       {/if}

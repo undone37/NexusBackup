@@ -82,8 +82,8 @@ thin storage (e.g. `local-lvm`) and free up space there.
 Expected: the dirty bitmap is lost when QEMU restarts, so the disk is read once completely. Only changed chunks are
 stored.
 
-**A guest shows "Overdue" on the Dashboard, or an object appears under "Objects needing attention".**
-"Overdue" in the **Protection status** table: its newest snapshot is older than 1.5 × the policy period (36 hours daily, 90 minutes hourly). **Breached** under **Objects needing attention**: the last good backup is older than 1.5 × the policy period
+**A guest shows "RPO breached" on the Dashboard, or an object appears under "Objects needing attention".**
+"RPO breached" in the **Protection status** table, or **Breached** under **Objects needing attention**: the last good backup is older than 1.5 × the policy period
 (36 hours for daily, 90 minutes for hourly). **Never**: the object is in a group but was never backed up successfully.
 Look for failed backup jobs of its group, or a job of the same source that blocks the queue.
 

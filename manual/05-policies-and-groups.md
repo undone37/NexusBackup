@@ -57,7 +57,7 @@ The schedule also sets the recovery point objective (RPO) the Dashboard measures
 schedule, 1 hour for an hourly one, N hours for `every Nh`, the longest gap between two run days for a weekday
 schedule (e.g. 3 days for `Mon-Fri`) and 31 days for a monthly one. Its key figures count an object as **RPO breached** when the last good backup is
 older than 1.5 × the RPO (36 hours or 90 minutes). The **Protection status** table below them uses the same
-rule: a guest is **Overdue** when its newest snapshot is older than 1.5 × the policy period. Guests of a paused group
+rule: a guest shows **RPO breached** when its newest snapshot is older than 1.5 × the policy period. Guests of a paused group
 (or of a source in maintenance) show **Paused** instead and do not count as breaches. See
 [03 The web interface](03-web-interface.md#dashboard).
 

@@ -180,7 +180,7 @@ export const en = {
     verified: 'Verified',
     status: 'Status',
     ok: 'Protected',
-    stale: 'Overdue',
+    stale: 'RPO breached',
     missing: 'No backup',
     failedJobs: 'Failed jobs',
     failedRecent: 'Failed jobs (7 days)',
