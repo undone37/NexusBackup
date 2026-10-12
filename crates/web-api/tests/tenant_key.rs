@@ -266,7 +266,7 @@ async fn tenant_key_quorum_show_once_replace() {
     let st = t.get(&p, &tadmin).await;
     assert_eq!(st.body["key"]["kid"], stored.kid);
     assert_eq!(st.body["requests"][0]["status"], "shown");
-    assert!(st.body.to_string().find(&key).is_none());
+    assert!(!st.body.to_string().contains(&key));
     let audit = t.count(&format!(
         "SELECT COUNT(*) FROM audit WHERE action = 'tenant.recovery_key_shown' AND details LIKE '%{}%'",
         stored.kid
