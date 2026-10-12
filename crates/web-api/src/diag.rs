@@ -79,6 +79,11 @@ fn submit(st: &St, ctx: &Ctx, kind: &str, since: Option<i64>, until: Option<i64>
     }
     let tmp = d.join(".request.json.tmp");
     std::fs::write(&tmp, req.to_string()).map_err(|e| anyhow::anyhow!("{}: {e}", tmp.display()))?;
+    // group-readable for nexus-diag (root, group nexus-webapi, no DAC override); the
+    // web-api's UMask=0077 would leave 0600
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o640))
+        .map_err(|e| anyhow::anyhow!("{}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, d.join("request.json")).map_err(|e| anyhow::anyhow!("{}: {e}", d.display()))?;
     Ok(id)
 }
