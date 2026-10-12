@@ -11,6 +11,7 @@
 //! status.json    {"id", "state": "done"|"error", "error", "created", "appliance", "bytes",
 //!                 "sha256", "files": [...]}                   written by the helper
 //! latest.bundle  the newest bundle (0640): the scheduler uploads it, the web-api serves it
+//! latest.json    status of that bundle (the last successful run)
 //! ```
 //! Not in the bundle: tenant DEKs (escrowed offsite under `keys/`), the KEK (only
 //! wrapped: `kek.recovery` is in the clear part), chunk data, plugin binaries
@@ -32,6 +33,7 @@ pub const KEYD_RUN: &str = "/run/nexus-keyd";
 pub const REQUEST: &str = "request.json";
 pub const STATUS: &str = "status.json";
 pub const LATEST: &str = "latest.bundle";
+pub const LATEST_INFO: &str = "latest.json";
 /// relative to `/`; the snapshot is taken with `VACUUM INTO` (consistent while in use)
 pub const CATALOG: &str = "var/lib/nexus/catalog/catalog.db";
 /// Files and directories (recursively) in the bundle, relative to `/`. Missing ones are skipped.
@@ -208,8 +210,10 @@ pub fn tick(dir: &Path, root: &Path, keyd_run: &Path) -> Result<bool> {
         Ok((b, header)) => {
             publish(dir, LATEST, &b)?;
             let sha: String = Sha256::digest(&b).iter().map(|x| format!("{x:02x}")).collect();
-            json!({"id": id, "state": "done", "created": now, "appliance": appliance, "bytes": b.len(),
-                   "sha256": sha, "files": header["files"]})
+            let st = json!({"id": id, "state": "done", "created": now, "appliance": appliance, "bytes": b.len(),
+                            "sha256": sha, "files": header["files"]});
+            publish(dir, LATEST_INFO, st.to_string().as_bytes())?;
+            st
         }
         Err(e) => {
             eprintln!("<3>nexus-config-backup: {e:#}");

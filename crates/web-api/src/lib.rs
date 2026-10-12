@@ -25,6 +25,7 @@ pub mod alerts;
 pub mod approvals;
 pub mod auth;
 pub mod certs;
+pub mod config_backup;
 pub mod console;
 pub mod dashboard;
 pub mod diag;
@@ -120,6 +121,8 @@ pub struct AppState {
     pub update_dir: std::sync::OnceLock<PathBuf>,
     /// diagnostics control dir (default: env `NEXUS_DIAG_DIR` or /var/lib/nexus/diag)
     pub diag_dir: std::sync::OnceLock<PathBuf>,
+    /// nexus-config-backup control dir (default: env `NEXUS_CONFIG_BACKUP_DIR` or /var/lib/nexus/config-backup)
+    pub config_backup_dir: std::sync::OnceLock<PathBuf>,
     /// console unlock codes (default: env `NEXUS_CONSOLE_UNLOCK_DIR` or /var/lib/nexus/console-unlock)
     pub console_dir: std::sync::OnceLock<PathBuf>,
     /// nexus-disks control dir (default: env `NEXUS_DISKS_DIR` or /var/lib/nexus/disks)
@@ -156,6 +159,7 @@ impl AppState {
             plugins: std::sync::OnceLock::new(),
             update_dir: std::sync::OnceLock::new(),
             diag_dir: std::sync::OnceLock::new(),
+            config_backup_dir: std::sync::OnceLock::new(),
             console_dir: std::sync::OnceLock::new(),
             disks_dir: std::sync::OnceLock::new(),
             nft_status: std::sync::OnceLock::new(),
@@ -484,6 +488,9 @@ pub fn router(st: St) -> Router {
                 .put(settings::put_registry_auth)
                 .delete(settings::delete_registry_auth),
         )
+        .route("/settings/config-backup", get(config_backup::get))
+        .route("/settings/config-backup/run", post(config_backup::run))
+        .route("/settings/config-backup/download", get(config_backup::download))
         .route("/diagnostics", get(diag::list))
         .route("/diagnostics/checks", post(diag::run_checks))
         .route("/diagnostics/bundle", post(diag::create_bundle))

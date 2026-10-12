@@ -76,6 +76,7 @@ pub mod forward;
 mod holds;
 mod inventory;
 mod lifecycle;
+mod config_backup;
 mod offsite_ui;
 pub mod orphans;
 mod plugins;
@@ -204,6 +205,11 @@ pub struct Config {
     pub forward_poll_secs: u64,
     /// nexus-disks status and operations (disks.rs; skipped while there is no status)
     pub disks_dir: PathBuf,
+    /// appliance configuration backup (config_backup.rs): schedule, control dir of
+    /// nexus-config-backup (skipped when missing), how long a run may take
+    pub config_backup: String,
+    pub config_backup_dir: PathBuf,
+    pub config_backup_timeout_secs: u64,
 }
 
 impl Default for Config {
@@ -254,6 +260,9 @@ impl Default for Config {
             inventory_secs: 3600,
             forward_poll_secs: 5,
             disks_dir: catalog::hardware::DIR.into(),
+            config_backup: "daily 02:30".into(),
+            config_backup_dir: lib.join("config-backup"),
+            config_backup_timeout_secs: 1800,
         }
     }
 }
@@ -718,6 +727,7 @@ impl Scheduler {
         self.log_err(|s| s.check_paused(now));
         self.log_err(|s| s.queue_inventory(now));
         self.log_err(|s| s.queue_reports(now));
+        self.log_err(|s| s.queue_config_backup(now));
         self.log_err(|s| s.start_jobs());
         let all = now.saturating_sub(self.last_refresh) >= self.cfg.refresh_secs;
         if all || !self.dirty.is_empty() {
@@ -1226,6 +1236,9 @@ impl Scheduler {
         if job.kind == "report_send" && state != "cancelled" {
             return self.report_finished(&job, ok, &log, result.as_ref());
         }
+        if job.kind.starts_with("config_") && state != "cancelled" {
+            return self.config_finished(&job, ok, &log, result.as_ref());
+        }
         if matches!(
             job.kind.as_str(),
             "backup"
@@ -1471,7 +1484,8 @@ impl Scheduler {
                 log.push_str(&format!("[scheduler] download ready: {file} ({size} bytes)\n"));
                 Some(r)
             }
-            "alert_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" | "file_search" | "file_index" => {
+            "alert_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" | "file_search" | "file_index"
+            | "config_backup" => {
                 serde_json::from_str(stdout.unwrap_or_default()).ok()
             }
             "offsite_list" => match serde_json::from_str::<Value>(stdout.unwrap_or_default().trim()) {
@@ -2288,6 +2302,9 @@ impl Scheduler {
     }
 
     pub fn plan(&self, job: &Job) -> Result<Plan> {
+        if let Some(plan) = self.plan_config(job)? {
+            return Ok(plan); // config_backup.rs
+        }
         if let Some(plan) = self.plan_appliance(job)? {
             return Ok(plan);
         }
