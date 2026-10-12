@@ -177,7 +177,8 @@ RUN semodule -i /usr/share/selinux/packages/nexus/nexus.pp /usr/share/selinux/pa
  && matchpathcon /usr/libexec/nexus/nexus-diag | grep -q nexus_diag_exec_t \
  && matchpathcon /var/lib/nexus/diag/0123/bundle.tar.gz | grep -q nexus_diag_var_lib_t \
  && matchpathcon /usr/libexec/nexus/nexus-disks | grep -q nexus_disks_exec_t \
- && matchpathcon /var/lib/nexus/disks/status.json | grep -q nexus_disks_var_lib_t
+ && matchpathcon /var/lib/nexus/disks/status.json | grep -q nexus_disks_var_lib_t \
+ && matchpathcon /etc/nexus/grub-user.cfg | grep -q nexus_grub_user_t
 
 # Systemd units, presets, tmpfiles (state dirs with owners and modes).
 COPY os/systemd/*.service os/systemd/*.path os/systemd/*.timer os/systemd/*.socket /usr/lib/systemd/system/
