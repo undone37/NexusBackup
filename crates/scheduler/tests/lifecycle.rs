@@ -146,6 +146,7 @@ esac"#,
         maintenance: "daily 03:00".into(),
         alert_retry_secs: [0, 0],
         capacity_threshold: 2.0, // never in tests
+        inventory_secs: 0,       // job counts below: no inventory jobs
         ..Default::default()
     };
     fs::create_dir_all(p.join("catalog")).unwrap();
@@ -429,6 +430,7 @@ fn large_gc_without_approvals_needs_admin_confirmation() {
         maintenance: "daily 03:00".into(),
         alert_retry_secs: [0, 0],
         capacity_threshold: 2.0,
+        inventory_secs: 0,
         ..Default::default()
     };
     fs::create_dir_all(p.join("catalog")).unwrap();

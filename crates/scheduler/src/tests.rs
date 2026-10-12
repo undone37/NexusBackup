@@ -47,6 +47,7 @@ fn env(max_parallel: usize) -> Env {
         offsite_bin: p.join("pve"),
         alerts_config: p.join("alerts.json"),
         max_parallel,
+        inventory_secs: 0, // inventory_jobs turns it on
         ..Default::default()
     };
     let db = Arc::new(Catalog::open_memory().unwrap());
@@ -1247,4 +1248,128 @@ fn capacity_samples_daily() {
         0,
         "no store, no sample"
     );
+}
+
+/// Phase 13c: inventory jobs per source (periodic, not doubled), `all` / `tags`
+/// groups resolved from the inventory for plans and retention (exclude wins),
+/// newly protected guests audited, gone guests dropped, failures one warning.
+#[test]
+fn inventory_jobs_and_auto_protect() {
+    let mut e = env(4);
+    let p = e.d.path().to_owned();
+    script(
+        &p.join("pve-inv"),
+        &format!(
+            "echo \"$@\" >> {0}/inv-calls\ncase \"$2\" in inventory) cat {0}/inv.json || exit 1 ;; *) echo done ;; esac",
+            p.display()
+        ),
+    );
+    e.cfg.pve_bin = p.join("pve-inv");
+    e.cfg.inventory_secs = 3600;
+    let inv = |ids: &[(u32, &str)]| {
+        let g: Vec<Value> = ids
+            .iter()
+            .map(|(v, t)| json!({"id": v.to_string(), "title": format!("vm{v}"), "kind": "qemu", "tags": [t]}))
+            .collect();
+        fs::write(p.join("inv.json"), json!({ "guests": g }).to_string()).unwrap();
+    };
+    inv(&[(100, "pool:prod"), (101, "pool:prod"), (102, "tag:web")]);
+    e.db.conn()
+        .execute_batch(
+            r#"UPDATE groups SET mode='all', guests='[]', exclude='["101"]' WHERE id=1;
+               UPDATE groups SET mode='tags', guests='[]', selector='["pool:prod"]' WHERE id=3;"#,
+        )
+        .unwrap();
+    let mut s = sched(&e);
+    let jobs = |s: &Scheduler| -> i64 {
+        s.db.conn()
+            .query_row("SELECT COUNT(*) FROM jobs WHERE kind='inventory'", [], |r| r.get(0))
+            .unwrap()
+    };
+    let t0 = 1_000_000;
+    s.now = t0;
+    s.queue_inventory(t0).unwrap();
+    s.queue_inventory(t0).unwrap();
+    assert_eq!(jobs(&s), 3, "one per pve source, not doubled");
+    // before the first listing an auto group protects nothing
+    let g1 = |s: &Scheduler| s.groups().unwrap().into_iter().find(|g| g.id == 1).unwrap();
+    assert!(g1(&s).guests.is_empty() && g1(&s).auto);
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    let n: i64 =
+        s.db.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM inventory WHERE source_id=1 AND gone IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert_eq!(n, 3);
+    assert_eq!(g1(&s).guests, vec![100, 102], "all minus exclude");
+    let g3 = s.groups().unwrap().into_iter().find(|g| g.id == 3).unwrap();
+    assert_eq!(g3.guests, vec![100, 101], "tags");
+    assert_eq!(group_sources(&g3), ["vm-100", "ct-100", "vm-101", "ct-101"]);
+    let audited: i64 = s
+        .db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM audit WHERE action='group.auto_protect' AND target='group/1' AND details LIKE '%102%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(audited, 1);
+    // the backup plan backs up the resolved set
+    let job = Job {
+        id: 99,
+        kind: "backup".into(),
+        tenant: "t1".into(),
+        params: json!({"group_id": 1}),
+    };
+    let plan = s.plan(&job).unwrap();
+    let cfg: Value = serde_json::from_slice(&plan.files.iter().find(|f| f.0 == "pve.json").unwrap().1).unwrap();
+    assert_eq!(cfg["vmids"], json!([100, 102]));
+    // within the interval nothing is queued; afterwards the next round
+    s.queue_inventory(t0 + 60).unwrap();
+    assert_eq!(jobs(&s), 3);
+    // 102 disappears: no longer selected, row kept as gone
+    inv(&[(100, "pool:prod"), (101, "pool:prod")]);
+    s.now = t0 + 3601;
+    s.queue_inventory(t0 + 3601).unwrap();
+    assert_eq!(jobs(&s), 6);
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert_eq!(g1(&s).guests, vec![100]);
+    let gone: Option<i64> =
+        s.db.conn()
+            .query_row(
+                "SELECT gone FROM inventory WHERE source_id=1 AND guest='102'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert!(gone.is_some());
+    // an unreachable source: a warning, once while open
+    fs::remove_file(p.join("inv.json")).unwrap();
+    for i in 0..2 {
+        let id = manual(&s, "inventory", "t1", json!({"source_id": 1}));
+        s.start_jobs().unwrap();
+        s.wait_idle(Duration::from_secs(20)).unwrap();
+        assert_eq!(state(&s, id), "failed", "run {i}");
+    }
+    let (n, sev): (i64, String) =
+        s.db.conn()
+            .query_row(
+                "SELECT COUNT(*), MAX(severity) FROM alerts WHERE kind='inventory_refresh'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+    assert_eq!((n, sev.as_str()), (1, "warning"));
+    // the failed listing kept the last inventory
+    assert_eq!(g1(&s).guests, vec![100]);
+    // inventory of another tenant's source is refused
+    let id = manual(&s, "inventory", "t2", json!({"source_id": 1}));
+    s.start_jobs().unwrap();
+    assert_eq!(state(&s, id), "failed");
 }

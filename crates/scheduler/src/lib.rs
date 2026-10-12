@@ -64,6 +64,7 @@
 
 pub mod alerts;
 pub mod firewall;
+mod inventory;
 mod plugins;
 pub mod replica;
 pub mod run;
@@ -166,6 +167,8 @@ pub struct Config {
     /// the appliance's own SSH keys (generated here, docs/phase12-contract.md §4);
     /// skipped when the directory is missing
     pub ssh_dir: PathBuf,
+    /// guest inventory refresh per source (auto-protect groups); 0 = off
+    pub inventory_secs: i64,
 }
 
 impl Default for Config {
@@ -211,6 +214,7 @@ impl Default for Config {
             replica_parallel: 4,
             replication_lag_secs: 48 * 3600,
             ssh_dir: "/etc/nexus/ssh".into(),
+            inventory_secs: 3600,
         }
     }
 }
@@ -264,8 +268,11 @@ struct GroupRow {
     datasets: Vec<String>,
     /// nfs/smb source: the group backs up the share itself (`share-<source>`)
     share: bool,
-    /// plugin source: (plugin id, guest ids; empty = the source as a whole)
+    /// plugin source: (plugin id, guest ids; empty = the source as a whole, unless `auto`)
     plugin: Option<(String, Vec<String>)>,
+    /// guests resolved from the inventory (mode `all` / `tags`, catalog::inventory):
+    /// an empty list means nothing to back up, never "the whole source"
+    auto: bool,
     schedule: String,
     gfs: Gfs,
     offsite: bool,
@@ -314,7 +321,7 @@ fn group_sources(g: &GroupRow) -> Vec<String> {
         .chain(g.share.then(|| nas::source_name(g.source_id as u64)))
         .chain(g.plugin.iter().flat_map(|(pid, guests)| {
             let sid = g.source_id as u64;
-            if guests.is_empty() {
+            if guests.is_empty() && !g.auto {
                 vec![plugin_proto::source_name(pid, sid, None)]
             } else {
                 guests
@@ -646,6 +653,7 @@ impl Scheduler {
         self.log_err(|s| s.queue_replication(now));
         self.log_err(|s| s.execute_key_exports());
         self.log_err(|s| s.queue_ssh_rotations());
+        self.log_err(|s| s.queue_inventory(now));
         self.log_err(|s| s.start_jobs());
         let all = now.saturating_sub(self.last_refresh) >= self.cfg.refresh_secs;
         if all || !self.dirty.is_empty() {
@@ -713,13 +721,25 @@ impl Scheduler {
     fn groups(&self) -> Result<Vec<GroupRow>> {
         let c = self.db.conn();
         let mut st = c.prepare(
-            "SELECT g.id, g.tenant, g.source_id, g.guests, p.schedule, p.gfs, p.offsite, s.kind \
+            "SELECT g.id, g.tenant, g.source_id, g.guests, p.schedule, p.gfs, p.offsite, s.kind, \
+             g.mode, g.selector, g.exclude \
              FROM groups g JOIN policies p ON p.id = g.policy_id JOIN sources s ON s.id = g.source_id ORDER BY g.id",
         )?;
         let rows = st.query_map([], |r| {
-            let guests: Vec<Value> = serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default();
             let gfs: String = r.get(5)?;
             let kind = r.get::<_, String>(7)?;
+            let mode: String = r.get(8)?;
+            // explicit list or resolved from the inventory: the same set for queueing,
+            // plans, retention and offsite-lag checks
+            let guests = catalog::inventory::resolve(
+                &c,
+                r.get(2)?,
+                &kind,
+                &mode,
+                &r.get::<_, String>(3)?,
+                &r.get::<_, String>(9)?,
+                &r.get::<_, String>(10)?,
+            )?;
             let nas = kind == "truenas";
             let share = kind == "nfs" || kind == "smb";
             let plugin = kind.strip_prefix("plugin:").map(|k| {
@@ -739,6 +759,7 @@ impl Scheduler {
             Ok(GroupRow {
                 share,
                 plugin,
+                auto: catalog::inventory::auto(&mode),
                 datasets: if nas {
                     guests
                         .iter()
@@ -1119,6 +1140,9 @@ impl Scheduler {
         if ok && (job.kind == "backup" || job.kind == "plugin_backup") {
             self.inconsistent_alerts(job.id, &job.tenant, &log)?;
         }
+        if let (true, Some(r)) = (job.kind == "inventory" || job.kind == "plugin_guests", &result) {
+            self.apply_inventory(&job, r)?;
+        }
         if let Some(q) = job.params["quorum_id"].as_i64() {
             self.db.conn().execute(
                 "UPDATE quorum SET state='executed' WHERE id=?1 AND state='approved'",
@@ -1147,6 +1171,16 @@ impl Scheduler {
                 let (sev, kind, what) = match alert {
                     Some("verify") => ("critical", "verify", "verification failed"),
                     Some("inventory") => ("critical", "inventory", "offsite inventory anomaly"),
+                    // an unreachable source: one open warning per source, not one per hour
+                    Some("inventory_refresh") => {
+                        let what = format!("guest inventory of source {} ", job.params["source_id"]);
+                        return self.alert(
+                            "warning",
+                            "inventory_refresh",
+                            &format!("{what}could not be refreshed (job {}): {tail}", job.id),
+                            Some(&what),
+                        );
+                    }
                     // replica_bookkeeping raised replication_verify / replication_keys already
                     Some("replication")
                         if log
@@ -1274,7 +1308,7 @@ impl Scheduler {
                 Some(r)
             }
             "alert_test" | "ssh_key_rotate" | "ssh_key_retire" => serde_json::from_str(stdout.unwrap_or_default()).ok(),
-            "plugin_validate" | "plugin_guests" => {
+            "plugin_validate" | "plugin_guests" | "inventory" => {
                 let out = stdout.unwrap_or_default();
                 match serde_json::from_str::<Value>(out.trim()) {
                     Ok(v @ Value::Object(_)) => Some(v),
@@ -2093,6 +2127,9 @@ impl Scheduler {
                             return self.plan_share_backup(plan, g.source_id);
                         }
                         if let Some((_, guests)) = &g.plugin {
+                            if g.auto && guests.is_empty() {
+                                bail!("nothing to back up: no guests match the group (inventory)");
+                            }
                             let guests = guests.clone();
                             return self.plan_plugin_backup(job, plan, g.source_id, &guests);
                         }
@@ -2486,6 +2523,7 @@ impl Scheduler {
                 plan.steps.push(step);
             }
             "replica_enroll" | "replica_sync" => return self.plan_replica(job, plan),
+            "inventory" => return self.plan_inventory(job, plan),
             k => bail!("unknown job kind {k:?}"),
         }
         Ok(plan)
