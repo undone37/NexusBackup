@@ -3161,6 +3161,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "reports"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "catalog",
+ "nas",
+ "plugin-manager",
+ "plugin-proto",
+ "serde",
+ "serde_json",
+ "truenas",
+]
+
+[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3495,6 +3509,7 @@ dependencies = [
  "plugin-proto",
  "rand 0.8.8",
  "replication",
+ "reports",
  "reqwest",
  "serde",
  "serde_json",
@@ -4484,6 +4499,7 @@ dependencies = [
  "rcgen",
  "regex",
  "replication",
+ "reports",
  "reqwest",
  "ring",
  "rustls",

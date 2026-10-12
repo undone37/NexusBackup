@@ -31,6 +31,7 @@ pub mod ops;
 pub mod plugins;
 pub mod quorum;
 pub mod replication;
+pub mod reports;
 pub mod resources;
 pub mod runctl;
 pub mod settings;
@@ -414,6 +415,12 @@ pub fn router(st: St) -> Router {
         .route("/auth/oidc/callback", get(oidc::callback))
         .route("/dashboard", get(dashboard::dashboard))
         .route("/storage", get(storage::storage))
+        .route("/reports/{file}", get(reports::export))
+        .route(
+            "/settings/reports",
+            get(reports::get_scheduled).put(reports::put_scheduled),
+        )
+        .route("/settings/reports/{name}/send", post(reports::send_now))
         .route("/tenants/{name}/quota", put(storage::put_quota))
         .route("/settings/anomaly", get(storage::get_anomaly).put(storage::put_anomaly))
         .route("/settings/oidc", get(oidc::get_settings).put(oidc::put_settings))

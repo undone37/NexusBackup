@@ -1,0 +1,17 @@
+[package]
+name = "reports"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Reports (protection, failed jobs, SLA, storage) from the catalog: CSV for the web-api, HTML mail bodies for the scheduler"
+
+[dependencies]
+anyhow = "1"
+catalog = { path = "../catalog" }
+nas = { path = "../nas", default-features = false }
+plugin-manager = { path = "../plugin-manager" }
+plugin-proto = { path = "../plugin-proto" }
+truenas = { path = "../truenas", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

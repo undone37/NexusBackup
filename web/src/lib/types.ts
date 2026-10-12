@@ -826,3 +826,24 @@ export interface AnomalySettings {
   history: number;
   floor_bytes: number;
 }
+
+/** Phase 14e reports (GET /reports/{type}.csv). */
+export type ReportType = 'protection' | 'failed' | 'sla' | 'storage';
+
+/** A scheduled report (setting `reports`, GET/PUT /settings/reports). */
+export interface ScheduledReport {
+  name: string;
+  types: ReportType[];
+  schedule: string;
+  timezone: string;
+  recipients: string[];
+  tenant: string | null;
+  /** the last `report_send` job (scheduled or "Send now") */
+  last?: { job_id: number; state: string; created: number; finished: number | null; requested_by: string } | null;
+}
+
+export interface ScheduledReports {
+  reports: ScheduledReport[];
+  /** an SMTP server is configured (Settings → Alert delivery) */
+  smtp: boolean;
+}
