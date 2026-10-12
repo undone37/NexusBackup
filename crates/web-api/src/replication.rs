@@ -439,6 +439,17 @@ pub async fn list_remote_snapshots(
     forward(&st, &p, Request::List { scope, tenant }, "application/json").await
 }
 
+/// The tenant's active legal holds (Phase 15c): advisory for the secondary.
+pub async fn remote_holds(
+    State(st): State<St>,
+    pc: PeerConn,
+    Path(tenant): Path<String>,
+) -> ApiResult<Json<Vec<repl_proto::HoldInfo>>> {
+    let p = peer_auth(&st, &pc)?;
+    in_scope(&p, &tenant)?;
+    Ok(Json(crate::holds::active_infos(&st.cat.conn(), &tenant)?))
+}
+
 pub async fn snapshot_file(
     State(st): State<St>,
     pc: PeerConn,

@@ -196,6 +196,8 @@ const db = {
   inventory: new Map<number, InvRow[]>(),
   jobs: [] as Job[],
   snapshots: [] as Json[],
+  /** Phase 15c legal holds (catalog v18 `legal_holds`, with history) */
+  holds: [] as Json[],
   quorum: [] as Json[],
   audit: [] as Json[],
   alerts: [] as Json[],
@@ -308,10 +310,19 @@ function planFor(kind: string, p: Json): string[] {
       return ['creating client key + CSR', 'connecting with the enrollment ALPN, primary certificate pinned', 'proofs exchanged, client certificate received', 'enrolled'];
     case 'restore_files':
       return [
+        ...(/^(vm|ct)-/.test(src)
+          ? [
+              `nexus-pve ${src.startsWith('ct-') ? 'ct-files' : 'files'} ${src.slice(3)} ${p.time} get <downloads>/restore-<job>.tar ${(p.paths ?? []).join(' ')}`,
+              'restore VM booted in 1.9s, 2 file systems mounted read-only',
+            ]
+          : []),
         `connecting to agent ${agName} over mTLS`,
         `RestoreBegin target=${p.target} overwrite=${p.overwrite} confirm="${p.confirm}"`,
         `reading ${src} @ ${p.time}: ${(p.paths ?? []).join(', ')}`,
         'restored 1,284 files (48.2 MiB), skipped 3 existing files',
+        ...(src === `host-${p.agent_id}`
+          ? []
+          : ['restore to another host: skipped 0 entries (devices, sockets, alternate data streams) and 12 xattrs the target cannot take']),
         `restore to ${p.target} finished`,
       ];
     case 'agent_enroll':
@@ -1178,6 +1189,7 @@ function seed() {
   seedReports(t);
   seedDiag(t);
   seedConsole(t);
+  seedHolds(t);
 }
 
 // ---------------------------------------------------------------- run control (Phase 13b)
@@ -1350,7 +1362,7 @@ async function quorum(u: User, action: string, params: Json, extra: Json = {}): 
       await audit(u.name, action, `quorum/${q.id}`, { approvals: 'disabled', params });
       return [200, { approvals: 'disabled', executed: false, quorum_id: q.id, state: 'approved', ...extra }];
     }
-    execute(0, action, params);
+    execute(0, action, params, u.name, u.name);
     await audit(u.name, action, action, { approvals: 'disabled', params });
     return [200, { approvals: 'disabled', executed: true, ...extra }];
   }
@@ -1530,6 +1542,11 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'restore.replace': {
       // the scheduler queues the restore job with replace (crates/scheduler/src/restore.rs)
       addJob(p.kind, p.tenant, { ...p.params, replace: true, quorum_id: qid, requested_by: by }, 'scheduler');
+      break;
+    }
+    case 'snapshot.hold_release': {
+      const h = find(db.holds, (x) => x.id === p.hold_id && x.state === 'active', 'active hold');
+      Object.assign(h, { state: 'released', released_by: by, approved_by: decider || by, released_at: now() });
       break;
     }
     case 'snapshot.delete': {
@@ -2507,13 +2524,18 @@ on('DELETE', '/snapshots/:tenant/:source/:time', (c, [tenant, source, time]) => 
   if (!x.local) throw new HttpError(409, 'only the offsite copy is left: it follows the offsite retention');
   if (x.origin) throw new HttpError(409, "replicated snapshot: it follows the replication source's retention");
   if (x.lock_until > now()) throw new HttpError(409, `snapshot is locked until ${x.lock_until} (unix time)`);
+  if (activeHold(tn, src, tm)) throw new HttpError(409, 'snapshot is under a legal hold: release it first (needs approval)');
   return quorum(u, 'snapshot.delete', { tenant: tn, source: src, time: tm });
 });
 on('GET', '/snapshots', (c) => {
   const u = need(c.user);
   const tq = c.query.get('tenant');
   const sq = c.query.get('source');
-  const xs = byTenant(u, db.snapshots as any[]).filter((s) => (!tq || s.tenant === tq) && (!sq || s.source === sq));
+  const held = c.query.get('held') === 'true';
+  const xs = byTenant(u, db.snapshots as any[])
+    .filter((s) => (!tq || s.tenant === tq) && (!sq || s.source === sq))
+    .map((s) => ({ ...s, hold: holdView(openHold(s.tenant, s.source, s.time)) }))
+    .filter((s) => !held || s.hold);
   return [200, xs.sort((a, b) => b.time - a.time)];
 });
 const pubJob = (j: Job, withLog: boolean) => {
@@ -2592,7 +2614,11 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
     if (a.enrolled_at === null) throw new HttpError(409, 'agent is not enrolled');
   }
   if (kind === 'restore_files') {
-    if (!String(p.source ?? '').startsWith('host-')) throw new HttpError(400, 'source: must be a host snapshot (host-<agent id>)');
+    const src = String(p.source ?? '');
+    // Phase 15b: host, TrueNAS, share, plugin (with a download restore), VM and CT snapshots
+    if (!/^(host|nas|share|plugin|vm|ct)-/.test(src)) throw new HttpError(400, 'source: not a snapshot with files');
+    if (!src.startsWith('host-') && !p.agent_id) throw new HttpError(400, 'agent_id: choose the agent to restore to');
+    if (src.startsWith('host-') && !p.agent_id) p.agent_id = src.slice(5);
     if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time))
       throw new HttpError(404, 'snapshot not found');
     if (!Array.isArray(p.paths) || !p.paths.length || p.paths.some((x: unknown) => typeof x !== 'string' || !x.startsWith('/')))
@@ -2783,7 +2809,8 @@ on('GET', '/alerts', (c) => {
   const id = Number(c.query.get('id') ?? 0);
   const rows = db.alerts
     .filter((a) => s === 'all' || (s === 'open') === !a.resolved_at)
-    .filter((a) => !id || a.id === id);
+    .filter((a) => !id || a.id === id)
+    .map((a): Json => ({ ...a, snapshot: alertSnapshot(a) }));
   return [200, rows.sort((a, b) => b.id - a.id)];
 });
 const alertNote = (b: Json) => {
@@ -4183,4 +4210,119 @@ export function mockApi(): Plugin {
       server.middlewares.use(mw as any);
     },
   };
+}
+
+// ---------------------------------------------------------------- legal holds (Phase 15c)
+
+/** Set by a security officer (immediate); release = approval `snapshot.hold_release`. */
+function openHold(tenant: string, source: string, time: number): Json | undefined {
+  return db.holds.find((h) => h.tenant === tenant && h.source === source && h.time === time && ['active', 'advisory'].includes(h.state));
+}
+function activeHold(tenant: string, source: string, time: number): Json | undefined {
+  const h = openHold(tenant, source, time);
+  return h?.state === 'active' ? h : undefined;
+}
+function holdView(h: Json | undefined): Json | null {
+  if (!h) return null;
+  const q = db.quorum.find((x) => x.action === 'snapshot.hold_release' && ['pending', 'approved'].includes(x.state) && x.params.hold_id === h.id);
+  return { ...h, release_quorum: q?.id ?? null };
+}
+/** The snapshot an alert offers to hold (anomaly: the last one before it; advisory: its own). */
+function alertSnapshot(a: Json): Json | null {
+  if (a.kind === 'anomaly') {
+    const m = /last snapshot before: (\S+)\/(\d+)/.exec(a.message);
+    return m && a.tenant ? { tenant: a.tenant, source: m[1], time: Number(m[2]) } : null;
+  }
+  if (a.kind === 'legal_hold_advisory') {
+    const m = /^legal_hold_advisory:([^/]+)\/(.+)\/(\d+)$/.exec(a.key ?? '');
+    return m ? { tenant: m[1], source: m[2], time: Number(m[3]) } : null;
+  }
+  return null;
+}
+function holdReason(b: Json): string {
+  const r = typeof b?.reason === 'string' ? b.reason.trim() : '';
+  if (!r || r.length > 500 || /[\u0000-\u001f]/.test(r)) throw new HttpError(400, 'reason: 1 to 500 characters, one line');
+  return r;
+}
+/** Holds one snapshot; applies an advisory. null if already held. */
+function holdOne(tenant: string, source: string, time: number, reason: string, by: string): Json | null {
+  const open = openHold(tenant, source, time);
+  if (open?.state === 'active') return null;
+  if (open) {
+    const from = { advisory_from: open.origin, primary_held_by: open.held_by };
+    Object.assign(open, { state: 'active', reason, held_by: by, held_at: now() });
+    for (const a of db.alerts)
+      if (a.key === `legal_hold_advisory:${tenant}/${source}/${time}` && !a.resolved_at) Object.assign(a, { resolved_at: now(), resolved_by: by, auto: true });
+    return { id: open.id, ...from };
+  }
+  const h = { id: nextId(), tenant, source, time, state: 'active', reason, held_by: by, held_at: now(), origin: null, released_by: null, approved_by: null, released_at: null };
+  db.holds.push(h);
+  return { id: h.id };
+}
+on('POST', '/snapshots/:tenant/:source/:time/hold', async (c, [tenant, source, time]) => {
+  const u = need(c.user, 'security_officer');
+  const [tn, src, tm] = [decodeURIComponent(tenant), decodeURIComponent(source), Number(time)];
+  if (u.tenant && u.tenant !== tn) throw new HttpError(403, 'forbidden');
+  const reason = holdReason(c.body);
+  find(db.snapshots, (y) => y.tenant === tn && y.source === src && y.time === tm, 'snapshot');
+  const out = holdOne(tn, src, tm, reason, u.name);
+  if (!out) throw new HttpError(409, 'snapshot is already under a legal hold');
+  await audit(u.name, 'snapshot.hold', `snapshot/${tn}/${src}/${tm}`, { reason, ...out });
+  return [201, out];
+});
+on('DELETE', '/snapshots/:tenant/:source/:time/hold', (c, [tenant, source, time]) => {
+  const u = need(c.user, 'security_officer', 'admin');
+  const [tn, src, tm] = [decodeURIComponent(tenant), decodeURIComponent(source), Number(time)];
+  if (u.tenant && u.tenant !== tn) throw new HttpError(403, 'forbidden');
+  const h = activeHold(tn, src, tm);
+  if (!h) throw new HttpError(404, 'snapshot is not under a legal hold');
+  if (holdView(h)!.release_quorum) throw new HttpError(409, 'a release of this hold is already requested');
+  return quorum(u, 'snapshot.hold_release', { tenant: tn, source: src, time: tm, hold_id: h.id });
+});
+on('POST', '/holds', async (c) => {
+  const u = need(c.user, 'security_officer');
+  const { tenant, source = null, from, to } = c.body ?? {};
+  if (u.tenant && u.tenant !== tenant) throw new HttpError(403, 'forbidden');
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from > to) throw new HttpError(400, 'from must not be after to');
+  const reason = holdReason(c.body);
+  const held: string[] = [];
+  for (const s of db.snapshots.filter((x) => x.tenant === tenant && (!source || x.source === source) && x.time >= from && x.time <= to))
+    if (holdOne(s.tenant, s.source, s.time, reason, u.name)) held.push(`${s.source}/${s.time}`);
+  if (held.length) await audit(u.name, 'snapshot.hold', `tenant/${tenant}`, { reason, source, from, to, snapshots: held });
+  return [200, { held: held.length, snapshots: held }];
+});
+on('GET', '/holds', (c) => {
+  const u = need(c.user);
+  const st = c.query.get('state');
+  return [200, byTenant(u, db.holds as any[]).filter((h) => !st || h.state === st).map(holdView).sort((a, b) => b!.id - a!.id)];
+});
+function seedHolds(t: number) {
+  const of = (tenant: string, source: string, n: number) =>
+    db.snapshots.filter((s) => s.tenant === tenant && s.source === source).sort((a, b) => b.time - a.time)[n];
+  // a litigation hold on an older initech snapshot
+  const lit = of('initech', 'vm-100', 6);
+  db.holds.push({
+    id: nextId(), tenant: 'initech', source: 'vm-100', time: lit.time, state: 'active', reason: 'Litigation hold, case 2026-17 (legal department)',
+    held_by: 'so', held_at: t - 86400 * 4, origin: null, released_by: null, approved_by: null, released_at: null,
+  });
+  // the change-rate anomaly on acme/vm-301 names the last good snapshot ("Hold last good snapshot")
+  const [bad, good] = [of('acme', 'vm-301', 0), of('acme', 'vm-301', 1)];
+  db.alerts.push(
+    mkAlert({
+      ts: bad.time + 1500, severity: 'critical', kind: 'anomaly', key: 'anomaly:acme/vm-301', tenant: 'acme',
+      message: `change-rate anomaly on acme/vm-301: snapshot ${bad.time}: 21.4 GiB new data that does not compress (1.01, usually 2.08): possibly encrypted; last snapshot before: vm-301/${good.time}`,
+    }),
+  );
+  // the primary hq-primary holds a replicated globex snapshot: advisory here
+  const adv = db.snapshots.filter((s) => s.tenant === 'globex').sort((a, b) => b.time - a.time)[3];
+  db.holds.push({
+    id: nextId(), tenant: 'globex', source: adv.source, time: adv.time, state: 'advisory', reason: 'Tax audit 2026 (hold all globex data)',
+    held_by: 'legal-hq', held_at: t - 86400, origin: 'hq-primary', released_by: null, approved_by: null, released_at: null,
+  });
+  db.alerts.push(
+    mkAlert({
+      ts: t - 3 * 3600, severity: 'warning', kind: 'legal_hold_advisory', key: `legal_hold_advisory:globex/${adv.source}/${adv.time}`, tenant: 'globex',
+      message: `primary hq-primary holds globex/${adv.source}/${adv.time} under a legal hold (Tax audit 2026 (hold all globex data), set by legal-hq); not applied here`,
+    }),
+  );
 }

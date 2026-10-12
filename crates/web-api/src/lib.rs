@@ -29,6 +29,7 @@ pub mod console;
 pub mod dashboard;
 pub mod diag;
 pub mod forwarding;
+pub mod holds;
 pub mod inventory;
 pub mod jobs;
 pub mod oidc;
@@ -548,6 +549,7 @@ pub fn router(st: St) -> Router {
         .route("/replication/sources/{id}/enroll", post(repl::enroll_source))
         .route("/replication/sources/{id}/sync", post(repl::sync_source))
         .merge(access::routes())
+        .merge(holds::routes())
         .fallback(api_not_found);
     // peer API: only on replication TLS connections (see `connection_scope`)
     let peer = Router::new()
@@ -557,6 +559,7 @@ pub fn router(st: St) -> Router {
         .route("/session/{id}/end", post(repl::session_end))
         .route("/tenants/{tenant}/keys", get(repl::tenant_keys))
         .route("/tenants/{tenant}/snapshots", get(repl::list_remote_snapshots))
+        .route("/tenants/{tenant}/holds", get(repl::remote_holds))
         .route(
             "/tenants/{tenant}/snapshots/{source}/{time}/{file}",
             get(repl::snapshot_file),

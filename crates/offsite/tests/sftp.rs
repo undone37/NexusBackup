@@ -351,22 +351,28 @@ fn sftp_target_upload_dr_retention_gc_verify() {
     // independent offsite retention: keep 1 daily -> 3 snapshots go (their locks were "now")
     let timer = Instant::now();
     let (kept, deleted, locked) = t
-        .apply_retention(&Gfs {
-            daily: 1,
-            weekly: 0,
-            monthly: 0,
-            yearly: 0,
-        })
+        .apply_retention(
+            &Gfs {
+                daily: 1,
+                weekly: 0,
+                monthly: 0,
+                yearly: 0,
+            },
+            &Default::default(),
+        )
         .unwrap();
     assert_eq!((kept, deleted, locked), (1, 3, 0));
     assert!(box_.list("snapshots/vm-1").unwrap().len() == 1);
     let (_, _, locked) = t
-        .apply_retention(&Gfs {
-            daily: 0,
-            weekly: 0,
-            monthly: 0,
-            yearly: 0,
-        })
+        .apply_retention(
+            &Gfs {
+                daily: 0,
+                weekly: 0,
+                monthly: 0,
+                yearly: 0,
+            },
+            &Default::default(),
+        )
         .unwrap();
     assert_eq!(locked, 1, "offsite lock holds");
     println!("target over sftp: retention {:?}", timer.elapsed());

@@ -1,7 +1,8 @@
 //! Appliance side of the Linux agent protocol (docs/agent-protocol.md):
 //! appliance CA, enrollment, mTLS sessions, file-level backup into
 //! `Index::Tree` snapshots (`host-<agent-id>`) with the plain→keyed chunk
-//! mapping index, restore to a path on the agent, file downloads from tree
+//! mapping index, restore to a path on the agent (from any file-tree snapshot of
+//! the tenant, or VM/CT files through a tar), file downloads from tree
 //! snapshots and signed agent self-updates. CLI: `nexus-agentctl` (spawned by
 //! the scheduler like `nexus-pve`).
 
@@ -11,6 +12,7 @@ pub mod enroll;
 pub mod files;
 pub mod map;
 pub mod restore;
+pub mod tarbridge;
 pub mod tls;
 pub mod update;
 

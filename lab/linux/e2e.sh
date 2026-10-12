@@ -15,6 +15,8 @@
 #     download  files_get tar + zip of the data directory, content checked against the VM
 #     db        restore the DB dump directory, drop the database, load the dump, count rows
 #     update    agent_update: wrong signature refused, signed 0.1.1 (lab/linux/bump-bundle.sh) accepted
+#     xhost     (not default; OTHER=<second running lab VM with its agent step done>) the host snapshot
+#               restored onto the other VM's agent (Phase 15b): content + modes equal, root-owned, no setuid
 # env: ROOT (target/linux-root; appliance VM: $LAB/appliance/root), PORT (18453; VM: 28443),
 #      AGENT_HOST (127.0.0.1; the appliance VM reaches the lab VMs as 10.0.2.2),
 #      BUNDLE (target/agent-dist/nexus-agent-<v>-x86_64.tar.gz), BUMP (target/agent-bump/src/target/agent-dist/nexus-agent-0.1.1-x86_64),
@@ -297,6 +299,43 @@ step_restore() {
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "second restore: $(jq -r .log <<<"$j" | tail -n 30)"
 	log "restore again (overwrite never): $(jq -c .result <<<"$j")"
 	echo "TARGET=$target" >>"$S/$VM.env"
+}
+
+# Phase 15b: this VM's host snapshot restored onto the agent of another lab VM ($OTHER, running,
+# its `agent` step done): content and permission bits identical, everything owned by root (the
+# agent's restore user; owners are not mapped across hosts), no setuid/setgid bits, the job log
+# counts the skipped xattrs/devices. Not in the default steps (needs two VMs up).
+step_xhost() {
+	state
+	local other=${OTHER:?OTHER=<vm>: another lab VM with an enrolled agent}
+	local oagent time paths r j d target=/restore/xhost-$(date +%s)
+	oagent=$(. "$S/$other.env" && echo "$AGENT")
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	time=$(latest)
+	paths=$(printf '%s\n' "${DATA[@]}" | jq -R . | jq -sc .)
+	ovm() { "$here/vm.sh" "$other" ssh "$@"; }
+	r=$(api admin POST /jobs "$(jq -nc --arg t "$TENANT" --arg s "host-$AGENT" --argjson tm "$time" --argjson p "$paths" \
+		--arg tg "$target" --arg a "$oagent" --arg c "$other" \
+		'{kind:"restore_files", tenant:$t, params:{source:$s, time:$tm, paths:$p, target:$tg, overwrite:"never", confirm:$c, agent_id:$a}}')")
+	expect 202 "restore_files onto $other"
+	j=$(wait_job admin "$(jq -r .id <<<"$r")" 1800)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "restore onto $other: $(jq -r .log <<<"$j" | tail -n 30)"
+	log "onto $other: $(jq -c .result <<<"$j") $(job_line "$j" 'restore to another host')"
+	for d in "${DATA[@]}"; do
+		# type, permission bits without setuid/setgid/sticky (cleared), size (not of directories:
+		# file-system specific), relative path (last: may contain blanks)
+		local q="sudo find . -printf '%y %m %s %p\n' | sort -k4"
+		local perm='{ $2 = substr("000" $2, length("000" $2) - 2); if ($1 == "d") $3 = "-"; print }'
+		vm "cd $d && $q" | awk "$perm" >"$S/$VM.xa"
+		ovm "cd $target$d && $q" | awk "$perm" >"$S/$VM.xb"
+		diff "$S/$VM.xa" "$S/$VM.xb" >"$S/$VM.xdiff" || die "xhost $d differs: $(head -20 "$S/$VM.xdiff")"
+		vm "cd $d && sudo find . -type f -exec sha256sum {} + | sort" >"$S/$VM.xa"
+		ovm "cd $target$d && sudo find . -type f -exec sha256sum {} + | sort" >"$S/$VM.xb"
+		diff -q "$S/$VM.xa" "$S/$VM.xb" >/dev/null || die "xhost $d: content differs"
+	done
+	[ -z "$(ovm "sudo find $target ! -user root -o ! -group root -o -perm /6000 | head -3")" ] ||
+		die "xhost: foreign owners or setuid/setgid bits arrived on $other"
+	result xhost "onto $other: content + modes identical, root-owned, no setuid"
 }
 
 step_download() {

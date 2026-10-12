@@ -47,6 +47,7 @@ const HINTS: &[(&str, &str)] = &[
     ("account_dormant", "An account was disabled because nobody logged in with it for the configured number of days (Settings → Security). If it is still needed, an admin re-enables it on the Users page; otherwise delete or leave it disabled."),
     ("mgmt_allow_reset", "The management allow-list was cleared at the console (nexus-setup reset-mgmt-allow). Confirm with the person who did it, then set a correct list in Settings → Security."),
     ("report", "A scheduled report could not be mailed. Check the SMTP server under Settings → Alert delivery (reachable, credentials) and the report's recipients on the Reports page, then use Send now. Resolves after the next successful send."),
+    ("legal_hold_advisory", "The primary holds this replicated snapshot under a legal hold. Holds are not applied here automatically: a security officer applies it with Apply hold (Alerts or Snapshots page). Resolves once applied or when the primary releases its hold."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
 

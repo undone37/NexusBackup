@@ -109,6 +109,15 @@ versions under **Keys exported**.
 
 ![Replicated snapshots on the secondary](images/snapshots-replicated.png)
 
+### Legal holds from the primary
+
+Every sync also fetches the primary's active [legal holds](06-restores.md#legal-hold) of the tenant. On the secondary
+they are **advisory**: the snapshot shows **Hold advised by <primary>**, a `legal_hold_advisory` warning names the
+snapshot, the reason and who set it, and nothing is enforced. The secondary's security officer decides: **Apply
+hold** (on the alert, or **Apply hold…** on **Snapshots**) makes it a hold of this appliance, set by them and
+released only with this appliance's approval. When the primary releases its hold before that, the advice is
+withdrawn and the alert resolves itself. Holds are only advised for snapshots the secondary has.
+
 ## Key rotation on the primary
 
 New snapshots after a tenant key rotation on the primary use a new key version. The secondary skips snapshots
@@ -135,6 +144,7 @@ valid for 10 years).
 | `replication_keys` | critical | key version mismatch, no export yet, or a key export failed |
 | `replication_verify` | critical | a fetched object failed verification; nothing was imported |
 | `job_failed` | critical | a sync or enrollment job failed |
+| `legal_hold_advisory` | warning | the primary holds a replicated snapshot under a legal hold (below) |
 
 See [11 Alerts and monitoring](11-alerts-and-monitoring.md).
 

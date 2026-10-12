@@ -78,7 +78,8 @@ fn ask_hours() -> std::io::Result<Option<u32>> {
 /// The root shell in its own scope; the terminal is taken back afterwards.
 fn shell(s: &Session) -> std::io::Result<std::process::ExitStatus> {
     let mut cmd = Command::new("systemd-run");
-    cmd.args(["--scope", "--quiet", "--unit", &s.unit])
+    // --no-ask-password: no password agent (nothing to ask; it would need extra policy)
+    cmd.args(["--scope", "--quiet", "--no-ask-password", "--unit", &s.unit])
         .arg("--description=NexusBackup console root shell (nexus-console-gate)")
         .arg(format!("--property=RuntimeMaxSec={}", u64::from(s.hours) * 3600))
         .args(["--", "/bin/bash", "--login"])

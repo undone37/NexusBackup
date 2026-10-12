@@ -13,7 +13,7 @@
 use crate::clock::ComplianceClock;
 use crate::crypto::{hex, invalid, parse_hex, ChunkId, Keyring};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
@@ -775,18 +775,32 @@ impl Store {
     /// extended per class, the rest are deleted unless still locked.
     /// Returns (kept, deleted, still_locked).
     pub fn apply_retention(&self, source: &str, gfs: &crate::retention::Gfs) -> io::Result<(usize, usize, usize)> {
+        self.apply_retention_held(source, gfs, &BTreeSet::new())
+    }
+
+    /// [`Self::apply_retention`] that never deletes the snapshots at `held`
+    /// times (legal holds, kept in the catalog): they count as kept, their
+    /// locks are only extended when GFS keeps them anyway, and they still take
+    /// part in the GFS selection (a held snapshot may be the daily one).
+    pub fn apply_retention_held(
+        &self,
+        source: &str,
+        gfs: &crate::retention::Gfs,
+        held: &BTreeSet<u64>,
+    ) -> io::Result<(usize, usize, usize)> {
         let snaps: Vec<Manifest> = self
             .list_snapshots()?
             .into_iter()
             .filter(|m| m.source == source)
             .collect();
         let keep = crate::retention::keep(&snaps.iter().map(|m| m.time).collect::<Vec<_>>(), gfs);
-        let (mut deleted, mut locked) = (0, 0);
+        let (mut deleted, mut locked, mut held_only) = (0, 0, 0);
         for m in &snaps {
             match keep.get(&m.time) {
                 Some(classes) => {
                     self.extend_lock(source, m.time, crate::retention::lock_until(m.time, classes))?;
                 }
+                None if held.contains(&m.time) => held_only += 1,
                 None => match self.delete_snapshot(source, m.time) {
                     Ok(()) => deleted += 1,
                     Err(e) if e.kind() == io::ErrorKind::PermissionDenied => locked += 1,
@@ -794,7 +808,7 @@ impl Store {
                 },
             }
         }
-        Ok((keep.len(), deleted, locked))
+        Ok((keep.len() + held_only, deleted, locked))
     }
 
     /// All chunk IDs referenced by committed snapshots. Any unreadable

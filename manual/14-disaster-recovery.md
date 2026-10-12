@@ -18,6 +18,7 @@ lost (hardware failure, fire, ransomware on the management network) and how the 
 | Single snapshot damaged locally | nothing extra | `verify` finds it; restore an older snapshot, or fetch it from offsite (below) |
 | The only administrator lost the authenticator or password | recovery key + local console | [Break-glass](#break-glass-the-only-administrator-lost-their-authenticator) (below) |
 | A root shell is needed on the appliance (repairs, rollback, the break-glass reset) | a one-time code approved by a second person, or the recovery key + local console | [Emergency root shell on the console](#emergency-root-shell-on-the-console) (below) |
+| Ransomware or another incident hit a protected system; evidence must be kept | a security officer | [Incident: hold the good snapshots first](#incident-hold-the-good-snapshots-first) (below) |
 
 ### The recovery key
 
@@ -35,6 +36,21 @@ During first boot the key service creates the appliance master key (KEK) and sho
 Keep the recovery key offline and separate from the offsite credentials (see
 [02 Installation](02-installation.md#store-the-recovery-key)). A replicated secondary has its **own** recovery key:
 store that one too.
+
+## Incident: hold the good snapshots first
+
+When a source was encrypted or tampered with, or a legal case needs its backups, keep the snapshots before anything
+else can remove them. Retention keeps running during the investigation and would otherwise prune the last good
+restore points on schedule.
+
+1. **Security officer:** on **Alerts**, **Hold last good snapshot** on the `anomaly` alert, or on **Snapshots**
+   **Hold a time range…** for the affected tenant (and guest) from well before the incident until now. Give the case
+   or ticket number as the reason. The holds apply at once ([06 Restores](06-restores.md#legal-hold)).
+2. If the tenant is replicated, the secondary shows the holds as advice: its security officer applies them there too
+   ([08 Replication](08-replication.md#legal-holds-from-the-primary)).
+3. Restore from a held snapshot as usual ([06 Restores](06-restores.md)); check the audit log for what happened.
+4. When the case is closed, request **Release hold** for each snapshot; a second approver confirms it. Retention then
+   prunes them on its normal schedule.
 
 ## Recover a tenant from the offsite copy
 

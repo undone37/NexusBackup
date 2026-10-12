@@ -3,7 +3,7 @@
 //!
 //! Config: `{source_id, name, url, connect_addr?, cert_pin, peer_id, cred_dir,
 //! keyd_socket, token_file? (enroll), tenant?, store? (sync: the tenant store),
-//! gfs?, bwlimit?, parallel?}`.
+//! gfs?, bwlimit?, parallel?, held? ([source, time] under a local legal hold)}`.
 //!
 //! Output lines the scheduler parses: `enrolled {json}`, `replicated {json}`,
 //! `key-mismatch {json}`, `verify-failed {json}`.
@@ -33,6 +33,8 @@ struct Config {
     gfs: Option<GfsCfg>,
     bwlimit: Option<u64>,
     parallel: Option<usize>,
+    #[serde(default)]
+    held: Vec<(String, u64)>,
 }
 
 #[derive(Deserialize, Default)]
@@ -84,6 +86,7 @@ fn run() -> Result<()> {
                 },
                 parallel: c.parallel.unwrap_or(4),
                 bwlimit: c.bwlimit,
+                held: c.held.into_iter().collect(),
             };
             let tenant = p.tenant.clone();
             let r = sync(&p, &mut |l| println!("{l}"));

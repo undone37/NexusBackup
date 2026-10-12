@@ -48,23 +48,29 @@ fn upload_dr_retention_gc_verify() {
 
     // independent offsite retention: keep 1 daily -> 3 snapshots go (their locks were "now")
     let (kept, deleted, locked) = t
-        .apply_retention(&Gfs {
-            daily: 1,
-            weekly: 0,
-            monthly: 0,
-            yearly: 0,
-        })
+        .apply_retention(
+            &Gfs {
+                daily: 1,
+                weekly: 0,
+                monthly: 0,
+                yearly: 0,
+            },
+            &Default::default(),
+        )
         .unwrap();
     assert_eq!((kept, deleted, locked), (1, 3, 0));
     assert!(box_.list("snapshots/vm-1").unwrap().len() == 1);
     // the kept one is locked for 14 days from its time now
     let (_, _, locked) = t
-        .apply_retention(&Gfs {
-            daily: 0,
-            weekly: 0,
-            monthly: 0,
-            yearly: 0,
-        })
+        .apply_retention(
+            &Gfs {
+                daily: 0,
+                weekly: 0,
+                monthly: 0,
+                yearly: 0,
+            },
+            &Default::default(),
+        )
         .unwrap();
     assert_eq!(locked, 1, "offsite lock holds");
 
@@ -233,7 +239,7 @@ fn remote_locks_follow_offsite_locks() {
     assert_eq!(t.pack_lock(&second[0]), l1);
 
     // GFS promotion: 14-day locks, on the remote first
-    let (kept, deleted, _) = t.apply_retention(&gfs(2)).unwrap();
+    let (kept, deleted, _) = t.apply_retention(&gfs(2), &Default::default()).unwrap();
     assert_eq!((kept, deleted), (2, 0));
     let (w0, w1) = (t0 + 14 * DAY, t1 + 14 * DAY);
     assert_eq!(rem.lock(&format!("snapshots/vm-1/{t0}/manifest")), Some(w0));
@@ -250,7 +256,7 @@ fn remote_locks_follow_offsite_locks() {
     assert_eq!((g.packs_deleted, g.packs_repacked), (0, 0), "{g:?}");
     assert!(g.packs_locked >= 1, "{g:?}");
     // retention with nothing to keep: the locks hold
-    let (_, deleted, locked) = t.apply_retention(&gfs(0)).unwrap();
+    let (_, deleted, locked) = t.apply_retention(&gfs(0), &Default::default()).unwrap();
     assert_eq!((deleted, locked), (0, 2));
     assert_eq!(rem.refused(), 0, "the engine never tries to delete locked objects");
 
@@ -265,7 +271,7 @@ fn remote_locks_follow_offsite_locks() {
     tb.rebuild_from_remote().unwrap();
     assert_eq!(tb.pack_lock(&first[0]), w1);
     assert_eq!(tb.max_lock().unwrap(), w1);
-    let (_, deleted, locked) = tb.apply_retention(&gfs(0)).unwrap();
+    let (_, deleted, locked) = tb.apply_retention(&gfs(0), &Default::default()).unwrap();
     assert_eq!((deleted, locked), (0, 2), "the DR copy knows the extended locks");
     assert!(tb.check_inventory().unwrap().ok());
     tb.restore("vm-1", t1).unwrap();
@@ -297,7 +303,7 @@ fn gc_deletes_expired_and_skips_locked_packs() {
     }
     assert_eq!(t.pack_count(), 4);
     // keep the newest only: 14-day lock on the packs it needs (A, B, D)
-    let (kept, deleted, _) = t.apply_retention(&gfs(1)).unwrap();
+    let (kept, deleted, _) = t.apply_retention(&gfs(1), &Default::default()).unwrap();
     assert_eq!((kept, deleted), (1, 3));
     let g = t.gc().unwrap();
     assert_eq!(g.packs_deleted, 1, "C: dead, never locked; {g:?}");
@@ -308,4 +314,39 @@ fn gc_deletes_expired_and_skips_locked_packs() {
     assert_eq!(rem.refused(), 0);
     assert!(t.check_inventory().unwrap().ok());
     assert_eq!(t.verify_sample(10).unwrap().1, 0);
+}
+
+/// Legal hold (Phase 15c): offsite retention never deletes a held snapshot,
+/// GC keeps its packs, and it restores from the box; released, it is pruned.
+#[test]
+fn held_snapshots_survive_offsite_retention_and_gc() {
+    let d = tempfile::tempdir().unwrap();
+    let box_ = LocalDir(d.path().join("box"));
+    let a = store(&d.path().join("a"));
+    let now = a.compliance_now().unwrap();
+    let opts = || Options {
+        repack_threshold: 0.0,
+        ..Default::default()
+    };
+    let times: Vec<u64> = (0..3).map(|v| now - (5 - v) * DAY).collect();
+    for (v, t) in times.iter().enumerate() {
+        backup(&a, *t, v as u64);
+    }
+    let mut t = Target::open(&a, &box_, d.path().join("state-a"), opts()).unwrap();
+    t.upload().unwrap();
+    let held = std::collections::BTreeSet::from([("vm-1".to_owned(), times[0])]);
+    let (kept, deleted, locked) = t.apply_retention(&gfs(1), &held).unwrap();
+    assert_eq!((kept, deleted, locked), (2, 1, 0));
+    let left = t.snapshots().unwrap();
+    assert_eq!(left, vec![("vm-1".to_owned(), times[0]), ("vm-1".to_owned(), times[2])]);
+    t.gc().unwrap();
+    assert!(t.check_inventory().unwrap().ok());
+    let b = store(&d.path().join("b"));
+    let mut tb = Target::open(&b, &box_, d.path().join("state-b"), opts()).unwrap();
+    tb.rebuild_from_remote().unwrap();
+    tb.restore("vm-1", times[0]).unwrap();
+    assert_eq!(restored(&b, times[0]), image(0));
+    // released: the next run prunes it
+    let (_, deleted, _) = t.apply_retention(&gfs(1), &Default::default()).unwrap();
+    assert_eq!(deleted, 1);
 }

@@ -70,6 +70,7 @@ pub mod consistency;
 pub mod expiry;
 pub mod firewall;
 pub mod forward;
+mod holds;
 mod inventory;
 mod lifecycle;
 pub mod orphans;
@@ -77,6 +78,7 @@ mod plugins;
 pub mod replica;
 pub mod report_mail;
 mod restore;
+mod restore_files;
 pub mod run;
 mod runctl;
 pub mod schedule;
@@ -2026,6 +2028,7 @@ impl Scheduler {
             "state": self.cfg.offsite_state_base.join(tenant),
             "remote": remote,
             "gfs": {"daily": g.daily, "weekly": g.weekly, "monthly": g.monthly, "yearly": g.yearly},
+            "held": catalog::holds::held(&self.db.conn(), tenant)?,
         });
         for k in ["uploaders", "bwlimit"] {
             if let Some(n) = o[k].as_u64() {
@@ -2200,6 +2203,7 @@ impl Scheduler {
             files: Vec::new(),
             steps: Vec::new(),
             download: None,
+            held: catalog::holds::held(&self.db.conn(), tenant)?,
         };
         let group = |id: i64| -> Result<GroupRow> {
             self.groups()?
@@ -2428,30 +2432,7 @@ impl Scheduler {
                 args.extend(restore_flags(job)?);
                 plan.steps.push(pve(args));
             }
-            "restore_files" => {
-                let src = ident(p, "source")?;
-                let src_agent = src
-                    .strip_prefix("host-")
-                    .filter(|a| valid_agent_id(a))
-                    .with_context(|| format!("restore_files needs a host-<agent> snapshot, not {src:?}"))?;
-                let target = p["agent_id"].as_str().unwrap_or(src_agent);
-                let a = self.agent(tenant, target)?;
-                plan.key = format!("agent:{}", a.id);
-                let paths: Vec<Value> = p["paths"]
-                    .as_array()
-                    .filter(|x| !x.is_empty() && x.len() <= 1000 && x.iter().all(Value::is_string))
-                    .context("paths must be a non-empty list")?
-                    .clone();
-                let restore = json!({
-                    "source_agent": src_agent, "time": num(p, "time")?, "paths": paths,
-                    "target": p["target"].as_str().context("missing parameter target")?,
-                    "overwrite": p["overwrite"].as_str().unwrap_or("never"),
-                    "confirm": p["confirm"].as_str().context("missing parameter confirm")?,
-                });
-                let (f, step) = self.agentctl(&dir, job, &a, "restore", json!({"restore": restore}))?;
-                plan.files.push(f);
-                plan.steps.push(step);
-            }
+            "restore_files" => return self.plan_restore_files(job, plan, replicated),
             "agent_update" => {
                 let a = self.agent(tenant, p["agent_id"].as_str().unwrap_or_default())?;
                 plan.key = format!("agent:{}", a.id);
@@ -2918,6 +2899,7 @@ impl Scheduler {
             files: Vec::new(),
             steps: vec![Step::Func(run::InProc(step))],
             download: None,
+            held: Default::default(),
         }))
     }
 

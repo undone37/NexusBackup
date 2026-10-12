@@ -31,12 +31,12 @@ The snapshot name tells you what was backed up. The menu follows from it:
 
 | Snapshot name | Source | **Restore** menu | Other button |
 |---|---|---|---|
-| `vm-<id>` | Proxmox VE virtual machine | **Full restore to a new VM / container**, **Instant recover** | **Browse files** |
-| `ct-<id>` | Proxmox VE container | **Full restore to a new VM / container** | **Browse files** |
+| `vm-<id>` | Proxmox VE virtual machine | **Full restore to a new VM / container**, **Instant recover**, **Restore files to a host…** | **Browse files** |
+| `ct-<id>` | Proxmox VE container | **Full restore to a new VM / container**, **Restore files to a host…** | **Browse files** |
 | `host-<agent id>` | Linux/Windows host (agent) | **Restore to path** | **Browse files** |
-| `nas-<source>-<pool.dataset>` | TrueNAS dataset (built-in connector) | none (download only) | **Browse files** |
-| `share-<source>` | NFS / SMB share | none (download only) | **Browse files** |
-| `plugin-<plugin>-<source>[-<guest>]` | plugin source, e.g. PostgreSQL or Microsoft 365 | the plugin's restores that apply to this kind of snapshot (see below) | the plugin's download button, e.g. **Download (tar/zip)** |
+| `nas-<source>-<pool.dataset>` | TrueNAS dataset (built-in connector) | **Restore to a host…** | **Browse files** |
+| `share-<source>` | NFS / SMB share | **Restore to a host…** | **Browse files** |
+| `plugin-<plugin>-<source>[-<guest>]` | plugin source, e.g. PostgreSQL or Microsoft 365 | the plugin's restores that apply to this kind of snapshot (see below); **Restore to a host…** if the plugin offers a download | the plugin's download button, e.g. **Download (tar/zip)** |
 
 Plugin snapshots come in two kinds: a **guest** snapshot (`plugin-<plugin>-<source>-<guest>`, e.g. one database or
 one mailbox) and a **source** snapshot (`plugin-<plugin>-<source>`, the whole source, e.g. a PostgreSQL cluster). A
@@ -219,40 +219,71 @@ To download:
 - tar keeps owners, modes, modification times, symlinks, hard links and extended attributes (incl. ACLs).
   zip keeps modes and modification times.
 - A prepared download is valid for **24 hours** and can be fetched only by the user who requested it.
-- For TrueNAS datasets and NFS/SMB shares, download is the only restore in this version. There is no restore
-  back to the dataset or share.
+- For TrueNAS datasets and NFS/SMB shares there is no restore back into the dataset or share itself. Download
+  the files, or restore them onto a host with an agent (next section), for example a server that mounts the share.
 
 ## Restore files to a host (agents)
 
-For `host-` snapshots, the agent writes the files back onto a host.
+An enrolled agent writes files from a snapshot onto its host. This works for every snapshot with files:
+host snapshots (`host-`, back onto the same host or onto another one), TrueNAS datasets (`nas-`), NFS/SMB shares
+(`share-`), plugin snapshots whose plugin offers a download (`plugin-…`, including the streams under
+`.nexus-streams/`), and files inside VM and container snapshots (`vm-`, `ct-`). The target is always an agent of the
+snapshot's tenant; agents of other tenants are not offered and the appliance refuses them.
 
-1. Either open **Restore** on the snapshot and choose **Restore to path** (restores everything), or open **Browse files**, select
-   paths and click **Restore to path** (with nothing selected the button reads **Restore everything to
-   path**).
+1. Choose what to restore:
+   - **Host snapshots:** open **Restore** and choose **Restore to path** (everything), or open **Browse files**,
+     select paths and click **Restore to path** (with nothing selected the button reads **Restore everything to
+     path**).
+   - **TrueNAS datasets, shares, plugin snapshots:** open **Restore** and choose **Restore to a host…**
+     (everything), or select paths in **Browse files** and click **Restore to a host…**.
+   - **VMs and containers:** open **Restore** and choose **Restore files to a host…**. The file browser opens;
+     select files or folders (a VM shows its file systems at the top level, e.g. `/sda1`), then click
+     **Restore to a host…**. The restore micro-VM reads the selection from the snapshot, the same way as for a
+     download.
 2. Fill in the dialog:
    - **Target directory on the host**: an absolute path, e.g. `/srv/restore`. The restored paths keep
      their structure below it. The directory is created if missing.
    - **Existing files**: **Never overwrite (skip existing files)**, **Overwrite if older than the backup
      copy**, or **Always overwrite**. Restoring onto `/` (or a Windows drive root) is refused unless you
      choose **Always overwrite**.
-   - **Target agent**: by default the host the backup came from. Any enrolled agent of the same tenant can
-     receive the files.
+   - **Target agent**: for host snapshots by default the host the backup came from. Enrolled agents of the tenant
+     are listed first, with their last contact; agents that are not enrolled cannot be chosen.
    - **Confirmation**: type the target agent's name. The appliance checks it, and the agent logs it.
-3. Click **Start restore**.
+3. Click **Start restore**. The job page opens.
 
 ![Restore files to a host](images/restore-to-path.png)
 
-The agent writes only below the target directory. It never follows symlinks or junctions planted in the target,
-and it restores owners, modes, extended attributes, ACLs and modification times. Skipped files (kept by the
-overwrite policy) appear in the log, not as errors.
+![A share snapshot restored onto another host](images/restore-to-host.png)
+
+The agent writes only below the target directory. It never follows symlinks or junctions planted in the target.
+Skipped files (kept by the overwrite policy) appear in the log, not as errors.
+
+**Back onto the same host**, the agent restores owners, modes, extended attributes, ACLs and modification times.
+
+**Onto another host** (and always for shares, TrueNAS, plugins, VMs and containers) the dialog shows a note, and the
+appliance adapts the metadata, because owner IDs and ACLs of another machine mean something else there:
+
+- Owners and groups are not mapped: the files belong to the agent's restore user (root for the installed service).
+- setuid, setgid and sticky bits are cleared; permissions and modification times are kept.
+- Device nodes and sockets are skipped; on Windows also FIFOs.
+- Extended attributes are kept only if the target can store them: `user.*` attributes on Linux, Windows metadata
+  (`win.*`) on Windows. ACLs, SELinux labels and SMB security descriptors of the other machine are dropped. The job
+  log counts what was skipped.
+- Files from VMs and containers carry modes, times, symlinks and hard links, but no extended attributes.
+  Sparse files are written fully allocated.
+
+![Files of a VM restored onto a host](images/restore-vm-files-to-host.png)
 
 On Windows, write paths as `/D/restore` or `D:\restore`. The agent restores security descriptors, alternate
 data streams and attributes. The security descriptor of a directory that already exists is only replaced
-with **Always overwrite**. EFS-encrypted files are not supported.
+with **Always overwrite**. EFS-encrypted files are not supported. Names that Windows does not allow (for example
+`a:b` or `name.` from a Linux share) fail as single entries; the job then fails and lists them, the other files are
+written.
 
-> **Status:** Linux restore was tested in the agent VM lab (Debian, AlmaLinux, Ubuntu, Fedora). The Windows
-> agent has been built and unit-tested only. It has never run on Windows, so treat Windows restores as
-> untested.
+> **Status:** Linux restore was tested in the agent VM lab (Debian, AlmaLinux, Ubuntu, Fedora). Restores from
+> shares, TrueNAS, plugins and VM/CT files onto a host (Phase 15b) are tested against a fake agent, and restores onto
+> another host also against the real Linux agent; the VM lab run is pending. The Windows agent has been built and
+> unit-tested only. It has never run on Windows, so treat Windows restores as untested.
 
 ## Plugin restores (PostgreSQL)
 
@@ -411,10 +442,56 @@ a restore point earlier, an administrator clicks **Delete** in its row on **Snap
 - Only the local copy is deleted. An offsite copy stays until the offsite retention removes it; a snapshot that
   exists only offsite has no **Delete**.
 - Snapshots replicated from another appliance have no **Delete**: they follow the replication source's retention.
+- A snapshot under a [legal hold](#legal-hold) has no **Delete**; the appliance refuses it until the hold is released.
 - With approvals enabled, the deletion is a `snapshot.delete` request that a second person approves on
   **Approvals** (see [10 Approvals and audit](10-approvals-and-audit.md)). After approval (or at once with approvals
   disabled) the scheduler deletes the snapshot in a **snapshot_delete** job. The next garbage collection frees the
   space its data used, unless other snapshots share it.
+
+## Legal hold
+
+A legal hold keeps a snapshot for as long as it is needed as evidence or as the last good copy after an incident,
+whatever its retention says. While a snapshot is held:
+
+- the protection group's retention, the retention of [snapshots in no group](05-policies-and-groups.md#snapshots-of-objects-in-no-group),
+  the offsite retention and the retention of a replication secondary never delete it;
+- garbage collection keeps all its data;
+- **Delete** is not offered, and a delete request approved earlier fails.
+
+The hold adds protection only; nothing else about the snapshot changes (restores work as usual).
+
+**Setting a hold** is up to the **security officer**, takes effect at once and is recorded in the audit log
+(`snapshot.hold`):
+
+- one snapshot: **Legal hold…** in its row on **Snapshots**, enter the reason (case or ticket reference) and
+  **Put on hold**;
+- many snapshots at once, e.g. everything since an incident began: **Hold a time range…** at the top of
+  **Snapshots**, choose the tenant, optionally one guest, the time range and the reason;
+- from a change-rate `anomaly` alert: **Hold last good snapshot** on **Alerts** puts the last snapshot before the
+  anomaly on hold (see [11 Alerts and monitoring](11-alerts-and-monitoring.md#change-rate-anomalies)).
+
+![Holding every snapshot of a guest in a time range](images/snapshot-hold-range.png)
+
+Held snapshots carry a **Legal hold** badge (hover it for who set it, when and why). **Legal holds only** in the
+filter bar lists them.
+
+![Snapshots under a legal hold](images/snapshots-held.png)
+
+**Releasing a hold** needs a second person: a security officer or an administrator clicks **Release hold**, and
+another administrator or security officer approves the `snapshot hold release` request on **Approvals** (see
+[10 Approvals and audit](10-approvals-and-audit.md)). Until then the badge shows **release requested** and the hold
+stays in force. After the release the snapshot follows its retention again and may be deleted by the next run.
+The holds and their history (who set and released them, who approved) are also available over the API
+(`GET /api/v1/holds`).
+
+On a **replication secondary** the primary's holds are only advice: they show as **Hold advised by <primary>** and
+raise a `legal_hold_advisory` alert, but the secondary's retention ignores them until its own security officer
+clicks **Apply hold…** (or **Apply hold** on the alert). See
+[08 Replication](08-replication.md#legal-holds-from-the-primary).
+
+> **Status:** Retention reads the holds when a job starts; a hold set while a retention job is already running
+> applies from the next run. The VM lab verifies that a hold blocks retention; the offsite and replication paths are
+> covered by integration tests.
 
 ## Restore from the offsite copy
 

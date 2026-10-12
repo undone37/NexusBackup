@@ -31,7 +31,7 @@ use anyhow::{bail, Context, Result};
 use chunkstore::retention::{self, Gfs};
 use chunkstore::store::write_atomic;
 use chunkstore::{ChunkId, Manifest, Store};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -431,8 +431,9 @@ impl<'a> Target<'a> {
     }
 
     /// Independent offsite retention with the same GFS semantics; locks are
-    /// tracked per offsite copy and only ever extended.
-    pub fn apply_retention(&mut self, gfs: &Gfs) -> Result<(usize, usize, usize)> {
+    /// tracked per offsite copy and only ever extended. Snapshots in `held`
+    /// (legal holds) are never deleted; they count as kept.
+    pub fn apply_retention(&mut self, gfs: &Gfs, held: &BTreeSet<(String, u64)>) -> Result<(usize, usize, usize)> {
         let now = self.store.compliance_now()?;
         let mut by_source: BTreeMap<String, Vec<u64>> = BTreeMap::new();
         for (s, t) in self.snapshots()? {
@@ -454,6 +455,8 @@ impl<'a> Target<'a> {
                         }
                         write_atomic(&self.lock_path(&source, t), want.to_string().as_bytes())?;
                     }
+                } else if held.contains(&(source.clone(), t)) {
+                    kept += 1;
                 } else if now < lock {
                     locked += 1;
                 } else {
