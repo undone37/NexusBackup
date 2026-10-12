@@ -267,5 +267,5 @@ Parallel worktree agents (schema versions pre-assigned, renumbered on merge if n
 - [ ] 13b run control: retries, pause/maintenance, blackout, SLA, schedules + time zones, cancel running jobs, back up selected/failed (v11)
 - [ ] 13c auto-protect + guest inventory, PVE unprotected KPI (v12)
 - [x] 13d storage accounting + quotas; 13e anomaly alert — merged 2026-10-12 as catalog v11 (`backup_stats`, `tenants.quota_bytes`); Storage page, Settings → Anomaly detection; tests backup_stats_and_anomaly_alert, quota_alerts, storage_accounting_quota_and_anomaly_settings
-- [ ] 13f alert lifecycle (resolve/auto-resolve/count/hints) + notification rules + webhook templates (v14)
+- [x] 13f alert lifecycle + notification rules + webhook templates — merged 2026-10-12 as catalog v12 (alerts key/tenant/count/last_ts/resolved_*/note/auto/notified_ts; cursor file replaced); catalog::alerting (hints, rules, templates); quota/anomaly keyed; tests alert_lifecycle, job_failure_resolved_by_success, rule_webhook_template_delivery, alert_ack_and_resolve, alert_rules_validation_and_secrets
 - [ ] merge, full suite, VM labs, screenshots, manual, CI
