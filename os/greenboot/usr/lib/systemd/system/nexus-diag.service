@@ -12,7 +12,8 @@ ExecStart=/usr/libexec/nexus/nexus-diag tick
 # it reads the catalog through the group, never the TLS key (0600 nexus-webapi). The
 # bounding set is what the tools it runs in their own domains need: nft (iptables_t:
 # net_admin), chronyc (chronyc_t: its client socket in /run/chrony, 0750 chrony).
-SupplementaryGroups=nexus-catalog nexus-webapi
+# nexus-keyd: see that keyd's socket exists (connecting stays forbidden by SELinux)
+SupplementaryGroups=nexus-catalog nexus-webapi nexus-keyd
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
 AmbientCapabilities=
 UMask=0027

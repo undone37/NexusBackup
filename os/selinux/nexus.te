@@ -927,6 +927,9 @@ read_files_pattern(nexus_diag_t, nexus_var_lib_t, nexus_var_lib_t)
 # audit chain, row counts
 list_dirs_pattern(nexus_diag_t, nexus_catalog_t, nexus_catalog_t)
 read_files_pattern(nexus_diag_t, nexus_catalog_t, nexus_catalog_t)
+# SQLite run by root tries to fchown/open the -wal/-shm read-write before it falls back to
+# read-only; refusing that is the point, so do not log it
+dontaudit nexus_diag_t nexus_catalog_t:file { write setattr };
 allow nexus_diag_t nexus_catalog_t:file map;
 # update status.json (bootc booted/staged/rollback as nexus-update last saw it)
 list_dirs_pattern(nexus_diag_t, nexus_update_t, nexus_update_t)

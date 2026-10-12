@@ -553,7 +553,9 @@ def write_json(path, data):
 
 def handle(d, req):
     out = os.path.join(d, req["id"])
-    os.mkdir(out, 0o2750)  # FileExistsError: an id is used once
+    # the control dir is setgid nexus-webapi, so the group is inherited; the unit has
+    # RestrictSUIDSGID=yes (an explicit S_ISGID mode is EPERM there)
+    os.mkdir(out, 0o750)  # FileExistsError: an id is used once
     st = {**req, "created": int(time.time()), "state": "running", "error": None, "files": {}}
     write_json(os.path.join(out, "status.json"), st)
     try:
