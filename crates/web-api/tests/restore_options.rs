@@ -301,6 +301,19 @@ async fn replace_original_needs_approval() {
     let n: i64 =
         t.one("SELECT COUNT(*) FROM audit WHERE action = 'quorum.request' AND details LIKE '%restore.replace%'");
     assert_eq!(n, 1);
+    // the scheduler's job: cancellable while queued, not while it runs (it may be mid-swap)
+    t.exec(
+        r#"INSERT INTO jobs (id, kind, tenant, params, state, requested_by, created) VALUES
+             (50, 'restore', 'acme', '{"source":"vm-100","replace":true,"quorum_id":1}', 'running', 'scheduler', 0),
+             (51, 'restore', 'acme', '{"source":"vm-100","replace":true,"quorum_id":2}', 'queued', 'scheduler', 0),
+             (52, 'restore', 'acme', '{"source":"vm-100"}', 'running', 'otto', 0);"#,
+    );
+    let r = t.post("/api/v1/jobs/50/cancel", &otto, json!({})).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.body);
+    for id in [51, 52] {
+        let r = t.post(&format!("/api/v1/jobs/{id}/cancel"), &otto, json!({})).await;
+        assert_eq!(r.status, StatusCode::OK, "{id}: {:?}", r.body);
+    }
 }
 
 #[tokio::test]

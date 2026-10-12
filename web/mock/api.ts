@@ -2660,6 +2660,7 @@ on('POST', '/jobs/:id/cancel', async (c, [id]) => {
   const j = find(db.jobs, (x) => x.id === Number(id), 'job');
   // Phase 13b: a running job gets a cancel request that the scheduler carries out
   if (j.state === 'running') {
+    if (j.params.replace) throw new HttpError(409, 'a running restore that replaces the original cannot be cancelled');
     if (j.cancel_by) throw new HttpError(409, 'cancellation already requested');
     Object.assign(j, { cancel_by: u.name, cancel_at: now() });
     await audit(u.name, 'job.cancel', `job/${j.id}`, { running: true });

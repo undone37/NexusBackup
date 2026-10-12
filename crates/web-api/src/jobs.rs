@@ -573,14 +573,22 @@ pub async fn cancel_job(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> 
     ctx.require(OPS)?;
     let state = {
         let c = st.cat.conn();
-        let state: String = c
+        let (state, replace): (String, bool) = c
             .query_row(
-                "SELECT state FROM jobs WHERE id = ?1 AND (?2 IS NULL OR tenant = ?2)",
+                "SELECT state, COALESCE(json_extract(params, '$.replace'), 0) = 1 FROM jobs
+                 WHERE id = ?1 AND (?2 IS NULL OR tenant = ?2)",
                 params![id, ctx.scope()],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?
             .ok_or_else(ApiError::not_found)?;
+        // stopping it between stopping and restoring the original could leave the
+        // original switched off and renamed (Phase 15a; its own rollback needs to run)
+        if replace && state == "running" {
+            return Err(ApiError::conflict(
+                "a running restore that replaces the original cannot be cancelled",
+            ));
+        }
         let queued = c.execute(
             "UPDATE jobs SET state = 'cancelled', finished = ?2 WHERE id = ?1 AND state = 'queued'",
             params![id, catalog::now()],

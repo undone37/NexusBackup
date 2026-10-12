@@ -133,6 +133,8 @@ Keep in mind:
   resources, replication jobs and backup groups that refer to the old ID. A protection group with the old ID
   still backs up the original, now switched off.
 - **The original is never deleted.** Remove it in Proxmox VE yourself once the restored guest works.
+- A replacing restore can be cancelled while it waits in the queue, not while it runs: stopping it half-way
+  could leave the original switched off and renamed.
 - If any step after the restore fails, the appliance puts the original back as it was (name, start at boot,
   network) and starts it again if it was running. The restored guest stays, switched off, under its
   `-restore` name. The job log lists every step, including a rollback that did not complete.
