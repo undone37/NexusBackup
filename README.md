@@ -99,13 +99,13 @@ appliance image in a VM with SELinux enforcing, end-to-end flow, signed updates,
 `lab/e2e` (control-plane end-to-end through the REST API and a headless browser).
 
 ## Roadmap
-Phases 0–11 are implemented: foundations, chunk store, Proxmox, restore features, offsite, control plane, hardened
+Phases 0–12 are implemented: foundations, chunk store, Proxmox, restore features, offsite, control plane, hardened
 image, additional sources, replication + S3, **plugin system** (signed, sandboxed plugins on a Rust SDK; reference
-plugins PostgreSQL, TrueNAS and Microsoft 365), **end-user manual** ([`manual/`](manual)) and **Microsoft 365**
-(Exchange, OneDrive, SharePoint, Teams as a plugin; tested against a Graph mock, a real-tenant run is pending).
-Next: **Phase 12** — professional UI redesign with dark mode, a KPI dashboard for management, OIDC single sign-on
-([`docs/phase12-contract.md`](docs/phase12-contract.md)), then release **0.0.1-alpha**. Production readiness work
-is tracked in `state.md`.
+plugins PostgreSQL, TrueNAS and Microsoft 365), **end-user manual** ([`manual/`](manual)), **Microsoft 365** (Exchange,
+OneDrive, SharePoint, Teams as a plugin; tested against a Graph mock, a real-tenant run is pending) and **Phase 12**:
+redesigned web UI with dark mode, a KPI dashboard for management, OIDC single sign-on (tested against Keycloak) and
+settings pages for alert delivery, SSH keys and updates. First release: **0.0.1-alpha**. Production readiness work is
+tracked in `state.md`.
 
 ## Security
 Please report vulnerabilities privately to the maintainers (do not open public issues). The threat model, the
