@@ -30,6 +30,7 @@
   import Users from './pages/Users.svelte';
   import Plugins from './pages/Plugins.svelte';
   import Settings from './pages/Settings.svelte';
+  import Account from './pages/Account.svelte';
   import IconDashboard from '@lucide/svelte/icons/layout-dashboard';
   import IconSnapshots from '@lucide/svelte/icons/database-backup';
   import IconStorage from '@lucide/svelte/icons/hard-drive';
@@ -59,7 +60,7 @@
   type Section = 'monitor' | 'governance' | 'config';
   const always: Allow = (u) => !!u;
   // Settings: approvals (everyone non-tenant), alerts / SSO (admin, security officer), SSH keys / updates (+ operator).
-  const viewSettings: Allow = (u) => !!u && u.role !== 'tenant_user' && !u.tenant;
+  const viewSettings: Allow = (u) => !!u && u.role !== 'tenant_user' && u.role !== 'viewer' && !u.tenant;
 
   // Routes; `nav` entries appear in the sidebar (filtered by role — the server still decides).
   const routes: { path: string; comp: Component<any>; allow: Allow; nav?: string; section?: Section; icon?: Component<any> }[] = [
@@ -81,6 +82,7 @@
     { path: '/users', comp: Users, allow: can.configure, nav: t.nav.users, section: 'config', icon: IconUsers },
     { path: '/plugins', comp: Plugins, allow: can.viewPlugins, nav: t.nav.plugins, section: 'config', icon: IconPlugins },
     { path: '/settings', comp: Settings, allow: viewSettings, nav: t.nav.settings, section: 'config', icon: IconSettings },
+    { path: '/account', comp: Account, allow: always },
   ];
   const SECTIONS: { id: Section; label: string }[] = [
     { id: 'monitor', label: t.nav.monitor },
@@ -261,13 +263,13 @@
         <button type="button" class="icon-btn theme-toggle" aria-label={themeLabel} title={themeLabel} onclick={() => setTheme(nextTheme(theme.choice))}>
           {#if theme.choice === 'light'}<IconSun aria-hidden="true" />{:else if theme.choice === 'dark'}<IconMoon aria-hidden="true" />{:else}<IconSystem aria-hidden="true" />{/if}
         </button>
-        <div class="whoami">
+        <a class="whoami" href={href('/account')} title={t.access.account}>
           <span class="avatar" aria-hidden="true">{session.user.name.slice(0, 2)}</span>
           <span class="who">
             <strong>{session.user.name}</strong>
             <small>{t.roles[session.user.role]}{session.user.tenant ? ` · ${session.user.tenant}` : ''}</small>
           </span>
-        </div>
+        </a>
         <button type="button" class="icon-btn" onclick={logout} aria-label={t.nav.logout} title={t.nav.logout}><IconLogout aria-hidden="true" /></button>
       </header>
 

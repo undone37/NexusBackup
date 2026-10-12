@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { get, post, put, act, errText, type Outcome } from '../lib/api';
+  import { askConfirm } from '../lib/confirm.svelte';
   import { notify } from '../lib/notify.svelte';
   import { session } from '../lib/session.svelte';
   import { ROLES } from '../lib/roles';
-  import { fmtTime } from '../lib/format';
+  import { fmtAgo, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import type { Activation, Role, Tenant, User } from '../lib/types';
   import Modal from '../components/Modal.svelte';
@@ -40,7 +41,22 @@
 
   let open = $state(false);
   let editing: User | null = $state(null);
-  let f = $state({ name: '', password: '', role: 'operator' as Role, tenant: '', disabled: false });
+  let f = $state({ name: '', password: '', role: 'operator' as Role, tenant: '', disabled: false, canDownload: true, expires: '' });
+  // Phase 14d: download privilege defaults by role; expiry as a date (end of that day, local time)
+  const roleDownloads = (r: Role) => r === 'admin' || r === 'operator' || r === 'tenant_user';
+  const dateOf = (ts: number | null | undefined) => {
+    if (!ts) return '';
+    const d = new Date(ts * 1000);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const tsOf = (date: string) => (date ? Math.floor(new Date(`${date}T23:59:59`).getTime() / 1000) : null);
+  let downloadTouched = $state(false);
+  $effect(() => {
+    // viewers and security officers never download; otherwise a new account follows the
+    // role's default until the box is changed by hand
+    if (f.role === 'viewer' || f.role === 'security_officer') f.canDownload = false;
+    else if (!downloadTouched && !editing) f.canDownload = roleDownloads(f.role);
+  });
   let actFor: User | null = $state(null);
   let actOpen = $state(false);
   let shown = $state<{ name: string; activation: Activation | null }>({ name: '', activation: null });
@@ -66,7 +82,16 @@
 
   function edit(x: User | null) {
     editing = x;
-    f = { name: x?.name ?? '', password: '', role: x?.role ?? 'operator', tenant: x?.tenant ?? '', disabled: x?.disabled ?? false };
+    f = {
+      name: x?.name ?? '',
+      password: '',
+      role: x?.role ?? 'operator',
+      tenant: x?.tenant ?? '',
+      disabled: x?.disabled ?? false,
+      canDownload: x?.can_download ?? true,
+      expires: dateOf(x?.expires),
+    };
+    downloadTouched = false;
     re = { password: '', totp: '' };
     open = true;
   }
@@ -82,18 +107,28 @@
     e.preventDefault();
     const tenant = f.tenant || null;
     if (!editing) {
-      const r = await act(post<UserResp>('/users', { name: f.name, role: f.role, tenant }), t.created);
+      const r = await act(
+        post<UserResp>('/users', { name: f.name, role: f.role, tenant, can_download: f.canDownload, expires: tsOf(f.expires) }),
+        t.created,
+      );
       if (!r) return;
       open = false;
       showActivation(f.name, r);
     } else {
       const body: Record<string, unknown> = isSso(editing) ? { disabled: f.disabled } : { role: f.role, tenant, disabled: f.disabled };
+      if (f.canDownload !== editing.can_download) body.can_download = f.canDownload;
+      if (tsOf(f.expires) !== (editing.expires ?? null)) body.expires = tsOf(f.expires);
       if (f.password && isSelf(editing)) Object.assign(body, { password: f.password }, reauth());
       const r = await act(put<UserResp>(`/users/${editing.id}`, body), t.saved);
       if (!r) return;
       open = false;
     }
     load();
+  }
+
+  async function endSessions(x: User) {
+    if (!(await askConfirm(t.access.revokeUserConfirm(x.name)))) return;
+    await act(post<{ revoked: number }>(`/users/${x.id}/sessions/revoke`, {}), (d) => t.access.revokedN(d.revoked));
   }
 
   function resetTotp(x: User) {
@@ -133,6 +168,7 @@
 
   function stateOf(x: User): { cls: string; text: string } {
     if (x.disabled) return { cls: 'bad', text: t.users.disabled };
+    if (x.expires && x.expires <= Date.now() / 1000) return { cls: 'bad', text: t.access.expiredOn(fmtTime(x.expires)) };
     if (x.pending_activation) {
       const exp = x.activation_expires;
       const sub = !exp ? t.users.pendingApproval : exp < Date.now() / 1000 ? t.users.expired : t.users.pendingUntil(fmtTime(exp));
@@ -170,7 +206,7 @@
             <th scope="col">{t.users.role}</th>
             <th scope="col">{t.tenant}</th>
             <th scope="col">{t.state}</th>
-            <th scope="col">{t.jobs.created}</th>
+            <th scope="col">{t.access.lastLogin}</th>
             <th scope="col"><span class="visually-hidden">{t.actions}</span></th>
           </tr>
         </thead>
@@ -188,8 +224,10 @@
                   <span class="chip {st.cls}">{st.text}</span>
                 {/if}
                 {#if isSso(x)}<span class="chip accent sso-badge" title={t.users.ssoHint}>{t.users.sso}</span>{/if}
+                {#if x.expires && x.expires > Date.now() / 1000}<span class="chip warn">{t.access.expiresOn(fmtTime(x.expires))}</span>{/if}
+                {#if x.can_download === false && x.role !== 'viewer' && x.role !== 'security_officer'}<span class="chip" title={t.access.canDownloadHint}>{t.access.noDownloadChip}</span>{/if}
               </td>
-              <td class="nowrap">{fmtTime(x.created)}</td>
+              <td class="nowrap">{x.last_login ? fmtAgo(x.last_login) : t.ago.never}</td>
               <td class="actions">
                 <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
                 {#if isSso(x)}
@@ -250,9 +288,26 @@
       </fieldset>
     {/if}
     {#if privileged && editing?.role !== f.role}<p class="banner info">{t.users.privilegedHint}</p>{/if}
+    {#if f.role === 'viewer'}<p class="muted">{t.access.viewerHint}</p>{/if}
+    <div class="form-grid">
+      <div class="field">
+        <label class="inline-check" title={t.access.canDownloadHint}>
+          <input type="checkbox" bind:checked={f.canDownload} onchange={() => (downloadTouched = true)} disabled={f.role === 'viewer' || f.role === 'security_officer'} />{t.access.canDownload}
+        </label>
+        <div class="hint">{t.access.canDownloadHint}</div>
+      </div>
+      <div class="field">
+        <label for="u-expires">{t.access.expires}</label>
+        <input id="u-expires" type="date" bind:value={f.expires} aria-describedby="u-expires-hint" />
+        <div class="hint" id="u-expires-hint">{t.access.expiresHint}</div>
+      </div>
+    </div>
     {#if editing}
       <div class="field">
         <label class="inline-check"><input type="checkbox" bind:checked={f.disabled} />{t.users.disabled}</label>
+      </div>
+      <div class="field">
+        <button type="button" class="small" onclick={() => endSessions(editing!)}>{t.access.revokeUser}</button>
       </div>
     {/if}
     <div class="form-actions">

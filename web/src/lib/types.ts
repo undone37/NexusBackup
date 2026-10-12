@@ -3,7 +3,7 @@
 
 import type { BlackoutWindow } from './schedule';
 
-export type Role = 'admin' | 'security_officer' | 'operator' | 'tenant_user';
+export type Role = 'admin' | 'security_officer' | 'operator' | 'tenant_user' | 'viewer';
 
 export interface User {
   id: number;
@@ -16,6 +16,11 @@ export interface User {
   activation_expires?: number | null;
   /** Phase 12: `oidc` users sign in through the IdP (no password / TOTP here) */
   auth?: 'local' | 'oidc';
+  /** Phase 14d: may download restored files (explicit or the role's default) */
+  can_download?: boolean;
+  /** no sign-in from then on (unix time); null = never */
+  expires?: number | null;
+  last_login?: number | null;
 }
 
 /** One-time activation code (or half of it) as returned by user create / new_activation / approve. */
@@ -33,6 +38,8 @@ export interface ApprovalsState {
   enabled: boolean;
   possible_approvers: number;
   recommend: boolean;
+  /** Phase 14d: approvals on, but fewer than three people could approve */
+  few_approvers?: boolean;
   pending_disable: number | null;
 }
 
@@ -825,4 +832,27 @@ export interface AnomalySettings {
   factor: number;
   history: number;
   floor_bytes: number;
+}
+
+/** Phase 14d: GET /auth/sessions, GET /sessions. */
+export interface SessionInfo {
+  id: number;
+  user_id: number;
+  user: string;
+  ip: string;
+  user_agent: string;
+  created: number;
+  last_seen: number;
+  current: boolean;
+}
+
+/** Phase 14d: GET /settings/security. */
+export interface SecuritySettings {
+  session: { idle_min: number; absolute_h: number };
+  dormant_days: number;
+  login_banner: string;
+  mgmt_allow: string[];
+  client_ip: string;
+  client_allowed: boolean;
+  pending: { session: number | null; mgmt_allow: number | null };
 }

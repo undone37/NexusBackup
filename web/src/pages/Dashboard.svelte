@@ -275,6 +275,11 @@
     <button type="button" class="small" onclick={dismiss}>{t.dash.dismiss}</button>
   </div>
 {/if}
+{#if approvals?.few_approvers && can.decideQuorum(session.user)}
+  <div class="banner warn few-approvers" role="status">
+    <span>{t.access.fewApprovers(approvals.possible_approvers)} <a href={href('/settings?tab=approvals')}>{t.dash.approvalsLink}</a></span>
+  </div>
+{/if}
 {#if kpiError}<p class="banner warn" role="status">{kpiError}</p>{/if}
 
 {#if kpi && pr && jb && cap && os}

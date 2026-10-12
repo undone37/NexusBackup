@@ -5,6 +5,8 @@
   import { runJob, downloadUrl, fileEntries, hostAgentId } from '../lib/jobs';
   import { fmtBytes, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
+  import { can } from '../lib/roles';
+  import { session } from '../lib/session.svelte';
   import type { Agent, FileEntry, Job } from '../lib/types';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import RestoreFiles from '../components/RestoreFiles.svelte';
@@ -180,16 +182,20 @@
 <div class="card">
   <div class="row">
     <strong>{t.files.selected(selected.length)}</strong>
-    <label class="visually-hidden" for="fmt">{t.files.format}</label>
-    <select id="fmt" bind:value={format} class="auto">
-      <option value="tar">tar</option>
-      <option value="zip">zip</option>
-    </select>
-    <button type="button" class="primary" disabled={!selected.length || preparing} onclick={prepare}>
-      {preparing ? t.files.preparing : t.files.download}
-    </button>
-    {#if ready}
-      <a class="button" href={downloadUrl(ready.token)} download={ready.filename}>{t.files.get} {ready.filename}</a>
+    {#if can.download(session.user)}
+      <label class="visually-hidden" for="fmt">{t.files.format}</label>
+      <select id="fmt" bind:value={format} class="auto">
+        <option value="tar">tar</option>
+        <option value="zip">zip</option>
+      </select>
+      <button type="button" class="primary" disabled={!selected.length || preparing} onclick={prepare}>
+        {preparing ? t.files.preparing : t.files.download}
+      </button>
+      {#if ready}
+        <a class="button" href={downloadUrl(ready.token)} download={ready.filename}>{t.files.get} {ready.filename}</a>
+      {/if}
+    {:else}
+      <span class="muted">{t.access.noDownload}</span>
     {/if}
     {#if agentId}
       <button type="button" onclick={() => (restoreOpen = true)} aria-describedby="restore-hint">

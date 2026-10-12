@@ -646,6 +646,22 @@ async function main() {
       await go('/settings?tab=updates');
       await shot('settings-updates');
     }],
+    // Phase 14d: Settings → Security, My account → Sessions, download privilege / expiry, the viewer role
+    ['access', async () => {
+      await go('/settings?tab=security');
+      await shot('settings-security', { height: 2000 });
+      await go('/account');
+      await shot('account-sessions');
+      await go('/users');
+      await ev(`$rowClick('contractor', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #u-expires')`, 'user dialog');
+      await shot('user-edit-access', { height: 1100 });
+      await closeDialogs();
+      await login('auditor');
+      await go('/', 900);
+      await shot('dashboard-viewer');
+      await login('admin');
+    }],
     ['approvals', async () => {
       await go('/quorum');
       await shot('approvals-admin', { height: 1400 });

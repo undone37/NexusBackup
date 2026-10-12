@@ -10,6 +10,7 @@
   import SshKeys from './settings/SshKeys.svelte';
   import Updates from './settings/Updates.svelte';
   import Anomaly from './settings/Anomaly.svelte';
+  import Security from './settings/Security.svelte';
 
   // Tabs per role (docs/phase12-contract.md: alerts + SSO readable by admins and security officers,
   // SSH keys + updates also by operators; only admins change anything — the server decides).
@@ -23,6 +24,7 @@
     { id: 'ssh', comp: SshKeys, allow: staff },
     { id: 'updates', comp: Updates, allow: staff },
     { id: 'anomaly', comp: Anomaly, allow: officer },
+    { id: 'security', comp: Security, allow: officer },
   ];
   const tabs = $derived(TABS.filter((x) => x.allow(session.user)));
   const tab = $derived(tabs.find((x) => x.id === route.query.get('tab')) ?? tabs[0]);

@@ -1,7 +1,8 @@
 // In-memory mock of the /api/v1 contract (docs/control-plane.md) for `npm run dev`
 // and `npm run preview`. Vite server middleware only — never part of the build output.
 //
-// Users (password "nexus", any 6-digit TOTP code): admin, so, so2, op, acme (tenant_user of "acme").
+// Users (password "nexus", any 6-digit TOTP code): admin, so, so2, op, acme (tenant_user of "acme"),
+// auditor (viewer, all tenants), acme-view (viewer of "acme").
 // "newop" is pending activation: sign-in page → "Activate account", code DEMO-ACTIVATE-NEWOP-2026
 // (any 6-digit authenticator code is accepted). Approvals start enabled with pending requests.
 //
@@ -29,7 +30,7 @@ interface Res {
   end(body?: string): void;
 }
 
-type Role = 'admin' | 'security_officer' | 'operator' | 'tenant_user';
+type Role = 'admin' | 'security_officer' | 'operator' | 'tenant_user' | 'viewer';
 type Json = Record<string, any>;
 
 class HttpError extends Error {
@@ -105,6 +106,10 @@ interface User {
   /** Phase 12: `oidc` = signs in through the IdP only (no password / TOTP here) */
   auth?: 'local' | 'oidc';
   oidc_sub?: string;
+  /** Phase 14d: explicit download privilege (unset = the role's default), expiry, last sign-in */
+  can_download?: boolean | null;
+  expires?: number | null;
+  last_login?: number | null;
 }
 interface Agent {
   id: string;
@@ -193,7 +198,7 @@ const db = {
   quorum: [] as Json[],
   audit: [] as Json[],
   alerts: [] as Json[],
-  sessions: new Map<string, { userId: number; csrf: string; created: number; last: number }>(),
+  sessions: new Map<string, { id: number; userId: number; csrf: string; created: number; last: number; ip: string; ua: string }>(),
   downloads: new Map<string, { owner: string; filename: string; body: string; expires: number }>(),
   failures: new Map<string, { count: number; until: number }>(),
   quorumSecrets: new Map<number, Json>(),
@@ -210,6 +215,13 @@ const db = {
   updates: {} as Json,
   /** Phase 13e setting `anomaly` */
   anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30 } as Json,
+  /** Phase 14d settings `session`, `dormant_days`, `login_banner`, `mgmt_allow` */
+  security: {
+    session: { idle_min: 30, absolute_h: 12 },
+    dormant_days: 90,
+    login_banner: 'Authorised use only. Activity on this appliance is recorded in a tamper-evident audit log.',
+    mgmt_allow: ['198.51.100.0/24', '192.0.2.0/24'] as string[],
+  },
 };
 const nextId = () => ++db.seq;
 
@@ -734,7 +746,18 @@ function seed() {
     mk('so2', 'security_officer'),
     mk('op', 'operator'),
     mk('acme', 'tenant_user', 'acme'),
+    mk('auditor', 'viewer', null, t - 86400 * 30),
+    mk('acme-view', 'viewer', 'acme', t - 86400 * 30),
   );
+  for (const u of db.users) u.last_login = t - 86400 * 2;
+  // a contractor account with an end date and no download privilege
+  const contractor = mk('contractor', 'operator', null, t - 86400 * 20);
+  Object.assign(contractor, { can_download: false, expires: day(-30, 0), last_login: t - 86400 * 5 });
+  db.users.push(contractor);
+  // the admin's other sessions (Account → Sessions)
+  const admin0 = db.users[0];
+  db.sessions.set('a1'.repeat(32), { id: 1, userId: admin0.id, csrf: 'x', created: t - 3 * 3600, last: t - 1200, ip: '198.51.100.23', ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0' });
+  db.sessions.set('b2'.repeat(32), { id: 2, userId: admin0.id, csrf: 'x', created: t - 7 * 3600, last: t - 5400, ip: '192.0.2.40', ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15' });
   const newop = mk('newop', 'operator');
   Object.assign(newop, { created: t - 3600, password: '', totp_secret: '', act: { parts: [normCode('DEMO-ACTIVATE-NEWOP-2026')], expires: t + 71 * 3600, failures: 0 } });
   const former = mk('former-op', 'operator', null, t - 86400 * 200);
@@ -1228,7 +1251,11 @@ const pub = (u: User) => ({
   pending_activation: !!u.act,
   activation_expires: u.act?.expires ?? null,
   auth: u.auth ?? 'local',
+  can_download: canDownload(u),
+  expires: u.expires ?? null,
+  last_login: u.last_login ?? null,
 });
+const canDownload = (u: User) => u.can_download ?? ['admin', 'operator', 'tenant_user'].includes(u.role);
 const PRIV: Role[] = ['admin', 'security_officer'];
 const ACT_SECS = 72 * 3600;
 const normCode = (s: string) => s.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
@@ -1418,6 +1445,12 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'settings.anomaly':
       db.anomaly = structuredClone(p.anomaly);
       break;
+    case 'security.session':
+      db.security.session = structuredClone(p.session);
+      break;
+    case 'security.mgmt_allow':
+      db.security.mgmt_allow = [...p.mgmt_allow];
+      break;
     case 'policy.update':
       Object.assign(find(db.policies, (x) => x.id === p.id, 'policy'), next);
       break;
@@ -1496,7 +1529,8 @@ on('POST', '/auth/login', async (c) => {
   const f = db.failures.get(name);
   if (f && f.until > now()) throw new HttpError(429, 'too many failed sign-ins; try again in 15 minutes');
   const u = db.users.find((x) => x.name === name);
-  if (!u || u.disabled || u.act || !u.password || u.password !== password || !/^\d{6}$/.test(String(totp))) {
+  const expired = !!u?.expires && u.expires <= now();
+  if (!u || u.disabled || expired || u.act || !u.password || u.password !== password || !/^\d{6}$/.test(String(totp))) {
     const g = f && f.until === 0 ? f : { count: 0, until: 0 };
     g.count++;
     if (g.count >= 5) g.until = now() + 900;
@@ -1507,7 +1541,9 @@ on('POST', '/auth/login', async (c) => {
   db.failures.delete(name);
   const sid = rand(32);
   const csrf = rand(16);
-  db.sessions.set(sid, { userId: u.id, csrf, created: now(), last: now() });
+  const ua = String(c.headers['user-agent'] ?? '').slice(0, 256);
+  db.sessions.set(sid, { id: nextId(), userId: u.id, csrf, created: now(), last: now(), ip: '198.51.100.17', ua });
+  u.last_login = now();
   c.res.setHeader('Set-Cookie', `nx_session=${sid}; HttpOnly; SameSite=Strict; Path=/`);
   await audit(u.name, 'auth.login', 'session', {});
   return [200, { csrf, user: pub(u) }];
@@ -1854,8 +1890,8 @@ on('POST', '/sources/:id/maintenance/end', async (c, [id]) => {
 // replication (docs/replication.md): this appliance as primary (peers) and as secondary (sources)
 const findPeer = (id: string) => find(db.replPeers, (p) => p.id === id, 'peer');
 const findRs = (id: string) => find(db.replSources, (r) => String(r.id) === id, 'replication source');
-on('GET', '/replication/peers', (c) => (need(c.user), [200, db.replPeers]));
-on('GET', '/replication/sources', (c) => (need(c.user), [200, db.replSources]));
+on('GET', '/replication/peers', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, db.replPeers]));
+on('GET', '/replication/sources', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, db.replSources]));
 on('POST', '/replication/peers', async (c) => {
   const u = need(c.user, 'admin');
   const { name, tenants = [] } = c.body;
@@ -2007,7 +2043,7 @@ on('DELETE', '/agents/:id', (c, [id]) => {
 on('GET', '/users', (c) => (need(c.user, 'admin'), [200, db.users.map(pub)]));
 on('POST', '/users', async (c) => {
   const u = need(c.user, 'admin');
-  const { name, role, tenant } = c.body;
+  const { name, role, tenant, can_download, expires } = c.body;
   if ('password' in c.body) throw new HttpError(400, 'unknown field `password`: users set their own password at activation');
   if (!NAME_RE.test(String(name ?? ''))) throw new HttpError(400, 'invalid user name');
   if (db.users.some((x) => x.name === name)) throw new HttpError(409, 'user exists');
@@ -2016,7 +2052,8 @@ on('POST', '/users', async (c) => {
   // enables them. The requester gets only the first half of the activation code.
   const priv = PRIV.includes(role);
   const gated = priv && db.approvals;
-  const n: User = { id: nextId(), name, password: '', role, tenant: tenant || null, disabled: gated, created: now(), totp_secret: '' };
+  if (role === 'tenant_admin') throw new HttpError(400, 'role: must be admin, security_officer, operator, tenant_user or viewer');
+  const n: User = { id: nextId(), name, password: '', role, tenant: tenant || null, disabled: gated, created: now(), totp_secret: '', can_download: can_download ?? null, expires: expires ?? null };
   db.users.push(n);
   const activation = startActivation(n, gated);
   await audit(u.name, 'user.create', `user/${n.id}`, { name, role });
@@ -2046,6 +2083,12 @@ on('PUT', '/users/:id', async (c, [id]) => {
   if (b.role !== undefined && b.role !== x.role) p.role = b.role;
   if (b.tenant !== undefined) p.tenant = b.tenant || null;
   if (b.disabled !== undefined && !!b.disabled !== x.disabled) p.disabled = !!b.disabled;
+  if (b.can_download !== undefined && !!b.can_download !== canDownload(x)) p.can_download = !!b.can_download;
+  if (b.expires !== undefined && (b.expires ?? null) !== (x.expires ?? null)) {
+    const others = db.users.filter((y) => y.role === 'admin' && !y.disabled && !y.expires && y.id !== x.id);
+    if (b.expires && (p.role ?? x.role) === 'admin' && !others.length) throw new HttpError(409, 'expires: the last admin without an expiry date cannot get one');
+    p.expires = b.expires ?? null;
+  }
   if (b.password) p.password = b.password;
   const extra: Json = {};
   if (b.reset_totp) {
@@ -2166,7 +2209,7 @@ on('DELETE', '/plugins/:id', (c, [id]) => {
   if (used) throw new HttpError(409, `plugin kinds are used by source "${used.name}"`);
   return quorum(u, 'plugin.remove', { id, versions: vs.map((x) => x.version) });
 });
-on('GET', '/plugin-keys', (c) => (need(c.user), [200, db.pluginKeys]));
+on('GET', '/plugin-keys', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, db.pluginKeys]));
 on('POST', '/plugin-keys', async (c) => {
   const u = need(c.user, 'admin');
   const publisher = String(c.body.publisher ?? '').trim();
@@ -2223,13 +2266,143 @@ on('POST', '/auth/activate/complete', async (c) => {
   return [200, { ok: true }];
 });
 
+// access (Phase 14d): sessions, timeouts, dormant accounts, login banner, management allow-list
+const CLIENT_IP = '198.51.100.17';
+const sessionList = (filter: (s: { userId: number }) => boolean, current: string | null) =>
+  [...db.sessions.entries()]
+    .filter(([, s]) => filter(s))
+    .map(([sid, s]) => ({ id: s.id, user_id: s.userId, user: db.users.find((u) => u.id === s.userId)?.name ?? '?', ip: s.ip, user_agent: s.ua, created: s.created, last_seen: s.last, current: sid === current }))
+    .sort((a, b) => b.last_seen - a.last_seen);
+function endSession(u: User, id: number, own: boolean) {
+  const e = [...db.sessions.entries()].find(([, s]) => s.id === id && (!own || s.userId === u.id));
+  if (!e) throw new HttpError(404, 'not found');
+  db.sessions.delete(e[0]);
+  return db.users.find((x) => x.id === e[1].userId)?.name ?? '?';
+}
+function cidr(s: string): string | null {
+  const m = /^(\d{1,3}(?:\.\d{1,3}){3})(?:\/(\d{1,2}))?$/.exec(s.trim());
+  if (m) {
+    const p = m[2] === undefined ? 32 : Number(m[2]);
+    const parts = m[1].split('.').map(Number);
+    if (p > 32 || parts.some((x) => x > 255)) return null;
+    const n = parts.reduce((a, x) => a * 256 + x, 0);
+    const net = n - (n % 2 ** (32 - p));
+    return `${[24, 16, 8, 0].map((sh) => Math.floor(net / 2 ** sh) % 256).join('.')}/${p}`;
+  }
+  const v6 = /^([0-9a-fA-F:]+)(?:\/(\d{1,3}))?$/.exec(s.trim());
+  if (v6 && v6[1].includes(':') && (v6[2] === undefined || Number(v6[2]) <= 128)) return `${v6[1].toLowerCase()}/${v6[2] ?? 128}`;
+  return null;
+}
+const inCidr = (ip: string, c: string) => {
+  const [net, p] = c.split('/');
+  if (net.includes(':') || ip.includes(':')) return false;
+  const n = (s: string) => s.split('.').map(Number).reduce((a, x) => a * 256 + x, 0);
+  const size = 2 ** (32 - Number(p));
+  return Math.floor(n(ip) / size) === Math.floor(n(net) / size);
+};
+const securityState = () => {
+  const pend = (a: string) => db.quorum.find((q) => q.action === a && q.state === 'pending')?.id ?? null;
+  const allow = db.security.mgmt_allow;
+  return {
+    ...structuredClone(db.security),
+    client_ip: CLIENT_IP,
+    client_allowed: !allow.length || allow.some((c) => inCidr(CLIENT_IP, c)),
+    pending: { session: pend('security.session'), mgmt_allow: pend('security.mgmt_allow') },
+  };
+};
+on('GET', '/auth/banner', () => [200, { banner: db.security.login_banner }]);
+on('GET', '/auth/sessions', (c) => {
+  const u = need(c.user);
+  return [200, sessionList((s) => s.userId === u.id, c.sid)];
+});
+on('DELETE', '/auth/sessions/:id', async (c, [id]) => {
+  const u = need(c.user);
+  const name = endSession(u, Number(id), true);
+  await audit(u.name, 'session.revoke', `user/${name}`, { session: Number(id) });
+  return [200, { revoked: 1 }];
+});
+on('GET', '/sessions', (c) => {
+  need(c.user, 'admin');
+  const uid = c.query.get('user');
+  return [200, sessionList((s) => !uid || s.userId === Number(uid), c.sid)];
+});
+on('DELETE', '/sessions/:id', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const name = endSession(u, Number(id), false);
+  await audit(u.name, 'session.revoke', `user/${name}`, { session: Number(id) });
+  return [200, { revoked: 1 }];
+});
+on('POST', '/users/:id/sessions/revoke', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const x = find(db.users, (y) => y.id === Number(id), 'user');
+  let n = 0;
+  for (const [sid, s] of db.sessions) if (s.userId === x.id) (db.sessions.delete(sid), n++);
+  await audit(u.name, 'session.revoke_user', `user/${x.name}`, { revoked: n });
+  return [200, { revoked: n }];
+});
+on('POST', '/sessions/revoke-all', async (c) => {
+  const u = need(c.user, 'admin');
+  if (!c.body.current_password || !c.body.current_totp) throw new HttpError(400, 'current_password and current_totp are required');
+  if (c.body.current_password !== u.password || !/^\d{6}$/.test(String(c.body.current_totp))) throw new HttpError(403, 're-authentication failed: wrong current password or TOTP code');
+  let n = 0;
+  for (const sid of [...db.sessions.keys()]) if (sid !== c.sid) (db.sessions.delete(sid), n++);
+  await audit(u.name, 'session.revoke_all', 'appliance', { revoked: n });
+  return [200, { revoked: n }];
+});
+on('GET', '/settings/security', (c) => (need(c.user, 'admin', 'security_officer'), [200, securityState()]));
+on('PUT', '/settings/session', async (c) => {
+  const u = need(c.user, 'admin');
+  const { idle_min, absolute_h } = c.body;
+  if (!Number.isInteger(idle_min) || idle_min < 5 || idle_min > 120) throw new HttpError(400, 'idle_min: 5..=120 minutes');
+  if (!Number.isInteger(absolute_h) || absolute_h < 1 || absolute_h > 24) throw new HttpError(400, 'absolute_h: 1..=24 hours');
+  const old = db.security.session;
+  const next = { idle_min, absolute_h };
+  if (idle_min > old.idle_min || absolute_h > old.absolute_h) return quorum(u, 'security.session', { session: next, old });
+  db.security.session = next;
+  await audit(u.name, 'security.session', 'settings/session', { session: next, old });
+  return [200, next];
+});
+on('PUT', '/settings/dormant', async (c) => {
+  const u = need(c.user, 'admin');
+  const days = c.body.days;
+  if (!Number.isInteger(days) || (days !== 0 && (days < 30 || days > 3650))) throw new HttpError(400, 'days: 0 (off) or 30..=3650');
+  await audit(u.name, 'security.dormant', 'settings/dormant_days', { days, old: db.security.dormant_days });
+  db.security.dormant_days = days;
+  return [200, { dormant_days: days }];
+});
+on('PUT', '/settings/banner', async (c) => {
+  const u = need(c.user, 'admin');
+  const text = String(c.body.banner ?? '').replace(/\s+$/, '');
+  if (text.length > 2000 || /[\u0000-\u0008\u000b-\u001f\u007f]/.test(text)) throw new HttpError(400, 'banner: up to 2000 characters, no control characters');
+  db.security.login_banner = text;
+  await audit(u.name, 'security.login_banner', 'settings/login_banner', { banner: text });
+  return [200, { banner: text }];
+});
+on('PUT', '/settings/mgmt-allow', async (c) => {
+  const u = need(c.user, 'admin');
+  const raw: unknown[] = Array.isArray(c.body.mgmt_allow) ? c.body.mgmt_allow : [];
+  if (raw.length > 64) throw new HttpError(400, 'mgmt_allow: at most 64 entries');
+  const list: string[] = [];
+  for (const s of raw) {
+    const x = cidr(String(s));
+    if (!x) throw new HttpError(400, `mgmt_allow: "${s}" is not an address or CIDR (10.0.0.0/8)`);
+    if (!list.includes(x)) list.push(x);
+  }
+  const old = db.security.mgmt_allow;
+  if (JSON.stringify(list) === JSON.stringify(old)) return [200, { mgmt_allow: list }];
+  const ok = !list.length || list.some((x) => inCidr(CLIENT_IP, x));
+  if (!ok && !(c.body.force && String(c.body.confirm ?? '').trim() === CLIENT_IP))
+    throw new HttpError(409, `mgmt_allow does not contain your address ${CLIENT_IP}: you would lose access to the web UI; add it, or confirm with force and confirm = "${CLIENT_IP}"`);
+  return quorum(u, 'security.mgmt_allow', { mgmt_allow: list, old, requested_from: CLIENT_IP });
+});
+
 // approvals setting
 const approvalsState = () => {
   const n = approvers().length;
   const pend = db.quorum.find((q) => q.action === 'approvals.disable' && q.state === 'pending');
-  return { enabled: db.approvals, possible_approvers: n, recommend: !db.approvals && n >= 2, pending_disable: pend?.id ?? null };
+  return { enabled: db.approvals, possible_approvers: n, recommend: !db.approvals && n >= 2, few_approvers: db.approvals && n < 3, pending_disable: pend?.id ?? null };
 };
-on('GET', '/settings/approvals', (c) => (need(c.user), [200, approvalsState()]));
+on('GET', '/settings/approvals', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, approvalsState()]));
 on('PUT', '/settings/approvals', async (c) => {
   const u = need(c.user, 'admin');
   const want = !!c.body.enabled;
@@ -2358,6 +2531,7 @@ on('POST', '/jobs', async (c) => {
   find(db.tenants, (t) => t.name === tenant, 'tenant');
   if (kind === 'files_list' && !String(params.path ?? '').startsWith('/')) throw new HttpError(400, 'path: must be absolute');
   checkJob(u, kind, tenant, params);
+  if (kind === 'files_get' && !canDownload(u)) throw new HttpError(403, 'this account may not download files');
   if (kind === 'backup') backupGuests(params);
   // Like web-api: files_get gets a server-generated download token, returned in the 202 body.
   const p = kind === 'files_get' ? { ...params, download_token: rand(32) } : params;
@@ -2909,7 +3083,7 @@ on('GET', '/dashboard', (c) => {
 
 // ---- OIDC (§2). The mock has no identity provider: "start" goes straight to the callback, which
 // signs in as the SSO demo user lwagner (Keycloak groups: nexus-operators).
-const MAPPING_ROLES = ['admin', 'security_officer', 'operator', 'tenant_user'];
+const MAPPING_ROLES = ['admin', 'security_officer', 'operator', 'tenant_user', 'viewer'];
 const pubOidc = () => {
   const { client_secret, ...rest } = db.oidc;
   return { ...structuredClone(rest), client_secret_set: !!client_secret };
@@ -2944,7 +3118,7 @@ on('GET', '/auth/oidc/callback', async (c) => {
   Object.assign(x, { role: best.role, tenant: best.tenants?.[0] ?? null });
   if (x.disabled) return fail('denied');
   const sid = rand(32);
-  db.sessions.set(sid, { userId: x.id, csrf: rand(16), created: now(), last: now() });
+  db.sessions.set(sid, { id: nextId(), userId: x.id, csrf: rand(16), created: now(), last: now(), ip: CLIENT_IP, ua: String(c.headers['user-agent'] ?? '').slice(0, 256) });
   c.res.setHeader('Set-Cookie', `nx_session=${sid}; HttpOnly; SameSite=Lax; Path=/`);
   await audit(x.name, 'auth.oidc_login', 'session', { groups: claims.groups });
   const state = decodeURIComponent(String(c.query.get('state') ?? '/'));
@@ -3150,10 +3324,11 @@ async function handle(req: Req, res: Res) {
     const sess = sid ? db.sessions.get(sid) : undefined;
     let user: User | null = null;
     if (sess) {
-      if (now() - sess.last > 1800 || now() - sess.created > 12 * 3600) db.sessions.delete(sid!);
+      const lim = db.security.session;
+      if (now() - sess.last > lim.idle_min * 60 || now() - sess.created > lim.absolute_h * 3600) db.sessions.delete(sid!);
       else {
         sess.last = now();
-        user = db.users.find((u) => u.id === sess.userId && !u.disabled) ?? null;
+        user = db.users.find((u) => u.id === sess.userId && !u.disabled && !(u.expires && u.expires <= now())) ?? null;
       }
     }
     if (method !== 'GET' && path !== '/auth/login' && !path.startsWith('/auth/activate/') && user && req.headers['x-csrf-token'] !== sess?.csrf) {
@@ -3162,6 +3337,7 @@ async function handle(req: Req, res: Res) {
     const dl = /^\/downloads\/([0-9a-f]+)$/.exec(path);
     if (dl && method === 'GET') {
       const u = need(user);
+      if (!canDownload(u)) throw new HttpError(403, 'this account may not download files');
       const d = db.downloads.get(dl[1]);
       if (!d || d.expires < now()) throw new HttpError(404, 'download not found or expired');
       if (d.owner !== u.name) throw new HttpError(403, 'only the requester can download this file');

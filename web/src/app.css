@@ -468,6 +468,13 @@ svg.lucide {
   display: flex;
   flex-direction: column;
 }
+a.whoami {
+  color: inherit;
+  text-decoration: none;
+}
+a.whoami:hover .who strong {
+  text-decoration: underline;
+}
 .whoami .who strong {
   font-weight: 600;
   font-size: 0.88rem;
@@ -2126,4 +2133,12 @@ tr.changed td {
 }
 .sso-badge {
   vertical-align: 1px;
+}
+
+/* Phase 14d: login banner (plain text, line breaks kept) */
+.login-banner {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  max-height: 14rem;
+  overflow-y: auto;
 }
