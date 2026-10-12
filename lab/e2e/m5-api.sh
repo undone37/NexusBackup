@@ -3,6 +3,7 @@
 # X-CSRF-Token, TLS verified against the appliance certificate.
 #   lab/e2e/m5.sh setup && lab/e2e/m5.sh start && lab/e2e/m5-api.sh [step...]
 # steps (default: all): config wait-backup check restore verify quorum phase13 legal-hold phase14d2 access diag audit
+#   (not in the default: offsite-fetch, Phase 17d: removes a local snapshot on disk, raises an inventory alert)
 #   (not in the default: console, console-check; lab/appliance/console-gate.sh runs them; firewall: appliance VM
 #   only, uses lab/appliance/con.py for the console reset)
 # Lab inputs (env, defaults = dev machine, see lab/README.md):
@@ -613,6 +614,63 @@ step_firewall() {
 	# our dropped attempts show up as blocked (status refreshed every minute)
 	fw_wait 'any(.drops[]; .port == 8443)' "blocked attempts on 8443"
 	log "access back after the console reset; blocked attempts: $(api admin GET /firewall | jq -c '[.drops[] | select(.port == 8443)]')"
+}
+
+# Phase 17d: an offsite-only snapshot fetched back through the UI's job kinds. Its local copy is
+# removed on disk like local retention would (real retention waits for the 14-day locks), which
+# raises the "disappeared from the local store while locked" alert: local harness only, not in the
+# default list. Then `offsite_list` shows it offsite only, `offsite_restore` fetches it (locked
+# locally for 7 days), and the file browser lists it like any local snapshot.
+step_offsite_fetch() {
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	local t other r j now
+	r=$(api admin GET "/snapshots?tenant=lab&source=vm-100")
+	t=$(jq -r '[.[] | select(.local and .offsite and .hold == null) | .time] | min' <<<"$r")
+	other=$(jq -r --argjson t "$t" '[.[] | select(.local and .time != $t) | .time] | max' <<<"$r")
+	[ "$t" != null ] || die "no local+offsite vm-100 snapshot"
+	rm -rf "$ROOT/var/lib/nexus/chunkstore/lab/snapshots/vm-100/$t"
+	# a finished retention job marks the tenant dirty: the refresh sees the snapshot offsite only
+	r=$(api admin POST /jobs '{"kind":"retention","tenant":"lab","params":{"source":"vm-100"}}')
+	expect 202 "retention job"
+	wait_job admin "$(jq -r .id <<<"$r")" 600 >/dev/null
+	for _ in $(seq 60); do
+		api admin GET "/snapshots?tenant=lab&source=vm-100" |
+			jq -e --argjson t "$t" 'any(.[]; .time == $t and (.local | not) and .offsite)' >/dev/null && break
+		sleep 2
+	done
+	api admin GET "/snapshots?tenant=lab&source=vm-100" |
+		jq -e --argjson t "$t" 'any(.[]; .time == $t and (.local | not) and .offsite)' >/dev/null || die "vm-100/$t not offsite only"
+	log "vm-100/$t is offsite only"
+	r=$(api admin POST /jobs '{"kind":"offsite_list","tenant":"lab","params":{}}')
+	expect 202 "offsite_list job"
+	j=$(wait_job admin "$(jq -r .id <<<"$r")" 600)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "offsite_list: $(jq -r .log <<<"$j" | tail -n 5)"
+	jq -e --argjson t "$t" '.result.snapshots | any(.[]; .source == "vm-100" and .time == $t and (.local | not) and .remote and .inventory)' \
+		<<<"$j" >/dev/null || die "listing: $(jq -c .result <<<"$j")"
+	log "offsite listing: $(jq -c '[.result.snapshots[] | {source, time, local, remote}]' <<<"$j")"
+	if [ "$other" != null ]; then
+		api admin POST /jobs "$(jq -nc --argjson t "$other" '{kind:"offsite_restore", tenant:"lab", params:{source:"vm-100", time:$t}}')" >/dev/null
+		expect 409 "fetch of a snapshot that is local"
+	fi
+	r=$(api admin POST /jobs "$(jq -nc --argjson t "$t" '{kind:"offsite_restore", tenant:"lab", params:{source:"vm-100", time:$t}}')")
+	expect 202 "offsite_restore job"
+	j=$(wait_job admin "$(jq -r .id <<<"$r")" 1800)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "offsite_restore: $(jq -r .log <<<"$j" | tail -n 10)"
+	now=$(date +%s)
+	for _ in $(seq 60); do
+		api admin GET "/snapshots?tenant=lab&source=vm-100" |
+			jq -e --argjson t "$t" --argjson n "$now" 'any(.[]; .time == $t and .local and .lock_until >= $n + 6 * 86400)' >/dev/null && break
+		sleep 2
+	done
+	api admin GET "/snapshots?tenant=lab&source=vm-100" |
+		jq -e --argjson t "$t" --argjson n "$now" 'any(.[]; .time == $t and .local and .lock_until >= $n + 6 * 86400)' >/dev/null ||
+		die "vm-100/$t not local again with a 7-day lock: $(api admin GET "/snapshots?tenant=lab&source=vm-100" | jq -c .)"
+	log "fetched back in $(jq '.finished - .started' <<<"$j") s, local again, locked for 7 days"
+	r=$(api admin POST /jobs "$(jq -nc --argjson t "$t" '{kind:"files_list", tenant:"lab", params:{source:"vm-100", time:$t, path:"/"}}')")
+	expect 202 "files_list of the fetched snapshot"
+	j=$(wait_job admin "$(jq -r .id <<<"$r")" 900)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "files_list: $(jq -r .log <<<"$j" | tail -n 10)"
+	log "fetched snapshot browsable: $(jq -c '[.result.entries[]?.name]' <<<"$j")"
 }
 
 step_audit() {

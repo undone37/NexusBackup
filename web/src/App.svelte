@@ -83,7 +83,7 @@
     { path: '/alerts', comp: Alerts, allow: can.viewAlerts, nav: t.nav.alerts, section: 'monitor', icon: IconAlerts },
     { path: '/quorum', comp: Quorum, allow: can.viewQuorum, nav: t.nav.quorum, section: 'governance', icon: IconApprovals },
     { path: '/audit', comp: Audit, allow: can.audit, nav: t.nav.audit, section: 'governance', icon: IconAudit },
-    { path: '/tenants', comp: Tenants, allow: can.configure, nav: t.nav.tenants, section: 'config', icon: IconTenants },
+    { path: '/tenants', comp: Tenants, allow: can.attachOffsite, nav: t.nav.tenants, section: 'config', icon: IconTenants },
     { path: '/sources', comp: Sources, allow: can.configure, nav: t.nav.sources, section: 'config', icon: IconSources },
     { path: '/agents', comp: Agents, allow: can.configure, nav: t.nav.agents, section: 'config', icon: IconAgents },
     { path: '/replication', comp: Replication, allow: can.viewReplication, nav: t.nav.replication, section: 'config', icon: IconReplication },
