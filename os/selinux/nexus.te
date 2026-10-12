@@ -321,6 +321,9 @@ domtrans_pattern(nexus_scheduler_t, nexus_nas_exec_t, nexus_nas_t)
 # the scheduler runs with NoNewPrivileges, inherited by its jobs
 allow nexus_scheduler_t nexus_job_domain:process2 { nnp_transition nosuid_transition };
 allow nexus_scheduler_t nexus_job_domain:process { sigkill signal };
+# cancelling a running job (13b): each job runs in its own process group, which the
+# scheduler signals as a whole (a plugin host keeps its plugins in their own groups)
+allow nexus_scheduler_t self:process setpgid;
 allow nexus_job_domain nexus_scheduler_t:fd use;
 allow nexus_job_domain nexus_scheduler_t:fifo_file rw_inherited_fifo_file_perms;
 allow nexus_job_domain nexus_scheduler_t:process sigchld;
