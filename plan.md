@@ -120,6 +120,7 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | Firewall in the UI (Phase 16) | **Inbound only: per-service source restrictions (8443, replication, SSH/others if added); outbound stays automatic default-deny; changes need approval** (decided 2026-10-12) | Restrict admin access without weakening the egress model. |
 | Disk layout (Phase 16) | **mdadm + XFS for data/metadata tiers, configured in the UI (create on empty disks, spare, replace/rebuild, grow); system disks only shown (mirrored at install); SMART in the UI + `disk` alerts** (decided 2026-10-12) | In-kernel, mature, SELinux-friendly; no out-of-tree modules in the signed image. |
 | Order after Phase 15 | **Hardware + firewall = Phase 16, after file search (Phase 15); former 16–18 become 17–19** (decided 2026-10-12) | User priority. |
+| Agent packages (Phase 20) | **Linux agent as .deb + .rpm, Windows agent as .exe installer, built by the release workflow and attached to every release; last phase** (decided 2026-10-12) | Easy installation on sources. |
 | Legal hold (Phase 15) | **Set by the security officer alone (adds protection); release needs approval; advisory to secondaries** (decided 2026-10-12) | Incident tool beyond retention locks. |
 | API tokens (Phase 14) | **Scoped read/operator, expiring, hashed; can never approve, change settings/users/tokens or download** (decided 2026-10-12) | Automation without weakening four-eyes. |
 | Vault mode (Phase 17) | **One-way profile for secondaries; switching off needs approval + recovery key** (decided 2026-10-12) | Protects the vault copy against one stolen admin account. |
@@ -662,6 +663,13 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
 ### Phase 19 — Tier 3
 - (file search moved to Phase 15) M365 item metadata search; Linux bare-metal recovery / P2V via rescue ISO;
   tenant-admin role; mbox/eml then PST export. Not planned: failover (decision above).
+
+### Phase 20 — Agent packages on the release page (added 2026-10-12 by user request)
+- Linux agent as `.deb` and `.rpm` (static musl binary, systemd unit, user, hardening, postinst enrollment hint;
+  amd64 + arm64 if the build allows), Windows agent as a signed-ready `.exe` installer (service registration,
+  firewall-free: the agent never listens publicly beyond its mTLS port as today, uninstaller); all built by the
+  release workflow, checksummed and attached to the GitHub release next to the ISO; package signatures with the
+  release key (cosign blob signatures; rpm/deb native signing documented); install docs in the manual.
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
