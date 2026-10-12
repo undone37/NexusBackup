@@ -1,5 +1,7 @@
 //! `nexus-offsite <config.json> upload | retention | gc | verify [packs] | check | list | restore <source> <time>`
-//! and `nexus-offsite <config.json> dr <keyd-dir>` (fresh appliance: recovery key on stdin).
+//! and `nexus-offsite <config.json> dr [--tenant-key] <keyd-dir>` (fresh appliance: the
+//! appliance recovery key on stdin, or with `--tenant-key` the tenant recovery key; never on
+//! the command line, where other processes could read it).
 
 use anyhow::{bail, Context, Result};
 use catalog::schedule::{self, Bandwidth, RateWindow};
@@ -160,7 +162,7 @@ fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
-        bail!("usage: nexus-offsite <config.json> upload | retention | gc | verify [packs] | check | list | restore <source> <time> | dr <keyd-dir>");
+        bail!("usage: nexus-offsite <config.json> upload | retention | gc | verify [packs] | check | list | restore <source> <time> | dr [--tenant-key] <keyd-dir>");
     };
     let cfg: Config = serde_json::from_slice(&fs::read(cfg_path)?).context("config")?;
     let remote = remote(&cfg.remote, cfg.uploaders.clamp(1, 10))?;
@@ -178,25 +180,28 @@ fn main() -> Result<()> {
 
     if cmd == "dr" {
         // Fresh appliance: escrowed keys from the box + recovery key, inventory from the box.
-        let keyd_dir = PathBuf::from(rest.first().context("dr <keyd-dir>")?);
-        let mut rk = String::new();
+        let (tenant_mode, keyd_dir) = match rest {
+            [flag, d] if flag == "--tenant-key" => (true, PathBuf::from(d)),
+            [d] => (false, PathBuf::from(d)),
+            _ => bail!("dr [--tenant-key] <keyd-dir>"),
+        };
+        let mut rk = zeroize::Zeroizing::new(String::new());
         std::io::stdin().read_to_string(&mut rk)?;
-        let mut files = vec![("kek.recovery".to_owned(), remote.get("keys/kek.recovery", 0, None)?)];
-        for (n, _, _) in remote.list(&format!("keys/tenants/{}", cfg.tenant))? {
-            let name = format!("tenants/{}/{n}", cfg.tenant);
-            files.push((name.clone(), remote.get(&format!("keys/{name}"), 0, None)?));
-        }
-        keyd::import_escrow(&keyd_dir, &files)?;
-        keyd::recover(&keyd_dir, &rk)?;
-        let deks: Vec<(u32, [u8; 32])> = keyd::tenant_deks(&keyd_dir, &cfg.tenant)?
-            .into_iter()
-            .map(|(v, k)| (v, *k))
-            .collect();
+        let deks = if tenant_mode {
+            offsite::dr::tenant_keys(remote.as_ref(), &cfg.tenant, &keyd_dir, &rk)?
+        } else {
+            offsite::dr::appliance_keys(remote.as_ref(), &cfg.tenant, &keyd_dir, &rk)?
+        };
         let store = Store::open(&cfg.store, Keyring::new(&cfg.tenant, &deks), StoreOptions::default())?;
         let mut t = Target::open(&store, remote.as_ref(), cfg.state.clone(), opts())?;
         let packs = t.rebuild_from_remote()?;
         println!(
-            "DR: keys recovered, {packs} packs and {} snapshots indexed",
+            "DR: keys recovered{}, {packs} packs and {} snapshots indexed",
+            if tenant_mode {
+                " with the tenant recovery key"
+            } else {
+                ""
+            },
             t.snapshots()?.len()
         );
         return Ok(());
@@ -221,6 +226,9 @@ fn main() -> Result<()> {
             // the keys must outlive every locked snapshot (DR needs them)
             for (name, _) in &escrow {
                 t.protect(&format!("keys/{name}"))?;
+            }
+            for n in offsite::dr::prune_tenant_escrow(remote.as_ref(), &cfg.tenant, &escrow) {
+                println!("removed old tenant escrow {n}");
             }
             println!(
                 "uploaded {} snapshots, {} packs, {} chunks, {} bytes",

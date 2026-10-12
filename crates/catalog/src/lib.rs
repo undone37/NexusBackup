@@ -19,6 +19,7 @@ pub mod holds;
 pub mod inventory;
 pub mod schedule;
 pub mod secret;
+pub mod tenant_key;
 pub use rusqlite;
 
 const SCHEMA_V1: &str = r#"

@@ -3,15 +3,19 @@
   import { onMount } from 'svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
   import { t } from '../lib/i18n';
+  import { session } from '../lib/session.svelte';
   import { fmtBytes } from '../lib/format';
   import type { Tenant, TenantOffsite, SftpRemote, S3Remote } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import BlackoutEditor from '../components/BlackoutEditor.svelte';
   import { bandwidthWeaker, timeZones, validRateWindow, type RateWindow } from '../lib/schedule';
   import ErrorBanner from '../components/ErrorBanner.svelte';
+  import TenantRecoveryKey from '../components/TenantRecoveryKey.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
 
   let items: Tenant[] = $state([]);
+  // tenant whose recovery key dialog is open (17e)
+  let keyOf: string | null = $state(null);
   let error: string | null = $state(null);
   let loaded = $state(false);
 
@@ -25,6 +29,7 @@
     loaded = true;
   }
   onMount(load);
+  const canKey = $derived(['admin', 'security_officer'].includes(session.user?.role ?? ''));
 
   /** The remote of a tenant; older UI versions stored the SFTP fields flat. */
   function remoteOf(o: TenantOffsite | undefined): SftpRemote | S3Remote | null {
@@ -200,6 +205,7 @@
               <td>{x.quota_bytes ? fmtBytes(x.quota_bytes) : '—'}</td>
               <td class="actions">
                 <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
+                {#if canKey}<button type="button" class="small" onclick={() => (keyOf = x.name)}>{t.tkey.button}</button>{/if}
                 <button type="button" class="small danger" onclick={() => remove(x)}>{t.delete}</button>
               </td>
             </tr>
@@ -209,6 +215,8 @@
     </div>
   {/if}
 </div>
+
+<TenantRecoveryKey bind:tenant={keyOf} />
 
 <Modal bind:open title={editing ? `${t.tenant}: ${editing.name}` : t.tenants.new} wide>
   <form onsubmit={save}>
