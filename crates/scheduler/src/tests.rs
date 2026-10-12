@@ -1257,7 +1257,7 @@ fn orphan_sweep_and_snapshot_delete() {
     let e = env(4);
     let mut s = sched(&e);
     let st = chunkstore::Store::open(
-        &e.cfg.store_base.join("t1"),
+        e.cfg.store_base.join("t1"),
         Keyring::new("t1", &[(1, [7; 32])]),
         test_opts(),
     )
