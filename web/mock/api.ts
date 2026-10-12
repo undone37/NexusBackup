@@ -208,6 +208,8 @@ const db = {
   alertSettings: {} as Json,
   sshKeys: [] as Json[],
   updates: {} as Json,
+  /** Phase 14b diagnostics runs (GET /diagnostics) */
+  diag: [] as Json[],
   /** Phase 13e setting `anomaly` */
   anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30 } as Json,
   /** Phase 14e setting `reports` (scheduled reports) */
@@ -1118,6 +1120,7 @@ function seed() {
   seedPhase13a(t);
   seedRunControl(t);
   seedReports(t);
+  seedDiag(t);
 }
 
 // ---------------------------------------------------------------- run control (Phase 13b)
@@ -3321,6 +3324,80 @@ on('POST', '/updates/apply', (c) => {
   if (!db.updates.available) throw new HttpError(409, 'no update available');
   if (db.updates.staged) throw new HttpError(409, 'an update is already staged');
   return quorum(u, 'update.apply', { version: db.updates.available.version, digest: db.updates.available.digest });
+});
+
+// ---- diagnostics (Phase 14b): nexus-diag picks a request up after ~1 s and finishes after ~3 s
+function diagChecks(t: number): Json[] {
+  const c = (id: string, title: string, status: string, severity: number, detail: string) =>
+    ({ id, title, status, severity, detail, manual: `15-troubleshooting-faq.md#check-${id.replace(/\./g, '-')}` });
+  const day = (d: number) => new Date((t + d * 86400) * 1000).toISOString().slice(0, 10);
+  return [
+    c('disk.store', 'Disk space: /var/lib/nexus/chunkstore', 'pass', 1, '/var/lib/nexus/chunkstore: 58 % used, 1.7 TiB of 4.0 TiB free'),
+    c('disk.var', 'Disk space: /var', 'pass', 1, '/var: 58 % used, 1.7 TiB of 4.0 TiB free'),
+    c('disk.root', 'Disk space: /sysroot', 'pass', 1, '/sysroot: 31 % used, 27.5 GiB of 40.0 GiB free'),
+    c('disk.boot', 'Disk space: /boot', 'pass', 1, '/boot: 42 % used, 557 MiB of 960 MiB free'),
+    c('time.sync', 'Time synchronisation', 'pass', 1, 'stratum 2, offset +0.4 ms, normal, reference C035676C'),
+    c('time.nts', 'Authenticated time sources (NTS)', 'pass', 1, '4 NTS source(s)'),
+    c('egress', 'Outbound firewall', 'pass', 1, 'default-deny output chain loaded, allow-list sync active'),
+    c('keyd', 'Key daemon', 'pass', 1, 'key daemon running, socket present'),
+    c('tls.cert', 'Web certificate', 'warn', 2, `web certificate expires on ${day(21)} (21 days)`),
+    c('audit.chain', 'Audit log hash chain', 'pass', 1, `${db.audit.length} entries, hash chain intact`),
+    c('catalog.integrity', 'Catalog integrity', 'pass', 1, 'quick_check ok'),
+    c('selinux', 'SELinux mode', 'pass', 1, 'enforcing'),
+    c('systemd.failed', 'Failed system services', 'pass', 1, 'no failed units'),
+    c('bootc', 'OS image (bootc)', 'pass', 1, `booted ${db.updates.booted?.version}, rollback ${db.updates.rollback?.version}`),
+    c('smart', 'Disk health (SMART)', 'skip', 1, 'smartctl not installed'),
+  ];
+}
+function seedDiag(t: number) {
+  db.diag.push({ id: rand(16), kind: 'checks', by: 'admin', state: 'done', since: null, until: null, created: t - 2 * 3600 - 6, finished: t - 2 * 3600, error: null, checks: diagChecks(t), bundle: null });
+}
+function diagView(u: User, x: Json): Json | null {
+  if (x.kind === 'bundle' && x.by !== u.name) return null;
+  const t = now();
+  if (x.state === 'queued' && t - x.queued >= 1) x.state = 'running';
+  if (x.state === 'running' && t - x.queued >= 3) {
+    Object.assign(x, { state: 'done', created: x.queued, finished: t, checks: diagChecks(t) });
+    if (x.kind === 'bundle') {
+      const token = rand(32);
+      const body = `nexus-support bundle (mock) ${x.id}: ${new Date(x.since * 1000).toISOString()} .. ${new Date(x.until * 1000).toISOString()}\n`;
+      db.downloads.set(token, { owner: x.by, filename: `nexus-support-${x.id}.tar.gz`, body, expires: t + 86400 });
+      x.bundle = { bytes: 184_320 + Math.floor(Math.random() * 40_000), url: `/api/v1/downloads/${token}` };
+    }
+  }
+  const { queued: _q, ...rest } = x;
+  return { ...rest, expires: x.created ? x.created + 86400 : undefined };
+}
+const diagSubmit = async (u: User, kind: string, since: number | null, until: number | null) => {
+  if (db.diag.some((x) => x.state === 'queued')) throw new HttpError(409, 'a diagnostics request is waiting to run; try again in a minute');
+  const x = { id: rand(16), kind, by: u.name, state: 'queued', since, until, created: null, finished: null, error: null, checks: null, bundle: null, queued: now() };
+  db.diag.unshift(x);
+  await audit(u.name, `diag.${kind}`, `diag/${x.id}`, kind === 'bundle' ? { since, until } : {});
+  return [202, { id: x.id, state: 'queued' }] as [number, Json];
+};
+const diagReader = (c: { user: User | null }) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  if (u.tenant) throw new HttpError(403, 'appliance-wide');
+  return u;
+};
+on('GET', '/diagnostics', (c) => {
+  const u = diagReader(c);
+  return [200, { items: db.diag.map((x) => diagView(u, x)).filter(Boolean) }];
+});
+on('POST', '/diagnostics/checks', (c) => diagSubmit(diagReader(c), 'checks', null, null));
+on('POST', '/diagnostics/bundle', (c) => {
+  const u = need(c.user, 'admin');
+  const until = c.body.until ?? now();
+  const since = c.body.since ?? until - 86400;
+  if (!(since < until) || until > now() + 3600) throw new HttpError(400, 'since must be before until, and until not in the future');
+  if (until - since > 31 * 86400) throw new HttpError(400, 'the time range is limited to 31 days');
+  return diagSubmit(u, 'bundle', since, until);
+});
+on('GET', '/diagnostics/:id', (c, [id]) => {
+  const u = diagReader(c);
+  const v = diagView(u, find(db.diag, (x) => x.id === id, 'diagnostics run'));
+  if (!v) throw new HttpError(404, 'diagnostics run not found');
+  return [200, v];
 });
 
 // ---------------------------------------------------------------- server glue

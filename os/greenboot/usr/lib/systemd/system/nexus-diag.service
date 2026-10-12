@@ -1,0 +1,59 @@
+[Unit]
+Description=NexusBackup diagnostics (self-checks and redacted support bundles)
+# Started by nexus-diag.path. nexus-update runs `nexus-diag checks` itself (in its own
+# unit) before it stages or applies an update.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/nexus/nexus-diag tick
+# root, because the bundle reads the journal, the audit log and the nftables ruleset;
+# SELinux (nexus_diag_t) limits it to reading those and writing its control dir.
+# No CAP_DAC_OVERRIDE for the script itself (the policy grants none to nexus_diag_t):
+# it reads the catalog through the group, never the TLS key (0600 nexus-webapi). The
+# bounding set is what the tools it runs in their own domains need: nft (iptables_t:
+# net_admin), chronyc (chronyc_t: its client socket in /run/chrony, 0750 chrony).
+SupplementaryGroups=nexus-catalog
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
+AmbientCapabilities=
+UMask=0027
+TimeoutStartSec=30min
+Nice=10
+IOSchedulingClass=idle
+
+# Reads only, except its control dir (2770 root:nexus-webapi, tmpfiles.d/nexus-diag.conf).
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nexus/diag
+# key material, credentials and job configs are not even visible (the chunk store stays:
+# the disk check needs statfs on it; DAC 0700 nexus-chunkstore keeps its contents closed)
+InaccessiblePaths=-/var/lib/nexus/keyd -/var/lib/nexus/escrow -/var/lib/nexus/offsite
+InaccessiblePaths=-/var/lib/nexus/scheduler -/var/lib/nexus/replicad -/var/lib/nexus/webapi -/etc/nexus/ssh
+InaccessiblePaths=-/run/nexus-scheduler -/var/lib/nexus/downloads -/var/lib/nexus/plugins-staging
+
+# No network: no inet sockets at all (chronyc and nft talk over unix/netlink sockets).
+# Not PrivateNetwork=: nft must list the host's ruleset, not an empty namespace's.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+IPAddressDeny=any
+
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+PrivateIPC=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+LimitCORE=0
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM

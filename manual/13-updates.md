@@ -26,7 +26,8 @@ hosts (`ghcr.io`, `pkg-containers.githubusercontent.com`, TCP 443) and closes it
 > updates in the maintenance window on its own. The signing chain, unsigned-image rejection,
 > staged-only download, apply on request and automatic rollback were tested in a lab VM with a local registry and
 > the TEST key. The maintenance window, the scheduler's "do not reboot while jobs run" signal and the downgrade
-> guard are covered by unit tests only. No real release has been published or signed yet.
+> guard are covered by unit tests only. No real release has been published or signed yet. The pre-update checks are
+> covered by unit tests; their run on a real appliance (SELinux confinement of the check tool) is not lab-tested yet.
 
 ## What the appliance accepts
 
@@ -49,7 +50,7 @@ administrators see the buttons.
 
 | Line | Meaning |
 |---|---|
-| status chip | **Up to date**, **Update available**, **Checking…**, **Staged** or **Error** (the error text is shown above the box) |
+| status chip | **Up to date**, **Update available**, **Checking…**, **Staged**, **Blocked by checks** (the failed pre-update checks are listed above the box, see below) or **Error** (the error text is shown above the box) |
 | **Running version** | the booted image: version, digest and since when it runs |
 | **Staged, boots next** | an image that is downloaded and verified and boots at the next reboot; "none" if there is none |
 | **Available** | a newer signed image in the channel, or "No newer image available." |
@@ -66,6 +67,21 @@ administrators see the buttons.
   approve first. The same rules as for `nexus-update apply` below apply: make sure no restore is running.
 
 The web interface does not change the maintenance window and has no rollback button; use the console commands below.
+
+<a id="pre-update-checks"></a>
+## Pre-update checks
+
+Before the appliance downloads an update, and again before it reboots into one, it runs the self-checks of
+**Settings → Diagnostics** ([15 Troubleshooting](15-troubleshooting-faq.md#diagnostics-and-support-bundles)): disk
+space, time synchronisation, firewall, key daemon, web certificate, audit log, catalog, SELinux, failed services and
+the OS image. If a check of severity **error** or **critical** fails, the update is **not** downloaded or installed:
+
+- **Settings → Updates** shows **Blocked by checks** and lists the failed checks, each linked to its entry in chapter 15;
+- `nexus-update status` shows the result `refused: pre-update checks failed: …`;
+- warnings (for example a certificate that expires within 30 days) do not stop an update.
+
+Fix the causes, then click **Check now** (or wait for the next daily check). Rolling back is never blocked. If the
+check tool itself cannot run, the update goes ahead, so that a broken check cannot block the update that fixes it.
 
 ## Check the update status on the console
 
@@ -84,6 +100,9 @@ window, whether jobs currently postpone an update, the last check and its result
 nexus-update stage     # check for a new image and download it now (not applied)
 nexus-update apply     # reboot into the staged image now (ignores the window)
 ```
+
+Both run the pre-update checks first and stop with `pre-update checks failed: …` if one fails. Only if support asks
+you to: `NEXUS_UPDATE_DIAG=off nexus-update apply` skips them.
 
 `apply` also applies an older version or a previously rolled-back image. Use it deliberately.
 

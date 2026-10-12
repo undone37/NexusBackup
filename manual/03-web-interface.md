@@ -414,8 +414,8 @@ back in time. See [10 Approvals and audit](10-approvals-and-audit.md#audit-log).
 ## Settings
 
 **Configuration → Settings** holds the appliance-wide settings. Only administrators change them; security officers
-see every tab read-only ("Read-only: only administrators change these settings."), operators see **Approvals**,
-**Appliance SSH keys** and **Updates**. Changes that weaken protection or change who can sign in need a second person
+see every tab read-only ("Read-only: only administrators change these settings.") and can run the self-checks under
+**Diagnostics**, operators see **Approvals**, **Appliance SSH keys** and **Updates**. Changes that weaken protection or change who can sign in need a second person
 when approvals are enabled.
 
 | Tab | What it is for | Chapter |
@@ -426,6 +426,7 @@ when approvals are enabled.
 | **Appliance SSH keys** | the public keys the appliance signs in to sources with; **Copy**, **Rotate**, **Retire old key** | [04 Sources](04-sources.md#appliance-ssh-keys) |
 | **Updates** | running, staged, available and rollback image; **Check now**, **Install now** | [13 Updates](13-updates.md#updates-in-the-web-interface) |
 | **Anomaly detection** | thresholds of the change-rate `anomaly` alert | [11 Alerts and monitoring](11-alerts-and-monitoring.md#change-rate-anomalies) |
+| **Diagnostics** | **Run checks** (self-checks with a help link each; the same checks gate updates), **Create bundle** (redacted support bundle for a time range, administrators only, downloadable for 24 h) | [15 Troubleshooting](15-troubleshooting-faq.md#diagnostics-and-support-bundles) |
 
 ![Settings: Approvals](images/settings-approvals.png)
 
@@ -438,6 +439,8 @@ when approvals are enabled.
 ![Settings: Updates](images/settings-updates.png)
 
 ![Settings: Anomaly detection](images/settings-anomaly.png)
+
+![Settings: Diagnostics](images/settings-diagnostics.png)
 
 ## Messages and dialogs
 
