@@ -99,13 +99,43 @@
     prValues = initValues(r.params_schema);
     prErrors = {};
     prMinutes = 60;
+    prPick = '';
     prOpen = true;
+  }
+
+  // Phase 18b: a snapshot's recoverable range (plugin metadata, e.g. PostgreSQL) bounds
+  // the point-in-time target: a picker in local time fills `target_time` (UTC).
+  const range = $derived((prSnap as Snapshot | null)?.meta?.recoverable ?? null);
+  const hasTimeTarget = $derived(!!(prRestore as PluginRestore | null)?.params_schema?.properties?.target_time);
+  let prPick = $state('');
+  const two = (n: number) => String(n).padStart(2, '0');
+  const localInput = (ts: number) => {
+    const d = new Date(ts * 1000);
+    return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}T${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
+  };
+  function pickTime(v: string) {
+    prPick = v;
+    const d = new Date(v);
+    if (!v || Number.isNaN(d.getTime())) return;
+    const iso = d.toISOString();
+    prValues.target_time = `${iso.slice(0, 10)} ${iso.slice(11, 19)}+00`;
+  }
+  /** `target_time` as unix seconds, null = empty or not parseable here (the plugin checks). */
+  function targetSecs(v: unknown): number | null {
+    const s = String(v ?? '').trim();
+    if (!s) return null;
+    const n = Date.parse(s.replace(' ', 'T').replace(/([+-]\d{2})$/, '$1:00'));
+    return Number.isNaN(n) ? null : Math.floor(n / 1000);
   }
 
   async function startPluginRestore(e: SubmitEvent) {
     e.preventDefault();
     if (!prSnap || !prRestore) return;
     const { value, errors } = buildValue(prRestore.params_schema, prValues);
+    const ts = targetSecs(value.target_time);
+    if (range && ts !== null && (ts < range.from_time || ts > range.to_time)) {
+      errors.target_time = t.snap.outOfRange(fmtTime(range.from_time), fmtTime(range.to_time));
+    }
     prErrors = errors;
     const minutes = Number(prMinutes);
     if (Object.keys(errors).length || (isMount(prRestore) && !(Number.isInteger(minutes) && minutes >= 1 && minutes <= 1440))) {
@@ -633,6 +663,35 @@
         {prSnap.tenant} · {fmtTime(prSnap.time)}
         {#if prRestore.app_specific}<span class="chip info">{t.snap.appSpecific}</span>{/if}
       </p>
+      {#if range && hasTimeTarget}
+        <div class="range" role="group" aria-labelledby="pr-range-label">
+          <p id="pr-range-label">
+            <strong>{t.snap.recoverable}</strong>
+            {#if range.from_time >= range.to_time}
+              {t.snap.recoverableBaseOnly(fmtTime(range.to_time), range.to_lsn)}
+            {:else}
+              {t.snap.recoverableRange(fmtTime(range.from_time), fmtTime(range.to_time))}
+              <span class="muted mono">LSN {range.from_lsn} → {range.to_lsn}{range.timeline ? ` · ${t.snap.timeline} ${range.timeline}` : ''}</span>
+            {/if}
+          </p>
+          {#if range.from_time < range.to_time}
+            <div class="field">
+              <label for="pr-pick">{t.snap.pickTime}</label>
+              <input
+                id="pr-pick"
+                type="datetime-local"
+                step="1"
+                min={localInput(range.from_time)}
+                max={localInput(range.to_time)}
+                value={prPick}
+                oninput={(e) => pickTime(e.currentTarget.value)}
+                aria-describedby="pr-pick-hint"
+              />
+              <div class="hint" id="pr-pick-hint">{t.snap.pickTimeHint}</div>
+            </div>
+          {/if}
+        </div>
+      {/if}
       {#if prRestore.params_schema && Object.keys(prRestore.params_schema.properties ?? {}).length}
         <SchemaForm schema={prRestore.params_schema} bind:values={prValues} errors={prErrors} />
       {:else if !isMount(prRestore)}
@@ -678,6 +737,15 @@
   }
   .check-list label {
     white-space: nowrap;
+  }
+  .range {
+    border: 1px solid var(--border);
+    border-radius: var(--radius, 6px);
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 0.75rem;
+  }
+  .range p {
+    margin: 0 0 0.25rem;
   }
   /* legal-hold badge: the gavel replaces the chip dot */
   .chip.hold :global(svg) {

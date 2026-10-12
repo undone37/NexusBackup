@@ -268,6 +268,8 @@ export type AgentStatus = 'enrolled' | 'pending' | 'expired';
 export type Overwrite = 'never' | 'if_older' | 'always';
 
 export interface Gfs {
+  /** Phase 18b: keep every snapshot of the last N hours (absent/0 = off) */
+  recent?: number;
   daily: number;
   weekly: number;
   monthly: number;
@@ -481,6 +483,15 @@ export interface Snapshot {
   hold?: LegalHold | null;
   /** Phase 15d: null = not recorded (before 15d, replicated or offsite-only) */
   consistency?: Consistency | null;
+  /** Phase 18b: plugin snapshot metadata (e.g. PostgreSQL's recoverable range), null = none */
+  meta?: SnapshotMeta | null;
+}
+
+/** Plugin snapshot metadata (protocol v1.6 `SnapshotMeta`); known keys are shown. */
+export interface SnapshotMeta {
+  /** point-in-time restore range: unix seconds and LSNs (PostgreSQL cluster snapshots) */
+  recoverable?: { from_time: number; to_time: number; from_lsn: string; to_lsn: string; timeline?: number };
+  [k: string]: unknown;
 }
 
 /** Consistency level of a snapshot (docs/control-plane.md "Consistency"). */
