@@ -86,7 +86,8 @@ fn main() -> Result<()> {
     match (cmd.as_str(), rest) {
         ("backup", [vmid]) => {
             let t = std::time::Instant::now();
-            let m = cluster.backup_vm(&store, vmid.parse()?)?;
+            let before = store.written();
+            let (m, read) = cluster.backup_vm(&store, vmid.parse()?)?;
             println!(
                 "committed {}/{} in {:.1?}, indexes {:?}",
                 m.source,
@@ -94,10 +95,12 @@ fn main() -> Result<()> {
                 t.elapsed(),
                 m.indexes
             );
+            println!("{}", store.stats_line(&m, read, store.written().since(before))?);
             cluster.push_index(&store)?;
         }
         ("backup-ct", [vmid]) => {
             let t = std::time::Instant::now();
+            let before = store.written();
             let (m, st) = cluster.backup_ct(&store, vmid.parse()?)?;
             println!(
                 "committed {}/{} in {:.1?}: tar stream {} bytes, {} chunks, {} new chunks ({} bytes new)",
@@ -109,6 +112,7 @@ fn main() -> Result<()> {
                 st.new_chunks,
                 st.new_bytes
             );
+            println!("{}", store.stats_line(&m, st.size, store.written().since(before))?);
             cluster.push_index(&store)?;
         }
         ("restore-ct", [vmid, time, node, target, storage]) => {
@@ -149,14 +153,21 @@ fn main() -> Result<()> {
             let failed: Vec<u32> = vmids
                 .iter()
                 .copied()
-                .filter(|&vmid| match cluster.backup_guest(&store, vmid) {
-                    Ok(m) => {
-                        println!("committed {}/{}", m.source, m.time);
-                        false
-                    }
-                    Err(e) => {
-                        eprintln!("backup of guest {vmid} failed: {e:#}");
-                        true
+                .filter(|&vmid| {
+                    let before = store.written();
+                    match cluster.backup_guest(&store, vmid) {
+                        Ok((m, read)) => {
+                            println!("committed {}/{}", m.source, m.time);
+                            match store.stats_line(&m, read, store.written().since(before)) {
+                                Ok(l) => println!("{l}"),
+                                Err(e) => eprintln!("stats of {}/{}: {e}", m.source, m.time),
+                            }
+                            false
+                        }
+                        Err(e) => {
+                            eprintln!("backup of guest {vmid} failed: {e:#}");
+                            true
+                        }
                     }
                 })
                 .collect();

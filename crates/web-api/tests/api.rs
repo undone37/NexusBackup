@@ -727,7 +727,7 @@ async fn tenant_user_isolation() {
     only_acme(&t.get("/api/v1/users", &tina).await.body, "tenant");
     assert_eq!(
         t.get("/api/v1/tenants", &tina).await.body,
-        json!([{"name": "acme", "offsite": {}}])
+        json!([{"name": "acme", "offsite": {}, "quota_bytes": null}])
     );
     assert_eq!(t.get("/api/v1/alerts", &tina).await.body, json!([]));
 

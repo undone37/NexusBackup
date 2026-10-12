@@ -283,7 +283,9 @@ fn main() -> Result<()> {
                     })
                     .transpose()?,
             };
+            let before = store.written();
             let o = backup::backup(&store, &root, &spec, &log)?;
+            let new = store.written().since(before);
             let r = &o.report;
             for e in &r.errors {
                 println!("error {}", e.escape_debug());
@@ -309,6 +311,8 @@ fn main() -> Result<()> {
                     None => "live share (no NAS snapshot)".into(),
                 }
             );
+            let m = store.load_manifest(&o.source, o.time)?;
+            println!("{}", store.stats_line(&m, r.bytes_read, new)?);
             if !o.consistent {
                 println!(
                     "inconsistent {}/{}: consistent=false ({}; {} files changed while read; {} entries unreadable)",

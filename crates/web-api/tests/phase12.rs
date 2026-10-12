@@ -1190,3 +1190,152 @@ async fn snapshot_delete_refuses_locked_and_needs_approval() {
     );
     assert_eq!(t.audit_count("snapshot.delete"), 1);
 }
+
+// ------------------------------------------------- storage accounting (13d/e)
+
+/// `GET /storage`: figures from `backup_stats` of kept snapshots, per tenant
+/// and group (ungrouped bucket), growth from capacity samples, tenant scoping;
+/// real dedup / compression on the dashboard; quotas; anomaly settings.
+#[tokio::test]
+async fn storage_accounting_quota_and_anomaly_settings() {
+    let t = T::new();
+    let now = catalog::now();
+    let day = 86400;
+    t.exec(
+        r#"INSERT INTO sources (id, tenant, kind, name, config) VALUES (1, 'acme', 'pve', 'pve-a', '{}'), (2, 'globex', 'pve', 'pve-g', '{}');
+           INSERT INTO policies (id, name, schedule, gfs, offsite) VALUES (1, 'daily', 'daily 22:00', '{}', 0);
+           INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES
+             (1, 'acme', 1, 1, 'web', '[100]'), (2, 'globex', 2, 1, 'g2', '[200]');
+           INSERT INTO snapshots (tenant, source, time, size, local, offsite) VALUES
+             ('acme', 'vm-100', 1, 1000, 1, 0), ('acme', 'vm-100', 2, 1000, 1, 0), ('acme', 'ct-555', 1, 400, 1, 0),
+             ('globex', 'vm-200', 1, 900, 1, 0), ('acme', 'vm-100', 9, 1000, 1, 0);
+           INSERT INTO backup_stats (tenant, source, time, read, logical, new_chunks, new_plain, new_stored) VALUES
+             ('acme', 'vm-100', 1, 1000, 1000, 4, 500, 250),
+             ('acme', 'vm-100', 2, 100, 1000, 1, 100, 50),
+             ('acme', 'ct-555', 1, 400, 400, 2, 400, 400),
+             ('acme', 'vm-100', 3, 100, 1000, 1, 100, 50),
+             ('globex', 'vm-200', 1, 900, 900, 3, 300, 100);"#,
+    );
+    // vm-100/3 is gone (no snapshot row), vm-100/9 has no stats (older release)
+    for (i, used) in [(95, 100), (31, 200), (8, 300), (0, 450)] {
+        t.st.cat
+            .conn()
+            .execute(
+                "INSERT INTO capacity_samples (day, tenant, used, logical) VALUES (?1, 'acme', ?2, 0)",
+                params![web_api::dashboard::day(now - i * day), used],
+            )
+            .unwrap();
+    }
+    let alice = t.login("alice").await;
+    let r = t.get("/api/v1/storage", &alice).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let tot = &r.body["totals"];
+    assert_eq!(
+        (&tot["logical"], &tot["data_in"], &tot["stored"], &tot["saved"]),
+        (&json!(3300), &json!(1300), &json!(800), &json!(2500))
+    );
+    assert_eq!((&tot["snapshots"], &tot["snapshots_all"]), (&json!(4), &json!(5)));
+    assert_eq!(tot["compression"], json!(1300.0 / 800.0));
+    let acme = r.body["tenants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["tenant"] == "acme")
+        .unwrap();
+    assert_eq!(acme["dedup"], json!(2400.0 / 1000.0));
+    assert_eq!(acme["used"], json!(450));
+    // growth: vs. the newest sample at least 7 / 30 / 90 days old
+    assert_eq!(acme["growth"], json!({"d7": 150, "d30": 250, "d90": 350}));
+    let groups = r.body["groups"].as_array().unwrap();
+    let web = groups.iter().find(|g| g["group"] == "web").unwrap();
+    assert_eq!((&web["logical"], &web["sources"]), (&json!(2000), &json!(1)));
+    let loose = groups
+        .iter()
+        .find(|g| g["tenant"] == "acme" && g["group_id"].is_null())
+        .unwrap();
+    assert_eq!(loose["stored"], json!(400), "ct-555 is in no group");
+    // dashboard tile: real ratios
+    let d = t.get("/api/v1/dashboard?days=7", &alice).await;
+    assert_eq!(d.body["capacity"]["dedup"], json!(3300.0 / 1300.0));
+    assert_eq!(d.body["capacity"]["compression"], json!(1300.0 / 800.0));
+    // tenant users: their tenant only
+    let tina = t.login("tina").await;
+    let r = t.get("/api/v1/storage", &tina).await;
+    assert_eq!(r.body["tenants"].as_array().unwrap().len(), 1);
+    assert_eq!(r.body["totals"]["logical"], json!(2400));
+    assert!(r.body["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|g| g["tenant"] == "acme"));
+
+    // quota: admin only, soft (no approval), audited, shown in the tenant list
+    assert_eq!(
+        t.put("/api/v1/tenants/acme/quota", &tina, json!({"quota_bytes": 1}))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        t.put("/api/v1/tenants/acme/quota", &alice, json!({"quota_bytes": 0}))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        t.put("/api/v1/tenants/nope/quota", &alice, json!({"quota_bytes": 5}))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    let r = t
+        .put("/api/v1/tenants/acme/quota", &alice, json!({"quota_bytes": 500}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(t.audit_count("tenant.quota"), 1);
+    let l = t.get("/api/v1/tenants", &alice).await;
+    assert_eq!(l.body[0]["quota_bytes"], json!(500));
+    let r = t.get("/api/v1/storage", &alice).await;
+    assert_eq!(r.body["tenants"][0]["quota_used"], json!(0.9));
+    t.put("/api/v1/tenants/acme/quota", &alice, json!({"quota_bytes": null}))
+        .await;
+    assert_eq!(
+        t.get("/api/v1/tenants", &alice).await.body[0]["quota_bytes"],
+        Value::Null
+    );
+
+    // anomaly thresholds: defaults; stricter applies, weaker needs approval
+    let r = t.get("/api/v1/settings/anomaly", &alice).await;
+    assert_eq!(
+        r.body,
+        json!({"enabled": true, "factor": 3.0, "history": 14, "floor_bytes": 1u64 << 30})
+    );
+    let otto = t.login("otto").await;
+    assert_eq!(
+        t.get("/api/v1/settings/anomaly", &otto).await.status,
+        StatusCode::FORBIDDEN
+    );
+    let strict = json!({"enabled": true, "factor": 2.0, "history": 14, "floor_bytes": 1u64 << 30});
+    let r = t.put("/api/v1/settings/anomaly", &alice, strict.clone()).await;
+    assert_eq!((r.status, &r.body), (StatusCode::OK, &strict));
+    for bad in [
+        json!({"enabled": true, "factor": 1.0, "history": 14, "floor_bytes": 1u64 << 30}),
+        json!({"enabled": true, "factor": 3.0, "history": 2, "floor_bytes": 1u64 << 30}),
+        json!({"enabled": true, "factor": 3.0, "history": 14, "floor_bytes": 1}),
+    ] {
+        assert_eq!(
+            t.put("/api/v1/settings/anomaly", &alice, bad.clone()).await.status,
+            StatusCode::BAD_REQUEST,
+            "{bad}"
+        );
+    }
+    let off = json!({"enabled": false, "factor": 2.0, "history": 14, "floor_bytes": 1u64 << 30});
+    let r = t.put("/api/v1/settings/anomaly", &alice, off.clone()).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    assert_eq!(t.get("/api/v1/settings/anomaly", &alice).await.body, strict);
+    let sam = t.login("sam").await;
+    let r = t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({})).await;
+    assert_eq!(r.body["state"], "executed", "{:?}", r.body);
+    assert_eq!(t.get("/api/v1/settings/anomaly", &alice).await.body, off);
+}

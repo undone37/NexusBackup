@@ -193,8 +193,22 @@ ALTER TABLE users ADD COLUMN oidc_sub TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS users_oidc_sub ON users(oidc_sub) WHERE oidc_sub IS NOT NULL;
 "#;
 
+/// v11 (Phase 13d, docs/storage-accounting.md): per-snapshot backup statistics
+/// (`nexus-stats` lines of the connectors, parsed by the scheduler) and a soft
+/// storage quota per tenant (NULL = none; only alerts, never blocks a backup).
+/// Purely additive: the previous release skips it.
+const SCHEMA_V11: &str = r#"
+CREATE TABLE IF NOT EXISTS backup_stats (
+  tenant TEXT NOT NULL, source TEXT NOT NULL, time INTEGER NOT NULL,
+  read INTEGER NOT NULL, logical INTEGER NOT NULL, new_chunks INTEGER NOT NULL,
+  new_plain INTEGER NOT NULL, new_stored INTEGER NOT NULL,
+  PRIMARY KEY (tenant, source, time));
+ALTER TABLE tenants ADD COLUMN quota_bytes INTEGER;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
+    SCHEMA_V11,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -873,7 +887,7 @@ mod tests {
         {
             let conn = c.conn();
             let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-            assert_eq!(v, 10);
+            assert_eq!(v, MIGRATIONS.len() as i64);
             let auth: String = conn
                 .query_row("SELECT auth FROM users WHERE name = 'admin'", [], |r| r.get(0))
                 .unwrap();
@@ -918,6 +932,47 @@ mod tests {
             })
             .unwrap();
         assert_eq!(n, 3);
+    }
+
+    /// v11 (backup stats, tenant quotas) on top of the previous catalog: existing
+    /// tenants have no quota, stats have one row per snapshot, and the previous
+    /// release still reads and writes tenants afterwards.
+    #[test]
+    fn migration_v11_backup_stats_and_quota() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.len() - 1;
+        {
+            let c = Connection::open(&p).unwrap();
+            c.pragma_update(None, "foreign_keys", "ON").unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute("INSERT INTO tenants (name) VALUES ('acme')", []).unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+            assert_eq!(v, MIGRATIONS.len() as i64);
+            let q: Option<i64> = conn
+                .query_row("SELECT quota_bytes FROM tenants WHERE name = 'acme'", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(q, None);
+            conn.execute("UPDATE tenants SET quota_bytes = 1000 WHERE name = 'acme'", [])
+                .unwrap();
+            let ins =
+                "INSERT INTO backup_stats (tenant, source, time, read, logical, new_chunks, new_plain, new_stored) \
+                       VALUES ('acme', 'vm-100', 1, 10, 20, 1, 5, 3)";
+            conn.execute(ins, []).unwrap();
+            assert!(conn.execute(ins, []).is_err(), "one row per snapshot");
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..before].iter().skip(v as usize).count(), 0);
+        old.execute("INSERT INTO tenants (name) VALUES ('beta')", []).unwrap();
     }
 
     /// A fresh catalog runs every migration: all source kinds and the

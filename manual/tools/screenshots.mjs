@@ -455,6 +455,14 @@ async function main() {
       await shot('snapshot-pg-to-target');
       await closeDialogs();
     }],
+    ['storage', async () => {
+      await go('/storage');
+      await until(`return !!document.querySelector('#s-group-table')`, 'storage page');
+      await shot('storage', { height: 1500 });
+      await go('/settings?tab=anomaly');
+      await until(`return !!document.querySelector('#an-f')`, 'anomaly settings');
+      await shot('settings-anomaly');
+    }],
     ['tenants', async () => {
       await go('/tenants');
       await shot('tenants');

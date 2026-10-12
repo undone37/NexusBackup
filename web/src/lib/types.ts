@@ -91,6 +91,8 @@ export interface TenantOffsite {
 export interface Tenant {
   name: string;
   offsite: TenantOffsite;
+  /** soft storage quota in bytes (Phase 13d); null = none */
+  quota_bytes?: number | null;
 }
 
 /** Config of a `pve` source. */
@@ -693,4 +695,38 @@ export interface UpdatesStatus {
   status: 'idle' | 'checking' | 'staged' | 'error' | string;
   error: string | null;
   rollback: UpdateImage | null;
+}
+
+/** Summed `backup_stats` of kept snapshots (GET /storage, docs/storage-accounting.md). */
+export interface StorageSum {
+  snapshots: number;
+  logical: number;
+  data_in: number;
+  stored: number;
+  saved: number;
+  dedup: number | null;
+  compression: number | null;
+  reduction: number | null;
+}
+
+export interface StorageGrowth {
+  d7: number | null;
+  d30: number | null;
+  d90: number | null;
+}
+
+export interface Storage {
+  generated: number;
+  totals: StorageSum & { snapshots_all: number; used: number; growth: StorageGrowth };
+  tenants: (StorageSum & { tenant: string; quota_bytes: number | null; used: number | null; quota_used: number | null; growth: StorageGrowth })[];
+  groups: (StorageSum & { tenant: string; group_id: number | null; group: string | null; sources: number })[];
+  per_day: { day: string; used: number; logical: number }[];
+}
+
+/** Setting `anomaly` (GET/PUT /settings/anomaly). */
+export interface AnomalySettings {
+  enabled: boolean;
+  factor: number;
+  history: number;
+  floor_bytes: number;
 }

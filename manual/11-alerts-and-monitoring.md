@@ -37,7 +37,40 @@ duplicate; after you acknowledge it, a condition that persists (for example a fu
 | `replication_keys` | critical | (secondary) the primary uses a tenant key version this appliance does not have, or a key export failed | export the keys again on the primary and have it approved |
 | `replication_verify` | critical | (secondary) replicated data failed verification; nothing was imported | check the primary; the next sync retries |
 | `config` | warning | the scheduler cannot use a group or replication source configuration | fix the configuration named in the message |
+| `anomaly` | critical | a backup added far more new data than usual for its source, or new data that suddenly does not compress (see [Change-rate anomalies](#change-rate-anomalies)) | check the source for mass changes or encryption (ransomware) before the last good snapshot expires; the message names it |
+| `quota` | warning at 80 %, critical at 100 % | a tenant's store reached 80 % or 100 % of its soft quota (**Tenants**) | review retention or what the tenant backs up, or raise the quota; backups continue either way |
 | `break_glass` | critical | an administrator account was reset on the console with the recovery key (`nexus-setup recover-admin`) | make sure the recovery was planned (check the audit entry `user.break_glass`), then acknowledge it; until then every administrator sees a red banner. See [14 Disaster recovery](14-disaster-recovery.md#break-glass-the-only-administrator-lost-their-authenticator) |
+
+## Change-rate anomalies
+
+After every backup the appliance compares the amount of **new data** the backup added to the store (after
+deduplication, before compression) with the same source's history. It raises a critical `anomaly` alert when
+
+- the new data is more than **3 ×** the median of the source's last **14** backups and more than **1 GiB**, or
+- the new data hardly compresses (factor below 1.05) while the source's data usually compresses well (median above
+  1.3), and it is more than a quarter of that 1 GiB floor. Encrypted files do not compress, so this is the typical
+  signature of ransomware encrypting a share or a server.
+
+Both rules need at least 5 earlier backups of the source. Example message:
+
+```text
+change-rate anomaly on acme/share-6: snapshot 1791580000: 412.0 GiB new data, limit 36.0 GiB (3× the median
+12.0 GiB of the last 14 runs); last snapshot before: share-6/1791493600
+```
+
+The message names the tenant, the source, the time of the suspicious snapshot and the **last snapshot before** it:
+the one to restore from if the data was encrypted. Act before that snapshot reaches the end of its retention. While
+the alert is unacknowledged, further anomalies of the same source do not raise a second alert.
+
+The thresholds are in **Configuration → Settings → Anomaly detection** (administrators; security officers read
+only): **Detect unusual change rates**, **Alert above this multiple of the median**, **Median over the last runs**
+and **Never alert below (GiB of new data)**. Stricter values apply at once; switching detection off or raising the
+multiple or the floor needs a second person when approvals are enabled (request `settings.anomaly`).
+
+![Settings: Anomaly detection](images/settings-anomaly.png)
+
+> **Status:** The figures come from the connectors' per-backup statistics, introduced in this release. Backups taken
+> before carry none, so detection starts after 5 backups per source with this release.
 
 ## Delivery by webhook and e-mail
 
