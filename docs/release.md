@@ -145,6 +145,17 @@ A tick:
    `bootc upgrade --from-downloaded --apply` (reboot),
 4. writes `status.json`.
 
+Pre-update checks (Phase 14b): before step 2 fetches and before step 3 reboots (once per
+tick), `nexus-update` runs `/usr/libexec/nexus/nexus-diag checks` (`NEXUS_UPDATE_DIAG`,
+`off` skips). If a check with `status: fail` and `severity >= 3` comes back, the step is
+refused: `last_result` = `refused: pre-update checks failed: <id>: <detail>; …`,
+`status.json` `checks` = `{time, blocking: [{id, title, severity, detail, manual}]}`, the api
+view `status: "blocked"` with `blocked` = that list. The tick still exits 0 (a failed unit
+would itself fail the `systemd.failed` check). Rollback is never gated. When nexus-diag
+cannot run (exit ≠ 0, bad JSON, missing), the update proceeds and `checks.error` records why:
+a broken checker must not block the update that fixes it. The console `stage`/`apply`
+commands run the same checks. Checks and their severities: manual/15 "The checks".
+
 Egress: outbound traffic is default-deny (os/nftables.conf). With
 `NEXUS_UPDATE_EGRESS=nft`, the addresses of `ghcr.io` and
 `pkg-containers.githubusercontent.com` (blob CDN) are resolved (union of 3 lookups)
@@ -164,7 +175,7 @@ and scheduler can write and root reads):
 | `request` | web-api | one word: `stage` (check + download now), `apply` (reboot into the staged update now; ignores window and inhibit, and also applies a digest that was rolled back before or an older version), `rollback` (`bootc rollback` + reboot). Consumed at once by `nexus-update.path`. Should be quorum-gated in the control plane |
 | `window` | web-api | overrides the default window: `<days> HH:MM <minutes>` in UTC, days = `daily` or `Mon,Thu,...`, or `off` (only admin apply). Invalid content → default window + log |
 | `inhibit` | scheduler | while present and touched within the last 6 h, window applies are postponed (touch it while jobs run, delete afterwards). A stale file stops blocking after 6 h |
-| `status.json` | root (0640) | `booted`/`staged`/`rollback` {image, digest, version, signature, download_only}, `spec_signature`, `channel`, `window`, `in_window`, `inhibited`, `last_check`, `last_result` {time, request, result}, `applying`, `failed_digests` |
+| `status.json` | root (0640) | `booted`/`staged`/`rollback` {image, digest, version, signature, download_only}, `spec_signature`, `channel`, `window`, `in_window`, `inhibited`, `last_check`, `last_result` {time, request, result}, `applying`, `failed_digests`, `checks` (pre-update checks, above), `api` (the web view) |
 
 Control files are read with `O_NOFOLLOW`, as regular files only and at most 256
 bytes. Unknown words are logged and dropped. Open: the web-api and scheduler units

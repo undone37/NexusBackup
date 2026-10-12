@@ -27,6 +27,8 @@ policy_module(nexus, 1.0.0)
 #                                                          NFS/CIFS mount per socket connection
 #   init_t ── nexus_setup_exec_t ─────> nexus_setup_t      first boot (root): nmcli/hostnamectl/systemctl
 #   init_t ── nexus_nftsync_exec_t ───> nexus_nftsync_t    root oneshot ── iptables_exec_t ──> iptables_t
+#   init_t ── nexus_diag_exec_t ──────> nexus_diag_t       root oneshot, diagnostics: reads journal/audit/
+#                                                          nft/chrony/catalog, writes its dir, no network
 #
 # Data types are private to the domains named in their rules; nothing is
 # shared through generic types (var_lib_t, etc_t, tmp_t). No domain is
@@ -818,3 +820,87 @@ read_lnk_files_pattern(nexus_webapi_t, nexus_plugin_data_t, nexus_plugin_data_t)
 list_dirs_pattern(nexus_scheduler_t, nexus_plugin_data_t, nexus_plugin_data_t)
 read_files_pattern(nexus_scheduler_t, nexus_plugin_data_t, nexus_plugin_data_t)
 read_lnk_files_pattern(nexus_scheduler_t, nexus_plugin_data_t, nexus_plugin_data_t)
+
+########################################
+# Diagnostics (Phase 14b, os/greenboot/usr/libexec/nexus/nexus-diag): root oneshot started
+# by nexus-diag.path when the web-api writes /var/lib/nexus/diag/request.json. Self-checks
+# and a redacted support bundle: reads the journal (journalctl_t), the audit log, the
+# nftables ruleset (iptables_t), chrony (chronyc_t), systemd state, the catalog (read-only),
+# the update status and the web certificate; writes only its control dir. No network.
+
+nexus_daemon(diag)
+type nexus_diag_var_lib_t;	# /var/lib/nexus/diag: requests (web-api) and results (nexus-diag)
+files_type(nexus_diag_var_lib_t)
+
+# the script runs under /usr/bin/python3 (bin_t) with the standard library from /usr;
+# ausearch (bin_t) runs in this domain; nexus-health (bin_t) is imported for the audit chain
+corecmd_exec_bin(nexus_diag_t)
+libs_use_ld_so(nexus_diag_t)
+libs_use_shared_libs(nexus_diag_t)
+libs_read_lib_files(nexus_diag_t)
+files_read_usr_files(nexus_diag_t)
+files_read_etc_files(nexus_diag_t)
+# import ssl: OpenSSL configuration under /etc/pki; ausearch -i: user names
+miscfiles_read_generic_certs(nexus_diag_t)
+auth_read_passwd(nexus_diag_t)
+# its control dir: consumes request.json, writes <id>/{status,checks}.json and the bundle,
+# prunes old results
+manage_dirs_pattern(nexus_diag_t, nexus_diag_var_lib_t, nexus_diag_var_lib_t)
+manage_files_pattern(nexus_diag_t, nexus_diag_var_lib_t, nexus_diag_var_lib_t)
+# setup-done
+read_files_pattern(nexus_diag_t, nexus_var_lib_t, nexus_var_lib_t)
+# catalog, read-only (mode=ro, readonly_shm: the -shm file is opened O_RDONLY): quick_check,
+# audit chain, row counts
+list_dirs_pattern(nexus_diag_t, nexus_catalog_t, nexus_catalog_t)
+read_files_pattern(nexus_diag_t, nexus_catalog_t, nexus_catalog_t)
+allow nexus_diag_t nexus_catalog_t:file map;
+# update status.json (bootc booted/staged/rollback as nexus-update last saw it)
+list_dirs_pattern(nexus_diag_t, nexus_update_t, nexus_update_t)
+read_files_pattern(nexus_diag_t, nexus_update_t, nexus_update_t)
+# keyd: the socket exists (never connects)
+allow nexus_diag_t nexus_keyd_var_run_t:dir search_dir_perms;
+allow nexus_diag_t nexus_keyd_var_run_t:sock_file getattr;
+# web certificate expiry: cert.pem shares the type of the TLS key and the metrics token;
+# DAC keeps the key closed (0600 nexus-webapi; this domain has no DAC override) and the
+# script opens only cert.pem
+files_search_etc(nexus_diag_t)
+allow nexus_diag_t nexus_etc_t:dir search_dir_perms;
+read_files_pattern(nexus_diag_t, nexus_webapi_secret_t, nexus_webapi_secret_t)
+# disk usage: statfs of the store, /var, /sysroot, /boot
+fs_getattr_all_fs(nexus_diag_t)
+allow nexus_diag_t nexus_store_t:dir getattr;
+files_getattr_boot_dirs(nexus_diag_t)
+# SELinux mode (/sys/fs/selinux/enforce)
+selinux_get_enforce_mode(nexus_diag_t)
+# audit log: ausearch reads auditd.conf and /var/log/audit
+logging_read_audit_config(nexus_diag_t)
+logging_read_audit_log(nexus_diag_t)
+logging_map_audit_log(nexus_diag_t)
+# failed units, is-active: systemctl over the private socket, status of PID 1 and units
+systemd_exec_systemctl(nexus_diag_t)
+init_stream_connect(nexus_diag_t)
+init_read_state(nexus_diag_t)
+allow nexus_diag_t init_t:system status;
+systemd_status_all_unit_files(nexus_diag_t)
+# journal (journalctl), chrony (chronyc), nftables (nft list): each tool in its own domain;
+# the unit has NoNewPrivileges=yes; output comes back through our pipes
+journalctl_domtrans(nexus_diag_t)
+chronyd_domtrans_chronyc(nexus_diag_t)
+iptables_domtrans(nexus_diag_t)
+allow nexus_diag_t { journalctl_t chronyc_t iptables_t }:process2 { nnp_transition nosuid_transition };
+allow { journalctl_t chronyc_t iptables_t } nexus_diag_t:fd use;
+allow { journalctl_t chronyc_t iptables_t } nexus_diag_t:fifo_file rw_inherited_fifo_file_perms;
+allow { journalctl_t chronyc_t iptables_t } nexus_diag_t:process sigchld;
+
+# no network; never writes the catalog, update control or anything outside its dir; never
+# reads keys, stores, credentials or job configs; never talks to keyd
+neverallow nexus_diag_t self:{ tcp_socket udp_socket rawip_socket sctp_socket } create;
+neverallow nexus_diag_t { nexus_catalog_t nexus_update_t nexus_var_lib_t nexus_webapi_secret_t nexus_etc_t }:file { write append create unlink rename setattr };
+neverallow nexus_diag_t { nexus_keyd_var_lib_t nexus_store_t nexus_escrow_t nexus_sshkey_t nexus_scheduler_var_run_t nexus_scheduler_secret_t nexus_webapi_var_lib_t nexus_agent_ca_t nexus_replicad_var_lib_t nexus_replica_key_t nexus_downloads_t }:file { read open };
+neverallow nexus_diag_t nexus_keyd_var_run_t:sock_file { write open };
+# only nexus-diag writes results (the web-api writes requests into the top dir, reads results)
+neverallow { nexus_domain -nexus_diag_t -nexus_webapi_t } nexus_diag_var_lib_t:file { read write open };
+
+# web-api: request.json (tmp + rename) into the control dir, status / checks / bundle out
+allow nexus_webapi_t nexus_diag_var_lib_t:dir rw_dir_perms;
+manage_files_pattern(nexus_webapi_t, nexus_diag_var_lib_t, nexus_diag_var_lib_t)

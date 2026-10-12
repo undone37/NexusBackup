@@ -20,6 +20,9 @@ SupplementaryGroups=nexus-replicad
 ReadWritePaths=/var/lib/nexus/catalog
 # OS update control (request/window/inhibit for nexus-update; 2770 root:nexus-catalog)
 ReadWritePaths=/var/lib/nexus/update
+# diagnostics (Settings -> Diagnostics): request.json for nexus-diag.path, results and
+# support bundles read back (2770 root:nexus-webapi, tmpfiles.d/nexus-diag.conf)
+ReadWritePaths=-/var/lib/nexus/diag
 # plugin uploads (docs/plugin-system.md): bundle + signature into the staging dir
 # (2770 nexus-webapi:nexus-plugins, read and deleted by nexus-plugin-install), then
 # .trigger for nexus-plugin-install.path; project keys and installed manifests read-only

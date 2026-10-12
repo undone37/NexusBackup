@@ -16,8 +16,6 @@ use std::time::{Duration, Instant};
 pub const CACHE_SECS: u64 = 60;
 /// `worst` lists at most this many objects
 const WORST: usize = 10;
-/// an object breaches its SLA when its last good backup is older than RPO × 1.5
-const SLA_FACTOR: f64 = 1.5;
 /// `unprotected_list` lists at most this many objects
 const UNPROTECTED_LIST: usize = 200;
 /// minimum samples for a capacity forecast (contract: `null` below 7)
@@ -84,24 +82,7 @@ pub fn break_glass(c: &Connection, ctx: &Ctx) -> ApiResult<Value> {
     Ok(if open { v } else { Value::Null })
 }
 
-/// `YYYY-MM-DD` (UTC) of a unix time (civil-from-days, H. Hinnant).
-pub fn day(ts: i64) -> String {
-    let z = ts.div_euclid(DAY) + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
-/// RPO of a policy schedule: the (longest) schedule period.
-fn rpo(schedule: &str) -> i64 {
-    catalog::schedule::Schedule::parse(schedule).map_or(DAY, |s| s.period())
-}
+pub use reports::day;
 
 /// Least-squares slope (y per x) of the points; `None` for fewer than 2.
 pub fn slope(points: &[(f64, f64)]) -> Option<f64> {
@@ -127,153 +108,29 @@ pub fn forecast_days(samples: &[(f64, f64)], free: Option<i64>) -> Option<i64> {
     Some((free? as f64 / s).ceil() as i64)
 }
 
-struct Obj {
-    tenant: String,
-    /// snapshot sources that count for this object (PVE: `vm-` and `ct-`)
-    sources: Vec<String>,
-    name: String,
-    kind: String,
-    rpo: i64,
-    /// every group of the object is paused (or its source in maintenance, Phase 13b)
-    paused: bool,
-}
-
 fn protection(c: &Connection, scope: Option<&str>, now: i64) -> ApiResult<Value> {
-    /// (tenant, source id, guests, schedule, kind, source name, config, auto, paused)
-    type Row = (String, i64, Vec<Value>, String, String, String, String, bool, bool);
-    let rows: Vec<Row> = c
-        .prepare(
-            "SELECT g.tenant, g.source_id, g.guests, p.schedule, s.kind, s.name, s.config, g.mode, g.selector, g.exclude,
-                    g.paused_until = -1 OR g.paused_until > ?2 OR s.maintenance_until = -1 OR s.maintenance_until > ?2
-             FROM groups g JOIN policies p ON p.id = g.policy_id JOIN sources s ON s.id = g.source_id
-             WHERE ?1 IS NULL OR g.tenant = ?1 ORDER BY g.id",
-        )?
-        .query_map(params![scope, now], |r| {
-            let (sid, kind, mode): (i64, String, String) = (r.get(1)?, r.get(4)?, r.get(7)?);
-            // the scheduler's resolution (explicit list or inventory, catalog::inventory)
-            let guests = catalog::inventory::resolve(
-                c,
-                sid,
-                &kind,
-                &mode,
-                &r.get::<_, String>(2)?,
-                &r.get::<_, String>(8)?,
-                &r.get::<_, String>(9)?,
-            )?;
-            let auto = catalog::inventory::auto(&mode);
-            let paused = r.get::<_, Option<bool>>(10)?.unwrap_or(false);
-            Ok((r.get(0)?, sid, guests, r.get(3)?, kind, r.get(5)?, r.get(6)?, auto, paused))
-        })?
-        .collect::<Result<_, _>>()?;
-    // object key (tenant, first source) → object; one object in several groups counts once (shortest RPO)
-    let mut objs: BTreeMap<(String, String), Obj> = BTreeMap::new();
-    for (tenant, sid, guests, schedule, kind, sname, cfg, auto, paused) in rows {
-        let strs = || guests.iter().filter_map(Value::as_str).map(str::to_owned);
-        let mut add: Vec<(Vec<String>, String)> = Vec::new();
-        match kind.as_str() {
-            "pve" => {
-                for v in guests.iter().filter_map(Value::as_u64) {
-                    add.push((vec![format!("vm-{v}"), format!("ct-{v}")], format!("{sname} guest {v}")));
-                }
-            }
-            "linux" => {
-                for a in strs() {
-                    add.push((vec![format!("host-{a}")], format!("{sname} ({a})")));
-                }
-            }
-            "truenas" => {
-                let mut ds: Vec<String> = strs().collect();
-                if ds.is_empty() && !auto {
-                    let cfg: Value = serde_json::from_str(&cfg).unwrap_or(Value::Null);
-                    ds = cfg["datasets"]
-                        .as_array()
-                        .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
-                        .unwrap_or_default();
-                }
-                for d in ds {
-                    add.push((vec![truenas::source_name(sid as u64, &d)], format!("{sname} {d}")));
-                }
-            }
-            "nfs" | "smb" => add.push((vec![nas::source_name(sid as u64)], sname.clone())),
-            k => {
-                let Some(pk) = k.strip_prefix("plugin:") else { continue };
-                let Some(cur) = plugin_manager::current_for_kind(c, pk).ok().flatten() else {
-                    continue;
-                };
-                let g: Vec<String> = strs().collect();
-                if g.is_empty() && !auto {
-                    add.push((
-                        vec![plugin_proto::source_name(&cur.id, sid as u64, None)],
-                        sname.clone(),
-                    ));
-                }
-                for x in g {
-                    add.push((
-                        vec![plugin_proto::source_name(&cur.id, sid as u64, Some(&x))],
-                        format!("{sname} {x}"),
-                    ));
-                }
-            }
-        }
-        let r = rpo(&schedule);
-        for (sources, name) in add {
-            let o = objs.entry((tenant.clone(), sources[0].clone())).or_insert_with(|| Obj {
-                tenant: tenant.clone(),
-                sources,
-                name,
-                kind: kind.clone(),
-                rpo: r,
-                paused,
-            });
-            o.rpo = o.rpo.min(r);
-            o.paused &= paused;
-        }
-    }
-    let last: HashMap<(String, String), i64> = c
-        .prepare(
-            "SELECT tenant, source, MAX(time) FROM snapshots WHERE ?1 IS NULL OR tenant = ?1 GROUP BY tenant, source",
-        )?
-        .query_map([scope], |r| Ok(((r.get(0)?, r.get(1)?), r.get(2)?)))?
-        .collect::<Result<_, _>>()?;
+    // the protected objects and their SLA state (shared with the protection / sla reports)
+    let objs = reports::protection::assess(c, scope, now)?;
     let (mut ok, mut breach, mut never, mut paused) = (0, 0, 0, 0);
     let mut list: Vec<(u8, i64, Value)> = Vec::new();
-    for o in objs.values() {
-        let last_ok = o
-            .sources
-            .iter()
-            .filter_map(|s| last.get(&(o.tenant.clone(), s.clone())))
-            .max()
-            .copied();
-        let source = o
-            .sources
-            .iter()
-            .find(|s| last.contains_key(&(o.tenant.clone(), (*s).clone())))
-            .unwrap_or(&o.sources[0]);
-        let age = last_ok.map(|t| (now - t).max(0));
-        let (sla, rank) = match age {
-            None => {
-                never += 1;
-                ("never", 0)
-            }
-            // paused on purpose: shown, but not a breach
-            Some(a) if a as f64 > o.rpo as f64 * SLA_FACTOR && o.paused => {
-                paused += 1;
-                ("paused", 2)
-            }
-            Some(a) if a as f64 > o.rpo as f64 * SLA_FACTOR => {
-                breach += 1;
-                ("breach", 1)
-            }
-            Some(_) => {
-                ok += 1;
-                ("ok", 2)
-            }
+    for s in &objs {
+        match s.sla {
+            "never" => never += 1,
+            "paused" => paused += 1,
+            "breach" => breach += 1,
+            _ => ok += 1,
+        }
+        let rank = match s.sla {
+            "never" => 0,
+            "breach" => 1,
+            _ => 2,
         };
+        let (o, age) = (&s.obj, s.age);
         list.push((
             rank,
             -age.unwrap_or(i64::MAX),
-            json!({"source": source, "name": o.name, "kind": o.kind, "tenant": o.tenant,
-                   "last_ok": last_ok, "age_s": age, "rpo_s": o.rpo, "sla": sla}),
+            json!({"source": s.source, "name": o.name, "kind": o.kind, "tenant": o.tenant,
+                   "last_ok": s.last_ok, "age_s": age, "rpo_s": o.rpo, "sla": s.sla}),
         ));
     }
     // breach before never would hide objects that never worked: the contract puts
@@ -283,7 +140,7 @@ fn protection(c: &Connection, scope: Option<&str>, now: i64) -> ApiResult<Value>
 
     // unprotected: enrolled agents no group backs up, share sources without a group,
     // inventory guests (PVE, TrueNAS, plugins) outside every group of their source
-    let protected_hosts: HashSet<String> = objs.values().flat_map(|o| o.sources.clone()).collect();
+    let protected_hosts: HashSet<String> = objs.iter().flat_map(|s| s.obj.sources.clone()).collect();
     let mut open: Vec<Value> = Vec::new();
     let agents: Vec<(String, String, String)> = c
         .prepare("SELECT tenant, id, name FROM agents WHERE ?1 IS NULL OR tenant = ?1 ORDER BY tenant, name")?

@@ -1889,6 +1889,9 @@ fn inventory_jobs_and_auto_protect() {
     s.start_jobs().unwrap();
     assert_eq!(state(&s, id), "failed");
 }
+/// Phase 14a audit / alert forwarding.
 mod forward;
+/// Phase 14e scheduled reports.
+mod report_mail;
 /// Phase 13b run control (pause, blackout, retries, SLA, cancel).
 mod runctl;

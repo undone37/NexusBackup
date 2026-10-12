@@ -208,6 +208,8 @@ const db = {
   alertSettings: {} as Json,
   sshKeys: [] as Json[],
   updates: {} as Json,
+  /** Phase 14b diagnostics runs (GET /diagnostics) */
+  diag: [] as Json[],
   /** Phase 13e setting `anomaly` */
   anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30 } as Json,
   /** Phase 14a setting `forwarding` (header values: plaintext here, null in responses) */
@@ -217,6 +219,8 @@ const db = {
   } as Json,
   /** last delivery error per sink (none = the forwarder keeps up) */
   forwardErr: {} as Record<string, string>,
+  /** Phase 14e setting `reports` (scheduled reports) */
+  reports: [] as Json[],
 };
 const nextId = () => ++db.seq;
 
@@ -369,6 +373,7 @@ function tick() {
       if (j.kind === 'files_list') j.result = { entries: listDir(String(j.params.path ?? '/'), String(j.params.source ?? '')) };
       if (j.kind.startsWith('plugin_')) pluginResult(j, t);
       if (j.kind === 'inventory' || j.kind === 'plugin_guests') inventoryResult(j, t);
+      if (j.kind === 'report_send') reportSent(j);
       const ag = db.agents.find((a) => a.id === j.params.agent_id);
       if (j.kind === 'agent_enroll' && ag) {
         Object.assign(ag, { enrolled_at: t, cert_sha256: rand(32), token_expires: null, token_hash: null, last_seen: t });
@@ -1121,6 +1126,8 @@ function seed() {
   seedPhase12(t);
   seedPhase13a(t);
   seedRunControl(t);
+  seedReports(t);
+  seedDiag(t);
 }
 
 // ---------------------------------------------------------------- run control (Phase 13b)
@@ -1494,7 +1501,9 @@ type Ctx = {
   sid: string | null;
   res: Res;
 };
-type Handler = (c: Ctx, m: string[]) => Promise<[number, unknown]> | [number, unknown];
+// an optional third element is the content type (CSV downloads)
+type Reply = [number, unknown] | [number, unknown, string];
+type Handler = (c: Ctx, m: string[]) => Promise<Reply> | Reply;
 const routes: [string, RegExp, Handler][] = [];
 const on = (method: string, path: string, h: Handler) =>
   routes.push([method, new RegExp('^' + path.replace(/:\w+/g, '([^/]+)') + '$'), h]);
@@ -2656,7 +2665,7 @@ const GUEST_NAMES: Record<string, string> = {
   'initech/100': 'erp-app', 'initech/101': 'erp-db', 'initech/200': 'proxy', 'initech/102': 'dev-sandbox', 'initech/103': 'legacy-ftp',
   'acme/300': 'shop-web', 'acme/301': 'shop-api', 'acme/302': 'test-web',
 };
-interface Obj { source: string; name: string; kind: string; tenant: string; rpo_s: number; inGroup: boolean; names: string[]; sourceName?: string; sourceId?: number | null; paused?: boolean }
+interface Obj { source: string; name: string; kind: string; tenant: string; rpo_s: number; inGroup: boolean; names: string[]; sourceName?: string; sourceId?: number | null; paused?: boolean; group?: string }
 
 function protectedObjects(u: User): Obj[] {
   const out: Obj[] = [];
@@ -2666,7 +2675,7 @@ function protectedObjects(u: User): Obj[] {
     if (!src || !pol) continue;
     const rpo_s = schedulePeriod(pol.schedule);
     const paused = isPaused(g.paused_until, now()) || isPaused(src.maintenance_until, now());
-    const add = (source: string, name: string, names = [source]) => out.push({ source, name, kind: src.kind, tenant: g.tenant, rpo_s, inGroup: true, names, paused });
+    const add = (source: string, name: string, names = [source]) => out.push({ source, name, kind: src.kind, tenant: g.tenant, rpo_s, inGroup: true, names, paused, group: g.name });
     const guests = resolveGuests(g);
     if (src.kind === 'pve')
       for (const v of guests) add(guestName(v), `${GUEST_NAMES[`${g.tenant}/${v}`] ?? 'guest'} (${v})`, [`vm-${v}`, `ct-${v}`]);
@@ -3016,6 +3025,200 @@ on('POST', '/settings/forwarding/test', async (c) => {
   await audit(u.name, 'job.create', 'job/0', { kind: 'forward_test', params: {} });
   return [200, out];
 });
+// ---- Phase 14e reports: CSV downloads and scheduled reports (docs/control-plane.md "Reports")
+const REPORT_TYPES = ['protection', 'failed', 'sla', 'storage'];
+const isoTime = (ts: number | null | undefined) => (ts ? new Date(ts * 1000).toISOString().replace('.000Z', 'Z') : '');
+/** RFC 4180 like reports::Table::csv (formula-like text neutralised). */
+function toCsv(columns: string[], rows: unknown[][]): string {
+  const field = (v: unknown) => {
+    let s = v === null || v === undefined ? '' : String(v);
+    if (typeof v === 'string' && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+    return /[",\r\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+  };
+  return [columns, ...rows].map((r) => r.map(field).join(',') + '\r\n').join('');
+}
+const hours = (s: number) => Math.round(s / 360) / 10;
+const ratio3 = (r: number | null) => (r === null ? '' : Math.round(r * 1000) / 1000);
+function reportTable(u: User, kind: string, scope: string | null, from: number, to: number): [string[], unknown[][]] {
+  const t = now();
+  const v: User = { ...u, tenant: scope };
+  if (kind === 'protection' || kind === 'sla') {
+    const snaps = byTenant(v, db.snapshots as any[]);
+    // one row per object; an object in several groups lists them all (shortest RPO)
+    const merged = new Map<string, Obj & { groups: string[] }>();
+    for (const o of protectedObjects(v).filter((x) => x.inGroup)) {
+      const k = `${o.tenant}/${o.source}`;
+      const m = merged.get(k);
+      if (!m) merged.set(k, { ...o, groups: [o.group ?? ''] });
+      else {
+        m.rpo_s = Math.min(m.rpo_s, o.rpo_s);
+        m.paused = m.paused && o.paused;
+        if (!m.groups.includes(o.group ?? '')) m.groups.push(o.group ?? '');
+      }
+    }
+    const objs = [...merged.values()].map((o) => {
+        const mine = snaps.filter((s) => s.tenant === o.tenant && o.names.includes(s.source)).sort((a, b) => b.time - a.time);
+        const last = mine[0];
+        const age = last ? t - last.time : null;
+        const sla = !last ? 'never' : (age as number) > o.rpo_s * 1.5 ? (o.paused ? 'paused' : 'breach') : 'ok';
+        return { o, last, age, sla, groups: o.groups.join(' ') };
+      });
+    if (kind === 'protection')
+      return [
+        ['tenant', 'groups', 'object', 'kind', 'source', 'rpo_hours', 'last_good', 'age_hours', 'status', 'local', 'offsite', 'verified', 'consistency'],
+        objs.map(({ o, last, age, sla, groups }) => [
+          o.tenant, groups, o.name, o.kind, last?.source ?? o.names[0], hours(o.rpo_s), isoTime(last?.time), age === null ? '' : hours(age), sla,
+          last ? (last.local ? 'yes' : 'no') : '', last ? (last.offsite ? 'yes' : 'no') : '', isoTime(last?.verified),
+          o.kind === 'pve' || !last ? 'unknown' : 'consistent',
+        ]),
+      ];
+    const rows: [number, unknown[]][] = [];
+    for (const { o, last, sla, groups } of objs) {
+      const limit = o.rpo_s * 1.5;
+      if (sla === 'breach' && last) {
+        const s = Math.max(last.time + limit, from);
+        const e = Math.min(t, to);
+        if (s < e) rows.push([s, ['rpo_breach', o.tenant, groups, o.name, isoTime(s), '', hours(e - s), hours(limit), `ongoing: no good backup since ${isoTime(last.time)}`]]);
+      }
+    }
+    for (const a of db.alerts.filter((x) => x.kind === 'sla_missed' && x.ts >= from && x.ts < to && (!scope || x.tenant === scope)))
+      rows.push([a.ts, ['sla_missed', a.tenant ?? '', /group (\S+)/.exec(a.message)?.[1] ?? '', '', isoTime(a.ts), '', '', '', a.message]]);
+    rows.sort((a, b) => a[0] - b[0]);
+    return [['type', 'tenant', 'groups', 'object', 'start', 'end', 'hours', 'target_hours', 'detail'], rows.map((r) => r[1])];
+  }
+  if (kind === 'failed') {
+    const jobs = db.jobs.filter((j) => j.state === 'failed' && j.finished && j.finished >= from && j.finished < to && (!scope || j.tenant === scope));
+    const target = (p: Json) => {
+      const g = db.groups.find((x) => x.id === p.group_id);
+      if (g) return `group ${g.name}`;
+      const s = db.sources.find((x) => x.id === p.source_id);
+      if (s) return `source ${s.name}`;
+      return p.agent_id ? `agent ${p.agent_id}` : p.vmid ? `guest ${p.vmid}` : '';
+    };
+    const errLine = (log: string) => {
+      const lines = log.split('\n').map((l) => l.trim()).filter(Boolean);
+      return (lines.find((l) => /error|failed|fatal/i.test(l)) ?? lines.at(-1) ?? '').slice(0, 300);
+    };
+    return [
+      ['job', 'tenant', 'kind', 'target', 'created', 'finished', 'attempt', 'error'],
+      jobs.sort((a, b) => a.finished! - b.finished!).map((j) => [j.id, j.tenant, j.kind, target(j.params), isoTime(j.created), isoTime(j.finished), j.attempt ?? 1, errLine(j.log || j.fail || '')]),
+    ];
+  }
+  const s = storageStats(v);
+  const sums = (x: Json) => [x.logical, x.data_in, x.stored, x.saved, ratio3(x.dedup), ratio3(x.compression), ratio3(x.reduction)];
+  return [
+    ['level', 'tenant', 'group', 'sources', 'snapshots', 'logical_bytes', 'data_in_bytes', 'stored_bytes', 'saved_bytes', 'dedup', 'compression', 'reduction', 'used_bytes', 'quota_bytes', 'growth_7d_bytes', 'growth_30d_bytes', 'growth_90d_bytes'],
+    [
+      ...s.tenants.map((x) => ['tenant', x.tenant, '', '', x.snapshots, ...sums(x), x.used, x.quota_bytes ?? '', x.growth.d7, x.growth.d30, x.growth.d90]),
+      ...s.groups.map((g) => ['group', g.tenant, g.group ?? '', g.sources, g.snapshots, ...sums(g), '', '', '', '', '']),
+    ],
+  ];
+}
+function reportRange(q: URLSearchParams): [number, number] {
+  const when = (v: string, what: string, end: boolean) => {
+    if (/^-?\d+$/.test(v)) return Number(v);
+    const ms = /^\d{4}-\d{2}-\d{2}$/.test(v) ? Date.parse(`${v}T00:00:00Z`) : NaN;
+    if (Number.isNaN(ms) || new Date(ms).toISOString().slice(0, 10) !== v) throw new HttpError(400, `${what}: YYYY-MM-DD or unix seconds`);
+    return ms / 1000 + (end ? DAY : 0);
+  };
+  const to = q.get('to') ? when(q.get('to')!, 'to', true) : now();
+  const from = q.get('from') ? when(q.get('from')!, 'from', false) : to - 7 * DAY;
+  if (from >= to) throw new HttpError(400, 'from must be before to');
+  if (to - from > 400 * DAY) throw new HttpError(400, 'range: at most 400 days');
+  return [from, to];
+}
+on('GET', '/reports/:file', async (c, [file]) => {
+  const u = need(c.user);
+  const kind = /^([a-z]+)\.csv$/.exec(file)?.[1] ?? '';
+  if (!REPORT_TYPES.includes(kind)) throw new HttpError(404, 'not found');
+  const want = c.query.get('tenant') || null;
+  if (u.tenant && want && want !== u.tenant) throw new HttpError(403, 'forbidden');
+  const scope = u.tenant ?? want;
+  const [from, to] = reportRange(c.query);
+  const [cols, rows] = reportTable(u, kind, scope, from, to);
+  await audit(u.name, 'report.export', `report/${kind}`, { type: kind, from, to, tenant: scope, rows: rows.length });
+  c.res.setHeader('Content-Disposition', `attachment; filename="nexus-${kind}${scope ? `-${scope}` : ''}-${isoDay(to - 1)}.csv"`);
+  return [200, toCsv(cols, rows), 'text/csv; charset=utf-8'];
+});
+const reportsView = () => ({
+  smtp: !!db.alertSettings.smtp?.host,
+  reports: db.reports.map((r) => {
+    const j = [...db.jobs].reverse().find((x) => x.kind === 'report_send' && x.params.name === r.name);
+    return { ...r, last: j ? { job_id: j.id, state: j.state, created: j.created, finished: j.finished, requested_by: j.requested_by } : null };
+  }),
+});
+on('GET', '/settings/reports', (c) => (need(c.user, 'admin', 'security_officer'), [200, reportsView()]));
+on('PUT', '/settings/reports', async (c) => {
+  const u = need(c.user, 'admin');
+  const list = c.body.reports;
+  if (!Array.isArray(list)) throw new HttpError(400, 'reports: array required');
+  if (list.length > 32) throw new HttpError(400, 'reports: at most 32');
+  if (list.length && !db.alertSettings.smtp?.host) throw new HttpError(400, 'scheduled reports are mailed through the SMTP server: configure it under Settings → Alert delivery first');
+  const names = new Set<string>();
+  const out: Json[] = [];
+  for (const r of list) {
+    const what = (m: string) => new HttpError(400, `report ${r.name}: ${m}`);
+    const extra = Object.keys(r).find((k) => !['name', 'types', 'schedule', 'timezone', 'recipients', 'tenant'].includes(k));
+    if (extra) throw new HttpError(400, `unknown field \`${extra}\``);
+    if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(String(r.name))) throw new HttpError(400, 'name: [A-Za-z0-9._-]{1,64}');
+    if (names.has(r.name)) throw what('names must be unique');
+    names.add(r.name);
+    const types = r.types ?? [];
+    if (!types.length || new Set(types).size !== types.length || types.some((x: string) => !REPORT_TYPES.includes(x))) throw what('types: one or more of protection, failed, sla, storage, each once');
+    const recipients = r.recipients ?? [];
+    if (!recipients.length || recipients.length > 16) throw what('recipients: 1..=16 mail addresses');
+    const bad = recipients.find((x: string) => !mailRe.test(x));
+    if (bad) throw what(`recipients: "${bad}" is not a mail address`);
+    const sch = parseSchedule(String(r.schedule));
+    if (!sch) throw what(`bad schedule "${r.schedule}"`);
+    if (sch.kind === 'hours') throw what('schedule: a report runs on weekdays (`Mon 07:00`, `daily 07:00`) or monthly (`monthly 1 07:00`)');
+    const tz = String(r.timezone ?? 'UTC');
+    try {
+      new Intl.DateTimeFormat('en', { timeZone: tz });
+    } catch {
+      throw what(`unknown time zone "${tz}"`);
+    }
+    if (r.tenant && !db.tenants.some((x) => x.name === r.tenant)) throw what(`unknown tenant ${r.tenant}`);
+    out.push({ name: r.name, types, schedule: r.schedule, timezone: tz, recipients, tenant: r.tenant ?? null });
+  }
+  db.reports = out;
+  await audit(u.name, 'settings.reports', 'settings/reports', { reports: out });
+  return [200, reportsView()];
+});
+on('POST', '/settings/reports/:name/send', async (c, [name]) => {
+  const u = need(c.user, 'admin');
+  const r = find(db.reports, (x) => x.name === decodeURIComponent(name), 'report');
+  if (db.jobs.some((j) => j.kind === 'report_send' && j.params.name === r.name && ['queued', 'running'].includes(j.state))) throw new HttpError(409, 'this report is already being sent');
+  const sch = parseSchedule(r.schedule);
+  const period = sch ? schedulePeriod(r.schedule) : 7 * DAY;
+  const p = { name: r.name, from: now() - period, to: now() };
+  const j = addJob('report_send', '-', p, u.name, {
+    plan: [`composing report ${r.name}: ${r.types.join(', ')}`, `mailing to ${r.recipients.join(', ')} via ${db.alertSettings.smtp?.host ?? '-'}`],
+    duration: 3,
+  });
+  await audit(u.name, 'job.create', `job/${j.id}`, { kind: 'report_send', params: p });
+  return [202, { job_id: j.id }];
+});
+/** A sent report: the result and `report.sent`, like the scheduler. */
+function reportSent(j: Job) {
+  const r = db.reports.find((x) => x.name === j.params.name);
+  j.result = r
+    ? { name: r.name, types: r.types, tenant: r.tenant, recipients: r.recipients, from: j.params.from, to: j.params.to, attachments: r.types.map((k: string) => `${r.name}-${k}-${isoDay(j.params.to - 1)}.csv`), rows: 42 }
+    : null;
+  void audit('scheduler', 'report.sent', `report/${j.params.name}`, { job: j.id, summary: j.result });
+}
+function seedReports(t: number) {
+  db.reports = [
+    { name: 'weekly-ops', types: ['protection', 'failed', 'sla'], schedule: 'Mon 07:00', timezone: 'Europe/Berlin', recipients: ['ops@example.com', 'it-lead@example.com'], tenant: null },
+    { name: 'acme-monthly', types: ['protection', 'storage'], schedule: 'monthly 1 06:00', timezone: 'Europe/Berlin', recipients: ['it@acme.example.com'], tenant: 'acme' },
+  ];
+  // last Monday's weekly run (sent) and the monthly one
+  const monday = Math.floor((t / DAY - ((Math.floor(t / DAY) + 3) % 7))) * DAY + 5 * 3600;
+  for (const [r, at] of [[db.reports[0], monday], [db.reports[1], t - 11 * DAY]] as [Json, number][]) {
+    const j = addJob('report_send', '-', { name: r.name, from: at - 7 * DAY, to: at }, 'scheduler', { state: 'ok', created: at, started: at, finished: at + 4, log: `report ${r.name} mailed to ${r.recipients.join(', ')}` });
+    j.result = { name: r.name, types: r.types, recipients: r.recipients, rows: 37 };
+  }
+}
 
 const dashCache = new Map<string, { at: number; body: Json }>();
 on('GET', '/dashboard', (c) => {
@@ -3244,6 +3447,80 @@ on('POST', '/updates/apply', (c) => {
   return quorum(u, 'update.apply', { version: db.updates.available.version, digest: db.updates.available.digest });
 });
 
+// ---- diagnostics (Phase 14b): nexus-diag picks a request up after ~1 s and finishes after ~3 s
+function diagChecks(t: number): Json[] {
+  const c = (id: string, title: string, status: string, severity: number, detail: string) =>
+    ({ id, title, status, severity, detail, manual: `15-troubleshooting-faq.md#check-${id.replace(/\./g, '-')}` });
+  const day = (d: number) => new Date((t + d * 86400) * 1000).toISOString().slice(0, 10);
+  return [
+    c('disk.store', 'Disk space: /var/lib/nexus/chunkstore', 'pass', 1, '/var/lib/nexus/chunkstore: 58 % used, 1.7 TiB of 4.0 TiB free'),
+    c('disk.var', 'Disk space: /var', 'pass', 1, '/var: 58 % used, 1.7 TiB of 4.0 TiB free'),
+    c('disk.root', 'Disk space: /sysroot', 'pass', 1, '/sysroot: 31 % used, 27.5 GiB of 40.0 GiB free'),
+    c('disk.boot', 'Disk space: /boot', 'pass', 1, '/boot: 42 % used, 557 MiB of 960 MiB free'),
+    c('time.sync', 'Time synchronisation', 'pass', 1, 'stratum 2, offset +0.4 ms, normal, reference C035676C'),
+    c('time.nts', 'Authenticated time sources (NTS)', 'pass', 1, '4 NTS source(s)'),
+    c('egress', 'Outbound firewall', 'pass', 1, 'default-deny output chain loaded, allow-list sync active'),
+    c('keyd', 'Key daemon', 'pass', 1, 'key daemon running, socket present'),
+    c('tls.cert', 'Web certificate', 'warn', 2, `web certificate expires on ${day(21)} (21 days)`),
+    c('audit.chain', 'Audit log hash chain', 'pass', 1, `${db.audit.length} entries, hash chain intact`),
+    c('catalog.integrity', 'Catalog integrity', 'pass', 1, 'quick_check ok'),
+    c('selinux', 'SELinux mode', 'pass', 1, 'enforcing'),
+    c('systemd.failed', 'Failed system services', 'pass', 1, 'no failed units'),
+    c('bootc', 'OS image (bootc)', 'pass', 1, `booted ${db.updates.booted?.version}, rollback ${db.updates.rollback?.version}`),
+    c('smart', 'Disk health (SMART)', 'skip', 1, 'smartctl not installed'),
+  ];
+}
+function seedDiag(t: number) {
+  db.diag.push({ id: rand(16), kind: 'checks', by: 'admin', state: 'done', since: null, until: null, created: t - 2 * 3600 - 6, finished: t - 2 * 3600, error: null, checks: diagChecks(t), bundle: null });
+}
+function diagView(u: User, x: Json): Json | null {
+  if (x.kind === 'bundle' && x.by !== u.name) return null;
+  const t = now();
+  if (x.state === 'queued' && t - x.queued >= 1) x.state = 'running';
+  if (x.state === 'running' && t - x.queued >= 3) {
+    Object.assign(x, { state: 'done', created: x.queued, finished: t, checks: diagChecks(t) });
+    if (x.kind === 'bundle') {
+      const token = rand(32);
+      const body = `nexus-support bundle (mock) ${x.id}: ${new Date(x.since * 1000).toISOString()} .. ${new Date(x.until * 1000).toISOString()}\n`;
+      db.downloads.set(token, { owner: x.by, filename: `nexus-support-${x.id}.tar.gz`, body, expires: t + 86400 });
+      x.bundle = { bytes: 184_320 + Math.floor(Math.random() * 40_000), url: `/api/v1/downloads/${token}` };
+    }
+  }
+  const { queued: _q, ...rest } = x;
+  return { ...rest, expires: x.created ? x.created + 86400 : undefined };
+}
+const diagSubmit = async (u: User, kind: string, since: number | null, until: number | null) => {
+  if (db.diag.some((x) => x.state === 'queued')) throw new HttpError(409, 'a diagnostics request is waiting to run; try again in a minute');
+  const x = { id: rand(16), kind, by: u.name, state: 'queued', since, until, created: null, finished: null, error: null, checks: null, bundle: null, queued: now() };
+  db.diag.unshift(x);
+  await audit(u.name, `diag.${kind}`, `diag/${x.id}`, kind === 'bundle' ? { since, until } : {});
+  return [202, { id: x.id, state: 'queued' }] as [number, Json];
+};
+const diagReader = (c: { user: User | null }) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  if (u.tenant) throw new HttpError(403, 'appliance-wide');
+  return u;
+};
+on('GET', '/diagnostics', (c) => {
+  const u = diagReader(c);
+  return [200, { items: db.diag.map((x) => diagView(u, x)).filter(Boolean) }];
+});
+on('POST', '/diagnostics/checks', (c) => diagSubmit(diagReader(c), 'checks', null, null));
+on('POST', '/diagnostics/bundle', (c) => {
+  const u = need(c.user, 'admin');
+  const until = c.body.until ?? now();
+  const since = c.body.since ?? until - 86400;
+  if (!(since < until) || until > now() + 3600) throw new HttpError(400, 'since must be before until, and until not in the future');
+  if (until - since > 31 * 86400) throw new HttpError(400, 'the time range is limited to 31 days');
+  return diagSubmit(u, 'bundle', since, until);
+});
+on('GET', '/diagnostics/:id', (c, [id]) => {
+  const u = diagReader(c);
+  const v = diagView(u, find(db.diag, (x) => x.id === id, 'diagnostics run'));
+  if (!v) throw new HttpError(404, 'diagnostics run not found');
+  return [200, v];
+});
+
 // ---------------------------------------------------------------- server glue
 
 function readBody(req: Req): Promise<Uint8Array & { toString(enc: string): string }> {
@@ -3310,8 +3587,8 @@ async function handle(req: Req, res: Res) {
     for (const [m, re, h] of routes) {
       const mm = method === m ? re.exec(path) : null;
       if (!mm) continue;
-      const [status, out] = await h({ method, path, query: url.searchParams, body, raw, headers: req.headers, user, sid, res }, mm.slice(1));
-      return send(status, out);
+      const [status, out, type] = await h({ method, path, query: url.searchParams, body, raw, headers: req.headers, user, sid, res }, mm.slice(1));
+      return send(status, out, type);
     }
     throw new HttpError(404, 'no such endpoint');
   } catch (e) {

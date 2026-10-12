@@ -486,6 +486,17 @@ async function main() {
       await until(`return !!document.querySelector('#an-f')`, 'anomaly settings');
       await shot('settings-anomaly');
     }],
+    ['reports', async () => {
+      await go('/reports');
+      await until(`return !!document.querySelector('#r-sched') && document.body.innerText.includes('weekly-ops')`, 'reports page');
+      await ev(`document.querySelector('input[name="report-type"][value="failed"]').click(); return true;`);
+      await settle();
+      await shot('reports', { height: 1300 });
+      await ev(`$rowClick('weekly-ops', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #rs-to')`, 'scheduled report dialog');
+      await shot('report-schedule', { height: 1150 });
+      await closeDialogs();
+    }],
     ['tenants', async () => {
       await go('/tenants');
       await shot('tenants');
@@ -650,6 +661,12 @@ async function main() {
       await shot('settings-ssh-keys');
       await go('/settings?tab=updates');
       await shot('settings-updates');
+      // Phase 14b: self-checks (seeded run) and a support bundle the mock finishes after ~3 s
+      await go('/settings?tab=diagnostics');
+      await until(`return !!document.querySelector('#diag-checks-h') && document.querySelectorAll('tbody tr').length > 10`, 'diagnostics checks');
+      await ev(`$click('Create bundle'); return true;`);
+      await until(`return [...document.querySelectorAll('.chip')].some((c) => c.textContent.trim() === 'Ready')`, 'support bundle ready');
+      await shot('settings-diagnostics', { height: 1700 });
     }],
     ['approvals', async () => {
       await go('/quorum');

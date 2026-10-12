@@ -73,6 +73,7 @@ log (`alert.ack`, `alert.resolve`).
 | `orphaned` | info | snapshots of an object that is in no protection group of its tenant were found; they are pruned with the default retention (shown once per object) | — | put the object into a group if it should keep being protected with that group's retention, or ignore it; see [05 Policies and protection groups](05-policies-and-groups.md#snapshots-of-objects-in-no-group) |
 | `anomaly` | critical | a backup added far more new data than usual for its source, or new data that suddenly does not compress (see [Change-rate anomalies](#change-rate-anomalies)) | — | check the source for mass changes or encryption (ransomware) before the last good snapshot expires; the message names it |
 | `quota` | warning at 80 %, critical at 100 % | a tenant's store reached 80 % or 100 % of its soft quota (**Tenants**); one alert per tenant, escalated at 100 % | usage is back under 80 % | review retention or what the tenant backs up, or raise the quota; backups continue either way |
+| `report` | warning | a scheduled report could not be mailed (SMTP server unreachable or refusing, no SMTP server configured, report removed meanwhile) or its schedule is invalid; one alert per report (`report:<name>`) | the report is mailed successfully (scheduled or **Send now**) | check the SMTP server under **Settings → Alert delivery** and the recipients on **Reports**, then **Send now** |
 | `break_glass` | critical | an administrator account was reset on the console with the recovery key (`nexus-setup recover-admin`) | — | make sure the recovery was planned (check the audit entry `user.break_glass`), then acknowledge it; until then every administrator sees a red banner. See [14 Disaster recovery](14-disaster-recovery.md#break-glass-the-only-administrator-lost-their-authenticator) |
 | `forwarding` | warning | audit / alert forwarding to a syslog or HTTPS sink has failed for 15 minutes (one alert per sink; the message names the destination and the error) | the sink delivers again (or is disabled / removed) | check the receiver (reachable, certificate, token) and **Settings → Forwarding** (**Send test message**); nothing is lost, the backlog follows. See [10 Approvals and audit](10-approvals-and-audit.md#forwarding-to-a-siem) |
 
@@ -245,6 +246,43 @@ over TLS and/or HTTPS JSON, in order, at least once); see
 > **Status:** Forwarding is covered by scheduler tests against local TLS syslog and HTTPS receivers (resume after a
 > restart, nothing skipped after failures) and by API tests; the lab step `lab/appliance/forwarding.sh` checks it
 > on an installed appliance against an rsyslog container.
+
+## Scheduled reports
+
+Administrators can have the reports of **Monitor → Reports** (see
+[03 The web interface](03-web-interface.md#reports)) mailed regularly, for example a weekly status for the
+operations team or a monthly report per customer tenant.
+
+![A scheduled report](images/report-schedule.png)
+
+1. Set up the SMTP server first (**Settings → Alert delivery**); reports use the same server and sender address.
+   The SMTP server is already in the appliance's outbound allow-list, nothing else needs to be opened.
+2. **Reports → Scheduled reports → Add report**:
+   - **Name**: letters, digits, `.`, `-`, `_`; it is part of the attachment names (`weekly-ops-failed-2026-10-12.csv`).
+   - **Data of**: all tenants, or one tenant (the report then contains only that tenant's objects and jobs; useful for
+     a customer's contact).
+   - **Reports**: one or more of the four reports.
+   - **Schedule**: on weekdays (`Mon 07:00`), daily (`daily 07:00`) or monthly (`monthly 1 06:00`; a month without
+     the day sends on its last day), in the chosen **Time zone**. Hourly schedules are not offered.
+   - **Recipients**: up to 16 mail addresses.
+3. **Save**. The change applies at once and is recorded in the audit log (`settings.reports`).
+
+What is sent: one HTML e-mail with a short summary per report (number of rows, the first 20 rows as a table) and
+every report as a CSV attachment (all rows), plus a plain-text part. Each mail covers the time since the previous
+scheduled run: a weekly report sent on Monday 07:00 covers Monday 07:00 of the week before up to this Monday 07:00; a
+monthly one the previous month. Protection status and Storage show the state at sending time.
+
+- The scheduler queues an appliance job `report_send` when a slot has passed. After downtime it sends once, not once
+  per missed slot. A newly added report waits for its first slot.
+- **Send now** sends a report immediately, covering one schedule period up to now (one week, one month). It does not
+  move the schedule.
+- **Last sent** shows the state of the latest send job; the job (on **Jobs**, appliance jobs) holds the log and the
+  attachment names.
+- A sent report is audited (`report.sent`, with recipients, range and attachment names). If it cannot be sent, the
+  appliance raises a `report` warning (see [Alert kinds](#alert-kinds)) that resolves itself after the next successful
+  send.
+- The mail leaves the appliance unencrypted beyond the SMTP connection's TLS. Send tenant reports only to people who
+  may see that tenant's data.
 
 ## Metrics (Prometheus)
 

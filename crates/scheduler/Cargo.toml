@@ -24,6 +24,7 @@ nftsync = { path = "../nftsync" }
 plugin-manager = { path = "../plugin-manager" }
 plugin-proto = { path = "../plugin-proto" }
 replication = { path = "../replication", default-features = false }
+reports = { path = "../reports" }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 # forwarding (src/forward.rs): syslog over TLS, pinned / CA-verified TLS of the HTTPS sink
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

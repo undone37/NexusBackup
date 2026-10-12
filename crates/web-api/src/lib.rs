@@ -24,6 +24,7 @@ pub mod alerts;
 pub mod approvals;
 pub mod auth;
 pub mod dashboard;
+pub mod diag;
 pub mod forwarding;
 pub mod inventory;
 pub mod jobs;
@@ -32,6 +33,7 @@ pub mod ops;
 pub mod plugins;
 pub mod quorum;
 pub mod replication;
+pub mod reports;
 pub mod resources;
 pub mod runctl;
 pub mod settings;
@@ -102,6 +104,8 @@ pub struct AppState {
     pub plugins: std::sync::OnceLock<crate::plugins::PluginPaths>,
     /// OS update control dir (default: env `NEXUS_UPDATE_DIR` or /var/lib/nexus/update)
     pub update_dir: std::sync::OnceLock<PathBuf>,
+    /// diagnostics control dir (default: env `NEXUS_DIAG_DIR` or /var/lib/nexus/diag)
+    pub diag_dir: std::sync::OnceLock<PathBuf>,
     /// `GET /dashboard` answers, ≤ 60 s old
     pub dashboard: crate::dashboard::Cache,
     /// OIDC discovery/JWKS cache and pending logins
@@ -129,6 +133,7 @@ impl AppState {
             repl: crate::replication::ReplState::new(repl),
             plugins: std::sync::OnceLock::new(),
             update_dir: std::sync::OnceLock::new(),
+            diag_dir: std::sync::OnceLock::new(),
             dashboard: Default::default(),
             oidc: Default::default(),
         })
@@ -415,6 +420,12 @@ pub fn router(st: St) -> Router {
         .route("/auth/oidc/callback", get(oidc::callback))
         .route("/dashboard", get(dashboard::dashboard))
         .route("/storage", get(storage::storage))
+        .route("/reports/{file}", get(reports::export))
+        .route(
+            "/settings/reports",
+            get(reports::get_scheduled).put(reports::put_scheduled),
+        )
+        .route("/settings/reports/{name}/send", post(reports::send_now))
         .route("/tenants/{name}/quota", put(storage::put_quota))
         .route("/settings/anomaly", get(storage::get_anomaly).put(storage::put_anomaly))
         .route("/settings/oidc", get(oidc::get_settings).put(oidc::put_settings))
@@ -427,6 +438,11 @@ pub fn router(st: St) -> Router {
         .route("/updates", get(settings::get_updates))
         .route("/updates/check", post(settings::check_updates))
         .route("/updates/apply", post(settings::apply_update))
+        .route("/diagnostics", get(diag::list))
+        .route("/diagnostics/checks", post(diag::run_checks))
+        .route("/diagnostics/bundle", post(diag::create_bundle))
+        .route("/diagnostics/{id}", get(diag::get_one))
+        .route("/diagnostics/{id}/download", get(diag::download))
         .route(
             "/settings/approvals",
             get(approvals::get_approvals).put(approvals::set_approvals),
