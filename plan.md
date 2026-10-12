@@ -100,6 +100,15 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | Branding (Phase 12) | **Name "NexusBackup", simple geometric SVG logo mark, navy + teal palette** (decided 2026-10-11) | Neutral; replaceable (one SVG + CSS variables). |
 | UI dependencies (Phase 12) | **Hand-written SVG charts (no chart library); small npm UI deps allowed (e.g. icon set)** (decided 2026-10-11) | Small bundle, strict CSP. |
 | Release 0.0.1-alpha | **After Phase 12: push main, CI green, push tag `v0.0.1-alpha` → CI draft release; maintainer signs the digest (release/sign.sh), then the draft is published** (decided 2026-10-11) | Signing needs the maintainer's passphrase. |
+| Phases 13–18 scope | **All Cohesity "worth copying" items, Tiers 1–3 (docs/cohesity-comparison.md)** (decided 2026-10-12) | Close operational gaps; feature parity where it fits the pull/security model. |
+| Failover of replicated tenants | **Still no promotion: a secondary never takes over; DR = rebuild a primary from the secondary or offsite** (reconfirmed 2026-10-12) | Keeps the one-way trust model of replication. |
+| Emergency console root access (Phase 14) | **tty2 gate: approved one-time code (`console.unlock`, ≤ 8 h) or the recovery key; time-limited shell; audit + critical alert** (decided 2026-10-12) | Closes the "no root shell" gap without sshd or a known root password. |
+| Audit/alert forwarding (Phase 14) | **Syslog over TLS (RFC 5424/5425) and HTTPS JSON, both; audit entries carry seq + hash; daily anchor record** (decided 2026-10-12) | SIEM integration; anchors the hash chain off the box. |
+| Orphaned snapshots (Phase 13) | **Pruned with the default GFS (setting `orphan_gfs`); never-locked-only delete via approval** (decided 2026-10-12) | Store must not grow forever. |
+| Legal hold (Phase 15) | **Set by the security officer alone (adds protection); release needs approval; advisory to secondaries** (decided 2026-10-12) | Incident tool beyond retention locks. |
+| API tokens (Phase 14) | **Scoped read/operator, expiring, hashed; can never approve, change settings/users/tokens or download** (decided 2026-10-12) | Automation without weakening four-eyes. |
+| Vault mode (Phase 16) | **One-way profile for secondaries; switching off needs approval + recovery key** (decided 2026-10-12) | Protects the vault copy against one stolen admin account. |
+| Mail export (Phase 18) | **mbox / .eml tree first, then a PST writer** (decided 2026-10-12) | PST writing is large; open formats cover most needs. |
 | NAS shares (Phase 7) | **Kernel NFS/SMB mounts, read-only, in a private mount namespace by a small privileged helper with its own SELinux domain** (decided 2026-10-09) | Mature, fast clients; isolation via namespace + SELinux. |
 | Windows testing (Phase 7) | **Build + unit tests only, no Windows test VMs for now** (decided 2026-10-09) | Real Windows testing later; plan's test matrix for Windows is deferred. |
 | Agent trust (Phase 7) | **Appliance-run private CA + one-time enrollment token**, agent pins appliance cert (decided 2026-10-09) | Agent never connects out; mTLS only. |
@@ -593,6 +602,38 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
 - OIDC login (authorization code + PKCE) next to local accounts; group/claim → role/tenant mapping; local break-glass admins.
 - Manual screenshots regenerated (Phase 10 script); docs/control-plane.md + threat model updated for OIDC.
 
+### Phase 13 — Operations core (after 0.0.1-alpha; added 2026-10-12 by user request, Cohesity comparison)
+- Orphaned-snapshot retention + approved snapshot delete; run control (retries, pause/maintenance, blackout windows,
+  runtime SLA, richer schedules with time zones, cancel running jobs, back up selected/failed guests);
+  auto-protect (guest inventory, `all`/tag/pool modes with exclusions); storage accounting (dedup/compression,
+  per tenant/group, growth) + soft quotas; change-rate anomaly alert; alert lifecycle (resolve, auto-resolve,
+  hints) + notification rules and webhook templates.
+
+### Phase 14 — Security and operations
+- Audit/alert forwarding (syslog TLS + HTTPS JSON, anchor), audit filters + CSV; diagnostics bundle + self-checks
+  (also before updates); emergency console root access; viewer role, download privilege, session list/revoke,
+  configurable timeouts, API tokens, web certificate import (CSR on the appliance) + expiry alerts, login banner,
+  management IP allow-list; scheduled CSV/HTML reports. Release 0.1.0-alpha afterwards.
+
+### Phase 15 — Restore and protection
+- Restore options (link down, power-on, name, multi-guest, replace original safely); restore into hosts through an
+  agent for any file snapshot; legal hold; consistency per snapshot; disk/file selection; agent cert renewal,
+  re-registration, throttling; parallel guests per group.
+
+### Phase 16 — Offsite, replication, vault, tenants
+- Time windows (bandwidth/pause) for offsite and replication, replication sync window + "close vault now", vault
+  profile, offsite browse/restore in the UI + attach an offsite copy, optional per-tenant recovery key, tenant
+  deactivation.
+
+### Phase 17 — Workloads
+- M365: per-item failures as warnings, unlicensed users, Recoverable Items, private channels, group mailboxes,
+  several app registrations, chats (download only), cross-tenant restore, app registration helper.
+  PostgreSQL: WAL-only frequent runs, recoverable range, start after restore, tablespace remap, LSN targets, HA.
+
+### Phase 18 — Tier 3
+- File-name search across snapshots (VM opt-in, M365 metadata); Linux bare-metal recovery / P2V via rescue ISO;
+  tenant-admin role; mbox/eml then PST export. Not planned: failover (decision above).
+
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
 ---
@@ -612,6 +653,9 @@ Timelines assume a small dedicated team (2–4 engineers); adjust to actual staf
 | Team size and licensing model (AGPL vs. others, commercial support?) | Affects reuse of AGPL code (e.g. PBS crates) and go-to-market | **Decided 2026-10-08: AGPL-3.0.** Commercial support model and team size still open. |
 | Instant-recovery latency on HDD tier | Poor user experience | Optional NVMe cache tier; measure in phase 3. |
 | Catalog growth with millions of NAS files | SQLite performance | Keep file metadata in dynamic indexes, not in the catalog; catalog stores only snapshots/jobs. |
+| Anomaly alert false positives (Phase 13) | Alert fatigue, ignored real attacks | Conservative defaults (3× median, 1 GiB floor), thresholds in settings, per-source history; tune with real data. |
+| Tenant-admin scope creep (Phase 18) | Privilege escalation across tenants | Explicit allow-list of actions; RBAC matrix tests; no offsite/keys/approvals. |
+| PST writer complexity (Phase 18) | Large effort, format bugs | Ship mbox/eml first; PST mail-only; validate with libpff/Outlook. |
 | Legal retention expectations (GoBD/HGB) | Customer misunderstanding | Document clearly that backup ≠ archive. |
 
 ---
