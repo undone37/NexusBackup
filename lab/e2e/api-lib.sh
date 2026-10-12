@@ -17,7 +17,7 @@ api() {
 	local u=$1 m=$2 p=$3 d=${4:-}
 	local args=(-s --cacert "$ROOT/etc/nexus/tls/cert.pem" --resolve "nexus-m5:$PORT:127.0.0.1"
 		-b "$S/$u.jar" -c "$S/$u.jar" -X "$m" -o "$S/body" -w '%{http_code}')
-	[ "$m" = GET ] || args+=(-H "X-CSRF-Token: $(cat "$S/$u.csrf" 2>/dev/null)")
+	[ "$m" = GET ] || args+=(-H "X-CSRF-Token: $(cat "$S/$u.csrf" 2>/dev/null || true)") # none for anonymous calls
 	[ -z "$d" ] || args+=(-H 'Content-Type: application/json' --data-binary "$d")
 	curl "${args[@]}" "$BASE$p" >"$S/status"
 	cat "$S/body"

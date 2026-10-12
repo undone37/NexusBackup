@@ -151,10 +151,20 @@ step_restore() {
 	else
 		login admin "$ADMIN_PW" "$ADMIN_TOTP"
 		opw="op-$(head -c 12 /dev/urandom | base64 | tr -d '/+=')"
-		r=$(api admin POST /users "$(jq -nc --arg p "$opw" '{name:"op", password:$p, role:"operator"}')")
+		# self-enrollment (plan §2 "User onboarding"): the admin gets a one-time code, the
+		# operator sets their own password and authenticator
+		r=$(api admin POST /users '{"name":"op", "role":"operator"}')
 		expect 201 "create operator"
-		osec=$(jq -r '.totp_uri' <<<"$r" | sed -n 's/.*[?&]secret=\([A-Z2-7]*\).*/\1/p')
-		[ -n "$osec" ] || die "no TOTP URI for the operator: $r"
+		local code
+		code=$(jq -r '.activation.code' <<<"$r")
+		r=$(api anon POST /auth/activate/begin "$(jq -nc --arg c "$code" '{name:"op", code:$c}')")
+		expect 200 "activation begin"
+		osec=$(jq -r '.totp_secret' <<<"$r")
+		api anon POST /auth/activate/complete "$(jq -nc --arg c "$code" --arg p "$opw" --arg t "$(python3 "$api_lib/totp.py" "$osec")" \
+			'{name:"op", code:$c, password:$p, totp:$t}')" >/dev/null
+		expect 200 "activation complete"
+		# the activation used this TOTP step: login() must wait for the next one
+		python3 "$api_lib/totp.py" "$osec" >"${ROOT:-$S}/run/lastcode-op"
 		printf "OP_PW='%s'\nOP_TOTP='%s'\n" "$opw" "$osec" >"$S/op.env"
 	fi
 	login op "$opw" "$osec"
