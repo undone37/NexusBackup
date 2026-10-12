@@ -1,4 +1,4 @@
-# Phases 13–18: Cohesity-inspired features (Tier 1 + 2 + 3)
+# Phases 13–19: Cohesity-inspired features (Tier 1 + 2 + 3)
 
 ## Context
 We compared Cohesity 7.4.1 with NexusBackup; the findings are in `docs/cohesity-comparison.md`. The user wants every
@@ -212,7 +212,16 @@ existing rules: record decisions in plan.md, update state.md and commit after ev
   - Appliance-side bandwidth and CPU limits enforced by the agent.
   - Run guests in parallel within a group (per-group limit, default 2).
 
-## Phase 16: Offsite, replication, vault, tenants (Tier 2)
+## Phase 16: Hardware and inbound firewall (added 2026-10-12, user request)
+
+- **16a. Disks + SMART:** disk inventory, smartmontools in the image, SMART attributes/self-tests in the UI, `disk`
+  alerts (SMART failing, pending/reallocated sectors, temperature, md degraded/rebuilding).
+- **16b. Disk layout (mdadm + XFS):** data/metadata arrays from empty disks, spares, replace + rebuild, grow, via a
+  root helper with its own SELinux domain; approval + typed confirmation for destructive steps; system disks shown only.
+- **16c. Inbound firewall:** per-service source restrictions (8443, replication, future services) in the UI,
+  generalising the 14d management allow-list; approval for every change; console reset.
+
+## Phase 17 (was 16): Offsite, replication, vault, tenants (Tier 2)
 
 - **16a. Time windows.** One shared window type, `[{days, from, to, action: pause|limit, rate}]`, in
   `schedule.rs`:
@@ -240,7 +249,7 @@ existing rules: record decisions in plan.md, update state.md and commit after ev
 - **16f. Tenant deactivate.** `tenants.disabled` pauses schedules and blocks the tenant's logins and tokens.
   Quotas are in 13d.
 
-## Phase 17: Workloads (Tier 2)
+## Phase 18 (was 17): Workloads (Tier 2)
 
 - **17a. M365** (`plugins/m365`):
   - Skip and report failed items: the guest ends as a **warning** with a failure count instead of aborting.
@@ -264,7 +273,7 @@ existing rules: record decisions in plan.md, update state.md and commit after ev
   - HA: a list of hosts; back up from the primary (`pg_is_in_recovery()`), and take a new base backup after a
     failover.
 
-## Phase 18: Tier 3
+## Phase 19 (was 18): Tier 3
 
 - **18a. File-name search across snapshots.**
   - First step: a search job that scans the sealed Tree indexes of a tenant's snapshots with a time budget and

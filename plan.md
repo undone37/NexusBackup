@@ -101,7 +101,7 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | UI dependencies (Phase 12) | **Hand-written SVG charts (no chart library); small npm UI deps allowed (e.g. icon set)** (decided 2026-10-11) | Small bundle, strict CSP. |
 | Release 0.0.1-alpha | **After Phase 12: push main, CI green, push tag `v0.0.1-alpha` → CI draft release; maintainer signs the digest (release/sign.sh), then the draft is published** (decided 2026-10-11) | Signing needs the maintainer's passphrase. |
 | Visibility | **GitHub repo and ghcr.io package stay private until the maintainer decides otherwise (more testing first)** (decided 2026-10-12) | Releases are for testing only; appliances need a read-only pull credential for updates. |
-| Phases 13–18 scope | **All Cohesity "worth copying" items, Tiers 1–3 (docs/cohesity-comparison.md)** (decided 2026-10-12) | Close operational gaps; feature parity where it fits the pull/security model. |
+| Phases 13–19 scope | **All Cohesity "worth copying" items, Tiers 1–3 (docs/cohesity-comparison.md)** (decided 2026-10-12) | Close operational gaps; feature parity where it fits the pull/security model. |
 | Failover of replicated tenants | **Still no promotion: a secondary never takes over; DR = rebuild a primary from the secondary or offsite** (reconfirmed 2026-10-12) | Keeps the one-way trust model of replication. |
 | Emergency console root access (Phase 14) | **tty2 gate: approved one-time code (`console.unlock`, ≤ 8 h) or the recovery key; time-limited shell; audit + critical alert** (decided 2026-10-12) | Closes the "no root shell" gap without sshd or a known root password. |
 | Audit/alert forwarding (Phase 14) | **Syslog over TLS (RFC 5424/5425) and HTTPS JSON, both; audit entries carry seq + hash; daily anchor record** (decided 2026-10-12) | SIEM integration; anchors the hash chain off the box. |
@@ -117,10 +117,13 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | File index (Phase 15, moved from 18) | **Per-tenant index, written at snapshot commit, sealed with the tenant key and stored in the tenant's store (no file names in plaintext in the catalog); removed with the snapshot** (decided 2026-10-12) | Find a file to restore without knowing which snapshot holds it. |
 | Forwarding details (14a) | **Outbox table (triggers on alerts/jobs) + audit by seq; at-least-once, never skips; weakening a sink (disable, remove, new destination, CA/pin/headers) needs approval, adding one does not; a new destination receives the audit history from seq 1; TLS trust = CA, exact cert or SHA-256 pin (no insecure mode); structured-data PEN 32473 is the documentation placeholder until a real enterprise number is assigned** (decided 2026-10-12) | SIEM gets a gap-free, verifiable trail. |
 | API tokens / certificate details (14d2) | **Token creation needs password + TOTP (OIDC: session ≤ 15 min); max 20 per user; allow-list of token routes (closed by default); imported web cert in a separate `web.pem` while replication ALPN keeps the self-signed identity cert (existing pins never break); cert install admin-only without approval (audited); no ACME client** (decided 2026-10-12) | Automation without weakening four-eyes; own PKI without breaking replication. |
+| Firewall in the UI (Phase 16) | **Inbound only: per-service source restrictions (8443, replication, SSH/others if added); outbound stays automatic default-deny; changes need approval** (decided 2026-10-12) | Restrict admin access without weakening the egress model. |
+| Disk layout (Phase 16) | **mdadm + XFS for data/metadata tiers, configured in the UI (create on empty disks, spare, replace/rebuild, grow); system disks only shown (mirrored at install); SMART in the UI + `disk` alerts** (decided 2026-10-12) | In-kernel, mature, SELinux-friendly; no out-of-tree modules in the signed image. |
+| Order after Phase 15 | **Hardware + firewall = Phase 16, after file search (Phase 15); former 16–18 become 17–19** (decided 2026-10-12) | User priority. |
 | Legal hold (Phase 15) | **Set by the security officer alone (adds protection); release needs approval; advisory to secondaries** (decided 2026-10-12) | Incident tool beyond retention locks. |
 | API tokens (Phase 14) | **Scoped read/operator, expiring, hashed; can never approve, change settings/users/tokens or download** (decided 2026-10-12) | Automation without weakening four-eyes. |
-| Vault mode (Phase 16) | **One-way profile for secondaries; switching off needs approval + recovery key** (decided 2026-10-12) | Protects the vault copy against one stolen admin account. |
-| Mail export (Phase 18) | **mbox / .eml tree first, then a PST writer** (decided 2026-10-12) | PST writing is large; open formats cover most needs. |
+| Vault mode (Phase 17) | **One-way profile for secondaries; switching off needs approval + recovery key** (decided 2026-10-12) | Protects the vault copy against one stolen admin account. |
+| Mail export (Phase 19) | **mbox / .eml tree first, then a PST writer** (decided 2026-10-12) | PST writing is large; open formats cover most needs. |
 | NAS shares (Phase 7) | **Kernel NFS/SMB mounts, read-only, in a private mount namespace by a small privileged helper with its own SELinux domain** (decided 2026-10-09) | Mature, fast clients; isolation via namespace + SELinux. |
 | Windows testing (Phase 7) | **Build + unit tests only, no Windows test VMs for now** (decided 2026-10-09) | Real Windows testing later; plan's test matrix for Windows is deferred. |
 | Agent trust (Phase 7) | **Appliance-run private CA + one-time enrollment token**, agent pins appliance cert (decided 2026-10-09) | Agent never connects out; mTLS only. |
@@ -628,24 +631,35 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
   management IP allow-list; scheduled CSV/HTML reports. Release 0.1.0-alpha afterwards.
 
 ### Phase 15 — Restore and protection
-- **File search (moved here from Phase 18 on 2026-10-12 by user request):** per-tenant file index, built at
+- **File search (moved here from Phase 19 on 2026-10-12 by user request):** per-tenant file index, built at
   snapshot commit, sealed with the tenant key in the tenant's store; search by name/wildcard across snapshots,
   results lead straight to download / restore; VM-disk indexing opt-in per group.
 - Restore options (link down, power-on, name, multi-guest, replace original safely); restore into hosts through an
   agent for any file snapshot; legal hold; consistency per snapshot; disk/file selection; agent cert renewal,
   re-registration, throttling; parallel guests per group.
 
-### Phase 16 — Offsite, replication, vault, tenants
+### Phase 16 — Hardware and inbound firewall in the web UI (after Phase 15; added 2026-10-12 by user request)
+- Disks: inventory of all disks (model, serial, size, role), SMART attributes and self-test results in the UI
+  (smartmontools in the image), `disk` alerts for failing/degraded disks (SMART health, pending/reallocated sectors,
+  temperature, md array degraded / rebuilding).
+- Disk layout: mdadm (RAID1/5/6/10) + XFS for the data and metadata tiers, configured in the UI: create an array
+  on empty disks, add a hot spare, replace a failed disk (rebuild with progress), grow; system disks are mirrored
+  at install and only shown. Destructive steps need approval + typed confirmation; disks with data are refused.
+- Inbound firewall: per-service source restrictions (web port 8443, replication, SSH or other services if ever
+  added) edited in the UI; generalises the 14d management allow-list; outbound stays automatic (default-deny);
+  every change needs approval; console reset against lock-out.
+
+### Phase 17 — Offsite, replication, vault, tenants
 - Time windows (bandwidth/pause) for offsite and replication, replication sync window + "close vault now", vault
   profile, offsite browse/restore in the UI + attach an offsite copy, optional per-tenant recovery key, tenant
   deactivation.
 
-### Phase 17 — Workloads
+### Phase 18 — Workloads
 - M365: per-item failures as warnings, unlicensed users, Recoverable Items, private channels, group mailboxes,
   several app registrations, chats (download only), cross-tenant restore, app registration helper.
   PostgreSQL: WAL-only frequent runs, recoverable range, start after restore, tablespace remap, LSN targets, HA.
 
-### Phase 18 — Tier 3
+### Phase 19 — Tier 3
 - (file search moved to Phase 15) M365 item metadata search; Linux bare-metal recovery / P2V via rescue ISO;
   tenant-admin role; mbox/eml then PST export. Not planned: failover (decision above).
 
@@ -669,8 +683,8 @@ Timelines assume a small dedicated team (2–4 engineers); adjust to actual staf
 | Instant-recovery latency on HDD tier | Poor user experience | Optional NVMe cache tier; measure in phase 3. |
 | Catalog growth with millions of NAS files | SQLite performance | Keep file metadata in dynamic indexes, not in the catalog; catalog stores only snapshots/jobs. |
 | Anomaly alert false positives (Phase 13) | Alert fatigue, ignored real attacks | Conservative defaults (3× median, 1 GiB floor), thresholds in settings, per-source history; tune with real data. |
-| Tenant-admin scope creep (Phase 18) | Privilege escalation across tenants | Explicit allow-list of actions; RBAC matrix tests; no offsite/keys/approvals. |
-| PST writer complexity (Phase 18) | Large effort, format bugs | Ship mbox/eml first; PST mail-only; validate with libpff/Outlook. |
+| Tenant-admin scope creep (Phase 19) | Privilege escalation across tenants | Explicit allow-list of actions; RBAC matrix tests; no offsite/keys/approvals. |
+| PST writer complexity (Phase 19) | Large effort, format bugs | Ship mbox/eml first; PST mail-only; validate with libpff/Outlook. |
 | Legal retention expectations (GoBD/HGB) | Customer misunderstanding | Document clearly that backup ≠ archive. |
 
 ---
