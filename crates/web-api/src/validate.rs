@@ -161,14 +161,16 @@ pub fn host(s: &str) -> ApiResult<()> {
     }
 }
 
-pub const ROLES: [&str; 4] = ["admin", "security_officer", "operator", "tenant_user"];
+/// `viewer` (v15): read-only, appliance-wide or one tenant. The catalog also
+/// accepts `tenant_admin` (Phase 18c); the API does not hand it out yet.
+pub const ROLES: [&str; 5] = ["admin", "security_officer", "operator", "tenant_user", "viewer"];
 
 pub fn role(s: &str) -> ApiResult<()> {
     if ROLES.contains(&s) {
         Ok(())
     } else {
         Err(ApiError::bad(
-            "role: must be admin, security_officer, operator or tenant_user",
+            "role: must be admin, security_officer, operator, tenant_user or viewer",
         ))
     }
 }

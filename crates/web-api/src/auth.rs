@@ -4,7 +4,7 @@
 use crate::{ct_eq, random_hex, sha256_hex, validate, ApiError, ApiResult, AppState, St, J};
 use axum::extract::{ConnectInfo, FromRequestParts, State};
 use axum::http::request::Parts;
-use axum::http::{header, HeaderValue, Method, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use catalog::rusqlite::{params, Connection, OptionalExtension, Row};
@@ -16,6 +16,7 @@ use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 
 pub const COOKIE: &str = "nx_session";
+/// Default session timeouts; setting `session` overrides them (crate::access).
 pub const IDLE_SECS: i64 = 30 * 60;
 pub const ABSOLUTE_SECS: i64 = 12 * 3600;
 pub const MAX_FAILURES: usize = 5;
@@ -38,9 +39,17 @@ pub struct User {
     pub activation_expires: Option<i64>,
     /// `local` (password + TOTP) or `oidc` (signs in at the IdP, catalog v10)
     pub auth: String,
+    /// may download restored files (`files_get`); explicit or the role's default (v15)
+    pub can_download: bool,
+    /// no login from then on (v15); `None` = never
+    pub expires: Option<i64>,
+    pub last_login: Option<i64>,
 }
 
-pub const USER_COLS: &str = "id, name, role, tenant, disabled, created, activation_hash, activation_expires, auth";
+pub const USER_COLS: &str =
+    "id, name, role, tenant, disabled, created, activation_hash, activation_expires, auth, can_download, expires, last_login";
+/// Columns of [`USER_COLS`]: credentials selected after them start here.
+pub const USER_NCOLS: usize = 12;
 
 impl User {
     pub fn from_row(r: &Row, off: usize) -> catalog::rusqlite::Result<Self> {
@@ -54,7 +63,17 @@ impl User {
             pending_activation: r.get::<_, Option<String>>(off + 6)?.is_some(),
             activation_expires: r.get(off + 7)?,
             auth: r.get(off + 8)?,
+            can_download: match r.get::<_, Option<bool>>(off + 9)? {
+                Some(b) => b,
+                None => catalog::access::role_can_download(&r.get::<_, String>(off + 2)?),
+            },
+            expires: r.get(off + 10)?,
+            last_login: r.get(off + 11)?,
         })
+    }
+
+    pub fn expired(&self, now: i64) -> bool {
+        self.expires.is_some_and(|e| now >= e)
     }
 
     pub fn load(c: &Connection, id: i64) -> ApiResult<User> {
@@ -150,7 +169,12 @@ impl FromRequestParts<St> for Ctx {
         let Some((csrf, created, last_seen, user)) = row else {
             return Err(ApiError::unauthorized());
         };
-        if user.disabled || now - last_seen > IDLE_SECS || now - created > ABSOLUTE_SECS {
+        if user.expired(now) {
+            c.execute("DELETE FROM sessions WHERE user_id = ?1", [user.id])?;
+            return Err(ApiError(StatusCode::UNAUTHORIZED, "account expired".into()));
+        }
+        let lim = catalog::access::session_limits(&c)?;
+        if user.disabled || now - last_seen > lim.idle_secs() || now - created > lim.absolute_secs() {
             c.execute("DELETE FROM sessions WHERE id_hash = ?1", [&sid])?;
             return Err(ApiError(StatusCode::UNAUTHORIZED, "session expired".into()));
         }
@@ -273,6 +297,9 @@ fn check_credentials(
     }
     if u.disabled {
         return Err("disabled");
+    }
+    if u.expired(catalog::now()) {
+        return Err("expired");
     }
     let seed = st.totp.decrypt(&u.name, stored_seed).map_err(|e| {
         eprintln!("<3>web-api: {e:#}");
@@ -397,7 +424,12 @@ fn dummy_hash() -> &'static str {
 
 /// Login is the one non-GET endpoint without CSRF header (no session yet);
 /// the JSON content type requirement and SameSite=Strict cover login CSRF.
-pub async fn login(State(st): State<St>, ClientIp(ip): ClientIp, J(r): J<LoginReq>) -> ApiResult<Response> {
+pub async fn login(
+    State(st): State<St>,
+    ClientIp(ip): ClientIp,
+    headers: HeaderMap,
+    J(r): J<LoginReq>,
+) -> ApiResult<Response> {
     let now = catalog::now();
     let valid_name = validate::name(&r.name, "name").is_ok();
     let ukey = format!("user:{}", if valid_name { r.name.as_str() } else { "?" });
@@ -426,9 +458,9 @@ pub async fn login(State(st): State<St>, ClientIp(ip): ClientIp, J(r): J<LoginRe
                 |row| {
                     Ok((
                         User::from_row(row, 0)?,
-                        row.get::<_, String>(9)?,
-                        row.get::<_, String>(10)?,
-                        row.get::<_, i64>(11)?,
+                        row.get::<_, String>(USER_NCOLS)?,
+                        row.get::<_, String>(USER_NCOLS + 1)?,
+                        row.get::<_, i64>(USER_NCOLS + 2)?,
                     ))
                 },
             )
@@ -475,28 +507,43 @@ pub async fn login(State(st): State<St>, ClientIp(ip): ClientIp, J(r): J<LoginRe
     };
     st.limiter.lock().unwrap().clear(&ukey);
 
-    let (cookie, csrf) = new_session(&st, user.id)?;
+    let (cookie, csrf) = new_session(&st, user.id, &ip, &headers)?;
     st.audit(&user.name, "auth.login", &target, json!({"ip": ip}))?;
     let mut res = Json(json!({"csrf": csrf, "user": user})).into_response();
     res.headers_mut().insert(header::SET_COOKIE, cookie);
     Ok(res)
 }
 
-/// A new session for `user_id` (local login and OIDC callback alike):
-/// the `Set-Cookie` value and the CSRF token. Expired sessions are purged.
-pub fn new_session(st: &AppState, user_id: i64) -> ApiResult<(HeaderValue, String)> {
+/// A new session for `user_id` (local login and OIDC callback alike) from
+/// `ip` with the request's user agent: the `Set-Cookie` value and the CSRF
+/// token. Expired sessions are purged; the account's `last_login` is set.
+pub fn new_session(st: &AppState, user_id: i64, ip: &str, headers: &HeaderMap) -> ApiResult<(HeaderValue, String)> {
     let now = catalog::now();
     let (token, csrf) = (random_hex(), random_hex());
+    let ua: String = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(256)
+        .collect();
     let c = st.cat.conn();
+    let lim = catalog::access::session_limits(&c)?;
     c.execute(
         "DELETE FROM sessions WHERE last_seen < ?1 OR created < ?2",
-        params![now - IDLE_SECS, now - ABSOLUTE_SECS],
+        params![now - lim.idle_secs(), now - lim.absolute_secs()],
     )?;
     c.execute(
-        "INSERT INTO sessions (id_hash, user_id, csrf, created, last_seen) VALUES (?1, ?2, ?3, ?4, ?4)",
-        params![sha256_hex(token.as_bytes()), user_id, csrf, now],
+        "INSERT INTO sessions (id_hash, user_id, csrf, created, last_seen, ip, user_agent)
+         VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6)",
+        params![sha256_hex(token.as_bytes()), user_id, csrf, now, ip, ua],
     )?;
-    let cookie = format!("{COOKIE}={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={ABSOLUTE_SECS}");
+    c.execute("UPDATE users SET last_login = ?2 WHERE id = ?1", params![user_id, now])?;
+    let cookie = format!(
+        "{COOKIE}={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={}",
+        lim.absolute_secs()
+    );
     Ok((HeaderValue::from_str(&cookie).unwrap(), csrf))
 }
 

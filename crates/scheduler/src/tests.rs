@@ -1889,6 +1889,8 @@ fn inventory_jobs_and_auto_protect() {
     s.start_jobs().unwrap();
     assert_eq!(state(&s, id), "failed");
 }
+/// Phase 14d account housekeeping and the management allow-list.
+mod accounts;
 /// Phase 14d certificate / secret / token expiry alerts.
 mod expiry;
 /// Phase 14a audit / alert forwarding.

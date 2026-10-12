@@ -363,15 +363,17 @@ fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiResult<Value>
     })
 }
 
-/// 202 `{id}` (+ `download_token` for `files_get`).
+/// 202 `{id}` (+ `download_token` for `files_get`, which also needs the
+/// account's download privilege). Viewers and security officers request no jobs.
 pub async fn create_job(State(st): State<St>, ctx: Ctx, J(r): J<JobReq>) -> ApiResult<Response> {
     let allowed = match ctx.user.role.as_str() {
         "admin" => true,
         "operator" => !ADMIN_KINDS.contains(&r.kind.as_str()),
         "tenant_user" => RESTORE_KINDS.contains(&r.kind.as_str()),
+        "viewer" | "security_officer" => false,
         _ => false,
     };
-    if !allowed {
+    if !allowed || (r.kind == "files_get" && !ctx.user.can_download) {
         return Err(ApiError::forbidden());
     }
     if ctx.token.is_some() && crate::tokens::DENIED_KINDS.contains(&r.kind.as_str()) {
@@ -517,6 +519,9 @@ pub async fn cancel_job(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> 
 /// `files_get` job (everyone else gets 404). Files older than 24 h are gone
 /// (the scheduler deletes them; we refuse to serve them meanwhile).
 pub async fn download(State(st): State<St>, ctx: Ctx, Path(token): Path<String>) -> ApiResult<Response> {
+    if !ctx.user.can_download {
+        return Err(ApiError::forbidden());
+    }
     if token.len() != 64 || !token.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
         return Err(ApiError::not_found());
     }

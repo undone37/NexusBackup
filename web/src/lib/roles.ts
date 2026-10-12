@@ -4,20 +4,23 @@ import type { Role, User } from './types';
 export const can = {
   configure: (u: User | null) => u?.role === 'admin',
   backup: (u: User | null) => u?.role === 'admin' || u?.role === 'operator',
-  restore: (u: User | null) => !!u && u.role !== 'security_officer',
+  // viewers: read-only, no job kinds at all (Phase 14d)
+  restore: (u: User | null) => !!u && u.role !== 'security_officer' && u.role !== 'viewer',
+  // files_get: the account's download privilege (Users page)
+  download: (u: User | null) => !!u?.can_download,
   cancelJob: (u: User | null) => u?.role === 'admin' || u?.role === 'operator',
   // approvers: admins and security officers (never the requester — the server checks)
   decideQuorum: (u: User | null) => u?.role === 'admin' || u?.role === 'security_officer',
-  viewQuorum: (u: User | null) => !!u && u.role !== 'tenant_user' && !u.tenant,
+  viewQuorum: (u: User | null) => !!u && u.role !== 'tenant_user' && u.role !== 'viewer' && !u.tenant,
   // Alerts are appliance-wide (no tenant column); tenant-scoped users get an empty list.
   viewAlerts: (u: User | null) => !!u && !u.tenant,
   audit: (u: User | null) => u?.role === 'admin' || u?.role === 'security_officer',
-  ackAlert: (u: User | null) => !!u && u.role !== 'tenant_user',
+  ackAlert: (u: User | null) => !!u && u.role !== 'tenant_user' && u.role !== 'viewer',
   // Replication peers/sources are appliance-wide: not for tenant-scoped users.
-  viewReplication: (u: User | null) => !!u && u.role !== 'tenant_user' && !u.tenant,
+  viewReplication: (u: User | null) => !!u && u.role !== 'tenant_user' && u.role !== 'viewer' && !u.tenant,
   // Plugins are appliance-wide; admins change them, security officers / operators may look.
-  viewPlugins: (u: User | null) => !!u && u.role !== 'tenant_user',
+  viewPlugins: (u: User | null) => !!u && u.role !== 'tenant_user' && u.role !== 'viewer',
   syncReplication: (u: User | null) => u?.role === 'admin' || u?.role === 'operator',
 };
 
-export const ROLES: Role[] = ['admin', 'security_officer', 'operator', 'tenant_user'];
+export const ROLES: Role[] = ['admin', 'security_officer', 'operator', 'tenant_user', 'viewer'];

@@ -37,9 +37,12 @@ For appliance accounts:
 - New accounts are activated with an activation code through **Activate account** below the form; see
   [09 Users and access](09-users-and-access.md#activating-your-account).
 
-A session ends after 30 minutes without activity and after 12 hours at the latest. You then see "Your session has
-expired. Please sign in again." If single sign-on fails, the sign-in page shows the reason in a red box; see
+A session ends after 30 minutes without activity and after 12 hours at the latest (an administrator can change both
+in **Settings → Security**). You then see "Your session has expired. Please sign in again." An account with an end
+date cannot sign in from that day on. If single sign-on fails, the sign-in page shows the reason in a red box; see
 [15 Troubleshooting](15-troubleshooting-faq.md#single-sign-on).
+
+If the administrators set a **login banner** (for example a legal notice), it appears in a blue box above the form.
 
 ## Layout
 
@@ -65,7 +68,8 @@ hidden; open it with the **Menu** button at the top left.
 - the **Alerts** button (bell icon) with the number of open alerts, for roles that see alerts;
 - the **theme** button (see below);
 - your user name and role, and for tenant-scoped accounts your tenant (e.g. "Tenant user · acme"). Click it to
-  open **My account** with your API tokens ([09 Users and access](09-users-and-access.md#api-tokens));
+  open **My account** with your sessions and API tokens ([09 Users and access](09-users-and-access.md#your-sessions-my-account),
+  [API tokens](09-users-and-access.md#api-tokens));
 - **Sign out** (arrow icon).
 
 **Theme (light / dark).** By default the interface follows your operating system's light or dark setting. The theme
@@ -80,19 +84,24 @@ Keyboard users: the first Tab stop is **Skip to content**.
 
 The sidebar shows only what your role may use. The server checks every request again; hiding is a convenience.
 
-| Page | Administrator | Security officer | Operator | Tenant user |
-|---|---|---|---|---|
-| Dashboard, Snapshots, Storage, Reports (CSV downloads), Jobs | ✓ | ✓ | ✓ | ✓ (own tenant) |
-| Reports: scheduled reports | ✓ | read | — | — |
-| Alerts | ✓ | ✓ | ✓ | — |
-| Approvals | ✓ | ✓ (decides) | ✓ (read) | — |
-| Audit log | ✓ | ✓ | — | — |
-| Tenants, Sources, Agents, Policies, Protection groups, Users | ✓ | — | — | — |
-| Replication, Plugins | ✓ | read | read | — |
-| Settings | ✓ (all tabs) | read (all tabs) | read (Approvals, Appliance SSH keys, Updates) | — |
+| Page | Administrator | Security officer | Operator | Tenant user | Viewer |
+|---|---|---|---|---|---|
+| Dashboard, Snapshots, Storage, Reports (CSV downloads), Jobs | ✓ | ✓ | ✓ | ✓ (own tenant) | read (its scope) |
+| Reports: scheduled reports | ✓ | read | — | — | — |
+| Alerts | ✓ | ✓ | ✓ | — | read (without a tenant) |
+| Approvals | ✓ | ✓ (decides) | ✓ (read) | — | — |
+| Audit log | ✓ | ✓ | — | — | — |
+| Tenants, Sources, Agents, Policies, Protection groups, Users | ✓ | — | — | — | — |
+| Replication, Plugins | ✓ | read | read | — | — |
+| Settings | ✓ (all tabs) | read (all tabs) | read (Approvals, Appliance SSH keys, Updates) | — | — |
+| My account | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 Accounts limited to one tenant (any role with a tenant set) see only that tenant's data and do not see the Alerts,
-Approvals, Replication and Settings pages. A security officer can see snapshots but cannot start restores.
+Approvals, Replication and Settings pages. A security officer can see snapshots but cannot start restores. A viewer
+sees the same pages as a tenant user (or, without a tenant, all tenants and the alerts) but has no buttons that start
+or change anything: no **Back up now**, no restores, no file browsing or downloads, no acknowledging alerts.
+
+![Dashboard of the appliance-wide viewer "auditor"](images/dashboard-viewer.png)
 
 ![Dashboard of an operator: no configuration pages except Replication, Plugins and Settings](images/dashboard-operator.png)
 
@@ -420,7 +429,7 @@ the last error. See [10 Approvals and audit](10-approvals-and-audit.md#audit-log
 
 **Configuration → Settings** holds the appliance-wide settings. Only administrators change them; security officers
 see every tab read-only ("Read-only: only administrators change these settings.") and can run the self-checks under
-**Diagnostics**, operators see **Approvals**, **Appliance SSH keys** and **Updates**. Changes that weaken protection or change who can sign in need a second person
+**Diagnostics**, operators see **Approvals**, **Appliance SSH keys** and **Updates**; viewers and tenant users see no settings. Changes that weaken protection or change who can sign in need a second person
 when approvals are enabled.
 
 | Tab | What it is for | Chapter |
@@ -435,6 +444,7 @@ when approvals are enabled.
 | **Forwarding** | the syslog-over-TLS and HTTPS (JSON) sinks that receive the audit log, alert events and finished jobs; **Send test message** | [10 Approvals and audit](10-approvals-and-audit.md#forwarding-to-a-siem) |
 | **Diagnostics** | **Run checks** (self-checks with a help link each; the same checks gate updates), **Create bundle** (redacted support bundle for a time range, administrators only, downloadable for 24 h) | [15 Troubleshooting](15-troubleshooting-faq.md#diagnostics-and-support-bundles) |
 | **Console access** | requests for an emergency root shell on the appliance console, **Show code** (once), **Revoke** (administrators and security officers only) | [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console) |
+| **Security** | management allow-list, session timeouts, dormant accounts, login banner; sessions of all users (administrators) | [02 Installation](02-installation.md#management-allow-list), [09 Users and access](09-users-and-access.md#sessions-and-sign-in-protection) |
 
 ![Settings: Approvals](images/settings-approvals.png)
 
@@ -452,6 +462,8 @@ when approvals are enabled.
 ![Settings: Forwarding](images/settings-forwarding.png)
 ![Settings: Diagnostics](images/settings-diagnostics.png)
 ![Settings: Console access](images/settings-console.png)
+
+![Settings: Security](images/settings-security.png)
 
 ## Messages and dialogs
 

@@ -17,7 +17,7 @@ use reports::{Kind, Scheduled};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-/// Every role may export (tenant users: own tenant); `viewer` once 14d adds it.
+/// Every role may export (tenant users and tenant-scoped viewers: own tenant).
 const READ: &[&str] = &["admin", "operator", "security_officer", "tenant_user", "viewer"];
 const ADMIN: &[&str] = &["admin"];
 const SETTINGS_READ: &[&str] = &["admin", "security_officer"];

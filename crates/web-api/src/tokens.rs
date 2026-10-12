@@ -176,7 +176,8 @@ pub async fn layer(State(st): State<St>, mut req: Request, next: Next) -> Respon
     VIA.scope(via, next.run(req)).await
 }
 
-/// The token's user (role capped) or `None` (unknown, wrong secret, expired, user inactive).
+/// The token's user (role capped) or `None` (unknown, wrong secret, expired, user disabled
+/// (also as dormant) or expired).
 fn authenticate(st: &St, token: &str, ip: &str) -> ApiResult<Option<TokenAuth>> {
     let Some((prefix, secret)) = token[PREFIX.len()..].split_once('_') else {
         return Ok(None);
@@ -216,7 +217,11 @@ fn authenticate(st: &St, token: &str, ip: &str) -> ApiResult<Option<TokenAuth>> 
     let Some((tok, hash, expires, last_used, mut user)) = row else {
         return Ok(None);
     };
-    if !ct_eq(sha256_hex(secret.as_bytes()).as_bytes(), hash.as_bytes()) || expires <= now || user.disabled {
+    if !ct_eq(sha256_hex(secret.as_bytes()).as_bytes(), hash.as_bytes())
+        || expires <= now
+        || user.disabled
+        || user.expired(now)
+    {
         return Ok(None);
     }
     if last_used.is_none_or(|t| now - t >= TOUCH_SECS) {
@@ -226,6 +231,8 @@ fn authenticate(st: &St, token: &str, ip: &str) -> ApiResult<Option<TokenAuth>> 
         )?;
     }
     user.role = effective(&tok.scope, &user.role).0;
+    // tokens never download (not on the allow-list either), whatever the account's privilege
+    user.can_download = false;
     Ok(Some(TokenAuth { user, token: tok }))
 }
 

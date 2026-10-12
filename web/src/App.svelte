@@ -64,7 +64,7 @@
   type Section = 'monitor' | 'governance' | 'config';
   const always: Allow = (u) => !!u;
   // Settings: approvals (everyone non-tenant), alerts / SSO (admin, security officer), SSH keys / updates (+ operator).
-  const viewSettings: Allow = (u) => !!u && u.role !== 'tenant_user' && !u.tenant;
+  const viewSettings: Allow = (u) => !!u && u.role !== 'tenant_user' && u.role !== 'viewer' && !u.tenant;
 
   // Routes; `nav` entries appear in the sidebar (filtered by role — the server still decides).
   const routes: { path: string; comp: Component<any>; allow: Allow; nav?: string; section?: Section; icon?: Component<any> }[] = [

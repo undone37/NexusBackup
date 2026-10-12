@@ -7,6 +7,11 @@ const USAGE: &str = "usage: nexus-setup [options]
        nexus-setup recover-admin [--user NAME] [--force-solo] [--root DIR] [--catalog FILE] [--keyd-dir DIR]
                                 break-glass: reset a local admin account to pending activation with a new
                                 one-time code; asks for the recovery key (stdin)
+       nexus-setup disable-approvals [--root DIR] [--catalog FILE] [--keyd-dir DIR]
+                                break-glass: switch approvals off when nobody else can approve any more;
+                                asks for the recovery key (stdin)
+       nexus-setup reset-mgmt-allow [--root DIR] [--catalog FILE]
+                                clear the management allow-list (web UI reachable from any address again)
   --root DIR                    prefix for every written path (dev/tests)    env NEXUS_SETUP_ROOT
   --dry-run                     print nmcli/hostnamectl/systemctl, run none   env NEXUS_SETUP_DRY_RUN=1
   --script FILE                 non-interactive, answers from JSON (see crate docs)
@@ -161,8 +166,70 @@ fn recover_admin(args: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// `disable-approvals`: break-glass when approvals can no longer be granted.
+fn disable_approvals(args: &[String]) -> Result<ExitCode> {
+    let o = parse(args)?;
+    if o.dry_run || o.script.is_some() || o.force_network {
+        bail!("disable-approvals takes only path options");
+    }
+    if o.root == std::path::Path::new("/") && unsafe { libc::geteuid() } != 0 {
+        bail!("must run as root on the appliance console");
+    }
+    eprint!("Recovery key (as printed at first boot): ");
+    let mut key = zeroize::Zeroizing::new(String::new());
+    std::io::stdin().read_line(&mut key)?;
+    setup::recover::disable_approvals(&o.paths, &key)?;
+    println!("Approvals are disabled. Add administrators or security officers (Users), then enable approvals again");
+    println!("in Settings -> Approvals. This was audited (approvals.break_glass) and raised a critical alert.");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `reset-mgmt-allow`: console recovery from a management allow-list lockout.
+fn reset_mgmt_allow(args: &[String]) -> Result<ExitCode> {
+    let o = parse(args)?;
+    if o.dry_run || o.script.is_some() || o.force_network {
+        bail!("reset-mgmt-allow takes only path options");
+    }
+    let real = o.root == std::path::Path::new("/");
+    if real && unsafe { libc::geteuid() } != 0 {
+        bail!("must run as root on the appliance console");
+    }
+    let old = setup::recover::reset_mgmt_allow(&o.paths)?;
+    if real {
+        if let Err(e) = setup::recover::open_mgmt_firewall(std::path::Path::new("/usr/sbin/nft")) {
+            eprintln!("warning: could not open the firewall at once ({e:#}); the scheduler applies it within a minute");
+        }
+    }
+    println!(
+        "Management allow-list cleared (was: {}). The web UI on port {} is reachable from any address again.",
+        if old.is_empty() { "empty".into() } else { old.join(", ") },
+        setup::WEB_PORT
+    );
+    println!("This was audited (security.mgmt_allow_reset) and raised a warning alert. Set a correct list in Settings -> Security.");
+    Ok(ExitCode::SUCCESS)
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "disable-approvals") {
+        keyd::harden_process();
+        return match disable_approvals(&args[1..]) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("nexus-setup disable-approvals: {e:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if args.first().is_some_and(|a| a == "reset-mgmt-allow") {
+        return match reset_mgmt_allow(&args[1..]) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("nexus-setup reset-mgmt-allow: {e:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if args.first().is_some_and(|a| a == "recover-admin") {
         keyd::harden_process();
         return match recover_admin(&args[1..]) {

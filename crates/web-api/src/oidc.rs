@@ -58,7 +58,7 @@ pub const JWKS_MIN_REFRESH: Duration = Duration::from_secs(10);
 const MAX_BODY: usize = 1 << 20;
 const MAX_TOKEN: usize = 16 << 10;
 const SECRET_LABEL: &str = "oidc/client_secret";
-const ROLES_BY_RANK: [&str; 4] = ["tenant_user", "operator", "security_officer", "admin"];
+const ROLES_BY_RANK: [&str; 5] = ["viewer", "tenant_user", "operator", "security_officer", "admin"];
 
 // ---------------------------------------------------------------- settings
 
@@ -187,12 +187,16 @@ fn validate_settings(c: &Connection, s: &Settings) -> ApiResult<()> {
             return bad("mappings: group 1..=256 printable characters");
         }
         validate::role(&m.role)?;
-        // an account has exactly one tenant (tenant_user) or none (all other roles)
+        // an account has exactly one tenant (tenant_user), at most one (viewer)
+        // or none (all other roles)
         if m.role == "tenant_user" && m.tenants.len() != 1 {
             return bad("mappings: tenant_user needs exactly one tenant");
         }
-        if m.role != "tenant_user" && !m.tenants.is_empty() {
-            return bad("mappings: only tenant_user mappings name a tenant (other roles see all tenants)");
+        if m.role == "viewer" && m.tenants.len() > 1 {
+            return bad("mappings: a viewer mapping names at most one tenant (none = all tenants)");
+        }
+        if !matches!(m.role.as_str(), "tenant_user" | "viewer") && !m.tenants.is_empty() {
+            return bad("mappings: only tenant_user and viewer mappings name a tenant (other roles see all tenants)");
         }
         for t in &m.tenants {
             validate::name(t, "tenant")?;
@@ -801,6 +805,14 @@ fn provision(st: &St, s: &Settings, claims: &Value) -> ApiResult<Result<Provisio
                 "the account was disabled (by an admin or because no mapping matched); an admin re-enables it".into(),
             )))
         }
+        Some(u) if u.expired(catalog::now()) => {
+            tx.execute("DELETE FROM sessions WHERE user_id = ?1", [u.id])?;
+            tx.commit()?;
+            return Ok(Err((
+                "account_disabled",
+                "the account expired; an admin extends or clears its expiry date".into(),
+            )));
+        }
         Some(u) => {
             if u.role != m.role || u.tenant != tenant {
                 tx.execute(
@@ -1117,7 +1129,7 @@ pub async fn callback(
     for (action, details) in audits {
         st.audit("web-api", &action, &target, details)?;
     }
-    let (cookie, _csrf) = new_session(&st, user.id)?;
+    let (cookie, _csrf) = new_session(&st, user.id, &ip, &headers)?;
     st.audit(
         &user.name,
         "auth.oidc_login",
@@ -1466,6 +1478,17 @@ mod tests {
             s.mappings[0].role = "tenant_user".into();
             s.mappings[0].tenants = vec!["acme".into()]
         }));
+        // viewers: appliance-wide or one tenant
+        assert!(!bad(&|s| s.mappings[0].role = "viewer".into()));
+        assert!(!bad(&|s| {
+            s.mappings[0].role = "viewer".into();
+            s.mappings[0].tenants = vec!["acme".into()]
+        }));
+        assert!(bad(&|s| {
+            s.mappings[0].role = "viewer".into();
+            s.mappings[0].tenants = vec!["acme".into(), "acme".into()]
+        }));
+        assert!(bad(&|s| s.mappings[0].role = "tenant_admin".into()), "reserved");
         assert!(sso_name_ok("alice@contoso.onmicrosoft.com") && sso_name_ok("kc.alice"));
         assert!(!sso_name_ok("a b") && !sso_name_ok("") && !sso_name_ok(&"x".repeat(129)) && !sso_name_ok("a\tb"));
         assert!(bad(&|s| s.username_claim = "a b".into()));

@@ -248,8 +248,8 @@ way: generate a new request, install the new certificate.
 
 ## Network and firewall
 
-- **Inbound:** only TCP 8443 (web UI, REST API and, for replication peers, the replication endpoint). Everything
-  else is dropped.
+- **Inbound:** only TCP 8443 (web UI, REST API and, for replication peers, the replication endpoint), by default
+  from any address; the [management allow-list](#management-allow-list) restricts it. Everything else is dropped.
 - **Outbound:** blocked by default. The scheduler keeps an allow-list of every destination you configure (PVE API
   and node SSH, agents, TrueNAS, NFS/SMB servers, plugin endpoints, offsite targets, replication primaries, the alert
   webhook and SMTP relay). A small privileged helper (`nexus-nft-sync`) applies it to the firewall within seconds of
@@ -262,6 +262,35 @@ way: generate a new request, install the new certificate.
 > **Status:** `systemctl reload nftables` empties the allow-list until the next sync (at most 30 minutes, or the next
 > configuration change). Outbound rules work with resolved IP addresses, which is fragile for endpoints behind
 > rotating DNS (for example large S3 providers or CDNs).
+
+### Management allow-list
+
+**Settings → Security → Management allow-list** (administrators) limits who may open connections to port 8443:
+enter networks or addresses, one per line (`192.0.2.0/24`, `2001:db8:10::/48`, `198.51.100.7`); an empty list
+means any address. IPv4 and IPv6 are separate: a list with only IPv4 networks blocks all IPv6 clients. Connections
+that are already open are not cut.
+
+- Include every place that needs the web UI or the API: administrators' and operators' networks, monitoring that
+  scrapes `/metrics`, and the **secondary appliances of a replication** (they pull from this appliance on 8443).
+- Every change is an approval request (`security.mgmt_allow`) while approvals are enabled. The page shows your own
+  address and whether the saved list allows it. A list that does not contain your address is refused unless you
+  type your address to confirm that you will lose access from here.
+- The scheduler writes the approved list into the firewall file and `nexus-nft-sync` loads it into the sets
+  `mgmt_allowed_v4` / `mgmt_allowed_v6` within seconds (at boot the image starts with "any" until the scheduler
+  has written the list, a few seconds after start).
+
+**Locked out?** On the local console, as root:
+
+```sh
+nexus-setup reset-mgmt-allow
+```
+
+clears the list (any address again) and opens the firewall at once. It is audited (`security.mgmt_allow_reset`,
+actor `console`) and raises a warning alert `mgmt_allow_reset`. Then set a correct list in the web interface.
+
+> **Status:** The allow-list is tested in the API, the scheduler and the firewall-set generator, and the nftables
+> rules were checked with `nft`; a run on the appliance image (lab) is pending. The console commands need a root
+> shell on the console (see [Known gaps after installation](#known-gaps-after-installation)).
 
 ## Known gaps after installation
 

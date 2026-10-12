@@ -15,13 +15,20 @@
   let busy = $state(false);
   let error: string | null = $state(null);
   let oidc: OidcPublic | null = $state(null);
+  // Phase 14d: the appliance's login banner (Settings → Security), plain text
+  let banner = $state('');
   // single sign-on failures come back as /#/login?oidc_error=<code> (contract §2)
   const oidcError = $derived(route.path === '/login' ? route.query.get('oidc_error') : null);
   // after the IdP round trip, return to the page the user wanted (hash routes; same-origin path only)
   const next = $derived(route.path === '/' || route.path === '/login' ? '/' : `/#${route.path}`);
 
   onMount(async () => {
-    oidc = await get<OidcPublic>('/auth/oidc').catch(() => null);
+    [oidc, banner] = await Promise.all([
+      get<OidcPublic>('/auth/oidc').catch(() => null),
+      get<{ banner: string }>('/auth/banner')
+        .then((b) => b.banner)
+        .catch(() => ''),
+    ]);
   });
 
   async function submit(e: SubmitEvent) {
@@ -47,6 +54,7 @@
       <div class="brand"><Logo />{t.app}</div>
       <h1 id="login-title">{t.login.title}</h1>
       <p class="lede">{oidc?.enabled ? t.login.lede : t.login.ledeLocal}</p>
+      {#if banner}<div class="banner info login-banner" role="note" aria-label={t.access.bannerLabel}>{banner}</div>{/if}
       {#if oidcError}<div class="banner error" role="alert">{t.login.oidcError(oidcError)}</div>{/if}
       {#if error}<div class="banner error" role="alert">{error}</div>{/if}
       {#if oidc?.enabled}

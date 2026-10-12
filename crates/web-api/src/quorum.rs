@@ -46,6 +46,8 @@ pub const WEB_ACTIONS: &[&str] = &[
     "update.apply",
     "settings.anomaly",
     "settings.forwarding",
+    "security.session",
+    "security.mgmt_allow",
 ];
 
 /// Who may approve or reject requests (never their own: see [`approve`]).
@@ -306,6 +308,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         "update.apply" => {}
         "settings.anomaly" => catalog::set_setting(c, crate::storage::ANOMALY_SETTING, &p["anomaly"].to_string())?,
         "settings.forwarding" => catalog::set_setting(c, catalog::forwarding::SETTING, &p["forwarding"].to_string())?,
+        a if a.starts_with("security.") => crate::access::execute(c, a, p)?,
         "agent.delete" => {
             let id = p["id"].as_str().unwrap_or_default();
             if crate::agents::agent_in_use(c, id)? {

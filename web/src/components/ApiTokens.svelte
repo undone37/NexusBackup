@@ -21,7 +21,7 @@
   let loaded = $state(false);
   const now = () => Date.now() / 1000;
   // security officers' tokens are read-only (the server refuses operator tokens for them)
-  const canOperate = $derived(session.user?.role !== 'security_officer');
+  const canOperate = $derived(session.user?.role !== 'security_officer' && session.user?.role !== 'viewer');
   const local = $derived(session.user?.auth !== 'oidc');
 
   async function load() {
