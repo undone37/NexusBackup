@@ -313,3 +313,11 @@ Four parallel agents: 17a+b windows + close vault; 17c+f vault profile + tenant 
 ## Phase 18 — Workloads (started 2026-10-12)
 Three parallel agents: 18a1 M365 item failures as warnings, unlicensed users, Recoverable Items, private/shared channels, group mailboxes, no double team sites; 18a2 M365 several app registrations, chats (opt-in), cross-tenant restore, app registration helper; 18b PostgreSQL WAL-only frequent runs + `recent` retention class, recoverable range, start/tablespace remap/LSN/name targets, HA.
 CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → free space step + line-tables-only debug info (2026-10-12).
+
+## Phase 17 complete (code, 2026-10-12)
+- [x] 17a+b windows + close vault (v24), 17c+f vault mode + tenant deactivation (v22), 17d offsite in the UI + attach, 17e per-tenant recovery key
+## Phase 18 complete (code, 2026-10-12)
+- [x] 18a1 M365 warnings (contract v1.7) + coverage, 18a2 M365 apps/chats/cross-tenant (v1.6), 18b PostgreSQL 1.2.0 (v23, contract v1.8)
+## Urgent hardening (2026-10-12)
+- [x] GRUB password (ADR-013), fleecing guard, compliance clock fix + clock_skew, Splunk HEC + alert categories
+- [ ] VM labs for 16/17/18/hardening (grub-lock.sh, disks.sh, firewall step, offsite-fetch, PG 1.2.0 bundle, vault mode, windows)
