@@ -259,3 +259,13 @@ Also in scope (user 2026-10-11: "fix all of them"): Snapshots page restore filte
 - [x] Integration (2026-10-12, real image, SELinux enforcing): `lab/e2e/ui-smoke.mjs` (admin + security officer, light + dark, 14 pages + 5 Settings tabs = 76 page views against the real API: 0 exceptions / console errors / CSP violations / API errors, also with SSO configured); `plugins.sh oidc` against Keycloak 26.4 over TLS (testbox TLS=1): settings via quorum, discovery + JWKS from the appliance through the egress allow-list, kc-alice → admin, kc-tina → tenant user `sso`, kc-nobody refused (`oidc_error=denied`), audited; `plugins.sh check`: 0 nexus AVCs. Fixed on the way: OIDC redirect URI came from the Host header, which HTTP/2 does not send (fell back to `localhost`); the IdP reaches the allow-list one scheduler tick (≤ 30 s) after saving. Claude-in-Chrome click-through not possible while the user is away (extension not connected) — replaced by the headless smoke test
   - [x] PVE end-to-end on the Phase 12 image (`e2e.sh disk`, `boot`, `setup`, `api`, `check`, 2026-10-12): scheduled backup of vm-100 + ct-200, retention, offsite, file restore of both by an operator enrolled via activation code, verify (0 corrupt), quorum (own approval refused, security officer approves), audit; 0 nexus AVCs. Lab fixed: m5-api.sh created users with a password (self-enrollment since v9), api helper died under set -e for anonymous calls
   - manual screenshots are from the seeded mock (by design, Phase 10 decision)
+
+## Phase 13 — Operations core (started 2026-10-12; plan: docs/phase13-18-plan.md)
+Cohesity comparison (docs/cohesity-comparison.md) → Phases 13–18 approved by the user (Tiers 1–3, no failover).
+Parallel worktree agents (schema versions pre-assigned, renumbered on merge if needed):
+- [ ] 13a orphaned-snapshot retention + approved snapshot delete (no schema)
+- [ ] 13b run control: retries, pause/maintenance, blackout, SLA, schedules + time zones, cancel running jobs, back up selected/failed (v11)
+- [ ] 13c auto-protect + guest inventory, PVE unprotected KPI (v12)
+- [ ] 13d storage accounting (dedup/compression, per tenant/group, growth) + quotas; 13e anomaly alert (v13)
+- [ ] 13f alert lifecycle (resolve/auto-resolve/count/hints) + notification rules + webhook templates (v14)
+- [ ] merge, full suite, VM labs, screenshots, manual, CI
