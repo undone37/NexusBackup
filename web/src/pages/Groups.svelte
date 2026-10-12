@@ -4,14 +4,20 @@
   import { get, post, put, del, act, errText } from '../lib/api';
   import { notify } from '../lib/notify.svelte';
   import { href } from '../lib/router.svelte';
-  import { fmtAgo, fmtBytes } from '../lib/format';
+  import { fmtAgo, fmtBytes, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import { runJob } from '../lib/jobs';
   import { isPluginKind, pluginKinds } from '../lib/plugins';
   import type { Agent, Group, GroupMode, Inventory, Plugin, PluginGuest, Policy, Source, Tenant } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
+  import BackupNow from '../components/BackupNow.svelte';
+  import PauseDialog from '../components/PauseDialog.svelte';
+  import { session } from '../lib/session.svelte';
+  import { can } from '../lib/roles';
+  import { isPaused, timeZones } from '../lib/schedule';
   import IconPlus from '@lucide/svelte/icons/plus';
+  import IconPlay from '@lucide/svelte/icons/play';
 
   let items: Group[] = $state([]);
   let tenants: Tenant[] = $state([]);
@@ -63,7 +69,9 @@
     mode: 'explicit' as GroupMode,
     selector: [] as string[],
     exclude: [] as string[],
+    timezone: 'UTC',
   });
+  const zones = timeZones();
   const tenantSources = $derived(sources.filter((s) => s.tenant === f.tenant));
   // A linux source backs up exactly one host: guests = [its agent id], no VM/CT IDs.
   const linuxSource = $derived.by(() => {
@@ -193,6 +201,7 @@
       policy_id: x?.policy_id ?? policies[0]?.id ?? 0,
       guests: (x?.guests ?? []).filter((g) => typeof g === 'number').join(', '),
       datasets: (x?.guests ?? []).filter((g): g is string => typeof g === 'string'),
+      timezone: x?.timezone ?? 'UTC',
       mode: x?.mode ?? 'explicit',
       selector: [...(x?.selector ?? [])],
       exclude: [...(x?.exclude ?? [])],
@@ -251,6 +260,7 @@
       mode: auto ? f.mode : 'explicit',
       selector: auto && f.mode === 'tags' ? f.selector : [],
       exclude: auto ? f.exclude : [],
+      timezone: f.timezone,
     };
     const r = editing
       ? await act(put(`/groups/${editing.id}`, body), t.saved)
@@ -259,6 +269,20 @@
       open = false;
       load();
     }
+  }
+
+  // Run control (Phase 13b): back up now, pause / resume.
+  let bnOpen = $state(false);
+  let pauseOpen = $state(false);
+  let target: Group | null = $state(null);
+  async function pause(u: number | null) {
+    if (target && (await act(post(`/groups/${target.id}/pause`, u === null ? {} : { until: u }), t.runctl.pausedDone))) {
+      pauseOpen = false;
+      load();
+    }
+  }
+  async function resume(x: Group) {
+    if (await act(post(`/groups/${x.id}/resume`), t.runctl.resumedDone)) load();
   }
 
   async function remove(x: Group) {
@@ -295,7 +319,15 @@
         <tbody>
           {#each items as x (x.id)}
             <tr>
-              <td><strong>{x.name}</strong></td>
+              <td
+                ><strong>{x.name}</strong>
+                {#if isPaused(x.paused_until)}<span class="chip warn"
+                    >{x.paused_until === -1 ? t.runctl.pausedForever : t.runctl.pausedUntil(fmtTime(x.paused_until))}</span
+                  >{/if}
+                {#if isPaused(x.maintenance_until)}<span class="chip warn">{t.runctl.inMaintenance}</span>{/if}
+                {#if x.blackout_active}<span class="chip plain">{t.runctl.blackoutNow}</span>{/if}
+                {#if x.timezone && x.timezone !== 'UTC'}<div class="muted">{x.timezone}</div>{/if}</td
+              >
               <td>{x.tenant}</td>
               <td>{sourceName(x.source_id)}</td>
               <td>{policyName(x.policy_id)}</td>
@@ -307,6 +339,28 @@
                     : kindTitle(sources.find((s) => s.id === x.source_id)?.kind ?? '')}{/if}</td
               >
               <td class="actions">
+                {#if can.backup(session.user)}
+                  <button
+                    type="button"
+                    class="small"
+                    onclick={() => {
+                      target = x;
+                      bnOpen = true;
+                    }}><IconPlay aria-hidden="true" />{t.runctl.backupNow}</button
+                  >
+                  {#if isPaused(x.paused_until)}
+                    <button type="button" class="small" onclick={() => resume(x)}>{t.runctl.resume}</button>
+                  {:else}
+                    <button
+                      type="button"
+                      class="small"
+                      onclick={() => {
+                        target = x;
+                        pauseOpen = true;
+                      }}>{t.runctl.pause}</button
+                    >
+                  {/if}
+                {/if}
                 <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
                 <button type="button" class="small danger" onclick={() => remove(x)}>{t.delete}</button>
               </td>
@@ -342,6 +396,12 @@
         <select id="g-pol" bind:value={f.policy_id} required>
           {#each policies as p (p.id)}<option value={p.id}>{p.name} ({p.schedule})</option>{/each}
         </select>
+      </div>
+      <div class="field">
+        <label for="g-tz">{t.runctl.timezone}</label>
+        <input id="g-tz" list="g-tz-list" bind:value={f.timezone} required aria-describedby="g-tz-hint" />
+        <datalist id="g-tz-list">{#each zones as z (z)}<option value={z}></option>{/each}</datalist>
+        <div class="hint" id="g-tz-hint">{t.runctl.timezoneHint}</div>
       </div>
     </div>
     {#if invSource}
@@ -447,3 +507,12 @@
     </div>
   </form>
 </Modal>
+
+<BackupNow bind:open={bnOpen} group={target} label={guestText} />
+<PauseDialog
+  bind:open={pauseOpen}
+  title={t.runctl.pauseTitle(target?.name ?? '')}
+  hint={t.runctl.pauseHint}
+  submit={t.runctl.pause}
+  onsubmit={pause}
+/>

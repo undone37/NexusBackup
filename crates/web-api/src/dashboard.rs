@@ -98,12 +98,9 @@ pub fn day(ts: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-/// RPO of a policy schedule: the schedule period.
+/// RPO of a policy schedule: the (longest) schedule period.
 fn rpo(schedule: &str) -> i64 {
-    match schedule.split_whitespace().next() {
-        Some("hourly") => 3600,
-        _ => DAY,
-    }
+    catalog::schedule::Schedule::parse(schedule).map_or(DAY, |s| s.period())
 }
 
 /// Least-squares slope (y per x) of the points; `None` for fewer than 2.
@@ -137,17 +134,21 @@ struct Obj {
     name: String,
     kind: String,
     rpo: i64,
+    /// every group of the object is paused (or its source in maintenance, Phase 13b)
+    paused: bool,
 }
 
 fn protection(c: &Connection, scope: Option<&str>, now: i64) -> ApiResult<Value> {
-    type Row = (String, i64, Vec<Value>, String, String, String, String, bool);
+    /// (tenant, source id, guests, schedule, kind, source name, config, auto, paused)
+    type Row = (String, i64, Vec<Value>, String, String, String, String, bool, bool);
     let rows: Vec<Row> = c
         .prepare(
-            "SELECT g.tenant, g.source_id, g.guests, p.schedule, s.kind, s.name, s.config, g.mode, g.selector, g.exclude
+            "SELECT g.tenant, g.source_id, g.guests, p.schedule, s.kind, s.name, s.config, g.mode, g.selector, g.exclude,
+                    g.paused_until = -1 OR g.paused_until > ?2 OR s.maintenance_until = -1 OR s.maintenance_until > ?2
              FROM groups g JOIN policies p ON p.id = g.policy_id JOIN sources s ON s.id = g.source_id
              WHERE ?1 IS NULL OR g.tenant = ?1 ORDER BY g.id",
         )?
-        .query_map([scope], |r| {
+        .query_map(params![scope, now], |r| {
             let (sid, kind, mode): (i64, String, String) = (r.get(1)?, r.get(4)?, r.get(7)?);
             // the scheduler's resolution (explicit list or inventory, catalog::inventory)
             let guests = catalog::inventory::resolve(
@@ -160,12 +161,13 @@ fn protection(c: &Connection, scope: Option<&str>, now: i64) -> ApiResult<Value>
                 &r.get::<_, String>(9)?,
             )?;
             let auto = catalog::inventory::auto(&mode);
-            Ok((r.get(0)?, sid, guests, r.get(3)?, kind, r.get(5)?, r.get(6)?, auto))
+            let paused = r.get::<_, Option<bool>>(10)?.unwrap_or(false);
+            Ok((r.get(0)?, sid, guests, r.get(3)?, kind, r.get(5)?, r.get(6)?, auto, paused))
         })?
         .collect::<Result<_, _>>()?;
     // object key (tenant, first source) → object; one object in several groups counts once (shortest RPO)
     let mut objs: BTreeMap<(String, String), Obj> = BTreeMap::new();
-    for (tenant, sid, guests, schedule, kind, sname, cfg, auto) in rows {
+    for (tenant, sid, guests, schedule, kind, sname, cfg, auto, paused) in rows {
         let strs = || guests.iter().filter_map(Value::as_str).map(str::to_owned);
         let mut add: Vec<(Vec<String>, String)> = Vec::new();
         match kind.as_str() {
@@ -221,8 +223,10 @@ fn protection(c: &Connection, scope: Option<&str>, now: i64) -> ApiResult<Value>
                 name,
                 kind: kind.clone(),
                 rpo: r,
+                paused,
             });
             o.rpo = o.rpo.min(r);
+            o.paused &= paused;
         }
     }
     let last: HashMap<(String, String), i64> = c
@@ -231,7 +235,7 @@ fn protection(c: &Connection, scope: Option<&str>, now: i64) -> ApiResult<Value>
         )?
         .query_map([scope], |r| Ok(((r.get(0)?, r.get(1)?), r.get(2)?)))?
         .collect::<Result<_, _>>()?;
-    let (mut ok, mut breach, mut never) = (0, 0, 0);
+    let (mut ok, mut breach, mut never, mut paused) = (0, 0, 0, 0);
     let mut list: Vec<(u8, i64, Value)> = Vec::new();
     for o in objs.values() {
         let last_ok = o
@@ -250,6 +254,11 @@ fn protection(c: &Connection, scope: Option<&str>, now: i64) -> ApiResult<Value>
             None => {
                 never += 1;
                 ("never", 0)
+            }
+            // paused on purpose: shown, but not a breach
+            Some(a) if a as f64 > o.rpo as f64 * SLA_FACTOR && o.paused => {
+                paused += 1;
+                ("paused", 2)
             }
             Some(a) if a as f64 > o.rpo as f64 * SLA_FACTOR => {
                 breach += 1;
@@ -327,7 +336,7 @@ fn protection(c: &Connection, scope: Option<&str>, now: i64) -> ApiResult<Value>
     Ok(json!({
         "objects": protected + unprotected, "protected": protected, "unprotected": unprotected,
         "unprotected_list": open,
-        "sla_ok": ok, "sla_breach": breach, "never": never, "worst": worst,
+        "sla_ok": ok, "sla_breach": breach, "sla_paused": paused, "never": never, "worst": worst,
     }))
 }
 

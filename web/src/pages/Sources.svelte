@@ -12,6 +12,11 @@
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import SchemaForm from '../components/SchemaForm.svelte';
+  import PauseDialog from '../components/PauseDialog.svelte';
+  import { session } from '../lib/session.svelte';
+  import { can } from '../lib/roles';
+  import { fmtTime } from '../lib/format';
+  import { isPaused } from '../lib/schedule';
   import Inventory from '../components/Inventory.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
 
@@ -433,6 +438,20 @@
     }
   }
 
+  // Maintenance mode (Phase 13b): no scheduled backups of the source's groups.
+  let maintOpen = $state(false);
+  let maintSource: Source | null = $state(null);
+  async function maintenance(u: number | null) {
+    const x = maintSource;
+    if (x && (await act(post(`/sources/${x.id}/maintenance`, u === null ? {} : { until: u }), t.runctl.maintenanceDone))) {
+      maintOpen = false;
+      load();
+    }
+  }
+  async function endMaintenance(x: Source) {
+    if (await act(post(`/sources/${x.id}/maintenance/end`), t.runctl.maintenanceEnded)) load();
+  }
+
   async function remove(x: Source) {
     if (!(await askConfirm(t.confirmDelete(`${t.groups.source} "${x.name}"`)))) return;
     if (await act(del(`/sources/${x.id}`), t.deleted)) load();
@@ -467,7 +486,12 @@
         <tbody>
           {#each items as x (x.id)}
             <tr>
-              <td><strong>{x.name}</strong></td>
+              <td
+                ><strong>{x.name}</strong>
+                {#if isPaused(x.maintenance_until)}<span class="chip warn"
+                    >{x.maintenance_until === -1 ? t.runctl.inMaintenance : t.runctl.maintenanceUntil(fmtTime(x.maintenance_until))}</span
+                  >{/if}</td
+              >
               <td>{x.tenant}</td>
               <td>{kindTitle(x.kind)}</td>
               {#if isPlugin(x)}
@@ -515,6 +539,20 @@
                 {/if}
                 {#if hasInventory(x)}
                   <button type="button" class="small" onclick={() => ((invOf = x), (invOpen = true))}>{t.inventory.open}</button>
+                {/if}
+                {#if can.backup(session.user)}
+                  {#if isPaused(x.maintenance_until)}
+                    <button type="button" class="small" onclick={() => endMaintenance(x)}>{t.runctl.endMaintenance}</button>
+                  {:else}
+                    <button
+                      type="button"
+                      class="small"
+                      onclick={() => {
+                        maintSource = x;
+                        maintOpen = true;
+                      }}>{t.runctl.maintenance}</button
+                    >
+                  {/if}
                 {/if}
                 <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
                 <button type="button" class="small danger" onclick={() => remove(x)}>{t.delete}</button>
@@ -920,6 +958,13 @@
   </form>
 </Modal>
 
+<PauseDialog
+  bind:open={maintOpen}
+  title={t.runctl.maintenanceTitle(maintSource?.name ?? '')}
+  hint={t.runctl.maintenanceHint}
+  submit={t.runctl.startMaintenance}
+  onsubmit={maintenance}
+/>
 <Modal bind:open={invOpen} title={t.inventory.title(invOf?.name ?? '')} wide>
   {#if invOf}<Inventory source={invOf} />{/if}
 </Modal>

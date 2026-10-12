@@ -266,18 +266,22 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         "policy.delete" => changed(c.execute("DELETE FROM policies WHERE id = ?1", [int(p, "id")?])?)?,
         "group.delete" => changed(c.execute("DELETE FROM groups WHERE id = ?1", [int(p, "id")?])?)?,
         "policy.update" => changed(c.execute(
-            "UPDATE policies SET name = ?2, schedule = ?3, gfs = ?4, offsite = ?5 WHERE id = ?1",
+            "UPDATE policies SET name = ?2, schedule = ?3, gfs = ?4, offsite = ?5, retry = ?6, blackout = ?7,
+             sla_minutes = ?8 WHERE id = ?1",
             params![
                 int(p, "id")?,
                 p["name"].as_str(),
                 p["schedule"].as_str(),
                 p["gfs"].to_string(),
-                p["offsite"].as_bool().unwrap_or(true)
+                p["offsite"].as_bool().unwrap_or(true),
+                p.get("retry").map_or_else(|| json!(catalog::schedule::Retry::default()), Clone::clone).to_string(),
+                p.get("blackout").map_or_else(|| json!([]), Clone::clone).to_string(),
+                p["sla_minutes"].as_u64()
             ],
         )?)?,
         "group.update" => changed(c.execute(
             "UPDATE groups SET source_id = ?2, policy_id = ?3, name = ?4, guests = ?5, mode = ?6, selector = ?7, \
-             exclude = ?8 WHERE id = ?1",
+             exclude = ?8, timezone = ?9 WHERE id = ?1",
             params![
                 int(p, "id")?,
                 int(p, "source_id")?,
@@ -287,7 +291,8 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
                 // requests made before v12 carry no mode: explicit
                 p["mode"].as_str().unwrap_or("explicit"),
                 p.get("selector").unwrap_or(&json!([])).to_string(),
-                p.get("exclude").unwrap_or(&json!([])).to_string()
+                p.get("exclude").unwrap_or(&json!([])).to_string(),
+                p["timezone"].as_str().unwrap_or("UTC")
             ],
         )?)?,
         "user.update" => return crate::resources::apply_user_update(c, p).map(Some),

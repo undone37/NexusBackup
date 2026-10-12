@@ -53,6 +53,17 @@ The inventory feeds the [auto-protect groups](05-policies-and-groups.md#auto-pro
 it has `VM.Audit` on (the lab roles below grant it on `/`). If a refresh fails, the last inventory stays in effect and
 an `inventory_refresh` warning is raised.
 
+### Maintenance
+
+**Maintenance** puts a source into maintenance mode for 1–30 days or until **End maintenance**, for example while a
+Proxmox VE cluster or a NAS is upgraded. Meanwhile no scheduled backups of the source's groups start (running ones
+are not stopped; cancel them on **Jobs** if needed), and the Dashboard shows their guests as **Paused** instead of
+overdue. Manual backups stay possible. The source shows an **In maintenance** badge, and the groups page shows it on
+each of its groups. A slot missed during maintenance runs once when it ends. Maintenance of more than 7 days (or until
+ended) raises a `paused` warning. It needs no approval and is audited (`source.maintenance`,
+`source.maintenance_end`). Operators may set it through the API as well (`POST /api/v1/sources/{id}/maintenance`
+with `{"until": <unix time>}` or `{}`, `POST /api/v1/sources/{id}/maintenance/end`).
+
 ## Appliance SSH keys
 
 The appliance signs in to some sources over SSH with its own keys: Proxmox VE nodes, TrueNAS systems and offsite

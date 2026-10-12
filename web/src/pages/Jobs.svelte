@@ -1,6 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { get, errText, qs } from '../lib/api';
+  import { get, post, act, errText, qs } from '../lib/api';
+  import { askConfirm } from '../lib/confirm.svelte';
+  import { session } from '../lib/session.svelte';
+  import { can } from '../lib/roles';
   import { route, navigate, href } from '../lib/router.svelte';
   import { fmtAgo, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
@@ -38,6 +41,12 @@
 
   function filter() {
     navigate('/jobs' + qs({ state: stateF, kind }));
+  }
+
+  // queued: cancelled at once; running: the scheduler stops it (Phase 13b)
+  async function cancel(j: Job) {
+    if (j.state === 'running' && !(await askConfirm(t.runctl.cancelConfirm(j.id)))) return;
+    if (await act(post(`/jobs/${j.id}/cancel`), j.state === 'running' ? t.runctl.cancelling : t.jobs.cancelled)) load();
   }
 
   function duration(j: Job) {
@@ -89,6 +98,7 @@
             <th scope="col">{t.jobs.requestedBy}</th>
             <th scope="col">{t.jobs.created}</th>
             <th scope="col" class="num">⏱</th>
+            {#if can.cancelJob(session.user)}<th scope="col"><span class="visually-hidden">{t.actions}</span></th>{/if}
           </tr>
         </thead>
         <tbody>
@@ -97,10 +107,22 @@
               <td><a href={href(`/jobs/${j.id}`)}>#{j.id}</a></td>
               <td>{kindLabel(j.kind)}</td>
               <td>{j.tenant}</td>
-              <td><JobState state={j.state} /></td>
+              <td
+                ><JobState state={j.state} />{#if (j.attempt ?? 1) > 1}
+                  <span class="muted">{t.runctl.attempt} {j.attempt}</span>{/if}</td
+              >
               <td>{j.requested_by}</td>
               <td class="nowrap" title={fmtTime(j.created)}>{fmtAgo(j.created)}</td>
               <td class="num">{duration(j)}</td>
+              {#if can.cancelJob(session.user)}
+                <td class="actions">
+                  {#if (j.state === 'queued' || j.state === 'running') && !j.cancel_by}
+                    <button type="button" class="small danger" onclick={() => cancel(j)}>{t.runctl.cancelRunning}</button>
+                  {:else if j.cancel_by && j.state === 'running'}
+                    <span class="muted">{t.runctl.cancelRequested(j.cancel_by)}</span>
+                  {/if}
+                </td>
+              {/if}
             </tr>
           {/each}
         </tbody>

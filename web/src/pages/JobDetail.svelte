@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { askConfirm } from '../lib/confirm.svelte';
   import { get, post, act, errText } from '../lib/api';
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
@@ -43,7 +44,9 @@
   });
 
   async function cancel() {
-    if (await act(post(`/jobs/${encodeURIComponent(id)}/cancel`), t.jobs.cancelled)) load();
+    const running = job?.state === 'running';
+    if (running && !(await askConfirm(t.runctl.cancelConfirm(Number(id))))) return;
+    if (await act(post(`/jobs/${encodeURIComponent(id)}/cancel`), running ? t.runctl.cancelling : t.jobs.cancelled)) load();
   }
 </script>
 
@@ -51,7 +54,8 @@
   <h1>{t.jobs.detail(Number(id))}</h1>
   <div class="row">
     {#if live}<span class="live">{t.jobs.live}</span>{/if}
-    {#if job?.state === 'queued' && can.cancelJob(session.user)}
+    {#if job?.cancel_by && job.state === 'running'}<span class="muted">{t.runctl.cancelRequested(job.cancel_by)}</span>{/if}
+    {#if (job?.state === 'queued' || (job?.state === 'running' && !job.cancel_by)) && can.cancelJob(session.user)}
       <button type="button" class="danger" onclick={cancel}>{t.jobs.cancel}</button>
     {/if}
     <a class="button" href={href('/jobs')}>{t.jobs.back}</a>
@@ -80,6 +84,17 @@
         <dd>{fmtTime(job.started)}</dd>
         <dt>{t.jobs.finished}</dt>
         <dd>{fmtTime(job.finished)}</dd>
+        {#if (job.attempt ?? 1) > 1 || job.retry_of}
+          <dt>{t.runctl.attempt}</dt>
+          <dd>
+            {job.attempt}{#if job.retry_of}
+              · <a href={href(`/jobs/${job.retry_of}`)}>{t.runctl.retryOf(job.retry_of)}</a>{/if}
+          </dd>
+        {/if}
+        {#if job.not_before && job.state === 'queued'}
+          <dt>{t.runctl.notBefore}</dt>
+          <dd>{fmtTime(job.not_before)}</dd>
+        {/if}
       </dl>
     </section>
     <section class="card" aria-labelledby="jp">

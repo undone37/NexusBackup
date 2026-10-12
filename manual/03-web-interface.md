@@ -110,10 +110,13 @@ for the browser session). The key figures refresh every minute, the table below 
 - **Object**: one protected unit: a Proxmox VE VM or container, an agent host, a TrueNAS dataset, an NFS/SMB share,
   or a plugin guest or source (e.g. a PostgreSQL database or a Microsoft 365 mailbox).
 - **RPO** (recovery point objective): how much data you may lose at most. The dashboard takes it from the object's
-  policy schedule: **daily** = 24 h, **hourly** = 1 h.
+  policy schedule: **daily** = 24 h, **hourly** = 1 h, **every N hours** = N h, weekdays = the longest gap between
+  two run days, **monthly** = 31 days (see [05](05-policies-and-groups.md#schedules)).
 - **Within RPO**: the last good (successful) backup is no older than **1.5 × the RPO**, e.g. 36 h for a daily
   policy, 90 minutes for an hourly one. The half period is slack for a long or delayed backup.
 - **RPO breached**: the last good backup is older than 1.5 × the RPO.
+- **Paused**: behind the RPO, but every group of the object is paused or its source is in maintenance. Not counted as
+  a breach (see [05](05-policies-and-groups.md#pausing-a-group)).
 - **Never backed up**: the object is in a protection group but has no successful backup yet.
 - **Not in a group**: the appliance knows the object (a guest in the inventory of a source, e.g. a VM on a connected
   Proxmox VE cluster or a database of a PostgreSQL source; an enrolled agent; an NFS/SMB source) but no protection
@@ -177,9 +180,10 @@ If the key figures cannot be loaded, a banner says so; the table below still wor
 **Protection status** lists every protection group with one row per guest (VM, container, host, dataset, share,
 database). The columns show the time of the last backup and whether the newest copies are **Local**, **Offsite** and
 **Verified**. **Offsite** shows *n/a* when the group's policy does not copy offsite. **Status** is **Protected**,
-**Overdue** or **No backup**; this column uses a simpler rule than the key figures: **Overdue** means the newest
-snapshot is older than 1.5 × the policy period (36 hours for daily, 90 minutes for hourly policies; the same rule as the RPO KPIs). Administrators and operators can start a backup of the
-whole group with **Back up now**.
+**Overdue**, **Paused** (the group is paused or its source in maintenance) or **No backup**; this column uses a simpler rule than the key figures: **Overdue** means the newest
+snapshot is older than 1.5 × the policy period (36 hours for daily, 90 minutes for hourly policies; the same rule as the RPO KPIs). Administrators and operators can start a backup with **Back up now**:
+the whole group, selected guests or the guests that failed in the last run (see
+[05](05-policies-and-groups.md#back-up-now)).
 
 Below the table are the most recent **Failed jobs** (last 7 days) and **Open alerts**.
 
@@ -285,7 +289,16 @@ parameters. While the job runs, the log refreshes every 2 seconds (**Live — re
 
 ![A failed backup with its log](images/job-failed.png)
 
-- Administrators and operators can **Cancel job** while it is still queued; running jobs cannot be cancelled.
+- Administrators and operators can cancel a queued or running job (**Cancel** in the list, **Cancel job** on the
+  job page). A queued job is cancelled at once. For a running job the scheduler stops the connector (SIGTERM, then
+  SIGKILL after 30 seconds) and, for a Proxmox VE backup or restore, the running PVE task; the job ends
+  **cancelled**, and "Cancellation requested by …" is shown meanwhile. A backup cancelled half-way leaves no
+  snapshot: a snapshot only exists once its manifest is written as the very last step, and the chunks it had
+  already stored are removed by the next garbage collection. Steps that run inside the appliance (retention, GC,
+  verify) are not interrupted; the job stops after the current step. Cancelling is recorded in the audit log
+  (`job.cancel`).
+- Failed backups are retried (see [05](05-policies-and-groups.md#retries)): the job list shows **Attempt n**, and a
+  retry's page links to the first job of the chain; a retry waiting for its delay shows **Starts not before**.
 - A finished **Download files** job shows a **Download** button to the person who requested it.
 - Plugin jobs show a **Result** section (validation result, list of guests, restore summary).
 - A backup that could not take a point-in-time consistent view (an agent without snapshot support, a share without

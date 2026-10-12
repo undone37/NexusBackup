@@ -14,6 +14,8 @@ import type { Plugin } from 'vite';
 // The real manifests of the shipped plugins, so the demo's forms and restores match them.
 import pgManifest from '../../plugins/postgresql/manifest.json' with { type: 'json' };
 import truenasManifest from '../../plugins/truenas/manifest.json' with { type: 'json' };
+// Phase 13b: the schedule grammar and blackout check the UI uses as well.
+import { blackoutActive, isPaused, parseSchedule, schedulePeriod, validWindow, type BlackoutWindow } from '../src/lib/schedule.ts';
 
 interface Req {
   method?: string;
@@ -134,6 +136,12 @@ interface Job {
   plan: string[];
   duration: number;
   fail?: string;
+  /** Phase 13b: retry chain, retry delay, cancel request of a running job */
+  attempt?: number;
+  retry_of?: number | null;
+  not_before?: number | null;
+  cancel_by?: string | null;
+  cancel_at?: number;
 }
 
 interface MockGroup {
@@ -146,6 +154,9 @@ interface MockGroup {
   mode: 'explicit' | 'all' | 'tags';
   selector: string[];
   exclude: string[];
+  /** Phase 13b */
+  timezone?: string;
+  paused_until?: number | null;
 }
 interface InvRow {
   guest: string;
@@ -160,11 +171,20 @@ const db = {
   users: [] as User[],
   tenants: [] as { name: string; offsite: Json; quota_bytes?: number | null }[],
   /** kind: pve | linux | nfs | smb | plugin:<kind> */
-  sources: [] as { id: number; tenant: string; kind: string; name: string; config: Json }[],
+  sources: [] as { id: number; tenant: string; kind: string; name: string; config: Json; maintenance_until?: number | null }[],
   agents: [] as Agent[],
   replPeers: [] as Json[],
   replSources: [] as Json[],
-  policies: [] as { id: number; name: string; schedule: string; gfs: Json; offsite: boolean }[],
+  policies: [] as {
+    id: number;
+    name: string;
+    schedule: string;
+    gfs: Json;
+    offsite: boolean;
+    retry?: { count: number; delay_min: number };
+    blackout?: BlackoutWindow[];
+    sla_minutes?: number | null;
+  }[],
   groups: [] as MockGroup[],
   /** Phase 13c: guest inventory per source id (GET /sources/{id}/inventory) */
   inventory: new Map<number, InvRow[]>(),
@@ -314,11 +334,16 @@ function planFor(kind: string, p: Json): string[] {
 function tick() {
   const t = now();
   for (const j of db.jobs) {
-    if (j.state === 'queued' && t - j.created >= 1) {
+    if (j.state === 'queued' && t - j.created >= 1 && !(j.not_before && j.not_before > t)) {
       j.state = 'running';
       j.started = t;
     }
     if (j.state !== 'running' || j.started === null) continue;
+    if (j.cancel_by && t - (j.cancel_at ?? t) >= 2) {
+      Object.assign(j, { state: 'cancelled', finished: t });
+      j.log += `\n[scheduler] cancelled (requested by ${j.cancel_by})`;
+      continue;
+    }
     const frac = Math.min(1, (t - j.started) / j.duration);
     const n = Math.ceil(frac * j.plan.length);
     j.log = j.plan
@@ -1088,6 +1113,107 @@ function seed() {
   });
   seedPhase12(t);
   seedPhase13a(t);
+  seedRunControl(t);
+}
+
+// ---------------------------------------------------------------- run control (Phase 13b)
+
+/** Policy run-control fields as the web-api validates them (defaults: 3 retries 5 min apart, no blackout, no SLA). */
+function runControl(b: Json): { retry: { count: number; delay_min: number }; blackout: BlackoutWindow[]; sla_minutes: number | null } {
+  if (!parseSchedule(String(b.schedule ?? ''))) throw new HttpError(400, `schedule: bad schedule ${JSON.stringify(b.schedule)}`);
+  const retry = b.retry ?? { count: 3, delay_min: 5 };
+  if (!(retry.count >= 0 && retry.count <= 10 && retry.delay_min >= 1 && retry.delay_min <= 1440))
+    throw new HttpError(400, 'retry: count 0..=10, delay_min 1..=1440');
+  const blackout: BlackoutWindow[] = (b.blackout ?? []).map((w: Json) => ({ days: w.days ?? [], from: w.from, to: w.to, abort: !!w.abort }));
+  if (blackout.length > 20 || !blackout.every(validWindow)) throw new HttpError(400, 'blackout: from/to must be different HH:MM times');
+  const sla = b.sla_minutes ?? null;
+  if (sla !== null && !(sla >= 1 && sla <= 10080)) throw new HttpError(400, 'sla_minutes: 1..=10080');
+  return { retry, blackout, sla_minutes: sla };
+}
+
+function checkTz(tz: unknown): string {
+  const z = tz === undefined ? 'UTC' : String(tz);
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: z });
+  } catch {
+    throw new HttpError(400, `timezone: unknown time zone "${z}"`);
+  }
+  return z;
+}
+
+/** GET /groups: run state (paused, source maintenance, active blackout window). */
+function groupState(g: (typeof db.groups)[number]) {
+  const pol = db.policies.find((p) => p.id === g.policy_id);
+  const src = db.sources.find((s) => s.id === g.source_id);
+  return {
+    ...g,
+    timezone: g.timezone ?? 'UTC',
+    paused_until: g.paused_until ?? null,
+    maintenance_until: src?.maintenance_until ?? null,
+    blackout_active: blackoutActive(pol?.blackout ?? [], g.timezone ?? 'UTC', now()),
+    resolved_guests: resolveGuests(g),
+  };
+}
+
+/** "Back up now" params: `guests` (a subset of the group's) or `failed_only` (from the last failed run). */
+function backupGuests(p: Json) {
+  if (p.group_id === undefined) {
+    if (p.guests !== undefined || p.failed_only) throw new HttpError(400, 'params: guests and failed_only need group_id');
+    return;
+  }
+  const g = find(db.groups, (x) => x.id === p.group_id, 'group');
+  if (p.failed_only) {
+    if (p.guests !== undefined) throw new HttpError(400, 'params: guests or failed_only, not both');
+    const last = db.jobs
+      .filter((j) => j.kind === 'backup' && j.params.group_id === g.id && (j.state === 'ok' || j.state === 'failed'))
+      .sort((a, b) => b.id - a.id)[0];
+    if (last?.state !== 'failed') throw new HttpError(409, "the group's last run did not fail");
+    delete p.failed_only;
+    if (Array.isArray(last.result?.failed_guests)) p.guests = last.result.failed_guests;
+    return;
+  }
+  if (p.guests !== undefined && (!Array.isArray(p.guests) || !p.guests.length || p.guests.some((x: unknown) => !resolveGuests(g).includes(x as never))))
+    throw new HttpError(400, "guests: a non-empty subset of the group's guests");
+}
+
+/** Demo state: retries, blackout window, SLA, a paused group, a source in maintenance, a retry chain. */
+function seedRunControl(t: number) {
+  for (const p of db.policies) Object.assign(p, { retry: { count: 3, delay_min: 5 }, blackout: [], sla_minutes: null, ...p });
+  const pol = (n: string) => db.policies.find((p) => p.name === n)!;
+  pol('gold').retry = { count: 2, delay_min: 10 };
+  pol('gold').sla_minutes = 240;
+  pol('bronze').blackout = [{ days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], from: '07:00', to: '19:00', abort: true }];
+  pol('databases-hourly').schedule = 'every 2h at 15';
+  pol('databases-hourly').sla_minutes = 20;
+  pol('silver').schedule = 'Mon-Sat 22:00';
+  for (const g of db.groups) Object.assign(g, { timezone: g.tenant === 'initech' ? 'Europe/Berlin' : 'UTC', paused_until: null, ...g });
+  const grp = (n: string) => db.groups.find((g) => g.name === n)!;
+  const nas02 = grp('acme-nas02');
+  nas02.paused_until = -1;
+  const fs02 = db.sources.find((s) => s.name === 'fs02-files');
+  if (fs02) fs02.maintenance_until = t + 2 * DAY;
+  // the nightly production run failed for vm-101: retried for that guest only
+  const prod = grp('production');
+  const first = db.jobs.find((j) => j.kind === 'backup' && j.params.group_id === prod.id && j.state === 'failed');
+  if (first) {
+    first.result = { failed_guests: [101] };
+    first.log += `\n[scheduler] attempt 1 of 3 failed; retry as job ${db.seq + 1} in 10 min for [101]`;
+    const second = addJob('backup', 'initech', { group_id: prod.id, guests: [101] }, 'scheduler', { attempt: 2, retry_of: first.id });
+    Object.assign(second, {
+      created: (first.finished ?? t) + 1, started: (first.finished ?? t) + 600, finished: (first.finished ?? t) + 640, state: 'failed', plan: [],
+      result: { failed_guests: [101] },
+      log: ['starting backup of vm-101 via node pve2', 'ERROR: vm-101: fleecing storage local-lvm on pve2 is full (98 %)', `[scheduler] attempt 2 of 3 failed; retry as job ${db.seq + 1} in 10 min for [101]`].join('\n'),
+    });
+    const third = addJob('backup', 'initech', { group_id: prod.id, guests: [101] }, 'scheduler', { attempt: 3, retry_of: first.id });
+    Object.assign(third, { created: (second.finished ?? t) + 1, not_before: t + 8 * 60 });
+  }
+  db.alerts.push(
+    mkAlert({ ts: t - 7 * 3600, severity: 'warning', kind: 'paused', key: `paused:group:${nas02.id}:-1`, tenant: 'acme', message: `group ${nas02.id} acme-nas02 (acme) paused until further notice: no scheduled backups meanwhile` }),
+    mkAlert({
+      ts: t - 26 * 3600, severity: 'warning', kind: 'sla_missed', key: 'sla_missed:4690', tenant: 'acme', resolved_at: t - 25 * 3600, resolved_by: 'op',
+      message: `backup job 4690 of group acme-databases (acme) still running after 21 min (SLA 20 min)`,
+    }),
+  );
 }
 
 // ---------------------------------------------------------------- helpers
@@ -1205,7 +1331,10 @@ function truenasConfig(cfg: Json, old?: Json): Json {
   return c;
 }
 const weakens = (a: Json, b: Json) =>
-  ['daily', 'weekly', 'monthly', 'yearly'].some((k) => Number(b.gfs?.[k]) < Number(a.gfs?.[k])) || (a.offsite && !b.offsite);
+  ['daily', 'weekly', 'monthly', 'yearly'].some((k) => Number(b.gfs?.[k]) < Number(a.gfs?.[k])) ||
+  (a.offsite && !b.offsite) ||
+  // Phase 13b: a new blackout window means fewer runs
+  (b.blackout ?? []).some((w: Json) => !(a.blackout ?? []).some((x: Json) => JSON.stringify(x) === JSON.stringify(w)));
 // web-api refuses inline secrets in opaque JSON blobs (secrets live in files).
 function noInlineSecrets(v: unknown) {
   if (v && typeof v === 'object')
@@ -1530,8 +1659,7 @@ on('DELETE', '/sources/:id', (c, [id]) => {
 on('GET', '/policies', (c) => (need(c.user), [200, db.policies]));
 on('POST', '/policies', async (c) => {
   const u = need(c.user, 'admin');
-  const p = { id: nextId(), name: c.body.name, schedule: c.body.schedule, gfs: c.body.gfs, offsite: !!c.body.offsite };
-  if (!/^(daily \d{2}:\d{2}|hourly \d{2})$/.test(p.schedule ?? '')) throw new HttpError(400, 'invalid schedule');
+  const p = { id: nextId(), name: c.body.name, schedule: c.body.schedule, gfs: c.body.gfs, offsite: !!c.body.offsite, ...runControl(c.body) };
   db.policies.push(p);
   await audit(u.name, 'policy.create', `policy/${p.id}`, p);
   return [201, p];
@@ -1539,7 +1667,7 @@ on('POST', '/policies', async (c) => {
 on('PUT', '/policies/:id', async (c, [id]) => {
   const u = need(c.user, 'admin');
   const p = find(db.policies, (x) => x.id === Number(id), 'policy');
-  const after = { name: c.body.name, schedule: c.body.schedule, gfs: c.body.gfs, offsite: !!c.body.offsite };
+  const after = { name: c.body.name, schedule: c.body.schedule, gfs: c.body.gfs, offsite: !!c.body.offsite, ...runControl(c.body) };
   if (weakens(p, after)) return quorum(u, 'policy.update', { id: p.id, ...after, old: structuredClone(p) });
   Object.assign(p, after);
   await audit(u.name, 'policy.update', `policy/${p.id}`, after);
@@ -1551,7 +1679,7 @@ on('DELETE', '/policies/:id', (c, [id]) => {
 });
 
 // groups
-on('GET', '/groups', (c) => [200, byTenant(need(c.user), db.groups)]);
+on('GET', '/groups', (c) => [200, byTenant(need(c.user), db.groups).map(groupState)]);
 
 // ---- Phase 13c: guest inventory and auto-protect groups (crates/web-api/src/inventory.rs)
 function hasInventory(src: (typeof db.sources)[number]): boolean {
@@ -1652,7 +1780,7 @@ function checkGuests(src: (typeof db.sources)[number], guests: unknown) {
 }
 on('POST', '/groups', async (c) => {
   const u = need(c.user, 'admin');
-  const g: MockGroup = { id: nextId(), tenant: c.body.tenant, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), name: c.body.name, guests: c.body.guests ?? [], mode: 'explicit', selector: [], exclude: [] };
+  const g: MockGroup = { id: nextId(), tenant: c.body.tenant, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), name: c.body.name, guests: c.body.guests ?? [], mode: 'explicit', selector: [], exclude: [], timezone: checkTz(c.body.timezone), paused_until: null };
   const src = find(db.sources, (s) => s.id === g.source_id && s.tenant === g.tenant, 'source in tenant');
   Object.assign(g, checkMode(src, c.body));
   if (g.mode === 'explicit') checkGuests(src, g.guests);
@@ -1665,7 +1793,7 @@ on('PUT', '/groups/:id', async (c, [id]) => {
   const g = find(db.groups, (x) => x.id === Number(id), 'group');
   if ('tenant' in c.body) throw new HttpError(400, 'unknown field `tenant`');
   const src = find(db.sources, (s) => s.id === Number(c.body.source_id) && s.tenant === g.tenant, 'source in tenant');
-  const next = { name: c.body.name, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), guests: c.body.guests ?? [], ...checkMode(src, c.body) };
+  const next = { name: c.body.name, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), guests: c.body.guests ?? [], ...checkMode(src, c.body), timezone: checkTz(c.body.timezone) };
   if (next.mode === 'explicit') checkGuests(src, next.guests);
   const from = find(db.policies, (p) => p.id === g.policy_id, 'policy');
   const to = find(db.policies, (p) => p.id === next.policy_id, 'policy');
@@ -1677,6 +1805,50 @@ on('PUT', '/groups/:id', async (c, [id]) => {
 on('DELETE', '/groups/:id', (c, [id]) => {
   const g = find(db.groups, (x) => x.id === Number(id), 'group');
   return quorum(need(c.user, 'admin'), 'group.delete', { id: g.id, name: g.name });
+});
+
+// run control (Phase 13b): pause / resume groups, source maintenance
+const pauseUntil = (b: Json) => {
+  if (b.until === undefined || b.until === null) return -1;
+  if (!(b.until > now() && b.until <= now() + 366 * DAY)) throw new HttpError(400, 'until: a time in the next 366 days (or none = indefinitely)');
+  return Number(b.until);
+};
+on('POST', '/groups/:id/pause', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'operator');
+  const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
+  g.paused_until = pauseUntil(c.body ?? {});
+  await audit(u.name, 'group.pause', `group/${g.id}`, { tenant: g.tenant, paused_until: g.paused_until });
+  if (g.paused_until === -1 || g.paused_until > now() + 7 * DAY)
+    db.alerts.push(
+      mkAlert({
+        ts: now(), severity: 'warning', kind: 'paused', key: `paused:group:${g.id}:${g.paused_until}`, tenant: g.tenant,
+        message: `group ${g.id} ${g.name} (${g.tenant}) paused until ${g.paused_until === -1 ? 'further notice' : isoDay(g.paused_until)}: no scheduled backups meanwhile`,
+      }),
+    );
+  return [200, { id: g.id, paused_until: g.paused_until }];
+});
+on('POST', '/groups/:id/resume', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'operator');
+  const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
+  g.paused_until = null;
+  // like the scheduler's next tick: the group's `paused` warning resolves itself
+  for (const a of db.alerts) if (a.kind === 'paused' && !a.resolved_at && String(a.key).startsWith(`paused:group:${g.id}:`)) Object.assign(a, { resolved_at: now(), resolved_by: 'scheduler', auto: true });
+  await audit(u.name, 'group.resume', `group/${g.id}`, { tenant: g.tenant, paused_until: null });
+  return [200, { id: g.id, paused_until: null }];
+});
+on('POST', '/sources/:id/maintenance', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'operator');
+  const s = find(byTenant(u, db.sources), (x) => x.id === Number(id), 'source');
+  s.maintenance_until = pauseUntil(c.body ?? {});
+  await audit(u.name, 'source.maintenance', `source/${s.id}`, { tenant: s.tenant, maintenance_until: s.maintenance_until });
+  return [200, { id: s.id, maintenance_until: s.maintenance_until }];
+});
+on('POST', '/sources/:id/maintenance/end', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'operator');
+  const s = find(byTenant(u, db.sources), (x) => x.id === Number(id), 'source');
+  s.maintenance_until = null;
+  await audit(u.name, 'source.maintenance_end', `source/${s.id}`, { tenant: s.tenant, maintenance_until: null });
+  return [200, { id: s.id, maintenance_until: null }];
 });
 
 // replication (docs/replication.md): this appliance as primary (peers) and as secondary (sources)
@@ -2105,8 +2277,9 @@ on('GET', '/snapshots', (c) => {
   return [200, xs.sort((a, b) => b.time - a.time)];
 });
 const pubJob = (j: Job, withLog: boolean) => {
-  const { plan: _p, duration: _d, fail: _f, log, ...rest } = j;
-  return withLog ? { ...rest, log } : rest;
+  const { plan: _p, duration: _d, fail: _f, cancel_at: _c, log, ...rest } = j;
+  const out = { attempt: 1, retry_of: null, not_before: null, cancel_by: null, ...rest };
+  return withLog ? { ...out, log } : out;
 };
 on('GET', '/jobs', (c) => {
   const u = need(c.user);
@@ -2185,6 +2358,7 @@ on('POST', '/jobs', async (c) => {
   find(db.tenants, (t) => t.name === tenant, 'tenant');
   if (kind === 'files_list' && !String(params.path ?? '').startsWith('/')) throw new HttpError(400, 'path: must be absolute');
   checkJob(u, kind, tenant, params);
+  if (kind === 'backup') backupGuests(params);
   // Like web-api: files_get gets a server-generated download token, returned in the 202 body.
   const p = kind === 'files_get' ? { ...params, download_token: rand(32) } : params;
   const j = addJob(kind, tenant, p, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
@@ -2196,11 +2370,18 @@ on('POST', '/jobs', async (c) => {
 on('POST', '/jobs/:id/cancel', async (c, [id]) => {
   const u = need(c.user, 'admin', 'operator');
   const j = find(db.jobs, (x) => x.id === Number(id), 'job');
-  if (j.state !== 'queued') throw new HttpError(409, 'only queued jobs can be cancelled');
+  // Phase 13b: a running job gets a cancel request that the scheduler carries out
+  if (j.state === 'running') {
+    if (j.cancel_by) throw new HttpError(409, 'cancellation already requested');
+    Object.assign(j, { cancel_by: u.name, cancel_at: now() });
+    await audit(u.name, 'job.cancel', `job/${j.id}`, { running: true });
+    return [200, { id: j.id, state: 'cancelling' }];
+  }
+  if (j.state !== 'queued') throw new HttpError(409, `job is ${j.state}, only queued or running jobs can be cancelled`);
   j.state = 'cancelled';
   j.finished = now();
-  await audit(u.name, 'job.cancel', `job/${j.id}`, {});
-  return [200, pubJob(j, true)];
+  await audit(u.name, 'job.cancel', `job/${j.id}`, { running: false });
+  return [200, { id: j.id, state: 'cancelled' }];
 });
 
 // quorum
@@ -2422,7 +2603,7 @@ const GUEST_NAMES: Record<string, string> = {
   'initech/100': 'erp-app', 'initech/101': 'erp-db', 'initech/200': 'proxy', 'initech/102': 'dev-sandbox', 'initech/103': 'legacy-ftp',
   'acme/300': 'shop-web', 'acme/301': 'shop-api', 'acme/302': 'test-web',
 };
-interface Obj { source: string; name: string; kind: string; tenant: string; rpo_s: number; inGroup: boolean; names: string[]; sourceName?: string; sourceId?: number | null }
+interface Obj { source: string; name: string; kind: string; tenant: string; rpo_s: number; inGroup: boolean; names: string[]; sourceName?: string; sourceId?: number | null; paused?: boolean }
 
 function protectedObjects(u: User): Obj[] {
   const out: Obj[] = [];
@@ -2430,8 +2611,9 @@ function protectedObjects(u: User): Obj[] {
     const src = db.sources.find((s) => s.id === g.source_id);
     const pol = db.policies.find((p) => p.id === g.policy_id);
     if (!src || !pol) continue;
-    const rpo_s = pol.schedule.startsWith('hourly') ? 3600 : DAY;
-    const add = (source: string, name: string, names = [source]) => out.push({ source, name, kind: src.kind, tenant: g.tenant, rpo_s, inGroup: true, names });
+    const rpo_s = schedulePeriod(pol.schedule);
+    const paused = isPaused(g.paused_until, now()) || isPaused(src.maintenance_until, now());
+    const add = (source: string, name: string, names = [source]) => out.push({ source, name, kind: src.kind, tenant: g.tenant, rpo_s, inGroup: true, names, paused });
     const guests = resolveGuests(g);
     if (src.kind === 'pve')
       for (const v of guests) add(guestName(v), `${GUEST_NAMES[`${g.tenant}/${v}`] ?? 'guest'} (${v})`, [`vm-${v}`, `ct-${v}`]);
@@ -2493,7 +2675,7 @@ function dashboard(u: User, days: number) {
   const objs = protectedObjects(u).map((o) => {
     const last = snaps.filter((s) => s.tenant === o.tenant && o.names.includes(s.source)).reduce((m, s) => Math.max(m, s.time), 0) || null;
     const age_s = last ? t - last : null;
-    const sla = !last ? 'never' : (age_s as number) > o.rpo_s * 1.5 ? 'breach' : 'ok';
+    const sla = !last ? 'never' : (age_s as number) > o.rpo_s * 1.5 ? (o.paused ? 'paused' : 'breach') : 'ok';
     return { ...o, last_ok: last, age_s, sla };
   });
   const inGroup = objs.filter((o) => o.inGroup);
@@ -2503,12 +2685,13 @@ function dashboard(u: User, days: number) {
     unprotected: objs.length - inGroup.filter((o) => o.sla !== 'never').length,
     sla_ok: inGroup.filter((o) => o.sla === 'ok').length,
     sla_breach: inGroup.filter((o) => o.sla === 'breach').length,
+    sla_paused: inGroup.filter((o) => o.sla === 'paused').length,
     never: inGroup.filter((o) => o.sla === 'never').length,
     unprotected_list: objs
       .filter((o) => !o.inGroup)
       .map((o) => ({ tenant: o.tenant, kind: o.kind, source_id: o.sourceId ?? null, source: o.sourceName ?? '', guest: o.source, name: o.name })),
     worst: inGroup
-      .sort((a, b) => Number(b.sla !== 'ok') - Number(a.sla !== 'ok') || (b.age_s ?? Infinity) / b.rpo_s - (a.age_s ?? Infinity) / a.rpo_s)
+      .sort((a, b) => Number(!['ok', 'paused'].includes(b.sla)) - Number(!['ok', 'paused'].includes(a.sla)) || (b.age_s ?? Infinity) / b.rpo_s - (a.age_s ?? Infinity) / a.rpo_s)
       .slice(0, 10)
       .map(({ source, name, kind, tenant, last_ok, age_s, rpo_s, sla }) => ({ source, name, kind, tenant, last_ok, age_s, rpo_s, sla })),
   };

@@ -5,9 +5,11 @@
 
 use chunkstore::retention::Gfs;
 use chunkstore::{Keyring, Options, Store};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -129,6 +131,8 @@ pub enum Outcome {
     Quorum {
         message: String,
     },
+    /// stopped on request ([`Cancels`])
+    Cancelled,
 }
 
 pub struct Finished {
@@ -142,6 +146,75 @@ pub struct Ctx {
     pub keys: KeySource,
     pub store_options: fn() -> Options,
     pub log_max: usize,
+    pub cancels: Cancels,
+}
+
+/// Cancel requests for running jobs (Phase 13b, docs/control-plane.md "Run
+/// control"). The worker checks the mark before each step; a spawned CLI runs
+/// in its own process group, which gets SIGTERM on request and SIGKILL from
+/// [`Cancels::kill`] (the scheduler calls it after the grace period).
+/// In-process steps (retention, GC, verify) are not interrupted: the job stops
+/// after the current step.
+#[derive(Default)]
+pub struct Cancels(Mutex<HashMap<i64, Slot>>);
+
+#[derive(Default)]
+struct Slot {
+    requested: bool,
+    /// process group of the CLI currently running for the job
+    pgid: Option<i32>,
+}
+
+fn signal_group(pgid: i32, sig: i32) {
+    // SAFETY: plain kill(2) on a process group we created and have not reaped yet
+    unsafe {
+        libc::kill(-pgid, sig);
+    }
+}
+
+impl Cancels {
+    pub fn request(&self, id: i64) {
+        let mut m = self.0.lock().unwrap();
+        let s = m.entry(id).or_default();
+        if !s.requested {
+            s.requested = true;
+            if let Some(p) = s.pgid {
+                signal_group(p, libc::SIGTERM);
+            }
+        }
+    }
+
+    pub fn kill(&self, id: i64) {
+        if let Some(p) = self.0.lock().unwrap().get(&id).and_then(|s| s.pgid) {
+            signal_group(p, libc::SIGKILL);
+        }
+    }
+
+    pub fn requested(&self, id: i64) -> bool {
+        self.0.lock().unwrap().get(&id).is_some_and(|s| s.requested)
+    }
+
+    /// The job finished: forget it.
+    pub fn remove(&self, id: i64) {
+        self.0.lock().unwrap().remove(&id);
+    }
+
+    /// Registers the child's process group; a request that came first stops it now.
+    fn spawned(&self, id: i64, pgid: i32) {
+        let mut m = self.0.lock().unwrap();
+        let s = m.entry(id).or_default();
+        s.pgid = Some(pgid);
+        if s.requested {
+            signal_group(pgid, libc::SIGTERM);
+        }
+    }
+
+    /// Before the child is reaped: no signals to a group id that may be reused.
+    fn exited(&self, id: i64) {
+        if let Some(s) = self.0.lock().unwrap().get_mut(&id) {
+            s.pgid = None;
+        }
+    }
 }
 
 const MAX_CAPTURE: usize = 4 << 20;
@@ -169,7 +242,7 @@ pub fn execute(id: i64, plan: &Plan, ctx: &Ctx) -> Finished {
                 .line(&format!("[scheduler] cannot write job config: {e}"));
             Outcome::Failed { alert: None }
         }
-        Ok(()) => run_steps(plan, ctx, &log, &mut stdout),
+        Ok(()) => run_steps(id, plan, ctx, &log, &mut stdout),
     };
     let _ = fs::remove_dir_all(&plan.dir);
     if outcome != Outcome::Ok {
@@ -189,7 +262,7 @@ pub fn execute(id: i64, plan: &Plan, ctx: &Ctx) -> Finished {
     }
 }
 
-fn run_steps(plan: &Plan, ctx: &Ctx, log: &Arc<Mutex<BoundedLog>>, stdout: &mut Option<String>) -> Outcome {
+fn run_steps(id: i64, plan: &Plan, ctx: &Ctx, log: &Arc<Mutex<BoundedLog>>, stdout: &mut Option<String>) -> Outcome {
     let needs_store = plan
         .steps
         .iter()
@@ -208,6 +281,10 @@ fn run_steps(plan: &Plan, ctx: &Ctx, log: &Arc<Mutex<BoundedLog>>, stdout: &mut 
         None
     };
     for step in &plan.steps {
+        if ctx.cancels.requested(id) {
+            log.lock().unwrap().line("[scheduler] cancelled");
+            return Outcome::Cancelled;
+        }
         let failed = Outcome::Failed { alert: None };
         match step {
             Step::Cli {
@@ -221,11 +298,16 @@ fn run_steps(plan: &Plan, ctx: &Ctx, log: &Arc<Mutex<BoundedLog>>, stdout: &mut 
                     bin.file_name().unwrap_or_default().to_string_lossy(),
                     args.join(" ")
                 ));
-                match run_cli(bin, args, log, *capture) {
+                match run_cli(bin, args, log, *capture, Some((id, &ctx.cancels))) {
                     Ok((true, out)) => {
                         if *capture {
                             *stdout = Some(out);
                         }
+                    }
+                    Ok((false, _)) if ctx.cancels.requested(id) => {
+                        stop_task(bin, args, log);
+                        log.lock().unwrap().line("[scheduler] cancelled");
+                        return Outcome::Cancelled;
                     }
                     Ok((false, _)) => return Outcome::Failed { alert: *alert },
                     Err(e) => {
@@ -368,15 +450,48 @@ fn run_steps(plan: &Plan, ctx: &Ctx, log: &Arc<Mutex<BoundedLog>>, stdout: &mut 
     Outcome::Ok
 }
 
+/// A cancelled connector that reported a PVE task (`upid: <UPID>` line) gets
+/// `<bin> <config> task-stop <UPID>` for the last one, so vzdump / qmrestore on
+/// the node stops too (nexus-pve; the DELETE task API).
+fn stop_task(bin: &Path, args: &[String], log: &Arc<Mutex<BoundedLog>>) {
+    let upid = log
+        .lock()
+        .unwrap()
+        .buf
+        .lines()
+        .rev()
+        .find_map(|l| l.strip_prefix("upid: ").map(|u| u.trim().to_owned()));
+    let (Some(upid), Some(cfg)) = (upid.filter(|u| u.starts_with("UPID:")), args.first()) else {
+        return;
+    };
+    let args = [cfg.clone(), "task-stop".into(), upid];
+    if let Err(e) = run_cli(bin, &args, log, false, None) {
+        log.lock().unwrap().line(&format!("[scheduler] task-stop: {e}"));
+    }
+}
+
 /// Runs a CLI with stdout/stderr streamed into `log` (or stdout captured).
-/// Returns (success, captured stdout).
-pub fn run_cli(bin: &Path, args: &[String], log: &Arc<Mutex<BoundedLog>>, capture: bool) -> io::Result<(bool, String)> {
-    let mut child = Command::new(bin)
-        .args(args)
+/// Returns (success, captured stdout). With `job`, the child runs in its own
+/// process group registered for cancellation.
+pub fn run_cli(
+    bin: &Path,
+    args: &[String],
+    log: &Arc<Mutex<BoundedLog>>,
+    capture: bool,
+    job: Option<(i64, &Cancels)>,
+) -> io::Result<(bool, String)> {
+    let mut cmd = Command::new(bin);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+    if job.is_some() {
+        cmd.process_group(0);
+    }
+    let mut child = cmd.spawn()?;
+    if let Some((id, c)) = job {
+        c.spawned(id, child.id() as i32);
+    }
     let pump = |mut r: Box<dyn Read + Send>, log: Arc<Mutex<BoundedLog>>, keep: bool| {
         std::thread::spawn(move || {
             let mut kept = Vec::new();
@@ -397,6 +512,18 @@ pub fn run_cli(bin: &Path, args: &[String], log: &Arc<Mutex<BoundedLog>>, captur
     };
     let out = pump(Box::new(child.stdout.take().unwrap()), log.clone(), capture);
     let err = pump(Box::new(child.stderr.take().unwrap()), log.clone(), false);
+    if let Some((id, c)) = job {
+        // wait for the exit without reaping (WNOWAIT): the group id stays ours
+        // until it is unregistered, so a late signal cannot hit a reused id
+        // SAFETY: waitid on our own child with a zeroed siginfo out-parameter
+        unsafe {
+            let mut info: libc::siginfo_t = std::mem::zeroed();
+            while libc::waitid(libc::P_PID, child.id(), &mut info, libc::WEXITED | libc::WNOWAIT) != 0
+                && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
+            {}
+        }
+        c.exited(id);
+    }
     let status = child.wait()?;
     let captured = out.join().unwrap_or_default();
     let _ = err.join();
@@ -446,7 +573,7 @@ mod tests {
         );
         let log = Arc::new(Mutex::new(BoundedLog::new(1 << 16)));
         let args = vec!["-c".into(), "echo out; echo err >&2; exit 3".into()];
-        let (ok, out) = run_cli(Path::new("/bin/sh"), &args, &log, true).unwrap();
+        let (ok, out) = run_cli(Path::new("/bin/sh"), &args, &log, true, None).unwrap();
         assert!(!ok);
         assert_eq!(out, "out\n");
         let l = log.lock().unwrap().buf.clone();

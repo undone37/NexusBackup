@@ -19,6 +19,13 @@ pub struct ApiConfig {
     pub token_secret: String,
 }
 
+/// Long-running tasks are reported on stderr as `upid: <UPID>`: the scheduler
+/// stops the last one with `task-stop` when the job is cancelled.
+fn reported(upid: &str) -> String {
+    eprintln!("upid: {upid}");
+    upid.to_owned()
+}
+
 pub struct Api {
     http: reqwest::blocking::Client,
     base: String,
@@ -62,6 +69,21 @@ impl Api {
         self.send(self.http.post(format!("{}{path}", self.base)).form(form))
     }
 
+    /// Stops a running task (`DELETE /nodes/{node}/tasks/{upid}`; the node is
+    /// the UPID's second field). A task that already ended is left alone.
+    pub fn stop_task(&self, upid: &str) -> Result<()> {
+        let node = upid
+            .split(':')
+            .nth(1)
+            .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.'))
+            .context("invalid UPID")?;
+        if self.task_status(node, upid)?.is_some() {
+            return Ok(());
+        }
+        self.send(self.http.delete(format!("{}/nodes/{node}/tasks/{upid}", self.base)))?;
+        Ok(())
+    }
+
     pub fn version(&self) -> Result<String> {
         Ok(self.get("/version")?["version"].as_str().unwrap_or_default().to_owned())
     }
@@ -76,7 +98,7 @@ impl Api {
             form.push(("fleecing", f));
         }
         let upid = self.post(&format!("/nodes/{node}/vzdump"), &form)?;
-        upid.as_str().map(str::to_owned).context("vzdump returned no UPID")
+        upid.as_str().map(reported).context("vzdump returned no UPID")
     }
 
     /// Restores a provider archive (`<storeid>:backup/<name>`) as VM `vmid`; returns the UPID.
@@ -91,7 +113,7 @@ impl Api {
                 ("unique", "1"),
             ],
         )?;
-        upid.as_str().map(str::to_owned).context("restore returned no UPID")
+        upid.as_str().map(reported).context("restore returned no UPID")
     }
 
     /// Restores a provider container archive as CT `vmid` (unprivileged; PVE refuses
@@ -109,7 +131,7 @@ impl Api {
                 ("unique", "1"),
             ],
         )?;
-        upid.as_str().map(str::to_owned).context("restore returned no UPID")
+        upid.as_str().map(reported).context("restore returned no UPID")
     }
 
     /// POST returning a task UPID.
