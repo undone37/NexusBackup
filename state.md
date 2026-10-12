@@ -283,5 +283,5 @@ Six parallel worktree agents (each merges main into its branch before reporting)
 - [ ] 14c emergency console root access (tty2 gate: approved one-time code or recovery key)
 - [ ] 14d1 viewer role, download privilege, expiry, sessions list/revoke, timeouts, dormant accounts, login banner, management allow-list, approver-count warning
 - [ ] 14d2 API tokens, web certificate import (CSR on the appliance), certificate expiry alerts
-- [ ] 14e reports: CSV downloads + scheduled HTML e-mail
+- [x] 14e reports — merged 2026-10-12 (no schema): crates/reports (protection, failed, sla, storage), `GET /reports/{type}.csv`, `settings/reports`, scheduler `report_send` jobs; Reports page
 - [ ] merge, full suite, VM labs (PVE e2e, plugins, forwarding, console gate), screenshots, CI, release 0.1.0-alpha
