@@ -1889,5 +1889,6 @@ fn inventory_jobs_and_auto_protect() {
     s.start_jobs().unwrap();
     assert_eq!(state(&s, id), "failed");
 }
+mod forward;
 /// Phase 13b run control (pause, blackout, retries, SLA, cancel).
 mod runctl;

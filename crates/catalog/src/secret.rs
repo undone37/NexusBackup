@@ -266,6 +266,7 @@ impl SealKey {
 }
 
 /// Private half, held only by the scheduler.
+#[derive(Clone)]
 pub struct SchedulerKey(crypto_box::SecretKey);
 
 impl SchedulerKey {
