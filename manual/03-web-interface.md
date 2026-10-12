@@ -303,11 +303,11 @@ Each row has two controls (not for security officers, who cannot restore):
 
 | Snapshot | Restore menu |
 |---|---|
-| `vm-` | **Full restore to a new VM / container**, **Instant recover** |
-| `ct-` | **Full restore to a new VM / container** |
+| `vm-` | **Full restore to a new VM / container**, **Instant recover**, **Restore files to a host…** |
+| `ct-` | **Full restore to a new VM / container**, **Restore files to a host…** |
 | `host-` | **Restore to path** |
-| `plugin-…` | the plugin's restores that apply to this kind of snapshot, e.g. **Restore database dump to a server** only on database snapshots and **Point-in-time restore** only on cluster snapshots of PostgreSQL |
-| `nas-`, `share-` | no menu: download only |
+| `plugin-…` | the plugin's restores that apply to this kind of snapshot, e.g. **Restore database dump to a server** only on database snapshots and **Point-in-time restore** only on cluster snapshots of PostgreSQL; **Restore to a host…** for plugins with a download |
+| `nas-`, `share-` | **Restore to a host…** |
 
 Administrators also see **Delete** on snapshots whose retention lock has expired, that have a local copy and that were
 not replicated from another appliance (see [06 Restores](06-restores.md#deleting-a-snapshot)).

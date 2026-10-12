@@ -24,6 +24,9 @@
   import IconHost from '@lucide/svelte/icons/hard-drive';
   import IconPlugin from '@lucide/svelte/icons/puzzle';
   import IconTrash from '@lucide/svelte/icons/trash-2';
+  import IconGavel from '@lucide/svelte/icons/gavel';
+  import IconUnlock from '@lucide/svelte/icons/lock-open';
+  import HoldDialog from '../components/HoldDialog.svelte';
 
   let snaps: Snapshot[] = $state([]);
   let tenants: Tenant[] = $state([]);
@@ -35,10 +38,13 @@
 
   let tenant = $state(route.query.get('tenant') ?? '');
   let source = $state(route.query.get('source') ?? '');
+  let heldOnly = $state(route.query.get('held') === 'true');
 
   async function load() {
     try {
-      snaps = await get<Snapshot[]>('/snapshots' + qs({ tenant: route.query.get('tenant'), source: route.query.get('source') }));
+      snaps = await get<Snapshot[]>(
+        '/snapshots' + qs({ tenant: route.query.get('tenant'), source: route.query.get('source'), held: route.query.get('held') }),
+      );
       error = null;
     } catch (e) {
       error = errText(e);
@@ -127,7 +133,7 @@
 
   function applyFilter(e: SubmitEvent) {
     e.preventDefault();
-    navigate('/snapshots' + qs({ tenant, source: source.trim() }));
+    navigate('/snapshots' + qs({ tenant, source: source.trim(), held: heldOnly ? 'true' : '' }));
   }
 
   const guestNames = $derived([...new Set(snaps.map((s) => s.source))].sort());
@@ -184,21 +190,46 @@
   function restoreItems(s: Snapshot): MenuItem[] {
     if (hostAgentId(s.source))
       return [{ label: t.snap.restorePath, hint: t.snap.restorePathHint, icon: IconHost, onselect: () => openRestoreFiles(s) }];
+    // any file tree onto a host with an agent of the tenant (Phase 15b)
+    const toHost: MenuItem = { label: t.snap.restoreToHost, hint: t.snap.restoreToHostHint, icon: IconHost, onselect: () => openRestoreFiles(s) };
     const pl = pluginOf(s);
-    if (pl)
-      return (pl.kind?.restores ?? [])
+    if (pl) {
+      const items: MenuItem[] = (pl.kind?.restores ?? [])
         .filter((r) => r.id !== 'download' && restoreApplies(r, pl.guest))
         .map((r) => ({ label: r.title, hint: r.app_specific ? t.snap.appSpecific : undefined, icon: IconPlugin, onselect: () => openPluginRestore(s, r) }));
-    // TrueNAS datasets and NFS/SMB shares: file download only (docs/truenas-connector.md, docs/nas-connector.md)
-    if (s.source.startsWith('nas-') || s.source.startsWith('share-')) return [];
+      // plugins with a download restore keep plain files in their snapshots
+      if (pl.kind?.restores.some((r) => r.id === 'download')) items.push(toHost);
+      return items;
+    }
+    // TrueNAS datasets and NFS/SMB shares (docs/truenas-connector.md, docs/nas-connector.md)
+    if (s.source.startsWith('nas-') || s.source.startsWith('share-')) return [toHost];
     const items: MenuItem[] = [{ label: t.snap.fullRestore, hint: t.snap.fullRestoreHint, icon: IconRestore, onselect: () => openRestore(s, 'restore') }];
     if (s.source.startsWith('vm-'))
       items.push({ label: t.snap.instant, hint: t.snap.instantHintShort, icon: IconZap, onselect: () => openRestore(s, 'instant') });
+    // VM/CT files: chosen in the file browser (restore micro-VM), then restored onto a host
+    items.push({ label: t.snap.restoreFilesToHost, hint: t.snap.restoreFilesToHostHint, icon: IconHost, onselect: () => browse(s) });
     return items;
   }
 
-  // Manual delete (approval `snapshot.delete`): local, unlocked, not replicated snapshots only.
-  const deletable = (s: Snapshot) => can.configure(session.user) && s.local && !s.origin && s.lock_until <= now;
+  // Manual delete (approval `snapshot.delete`): local, unlocked, not replicated, not held snapshots only.
+  const deletable = (s: Snapshot) =>
+    can.configure(session.user) && s.local && !s.origin && s.lock_until <= now && s.hold?.state !== 'active';
+
+  // Legal hold (15c): security officers set (or apply an advisory) at once; release needs approval.
+  let holdOpen = $state(false);
+  let holdTarget: Snapshot | null = $state(null);
+  let holdReason = $state('');
+  function openHold(s: Snapshot | null) {
+    holdTarget = s;
+    holdReason = s?.hold?.state === 'advisory' ? s.hold.reason : '';
+    holdOpen = true;
+  }
+  async function releaseHold(s: Snapshot) {
+    if (!(await askConfirm(t.snap.releaseConfirm(s.source, fmtTime(s.time))))) return;
+    const path = `/snapshots/${encodeURIComponent(s.tenant)}/${encodeURIComponent(s.source)}/${s.time}/hold`;
+    if (await act(del(path), t.snap.releaseQueued)) load();
+  }
+  const showActions = $derived(can.restore(session.user) || can.hold(session.user) || can.releaseHold(session.user));
   async function remove(s: Snapshot) {
     if (!(await askConfirm(t.snap.deleteConfirm(s.source, fmtTime(s.time))))) return;
     const path = `/snapshots/${encodeURIComponent(s.tenant)}/${encodeURIComponent(s.source)}/${s.time}`;
@@ -212,6 +243,9 @@
 
 <div class="page-head">
   <h1>{t.snap.title}</h1>
+  {#if can.hold(session.user)}
+    <button type="button" onclick={() => openHold(null)}><IconGavel aria-hidden="true" />{t.snap.holdRange}</button>
+  {/if}
   <p class="lede">{t.snap.lede}</p>
 </div>
 
@@ -232,6 +266,7 @@
       {#each guestNames as g (g)}<option value={g}></option>{/each}
     </datalist>
   </div>
+  <label class="inline-check"><input type="checkbox" bind:checked={heldOnly} />{t.snap.heldOnly}</label>
   <button type="submit">{t.snap.apply}</button>
 </form>
 
@@ -255,7 +290,7 @@
             <th scope="col">{t.dash.offsite}</th>
             <th scope="col">{t.dash.verified}</th>
             <th scope="col">{t.snap.lock}</th>
-            {#if can.restore(session.user)}<th scope="col"><span class="visually-hidden">{t.actions}</span></th>{/if}
+            {#if showActions}<th scope="col"><span class="visually-hidden">{t.actions}</span></th>{/if}
           </tr>
         </thead>
         <tbody>
@@ -278,6 +313,19 @@
                   </div>
                 {/if}
                 {#if s.origin}<div><span class="chip info">{t.snap.replicatedFrom(s.origin)}</span></div>{/if}
+                {#if s.hold?.state === 'active'}
+                  <div>
+                    <span class="chip warn plain hold" title={t.snap.heldTitle(s.hold.held_by, fmtTime(s.hold.held_at), s.hold.reason)}
+                      ><IconGavel aria-hidden="true" />{t.snap.held}{s.hold.release_quorum ? ` · ${t.snap.releasePending}` : ''}</span
+                    >
+                  </div>
+                {:else if s.hold}
+                  <div>
+                    <span class="chip info plain hold" title={t.snap.advisoryTitle(s.hold.held_by, s.hold.reason)}
+                      ><IconGavel aria-hidden="true" />{t.snap.advisory(s.hold.origin ?? '?')}</span
+                    >
+                  </div>
+                {/if}
               </td>
               <td>{s.tenant}</td>
               <td class="nowrap">{fmtTime(s.time)}</td>
@@ -286,16 +334,27 @@
               <td><Check on={s.offsite} /></td>
               <td><Check on={s.verified} title={s.verified ? fmtAgo(s.verified) : ''} /></td>
               <td class="nowrap">{s.lock_until > now ? fmtTime(s.lock_until) : '—'}</td>
-              {#if can.restore(session.user)}
+              {#if showActions}
                 <td class="actions">
-                  <button
-                    type="button"
-                    class="small"
-                    onclick={() => browse(s)}
-                    title={pl && !pl.kind ? t.snap.pluginUnknown : undefined}><IconFolder aria-hidden="true" />{download?.title ?? t.snap.browse}</button
-                  >
-                  {#if items.length}
-                    <Menu label={t.snap.restoreMenu} ariaLabel={t.snap.restoreMenuLabel(s.source)} {items} />
+                  {#if can.restore(session.user)}
+                    <button
+                      type="button"
+                      class="small"
+                      onclick={() => browse(s)}
+                      title={pl && !pl.kind ? t.snap.pluginUnknown : undefined}><IconFolder aria-hidden="true" />{download?.title ?? t.snap.browse}</button
+                    >
+                    {#if items.length}
+                      <Menu label={t.snap.restoreMenu} ariaLabel={t.snap.restoreMenuLabel(s.source)} {items} />
+                    {/if}
+                  {/if}
+                  {#if can.hold(session.user) && s.hold?.state !== 'active'}
+                    <button type="button" class="small" onclick={() => openHold(s)} aria-label={t.snap.holdLabel(s.source, fmtTime(s.time))}
+                      ><IconGavel aria-hidden="true" />{s.hold ? t.snap.applyHold : t.snap.hold}</button
+                    >
+                  {:else if can.releaseHold(session.user) && s.hold?.state === 'active' && !s.hold.release_quorum}
+                    <button type="button" class="small" onclick={() => releaseHold(s)} aria-label={t.snap.releaseLabel(s.source, fmtTime(s.time))}
+                      ><IconUnlock aria-hidden="true" />{t.snap.release}</button
+                    >
                   {/if}
                   {#if deletable(s)}
                     <button type="button" class="small danger" onclick={() => remove(s)} aria-label={t.snap.deleteLabel(s.source, fmtTime(s.time))}
@@ -374,7 +433,25 @@
   {/if}
 </Modal>
 
+<HoldDialog
+  bind:open={holdOpen}
+  target={holdTarget}
+  reason={holdReason}
+  tenants={session.user?.tenant ? [session.user.tenant] : tenants.map((x) => x.name)}
+  tenant={route.query.get('tenant') ?? ''}
+  sources={guestNames}
+  ondone={load}
+/>
+
 {#if rfSnap}
   <RestoreFiles bind:open={rfOpen} tenant={rfSnap.tenant} source={rfSnap.source} time={rfSnap.time} paths={['/']} {agents} />
 {/if}
 
+
+<style>
+  /* legal-hold badge: the gavel replaces the chip dot */
+  .chip.hold :global(svg) {
+    width: 0.85rem;
+    height: 0.85rem;
+  }
+</style>

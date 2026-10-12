@@ -381,18 +381,23 @@ fn backup_incremental_and_restore_roundtrip() {
         &mut s,
         &RestoreSpec {
             job: 4,
-            source_agent: ID.into(),
+            source: source_name(ID),
             time: t1,
             paths: vec!["/".into()],
             target: "/srv/restore".into(),
             overwrite: Overwrite::Never,
             confirm: "web01".into(),
+            target_agent: ID.into(),
         },
         &mut |l| eprintln!("{l}"),
     )
     .unwrap();
     s.close();
     assert_eq!(st.files, 6);
+    assert!(
+        e.agent.st.lock().unwrap().received.iter().all(|x| x.uid != u32::MAX),
+        "own host: owners kept"
+    );
     let out = e.restored.join("srv/restore");
     for f in [
         "etc/ssh/sshd_config",
@@ -583,4 +588,204 @@ fn update_is_pushed() {
     assert_eq!(e.agent.st.lock().unwrap().updates, vec![("0.2.0".into(), 1000, 9)]);
     fs::write(d.path().join("nexus-agent"), vec![0; agent_proto::MAX_FRAME]).unwrap();
     assert!(update::load(d.path()).is_err(), "too large for one frame");
+}
+
+fn tentry(
+    path: &str,
+    kind: TreeKind,
+    mode: u32,
+    data: Option<(&Store, &[u8])>,
+    xattrs: &[&str],
+) -> chunkstore::TreeEntry {
+    let (size, chunks) = match data {
+        Some((st, d)) => (d.len() as u64, vec![st.insert_chunk(d).unwrap().0]),
+        None => (0, vec![]),
+    };
+    chunkstore::TreeEntry {
+        path: path.as_bytes().to_vec(),
+        kind,
+        mode,
+        uid: 0,
+        gid: 0,
+        size,
+        mtime_ns: 1_700_000_000_000_000_000,
+        ctime_ns: 0,
+        inode: 0,
+        rdev: 0,
+        link_target: None,
+        xattrs: xattrs.iter().map(|k| (k.as_bytes().to_vec(), b"v".to_vec())).collect(),
+        chunks,
+        inconsistent: false,
+    }
+}
+
+/// Phase 15b: NAS share and plugin file trees, and a VM file tar, restored onto an
+/// agent (another host than the snapshot's): owners not mapped, setuid cleared,
+/// devices and foreign xattrs skipped, content byte-exact.
+#[test]
+fn restore_to_another_host_from_share_plugin_and_vm_tar() {
+    let e = Env::new();
+    let pin = e.enroll();
+    let store = e.store();
+    let big = rnd(300_000, 7);
+    let share = vec![
+        tentry("data", TreeKind::Dir, 0o41777, None, &[]),
+        tentry(
+            "data/tool",
+            TreeKind::File,
+            0o104755,
+            Some((&store, b"#!/bin/sh\n")),
+            &["user.k", "system.nfs4_acl", "security.selinux"],
+        ),
+        tentry("data/big.bin", TreeKind::File, 0o100644, Some((&store, &big)), &[]),
+        tentry("data/sda", TreeKind::Device, 0o60660, None, &[]),
+        tentry("other", TreeKind::Dir, 0o40755, None, &[]),
+    ];
+    store
+        .commit_snapshot("share-7", 100, &[(TREE_INDEX, Index::Tree { entries: share })])
+        .unwrap();
+    let plugin = vec![tentry(
+        "db1.sql",
+        TreeKind::File,
+        0o100600,
+        Some((&store, b"CREATE TABLE t;")),
+        &[],
+    )];
+    store
+        .commit_snapshot(
+            "plugin-pgx-9-db1",
+            100,
+            &[
+                ("files", Index::Tree { entries: plugin }),
+                (
+                    "streams",
+                    Index::Dynamic {
+                        entries: vec![chunkstore::FileEntry {
+                            path: "db1.dump".into(),
+                            mode: 0o600,
+                            size: 4,
+                            mtime: 100,
+                            chunks: vec![store.insert_chunk(b"DUMP").unwrap().0],
+                        }],
+                    },
+                ),
+            ],
+        )
+        .unwrap();
+    let map = MapDb::open(&e.store_dir).unwrap();
+    let spec = |source: &str, target: &str, paths: &[&str]| RestoreSpec {
+        job: 9,
+        source: source.into(),
+        time: 100,
+        paths: paths.iter().map(|p| p.to_string()).collect(),
+        target: target.into(),
+        overwrite: Overwrite::Never,
+        confirm: "web01".into(),
+        target_agent: ID.into(),
+    };
+    let mut log = Vec::new();
+    let mut s = e.session(&pin);
+    let st = restore::restore(
+        &store,
+        &map,
+        &mut s,
+        &spec("share-7", "/srv/share", &["/data"]),
+        &mut |l| log.push(l.to_owned()),
+    )
+    .unwrap();
+    s.close();
+    assert_eq!(st.files, 2);
+    let out = e.restored.join("srv/share/data");
+    assert_eq!(fs::read(out.join("tool")).unwrap(), b"#!/bin/sh\n");
+    assert_eq!(fs::read(out.join("big.bin")).unwrap(), big);
+    assert!(!out.join("sda").exists() && !e.restored.join("srv/share/other").exists());
+    {
+        let g = e.agent.st.lock().unwrap();
+        let tool = g.received.iter().find(|x| x.path == b"data/tool").unwrap();
+        assert_eq!((tool.uid, tool.gid, tool.mode), (u32::MAX, u32::MAX, 0o100755));
+        assert!(tool.xattrs.is_empty(), "the fake agent has no xattr support");
+        assert_eq!(g.received.iter().find(|x| x.path == b"data").unwrap().mode, 0o40777);
+        assert!(!g.received.iter().any(|x| x.path == b"data/sda"));
+    }
+    assert!(
+        log.iter()
+            .any(|l| l.contains("skipped 1 entries") && l.contains("3 xattrs")),
+        "{log:?}"
+    );
+
+    // plugin file tree (index `files`) and its streams below .nexus-streams/ (as in the browser)
+    let mut s = e.session(&pin);
+    restore::restore(
+        &store,
+        &map,
+        &mut s,
+        &spec("plugin-pgx-9-db1", "/srv/pg", &["/"]),
+        &mut |_| {},
+    )
+    .unwrap();
+    s.close();
+    assert_eq!(fs::read(e.restored.join("srv/pg/db1.sql")).unwrap(), b"CREATE TABLE t;");
+    assert_eq!(
+        fs::read(e.restored.join("srv/pg/.nexus-streams/db1.dump")).unwrap(),
+        b"DUMP"
+    );
+
+    // not a file tree / unknown snapshot: refused before RestoreBegin
+    let mut s = e.session(&pin);
+    assert!(restore::restore(&store, &map, &mut s, &spec("vm-100", "/srv/x", &["/"]), &mut |_| {}).is_err());
+    assert!(restore::restore(&store, &map, &mut s, &spec("share-8", "/srv/x", &["/"]), &mut |_| {}).is_err());
+    s.close();
+
+    // VM files: the tar written by `nexus-pve files … get`, bridged into restore entries
+    let d = tempfile::tempdir().unwrap();
+    let tarp = d.path().join("restore-9.tar");
+    let huge = rnd(agent_proto::MAX_CHUNK + 12_345, 3);
+    {
+        let mut b = tar::Builder::new(fs::File::create(&tarp).unwrap());
+        let mut add = |path: &str, t: tar::EntryType, data: &[u8], link: Option<&str>| {
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(t);
+            h.set_mode(if t == tar::EntryType::Directory { 0o755 } else { 0o644 });
+            h.set_mtime(1_760_000_000);
+            h.set_size(data.len() as u64);
+            match link {
+                Some(l) => b.append_link(&mut h, path, l).unwrap(),
+                None => b.append_data(&mut h, path, data).unwrap(),
+            }
+        };
+        add("sda1/etc/", tar::EntryType::Directory, b"", None);
+        add("sda1/etc/hostname", tar::EntryType::Regular, b"vm100\n", None);
+        add("sda1/var/", tar::EntryType::Directory, b"", None);
+        add("sda1/var/huge.bin", tar::EntryType::Regular, &huge, None);
+        add(
+            "sda1/etc/localtime",
+            tar::EntryType::Symlink,
+            b"",
+            Some("/usr/share/zoneinfo/UTC"),
+        );
+        b.finish().unwrap();
+    }
+    let mut s = e.session(&pin);
+    let st =
+        agent_conn::tarbridge::restore_tar(&mut s, &tarp, &spec("vm-100", "/srv/vm", &["/sda1"]), &mut |_| {}).unwrap();
+    s.close();
+    assert_eq!(st.files, 2);
+    let out = e.restored.join("srv/vm/sda1");
+    assert_eq!(fs::read(out.join("etc/hostname")).unwrap(), b"vm100\n");
+    assert_eq!(
+        fs::read(out.join("var/huge.bin")).unwrap(),
+        huge,
+        "two chunks, in order"
+    );
+    assert_eq!(
+        fs::read_link(out.join("etc/localtime")).unwrap(),
+        Path::new("/usr/share/zoneinfo/UTC")
+    );
+    let g = e.agent.st.lock().unwrap();
+    assert_eq!(g.restores.last().unwrap().0, "/srv/vm");
+    assert!(g
+        .received
+        .iter()
+        .filter(|x| x.path.starts_with(b"sda1"))
+        .all(|x| x.uid == u32::MAX));
 }

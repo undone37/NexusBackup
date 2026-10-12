@@ -123,6 +123,13 @@ replaced, never followed); existing directories in the way of a file are never r
 Owner, mode, xattrs (incl. ACLs, `security.*`), mtime are applied; directory metadata and
 hard links last. Non-root restores keep the restoring user as owner.
 
+The agent is also the restore target for files from other machines (Phase 15b: NAS shares,
+TrueNAS datasets, plugin file trees, VM/CT files, other hosts). The appliance then sends
+`uid`/`gid` = -1, so `fchown` leaves the agent's restore user (root for the packaged
+service) as owner; setuid/setgid/sticky bits are cleared, devices and sockets are not
+sent, and only `user.*` xattrs arrive (docs/agent-protocol.md "Restore to another host").
+Confinement, overwrite policy and confirmation are the same as for the own host's files.
+
 ## Self-update
 
 `Update.signature` = output of `cosign sign-blob --key <release key>` (base64 DER ECDSA

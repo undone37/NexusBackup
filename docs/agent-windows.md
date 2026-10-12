@@ -195,6 +195,15 @@ already existed is only replaced with `overwrite = Always` ("restore security
 descriptors when the overwrite policy allows"). Devices, FIFOs and sockets (Linux
 backups) are errors. EFS-encrypted files are not supported (read fails → error).
 
+Files from other machines (Phase 15b: another Windows host, Linux hosts, NAS shares,
+TrueNAS, plugin file trees, VM/CT files) use the same protocol and checks. The appliance
+does not send devices, sockets or FIFOs there and keeps only `win.*` xattrs (security
+descriptors of another Windows host are applied as above, retried without
+owner/group/SACL if they do not apply); entries without `win.*` metadata get default
+attributes and inherit the target directory's ACL. Names that are invalid on Windows
+(`:` , `?`, trailing dots, reserved device names, …, common on Linux/NAS shares) are
+reported as errors per entry and fail the job; the other files are written.
+
 ## Self-update
 
 Same `Update` message and checks as Linux (`agent_core::update::check_candidate`:

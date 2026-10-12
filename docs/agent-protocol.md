@@ -67,8 +67,8 @@ agent's metadata cache are sent with `unchanged = true` and the cached chunk lis
 - Snapshot index: new `Index::Tree { entries }` (postcard variant appended → old data still decodes) holding
   the full `Entry` metadata with keyed chunk IDs; source name `host-<agent_id>`, index name `tree`.
 - Job kinds: `backup` ({group_id} or {agent_id}), `restore_files` {source, time, paths, target, overwrite,
-  confirm, agent_id}, `agent_update` {agent_id}, `agent_enroll` {agent_id}; endpoints and RBAC in
-  docs/control-plane.md.
+  confirm, agent_id} (source: any file snapshot of the tenant, see "Restore from any file snapshot"),
+  `agent_update` {agent_id}, `agent_enroll` {agent_id}; endpoints and RBAC in docs/control-plane.md.
 
 ### Clarifications (appliance implementation, crate `agent-conn`, CLI `nexus-agentctl`)
 These pin down points the message table leaves open; an agent must behave as described.
@@ -109,7 +109,26 @@ These pin down points the message table leaves open; an agent must behave as des
   chunk order (repeated chunks are sent again), so files can be written sequentially; then `RestoreEnd`.
   Selected paths include all parent directories (with their recorded metadata). `confirm` is the target
   agent's *name* as typed by the user (the web-api refuses anything else); `RestoreDone.stats.errors` non-empty
-  fails the job. Entry chunk lists carry plain hashes (mapping index, or recomputed).
+  fails the job. Entry chunk lists carry plain hashes (mapping index, or recomputed). A batch also ends
+  before it would carry more than 100 000 chunk references (frame limit).
+- **Restore from any file snapshot (Phase 15b).** The source of a restore is any file-tree snapshot of the
+  tenant: `host-<agent>` (index `tree`), `nas-<source>-<dataset>` and `share-<source>` (index `tree`),
+  `plugin-…` (index `files`, plus its streams below `.nexus-streams/` exactly as in the file browser), and
+  VM/CT files: `nexus-pve files|ct-files <vmid> <time> get <downloads>/restore-<job>-<rand>.tar <paths>`
+  (restore micro-VM / CT tar stream) writes the selection as a tar, and `nexus-agentctl restore` with
+  `restore.tar` turns it into the same entry/chunk stream (`agent_conn::tarbridge`: pass 1 builds the
+  entries, file data cut into 4 MiB pieces with plain BLAKE3, pass 2 re-reads the tar for each batch's data;
+  regular files, directories, symlinks, hard links within the archive, FIFOs and long names; devices,
+  sockets, `..` names and entries below a symlink are skipped; sparse files arrive fully allocated; the tar
+  has no xattrs). The staging tar is removed by `nexus-agentctl` (and by the scheduler if the job fails).
+- **Restore to another host** (target agent ≠ the snapshot's `host-<agent>`; always for nas/share/plugin/VM/CT
+  sources): the appliance adapts the entries, the protocol is unchanged (works with older agents):
+  `uid`/`gid` = `0xFFFFFFFF` (= -1 for `fchown`: the agent's restore user stays the owner; Windows ignores
+  them), setuid/setgid/sticky bits cleared, device nodes and sockets (and FIFOs for Windows agents) skipped, xattrs kept only if the target
+  can store them (`user.*` on agents with the `xattrs` capability, `win.*` on agents with `win-sd`; POSIX/NFSv4
+  ACLs, `security.*` labels and `trusted.*` of the other machine are dropped), alternate data streams
+  (`win.ads`) only onto Windows agents. Skipped entries and xattrs are counted in the job log
+  (`restore to another host: skipped …`), not reported as errors.
 - **Update.** The update directory (`/usr/share/nexus/agent`) holds `nexus-agent`, `nexus-agent.sig`,
   `nexus-agent.version`; the whole binary travels in one frame, so it must stay below 8 MiB (open: chunked
   update for bigger binaries). After `UpdateDone` the appliance reconnects (≤ 120 s) and expects the new

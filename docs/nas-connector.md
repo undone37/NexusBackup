@@ -150,9 +150,13 @@ the **supported, documented setup** (user decision 2026-10-10); the admin config
 | not captured | share root's own metadata; SACL (`system.cifs_ntsd_full`, needs SeSecurityPrivilege); `security.selinux` | | |
 
 ## 3. Restore
-v1 is **download only** (tar keeps owners, modes, mtimes, symlinks, hard links, xattrs incl. ACLs as
-PAX `SCHILY.xattr.*`; zip modes and mtimes), using agent-conn's tree download code. Restore into the
-share would need a writable mount and a confinement story for the writer; deferred.
+Download (tar keeps owners, modes, mtimes, symlinks, hard links, xattrs incl. ACLs as PAX
+`SCHILY.xattr.*`; zip modes and mtimes), using agent-conn's tree download code, and since Phase 15b
+**restore onto a host** through an enrolled agent of the same tenant (`restore_files`, docs/agent-protocol.md
+"Restore to another host": owners not mapped, only `user.*` xattrs on Linux agents, ACLs dropped; for a
+share with Windows ACLs, restore to a Windows host and set the ACLs there, or use the tar download). Restore
+into the share itself would need a writable mount and a confinement story for the writer; deferred (the
+usual path: restore onto a host that mounts the share).
 
 ## 4. Integration
 - **Catalog v6**: source kinds `nfs`, `smb` (rebuild of `sources` like v4/v5). Config: `host`, `port`
@@ -162,7 +166,7 @@ share would need a writable mount and a confinement story for the writer; deferr
   `excludes`, `threads` (16), `xattrs` (true), `timeout_secs` (60). Secrets are bound to
   `host`/`port`/`user` (catalog::secret); GET returns `password_set` / `keytab_set`.
 - **web-api**: admin-only CRUD with the helper's own validation (`nas::proto::Request::check`), audit
-  `source.create/update`; groups without guests; `share-<id>` accepted by file jobs; no `restore_files`.
+  `source.create/update`; groups without guests; `share-<id>` accepted by file jobs and by `restore_files` (with a target `agent_id`).
 - **Scheduler**: `backup {group_id}` spawns `nexus-nas <job>/nas.json backup` (password / keytab as
   0600 job files), exclusive per source; retention and `files_list`/`files_get` for `share-<id>`
   (no mount, no secrets); result `{source, time, consistent, transferred_bytes}`; alert
@@ -266,7 +270,7 @@ exhausted the inodes of a 16 GB ext4 (store moved to its own file system in the 
 - Decided 2026-10-10: no SMB Kerberos in v1 (§6).
 - Decided 2026-10-10: shares without a NAS snapshot raise the `backup_inconsistent` warning **once per
   source**; files that actually changed while read raise it every time (deduplicated while unacknowledged).
-- Download only (no restore to the share).
+- No restore into the share itself (download, or restore onto a host with an agent, Phase 15b).
 - Entries in memory until the commit (~0.7 KB per entry); proposal: split/streamed tree index in the
   chunk store for 10M+ entry shares.
 - One chunk file per small file (fsync each): full backups of millions of tiny files are bound by store

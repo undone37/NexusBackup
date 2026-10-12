@@ -5,7 +5,7 @@
 
 use chunkstore::retention::Gfs;
 use chunkstore::{Keyring, Options, Store};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -99,6 +99,11 @@ pub enum Step {
     Func(InProc),
 }
 
+/// Held times of one source.
+fn held_of(held: &BTreeSet<(String, u64)>, source: &str) -> BTreeSet<u64> {
+    held.iter().filter(|(s, _)| s == source).map(|(_, t)| *t).collect()
+}
+
 pub struct InProc(pub Box<dyn Fn() -> Result<String, String> + Send>);
 
 impl std::fmt::Debug for InProc {
@@ -119,6 +124,9 @@ pub struct Plan {
     pub steps: Vec<Step>,
     /// files_get output (removed on failure)
     pub download: Option<PathBuf>,
+    /// `(source, time)` under a legal hold when the job was planned: never
+    /// deleted by its retention or delete steps
+    pub held: BTreeSet<(String, u64)>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -338,7 +346,7 @@ fn run_steps(id: i64, plan: &Plan, ctx: &Ctx, log: &Arc<Mutex<BoundedLog>>, stdo
                     }
                 }
                 for src in &all {
-                    match s.apply_retention(src, gfs) {
+                    match s.apply_retention_held(src, gfs, &held_of(&plan.held, src)) {
                         Ok((k, d, l)) => log
                             .lock()
                             .unwrap()
@@ -368,7 +376,7 @@ fn run_steps(id: i64, plan: &Plan, ctx: &Ctx, log: &Arc<Mutex<BoundedLog>>, stdo
                 sources.dedup(); // sorted by source
                 let mut out = serde_json::Map::new();
                 for src in &sources {
-                    match s.apply_retention(src, gfs) {
+                    match s.apply_retention_held(src, gfs, &held_of(&plan.held, src)) {
                         Ok((k, d, l)) => {
                             log.lock().unwrap().line(&format!(
                                 "retention {src} (in no group): kept {k}, deleted {d}, still locked {l}"
@@ -382,6 +390,12 @@ fn run_steps(id: i64, plan: &Plan, ctx: &Ctx, log: &Arc<Mutex<BoundedLog>>, stdo
                     }
                 }
                 *stdout = Some(serde_json::json!({ "orphans": out }).to_string());
+            }
+            Step::Delete { source, time } if plan.held.contains(&(source.clone(), *time)) => {
+                log.lock()
+                    .unwrap()
+                    .line(&format!("snapshot {source}/{time} is under a legal hold: not deleted"));
+                return failed;
             }
             Step::Delete { source, time } => match store.as_ref().unwrap().delete_snapshot(source, *time) {
                 Ok(()) => log.lock().unwrap().line(&format!("deleted snapshot {source}/{time}")),

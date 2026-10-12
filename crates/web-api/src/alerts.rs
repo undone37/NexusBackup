@@ -46,12 +46,18 @@ pub async fn list_alerts(State(st): State<St>, ctx: Ctx, Q(f): Q<AlertFilter>) -
         )?
         .query_map(params![f.acked, resolved, f.id], |r| {
             let kind: String = r.get(5)?;
+            let (key, tenant, message) = (
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<String>>(7)?,
+                r.get::<_, String>(8)?,
+            );
             Ok(json!({
                 "id": r.get::<_, i64>(0)?, "ts": r.get::<_, i64>(1)?, "first_ts": r.get::<_, i64>(1)?,
                 "last_ts": r.get::<_, i64>(2)?, "count": r.get::<_, i64>(3)?, "severity": r.get::<_, String>(4)?,
                 "hint": catalog::alerting::hint(&kind), "kind": kind,
-                "key": r.get::<_, Option<String>>(6)?, "tenant": r.get::<_, Option<String>>(7)?,
-                "message": r.get::<_, String>(8)?, "acked_by": r.get::<_, Option<String>>(9)?,
+                // the snapshot a security officer may put on hold from here (anomaly, advisory)
+                "snapshot": crate::holds::alert_snapshot(&kind, key.as_deref(), &message, tenant.as_deref()),
+                "key": key, "tenant": tenant, "message": message, "acked_by": r.get::<_, Option<String>>(9)?,
                 "resolved_at": r.get::<_, Option<i64>>(10)?, "resolved_by": r.get::<_, Option<String>>(11)?,
                 "note": r.get::<_, Option<String>>(12)?, "auto": r.get::<_, i64>(13)? != 0,
             }))

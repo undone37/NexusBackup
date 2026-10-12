@@ -340,10 +340,12 @@ async function main() {
       const newest = (src) => snaps.filter((s) => s.source === src).sort((a, b) => b.time - a.time)[0];
       Object.assign(data, {
         vm100: newest('vm-100'),
+        vm300: newest('vm-300'),
         host: newest(`host-${web01.id}`),
         pgCluster: newest(`plugin-postgresql-${pg.id}`),
         pgShop: newest(`plugin-postgresql-${pg.id}-shop`),
         pgId: pg.id,
+        share: newest(`share-${sources.find((s) => s.kind === 'nfs').id}`),
         web01,
       });
       await go('/', 900);
@@ -457,6 +459,32 @@ async function main() {
       await ev(`$fill('input[placeholder="/srv/restore"]', '/srv/restore'); $fill('dialog[open] select', 'if_older'); return true;`);
       await ev(`const i = [...$scope().querySelectorAll('input.mono')].pop(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, 'web01'); i.dispatchEvent(new Event('input', { bubbles: true })); return true;`);
       await shot('restore-to-path', { height: 1000 });
+      await closeDialogs();
+    }],
+    // Phase 15b: a NAS share snapshot and VM files onto a host with an agent
+    ['restore-to-host', async () => {
+      const confirmAgent = `const sel = $scope().querySelector('select[id$="-agent"]'); const name = sel.selectedOptions[0].textContent.split(' (')[0].trim();
+        const i = [...$scope().querySelectorAll('input.mono')].pop(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, name); i.dispatchEvent(new Event('input', { bubbles: true })); return true;`;
+      await go(`/snapshots?source=${data.share.source}`);
+      await ev(`$rowClick('${data.share.source}', 'Restore'); return true;`);
+      await until(`return !!$button('Restore to a host')`, 'restore menu');
+      await ev(`$click('Restore to a host'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input[placeholder="/srv/restore"]')`, 'restore-to-host dialog');
+      await ev(`$fill('input[placeholder="/srv/restore"]', '/srv/restore/projects'); return true;`);
+      await ev(confirmAgent);
+      await shot('restore-to-host', { height: 1100 });
+      await closeDialogs();
+      const s = data.vm300; // acme: the tenant with enrolled agents
+      await go(`/files?tenant=${s.tenant}&source=${s.source}&time=${s.time}&path=/`);
+      await until(`return !!$button('etc/')`, 'file listing', 30000);
+      await ev(`$click('etc/'); return true;`);
+      await until(`return !!document.querySelector('input[aria-label="Select hostname"]')`, '/etc listing', 30000);
+      await ev(`document.querySelector('input[aria-label="Select nginx"]').click(); return true;`);
+      await ev(`$click('Restore to a host'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input[placeholder="/srv/restore"]')`, 'VM files dialog');
+      await ev(`$fill('input[placeholder="/srv/restore"]', '/srv/restore/vm-300'); return true;`);
+      await ev(confirmAgent);
+      await shot('restore-vm-files-to-host', { height: 1100 });
       await closeDialogs();
     }],
     ['plugin-restores', async () => {
@@ -762,6 +790,28 @@ async function main() {
       await login('acme');
       await go('/snapshots?source=vm-300');
       await shot('tenant-user-snapshots');
+    }],
+    // Phase 15c: legal hold (security officer): from the anomaly alert, for a time range, release request
+    ['legal-hold', async () => {
+      await login('so');
+      await go('/alerts');
+      await ev(`$rowClick('change-rate anomaly', 'Hold last good snapshot'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #hold-reason')`, 'hold dialog');
+      await shot('alert-hold-last-good');
+      await ev(`$click('Put on hold', document.querySelector('dialog[open]')); return true;`);
+      await settle();
+      await go('/snapshots?tenant=initech');
+      await ev(`$click('Hold a time range'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #hold-from')`, 'hold range dialog');
+      await ev(`$fill('#hold-source', 'vm-101'); $fill('#hold-reason', 'Incident 2026-031: suspected intrusion on app01'); return true;`);
+      await shot('snapshot-hold-range');
+      await closeDialogs();
+      await go('/snapshots?held=true');
+      await ev(`$rowClick('initech', 'Release hold'); return true;`);
+      await confirmOk();
+      await settle();
+      await shot('snapshots-held');
+      await login('admin');
     }],
     ['approvals-off', async () => {
       // switch approvals off (a request by admin, approved by a security officer) for the remaining pictures

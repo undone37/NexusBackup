@@ -13,6 +13,7 @@ pub mod alerting;
 pub mod auth;
 pub mod console;
 pub mod forwarding;
+pub mod holds;
 pub mod inventory;
 pub mod schedule;
 pub mod secret;
@@ -389,7 +390,25 @@ CREATE UNIQUE INDEX IF NOT EXISTS users_oidc_sub ON users(oidc_sub) WHERE oidc_s
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 "#;
 
-/// v18 (Phase 15e/15f, disk/file selection and agents, docs/control-plane.md):
+/// v18 (Phase 15c, docs/control-plane.md "Legal hold"): one row per hold and
+/// its history. `active` holds keep a snapshot from retention (local, orphan
+/// sweep, offsite, replica), GC and `snapshot.delete` until a release is
+/// approved (`released`). On a replication secondary, holds the primary reports
+/// arrive as `advisory` rows (`origin` = the replication source): not applied
+/// until a security officer applies them (→ `active`), `withdrawn` when the
+/// primary no longer reports them. At most one open (`active`/`advisory`) row
+/// per snapshot. The previous release ignores the table (no holds enforced).
+const SCHEMA_V18: &str = r#"
+CREATE TABLE legal_holds (
+  id INTEGER PRIMARY KEY, tenant TEXT NOT NULL, source TEXT NOT NULL, time INTEGER NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('active','released','advisory','withdrawn')),
+  reason TEXT NOT NULL, held_by TEXT NOT NULL, held_at INTEGER NOT NULL, origin TEXT,
+  released_by TEXT, approved_by TEXT, released_at INTEGER);
+CREATE UNIQUE INDEX legal_holds_open ON legal_holds(tenant, source, time) WHERE state IN ('active','advisory');
+CREATE INDEX legal_holds_snapshot ON legal_holds(tenant, source, time);
+"#;
+
+/// v19 (Phase 15e/15f, disk/file selection and agents, docs/control-plane.md):
 /// `groups.exclude_disks` (PVE: `{"*": ["scsi1"], "<vmid>": ["virtio2"]}`, disk
 /// keys not backed up), `groups.exclude_disks_mode` (`placeholder`: a restore
 /// recreates them empty with their size and config; `omit`: left out of the
@@ -401,7 +420,7 @@ CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 /// confirmed: sessions accept either), `agents.limits` (`{bwlimit, nice}`, sent
 /// with every backup). Purely additive: the previous release skips it and never
 /// reads the columns (excluded disks are backed up again, guests run one by one).
-const SCHEMA_V18: &str = r#"
+const SCHEMA_V19: &str = r#"
 ALTER TABLE groups ADD COLUMN exclude_disks TEXT NOT NULL DEFAULT '{}';
 ALTER TABLE groups ADD COLUMN exclude_disks_mode TEXT NOT NULL DEFAULT 'placeholder'
   CHECK (exclude_disks_mode IN ('placeholder','omit'));
@@ -415,7 +434,7 @@ ALTER TABLE agents ADD COLUMN limits TEXT NOT NULL DEFAULT '{}';
 
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
-    SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18,
+    SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1182,15 +1201,15 @@ mod tests {
         old.execute("INSERT INTO tenants (name) VALUES ('beta')", []).unwrap();
     }
 
-    /// v18 (disk/file selection, agents) on top of the previous catalog: groups
+    /// v19 (disk/file selection, agents) on top of the previous catalog: groups
     /// exclude no disks and run one guest at a time, policies have no global file
     /// filters, agents have no limits and an unknown certificate validity. The
     /// previous release still reads and writes groups, policies and agents.
     #[test]
-    fn migration_v18_selection_agents() {
+    fn migration_v19_selection_agents() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.db");
-        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V18).unwrap();
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V19).unwrap();
         {
             let c = Connection::open(&p).unwrap();
             for (i, m) in MIGRATIONS[..before].iter().enumerate() {
@@ -1762,5 +1781,50 @@ mod tests {
              INSERT INTO jobs (kind, tenant, params, state, requested_by, created) VALUES ('gc','t','{}','queued','s',2);",
         )
         .unwrap();
+    }
+
+    /// v18 (legal holds) on top of the previous catalog: no holds; one open
+    /// hold per snapshot, history rows unlimited; the previous release still
+    /// deletes snapshot rows afterwards (the holds table is not in its way).
+    #[test]
+    fn migration_v18_legal_holds() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V18).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute(
+                "INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('acme', 'vm-100', 5, 1, 0)",
+                [],
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+            assert_eq!(v, MIGRATIONS.len() as i64);
+            assert!(holds::held(&conn, "acme").unwrap().is_empty());
+            let ins = "INSERT INTO legal_holds (tenant, source, time, state, reason, held_by, held_at) \
+                       VALUES ('acme', 'vm-100', 5, ?1, 'case 1', 'sam', 1)";
+            conn.execute(ins, ["active"]).unwrap();
+            assert!(conn.execute(ins, ["advisory"]).is_err(), "one open hold per snapshot");
+            assert!(conn.execute(ins, ["bogus"]).is_err());
+            conn.execute("UPDATE legal_holds SET state = 'released'", []).unwrap();
+            conn.execute(ins, ["active"]).unwrap();
+            assert_eq!(
+                holds::held(&conn, "acme").unwrap().into_iter().collect::<Vec<_>>(),
+                vec![("vm-100".to_owned(), 5)]
+            );
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..before].iter().skip(v as usize).count(), 0);
+        old.execute("DELETE FROM snapshots WHERE tenant = 'acme'", []).unwrap();
     }
 }

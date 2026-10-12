@@ -95,11 +95,11 @@ The built-in TrueNAS source still uses the key pair you enter in its form (see [
 
 | Source type (UI) | Kind | Appliance connects to | Restores |
 |---|---|---|---|
-| **Proxmox VE cluster** | `pve` | PVE API (TCP 8006) and SSH (TCP 22) on every node | full VM/CT, instant recovery, file download |
-| **Linux or Windows host (agent)** | `linux` | the agent on the host (TCP 7444) | restore to path, tar/zip download |
-| **TrueNAS (ZFS datasets)** | `truenas` | TrueNAS API (TCP 443) and SSH (TCP 22) | tar/zip download |
-| **NFS share** | `nfs` | NFS (TCP 2049; NFSv3 also mountd, default 20048) | tar/zip download |
-| **SMB share** | `smb` | SMB (TCP 445) | tar/zip download |
+| **Proxmox VE cluster** | `pve` | PVE API (TCP 8006) and SSH (TCP 22) on every node | full VM/CT, instant recovery, file download, files to a host with an agent |
+| **Linux or Windows host (agent)** | `linux` | the agent on the host (TCP 7444) | restore to path (this or another host), tar/zip download; the agent is also the target for files from every other source |
+| **TrueNAS (ZFS datasets)** | `truenas` | TrueNAS API (TCP 443) and SSH (TCP 22) | tar/zip download, files to a host with an agent |
+| **NFS share** | `nfs` | NFS (TCP 2049; NFSv3 also mountd, default 20048) | tar/zip download, files to a host with an agent |
+| **SMB share** | `smb` | SMB (TCP 445) | tar/zip download, files to a host with an agent |
 | plugin kinds (e.g. **PostgreSQL server (14 or newer)**) | `plugin:<kind>` | the endpoints the plugin declares (PostgreSQL: 5432; optional restore server and SSH host) | per plugin |
 | **Microsoft 365 tenant (Exchange, OneDrive, SharePoint, Teams)** (plugin) | `plugin:m365` | `graph.microsoft.com`, `login.microsoftonline.com` and your two SharePoint hosts (TCP 443) | download; restore to the original or another user/site/team (new folder) |
 
@@ -358,6 +358,15 @@ Choose **Linux or Windows host (agent)**, the **Agent**, and:
 
 A group of an agent source backs up exactly that agent's host. Snapshots are named `host-<agent id>`.
 
+### The agent as a restore target
+
+An enrolled agent can also receive files from every other snapshot of its tenant: other hosts, NAS shares,
+TrueNAS datasets, plugin file trees and files from VM or container snapshots
+([06 Restores](06-restores.md#restore-files-to-a-host-agents)). An agent used only as a restore target needs no
+source and no group: create and enroll it as above. Files from another machine are owned by the agent's restore
+user (root for the installed service), setuid/setgid bits are cleared, and only extended attributes the host can
+store are kept. The agent writes only below the target directory you choose, after you typed its name.
+
 ### Consistency on Linux
 
 For each volume, the agent takes a snapshot before reading:
@@ -482,7 +491,8 @@ restorable until retention removes them. When you finally delete the built-in so
 
 The appliance mounts a share read-only and walks it. Unchanged files are detected from the previous snapshot by
 path or inode plus size, mtime and ctime. The mount is done by a small privileged helper and is never visible in
-any mount table. Restores are **download only** (tar/zip) in v1.
+any mount table. Restores: tar/zip download, or the files onto a host with an agent
+([06 Restores](06-restores.md#restore-files-to-a-host-agents)); there is no restore into the share itself.
 
 ### Server side: give the appliance read access to everything
 

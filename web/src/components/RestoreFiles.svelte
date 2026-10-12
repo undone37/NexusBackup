@@ -2,13 +2,14 @@
   import { post, act } from '../lib/api';
   import { navigate } from '../lib/router.svelte';
   import { hostAgentId } from '../lib/jobs';
-  import { fmtTime } from '../lib/format';
+  import { fmtAgo, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import type { Agent, Overwrite } from '../lib/types';
   import Modal from './Modal.svelte';
 
-  // Restore files of a host snapshot (`host-<agent id>`) onto a path of an agent of the
-  // same tenant. The user has to type the target agent's name; the server checks it too.
+  // Restore files of a snapshot (host, NAS share / TrueNAS dataset, plugin file tree, or
+  // VM/CT files through the restore micro-VM) onto a path of an agent of the same tenant.
+  // The user has to type the target agent's name; the server checks it too.
   let {
     open = $bindable(false),
     tenant,
@@ -21,7 +22,13 @@
   const id = $props.id();
   const OVERWRITE: Overwrite[] = ['never', 'if_older', 'always'];
 
-  const candidates = $derived(agents.filter((a) => a.tenant === tenant));
+  // agents of the snapshot's tenant; enrolled ones first, most recently seen first
+  const candidates = $derived(
+    agents
+      .filter((a) => a.tenant === tenant)
+      .sort((a, b) => Number(b.enrolled_at !== null) - Number(a.enrolled_at !== null) || (b.last_seen ?? 0) - (a.last_seen ?? 0)),
+  );
+  const own = $derived(hostAgentId(source));
   let target = $state('');
   let overwrite: Overwrite = $state('never');
   let agentId = $state('');
@@ -42,12 +49,13 @@
   // (Also runs when the agent list arrives after the dialog opened.)
   $effect(() => {
     if (!open || agentId) return;
-    const own = hostAgentId(source);
     const enrolled = candidates.filter((a) => a.enrolled_at !== null);
     agentId = enrolled.find((a) => a.id === own)?.id ?? enrolled[0]?.id ?? '';
   });
 
   const agent = $derived(candidates.find((a) => a.id === agentId) ?? null);
+  // owners are mapped only when the files go back onto the host they came from
+  const otherHost = $derived(!!agent && agent.id !== own);
   const targetOk = $derived(target.startsWith('/'));
   const ready = $derived(!!agent && targetOk && confirm === agent.name && paths.length > 0 && !busy);
 
@@ -107,12 +115,17 @@
       <select id="{id}-agent" bind:value={agentId} required aria-describedby="{id}-agent-hint">
         {#each candidates as a (a.id)}
           <option value={a.id} disabled={a.enrolled_at === null}
-            >{a.name} ({a.host}){a.enrolled_at === null ? ` — ${t.restoreFiles.notEnrolled}` : ''}</option
+            >{a.name} ({a.host}) — {a.enrolled_at === null
+              ? t.restoreFiles.notEnrolled
+              : t.restoreFiles.lastSeen(fmtAgo(a.last_seen))}</option
           >
         {/each}
       </select>
-      <div class="hint" id="{id}-agent-hint">{agent ? t.restoreFiles.agentHint : t.restoreFiles.noAgent}</div>
+      <div class="hint" id="{id}-agent-hint">
+        {agent ? (own ? t.restoreFiles.agentHint : t.restoreFiles.agentHintOther) : t.restoreFiles.noAgent}
+      </div>
     </div>
+    {#if otherHost}<p class="banner info">{t.restoreFiles.otherHost}</p>{/if}
     {#if agent}
       <div class="field">
         <label for="{id}-confirm">{t.restoreFiles.confirm}</label>

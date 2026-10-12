@@ -48,6 +48,7 @@ pub const WEB_ACTIONS: &[&str] = &[
     "settings.forwarding",
     "security.session",
     "security.mgmt_allow",
+    catalog::holds::RELEASE_ACTION,
 ];
 
 /// Who may approve or reject requests (never their own: see [`approve`]).
@@ -91,7 +92,7 @@ pub enum Outcome {
     Direct { quorum_id: Option<i64>, extra: Value },
 }
 
-fn merge(body: &mut Value, extra: &Value) {
+pub(crate) fn merge(body: &mut Value, extra: &Value) {
     if let (Some(b), Some(e)) = (body.as_object_mut(), extra.as_object()) {
         b.extend(e.clone());
     }
@@ -327,6 +328,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         "settings.anomaly" => catalog::set_setting(c, crate::storage::ANOMALY_SETTING, &p["anomaly"].to_string())?,
         "settings.forwarding" => catalog::set_setting(c, catalog::forwarding::SETTING, &p["forwarding"].to_string())?,
         a if a.starts_with("security.") => crate::access::execute(c, a, p)?,
+        catalog::holds::RELEASE_ACTION => crate::holds::execute(c, p, approver, requested_by)?,
         "agent.delete" => {
             let id = p["id"].as_str().unwrap_or_default();
             if crate::agents::agent_in_use(c, id)? {

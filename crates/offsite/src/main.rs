@@ -24,6 +24,9 @@ struct Config {
     state: PathBuf,
     remote: RemoteCfg,
     gfs: Option<GfsCfg>,
+    /// `[source, time]` under legal hold: never deleted by offsite retention
+    #[serde(default)]
+    held: Vec<(String, u64)>,
     #[serde(default = "four")]
     uploaders: usize,
     /// bytes per second over all uploaders
@@ -214,7 +217,8 @@ fn main() -> Result<()> {
             );
         }
         ("retention", []) => {
-            let (k, d, l) = t.apply_retention(&gfs)?;
+            let held = cfg.held.iter().cloned().collect();
+            let (k, d, l) = t.apply_retention(&gfs, &held)?;
             for (name, _) in escrow_files(&cfg.escrow_dir).unwrap_or_default() {
                 t.protect(&format!("keys/{name}"))?;
             }

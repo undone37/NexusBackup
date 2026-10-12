@@ -988,6 +988,10 @@ manage_files_pattern(nexus_webapi_t, nexus_diag_var_lib_t, nexus_diag_var_lib_t)
 # up). Executing bash moves the shell to unconfined_t: the emergency root shell.
 
 allow nexus_consolegate_t self:capability { chown fowner dac_override dac_read_search ipc_lock };
+# systemd-run --scope: PID 1 starts (and on timeout or a restarted gate stops) the shell's
+# transient scope; its password agent looks at /proc/sys/fs (found in the VM)
+allow nexus_consolegate_t init_t:system { start stop status };
+kernel_read_fs_sysctls(nexus_consolegate_t)
 # catalog (audit, alert, banner setting); SQLite running as root chowns the -wal/-shm
 # it creates to the database's owner
 manage_files_pattern(nexus_consolegate_t, nexus_catalog_t, nexus_catalog_t)

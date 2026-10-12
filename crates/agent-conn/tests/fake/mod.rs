@@ -57,6 +57,8 @@ pub struct State {
     pub scans: Vec<Option<BaseRef>>,
     pub releases: Vec<(u64, bool)>,
     pub restores: Vec<(String, Overwrite, String)>,
+    /// every entry of every restore, as received
+    pub received: Vec<Entry>,
     pub malice: Malice,
     pub consistent: bool,
     pub version: String,
@@ -103,6 +105,7 @@ impl FakeAgent {
             scans: Vec::new(),
             releases: Vec::new(),
             restores: Vec::new(),
+            received: Vec::new(),
             malice: Malice::None,
             consistent: true,
             version: "0.1.0".into(),
@@ -285,6 +288,7 @@ fn serve(tcp: TcpStream, st: &Arc<Mutex<State>>) -> std::io::Result<()> {
             }
             Message::RestoreEntries { batch } => {
                 let r = restore.as_mut().expect("RestoreBegin first");
+                g.received.extend(batch.iter().cloned());
                 for e in batch {
                     let p = r.base.join(std::str::from_utf8(&e.path).unwrap());
                     match e.kind {

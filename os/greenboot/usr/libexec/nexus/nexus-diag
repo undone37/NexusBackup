@@ -37,6 +37,7 @@ import datetime as dt
 import importlib.machinery
 import importlib.util
 import io
+import grp
 import json
 import os
 import re
@@ -256,6 +257,14 @@ def keyd():
         return "skip", 1, "first-boot setup not finished"
     if run("systemctl", "is-active", "--quiet", "nexus-keyd.service")[0] != 0:
         return "fail", 4, "nexus-keyd.service is not running: no backups or restores"
+    # only nexus-diag.service has the group that may look into keyd's run dir; run by
+    # nexus-update (no such group, no DAC override in nexus_diag_t) the unit state suffices
+    try:
+        keyd_gid = grp.getgrnam("nexus-keyd").gr_gid
+    except KeyError:
+        keyd_gid = None
+    if keyd_gid is not None and keyd_gid not in os.getgroups() and os.getegid() != keyd_gid:
+        return "pass", 1, "key daemon running (socket not inspected from this caller)"
     try:
         if not stat.S_ISSOCK(os.stat(cfg("KEYD_SOCKET")).st_mode):
             return "fail", 4, f"{cfg('KEYD_SOCKET')} is not a socket"

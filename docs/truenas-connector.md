@@ -175,14 +175,14 @@ permission on each dataset root; sshd "Auxiliary Parameters" `Match User nexusba
   `authorized_keys`.
 - **Groups**: guests = datasets of the source (none = all). **Jobs**: `backup {group_id}`, retention per
   dataset incl. children (prefix `nas-<id>-<ds>.`), `files_list`/`files_get` on `nas-…` snapshots.
-  `restore_files` is refused (download only, §6). Backup result: per snapshot `transferred_bytes`.
+  `restore_files` onto an agent of the tenant (§6). Backup result: per snapshot `transferred_bytes`.
 - **Scheduler**: spawns `nexus-truenas <job>/truenas.json backup` (pinned cert, API key, SSH key and
   `known_hosts` built from the pinned host key as 0600 files in the job dir), file jobs without any
   TrueNAS secret; the firewall allow-list gets the API and SSH endpoints of every TrueNAS source.
 - **SELinux**: job domain `nexus_truenas_t` (entered only from the scheduler): http/ssh/unreserved
   ports, `/usr/bin/ssh` in-domain, job dir, tenant store, keyd socket, downloads.
 - **UI**: TrueNAS source form (write-only secrets, line to paste), dataset selection in groups,
-  dashboard/snapshots for `nas-` sources (browse/download; no restore button).
+  dashboard/snapshots for `nas-` sources (browse/download, **Restore to a host…**).
 
 ## 5. CLI
 `nexus-truenas <config.json> backup | check | snapshots | authorized-key <pubkey-file> [from] |
@@ -191,8 +191,10 @@ Output lines: `committed <source>/<time> in …: … <n> bytes transferred`, `fa
 `result {json}`; exit 1 if any dataset failed.
 
 ## 6. Restore
-v1 is **download only** (tar keeps owners, modes, mtimes, symlinks, hard links, xattrs incl. ACLs;
-zip modes and mtimes), reusing agent-conn's tree download code. Restore into a dataset over SSH would
+Download (tar keeps owners, modes, mtimes, symlinks, hard links, xattrs incl. ACLs; zip modes and
+mtimes), reusing agent-conn's tree download code, and since Phase 15b **restore onto a host** through an
+enrolled agent of the same tenant (`restore_files`, docs/agent-protocol.md "Restore to another host":
+owners not mapped, only `user.*` xattrs, ACLs dropped). Restore into a dataset over SSH would
 turn the read-only forced command into a writing one running as root on TrueNAS; doing that safely needs a
 separate restore key/command confined to a target dataset (openat2-style confinement is not available
 with standard tools), so it is deferred.
@@ -292,7 +294,7 @@ lost state means a full read (logged), never a wrong backup.
   are not readable there, so OpenSSH's built-in defaults apply.
 - Dataset names longer than 64 characters cannot be guests; a walk of a huge dataset must finish within the host's
   15 minute idle limit (the walk sends no messages).
-- Same: download-only restore (§6), privilege model (§1), naming rules, hostile-input parsers.
+- Same: no restore into the dataset itself (§6), privilege model (§1), naming rules, hostile-input parsers.
 
 **Coexistence and migration.** Both kinds can exist side by side, also for the same TrueNAS and the same datasets:
 every source creates and deletes only its own `nexus-<its id>-*` snapshots, and the scheduler's firewall allow-list

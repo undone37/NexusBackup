@@ -20,12 +20,13 @@ T0=$(date +%s)
 log() { printf '[%4ss] %s\n' $(($(date +%s) - T0)) "$*" >&2; }
 
 log "real gate on tty2"
-con run 'set -e
+# in a subshell: `set -e` must not end the serial root shell itself
+con run '( set -e
 systemctl is-active nexus-console-gate.service
 test "$(systemctl is-enabled getty@tty2.service)" = masked
-ps -eo label,tty,comm | grep "nexus_consolegate_t.*tty2.*nexus-console-gat"
+ps -eo label,tty,comm | grep "nexus_consolegate_t.*tty2.*nexus-console-g" # comm: 15 chars
 ls -ldZ /var/lib/nexus/console-unlock | grep -E "^drwx------\. .*nexus-webapi nexus-webapi .*nexus_console_unlock_t"
-ls -dZ /run/nexus-console-gate | grep nexus_consolegate_var_run_t'
+ls -dZ /run/nexus-console-gate | grep nexus_consolegate_var_run_t )'
 
 log "one-time code from the API"
 "$here/e2e.sh" api console
@@ -41,14 +42,25 @@ import con
 
 c = con.Console()
 c.shell(30)
-GATE = ("systemd-run --pty --quiet --wait --collect --unit=nexus-console-gate-lab "
-        "-E NEXUS_CONSOLE_GATE_STATE=/run/nexus-console-gate/lab-attempts "
-        "/usr/libexec/nexus/nexus-console-gate --once\n")
+RUNS = iter(range(1, 100))
+
+
+def resync():
+    # after a --pty session: a sane terminal and a full command round trip before the next start
+    c.shell(60)
+    c.run("stty sane; stty -echo; sleep 1", 30)
+
+
+def gate_cmd():
+    # a fresh unit name per run: the previous instance may still be finishing its audit
+    return (f"systemd-run --pty --quiet --wait --collect --unit=nexus-console-gate-lab-{next(RUNS)} "
+            "-E NEXUS_CONSOLE_GATE_STATE=/run/nexus-console-gate/lab-attempts "
+            "/usr/libexec/nexus/nexus-console-gate --once\n")
 PROMPT = rb"Unlock code or recovery key: "
 
 
 def session(secret, hours=None):
-    c.send(GATE.encode())
+    c.send(gate_cmd().encode())
     c.until(PROMPT, 60)
     c.send(secret.encode() + b"\r")
     if hours is not None:
@@ -63,11 +75,11 @@ def session(secret, hours=None):
     print("shell context:", [l for l in text.splitlines() if "unconfined_t" in l][-1].strip())
     c.send(b"exit\r")
     c.until(rb"Root shell ended \(exit\)\.", 30)
-    c.shell(60)
+    resync()
 
 
 # a wrong code is rejected and counted
-c.send(GATE.encode())
+c.send(gate_cmd().encode())
 c.until(PROMPT, 60)
 c.send(b"AAAAA-AAAAA-AAAAA-AAAAA\r")
 c.until(rb"Not accepted \(1 of 5 attempts per 15 min\)\.", 30)
@@ -80,24 +92,24 @@ out, _ = c.until(rb"GATE-OK-42", 30)
 assert b"unconfined_t" in out, out
 c.send(b"exit\r")
 c.until(rb"Root shell ended \(exit\)\.", 30)
-c.shell(60)
+resync()
 print("code: accepted once, shell unconfined_t")
 # the same code again: consumed
-c.send(GATE.encode())
+c.send(gate_cmd().encode())
 c.until(PROMPT, 60)
 c.send(os.environ["GATE_CODE"].encode() + b"\r")
 c.until(rb"Not accepted", 30)
 c.until(PROMPT, 60)
 c.send(b"\x04")  # EOF at the prompt ends the gate
 c.until(rb"\x04|\n", 30)
-c.shell(60)
+resync()
 print("code: second use refused")
 session(os.environ["GATE_RK"], hours="1")
 print("recovery key: shell unconfined_t")
 PY
 
 log "catalog, files and AVCs"
-con run 'rm -f /run/nexus-console-gate/lab-attempts
+con run '( rm -f /run/nexus-console-gate/lab-attempts
 python3 - <<"EOF"
 import json, sqlite3
 db = sqlite3.connect("file:/var/lib/nexus/catalog/catalog.db?mode=ro", uri=True)
@@ -111,6 +123,6 @@ assert n == 2, n
 print("OK")
 EOF
 test -z "$(ls -A /var/lib/nexus/console-unlock)"
-ausearch -m avc,user_avc,selinux_err -ts boot 2>&1 | grep -E "consolegate|console_unlock|unconfined_t" && exit 1 || echo "no console AVCs"'
+ausearch -m avc,user_avc,selinux_err -ts boot 2>&1 | grep -E "consolegate|console_unlock|unconfined_t" && exit 1 || echo "no console AVCs" )'
 "$here/e2e.sh" api console-check
 log "console gate: ok"
