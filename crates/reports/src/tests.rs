@@ -152,9 +152,15 @@ fn consistency_from_the_job_result() {
     let c = cat.conn();
     let t = generate(&c, Kind::Protection, Some("acme"), 0, NOW, NOW).unwrap();
     let r = t.rows.iter().find(|r| col(&t, r, "source") == "vm-101").unwrap();
-    assert_eq!(col(&t, r, "consistency"), "consistent");
+    assert_eq!(col(&t, r, "consistency"), "crash", "legacy consistent=true");
     let r = t.rows.iter().find(|r| col(&t, r, "source") == "vm-100").unwrap();
     assert_eq!(col(&t, r, "consistency"), "unknown");
+    // the level recorded since 15d wins
+    c.execute("UPDATE snapshots SET consistency = 'application'", [])
+        .unwrap();
+    let t = generate(&c, Kind::Protection, Some("acme"), 0, NOW, NOW).unwrap();
+    let r = t.rows.iter().find(|r| col(&t, r, "source") == "vm-100").unwrap();
+    assert_eq!(col(&t, r, "consistency"), "application");
 }
 
 #[test]

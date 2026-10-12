@@ -662,7 +662,7 @@ export const en = {
     yearly: 'Yearly',
     offsite: 'Copy offsite',
     weakenHint:
-      'Lowering retention, disabling offsite or adding a blackout window needs approval by a second person when approvals are enabled.',
+      'Lowering retention, disabling offsite, adding a blackout window or relaxing the required consistency needs approval by a second person when approvals are enabled.',
   },
   groups: {
     title: 'Protection groups',
@@ -1571,6 +1571,64 @@ export const en = {
     viaCode: (id: number | null, by: string | null) => `one-time code #${id ?? '?'} of ${by ?? '?'}`,
     viaRecovery: 'opened with the recovery key',
     readOnly: 'Only administrators request console access; security officers can revoke codes.',
+  },
+  // Phase 15a: restore options, replace original, several guests at once
+  ropts: {
+    options: 'Options',
+    name: 'Name of the new guest',
+    nameHint: (def: string) => `Empty: ${def}. Letters, digits, dot, dash, underscore.`,
+    prefix: 'Name prefix',
+    prefixHint: 'Put in front of the backed-up name, e.g. dr- (instead of a name).',
+    pool: 'Resource pool',
+    poolHint: 'Optional: add the guest to this Proxmox VE pool.',
+    start: 'Power on after the restore',
+    linkDown: 'Disconnect the network (all NICs link_down)',
+    linkDownHint: 'Avoids address conflicts with the original; reconnect in Proxmox VE when ready.',
+    replace: 'Replace the original guest',
+    replaceHint: (vmid: string) =>
+      `After a successful restore, guest ${vmid} is shut down, renamed "<name>-replaced-<date>", set to not start at boot and disconnected from the network. The restored guest takes over its name and start-at-boot setting. The original is never deleted. The VMID changes: the restored guest keeps the new ID. If any step fails, the original is put back as it was and started again. Needs approval by a second person.`,
+    keepLinks: 'Keep the original’s network connected',
+    replaceQueued: 'Replace requested.',
+    many: 'Restore several',
+    manyTitle: 'Restore several guests',
+    manyIntro:
+      'One restore job per guest, each from its newest snapshot shown here. The new IDs are the first ID plus 0, 1, 2… in the order of the list.',
+    manyGroup: 'Select a group',
+    manyGroupNone: '—',
+    manyGuests: 'Guests',
+    manySelected: (n: number) => `${n} selected`,
+    manyBase: 'First new VM/CT ID',
+    manyNone: 'No VM or container snapshots for this tenant.',
+    manyStarted: (n: number) => `${n} restore jobs started.`,
+    irStart: 'Power on (otherwise the VM is created switched off and the disks are moved offline)',
+  },
+  // Phase 15d: consistency per snapshot
+  cons: {
+    column: 'Consistency',
+    levels: {
+      application: 'application',
+      crash: 'crash',
+      inconsistent: 'inconsistent',
+      unknown: 'unknown',
+    } as Record<string, string>,
+    hints: {
+      application: 'Application-consistent: the guest was quiesced (guest-agent freeze, VSS writers, hooks) or stopped.',
+      crash: 'Crash-consistent: a point-in-time snapshot without quiescing the applications.',
+      inconsistent: 'Not consistent: read live without a snapshot; files may have changed while read.',
+      unknown: 'Unknown: the backup reported no consistency information.',
+    } as Record<string, string>,
+    policy: 'Required consistency',
+    mode: 'If a snapshot falls short',
+    modes: { off: 'Do nothing', warn: 'Warn (alert)', fail: 'Fail the job (and warn)' } as Record<string, string>,
+    level: 'Minimum level',
+    levelOpts: {
+      application: 'Application-consistent',
+      crash: 'Crash-consistent (point in time)',
+    } as Record<string, string>,
+    policyHint:
+      'Applies to group backups. The snapshot is kept either way; a failed job is retried like any failed backup.',
+    short: (mode: string, level: string) => (mode === 'off' ? '—' : `${mode}: ${level}`),
+    dashTitle: 'Consistency of the newest snapshots',
   },
 };
 

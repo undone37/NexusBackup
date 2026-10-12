@@ -507,9 +507,12 @@ mod tests {
 
     /// In-memory PVE: guests with config + power state; `fail` names the
     /// operation (e.g. "stop:100", "set:105") that fails once.
+    /// config + running
+    type Guest = (Map<String, Value>, bool);
+
     #[derive(Default)]
     struct Fake {
-        guests: RefCell<BTreeMap<u32, (Map<String, Value>, bool)>>,
+        guests: RefCell<BTreeMap<u32, Guest>>,
         fail: RefCell<Option<String>>,
         calls: RefCell<Vec<String>>,
     }

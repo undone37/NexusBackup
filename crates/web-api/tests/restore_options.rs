@@ -229,6 +229,12 @@ async fn restore_options_validated_and_stored() {
     // the snapshot list shows the level
     let l = t.get("/api/v1/snapshots?tenant=acme", &otto).await.body;
     assert!(l.as_array().unwrap().iter().all(|s| s["consistency"] == "crash"), "{l}");
+    // and the dashboard counts the newest snapshot per source
+    let d = t.get("/api/v1/dashboard", &otto).await.body;
+    assert_eq!(
+        d["consistency"],
+        json!({"application": 0, "crash": 2, "inconsistent": 0, "unknown": 0})
+    );
 }
 
 #[tokio::test]

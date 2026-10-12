@@ -189,6 +189,7 @@ const db = {
     retry?: { count: number; delay_min: number };
     blackout?: BlackoutWindow[];
     sla_minutes?: number | null;
+    require_consistency?: { mode: string; level: string };
   }[],
   groups: [] as MockGroup[],
   /** Phase 13c: guest inventory per source id (GET /sources/{id}/inventory) */
@@ -341,11 +342,29 @@ function planFor(kind: string, p: Json): string[] {
       return [`mounting ${src} @ ${p.time} read-only in restore micro-VM`, `listing ${p.path}`, 'done'];
     case 'files_get':
       return [`mounting ${src} @ ${p.time}`, `packing ${(p.paths ?? []).length} path(s) as ${p.format}`, 'archive ready'];
+    case 'restore':
+    case 'restore_ct': {
+      const ct = kind === 'restore_ct';
+      const vmid = String(src).slice(3);
+      const name = p.name ?? `${p.name_prefix ?? ''}${ct ? 'ct' : 'vm'}${vmid}${p.name_prefix ? '' : '-restore'}`;
+      return [
+        `restoring ${src} @ ${p.time} as ${ct ? 'CT' : 'VM'} ${p.target} (${name}) on ${p.node}, storage ${p.storage}${p.pool ? `, pool ${p.pool}` : ''}`,
+        ct ? 'streaming the container archive' : 'serving disks over NBD: drive-scsi0',
+        `restored ${ct ? 'lxc' : 'qemu'} ${p.target} (${name})`,
+        ...(p.link_down ? [`NICs of ${p.target}: link_down=1`] : []),
+        ...(p.replace
+          ? [
+              `original ${ct ? 'lxc' : 'qemu'} ${vmid} stopped, renamed ${ct ? 'ct' : 'vm'}${vmid}-replaced-202610122130, onboot 0${p.keep_original_links ? '' : ', NICs link_down'}; ${p.target} is now ${ct ? 'ct' : 'vm'}${vmid}`,
+            ]
+          : []),
+        ...(p.start || p.replace ? [`${p.target} started`] : []),
+      ];
+    }
     case 'instant_recover':
       return [
         `exporting ${src} @ ${p.time} via NBD over SSH to ${p.node}`,
-        `creating qcow2 overlay, VM ${p.target}`,
-        'VM started from backup',
+        `creating qcow2 overlay, VM ${p.target}${p.link_down ? ' (NICs link_down)' : ''}`,
+        p.start === false ? 'VM created switched off; moving disks offline' : 'VM started from backup',
         `live disk move to ${p.storage}: 25%`,
         `live disk move to ${p.storage}: 100%`,
         'instant recovery complete',
@@ -560,6 +579,10 @@ function hostDir(path: string, t: number): Json[] {
 
 const guestName = (g: number | string) =>
   typeof g === 'string' ? `host-${g}` : g >= 200 && g < 300 ? `ct-${g}` : `vm-${g}`;
+/** Phase 15d demo levels: VMs quiesced by the guest agent (vm-101: agent not running), containers and
+ * NAS snapshots crash-consistent, agents and plugins application-consistent (hooks / VSS / dumps). */
+const levelOf = (source: string) =>
+  source === 'vm-101' || /^(ct|nas|share)-/.test(source) ? 'crash' : /^(vm|host|plugin)-/.test(source) ? 'application' : 'unknown';
 const snap = (tenant: string, source: string, time: number, size: number, local: boolean, offsite: boolean, verified: number | null) => ({
   tenant,
   source,
@@ -569,6 +592,7 @@ const snap = (tenant: string, source: string, time: number, size: number, local:
   offsite,
   lock_until: time + 14 * 86400,
   verified,
+  consistency: levelOf(source),
 });
 
 // ---------------------------------------------------------------- plugins (docs/plugin-system.md)
@@ -1159,7 +1183,12 @@ function seed() {
 // ---------------------------------------------------------------- run control (Phase 13b)
 
 /** Policy run-control fields as the web-api validates them (defaults: 3 retries 5 min apart, no blackout, no SLA). */
-function runControl(b: Json): { retry: { count: number; delay_min: number }; blackout: BlackoutWindow[]; sla_minutes: number | null } {
+function runControl(b: Json): {
+  retry: { count: number; delay_min: number };
+  blackout: BlackoutWindow[];
+  sla_minutes: number | null;
+  require_consistency: { mode: string; level: string };
+} {
   if (!parseSchedule(String(b.schedule ?? ''))) throw new HttpError(400, `schedule: bad schedule ${JSON.stringify(b.schedule)}`);
   const retry = b.retry ?? { count: 3, delay_min: 5 };
   if (!(retry.count >= 0 && retry.count <= 10 && retry.delay_min >= 1 && retry.delay_min <= 1440))
@@ -1168,7 +1197,11 @@ function runControl(b: Json): { retry: { count: number; delay_min: number }; bla
   if (blackout.length > 20 || !blackout.every(validWindow)) throw new HttpError(400, 'blackout: from/to must be different HH:MM times');
   const sla = b.sla_minutes ?? null;
   if (sla !== null && !(sla >= 1 && sla <= 10080)) throw new HttpError(400, 'sla_minutes: 1..=10080');
-  return { retry, blackout, sla_minutes: sla };
+  // Phase 15d
+  const rc = { mode: 'off', level: 'crash', ...(b.require_consistency ?? {}) };
+  if (!['off', 'warn', 'fail'].includes(rc.mode) || !['application', 'crash'].includes(rc.level))
+    throw new HttpError(400, 'require_consistency: mode off|warn|fail, level application|crash');
+  return { retry, blackout, sla_minutes: sla, require_consistency: { mode: rc.mode, level: rc.level } };
 }
 
 function checkTz(tz: unknown): string {
@@ -1218,10 +1251,12 @@ function backupGuests(p: Json) {
 
 /** Demo state: retries, blackout window, SLA, a paused group, a source in maintenance, a retry chain. */
 function seedRunControl(t: number) {
-  for (const p of db.policies) Object.assign(p, { retry: { count: 3, delay_min: 5 }, blackout: [], sla_minutes: null, ...p });
+  for (const p of db.policies)
+    Object.assign(p, { retry: { count: 3, delay_min: 5 }, blackout: [], sla_minutes: null, require_consistency: { mode: 'off', level: 'crash' }, ...p });
   const pol = (n: string) => db.policies.find((p) => p.name === n)!;
   pol('gold').retry = { count: 2, delay_min: 10 };
   pol('gold').sla_minutes = 240;
+  pol('gold').require_consistency = { mode: 'warn', level: 'application' };
   pol('bronze').blackout = [{ days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], from: '07:00', to: '19:00', abort: true }];
   pol('databases-hourly').schedule = 'every 2h at 15';
   pol('databases-hourly').sla_minutes = 20;
@@ -1379,7 +1414,11 @@ const weakens = (a: Json, b: Json) =>
   ['daily', 'weekly', 'monthly', 'yearly'].some((k) => Number(b.gfs?.[k]) < Number(a.gfs?.[k])) ||
   (a.offsite && !b.offsite) ||
   // Phase 13b: a new blackout window means fewer runs
-  (b.blackout ?? []).some((w: Json) => !(a.blackout ?? []).some((x: Json) => JSON.stringify(x) === JSON.stringify(w)));
+  (b.blackout ?? []).some((w: Json) => !(a.blackout ?? []).some((x: Json) => JSON.stringify(x) === JSON.stringify(w))) ||
+  // Phase 15d: a relaxed consistency requirement
+  (b.require_consistency &&
+    (['off', 'warn', 'fail'].indexOf(b.require_consistency.mode) < ['off', 'warn', 'fail'].indexOf(a.require_consistency?.mode ?? 'off') ||
+      (b.require_consistency.mode !== 'off' && a.require_consistency?.level === 'application' && b.require_consistency.level === 'crash')));
 // web-api refuses inline secrets in opaque JSON blobs (secrets live in files).
 function noInlineSecrets(v: unknown) {
   if (v && typeof v === 'object')
@@ -1488,6 +1527,11 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'ssh_key.rotate':
       rotateSshKey(p.name);
       break;
+    case 'restore.replace': {
+      // the scheduler queues the restore job with replace (crates/scheduler/src/restore.rs)
+      addJob(p.kind, p.tenant, { ...p.params, replace: true, quorum_id: qid, requested_by: by }, 'scheduler');
+      break;
+    }
     case 'snapshot.delete': {
       // the scheduler's `snapshot_delete` job; an offsite copy stays (offsite retention)
       const x = find(db.snapshots, (y) => y.tenant === p.tenant && y.source === p.source && y.time === p.time, 'snapshot');
@@ -2499,7 +2543,22 @@ function pluginSnapshotKind(tenant: string, name: string) {
   return pk.kind;
 }
 const OVERWRITE = ['never', 'if_older', 'always'];
+const PVE_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,62}$/;
+/** Phase 15a restore options, as web-api `jobs.rs` checks them. */
+function checkRestore(kind: string, tenant: string, p: Json) {
+  const want = kind === 'restore_ct' ? 'ct-' : 'vm-';
+  if (!String(p.source ?? '').startsWith(want)) throw new HttpError(400, `source: ${kind} needs a ${want}<vmid> snapshot`);
+  if (!(p.target >= 100 && p.target <= 999999999)) throw new HttpError(400, 'vmid: must be within 100..=999999999');
+  if (p.name !== undefined && p.name_prefix !== undefined) throw new HttpError(400, 'name, name_prefix: give at most one');
+  for (const k of ['name', 'name_prefix', 'pool'])
+    if (p[k] !== undefined && !PVE_NAME.test(String(p[k]))) throw new HttpError(400, `${k}: must match [A-Za-z0-9._-]{1,63} without a leading dot or dash`);
+  if (p.replace && kind === 'instant_recover') throw new HttpError(400, 'replace: only a full restore can replace the original');
+  if (p.replace && String(p.source).slice(3) === String(p.target)) throw new HttpError(400, 'target: replace restores to a new VMID');
+  if (!p.replace && p.keep_original_links !== undefined) throw new HttpError(400, 'keep_original_links: only with replace');
+  if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time)) throw new HttpError(404, 'no such snapshot');
+}
 function checkJob(u: User, kind: string, tenant: string, p: Json) {
+  if (kind === 'restore' || kind === 'restore_ct' || kind === 'instant_recover') checkRestore(kind, tenant, p);
   if (kind === 'agent_enroll') throw new HttpError(400, 'use POST /agents/{id}/enroll');
   if (kind === 'inventory') {
     const src = find(db.sources, (s) => s.id === Number(p.source_id) && s.tenant === tenant, 'source in tenant');
@@ -2556,6 +2615,12 @@ on('POST', '/jobs', async (c) => {
   checkJob(u, kind, tenant, params);
   if (kind === 'files_get' && !canDownload(u)) throw new HttpError(403, 'this account may not download files');
   if (kind === 'backup') backupGuests(params);
+  if (params.replace) {
+    // Phase 15a: an approval request (`restore.replace`), never a plain job; not for tenant users
+    need(u, 'admin', 'operator');
+    const { replace: _r, ...rest } = params;
+    return quorum(u, 'restore.replace', { tenant, kind, params: rest });
+  }
   // Like web-api: files_get gets a server-generated download token, returned in the 202 body.
   const p = kind === 'files_get' ? { ...params, download_token: rand(32) } : params;
   const j = addJob(kind, tenant, p, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
@@ -2563,6 +2628,32 @@ on('POST', '/jobs', async (c) => {
   if (kind === 'inventory') j.duration = 3;
   await audit(u.name, 'job.create', `job/${j.id}`, { kind, tenant, params: p });
   return [202, p.download_token ? { id: j.id, download_token: p.download_token } : { id: j.id }];
+});
+// Phase 15a: several guests in one request, one job each (web-api `restores.rs`)
+on('POST', '/restores', async (c) => {
+  const u = need(c.user, 'admin', 'operator', 'tenant_user');
+  const b = c.body;
+  if (u.tenant && u.tenant !== b.tenant) throw new HttpError(403, 'forbidden');
+  find(db.tenants, (t) => t.name === b.tenant, 'tenant');
+  const items: Json[] = b.items ?? [];
+  if (!items.length || items.length > 100) throw new HttpError(400, 'items: 1..=100 guests');
+  if (new Set(items.map((i) => i.source)).size !== items.length) throw new HttpError(400, 'items: one snapshot per guest');
+  const jobs = items.map((it, i) => {
+    const kind = String(it.source).startsWith('ct-') ? 'restore_ct' : 'restore';
+    const p: Json = { source: it.source, time: it.time, node: b.node, target: Number(b.target_base) + i, storage: b.storage, start: !!b.start, link_down: !!b.link_down };
+    if (b.name_prefix) p.name_prefix = b.name_prefix;
+    if (b.pool) p.pool = b.pool;
+    try {
+      checkRestore(kind, b.tenant, p);
+    } catch (e) {
+      if (e instanceof HttpError) throw new HttpError(e.status, `${it.source}: ${e.message}`);
+      throw e;
+    }
+    return { kind, p };
+  });
+  const ids = jobs.map(({ kind, p }) => addJob(kind, b.tenant, p, u.name).id);
+  await audit(u.name, 'job.create_many', `tenant/${b.tenant}`, { ids, jobs });
+  return [202, { ids }];
 });
 on('POST', '/jobs/:id/cancel', async (c, [id]) => {
   const u = need(c.user, 'admin', 'operator');
@@ -3001,10 +3092,18 @@ function dashboard(u: User, days: number) {
     last_verify: verified.length ? Math.max(...verified) : null,
     verify_failed: 0,
   };
+  const newest = new Map<string, Json>();
+  for (const s of snaps.filter((x) => x.local)) {
+    const k = `${s.tenant}/${s.source}`;
+    if ((newest.get(k)?.time ?? -1) < s.time) newest.set(k, s);
+  }
+  const consistency: Record<string, number> = { application: 0, crash: 0, inconsistent: 0, unknown: 0 };
+  for (const s of newest.values()) consistency[s.consistency ?? 'unknown'] += 1;
   return {
     generated: t,
     days,
     protection: prot,
+    consistency,
     jobs: {
       success_rate: total ? +((sum.ok + sum.warning) / total).toFixed(4) : null,
       total,
