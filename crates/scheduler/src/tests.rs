@@ -1897,5 +1897,7 @@ mod expiry;
 mod forward;
 /// Phase 14e scheduled reports.
 mod report_mail;
+/// Phase 15b restore to a host (VM/CT files through a staging tar).
+mod restore_files;
 /// Phase 13b run control (pause, blackout, retries, SLA, cancel).
 mod runctl;

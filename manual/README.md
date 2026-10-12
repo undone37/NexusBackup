@@ -31,7 +31,7 @@ appliance.
 4. [Sources](04-sources.md): Proxmox VE, Linux/Windows agents, TrueNAS (built-in and plugin), NFS/SMB shares,
    PostgreSQL, Microsoft 365 and other plugin sources
 5. [Policies and protection groups](05-policies-and-groups.md): schedules, retention, what gets backed up
-6. [Restores](06-restores.md): full VM/CT restore, instant recovery, file download, restore to path, PostgreSQL dump
+6. [Restores](06-restores.md): full VM/CT restore, instant recovery, file download, restore to path / files from any snapshot onto a host, PostgreSQL dump
    restore and point-in-time restore, Microsoft 365 restores
 7. [Offsite copies](07-offsite.md): Hetzner Storage Box (SFTP), S3 with Object Lock
 8. [Replication to a second appliance](08-replication.md)

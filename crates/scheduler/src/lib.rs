@@ -74,6 +74,7 @@ pub mod orphans;
 mod plugins;
 pub mod replica;
 pub mod report_mail;
+mod restore_files;
 pub mod run;
 mod runctl;
 pub mod schedule;
@@ -2417,30 +2418,7 @@ impl Scheduler {
                 }
                 plan.steps.push(pve(args));
             }
-            "restore_files" => {
-                let src = ident(p, "source")?;
-                let src_agent = src
-                    .strip_prefix("host-")
-                    .filter(|a| valid_agent_id(a))
-                    .with_context(|| format!("restore_files needs a host-<agent> snapshot, not {src:?}"))?;
-                let target = p["agent_id"].as_str().unwrap_or(src_agent);
-                let a = self.agent(tenant, target)?;
-                plan.key = format!("agent:{}", a.id);
-                let paths: Vec<Value> = p["paths"]
-                    .as_array()
-                    .filter(|x| !x.is_empty() && x.len() <= 1000 && x.iter().all(Value::is_string))
-                    .context("paths must be a non-empty list")?
-                    .clone();
-                let restore = json!({
-                    "source_agent": src_agent, "time": num(p, "time")?, "paths": paths,
-                    "target": p["target"].as_str().context("missing parameter target")?,
-                    "overwrite": p["overwrite"].as_str().unwrap_or("never"),
-                    "confirm": p["confirm"].as_str().context("missing parameter confirm")?,
-                });
-                let (f, step) = self.agentctl(&dir, job, &a, "restore", json!({"restore": restore}))?;
-                plan.files.push(f);
-                plan.steps.push(step);
-            }
+            "restore_files" => return self.plan_restore_files(job, plan, replicated),
             "agent_update" => {
                 let a = self.agent(tenant, p["agent_id"].as_str().unwrap_or_default())?;
                 plan.key = format!("agent:{}", a.id);

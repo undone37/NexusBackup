@@ -457,6 +457,39 @@ async fn plugin_lifecycle_sources_and_jobs() {
         )
         .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    // Phase 15b: the plugin's file tree (it offers `download`) onto an agent of the tenant
+    t.st.cat
+        .conn()
+        .execute(
+            "INSERT INTO agents (id, tenant, name, host, port) VALUES ('0123456789abcdef','acme','web01','web01.lan',7444)",
+            [],
+        )
+        .unwrap();
+    let to_host = |source: String| {
+        job(
+            "restore_files",
+            json!({"source": source, "time": 100, "paths": ["/"], "target": "/srv/pg",
+                   "overwrite": "never", "confirm": "web01", "agent_id": "0123456789abcdef"}),
+        )
+    };
+    let r = t
+        .call(
+            Method::POST,
+            "/api/v1/jobs",
+            &tina,
+            Some(to_host(format!("plugin-pgx-{sid}-db1"))),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let r = t
+        .call(
+            Method::POST,
+            "/api/v1/jobs",
+            &tina,
+            Some(to_host(format!("plugin-other-{sid}-db1"))),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
     let r = t
         .call(
             Method::POST,

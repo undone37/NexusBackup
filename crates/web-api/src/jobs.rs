@@ -57,7 +57,7 @@ struct BackupP {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RestoreFilesP {
-    /// `host-<agent_id>`
+    /// `host-<agent_id>`, `nas-…`, `share-…`, `plugin-…`, `vm-<id>`, `ct-<id>` (Phase 15b)
     source: String,
     time: i64,
     paths: Vec<String>,
@@ -66,7 +66,8 @@ struct RestoreFilesP {
     overwrite: String,
     /// the target agent's name, typed by the user
     confirm: String,
-    /// target agent (default: the snapshot's agent; same tenant)
+    /// target agent (same tenant; default for host snapshots: the snapshot's agent,
+    /// required for every other source)
     #[serde(default)]
     agent_id: Option<String>,
 }
@@ -164,6 +165,23 @@ fn parse<T: serde::de::DeserializeOwned>(v: Value) -> ApiResult<T> {
     serde_json::from_value(v).map_err(|e| ApiError::bad(format!("params: {e}")))
 }
 
+/// Snapshots whose files `restore_files` can put onto an agent (Phase 15b): host,
+/// TrueNAS dataset, NFS/SMB share, VM and CT snapshots, and plugin snapshots of a
+/// plugin that offers the `download` restore (its `files` tree are plain files).
+fn restorable_files(st: &St, tenant: &str, source: &str) -> ApiResult<()> {
+    validate::source_ref(source)?;
+    let Some((pid, sid, _)) = plugin_proto::parse_source_name(source).filter(|_| source.starts_with("plugin-")) else {
+        return Ok(());
+    };
+    let (cur, spec) = crate::plugins::source_of(&st.cat.conn(), tenant, sid as i64)?;
+    if cur.id != pid || !spec.restores.iter().any(|x| x.id == "download") {
+        return Err(ApiError::bad(
+            "source: this plugin's snapshots hold no plain files to restore (no download restore)",
+        ));
+    }
+    Ok(())
+}
+
 fn snapshot_exists(st: &St, tenant: &str, source: &str, time: i64) -> ApiResult<()> {
     validate::source_ref(source)?;
     let found = st
@@ -211,11 +229,14 @@ fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiResult<Value>
         }
         "restore_files" => {
             let mut r: RestoreFilesP = parse(p)?;
-            let src_agent = r
-                .source
-                .strip_prefix("host-")
-                .ok_or_else(|| ApiError::bad("source: restore_files needs a host-<agent_id> snapshot"))?
-                .to_owned();
+            restorable_files(st, tenant, &r.source)?;
+            // host snapshots default to their own agent; other sources name the target
+            let src_agent = match (r.source.strip_prefix("host-"), r.agent_id.as_deref()) {
+                (_, Some(a)) | (Some(a), None) => a.to_owned(),
+                (None, None) => return Err(ApiError::bad(
+                    "agent_id: choose the agent to restore to (snapshots of NAS shares, plugins, VMs and containers)",
+                )),
+            };
             snapshot_exists(st, tenant, &r.source, r.time)?;
             if r.paths.is_empty() || r.paths.len() > 1000 {
                 return Err(ApiError::bad("paths: 1..=1000 entries"));

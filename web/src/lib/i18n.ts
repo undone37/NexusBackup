@@ -315,6 +315,10 @@ export const en = {
     fullRestoreHint: 'Restore onto a Proxmox VE node',
     instantHintShort: 'Start now from the backup, move disks live',
     restorePathHint: 'Write files onto a host with an agent',
+    restoreToHost: 'Restore to a host…',
+    restoreToHostHint: 'Write the files onto any host with an agent of this tenant',
+    restoreFilesToHost: 'Restore files to a host…',
+    restoreFilesToHostHint: 'Pick files in the browser, then restore them onto a host with an agent',
     instantHint:
       'The guest starts immediately from the backup over NBD; disks are moved to the target storage while it runs.',
     deleteLabel: (s: string, time: string) => `Delete snapshot ${s} @ ${time}`,
@@ -340,6 +344,8 @@ export const en = {
     failed: 'The job failed — see the job log.',
     restoreHint: 'Restores the selected paths (or everything, if nothing is selected) onto a host.',
     restoreAll: 'Restore everything to path',
+    restoreToHost: 'Restore to a host…',
+    restoreHintSelect: 'Select files or folders, then restore them onto a host with an agent.',
     streamsHint: 'Application streams of this plugin backup (e.g. database dumps) are under .nexus-streams/.',
   },
   restoreFiles: {
@@ -361,6 +367,10 @@ export const en = {
     confirm: 'Confirmation',
     confirmHint: (n: string) => `Type the name of the target agent (${n}) to confirm.`,
     noAgent: 'No enrolled agent of this tenant is available.',
+    agentHintOther: 'Any enrolled agent of the same tenant can receive the files.',
+    lastSeen: (ago: string) => `last contact ${ago}`,
+    otherHost:
+      'The files come from another machine: they are owned by the agent’s restore user (owners and groups from the backup are not mapped), setuid/setgid bits are cleared, device nodes are skipped, and only extended attributes the target can store are kept (no ACLs or SELinux labels of the other machine).',
     start: 'Start restore',
   },
   jobs: {

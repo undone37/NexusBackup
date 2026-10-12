@@ -63,6 +63,9 @@ export const downloadUrl = (token: string) => `/api/v1/downloads/${encodeURIComp
 /** Agent id of a host snapshot source (`host-<agent id>`), else null. */
 export const hostAgentId = (source: string) => (source.startsWith('host-') ? source.slice(5) : null);
 
+/** Snapshots whose files can be restored onto a host through an agent (`restore_files`, Phase 15b). */
+export const restorableToHost = (source: string) => /^(host|nas|share|plugin|vm|ct)-/.test(source);
+
 export function agentStatus(a: Agent, now = Date.now() / 1000): AgentStatus {
   if (a.enrolled_at !== null) return 'enrolled';
   return a.token_expires !== null && a.token_expires > now ? 'pending' : 'expired';

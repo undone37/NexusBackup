@@ -178,12 +178,13 @@ fn real_agent_with_agent_conn() {
         &mut s,
         &RestoreSpec {
             job: 3,
-            source_agent: ID.into(),
+            source: source_name(ID),
             time: r2.time,
             paths: vec![data.to_string_lossy().into_owned()],
             target: target.to_string_lossy().into_owned(),
             overwrite: Overwrite::Never,
             confirm: "web01".into(),
+            target_agent: ID.into(),
         },
         &mut |l| eprintln!("{l}"),
     )
@@ -209,4 +210,37 @@ fn real_agent_with_agent_conn() {
         fs::metadata(out.join("hostname.link")).unwrap().ino(),
         fs::metadata(out.join("etc/hostname")).unwrap().ino()
     );
+
+    // the same snapshot as if restored onto another host (Phase 15b): the real agent
+    // takes uid/gid -1 (owner = the restoring user), content and modes arrive
+    let other = d.path().join("other");
+    let mut s = session(&ca, port, &e.cert_sha256);
+    let stats = restore::restore(
+        &store,
+        &map,
+        &mut s,
+        &RestoreSpec {
+            job: 4,
+            source: source_name(ID),
+            time: r2.time,
+            paths: vec![data.to_string_lossy().into_owned()],
+            target: other.to_string_lossy().into_owned(),
+            overwrite: Overwrite::Never,
+            confirm: "web01".into(),
+            target_agent: "fedcba9876543210".into(),
+        },
+        &mut |l| eprintln!("{l}"),
+    )
+    .unwrap();
+    s.close();
+    assert!(stats.errors.is_empty(), "{:?}", stats.errors);
+    let f = other.join(&rel).join("etc/ssh/sshd_config");
+    assert_eq!(
+        fs::read(&f).unwrap(),
+        fs::read(data.join("etc/ssh/sshd_config")).unwrap()
+    );
+    let m = fs::metadata(&f).unwrap();
+    assert_eq!(m.mode() & 0o7777, 0o600);
+    // SAFETY: plain libc getters
+    assert_eq!((m.uid(), m.gid()), unsafe { (libc::geteuid(), libc::getegid()) });
 }

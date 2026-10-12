@@ -5,8 +5,9 @@
 
 use crate::restore::{request_path, select};
 use anyhow::{bail, Result};
-use chunkstore::{Store, TreeEntry, TreeKind};
+use chunkstore::{FileEntry, Store, TreeEntry, TreeKind};
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io;
@@ -28,6 +29,61 @@ impl Format {
             _ => bail!("output must end in .tar or .zip"),
         }
     }
+}
+
+/// Directory of a plugin snapshot's streams in file views (`plugin_proto::STREAMS_DIR`,
+/// checked in crate plugin-host).
+pub const STREAMS_DIR: &str = ".nexus-streams";
+
+fn dir_entry(path: Vec<u8>, mtime: i64) -> TreeEntry {
+    TreeEntry {
+        path,
+        kind: TreeKind::Dir,
+        mode: 0o40755,
+        uid: 0,
+        gid: 0,
+        size: 0,
+        mtime_ns: mtime * 1_000_000_000,
+        ctime_ns: 0,
+        inode: 0,
+        rdev: 0,
+        link_target: None,
+        xattrs: Vec::new(),
+        chunks: Vec::new(),
+        inconsistent: false,
+    }
+}
+
+/// A plugin snapshot as one file tree: its files plus its streams as regular files
+/// below [`STREAMS_DIR`] (mode 0600, directories with the snapshot time). The file
+/// browser, downloads and restores to a host all see this view.
+pub fn with_streams(mut files: Vec<TreeEntry>, streams: &[FileEntry], time: u64) -> Vec<TreeEntry> {
+    if streams.is_empty() {
+        return files;
+    }
+    let mut dirs: BTreeSet<Vec<u8>> = BTreeSet::new();
+    dirs.insert(STREAMS_DIR.as_bytes().to_vec());
+    for st in streams {
+        let p = format!("{STREAMS_DIR}/{}", st.path);
+        let mut i = 0;
+        while let Some(k) = p[i..].find('/') {
+            dirs.insert(p.as_bytes()[..i + k].to_vec());
+            i += k + 1;
+        }
+    }
+    files.extend(dirs.into_iter().map(|d| dir_entry(d, time as i64)));
+    for st in streams {
+        files.push(TreeEntry {
+            path: format!("{STREAMS_DIR}/{}", st.path).into_bytes(),
+            kind: TreeKind::File,
+            mode: 0o100600,
+            size: st.size,
+            mtime_ns: st.mtime * 1_000_000_000,
+            chunks: st.chunks.clone(),
+            ..dir_entry(Vec::new(), 0)
+        });
+    }
+    files
 }
 
 #[derive(Serialize, Debug, PartialEq)]
