@@ -6,9 +6,13 @@ workload, certificate upload), limits and the open real-tenant run: [docs/m365.m
 
 | Guest | Snapshot `plugin-m365-<source>-<guest>` | Restores |
 |---|---|---|
-| `u.<user id>` | `mail/…/*.eml`, `calendar/…/*.ics`, `contacts/…/*.vcf`, `onedrive/…` | download; to the original or another user (new folder) |
+| `u.<user id>` | `mail/…/*.eml`, `recoverable/Deletions/*.eml`, `calendar/…/*.ics`, `contacts/…/*.vcf`, `onedrive/…` | download; to the original or another user (new folder) |
 | `s.<site>` | `libraries/<library>/…` | download; to the original or another site (new folder) |
-| `t.<team id>` | `files/…`, `channels/<channel>/*.json` | download; to the original or another team (new folder, migration-mode channels) |
+| `t.<team id>` | `files/…`, `channel-files/<channel>/…`, `channels/<channel>/*.json` | download; to the original or another team (new folder, migration-mode channels, private channel sites) |
+| `g.<group id>` | `conversations/*.json`, `calendar/*.ics`, `files/…` (non-team groups) | download; files to the original or another group (conversations download only) |
+
+Items that keep failing after Graph's retries are skipped and reported as warnings (contract v1.6); the job ends ok
+with warnings and the next backup asks for them again.
 
 Incremental: Graph delta queries for mail folders and drives (delta links in the state blob), complete listings
 for calendars and contacts, the Teams export API by modification time for channel messages; the previous

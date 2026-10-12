@@ -3,6 +3,7 @@
 //! that exists is ever overwritten:
 //!
 //! - mail → a new top-level mail folder (subfolders recreated), messages imported as MIME;
+//!   Recoverable Items "Deletions" → `<folder>/Restored deleted items`;
 //! - calendars → one new calendar per backed-up calendar (`<folder> – <name>`), events
 //!   created from the Graph JSON in the `.ics` (without attendees: no invitations go out);
 //! - contacts → a new contact folder with one subfolder per backed-up folder;
@@ -10,7 +11,11 @@
 //!   `<folder>/…` in the target site's library of the same name (else the default
 //!   library, `<folder>/<library>/…`); uploads use `conflictBehavior=fail`;
 //! - Teams threads → a new channel per backed-up channel created in migration mode
-//!   (original authors and times), completed at the end.
+//!   (original authors and times), completed at the end; private / shared channel
+//!   files → `<folder>/…` in the site of the target team's channel of the same name;
+//! - Microsoft 365 groups: files (groups that are not teams) → `<folder>/…` in the
+//!   group's drive. Conversations and the group calendar are download-only: Graph
+//!   v1.0 offers no application permission to create group posts or group events.
 //!
 //! Download (mail as .eml, events .ics, contacts .vcf, files as they are, threads
 //! .json) is the appliance's generic download and never reaches the plugin.
@@ -53,6 +58,8 @@ struct Target {
     site_drives: Option<Vec<(String, String)>>,
     /// backed-up channel dir → new channel id
     channels: HashMap<String, String>,
+    /// private / shared channel dir → drive of the target's channel of that name
+    channel_drives: HashMap<String, Option<String>>,
     counts: HashMap<&'static str, u64>,
 }
 
@@ -65,7 +72,7 @@ pub fn run(ctx: &Ctx, c: &Config, mut g: Graph, src: &mut Source) -> Result<Stri
         .map(str::to_owned)
         .or_else(|| parse_source_name(source).and_then(|x| x.2))
         .and_then(|g| Guest::parse(&g))
-        .ok_or_else(|| error(22, "this snapshot is not one of a user, site or team"))?;
+        .ok_or_else(|| error(22, "this snapshot is not one of a user, site, team or group"))?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
@@ -81,7 +88,7 @@ pub fn run(ctx: &Ctx, c: &Config, mut g: Graph, src: &mut Source) -> Result<Stri
     let sp_host = c.sharepoint_host.clone().unwrap_or_default();
     let id = match action {
         "to_original" => match &guest {
-            Guest::User(u) | Guest::Team(u) => u.clone(),
+            Guest::User(u) | Guest::Team(u) | Guest::Group(u) => u.clone(),
             Guest::Site(..) => guest.site_id(&sp_host).unwrap_or_default(),
         },
         "to_other" => {
@@ -125,6 +132,7 @@ pub fn run(ctx: &Ctx, c: &Config, mut g: Graph, src: &mut Source) -> Result<Stri
         drive: None,
         site_drives: None,
         channels: HashMap::new(),
+        channel_drives: HashMap::new(),
         counts: HashMap::new(),
     };
     ctx.info(format!("restoring into {:?} of {}", t.folder, t.id));
@@ -201,17 +209,23 @@ fn resolve_target(g: &mut Graph, guest: &Guest, t: &str) -> Result<String> {
                 .context("site without id")?
                 .to_owned()
         }
-        Guest::Team(_) => {
+        Guest::Team(_) | Guest::Group(_) => {
+            let team = matches!(guest, Guest::Team(_));
+            let (one, list) = if team {
+                ("/teams", "/teams?$select=id,displayName&$top=999".to_owned())
+            } else {
+                ("/groups", format!("{}&$top=999", crate::UNIFIED_GROUPS))
+            };
+            let what = if team { "team" } else { "group" };
             let guid = t.len() == 36 && t.bytes().filter(|b| *b == b'-').count() == 4;
             if guid {
-                g.get(&format!("/teams/{}?$select=id", enc(t)), &[])
-                    .map_err(not_found)?["id"]
+                g.get(&format!("{one}/{}?$select=id", enc(t)), &[]).map_err(not_found)?["id"]
                     .as_str()
-                    .context("team without id")?
+                    .context("object without id")?
                     .to_owned()
             } else {
                 let mut found = Vec::new();
-                g.pages("/teams?$select=id,displayName&$top=999", &[], |x| {
+                g.pages(&list, &[], |x| {
                     if x["displayName"].as_str() == Some(t) {
                         found.push(x["id"].as_str().unwrap_or_default().to_owned());
                     }
@@ -219,11 +233,11 @@ fn resolve_target(g: &mut Graph, guest: &Guest, t: &str) -> Result<String> {
                 })?;
                 match found.len() {
                     1 => found.remove(0),
-                    0 => return Err(error(22, format!("target: no team named {t:?}"))),
+                    0 => return Err(error(22, format!("target: no {what} named {t:?}"))),
                     _ => {
                         return Err(error(
                             22,
-                            format!("target: several teams are named {t:?}; use the team id"),
+                            format!("target: several {what}s are named {t:?}; use the {what} id"),
                         ))
                     }
                 }
@@ -260,6 +274,41 @@ fn put(g: &mut Graph, guest: &Guest, t: &mut Target, item: &FileItem, data: &mut
                 &[],
             )?;
             *t.counts.entry("messages").or_default() += 1;
+        }
+        (Guest::User(_), "recoverable") if s.len() >= 3 => {
+            let mut names = vec!["Restored deleted items".to_owned()];
+            names.extend(s[2..s.len() - 1].iter().cloned());
+            let fid = mail_folder(g, t, &names)?;
+            let mime = read_all(data, item.meta.size)?;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&mime);
+            let url = g.url(&format!("/users/{}/mailFolders/{}/messages", enc(&t.id), enc(&fid)));
+            g.call(
+                reqwest::Method::POST,
+                &url,
+                graph::Body::Bytes(b64.into_bytes(), "text/plain"),
+                &[],
+            )?;
+            *t.counts.entry("deleted messages").or_default() += 1;
+        }
+        (Guest::Group(_), "conversations" | "calendar") => {
+            *t.counts
+                .entry("group conversations / events (download only, skipped)")
+                .or_default() += 1;
+        }
+        (Guest::Team(_), "channel-files") if s.len() >= 3 => {
+            if !t.channel_drives.contains_key(&s[1]) {
+                let d = private_channel_drive(g, &t.id, &decode_name(&s[1]))?;
+                t.channel_drives.insert(s[1].clone(), d);
+            }
+            let Some(drive) = t.channel_drives[&s[1]].clone() else {
+                *t.counts
+                    .entry("channel files without a private/shared channel of that name (skipped)")
+                    .or_default() += 1;
+                return Ok(());
+            };
+            let mut dir = vec![t.folder.clone()];
+            dir.extend(s[2..s.len() - 1].iter().map(|x| decode_name(x)));
+            upload(g, t, &drive, dir, &decode_name(&s[s.len() - 1]), item.meta.size, data)?;
         }
         (Guest::User(_), "calendar") if s.len() == 3 => {
             let Some(ev) = embedded_graph(&String::from_utf8_lossy(&read_all(data, item.meta.size)?)) else {
@@ -317,7 +366,7 @@ fn put(g: &mut Graph, guest: &Guest, t: &mut Target, item: &FileItem, data: &mut
             )?;
             *t.counts.entry("contacts").or_default() += 1;
         }
-        (Guest::User(_), "onedrive") | (Guest::Team(_), "files") if s.len() >= 2 => {
+        (Guest::User(_), "onedrive") | (Guest::Team(_) | Guest::Group(_), "files") if s.len() >= 2 => {
             let drive = match &t.drive {
                 Some(d) => d.clone(),
                 None => {
@@ -423,6 +472,25 @@ fn put(g: &mut Graph, guest: &Guest, t: &mut Target, item: &FileItem, data: &mut
         }
     }
     Ok(())
+}
+
+/// Files drive of the target team's private or shared channel named `name`.
+fn private_channel_drive(g: &mut Graph, team: &str, name: &str) -> Result<Option<String>> {
+    let mut id = None;
+    g.pages(
+        &format!("/teams/{}/channels?$select=id,displayName,membershipType", enc(team)),
+        &[],
+        |c| {
+            if crate::separate_channel(&c) && c["displayName"].as_str() == Some(name) {
+                id = c["id"].as_str().map(str::to_owned);
+            }
+            Ok(())
+        },
+    )?;
+    match id {
+        Some(ch) => crate::channel_drive(g, team, &ch),
+        None => Ok(None),
+    }
 }
 
 /// Messages Graph can import: from a user, not deleted.

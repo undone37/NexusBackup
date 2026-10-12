@@ -1,11 +1,11 @@
 [package]
 name = "m365-plugin"
-version = "1.0.0"
+version = "1.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish = false
-description = "NexusBackup plugin: Microsoft 365 (Exchange, OneDrive, SharePoint, Teams) via Microsoft Graph (docs/m365.md)"
+description = "NexusBackup plugin: Microsoft 365 (Exchange, OneDrive, SharePoint, Teams, Groups) via Microsoft Graph (docs/m365.md)"
 
 [lib]
 name = "m365_plugin"

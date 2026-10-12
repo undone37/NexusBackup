@@ -4,10 +4,15 @@
 //! u.<user>   mail/<folder>/…/<subject> ~<hash>.eml        MIME as Exchange returns it
 //!            calendar/<calendar>/<date> <subject> ~<hash>.ics
 //!            contacts/<folder>/…/<name> ~<hash>.vcf
+//!            recoverable/Deletions/<subject> ~<hash>.eml   Recoverable Items "Deletions"
 //!            onedrive/<path>                               files as they are
 //! s.<site>   libraries/<library>/<path>
 //! t.<team>   files/<path>                                  the team's document library
+//!            channel-files/<channel>/<path>                private / shared channel sites
 //!            channels/<channel>/<date> <subject> ~<hash>.json   thread: root + replies
+//! g.<group>  conversations/<topic> ~<hash>.json            conversation: threads with posts
+//!            calendar/<date> <subject> ~<hash>.ics         group calendar (if Graph allows)
+//!            files/<path>                                  groups that are not teams
 //! ```
 //!
 //! Every directory and file carries its Graph id in the xattr `user.m365.id` (and
@@ -24,6 +29,13 @@
 //! API filtered by `lastModifiedDateTime`. An item whose id, path, version tag and
 //! time equal the base entry is sent as `Unchanged` (the host reuses its data);
 //! anything else is downloaded. Renamed folders therefore re-send their items.
+//!
+//! Failures: an item (or a folder listing) that still fails after Graph's retries is
+//! skipped and reported (`Sink::item_failed`; the job ends `ok` with warnings) instead
+//! of failing the guest. A folder whose listing failed keeps its base items; a
+//! container with skipped items keeps its previous delta link (no link on a full
+//! round), so the next backup asks for the skipped items again. 401 still aborts,
+//! and so do more than `MAX_FAILED` failures when they outnumber the items read.
 
 use crate::format::{encode_name, item_name, parse_time, rfc3339, short_hash};
 use crate::graph::{self, enc, Graph};
@@ -42,6 +54,9 @@ messages can only be exported after Microsoft approves the request (https://aka.
 docs/m365.md). Until then disable \"Teams: channel messages\" — team files are backed up without it.";
 
 const PREFER_IDS: &str = "IdType=\"ImmutableId\", odata.maxpagesize=200";
+
+/// Failures that abort the guest when they outnumber the items read (outage, revoked access).
+const MAX_FAILED: u64 = 100;
 
 /// Overlap of consecutive Teams export windows (clock skew, late index updates).
 const TEAMS_OVERLAP: i64 = 600;
@@ -233,6 +248,8 @@ struct Out<'a> {
     unchanged: u64,
     downloaded: u64,
     skipped: u64,
+    /// items skipped with an error (reported as warnings)
+    failed: u64,
 }
 
 fn xattrs(id: &str, tag: Option<&str>) -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -395,6 +412,7 @@ pub fn run(ctx: &Ctx, c: &Config, g: Graph, guest: &Guest, sink: &mut Sink) -> R
             unchanged: 0,
             downloaded: 0,
             skipped: 0,
+            failed: 0,
         },
         notes: Vec::new(),
     };
@@ -417,7 +435,9 @@ pub fn run(ctx: &Ctx, c: &Config, g: Graph, guest: &Guest, sink: &mut Sink) -> R
                         r.drive("onedrive", &id)?;
                     }
                     Err(e) if graph::status(&e) == Some(404) => r.note("no OneDrive"),
-                    Err(e) => return Err(e),
+                    Err(e) => {
+                        r.item_failed("onedrive", e)?;
+                    }
                 }
             }
         }
@@ -447,13 +467,51 @@ pub fn run(ctx: &Ctx, c: &Config, g: Graph, guest: &Guest, sink: &mut Sink) -> R
             if !(c.teams || c.teams_messages) {
                 return Err(error(22, "Teams is disabled in the source"));
             }
+            let mut chans = Vec::new();
+            r.g.pages(
+                &format!("/teams/{}/channels?$select=id,displayName,membershipType", enc(t)),
+                &[],
+                |c| {
+                    chans.push(c);
+                    Ok(())
+                },
+            )?;
             if c.teams {
                 let d = r.g.get(&format!("/groups/{}/drive?$select=id", enc(t)), &[])?;
                 let id = d["id"].as_str().unwrap_or_default().to_owned();
                 r.drive("files", &id)?;
+                r.channel_files(t, &chans)?;
             }
             if c.teams_messages {
-                r.channels(t, started)?;
+                r.channels(t, started, chans)?;
+            }
+        }
+        Guest::Group(gid) => {
+            if !c.groups {
+                return Err(error(22, "Microsoft 365 groups are disabled in the source"));
+            }
+            let grp = r.g.get(
+                &format!(
+                    "/groups/{}?$select=id,displayName,resourceProvisioningOptions",
+                    enc(gid)
+                ),
+                &[],
+            )?;
+            r.conversations(gid)?;
+            r.group_calendar(gid)?;
+            if crate::is_team(&grp) {
+                r.note("files are backed up with the team");
+            } else if c.sharepoint {
+                match r.g.get(&format!("/groups/{}/drive?$select=id", enc(gid)), &[]) {
+                    Ok(d) => {
+                        let id = d["id"].as_str().unwrap_or_default().to_owned();
+                        r.drive("files", &id)?;
+                    }
+                    Err(e) if graph::status(&e) == Some(404) => r.note("no group files"),
+                    Err(e) => {
+                        r.item_failed("files", e)?;
+                    }
+                }
             }
         }
     }
@@ -482,6 +540,14 @@ pub fn run(ctx: &Ctx, c: &Config, g: Graph, guest: &Guest, sink: &mut Sink) -> R
     if out.skipped > 0 {
         ctx.info(format!("{} items vanished while the backup ran (skipped)", out.skipped));
     }
+    let summary = if out.failed > 0 {
+        format!(
+            "{summary}; {} items could not be read (skipped, see warnings)",
+            out.failed
+        )
+    } else {
+        summary
+    };
     Ok(BackupResult {
         state: Some(new.encode(ctx)),
         consistent: true,
@@ -517,6 +583,65 @@ impl Run<'_, '_> {
 
     fn prefer(&self) -> [(&'static str, String); 1] {
         [("prefer", PREFER_IDS.to_owned())]
+    }
+
+    /// A Graph read for `what` (snapshot path) failed after the retries: 404 = vanished
+    /// (`Ok(false)`), 401 aborts, anything else is skipped and reported (`Ok(true)`).
+    /// Only for Graph errors — sink errors must never come here.
+    fn item_failed(&mut self, what: &str, e: anyhow::Error) -> Result<bool> {
+        match graph::status(&e) {
+            Some(404) => {
+                self.out.skipped += 1;
+                return Ok(false);
+            }
+            Some(401) => return Err(e),
+            _ if graph::is_protected_api_denied(&e) => return Err(error(13, PROTECTED_API_HELP)),
+            _ => {}
+        }
+        self.out.failed += 1;
+        if self.out.failed <= 20 {
+            self.ctx.warn(format!("skipped {what}: {e:#}"));
+        }
+        self.out.sink.item_failed(format!("{what}: {e:#}"));
+        if self.out.failed >= MAX_FAILED && self.out.failed > self.out.items {
+            return Err(e.context(format!(
+                "{} items failed, more than were read: giving up (last: {what})",
+                self.out.failed
+            )));
+        }
+        Ok(true)
+    }
+
+    /// The base's files directly below the directory `xid` that were at `path`, taken
+    /// over unchanged (its listing failed this time).
+    fn keep_base(&mut self, xid: &str, path: &str) -> Result<()> {
+        let kids: Vec<BaseEntry> = self
+            .prev
+            .children(xid)
+            .filter(|b| b.meta.kind == Some(Kind::File) && parent_path(&b.path) == Some(path.as_bytes()))
+            .cloned()
+            .collect();
+        for b in kids {
+            if self.out.used.insert(b.path.clone()) {
+                self.out.sink.unchanged(&b.path, b.meta)?;
+                self.out.items += 1;
+                self.out.unchanged += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// Stores a container's new delta link — or, if items of it failed since
+    /// `failed_before`, the old one (replays their changes; none = full listing).
+    fn link(&mut self, key: String, link: Option<String>, failed_before: u64) {
+        let l = if self.out.failed > failed_before {
+            self.old.delta.get(&key).cloned()
+        } else {
+            link
+        };
+        if let Some(l) = l {
+            self.new.delta.insert(key, l);
+        }
     }
 
     // ---- Exchange ----------------------------------------------------------------
@@ -556,59 +681,92 @@ impl Run<'_, '_> {
         let mut sorted: Vec<(&String, &String)> = paths.iter().collect();
         sorted.sort_by(|a, b| a.1.cmp(b.1));
         for (fid, fpath) in sorted {
-            self.out.dir(fpath, &format!("mf:{fid}"))?;
-            let key = format!("mail:{fid}");
-            let initial = format!(
-                "/users/{}/mailFolders/{}/messages/delta?$select=subject,lastModifiedDateTime,changeKey",
-                enc(u),
-                seg(fid)
-            );
-            let d = delta(self.ctx, &mut self.g, self.old.delta.get(&key), &initial, &h)?;
-            let mut cur: BTreeMap<String, Item> = BTreeMap::new();
-            if d.incremental {
-                for b in self.prev.children(&format!("mf:{fid}")) {
-                    if let Some(id) = xattr(&b.meta, X_ID).and_then(|i| i.strip_prefix("m:")) {
-                        cur.insert(id.to_owned(), Item::from_base(b));
-                    }
+            self.mail_folder(u, fid, fpath)?;
+        }
+        // Recoverable Items "Deletions" (deleted from Deleted Items; not in the folder delta)
+        match self.g.get(
+            &format!("/users/{}/mailFolders/recoverableitemsdeletions?$select=id", enc(u)),
+            &h,
+        ) {
+            Ok(f) => {
+                if let Some(fid) = f["id"].as_str().filter(|f| !paths.contains_key(*f)) {
+                    self.out.dir("recoverable", "recoverable")?;
+                    self.mail_folder(u, fid, "recoverable/Deletions")?;
                 }
             }
-            for (id, v) in d.items {
-                match v {
-                    None => {
-                        cur.remove(&id);
-                    }
-                    Some(m) => {
-                        cur.insert(
-                            id.clone(),
-                            Item {
-                                name: item_name(m["subject"].as_str().unwrap_or_default(), &id, "eml"),
-                                tag: m["changeKey"].as_str().unwrap_or_default().to_owned(),
-                                mtime_ns: time_ns(&m["lastModifiedDateTime"]),
-                            },
-                        );
-                    }
-                }
-            }
-            for (id, it) in cur {
-                let xid = format!("m:{id}");
-                let path = self.out.claim(format!("{fpath}/{}", it.name), &xid);
-                if self.out.unchanged(&self.prev, &path, &xid, &it, None)? {
-                    continue;
-                }
-                match self
-                    .g
-                    .get_bytes(&format!("/users/{}/messages/{}/$value", enc(u), seg(&id)), &h)
-                {
-                    Ok(mime) => self.out.bytes(&path, &xid, &it, &mime)?,
-                    Err(e) if graph::status(&e) == Some(404) => self.out.skipped += 1,
-                    Err(e) => return Err(e),
-                }
-            }
-            if let Some(l) = d.link {
-                self.new.delta.insert(key, l);
+            Err(e) if graph::status(&e) == Some(404) => {}
+            Err(e) => {
+                self.item_failed("recoverable/Deletions", e)?;
             }
         }
         Ok(true)
+    }
+
+    /// The messages of one mail folder (delta query; continued from the stored link).
+    fn mail_folder(&mut self, u: &str, fid: &str, fpath: &str) -> Result<()> {
+        let h = self.prefer();
+        let fx = format!("mf:{fid}");
+        self.out.dir(fpath, &fx)?;
+        let key = format!("mail:{fid}");
+        let initial = format!(
+            "/users/{}/mailFolders/{}/messages/delta?$select=subject,lastModifiedDateTime,changeKey",
+            enc(u),
+            seg(fid)
+        );
+        let before = self.out.failed;
+        let d = match delta(self.ctx, &mut self.g, self.old.delta.get(&key), &initial, &h) {
+            Ok(d) => d,
+            Err(e) => {
+                if self.item_failed(fpath, e)? {
+                    self.keep_base(&fx, fpath)?;
+                    self.link(key, None, before);
+                }
+                return Ok(());
+            }
+        };
+        let mut cur: BTreeMap<String, Item> = BTreeMap::new();
+        if d.incremental {
+            for b in self.prev.children(&fx) {
+                if let Some(id) = xattr(&b.meta, X_ID).and_then(|i| i.strip_prefix("m:")) {
+                    cur.insert(id.to_owned(), Item::from_base(b));
+                }
+            }
+        }
+        for (id, v) in d.items {
+            match v {
+                None => {
+                    cur.remove(&id);
+                }
+                Some(m) => {
+                    cur.insert(
+                        id.clone(),
+                        Item {
+                            name: item_name(m["subject"].as_str().unwrap_or_default(), &id, "eml"),
+                            tag: m["changeKey"].as_str().unwrap_or_default().to_owned(),
+                            mtime_ns: time_ns(&m["lastModifiedDateTime"]),
+                        },
+                    );
+                }
+            }
+        }
+        for (id, it) in cur {
+            let xid = format!("m:{id}");
+            let path = self.out.claim(format!("{fpath}/{}", it.name), &xid);
+            if self.out.unchanged(&self.prev, &path, &xid, &it, None)? {
+                continue;
+            }
+            match self
+                .g
+                .get_bytes(&format!("/users/{}/messages/{}/$value", enc(u), seg(&id)), &h)
+            {
+                Ok(mime) => self.out.bytes(&path, &xid, &it, &mime)?,
+                Err(e) => {
+                    self.item_failed(&path, e)?;
+                }
+            }
+        }
+        self.link(key, d.link, before);
+        Ok(())
     }
 
     fn calendars(&mut self, u: &str) -> Result<()> {
@@ -626,37 +784,50 @@ impl Run<'_, '_> {
         for (name, cal) in unique_names(cals, "name") {
             let cid = cal["id"].as_str().unwrap_or_default().to_owned();
             let cpath = format!("calendar/{}", encode_name(&name));
-            self.out.dir(&cpath, &format!("cal:{cid}"))?;
+            let cx = format!("cal:{cid}");
+            self.out.dir(&cpath, &cx)?;
             let mut events = Vec::new();
-            self.g.pages(
+            let r = self.g.pages(
                 &format!("/users/{}/calendars/{}/events?$top=100", enc(u), seg(&cid)),
                 &h,
                 |e| {
                     events.push(e);
                     Ok(())
                 },
-            )?;
-            for e in events {
-                let Some(id) = e["id"].as_str() else { continue };
-                let xid = format!("e:{id}");
-                let date = e["start"]["dateTime"]
-                    .as_str()
-                    .and_then(|d| d.get(..10))
-                    .unwrap_or_default();
-                let it = Item {
-                    name: item_name(
-                        &format!("{date} {}", e["subject"].as_str().unwrap_or_default()),
-                        id,
-                        "ics",
-                    ),
-                    tag: e["changeKey"].as_str().unwrap_or_default().to_owned(),
-                    mtime_ns: time_ns(&e["lastModifiedDateTime"]),
-                };
-                let path = self.out.claim(format!("{cpath}/{}", it.name), &xid);
-                if !self.out.unchanged(&self.prev, &path, &xid, &it, None)? {
-                    self.out
-                        .bytes(&path, &xid, &it, crate::format::event_ics(&e).as_bytes())?;
+            );
+            if let Err(e) = r {
+                if self.item_failed(&cpath, e)? {
+                    self.keep_base(&cx, &cpath)?;
                 }
+                continue;
+            }
+            self.events(&cpath, events)?;
+        }
+        Ok(())
+    }
+
+    /// Events (Graph JSON) as `.ics` files below `dir`.
+    fn events(&mut self, dir: &str, events: Vec<Value>) -> Result<()> {
+        for e in events {
+            let Some(id) = e["id"].as_str() else { continue };
+            let xid = format!("e:{id}");
+            let date = e["start"]["dateTime"]
+                .as_str()
+                .and_then(|d| d.get(..10))
+                .unwrap_or_default();
+            let it = Item {
+                name: item_name(
+                    &format!("{date} {}", e["subject"].as_str().unwrap_or_default()),
+                    id,
+                    "ics",
+                ),
+                tag: e["changeKey"].as_str().unwrap_or_default().to_owned(),
+                mtime_ns: time_ns(&e["lastModifiedDateTime"]),
+            };
+            let path = self.out.claim(format!("{dir}/{}", it.name), &xid);
+            if !self.out.unchanged(&self.prev, &path, &xid, &it, None)? {
+                self.out
+                    .bytes(&path, &xid, &it, crate::format::event_ics(&e).as_bytes())?;
             }
         }
         Ok(())
@@ -704,10 +875,16 @@ impl Run<'_, '_> {
         for (fpath, url, fid) in folders {
             self.out.dir(&fpath, &fid)?;
             let mut list = Vec::new();
-            self.g.pages(&url, &h, |p| {
+            let r = self.g.pages(&url, &h, |p| {
                 list.push(p);
                 Ok(())
-            })?;
+            });
+            if let Err(e) = r {
+                if self.item_failed(&fpath, e)? {
+                    self.keep_base(&fid, &fpath)?;
+                }
+                continue;
+            }
             for p in list {
                 let Some(id) = p["id"].as_str() else { continue };
                 let xid = format!("p:{id}");
@@ -740,7 +917,15 @@ impl Run<'_, '_> {
             "/drives/{}/root/delta?$select=id,name,parentReference,file,folder,package,root,size,lastModifiedDateTime,cTag,eTag,deleted",
             enc(drive)
         );
-        let d = delta(self.ctx, &mut self.g, self.old.delta.get(&key), &initial, &[])?;
+        let before = self.out.failed;
+        let d = match delta(self.ctx, &mut self.g, self.old.delta.get(&key), &initial, &[]) {
+            Ok(d) => d,
+            Err(e) => {
+                // missing in this snapshot; no link stored, so the next backup lists it completely
+                self.item_failed(root_path, e)?;
+                return Ok(());
+            }
+        };
         #[derive(Clone)]
         struct Node {
             parent: Option<String>,
@@ -857,34 +1042,57 @@ impl Run<'_, '_> {
             let mut dl = self
                 .g
                 .download(&format!("/drives/{}/items/{}/content", enc(drive), seg(&id)), n.size);
-            match dl.start() {
-                Ok(()) => {}
-                Err(e) if graph::status(&e) == Some(404) => {
-                    self.out.skipped += 1;
-                    continue;
-                }
-                Err(e) => return Err(e),
+            if let Err(e) = dl.start() {
+                drop(dl);
+                self.item_failed(&path, e)?;
+                continue;
             }
             self.out.file(&path, &xid, &n.item, n.size, &mut dl)?;
         }
-        if let Some(l) = d.link {
-            self.new.delta.insert(key, l);
+        self.link(key, d.link, before);
+        Ok(())
+    }
+
+    /// Files of private and shared channels (each in a SharePoint site of its own).
+    fn channel_files(&mut self, t: &str, chans: &[Value]) -> Result<()> {
+        let sep: Vec<Value> = chans.iter().filter(|c| crate::separate_channel(c)).cloned().collect();
+        if sep.is_empty() {
+            return Ok(());
+        }
+        self.out.dir("channel-files", "channel-files")?;
+        for (name, ch) in unique_names(sep, "displayName") {
+            let path = format!("channel-files/{}", encode_name(&name));
+            match crate::channel_drive(&mut self.g, t, ch["id"].as_str().unwrap_or_default()) {
+                Ok(Some(d)) => self.drive(&path, &d)?,
+                Ok(None) => self.note(&format!("channel {name}: no files site yet")),
+                Err(e) => {
+                    self.item_failed(&path, e)?;
+                }
+            }
         }
         Ok(())
     }
 
     // ---- Teams channel messages ----------------------------------------------------
 
-    fn channels(&mut self, t: &str, started: i64) -> Result<()> {
-        let mut chans = Vec::new();
-        self.g.pages(
-            &format!("/teams/{}/channels?$select=id,displayName,membershipType", enc(t)),
-            &[],
-            |c| {
-                chans.push(c);
-                Ok(())
-            },
-        )?;
+    /// Root message and replies of a thread (none if the root is gone).
+    fn thread(&mut self, t: &str, ch: &str, root: &str) -> Result<(Option<Value>, Vec<Value>)> {
+        let base = format!("/teams/{}/channels/{}/messages/{}", enc(t), seg(ch), seg(root));
+        let root_msg = match self.g.get(&base, &[]) {
+            Ok(m) => Some(m),
+            Err(e) if graph::status(&e) == Some(404) => None,
+            Err(e) => return Err(e),
+        };
+        let mut replies = Vec::new();
+        self.g.pages(&format!("{base}/replies?$top=50"), &[], |m| {
+            replies.push(m);
+            Ok(())
+        })?;
+        Ok((root_msg, replies))
+    }
+
+    fn channels(&mut self, t: &str, started: i64, chans: Vec<Value>) -> Result<()> {
+        let before = self.out.failed;
         self.out.dir("channels", "channels")?;
         let mut chan_path: HashMap<String, String> = HashMap::new();
         let mut chan_name: HashMap<String, String> = HashMap::new();
@@ -919,18 +1127,18 @@ impl Run<'_, '_> {
         for (root, (ch, mut msgs)) in threads {
             if since.is_some() {
                 // only the changed messages came back: fetch the whole thread
-                msgs.clear();
-                let base = format!("/teams/{}/channels/{}/messages/{}", enc(t), seg(&ch), seg(&root));
-                match self.g.get(&base, &[]) {
-                    Ok(m) => msgs.push(m),
-                    Err(e) if graph::status(&e) == Some(404) => {}
-                    Err(e) if graph::is_protected_api_denied(&e) => return Err(error(13, PROTECTED_API_HELP)),
-                    Err(e) => return Err(e),
+                match self.thread(t, &ch, &root) {
+                    Ok((r, replies)) => msgs = r.into_iter().chain(replies).collect(),
+                    Err(e) => {
+                        // the base's version is kept below (not in `written`)
+                        let what = format!(
+                            "{} thread {root}",
+                            chan_path.get(&ch).map_or("channels", |p| p.as_str())
+                        );
+                        self.item_failed(&what, e)?;
+                        continue;
+                    }
                 }
-                self.g.pages(&format!("{base}/replies?$top=50"), &[], |m| {
-                    msgs.push(m);
-                    Ok(())
-                })?;
             }
             let Some(cpath) = chan_path.get(&ch).cloned() else {
                 self.ctx
@@ -1026,19 +1234,13 @@ impl Run<'_, '_> {
                 // moved (renamed channel): the thread must be sent again
                 let root = xid.trim_start_matches("t:").to_owned();
                 let Some(ch) = ch else { continue };
-                let base = format!("/teams/{}/channels/{}/messages/{}", enc(t), seg(&ch), seg(&root));
-                let mut msgs = Vec::new();
-                match self.g.get(&base, &[]) {
-                    Ok(m) => msgs.push(m),
-                    Err(e) if graph::status(&e) == Some(404) => {}
-                    Err(e) => return Err(e),
-                }
-                let root_msg = msgs.pop();
-                let mut replies = Vec::new();
-                self.g.pages(&format!("{base}/replies?$top=50"), &[], |m| {
-                    replies.push(m);
-                    Ok(())
-                })?;
+                let (root_msg, mut replies) = match self.thread(t, &ch, &root) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        self.item_failed(&path, e)?;
+                        continue;
+                    }
+                };
                 replies.sort_by(|a, b| a["createdDateTime"].as_str().cmp(&b["createdDateTime"].as_str()));
                 let doc = json!({
                     "channel": {"id": ch, "displayName": chan_name.get(&ch)},
@@ -1049,8 +1251,116 @@ impl Run<'_, '_> {
                 self.out.bytes(&path, &xid, &it, &b)?;
             }
         }
-        self.new.teams_since = Some(started);
+        // with failed threads the next export starts where this one did (they are fetched again)
+        self.new.teams_since = if self.out.failed > before {
+            self.old.teams_since
+        } else {
+            Some(started)
+        };
         Ok(())
+    }
+
+    // ---- Microsoft 365 groups ------------------------------------------------------
+
+    /// Group conversations: one JSON per conversation (its threads with their posts),
+    /// re-read when `lastDeliveredDateTime` changed.
+    fn conversations(&mut self, gid: &str) -> Result<()> {
+        let mut convs = Vec::new();
+        let r = self
+            .g
+            .pages(&format!("/groups/{}/conversations?$top=100", enc(gid)), &[], |c| {
+                convs.push(c);
+                Ok(())
+            });
+        match r {
+            Ok(_) => {}
+            Err(e) if graph::status(&e) == Some(404) => {
+                self.note("no group mailbox");
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        }
+        self.out.dir("conversations", "conversations")?;
+        for cv in convs {
+            let Some(id) = cv["id"].as_str().map(str::to_owned) else {
+                continue;
+            };
+            let xid = format!("cv:{id}");
+            let it = Item {
+                name: item_name(cv["topic"].as_str().unwrap_or_default(), &id, "json"),
+                tag: cv["lastDeliveredDateTime"].as_str().unwrap_or_default().to_owned(),
+                mtime_ns: time_ns(&cv["lastDeliveredDateTime"]),
+            };
+            let path = self.out.claim(format!("conversations/{}", it.name), &xid);
+            if self.out.unchanged(&self.prev, &path, &xid, &it, None)? {
+                continue;
+            }
+            match self.conversation(gid, &id) {
+                Ok(threads) => {
+                    let b = serde_json::to_vec_pretty(&json!({"conversation": cv, "threads": threads}))?;
+                    self.out.bytes(&path, &xid, &it, &b)?;
+                }
+                Err(e) => {
+                    self.item_failed(&path, e)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn conversation(&mut self, gid: &str, cid: &str) -> Result<Vec<Value>> {
+        let mut threads = Vec::new();
+        self.g.pages(
+            &format!("/groups/{}/conversations/{}/threads?$top=50", enc(gid), seg(cid)),
+            &[],
+            |t| {
+                threads.push(t);
+                Ok(())
+            },
+        )?;
+        for t in threads.iter_mut() {
+            let tid = t["id"].as_str().unwrap_or_default().to_owned();
+            let mut posts = Vec::new();
+            self.g.pages(
+                &format!("/groups/{}/threads/{}/posts?$top=50", enc(gid), seg(&tid)),
+                &[],
+                |p| {
+                    posts.push(p);
+                    Ok(())
+                },
+            )?;
+            t["posts"] = json!(posts);
+        }
+        Ok(threads)
+    }
+
+    /// The group calendar. Graph v1.0 documents no application permission for it, so
+    /// a refusal is a note, not a failure (docs/m365.md "Limits").
+    fn group_calendar(&mut self, gid: &str) -> Result<()> {
+        let h = [(
+            "prefer",
+            "outlook.timezone=\"UTC\", IdType=\"ImmutableId\", odata.maxpagesize=100".to_owned(),
+        )];
+        let mut events = Vec::new();
+        let r = self
+            .g
+            .pages(&format!("/groups/{}/calendar/events?$top=100", enc(gid)), &h, |e| {
+                events.push(e);
+                Ok(())
+            });
+        match r {
+            Ok(_) => {}
+            Err(e) if matches!(graph::status(&e), Some(401) | Some(403) | Some(404)) => {
+                self.note("group calendar not readable with application permissions (Graph limitation)");
+                return Ok(());
+            }
+            Err(e) => {
+                self.item_failed("calendar", e)?;
+                return Ok(());
+            }
+        }
+        self.out.dir("calendar", "calendar")?;
+        self.events("calendar", events)
     }
 }
 

@@ -15,6 +15,7 @@ import type { Plugin } from 'vite';
 // The real manifests of the shipped plugins, so the demo's forms and restores match them.
 import pgManifest from '../../plugins/postgresql/manifest.json' with { type: 'json' };
 import truenasManifest from '../../plugins/truenas/manifest.json' with { type: 'json' };
+import m365Manifest from '../../plugins/m365/manifest.json' with { type: 'json' };
 // Phase 13b: the schedule grammar and blackout check the UI uses as well.
 import { blackoutActive, isPaused, parseSchedule, schedulePeriod, validWindow, type BlackoutWindow } from '../src/lib/schedule.ts';
 
@@ -974,6 +975,7 @@ function seed() {
   const pgM = (v: string): Json => withAppliesTo({ ...structuredClone(pgManifest), version: v });
   const pg110 = pluginEntry(pgM('1.1.0'), 'admin', t - 1500, { state: 'pending', current: false, enabled: false, installed_at: null });
   db.plugins.push(pluginEntry(pgM('1.0.0'), 'admin', t - 86400 * 25), pg110, pluginEntry(structuredClone(truenasManifest) as Json, 'admin', t - 86400 * 12));
+  db.plugins.push(pluginEntry(structuredClone(m365Manifest) as Json, 'admin', t - 86400 * 6));
   const sPg = {
     id: nextId(),
     tenant: 'acme',
@@ -995,7 +997,18 @@ function seed() {
       ssh_host: 'nas02.acme.example.com', ssh_port: 22, ssh_user: 'nexusbackup', ssh_host_key: DEMO_HOST_KEY('nas02'), ssh_private_key: 'SECRET', datasets: ['tank/media'], recursive: false, sudo: true, zfs_sudo: true,
     } as Json,
   };
-  db.sources.push(sPg, sNas02);
+  const sM365 = {
+    id: nextId(),
+    tenant: 'globex',
+    kind: 'plugin:m365',
+    name: 'm365-globex',
+    config: {
+      tenant_id: 'globex.onmicrosoft.com', client_id: '3f2a9c71-5d1e-4b8a-9c0d-7e6f5a4b3c21', certificate: 'SECRET', private_key: 'SECRET',
+      exchange: true, onedrive: true, sharepoint: true, teams: true, teams_messages: false, groups: true,
+      sharepoint_host: 'globex.sharepoint.com', onedrive_host: 'globex-my.sharepoint.com',
+    } as Json,
+  };
+  db.sources.push(sPg, sNas02, sM365);
 
   const grp = (tenant: string, source_id: number, policy_id: number, name: string, guests: (number | string)[], auto: Partial<MockGroup> = {}): MockGroup => ({
     id: nextId(), tenant, source_id, policy_id, name, guests, mode: 'explicit', selector: [], exclude: [],
@@ -1148,6 +1161,16 @@ function seed() {
     `snapshot committed: plugin-postgresql-${sPg.id}-shop`,
     `snapshot committed: plugin-postgresql-${sPg.id}-crm`,
   ], 120);
+  // Microsoft 365: two items kept failing after Graph's retries — skipped, the job ends ok with warnings (contract v1.6)
+  const m365User = `plugin-m365-${sM365.id}-u.5b0c2e81-7f3d-4a96-b1e2-0c9d8e7f6a51`;
+  old(addJob('plugin_backup', 'globex', { source_id: sM365.id }, 'scheduler'), day(0, 2), 'ok', [
+    'starting nexus-pluginhost: m365 1.1.0 (sandbox: landlock + seccomp)',
+    `base ${m365User}/${day(1, 2)} (18,422 entries)`,
+    'plugin[warn]: skipped mail/Inbox/Quarterly report ~3f9a0c1d2e4b.eml: GET /v1.0/users/…/messages/…/$value: 500 ErrorInternalServerError',
+    'plugin[warn]: skipped onedrive/Projects/model.xlsx: GET /v1.0/drives/…/items/…/content: 503 serviceNotAvailable',
+    `committed ${m365User}/${day(0, 2)} 18,431 entries (18,190 files, 18,102 unchanged), 0 streams, 2.1 GiB, 88 MiB transferred, 61 MiB new, consistent=true`,
+    `warnings ${m365User}/${day(0, 2)}: 2 items could not be read and are missing from the snapshot: mail/Inbox/Quarterly report ~3f9a0c1d2e4b.eml: 500 ErrorInternalServerError; onedrive/Projects/model.xlsx: 503 serviceNotAvailable`,
+  ], 540, { snapshots: [{ source: m365User, time: day(0, 2), consistent: true, warnings: 2 }], source: m365User, time: day(0, 2), consistent: true, warnings: 2 });
   const running = addJob('offsite', 'acme', {}, 'scheduler', { duration: 240 });
   running.plan = [
     'uploading to s3 nexus-acme/appliance1 (Object Lock, compliance mode)',
@@ -1897,6 +1920,7 @@ on('GET', '/groups', (c) => [200, byTenant(need(c.user), db.groups).map(groupSta
 function hasInventory(src: (typeof db.sources)[number]): boolean {
   return src.kind === 'pve' || src.kind === 'truenas' || (src.kind.startsWith('plugin:') && !!pluginKind(src.kind)?.kind.guests?.list);
 }
+const DEFAULT_OFF = ['license:none', 'site:team'];
 /** Guests of a group as the scheduler resolves them: explicit list, or the inventory (all / tags); exclude wins. */
 function resolveGuests(g: MockGroup): (number | string)[] {
   const ex = new Set((g.exclude ?? []).map(String));
@@ -1904,6 +1928,8 @@ function resolveGuests(g: MockGroup): (number | string)[] {
   const pve = db.sources.find((s) => s.id === g.source_id)?.kind === 'pve';
   return (db.inventory.get(g.source_id) ?? [])
     .filter((r) => r.gone === null && !ex.has(r.guest) && (g.mode === 'all' || r.tags.some((x) => g.selector.includes(x))))
+    // catalog::inventory::DEFAULT_OFF: unlicensed M365 users and team sites only when the selector names the tag
+    .filter((r) => !r.tags.some((x) => DEFAULT_OFF.includes(x) && !g.selector.includes(x)))
     .map((r) => (pve ? Number(r.guest) : r.guest));
 }
 /** Names of the groups protecting `guest` of a source (a plugin group without guests: the whole source). */

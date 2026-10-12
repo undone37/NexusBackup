@@ -244,7 +244,8 @@ fn jobs(c: &Connection, scope: Option<&str>, days: i64, now: i64) -> ApiResult<V
             .unwrap_or(Value::Null);
         let i = match state.as_str() {
             "failed" => 2,
-            _ if result["consistent"] == false => 1,
+            // not point-in-time consistent, or items skipped (plugin contract v1.6)
+            _ if result["consistent"] == false || result["warnings"].as_u64().is_some_and(|n| n > 0) => 1,
             _ => 0,
         };
         tot[i] += 1;

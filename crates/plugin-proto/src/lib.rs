@@ -201,7 +201,20 @@ pub enum Message {
     TaggedGuests {
         list: Vec<TaggedGuest>,
     },
+    // v1.6 (appended)
+    /// Backup only, before `Done`: `count` items could not be read and are missing
+    /// from the snapshot (the plugin skipped them); `samples` names the first few
+    /// with their error. The job ends `ok` with warnings. The SDK sends it only when
+    /// `count > 0`, so plugins without skipped items still run on a v1.5 host.
+    Warnings {
+        count: u64,
+        samples: Vec<String>,
+    },
 }
+
+/// Samples per `Warnings` message and bytes per sample.
+pub const MAX_WARNING_SAMPLES: usize = 20;
+pub const MAX_WARNING_SAMPLE: usize = 1024;
 
 fn bad(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
@@ -290,6 +303,11 @@ pub fn check(m: &Message) -> io::Result<()> {
                 .any(|g| g.tags.len() > MAX_GUEST_TAGS || g.tags.iter().any(|t| t.len() > MAX_TAG)) =>
         {
             Err(bad("too many or too long guest tags"))
+        }
+        Message::Warnings { samples, .. }
+            if samples.len() > MAX_WARNING_SAMPLES || samples.iter().any(|t| t.len() > MAX_WARNING_SAMPLE) =>
+        {
+            Err(bad("too many or too long warning samples"))
         }
         Message::Done { state: Some(s), .. } | Message::Init { state: Some(s), .. } if s.len() > MAX_STATE => {
             Err(bad("state blob too large"))
@@ -645,6 +663,29 @@ mod tests {
         assert!(check(&Message::TaggedGuests { list: vec![t.clone()] }).is_err());
         t.tags = vec!["t".into(); MAX_GUEST_TAGS + 1];
         assert!(check(&Message::TaggedGuests { list: vec![t] }).is_err());
+    }
+
+    /// v1.6 warnings: appended (wire index after `TaggedGuests`; `Done` unchanged), limits hold.
+    #[test]
+    fn warnings_are_appended() {
+        let m = Message::Warnings {
+            count: 3,
+            samples: vec!["mail/x.eml: 500".into()],
+        };
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &m).unwrap();
+        assert_eq!(buf[4], 25, "variant index after TaggedGuests (24)");
+        assert_eq!(read_msg(&mut &buf[..]).unwrap(), m);
+        let many = Message::Warnings {
+            count: 99,
+            samples: vec!["x".into(); MAX_WARNING_SAMPLES + 1],
+        };
+        assert!(check(&many).is_err());
+        let long = Message::Warnings {
+            count: 1,
+            samples: vec!["x".repeat(MAX_WARNING_SAMPLE + 1)],
+        };
+        assert!(check(&long).is_err());
     }
 
     #[test]

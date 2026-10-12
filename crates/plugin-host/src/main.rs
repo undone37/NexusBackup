@@ -3,7 +3,7 @@
 //!
 //! Spawned by the scheduler with a generated 0600 job config (secrets of the
 //! source opened, docs/plugin-system.md). Machine-readable lines on stdout:
-//! `committed <source>/<time>: …`, `inconsistent <source>/<time>: …`,
+//! `committed <source>/<time>: …`, `inconsistent <source>/<time>: …`, `warnings <source>/<time>: <n> …`,
 //! `summary <source>/<time>: …` per guest and `result {json}` (backup);
 //! `restored {json}` (restore); `mount-ready {json}` / `unmounted {json}` (mount).
 //! validate / guests print only their JSON result on stdout (log on stderr).
@@ -283,6 +283,7 @@ fn main() -> Result<()> {
                         "source": r.source, "time": r.time, "base": r.base, "entries": r.entries, "files": r.files,
                         "streams": r.streams, "unchanged": r.unchanged, "bytes": r.bytes,
                         "transferred_bytes": r.transferred, "new_bytes": r.new_bytes, "consistent": r.consistent,
+                        "warnings": r.warnings, "warning_samples": r.warning_samples,
                     })),
                     Err(e) => {
                         out_line(&format!(

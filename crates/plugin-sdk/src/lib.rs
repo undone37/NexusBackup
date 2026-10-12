@@ -260,15 +260,24 @@ pub fn run_with<P: Plugin>(mut p: P, r: Box<dyn Read + Send>, w: Box<dyn Write +
         }),
         Op::Backup => {
             let mut sink = Sink::new(chan.clone(), ctx.base_time.is_some());
-            p.backup(&ctx, &mut sink).map(|mut b| {
+            p.backup(&ctx, &mut sink).and_then(|mut b| {
                 if sink.inconsistent > 0 {
                     b.consistent = false;
                 }
-                Message::Done {
+                if sink.failed > 0 {
+                    // v1.6: only sent when needed, so other plugins still run on a v1.5 host
+                    chan.borrow_mut()
+                        .send(&Message::Warnings {
+                            count: sink.failed,
+                            samples: std::mem::take(&mut sink.failed_samples),
+                        })
+                        .map_err(|e| anyhow::anyhow!("host connection: {e}"))?;
+                }
+                Ok(Message::Done {
                     state: b.state,
                     consistent: b.consistent,
                     summary: b.summary,
-                }
+                })
             })
         }
         Op::Restore => {

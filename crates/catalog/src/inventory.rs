@@ -12,6 +12,11 @@ use std::collections::HashSet;
 pub const MODES: &[&str] = &["explicit", "all", "tags"];
 /// Tags per guest kept in the inventory.
 pub const MAX_TAGS: usize = 64;
+/// Guests with one of these tags are left out of `all` and `tags` groups unless the
+/// group's selector names the tag: Microsoft 365 users without a license (usually
+/// no mailbox or OneDrive) and team/group sites (backed up by their team or group
+/// guest, so nothing is backed up twice).
+pub const DEFAULT_OFF: &[&str] = &["license:none", "site:team"];
 
 /// One listed guest.
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -52,7 +57,8 @@ pub fn auto(mode: &str) -> bool {
 
 /// Guests of a group in the shape of `groups.guests` (vmids as numbers for `pve`
 /// sources, strings otherwise): `explicit` → `guests`; `all` → the source's
-/// present inventory guests; `tags` → those with any tag of `selector`.
+/// present inventory guests; `tags` → those with any tag of `selector`; both
+/// without guests carrying a [`DEFAULT_OFF`] tag the selector does not name.
 /// `exclude` always wins. An unknown mode resolves to nothing (fail closed).
 pub fn resolve(
     c: &Connection,
@@ -82,7 +88,13 @@ pub fn resolve(
     let mut out: Vec<Value> = rows
         .into_iter()
         .filter(|(g, _)| !exclude.contains(g))
-        .filter(|(_, tags)| mode == "all" || strings(tags).iter().any(|t| want.contains(t)))
+        .filter(|(_, tags)| {
+            let tags = strings(tags);
+            let off = tags
+                .iter()
+                .any(|t| DEFAULT_OFF.contains(&t.as_str()) && !want.contains(t));
+            !off && (mode == "all" || tags.iter().any(|t| want.contains(t)))
+        })
         .filter_map(|(g, _)| {
             if kind == "pve" {
                 g.parse::<u32>().ok().map(Value::from)
@@ -209,13 +221,28 @@ mod tests {
         update(
             &c,
             2,
-            &[item("user-a", &["type:user"]), item("site-b", &["type:site"])],
+            &[
+                item("user-a", &["type:user"]),
+                item("site-b", &["type:site"]),
+                item("user-c", &["type:user", "license:none"]),
+                item("site-d", &["type:site", "site:team"]),
+            ],
             10,
         )
         .unwrap();
+        let m = |mode: &str, sel: &str| resolve(&c, 2, "plugin:m365", mode, "[]", sel, "[]").unwrap();
+        assert_eq!(m("tags", r#"["type:user"]"#), vec![json!("user-a")]);
+        // unlicensed users and team sites only when the selector names their tag
+        assert_eq!(m("all", "[]"), vec![json!("site-b"), json!("user-a")]);
         assert_eq!(
-            resolve(&c, 2, "plugin:m365", "tags", "[]", r#"["type:user"]"#, "[]").unwrap(),
-            vec![json!("user-a")]
+            m("tags", r#"["type:user","license:none"]"#),
+            vec![json!("user-a"), json!("user-c")]
+        );
+        assert_eq!(m("tags", r#"["site:team"]"#), vec![json!("site-d")]);
+        assert_eq!(
+            resolve(&c, 2, "plugin:m365", "explicit", r#"["user-c"]"#, "[]", "[]").unwrap(),
+            vec![json!("user-c")],
+            "explicit selection is taken as is"
         );
     }
 

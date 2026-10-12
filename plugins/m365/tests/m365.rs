@@ -169,6 +169,7 @@ fn guest_of(kind: &str, id: &str) -> String {
     match kind {
         "u" => m365_plugin::Guest::User(id.into()).id(),
         "t" => m365_plugin::Guest::Team(id.into()).id(),
+        "g" => m365_plugin::Guest::Group(id.into()).id(),
         _ => m365_plugin::site_guest(id).unwrap().id(),
     }
 }
@@ -250,7 +251,8 @@ fn token_flow_validation_and_guests() {
     let has = |id: &str| list.iter().any(|x| x["id"] == id);
     assert!(has(&guest_of("u", &ids.alice)) && has(&guest_of("u", &ids.carol)));
     assert!(has(&guest_of("s", &ids.marketing)) && has(&guest_of("t", &ids.team)));
-    assert_eq!(list.len(), 3 + 2 + 1, "no guest users, no personal sites: {g}");
+    // 3 users, 3 sites (incl. the team's), 1 team, 1 group (the team's)
+    assert_eq!(list.len(), 3 + 3 + 1 + 1, "no guest users, no personal sites: {g}");
     // v1.5 tags (auto-protect): type per object, unlicensed users
     let tags = |id: &str| list.iter().find(|x| x["id"] == id).unwrap()["tags"].clone();
     assert_eq!(tags(&guest_of("u", &ids.alice)), serde_json::json!(["type:user"]));
@@ -331,8 +333,8 @@ fn mailbox_and_onedrive_full_incremental_and_formats() {
     );
     assert_eq!(
         m.count2("/messages/delta?", "token="),
-        3,
-        "every folder continued from its delta link"
+        4,
+        "every folder (3 + Recoverable Items Deletions) continued from its delta link"
     );
     assert_eq!(m.count2("/root/delta?", "token="), 1);
     assert_eq!(
@@ -766,4 +768,224 @@ fn sandboxed_binary() {
     let s = snapshot(&h, &source, b2.time);
     assert_eq!(s["onedrive/bob.txt"].as_deref(), Some(&b"bob's file"[..]));
     let _ = b1;
+}
+
+/// Items that keep failing after Graph's retries are skipped and reported (contract
+/// v1.6 `Warnings`): the snapshot commits, the failed items are asked for again next
+/// time; a folder whose listing fails keeps its base items.
+#[test]
+fn failed_items_are_skipped_and_reported() {
+    let m = Mock::start();
+    let ids = seed(&m);
+    let h = host();
+    let cfg = m.config();
+    let guest = guest_of("u", &ids.alice);
+    {
+        let mut t = m.lock();
+        t.broken.insert(ids.msgs[2].clone());
+        t.broken.insert(ids.report.clone());
+    }
+    let b1 = h.backup(&cfg, Some(&guest)).unwrap();
+    assert_eq!(b1.warnings, 2, "{b1:?}");
+    assert!(
+        b1.warning_samples.iter().any(|s| s.starts_with("mail/Inbox/Lunch? ~"))
+            && b1
+                .warning_samples
+                .iter()
+                .any(|s| s.starts_with("onedrive/Documents/report.docx: ")),
+        "{:?}",
+        b1.warning_samples
+    );
+    assert!(b1.summary.contains("2 items could not be read"), "{}", b1.summary);
+    assert!(h
+        .log()
+        .iter()
+        .any(|l| l.starts_with(&format!("warnings {}/{}: 2 items", src(&guest), b1.time))));
+    let s1 = snapshot(&h, &src(&guest), b1.time);
+    assert!(find(&s1, "mail/Inbox/", "Lunch?").is_none() && find(&s1, "mail/Inbox/", "Hello ~").is_some());
+    assert!(!s1.contains_key("onedrive/Documents/report.docx") && s1.contains_key("onedrive/Documents/Deep/notes.txt"));
+
+    // fixed: the next (incremental) backup fetches exactly the skipped items again
+    m.lock().broken.clear();
+    // and the calendar listing fails now: its events of the base are kept
+    m.lock().deny.insert("/calendars/cal-".into());
+    m.clear_requests();
+    let b2 = h.backup(&cfg, Some(&guest)).unwrap();
+    assert_eq!(b2.warnings, 1, "{b2:?}");
+    assert!(
+        b2.warning_samples[0].starts_with("calendar/Calendar: "),
+        "{:?}",
+        b2.warning_samples
+    );
+    let s2 = snapshot(&h, &src(&guest), b2.time);
+    assert!(find(&s2, "mail/Inbox/", "Lunch?").is_some());
+    assert_eq!(s2["onedrive/Documents/report.docx"].as_deref(), Some(&b"report v1"[..]));
+    assert!(
+        find(&s2, "calendar/Calendar/", "Planning").is_some(),
+        "base events kept"
+    );
+    assert_eq!(m.count("/$value"), 1, "only the skipped message");
+    assert_eq!(m.count("/_dl/"), 1, "only the skipped file");
+    m.lock().deny.clear();
+    let b3 = h.backup(&cfg, Some(&guest)).unwrap();
+    assert_eq!((b3.warnings, b3.transferred), (0, 0), "{b3:?}");
+}
+
+#[test]
+fn recoverable_items_backup_and_restore() {
+    let m = Mock::start();
+    let ids = seed(&m);
+    let h = host();
+    let cfg = m.config();
+    let guest = guest_of("u", &ids.alice);
+    let rec = m.lock().recoverable(&ids.alice);
+    m.lock().add_message(&ids.alice, &rec, "Purged contract", "gone?");
+    let b = h.backup(&cfg, Some(&guest)).unwrap();
+    let s = snapshot(&h, &src(&guest), b.time);
+    let (p, _) = find(&s, "recoverable/Deletions/", "Purged contract").unwrap();
+    assert!(p.ends_with(".eml"), "{p}");
+    assert!(find(&s, "mail/", "Purged contract").is_none(), "not under mail/");
+    let r = h
+        .restore(
+            &cfg,
+            &src(&guest),
+            b.time,
+            "to_original",
+            json!({"paths": ["recoverable"], "folder": "Back"}),
+        )
+        .unwrap();
+    assert!(r.summary.contains("1 deleted messages"), "{}", r.summary);
+    let t = m.lock();
+    let back = t.folder_by_name(&ids.alice, "Back").unwrap().id.clone();
+    let f = t
+        .folders
+        .iter()
+        .find(|f| f.parent.as_deref() == Some(&back) && f.name == "Restored deleted items")
+        .unwrap();
+    assert!(t
+        .messages
+        .iter()
+        .any(|x| x.folder == f.id && x.subject == "Purged contract"));
+}
+
+#[test]
+fn groups_guests_backup_and_restore() {
+    let m = Mock::start();
+    let ids = seed(&m);
+    let (sales, conv) = {
+        let mut t = m.lock();
+        let sales = t.add_group("Sales");
+        let conv = t.add_conversation(&sales, "Q4 pipeline", &["numbers?", "attached"]);
+        t.add_conversation(&sales, "Offsite", &["where"]);
+        t.add_group_event(&sales, "Kickoff");
+        let d = t.group(&sales).drive.clone();
+        let r = t.drive_root(&d);
+        t.add_item(&d, &r, "deals.xlsx", Some(b"deals".to_vec()));
+        (sales, conv)
+    };
+    let h = host();
+    let cfg = m.config();
+    // guests: groups (team-backed too) and their sites tagged site:team
+    let g = h.guests(&cfg).unwrap();
+    let list = g["guests"].as_array().unwrap();
+    let tags = |id: &str| list.iter().find(|x| x["id"] == id).map(|x| x["tags"].clone());
+    assert_eq!(tags(&guest_of("g", &sales)), Some(json!(["type:group"])));
+    assert_eq!(tags(&guest_of("g", &ids.team)), Some(json!(["type:group"])));
+    let site_of = |gid: &str| guest_of("s", &m.lock().group(gid).site);
+    assert_eq!(tags(&site_of(&sales)), Some(json!(["type:site", "site:team"])));
+    assert_eq!(tags(&site_of(&ids.team)), Some(json!(["type:site", "site:team"])));
+    assert_eq!(tags(&guest_of("s", &ids.marketing)), Some(json!(["type:site"])));
+
+    let guest = guest_of("g", &sales);
+    let b1 = h.backup(&cfg, Some(&guest)).unwrap();
+    assert!(b1.summary.contains("group calendar not readable"), "{}", b1.summary);
+    let s1 = snapshot(&h, &src(&guest), b1.time);
+    let (p, doc) = find(&s1, "conversations/", "Q4 pipeline ~").unwrap();
+    assert!(p.ends_with(".json"), "{p}");
+    let doc: Value = serde_json::from_slice(doc).unwrap();
+    assert_eq!(doc["conversation"]["id"], conv.as_str());
+    assert_eq!(doc["threads"][0]["posts"].as_array().unwrap().len(), 2);
+    assert_eq!(s1["files/deals.xlsx"].as_deref(), Some(&b"deals"[..]));
+    assert!(!s1.keys().any(|k| k.starts_with("calendar/")));
+
+    // a new post: only that conversation is read again; the calendar once Graph allows it
+    m.lock().add_post(&conv, "closed!");
+    m.lock().group_calendar = true;
+    m.clear_requests();
+    let b2 = h.backup(&cfg, Some(&guest)).unwrap();
+    assert_eq!(m.count("/posts"), 1, "unchanged conversation not re-read");
+    let s2 = snapshot(&h, &src(&guest), b2.time);
+    let (_, doc) = find(&s2, "conversations/", "Q4 pipeline ~").unwrap();
+    let doc: Value = serde_json::from_slice(doc).unwrap();
+    assert_eq!(doc["threads"][0]["posts"].as_array().unwrap().len(), 3);
+    assert!(find(&s2, "calendar/", "2026-11-02 Kickoff").is_some());
+
+    // restore: files into a new folder of the group's drive; conversations are download-only
+    let r = h
+        .restore(&cfg, &src(&guest), b2.time, "to_original", json!({"folder": "Back"}))
+        .unwrap();
+    assert!(
+        r.summary.contains("1 files") && r.summary.contains("download only"),
+        "{}",
+        r.summary
+    );
+    let d = m.lock().group(&sales).drive.clone();
+    assert!(m.lock().tree(&d).iter().any(|x| x.0 == "Back/deals.xlsx"));
+
+    // a team's group guest: mailbox only, the files belong to the team guest
+    let tg = guest_of("g", &ids.team);
+    let b = h.backup(&cfg, Some(&tg)).unwrap();
+    assert!(b.summary.contains("files are backed up with the team"), "{}", b.summary);
+    assert!(!snapshot(&h, &src(&tg), b.time).keys().any(|k| k.starts_with("files")));
+    let mut c = cfg.clone();
+    c["groups"] = json!(false);
+    assert!(h.backup(&c, Some(&guest)).is_err());
+}
+
+#[test]
+fn private_channel_sites_under_the_team() {
+    let m = Mock::start();
+    let ids = seed(&m);
+    let (_, d) = m.lock().add_channel(&ids.team, "Secret", "private");
+    {
+        let mut t = m.lock();
+        let r = t.drive_root(&d);
+        t.add_item(&d, &r, "salaries.csv", Some(b"a,b".to_vec()));
+    }
+    let h = host();
+    let mut cfg = m.config();
+    cfg["teams_messages"] = json!(false);
+    let g = h.guests(&cfg).unwrap();
+    let site = {
+        let t = m.lock();
+        t.sites.iter().find(|s| s.drives.contains(&d)).unwrap().id.clone()
+    };
+    let entry = g["guests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["id"] == guest_of("s", &site))
+        .cloned()
+        .unwrap();
+    assert_eq!(entry["tags"], json!(["type:site", "site:team"]), "{entry}");
+
+    let guest = guest_of("t", &ids.team);
+    let b = h.backup(&cfg, Some(&guest)).unwrap();
+    let s = snapshot(&h, &src(&guest), b.time);
+    assert_eq!(s["channel-files/Secret/salaries.csv"].as_deref(), Some(&b"a,b"[..]));
+    assert_eq!(s["files/General/minutes.md"].as_deref(), Some(&b"# minutes"[..]));
+    // restore into the private channel's own site, never into the team's library
+    let r = h
+        .restore(
+            &cfg,
+            &src(&guest),
+            b.time,
+            "to_original",
+            json!({"paths": ["channel-files"], "folder": "Back"}),
+        )
+        .unwrap();
+    assert!(r.summary.contains("1 files"), "{}", r.summary);
+    let t = m.lock();
+    assert!(t.tree(&d).iter().any(|x| x.0 == "Back/salaries.csv"));
+    assert!(!t.tree(&t.team(&ids.team).drive).iter().any(|x| x.0.starts_with("Back")));
 }

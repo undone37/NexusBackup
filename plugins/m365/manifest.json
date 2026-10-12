@@ -1,13 +1,13 @@
 {
   "id": "m365",
   "name": "Microsoft 365",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "nexusbackup",
   "api": 1,
   "kinds": [
     {
       "kind": "m365",
-      "title": "Microsoft 365 tenant (Exchange, OneDrive, SharePoint, Teams)",
+      "title": "Microsoft 365 tenant (Exchange, OneDrive, SharePoint, Teams, Groups)",
       "config_schema": {
         "type": "object",
         "required": ["tenant_id", "client_id", "certificate", "private_key"],
@@ -42,6 +42,11 @@
             "type": "boolean",
             "title": "Teams: channel messages (protected Microsoft API, needs Microsoft's approval)",
             "default": false
+          },
+          "groups": {
+            "type": "boolean",
+            "title": "Microsoft 365 groups: conversations, calendar, files (needs Group.Read.All)",
+            "default": true
           },
           "teams_export_model": {
             "type": "string",
@@ -85,13 +90,13 @@
         { "host": "/sharepoint_host", "port": "/port", "default_port": 443, "proto": "tcp" },
         { "host": "/onedrive_host", "port": "/port", "default_port": 443, "proto": "tcp" }
       ],
-      "guests": { "title": "Users (mailbox + OneDrive), sites and teams", "list": true },
+      "guests": { "title": "Users (mailbox + OneDrive), sites, teams and Microsoft 365 groups", "list": true },
       "backup": { "incremental": true, "consistent": "item" },
       "restores": [
-        { "id": "download", "title": "Download (mail .eml, events .ics, contacts .vcf, files, threads .json)" },
+        { "id": "download", "title": "Download (mail .eml, events .ics, contacts .vcf, files, threads and conversations .json)" },
         {
           "id": "to_original",
-          "title": "Restore to the original user / site / team (into a new folder)",
+          "title": "Restore to the original user / site / team / group (into a new folder; group conversations: download only)",
           "params_schema": {
             "type": "object",
             "properties": {
@@ -111,14 +116,14 @@
         },
         {
           "id": "to_other",
-          "title": "Restore to another user / site / team (into a new folder)",
+          "title": "Restore to another user / site / team / group (into a new folder)",
           "params_schema": {
             "type": "object",
             "required": ["target"],
             "properties": {
               "target": {
                 "type": "string",
-                "title": "Target: user (UPN or id), site (URL or id) or team (id or name)",
+                "title": "Target: user (UPN or id), site (URL or id), team or group (id or name)",
                 "maxLength": 1024
               },
               "paths": {
