@@ -22,6 +22,9 @@ const RESTORE_KINDS: &[&str] = &[
     "restore_files",
     "plugin_restore",
     "plugin_mount",
+    // Phase 17d: browse the offsite copy, fetch a snapshot back for a restore
+    "offsite_list",
+    "offsite_restore",
 ];
 /// Kinds only an admin may request (they change software or trust on a host).
 const ADMIN_KINDS: &[&str] = &["agent_update", "agent_enroll", "agent_renew"];
@@ -187,6 +190,29 @@ struct PluginRestoreP {
     /// plugin_mount: 1..=1440
     #[serde(default, skip_serializing_if = "Option::is_none")]
     minutes: Option<u64>,
+}
+
+/// `offsite_restore`: fetch one offsite-only snapshot back into the store.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OffsiteRestoreP {
+    source: String,
+    time: i64,
+}
+
+/// The tenant has an offsite target (`tenants.offsite.remote`).
+fn has_offsite(st: &St, tenant: &str) -> ApiResult<()> {
+    let o: Option<String> = st
+        .cat
+        .conn()
+        .query_row("SELECT offsite FROM tenants WHERE name = ?1", [tenant], |r| r.get(0))
+        .optional()?;
+    let o: Value = o.and_then(|o| serde_json::from_str(&o).ok()).unwrap_or_default();
+    if o["remote"].is_object() {
+        Ok(())
+    } else {
+        Err(ApiError::bad("tenant: has no offsite target"))
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -431,6 +457,33 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
             }
             json!(r)
         }
+        "offsite_list" => {
+            let _: MaintP = parse(p)?;
+            has_offsite(st, tenant)?;
+            json!({})
+        }
+        "offsite_restore" => {
+            let r: OffsiteRestoreP = parse(p)?;
+            validate::source_ref(&r.source)?;
+            has_offsite(st, tenant)?;
+            let row: Option<(bool, bool)> = st
+                .cat
+                .conn()
+                .query_row(
+                    "SELECT local, offsite FROM snapshots WHERE tenant = ?1 AND source = ?2 AND time = ?3",
+                    params![tenant, r.source, r.time],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            match row {
+                None | Some((_, false)) => {
+                    return Err(ApiError(StatusCode::NOT_FOUND, "no such offsite snapshot".into()))
+                }
+                Some((true, _)) => return Err(ApiError::conflict("the snapshot is in the local store already")),
+                Some((false, true)) => {}
+            }
+            json!(r)
+        }
         "offsite" | "retention" | "gc" | "verify" => {
             let m: MaintP = parse(p)?;
             if let Some(s) = &m.source {
@@ -542,7 +595,9 @@ fn job_json(r: &catalog::rusqlite::Row, with_log: bool) -> catalog::rusqlite::Re
     let p: String = r.get(3)?;
     let mut v = json!({
         "id": r.get::<_, i64>(0)?, "kind": r.get::<_, String>(1)?, "tenant": r.get::<_, String>(2)?,
-        "params": serde_json::from_str::<Value>(&p).unwrap_or_default(), "state": r.get::<_, String>(4)?,
+        // sealed values (an `offsite_attach` recovery key until the scheduler takes it) never leave
+        "params": crate::quorum::redact(serde_json::from_str::<Value>(&p).unwrap_or_default()),
+        "state": r.get::<_, String>(4)?,
         "requested_by": r.get::<_, String>(5)?, "created": r.get::<_, i64>(6)?,
         "started": r.get::<_, Option<i64>>(7)?, "finished": r.get::<_, Option<i64>>(8)?,
         "result": r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),

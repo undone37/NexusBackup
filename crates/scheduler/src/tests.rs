@@ -1899,6 +1899,8 @@ mod expiry;
 mod forward;
 /// Phase 15c legal holds (retention, orphan sweep, delete, offsite config, advisories).
 mod holds;
+/// Phase 17d offsite in the UI (list, fetch back, attach an offsite copy).
+mod offsite_ui;
 /// Phase 14e scheduled reports.
 mod report_mail;
 /// Phase 15b restore to a host (VM/CT files through a staging tar).

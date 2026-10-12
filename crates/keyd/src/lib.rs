@@ -210,6 +210,90 @@ pub fn import_escrow(dir: &Path, files: &[(String, Vec<u8>)]) -> io::Result<()> 
     Ok(())
 }
 
+/// Upper bound for an `attach-escrow` body (recovery key + escrow files).
+pub const MAX_ATTACH: usize = 256 << 10;
+
+/// Attach an offsite copy to a running appliance (web UI, docs/control-plane.md
+/// "Attach an offsite copy"): the escrowed `kek.recovery` of the *old*
+/// appliance is opened with its recovery key, which unwraps the tenant's DEKs;
+/// they are re-wrapped under this appliance's KEK. Nothing of the old KEK or
+/// the recovery key is stored. Refused if the tenant already has other keys
+/// here or was replicated; idempotent for the same keys. Returns the versions.
+pub fn attach_escrow(
+    dir: &Path,
+    tenant: &str,
+    recovery_key: &str,
+    files: &[(String, Vec<u8>)],
+) -> io::Result<Vec<u32>> {
+    let td = tenant_dir(dir, tenant)?;
+    let blob = files
+        .iter()
+        .find(|(n, _)| n == "kek.recovery")
+        .ok_or_else(|| err(io::ErrorKind::InvalidInput, "escrow has no kek.recovery"))?;
+    let rk = parse_recovery_key(recovery_key)?;
+    let old_kek = Zeroizing::new(unwrap_key(&rk, &blob.1, "kek-recovery").map_err(|_| {
+        err(
+            io::ErrorKind::PermissionDenied,
+            "the recovery key does not open the escrowed KEK",
+        )
+    })?);
+    let prefix = format!("tenants/{tenant}/dek.");
+    let mut deks = Vec::new();
+    for (name, bytes) in files.iter().filter(|(n, _)| n != "kek.recovery") {
+        let v: u32 = name
+            .strip_prefix(&prefix)
+            .and_then(|v| v.parse().ok())
+            .ok_or_else(|| err(io::ErrorKind::InvalidInput, format!("unexpected escrow file {name:?}")))?;
+        deks.push((v, Zeroizing::new(unwrap_key(&old_kek, bytes, &label(tenant, v))?)));
+    }
+    if deks.is_empty() {
+        return Err(err(
+            io::ErrorKind::NotFound,
+            format!("escrow has no keys of tenant {tenant}"),
+        ));
+    }
+    if td.join(ORIGIN).exists() {
+        return Err(err(
+            io::ErrorKind::PermissionDenied,
+            format!("tenant {tenant} is replicated from a primary"),
+        ));
+    }
+    let have = versions(dir, tenant)?;
+    let existing = if have.is_empty() {
+        vec![]
+    } else {
+        tenant_deks(dir, tenant)?
+    };
+    for (v, k) in &existing {
+        if !deks.iter().any(|(x, n)| x == v && n[..] == k[..]) {
+            return Err(err(
+                io::ErrorKind::AlreadyExists,
+                format!("tenant {tenant} has other keys on this appliance (DEK v{v})"),
+            ));
+        }
+    }
+    let kek = unseal(dir)?;
+    fs::create_dir_all(&td)?;
+    for (v, k) in &deks {
+        if !have.contains(v) {
+            write_atomic(&td.join(format!("dek.{v}")), &wrap_key(&kek, k, &label(tenant, *v)))?;
+        }
+    }
+    versions(dir, tenant)
+}
+
+/// Encodes escrow files like the `escrow` answer (see [`parse_escrow`]).
+pub fn encode_escrow(files: &[(String, Vec<u8>)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (name, bytes) in files {
+        out.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+        out.extend_from_slice(bytes);
+    }
+    out
+}
+
 // ---------------------------------------------------------------- replication (docs/replication.md §5)
 
 /// X25519 secret key of this keyd for receiving DEK exports, wrapped under the KEK.
@@ -411,6 +495,8 @@ fn peer_uid(s: &UnixStream) -> io::Result<u32> {
 /// - `replica-pubkey\n` → 32-byte X25519 public key for DEK exports (docs/replication.md)
 /// - `export-for <tenant> <peer-pubkey hex> <quorum id>\n` → DEK export sealed to that key
 /// - `import-sealed <tenant> <origin> <len>\n` + `len` bytes → N x u32 LE versions now present
+/// - `attach-escrow <tenant> <len>\n` + `len` bytes (recovery key line, then escrow files
+///   encoded like the `escrow` answer) → N x u32 LE versions now present ([`attach_escrow`])
 ///
 /// Any error closes the connection without an answer.
 // ponytail: sequential accept loop; requests only happen at chunkstore start.
@@ -436,26 +522,33 @@ fn handle(mut s: UnixStream, dir: &Path, allow_uid: u32) -> io::Result<()> {
     let mut r = BufReader::new(&s);
     let mut line = String::new();
     (&mut r).take(256).read_line(&mut line)?;
-    let body = match body_len(&line)? {
+    // zeroized: an `attach-escrow` body carries the recovery key
+    let body = Zeroizing::new(match body_len(&line)? {
         Some(n) => {
             let mut b = vec![0u8; n];
             r.read_exact(&mut b)?;
             b
         }
         None => Vec::new(),
-    };
+    });
     s.write_all(&answer_with_body(dir, &line, &body)?)
 }
 
-/// `import-sealed …` carries a body of the length given last on the line.
+/// `import-sealed …` and `attach-escrow …` carry a body of the length given last on the line.
 fn body_len(line: &str) -> io::Result<Option<usize>> {
-    match line.trim_end_matches('\n').strip_prefix("import-sealed ") {
+    let line = line.trim_end_matches('\n');
+    let (rest, max) = match (line.strip_prefix("import-sealed "), line.strip_prefix("attach-escrow ")) {
+        (Some(r), _) => (Some(r), MAX_EXPORT),
+        (_, Some(r)) => (Some(r), MAX_ATTACH),
+        _ => (None, 0),
+    };
+    match rest {
         Some(rest) => {
             let n: usize = rest
                 .rsplit(' ')
                 .next()
                 .and_then(|n| n.parse().ok())
-                .filter(|n| (1..=MAX_EXPORT).contains(n))
+                .filter(|n| (1..=max).contains(n))
                 .ok_or_else(|| err(io::ErrorKind::InvalidInput, "invalid body length"))?;
             Ok(Some(n))
         }
@@ -503,16 +596,22 @@ pub fn answer_with_body(dir: &Path, line: &str, body: &[u8]) -> io::Result<Zeroi
         eprintln!("keyd: imported DEKs of tenant {tenant} from {origin}: versions {vs:?}");
         return Ok(Zeroizing::new(vs.iter().flat_map(|v| v.to_le_bytes()).collect()));
     }
+    if let Some(rest) = line.strip_prefix("attach-escrow ") {
+        let [tenant, _len] = rest.split(' ').collect::<Vec<_>>()[..] else {
+            return Err(err(io::ErrorKind::InvalidInput, "attach-escrow <tenant> <len>"));
+        };
+        let nl = body
+            .iter()
+            .position(|b| *b == b'\n')
+            .ok_or_else(|| err(io::ErrorKind::InvalidInput, "attach-escrow: no recovery key line"))?;
+        let rk = Zeroizing::new(String::from_utf8_lossy(&body[..nl]).into_owned());
+        let vs = attach_escrow(dir, tenant, &rk, &parse_escrow(&body[nl + 1..])?)?;
+        eprintln!("keyd: attached DEKs of tenant {tenant} from an offsite escrow: versions {vs:?}");
+        return Ok(Zeroizing::new(vs.iter().flat_map(|v| v.to_le_bytes()).collect()));
+    }
     let tenant = match line.split_once(' ') {
         Some(("escrow", t)) => {
-            let mut out = Zeroizing::new(Vec::new());
-            for (name, bytes) in export_escrow(dir, t)? {
-                out.extend_from_slice(&(name.len() as u16).to_be_bytes());
-                out.extend_from_slice(name.as_bytes());
-                out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
-                out.extend_from_slice(&bytes);
-            }
-            return Ok(out);
+            return Ok(Zeroizing::new(encode_escrow(&export_escrow(dir, t)?)));
         }
         Some(("ensure", t)) => {
             if versions(dir, t)?.is_empty() {
@@ -598,6 +697,23 @@ pub fn request_export(socket: &Path, tenant: &str, peer_pub: &[u8; 32], quorum_i
         &format!("export-for {tenant} {} {quorum_id}", hex(peer_pub)),
         &[],
     )
+}
+
+/// nexus-offsite `attach`: hands the escrow fetched from the offsite target and
+/// the recovery key typed in the web UI to keyd ([`attach_escrow`]).
+pub fn request_attach(
+    socket: &Path,
+    tenant: &str,
+    recovery_key: &str,
+    files: &[(String, Vec<u8>)],
+) -> io::Result<Vec<u32>> {
+    let mut body = Zeroizing::new(format!("{}\n", recovery_key.trim()).into_bytes());
+    body.extend_from_slice(&encode_escrow(files));
+    let b = request_raw(socket, &format!("attach-escrow {tenant} {}", body.len()), &body)?;
+    if b.len() % 4 != 0 {
+        return Err(err(io::ErrorKind::InvalidData, "malformed keyd answer"));
+    }
+    Ok(b.chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect())
 }
 
 /// Secondary (nexus-replica): import a DEK export received from the primary.
@@ -686,6 +802,64 @@ mod tests {
         let esc = fetch_escrow(&sock, "newco").unwrap();
         assert_eq!(esc, export_escrow(d.path(), "newco").unwrap());
         srv.join().unwrap();
+    }
+
+    /// Attach (web UI DR): the old appliance's escrow + its recovery key into a
+    /// running appliance with its own KEK, over the socket.
+    #[test]
+    fn attach_escrow_rewraps_under_local_kek() {
+        let a = tempfile::tempdir().unwrap();
+        let rk = init(a.path()).unwrap();
+        create_tenant(a.path(), "acme").unwrap();
+        rotate_tenant(a.path(), "acme").unwrap();
+        let deks = |d: &Path| -> Vec<(u32, [u8; 32])> {
+            tenant_deks(d, "acme")
+                .unwrap()
+                .into_iter()
+                .map(|(v, k)| (v, *k))
+                .collect()
+        };
+        let old = deks(a.path());
+        let esc = export_escrow(a.path(), "acme").unwrap();
+
+        let b = tempfile::tempdir().unwrap();
+        init(b.path()).unwrap();
+        create_tenant(b.path(), "other").unwrap();
+        let sock = b.path().join("k.sock");
+        let me = unsafe { libc::getuid() };
+        let l = UnixListener::bind(&sock).unwrap();
+        let dir = b.path().to_owned();
+        let srv = std::thread::spawn(move || {
+            for _ in 0..4 {
+                let _ = handle(l.accept().unwrap().0, &dir, me);
+            }
+        });
+        assert!(
+            request_attach(&sock, "acme", &format_recovery_key(&[9; 32]), &esc).is_err(),
+            "wrong recovery key"
+        );
+        assert!(
+            request_attach(&sock, "other", &rk, &esc).is_err(),
+            "files of another tenant"
+        );
+        assert_eq!(request_attach(&sock, "acme", &rk, &esc).unwrap(), vec![1, 2]);
+        assert_eq!(
+            request_attach(&sock, "acme", &rk, &esc).unwrap(),
+            vec![1, 2],
+            "idempotent"
+        );
+        srv.join().unwrap();
+        assert_eq!(old, deks(b.path()), "same DEKs, wrapped under b's KEK");
+        assert_ne!(
+            fs::read(a.path().join("kek.recovery")).unwrap(),
+            fs::read(b.path().join("kek.recovery")).unwrap(),
+            "b keeps its own recovery escrow"
+        );
+        // a tenant with different local keys is refused
+        let c = tempfile::tempdir().unwrap();
+        init(c.path()).unwrap();
+        create_tenant(c.path(), "acme").unwrap();
+        assert!(attach_escrow(c.path(), "acme", &rk, &esc).is_err());
     }
 
     #[test]
