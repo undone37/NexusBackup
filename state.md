@@ -300,3 +300,12 @@ Six parallel worktree agents (each merges main into its branch before reporting)
 - [x] 15a+15d restore options + consistency — merged as catalog v20
 - [x] 15e+15f selection + agents — merged as catalog v21 (exclude disks placeholder/omit, file filters, agent cert renewal + re-enroll, limits, parallel guests)
 - [ ] labs (PVE e2e incl. legal-hold, forwarding, console gate, plugins, linux agent xhost), screenshots, CI, release 0.1.0-alpha (Phases 13–15)
+
+## Phase 16 — Hardware + inbound firewall (2026-10-12)
+- [x] 16c inbound firewall per service — merged (settings `inbound`, nft sets in_web/in_icmp, blocked attempts, `nexus-setup reset-firewall`)
+- [x] 16a/16b disks, SMART, alerts, mdadm + XFS data array — merged (`nexus-disks` helper, Hardware page; metadata tier deferred)
+- [x] VM finding: outgoing MLD reports were dropped + drop log flooded the console → allowed, kernel.printk 3 4 1 7
+- [ ] VM labs: m5-api `firewall` step, `lab/appliance/disks.sh` (EXTRA_DISKS=5 NVME=1)
+
+## Phase 17 — Offsite, replication, vault, tenants (started 2026-10-12)
+Four parallel agents: 17a+b windows + close vault; 17c+f vault profile + tenant deactivate; 17d offsite in the UI + attach offsite copy; 17e per-tenant recovery key.
