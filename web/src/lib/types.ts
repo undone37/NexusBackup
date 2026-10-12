@@ -263,6 +263,8 @@ export interface Policy {
   retry: { count: number; delay_min: number };
   blackout: BlackoutWindow[];
   sla_minutes: number | null;
+  /** Phase 15d */
+  require_consistency?: RequireConsistency;
 }
 
 export interface Group {
@@ -442,6 +444,17 @@ export interface Snapshot {
   origin?: string | null;
   /** open legal hold (15c): `active` (enforced) or `advisory` (reported by the primary) */
   hold?: LegalHold | null;
+  /** Phase 15d: null = not recorded (before 15d, replicated or offsite-only) */
+  consistency?: Consistency | null;
+}
+
+/** Consistency level of a snapshot (docs/control-plane.md "Consistency"). */
+export type Consistency = 'application' | 'crash' | 'inconsistent' | 'unknown';
+
+/** Policy option: minimum consistency of group backups. */
+export interface RequireConsistency {
+  mode: 'off' | 'warn' | 'fail';
+  level: 'application' | 'crash';
 }
 
 /** A legal hold and its history (Phase 15c, GET /holds). */
@@ -759,6 +772,8 @@ export type Sla = 'ok' | 'breach' | 'never' | 'paused';
 
 /** GET /dashboard?days=7|30 (§1). Byte counts; ratios and forecasts are null when unknown. */
 export interface Dashboard {
+  /** Phase 15d: newest local snapshot per source, counted per level */
+  consistency?: Record<string, number>;
   generated: number;
   days: number;
   protection: {

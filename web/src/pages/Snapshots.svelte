@@ -11,7 +11,8 @@
   import { hostAgentId } from '../lib/jobs';
   import { parsePluginSnapshot, pluginKinds, restoreApplies, snapshotKind } from '../lib/plugins';
   import { buildValue, initValues, type FormValues } from '../lib/schema';
-  import type { Agent, Plugin, PluginRestore, PveSource, Snapshot, Source, Tenant } from '../lib/types';
+  import type { Agent, Group, Plugin, PluginRestore, PveSource, Snapshot, Source, Tenant } from '../lib/types';
+  import ConsistencyBadge from '../components/ConsistencyBadge.svelte';
   import Check from '../components/Check.svelte';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
@@ -24,6 +25,7 @@
   import IconHost from '@lucide/svelte/icons/hard-drive';
   import IconPlugin from '@lucide/svelte/icons/puzzle';
   import IconTrash from '@lucide/svelte/icons/trash-2';
+  import IconLayers from '@lucide/svelte/icons/layers';
   import IconGavel from '@lucide/svelte/icons/gavel';
   import IconUnlock from '@lucide/svelte/icons/lock-open';
   import HoldDialog from '../components/HoldDialog.svelte';
@@ -147,10 +149,20 @@
   let target = $state('');
   let storage = $state('');
   let busy = $state(false);
+  // Phase 15a options
+  let rName = $state('');
+  let rPrefix = $state('');
+  let rPool = $state('');
+  let rStart = $state(false);
+  let rLinkDown = $state(false);
+  let rReplace = $state(false);
+  let rKeepLinks = $state(false);
 
   const pveSources = $derived(sources.filter((s): s is PveSource => s.kind === 'pve'));
-  const tenantSources = $derived(pveSources.filter((s) => sel && s.tenant === sel.tenant));
-  const nodeNames = $derived([...new Set(tenantSources.flatMap((s) => Object.keys(s.config?.nodes ?? {})))]);
+  const nodesOf = (tenant: string | undefined) => [
+    ...new Set(pveSources.filter((s) => s.tenant === tenant).flatMap((s) => Object.keys(s.config?.nodes ?? {}))),
+  ];
+  const nodeNames = $derived(nodesOf((sel as Snapshot | null)?.tenant));
 
   function openRestore(s: Snapshot, m: 'restore' | 'instant') {
     sel = s;
@@ -160,22 +172,112 @@
     // the source's `storage` is the NexusBackup storage itself, not a place for restored disks
     storage = '';
     node = nodeNames[0] ?? '';
+    rName = '';
+    rPrefix = '';
+    rPool = '';
+    // instant recovery: running at once, isolated from the original by default
+    rStart = m === 'instant';
+    rLinkDown = m === 'instant';
+    rReplace = false;
+    rKeepLinks = false;
     dlgOpen = true;
   }
   $effect(() => {
     if (dlgOpen && !node && nodeNames.length) node = nodeNames[0];
   });
+  const origVmid = (s: Snapshot | null) => s?.source.replace(/^(vm|ct)-/, '') ?? '';
 
   async function startRestore(e: SubmitEvent) {
     e.preventDefault();
     if (!sel) return;
     busy = true;
     const kind = mode === 'instant' ? 'instant_recover' : sel.source.startsWith('ct-') ? 'restore_ct' : 'restore';
-    const params = { source: sel.source, time: sel.time, node, target: Number(target), storage };
-    const r = await act(post<{ id: number }>('/jobs', { kind, tenant: sel.tenant, params }), (d) => t.snap.jobStarted(d.id));
+    const params: Record<string, unknown> = {
+      source: sel.source,
+      time: sel.time,
+      node,
+      target: Number(target),
+      storage,
+      start: rStart,
+      link_down: rLinkDown,
+    };
+    if (rName.trim() && mode !== 'instant') params.name = rName.trim();
+    else if (rPrefix.trim()) params.name_prefix = rPrefix.trim();
+    if (rPool.trim()) params.pool = rPool.trim();
+    if (rReplace && mode === 'restore') {
+      params.replace = true;
+      if (rKeepLinks) params.keep_original_links = true;
+    }
+    const r = await act(post<{ id?: number }>('/jobs', { kind, tenant: sel.tenant, params }), (d) =>
+      d.id ? t.snap.jobStarted(d.id) : t.ropts.replaceQueued,
+    );
     busy = false;
     if (r) dlgOpen = false;
-    if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
+    if (r && !r.quorum && r.data?.id) navigate(`/jobs/${r.data.id}`);
+  }
+
+  // Restore several guests (one job each, `POST /restores`)
+  let manyOpen = $state(false);
+  let manyTenant = $state('');
+  let manyChecked: Record<string, boolean> = $state({});
+  let manyGroup = $state('');
+  let manyBase = $state('');
+  let groups: Group[] = $state([]);
+  const manyLatest = $derived.by(() => {
+    const m = new Map<string, Snapshot>();
+    for (const s of snaps)
+      if (s.tenant === manyTenant && s.local && /^(vm|ct)-\d+$/.test(s.source) && (m.get(s.source)?.time ?? -1) < s.time) m.set(s.source, s);
+    return [...m.values()].sort((a, b) => a.source.localeCompare(b.source, undefined, { numeric: true }));
+  });
+  const manyPicked = $derived(manyLatest.filter((s) => manyChecked[s.source]));
+  const manyTenants = $derived([...new Set(snaps.filter((s) => /^(vm|ct)-/.test(s.source)).map((s) => s.tenant))].sort());
+
+  async function openMany() {
+    manyTenant = manyTenants.includes(tenant) ? tenant : (manyTenants[0] ?? '');
+    manyChecked = {};
+    manyGroup = '';
+    manyBase = '';
+    node = nodesOf(manyTenant)[0] ?? '';
+    storage = '';
+    rPrefix = 'restore-';
+    rPool = '';
+    rStart = false;
+    rLinkDown = true;
+    manyOpen = true;
+    try {
+      groups = await get<Group[]>('/groups');
+    } catch {
+      groups = [];
+    }
+  }
+  function pickGroup() {
+    const g = groups.find((x) => String(x.id) === manyGroup);
+    if (!g) return;
+    const ids = new Set((g.guests ?? []).map(String));
+    manyChecked = Object.fromEntries(manyLatest.map((s) => [s.source, ids.has(s.source.replace(/^(vm|ct)-/, ''))]));
+  }
+
+  async function startMany(e: SubmitEvent) {
+    e.preventDefault();
+    if (!manyPicked.length) return;
+    busy = true;
+    const body: Record<string, unknown> = {
+      tenant: manyTenant,
+      node,
+      storage,
+      target_base: Number(manyBase),
+      start: rStart,
+      link_down: rLinkDown,
+      items: manyPicked.map((s) => ({ source: s.source, time: s.time })),
+    };
+    if (rPrefix.trim()) body.name_prefix = rPrefix.trim();
+    if (rPool.trim()) body.pool = rPool.trim();
+    const r = await act(post<{ ids: number[] }>('/restores', body), (d) => t.ropts.manyStarted(d.ids.length));
+    busy = false;
+    if (r) {
+      manyOpen = false;
+      navigate('/jobs');
+    }
   }
 
   // Restore files of a host snapshot to a path (agents)
@@ -243,6 +345,9 @@
 
 <div class="page-head">
   <h1>{t.snap.title}</h1>
+  {#if can.restore(session.user) && manyTenants.length}
+    <button type="button" onclick={openMany}><IconLayers aria-hidden="true" />{t.ropts.many}</button>
+  {/if}
   {#if can.hold(session.user)}
     <button type="button" onclick={() => openHold(null)}><IconGavel aria-hidden="true" />{t.snap.holdRange}</button>
   {/if}
@@ -291,6 +396,7 @@
             <th scope="col">{t.dash.offsite}</th>
             <th scope="col">{t.dash.verified}</th>
             <th scope="col">{t.snap.lock}</th>
+            <th scope="col">{t.cons.column}</th>
             {#if showActions}<th scope="col"><span class="visually-hidden">{t.actions}</span></th>{/if}
           </tr>
         </thead>
@@ -335,6 +441,7 @@
               <td><Check on={s.offsite} /></td>
               <td><Check on={s.verified} title={s.verified ? fmtAgo(s.verified) : ''} /></td>
               <td class="nowrap">{s.lock_until > now ? fmtTime(s.lock_until) : '—'}</td>
+              <td><ConsistencyBadge level={s.consistency} /></td>
               {#if showActions}
                 <td class="actions">
                   {#if can.restore(session.user)}
@@ -395,12 +502,124 @@
           <input id="r-storage" bind:value={storage} required placeholder="local-lvm" />
         </div>
       </div>
+      <fieldset>
+        <legend>{t.ropts.options}</legend>
+        <div class="form-grid">
+          {#if mode === 'restore'}
+            <div class="field">
+              <label for="r-name">{t.ropts.name}</label>
+              <input id="r-name" bind:value={rName} disabled={!!rPrefix.trim()} pattern="[A-Za-z0-9_][A-Za-z0-9._\-]{'{0,62}'}" aria-describedby="r-name-hint" />
+              <div class="hint" id="r-name-hint">{t.ropts.nameHint('<name>-restore')}</div>
+            </div>
+          {/if}
+          <div class="field">
+            <label for="r-prefix">{t.ropts.prefix}</label>
+            <input id="r-prefix" bind:value={rPrefix} disabled={!!rName.trim() && mode === 'restore'} pattern="[A-Za-z0-9_][A-Za-z0-9._\-]{'{0,62}'}" aria-describedby="r-prefix-hint" />
+            <div class="hint" id="r-prefix-hint">{t.ropts.prefixHint}</div>
+          </div>
+          <div class="field">
+            <label for="r-pool">{t.ropts.pool}</label>
+            <input id="r-pool" bind:value={rPool} pattern="[A-Za-z0-9_][A-Za-z0-9._\-]{'{0,62}'}" aria-describedby="r-pool-hint" />
+            <div class="hint" id="r-pool-hint">{t.ropts.poolHint}</div>
+          </div>
+        </div>
+        <div class="field">
+          <label class="inline-check"><input id="r-start" type="checkbox" bind:checked={rStart} />{mode === 'instant' ? t.ropts.irStart : t.ropts.start}</label>
+        </div>
+        <div class="field">
+          <label class="inline-check"><input id="r-linkdown" type="checkbox" bind:checked={rLinkDown} />{t.ropts.linkDown}</label>
+          <div class="hint">{t.ropts.linkDownHint}</div>
+        </div>
+        {#if mode === 'restore' && can.backup(session.user)}
+          <div class="field">
+            <label class="inline-check"><input id="r-replace" type="checkbox" bind:checked={rReplace} />{t.ropts.replace}</label>
+          </div>
+          {#if rReplace}
+            <p class="banner warn">{t.ropts.replaceHint(origVmid(sel))}</p>
+            <div class="field">
+              <label class="inline-check"><input id="r-keeplinks" type="checkbox" bind:checked={rKeepLinks} />{t.ropts.keepLinks}</label>
+            </div>
+          {/if}
+        {/if}
+      </fieldset>
       <div class="form-actions">
         <button type="button" onclick={() => (dlgOpen = false)}>{t.cancel}</button>
         <button type="submit" class="primary" disabled={busy}>{t.snap.start}</button>
       </div>
     </form>
   {/if}
+</Modal>
+
+<Modal bind:open={manyOpen} title={t.ropts.manyTitle} wide>
+  <form onsubmit={startMany}>
+    <p class="muted">{t.ropts.manyIntro}</p>
+    <div class="form-grid">
+      {#if manyTenants.length > 1}
+        <div class="field">
+          <label for="m-tenant">{t.tenant}</label>
+          <select id="m-tenant" bind:value={manyTenant} onchange={() => ((manyChecked = {}), (node = nodesOf(manyTenant)[0] ?? ''))}>
+            {#each manyTenants as tn (tn)}<option value={tn}>{tn}</option>{/each}
+          </select>
+        </div>
+      {/if}
+      <div class="field">
+        <label for="m-group">{t.ropts.manyGroup}</label>
+        <select id="m-group" bind:value={manyGroup} onchange={pickGroup}>
+          <option value="">{t.ropts.manyGroupNone}</option>
+          {#each groups.filter((g) => g.tenant === manyTenant) as g (g.id)}<option value={String(g.id)}>{g.name}</option>{/each}
+        </select>
+      </div>
+    </div>
+    <fieldset>
+      <legend>{t.ropts.manyGuests} <span class="muted">({t.ropts.manySelected(manyPicked.length)})</span></legend>
+      {#if manyLatest.length === 0}
+        <p class="empty">{t.ropts.manyNone}</p>
+      {:else}
+        <div class="check-list">
+          {#each manyLatest as s (s.source)}
+            <label class="inline-check"
+              ><input type="checkbox" bind:checked={manyChecked[s.source]} /><span class="mono">{s.source}</span>
+              <span class="muted">{fmtTime(s.time)}</span>
+              <ConsistencyBadge level={s.consistency} /></label
+            >
+          {/each}
+        </div>
+      {/if}
+    </fieldset>
+    <div class="form-grid">
+      <div class="field">
+        <label for="m-node">{t.snap.node}</label>
+        <input id="m-node" bind:value={node} list="m-nodes" required autocomplete="off" />
+        <datalist id="m-nodes">{#each nodesOf(manyTenant) as n (n)}<option value={n}></option>{/each}</datalist>
+      </div>
+      <div class="field">
+        <label for="m-base">{t.ropts.manyBase}</label>
+        <input id="m-base" type="number" min="100" max="999999999" bind:value={manyBase} required />
+      </div>
+      <div class="field">
+        <label for="m-storage">{t.snap.storage}</label>
+        <input id="m-storage" bind:value={storage} required placeholder="local-lvm" />
+      </div>
+      <div class="field">
+        <label for="m-prefix">{t.ropts.prefix}</label>
+        <input id="m-prefix" bind:value={rPrefix} pattern="[A-Za-z0-9_][A-Za-z0-9._\-]{'{0,62}'}" />
+      </div>
+      <div class="field">
+        <label for="m-pool">{t.ropts.pool}</label>
+        <input id="m-pool" bind:value={rPool} pattern="[A-Za-z0-9_][A-Za-z0-9._\-]{'{0,62}'}" />
+      </div>
+    </div>
+    <div class="field">
+      <label class="inline-check"><input id="m-start" type="checkbox" bind:checked={rStart} />{t.ropts.start}</label>
+    </div>
+    <div class="field">
+      <label class="inline-check"><input id="m-linkdown" type="checkbox" bind:checked={rLinkDown} />{t.ropts.linkDown}</label>
+    </div>
+    <div class="form-actions">
+      <button type="button" onclick={() => (manyOpen = false)}>{t.cancel}</button>
+      <button type="submit" class="primary" disabled={busy || !manyPicked.length}>{t.snap.start}</button>
+    </div>
+  </form>
 </Modal>
 
 <Modal
@@ -450,6 +669,16 @@
 
 
 <style>
+  .check-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(22rem, 1fr));
+    gap: 0.25rem 1rem;
+    max-height: 18rem;
+    overflow: auto;
+  }
+  .check-list label {
+    white-space: nowrap;
+  }
   /* legal-hold badge: the gavel replaces the chip dot */
   .chip.hold :global(svg) {
     width: 0.85rem;

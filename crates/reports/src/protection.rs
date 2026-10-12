@@ -191,7 +191,8 @@ pub fn assess(c: &Connection, scope: Option<&str>, now: i64) -> rusqlite::Result
 }
 
 /// (tenant, source, time) → `consistent` flag of the backup job that wrote it
-/// (agent, share and plugin backups report it; PVE until 15d not).
+/// (agent, share and plugin backups before 15d; the fallback when
+/// `snapshots.consistency` is not set).
 fn consistency(
     c: &Connection,
     scope: Option<&str>,
@@ -233,26 +234,30 @@ pub fn table(c: &Connection, scope: Option<&str>, now: i64) -> rusqlite::Result<
     let cons = consistency(c, scope, since)?;
     let mut rows = Vec::new();
     for s in st {
-        let snap: Option<(bool, bool, Option<i64>)> = match s.last_ok {
+        let snap: Option<(bool, bool, Option<i64>, Option<String>)> = match s.last_ok {
             Some(t) => {
                 use rusqlite::OptionalExtension;
                 c.query_row(
-                    "SELECT local, offsite, verified FROM snapshots WHERE tenant = ?1 AND source = ?2 AND time = ?3",
+                    "SELECT local, offsite, verified, consistency FROM snapshots
+                     WHERE tenant = ?1 AND source = ?2 AND time = ?3",
                     params![s.obj.tenant, s.source, t],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
                 .optional()?
             }
             None => None,
         };
         let yes = |b: bool| Cell::text(if b { "yes" } else { "no" });
-        let consistent = match s
+        // levels of Phase 15d (application / crash / inconsistent / unknown); before
+        // it only the `consistent` flag: a consistent view was at least a snapshot
+        let legacy = s
             .last_ok
-            .and_then(|t| cons.get(&(s.obj.tenant.clone(), s.source.clone(), t)))
-        {
-            Some(true) => "consistent",
-            Some(false) => "inconsistent",
-            None => "unknown",
+            .and_then(|t| cons.get(&(s.obj.tenant.clone(), s.source.clone(), t)));
+        let consistent = match (snap.as_ref().and_then(|x| x.3.as_deref()), legacy) {
+            (Some(l), _) => l.to_owned(),
+            (None, Some(true)) => "crash".into(),
+            (None, Some(false)) => "inconsistent".into(),
+            (None, None) => "unknown".into(),
         };
         rows.push(vec![
             Cell::text(&s.obj.tenant),
@@ -264,9 +269,9 @@ pub fn table(c: &Connection, scope: Option<&str>, now: i64) -> rusqlite::Result<
             Cell::opt_time(s.last_ok),
             s.age.map_or(Cell::Empty, Cell::hours),
             Cell::text(s.sla),
-            snap.map_or(Cell::Empty, |x| yes(x.0)),
-            snap.map_or(Cell::Empty, |x| yes(x.1)),
-            Cell::opt_time(snap.and_then(|x| x.2)),
+            snap.as_ref().map_or(Cell::Empty, |x| yes(x.0)),
+            snap.as_ref().map_or(Cell::Empty, |x| yes(x.1)),
+            Cell::opt_time(snap.as_ref().and_then(|x| x.2)),
             Cell::text(consistent),
         ]);
     }

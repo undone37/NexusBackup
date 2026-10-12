@@ -1,4 +1,4 @@
-//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | restore-ct <vmid> <time> <node> <target> <storage> | instant-recover <vmid> <time> <node> <target> <storage> [--link-down] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | push-index | list | inventory`.
+//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | push-index | list | inventory`.
 //! `backup-all` backs up every guest in `vmids`, VM or container (type from /cluster/resources).
 
 use anyhow::{bail, Context, Result};
@@ -43,7 +43,7 @@ fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
-        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | restore-ct <vmid> <time> <node> <target> <storage> | instant-recover <vmid> <time> <node> <target> <storage> [--link-down] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | push-index | list | inventory | task-stop <upid>");
+        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | push-index | list | inventory | task-stop <upid>");
     };
     let cfg: Config = serde_json::from_slice(&fs::read(cfg_path)?).context("config")?;
     if let ("inventory", []) = (cmd.as_str(), rest) {
@@ -114,20 +114,39 @@ fn main() -> Result<()> {
             println!("{}", store.stats_line(&m, st.size, store.written().since(before))?);
             cluster.push_index(&store)?;
         }
-        ("restore-ct", [vmid, time, node, target, storage]) => {
-            let exit = cluster.restore_ct(&store, vmid.parse()?, time.parse()?, node, target.parse()?, storage)?;
-            println!("restore finished: {exit}");
+        ("restore-ct", [vmid, time, node, target, storage, opts @ ..]) => {
+            let opts = pve::restore::RestoreOpts::parse(opts)?;
+            let r = cluster.restore_ct(
+                &store,
+                vmid.parse()?,
+                time.parse()?,
+                node,
+                target.parse()?,
+                storage,
+                &opts,
+            )?;
+            println!("restored {}", serde_json::to_string(&r)?);
         }
-        ("restore", [vmid, time, node, target, storage]) => {
-            let exit = cluster.restore_vm(&store, vmid.parse()?, time.parse()?, node, target.parse()?, storage)?;
-            println!("restore finished: {exit}");
+        ("restore", [vmid, time, node, target, storage, opts @ ..]) => {
+            let opts = pve::restore::RestoreOpts::parse(opts)?;
+            let r = cluster.restore_vm(
+                &store,
+                vmid.parse()?,
+                time.parse()?,
+                node,
+                target.parse()?,
+                storage,
+                &opts,
+            )?;
+            println!("restored {}", serde_json::to_string(&r)?);
         }
         ("instant-recover", [vmid, time, node, target, storage, opts @ ..]) => {
-            let link_down = match opts {
-                [] => false,
-                [o] if o == "--link-down" => true,
-                _ => bail!("instant-recover: unknown options {opts:?}"),
-            };
+            // CLI default: start the VM (as before); `--no-start` creates it powered off
+            let mut opts: Vec<String> = opts.to_vec();
+            let no_start = opts.iter().any(|o| o == "--no-start");
+            opts.retain(|o| o != "--no-start" && o != "--start");
+            let mut opts = pve::restore::RestoreOpts::parse(&opts)?;
+            opts.start = !no_start;
             let r = cluster.instant_recover(
                 &store,
                 vmid.parse()?,
@@ -135,7 +154,7 @@ fn main() -> Result<()> {
                 node,
                 target.parse()?,
                 storage,
-                link_down,
+                &opts,
             )?;
             println!("VM running after {:.1?}", r.running_after);
             for (disk, d) in &r.moves {

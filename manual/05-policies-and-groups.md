@@ -23,6 +23,7 @@ Click **New policy** (or **Edit** on an existing one) and fill in:
 | **Retries** | how often a failed backup is retried (0–10, default 3) and the minutes between attempts (default 5) |
 | **Run-time SLA (minutes)** | optional: raise an `sla_missed` warning when a backup of a group runs longer |
 | **Blackout windows** | times in which no scheduled backups start, optionally cancelling running ones |
+| **Required consistency** | optional: warn or fail when a snapshot is less consistent than a minimum level (see [Required consistency](#required-consistency)) |
 
 ![Editing a policy: lowering a retention value needs approval](images/policy-edit.png)
 
@@ -31,10 +32,11 @@ default 14 daily, 4 weekly, 6 monthly, 2 yearly.
 
 Rules:
 
-- **Lowering** any retention value, switching **Copy offsite** off or **adding a blackout window** weakens
-  protection. With approvals enabled the change becomes an approval request ("Pending approval: request #N …") and
-  takes effect only after another administrator or security officer approves it. Raising values, removing blackout
-  windows and changing the schedule, retries or SLA take effect immediately.
+- **Lowering** any retention value, switching **Copy offsite** off, **adding a blackout window** or **relaxing the
+  required consistency** (a milder action, or a lower minimum level) weakens protection. With approvals enabled the
+  change becomes an approval request ("Pending approval: request #N …") and takes effect only after another
+  administrator or security officer approves it. Raising values, removing blackout windows, a stricter consistency
+  requirement and changing the schedule, retries or SLA take effect immediately.
 - Lowering retention never shortens existing retention locks. Snapshots that are locked stay until their lock
   expires, even if the new policy would no longer keep them.
 - Deleting a policy needs approval (when approvals are enabled).
@@ -232,6 +234,26 @@ Adding a window needs approval when approvals are enabled (it reduces protection
 
 With **Run-time SLA (minutes)** set, a group backup that is still running after that time raises one
 `sla_missed` warning per job (see [11 Alerts and monitoring](11-alerts-and-monitoring.md)). The job keeps running.
+
+### Required consistency
+
+Every snapshot records how consistent it is: **application**, **crash**, **inconsistent** or **unknown** (see
+[06 Restores](06-restores.md#consistency)). Under **Required consistency** a policy sets:
+
+- **If a snapshot falls short**: **Do nothing** (default), **Warn (alert)** or **Fail the job (and warn)**.
+- **Minimum level**: **Application-consistent** or **Crash-consistent (point in time)**. **inconsistent** and
+  **unknown** never meet a minimum.
+
+With **Warn**, a snapshot below the minimum raises one `consistency` warning per guest (alert key
+`consistency:<tenant>/<guest>`). It resolves by itself with the next snapshot of that guest that meets the minimum.
+With **Fail**, the backup job also ends **failed**: the snapshot is kept (it is still a restore point), and the job is
+retried like any failed backup, which helps when, say, the guest agent was not running yet.
+The requirement applies to backups of the policy's groups (scheduled, **Back up now** and retries). A backup of a
+single VM through the API outside a group is not checked.
+
+Typical settings: **Warn** at **Application-consistent** for database servers (finds VMs whose guest agent stopped
+working), **Fail** at **Crash-consistent** for file servers backed up by an agent (finds hosts read without a
+snapshot).
 
 ### Pausing a group
 

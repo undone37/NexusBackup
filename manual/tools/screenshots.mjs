@@ -416,15 +416,26 @@ async function main() {
       await shot('snapshot-restore-menu');
       await ev(`$click('Full restore'); return true;`);
       await until(`return !!document.querySelector('dialog[open] #r-target')`, 'restore dialog');
-      await ev(`$fill('#r-target', '9100'); $fill('#r-storage', 'local-lvm'); return true;`);
-      await shot('snapshot-restore-vm');
+      await ev(`$fill('#r-target', '9100'); $fill('#r-storage', 'local-lvm'); $fill('#r-pool', 'dr-test'); $check('#r-start'); $check('#r-linkdown'); return true;`);
+      await shot('snapshot-restore-vm', { height: 1300 });
+      // Phase 15a: replace the original (approval restore.replace)
+      await ev(`$check('#r-linkdown', false); $fill('#r-pool', ''); $check('#r-replace'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #r-keeplinks')`, 'replace options');
+      await shot('snapshot-restore-replace', { height: 1400 });
       await closeDialogs();
       await ev(`$rowClick('vm-100', 'Restore'); return true;`);
       await until(`return !!$button('Instant recover')`, 'restore menu');
       await ev(`$click('Instant recover'); return true;`);
       await until(`return !!document.querySelector('dialog[open] #r-target')`, 'instant recover dialog');
-      await ev(`$fill('#r-target', '9101'); $fill('#r-storage', 'local-lvm'); return true;`);
-      await shot('snapshot-instant-recover');
+      await ev(`$fill('#r-target', '9101'); $fill('#r-storage', 'local-lvm'); $fill('#r-prefix', 'ir-'); return true;`);
+      await shot('snapshot-instant-recover', { height: 1200 });
+      await closeDialogs();
+      // Phase 15a: several guests of one group in one dialog
+      await go('/snapshots?tenant=acme');
+      await ev(`$click('Restore several'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #m-group option:nth-child(2)')`, 'restore several dialog');
+      await ev(`const o = document.querySelector('dialog[open] #m-group option:nth-child(2)'); $fill('#m-group', o.value); $fill('#m-base', '9200'); $fill('#m-storage', 'local-lvm'); return true;`);
+      await shot('snapshots-restore-many', { height: 1300 });
       await closeDialogs();
       await go('/snapshots?tenant=globex');
       await shot('snapshots-replicated');
