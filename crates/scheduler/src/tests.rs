@@ -2070,3 +2070,20 @@ fn consistency_recorded_and_policy_enforced() {
     assert_eq!(snap_level(&s).as_deref(), Some("application"));
     assert_eq!(open(&s), 0, "resolved by a snapshot that meets the policy");
 }
+
+/// `forward_test` stores its answer as the job result (it was dropped once:
+/// the forwarding "Send test message" then always showed nothing).
+#[test]
+fn forward_test_result_is_stored() {
+    let e = env(4);
+    let mut s = sched(&e);
+    let id = manual(&s, "forward_test", "-", json!({}));
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert_eq!(state(&s, id), "ok");
+    assert_eq!(
+        result_of(&s, id),
+        json!({"forwarding": "error: no sink configured"}),
+        "stored, not NULL"
+    );
+}
