@@ -140,6 +140,7 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | Release 0.1.0-alpha (2026-10-12) | **After the final VM labs pass: push tag `v0.1.0-alpha` → draft release (image + ISO); maintainer signs, then publish** (decided 2026-10-12) | Same procedure as 0.0.1-alpha. |
 | Scope while the maintainer is away (2026-10-12) | **Phases 19, 20, then 21–23, each with labs** (decided 2026-10-12) | |
 | Windows agent installer (Phase 20) | **MSI (WiX), suited for GPO/Intune; .deb/.rpm/.msi get SHA256SUMS + cosign blob signatures at release time (no GPG/Authenticode keys yet)** (decided 2026-10-12) | Enterprise deployment. |
+| Endpoint UIs (Phase 24) | **Linux TUI + Windows/Linux desktop GUI showing the last backup sessions (pushed by the appliance after each backup), next run, appliance reachability; "Back up now" is a local request picked up by an appliance poll of every agent (agent still never connects out); roaming laptops only on LAN/VPN (retry when reachable, UI shows "not reachable since"); GUI in Rust + iced with a tray icon (shared Windows/Linux), talking to the local agent service over a socket/named pipe; no end-user self-service restore (restores stay admin-only on the appliance)** (decided 2026-10-12, user request; style inspired by Veeam Agent for Linux/Windows) | End users see protection status on their machine. |
 | Legal hold (Phase 15) | **Set by the security officer alone (adds protection); release needs approval; advisory to secondaries** (decided 2026-10-12) | Incident tool beyond retention locks. |
 | API tokens (Phase 14) | **Scoped read/operator, expiring, hashed; can never approve, change settings/users/tokens or download** (decided 2026-10-12) | Automation without weakening four-eyes. |
 | Vault mode (Phase 17) | **One-way profile for secondaries; switching off needs approval + recovery key** (decided 2026-10-12) | Protects the vault copy against one stolen admin account. |
@@ -705,6 +706,13 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
 - Usage/billing export, per-tenant IdP, impersonation rules, policy tiers, onboarding wizard, immutable tenant IDs,
   site-VPN pattern, interim-backup DR runbook; MSSQL (log chain, PITR), MySQL/MariaDB plugin, Exchange full-VSS mode,
   AD runbook, Hyper-V host-level, Windows BMR, Windows client + arm64 agents.
+
+### Phase 24 — Endpoint UIs for the agents (added 2026-10-12 by user request)
+- Linux agent TUI (`nexus-agent tui`, Veeam-Agent-for-Linux style: status, last sessions with result/duration/
+  transferred, next run, "Back up now" request); Windows tray + window (Veeam-Agent-for-Windows style timeline of
+  sessions); new Linux desktop GUI agent package (tray + window, same iced codebase). Appliance: session summaries
+  pushed to the agent after each backup; lightweight poll of enrolled agents for queued requests and reachability;
+  laptop handling (reachability-based retry, "last seen"). No self-service restore.
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
