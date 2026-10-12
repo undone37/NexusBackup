@@ -418,7 +418,7 @@ the last error. See [10 Approvals and audit](10-approvals-and-audit.md#audit-log
 
 | Page | What you do there | Chapter |
 |---|---|---|
-| **Tenants** | create tenants, set each tenant's offsite target and soft storage quota; deactivate and reactivate a tenant | [07 Offsite copies](07-offsite.md), [Storage](#storage), [09 Users and access](09-users-and-access.md#deactivating-a-tenant) |
+| **Tenants** | create tenants, set each tenant's offsite target and soft storage quota; deactivate and reactivate a tenant ([09](09-users-and-access.md#deactivating-a-tenant)); **Recovery key**: the optional tenant recovery key ([14](14-disaster-recovery.md#the-tenant-recovery-key-optional)) | [07 Offsite copies](07-offsite.md), [Storage](#storage) |
 | **Sources** | connect Proxmox VE, agent hosts, TrueNAS, NFS/SMB shares and plugin sources | [04 Sources](04-sources.md) |
 | **Agents** | register Linux/Windows backup agents, issue enrollment tokens, update agents | [04 Sources](04-sources.md) |
 | **Replication** | pair this appliance with a second appliance | [08 Replication](08-replication.md) |

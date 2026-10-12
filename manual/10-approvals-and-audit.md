@@ -25,6 +25,7 @@ a different administrator or security officer must approve:
 | Approvals | disabling the approval requirement itself (`approvals disable`; refused while vault mode is on) |
 | Tenants | deactivating a tenant (`tenant disable`, with the reason; backups stop). Reactivating needs no approval |
 | Vault mode | switching it on (`vault enable`) and off (`vault disable`, then the recovery key at the console); while it is on, every restore, mount and download (`vault restore`, the approver sees the jobs and their parameters). See [08 Replication](08-replication.md#vault-mode-secondary-only) |
+| Tenant recovery key | creating or replacing a tenant's recovery key (`tenant recovery_key`, **Tenants → Recovery key**): after the approval the requester shows the key once; see [14 Disaster recovery](14-disaster-recovery.md#the-tenant-recovery-key-optional) |
 | Console access | a root shell on the appliance console (`console unlock`, **Settings → Console access**): after the approval the requester shows the one-time code once; see [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console) |
 
 Rules:
@@ -175,6 +176,7 @@ What is recorded:
   (`user.oidc_created`) and settings changes (`settings.oidc`);
 - a break-glass recovery of an administrator on the console (`user.break_glass`, see
   [14 Disaster recovery](14-disaster-recovery.md#break-glass-the-only-administrator-lost-their-authenticator));
+- a tenant recovery key shown (`tenant.recovery_key_shown`, with its key ID and the replaced key ID, never the key);
 - emergency console access: the one-time code shown (`console.unlock_code`) or revoked (`console.unlock_revoke`),
   rejected codes at the console (`console.unlock_failed`), and every root shell with its start and end
   (`console.root_shell`, `console.root_shell_end`, actor `console`; see

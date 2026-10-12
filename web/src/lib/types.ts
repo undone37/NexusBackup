@@ -705,6 +705,30 @@ export interface ConsoleShell {
   alert: number;
 }
 
+// ---------------------------------------------------------------- tenant recovery key (17e)
+
+export type TenantKeyRequestStatus = 'pending' | 'rejected' | 'approved' | 'expired' | 'shown';
+export interface TenantKeyInfo {
+  tenant: string;
+  /** null: no tenant recovery key (only the appliance recovery key restores this tenant) */
+  key: { kid: string; set_at: number; requested_by: string; approved_by: string } | null;
+  requests: {
+    id: number;
+    requested_by: string;
+    created: number;
+    decided_by: string | null;
+    decided_at: number | null;
+    show_until: number | null;
+    status: TenantKeyRequestStatus;
+  }[];
+}
+export interface TenantKeyShown {
+  tenant: string;
+  key: string;
+  kid: string;
+  replaced: string | null;
+}
+
 // ---------------------------------------------------------------- plugins (docs/plugin-system.md)
 
 /** JSON-Schema subset of `config_schema` / `params_schema`. */

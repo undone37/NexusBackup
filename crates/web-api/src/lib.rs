@@ -48,6 +48,7 @@ pub mod selection;
 pub mod settings;
 pub mod spa;
 pub mod storage;
+pub mod tenant_key;
 pub mod tenants;
 pub mod tls;
 pub mod tokens;
@@ -460,6 +461,11 @@ pub fn router(st: St) -> Router {
         )
         .route("/settings/reports/{name}/send", post(reports::send_now))
         .route("/tenants/{name}/quota", put(storage::put_quota))
+        .route(
+            "/tenants/{tenant}/recovery-key",
+            get(tenant_key::get).post(tenant_key::request_key),
+        )
+        .route("/tenants/{tenant}/recovery-key/{id}/show", post(tenant_key::show))
         .route("/settings/anomaly", get(storage::get_anomaly).put(storage::put_anomaly))
         .route("/settings/oidc", get(oidc::get_settings).put(oidc::put_settings))
         .route("/settings/oidc/test", post(oidc::test_settings))

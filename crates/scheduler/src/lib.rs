@@ -88,6 +88,7 @@ pub mod search;
 mod selection;
 pub mod sshkeys;
 pub mod stats;
+mod tenant_key;
 mod tenants;
 
 use anyhow::{bail, Context, Result};
@@ -2022,10 +2023,12 @@ impl Scheduler {
     /// Refreshes the tenant's wrapped escrow files from keyd (new DEK versions
     /// after a rotation reach the box with the next upload).
     fn refresh_escrow(&self, tenant: &str) {
+        crate::tenant_key::sync(&self.db, &self.cfg.keyd_socket, tenant);
         let Ok(files) = keyd::fetch_escrow(&self.cfg.keyd_socket, tenant) else {
             return; // tests / keyd down: nexus-offsite reports a missing escrow dir itself
         };
         let dir = self.cfg.escrow_base.join(tenant);
+        crate::tenant_key::prune_escrow_dir(&dir, tenant, &files);
         for (name, bytes) in files {
             let p = dir.join(&name);
             let ok = p.parent().is_some_and(|d| fs::create_dir_all(d).is_ok())

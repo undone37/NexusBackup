@@ -3,7 +3,14 @@ on: [push, pull_request]
 jobs:
   rust:
     runs-on: ubuntu-latest
+    env:
+      # the workspace's test build no longer fits a runner's disk with full debug info
+      # (PostgreSQL / Keycloak testboxes then failed with "No space left on device")
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
+      - name: Free disk space (unused preinstalled toolchains)
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "clippy, rustfmt" }
@@ -14,6 +21,8 @@ jobs:
       # sandbox tests start real sandboxes (the appliance allows them, docs/plugin-system.md)
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: cargo test --all --no-fail-fast
+      - if: always()
+        run: df -h / && du -sh target
       - run: prove pve-plugin/t
       - run: python3 -m unittest discover -s os/greenboot/tests
       - run: release/check-trust.sh

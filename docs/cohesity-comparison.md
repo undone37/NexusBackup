@@ -86,3 +86,55 @@ Effort: S = days, M = 1–2 weeks, L = more.
 - Optional encryption, cross-tenant dedup, per-tenant external KMS.
 - SNMP v1/v2c, a reporting database open to the network, cURL-option webhooks.
 - Public folders: Microsoft ends programmatic access in 2026/27 (p.3733).
+
+## Additional Cohesity documents (reviewed 2026-10-12)
+
+Sources: Security Hardening Guide, Security / Ransomware / Anomaly Detection white papers, Virtual Edition and
+vSphere best practices, Networking Quick Start, Optimal Network Designs, Generic NAS and NetApp solution guides,
+Storage Efficiency white paper, BaaS and Multi-tenancy/DRaaS solution guides, Splunk solution guide, support matrix.
+Only findings beyond the sections above and the Phase 13–20 plan.
+
+### Do now (small, safety-relevant)
+- **Boot-menu bypass:** a console user can edit the GRUB kernel line (`init=/bin/sh`, `rd.break`) and get root
+  without the console gate's approval and audit → GRUB superuser password (escrowed like the recovery key), emergency
+  and rescue targets masked. (Hardening guide / Security white paper "secure base OS")
+- **Fleecing space guard (PVE):** a full LVM-thin fleecing pool can freeze every VM on it → check free space before
+  and during each guest, skip/cancel below a threshold, alert. (vSphere guide: auto-cancel on low datastore space)
+- **Clock:** lower the compliance-clock slew limit (ADR-011: 1 % ≈ 3.4 h / 14 days; Cohesity caps ≈ 10 min / 14
+  days), `clock_skew` alert and diag check when system and compliance clock differ by > 60 s.
+- **SIEM:** "Splunk HEC" body preset for the HTTPS sink (one event object per record, `Authorization: Splunk`),
+  stable `category` field on every alert (security, backup, replication, hardware, system, audit).
+
+### Security and ransomware (later phase)
+Anomalous snapshots flagged and restores/holds defaulting to the latest clean one; file-level change signals from
+the 15g name index (added/changed/deleted counts, mass renames, ransom-note names) and a snapshot diff view; trend
+sparklines per source; "incident mode" for the security officer (hold range, pause groups, revoke sessions/tokens,
+critical alert; leaving needs approval); security posture checks in nexus-diag (approvals, ≥ 3 approvers,
+forwarding delivering, offsite lock, inbound allow-list, own certificate, no dormant admins); WebAuthn/passkeys
+(optionally required for admins/SOs); grype CVE scan of the release image in CI (+ OpenSCAP CIS report);
+bit-rot repair of a bad chunk from offsite/replica; scheduled DEK rotation reminder; concurrent session limit;
+separation-of-duties / BMC hardening section in the manual; opt-in YARA scan of a snapshot in the restore microVM
+(admin-supplied rules, no feed); Entra ID objects as an M365 guest type (export only).
+Not copied: SaaS ML scoring / vendor telemetry, data classification, FIPS/CC (XChaCha20 by decision — state it),
+external KMS, SOAR marketplace apps.
+
+### Network, virtual appliance, PVE, NAS, efficiency (later phase)
+Network step for extra interfaces (bond, VLAN, MTU, static routes, no-gateway data network; promised in plan §12,
+not built) and egress rules bound to interface roles; path-MTU self-check; "running NexusBackup as a VM" guidance
+(never on the PVE cluster it protects; vTPM caveat; separate metadata/data disks); per-source and per-PVE-storage
+concurrency caps; appliance-side read rate limit for PVE/NAS/TrueNAS (reuse 17a windows), later PSI-based backoff;
+"restore priority" switch (holds schedules/GC/verify/offsite/replication during DR, auto-expires); VM identity per
+snapshot (vmgenid/smbios uuid) to detect reused VMIDs; NAS: sizing note (entries in RAM) and split by include roots,
+skipped-files CSV, overlap warning, TrueNAS "use existing snapshots" mode (zfs diff between replication snapshots);
+small-chunk packing into local pack files with GC compaction; measure 1 vs 4 MiB VM chunks.
+Not copied: erasure coding, cross-tenant dedup, CDP, DFS referral following, compression on/off toggle.
+
+### Service providers and workloads (later phases)
+Monthly per-tenant usage export for billing (objects, logical avg/peak, measured stored, offsite); per-tenant OIDC
+IdP; "view as tenant" as role intersection, read-only by default, visible in the tenant's audit; policy tier
+templates; "new tenant" onboarding wizard; immutable tenant IDs (replication currently matches names); WireGuard
+site-VPN pattern, later per-tenant VLAN interfaces; DR runbook "interim backups on the secondary in a new local
+tenant" (keeps the no-failover decision) + lab test of a full VM restore on the secondary; pull-based audit route for
+SIEMs. Workloads by relevance: MSSQL (log chain, PITR, per-database restore), MySQL/MariaDB plugin
+(mariadb-backup + binlog PITR), Exchange on-prem full-VSS mode (log truncation), AD restore runbook, Hyper-V host-level,
+Windows BMR, Windows client OS + Linux arm64 agent support. Cohesity supports neither Proxmox VE nor TrueNAS directly.
