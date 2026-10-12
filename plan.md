@@ -136,6 +136,10 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | Urgent hardening (2026-10-12) | **GRUB password derived from the recovery key (HMAC-SHA256 label `nexus-grub-password-v1`, keyboard-layout-safe alphabet; ADR-013), boot entries unrestricted, rescue masked, emergency refuses locked root, `rd.shell=0 rd.emergency=reboot`; fleecing guard per PVE source (skip < 15 % / 20 GiB, stop < 5 %); compliance clock slew 0.1 % and kept running by the scheduler; `clock_skew` warning/critical only for jumps or a clock ahead, a lag after downtime is info; Splunk HEC format + alert `category`** (decided 2026-10-12) | Close the console bypass; protect production VMs during backups; trustworthy lock time. |
 | Windows / close vault (17a/b) | **One window type (pause > limit > base; a limit window replaces the base rate); weakening judged at every boundary over 8 days (a time-zone change usually counts); window changes apply from the next job; "Close vault (pause pulling now)" per replication source is distinct from vault mode; closing is direct for admin/SO, reopening needs approval** (decided 2026-10-12) | Short exposure of the secondary; no WAN saturation. |
 | PostgreSQL 1.2.0 (18b) | **`every Nm` schedules (5–30); `Gfs.recent` hours keep-all class adds no lock beyond the 14-day commit lock; generic `snapshots.meta` (plugin contract v1.8 `SnapshotMeta`, catalog only); marker transaction per run so an idle server can be recovered to the run's time; HA via `hosts`, primary chosen per operation, old slot after failover dropped by the admin** (decided 2026-10-12) | Point-in-time RPO in minutes. |
+| Self-hosted CI runner (2026-10-12) | **All workflows on `runs-on: self-hosted` (Actions minutes limit); if the runner lacks tools, only report it — all gates run locally before every push** (decided 2026-10-12) | Private repo on paid minutes. |
+| Release 0.1.0-alpha (2026-10-12) | **After the final VM labs pass: push tag `v0.1.0-alpha` → draft release (image + ISO); maintainer signs, then publish** (decided 2026-10-12) | Same procedure as 0.0.1-alpha. |
+| Scope while the maintainer is away (2026-10-12) | **Phases 19, 20, then 21–23, each with labs** (decided 2026-10-12) | |
+| Windows agent installer (Phase 20) | **MSI (WiX), suited for GPO/Intune; .deb/.rpm/.msi get SHA256SUMS + cosign blob signatures at release time (no GPG/Authenticode keys yet)** (decided 2026-10-12) | Enterprise deployment. |
 | Legal hold (Phase 15) | **Set by the security officer alone (adds protection); release needs approval; advisory to secondaries** (decided 2026-10-12) | Incident tool beyond retention locks. |
 | API tokens (Phase 14) | **Scoped read/operator, expiring, hashed; can never approve, change settings/users/tokens or download** (decided 2026-10-12) | Automation without weakening four-eyes. |
 | Vault mode (Phase 17) | **One-way profile for secondaries; switching off needs approval + recovery key** (decided 2026-10-12) | Protects the vault copy against one stolen admin account. |
@@ -681,7 +685,7 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
 
 ### Phase 20 — Agent packages on the release page (added 2026-10-12 by user request)
 - Linux agent as `.deb` and `.rpm` (static musl binary, systemd unit, user, hardening, postinst enrollment hint;
-  amd64 + arm64 if the build allows), Windows agent as a signed-ready `.exe` installer (service registration,
+  amd64 + arm64 if the build allows), Windows agent as an MSI (WiX) installer (service registration,
   firewall-free: the agent never listens publicly beyond its mTLS port as today, uninstaller); all built by the
   release workflow, checksummed and attached to the GitHub release next to the ISO; package signatures with the
   release key (cosign blob signatures; rpm/deb native signing documented); install docs in the manual.
