@@ -169,7 +169,7 @@ class Host(unittest.TestCase):
             "NEXUS_DIAG_SELINUX_ENFORCE": str(self.d / "enforce"),
             "NEXUS_DIAG_DISKS": f"store={self.d / 'store'} var={self.d}",
             "NEXUS_DIAG_HEALTH": str(HEALTH),
-            "NEXUS_DIAG_SMARTCTL": str(self.d / "no-smartctl"),
+            "NEXUS_DIAG_DISKS_STATUS": str(self.d / "disks.json"),
             # the temp dirs live on the build host's disk (a CI runner may be > 90 % full)
             "NEXUS_DIAG_DISK_WARN_PCT": "101",
             "NEXUS_DIAG_DISK_FAIL_PCT": "101",
@@ -280,6 +280,29 @@ class Checks(Host):
         finally:
             os.environ["NEXUS_DIAG_DISK_WARN_PCT"] = os.environ["NEXUS_DIAG_DISK_FAIL_PCT"] = "101"
 
+    def test_disk_health_from_nexus_disks(self):
+        ok = {"scanned": int(time.time()), "disks": [
+            {"name": "sda", "smart": {"available": True, "health": "passed", "pending": 0}},
+            {"name": "vdb", "smart": {"available": False}}],
+            "arrays": [{"name": "md127", "state": "clean", "degraded": False}]}
+        (self.d / "disks.json").write_text(json.dumps(ok))
+        c = self.by_id(self.m.checks())["smart"]
+        self.assertEqual((c["status"], c["detail"]), ("pass", "2 disk(s), 1 with SMART, 1 array(s) healthy"))
+        ok["disks"][0]["smart"]["pending"] = 8
+        ok["arrays"][0].update(state="recovering", degraded=True)
+        (self.d / "disks.json").write_text(json.dumps(ok))
+        c = self.by_id(self.m.checks())["smart"]
+        self.assertEqual((c["status"], c["severity"]), ("warn", 2))
+        self.assertIn("degraded array(s): md127", c["detail"])
+        self.assertIn("bad sectors or media errors on: sda", c["detail"])
+        ok["disks"][0]["smart"]["health"] = "failed"
+        (self.d / "disks.json").write_text(json.dumps(ok))
+        c = self.by_id(self.m.checks())["smart"]
+        self.assertEqual((c["status"], c["severity"]), ("fail", 3))
+        ok["scanned"] = 0
+        (self.d / "disks.json").write_text(json.dumps(ok))
+        self.assertIn("nexus-disks.timer", self.by_id(self.m.checks())["smart"]["detail"])
+
     def test_missing_tools_and_files_skip(self):
         for k in ("NEXUS_DIAG_CHRONYC", "NEXUS_DIAG_NFT"):
             os.environ[k] = str(self.d / "missing")
@@ -349,7 +372,7 @@ class Requests(Host):
         with tarfile.open(p) as tar:
             names = {n.split("/", 1)[1]: n for n in tar.getnames()}
             for f in ("manifest.json", "checks.json", "journal-nexus.txt", "avc.txt", "nft-drops.txt", "chrony.txt",
-                      "systemd-failed.txt", "update-status.json", "catalog-stats.json"):
+                      "systemd-failed.txt", "update-status.json", "catalog-stats.json", "disks.json"):
                 self.assertIn(f, names)
             text = {k: tar.extractfile(v).read().decode() for k, v in names.items()}
         self.assertTrue(all(n.startswith("nexus-support-") for n in names.values()))

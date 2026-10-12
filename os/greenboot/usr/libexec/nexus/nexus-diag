@@ -28,7 +28,8 @@
 # audit hashes (not secret), user names.
 #
 # Runs as root in its own SELinux domain (nexus_diag_t): read-only access to the
-# journal, audit log, nftables, chrony, systemd state, the catalog and the update status;
+# journal, audit log, nftables, chrony, systemd state, the catalog, the update status and
+# the disk status of nexus-disks (it never opens a disk itself);
 # writes only below the control directory; no network (IPAddressDeny=any, no inet
 # sockets in the policy). Every path and tool can be overridden through NEXUS_DIAG_*
 # environment variables (see DEFAULTS); the unit tests use that. Stdlib only.
@@ -69,7 +70,7 @@ DEFAULTS = {
     "NFT": "nft",
     "SYSTEMCTL": "systemctl",
     "AUSEARCH": "ausearch",
-    "SMARTCTL": "smartctl",
+    "DISKS_STATUS": "/var/lib/nexus/disks/status.json",  # nexus-disks
     "TIMEOUT": "120",  # per tool call
     "JOURNAL_MAX_MB": "64",  # per journal file in the bundle
 }
@@ -380,22 +381,31 @@ def bootc():
 
 
 def smart():
-    if not shutil.which(cfg("SMARTCTL")):
-        # smartmontools is not part of the image (most appliances run as VMs; the
-        # hypervisor watches the disks). Installing it adds the check without changes here.
-        return "skip", 1, "smartctl not installed"
-    rc, out, _ = run("smartctl", "--scan")
-    devs = [l.split()[0] for l in out.splitlines() if l.startswith("/dev/")]
-    if not devs:
-        return "skip", 1, "no SMART-capable disks"
-    bad = []
-    for dev in devs:
-        rc, out, _ = run("smartctl", "-H", dev)
-        if rc & 0b1000:  # bit 3: disk failing
-            bad.append(dev)
-    if bad:
-        return "fail", 3, "SMART reports failing disk(s): " + ", ".join(bad)
-    return "pass", 1, f"{len(devs)} disk(s) healthy"
+    """Disk health as nexus-disks last saw it (Phase 16a): SMART, md arrays. nexus-diag itself
+    never opens a disk."""
+    try:
+        with open(cfg("DISKS_STATUS")) as f:
+            st = json.load(f)
+    except FileNotFoundError:
+        return "skip", 1, "no disk status yet (nexus-disks has not run)"
+    age = time.time() - st.get("scanned", 0)
+    if age > 3600:
+        return "warn", 2, f"disk status is {age / 3600:.0f} h old: nexus-disks.timer is not running"
+    failing = [d["name"] for d in st.get("disks") or [] if (d.get("smart") or {}).get("health") == "failed"]
+    bad = [a["name"] for a in st.get("arrays") or [] if a.get("state") in ("failed", "inactive")]
+    degraded = [a["name"] for a in st.get("arrays") or [] if a.get("degraded") and a["name"] not in bad]
+    sectors = [d["name"] for d in st.get("disks") or [] if any(
+        ((d.get("smart") or {}).get(k) or 0) > 0 for k in ("pending", "reallocated", "offline_uncorrectable", "media_errors"))]
+    if failing or bad:
+        return "fail", 3, "; ".join(x for x in (
+            failing and "SMART reports failing disk(s): " + ", ".join(failing),
+            bad and "failed array(s): " + ", ".join(bad)) if x)
+    if degraded or sectors:
+        return "warn", 2, "; ".join(x for x in (
+            degraded and "degraded array(s): " + ", ".join(degraded),
+            sectors and "bad sectors or media errors on: " + ", ".join(sectors)) if x)
+    smart_ok = sum(1 for d in st.get("disks") or [] if (d.get("smart") or {}).get("available"))
+    return "pass", 1, f"{len(st.get('disks') or [])} disk(s), {smart_ok} with SMART, {len(st.get('arrays') or [])} array(s) healthy"
 
 
 def checks():
@@ -452,6 +462,14 @@ def catalog_stats():
         conn.close()
 
 
+def read_text(path, limit=4 << 20):
+    try:
+        with open(path, errors="replace") as f:
+            return f.read(limit)
+    except OSError as e:
+        return f"{path}: {e.strerror}\n"
+
+
 def tool_text(*argv, timeout=None):
     rc, out, err = run(*argv, timeout=timeout)
     head = f"$ {' '.join(argv)}\n# exit {rc}\n"
@@ -487,7 +505,7 @@ def bundle_files(since, until, cs):
         "nexus-units.txt": tool_text("systemctl", "list-units", "nexus-*", "--all", "--plain", "--no-pager"),
         "nft-ruleset.txt": tool_text("nft", "list", "table", "inet", "nexus"),
         "catalog-stats.json": json.dumps(catalog_stats(), indent=1),
-        "smart.txt": tool_text("smartctl", "--scan") if shutil.which(cfg("SMARTCTL")) else "smartctl not installed\n",
+        "disks.json": read_text(cfg("DISKS_STATUS")),
     }
 
 
