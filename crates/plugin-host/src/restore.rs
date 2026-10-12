@@ -151,9 +151,7 @@ pub fn run(
         kind: p.kind.to_owned(),
         op: Op::Restore,
         config: p.config.to_owned(),
-        params: snap
-            .init_params(restore_extra(p))
-            .to_string(),
+        params: snap.init_params(restore_extra(p)).to_string(),
         base: Some(BaseInfo { time: snap.time }),
         state: snap.state.clone(),
     })?;

@@ -430,10 +430,7 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
                 let (tcur, tspec) = crate::plugins::source_of(&st.cat.conn(), tenant, tid)
                     .map_err(|_| ApiError::bad("target_source_id: no such plugin source in this tenant"))?;
                 if tcur.id != cur.id || tspec.kind != spec.kind {
-                    return Err(ApiError::bad(format!(
-                        "target_source_id: not a {} source",
-                        spec.kind
-                    )));
+                    return Err(ApiError::bad(format!("target_source_id: not a {} source", spec.kind)));
                 }
             }
             json!(r)

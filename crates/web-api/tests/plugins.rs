@@ -543,11 +543,14 @@ async fn plugin_lifecycle_sources_and_jobs() {
         v
     };
     assert_eq!(opened(dr)["apps"][0]["password"], "app-s3cret");
-    let put_apps = |apps: Value| {
-        json!({"name": "pg-dr", "config": {"host": "db9", "user": "b", "apps": apps}})
-    };
+    let put_apps = |apps: Value| json!({"name": "pg-dr", "config": {"host": "db9", "user": "b", "apps": apps}});
     let r = t
-        .call(Method::PUT, &format!("/api/v1/sources/{dr}"), &admin, Some(put_apps(json!([{"id": "a"}, {"id": "b", "password": "b2"}]))))
+        .call(
+            Method::PUT,
+            &format!("/api/v1/sources/{dr}"),
+            &admin,
+            Some(put_apps(json!([{"id": "a"}, {"id": "b", "password": "b2"}]))),
+        )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     assert_eq!(opened(dr)["apps"][0]["password"], "app-s3cret");
@@ -558,7 +561,12 @@ async fn plugin_lifecycle_sources_and_jobs() {
         (json!([{"id": "a", "password": "x", "evil": 1}]), "unknown property"),
     ] {
         let r = t
-            .call(Method::PUT, &format!("/api/v1/sources/{dr}"), &admin, Some(put_apps(apps)))
+            .call(
+                Method::PUT,
+                &format!("/api/v1/sources/{dr}"),
+                &admin,
+                Some(put_apps(apps)),
+            )
             .await;
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{why}");
         assert!(r.body["error"].as_str().unwrap().contains(why), "{why}: {:?}", r.body);
@@ -572,8 +580,15 @@ async fn plugin_lifecycle_sources_and_jobs() {
                    "params": {"database": "app"}, "target_source_id": target}),
         )
     };
-    let r = t.call(Method::POST, "/api/v1/jobs", &tina, Some(other("to_other", json!(dr)))).await;
-    assert_eq!(r.status, StatusCode::BAD_REQUEST, "to_other takes no params: {:?}", r.body);
+    let r = t
+        .call(Method::POST, "/api/v1/jobs", &tina, Some(other("to_other", json!(dr))))
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::BAD_REQUEST,
+        "to_other takes no params: {:?}",
+        r.body
+    );
     let r = t
         .call(
             Method::POST,
@@ -593,8 +608,17 @@ async fn plugin_lifecycle_sources_and_jobs() {
             .query_row("SELECT params FROM jobs WHERE id = ?1", [id], |r| r.get(0))
             .unwrap();
     assert_eq!(serde_json::from_str::<Value>(&stored).unwrap()["target_source_id"], dr);
-    let r = t.call(Method::POST, "/api/v1/jobs", &tina, Some(other("to_target", json!(dr)))).await;
-    assert!(r.body["error"].as_str().unwrap().contains("cannot run into another source"), "{:?}", r.body);
+    let r = t
+        .call(Method::POST, "/api/v1/jobs", &tina, Some(other("to_target", json!(dr))))
+        .await;
+    assert!(
+        r.body["error"]
+            .as_str()
+            .unwrap()
+            .contains("cannot run into another source"),
+        "{:?}",
+        r.body
+    );
     let r = t
         .call(
             Method::POST,
@@ -618,7 +642,11 @@ async fn plugin_lifecycle_sources_and_jobs() {
             )
             .await;
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
-        assert!(r.body["error"].as_str().unwrap().contains("in this tenant"), "{:?}", r.body);
+        assert!(
+            r.body["error"].as_str().unwrap().contains("in this tenant"),
+            "{:?}",
+            r.body
+        );
     }
 
     // remove refused while a source exists; disable is quorum-gated
