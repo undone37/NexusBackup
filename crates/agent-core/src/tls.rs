@@ -180,6 +180,11 @@ pub fn new_identity(hostname: &str) -> Result<(String, String), String> {
     Ok((kp.serialize_pem(), cert.pem()))
 }
 
+/// A new key pair (PEM), certificate renewal.
+pub fn new_key() -> Result<String, String> {
+    Ok(rcgen::KeyPair::generate().map_err(|e| e.to_string())?.serialize_pem())
+}
+
 /// CSR for the existing key (the appliance sets CN, EKU and validity).
 pub fn csr(key_pem: &str) -> Result<String, String> {
     let kp = rcgen::KeyPair::from_pem(key_pem).map_err(|e| e.to_string())?;

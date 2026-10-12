@@ -2,10 +2,10 @@
 //! `agent_core::chunk`; the [`Locator`] serves `Want` later).
 
 use crate::cache::{Cache, Cached};
-use crate::glob::Excludes;
 use crate::snapshot::BTRFS_DIR;
 use crate::sys;
 use agent_core::chunk::{self, ChunkList};
+use agent_core::filter::{Filter, Visit};
 use agent_proto::{Entry, Kind, ScanStats, MAX_PATH, MAX_XATTR};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, Metadata};
@@ -63,7 +63,7 @@ fn kind_of(m: &Metadata) -> Option<Kind> {
 }
 
 pub struct Scanner<'a> {
-    pub excludes: &'a Excludes,
+    pub filter: &'a Filter,
     /// committed cache of the base backup (None = read everything)
     pub cache: Option<&'a Cache>,
     /// all host mount points: never descended into from a parent root
@@ -76,9 +76,9 @@ pub struct Scanner<'a> {
 }
 
 impl<'a> Scanner<'a> {
-    pub fn new(excludes: &'a Excludes, cache: Option<&'a Cache>, locator: Locator, new_cache: Cache) -> Self {
+    pub fn new(filter: &'a Filter, cache: Option<&'a Cache>, locator: Locator, new_cache: Cache) -> Self {
         Scanner {
-            excludes,
+            filter,
             cache,
             mountpoints: HashSet::new(),
             locator,
@@ -109,6 +109,10 @@ impl<'a> Scanner<'a> {
                 }
             };
             let dev = md.dev();
+            let visit = self.filter.visit(root.host.as_os_str().as_bytes());
+            if visit == Visit::Skip || (visit == Visit::Pass && !md.is_dir()) {
+                continue;
+            }
             if root.host != Path::new("/") {
                 if let Some(e) = self.entry(root, &root.host, &root.src, &md) {
                     emit(e)?;
@@ -133,7 +137,8 @@ impl<'a> Scanner<'a> {
                         continue;
                     }
                     let (h, s) = (host.join(&name), src.join(&name));
-                    if self.excludes.matches(h.as_os_str().as_bytes()) {
+                    let visit = self.filter.visit(h.as_os_str().as_bytes());
+                    if visit == Visit::Skip {
                         continue;
                     }
                     let md = match fs::symlink_metadata(&s) {
@@ -143,6 +148,9 @@ impl<'a> Scanner<'a> {
                             continue;
                         }
                     };
+                    if visit == Visit::Pass && !md.is_dir() {
+                        continue;
+                    }
                     let boundary = md.is_dir() && (md.dev() != dev || self.mountpoints.contains(&h));
                     if boundary && self.roots.contains(&h) {
                         continue; // another root covers it
@@ -320,9 +328,12 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn scan_dir(dir: &Path, excludes: &[&str], cache: Option<&Cache>, live: bool) -> (Vec<Entry>, Scanner<'static>) {
-        let ex: &'static Excludes = Box::leak(Box::new(Excludes::new(
-            &excludes.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-        )));
+        let globs = crate::glob::Excludes::new(&excludes.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        scan_filtered(dir, Filter::globs(globs), cache, live)
+    }
+
+    fn scan_filtered(dir: &Path, f: Filter, cache: Option<&Cache>, live: bool) -> (Vec<Entry>, Scanner<'static>) {
+        let ex: &'static Filter = Box::leak(Box::new(f));
         let cache: Option<&'static Cache> = cache.map(|c| &*Box::leak(Box::new(c.clone())));
         let mut s = Scanner::new(ex, cache, Locator::new(None, 0).unwrap(), Cache::new(1, None));
         let mut out = vec![];
@@ -430,6 +441,44 @@ mod tests {
     }
 
     #[test]
+    fn include_roots_and_regex_excludes() {
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path();
+        for p in ["home/alice/docs", "home/alice/.cache", "home/bob", "etc"] {
+            fs::create_dir_all(d.join(p)).unwrap();
+        }
+        for p in [
+            "home/alice/docs/a.txt",
+            "home/alice/docs/a.bak",
+            "home/alice/.cache/x",
+            "home/bob/b",
+            "etc/e",
+            "top",
+        ] {
+            fs::write(d.join(p), b"x").unwrap();
+        }
+        let s = |v: &[String]| v.to_vec();
+        let f = Filter::new(
+            crate::glob::Excludes::new(&[]),
+            &s(&[format!("{}/home/alice", d.display())]),
+            &s(&[r"\.bak$".into(), "/\\.cache$".into()]),
+            false,
+        )
+        .unwrap();
+        let (es, _) = scan_filtered(d, f, None, false);
+        let names: Vec<String> = es
+            .iter()
+            .map(|e| String::from_utf8_lossy(&e.path).into_owned())
+            .map(|n| n.trim_start_matches(&d.display().to_string()[1..]).to_owned())
+            .collect();
+        assert_eq!(
+            names,
+            ["", "/home", "/home/alice", "/home/alice/docs", "/home/alice/docs/a.txt"],
+            "the way to the include root, the root's content minus regex excludes"
+        );
+    }
+
+    #[test]
     fn cache_marks_unchanged_without_reading() {
         let t = tempfile::tempdir().unwrap();
         let d = t.path();
@@ -460,7 +509,7 @@ mod tests {
         fs::write(d.join("hot"), vec![1u8; 600_000]).unwrap();
         let pre = fs::symlink_metadata(d.join("hot")).unwrap();
         // simulate a writer between the walk's stat and the read
-        let ex = Excludes::default();
+        let ex = Filter::default();
         let spool = t.path().join("spool");
         let mut s = Scanner::new(
             &ex,
@@ -502,7 +551,7 @@ mod tests {
         let d = t.path();
         fs::create_dir_all(d.join("mnt/inner")).unwrap();
         fs::write(d.join("mnt/inner/x"), b"x").unwrap();
-        let ex = Excludes::default();
+        let ex = Filter::default();
         let mut s = Scanner::new(&ex, None, Locator::default(), Cache::default());
         s.mountpoints.insert(d.join("mnt"));
         let mut out = vec![];

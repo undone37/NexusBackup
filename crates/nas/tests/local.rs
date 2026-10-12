@@ -64,7 +64,7 @@ fn opts(threads: usize) -> scan::Options {
         threads,
         xattrs: true,
         extra_xattrs: Vec::new(),
-        excludes: agent_core::glob::Excludes::new(&ex),
+        filter: agent_core::filter::Filter::globs(agent_core::glob::Excludes::new(&ex)),
         batch: 7,
         before_read: None,
     }
@@ -325,4 +325,46 @@ fn download_matches_the_share() {
     }
     assert_eq!(got.len(), want.len());
     assert_eq!(got, want);
+}
+
+/// Phase 15e: include roots (share paths) and regex excludes, same semantics as the
+/// agents (agent_core::filter), deterministic for any number of threads.
+#[test]
+fn include_roots_and_regex_excludes() {
+    let d = tempfile::tempdir().unwrap();
+    let share = d.path().join("share");
+    tree(&share);
+    let root = mount::open_local(&share).unwrap();
+    let st = store(&d.path().join("store"));
+    let o = |threads| {
+        let mut o = opts(threads);
+        o.filter = agent_core::filter::Filter::new(
+            agent_core::glob::Excludes::new(&["*.tmp".into()]),
+            &["/docs/deep/a".into(), "/many/".into()],
+            &[r"^/many/f0[0-8]".into(), r"/b$".into()],
+            false,
+        )
+        .unwrap();
+        o
+    };
+    let (one, _) = scan::scan(&st, &root, &o(1), None, &quiet).unwrap();
+    let (many, r) = scan::scan(&st, &root, &o(8), None, &quiet).unwrap();
+    assert_eq!(one, many);
+    assert_eq!(r.error_count, 0, "{:?}", r.errors);
+    let paths: Vec<String> = one
+        .iter()
+        .map(|e| String::from_utf8_lossy(&e.path).into_owned())
+        .collect();
+    // the way to /docs/deep/a, nothing else of docs (README, hl2), `b` excluded by regex
+    assert!(
+        paths.starts_with(&["docs".into(), "docs/deep".into(), "docs/deep/a".into()]),
+        "{paths:?}"
+    );
+    assert!(!paths
+        .iter()
+        .any(|p| p.starts_with("docs/deep/a/b") || p == "docs/README.txt" || p == "hl1"));
+    // /many minus f0000..f0899
+    let many_files = paths.iter().filter(|p| p.starts_with("many/f")).count();
+    assert_eq!(many_files, 100, "f0900..f0999");
+    assert!(paths.contains(&"many/hl3".to_string()));
 }

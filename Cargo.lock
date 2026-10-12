@@ -91,6 +91,7 @@ dependencies = [
  "libc",
  "postcard",
  "rcgen",
+ "regex",
  "ring",
  "rustls",
  "serde",

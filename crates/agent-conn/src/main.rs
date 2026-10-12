@@ -1,4 +1,4 @@
-//! `nexus-agentctl <config.json> enroll | backup | restore | update | hello |
+//! `nexus-agentctl <config.json> enroll | backup | restore | update | hello | renew |
 //! files <agent-id> <time> ls <dir> | files <agent-id> <time> get <out.tar|out.zip> <path>...`
 //!
 //! Spawned by the scheduler with a generated 0600 config (docs/agent-protocol.md
@@ -12,7 +12,7 @@ use agent_conn::ca::Ca;
 use agent_conn::files::{self, Format};
 use agent_conn::map::MapDb;
 use agent_conn::restore::{self, parse_overwrite, Spec as RestoreSpec};
-use agent_conn::tls::{session_config, AgentInfo, Session};
+use agent_conn::tls::{session_config_pins, AgentInfo, Session};
 use agent_conn::{enroll, update, valid_agent_id};
 use anyhow::{bail, Context, Result};
 use chunkstore::{Options, Store};
@@ -61,6 +61,9 @@ struct AgentCfg {
     port: u16,
     #[serde(default)]
     cert_sha256: Option<String>,
+    /// a renewed certificate issued but not yet confirmed (accepted as well)
+    #[serde(default)]
+    cert_sha256_next: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -71,6 +74,10 @@ struct BackupCfg {
     excludes: Vec<String>,
     #[serde(default)]
     hooks: bool,
+    #[serde(default)]
+    filters: agent_proto::Filters,
+    #[serde(default)]
+    limits: agent_proto::Limits,
 }
 
 #[derive(Deserialize)]
@@ -104,14 +111,22 @@ impl Config {
             .cert_sha256
             .as_deref()
             .context("agent is not enrolled (no certificate fingerprint)")?;
+        let pins: Vec<&str> = std::iter::once(pin).chain(a.cert_sha256_next.as_deref()).collect();
         let mut s = Session::connect(
             &a.host,
             a.port,
-            session_config(ca, &a.id, Some(pin))?,
+            session_config_pins(ca, &a.id, &pins)?,
             Duration::from_secs(self.timeout_secs),
         )?;
         let info = s.hello(&a.id)?;
         println!("agent-info {}", serde_json::to_string(&info)?);
+        // which certificate the agent presented (confirms a renewed one) and its validity
+        if let Some((fp, nb, na)) = s.peer_cert() {
+            println!(
+                "agent-cert {}",
+                json!({"agent_id": a.id, "cert_sha256": fp, "not_before": nb, "not_after": na})
+            );
+        }
         Ok((s, info))
     }
 }
@@ -119,7 +134,7 @@ impl Config {
 fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: nexus-agentctl <config.json> enroll | backup | restore | update | hello | files <agent-id> <time> ls <dir> | files <agent-id> <time> get <out.tar|out.zip> <path>...";
+    let usage = "usage: nexus-agentctl <config.json> enroll | backup | restore | update | hello | renew | files <agent-id> <time> ls <dir> | files <agent-id> <time> get <out.tar|out.zip> <path>...";
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
         bail!("{usage}");
     };
@@ -149,7 +164,9 @@ fn main() -> Result<()> {
                     host: a.host.clone(),
                     port: a.port,
                     cert_sha256: Some(e.cert_sha256.clone()),
+                    cert_sha256_next: None,
                 }),
+
                 ..cfg
             };
             let end = Instant::now() + Duration::from_secs(60);
@@ -171,6 +188,34 @@ fn main() -> Result<()> {
             let ca = Ca::load_or_create(&cfg.ca_dir)?;
             cfg.session(&ca)?.0.close();
         }
+        ("renew", []) => {
+            let ca = Ca::load_or_create(&cfg.ca_dir)?;
+            let a = cfg.agent()?;
+            let (mut s, _) = cfg.session(&ca)?;
+            let line = |what: &str, r: &agent_conn::renew::Renewed| {
+                println!(
+                    "{what} {}",
+                    json!({"agent_id": a.id, "cert_sha256": r.cert_sha256, "not_before": r.not_before, "not_after": r.not_after})
+                )
+            };
+            // `renew-issued` first: the scheduler accepts it as a second pin even if
+            // the confirmation below never arrives
+            let r = agent_conn::renew::renew(&ca, &mut s, &a.id, &mut |r| line("renew-issued", r))?;
+            s.close();
+            line("renewed", &r);
+            // confirm with a session pinned to the new certificate only
+            let pinned = Config {
+                agent: Some(AgentCfg {
+                    id: a.id.clone(),
+                    host: a.host.clone(),
+                    port: a.port,
+                    cert_sha256: Some(r.cert_sha256.clone()),
+                    cert_sha256_next: None,
+                }),
+                ..cfg
+            };
+            pinned.session(&ca)?.0.close();
+        }
         ("backup", []) => {
             let b = cfg.backup.as_ref().context("config: backup missing")?;
             if b.paths.is_empty() {
@@ -186,6 +231,8 @@ fn main() -> Result<()> {
                 paths: b.paths.clone(),
                 excludes: b.excludes.clone(),
                 hooks: b.hooks,
+                filters: b.filters.clone(),
+                limits: b.limits,
             };
             let written = store.written();
             let r = backup::backup(&store, &mut map, &mut s, &cfg.agent()?.id, &spec, &mut |l| {

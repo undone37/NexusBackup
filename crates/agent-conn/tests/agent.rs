@@ -134,6 +134,8 @@ impl Env {
                 paths: vec!["/".into()],
                 excludes: vec![],
                 hooks: true,
+                filters: Default::default(),
+                limits: Default::default(),
             },
             &mut |l| eprintln!("{l}"),
         );

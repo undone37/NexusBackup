@@ -10,7 +10,7 @@
 use crate::map::MapDb;
 use crate::tls::Session;
 use crate::{hex, name, source_name, valid_rel_path, TREE_INDEX};
-use agent_proto::{BaseRef, Entry, Hash, Kind, Message, ScanStats, MAX_BATCH};
+use agent_proto::{BaseRef, Entry, Filters, Hash, Kind, Limits, Message, ScanStats, CAP_PREPARE2, MAX_BATCH};
 use anyhow::{bail, Context, Result};
 use chunkstore::{ChunkId, Index, Manifest, Store, TreeEntry, TreeKind};
 use std::collections::{HashMap, HashSet};
@@ -21,6 +21,9 @@ pub struct Spec {
     pub paths: Vec<String>,
     pub excludes: Vec<String>,
     pub hooks: bool,
+    /// sent with `PrepareEx` (agents with CAP_PREPARE2), ignored by older agents
+    pub filters: Filters,
+    pub limits: Limits,
 }
 
 #[derive(Debug, Default)]
@@ -118,12 +121,30 @@ pub fn backup(
         base,
         ..Default::default()
     };
-    s.send(&Message::Prepare {
-        job: spec.job,
-        paths: spec.paths.clone(),
-        excludes: spec.excludes.clone(),
-        hooks: spec.hooks,
-    })?;
+    if s.has_cap(CAP_PREPARE2) {
+        s.send(&Message::PrepareEx {
+            job: spec.job,
+            paths: spec.paths.clone(),
+            excludes: spec.excludes.clone(),
+            hooks: spec.hooks,
+            filters: spec.filters.clone(),
+            limits: spec.limits,
+        })?;
+    } else {
+        // an agent before v1.3: globs only, no limits (docs/agent-protocol.md "Filters")
+        if spec.filters != Filters::default() {
+            log("warning: this agent version ignores include paths, regex excludes and cross-mount settings: update the agent");
+        }
+        if spec.limits != Limits::default() {
+            log("warning: this agent version ignores the bandwidth / CPU limits: update the agent");
+        }
+        s.send(&Message::Prepare {
+            job: spec.job,
+            paths: spec.paths.clone(),
+            excludes: spec.excludes.clone(),
+            hooks: spec.hooks,
+        })?;
+    }
     match s.recv()? {
         Message::Prepared {
             job,

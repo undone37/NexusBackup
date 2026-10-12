@@ -252,3 +252,25 @@ pub fn uname() -> (String, String) {
     };
     (s(&u.release), s(&u.nodename))
 }
+
+/// `Limits::nice` for the calling thread (Linux priorities are per thread): CPU nice
+/// `n` and best-effort I/O priority 4..=7 (lowest at nice 19). Children (hooks)
+/// inherit both.
+pub fn lower_priority(n: u8) -> io::Result<()> {
+    // SAFETY: plain syscalls on the calling thread.
+    let tid = unsafe { libc::syscall(libc::SYS_gettid) } as libc::id_t;
+    cvt(unsafe { libc::setpriority(libc::PRIO_PROCESS, tid, libc::c_int::from(n)) })?;
+    const IOPRIO_WHO_PROCESS: libc::c_long = 1;
+    const IOPRIO_CLASS_BE: libc::c_long = 2;
+    let level = 4 + libc::c_long::from(n) * 3 / 19;
+    // SAFETY: ioprio_set(which, who, ioprio)
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_ioprio_set,
+            IOPRIO_WHO_PROCESS,
+            tid as libc::c_long,
+            (IOPRIO_CLASS_BE << 13) | level,
+        )
+    };
+    cvt(r as libc::c_int).map(drop)
+}

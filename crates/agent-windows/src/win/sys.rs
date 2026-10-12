@@ -391,3 +391,11 @@ pub fn enable_privileges(names: &[&str]) -> Vec<String> {
     }
     failed
 }
+
+/// `Limits::nice`: background processing mode for the calling (session) thread:
+/// lowest CPU scheduling, very low I/O and memory priority.
+pub fn background_mode() -> io::Result<()> {
+    use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN};
+    // SAFETY: pseudo handle of the calling thread.
+    unsafe { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) }.map_err(io_err)
+}

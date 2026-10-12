@@ -48,6 +48,11 @@ struct Config {
     snapshot_order: String,
     #[serde(default)]
     excludes: Vec<String>,
+    /// include roots (share paths, `/projects/a`) and regex excludes (agent_core::filter)
+    #[serde(default)]
+    include: Vec<String>,
+    #[serde(default)]
+    exclude_regex: Vec<String>,
     #[serde(default = "threads")]
     threads: usize,
     #[serde(default = "yes")]
@@ -243,7 +248,14 @@ impl Config {
                 (Some(Fs::Smb), _) => vec!["system.cifs_acl", "user.cifs.dosattrib", "user.cifs.creationtime"],
                 _ => Vec::new(),
             },
-            excludes: agent_core::glob::Excludes::new(&ex),
+            filter: agent_core::filter::Filter::new(
+                agent_core::glob::Excludes::new(&ex),
+                &self.include,
+                &self.exclude_regex,
+                false,
+            )
+            .map_err(anyhow::Error::msg)?,
+
             batch: 256,
             before_read: None,
         })

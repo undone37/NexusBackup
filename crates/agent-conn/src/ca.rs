@@ -181,6 +181,12 @@ impl Ca {
     }
 }
 
+/// (not_before, not_after) of a DER certificate, Unix seconds.
+pub fn cert_validity(der: &[u8]) -> Option<(i64, i64)> {
+    let (_, c) = x509_parser::parse_x509_certificate(der).ok()?;
+    Some((c.validity().not_before.timestamp(), c.validity().not_after.timestamp()))
+}
+
 /// CN of a DER certificate.
 pub fn common_name(der: &[u8]) -> Option<String> {
     let (_, c) = x509_parser::parse_x509_certificate(der).ok()?;
