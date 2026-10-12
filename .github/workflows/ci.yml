@@ -13,10 +13,21 @@ jobs:
       # Ubuntu 24.04 runners forbid unprivileged user namespaces (AppArmor); the plugin
       # sandbox tests start real sandboxes (the appliance allows them, docs/plugin-system.md)
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - run: cargo test --all
+      - run: cargo test --all --no-fail-fast
       - run: prove pve-plugin/t
       - run: python3 -m unittest discover -s os/greenboot/tests
       - run: release/check-trust.sh
+  web:
+    # the SPA embedded in nexus-web-api (same Node major as os/Containerfile)
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: web } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json }
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run check
+      - run: npm run build
   agent-windows:
     # Windows agent: cross-compile in podman (rust + mingw-w64), clippy for the Windows
     # target, size/import checks; platform-independent unit tests on Linux.
