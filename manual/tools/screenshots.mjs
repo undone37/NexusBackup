@@ -816,6 +816,21 @@ async function main() {
       await shot('firewall-edit', { height: 1000 });
       await closeDialogs();
     }],
+    // Phase 17c: Settings → Vault (the demo appliance is a primary: preconditions not met)
+    ['vault', async () => {
+      await go('/settings?tab=vault');
+      await until(`return document.body.innerText.includes('Preconditions')`, 'vault tab');
+      await shot('settings-vault', { height: 1000 });
+    }],
+    // Phase 17f: deactivate a tenant (reason dialog; the request then needs approval)
+    ['tenant-deactivate', async () => {
+      await go('/tenants');
+      await ev(`$rowClick('globex', 'Deactivate'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input')`, 'deactivate reason dialog');
+      await ev(`$fill('dialog[open] input', 'contract paused until 2027-01'); return true;`);
+      await shot('tenant-deactivate');
+      await closeDialogs();
+    }],
     ['approvals', async () => {
       await go('/quorum');
       await shot('approvals-admin', { height: 1400 });

@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { askConfirm } from '../lib/confirm.svelte';
+  import { askConfirm, askText } from '../lib/confirm.svelte';
   import { onMount } from 'svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
   import { t } from '../lib/i18n';
-  import { fmtBytes } from '../lib/format';
+  import { fmtBytes, fmtTime } from '../lib/format';
   import type { Tenant, TenantOffsite, SftpRemote, S3Remote } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
@@ -136,6 +136,17 @@
     }
   }
 
+  // Phase 17f: deactivation needs approval (backups stop); reactivation applies at once
+  async function deactivate(x: Tenant) {
+    const reason = await askText(t.tdis.reason(x.name));
+    if (!reason?.trim()) return;
+    if (await act(post(`/tenants/${encodeURIComponent(x.name)}/deactivate`, { reason: reason.trim() }), t.tdis.done)) load();
+  }
+  async function reactivate(x: Tenant) {
+    if (!(await askConfirm(t.tdis.reactivateConfirm(x.name)))) return;
+    if (await act(post(`/tenants/${encodeURIComponent(x.name)}/reactivate`), t.tdis.reactivated)) load();
+  }
+
   async function remove(x: Tenant) {
     if (!(await askConfirm(t.confirmDelete(`${t.tenant} "${x.name}"`)))) return;
     if (await act(del(`/tenants/${encodeURIComponent(x.name)}`), t.deleted)) load();
@@ -160,6 +171,7 @@
         <thead>
           <tr>
             <th scope="col">{t.name}</th>
+            <th scope="col">{t.tdis.status}</th>
             <th scope="col">{t.tenants.offsite}</th>
             <th scope="col">{t.tenants.uploaders}</th>
             <th scope="col">{t.storage.quota}</th>
@@ -171,6 +183,14 @@
             {@const r = remoteOf(x.offsite)}
             <tr>
               <td><strong>{x.name}</strong></td>
+              <td>
+                {#if x.disabled}
+                  <span class="chip warn" title={t.tdis.since(x.disabled_by ?? '—', fmtTime(x.disabled_at), x.disabled_reason ?? '')}>{t.tdis.deactivated}</span>
+                  <div class="muted">{x.disabled_reason}</div>
+                {:else}
+                  <span class="chip ok">{t.tdis.active}</span>
+                {/if}
+              </td>
               <td class="mono">
                 {summary(x.offsite)}
                 {#if r?.type === 's3' && r.lock}<span class="chip ok">{t.tenants.locked}</span>{/if}
@@ -179,6 +199,11 @@
               <td>{x.quota_bytes ? fmtBytes(x.quota_bytes) : '—'}</td>
               <td class="actions">
                 <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
+                {#if x.disabled}
+                  <button type="button" class="small" onclick={() => reactivate(x)}>{t.tdis.reactivate}</button>
+                {:else}
+                  <button type="button" class="small" onclick={() => deactivate(x)}>{t.tdis.deactivate}</button>
+                {/if}
                 <button type="button" class="small danger" onclick={() => remove(x)}>{t.delete}</button>
               </td>
             </tr>

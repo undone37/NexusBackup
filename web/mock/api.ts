@@ -185,7 +185,16 @@ interface InvRow {
 
 const db = {
   users: [] as User[],
-  tenants: [] as { name: string; offsite: Json; quota_bytes?: number | null }[],
+  tenants: [] as {
+    name: string;
+    offsite: Json;
+    quota_bytes?: number | null;
+    // Phase 17f: deactivated tenants
+    disabled?: boolean;
+    disabled_at?: number | null;
+    disabled_by?: string | null;
+    disabled_reason?: string | null;
+  }[],
   /** kind: pve | linux | nfs | smb | plugin:<kind> */
   sources: [] as { id: number; tenant: string; kind: string; name: string; config: Json; maintenance_until?: number | null }[],
   agents: [] as Agent[],
@@ -221,6 +230,8 @@ const db = {
   plugins: [] as Json[],
   pluginKeys: [] as Json[],
   approvals: false,
+  // Phase 17c setting `vault_mode`
+  vault: { enabled: false, since: null as number | null, by: null as string | null },
   gcPending: [] as Json[],
   seq: 100,
   /** Phase 12 settings (docs/phase12-contract.md) */
@@ -1406,8 +1417,9 @@ function find<T>(xs: T[], pred: (x: T) => boolean, what: string): T {
 }
 
 // approved requests the scheduler executes (state stays `approved` until it has)
-// (console.unlock: nobody executes it; the requester then fetches the code once, 14c)
-const SCHEDULER_ACTIONS = ['replication.key_export', 'gc_large', 'console.unlock'];
+// (console.unlock: nobody executes it; the requester then fetches the code once, 14c;
+// vault.disable: completed at the console with the recovery key, 17c)
+const SCHEDULER_ACTIONS = ['replication.key_export', 'gc_large', 'console.unlock', 'vault.disable'];
 // 202 {quorum_id, ...extra} like web-api's `accepted()`; with approvals disabled the
 // action runs at once (200 {approvals: "disabled", executed}).
 async function quorum(u: User, action: string, params: Json, extra: Json = {}): Promise<[number, Json]> {
@@ -1595,8 +1607,23 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       Object.assign(find(db.groups, (x) => x.id === p.id, 'group'), next);
       break;
     case 'approvals.disable':
+      if (db.vault.enabled) throw new HttpError(409, 'vault mode is on: approvals cannot be disabled');
       db.approvals = false;
       break;
+    case 'vault.enable':
+      Object.assign(db.vault, { enabled: true, since: now(), by });
+      break;
+    case 'vault.restore': {
+      // queued as the requester (their downloads stay theirs)
+      const ids = (p.jobs as Json[]).map((j) => addJob(j.kind, p.tenant, j.params, by).id);
+      return { job_ids: ids };
+    }
+    case 'tenant.disable': {
+      const x = find(db.tenants, (y) => y.name === p.name, 'tenant');
+      Object.assign(x, { disabled: true, disabled_at: now(), disabled_by: by, disabled_reason: p.reason });
+      for (const [sid, s] of db.sessions) if (db.users.find((y) => y.id === s.userId)?.tenant === p.name) db.sessions.delete(sid);
+      break;
+    }
     case 'oidc.update':
       db.oidc = { ...db.oidc, ...next, client_secret: db.quorumSecrets.get(qid)?.client_secret ?? db.oidc.client_secret };
       db.quorumSecrets.delete(qid);
@@ -1685,7 +1712,7 @@ on('POST', '/auth/login', async (c) => {
   if (f && f.until > now()) throw new HttpError(429, 'too many failed sign-ins; try again in 15 minutes');
   const u = db.users.find((x) => x.name === name);
   const expired = !!u?.expires && u.expires <= now();
-  if (!u || u.disabled || expired || u.act || !u.password || u.password !== password || !/^\d{6}$/.test(String(totp))) {
+  if (!u || u.disabled || tenantOff(u.tenant) || expired || u.act || !u.password || u.password !== password || !/^\d{6}$/.test(String(totp))) {
     const g = f && f.until === 0 ? f : { count: 0, until: 0 };
     g.count++;
     if (g.count >= 5) g.until = now() + 900;
@@ -1710,7 +1737,10 @@ on('POST', '/auth/logout', (c) => {
 });
 on('GET', '/auth/me', (c) => {
   const u = need(c.user);
-  return [200, { user: pub(u), csrf: db.sessions.get(c.sid!)!.csrf, console_shell: u.tenant || u.role === 'tenant_user' ? null : consoleShell }];
+  return [
+    200,
+    { user: pub(u), csrf: db.sessions.get(c.sid!)!.csrf, console_shell: u.tenant || u.role === 'tenant_user' ? null : consoleShell, vault_mode: db.vault.enabled },
+  ];
 });
 
 // tenants
@@ -1718,6 +1748,7 @@ const NAME_RE = /^(?!\.)[A-Za-z0-9._-]{1,64}$/;
 on('GET', '/tenants', (c) => [200, db.tenants.filter((t) => !need(c.user).tenant || t.name === c.user!.tenant).map((t) => ({ ...t, offsite: publicOffsite(t.offsite) }))]);
 on('POST', '/tenants', async (c) => {
   const u = need(c.user, 'admin');
+  vaultRefuse('new tenants');
   const name = String(c.body.name ?? '').trim();
   if (!NAME_RE.test(name)) throw new HttpError(400, 'invalid tenant name');
   if (db.tenants.some((t) => t.name === name)) throw new HttpError(409, 'tenant exists');
@@ -1737,6 +1768,89 @@ on('PUT', '/tenants/:name', async (c, [name]) => {
   return [200, { ...t, offsite: publicOffsite(t.offsite) }];
 });
 on('DELETE', '/tenants/:name', (c, [name]) => quorum(need(c.user, 'admin'), 'tenant.delete', { name: decodeURIComponent(name) }));
+
+// Phase 17f: tenant deactivation (web-api `tenants.rs`): approval to deactivate, reactivation at once
+function tenantOff(name: string | null | undefined): boolean {
+  return !!name && !!db.tenants.find((x) => x.name === name)?.disabled;
+}
+const PAUSED_KINDS = ['backup', 'plugin_backup', 'offsite', 'replica_sync'];
+on('POST', '/tenants/:name/deactivate', async (c, [name]) => {
+  const u = need(c.user, 'admin');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  const x = find(db.tenants, (y) => y.name === decodeURIComponent(name), 'tenant');
+  const reason = String(c.body.reason ?? '').trim();
+  if (!reason || reason.length > 500 || /[\u0000-\u001f]/.test(reason)) throw new HttpError(400, 'reason: 1 to 500 characters, one line');
+  if (x.disabled) throw new HttpError(409, 'tenant is already deactivated');
+  if (db.quorum.some((q) => q.action === 'tenant.disable' && q.state === 'pending' && q.params.name === x.name))
+    throw new HttpError(409, 'a request to deactivate this tenant is already pending');
+  return quorum(u, 'tenant.disable', { name: x.name, reason });
+});
+on('POST', '/tenants/:name/reactivate', async (c, [name]) => {
+  const u = need(c.user, 'admin');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  const x = find(db.tenants, (y) => y.name === decodeURIComponent(name), 'tenant');
+  if (!x.disabled) throw new HttpError(409, 'tenant is not deactivated');
+  const was = x.disabled_reason;
+  Object.assign(x, { disabled: false, disabled_at: null, disabled_by: null, disabled_reason: null });
+  await audit(u.name, 'tenant.enable', `tenant/${x.name}`, { was_reason: was });
+  return [200, { name: x.name, disabled: false }];
+});
+
+// Phase 17c: vault mode (web-api `vault.rs`)
+const VAULT_KINDS = ['restore', 'restore_ct', 'instant_recover', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount', 'offsite_restore'];
+function vaultRefuse(what: string) {
+  if (db.vault.enabled) throw new HttpError(409, `vault mode is on: ${what} are not allowed on this appliance (Settings → Vault)`);
+}
+function vaultChecks() {
+  const replicated = new Set(db.replSources.flatMap((s) => s.tenants as string[]));
+  const local = db.tenants.map((x) => x.name).filter((n) => !replicated.has(n));
+  const web: string[] = db.firewall.web?.allow ?? [];
+  return {
+    secondary: { ok: db.replSources.length > 0, sources: db.replSources.length },
+    no_local_tenants: { ok: !local.length, tenants: local },
+    no_peers: { ok: !db.replPeers.length, peers: db.replPeers.length },
+    approvals: { ok: db.approvals },
+    web_restricted: { ok: web.length > 0, allow: web },
+  };
+}
+const vaultPending = (action: string) => db.quorum.filter((q) => q.action === action && q.state === 'pending').pop()?.id ?? null;
+on('GET', '/vault', (c) => {
+  const u = need(c.user);
+  const out: Json = { ...db.vault };
+  if (!u.tenant && ['admin', 'security_officer', 'operator'].includes(u.role)) {
+    const checks = vaultChecks();
+    Object.assign(out, {
+      checks,
+      ready: Object.values(checks).every((x) => x.ok),
+      pending_enable: vaultPending('vault.enable'),
+      pending_disable: vaultPending('vault.disable'),
+      approved_disable:
+        db.quorum.filter((q) => q.action === 'vault.disable' && q.state === 'approved' && (q.decided_at ?? 0) > now() - 72 * 3600).pop()?.id ?? null,
+    });
+  }
+  return [200, out];
+});
+on('PUT', '/vault', async (c) => {
+  const u = need(c.user, 'admin');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  const want = !!c.body.enabled;
+  if (want === db.vault.enabled) return [200, { enabled: want }];
+  const action = want ? 'vault.enable' : 'vault.disable';
+  if (vaultPending(action)) throw new HttpError(409, `a ${action} request is already pending`);
+  if (want && !Object.values(vaultChecks()).every((x) => x.ok)) throw new HttpError(409, 'vault mode cannot be enabled: a precondition is not met');
+  const q = { id: nextId(), action, params: { enabled: want }, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
+  db.quorum.push(q);
+  await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action, params: q.params });
+  return [202, { quorum_id: q.id }];
+});
+/** Vault mode: restores and downloads become one `vault.restore` request. */
+async function vaultGate(u: User, tenant: string, jobs: { kind: string; params: Json }[]): Promise<Reply | null> {
+  if (!db.vault.enabled || !jobs.some((j) => VAULT_KINDS.includes(j.kind))) return null;
+  const q = { id: nextId(), action: 'vault.restore', params: { tenant, jobs }, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
+  db.quorum.push(q);
+  await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action: q.action, params: q.params });
+  return [202, { quorum_id: q.id, vault: true }];
+}
 
 // sources
 on('GET', '/sources', (c) => [200, byTenant(need(c.user), db.sources).map(stripSource)]);
@@ -1788,6 +1902,7 @@ function shareConfig(kind: string, cfg: Json): Json {
 
 on('POST', '/sources', async (c) => {
   const u = need(c.user, 'admin');
+  vaultRefuse('new sources');
   const { tenant, name, config, kind = 'pve' } = c.body;
   find(db.tenants, (t) => t.name === tenant, 'tenant');
   if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
@@ -2010,6 +2125,7 @@ const disksAdded = (a: Record<string, string[]> = {}, b: Record<string, string[]
   Object.entries(b).some(([k, l]) => l.some((d) => !(a[k] ?? []).includes(d)));
 on('POST', '/groups', async (c) => {
   const u = need(c.user, 'admin');
+  vaultRefuse('new protection groups');
   const g: MockGroup = { id: nextId(), tenant: c.body.tenant, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), name: c.body.name, guests: c.body.guests ?? [], mode: 'explicit', selector: [], exclude: [], timezone: checkTz(c.body.timezone), paused_until: null };
   const src = find(db.sources, (s) => s.id === g.source_id && s.tenant === g.tenant, 'source in tenant');
   Object.assign(g, checkMode(src, c.body), groupSelection(src, c.body));
@@ -2099,6 +2215,7 @@ on('GET', '/replication/peers', (c) => (need(c.user, 'admin', 'security_officer'
 on('GET', '/replication/sources', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, db.replSources]));
 on('POST', '/replication/peers', async (c) => {
   const u = need(c.user, 'admin');
+  vaultRefuse('replication peers (serving as a primary)');
   const { name, tenants = [] } = c.body;
   if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
   if (!Array.isArray(tenants) || !tenants.length) throw new HttpError(400, 'tenants: at least one');
@@ -2194,6 +2311,7 @@ async function issueToken(a: Agent) {
 on('GET', '/agents', (c) => [200, byTenant(need(c.user), db.agents).map(pubAgent)]);
 on('POST', '/agents', async (c) => {
   const u = need(c.user, 'admin');
+  vaultRefuse('new agents');
   const { tenant, name, host, port = 7444 } = c.body;
   find(db.tenants, (t) => t.name === tenant, 'tenant');
   if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
@@ -2631,6 +2749,7 @@ async function fwRequest(u: User, id: string, raw: unknown, enabled: unknown, fo
   const old = structuredClone(db.firewall[id]);
   const rule = { allow: list, enabled: typeof enabled === 'boolean' ? enabled : old.enabled };
   if (JSON.stringify(rule) === JSON.stringify(old)) return [200, { service: id, rule }];
+  if (id === 'web' && !list.length) vaultRefuse('an unrestricted web inbound rule');
   const ok = !list.length || list.some((x) => inCidr(CLIENT_IP, x));
   if (svc.lockout && !ok && !(force && String(confirm ?? '').trim() === CLIENT_IP))
     throw new HttpError(409, `the list for ${id} does not contain your address ${CLIENT_IP}: you would lose access to the web UI; add it, or confirm with force and confirm = "${CLIENT_IP}"`);
@@ -2685,6 +2804,7 @@ on('PUT', '/settings/approvals', async (c) => {
     await audit(u.name, 'settings.approvals', 'settings/approvals', { enabled: true });
     return [200, approvalsState()];
   }
+  vaultRefuse('requests to disable approvals');
   if (approvalsState().pending_disable) throw new HttpError(409, 'a request to disable approvals is already pending');
   return quorum(u, 'approvals.disable', { enabled: false });
 });
@@ -2827,6 +2947,7 @@ on('POST', '/jobs', async (c) => {
   if (kind === 'files_list' && !String(params.path ?? '').startsWith('/')) throw new HttpError(400, 'path: must be absolute');
   checkJob(u, kind, tenant, params);
   if (kind === 'files_get' && !canDownload(u)) throw new HttpError(403, 'this account may not download files');
+  if (PAUSED_KINDS.includes(kind) && tenantOff(tenant)) throw new HttpError(409, `tenant ${tenant} is deactivated: no ${kind} jobs until it is reactivated`);
   if (kind === 'backup') backupGuests(params);
   if (params.replace) {
     // Phase 15a: an approval request (`restore.replace`), never a plain job; not for tenant users
@@ -2836,6 +2957,8 @@ on('POST', '/jobs', async (c) => {
   }
   // Like web-api: files_get gets a server-generated download token, returned in the 202 body.
   const p = kind === 'files_get' ? { ...params, download_token: rand(32) } : params;
+  const gated = await vaultGate(u, tenant, [{ kind, params: p }]);
+  if (gated) return gated;
   const j = addJob(kind, tenant, p, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
   if (kind.startsWith('plugin_')) j.duration = { plugin_validate: 3, plugin_guests: 3, plugin_restore: 14, plugin_mount: 6 }[kind as string] ?? 10;
   if (kind === 'inventory') j.duration = 3;
@@ -2864,6 +2987,8 @@ on('POST', '/restores', async (c) => {
     }
     return { kind, p };
   });
+  const gated = await vaultGate(u, b.tenant, jobs.map(({ kind, p }) => ({ kind, params: p })));
+  if (gated) return gated;
   const ids = jobs.map(({ kind, p }) => addJob(kind, b.tenant, p, u.name).id);
   await audit(u.name, 'job.create_many', `tenant/${b.tenant}`, { ids, jobs });
   return [202, { ids }];
@@ -3316,7 +3441,7 @@ function dashboard(u: User, days: number) {
   const objs = protectedObjects(u).map((o) => {
     const last = snaps.filter((s) => s.tenant === o.tenant && o.names.includes(s.source)).reduce((m, s) => Math.max(m, s.time), 0) || null;
     const age_s = last ? t - last : null;
-    const sla = !last ? 'never' : (age_s as number) > o.rpo_s * 1.5 ? (o.paused ? 'paused' : 'breach') : 'ok';
+    const sla = tenantOff(o.tenant) ? 'deactivated' : !last ? 'never' : (age_s as number) > o.rpo_s * 1.5 ? (o.paused ? 'paused' : 'breach') : 'ok';
     return { ...o, last_ok: last, age_s, sla };
   });
   const inGroup = objs.filter((o) => o.inGroup);
@@ -3327,12 +3452,14 @@ function dashboard(u: User, days: number) {
     sla_ok: inGroup.filter((o) => o.sla === 'ok').length,
     sla_breach: inGroup.filter((o) => o.sla === 'breach').length,
     sla_paused: inGroup.filter((o) => o.sla === 'paused').length,
+    sla_deactivated: inGroup.filter((o) => o.sla === 'deactivated').length,
+    deactivated_tenants: tenants.filter((n) => tenantOff(n)),
     never: inGroup.filter((o) => o.sla === 'never').length,
     unprotected_list: objs
       .filter((o) => !o.inGroup)
       .map((o) => ({ tenant: o.tenant, kind: o.kind, source_id: o.sourceId ?? null, source: o.sourceName ?? '', guest: o.source, name: o.name })),
     worst: inGroup
-      .sort((a, b) => Number(!['ok', 'paused'].includes(b.sla)) - Number(!['ok', 'paused'].includes(a.sla)) || (b.age_s ?? Infinity) / b.rpo_s - (a.age_s ?? Infinity) / a.rpo_s)
+      .sort((a, b) => Number(!['ok', 'paused', 'deactivated'].includes(b.sla)) - Number(!['ok', 'paused', 'deactivated'].includes(a.sla)) || (b.age_s ?? Infinity) / b.rpo_s - (a.age_s ?? Infinity) / a.rpo_s)
       .slice(0, 10)
       .map(({ source, name, kind, tenant, last_ok, age_s, rpo_s, sla }) => ({ source, name, kind, tenant, last_ok, age_s, rpo_s, sla })),
   };
@@ -4669,7 +4796,7 @@ async function handle(req: Req, res: Res) {
       if (now() - sess.last > lim.idle_min * 60 || now() - sess.created > lim.absolute_h * 3600) db.sessions.delete(sid!);
       else {
         sess.last = now();
-        user = db.users.find((u) => u.id === sess.userId && !u.disabled && !(u.expires && u.expires <= now())) ?? null;
+        user = db.users.find((u) => u.id === sess.userId && !u.disabled && !tenantOff(u.tenant) && !(u.expires && u.expires <= now())) ?? null;
       }
     }
     if (method !== 'GET' && path !== '/auth/login' && !path.startsWith('/auth/activate/') && user && req.headers['x-csrf-token'] !== sess?.csrf) {

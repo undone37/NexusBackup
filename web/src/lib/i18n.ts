@@ -255,7 +255,7 @@ export const en = {
     age: 'Age',
     rpo: 'RPO',
     sla: 'SLA',
-    slaChip: { ok: 'Within RPO', breach: 'Breached', never: 'Never', paused: 'Paused' } as Record<string, string>,
+    slaChip: { ok: 'Within RPO', breach: 'Breached', never: 'Never', paused: 'Paused', deactivated: 'Deactivated' } as Record<string, string>,
     allGood: 'Every object is within its RPO.',
     notInGroup: (n: number) => `Not in a group (${n})`,
     notInGroupSub: 'Guests, hosts and shares no protection group backs up (from the guest inventory of each source)',
@@ -938,6 +938,7 @@ export const en = {
       console: 'Console access',
       security: 'Security',
       firewall: 'Firewall',
+      vault: 'Vault',
     } as Record<string, string>,
     fw: {
       intro:
@@ -2031,6 +2032,59 @@ export const en = {
       'Applies to group backups. The snapshot is kept either way; a failed job is retried like any failed backup.',
     short: (mode: string, level: string) => (mode === 'off' ? '—' : `${mode}: ${level}`),
     dashTitle: 'Consistency of the newest snapshots',
+  },
+  // Phase 17c: vault mode for a replication secondary
+  vault: {
+    badge: 'Vault mode',
+    badgeTitle: 'Vault mode is on: restores and downloads need approval',
+    title: 'Vault mode',
+    on: 'On',
+    off: 'Off',
+    intro:
+      'Vault mode turns a replication secondary into a locked copy: approvals stay on, every restore, mount and download needs a second person, and no new tenants, sources, groups, agents or replication peers can be added. It is meant to stay on: switching it off needs an approval and then the recovery key at the console.',
+    since: (by: string, at: string) => `On since ${at} (requested by ${by}).`,
+    checks: 'Preconditions',
+    checkNames: {
+      secondary: 'This appliance is a replication secondary (at least one replication source)',
+      no_local_tenants: 'Every tenant is replicated (no local backup tenants)',
+      no_peers: 'No replication peers (this appliance is nobody’s primary)',
+      approvals: 'Approvals are enabled',
+      web_restricted: 'The web inbound rule is restricted (Settings → Firewall, service web)',
+    } as Record<string, string>,
+    localTenants: (l: string[]) => `Local tenants: ${l.join(', ')}`,
+    peers: (n: number) => `${n} peer(s)`,
+    enable: 'Request vault mode',
+    enableConfirm:
+      'Request vault mode? After approval, restores and downloads need approval, and switching vault mode off needs an approval plus the recovery key at the console.',
+    enablePending: (id: number) => `Request #${id} to enable vault mode is waiting for approval.`,
+    notReady: 'Vault mode can be requested once every precondition is met.',
+    disable: 'Request to switch off',
+    disableConfirm:
+      'Request to switch vault mode off? After approval, someone with the recovery key completes it at the appliance console.',
+    disablePending: (id: number) => `Request #${id} to switch vault mode off is waiting for approval.`,
+    disableApproved: (id: number) =>
+      `Request #${id} to switch vault mode off is approved. Complete it within 72 hours at the appliance console as root: nexus-setup vault-disable (asks for the recovery key).`,
+    disableHow:
+      'Switching off: 1. an admin requests it here, 2. another admin or security officer approves it, 3. within 72 hours someone runs nexus-setup vault-disable at the appliance console and types the recovery key. The web UI never asks for the recovery key.',
+    requestRestore: 'Request restore',
+    requestDownload: 'Request download',
+    restoreHint: 'Vault mode: restores, mounts and downloads are requests that a second person approves (Approvals). The job starts after approval.',
+    requested: (id: number) => `Vault mode: request #${id} is waiting for approval. The job starts once it is approved.`,
+  },
+  // Phase 17f: tenant deactivation
+  tdis: {
+    status: 'Status',
+    active: 'Active',
+    deactivated: 'Deactivated',
+    deactivate: 'Deactivate',
+    reactivate: 'Reactivate',
+    reason: (name: string) =>
+      `Deactivate tenant "${name}"? Its backups, offsite copies and replication stop, its accounts and API tokens can no longer sign in, and its alerts are muted. Retention keeps running; snapshots stay restorable by administrators. Reason (recorded in the audit log):`,
+    reactivateConfirm: (name: string) => `Reactivate tenant "${name}"? Backups resume on their schedules and its accounts can sign in again.`,
+    done: 'Tenant deactivated.',
+    reactivated: 'Tenant reactivated.',
+    since: (by: string, at: string, reason: string) => `Deactivated by ${by} on ${at}: ${reason}`,
+    dashBanner: (l: string[]) => `Deactivated tenants (no backups on purpose, not counted as RPO breaches): ${l.join(', ')}.`,
   },
 };
 

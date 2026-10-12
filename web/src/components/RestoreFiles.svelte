@@ -4,6 +4,7 @@
   import { hostAgentId } from '../lib/jobs';
   import { fmtAgo, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
+  import { session } from '../lib/session.svelte';
   import type { Agent, Overwrite } from '../lib/types';
   import Modal from './Modal.svelte';
 
@@ -144,7 +145,7 @@
     {/if}
     <div class="form-actions">
       <button type="button" onclick={() => (open = false)}>{t.cancel}</button>
-      <button type="submit" class="primary" disabled={!ready}>{t.restoreFiles.start}</button>
+      <button type="submit" class="primary" disabled={!ready}>{session.vault ? t.vault.requestRestore : t.restoreFiles.start}</button>
     </div>
   </form>
 </Modal>
