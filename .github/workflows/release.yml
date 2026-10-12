@@ -24,7 +24,7 @@ env:
 
 jobs:
   image:
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     outputs:
       digest: ${{ steps.push.outputs.digest }}
       image: ${{ steps.push.outputs.image }}
