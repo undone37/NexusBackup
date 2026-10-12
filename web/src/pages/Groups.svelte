@@ -4,11 +4,11 @@
   import { get, post, put, del, act, errText } from '../lib/api';
   import { notify } from '../lib/notify.svelte';
   import { href } from '../lib/router.svelte';
-  import { fmtBytes } from '../lib/format';
+  import { fmtAgo, fmtBytes } from '../lib/format';
   import { t } from '../lib/i18n';
   import { runJob } from '../lib/jobs';
   import { isPluginKind, pluginKinds } from '../lib/plugins';
-  import type { Agent, Group, Plugin, PluginGuest, Policy, Source, Tenant } from '../lib/types';
+  import type { Agent, Group, GroupMode, Inventory, Plugin, PluginGuest, Policy, Source, Tenant } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
@@ -53,7 +53,17 @@
 
   let open = $state(false);
   let editing: Group | null = $state(null);
-  let f = $state({ tenant: '', name: '', source_id: 0, policy_id: 0, guests: '', datasets: [] as string[] });
+  let f = $state({
+    tenant: '',
+    name: '',
+    source_id: 0,
+    policy_id: 0,
+    guests: '',
+    datasets: [] as string[],
+    mode: 'explicit' as GroupMode,
+    selector: [] as string[],
+    exclude: [] as string[],
+  });
   const tenantSources = $derived(sources.filter((s) => s.tenant === f.tenant));
   // A linux source backs up exactly one host: guests = [its agent id], no VM/CT IDs.
   const linuxSource = $derived.by(() => {
@@ -77,6 +87,65 @@
   });
   const pluginGuests = $derived(pluginSource ? (kinds.get(pluginSource.kind)?.kind.guests ?? null) : null);
   const GUEST_RE = /^[A-Za-z0-9._-]{1,64}$/;
+
+  // Auto-protect (Phase 13c): PVE, TrueNAS and plugin kinds with a guest list have an
+  // inventory; their groups may take all guests or the guests with given tags.
+  const invSource = $derived.by(() => {
+    const s = sources.find((x) => x.id === Number(f.source_id));
+    if (!s) return null;
+    return s.kind === 'pve' || s.kind === 'truenas' || (isPluginKind(s.kind) && !!kinds.get(s.kind)?.kind.guests?.list) ? s : null;
+  });
+  let inv = $state<Inventory | null>(null);
+  let invBusy = $state(false);
+  let invJob: number | null = $state(null);
+  async function loadInventory(id: number) {
+    try {
+      const r = await get<Inventory>(`/sources/${id}/inventory`);
+      if (Number(f.source_id) === id) inv = r;
+    } catch {
+      inv = null;
+    }
+  }
+  $effect(() => {
+    const s = invSource;
+    inv = null;
+    if (open && s) loadInventory(s.id);
+  });
+  async function refreshInventory() {
+    const s = invSource;
+    if (!s) return;
+    invBusy = true;
+    invJob = null;
+    try {
+      const r = await runJob('inventory', s.tenant, { source_id: s.id }, ctl.signal);
+      if (r && r.job.state !== 'ok') {
+        invJob = r.job.id;
+        notify('error', t.groups.refreshFailed);
+      }
+      await loadInventory(s.id);
+    } catch (e) {
+      notify('error', errText(e));
+    } finally {
+      invBusy = false;
+    }
+  }
+  const present = $derived(inv?.guests.filter((g) => g.gone === null) ?? []);
+  const allTags = $derived([...new Set([...present.flatMap((g) => g.tags), ...f.selector])].sort());
+  const matched = $derived(present.filter((g) => f.mode === 'all' || g.tags.some((x) => f.selector.includes(x))));
+  const protectedNow = $derived(matched.filter((g) => !f.exclude.includes(g.guest)).length);
+  const MODES: GroupMode[] = ['explicit', 'all', 'tags'];
+  let tagInput = $state('');
+  const TAG_RE = /^\S(?:[^\x00-\x1f\x7f]{0,126}\S)?$/;
+  function addTag() {
+    const x = tagInput.trim();
+    if (!x) return;
+    if (!TAG_RE.test(x)) {
+      notify('error', t.groups.tagInvalid(x));
+      return;
+    }
+    if (!f.selector.includes(x)) f.selector = [...f.selector, x];
+    tagInput = '';
+  }
 
   // "Load <guests.title>": plugin_guests job against the source.
   const ctl = new AbortController();
@@ -124,7 +193,11 @@
       policy_id: x?.policy_id ?? policies[0]?.id ?? 0,
       guests: (x?.guests ?? []).filter((g) => typeof g === 'number').join(', '),
       datasets: (x?.guests ?? []).filter((g): g is string => typeof g === 'string'),
+      mode: x?.mode ?? 'explicit',
+      selector: [...(x?.selector ?? [])],
+      exclude: [...(x?.exclude ?? [])],
     };
+    tagInput = '';
     lastSource = f.source_id;
     guestList = null;
     open = true;
@@ -135,12 +208,20 @@
     if (!open || Number(f.source_id) === lastSource) return;
     lastSource = Number(f.source_id);
     f.datasets = [];
+    f.exclude = [];
   });
 
   async function save(e: SubmitEvent) {
     e.preventDefault();
     let guests: (number | string)[];
-    if (linuxSource) {
+    const auto = !!invSource && f.mode !== 'explicit';
+    if (auto) {
+      guests = [];
+      if (f.mode === 'tags' && !f.selector.length) {
+        notify('error', t.groups.tags);
+        return;
+      }
+    } else if (linuxSource) {
       guests = [linuxSource.config.agent_id];
     } else if (pluginSource) {
       // (f.datasets holds the selected guest ids of a plugin source too)
@@ -162,7 +243,15 @@
       }
     }
     // The tenant is fixed after creation (PUT rejects unknown fields, incl. tenant).
-    const body = { name: f.name, source_id: Number(f.source_id), policy_id: Number(f.policy_id), guests };
+    const body = {
+      name: f.name,
+      source_id: Number(f.source_id),
+      policy_id: Number(f.policy_id),
+      guests,
+      mode: auto ? f.mode : 'explicit',
+      selector: auto && f.mode === 'tags' ? f.selector : [],
+      exclude: auto ? f.exclude : [],
+    };
     const r = editing
       ? await act(put(`/groups/${editing.id}`, body), t.saved)
       : await act(post('/groups', { tenant: f.tenant, ...body }), t.created);
@@ -211,9 +300,11 @@
               <td>{sourceName(x.source_id)}</td>
               <td>{policyName(x.policy_id)}</td>
               <td class="mono"
-                >{x.guests.length
-                  ? x.guests.map(guestText).join(', ')
-                  : kindTitle(sources.find((s) => s.id === x.source_id)?.kind ?? '')}</td
+                >{#if x.mode && x.mode !== 'explicit'}{t.groups.auto(x.mode, x.selector.join(', '))}{#if x.exclude.length}<span
+                      class="muted"> · {t.groups.except(x.exclude.join(', '))}</span
+                    >{/if}{:else}{x.guests.length
+                    ? x.guests.map(guestText).join(', ')
+                    : kindTitle(sources.find((s) => s.id === x.source_id)?.kind ?? '')}{/if}</td
               >
               <td class="actions">
                 <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
@@ -253,7 +344,63 @@
         </select>
       </div>
     </div>
-    {#if linuxSource}
+    {#if invSource}
+      <fieldset class="field">
+        <legend>{t.groups.mode}</legend>
+        <div class="row">
+          {#each MODES as m (m)}
+            <label class="inline-check"><input type="radio" name="g-mode" value={m} bind:group={f.mode} />{t.groups.modes[m]}</label>
+          {/each}
+        </div>
+        <p class="hint">{t.groups.modeHint[f.mode]}</p>
+      </fieldset>
+    {/if}
+    {#if invSource && f.mode !== 'explicit'}
+      <div class="row">
+        <span class="muted">{inv?.refreshed ? t.groups.refreshed(fmtAgo(inv.refreshed)) : t.groups.noInventory}</span>
+        <button type="button" class="small" disabled={invBusy} onclick={refreshInventory}
+          >{invBusy ? t.groups.refreshing : t.groups.refresh}</button
+        >
+        {#if invJob}<a href={href(`/jobs/${invJob}`)}>{t.jobs.detail(invJob)}</a>{/if}
+      </div>
+      {#if f.mode === 'tags'}
+        <fieldset class="field">
+          <legend>{t.groups.tags}</legend>
+          {#each allTags as x (x)}
+            <label class="inline-check mono"><input type="checkbox" value={x} bind:group={f.selector} />{x}</label>
+          {:else}
+            <p class="hint">{t.groups.tagNone}</p>
+          {/each}
+          <div class="row">
+            <input
+              class="mono"
+              aria-label={t.groups.tagAdd}
+              placeholder={t.groups.tagAdd}
+              bind:value={tagInput}
+              onkeydown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  addTag();
+                }
+              }}
+            />
+            <button type="button" class="small" onclick={addTag}>{t.groups.tagAddBtn}</button>
+          </div>
+        </fieldset>
+      {/if}
+      <fieldset class="field">
+        <legend>{t.groups.exclude}</legend>
+        <p class="hint">{t.groups.excludeHint}</p>
+        {#each matched as g (g.guest)}
+          <label class="inline-check"
+            ><input type="checkbox" value={g.guest} bind:group={f.exclude} /><span class="mono">{g.guest}</span>{#if g.name !== g.guest}<span
+                >{g.name}</span
+              >{/if}</label
+          >
+        {/each}
+        <p class="muted" role="status">{t.groups.preview(protectedNow, matched.length - protectedNow)}</p>
+      </fieldset>
+    {:else if linuxSource}
       <p class="muted">{t.groups.linuxGuest(agentName(linuxSource.config.agent_id))}</p>
     {:else if pluginSource}
       {#if pluginGuests?.list}

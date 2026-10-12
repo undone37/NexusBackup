@@ -356,6 +356,13 @@ async function main() {
       await cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }, { name: 'prefers-reduced-motion', value: 'reduce' }] });
       await sleep(300);
     }],
+    // Phase 13c: the "Not in a group" drill-down (guests from the inventory no group protects)
+    ['dashboard-unprotected', async () => {
+      await go('/', 900);
+      await until(`return !!document.querySelector('.open-list details')`, 'not-in-a-group list');
+      await ev(`const d = document.querySelector('.open-list details'); d.open = true; window.scrollTo(0, d.getBoundingClientRect().top + window.scrollY - 80); return true;`);
+      await shot('dashboard-unprotected', { scrolled: true });
+    }],
     ['jobs', async () => {
       await go('/jobs');
       await shot('jobs');
@@ -479,6 +486,11 @@ async function main() {
       await edit('filer-projects', 'source-nfs', 1150);
       await edit('fs01-data', 'source-smb', 1250);
       await edit('pg-shop', 'source-postgresql', 2000);
+      // Phase 13c: guest inventory of the PVE cluster
+      await ev(`$rowClick('pve-cluster', 'Inventory'); return true;`);
+      await until(`return document.querySelector('dialog[open]')?.innerText.includes('build-runner')`, 'inventory');
+      await shot('source-inventory');
+      await closeDialogs();
     }],
     ['agents', async () => {
       await go('/agents');
@@ -531,6 +543,11 @@ async function main() {
       await ev(`$rowClick('production', 'Edit'); return true;`);
       await until(`return !!document.querySelector('dialog[open] #g-guests')`, 'PVE group dialog');
       await shot('group-pve');
+      await closeDialogs();
+      // Phase 13c: auto-protect by PVE pool with one exclusion
+      await ev(`$rowClick('development', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input[value="105"]')`, 'auto-protect group dialog');
+      await shot('group-auto', { height: 1250 });
       await closeDialogs();
     }],
     ['users', async () => {

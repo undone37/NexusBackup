@@ -254,8 +254,39 @@ export interface Group {
   source_id: number;
   policy_id: number;
   name: string;
-  /** pve: VM/CT IDs; linux: exactly `[source.config.agent_id]`; truenas: datasets of the source; nfs/smb: none (the share) */
+  /** pve: VM/CT IDs; linux: exactly `[source.config.agent_id]`; truenas: datasets of the source; nfs/smb: none (the share). Empty for mode all/tags. */
   guests: (number | string)[];
+  /** Phase 13c: explicit = `guests`; all = every inventory guest of the source; tags = guests with any `selector` tag */
+  mode: GroupMode;
+  /** mode tags: `pool:x`, `tag:y`, `node:n`, `type:qemu`, … */
+  selector: string[];
+  /** guest ids never protected by this group (mode all/tags) */
+  exclude: string[];
+}
+
+export type GroupMode = 'explicit' | 'all' | 'tags';
+
+/** One guest of `GET /sources/{id}/inventory`. */
+export interface InventoryGuest {
+  guest: string;
+  name: string;
+  kind: string;
+  tags: string[];
+  seen: number;
+  /** set when the guest was no longer listed */
+  gone: number | null;
+  /** names of the groups protecting it */
+  groups: string[];
+}
+
+export interface Inventory {
+  source_id: number;
+  kind: string;
+  /** false: the source kind has no inventory (linux, nfs, smb, plugin kinds without guests) */
+  inventory: boolean;
+  /** last successful listing; null = never */
+  refreshed: number | null;
+  guests: InventoryGuest[];
 }
 
 export type JobState = 'queued' | 'running' | 'ok' | 'failed' | 'cancelled';
@@ -279,7 +310,8 @@ export type JobKind =
   | 'plugin_restore'
   | 'plugin_mount'
   | 'replica_enroll'
-  | 'replica_sync';
+  | 'replica_sync'
+  | 'inventory';
 
 /** One entry of `nexus-pve files … ls` (crates/pve/src/files.rs `Entry`); agents use the same shape. */
 export interface FileEntry {
@@ -562,6 +594,8 @@ export interface PluginGuest {
   id: string;
   title: string;
   size?: number;
+  /** v1.5: e.g. `type:user`, `license:none` */
+  tags?: string[];
 }
 
 // ---------------------------------------------------------------- Phase 12 (docs/phase12-contract.md)
@@ -579,6 +613,15 @@ export interface Dashboard {
     sla_ok: number;
     sla_breach: number;
     never: number;
+    /** Phase 13c: what no group protects (inventory guests, agents, shares), at most 200 */
+    unprotected_list?: {
+      tenant: string;
+      kind: string;
+      source_id: number | null;
+      source: string;
+      guest: string | null;
+      name: string;
+    }[];
     worst: {
       source: string;
       name: string;

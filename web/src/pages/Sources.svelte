@@ -12,6 +12,7 @@
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import SchemaForm from '../components/SchemaForm.svelte';
+  import Inventory from '../components/Inventory.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
 
   let items: Source[] = $state([]);
@@ -70,6 +71,12 @@
   // "Validate connection": plugin_validate job on the stored config.
   const ctl = new AbortController();
   onDestroy(() => ctl.abort());
+  // guest inventory (Phase 13c): PVE, TrueNAS and plugin kinds that list guests
+  const hasInventory = (x: Source) =>
+    x.kind === 'pve' || x.kind === 'truenas' || (isPlugin(x) && !!kindsAll.get(x.kind)?.kind.guests?.list);
+  let invOf: Source | null = $state(null);
+  let invOpen = $state(false);
+
   let checks: Record<number, { busy: boolean; ok?: boolean; text?: string; job?: number }> = $state({});
   async function validate(x: PluginSource) {
     checks[x.id] = { busy: true };
@@ -506,6 +513,9 @@
                     >{t.sources.validate}</button
                   >
                 {/if}
+                {#if hasInventory(x)}
+                  <button type="button" class="small" onclick={() => ((invOf = x), (invOpen = true))}>{t.inventory.open}</button>
+                {/if}
                 <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
                 <button type="button" class="small danger" onclick={() => remove(x)}>{t.delete}</button>
               </td>
@@ -908,4 +918,8 @@
       <button type="submit" class="primary" disabled={(f.kind === 'linux' && !f.agent_id) || (isPluginKind(f.kind) && !pk)}>{editing ? t.save : t.create}</button>
     </div>
   </form>
+</Modal>
+
+<Modal bind:open={invOpen} title={t.inventory.title(invOf?.name ?? '')} wide>
+  {#if invOf}<Inventory source={invOf} />{/if}
 </Modal>
