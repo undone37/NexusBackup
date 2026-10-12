@@ -218,6 +218,16 @@ fn main() {
                 },
             );
             send(&mut w, &Message::StreamEnd);
+            if let Some(n) = cfg["warnings"].as_u64() {
+                // v1.7 skipped items
+                send(
+                    &mut w,
+                    &Message::Warnings {
+                        count: n,
+                        samples: vec!["b.txt: unreadable".into()],
+                    },
+                );
+            }
             if let Some(m) = cfg.get("meta") {
                 // v1.6; twice when asked to (a violation)
                 for _ in 0..if cfg["meta_twice"] == true { 2 } else { 1 } {

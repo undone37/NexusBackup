@@ -148,8 +148,14 @@ Tags you can select:
 | `tag:<tag>` | Proxmox VE tag of the VM or container |
 | `node:<node>` | Proxmox VE node the guest runs on (changes with migrations) |
 | `type:qemu`, `type:lxc` | Proxmox VE VM or container |
-| `type:user`, `type:site`, `type:team` | Microsoft 365 object type |
+| `type:user`, `type:site`, `type:team`, `type:group` | Microsoft 365 object type |
 | `license:none` | Microsoft 365 user without any license |
+| `site:team` | Microsoft 365 site that belongs to a team or group (backed up with the team or group) |
+
+Guests tagged `license:none` or `site:team` are **left out** of groups of mode **All guests**, and of tag groups that
+do not select that tag explicitly: unlicensed accounts usually have no mailbox or OneDrive, and team sites would
+otherwise be backed up twice. To back them up anyway, select the tag (for example `license:none`) in a tag group,
+or tick the guests in a group with an explicit list.
 
 The tag list shows the tags the inventory currently contains; type a tag and click **Add tag** to select one that no
 guest has yet. **Exclusions** lists the guests the selection matches: ticked guests are never backed up by this group,

@@ -452,7 +452,9 @@ export interface JobResult {
   size?: number;
   expires?: number;
   /** backup: committed snapshots (+ source/time when exactly one) */
-  snapshots?: { source: string; time: number; consistent?: boolean; transferred_bytes?: number }[];
+  snapshots?: { source: string; time: number; consistent?: boolean; transferred_bytes?: number; warnings?: number }[];
+  /** plugin backups (contract v1.7): items skipped with an error — the job is ok with warnings */
+  warnings?: number;
   source?: string;
   time?: number;
   /** agent / share backups: false = no snapshot of the source (live read) or files changed while read */

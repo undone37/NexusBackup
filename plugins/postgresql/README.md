@@ -32,7 +32,7 @@ rustls, SCRAM-SHA-256/md5/password; no new crates, all were already in the works
   its commit record carries a timestamp, so every time up to the run is reachable by `recovery_target_time` even on
   an idle server (recovery ends with FATAL when no commit after the target is in the WAL). On a standby or without
   SQL access the run warns and uses the server's/appliance's clock.
-- **Recoverable range** (snapshot metadata, protocol v1.6 `SnapshotMeta`): `{"recoverable": {from_time, from_lsn,
+- **Recoverable range** (snapshot metadata, protocol v1.8 `SnapshotMeta`): `{"recoverable": {from_time, from_lsn,
   to_time, to_lsn, timeline}}` = first full second after the base backup's end (its end LSN) → the marker's time
   (the streamed WAL end). A full snapshot recovers to the end of its base backup only (from = to). The appliance
   stores it in `snapshots.meta`; the restore dialog shows it and bounds its time picker.
@@ -47,7 +47,7 @@ rustls, SCRAM-SHA-256/md5/password; no new crates, all were already in the works
   (`ssh_pg_ctl`, else `/usr/lib/postgresql/<PG_VERSION>/bin`, `/usr/pgsql-<PG_VERSION>/bin`, else `PATH`); a
   failed start returns the end of the log. Otherwise start a PostgreSQL of the same major version on it.
 - **High availability** (`src/ha.rs`): `host` plus `hosts` (`host` or `host:port`, firewall/Landlock via the
-  v1.6 endpoint host list). With more than one server every operation first asks each `SELECT
+  v1.8 endpoint host list). With more than one server every operation first asks each `SELECT
   pg_is_in_recovery()` and uses the first primary in the configured order (two primaries: the first, with a
   warning); the job log lists every server as primary/standby/unreachable, and `validate` fails on `hosts` when
   there is none. Dumps, dump restores to the source and cluster backups all go to the primary; after a failover

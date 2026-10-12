@@ -39,7 +39,7 @@ The appliance lists the guests of every Proxmox VE, TrueNAS and guest-listing pl
 |---|---|---|
 | Proxmox VE | every VM and container the API token can see (`/cluster/resources`), without templates | `type:qemu`/`type:lxc`, `node:<node>`, `pool:<pool>`, `tag:<PVE tag>` |
 | TrueNAS | the datasets configured in the source | `pool:<ZFS pool>` |
-| Plugin sources (PostgreSQL, Microsoft 365, …) | what the plugin lists (databases; users, sites, teams) | what the plugin reports, e.g. Microsoft 365 `type:user`, `license:none` |
+| Plugin sources (PostgreSQL, Microsoft 365, …) | what the plugin lists (databases; users, sites, teams, groups) | what the plugin reports, e.g. Microsoft 365 `type:user`, `license:none`, `site:team` |
 
 **Inventory** opens the list: **Guest** (ID), **Name**, **Type**, **Tags** and **Protected by** (the groups covering
 the guest, or **not in a group**). Guests the source no longer lists stay in the list, greyed out, as **gone since …**;
@@ -614,8 +614,9 @@ What the group selects decides the backup type:
 ### Microsoft 365 (Exchange, OneDrive, SharePoint, Teams)
 
 The **Microsoft 365** plugin (`m365`) backs up a Microsoft 365 tenant through Microsoft Graph: Exchange mailboxes
-(mail, calendars, contacts), OneDrive, SharePoint document libraries, and Teams (team files and, optionally,
-channel messages). It signs in as an **app registration** in your Entra ID with a **certificate**. There is no
+(mail, calendars, contacts, and the Recoverable Items "Deletions" folder), OneDrive, SharePoint document libraries,
+Teams (team files incl. the sites of private and shared channels and, optionally, channel messages) and Microsoft
+365 groups (conversations, group files). It signs in as an **app registration** in your Entra ID with a **certificate**. There is no
 password and no client secret. Details and limits: `docs/m365.md` in the repository.
 
 Prepare Entra ID once (a Global or Application Administrator does this). The quickest way is one of the helper
@@ -653,6 +654,7 @@ files to paste into the form. Delete the output folder afterwards. To do it by h
    | OneDrive, SharePoint, Teams files | `Sites.Read.All`, `Files.Read.All` | `Sites.ReadWrite.All`, `Files.ReadWrite.All` |
    | Teams | `Team.ReadBasic.All`, `Channel.ReadBasic.All` | |
    | Teams channel messages | `ChannelMessage.Read.All` | `Teamwork.Migrate.All`, `Channel.Create` |
+   | Microsoft 365 groups | `Group.Read.All` | |
    | 1:1 and group chats | `Chat.Read.All`, `Chat.ReadBasic.All` | (download only) |
 
 4. Only if you want **Teams channel messages**: Microsoft treats the export of channel messages as a *protected
@@ -675,7 +677,8 @@ fields (from the plugin manifest):
   (off by default; each chat is saved as `.json` and as a readable `.html` page under `chats/` in the user's
   snapshot), and **Teams export payment model (channel messages and chats)**: `B` (backup use, billed by Microsoft through an
   Azure subscription linked to the app), `A` (security/compliance licences) or `evaluation` (a small free monthly
-  quota, for tests).
+  quota, for tests). **Microsoft 365 groups: conversations, calendar, files (needs Group.Read.All)** is on by
+  default; it also lets the plugin recognise team and group sites.
 - **SharePoint host** (`contoso.sharepoint.com`) and **OneDrive host** (`contoso-my.sharepoint.com`): needed for
   OneDrive, SharePoint and Teams files. If you enter wrong values, validation tells you the right ones.
 - **Further app registrations (used round-robin; a throttled app hands over to the next)**: optional. Microsoft
@@ -695,11 +698,19 @@ next to the workload with the permission names. With further apps, validation si
 names the failing one under **Further app registrations**. A sign-in failure shows Microsoft's error code (for example
 `AADSTS700027` when the certificate is not uploaded to the app).
 
-In the protection group, click **Load …** and tick the **users** (mailbox + OneDrive), **sites** and **teams** to
-back up. Each becomes its own snapshot (`plugin-m365-<source>-u.…`, `-s.…`, `-t.…`). A group without any ticked
+In the protection group, click **Load …** and tick the **users** (mailbox + OneDrive), **sites**, **teams** and
+**groups** to back up, or use an auto-protect group (see [05 Policies and groups](05-policies-and-groups.md)). Each
+becomes its own snapshot (`plugin-m365-<source>-u.…`, `-s.…`, `-t.…`, `-g.…`). Sites of teams and groups are listed
+with the note "backed up with its team / group" and the tag `site:team`; users without a license carry
+`license:none`. Groups of mode **All guests** leave both out. A group without any ticked
 object is refused: the plugin never backs up a whole tenant as one snapshot. Backups after the first one are
 incremental: the plugin asks Microsoft only for what changed (mail folders and drives) or compares the lists
 (calendars, contacts, Teams messages), and unchanged items are not downloaded again.
+
+If single items cannot be read even after retries (Microsoft answers with a server error), the plugin skips them
+and the backup still completes: the job ends **ok** with a **warning** chip on **Jobs**, the job page names the
+first skipped items, and the dashboard counts the job as a warning. The next backup tries those items again. A user
+without a mailbox or OneDrive is not an error; the job log notes it.
 
 > **Caution:** the app's application permissions are tenant-wide. To limit which mailboxes it can read, use
 > Exchange Online *RBAC for Applications*. When the certificate approaches its expiry date, upload a new one,
@@ -707,8 +718,10 @@ incremental: the plugin asks Microsoft only for what changed (mail folders and d
 >
 > **Status:** The plugin passed its integration tests against a local Microsoft Graph simulation. A run against a
 > real Microsoft 365 tenant is still pending. Not covered in this version: modified occurrences of recurring
-> meetings, event attachments, contact photos, archive mailboxes, public folders, file versions and sharing
-> permissions, SharePoint lists and subsites, private/shared channel sites (back them up as sites). Chats are
-> download only. Version 1.1 (further apps, chats, restore into another tenant, helper scripts) is also tested
-> against the simulation only; the PowerShell helper has not been run yet.
+> meetings, event attachments, contact photos, archive mailboxes, public folders, Recoverable Items other than
+> "Deletions", file versions and sharing permissions, SharePoint lists and subsites. Chats are download only. Group
+> calendars: Microsoft documents no app permission for them, so on a real tenant the backup most likely only notes
+> "group calendar not readable". Versions 1.1 (further apps, chats, restore into another tenant, helper scripts) and
+> 1.2 (skipped items as warnings, Recoverable Items, private/shared channel sites, groups) are also tested against
+> the simulation only; the PowerShell helper has not been run yet.
 

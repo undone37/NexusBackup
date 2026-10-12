@@ -201,7 +201,16 @@ pub enum Message {
     TaggedGuests {
         list: Vec<TaggedGuest>,
     },
-    // v1.6 (appended)
+    // v1.7 (appended)
+    /// Backup only, before `Done`: `count` items could not be read and are missing
+    /// from the snapshot (the plugin skipped them); `samples` names the first few
+    /// with their error. The job ends `ok` with warnings. The SDK sends it only when
+    /// `count > 0`, so plugins without skipped items still run on a v1.6 host.
+    Warnings {
+        count: u64,
+        samples: Vec<String>,
+    },
+    // v1.8 (appended after `Warnings`)
     /// Metadata of the snapshot being written (plugin → host, backup only, at most
     /// once, before `Done`): a JSON object of at most `MAX_SNAPSHOT_META` bytes that
     /// the appliance keeps with the snapshot in its catalog (e.g. PostgreSQL's
@@ -210,6 +219,10 @@ pub enum Message {
         json: String,
     },
 }
+
+/// Samples per `Warnings` message and bytes per sample.
+pub const MAX_WARNING_SAMPLES: usize = 20;
+pub const MAX_WARNING_SAMPLE: usize = 1024;
 
 pub const MAX_SNAPSHOT_META: usize = 16 << 10;
 
@@ -300,6 +313,11 @@ pub fn check(m: &Message) -> io::Result<()> {
                 .any(|g| g.tags.len() > MAX_GUEST_TAGS || g.tags.iter().any(|t| t.len() > MAX_TAG)) =>
         {
             Err(bad("too many or too long guest tags"))
+        }
+        Message::Warnings { samples, .. }
+            if samples.len() > MAX_WARNING_SAMPLES || samples.iter().any(|t| t.len() > MAX_WARNING_SAMPLE) =>
+        {
+            Err(bad("too many or too long warning samples"))
         }
         Message::Done { state: Some(s), .. } | Message::Init { state: Some(s), .. } if s.len() > MAX_STATE => {
             Err(bad("state blob too large"))
@@ -474,7 +492,7 @@ pub fn split_host_port(s: &str, default_port: u16) -> Option<(String, u16)> {
 impl KindSpec {
     /// (host, port) of the TCP endpoints configured in `cfg`: host from the config
     /// (else `default_host`; unconfigured endpoints without one are skipped), port from
-    /// the config (else `default_port`). v1.6: a pointer to an array of strings yields
+    /// the config (else `default_port`). v1.8: a pointer to an array of strings yields
     /// one target per item, each `host` or `host:port` (`[v6]:port`); the port of an
     /// item without one comes from the endpoint's port field. The appliance firewall
     /// opens these.
@@ -672,7 +690,8 @@ mod tests {
     /// v1.5 tags are a new appended variant: a v1.4 plugin's `Guests` frame is byte
     /// for byte what it was (old plugins keep working), `TaggedGuests` round-trips and
     /// its limits hold.
-    /// v1.6: `SnapshotMeta` is appended (after `TaggedGuests`); only small JSON objects pass.
+    /// v1.8: `SnapshotMeta` is appended after `Warnings` (v1.7); both indices are pinned so
+    /// neither changes for a host or plugin built on the other; only small JSON objects pass.
     #[test]
     fn snapshot_meta() {
         let m = Message::SnapshotMeta {
@@ -680,7 +699,17 @@ mod tests {
         };
         let mut buf = Vec::new();
         write_msg(&mut buf, &m).unwrap();
-        assert_eq!(buf[4], 25, "wire index: after TaggedGuests (24)");
+        assert_eq!(buf[4], 26, "wire index: after Warnings (25)");
+        let mut w = Vec::new();
+        write_msg(
+            &mut w,
+            &Message::Warnings {
+                count: 1,
+                samples: vec![],
+            },
+        )
+        .unwrap();
+        assert_eq!(w[4], 25, "Warnings keeps its index");
         assert_eq!(read_msg(&mut &buf[..]).unwrap(), m);
         for bad in ["[1]", "nope", r#""x""#] {
             assert!(check(&Message::SnapshotMeta { json: bad.into() }).is_err(), "{bad}");
@@ -715,6 +744,29 @@ mod tests {
         assert!(check(&Message::TaggedGuests { list: vec![t.clone()] }).is_err());
         t.tags = vec!["t".into(); MAX_GUEST_TAGS + 1];
         assert!(check(&Message::TaggedGuests { list: vec![t] }).is_err());
+    }
+
+    /// v1.7 warnings: appended (wire index after `TaggedGuests`; `Done` unchanged), limits hold.
+    #[test]
+    fn warnings_are_appended() {
+        let m = Message::Warnings {
+            count: 3,
+            samples: vec!["mail/x.eml: 500".into()],
+        };
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &m).unwrap();
+        assert_eq!(buf[4], 25, "variant index after TaggedGuests (24)");
+        assert_eq!(read_msg(&mut &buf[..]).unwrap(), m);
+        let many = Message::Warnings {
+            count: 99,
+            samples: vec!["x".into(); MAX_WARNING_SAMPLES + 1],
+        };
+        assert!(check(&many).is_err());
+        let long = Message::Warnings {
+            count: 1,
+            samples: vec!["x".repeat(MAX_WARNING_SAMPLE + 1)],
+        };
+        assert!(check(&long).is_err());
     }
 
     #[test]
@@ -804,7 +856,7 @@ mod tests {
             [("db".into(), 8443), ("127.0.0.1".into(), 8443)]
         );
         assert_eq!(f.tcp_ports(&serde_json::json!({"api_host": ""})), [443]);
-        // v1.6: arrays of `host[:port]` (PostgreSQL HA hosts)
+        // v1.8: arrays of `host[:port]` (PostgreSQL HA hosts)
         let mut ha = m.clone();
         ha.kinds[0].endpoints.push(Endpoint {
             host: "/hosts".into(),

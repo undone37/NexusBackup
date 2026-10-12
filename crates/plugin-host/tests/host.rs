@@ -242,13 +242,18 @@ fn validate_guests_mount() {
     assert!(out.iter().any(|l| l.starts_with("mount-ready ")));
 }
 
-/// v1.6 snapshot metadata: one JSON object per backup, returned in the report.
+/// v1.8 snapshot metadata: one JSON object per backup, returned in the report.
 #[test]
 fn snapshot_meta() {
     let e = env();
     let m = json!({"recoverable": {"from_time": 1, "to_lsn": "0/3000000"}});
     let (r, _) = e.backup(json!({"mode": "ok", "meta": m}));
     assert_eq!(r.unwrap().meta, Some(m.clone()));
+    // with v1.7 warnings in the same backup: both reach the report (and the result line)
+    let (r, log) = e.backup(json!({"mode": "ok", "meta": m, "warnings": 2}));
+    let r = r.unwrap();
+    assert_eq!((r.meta.as_ref(), r.warnings), (Some(&m), 2));
+    assert!(log.contains("warnings plugin-testplug-1/"), "{log}");
     let (r, _) = e.backup(json!({"mode": "ok", "meta": m, "meta_twice": true}));
     assert!(format!("{:#}", r.unwrap_err()).contains("SnapshotMeta sent twice"));
     let (r, _) = e.backup(json!({"mode": "ok", "meta": [1]}));

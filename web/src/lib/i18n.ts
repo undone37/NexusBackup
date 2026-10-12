@@ -493,6 +493,10 @@ export const en = {
     back: "All jobs",
     notConsistent: (srcs: string) =>
       `Not point-in-time consistent: ${srcs} (read without a snapshot of the source, or files changed while they were read).`,
+    warnings: (n: number) => `${n} ${n === 1 ? "warning" : "warnings"}`,
+    warningsTitle: "Items that could not be read were skipped; the snapshots were committed without them",
+    skipped: (n: number, srcs: string) =>
+      `${n} ${n === 1 ? "item" : "items"} could not be read and ${n === 1 ? "is" : "are"} missing from the snapshot (${srcs}); the next backup tries ${n === 1 ? "it" : "them"} again. The log lines "warnings …" name the first ones with their error.`,
     anyState: "Any state",
     anyKind: "Any kind",
     kinds: {

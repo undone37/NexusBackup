@@ -1349,7 +1349,7 @@ function seedM365(t: number) {
     config: {
       tenant_id: domain, client_id: '6f1c0a8e-2b4d-43f7-a5a1-e0b29d8c47f3', certificate: 'SECRET', private_key: 'SECRET',
       apps: Array.from({ length: apps }, (_, i) => ({ client_id: `${i + 2}a3b4c5d-6e7f-4081-92a3-b4c5d6e7f801`, certificate: 'SECRET' })),
-      exchange: true, onedrive: true, sharepoint: true, teams: true, teams_messages: false, chats: false, teams_export_model: 'B',
+      exchange: true, onedrive: true, sharepoint: true, teams: true, teams_messages: false, chats: false, groups: true, teams_export_model: 'B',
       sharepoint_host: `${sp}.sharepoint.com`, onedrive_host: `${sp}-my.sharepoint.com`,
     } as Json,
   });
@@ -1361,6 +1361,25 @@ function seedM365(t: number) {
       const time = Math.floor(t / 86400 - d) * 86400 + hh * 3600;
       if (time <= t) db.snapshots.push(snap('acme', `plugin-m365-${a.id}-${g}`, time, Math.round(gib * 2 ** 30), true, d > 0, d > 1 ? time + 7200 : null));
     }
+  // today's backup: two items kept failing after Graph's retries — skipped, the job ends ok with warnings (contract v1.7)
+  const user = `plugin-m365-${a.id}-u.0c9d1c7a-1111-4222-8333-444455556666`;
+  const start = Math.floor(t / 86400) * 86400 + 2 * 3600;
+  if (start + 540 <= t) {
+    const stamp = (i: number) => new Date((start + 2 + i * 90) * 1000).toISOString();
+    const lines = [
+      'starting nexus-pluginhost: m365 1.2.0 (sandbox: landlock + seccomp)',
+      `base ${user}/${start - 86400} (18,422 entries)`,
+      'plugin[warn]: skipped mail/Inbox/Quarterly report ~3f9a0c1d2e4b.eml: GET /v1.0/users/…/messages/…/$value: 500 ErrorInternalServerError',
+      'plugin[warn]: skipped onedrive/Projects/model.xlsx: GET /v1.0/drives/…/items/…/content: 503 serviceNotAvailable',
+      `committed ${user}/${start} 18,431 entries (18,190 files, 18,102 unchanged), 0 streams, 2.1 GiB, 88 MiB transferred, 61 MiB new, consistent=true`,
+      `warnings ${user}/${start}: 2 items could not be read and are missing from the snapshot: mail/Inbox/Quarterly report ~3f9a0c1d2e4b.eml: 500 ErrorInternalServerError; onedrive/Projects/model.xlsx: 503 serviceNotAvailable`,
+    ];
+    Object.assign(addJob('plugin_backup', 'acme', { source_id: a.id }, 'scheduler'), {
+      created: start, started: start + 2, finished: start + 540, state: 'ok', plan: [],
+      log: lines.map((l, i) => `${stamp(i)} ${l}`).join('\n'),
+      result: { snapshots: [{ source: user, time: start, consistent: true, warnings: 2 }], source: user, time: start, consistent: true, warnings: 2 },
+    });
+  }
 }
 
 // ---------------------------------------------------------------- run control (Phase 13b)
@@ -2165,6 +2184,7 @@ on('GET', '/groups', (c) => [200, byTenant(need(c.user), db.groups).map(groupSta
 function hasInventory(src: (typeof db.sources)[number]): boolean {
   return src.kind === 'pve' || src.kind === 'truenas' || (src.kind.startsWith('plugin:') && !!pluginKind(src.kind)?.kind.guests?.list);
 }
+const DEFAULT_OFF = ['license:none', 'site:team'];
 /** Guests of a group as the scheduler resolves them: explicit list, or the inventory (all / tags); exclude wins. */
 function resolveGuests(g: MockGroup): (number | string)[] {
   const ex = new Set((g.exclude ?? []).map(String));
@@ -2172,6 +2192,8 @@ function resolveGuests(g: MockGroup): (number | string)[] {
   const pve = db.sources.find((s) => s.id === g.source_id)?.kind === 'pve';
   return (db.inventory.get(g.source_id) ?? [])
     .filter((r) => r.gone === null && !ex.has(r.guest) && (g.mode === 'all' || r.tags.some((x) => g.selector.includes(x))))
+    // catalog::inventory::DEFAULT_OFF: unlicensed M365 users and team sites only when the selector names the tag
+    .filter((r) => !r.tags.some((x) => DEFAULT_OFF.includes(x) && !g.selector.includes(x)))
     .map((r) => (pve ? Number(r.guest) : r.guest));
 }
 /** Names of the groups protecting `guest` of a source (a plugin group without guests: the whole source). */

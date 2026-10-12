@@ -20,6 +20,9 @@ pub struct Sink {
     has_base: bool,
     /// files whose size changed while read (the backup is reported not consistent)
     pub inconsistent: u64,
+    /// items skipped with an error ([`Sink::item_failed`]); the first few with their error
+    pub failed: u64,
+    pub failed_samples: Vec<String>,
 }
 
 fn send(chan: &Shared, m: &Message) -> Result<()> {
@@ -32,6 +35,27 @@ impl Sink {
             chan,
             has_base,
             inconsistent: 0,
+            failed: 0,
+            failed_samples: Vec::new(),
+        }
+    }
+
+    /// Records an item that could not be read and is left out of the snapshot (e.g.
+    /// `"mail/Inbox/x.eml: 500 …"`). The backup still commits; the job ends `ok`
+    /// with warnings (contract v1.7 `Warnings`, sent before `Done` when any).
+    pub fn item_failed(&mut self, what: impl Into<String>) {
+        self.failed += 1;
+        if self.failed_samples.len() < plugin_proto::MAX_WARNING_SAMPLES {
+            let mut s: String = what.into();
+            if s.len() > plugin_proto::MAX_WARNING_SAMPLE {
+                let mut n = plugin_proto::MAX_WARNING_SAMPLE - 3;
+                while !s.is_char_boundary(n) {
+                    n -= 1;
+                }
+                s.truncate(n);
+                s.push_str("...");
+            }
+            self.failed_samples.push(s);
         }
     }
 
@@ -114,8 +138,8 @@ impl Sink {
         )
     }
 
-    /// v1.6: metadata the appliance keeps with this snapshot in its catalog (a JSON
-    /// object ≤ 16 KiB, at most once per backup; needs a v1.6 host).
+    /// v1.8: metadata the appliance keeps with this snapshot in its catalog (a JSON
+    /// object ≤ 16 KiB, at most once per backup; needs a v1.8 host).
     pub fn snapshot_meta(&mut self, meta: &serde_json::Value) -> Result<()> {
         if !meta.is_object() {
             bail!("snapshot metadata must be a JSON object");
