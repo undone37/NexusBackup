@@ -369,26 +369,46 @@ objects (a warning in each backup log names those present). Use a cluster backup
 ### Point-in-time restore
 
 1. Open **Restore** on a cluster snapshot and choose **Point-in-time restore (new data directory via SSH)**.
-2. Enter the **New data directory on the restore host (must not exist)**, optionally a time to recover to
-   (e.g. `2026-10-10 14:30:00+00`; empty = the end of the backup), and optionally a port.
-3. Click **Start**.
+2. The box at the top shows the snapshot's **recoverable range**: from the end of its base backup to the time of
+   the backup run (with the WAL positions, LSNs, and the timeline). Pick a time in **Pick a time in this range**
+   (your local time; it fills **Recover to time** in UTC), or fill in exactly one of the targets yourself:
+   - **Recover to time**, e.g. `2026-10-10 14:30:00+00`;
+   - **… or to LSN**, e.g. `0/3000060` (from `pg_current_wal_lsn()` or the server log);
+   - **… or to a named restore point** created on the server with `SELECT pg_create_restore_point('before_upgrade')`.
+
+   All targets empty = the end of the backup. A time outside the range is refused before the job starts.
+3. Enter the **New data directory on the restore host (must not exist)** and optionally a port.
+4. If the cluster has **tablespaces** besides the data directory, give each a new directory, one per line:
+   `<oid or old path>=<new path>` (e.g. `16390=/srv/pg/restore-ts1` or `/srv/pg/ts1=/srv/pg/restore-ts1`). The
+   error message of a restore without them lists the tablespaces of the snapshot. The new directories must not
+   exist (their parents must) and may not lie inside the data directory.
+5. Tick **Start PostgreSQL after the restore** to have the plugin start it, or leave it to start it yourself.
+6. Click **Start**.
 
 ![Point-in-time restore dialog](images/snapshot-pg-pitr.png)
 
 The plugin connects over SSH to the restore host configured in the source (host key pinned). It unpacks the
-base backup into the new directory and the WAL into `<dir>/nexus_wal/`, and writes the recovery settings
-(target time, then promote). **It does not start PostgreSQL.** On the restore host, start a server of the
-same major version on the directory:
+base backup into the new directory, each tablespace into its new directory (and points `tablespace_map` at it, so
+PostgreSQL creates the links), the WAL into `<dir>/nexus_wal/`, and writes the recovery settings (the target, then
+promote). If the source keeps its configuration outside the data directory (Debian and Ubuntu do), a minimal
+`postgresql.conf` and a `pg_hba.conf` that allows local connections only are added.
+
+With **Start PostgreSQL after the restore**, the plugin runs `pg_ctl start` on the restore host and waits up to 10
+minutes until the server accepts connections. It uses the `pg_ctl` of the source's major version
+(`/usr/lib/postgresql/<version>/bin` on Debian/Ubuntu, `/usr/pgsql-<version>/bin` with the PGDG packages, else the
+one in `PATH`; the source field **pg_ctl on the restore host** overrides it). The server log is
+`<dir>/nexus_restore.log`; if the start fails, its last lines are in the job log (for example when the requested
+target is not in the WAL). Without the option, start a server of the same major version yourself:
 
 ```sh
 pg_ctl -D /var/lib/postgresql/18/restore-1013 start
 ```
 
-Limits: clusters with additional tablespaces can only be downloaded, not restored point-in-time. Only time
-targets are supported. The restore always creates a new data directory and never writes into a running
-server.
+The restore always creates a new data directory and never writes into a running server. Choose a **port** that is
+free on the restore host when the source runs there too.
 
-> **Status:** Tested against PostgreSQL 14, 17 and 18 in the plugin's container test box. A run on the
+> **Status:** Tested against PostgreSQL 14 and 17 (recovery to a time, an LSN and a restore point, tablespaces,
+> start by the plugin) and 18 (earlier version of the test) in the plugin's container test box. A run on the
 > appliance image (VM lab) is still pending.
 
 ## Microsoft 365 restores

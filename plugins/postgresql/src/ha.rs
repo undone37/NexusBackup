@@ -10,7 +10,10 @@ use anyhow::Result;
 pub fn candidates(cfg: &serde_json::Value) -> Vec<(String, u16)> {
     let port = cfg["port"].as_u64().and_then(|p| u16::try_from(p).ok()).unwrap_or(5432);
     let mut out: Vec<(String, u16)> = Vec::new();
-    let first = cfg["host"].as_str().map(|h| h.trim_matches(['[', ']'])).unwrap_or_default();
+    let first = cfg["host"]
+        .as_str()
+        .map(|h| h.trim_matches(['[', ']']))
+        .unwrap_or_default();
     if !first.is_empty() {
         out.push((first.to_owned(), port));
     }

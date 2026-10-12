@@ -163,7 +163,9 @@ fn marker(ctx: &Ctx, sql: &Opts) -> f64 {
         ctx.warn(format!(
             "no SQL connection for the recovery marker ({e:#}): the recoverable range uses the appliance clock"
         ));
-        SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64())
     })
 }
 

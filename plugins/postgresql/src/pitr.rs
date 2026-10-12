@@ -83,7 +83,9 @@ pub struct Tablespace {
 pub fn remap(map: &str, rules: &[String]) -> Result<(Vec<Tablespace>, String)> {
     let mut out: Vec<Tablespace> = Vec::new();
     for l in map.lines().filter(|l| !l.trim().is_empty()) {
-        let (oid, old) = l.split_once(' ').with_context(|| format!("tablespace_map: bad line {l:?}"))?;
+        let (oid, old) = l
+            .split_once(' ')
+            .with_context(|| format!("tablespace_map: bad line {l:?}"))?;
         if oid.is_empty() || !oid.bytes().all(|b| b.is_ascii_digit()) {
             bail!("tablespace_map: bad line {l:?}");
         }
@@ -208,7 +210,8 @@ fn unpack(
         .into_inner()?
         .into_inner()
         .map_err(|e| anyhow!("ssh: {}", e.error()))?;
-    exec.finish().with_context(|| format!("unpacking into {dir} on the restore host"))?;
+    exec.finish()
+        .with_context(|| format!("unpacking into {dir} on the restore host"))?;
     Ok(u)
 }
 
@@ -259,13 +262,19 @@ pub fn pitr(ctx: &Ctx, src: &mut Source, ssh: &Ssh) -> Result<String> {
             map = Some(s);
             Ok(())
         })?;
-        remap(&map.context("the snapshot has tablespaces but no data/tablespace_map")?, &rules)?
+        remap(
+            &map.context("the snapshot has tablespaces but no data/tablespace_map")?,
+            &rules,
+        )?
     } else if !rules.is_empty() {
         bail!("tablespaces: this snapshot has no tablespaces besides the data directory");
     } else {
         (Vec::new(), String::new())
     };
-    if spaces.iter().any(|t| t.new == dir || t.new.starts_with(&format!("{dir}/"))) {
+    if spaces
+        .iter()
+        .any(|t| t.new == dir || t.new.starts_with(&format!("{dir}/")))
+    {
         bail!("tablespaces: a tablespace directory may not lie inside the data directory");
     }
 
@@ -364,7 +373,9 @@ pub fn pitr(ctx: &Ctx, src: &mut Source, ssh: &Ssh) -> Result<String> {
     }
     ssh.run(&start_cmd(dir, pg_ctl))
         .context("the data directory is restored, but PostgreSQL did not start")?;
-    Ok(format!("{head}; PostgreSQL started on it (log {dir}/nexus_restore.log)"))
+    Ok(format!(
+        "{head}; PostgreSQL started on it (log {dir}/nexus_restore.log)"
+    ))
 }
 
 #[cfg(test)]
@@ -436,7 +447,10 @@ mod tests {
     fn start_command_quotes() {
         let c = start_cmd("/var/lib/pg/r1", Some("/opt/pg/bin/pg_ctl"));
         assert!(c.starts_with("d='/var/lib/pg/r1'; "), "{c}");
-        assert!(c.contains("for x in '/opt/pg/bin/pg_ctl' \"/usr/lib/postgresql/$v/bin/pg_ctl\""), "{c}");
+        assert!(
+            c.contains("for x in '/opt/pg/bin/pg_ctl' \"/usr/lib/postgresql/$v/bin/pg_ctl\""),
+            "{c}"
+        );
         assert!(c.contains("-w -t 600 start"));
     }
 }

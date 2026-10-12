@@ -365,7 +365,11 @@ fn cluster_backup_and_point_in_time_restore() {
     assert!(full.files > 500 && full.consistent, "{}", full.files);
     // the full snapshot recovers to the end of its base backup only
     let fr = &full.meta.as_ref().expect("snapshot meta")["recoverable"];
-    assert_eq!((&fr["from_lsn"], &fr["from_time"]), (&fr["to_lsn"], &fr["to_time"]), "{fr}");
+    assert_eq!(
+        (&fr["from_lsn"], &fr["from_time"]),
+        (&fr["to_lsn"], &fr["to_time"]),
+        "{fr}"
+    );
 
     b.psql(false, "pitr", "INSERT INTO t (id) SELECT generate_series(1, 100)");
     std::thread::sleep(Duration::from_millis(1100));
@@ -389,7 +393,10 @@ fn cluster_backup_and_point_in_time_restore() {
     // recoverable range: base backup end → this run's marker commit
     let ir = &inc.meta.as_ref().unwrap()["recoverable"];
     assert_eq!(ir["from_lsn"], fr["from_lsn"]);
-    assert!(ir["to_time"].as_u64() >= ir["from_time"].as_u64() && ir["to_lsn"] != ir["from_lsn"], "{ir}");
+    assert!(
+        ir["to_time"].as_u64() >= ir["from_time"].as_u64() && ir["to_lsn"] != ir["from_lsn"],
+        "{ir}"
+    );
     // WAL-only frequent runs: nothing changed = only the (partial) last segments again
     let idle = h.backup(&cfg, None).unwrap();
     assert!(idle.summary.starts_with("incremental:"), "{}", idle.summary);
@@ -499,10 +506,22 @@ fn restore_targets_tablespaces_and_start() {
     drop_tablespace(&b);
     stop_rm(&b, &["ts_src", "lsn1", "lsn1_ts", "rp1", "rp1_ts", "nots"]);
     b.exec(&["mkdir", "-m", "700", "/var/lib/postgresql/ts_src"]);
-    b.psql(false, "postgres", "CREATE TABLESPACE nexus_ts LOCATION '/var/lib/postgresql/ts_src'");
+    b.psql(
+        false,
+        "postgres",
+        "CREATE TABLESPACE nexus_ts LOCATION '/var/lib/postgresql/ts_src'",
+    );
     b.psql(false, "postgres", "CREATE DATABASE pitrts");
-    b.psql(false, "pitrts", "CREATE TABLE t (id int PRIMARY KEY) TABLESPACE nexus_ts");
-    let oid = b.psql(false, "postgres", "SELECT oid FROM pg_tablespace WHERE spcname = 'nexus_ts'");
+    b.psql(
+        false,
+        "pitrts",
+        "CREATE TABLE t (id int PRIMARY KEY) TABLESPACE nexus_ts",
+    );
+    let oid = b.psql(
+        false,
+        "postgres",
+        "SELECT oid FROM pg_tablespace WHERE spcname = 'nexus_ts'",
+    );
     let h = b.host();
     let cfg = b.config();
     let full = h.backup(&cfg, None).unwrap();
@@ -548,10 +567,20 @@ fn restore_targets_tablespaces_and_start() {
         )
         .unwrap();
     assert!(r.summary.contains("PostgreSQL started"), "{}", r.summary);
-    assert!(r.summary.contains(&format!("tablespaces {oid} → /var/lib/postgresql/lsn1_ts")), "{}", r.summary);
+    assert!(
+        r.summary
+            .contains(&format!("tablespaces {oid} → /var/lib/postgresql/lsn1_ts")),
+        "{}",
+        r.summary
+    );
     assert_eq!(wait_and_count(&b, "lsn1", 5494, "pitrts"), "100");
     assert_eq!(
-        b.psql_port(false, 5494, "postgres", &format!("SELECT pg_tablespace_location({oid})")),
+        b.psql_port(
+            false,
+            5494,
+            "postgres",
+            &format!("SELECT pg_tablespace_location({oid})")
+        ),
         "/var/lib/postgresql/lsn1_ts"
     );
     b.exec(&["pg_ctl", "-D", "/var/lib/postgresql/lsn1", "-m", "fast", "stop"]);
@@ -665,7 +694,8 @@ fn wait_and_count(b: &Box, d: &str, port: u16, db: &str) -> String {
         assert!(
             t0.elapsed() < Duration::from_secs(120),
             "recovery did not end: {}",
-            b.exec(&["cat", &format!("/var/lib/postgresql/{d}/nexus_restore.log")]).1
+            b.exec(&["cat", &format!("/var/lib/postgresql/{d}/nexus_restore.log")])
+                .1
         );
         std::thread::sleep(Duration::from_millis(200));
     }

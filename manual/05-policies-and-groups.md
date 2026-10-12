@@ -18,7 +18,7 @@ Click **New policy** (or **Edit** on an existing one) and fill in:
 |---|---|
 | **Name** | e.g. `gold`, `databases-hourly` |
 | **Schedule** | when the group's backup runs, in the **time zone of the group** (see [Schedules](#schedules)) |
-| **Retention (GFS)** | how many **Daily**, **Weekly**, **Monthly** and **Yearly** restore points to keep (0 = none of that class) |
+| **Retention (GFS)** | **Keep all snapshots of the last N hours** (0 = off, see [Frequent runs](#frequent-runs-keep-all-recent-snapshots)), then how many **Daily**, **Weekly**, **Monthly** and **Yearly** restore points to keep (0 = none of that class) |
 | **Copy offsite** | upload the snapshots to the tenant's offsite target after each backup |
 | **Retries** | how often a failed backup is retried (0–10, default 3) and the minutes between attempts (default 5) |
 | **Run-time SLA (minutes)** | optional: raise an `sla_missed` warning when a backup of a group runs longer |
@@ -30,6 +30,25 @@ Click **New policy** (or **Edit** on an existing one) and fill in:
 
 How retention counts is explained in [01 Concepts](01-concepts.md#retention-gfs). A good starting point is the
 default 14 daily, 4 weekly, 6 monthly, 2 yearly.
+
+### Frequent runs: keep all recent snapshots
+
+Sources whose incremental runs are cheap can run every few minutes, above all PostgreSQL cluster backups: a run
+on an unchanged base backup sends only the new WAL (see [12 Plugins](12-plugins.md)). Daily/weekly/… retention
+would keep only the last snapshot of each day, so a policy for such a group sets **Keep all snapshots of the last
+N hours**, for example `every 15m` with 24 hours: every snapshot of the last 24 hours stays (96 restore points,
+each a point-in-time restore range), older ones are thinned out to one per day, week, month and year.
+
+![A policy for WAL-only runs every 15 minutes](images/policy-wal-frequent.png)
+
+- The hours count back from the **newest** snapshot of the object, not from now: if backups stop, nothing of the
+  last day is pruned.
+- Snapshots kept only for this reason are not locked beyond the lock every new snapshot gets when it is written
+  (the store's minimum lock, 14 days by default). They are pruned once that lock has expired, so on an appliance
+  with the default minimum lock the store keeps 14 days of 15-minute snapshots anyway; the space is small because
+  they share their data with each other.
+- Lowering the hours shortens retention and needs approval, like lowering any other class.
+- Offsite copies and replication keep the daily/weekly/monthly/yearly classes only.
 
 Rules:
 
@@ -224,11 +243,12 @@ info alert names it (see [11 Alerts and monitoring](11-alerts-and-monitoring.md)
 
 ### Schedules
 
-The schedule editor offers four kinds; the **Schedule string** below it is what is stored (you can also type it):
+The schedule editor offers five kinds; the **Schedule string** below it is what is stored (you can also type it):
 
 | Kind | Schedule string | Runs |
 |---|---|---|
 | Daily | `daily 01:30` | every day at 01:30 |
+| Every N minutes | `every 15m` | every 15 minutes from the full hour (:00, :15, :30, :45; N = 5, 6, 10, 12, 15, 20 or 30) |
 | Every N hours | `hourly 15`, `every 6h at 15` | every hour at :15; every 6 hours at 00:15, 06:15, 12:15, 18:15 (N = 1, 2, 3, 4, 6, 8 or 12) |
 | On weekdays | `Mon,Wed,Fri 22:00`, `Mon-Fri 20:00` | on the listed days (`Mon` … `Sun`, lists and ranges) |
 | Monthly | `monthly 1 03:00` | on that day of the month (a month without day 29–31 runs on its last day) |

@@ -568,6 +568,11 @@ set `wal_level` to at least `replica` and keep one `max_wal_senders` and one `ma
 Form fields (from the plugin manifest):
 
 - **Server**, **Port** (5432), **User**, **Password**
+- optional **More servers of the cluster (HA: host or host:port; backups use the primary)**, one per line: the other
+  members of a primary/standby cluster (streaming replicas, Patroni). Every backup connects to all servers and
+  uses the one that is not in recovery (`pg_is_in_recovery()` = false); **Validate connection** fails on the
+  **More servers** field when none is a primary, and the job log lists each server as primary, standby or
+  unreachable. The role, `pg_hba.conf` and TLS settings must be the same on all of them.
 - **TLS**: `require` (encrypted, certificate not checked, the default), `verify-full` (CA below or public CAs, plus
   the host name), `disable`. **CA certificate (PEM, verify-full)**.
 - **Databases offered (patterns, empty = all)**, **Databases hidden (patterns)**
@@ -576,7 +581,8 @@ Form fields (from the plugin manifest):
   **Alternate server password**: a second server for dump restores
 - optional **Point-in-time restore host (SSH)**, **SSH port**, **SSH user (owner of the restored data directory)**
   (default `postgres`), **SSH private key (OpenSSH, unencrypted)**, **SSH host key (known_hosts line or public
-  key)**: where point-in-time restores create a new data directory
+  key)**: where point-in-time restores create a new data directory; optional **pg_ctl on the restore host**
+  when the plugin starts the restored server and `pg_ctl` is not in a standard place
 
 Click **Validate connection** to check connectivity and permissions.
 
@@ -585,7 +591,15 @@ What the group selects decides the backup type:
 - **Databases selected:** one consistent logical dump per database (stream `<db>.sql`). These are restored to a
   server.
 - **No database selected:** the whole cluster, as a base backup (`data/`) plus all WAL since then (`wal/`). This
-  is restorable to a point in time.
+  is restorable to a point in time. Runs between two base backups send only the new WAL, so such a group can run
+  every 15 minutes (schedule `every 15m`, with **Keep all snapshots of the last N hours** in its policy, see
+  [05 Policies](05-policies-and-groups.md#frequent-runs-keep-all-recent-snapshots)). Each cluster snapshot records
+  its **recoverable range** (end of the base backup → time of the run), which the point-in-time restore dialog
+  shows. Each run commits one tiny transaction on the server (it assigns a transaction ID), so that the run's time
+  is reachable by a point-in-time restore even when nothing else changed.
+- **High availability:** after a failover the new primary is on a new timeline: the next cluster backup is a new
+  base backup from it (and creates the replication slot there). Drop the slot on the old primary when it comes
+  back as a standby (`SELECT pg_drop_replication_slot('nexusbackup')`), or it retains WAL.
 
 > **Caution:** the replication slot keeps WAL on the server between backups. If backups stop, WAL accumulates.
 > When you remove the source, drop the slot (`SELECT pg_drop_replication_slot('nexusbackup')`), or set
@@ -593,9 +607,9 @@ What the group selects decides the backup type:
 >
 > **Status:** Logical dumps do not cover owners/grants, comments, RLS policies, aggregates, operators, range types,
 > rules, foreign tables, table inheritance, large objects, publications, event triggers, statistics objects or
-> roles. Each backup warns about the ones present; use a cluster backup where they matter. Point-in-time restore
-> of clusters with extra tablespaces is not supported (use the download). The plugin passed integration tests
-> against real PostgreSQL servers. A run on the appliance image (signed bundle, UI) is still pending.
+> roles. Each backup warns about the ones present; use a cluster backup where they matter. The plugin (1.2.0,
+> incl. a streaming replica, failover by promotion, tablespaces) passed integration tests against real PostgreSQL
+> 14 and 17 servers. A run on the appliance image (signed bundle, UI) is still pending.
 
 ### Microsoft 365 (Exchange, OneDrive, SharePoint, Teams)
 
