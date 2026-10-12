@@ -59,6 +59,7 @@ RUN --mount=type=cache,target=/opt/cargo/registry \
  && mkdir -p /out \
  && cp target/release/keyd target/release/nexus-pve target/release/nexus-offsite \
        target/release/nexus-web-api target/release/nexus-scheduler target/release/nexus-setup \
+       target/release/nexus-console-gate \
        target/release/nexus-nft-sync target/release/nexus-agentctl target/release/nexus-truenas \
        target/release/nexus-nas target/release/nexus-nasmount \
        target/release/nexus-replicad target/release/nexus-replica \
@@ -118,7 +119,7 @@ RUN systemd-sysusers /usr/lib/sysusers.d/nexus.conf
 
 # Binaries and the restore micro-VM.
 COPY --from=rust /out/keyd /out/nexus-pve /out/nexus-offsite /out/nexus-web-api \
-     /out/nexus-scheduler /out/nexus-setup /out/nexus-nft-sync /out/nexus-agentctl /out/nexus-truenas \
+     /out/nexus-scheduler /out/nexus-setup /out/nexus-console-gate /out/nexus-nft-sync /out/nexus-agentctl /out/nexus-truenas \
      /out/nexus-nas /out/nexus-nasmount /out/nexus-replicad /out/nexus-replica \
      /out/nexus-pluginhost /out/nexus-plugin-install /usr/libexec/nexus/
 # plugin console tool (verify/inspect bundles); the test plugin (nexus-test-plugin) is never shipped
@@ -149,6 +150,8 @@ RUN semodule -i /usr/share/selinux/packages/nexus/nexus.pp /usr/share/selinux/pa
  && matchpathcon /var/lib/nexus/scheduler/agent-ca/ca.key | grep -q nexus_agent_ca_t \
  && matchpathcon /usr/libexec/nexus/nexus-web-api | grep -q nexus_webapi_exec_t \
  && matchpathcon /usr/libexec/nexus/nexus-scheduler | grep -q nexus_scheduler_exec_t \
+ && matchpathcon /usr/libexec/nexus/nexus-console-gate | grep -q nexus_consolegate_exec_t \
+ && matchpathcon /var/lib/nexus/console-unlock/1.json | grep -q nexus_console_unlock_t \
  && matchpathcon /usr/lib/nexus/restore-vm/vmlinuz | grep -q nexus_restorevm_image_t \
  && matchpathcon /var/lib/nexus/catalog | grep -q nexus_catalog_t \
  && matchpathcon /usr/libexec/nexus/nexus-pluginhost | grep -q nexus_pluginhost_exec_t \
@@ -200,16 +203,20 @@ LABEL org.opencontainers.image.version=${NEXUS_VERSION}
 # Time: NTS only (chronyd -p parses the config and fails on errors).
 RUN chronyd -p -f /etc/chrony.conf >/dev/null
 
-# No interactive root (locked password, emergency access on the local console
-# only); sshd off. The preset file also governs the first-boot preset-all.
+# No interactive root (locked password; emergency access only through the console
+# gate on tty2, which replaces that VT's getty: Phase 14c); sshd off. The preset
+# file also governs the first-boot preset-all.
 RUN usermod -L root \
- && systemctl preset sshd.service sshd.socket nftables.service chronyd.service \
+ && ln -sf /dev/null /etc/systemd/system/getty@tty2.service \
+ && ln -sf /dev/null /etc/systemd/system/autovt@tty2.service \
+ && systemctl preset sshd.service sshd.socket nftables.service chronyd.service nexus-console-gate.service \
       nexus-setup.service nexus-nft-sync.service nexus-nft-sync.path nexus-nft-sync.timer nexus-nasmount.socket \
       nexus-plugin-install.service nexus-plugin-install.path \
  && ! systemctl is-enabled -q sshd.service \
- && systemctl is-enabled -q nftables.service chronyd.service nexus-setup.service \
+ && systemctl is-enabled -q nftables.service chronyd.service nexus-setup.service nexus-console-gate.service \
       nexus-nft-sync.path nexus-nft-sync.timer nexus-nasmount.socket \
       nexus-plugin-install.service nexus-plugin-install.path \
+ && test "$(systemctl is-enabled getty@tty2.service)" = masked \
  && ! systemctl is-enabled -q nexus-web-api.service nexus-scheduler.service nexus-keyd.service
 
 # COPY keeps the build host's modes (umask 002 → 0664/0775): strip group/world

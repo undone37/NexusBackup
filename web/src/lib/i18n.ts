@@ -783,6 +783,7 @@ export const en = {
       updates: 'Updates',
       anomaly: 'Anomaly detection',
       diagnostics: 'Diagnostics',
+      console: 'Console access',
     } as Record<string, string>,
     readOnly: 'Read-only: only administrators change these settings.',
     test: 'Send test',
@@ -1146,6 +1147,8 @@ export const en = {
       replication_keys: 'The tenant keys on this secondary do not match the primary. Re-export the keys on the primary (needs approval).',
       break_glass: 'An administrator account was reset at the console. Confirm with the person who did it, then acknowledge to clear the banner.',
       report: "A scheduled report could not be mailed. Check the SMTP server under Settings → Alert delivery (reachable, credentials) and the report's recipients on the Reports page, then use Send now. Resolves after the next successful send.",
+      console_unlock: 'A one-time code for a root shell on the appliance console was issued. Make sure the request (Settings → Console access) was planned, then acknowledge.',
+      console_root_shell: 'Someone opened a root shell on the appliance console. Confirm with the requester (or whoever holds the recovery key) what was done, check the audit log, then acknowledge.',
     } as Record<string, string>,
   },
   storage: {
@@ -1322,6 +1325,56 @@ export const en = {
     attempt: 'Attempt',
     retryOf: (id: number) => `retry of job #${id}`,
     notBefore: 'Starts not before',
+  },
+  console: {
+    intro:
+      'The appliance has no root password and no SSH. For an emergency, a root shell opens on the local console (tty2: press Alt+F2, or Ctrl+Alt+F2 in a graphical console) with a one-time code requested here, or with the recovery key. Every use is audited and raises a critical alert.',
+    request: 'Request console access',
+    hours: 'Shell duration',
+    hoursN: (n: number) => `${n} h`,
+    reason: 'Reason',
+    reasonHint: 'Shown to the approver and in the audit log and the alert.',
+    submit: 'Request',
+    quorumHint:
+      'With approvals enabled, another administrator or a security officer must approve the request. Then you can show the code once; it must be used within 24 hours of the approval.',
+    requested: (id: number) => `Request #${id} is waiting for approval.`,
+    readyDirect: (id: number) => `Request #${id} was approved without a second person (approvals are disabled). Show the code now or later.`,
+    list: 'Requests',
+    none: 'No console access was requested yet.',
+    id: '#',
+    by: 'Requested by',
+    approvedBy: 'Approved by',
+    codeUntil: 'Use before',
+    statusCol: 'Status',
+    status: {
+      pending: 'Waiting for approval',
+      rejected: 'Rejected',
+      expired: 'Expired',
+      approved: 'Approved: code not shown yet',
+      issued: 'Code shown, not used yet',
+      used: 'Used',
+      revoked: 'Revoked',
+    } as Record<string, string>,
+    show: 'Show code',
+    showConfirm:
+      'The code is shown only once and cannot be displayed again. Have the console ready (or write the code down safely). Show it now?',
+    revoke: 'Revoke',
+    revokeConfirm: (id: number) => `Revoke the code of request #${id}? It stops working on the console at once.`,
+    revoked: 'Code revoked.',
+    codeTitle: (id: number) => `One-time console code (request #${id})`,
+    codeOnce: 'Shown only now. Only its hash is stored on the appliance; nobody can display it again.',
+    codeSteps: (h: number) =>
+      `At the appliance console switch to tty2 (Alt+F2), type this code and press Enter. A root shell opens for up to ${h} h; leave it with "exit". The code works once.`,
+    code: 'Code',
+    expires: 'Use before',
+    recovery:
+      'Without the web UI (no second person available, or the web UI is down) the recovery key printed at first boot opens the console as well; it raises the same alert.',
+    active: 'Root shell running on the console',
+    activeText: (since: string, until: string, how: string) =>
+      `since ${since}, ends at the latest ${until} (${how}); a critical alert was raised.`,
+    viaCode: (id: number | null, by: string | null) => `one-time code #${id ?? '?'} of ${by ?? '?'}`,
+    viaRecovery: 'opened with the recovery key',
+    readOnly: 'Only administrators request console access; security officers can revoke codes.',
   },
 };
 

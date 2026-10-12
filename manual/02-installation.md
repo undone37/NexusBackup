@@ -80,7 +80,8 @@ appliance accept only signed updates from that repository right away.
 
 The installed system has:
 
-- a locked root account and **no SSH server**: emergency access is through the local console only;
+- a locked root account and **no SSH server**: emergency access is through the local console only, on tty2 with a
+  one-time code or the recovery key (see [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console));
 - SELinux enforcing; every service in its own user, systemd sandbox and SELinux domain;
 - a firewall that blocks everything except the management port (see [Network and firewall](#network-and-firewall)).
 
@@ -221,8 +222,10 @@ These are open production items (see `state.md`, "Production gaps"):
 
 - **Console root shell:** several maintenance tasks in this manual (update rollback and maintenance window, network
   change, SSH key files, disaster recovery, the break-glass reset of a locked-out administrator) need a root shell on
-  the local console. The image locks the root password and has no documented way to get a root shell yet; the lab VMs use a lab-only console autologin. Plan how you will get emergency access
-  (for example booting a rescue system) before you rely on it.
+  the local console. The root password stays locked; the shell opens on **tty2** with a one-time code that a second
+  person approved, or with the recovery key, for at most 8 hours, audited and alerted (see
+  [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console)). Remaining gap: the procedure
+  has not been used on real hardware yet (see the status note there).
 
 - **SSH keys for Proxmox VE nodes:** **Settings → Appliance SSH keys** shows and rotates the appliance's keys, but
   its appliance-side part is still being integrated, so the appliance does not create its own key pair yet. The PVE

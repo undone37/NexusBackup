@@ -427,6 +427,7 @@ when approvals are enabled.
 | **Updates** | running, staged, available and rollback image; **Check now**, **Install now** | [13 Updates](13-updates.md#updates-in-the-web-interface) |
 | **Anomaly detection** | thresholds of the change-rate `anomaly` alert | [11 Alerts and monitoring](11-alerts-and-monitoring.md#change-rate-anomalies) |
 | **Diagnostics** | **Run checks** (self-checks with a help link each; the same checks gate updates), **Create bundle** (redacted support bundle for a time range, administrators only, downloadable for 24 h) | [15 Troubleshooting](15-troubleshooting-faq.md#diagnostics-and-support-bundles) |
+| **Console access** | requests for an emergency root shell on the appliance console, **Show code** (once), **Revoke** (administrators and security officers only) | [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console) |
 
 ![Settings: Approvals](images/settings-approvals.png)
 
@@ -441,6 +442,7 @@ when approvals are enabled.
 ![Settings: Anomaly detection](images/settings-anomaly.png)
 
 ![Settings: Diagnostics](images/settings-diagnostics.png)
+![Settings: Console access](images/settings-console.png)
 
 ## Messages and dialogs
 

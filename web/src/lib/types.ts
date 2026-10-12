@@ -512,6 +512,37 @@ export interface Alert {
 export interface LoginResponse {
   csrf: string;
   user: User;
+  /** a console root shell is running (14c; GET /auth/me) */
+  console_shell?: ConsoleShell | null;
+}
+
+// ---------------------------------------------------------------- console root access (14c)
+
+export type ConsoleUnlockStatus = 'pending' | 'rejected' | 'expired' | 'approved' | 'issued' | 'used' | 'revoked';
+export interface ConsoleUnlock {
+  id: number;
+  hours: number;
+  reason: string;
+  requested_by: string;
+  created: number;
+  decided_by: string | null;
+  decided_at: number | null;
+  code_expires: number | null;
+  status: ConsoleUnlockStatus;
+}
+export interface ConsoleCode {
+  id: number;
+  code: string;
+  hours: number;
+  expires: number;
+}
+export interface ConsoleShell {
+  at: number;
+  until: number;
+  method: 'code' | 'recovery_key';
+  unlock: number | null;
+  requested_by: string | null;
+  alert: number;
 }
 
 // ---------------------------------------------------------------- plugins (docs/plugin-system.md)

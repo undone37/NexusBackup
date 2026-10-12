@@ -3,6 +3,7 @@
 # X-CSRF-Token, TLS verified against the appliance certificate.
 #   lab/e2e/m5.sh setup && lab/e2e/m5.sh start && lab/e2e/m5-api.sh [step...]
 # steps (default: all): config wait-backup check restore verify quorum phase13 diag audit
+#   (not in the default: console, console-check; lab/appliance/console-gate.sh runs them)
 # Lab inputs (env, defaults = dev machine, see lab/README.md):
 #   LAB (/home/ah/nexus-lab), LAB_CA (default: fetched from the node), LAB_TOKEN_SECRET (file;
 #   default: secret part of $LAB/api-token), LAB_SSH_KEY (private key whose public half is in the
@@ -364,6 +365,47 @@ step_diag() {
 	log "support bundle $id: $(jq -r .bundle.bytes <<<"$r") bytes, $(find "$t" -type f | wc -l) files"
 	api so GET "/diagnostics/$id/download" >/dev/null
 	expect 403 "bundle download by the security officer"
+}
+
+# 14c: console.unlock through the quorum, the code shown once ($S/console-code for
+# lab/appliance/console-gate.sh, which types it at a lab instance of the gate)
+step_console() {
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	local r id
+	r=$(api admin POST /console/unlock '{"hours":1,"reason":"lab: console gate e2e"}')
+	id=$(jq -r .quorum_id <<<"$r")
+	if [ "$(status)" = 202 ]; then
+		api admin POST "/console/unlock/$id/code" >/dev/null
+		expect 409 "code before the approval"
+		login so "$SO_PW" "$SO_TOTP"
+		api so POST "/quorum/$id/approve" >/dev/null
+		expect 200 "so approves console.unlock"
+		api so POST "/console/unlock/$id/code" >/dev/null
+		expect 403 "the code is for the requester only"
+	else
+		expect 200 "console.unlock with approvals disabled"
+	fi
+	api admin POST "/console/unlock/$id/code" | jq -r .code >"$S/console-code"
+	expect 200 "fetch the code"
+	echo "$id" >"$S/console-id"
+	api admin POST "/console/unlock/$id/code" >/dev/null
+	expect 409 "the code is shown once"
+	api admin GET /console/unlock | jq -e --argjson id "$id" '.[] | select(.id == $id) | .status == "issued"' >/dev/null ||
+		die "request $id not issued"
+	log "console.unlock #$id approved, code shown once ($S/console-code)"
+}
+
+# after lab/appliance/console-gate.sh: the code was used, the banner is gone, the alerts are open
+step_console_check() {
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	local id
+	id=$(cat "$S/console-id")
+	api admin GET /console/unlock | jq -e --argjson id "$id" '.[] | select(.id == $id) | .status == "used"' >/dev/null ||
+		die "request $id: $(api admin GET /console/unlock | jq -c --argjson id "$id" '.[] | select(.id == $id)')"
+	api admin GET /auth/me | jq -e '.console_shell == null' >/dev/null || die "console banner still set"
+	api admin GET "/alerts?state=open" | jq -e '[.[] | select(.kind == "console_root_shell")] | length >= 2' >/dev/null ||
+		die "console_root_shell alerts missing"
+	log "console request #$id used, banner cleared, console_root_shell alerts open"
 }
 
 step_audit() {

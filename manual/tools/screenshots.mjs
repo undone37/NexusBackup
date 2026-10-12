@@ -663,6 +663,29 @@ async function main() {
       await until(`return [...document.querySelectorAll('.chip')].some((c) => c.textContent.trim() === 'Ready')`, 'support bundle ready');
       await shot('settings-diagnostics', { height: 1700 });
     }],
+    ['console', async () => {
+      // emergency console root access (14c): request, approval, the code shown once, the banner while the shell runs
+      const r = await api('POST', '/console/unlock', { hours: 2, reason: 'Storage driver debugging with the vendor (case 5120)' });
+      if (r.status === 202) {
+        await login('so');
+        await api('POST', `/quorum/${r.body.quorum_id}/approve`);
+        await login('admin');
+      }
+      await go('/settings?tab=console');
+      await until(`return !!$button('Show code')`, 'console access requests');
+      await shot('settings-console');
+      await ev(`$rowClick('Storage driver debugging', 'Show code'); return true;`);
+      await confirmOk();
+      await until(`return !!document.querySelector('dialog[open] .console-code')`, 'console code');
+      const code = await ev(`return document.querySelector('dialog[open] .console-code').textContent;`);
+      await shot('console-code');
+      await closeDialogs();
+      // the mock stands in for the gate on tty2
+      await api('POST', '/mock/console-gate', { code });
+      await go('/', 900);
+      await shot('console-shell-banner');
+      await api('POST', '/mock/console-gate', { end: true });
+    }],
     ['approvals', async () => {
       await go('/quorum');
       await shot('approvals-admin', { height: 1400 });

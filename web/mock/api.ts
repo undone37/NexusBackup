@@ -1121,6 +1121,7 @@ function seed() {
   seedRunControl(t);
   seedReports(t);
   seedDiag(t);
+  seedConsole(t);
 }
 
 // ---------------------------------------------------------------- run control (Phase 13b)
@@ -1266,7 +1267,8 @@ function find<T>(xs: T[], pred: (x: T) => boolean, what: string): T {
 }
 
 // approved requests the scheduler executes (state stays `approved` until it has)
-const SCHEDULER_ACTIONS = ['replication.key_export', 'gc_large'];
+// (console.unlock: nobody executes it; the requester then fetches the code once, 14c)
+const SCHEDULER_ACTIONS = ['replication.key_export', 'gc_large', 'console.unlock'];
 // 202 {quorum_id, ...extra} like web-api's `accepted()`; with approvals disabled the
 // action runs at once (200 {approvals: "disabled", executed}).
 async function quorum(u: User, action: string, params: Json, extra: Json = {}): Promise<[number, Json]> {
@@ -1528,7 +1530,7 @@ on('POST', '/auth/logout', (c) => {
 });
 on('GET', '/auth/me', (c) => {
   const u = need(c.user);
-  return [200, { user: pub(u), csrf: db.sessions.get(c.sid!)!.csrf }];
+  return [200, { user: pub(u), csrf: db.sessions.get(c.sid!)!.csrf, console_shell: u.tenant || u.role === 'tenant_user' ? null : consoleShell }];
 });
 
 // tenants
@@ -2472,7 +2474,7 @@ const alertFor = (c: Ctx, id: string) => {
   const u = need(c.user, 'admin', 'operator', 'security_officer');
   if (u.tenant) throw new HttpError(403, 'forbidden');
   const a = find(db.alerts, (x) => x.id === Number(id), 'alert');
-  if (a.kind === 'break_glass') need(c.user, 'admin', 'security_officer');
+  if (['break_glass', 'console_unlock', 'console_root_shell'].includes(a.kind)) need(c.user, 'admin', 'security_officer');
   return { u, a };
 };
 on('POST', '/alerts/:id/ack', async (c, [id]) => {
@@ -3471,6 +3473,115 @@ async function handle(req: Req, res: Res) {
     return send(500, { error: 'internal error' });
   }
 }
+
+// ---------------------------------------------------------------- console root access (14c)
+// web-api: crates/web-api/src/console.rs; the gate on tty2 is simulated by POST /mock/console-gate.
+const CONSOLE_TTL = 24 * 3600;
+let consoleShell: Json | null = null;
+/** quorum id -> code hash (issued), plus what the gate / a revocation did with it */
+const consoleCodes = new Map<number, { hash: string; outcome: 'used' | 'revoked' | null }>();
+const consoleNorm = (s: string) =>
+  s.toUpperCase().replace(/[\s-]/g, '').replace(/O/g, '0').replace(/[IL]/g, '1');
+function consoleStatus(q: Json, t = now()): string {
+  const fresh = q.decided_at && q.decided_at + CONSOLE_TTL > t;
+  if (q.state === 'pending' || q.state === 'rejected') return q.state;
+  if (q.state === 'approved') return fresh ? 'approved' : 'expired';
+  if (q.state === 'executed') return consoleCodes.get(q.id)?.outcome ?? (fresh ? 'issued' : 'expired');
+  return 'expired';
+}
+const consoleRows = () => db.quorum.filter((q) => q.action === 'console.unlock').sort((a, b) => b.id - a.id);
+const consoleView = (q: Json) => ({
+  id: q.id, hours: q.params.hours, reason: q.params.reason, requested_by: q.requested_by, created: q.created,
+  decided_by: q.decided_by, decided_at: q.decided_at, code_expires: q.decided_at ? q.decided_at + CONSOLE_TTL : null,
+  status: consoleStatus(q),
+});
+function consoleAdmin(c: Ctx, ...roles: Role[]): User {
+  const u = need(c.user, ...roles);
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  return u;
+}
+function seedConsole(t: number) {
+  // an earlier, used console session: approved by the security officer
+  const q = {
+    id: nextId(), action: 'console.unlock', params: { hours: 2, reason: 'Storage controller firmware: collect vendor logs (case 4711)' },
+    requested_by: 'admin', created: t - 86400 * 33, decided_by: 'so', decided_at: t - 86400 * 33 + 1200, state: 'executed',
+  };
+  db.quorum.push(q);
+  consoleCodes.set(q.id, { hash: 'seeded', outcome: 'used' });
+  db.alerts.push(
+    mkAlert({
+      ts: t - 86400 * 33 + 1500, severity: 'critical', kind: 'console_root_shell',
+      message: `root shell opened on the appliance console with one-time code #${q.id} (requested by admin, approved by so; reason: ${q.params.reason}), for up to 2 h`,
+      acked_by: 'so', resolved_at: t - 86400 * 33 + 9000, resolved_by: 'so', note: 'Vendor logs collected, shell closed after 40 min.',
+    }),
+  );
+}
+on('GET', '/console/unlock', (c) => {
+  consoleAdmin(c, 'admin', 'security_officer');
+  return [200, consoleRows().slice(0, 50).map(consoleView)];
+});
+on('POST', '/console/unlock', async (c) => {
+  const u = consoleAdmin(c, 'admin');
+  const hours = Number(c.body.hours);
+  const reason = String(c.body.reason ?? '').trim();
+  if (!Number.isInteger(hours) || hours < 1 || hours > 8) throw new HttpError(400, 'hours: 1 to 8');
+  if (!reason || reason.length > 500) throw new HttpError(400, 'reason: 1 to 500 characters');
+  return quorum(u, 'console.unlock', { hours, reason });
+});
+on('POST', '/console/unlock/:id/code', async (c, [id]) => {
+  const u = consoleAdmin(c, 'admin');
+  const q = find(consoleRows(), (x) => x.id === Number(id), 'console unlock request');
+  if (q.requested_by !== u.name) throw new HttpError(403, 'only the requester sees the code');
+  const st = consoleStatus(q);
+  if (['issued', 'used', 'revoked'].includes(st)) throw new HttpError(409, 'the code of this request was already shown');
+  if (st !== 'approved') throw new HttpError(409, `request is ${st}`);
+  const a = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  const code = Array.from({ length: 4 }, () => Array.from(randomBytes(5), (x) => a[x & 31]).join('')).join('-');
+  consoleCodes.set(q.id, { hash: await sha256(consoleNorm(code)), outcome: null });
+  q.state = 'executed';
+  const solo = q.decided_by === q.requested_by;
+  db.alerts.push(
+    mkAlert({
+      ts: now(), severity: 'critical', kind: 'console_unlock',
+      message: `console unlock code issued to ${u.name} for a root shell of up to ${q.params.hours} h on the appliance console (${solo ? 'approvals disabled' : `approved by ${q.decided_by}`}; reason: ${q.params.reason})`,
+    }),
+  );
+  const expires = q.decided_at + CONSOLE_TTL;
+  await audit(u.name, 'console.unlock_code', `console-unlock/${q.id}`, { hours: q.params.hours, approved_by: q.decided_by, expires });
+  return [200, { id: q.id, code, hours: q.params.hours, expires }];
+});
+on('DELETE', '/console/unlock/:id', async (c, [id]) => {
+  const u = consoleAdmin(c, 'admin', 'security_officer');
+  const q = find(consoleRows(), (x) => x.id === Number(id), 'console unlock request');
+  const st = consoleStatus(q);
+  if (st !== 'approved' && st !== 'issued') throw new HttpError(409, `request is ${st}`);
+  q.state = 'executed';
+  consoleCodes.set(q.id, { hash: consoleCodes.get(q.id)?.hash ?? '', outcome: 'revoked' });
+  await audit(u.name, 'console.unlock_revoke', `console-unlock/${q.id}`, { was: st });
+  return [200, { id: q.id, status: 'revoked' }];
+});
+// MOCK ONLY (no such endpoint on the appliance): what the console gate on tty2 does with a code,
+// for the demo and the manual's pictures. {code} opens a shell, {end: true} ends it.
+on('POST', '/mock/console-gate', async (c) => {
+  if (c.body.end) {
+    if (consoleShell) await audit('console', 'console.root_shell_end', 'console', { how: 'exit', unlock: consoleShell.unlock });
+    consoleShell = null;
+    return [200, { ok: true }];
+  }
+  const h = await sha256(consoleNorm(String(c.body.code ?? '')));
+  const q = consoleRows().find((x) => consoleCodes.get(x.id)?.hash === h && consoleStatus(x) === 'issued');
+  if (!q) throw new HttpError(403, 'not accepted');
+  consoleCodes.get(q.id)!.outcome = 'used';
+  const at = now();
+  const alert = mkAlert({
+    ts: at, severity: 'critical', kind: 'console_root_shell',
+    message: `root shell opened on the appliance console with one-time code #${q.id} (requested by ${q.requested_by}, approved by ${q.decided_by}; reason: ${q.params.reason}), for up to ${q.params.hours} h`,
+  });
+  db.alerts.push(alert);
+  consoleShell = { at, until: at + q.params.hours * 3600, method: 'code', unlock: q.id, requested_by: q.requested_by, alert: alert.id };
+  await audit('console', 'console.root_shell', `console-unlock/${q.id}`, { method: 'code', hours: q.params.hours, unlock: q.id });
+  return [200, consoleShell];
+});
 
 export function mockApi(): Plugin {
   seed();

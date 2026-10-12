@@ -91,7 +91,7 @@ fn alert_kind(st: &St, ctx: &Ctx, id: i64) -> ApiResult<String> {
         .query_row("SELECT kind FROM alerts WHERE id = ?1", [id], |r| r.get(0))
         .optional()?
         .ok_or_else(ApiError::not_found)?;
-    if kind == "break_glass" {
+    if kind == "break_glass" || crate::console::officer_only(&kind) {
         ctx.require(&["admin", "security_officer"])?;
     }
     Ok(kind)

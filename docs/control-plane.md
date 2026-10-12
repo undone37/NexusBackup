@@ -10,6 +10,7 @@ console TUI first boot. Plan §11.
 | `nexus-scheduler` | `nexus-chunkstore` | catalog DB, keyd socket, chunk store, `nexus-pve` / `nexus-offsite` / `nexus-agentctl` / `nexus-truenas` / `nexus-nas` / `nexus-replica` (spawned), agent CA `/var/lib/nexus/scheduler/agent-ca/` (keys 0600), secrets key `/var/lib/nexus/scheduler/secrets.key` (0600, own) | HTTP clients |
 | `nexus-nasmount` (socket-activated per connection, docs/nas-connector.md) | root, `CAP_SYS_ADMIN` only | its socket `/run/nexus-nasmount/mount.sock` (group `nexus-chunkstore`): one request, one detached read-only NFS/CIFS mount whose fd goes back to `nexus-nas` | files, catalog, keys, chunks; it never attaches a mount anywhere |
 | `nexus-setup` (console TUI, first boot) | root | keyd CLI, catalog DB, TLS files, creates the TOTP key | network until configured |
+| `nexus-console-gate` (tty2, Phase 14c) | root, domain `nexus_consolegate_t` | catalog DB (audit, alerts, banner setting), keyd files (recovery key check, read), `/var/lib/nexus/console-unlock` (read + delete), PID 1 (transient scope); starts the root shell (`unconfined_t`) | network |
 | `nexus-replicad` (docs/replication.md) | `nexus-chunkstore` (group `nexus-replicad`, domain `nexus_replicad_t`) | tenant stores **read-only**, replication CA + token-sealing key `/var/lib/nexus/replicad`, its socket `/run/nexus-replicad/replicad.sock` (web-api uid only) | keyd, catalog, network |
 
 The web-api also connects to the replicad socket and reads `/run/nexus-replicad/ca.pem` (replication CA
@@ -88,6 +89,7 @@ Every mutating API call and every job state change appends one entry (`catalog::
 | appliance SSH keys: read / rotate (quorum), retire | read, ✓ | read | read | — |
 | OS updates: read / check, apply (quorum) | read, ✓ | read | read | — |
 | acknowledge the break-glass alert (other alerts: operator+) | ✓ | ✓ | — | — |
+| console access (14c): request + show own code / list, revoke codes; acknowledge `console_*` alerts | ✓, ✓ | list, revoke; ack | — | — |
 
 **Quorum (four-eyes, optional — plan §2 "Approval system", user decision 2026-10-10)** — while approvals are **enabled** (`settings.approvals_enabled`), these never execute directly; they create a `quorum` row that a *different* user with role `admin` or `security_officer` (never the requester) must approve within 72 h: weakening a policy (any GFS value lowered, offsite disabled), deleting a group/source/tenant/policy/agent, deleting snapshots manually (`snapshot.delete`, executed by the scheduler), GC deleting > 20 % of chunks (raised by the scheduler), granting `admin`/`security_officer`, disabling a user who is the last admin/security_officer, a new activation code for an admin/security_officer; replication (docs/replication.md): creating a replication peer (`replication_peer.create`, exposes the tenants' data), exporting DEKs to a peer (`replication.key_export`, executed by the scheduler), revoking a peer, deleting an enrolled replication source, lowering a replication source's GFS; Phase 12: changing the OIDC settings (`oidc.update`: it changes who can log in), rotating an appliance SSH key (`ssh_key.rotate`, executed by the scheduler), applying an OS update now (`update.apply`).
 
@@ -132,11 +134,12 @@ Auth: `POST /auth/login {name, password, totp}` → `Set-Cookie: nx_session=…;
 | `GET/POST /replication/sources`, `PUT/DELETE /replication/sources/{id}`, `POST /replication/sources/{id}/enroll`, `POST /replication/sources/{id}/sync` | read / admin (sync: operator too) | details in docs/replication.md §9 |
 | `GET /plugins`, `POST /plugins`, `POST /plugins/{id}/enable`, `POST /plugins/{id}/disable`, `POST /plugins/{id}/activate`, `DELETE /plugins/{id}` | read: everyone / admin (upload, disable, activate, DELETE → quorum; enable direct) | upload: raw bundle (`application/octet-stream`, ≤ 128 MiB) + `X-Plugin-Signature` → 202 `{quorum_id, plugin, upgrade_from}`; DELETE 409 while sources of its kinds exist (docs/plugin-system.md) |
 | `GET/POST /plugin-keys`, `DELETE /plugin-keys/{fingerprint}` | admin, security_officer, operator read / admin (POST, DELETE → quorum) | project keys (image) are listed `builtin` and cannot be removed |
-| `GET /dashboard?days=7` or `30` | all (tenant users: own tenant) | Phase 12 KPIs (docs/phase12-contract.md §1), cached ≤ 60 s per scope; plus `break_glass`; `capacity.dedup` / `capacity.compression` from `backup_stats` |
+| `GET /dashboard?days=7` or `30` | all (tenant users: own tenant) | Phase 12 KPIs (docs/phase12-contract.md §1), cached ≤ 60 s per scope; plus `break_glass` and `console_shell` (14c); `capacity.dedup` / `capacity.compression` from `backup_stats` |
 | `GET /storage` | all (tenant users: own tenant) | storage accounting per tenant and group, growth 7/30/90 d (docs/storage-accounting.md) |
 | `GET /reports/{protection,failed,sla,storage}.csv?from=&to=&tenant=` | all (also `viewer` once it exists; tenant users: own tenant, another `tenant` → 403) | Phase 14e, see Reports; `from` / `to` = `YYYY-MM-DD` (UTC, `to` inclusive) or unix seconds, default the last 7 days, at most 400 days; `text/csv; charset=utf-8`, `Content-Disposition: attachment; filename="nexus-<type>[-<tenant>]-<day>.csv"`; audited `report.export {type, from, to, tenant, rows}` |
 | `GET` / `PUT /settings/reports`, `POST /settings/reports/{name}/send` | read: admin, security_officer; write, send: admin | setting `reports`: `{reports: [{name, types, schedule, timezone, recipients, tenant}]}`; GET adds `last` (latest `report_send` job) per report and `smtp` (server configured); PUT replaces the list (direct, audited `settings.reports`; non-empty list needs the SMTP server of `alerts`); send → 202 `{job_id}` (one period up to now), 409 while one is queued or running |
 | `PUT /tenants/{name}/quota` `{quota_bytes}` | admin | soft quota (null = none); direct, audited `tenant.quota` |
+| `GET /console/unlock`, `POST /console/unlock` `{hours 1..8, reason}`, `POST /console/unlock/{id}/code`, `DELETE /console/unlock/{id}` | read + revoke: admin, security_officer; request + code: admin (code: the requester only); appliance-wide accounts only | 14c, see "Console root shell": POST → quorum `console.unlock` (approved, never executed by anyone); `/code` shows the code once (`console.unlock_code`, critical alert `console_unlock`), 409 when pending, already shown, revoked or > 24 h after the approval; DELETE revokes an approved or shown code (`console.unlock_revoke`). List rows: `{id, hours, reason, requested_by, created, decided_by, decided_at, code_expires, status}` with status `pending/rejected/expired/approved/issued/used/revoked` |
 | `GET` / `PUT /settings/anomaly` | read: admin, security_officer; write: admin | anomaly thresholds; weakening is gated (`settings.anomaly`) |
 | `GET /auth/oidc`, `GET /auth/oidc/start?next=`, `GET /auth/oidc/callback` | none | OIDC sign-in (§2, see Clarifications) |
 | `GET/PUT /settings/oidc`, `POST /settings/oidc/test` | read: admin, security_officer / admin (PUT → quorum `oidc.update`) | client secret write-only (`client_secret_set`); GET adds `redirect_uri` to register at the IdP; test → `{discovery, jwks}` |
@@ -254,6 +257,34 @@ Replication (docs/replication.md): on the primary the scheduler executes approve
 
 ## Break-glass (`nexus-setup recover-admin`, Phase 12 §7)
 Console only (root): `nexus-setup recover-admin [--user NAME] [--force-solo]` asks for the recovery key (checked against keyd's `kek.recovery` as at first boot), resets a local admin account to pending activation (old password and authenticator invalid at once, sessions ended, account enabled) and prints a new one-time activation code (72 h). Without `--user` the only local admin is chosen. With approvals enabled and at least two possible approvers it refuses unless `--force-solo` (recorded in the alert, the audit entry and the banner). Audited `user.break_glass` (actor `console`), critical alert `break_glass`, setting `break_glass`.
+
+## Console root shell (Phase 14c)
+Root's password is locked and there is no sshd; the only root shell is the console gate `nexus-console-gate`
+(crates/setup, `nexus-console-gate.service` on tty2, which replaces getty@tty2/autovt@tty2, both masked). It accepts:
+- a one-time code: `console.unlock` quorum request (admin; another admin or security officer approves; with approvals
+  disabled it is approved at once). The requester fetches the code once (`POST /console/unlock/{id}/code`, quorum
+  `approved` → `executed`); the web-api writes `{id, hash, hours, requested_by, approved_by, reason, issued,
+  expires}` to `/var/lib/nexus/console-unlock/<id>.json` (0700 nexus-webapi; tmp + rename), `hash` = SHA-256 of the
+  normalized code (Crockford base32, 4×5 characters = 100 bits; `catalog::console`), `expires` = approval + 24 h. The
+  gate deletes the file when the code is used (one-time) and expired files on every round;
+- the recovery key (keyd `check_recovery_key`, as `recover-admin`), with a duration of 1–8 h asked at the console.
+
+Failures: audited `console.unlock_failed`; 5 per 15 min, 2/4/8/16 s delay after the 1st–4th (state in
+`/run/nexus-console-gate`, kept across restarts of the gate). Success: audit `console.root_shell` (actor `console`,
+target `console-unlock/<id>` or `console`; method, hours, until, requester/approver), critical alert
+`console_root_shell`, setting `console_shell_active` `{at, until, method, unlock, requested_by, alert, unit}`
+(`GET /auth/me` and `GET /dashboard` return it as `console_shell` to appliance-wide roles: the UI banner). The shell
+is `systemd-run --scope --unit nexus-console-shell-<at> -p RuntimeMaxSec=<hours> -- /bin/bash --login` on tty2:
+systemd stops the scope (every process in it) when the time is up, and the gate stops it when bash exits. Then
+`console.root_shell_end` (`how`: exit / timeout / …) and the setting is removed; a gate that restarts during a shell
+clears the setting (`how: "gate restarted"`) and stops the old scope (TTYVHangup= already hung up its terminal).
+`console_unlock` / `console_root_shell` alerts are acknowledged by admin or security officer only.
+
+SELinux: the gate runs as `nexus_consolegate_t` (catalog, keyd files read, unlock files read + unlink, tty, PID 1
+over the private socket for the transient scope); executing bash transitions to `unconfined_t` (role system_r).
+neverallow: no other nexus domain transitions to `unconfined_t`; only `nexus_webapi_t` creates or writes the unlock
+files, only it and the gate read them. The unit is deliberately unsandboxed (the shell inherits the unit's
+namespaces and capability bounding set).
 
 ## First boot (`nexus-setup`, console TUI)
 Network (NetworkManager, static/DHCP on the management NIC) → admin account + TOTP enrollment (QR in terminal, code confirmation) → second person: "create it now (recommended)" = security officer account + TOTP, entered at the console by that person, or "later" (audit `setup.second_person_later`; script mode `"second_person_later": true`) → `keyd init`: recovery key shown once, re-entry of 3 random groups required → TLS certificate (self-signed, SAN = hostname + IPs; fingerprint shown) → metrics token → `/var/lib/nexus/setup-done` (writes `settings.approvals_enabled`: enabled with two people, **disabled with a single administrator** — the TUI and the script output say so; audit `setup.approvals`) → enable `nexus-web-api`, `nexus-scheduler`, `nexus-keyd`, `nexus-replicad` (`nexus-nasmount.socket` is enabled by the image preset).
