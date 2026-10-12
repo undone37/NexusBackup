@@ -161,7 +161,7 @@ impl Target {
     /// Adapts an entry for another host than the snapshot's (docs/agent-protocol.md
     /// "Restore to another host"): owners are not mapped (uid/gid -1: the agent's
     /// restore user stays the owner; Windows ignores them), setuid/setgid/sticky bits
-    /// are cleared, device nodes and sockets are skipped, xattrs are kept only where the
+    /// are cleared, device nodes and sockets (and FIFOs on Windows) are skipped, xattrs are kept only where the
     /// target can store them (`user.*` on Linux, `win.*` on Windows; ACLs and SELinux
     /// labels of another host are dropped), alternate data streams only on Windows.
     /// false = skip the entry.
@@ -170,7 +170,9 @@ impl Target {
             return true;
         }
         let ads = e.xattrs.iter().any(|(k, _)| k == b"win.ads");
-        if matches!(e.kind, Kind::Device | Kind::Socket) || (ads && !self.windows) {
+        // Windows agents cannot create FIFOs (an error there); devices/sockets make no sense elsewhere
+        let windows_fifo = self.windows && e.kind == Kind::Fifo;
+        if matches!(e.kind, Kind::Device | Kind::Socket) || windows_fifo || (ads && !self.windows) {
             sk.entries += 1;
             return false;
         }
@@ -401,6 +403,11 @@ mod tests {
         let mut e = entry(Kind::File, 0o644, &["win.ads", "win.sd", "user.a"]);
         assert!(win.adapt(&mut e, &mut sk));
         assert_eq!(e.xattrs.len(), 2);
+        assert!(
+            !win.adapt(&mut entry(Kind::Fifo, 0o10644, &[]), &mut sk),
+            "no FIFOs on Windows"
+        );
+        assert!(linux.adapt(&mut entry(Kind::Fifo, 0o10644, &[]), &mut sk));
 
         // without xattr support nothing is kept; the own host keeps everything
         let mut e = entry(Kind::File, 0o4755, &["user.a"]);
