@@ -151,7 +151,7 @@ jobs:
     needs: image
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build (release keys from release/keys)
         run: release/packages.sh
