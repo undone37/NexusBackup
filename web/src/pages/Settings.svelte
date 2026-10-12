@@ -10,6 +10,7 @@
   import SshKeys from './settings/SshKeys.svelte';
   import Updates from './settings/Updates.svelte';
   import Anomaly from './settings/Anomaly.svelte';
+  import Certificate from './settings/Certificate.svelte';
   import Diagnostics from './settings/Diagnostics.svelte';
   import Console from './settings/Console.svelte';
 
@@ -26,6 +27,7 @@
     { id: 'ssh', comp: SshKeys, allow: staff },
     { id: 'updates', comp: Updates, allow: staff },
     { id: 'anomaly', comp: Anomaly, allow: officer },
+    { id: 'certificate', comp: Certificate, allow: officer },
     { id: 'diagnostics', comp: Diagnostics, allow: officer },
     { id: 'console', comp: Console, allow: officer },
   ];

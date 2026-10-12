@@ -284,9 +284,24 @@ ALTER TABLE jobs ADD COLUMN cancel_by TEXT;
 ALTER TABLE jobs ADD COLUMN sla_alerted INTEGER NOT NULL DEFAULT 0;
 "#;
 
+/// v15 (Phase 14d, API tokens, docs/control-plane.md "API tokens"): one row per
+/// token `nxt_<prefix>_<secret>`. `prefix` (8 hex) finds the row, `hash` is the
+/// SHA-256 (hex) of the 256-bit random secret (high entropy: a plain hash is
+/// enough, no password KDF needed); the secret itself is never stored.
+/// `scope` caps what the token may do (`read` or `operator`, never more than
+/// the owner's role), `expires` is mandatory (at most 365 days). Deleting the
+/// user deletes their tokens. Purely additive.
+const SCHEMA_V15: &str = r#"
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, prefix TEXT NOT NULL UNIQUE, hash TEXT NOT NULL,
+  scope TEXT NOT NULL CHECK (scope IN ('read','operator')), expires INTEGER NOT NULL,
+  created INTEGER NOT NULL, last_used INTEGER, last_ip TEXT, UNIQUE (user_id, name));
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
-    SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14,
+    SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1118,6 +1133,42 @@ mod tests {
              INSERT INTO jobs (kind, tenant, params, state, requested_by, created) VALUES ('backup', 'acme', '{}', 'queued', 's', 2);",
         )
         .unwrap();
+    }
+
+    /// v15 (API tokens) on top of the previous catalog: the table starts empty,
+    /// the scope is checked and tokens follow their user (ON DELETE CASCADE).
+    #[test]
+    fn migration_v15_api_tokens() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V15).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO users (id, name, password_hash, totp_secret, role, created) VALUES (1, 'a', 'x', '', 'admin', 0);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, MIGRATIONS.len() as i64);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM api_tokens", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+        let ins = "INSERT INTO api_tokens (user_id, name, prefix, hash, scope, expires, created) VALUES (1, ?1, ?2, 'h', ?3, 10, 0)";
+        conn.execute(ins, ["ci", "abcd1234", "read"]).unwrap();
+        assert!(conn.execute(ins, ["x", "ffff0000", "admin"]).is_err(), "scope checked");
+        conn.execute("DELETE FROM users WHERE id = 1", []).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM api_tokens", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "tokens follow their user");
     }
 
     /// A fresh catalog runs every migration: all source kinds and the

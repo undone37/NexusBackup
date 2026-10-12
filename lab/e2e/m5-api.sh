@@ -2,7 +2,7 @@
 # M5 flow over the REST API only (what the UI does): curl with cookie jar +
 # X-CSRF-Token, TLS verified against the appliance certificate.
 #   lab/e2e/m5.sh setup && lab/e2e/m5.sh start && lab/e2e/m5-api.sh [step...]
-# steps (default: all): config wait-backup check restore verify quorum phase13 diag audit
+# steps (default: all): config wait-backup check restore verify quorum phase13 phase14d2 diag audit
 #   (not in the default: console, console-check; lab/appliance/console-gate.sh runs them)
 # Lab inputs (env, defaults = dev machine, see lab/README.md):
 #   LAB (/home/ah/nexus-lab), LAB_CA (default: fetched from the node), LAB_TOKEN_SECRET (file;
@@ -313,6 +313,63 @@ step_phase13() {
 	log "locked snapshot lab/$r: delete refused (409)"
 }
 
+# Phase 14d (2): API tokens (scope, allow-list, revoke, audit actor) and the web certificate import through
+# nexus-tls (CSR on the appliance, signed by a throwaway lab CA, served without restart, reverted).
+step_phase14d2() {
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	local r tok id d=$S/phase14d2
+	mkdir -p "$d"
+	r=$(api admin POST /auth/tokens "$(jq -nc --arg p "$ADMIN_PW" --arg t "$(fresh_code admin "$ADMIN_TOTP")" \
+		'{name:"lab-read", scope:"read", days:1, current_password:$p, current_totp:$t}')")
+	expect 201 "create token"
+	tok=$(jq -r .token <<<"$r")
+	id=$(jq -r .id <<<"$r")
+	bearer() { # METHOD PATH [JSON]: no cookie, no CSRF header
+		curl -s --cacert "$ROOT/etc/nexus/tls/cert.pem" --resolve "nexus-m5:$PORT:127.0.0.1" -H "Authorization: Bearer $tok" \
+			-X "$1" ${3:+-H 'Content-Type: application/json' --data-binary "$3"} -o "$S/body" -w '%{http_code}' "$BASE$2" >"$S/status"
+	}
+	bearer GET /dashboard
+	expect 200 "read token: GET /dashboard"
+	bearer POST /jobs '{"kind":"verify","tenant":"lab","params":{}}'
+	expect 403 "read token: POST /jobs"
+	bearer GET /settings/approvals
+	expect 403 "token: settings"
+	api admin GET "/audit?order=desc&limit=30" | jq -e 'any(.[]; .action == "token.create" and .actor == "admin")' >/dev/null ||
+		die "token.create not audited"
+	api admin DELETE "/auth/tokens/$id" >/dev/null
+	expect 200 "revoke token"
+	bearer GET /dashboard
+	expect 401 "revoked token"
+	log "API token: read scope enforced, revoked"
+
+	r=$(api admin POST /certificate/csr '{"cn":"nexus-m5","sans":[]}')
+	expect 200 "CSR (nexus-tls)"
+	jq -r .csr_pem <<<"$r" >"$d/req.csr"
+	openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout "$d/ca.key" -out "$d/ca.pem" -days 2 \
+		-subj /CN=nexus-lab-ca -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign 2>/dev/null
+	printf 'extendedKeyUsage=serverAuth\nkeyUsage=critical,digitalSignature\n' >"$d/ext"
+	openssl x509 -req -in "$d/req.csr" -CA "$d/ca.pem" -CAkey "$d/ca.key" -CAcreateserial -days 1 -copy_extensions copy \
+		-extfile "$d/ext" -out "$d/leaf.pem" 2>/dev/null
+	grep -q "DNS:nexus-m5" <(openssl x509 -in "$d/leaf.pem" -noout -ext subjectAltName 2>/dev/null) ||
+		die "the signed certificate lacks the CSR's SAN"
+	# the leaf alone (root not included: accepted with a warning)
+	r=$(api admin POST /certificate/install "$(jq -nc --rawfile c "$d/leaf.pem" '{chain_pem:$c}')")
+	expect 200 "install certificate"
+	log "installed: $(jq -c '{sha256: .chain[0].sha256, warnings}' <<<"$r")"
+	# served right away (no restart), verified against the lab CA; the identity no longer verifies
+	curl -sf --cacert "$d/ca.pem" --resolve "nexus-m5:$PORT:127.0.0.1" "https://nexus-m5:$PORT/health" >/dev/null ||
+		die "imported certificate not served"
+	! curl -sf --cacert "$ROOT/etc/nexus/tls/cert.pem" --resolve "nexus-m5:$PORT:127.0.0.1" "https://nexus-m5:$PORT/health" >/dev/null ||
+		die "still the self-signed certificate"
+	log "imported certificate served without a restart"
+	API_CA=$d/ca.pem api admin POST /certificate/revert '{}' >/dev/null
+	expect 200 "revert certificate"
+	curl -sf --cacert "$ROOT/etc/nexus/tls/cert.pem" --resolve "nexus-m5:$PORT:127.0.0.1" "https://nexus-m5:$PORT/health" >/dev/null ||
+		die "self-signed certificate not back after revert"
+	api admin GET /certificate | jq -e '.active == "self_signed"' >/dev/null || die "certificate status after revert"
+	log "reverted to the self-signed certificate"
+}
+
 # Phase 14b on the real appliance (nexus-diag, root, nexus_diag_t): self-checks and a redacted
 # support bundle through Settings -> Diagnostics. Dev mode (no appliance) has no nexus-diag: skipped.
 step_diag() {
@@ -416,7 +473,7 @@ step_audit() {
 }
 
 steps=("$@")
-[ ${#steps[@]} -gt 0 ] || steps=(config wait-backup check restore verify quorum phase13 diag audit)
+[ ${#steps[@]} -gt 0 ] || steps=(config wait-backup check restore verify quorum phase13 phase14d2 diag audit)
 for s in "${steps[@]}"; do
 	log "== $s"
 	"step_${s//-/_}"

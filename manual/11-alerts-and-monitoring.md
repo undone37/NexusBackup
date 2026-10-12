@@ -73,10 +73,31 @@ log (`alert.ack`, `alert.resolve`).
 | `orphaned` | info | snapshots of an object that is in no protection group of its tenant were found; they are pruned with the default retention (shown once per object) | — | put the object into a group if it should keep being protected with that group's retention, or ignore it; see [05 Policies and protection groups](05-policies-and-groups.md#snapshots-of-objects-in-no-group) |
 | `anomaly` | critical | a backup added far more new data than usual for its source, or new data that suddenly does not compress (see [Change-rate anomalies](#change-rate-anomalies)) | — | check the source for mass changes or encryption (ransomware) before the last good snapshot expires; the message names it |
 | `quota` | warning at 80 %, critical at 100 % | a tenant's store reached 80 % or 100 % of its soft quota (**Tenants**); one alert per tenant, escalated at 100 % | usage is back under 80 % | review retention or what the tenant backs up, or raise the quota; backups continue either way |
+| `cert_expiry` | info at 90 days, warning at 30, critical at 7 (API tokens: info, last 7 days) | a certificate, the IdP client secret or an API token expires soon (see [Expiry warnings](#expiry-warnings)); one alert per item, escalated | renewed (new certificate, new secret date, token revoked or replaced) | renew as the message says |
 | `report` | warning | a scheduled report could not be mailed (SMTP server unreachable or refusing, no SMTP server configured, report removed meanwhile) or its schedule is invalid; one alert per report (`report:<name>`) | the report is mailed successfully (scheduled or **Send now**) | check the SMTP server under **Settings → Alert delivery** and the recipients on **Reports**, then **Send now** |
 | `break_glass` | critical | an administrator account was reset on the console with the recovery key (`nexus-setup recover-admin`) | — | make sure the recovery was planned (check the audit entry `user.break_glass`), then acknowledge it; until then every administrator sees a red banner. See [14 Disaster recovery](14-disaster-recovery.md#break-glass-the-only-administrator-lost-their-authenticator) |
 | `console_unlock` | critical | a one-time code for a root shell on the console was shown to its requester (**Settings → Console access**) | — | make sure the request was planned; revoke the code there if not. See [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console) |
 | `console_root_shell` | critical | a root shell was opened on the appliance console with a one-time code or the recovery key; while it runs every administrator, security officer and operator sees a red banner | — | confirm with the requester (or whoever holds the recovery key) what was done, check the audit log (`console.root_shell`, `console.root_shell_end`), then acknowledge |
+
+## Expiry warnings
+
+The scheduler checks every 15 minutes what expires and raises one `cert_expiry` alert per item: **info** 90 days
+before, **warning** 30 days before, **critical** 7 days before and after expiry. The alert is escalated in place and
+resolves itself once the item is renewed or gone.
+
+| Item | Expiry from | Renew |
+|---|---|---|
+| **Web certificate** (imported) | the certificate | **Settings → Certificate**: new request, install the new certificate ([02 Installation](02-installation.md#use-your-own-certificate)) |
+| **Self-signed appliance certificate** (pinned by replication secondaries) | the certificate (10 years from setup) | `nexus-setup --force-reconfigure-network` creates a new one; give the new fingerprint to the secondaries |
+| **Agent certificates** | 10 years after the agent's enrollment | enroll the agent again ([04 Sources](04-sources.md)) |
+| **Agent CA** (the appliance's client certificate for agents) | 10 years after the first agent enrollment | not automated yet: plan a re-enrollment of all agents |
+| **Replication secondaries** (their client certificates, on the primary) | 10 years after enrollment | enroll the secondary again ([08 Replication](08-replication.md)) |
+| **IdP client secret** | the date entered under **Settings → Single sign-on** (optional) | create a new secret at the IdP, enter it and the new date |
+| **API tokens** (info only, last 7 days) | the token | create a new token, revoke the old one ([09 Users and access](09-users-and-access.md#api-tokens)) |
+
+> **Status:** agent and replication certificates are not stored on the appliance (only their fingerprints), so their
+> dates are computed from the enrollment time and the fixed lifetimes. A replication secondary does not warn about
+> the primary's certificate.
 
 ## Change-rate anomalies
 
@@ -298,6 +319,9 @@ Useful alerting rules in your monitoring system: no successful backup of a group
 pending approvals older than a day, a sudden rise in failed sign-ins, and the appliance not answering `/health`.
 
 `GET /health` (no token) answers `{"ok": true}` while the web API runs.
+
+For more than metrics, use a read-only **API token** ([09 Users and access](09-users-and-access.md#api-tokens)): for
+example `GET /api/v1/dashboard` (protection status and RPO per group) or `GET /api/v1/alerts?state=open`.
 
 ## Daily checklist for operators
 

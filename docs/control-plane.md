@@ -11,6 +11,7 @@ console TUI first boot. Plan §11.
 | `nexus-nasmount` (socket-activated per connection, docs/nas-connector.md) | root, `CAP_SYS_ADMIN` only | its socket `/run/nexus-nasmount/mount.sock` (group `nexus-chunkstore`): one request, one detached read-only NFS/CIFS mount whose fd goes back to `nexus-nas` | files, catalog, keys, chunks; it never attaches a mount anywhere |
 | `nexus-setup` (console TUI, first boot) | root | keyd CLI, catalog DB, TLS files, creates the TOTP key | network until configured |
 | `nexus-console-gate` (tty2, Phase 14c) | root, domain `nexus_consolegate_t` | catalog DB (audit, alerts, banner setting), keyd files (recovery key check, read), `/var/lib/nexus/console-unlock` (read + delete), PID 1 (transient scope); starts the root shell (`unconfined_t`) | network |
+| `nexus-tls` (oneshot, `nexus-tls.path`, Phase 14d) | root, no capabilities, group `nexus-webapi` | its request dir `/var/lib/nexus/tls` (0770 root:nexus-webapi), `/etc/nexus/tls/web.pem*` and `pending/` | network, catalog, the identity certificate/key `cert.pem`/`key.pem` (SELinux `nexus_tls_t`) |
 | `nexus-replicad` (docs/replication.md) | `nexus-chunkstore` (group `nexus-replicad`, domain `nexus_replicad_t`) | tenant stores **read-only**, replication CA + token-sealing key `/var/lib/nexus/replicad`, its socket `/run/nexus-replicad/replicad.sock` (web-api uid only) | keyd, catalog, network |
 
 The web-api also connects to the replicad socket and reads `/run/nexus-replicad/ca.pem` (replication CA
@@ -182,6 +183,57 @@ Headers on every response: `Content-Security-Policy: default-src 'self'; script-
 - Appliance jobs (Phase 12) carry tenant `-` and are queued by the settings endpoints only (`POST /jobs` refuses them): `alert_test` → result `{webhook?, smtp?}` (`"ok"` / `"error: …"`), `ssh_key_rotate` {name, quorum_id} → `{name, next}`, `ssh_key_retire` {name} → `{name, old, new}`, `report_send` {name, from, to} → `{name, types, tenant, recipients, from, to, attachments, rows}` (Phase 14e). Tenant users never see them.
 - Break-glass (§7): `nexus-setup recover-admin` raises the alert `break_glass` (critical) and writes `settings.break_glass`; the UI shows its banner while that alert is unacknowledged. `GET /auth/me` and `GET /dashboard` additionally return `break_glass: {at, user, alert, forced_solo}` (admin, security_officer, operator). Only an admin or security officer can acknowledge that alert (`POST /alerts/{id}/ack`, which also removes the setting).
 - `GET /quorum` is readable by admin, security_officer and operator. Tenant-scoped users (`users.tenant` set) see only their tenant's rows in every list (`users` included); most alerts have no tenant and may name other tenants, so they get an empty alert list.
+
+## API tokens (Phase 14d, `crates/web-api/src/tokens.rs`, catalog v15)
+- Format `nxt_<prefix>_<secret>`: prefix 8 hex (finds the row), secret 256 bit hex. `api_tokens.hash` = SHA-256 of
+  the secret: the secret is random and long, so a fast hash suffices (no KDF); the secret is returned once, by
+  `POST /auth/tokens`, and never stored. `expires` is mandatory (1–365 days); the owner (`user_id`, ON DELETE
+  CASCADE), `scope` (`read` | `operator`), `last_used` / `last_ip` (written at most once a minute).
+- `Authorization: Bearer nxt_…` is handled by a middleware in front of the router (other bearer tokens, e.g. the
+  metrics token, pass untouched). Valid = known prefix, constant-time hash match, not expired, user enabled and not
+  pending activation. It then puts `TokenAuth` (user with capped role + token) into the request; `Ctx` uses it
+  instead of the cookie (no session, **no CSRF header**: a browser never adds this header by itself).
+- Effective role: `operator` scope → admin/operator users act as `operator`, tenant users stay `tenant_user`;
+  `read` scope (and any security officer token) keeps the user's role but only GET. Default deny: only the routes
+  on the token allow-list are reachable (`tokens::READ` for GET, `tokens::OPERATE` for POST with operator scope:
+  `/jobs`, `/jobs/{id}/cancel`, group pause/resume, source maintenance, alert ack, replication sync); everything
+  else answers 403 "API tokens cannot use this endpoint". Never on the list: approvals, settings, users, tokens,
+  plugins and keys, certificate, downloads, replication keys/peers, updates, deletes, login/logout. `POST /jobs`
+  also refuses `files_get` and `plugin_mount` for tokens.
+- Audit: `AppState::audit` records the actor as `<user> via token <name>` during a token request (task-local);
+  `jobs.requested_by` and quorum `requested_by` stay the plain user name (four-eyes comparisons).
+- `GET /auth/tokens` own (`?all=true`: admin, all users), `POST /auth/tokens {name, scope, days, current_password,
+  current_totp}` (re-authentication like a password change; OIDC accounts instead need a session ≤ 15 min old;
+  at most 20 per user) → 201 with `token`, `DELETE /auth/tokens/{id}` own or (admin) any. Audited `token.create`,
+  `token.revoke`.
+
+## Web certificate (Phase 14d, crate `webtls`, `crates/web-api/src/certs.rs`)
+- `/etc/nexus/tls/cert.pem` + `key.pem`: the self-signed **identity** from nexus-setup. Replication secondaries pin
+  its SHA-256 (`replication_sources.cert_pin`), and connections with a replication ALPN always get it.
+- `/etc/nexus/tls/web.pem`: an imported chain + its key in one file (one rename swaps both), served to every other
+  connection by `tls::WebCert` (rustls `ResolvesServerCert`: one `stat` per handshake, reload on mtime/size/inode
+  change, a broken file keeps the current certificate, missing file = identity). HTTP/2 ALPN unchanged. So an
+  import breaks no pin; agents never see this certificate (they verify the appliance's agent-CA client cert).
+- `nexus-tls` handles `request.json` (`{id, op: csr|install|revert, …}`, written by the web-api with a temp file +
+  rename) and answers in `result.json`; the web-api waits up to 30 s (503 otherwise). `csr {cn, sans}`: new P-256
+  key into `pending/key.pem` (0600 root, SELinux `nexus_tls_pending_t`; never leaves the helper), CSR returned and
+  kept as `csr.pem` + `pending.json` for the UI. `install {chain_pem}`: `webtls::validate` (leaf key = pending
+  key, leaf first and each certificate signed by the next, intermediates are CAs, all valid now, leaf not a CA,
+  EKU serverAuth and KU digitalSignature if present, SANs cover every requested name, wildcards one label), then
+  `web.pem.prev` = old `web.pem`, `web.pem` written atomically (0640 root:nexus-webapi). `revert` swaps `web.pem`
+  and `web.pem.prev` (no previous = remove, i.e. back to the identity).
+- `GET /certificate` (admin, security_officer): active, chain (subject, issuer, SANs, validity, SHA-256), identity,
+  pending CSR, pins. `POST /certificate/csr|install|revert` (admin), audited `tls.csr`, `tls.install`,
+  `tls.revert`. The web-api publishes `{web, identity}` dates to the setting `tls_status` (start, hourly, after a
+  change) for the scheduler's expiry alerts.
+
+## Expiry alerts (Phase 14d, `crates/scheduler/src/expiry.rs`)
+With every full refresh (15 min): kind `cert_expiry`, key `cert_expiry:<what>` (`web`, `identity`, `agent:<id>`,
+`agent_ca`, `replication_peer:<id>`, `oidc_secret`, `token:<id>`); info ≤ 90 days, warning ≤ 30, critical ≤ 7 or
+expired; raised once per level (escalated in place), resolved when no longer due. Agent and peer certificates are
+not stored (only fingerprints): their dates are enrollment + 10 years (agent-conn / replication `ca.rs`); the agent
+CA's first enrollment is remembered in the setting `agent_ca_created`. The IdP secret date is the optional
+`settings.oidc.client_secret_expires`. Tokens: info during their last 7 days.
 
 ## Scheduler
 Inventory (Phase 13c, `crates/scheduler/src/inventory.rs`): every tick, a source of kind pve / truenas / plugin

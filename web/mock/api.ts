@@ -1119,6 +1119,7 @@ function seed() {
   seedPhase12(t);
   seedPhase13a(t);
   seedRunControl(t);
+  seedPhase14d2(t);
   seedReports(t);
   seedDiag(t);
   seedConsole(t);
@@ -3175,6 +3176,7 @@ on('PUT', '/settings/oidc', async (c) => {
   const next = {
     enabled: !!b.enabled, issuer: b.issuer, client_id: String(b.client_id).trim(), scopes: b.scopes, label: String(b.label).trim(),
     username_claim: String(b.username_claim || 'preferred_username'), groups_claim: String(b.groups_claim || 'groups'), mappings: b.mappings,
+    client_secret_expires: typeof b.client_secret_expires === 'number' && b.client_secret_expires > 0 ? b.client_secret_expires : null,
   };
   const secret = b.client_secret ? String(b.client_secret) : undefined;
   if (db.approvals) {
@@ -3326,6 +3328,132 @@ on('POST', '/updates/apply', (c) => {
   if (!db.updates.available) throw new HttpError(409, 'no update available');
   if (db.updates.staged) throw new HttpError(409, 'an update is already staged');
   return quorum(u, 'update.apply', { version: db.updates.available.version, digest: db.updates.available.digest });
+});
+
+// ---------------------------------------------------------------- Phase 14d: API tokens, web certificate
+
+const p14 = {
+  tokens: [] as { id: number; user_id: number; name: string; prefix: string; scope: 'read' | 'operator'; expires: number; created: number; last_used: number | null; last_ip: string | null }[],
+  cert: {
+    identity: null as Json | null,
+    web: null as Json[] | null,
+    prev: null as Json[] | null,
+    pending: null as Json | null,
+  },
+};
+const fpHex = () => rand(32).toUpperCase().replace(/(..)(?=.)/g, '$1:');
+const certInfo = (subject: string, issuer: string, sans: string[], from: number, to: number, selfSigned = false, ca = false): Json => ({
+  subject, issuer, sans, not_before: from, not_after: to, sha256: fpHex(), self_signed: selfSigned, ca,
+});
+const pemOf = (label: string, n: number) => {
+  const body = b64(randomBytes(n)).replace(/(.{64})/g, '$1\n').trim();
+  return `-----BEGIN ${label}-----\n${body}\n-----END ${label}-----\n`;
+};
+
+function seedPhase14d2(t: number) {
+  const admin = db.users.find((u) => u.name === 'admin')!;
+  const op = db.users.find((u) => u.name === 'op')!;
+  p14.tokens.push(
+    { id: nextId(), user_id: admin.id, name: 'monitoring', prefix: rand(4), scope: 'read', expires: t + 86400 * 300, created: t - 86400 * 65, last_used: t - 240, last_ip: '198.51.100.20' },
+    { id: nextId(), user_id: admin.id, name: 'ci-restore-test', prefix: rand(4), scope: 'operator', expires: t + 86400 * 5, created: t - 86400 * 85, last_used: t - 86400 * 2, last_ip: '198.51.100.31' },
+    { id: nextId(), user_id: op.id, name: 'ansible', prefix: rand(4), scope: 'operator', expires: t + 86400 * 120, created: t - 86400 * 10, last_used: null, last_ip: null },
+  );
+  const sans = ['backup.example.com', '198.51.100.5'];
+  p14.cert.identity = certInfo('CN=backup.example.com, O=NexusBackup appliance', 'CN=backup.example.com, O=NexusBackup appliance', sans, t - 86400 * 455, t + 86400 * 3200, true);
+  p14.cert.web = [
+    certInfo('CN=backup.example.com', 'CN=Example Corp Issuing CA 1, O=Example Corp', sans, t - 86400 * 40, t + 86400 * 325),
+    certInfo('CN=Example Corp Issuing CA 1, O=Example Corp', 'CN=Example Corp Root CA, O=Example Corp', [], t - 86400 * 900, t + 86400 * 2700, false, true),
+  ];
+  db.alerts.push(
+    mkAlert({ ts: t - 86400 * 3, severity: 'info', kind: 'cert_expiry', key: `cert_expiry:token:${p14.tokens[1].id}`, message: 'API token ci-restore-test of admin expires in 5 day(s)' }),
+    mkAlert({ ts: t - 86400 * 6, severity: 'warning', kind: 'cert_expiry', key: 'cert_expiry:oidc_secret', message: 'The OIDC client secret (create a new one at the IdP, enter it in Settings → Single sign-on) expires in 24 day(s)' }),
+  );
+  db.oidc.client_secret_expires = t + 86400 * 24;
+}
+
+const pubToken = (x: (typeof p14.tokens)[number]) => ({
+  id: x.id, user: db.users.find((u) => u.id === x.user_id)?.name ?? '?', name: x.name, prefix: x.prefix, scope: x.scope,
+  expires: x.expires, created: x.created, last_used: x.last_used, last_ip: x.last_ip,
+});
+on('GET', '/auth/tokens', (c) => {
+  const u = need(c.user);
+  const all = c.query.get('all') === 'true';
+  if (all) need(c.user, 'admin');
+  return [200, p14.tokens.filter((x) => all || x.user_id === u.id).map(pubToken).sort((a, b) => a.user.localeCompare(b.user) || a.name.localeCompare(b.name))];
+});
+on('POST', '/auth/tokens', async (c) => {
+  const u = need(c.user);
+  const { name = '', scope = '', days = 0, current_password, current_totp } = c.body;
+  if (!NAME_RE.test(String(name))) throw new HttpError(400, 'name: must match [A-Za-z0-9._-]{1,64} without a leading dot');
+  if (!Number.isInteger(days) || days < 1 || days > 365) throw new HttpError(400, 'days: 1..=365');
+  if (scope !== 'read' && scope !== 'operator') throw new HttpError(400, 'scope: read or operator');
+  if (scope === 'operator' && u.role === 'security_officer') throw new HttpError(400, 'scope: operator tokens need the admin, operator or tenant user role');
+  if (u.auth !== 'oidc' && (current_password !== u.password || !/^\d{6}$/.test(String(current_totp ?? ''))))
+    throw new HttpError(current_password === undefined ? 400 : 403, 're-authentication failed: wrong current password or TOTP code');
+  if (p14.tokens.some((x) => x.user_id === u.id && x.name === name)) throw new HttpError(409, 'conflicts with existing data (duplicate name or still referenced)');
+  const secret = rand(32);
+  const x = { id: nextId(), user_id: u.id, name, prefix: rand(4), scope, expires: now() + days * 86400, created: now(), last_used: null, last_ip: null };
+  p14.tokens.push(x);
+  await audit(u.name, 'token.create', `token/${u.name}/${name}`, { id: x.id, prefix: x.prefix, scope, expires: x.expires });
+  return [201, { ...pubToken(x), token: `nxt_${x.prefix}_${secret}` }];
+});
+on('DELETE', '/auth/tokens/:id', async (c, [id]) => {
+  const u = need(c.user);
+  const x = p14.tokens.find((t) => String(t.id) === id && (t.user_id === u.id || u.role === 'admin'));
+  if (!x) throw new HttpError(404, 'not found');
+  p14.tokens.splice(p14.tokens.indexOf(x), 1);
+  await audit(u.name, 'token.revoke', `token/${pubToken(x).user}/${x.name}`, { id: x.id });
+  return [200, { ok: true }];
+});
+
+const certStatus = () => {
+  const c = p14.cert;
+  return {
+    active: c.web ? 'imported' : 'self_signed',
+    chain: structuredClone(c.web ?? [c.identity]),
+    identity: structuredClone(c.identity),
+    pending: structuredClone(c.pending),
+    can_revert: !!c.web || !!c.prev,
+    previous: !!c.prev,
+    pins: { replication_identity: c.identity?.sha256 ?? null, replication_peers: db.replPeers.filter((p) => p.state === 'enrolled').length },
+  };
+};
+const MOCK_NAME_RE = /^(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$|^[0-9.:a-f]+$/;
+on('GET', '/certificate', (c) => (need(c.user, 'admin', 'security_officer'), [200, certStatus()]));
+on('POST', '/certificate/csr', async (c) => {
+  const u = need(c.user, 'admin');
+  const cn = String(c.body.cn ?? '').trim().toLowerCase();
+  const sans = [cn, ...(Array.isArray(c.body.sans) ? c.body.sans.map((s: unknown) => String(s).trim().toLowerCase()) : [])].filter((s, i, a) => s && a.indexOf(s) === i);
+  for (const s of sans) if (!MOCK_NAME_RE.test(s)) throw new HttpError(400, `cn: "${s}" is neither a DNS name nor an IP address`);
+  p14.cert.pending = { cn, sans, created: now(), csr_pem: pemOf('CERTIFICATE REQUEST', 300) };
+  await audit(u.name, 'tls.csr', 'tls/web', { pending: { cn, sans } });
+  return [200, { csr_pem: p14.cert.pending.csr_pem, pending: p14.cert.pending }];
+});
+on('POST', '/certificate/install', async (c) => {
+  const u = need(c.user, 'admin');
+  const pem = String(c.body.chain_pem ?? '');
+  const p = p14.cert.pending;
+  if (!p) throw new HttpError(400, 'no pending key: generate a CSR first');
+  const n = (pem.match(/-----BEGIN CERTIFICATE-----/g) ?? []).length;
+  if (!n) throw new HttpError(400, 'no certificate found (paste PEM: -----BEGIN CERTIFICATE-----)');
+  const t = now();
+  const chain = [certInfo(`CN=${p.cn}`, 'CN=Example Corp Issuing CA 1, O=Example Corp', p.sans, t - 3600, t + 86400 * 397)];
+  if (n > 1) chain.push(certInfo('CN=Example Corp Issuing CA 1, O=Example Corp', 'CN=Example Corp Root CA, O=Example Corp', [], t - 86400 * 900, t + 86400 * 2700, false, true));
+  const warnings = n > 1 ? ['the issuer CN=Example Corp Root CA, O=Example Corp is not included: clients must trust it (or the root above it) already'] : [];
+  p14.cert.prev = p14.cert.web;
+  p14.cert.web = chain;
+  p14.cert.pending = null;
+  await audit(u.name, 'tls.install', 'tls/web', { subject: chain[0].subject, sha256: chain[0].sha256, not_after: chain[0].not_after, warnings });
+  return [200, { chain, warnings }];
+});
+on('POST', '/certificate/revert', async (c) => {
+  const u = need(c.user, 'admin');
+  const k = p14.cert;
+  if (!k.web && !k.prev) throw new HttpError(400, 'nothing to revert: the self-signed certificate is in use and there is no previous one');
+  [k.web, k.prev] = [k.prev, k.web];
+  const active = k.web ? 'imported' : 'self_signed';
+  await audit(u.name, 'tls.revert', 'tls/web', { active });
+  return [200, { active }];
 });
 
 // ---- diagnostics (Phase 14b): nexus-diag picks a request up after ~1 s and finishes after ~3 s

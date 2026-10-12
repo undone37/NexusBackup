@@ -759,6 +759,8 @@ export interface OidcSettings {
   groups_claim: string;
   label: string;
   mappings: OidcMapping[];
+  /** Phase 14d: when the client secret expires at the IdP (unix time; expiry alerts) */
+  client_secret_expires?: number | null;
 }
 
 export type Severity = 'info' | 'warning' | 'critical';
@@ -886,6 +888,45 @@ export interface AnomalySettings {
   factor: number;
   history: number;
   floor_bytes: number;
+}
+
+/** Phase 14d: an API token (`nxt_…`); the secret is only in the create answer. */
+export interface ApiToken {
+  id: number;
+  user: string;
+  name: string;
+  prefix: string;
+  scope: 'read' | 'operator';
+  expires: number;
+  created: number;
+  last_used: number | null;
+  last_ip: string | null;
+  /** POST /auth/tokens only: shown once */
+  token?: string;
+}
+
+/** Phase 14d: one certificate of the served chain (GET /certificate). */
+export interface CertInfo {
+  subject: string;
+  issuer: string;
+  sans: string[];
+  not_before: number;
+  not_after: number;
+  /** SHA-256, upper case, colon separated */
+  sha256: string;
+  self_signed: boolean;
+  ca: boolean;
+}
+
+export interface CertStatus {
+  active: 'imported' | 'self_signed';
+  chain: CertInfo[];
+  /** the self-signed identity certificate replication secondaries pin */
+  identity: CertInfo | null;
+  pending: { cn: string; sans: string[]; created: number; csr_pem: string | null } | null;
+  can_revert: boolean;
+  previous: boolean;
+  pins: { replication_identity: string | null; replication_peers: number };
 }
 
 /** Phase 14e reports (GET /reports/{type}.csv). */
