@@ -2574,7 +2574,7 @@ async function issueToken(a: Agent) {
   const token = b32(26);
   a.token_hash = await sha256(token);
   a.token_expires = now() + 86400;
-  return { token, install_command: 'sudo /usr/local/sbin/nexus-agent init --token -', token_expires: a.token_expires };
+  return { token, install_command: 'sudo nexus-agent init --token -', token_expires: a.token_expires };
 }
 on('GET', '/agents', (c) => [200, byTenant(need(c.user), db.agents).map(pubAgent)]);
 on('POST', '/agents', async (c) => {

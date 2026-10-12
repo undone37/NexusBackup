@@ -1,0 +1,2 @@
+# one static (musl) binary for every distribution, no shared-library dependencies
+nexus-agent: statically-linked-binary [usr/bin/nexus-agent]

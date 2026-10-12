@@ -109,6 +109,9 @@ pub struct Settings {
     pub hook_owner: u32,
     /// Windows: VSS writer class ids (comma separated) that must not take part
     pub vss_exclude_writers: String,
+    /// `self_update = on|off`; unset: on, except for package installs
+    /// ([`crate::update::self_update_blocked`])
+    pub self_update: Option<bool>,
 }
 
 impl Default for Settings {
@@ -123,6 +126,7 @@ impl Default for Settings {
             max_connections: 4,
             hook_owner: 0,
             vss_exclude_writers: String::new(),
+            self_update: None,
         }
     }
 }
@@ -154,6 +158,13 @@ impl Settings {
                 "appliance_id" => s.appliance_id = Some(v.to_string()).filter(|v| !v.is_empty()),
                 "max_connections" => s.max_connections = num(v)?.clamp(1, 64) as usize,
                 "vss_exclude_writers" => s.vss_exclude_writers = v.to_string(),
+                "self_update" => {
+                    s.self_update = Some(match v {
+                        "on" | "yes" | "true" => true,
+                        "off" | "no" | "false" => false,
+                        _ => return Err(format!("agent.conf line {}: self_update must be on or off", n + 1)),
+                    })
+                }
                 _ => return Err(format!("agent.conf line {}: unknown key {k}", n + 1)),
             }
         }
@@ -259,6 +270,10 @@ mod tests {
         assert_eq!(s.appliance_id.as_deref(), Some("abc"));
         assert!(Settings::parse("prot = 1").is_err());
         assert!(Settings::parse("port = 70000").is_err());
+        assert_eq!(s.self_update, None);
+        assert_eq!(Settings::parse("self_update = on").unwrap().self_update, Some(true));
+        assert_eq!(Settings::parse("self_update=off").unwrap().self_update, Some(false));
+        assert!(Settings::parse("self_update = maybe").is_err());
     }
 
     #[test]

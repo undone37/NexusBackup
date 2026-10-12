@@ -35,7 +35,49 @@ for lab builds), `cargo test -p agent-windows --test dist -- --ignored` checks t
 artifact: PE32+ x86-64, embedded version, fits one frame, signature verifies with the
 TEST key through the same code path as a self-update.
 
-## Install
+## MSI
+
+`nexus-agent-<v>-x64.msi` on every release, built by `release/packages.sh` (after
+`build.sh`) with **wixl** from msitools in a Fedora container (WiX 3 schema,
+`crates/agent-windows/dist/nexus-agent.wxs`). wixl rather than WiX v4/v5: Linux-native, no
+.NET SDK or Windows container, and it covers what the MSI needs (ServiceInstall,
+ServiceControl, MajorUpgrade, custom actions from an installed file). What it cannot do:
+the WiX util extension (failure actions, ACLs; done by the agent below) and listing
+`Secure="yes"` properties in `SecureCustomProperties` (PURGE therefore reaches the server
+side only for administrators; uninstalls run elevated anyway).
+
+- `C:\Program Files\NexusBackup Agent\`: `nexus-agent.exe`, `README.md`, `package-managed`
+  (`msi`: self-update off, see below). Per machine, x64, Add/Remove Programs entry
+  "NexusBackup Agent" (no modify/repair), fixed UpgradeCode
+  `f0236c93-ddce-4b09-a197-525c84656168`: a newer MSI replaces an older one (major
+  upgrade, enrollment kept), a downgrade is refused.
+- `%ProgramData%\NexusAgent\config\release-keys\*.pub` (the pinned release keys).
+- Service `NexusAgent` (ServiceInstall: own process, auto start, LocalSystem, argument
+  `service`); ServiceControl: start on install (without waiting), stop on install and
+  uninstall, delete on uninstall. An agent that is not enrolled yet logs "not initialised"
+  and stops with exit code 0 (no failure-action restarts).
+- Deferred custom action `nexus-agent.exe service-setup` (LocalSystem, after
+  InstallServices): the protected ACL on `%ProgramData%\NexusAgent` (also over the keys the
+  MSI just wrote) and the failure actions, as `nexus-agent.exe install` sets them.
+- Uninstall keeps `%ProgramData%\NexusAgent`; with `PURGE=1` the deferred custom action
+  `nexus-agent.exe purge-data --yes` (after DeleteServices, not during an upgrade) deletes
+  it. No firewall rule (open TCP 7444 for the appliance address yourself).
+- No token property on purpose: tokens are one-time and per host, so one GPO/Intune
+  command line cannot carry them, and MSI properties end up in verbose logs, deployment
+  configuration and process lists. Enroll afterwards:
+  `echo <token> | nexus-agent.exe init --token -` (or interactively), then
+  `sc.exe start NexusAgent`.
+
+Silent: `msiexec /i nexus-agent-<v>-x64.msi /qn [/l*v install.log]`, uninstall
+`msiexec /x nexus-agent-<v>-x64.msi /qn [PURGE=1]`. GPO: computer software installation;
+Intune: line-of-business app (device context).
+
+Checked on Linux (`release/test-packages.sh`, msitools): tables present, ServiceInstall
+and ServiceControl rows, custom action types and conditions, upgrade code, no token
+property, x64 template, extracted file layout. **A real installation has not run on
+Windows** (no Windows VMs); add the MSI to the manual test plan below.
+
+## Manual install (without the MSI)
 
 As Administrator, on the server:
 
@@ -51,7 +93,8 @@ nexus-agent.exe install
 `install` registers the service `NexusAgent` (LocalSystem, automatic start, arguments
 `service`), sets failure actions (restart after 2 s / 10 s / 60 s, counter reset after
 one day, also on non-crash failures) and starts it. Other commands: `status`, `run`
-(foreground), `uninstall` (keeps config/state), `version`, `init --token` again for
+(foreground), `uninstall` (keeps config/state), `version` (or `--version`), `service-setup` and
+`purge-data --yes` (used by the MSI), `init --token` again for
 re-enrollment or to clear the lock after 5 failed proofs. Open TCP 7444 in the Windows
 firewall for the appliance address only.
 
@@ -206,6 +249,10 @@ reported as errors per entry and fail the job; the other files are written.
 
 ## Self-update
 
+MSI installs: `package-managed` next to `nexus-agent.exe` turns self-update off (`Update`
+is refused, "installed from a msi package …") unless `self_update = on` in `agent.conf`; a
+self-update would replace a file the MSI owns. Update them with a newer MSI.
+
 Same `Update` message and checks as Linux (`agent_core::update::check_candidate`:
 cosign blob signature with a key from `config\release-keys\*.pub`, embedded version
 strictly newer, PE32+ x86-64 image); Authenticode is not required. Install:
@@ -271,6 +318,7 @@ Everything in `src/win/` has only been compiled, never executed:
 - restore of security descriptors with foreign SIDs, SACLs, read-only files, streams on
   directories, hard links, junctions;
 - self-update by rename of the running image and the reboot fallback;
+- the MSI (install, major upgrade, uninstall, PURGE, the two custom actions);
 - background mode (`THREAD_MODE_BACKGROUND_BEGIN`) of the session thread for `Limits::nice`,
   and the certificate swap (`agent.key`/`agent.crt` renames over existing files) on NTFS;
 
@@ -284,7 +332,7 @@ ReFS volume (2016+: `E:`), a FAT32/exFAT USB/VHD volume, and an NTFS volume moun
 a folder (`C:\mnt\data`); one VM with SQL Server (Express is enough), one domain
 controller (NTDS), Exchange on 2019 if available.
 
-1. **Install:** copy, `init --token -`, `install`; `sc qc NexusAgent`, `sc qfailure
+1. **Install:** copy, `init --token -`, `install` (MSI: step 11); `sc qc NexusAgent`, `sc qfailure
    NexusAgent` (3 restarts), `icacls %ProgramData%\NexusAgent` (only SYSTEM +
    Administrators, protected), non-admin user cannot read `config\agent.key`.
 2. **Enrollment:** enroll from the appliance; wrong token 5× → locked; `status` shows the
@@ -326,3 +374,13 @@ controller (NTDS), Exchange on 2019 if available.
    reboot → starts automatically; log rotation at 10 MiB.
 10. **Performance:** 1 M small files on D:, second run with 1 % changed: scan time and
     memory; journal read time; compare with the Linux agent on similar data.
+11. **MSI:** `msiexec /i nexus-agent-<v>-x64.msi /qn /l*v i.log` → Apps & features entry,
+    `sc qc NexusAgent` (auto, LocalSystem, `service`), `sc qfailure NexusAgent` (3 restarts,
+    set by `service-setup`), `icacls %ProgramData%\NexusAgent` (protected, SYSTEM +
+    Administrators), the service started and stopped again ("not initialised" in
+    `state\nexus-agent.log`, exit 0, no restarts); `init --token -` + `sc start` → enroll;
+    `Update agent` from the appliance → refused ("installed from a msi package"); install a
+    newer MSI → service restarted with the new version, still enrolled; an older MSI →
+    refused; `msiexec /x … /qn` → service and Program Files gone, `%ProgramData%\NexusAgent`
+    kept; reinstall → enrolled again; `msiexec /x … /qn PURGE=1` → `%ProgramData%\NexusAgent`
+    gone. Deploy once through a GPO (computer software installation) and once through Intune.

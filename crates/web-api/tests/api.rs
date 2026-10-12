@@ -2310,10 +2310,7 @@ async fn agents_tokens_enrollment_and_deletion() {
     assert_eq!(token.len(), 26);
     assert_eq!(r.body["port"], 7444);
     // the token is pasted on stdin, never part of the command (ps / shell history)
-    assert_eq!(
-        r.body["install_command"],
-        "sudo /usr/local/sbin/nexus-agent init --token -"
-    );
+    assert_eq!(r.body["install_command"], "sudo nexus-agent init --token -");
     assert!(!r.body["install_command"].as_str().unwrap().contains(&token));
     assert!(r.body["enrolled_at"].is_null());
 
