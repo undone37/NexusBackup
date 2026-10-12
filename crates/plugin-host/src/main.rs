@@ -88,6 +88,13 @@ struct JobConfig {
     timeouts: Option<TimeoutCfg>,
     #[serde(default)]
     tmp_base: Option<PathBuf>,
+    /// backup: guests at once (group `parallel_guests`, 1..=8)
+    #[serde(default = "one")]
+    parallel: usize,
+}
+
+fn one() -> usize {
+    1
 }
 
 fn yes() -> bool {
@@ -230,25 +237,31 @@ fn main() -> Result<()> {
         }
         ("backup", []) => {
             let run = Run::new(cfg)?;
-            let store = open_store(&run.cfg)?;
+            let parallel = run.cfg.parallel.clamp(1, 8);
+            // in parallel every guest gets its own Store handle: `written()` deltas
+            // (nexus-stats, new_bytes) stay per snapshot
+            let shared = if parallel == 1 {
+                Some(open_store(&run.cfg)?)
+            } else {
+                None
+            };
             let guests: Vec<Option<String>> = if run.cfg.guests.is_empty() {
                 vec![None]
             } else {
                 run.cfg.guests.iter().cloned().map(Some).collect()
             };
-            let (mut done, mut failed) = (Vec::new(), Vec::new());
-            for g in &guests {
+            // Ok = snapshot summary, Err = failure record
+            let one = |g: &Option<String>| -> Result<Value, Value> {
                 if let Some(g) = g {
                     if !plugin_proto::valid_guest_id(g) {
-                        failed.push(json!({"guest": g, "error": "invalid guest id"}));
-                        continue;
+                        return Err(json!({"guest": g, "error": "invalid guest id"}));
                     }
                 }
                 let source = source_name(&run.plugin.id, run.source_id, g.as_deref());
-                let t = run.timeouts(Op::Backup);
-                let r = run.spawn(Op::Backup, t).and_then(|mut p| {
+                let into = |store: &Store| {
+                    let mut p = run.spawn(Op::Backup, run.timeouts(Op::Backup))?;
                     backup::run(
-                        &store,
+                        store,
                         &mut p,
                         &backup::Params {
                             job: run.cfg.job,
@@ -260,9 +273,13 @@ fn main() -> Result<()> {
                         },
                         &mut |l| out_line(l),
                     )
-                });
+                };
+                let r = match &shared {
+                    Some(s) => into(s),
+                    None => open_store(&run.cfg).and_then(|s| into(&s)),
+                };
                 match r {
-                    Ok(r) => done.push(json!({
+                    Ok(r) => Ok(json!({
                         "source": r.source, "time": r.time, "base": r.base, "entries": r.entries, "files": r.files,
                         "streams": r.streams, "unchanged": r.unchanged, "bytes": r.bytes,
                         "transferred_bytes": r.transferred, "new_bytes": r.new_bytes, "consistent": r.consistent,
@@ -272,8 +289,15 @@ fn main() -> Result<()> {
                             "failed {source}: {}",
                             plugin_host::escape(&format!("{e:#}"), 2000)
                         ));
-                        failed.push(json!({"source": source, "error": format!("{e:#}")}));
+                        Err(json!({"source": source, "error": format!("{e:#}")}))
                     }
+                }
+            };
+            let (mut done, mut failed) = (Vec::new(), Vec::new());
+            for r in plugin_host::run_parallel(&guests, parallel, one) {
+                match r {
+                    Ok(v) => done.push(v),
+                    Err(v) => failed.push(v),
                 }
             }
             out_line(&format!("result {}", json!({"snapshots": done, "failed": failed})));
