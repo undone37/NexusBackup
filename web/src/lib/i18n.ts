@@ -547,6 +547,25 @@ export const en = {
     excludesInvalid: 'Excludes: at most 256 patterns.',
     hooks: 'Run pre/post backup hooks on the host',
     hooksHint: 'Scripts in /etc/nexus-agent/hooks.d run before and after each backup (e.g. database dumps).',
+    // Phase 15e: file selection (agents and shares)
+    selection: 'File selection',
+    include: 'Include only (one absolute path per line, optional)',
+    includeHint:
+      'Whitelist: if set, only these directories (and the directories leading to them) are backed up. Excludes still win. Windows: C:\\Users\\alice works too.',
+    includeShare: 'Include only (share paths, one per line, optional)',
+    includeShareHint: 'Whitelist below the share root, e.g. /projects/a. Excludes still win.',
+    includeInvalid: 'Include: at most 256 absolute paths.',
+    regex: 'Regex excludes (one regular expression per line, optional)',
+    regexHint:
+      'Matched against the full path (/home/alice/x.bak; Windows /C/Users/…, case-insensitive), e.g. \\.bak$ or /cache(/|$). Applied in addition to the globs.',
+    crossMounts: 'Also back up file systems mounted below these paths',
+    crossMountsHint:
+      'Each nested local file system is read from its own snapshot. Pseudo, in-memory, container overlay and network file systems are never crossed.',
+    skipFstypes: 'Never cross these file system types (one per line, optional)',
+    skipFstypesHint:
+      'Empty = the default list (proc, sysfs, tmpfs, overlay, squashfs, nfs, nfs4, cifs, fuse, autofs, …). A list here replaces it, e.g. vfat to skip /boot/efi.',
+    agentVersionNote:
+      'Include paths, regex excludes, nested mounts and the agent limits need an agent of this release (capability "prepare2"); older agents back up with the glob excludes only and the job log warns. Update the agent under Agents.',
     pluginKinds: 'Plugins',
     pluginDisabled: (k: string) => `${k} (plugin disabled or not installed)`,
     pluginHint: (name: string, version: string, publisher: string) =>
@@ -591,6 +610,26 @@ export const en = {
     installCommand: 'Install command',
     expires: 'Valid until',
     deleteWhat: (n: string) => `agent "${n}"`,
+    // Phase 15f
+    reenrollToken: 'Re-enroll (new token)',
+    reenrollConfirm: (n: string) =>
+      `Re-enroll "${n}" (e.g. after it lost its key or the host was reinstalled)? A new one-time token is issued for the same agent ID: sources, groups and host snapshots stay attached. Run the install command on the host, then click "Re-enroll". The current certificate stays valid until then.`,
+    renew: 'Renew certificate',
+    renewConfirm: (n: string) =>
+      `Renew the certificate of "${n}" now? The agent generates a new key over the existing session; the appliance signs it and pins the new certificate. Renewal also happens automatically 30 days (or 10 % of the lifetime) before expiry.`,
+    certUntil: (s: string) => `valid until ${s}`,
+    renewalPending: 'Renewal issued, waiting for the next session to confirm it',
+    limits: 'Limits',
+    limitsTitle: (n: string) => `Limits for ${n}`,
+    limitsIntro:
+      'Enforced by the agent for every backup: a bandwidth cap on the data sent to the appliance and a lower CPU / I/O priority for the backup. Needs an agent of this release; older agents ignore them (the job log warns).',
+    bwlimit: 'Bandwidth limit (MiB/s, 0 = unlimited)',
+    bwlimitHint: 'At least 0.0625 MiB/s (64 KiB/s). Applies to chunk data; compressed data counts with its wire size.',
+    bwlimitInvalid: 'Bandwidth: 0 (unlimited) or at least 0.0625 MiB/s.',
+    nice: 'CPU / I/O priority (nice 0–19, 0 = normal)',
+    niceHint: 'Linux: nice value and best-effort I/O priority of the backup thread (and hooks). Windows: background mode for any value above 0.',
+    limitsNone: 'none',
+    limitsShort: (bw: string, nice: number) => [bw, nice ? `nice ${nice}` : ''].filter(Boolean).join(', '),
   },
   repl: {
     primaryFingerprint: "This appliance's certificate fingerprint (SHA-256) — enter it on the secondary",
@@ -662,7 +701,13 @@ export const en = {
     yearly: 'Yearly',
     offsite: 'Copy offsite',
     weakenHint:
-      'Lowering retention, disabling offsite or adding a blackout window needs approval by a second person when approvals are enabled.',
+      'Lowering retention, disabling offsite, adding a blackout window or adding a global exclude needs approval by a second person when approvals are enabled.',
+    // Phase 15e
+    fileFilters: 'Global file excludes',
+    fileFiltersHint:
+      'Applied to every agent and share source of the groups using this policy, in addition to the source\'s own excludes.',
+    globalExclude: 'Glob excludes (one per line)',
+    globalRegex: 'Regex excludes (one per line)',
   },
   groups: {
     title: 'Protection groups',
@@ -704,6 +749,24 @@ export const en = {
     auto: (mode: string, sel: string) => (mode === 'all' ? 'All guests' : `Tags: ${sel}`),
     except: (ids: string) => `except ${ids}`,
     tagInvalid: (x: string) => `Invalid tag "${x}".`,
+    // Phase 15e/f
+    disks: 'Disk selection',
+    excludeDisks: 'Excluded disks (all guests)',
+    excludeDisksHint:
+      'Disk keys of the guest configs, comma separated, e.g. scsi1, virtio2. Disks with backup=0 in PVE are skipped anyway (and reported in the job log). Excluding a disk needs approval.',
+    excludeDisksPer: 'Excluded disks per guest (one line per guest: vmid: disks)',
+    excludeDisksPerHint: 'E.g. 101: scsi2, sata0',
+    excludeDisksInvalid: (x: string) => `Invalid disk entry "${x}" (expected disk keys like scsi1, or "vmid: disks").`,
+    restoreMode: 'On restore, excluded disks are',
+    restoreModes: {
+      placeholder: 'recreated empty (original size and settings)',
+      omit: 'left out of the restored VM',
+    } as Record<string, string>,
+    parallel: 'Guests backed up at once',
+    parallelHint:
+      '1 = one after the other. PVE: spread across nodes first (a node may run its vzdump jobs one by one). Plugin sources: separate plugin processes.',
+    disksShort: (n: number) => `${n} disk${n === 1 ? '' : 's'} excluded`,
+    parallelShort: (n: number) => `${n} at once`,
   },
   inventory: {
     title: (n: string) => `Guest inventory: ${n}`,

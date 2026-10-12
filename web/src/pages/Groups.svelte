@@ -70,6 +70,11 @@
     selector: [] as string[],
     exclude: [] as string[],
     timezone: 'UTC',
+    // Phase 15e/f
+    disksAll: '',
+    disksPer: '',
+    disksMode: 'placeholder' as 'placeholder' | 'omit',
+    parallel: 1,
   });
   const zones = timeZones();
   const tenantSources = $derived(sources.filter((s) => s.tenant === f.tenant));
@@ -95,6 +100,33 @@
   });
   const pluginGuests = $derived(pluginSource ? (kinds.get(pluginSource.kind)?.kind.guests ?? null) : null);
   const GUEST_RE = /^[A-Za-z0-9._-]{1,64}$/;
+  // Phase 15e/f: disk selection (PVE) and parallel guests (PVE, plugins)
+  const pveSource = $derived(sources.find((x) => x.id === Number(f.source_id))?.kind === 'pve');
+  const parallelSource = $derived(pveSource || !!pluginSource);
+  const DISK_RE = /^[a-z]+[0-9]{1,3}$/;
+  const diskList = (v: string) => v.split(/[\s,]+/).filter(Boolean);
+  /** `{"*": [...], "<vmid>": [...]}` from the two fields, or null (after telling the user). */
+  function excludeDisks(): Record<string, string[]> | null {
+    const out: Record<string, string[]> = {};
+    const all = diskList(f.disksAll);
+    const bad = all.find((d) => !DISK_RE.test(d));
+    if (bad) {
+      notify('error', t.groups.excludeDisksInvalid(bad));
+      return null;
+    }
+    if (all.length) out['*'] = all;
+    for (const line of f.disksPer.split('\n').map((l) => l.trim()).filter(Boolean)) {
+      const m = /^(\d+)\s*:\s*(.+)$/.exec(line);
+      const disks = m ? diskList(m[2]) : [];
+      if (!m || !disks.length || disks.some((d) => !DISK_RE.test(d))) {
+        notify('error', t.groups.excludeDisksInvalid(line));
+        return null;
+      }
+      out[m[1]] = [...(out[m[1]] ?? []), ...disks];
+    }
+    return out;
+  }
+  const diskCount = (x: Group) => Object.values(x.exclude_disks ?? {}).reduce((n, l) => n + l.length, 0);
 
   // Auto-protect (Phase 13c): PVE, TrueNAS and plugin kinds with a guest list have an
   // inventory; their groups may take all guests or the guests with given tags.
@@ -205,6 +237,13 @@
       mode: x?.mode ?? 'explicit',
       selector: [...(x?.selector ?? [])],
       exclude: [...(x?.exclude ?? [])],
+      disksAll: (x?.exclude_disks?.['*'] ?? []).join(', '),
+      disksPer: Object.entries(x?.exclude_disks ?? {})
+        .filter(([k]) => k !== '*')
+        .map(([k, l]) => `${k}: ${l.join(', ')}`)
+        .join('\n'),
+      disksMode: x?.exclude_disks_mode ?? 'placeholder',
+      parallel: x?.parallel_guests ?? 1,
     };
     tagInput = '';
     lastSource = f.source_id;
@@ -251,7 +290,10 @@
         return;
       }
     }
+    const exclude_disks = pveSource ? excludeDisks() : {};
+    if (!exclude_disks) return;
     // The tenant is fixed after creation (PUT rejects unknown fields, incl. tenant).
+    // Excluding another disk comes back as 202 {quorum_id}: act() reports it as pending.
     const body = {
       name: f.name,
       source_id: Number(f.source_id),
@@ -261,6 +303,9 @@
       selector: auto && f.mode === 'tags' ? f.selector : [],
       exclude: auto ? f.exclude : [],
       timezone: f.timezone,
+      exclude_disks,
+      exclude_disks_mode: f.disksMode,
+      parallel_guests: parallelSource ? Number(f.parallel) || 1 : 1,
     };
     const r = editing
       ? await act(put(`/groups/${editing.id}`, body), t.saved)
@@ -326,7 +371,12 @@
                   >{/if}
                 {#if isPaused(x.maintenance_until)}<span class="chip warn">{t.runctl.inMaintenance}</span>{/if}
                 {#if x.blackout_active}<span class="chip plain">{t.runctl.blackoutNow}</span>{/if}
-                {#if x.timezone && x.timezone !== 'UTC'}<div class="muted">{x.timezone}</div>{/if}</td
+                {#if x.timezone && x.timezone !== 'UTC'}<div class="muted">{x.timezone}</div>{/if}
+                {#if diskCount(x) || (x.parallel_guests ?? 1) > 1}<div class="muted">
+                    {[diskCount(x) ? t.groups.disksShort(diskCount(x)) : '', (x.parallel_guests ?? 1) > 1 ? t.groups.parallelShort(x.parallel_guests) : '']
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </div>{/if}</td
               >
               <td>{x.tenant}</td>
               <td>{sourceName(x.source_id)}</td>
@@ -499,6 +549,38 @@
       <div class="field">
         <label for="g-guests">{t.groups.guests}</label>
         <input id="g-guests" class="mono" bind:value={f.guests} placeholder="100, 101, 200" />
+      </div>
+    {/if}
+    {#if pveSource}
+      <fieldset class="field">
+        <legend>{t.groups.disks}</legend>
+        <div class="field">
+          <label for="g-disks">{t.groups.excludeDisks}</label>
+          <input id="g-disks" class="mono" bind:value={f.disksAll} placeholder="scsi1, virtio2" aria-describedby="g-disks-hint" />
+          <div class="hint" id="g-disks-hint">{t.groups.excludeDisksHint}</div>
+        </div>
+        <div class="field">
+          <label for="g-disks-per">{t.groups.excludeDisksPer}</label>
+          <textarea id="g-disks-per" class="mono" bind:value={f.disksPer} spellcheck="false" placeholder={t.groups.excludeDisksPerHint}
+          ></textarea>
+        </div>
+        <div class="field">
+          <span class="muted">{t.groups.restoreMode}</span>
+          <div class="row">
+            {#each ['placeholder', 'omit'] as m (m)}
+              <label class="inline-check"
+                ><input type="radio" name="g-dmode" value={m} bind:group={f.disksMode} />{t.groups.restoreModes[m]}</label
+              >
+            {/each}
+          </div>
+        </div>
+      </fieldset>
+    {/if}
+    {#if parallelSource}
+      <div class="field">
+        <label for="g-par">{t.groups.parallel}</label>
+        <input id="g-par" type="number" min="1" max="8" bind:value={f.parallel} required aria-describedby="g-par-hint" />
+        <div class="hint" id="g-par-hint">{t.groups.parallelHint}</div>
       </div>
     {/if}
     <div class="form-actions">

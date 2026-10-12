@@ -1,11 +1,11 @@
 <script lang="ts">
   import { askConfirm } from '../lib/confirm.svelte';
   import { onMount } from 'svelte';
-  import { get, post, del, act, errText } from '../lib/api';
+  import { get, post, put, del, act, errText } from '../lib/api';
   import { notify } from '../lib/notify.svelte';
   import { navigate } from '../lib/router.svelte';
   import { agentStatus } from '../lib/jobs';
-  import { fmtAgo, fmtTime } from '../lib/format';
+  import { fmtAgo, fmtBytes, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import type { Agent, AgentToken, Tenant } from '../lib/types';
   import Modal from '../components/Modal.svelte';
@@ -65,7 +65,8 @@
   });
 
   async function newToken(a: Agent) {
-    if (!(await askConfirm(t.agents.newTokenConfirm(a.name)))) return;
+    const enrolled = agentStatus(a, now) === 'enrolled';
+    if (!(await askConfirm(enrolled ? t.agents.reenrollConfirm(a.name) : t.agents.newTokenConfirm(a.name)))) return;
     const r = await act(post<AgentToken>(`/agents/${encodeURIComponent(a.id)}/token`), t.saved);
     if (!r) return;
     if (!r.quorum && r.data.token) showToken(a.name, r.data);
@@ -85,6 +86,46 @@
     );
     if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
   }
+
+  // Phase 15f: certificate renewal over the session, appliance-side limits
+  async function renew(a: Agent) {
+    if (!(await askConfirm(t.agents.renewConfirm(a.name)))) return;
+    const r = await act(
+      post<{ id: number }>('/jobs', { kind: 'agent_renew', tenant: a.tenant, params: { agent_id: a.id } }),
+      (d) => t.snap.jobStarted(d.id),
+    );
+    if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
+  }
+
+  const MIB = 1 << 20;
+  let limOpen = $state(false);
+  let limAgent: Agent | null = $state(null);
+  let lim = $state({ mib: 0 as number, nice: 0 as number });
+  function limits(a: Agent) {
+    limAgent = a;
+    const l = a.limits as { bwlimit?: number; nice?: number };
+    lim = { mib: (l.bwlimit ?? 0) / MIB, nice: l.nice ?? 0 };
+    limOpen = true;
+  }
+  async function saveLimits(e: SubmitEvent) {
+    e.preventDefault();
+    if (!limAgent) return;
+    const bwlimit = Math.round((Number(lim.mib) || 0) * MIB);
+    if (bwlimit !== 0 && bwlimit < 65536) {
+      notify('error', t.agents.bwlimitInvalid);
+      return;
+    }
+    const body = { bwlimit, nice: Number(lim.nice) || 0 };
+    if (await act(put(`/agents/${encodeURIComponent(limAgent.id)}/limits`, body), t.saved)) {
+      limOpen = false;
+      load();
+    }
+  }
+  const limitText = (a: Agent) => {
+    const l = a.limits as { bwlimit?: number; nice?: number };
+    if (!l.bwlimit && !l.nice) return t.agents.limitsNone;
+    return t.agents.limitsShort(l.bwlimit ? `${fmtBytes(l.bwlimit)}/s` : '', l.nice ?? 0);
+  };
 
   async function remove(a: Agent) {
     if (!(await askConfirm(t.confirmDelete(t.agents.deleteWhat(a.name))))) return;
@@ -125,6 +166,7 @@
             <th scope="col">{t.agents.lastSeen}</th>
             <th scope="col">{t.agents.version} / {t.agents.os}</th>
             <th scope="col">{t.agents.cert}</th>
+            <th scope="col">{t.agents.limits}</th>
             <th scope="col"><span class="visually-hidden">{t.actions}</span></th>
           </tr>
         </thead>
@@ -150,7 +192,10 @@
               </td>
               <td class="mono">
                 {#if a.cert_sha256}<span title="SHA-256 {a.cert_sha256}">{shortFp(a.cert_sha256)}</span>{:else}—{/if}
+                {#if a.cert_expires}<div class="muted">{t.agents.certUntil(fmtTime(a.cert_expires))}</div>{/if}
+                {#if a.cert_renewal_pending}<div><span class="chip info">{t.agents.renewalPending}</span></div>{/if}
               </td>
+              <td class="nowrap">{limitText(a)}</td>
               <td class="actions">
                 <!-- Enrolling needs a valid one-time token; enrolled agents can re-enroll after "New token". -->
                 {#if st !== 'enrolled' || hasToken(a)}
@@ -162,10 +207,14 @@
                     onclick={() => enroll(a)}>{st === 'enrolled' ? t.agents.reenroll : t.agents.enroll}</button
                   >
                 {/if}
-                <button type="button" class="small" onclick={() => newToken(a)}>{t.agents.newToken}</button>
+                <button type="button" class="small" onclick={() => newToken(a)}
+                  >{st === 'enrolled' ? t.agents.reenrollToken : t.agents.newToken}</button
+                >
                 {#if st === 'enrolled'}
+                  <button type="button" class="small" onclick={() => renew(a)}>{t.agents.renew}</button>
                   <button type="button" class="small" onclick={() => update(a)}>{t.agents.update}</button>
                 {/if}
+                <button type="button" class="small" onclick={() => limits(a)}>{t.agents.limits}</button>
                 <button type="button" class="small danger" onclick={() => remove(a)}>{t.delete}</button>
               </td>
             </tr>
@@ -224,4 +273,26 @@
       <button type="button" class="primary" onclick={() => (tokOpen = false)}>{t.close}</button>
     </div>
   {/if}
+</Modal>
+
+<Modal bind:open={limOpen} title={t.agents.limitsTitle(limAgent?.name ?? '')}>
+  <form onsubmit={saveLimits}>
+    <p class="hint">{t.agents.limitsIntro}</p>
+    <div class="form-grid">
+      <div class="field">
+        <label for="l-bw">{t.agents.bwlimit}</label>
+        <input id="l-bw" type="number" min="0" step="0.0625" bind:value={lim.mib} required aria-describedby="l-bw-hint" />
+        <div class="hint" id="l-bw-hint">{t.agents.bwlimitHint}</div>
+      </div>
+      <div class="field">
+        <label for="l-nice">{t.agents.nice}</label>
+        <input id="l-nice" type="number" min="0" max="19" bind:value={lim.nice} required aria-describedby="l-nice-hint" />
+        <div class="hint" id="l-nice-hint">{t.agents.niceHint}</div>
+      </div>
+    </div>
+    <div class="form-actions">
+      <button type="button" onclick={() => (limOpen = false)}>{t.cancel}</button>
+      <button type="submit" class="primary">{t.save}</button>
+    </div>
+  </form>
 </Modal>
