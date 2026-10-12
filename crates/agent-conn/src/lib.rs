@@ -12,6 +12,7 @@ pub mod enroll;
 pub mod files;
 pub mod map;
 pub mod renew;
+pub mod rescue;
 pub mod restore;
 pub mod tarbridge;
 pub mod tls;

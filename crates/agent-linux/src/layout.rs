@@ -358,6 +358,9 @@ pub fn build(src: &Sources) -> Layout {
     let mut disks = vec![];
     for &i in &disk_idx {
         let n = &nodes[i];
+        if matches!(n.kind.as_str(), "loop" | "rom" | "zram") {
+            continue; // snap packages, ISO images, compressed swap: nothing to recreate
+        }
         if n.kind != "disk" || n.removable {
             warnings.push(format!(
                 "{} ({}{}) holds mounted file systems but is not recorded as a disk",
