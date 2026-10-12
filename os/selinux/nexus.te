@@ -27,10 +27,14 @@ policy_module(nexus, 1.0.0)
 #                                                          NFS/CIFS mount per socket connection
 #   init_t ── nexus_setup_exec_t ─────> nexus_setup_t      first boot (root): nmcli/hostnamectl/systemctl
 #   init_t ── nexus_nftsync_exec_t ───> nexus_nftsync_t    root oneshot ── iptables_exec_t ──> iptables_t
+#   init_t ── nexus_consolegate_exec_t > nexus_consolegate_t  console gate on tty2 (root): unlock code or
+#                                                          recovery key ── shell_exec_t ──> unconfined_t
+#                                                          (the emergency root shell; the only way there)
 #
 # Data types are private to the domains named in their rules; nothing is
 # shared through generic types (var_lib_t, etc_t, tmp_t). No domain is
-# permissive or unconfined. Every allow rule below states why it exists.
+# permissive or unconfined (the console gate's root shell is unconfined_t by
+# design, Phase 14c). Every allow rule below states why it exists.
 ########################################
 
 gen_require(`
@@ -43,6 +47,8 @@ gen_require(`
 	type nfs_t;
 	type cifs_t;
 	type net_conf_t;
+	type unconfined_t;
+	role system_r;
 	class service { start stop status reload enable disable };
 	class system { reload status };
 ')
@@ -85,6 +91,7 @@ nexus_daemon(nasmount)
 nexus_job(replica)
 nexus_job(pluginhost)
 nexus_daemon(plugininstall)
+nexus_daemon(consolegate)
 
 # Plugin process (docs/plugin-system.md): untrusted third-party code. Deliberately
 # NOT in nexus_domain: that attribute grants every nexus service basics a plugin must
@@ -160,6 +167,10 @@ type nexus_replicad_var_run_t;	# replicad socket, published ca.pem / seal.pub (w
 files_pid_file(nexus_replicad_var_run_t)
 type nexus_replica_key_t;	# secondary: client key + certificate per replication source (nexus-replica only)
 files_type(nexus_replica_key_t)
+type nexus_console_unlock_t;	# console unlock codes (hashes): web-api writes, the console gate reads + deletes
+files_type(nexus_console_unlock_t)
+type nexus_consolegate_var_run_t;	# console gate: failed attempts (RuntimeDirectory=nexus-console-gate)
+files_pid_file(nexus_consolegate_var_run_t)
 
 ########################################
 # Common to all nexus domains: the basics of a Rust program on glibc.
@@ -186,8 +197,10 @@ allow nexus_domain nexus_var_lib_t:dir search_dir_perms;
 
 # Only keyd may ever touch the TPM (TPM sealing is deferred, the rule stays).
 neverallow { nexus_domain -nexus_keyd_t } tpm_device_t:chr_file *;
-# Key material: only keyd (and setup, which runs `keyd init` once) see it.
-neverallow { nexus_domain -nexus_keyd_t -nexus_setup_t } nexus_keyd_var_lib_t:file { read write open };
+# Key material: only keyd (and setup, which runs `keyd init` once) see it; the
+# console gate reads it to check the recovery key (as recover-admin does).
+neverallow { nexus_domain -nexus_keyd_t -nexus_setup_t -nexus_consolegate_t } nexus_keyd_var_lib_t:file { read open };
+neverallow { nexus_domain -nexus_keyd_t -nexus_setup_t } nexus_keyd_var_lib_t:file write;
 # The restore micro-VM (QEMU parsing untrusted guest disks) never reaches keys,
 # stores, the catalog, downloads, credentials or job configs, nor the keyd socket
 # (security review H-3: it shares the nexus-chunkstore uid, so MAC is the boundary).
@@ -816,3 +829,60 @@ read_lnk_files_pattern(nexus_webapi_t, nexus_plugin_data_t, nexus_plugin_data_t)
 list_dirs_pattern(nexus_scheduler_t, nexus_plugin_data_t, nexus_plugin_data_t)
 read_files_pattern(nexus_scheduler_t, nexus_plugin_data_t, nexus_plugin_data_t)
 read_lnk_files_pattern(nexus_scheduler_t, nexus_plugin_data_t, nexus_plugin_data_t)
+
+########################################
+# Console gate (Phase 14c, nexus-console-gate.service on tty2, root): accepts a
+# one-time unlock code (issued by the web-api after an approved console.unlock) or
+# the recovery key, records the shell in the catalog and starts it with
+# `systemd-run --scope -p RuntimeMaxSec=` (systemd stops the scope when the time is
+# up). Executing bash moves the shell to unconfined_t: the emergency root shell.
+
+allow nexus_consolegate_t self:capability { chown fowner dac_override dac_read_search ipc_lock };
+# catalog (audit, alert, banner setting); SQLite running as root chowns the -wal/-shm
+# it creates to the database's owner
+manage_files_pattern(nexus_consolegate_t, nexus_catalog_t, nexus_catalog_t)
+allow nexus_consolegate_t nexus_catalog_t:dir rw_dir_perms;
+allow nexus_consolegate_t nexus_catalog_t:file map;
+# setup-done
+read_files_pattern(nexus_consolegate_t, nexus_var_lib_t, nexus_var_lib_t)
+# recovery key check: kek.recovery unwrapped with the typed key must equal kek.local
+list_dirs_pattern(nexus_consolegate_t, nexus_keyd_var_lib_t, nexus_keyd_var_lib_t)
+read_files_pattern(nexus_consolegate_t, nexus_keyd_var_lib_t, nexus_keyd_var_lib_t)
+# unlock codes: read, and delete when used or expired (never create: that is the web-api)
+allow nexus_consolegate_t nexus_console_unlock_t:dir rw_dir_perms;
+allow nexus_consolegate_t nexus_console_unlock_t:file { read_file_perms unlink };
+# failed attempts across restarts of the gate
+manage_files_pattern(nexus_consolegate_t, nexus_consolegate_var_run_t, nexus_consolegate_var_run_t)
+# tty2 (echo off for the recovery key, foreground process group after the shell)
+term_use_unallocated_ttys(nexus_consolegate_t)
+term_use_controlling_term(nexus_consolegate_t)
+# systemd-run --scope / systemctl stop <scope> run in this domain and talk to PID 1
+# (private socket as root, or the system bus): create the transient scope, stop it
+corecmd_exec_bin(nexus_consolegate_t)
+systemd_exec_systemctl(nexus_consolegate_t)
+files_read_etc_files(nexus_consolegate_t)
+files_read_usr_files(nexus_consolegate_t)
+init_stream_connect(nexus_consolegate_t)
+init_read_state(nexus_consolegate_t)
+dbus_system_bus_client(nexus_consolegate_t)
+init_dbus_chat(nexus_consolegate_t)
+init_start_transient_unit(nexus_consolegate_t)
+allow nexus_consolegate_t init_t:service { stop status };
+allow nexus_consolegate_t init_t:system status;
+allow nexus_consolegate_t self:unix_dgram_socket create_socket_perms;
+# The shell: systemd-run execs /bin/bash in place -> unconfined_t (system_u:system_r,
+# the gate's identity and role; a shell entry point of unconfined_t as for logins)
+corecmd_shell_domtrans(nexus_consolegate_t, unconfined_t)
+corecmd_shell_entry_type(unconfined_t)
+role system_r types unconfined_t;
+
+# --- web-api: writes the code files (tmp + rename), revokes (deletes) them
+allow nexus_webapi_t nexus_console_unlock_t:dir rw_dir_perms;
+manage_files_pattern(nexus_webapi_t, nexus_console_unlock_t, nexus_console_unlock_t)
+
+# Only the console gate reaches unconfined_t; only the web-api issues codes, only it
+# and the gate read them.
+neverallow { nexus_domain -nexus_consolegate_t } unconfined_t:process { transition dyntransition };
+neverallow { nexus_domain -nexus_webapi_t } nexus_console_unlock_t:file { create write append rename link setattr relabelto };
+neverallow { nexus_domain -nexus_webapi_t -nexus_consolegate_t } nexus_console_unlock_t:file { read open };
+neverallow nexus_plugin_t { nexus_console_unlock_t nexus_consolegate_var_run_t }:file { read write append open create unlink link rename setattr execute ioctl lock };

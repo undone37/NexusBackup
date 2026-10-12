@@ -12,6 +12,8 @@ enable nexus-nft-sync.path
 enable nexus-nft-sync.timer
 # NAS mount helper (socket-activated per connection, docs/nas-connector.md).
 enable nexus-nasmount.socket
+# Emergency console gate on tty2 (replaces its getty; Phase 14c).
+enable nexus-console-gate.service
 # Plugin installer (path-triggered oneshot, also once at boot); inert until
 # /var/lib/nexus/setup-done exists (ConditionPathExists in the service).
 enable nexus-plugin-install.service

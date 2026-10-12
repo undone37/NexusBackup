@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod alerting;
 pub mod auth;
+pub mod console;
 pub mod inventory;
 pub mod schedule;
 pub mod secret;

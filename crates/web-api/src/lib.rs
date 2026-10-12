@@ -23,6 +23,7 @@ pub mod agents;
 pub mod alerts;
 pub mod approvals;
 pub mod auth;
+pub mod console;
 pub mod dashboard;
 pub mod inventory;
 pub mod jobs;
@@ -101,6 +102,8 @@ pub struct AppState {
     pub plugins: std::sync::OnceLock<crate::plugins::PluginPaths>,
     /// OS update control dir (default: env `NEXUS_UPDATE_DIR` or /var/lib/nexus/update)
     pub update_dir: std::sync::OnceLock<PathBuf>,
+    /// console unlock codes (default: env `NEXUS_CONSOLE_UNLOCK_DIR` or /var/lib/nexus/console-unlock)
+    pub console_dir: std::sync::OnceLock<PathBuf>,
     /// `GET /dashboard` answers, ≤ 60 s old
     pub dashboard: crate::dashboard::Cache,
     /// OIDC discovery/JWKS cache and pending logins
@@ -128,6 +131,7 @@ impl AppState {
             repl: crate::replication::ReplState::new(repl),
             plugins: std::sync::OnceLock::new(),
             update_dir: std::sync::OnceLock::new(),
+            console_dir: std::sync::OnceLock::new(),
             dashboard: Default::default(),
             oidc: Default::default(),
         })
@@ -461,6 +465,9 @@ pub fn router(st: St) -> Router {
         .route("/jobs/{id}/cancel", post(cancel_job))
         .route("/downloads/{token}", get(download))
         .route("/quorum", get(list_quorum))
+        .route("/console/unlock", get(console::list).post(console::request_unlock))
+        .route("/console/unlock/{id}", axum::routing::delete(console::revoke))
+        .route("/console/unlock/{id}/code", post(console::fetch_code))
         .route("/quorum/{id}/approve", post(approve))
         .route("/quorum/{id}/reject", post(reject))
         .route("/audit", get(list_audit))
