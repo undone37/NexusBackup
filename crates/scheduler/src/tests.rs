@@ -1904,3 +1904,88 @@ mod report_mail;
 mod restore_files;
 /// Phase 13b run control (pause, blackout, retries, SLA, cancel).
 mod runctl;
+/// Phase 15g file search and name index jobs.
+mod search;
+
+/// Phase 15d: the connector's `consistency` line ends up in the job result and
+/// `snapshots.consistency`; the policy's `require_consistency` warns (one alert
+/// per source, resolved by a snapshot that meets it) or fails the job.
+#[test]
+fn consistency_recorded_and_policy_enforced() {
+    let e = env(1);
+    let mut s = sched(&e);
+    let pve = e.d.path().join("pve");
+    let level = |lvl: &str| {
+        fs::remove_file(&pve).unwrap();
+        script(
+            &pve,
+            &format!("echo committed vm-100/1000; echo 'consistency vm-100/1000: {lvl} (test)'"),
+        );
+    };
+    let set_policy = |mode: &str, min: &str| {
+        e.db.conn()
+            .execute(
+                "UPDATE policies SET require_consistency=?1",
+                [json!({"mode": mode, "level": min}).to_string()],
+            )
+            .unwrap();
+    };
+    let snap_level = |s: &Scheduler| -> Option<String> {
+        s.db.conn()
+            .query_row(
+                "SELECT consistency FROM snapshots WHERE tenant='t1' AND source='vm-100' AND time=1000",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let open = |s: &Scheduler| -> i64 {
+        s.db.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM alerts WHERE kind='consistency' AND key='consistency:t1/vm-100' AND resolved_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let run = |s: &mut Scheduler| -> i64 {
+        let id = manual(s, "backup", "t1", json!({"group_id": 1}));
+        // the previous run's retention follow-up goes first
+        while state(s, id) == "queued" {
+            s.start_jobs().unwrap();
+            s.wait_idle(Duration::from_secs(20)).unwrap();
+        }
+        id
+    };
+
+    level("crash");
+    let a = run(&mut s);
+    assert_eq!(state(&s, a), "ok");
+    assert_eq!(result_of(&s, a)["consistency"], "crash");
+    assert_eq!(snap_level(&s).as_deref(), Some("crash"));
+    assert_eq!(open(&s), 0, "policy off: no alert");
+
+    set_policy("warn", "application");
+    let b = run(&mut s);
+    assert_eq!(state(&s, b), "ok", "warn keeps the job ok");
+    assert_eq!(open(&s), 1);
+
+    set_policy("fail", "application");
+    let c = run(&mut s);
+    assert_eq!(state(&s, c), "failed");
+    let log: String =
+        s.db.conn()
+            .query_row("SELECT log FROM jobs WHERE id=?1", [c], |r| r.get(0))
+            .unwrap();
+    assert!(
+        log.contains("consistency below the policy minimum (application): vm-100/1000: crash"),
+        "{log}"
+    );
+    assert_eq!(open(&s), 1, "still one alert per source");
+
+    level("application");
+    let d = run(&mut s);
+    assert_eq!(state(&s, d), "ok");
+    assert_eq!(snap_level(&s).as_deref(), Some("application"));
+    assert_eq!(open(&s), 0, "resolved by a snapshot that meets the policy");
+}

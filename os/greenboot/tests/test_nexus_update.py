@@ -364,7 +364,7 @@ class Agent(unittest.TestCase):
 
     def test_bootc_failure_is_reported_not_raised(self):
         (self.d / "fail").touch()
-        self.assertEqual(self.tick(), 1)
+        self.assertEqual(self.tick(), 0, "reported in status.json, not a failed unit")
         self.assertIn("simulated failure", json.loads((self.d / "ctl/status.json").read_text())["last_result"]["result"])
 
     def test_egress_opened_and_closed(self):

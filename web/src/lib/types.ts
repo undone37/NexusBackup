@@ -284,6 +284,8 @@ export interface Policy {
   retry: { count: number; delay_min: number };
   blackout: BlackoutWindow[];
   sla_minutes: number | null;
+  /** Phase 15d */
+  require_consistency?: RequireConsistency;
   /** Phase 15e: global excludes for every agent and share source of the policy's groups */
   file_filters: FileFilters;
 }
@@ -316,6 +318,8 @@ export interface Group {
   selector: string[];
   /** guest ids never protected by this group (mode all/tags) */
   exclude: string[];
+  /** Phase 15g, pve groups: list the VM/CT file systems after each backup (restore micro-VM) for the file search */
+  index_files?: boolean;
   /** Phase 15e (PVE groups): disk keys not backed up, `*` = every guest, else per vmid */
   exclude_disks: Record<string, string[]>;
   /** placeholder: a restore recreates excluded disks empty; omit: left out of the restored config */
@@ -372,7 +376,33 @@ export type JobKind =
   | 'plugin_mount'
   | 'replica_enroll'
   | 'replica_sync'
-  | 'inventory';
+  | 'inventory'
+  | 'file_search'
+  | 'file_index';
+
+/** One hit of a `file_search` job: one version of a file (same path, size, mtime) and the snapshots that hold it. */
+export interface SearchMatch {
+  source: string;
+  /** relative, no leading slash (the Files page path is `/` + path) */
+  path: string;
+  kind: 'file' | 'dir' | 'symlink' | 'other';
+  size: number;
+  mtime: number;
+  /** snapshot times holding this version, newest first */
+  times: number[];
+}
+
+/** `job.result` of a finished `file_search` job (POST /search). */
+export interface SearchResult {
+  matches: SearchMatch[];
+  /** snapshots searched */
+  scanned: number;
+  /** snapshots without a file index (VM/CT disks of groups without index_files) */
+  unindexed: number;
+  /** the limit or the time budget was hit */
+  truncated: boolean;
+  elapsed_ms: number;
+}
 
 /** One entry of `nexus-pve files … ls` (crates/pve/src/files.rs `Entry`); agents use the same shape. */
 export interface FileEntry {
@@ -449,6 +479,17 @@ export interface Snapshot {
   origin?: string | null;
   /** open legal hold (15c): `active` (enforced) or `advisory` (reported by the primary) */
   hold?: LegalHold | null;
+  /** Phase 15d: null = not recorded (before 15d, replicated or offsite-only) */
+  consistency?: Consistency | null;
+}
+
+/** Consistency level of a snapshot (docs/control-plane.md "Consistency"). */
+export type Consistency = 'application' | 'crash' | 'inconsistent' | 'unknown';
+
+/** Policy option: minimum consistency of group backups. */
+export interface RequireConsistency {
+  mode: 'off' | 'warn' | 'fail';
+  level: 'application' | 'crash';
 }
 
 /** A legal hold and its history (Phase 15c, GET /holds). */
@@ -766,6 +807,8 @@ export type Sla = 'ok' | 'breach' | 'never' | 'paused';
 
 /** GET /dashboard?days=7|30 (§1). Byte counts; ratios and forecasts are null when unknown. */
 export interface Dashboard {
+  /** Phase 15d: newest local snapshot per source, counted per level */
+  consistency?: Record<string, number>;
   generated: number;
   days: number;
   protection: {

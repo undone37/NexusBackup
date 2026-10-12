@@ -13,8 +13,10 @@ backups. It reaches PVE nodes, agents and database servers. Nothing on the sourc
 | **Tenant user** | all restore types, own tenant only (the UI shows only that tenant's snapshots) |
 | **Security officer** | none: reads everything, restores nothing |
 
-Restores never need an approval. They write only to new
-targets or to targets you confirm explicitly. Existing backups are never touched.
+Restores need no approval. They write only to new
+targets or to targets you confirm explicitly. Existing backups are never touched. The one exception is
+**Replace the original guest** (below). It changes the original guest, so it needs approval, and only
+administrators and operators can request it.
 
 ![Snapshots of tenant initech with Browse files and the Restore menu](images/snapshots.png)
 
@@ -42,8 +44,25 @@ plugin declares for each of its restores whether it applies to guest snapshots, 
 menu offers only the matching ones. The appliance refuses a restore that does not match the snapshot kind.
 
 Use the **Tenant** and **Guest (e.g. vm-100)** filters to narrow the list. Each row shows **Local**,
-**Offsite** and **Verified** marks and the **Locked until** date. A locked snapshot cannot be deleted
-before that date (see [01 Concepts](01-concepts.md)).
+**Offsite** and **Verified** marks, the **Locked until** date and the **Consistency** of the snapshot. A
+locked snapshot cannot be deleted before that date (see [01 Concepts](01-concepts.md)).
+
+### Consistency
+
+The **Consistency** badge shows how consistent the snapshot is. Hover over it for an explanation.
+
+| Badge | Meaning | Typical source |
+|---|---|---|
+| **application** | The applications were quiesced, or the guest was off. | VM with a running QEMU guest agent (vzdump freezes and thaws the file systems); stopped VM or container; agent with pre/post hooks; Windows agent (VSS writers); plugin with application-consistent backups (e.g. database dumps) |
+| **crash** | A point-in-time snapshot without quiescing, like pulling the power plug. | VM without guest agent, or the freeze failed / was skipped; running container (frozen, then storage snapshot); Linux agent with a volume snapshot but no hooks; NAS / TrueNAS snapshot |
+| **inconsistent** | Read live, without a snapshot. Files may have changed while they were read. | agent or share without a usable snapshot |
+| **unknown** | No information. | snapshots taken before this version, replicated or offsite-only snapshots |
+
+For VMs the level comes from the vzdump task log on Proxmox VE: `issuing guest-agent 'fs-freeze' command` and
+`… 'fs-thaw' command` mean application-consistent; `unable to freeze guest fs …` or `skipping guest filesystem
+freeze …` mean crash-consistent. To get application-consistent VM snapshots, install the QEMU guest agent in
+the guest and enable it in the VM options. A policy can require a minimum level (see
+[05 Policies and groups](05-policies-and-groups.md)).
 
 ## Restore a VM or container (full restore)
 
@@ -54,9 +73,21 @@ before that date (see [01 Concepts](01-concepts.md)).
    - **New VM/CT ID**: an ID that is not in use on the cluster yet.
    - **Target storage**: the PVE storage for the disks or the root file system, e.g. `local-lvm`. It must be a
      storage that holds VM disk images / container volumes, not the NexusBackup storage itself.
-3. Click **Start**. The job page opens.
+3. Set the **Options** you need (all optional):
+   - **Name of the new guest**: the VM name or container host name. Empty: the backed-up name with
+     `-restore` appended, e.g. `web1-restore`.
+   - **Name prefix**: instead of a name, put a prefix in front of the backed-up name, e.g. `dr-` gives
+     `dr-web1`.
+   - **Resource pool**: adds the guest to this Proxmox VE pool. The pool must exist, and the PVE API
+     token needs `Pool.Allocate` on it.
+   - **Power on after the restore**: starts the guest when the restore has finished.
+   - **Disconnect the network (all NICs link_down)**: sets `link_down=1` on every network interface before
+     the guest first starts. Use it when the original still runs on the same network. Reconnect the
+     interfaces in Proxmox VE when you are ready.
+   - **Replace the original guest**: see below.
+4. Click **Start**. The job page opens.
 
-![Restore dialog for vm-100](images/snapshot-restore-vm.png)
+![Restore dialog for vm-100 with a pool, power-on and disconnected network](images/snapshot-restore-vm.png)
 
 What happens:
 
@@ -68,8 +99,65 @@ What happens:
 - PVE cannot live-restore from a backup provider: the guest starts only after the copy has finished. To
   start it immediately, use instant recovery.
 
+A new guest never overwrites an existing one: PVE refuses a VM/CT ID that is in use.
+
 > **Status:** Full VM and CT restore was verified in the nested PVE 9 lab (single node). Multi-node clusters
-> are untested. The PVE API token needs `SDN.Use` on the guest's bridge zone for restores.
+> are untested. The PVE API token needs `SDN.Use` on the guest's bridge zone for restores. The restore
+> options (name, pool, power on, link_down) and replacing the original are covered by unit tests against a
+> simulated PVE API; the lab run on a real cluster is pending.
+
+### Replace the original guest
+
+Use this when the original guest is broken and the restored copy should take its place. Tick **Replace the
+original guest** in the full-restore dialog. The original is the guest with the snapshot's ID (for example
+VM 100 for `vm-100`).
+
+![Replace the original: the dialog explains every step](images/snapshot-restore-replace.png)
+
+The request needs approval by a second person (administrator or security officer) when approvals are enabled
+(see [10 Approvals and audit](10-approvals-and-audit.md)). After the approval, the scheduler runs the restore
+job. The steps run in this order:
+
+1. The snapshot is restored to the **new** VM/CT ID. The restored guest keeps the original's MAC addresses,
+   stays switched off and does not start at boot.
+2. Only if the restore succeeded: the original is shut down (hard stop after 3 minutes).
+3. The original is renamed `<name>-replaced-<YYYYmmddHHMM>` (UTC), set to not start at boot (`onboot=0`), and
+   all its network interfaces are disconnected (`link_down=1`). Tick **Keep the original's network
+   connected** to leave them as they are.
+4. The restored guest gets the original's name and start-at-boot setting.
+5. With **Power on after the restore** ticked, the restored guest starts.
+
+Keep in mind:
+
+- **The VM/CT ID changes.** The restored guest keeps the new ID. Update monitoring, firewall rules, HA
+  resources, replication jobs and backup groups that refer to the old ID. A protection group with the old ID
+  still backs up the original, now switched off.
+- **The original is never deleted.** Remove it in Proxmox VE yourself once the restored guest works.
+- A replacing restore can be cancelled while it waits in the queue, not while it runs: stopping it half-way
+  could leave the original switched off and renamed.
+- If any step after the restore fails, the appliance puts the original back as it was (name, start at boot,
+  network) and starts it again if it was running. The restored guest stays, switched off, under its
+  `-restore` name. The job log lists every step, including a rollback that did not complete.
+
+### Restore several guests at once
+
+**Restore several** (top right on the Snapshots page) restores many guests of one tenant in one step, for
+example a whole protection group after losing a cluster.
+
+![Restore several guests of the group acme-vms](images/snapshots-restore-many.png)
+
+1. Pick the tenant (if you see several), then tick the guests or choose **Select a group** to tick the
+   guests of a protection group. The list shows each VM and container with its newest local snapshot.
+2. Enter **Target node**, **Target storage** and **First new VM/CT ID**. The guests get consecutive IDs in
+   the order of the list: the first ID, the first ID + 1, and so on.
+3. Set the options: **Name prefix** (default `restore-`), **Resource pool**, **Power on after the restore**,
+   **Disconnect the network** (on by default).
+4. Click **Start**. The appliance creates one restore job per guest and checks all of them first: if one
+   guest cannot be restored (e.g. an ID out of range), no job is created. The request is audited once
+   (`job.create_many`).
+
+Replacing originals is not offered here. Request it per guest, so that each replacement gets its own
+approval.
 
 ## Instant recovery (VMs)
 
@@ -77,7 +165,14 @@ Instant recovery boots the VM straight from the backup, then moves its disks to 
 
 1. Open **Restore** on a `vm-` snapshot and choose **Instant recover**.
 2. Enter **Target node**, **New VM/CT ID** and **Target storage** (the storage the disks move to).
-3. Click **Start**.
+3. Check the options:
+   - **Name prefix** (optional): put in front of the backed-up name. Empty: `<name>-restore`.
+   - **Resource pool** (optional).
+   - **Power on**: on by default. Switched off, the VM is created powered off and its disks are moved
+     while it is off. It is ready to start afterwards.
+   - **Disconnect the network (all NICs link_down)**: on by default, because the original often still
+     runs. Reconnect the interfaces in Proxmox VE when you are ready.
+4. Click **Start**.
 
 ![Instant recovery dialog](images/snapshot-instant-recover.png)
 
@@ -92,8 +187,8 @@ Limits:
 - Guest writes accumulate on the node's root file system until the disk move finishes. Keep enough free
   space there.
 - The VM gets new NIC MAC addresses and a new `vmgenid`. If the original VM still runs on the same network,
-  start the recovered VM with its links down. The API accepts `link_down` for `instant_recover` jobs; the
-  web UI dialog has no switch for it.
+  keep **Disconnect the network** ticked.
+- Instant recovery cannot replace the original. Use a full restore with **Replace the original guest**.
 - If the appliance or the network to the node fails during instant recovery, reads of blocks that are not
   yet in the overlay stall, and fail after 60 s. Moved data and guest writes are not affected. Resuming the
   serving is a command-line step (`nexus-pve … ir-serve`, see `docs/pve-connector.md`).
@@ -126,6 +221,52 @@ To download:
 - A prepared download is valid for **24 hours** and can be fetched only by the user who requested it.
 - For TrueNAS datasets and NFS/SMB shares there is no restore back into the dataset or share itself. Download
   the files, or restore them onto a host with an agent (next section), for example a server that mounts the share.
+
+## Find a file
+
+When you do not know which snapshot (or which guest) holds a file, open **Monitor → Find files** (or **Find files**
+on the Snapshots page).
+
+1. Choose the **Tenant** (tenant users search their own tenant only).
+2. Type a **Name or pattern**:
+   - without wildcards the name only has to contain the text (`budget` finds `budget-2026-q4.xlsx`);
+   - `*` stands for any characters, `?` for one character, `[abc]` / `[a-z]` for one of the listed characters,
+     `[!x]` for any character except those listed (`report-202?.pdf`, `*.[ch]`);
+   - without a `/` the pattern is matched against the file or folder name; with a `/` against the whole path from
+     the snapshot root (`home/*/Documents/*.docx`);
+   - upper and lower case are treated alike unless you tick **Case-sensitive**.
+3. Optionally narrow it to one **Guest** and a date range (**Snapshots from / until**), then click **Search**.
+
+![Search results for budget* in tenant acme](images/search.png)
+
+Each row is one version of a file: the same path with the same size and modification time in several snapshots is
+shown once, with the number of snapshots that hold it. Pick the snapshot in the list (default: the newest), then:
+
+- **Open** shows the folder in the file browser of that snapshot ([Browse files](#browse-files-and-download-them-tar-or-zip));
+- **Download** packs the file as a tar archive (needs the download permission);
+- **Restore…** (host snapshots) opens the [restore to a host](#restore-files-to-a-host-agents) dialog for this path.
+
+At most 500 versions are listed, and a search stops after 30 seconds. If either limit is hit, a note asks you to narrow
+the search (a longer name, one guest, a date range). The search runs as a **File search** job; every search is
+recorded in the audit log (`file.search`) with the query.
+
+What is searched:
+
+- Host (agent), TrueNAS, NFS/SMB and plugin snapshots: always. Each snapshot gets its own file index when it is
+  committed; snapshots taken before this release are indexed by the daily maintenance.
+- VM and container snapshots: only for protection groups with **Index files in VM/CT disks** switched on
+  ([05 Policies and groups](05-policies-and-groups.md#index-files-in-vmct-disks)). It costs a restore micro-VM boot
+  (VMs) or a read of the backup (containers) after every backup. Other VM/CT snapshots are counted in a note
+  ("… snapshots have no file index").
+- Snapshots that exist only offsite are not searched.
+
+Privacy: the file names never appear in plaintext in the catalog. The index of a snapshot is stored next to the
+snapshot, encrypted with the tenant key, and is deleted together with the snapshot (retention, manual delete). The
+search runs on the appliance in the scheduler, which opens the indexes with the tenant key; the web interface only
+receives the matches.
+
+> **Status:** The search and the per-snapshot index are covered by unit and scheduler tests with a temporary store.
+> Indexing of VM disks through the restore micro-VM has not run in the VM lab yet.
 
 ## Restore files to a host (agents)
 

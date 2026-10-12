@@ -3,7 +3,7 @@
   import { onMount } from 'svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
   import { t } from '../lib/i18n';
-  import type { Gfs, Policy } from '../lib/types';
+  import type { Gfs, Policy, RequireConsistency } from '../lib/types';
   import Check from '../components/Check.svelte';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
@@ -40,6 +40,7 @@
     retry: { count: 3, delay_min: 5 },
     blackout: [] as BlackoutWindow[],
     sla: '' as string | number,
+    cons: { mode: 'off', level: 'crash' } as RequireConsistency,
     exclude: '',
     exclude_regex: '',
   });
@@ -61,6 +62,7 @@
           retry: { ...(x.retry ?? { count: 3, delay_min: 5 }) },
           blackout: (x.blackout ?? []).map((w) => ({ ...w, days: [...w.days] })),
           sla: x.sla_minutes ?? '',
+          cons: { ...(x.require_consistency ?? { mode: 'off', level: 'crash' }) },
           exclude: (x.file_filters?.exclude ?? []).join('\n'),
           exclude_regex: (x.file_filters?.exclude_regex ?? []).join('\n'),
         }
@@ -82,6 +84,7 @@
       retry: { count: Number(f.retry.count) || 0, delay_min: Number(f.retry.delay_min) || 1 },
       blackout: f.blackout,
       sla_minutes: f.sla === '' || f.sla === null ? null : Number(f.sla),
+      require_consistency: f.cons,
       file_filters: { exclude: lines(f.exclude), exclude_regex: lines(f.exclude_regex) },
     };
     // A weakening change comes back as 202 {quorum_id}; act() reports it as pending.
@@ -122,6 +125,7 @@
             <th scope="col">{t.runctl.retry}</th>
             <th scope="col">{t.runctl.blackout}</th>
             <th scope="col">SLA</th>
+            <th scope="col">{t.cons.policy}</th>
             <th scope="col">{t.policies.fileFilters}</th>
             <th scope="col"><span class="visually-hidden">{t.actions}</span></th>
           </tr>
@@ -140,6 +144,12 @@
                 >{t.runctl.blackoutShort(x.blackout?.length ?? 0)}</td
               >
               <td class="nowrap">{t.runctl.slaShort(x.sla_minutes)}</td>
+              <td class="nowrap"
+                >{t.cons.short(
+                  x.require_consistency?.mode ?? 'off',
+                  t.cons.levels[x.require_consistency?.level ?? 'crash'],
+                )}</td
+              >
               <td class="mono" title={[...(x.file_filters?.exclude ?? []), ...(x.file_filters?.exclude_regex ?? [])].join('  ')}
                 >{(x.file_filters?.exclude?.length ?? 0) + (x.file_filters?.exclude_regex?.length ?? 0) || '—'}</td
               >
@@ -202,6 +212,24 @@
       <p class="hint">{t.runctl.retryHint}</p>
     </fieldset>
     <BlackoutEditor bind:windows={f.blackout} />
+    <fieldset class="field">
+      <legend>{t.cons.policy}</legend>
+      <div class="form-grid">
+        <div class="field">
+          <label for="p-cmode">{t.cons.mode}</label>
+          <select id="p-cmode" bind:value={f.cons.mode}>
+            {#each ['off', 'warn', 'fail'] as m (m)}<option value={m}>{t.cons.modes[m]}</option>{/each}
+          </select>
+        </div>
+        <div class="field">
+          <label for="p-clevel">{t.cons.level}</label>
+          <select id="p-clevel" bind:value={f.cons.level} disabled={f.cons.mode === 'off'}>
+            {#each ['application', 'crash'] as l (l)}<option value={l}>{t.cons.levelOpts[l]}</option>{/each}
+          </select>
+        </div>
+      </div>
+      <p class="hint">{t.cons.policyHint}</p>
+    </fieldset>
     <fieldset class="field">
       <legend>{t.policies.fileFilters}</legend>
       <p class="hint">{t.policies.fileFiltersHint}</p>

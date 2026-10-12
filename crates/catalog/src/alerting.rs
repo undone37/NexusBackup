@@ -37,6 +37,7 @@ const HINTS: &[(&str, &str)] = &[
     ("gc_confirm", "A garbage collection would delete an unusually large amount of data and approvals are disabled. Find out why, then confirm or leave it on the Approvals page."),
     ("config", "A schedule or setting is invalid. Correct it on the named group or replication source."),
     ("backup_inconsistent", "The backup is not point-in-time consistent. Enable snapshots on the source (NAS, LVM, ZFS, btrfs or plugin quiescing) or back it up while it is idle."),
+    ("consistency", "A snapshot is less consistent than the policy requires. Enable the QEMU guest agent (VMs), hooks or VSS (agents), or snapshots on the source; resolves with the next snapshot that meets the policy."),
     ("replication_lag", "Replication from the primary is behind. Check the network path to the primary and the replica_sync job logs. Resolves after the next successful sync."),
     ("replication_verify", "Replicated data failed verification and was not imported. Check the primary's store and run the sync again."),
     ("replication_keys", "The tenant keys on this secondary do not match the primary. Re-export the keys on the primary (needs approval)."),

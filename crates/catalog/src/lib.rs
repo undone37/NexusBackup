@@ -407,8 +407,27 @@ CREATE TABLE legal_holds (
 CREATE UNIQUE INDEX legal_holds_open ON legal_holds(tenant, source, time) WHERE state IN ('active','advisory');
 CREATE INDEX legal_holds_snapshot ON legal_holds(tenant, source, time);
 "#;
+/// v19 (Phase 15g, file index, docs/file-index.md): `groups.index_files` — after
+/// each backup of the group, the files in its VM/CT disks are listed (restore
+/// micro-VM / container tar) into the snapshot's sealed name index, so the file
+/// search covers them. File-tree snapshots are always indexed. Purely additive.
+const SCHEMA_V19: &str = "ALTER TABLE groups ADD COLUMN index_files INTEGER NOT NULL DEFAULT 0;";
 
-/// v19 (Phase 15e/15f, disk/file selection and agents, docs/control-plane.md):
+/// v20 (Phase 15d, consistency, docs/control-plane.md "Consistency"):
+/// `snapshots.consistency` (`application` = quiesced: guest-agent freeze, VSS
+/// writers, hooks, or the guest was stopped; `crash` = point-in-time snapshot
+/// without quiesce; `inconsistent` = read live; `unknown`; NULL = before v19 /
+/// not recorded, e.g. replicated or offsite-only rows). Set by the scheduler from
+/// the backup job's log. `policies.require_consistency` (JSON
+/// `{"mode": "off"|"warn"|"fail", "level": "application"|"crash"}`). Purely
+/// additive: the previous release skips both columns.
+const SCHEMA_V20: &str = r#"
+ALTER TABLE snapshots ADD COLUMN consistency TEXT
+  CHECK (consistency IN ('application','crash','inconsistent','unknown'));
+ALTER TABLE policies ADD COLUMN require_consistency TEXT NOT NULL DEFAULT '{"mode":"off","level":"crash"}';
+"#;
+
+/// v21 (Phase 15e/15f, disk/file selection and agents, docs/control-plane.md):
 /// `groups.exclude_disks` (PVE: `{"*": ["scsi1"], "<vmid>": ["virtio2"]}`, disk
 /// keys not backed up), `groups.exclude_disks_mode` (`placeholder`: a restore
 /// recreates them empty with their size and config; `omit`: left out of the
@@ -420,7 +439,7 @@ CREATE INDEX legal_holds_snapshot ON legal_holds(tenant, source, time);
 /// confirmed: sessions accept either), `agents.limits` (`{bwlimit, nice}`, sent
 /// with every backup). Purely additive: the previous release skips it and never
 /// reads the columns (excluded disks are backed up again, guests run one by one).
-const SCHEMA_V19: &str = r#"
+const SCHEMA_V21: &str = r#"
 ALTER TABLE groups ADD COLUMN exclude_disks TEXT NOT NULL DEFAULT '{}';
 ALTER TABLE groups ADD COLUMN exclude_disks_mode TEXT NOT NULL DEFAULT 'placeholder'
   CHECK (exclude_disks_mode IN ('placeholder','omit'));
@@ -435,6 +454,7 @@ ALTER TABLE agents ADD COLUMN limits TEXT NOT NULL DEFAULT '{}';
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
+    SCHEMA_V20, SCHEMA_V21,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1160,6 +1180,45 @@ mod tests {
         assert_eq!(n, 3);
     }
 
+    /// v19 (file index flag) on top of the previous catalog: existing groups do
+    /// not index VM/CT disks; the previous release still inserts groups.
+    #[test]
+    fn migration_v19_index_files() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V19).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO tenants (name) VALUES ('acme');
+                 INSERT INTO sources (id, tenant, name, kind, config) VALUES (1, 'acme', 'pve', 'pve', '{}');
+                 INSERT INTO policies (id, name, schedule, gfs) VALUES (1, 'p', 'daily 01:00', '{}');
+                 INSERT INTO groups (tenant, source_id, policy_id, name, guests) VALUES ('acme', 1, 1, 'g', '[100]');",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let on: bool = conn
+                .query_row("SELECT index_files FROM groups", [], |r| r.get(0))
+                .unwrap();
+            assert!(!on);
+            conn.execute("UPDATE groups SET index_files = 1", []).unwrap();
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        old.execute(
+            "INSERT INTO groups (tenant, source_id, policy_id, name, guests) VALUES ('acme', 1, 1, 'h', '[101]')",
+            [],
+        )
+        .unwrap();
+    }
+
     /// v11 (backup stats, tenant quotas) on top of the previous catalog: existing
     /// tenants have no quota, stats have one row per snapshot, and the previous
     /// release still reads and writes tenants afterwards.
@@ -1201,15 +1260,15 @@ mod tests {
         old.execute("INSERT INTO tenants (name) VALUES ('beta')", []).unwrap();
     }
 
-    /// v19 (disk/file selection, agents) on top of the previous catalog: groups
+    /// v21 (disk/file selection, agents) on top of the previous catalog: groups
     /// exclude no disks and run one guest at a time, policies have no global file
     /// filters, agents have no limits and an unknown certificate validity. The
     /// previous release still reads and writes groups, policies and agents.
     #[test]
-    fn migration_v19_selection_agents() {
+    fn migration_v21_selection_agents() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.db");
-        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V19).unwrap();
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V21).unwrap();
         {
             let c = Connection::open(&p).unwrap();
             for (i, m) in MIGRATIONS[..before].iter().enumerate() {
@@ -1484,6 +1543,52 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM api_tokens", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0, "tokens follow their user");
+    }
+
+    /// v20 (consistency) on top of the previous catalog: existing snapshots have
+    /// no level (NULL), policies require nothing; the level is checked; the
+    /// previous release still writes both tables.
+    #[test]
+    fn migration_v20_consistency() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V20).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO policies (id, name, schedule, gfs) VALUES (1, 'p', 'daily 22:00', '{}');
+                 INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('t', 'vm-100', 1, 1, 0);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+            assert_eq!(v, MIGRATIONS.len() as i64);
+            let lvl: Option<String> = conn
+                .query_row("SELECT consistency FROM snapshots", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(lvl, None);
+            let req: String = conn
+                .query_row("SELECT require_consistency FROM policies", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(req, r#"{"mode":"off","level":"crash"}"#);
+            conn.execute("UPDATE snapshots SET consistency = 'application'", [])
+                .unwrap();
+            assert!(conn.execute("UPDATE snapshots SET consistency = 'app'", []).is_err());
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        old.execute_batch(
+            "INSERT INTO policies (name, schedule, gfs) VALUES ('q', 'hourly 5', '{}');
+             INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('t', 'vm-100', 2, 1, 0);",
+        )
+        .unwrap();
     }
 
     /// A fresh catalog runs every migration: all source kinds and the

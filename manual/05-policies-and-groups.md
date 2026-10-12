@@ -23,6 +23,7 @@ Click **New policy** (or **Edit** on an existing one) and fill in:
 | **Retries** | how often a failed backup is retried (0–10, default 3) and the minutes between attempts (default 5) |
 | **Run-time SLA (minutes)** | optional: raise an `sla_missed` warning when a backup of a group runs longer |
 | **Blackout windows** | times in which no scheduled backups start, optionally cancelling running ones |
+| **Required consistency** | optional: warn or fail when a snapshot is less consistent than a minimum level (see [Required consistency](#required-consistency)) |
 | **Global file excludes** | glob patterns and regular expressions excluded from **every** agent and NFS/SMB source of the policy's groups, on top of each source's own excludes (see [File selection](04-sources.md#file-selection-include-paths-regex-excludes-nested-mounts)) |
 
 ![Editing a policy: lowering a retention value needs approval](images/policy-edit.png)
@@ -32,11 +33,12 @@ default 14 daily, 4 weekly, 6 monthly, 2 yearly.
 
 Rules:
 
-- **Lowering** any retention value, switching **Copy offsite** off, **adding a blackout window** or **adding a
-  global file exclude** weakens protection. With approvals enabled the change becomes an approval request
-  ("Pending approval: request #N …") and takes effect only after another administrator or security officer
-  approves it. Raising values, removing blackout windows or global excludes and changing the schedule, retries or
-  SLA take effect immediately.
+- **Lowering** any retention value, switching **Copy offsite** off, **adding a blackout window**, **relaxing the
+  required consistency** (a milder action, or a lower minimum level) or **adding a global file exclude** weakens
+  protection. With approvals enabled the change becomes an approval request ("Pending approval: request #N …") and
+  takes effect only after another administrator or security officer approves it. Raising values, removing blackout
+  windows or global excludes, a stricter consistency requirement and changing the schedule, retries or SLA take
+  effect immediately.
 - Lowering retention never shortens existing retention locks. Snapshots that are locked stay until their lock
   expires, even if the new policy would no longer keep them.
 - Deleting a policy needs approval (when approvals are enabled).
@@ -147,6 +149,19 @@ Notes:
   `inventory_refresh` warning is raised (once while it is open).
 - Microsoft 365 tags by Entra group (`group:<name>`) are not available yet.
 
+### Index files in VM/CT disks
+
+Files of host, TrueNAS, NFS/SMB and plugin snapshots are always findable under **Monitor → Find files**
+([06 Restores](06-restores.md#find-a-file)). The files inside VM and container disks are not, unless you switch
+it on per group: open **Edit** on a Proxmox VE group and tick **Index files in VM/CT disks (boots the restore
+micro-VM after every backup)**. The list of groups shows a **File index** label for such groups.
+
+After each backup of the group, the appliance queues a **File index** job per VM or container snapshot. For a VM it
+starts the restore micro-VM, mounts the guest file systems read-only and lists them; for a container it reads the
+stored tar stream. The file list is sealed with the tenant key and stored next to the snapshot. Costs: a micro-VM boot
+(a few seconds with KVM) plus the walk over all files for every VM snapshot, and a full read of the container's
+backup for every CT snapshot, so the index job can take minutes for large guests. Only snapshots taken while the
+flag is on are indexed. Turning it on or off is recorded in the audit log (`group.index_files`).
 ### Excluded disks and parallel guests (Proxmox VE)
 
 A Proxmox VE group has two more settings in its dialog:
@@ -251,6 +266,26 @@ Adding a window needs approval when approvals are enabled (it reduces protection
 
 With **Run-time SLA (minutes)** set, a group backup that is still running after that time raises one
 `sla_missed` warning per job (see [11 Alerts and monitoring](11-alerts-and-monitoring.md)). The job keeps running.
+
+### Required consistency
+
+Every snapshot records how consistent it is: **application**, **crash**, **inconsistent** or **unknown** (see
+[06 Restores](06-restores.md#consistency)). Under **Required consistency** a policy sets:
+
+- **If a snapshot falls short**: **Do nothing** (default), **Warn (alert)** or **Fail the job (and warn)**.
+- **Minimum level**: **Application-consistent** or **Crash-consistent (point in time)**. **inconsistent** and
+  **unknown** never meet a minimum.
+
+With **Warn**, a snapshot below the minimum raises one `consistency` warning per guest (alert key
+`consistency:<tenant>/<guest>`). It resolves by itself with the next snapshot of that guest that meets the minimum.
+With **Fail**, the backup job also ends **failed**: the snapshot is kept (it is still a restore point), and the job is
+retried like any failed backup, which helps when, say, the guest agent was not running yet.
+The requirement applies to backups of the policy's groups (scheduled, **Back up now** and retries). A backup of a
+single VM through the API outside a group is not checked.
+
+Typical settings: **Warn** at **Application-consistent** for database servers (finds VMs whose guest agent stopped
+working), **Fail** at **Crash-consistent** for file servers backed up by an agent (finds hosts read without a
+snapshot).
 
 ### Pausing a group
 

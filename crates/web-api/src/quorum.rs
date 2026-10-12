@@ -275,7 +275,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         "policy.update" => {
             changed(c.execute(
                 "UPDATE policies SET name = ?2, schedule = ?3, gfs = ?4, offsite = ?5, retry = ?6, blackout = ?7,
-             sla_minutes = ?8 WHERE id = ?1",
+             sla_minutes = ?8, require_consistency = ?9 WHERE id = ?1",
                 params![
                 int(p, "id")?,
                 p["name"].as_str(),
@@ -284,7 +284,10 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
                 p["offsite"].as_bool().unwrap_or(true),
                 p.get("retry").map_or_else(|| json!(catalog::schedule::Retry::default()), Clone::clone).to_string(),
                 p.get("blackout").map_or_else(|| json!([]), Clone::clone).to_string(),
-                p["sla_minutes"].as_u64()
+                p["sla_minutes"].as_u64(),
+                // requests made before v19 carry none: off
+                p.get("require_consistency")
+                    .map_or_else(|| r#"{"mode":"off","level":"crash"}"#.to_owned(), |v| v.to_string())
             ],
             )?)?;
             c.execute(

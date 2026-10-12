@@ -199,6 +199,12 @@ impl Cluster {
             // ponytail: snapshot is kept (bitmap already committed); alerting comes with the scheduler
             eprintln!("warning: vzdump task for VM {vmid} ended with {exit}; snapshot kept");
         }
+        let log = self.api.task_log(&node, &upid).unwrap_or_default();
+        let level = crate::consistency::vm_level(&log);
+        println!(
+            "{}",
+            crate::consistency::line(&source_name(vmid), manifest.0.time, level)
+        );
         Ok(manifest)
     }
 
@@ -268,8 +274,10 @@ impl Cluster {
         Ok((store.commit_snapshot(&source, time, &refs)?, read))
     }
 
-    /// Full restore of snapshot `vm-<vmid>/<time>` as VM `target` on `node`. PVE pulls
-    /// each disk through `qemu-nbd` on the node; we serve it over `ssh restore-serve`.
+    /// Full restore of snapshot `vm-<vmid>/<time>` as VM `target` on `node` with
+    /// the options of `crate::restore`. PVE pulls each disk through `qemu-nbd` on
+    /// the node; we serve it over `ssh restore-serve`.
+    #[allow(clippy::too_many_arguments)]
     pub fn restore_vm(
         &self,
         store: &Store,
@@ -278,21 +286,51 @@ impl Cluster {
         node: &str,
         target: u32,
         target_storage: &str,
-    ) -> Result<String> {
+        opts: &crate::restore::RestoreOpts,
+    ) -> Result<crate::restore::Restored> {
         let m = store.load_manifest(&source_name(vmid), time)?;
-        let excluded = read_excluded(store, &m)?;
+        let conf = read_config(store, &m, "qemu-server.conf")?.unwrap_or_default();
         let ssh = self.ssh(node)?;
         let archive = format!("nexus-{vmid}-{time}");
         let volid = format!("{}:backup/{archive}", self.storage);
-        let upid = self.api.start_restore(node, target, &volid, target_storage)?;
+        let name = crate::restore::conf_value(&conf, "name");
+        let stamp = crate::restore::stamp(crate::restore::unix_now());
+        crate::restore::run(
+            self,
+            "qemu",
+            node,
+            target,
+            vmid,
+            &volid,
+            target_storage,
+            name.as_deref(),
+            opts,
+            &stamp,
+            |params| {
+                let upid = self.api.start_restore(node, "qemu", params)?;
+                self.serve_restore(store, &m, ssh, node, &archive, &upid)
+            },
+        )
+    }
+
+    fn serve_restore(
+        &self,
+        store: &Store,
+        m: &Manifest,
+        ssh: &SshNode,
+        node: &str,
+        archive: &str,
+        upid: &str,
+    ) -> Result<()> {
+        let excluded = read_excluded(store, m)?;
         let mut served = std::collections::HashSet::new();
         loop {
-            if let Some(exit) = self.api.task_status(node, &upid)? {
+            if let Some(exit) = self.api.task_status(node, upid)? {
                 if exit != "OK" {
-                    let log = self.api.task_log(node, &upid).unwrap_or_default();
+                    let log = self.api.task_log(node, upid).unwrap_or_default();
                     bail!("restore task ended with {exit}: {}", log.join("\n"));
                 }
-                return Ok(exit);
+                return Ok(());
             }
             let Ok(out) = ssh.run(&format!("restore-job {archive}"), None) else {
                 std::thread::sleep(Duration::from_secs(1));
@@ -314,15 +352,15 @@ impl Cluster {
                     .and_then(|x| x.placeholder(&device))
                     .with_context(|| format!("snapshot has no device {device}"))?;
                 eprintln!("{device} was excluded from the backup: restored empty ({size} bytes)");
-                serve(ssh, &archive, &device, size, |_, buf| {
+                serve(ssh, archive, &device, size, |_, buf| {
                     buf.fill(0);
                     Ok(())
                 })
                 .with_context(|| format!("serve {device}"))?;
                 continue;
             }
-            let idx = store.load_index(&m, &device)?;
-            serve_device(store, ssh, &archive, &device, &idx).with_context(|| format!("serve {device}"))?;
+            let idx = store.load_index(m, &device)?;
+            serve_device(store, ssh, archive, &device, &idx).with_context(|| format!("serve {device}"))?;
         }
     }
 

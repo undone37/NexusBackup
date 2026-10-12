@@ -245,11 +245,14 @@
       disksMode: x?.exclude_disks_mode ?? 'placeholder',
       parallel: x?.parallel_guests ?? 1,
     };
+    indexFiles = !!x?.index_files;
     tagInput = '';
     lastSource = f.source_id;
     guestList = null;
     open = true;
   }
+  // Phase 15g: file index of VM/CT disks (pve groups only, PUT /groups/{id}/index-files)
+  let indexFiles = $state(false);
   // Another source: the selected guests/datasets belonged to the old one.
   let lastSource = 0;
   $effect(() => {
@@ -311,6 +314,9 @@
       ? await act(put(`/groups/${editing.id}`, body), t.saved)
       : await act(post('/groups', { tenant: f.tenant, ...body }), t.created);
     if (r) {
+      const id = editing?.id ?? (r.data as Partial<Group>).id;
+      if (pveSource && id && indexFiles !== !!editing?.index_files)
+        await act(put(`/groups/${id}/index-files`, { enabled: indexFiles }), indexFiles ? t.groups.indexFilesOn : t.groups.indexFilesOff);
       open = false;
       load();
     }
@@ -371,6 +377,7 @@
                   >{/if}
                 {#if isPaused(x.maintenance_until)}<span class="chip warn">{t.runctl.inMaintenance}</span>{/if}
                 {#if x.blackout_active}<span class="chip plain">{t.runctl.blackoutNow}</span>{/if}
+                {#if x.index_files}<span class="chip plain">{t.groups.indexFilesShort}</span>{/if}
                 {#if x.timezone && x.timezone !== 'UTC'}<div class="muted">{x.timezone}</div>{/if}
                 {#if diskCount(x) || (x.parallel_guests ?? 1) > 1}<div class="muted">
                     {[diskCount(x) ? t.groups.disksShort(diskCount(x)) : '', (x.parallel_guests ?? 1) > 1 ? t.groups.parallelShort(x.parallel_guests) : '']
@@ -552,6 +559,12 @@
       </div>
     {/if}
     {#if pveSource}
+      <div class="field">
+        <label class="inline-check"
+          ><input type="checkbox" bind:checked={indexFiles} aria-describedby="g-idx-hint" />{t.groups.indexFiles}</label
+        >
+        <p class="hint" id="g-idx-hint">{t.groups.indexFilesHint}</p>
+      </div>
       <fieldset class="field">
         <legend>{t.groups.disks}</legend>
         <div class="field">

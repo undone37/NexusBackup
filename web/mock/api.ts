@@ -167,6 +167,8 @@ interface MockGroup {
   /** Phase 13b */
   timezone?: string;
   paused_until?: number | null;
+  /** Phase 15g: index the files of VM/CT disks after each backup */
+  index_files?: boolean;
   /** Phase 15e/f */
   exclude_disks?: Record<string, string[]>;
   exclude_disks_mode?: 'placeholder' | 'omit';
@@ -198,6 +200,7 @@ const db = {
     retry?: { count: number; delay_min: number };
     blackout?: BlackoutWindow[];
     sla_minutes?: number | null;
+    require_consistency?: { mode: string; level: string };
     file_filters?: { exclude: string[]; exclude_regex: string[] };
   }[],
   groups: [] as MockGroup[],
@@ -369,11 +372,29 @@ function planFor(kind: string, p: Json): string[] {
       return [`mounting ${src} @ ${p.time} read-only in restore micro-VM`, `listing ${p.path}`, 'done'];
     case 'files_get':
       return [`mounting ${src} @ ${p.time}`, `packing ${(p.paths ?? []).length} path(s) as ${p.format}`, 'archive ready'];
+    case 'restore':
+    case 'restore_ct': {
+      const ct = kind === 'restore_ct';
+      const vmid = String(src).slice(3);
+      const name = p.name ?? `${p.name_prefix ?? ''}${ct ? 'ct' : 'vm'}${vmid}${p.name_prefix ? '' : '-restore'}`;
+      return [
+        `restoring ${src} @ ${p.time} as ${ct ? 'CT' : 'VM'} ${p.target} (${name}) on ${p.node}, storage ${p.storage}${p.pool ? `, pool ${p.pool}` : ''}`,
+        ct ? 'streaming the container archive' : 'serving disks over NBD: drive-scsi0',
+        `restored ${ct ? 'lxc' : 'qemu'} ${p.target} (${name})`,
+        ...(p.link_down ? [`NICs of ${p.target}: link_down=1`] : []),
+        ...(p.replace
+          ? [
+              `original ${ct ? 'lxc' : 'qemu'} ${vmid} stopped, renamed ${ct ? 'ct' : 'vm'}${vmid}-replaced-202610122130, onboot 0${p.keep_original_links ? '' : ', NICs link_down'}; ${p.target} is now ${ct ? 'ct' : 'vm'}${vmid}`,
+            ]
+          : []),
+        ...(p.start || p.replace ? [`${p.target} started`] : []),
+      ];
+    }
     case 'instant_recover':
       return [
         `exporting ${src} @ ${p.time} via NBD over SSH to ${p.node}`,
-        `creating qcow2 overlay, VM ${p.target}`,
-        'VM started from backup',
+        `creating qcow2 overlay, VM ${p.target}${p.link_down ? ' (NICs link_down)' : ''}`,
+        p.start === false ? 'VM created switched off; moving disks offline' : 'VM started from backup',
         `live disk move to ${p.storage}: 25%`,
         `live disk move to ${p.storage}: 100%`,
         'instant recovery complete',
@@ -459,6 +480,12 @@ function tick() {
               ? resolveGuests(g!).map((d) => `nas-${gsrc.id}-${String(d).replaceAll('/', '.')}`)
               : (j.params.vmid ? [j.params.vmid] : j.params.agent_id ? [j.params.agent_id] : g ? resolveGuests(g) : []).map(guestName);
         for (const n of names) db.snapshots.push(snap(j.tenant, n, t, 64 << 30, true, false, null));
+        // Phase 15g: groups with index_files list the guests' file systems after the backup
+        if (g?.index_files && gsrc?.kind === 'pve')
+          for (const n of names) {
+            const x = addJob('file_index', j.tenant, { source: n, time: t, source_id: gsrc.id }, 'scheduler');
+            x.plan = [`booting the restore micro-VM for ${n} @ ${t}`, 'walking the guest file systems', 'file index sealed and written'];
+          }
         for (const a of db.agents) if (names.includes(`host-${a.id}`)) a.last_seen = t;
       }
     }
@@ -590,6 +617,10 @@ function hostDir(path: string, t: number): Json[] {
 
 const guestName = (g: number | string) =>
   typeof g === 'string' ? `host-${g}` : g >= 200 && g < 300 ? `ct-${g}` : `vm-${g}`;
+/** Phase 15d demo levels: VMs quiesced by the guest agent (vm-101: agent not running), containers and
+ * NAS snapshots crash-consistent, agents and plugins application-consistent (hooks / VSS / dumps). */
+const levelOf = (source: string) =>
+  source === 'vm-101' || /^(ct|nas|share)-/.test(source) ? 'crash' : /^(vm|host|plugin)-/.test(source) ? 'application' : 'unknown';
 const snap = (tenant: string, source: string, time: number, size: number, local: boolean, offsite: boolean, verified: number | null) => ({
   tenant,
   source,
@@ -599,6 +630,7 @@ const snap = (tenant: string, source: string, time: number, size: number, local:
   offsite,
   lock_until: time + 14 * 86400,
   verified,
+  consistency: levelOf(source),
 });
 
 // ---------------------------------------------------------------- plugins (docs/plugin-system.md)
@@ -966,6 +998,7 @@ function seed() {
   // Phase 15e/f: the scratch disk of the ERP database is not backed up, two guests at once
   const gProd = grp('initech', sInitech.id, gold.id, 'production', [100, 101, 200], {
     exclude_disks: { '101': ['scsi2'] },
+    index_files: true,
     parallel_guests: 2,
   });
   // auto-protect (Phase 13c): every guest of the PVE pool "dev" except the build runner
@@ -1205,6 +1238,7 @@ function runControl(b: Json): {
   retry: { count: number; delay_min: number };
   blackout: BlackoutWindow[];
   sla_minutes: number | null;
+  require_consistency: { mode: string; level: string };
   file_filters: { exclude: string[]; exclude_regex: string[] };
 } {
   if (!parseSchedule(String(b.schedule ?? ''))) throw new HttpError(400, `schedule: bad schedule ${JSON.stringify(b.schedule)}`);
@@ -1215,6 +1249,10 @@ function runControl(b: Json): {
   if (blackout.length > 20 || !blackout.every(validWindow)) throw new HttpError(400, 'blackout: from/to must be different HH:MM times');
   const sla = b.sla_minutes ?? null;
   if (sla !== null && !(sla >= 1 && sla <= 10080)) throw new HttpError(400, 'sla_minutes: 1..=10080');
+  // Phase 15d
+  const rc = { mode: 'off', level: 'crash', ...(b.require_consistency ?? {}) };
+  if (!['off', 'warn', 'fail'].includes(rc.mode) || !['application', 'crash'].includes(rc.level))
+    throw new HttpError(400, 'require_consistency: mode off|warn|fail, level application|crash');
   // Phase 15e: global file excludes
   const ff = b.file_filters ?? {};
   for (const k of Object.keys(ff)) if (!['exclude', 'exclude_regex'].includes(k)) throw new HttpError(400, `file_filters: unknown field "${k}"`);
@@ -1223,7 +1261,7 @@ function runControl(b: Json): {
     return (v ?? []) as string[];
   };
   const file_filters = { exclude: list(ff.exclude, 'file_filters.exclude'), exclude_regex: list(ff.exclude_regex, 'file_filters.exclude_regex') };
-  return { retry, blackout, sla_minutes: sla, file_filters };
+  return { retry, blackout, sla_minutes: sla, require_consistency: { mode: rc.mode, level: rc.level }, file_filters };
 }
 
 function checkTz(tz: unknown): string {
@@ -1244,6 +1282,7 @@ function groupState(g: (typeof db.groups)[number]) {
     ...g,
     timezone: g.timezone ?? 'UTC',
     paused_until: g.paused_until ?? null,
+    index_files: g.index_files ?? false,
     maintenance_until: src?.maintenance_until ?? null,
     blackout_active: blackoutActive(pol?.blackout ?? [], g.timezone ?? 'UTC', now()),
     resolved_guests: resolveGuests(g),
@@ -1273,10 +1312,12 @@ function backupGuests(p: Json) {
 
 /** Demo state: retries, blackout window, SLA, a paused group, a source in maintenance, a retry chain. */
 function seedRunControl(t: number) {
-  for (const p of db.policies) Object.assign(p, { retry: { count: 3, delay_min: 5 }, blackout: [], sla_minutes: null, ...p });
+  for (const p of db.policies)
+    Object.assign(p, { retry: { count: 3, delay_min: 5 }, blackout: [], sla_minutes: null, require_consistency: { mode: 'off', level: 'crash' }, ...p });
   const pol = (n: string) => db.policies.find((p) => p.name === n)!;
   pol('gold').retry = { count: 2, delay_min: 10 };
   pol('gold').sla_minutes = 240;
+  pol('gold').require_consistency = { mode: 'warn', level: 'application' };
   pol('bronze').blackout = [{ days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], from: '07:00', to: '19:00', abort: true }];
   pol('databases-hourly').schedule = 'every 2h at 15';
   pol('databases-hourly').sla_minutes = 20;
@@ -1438,7 +1479,11 @@ const weakens = (a: Json, b: Json) =>
   ) ||
   (a.offsite && !b.offsite) ||
   // Phase 13b: a new blackout window means fewer runs
-  (b.blackout ?? []).some((w: Json) => !(a.blackout ?? []).some((x: Json) => JSON.stringify(x) === JSON.stringify(w)));
+  (b.blackout ?? []).some((w: Json) => !(a.blackout ?? []).some((x: Json) => JSON.stringify(x) === JSON.stringify(w))) ||
+  // Phase 15d: a relaxed consistency requirement
+  (b.require_consistency &&
+    (['off', 'warn', 'fail'].indexOf(b.require_consistency.mode) < ['off', 'warn', 'fail'].indexOf(a.require_consistency?.mode ?? 'off') ||
+      (b.require_consistency.mode !== 'off' && a.require_consistency?.level === 'application' && b.require_consistency.level === 'crash')));
 // web-api refuses inline secrets in opaque JSON blobs (secrets live in files).
 function noInlineSecrets(v: unknown) {
   if (v && typeof v === 'object')
@@ -1547,6 +1592,11 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'ssh_key.rotate':
       rotateSshKey(p.name);
       break;
+    case 'restore.replace': {
+      // the scheduler queues the restore job with replace (crates/scheduler/src/restore.rs)
+      addJob(p.kind, p.tenant, { ...p.params, replace: true, quorum_id: qid, requested_by: by }, 'scheduler');
+      break;
+    }
     case 'snapshot.hold_release': {
       const h = find(db.holds, (x) => x.id === p.hold_id && x.state === 'active', 'active hold');
       Object.assign(h, { state: 'released', released_by: by, approved_by: decider || by, released_at: now() });
@@ -1964,6 +2014,16 @@ on('PUT', '/groups/:id', async (c, [id]) => {
   Object.assign(g, next);
   await audit(u.name, 'group.update', `group/${g.id}`, g);
   return [200, g];
+});
+on('PUT', '/groups/:id/index-files', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const g = find(db.groups, (x) => x.id === Number(id), 'group');
+  const src = db.sources.find((s) => s.id === g.source_id);
+  if (src?.kind !== 'pve') throw new HttpError(400, 'index_files applies to Proxmox VE groups (VM/CT disks); other snapshots are always indexed');
+  if (typeof c.body?.enabled !== 'boolean') throw new HttpError(400, 'enabled: true or false');
+  g.index_files = c.body.enabled;
+  await audit(u.name, 'group.index_files', `group/${g.id}`, { tenant: g.tenant, index_files: g.index_files });
+  return [200, { id: g.id, index_files: g.index_files }];
 });
 on('DELETE', '/groups/:id', (c, [id]) => {
   const g = find(db.groups, (x) => x.id === Number(id), 'group');
@@ -2625,7 +2685,22 @@ function pluginSnapshotKind(tenant: string, name: string) {
   return pk.kind;
 }
 const OVERWRITE = ['never', 'if_older', 'always'];
+const PVE_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,62}$/;
+/** Phase 15a restore options, as web-api `jobs.rs` checks them. */
+function checkRestore(kind: string, tenant: string, p: Json) {
+  const want = kind === 'restore_ct' ? 'ct-' : 'vm-';
+  if (!String(p.source ?? '').startsWith(want)) throw new HttpError(400, `source: ${kind} needs a ${want}<vmid> snapshot`);
+  if (!(p.target >= 100 && p.target <= 999999999)) throw new HttpError(400, 'vmid: must be within 100..=999999999');
+  if (p.name !== undefined && p.name_prefix !== undefined) throw new HttpError(400, 'name, name_prefix: give at most one');
+  for (const k of ['name', 'name_prefix', 'pool'])
+    if (p[k] !== undefined && !PVE_NAME.test(String(p[k]))) throw new HttpError(400, `${k}: must match [A-Za-z0-9._-]{1,63} without a leading dot or dash`);
+  if (p.replace && kind === 'instant_recover') throw new HttpError(400, 'replace: only a full restore can replace the original');
+  if (p.replace && String(p.source).slice(3) === String(p.target)) throw new HttpError(400, 'target: replace restores to a new VMID');
+  if (!p.replace && p.keep_original_links !== undefined) throw new HttpError(400, 'keep_original_links: only with replace');
+  if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time)) throw new HttpError(404, 'no such snapshot');
+}
 function checkJob(u: User, kind: string, tenant: string, p: Json) {
+  if (kind === 'restore' || kind === 'restore_ct' || kind === 'instant_recover') checkRestore(kind, tenant, p);
   if (kind === 'agent_enroll') throw new HttpError(400, 'use POST /agents/{id}/enroll');
   if (kind === 'inventory') {
     const src = find(db.sources, (s) => s.id === Number(p.source_id) && s.tenant === tenant, 'source in tenant');
@@ -2686,6 +2761,12 @@ on('POST', '/jobs', async (c) => {
   checkJob(u, kind, tenant, params);
   if (kind === 'files_get' && !canDownload(u)) throw new HttpError(403, 'this account may not download files');
   if (kind === 'backup') backupGuests(params);
+  if (params.replace) {
+    // Phase 15a: an approval request (`restore.replace`), never a plain job; not for tenant users
+    need(u, 'admin', 'operator');
+    const { replace: _r, ...rest } = params;
+    return quorum(u, 'restore.replace', { tenant, kind, params: rest });
+  }
   // Like web-api: files_get gets a server-generated download token, returned in the 202 body.
   const p = kind === 'files_get' ? { ...params, download_token: rand(32) } : params;
   const j = addJob(kind, tenant, p, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
@@ -2694,11 +2775,38 @@ on('POST', '/jobs', async (c) => {
   await audit(u.name, 'job.create', `job/${j.id}`, { kind, tenant, params: p });
   return [202, p.download_token ? { id: j.id, download_token: p.download_token } : { id: j.id }];
 });
+// Phase 15a: several guests in one request, one job each (web-api `restores.rs`)
+on('POST', '/restores', async (c) => {
+  const u = need(c.user, 'admin', 'operator', 'tenant_user');
+  const b = c.body;
+  if (u.tenant && u.tenant !== b.tenant) throw new HttpError(403, 'forbidden');
+  find(db.tenants, (t) => t.name === b.tenant, 'tenant');
+  const items: Json[] = b.items ?? [];
+  if (!items.length || items.length > 100) throw new HttpError(400, 'items: 1..=100 guests');
+  if (new Set(items.map((i) => i.source)).size !== items.length) throw new HttpError(400, 'items: one snapshot per guest');
+  const jobs = items.map((it, i) => {
+    const kind = String(it.source).startsWith('ct-') ? 'restore_ct' : 'restore';
+    const p: Json = { source: it.source, time: it.time, node: b.node, target: Number(b.target_base) + i, storage: b.storage, start: !!b.start, link_down: !!b.link_down };
+    if (b.name_prefix) p.name_prefix = b.name_prefix;
+    if (b.pool) p.pool = b.pool;
+    try {
+      checkRestore(kind, b.tenant, p);
+    } catch (e) {
+      if (e instanceof HttpError) throw new HttpError(e.status, `${it.source}: ${e.message}`);
+      throw e;
+    }
+    return { kind, p };
+  });
+  const ids = jobs.map(({ kind, p }) => addJob(kind, b.tenant, p, u.name).id);
+  await audit(u.name, 'job.create_many', `tenant/${b.tenant}`, { ids, jobs });
+  return [202, { ids }];
+});
 on('POST', '/jobs/:id/cancel', async (c, [id]) => {
   const u = need(c.user, 'admin', 'operator');
   const j = find(db.jobs, (x) => x.id === Number(id), 'job');
   // Phase 13b: a running job gets a cancel request that the scheduler carries out
   if (j.state === 'running') {
+    if (j.params.replace) throw new HttpError(409, 'a running restore that replaces the original cannot be cancelled');
     if (j.cancel_by) throw new HttpError(409, 'cancellation already requested');
     Object.assign(j, { cancel_by: u.name, cancel_at: now() });
     await audit(u.name, 'job.cancel', `job/${j.id}`, { running: true });
@@ -2709,6 +2817,101 @@ on('POST', '/jobs/:id/cancel', async (c, [id]) => {
   j.finished = now();
   await audit(u.name, 'job.cancel', `job/${j.id}`, { running: false });
   return [200, { id: j.id, state: 'cancelled' }];
+});
+
+// ---- Phase 15g: file search across snapshots (crates/scheduler/src/search.rs, POST /search)
+/** Every entry of a snapshot's synthetic tree (listDir), paths relative without a leading slash. */
+function walkSnapshot(source: string, time: number): { path: string; kind: string; size: number; mtime: number }[] {
+  const out: { path: string; kind: string; size: number; mtime: number }[] = [];
+  const week = 7 * DAY;
+  const rec = (dir: string) => {
+    for (const e of listDir(dir, source)) {
+      const full = dir === '/' ? `/${e.name}` : `${dir}/${e.name}`;
+      // documents change weekly (several versions across snapshots), the rest stays put
+      const changing = e.kind === 'file' && /\.(pdf|docx|xlsx|odt|txt|sql)$/.test(e.name);
+      const mtime = changing ? Math.floor((time - 3600) / week) * week : Math.min(e.mtime, time - 3600);
+      const size = changing ? e.size + (Math.floor(time / week) % 7) * 1024 : e.size;
+      out.push({ path: full.slice(1), kind: e.kind, size, mtime });
+      if (e.kind === 'dir') rec(full);
+    }
+  };
+  rec('/');
+  return out;
+}
+/** Glob (* ? [abc] [a-z] [!x]) as a RegExp; no wildcard = substring. */
+function globRe(q: string, caseSensitive: boolean): RegExp {
+  const wild = /[*?[]/.test(q);
+  let re = '';
+  for (let i = 0; i < q.length; i++) {
+    const ch = q[i];
+    if (ch === '*') re += '.*';
+    else if (ch === '?') re += '.';
+    else if (ch === '[') {
+      const end = q.indexOf(']', i + 2);
+      if (end < 0) re += '\\[';
+      else {
+        let body = q.slice(i + 1, end);
+        const neg = body.startsWith('!');
+        if (neg) body = body.slice(1);
+        re += `[${neg ? '^' : ''}${body.replace(/[\\\]^]/g, '\\$&')}]`;
+        i = end;
+      }
+    } else re += ch.replace(/[.+^${}()|\\/]/g, '\\$&');
+  }
+  return new RegExp(wild ? `^${re}$` : re, caseSensitive ? '' : 'i');
+}
+/** VM/CT snapshots are indexed only when a group with index_files covers the guest. */
+function vmIndexed(tenant: string, source: string): boolean {
+  const id = Number(source.replace(/^(vm|ct)-/, ''));
+  return db.groups.some((g) => g.tenant === tenant && g.index_files && resolveGuests(g).some((x) => Number(x) === id));
+}
+function searchResult(p: Json, tenant: string) {
+  const t0 = Date.now();
+  const query = String(p.query).replace(/^\/+/, '');
+  const re = globRe(query, !!p.case_sensitive);
+  const full = query.includes('/');
+  const limit = Number(p.limit ?? 500);
+  const snaps = (db.snapshots as any[])
+    .filter((s) => s.tenant === tenant && s.local && (!p.source || s.source === p.source) && (!p.from || s.time >= p.from) && (!p.to || s.time <= p.to))
+    .sort((a, b) => b.time - a.time);
+  const groups = new Map<string, Json>();
+  let [scanned, unindexed, truncated] = [0, 0, false];
+  for (const s of snaps) {
+    if (/^(vm|ct)-/.test(s.source) && !vmIndexed(tenant, s.source)) {
+      unindexed++;
+      continue;
+    }
+    scanned++;
+    for (const e of walkSnapshot(s.source, s.time)) {
+      const name = full ? e.path : e.path.split('/').pop()!;
+      if (!re.test(name)) continue;
+      const k = `${s.source}\0${e.path}\0${e.size}\0${e.mtime}`;
+      const m = groups.get(k);
+      if (m) m.times.push(s.time);
+      else if (groups.size < limit) groups.set(k, { source: s.source, ...e, times: [s.time] });
+      else truncated = true;
+    }
+  }
+  const matches = [...groups.values()].sort((a, b) => a.path.localeCompare(b.path) || a.source.localeCompare(b.source) || b.mtime - a.mtime);
+  return { matches, scanned, unindexed, truncated, elapsed_ms: Date.now() - t0 + 412 };
+}
+on('POST', '/search', async (c) => {
+  const u = need(c.user, 'admin', 'operator', 'tenant_user');
+  const b = c.body ?? {};
+  const tenant = String(b.tenant ?? '');
+  if (u.tenant && u.tenant !== tenant) throw new HttpError(403, 'forbidden');
+  find(db.tenants, (t) => t.name === tenant, 'tenant');
+  const query = String(b.query ?? '').trim();
+  if (!query || query.length > 256) throw new HttpError(400, 'query: 1..=256 characters');
+  if (b.limit !== undefined && !(Number.isInteger(b.limit) && b.limit >= 1 && b.limit <= 2000)) throw new HttpError(400, 'limit: 1..=2000');
+  const p: Json = { query, case_sensitive: !!b.case_sensitive, limit: b.limit ?? 500 };
+  for (const k of ['source', 'from', 'to']) if (b[k] !== undefined && b[k] !== null && b[k] !== '') p[k] = b[k];
+  const j = addJob('file_search', tenant, p, u.name);
+  j.duration = 1;
+  j.plan = [`searching the file indexes of tenant ${tenant} for "${query}"`, 'done'];
+  j.result = searchResult(p, tenant);
+  await audit(u.name, 'file.search', `job/${j.id}`, { tenant, ...p });
+  return [202, { id: j.id }];
 });
 
 // quorum
@@ -3132,10 +3335,18 @@ function dashboard(u: User, days: number) {
     last_verify: verified.length ? Math.max(...verified) : null,
     verify_failed: 0,
   };
+  const newest = new Map<string, Json>();
+  for (const s of snaps.filter((x) => x.local)) {
+    const k = `${s.tenant}/${s.source}`;
+    if ((newest.get(k)?.time ?? -1) < s.time) newest.set(k, s);
+  }
+  const consistency: Record<string, number> = { application: 0, crash: 0, inconsistent: 0, unknown: 0 };
+  for (const s of newest.values()) consistency[s.consistency ?? 'unknown'] += 1;
   return {
     generated: t,
     days,
     protection: prot,
+    consistency,
     jobs: {
       success_rate: total ? +((sum.ok + sum.warning) / total).toFixed(4) : null,
       total,

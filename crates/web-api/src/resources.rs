@@ -1352,6 +1352,9 @@ pub struct PolicyReq {
     blackout: Vec<Window>,
     #[serde(default)]
     sla_minutes: Option<u32>,
+    /// Phase 15d: minimum consistency of group backups (scheduler `consistency.rs`)
+    #[serde(default)]
+    require_consistency: RequireConsistency,
     /// Phase 15e: global excludes for every file source of the policy's groups
     #[serde(default)]
     file_filters: crate::selection::FileFilters,
@@ -1359,6 +1362,46 @@ pub struct PolicyReq {
 
 fn yes() -> bool {
     true
+}
+
+/// `{"mode": "off"|"warn"|"fail", "level": "application"|"crash"}`
+#[derive(Deserialize, Serialize, Clone, PartialEq, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct RequireConsistency {
+    mode: String,
+    #[serde(default = "crash")]
+    level: String,
+}
+
+fn crash() -> String {
+    "crash".into()
+}
+
+impl Default for RequireConsistency {
+    fn default() -> Self {
+        RequireConsistency {
+            mode: "off".into(),
+            level: crash(),
+        }
+    }
+}
+
+impl RequireConsistency {
+    const MODES: [&str; 3] = ["off", "warn", "fail"];
+    fn check(&self) -> ApiResult<()> {
+        if !Self::MODES.contains(&self.mode.as_str()) {
+            return Err(ApiError::bad("require_consistency.mode: off, warn or fail"));
+        }
+        if self.level != "application" && self.level != "crash" {
+            return Err(ApiError::bad("require_consistency.level: application or crash"));
+        }
+        Ok(())
+    }
+    /// A milder mode, or a lower level while the requirement is on.
+    fn weakened_by(&self, new: &Self) -> bool {
+        let rank = |m: &str| Self::MODES.iter().position(|x| *x == m).unwrap_or(0);
+        rank(&new.mode) < rank(&self.mode) || (new.mode != "off" && self.level == "application" && new.level == "crash")
+    }
 }
 
 impl PolicyReq {
@@ -1374,22 +1417,26 @@ impl PolicyReq {
         if self.sla_minutes.is_some_and(|m| !(1..=10080).contains(&m)) {
             return Err(ApiError::bad("sla_minutes: 1..=10080"));
         }
+        self.require_consistency.check()?;
         self.file_filters.check()?;
         self.gfs.check()
     }
     /// Any GFS count lowered, offsite disabled, a blackout window added
-    /// (fewer runs: it could stop backups altogether) or a global exclude added.
+    /// (fewer runs: it could stop backups altogether), the consistency
+    /// requirement relaxed or a global exclude added.
     fn weakened_by(&self, new: &PolicyReq) -> bool {
         self.gfs.lowered_by(&new.gfs)
             || (self.offsite && !new.offsite)
             || new.blackout.iter().any(|w| !self.blackout.contains(w))
+            || self.require_consistency.weakened_by(&new.require_consistency)
             || self.file_filters.widened_by(&new.file_filters)
     }
 }
 
 fn load_policy(c: &Connection, id: i64) -> ApiResult<Option<PolicyReq>> {
     Ok(c.query_row(
-        "SELECT name, schedule, gfs, offsite, retry, blackout, sla_minutes, file_filters FROM policies WHERE id = ?1",
+        "SELECT name, schedule, gfs, offsite, retry, blackout, sla_minutes, require_consistency, file_filters \
+         FROM policies WHERE id = ?1",
         [id],
         |r| {
             Ok((
@@ -1404,15 +1451,17 @@ fn load_policy(c: &Connection, id: i64) -> ApiResult<Option<PolicyReq>> {
                     r.get::<_, String>(5)?,
                     r.get::<_, Option<u32>>(6)?,
                     r.get::<_, String>(7)?,
+                    r.get::<_, String>(8)?,
                 ),
             ))
         },
     )
     .optional()?
     .map(
-        |((name, schedule, gfs, offsite), (retry, blackout, sla_minutes, filters))| PolicyReq {
+        |((name, schedule, gfs, offsite), (retry, blackout, sla_minutes, req, filters))| PolicyReq {
             file_filters: serde_json::from_str(&filters).unwrap_or_default(),
             retry: serde_json::from_str(&retry).unwrap_or_default(),
+            require_consistency: serde_json::from_str(&req).unwrap_or_default(),
             blackout: serde_json::from_str(&blackout).unwrap_or_default(),
             sla_minutes,
             name,
@@ -1430,7 +1479,8 @@ fn load_policy(c: &Connection, id: i64) -> ApiResult<Option<PolicyReq>> {
 
 fn policy_json(id: i64, p: &PolicyReq) -> Value {
     json!({"id": id, "name": p.name, "schedule": p.schedule, "gfs": p.gfs, "offsite": p.offsite,
-           "retry": p.retry, "blackout": p.blackout, "sla_minutes": p.sla_minutes, "file_filters": p.file_filters})
+           "retry": p.retry, "blackout": p.blackout, "sla_minutes": p.sla_minutes,
+           "require_consistency": p.require_consistency, "file_filters": p.file_filters})
 }
 
 /// A policy as `policy_json` (quorum `old` snapshots compare against it).
@@ -1459,8 +1509,9 @@ pub async fn create_policy(State(st): State<St>, ctx: Ctx, J(r): J<PolicyReq>) -
     let id = {
         let c = st.cat.conn();
         c.execute(
-            "INSERT INTO policies (name, schedule, gfs, offsite, retry, blackout, sla_minutes, file_filters)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO policies (name, schedule, gfs, offsite, retry, blackout, sla_minutes, require_consistency,
+             file_filters)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 r.name,
                 r.schedule,
@@ -1469,6 +1520,7 @@ pub async fn create_policy(State(st): State<St>, ctx: Ctx, J(r): J<PolicyReq>) -
                 json!(r.retry).to_string(),
                 json!(r.blackout).to_string(),
                 r.sla_minutes,
+                json!(r.require_consistency).to_string(),
                 json!(r.file_filters).to_string()
             ],
         )?;
@@ -1509,7 +1561,7 @@ pub async fn update_policy(
     }
     st.cat.conn().execute(
         "UPDATE policies SET name = ?2, schedule = ?3, gfs = ?4, offsite = ?5, retry = ?6, blackout = ?7,
-         sla_minutes = ?8, file_filters = ?9 WHERE id = ?1",
+         sla_minutes = ?8, require_consistency = ?9, file_filters = ?10 WHERE id = ?1",
         params![
             id,
             r.name,
@@ -1519,6 +1571,7 @@ pub async fn update_policy(
             json!(r.retry).to_string(),
             json!(r.blackout).to_string(),
             r.sla_minutes,
+            json!(r.require_consistency).to_string(),
             json!(r.file_filters).to_string()
         ],
     )?;
@@ -1702,13 +1755,14 @@ fn group_row(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
         json!({"id": r.get::<_, i64>(0)?, "tenant": r.get::<_, String>(1)?, "source_id": r.get::<_, i64>(2)?,
               "policy_id": r.get::<_, i64>(3)?, "name": r.get::<_, String>(4)?, "guests": list(5)?,
               "mode": r.get::<_, String>(6)?, "selector": list(7)?, "exclude": list(8)?,
-              "timezone": r.get::<_, String>(9)?, "exclude_disks": list(10)?,
-              "exclude_disks_mode": r.get::<_, String>(11)?, "parallel_guests": r.get::<_, u32>(12)?}),
+              "timezone": r.get::<_, String>(9)?, "index_files": r.get::<_, bool>(10)?,
+              "exclude_disks": list(11)?, "exclude_disks_mode": r.get::<_, String>(12)?,
+              "parallel_guests": r.get::<_, u32>(13)?}),
     )
 }
 
 const GROUP_COLS: &str = "id, tenant, source_id, policy_id, name, guests, mode, selector, exclude, timezone, \
-                          exclude_disks, exclude_disks_mode, parallel_guests";
+                          index_files, exclude_disks, exclude_disks_mode, parallel_guests";
 
 /// A group as `group_row` (quorum `old` snapshots compare against it).
 pub fn group_value(c: &Connection, id: i64) -> ApiResult<Option<Value>> {

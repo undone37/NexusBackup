@@ -142,6 +142,24 @@ attaches the appliance's NBD export to `/dev/nbdX` with the node's own `qemu-nbd
 
 Helper additions: `restore-job <archive>`, `restore-serve <archive> <device>`; archive `^nexus-\d{1,9}-\d{1,12}$`, device `^[a-z0-9\-]{1,64}$`.
 
+### Restore options (Phase 15a)
+Step 1 also carries `name=<name>` (containers: `hostname`), `pool=<pool>`, `start=1` (only when nothing must change
+before the first boot), and for **replace original** `unique=0` + `onboot=0`; PVE applies extra parameters to the
+restored configuration (`override_conf`). After the task: `PUT /nodes/<node>/<qemu|lxc>/<vmid>/config` with every
+`netN` + `link_down=1` (option `link_down`), then `POST …/status/start`. Replace original swaps the restored guest in
+for the original (`…/status/shutdown forceStop=1 timeout=180`, `PUT …/config` name/onboot/NICs, rollback on any
+failure); see the module doc of `crates/pve/src/restore.rs`. Extra token privileges: `VM.PowerMgmt` and
+`VM.Config.Options` / `VM.Config.Network` on the original (replace), `Pool.Allocate` on `/pool/<pool>` (pool).
+
+### Consistency (Phase 15d)
+After each backup the appliance reads the vzdump task log (`GET /nodes/<node>/tasks/<upid>/log`) and classifies the
+snapshot (`crates/pve/src/consistency.rs`): `INFO: issuing guest-agent 'fs-freeze' command` + `… 'fs-thaw' command`
+without `unable to freeze guest fs` → `application`; `skipping guest filesystem freeze - …` (PVE 9) /
+`skipping guest-agent 'fs-freeze', agent configured but not running?` (PVE 8), a failed freeze or no freeze at all
+→ `crash`; `status = stopped` → `application`. Containers: `create storage snapshot 'vzdump'` (cgroup freeze +
+syncfs + storage snapshot) or `backup mode: suspend` → `crash`; stopped → `application`. The line
+`consistency <source>/<time>: <level> (<reason>)` goes to the job log.
+
 ## Container backup flow
 `backup_container` runs as the container's mapped root (e.g. uid 100000) inside a new user
 namespace, in a child forked by `PVE::LXC::Namespaces::run_in_userns` (`run_fork`). That

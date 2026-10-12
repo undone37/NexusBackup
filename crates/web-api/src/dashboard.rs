@@ -378,10 +378,30 @@ fn offsite(c: &Connection, scope: Option<&str>, days: i64, now: i64, lag_alert: 
 }
 
 /// The whole dashboard body (without `break_glass`).
+/// Consistency of each source's newest local snapshot (Phase 15d): count per level.
+fn consistency(c: &Connection, scope: Option<&str>) -> ApiResult<Value> {
+    let mut out = json!({"application": 0, "crash": 0, "inconsistent": 0, "unknown": 0});
+    let rows: Vec<(String, i64)> = c
+        .prepare(
+            "SELECT COALESCE(s.consistency, 'unknown'), COUNT(*) FROM snapshots s
+             WHERE s.local = 1 AND (?1 IS NULL OR s.tenant = ?1)
+               AND s.time = (SELECT MAX(x.time) FROM snapshots x
+                             WHERE x.tenant = s.tenant AND x.source = s.source AND x.local = 1)
+             GROUP BY 1",
+        )?
+        .query_map([scope], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    for (level, n) in rows {
+        out[level] = json!(n);
+    }
+    Ok(out)
+}
+
 pub fn compute(c: &Connection, scope: Option<&str>, days: i64, now: i64) -> ApiResult<Value> {
     Ok(json!({
         "generated": now, "days": days,
         "protection": protection(c, scope, now)?,
+        "consistency": consistency(c, scope)?,
         "jobs": jobs(c, scope, days, now)?,
         "capacity": capacity(c, scope, days, now)?,
         // same threshold as the scheduler's offsite_lag alert (48 h)

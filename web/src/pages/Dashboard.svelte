@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ConsistencyBadge from '../components/ConsistencyBadge.svelte';
   import { onMount } from 'svelte';
   import { get, errText } from '../lib/api';
   import { session } from '../lib/session.svelte';
@@ -497,6 +498,7 @@
               <th scope="col">{t.dash.local}</th>
               <th scope="col">{t.dash.offsite}</th>
               <th scope="col">{t.dash.verified}</th>
+              <th scope="col">{t.cons.column}</th>
               <th scope="col">{t.dash.status}</th>
               {#if can.backup(session.user)}<th scope="col"><span class="visually-hidden">{t.actions}</span></th>{/if}
             </tr>
@@ -526,6 +528,7 @@
                     <Check on={ver} title={ver ? `${t.dash.verified}: ${fmtTime(ver.verified)}` : ''} />
                     <span class="muted">{ver ? fmtAgo(ver.time) : ''}</span>
                   </td>
+                  <td>{#if s}<ConsistencyBadge level={s.consistency} />{/if}</td>
                   <td><span class="chip {statusCls[st]}">{st === 'paused' ? t.runctl.paused : t.dash[st]}</span></td>
                   {#if can.backup(session.user) && i === 0}
                     <td class="actions" rowspan={guestsOf(g).length}>

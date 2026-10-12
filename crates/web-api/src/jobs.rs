@@ -93,14 +93,50 @@ fn agent_name(st: &St, tenant: &str, id: &str) -> ApiResult<String> {
     n.ok_or_else(|| ApiError::bad("agent_id: no such agent in this tenant"))
 }
 
+/// Full restore / instant recovery (options: Phase 15a, `crates/pve/src/restore.rs`).
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct RestoreP {
-    source: String,
-    time: i64,
-    node: String,
-    target: u32,
-    storage: String,
+pub(crate) struct RestoreP {
+    pub source: String,
+    pub time: i64,
+    pub node: String,
+    pub target: u32,
+    pub storage: String,
+    /// name of the new guest (default `<backed-up name>-restore`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// or a prefix to the backed-up name
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_prefix: Option<String>,
+    /// PVE resource pool
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<String>,
+    /// power on afterwards (instant recovery: default on)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<bool>,
+    /// disconnect all NICs of the new guest
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_down: Option<bool>,
+    /// replace the original guest: approval `restore.replace`, never a plain job
+    #[serde(default, skip_serializing)]
+    pub replace: bool,
+    /// replace: leave the original's NICs connected
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_original_links: Option<bool>,
+}
+
+/// PVE guest / pool names (DNS-name characters, 1..=63, no leading `-` or `.`).
+fn pve_name(s: &str, what: &str) -> ApiResult<()> {
+    let ok = (1..=63).contains(&s.len())
+        && !s.starts_with(['-', '.'])
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+    if ok {
+        Ok(())
+    } else {
+        Err(ApiError::bad(format!(
+            "{what}: must match [A-Za-z0-9._-]{{1,63}} without a leading dot or dash"
+        )))
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -197,7 +233,7 @@ fn snapshot_exists(st: &St, tenant: &str, source: &str, time: i64) -> ApiResult<
 }
 
 /// Validates and canonicalises the params of a job request.
-fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiResult<Value> {
+pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiResult<Value> {
     Ok(match kind {
         "backup" => {
             crate::replication::refuse_replicated(&st.cat.conn(), tenant)?;
@@ -272,8 +308,30 @@ fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiResult<Value>
             validate::name(&r.node, "node")?;
             validate::vmid(r.target)?;
             validate::name(&r.storage, "storage")?;
+            if r.name.is_some() && r.name_prefix.is_some() {
+                return Err(ApiError::bad("name, name_prefix: give at most one"));
+            }
+            for (v, what) in [(&r.name, "name"), (&r.name_prefix, "name_prefix"), (&r.pool, "pool")] {
+                if let Some(v) = v {
+                    pve_name(v, what)?;
+                }
+            }
+            if r.replace {
+                if kind == "instant_recover" {
+                    return Err(ApiError::bad("replace: only a full restore can replace the original"));
+                }
+                if r.source[3..].parse::<u32>().ok() == Some(r.target) {
+                    return Err(ApiError::bad("target: replace restores to a new VMID"));
+                }
+            } else if r.keep_original_links.is_some() {
+                return Err(ApiError::bad("keep_original_links: only with replace"));
+            }
             snapshot_exists(st, tenant, &r.source, r.time)?;
-            json!(r)
+            let mut v = json!(r);
+            if r.replace {
+                v["replace"] = json!(true); // taken out again by create_job (approval)
+            }
+            v
         }
         "files_list" => {
             let f: FilesListP = parse(p)?;
@@ -414,6 +472,9 @@ pub async fn create_job(State(st): State<St>, ctx: Ctx, J(r): J<JobReq>) -> ApiR
         .optional()?;
     tenant_ok.ok_or_else(|| ApiError::bad("tenant: does not exist"))?;
     let params = check_params(&st, &r.kind, &r.tenant, r.params)?;
+    if params.get("replace").is_some() {
+        return request_replace(&st, &ctx, &r.kind, &r.tenant, params).map(|o| crate::quorum::accepted(o, json!({})));
+    }
     let id = {
         let c = st.cat.conn();
         c.execute(
@@ -433,6 +494,39 @@ pub async fn create_job(State(st): State<St>, ctx: Ctx, J(r): J<JobReq>) -> ApiR
         body["download_token"] = t.clone();
     }
     Ok((StatusCode::ACCEPTED, Json(body)).into_response())
+}
+
+/// Replace original (Phase 15a): admins and operators only, never via a token;
+/// approval `restore.replace` (executed by the scheduler as a restore job).
+fn request_replace(
+    st: &St,
+    ctx: &Ctx,
+    kind: &str,
+    tenant: &str,
+    mut params: Value,
+) -> ApiResult<crate::quorum::Outcome> {
+    ctx.require(OPS)?;
+    if ctx.token.is_some() {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "API tokens cannot replace guests".into(),
+        ));
+    }
+    if let Some(o) = params.as_object_mut() {
+        o.remove("replace");
+    }
+    let target = format!(
+        "snapshot/{tenant}/{}/{}",
+        params["source"].as_str().unwrap_or_default(),
+        params["time"]
+    );
+    crate::quorum::request(
+        st,
+        ctx,
+        "restore.replace",
+        &target,
+        json!({"tenant": tenant, "kind": kind, "params": params}),
+    )
 }
 
 #[derive(Deserialize)]
@@ -500,14 +594,22 @@ pub async fn cancel_job(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> 
     ctx.require(OPS)?;
     let state = {
         let c = st.cat.conn();
-        let state: String = c
+        let (state, replace): (String, bool) = c
             .query_row(
-                "SELECT state FROM jobs WHERE id = ?1 AND (?2 IS NULL OR tenant = ?2)",
+                "SELECT state, COALESCE(json_extract(params, '$.replace'), 0) = 1 FROM jobs
+                 WHERE id = ?1 AND (?2 IS NULL OR tenant = ?2)",
                 params![id, ctx.scope()],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?
             .ok_or_else(ApiError::not_found)?;
+        // stopping it between stopping and restoring the original could leave the
+        // original switched off and renamed (Phase 15a; its own rollback needs to run)
+        if replace && state == "running" {
+            return Err(ApiError::conflict(
+                "a running restore that replaces the original cannot be cancelled",
+            ));
+        }
         let queued = c.execute(
             "UPDATE jobs SET state = 'cancelled', finished = ?2 WHERE id = ?1 AND state = 'queued'",
             params![id, catalog::now()],
@@ -612,7 +714,7 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
     let rows = c
         .prepare(&format!(
             "SELECT s.tenant, s.source, s.time, s.size, s.local, s.offsite, s.lock_until, s.verified, s.origin,
-                    h.id IS NOT NULL, {} FROM snapshots s
+                    h.id IS NOT NULL, s.consistency, {} FROM snapshots s
              LEFT JOIN legal_holds h ON h.tenant = s.tenant AND h.source = s.source AND h.time = s.time
                AND h.state IN ('active','advisory')
              WHERE (?1 IS NULL OR s.tenant = ?1) AND (?2 IS NULL OR s.source = ?2) AND (?3 IS NULL OR s.tenant = ?3)
@@ -631,6 +733,7 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
                 "size": r.get::<_, i64>(3)?, "local": r.get::<_, bool>(4)?, "offsite": r.get::<_, bool>(5)?,
                 "lock_until": r.get::<_, i64>(6)?, "verified": r.get::<_, Option<i64>>(7)?,
                 "origin": r.get::<_, Option<String>>(8)?, "hold": hold,
+                "consistency": r.get::<_, Option<String>>(10)?,
             }))
         })?
         .collect::<Result<Vec<_>, _>>()?;

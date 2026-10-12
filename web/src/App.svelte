@@ -17,6 +17,7 @@
   import Storage from './pages/Storage.svelte';
   import Reports from './pages/Reports.svelte';
   import Files from './pages/Files.svelte';
+  import Search from './pages/Search.svelte';
   import Jobs from './pages/Jobs.svelte';
   import JobDetail from './pages/JobDetail.svelte';
   import Alerts from './pages/Alerts.svelte';
@@ -34,6 +35,7 @@
   import Account from './pages/Account.svelte';
   import IconDashboard from '@lucide/svelte/icons/layout-dashboard';
   import IconSnapshots from '@lucide/svelte/icons/database-backup';
+  import IconSearch from '@lucide/svelte/icons/file-search';
   import IconStorage from '@lucide/svelte/icons/hard-drive';
   import IconReports from '@lucide/svelte/icons/file-spreadsheet';
   import IconJobs from '@lucide/svelte/icons/list-checks';
@@ -70,6 +72,7 @@
   const routes: { path: string; comp: Component<any>; allow: Allow; nav?: string; section?: Section; icon?: Component<any> }[] = [
     { path: '/', comp: Dashboard, allow: always, nav: t.nav.dashboard, section: 'monitor', icon: IconDashboard },
     { path: '/snapshots', comp: Snapshots, allow: always, nav: t.nav.snapshots, section: 'monitor', icon: IconSnapshots },
+    { path: '/search', comp: Search, allow: can.restore, nav: t.nav.search, section: 'monitor', icon: IconSearch },
     { path: '/storage', comp: Storage, allow: always, nav: t.nav.storage, section: 'monitor', icon: IconStorage },
     { path: '/reports', comp: Reports, allow: always, nav: t.nav.reports, section: 'monitor', icon: IconReports },
     { path: '/files', comp: Files, allow: can.restore },

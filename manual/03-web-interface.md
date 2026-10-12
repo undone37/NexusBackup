@@ -52,7 +52,7 @@ If the administrators set a **login banner** (for example a legal notice), it ap
 
 | Group | Pages |
 |---|---|
-| **Monitor** | Dashboard, Snapshots, Jobs, Alerts |
+| **Monitor** | Dashboard, Snapshots, Find files, Storage, Reports, Jobs, Alerts |
 | **Governance** | Approvals, Audit log |
 | **Configuration** | Tenants, Sources, Agents, Replication, Policies, Protection groups, Users, Plugins, Settings |
 
@@ -87,6 +87,7 @@ The sidebar shows only what your role may use. The server checks every request a
 | Page | Administrator | Security officer | Operator | Tenant user | Viewer |
 |---|---|---|---|---|---|
 | Dashboard, Snapshots, Storage, Reports (CSV downloads), Jobs | ✓ | ✓ | ✓ | ✓ (own tenant) | read (its scope) |
+| Find files | ✓ | — | ✓ | ✓ (own tenant) | — |
 | Reports: scheduled reports | ✓ | read | — | — | — |
 | Alerts | ✓ | ✓ | ✓ | — | read (without a tenant) |
 | Approvals | ✓ | ✓ (decides) | ✓ (read) | — | — |
@@ -189,8 +190,9 @@ If the key figures cannot be loaded, a banner says so; the table below still wor
 ### Protection status table, failed jobs, open alerts
 
 **Protection status** lists every protection group with one row per guest (VM, container, host, dataset, share,
-database). The columns show the time of the last backup and whether the newest copies are **Local**, **Offsite** and
-**Verified**. **Offsite** shows *n/a* when the group's policy does not copy offsite. **Status** is **Protected**,
+database). The columns show the time of the last backup, whether the newest copies are **Local**, **Offsite** and
+**Verified**, and the **Consistency** of the newest snapshot (**application**, **crash**, **inconsistent** or
+**unknown**, see [06 Restores](06-restores.md#consistency)). **Offsite** shows *n/a* when the group's policy does not copy offsite. **Status** is **Protected**,
 **RPO breached**, **Paused** (the group is paused or its source in maintenance) or **No backup**; **RPO breached** means the newest
 snapshot is older than 1.5 × the policy period (36 hours for daily, 90 minutes for hourly policies; the same rule as the RPO KPIs). Administrators and operators can start a backup with **Back up now**:
 the whole group, selected guests or the guests that failed in the last run (see
@@ -243,7 +245,8 @@ without approval.
 
 | Report | Content | Time range |
 |---|---|---|
-| **Protection status** | one row per protected guest, host, share, dataset and plugin guest: its groups, RPO, last good backup and its age, status (`ok`, `breach` = older than RPO × 1.5, `never`, `paused`), whether that snapshot is kept locally, copied offsite and verified (time), and its consistency (`consistent`, `inconsistent`, `unknown`; Proxmox guests show `unknown` for now) | current state |
+| **Protection status** | one row per protected guest, host, share, dataset and plugin guest: its groups, RPO, last good backup and its age, status (`ok`, `breach` = older than RPO × 1.5, `never`, `paused`), whether that snapshot is kept locally, copied offsite and verified (time), and its consistency (`application`, `crash`, `inconsistent`, `unknown`; snapshots from before this version show the
+older `consistent` flag as `crash` / `inconsistent`) | current state |
 | **Failed jobs** | every job that failed in the range: job number, tenant, kind, what it worked on (group, source, agent, guest), times, attempt and the first error line of its log | from – to |
 | **SLA and RPO breaches** | `rpo_breach` rows: the periods in which an object had no good backup for longer than RPO × 1.5 (start, end or empty while it lasts, hours, limit); `sla_missed` rows: backups that ran longer than their policy's run-time SLA | from – to |
 | **Storage** | one row per tenant and per protection group: snapshots, logical size, data in, stored, saved (bytes), deduplication, compression, data reduction, measured store size, soft quota and growth over 7 / 30 / 90 days (tenant rows) | current state |
@@ -292,7 +295,12 @@ Snapshot names tell you what was backed up:
 
 **Size** is the logical size of the snapshot. **Local**, **Offsite** and **Verified** show where copies exist and
 whether the local copy passed verification. **Locked until** is the retention lock (— when it has expired).
-Snapshots received from another appliance carry a **Replicated from …** label.
+**Consistency** is the snapshot's consistency level; hover over the badge for its meaning (see
+[06 Restores](06-restores.md#consistency)). Snapshots received from another appliance carry a **Replicated from …**
+label.
+
+**Restore several** (top right) restores many VMs and containers of one tenant in one step, see
+[06 Restores](06-restores.md#restore-several-guests-at-once).
 
 Each row has two controls (not for security officers, who cannot restore):
 
@@ -325,6 +333,16 @@ See [06 Restores](06-restores.md).
 
 Reading a VM's file systems starts an isolated restore micro-VM in the background, so the first listing of a VM
 snapshot takes a few seconds.
+
+## Find files
+
+**Find files** (also linked from the Snapshots page) searches file and folder names across all snapshots of a tenant:
+a name or pattern (`*`, `?`, `[a-z]`), optionally one guest and a date range. Each result row is one version of a file
+(same path, size and modification time) with the snapshots that hold it; pick a snapshot and click **Open** (file
+browser at that folder), **Download** or, for host snapshots, **Restore…**. Details:
+[06 Restores](06-restores.md#find-a-file).
+
+![Search results for budget* in tenant acme](images/search.png)
 
 ## Jobs
 

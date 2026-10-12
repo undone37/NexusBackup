@@ -236,7 +236,9 @@ esac"#,
     let br: Value = serde_json::from_str(&q::<String>(&db, "SELECT result FROM jobs WHERE kind='backup'")).unwrap();
     assert_eq!(
         br,
-        json!({"snapshots": [{"source": "vm-100", "time": 1}], "source": "vm-100", "time": 1})
+        // a fake nexus-pve without the `consistency` line (Phase 15d): unknown
+        json!({"snapshots": [{"source": "vm-100", "time": 1, "consistency": "unknown"}], "source": "vm-100",
+               "time": 1, "consistency": "unknown"})
     );
     let log: String = q(&db, "SELECT log FROM jobs WHERE kind='retention'");
     assert!(log.contains("retention vm-100: kept 2, deleted 3"), "{log}");
