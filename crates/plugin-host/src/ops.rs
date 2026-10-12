@@ -6,7 +6,7 @@ use crate::sandbox::Peer;
 use crate::{escape, level_name};
 use anyhow::{bail, Result};
 use chunkstore::{ChunkId, Store, TreeKind};
-use plugin_proto::{valid_guest_id, BaseInfo, Guest, Message, Op, API};
+use plugin_proto::{valid_guest_id, BaseInfo, Message, Op, TaggedGuest, API};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -61,14 +61,19 @@ pub fn guests(peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&str)) -> Res
         match peer.recv()? {
             Message::Log { level, text } => out(&format!("plugin[{}]: {}", level_name(level), escape(&text, 4000))),
             Message::Progress { .. } => {}
-            Message::Guests { list } => {
+            m @ (Message::Guests { .. } | Message::TaggedGuests { .. }) => {
                 peer.finish();
+                let list: Vec<TaggedGuest> = match m {
+                    Message::Guests { list } => list.into_iter().map(TaggedGuest::from).collect(),
+                    Message::TaggedGuests { list } => list,
+                    _ => unreachable!(),
+                };
                 if list.len() > 10_000 {
                     bail!("plugin listed more than 10000 guests");
                 }
                 let mut seen = std::collections::HashSet::new();
                 let mut ok: Vec<Value> = Vec::new();
-                for Guest { id, title, size } in list {
+                for TaggedGuest { id, title, size, tags } in list {
                     if !valid_guest_id(&id) || !seen.insert(id.clone()) {
                         out(&format!(
                             "plugin: guest id {} dropped (invalid or duplicate)",
@@ -76,7 +81,12 @@ pub fn guests(peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&str)) -> Res
                         ));
                         continue;
                     }
-                    ok.push(json!({"id": id, "title": escape(&title, 200), "size": size}));
+                    // tags (v1.5): printable, trimmed; others are dropped (escaping would change them)
+                    let tags: Vec<String> = tags
+                        .into_iter()
+                        .filter(|t| !t.is_empty() && escape(t, 128) == *t && t.trim() == t)
+                        .collect();
+                    ok.push(json!({"id": id, "title": escape(&title, 200), "size": size, "tags": tags}));
                 }
                 return Ok(json!({ "guests": ok }));
             }

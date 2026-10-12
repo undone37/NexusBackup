@@ -4,5 +4,6 @@ pub mod api;
 pub mod backup;
 pub mod ct;
 pub mod files;
+pub mod inventory;
 pub mod ir;
 pub mod restorevm;

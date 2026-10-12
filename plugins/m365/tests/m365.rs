@@ -251,6 +251,15 @@ fn token_flow_validation_and_guests() {
     assert!(has(&guest_of("u", &ids.alice)) && has(&guest_of("u", &ids.carol)));
     assert!(has(&guest_of("s", &ids.marketing)) && has(&guest_of("t", &ids.team)));
     assert_eq!(list.len(), 3 + 2 + 1, "no guest users, no personal sites: {g}");
+    // v1.5 tags (auto-protect): type per object, unlicensed users
+    let tags = |id: &str| list.iter().find(|x| x["id"] == id).unwrap()["tags"].clone();
+    assert_eq!(tags(&guest_of("u", &ids.alice)), serde_json::json!(["type:user"]));
+    assert_eq!(
+        tags(&guest_of("u", &ids.carol)),
+        serde_json::json!(["type:user", "license:none"])
+    );
+    assert_eq!(tags(&guest_of("s", &ids.marketing)), serde_json::json!(["type:site"]));
+    assert_eq!(tags(&guest_of("t", &ids.team)), serde_json::json!(["type:team"]));
     assert!(list
         .iter()
         .all(|x| plugin_sdk::proto::valid_guest_id(x["id"].as_str().unwrap())));
