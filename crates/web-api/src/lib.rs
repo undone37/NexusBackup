@@ -29,6 +29,7 @@ pub mod console;
 pub mod dashboard;
 pub mod diag;
 pub mod forwarding;
+pub mod hardware;
 pub mod holds;
 pub mod inventory;
 pub mod jobs;
@@ -116,6 +117,8 @@ pub struct AppState {
     pub diag_dir: std::sync::OnceLock<PathBuf>,
     /// console unlock codes (default: env `NEXUS_CONSOLE_UNLOCK_DIR` or /var/lib/nexus/console-unlock)
     pub console_dir: std::sync::OnceLock<PathBuf>,
+    /// nexus-disks control dir (default: env `NEXUS_DISKS_DIR` or /var/lib/nexus/disks)
+    pub disks_dir: std::sync::OnceLock<PathBuf>,
     /// `GET /dashboard` answers, ≤ 60 s old
     pub dashboard: crate::dashboard::Cache,
     /// OIDC discovery/JWKS cache and pending logins
@@ -147,6 +150,7 @@ impl AppState {
             update_dir: std::sync::OnceLock::new(),
             diag_dir: std::sync::OnceLock::new(),
             console_dir: std::sync::OnceLock::new(),
+            disks_dir: std::sync::OnceLock::new(),
             dashboard: Default::default(),
             oidc: Default::default(),
             tls: std::sync::OnceLock::new(),
@@ -555,6 +559,7 @@ pub fn router(st: St) -> Router {
         .route("/replication/sources/{id}/sync", post(repl::sync_source))
         .merge(access::routes())
         .merge(holds::routes())
+        .merge(hardware::routes())
         .fallback(api_not_found);
     // peer API: only on replication TLS connections (see `connection_scope`)
     let peer = Router::new()

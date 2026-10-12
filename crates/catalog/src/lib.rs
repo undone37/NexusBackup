@@ -13,6 +13,7 @@ pub mod alerting;
 pub mod auth;
 pub mod console;
 pub mod forwarding;
+pub mod hardware;
 pub mod holds;
 pub mod inventory;
 pub mod schedule;

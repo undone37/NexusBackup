@@ -48,6 +48,7 @@ const HINTS: &[(&str, &str)] = &[
     ("mgmt_allow_reset", "The management allow-list was cleared at the console (nexus-setup reset-mgmt-allow). Confirm with the person who did it, then set a correct list in Settings → Security."),
     ("report", "A scheduled report could not be mailed. Check the SMTP server under Settings → Alert delivery (reachable, credentials) and the report's recipients on the Reports page, then use Send now. Resolves after the next successful send."),
     ("legal_hold_advisory", "The primary holds this replicated snapshot under a legal hold. Holds are not applied here automatically: a security officer applies it with Apply hold (Alerts or Snapshots page). Resolves once applied or when the primary releases its hold."),
+    ("disk", "A disk or RAID array needs attention (SMART failing, bad sectors, temperature, NVMe wear, degraded or rebuilding array). Open Configuration → Hardware; replace a failed disk as the troubleshooting chapter describes. Resolves when the disk or array is healthy again."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
 

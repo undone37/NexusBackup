@@ -49,6 +49,10 @@ pub const WEB_ACTIONS: &[&str] = &[
     "security.session",
     "security.mgmt_allow",
     catalog::holds::RELEASE_ACTION,
+    "disks.create_array",
+    "disks.add_spare",
+    "disks.replace",
+    "disks.grow",
 ];
 
 /// Who may approve or reject requests (never their own: see [`approve`]).
@@ -191,6 +195,7 @@ fn direct(st: &St, by: &str, action: &str, target: &str, params: Value) -> ApiRe
     if quorum_id.is_none() {
         crate::plugins::after_approve(st, action);
         crate::settings::after_approve(st, action, by, &params);
+        crate::hardware::after_approve(st, action, by, &params, None);
     }
     Ok(Outcome::Direct { quorum_id, extra })
 }
@@ -328,6 +333,8 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         "oidc.update" => crate::oidc::execute(c, p)?,
         // the request file for nexus-update is written after the commit (settings::after_approve)
         "update.apply" => {}
+        // the request for nexus-disks likewise (hardware::after_approve)
+        a if a.starts_with("disks.") => {}
         "settings.anomaly" => catalog::set_setting(c, crate::storage::ANOMALY_SETTING, &p["anomaly"].to_string())?,
         "settings.forwarding" => catalog::set_setting(c, catalog::forwarding::SETTING, &p["forwarding"].to_string())?,
         a if a.starts_with("security.") => crate::access::execute(c, a, p)?,
@@ -432,6 +439,7 @@ pub async fn approve(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> Api
     if executed {
         crate::plugins::after_approve(&st, &action);
         crate::settings::after_approve(&st, &action, &requested_by, &p);
+        crate::hardware::after_approve(&st, &action, &requested_by, &p, Some(id));
         st.audit(
             &requested_by,
             &action,
