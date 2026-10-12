@@ -40,6 +40,7 @@ const HINTS: &[(&str, &str)] = &[
     ("consistency", "A snapshot is less consistent than the policy requires. Enable the QEMU guest agent (VMs), hooks or VSS (agents), or snapshots on the source; resolves with the next snapshot that meets the policy."),
     ("replication_lag", "Replication from the primary is behind. Check the network path to the primary and the replica_sync job logs. Resolves after the next successful sync."),
     ("replication_verify", "Replicated data failed verification and was not imported. Check the primary's store and run the sync again."),
+    ("vault_closed", "The replication source was closed with Close vault now: no syncs, the primary is not reachable from here. Nothing to do while that is intended; reopening needs approval (Replication page). Resolves when the source is reopened."),
     ("replication_keys", "The tenant keys on this secondary do not match the primary. Re-export the keys on the primary (needs approval)."),
     ("break_glass", "An administrator account was reset, or approvals were switched off, at the console. Confirm with the person who did it, then acknowledge to clear the banner."),
     ("cert_expiry", "A certificate, secret or API token expires soon. Renew it as the message says (web certificate: Settings → Certificate; agents and replication secondaries: enroll again; IdP secret: Settings → Single sign-on; tokens: create a new one). Resolves once renewed."),

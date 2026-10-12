@@ -8,6 +8,7 @@
 //! keeps replicated tenants away from keyd `ensure` (their DEKs are imported).
 
 use super::*;
+use catalog::schedule::{self, RateWindow, Span};
 use catalog::secret::replication_source_token_location;
 
 pub(crate) struct SourceRow {
@@ -24,14 +25,33 @@ pub(crate) struct SourceRow {
     pub token_hash: Option<String>,
     pub created: i64,
     pub status: Value,
+    /// Phase 17a/b: bandwidth windows, sync window (both in `timezone`), "close vault now"
+    pub windows: Vec<RateWindow>,
+    pub sync_window: Vec<Span>,
+    pub timezone: String,
+    pub closed_until: Option<i64>,
+    pub closed_by: Option<String>,
+}
+
+impl SourceRow {
+    /// Closed by "close vault now" (until reopened, or until `closed_until`).
+    pub fn closed(&self, now: i64) -> bool {
+        schedule::paused(self.closed_until, now)
+    }
+
+    /// Syncs may run (and the primary is reachable): open and inside the sync window.
+    pub fn open(&self, now: i64) -> bool {
+        let tz = schedule::tz(&self.timezone).unwrap_or(schedule::Tz::UTC);
+        !self.closed(now) && schedule::sync_open(&self.sync_window, tz, now)
+    }
 }
 
 impl Scheduler {
     pub(crate) fn replication_sources(&self) -> Result<Vec<SourceRow>> {
         let c = self.db.conn();
         let mut st = c.prepare(
-            "SELECT id, name, url, peer_id, cert_pin, tenants, schedule, gfs, bwlimit, state, token_hash, created, status \
-             FROM replication_sources ORDER BY id",
+            "SELECT id, name, url, peer_id, cert_pin, tenants, schedule, gfs, bwlimit, state, token_hash, created, status, \
+             windows, sync_window, timezone, closed_until, closed_by FROM replication_sources ORDER BY id",
         )?;
         let rows = st.query_map([], |r| {
             Ok(SourceRow {
@@ -48,6 +68,11 @@ impl Scheduler {
                 token_hash: r.get(10)?,
                 created: r.get(11)?,
                 status: serde_json::from_str(&r.get::<_, String>(12)?).unwrap_or(json!({})),
+                windows: serde_json::from_str(&r.get::<_, String>(13)?).unwrap_or_default(),
+                sync_window: serde_json::from_str(&r.get::<_, String>(14)?).unwrap_or_default(),
+                timezone: r.get(15)?,
+                closed_until: r.get(16)?,
+                closed_by: r.get(17)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -69,11 +94,13 @@ impl Scheduler {
             .collect())
     }
 
-    /// `host:port` of every replication source (outbound allow-list).
+    /// `host:port` of every replication source (outbound allow-list), only
+    /// while it is open and inside its sync window (Phase 17a/b).
     pub(crate) fn replication_targets(&self) -> Result<Vec<(String, u16)>> {
         Ok(self
             .replication_sources()?
             .iter()
+            .filter(|s| s.open(self.now))
             .filter_map(|s| {
                 let (h, p) = s.url.rsplit_once(':')?;
                 Some((h.trim_matches(['[', ']']).to_owned(), p.parse().ok()?))
@@ -84,7 +111,7 @@ impl Scheduler {
     /// Secondary: one `replica_sync` per enrolled source and tenant when due.
     pub(crate) fn queue_replication(&mut self, now: i64) -> Result<()> {
         for s in self.replication_sources()? {
-            if s.state != "enrolled" {
+            if s.state != "enrolled" || !s.open(now) {
                 continue;
             }
             let sched = match Schedule::parse(&s.schedule) {
@@ -183,11 +210,17 @@ impl Scheduler {
         if !s.tenants.contains(&job.tenant) {
             bail!("tenant {} is not replicated by source {}", job.tenant, s.name);
         }
+        if s.closed(self.now) {
+            bail!("replication source {} is closed (vault closed): no syncs until it is reopened", s.name);
+        }
+        if !s.open(self.now) {
+            bail!("replication source {} is outside its sync window", s.name);
+        }
         plan.key = format!("tenant:{}", job.tenant);
         let cfg = self.replica_config(
             &s,
             json!({"tenant": job.tenant, "store": self.cfg.store_base.join(&job.tenant), "gfs": s.gfs,
-                   "bwlimit": s.bwlimit, "parallel": self.cfg.replica_parallel, "held": plan.held}),
+                   "bwlimit": s.bwlimit, "windows": s.windows, "timezone": s.timezone, "parallel": self.cfg.replica_parallel, "held": plan.held}),
         );
         plan.files
             .push(("replica.json".into(), serde_json::to_vec_pretty(&cfg)?));
@@ -308,6 +341,7 @@ impl Scheduler {
     }
 
     /// Secondary: no successful sync of a source/tenant for longer than the lag limit.
+    /// A closed source (vault closed) lags on purpose: `vault_closed` says so.
     pub(crate) fn check_replication_lag(&self, now: i64) -> Result<()> {
         for s in self.replication_sources()? {
             if s.state != "enrolled" {
@@ -316,7 +350,7 @@ impl Scheduler {
             for t in &s.tenants {
                 let last = s.status[t]["last_ok"].as_i64().unwrap_or(s.created);
                 let key = format!("replication_lag:{}:{t}", s.name);
-                if now - last > self.cfg.replication_lag_secs {
+                if now - last > self.cfg.replication_lag_secs && !s.closed(now) {
                     self.raise(
                         "warning",
                         "replication_lag",

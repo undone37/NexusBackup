@@ -19,7 +19,7 @@
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
-use chrono_tz::Tz;
+pub use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, Instant};
