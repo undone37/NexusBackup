@@ -221,6 +221,9 @@ pub struct Report {
     pub new_bytes: u64,
     pub consistent: bool,
     pub summary: String,
+    /// items the plugin skipped (v1.7 `Warnings`) and the first few of them
+    pub warnings: u64,
+    pub warning_samples: Vec<String>,
 }
 
 /// Plugin log/progress output with a per-job budget.
@@ -530,6 +533,14 @@ pub fn run(store: &Store, peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&
                     chunks: c.chunks,
                 });
             }
+            Message::Warnings { count, samples } => {
+                r.warnings = r.warnings.saturating_add(count);
+                for x in samples {
+                    if r.warning_samples.len() < plugin_proto::MAX_WARNING_SAMPLES {
+                        r.warning_samples.push(x);
+                    }
+                }
+            }
             Message::Done {
                 state,
                 consistent,
@@ -584,6 +595,14 @@ pub fn run(store: &Store, peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&
             escape(&r.summary, 500)
         ));
     }
+    if r.warnings > 0 {
+        // `warnings <id>: <n> …` is parsed by the scheduler (job result `warnings`)
+        (log.out)(&format!(
+            "warnings {id}: {} items could not be read and are missing from the snapshot: {}",
+            r.warnings,
+            escape(&r.warning_samples.join("; "), 4000)
+        ));
+    }
     if !r.summary.is_empty() {
         (log.out)(&format!("summary {id}: {}", escape(&r.summary, 4000)));
     }
@@ -617,6 +636,7 @@ pub(crate) fn msg_name(m: &Message) -> &'static str {
         Message::Error { .. } => "Error",
         Message::BaseList { .. } => "BaseList",
         Message::TaggedGuests { .. } => "TaggedGuests",
+        Message::Warnings { .. } => "Warnings",
     }
 }
 

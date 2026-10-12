@@ -228,6 +228,7 @@ async fn dashboard_kpis_scoping_and_cache() {
              ('backup', 'acme', '{{"group_id": 1}}', 'ok', 'scheduler', {now}, {now}, '{{}}'),
              ('backup', 'acme', '{{"group_id": 1}}', 'failed', 'scheduler', {now}, {now}, NULL),
              ('backup', 'acme', '{{"agent_id": "0123456789abcdef"}}', 'ok', 'scheduler', {now}, {now}, '{{"consistent": false}}'),
+             ('plugin_backup', 'acme', '{{"source_id": 7}}', 'ok', 'scheduler', {now}, {now}, '{{"warnings": 3}}'),
              ('backup', 'globex', '{{"group_id": 2}}', 'failed', 'scheduler', {now}, {now}, NULL),
              ('backup', 'acme', '{{"group_id": 1}}', 'failed', 'scheduler', {ancient}, {ancient}, NULL),
              ('verify', 'acme', '{{}}', 'ok', 'scheduler', {now}, {now}, NULL);
@@ -290,9 +291,10 @@ async fn dashboard_kpis_scoping_and_cache() {
             j["warning"].as_i64(),
             j["failed"].as_i64()
         ),
-        (Some(4), Some(1), Some(1), Some(2))
+        (Some(5), Some(1), Some(2), Some(2)),
+        "skipped items (plugin warnings) count as warning"
     );
-    assert_eq!(j["success_rate"], 0.5);
+    assert_eq!(j["success_rate"], 0.6);
     assert_eq!(j["per_day"].as_array().unwrap().len(), 7);
     assert_eq!(j["failed_by_kind"], json!([{"kind": "pve", "failed": 2}]));
     let c = &b["capacity"];
@@ -322,7 +324,7 @@ async fn dashboard_kpis_scoping_and_cache() {
     assert!(t.get("/api/v1/dashboard?days=9", &alice).await.status == StatusCode::BAD_REQUEST);
     let r30 = t.get("/api/v1/dashboard", &alice).await;
     assert_eq!(r30.body["days"], 30);
-    assert_eq!(r30.body["jobs"]["total"], 4, "the failure 40 days ago is outside");
+    assert_eq!(r30.body["jobs"]["total"], 5, "the failure 40 days ago is outside");
     assert_eq!(r30.body["jobs"]["per_day"].as_array().unwrap().len(), 30);
 
     // tenant user: own tenant, no appliance-wide figures
@@ -336,7 +338,7 @@ async fn dashboard_kpis_scoping_and_cache() {
         .unwrap()
         .iter()
         .all(|w| w["tenant"] == "acme"));
-    assert_eq!(b["jobs"]["total"], 3);
+    assert_eq!(b["jobs"]["total"], 4);
     assert!(b["capacity"]["total"].is_null() && b["capacity"]["forecast_full_days"].is_null());
     assert_eq!(b["capacity"]["used"], 1900);
     assert!(b["offsite"]["replication_lag_max_s"].is_null());
@@ -346,9 +348,9 @@ async fn dashboard_kpis_scoping_and_cache() {
         "INSERT INTO jobs (kind, tenant, params, state, requested_by, created, finished) VALUES ('backup', 'acme', '{{}}', 'failed', 'x', {now}, {now});"
     ));
     let again = t.get("/api/v1/dashboard?days=7", &alice).await;
-    assert_eq!(again.body["jobs"]["total"], 4);
+    assert_eq!(again.body["jobs"]["total"], 5);
     t.st.dashboard.lock().unwrap().clear();
-    assert_eq!(t.get("/api/v1/dashboard?days=7", &alice).await.body["jobs"]["total"], 5);
+    assert_eq!(t.get("/api/v1/dashboard?days=7", &alice).await.body["jobs"]["total"], 6);
 }
 
 // ---------------------------------------------------------------- alert delivery

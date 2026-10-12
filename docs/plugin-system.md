@@ -2,7 +2,7 @@
 
 Status: v1 (2026-10-10), implementation notes v1.1 (2026-10-10, see "Implementation (v1.1)" at the end), additive
 v1.2 (2026-10-10, TrueNAS + PostgreSQL plugins, see "v1.2" at the end), additive v1.3 (2026-10-11, Microsoft 365
-plugin, see "v1.3" at the end), additive v1.4 (2026-10-11, restores per snapshot kind, see "v1.4" at the end), additive v1.5 (2026-10-12, tagged guests, see "v1.5"). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
+plugin, see "v1.3" at the end), additive v1.4 (2026-10-11, restores per snapshot kind, see "v1.4" at the end), additive v1.5 (2026-10-12, tagged guests, see "v1.5"), additive v1.6 (2026-10-12, restore into another source and lists of objects, see "v1.6"), additive v1.7 (2026-10-12, skipped items as warnings, see "v1.7"). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
 speaking a **versioned protocol**, with a **Rust SDK**; trust = **project release key + publisher keys an admin adds
 with quorum**; reference plugin **PostgreSQL**; the **TrueNAS** connector is ported to the SDK; the restore API covers
 **download, restore to original/alternate target, application-specific restore and mount/instant access**.
@@ -271,6 +271,18 @@ Manifest and job parameters only; protocol and `api: 1` unchanged.
   properties refused). `secret_fields` names apply inside the items as well (sealed at `/apps/<i>/<field>`,
   returned as `<field>_set` per item, kept on update when the item's other fields are unchanged at the same
   position; a moved or new item must bring its secrets again). The form renders such lists as repeatable groups.
+
+## v1.7 — skipped items as warnings (2026-10-12, Phase 18a)
+Additive; `api: 1` unchanged. Appended message `Warnings { count, samples }` (plugin → host, backup only, before
+`Done`): `count` items could not be read and are missing from the snapshot; `samples` (≤ 20, ≤ 1 KiB each, `check`)
+name the first ones with their error. SDK: `Sink::item_failed(what)` counts and samples; the runner sends `Warnings`
+only when the count is > 0, so plugins that never skip anything still run on a v1.6 host. Host: the counts of
+several messages add up; after the commit it logs `warnings <source>/<time>: <n> items could not be read …` and
+reports `warnings` / `warning_samples` per snapshot. Scheduler: the job stays `ok`; its result gets `warnings` (sum)
+and per snapshot `warnings`; the dashboard counts such jobs as **warning** (like not point-in-time consistent ones),
+the jobs list shows a warning chip and the job page a banner. Microsoft 365 uses it for items that still fail after
+Graph's retries (docs/m365.md "Incremental backups"). Tested: `crates/plugin-proto` (wire index, limits),
+`crates/scheduler` (result parsing, forged lines ignored), `crates/web-api` phase12 (dashboard), `plugins/m365`.
 
 ## v1.4 — restores per snapshot kind (2026-10-11, docs/phase12-contract.md §6)
 Manifest only; protocol and API version unchanged (`api: 1`). A restore spec may name `"applies_to"`: `"guest"`

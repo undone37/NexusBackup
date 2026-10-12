@@ -5,8 +5,10 @@
 //!
 //! Guests (one snapshot each): `u.<user id>` (mailbox + OneDrive), `s.<site>`
 //! (document libraries of a site; the site collection and web GUIDs as base64url,
-//! the ids Graph uses do not fit the guest-id rules), `t.<group id>` (team files +
-//! channel messages). Incremental backups: see `backup`.
+//! the ids Graph uses do not fit the guest-id rules), `t.<group id>` (team files,
+//! private/shared channel files, channel messages), `g.<group id>` (Microsoft 365
+//! group: conversations, calendar, and the group's files unless it is a team).
+//! Incremental backups: see `backup`.
 
 pub mod auth;
 pub mod backup;
@@ -38,6 +40,8 @@ pub struct Config {
     pub sharepoint: bool,
     pub teams: bool,
     pub teams_messages: bool,
+    /// Microsoft 365 groups (conversations, calendar; files with `sharepoint`)
+    pub groups: bool,
     /// 1:1 and group chats of users (export API, metered: opt-in)
     pub chats: bool,
     /// `model` parameter of the Teams export API (`A`, `B`; None = evaluation mode)
@@ -132,6 +136,7 @@ impl Config {
             sharepoint: flag("sharepoint", true),
             teams: flag("teams", true),
             teams_messages: flag("teams_messages", false),
+            groups: flag("groups", true),
             chats: flag("chats", false),
             teams_model: match v["teams_export_model"].as_str().unwrap_or("B") {
                 "evaluation" => None,
@@ -144,7 +149,7 @@ impl Config {
             port,
             ca_cert: opt("ca_cert"),
         };
-        if !(c.exchange || c.onedrive || c.sharepoint || c.teams || c.teams_messages || c.chats) {
+        if !(c.exchange || c.onedrive || c.sharepoint || c.teams || c.teams_messages || c.groups || c.chats) {
             return Err(("exchange", "select at least one workload".into()));
         }
         if c.files() && c.sharepoint_host.is_none() {
@@ -217,6 +222,8 @@ pub enum Guest {
     /// site collection id, web id
     Site(String, String),
     Team(String),
+    /// Microsoft 365 group (group id)
+    Group(String),
 }
 
 fn guid_bytes(g: &str) -> Option<Vec<u8>> {
@@ -240,6 +247,7 @@ impl Guest {
         match self {
             Guest::User(u) => format!("u.{}", u.to_ascii_lowercase()),
             Guest::Team(t) => format!("t.{}", t.to_ascii_lowercase()),
+            Guest::Group(g) => format!("g.{}", g.to_ascii_lowercase()),
             Guest::Site(s, w) => {
                 let mut b = guid_bytes(s).unwrap_or_default();
                 b.extend(guid_bytes(w).unwrap_or_default());
@@ -253,6 +261,7 @@ impl Guest {
         match k {
             "u" if guid_ok(v) => Some(Guest::User(v.into())),
             "t" if guid_ok(v) => Some(Guest::Team(v.into())),
+            "g" if guid_ok(v) => Some(Guest::Group(v.into())),
             "s" => {
                 let b = B64URL.decode(v).ok().filter(|b| b.len() == 32)?;
                 Some(Guest::Site(guid_str(&b[..16]), guid_str(&b[16..])))
@@ -278,6 +287,94 @@ pub fn site_guest(id: &str) -> Option<Guest> {
 }
 
 pub struct M365;
+
+/// Microsoft 365 (unified) groups with the properties the plugin needs.
+pub const UNIFIED_GROUPS: &str =
+    "/groups?$filter=groupTypes%2Fany(c%3Ac%20eq%20%27Unified%27)&$select=id,displayName,resourceProvisioningOptions";
+
+/// Does a group (Graph JSON) back a team?
+pub fn is_team(g: &Value) -> bool {
+    g["resourceProvisioningOptions"]
+        .as_array()
+        .is_some_and(|a| a.iter().any(|x| x == "Team"))
+}
+
+/// Private and shared channels keep their files in a SharePoint site of their own.
+pub fn separate_channel(ch: &Value) -> bool {
+    matches!(ch["membershipType"].as_str(), Some("private") | Some("shared"))
+}
+
+/// Drive (document library) holding a channel's files (`filesFolder`); None while
+/// the channel's site is not provisioned yet.
+pub fn channel_drive(g: &mut Graph, team: &str, channel: &str) -> Result<Option<String>> {
+    match g.get(
+        &format!(
+            "/teams/{}/channels/{}/filesFolder",
+            graph::enc(team),
+            graph::enc(channel)
+        ),
+        &[],
+    ) {
+        Ok(f) => Ok(f["parentReference"]["driveId"].as_str().map(str::to_owned)),
+        Err(e) if graph::status(&e) == Some(404) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Site guests a group / team guest covers: the group's site and, for teams, the
+/// sites of private and shared channels (`sharepointIds` of the channel drive's
+/// root). Lookup failures are logged and skipped (the site stays a plain site).
+pub fn group_sites(ctx: &Ctx, g: &mut Graph, group: &str, team: bool) -> Vec<Guest> {
+    let mut out = Vec::new();
+    match g.get(&format!("/groups/{}/sites/root?$select=id", graph::enc(group)), &[]) {
+        Ok(s) => out.extend(s["id"].as_str().and_then(site_guest)),
+        Err(e) if graph::status(&e) == Some(404) => {}
+        Err(e) => ctx.warn(format!("site of group {group}: {e:#}")),
+    }
+    if !team {
+        return out;
+    }
+    let mut chans = Vec::new();
+    let r = g.pages(
+        &format!(
+            "/teams/{}/channels?$select=id,displayName,membershipType",
+            graph::enc(group)
+        ),
+        &[],
+        |c| {
+            if separate_channel(&c) {
+                chans.push(c["id"].as_str().unwrap_or_default().to_owned());
+            }
+            Ok(())
+        },
+    );
+    if let Err(e) = r {
+        ctx.warn(format!("channels of team {group}: {e:#}"));
+    }
+    for ch in chans {
+        let site = channel_drive(g, group, &ch).and_then(|d| match d {
+            Some(d) => {
+                let r = g.get(
+                    &format!("/drives/{}/root?$select=id,sharepointIds", graph::enc(&d)),
+                    &[],
+                )?;
+                let ids = &r["sharepointIds"];
+                Ok(match (ids["siteId"].as_str(), ids["webId"].as_str()) {
+                    (Some(s), Some(w)) if guid_ok(s) && guid_ok(w) => {
+                        Some(Guest::Site(s.to_ascii_lowercase(), w.to_ascii_lowercase()))
+                    }
+                    _ => None,
+                })
+            }
+            None => Ok(None),
+        });
+        match site {
+            Ok(s) => out.extend(s),
+            Err(e) => ctx.warn(format!("site of channel {ch}: {e:#}")),
+        }
+    }
+    out
+}
 
 /// The parsed config of a context (plugin error code 22 = invalid config).
 pub fn config(ctx: &Ctx) -> Result<Config> {
@@ -456,13 +553,21 @@ impl Plugin for M365 {
                 }
             }
         }
+        if c.groups {
+            if let Err(e) = g.get(&format!("{UNIFIED_GROUPS}&$top=1"), &[]) {
+                return Ok(invalid("groups", missing(&e, "Group.Read.All")));
+            }
+        }
         Ok(Validation::Valid)
     }
 
-    /// Users, sites and teams, tagged `type:user|site|team` (auto-protect groups);
-    /// users without any license also `license:none` (`assignedLicenses` needs no
-    /// permission beyond User.Read.All). Entra group tags (`group:<name>`) would need
-    /// GroupMember.Read.All: not done (plan 17a).
+    /// Users, sites, teams and groups, tagged `type:user|site|team|group`
+    /// (auto-protect groups); users without any license also `license:none`
+    /// (`assignedLicenses` needs no permission beyond User.Read.All), sites of groups
+    /// and teams (incl. private/shared channel sites) also `site:team` — they are
+    /// backed up by their team / group guest, and groups of mode `all` leave them out
+    /// (catalog `DEFAULT_OFF`). Entra group tags (`group:<name>`) would need
+    /// GroupMember.Read.All: not done.
     fn list_tagged_guests(&mut self, ctx: &Ctx) -> Result<Vec<SdkGuest>> {
         let (c, mut g) = connect(ctx)?;
         let mut out = Vec::new();
@@ -494,7 +599,47 @@ impl Plugin for M365 {
                 },
             )?;
         }
+        // groups: guests of their own, and their sites are not offered as plain sites
+        let mut groups = Vec::new();
+        if c.groups || c.sharepoint {
+            let r = g.pages(&format!("{UNIFIED_GROUPS}&$top=999"), &[], |x| {
+                groups.push(x);
+                Ok(())
+            });
+            if let Err(e) = r {
+                if !matches!(graph::status(&e), Some(401) | Some(403)) {
+                    return Err(e);
+                }
+                ctx.warn(format!(
+                    "Microsoft 365 groups not listed: {} (team and group sites are offered as plain sites)",
+                    missing(&e, "Group.Read.All")
+                ));
+                groups.clear();
+            }
+        }
+        if c.groups {
+            for x in &groups {
+                if let Some(id) = x["id"].as_str().filter(|i| guid_ok(i)) {
+                    out.push(SdkGuest {
+                        tags: vec!["type:group".into()],
+                        id: Guest::Group(id.into()).id(),
+                        title: format!(
+                            "Group: {}{}",
+                            x["displayName"].as_str().unwrap_or_default(),
+                            if is_team(x) { " (team)" } else { "" }
+                        ),
+                        size: None,
+                    });
+                }
+            }
+        }
         if c.sharepoint {
+            let mut covered = std::collections::HashSet::new();
+            for x in &groups {
+                if let Some(id) = x["id"].as_str() {
+                    covered.extend(group_sites(ctx, &mut g, id, is_team(x)).into_iter().map(|s| s.id()));
+                }
+            }
             let host = c.sharepoint_host.clone().unwrap_or_default();
             g.pages(
                 "/sites/getAllSites?$select=id,displayName,webUrl,isPersonalSite&$top=999",
@@ -505,13 +650,19 @@ impl Plugin for M365 {
                         return Ok(());
                     }
                     if let Some(gst) = site_guest(id) {
+                        let team = covered.contains(&gst.id());
+                        let mut tags = vec!["type:site".to_owned()];
+                        if team {
+                            tags.push("site:team".into());
+                        }
                         out.push(SdkGuest {
-                            tags: vec!["type:site".into()],
+                            tags,
                             id: gst.id(),
                             title: format!(
-                                "Site: {} ({})",
+                                "Site: {} ({}){}",
                                 s["displayName"].as_str().unwrap_or_default(),
-                                s["webUrl"].as_str().unwrap_or_default()
+                                s["webUrl"].as_str().unwrap_or_default(),
+                                if team { " - backed up with its team / group" } else { "" }
                             ),
                             size: None,
                         });
@@ -541,7 +692,7 @@ impl Plugin for M365 {
         let guest = ctx.guest().ok_or_else(|| {
             error(
                 22,
-                "select users, sites or teams in the group: a tenant is backed up per object",
+                "select users, sites, teams or groups in the group: a tenant is backed up per object",
             )
         })?;
         let guest = Guest::parse(guest).ok_or_else(|| error(22, format!("unknown guest {guest:?}")))?;
@@ -574,7 +725,11 @@ mod tests {
             s.site_id("contoso.sharepoint.com").unwrap(),
             "contoso.sharepoint.com,2c712604-1370-44e7-a1f5-426573fda80a,9e7f2c0d-0000-4b6b-8f3a-0123456789ab"
         );
-        for g in [u.clone(), Guest::Team("2c712604-1370-44e7-a1f5-426573fda80a".into())] {
+        for g in [
+            u.clone(),
+            Guest::Team("2c712604-1370-44e7-a1f5-426573fda80a".into()),
+            Guest::Group("2c712604-1370-44e7-a1f5-426573fda80b".into()),
+        ] {
             assert!(plugin_sdk::proto::valid_guest_id(&g.id()));
             assert_eq!(Guest::parse(&g.id()).map(|x| x.id()), Some(g.id()));
         }
@@ -617,6 +772,8 @@ mod tests {
         mail_only["onedrive_host"] = Value::Null;
         assert!(Config::parse(&mail_only).is_ok());
         mail_only["exchange"] = json!(false);
+        assert!(Config::parse(&mail_only).is_ok(), "groups alone");
+        mail_only["groups"] = json!(false);
         assert_eq!(Config::parse(&mail_only).err().map(|e| e.0), Some("exchange"));
     }
 }

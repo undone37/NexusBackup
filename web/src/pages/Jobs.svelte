@@ -108,7 +108,8 @@
               <td>{kindLabel(j.kind)}</td>
               <td>{j.tenant}</td>
               <td
-                ><JobState state={j.state} />{#if (j.attempt ?? 1) > 1}
+                ><JobState state={j.state} />{#if j.result?.warnings}
+                  <span class="chip warn" title={t.jobs.warningsTitle}>{t.jobs.warnings(j.result.warnings)}</span>{/if}{#if (j.attempt ?? 1) > 1}
                   <span class="muted">{t.runctl.attempt} {j.attempt}</span>{/if}</td
               >
               <td>{j.requested_by}</td>
