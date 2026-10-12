@@ -4,8 +4,9 @@
 //! - `web`, `identity`: the served web certificate and the self-signed identity
 //!   (replication secondaries pin it); dates from the setting `tls_status`, which
 //!   the web-api publishes (the scheduler cannot read /etc/nexus/tls);
-//! - `agent:<id>`: agent certificates, 10 years from enrollment (agent-conn
-//!   `ca.rs`; only fingerprints are in the catalog);
+//! - `agent:<id>`: agent certificates: `agents.cert_expires` as reported by the
+//!   last session (renewal.rs), else 10 years from enrollment (agent-conn `ca.rs`);
+//!   renewed automatically 30 days (or 10 % of the lifetime) before expiry;
 //! - `agent_ca`: the appliance's client certificate for agents (10 years) and the
 //!   agent CA (20 years), created with the first enrollment;
 //! - `replication_peer:<id>`: secondaries' client certificates (10 years from
@@ -81,7 +82,8 @@ impl Scheduler {
                 v.push(item(k.into(), format!("{what} {subject}"), t, None));
             }
         }
-        let mut q = c.prepare("SELECT id, tenant, name, enrolled_at FROM agents WHERE enrolled_at IS NOT NULL")?;
+        let mut q =
+            c.prepare("SELECT id, tenant, name, enrolled_at, cert_expires FROM agents WHERE enrolled_at IS NOT NULL")?;
         let agents = q
             .query_map([], |r| {
                 Ok((
@@ -89,19 +91,24 @@ impl Scheduler {
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
                     r.get::<_, i64>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         let mut first = catalog::setting(&c, AGENT_CA_SETTING)?.and_then(|s| s.parse::<i64>().ok());
-        for (id, tenant, name, at) in agents {
+        for (id, tenant, name, at, expires) in agents {
             first = Some(first.map_or(at, |f| f.min(at)));
             v.push(item(
                 format!("agent:{id}"),
-                format!("The certificate of agent {tenant}/{name} (re-enroll the agent to renew)"),
-                at + TEN_YEARS,
+                format!(
+                    "The certificate of agent {tenant}/{name} (renewed automatically; Agents → Renew certificate, \
+                     or re-enroll the agent)"
+                ),
+                expires.unwrap_or(at + TEN_YEARS),
                 Some(tenant),
             ));
         }
+
         if let Some(f) = first {
             catalog::set_setting(&c, AGENT_CA_SETTING, &f.to_string())?;
             v.push(item(

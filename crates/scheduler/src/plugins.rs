@@ -91,13 +91,27 @@ impl Scheduler {
     }
 
     /// Backup of a plugin source (one host run, one plugin process per guest).
-    pub(crate) fn plan_plugin_backup(&self, job: &Job, mut plan: Plan, sid: i64, guests: &[String]) -> Result<Plan> {
+    pub(crate) fn plan_plugin_backup(
+        &self,
+        job: &Job,
+        mut plan: Plan,
+        sid: i64,
+        guests: &[String],
+        parallel: u32,
+    ) -> Result<Plan> {
         let (cur, kind, config) = self.plugin_source(&job.tenant, sid)?;
         if guests.iter().any(|g| !valid_guest_id(g)) {
             bail!("invalid guest id");
         }
         plan.key = format!("source:{sid}");
-        plan.files = self.plugin_cfg(job, &cur, &kind, sid, config, json!({"guests": guests}))?;
+        plan.files = self.plugin_cfg(
+            job,
+            &cur,
+            &kind,
+            sid,
+            config,
+            json!({"guests": guests, "parallel": parallel}),
+        )?;
         plan.steps.push(self.host_step(&plan, &["backup".into()], false));
         Ok(plan)
     }
@@ -143,21 +157,23 @@ impl Scheduler {
             }
             "plugin_backup" => {
                 let sid = p["source_id"].as_i64().context("missing parameter source_id")?;
+                let first = self
+                    .groups()?
+                    .into_iter()
+                    .find(|g| g.tenant == job.tenant && g.source_id == sid);
+                // the source's first group sets the parallelism
+                let parallel = first.as_ref().map_or(1, |g| g.parallel);
                 let guests: Vec<String> = match p["guests"].as_array() {
                     Some(a) => a.iter().filter_map(|g| g.as_str().map(str::to_owned)).collect(),
                     // default: the guests of the source's first group, else the whole source
-                    None => match self
-                        .groups()?
-                        .into_iter()
-                        .find(|g| g.tenant == job.tenant && g.source_id == sid)
-                    {
+                    None => match first {
                         Some(g) if g.auto && g.plugin.as_ref().is_none_or(|x| x.1.is_empty()) => {
                             bail!("nothing to back up: no guests match the group (inventory)")
                         }
                         g => g.and_then(|g| g.plugin.map(|x| x.1)).unwrap_or_default(),
                     },
                 };
-                return self.plan_plugin_backup(job, plan, sid, &guests);
+                return self.plan_plugin_backup(job, plan, sid, &guests, parallel);
             }
             "plugin_restore" | "plugin_mount" => {
                 let source = ident(p, "source")?;
