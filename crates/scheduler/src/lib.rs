@@ -3249,8 +3249,14 @@ impl Scheduler {
         for e in fs::read_dir(&self.cfg.downloads)? {
             let e = e?;
             let m = e.metadata()?;
-            if m.is_file() && now - m.mtime() > self.cfg.download_ttl_secs {
+            if now - m.mtime() <= self.cfg.download_ttl_secs {
+                continue;
+            }
+            if m.is_file() {
                 fs::remove_file(e.path())?;
+            } else if m.is_dir() && e.file_name().to_string_lossy().ends_with(".d") {
+                // staging dir of an export (nexus-pluginhost export) left by a crash
+                fs::remove_dir_all(e.path())?;
             }
         }
         Ok(())

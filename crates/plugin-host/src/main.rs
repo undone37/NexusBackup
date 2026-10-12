@@ -1,11 +1,14 @@
 //! `nexus-pluginhost <job.json> validate | guests | backup | restore | mount |
-//!  files <source> <time> ls <dir> | files <source> <time> get <out.tar|out.zip> <path>...`
+//!  files <source> <time> ls <dir> | files <source> <time> get <out.tar|out.zip> <path>... |
+//!  export <out.tar|out.zip> <path>...`
 //!
 //! Spawned by the scheduler with a generated 0600 job config (secrets of the
 //! source opened, docs/plugin-system.md). Machine-readable lines on stdout:
 //! `committed <source>/<time>: …`, `inconsistent <source>/<time>: …`, `warnings <source>/<time>: <n> …`,
 //! `summary <source>/<time>: …` per guest and `result {json}` (backup);
-//! `restored {json}` (restore); `mount-ready {json}` / `unmounted {json}` (mount).
+//! `restored {json}` (restore); `mount-ready {json}` / `unmounted {json}` (mount);
+//! `exported {json}` (export: the `download` restore with conversion, contract v1.9 —
+//! job config `restore` = the snapshot and the user's params; no secrets, no network).
 //! validate / guests print only their JSON result on stdout (log on stderr).
 //! Everything the plugin says is escaped and prefixed (`plugin[…]: `).
 
@@ -13,7 +16,7 @@ use agent_conn::files::Format;
 use anyhow::{bail, Context, Result};
 use chunkstore::{Options, Store};
 use plugin_host::sandbox::{Limits, Options as SandboxOptions, PluginProc, Spec};
-use plugin_host::{backup, files, ops, restore, set_log_stderr, Timeouts};
+use plugin_host::{backup, export, files, ops, restore, set_log_stderr, Timeouts};
 use plugin_proto::{parse_source_name, source_name, Manifest, Op};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -179,11 +182,16 @@ impl Run {
     }
 
     fn spawn(&self, op: Op, t: Timeouts) -> Result<PluginProc> {
+        self.spawn_with(op, t, self.ports())
+    }
+
+    /// `tcp_ports`: Some(empty) = no TCP connects at all (export: conversion only).
+    fn spawn_with(&self, op: Op, t: Timeouts, tcp_ports: Option<Vec<u16>>) -> Result<PluginProc> {
         let spec = Spec {
             dir: self.plugin.dir.clone(),
             bin_sha256: self.plugin.bin_sha256.clone(),
             manifest: Some(self.plugin.manifest.clone()),
-            tcp_ports: self.ports(),
+            tcp_ports,
             limits: Limits::from_manifest(self.manifest.sandbox.as_ref(), t.op.as_secs()),
             job: self.cfg.job,
         };
@@ -234,7 +242,7 @@ fn out_line(l: &str) {
 fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: nexus-pluginhost <job.json> validate | guests | backup | restore | mount | files <source> <time> ls <dir> | files <source> <time> get <out.tar|out.zip> <path>...";
+    let usage = "usage: nexus-pluginhost <job.json> validate | guests | backup | restore | mount | files <source> <time> ls <dir> | files <source> <time> get <out.tar|out.zip> <path>... | export <out.tar|out.zip> <path>...";
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
         bail!("{usage}");
     };
@@ -403,6 +411,54 @@ fn main() -> Result<()> {
                 &mut |l| out_line(l),
             )?;
             out_line(&format!("unmounted {r}"));
+        }
+        ("export", [out, paths @ ..]) if !paths.is_empty() => {
+            let mut run = Run::new(cfg)?;
+            let s = run.cfg.restore.take().context("config: restore missing")?;
+            let guest = run.snapshot_of(&s)?;
+            let kind = run.manifest.kinds.iter().find(|k| k.kind == run.kind).unwrap();
+            if !kind
+                .restores
+                .iter()
+                .any(|r| r.id == "download" && r.params_schema.is_some())
+            {
+                bail!("kind {} has no download with conversion (contract v1.9)", run.kind);
+            }
+            // converting needs neither credentials nor network
+            run.config = "{}".into();
+            let out = Path::new(out);
+            agent_conn::files::Format::from_path(out)?;
+            let store = open_store(&run.cfg)?;
+            let snap = restore::Snapshot::load(&store, &s.source, s.time)?;
+            let mut params = s.params.clone();
+            if let (Some(o), Some(g)) = (params.as_object_mut(), &guest) {
+                o.insert("guest".into(), json!(g));
+            }
+            let t = run.timeouts(Op::Export);
+            let mut p = run.spawn_with(Op::Export, t, Some(Vec::new()))?;
+            let staging = out.with_extension("d");
+            let r = export::run(
+                &store,
+                &mut p,
+                &snap,
+                &export::Params {
+                    job: run.cfg.job,
+                    kind: &run.kind,
+                    config: &run.config,
+                    params,
+                    paths,
+                    max_files: 1_000_000,
+                    max_bytes: 16 << 40,
+                },
+                &staging,
+                &mut |l| out_line(l),
+            )?;
+            let n = export::pack(&staging, out)?;
+            out_line(&format!(
+                "exported {}",
+                json!({"source": s.source, "time": s.time, "files": n, "bytes": r.bytes, "summary": r.summary})
+            ));
+            println!("{n} entries written to {}", out.display());
         }
         ("files", [source, time, op, args @ ..]) => {
             if parse_source_name(source).is_none() {
