@@ -1985,6 +1985,8 @@ mod runctl;
 mod search;
 /// Phase 17f tenant deactivation.
 mod tenants;
+/// Phase 17a/b bandwidth and sync windows, close vault.
+mod windows;
 
 /// Phase 15d: the connector's `consistency` line ends up in the job result and
 /// `snapshots.consistency`; the policy's `require_consistency` warns (one alert

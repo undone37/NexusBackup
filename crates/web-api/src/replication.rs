@@ -21,6 +21,7 @@ use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use catalog::rusqlite::{params, Connection, OptionalExtension};
+use catalog::schedule::{self, Bandwidth, RateWindow, Span};
 use catalog::secret::{replication_peer_token_location, replication_source_token_location, SealKey};
 use repl_proto::{
     hex, key_fingerprint, parse_ids, split_code, token_digest, unhex, valid_hex64, valid_peer_id, EnrollOutcome,
@@ -837,29 +838,45 @@ pub fn execute(c: &Connection, action: &str, p: &Value) -> ApiResult<bool> {
                     "the replication source changed since this request was made; reject it and request again",
                 ));
             }
+            let s = settings(p); // requests made before Phase 17a carry no windows: defaults
             changed(c.execute(
-                "UPDATE replication_sources SET schedule = ?2, gfs = ?3, bwlimit = ?4 WHERE id = ?1",
+                "UPDATE replication_sources SET schedule = ?2, gfs = ?3, bwlimit = ?4, windows = ?5, sync_window = ?6, \
+                 timezone = ?7 WHERE id = ?1",
                 params![
                     p["id"].as_i64(),
                     p["schedule"].as_str(),
                     p["gfs"].to_string(),
-                    p["bwlimit"].as_u64()
+                    p["bwlimit"].as_u64(),
+                    s["windows"].to_string(),
+                    s["sync_window"].to_string(),
+                    s["timezone"].as_str()
                 ],
             )?)?
         }
+        REOPEN => changed(c.execute(
+            "UPDATE replication_sources SET closed_until = NULL, closed_by = NULL, closed_at = NULL \
+             WHERE id = ?1 AND closed_until IS NOT NULL",
+            [p["id"].as_i64()],
+        )?)?,
         _ => return Ok(false),
     }
     Ok(true)
 }
 
 fn settings(v: &Value) -> Value {
-    json!({"schedule": v["schedule"], "gfs": v["gfs"], "bwlimit": v["bwlimit"]})
+    let or = |k: &str, d: Value| v.get(k).filter(|x| !x.is_null()).cloned().unwrap_or(d);
+    json!({"schedule": v["schedule"], "gfs": v["gfs"], "bwlimit": v["bwlimit"], "windows": or("windows", json!([])),
+           "sync_window": or("sync_window", json!([])), "timezone": or("timezone", json!("UTC"))})
 }
+
+/// Quorum action: reopening a closed replication source (Phase 17b).
+pub const REOPEN: &str = "replication.reopen";
 
 // ================================================================ management: sources (secondary)
 
 const SOURCE_COLS: &str =
-    "id, name, url, peer_id, cert_pin, tenants, schedule, gfs, bwlimit, state, cert_sha256, keyd_pub, created, last_sync, status";
+    "id, name, url, peer_id, cert_pin, tenants, schedule, gfs, bwlimit, state, cert_sha256, keyd_pub, created, last_sync, status, \
+     windows, sync_window, timezone, closed_until, closed_by, closed_at";
 
 fn source_row(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
     let keyd: Option<String> = r.get(11)?;
@@ -873,7 +890,29 @@ fn source_row(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
         "keyd_fingerprint": keyd.as_deref().and_then(unhex).map(|k| key_fingerprint(&k)),
         "created": r.get::<_, i64>(12)?, "last_sync": r.get::<_, Option<i64>>(13)?,
         "status": serde_json::from_str::<Value>(&r.get::<_, String>(14)?).unwrap_or(Value::Null),
+        "windows": serde_json::from_str::<Value>(&r.get::<_, String>(15)?).unwrap_or(json!([])),
+        "sync_window": serde_json::from_str::<Value>(&r.get::<_, String>(16)?).unwrap_or(json!([])),
+        "timezone": r.get::<_, String>(17)?, "closed_until": r.get::<_, Option<i64>>(18)?,
+        "closed_by": r.get::<_, Option<String>>(19)?, "closed_at": r.get::<_, Option<i64>>(20)?,
     }))
+}
+
+/// Closed by "close vault now" right now (`closed_until` -1 = until reopened).
+fn is_closed(s: &Value) -> bool {
+    schedule::paused(s["closed_until"].as_i64(), catalog::now())
+}
+
+/// Stored windows of a source row (as validated when they were set).
+fn bandwidth_of(s: &Value) -> Bandwidth {
+    Bandwidth {
+        base: s["bwlimit"].as_u64(),
+        windows: serde_json::from_value(s["windows"].clone()).unwrap_or_default(),
+        tz: schedule::tz(s["timezone"].as_str().unwrap_or("UTC")).unwrap_or(schedule::Tz::UTC),
+    }
+}
+
+fn sync_window_of(s: &Value) -> Vec<Span> {
+    serde_json::from_value(s["sync_window"].clone()).unwrap_or_default()
 }
 
 pub fn source_value(c: &Connection, id: i64) -> ApiResult<Option<Value>> {
@@ -912,6 +951,11 @@ pub struct SourceReq {
     schedule: String,
     gfs: Option<validate::Gfs>,
     bwlimit: Option<u64>,
+    #[serde(default)]
+    windows: Vec<RateWindow>,
+    #[serde(default)]
+    sync_window: Vec<Span>,
+    timezone: Option<String>,
 }
 
 /// `host:port` with the port defaulting to 8443.
@@ -994,6 +1038,10 @@ pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -
     if r.tenants.is_empty() || r.tenants.len() > 64 {
         return Err(ApiError::bad("tenants: 1..=64 tenant names"));
     }
+    validate::windows(&r.windows)?;
+    validate::sync_window(&r.sync_window)?;
+    let tz = r.timezone.clone().unwrap_or_else(|| "UTC".into());
+    validate::timezone(&tz)?;
     st.seal_key()?; // 503 before anything is written
     let (id, job, created) = {
         let mut c = st.cat.conn();
@@ -1022,10 +1070,11 @@ pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -
             }
         }
         tx.execute(
-            "INSERT INTO replication_sources (name, url, peer_id, cert_pin, tenants, schedule, gfs, bwlimit, state, created)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'enrolling', ?9)",
+            "INSERT INTO replication_sources (name, url, peer_id, cert_pin, tenants, schedule, gfs, bwlimit, state, created,
+               windows, sync_window, timezone)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'enrolling', ?9, ?10, ?11, ?12)",
             params![r.name, url, peer_id, pin, json!(r.tenants).to_string(), r.schedule, json!(gfs).to_string(),
-                    r.bwlimit, catalog::now()],
+                    r.bwlimit, catalog::now(), json!(r.windows).to_string(), json!(r.sync_window).to_string(), tz],
         )?;
         let id = tx.last_insert_rowid();
         let sealed = seal_token(&st, id, &url, peer_id, &pin, token)?;
@@ -1057,7 +1106,8 @@ pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -
         "replication_source.create",
         &format!("replication-source/{id}"),
         json!({"name": r.name, "url": url, "peer_id": peer_id, "cert_pin": pin, "tenants": r.tenants,
-               "schedule": r.schedule, "gfs": gfs, "bwlimit": r.bwlimit}),
+               "schedule": r.schedule, "gfs": gfs, "bwlimit": r.bwlimit, "windows": r.windows,
+               "sync_window": r.sync_window, "timezone": tz}),
     )?;
     st.audit(
         ctx.name(),
@@ -1074,6 +1124,10 @@ pub struct SourceUpdate {
     schedule: Option<String>,
     gfs: Option<validate::Gfs>,
     bwlimit: Option<Option<u64>>,
+    /// Phase 17a: bandwidth windows, sync window, their time zone
+    windows: Option<Vec<RateWindow>>,
+    sync_window: Option<Vec<Span>>,
+    timezone: Option<String>,
 }
 
 pub async fn update_source(
@@ -1101,8 +1155,32 @@ pub async fn update_source(
         Some(b) => b,
         None => old["bwlimit"].as_u64(),
     };
-    let p = json!({"id": id, "schedule": schedule, "gfs": gfs, "bwlimit": bwlimit, "old": settings(&old)});
-    if old_gfs.lowered_by(&gfs) {
+    let windows = r.windows.map_or_else(|| old["windows"].clone(), |w| json!(w));
+    let sync_window = r.sync_window.map_or_else(|| old["sync_window"].clone(), |s| json!(s));
+    let timezone = r
+        .timezone
+        .unwrap_or_else(|| old["timezone"].as_str().unwrap_or("UTC").to_owned());
+    validate::timezone(&timezone)?;
+    let p = json!({"id": id, "schedule": schedule, "gfs": gfs, "bwlimit": bwlimit, "windows": windows,
+                   "sync_window": sync_window, "timezone": timezone, "old": settings(&old)});
+    let new_windows: Vec<RateWindow> =
+        serde_json::from_value(windows.clone()).map_err(|e| ApiError::bad(format!("windows: {e}")))?;
+    let new_sync: Vec<Span> =
+        serde_json::from_value(sync_window.clone()).map_err(|e| ApiError::bad(format!("sync_window: {e}")))?;
+    validate::windows(&new_windows)?;
+    validate::sync_window(&new_sync)?;
+    // weakening needs approval: lower GFS, more bandwidth (a pause removed or
+    // shortened, a higher rate), a wider sync window; tightening applies directly
+    let (old_bw, new_tz) = (bandwidth_of(&old), schedule::tz(&timezone).unwrap_or(schedule::Tz::UTC));
+    let new_bw = Bandwidth {
+        base: bwlimit,
+        windows: new_windows,
+        tz: new_tz,
+    };
+    let now = catalog::now();
+    let weaker =
+        old_bw.weaker(&new_bw, now) || schedule::sync_widened(&sync_window_of(&old), old_bw.tz, &new_sync, new_tz, now);
+    if old_gfs.lowered_by(&gfs) || weaker {
         let q = request(
             &st,
             &ctx,
@@ -1117,7 +1195,8 @@ pub async fn update_source(
         ctx.name(),
         "replication_source.update",
         &format!("replication-source/{id}"),
-        json!({"schedule": schedule, "gfs": gfs, "bwlimit": bwlimit}),
+        json!({"schedule": schedule, "gfs": gfs, "bwlimit": bwlimit, "windows": windows,
+               "sync_window": sync_window, "timezone": timezone}),
     )?;
     let out = source_value(&st.cat.conn(), id)?.ok_or_else(ApiError::not_found)?;
     Ok(Json(out).into_response())
@@ -1187,6 +1266,16 @@ pub async fn sync_source(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) ->
     if s["state"] != "enrolled" {
         return Err(ApiError::conflict("the replication source is not enrolled yet"));
     }
+    if is_closed(&s) {
+        return Err(ApiError::conflict(
+            "the replication source is closed (pulling paused): request reopening first",
+        ));
+    }
+    if !schedule::sync_open(&sync_window_of(&s), bandwidth_of(&s).tz, catalog::now()) {
+        return Err(ApiError::conflict(
+            "outside the sync window: the primary is not reachable now",
+        ));
+    }
     let tenants: Vec<String> = serde_json::from_value(s["tenants"].clone()).unwrap_or_default();
     let mut jobs = Vec::new();
     for t in &tenants {
@@ -1234,6 +1323,93 @@ pub async fn delete_source(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) 
         "replication_source.delete",
         &format!("replication-source/{id}"),
         json!({"id": id, "name": s["name"], "url": s["url"], "tenants": s["tenants"]}),
+    )?;
+    Ok(accepted(q, json!({})))
+}
+
+// ================================================================ close vault (Phase 17b)
+
+/// Who may close a vault and request reopening it (approved by another approver).
+const CLOSERS: &[&str] = &["admin", "security_officer"];
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CloseReq {
+    /// unix time; absent = until reopened
+    until: Option<i64>,
+}
+
+/// "Close vault now": no syncs and no firewall target from the next scheduler
+/// tick; queued syncs are cancelled and running ones get a cancel request here
+/// already. Never needs approval (it only adds protection) but can never
+/// shorten an existing closure.
+pub async fn close_source(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>, body: Bytes) -> ApiResult<Response> {
+    ctx.require(CLOSERS)?;
+    if ctx.scope().is_some() {
+        return Err(ApiError::forbidden());
+    }
+    let r: CloseReq = optional_json(&body)?;
+    let now = catalog::now();
+    let until = match r.until {
+        None => -1,
+        Some(u) if u > now => u,
+        Some(_) => return Err(ApiError::bad("until: must be in the future")),
+    };
+    let s = source_value(&st.cat.conn(), id)?.ok_or_else(ApiError::not_found)?;
+    if let Some(cur) = s["closed_until"].as_i64().filter(|_| is_closed(&s)) {
+        if cur == -1 || (until != -1 && until <= cur) {
+            return Err(ApiError::conflict(
+                "the vault is already closed at least that long; reopening needs approval",
+            ));
+        }
+    }
+    let cancelled = {
+        let mut c = st.cat.conn();
+        let tx = c.transaction()?;
+        tx.execute(
+            "UPDATE replication_sources SET closed_until = ?2, closed_by = ?3, closed_at = ?4 WHERE id = ?1",
+            params![id, until, ctx.name(), now],
+        )?;
+        let q = tx.execute(
+            "UPDATE jobs SET state = 'cancelled', finished = ?2, log = log || '[web-api] cancelled: vault closed\n' \
+             WHERE kind = 'replica_sync' AND state = 'queued' AND json_extract(params, '$.replication_source_id') = ?1",
+            params![id, now],
+        )?;
+        let r = tx.execute(
+            "UPDATE jobs SET cancel_by = 'vault_closed' WHERE kind = 'replica_sync' AND state = 'running' \
+             AND cancel_by IS NULL AND json_extract(params, '$.replication_source_id') = ?1",
+            [id],
+        )?;
+        tx.commit()?;
+        q + r
+    };
+    st.audit(
+        ctx.name(),
+        "replication_source.close",
+        &format!("replication-source/{id}"),
+        json!({"name": s["name"], "closed_until": until, "syncs_cancelled": cancelled}),
+    )?;
+    let out = source_value(&st.cat.conn(), id)?.ok_or_else(ApiError::not_found)?;
+    Ok(Json(out).into_response())
+}
+
+/// Reopening a closed vault needs approval (quorum `replication.reopen`).
+pub async fn reopen_source(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> ApiResult<Response> {
+    ctx.require(CLOSERS)?;
+    if ctx.scope().is_some() {
+        return Err(ApiError::forbidden());
+    }
+    let s = source_value(&st.cat.conn(), id)?.ok_or_else(ApiError::not_found)?;
+    if s["closed_until"].is_null() {
+        return Err(ApiError::conflict("the replication source is not closed"));
+    }
+    let q = request(
+        &st,
+        &ctx,
+        REOPEN,
+        &format!("replication-source/{id}"),
+        json!({"id": id, "name": s["name"], "url": s["url"], "closed_until": s["closed_until"],
+               "closed_by": s["closed_by"], "closed_at": s["closed_at"]}),
     )?;
     Ok(accepted(q, json!({})))
 }

@@ -7,6 +7,7 @@
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use catalog::rusqlite::params;
+use catalog::schedule::{Action, Bandwidth, RateWindow};
 use catalog::secret::{SchedulerKey, TotpKey};
 use catalog::Catalog;
 use chunkstore::{Index, Keyring, Options, Store};
@@ -325,6 +326,10 @@ impl Secondary {
     }
 
     fn sync(&self, t: &Target, tenant: &str) -> anyhow::Result<client::SyncReport> {
+        self.sync_bw(t, tenant, Default::default())
+    }
+
+    fn sync_bw(&self, t: &Target, tenant: &str, bandwidth: Bandwidth) -> anyhow::Result<client::SyncReport> {
         client::sync(
             &SyncParams {
                 target: t.clone(),
@@ -334,7 +339,7 @@ impl Secondary {
                 keyd_socket: self.keyd_sock.clone(),
                 gfs: Default::default(),
                 parallel: 4,
-                bwlimit: None,
+                bandwidth,
                 held: Default::default(),
             },
             &mut |l| eprintln!("replica: {l}"),
@@ -439,6 +444,45 @@ fn enroll_sync_incremental_restore_on_secondary_only() {
     // the secondary's keyd wraps the DEK under its own KEK (DR with its recovery key)
     assert!(s.dir.path().join("keyd/tenants/acme/origin").exists());
     assert!(sec_store.verify(|_| true).unwrap().corrupt.is_empty());
+}
+
+/// Phase 17a: the chunk download follows the bandwidth windows; a sync that
+/// was cancelled (window closed, vault closed) after fetching chunks but before
+/// committing the snapshot resumes: the chunks stay, only the manifest is missing.
+#[test]
+fn bandwidth_windows_and_resume_after_cancel() {
+    let (p, s, _, now) = enrolled();
+    let t = p.target();
+    let hhmm = |x: u64| format!("{:02}:{:02}", (x % DAY) / 3600, (x % 3600) / 60);
+    let limit = Bandwidth {
+        windows: vec![RateWindow {
+            days: vec![],
+            from: hhmm(now - 120),
+            to: hhmm(now + 900),
+            action: Action::Limit,
+            rate_bytes: Some(4_000_000),
+        }],
+        ..Default::default()
+    };
+    let t0 = std::time::Instant::now();
+    let r = s.sync_bw(&t, "acme", limit).unwrap();
+    assert_eq!(r.imported.len(), 3);
+    let secs = t0.elapsed().as_secs_f64();
+    assert!(
+        secs >= 0.8 * r.bytes_fetched as f64 / 4e6,
+        "{} bytes in {secs} s",
+        r.bytes_fetched
+    );
+    // what a cancelled sync leaves behind: the newest snapshot's chunks, no manifest
+    let newest = now - DAY;
+    // (the snapshot directory without its manifest, as the store writes it last)
+    let snap = s.dir.path().join(format!("store/acme/snapshots/vm-100/{newest}"));
+    std::fs::remove_dir_all(&snap).unwrap();
+    assert!(s.store("acme").load_manifest("vm-100", newest).is_err());
+    let r = s.sync(&t, "acme").unwrap();
+    assert_eq!(r.imported, vec![format!("vm-100/{newest}")]);
+    assert_eq!(r.chunks_fetched, 0, "resumed without fetching again: {r:?}");
+    assert!(r.chunks_present > 0);
 }
 
 /// Legal holds (Phase 15c): the primary's active holds reach the secondary in
@@ -1044,4 +1088,127 @@ fn replication_without_approvals_runs_on_the_admins_request() {
             .unwrap();
     assert_eq!(disabled, 4, "create, export after enrollment, re-export, revoke");
     assert!(sec.sync(&t, "acme").is_err(), "revoked");
+}
+
+/// Phase 17a/b on the secondary: windows and sync window (weakening needs
+/// approval, tightening is direct), "close vault now" (admin or security
+/// officer, direct, cancels syncs, never shortened) and reopening (quorum
+/// `replication.reopen`, approved by someone else).
+#[test]
+fn source_windows_close_and_reopen() {
+    let p = Primary::new();
+    let op = session(&p.st.cat, "olga", "operator");
+    let viewer = session(&p.st.cat, "vera", "viewer");
+    let c = |s: &Sess, m: Method, path: &str, b: Option<Value>| p.call(m, path, s, b);
+    let (st, b) = c(
+        &p.admin,
+        Method::POST,
+        "/api/v1/replication/sources",
+        Some(
+            json!({"name": "prim", "url": "10.0.2.2:28443", "code": "0123456789abcdef.ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                    "fingerprint": "ab".repeat(32), "tenants": ["dr1"], "schedule": "hourly 05",
+                    "sync_window": [{"from": "22:00", "to": "06:00"}], "timezone": "Europe/Berlin",
+                    "windows": [{"from": "08:00", "to": "18:00", "action": "pause"}]}),
+        ),
+    );
+    assert_eq!(st, StatusCode::CREATED, "{b}");
+    let id = b["source"]["id"].as_i64().unwrap();
+    assert_eq!(b["source"]["timezone"], "Europe/Berlin");
+    assert_eq!(b["source"]["sync_window"][0]["from"], "22:00");
+    let path = format!("/api/v1/replication/sources/{id}");
+    let put = |body: Value| c(&p.admin, Method::PUT, &path, Some(body));
+    for bad in [
+        json!({"windows": [{"from": "08:00", "to": "08:00", "action": "pause"}]}),
+        json!({"windows": [{"from": "08:00", "to": "09:00", "action": "limit"}]}),
+        json!({"sync_window": [{"days": ["Xyz"], "from": "08:00", "to": "09:00"}]}),
+        json!({"timezone": "Mars/Base"}),
+    ] {
+        assert_eq!(put(bad.clone()).0, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    // tightening: a longer pause, a narrower sync window, a lower limit: direct
+    let (st, b) = put(json!({"windows": [{"from": "07:00", "to": "19:00", "action": "pause"},
+                                       {"from": "19:00", "to": "22:00", "action": "limit", "rate_bytes": 1000}],
+                            "sync_window": [{"from": "23:00", "to": "05:00"}]}));
+    assert_eq!(st, StatusCode::OK, "{b}");
+    assert_eq!(b["windows"][1]["rate_bytes"], 1000);
+    // weakening: the pause removed, the sync window widened, another time zone: approval
+    for weak in [
+        json!({"windows": [{"from": "19:00", "to": "22:00", "action": "limit", "rate_bytes": 1000}]}),
+        json!({"sync_window": []}),
+        json!({"sync_window": [{"from": "22:00", "to": "05:00"}]}),
+        json!({"timezone": "America/New_York"}),
+    ] {
+        let (st, b) = put(weak.clone());
+        assert_eq!(st, StatusCode::ACCEPTED, "{weak}: {b}");
+    }
+    let q = p.pending("replication_source.update");
+    assert_eq!(q.len(), 4);
+    p.approve(q[1]);
+    let (_, list) = c(&p.admin, Method::GET, "/api/v1/replication/sources", None);
+    assert_eq!(list[0]["sync_window"], json!([]), "approved: always");
+    assert_eq!(list[0]["windows"][0]["action"], "pause", "the rest unchanged");
+
+    // close: not by operators or viewers; by a security officer, direct
+    let close = format!("{path}/close");
+    assert_eq!(c(&op, Method::POST, &close, None).0, StatusCode::FORBIDDEN);
+    assert_eq!(c(&viewer, Method::POST, &close, None).0, StatusCode::FORBIDDEN);
+    let soon = catalog::now() + 3600;
+    let (st, b) = c(&p.so, Method::POST, &close, Some(json!({"until": soon})));
+    assert_eq!(st, StatusCode::OK, "{b}");
+    assert_eq!(b["closed_until"].as_i64(), Some(soon));
+    assert!(b["closed_by"].is_string());
+    let shorter = c(&p.admin, Method::POST, &close, Some(json!({"until": soon - 60})));
+    assert_eq!(shorter.0, StatusCode::CONFLICT, "never shortened");
+    // closing for good cancels queued syncs
+    p.st.cat
+        .conn()
+        .execute(
+            "INSERT INTO jobs (kind, tenant, params, state, requested_by, created) \
+             VALUES ('replica_sync', 'dr1', ?1, 'queued', 'scheduler', 0)",
+            [json!({"replication_source_id": id, "tenant": "dr1"}).to_string()],
+        )
+        .unwrap();
+    let (st, b) = c(&p.admin, Method::POST, &close, None);
+    assert_eq!(st, StatusCode::OK, "{b}");
+    assert_eq!(b["closed_until"], -1);
+    let jobs: String =
+        p.st.cat
+            .conn()
+            .query_row("SELECT state FROM jobs WHERE kind = 'replica_sync'", [], |r| r.get(0))
+            .unwrap();
+    assert_eq!(jobs, "cancelled");
+    assert_eq!(c(&p.admin, Method::POST, &close, None).0, StatusCode::CONFLICT);
+    // manual sync refused while closed (the source is not enrolled here: fake it)
+    p.st.cat
+        .conn()
+        .execute("UPDATE replication_sources SET state = 'enrolled'", [])
+        .unwrap();
+    let (st, b) = c(&p.admin, Method::POST, &format!("{path}/sync"), None);
+    assert_eq!(st, StatusCode::CONFLICT);
+    assert!(b.to_string().contains("closed"), "{b}");
+
+    // reopen: quorum, not approvable by the requester, executed by another approver
+    assert_eq!(
+        c(&op, Method::POST, &format!("{path}/reopen"), None).0,
+        StatusCode::FORBIDDEN
+    );
+    let (st, b) = c(&p.admin, Method::POST, &format!("{path}/reopen"), None);
+    assert_eq!(st, StatusCode::ACCEPTED, "{b}");
+    let qid = b["quorum_id"].as_i64().unwrap();
+    let (st, _) = c(&p.admin, Method::POST, &format!("/api/v1/quorum/{qid}/approve"), None);
+    assert_eq!(st, StatusCode::FORBIDDEN, "own request");
+    let (_, list) = c(&p.admin, Method::GET, "/api/v1/replication/sources", None);
+    assert_eq!(list[0]["closed_until"], -1, "still closed while pending");
+    p.approve(qid);
+    let (_, list) = c(&p.admin, Method::GET, "/api/v1/replication/sources", None);
+    assert!(list[0]["closed_until"].is_null() && list[0]["closed_by"].is_null());
+    assert_eq!(
+        c(&p.admin, Method::POST, &format!("{path}/reopen"), None).0,
+        StatusCode::CONFLICT,
+        "not closed"
+    );
+    let acts = p.audit_actions();
+    for a in ["replication_source.close", "quorum.request", "replication.reopen"] {
+        assert!(acts.iter().any(|x| x == a), "{a} missing in {acts:?}");
+    }
 }

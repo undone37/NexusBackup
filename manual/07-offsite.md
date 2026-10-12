@@ -57,9 +57,33 @@ Fields for both target types:
 
 - **Bandwidth limit (KiB/s, empty = unlimited)**: covers all uploaders together.
 - **Parallel uploads**: 1–8 in the form, default 4.
+- **Bandwidth windows** and **Time zone of the windows**: see below.
 
 Changing or removing a target that is already configured needs approval by a second person while approvals
 are enabled ([10 Approvals and audit](10-approvals-and-audit.md)). Setting the first target does not.
+
+## Bandwidth windows
+
+Bandwidth windows pause or slow down the uploads at certain times, for example during office hours when the
+internet line is needed for other work. Each window has start days (none = every day), a **From** and a **To**
+time (a **To** earlier than **From** ends the next day) and an **Action**:
+
+- **Pause (no transfer)**: no uploads inside the window. An Offsite copy job that would start in a pause waits
+  until it ends (the job shows as queued, with the end of the pause as its earliest start). An upload that is
+  already running holds before its next pack and continues when the pause ends.
+- **Limit** with a **Rate (MB/s)**: at most this rate over all uploaders while the window is active.
+
+How the windows combine: a pause wins over a limit; of several active limits the lowest applies; while a limit
+window is active it replaces the **Bandwidth limit** field (it may also allow more, e.g. a faster night). The
+uploader checks the windows every few seconds, so a new window takes effect while a long upload runs. The times
+are evaluated in the **Time zone of the windows** (default UTC), including daylight-saving changes.
+
+Tightening applies at once: adding or lengthening a pause, lowering a rate or the bandwidth limit. Anything that
+lets more data through at some time of the week (removing or shortening a pause, a higher rate, another time
+zone) counts as a change of the offsite target and needs approval while approvals are enabled.
+
+> **Status:** Bandwidth windows are covered by automated tests (local target, throughput measured); a run
+> against a real Storage Box is still pending.
 
 ## Hetzner Storage Box (SFTP)
 

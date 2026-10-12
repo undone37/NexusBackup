@@ -6,6 +6,8 @@
   import { fmtBytes, fmtTime } from '../lib/format';
   import type { OffsiteListed, QuorumRequest, Tenant, TenantOffsite, SftpRemote, S3Remote } from '../lib/types';
   import Modal from '../components/Modal.svelte';
+  import BlackoutEditor from '../components/BlackoutEditor.svelte';
+  import { bandwidthWeaker, timeZones, validRateWindow, type RateWindow } from '../lib/schedule';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import TenantRecoveryKey from '../components/TenantRecoveryKey.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
@@ -92,6 +94,10 @@
   let secretSet = $state(false);
   let uploaders = $state(4);
   let bwlimit = $state('');
+  // Phase 17a: bandwidth windows of the offsite uploads
+  let windows: RateWindow[] = $state([]);
+  let tz = $state('UTC');
+  const zones = timeZones();
   // soft quota in GiB (null = none); saved separately (PUT /tenants/{name}/quota, applies at once)
   const GIB = 2 ** 30;
   let quota: number | null = $state(null);
@@ -124,6 +130,8 @@
     }
     uploaders = x?.offsite?.uploaders ?? 4;
     bwlimit = x?.offsite?.bwlimit ? String(Math.round(x.offsite.bwlimit / 1024)) : '';
+    windows = $state.snapshot(x?.offsite?.windows ?? []);
+    tz = x?.offsite?.timezone ?? 'UTC';
     quota = x?.quota_bytes ? +(x.quota_bytes / GIB).toFixed(2) : null;
     if (attach) kind = 'sftp';
     open = true;
@@ -131,7 +139,9 @@
 
   function offsite(): TenantOffsite {
     if (kind === 'none') return {};
-    const common = { uploaders: Number(uploaders) || 1, bwlimit: bwlimit ? Number(bwlimit) * 1024 : null };
+    const common: TenantOffsite = { uploaders: Number(uploaders) || 1, bwlimit: bwlimit ? Number(bwlimit) * 1024 : null };
+    if (windows.length) common.windows = $state.snapshot(windows);
+    if (windows.length || tz !== 'UTC') common.timezone = tz;
     if (kind === 'sftp') {
       // The SSH key never goes through the API: the config references a key file on the appliance.
       const r: SftpRemote = { type: 'sftp', host: sftp.host.trim(), port: Number(sftp.port) || 23, user: sftp.user.trim(), key_file: sftp.key_file.trim(), host_key: sftp.host_key.trim() };
@@ -156,8 +166,19 @@
     return { remote: r, ...common };
   }
 
+  // an existing target whose windows allow more bandwidth: approval (shown before saving)
+  const weaker = $derived.by(() => {
+    const o = (editing as Tenant | null)?.offsite;
+    return (
+      !!o?.remote &&
+      kind !== 'none' &&
+      bandwidthWeaker({ windows: o.windows ?? [], base: o.bwlimit, tz: o.timezone ?? 'UTC' }, { windows, base: bwlimit ? Number(bwlimit) * 1024 : null, tz })
+    );
+  });
+
   async function save(e: SubmitEvent) {
     e.preventDefault();
+    if (!windows.every(validRateWindow)) return;
     const o = offsite();
     if (attaching) {
       const r = await act(post<{ quorum_id?: number }>('/tenants/attach', { name, offsite: o }), t.offsite.attachDirect);
@@ -506,6 +527,14 @@
             <input id="t-up" type="number" min="1" max="8" bind:value={uploaders} />
           </div>
         </div>
+        <BlackoutEditor bind:windows mode="rate" idp="t-win" legend={t.windows.bandwidth} hint={t.tenants.windowsHint} />
+        <div class="field">
+          <label for="t-tz">{t.windows.timezone}</label>
+          <select id="t-tz" bind:value={tz}>
+            {#each zones as z (z)}<option value={z}>{z}</option>{/each}
+          </select>
+        </div>
+        {#if weaker}<p class="banner warn" role="status">{t.windows.weaker}</p>{/if}
       {/if}
     </fieldset>
     <div class="form-actions">

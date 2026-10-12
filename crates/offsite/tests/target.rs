@@ -354,6 +354,47 @@ fn held_snapshots_survive_offsite_retention_and_gc() {
     assert_eq!(deleted, 1);
 }
 
+/// Phase 17a: the uploaders follow the bandwidth windows (one bucket over all
+/// of them); a window that is not active changes nothing.
+#[test]
+fn upload_follows_bandwidth_windows() {
+    use catalog::schedule::{Action, Bandwidth, RateWindow};
+    use std::time::Instant;
+    let hhmm = |t: u64| format!("{:02}:{:02}", (t % DAY) / 3600, (t % 3600) / 60);
+    let win = |from: u64, to: u64, action: Action, rate_bytes: Option<u64>| RateWindow {
+        days: vec![],
+        from: hhmm(from),
+        to: hhmm(to),
+        action,
+        rate_bytes,
+    };
+    let n = now();
+    let d = tempfile::tempdir().unwrap();
+    let a = store(&d.path().join("a"));
+    backup(&a, n - DAY, 0); // ~3 MiB in one pack
+                            // active now: 2 MB/s (the base would allow far more); a pause later today
+    let bandwidth = Bandwidth {
+        base: Some(1 << 30),
+        windows: vec![
+            win(n - 120, n + 600, Action::Limit, Some(2_000_000)),
+            win(n + 3 * 3600, n + 4 * 3600, Action::Pause, None),
+        ],
+        ..Default::default()
+    };
+    let box_ = LocalDir(d.path().join("box"));
+    let opts = Options {
+        uploaders: 2,
+        bandwidth,
+        ..Default::default()
+    };
+    let mut t = Target::open(&a, &box_, d.path().join("state"), opts).unwrap();
+    let t0 = Instant::now();
+    let st = t.upload().unwrap();
+    assert_eq!(st.snapshots, 1);
+    let secs = t0.elapsed().as_secs_f64();
+    assert!(secs >= 0.8 * st.bytes as f64 / 2e6, "{} bytes in {secs} s", st.bytes);
+}
+
 /// Offsite in the UI (Phase 17d): the listing cross-checks inventory, box and
 /// local store; a fetched-back snapshot is locked locally for the keep time,
 /// so local retention leaves it alone until then.

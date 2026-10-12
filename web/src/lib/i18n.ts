@@ -585,6 +585,27 @@ export const en = {
     lockHint:
       "Only for buckets created with Object Lock. Use credentials without DeleteObjectVersion (docs/s3-offsite.md).",
     locked: "locked",
+    windowsHint:
+      "Pause or limit offsite uploads at certain times, for example during business hours. An upload that would start in a pause waits for its end; a running one holds before its next pack. Tightening applies directly; allowing more bandwidth needs approval, like other changes of an existing offsite target.",
+  },
+  // Phase 17a: bandwidth windows and sync windows (offsite, replication sources)
+  windows: {
+    action: "Action",
+    pause: "Pause (no transfer)",
+    limit: "Limit",
+    rate: "Rate (MB/s)",
+    bandwidth: "Bandwidth windows",
+    bandwidthHint:
+      "Times when the transfer pauses or is limited (time zone below). A pause wins over a limit, the lowest of several limits applies, and a limit replaces the base limit while it is active (it may also allow more, e.g. at night).",
+    syncWindow: "Sync window",
+    syncWindowHint:
+      "Syncs run, and the primary is reachable through the firewall, only inside these windows (none = always). A sync still running when the window closes is cancelled; the next one resumes where it stopped.",
+    timezone: "Time zone of the windows",
+    short: (n: number) => (n ? `${n} window${n === 1 ? "" : "s"}` : "—"),
+    gatedHint:
+      "Tightening (a longer pause, a lower rate, a narrower sync window) applies at once. Anything that allows more needs approval by a second person.",
+    weaker:
+      "This change allows more bandwidth or a wider sync window: it needs approval.",
   },
   sources: {
     title: 'Sources',
@@ -860,6 +881,23 @@ export const en = {
     error: "Last error",
     gfsHint:
       "Retention here, independent of the primary. Lowering it later needs approval.",
+    // Phase 17a/b (per replication source; not the appliance-wide vault mode)
+    windows: "Windows",
+    windowsTitle: (n: string) => `Windows of "${n}"`,
+    syncWindowShort: "Sync window",
+    outsideWindow: "Outside sync window",
+    closed: "Closed (pulling paused)",
+    closedSince: (when: string, by: string) => `Closed since ${when} by ${by}`,
+    closedUntil: (d: string) => `until ${d}`,
+    closedForever: "until reopened (needs approval)",
+    closeVault: "Close vault (pause pulling now)",
+    closeConfirm: (n: string) =>
+      `Close "${n}" now? Pulling from this primary stops at once (a running sync is cancelled) and the firewall no longer lets this appliance reach it. This closes only this replication source, it does not switch on vault mode. Reopening needs approval by a second person.`,
+    closedDone: "Source closed: pulling paused.",
+    reopen: "Request reopening",
+    reopenConfirm: (n: string) =>
+      `Request reopening "${n}"? Another administrator or security officer must approve it; syncs resume after that.`,
+    reopenDone: "Reopened.",
   },
   policies: {
     title: "Policies",
@@ -1624,6 +1662,8 @@ export const en = {
       disk: 'A disk or RAID array needs attention (SMART failing, bad sectors, temperature, NVMe wear, degraded or rebuilding array). Open Configuration → Hardware; replace a failed disk as the manual describes. Resolves when the disk or array is healthy again.',
       clock_skew: 'System time and the compliance clock (retention locks) differ. A lag after a restart is normal: the compliance clock catches up slowly and locks last longer meanwhile. A jump while running, or a compliance clock ahead of system time, means system time was changed by hand or a time source is wrong: check Diagnostics (time.sync, time.nts) and the audit log. Resolves when the difference is below a minute.',
       fleecing_space: 'The fleecing storage of a Proxmox node (usually local-lvm) is nearly full. A full LVM-thin pool pauses every VM on it, so guests are skipped below the guard and a running backup is cancelled below the critical level. Free space in that storage or choose a larger fleecing storage for the source, and adjust the guard on the source if needed. Resolves when a backup finds enough space again.',
+      vault_closed:
+        "A replication source was closed with Close vault (pause pulling now): no syncs, the primary is not reachable from here. Nothing to do while that is intended; reopening needs approval (Replication page). Resolves when the source is reopened.",
     } as Record<string, string>,
   },
   hw: {

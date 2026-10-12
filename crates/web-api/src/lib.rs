@@ -572,6 +572,8 @@ pub fn router(st: St) -> Router {
         )
         .route("/replication/sources/{id}/enroll", post(repl::enroll_source))
         .route("/replication/sources/{id}/sync", post(repl::sync_source))
+        .route("/replication/sources/{id}/close", post(repl::close_source))
+        .route("/replication/sources/{id}/reopen", post(repl::reopen_source))
         .merge(access::routes())
         .merge(firewall::routes())
         .merge(holds::routes())

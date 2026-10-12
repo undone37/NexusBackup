@@ -109,19 +109,39 @@ export interface BlackoutWindow {
   abort: boolean;
 }
 
-export const validWindow = (w: BlackoutWindow) => HHMM.test(w.from) && HHMM.test(w.to) && w.from !== w.to;
+export const validWindow = (w: Span) => HHMM.test(w.from) && HHMM.test(w.to) && w.from !== w.to;
+
+/** A daily window: start days (empty = every day), local from–to (to <= from: over midnight). */
+export interface Span {
+  days: string[];
+  from: string;
+  to: string;
+}
+
+/** Bandwidth window (Phase 17a; offsite and replication sources). */
+export interface RateWindow extends Span {
+  action: 'pause' | 'limit';
+  /** bytes per second (action limit) */
+  rate_bytes?: number;
+}
+
+export const validRateWindow = (w: RateWindow) => validWindow(w) && (w.action === 'pause' || (w.rate_bytes ?? 0) > 0);
 
 /** Weekday (Mon..Sun) and minutes since midnight of `t` (unix seconds) in time zone `tz`. */
+const formats = new Map<string, Intl.DateTimeFormat>();
 function local(t: number, tz: string): { day: number; mins: number } {
-  const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(
-    new Date(t * 1000),
-  );
+  let f = formats.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+    formats.set(tz, f);
+  }
+  const parts = f.formatToParts(new Date(t * 1000));
   const get = (k: string) => parts.find((p) => p.type === k)?.value ?? '';
   return { day: DAYS.indexOf(get('weekday') as (typeof DAYS)[number]), mins: Number(get('hour')) * 60 + Number(get('minute')) };
 }
 
 /** Whether one of the windows is active at `t` in `tz` (wall-clock approximation; the scheduler decides). */
-export function blackoutActive(windows: BlackoutWindow[], tz: string, t: number): boolean {
+export function blackoutActive(windows: Span[], tz: string, t: number): boolean {
   let l: { day: number; mins: number };
   try {
     l = local(t, tz);
@@ -129,7 +149,7 @@ export function blackoutActive(windows: BlackoutWindow[], tz: string, t: number)
     return false;
   }
   const mins = (s: string) => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5));
-  const on = (w: BlackoutWindow, d: number) => !w.days.length || w.days.includes(DAYS[(d + 7) % 7]);
+  const on = (w: Span, d: number) => !w.days.length || w.days.includes(DAYS[(d + 7) % 7]);
   return windows.some((w) => {
     const [f, to] = [mins(w.from), mins(w.to)];
     if (to > f) return on(w, l.day) && l.mins >= f && l.mins < to;
@@ -146,3 +166,31 @@ export function timeZones(): string[] {
 
 /** `paused_until` / `maintenance_until`: active now? (-1 = indefinitely) */
 export const isPaused = (until: number | null | undefined, t = Date.now() / 1000) => until === -1 || (!!until && until > t);
+
+/** Allowed bytes per second at `t` (0 = paused, Infinity = unlimited): pause > lowest active limit > base. */
+export function allowanceAt(windows: RateWindow[], base: number | null | undefined, tz: string, t: number): number {
+  const active = windows.filter((w) => blackoutActive([w], tz, t));
+  if (active.some((w) => w.action === 'pause')) return 0;
+  const rates = active.filter((w) => w.action === 'limit' && (w.rate_bytes ?? 0) > 0).map((w) => w.rate_bytes!);
+  return rates.length ? Math.min(...rates) : base || Infinity;
+}
+
+/** Sampled every 15 minutes over a week (the API decides exactly): does `next` allow more than `prev` somewhere? */
+export function bandwidthWeaker(
+  prev: { windows: RateWindow[]; base?: number | null; tz: string },
+  next: { windows: RateWindow[]; base?: number | null; tz: string },
+  from = Date.now() / 1000,
+): boolean {
+  for (let t = from; t < from + 7 * 86400; t += 900)
+    if (allowanceAt(next.windows, next.base, next.tz, t) > allowanceAt(prev.windows, prev.base, prev.tz, t)) return true;
+  return false;
+}
+
+/** Inside the sync window (none = always). */
+export const syncOpen = (spans: Span[], tz: string, t = Date.now() / 1000) => !spans.length || blackoutActive(spans, tz, t);
+
+/** Sampled like {@link bandwidthWeaker}: is `next` open somewhere `prev` is closed? */
+export function syncWidened(prev: Span[], prevTz: string, next: Span[], nextTz: string, from = Date.now() / 1000): boolean {
+  for (let t = from; t < from + 7 * 86400; t += 900) if (syncOpen(next, nextTz, t) && !syncOpen(prev, prevTz, t)) return true;
+  return false;
+}

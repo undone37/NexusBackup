@@ -593,7 +593,7 @@ async function main() {
       await closeDialogs();
       await ev(`$rowClick('initech', 'Edit'); return true;`);
       await until(`return !!document.querySelector('dialog[open] #t-host')`, 'tenant dialog');
-      await shot('tenant-sftp');
+      await shot('tenant-sftp', { height: 1250 });
       await closeDialogs();
     }],
     // Phase 17d: offsite-only snapshots, a tenant's offsite copy, attaching an offsite copy (two steps)
@@ -666,6 +666,11 @@ async function main() {
       await ev(`$fill('#s-name', 'branch-primary'); $fill('#s-url', 'backup-branch.example.net:8443'); $fill('#s-code', '5e6f708192a3b4c5.ABCDEFGHIJKLMNOPQRSTUVWXYZ');
         $fill('#s-fp', '9c4f1e2d7a0b3c5d6e8f9a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e4f5'); $fill('#s-tenants', 'umbrella'); $fill('#s-sched', 'daily 05:00'); return true;`);
       await shot('replication-source-new', { height: 1150 });
+      await closeDialogs();
+      // Phase 17a: sync window and bandwidth windows of a source
+      await ev(`$rowClick('hq-primary', 'Windows'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #w-tz')`, 'windows dialog');
+      await shot('replication-windows', { height: 1300 });
       await closeDialogs();
     }],
     ['policies', async () => {
@@ -937,6 +942,23 @@ async function main() {
       await confirmOk();
       await settle();
       await shot('snapshots-held');
+      await login('admin');
+    }],
+    // Phase 17b: a security officer closes the vault; reopening is requested by an admin and approved
+    ['vault-close', async () => {
+      await login('so');
+      await go('/replication');
+      await ev(`$rowClick('hq-primary', 'Close vault (pause pulling now)'); return true;`);
+      await confirmOk();
+      await settle();
+      await shot('replication-closed');
+      await login('admin');
+      await go('/replication');
+      await ev(`$rowClick('hq-primary', 'Request reopening'); return true;`);
+      await confirmOk();
+      await login('so');
+      const q = (await api('GET', '/quorum')).body.find((x) => x.action === 'replication.reopen' && x.state === 'pending');
+      await api('POST', `/quorum/${q.id}/approve`);
       await login('admin');
     }],
     ['approvals-off', async () => {

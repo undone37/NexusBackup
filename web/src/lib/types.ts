@@ -1,7 +1,7 @@
 // Shapes of the /api/v1 resources (docs/control-plane.md). Times are unix seconds.
 // JSON columns of the catalog (offsite, config, gfs, guests, params, details) arrive parsed.
 
-import type { BlackoutWindow } from './schedule';
+import type { BlackoutWindow, RateWindow, Span } from './schedule';
 
 export type Role = 'admin' | 'security_officer' | 'operator' | 'tenant_user' | 'viewer';
 
@@ -88,6 +88,9 @@ export interface TenantOffsite {
   remote?: SftpRemote | S3Remote;
   /** bytes per second over all uploaders */
   bwlimit?: number | null;
+  /** Phase 17a: pause / limit windows in `timezone` */
+  windows?: RateWindow[];
+  timezone?: string;
   uploaders?: number;
   host?: string;
   port?: number;
@@ -604,6 +607,14 @@ export interface ReplicationSource {
   created: number;
   last_sync: number | null;
   status: Record<string, ReplicationTenantStatus>;
+  /** Phase 17a: bandwidth windows, sync window (none = always), their time zone */
+  windows: RateWindow[];
+  sync_window: Span[];
+  timezone: string;
+  /** Phase 17b "close vault now": null = open, -1 = until reopened, else unix time */
+  closed_until: number | null;
+  closed_by: string | null;
+  closed_at: number | null;
 }
 
 export type QuorumState = 'pending' | 'approved' | 'rejected' | 'executed' | 'expired';

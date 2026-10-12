@@ -94,6 +94,7 @@ pub mod sshkeys;
 pub mod stats;
 mod tenant_key;
 mod tenants;
+mod windows;
 
 use anyhow::{bail, Context, Result};
 use catalog::rusqlite::{params, OptionalExtension};
@@ -708,6 +709,7 @@ impl Scheduler {
         self.log_err(|s| s.queue_scheduled(now));
         self.log_err(|s| s.queue_maintenance(now));
         self.log_err(|s| s.queue_replication(now));
+        self.log_err(|s| s.replication_windows(now));
         self.log_err(|s| s.execute_key_exports());
         self.log_err(|s| s.queue_ssh_rotations());
         self.log_err(|s| s.blackout_aborts(now));
@@ -1102,6 +1104,9 @@ impl Scheduler {
             if self.running.len() >= self.cfg.max_parallel {
                 break;
             }
+            if self.hold_offsite(&job)? {
+                continue; // pause window: waits for its end
+            }
             let plan = match self.plan(&job) {
                 Ok(p) => p,
                 Err(e) => {
@@ -1257,7 +1262,8 @@ impl Scheduler {
                 )?;
             }
         }
-        if job.kind.starts_with("replica_") {
+        // a cancelled sync (window closed, vault closed) is no error: the next one resumes
+        if job.kind.starts_with("replica_") && state != "cancelled" {
             self.replica_bookkeeping(&job, &log, ok)?;
         }
         if ok && (job.kind == "backup" || job.kind == "plugin_backup") {
@@ -2139,6 +2145,12 @@ impl Scheduler {
         for k in ["uploaders", "bwlimit"] {
             if let Some(n) = o[k].as_u64() {
                 cfg[k] = n.into();
+            }
+        }
+        // bandwidth windows (Phase 17a): nexus-offsite follows them while uploading
+        for k in ["windows", "timezone"] {
+            if !o[k].is_null() {
+                cfg[k] = o[k].clone();
             }
         }
         files.push(("offsite.json".into(), serde_json::to_vec_pretty(&cfg)?));

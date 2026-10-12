@@ -1,5 +1,7 @@
 //! Policy schedules, blackout windows and retry settings (Phase 13b, docs/control-plane.md
-//! "Run control"). Shared by the web-api (validation) and the scheduler (evaluation).
+//! "Run control"), bandwidth and sync windows (Phase 17a, [`Bandwidth`], [`Span`],
+//! [`Throttle`]). Shared by the web-api (validation), the scheduler and the
+//! transfer engines (evaluation).
 //!
 //! Schedule forms (all evaluated in a time zone, default UTC):
 //! - `hourly MM`, `every Nh` / `every Nh at MM` (N divides 24: slots at local hours 0, N, 2N, …)
@@ -19,8 +21,10 @@
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
-use chrono_tz::Tz;
+pub use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration as StdDuration, Instant};
 
 const DAY: i64 = 86400;
 pub const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -288,31 +292,55 @@ pub struct Window {
 
 impl Window {
     pub fn check(&self) -> Result<()> {
-        for d in &self.days {
-            weekday(d).with_context(|| format!("blackout: unknown day {d:?} (Mon..Sun)"))?;
-        }
-        let (f, t) = (hhmm(&self.from), hhmm(&self.to));
-        if f.is_none() || t.is_none() || f == t {
-            bail!("blackout: from/to must be different HH:MM times");
-        }
-        Ok(())
+        check_span(&self.days, &self.from, &self.to, "blackout")
     }
 
     /// Start (unix seconds) of the occurrence of this window that contains `now`.
     pub fn active_start(&self, tz: Tz, now: i64) -> Option<i64> {
-        let ((fh, fm), (th, tm)) = (hhmm(&self.from)?, hhmm(&self.to)?);
-        let today = local(tz, now).date_naive();
-        [today - Duration::days(1), today].into_iter().find_map(|d| {
-            let wd = DAYS[d.weekday().num_days_from_monday() as usize];
-            if !self.days.is_empty() && !self.days.iter().any(|x| x == wd) {
-                return None;
-            }
-            let start = to_utc(tz, d, fh, fm);
-            let end_day = if (th, tm) <= (fh, fm) { d + Duration::days(1) } else { d };
-            let end = to_utc(tz, end_day, th, tm);
-            (start <= now && now < end).then_some(start)
-        })
+        occurrence(&self.days, &self.from, &self.to, tz, now).map(|(s, _)| s)
     }
+}
+
+/// `[start, end)` (unix seconds) of the occurrence of a daily window (start
+/// days, local `from`–`to`, `to` <= `from` = over midnight) containing `now`.
+fn occurrence(days: &[String], from: &str, to: &str, tz: Tz, now: i64) -> Option<(i64, i64)> {
+    let ((fh, fm), (th, tm)) = (hhmm(from)?, hhmm(to)?);
+    let today = local(tz, now).date_naive();
+    [today - Duration::days(1), today].into_iter().find_map(|d| {
+        let wd = DAYS[d.weekday().num_days_from_monday() as usize];
+        if !days.is_empty() && !days.iter().any(|x| x == wd) {
+            return None;
+        }
+        let start = to_utc(tz, d, fh, fm);
+        let end_day = if (th, tm) <= (fh, fm) { d + Duration::days(1) } else { d };
+        let end = to_utc(tz, end_day, th, tm);
+        (start <= now && now < end).then_some((start, end))
+    })
+}
+
+fn check_span(days: &[String], from: &str, to: &str, what: &str) -> Result<()> {
+    for d in days {
+        weekday(d).with_context(|| format!("{what}: unknown day {d:?} (Mon..Sun)"))?;
+    }
+    let (f, t) = (hhmm(from), hhmm(to));
+    if f.is_none() || t.is_none() || f == t {
+        bail!("{what}: from/to must be different HH:MM times");
+    }
+    Ok(())
+}
+
+/// Unix times in `[start, start + days)` at which a window `from`/`to` may
+/// begin or end (every day, weekday filters ignored: a superset is enough).
+fn edges(from: &str, to: &str, tz: Tz, start: i64, days: i64) -> Vec<i64> {
+    let first = local(tz, start).date_naive() - Duration::days(1);
+    let mut out = Vec::new();
+    for (h, m) in [hhmm(from), hhmm(to)].into_iter().flatten() {
+        for i in 0..=days + 1 {
+            out.push(to_utc(tz, first + Duration::days(i), h, m));
+        }
+    }
+    out.retain(|t| (start..start + days * DAY).contains(t));
+    out
 }
 
 /// Earliest start of the windows active at `now` (and whether any of them aborts).
@@ -333,6 +361,282 @@ pub fn abort_since(windows: &[Window], tz: Tz, now: i64) -> Option<i64> {
         .filter(|w| w.abort)
         .filter_map(|w| w.active_start(tz, now))
         .min()
+}
+
+// ------------------------------------------------------------- bandwidth windows
+
+/// What a bandwidth window does while it is active.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Action {
+    /// no transfer at all
+    Pause,
+    /// at most `rate_bytes` per second
+    Limit,
+}
+
+/// A bandwidth window (offsite `windows`, replication source `windows`, Phase
+/// 17a): from `from` to `to` (local time of the tenant / source) on the given
+/// start days (empty = every day); `to` <= `from` ends on the next day.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RateWindow {
+    #[serde(default)]
+    pub days: Vec<String>,
+    pub from: String,
+    pub to: String,
+    pub action: Action,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_bytes: Option<u64>,
+}
+
+/// At most this many windows per list.
+pub const MAX_WINDOWS: usize = 32;
+
+impl RateWindow {
+    pub fn check(&self) -> Result<()> {
+        check_span(&self.days, &self.from, &self.to, "window")?;
+        match (self.action, self.rate_bytes) {
+            (Action::Limit, Some(r)) if r > 0 => Ok(()),
+            (Action::Limit, _) => bail!("window: action limit needs rate_bytes > 0"),
+            (Action::Pause, None) => Ok(()),
+            (Action::Pause, Some(_)) => bail!("window: action pause takes no rate_bytes"),
+        }
+    }
+}
+
+/// Validates a bandwidth window list.
+pub fn check_windows(w: &[RateWindow]) -> Result<()> {
+    if w.len() > MAX_WINDOWS {
+        bail!("at most {MAX_WINDOWS} windows");
+    }
+    w.iter().try_for_each(RateWindow::check)
+}
+
+/// Effective transfer limit at one point in time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Limit {
+    Unlimited,
+    /// bytes per second
+    Rate(u64),
+    Paused,
+}
+
+impl Limit {
+    /// Bytes per second allowed (paused 0, unlimited `u64::MAX`): smaller = more restrictive.
+    pub fn allowance(self) -> u64 {
+        match self {
+            Limit::Unlimited => u64::MAX,
+            Limit::Rate(r) => r,
+            Limit::Paused => 0,
+        }
+    }
+}
+
+/// A base limit plus bandwidth windows, evaluated in a time zone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bandwidth {
+    /// bytes per second outside limit windows (`None` = unlimited)
+    pub base: Option<u64>,
+    pub windows: Vec<RateWindow>,
+    pub tz: Tz,
+}
+
+impl Default for Bandwidth {
+    fn default() -> Self {
+        Bandwidth {
+            base: None,
+            windows: Vec::new(),
+            tz: Tz::UTC,
+        }
+    }
+}
+
+impl Bandwidth {
+    /// Pause beats limit beats the base; among several active limit windows the
+    /// lowest rate wins. A limit window replaces the base (it may also allow
+    /// more, e.g. a faster night).
+    pub fn limit_at(&self, now: i64) -> Limit {
+        let mut rate: Option<u64> = None;
+        for w in &self.windows {
+            if occurrence(&w.days, &w.from, &w.to, self.tz, now).is_none() {
+                continue;
+            }
+            match (w.action, w.rate_bytes) {
+                (Action::Pause, _) => return Limit::Paused,
+                (Action::Limit, Some(r)) if r > 0 => rate = Some(rate.map_or(r, |x| x.min(r))),
+                (Action::Limit, _) => {}
+            }
+        }
+        match rate.or(self.base.filter(|b| *b > 0)) {
+            Some(r) => Limit::Rate(r),
+            None => Limit::Unlimited,
+        }
+    }
+
+    /// End of the pause active at `now` (chained pauses followed), `None` if not paused.
+    pub fn paused_until(&self, now: i64) -> Option<i64> {
+        let mut t = now;
+        for _ in 0..64 {
+            let end = self
+                .windows
+                .iter()
+                .filter(|w| w.action == Action::Pause)
+                .filter_map(|w| occurrence(&w.days, &w.from, &w.to, self.tz, t).map(|(_, e)| e))
+                .max();
+            match end {
+                Some(e) => t = e,
+                None => break,
+            }
+        }
+        (t > now).then_some(t)
+    }
+
+    /// Whether `new` allows more than `self` at some time in the 8 days from
+    /// `from`: a weakening (more bandwidth, a pause removed or shortened).
+    pub fn weaker(&self, new: &Bandwidth, from: i64) -> bool {
+        let mut ts = vec![from];
+        for b in [self, new] {
+            for w in &b.windows {
+                ts.extend(edges(&w.from, &w.to, b.tz, from, 8));
+            }
+        }
+        ts.into_iter()
+            .any(|t| new.limit_at(t).allowance() > self.limit_at(t).allowance())
+    }
+}
+
+/// A sync window span (replication source `sync_window`): syncs only from
+/// `from` to `to` on the given start days (empty = every day).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Span {
+    #[serde(default)]
+    pub days: Vec<String>,
+    pub from: String,
+    pub to: String,
+}
+
+/// Validates a sync window.
+pub fn check_spans(s: &[Span]) -> Result<()> {
+    if s.len() > MAX_WINDOWS {
+        bail!("at most {MAX_WINDOWS} windows");
+    }
+    s.iter()
+        .try_for_each(|x| check_span(&x.days, &x.from, &x.to, "sync window"))
+}
+
+/// Inside the sync window (no spans = always).
+pub fn sync_open(spans: &[Span], tz: Tz, now: i64) -> bool {
+    spans.is_empty()
+        || spans
+            .iter()
+            .any(|s| occurrence(&s.days, &s.from, &s.to, tz, now).is_some())
+}
+
+/// Whether the sync window `new` is open at some time (within 8 days from
+/// `from`) where `old` is closed: a widening.
+pub fn sync_widened(old: &[Span], old_tz: Tz, new: &[Span], new_tz: Tz, from: i64) -> bool {
+    let mut ts = vec![from];
+    for (s, tz) in old.iter().map(|s| (s, old_tz)).chain(new.iter().map(|s| (s, new_tz))) {
+        ts.extend(edges(&s.from, &s.to, tz, from, 8));
+    }
+    ts.into_iter()
+        .any(|t| sync_open(new, new_tz, t) && !sync_open(old, old_tz, t))
+}
+
+/// Shared rate limiter of several transfer threads following a [`Bandwidth`]
+/// (offsite uploaders, replication chunk workers). The effective limit is
+/// re-evaluated every `recheck`; a new limit starts a new token bucket.
+pub struct Throttle {
+    bw: Bandwidth,
+    clock: Arc<dyn Fn() -> i64 + Send + Sync>,
+    recheck: StdDuration,
+    st: Mutex<ThrottleState>,
+}
+
+struct ThrottleState {
+    limit: Limit,
+    checked: Option<Instant>,
+    start: Instant,
+    bytes: u64,
+}
+
+impl Throttle {
+    /// Wall clock, re-evaluated every 10 s.
+    pub fn new(bw: Bandwidth) -> Self {
+        Self::with_clock(bw, Arc::new(crate::now), StdDuration::from_secs(10))
+    }
+
+    pub fn with_clock(bw: Bandwidth, clock: Arc<dyn Fn() -> i64 + Send + Sync>, recheck: StdDuration) -> Self {
+        Throttle {
+            bw,
+            clock,
+            recheck,
+            st: Mutex::new(ThrottleState {
+                limit: Limit::Unlimited,
+                checked: None,
+                start: Instant::now(),
+                bytes: 0,
+            }),
+        }
+    }
+
+    fn refresh(&self, st: &mut ThrottleState) -> Limit {
+        if st.checked.is_none_or(|c| c.elapsed() >= self.recheck) {
+            let l = self.bw.limit_at((self.clock)());
+            if l != st.limit || st.checked.is_none() {
+                st.limit = l;
+                st.start = Instant::now();
+                st.bytes = 0;
+            }
+            st.checked = Some(Instant::now());
+        }
+        st.limit
+    }
+
+    fn slice(&self) -> StdDuration {
+        self.recheck
+            .clamp(StdDuration::from_millis(200), StdDuration::from_secs(10))
+    }
+
+    /// The limit in force now.
+    pub fn limit(&self) -> Limit {
+        self.refresh(&mut self.st.lock().unwrap())
+    }
+
+    /// Blocks while a pause window is active; true if it waited (callers
+    /// reconnect: an idle connection may have been dropped).
+    pub fn wait_open(&self) -> bool {
+        let mut waited = false;
+        while self.limit() == Limit::Paused {
+            waited = true;
+            std::thread::sleep(self.slice());
+        }
+        waited
+    }
+
+    /// After `n` bytes were transferred: sleeps as long as the current rate
+    /// requires (in slices, so a window change takes effect within one).
+    pub fn account(&self, n: u64) {
+        let mut add = n;
+        loop {
+            let wait = {
+                let mut st = self.st.lock().unwrap();
+                match self.refresh(&mut st) {
+                    Limit::Rate(r) => {
+                        st.bytes += std::mem::take(&mut add);
+                        StdDuration::from_secs_f64(st.bytes as f64 / r as f64).checked_sub(st.start.elapsed())
+                    }
+                    _ => None,
+                }
+            };
+            match wait {
+                Some(w) if !w.is_zero() => std::thread::sleep(w.min(self.slice())),
+                _ => return,
+            }
+        }
+    }
 }
 
 // ------------------------------------------------------------- retry
@@ -621,5 +925,238 @@ mod tests {
                 .check()
                 .is_err()
         );
+    }
+
+    fn rw(days: &[&str], from: &str, to: &str, rate: Option<u64>) -> RateWindow {
+        RateWindow {
+            days: days.iter().map(|d| d.to_string()).collect(),
+            from: from.into(),
+            to: to.into(),
+            action: if rate.is_some() { Action::Limit } else { Action::Pause },
+            rate_bytes: rate,
+        }
+    }
+
+    fn span(days: &[&str], from: &str, to: &str) -> Span {
+        Span {
+            days: days.iter().map(|d| d.to_string()).collect(),
+            from: from.into(),
+            to: to.into(),
+        }
+    }
+
+    #[test]
+    fn bandwidth_windows() {
+        // D is a Friday; business hours limited, a pause over midnight, base 10 MB/s
+        let bw = Bandwidth {
+            base: Some(10_000_000),
+            windows: vec![
+                rw(&["Mon", "Tue", "Wed", "Thu", "Fri"], "08:00", "18:00", Some(1_000_000)),
+                rw(&[], "12:00", "13:00", Some(500_000)),
+                rw(&["Thu"], "23:00", "02:00", None),
+            ],
+            tz: Tz::UTC,
+        };
+        assert!(check_windows(&bw.windows).is_ok());
+        assert_eq!(bw.limit_at(D + 7 * HOUR), Limit::Rate(10_000_000), "base");
+        assert_eq!(bw.limit_at(D + 9 * HOUR), Limit::Rate(1_000_000));
+        assert_eq!(
+            bw.limit_at(D + 12 * HOUR + 30 * 60),
+            Limit::Rate(500_000),
+            "lowest rate wins"
+        );
+        assert_eq!(bw.limit_at(D + 18 * HOUR), Limit::Rate(10_000_000), "end exclusive");
+        // midnight wrap: Thursday 23:00 → Friday 02:00
+        assert_eq!(bw.limit_at(D + HOUR), Limit::Paused);
+        assert_eq!(bw.limit_at(D - HOUR), Limit::Paused);
+        assert_eq!(bw.limit_at(D + 2 * HOUR), Limit::Rate(10_000_000));
+        assert_eq!(
+            bw.limit_at(D + 23 * HOUR + 30 * 60),
+            Limit::Rate(10_000_000),
+            "Friday not listed"
+        );
+        assert_eq!(bw.paused_until(D + HOUR), Some(D + 2 * HOUR));
+        assert_eq!(bw.paused_until(D + 3 * HOUR), None);
+        // a limit window may allow more than the base; no base = unlimited
+        let night = Bandwidth {
+            base: Some(1000),
+            windows: vec![rw(&[], "22:00", "06:00", Some(50_000))],
+            tz: Tz::UTC,
+        };
+        assert_eq!(night.limit_at(D + 23 * HOUR), Limit::Rate(50_000));
+        assert_eq!(Bandwidth::default().limit_at(D), Limit::Unlimited);
+        // chained pauses: 01:00–03:00 then 02:30–05:00
+        let chain = Bandwidth {
+            windows: vec![rw(&[], "01:00", "03:00", None), rw(&[], "02:30", "05:00", None)],
+            ..Default::default()
+        };
+        assert_eq!(chain.paused_until(D + HOUR + 60), Some(D + 5 * HOUR));
+        for bad in [
+            rw(&[], "01:00", "01:00", None),
+            rw(&["xx"], "01:00", "02:00", None),
+            RateWindow {
+                rate_bytes: Some(0),
+                ..rw(&[], "01:00", "02:00", Some(1))
+            },
+            RateWindow {
+                rate_bytes: None,
+                ..rw(&[], "01:00", "02:00", Some(1))
+            },
+            RateWindow {
+                rate_bytes: Some(5),
+                ..rw(&[], "01:00", "02:00", None)
+            },
+        ] {
+            assert!(bad.check().is_err(), "{bad:?}");
+        }
+        assert!(check_windows(&vec![rw(&[], "01:00", "02:00", None); MAX_WINDOWS + 1]).is_err());
+        let j: Vec<RateWindow> =
+            serde_json::from_str(r#"[{"from":"08:00","to":"18:00","action":"limit","rate_bytes":5}]"#).unwrap();
+        assert_eq!(j[0].action, Action::Limit);
+        assert!(serde_json::from_str::<Vec<RateWindow>>(r#"[{"from":"08:00","to":"18:00","action":"stop"}]"#).is_err());
+    }
+
+    #[test]
+    fn bandwidth_dst() {
+        let berlin: Tz = "Europe/Berlin".parse().unwrap();
+        // spring forward 2025-03-30 02:00 → 03:00: a pause 01:00–04:00 local is 2 h long
+        let d = NaiveDate::from_ymd_opt(2025, 3, 30).unwrap();
+        let day0 = d.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
+        let bw = Bandwidth {
+            windows: vec![rw(&[], "01:00", "04:00", None)],
+            tz: berlin,
+            ..Default::default()
+        };
+        // 01:00 CET = 00:00 UTC, 04:00 CEST = 02:00 UTC
+        assert_eq!(bw.limit_at(day0 - 1), Limit::Unlimited);
+        assert_eq!(bw.limit_at(day0), Limit::Paused);
+        assert_eq!(bw.paused_until(day0 + 60), Some(day0 + 2 * HOUR));
+        assert_eq!(bw.limit_at(day0 + 2 * HOUR), Limit::Unlimited);
+        // a window starting inside the gap (02:30) starts after it (03:30 CEST = 01:30 UTC)
+        let gap = Bandwidth {
+            windows: vec![rw(&[], "02:30", "05:00", Some(7))],
+            tz: berlin,
+            ..Default::default()
+        };
+        assert_eq!(gap.limit_at(day0 + HOUR + 29 * 60), Limit::Unlimited);
+        assert_eq!(gap.limit_at(day0 + HOUR + 30 * 60), Limit::Rate(7));
+        // fall back 2025-10-26: 01:00–04:00 local is 4 h long (23:00–03:00 UTC)
+        let d = NaiveDate::from_ymd_opt(2025, 10, 26).unwrap();
+        let day0 = d.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
+        assert_eq!(bw.limit_at(day0 - HOUR), Limit::Paused);
+        assert_eq!(bw.limit_at(day0 + 2 * HOUR + 59 * 60), Limit::Paused);
+        assert_eq!(bw.limit_at(day0 + 3 * HOUR), Limit::Unlimited);
+    }
+
+    #[test]
+    fn weakening() {
+        let pause = rw(&[], "08:00", "18:00", None);
+        let old = Bandwidth {
+            base: Some(1000),
+            windows: vec![pause.clone()],
+            tz: Tz::UTC,
+        };
+        let with = |w: Vec<RateWindow>| Bandwidth {
+            windows: w,
+            ..old.clone()
+        };
+        assert!(!old.weaker(&old, D), "unchanged");
+        assert!(old.weaker(&with(vec![]), D), "pause removed");
+        assert!(
+            old.weaker(&with(vec![rw(&[], "09:00", "18:00", None)]), D),
+            "pause shortened"
+        );
+        assert!(
+            !old.weaker(&with(vec![rw(&[], "07:00", "19:00", None)]), D),
+            "pause widened"
+        );
+        assert!(
+            !old.weaker(&with(vec![pause.clone(), rw(&[], "20:00", "22:00", Some(10))]), D),
+            "a lower limit added"
+        );
+        assert!(
+            old.weaker(&with(vec![pause.clone(), rw(&[], "20:00", "22:00", Some(5000))]), D),
+            "a faster window added"
+        );
+        assert!(
+            old.weaker(&with(vec![rw(&["Mon"], "08:00", "18:00", None)]), D),
+            "pause only on Mondays"
+        );
+        assert!(
+            old.weaker(
+                &Bandwidth {
+                    tz: "Asia/Tokyo".parse().unwrap(),
+                    ..old.clone()
+                },
+                D
+            ),
+            "time zone moved the pause"
+        );
+        assert!(
+            old.weaker(
+                &Bandwidth {
+                    base: None,
+                    ..old.clone()
+                },
+                D
+            ),
+            "base removed"
+        );
+        // sync windows
+        let night = vec![span(&[], "22:00", "06:00")];
+        assert!(sync_open(&night, Tz::UTC, D + HOUR) && !sync_open(&night, Tz::UTC, D + 12 * HOUR));
+        assert!(sync_open(&[], Tz::UTC, D), "no window: always");
+        assert!(!sync_widened(&night, Tz::UTC, &night, Tz::UTC, D));
+        assert!(
+            !sync_widened(&night, Tz::UTC, &[span(&[], "23:00", "05:00")], Tz::UTC, D),
+            "narrower"
+        );
+        assert!(
+            sync_widened(&night, Tz::UTC, &[span(&[], "21:00", "06:00")], Tz::UTC, D),
+            "wider"
+        );
+        assert!(sync_widened(&night, Tz::UTC, &[], Tz::UTC, D), "removed = always open");
+        assert!(!sync_widened(&[], Tz::UTC, &night, Tz::UTC, D), "added");
+        assert!(check_spans(&night).is_ok() && check_spans(&[span(&["x"], "01:00", "02:00")]).is_err());
+    }
+
+    #[test]
+    fn throttle_follows_the_windows() {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        let clock = Arc::new(AtomicI64::new(D + 9 * HOUR));
+        let c = clock.clone();
+        let th = Throttle::with_clock(
+            Bandwidth {
+                base: None,
+                windows: vec![
+                    rw(&[], "08:00", "10:00", Some(100_000)),
+                    rw(&[], "10:00", "11:00", None),
+                ],
+                tz: Tz::UTC,
+            },
+            Arc::new(move || c.load(Ordering::Relaxed)),
+            StdDuration::ZERO,
+        );
+        assert_eq!(th.limit(), Limit::Rate(100_000));
+        let t0 = Instant::now();
+        th.account(30_000);
+        assert!(t0.elapsed() >= StdDuration::from_millis(250), "{:?}", t0.elapsed());
+        // the window ends: unlimited at once
+        clock.store(D + 12 * HOUR, Ordering::Relaxed);
+        let t0 = Instant::now();
+        th.account(10_000_000);
+        assert!(t0.elapsed() < StdDuration::from_millis(100));
+        assert!(!th.wait_open());
+        // a pause blocks until it ends
+        clock.store(D + 10 * HOUR + 30 * 60, Ordering::Relaxed);
+        let c = clock.clone();
+        let h = std::thread::spawn(move || {
+            std::thread::sleep(StdDuration::from_millis(300));
+            c.store(D + 11 * HOUR, Ordering::Relaxed);
+        });
+        let t0 = Instant::now();
+        assert!(th.wait_open());
+        assert!(t0.elapsed() >= StdDuration::from_millis(250));
+        h.join().unwrap();
     }
 }

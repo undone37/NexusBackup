@@ -10,6 +10,7 @@ use crate::{
     SnapshotInfo, ALPN_ENROLL, ALPN_PEER, CN_PREFIX, EXPORTER_LABEL, MAX_CHUNK, MAX_FILE, MISSING, PREFIX,
 };
 use anyhow::{anyhow, bail, Context, Result};
+use catalog::schedule::{Bandwidth, Throttle};
 use chunkstore::retention::{keep, Gfs};
 use chunkstore::{ChunkId, Options, Store};
 use rustls::pki_types::pem::PemObject;
@@ -23,7 +24,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Ids per chunk request (≤ MAX_IDS); small enough to spread over the workers.
 const BATCH: usize = 128;
@@ -139,8 +140,9 @@ pub struct SyncParams {
     pub gfs: Gfs,
     /// parallel connections for chunk downloads
     pub parallel: usize,
-    /// bytes per second (None = unlimited)
-    pub bwlimit: Option<u64>,
+    /// bytes per second (`base`, None = unlimited) and the bandwidth windows
+    /// (pause / limit, Phase 17a), re-evaluated while fetching
+    pub bandwidth: Bandwidth,
     /// `(source, time)` under a legal hold applied on this appliance: kept by
     /// the local retention
     pub held: BTreeSet<(String, u64)>,
@@ -227,22 +229,6 @@ impl Peer {
             bail!("{path}: {}", crate::http::error_text(s, &b));
         }
         Ok(b)
-    }
-}
-
-struct Limiter {
-    rate: u64,
-    start: Instant,
-    bytes: AtomicU64,
-}
-
-impl Limiter {
-    fn account(&self, n: u64) {
-        let total = self.bytes.fetch_add(n, Ordering::Relaxed) + n;
-        let due = Duration::from_secs_f64(total as f64 / self.rate as f64);
-        if let Some(wait) = due.checked_sub(self.start.elapsed()) {
-            std::thread::sleep(wait);
-        }
     }
 }
 
@@ -365,11 +351,7 @@ fn sync_inner(
         report.skipped_by_retention
     ));
 
-    let limiter = p.bwlimit.filter(|r| *r > 0).map(|rate| Limiter {
-        rate,
-        start: Instant::now(),
-        bytes: AtomicU64::new(0),
-    });
+    let limiter = (p.bandwidth != Bandwidth::default()).then(|| Throttle::new(p.bandwidth.clone()));
     // 3. per snapshot: manifest + indexes (verified), missing chunks (verified), commit
     for s in wanted {
         let id = format!("{}/{}", s.source, s.time);
@@ -487,7 +469,7 @@ fn fetch_chunks(
     cfg: &Arc<ClientConfig>,
     store: &Store,
     ids: Vec<ChunkId>,
-    limiter: Option<&Limiter>,
+    limiter: Option<&Throttle>,
 ) -> Result<(u64, u64)> {
     if ids.is_empty() {
         return Ok((0, 0));
@@ -506,6 +488,10 @@ fn fetch_chunks(
                     loop {
                         if stop.load(Ordering::Relaxed) {
                             return Ok(());
+                        }
+                        // a pause window: wait, then start over on a fresh connection
+                        if limiter.is_some_and(Throttle::wait_open) {
+                            conn = Conn::connect(&p.target, cfg.clone())?;
                         }
                         let Some(batch) = queue.lock().unwrap().pop_front() else {
                             return Ok(());

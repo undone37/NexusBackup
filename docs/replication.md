@@ -191,9 +191,36 @@ import into a tenant with local DEKs). A source may be added to a replicated ten
 (e.g. the DR site's PVE cluster for full VM restores). The scheduler never creates a DEK for them (`ensure`
 is skipped; jobs that open the store wait until the first sync imported the keys).
 
-**Alerts (secondary)**: `replication_lag` (warning, no successful sync of a source/tenant for > 48 h),
+**Alerts (secondary)**: `replication_lag` (warning, no successful sync of a source/tenant for > 48 h; not while
+the source is closed), `vault_closed` (info, while closed),
 `replication_keys` (critical, key version mismatch / no export), `replication_verify` (critical,
 verification failure), plus the generic `job_failed`.
+
+### Windows and closing the vault (Phase 17a/b)
+Per replication source (catalog v24, all in `timezone`, IANA, default UTC):
+
+- `windows`: bandwidth windows `[{days, from, to, action: "pause"|"limit", rate_bytes?}]` (shared type
+  `catalog::schedule::RateWindow`). `nexus-replica` gets them with `bwlimit` and `timezone` in its job config;
+  the chunk workers share one `catalog::schedule::Throttle`, which re-evaluates the effective limit every 10 s
+  (pause > lowest active limit > base `bwlimit`; a limit window replaces the base while active) and starts a
+  new token bucket on a change. In a pause a worker waits before its next batch and then reconnects.
+- `sync_window`: `[{days, from, to}]` (empty = always). Outside it the source is closed for traffic: no
+  firewall target (`replication_targets`), no queued syncs, the manual sync is refused (409) and
+  `plan_replica` refuses to start one. When the window closes, `Scheduler::replication_windows` cancels queued
+  syncs and sets `cancel_by = 'sync_window'` on running ones (the existing cancel path: SIGTERM to the process
+  group, SIGKILL after the grace period). A cancelled sync records no error. It resumes on the next run: step 5
+  writes verified chunks before the manifest, so the next sync finds them (`touch_chunk`) and only fetches
+  what is missing (test `bandwidth_windows_and_resume_after_cancel`).
+- `closed_until` / `closed_by` / `closed_at` ("close vault now"): `POST …/close {until?}` (admin, security
+  officer, direct, audited `replication_source.close`) sets `closed_until` (-1 = until reopened); a closure
+  can be extended but never shortened. The web-api cancels queued syncs and requests the cancel of running
+  ones at once; the scheduler drops the firewall target on its next tick and keeps the info alert
+  `vault_closed:<id>` open (no `replication_lag` meanwhile). `POST …/reopen` → quorum `replication.reopen`
+  (executed by the web-api on approval: `closed_until` etc. NULL).
+
+Changing the windows: a tightening applies directly; a weakening (`Bandwidth::weaker`: more allowance at
+some breakpoint of the next 8 days; `sync_widened`: open where it was closed; another time zone usually is
+both) goes through quorum `replication_source.update` like a lower GFS.
 
 ### Legal holds (Phase 15c)
 After the snapshots, `nexus-replica sync` fetches `GET …/tenants/{t}/holds` (`[HoldInfo {source, time, reason,
@@ -222,13 +249,15 @@ Migration 7 (applied after v6, the NAS connector's rebuild of `sources` for kind
 | `DELETE /replication/peers/{id}` | admin | → 202 quorum `replication_peer.delete`: state `revoked`, token and key exports dropped, fingerprint refused immediately |
 | `GET /replication/sources` | read (admin, security_officer, operator) | status per tenant, own keyd fingerprint |
 | `POST /replication/sources {name, url, code, fingerprint, tenants, schedule, gfs?, bwlimit?}` | admin | → 201 + `replica_enroll` job id; creates missing tenants |
-| `PUT /replication/sources/{id} {schedule?, gfs?, bwlimit?}` | admin | lowering any GFS value → quorum `replication_source.update` |
+| `PUT /replication/sources/{id} {schedule?, gfs?, bwlimit?, windows?, sync_window?, timezone?}` | admin | lowering any GFS value or weakening the windows → quorum `replication_source.update` |
+| `POST /replication/sources/{id}/close {until?}` | admin, security_officer | "close vault now", direct; 409 if it would shorten a closure |
+| `POST /replication/sources/{id}/reopen` | admin, security_officer | → quorum `replication.reopen` (approved by another approver) |
 | `POST /replication/sources/{id}/enroll` | admin | retry enrollment (needs a new code if the old one was consumed: `{code}`) |
 | `POST /replication/sources/{id}/sync` | admin, operator | queues `replica_sync` for each tenant → 202 `{jobs}` |
 | `DELETE /replication/sources/{id}` | admin | → quorum `replication_source.delete` (stops replication; replicated snapshots stay under retention) |
 
 Audit actions: `replication_peer.create|enrolled|delete`, `replication.key_export`,
-`replication.session_start|session_end|denied`, `replication_source.create|update|delete`,
+`replication.session_start|session_end|denied`, `replication_source.create|update|delete|close`, `replication.reopen`,
 `replication_source.enrolled` (scheduler). Job kinds: `replica_enroll` (admin), `replica_sync`.
 
 ## 10. OS integration
@@ -243,8 +272,8 @@ Audit actions: `replication_peer.create|enrolled|delete`, `replication.key_expor
   (`nexus_replicad_var_run_t`) besides its existing rules; `nexus_replica_t` (job domain like offsite:
   store rw, keyd, connect to `http_port_t`/unreserved, its key dir `nexus_replica_key_t`, nobody else
   reads it).
-- nftables: the scheduler adds every replication source's `host:port` to the outbound allow-list. The
-  primary needs no rule (8443 inbound already exists).
+- nftables: the scheduler adds every replication source's `host:port` to the outbound allow-list while it
+  is open and inside its sync window (Phase 17a/b). The primary needs no rule (8443 inbound already exists).
 
 ## 11. Tests and lab results
 

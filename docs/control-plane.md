@@ -60,7 +60,7 @@ replicad); it streams replicad's answers to replication peers without opening st
 | `forward_state` (v16) | sink PK (`syslog`,`https`), dest, audit_seq, event_seq (last delivered), last_ok, last_error, last_error_ts, failing_since |
 | `alerts` | id, ts (first seen), severity, kind, message (latest), acked_by; v12 (13f lifecycle): key (dedup key, one open alert per key), tenant, count, last_ts, resolved_at, resolved_by, note, auto (resolved by the scheduler), notified_ts (last delivery; NULL = due) |
 | `replication_peers` (v7, primary) | id (16 hex), name, tenants (JSON), state (`pending`,`approved`,`enrolled`,`revoked`), cert_sha256, keyd_pub, token_hash (`sealed:v1:` to replicad), token_expires, enroll_failures, key_exports (JSON, DEKs sealed to the peer's keyd), created, created_by, enrolled_at, last_seen, revoked |
-| `replication_sources` (v7, secondary) | id, name, url (`host:port`), peer_id, cert_pin, tenants (JSON), schedule, gfs, bwlimit, token_hash (`sealed:v1:` to the scheduler), state (`enrolling`,`enrolled`,`failed`), cert_sha256, keyd_pub, created, last_sync, status (JSON per tenant) |
+| `replication_sources` (v7, secondary) | id, name, url (`host:port`), peer_id, cert_pin, tenants (JSON), schedule, gfs, bwlimit, token_hash (`sealed:v1:` to the scheduler), state (`enrolling`,`enrolled`,`failed`), cert_sha256, keyd_pub, created, last_sync, status (JSON per tenant); v24: windows, sync_window (JSON), timezone, closed_until (-1 = until reopened), closed_by, closed_at |
 
 `snapshots.origin` (v7): NULL for local backups, else the replication source the snapshot came from. `snapshots.consistency` (v20): `application`/`crash`/`inconsistent`/`unknown`/NULL; `snapshots.meta` (v23, Phase 18b): the plugin's snapshot metadata (protocol v1.8 `SnapshotMeta`, a JSON object ≤ 16 KiB, e.g. PostgreSQL's `{"recoverable": {from_time, from_lsn, to_time, to_lsn, timeline}}`), taken from the plugin host's `result` line by `crates/scheduler/src/snapmeta.rs` when a `plugin_backup` job ends (NULL otherwise; the snapshot refresh keeps it); `policies.require_consistency` (v20): JSON `{mode, level}` (see Consistency).
 
@@ -325,6 +325,21 @@ mapped, setuid/setgid/sticky cleared, devices/sockets skipped, only xattrs the t
   `commit_snapshot` writes the indexes first and the manifest last (atomic rename), snapshots without a manifest are
   not listed, and unreferenced chunks go with the next GC after its grace period. In-process steps (retention, GC,
   verify) are not interrupted.
+
+## Bandwidth and sync windows, close vault (Phase 17a/b, `catalog::schedule`, `scheduler/src/windows.rs`)
+- **Window type** (`catalog::schedule`): `RateWindow {days, from, to, action: pause|limit, rate_bytes?}` and the
+  sync-window `Span {days, from, to}`, evaluated like blackout windows (start days, `to <= from` = over midnight,
+  time zone incl. DST). `Bandwidth {base, windows, tz}::limit_at(t)`: pause > lowest active limit > base; a limit
+  window replaces the base while active. `paused_until` follows chained pauses. `weaker` / `sync_widened` compare
+  two configurations at every window edge of the next 8 days (the web-api's weakening test).
+- **Transfers**: `Throttle` (one per upload / sync, shared by the worker threads) re-evaluates the limit every 10 s,
+  starts a new token bucket when it changes, sleeps in slices so a change takes effect within one, and blocks in
+  `wait_open` during a pause. Offsite: `nexus-offsite` gets `bwlimit`, `windows`, `timezone` from `tenants.offsite`
+  (the uploaders wait before each pack); an `offsite` job that would start in a pause gets `not_before` = end of the
+  pause instead (`hold_offsite` in `start_jobs`). Replication: see docs/replication.md "Windows and closing the vault".
+- **Gating**: tenant offsite: a change that only tightens `bwlimit`/`windows`/`timezone` of an existing target applies
+  directly, anything else stays quorum `tenant.update`. Replication sources: weakening → `replication_source.update`
+  quorum; reopening a closed vault → `replication.reopen`.
 
 ## Restore options (Phase 15a, `crates/pve/src/restore.rs`, `crates/scheduler/src/restore.rs`)
 - `restore` / `restore_ct` / `instant_recover` params: `source, time, node, target, storage` plus optional `name`
