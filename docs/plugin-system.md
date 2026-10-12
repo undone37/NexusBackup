@@ -253,6 +253,25 @@ Limits: 64 tags per guest, 128 bytes each (`check`); the host keeps only printab
 need GroupMember.Read.All and are left for 17a. Tested: `crates/plugin-proto` (wire compatibility, limits),
 `plugins/m365/tests/m365.rs` (tags).
 
+## v1.6 — restore into another source; lists of objects in configs (2026-10-12, Phase 18a)
+Manifest and job parameters only; protocol and `api: 1` unchanged.
+- **`target_source: true`** on a restore spec: the restore may run with the config (credentials, endpoints) of
+  **another source of the same kind and appliance tenant**. Job `plugin_restore` takes `target_source_id` next to
+  `params`. The web-api refuses it for restores without the flag, for sources of other tenants (also for admins:
+  sources and their secrets belong to one tenant) or kinds, and for mounts; the scheduler checks tenant, kind and
+  flag again, opens the target's sealed secrets and passes `restore.target {source_id, config}` to
+  `nexus-pluginhost`, which refuses a target for a restore without the flag (an older web-api cannot bypass it),
+  runs the plugin with the target's config (its endpoints open the sandbox ports) and adds `target_source_id` to
+  the restore's init params. Snapshot and store stay those of the original source. UI: a **Target source** select
+  in the restore dialog (sources of the snapshot's tenant and kind). Use: Microsoft 365 `to_other` into another
+  M365 tenant (docs/m365.md). Tested: `crates/web-api/tests/plugins.rs`, `crates/plugin-host` (unit + host test),
+  `plugins/m365/tests/apps_chats.rs`.
+- **Lists of objects** in `config_schema`: a property `{"type": "array", "items": {"type": "object", "properties":
+  {…scalars…}, "required": […]}}` (M365 `apps`). The web-api validates every item like an object (unknown
+  properties refused). `secret_fields` names apply inside the items as well (sealed at `/apps/<i>/<field>`,
+  returned as `<field>_set` per item, kept on update when the item's other fields are unchanged at the same
+  position; a moved or new item must bring its secrets again). The form renders such lists as repeatable groups.
+
 ## v1.4 — restores per snapshot kind (2026-10-11, docs/phase12-contract.md §6)
 Manifest only; protocol and API version unchanged (`api: 1`). A restore spec may name `"applies_to"`: `"guest"`
 (offered only on snapshots of one guest, `plugin-<p>-<sid>-<guest>`), `"source"` (only on whole-source snapshots,

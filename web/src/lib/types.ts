@@ -687,8 +687,9 @@ export interface JsonSchema {
   type?: 'object' | 'string' | 'integer' | 'boolean' | 'array';
   properties?: Record<string, JsonSchema>;
   required?: string[];
-  /** arrays: items are strings */
+  /** arrays: items are strings, or objects of scalar properties (contract v1.6) */
   items?: JsonSchema;
+  maxItems?: number;
   enum?: (string | number)[];
   minimum?: number;
   maximum?: number;
@@ -708,6 +709,8 @@ export interface PluginRestore {
   app_specific?: boolean;
   /** manifest v1.4: which snapshots the restore applies to (default `any`) */
   applies_to?: 'guest' | 'source' | 'any';
+  /** manifest v1.6: may run with another source of the same kind (job `target_source_id`) */
+  target_source?: boolean;
 }
 
 export interface PluginEndpoint {

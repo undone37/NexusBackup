@@ -525,6 +525,27 @@ async function main() {
       await shot('snapshot-pg-to-target');
       await closeDialogs();
     }],
+    // Phase 18a: Microsoft 365 source with further app registrations; restore into another M365 tenant
+    ['m365', async () => {
+      const sources = (await api('GET', '/sources')).body;
+      const m = sources.find((s) => s.name === 'm365-acme');
+      const target = sources.find((s) => s.name === 'm365-acme-new');
+      const src = `plugin-m365-${m.id}-u.0c9d1c7a-1111-4222-8333-444455556666`;
+      await go('/sources');
+      await ev(`$rowClick('m365-acme', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] form')`, 'M365 source dialog');
+      await sleep(300);
+      await shot('source-m365', { height: 2100 });
+      await closeDialogs();
+      await go(`/snapshots?source=${src}`);
+      await ev(`$rowClick('${src}', 'Restore'); return true;`);
+      await until(`return !!$button('Restore to another user')`, 'restore menu');
+      await ev(`$click('Restore to another user'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #pr-target')`, 'restore dialog with target source');
+      await ev(`$fill('#pr-target', '${target.id}'); const i = $scope().querySelector('input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, 'alice@acmegroup.example'); i.dispatchEvent(new Event('input', { bubbles: true })); return true;`);
+      await shot('snapshot-m365-other-tenant');
+      await closeDialogs();
+    }],
     ['storage', async () => {
       await go('/storage');
       await until(`return !!document.querySelector('#s-group-table')`, 'storage page');

@@ -399,7 +399,7 @@ calendar or channel.
 
 | Snapshot | Contains (folders in the file browser) |
 |---|---|
-| user (`u.…`) | `mail/` (one `.eml` per message), `calendar/` (one `.ics` per event), `contacts/` (one `.vcf` per contact), `onedrive/` (the files) |
+| user (`u.…`) | `mail/` (one `.eml` per message), `calendar/` (one `.ics` per event), `contacts/` (one `.vcf` per contact), `onedrive/` (the files), `chats/` (one `.json` and one readable `.html` per chat, if chats are backed up; download only) |
 | site (`s.…`) | `libraries/<library>/` (the files) |
 | team (`t.…`) | `files/` (the team's files), `channels/<channel>/` (one `.json` per conversation, if channel messages are backed up) |
 
@@ -442,6 +442,20 @@ and OneDrive of a person who left. In addition to the fields above, enter the **
 
 The target must be of the same kind as the snapshot (a user's mailbox cannot be restored into a site). The job
 fails with "target … not found" if the target does not exist.
+
+### Restore into another Microsoft 365 tenant
+
+The restore to another user, site or team can also write into **another Microsoft 365 tenant**, for example
+after a merger (move selected users to the new company's tenant) or to recover into a new tenant when the old
+one is lost or compromised. Register the other tenant as a second Microsoft 365 source in the **same appliance
+tenant** (its own app registration, see [04 Sources](04-sources.md#microsoft-365-exchange-onedrive-sharepoint-teams)).
+In the restore dialog, choose it under **Target source** and enter the **Target** as it exists in that tenant
+(for example `jane@newcompany.com`). The appliance runs the restore with the target source's app and
+certificate; the original tenant is not contacted. Teams conversations are not restored into another tenant
+(their authors do not exist there) and are counted as skipped; team files are restored. Chats are never
+restored (download them instead).
+
+![Restore of a user into another Microsoft 365 tenant](images/snapshot-m365-other-tenant.png)
 
 The app registration needs the write permissions listed in [04 Sources](04-sources.md#microsoft-365-exchange-onedrive-sharepoint-teams)
 for restores, and for Teams conversations also `Teamwork.Migrate.All` and `Channel.Create`.
