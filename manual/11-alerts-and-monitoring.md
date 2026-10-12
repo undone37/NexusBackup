@@ -74,6 +74,7 @@ log (`alert.ack`, `alert.resolve`).
 | `anomaly` | critical | a backup added far more new data than usual for its source, or new data that suddenly does not compress (see [Change-rate anomalies](#change-rate-anomalies)) | — | check the source for mass changes or encryption (ransomware) before the last good snapshot expires; the message names it |
 | `quota` | warning at 80 %, critical at 100 % | a tenant's store reached 80 % or 100 % of its soft quota (**Tenants**); one alert per tenant, escalated at 100 % | usage is back under 80 % | review retention or what the tenant backs up, or raise the quota; backups continue either way |
 | `break_glass` | critical | an administrator account was reset on the console with the recovery key (`nexus-setup recover-admin`) | — | make sure the recovery was planned (check the audit entry `user.break_glass`), then acknowledge it; until then every administrator sees a red banner. See [14 Disaster recovery](14-disaster-recovery.md#break-glass-the-only-administrator-lost-their-authenticator) |
+| `forwarding` | warning | audit / alert forwarding to a syslog or HTTPS sink has failed for 15 minutes (one alert per sink; the message names the destination and the error) | the sink delivers again (or is disabled / removed) | check the receiver (reachable, certificate, token) and **Settings → Forwarding** (**Send test message**); nothing is lost, the backlog follows. See [10 Approvals and audit](10-approvals-and-audit.md#forwarding-to-a-siem) |
 
 ## Change-rate anomalies
 
@@ -231,8 +232,19 @@ rule for every alert:
 
 > **Status:** The alert lifecycle (counting, auto-resolve, reminders, retention) and the notification rules
 > (routing, templates, sealed headers) are covered by the scheduler and API tests and were tried in the web interface
-> against the demo backend. They have not yet been run on an installed appliance in the VM labs. Syslog and HTTPS
-> forwarding channels follow in a later release.
+> against the demo backend. They have not yet been run on an installed appliance in the VM labs.
+
+### Forwarding to syslog or a SIEM
+
+Notification rules pick alerts for people. To feed a log server or SIEM with **every** alert event (raised,
+escalated, acknowledged, resolved), every finished job and the audit log, use **Settings → Forwarding** (syslog
+over TLS and/or HTTPS JSON, in order, at least once); see
+[10 Approvals and audit](10-approvals-and-audit.md#forwarding-to-a-siem). A sink that fails for 15 minutes raises the
+`forwarding` alert.
+
+> **Status:** Forwarding is covered by scheduler tests against local TLS syslog and HTTPS receivers (resume after a
+> restart, nothing skipped after failures) and by API tests; the lab step `lab/appliance/forwarding.sh` checks it
+> on an installed appliance against an rsyslog container.
 
 ## Metrics (Prometheus)
 

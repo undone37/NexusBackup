@@ -383,3 +383,56 @@ fn daily_anchor_and_failure_alert() {
     s.check_forwarding(now + 360).unwrap();
     assert!(open(&s)[0].1.is_some(), "resolved after recovery");
 }
+
+/// Against the lab testbox (`lab/forwarding/testbox/run.sh start`, then
+/// `eval "$(lab/forwarding/testbox/run.sh env)"`):
+/// `cargo test -p scheduler --lib testbox -- --ignored`. rsyslog must log the audit record
+/// with its structured data; the HTTPS sink must accept the batch (pinned) and refuse it
+/// without the token.
+#[test]
+#[ignore]
+fn testbox_rsyslog_and_https_sink() {
+    let env =
+        |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("{k}: eval \"$(lab/forwarding/testbox/run.sh env)\""));
+    let ca = std::fs::read_to_string(env("FWD_CA")).unwrap();
+    let marker = format!("x/{}", catalog::now());
+    let recs = [
+        forward::Record::Audit {
+            seq: 4242,
+            ts: catalog::now(),
+            actor: "lab".into(),
+            action: "lab.test".into(),
+            target: marker.clone(),
+            details: r#"{"q":"a \"quoted\" ] value"}"#.into(),
+            prev_hash: "0".repeat(64),
+            hash: "ab".repeat(32),
+        },
+        forward::Record::Test { ts: catalog::now() },
+    ];
+    let port: u16 = env("FWD_SYSLOG_PORT").parse().unwrap();
+    let s: catalog::forwarding::Syslog =
+        serde_json::from_value(json!({"host": "127.0.0.1", "port": port, "ca_pem": ca})).unwrap();
+    forward::send_syslog(&s, "nexus-lab", &recs).unwrap();
+    let url = format!("https://127.0.0.1:{}/ingest", env("FWD_HTTPS_PORT"));
+    let h: catalog::forwarding::Https =
+        serde_json::from_value(json!({"url": url, "pin_sha256": env("FWD_PIN")})).unwrap();
+    let auth = BTreeMap::from([("Authorization".to_owned(), format!("Bearer {}", env("FWD_TOKEN")))]);
+    forward::send_https(&h, &auth, "nexus-lab", &recs).unwrap();
+    assert!(
+        forward::send_https(&h, &BTreeMap::new(), "nexus-lab", &recs).is_err(),
+        "401 without the token"
+    );
+    std::thread::sleep(Duration::from_secs(2));
+    let log = std::fs::read_to_string(env("FWD_SYSLOG_LOG")).unwrap();
+    let line = log
+        .lines()
+        .find(|l| l.contains(&marker))
+        .expect("audit record in syslog.log");
+    assert!(
+        line.contains(&format!("[nexus@32473 seq=\"4242\" hash=\"{}\"", "ab".repeat(32))),
+        "{line}"
+    );
+    assert!(log.lines().any(|l| l.contains(" nexus - test [nexus@32473]")), "{log}");
+    let https = std::fs::read_to_string(env("FWD_HTTPS_LOG")).unwrap();
+    assert!(https.contains(&marker), "{https}");
+}

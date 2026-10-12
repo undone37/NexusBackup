@@ -338,7 +338,11 @@ where they are switched on and off. See [10 Approvals and audit](10-approvals-an
 ![Audit log after verifying the chain](images/audit.png)
 
 Every recorded action, newest first. **Verify chain** recomputes the hash chain over all entries; **Load more** pages
-back in time. See [10 Approvals and audit](10-approvals-and-audit.md#audit-log).
+back in time. The filter bar narrows the list by **Actor** (exact), **Action** (prefix, e.g. `user.`), **Target**
+(contains) and a **From** / **To** day range; **Export CSV** downloads the matching entries with their hashes
+(recorded as `audit.export`). The **Forwarding** box shows each configured syslog / HTTPS sink: destination, state
+(up to date, entries behind, failing, disabled), the last delivered entry against the newest, the last delivery and
+the last error. See [10 Approvals and audit](10-approvals-and-audit.md#audit-log).
 
 ## Configuration pages
 
@@ -385,6 +389,7 @@ when approvals are enabled.
 | **Appliance SSH keys** | the public keys the appliance signs in to sources with; **Copy**, **Rotate**, **Retire old key** | [04 Sources](04-sources.md#appliance-ssh-keys) |
 | **Updates** | running, staged, available and rollback image; **Check now**, **Install now** | [13 Updates](13-updates.md#updates-in-the-web-interface) |
 | **Anomaly detection** | thresholds of the change-rate `anomaly` alert | [11 Alerts and monitoring](11-alerts-and-monitoring.md#change-rate-anomalies) |
+| **Forwarding** | the syslog-over-TLS and HTTPS (JSON) sinks that receive the audit log, alert events and finished jobs; **Send test message** | [10 Approvals and audit](10-approvals-and-audit.md#forwarding-to-a-siem) |
 
 ![Settings: Approvals](images/settings-approvals.png)
 
@@ -397,6 +402,8 @@ when approvals are enabled.
 ![Settings: Updates](images/settings-updates.png)
 
 ![Settings: Anomaly detection](images/settings-anomaly.png)
+
+![Settings: Forwarding](images/settings-forwarding.png)
 
 ## Messages and dialogs
 
