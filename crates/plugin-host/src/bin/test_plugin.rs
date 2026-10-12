@@ -430,6 +430,9 @@ fn main() {
             }
             got.insert("params".into(), p["params"].clone());
             got.insert("restore".into(), p["restore"].clone());
+            // restore into another source: which config (credentials) the host gave us
+            got.insert("target_source_id".into(), p["target_source_id"].clone());
+            got.insert("config".into(), cfg.clone());
             done(&mut w, &Value::Object(got).to_string());
         }
         (Op::Mount, _) => {

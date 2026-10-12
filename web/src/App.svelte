@@ -35,6 +35,7 @@
   import Settings from './pages/Settings.svelte';
   import Account from './pages/Account.svelte';
   import IconDashboard from '@lucide/svelte/icons/layout-dashboard';
+  import IconVault from '@lucide/svelte/icons/lock-keyhole';
   import IconSnapshots from '@lucide/svelte/icons/database-backup';
   import IconSearch from '@lucide/svelte/icons/file-search';
   import IconStorage from '@lucide/svelte/icons/hard-drive';
@@ -83,7 +84,7 @@
     { path: '/alerts', comp: Alerts, allow: can.viewAlerts, nav: t.nav.alerts, section: 'monitor', icon: IconAlerts },
     { path: '/quorum', comp: Quorum, allow: can.viewQuorum, nav: t.nav.quorum, section: 'governance', icon: IconApprovals },
     { path: '/audit', comp: Audit, allow: can.audit, nav: t.nav.audit, section: 'governance', icon: IconAudit },
-    { path: '/tenants', comp: Tenants, allow: can.configure, nav: t.nav.tenants, section: 'config', icon: IconTenants },
+    { path: '/tenants', comp: Tenants, allow: can.attachOffsite, nav: t.nav.tenants, section: 'config', icon: IconTenants },
     { path: '/sources', comp: Sources, allow: can.configure, nav: t.nav.sources, section: 'config', icon: IconSources },
     { path: '/agents', comp: Agents, allow: can.configure, nav: t.nav.agents, section: 'config', icon: IconAgents },
     { path: '/replication', comp: Replication, allow: can.viewReplication, nav: t.nav.replication, section: 'config', icon: IconReplication },
@@ -144,7 +145,11 @@
     const u = session.user;
     if (!u) return;
     if (can.viewAlerts(u)) alerts = await get<Alert[]>('/alerts?state=open').catch(() => alerts);
-    if (can.viewQuorum(u)) shell = await get<LoginResponse>('/auth/me').then((m) => m.console_shell ?? null).catch(() => shell);
+    const me = await get<LoginResponse>('/auth/me').catch(() => null);
+    if (me) {
+      session.vault = !!me.vault_mode;
+      if (can.viewQuorum(u)) shell = me.console_shell ?? null;
+    }
     if (can.viewQuorum(u))
       pendingApprovals = await get<QuorumRequest[]>('/quorum')
         .then((q) => q.filter((x) => x.state === 'pending').length)
@@ -173,6 +178,7 @@
     try {
       const me = await get<LoginResponse>('/auth/me');
       setSession(me.user, me.csrf);
+      session.vault = !!me.vault_mode;
       shell = me.console_shell ?? null;
     } catch {
       setSession(null, null);
@@ -263,6 +269,13 @@
           </div>
         {/if}
         <span class="spacer"></span>
+        {#if session.vault}
+          {#if can.viewQuorum(session.user)}
+            <a class="chip accent vault-badge" href={href('/settings?tab=vault')} title={t.vault.badgeTitle}><IconVault aria-hidden="true" />{t.vault.badge}</a>
+          {:else}
+            <span class="chip accent vault-badge" title={t.vault.badgeTitle}><IconVault aria-hidden="true" />{t.vault.badge}</span>
+          {/if}
+        {/if}
         {#if can.viewQuorum(session.user)}
           <a class="icon-btn" href={href('/quorum')} aria-label={t.nav.approvalsPending(pendingApprovals)} title={t.nav.approvalsPending(pendingApprovals)}>
             <IconApprovals aria-hidden="true" />

@@ -4,6 +4,12 @@
 //! exponential backoff) and transient errors retried; `@odata.nextLink` paging;
 //! delta links; ranged downloads that resume after broken connections; small and
 //! session uploads. Bearer tokens only ever go to the configured Graph origin.
+//!
+//! Several app registrations (config `apps`): each has its own token and its own
+//! throttling state. A Graph client starts with the app picked for its guest
+//! (round-robin by guest id); a 429 of one app parks that app for its
+//! `Retry-After` and the request moves to the next app that is not parked (Graph
+//! throttles per app and tenant), so one throttled app does not stall the backup.
 
 use crate::auth::Credential;
 use anyhow::{anyhow, bail, Context, Result};
@@ -72,6 +78,8 @@ pub struct Stats {
     pub throttled: u64,
     pub retries: u64,
     pub tokens: u64,
+    /// moves to another app after a 429
+    pub switches: u64,
 }
 
 pub struct Settings {
@@ -79,9 +87,21 @@ pub struct Settings {
     pub graph_origin: String,
     /// token endpoint `https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token`
     pub token_url: String,
-    pub client_id: String,
     /// extra trusted CA certificates (PEM)
     pub ca_pem: Option<String>,
+}
+
+/// One app registration: client id and certificate credential.
+pub struct App {
+    pub client_id: String,
+    pub cred: Credential,
+}
+
+struct AppState {
+    app: App,
+    token: Option<(String, Instant)>,
+    /// parked after a 429 until then
+    throttled: Option<Instant>,
 }
 
 pub struct Graph {
@@ -90,9 +110,9 @@ pub struct Graph {
     pub base: String,
     token_url: String,
     scope: String,
-    client_id: String,
-    cred: Credential,
-    token: Option<(String, Instant)>,
+    apps: Vec<AppState>,
+    /// the app requests go out with
+    cur: usize,
     pub stats: Stats,
 }
 
@@ -157,8 +177,21 @@ fn error_of(r: Response, what: String) -> anyhow::Error {
     .into()
 }
 
+/// Stable start app of a guest (FNV-1a of its id): the guests of a group spread
+/// over the apps the same way in every run.
+pub fn pick(guest: &str, apps: usize) -> usize {
+    let h = guest.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x100_0000_01b3)
+    });
+    (h % apps.max(1) as u64) as usize
+}
+
 impl Graph {
-    pub fn new(s: Settings, cred: Credential) -> Result<Graph> {
+    /// Graph client with `apps` (at least one), starting with app `start`.
+    pub fn new(s: Settings, apps: Vec<App>, start: usize) -> Result<Graph> {
+        if apps.is_empty() {
+            bail!("no app registration");
+        }
         let mut b = Client::builder()
             .user_agent(concat!("ISV|NexusBackup|NexusBackup-M365/", env!("CARGO_PKG_VERSION")))
             .https_only(true)
@@ -180,15 +213,60 @@ impl Graph {
             origin,
             token_url: s.token_url,
             scope,
-            client_id: s.client_id,
-            cred,
-            token: None,
+            cur: start % apps.len(),
+            apps: apps
+                .into_iter()
+                .map(|app| AppState {
+                    app,
+                    token: None,
+                    throttled: None,
+                })
+                .collect(),
             stats: Stats::default(),
         })
     }
 
-    pub fn thumbprint(&self) -> String {
-        self.cred.thumbprint()
+    /// Number of app registrations and the client id of app `i`.
+    pub fn apps(&self) -> usize {
+        self.apps.len()
+    }
+
+    pub fn client_id(&self, i: usize) -> &str {
+        &self.apps[i].app.client_id
+    }
+
+    /// Certificate thumbprint of app `i`.
+    pub fn thumbprint(&self, i: usize) -> String {
+        self.apps[i].app.cred.thumbprint()
+    }
+
+    /// Sends the following requests with app `i`.
+    pub fn use_app(&mut self, i: usize) {
+        self.cur = i % self.apps.len();
+    }
+
+    /// After a 429 of the current app: park it and move to the next app that is not
+    /// parked. `None` = every app is parked: the time until the first is free again.
+    fn switch_app(&mut self, wait: Duration) -> Option<Duration> {
+        let now = Instant::now();
+        self.apps[self.cur].throttled = Some(now + wait);
+        let n = self.apps.len();
+        for k in 1..n {
+            let i = (self.cur + k) % n;
+            if self.apps[i].throttled.is_none_or(|t| t <= now) {
+                self.cur = i;
+                self.stats.switches += 1;
+                return None;
+            }
+        }
+        let (i, until) = self
+            .apps
+            .iter()
+            .enumerate()
+            .filter_map(|(i, a)| a.throttled.map(|t| (i, t)))
+            .min_by_key(|x| x.1)?;
+        self.cur = i;
+        Some(until.saturating_duration_since(now))
     }
 
     pub fn url(&self, path: &str) -> String {
@@ -202,16 +280,19 @@ impl Graph {
         Ok(())
     }
 
-    /// A valid access token (new one if none or less than 5 minutes left).
+    /// A valid access token of the current app (new one if none or less than 5 minutes left).
     pub fn token(&mut self) -> Result<String> {
-        if let Some((t, exp)) = &self.token {
+        let cur = self.cur;
+        if let Some((t, exp)) = &self.apps[cur].token {
             if Instant::now() + Duration::from_secs(300) < *exp {
                 return Ok(t.clone());
             }
         }
-        let assertion = self.cred.assertion(&self.client_id, &self.token_url, now())?;
+        let a = &self.apps[cur].app;
+        let assertion = a.cred.assertion(&a.client_id, &self.token_url, now())?;
+        let client_id = a.client_id.clone();
         let form = [
-            ("client_id", self.client_id.as_str()),
+            ("client_id", client_id.as_str()),
             ("scope", self.scope.as_str()),
             ("grant_type", "client_credentials"),
             (
@@ -242,7 +323,7 @@ impl Graph {
             .context("token response without access_token")?;
         let secs = v["expires_in"].as_u64().unwrap_or(3599);
         self.stats.tokens += 1;
-        self.token = Some((t.to_owned(), Instant::now() + Duration::from_secs(secs)));
+        self.apps[cur].token = Some((t.to_owned(), Instant::now() + Duration::from_secs(secs)));
         Ok(t.to_owned())
     }
 
@@ -257,6 +338,8 @@ impl Graph {
     ) -> Result<Response> {
         let mut attempt = 0;
         let mut refreshed = false;
+        // moving to another app is not a retry of the same app
+        let max = MAX_ATTEMPTS + self.apps.len() as u32 - 1;
         loop {
             attempt += 1;
             let mut rb = self.http.request(method.clone(), url);
@@ -274,7 +357,7 @@ impl Graph {
             self.stats.requests += 1;
             let r = match rb.send() {
                 Ok(r) => r,
-                Err(e) if attempt < MAX_ATTEMPTS => {
+                Err(e) if attempt < max => {
                     self.stats.retries += 1;
                     let _ = e;
                     std::thread::sleep(backoff(attempt));
@@ -285,12 +368,19 @@ impl Graph {
             let st = r.status().as_u16();
             if st == 401 && auth && !refreshed {
                 refreshed = true;
-                self.token = None;
+                self.apps[self.cur].token = None;
                 continue;
             }
-            if matches!(st, 429 | 503 | 504) && attempt < MAX_ATTEMPTS {
+            if matches!(st, 429 | 503 | 504) && attempt < max {
                 self.stats.throttled += 1;
-                let wait = retry_after(&r).unwrap_or_else(|| backoff(attempt));
+                let mut wait = retry_after(&r).unwrap_or_else(|| backoff(attempt));
+                if st == 429 && auth && self.apps.len() > 1 {
+                    match self.switch_app(wait) {
+                        // straight on with another app
+                        None => continue,
+                        Some(w) => wait = w,
+                    }
+                }
                 std::thread::sleep(wait.min(Duration::from_secs(300)));
                 continue;
             }

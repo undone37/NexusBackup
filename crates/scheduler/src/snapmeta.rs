@@ -1,6 +1,6 @@
 //! Plugin snapshot metadata (protocol v1.6 `SnapshotMeta`, Phase 18b): the plugin
 //! host prints it per snapshot in its `result {json}` line; the backup result
-//! carries it as `snapshots[].meta` and it is kept in `snapshots.meta` (catalog v22),
+//! carries it as `snapshots[].meta` and it is kept in `snapshots.meta` (catalog v23),
 //! e.g. PostgreSQL's recoverable range for the point-in-time restore dialog.
 
 use crate::{Job, Scheduler};

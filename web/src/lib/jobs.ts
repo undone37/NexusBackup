@@ -1,5 +1,6 @@
 import { get, post } from './api';
 import { t } from './i18n';
+import { notify } from './notify.svelte';
 import type { Agent, AgentStatus, FileEntry, Job, JobKind } from './types';
 
 export const JOB_KINDS: JobKind[] = [
@@ -27,6 +28,9 @@ export const JOB_KINDS: JobKind[] = [
   'inventory',
   'file_search',
   'file_index',
+  'offsite_list',
+  'offsite_restore',
+  'offsite_attach',
 ];
 
 /** Human-readable job kind (falls back to the raw kind for kinds the UI does not know yet). */
@@ -46,7 +50,11 @@ export async function runJob(
   intervalMs = 1000,
 ): Promise<{ job: Job; token?: string } | null> {
   const o = await post<{ id: number; download_token?: string }>('/jobs', { kind, tenant, params });
-  if (o.quorum) return null;
+  // approval first (vault mode, Phase 17c): the job starts once approved
+  if (o.quorum) {
+    notify('pending', t.vault.requested(o.quorumId));
+    return null;
+  }
   for (;;) {
     await new Promise((r) => setTimeout(r, intervalMs));
     if (signal.aborted) return null;

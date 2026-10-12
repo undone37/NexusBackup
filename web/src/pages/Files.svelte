@@ -122,6 +122,7 @@
 {#if source.startsWith('plugin-')}<p class="muted">{t.files.streamsHint}</p>{/if}
 
 <ErrorBanner {error} />
+{#if session.vault}<p class="banner pending" role="status">{t.vault.restoreHint}</p>{/if}
 {#if failedJob}<p><a href={href(`/jobs/${failedJob}`)}>{t.jobs.detail(failedJob)}</a></p>{/if}
 
 <div class="card">
@@ -193,7 +194,7 @@
         <option value="zip">zip</option>
       </select>
       <button type="button" class="primary" disabled={!selected.length || preparing} onclick={prepare}>
-        {preparing ? t.files.preparing : t.files.download}
+        {preparing ? t.files.preparing : session.vault ? t.vault.requestDownload : t.files.download}
       </button>
       {#if ready}
         <a class="button" href={downloadUrl(ready.token)} download={ready.filename}>{t.files.get} {ready.filename}</a>

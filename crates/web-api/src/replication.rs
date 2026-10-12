@@ -684,6 +684,7 @@ fn replicad_seal_key(st: &St) -> ApiResult<SealKey> {
 /// quorum approval that makes the code usable.
 pub async fn create_peer(State(st): State<St>, ctx: Ctx, J(r): J<PeerReq>) -> ApiResult<Response> {
     ctx.require(ADMIN)?;
+    crate::vault::refuse(&st.cat.conn(), "replication peers (serving as a primary)")?;
     validate::name(&r.name, "name")?;
     check_tenants(&st.cat.conn(), &r.tenants)?;
     let pk = replicad_seal_key(&st)?;
@@ -1196,7 +1197,8 @@ pub async fn sync_source(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) ->
             params![t, id],
             |x| x.get(0),
         )?;
-        if busy > 0 {
+        // a deactivated tenant syncs no more (Phase 17f)
+        if busy > 0 || catalog::tenants::disabled(&st.cat.conn(), t)? {
             continue;
         }
         let j = queue_job(&st.cat.conn(), "replica_sync", t, &p, ctx.name())?;

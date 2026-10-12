@@ -148,6 +148,52 @@ valid for 10 years).
 
 See [11 Alerts and monitoring](11-alerts-and-monitoring.md).
 
+## Vault mode (secondary only)
+
+Vault mode turns a secondary into a locked copy that one stolen administrator account cannot empty or read out
+unnoticed. It is a one-way profile: switching it off needs an approval **and** the recovery key at the console.
+
+Open **Configuration → Settings → Vault**. The tab lists the preconditions; **Request vault mode** (administrators)
+is available only when all of them are met:
+
+- this appliance is a replication secondary (at least one replication source);
+- every tenant is replicated (no local backup tenants);
+- it has no replication peers (it is nobody's primary);
+- approvals are enabled;
+- the web inbound rule is restricted (**Settings → Firewall**, service **Web UI and API**: a source list).
+
+![Settings: Vault with its preconditions](images/settings-vault.png)
+
+The request needs approval by another administrator or security officer; the preconditions are checked again then.
+While vault mode is on (a **Vault mode** badge in the top bar):
+
+- approvals cannot be disabled, neither in the web interface nor with `nexus-setup disable-approvals`;
+- every restore, instant recovery, file restore to a host, plugin restore or mount and every file download becomes a
+  request (`vault restore`, shown with the job and its parameters). The buttons read **Request restore** /
+  **Request download**. After approval the job starts as the requester; a download is then on the job's page.
+  Browsing the files of a snapshot needs no approval;
+- no new tenants, sources, protection groups, agents or replication peers can be added (the secondary only receives
+  replication). New replication sources can still be added;
+- the web inbound rule cannot be emptied (any address).
+
+**Switching vault mode off:**
+
+1. An administrator clicks **Request to switch off** on the Vault tab.
+2. Another administrator or security officer approves the `vault disable` request.
+3. Within 72 hours, someone with the recovery key runs, as root on the appliance console:
+
+   ```
+   nexus-setup vault-disable
+   ```
+
+   It asks for the recovery key, switches vault mode off, audits `vault.disable` (actor `console`) and raises the
+   warning alert `vault_disabled`. The web interface never asks for the recovery key: the web service has no access
+   to the key escrow. A root shell on the console is opened as described in
+   [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console).
+
+> **Status:** Vault mode is covered by API and unit tests (preconditions, enforced approvals, restores through
+> approval, the console step). It was not yet run in the two-appliance lab.
+
 ## Using the secondary for disaster recovery
 
 If the primary is lost, the secondary already holds restorable copies of the replicated tenants, with its own

@@ -520,8 +520,15 @@ fn check_prop(name: &str, sch: &Value, v: &Value) -> ApiResult<()> {
             } else {
                 json!({"type": "string"})
             };
+            if items["type"] == "object" {
+                // a list of objects of scalar properties (e.g. M365 `apps`)
+                for (i, x) in a.iter().enumerate() {
+                    check_schema(&items, x, &format!("{name}[{i}]"), &[])?;
+                }
+                return Ok(());
+            }
             if items["type"] != "string" {
-                return err("only lists of strings are supported".into());
+                return err("only lists of strings or objects are supported".into());
             }
             for x in a {
                 check_prop(name, &items, x)?;
@@ -575,6 +582,46 @@ fn endpoint_values(spec: &KindSpec, v: &Value) -> Vec<Value> {
         .collect()
 }
 
+/// Lists of objects (M365 `apps`): an item's omitted secret is kept from the stored
+/// item at the same position if the item's other fields are unchanged (sealed
+/// secrets are bound to their position, `/apps/<i>/certificate`); a moved or new
+/// item must bring its secrets again.
+fn keep_item_secrets(o: &mut Map<String, Value>, old: Option<&Value>, secrets: &[&str], moved: bool) -> ApiResult<()> {
+    let plain = |m: &Map<String, Value>| -> Vec<(String, Value)> {
+        m.iter()
+            .filter(|(k, _)| !secrets.contains(&k.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    };
+    for (k, x) in o.iter_mut() {
+        let Some(items) = x.as_array_mut() else { continue };
+        for (i, it) in items.iter_mut().enumerate() {
+            let Some(io) = it.as_object_mut() else { continue };
+            io.retain(|_, v| !v.is_null() && v != "");
+            let Some(prev) = old.and_then(|o| o[k.as_str()].get(i)).and_then(Value::as_object) else {
+                continue;
+            };
+            if plain(io) != plain(prev) {
+                continue;
+            }
+            for f in secrets {
+                if io.contains_key(*f) {
+                    continue;
+                }
+                if let Some(s) = prev.get(*f).filter(|s| s.is_string()) {
+                    if moved {
+                        return Err(ApiError::bad(format!(
+                            "config.{k}[{i}].{f}: required when the endpoint (host/port) changes"
+                        )));
+                    }
+                    io.insert((*f).to_owned(), s.clone());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Plugin source config as stored: validated, secrets sealed to the scheduler.
 /// `old` (update): omitted secrets are kept unless an endpoint field changed.
 pub fn sealed_plugin_config(
@@ -588,12 +635,13 @@ pub fn sealed_plugin_config(
         return Err(ApiError::bad("config: must be an object"));
     }
     let secrets: Vec<&str> = spec.secret_fields.iter().map(String::as_str).collect();
+    cfg.as_object_mut().unwrap().retain(|_, v| !v.is_null() && v != "");
+    let moved = old.is_some_and(|old| endpoint_values(spec, old) != endpoint_values(spec, &cfg));
     let o = cfg.as_object_mut().unwrap();
-    o.retain(|_, v| !v.is_null() && v != "");
+    keep_item_secrets(o, old, &secrets, moved)?;
     let missing: Vec<&str> = secrets.iter().copied().filter(|f| !o.contains_key(*f)).collect();
     check_schema(&spec.config_schema, &cfg, "config", &missing)?;
     if let Some(old) = old {
-        let moved = endpoint_values(spec, old) != endpoint_values(spec, &cfg);
         for f in &missing {
             if let Some(x) = old.get(*f).filter(|x| x.is_string()) {
                 if moved {
@@ -656,6 +704,16 @@ pub fn public_plugin_config(c: &Connection, kind: &str, raw: &str) -> Value {
             }
         }
         o.extend(add);
+        // secrets in lists of objects (M365 `apps`): `<field>_set` per item
+        for it in o.values_mut().filter_map(Value::as_array_mut).flatten() {
+            if let Some(io) = it.as_object_mut() {
+                for f in &all {
+                    if let Some(x) = io.remove(f.as_str()) {
+                        io.insert(format!("{f}_set"), json!(x.as_str().is_some_and(|s| !s.is_empty())));
+                    }
+                }
+            }
+        }
     }
     v
 }

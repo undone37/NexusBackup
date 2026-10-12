@@ -229,7 +229,7 @@ async fn restore_options_validated_and_stored() {
     // the snapshot list shows the level
     let l = t.get("/api/v1/snapshots?tenant=acme", &otto).await.body;
     assert!(l.as_array().unwrap().iter().all(|s| s["consistency"] == "crash"), "{l}");
-    // plugin snapshot metadata (v22) comes back as JSON, absent = null
+    // plugin snapshot metadata (v23) comes back as JSON, absent = null
     assert!(l.as_array().unwrap().iter().all(|s| s["meta"].is_null()), "{l}");
     t.exec(r#"UPDATE snapshots SET meta = '{"recoverable":{"to_lsn":"0/3000000"}}' WHERE source = 'vm-100'"#);
     let l = t.get("/api/v1/snapshots?tenant=acme&source=vm-100", &otto).await.body;

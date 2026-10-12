@@ -798,6 +798,11 @@ fn provision(st: &St, s: &Settings, claims: &Value) -> ApiResult<Result<Provisio
         return Ok(Err(("denied", format!("no mapping matches the groups {groups:?}"))));
     };
     let tenant = m.tenants.first().cloned();
+    if let Some(t) = &tenant {
+        if catalog::tenants::disabled(&tx, t)? {
+            return Ok(Err(("tenant_disabled", format!("tenant {t} is deactivated"))));
+        }
+    }
     let user = match existing {
         Some(u) if u.disabled => {
             return Ok(Err((

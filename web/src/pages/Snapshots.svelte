@@ -29,6 +29,8 @@
   import IconGavel from '@lucide/svelte/icons/gavel';
   import IconUnlock from '@lucide/svelte/icons/lock-open';
   import HoldDialog from '../components/HoldDialog.svelte';
+  import IconCloudDown from '@lucide/svelte/icons/cloud-download';
+  import { fetchFromOffsite } from '../lib/offsite';
 
   let snaps: Snapshot[] = $state([]);
   let tenants: Tenant[] = $state([]);
@@ -41,6 +43,12 @@
   let tenant = $state(route.query.get('tenant') ?? '');
   let source = $state(route.query.get('source') ?? '');
   let heldOnly = $state(route.query.get('held') === 'true');
+  // Phase 17d: local copies, or offsite-only ones (pruned locally, still on the offsite target)
+  let where = $state(route.query.get('where') ?? '');
+  const offsiteOnly = (s: Snapshot) => !s.local && s.offsite;
+  const shown = $derived(
+    snaps.filter((s) => (where === 'local' ? s.local : where === 'offsite' ? offsiteOnly(s) : true)),
+  );
 
   async function load() {
     try {
@@ -91,6 +99,14 @@
   let prValues: FormValues = $state({});
   let prErrors: Record<string, string> = $state({});
   let prMinutes = $state(60);
+  // manifest v1.6 `target_source`: '' = the snapshot's own source
+  let prTarget = $state('');
+  const prOwn = $derived(prSnap ? (sources.find((x) => x.id === parsePluginSnapshot(prSnap!.source)?.sourceId) ?? null) : null);
+  const prTargets = $derived.by(() => {
+    const own = prOwn;
+    if (!prSnap || !own || !prRestore?.target_source) return [];
+    return sources.filter((x) => x.kind === own.kind && x.tenant === prSnap!.tenant && x.id !== own.id);
+  });
   const isMount = (r: PluginRestore | null) => r?.id === 'mount';
 
   function openPluginRestore(s: Snapshot, r: PluginRestore) {
@@ -100,6 +116,7 @@
     prErrors = {};
     prMinutes = 60;
     prPick = '';
+    prTarget = '';
     prOpen = true;
   }
 
@@ -146,7 +163,11 @@
     const base = { source: prSnap.source, time: prSnap.time };
     const job = isMount(prRestore)
       ? { kind: 'plugin_mount', tenant: prSnap.tenant, params: { ...base, params: value, minutes } }
-      : { kind: 'plugin_restore', tenant: prSnap.tenant, params: { ...base, restore: prRestore.id, params: value } };
+      : {
+          kind: 'plugin_restore',
+          tenant: prSnap.tenant,
+          params: { ...base, restore: prRestore.id, params: value, ...(prTarget ? { target_source_id: Number(prTarget) } : {}) },
+        };
     const r = await act(post<{ id: number }>('/jobs', job), (d) => t.snap.jobStarted(d.id));
     busy = false;
     if (r) prOpen = false;
@@ -165,7 +186,7 @@
 
   function applyFilter(e: SubmitEvent) {
     e.preventDefault();
-    navigate('/snapshots' + qs({ tenant, source: source.trim(), held: heldOnly ? 'true' : '' }));
+    navigate('/snapshots' + qs({ tenant, source: source.trim(), held: heldOnly ? 'true' : '', where }));
   }
 
   const guestNames = $derived([...new Set(snaps.map((s) => s.source))].sort());
@@ -368,6 +389,11 @@
     await act(del(path), t.snap.deleteQueued);
   }
 
+  async function fetchBack(s: Snapshot) {
+    const id = await fetchFromOffsite(s.tenant, s.source, s.time);
+    if (id) navigate(`/jobs/${id}`);
+  }
+
   function browse(s: Snapshot) {
     navigate('/files' + qs({ tenant: s.tenant, source: s.source, time: s.time, path: '/' }));
   }
@@ -402,16 +428,25 @@
       {#each guestNames as g (g)}<option value={g}></option>{/each}
     </datalist>
   </div>
+  <div class="field">
+    <label for="f-where">{t.offsite.where}</label>
+    <select id="f-where" bind:value={where}>
+      <option value="">{t.offsite.whereAll}</option>
+      <option value="local">{t.offsite.whereLocal}</option>
+      <option value="offsite">{t.offsite.whereOffsiteOnly}</option>
+    </select>
+  </div>
   <label class="inline-check"><input type="checkbox" bind:checked={heldOnly} />{t.snap.heldOnly}</label>
   <button type="submit">{t.snap.apply}</button>
 </form>
 
 <ErrorBanner {error} />
+{#if session.vault}<p class="banner pending" role="status">{t.vault.restoreHint}</p>{/if}
 
 <div class="card">
   {#if !loaded}
     <p class="muted" aria-busy="true">{t.loading}</p>
-  {:else if snaps.length === 0}
+  {:else if shown.length === 0}
     <p class="empty">{t.none}</p>
   {:else}
     <div class="table-wrap">
@@ -431,7 +466,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each snaps as s (`${s.tenant}/${s.source}/${s.time}`)}
+          {#each shown as s (`${s.tenant}/${s.source}/${s.time}`)}
             {@const ag = agentOf(s)}
             {@const sh = shareName(s)}
             {@const pl = pluginOf(s)}
@@ -450,6 +485,7 @@
                   </div>
                 {/if}
                 {#if s.origin}<div><span class="chip info">{t.snap.replicatedFrom(s.origin)}</span></div>{/if}
+                {#if offsiteOnly(s)}<div><span class="chip info plain">{t.offsite.onlyOffsite}</span></div>{/if}
                 {#if s.hold?.state === 'active'}
                   <div>
                     <span class="chip warn plain hold" title={t.snap.heldTitle(s.hold.held_by, fmtTime(s.hold.held_at), s.hold.reason)}
@@ -474,7 +510,12 @@
               <td><ConsistencyBadge level={s.consistency} /></td>
               {#if showActions}
                 <td class="actions">
-                  {#if can.restore(session.user)}
+                  {#if can.restore(session.user) && offsiteOnly(s)}
+                    <!-- restores need a local copy: fetch it back first (17d) -->
+                    <button type="button" class="small" onclick={() => fetchBack(s)} aria-label={t.offsite.fetchLabel(s.source, fmtTime(s.time))}
+                      ><IconCloudDown aria-hidden="true" />{t.offsite.fetch}</button
+                    >
+                  {:else if can.restore(session.user)}
                     <button
                       type="button"
                       class="small"
@@ -574,7 +615,7 @@
       </fieldset>
       <div class="form-actions">
         <button type="button" onclick={() => (dlgOpen = false)}>{t.cancel}</button>
-        <button type="submit" class="primary" disabled={busy}>{t.snap.start}</button>
+        <button type="submit" class="primary" disabled={busy}>{session.vault ? t.vault.requestRestore : t.snap.start}</button>
       </div>
     </form>
   {/if}
@@ -647,7 +688,7 @@
     </div>
     <div class="form-actions">
       <button type="button" onclick={() => (manyOpen = false)}>{t.cancel}</button>
-      <button type="submit" class="primary" disabled={busy || !manyPicked.length}>{t.snap.start}</button>
+      <button type="submit" class="primary" disabled={busy || !manyPicked.length}>{session.vault ? t.vault.requestRestore : t.snap.start}</button>
     </div>
   </form>
 </Modal>
@@ -692,6 +733,16 @@
           {/if}
         </div>
       {/if}
+      {#if prTargets.length}
+        <div class="field">
+          <label for="pr-target">{t.snap.targetSource}</label>
+          <select id="pr-target" bind:value={prTarget} aria-describedby="pr-target-hint">
+            <option value="">{t.snap.targetSourceOwn(prOwn?.name ?? '')}</option>
+            {#each prTargets as x (x.id)}<option value={String(x.id)}>{x.name}</option>{/each}
+          </select>
+          <div class="hint" id="pr-target-hint">{t.snap.targetSourceHint}</div>
+        </div>
+      {/if}
       {#if prRestore.params_schema && Object.keys(prRestore.params_schema.properties ?? {}).length}
         <SchemaForm schema={prRestore.params_schema} bind:values={prValues} errors={prErrors} />
       {:else if !isMount(prRestore)}
@@ -706,7 +757,7 @@
       {/if}
       <div class="form-actions">
         <button type="button" onclick={() => (prOpen = false)}>{t.cancel}</button>
-        <button type="submit" class="primary" disabled={busy}>{t.snap.start}</button>
+        <button type="submit" class="primary" disabled={busy}>{session.vault ? t.vault.requestRestore : t.snap.start}</button>
       </div>
     </form>
   {/if}

@@ -347,6 +347,11 @@ pub struct RestoreAction {
     /// (`plugin-<p>-<sid>-<guest>`), `source` (`plugin-<p>-<sid>`) or `any` (default)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applies_to: Option<String>,
+    /// v1.6: the restore may run with the credentials of another source of the same
+    /// kind and tenant (job parameter `target_source_id`; e.g. M365 into another
+    /// Microsoft 365 tenant). The plugin then sees `target_source_id` in its params.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub target_source: bool,
 }
 
 /// Values of [`RestoreAction::applies_to`].

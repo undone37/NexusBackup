@@ -13,7 +13,10 @@
 //!   download ranges, protected Teams APIs denied;
 //! - downloads via a 302 redirect to a range-capable URL, uploads (simple PUT and
 //!   upload sessions with `Content-Range`), folder / message / event / contact /
-//!   channel creation, Teams migration-mode channels.
+//!   channel creation, Teams migration-mode channels;
+//! - further app registrations (`add_app`) with per-app throttling
+//!   (`throttle_app`) and per-app request counts; 1:1 and group chats
+//!   (`/users/{id}/chats/getAllMessages`, `/chats/{id}`, `/chats/{id}/messages`).
 
 #![allow(dead_code)]
 
@@ -31,6 +34,10 @@ pub const CLIENT_ID: &str = "11111111-2222-3333-4444-555555555555";
 pub const SP_HOST: &str = "contoso.sharepoint.com";
 pub const CERT: &str = include_str!("../data/test-app.crt");
 pub const KEY: &str = include_str!("../data/test-app.key");
+/// A second app registration (round-robin tests).
+pub const CLIENT_ID2: &str = "22222222-3333-4444-5555-666666666666";
+pub const CERT2: &str = include_str!("../data/test-app2.crt");
+pub const KEY2: &str = include_str!("../data/test-app2.key");
 /// Fixed "old" time of seeded objects (2026-01-01T00:00:00Z).
 pub const OLD: i64 = 1_767_225_600;
 
@@ -146,7 +153,17 @@ pub struct Tenant {
     pub revoke_after: Option<u32>,
     pub break_downloads: u32,
     pub deny: HashSet<String>,
+    /// further apps: client id → (registered `x5t#S256`, public key)
+    pub apps: HashMap<String, (String, Vec<u8>)>,
+    /// Graph requests of this app answered with 429 (`Retry-After: 30`), count
+    pub throttle_app: HashMap<String, u32>,
+    /// chats: (chat id, topic, member user ids) and their messages (chat id, json)
+    pub chats: Vec<(String, String, Vec<String>)>,
+    pub chat_msgs: Vec<(String, Value)>,
     // observations
+    /// token → client id; Graph requests per client id
+    pub token_app: HashMap<String, String>,
+    pub per_app: HashMap<String, u32>,
     pub tokens: HashMap<String, i64>,
     pub jtis: HashSet<String>,
     pub assertions_ok: u32,
@@ -563,6 +580,46 @@ impl Tenant {
         m["lastModifiedDateTime"] = json!(iso(modified));
     }
 
+    /// Registers another app (client id, certificate PEM).
+    pub fn add_app(&mut self, client_id: &str, cert: &str, key: &str) {
+        let cert_der = pem::parse(cert).unwrap().contents().to_vec();
+        let kp = ring::signature::RsaKeyPair::from_pkcs8(pem::parse(key).unwrap().contents()).unwrap();
+        self.apps.insert(
+            client_id.into(),
+            (
+                B64URL.encode(ring::digest::digest(&ring::digest::SHA256, &cert_der)),
+                ring::signature::KeyPair::public_key(&kp).as_ref().to_vec(),
+            ),
+        );
+    }
+
+    /// A chat of `members` (user ids; empty topic = none).
+    pub fn add_chat_thread(&mut self, topic: &str, members: &[&str]) -> String {
+        let id = format!("19:{}@unq.gbl.spaces", self.next());
+        self.chats.push((
+            id.clone(),
+            topic.into(),
+            members.iter().map(|m| (*m).to_owned()).collect(),
+        ));
+        id
+    }
+
+    /// A chat message (`modified` defaults to an old time).
+    pub fn add_chat_msg(&mut self, chat: &str, user: &str, text: &str, modified: Option<i64>) -> String {
+        let id = format!("{}", 1_710_000_000_000u64 + self.next());
+        let seq = self.bump();
+        let t = modified.unwrap_or(OLD + seq as i64);
+        let name = self.user(user).map(|u| u.name.clone()).unwrap_or_default();
+        let m = json!({
+            "id": id, "chatId": chat, "messageType": "message", "replyToId": null,
+            "createdDateTime": iso(t), "lastModifiedDateTime": iso(t), "deletedDateTime": null,
+            "from": {"user": {"id": user, "displayName": name, "userIdentityType": "aadUser"}},
+            "body": {"contentType": "html", "content": format!("<p>{text}</p>")},
+        });
+        self.chat_msgs.push((chat.into(), m));
+        id
+    }
+
     fn origin(&self) -> String {
         format!("https://127.0.0.1:{}", self.port)
     }
@@ -665,7 +722,13 @@ impl Tenant {
                 "AADSTS900144: malformed client credentials request",
             );
         }
-        if f("client_id") != CLIENT_ID {
+        let client = f("client_id");
+        let reg = if client == CLIENT_ID {
+            Some((self.registered.clone(), self.public_key.clone()))
+        } else {
+            self.apps.get(&client).cloned()
+        };
+        let Some((registered, public_key)) = reg else {
             return bad(
                 400,
                 "unauthorized_client",
@@ -674,7 +737,7 @@ impl Tenant {
                     f("client_id")
                 ),
             );
-        }
+        };
         let jwt = f("client_assertion");
         let parts: Vec<&str> = jwt.split('.').collect();
         let fail = |m: &str| {
@@ -698,11 +761,11 @@ impl Tenant {
         if h["alg"] != "PS256" || h["typ"] != "JWT" {
             return fail("alg");
         }
-        if h["x5t#S256"].as_str() != Some(self.registered.as_str()) {
+        if h["x5t#S256"].as_str() != Some(registered.as_str()) {
             return fail("unknown certificate");
         }
         let sig = B64URL.decode(parts[2]).unwrap_or_default();
-        let pk = ring::signature::UnparsedPublicKey::new(&ring::signature::RSA_PSS_2048_8192_SHA256, &self.public_key);
+        let pk = ring::signature::UnparsedPublicKey::new(&ring::signature::RSA_PSS_2048_8192_SHA256, &public_key);
         if pk
             .verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &sig)
             .is_err()
@@ -712,8 +775,8 @@ impl Tenant {
         let aud = format!("{}/{TENANT}/oauth2/v2.0/token", self.origin());
         let t = now();
         if c["aud"] != aud.as_str()
-            || c["iss"] != CLIENT_ID
-            || c["sub"] != CLIENT_ID
+            || c["iss"] != client.as_str()
+            || c["sub"] != client.as_str()
             || c["exp"].as_i64().is_none_or(|e| e < t)
             || c["nbf"].as_i64().is_none_or(|n| n > t + 300)
         {
@@ -730,6 +793,7 @@ impl Tenant {
         self.assertions_ok += 1;
         let tok = format!("tok{}", self.next());
         self.tokens.insert(tok.clone(), t + self.token_lifetime as i64);
+        self.token_app.insert(tok.clone(), client);
         j(
             200,
             json!({"token_type": "Bearer", "expires_in": self.token_lifetime, "ext_expires_in": self.token_lifetime, "access_token": tok}),
@@ -810,6 +874,20 @@ impl Tenant {
                 );
             }
             *n -= 1;
+        }
+        let app = req
+            .headers
+            .get("authorization")
+            .and_then(|a| a.strip_prefix("Bearer "))
+            .and_then(|t| self.token_app.get(t))
+            .cloned()
+            .unwrap_or_default();
+        *self.per_app.entry(app.clone()).or_default() += 1;
+        if let Some(n) = self.throttle_app.get_mut(&app).filter(|n| **n > 0) {
+            *n -= 1;
+            let mut r = gerr(429, "TooManyRequests", "Application is over its request limit.");
+            r.headers.push(("retry-after".into(), "30".into()));
+            return r;
         }
         if self.deny.iter().any(|d| req.path.contains(d.as_str())) {
             return gerr(
@@ -1129,6 +1207,59 @@ impl Tenant {
                 }
                 None => not_found(),
             },
+            ("GET", ["users", u, "chats", "getAllMessages"]) => {
+                if !self.protected_api {
+                    return gerr(403, "Forbidden", PROTECTED);
+                }
+                let uid = self.user(u).map(|x| x.id.clone()).unwrap_or_default();
+                let since = req.q("$filter").and_then(|f| {
+                    f.strip_prefix("lastModifiedDateTime gt ")
+                        .and_then(m365_plugin::format::parse_time)
+                        .map(|ns| ns / 1_000_000_000)
+                });
+                let mine: HashSet<&String> = self.chats.iter().filter(|c| c.2.contains(&uid)).map(|c| &c.0).collect();
+                let all = self
+                    .chat_msgs
+                    .iter()
+                    .filter(|(c, m)| {
+                        mine.contains(c)
+                            && since.is_none_or(|s| {
+                                m["lastModifiedDateTime"]
+                                    .as_str()
+                                    .and_then(m365_plugin::format::parse_time)
+                                    .is_some_and(|x| x / 1_000_000_000 > s)
+                            })
+                    })
+                    .map(|(_, m)| m.clone())
+                    .collect();
+                self.page(req, all, None)
+            }
+            ("GET", ["chats", c]) => match self.chats.iter().find(|x| x.0 == *c) {
+                Some((id, topic, members)) => {
+                    let members: Vec<Value> = members
+                        .iter()
+                        .map(|m| json!({"userId": m, "displayName": self.user(m).map(|u| u.name.clone())}))
+                        .collect();
+                    j(
+                        200,
+                        json!({"id": id, "topic": if topic.is_empty() { Value::Null } else { json!(topic) },
+                               "chatType": if members.len() > 2 { "group" } else { "oneOnOne" }, "members": members}),
+                    )
+                }
+                None => not_found(),
+            },
+            ("GET", ["chats", c, "messages"]) => {
+                if !self.protected_api {
+                    return gerr(403, "Forbidden", PROTECTED);
+                }
+                let all = self
+                    .chat_msgs
+                    .iter()
+                    .filter(|(x, _)| x == c)
+                    .map(|(_, m)| m.clone())
+                    .collect();
+                self.page(req, all, None)
+            }
             ("GET", ["teams", t, "channels", "getAllMessages"]) => {
                 if !self.protected_api {
                     return gerr(403, "Forbidden", PROTECTED);
