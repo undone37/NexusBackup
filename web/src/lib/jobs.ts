@@ -16,6 +16,7 @@ export const JOB_KINDS: JobKind[] = [
   'verify',
   'agent_enroll',
   'agent_update',
+  'agent_renew',
   'plugin_validate',
   'plugin_guests',
   'plugin_backup',

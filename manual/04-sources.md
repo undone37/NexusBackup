@@ -287,7 +287,7 @@ Statuses: **Token pending** (waiting for enrollment), **Token expired** (issue a
 
 - **Update agent** sends the current signed agent release. The agent verifies the signature, refuses downgrades,
   and restarts.
-- **Re-enroll** is offered after **New token** on an enrolled agent (see [Re-enrolling](#re-enrolling-an-agent)).
+- **Re-enroll (new token)** replaces **New token** on an enrolled agent (see [Re-enrolling](#re-enrolling-an-agent)).
 - **Renew certificate** renews the agent's certificate now (see [Certificate renewal](#certificate-renewal)).
 - **Limits** sets a bandwidth and CPU limit for the agent's backups (see [Limits](#bandwidth-and-cpu-limits)).
 - **Delete** needs approval when approvals are enabled. It is refused while a source uses the agent.
@@ -299,15 +299,15 @@ Changing an agent's host or port is not supported yet. Delete the agent and crea
 
 Agent certificates are valid for 10 years. The appliance renews them **automatically** over the existing mutual-TLS
 connection when less than 30 days or less than 10 % of the lifetime are left (for a 10-year certificate: during its
-last year): an **Renew agent certificate** job asks the agent for a new certificate request, the agent generates a
+last year): a **Renew agent certificate** job asks the agent for a new certificate request, the agent generates a
 **new key pair** for it, the appliance signs it with its agent CA, and the agent switches to the new key and
 certificate atomically (a crash in between leaves either the old or the new pair, never a mix). Click **Renew
 certificate** to do it now, e.g. after a suspected key compromise. The audit log records it (`agent.cert_renewed`) and
-the `cert_expiry` alert of the agent is resolved. The **Certificate** column shows when the current certificate
+the `cert_expiry` alert of the agent is resolved. The **Certificate** column shows "valid until …" for the current certificate
 expires.
 
 If the connection breaks after the appliance signed the new certificate, the appliance accepts both the old and the
-new certificate until the next connection shows which one the agent uses ("renewal pending"). A failed automatic
+new certificate until the next connection shows which one the agent uses (the chip "Renewal issued, waiting for the next session to confirm it"). A failed automatic
 renewal is retried after a day.
 
 #### Re-enrolling an agent
@@ -320,17 +320,19 @@ the enrollment job has run. The audit log marks such a token as a re-enrollment.
 
 #### Bandwidth and CPU limits
 
-**Limits** on the Agents page applies to every backup of the agent:
+**Limits** on the Agents page (dialog **Limits for <name>**) applies to every backup of the agent:
 
-- **Bandwidth (MiB/s)**: the agent sends chunk data to the appliance at most this fast (0 = unlimited; at least
+- **Bandwidth limit (MiB/s, 0 = unlimited)**: the agent sends chunk data to the appliance at most this fast (0 = unlimited; at least
   64 KiB/s). Data the appliance already has is never sent, so incremental backups are rarely affected.
-- **CPU priority (nice 0–19)**: the agent lowers its priority for the backup. On Linux the service already runs
+- **CPU / I/O priority (nice 0–19, 0 = normal)**: the agent lowers its priority for the backup. On Linux the service already runs
   with nice 10 and the lowest best-effort I/O priority; values above 10 lower the CPU priority further, and from 15
   on the agent reads with the idle I/O class (it then only gets disk time nobody else wants). Pre/post hooks
   inherit it. On Windows any value above 0 switches the backup to background mode (low CPU and I/O priority).
 
 
 Changing limits is audited (`agent.limits`).
+
+![Limits of an agent](images/agent-limits.png)
 
 > **Status:** Limits, include paths, regex excludes, nested mounts and certificate renewal need an agent of this
 > release (capabilities `prepare2` and `cert-renew`). Older agents back up as before and ignore include paths, regex
@@ -347,7 +349,7 @@ Choose **Linux or Windows host (agent)**, the **Agent**, and:
   `/C/…` form: `/C/Users`, `/D/Shares` (`C:\Users` is accepted by the agent too).
 - **Exclude patterns (one glob per line, optional)**: up to 256, e.g. `*.tmp`, `/var/cache/**`. On Windows they are
   matched case-insensitively, e.g. `C:\Users\*\AppData\Local\Temp`.
-- **Include paths**, **Regex excludes**, **Back up nested mounts** and **Skipped file system types**: see
+- Fieldset **File selection**: **Include only**, **Regex excludes**, **Also back up file systems mounted below these paths** and **Never cross these file system types**: see
   [File selection](#file-selection-include-paths-regex-excludes-nested-mounts).
 - **Run pre/post backup hooks on the host**: scripts in `/etc/nexus-agent/hooks.d` (`pre`, `post`) run before and
   after each backup, for example database dumps. A failing pre hook fails the backup. Hooks are local to the
@@ -378,14 +380,14 @@ Agent sources and NFS/SMB sources share the same selection rules:
 - **Regex excludes** (one regular expression per line): matched against the whole path, e.g. `\.(bak|old)$` or
   `^/home/[^/]+/\.cache(/|$)`. On Windows paths look like `/C/Users/alice/…` and the match ignores case. Invalid
   expressions are refused when you save.
-- **Include paths** (optional, one absolute path per line): if set, only what is inside one of them is backed up;
+- **Include only** (optional, one absolute path per line): if set, only what is inside one of them is backed up;
   the directories leading to them are kept (so restores show the full path) but nothing else in them. Example: paths
   `/`, include `/home` and `/etc`. Windows: `C:\Users\alice`. NFS/SMB: paths inside the share, e.g. `/projects/a`.
 - **Exclusion always wins**: an excluded directory is skipped even if it leads to, or is, an include path.
 - **Global file excludes** of the group's policy are added to every source's excludes
   ([05 Policies and groups](05-policies-and-groups.md#policies)).
-- **Back up nested mounts** (Linux agents): file systems mounted below the paths (e.g. `/srv/data` below `/`) are
-  normally not backed up; tick this to include them, each from its own snapshot. **Skipped file system types**
+- **Also back up file systems mounted below these paths** (Linux agents): file systems mounted below the paths (e.g. `/srv/data` below `/`) are
+  normally not backed up; tick this to include them, each from its own snapshot. **Never cross these file system types**
   lists types that are never included (empty = the default list: `proc`, `sysfs`, `devtmpfs`, `tmpfs`, `overlay`,
   `squashfs`, `nfs`, `nfs4`, `cifs`, `smb3`, `fuse`, `autofs`, `cgroup`, …); only local data file systems (ext4,
   xfs, btrfs, zfs, vfat, …) are ever included. Skipped network and data file systems are named in the job log. The
@@ -508,7 +510,7 @@ These are the supported setups:
 
 Common fields: **Server (host name or IP)**, **Port** (NFS 2049, SMB 445), **Protocol version** (NFS 4.2/4.1/4.0/3,
 SMB 3/3.1.1/3.02/3.0/2.1), **Scan threads** (default 16), **Server timeout (seconds)**,
-**Back up extended attributes and ACLs**, **Exclude patterns**, **Include paths** and **Regex excludes** (see
+**Back up extended attributes and ACLs**, **Exclude patterns**, **Include only (share paths)** and **Regex excludes** (see
 [File selection](#file-selection-include-paths-regex-excludes-nested-mounts)). Snapshot directories (`.snapshot`,
 `~snapshot`, `.zfs`) are always excluded.
 

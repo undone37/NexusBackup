@@ -151,26 +151,26 @@ Notes:
 
 A Proxmox VE group has two more settings in its dialog:
 
-- **Excluded disks**: disk keys of the guest configuration that are **not** backed up, e.g. `scsi1` (a scratch or
+- **Excluded disks (all guests)** and **Excluded disks per guest** (fieldset **Disk selection**, one line per guest: `101: scsi2`): disk keys of the guest configuration that are **not** backed up, e.g. `scsi1` (a scratch or
   swap disk) or `virtio2`. Enter them for **all guests of the group** or for single guests (by VM ID). Disks that
   have `backup=0` in Proxmox VE are skipped by PVE itself as before; the job log names them ("disk scsi2 of VM 101
   has backup=0: skipped by PVE"), and excluded disks too ("excluded disk scsi1 of VM 101 (… bytes): not backed up").
   Containers are not affected: exclude a mount point there with `backup=0` in PVE.
 - **On restore, excluded disks are**:
-  - **recreated empty** (default): the restored VM gets the disk with its original size and options, filled with
+  - **recreated empty (original size and settings)** (default): the restored VM gets the disk with its original size and options, filled with
     zeros, so the VM configuration stays complete (boot order, `/etc/fstab` on the guest still find a disk);
-  - **left out**: the restored VM has no such disk (its line is removed from the configuration).
+  - **left out of the restored VM**: the restored VM has no such disk (its line is removed from the configuration).
   The choice is stored in each snapshot at backup time; changing it later affects new snapshots only. Instant
   recovery always leaves excluded disks out.
-- **Guests at once** (1–8, default 1): how many guests of the group are backed up in parallel. The appliance spreads
+- **Guests backed up at once** (1–8, default 1): how many guests of the group are backed up in parallel. The appliance spreads
   them over the cluster nodes (the next guest goes to the node with the fewest running backups). Snapshots, the
   per-guest statistics, retries of failed guests and **Cancel** work per guest as before; a cancel stops every running
   vzdump task. The same setting runs several guests of a **plugin** group (e.g. several PostgreSQL databases) at once.
 
 Excluding another disk backs up less: like a weaker policy it needs approval when approvals are enabled. Removing an
-excluded disk, the restore choice and **Guests at once** take effect immediately.
+excluded disk, the restore choice and **Guests backed up at once** take effect immediately.
 
-![A Proxmox VE group with an excluded disk and two guests at once](images/group-exclude-disks.png)
+![A Proxmox VE group with an excluded disk and two guests at once](images/group-disks.png)
 
 > **Status:** Proxmox VE may run only one vzdump at a time on a node (its global vzdump lock): guests on the same node
 > then wait for each other and parallel backups only help across nodes. This, the empty-disk restore and the

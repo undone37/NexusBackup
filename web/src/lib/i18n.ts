@@ -396,6 +396,7 @@ export const en = {
       restore_files: 'Restore files to host',
       agent_update: 'Update agent',
       agent_enroll: 'Enroll agent',
+      agent_renew: 'Renew agent certificate',
       plugin_validate: 'Validate plugin source',
       plugin_guests: 'List plugin guests',
       plugin_backup: 'Plugin backup',

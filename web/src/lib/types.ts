@@ -364,6 +364,7 @@ export type JobKind =
   | 'restore_files'
   | 'agent_update'
   | 'agent_enroll'
+  | 'agent_renew'
   | 'plugin_validate'
   | 'plugin_guests'
   | 'plugin_backup'
