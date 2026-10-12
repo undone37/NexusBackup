@@ -298,5 +298,5 @@ Six parallel worktree agents (each merges main into its branch before reporting)
 - [x] 15c legal hold — merged as catalog v18
 - [x] 15g per-tenant file index + search — merged as catalog v19
 - [x] 15a+15d restore options + consistency — merged as catalog v20
-- [ ] 15e+15f selection + agents (agent re-merging main, v21)
+- [x] 15e+15f selection + agents — merged as catalog v21 (exclude disks placeholder/omit, file filters, agent cert renewal + re-enroll, limits, parallel guests)
 - [ ] labs (PVE e2e incl. legal-hold, forwarding, console gate, plugins, linux agent xhost), screenshots, CI, release 0.1.0-alpha (Phases 13–15)
