@@ -115,6 +115,7 @@ class Redact(unittest.TestCase):
             "nexus-audit seq=12 actor=alice action=auth.login target=- hash=" + "ab" * 32,
             '{"spec_signature": "containerPolicy", "keyd_pub": "00ff"}',
             "user alice signed in from 10.0.0.8",
+            "auth: login failed for bob (bad code), tokens issued: 3",
         ]
         for text in keep:
             self.assertEqual(self.r(text), text)

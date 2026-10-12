@@ -121,7 +121,7 @@ def health():
 _SECRET_KEYS = (
     r"pass(?:word|wd|phrase)?|secret|client[_-]?secret|token|api[_-]?key|access[_-]?key|secret[_-]?key|"
     r"private[_-]?key|totp(?:[_-]?secret|[_-]?seed)?|seed|otp|csrf|session(?:[_-]?id)?|cookie|credentials?|"
-    r"auth(?:orization)?|sas|x-amz-[a-z-]*"
+    r"authorization|sas|x-amz-[a-z-]*"
 )
 # password_hash, totp_secret_enc, token_hash, ...
 _SECRET_KEYS = r"(?:" + _SECRET_KEYS + r")(?:[_-](?:hash|enc|sealed|file))?"
