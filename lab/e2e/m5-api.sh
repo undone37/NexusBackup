@@ -2,7 +2,7 @@
 # M5 flow over the REST API only (what the UI does): curl with cookie jar +
 # X-CSRF-Token, TLS verified against the appliance certificate.
 #   lab/e2e/m5.sh setup && lab/e2e/m5.sh start && lab/e2e/m5-api.sh [step...]
-# steps (default: all): config wait-backup check restore verify quorum phase13 audit
+# steps (default: all): config wait-backup check restore verify quorum phase13 access audit
 # Lab inputs (env, defaults = dev machine, see lab/README.md):
 #   LAB (/home/ah/nexus-lab), LAB_CA (default: fetched from the node), LAB_TOKEN_SECRET (file;
 #   default: secret part of $LAB/api-token), LAB_SSH_KEY (private key whose public half is in the
@@ -312,6 +312,53 @@ step_phase13() {
 	log "locked snapshot lab/$r: delete refused (409)"
 }
 
+# Phase 14d on the real appliance: login banner, own sessions, session timeouts (loosening needs the
+# security officer), the management allow-list through the firewall (our own address stays allowed)
+# and back to "any", dormant-account setting, approver warning.
+step_access() {
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	login so "$SO_PW" "$SO_TOTP"
+	local r q ip
+	api admin PUT /settings/banner '{"banner":"Lab appliance.\nAuthorised use only."}' >/dev/null
+	expect 200 "set login banner"
+	rm -f "$S/anon.jar"
+	api anon GET /auth/banner | jq -e '.banner == "Lab appliance.\nAuthorised use only."' >/dev/null || die "public banner"
+	r=$(api admin GET /auth/sessions)
+	jq -e 'map(select(.current)) | length == 1' <<<"$r" >/dev/null || die "own sessions: $r"
+	log "own sessions: $(jq -c 'map({id, ip, current})' <<<"$r")"
+	api admin PUT /settings/session '{"idle_min":20,"absolute_h":12}' >/dev/null
+	expect 200 "tighten session timeouts"
+	r=$(api admin PUT /settings/session '{"idle_min":30,"absolute_h":12}')
+	expect 202 "loosening session timeouts needs approval"
+	api so POST "/quorum/$(jq -r .quorum_id <<<"$r")/approve" >/dev/null
+	expect 200 "so approves longer timeouts"
+	api admin GET /settings/security | jq -e '.session == {"idle_min":30,"absolute_h":12}' >/dev/null || die "session timeouts"
+	# management allow-list: only our own address; the firewall must keep us in
+	ip=$(api admin GET /settings/security | jq -r .client_ip)
+	r=$(api admin PUT /settings/mgmt-allow '{"mgmt_allow":["192.0.2.0/24"]}')
+	expect 409 "a list without the requester's address"
+	r=$(api admin PUT /settings/mgmt-allow "$(jq -nc --arg ip "$ip" '{mgmt_allow:[$ip, "192.0.2.0/24"]}')")
+	expect 202 "allow-list change needs approval"
+	api so POST "/quorum/$(jq -r .quorum_id <<<"$r")/approve" >/dev/null
+	expect 200 "so approves the allow-list"
+	sleep 15 # scheduler tick + nexus-nft-sync
+	rm -f "$S/anon.jar"
+	api anon GET /health >/dev/null
+	expect 200 "still reachable from $ip with the allow-list"
+	log "management allow-list [$ip, 192.0.2.0/24] applied, web-api still reachable"
+	r=$(api admin PUT /settings/mgmt-allow '{"mgmt_allow":[]}')
+	expect 202 "opening the allow-list needs approval"
+	api so POST "/quorum/$(jq -r .quorum_id <<<"$r")/approve" >/dev/null
+	expect 200 "so approves any address"
+	api admin PUT /settings/dormant '{"days":90}' >/dev/null
+	expect 200 "dormant accounts on"
+	api admin PUT /settings/dormant '{"days":0}' >/dev/null
+	expect 200 "dormant accounts off"
+	# two approvers (admin, so): the warning is on
+	api admin GET /settings/approvals | jq -e '.enabled == false or .few_approvers == true' >/dev/null || die "few_approvers"
+	log "access settings ok"
+}
+
 step_audit() {
 	login so "$SO_PW" "$SO_TOTP"
 	api so GET /audit/verify | jq -c . >&2
@@ -320,7 +367,7 @@ step_audit() {
 }
 
 steps=("$@")
-[ ${#steps[@]} -gt 0 ] || steps=(config wait-backup check restore verify quorum phase13 audit)
+[ ${#steps[@]} -gt 0 ] || steps=(config wait-backup check restore verify quorum phase13 access audit)
 for s in "${steps[@]}"; do
 	log "== $s"
 	"step_${s//-/_}"
