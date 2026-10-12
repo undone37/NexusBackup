@@ -6,10 +6,13 @@
 //! replication slot, point-in-time restore over SSH). Everything speaks the wire
 //! protocol in Rust (`pg.rs`): the sandbox can only run what the appliance image
 //! ships, and pg_dump/pg_basebackup must match the server's major version anyway.
+//! With several servers (`hosts`, ha.rs) every backup runs against the primary.
 
 mod dump;
+mod ha;
 mod pg;
 mod physical;
+mod pitr;
 mod ssh;
 
 use anyhow::{Context, Result};
@@ -18,7 +21,11 @@ use plugin_sdk::sink::glob;
 use plugin_sdk::{error, BackupResult, Ctx, Guest, Plugin, Sink, Source, Validation};
 use std::io::BufReader;
 
-struct Postgres;
+#[derive(Default)]
+struct Postgres {
+    /// the source server (with `hosts`: the primary), resolved once per run
+    server: Option<(String, u16)>,
+}
 
 /// A PEM block pasted into a single-line (password) field loses its line breaks: rebuild them.
 pub(crate) fn rewrap_pem(s: &str) -> String {
@@ -72,6 +79,49 @@ fn opts(ctx: &Ctx, prefix: &str, dbname: &str, replication: bool) -> Result<Opts
         ca_cert: c["ca_cert"].as_str().map(str::to_owned),
         replication,
     })
+}
+
+impl Postgres {
+    /// The server to back up from: `host`, or with `hosts` the primary among them
+    /// (`pg_is_in_recovery()` = false; logged with the state of every server).
+    fn server(&mut self, ctx: &Ctx) -> Result<(String, u16)> {
+        if let Some(s) = &self.server {
+            return Ok(s.clone());
+        }
+        let cands = ha::candidates(&ctx.config);
+        let s = match cands.as_slice() {
+            [] => return Err(error(22, "config: host missing")),
+            [one] => one.clone(),
+            _ => {
+                let (i, report) = ha::pick_primary(&cands, |(host, port)| {
+                    let o = Opts {
+                        host: host.clone(),
+                        port: *port,
+                        ..opts(ctx, "", "postgres", false)?
+                    };
+                    let mut c = Conn::connect(&o)?;
+                    let v = c.value("SELECT pg_is_in_recovery()")?;
+                    c.close();
+                    Ok(v.as_deref() == Some("t"))
+                })
+                .map_err(|r| error(113, r))?;
+                ctx.info(format!("servers: {report}"));
+                cands[i].clone()
+            }
+        };
+        self.server = Some(s.clone());
+        Ok(s)
+    }
+
+    /// Connection options for the source server (see [`Postgres::server`]).
+    fn src(&mut self, ctx: &Ctx, dbname: &str, replication: bool) -> Result<Opts> {
+        let (host, port) = self.server(ctx)?;
+        Ok(Opts {
+            host,
+            port,
+            ..opts(ctx, "", dbname, replication)?
+        })
+    }
 }
 
 fn slot(ctx: &Ctx) -> Result<String> {
@@ -140,7 +190,13 @@ impl Plugin for Postgres {
         if let Err(e) = slot(ctx) {
             return Ok(invalid("slot", e.to_string()));
         }
-        let mut c = match Conn::connect(&opts(ctx, "", "postgres", false)?) {
+        let multi = ha::candidates(&ctx.config).len() > 1;
+        let o = match self.src(ctx, "postgres", false) {
+            Ok(o) => o,
+            Err(e) if multi => return Ok(invalid("hosts", format!("{e:#}"))),
+            Err(e) => return Err(e),
+        };
+        let mut c = match Conn::connect(&o) {
             Ok(c) => c,
             Err(e) => return Ok(invalid(&field_of(&e, ""), format!("{e:#}"))),
         };
@@ -165,7 +221,7 @@ impl Plugin for Postgres {
             return Ok(invalid("user", "the role needs pg_read_all_data (logical dumps)"));
         }
         c.close();
-        match Conn::connect(&opts(ctx, "", "", true)?).and_then(|mut r| r.exec("IDENTIFY_SYSTEM")) {
+        match Conn::connect(&self.src(ctx, "", true)?).and_then(|mut r| r.exec("IDENTIFY_SYSTEM")) {
             Ok(()) => {}
             Err(e) => {
                 return Ok(invalid(
@@ -188,7 +244,7 @@ impl Plugin for Postgres {
     }
 
     fn list_guests(&mut self, ctx: &Ctx) -> Result<Vec<Guest>> {
-        let mut c = Conn::connect(&opts(ctx, "", "postgres", false)?)?;
+        let mut c = Conn::connect(&self.src(ctx, "postgres", false)?)?;
         let rows = c.query(
             "SELECT datname, CASE WHEN has_database_privilege(datname, 'CONNECT') THEN pg_database_size(datname) END \
              FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname",
@@ -220,14 +276,21 @@ impl Plugin for Postgres {
     fn backup(&mut self, ctx: &Ctx, sink: &mut Sink) -> Result<BackupResult> {
         let Some(db) = ctx.guest() else {
             let days = ctx.config["full_every_days"].as_u64().unwrap_or(7).max(1);
-            let r = physical::backup(ctx, sink, &opts(ctx, "", "", true)?, &slot(ctx)?, days)?;
+            let (repl, sql) = (self.src(ctx, "", true)?, self.src(ctx, "postgres", false)?);
+            let r = physical::backup(ctx, sink, &repl, &sql, &slot(ctx)?, days)?;
+            sink.snapshot_meta(&r.meta)?;
+            let from = if ha::candidates(&ctx.config).len() > 1 {
+                format!(" (from {})", ha::show(&(repl.host, repl.port)))
+            } else {
+                String::new()
+            };
             return Ok(BackupResult {
                 state: Some(serde_json::to_vec(&r.state)?),
                 consistent: true,
-                summary: r.summary,
+                summary: format!("{}{from}", r.summary),
             });
         };
-        let mut c = Conn::connect(&opts(ctx, "", db, false)?)?;
+        let mut c = Conn::connect(&self.src(ctx, db, false)?)?;
         let mut s = sink.stream(&format!("{db}.sql"))?;
         let st = dump::dump(&mut c, &mut s)?;
         s.finish()?;
@@ -243,15 +306,15 @@ impl Plugin for Postgres {
 
     fn restore(&mut self, ctx: &Ctx, src: &mut Source) -> Result<String> {
         match ctx.params["restore"].as_str() {
-            Some("to_target") => restore_dump(ctx, src),
-            Some("pitr") => physical::pitr(ctx, src, &ssh_of(ctx)?),
+            Some("to_target") => restore_dump(self, ctx, src),
+            Some("pitr") => pitr::pitr(ctx, src, &ssh_of(ctx)?),
             r => Err(error(95, format!("unknown restore {r:?}"))),
         }
     }
 }
 
 /// A logical dump into a (new) database on the source or the alternate server.
-fn restore_dump(ctx: &Ctx, src: &mut Source) -> Result<String> {
+fn restore_dump(pg: &mut Postgres, ctx: &Ctx, src: &mut Source) -> Result<String> {
     let p = &ctx.params["params"];
     let db = p["database"].as_str().unwrap_or_default().to_owned();
     if db.is_empty() || db.len() > 63 {
@@ -270,7 +333,13 @@ fn restore_dump(ctx: &Ctx, src: &mut Source) -> Result<String> {
         .context("this snapshot holds no database dump (restore a cluster snapshot point-in-time)")?
         .to_owned();
     let into_existing = p["into_existing"].as_bool().unwrap_or(false);
-    let mut admin = Conn::connect(&opts(ctx, prefix, "postgres", false)?)?;
+    // the source server = its primary (HA)
+    let admin_opts = if prefix.is_empty() {
+        pg.src(ctx, "postgres", false)?
+    } else {
+        opts(ctx, prefix, "postgres", false)?
+    };
+    let mut admin = Conn::connect(&admin_opts)?;
     let exists = !admin
         .query(&format!("SELECT 1 FROM pg_database WHERE datname = {}", lit(&db)))?
         .is_empty();
@@ -291,7 +360,11 @@ fn restore_dump(ctx: &Ctx, src: &mut Source) -> Result<String> {
                 lit(&enc)
             ))?;
         }
-        let res = Conn::connect(&opts(ctx, prefix, &db, false)?).and_then(|mut c| dump::restore(&mut c, &mut r));
+        let o = Opts {
+            dbname: db.clone(),
+            ..admin_opts.clone()
+        };
+        let res = Conn::connect(&o).and_then(|mut c| dump::restore(&mut c, &mut r));
         if res.is_err() && !exists {
             // leave nothing half-restored behind
             let _ = admin.exec(&format!("DROP DATABASE IF EXISTS {}", ident(&db)));
@@ -314,7 +387,7 @@ fn restore_dump(ctx: &Ctx, src: &mut Source) -> Result<String> {
 }
 
 fn main() {
-    plugin_sdk::run(Postgres)
+    plugin_sdk::run(Postgres::default())
 }
 
 #[cfg(test)]

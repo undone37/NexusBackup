@@ -442,32 +442,66 @@ pub fn parse_source_name(s: &str) -> Option<(String, u64, Option<String>)> {
 /// may not use it as the first component of a file path.
 pub const STREAMS_DIR: &str = ".nexus-streams";
 
+/// `host`, `host:port`, `[v6]`, `[v6]:port` or a bare IPv6 address → (host, port);
+/// None for an empty host or a bad port.
+pub fn split_host_port(s: &str, default_port: u16) -> Option<(String, u16)> {
+    let s = s.trim();
+    let (host, port) = if let Some(rest) = s.strip_prefix('[') {
+        let (h, after) = rest.split_once(']')?;
+        match after.strip_prefix(':') {
+            Some(p) => (h, Some(p)),
+            None if after.is_empty() => (h, None),
+            None => return None,
+        }
+    } else {
+        match s.rsplit_once(':') {
+            Some((h, p)) if !h.contains(':') => (h, Some(p)),
+            _ => (s, None),
+        }
+    };
+    let port = match port {
+        Some(p) => p.parse().ok().filter(|p| *p > 0)?,
+        None => default_port,
+    };
+    (!host.is_empty()).then(|| (host.to_owned(), port))
+}
+
 impl KindSpec {
     /// (host, port) of the TCP endpoints configured in `cfg`: host from the config
     /// (else `default_host`; unconfigured endpoints without one are skipped), port from
-    /// the config (else `default_port`). The appliance firewall opens these.
+    /// the config (else `default_port`). v1.6: a pointer to an array of strings yields
+    /// one target per item, each `host` or `host:port` (`[v6]:port`); the port of an
+    /// item without one comes from the endpoint's port field. The appliance firewall
+    /// opens these.
     pub fn tcp_targets(&self, cfg: &serde_json::Value) -> Vec<(String, u16)> {
-        self.endpoints
-            .iter()
-            .filter(|e| e.proto == "tcp")
-            .filter_map(|e| {
-                let host = cfg
-                    .pointer(&e.host)
-                    .and_then(|v| v.as_str())
-                    .map(|h| h.trim_matches(['[', ']']))
-                    .filter(|h| !h.is_empty())
-                    .or(e.default_host.as_deref())?
-                    .to_owned();
-                let port = e
-                    .port
-                    .as_deref()
-                    .and_then(|p| cfg.pointer(p))
-                    .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
-                    .and_then(|p| u16::try_from(p).ok())
-                    .unwrap_or(e.default_port);
-                Some((host, port))
-            })
-            .collect()
+        let mut out = Vec::new();
+        for e in self.endpoints.iter().filter(|e| e.proto == "tcp") {
+            let port = e
+                .port
+                .as_deref()
+                .and_then(|p| cfg.pointer(p))
+                .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                .and_then(|p| u16::try_from(p).ok())
+                .unwrap_or(e.default_port);
+            match cfg.pointer(&e.host) {
+                Some(serde_json::Value::Array(items)) => out.extend(
+                    items
+                        .iter()
+                        .filter_map(|v| split_host_port(v.as_str()?, port)),
+                ),
+                v => {
+                    let host = v
+                        .and_then(|v| v.as_str())
+                        .map(|h| h.trim_matches(['[', ']']))
+                        .filter(|h| !h.is_empty())
+                        .or(e.default_host.as_deref());
+                    if let Some(h) = host {
+                        out.push((h.to_owned(), port));
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// TCP ports of [`KindSpec::tcp_targets`]: the plugin's connect allow-list (Landlock).
@@ -767,6 +801,29 @@ mod tests {
             [("db".into(), 8443), ("127.0.0.1".into(), 8443)]
         );
         assert_eq!(f.tcp_ports(&serde_json::json!({"api_host": ""})), [443]);
+        // v1.6: arrays of `host[:port]` (PostgreSQL HA hosts)
+        let mut ha = m.clone();
+        ha.kinds[0].endpoints.push(Endpoint {
+            host: "/hosts".into(),
+            port: Some("/port".into()),
+            default_port: 5432,
+            proto: "tcp".into(),
+            default_host: None,
+        });
+        assert_eq!(
+            ha.kinds[0].tcp_targets(&serde_json::json!({"host": "a", "port": 6432,
+                "hosts": ["b", "c:5433", "[fd00::1]:5434", "fd00::2", "", "d:x", 7]})),
+            [
+                ("a".into(), 6432),
+                ("b".into(), 6432),
+                ("c".into(), 5433),
+                ("fd00::1".into(), 5434),
+                ("fd00::2".into(), 6432)
+            ]
+        );
+        assert_eq!(split_host_port("[::1]", 1), Some(("::1".into(), 1)));
+        assert_eq!(split_host_port("h:0", 1), None);
+        assert_eq!(split_host_port("[::1]x", 1), None);
         for bad_host in ["1.2.3.4", "*.example.com", "localhost", "a..b", "-a.b", "a b.c"] {
             let mut bad = fixed.clone();
             bad.kinds[0].endpoints[1].default_host = Some(bad_host.into());

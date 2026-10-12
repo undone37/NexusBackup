@@ -1,7 +1,9 @@
 //! The plugin binary in the real sandbox against a real PostgreSQL (testbox/run.sh,
 //! rootless podman): validate, guests, logical dump → restore to the source and to
 //! an alternate server (compared with pg_dump), cluster base backup + incremental
-//! WAL → point-in-time restore over SSH, started and queried.
+//! WAL → point-in-time restore over SSH, started and queried; recovery to an LSN and
+//! a named restore point, tablespaces remapped, started by the plugin (1.2.0); HA:
+//! the primary among several servers, a new base backup after a failover.
 //! Without podman (or with NEXUS_PG_TESTBOX=skip) every test prints why and passes.
 
 use plugin_sdk::testing::Host;
@@ -343,6 +345,7 @@ fn cluster_backup_and_point_in_time_restore() {
     };
     let b = Box { env };
     reset(&b, false, &["pitr"]);
+    drop_tablespace(&b);
     for d in ["pitr1", "pitr2", "pitr3"] {
         let dir = format!("/var/lib/postgresql/{d}");
         b.exec(&["pg_ctl", "-D", &dir, "-m", "immediate", "stop"]);
@@ -360,6 +363,9 @@ fn cluster_backup_and_point_in_time_restore() {
     let full = h.backup(&cfg, None).unwrap();
     assert!(full.summary.starts_with("full:"), "{} {:?}", full.summary, h.log());
     assert!(full.files > 500 && full.consistent, "{}", full.files);
+    // the full snapshot recovers to the end of its base backup only
+    let fr = &full.meta.as_ref().expect("snapshot meta")["recoverable"];
+    assert_eq!((&fr["from_lsn"], &fr["from_time"]), (&fr["to_lsn"], &fr["to_time"]), "{fr}");
 
     b.psql(false, "pitr", "INSERT INTO t (id) SELECT generate_series(1, 100)");
     std::thread::sleep(Duration::from_millis(1100));
@@ -380,11 +386,24 @@ fn cluster_backup_and_point_in_time_restore() {
         "only WAL is transferred: {}",
         inc.transferred
     );
+    // recoverable range: base backup end → this run's marker commit
+    let ir = &inc.meta.as_ref().unwrap()["recoverable"];
+    assert_eq!(ir["from_lsn"], fr["from_lsn"]);
+    assert!(ir["to_time"].as_u64() >= ir["from_time"].as_u64() && ir["to_lsn"] != ir["from_lsn"], "{ir}");
+    // WAL-only frequent runs: nothing changed = only the (partial) last segments again
+    let idle = h.backup(&cfg, None).unwrap();
+    assert!(idle.summary.starts_with("incremental:"), "{}", idle.summary);
+    assert!(idle.transferred <= 2 * (16 << 20), "{}", idle.transferred);
 
     b.psql(false, "pitr", "INSERT INTO t (id) SELECT generate_series(201, 300)");
+    // the marker of the next run lies in a later second than this commit (to_time = its floor)
+    std::thread::sleep(Duration::from_millis(1100));
     let inc2 = h.backup(&cfg, None).unwrap();
     assert!(inc2.summary.starts_with("incremental:"), "{}", inc2.summary);
     assert!(inc2.unchanged >= inc.unchanged, "{} {}", inc2.unchanged, inc.unchanged);
+    // the end of the recoverable range is reachable by time (the marker commit follows it)
+    let to_time = inc2.meta.as_ref().unwrap()["recoverable"]["to_time"].as_u64().unwrap();
+    let to_text = b.psql(false, "postgres", &format!("SELECT to_timestamp({to_time})::text"));
 
     // to t1: only the first batch
     let r = h
@@ -412,6 +431,20 @@ fn cluster_backup_and_point_in_time_restore() {
     )
     .unwrap();
     assert_eq!(start_and_count(&b, "pitr2", 5498), "300");
+    for d in ["pitr4"] {
+        let dir = format!("/var/lib/postgresql/{d}");
+        b.exec(&["pg_ctl", "-D", &dir, "-m", "immediate", "stop"]);
+        b.exec(&["rm", "-rf", &dir]);
+    }
+    h.restore(
+        &cfg,
+        &inc2.source,
+        inc2.time,
+        "pitr",
+        json!({"directory": "/var/lib/postgresql/pitr4", "port": 5495, "target_time": to_text}),
+    )
+    .unwrap();
+    assert_eq!(start_and_count(&b, "pitr4", 5495), "300");
     // the base backup alone (full snapshot: only the WAL in its pg_wal)
     h.restore(
         &cfg,
@@ -441,8 +474,210 @@ fn cluster_backup_and_point_in_time_restore() {
     assert!(again.summary.starts_with("full:"), "{} {:?}", again.summary, h.log());
 }
 
+fn drop_tablespace(b: &Box) {
+    reset(b, false, &["pitrts"]);
+    b.psql(false, "postgres", "DROP TABLESPACE IF EXISTS nexus_ts");
+}
+
+fn stop_rm(b: &Box, dirs: &[&str]) {
+    for d in dirs {
+        let dir = format!("/var/lib/postgresql/{d}");
+        b.exec(&["pg_ctl", "-D", &dir, "-m", "immediate", "stop"]);
+        b.exec(&["rm", "-rf", &dir]);
+    }
+}
+
+/// Recovery to an LSN and to a named restore point, a tablespace moved to a new
+/// directory, PostgreSQL started by the plugin.
+#[test]
+fn restore_targets_tablespaces_and_start() {
+    let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(env) = testbox("restore_targets_tablespaces_and_start") else {
+        return;
+    };
+    let b = Box { env };
+    drop_tablespace(&b);
+    stop_rm(&b, &["ts_src", "lsn1", "lsn1_ts", "rp1", "rp1_ts", "nots"]);
+    b.exec(&["mkdir", "-m", "700", "/var/lib/postgresql/ts_src"]);
+    b.psql(false, "postgres", "CREATE TABLESPACE nexus_ts LOCATION '/var/lib/postgresql/ts_src'");
+    b.psql(false, "postgres", "CREATE DATABASE pitrts");
+    b.psql(false, "pitrts", "CREATE TABLE t (id int PRIMARY KEY) TABLESPACE nexus_ts");
+    let oid = b.psql(false, "postgres", "SELECT oid FROM pg_tablespace WHERE spcname = 'nexus_ts'");
+    let h = b.host();
+    let cfg = b.config();
+    let full = h.backup(&cfg, None).unwrap();
+    assert!(full.summary.starts_with("full:"), "{} {:?}", full.summary, h.log());
+
+    b.psql(false, "pitrts", "INSERT INTO t SELECT generate_series(1, 100)");
+    let lsn = b.psql(false, "postgres", "SELECT pg_current_wal_lsn()");
+    b.psql(false, "pitrts", "INSERT INTO t SELECT generate_series(101, 200)");
+    b.psql(false, "postgres", "SELECT pg_create_restore_point('nexus_rp')");
+    b.psql(false, "pitrts", "INSERT INTO t SELECT generate_series(201, 300)");
+    let inc = h.backup(&cfg, None).unwrap();
+    assert!(inc.summary.starts_with("incremental:"), "{} {:?}", inc.summary, h.log());
+
+    // tablespaces need a new directory each
+    let e = h.restore(
+        &cfg,
+        &inc.source,
+        inc.time,
+        "pitr",
+        json!({"directory": "/var/lib/postgresql/nots"}),
+    );
+    let e = format!("{:#}", e.unwrap_err());
+    assert!(e.contains(&format!("{oid} (/var/lib/postgresql/ts_src)")), "{e}");
+    // two targets at once are refused
+    let e = h.restore(
+        &cfg,
+        &inc.source,
+        inc.time,
+        "pitr",
+        json!({"directory": "/var/lib/postgresql/nots", "target_lsn": lsn, "target_name": "nexus_rp"}),
+    );
+    assert!(format!("{:#}", e.unwrap_err()).contains("at most one"));
+
+    // to the LSN, tablespace by oid, started by the plugin
+    let r = h
+        .restore(
+            &cfg,
+            &inc.source,
+            inc.time,
+            "pitr",
+            json!({"directory": "/var/lib/postgresql/lsn1", "target_lsn": lsn, "port": 5494, "start": true,
+                   "tablespaces": [format!("{oid}=/var/lib/postgresql/lsn1_ts")]}),
+        )
+        .unwrap();
+    assert!(r.summary.contains("PostgreSQL started"), "{}", r.summary);
+    assert!(r.summary.contains(&format!("tablespaces {oid} → /var/lib/postgresql/lsn1_ts")), "{}", r.summary);
+    assert_eq!(wait_and_count(&b, "lsn1", 5494, "pitrts"), "100");
+    assert_eq!(
+        b.psql_port(false, 5494, "postgres", &format!("SELECT pg_tablespace_location({oid})")),
+        "/var/lib/postgresql/lsn1_ts"
+    );
+    b.exec(&["pg_ctl", "-D", "/var/lib/postgresql/lsn1", "-m", "fast", "stop"]);
+
+    // to the named restore point, tablespace by its old path, started here
+    h.restore(
+        &cfg,
+        &inc.source,
+        inc.time,
+        "pitr",
+        json!({"directory": "/var/lib/postgresql/rp1", "target_name": "nexus_rp", "port": 5493,
+               "tablespaces": ["/var/lib/postgresql/ts_src=/var/lib/postgresql/rp1_ts"]}),
+    )
+    .unwrap();
+    assert_eq!(start_and_count_db(&b, "rp1", 5493, "pitrts"), "200");
+
+    stop_rm(&b, &["lsn1", "lsn1_ts", "rp1", "rp1_ts"]);
+    drop_tablespace(&b);
+    b.exec(&["rm", "-rf", "/var/lib/postgresql/ts_src"]);
+}
+
+/// HA: the configured host is a standby, the primary is found among `hosts`; after
+/// a failover (the replica promoted, the old primary unreachable) the next backup
+/// is a full one from the new primary.
+#[test]
+fn ha_primary_and_failover() {
+    let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(env) = testbox("ha_primary_and_failover") else {
+        return;
+    };
+    let b = Box { env };
+    drop_tablespace(&b);
+    stop_rm(&b, &["replica"]);
+    let home = "/var/lib/postgresql";
+    let (ok, out) = b.exec(&[
+        "env",
+        &format!("PGPASSWORD={}", b.var("SUPER_PASSWORD")),
+        "pg_basebackup",
+        "-h",
+        "127.0.0.1",
+        "-U",
+        "postgres",
+        "-D",
+        &format!("{home}/replica"),
+        "-R",
+        "-X",
+        "stream",
+        "-c",
+        "fast",
+    ]);
+    assert!(ok, "pg_basebackup: {out}");
+    let (ok, out) = b.exec(&[
+        "pg_ctl",
+        "-D",
+        &format!("{home}/replica"),
+        "-l",
+        "/tmp/replica.log",
+        "-o",
+        &format!(
+            "-p 5433 -c listen_addresses=0.0.0.0 -c ssl=on -c ssl_cert_file={home}/server.crt -c ssl_key_file={home}/server.key"
+        ),
+        "-w",
+        "start",
+    ]);
+    assert!(ok, "replica start: {out} {}", b.exec(&["cat", "/tmp/replica.log"]).1);
+    assert_eq!(b.psql_port(false, 5433, "postgres", "SELECT pg_is_in_recovery()"), "t");
+
+    let (port, rport) = (b.var("PORT").to_owned(), b.var("REPLICA_PORT").to_owned());
+    let h = b.host();
+    let mut cfg = b.config();
+    cfg["port"] = json!(rport.parse::<u16>().unwrap());
+    cfg["hosts"] = json!([format!("127.0.0.1:{port}")]);
+    let v = h.validate(&cfg).unwrap();
+    assert_eq!(v["valid"], true, "{v} {:?}", h.log());
+    let want = format!("servers: 127.0.0.1:{rport} standby, 127.0.0.1:{port} primary");
+    assert!(h.log().iter().any(|l| l.contains(&want)), "{:?}", h.log());
+    let full = h.backup(&cfg, None).unwrap();
+    assert!(
+        full.summary.starts_with("full:") && full.summary.ends_with(&format!("(from 127.0.0.1:{port})")),
+        "{}",
+        full.summary
+    );
+    // no primary at all: validate names the hosts field
+    let mut none = cfg.clone();
+    none["hosts"] = json!(["127.0.0.1:9"]);
+    let v = h.validate(&none).unwrap();
+    assert_eq!(v["field"], "hosts", "{v}");
+
+    // failover: the replica becomes the primary (timeline 2), the old one is gone
+    let (ok, out) = b.exec(&["pg_ctl", "-D", &format!("{home}/replica"), "-w", "promote"]);
+    assert!(ok, "promote: {out}");
+    let mut after = b.config();
+    after["port"] = json!(9); // the old primary: nothing listens there
+    after["hosts"] = json!([format!("127.0.0.1:{rport}")]);
+    let again = h.backup(&after, None).unwrap();
+    assert!(
+        again.summary.starts_with("full:") && again.summary.ends_with(&format!("(from 127.0.0.1:{rport})")),
+        "{} {:?}",
+        again.summary,
+        h.log()
+    );
+    assert!(h.log().iter().any(|l| l.contains("timeline changed")), "{:?}", h.log());
+    assert_eq!(again.meta.as_ref().unwrap()["recoverable"]["timeline"], 2);
+    stop_rm(&b, &["replica"]);
+}
+
+/// Waits for the end of recovery of a server the plugin started, counts t in `db`.
+fn wait_and_count(b: &Box, d: &str, port: u16, db: &str) -> String {
+    let t0 = Instant::now();
+    while b.psql_port(false, port, "postgres", "SELECT pg_is_in_recovery()") != "f" {
+        assert!(
+            t0.elapsed() < Duration::from_secs(120),
+            "recovery did not end: {}",
+            b.exec(&["cat", &format!("/var/lib/postgresql/{d}/nexus_restore.log")]).1
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    b.psql_port(false, port, db, "SELECT count(*) FROM t")
+}
+
 /// Starts PostgreSQL on a restored data directory, waits for the end of recovery, counts t.
 fn start_and_count(b: &Box, d: &str, port: u16) -> String {
+    start_and_count_db(b, d, port, "pitr")
+}
+
+fn start_and_count_db(b: &Box, d: &str, port: u16, db: &str) -> String {
     let dir = format!("/var/lib/postgresql/{d}");
     let log = format!("/tmp/{d}.log");
     let (ok, out) = b.exec(&[
@@ -468,7 +703,7 @@ fn start_and_count(b: &Box, d: &str, port: u16) -> String {
         );
         std::thread::sleep(Duration::from_millis(200));
     }
-    let n = b.psql_port(false, port, "pitr", "SELECT count(*) FROM t");
+    let n = b.psql_port(false, port, db, "SELECT count(*) FROM t");
     b.exec(&["pg_ctl", "-D", &dir, "-m", "fast", "stop"]);
     n
 }
