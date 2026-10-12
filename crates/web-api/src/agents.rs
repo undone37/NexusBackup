@@ -67,9 +67,11 @@ pub fn new_token() -> String {
 }
 
 /// The token is NOT part of the command (it would end up in `ps` and the shell
-/// history): `--token -` makes the agent read it from stdin, the admin pastes it.
+/// history): `--token -` makes the agent read it from stdin, the admin pastes it. Packages
+/// install /usr/bin/nexus-agent; bundle installs (/usr/local/sbin) on EL/Fedora need the full
+/// path with sudo (manual 04).
 pub fn install_command(_token: &str) -> String {
-    "sudo /usr/local/sbin/nexus-agent init --token -".into()
+    "sudo nexus-agent init --token -".into()
 }
 
 /// New token: digest sealed to the scheduler, bound to id + endpoint.

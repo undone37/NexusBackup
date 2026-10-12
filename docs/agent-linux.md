@@ -8,7 +8,49 @@ shared with the Windows agent (docs/agent-windows.md); `agent-linux` implements 
 `Platform` and `RestoreFs` traits. It listens (TCP 7444, TLS 1.3, ALPN `nexus-agent/1`) and never
 connects out.
 
-## Install
+## Packages (.deb / .rpm)
+
+Every release carries `nexus-agent_<v>-1_{amd64,arm64}.deb` and
+`nexus-agent-<v>-1.{x86_64,aarch64}.rpm`, built by `release/packages.sh` (release workflow,
+job `packages`) entirely in rootless podman: the static musl binaries in the official Rust
+image (x86_64 with gcc, aarch64 with the Debian `gcc-aarch64-linux-gnu` cross compiler; both
+link Rust's self-contained musl), the packages with nfpm (`goreleaser/nfpm`, pinned by
+digest; config and maintainer scripts in `crates/agent-linux/dist/pkg/`). The package version
+is the agent crate version (what self-update compares), release `1`.
+
+Contents: `/usr/bin/nexus-agent`, `/usr/lib/systemd/system/nexus-agent.service` (the bundle's
+unit with `ExecStart=/usr/bin/nexus-agent run`), `/etc/nexus-agent/{hooks.d/{pre,post},release-keys}`
+(0700 / keys 0644 as config files), `/usr/lib/nexus-agent/package-managed` (`deb` or `rpm`),
+`/usr/share/doc/nexus-agent/` (README, copyright, `examples/hooks.d/pre/*.example`). No system
+user (the agent must run as root, see the unit), no dependencies (static binary).
+
+Maintainer scripts (`postinst.sh`, `prerm.sh`, `postrm.sh`; the same files for deb and rpm,
+they tell the two calling conventions apart):
+- install: writes `/etc/modules-load.d/nexus-agent.conf` if LVM is present (as install.sh),
+  `daemon-reload`, prints the enrollment commands. The unit is **not** enabled or started
+  before enrollment (`nexus-agent init --token -`, then `systemctl enable --now nexus-agent`).
+  A reinstall on a host that still has `/etc/nexus-agent/agent.key` enables and starts it.
+- upgrade: `systemctl try-restart`.
+- remove / erase: `disable --now`, removes the modules-load file; `/etc/nexus-agent` stays
+  (reinstalling keeps the enrollment). `apt purge` also deletes `/etc/nexus-agent` and
+  `/var/lib/nexus-agent`.
+- warns if an install.sh installation (`/etc/systemd/system/nexus-agent.service`,
+  `/usr/local/sbin/nexus-agent`) would shadow the packaged one; remove those two files when
+  switching from the bundle to the package (`/etc/nexus-agent` is shared and kept).
+
+Checks (`release/test-packages.sh`, run by the release workflow before the upload): install,
+file modes, `nexus-agent --version` and `status`, `systemd-analyze verify`, unit not enabled,
+reinstall, remove (enrollment kept) and purge in `debian:13`; install, `rpm -V`, erase in
+`almalinux:10` and `fedora:43`; lintian and rpmlint without errors. The aarch64 binary is
+checked with `file` and run under qemu-user when the host has binfmt for it. Known lint
+warnings (accepted): no man page, 0700 directories under `/etc`, maintainer scripts call
+`systemctl` directly (shared deb/rpm scripts, no debhelper), nfpm's changelog format,
+`statically-linked-binary` is overridden (lintian override in the package, rpmlint filter
+`crates/agent-linux/dist/pkg/rpmlintrc`). Native package signing (GPG for apt/dnf
+repositories) is not done: there is no repository yet; the files are signed with cosign
+(docs/release.md).
+
+## Install from the bundle (any systemd distribution)
 
 ```
 crates/agent-linux/dist/build-bundle.sh [--test-key] [--sign]   # on the build host
@@ -30,7 +72,8 @@ after enrollment), `agent.key` (0600), `enroll.crt`, `agent.crt`, `ca.crt`, `age
 
 `agent.conf` (`key = value`): `listen` (`::`), `port` (7444), `lvm_snapshot_percent` (10),
 `hook_timeout_secs` (3600), `spool_max_bytes` (2 GiB), `appliance_id` (pin the client
-certificate CN `nexus-appliance:<id>`), `max_connections` (4). Unknown keys are errors.
+certificate CN `nexus-appliance:<id>`), `max_connections` (4), `self_update` (`on`/`off`;
+unset = on, except for package installs). Unknown keys are errors.
 
 ## Enrollment and TLS
 
@@ -138,7 +181,15 @@ P-256 over SHA-256), produced by `release/sign.sh sign-blob`. Verified against
 signed binary (must equal the claimed version and be strictly newer). Refused while jobs
 or a restore run. Atomic rename over the running binary (old one kept as `.prev`), then
 exit 75 → systemd restarts (`RestartForceExitStatus=75`). The binary must stay below the
-8 MiB frame limit (currently ~2 MiB).
+8 MiB frame limit (currently ~3.3 MiB).
+
+Package installs: the package owns `/usr/bin/nexus-agent`, so a self-update would be undone
+by the next package upgrade and flagged by `rpm -V` / `debsums`. If
+`/usr/lib/nexus-agent/package-managed` exists, `Update` is refused before any check ("installed
+from a deb package: update it with the package manager …") unless `agent.conf` says
+`self_update = on`; `self_update = off` disables it for bundle installs too. `nexus-agent
+status` shows the state. The appliance's **Update agent** job then fails with that message;
+bundle installs keep updating as before.
 
 ## systemd hardening
 

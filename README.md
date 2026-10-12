@@ -76,6 +76,22 @@ designs), [`docs/adr.md`](docs/adr.md) (architecture decisions), [`docs/threat-m
 | `manual/` | end-user manual (Markdown, English) with screenshots; `manual/tools/screenshots.mjs` regenerates them |
 | `lab/` | reproducible labs: nested PVE, appliance VMs, Linux/TrueNAS/NAS VMs, fuzzing, e2e scripts |
 
+## Downloads
+Every [GitHub release](https://github.com/undone37/NexusBackup/releases) carries the installer ISO and the backup
+agent packages:
+
+| File | For |
+|---|---|
+| `nexusbackup-<v>-x86_64.iso` | the appliance (installer; updates come as signed bootc images) |
+| `nexus-agent_<v>-1_amd64.deb`, `nexus-agent_<v>-1_arm64.deb` | Debian, Ubuntu (x86_64, aarch64) |
+| `nexus-agent-<v>-1.x86_64.rpm`, `nexus-agent-<v>-1.aarch64.rpm` | RHEL/AlmaLinux/Rocky, Fedora, SUSE (x86_64, aarch64) |
+| `nexus-agent-<v>-x64.msi` | Windows Server 2016+ (silent install for GPO/Intune: `msiexec /i … /qn`) |
+| `SHA256SUMS`, `*.sig` | checksums and cosign signatures with the release key |
+
+Check a download: `sha256sum -c --ignore-missing SHA256SUMS` and `cosign verify-blob --key nexus-release-<…>.pub
+--signature <file>.sig --insecure-ignore-tlog=true <file>` (or `release/verify.sh --blobs DIR`). Installing and
+enrolling the agent: [manual chapter 04](manual/04-sources.md#2-install-the-agent-on-the-host).
+
 ## Build and test
 Requirements: Rust (stable, see `rust-version` in `Cargo.toml`), Node 20+ (web UI), podman (image, test boxes),
 QEMU/KVM (labs). No root needed on the build host.
