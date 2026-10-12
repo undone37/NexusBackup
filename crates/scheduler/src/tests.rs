@@ -854,10 +854,199 @@ fn inconsistent_alerts_once_per_source() {
     assert_eq!(count(&s), 2, "other source: its own first warning");
     s.inconsistent_alerts(5, "acme", changed).unwrap();
     s.inconsistent_alerts(6, "acme", changed).unwrap();
-    assert_eq!(count(&s), 3, "changed files: warned, deduplicated while unacknowledged");
+    assert_eq!(count(&s), 3, "changed files: warned, deduplicated while open");
+    let max_count = |s: &Scheduler| -> i64 {
+        s.db.conn()
+            .query_row(
+                "SELECT MAX(count) FROM alerts WHERE kind='backup_inconsistent'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(max_count(&s), 2, "the repeat counted on the open alert");
+    // user decision 2026-10-10: changed files warn again after an ack (13f: the
+    // seen alert is closed and a new one raised)
     ack(&s);
     s.inconsistent_alerts(7, "acme", changed).unwrap();
-    assert_eq!(count(&s), 4, "changed files warn again after an ack");
+    assert_eq!(count(&s), 4, "changed files warn again after the ack");
+    s.inconsistent_alerts(8, "acme", changed).unwrap();
+    assert_eq!(count(&s), 4, "counted while the new one is unacknowledged");
+}
+
+/// 13f lifecycle: a repeat counts on the open alert, a higher severity and the
+/// reminder interval deliver it again, the success path resolves it (audited),
+/// the next failure opens a new one; resolved alerts are pruned per severity.
+#[test]
+fn alert_lifecycle() {
+    let e = env(1);
+    let mut s = sched(&e);
+    let due = |s: &mut Scheduler| -> Vec<i64> {
+        let before: Vec<i64> = {
+            let c = s.db.conn();
+            let mut st = c
+                .prepare("SELECT id FROM alerts WHERE notified_ts IS NULL ORDER BY id")
+                .unwrap();
+            st.query_map([], |r| r.get(0)).unwrap().map(|x| x.unwrap()).collect()
+        };
+        s.deliver_alerts().unwrap();
+        before
+    };
+    let row = |s: &Scheduler, key: &str| -> (i64, i64, String, Option<i64>, i64) {
+        s.db.conn()
+            .query_row(
+                "SELECT id, count, severity, resolved_at, auto FROM alerts WHERE key = ?1 ORDER BY id DESC LIMIT 1",
+                [key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap()
+    };
+    s.raise(
+        "warning",
+        "offsite_lag",
+        "offsite_lag:acme",
+        "lags by 49 h",
+        Some("acme"),
+    )
+    .unwrap();
+    assert_eq!(due(&mut s).len(), 1);
+    s.raise(
+        "warning",
+        "offsite_lag",
+        "offsite_lag:acme",
+        "lags by 50 h",
+        Some("acme"),
+    )
+    .unwrap();
+    let (id, n, sev, resolved, _) = row(&s, "offsite_lag:acme");
+    assert_eq!((n, sev.as_str(), resolved), (2, "warning", None));
+    assert!(due(&mut s).is_empty(), "a repeat is not delivered again");
+    // escalation: delivered again, same row
+    s.raise(
+        "critical",
+        "offsite_lag",
+        "offsite_lag:acme",
+        "lags by 99 h",
+        Some("acme"),
+    )
+    .unwrap();
+    assert_eq!(due(&mut s), [id]);
+    assert_eq!(row(&s, "offsite_lag:acme").2, "critical");
+    // reminder after 24 h while unacknowledged, not once acknowledged
+    s.db.conn()
+        .execute("UPDATE alerts SET notified_ts = notified_ts - 25 * 3600", [])
+        .unwrap();
+    s.deliver_alerts().unwrap();
+    let t: i64 =
+        s.db.conn()
+            .query_row("SELECT notified_ts FROM alerts WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+    assert!(t > catalog::now() - 60, "reminded");
+    s.db.conn()
+        .execute(
+            "UPDATE alerts SET notified_ts = notified_ts - 25 * 3600, acked_by = 'op'",
+            [],
+        )
+        .unwrap();
+    s.deliver_alerts().unwrap();
+    let t2: i64 =
+        s.db.conn()
+            .query_row("SELECT notified_ts FROM alerts WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+    assert!(t2 < catalog::now() - 3600, "acknowledged: no reminder");
+    // resolve: closed automatically and audited; the next failure is a new alert
+    s.resolve("offsite_lag:acme").unwrap();
+    let (_, _, _, resolved, auto) = row(&s, "offsite_lag:acme");
+    assert!(resolved.is_some() && auto == 1);
+    let audits: i64 =
+        s.db.conn()
+            .query_row("SELECT COUNT(*) FROM audit WHERE action = 'alert.resolve'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+    assert_eq!(audits, 1);
+    s.resolve("offsite_lag:acme").unwrap();
+    s.raise("warning", "offsite_lag", "offsite_lag:acme", "lags again", Some("acme"))
+        .unwrap();
+    let (id2, n, _, resolved, _) = row(&s, "offsite_lag:acme");
+    assert!(id2 > id && n == 1 && resolved.is_none());
+    // pruning: resolved info alerts after 14 days, warnings after 180 (setting overrides)
+    s.raise("info", "x", "x:1", "old info", None).unwrap();
+    s.raise("warning", "y", "y:1", "old warning", None).unwrap();
+    let old = catalog::now() - 20 * 86400;
+    s.db.conn()
+        .execute(
+            "UPDATE alerts SET resolved_at = ?1 WHERE key IN ('x:1', 'y:1', 'offsite_lag:acme')",
+            [old],
+        )
+        .unwrap();
+    s.prune_alerts(catalog::now()).unwrap();
+    let keys = |s: &Scheduler| -> Vec<String> {
+        let c = s.db.conn();
+        let mut st = c.prepare("SELECT key FROM alerts ORDER BY id").unwrap();
+        st.query_map([], |r| r.get(0)).unwrap().map(|x| x.unwrap()).collect()
+    };
+    assert_eq!(keys(&s), ["offsite_lag:acme", "offsite_lag:acme", "y:1"]);
+    catalog::set_setting(&s.db.conn(), "alert_retention_days", r#"{"warning": 10}"#).unwrap();
+    s.prune_alerts(catalog::now()).unwrap();
+    assert_eq!(
+        keys(&s),
+        ["offsite_lag:acme"],
+        "the escalated (critical) one is kept 180 days"
+    );
+}
+
+/// A failed job raises `job_failed:<tenant>/<kind>/<target>` with the tenant;
+/// a repeat counts, the next successful run of the same job resolves it.
+#[test]
+fn job_failure_resolved_by_success() {
+    let e = env(1);
+    let mut s = sched(&e);
+    let job = Job {
+        id: 1,
+        kind: "backup".into(),
+        tenant: "acme".into(),
+        params: json!({"group_id": 1}),
+    };
+    let key = lifecycle::job_failed_key(&job);
+    assert_eq!(key, "job_failed:acme/backup/group/1");
+    let other = Job {
+        params: json!({"source_id": 3, "source": "vm-100"}),
+        kind: "restore".into(),
+        ..job.clone()
+    };
+    assert_eq!(
+        lifecycle::job_failed_key(&other),
+        "job_failed:acme/restore/source/3/vm-100"
+    );
+    let by_vmid = Job {
+        params: json!({"vmid": 101}),
+        ..job.clone()
+    };
+    assert_eq!(lifecycle::job_failed_key(&by_vmid), "job_failed:acme/backup/vmid/101");
+    for _ in 0..2 {
+        let id = manual(&s, "backup", "acme", json!({"group_id": 1}));
+        let j = s.job(id).unwrap();
+        s.fail_unstartable(&j, "no route to host").unwrap();
+    }
+    let (count, tenant, open): (i64, String, bool) =
+        s.db.conn()
+            .query_row(
+                "SELECT count, tenant, resolved_at IS NULL FROM alerts WHERE key = ?1",
+                [&key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+    assert_eq!((count, tenant.as_str(), open), (2, "acme", true));
+    s.resolve_after_ok(&job).unwrap();
+    let open: i64 =
+        s.db.conn()
+            .query_row("SELECT COUNT(*) FROM alerts WHERE resolved_at IS NULL", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+    assert_eq!(open, 0);
+    s.deliver_alerts().unwrap();
 }
 
 const PLUGIN_MANIFEST: &str = r#"{"id":"pgx","name":"PG","version":"1.2.0","publisher":"nexusbackup","api":1,
@@ -1101,13 +1290,87 @@ fn alert_test_uses_catalog_setting() {
     s.start_jobs().unwrap();
     s.wait_idle(Duration::from_secs(60)).unwrap();
     assert_eq!(state(&s, id), "ok");
+    // the pre-13f setting is read as one rule `default`
     let r = result_of(&s, id);
-    assert_eq!(r["webhook"], "ok", "{r}");
-    assert!(r["smtp"].as_str().unwrap().starts_with("error: "), "{r}");
-    assert!(got.join().unwrap().contains("\"severity\":\"info\""));
+    assert_eq!(r["default/webhook"], "ok", "{r}");
+    assert!(r["default/email"].as_str().unwrap().starts_with("error: "), "{r}");
+    let body = got.join().unwrap();
+    assert!(
+        body.contains("\"severity\":\"info\"") && body.contains("\"hint\":"),
+        "{body}"
+    );
     // the allow-list follows the setting, not alerts.json
     let targets = firewall::alert_targets(&s.alerts_config().unwrap());
     assert_eq!(targets, vec![("127.0.0.1".into(), port), ("127.0.0.1".into(), dead)]);
+}
+
+/// 13f rules: only matching rules deliver; a webhook template renders with
+/// JSON escaping and the sealed header is sent; every rule webhook is an egress target.
+#[test]
+fn rule_webhook_template_delivery() {
+    use std::io::{Read, Write};
+    let e = env(1);
+    let mut s = sched(&e);
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let got = std::thread::spawn(move || {
+        let (mut c, _) = l.accept().unwrap();
+        let mut buf = vec![0u8; 8192];
+        let mut req = Vec::new();
+        while !String::from_utf8_lossy(&req).ends_with('}') {
+            let n = c.read(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            req.extend_from_slice(&buf[..n]);
+        }
+        c.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+            .unwrap();
+        String::from_utf8_lossy(&req).into_owned()
+    });
+    let url = format!("http://127.0.0.1:{port}/hook");
+    let sealed = s
+        .secrets
+        .public()
+        .seal(
+            &catalog::alerting::header_location("acme-chat", "X-Token", &url),
+            "t0ken",
+        )
+        .unwrap();
+    let rules = json!([
+        {"name": "globex-only", "min_severity": "info", "tenants": ["globex"],
+         "channels": {"webhook": {"url": "https://hooks.example:8443/x"}}},
+        {"name": "acme-chat", "min_severity": "warning", "tenants": ["acme"], "kinds": ["job_failed"],
+         "channels": {"webhook": {"url": url, "headers": {"X-Token": sealed},
+            "template": "{\"text\": \"[{{severity}}] {{message}} ({{count}}x) {{alert_url}}\"}"}}}
+    ]);
+    catalog::set_setting(&s.db.conn(), "alert_rules", &rules.to_string()).unwrap();
+    s.raise("info", "job_failed", "k:1", "below the rule's severity", Some("acme"))
+        .unwrap();
+    s.raise(
+        "critical",
+        "job_failed",
+        "k:2",
+        "backup \"nightly\" failed:\nno route",
+        Some("acme"),
+    )
+    .unwrap();
+    s.deliver_alerts().unwrap();
+    let req = got.join().unwrap();
+    assert!(req.to_ascii_lowercase().contains("x-token: t0ken"), "{req}");
+    let body = &req[req.find("\r\n\r\n").unwrap() + 4..];
+    let v: Value = serde_json::from_str(body).unwrap();
+    let text = v["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("[critical] backup \"nightly\" failed:\nno route (1x) https://"),
+        "{text}"
+    );
+    assert!(text.ends_with("/#/alerts?id=2"), "{text}");
+    let targets = firewall::alert_targets(&s.alerts_config().unwrap());
+    assert_eq!(
+        targets,
+        vec![("hooks.example".into(), 8443), ("127.0.0.1".into(), port)]
+    );
 }
 
 /// Phase 12 §4: keys generated at start and published; an approved rotation
@@ -1479,8 +1742,24 @@ fn quota_alerts() {
     )
     .unwrap();
     s.check_quotas().unwrap();
+    // 13f: the same key escalates the open alert instead of adding one
     let a = alerts_of(&s, "quota");
-    assert_eq!(a.len(), 2);
-    assert_eq!(a[1].0, "critical");
-    assert!(a[1].1.contains("120 %"), "{}", a[1].1);
+    assert_eq!(a.len(), 1);
+    assert_eq!(a[0].0, "critical");
+    assert!(a[0].1.contains("120 %"), "{}", a[0].1);
+    // back under 80 %: resolved by the scheduler
+    c().execute(
+        "INSERT INTO capacity_samples (day, tenant, used, logical) VALUES ('2026-10-04', 't1', 100, 1)",
+        [],
+    )
+    .unwrap();
+    s.check_quotas().unwrap();
+    let open: i64 = c()
+        .query_row(
+            "SELECT COUNT(*) FROM alerts WHERE kind='quota' AND resolved_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(open, 0);
 }

@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 
 pub mod activation;
 pub mod agents;
+pub mod alerts;
 pub mod approvals;
 pub mod auth;
 pub mod dashboard;
@@ -457,8 +458,9 @@ pub fn router(st: St) -> Router {
         .route("/quorum/{id}/reject", post(reject))
         .route("/audit", get(list_audit))
         .route("/audit/verify", get(verify_audit))
-        .route("/alerts", get(list_alerts))
-        .route("/alerts/{id}/ack", post(ack_alert))
+        .route("/alerts", get(alerts::list_alerts))
+        .route("/alerts/{id}/ack", post(alerts::ack_alert))
+        .route("/alerts/{id}/resolve", post(alerts::resolve_alert))
         .route(
             "/plugins",
             get(plugins::list_plugins)

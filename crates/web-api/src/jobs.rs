@@ -1,4 +1,4 @@
-//! Job requests, snapshots, downloads, alerts.
+//! Job requests, snapshots, downloads (alerts: `alerts.rs`).
 
 use crate::auth::Ctx;
 use crate::{random_hex, validate, ApiError, ApiResult, St, J, Q};
@@ -587,77 +587,4 @@ pub async fn delete_snapshot(
         json!({"tenant": tenant, "source": source, "time": time}),
     )?;
     Ok(crate::quorum::accepted(o, json!({})))
-}
-
-// ---------------------------------------------------------------- alerts
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AlertFilter {
-    acked: Option<bool>,
-}
-
-/// Alerts are appliance-wide (no tenant column) and may name other tenants,
-/// so tenant-scoped users get an empty list.
-pub async fn list_alerts(State(st): State<St>, ctx: Ctx, Q(f): Q<AlertFilter>) -> ApiResult<Json<Value>> {
-    if ctx.scope().is_some() {
-        return Ok(Json(json!([])));
-    }
-    let c = st.cat.conn();
-    let rows = c
-        .prepare(
-            "SELECT id, ts, severity, kind, message, acked_by FROM alerts
-             WHERE ?1 IS NULL OR (acked_by IS NOT NULL) = ?1 ORDER BY id DESC LIMIT 1000",
-        )?
-        .query_map([f.acked], |r| {
-            Ok(json!({
-                "id": r.get::<_, i64>(0)?, "ts": r.get::<_, i64>(1)?, "severity": r.get::<_, String>(2)?,
-                "kind": r.get::<_, String>(3)?, "message": r.get::<_, String>(4)?,
-                "acked_by": r.get::<_, Option<String>>(5)?,
-            }))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(Json(Value::Array(rows)))
-}
-
-pub async fn ack_alert(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
-    ctx.require(&["admin", "security_officer", "operator"])?;
-    if ctx.scope().is_some() {
-        return Err(ApiError::forbidden());
-    }
-    let kind: Option<String> = st
-        .cat
-        .conn()
-        .query_row("SELECT kind FROM alerts WHERE id = ?1", [id], |r| r.get(0))
-        .optional()?;
-    // a console recovery of an admin account (nexus-setup recover-admin) is
-    // acknowledged by someone who could have approved it, which ends the banner
-    let break_glass = kind.as_deref() == Some("break_glass");
-    if break_glass {
-        ctx.require(&["admin", "security_officer"])?;
-    }
-    {
-        let c = st.cat.conn();
-        let n = c.execute(
-            "UPDATE alerts SET acked_by = ?2 WHERE id = ?1 AND acked_by IS NULL",
-            params![id, ctx.name()],
-        )?;
-        if n == 0 {
-            let found = c
-                .query_row("SELECT 1 FROM alerts WHERE id = ?1", [id], |_| Ok(()))
-                .optional()?;
-            return Err(if found.is_some() {
-                ApiError::conflict("already acknowledged")
-            } else {
-                ApiError::not_found()
-            });
-        }
-    }
-    if break_glass {
-        st.cat
-            .conn()
-            .execute("DELETE FROM settings WHERE key = 'break_glass'", [])?;
-    }
-    st.audit(ctx.name(), "alert.ack", &format!("alert/{id}"), json!({"kind": kind}))?;
-    Ok(Json(json!({"id": id, "acked_by": ctx.name()})))
 }

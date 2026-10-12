@@ -87,7 +87,11 @@ impl Scheduler {
             rows.collect::<std::result::Result<_, _>>()?
         };
         for (tenant, quota, used) in rows {
-            let Some(sev) = quota_level(used, quota) else { continue };
+            let key = format!("quota:{tenant}");
+            let Some(sev) = quota_level(used, quota) else {
+                self.resolve(&key)?;
+                continue;
+            };
             let pfx = match sev {
                 "critical" => format!("tenant {tenant} exceeds its storage quota"),
                 _ => format!("tenant {tenant} uses over 80 % of its storage quota"),
@@ -98,7 +102,7 @@ impl Scheduler {
                 crate::anomaly::human(quota as u64),
                 used as f64 * 100.0 / quota as f64
             );
-            self.alert(sev, "quota", &msg, Some(&pfx))?;
+            self.raise(sev, "quota", &key, &msg, Some(&tenant))?;
         }
         Ok(())
     }

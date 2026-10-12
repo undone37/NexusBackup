@@ -361,7 +361,8 @@ async fn alert_settings_sealed_and_write_only() {
     let otto = t.login("otto").await;
     let r = t.get("/api/v1/settings/alerts", &sam).await;
     assert_eq!(r.status, StatusCode::OK);
-    assert_eq!(r.body["min_severity"], "warning");
+    assert_eq!(r.body["rules"], json!([]));
+    assert_eq!(r.body["reminder_hours"], 24);
     assert_eq!(
         t.get("/api/v1/settings/alerts", &otto).await.status,
         StatusCode::FORBIDDEN
@@ -377,6 +378,10 @@ async fn alert_settings_sealed_and_write_only() {
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     assert_eq!(r.body["smtp"]["password_set"], true);
     assert!(r.body["smtp"].get("password").is_none());
+    // the pre-13f form is stored as one rule (13f)
+    assert_eq!(r.body["rules"][0]["name"], "default");
+    assert_eq!(r.body["rules"][0]["min_severity"], "critical");
+    assert_eq!(r.body["rules"][0]["channels"]["email"], json!(["ops@example.com"]));
     let raw = catalog::setting(&t.st.cat.conn(), "alerts").unwrap().unwrap();
     assert!(!raw.contains("smtp-s3cret"));
     let stored: Value = serde_json::from_str(&raw).unwrap();
@@ -1338,4 +1343,219 @@ async fn storage_accounting_quota_and_anomaly_settings() {
     let r = t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({})).await;
     assert_eq!(r.body["state"], "executed", "{:?}", r.body);
     assert_eq!(t.get("/api/v1/settings/anomaly", &alice).await.body, off);
+}
+
+// ---------------------------------------------------------------- 13f: alert lifecycle and rules
+
+/// Acknowledge (seen, open) and resolve (closed) with notes, filters, RBAC, audit.
+#[tokio::test]
+async fn alert_ack_and_resolve() {
+    let t = T::new();
+    t.exec(
+        "INSERT INTO alerts (id, ts, last_ts, count, severity, kind, key, tenant, message) VALUES
+           (1, 10, 50, 3, 'critical', 'job_failed', 'job_failed:acme/backup/group/1', 'acme', 'backup job 9 failed'),
+           (2, 20, 20, 1, 'warning', 'capacity', 'capacity', NULL, 'store capacity above 75 %');",
+    );
+    let otto = t.login("otto").await;
+    let tina = t.login("tina").await;
+    let sam = t.login("sam").await;
+    let all = t.get("/api/v1/alerts", &otto).await.body;
+    assert_eq!(all.as_array().unwrap().len(), 2);
+    let a1 = &all[1];
+    assert_eq!(
+        (a1["count"].as_i64(), a1["first_ts"].as_i64(), a1["last_ts"].as_i64()),
+        (Some(3), Some(10), Some(50))
+    );
+    assert_eq!(a1["tenant"], "acme");
+    assert!(a1["hint"].as_str().unwrap().contains("job log"));
+    assert_eq!(
+        t.get("/api/v1/alerts", &tina).await.body,
+        json!([]),
+        "tenant users see none"
+    );
+    assert_eq!(
+        t.get("/api/v1/alerts?state=bogus", &otto).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    // acknowledge with a note: still open
+    let r = t
+        .post("/api/v1/alerts/1/ack", &otto, json!({"note": "looking into it"}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let open = t.get("/api/v1/alerts?state=open", &otto).await.body;
+    assert_eq!(open.as_array().unwrap().len(), 2);
+    assert_eq!(open[1]["note"], "looking into it");
+    assert_eq!(
+        t.post("/api/v1/alerts/1/ack", &sam, json!({})).await.status,
+        StatusCode::CONFLICT
+    );
+    // resolve; tenant users may not
+    assert_eq!(
+        t.post("/api/v1/alerts/2/resolve", &tina, json!({})).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        t.post("/api/v1/alerts/1/resolve", &otto, json!({"note": "x".repeat(1001)}))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    let r = t
+        .post("/api/v1/alerts/1/resolve", &otto, json!({"note": "source back online"}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(
+        t.post("/api/v1/alerts/1/resolve", &otto, json!({})).await.status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        t.post("/api/v1/alerts/2/resolve", &sam, json!({})).await.status,
+        StatusCode::OK
+    );
+    let done = t.get("/api/v1/alerts?state=resolved&id=1", &otto).await.body;
+    assert_eq!(done.as_array().unwrap().len(), 1);
+    assert_eq!(
+        (done[0]["resolved_by"].as_str(), done[0]["auto"].as_bool()),
+        (Some("otto"), Some(false))
+    );
+    assert_eq!(done[0]["note"], "source back online");
+    let two = t.get("/api/v1/alerts?state=resolved&id=2", &otto).await.body;
+    assert_eq!(two[0]["acked_by"], "sam", "resolving acknowledges too");
+    assert!(t
+        .get("/api/v1/alerts?state=open", &otto)
+        .await
+        .body
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(t.audit_count("alert.ack"), 1);
+    assert_eq!(t.audit_count("alert.resolve"), 2);
+    assert_eq!(
+        t.post("/api/v1/alerts/99/resolve", &otto, json!({})).await.status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+/// Rules: validation (templates must render to JSON), header values sealed and
+/// write-only (kept while the URL stays), test per rule, RBAC.
+#[tokio::test]
+async fn alert_rules_validation_and_secrets() {
+    let t = T::new();
+    let alice = t.login("alice").await;
+    let sam = t.login("sam").await;
+    let tmpl = r#"{"text": "[{{severity}}] {{kind}}: {{message}}\n{{hint}} <{{alert_url}}|open> ({{count}}x)"}"#;
+    let body = json!({
+        "smtp": {"host": "mail.example.com", "port": 587, "starttls": true, "from": "nexus@example.com"},
+        "rules": [
+            {"name": "ops", "min_severity": "warning", "channels": {"email": ["ops@example.com"]}},
+            {"name": "acme-chat", "min_severity": "info", "kinds": ["job_failed", "verify"], "tenants": ["acme"],
+             "channels": {"webhook": {"url": "https://hooks.slack.example/services/T/B/x",
+                                      "headers": {"Authorization": "Bearer s3cret-token"}, "template": tmpl}}}
+        ],
+        "reminder_hours": 12,
+        "retention_days": {"info": 7, "warning": 90, "critical": 365}
+    });
+    assert_eq!(
+        t.put("/api/v1/settings/alerts", &sam, body.clone()).await.status,
+        StatusCode::FORBIDDEN
+    );
+    let r = t.put("/api/v1/settings/alerts", &alice, body.clone()).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(
+        r.body["rules"][1]["channels"]["webhook"]["headers"],
+        json!({"Authorization": null})
+    );
+    assert_eq!(r.body["reminder_hours"], 12);
+    assert_eq!(r.body["retention_days"]["info"], 7);
+    let raw = catalog::setting(&t.st.cat.conn(), "alert_rules").unwrap().unwrap();
+    assert!(!raw.contains("s3cret-token"));
+    let rules: Vec<catalog::alerting::Rule> = serde_json::from_str(&raw).unwrap();
+    let w = rules[1].channels.webhook.as_ref().unwrap();
+    let opened =
+        t.sk.open(
+            &catalog::alerting::header_location("acme-chat", "Authorization", &w.url),
+            &w.headers["Authorization"],
+        )
+        .unwrap();
+    assert_eq!(opened.as_str(), "Bearer s3cret-token");
+    // GET is the same view, for security officers too
+    assert_eq!(t.get("/api/v1/settings/alerts", &sam).await.body, r.body);
+    // null keeps the value while the URL stays; a new URL needs it again
+    let mut keep = body.clone();
+    keep["rules"][1]["channels"]["webhook"]["headers"]["Authorization"] = Value::Null;
+    assert_eq!(
+        t.put("/api/v1/settings/alerts", &alice, keep.clone()).await.status,
+        StatusCode::OK
+    );
+    let again = catalog::setting(&t.st.cat.conn(), "alert_rules").unwrap().unwrap();
+    assert_eq!(again, raw);
+    keep["rules"][1]["channels"]["webhook"]["url"] = json!("https://evil.example/x");
+    assert_eq!(
+        t.put("/api/v1/settings/alerts", &alice, keep).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    let with = |f: &dyn Fn(&mut Value)| {
+        let mut b = body.clone();
+        f(&mut b);
+        b
+    };
+    for bad in [
+        with(&|b| b["rules"][1]["channels"]["webhook"]["template"] = json!(r#"{"text": {{message}}}"#)),
+        with(&|b| b["rules"][1]["channels"]["webhook"]["template"] = json!(r#"{"text": "{{password}}"}"#)),
+        with(&|b| b["rules"][1]["channels"]["webhook"]["url"] = json!("ftp://x")),
+        with(&|b| b["rules"][1]["channels"]["webhook"]["headers"] = json!({"Bad Header": "x"})),
+        with(&|b| b["rules"][1]["channels"]["webhook"]["headers"] = json!({"Host": "x"})),
+        with(&|b| b["rules"][0]["min_severity"] = json!("debug")),
+        with(&|b| b["rules"][0]["name"] = json!("acme-chat")),
+        with(&|b| b["rules"][0]["name"] = json!("../x")),
+        with(&|b| b["rules"][0]["channels"]["email"] = json!(["not-a-mail"])),
+        with(&|b| b["rules"][0]["tenants"] = json!(["a b"])),
+        with(&|b| b["smtp"] = Value::Null),
+        with(&|b| b["smtp"]["to"] = json!(["x@example.com"])),
+        with(&|b| b["reminder_hours"] = json!(-1)),
+        with(&|b| b["retention_days"] = json!({"debug": 3})),
+        with(&|b| b["rules"][0]["channels"]["sms"] = json!(["+49"])),
+    ] {
+        assert_eq!(
+            t.put("/api/v1/settings/alerts", &alice, bad.clone()).await.status,
+            StatusCode::BAD_REQUEST,
+            "{bad}"
+        );
+    }
+    // test one rule: the scheduler job carries the rule name
+    let st = t.st.clone();
+    let fake = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let n = st
+                .cat
+                .conn()
+                .execute(
+                    "UPDATE jobs SET state = 'ok', result = '{\"webhook\": \"ok\"}' \
+                     WHERE kind = 'alert_test' AND json_extract(params, '$.rule') = 'acme-chat'",
+                    [],
+                )
+                .unwrap();
+            if n > 0 {
+                break;
+            }
+        }
+    });
+    let r = t
+        .post("/api/v1/settings/alerts/test", &alice, json!({"rule": "acme-chat"}))
+        .await;
+    fake.await.unwrap();
+    assert_eq!((r.status, r.body.clone()), (StatusCode::OK, json!({"webhook": "ok"})));
+    assert_eq!(
+        t.post("/api/v1/settings/alerts/test", &alice, json!({"rule": "../x"}))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    let audit: String =
+        t.st.cat
+            .conn()
+            .query_row("SELECT group_concat(details) FROM audit", [], |r| r.get(0))
+            .unwrap();
+    assert!(!audit.contains("s3cret-token") && !audit.contains("sealed:v1:"));
 }

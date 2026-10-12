@@ -374,7 +374,18 @@ async function main() {
     }],
     ['alerts', async () => {
       await go('/alerts');
+      await ev(`$row('store capacity').querySelector('details').open = true; return true;`);
       await shot('alerts');
+      await ev(`$click('All'); return true;`);
+      await settle();
+      await shot('alerts-all');
+      await ev(`$click('Open'); return true;`);
+      await settle();
+      await ev(`$rowClick('store capacity', 'Resolve'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #al-note')`, 'resolve dialog');
+      await ev(`$fill('#al-note', 'Old daily snapshots of initech pruned, GC ran: 61 % used.'); return true;`);
+      await shot('alert-resolve');
+      await closeDialogs();
     }],
     ['audit', async () => {
       await go('/audit');
@@ -582,9 +593,13 @@ async function main() {
       await go('/settings?tab=approvals');
       await shot('settings-approvals');
       await go('/settings?tab=alerts');
-      await ev(`$click('Send test'); return true;`);
+      await ev(`$rowClick('acme-chat', 'Send test'); return true;`);
       await until(`return !!document.querySelector('.test-result')`, 'alert test result');
       await shot('settings-alerts', { height: 1250 });
+      await ev(`$rowClick('acme-chat', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] textarea.mono')`, 'rule editor');
+      await shot('settings-alert-rule', { height: 1400 });
+      await closeDialogs();
       await go('/settings?tab=sso');
       await shot('settings-sso', { height: 1500 });
       await go('/settings?tab=ssh');

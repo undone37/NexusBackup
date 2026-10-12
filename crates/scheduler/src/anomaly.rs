@@ -156,13 +156,15 @@ impl Scheduler {
             Some(t) => format!("last snapshot before: {}/{t}", s.source),
             None => "no earlier snapshot is kept".into(),
         };
-        // stable prefix: tenant + source (the lead's alert keys replace it in 13f)
-        let pfx = format!("change-rate anomaly on {tenant}/{}", s.source);
-        self.alert(
+        self.raise(
             "critical",
             "anomaly",
-            &format!("{pfx}: snapshot {}: {what}; {last}", s.time),
-            Some(&pfx),
+            &format!("anomaly:{tenant}/{}", s.source),
+            &format!(
+                "change-rate anomaly on {tenant}/{}: snapshot {}: {what}; {last}",
+                s.source, s.time
+            ),
+            Some(tenant),
         )
     }
 }

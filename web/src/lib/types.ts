@@ -433,13 +433,26 @@ export interface AuditVerify {
   error?: string;
 }
 
+/** GET /alerts (13f lifecycle): `ts` = `first_ts`; open while `resolved_at` is null. */
 export interface Alert {
   id: number;
   ts: number;
+  first_ts: number;
+  last_ts: number;
+  count: number;
   severity: 'info' | 'warning' | 'critical';
   kind: string;
+  key: string | null;
+  tenant: string | null;
   message: string;
+  /** English "what to do" (the UI prefers t.alerts.hints[kind]) */
+  hint: string;
   acked_by: string | null;
+  resolved_at: number | null;
+  resolved_by: string | null;
+  note: string | null;
+  /** resolved by the appliance (the problem went away) */
+  auto: boolean;
 }
 
 export interface LoginResponse {
@@ -650,20 +663,36 @@ export interface OidcSettings {
   mappings: OidcMapping[];
 }
 
-/** GET/PUT /settings/alerts (§3). `smtp.password` is write-only. */
+export type Severity = 'info' | 'warning' | 'critical';
+
+/** One notification rule (13f). Webhook header values are write-only: null = keep. */
+export interface AlertRule {
+  name: string;
+  min_severity: Severity;
+  /** empty = every kind / tenant */
+  kinds: string[];
+  tenants: string[];
+  channels: {
+    email: string[];
+    webhook: { url: string; headers: Record<string, string | null>; template: string | null } | null;
+  };
+}
+
+/** GET/PUT /settings/alerts (§3, 13f). `smtp.password` is write-only. */
 export interface AlertSettings {
-  webhook_url: string | null;
   smtp: {
     host: string;
     port: number;
     starttls: boolean;
     from: string;
-    to: string[];
     user: string;
     password_set?: boolean;
     password?: string;
   } | null;
-  min_severity: 'info' | 'warning' | 'critical';
+  rules: AlertRule[];
+  /** 0 = never remind */
+  reminder_hours: number;
+  retention_days: Record<Severity, number>;
 }
 
 /** GET /ssh-keys (§4): public halves only. */

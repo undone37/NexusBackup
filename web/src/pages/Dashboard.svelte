@@ -87,7 +87,7 @@
         get<Policy[]>('/policies'),
         get<Snapshot[]>('/snapshots'),
         get<Job[]>('/jobs?state=failed'),
-        get<Alert[]>('/alerts'),
+        get<Alert[]>('/alerts?state=open'),
       ]);
       groups = g;
       policies = p;
