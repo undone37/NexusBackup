@@ -127,6 +127,7 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | Restore options / consistency (15a/d) | **Default name `<name>-restore`; replace-original via approval, never deletes the original, rollback on any failure, not cancellable mid-swap; consistency levels application/crash/inconsistent/unknown (stopped guests = application); policy require_consistency off/warn/fail, relaxing needs approval** (decided 2026-10-12) | Safer restores, honest restore points. |
 | Inbound firewall details (16c) | **Service registry: `web` 8443 (UI, API, metrics and replication share the TLS listener → restricted together), `icmp` off by default, `ssh` listed as not running; setting `inbound` (migrates `mgmt_allow`); every change via approval `firewall.inbound`, lock-out guard for `web`; blocked attempts from nft dynamic sets; console reset `nexus-setup reset-firewall`** (decided 2026-10-12) | Restrict admin access without a TLS-blind per-path illusion. |
 | Disks details (16a/b) | **Root helper `nexus-disks` (timer + path unit, own SELinux domain, no network); smartmontools + mdadm in the image (smartd off); data array only on empty disks while the store is empty (no store migration); metadata tier deferred (would move the live catalog); arrays by md UUID, disks by serial; rescan/self-test without approval, layout changes with approval + typed serials** (decided 2026-10-12) | Safe hardware management without a shell. |
+| Additional Cohesity docs (2026-10-12) | **Urgent small items done immediately (GRUB lock, fleecing space guard, clock skew, Splunk HEC preset + alert category); the rest planned as Phases 21–23 after Phase 20** (decided 2026-10-12, recommended path) | Safety first; feature work keeps the agreed phase order. |
 | Legal hold (Phase 15) | **Set by the security officer alone (adds protection); release needs approval; advisory to secondaries** (decided 2026-10-12) | Incident tool beyond retention locks. |
 | API tokens (Phase 14) | **Scoped read/operator, expiring, hashed; can never approve, change settings/users/tokens or download** (decided 2026-10-12) | Automation without weakening four-eyes. |
 | Vault mode (Phase 17) | **One-way profile for secondaries; switching off needs approval + recovery key** (decided 2026-10-12) | Protects the vault copy against one stolen admin account. |
@@ -676,6 +677,22 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
   firewall-free: the agent never listens publicly beyond its mTLS port as today, uninstaller); all built by the
   release workflow, checksummed and attached to the GitHub release next to the ISO; package signatures with the
   release key (cosign blob signatures; rpm/deb native signing documented); install docs in the manual.
+
+### Phase 21 — Security and ransomware follow-ups (added 2026-10-12 from additional Cohesity docs)
+- Flag anomalous snapshots (restore/hold default to latest clean), file-level change signals + snapshot diff from the
+  name index, trend sparklines, incident mode, security posture checks, WebAuthn/passkeys, CVE scan of the image in
+  CI, bit-rot repair from offsite/replica, DEK rotation reminder, session cap, BMC/separation-of-duties docs, opt-in
+  YARA scan in the restore microVM, Entra ID objects (export). (docs/cohesity-comparison.md "Additional …")
+
+### Phase 22 — Network, PVE and NAS operations
+- Network interfaces (bond, VLAN, MTU, routes) + interface-bound egress, path-MTU check, VM-deployment guidance,
+  per-source/per-storage concurrency caps, read rate limits + PSI backoff, restore-priority switch, VM identity per
+  snapshot, NAS sizing/split/skipped-files CSV/overlap warning, TrueNAS existing-snapshot mode, local small-chunk packing.
+
+### Phase 23 — Service-provider operations and new workloads
+- Usage/billing export, per-tenant IdP, impersonation rules, policy tiers, onboarding wizard, immutable tenant IDs,
+  site-VPN pattern, interim-backup DR runbook; MSSQL (log chain, PITR), MySQL/MariaDB plugin, Exchange full-VSS mode,
+  AD runbook, Hyper-V host-level, Windows BMR, Windows client + arm64 agents.
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
