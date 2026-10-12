@@ -453,10 +453,26 @@ ALTER TABLE agents ADD COLUMN cert_sha256_next TEXT;
 ALTER TABLE agents ADD COLUMN limits TEXT NOT NULL DEFAULT '{}';
 "#;
 
+/// v22 (Phase 17a/b, docs/replication.md "Windows and closing the vault"):
+/// `replication_sources.windows` (bandwidth windows `[{days, from, to, action:
+/// pause|limit, rate_bytes?}]`), `sync_window` (`[{days, from, to}]`: syncs and the
+/// firewall target only inside; empty = always), `timezone` (of both, IANA),
+/// `closed_until` ("close vault now": NULL = open, -1 = until reopened, else a
+/// unix time), `closed_by` / `closed_at`. Purely additive: the previous release
+/// skips the columns (it would sync around the clock again).
+const SCHEMA_V22: &str = r#"
+ALTER TABLE replication_sources ADD COLUMN windows TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE replication_sources ADD COLUMN sync_window TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE replication_sources ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC';
+ALTER TABLE replication_sources ADD COLUMN closed_until INTEGER;
+ALTER TABLE replication_sources ADD COLUMN closed_by TEXT;
+ALTER TABLE replication_sources ADD COLUMN closed_at INTEGER;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
-    SCHEMA_V20, SCHEMA_V21,
+    SCHEMA_V20, SCHEMA_V21, SCHEMA_V22,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1180,6 +1196,53 @@ mod tests {
             })
             .unwrap();
         assert_eq!(n, 3);
+    }
+
+    /// v22 (replication windows, close vault) on top of the previous catalog:
+    /// existing sources sync always and are open; the previous release still
+    /// inserts and updates sources.
+    #[test]
+    fn migration_v22_replication_windows() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V22).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute(
+                "INSERT INTO replication_sources (name, url, peer_id, cert_pin, tenants, schedule, state, created) \
+                 VALUES ('p', 'h:8443', 'x', 'pin', '[\"t\"]', 'daily 01:00', 'enrolled', 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let row: (String, String, String, Option<i64>) = conn
+                .query_row(
+                    "SELECT windows, sync_window, timezone, closed_until FROM replication_sources",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .unwrap();
+            assert_eq!(row, ("[]".into(), "[]".into(), "UTC".into(), None));
+            conn.execute("UPDATE replication_sources SET closed_until = -1, closed_by = 'so'", [])
+                .unwrap();
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        old.execute("UPDATE replication_sources SET schedule = 'daily 02:00'", [])
+            .unwrap();
+        old.execute(
+            "INSERT INTO replication_sources (name, url, peer_id, cert_pin, tenants, schedule, state, created) \
+             VALUES ('q', 'h:8443', 'y', 'pin', '[]', 'daily 01:00', 'enrolling', 1)",
+            [],
+        )
+        .unwrap();
     }
 
     /// v19 (file index flag) on top of the previous catalog: existing groups do
