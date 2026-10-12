@@ -275,3 +275,13 @@ Parallel worktree agents (schema versions pre-assigned, renumbered on merge if n
 - [x] UI smoke on the real API: 84 page views (admin + SO, light + dark, incl. Storage and Settings → Anomaly), 0 problems; fixed: Data reduction tile empty before the first capacity sample (falls back to dedup × compression)
 
 **Phase 13 complete (2026-10-12).** Next: Phase 14 (security and operations), then release 0.1.0-alpha.
+
+## Phase 14 — Security and operations (started 2026-10-12)
+Six parallel worktree agents (each merges main into its branch before reporting):
+- [ ] 14a audit + alert forwarding (syslog TLS + HTTPS JSON, anchor), audit filters + CSV
+- [ ] 14b diagnostics bundle + self-checks (also before updates), `nexus-diag`
+- [ ] 14c emergency console root access (tty2 gate: approved one-time code or recovery key)
+- [ ] 14d1 viewer role, download privilege, expiry, sessions list/revoke, timeouts, dormant accounts, login banner, management allow-list, approver-count warning
+- [ ] 14d2 API tokens, web certificate import (CSR on the appliance), certificate expiry alerts
+- [ ] 14e reports: CSV downloads + scheduled HTML e-mail
+- [ ] merge, full suite, VM labs (PVE e2e, plugins, forwarding, console gate), screenshots, CI, release 0.1.0-alpha
