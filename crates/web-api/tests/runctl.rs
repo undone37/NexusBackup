@@ -202,6 +202,30 @@ async fn policy_run_control_fields_and_blackout_quorum() {
         t.one::<String>(&format!("SELECT retry FROM policies WHERE id = {id}")),
         r#"{"count":1,"delay_min":10}"#
     );
+    // Phase 18b: every 15 minutes + keep all snapshots of the last 24 h (raising: direct)
+    let mut fast = upd.clone();
+    fast["schedule"] = json!("every 15m");
+    fast["gfs"]["recent"] = json!(24);
+    let r = t.put(&format!("/api/v1/policies/{id}"), &alice, fast.clone()).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let list = t.get("/api/v1/policies", &alice).await.body;
+    let p = list.as_array().unwrap().iter().find(|p| p["id"] == id).unwrap().clone();
+    assert_eq!(
+        (p["schedule"].clone(), p["gfs"]["recent"].clone()),
+        (json!("every 15m"), json!(24))
+    );
+    fast["gfs"]["recent"] = json!(9000);
+    assert_eq!(
+        t.put(&format!("/api/v1/policies/{id}"), &alice, fast.clone())
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    // lowering it shortens retention: quorum (left pending; the plain update below keeps 24 h)
+    fast["gfs"]["recent"] = json!(0);
+    let r = t.put(&format!("/api/v1/policies/{id}"), &alice, fast).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    upd["gfs"]["recent"] = json!(24);
     // a new blackout window means fewer runs: quorum
     let w = json!([{"days": ["Mon", "Tue"], "from": "08:00", "to": "18:00", "abort": true}]);
     upd["blackout"] = w.clone();

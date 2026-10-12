@@ -512,9 +512,11 @@ async function main() {
       await until(`return !!$button('Point-in-time restore')`, 'restore menu');
       await ev(`$click('Point-in-time restore'); return true;`);
       await until(`return !!document.querySelector('dialog[open] input')`, 'PITR dialog');
-      await ev(`const ins = $scope().querySelectorAll('input'); const set = (i, v) => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, v); i.dispatchEvent(new Event('input', { bubbles: true })); };
-        set(ins[0], '/var/lib/postgresql/18/restore-1013'); set(ins[1], '2026-10-13 21:40:00+00'); return true;`);
-      await shot('snapshot-pg-pitr');
+      // Phase 18b: the recoverable range bounds the picker, which fills "Recover to time" (UTC)
+      await ev(`const q = (s) => $scope().querySelector(s); const set = (i, v) => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, v); i.dispatchEvent(new Event('input', { bubbles: true })); };
+        set(q('[id$="-directory"]'), '/var/lib/postgresql/18/restore-1013'); const p = q('#pr-pick'); set(p, p.max.slice(0, 14) + '40:00');
+        [...$scope().querySelectorAll('label')].find((l) => l.textContent.includes('Start PostgreSQL')).querySelector('input').click(); return true;`);
+      await shot('snapshot-pg-pitr', { height: 1100 });
       await closeDialogs();
       await go(`/snapshots?source=plugin-postgresql-${data.pgId}-shop`);
       await ev(`$rowClick('plugin-postgresql-${data.pgId}-shop', 'Restore'); return true;`);
@@ -673,6 +675,11 @@ async function main() {
       await until(`return !!document.querySelector('dialog[open] #p-sched')`, 'policy dialog');
       await ev(`$fill('#p-daily', '7'); return true;`);
       await shot('policy-edit', { height: 1500 });
+      await closeDialogs();
+      // Phase 18b: WAL-only runs every 15 minutes, all snapshots of the last 24 h kept
+      await ev(`$rowClick('pg-wal-15min', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #p-recent')`, 'policy dialog');
+      await shot('policy-wal-frequent', { height: 1500 });
       await closeDialogs();
       // run control (Phase 13b): weekday schedule, retries, a blackout window with abort
       await ev(`$rowClick('bronze', 'Edit'); return true;`);

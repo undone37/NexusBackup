@@ -5,7 +5,7 @@ Backs up PostgreSQL 14 or newer (tested: 14, 17, 18) through the plugin SDK. Sou
 | Group selects | Snapshot (`plugin-postgresql-<source>[-<db>]`) | Restores |
 |---|---|---|
 | databases | one logical dump per database: stream `<db>.sql` | `to_target`: into a new (or existing) database on the source or the alternate server; `download` |
-| nothing (whole source) | the cluster: `data/` (base backup), `wal/` (all WAL since it) | `pitr`: new data directory on the restore host via SSH, recovered to a point in time; `download` |
+| nothing (whole source) | the cluster: `data/` (base backup), `tablespaces/<oid>/`, `wal/` (all WAL since it); snapshot metadata: the recoverable range | `pitr`: new data directory on the restore host via SSH, recovered to a time, an LSN or a restore point, optionally started; `download` |
 
 ## How (and why this way)
 The plugin sandbox can only execute what the appliance image ships, and `pg_dump`/`pg_basebackup` would have to
@@ -24,11 +24,35 @@ rustls, SCRAM-SHA-256/md5/password; no new crates, all were already in the works
   WAL on the server between backups. Later backups re-reference `data/` (`Unchanged`, the host reuses the stored
   chunks) and stream only the new WAL (`START_REPLICATION` from the previous end, segment files, the last one
   zero-padded). Every snapshot is self-contained (base + WAL to its time). A new base backup is taken every
-  `full_every_days` (default 7), on a timeline/system change, or when the slot lost WAL.
-- **Point-in-time restore**: unpacks `data/` into a new directory on the restore host over SSH (`tar -x`, host key
-  pinned), the WAL into `<dir>/nexus_wal/`, and appends `restore_command`, `recovery_target_time` (or end of WAL),
-  `recovery_target_action = 'promote'`, `archive_mode = 'off'` (and `port`) to `postgresql.auto.conf` +
-  `recovery.signal`. Start a PostgreSQL of the same major version on it (`pg_ctl -D <dir> start`).
+  `full_every_days` (default 7), on a timeline/system change (failover), or when the slot lost WAL.
+- **WAL-only frequent runs** (1.2.0): an incremental run on an unchanged base sends no data file, only the WAL
+  since the previous run (the partial last segment again, ≤ 16 MiB plus what was written), so `every 15m`
+  schedules are cheap; the policy's `recent` class keeps them all for N hours. Each run first commits a marker
+  transaction (`SELECT pg_current_xact_id()` on a normal connection to `postgres`) and waits until it is flushed:
+  its commit record carries a timestamp, so every time up to the run is reachable by `recovery_target_time` even on
+  an idle server (recovery ends with FATAL when no commit after the target is in the WAL). On a standby or without
+  SQL access the run warns and uses the server's/appliance's clock.
+- **Recoverable range** (snapshot metadata, protocol v1.8 `SnapshotMeta`): `{"recoverable": {from_time, from_lsn,
+  to_time, to_lsn, timeline}}` = first full second after the base backup's end (its end LSN) → the marker's time
+  (the streamed WAL end). A full snapshot recovers to the end of its base backup only (from = to). The appliance
+  stores it in `snapshots.meta`; the restore dialog shows it and bounds its time picker.
+- **Point-in-time restore** (`src/pitr.rs`): unpacks `data/` into a new directory on the restore host over SSH
+  (`tar -x`, host key pinned), the WAL into `<dir>/nexus_wal/`, each tablespace into the directory given for it
+  (`tablespaces`: `<oid or old path>=<new path>`, every tablespace needs one; `tablespace_map` is rewritten, so
+  PostgreSQL creates the `pg_tblspc` links), and appends `restore_command`, one target (`recovery_target_time`,
+  `recovery_target_lsn` or `recovery_target_name`; none = end of WAL), `recovery_target_action = 'promote'`,
+  `archive_mode = 'off'` (and `port`) to `postgresql.auto.conf` + `recovery.signal`. A source that keeps its
+  configuration outside the data directory (Debian) gets an empty `postgresql.conf` and a `pg_hba.conf` with
+  `local all all peer`. With `start`, `pg_ctl -D <dir> -l <dir>/nexus_restore.log -w -t 600 start` runs over SSH
+  (`ssh_pg_ctl`, else `/usr/lib/postgresql/<PG_VERSION>/bin`, `/usr/pgsql-<PG_VERSION>/bin`, else `PATH`); a
+  failed start returns the end of the log. Otherwise start a PostgreSQL of the same major version on it.
+- **High availability** (`src/ha.rs`): `host` plus `hosts` (`host` or `host:port`, firewall/Landlock via the
+  v1.8 endpoint host list). With more than one server every operation first asks each `SELECT
+  pg_is_in_recovery()` and uses the first primary in the configured order (two primaries: the first, with a
+  warning); the job log lists every server as primary/standby/unreachable, and `validate` fails on `hosts` when
+  there is none. Dumps, dump restores to the source and cluster backups all go to the primary; after a failover
+  the timeline changed, so the next cluster backup is a new base backup that creates the slot on the new
+  primary. The slot on the old primary stays (drop it when it returns as a standby).
 
 ## Server setup
 ```sql
@@ -42,18 +66,25 @@ ALTER ROLE nexus CREATEDB;           -- only for dump restores to the source ser
 The alternate restore server's user needs `CREATEDB`; the SSH user on the restore host owns the new data directory
 (usually `postgres`; unencrypted OpenSSH key, the host key as a known_hosts line).
 
-## Limits (v1)
-Point-in-time restore of clusters with additional tablespaces (use the download); recovery targets other than time;
-restore to a running server; the restored server's version must be the source's major version.
+## Limits
+Restore into a running server; the restored server's version must be the source's major version; the marker
+waits at most 30 s for its commit to be flushed (`wal_writer_delay` is far below that); failover slots (PostgreSQL 17 `failover = true`) are not used, so the WAL between the last backup on the old
+primary and the failover is only in the next base backup if the new primary still has it.
 
 ## Tests
 `cargo test -p postgresql` — unit tests, and with podman the integration test (`tests/pg.rs`) against
 `testbox/run.sh` (PostgreSQL `$PG`, default 17, + sshd + an alternate server, rootless): validate, guests, dump →
-restore to the source and the alternate server compared with `pg_dump`, cluster full + incrementals → PITR to a
-time and to the end, started and queried. `PG=14 cargo test -p postgresql --test pg` for another version;
-`NEXUS_PG_TESTBOX=skip` skips it.
+restore to the source and the alternate server compared with `pg_dump`, cluster full + incrementals (incl. an idle
+WAL-only run) → PITR to a time, to the end of the recoverable range and to the end, started and queried; recovery to
+an LSN and to a restore point with a tablespace moved (by oid and by old path) and the server started by the
+plugin; HA: a streaming replica started inside the main container (`pg_basebackup -R`, port 5433 published as
+`$REPLICA_PORT`), the configured host a standby → the primary is used, then the replica promoted and the old
+primary unreachable → a full backup from the new primary on timeline 2. `PG=14 cargo test -p postgresql --test pg`
+for another version; `NAME=… PORT=… ALT_PORT=… SSH_PORT=… REPLICA_PORT=…` run a second testbox next to one in use;
+`NEXUS_PG_TESTBOX=skip` skips it. Unit tests cover primary selection with a fake cluster (`ha.rs`), recovery
+targets, tablespace remapping and the start command (`pitr.rs`).
 
 ## Packaging
 Build against glibc ≤ 2.39 (e.g. in an AlmaLinux 10 container, like the image's builder stage) or statically for
 `x86_64-unknown-linux-musl` (needs a musl C toolchain for `ring`), then `nexus-plugin pack manifest.json <binary>
-postgresql-1.1.0.nxplugin` and sign it (docs/plugin-sdk.md, lab/appliance/plugins.sh).
+postgresql-1.2.0.nxplugin` and sign it (docs/plugin-sdk.md, lab/appliance/plugins.sh).

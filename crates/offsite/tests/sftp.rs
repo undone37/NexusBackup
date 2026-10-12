@@ -353,6 +353,7 @@ fn sftp_target_upload_dr_retention_gc_verify() {
     let (kept, deleted, locked) = t
         .apply_retention(
             &Gfs {
+                recent: 0,
                 daily: 1,
                 weekly: 0,
                 monthly: 0,
@@ -366,6 +367,7 @@ fn sftp_target_upload_dr_retention_gc_verify() {
     let (_, _, locked) = t
         .apply_retention(
             &Gfs {
+                recent: 0,
                 daily: 0,
                 weekly: 0,
                 monthly: 0,

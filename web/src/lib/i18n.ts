@@ -343,6 +343,16 @@ export const en = {
     pluginGuest: (g: string) => `Guest ${g}`,
     appSpecific: "application-specific",
     pluginRestoreTitle: (r: string, s: string) => `${r}: ${s}`,
+    // Phase 18b: recoverable range of a cluster snapshot (PostgreSQL)
+    recoverable: "Recoverable:",
+    recoverableRange: (a: string, b: string) => `any time from ${a} to ${b}`,
+    recoverableBaseOnly: (a: string, lsn: string) =>
+      `only the end of the base backup (${a}, LSN ${lsn}); later snapshots of this source add the WAL after it`,
+    timeline: "timeline",
+    pickTime: "Pick a time in this range",
+    pickTimeHint:
+      'Your local time; fills "Recover to time" in UTC. Leave all targets empty to recover to the end.',
+    outOfRange: (a: string, b: string) => `Outside the recoverable range (${a} – ${b}).`,
     noParams: "This restore needs no parameters.",
     targetSource: "Target source",
     targetSourceOwn: (name: string) => `${name} (the snapshot's source)`,
@@ -857,12 +867,18 @@ export const en = {
     new: "New policy",
     schedule: "Schedule",
     scheduleHint:
-      '"daily HH:MM", "hourly MM", "every 6h at MM", "Mon,Wed,Fri HH:MM" or "monthly D HH:MM" (time zone of the group)',
+      '"daily HH:MM", "hourly MM", "every 6h at MM", "every 15m", "Mon,Wed,Fri HH:MM" or "monthly D HH:MM" (time zone of the group)',
     gfs: "Retention (GFS)",
     daily: "Daily",
     weekly: "Weekly",
     monthly: "Monthly",
     yearly: "Yearly",
+    // Phase 18b
+    recent: "Keep all snapshots of the last N hours",
+    recentShort: "Keep all",
+    recentHint:
+      "0 = off. For frequent runs (every 15 minutes): all of them stay restorable for this long, then daily/weekly/… apply. Counted back from the newest snapshot; such snapshots keep only the minimum lock.",
+    hours: (n: number) => `${n} h`,
     offsite: "Copy offsite",
     weakenHint:
       "Lowering retention, disabling offsite, adding a blackout window, relaxing the required consistency or adding a global exclude needs approval by a second person when approvals are enabled.",
@@ -2062,12 +2078,16 @@ export const en = {
     kind: "Runs",
     kinds: {
       daily: "Daily",
+      minutes: "Every N minutes",
       hours: "Every N hours",
       weekdays: "On weekdays",
       monthly: "Monthly",
     } as Record<string, string>,
     every: "Every",
     hoursN: (n: number) => (n === 1 ? "hour" : `${n} hours`),
+    minutesN: (n: number) => `${n} minutes`,
+    minutesHint:
+      "From the full hour. For frequent runs that send only what changed, e.g. PostgreSQL WAL.",
     at: "At",
     minute: "Minute",
     days: "Days",

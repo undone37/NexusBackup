@@ -210,11 +210,21 @@ pub enum Message {
         count: u64,
         samples: Vec<String>,
     },
+    // v1.8 (appended after `Warnings`)
+    /// Metadata of the snapshot being written (plugin → host, backup only, at most
+    /// once, before `Done`): a JSON object of at most `MAX_SNAPSHOT_META` bytes that
+    /// the appliance keeps with the snapshot in its catalog (e.g. PostgreSQL's
+    /// recoverable range, shown in the restore dialog).
+    SnapshotMeta {
+        json: String,
+    },
 }
 
 /// Samples per `Warnings` message and bytes per sample.
 pub const MAX_WARNING_SAMPLES: usize = 20;
 pub const MAX_WARNING_SAMPLE: usize = 1024;
+
+pub const MAX_SNAPSHOT_META: usize = 16 << 10;
 
 fn bad(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
@@ -317,6 +327,12 @@ pub fn check(m: &Message) -> io::Result<()> {
         }
         Message::Log { text, .. } | Message::Error { message: text, .. } if text.len() > 64 << 10 => {
             Err(bad("log text too long"))
+        }
+        Message::SnapshotMeta { json }
+            if json.len() > MAX_SNAPSHOT_META
+                || !serde_json::from_str::<serde_json::Value>(json).is_ok_and(|v| v.is_object()) =>
+        {
+            Err(bad("snapshot metadata: a JSON object of at most 16 KiB"))
         }
         _ => Ok(()),
     }
@@ -449,32 +465,64 @@ pub fn parse_source_name(s: &str) -> Option<(String, u64, Option<String>)> {
 /// may not use it as the first component of a file path.
 pub const STREAMS_DIR: &str = ".nexus-streams";
 
+/// `host`, `host:port`, `[v6]`, `[v6]:port` or a bare IPv6 address → (host, port);
+/// None for an empty host or a bad port.
+pub fn split_host_port(s: &str, default_port: u16) -> Option<(String, u16)> {
+    let s = s.trim();
+    let (host, port) = if let Some(rest) = s.strip_prefix('[') {
+        let (h, after) = rest.split_once(']')?;
+        match after.strip_prefix(':') {
+            Some(p) => (h, Some(p)),
+            None if after.is_empty() => (h, None),
+            None => return None,
+        }
+    } else {
+        match s.rsplit_once(':') {
+            Some((h, p)) if !h.contains(':') => (h, Some(p)),
+            _ => (s, None),
+        }
+    };
+    let port = match port {
+        Some(p) => p.parse().ok().filter(|p| *p > 0)?,
+        None => default_port,
+    };
+    (!host.is_empty()).then(|| (host.to_owned(), port))
+}
+
 impl KindSpec {
     /// (host, port) of the TCP endpoints configured in `cfg`: host from the config
     /// (else `default_host`; unconfigured endpoints without one are skipped), port from
-    /// the config (else `default_port`). The appliance firewall opens these.
+    /// the config (else `default_port`). v1.8: a pointer to an array of strings yields
+    /// one target per item, each `host` or `host:port` (`[v6]:port`); the port of an
+    /// item without one comes from the endpoint's port field. The appliance firewall
+    /// opens these.
     pub fn tcp_targets(&self, cfg: &serde_json::Value) -> Vec<(String, u16)> {
-        self.endpoints
-            .iter()
-            .filter(|e| e.proto == "tcp")
-            .filter_map(|e| {
-                let host = cfg
-                    .pointer(&e.host)
-                    .and_then(|v| v.as_str())
-                    .map(|h| h.trim_matches(['[', ']']))
-                    .filter(|h| !h.is_empty())
-                    .or(e.default_host.as_deref())?
-                    .to_owned();
-                let port = e
-                    .port
-                    .as_deref()
-                    .and_then(|p| cfg.pointer(p))
-                    .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
-                    .and_then(|p| u16::try_from(p).ok())
-                    .unwrap_or(e.default_port);
-                Some((host, port))
-            })
-            .collect()
+        let mut out = Vec::new();
+        for e in self.endpoints.iter().filter(|e| e.proto == "tcp") {
+            let port = e
+                .port
+                .as_deref()
+                .and_then(|p| cfg.pointer(p))
+                .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                .and_then(|p| u16::try_from(p).ok())
+                .unwrap_or(e.default_port);
+            match cfg.pointer(&e.host) {
+                Some(serde_json::Value::Array(items)) => {
+                    out.extend(items.iter().filter_map(|v| split_host_port(v.as_str()?, port)))
+                }
+                v => {
+                    let host = v
+                        .and_then(|v| v.as_str())
+                        .map(|h| h.trim_matches(['[', ']']))
+                        .filter(|h| !h.is_empty())
+                        .or(e.default_host.as_deref());
+                    if let Some(h) = host {
+                        out.push((h.to_owned(), port));
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// TCP ports of [`KindSpec::tcp_targets`]: the plugin's connect allow-list (Landlock).
@@ -642,6 +690,34 @@ mod tests {
     /// v1.5 tags are a new appended variant: a v1.4 plugin's `Guests` frame is byte
     /// for byte what it was (old plugins keep working), `TaggedGuests` round-trips and
     /// its limits hold.
+    /// v1.8: `SnapshotMeta` is appended after `Warnings` (v1.7); both indices are pinned so
+    /// neither changes for a host or plugin built on the other; only small JSON objects pass.
+    #[test]
+    fn snapshot_meta() {
+        let m = Message::SnapshotMeta {
+            json: r#"{"recoverable":{"from_time":1}}"#.into(),
+        };
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &m).unwrap();
+        assert_eq!(buf[4], 26, "wire index: after Warnings (25)");
+        let mut w = Vec::new();
+        write_msg(
+            &mut w,
+            &Message::Warnings {
+                count: 1,
+                samples: vec![],
+            },
+        )
+        .unwrap();
+        assert_eq!(w[4], 25, "Warnings keeps its index");
+        assert_eq!(read_msg(&mut &buf[..]).unwrap(), m);
+        for bad in ["[1]", "nope", r#""x""#] {
+            assert!(check(&Message::SnapshotMeta { json: bad.into() }).is_err(), "{bad}");
+        }
+        let big = format!(r#"{{"a":"{}"}}"#, "x".repeat(MAX_SNAPSHOT_META));
+        assert!(check(&Message::SnapshotMeta { json: big }).is_err());
+    }
+
     #[test]
     fn tagged_guests_are_wire_compatible() {
         let g = Guest {
@@ -780,6 +856,29 @@ mod tests {
             [("db".into(), 8443), ("127.0.0.1".into(), 8443)]
         );
         assert_eq!(f.tcp_ports(&serde_json::json!({"api_host": ""})), [443]);
+        // v1.8: arrays of `host[:port]` (PostgreSQL HA hosts)
+        let mut ha = m.clone();
+        ha.kinds[0].endpoints.push(Endpoint {
+            host: "/hosts".into(),
+            port: Some("/port".into()),
+            default_port: 5432,
+            proto: "tcp".into(),
+            default_host: None,
+        });
+        assert_eq!(
+            ha.kinds[0].tcp_targets(&serde_json::json!({"host": "a", "port": 6432,
+                "hosts": ["b", "c:5433", "[fd00::1]:5434", "fd00::2", "", "d:x", 7]})),
+            [
+                ("a".into(), 6432),
+                ("b".into(), 6432),
+                ("c".into(), 5433),
+                ("fd00::1".into(), 5434),
+                ("fd00::2".into(), 6432)
+            ]
+        );
+        assert_eq!(split_host_port("[::1]", 1), Some(("::1".into(), 1)));
+        assert_eq!(split_host_port("h:0", 1), None);
+        assert_eq!(split_host_port("[::1]x", 1), None);
         for bad_host in ["1.2.3.4", "*.example.com", "localhost", "a..b", "-a.b", "a b.c"] {
             let mut bad = fixed.clone();
             bad.kinds[0].endpoints[1].default_host = Some(bad_host.into());

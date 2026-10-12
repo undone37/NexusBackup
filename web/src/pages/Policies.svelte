@@ -13,7 +13,7 @@
   import { notify } from '../lib/notify.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
 
-  const GFS: (keyof Gfs)[] = ['daily', 'weekly', 'monthly', 'yearly'];
+  const GFS: ('daily' | 'weekly' | 'monthly' | 'yearly')[] = ['daily', 'weekly', 'monthly', 'yearly'];
 
   let items: Policy[] = $state([]);
   let error: string | null = $state(null);
@@ -35,7 +35,7 @@
   const blank = () => ({
     name: '',
     schedule: 'daily 01:00',
-    gfs: { daily: 14, weekly: 8, monthly: 12, yearly: 0 } as Gfs,
+    gfs: { recent: 0, daily: 14, weekly: 8, monthly: 12, yearly: 0 } as Gfs,
     offsite: true,
     retry: { count: 3, delay_min: 5 },
     blackout: [] as BlackoutWindow[],
@@ -57,7 +57,7 @@
       ? {
           name: x.name,
           schedule: x.schedule,
-          gfs: { ...x.gfs },
+          gfs: { recent: 0, ...x.gfs },
           offsite: x.offsite,
           retry: { ...(x.retry ?? { count: 3, delay_min: 5 }) },
           blackout: (x.blackout ?? []).map((w) => ({ ...w, days: [...w.days] })),
@@ -80,7 +80,10 @@
       name: f.name,
       schedule: f.schedule.trim(),
       offsite: f.offsite,
-      gfs: Object.fromEntries(GFS.map((k) => [k, Number(f.gfs[k]) || 0])),
+      gfs: {
+        ...Object.fromEntries(GFS.map((k) => [k, Number(f.gfs[k]) || 0])),
+        ...(Number(f.gfs.recent) > 0 ? { recent: Number(f.gfs.recent) } : {}),
+      },
       retry: { count: Number(f.retry.count) || 0, delay_min: Number(f.retry.delay_min) || 1 },
       blackout: f.blackout,
       sla_minutes: f.sla === '' || f.sla === null ? null : Number(f.sla),
@@ -120,6 +123,7 @@
           <tr>
             <th scope="col">{t.name}</th>
             <th scope="col">{t.policies.schedule}</th>
+            <th scope="col" class="num" title={t.policies.recent}>{t.policies.recentShort}</th>
             {#each GFS as k (k)}<th scope="col" class="num">{t.policies[k]}</th>{/each}
             <th scope="col">{t.policies.offsite}</th>
             <th scope="col">{t.runctl.retry}</th>
@@ -135,6 +139,7 @@
             <tr>
               <td><strong>{x.name}</strong></td>
               <td class="mono">{x.schedule}</td>
+              <td class="num nowrap">{x.gfs?.recent ? t.policies.hours(x.gfs.recent) : '—'}</td>
               {#each GFS as k (k)}<td class="num">{x.gfs?.[k] ?? 0}</td>{/each}
               <td><Check on={x.offsite} /></td>
               <td class="nowrap">{t.runctl.retryShort(x.retry?.count ?? 0, x.retry?.delay_min ?? 0)}</td>
@@ -180,6 +185,11 @@
     </fieldset>
     <fieldset>
       <legend>{t.policies.gfs}</legend>
+      <div class="field">
+        <label for="p-recent">{t.policies.recent}</label>
+        <input id="p-recent" class="narrow" type="number" min="0" max="8760" bind:value={f.gfs.recent} aria-describedby="p-recent-hint" />
+        <div class="hint" id="p-recent-hint">{t.policies.recentHint}</div>
+      </div>
       <div class="form-grid">
         {#each GFS as k (k)}
           <div class="field">
@@ -250,3 +260,9 @@
     </div>
   </form>
 </Modal>
+
+<style>
+  .narrow {
+    max-width: 10rem;
+  }
+</style>

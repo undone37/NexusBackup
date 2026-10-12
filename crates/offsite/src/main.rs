@@ -224,6 +224,7 @@ fn main() -> Result<()> {
     let store = Store::open(&cfg.store, keys, StoreOptions::default())?;
     let mut t = Target::open(&store, remote.as_ref(), cfg.state.clone(), opts())?;
     let gfs = cfg.gfs.as_ref().map_or_else(Gfs::default, |g| Gfs {
+        recent: 0,
         daily: g.daily,
         weekly: g.weekly,
         monthly: g.monthly,

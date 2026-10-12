@@ -79,6 +79,7 @@ fn run() -> Result<()> {
                 store: c.store.context("store")?,
                 keyd_socket: c.keyd_socket,
                 gfs: Gfs {
+                    recent: 0,
                     daily: g.daily.unwrap_or(d.daily),
                     weekly: g.weekly.unwrap_or(d.weekly),
                     monthly: g.monthly.unwrap_or(d.monthly),

@@ -89,6 +89,7 @@ mod runctl;
 pub mod schedule;
 pub mod search;
 mod selection;
+mod snapmeta;
 pub mod sshkeys;
 pub mod stats;
 mod tenant_key;
@@ -448,6 +449,7 @@ fn gfs_of(v: &Value) -> Gfs {
     let d = Gfs::default();
     let f = |k: &str, def: u32| v[k].as_u64().map_or(def, |n| n.min(10_000) as u32);
     Gfs {
+        recent: f("recent", d.recent),
         daily: f("daily", d.daily),
         weekly: f("weekly", d.weekly),
         monthly: f("monthly", d.monthly),
@@ -1185,6 +1187,9 @@ impl Scheduler {
         } else {
             self.failed_result(&job, &log)
         };
+        if ok && job.kind == "plugin_backup" {
+            self.meta_bookkeeping(&job, result.as_ref())?;
+        }
         if ok && (job.kind == "backup" || job.kind == "plugin_backup") {
             // snapshots.consistency + policy `require_consistency` (crate::consistency)
             if let Some(why) = self.consistency_bookkeeping(&job, result.as_ref())? {
@@ -1545,6 +1550,7 @@ impl Scheduler {
                     })
                     .collect();
                 self.add_consistency(&job.tenant, log, &mut snaps);
+                snapmeta::attach(log, &mut snaps);
                 let warnings: u64 = snaps.iter().filter_map(|s| s["warnings"].as_u64()).sum();
                 let mut r = json!({ "snapshots": snaps });
                 if let [one] = snaps.as_slice() {
@@ -2038,6 +2044,7 @@ impl Scheduler {
         Ok(gs
             .into_iter()
             .reduce(|a, b| Gfs {
+                recent: 0, // offsite copies keep the period classes only
                 daily: a.daily.max(b.daily),
                 weekly: a.weekly.max(b.weekly),
                 monthly: a.monthly.max(b.monthly),

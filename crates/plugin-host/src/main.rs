@@ -306,6 +306,7 @@ fn main() -> Result<()> {
                         "streams": r.streams, "unchanged": r.unchanged, "bytes": r.bytes,
                         "transferred_bytes": r.transferred, "new_bytes": r.new_bytes, "consistent": r.consistent,
                         "warnings": r.warnings, "warning_samples": r.warning_samples,
+                        "meta": r.meta,
                     })),
                     Err(e) => {
                         out_line(&format!(

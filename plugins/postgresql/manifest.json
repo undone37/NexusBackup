@@ -1,7 +1,7 @@
 {
   "id": "postgresql",
   "name": "PostgreSQL",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "nexusbackup",
   "api": 1,
   "kinds": [
@@ -14,6 +14,11 @@
         "properties": {
           "host": { "type": "string", "format": "hostname", "title": "Server" },
           "port": { "type": "integer", "format": "port", "title": "Port", "default": 5432 },
+          "hosts": {
+            "type": "array",
+            "title": "More servers of the cluster (HA: host or host:port; backups use the primary)",
+            "items": { "type": "string", "maxLength": 260, "pattern": "^[A-Za-z0-9._:\\[\\]-]{1,260}$" }
+          },
           "user": {
             "type": "string",
             "title": "User",
@@ -73,12 +78,18 @@
             "type": "string",
             "title": "SSH host key (known_hosts line or public key)",
             "maxLength": 4096
+          },
+          "ssh_pg_ctl": {
+            "type": "string",
+            "title": "pg_ctl on the restore host (optional; default: of the restored major version)",
+            "pattern": "^/[A-Za-z0-9._/-]{1,1023}$"
           }
         }
       },
       "secret_fields": ["password", "restore_password", "ssh_key"],
       "endpoints": [
         { "host": "/host", "port": "/port", "default_port": 5432, "proto": "tcp" },
+        { "host": "/hosts", "port": "/port", "default_port": 5432, "proto": "tcp" },
         { "host": "/restore_host", "port": "/restore_port", "default_port": 5432, "proto": "tcp" },
         { "host": "/ssh_host", "port": "/ssh_port", "default_port": 22, "proto": "tcp" }
       ],
@@ -121,10 +132,26 @@
               },
               "target_time": {
                 "type": "string",
-                "title": "Recover to (e.g. 2026-10-10 14:30:00+00; empty = end of the backup)",
+                "title": "Recover to time (e.g. 2026-10-10 14:30:00+00; all targets empty = end of the backup)",
                 "pattern": "^([0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}(:[0-9]{2}(\\.[0-9]{1,6})?)?( ?(Z|[+-][0-9]{2}(:?[0-9]{2})?))?)?$"
               },
-              "port": { "type": "integer", "format": "port", "title": "Port of the restored server (optional)" }
+              "target_lsn": {
+                "type": "string",
+                "title": "… or to LSN (e.g. 0/3000060)",
+                "pattern": "^([0-9A-Fa-f]{1,8}/[0-9A-Fa-f]{1,8})?$"
+              },
+              "target_name": {
+                "type": "string",
+                "title": "… or to a named restore point (pg_create_restore_point)",
+                "pattern": "^[A-Za-z0-9_.:-]{0,63}$"
+              },
+              "port": { "type": "integer", "format": "port", "title": "Port of the restored server (optional)" },
+              "tablespaces": {
+                "type": "array",
+                "title": "Tablespace directories (one per line: <oid or old path>=<new path>; needed when the cluster has tablespaces)",
+                "items": { "type": "string", "maxLength": 2100, "pattern": "^[^=]{1,1024}=/[A-Za-z0-9._/-]{1,1023}$" }
+              },
+              "start": { "type": "boolean", "title": "Start PostgreSQL after the restore (pg_ctl over SSH)", "default": false }
             }
           }
         }

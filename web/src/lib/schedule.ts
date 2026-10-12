@@ -1,14 +1,16 @@
 // Policy schedules and blackout windows (Phase 13b; same grammar as crates/catalog/src/schedule.rs):
-// `daily HH:MM`, `hourly MM`, `every Nh [at MM]` (N divides 24), `Mon,Wed,Fri HH:MM` / `Mon-Fri HH:MM`,
+// `daily HH:MM`, `hourly MM`, `every Nh [at MM]` (N divides 24), `every Nm` (N ≥ 5 divides 60),
+// `Mon,Wed,Fri HH:MM` / `Mon-Fri HH:MM`,
 // `monthly D HH:MM`. Evaluated in the group's time zone by the scheduler.
 
 export const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
 export const EVERY = [1, 2, 3, 4, 6, 8, 12];
+export const EVERY_MIN = [5, 6, 10, 12, 15, 20, 30];
 
-export type SchedKind = 'daily' | 'hours' | 'weekdays' | 'monthly';
+export type SchedKind = 'daily' | 'minutes' | 'hours' | 'weekdays' | 'monthly';
 export interface SchedForm {
   kind: SchedKind;
-  /** hours: every N hours (1 = hourly) */
+  /** hours: every N hours (1 = hourly); minutes: every N minutes */
   every: number;
   hour: number;
   minute: number;
@@ -46,6 +48,10 @@ export function parseSchedule(s: string): SchedForm | null {
     return t && { ...base, kind: 'daily', ...t };
   }
   if (p[0] === 'hourly' && p.length === 2) return MM.test(p[1]) ? { ...base, kind: 'hours', every: 1, minute: Number(p[1]) } : null;
+  if (p[0] === 'every' && p.length === 2 && /^\d{1,2}m$/.test(p[1])) {
+    const n = Number(p[1].slice(0, -1));
+    return EVERY_MIN.includes(n) ? { ...base, kind: 'minutes', every: n, minute: 0 } : null;
+  }
   if (p[0] === 'every' && (p.length === 2 || (p.length === 4 && p[2] === 'at'))) {
     const n = /^(\d{1,2})h$/.exec(p[1]);
     if (!n || !EVERY.includes(Number(n[1]))) return null;
@@ -69,6 +75,8 @@ export function parseSchedule(s: string): SchedForm | null {
 export function formatSchedule(f: SchedForm): string {
   const at = `${two(f.hour)}:${two(f.minute)}`;
   switch (f.kind) {
+    case 'minutes':
+      return `every ${EVERY_MIN.includes(f.every) ? f.every : 15}m`;
     case 'hours':
       return f.every === 1 ? `hourly ${two(f.minute)}` : `every ${f.every}h at ${two(f.minute)}`;
     case 'weekdays':
@@ -84,6 +92,7 @@ export function formatSchedule(f: SchedForm): string {
 export function schedulePeriod(s: string): number {
   const f = parseSchedule(s);
   if (!f) return 86400;
+  if (f.kind === 'minutes') return f.every * 60;
   if (f.kind === 'hours') return f.every * 3600;
   if (f.kind === 'monthly') return 31 * 86400;
   if (f.kind === 'daily') return 86400;

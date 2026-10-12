@@ -1,14 +1,14 @@
 <script lang="ts">
   // Schedule builder (Phase 13b): kind + fields, kept in sync with the schedule string the API takes.
   import { t } from '../lib/i18n';
-  import { DAYS, EVERY, formatSchedule, parseSchedule, type SchedForm } from '../lib/schedule';
+  import { DAYS, EVERY, EVERY_MIN, formatSchedule, parseSchedule, type SchedForm } from '../lib/schedule';
 
-  type Kind = 'daily' | 'hours' | 'weekdays' | 'monthly';
+  type Kind = 'daily' | 'minutes' | 'hours' | 'weekdays' | 'monthly';
   // `kinds`: the forms offered (scheduled reports: no hourly schedules)
   let {
     value = $bindable(''),
     id,
-    kinds = ['daily', 'hours', 'weekdays', 'monthly'],
+    kinds = ['daily', 'minutes', 'hours', 'weekdays', 'monthly'],
     hint = t.policies.scheduleHint,
   }: { value?: string; id: string; kinds?: Kind[]; hint?: string } = $props();
   let f: SchedForm = $state(parseSchedule(value) ?? parseSchedule('daily 01:00')!);
@@ -23,6 +23,9 @@
   });
   function sync() {
     if (f.kind === 'weekdays' && !f.days.length) return;
+    // switching between hours and minutes: keep `every` valid for the new kind
+    if (f.kind === 'minutes' && !EVERY_MIN.includes(f.every)) f.every = 15;
+    if (f.kind === 'hours' && !EVERY.includes(f.every)) f.every = 1;
     value = last = formatSchedule(f);
   }
   const time = (h: number, m: number) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
@@ -44,7 +47,15 @@
         {#each kinds as k (k)}<option value={k}>{t.runctl.kinds[k]}</option>{/each}
       </select>
     </div>
-    {#if f.kind === 'hours'}
+    {#if f.kind === 'minutes'}
+      <div class="field">
+        <label for="{id}-everym">{t.runctl.every}</label>
+        <select id="{id}-everym" bind:value={f.every} onchange={sync} aria-describedby="{id}-everym-hint">
+          {#each EVERY_MIN as n (n)}<option value={n}>{t.runctl.minutesN(n)}</option>{/each}
+        </select>
+        <div class="hint" id="{id}-everym-hint">{t.runctl.minutesHint}</div>
+      </div>
+    {:else if f.kind === 'hours'}
       <div class="field">
         <label for="{id}-every">{t.runctl.every}</label>
         <select id="{id}-every" bind:value={f.every} onchange={sync}>

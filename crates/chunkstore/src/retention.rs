@@ -1,12 +1,16 @@
 //! GFS retention (plan §10), period-based like PBS / `borg prune`: "14 daily"
 //! keeps the last snapshot of each of the last 14 days *that have a snapshot*.
 //! A snapshot may be daily, weekly, monthly and yearly at once; the union is kept.
+//! `recent` (hours) keeps *every* snapshot of the last N hours before the newest
+//! one (frequent WAL-only database runs), on top of the period classes.
 // ponytail: periods are computed in UTC; a per-appliance time zone when customers notice.
 
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Gfs {
+    /// keep all snapshots of the last N hours (counted back from the newest snapshot)
+    pub recent: u32,
     pub daily: u32,
     pub weekly: u32,
     pub monthly: u32,
@@ -16,6 +20,7 @@ pub struct Gfs {
 impl Default for Gfs {
     fn default() -> Self {
         Gfs {
+            recent: 0,
             daily: 14,
             weekly: 4,
             monthly: 6,
@@ -26,6 +31,7 @@ impl Default for Gfs {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Class {
+    Recent,
     Daily,
     Weekly,
     Monthly,
@@ -33,10 +39,12 @@ pub enum Class {
 }
 
 impl Class {
-    /// Lock duration a snapshot gets when classified (plan §5.5 / §10).
+    /// Lock duration a snapshot gets when classified (plan §5.5 / §10). `Recent`
+    /// adds nothing: such a snapshot keeps its commit lock (the store's minimum).
     pub fn lock_secs(self) -> u64 {
         const DAY: u64 = 86400;
         match self {
+            Class::Recent => 0,
             Class::Daily => 14 * DAY,
             Class::Weekly => 28 * DAY,
             Class::Monthly => 183 * DAY,
@@ -67,6 +75,7 @@ fn period(class: Class, t: u64) -> i64 {
             y * 12 + m as i64
         }
         Class::Yearly => civil(days).0,
+        Class::Recent => t as i64, // unused: every snapshot is its own period
     }
 }
 
@@ -77,6 +86,12 @@ pub fn keep(times: &[u64], p: &Gfs) -> BTreeMap<u64, Vec<Class>> {
     sorted.sort_unstable_by(|a, b| b.cmp(a)); // newest first
     sorted.dedup();
     let mut out: BTreeMap<u64, Vec<Class>> = BTreeMap::new();
+    if let (Some(&newest), true) = (sorted.first(), p.recent > 0) {
+        let from = newest.saturating_sub(u64::from(p.recent) * 3600);
+        for &t in sorted.iter().take_while(|t| **t > from) {
+            out.entry(t).or_default().push(Class::Recent);
+        }
+    }
     for (class, n) in [
         (Class::Daily, p.daily),
         (Class::Weekly, p.weekly),
@@ -146,6 +161,7 @@ mod tests {
         let k = keep(
             &times,
             &Gfs {
+                recent: 0,
                 daily: 14,
                 weekly: 0,
                 monthly: 0,
@@ -162,6 +178,7 @@ mod tests {
         let k = keep(
             &[d + 100, d + 5000, d + 3000, d - 10],
             &Gfs {
+                recent: 0,
                 daily: 2,
                 weekly: 0,
                 monthly: 0,
@@ -170,5 +187,36 @@ mod tests {
         );
         assert_eq!(k.keys().copied().collect::<Vec<_>>(), vec![d - 10, d + 5000]);
         assert_eq!(lock_until(d, &[Class::Daily, Class::Monthly]), d + 183 * DAY);
+    }
+
+    #[test]
+    fn recent_keeps_every_snapshot_of_the_last_hours() {
+        // every 15 minutes for 3 days
+        let end = 20_000 * DAY + 12 * 3600;
+        let times: Vec<u64> = (0..3 * 96).map(|i| end - i * 900).collect();
+        let g = Gfs {
+            recent: 24,
+            daily: 7,
+            weekly: 0,
+            monthly: 0,
+            yearly: 0,
+        };
+        let k = keep(&times, &g);
+        let recent: Vec<u64> = k
+            .iter()
+            .filter(|(_, c)| c.contains(&Class::Recent))
+            .map(|(t, _)| *t)
+            .collect();
+        assert_eq!(recent.len(), 96, "24 h of 15-minute snapshots");
+        assert!(recent.iter().all(|t| *t > end - 24 * 3600));
+        // older ones: one per day (the last of each day); 72 h from noon span 4 days, the
+        // last snapshots of the newest two are recent anyway
+        assert_eq!(k.len(), 96 + 2, "2 older days add their last snapshot");
+        assert!(k[&end].contains(&Class::Daily) && k[&end].contains(&Class::Recent));
+        // the recent class adds no lock beyond the snapshot time (the commit lock stays)
+        assert_eq!(lock_until(end - 900, &[Class::Recent]), end - 900);
+        assert_eq!(lock_until(end, &[Class::Recent, Class::Daily]), end + 14 * DAY);
+        let k0 = keep(&times, &Gfs { recent: 0, ..g });
+        assert_eq!(k0.len(), 4, "without recent: one per day");
     }
 }

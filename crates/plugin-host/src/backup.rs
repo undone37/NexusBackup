@@ -224,6 +224,8 @@ pub struct Report {
     /// items the plugin skipped (v1.7 `Warnings`) and the first few of them
     pub warnings: u64,
     pub warning_samples: Vec<String>,
+    /// v1.8 `SnapshotMeta` (a JSON object), kept in the appliance catalog
+    pub meta: Option<serde_json::Value>,
 }
 
 /// Plugin log/progress output with a per-job budget.
@@ -541,6 +543,12 @@ pub fn run(store: &Store, peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&
                     }
                 }
             }
+            Message::SnapshotMeta { json } => {
+                if r.meta.is_some() {
+                    return Err(peer.violation("SnapshotMeta sent twice"));
+                }
+                r.meta = Some(serde_json::from_str(&json).map_err(|_| peer.violation("SnapshotMeta: bad JSON"))?);
+            }
             Message::Done {
                 state,
                 consistent,
@@ -637,6 +645,7 @@ pub(crate) fn msg_name(m: &Message) -> &'static str {
         Message::BaseList { .. } => "BaseList",
         Message::TaggedGuests { .. } => "TaggedGuests",
         Message::Warnings { .. } => "Warnings",
+        Message::SnapshotMeta { .. } => "SnapshotMeta",
     }
 }
 

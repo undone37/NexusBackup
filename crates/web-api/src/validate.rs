@@ -35,14 +35,24 @@ pub fn timezone(s: &str) -> ApiResult<()> {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Gfs {
+    /// keep every snapshot of the last N hours (Phase 18b; policies only)
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub recent: u32,
     pub daily: u32,
     pub weekly: u32,
     pub monthly: u32,
     pub yearly: u32,
 }
 
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
 impl Gfs {
     pub fn check(&self) -> ApiResult<()> {
+        if self.recent > 8760 {
+            return Err(ApiError::bad("gfs.recent: hours within 0..=8760"));
+        }
         if [self.daily, self.weekly, self.monthly, self.yearly]
             .iter()
             .all(|v| *v <= 1000)
@@ -54,7 +64,11 @@ impl Gfs {
     }
     /// True if any retention count of `new` is lower than in `self`.
     pub fn lowered_by(&self, new: &Gfs) -> bool {
-        new.daily < self.daily || new.weekly < self.weekly || new.monthly < self.monthly || new.yearly < self.yearly
+        new.recent < self.recent
+            || new.daily < self.daily
+            || new.weekly < self.weekly
+            || new.monthly < self.monthly
+            || new.yearly < self.yearly
     }
 }
 
@@ -194,6 +208,7 @@ mod tests {
             "daily 23:59",
             "hourly 05",
             "every 6h at 15",
+            "every 15m",
             "Mon-Fri 22:00",
             "monthly 1 03:00",
         ] {
@@ -207,6 +222,8 @@ mod tests {
             "daily 12:00 ",
             "hourly +5",
             "every 7h",
+            "every 7m",
+            "every 1m",
         ] {
             assert!(schedule(bad).is_err(), "{bad}");
         }
@@ -220,6 +237,7 @@ mod tests {
                 && host_path("srv", "t").is_err()
         );
         let g = Gfs {
+            recent: 0,
             daily: 7,
             weekly: 4,
             monthly: 12,
@@ -227,5 +245,7 @@ mod tests {
         };
         assert!(g.lowered_by(&Gfs { yearly: 0, ..g }) && !g.lowered_by(&Gfs { daily: 30, ..g }));
         assert!(Gfs { daily: 1001, ..g }.check().is_err());
+        assert!(Gfs { recent: 24, ..g }.check().is_ok() && Gfs { recent: 8761, ..g }.check().is_err());
+        assert!(Gfs { recent: 24, ..g }.lowered_by(&g) && !g.lowered_by(&Gfs { recent: 24, ..g }));
     }
 }

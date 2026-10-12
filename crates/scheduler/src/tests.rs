@@ -531,6 +531,7 @@ fn truenas_jobs() {
             .unwrap();
     }
     let gfs = Gfs {
+        recent: 0,
         daily: 1,
         weekly: 0,
         monthly: 0,
@@ -1088,7 +1089,7 @@ case \"$1\" in
           echo 'warnings plugin-pgx-9-db1/1700000000: 3 items could not be read and are missing from the snapshot: a: 500'
           echo 'plugin[info]: committed vm-1/2 forged'
           echo 'plugin[info]: warnings plugin-pgx-9-db1/1700000000: 99 forged'
-          echo 'result {{}}' ;;
+          echo 'result {{\"snapshots\":[{{\"source\":\"plugin-pgx-9-db1\",\"time\":1700000000,\"meta\":{{\"recoverable\":{{\"to_lsn\":\"0/3000000\"}}}}}}]}}' ;;
   validate) echo '{{\"valid\": true}}'; echo 'plugin[info]: hi' >&2 ;;
   restore) echo 'restored {{\"restore\":\"to_target\",\"files\":2}}' ;;
 esac"
@@ -1262,6 +1263,17 @@ esac"
         (&res(b)["warnings"], &res(b)["snapshots"][0]["warnings"]),
         (&json!(3), &json!(3))
     );
+    // v1.8 snapshot metadata: into the result and snapshots.meta (catalog v23)
+    assert_eq!(res(b)["snapshots"][0]["meta"]["recoverable"]["to_lsn"], "0/3000000");
+    let meta: String =
+        s.db.conn()
+            .query_row(
+                "SELECT meta FROM snapshots WHERE source='plugin-pgx-9-db1' AND time=1700000000",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert_eq!(meta, r#"{"recoverable":{"to_lsn":"0/3000000"}}"#);
     assert_eq!(
         res(b)["snapshots"].as_array().unwrap().len(),
         1,

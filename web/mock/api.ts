@@ -971,7 +971,9 @@ function seed() {
   const silver = { id: nextId(), name: 'silver', schedule: 'daily 22:00', gfs: { daily: 14, weekly: 4, monthly: 6, yearly: 2 }, offsite: true };
   const bronze = { id: nextId(), name: 'bronze', schedule: 'daily 03:30', gfs: { daily: 7, weekly: 4, monthly: 0, yearly: 0 }, offsite: false };
   const hourly = { id: nextId(), name: 'databases-hourly', schedule: 'hourly 15', gfs: { daily: 14, weekly: 4, monthly: 6, yearly: 1 }, offsite: true };
-  db.policies.push(gold, silver, bronze, hourly);
+  // Phase 18b: WAL-only runs every 15 minutes, all of them kept for a day
+  const walFrequent = { id: nextId(), name: 'pg-wal-15min', schedule: 'every 15m', gfs: { recent: 24, daily: 14, weekly: 4, monthly: 6, yearly: 1 }, offsite: true };
+  db.policies.push(gold, silver, bronze, hourly, walFrequent);
 
   // Agents: web01 (Linux) and fs02 (Windows) enrolled in acme; db01 waits for enrollment, build01's token expired.
   const agent = (tenant: string, name: string, host: string, state: 'enrolled' | 'pending' | 'expired', os: string | null = null): Agent => ({
@@ -1041,6 +1043,7 @@ function seed() {
   db.sources.push(sWeb01, sFs02, sNas01, sNfs, sSmb);
 
   // Plugins: PostgreSQL 1.0.0 installed, 1.1.0 uploaded and waiting for approval; TrueNAS plugin 1.0.0.
+  // (Both carry the current manifest, so the UI shows today's PostgreSQL forms.)
   db.pluginKeys.push(BUILTIN_KEY, {
     fingerprint: 'sha256:0b7e5f1d93a2c4e8f6a1b3d5c7e9f0a2b4c6d8e0f1a3b5c7d9e1f2a4b6c8d0e2',
     publisher: 'example-labs',
@@ -1162,6 +1165,15 @@ function seed() {
   series('acme', `share-${sSmb.id}`, 0.9, { hh: 3, offsite: false, days: 3 });
   series('acme', `plugin-truenas-${sNas02.id}-tank.media`, 2_400, { hh: 22, skip: 1, days: 3 });
   series('acme', `plugin-postgresql-${sPg.id}`, 14, { hh: 22, skip: 1, days: 4 });
+  // Phase 18b: recoverable range of the cluster snapshots (base backup of the oldest + WAL up to each)
+  {
+    const cl = db.snapshots.filter((s) => s.source === `plugin-postgresql-${sPg.id}`).sort((a, b) => a.time - b.time);
+    const lsn = (n: number) => `0/${(0x2000158 + n * 0x1a3e_f20).toString(16).toUpperCase()}`;
+    cl.forEach((s, i) => {
+      const from = cl[0].time + 140;
+      (s as Json).meta = { recoverable: { from_time: from, from_lsn: lsn(0), to_time: i ? s.time - 3 : from, to_lsn: lsn(i), timeline: 1 } };
+    });
+  }
   for (const dbName of ['shop', 'crm']) {
     for (let h = 0; h < 4; h++) {
       const time = Math.floor(t / 3600 - h) * 3600 + 15 * 60;
@@ -1629,6 +1641,7 @@ function truenasConfig(cfg: Json, old?: Json): Json {
 }
 const weakens = (a: Json, b: Json) =>
   ['daily', 'weekly', 'monthly', 'yearly'].some((k) => Number(b.gfs?.[k]) < Number(a.gfs?.[k])) ||
+  Number(b.gfs?.recent ?? 0) < Number(a.gfs?.recent ?? 0) ||
   // Phase 15e: a new global exclude backs up less
   (['exclude', 'exclude_regex'] as const).some((k) =>
     (b.file_filters?.[k] ?? []).some((x: string) => !(a.file_filters?.[k] ?? []).includes(x)),

@@ -301,6 +301,7 @@ fn retention_prunes_unlocked_and_extends_locks() {
             .unwrap();
     }
     let gfs = Gfs {
+        recent: 0,
         daily: 3,
         weekly: 0,
         monthly: 0,
@@ -345,6 +346,7 @@ fn retention_skips_held_snapshots_and_gc_keeps_their_chunks() {
             .unwrap();
     }
     let gfs = Gfs {
+        recent: 0,
         daily: 1,
         weekly: 0,
         monthly: 0,

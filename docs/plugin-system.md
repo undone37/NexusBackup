@@ -2,7 +2,7 @@
 
 Status: v1 (2026-10-10), implementation notes v1.1 (2026-10-10, see "Implementation (v1.1)" at the end), additive
 v1.2 (2026-10-10, TrueNAS + PostgreSQL plugins, see "v1.2" at the end), additive v1.3 (2026-10-11, Microsoft 365
-plugin, see "v1.3" at the end), additive v1.4 (2026-10-11, restores per snapshot kind, see "v1.4" at the end), additive v1.5 (2026-10-12, tagged guests, see "v1.5"), additive v1.6 (2026-10-12, restore into another source and lists of objects, see "v1.6"), additive v1.7 (2026-10-12, skipped items as warnings, see "v1.7"). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
+plugin, see "v1.3" at the end), additive v1.4 (2026-10-11, restores per snapshot kind, see "v1.4" at the end), additive v1.5 (2026-10-12, tagged guests, see "v1.5"), additive v1.6 (2026-10-12, restore into another source and lists of objects, see "v1.6"), additive v1.7 (2026-10-12, skipped items as warnings, see "v1.7"), additive v1.8 (2026-10-12, snapshot metadata and endpoint host lists, see "v1.8"). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
 speaking a **versioned protocol**, with a **Rust SDK**; trust = **project release key + publisher keys an admin adds
 with quorum**; reference plugin **PostgreSQL**; the **TrueNAS** connector is ported to the SDK; the restore API covers
 **download, restore to original/alternate target, application-specific restore and mount/instant access**.
@@ -295,3 +295,25 @@ and offers a restore only where it applies. PostgreSQL: `to_target` (a database 
 + WAL of the cluster) = `source`. A v1.3 host ignores the field (it would offer and run both restores everywhere,
 failing inside the plugin as before). Tested: `crates/plugin-proto` (validation, shipped PostgreSQL manifest),
 `crates/web-api/tests/plugins.rs` (refusal at the API).
+
+## v1.8 — snapshot metadata, endpoint host lists (2026-10-12, Phase 18b PostgreSQL)
+Additive; `api: 1` unchanged.
+- **`SnapshotMeta { json }`** (plugin → host, backup only, at most once, before `Done`; appended after v1.7
+  `Warnings`, wire index 26, older variants keep theirs): a JSON object of at most 16 KiB (`check` refuses anything else) that the
+  appliance keeps with the snapshot. SDK: `Sink::snapshot_meta(&Value)`. The host returns it as `meta` per snapshot
+  in its `result {json}` line (`backup::Report::meta`); the scheduler stores it in `snapshots.meta` (catalog v23,
+  docs/control-plane.md) and `GET /snapshots` returns it. Generic: the web UI interprets known keys only —
+  `recoverable: {from_time, to_time, from_lsn, to_lsn, timeline}` bounds the point-in-time target of a restore
+  that has a `target_time` parameter (range box + time picker; a target outside it is refused in the form).
+  A plugin that sends it needs a v1.8 host (an older host stops it with "unexpected message"). A result line may carry
+  both `warnings` (v1.7) and `meta`; the scheduler keeps both (`result.warnings`, `snapshots.meta`).
+- **Endpoint host lists:** an endpoint's `host` pointer may name an array of strings; each item is `host` or
+  `host:port` (`[v6]:port`, bare IPv6), the port of an item without one comes from the endpoint's port field
+  (`plugin_proto::split_host_port`). `KindSpec::tcp_targets` returns one target per item, so the firewall and the
+  Landlock port list cover every server. PostgreSQL uses it for `hosts` (HA). An older host ignores array values
+  (only `host` opens).
+- PostgreSQL plugin 1.2.0 (plugins/postgresql/README.md): WAL-only frequent runs with a recovery marker commit,
+  the recoverable range as snapshot metadata, recovery to an LSN or a named restore point, tablespace remapping,
+  start after restore, primary selection among several servers. Tested: `crates/plugin-proto` (wire index, limits,
+  host lists), `crates/plugin-host/tests/host.rs` (metadata in the report, twice = violation),
+  `crates/scheduler` (result → `snapshots.meta`), `plugins/postgresql/tests/pg.rs` (real PostgreSQL 14 and 17).

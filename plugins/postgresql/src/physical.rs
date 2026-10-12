@@ -11,10 +11,18 @@
 //! previous snapshot and streams the new WAL up to the server's current position
 //! (the last segment is zero-padded and streamed again next time). Every snapshot
 //! is therefore self-contained: base backup + WAL up to the snapshot's time.
+//!
+//! Frequent runs (`every 15m`) are cheap: an unchanged base sends no data file,
+//! only the WAL since the previous run (the partial last segment again). Each run
+//! first commits a tiny transaction (`pg_current_xact_id()`) on a normal
+//! connection: its commit record carries a timestamp, so every time up to the
+//! snapshot's is reachable by `recovery_target_time` even on an idle server, and
+//! the snapshot's recoverable range (base backup end → that commit) goes into the
+//! snapshot metadata (`SnapshotMeta`, shown in the restore dialog).
 
 use crate::pg::{be64, data_row, error, fmt_lsn, Conn, Opts, Row};
-use anyhow::{anyhow, bail, Context, Result};
-use plugin_sdk::{Ctx, Kind, Meta, Sink, Source};
+use anyhow::{bail, Context, Result};
+use plugin_sdk::{Ctx, Kind, Meta, Sink};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{self, Read};
@@ -36,6 +44,12 @@ pub struct State {
     pub next: u64,
     /// all paths of `data/` and `tablespaces/`, front-coded (`<shared prefix len>:<rest>`)
     pub files: Vec<String>,
+    /// end LSN of the base backup and the first server time after it (unix seconds;
+    /// 0 in states before plugin 1.2.0): the start of the recoverable range
+    #[serde(default)]
+    pub base_end: u64,
+    #[serde(default)]
+    pub base_time: u64,
 }
 
 /// State blobs are ≤ 1 MiB; a larger path list is dropped (= the next backup is full).
@@ -115,10 +129,58 @@ fn identify(c: &mut Conn) -> Result<(String, u32, u64)> {
 pub struct Report {
     pub state: State,
     pub summary: String,
+    /// snapshot metadata: `{"recoverable": {from_time, from_lsn, to_time, to_lsn, timeline}}`
+    pub meta: serde_json::Value,
+}
+
+/// Commits a transaction with an xid (a commit record with a timestamp, see the
+/// module doc), waits until it is flushed (it wrote no other WAL, so the commit is
+/// asynchronous: the WAL writer flushes it within `wal_writer_delay`) and returns
+/// its server time (unix seconds, fractional). Falls back to the server's time
+/// without a commit (a standby) and to the appliance's clock (no SQL access).
+fn marker(ctx: &Ctx, sql: &Opts) -> f64 {
+    let r = Conn::connect(sql).and_then(|mut c| {
+        let v = c
+            .value(
+                "SELECT extract(epoch FROM now())::text || CASE WHEN pg_is_in_recovery() THEN '' \
+                 ELSE ' ' || pg_current_xact_id()::text END",
+            )?
+            .context("no value")?;
+        let (t, xid) = v.split_once(' ').unwrap_or((&v, ""));
+        let t: f64 = t.parse()?;
+        if !xid.is_empty() {
+            let lsn = c.value("SELECT pg_current_wal_insert_lsn()")?.context("no LSN")?;
+            let q = format!("SELECT pg_current_wal_flush_lsn() >= {}::pg_lsn", crate::pg::lit(&lsn));
+            let t0 = Instant::now();
+            while c.value(&q)?.as_deref() != Some("t") && t0.elapsed().as_secs() < 30 {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+        c.close();
+        Ok(t)
+    });
+    r.unwrap_or_else(|e| {
+        ctx.warn(format!(
+            "no SQL connection for the recovery marker ({e:#}): the recoverable range uses the appliance clock"
+        ));
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64())
+    })
+}
+
+pub fn range(st: &State, to_time: u64, to_lsn: u64) -> serde_json::Value {
+    let from_lsn = if st.base_end > 0 { st.base_end } else { st.wal_from };
+    let from_time = if st.base_time > 0 { st.base_time } else { st.full_time };
+    serde_json::json!({"recoverable": {
+        "from_time": from_time, "from_lsn": fmt_lsn(from_lsn),
+        "to_time": to_time.max(from_time), "to_lsn": fmt_lsn(to_lsn.max(from_lsn)), "timeline": st.tli,
+    }})
 }
 
 /// Backup of the cluster: incremental on top of `prev` if possible, else full.
-pub fn backup(ctx: &Ctx, sink: &mut Sink, o: &Opts, slot: &str, full_days: u64) -> Result<Report> {
+/// `o`: the replication connection, `sql`: a normal one (database `postgres`).
+pub fn backup(ctx: &Ctx, sink: &mut Sink, o: &Opts, sql: &Opts, slot: &str, full_days: u64) -> Result<Report> {
     let prev: Option<State> = ctx
         .state
         .as_deref()
@@ -129,14 +191,14 @@ pub fn backup(ctx: &Ctx, sink: &mut Sink, o: &Opts, slot: &str, full_days: u64) 
             ctx.info("previous snapshot has no file list: full backup");
         } else if now().saturating_sub(p.full_time) >= full_days * 86400 {
             ctx.info(format!("base backup older than {full_days} days: full backup"));
-        } else if let Some(r) = incremental(ctx, sink, o, slot, &p)? {
+        } else if let Some(r) = incremental(ctx, sink, o, sql, slot, &p)? {
             return Ok(r);
         }
     }
-    full(ctx, sink, o, slot)
+    full(ctx, sink, o, sql, slot)
 }
 
-fn full(ctx: &Ctx, sink: &mut Sink, o: &Opts, slot: &str) -> Result<Report> {
+fn full(ctx: &Ctx, sink: &mut Sink, o: &Opts, sql: &Opts, slot: &str) -> Result<Report> {
     let mut c = Conn::connect(o)?;
     let (system, tli, _) = identify(&mut c)?;
     let seg = parse_size(&c.value("SHOW wal_segment_size")?.unwrap_or_default())?;
@@ -239,6 +301,8 @@ fn full(ctx: &Ctx, sink: &mut Sink, o: &Opts, slot: &str) -> Result<Report> {
         .context("BASE_BACKUP: no end position")?;
     let end = crate::pg::parse_lsn(&end)?;
     c.close();
+    // the first full second after the backup ended (recovery targets before it are refused)
+    let base_time = marker(ctx, sql).ceil() as u64;
     let next = end - end % seg;
     let mut st = State {
         v: 1,
@@ -249,7 +313,11 @@ fn full(ctx: &Ctx, sink: &mut Sink, o: &Opts, slot: &str) -> Result<Report> {
         wal_from: next,
         next,
         files: encode_paths(&files),
+        base_end: end,
+        base_time,
     };
+    // this snapshot holds the WAL up to the end of the backup only
+    let meta = range(&st, base_time, end);
     if serde_json::to_vec(&st)?.len() > MAX_STATE {
         ctx.warn("too many files for an incremental chain: the next backup is full again");
         st.files.clear();
@@ -262,6 +330,7 @@ fn full(ctx: &Ctx, sink: &mut Sink, o: &Opts, slot: &str) -> Result<Report> {
             bytes,
             fmt_lsn(end)
         ),
+        meta,
     })
 }
 
@@ -400,7 +469,9 @@ impl Read for CopyReader<'_> {
 }
 
 /// Incremental: previous data + WAL as `Unchanged`, new WAL streamed. None = do a full backup.
-fn incremental(ctx: &Ctx, sink: &mut Sink, o: &Opts, slot: &str, p: &State) -> Result<Option<Report>> {
+fn incremental(ctx: &Ctx, sink: &mut Sink, o: &Opts, sql: &Opts, slot: &str, p: &State) -> Result<Option<Report>> {
+    // the marker commit lies before the flush position IDENTIFY_SYSTEM reports
+    let to_time = marker(ctx, sql).floor() as u64;
     let mut c = Conn::connect(o)?;
     let (system, tli, target) = identify(&mut c)?;
     if system != p.system || tli != p.tli {
@@ -490,7 +561,9 @@ fn incremental(ctx: &Ctx, sink: &mut Sink, o: &Opts, slot: &str, p: &State) -> R
         next: next.max(p.next),
         ..p.clone()
     };
+    let meta = range(&st, to_time, target);
     Ok(Some(Report {
+        meta,
         state: st,
         summary: format!(
             "incremental: {} data entries unchanged, {} WAL segments ({} new), up to {}",
@@ -594,114 +667,6 @@ impl Read for Seg<'_, '_> {
     }
 }
 
-/// Point-in-time restore: unpacks `data/` as a new data directory on the restore
-/// host (SSH), the WAL into `<dir>/nexus_wal/`, and configures recovery (target time
-/// or end of WAL, then promote). The user starts PostgreSQL (same major version) on it.
-pub fn pitr(ctx: &Ctx, src: &mut Source, ssh: &crate::ssh::Ssh) -> Result<String> {
-    let p = &ctx.params["params"];
-    let dir = p["directory"].as_str().unwrap_or_default();
-    if !valid_dir(dir) {
-        bail!("directory: an absolute path of [A-Za-z0-9._/-], without `..`");
-    }
-    let top: Vec<&str> = ctx.params["top"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|v| v.as_str())
-        .collect();
-    if !top.contains(&"data") {
-        bail!("this snapshot holds no base backup (point-in-time restore needs a cluster snapshot)");
-    }
-    if top.contains(&"tablespaces") {
-        bail!("snapshots with additional tablespaces cannot be restored point-in-time yet (use the download)");
-    }
-    let mut conf = String::from("\n# NexusBackup point-in-time restore\nrestore_command = 'cp nexus_wal/%f \"%p\"'\n");
-    if let Some(t) = p["target_time"].as_str().filter(|t| !t.is_empty()) {
-        conf += &format!("recovery_target_time = {}\n", crate::pg::lit(t));
-    }
-    conf += "recovery_target_action = 'promote'\narchive_mode = 'off'\n";
-    if let Some(port) = p["port"].as_u64() {
-        conf += &format!("port = {port}\n");
-    }
-
-    let q = crate::ssh::sh_quote(dir);
-    ssh.run(&format!("umask 077 && mkdir -- {q} && command -v tar >/dev/null"))
-        .context("creating the target directory (it must not exist)")?;
-    let exec = ssh.exec(&format!("exec tar -x -f - -C {q}"))?;
-    let mut tar = tar::Builder::new(io::BufWriter::with_capacity(1 << 18, exec));
-    let (mut files, mut bytes, mut wal) = (0u64, 0u64, 0u64);
-    let mut seen_conf = false;
-    src.files(&[b"data".to_vec(), b"wal".to_vec()], |item, data| {
-        let path = String::from_utf8_lossy(&item.path).into_owned();
-        let rel = match path.split_once('/') {
-            Some(("data", r)) => r.to_owned(),
-            Some(("wal", r)) => {
-                wal += 1;
-                format!("nexus_wal/{r}")
-            }
-            None if path == "wal" => "nexus_wal".into(),
-            _ => return Ok(()),
-        };
-        let m = &item.meta;
-        let mut h = tar::Header::new_gnu();
-        h.set_mode(m.mode & 0o7777);
-        h.set_mtime(m.mtime_ns.max(0) as u64 / 1_000_000_000);
-        match m.kind.unwrap_or(Kind::File) {
-            Kind::Dir => {
-                h.set_entry_type(tar::EntryType::Directory);
-                h.set_size(0);
-                tar.append_data(&mut h, &rel, io::empty())?;
-            }
-            Kind::File if rel == "postgresql.auto.conf" => {
-                let mut c = Vec::new();
-                data.read_to_end(&mut c)?;
-                c.extend_from_slice(conf.as_bytes());
-                h.set_size(c.len() as u64);
-                tar.append_data(&mut h, &rel, &c[..])?;
-                seen_conf = true;
-            }
-            Kind::File => {
-                h.set_size(m.size);
-                tar.append_data(&mut h, &rel, data)?;
-                files += 1;
-                bytes += m.size;
-            }
-            k => ctx.warn(format!("{path}: {k:?} skipped")),
-        }
-        Ok(())
-    })?;
-    let mut h = tar::Header::new_gnu();
-    h.set_mode(0o600);
-    h.set_mtime(now());
-    h.set_size(0);
-    tar.append_data(&mut h, "recovery.signal", io::empty())?;
-    if !seen_conf {
-        h.set_size(conf.len() as u64);
-        tar.append_data(&mut h, "postgresql.auto.conf", conf.as_bytes())?;
-    }
-    let exec = tar
-        .into_inner()?
-        .into_inner()
-        .map_err(|e| anyhow!("ssh: {}", e.error()))?;
-    exec.finish().context("unpacking on the restore host")?;
-    let until = p["target_time"]
-        .as_str()
-        .filter(|t| !t.is_empty())
-        .map_or("the end of the WAL".to_owned(), |t| t.to_owned());
-    Ok(format!(
-        "{files} files ({bytes} bytes) + {wal} WAL segments restored to {dir}; recovery to {until}, then promote: \
-         start PostgreSQL of the same major version on it (pg_ctl -D {dir} start)"
-    ))
-}
-
-pub fn valid_dir(d: &str) -> bool {
-    d.len() > 1
-        && d.len() <= 1024
-        && d.starts_with('/')
-        && d.bytes().all(|b| b.is_ascii_alphanumeric() || b"._/-".contains(&b))
-        && d.split('/').all(|c| c != ".." && c != ".")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -733,13 +698,5 @@ mod tests {
         assert_eq!(parse_size("16MB").unwrap(), 16 << 20);
         assert_eq!(parse_size("1GB").unwrap(), 1 << 30);
         assert!(parse_size("16 parsecs").is_err());
-    }
-
-    #[test]
-    fn restore_dirs() {
-        assert!(valid_dir("/var/lib/postgresql/17/restore"));
-        for bad in ["/", "rel/dir", "/a/../etc", "/a b", "/a/'x'", "/a/./b"] {
-            assert!(!valid_dir(bad), "{bad}");
-        }
     }
 }

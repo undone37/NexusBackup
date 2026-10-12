@@ -3,12 +3,15 @@
 #   run.sh start   build the image (cached), generate keys + TLS cert (once), start
 #                  `main` (the source; TLS, role `nexus` with REPLICATION, CREATEDB +
 #                  pg_read_all_data, sshd for postgres on $SSH_PORT) on 127.0.0.1:$PORT
-#                  and `alt` (alternate restore server) on 127.0.0.1:$ALT_PORT
+#                  and `alt` (alternate restore server) on 127.0.0.1:$ALT_PORT; main also
+#                  publishes 127.0.0.1:$REPLICA_PORT → 5433 for a streaming replica the HA
+#                  test starts inside it (pg_basebackup -R, pg_ctl -o "-p 5433")
 #   run.sh stop    remove both containers (all data goes with them)
 #   run.sh env     print `export NEXUS_PG_*=...` lines
 # The test starts the testbox itself when podman is available (NEXUS_PG_TESTBOX=skip
 # disables it). env: PG (major version, default 17), PORT (15432), ALT_PORT (15433),
-# SSH_PORT (12222). Keys, cert and passwords live in target/pg-testbox/ (not in git).
+# SSH_PORT (12222), REPLICA_PORT (15434), NAME (container name, nexus-pg-testbox).
+# Keys, cert and passwords live in target/pg-testbox/ (not in git).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
@@ -17,8 +20,9 @@ PG=${PG:-17}
 PORT=${PORT:-15432}
 ALT_PORT=${ALT_PORT:-15433}
 SSH_PORT=${SSH_PORT:-12222}
+REPLICA_PORT=${REPLICA_PORT:-15434}
 IMG=localhost/nexus-pg-testbox:$PG
-NAME=nexus-pg-testbox
+NAME=${NAME:-nexus-pg-testbox}
 
 secrets() {
 	mkdir -p "$dir/box"
@@ -63,7 +67,7 @@ case ${1:-} in
 start)
 	secrets
 	podman build -q --build-arg BASE="docker.io/library/postgres:$PG" -t "$IMG" -f "$here/Containerfile" "$here" >/dev/null
-	run "$NAME" -p "127.0.0.1:$PORT:5432" -p "127.0.0.1:$SSH_PORT:22"
+	run "$NAME" -p "127.0.0.1:$PORT:5432" -p "127.0.0.1:$SSH_PORT:22" -p "127.0.0.1:$REPLICA_PORT:5433"
 	run "$NAME-alt" -p "127.0.0.1:$ALT_PORT:5432"
 	ready "$NAME"
 	ready "$NAME-alt"
@@ -80,6 +84,7 @@ env)
 		export NEXUS_PG_PORT=$PORT
 		export NEXUS_PG_ALT_PORT=$ALT_PORT
 		export NEXUS_PG_SSH_PORT=$SSH_PORT
+		export NEXUS_PG_REPLICA_PORT=$REPLICA_PORT
 		export NEXUS_PG_PASSWORD='$(cat "$dir/nexus.secret")'
 		export NEXUS_PG_SUPER_PASSWORD='$(cat "$dir/postgres.secret")'
 		export NEXUS_PG_SSH_KEY='$dir/client_ed25519'
@@ -88,7 +93,7 @@ env)
 	EOF
 	;;
 *)
-	sed -n '2,12p' "$0" >&2
+	sed -n '2,15p' "$0" >&2
 	exit 2
 	;;
 esac
