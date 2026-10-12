@@ -2,7 +2,7 @@
 # M5 flow over the REST API only (what the UI does): curl with cookie jar +
 # X-CSRF-Token, TLS verified against the appliance certificate.
 #   lab/e2e/m5.sh setup && lab/e2e/m5.sh start && lab/e2e/m5-api.sh [step...]
-# steps (default: all): config wait-backup check restore verify quorum phase13 phase14d2 audit
+# steps (default: all): config wait-backup check restore verify quorum phase13 phase14d2 diag audit
 # Lab inputs (env, defaults = dev machine, see lab/README.md):
 #   LAB (/home/ah/nexus-lab), LAB_CA (default: fetched from the node), LAB_TOKEN_SECRET (file;
 #   default: secret part of $LAB/api-token), LAB_SSH_KEY (private key whose public half is in the
@@ -369,6 +369,60 @@ step_phase14d2() {
 	log "reverted to the self-signed certificate"
 }
 
+# Phase 14b on the real appliance (nexus-diag, root, nexus_diag_t): self-checks and a redacted
+# support bundle through Settings -> Diagnostics. Dev mode (no appliance) has no nexus-diag: skipped.
+step_diag() {
+	if [ "$APPL_HOST" = 127.0.0.1 ]; then
+		log "diag: needs the appliance VM (lab/appliance/e2e.sh api diag), skipped"
+		return
+	fi
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	login so "$SO_PW" "$SO_TOTP"
+	local id r
+	wait_diag() { # <user> <id> -> the finished result
+		for _ in $(seq 180); do
+			r=$(api "$1" GET "/diagnostics/$2")
+			case $(jq -r .state <<<"$r") in done | error) echo "$r"; return ;; esac
+			sleep 1
+		done
+		die "diagnostics $2 did not finish: $r"
+	}
+	id=$(api so POST /diagnostics/checks '{}' | jq -r .id)
+	expect 202 "run checks (security officer)"
+	r=$(wait_diag so "$id")
+	[ "$(jq -r .state <<<"$r")" = "done" ] || die "checks: $(jq -c . <<<"$r")"
+	jq -r '.checks[] | "  \(.status)\t\(.severity)\t\(.id): \(.detail)"' <<<"$r" >&2
+	# a healthy lab appliance: nothing that would block an update, and every check really ran
+	jq -e '[.checks[] | select(.status == "fail" and .severity >= 3)] == []' <<<"$r" >/dev/null ||
+		die "blocking checks failed: $(jq -c '[.checks[] | select(.status == "fail")]' <<<"$r")"
+	jq -e '[.checks[] | select(.detail | startswith("check could not run"))] == []' <<<"$r" >/dev/null ||
+		die "checks that crashed (SELinux denial?): $(jq -c '[.checks[] | select(.detail | startswith("check could not run"))]' <<<"$r")"
+	for c in time.sync egress keyd audit.chain catalog.integrity selinux systemd.failed; do
+		jq -e --arg c "$c" '.checks[] | select(.id == $c) | .status == "pass"' <<<"$r" >/dev/null ||
+			die "check $c: $(jq -c --arg c "$c" '.checks[] | select(.id == $c)' <<<"$r")"
+	done
+	api so POST /diagnostics/bundle '{}' >/dev/null
+	expect 403 "support bundle as security officer"
+	id=$(api admin POST /diagnostics/bundle "$(jq -nc --argjson u "$(date +%s)" '{since: ($u - 3600), until: $u}')" | jq -r .id)
+	expect 202 "create support bundle"
+	r=$(wait_diag admin "$id")
+	[ "$(jq -r .state <<<"$r")" = "done" ] || die "bundle: $(jq -c . <<<"$r")"
+	api admin GET "/diagnostics/$id/download" >/dev/null # body lands in $S/body
+	expect 200 "download support bundle"
+	local t=$S/bundle
+	rm -rf "$t" && mkdir -p "$t" && tar -xzf "$S/body" -C "$t"
+	t=$(find "$t" -mindepth 1 -maxdepth 1 -type d -name 'nexus-support-*') # the bundle's top directory
+	for f in manifest.json checks.json journal-nexus.txt avc.txt nft-drops.txt chrony.txt catalog-stats.json update-status.json; do
+		[ -s "$t/$f" ] || die "bundle lacks $f"
+	done
+	grep -q 'nexus-web-api' "$t/journal-nexus.txt" || die "bundle journal has no nexus-web-api lines"
+	grep -q 'Reference ID' "$t/chrony.txt" || die "bundle chrony.txt: $(head -5 "$t/chrony.txt")"
+	! grep -rqE 'BEGIN [A-Z ]*PRIVATE KEY|nx_session=[0-9a-f]{16}' "$t" || die "unredacted secret in the bundle"
+	log "support bundle $id: $(jq -r .bundle.bytes <<<"$r") bytes, $(find "$t" -type f | wc -l) files"
+	api so GET "/diagnostics/$id/download" >/dev/null
+	expect 403 "bundle download by the security officer"
+}
+
 step_audit() {
 	login so "$SO_PW" "$SO_TOTP"
 	api so GET /audit/verify | jq -c . >&2
@@ -377,7 +431,7 @@ step_audit() {
 }
 
 steps=("$@")
-[ ${#steps[@]} -gt 0 ] || steps=(config wait-backup check restore verify quorum phase13 phase14d2 audit)
+[ ${#steps[@]} -gt 0 ] || steps=(config wait-backup check restore verify quorum phase13 phase14d2 diag audit)
 for s in "${steps[@]}"; do
 	log "== $s"
 	"step_${s//-/_}"

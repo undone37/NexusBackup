@@ -790,9 +790,39 @@ export interface UpdatesStatus {
   /** "Sun 03:00 120" = weekday, start, minutes */
   window: string;
   last_check: number;
-  status: 'idle' | 'checking' | 'staged' | 'error' | string;
+  status: 'idle' | 'checking' | 'staged' | 'error' | 'blocked' | string;
   error: string | null;
   rollback: UpdateImage | null;
+  /** pre-update checks that refused the last stage / apply (status "blocked") */
+  blocked?: Pick<DiagCheck, 'id' | 'title' | 'severity' | 'detail' | 'manual'>[];
+}
+
+/** One self-check of nexus-diag (Settings → Diagnostics, pre-update checks). */
+export interface DiagCheck {
+  id: string;
+  title: string;
+  status: 'pass' | 'warn' | 'fail' | 'skip';
+  /** 1 info, 2 warning, 3 error, 4 critical (>= 3 failing blocks updates) */
+  severity: 1 | 2 | 3 | 4;
+  detail: string;
+  /** anchor in the user manual, e.g. "15-troubleshooting-faq.md#check-disk-var" */
+  manual: string;
+}
+
+/** GET /diagnostics/{id} */
+export interface DiagRun {
+  id: string;
+  kind: 'checks' | 'bundle';
+  by: string;
+  state: 'queued' | 'running' | 'done' | 'error';
+  since: number | null;
+  until: number | null;
+  created: number | null;
+  finished: number | null;
+  error: string | null;
+  expires?: number;
+  checks: DiagCheck[] | null;
+  bundle: { bytes: number; url: string } | null;
 }
 
 /** Summed `backup_stats` of kept snapshots (GET /storage, docs/storage-accounting.md). */
@@ -866,4 +896,25 @@ export interface CertStatus {
   can_revert: boolean;
   previous: boolean;
   pins: { replication_identity: string | null; replication_peers: number };
+}
+
+/** Phase 14e reports (GET /reports/{type}.csv). */
+export type ReportType = 'protection' | 'failed' | 'sla' | 'storage';
+
+/** A scheduled report (setting `reports`, GET/PUT /settings/reports). */
+export interface ScheduledReport {
+  name: string;
+  types: ReportType[];
+  schedule: string;
+  timezone: string;
+  recipients: string[];
+  tenant: string | null;
+  /** the last `report_send` job (scheduled or "Send now") */
+  last?: { job_id: number; state: string; created: number; finished: number | null; requested_by: string } | null;
+}
+
+export interface ScheduledReports {
+  reports: ScheduledReport[];
+  /** an SMTP server is configured (Settings → Alert delivery) */
+  smtp: boolean;
 }

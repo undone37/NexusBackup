@@ -21,6 +21,7 @@ webtls = { path = "../webtls" }
 nas = { path = "../nas", default-features = false }
 plugin-manager = { path = "../plugin-manager" }
 plugin-proto = { path = "../plugin-proto", features = ["bundle"] }
+reports = { path = "../reports" }
 regex = { version = "1", default-features = false, features = ["std", "perf", "unicode"] }
 # protocol types only (no chunk store, no keyd): docs/replication.md §2
 repl_proto = { package = "replication", path = "../replication", default-features = false }

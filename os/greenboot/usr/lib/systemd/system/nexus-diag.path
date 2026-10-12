@@ -1,0 +1,11 @@
+[Unit]
+Description=NexusBackup diagnostics requests from the web UI (self-checks, support bundle)
+
+[Path]
+# nexus-web-api writes /var/lib/nexus/diag/request.json (tmp + rename); nexus-diag
+# consumes (deletes) it and writes the result to /var/lib/nexus/diag/<id>/.
+PathExists=/var/lib/nexus/diag/request.json
+Unit=nexus-diag.service
+
+[Install]
+WantedBy=paths.target

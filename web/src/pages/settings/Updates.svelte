@@ -5,6 +5,7 @@
   import { session } from '../../lib/session.svelte';
   import { fmtAgo, fmtTime } from '../../lib/format';
   import { t } from '../../lib/i18n';
+  import { manualUrl } from '../../lib/manual';
   import type { UpdateImage, UpdatesStatus } from '../../lib/types';
   import ErrorBanner from '../../components/ErrorBanner.svelte';
   import IconRefresh from '@lucide/svelte/icons/refresh-cw';
@@ -37,7 +38,7 @@
   const short = (d?: string) => (d ? d.replace(/^(sha256:)?([0-9a-f]{12})[0-9a-f]+$/, '$1$2…') : '');
   // "idle" with a newer image is shown as "update available"
   const st = $derived(u?.status === 'idle' && u.available ? 'available' : (u?.status ?? ''));
-  const stCls: Record<string, string> = { idle: 'ok', available: 'info', checking: 'info', staged: 'warn', error: 'bad' };
+  const stCls: Record<string, string> = { idle: 'ok', available: 'info', checking: 'info', staged: 'warn', error: 'bad', blocked: 'bad' };
 
   async function check() {
     if (await act(post('/updates/check'), t.settings.upd.checkStarted)) load();
@@ -66,6 +67,16 @@
     {#if !error}<p class="muted" aria-busy="true">{t.loading}</p>{/if}
   {:else}
     {#if u.error}<p class="banner error" role="alert">{u.error}</p>{/if}
+    {#if u.status === 'blocked' && u.blocked?.length}
+      <div class="banner error" role="alert">
+        <p>{t.settings.upd.blocked}</p>
+        <ul>
+          {#each u.blocked as b (b.id)}
+            <li><a href={manualUrl(b.manual)} target="_blank" rel="noopener noreferrer">{b.title}</a>: {b.detail}</li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
     <section class="card" aria-labelledby="upd-h">
       <div class="card-head">
         <h2 id="upd-h">{t.settings.tabs.updates}</h2>

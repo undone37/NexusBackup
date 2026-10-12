@@ -71,6 +71,7 @@ mod lifecycle;
 pub mod orphans;
 mod plugins;
 pub mod replica;
+pub mod report_mail;
 pub mod run;
 mod runctl;
 pub mod schedule;
@@ -662,6 +663,7 @@ impl Scheduler {
         self.log_err(|s| s.check_sla(now));
         self.log_err(|s| s.check_paused(now));
         self.log_err(|s| s.queue_inventory(now));
+        self.log_err(|s| s.queue_reports(now));
         self.log_err(|s| s.start_jobs());
         let all = now.saturating_sub(self.last_refresh) >= self.cfg.refresh_secs;
         if all || !self.dirty.is_empty() {
@@ -1136,6 +1138,9 @@ impl Scheduler {
             &format!("job/{}", job.id),
             &json!({"kind": job.kind, "tenant": job.tenant}),
         )?;
+        if job.kind == "report_send" && state != "cancelled" {
+            return self.report_finished(&job, ok, &log, result.as_ref());
+        }
         if matches!(
             job.kind.as_str(),
             "backup" | "plugin_backup" | "retention" | "offsite" | "gc" | "replica_sync" | "snapshot_delete"
@@ -1363,7 +1368,9 @@ impl Scheduler {
                 log.push_str(&format!("[scheduler] download ready: {file} ({size} bytes)\n"));
                 Some(r)
             }
-            "alert_test" | "ssh_key_rotate" | "ssh_key_retire" => serde_json::from_str(stdout.unwrap_or_default()).ok(),
+            "alert_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" => {
+                serde_json::from_str(stdout.unwrap_or_default()).ok()
+            }
             "plugin_validate" | "plugin_guests" | "inventory" => {
                 let out = stdout.unwrap_or_default();
                 match serde_json::from_str::<Value>(out.trim()) {
@@ -2842,7 +2849,7 @@ impl Scheduler {
     // ------------------------------------------------------------ appliance jobs
 
     /// Jobs of no tenant (tenant `-`, queued by the web-api settings pages):
-    /// `alert_test` {rule?}, `ssh_key_rotate` {name, quorum_id}, `ssh_key_retire` {name}.
+    /// `alert_test` {rule?}, `report_send` {name, from, to}, `ssh_key_rotate` {name, quorum_id}, `ssh_key_retire` {name}.
     /// They run in-process; their stdout (a JSON object) becomes the result.
     fn plan_appliance(&self, job: &Job) -> Result<Option<Plan>> {
         let step: Box<dyn Fn() -> Result<String, String> + Send> = match job.kind.as_str() {
@@ -2852,6 +2859,7 @@ impl Scheduler {
                 let rule = job.params["rule"].as_str().map(str::to_owned);
                 Box::new(move || Ok(alerts::test(&cfg, &host, rule.as_deref()).to_string()))
             }
+            "report_send" => self.report_step(job),
             "ssh_key_rotate" | "ssh_key_retire" => {
                 let name = ident(&job.params, "name")?.to_owned();
                 let dir = self.cfg.ssh_dir.clone();
