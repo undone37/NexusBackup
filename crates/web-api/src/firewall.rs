@@ -80,11 +80,11 @@ fn pending(c: &Connection) -> ApiResult<Vec<(String, i64)>> {
 
 /// The newest pending request for `service`, if any.
 pub fn pending_for(c: &Connection, service: &str) -> ApiResult<Option<i64>> {
-    Ok(pending(c)?
-        .into_iter()
-        .filter(|(s, _)| s == service)
-        .map(|(_, id)| id)
-        .last())
+    Ok(newest(&pending(c)?, service))
+}
+
+fn newest(pend: &[(String, i64)], service: &str) -> Option<i64> {
+    pend.iter().rev().find(|(s, _)| s == service).map(|(_, id)| *id)
 }
 
 pub async fn get_firewall(State(st): State<St>, ctx: Ctx, ClientIp(ip): ClientIp) -> ApiResult<Json<Value>> {
@@ -115,7 +115,7 @@ pub async fn get_firewall(State(st): State<St>, ctx: Ctx, ClientIp(ip): ClientIp
             json!({
                 "id": s.id, "ports": s.ports, "lockout": s.lockout, "available": s.available,
                 "can_disable": s.can_disable, "enabled": r.enabled, "allow": r.allow, "effective": effective,
-                "pending": pend.iter().filter(|(x, _)| x == s.id).map(|(_, id)| *id).last(),
+                "pending": newest(&pend, s.id),
             })
         })
         .collect();
