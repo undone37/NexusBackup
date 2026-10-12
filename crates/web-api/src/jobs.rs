@@ -539,6 +539,56 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
     Ok(Json(Value::Array(rows)))
 }
 
+/// Deletes one local snapshot (admin, approval action `snapshot.delete`, executed
+/// by the scheduler). Refused at once while it is locked, when only the offsite
+/// copy is left (offsite retention) and for replicated snapshots (the
+/// replication source's retention; a deleted one would be fetched again).
+pub async fn delete_snapshot(
+    State(st): State<St>,
+    ctx: Ctx,
+    Path((tenant, source, time)): Path<(String, String, i64)>,
+) -> ApiResult<Response> {
+    ctx.require(&["admin"])?;
+    validate::name(&tenant, "tenant")?;
+    validate::source_ref(&source)?;
+    if !ctx.sees(&tenant) {
+        return Err(ApiError::forbidden());
+    }
+    let row: Option<(bool, i64, Option<String>)> = st
+        .cat
+        .conn()
+        .query_row(
+            "SELECT local, lock_until, origin FROM snapshots WHERE tenant = ?1 AND source = ?2 AND time = ?3",
+            params![tenant, source, time],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let (local, lock_until, origin) = row.ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no such snapshot".into()))?;
+    if !local {
+        return Err(ApiError::conflict(
+            "only the offsite copy is left: it follows the offsite retention",
+        ));
+    }
+    if origin.is_some() {
+        return Err(ApiError::conflict(
+            "replicated snapshot: it follows the replication source's retention",
+        ));
+    }
+    if lock_until > catalog::now() {
+        return Err(ApiError::conflict(format!(
+            "snapshot is locked until {lock_until} (unix time)"
+        )));
+    }
+    let o = crate::quorum::request(
+        &st,
+        &ctx,
+        "snapshot.delete",
+        &format!("snapshot/{tenant}/{source}/{time}"),
+        json!({"tenant": tenant, "source": source, "time": time}),
+    )?;
+    Ok(crate::quorum::accepted(o, json!({})))
+}
+
 // ---------------------------------------------------------------- alerts
 
 #[derive(Deserialize)]
