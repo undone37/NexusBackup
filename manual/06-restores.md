@@ -393,27 +393,29 @@ server.
 
 ## Microsoft 365 restores
 
-Microsoft 365 snapshots (`plugin-m365-<source>-u.…` for a user, `-s.…` for a site, `-t.…` for a team) offer three
+Microsoft 365 snapshots (`plugin-m365-<source>-u.…` for a user, `-s.…` for a site, `-t.…` for a team, `-g.…` for a
+Microsoft 365 group) offer three
 restores (download and two restores in the **Restore** menu). None of them overwrites anything in Microsoft 365: restores always write into a **new** folder,
 calendar or channel.
 
 | Snapshot | Contains (folders in the file browser) |
 |---|---|
-| user (`u.…`) | `mail/` (one `.eml` per message), `calendar/` (one `.ics` per event), `contacts/` (one `.vcf` per contact), `onedrive/` (the files), `chats/` (one `.json` and one readable `.html` per chat, if chats are backed up; download only) |
+| user (`u.…`) | `mail/` (one `.eml` per message), `recoverable/Deletions/` (deleted items still recoverable in Outlook), `calendar/` (one `.ics` per event), `contacts/` (one `.vcf` per contact), `onedrive/` (the files), `chats/` (one `.json` and one readable `.html` per chat, if chats are backed up; download only) |
 | site (`s.…`) | `libraries/<library>/` (the files) |
-| team (`t.…`) | `files/` (the team's files), `channels/<channel>/` (one `.json` per conversation, if channel messages are backed up) |
+| team (`t.…`) | `files/` (the team's files), `channel-files/<channel>/` (files of private and shared channels), `channels/<channel>/` (one `.json` per conversation, if channel messages are backed up) |
+| group (`g.…`) | `conversations/` (one `.json` per conversation with all posts), `calendar/` (if Microsoft allowed reading it), `files/` (groups that are not teams) |
 
 ### Download
 
-Click the download button (**Download (mail .eml, events .ics, contacts .vcf, files, threads .json)**), select
+Click the download button (**Download (mail .eml, events .ics, contacts .vcf, files, threads and conversations .json)**), select
 folders or single items and prepare a tar or zip archive as described in
 [Browse files and download them](#browse-files-and-download-them-tar-or-zip). Mail opens in any mail client,
 `.ics` files in any calendar, `.vcf` files in any address book. Names containing `/` or `%` are shown encoded
 (`Projects%2F2026` is the folder `Projects/2026`).
 
-### Restore to the original user, site or team
+### Restore to the original user, site, team or group
 
-1. Open **Restore** on the snapshot and choose **Restore to the original user / site / team (into a new folder)**.
+1. Open **Restore** on the snapshot and choose **Restore to the original user / site / team / group (into a new folder; group conversations: download only)**.
 2. Optionally fill in **Only these snapshot paths**, one per line, e.g. `mail/Inbox` or
    `onedrive/Documents/Contracts` (empty = everything), and **New folder** (empty = `Restored <date> <time>`). The
    folder must not exist yet.
@@ -421,24 +423,32 @@ folders or single items and prepare a tar or zip archive as described in
 
 Where the items end up:
 
-- **Mail**: a new top-level mail folder with that name, containing the backed-up folder structure.
+- **Mail**: a new top-level mail folder with that name, containing the backed-up folder structure. Items from
+  `recoverable/` go to its subfolder **Restored deleted items**.
 - **Calendars**: a new calendar `<folder> – <calendar name>` per backed-up calendar. Restored events have **no
   attendees**, so nobody receives invitations. The attendee list is still in the `.ics` file of the backup.
 - **Contacts**: a new contact folder with one subfolder per backed-up contact folder.
-- **OneDrive, team files**: the new folder in the user's OneDrive or the team's document library.
+- **OneDrive, team files, group files**: the new folder in the user's OneDrive or the team's or group's document
+  library.
+- **Private and shared channel files**: the new folder in the site of the team's private or shared channel with the
+  same name, so only that channel's members see them. Without such a channel they are skipped (the summary counts
+  them).
+- **Group conversations and group calendar**: download only. Microsoft offers no app permission to create group
+  posts or events; the summary counts them as skipped.
 - **SharePoint libraries**: the new folder inside the library of the same name. If the target site has no such
   library, `<folder>/<library>/…` in its default document library.
 - **Teams conversations**: a new channel `<channel> (restored <date> <time>)` per backed-up channel. Messages
   appear with their original author and time. Deleted messages and messages from bots are skipped.
 
-### Restore to another user, site or team
+### Restore to another user, site, team or group
 
-Use **Restore → Restore to another user / site / team (into a new folder)**, for example to give a successor the mailbox
+Use **Restore → Restore to another user / site / team / group (into a new folder; also into another Microsoft 365 tenant)**, for example to give a successor the mailbox
 and OneDrive of a person who left. In addition to the fields above, enter the **Target**:
 
 - for a user snapshot: the other user's sign-in name (`jane@contoso.com`) or object ID;
 - for a site snapshot: the site's address (`https://contoso.sharepoint.com/sites/archive`) or Graph site ID;
-- for a team snapshot: the team's ID or its exact name.
+- for a team snapshot: the team's ID or its exact name;
+- for a group snapshot: the group's ID or its exact name.
 
 The target must be of the same kind as the snapshot (a user's mailbox cannot be restored into a site). The job
 fails with "target … not found" if the target does not exist.

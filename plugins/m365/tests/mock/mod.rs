@@ -14,6 +14,11 @@
 //! - downloads via a 302 redirect to a range-capable URL, uploads (simple PUT and
 //!   upload sessions with `Content-Range`), folder / message / event / contact /
 //!   channel creation, Teams migration-mode channels;
+//! - Recoverable Items "Deletions" (well-known folder, not in the folder delta),
+//!   Microsoft 365 groups (team-backed or not) with sites, conversations and a
+//!   calendar (refused for app tokens unless `group_calendar`), private / shared
+//!   channels with sites of their own (`filesFolder`, `sharepointIds`), and items
+//!   whose reads always fail (`broken`).
 //! - further app registrations (`add_app`) with per-app throttling
 //!   (`throttle_app`) and per-app request counts; 1:1 and group chats
 //!   (`/users/{id}/chats/getAllMessages`, `/chats/{id}`, `/chats/{id}/messages`).
@@ -105,6 +110,17 @@ pub struct Site {
     pub drives: Vec<String>,
 }
 
+/// A Microsoft 365 group (teams are groups too).
+#[derive(Clone, Debug)]
+pub struct Group {
+    pub id: String,
+    pub name: String,
+    pub team: bool,
+    /// Graph site id of the group's site
+    pub site: String,
+    pub drive: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct Team {
     pub id: String,
@@ -140,12 +156,25 @@ pub struct Tenant {
     pub items: Vec<Item>,
     pub sites: Vec<Site>,
     pub teams: Vec<Team>,
+    pub groups: Vec<Group>,
+    /// channel id → (membershipType, drive of its own site for private / shared channels)
+    pub channel_kind: HashMap<String, (String, Option<String>)>,
+    /// group conversations (group id, json), threads (conversation id, json), posts (thread id, json)
+    pub conversations: Vec<(String, Value)>,
+    pub threads: Vec<(String, Value)>,
+    pub posts: Vec<(String, Value)>,
+    /// group calendar events (group id, json)
+    pub group_events: Vec<(String, Value)>,
     /// chat messages (team, json with "_seq"/"_modified" stripped on output)
     pub chat: Vec<(String, Value)>,
     // controls
     pub page_size: usize,
     pub faults: Vec<Fault>,
     pub protected_api: bool,
+    /// app tokens may read group calendars (Graph v1.0 documents no application permission)
+    pub group_calendar: bool,
+    /// ids of messages / drive items whose content reads fail with 500 every time
+    pub broken: HashSet<String>,
     pub token_lifetime: u64,
     /// the certificate registered on the app (`x5t#S256`)
     pub registered: String,
@@ -286,8 +315,22 @@ impl Tenant {
         if mailbox {
             self.calendars
                 .push((format!("cal-{id}"), id.clone(), "Calendar".into()));
+            let seq = self.bump();
+            self.folders.push(Folder {
+                id: format!("recov-{id}"),
+                user: id.clone(),
+                parent: Some(format!("recoverableitemsroot-{id}")),
+                name: "Deletions".into(),
+                seq,
+                deleted: false,
+            });
         }
         id
+    }
+
+    /// The Recoverable Items "Deletions" folder of a user.
+    pub fn recoverable(&self, user: &str) -> String {
+        format!("recov-{user}")
     }
 
     fn root(&mut self, drive: &str) -> String {
@@ -522,11 +565,103 @@ impl Tenant {
         self.sites.iter().find(|s| s.id == id).unwrap()
     }
 
-    pub fn add_team(&mut self, name: &str, channels: &[&str]) -> String {
+    fn add_group_entry(&mut self, name: &str, team: bool) -> (String, String) {
         let id = self.guid();
-        let d = format!("b!team{}", self.next());
-        self.drives.push((d.clone(), "Documents".into()));
-        self.root(&d);
+        let site = self.add_site(&name.replace(' ', ""), &["Documents"]);
+        let d = self.site(&site).drives[0].clone();
+        self.groups.push(Group {
+            id: id.clone(),
+            name: name.into(),
+            team,
+            site,
+            drive: d.clone(),
+        });
+        (id, d)
+    }
+
+    /// A Microsoft 365 group that is not a team (site with a "Documents" library).
+    pub fn add_group(&mut self, name: &str) -> String {
+        self.add_group_entry(name, false).0
+    }
+
+    pub fn group(&self, id: &str) -> &Group {
+        self.groups.iter().find(|g| g.id == id).unwrap()
+    }
+
+    /// A conversation with one thread of `posts` (texts) in a group.
+    pub fn add_conversation(&mut self, group: &str, topic: &str, posts: &[&str]) -> String {
+        let cid = self.exid("conv");
+        let tid = self.exid("thr");
+        let seq = self.bump();
+        let t = iso(OLD + seq as i64);
+        self.conversations.push((
+            group.into(),
+            json!({"id": cid, "topic": topic, "lastDeliveredDateTime": t, "hasAttachments": false,
+                   "uniqueSenders": ["Alice"], "preview": posts.first()}),
+        ));
+        self.threads.push((
+            cid.clone(),
+            json!({"id": tid, "topic": topic, "lastDeliveredDateTime": t}),
+        ));
+        for text in posts {
+            self.add_post(&cid, text);
+        }
+        cid
+    }
+
+    /// A new post in the (first) thread of a conversation; the conversation moves on.
+    pub fn add_post(&mut self, conv: &str, text: &str) -> String {
+        let id = self.exid("post");
+        let seq = self.bump();
+        let t = iso(OLD + seq as i64);
+        let tid = self.threads.iter().find(|x| x.0 == conv).unwrap().1["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        self.posts.push((
+            tid,
+            json!({"id": id, "createdDateTime": t, "receivedDateTime": t,
+                   "from": {"emailAddress": {"name": "Alice", "address": "alice@contoso.test"}},
+                   "body": {"contentType": "html", "content": format!("<p>{text}</p>")}}),
+        ));
+        if let Some(c) = self.conversations.iter_mut().find(|c| c.1["id"] == conv) {
+            c.1["lastDeliveredDateTime"] = json!(t);
+        }
+        id
+    }
+
+    pub fn add_group_event(&mut self, group: &str, subject: &str) -> String {
+        let id = self.exid("gev");
+        let seq = self.bump();
+        self.group_events.push((
+            group.into(),
+            json!({"id": id, "subject": subject, "changeKey": format!("ck{seq}"),
+                   "lastModifiedDateTime": iso(OLD + seq as i64),
+                   "start": {"dateTime": "2026-11-02T09:00:00.0000000", "timeZone": "UTC"},
+                   "end": {"dateTime": "2026-11-02T10:00:00.0000000", "timeZone": "UTC"}}),
+        ));
+        id
+    }
+
+    /// A private or shared channel with a site of its own; returns (channel id, its drive).
+    pub fn add_channel(&mut self, team: &str, name: &str, membership: &str) -> (String, String) {
+        let id = format!("19:{}@thread.tacv2", self.next());
+        let tname = self.team(team).name.replace(' ', "");
+        let site = self.add_site(&format!("{tname}-{}", name.replace(' ', "")), &["Documents"]);
+        let d = self.site(&site).drives[0].clone();
+        self.teams
+            .iter_mut()
+            .find(|t| t.id == team)
+            .unwrap()
+            .channels
+            .push((id.clone(), name.into(), false, false));
+        self.channel_kind
+            .insert(id.clone(), (membership.into(), Some(d.clone())));
+        (id, d)
+    }
+
+    pub fn add_team(&mut self, name: &str, channels: &[&str]) -> String {
+        let (id, d) = self.add_group_entry(name, true);
         let mut ch = Vec::new();
         for c in channels {
             ch.push((
@@ -951,12 +1086,21 @@ impl Tenant {
                     .collect();
                 self.page(req, all, None)
             }
+            ("GET", ["users", u, "mailFolders", "recoverableitemsdeletions"]) => {
+                let uid = self.user(u).map(|x| x.id.clone()).unwrap_or_default();
+                j(200, json!({"id": format!("recov-{uid}"), "displayName": "Deletions"}))
+            }
             ("GET", ["users", u, "mailFolders", "delta"]) => {
                 let uid = self.user(u).map(|x| x.id.clone()).unwrap_or_default();
                 let all = self
                     .folders
                     .iter()
                     .filter(|f| f.user == uid && !f.deleted)
+                    .filter(|f| {
+                        !f.parent
+                            .as_deref()
+                            .is_some_and(|p| p.starts_with("recoverableitemsroot-"))
+                    })
                     .map(|f| json!({"id": f.id, "displayName": f.name, "parentFolderId": f.parent}))
                     .collect();
                 let upto = self.seq;
@@ -984,6 +1128,9 @@ impl Tenant {
                     })
                     .collect();
                 self.page(req, all, Some(upto))
+            }
+            ("GET", ["users", _, "messages", id, "$value"]) if self.broken.contains(*id) => {
+                gerr(500, "ErrorInternalServerError", "An internal server error occurred.")
             }
             ("GET", ["users", u, "messages", id, "$value"]) => {
                 let uid = self.user(u).map(|x| x.id.clone()).unwrap_or_default();
@@ -1178,11 +1325,57 @@ impl Tenant {
                 Some(site) => j(200, json!({"id": site.drives[0]})),
                 None => not_found(),
             },
-            // ---- teams
-            ("GET", ["groups", t, "drive"]) => match self.teams.iter().find(|x| x.id == *t) {
-                Some(team) => j(200, json!({"id": team.drive})),
+            // ---- groups
+            ("GET", ["groups"]) => {
+                let all = self.groups.iter().map(|g| self.group_json(g)).collect();
+                self.page(req, all, None)
+            }
+            ("GET", ["groups", g]) => match self.groups.iter().find(|x| x.id == *g) {
+                Some(x) => j(200, self.group_json(x)),
                 None => not_found(),
             },
+            ("GET", ["groups", g, "drive"]) => match self.groups.iter().find(|x| x.id == *g) {
+                Some(x) => j(200, json!({"id": x.drive})),
+                None => not_found(),
+            },
+            ("GET", ["groups", g, "sites", "root"]) => match self.groups.iter().find(|x| x.id == *g) {
+                Some(x) => j(200, json!({"id": x.site})),
+                None => not_found(),
+            },
+            ("GET", ["groups", g, "conversations"]) => {
+                let all = self
+                    .conversations
+                    .iter()
+                    .filter(|c| c.0 == *g)
+                    .map(|c| c.1.clone())
+                    .collect();
+                self.page(req, all, None)
+            }
+            ("GET", ["groups", _, "conversations", c, "threads"]) => {
+                let all = self.threads.iter().filter(|t| t.0 == *c).map(|t| t.1.clone()).collect();
+                self.page(req, all, None)
+            }
+            ("GET", ["groups", _, "threads", t, "posts"]) => {
+                let all = self.posts.iter().filter(|p| p.0 == *t).map(|p| p.1.clone()).collect();
+                self.page(req, all, None)
+            }
+            ("GET", ["groups", g, "calendar", "events"]) => {
+                if !self.group_calendar {
+                    return gerr(
+                        403,
+                        "ErrorAccessDenied",
+                        "Access is denied. Check credentials and try again.",
+                    );
+                }
+                let all = self
+                    .group_events
+                    .iter()
+                    .filter(|e| e.0 == *g)
+                    .map(|e| e.1.clone())
+                    .collect();
+                self.page(req, all, None)
+            }
+            // ---- teams
             ("GET", ["teams"]) => {
                 let all = self
                     .teams
@@ -1201,12 +1394,33 @@ impl Tenant {
                         .channels
                         .iter()
                         .filter(|c| !c.2 || c.3)
-                        .map(|c| json!({"id": c.0, "displayName": c.1, "membershipType": "standard"}))
+                        .map(|c| {
+                            let kind = self.channel_kind.get(&c.0).map_or("standard", |k| k.0.as_str());
+                            json!({"id": c.0, "displayName": c.1, "membershipType": kind})
+                        })
                         .collect();
                     self.page(req, all, None)
                 }
                 None => not_found(),
             },
+            ("GET", ["teams", t, "channels", c, "filesFolder"]) => {
+                let Some(team) = self.teams.iter().find(|x| x.id == *t) else {
+                    return not_found();
+                };
+                let Some(ch) = team.channels.iter().find(|x| x.0 == *c) else {
+                    return not_found();
+                };
+                let drive = match self.channel_kind.get(*c) {
+                    Some((_, Some(d))) => d.clone(),
+                    _ => team.drive.clone(),
+                };
+                // like Graph: a driveItem with the drive in parentReference (no sharepointIds here)
+                j(
+                    200,
+                    json!({"id": format!("folder-{c}"), "name": ch.1, "folder": {"childCount": 0},
+                           "parentReference": {"driveId": drive, "driveType": "documentLibrary"}}),
+                )
+            }
             ("GET", ["users", u, "chats", "getAllMessages"]) => {
                 if !self.protected_api {
                     return gerr(403, "Forbidden", PROTECTED);
@@ -1378,7 +1592,14 @@ impl Tenant {
                 }
             }
             // ---- drives
-            ("GET", ["drives", d, "root"]) => j(200, json!({"id": self.drive_root(d)})),
+            ("GET", ["drives", d, "root"]) => {
+                let mut v = json!({"id": self.drive_root(d)});
+                if let Some(site) = self.sites.iter().find(|s| s.drives.iter().any(|x| x == d)) {
+                    let p: Vec<&str> = site.id.split(',').collect();
+                    v["sharepointIds"] = json!({"siteId": p[1], "webId": p[2], "siteUrl": site.url});
+                }
+                j(200, v)
+            }
             ("GET", ["drives", d, "root", "delta"]) => {
                 if !self.drives.iter().any(|x| x.0 == *d) {
                     return not_found();
@@ -1395,6 +1616,9 @@ impl Tenant {
                     .map(|i| self.item_json(i))
                     .collect();
                 self.page(req, all, Some(upto))
+            }
+            ("GET", ["drives", _, "items", i, "content"]) if self.broken.contains(*i) => {
+                gerr(500, "generalException", "An unspecified error has occurred.")
             }
             ("GET", ["drives", d, "items", i, "content"]) => {
                 if !self.items.iter().any(|x| x.id == *i && x.drive == *d && !x.deleted) {
@@ -1462,6 +1686,11 @@ impl Tenant {
                 &format!("mock: {m} /{} not implemented", g.join("/")),
             ),
         }
+    }
+
+    fn group_json(&self, g: &Group) -> Value {
+        json!({"id": g.id, "displayName": g.name, "groupTypes": ["Unified"],
+               "resourceProvisioningOptions": if g.team { json!(["Team"]) } else { json!([]) }})
     }
 
     fn msg_json(&self, x: &Msg) -> Value {

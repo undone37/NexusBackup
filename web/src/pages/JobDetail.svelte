@@ -67,6 +67,10 @@
 {#if job}
   {@const torn = (job.result?.snapshots ?? []).filter((x) => x.consistent === false).map((x) => x.source)}
   {#if torn.length}<p class="banner warn">{t.jobs.notConsistent(torn.join(', '))}</p>{/if}
+  {@const skipped = (job.result?.snapshots ?? []).filter((x) => (x.warnings ?? 0) > 0)}
+  {#if job.result?.warnings}<p class="banner warn">
+      {t.jobs.skipped(job.result.warnings, skipped.map((x) => x.source).join(', '))}
+    </p>{/if}
   <div class="two-col">
     <section class="card">
       <dl class="kv">
