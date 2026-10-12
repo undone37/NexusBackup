@@ -39,13 +39,13 @@ replicad); it streams replicad's answers to replication peers without opening st
 | Table | Columns (main) |
 |---|---|
 | `users` | id, name UNIQUE, password_hash (argon2id; `!pending-activation` while pending), totp_secret (`enc:v1:…`, legacy: base32; empty until the person enrolls), role, tenant (NULL = all), disabled, created, totp_last_step (v2), activation_hash + activation_expires (v9: digest of the one-time activation code, NULL = active; see Self-enrollment), auth (v10: `local` or `oidc`; OIDC accounts have password_hash `!oidc` and no TOTP seed), oidc_sub (v10: `<issuer>\|<sub>`, unique where set); v15 (table rebuilt): role CHECK adds `viewer` and `tenant_admin` (reserved for Phase 18c, refused by the API), can_download (NULL = role default: admin/operator/tenant_user yes, others no), expires (NULL = never), last_login |
-| `settings` (v9) | key PK, value: `approvals_enabled` (`true`/`false`), `gc_confirm/<tenant>` (JSON `{job, reason, created}`: a large GC waiting for an admin's confirmation while approvals are disabled); Phase 12: `oidc` (OIDC settings incl. mappings, client secret `enc:v1:`), `oidc_endpoints` (token + JWKS URL of the last discovery, for the allow-list), `alerts` (alert delivery, SMTP password sealed), `ssh_keys` (public halves published by the scheduler), `capacity` (store file system `{total, used, free, at}`, scheduler), `break_glass` (`{at, user, alert, forced_solo}` until the alert is acknowledged) |
+| `settings` (v9) | key PK, value: `approvals_enabled` (`true`/`false`), `gc_confirm/<tenant>` (JSON `{job, reason, created}`: a large GC waiting for an admin's confirmation while approvals are disabled); Phase 12: `oidc` (OIDC settings incl. mappings, client secret `enc:v1:`), `oidc_endpoints` (token + JWKS URL of the last discovery, for the allow-list), `alerts` (alert delivery, SMTP password sealed), `ssh_keys` (public halves published by the scheduler), `capacity` (store file system `{total, used, free, at}`, scheduler), `break_glass` (`{at, user, alert, forced_solo}` until the alert is acknowledged); Phase 17c: `vault_mode` (`{enabled, since, by}`, see "Vault mode") |
 | `backup_stats` (v11) | tenant, source, time, read, logical, new_chunks, new_plain, new_stored; PK (tenant, source, time); one row per committed snapshot from the connectors' `nexus-stats` lines (docs/storage-accounting.md). Also v11: `tenants.quota_bytes` (nullable soft quota) |
 | `capacity_samples` (v10) | day (`YYYY-MM-DD` UTC), tenant, used (bytes in the tenant's store), logical (sizes of its local snapshots); PK (day, tenant); one row per tenant and day, written by the scheduler's refresh |
 | `sessions` | id_hash (sha256 of cookie), user_id, csrf, created, last_seen; v15 (rebuilt): id (numeric, listed and revoked by it; the digest never leaves the server), ip, user_agent |
 | `tenants` | name PK, offsite (JSON: remote config, bwlimit, uploaders) |
 | `sources` | id, tenant, kind (`pve`, `linux` since v4, `truenas` since v5, `nfs`/`smb` since v6), name, config (pve JSON: api host/port/ca_pem/token_id, token_secret (`sealed:v1:…`), nodes, storage, fleecing_storage; linux JSON: agent_id, paths, excludes, hooks; truenas JSON (docs/truenas-connector.md): host, port, connect_addr, ca_pem (pinned certificate or CA), user, token_secret (API key, sealed), ssh {host, port, user, host_key, key_pem (sealed), public_key, from}, datasets, recursive, sudo, zfs_sudo; nfs/smb JSON (docs/nas-connector.md): host, port, version, NFS export/mount_port, SMB share/user/domain/sec/sign/seal/password (sealed)/keytab (sealed)/principal, snapshot_dir/snapshot_prefix/snapshot_order, excludes, threads, xattrs, timeout_secs) |
-| `tenants` | name PK, offsite (JSON: `remote` = `{type: "sftp", host, port, user, key_file, host_key, base_dir}` or `{type: "s3", endpoint, region, bucket, prefix, access_key, secret_key (sealed), path_style, ca_pem, storage_class_packs, storage_class_meta, lock}` (docs/s3-offsite.md), bwlimit (bytes/s), uploaders) |
+| `tenants` | name PK, quota_bytes (v11), disabled / disabled_at / disabled_by / disabled_reason (v22, see "Tenant deactivation"), offsite (JSON: `remote` = `{type: "sftp", host, port, user, key_file, host_key, base_dir}` or `{type: "s3", endpoint, region, bucket, prefix, access_key, secret_key (sealed), path_style, ca_pem, storage_class_packs, storage_class_meta, lock}` (docs/s3-offsite.md), bwlimit (bytes/s), uploaders) |
 | `sources` | id, tenant, kind (`pve`, `linux` since v4, `truenas` since v5), name, config (pve JSON: api host/port/ca_pem/token_id, token_secret (`sealed:v1:…`), nodes, storage, fleecing_storage; linux JSON: agent_id, paths, excludes, hooks; truenas JSON (docs/truenas-connector.md): host, port, connect_addr, ca_pem (pinned certificate or CA), user, token_secret (API key, sealed), ssh {host, port, user, host_key, key_pem (sealed), public_key, from}, datasets, recursive, sudo, zfs_sudo) |
 | `agents` (v4) | id (16 hex), tenant, name, host, port, cert_sha256, enrolled_at, token_hash (`sealed:v1:` token digest, NULL after enrollment), token_expires, last_seen, version, os; v21: cert_issued / cert_expires (validity of the presented certificate, from `agent-cert` lines), cert_sha256_next (renewed certificate issued but not confirmed: a second accepted pin), limits (JSON `{bwlimit, nice}`) |
 | `policies` | id, name, schedule (`daily HH:MM`, `hourly MM`, `every Nh [at MM]`, `Mon,Wed HH:MM` / `Mon-Fri HH:MM`, `monthly D HH:MM`; `catalog::schedule`), gfs (JSON {daily,weekly,monthly,yearly}), offsite (bool); v14: retry (JSON {count, delay_min}, default 3 × 5 min), blackout (JSON [{days, from, to, abort}]), sla_minutes (NULL = none) |
@@ -462,6 +462,47 @@ not in the store: the store's retention lock (`Manifest.lock_until`) can only gr
 - **Alerts:** `GET /alerts` rows carry `snapshot` `{tenant, source, time}` for `anomaly` (the "last snapshot before"
   named in the message) and `legal_hold_advisory`; the UI offers **Hold last good snapshot** / **Apply hold** there.
 - API tokens: `GET /holds` is readable with `read` scope; setting and releasing are closed to tokens.
+
+## Vault mode (Phase 17c, `web-api/src/vault.rs`, `catalog::vault`, setting `vault_mode`)
+A one-way profile for a replication secondary (user decision 2026-10-12): `{enabled, since, by}`.
+- **Enable:** admin, quorum action `vault.enable` (always a pending request), executed by the web-api after the
+  preconditions are checked again: ≥ 1 replication source; every tenant replicated (`replication::replicated_tenant`);
+  no `replication_peers` rows (also pending ones); approvals enabled; `inbound.web.allow` non-empty. `GET /vault`
+  lists them (`checks`, `ready`) for admins, security officers and operators; everybody gets `{enabled, since, by}`,
+  and `GET /auth/me` carries `vault_mode` (top-bar badge).
+- **Enforced while on:** `PUT /settings/approvals {enabled: false}` refused, and an `approvals.disable` request made
+  earlier cannot be approved; `nexus-setup disable-approvals` refuses too. `POST /jobs` and `POST /restores` with a
+  kind in `vault::GATED_KINDS` (`restore`, `restore_ct`, `instant_recover`, `files_get`, `restore_files`,
+  `plugin_restore`, `plugin_mount`, `offsite_restore`) store one `vault.restore` request `{tenant, jobs: [{kind,
+  params}]}` (params validated as for a direct job; `download_token` redacted in quorum lists) and answer 202
+  `{quorum_id, vault: true}`; on approval the web-api inserts the jobs with `requested_by` = the requester (so the
+  download stays theirs) and answers `{job_ids}`. `files_list` stays direct. `POST /tenants`, `/sources`, `/groups`,
+  `/agents`, `/replication/peers` → 409; a `web` inbound list may not become empty (request and execution).
+- **Disable:** admin, quorum action `vault.disable`, never executed by the web-api (state stays `approved`). Within
+  72 h, root at the console runs `nexus-setup vault-disable`: it checks the recovery key against keyd's escrow (as
+  `recover-admin`), finds the newest approved `vault.disable` of the last 72 h, sets `vault_mode` off, marks the
+  request `executed`, audits `vault.disable` (actor `console`, `{quorum_id, requested_by, approved_by}`) and raises
+  the warning alert `vault_disabled`. Decision: the console variant instead of a keyd `verify_recovery` request —
+  the web-api never talks to keyd (docs/replication.md) and would become a recovery-key oracle; the console step
+  needs root at the console (console gate) in addition to the key, like every other recovery-key action.
+- API tokens: `/vault` is not on the allow-list.
+
+## Tenant deactivation (Phase 17f, `web-api/src/tenants.rs`, `catalog::tenants`, catalog v22)
+`tenants.disabled` (0/1), `disabled_at`, `disabled_by` (requester), `disabled_reason`.
+- `POST /tenants/{name}/deactivate {reason}` (admin, appliance-wide): quorum action `tenant.disable`
+  `{name, reason}` (backups stop: a weakening of protection), executed by the web-api: flags the tenant and deletes
+  the sessions of every account with `users.tenant` = it. `POST /tenants/{name}/reactivate` (admin): immediate,
+  audited `tenant.enable` `{was_reason}`. `GET /tenants` returns the four fields.
+- Accounts scoped to a deactivated tenant: login refused (as `disabled`), sessions rejected, API tokens rejected,
+  OIDC sign-in refused (`tenant_disabled`); the users rows are unchanged.
+- Jobs: `POST /jobs` refuses `backup`, `plugin_backup`, `offsite`, `replica_sync` for it; `POST
+  /replication/sources/{id}/sync` skips it. Scheduler: no scheduled group backups (`queue_scheduled`), no replication
+  syncs (`queue_replication`), no chained offsite job; queued jobs of those kinds fail unstarted (`plan`). Retention,
+  GC, verify and file index keep running; restores stay possible for appliance-wide roles.
+- Alerts: `raise` drops every alert with that tenant except the info `tenant_disabled:<tenant>` (raised every tick
+  while deactivated, resolved on reactivation).
+- Dashboard / reports: objects of the tenant have SLA state `deactivated` (counted as `sla_deactivated`, never a
+  breach; also `paused` for the SLA report's breach intervals); `protection.deactivated_tenants` lists them.
 
 ## Break-glass (`nexus-setup recover-admin`, Phase 12 §7)
 Console only (root): `nexus-setup recover-admin [--user NAME] [--force-solo]` asks for the recovery key (checked against keyd's `kek.recovery` as at first boot), resets a local admin account to pending activation (old password and authenticator invalid at once, sessions ended, account enabled) and prints a new one-time activation code (72 h). Without `--user` the only local admin is chosen. With approvals enabled and at least two possible approvers it refuses unless `--force-solo` (recorded in the alert, the audit entry and the banner). Audited `user.break_glass` (actor `console`), critical alert `break_glass`, setting `break_glass`.

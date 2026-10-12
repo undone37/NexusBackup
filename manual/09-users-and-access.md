@@ -166,6 +166,30 @@ If approvals can no longer be granted because approvers are unavailable, see
 [10 Approvals and audit](10-approvals-and-audit.md#when-approvers-are-unavailable). Keep at least three people who
 can approve.
 
+## Deactivating a tenant
+
+When a customer or department pauses (contract on hold, project ended), an administrator deactivates its tenant
+instead of deleting it: **Configuration → Tenants**, **Deactivate** on the tenant's row, and a reason (one line,
+recorded in the audit log).
+
+![Deactivating a tenant: the reason](images/tenant-deactivate.png)
+
+Deactivating stops the tenant's protection, so it needs approval by another administrator or security officer while
+approvals are enabled (`tenant disable`). Once it takes effect:
+
+- no backups, offsite copies or replication syncs run for the tenant; **Back up now** is refused;
+- accounts limited to that tenant (tenant users, tenant viewers) are signed out and cannot sign in, and their API
+  tokens are refused. Their accounts stay as they are (not disabled on **Users**);
+- retention, garbage collection and verification keep running: snapshots are not deleted early, and administrators
+  and operators can still restore them;
+- the Dashboard shows the tenant's objects as **Deactivated** (not as RPO breaches) and names the tenant in a
+  banner; the tenant's alerts are muted, except one info alert `tenant_disabled`.
+
+The **Status** column on **Tenants** shows **Deactivated** with the reason. **Reactivate** applies at once (it only
+restores protection, audited `tenant.enable`): schedules resume and the tenant's accounts can sign in again.
+
+> **Status:** Tenant deactivation is covered by API and scheduler tests; it was not yet run in the VM lab.
+
 ## Sessions and sign-in protection
 
 - Sessions end after **30 minutes** without activity and after **12 hours** at the latest by default. An
