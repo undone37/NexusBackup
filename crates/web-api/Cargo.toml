@@ -16,6 +16,8 @@ base64 = "0.22"
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }
 agent-proto = { path = "../agent-proto" }
 catalog = { path = "../catalog" }
+# web certificate: Settings → Certificate parsing, requests to nexus-tls
+webtls = { path = "../webtls" }
 nas = { path = "../nas", default-features = false }
 plugin-manager = { path = "../plugin-manager" }
 plugin-proto = { path = "../plugin-proto", features = ["bundle"] }

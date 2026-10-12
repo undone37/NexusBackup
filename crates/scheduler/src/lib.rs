@@ -64,6 +64,7 @@
 
 pub mod alerts;
 pub mod anomaly;
+pub mod expiry;
 pub mod firewall;
 mod inventory;
 mod lifecycle;
@@ -672,6 +673,7 @@ impl Scheduler {
                 self.log_err(|s| s.check_quotas());
                 self.log_err(|s| s.publish_ssh_keys());
                 self.log_err(|s| s.prune_alerts(now));
+                self.log_err(|s| s.check_expiry(now));
             }
         }
         self.log_err(|s| s.check_offsite_lag(now));

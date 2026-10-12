@@ -41,6 +41,7 @@ const HINTS: &[(&str, &str)] = &[
     ("replication_verify", "Replicated data failed verification and was not imported. Check the primary's store and run the sync again."),
     ("replication_keys", "The tenant keys on this secondary do not match the primary. Re-export the keys on the primary (needs approval)."),
     ("break_glass", "An administrator account was reset at the console. Confirm with the person who did it, then acknowledge to clear the banner."),
+    ("cert_expiry", "A certificate, secret or API token expires soon. Renew it as the message says (web certificate: Settings → Certificate; agents and replication secondaries: enroll again; IdP secret: Settings → Single sign-on; tokens: create a new one). Resolves once renewed."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
 

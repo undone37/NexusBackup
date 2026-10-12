@@ -71,10 +71,13 @@ impl User {
 /// An authenticated request. Extracting it validates the session cookie,
 /// enforces idle/absolute expiry, refreshes `last_seen` and — for every
 /// method other than GET/HEAD — checks the `X-CSRF-Token` header.
+/// API token requests (`crate::tokens`, authenticated by its middleware) carry
+/// `token`, no session (`sid`, `csrf` empty) and the role capped by the scope.
 pub struct Ctx {
     pub user: User,
     pub sid: String,
     pub csrf: String,
+    pub token: Option<crate::tokens::TokenRef>,
 }
 
 impl Ctx {
@@ -110,6 +113,14 @@ fn session_cookie(parts: &Parts) -> Option<String> {
 impl FromRequestParts<St> for Ctx {
     type Rejection = ApiError;
     async fn from_request_parts(parts: &mut Parts, st: &St) -> Result<Self, ApiError> {
+        if let Some(t) = parts.extensions.get::<crate::tokens::TokenAuth>() {
+            return Ok(Ctx {
+                user: t.user.clone(),
+                sid: String::new(),
+                csrf: String::new(),
+                token: Some(t.token.clone()),
+            });
+        }
         let token = session_cookie(parts).ok_or_else(ApiError::unauthorized)?;
         let sid = sha256_hex(token.as_bytes());
         let now = catalog::now();
@@ -160,7 +171,12 @@ impl FromRequestParts<St> for Ctx {
             "UPDATE sessions SET last_seen = ?1 WHERE id_hash = ?2",
             params![now, sid],
         )?;
-        Ok(Ctx { user, sid, csrf })
+        Ok(Ctx {
+            user,
+            sid,
+            csrf,
+            token: None,
+        })
     }
 }
 

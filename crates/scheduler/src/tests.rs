@@ -1891,3 +1891,5 @@ fn inventory_jobs_and_auto_protect() {
 }
 /// Phase 13b run control (pause, blackout, retries, SLA, cancel).
 mod runctl;
+/// Phase 14d certificate / secret / token expiry alerts.
+mod expiry;

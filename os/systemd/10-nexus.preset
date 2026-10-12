@@ -16,6 +16,8 @@ enable nexus-nasmount.socket
 # /var/lib/nexus/setup-done exists (ConditionPathExists in the service).
 enable nexus-plugin-install.service
 enable nexus-plugin-install.path
+# Web certificate helper (CSR / import / revert requests from the web-api).
+enable nexus-tls.path
 # nexus-keyd, nexus-web-api and nexus-scheduler are enabled by nexus-setup
 # (`systemctl enable --now`) as its last step.
 disable nexus-keyd.service

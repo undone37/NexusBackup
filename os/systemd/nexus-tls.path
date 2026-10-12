@@ -1,0 +1,11 @@
+[Unit]
+Description=NexusBackup web certificate: watch for requests from the web UI
+
+[Path]
+# written by nexus-web-api (atomic rename): CSR, install or revert; nexus-tls
+# consumes (deletes) it and answers in result.json
+PathExists=/var/lib/nexus/tls/request.json
+Unit=nexus-tls.service
+
+[Install]
+WantedBy=paths.target

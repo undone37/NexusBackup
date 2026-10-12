@@ -23,6 +23,7 @@ pub mod agents;
 pub mod alerts;
 pub mod approvals;
 pub mod auth;
+pub mod certs;
 pub mod dashboard;
 pub mod inventory;
 pub mod jobs;
@@ -37,6 +38,7 @@ pub mod settings;
 pub mod spa;
 pub mod storage;
 pub mod tls;
+pub mod tokens;
 pub mod validate;
 
 /// Runtime configuration. Defaults are the appliance paths; every value can be
@@ -105,6 +107,8 @@ pub struct AppState {
     pub dashboard: crate::dashboard::Cache,
     /// OIDC discovery/JWKS cache and pending logins
     pub oidc: crate::oidc::OidcState,
+    /// web certificate files and the nexus-tls request dir (default: appliance paths)
+    pub tls: std::sync::OnceLock<webtls::Paths>,
 }
 
 impl AppState {
@@ -130,6 +134,7 @@ impl AppState {
             update_dir: std::sync::OnceLock::new(),
             dashboard: Default::default(),
             oidc: Default::default(),
+            tls: std::sync::OnceLock::new(),
         })
     }
 
@@ -177,8 +182,11 @@ impl AppState {
     }
 
     /// Appends an audit entry. Must not be called while holding `cat.conn()`.
+    /// During an API token request the token's user is recorded as
+    /// `<user> via token <name>`.
     pub fn audit(&self, actor: &str, action: &str, target: &str, details: serde_json::Value) -> Result<(), ApiError> {
-        self.cat.audit(actor, action, target, &details)?;
+        self.cat
+            .audit(&crate::tokens::audit_actor(actor), action, target, &details)?;
         Ok(())
     }
 }
@@ -409,6 +417,12 @@ pub fn router(st: St) -> Router {
         .route("/auth/me", get(me))
         .route("/auth/activate/begin", post(activation::begin))
         .route("/auth/activate/complete", post(activation::complete))
+        .route("/auth/tokens", get(tokens::list).post(tokens::create))
+        .route("/auth/tokens/{id}", axum::routing::delete(tokens::revoke))
+        .route("/certificate", get(certs::get_status))
+        .route("/certificate/csr", post(certs::csr))
+        .route("/certificate/install", post(certs::install))
+        .route("/certificate/revert", post(certs::revert))
         .route("/auth/oidc", get(oidc::info))
         .route("/auth/oidc/start", get(oidc::start))
         .route("/auth/oidc/callback", get(oidc::callback))
@@ -515,6 +529,7 @@ pub fn router(st: St) -> Router {
         .route("/metrics", get(metrics))
         .fallback(spa::serve)
         .layer(axum::extract::DefaultBodyLimit::max(1 << 20))
+        .layer(middleware::from_fn_with_state(st.clone(), tokens::layer))
         .layer(middleware::from_fn(connection_scope))
         .layer(middleware::from_fn(security_headers))
         .with_state(st)

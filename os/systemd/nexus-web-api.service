@@ -24,6 +24,9 @@ ReadWritePaths=/var/lib/nexus/update
 # (2770 nexus-webapi:nexus-plugins, read and deleted by nexus-plugin-install), then
 # .trigger for nexus-plugin-install.path; project keys and installed manifests read-only
 ReadWritePaths=/var/lib/nexus/plugins-staging
+# web certificate (docs/control-plane.md): request.json for nexus-tls.path, its
+# result.json (0770 root:nexus-webapi); web.pem is read from /etc/nexus/tls
+ReadWritePaths=/var/lib/nexus/tls
 Environment=NEXUS_PLUGIN_STAGING=/var/lib/nexus/plugins-staging
 Environment=NEXUS_PLUGIN_KEYS=/etc/pki/nexus/plugin-keys
 Environment=NEXUS_PLUGINS=/var/lib/nexus/plugins
