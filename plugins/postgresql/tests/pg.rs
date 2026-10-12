@@ -438,11 +438,7 @@ fn cluster_backup_and_point_in_time_restore() {
     )
     .unwrap();
     assert_eq!(start_and_count(&b, "pitr2", 5498), "300");
-    for d in ["pitr4"] {
-        let dir = format!("/var/lib/postgresql/{d}");
-        b.exec(&["pg_ctl", "-D", &dir, "-m", "immediate", "stop"]);
-        b.exec(&["rm", "-rf", &dir]);
-    }
+    stop_rm(&b, &["pitr4"]);
     h.restore(
         &cfg,
         &inc2.source,

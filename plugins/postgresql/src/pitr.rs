@@ -146,10 +146,53 @@ struct Unpacked {
     seen: Vec<String>,
 }
 
+/// The data directory's edits: recovery settings and the rewritten tablespace map.
+struct DataDir<'a> {
+    conf: &'a str,
+    new_map: &'a str,
+}
+
+impl DataDir<'_> {
+    /// New content of a `WATCH`ed file.
+    fn edit(&self, name: &str, mut c: Vec<u8>) -> Vec<u8> {
+        match name {
+            "postgresql.auto.conf" => {
+                c.extend_from_slice(self.conf.as_bytes());
+                c
+            }
+            "tablespace_map" if !self.new_map.is_empty() => self.new_map.as_bytes().to_vec(),
+            _ => c,
+        }
+    }
+
+    /// Files added at the end, given the `WATCH`ed names that were in the snapshot.
+    fn extra(&self, seen: &[String]) -> Vec<(&'static str, Vec<u8>)> {
+        let has = |n: &str| seen.iter().any(|s| s == n);
+        let mut x = vec![("recovery.signal", Vec::new())];
+        if !has("postgresql.auto.conf") {
+            x.push(("postgresql.auto.conf", self.conf.as_bytes().to_vec()));
+        }
+        // the source keeps its configuration outside the data directory (Debian): a
+        // minimal one, local connections only
+        if !has("postgresql.conf") {
+            x.push((
+                "postgresql.conf",
+                b"# NexusBackup: the source kept its configuration outside the data directory\n".to_vec(),
+            ));
+        }
+        if !has("pg_hba.conf") {
+            x.push(("pg_hba.conf", b"local all all peer\n".to_vec()));
+        }
+        if !has("pg_ident.conf") {
+            x.push(("pg_ident.conf", Vec::new()));
+        }
+        x
+    }
+}
+
 /// Streams the snapshot files at `paths` as a tar into `tar -x` in `dir` on the
-/// restore host. `name`: archive name of a snapshot path (None = skip); `edit`:
-/// new content of a `WATCH`ed file; `extra`: files appended at the end (given
-/// the `WATCH`ed names seen).
+/// restore host. `name`: archive name of a snapshot path (None = skip); `data`:
+/// the data directory's edits (None for a tablespace).
 fn unpack(
     ctx: &Ctx,
     src: &mut Source,
@@ -157,8 +200,7 @@ fn unpack(
     dir: &str,
     paths: &[String],
     name: &dyn Fn(&str) -> Option<String>,
-    edit: &dyn Fn(&str, Vec<u8>) -> Vec<u8>,
-    extra: &dyn Fn(&[String]) -> Vec<(&'static str, Vec<u8>)>,
+    datadir: Option<&DataDir>,
 ) -> Result<Unpacked> {
     let exec = ssh.exec(&format!("exec tar -x -f - -C {}", sh_quote(dir)))?;
     let mut tar = tar::Builder::new(io::BufWriter::with_capacity(1 << 18, exec));
@@ -171,21 +213,22 @@ fn unpack(
         let mut h = tar::Header::new_gnu();
         h.set_mode(m.mode & 0o7777);
         h.set_mtime(m.mtime_ns.max(0) as u64 / 1_000_000_000);
-        match m.kind.unwrap_or(Kind::File) {
-            Kind::Dir => {
+        let watched = datadir.filter(|_| WATCH.contains(&rel.as_str()));
+        match (m.kind.unwrap_or(Kind::File), watched) {
+            (Kind::Dir, _) => {
                 h.set_entry_type(tar::EntryType::Directory);
                 h.set_size(0);
                 tar.append_data(&mut h, &rel, io::empty())?;
             }
-            Kind::File if WATCH.contains(&rel.as_str()) => {
+            (Kind::File, Some(d)) => {
                 let mut c = Vec::new();
                 data.read_to_end(&mut c)?;
-                let c = edit(&rel, c);
+                let c = d.edit(&rel, c);
                 h.set_size(c.len() as u64);
                 tar.append_data(&mut h, &rel, &c[..])?;
                 u.seen.push(rel);
             }
-            Kind::File => {
+            (Kind::File, None) => {
                 h.set_size(m.size);
                 tar.append_data(&mut h, &rel, data)?;
                 if rel.starts_with("nexus_wal/") {
@@ -195,11 +238,11 @@ fn unpack(
                     u.bytes += m.size;
                 }
             }
-            k => ctx.warn(format!("{path}: {k:?} skipped")),
+            (k, _) => ctx.warn(format!("{path}: {k:?} skipped")),
         }
         Ok(())
     })?;
-    for (n, c) in extra(&u.seen) {
+    for (n, c) in datadir.map(|d| d.extra(&u.seen)).unwrap_or_default() {
         let mut h = tar::Header::new_gnu();
         h.set_mode(0o600);
         h.set_mtime(crate::physical::now());
@@ -284,8 +327,6 @@ pub fn pitr(ctx: &Ctx, src: &mut Source, ssh: &Ssh) -> Result<String> {
     }
     ssh.run(&format!("{mk} && command -v tar >/dev/null"))
         .context("creating the target directories (they must not exist; their parents must)")?;
-    let none = |_: &str, c: Vec<u8>| c;
-    let nothing = |_: &[String]| Vec::new();
     for t in &spaces {
         let pre = format!("tablespaces/{}", t.oid);
         let strip = format!("{pre}/");
@@ -296,40 +337,9 @@ pub fn pitr(ctx: &Ctx, src: &mut Source, ssh: &Ssh) -> Result<String> {
             &t.new,
             std::slice::from_ref(&pre),
             &|path| path.strip_prefix(&strip).map(str::to_owned),
-            &none,
-            &nothing,
+            None,
         )?;
     }
-    let edit = |name: &str, mut c: Vec<u8>| match name {
-        "postgresql.auto.conf" => {
-            c.extend_from_slice(conf.as_bytes());
-            c
-        }
-        "tablespace_map" if !new_map.is_empty() => new_map.clone().into_bytes(),
-        _ => c,
-    };
-    let extra = |seen: &[String]| {
-        let has = |n: &str| seen.iter().any(|s| s == n);
-        let mut x = vec![("recovery.signal", Vec::new())];
-        if !has("postgresql.auto.conf") {
-            x.push(("postgresql.auto.conf", conf.clone().into_bytes()));
-        }
-        // the source keeps its configuration outside the data directory (Debian): a
-        // minimal one, local connections only
-        if !has("postgresql.conf") {
-            x.push((
-                "postgresql.conf",
-                b"# NexusBackup: the source kept its configuration outside the data directory\n".to_vec(),
-            ));
-        }
-        if !has("pg_hba.conf") {
-            x.push(("pg_hba.conf", b"local all all peer\n".to_vec()));
-        }
-        if !has("pg_ident.conf") {
-            x.push(("pg_ident.conf", Vec::new()));
-        }
-        x
-    };
     let u = unpack(
         ctx,
         src,
@@ -342,8 +352,10 @@ pub fn pitr(ctx: &Ctx, src: &mut Source, ssh: &Ssh) -> Result<String> {
             None if path == "wal" => Some("nexus_wal".into()),
             _ => None,
         },
-        &edit,
-        &extra,
+        Some(&DataDir {
+            conf: &conf,
+            new_map: &new_map,
+        }),
     )?;
     let ts = if spaces.is_empty() {
         String::new()
