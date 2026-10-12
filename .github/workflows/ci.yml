@@ -61,5 +61,7 @@ jobs:
     permissions: { contents: read, checks: write }
     steps:
       - uses: actions/checkout@v4
+      # the self-hosted runner has no preinstalled cargo (GitHub-hosted runners do)
+      - uses: dtolnay/rust-toolchain@stable
       - uses: rustsec/audit-check@v2
         with: { token: "${{ secrets.GITHUB_TOKEN }}" }
