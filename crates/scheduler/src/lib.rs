@@ -1530,10 +1530,19 @@ impl Scheduler {
                                 v["transferred_bytes"] = json!(n);
                             }
                         }
+                        // `warnings <id>: <n> items …` (nexus-pluginhost, contract v1.7): ok with warnings
+                        let warn = format!("warnings {id}: ");
+                        if let Some(n) = log
+                            .lines()
+                            .find_map(|x| x.strip_prefix(&warn)?.split(' ').next()?.parse::<u64>().ok())
+                        {
+                            v["warnings"] = json!(n);
+                        }
                         Some(v)
                     })
                     .collect();
                 self.add_consistency(&job.tenant, log, &mut snaps);
+                let warnings: u64 = snaps.iter().filter_map(|s| s["warnings"].as_u64()).sum();
                 let mut r = json!({ "snapshots": snaps });
                 if let [one] = snaps.as_slice() {
                     for k in ["source", "time", "consistent", "consistency", "transferred_bytes"] {
@@ -1541,6 +1550,9 @@ impl Scheduler {
                             r[k] = one[k].clone();
                         }
                     }
+                }
+                if warnings > 0 {
+                    r["warnings"] = json!(warnings);
                 }
                 Some(r)
             }
