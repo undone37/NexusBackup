@@ -309,3 +309,7 @@ Six parallel worktree agents (each merges main into its branch before reporting)
 
 ## Phase 17 — Offsite, replication, vault, tenants (started 2026-10-12)
 Four parallel agents: 17a+b windows + close vault; 17c+f vault profile + tenant deactivate; 17d offsite in the UI + attach offsite copy; 17e per-tenant recovery key.
+
+## Phase 18 — Workloads (started 2026-10-12)
+Three parallel agents: 18a1 M365 item failures as warnings, unlicensed users, Recoverable Items, private/shared channels, group mailboxes, no double team sites; 18a2 M365 several app registrations, chats (opt-in), cross-tenant restore, app registration helper; 18b PostgreSQL WAL-only frequent runs + `recent` retention class, recoverable range, start/tablespace remap/LSN/name targets, HA.
+CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → free space step + line-tables-only debug info (2026-10-12).
