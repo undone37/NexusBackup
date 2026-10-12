@@ -75,6 +75,7 @@ def session(secret, hours=None):
     print("shell context:", [l for l in text.splitlines() if "unconfined_t" in l][-1].strip())
     c.send(b"exit\r")
     c.until(rb"Root shell ended \(exit\)\.", 30)
+    c.until(rb"action=console\.root_shell_end", 30)  # the gate is done with the terminal
     resync()
 
 
@@ -92,6 +93,7 @@ out, _ = c.until(rb"GATE-OK-42", 30)
 assert b"unconfined_t" in out, out
 c.send(b"exit\r")
 c.until(rb"Root shell ended \(exit\)\.", 30)
+c.until(rb"action=console\.root_shell_end", 30)  # the gate is done with the terminal
 resync()
 print("code: accepted once, shell unconfined_t")
 # the same code again: consumed
