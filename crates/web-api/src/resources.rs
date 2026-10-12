@@ -199,6 +199,7 @@ fn check_offsite(v: &Value) -> ApiResult<Option<S3Remote>> {
     if !v.is_object() {
         return Err(ApiError::bad("offsite: must be an object"));
     }
+    offsite_bandwidth(v)?;
     if v["remote"]["type"] != "s3" {
         opaque(v, "offsite", 16 << 10)?;
         return Ok(None);
@@ -212,6 +213,41 @@ fn check_offsite(v: &Value) -> ApiResult<Option<S3Remote>> {
     rr.remove("secret_key_set");
     opaque(&rest, "offsite", 80 << 10)?;
     Ok(Some(r))
+}
+
+/// `bwlimit`, `windows` and `timezone` of an offsite config (Phase 17a), validated.
+fn offsite_bandwidth(v: &Value) -> ApiResult<catalog::schedule::Bandwidth> {
+    let windows: Vec<catalog::schedule::RateWindow> = match v.get("windows") {
+        None | Some(Value::Null) => vec![],
+        Some(w) => serde_json::from_value(w.clone()).map_err(|e| ApiError::bad(format!("offsite.windows: {e}")))?,
+    };
+    validate::windows(&windows)?;
+    let tz = v["timezone"].as_str().unwrap_or("UTC");
+    validate::timezone(tz)?;
+    Ok(catalog::schedule::Bandwidth {
+        base: v["bwlimit"].as_u64(),
+        windows,
+        tz: catalog::schedule::tz(tz).map_err(|e| ApiError::bad(format!("offsite.timezone: {e}")))?,
+    })
+}
+
+/// Only the bandwidth part (`bwlimit`, `windows`, `timezone`) differs and the
+/// new one allows nothing more at any time: a tightening, applied directly.
+fn offsite_tightened(old: &Value, new: &Value) -> bool {
+    let rest = |v: &Value| {
+        let mut v = v.clone();
+        if let Some(o) = v.as_object_mut() {
+            for k in ["bwlimit", "windows", "timezone"] {
+                o.remove(k);
+            }
+        }
+        v
+    };
+    rest(old) == rest(new)
+        && match (offsite_bandwidth(old), offsite_bandwidth(new)) {
+            (Ok(o), Ok(n)) => !o.weaker(&n, catalog::now()),
+            _ => false,
+        }
 }
 
 /// The offsite config as stored: an S3 remote normalized, its secret sealed
@@ -313,7 +349,7 @@ pub async fn update_tenant(
     let offsite = sealed_offsite(&st, &name, &r.offsite, s3)?;
     let target = format!("tenant/{name}");
     let had_offsite = old["offsite"].as_object().is_some_and(|o| !o.is_empty());
-    if had_offsite && old["offsite"] != offsite {
+    if had_offsite && old["offsite"] != offsite && !offsite_tightened(&old["offsite"], &offsite) {
         let p = json!({"name": name, "offsite": offsite, "old": old});
         return gate(&st, &ctx, "tenant.update", &target, p);
     }

@@ -3660,3 +3660,43 @@ async fn activation_edge_cases() {
     assert!(t.audit_actions().contains(&"auth.lockout".to_string()));
     t.finish();
 }
+
+/// Phase 17a: offsite bandwidth windows. Tightening (a pause added, a lower
+/// limit) applies directly; weakening (a pause removed, a higher limit) or any
+/// other change together with it needs the quorum as before.
+#[tokio::test]
+async fn tenant_offsite_windows_tighten_direct_weaken_quorum() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let base = json!({"remote": "sftp", "host": "u1.your-storagebox.de", "key": "/etc/nexus/ssh/box"});
+    let with = |extra: Value| {
+        let mut v = base.clone();
+        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        v
+    };
+    let put = |o: Value| t.put("/api/v1/tenants/acme", &admin, json!({"offsite": o}));
+    assert_eq!(put(base.clone()).await.status, StatusCode::OK);
+    let pause = json!([{"days": ["Mon", "Tue", "Wed", "Thu", "Fri"], "from": "08:00", "to": "18:00", "action": "pause"}]);
+    for bad in [
+        json!({"windows": [{"from": "08:00", "to": "18:00", "action": "limit"}]}),
+        json!({"windows": [{"from": "08:00", "to": "18:00", "action": "nap"}]}),
+        json!({"windows": pause, "timezone": "Nowhere/Land"}),
+    ] {
+        assert_eq!(put(with(bad.clone())).await.status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    let r = put(with(json!({"windows": pause, "timezone": "Europe/Berlin", "bwlimit": 10_000_000}))).await;
+    assert_eq!(r.status, StatusCode::OK, "a pause and a limit added: {:?}", r.body);
+    assert_eq!(r.body["offsite"]["windows"], pause);
+    let r = put(with(json!({"windows": pause, "timezone": "Europe/Berlin", "bwlimit": 5_000_000}))).await;
+    assert_eq!(r.status, StatusCode::OK, "lower limit");
+    for weak in [
+        json!({"timezone": "Europe/Berlin", "bwlimit": 5_000_000}),
+        json!({"windows": pause, "timezone": "Europe/Berlin", "bwlimit": 6_000_000}),
+        json!({"windows": pause, "timezone": "Asia/Tokyo", "bwlimit": 5_000_000}),
+        json!({"windows": pause, "timezone": "Europe/Berlin", "bwlimit": 1, "host": "evil.example"}),
+    ] {
+        let r = put(with(weak.clone())).await;
+        assert_eq!(r.status, StatusCode::ACCEPTED, "{weak}: {:?}", r.body);
+    }
+    t.finish();
+}

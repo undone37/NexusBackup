@@ -32,6 +32,16 @@ pub fn timezone(s: &str) -> ApiResult<()> {
         .map_err(|e| ApiError::bad(format!("timezone: {e}")))
 }
 
+/// Bandwidth windows (offsite, replication source; Phase 17a).
+pub fn windows(w: &[catalog::schedule::RateWindow]) -> ApiResult<()> {
+    catalog::schedule::check_windows(w).map_err(|e| ApiError::bad(format!("windows: {e}")))
+}
+
+/// Sync window of a replication source (Phase 17a).
+pub fn sync_window(s: &[catalog::schedule::Span]) -> ApiResult<()> {
+    catalog::schedule::check_spans(s).map_err(|e| ApiError::bad(format!("sync_window: {e}")))
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Gfs {

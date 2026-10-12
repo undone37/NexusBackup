@@ -35,6 +35,7 @@ pub const WEB_ACTIONS: &[&str] = &[
     "replication_peer.delete",
     "replication_source.delete",
     "replication_source.update",
+    crate::replication::REOPEN,
     "plugin.install",
     "plugin.disable",
     "plugin.activate",
@@ -348,7 +349,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
             }
             changed(c.execute("DELETE FROM agents WHERE id = ?1", [id])?)?
         }
-        a if a.starts_with("replication_") => {
+        a if a.starts_with("replication_") || a == crate::replication::REOPEN => {
             return Ok(crate::replication::execute(c, a, p)?.then(|| json!({})));
         }
         a if a.starts_with("plugin") => {

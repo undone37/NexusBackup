@@ -1085,3 +1085,125 @@ fn replication_without_approvals_runs_on_the_admins_request() {
     assert_eq!(disabled, 4, "create, export after enrollment, re-export, revoke");
     assert!(sec.sync(&t, "acme").is_err(), "revoked");
 }
+
+/// Phase 17a/b on the secondary: windows and sync window (weakening needs
+/// approval, tightening is direct), "close vault now" (admin or security
+/// officer, direct, cancels syncs, never shortened) and reopening (quorum
+/// `replication.reopen`, approved by someone else).
+#[test]
+fn source_windows_close_and_reopen() {
+    let p = Primary::new();
+    let op = session(&p.st.cat, "olga", "operator");
+    let viewer = session(&p.st.cat, "vera", "viewer");
+    let c = |s: &Sess, m: Method, path: &str, b: Option<Value>| p.call(m, path, s, b);
+    let (st, b) = c(
+        &p.admin,
+        Method::POST,
+        "/api/v1/replication/sources",
+        Some(json!({"name": "prim", "url": "10.0.2.2:28443", "code": "0123456789abcdef.ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                    "fingerprint": "ab".repeat(32), "tenants": ["dr1"], "schedule": "hourly 05",
+                    "sync_window": [{"from": "22:00", "to": "06:00"}], "timezone": "Europe/Berlin",
+                    "windows": [{"from": "08:00", "to": "18:00", "action": "pause"}]})),
+    );
+    assert_eq!(st, StatusCode::CREATED, "{b}");
+    let id = b["source"]["id"].as_i64().unwrap();
+    assert_eq!(b["source"]["timezone"], "Europe/Berlin");
+    assert_eq!(b["source"]["sync_window"][0]["from"], "22:00");
+    let path = format!("/api/v1/replication/sources/{id}");
+    let put = |body: Value| c(&p.admin, Method::PUT, &path, Some(body));
+    for bad in [
+        json!({"windows": [{"from": "08:00", "to": "08:00", "action": "pause"}]}),
+        json!({"windows": [{"from": "08:00", "to": "09:00", "action": "limit"}]}),
+        json!({"sync_window": [{"days": ["Xyz"], "from": "08:00", "to": "09:00"}]}),
+        json!({"timezone": "Mars/Base"}),
+    ] {
+        assert_eq!(put(bad.clone()).0, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    // tightening: a longer pause, a narrower sync window, a lower limit: direct
+    let (st, b) = put(json!({"windows": [{"from": "07:00", "to": "19:00", "action": "pause"},
+                                       {"from": "19:00", "to": "22:00", "action": "limit", "rate_bytes": 1000}],
+                            "sync_window": [{"from": "23:00", "to": "05:00"}]}));
+    assert_eq!(st, StatusCode::OK, "{b}");
+    assert_eq!(b["windows"][1]["rate_bytes"], 1000);
+    // weakening: the pause removed, the sync window widened, another time zone: approval
+    for weak in [
+        json!({"windows": [{"from": "19:00", "to": "22:00", "action": "limit", "rate_bytes": 1000}]}),
+        json!({"sync_window": []}),
+        json!({"sync_window": [{"from": "22:00", "to": "05:00"}]}),
+        json!({"timezone": "America/New_York"}),
+    ] {
+        let (st, b) = put(weak.clone());
+        assert_eq!(st, StatusCode::ACCEPTED, "{weak}: {b}");
+    }
+    let q = p.pending("replication_source.update");
+    assert_eq!(q.len(), 4);
+    p.approve(q[1]);
+    let (_, list) = c(&p.admin, Method::GET, "/api/v1/replication/sources", None);
+    assert_eq!(list[0]["sync_window"], json!([]), "approved: always");
+    assert_eq!(list[0]["windows"][0]["action"], "pause", "the rest unchanged");
+
+    // close: not by operators or viewers; by a security officer, direct
+    let close = format!("{path}/close");
+    assert_eq!(c(&op, Method::POST, &close, None).0, StatusCode::FORBIDDEN);
+    assert_eq!(c(&viewer, Method::POST, &close, None).0, StatusCode::FORBIDDEN);
+    let soon = catalog::now() + 3600;
+    let (st, b) = c(&p.so, Method::POST, &close, Some(json!({"until": soon})));
+    assert_eq!(st, StatusCode::OK, "{b}");
+    assert_eq!(b["closed_until"].as_i64(), Some(soon));
+    assert!(b["closed_by"].is_string());
+    let shorter = c(&p.admin, Method::POST, &close, Some(json!({"until": soon - 60})));
+    assert_eq!(shorter.0, StatusCode::CONFLICT, "never shortened");
+    // closing for good cancels queued syncs
+    p.st.cat
+        .conn()
+        .execute(
+            "INSERT INTO jobs (kind, tenant, params, state, requested_by, created) \
+             VALUES ('replica_sync', 'dr1', ?1, 'queued', 'scheduler', 0)",
+            [json!({"replication_source_id": id, "tenant": "dr1"}).to_string()],
+        )
+        .unwrap();
+    let (st, b) = c(&p.admin, Method::POST, &close, None);
+    assert_eq!(st, StatusCode::OK, "{b}");
+    assert_eq!(b["closed_until"], -1);
+    let jobs: String = p
+        .st
+        .cat
+        .conn()
+        .query_row("SELECT state FROM jobs WHERE kind = 'replica_sync'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(jobs, "cancelled");
+    assert_eq!(c(&p.admin, Method::POST, &close, None).0, StatusCode::CONFLICT);
+    // manual sync refused while closed (the source is not enrolled here: fake it)
+    p.st.cat
+        .conn()
+        .execute("UPDATE replication_sources SET state = 'enrolled'", [])
+        .unwrap();
+    let (st, b) = c(&p.admin, Method::POST, &format!("{path}/sync"), None);
+    assert_eq!(st, StatusCode::CONFLICT);
+    assert!(b.to_string().contains("closed"), "{b}");
+
+    // reopen: quorum, not approvable by the requester, executed by another approver
+    assert_eq!(
+        c(&op, Method::POST, &format!("{path}/reopen"), None).0,
+        StatusCode::FORBIDDEN
+    );
+    let (st, b) = c(&p.admin, Method::POST, &format!("{path}/reopen"), None);
+    assert_eq!(st, StatusCode::ACCEPTED, "{b}");
+    let qid = b["quorum_id"].as_i64().unwrap();
+    let (st, _) = c(&p.admin, Method::POST, &format!("/api/v1/quorum/{qid}/approve"), None);
+    assert_eq!(st, StatusCode::FORBIDDEN, "own request");
+    let (_, list) = c(&p.admin, Method::GET, "/api/v1/replication/sources", None);
+    assert_eq!(list[0]["closed_until"], -1, "still closed while pending");
+    p.approve(qid);
+    let (_, list) = c(&p.admin, Method::GET, "/api/v1/replication/sources", None);
+    assert!(list[0]["closed_until"].is_null() && list[0]["closed_by"].is_null());
+    assert_eq!(
+        c(&p.admin, Method::POST, &format!("{path}/reopen"), None).0,
+        StatusCode::CONFLICT,
+        "not closed"
+    );
+    let acts = p.audit_actions();
+    for a in ["replication_source.close", "quorum.request", "replication.reopen"] {
+        assert!(acts.iter().any(|x| x == a), "{a} missing in {acts:?}");
+    }
+}
