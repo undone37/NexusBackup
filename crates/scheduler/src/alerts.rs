@@ -219,8 +219,7 @@ pub fn send_webhook(w: &Webhook, a: &Alert) -> Result<()> {
 }
 
 pub fn send_mail(s: &Smtp, to: &BTreeSet<String>, a: &Alert) -> Result<()> {
-    use lettre::transport::smtp::authentication::Credentials;
-    use lettre::{Message, SmtpTransport, Transport};
+    use lettre::Message;
     let mut b = Message::builder()
         .from(s.from.parse()?)
         .subject(format!("[NexusBackup {}] {}: {}", a.host, a.severity, a.kind));
@@ -247,6 +246,13 @@ pub fn send_mail(s: &Smtp, to: &BTreeSet<String>, a: &Alert) -> Result<()> {
         a.host,
         a.alert_url
     ))?;
+    send_message(s, &msg)
+}
+
+/// Sends a composed message through the SMTP server `s` (alerts, scheduled reports).
+pub fn send_message(s: &Smtp, msg: &lettre::Message) -> Result<()> {
+    use lettre::transport::smtp::authentication::Credentials;
+    use lettre::{SmtpTransport, Transport};
     let mut t = match s.tls {
         SmtpTls::Starttls => SmtpTransport::starttls_relay(&s.host)?,
         SmtpTls::Tls => SmtpTransport::relay(&s.host)?,
@@ -262,7 +268,7 @@ pub fn send_mail(s: &Smtp, to: &BTreeSet<String>, a: &Alert) -> Result<()> {
         let pw = std::fs::read_to_string(pf).with_context(|| format!("{}", pf.display()))?;
         t = t.credentials(Credentials::new(u.clone(), pw.trim().to_owned()));
     }
-    t.build().send(&msg)?;
+    t.build().send(msg)?;
     Ok(())
 }
 

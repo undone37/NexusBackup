@@ -18,7 +18,7 @@ const sec = Object.fromEntries(
 const BASE = `https://nexus-m5:${PORT}/`;
 rmSync(`${OUT}/profile`, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
-const PAGES = ['/', '/snapshots', '/storage', '/jobs', '/alerts', '/quorum', '/audit', '/tenants', '/sources', '/agents',
+const PAGES = ['/', '/snapshots', '/storage', '/reports', '/jobs', '/alerts', '/quorum', '/audit', '/tenants', '/sources', '/agents',
   '/replication', '/policies', '/groups', '/users', '/plugins'];
 const TABS = ['approvals', 'alerts', 'sso', 'ssh', 'updates', 'anomaly'];
 

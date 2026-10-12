@@ -81,7 +81,8 @@ The sidebar shows only what your role may use. The server checks every request a
 
 | Page | Administrator | Security officer | Operator | Tenant user |
 |---|---|---|---|---|
-| Dashboard, Snapshots, Storage, Jobs | ✓ | ✓ | ✓ | ✓ (own tenant) |
+| Dashboard, Snapshots, Storage, Reports (CSV downloads), Jobs | ✓ | ✓ | ✓ | ✓ (own tenant) |
+| Reports: scheduled reports | ✓ | read | — | — |
 | Alerts | ✓ | ✓ | ✓ | — |
 | Approvals | ✓ | ✓ (decides) | ✓ (read) | — |
 | Audit log | ✓ | ✓ | — | — |
@@ -222,6 +223,46 @@ wrote (plain and stored). The page sums these up for the snapshots that are stil
 appliance raises a `quota` warning at 80 % and a critical alert at 100 % of the measured store size (see
 [11 Alerts and monitoring](11-alerts-and-monitoring.md#alert-kinds)). A quota never stops a backup; it applies
 without approval.
+
+## Reports
+
+**Monitor → Reports** exports four reports as CSV files and, for administrators, mails them on a schedule
+(see [11 Alerts and monitoring](11-alerts-and-monitoring.md#scheduled-reports)).
+
+![Reports](images/reports.png)
+
+| Report | Content | Time range |
+|---|---|---|
+| **Protection status** | one row per protected guest, host, share, dataset and plugin guest: its groups, RPO, last good backup and its age, status (`ok`, `breach` = older than RPO × 1.5, `never`, `paused`), whether that snapshot is kept locally, copied offsite and verified (time), and its consistency (`consistent`, `inconsistent`, `unknown`; Proxmox guests show `unknown` for now) | current state |
+| **Failed jobs** | every job that failed in the range: job number, tenant, kind, what it worked on (group, source, agent, guest), times, attempt and the first error line of its log | from – to |
+| **SLA and RPO breaches** | `rpo_breach` rows: the periods in which an object had no good backup for longer than RPO × 1.5 (start, end or empty while it lasts, hours, limit); `sla_missed` rows: backups that ran longer than their policy's run-time SLA | from – to |
+| **Storage** | one row per tenant and per protection group: snapshots, logical size, data in, stored, saved (bytes), deduplication, compression, data reduction, measured store size, soft quota and growth over 7 / 30 / 90 days (tenant rows) | current state |
+
+1. Choose the report.
+2. For **Failed jobs** and **SLA and RPO breaches**, set **From** and **To** (whole UTC days, **To** included; at most
+   400 days). Without dates the last 7 days are used.
+3. Accounts that see all tenants can limit the report to one **Tenant**. Tenant-scoped accounts always get their own
+   tenant only.
+4. **Download CSV**. Every download is recorded in the audit log (`report.export`, with report, range, tenant and
+   number of rows).
+
+The CSV format follows RFC 4180: comma separated, a header line, fields with commas, quotes or line breaks in double
+quotes, UTF-8 without a byte order mark, times in UTC as ISO 8601 (`2026-10-12T07:00:00Z`), sizes in bytes.
+Text that starts with `=`, `+`, `-` or `@` gets a leading `'` so spreadsheets do not run it as a formula.
+**Excel**: open it with **Data → From Text/CSV**, choose **65001: Unicode (UTF-8)** and the comma as delimiter
+(double-clicking the file may show umlauts wrongly and split by semicolons in some locales). LibreOffice asks for the
+character set and delimiter when opening the file.
+
+How the SLA report finds the gaps: it takes the times of the object's snapshots in the catalog plus the snapshots
+that successful backup jobs recorded, so snapshots removed by retention do not show up as gaps. A pause is only known
+for the current state: an object paused now has no open breach, earlier gaps count regardless.
+
+**Scheduled reports** (below the export; administrators change them, security officers can see them) are described in
+[11 Alerts and monitoring](11-alerts-and-monitoring.md#scheduled-reports).
+
+> **Status:** The reports and the scheduled mails are new in this release. They are covered by the catalog, API and
+> scheduler tests (including the mail composition against a local SMTP stub) and were tried in the web interface
+> against the demo backend. They have not yet been run on an installed appliance in the VM labs.
 
 ## Snapshots
 

@@ -82,6 +82,8 @@ Every mutating API call and every job state change appends one entry (`catalog::
 | confirm a large GC while approvals are disabled | ✓ | — | — | — |
 | audit log, verify chain | ✓ | ✓ | — | — |
 | dashboard KPIs (`GET /dashboard`) | ✓ | ✓ | ✓ | own tenant |
+| report CSV downloads (`GET /reports/{type}.csv`) | ✓ | ✓ | ✓ | own tenant |
+| scheduled reports: read / change, send now | read, ✓ | read | — | — |
 | OIDC / alert delivery settings: read / change, test | read, ✓ | read | — | — |
 | appliance SSH keys: read / rotate (quorum), retire | read, ✓ | read | read | — |
 | OS updates: read / check, apply (quorum) | read, ✓ | read | read | — |
@@ -132,6 +134,8 @@ Auth: `POST /auth/login {name, password, totp}` → `Set-Cookie: nx_session=…;
 | `GET/POST /plugin-keys`, `DELETE /plugin-keys/{fingerprint}` | admin, security_officer, operator read / admin (POST, DELETE → quorum) | project keys (image) are listed `builtin` and cannot be removed |
 | `GET /dashboard?days=7` or `30` | all (tenant users: own tenant) | Phase 12 KPIs (docs/phase12-contract.md §1), cached ≤ 60 s per scope; plus `break_glass`; `capacity.dedup` / `capacity.compression` from `backup_stats` |
 | `GET /storage` | all (tenant users: own tenant) | storage accounting per tenant and group, growth 7/30/90 d (docs/storage-accounting.md) |
+| `GET /reports/{protection,failed,sla,storage}.csv?from=&to=&tenant=` | all (also `viewer` once it exists; tenant users: own tenant, another `tenant` → 403) | Phase 14e, see Reports; `from` / `to` = `YYYY-MM-DD` (UTC, `to` inclusive) or unix seconds, default the last 7 days, at most 400 days; `text/csv; charset=utf-8`, `Content-Disposition: attachment; filename="nexus-<type>[-<tenant>]-<day>.csv"`; audited `report.export {type, from, to, tenant, rows}` |
+| `GET` / `PUT /settings/reports`, `POST /settings/reports/{name}/send` | read: admin, security_officer; write, send: admin | setting `reports`: `{reports: [{name, types, schedule, timezone, recipients, tenant}]}`; GET adds `last` (latest `report_send` job) per report and `smtp` (server configured); PUT replaces the list (direct, audited `settings.reports`; non-empty list needs the SMTP server of `alerts`); send → 202 `{job_id}` (one period up to now), 409 while one is queued or running |
 | `PUT /tenants/{name}/quota` `{quota_bytes}` | admin | soft quota (null = none); direct, audited `tenant.quota` |
 | `GET` / `PUT /settings/anomaly` | read: admin, security_officer; write: admin | anomaly thresholds; weakening is gated (`settings.anomaly`) |
 | `GET /auth/oidc`, `GET /auth/oidc/start?next=`, `GET /auth/oidc/callback` | none | OIDC sign-in (§2, see Clarifications) |
@@ -171,7 +175,7 @@ Headers on every response: `Content-Security-Policy: default-src 'self'; script-
 - TrueNAS sources (docs/truenas-connector.md): `token_secret` (API key) and `ssh.key_pem` are write-only and sealed (`token_secret_set`, `ssh.key_pem_set` instead); omitted on PUT = keep, refused when the endpoint fields they are bound to change. GET adds `authorized_keys`: the line (with the forced command) to paste into the TrueNAS user's "SSH public key" field. Datasets: 1..=64 non-overlapping names of `[A-Za-z0-9_-]` components. Groups of a TrueNAS source list datasets of that source as guests (empty = all). Backup results carry `transferred_bytes` per `nas-` snapshot.
 - NFS/SMB sources (docs/nas-connector.md): one share per source. The config is validated with the mount helper's own request checks (host name/IP, export path, share name, user, domain, versions, `seal` needs SMB 3; no option separators or control characters anywhere). SMB `password` (or `keytab` as base64 with `sec: "krb5"` + `principal`) is write-only and sealed (`password_set`, `keytab_set`); omitted on PUT = keep, refused when `host`, `port`, `user`, `sec` or `principal` change. Groups of a share source have no guests. Backup results carry `consistent` (NAS snapshot used, no file changed while read, nothing unreadable) and `transferred_bytes` for the `share-` snapshot.
 - OIDC (Phase 12, docs/phase12-contract.md §2, `crates/web-api/src/oidc.rs`): authorization code + PKCE S256, `state` (one use, ≤ 10 min, in memory) bound to the browser by the HttpOnly cookie `nx_oidc` (SameSite=Lax, Path `/api/v1/auth/oidc`), `nonce`. Discovery `<issuer>/.well-known/openid-configuration` (its `issuer` must equal the configured one; endpoints https, http only for loopback issuers), JWKS cached 1 h and fetched again on an unknown `kid` (forced fetches at most every 10 s). ID token: RS256 / ES256 / PS256 only (`none` and HMAC refused before any key lookup), `iss`, `aud` (several audiences need `azp` = client id), `exp` / `iat` / `nbf` with 60 s skew, `nonce`, `sub`. Claims from the ID token only: `username_claim` (taken as it is, may contain `@`; ≤ 128 printable characters without whitespace), `groups_claim` (array or string; a leading `/` of Keycloak full paths is ignored). Mapping: the highest privileged matching mapping wins (admin > security_officer > operator > tenant_user; unscoped before scoped, then configured order); `tenants` holds one tenant for tenant_user mappings and none for every other role (an account has one tenant or all); default scopes `openid profile email`. Account per `<issuer>|<sub>`: created on first login (`user.oidc_created`), role/tenant refreshed at every login (`user.oidc_updated`); no matching mapping → disabled + sessions ended + denied; a disabled OIDC account is refused (`account_disabled`) and stays disabled until an admin enables it; a name that exists already (local account or another subject) is refused (`denied`, reason `name_conflict`), never taken over. OIDC accounts cannot log in locally, have no password/TOTP (re-authentication, which needs them, is refused for them), and their role/tenant/credentials cannot be changed through `PUT /users` (only `disabled`). Errors → 302 `/#/login?oidc_error=<code>`: `disabled` (single sign-on off), `account_disabled` (the account was disabled by an admin or by a login without matching mapping; only an admin re-enables it), `expired` (pending login older than 10 min), `state` (unknown/used state, or not started in this browser), `idp` (IdP error, discovery failure), `token` (token request or ID token refused), `denied` (no mapping, name conflict, unusable name, rate limit); every refusal is audited `auth.oidc_denied` with the detailed reason and counts toward the per-address login rate limiter. Redirect URI = `https://<Host>/api/v1/auth/oidc/callback` (the IdP compares it with its registration); `next` must be a same-origin path, a fragment allowed (`/`, `/#/jobs`; not `//…` or `/\…`), else `/`.
-- Appliance jobs (Phase 12) carry tenant `-` and are queued by the settings endpoints only (`POST /jobs` refuses them): `alert_test` → result `{webhook?, smtp?}` (`"ok"` / `"error: …"`), `ssh_key_rotate` {name, quorum_id} → `{name, next}`, `ssh_key_retire` {name} → `{name, old, new}`. Tenant users never see them.
+- Appliance jobs (Phase 12) carry tenant `-` and are queued by the settings endpoints only (`POST /jobs` refuses them): `alert_test` → result `{webhook?, smtp?}` (`"ok"` / `"error: …"`), `ssh_key_rotate` {name, quorum_id} → `{name, next}`, `ssh_key_retire` {name} → `{name, old, new}`, `report_send` {name, from, to} → `{name, types, tenant, recipients, from, to, attachments, rows}` (Phase 14e). Tenant users never see them.
 - Break-glass (§7): `nexus-setup recover-admin` raises the alert `break_glass` (critical) and writes `settings.break_glass`; the UI shows its banner while that alert is unacknowledged. `GET /auth/me` and `GET /dashboard` additionally return `break_glass: {at, user, alert, forced_solo}` (admin, security_officer, operator). Only an admin or security officer can acknowledge that alert (`POST /alerts/{id}/ack`, which also removes the setting).
 - `GET /quorum` is readable by admin, security_officer and operator. Tenant-scoped users (`users.tenant` set) see only their tenant's rows in every list (`users` included); most alerts have no tenant and may name other tenants, so they get an empty alert list.
 
@@ -215,6 +219,37 @@ Replication (docs/replication.md): on the primary the scheduler executes approve
   `commit_snapshot` writes the indexes first and the manifest last (atomic rename), snapshots without a manifest are
   not listed, and unreferenced chunks go with the next GC after its grace period. In-process steps (retention, GC,
   verify) are not interrupted.
+
+## Reports (Phase 14e)
+- **Crate `reports`** (shared by web-api and scheduler, no web-api dependency): `generate(conn, kind, scope, from, to,
+  now) → Table {columns, rows}` and `Table::csv()`. The protected-object enumeration (`reports::protection::objects`
+  / `assess`, RPO = schedule period, breach when the last snapshot is older than RPO × 1.5) and the storage
+  accounting (`reports::storage::compute`) moved there from the web-api; `GET /dashboard` and `GET /storage` call
+  them, so dashboard, Storage page and reports cannot drift apart.
+- **Reports**: `protection` (one row per protected object: tenant, groups, object, kind, source, rpo_hours,
+  last_good, age_hours, status, local / offsite / verified of the last snapshot, consistency from the `consistent`
+  flag of the backup job result that wrote it, else `unknown`; current state); `failed` (jobs with `state = failed`
+  and `finished` in `[from, to)`: job, tenant, kind, target, created, finished, attempt, first log line matching
+  error / failed / fatal, else the last line, ≤ 300 chars); `sla` (`rpo_breach`: per object the intervals from
+  `backup + 1.5 × RPO` to the next good backup or now, from snapshot times in `snapshots` ∪ the `snapshots[]` of ok
+  backup job results, so retention does not open false gaps; an object paused now has no open breach;
+  `sla_missed`: those alerts with `ts` in the range, joined to the job and group); `storage` (tenant rows, then group
+  rows of `GET /storage`; current state).
+- **CSV**: RFC 4180 (comma, CRLF, quoting of `,` `"` CR LF), UTF-8 without BOM, ISO 8601 UTC times, bytes as
+  integers, ratios with 3 decimals, hours with 1; text cells starting with `= + - @` TAB CR get a leading `'`
+  (CSV injection).
+- **Scheduled** (setting `reports`, array of `{name [A-Za-z0-9._-]{1,64}, types (each once), schedule (catalog
+  schedule grammar without the hourly forms), timezone (IANA, default UTC), recipients (1..=16), tenant?}`): the
+  scheduler's `queue_reports` (each tick) queues the appliance job `report_send {name, from, to}` (tenant `-`) when
+  the schedule is due (same period rule and first-sight wait as groups; `last_run` = newest `report_send` queued by
+  the scheduler for the name; not while one is queued/running); `from` = the previous slot, `to` = this slot. The job
+  composes on the scheduler thread (`reports::compose`: subject `[NexusBackup <host>] report <name>: <from day> –
+  <to day>`, inline-styled HTML with up to 20 rows per report, all values HTML-escaped, a text part, one CSV
+  attachment `<name>-<type>-<day>.csv` per type) and sends in the job thread (`alerts::send_message`, the SMTP server
+  of setting `alerts` with its sealed password; already in the egress allow-list via `firewall::alert_targets`).
+  Result `{name, types, tenant, recipients, from, to, attachments, rows}`. Ok → audit `report.sent` and resolve
+  `report:<name>`; failed (or an invalid schedule at queue time) → warning alert `report` under key
+  `report:<name>` instead of `job_failed`. `POST /jobs` refuses the kind.
 
 ## Break-glass (`nexus-setup recover-admin`, Phase 12 §7)
 Console only (root): `nexus-setup recover-admin [--user NAME] [--force-solo]` asks for the recovery key (checked against keyd's `kek.recovery` as at first boot), resets a local admin account to pending activation (old password and authenticator invalid at once, sessions ended, account enabled) and prints a new one-time activation code (72 h). Without `--user` the only local admin is chosen. With approvals enabled and at least two possible approvers it refuses unless `--force-solo` (recorded in the alert, the audit entry and the banner). Audited `user.break_glass` (actor `console`), critical alert `break_glass`, setting `break_glass`.
