@@ -28,6 +28,7 @@ pub mod certs;
 pub mod console;
 pub mod dashboard;
 pub mod diag;
+pub mod firewall;
 pub mod forwarding;
 pub mod holds;
 pub mod inventory;
@@ -116,6 +117,8 @@ pub struct AppState {
     pub diag_dir: std::sync::OnceLock<PathBuf>,
     /// console unlock codes (default: env `NEXUS_CONSOLE_UNLOCK_DIR` or /var/lib/nexus/console-unlock)
     pub console_dir: std::sync::OnceLock<PathBuf>,
+    /// nexus-nft-sync status file (default: env `NEXUS_NFT_STATUS` or /run/nexus-nft-status/status.json)
+    pub nft_status: std::sync::OnceLock<PathBuf>,
     /// `GET /dashboard` answers, ≤ 60 s old
     pub dashboard: crate::dashboard::Cache,
     /// OIDC discovery/JWKS cache and pending logins
@@ -147,6 +150,7 @@ impl AppState {
             update_dir: std::sync::OnceLock::new(),
             diag_dir: std::sync::OnceLock::new(),
             console_dir: std::sync::OnceLock::new(),
+            nft_status: std::sync::OnceLock::new(),
             dashboard: Default::default(),
             oidc: Default::default(),
             tls: std::sync::OnceLock::new(),
@@ -554,6 +558,7 @@ pub fn router(st: St) -> Router {
         .route("/replication/sources/{id}/enroll", post(repl::enroll_source))
         .route("/replication/sources/{id}/sync", post(repl::sync_source))
         .merge(access::routes())
+        .merge(firewall::routes())
         .merge(holds::routes())
         .fallback(api_not_found);
     // peer API: only on replication TLS connections (see `connection_scope`)

@@ -10,8 +10,9 @@ const USAGE: &str = "usage: nexus-setup [options]
        nexus-setup disable-approvals [--root DIR] [--catalog FILE] [--keyd-dir DIR]
                                 break-glass: switch approvals off when nobody else can approve any more;
                                 asks for the recovery key (stdin)
-       nexus-setup reset-mgmt-allow [--root DIR] [--catalog FILE]
-                                clear the management allow-list (web UI reachable from any address again)
+       nexus-setup reset-firewall [--root DIR] [--catalog FILE]
+                                clear every inbound firewall restriction (web UI reachable from any
+                                address again); reset-mgmt-allow is the old name
   --root DIR                    prefix for every written path (dev/tests)    env NEXUS_SETUP_ROOT
   --dry-run                     print nmcli/hostnamectl/systemctl, run none   env NEXUS_SETUP_DRY_RUN=1
   --script FILE                 non-interactive, answers from JSON (see crate docs)
@@ -184,28 +185,30 @@ fn disable_approvals(args: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// `reset-mgmt-allow`: console recovery from a management allow-list lockout.
-fn reset_mgmt_allow(args: &[String]) -> Result<ExitCode> {
+/// `reset-firewall` (old name `reset-mgmt-allow`): console recovery from an
+/// inbound firewall lockout.
+fn reset_firewall(args: &[String]) -> Result<ExitCode> {
     let o = parse(args)?;
     if o.dry_run || o.script.is_some() || o.force_network {
-        bail!("reset-mgmt-allow takes only path options");
+        bail!("reset-firewall takes only path options");
     }
     let real = o.root == std::path::Path::new("/");
     if real && unsafe { libc::geteuid() } != 0 {
         bail!("must run as root on the appliance console");
     }
-    let old = setup::recover::reset_mgmt_allow(&o.paths)?;
+    let old = setup::recover::reset_firewall(&o.paths)?;
     if real {
-        if let Err(e) = setup::recover::open_mgmt_firewall(std::path::Path::new("/usr/sbin/nft")) {
+        if let Err(e) = setup::recover::open_firewall(&o.paths, std::path::Path::new("/usr/sbin/nft")) {
             eprintln!("warning: could not open the firewall at once ({e:#}); the scheduler applies it within a minute");
         }
     }
+    let was: Vec<String> = old.iter().map(|(s, l)| format!("{s}: {}", l.join(", "))).collect();
     println!(
-        "Management allow-list cleared (was: {}). The web UI on port {} is reachable from any address again.",
-        if old.is_empty() { "empty".into() } else { old.join(", ") },
+        "Inbound firewall restrictions cleared (were: {}). The web UI on port {} is reachable from any address again.",
+        if was.is_empty() { "none".into() } else { was.join("; ") },
         setup::WEB_PORT
     );
-    println!("This was audited (security.mgmt_allow_reset) and raised a warning alert. Set a correct list in Settings -> Security.");
+    println!("This was audited (firewall.reset) and raised a warning alert. Set correct source lists in Settings -> Firewall.");
     Ok(ExitCode::SUCCESS)
 }
 
@@ -221,11 +224,14 @@ fn main() -> ExitCode {
             }
         };
     }
-    if args.first().is_some_and(|a| a == "reset-mgmt-allow") {
-        return match reset_mgmt_allow(&args[1..]) {
+    if args
+        .first()
+        .is_some_and(|a| a == "reset-firewall" || a == "reset-mgmt-allow")
+    {
+        return match reset_firewall(&args[1..]) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("nexus-setup reset-mgmt-allow: {e:#}");
+                eprintln!("nexus-setup reset-firewall: {e:#}");
                 ExitCode::FAILURE
             }
         };

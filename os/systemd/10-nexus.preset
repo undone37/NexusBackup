@@ -10,6 +10,7 @@ enable nexus-setup.service
 enable nexus-nft-sync.service
 enable nexus-nft-sync.path
 enable nexus-nft-sync.timer
+enable nexus-nft-status.timer
 # NAS mount helper (socket-activated per connection, docs/nas-connector.md).
 enable nexus-nasmount.socket
 # Emergency console gate on tty2 (replaces its getty; Phase 14c).

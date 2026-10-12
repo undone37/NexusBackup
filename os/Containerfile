@@ -216,11 +216,11 @@ RUN usermod -L root \
  && ln -sf /dev/null /etc/systemd/system/getty@tty2.service \
  && ln -sf /dev/null /etc/systemd/system/autovt@tty2.service \
  && systemctl preset sshd.service sshd.socket nftables.service chronyd.service nexus-console-gate.service \
-      nexus-setup.service nexus-nft-sync.service nexus-nft-sync.path nexus-nft-sync.timer nexus-nasmount.socket \
+      nexus-setup.service nexus-nft-sync.service nexus-nft-sync.path nexus-nft-sync.timer nexus-nft-status.timer nexus-nasmount.socket \
       nexus-plugin-install.service nexus-plugin-install.path nexus-tls.path \
  && ! systemctl is-enabled -q sshd.service \
  && systemctl is-enabled -q nftables.service chronyd.service nexus-setup.service nexus-console-gate.service \
-      nexus-nft-sync.path nexus-nft-sync.timer nexus-nasmount.socket \
+      nexus-nft-sync.path nexus-nft-sync.timer nexus-nft-status.timer nexus-nasmount.socket \
       nexus-plugin-install.service nexus-plugin-install.path nexus-tls.path \
  && test "$(systemctl is-enabled getty@tty2.service)" = masked \
  && ! systemctl is-enabled -q nexus-web-api.service nexus-scheduler.service nexus-keyd.service

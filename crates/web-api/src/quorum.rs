@@ -48,6 +48,7 @@ pub const WEB_ACTIONS: &[&str] = &[
     "settings.forwarding",
     "security.session",
     "security.mgmt_allow",
+    crate::firewall::ACTION,
     catalog::holds::RELEASE_ACTION,
 ];
 
@@ -331,6 +332,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         "settings.anomaly" => catalog::set_setting(c, crate::storage::ANOMALY_SETTING, &p["anomaly"].to_string())?,
         "settings.forwarding" => catalog::set_setting(c, catalog::forwarding::SETTING, &p["forwarding"].to_string())?,
         a if a.starts_with("security.") => crate::access::execute(c, a, p)?,
+        crate::firewall::ACTION => crate::firewall::execute(c, p)?,
         catalog::holds::RELEASE_ACTION => crate::holds::execute(c, p, approver, requested_by)?,
         "agent.delete" => {
             let id = p["id"].as_str().unwrap_or_default();
