@@ -263,7 +263,7 @@ Also in scope (user 2026-10-11: "fix all of them"): Snapshots page restore filte
 ## Phase 13 — Operations core (started 2026-10-12; plan: docs/phase13-18-plan.md)
 Cohesity comparison (docs/cohesity-comparison.md) → Phases 13–18 approved by the user (Tiers 1–3, no failover).
 Parallel worktree agents (schema versions pre-assigned, renumbered on merge if needed):
-- [ ] 13a orphaned-snapshot retention + approved snapshot delete (no schema)
+- [x] 13a orphaned-snapshot retention + approved snapshot delete (no schema) — merged 2026-10-12; sweep in daily gc job, `DELETE /snapshots/{t}/{s}/{time}` → quorum `snapshot.delete` → scheduler job; tests orphan_sweep_and_snapshot_delete, snapshot_delete_refuses_locked_and_needs_approval
 - [ ] 13b run control: retries, pause/maintenance, blackout, SLA, schedules + time zones, cancel running jobs, back up selected/failed (v11)
 - [ ] 13c auto-protect + guest inventory, PVE unprotected KPI (v12)
 - [ ] 13d storage accounting (dedup/compression, per tenant/group, growth) + quotas; 13e anomaly alert (v13)
