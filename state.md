@@ -279,8 +279,8 @@ Parallel worktree agents (schema versions pre-assigned, renumbered on merge if n
 ## Phase 14 — Security and operations (started 2026-10-12)
 Six parallel worktree agents (each merges main into its branch before reporting):
 - [ ] 14a audit + alert forwarding (syslog TLS + HTTPS JSON, anchor), audit filters + CSV
-- [ ] 14b diagnostics bundle + self-checks (also before updates), `nexus-diag`
-- [ ] 14c emergency console root access (tty2 gate: approved one-time code or recovery key)
+- [x] 14b diagnostics — merged 2026-10-12: `nexus-diag` (path unit, nexus_diag_t), 15 checks, redacted bundle, pre-update gate in nexus-update, Settings → Diagnostics; lab step `m5-api.sh diag` (to run in the VM)
+- [x] 14c console root access — merged 2026-10-12: `console.unlock` quorum action, code shown once, `nexus-console-gate` on tty2 (nexus_consolegate_t → unconfined_t), banner, Settings → Console access; lab `lab/appliance/console-gate.sh` (to run in the VM)
 - [ ] 14d1 viewer role, download privilege, expiry, sessions list/revoke, timeouts, dormant accounts, login banner, management allow-list, approver-count warning
 - [ ] 14d2 API tokens, web certificate import (CSR on the appliance), certificate expiry alerts
 - [x] 14e reports — merged 2026-10-12 (no schema): crates/reports (protection, failed, sla, storage), `GET /reports/{type}.csv`, `settings/reports`, scheduler `report_send` jobs; Reports page
