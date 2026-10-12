@@ -42,7 +42,7 @@ impl Sink {
 
     /// Records an item that could not be read and is left out of the snapshot (e.g.
     /// `"mail/Inbox/x.eml: 500 …"`). The backup still commits; the job ends `ok`
-    /// with warnings (contract v1.6 `Warnings`, sent before `Done` when any).
+    /// with warnings (contract v1.7 `Warnings`, sent before `Done` when any).
     pub fn item_failed(&mut self, what: impl Into<String>) {
         self.failed += 1;
         if self.failed_samples.len() < plugin_proto::MAX_WARNING_SAMPLES {

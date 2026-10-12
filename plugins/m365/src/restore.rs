@@ -17,6 +17,14 @@
 //!   group's drive. Conversations and the group calendar are download-only: Graph
 //!   v1.0 offers no application permission to create group posts or group events.
 //!
+//! - chats (`chats/`) are download only.
+//!
+//! `to_other` may run into another Microsoft 365 tenant (another source of this
+//! kind, job parameter `target_source_id`; the host then runs the plugin with that
+//! source's config and credentials): tenant migration, recovery into a new tenant.
+//! The target is resolved in that tenant; Teams messages are skipped there (their
+//! authors are users of the original tenant, migration import needs them).
+//!
 //! Download (mail as .eml, events .ics, contacts .vcf, files as they are, threads
 //! .json) is the appliance's generic download and never reaches the plugin.
 
@@ -61,6 +69,8 @@ struct Target {
     /// private / shared channel dir → drive of the target's channel of that name
     channel_drives: HashMap<String, Option<String>>,
     counts: HashMap<&'static str, u64>,
+    /// restoring into another source (another M365 tenant)
+    other_tenant: bool,
 }
 
 pub fn run(ctx: &Ctx, c: &Config, mut g: Graph, src: &mut Source) -> Result<String> {
@@ -86,6 +96,13 @@ pub fn run(ctx: &Ctx, c: &Config, mut g: Graph, src: &mut Source) -> Result<Stri
         return Err(error(22, "folder: 1–100 characters, none of \" * : < > ? / \\ | # %"));
     }
     let sp_host = c.sharepoint_host.clone().unwrap_or_default();
+    let other_tenant = ctx.params["target_source_id"].is_u64();
+    if other_tenant && action != "to_other" {
+        return Err(error(
+            22,
+            "into another source only \"to another user / site / team\" restores",
+        ));
+    }
     let id = match action {
         "to_original" => match &guest {
             Guest::User(u) | Guest::Team(u) | Guest::Group(u) => u.clone(),
@@ -134,8 +151,18 @@ pub fn run(ctx: &Ctx, c: &Config, mut g: Graph, src: &mut Source) -> Result<Stri
         channels: HashMap::new(),
         channel_drives: HashMap::new(),
         counts: HashMap::new(),
+        other_tenant,
     };
-    ctx.info(format!("restoring into {:?} of {}", t.folder, t.id));
+    ctx.info(format!(
+        "restoring into {:?} of {}{}",
+        t.folder,
+        t.id,
+        if other_tenant {
+            format!(" (tenant {} of source {})", c.tenant_id, ctx.params["target_source_id"])
+        } else {
+            String::new()
+        }
+    ));
     let mut done = 0u64;
     let r = src.files(&paths, |item, data| {
         if item.meta.kind != Some(Kind::File) {
@@ -421,6 +448,12 @@ fn put(g: &mut Graph, guest: &Guest, t: &mut Target, item: &FileItem, data: &mut
             };
             dir.extend(s[2..s.len() - 1].iter().map(|x| decode_name(x)));
             upload(g, t, &drive, dir, &decode_name(&s[s.len() - 1]), item.meta.size, data)?;
+        }
+        (Guest::User(_), "chats") => {
+            *t.counts.entry("chat files (download only, skipped)").or_default() += 1;
+        }
+        (Guest::Team(_), "channels") if t.other_tenant => {
+            *t.counts.entry("channel messages (other tenant, skipped)").or_default() += 1;
         }
         (Guest::Team(_), "channels") if s.len() == 3 => {
             let doc: Value = serde_json::from_slice(&read_all(data, item.meta.size)?).context("thread JSON")?;

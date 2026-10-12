@@ -771,7 +771,7 @@ fn sandboxed_binary() {
 }
 
 /// Items that keep failing after Graph's retries are skipped and reported (contract
-/// v1.6 `Warnings`): the snapshot commits, the failed items are asked for again next
+/// v1.7 `Warnings`): the snapshot commits, the failed items are asked for again next
 /// time; a folder whose listing fails keeps its base items.
 #[test]
 fn failed_items_are_skipped_and_reported() {

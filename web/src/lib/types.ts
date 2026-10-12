@@ -378,7 +378,26 @@ export type JobKind =
   | 'replica_sync'
   | 'inventory'
   | 'file_search'
-  | 'file_index';
+  | 'file_index'
+  | 'offsite_list'
+  | 'offsite_restore'
+  | 'offsite_attach';
+
+/** One snapshot of an `offsite_list` result (Phase 17d, `nexus-offsite list --json`). */
+export interface OffsiteListed {
+  source: string;
+  time: number;
+  /** logical size; null when the snapshot is not in this appliance's offsite inventory */
+  size: number | null;
+  /** offsite retention lock (0 = none / unknown) */
+  lock_until: number;
+  /** in this appliance's offsite inventory */
+  inventory: boolean;
+  /** its manifest is on the offsite target */
+  remote: boolean;
+  /** a copy is in the local store */
+  local: boolean;
+}
 
 /** One hit of a `file_search` job: one version of a file (same path, size, mtime) and the snapshots that hold it. */
 export interface SearchMatch {
@@ -427,7 +446,7 @@ export interface JobResult {
   expires?: number;
   /** backup: committed snapshots (+ source/time when exactly one) */
   snapshots?: { source: string; time: number; consistent?: boolean; transferred_bytes?: number; warnings?: number }[];
-  /** plugin backups (contract v1.6): items skipped with an error — the job is ok with warnings */
+  /** plugin backups (contract v1.7): items skipped with an error — the job is ok with warnings */
   warnings?: number;
   source?: string;
   time?: number;
@@ -682,6 +701,30 @@ export interface ConsoleShell {
   alert: number;
 }
 
+// ---------------------------------------------------------------- tenant recovery key (17e)
+
+export type TenantKeyRequestStatus = 'pending' | 'rejected' | 'approved' | 'expired' | 'shown';
+export interface TenantKeyInfo {
+  tenant: string;
+  /** null: no tenant recovery key (only the appliance recovery key restores this tenant) */
+  key: { kid: string; set_at: number; requested_by: string; approved_by: string } | null;
+  requests: {
+    id: number;
+    requested_by: string;
+    created: number;
+    decided_by: string | null;
+    decided_at: number | null;
+    show_until: number | null;
+    status: TenantKeyRequestStatus;
+  }[];
+}
+export interface TenantKeyShown {
+  tenant: string;
+  key: string;
+  kid: string;
+  replaced: string | null;
+}
+
 // ---------------------------------------------------------------- plugins (docs/plugin-system.md)
 
 /** JSON-Schema subset of `config_schema` / `params_schema`. */
@@ -689,8 +732,9 @@ export interface JsonSchema {
   type?: 'object' | 'string' | 'integer' | 'boolean' | 'array';
   properties?: Record<string, JsonSchema>;
   required?: string[];
-  /** arrays: items are strings */
+  /** arrays: items are strings, or objects of scalar properties (contract v1.6) */
   items?: JsonSchema;
+  maxItems?: number;
   enum?: (string | number)[];
   minimum?: number;
   maximum?: number;
@@ -710,6 +754,8 @@ export interface PluginRestore {
   app_specific?: boolean;
   /** manifest v1.4: which snapshots the restore applies to (default `any`) */
   applies_to?: 'guest' | 'source' | 'any';
+  /** manifest v1.6: may run with another source of the same kind (job `target_source_id`) */
+  target_source?: boolean;
 }
 
 export interface PluginEndpoint {

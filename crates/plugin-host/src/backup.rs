@@ -221,7 +221,7 @@ pub struct Report {
     pub new_bytes: u64,
     pub consistent: bool,
     pub summary: String,
-    /// items the plugin skipped (v1.6 `Warnings`) and the first few of them
+    /// items the plugin skipped (v1.7 `Warnings`) and the first few of them
     pub warnings: u64,
     pub warning_samples: Vec<String>,
 }

@@ -195,7 +195,7 @@ impl S3Remote {
 /// Validates `tenants.offsite`. An S3 remote is parsed strictly (its
 /// `secret_key` is the one inline secret allowed); anything else stays an
 /// opaque blob without inline secrets.
-fn check_offsite(v: &Value) -> ApiResult<Option<S3Remote>> {
+pub(crate) fn check_offsite(v: &Value) -> ApiResult<Option<S3Remote>> {
     if !v.is_object() {
         return Err(ApiError::bad("offsite: must be an object"));
     }
@@ -216,7 +216,7 @@ fn check_offsite(v: &Value) -> ApiResult<Option<S3Remote>> {
 
 /// The offsite config as stored: an S3 remote normalized, its secret sealed
 /// to the scheduler (bound to the tenant and the S3 endpoint fields).
-fn sealed_offsite(st: &St, tenant: &str, v: &Value, s3: Option<S3Remote>) -> ApiResult<Value> {
+pub(crate) fn sealed_offsite(st: &St, tenant: &str, v: &Value, s3: Option<S3Remote>) -> ApiResult<Value> {
     let Some(r) = s3 else { return Ok(v.clone()) };
     let mut out = v.clone();
     out["remote"] = serde_json::to_value(&r).map_err(anyhow::Error::from)?;

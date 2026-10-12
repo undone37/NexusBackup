@@ -377,6 +377,20 @@ function planFor(kind: string, p: Json): string[] {
       ];
     case 'files_list':
       return [`mounting ${src} @ ${p.time} read-only in restore micro-VM`, `listing ${p.path}`, 'done'];
+    case 'offsite_list':
+      return ['$ nexus-offsite offsite.json list --json', 'reading the offsite inventory and the target listing', 'done'];
+    case 'offsite_restore':
+      return [
+        `$ nexus-offsite offsite.json restore ${src} ${p.time} 604800`,
+        'fetching 412 chunks from 9 packs (chunks verified on insert)',
+        `restored ${src}/${p.time} into the local store, kept locally for at least 604800 s`,
+      ];
+    case 'offsite_attach':
+      return [
+        '$ nexus-offsite offsite.json attach recovery.key',
+        'keys of tenant imported: versions [1, 2]',
+        'attach: keys recovered, 37 packs and 5 snapshots indexed',
+      ];
     case 'files_get':
       return [`mounting ${src} @ ${p.time}`, `packing ${(p.paths ?? []).length} path(s) as ${p.format}`, 'archive ready'];
     case 'restore':
@@ -443,6 +457,7 @@ function tick() {
       if (j.kind.startsWith('plugin_')) pluginResult(j, t);
       if (j.kind === 'inventory' || j.kind === 'plugin_guests') inventoryResult(j, t);
       if (j.kind === 'report_send') reportSent(j);
+      if (j.kind.startsWith('offsite_')) offsiteResult(j, t);
       const ag = db.agents.find((a) => a.id === j.params.agent_id);
       if (j.kind === 'agent_enroll' && ag) {
         Object.assign(ag, { enrolled_at: t, cert_sha256: rand(32), token_expires: null, token_hash: null, last_seen: t });
@@ -496,6 +511,39 @@ function tick() {
         for (const a of db.agents) if (names.includes(`host-${a.id}`)) a.last_seen = t;
       }
     }
+  }
+}
+
+/** Phase 17d: what the scheduler does after the offsite jobs (crates/scheduler/src/offsite_ui.rs). */
+function offsiteResult(j: Job, t: number) {
+  if (j.kind === 'offsite_list') {
+    const snaps = db.snapshots
+      .filter((s) => s.tenant === j.tenant && s.offsite)
+      .sort((a, b) => a.source.localeCompare(b.source) || a.time - b.time);
+    // the demo target lost one manifest (initech): "missing on the target"
+    const lost = j.tenant === 'initech' ? snaps.find((s) => s.source === 'vm-100' && s.local) : undefined;
+    j.result = {
+      snapshots: snaps.map((s) => ({
+        source: s.source,
+        time: s.time,
+        size: s.size,
+        lock_until: s.time + (s.local ? 14 : 183) * DAY,
+        inventory: true,
+        remote: s !== lost,
+        local: s.local,
+      })),
+    };
+  }
+  if (j.kind === 'offsite_restore') {
+    const s = db.snapshots.find((x) => x.tenant === j.tenant && x.source === j.params.source && x.time === j.params.time);
+    if (s) Object.assign(s, { local: true, lock_until: t + 7 * DAY });
+  }
+  if (j.kind === 'offsite_attach') {
+    const q = db.quorum.find((x) => x.id === j.params.attach_quorum);
+    if (!q || db.tenants.some((x) => x.name === j.tenant)) return;
+    q.state = 'executed';
+    db.tenants.push({ name: j.tenant, offsite: q.params.offsite });
+    for (const d of [1, 2, 8, 35, 66]) db.snapshots.push(snap(j.tenant, 'vm-100', t - d * DAY, 32 << 30, false, true, null));
   }
 }
 
@@ -752,7 +800,10 @@ function schemaCheck(schema: Json | undefined, v: Json, prefix: string) {
     if (x === undefined) continue;
     if (p.type === 'array') {
       if (!Array.isArray(x)) throw new HttpError(400, `${prefix}.${k}: array expected`);
-      x.forEach((item, i) => one(`${prefix}.${k}[${i}]`, { type: 'string', ...(p.items ?? {}) }, item));
+      if (p.maxItems !== undefined && x.length > p.maxItems) throw new HttpError(400, `${prefix}.${k}: too many items`);
+      // contract v1.6: lists of objects
+      if (p.items?.type === 'object') x.forEach((item, i) => schemaCheck(p.items, item, `${prefix}.${k}[${i}]`));
+      else x.forEach((item, i) => one(`${prefix}.${k}[${i}]`, { type: 'string', ...(p.items ?? {}) }, item));
     } else one(`${prefix}.${k}`, p, x);
   }
 }
@@ -770,6 +821,22 @@ function pluginSourceConfig(kind: string, cfg: Json, old?: Json): Json {
       if (moved) throw new HttpError(400, `config.${f}: required (the endpoint changed)`);
       out[f] = old[f];
     }
+  }
+  // lists of objects: an item keeps its stored secrets while its other fields stay the same at its position
+  const secrets: string[] = pk.kind.secret_fields ?? [];
+  const plain = (o: Json) => JSON.stringify(Object.entries(o ?? {}).filter(([k]) => !secrets.includes(k)));
+  for (const [k, v] of Object.entries(out)) {
+    if (!Array.isArray(v) || !v.some((x) => x && typeof x === 'object')) continue;
+    out[k] = v.map((item: Json, i: number) => {
+      const prev = old?.[k]?.[i];
+      const it = Object.fromEntries(Object.entries(item).filter(([, x]) => x !== '' && x !== null && x !== undefined));
+      if (!prev || plain(it) !== plain(prev)) return it;
+      for (const f of secrets) if (it[f] === undefined && prev[f] !== undefined) {
+        if (moved) throw new HttpError(400, `config.${k}[${i}].${f}: required (the endpoint changed)`);
+        it[f] = prev[f];
+      }
+      return it;
+    });
   }
   schemaCheck(pk.kind.config_schema, out, 'config');
   return out;
@@ -975,7 +1042,6 @@ function seed() {
   const pgM = (v: string): Json => withAppliesTo({ ...structuredClone(pgManifest), version: v });
   const pg110 = pluginEntry(pgM('1.1.0'), 'admin', t - 1500, { state: 'pending', current: false, enabled: false, installed_at: null });
   db.plugins.push(pluginEntry(pgM('1.0.0'), 'admin', t - 86400 * 25), pg110, pluginEntry(structuredClone(truenasManifest) as Json, 'admin', t - 86400 * 12));
-  db.plugins.push(pluginEntry(structuredClone(m365Manifest) as Json, 'admin', t - 86400 * 6));
   const sPg = {
     id: nextId(),
     tenant: 'acme',
@@ -997,18 +1063,7 @@ function seed() {
       ssh_host: 'nas02.acme.example.com', ssh_port: 22, ssh_user: 'nexusbackup', ssh_host_key: DEMO_HOST_KEY('nas02'), ssh_private_key: 'SECRET', datasets: ['tank/media'], recursive: false, sudo: true, zfs_sudo: true,
     } as Json,
   };
-  const sM365 = {
-    id: nextId(),
-    tenant: 'globex',
-    kind: 'plugin:m365',
-    name: 'm365-globex',
-    config: {
-      tenant_id: 'globex.onmicrosoft.com', client_id: '3f2a9c71-5d1e-4b8a-9c0d-7e6f5a4b3c21', certificate: 'SECRET', private_key: 'SECRET',
-      exchange: true, onedrive: true, sharepoint: true, teams: true, teams_messages: false, groups: true,
-      sharepoint_host: 'globex.sharepoint.com', onedrive_host: 'globex-my.sharepoint.com',
-    } as Json,
-  };
-  db.sources.push(sPg, sNas02, sM365);
+  db.sources.push(sPg, sNas02);
 
   const grp = (tenant: string, source_id: number, policy_id: number, name: string, guests: (number | string)[], auto: Partial<MockGroup> = {}): MockGroup => ({
     id: nextId(), tenant, source_id, policy_id, name, guests, mode: 'explicit', selector: [], exclude: [],
@@ -1083,6 +1138,8 @@ function seed() {
   series('initech', 'vm-100', 40);
   series('initech', 'vm-101', 120, { skip: 2 });
   series('initech', 'ct-200', 8);
+  // Phase 17d: older monthlies of vm-100 only offsite (local retention pruned them)
+  for (const d of [35, 66, 97]) db.snapshots.push(snap('initech', 'vm-100', day(d, 1), Math.round(39.6 * 2 ** 30), false, true, d === 35 ? day(d, 1) + 7200 : null));
   series('initech', 'vm-102', 30, { offsite: false, hh: 3 });
   series('acme', 'vm-300', 60, { hh: 22, skip: 1 });
   series('acme', 'vm-301', 25, { hh: 22, skip: 1 });
@@ -1161,16 +1218,6 @@ function seed() {
     `snapshot committed: plugin-postgresql-${sPg.id}-shop`,
     `snapshot committed: plugin-postgresql-${sPg.id}-crm`,
   ], 120);
-  // Microsoft 365: two items kept failing after Graph's retries — skipped, the job ends ok with warnings (contract v1.6)
-  const m365User = `plugin-m365-${sM365.id}-u.5b0c2e81-7f3d-4a96-b1e2-0c9d8e7f6a51`;
-  old(addJob('plugin_backup', 'globex', { source_id: sM365.id }, 'scheduler'), day(0, 2), 'ok', [
-    'starting nexus-pluginhost: m365 1.1.0 (sandbox: landlock + seccomp)',
-    `base ${m365User}/${day(1, 2)} (18,422 entries)`,
-    'plugin[warn]: skipped mail/Inbox/Quarterly report ~3f9a0c1d2e4b.eml: GET /v1.0/users/…/messages/…/$value: 500 ErrorInternalServerError',
-    'plugin[warn]: skipped onedrive/Projects/model.xlsx: GET /v1.0/drives/…/items/…/content: 503 serviceNotAvailable',
-    `committed ${m365User}/${day(0, 2)} 18,431 entries (18,190 files, 18,102 unchanged), 0 streams, 2.1 GiB, 88 MiB transferred, 61 MiB new, consistent=true`,
-    `warnings ${m365User}/${day(0, 2)}: 2 items could not be read and are missing from the snapshot: mail/Inbox/Quarterly report ~3f9a0c1d2e4b.eml: 500 ErrorInternalServerError; onedrive/Projects/model.xlsx: 503 serviceNotAvailable`,
-  ], 540, { snapshots: [{ source: m365User, time: day(0, 2), consistent: true, warnings: 2 }], source: m365User, time: day(0, 2), consistent: true, warnings: 2 });
   const running = addJob('offsite', 'acme', {}, 'scheduler', { duration: 240 });
   running.plan = [
     'uploading to s3 nexus-acme/appliance1 (Object Lock, compliance mode)',
@@ -1223,6 +1270,11 @@ function seed() {
   q('replication_peer.create', { id: peerId, name: 'dr-site', tenants: ['acme'] }, 'admin', t - 86400 * 21, 'executed', 'so');
   q('replication.key_export', { peer: peerId, keyd_fingerprint: peerKeyd, tenants: ['acme'] }, 'admin', t - 86400 * 20, 'executed', 'so2');
   q('source.delete', { id: 42, name: 'old-esx-import' }, 'admin', t - 86400 * 9, 'rejected', 'so');
+  // Phase 17d: an approved "attach offsite copy" waiting for the requester's recovery key
+  q('tenant.attach_offsite', {
+    name: 'umbrella',
+    offsite: { remote: { type: 'sftp', host: 'u654321.storagebox.example.net', port: 23, user: 'u654321', host_key: DEMO_HOST_KEY('umb'), base_dir: 'nexus', key_file: '/etc/nexus/ssh/offsite' } },
+  }, 'admin', t - 2 * 3600, 'approved', 'so');
   const gcq = q('gc_large', { tenant: 'initech', job: 4711, reason: 'GC would delete 34 % of the stored chunks (limit 20 %)' }, 'scheduler', t - 2 * 3600);
   db.alerts.push(
     mkAlert({
@@ -1257,8 +1309,54 @@ function seed() {
   seedReports(t);
   seedDiag(t);
   seedConsole(t);
+  seedTenantKeys(t);
   seedHolds(t);
   seedHardware(t);
+  seedM365(t);
+}
+
+/** Phase 18a: Microsoft 365 plugin with two apps, a second M365 tenant as restore target (tenant migration). */
+function seedM365(t: number) {
+  db.plugins.push(pluginEntry(structuredClone(m365Manifest) as Json, 'admin', t - 86400 * 8));
+  const m365 = (name: string, domain: string, sp: string, apps: number) => ({
+    id: nextId(),
+    tenant: 'acme',
+    kind: 'plugin:m365',
+    name,
+    config: {
+      tenant_id: domain, client_id: '6f1c0a8e-2b4d-43f7-a5a1-e0b29d8c47f3', certificate: 'SECRET', private_key: 'SECRET',
+      apps: Array.from({ length: apps }, (_, i) => ({ client_id: `${i + 2}a3b4c5d-6e7f-4081-92a3-b4c5d6e7f801`, certificate: 'SECRET' })),
+      exchange: true, onedrive: true, sharepoint: true, teams: true, teams_messages: false, chats: false, groups: true, teams_export_model: 'B',
+      sharepoint_host: `${sp}.sharepoint.com`, onedrive_host: `${sp}-my.sharepoint.com`,
+    } as Json,
+  });
+  const a = m365('m365-acme', 'acme.onmicrosoft.com', 'acme', 2);
+  const b = m365('m365-acme-new', 'acmegroup.onmicrosoft.com', 'acmegroup', 0);
+  db.sources.push(a, b);
+  for (const [g, gib, hh] of [['u.0c9d1c7a-1111-4222-8333-444455556666', 6.2, 2], ['u.5b2e4f10-aaaa-4bbb-8ccc-ddddeeeeffff', 3.4, 2]] as [string, number, number][])
+    for (let d = 4; d >= 0; d--) {
+      const time = Math.floor(t / 86400 - d) * 86400 + hh * 3600;
+      if (time <= t) db.snapshots.push(snap('acme', `plugin-m365-${a.id}-${g}`, time, Math.round(gib * 2 ** 30), true, d > 0, d > 1 ? time + 7200 : null));
+    }
+  // today's backup: two items kept failing after Graph's retries — skipped, the job ends ok with warnings (contract v1.7)
+  const user = `plugin-m365-${a.id}-u.0c9d1c7a-1111-4222-8333-444455556666`;
+  const start = Math.floor(t / 86400) * 86400 + 2 * 3600;
+  if (start + 540 <= t) {
+    const stamp = (i: number) => new Date((start + 2 + i * 90) * 1000).toISOString();
+    const lines = [
+      'starting nexus-pluginhost: m365 1.2.0 (sandbox: landlock + seccomp)',
+      `base ${user}/${start - 86400} (18,422 entries)`,
+      'plugin[warn]: skipped mail/Inbox/Quarterly report ~3f9a0c1d2e4b.eml: GET /v1.0/users/…/messages/…/$value: 500 ErrorInternalServerError',
+      'plugin[warn]: skipped onedrive/Projects/model.xlsx: GET /v1.0/drives/…/items/…/content: 503 serviceNotAvailable',
+      `committed ${user}/${start} 18,431 entries (18,190 files, 18,102 unchanged), 0 streams, 2.1 GiB, 88 MiB transferred, 61 MiB new, consistent=true`,
+      `warnings ${user}/${start}: 2 items could not be read and are missing from the snapshot: mail/Inbox/Quarterly report ~3f9a0c1d2e4b.eml: 500 ErrorInternalServerError; onedrive/Projects/model.xlsx: 503 serviceNotAvailable`,
+    ];
+    Object.assign(addJob('plugin_backup', 'acme', { source_id: a.id }, 'scheduler'), {
+      created: start, started: start + 2, finished: start + 540, state: 'ok', plan: [],
+      log: lines.map((l, i) => `${stamp(i)} ${l}`).join('\n'),
+      result: { snapshots: [{ source: user, time: start, consistent: true, warnings: 2 }], source: user, time: start, consistent: true, warnings: 2 },
+    });
+  }
 }
 
 // ---------------------------------------------------------------- run control (Phase 13b)
@@ -1430,7 +1528,8 @@ function find<T>(xs: T[], pred: (x: T) => boolean, what: string): T {
 
 // approved requests the scheduler executes (state stays `approved` until it has)
 // (console.unlock: nobody executes it; the requester then fetches the code once, 14c)
-const SCHEDULER_ACTIONS = ['replication.key_export', 'gc_large', 'console.unlock'];
+// (tenant.attach_offsite: the requester then submits the recovery key, the scheduler runs the attach, 17d)
+const SCHEDULER_ACTIONS = ['replication.key_export', 'gc_large', 'console.unlock', 'tenant.recovery_key', 'tenant.attach_offsite'];
 // 202 {quorum_id, ...extra} like web-api's `accepted()`; with approvals disabled the
 // action runs at once (200 {approvals: "disabled", executed}).
 async function quorum(u: User, action: string, params: Json, extra: Json = {}): Promise<[number, Json]> {
@@ -1461,6 +1560,12 @@ function stripSource(s: (typeof db.sources)[number]) {
       else config[k] = v;
     }
     for (const f of secrets) config[`${f}_set`] ??= false;
+    // lists of objects (contract v1.6): `<field>_set` per item
+    for (const [k, v] of Object.entries(config))
+      if (Array.isArray(v) && v.some((x) => x && typeof x === 'object'))
+        config[k] = v.map((item: Json) =>
+          Object.fromEntries(Object.entries(item).map(([f, x]) => (secrets.includes(f) ? [`${f}_set`, x !== undefined && x !== ''] : [f, x]))),
+        );
     return { ...s, config };
   }
   if (s.kind === 'nfs' || s.kind === 'smb') {
@@ -1593,6 +1698,7 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       break;
     case 'tenant.delete':
       db.tenants = db.tenants.filter((g) => g.name !== p.name);
+      tenantKeys.delete(p.name);
       break;
     case 'settings.anomaly':
       db.anomaly = structuredClone(p.anomaly);
@@ -1760,6 +1866,36 @@ on('PUT', '/tenants/:name', async (c, [name]) => {
   return [200, { ...t, offsite: publicOffsite(t.offsite) }];
 });
 on('DELETE', '/tenants/:name', (c, [name]) => quorum(need(c.user, 'admin'), 'tenant.delete', { name: decodeURIComponent(name) }));
+// Phase 17d: attach an existing offsite copy (web-api offsite.rs): request → approval → recovery key once
+const ATTACH = 'tenant.attach_offsite';
+const attachOpen = (q: Json) => q.action === ATTACH && (q.state === 'pending' || (q.state === 'approved' && q.decided_at >= now() - 72 * 3600));
+on('POST', '/tenants/attach', async (c) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  const name = String(c.body.name ?? '').trim();
+  if (!NAME_RE.test(name)) throw new HttpError(400, 'invalid tenant name');
+  const r = c.body.offsite?.remote;
+  if (r?.type !== 'sftp' && r?.type !== 's3') throw new HttpError(400, 'offsite.remote: an SFTP (host, user, key_file, host_key) or S3 target');
+  if (r.type === 's3' && !r.secret_key) throw new HttpError(400, 'offsite.remote.secret_key: required');
+  if (db.tenants.some((t) => t.name === name)) throw new HttpError(409, 'a tenant with this name exists');
+  const open = db.quorum.find((q) => attachOpen(q) && q.params.name === name);
+  if (open) throw new HttpError(409, `an attach request for this tenant is open (#${open.id})`);
+  return quorum(u, ATTACH, { name, offsite: publicOffsite(tenantOffsite(c.body.offsite)) }, { name });
+});
+on('POST', '/tenants/attach/:id/run', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  const q = find(db.quorum, (x) => x.id === Number(id) && x.action === ATTACH, 'attach request');
+  if (q.requested_by !== u.name) throw new HttpError(403, 'only the requester of the attach submits the recovery key');
+  if (q.state !== 'approved') throw new HttpError(409, `request is ${q.state}`);
+  if (!attachOpen(q)) throw new HttpError(409, 'the approval is older than 72 h: request the attach again');
+  if (db.jobs.some((j) => j.kind === 'offsite_attach' && j.params.attach_quorum === q.id && (j.state === 'queued' || j.state === 'running')))
+    throw new HttpError(409, 'this attach is already running');
+  const hex = String(c.body.recovery_key ?? '').replace(/[^0-9a-zA-Z]/g, '');
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new HttpError(400, 'recovery_key: 64 hex digits (16 groups of 4)');
+  // the key itself is never kept (web-api: sealed to the scheduler, removed when the job starts)
+  const j = addJob('offsite_attach', q.params.name, { attach_quorum: q.id }, u.name);
+  await audit(u.name, 'tenant.attach_offsite.run', `tenant/${q.params.name}`, { quorum_id: q.id, job: j.id });
+  return [202, { id: j.id }];
+});
 
 // sources
 on('GET', '/sources', (c) => [200, byTenant(need(c.user), db.sources).map(stripSource)]);
@@ -2767,7 +2903,7 @@ on('GET', '/jobs/:id', (c, [id]) => {
   const u = need(c.user);
   return [200, pubJob(find(byTenant(u, db.jobs), (j) => j.id === Number(id), 'job'), true)];
 });
-const RESTORE_KINDS = ['restore', 'restore_ct', 'instant_recover', 'files_list', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount'];
+const RESTORE_KINDS = ['restore', 'restore_ct', 'instant_recover', 'files_list', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount', 'offsite_list', 'offsite_restore'];
 /** Source + kind of a plugin snapshot name (plugin-<id>-<source id>[-<guest>]). */
 function pluginSnapshotKind(tenant: string, name: string) {
   const parts = name.replace(/^plugin-/, '').split('-');
@@ -2793,6 +2929,15 @@ function checkRestore(kind: string, tenant: string, p: Json) {
   if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time)) throw new HttpError(404, 'no such snapshot');
 }
 function checkJob(u: User, kind: string, tenant: string, p: Json) {
+  // Phase 17d: browse the offsite copy, fetch an offsite-only snapshot back (web-api jobs.rs)
+  if (kind === 'offsite_list' || kind === 'offsite_restore') {
+    if (!db.tenants.find((x) => x.name === tenant)?.offsite?.remote) throw new HttpError(400, 'tenant: has no offsite target');
+    if (kind === 'offsite_restore') {
+      const s = db.snapshots.find((x) => x.tenant === tenant && x.source === p.source && x.time === p.time && x.offsite);
+      if (!s) throw new HttpError(404, 'no such offsite snapshot');
+      if (s.local) throw new HttpError(409, 'the snapshot is in the local store already');
+    }
+  }
   if (kind === 'restore' || kind === 'restore_ct' || kind === 'instant_recover') checkRestore(kind, tenant, p);
   if (kind === 'agent_enroll') throw new HttpError(400, 'use POST /agents/{id}/enroll');
   if (kind === 'inventory') {
@@ -2820,6 +2965,15 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
     else if (Object.keys(p.params ?? {}).length) throw new HttpError(400, 'params: this restore takes none');
     if (kind === 'plugin_mount' && !(Number.isInteger(p.minutes) && p.minutes >= 1 && p.minutes <= 1440))
       throw new HttpError(400, 'minutes: 1..1440');
+    // contract v1.6: restore with another source of the same tenant and kind
+    if (p.target_source_id !== undefined) {
+      if (kind === 'plugin_mount') throw new HttpError(400, 'target_source_id: restores only');
+      if (!r.target_source) throw new HttpError(400, `target_source_id: restore ${rid} cannot run into another source`);
+      const own = db.sources.find((s) => s.id === Number(/^plugin-.+?-(\d+)/.exec(p.source)?.[1]));
+      const tgt = db.sources.find((s) => s.id === Number(p.target_source_id) && s.tenant === tenant);
+      if (!tgt) throw new HttpError(400, 'target_source_id: no such plugin source in this tenant');
+      if (tgt.kind !== own?.kind) throw new HttpError(400, `target_source_id: not a ${own?.kind} source`);
+    }
   }
   if (kind === 'agent_update' || kind === 'agent_renew') {
     if (u.role !== 'admin') throw new HttpError(403, 'requires role admin');
@@ -2865,6 +3019,7 @@ on('POST', '/jobs', async (c) => {
   const j = addJob(kind, tenant, p, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
   if (kind.startsWith('plugin_')) j.duration = { plugin_validate: 3, plugin_guests: 3, plugin_restore: 14, plugin_mount: 6 }[kind as string] ?? 10;
   if (kind === 'inventory') j.duration = 3;
+  if (kind === 'offsite_list') j.duration = 3;
   await audit(u.name, 'job.create', `job/${j.id}`, { kind, tenant, params: p });
   return [202, p.download_token ? { id: j.id, download_token: p.download_token } : { id: j.id }];
 });
@@ -5021,3 +5176,73 @@ function seedHolds(t: number) {
     }),
   );
 }
+
+// ---------------------------------------------------------------- tenant recovery key (Phase 17e)
+// The appliance keeps only the public key; here a random 64-hex stand-in (kid = its first 16 digits).
+
+const TKEY_TTL = 24 * 3600;
+const tenantKeys = new Map<string, { kid: string; set_at: number; requested_by: string; approved_by: string }>();
+function tkeyStatus(q: Json, t = now()): string {
+  if (q.state === 'pending' || q.state === 'rejected') return q.state;
+  if (q.state === 'approved') return q.decided_at && q.decided_at + TKEY_TTL > t ? 'approved' : 'expired';
+  if (q.state === 'executed') return 'shown';
+  return 'expired';
+}
+const tkeyRows = (tenant: string) =>
+  db.quorum.filter((q) => q.action === 'tenant.recovery_key' && q.params.tenant === tenant).sort((a, b) => b.id - a.id);
+function tkeyUser(c: Ctx, tenant: string, ...roles: Role[]): User {
+  const u = need(c.user, ...roles);
+  if (u.tenant && u.tenant !== tenant) throw new HttpError(403, 'forbidden');
+  find(db.tenants, (x) => x.name === tenant, 'tenant');
+  return u;
+}
+function seedTenantKeys(t: number) {
+  // acme set up a tenant recovery key three weeks ago
+  const q = {
+    id: nextId(), action: 'tenant.recovery_key', params: { tenant: 'acme', replace: false },
+    requested_by: 'admin', created: t - 86400 * 21, decided_by: 'so', decided_at: t - 86400 * 21 + 900, state: 'executed',
+  };
+  db.quorum.push(q);
+  tenantKeys.set('acme', { kid: rand(8), set_at: t - 86400 * 21 + 1200, requested_by: 'admin', approved_by: 'so' });
+}
+on('GET', '/tenants/:tenant/recovery-key', (c, [tn]) => {
+  const tenant = decodeURIComponent(tn);
+  tkeyUser(c, tenant, 'admin', 'security_officer');
+  return [
+    200,
+    {
+      tenant,
+      key: tenantKeys.get(tenant) ?? null,
+      requests: tkeyRows(tenant).slice(0, 20).map((q) => ({
+        id: q.id, requested_by: q.requested_by, created: q.created, decided_by: q.decided_by, decided_at: q.decided_at,
+        show_until: q.decided_at ? q.decided_at + TKEY_TTL : null, status: tkeyStatus(q),
+      })),
+    },
+  ];
+});
+on('POST', '/tenants/:tenant/recovery-key', async (c, [tn]) => {
+  const tenant = decodeURIComponent(tn);
+  const u = tkeyUser(c, tenant, 'admin');
+  if (tkeyRows(tenant).some((q) => ['pending', 'approved'].includes(tkeyStatus(q))))
+    throw new HttpError(409, "a request for this tenant's recovery key is still open");
+  return quorum(u, 'tenant.recovery_key', { tenant, replace: tenantKeys.has(tenant) });
+});
+on('POST', '/tenants/:tenant/recovery-key/:id/show', async (c, [tn, id]) => {
+  const tenant = decodeURIComponent(tn);
+  const u = tkeyUser(c, tenant, 'admin');
+  const q = find(tkeyRows(tenant), (x) => x.id === Number(id), 'request');
+  if (q.requested_by !== u.name) throw new HttpError(403, 'forbidden');
+  const st = tkeyStatus(q);
+  if (st === 'shown') throw new HttpError(409, 'this key was already shown');
+  if (st !== 'approved') throw new HttpError(409, `request is ${st}`);
+  const raw = rand(32);
+  const key = Array.from({ length: 16 }, (_, i) => raw.slice(i * 4, i * 4 + 4)).join('-');
+  const kid = rand(8);
+  const replaced = tenantKeys.get(tenant)?.kid ?? null;
+  q.state = 'executed';
+  tenantKeys.set(tenant, { kid, set_at: now(), requested_by: q.requested_by, approved_by: q.decided_by });
+  await audit(u.name, 'tenant.recovery_key_shown', `tenant/${tenant}/recovery-key`, {
+    kid, replaced, quorum_id: q.id, approved_by: q.decided_by, approvals: q.decided_by === q.requested_by ? 'disabled' : 'enabled',
+  });
+  return [200, { tenant, key, kid, replaced }];
+});

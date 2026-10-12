@@ -68,7 +68,16 @@
     const secret = kindsAll.get(x.kind)?.kind.secret_fields ?? [];
     return Object.entries(x.config ?? {})
       // short single-line values only (no PEM blocks or long lists)
-      .filter(([k, v]) => !k.endsWith('_set') && !secret.includes(k) && v !== '' && v !== null && !String(v).includes('\n') && String(v).length <= 64)
+      .filter(
+        ([k, v]) =>
+          !k.endsWith('_set') &&
+          !secret.includes(k) &&
+          v !== '' &&
+          v !== null &&
+          !(Array.isArray(v) && v.some((i) => typeof i === 'object')) &&
+          !String(v).includes('\n') &&
+          String(v).length <= 64,
+      )
       .slice(0, 3)
       .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join(',') : String(v)}`)
       .join(' · ');

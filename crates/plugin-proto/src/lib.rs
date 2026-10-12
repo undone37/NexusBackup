@@ -201,11 +201,11 @@ pub enum Message {
     TaggedGuests {
         list: Vec<TaggedGuest>,
     },
-    // v1.6 (appended)
+    // v1.7 (appended)
     /// Backup only, before `Done`: `count` items could not be read and are missing
     /// from the snapshot (the plugin skipped them); `samples` names the first few
     /// with their error. The job ends `ok` with warnings. The SDK sends it only when
-    /// `count > 0`, so plugins without skipped items still run on a v1.5 host.
+    /// `count > 0`, so plugins without skipped items still run on a v1.6 host.
     Warnings {
         count: u64,
         samples: Vec<String>,
@@ -349,6 +349,11 @@ pub struct RestoreAction {
     /// (`plugin-<p>-<sid>-<guest>`), `source` (`plugin-<p>-<sid>`) or `any` (default)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applies_to: Option<String>,
+    /// v1.6: the restore may run with the credentials of another source of the same
+    /// kind and tenant (job parameter `target_source_id`; e.g. M365 into another
+    /// Microsoft 365 tenant). The plugin then sees `target_source_id` in its params.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub target_source: bool,
 }
 
 /// Values of [`RestoreAction::applies_to`].
@@ -665,7 +670,7 @@ mod tests {
         assert!(check(&Message::TaggedGuests { list: vec![t] }).is_err());
     }
 
-    /// v1.6 warnings: appended (wire index after `TaggedGuests`; `Done` unchanged), limits hold.
+    /// v1.7 warnings: appended (wire index after `TaggedGuests`; `Done` unchanged), limits hold.
     #[test]
     fn warnings_are_appended() {
         let m = Message::Warnings {

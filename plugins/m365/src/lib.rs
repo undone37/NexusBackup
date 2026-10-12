@@ -33,6 +33,8 @@ pub struct Config {
     /// PEM (checked by `parse`: a usable RSA key matching the certificate)
     certificate: String,
     private_key: String,
+    /// further app registrations (client id, certificate + key PEM), used round-robin
+    pub apps: Vec<(String, String)>,
     pub exchange: bool,
     pub onedrive: bool,
     pub sharepoint: bool,
@@ -40,6 +42,8 @@ pub struct Config {
     pub teams_messages: bool,
     /// Microsoft 365 groups (conversations, calendar; files with `sharepoint`)
     pub groups: bool,
+    /// 1:1 and group chats of users (export API, metered: opt-in)
+    pub chats: bool,
     /// `model` parameter of the Teams export API (`A`, `B`; None = evaluation mode)
     pub teams_model: Option<String>,
     pub sharepoint_host: Option<String>,
@@ -96,6 +100,23 @@ impl Config {
         }
         let (certificate, private_key) = (s("certificate")?, s("private_key")?);
         Credential::parse(&certificate, &private_key)?;
+        let mut apps: Vec<(String, String)> = Vec::new();
+        for (i, a) in v["apps"].as_array().into_iter().flatten().enumerate() {
+            let n = i + 2;
+            let id = a["client_id"].as_str().map(str::trim).unwrap_or_default();
+            if !guid_ok(id) {
+                return Err(("apps", format!("app {n}: expected the application (client) ID, a GUID")));
+            }
+            if id.eq_ignore_ascii_case(&client_id) || apps.iter().any(|x| x.0.eq_ignore_ascii_case(id)) {
+                return Err(("apps", format!("app {n}: {id} is listed twice")));
+            }
+            let pem = a["certificate"].as_str().unwrap_or_default();
+            Credential::parse(pem, "").map_err(|(_, m)| ("apps", format!("app {n}: {m}")))?;
+            apps.push((id.to_owned(), pem.to_owned()));
+        }
+        if apps.len() > 8 {
+            return Err(("apps", "at most 8 further app registrations".into()));
+        }
         let port = match &v["port"] {
             Value::Null => 443,
             x => x
@@ -109,12 +130,14 @@ impl Config {
             client_id,
             certificate,
             private_key,
+            apps,
             exchange: flag("exchange", true),
             onedrive: flag("onedrive", true),
             sharepoint: flag("sharepoint", true),
             teams: flag("teams", true),
             teams_messages: flag("teams_messages", false),
             groups: flag("groups", true),
+            chats: flag("chats", false),
             teams_model: match v["teams_export_model"].as_str().unwrap_or("B") {
                 "evaluation" => None,
                 m => Some(m.to_owned()),
@@ -126,7 +149,7 @@ impl Config {
             port,
             ca_cert: opt("ca_cert"),
         };
-        if !(c.exchange || c.onedrive || c.sharepoint || c.teams || c.teams_messages || c.groups) {
+        if !(c.exchange || c.onedrive || c.sharepoint || c.teams || c.teams_messages || c.groups || c.chats) {
             return Err(("exchange", "select at least one workload".into()));
         }
         if c.files() && c.sharepoint_host.is_none() {
@@ -157,10 +180,25 @@ impl Config {
         }
     }
 
-    /// Graph client with this config's credential.
+    /// Graph client with every app registration, starting with app 1.
     pub fn graph(&self) -> Result<Graph> {
-        let cred = Credential::parse(&self.certificate, &self.private_key)
-            .map_err(|(f, m)| error(22, format!("config {f}: {m}")))?;
+        self.graph_for(None)
+    }
+
+    /// Graph client starting with the app picked for `guest` (round-robin).
+    pub fn graph_for(&self, guest: Option<&str>) -> Result<Graph> {
+        let bad = |(f, m): Bad| error(22, format!("config {f}: {m}"));
+        let mut apps = vec![graph::App {
+            client_id: self.client_id.clone(),
+            cred: Credential::parse(&self.certificate, &self.private_key).map_err(bad)?,
+        }];
+        for (id, pem) in &self.apps {
+            apps.push(graph::App {
+                client_id: id.clone(),
+                cred: Credential::parse(pem, "").map_err(bad)?,
+            });
+        }
+        let start = guest.map_or(0, |g| graph::pick(g, apps.len()));
         Graph::new(
             Settings {
                 graph_origin: self.origin(&self.graph_host),
@@ -169,10 +207,10 @@ impl Config {
                     self.origin(&self.login_host),
                     graph::enc(&self.tenant_id)
                 ),
-                client_id: self.client_id.clone(),
                 ca_pem: self.ca_cert.clone(),
             },
-            cred,
+            apps,
+            start,
         )
     }
 }
@@ -346,7 +384,7 @@ pub fn config(ctx: &Ctx) -> Result<Config> {
 /// Opens Graph for a context (config + credential).
 pub fn connect(ctx: &Ctx) -> Result<(Config, Graph)> {
     let c = config(ctx)?;
-    let g = c.graph()?;
+    let g = c.graph_for(ctx.guest())?;
     Ok((c, g))
 }
 
@@ -407,7 +445,7 @@ impl Plugin for M365 {
             Err((f, m)) => return Ok(invalid(f, m)),
         };
         let mut g = c.graph()?;
-        ctx.info(format!("certificate thumbprint (SHA-1) {}", g.thumbprint()));
+        ctx.info(format!("certificate thumbprint (SHA-1) {}", g.thumbprint(0)));
         if let Err(e) = g.token() {
             return Ok(token_problem(&e));
         }
@@ -415,6 +453,28 @@ impl Plugin for M365 {
             Ok(v) => v["value"].as_array().cloned().unwrap_or_default(),
             Err(e) => return Ok(invalid("client_id", missing(&e, "User.Read.All"))),
         };
+        // further app registrations: each signs in and reads the directory
+        for i in 1..g.apps() {
+            g.use_app(i);
+            ctx.info(format!(
+                "app {} ({}): certificate thumbprint (SHA-1) {}",
+                i + 1,
+                g.client_id(i),
+                g.thumbprint(i)
+            ));
+            let r = g.token().and_then(|_| g.get("/users?$select=id&$top=1", &[]));
+            if let Err(e) = r {
+                let why = match token_problem(&e) {
+                    _ if graph::status(&e) == Some(403) => {
+                        missing(&e, "User.Read.All (and the other permissions of app 1)")
+                    }
+                    Validation::Invalid { message, .. } => message,
+                    Validation::Valid => String::new(),
+                };
+                return Ok(invalid("apps", format!("app {} ({}): {why}", i + 1, g.client_id(i))));
+            }
+        }
+        g.use_app(0);
         if c.exchange {
             if let Some(u) = users.first().and_then(|u| u["id"].as_str()) {
                 if let Err(e) = g.get(&format!("/users/{}/mailFolders?$top=1", graph::enc(u)), &[]) {
@@ -423,6 +483,18 @@ impl Plugin for M365 {
                             "exchange",
                             missing(&e, "Mail.ReadWrite, Calendars.ReadWrite, Contacts.ReadWrite"),
                         ));
+                    }
+                }
+            }
+        }
+        if c.chats {
+            if let Some(u) = users.first().and_then(|u| u["id"].as_str()) {
+                if let Err(e) = g.get(&backup::chats::export_url(&c, u, None, 1), &[]) {
+                    if graph::is_protected_api_denied(&e) {
+                        return Ok(invalid("chats", backup::chats::CHATS_HELP.into()));
+                    }
+                    if graph::status(&e) != Some(404) {
+                        return Ok(invalid("chats", missing(&e, "Chat.Read.All")));
                     }
                 }
             }
@@ -499,7 +571,7 @@ impl Plugin for M365 {
     fn list_tagged_guests(&mut self, ctx: &Ctx) -> Result<Vec<SdkGuest>> {
         let (c, mut g) = connect(ctx)?;
         let mut out = Vec::new();
-        if c.exchange || c.onedrive {
+        if c.exchange || c.onedrive || c.chats {
             g.pages(
                 "/users?$select=id,displayName,userPrincipalName,userType,assignedLicenses&$top=999",
                 &[],

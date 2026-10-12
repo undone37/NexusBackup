@@ -400,22 +400,22 @@ calendar or channel.
 
 | Snapshot | Contains (folders in the file browser) |
 |---|---|
-| user (`u.…`) | `mail/` (one `.eml` per message), `recoverable/Deletions/` (deleted items still recoverable in Outlook), `calendar/` (one `.ics` per event), `contacts/` (one `.vcf` per contact), `onedrive/` (the files) |
+| user (`u.…`) | `mail/` (one `.eml` per message), `recoverable/Deletions/` (deleted items still recoverable in Outlook), `calendar/` (one `.ics` per event), `contacts/` (one `.vcf` per contact), `onedrive/` (the files), `chats/` (one `.json` and one readable `.html` per chat, if chats are backed up; download only) |
 | site (`s.…`) | `libraries/<library>/` (the files) |
 | team (`t.…`) | `files/` (the team's files), `channel-files/<channel>/` (files of private and shared channels), `channels/<channel>/` (one `.json` per conversation, if channel messages are backed up) |
 | group (`g.…`) | `conversations/` (one `.json` per conversation with all posts), `calendar/` (if Microsoft allowed reading it), `files/` (groups that are not teams) |
 
 ### Download
 
-Click the download button (**Download (mail .eml, events .ics, contacts .vcf, files, threads .json)**), select
+Click the download button (**Download (mail .eml, events .ics, contacts .vcf, files, threads and conversations .json)**), select
 folders or single items and prepare a tar or zip archive as described in
 [Browse files and download them](#browse-files-and-download-them-tar-or-zip). Mail opens in any mail client,
 `.ics` files in any calendar, `.vcf` files in any address book. Names containing `/` or `%` are shown encoded
 (`Projects%2F2026` is the folder `Projects/2026`).
 
-### Restore to the original user, site or team
+### Restore to the original user, site, team or group
 
-1. Open **Restore** on the snapshot and choose **Restore to the original user / site / team (into a new folder)**.
+1. Open **Restore** on the snapshot and choose **Restore to the original user / site / team / group (into a new folder; group conversations: download only)**.
 2. Optionally fill in **Only these snapshot paths**, one per line, e.g. `mail/Inbox` or
    `onedrive/Documents/Contracts` (empty = everything), and **New folder** (empty = `Restored <date> <time>`). The
    folder must not exist yet.
@@ -440,9 +440,9 @@ Where the items end up:
 - **Teams conversations**: a new channel `<channel> (restored <date> <time>)` per backed-up channel. Messages
   appear with their original author and time. Deleted messages and messages from bots are skipped.
 
-### Restore to another user, site or team
+### Restore to another user, site, team or group
 
-Use **Restore → Restore to another user / site / team (into a new folder)**, for example to give a successor the mailbox
+Use **Restore → Restore to another user / site / team / group (into a new folder; also into another Microsoft 365 tenant)**, for example to give a successor the mailbox
 and OneDrive of a person who left. In addition to the fields above, enter the **Target**:
 
 - for a user snapshot: the other user's sign-in name (`jane@contoso.com`) or object ID;
@@ -452,6 +452,20 @@ and OneDrive of a person who left. In addition to the fields above, enter the **
 
 The target must be of the same kind as the snapshot (a user's mailbox cannot be restored into a site). The job
 fails with "target … not found" if the target does not exist.
+
+### Restore into another Microsoft 365 tenant
+
+The restore to another user, site or team can also write into **another Microsoft 365 tenant**, for example
+after a merger (move selected users to the new company's tenant) or to recover into a new tenant when the old
+one is lost or compromised. Register the other tenant as a second Microsoft 365 source in the **same appliance
+tenant** (its own app registration, see [04 Sources](04-sources.md#microsoft-365-exchange-onedrive-sharepoint-teams)).
+In the restore dialog, choose it under **Target source** and enter the **Target** as it exists in that tenant
+(for example `jane@newcompany.com`). The appliance runs the restore with the target source's app and
+certificate; the original tenant is not contacted. Teams conversations are not restored into another tenant
+(their authors do not exist there) and are counted as skipped; team files are restored. Chats are never
+restored (download them instead).
+
+![Restore of a user into another Microsoft 365 tenant](images/snapshot-m365-other-tenant.png)
 
 The app registration needs the write permissions listed in [04 Sources](04-sources.md#microsoft-365-exchange-onedrive-sharepoint-teams)
 for restores, and for Teams conversations also `Teamwork.Migrate.All` and `Channel.Create`.
@@ -551,11 +565,29 @@ clicks **Apply hold…** (or **Apply hold** on the alert). See
 
 ## Restore from the offsite copy
 
-The web UI has no restore from the offsite tier. Restores always read the local store. The offsite engine can
-bring a snapshot back from the Storage Box or bucket into the local store
-(`nexus-offsite <config.json> restore <source> <time>`), but this is a command-line tool. No UI or API job
-exposes it in this version. Rebuilding an appliance from the offsite copy is covered in
-[14 Disaster recovery](14-disaster-recovery.md).
+Restores always read the local store. Local retention usually keeps fewer snapshots than the offsite copy, so older
+snapshots can exist **only offsite**. The **Snapshots** page lists them too: **Local** is empty, **Offsite** is
+ticked, and the row is marked **offsite only**. To see just those, set **Copies** to **Offsite only** and click
+**Filter**.
 
-> **Status:** Offsite restore and DR were verified with the SFTP test box and MinIO, not yet against a real
-> Hetzner Storage Box or a real S3 provider.
+![Offsite-only snapshots of tenant initech with Fetch from offsite](images/snapshots-offsite.png)
+
+An offsite-only snapshot has no **Browse files** button and no **Restore** menu. Fetch it back first:
+
+1. Click **Fetch from offsite** on the row and confirm. A **Fetch from offsite** job starts and its page opens. It
+   downloads the snapshot's data from the Storage Box or bucket into the local store; every chunk is checked before
+   it is stored. It takes about as long as downloading the snapshot's changed data.
+2. When the job has finished, the snapshot is **Local** again. Browse it, download files or run any restore from it as
+   usual.
+
+A fetched snapshot is locked in the local store for at least **7 days**, so local retention does not delete it again
+before you have used it. After that, retention removes the local copy on its normal schedule; the offsite copy is not
+affected. While the lock runs, the local copy cannot be deleted by hand either.
+
+Administrators, operators and tenant users (their own tenant) may fetch snapshots back, like restores. To see what
+the offsite target holds right now, use **Offsite copy** on the tenant ([07 Offsite copies](07-offsite.md#check-the-offsite-copy)).
+Rebuilding a lost appliance from the offsite copy is covered in [14 Disaster recovery](14-disaster-recovery.md).
+
+> **Status:** Fetching back was tested with the SFTP test box and MinIO (integration tests) and is a lab step
+> (`offsite-fetch`); not yet against a real Hetzner Storage Box or a real S3 provider. The keep time of 7 days is the
+> scheduler default (`offsite_fetch_keep_secs`); there is no setting for it in the web UI.

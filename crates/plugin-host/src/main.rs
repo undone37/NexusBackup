@@ -48,6 +48,28 @@ struct SnapCfg {
     /// mount only
     #[serde(default)]
     minutes: Option<u64>,
+    /// restore only: run with another source's config (manifest `target_source`)
+    #[serde(default)]
+    target: Option<TargetCfg>,
+}
+
+/// Another source of the same kind and tenant (checked by the scheduler), secrets opened.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TargetCfg {
+    source_id: u64,
+    config: Value,
+}
+
+/// Config the restore runs with and the target source id: the snapshot source's
+/// config, or the target source's if the job names one (only for restores whose
+/// manifest entry allows it).
+fn restore_config(own: &str, s: &SnapCfg, action: &plugin_proto::RestoreAction) -> Result<(String, Option<u64>)> {
+    match &s.target {
+        None => Ok((own.to_owned(), None)),
+        Some(_) if !action.target_source => bail!("restore {:?} cannot run into another source", action.id),
+        Some(t) => Ok((t.config.to_string(), Some(t.source_id))),
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -307,9 +329,9 @@ fn main() -> Result<()> {
             }
         }
         ("restore", []) => {
-            let run = Run::new(cfg)?;
-            let s = run.cfg.restore.as_ref().context("config: restore missing")?;
-            let guest = run.snapshot_of(s)?;
+            let mut run = Run::new(cfg)?;
+            let s = run.cfg.restore.take().context("config: restore missing")?;
+            let guest = run.snapshot_of(&s)?;
             let id = s.id.clone().context("config: restore.id missing")?;
             let kind = run.manifest.kinds.iter().find(|k| k.kind == run.kind).unwrap();
             let Some(action) = kind.restores.iter().find(|r| r.id == id).filter(|_| id != "download") else {
@@ -328,6 +350,9 @@ fn main() -> Result<()> {
                     if guest.is_some() { "guest" } else { "source" }
                 );
             }
+            let (config, target_source_id) = restore_config(&run.config, &s, action)?;
+            // endpoints (sandbox ports) and credentials: those of the target source
+            run.config = config;
             let store = open_store(&run.cfg)?;
             let snap = restore::Snapshot::load(&store, &s.source, s.time)?;
             let mut params = s.params.clone();
@@ -347,6 +372,7 @@ fn main() -> Result<()> {
                     restore: &id,
                     params,
                     max_log_bytes: 4 << 20,
+                    target_source_id,
                 },
                 &mut |l| out_line(l),
             )?;
@@ -402,4 +428,33 @@ fn main() -> Result<()> {
         _ => bail!("{usage}"),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_runs_with_the_target_sources_credentials() {
+        let mut action: plugin_proto::RestoreAction =
+            serde_json::from_value(json!({"id": "to_other", "title": "x"})).unwrap();
+        let snap = |target: Value| -> SnapCfg {
+            serde_json::from_value(
+                json!({"source": "plugin-m365-3-u.x", "time": 1, "id": "to_other", "target": target}),
+            )
+            .unwrap()
+        };
+        let own = r#"{"client_id":"own"}"#;
+        assert_eq!(
+            restore_config(own, &snap(Value::Null), &action).unwrap(),
+            (own.to_owned(), None)
+        );
+        let other = snap(json!({"source_id": 9, "config": {"client_id": "other"}}));
+        // a restore whose manifest entry does not allow it never gets another source's secrets
+        assert!(restore_config(own, &other, &action).is_err());
+        action.target_source = true;
+        let (cfg, sid) = restore_config(own, &other, &action).unwrap();
+        let cfg: Value = serde_json::from_str(&cfg).unwrap();
+        assert_eq!((cfg["client_id"].clone(), sid), (json!("other"), Some(9)));
+    }
 }

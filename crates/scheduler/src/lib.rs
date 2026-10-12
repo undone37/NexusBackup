@@ -74,6 +74,7 @@ pub mod forward;
 mod holds;
 mod inventory;
 mod lifecycle;
+mod offsite_ui;
 pub mod orphans;
 mod plugins;
 mod renewal;
@@ -88,6 +89,7 @@ pub mod search;
 mod selection;
 pub mod sshkeys;
 pub mod stats;
+mod tenant_key;
 
 use anyhow::{bail, Context, Result};
 use catalog::rusqlite::{params, OptionalExtension};
@@ -165,6 +167,9 @@ pub struct Config {
     pub refresh_secs: i64,
     pub download_ttl_secs: i64,
     pub offsite_lag_secs: i64,
+    /// a snapshot fetched back from offsite (`offsite_restore`) is locked
+    /// locally at least this long, so local retention keeps it (default 7 days)
+    pub offsite_fetch_keep_secs: u64,
     /// alert above this used share of the store file system
     pub capacity_threshold: f64,
     /// retry delays of alert delivery
@@ -230,6 +235,7 @@ impl Default for Config {
             refresh_secs: 900,
             download_ttl_secs: 86400,
             offsite_lag_secs: 48 * 3600,
+            offsite_fetch_keep_secs: 7 * 86400,
             capacity_threshold: 0.75,
             alert_retry_secs: [10, 60],
             secrets_key: None,
@@ -952,6 +958,8 @@ impl Scheduler {
         for (_, o) in self.tenants()? {
             targets.extend(firewall::offsite_targets(&o));
         }
+        // approved "attach an offsite copy" requests: the target before the tenant exists
+        targets.extend(self.attach_targets()?);
         // secondary: the primaries' management ports (docs/replication.md §10)
         targets.extend(self.replication_targets()?);
         if let Ok(a) = self.alerts_config() {
@@ -1201,9 +1209,19 @@ impl Scheduler {
         }
         if matches!(
             job.kind.as_str(),
-            "backup" | "plugin_backup" | "retention" | "offsite" | "gc" | "replica_sync" | "snapshot_delete"
+            "backup"
+                | "plugin_backup"
+                | "retention"
+                | "offsite"
+                | "gc"
+                | "replica_sync"
+                | "snapshot_delete"
+                | "offsite_restore"
         ) {
             self.dirty.insert(job.tenant.clone());
+        }
+        if job.kind == "offsite_attach" {
+            self.attach_bookkeeping(&job, ok)?;
         }
         self.agent_bookkeeping(&job, &log)?;
         if job.kind.starts_with("ssh_key_") {
@@ -1433,6 +1451,13 @@ impl Scheduler {
             "alert_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" | "file_search" | "file_index" => {
                 serde_json::from_str(stdout.unwrap_or_default()).ok()
             }
+            "offsite_list" => match serde_json::from_str::<Value>(stdout.unwrap_or_default().trim()) {
+                Ok(s @ Value::Array(_)) => Some(json!({ "snapshots": s })),
+                _ => {
+                    log.push_str("[scheduler] unexpected offsite listing (no JSON array)\n");
+                    None
+                }
+            },
             "plugin_validate" | "plugin_guests" | "inventory" => {
                 let out = stdout.unwrap_or_default();
                 match serde_json::from_str::<Value>(out.trim()) {
@@ -1496,7 +1521,7 @@ impl Scheduler {
                                 v["transferred_bytes"] = json!(n);
                             }
                         }
-                        // `warnings <id>: <n> items …` (nexus-pluginhost, contract v1.6): ok with warnings
+                        // `warnings <id>: <n> items …` (nexus-pluginhost, contract v1.7): ok with warnings
                         let warn = format!("warnings {id}: ");
                         if let Some(n) = log
                             .lines()
@@ -2027,10 +2052,12 @@ impl Scheduler {
     /// Refreshes the tenant's wrapped escrow files from keyd (new DEK versions
     /// after a rotation reach the box with the next upload).
     fn refresh_escrow(&self, tenant: &str) {
+        crate::tenant_key::sync(&self.db, &self.cfg.keyd_socket, tenant);
         let Ok(files) = keyd::fetch_escrow(&self.cfg.keyd_socket, tenant) else {
             return; // tests / keyd down: nexus-offsite reports a missing escrow dir itself
         };
         let dir = self.cfg.escrow_base.join(tenant);
+        crate::tenant_key::prune_escrow_dir(&dir, tenant, &files);
         for (name, bytes) in files {
             let p = dir.join(&name);
             let ok = p.parent().is_some_and(|d| fs::create_dir_all(d).is_ok())
@@ -2046,6 +2073,11 @@ impl Scheduler {
             return Ok(None);
         };
         self.refresh_escrow(tenant);
+        self.offsite_files(tenant, &o, dir).map(Some)
+    }
+
+    /// Job dir files for nexus-offsite from an opened offsite config `o`.
+    fn offsite_files(&self, tenant: &str, o: &Value, dir: &Path) -> Result<Files> {
         let mut files = Vec::new();
         let mut remote = o["remote"].clone();
         if let Some(k) = remote["key_pem"].as_str() {
@@ -2085,7 +2117,7 @@ impl Scheduler {
             }
         }
         files.push(("offsite.json".into(), serde_json::to_vec_pretty(&cfg)?));
-        Ok(Some(files))
+        Ok(files)
     }
 
     fn agent(&self, tenant: &str, id: &str) -> Result<AgentRow> {
@@ -2275,6 +2307,9 @@ impl Scheduler {
         };
         if job.kind == "file_search" || job.kind == "file_index" {
             return self.plan_files_index(job, plan);
+        }
+        if job.kind.starts_with("offsite_") {
+            return self.plan_offsite_ui(job, plan); // offsite_ui.rs
         }
         if job.kind == "retention"
             && (p["plugin"] == true || p["source"].as_str().is_some_and(|s| s.starts_with("plugin-")))

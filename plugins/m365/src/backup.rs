@@ -46,6 +46,9 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[path = "chats.rs"]
+pub mod chats;
+
 pub const X_ID: &[u8] = b"user.m365.id";
 pub const X_TAG: &[u8] = b"user.m365.tag";
 
@@ -418,10 +421,10 @@ pub fn run(ctx: &Ctx, c: &Config, g: Graph, guest: &Guest, sink: &mut Sink) -> R
     };
     match guest {
         Guest::User(u) => {
-            if !(c.exchange || c.onedrive) {
+            if !(c.exchange || c.onedrive || c.chats) {
                 return Err(error(
                     22,
-                    "users are backed up for Exchange or OneDrive; both are disabled",
+                    "users are backed up for Exchange, OneDrive or chats; all are disabled",
                 ));
             }
             if c.exchange && r.mail(u)? {
@@ -439,6 +442,9 @@ pub fn run(ctx: &Ctx, c: &Config, g: Graph, guest: &Guest, sink: &mut Sink) -> R
                         r.item_failed("onedrive", e)?;
                     }
                 }
+            }
+            if c.chats {
+                r.chats(u, started)?;
             }
         }
         Guest::Site(..) => {
@@ -524,13 +530,14 @@ pub fn run(ctx: &Ctx, c: &Config, g: Graph, guest: &Guest, sink: &mut Sink) -> R
         ..
     } = r;
     let summary = format!(
-        "{} items ({} unchanged), {} MiB downloaded, {} Graph requests ({} throttled, {} retried){}",
+        "{} items ({} unchanged), {} MiB downloaded, {} Graph requests ({} throttled, {} retried, {} app switches){}",
         out.items,
         out.unchanged,
         out.downloaded >> 20,
         g.stats.requests,
         g.stats.throttled,
         g.stats.retries,
+        g.stats.switches,
         if notes.is_empty() {
             String::new()
         } else {

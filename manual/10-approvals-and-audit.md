@@ -10,7 +10,7 @@ a different administrator or security officer must approve:
 
 | Area | Action (as shown on the Approvals page) |
 |---|---|
-| Configuration | deleting a tenant, source, policy, protection group or agent (`tenant delete`, `source delete`, …) |
+| Configuration | deleting a tenant, source, policy, protection group or agent (`tenant delete`, `source delete`, …); attaching the offsite copy of a lost appliance as a tenant (`tenant attach_offsite`: after the approval the requester enters the old recovery key once, see [14 Disaster recovery](14-disaster-recovery.md#attach-an-offsite-copy-in-the-web-ui)) |
 | Retention | lowering any GFS value, switching off **Copy offsite** or relaxing the required consistency (`policy update`); moving a group to a weaker policy (`group update`) |
 | Restore | replacing the original guest with a restored copy (`restore replace`, see [06 Restores](06-restores.md#replace-the-original-guest)) |
 | Accounts | granting **Administrator** or **Security officer**, re-enabling such an account, a new activation code for one (`user update`) |
@@ -23,13 +23,14 @@ a different administrator or security officer must approve:
 | Updates | **Install now**: installing an available appliance update without waiting for the maintenance window (`update apply`) |
 | Monitoring | weakening anomaly detection (`settings anomaly`); disabling or removing an enabled forwarding sink, or changing its destination, certificate trust or headers (`settings forwarding`, see [Forwarding](#forwarding-to-a-siem)) |
 | Approvals | disabling the approval requirement itself (`approvals disable`) |
+| Tenant recovery key | creating or replacing a tenant's recovery key (`tenant recovery_key`, **Tenants → Recovery key**): after the approval the requester shows the key once; see [14 Disaster recovery](14-disaster-recovery.md#the-tenant-recovery-key-optional) |
 | Console access | a root shell on the appliance console (`console unlock`, **Settings → Console access**): after the approval the requester shows the one-time code once; see [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console) |
 
 Rules:
 
 - The requester can never decide their own request. Any **other** enabled administrator or security officer can.
 - A request expires after **72 hours** without a decision.
-- Approving runs the action immediately and cannot be undone. Some actions (the replication key export, a large GC, a snapshot delete, a restore that replaces the original)
+- Approving runs the action immediately and cannot be undone. Some actions (the replication key export, a large GC, a snapshot delete, a restore that replaces the original, attaching an offsite copy)
   are carried out by the scheduler shortly after the approval; their state goes from **Approved** to **Executed**.
 - Requests never show secrets: passwords, keys and activation codes are not part of a request.
 - Some actions only add protection and therefore need no approval, e.g. a security officer putting snapshots on a
@@ -170,6 +171,7 @@ What is recorded:
   (`user.oidc_created`) and settings changes (`settings.oidc`);
 - a break-glass recovery of an administrator on the console (`user.break_glass`, see
   [14 Disaster recovery](14-disaster-recovery.md#break-glass-the-only-administrator-lost-their-authenticator));
+- a tenant recovery key shown (`tenant.recovery_key_shown`, with its key ID and the replaced key ID, never the key);
 - emergency console access: the one-time code shown (`console.unlock_code`) or revoked (`console.unlock_revoke`),
   rejected codes at the console (`console.unlock_failed`), and every root shell with its start and end
   (`console.root_shell`, `console.root_shell_end`, actor `console`; see

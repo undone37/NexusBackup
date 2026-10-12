@@ -265,7 +265,7 @@ pub fn run_with<P: Plugin>(mut p: P, r: Box<dyn Read + Send>, w: Box<dyn Write +
                     b.consistent = false;
                 }
                 if sink.failed > 0 {
-                    // v1.6: only sent when needed, so other plugins still run on a v1.5 host
+                    // v1.7: only sent when needed, so other plugins still run on a v1.6 host
                     chan.borrow_mut()
                         .send(&Message::Warnings {
                             count: sink.failed,
