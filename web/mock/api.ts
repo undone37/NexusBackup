@@ -125,6 +125,11 @@ interface Agent {
   os: string | null;
   /** like web-api: only the hash of the one-time token is kept */
   token_hash: string | null;
+  /** Phase 15f: limits, certificate validity, unconfirmed renewal */
+  limits: { bwlimit?: number; nice?: number };
+  cert_issued: number | null;
+  cert_expires: number | null;
+  cert_renewal_pending: boolean;
 }
 interface Job {
   id: number;
@@ -164,6 +169,10 @@ interface MockGroup {
   paused_until?: number | null;
   /** Phase 15g: index the files of VM/CT disks after each backup */
   index_files?: boolean;
+  /** Phase 15e/f */
+  exclude_disks?: Record<string, string[]>;
+  exclude_disks_mode?: 'placeholder' | 'omit';
+  parallel_guests?: number;
 }
 interface InvRow {
   guest: string;
@@ -192,6 +201,7 @@ const db = {
     blackout?: BlackoutWindow[];
     sla_minutes?: number | null;
     require_consistency?: { mode: string; level: string };
+    file_filters?: { exclude: string[]; exclude_regex: string[] };
   }[],
   groups: [] as MockGroup[],
   /** Phase 13c: guest inventory per source id (GET /sources/{id}/inventory) */
@@ -266,7 +276,7 @@ function addJob(kind: string, tenant: string, params: Json, by: string, opts: Pa
     result: null,
     plan: planFor(kind, params),
     duration:
-      { files_list: 3, files_get: 5, backup: 12, restore: 16, restore_ct: 12, instant_recover: 10, restore_files: 8, agent_enroll: 5, agent_update: 6 }[kind] ?? 8,
+      { files_list: 3, files_get: 5, backup: 12, restore: 16, restore_ct: 12, instant_recover: 10, restore_files: 8, agent_enroll: 5, agent_update: 6, agent_renew: 4 }[kind] ?? 8,
     ...opts,
   };
   db.jobs.push(j);
@@ -333,6 +343,13 @@ function planFor(kind: string, p: Json): string[] {
         'token proof verified (bound to the TLS session)',
         'issued client certificate, pinned agent certificate',
         'agent enrolled',
+      ];
+    case 'agent_renew':
+      return [
+        `session with ${agName}: RenewCert`,
+        'agent generated a new key pair, CSR received',
+        'signed (CN nexus-agent:<id>, 10 years); new fingerprint accepted as a second pin',
+        'agent swapped key and certificate (RenewOk); confirmed with a new session',
       ];
     case 'agent_update':
       return [
@@ -431,6 +448,8 @@ function tick() {
         rs.status = { ...rs.status, [j.params.tenant]: { ...(rs.status?.[j.params.tenant] ?? {}), last_ok: t, last_error: null } };
       }
       if (j.kind === 'agent_update' && ag) Object.assign(ag, { version: '0.9.1', last_seen: t });
+      if (j.kind === 'agent_renew' && ag)
+        Object.assign(ag, { cert_sha256: rand(32), cert_issued: t, cert_expires: t + 3650 * 86400, cert_renewal_pending: false, last_seen: t });
       if (j.kind === 'restore_files' && ag) ag.last_seen = t;
       if (j.kind === 'files_get') {
         j.result = { download_token: j.params.download_token, format: j.params.format, entries: (j.params.paths ?? []).length };
@@ -883,9 +902,15 @@ function seed() {
     version: state === 'enrolled' ? '0.9.0' : null,
     os: state === 'enrolled' ? os : null,
     token_hash: state === 'enrolled' ? null : rand(32),
+    limits: {},
+    cert_issued: state === 'enrolled' ? t - 86400 * 20 : null,
+    cert_expires: state === 'enrolled' ? t - 86400 * 20 + 3650 * 86400 : null,
+    cert_renewal_pending: false,
   });
   const web01 = agent('acme', 'web01', '198.51.100.31', 'enrolled', 'Debian GNU/Linux 13 (trixie)');
   const fs02 = agent('acme', 'fs02', 'fs02.acme.example.com', 'enrolled', 'Windows Server 2022 Standard (10.0.20348)');
+  // Phase 15f: web01 is throttled during business-hours backups
+  web01.limits = { bwlimit: 20 * 1024 * 1024, nice: 10 };
   db.agents.push(web01, fs02, agent('initech', 'db01', 'db01.initech.example.com', 'pending'), agent('initech', 'build01', '192.0.2.40', 'expired'));
   const sWeb01 = {
     id: nextId(),
@@ -967,9 +992,15 @@ function seed() {
   db.sources.push(sPg, sNas02);
 
   const grp = (tenant: string, source_id: number, policy_id: number, name: string, guests: (number | string)[], auto: Partial<MockGroup> = {}): MockGroup => ({
-    id: nextId(), tenant, source_id, policy_id, name, guests, mode: 'explicit', selector: [], exclude: [], ...auto,
+    id: nextId(), tenant, source_id, policy_id, name, guests, mode: 'explicit', selector: [], exclude: [],
+    exclude_disks: {}, exclude_disks_mode: 'placeholder', parallel_guests: 1, ...auto,
   });
-  const gProd = grp('initech', sInitech.id, gold.id, 'production', [100, 101, 200], { index_files: true });
+  // Phase 15e/f: the scratch disk of the ERP database is not backed up, two guests at once
+  const gProd = grp('initech', sInitech.id, gold.id, 'production', [100, 101, 200], {
+    exclude_disks: { '101': ['scsi2'] },
+    index_files: true,
+    parallel_guests: 2,
+  });
   // auto-protect (Phase 13c): every guest of the PVE pool "dev" except the build runner
   const gDev = grp('initech', sInitech.id, bronze.id, 'development', [], { mode: 'tags', selector: ['pool:dev'], exclude: ['105'] });
   const gAcmeVms = grp('acme', sAcme.id, silver.id, 'acme-vms', [300, 301]);
@@ -1208,6 +1239,7 @@ function runControl(b: Json): {
   blackout: BlackoutWindow[];
   sla_minutes: number | null;
   require_consistency: { mode: string; level: string };
+  file_filters: { exclude: string[]; exclude_regex: string[] };
 } {
   if (!parseSchedule(String(b.schedule ?? ''))) throw new HttpError(400, `schedule: bad schedule ${JSON.stringify(b.schedule)}`);
   const retry = b.retry ?? { count: 3, delay_min: 5 };
@@ -1221,7 +1253,15 @@ function runControl(b: Json): {
   const rc = { mode: 'off', level: 'crash', ...(b.require_consistency ?? {}) };
   if (!['off', 'warn', 'fail'].includes(rc.mode) || !['application', 'crash'].includes(rc.level))
     throw new HttpError(400, 'require_consistency: mode off|warn|fail, level application|crash');
-  return { retry, blackout, sla_minutes: sla, require_consistency: { mode: rc.mode, level: rc.level } };
+  // Phase 15e: global file excludes
+  const ff = b.file_filters ?? {};
+  for (const k of Object.keys(ff)) if (!['exclude', 'exclude_regex'].includes(k)) throw new HttpError(400, `file_filters: unknown field "${k}"`);
+  const list = (v: unknown, what: string) => {
+    if (!Array.isArray(v ?? []) || ((v ?? []) as unknown[]).some((x) => typeof x !== 'string' || !x.trim())) throw new HttpError(400, `${what}: non-empty patterns`);
+    return (v ?? []) as string[];
+  };
+  const file_filters = { exclude: list(ff.exclude, 'file_filters.exclude'), exclude_regex: list(ff.exclude_regex, 'file_filters.exclude_regex') };
+  return { retry, blackout, sla_minutes: sla, require_consistency: { mode: rc.mode, level: rc.level }, file_filters };
 }
 
 function checkTz(tz: unknown): string {
@@ -1433,6 +1473,10 @@ function truenasConfig(cfg: Json, old?: Json): Json {
 }
 const weakens = (a: Json, b: Json) =>
   ['daily', 'weekly', 'monthly', 'yearly'].some((k) => Number(b.gfs?.[k]) < Number(a.gfs?.[k])) ||
+  // Phase 15e: a new global exclude backs up less
+  (['exclude', 'exclude_regex'] as const).some((k) =>
+    (b.file_filters?.[k] ?? []).some((x: string) => !(a.file_filters?.[k] ?? []).includes(x)),
+  ) ||
   (a.offsite && !b.offsite) ||
   // Phase 13b: a new blackout window means fewer runs
   (b.blackout ?? []).some((w: Json) => !(a.blackout ?? []).some((x: Json) => JSON.stringify(x) === JSON.stringify(w))) ||
@@ -1681,7 +1725,8 @@ on('GET', '/sources', (c) => [200, byTenant(need(c.user), db.sources).map(stripS
 // linux source config: {agent_id, paths (absolute, 1..=64), excludes (0..=256), hooks}; unknown fields refused.
 function linuxConfig(tenant: string, cfg: Json): Json {
   for (const k of Object.keys(cfg ?? {}))
-    if (!['agent_id', 'paths', 'excludes', 'hooks'].includes(k)) throw new HttpError(400, `config: unknown field "${k}"`);
+    if (!['agent_id', 'paths', 'excludes', 'hooks', 'include', 'exclude_regex', 'cross_mounts', 'skip_fstypes'].includes(k))
+      throw new HttpError(400, `config: unknown field "${k}"`);
   find(db.agents, (a) => a.id === cfg.agent_id && a.tenant === tenant, 'agent in tenant');
   const paths = cfg.paths;
   if (!Array.isArray(paths) || paths.length < 1 || paths.length > 64 || paths.some((p) => typeof p !== 'string' || !p.startsWith('/')))
@@ -1689,18 +1734,38 @@ function linuxConfig(tenant: string, cfg: Json): Json {
   const excludes = cfg.excludes ?? [];
   if (!Array.isArray(excludes) || excludes.length > 256 || excludes.some((p) => typeof p !== 'string' || !p))
     throw new HttpError(400, 'config.excludes: at most 256 non-empty patterns');
-  return { agent_id: cfg.agent_id, paths, excludes, hooks: !!cfg.hooks };
+  const sel = selection(cfg, true);
+  return { agent_id: cfg.agent_id, paths, excludes, hooks: !!cfg.hooks, ...sel };
+}
+/** Phase 15e: include roots, regex excludes (+ nested mounts for agents); empty values are not stored. */
+function selection(cfg: Json, agent: boolean): Json {
+  const out: Json = {};
+  const include = cfg.include ?? [];
+  if (!Array.isArray(include) || include.length > 256 || include.some((p) => typeof p !== 'string' || !(p.startsWith('/') || (agent && /^[A-Za-z]:[\\/]/.test(p)))))
+    throw new HttpError(400, 'config.include: absolute paths');
+  if (include.length) out.include = include;
+  const rx = cfg.exclude_regex ?? [];
+  if (!Array.isArray(rx) || rx.some((p) => typeof p !== 'string' || !p.trim())) throw new HttpError(400, 'config.exclude_regex: non-empty patterns');
+  if (rx.length) out.exclude_regex = rx;
+  if (agent && cfg.cross_mounts) out.cross_mounts = true;
+  const fst = cfg.skip_fstypes ?? [];
+  if (agent && fst.length) {
+    if (fst.some((x: unknown) => typeof x !== 'string' || !/^[A-Za-z0-9._-]{1,32}$/.test(x))) throw new HttpError(400, 'config.skip_fstypes: file system type names');
+    out.skip_fstypes = fst;
+  }
+  return out;
 }
 
 // nfs/smb source config: NFS and SMB fields must not be mixed (deny_unknown_fields in the web-api).
 function shareConfig(kind: string, cfg: Json): Json {
-  const common = ['host', 'port', 'version', 'snapshot_dir', 'snapshot_prefix', 'snapshot_order', 'excludes', 'threads', 'xattrs', 'timeout_secs'];
+  const common = ['host', 'port', 'version', 'snapshot_dir', 'snapshot_prefix', 'snapshot_order', 'excludes', 'include', 'exclude_regex', 'threads', 'xattrs', 'timeout_secs'];
   const own = kind === 'nfs' ? ['export', 'mount_port'] : ['share', 'user', 'domain', 'sec', 'sign', 'seal', 'password', 'keytab', 'principal'];
   for (const k of Object.keys(cfg ?? {})) if (![...common, ...own].includes(k)) throw new HttpError(400, `config: unknown field "${k}"`);
   if (!cfg?.host) throw new HttpError(400, 'host: required');
   if (kind === 'nfs' && !String(cfg.export ?? '').startsWith('/')) throw new HttpError(400, 'export: absolute path required');
   if (kind === 'smb' && !cfg.share) throw new HttpError(400, 'share: required');
-  return { ...cfg };
+  const { include: _i, exclude_regex: _r, ...rest } = cfg;
+  return { ...rest, ...selection(cfg, false) };
 }
 
 on('POST', '/sources', async (c) => {
@@ -1785,7 +1850,7 @@ on('DELETE', '/sources/:id', (c, [id]) => {
 });
 
 // policies
-on('GET', '/policies', (c) => (need(c.user), [200, db.policies]));
+on('GET', '/policies', (c) => (need(c.user), [200, db.policies.map((p) => ({ file_filters: { exclude: [], exclude_regex: [] }, ...p }))]));
 on('POST', '/policies', async (c) => {
   const u = need(c.user, 'admin');
   const p = { id: nextId(), name: c.body.name, schedule: c.body.schedule, gfs: c.body.gfs, offsite: !!c.body.offsite, ...runControl(c.body) };
@@ -1907,11 +1972,29 @@ function checkGuests(src: (typeof db.sources)[number], guests: unknown) {
     if (guests.length) throw new HttpError(400, "guests: a share source's group lists no guests");
   } else if (guests.some((g) => !Number.isInteger(g) || g < 100)) throw new HttpError(400, 'guests: VM/CT IDs required');
 }
+/** Phase 15e/f group fields: disk keys (PVE only), restore mode, parallel guests. */
+function groupSelection(src: (typeof db.sources)[number], b: Json): Pick<MockGroup, 'exclude_disks' | 'exclude_disks_mode' | 'parallel_guests'> {
+  const ex: Record<string, string[]> = {};
+  for (const [k, v] of Object.entries((b.exclude_disks ?? {}) as Json)) {
+    if (k !== '*' && !/^[1-9]\d{2,8}$/.test(k)) throw new HttpError(400, 'exclude_disks: keys are "*" or vmids');
+    if (!Array.isArray(v) || v.some((d) => typeof d !== 'string' || !/^[a-z]+\d{1,3}$/.test(d)))
+      throw new HttpError(400, 'exclude_disks: up to 32 disk keys like scsi1, virtio2, sata0, efidisk0');
+    if (v.length) ex[k] = [...new Set(v as string[])].sort();
+  }
+  if (Object.keys(ex).length && src.kind !== 'pve') throw new HttpError(400, 'exclude_disks: only for groups of a pve source');
+  const mode = b.exclude_disks_mode ?? 'placeholder';
+  if (!['placeholder', 'omit'].includes(mode)) throw new HttpError(400, 'exclude_disks_mode: placeholder or omit');
+  const par = b.parallel_guests ?? 1;
+  if (!(Number.isInteger(par) && par >= 1 && par <= 8)) throw new HttpError(400, 'parallel_guests: 1..=8');
+  return { exclude_disks: ex, exclude_disks_mode: mode, parallel_guests: par };
+}
+const disksAdded = (a: Record<string, string[]> = {}, b: Record<string, string[]> = {}) =>
+  Object.entries(b).some(([k, l]) => l.some((d) => !(a[k] ?? []).includes(d)));
 on('POST', '/groups', async (c) => {
   const u = need(c.user, 'admin');
   const g: MockGroup = { id: nextId(), tenant: c.body.tenant, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), name: c.body.name, guests: c.body.guests ?? [], mode: 'explicit', selector: [], exclude: [], timezone: checkTz(c.body.timezone), paused_until: null };
   const src = find(db.sources, (s) => s.id === g.source_id && s.tenant === g.tenant, 'source in tenant');
-  Object.assign(g, checkMode(src, c.body));
+  Object.assign(g, checkMode(src, c.body), groupSelection(src, c.body));
   if (g.mode === 'explicit') checkGuests(src, g.guests);
   db.groups.push(g);
   await audit(u.name, 'group.create', `group/${g.id}`, g);
@@ -1922,11 +2005,12 @@ on('PUT', '/groups/:id', async (c, [id]) => {
   const g = find(db.groups, (x) => x.id === Number(id), 'group');
   if ('tenant' in c.body) throw new HttpError(400, 'unknown field `tenant`');
   const src = find(db.sources, (s) => s.id === Number(c.body.source_id) && s.tenant === g.tenant, 'source in tenant');
-  const next = { name: c.body.name, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), guests: c.body.guests ?? [], ...checkMode(src, c.body), timezone: checkTz(c.body.timezone) };
+  const next = { name: c.body.name, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), guests: c.body.guests ?? [], ...checkMode(src, c.body), timezone: checkTz(c.body.timezone), ...groupSelection(src, c.body) };
   if (next.mode === 'explicit') checkGuests(src, next.guests);
   const from = find(db.policies, (p) => p.id === g.policy_id, 'policy');
   const to = find(db.policies, (p) => p.id === next.policy_id, 'policy');
-  if (weakens(from, to)) return quorum(u, 'group.update', { id: g.id, tenant: g.tenant, ...next, old: structuredClone(g) });
+  if (weakens(from, to) || disksAdded(g.exclude_disks, next.exclude_disks))
+    return quorum(u, 'group.update', { id: g.id, tenant: g.tenant, ...next, old: structuredClone(g) });
   Object.assign(g, next);
   await audit(u.name, 'group.update', `group/${g.id}`, g);
   return [200, g];
@@ -2111,6 +2195,10 @@ on('POST', '/agents', async (c) => {
     version: null,
     os: null,
     token_hash: null,
+    limits: {},
+    cert_issued: null,
+    cert_expires: null,
+    cert_renewal_pending: false,
   };
   const tok = await issueToken(a);
   db.agents.push(a);
@@ -2123,6 +2211,19 @@ on('POST', '/agents/:id/token', async (c, [id]) => {
   const tok = await issueToken(a);
   await audit(u.name, 'agent.token', `agent/${a.id}`, { token_expires: tok.token_expires });
   return [200, tok];
+});
+on('PUT', '/agents/:id/limits', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const a = findAgent(u, id);
+  for (const k of Object.keys(c.body ?? {})) if (!['bwlimit', 'nice'].includes(k)) throw new HttpError(400, `unknown field ${k}`);
+  const bwlimit = c.body.bwlimit ?? 0;
+  const nice = c.body.nice ?? 0;
+  if (!(Number.isInteger(nice) && nice >= 0 && nice <= 19)) throw new HttpError(400, 'nice: 0..=19');
+  if (!(Number.isInteger(bwlimit) && (bwlimit === 0 || bwlimit >= 65536))) throw new HttpError(400, 'bwlimit: 0 (unlimited) or at least 65536 bytes/s');
+  const old = a.limits;
+  a.limits = { bwlimit, nice };
+  await audit(u.name, 'agent.limits', `agent/${a.id}`, { new: a.limits, old });
+  return [200, pubAgent(a)];
 });
 on('POST', '/agents/:id/enroll', async (c, [id]) => {
   const u = need(c.user, 'admin');
@@ -2627,7 +2728,7 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
     if (kind === 'plugin_mount' && !(Number.isInteger(p.minutes) && p.minutes >= 1 && p.minutes <= 1440))
       throw new HttpError(400, 'minutes: 1..1440');
   }
-  if (kind === 'agent_update') {
+  if (kind === 'agent_update' || kind === 'agent_renew') {
     if (u.role !== 'admin') throw new HttpError(403, 'requires role admin');
     const a = find(db.agents, (x) => x.id === p.agent_id && x.tenant === tenant, 'agent in tenant');
     if (a.enrolled_at === null) throw new HttpError(409, 'agent is not enrolled');

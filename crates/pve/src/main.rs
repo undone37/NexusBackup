@@ -27,6 +27,18 @@ struct Config {
     /// guests (VMs and containers) protected by `backup-all` (scheduled via systemd timer)
     #[serde(default)]
     vmids: Vec<u32>,
+    /// `backup-all`: guests at once (group `parallel_guests`, 1..=8)
+    #[serde(default = "one")]
+    parallel: usize,
+    /// VM devices not backed up, per vmid (`{"101": ["drive-scsi1"]}`, group `exclude_disks`)
+    #[serde(default)]
+    exclude_disks: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    exclude_disks_mode: pve::exclude::Mode,
+}
+
+fn one() -> usize {
+    1
 }
 
 #[derive(Deserialize)]
@@ -76,11 +88,18 @@ fn main() -> Result<()> {
     };
     let api = api(a)?;
     let vmids = cfg.vmids.clone();
+    let mut exclude = BTreeMap::new();
+    for (vmid, devices) in cfg.exclude_disks {
+        exclude.insert(vmid.parse::<u32>().context("exclude_disks: vmid keys")?, devices);
+    }
+    let (store_root, keyd_socket, tenant) = (cfg.store.clone(), cfg.keyd_socket.clone(), cfg.tenant.clone());
     let cluster = Cluster {
         api,
         storage: cfg.storage,
         fleecing_storage: cfg.fleecing_storage,
         nodes: cfg.nodes,
+        exclude,
+        exclude_mode: cfg.exclude_disks_mode,
     };
     match (cmd.as_str(), rest) {
         ("backup", [vmid]) => {
@@ -167,28 +186,47 @@ fn main() -> Result<()> {
         // resume serving an instant recovery (e.g. after an appliance restart)
         ("ir-serve", [node, target]) => cluster.ir_resume(&store, node, target.parse()?)?,
         ("backup-all", []) => {
-            // ponytail: sequential, one guest at a time; parallel per node when windows get tight
-            let failed: Vec<u32> = vmids
-                .iter()
-                .copied()
-                .filter(|&vmid| {
-                    let before = store.written();
-                    match cluster.backup_guest(&store, vmid) {
-                        Ok((m, read)) => {
-                            println!("committed {}/{}", m.source, m.time);
-                            match store.stats_line(&m, read, store.written().since(before)) {
-                                Ok(l) => println!("{l}"),
-                                Err(e) => eprintln!("stats of {}/{}: {e}", m.source, m.time),
-                            }
-                            false
+            // true = failed; every line is printed whole (parallel workers interleave lines only)
+            let one = |store: &Store, vmid: u32| -> bool {
+                let before = store.written();
+                match cluster.backup_guest(store, vmid) {
+                    Ok((m, read)) => {
+                        println!("committed {}/{}", m.source, m.time);
+                        match store.stats_line(&m, read, store.written().since(before)) {
+                            Ok(l) => println!("{l}"),
+                            Err(e) => eprintln!("stats of {}/{}: {e}", m.source, m.time),
                         }
+                        false
+                    }
+                    Err(e) => {
+                        eprintln!("backup of guest {vmid} failed: {e:#}");
+                        true
+                    }
+                }
+            };
+            let failed: Vec<u32> = if cfg.parallel <= 1 || vmids.len() <= 1 {
+                vmids.iter().copied().filter(|&vmid| one(&store, vmid)).collect()
+            } else {
+                let nodes = cluster.guest_nodes()?;
+                let items: Vec<(u32, String)> = vmids
+                    .iter()
+                    .map(|v| (*v, nodes.get(v).cloned().unwrap_or_default()))
+                    .collect();
+                // each guest gets its own Store handle: `written()` deltas stay per snapshot
+                let res = pve::parallel::run(&items, cfg.parallel.min(8), |&vmid| {
+                    let own = keyd::fetch_keyring(&keyd_socket, &tenant)
+                        .context("keyd")
+                        .and_then(|k| Ok(Store::open(&store_root, k, Options::default())?));
+                    match own {
+                        Ok(s) => one(&s, vmid),
                         Err(e) => {
                             eprintln!("backup of guest {vmid} failed: {e:#}");
                             true
                         }
                     }
-                })
-                .collect();
+                });
+                vmids.iter().zip(res).filter(|(_, f)| *f).map(|(v, _)| *v).collect()
+            };
             cluster.push_index(&store)?;
             if !failed.is_empty() {
                 bail!("failed guests: {failed:?}");

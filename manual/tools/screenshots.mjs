@@ -568,7 +568,7 @@ async function main() {
         await closeDialogs();
       };
       await edit('pve-cluster', 'source-pve', 1150);
-      await edit('web01-files', 'source-agent', 1000);
+      await edit('web01-files', 'source-agent', 1400);
       await edit('nas01', 'source-truenas', 1700);
       await edit('filer-projects', 'source-nfs', 1150);
       await edit('fs01-data', 'source-smb', 1250);
@@ -586,6 +586,11 @@ async function main() {
       await confirmOk();
       await until(`return document.body.innerText.includes('One-time token')`, 'token dialog');
       await shot('agent-token');
+      await closeDialogs();
+      // Phase 15f: appliance-side limits of an agent (renewal and re-enroll are row actions)
+      await ev(`$rowClick('web01', 'Limits'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #l-bw')`, 'limits dialog');
+      await shot('agent-limits');
       await closeDialogs();
     }],
     ['replication', async () => {
@@ -635,6 +640,9 @@ async function main() {
       await ev(`$rowClick('production', 'Edit'); return true;`);
       await until(`return !!document.querySelector('dialog[open] #g-guests')`, 'PVE group dialog');
       await shot('group-pve');
+      // Phase 15e/f: excluded disks, restore mode, parallel guests (lower part of the same dialog)
+      await until(`return !!document.querySelector('dialog[open] #g-par')`, 'disk selection fields');
+      await shot('group-disks', { height: 1500 });
       await closeDialogs();
       // Phase 13c: auto-protect by PVE pool with one exclusion
       await ev(`$rowClick('development', 'Edit'); return true;`);

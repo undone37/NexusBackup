@@ -24,6 +24,7 @@ Click **New policy** (or **Edit** on an existing one) and fill in:
 | **Run-time SLA (minutes)** | optional: raise an `sla_missed` warning when a backup of a group runs longer |
 | **Blackout windows** | times in which no scheduled backups start, optionally cancelling running ones |
 | **Required consistency** | optional: warn or fail when a snapshot is less consistent than a minimum level (see [Required consistency](#required-consistency)) |
+| **Global file excludes** | glob patterns and regular expressions excluded from **every** agent and NFS/SMB source of the policy's groups, on top of each source's own excludes (see [File selection](04-sources.md#file-selection-include-paths-regex-excludes-nested-mounts)) |
 
 ![Editing a policy: lowering a retention value needs approval](images/policy-edit.png)
 
@@ -32,11 +33,12 @@ default 14 daily, 4 weekly, 6 monthly, 2 yearly.
 
 Rules:
 
-- **Lowering** any retention value, switching **Copy offsite** off, **adding a blackout window** or **relaxing the
-  required consistency** (a milder action, or a lower minimum level) weakens protection. With approvals enabled the
-  change becomes an approval request ("Pending approval: request #N …") and takes effect only after another
-  administrator or security officer approves it. Raising values, removing blackout windows, a stricter consistency
-  requirement and changing the schedule, retries or SLA take effect immediately.
+- **Lowering** any retention value, switching **Copy offsite** off, **adding a blackout window**, **relaxing the
+  required consistency** (a milder action, or a lower minimum level) or **adding a global file exclude** weakens
+  protection. With approvals enabled the change becomes an approval request ("Pending approval: request #N …") and
+  takes effect only after another administrator or security officer approves it. Raising values, removing blackout
+  windows or global excludes, a stricter consistency requirement and changing the schedule, retries or SLA take
+  effect immediately.
 - Lowering retention never shortens existing retention locks. Snapshots that are locked stay until their lock
   expires, even if the new policy would no longer keep them.
 - Deleting a policy needs approval (when approvals are enabled).
@@ -160,11 +162,41 @@ stored tar stream. The file list is sealed with the tenant key and stored next t
 (a few seconds with KVM) plus the walk over all files for every VM snapshot, and a full read of the container's
 backup for every CT snapshot, so the index job can take minutes for large guests. Only snapshots taken while the
 flag is on are indexed. Turning it on or off is recorded in the audit log (`group.index_files`).
+### Excluded disks and parallel guests (Proxmox VE)
+
+A Proxmox VE group has two more settings in its dialog:
+
+- **Excluded disks (all guests)** and **Excluded disks per guest** (fieldset **Disk selection**, one line per guest: `101: scsi2`): disk keys of the guest configuration that are **not** backed up, e.g. `scsi1` (a scratch or
+  swap disk) or `virtio2`. Enter them for **all guests of the group** or for single guests (by VM ID). Disks that
+  have `backup=0` in Proxmox VE are skipped by PVE itself as before; the job log names them ("disk scsi2 of VM 101
+  has backup=0: skipped by PVE"), and excluded disks too ("excluded disk scsi1 of VM 101 (… bytes): not backed up").
+  Containers are not affected: exclude a mount point there with `backup=0` in PVE.
+- **On restore, excluded disks are**:
+  - **recreated empty (original size and settings)** (default): the restored VM gets the disk with its original size and options, filled with
+    zeros, so the VM configuration stays complete (boot order, `/etc/fstab` on the guest still find a disk);
+  - **left out of the restored VM**: the restored VM has no such disk (its line is removed from the configuration).
+  The choice is stored in each snapshot at backup time; changing it later affects new snapshots only. Instant
+  recovery always leaves excluded disks out.
+- **Guests backed up at once** (1–8, default 1): how many guests of the group are backed up in parallel. The appliance spreads
+  them over the cluster nodes (the next guest goes to the node with the fewest running backups). Snapshots, the
+  per-guest statistics, retries of failed guests and **Cancel** work per guest as before; a cancel stops every running
+  vzdump task. The same setting runs several guests of a **plugin** group (e.g. several PostgreSQL databases) at once.
+
+Excluding another disk backs up less: like a weaker policy it needs approval when approvals are enabled. Removing an
+excluded disk, the restore choice and **Guests backed up at once** take effect immediately.
+
+![A Proxmox VE group with an excluded disk and two guests at once](images/group-disks.png)
+
+> **Status:** Proxmox VE may run only one vzdump at a time on a node (its global vzdump lock): guests on the same node
+> then wait for each other and parallel backups only help across nodes. This, the empty-disk restore and the
+> cancellation of parallel vzdump tasks are covered by unit and scheduler tests; the VM lab run is pending.
 
 ### Changing and deleting groups
 
 - **Edit** lets you change the name, source, policy, guests, the **What to protect** choice, tags and exclusions. Moving a group to a policy that is weaker in any
-  respect (a lower retention value or no offsite copy) needs approval, like weakening the policy itself.
+  respect (a lower retention value, no offsite copy, more global excludes) or excluding another disk needs approval,
+  like weakening the policy itself.
+
 - **Delete** needs approval when approvals are enabled. Deleting a group stops future backups. Existing snapshots are
   not deleted.
 

@@ -252,3 +252,39 @@ pub fn uname() -> (String, String) {
     };
     (s(&u.release), s(&u.nodename))
 }
+
+/// `Limits::nice` for the calling thread (Linux priorities are per thread; hooks
+/// inherit them). Only ever lowers: CPU nice becomes `max(current, n)` (the unit
+/// already runs with `Nice=10`, and raising needs CAP_SYS_NICE, which the agent does
+/// not have); from 15 on the I/O class becomes idle (the unit's default is
+/// best-effort 7). Returns (nice, idle I/O) as set.
+pub fn lower_priority(n: u8) -> io::Result<(i32, bool)> {
+    // SAFETY: plain syscalls on the calling thread.
+    let tid = unsafe { libc::syscall(libc::SYS_gettid) } as libc::id_t;
+    // getpriority may legitimately return -1: clear errno first
+    unsafe { *libc::__errno_location() = 0 };
+    let cur = unsafe { libc::getpriority(libc::PRIO_PROCESS, tid) };
+    if cur == -1 && io::Error::last_os_error().raw_os_error().unwrap_or(0) != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let nice = cur.max(i32::from(n.min(19)));
+    if nice > cur {
+        cvt(unsafe { libc::setpriority(libc::PRIO_PROCESS, tid, nice) })?;
+    }
+    let idle = n >= 15;
+    if idle {
+        const IOPRIO_WHO_PROCESS: libc::c_long = 1;
+        const IOPRIO_CLASS_IDLE: libc::c_long = 3;
+        // SAFETY: ioprio_set(which, who, ioprio) on the calling thread
+        let r = unsafe {
+            libc::syscall(
+                libc::SYS_ioprio_set,
+                IOPRIO_WHO_PROCESS,
+                tid as libc::c_long,
+                IOPRIO_CLASS_IDLE << 13,
+            )
+        };
+        cvt(r as libc::c_int)?;
+    }
+    Ok((nice, idle))
+}

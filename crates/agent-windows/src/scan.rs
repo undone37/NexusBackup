@@ -8,7 +8,7 @@ use crate::paths::utf16_to_wtf8;
 use crate::usn::Changes;
 use agent_core::cache::{Cache, Cached};
 use agent_core::chunk::{self, ChunkList, Locator};
-use agent_core::glob::Excludes;
+use agent_core::filter::{Filter, Visit};
 use agent_proto::{Entry, Kind, ScanStats, MAX_PATH, MAX_XATTR};
 use std::collections::HashMap;
 use std::io;
@@ -76,7 +76,7 @@ pub struct Root {
 
 pub struct Walker<'a, S: Source> {
     pub source: &'a mut S,
-    pub excludes: &'a Excludes,
+    pub filter: &'a Filter,
     pub cache: Option<&'a Cache>,
     pub changes: &'a [Changes],
     pub locator: Locator,
@@ -95,7 +95,7 @@ fn join(parent: &[u8], name: &[u8]) -> Vec<u8> {
 impl<'a, S: Source> Walker<'a, S> {
     pub fn new(
         source: &'a mut S,
-        excludes: &'a Excludes,
+        filter: &'a Filter,
         cache: Option<&'a Cache>,
         changes: &'a [Changes],
         locator: Locator,
@@ -103,7 +103,7 @@ impl<'a, S: Source> Walker<'a, S> {
     ) -> Self {
         Walker {
             source,
-            excludes,
+            filter,
             cache,
             changes,
             locator,
@@ -123,11 +123,11 @@ impl<'a, S: Source> Walker<'a, S> {
         }
     }
 
-    fn excluded(&self, entry: &[u8]) -> bool {
+    fn visit(&self, entry: &[u8]) -> Visit {
         let mut abs = Vec::with_capacity(entry.len() + 1);
         abs.push(b'/');
         abs.extend_from_slice(entry);
-        self.excludes.matches(&abs)
+        self.filter.visit(&abs)
     }
 
     /// Walk all roots (depth first, names sorted, a directory before its children).
@@ -141,6 +141,11 @@ impl<'a, S: Source> Walker<'a, S> {
                 }
             };
             let descend = facts.is_dir() && !facts.is_link();
+            match self.visit(&root.entry) {
+                Visit::Skip => continue,
+                Visit::Pass if !descend => continue,
+                _ => {}
+            }
             self.object(root, &root.entry, &root.src, facts, emit)?;
             if !descend {
                 continue;
@@ -158,7 +163,8 @@ impl<'a, S: Source> Walker<'a, S> {
                 let mut subdirs = vec![];
                 for name in names {
                     let e = join(&entry, &utf16_to_wtf8(&name));
-                    if self.excluded(&e) {
+                    let visit = self.visit(&e);
+                    if visit == Visit::Skip {
                         continue;
                     }
                     let s = self.source.child(&src, &name);
@@ -170,6 +176,9 @@ impl<'a, S: Source> Walker<'a, S> {
                         }
                     };
                     let descend = facts.is_dir() && !facts.is_link();
+                    if visit == Visit::Pass && !descend {
+                        continue;
+                    }
                     if self.object(root, &e, &s, facts, emit)? && descend {
                         subdirs.push((e, s));
                     }
@@ -504,12 +513,22 @@ mod tests {
         changes: Changes,
         live: bool,
     ) -> (Vec<Entry>, ScanStats, Cache, Locator) {
-        let ex = Excludes::new_case_insensitive(
+        let ex = agent_core::glob::Excludes::new_case_insensitive(
             &excludes
                 .iter()
                 .map(|s| crate::paths::normalize_exclude(s))
                 .collect::<Vec<_>>(),
         );
+        walk_f(src, Filter::globs(ex), cache, changes, live)
+    }
+
+    fn walk_f(
+        src: &mut SimSource,
+        ex: Filter,
+        cache: Option<&Cache>,
+        changes: Changes,
+        live: bool,
+    ) -> (Vec<Entry>, ScanStats, Cache, Locator) {
         let changes = [changes];
         let root = Root {
             entry: b"C/Data".to_vec(),
@@ -574,6 +593,36 @@ mod tests {
         d.attrs |= meta::FILE_ATTRIBUTE_REPARSE_POINT;
         d.reparse_tag = 0x8000_0013;
         (t, s)
+    }
+
+    #[test]
+    fn include_roots_and_regex_excludes() {
+        let (_t, mut s) = sample();
+        let f = crate::filter(
+            &[],
+            &agent_proto::Filters {
+                include: vec![r"c:\data\docs".into()],
+                exclude_regex: vec![r"\.BIN$".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (es, _, _, _) = walk_f(&mut s, f, None, Changes::Unsupported, false);
+        let names: Vec<_> = es
+            .iter()
+            .map(|e| String::from_utf8_lossy(&e.path).into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "C/Data",
+                "C/Data/Docs",
+                "C/Data/Docs/hard1.txt",
+                "C/Data/Docs/report.docx",
+                "C/Data/Docs/report.docx:Zone.Identifier"
+            ],
+            "the way to the include root, its content minus the regex exclude (case-insensitive)"
+        );
     }
 
     #[test]

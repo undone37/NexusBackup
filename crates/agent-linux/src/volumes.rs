@@ -77,6 +77,55 @@ pub fn containing<'a>(mounts: &'a [Mount], path: &Path) -> Option<&'a Mount> {
         .max_by_key(|m| m.mountpoint.components().count())
 }
 
+/// `Filters::cross_mounts`: the mounts strictly below one of `roots` that become
+/// roots of their own (each read from its own snapshot): local data file systems
+/// not in the skip list (`skip` empty = `agent_core::filter::DEFAULT_SKIP_FSTYPES`),
+/// whose mount point and the directories leading to it are not excluded, and not
+/// below a skipped mount. Returns (mount points to add, notes about skipped ones
+/// worth telling: network and data file systems).
+pub fn nested_roots(
+    mounts: &[Mount],
+    roots: &[PathBuf],
+    skip: &[String],
+    filter: &agent_core::filter::Filter,
+) -> (Vec<PathBuf>, Vec<String>) {
+    use agent_core::filter::{skip_fstype, Visit};
+    use std::os::unix::ffi::OsStrExt;
+    let mut sorted: Vec<&Mount> = mounts.iter().collect();
+    sorted.sort_by(|a, b| a.mountpoint.cmp(&b.mountpoint));
+    let (mut add, mut notes, mut skipped) = (vec![], vec![], Vec::<&Path>::new());
+    for m in sorted {
+        let mp = m.mountpoint.as_path();
+        let Some(root) = roots.iter().find(|r| mp.starts_with(r) && mp != r.as_path()) else {
+            continue;
+        };
+        if roots.iter().any(|r| r == mp) || skipped.iter().any(|s| mp.starts_with(s)) {
+            continue;
+        }
+        let excluded = mp
+            .ancestors()
+            .take_while(|a| a.starts_with(root) && *a != root.as_path())
+            .any(|a| filter.visit(a.as_os_str().as_bytes()) == Visit::Skip);
+        if excluded {
+            skipped.push(mp);
+            continue;
+        }
+        if skip_fstype(skip, &m.fstype) || !is_data_fs(m) {
+            if is_data_fs(m) || m.fstype.starts_with("nfs") || m.fstype == "cifs" || m.fstype == "smb3" {
+                notes.push(format!(
+                    "nested mount {} ({}) skipped by file system type",
+                    mp.display(),
+                    m.fstype
+                ));
+            }
+            skipped.push(mp);
+            continue;
+        }
+        add.push(mp.to_path_buf());
+    }
+    (add, notes)
+}
+
 /// Normalised absolute path: must start with `/`, no `..`, `.` removed.
 pub fn normalize(p: &str) -> Result<PathBuf, String> {
     let path = Path::new(p);
@@ -334,6 +383,39 @@ mod tests {
         assert_eq!(containing(&m, Path::new("/tank/x")).unwrap().source, "tank/ds");
         let data_fs: Vec<_> = m.iter().filter(|x| is_data_fs(x)).map(|x| x.fstype.as_str()).collect();
         assert_eq!(data_fs, ["xfs", "ext4", "zfs", "ext4"]);
+    }
+
+    #[test]
+    fn nested_mounts_by_fstype_and_filter() {
+        use agent_core::filter::Filter;
+        use agent_core::glob::Excludes;
+        let mi = "\
+1 0 253:1 / / rw - xfs /dev/root rw
+2 1 0:5 / /proc rw - proc proc rw
+3 1 253:2 / /srv rw - ext4 /dev/sdb1 rw
+4 3 253:3 / /srv/cache rw - ext4 /dev/sdc1 rw
+5 3 0:50 / /srv/nfs rw - nfs4 nas:/x rw
+6 5 253:4 / /srv/nfs/inner rw - ext4 /dev/sdd1 rw
+7 1 253:5 / /boot/efi rw - vfat /dev/sda1 rw
+8 1 0:42 / /run rw - tmpfs tmpfs rw
+9 1 253:6 / /home rw - ext4 /dev/sde1 rw
+";
+        let m = parse_mountinfo(mi);
+        let f = Filter::new(Excludes::new(&["/srv/cache".into()]), &[], &[], false).unwrap();
+        let (add, notes) = nested_roots(&m, &[PathBuf::from("/")], &[], &f);
+        assert_eq!(add, [PathBuf::from("/boot/efi"), "/home".into(), "/srv".into()]);
+        assert_eq!(notes, ["nested mount /srv/nfs (nfs4) skipped by file system type"]);
+        // an explicit list replaces the default; a requested root is not added twice
+        let (add, _) = nested_roots(
+            &m,
+            &[PathBuf::from("/"), "/home".into()],
+            &["vfat".into()],
+            &Filter::default(),
+        );
+        assert_eq!(add, [PathBuf::from("/srv"), "/srv/cache".into()]);
+        // only below the requested paths
+        let (add, _) = nested_roots(&m, &[PathBuf::from("/srv")], &[], &Filter::default());
+        assert_eq!(add, [PathBuf::from("/srv/cache")]);
     }
 
     #[test]

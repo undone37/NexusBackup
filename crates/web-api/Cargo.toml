@@ -15,6 +15,8 @@ anyhow = "1"
 base64 = "0.22"
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }
 agent-proto = { path = "../agent-proto" }
+# file filter validation exactly as the agents compile them (regex size limits)
+agent-core = { path = "../agent-core" }
 catalog = { path = "../catalog" }
 # web certificate: Settings → Certificate parsing, requests to nexus-tls
 webtls = { path = "../webtls" }

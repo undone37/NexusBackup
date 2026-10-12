@@ -6,10 +6,11 @@
 use crate::cache::Cache;
 use crate::chunk::Locator;
 use crate::config::{write_atomic, Paths, Settings};
+use crate::limit::Bucket;
 use crate::tls;
 use agent_proto::{
-    enroll_proof, proof_eq, read_msg, write_msg, Entry, Hash, Message, Overwrite, ScanStats, SnapshotInfo, Volume,
-    VssWriter, ALPN, EXPORTER_LABEL, MAX_BATCH, VERSION,
+    enroll_proof, proof_eq, read_msg, write_msg, Entry, Filters, Hash, Limits, Message, Overwrite, ScanStats,
+    SnapshotInfo, Volume, VssWriter, ALPN, EXPORTER_LABEL, MAX_BATCH, VERSION,
 };
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use std::collections::HashMap;
@@ -106,15 +107,22 @@ pub trait Platform: Send + Sync + 'static {
 
     fn host_info(&self) -> HostInfo;
     fn list_volumes(&self) -> Vec<Volume>;
-    /// Validate paths, run pre hooks / VSS writers, create snapshots.
+    /// Validate paths and filters, run pre hooks / VSS writers, create snapshots.
+    /// `filters` is empty for an old appliance's `Prepare`.
     fn prepare(
         &self,
         ctx: Ctx,
         job: u64,
         paths: &[String],
         excludes: &[String],
+        filters: &Filters,
         hooks: bool,
     ) -> Result<PreparedJob<Self::Job>, Refused>;
+    /// Lower the CPU / I/O priority of the calling (session) thread for the rest of
+    /// the connection (`Limits::nice` > 0). Returns a log line ("" = not supported).
+    fn lower_priority(&self, _nice: u8) -> String {
+        String::new()
+    }
     /// Walk the prepared roots, emitting entries; `cache` = committed metadata cache
     /// (only when the appliance sent a base).
     fn scan(
@@ -268,6 +276,7 @@ impl<P: Platform + Default> Agent<P> {
 
 impl<P: Platform> Agent<P> {
     pub fn with_platform(platform: P, paths: Paths, settings: Settings) -> Result<Agent<P>, String> {
+        crate::config::finish_identity_swap(&paths).map_err(|e| format!("certificate renewal: {e}"))?;
         let mode = load_mode(&paths, &settings)?;
         Ok(Agent {
             platform,
@@ -366,6 +375,8 @@ impl<P: Platform> Agent<P> {
                     appliance: id,
                     jobs: HashMap::new(),
                     restore: None,
+                    niced: false,
+                    renew_key: None,
                 };
                 let r = sess.run(&mut s);
                 sess.abort_all();
@@ -439,6 +450,8 @@ struct Job<J> {
     inner: J,
     writers: Vec<VssWriter>,
     scan: Option<(Locator, Cache)>,
+    /// `Limits::bwlimit` on the chunk data sent for `Want`
+    bucket: Option<Bucket>,
 }
 
 struct Session<'a, P: Platform> {
@@ -447,6 +460,10 @@ struct Session<'a, P: Platform> {
     appliance: String,
     jobs: HashMap<u64, Job<P::Job>>,
     restore: Option<P::Restore>,
+    /// the session thread's priority was lowered (`Limits::nice`)
+    niced: bool,
+    /// key pair of a certificate renewal in progress (`RenewCert` → `RenewDone`)
+    renew_key: Option<String>,
 }
 
 impl<P: Platform> Session<'_, P> {
@@ -474,8 +491,11 @@ impl<P: Platform> Session<'_, P> {
                 agent_version: info.agent_version,
                 caps: {
                     let mut c = info.caps;
-                    if !c.iter().any(|x| x == agent_proto::CAP_LZ4) {
-                        c.push(agent_proto::CAP_LZ4.into()); // wire compression lives in the shared core
+                    // wire compression, filters + limits and certificate renewal live in the shared core
+                    for cap in [agent_proto::CAP_LZ4, agent_proto::CAP_PREPARE2, agent_proto::CAP_RENEW] {
+                        if !c.iter().any(|x| x == cap) {
+                            c.push(cap.into());
+                        }
                     }
                     c
                 },
@@ -500,7 +520,17 @@ impl<P: Platform> Session<'_, P> {
                     paths,
                     excludes,
                     hooks,
-                } => self.prepare(s, job, paths, excludes, hooks)?,
+                } => self.prepare(s, job, paths, excludes, Filters::default(), Limits::default(), hooks)?,
+                Message::PrepareEx {
+                    job,
+                    paths,
+                    excludes,
+                    hooks,
+                    filters,
+                    limits,
+                } => self.prepare(s, job, paths, excludes, filters, limits, hooks)?,
+                Message::RenewCert => self.renew_begin(s)?,
+                Message::RenewDone { cert_pem, ca_pem } => self.renew_done(s, &cert_pem, &ca_pem)?,
                 Message::Writers { job } => match self.jobs.get(&job) {
                     Some(j) => write_msg(
                         s,
@@ -580,12 +610,15 @@ impl<P: Platform> Session<'_, P> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn prepare(
         &mut self,
         s: &mut Stream,
         job: u64,
         paths: Vec<String>,
         excludes: Vec<String>,
+        filters: Filters,
+        limits: Limits,
         hooks: bool,
     ) -> io::Result<()> {
         if self.jobs.contains_key(&job) {
@@ -597,11 +630,21 @@ impl<P: Platform> Session<'_, P> {
         let p = match self
             .agent
             .platform
-            .prepare(self.agent.ctx(), job, &paths, &excludes, hooks)
+            .prepare(self.agent.ctx(), job, &paths, &excludes, &filters, hooks)
         {
             Ok(p) => p,
             Err(Refused(code, msg)) => return error(s, code, msg),
         };
+        let mut hook_log = p.hook_log;
+        if limits.nice > 0 && !self.niced {
+            self.niced = true;
+            let l = self.agent.platform.lower_priority(limits.nice.min(19));
+            if !l.is_empty() {
+                log(format!("job {job}: {l}"));
+                hook_log.push_str(&l);
+                hook_log.push('\n');
+            }
+        }
         self.agent.active_jobs.fetch_add(1, Ordering::SeqCst);
         self.jobs.insert(
             job,
@@ -609,6 +652,7 @@ impl<P: Platform> Session<'_, P> {
                 inner: p.job,
                 writers: p.writers,
                 scan: None,
+                bucket: Bucket::new(limits.bwlimit, std::time::Instant::now()),
             },
         );
         log(format!(
@@ -621,7 +665,7 @@ impl<P: Platform> Session<'_, P> {
                 job,
                 snapshots: p.snapshots,
                 consistent: p.consistent,
-                hook_log: p.hook_log,
+                hook_log,
             },
         )
     }
@@ -684,22 +728,38 @@ impl<P: Platform> Session<'_, P> {
     /// `lz4`: the appliance asked via `WantLz4`; compressible chunks go as `ChunkLz4`
     /// (one fast attempt per chunk, a single extra buffer at a time).
     fn want(&mut self, s: &mut Stream, job: u64, hashes: &[Hash], lz4: bool) -> io::Result<()> {
-        let Some((loc, _)) = self.jobs.get_mut(&job).and_then(|j| j.scan.as_mut()) else {
+        let Some(Job {
+            scan: Some((loc, _)),
+            bucket,
+            ..
+        }) = self.jobs.get_mut(&job)
+        else {
             return error(s, E_UNKNOWN_JOB, format!("job {job} has no scan"));
         };
         let mut missing = vec![];
+        let mut pace = |n: usize| {
+            if let Some(b) = bucket.as_mut() {
+                b.throttle(n as u64);
+            }
+        };
         for h in hashes {
             match loc.get(h) {
                 Some(data) => match lz4.then(|| agent_proto::lz4_pack(&data)).flatten() {
-                    Some(c) => write_msg(
-                        s,
-                        &Message::ChunkLz4 {
-                            hash: *h,
-                            raw_len: data.len() as u32,
-                            data: c,
-                        },
-                    )?,
-                    None => write_msg(s, &Message::Chunk { hash: *h, data })?,
+                    Some(c) => {
+                        pace(c.len());
+                        write_msg(
+                            s,
+                            &Message::ChunkLz4 {
+                                hash: *h,
+                                raw_len: data.len() as u32,
+                                data: c,
+                            },
+                        )?
+                    }
+                    None => {
+                        pace(data.len());
+                        write_msg(s, &Message::Chunk { hash: *h, data })?
+                    }
                 },
                 None => missing.push(hex::encode(h)),
             }
@@ -743,6 +803,49 @@ impl<P: Platform> Session<'_, P> {
         agent.active_jobs.fetch_sub(1, Ordering::SeqCst);
         log(format!("job {job} released (success={success})"));
         Some(text)
+    }
+
+    /// `RenewCert`: a new key pair (kept in memory until `RenewDone`) and its CSR.
+    fn renew_begin(&mut self, s: &mut Stream) -> io::Result<()> {
+        let (key, csr_pem) = match tls::new_key().and_then(|k| tls::csr(&k).map(|c| (k, c))) {
+            Ok(x) => x,
+            Err(e) => return error(s, E_INTERNAL, format!("new key: {e}")),
+        };
+        self.renew_key = Some(key);
+        log("certificate renewal: new key generated, CSR sent");
+        write_msg(s, &Message::RenewCsr { csr_pem })
+    }
+
+    /// `RenewDone`: check the certificate (our new key, our agent id, signed by
+    /// the CA we already trust), swap key + certificate atomically, use them for
+    /// new connections.
+    fn renew_done(&mut self, s: &mut Stream, cert_pem: &str, ca_pem: &str) -> io::Result<()> {
+        let Some(key) = self.renew_key.take() else {
+            return error(s, E_BAD_REQUEST, "RenewDone without RenewCert");
+        };
+        let paths = &self.agent.paths;
+        let trusted = fs::read_to_string(paths.ca())
+            .ok()
+            .and_then(|pem| tls::certs_from_pem(&pem).ok())
+            .zip(tls::certs_from_pem(ca_pem).ok())
+            .is_some_and(|(a, b)| a.first() == b.first());
+        if !trusted {
+            return error(s, E_REFUSED, "renewed certificate is not from the trusted CA");
+        }
+        if let Err(e) = tls::check_issued(&key, cert_pem, ca_pem, &self.agent_id) {
+            log(format!("certificate renewal: issued certificate rejected: {e}"));
+            return error(s, E_BAD_REQUEST, e);
+        }
+        if let Err(e) = crate::config::swap_identity(paths, &key, cert_pem) {
+            log(format!("certificate renewal: {e}"));
+            return error(s, E_INTERNAL, format!("storing the new certificate: {e}"));
+        }
+        match load_mode(paths, &self.agent.settings) {
+            Ok(m) => self.agent.set_mode(m),
+            Err(e) => return error(s, E_INTERNAL, e),
+        }
+        log("certificate renewed: new key and certificate active for new connections");
+        write_msg(s, &Message::RenewOk)
     }
 
     /// Connection gone: never leave snapshots behind.

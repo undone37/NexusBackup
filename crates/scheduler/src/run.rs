@@ -485,23 +485,30 @@ fn run_steps(id: i64, plan: &Plan, ctx: &Ctx, log: &Arc<Mutex<BoundedLog>>, stdo
 }
 
 /// A cancelled connector that reported a PVE task (`upid: <UPID>` line) gets
-/// `<bin> <config> task-stop <UPID>` for the last one, so vzdump / qmrestore on
-/// the node stops too (nexus-pve; the DELETE task API).
+/// `<bin> <config> task-stop <UPID>` for each of them (newest first; parallel
+/// guests run several vzdump tasks at once), so vzdump / qmrestore on the node
+/// stops too (nexus-pve; the DELETE task API leaves ended tasks alone).
 fn stop_task(bin: &Path, args: &[String], log: &Arc<Mutex<BoundedLog>>) {
-    let upid = log
-        .lock()
-        .unwrap()
-        .buf
-        .lines()
-        .rev()
-        .find_map(|l| l.strip_prefix("upid: ").map(|u| u.trim().to_owned()));
-    let (Some(upid), Some(cfg)) = (upid.filter(|u| u.starts_with("UPID:")), args.first()) else {
-        return;
-    };
-    let args = [cfg.clone(), "task-stop".into(), upid];
-    if let Err(e) = run_cli(bin, &args, log, false, None) {
-        log.lock().unwrap().line(&format!("[scheduler] task-stop: {e}"));
+    let upids = reported_upids(&log.lock().unwrap().buf);
+    let Some(cfg) = args.first() else { return };
+    for upid in upids {
+        let args = [cfg.clone(), "task-stop".into(), upid];
+        if let Err(e) = run_cli(bin, &args, log, false, None) {
+            log.lock().unwrap().line(&format!("[scheduler] task-stop: {e}"));
+        }
     }
+}
+
+/// Distinct `upid: <UPID>` lines of a log, newest first.
+fn reported_upids(log: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for u in log.lines().rev().filter_map(|l| l.strip_prefix("upid: ")) {
+        let u = u.trim();
+        if u.starts_with("UPID:") && !out.iter().any(|x| x == u) {
+            out.push(u.to_owned());
+        }
+    }
+    out
 }
 
 /// Runs a CLI with stdout/stderr streamed into `log` (or stdout captured).
@@ -578,6 +585,17 @@ pub fn run_cli(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_reported_tasks_are_stopped_newest_first() {
+        let log = "upid: UPID:pve1:1:a:\ncommitted vm-100/5\nupid: UPID:pve2:2:b:\nupid: bogus\n\
+                   upid: UPID:pve1:1:a:\nupid: UPID:pve1:3:c: \n";
+        assert_eq!(
+            reported_upids(log),
+            vec!["UPID:pve1:3:c:", "UPID:pve1:1:a:", "UPID:pve2:2:b:"]
+        );
+        assert!(reported_upids("nothing\n").is_empty());
+    }
 
     #[test]
     fn bounded_log_keeps_tail() {

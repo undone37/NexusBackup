@@ -427,10 +427,34 @@ ALTER TABLE snapshots ADD COLUMN consistency TEXT
 ALTER TABLE policies ADD COLUMN require_consistency TEXT NOT NULL DEFAULT '{"mode":"off","level":"crash"}';
 "#;
 
+/// v21 (Phase 15e/15f, disk/file selection and agents, docs/control-plane.md):
+/// `groups.exclude_disks` (PVE: `{"*": ["scsi1"], "<vmid>": ["virtio2"]}`, disk
+/// keys not backed up), `groups.exclude_disks_mode` (`placeholder`: a restore
+/// recreates them empty with their size and config; `omit`: left out of the
+/// restored config), `groups.parallel_guests` (1..=8 guests at once, PVE and
+/// plugin groups); `policies.file_filters` (`{exclude, exclude_regex}` applied to
+/// every file source of the policy's groups); `agents.cert_issued` /
+/// `cert_expires` (validity of the current agent certificate, reported by every
+/// session), `agents.cert_sha256_next` (a renewed certificate issued but not yet
+/// confirmed: sessions accept either), `agents.limits` (`{bwlimit, nice}`, sent
+/// with every backup). Purely additive: the previous release skips it and never
+/// reads the columns (excluded disks are backed up again, guests run one by one).
+const SCHEMA_V21: &str = r#"
+ALTER TABLE groups ADD COLUMN exclude_disks TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE groups ADD COLUMN exclude_disks_mode TEXT NOT NULL DEFAULT 'placeholder'
+  CHECK (exclude_disks_mode IN ('placeholder','omit'));
+ALTER TABLE groups ADD COLUMN parallel_guests INTEGER NOT NULL DEFAULT 1 CHECK (parallel_guests BETWEEN 1 AND 8);
+ALTER TABLE policies ADD COLUMN file_filters TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE agents ADD COLUMN cert_issued INTEGER;
+ALTER TABLE agents ADD COLUMN cert_expires INTEGER;
+ALTER TABLE agents ADD COLUMN cert_sha256_next TEXT;
+ALTER TABLE agents ADD COLUMN limits TEXT NOT NULL DEFAULT '{}';
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
-    SCHEMA_V20,
+    SCHEMA_V20, SCHEMA_V21,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1234,6 +1258,66 @@ mod tests {
         let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
         assert_eq!(MIGRATIONS[..before].iter().skip(v as usize).count(), 0);
         old.execute("INSERT INTO tenants (name) VALUES ('beta')", []).unwrap();
+    }
+
+    /// v21 (disk/file selection, agents) on top of the previous catalog: groups
+    /// exclude no disks and run one guest at a time, policies have no global file
+    /// filters, agents have no limits and an unknown certificate validity. The
+    /// previous release still reads and writes groups, policies and agents.
+    #[test]
+    fn migration_v21_selection_agents() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V21).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO tenants (name) VALUES ('acme');
+                 INSERT INTO sources (id, tenant, kind, name, config) VALUES (1, 'acme', 'pve', 'pve', '{}');
+                 INSERT INTO policies (id, name, schedule, gfs) VALUES (1, 'p', 'daily 01:00', '{}');
+                 INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (1, 'acme', 1, 1, 'g', '[100]');
+                 INSERT INTO agents (id, tenant, name, host, port, cert_sha256, enrolled_at)
+                   VALUES ('0123456789abcdef', 'acme', 'web', 'h', 7444, 'ab', 5);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let g: (String, String, i64) = conn
+                .query_row(
+                    "SELECT exclude_disks, exclude_disks_mode, parallel_guests FROM groups WHERE id = 1",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(g, ("{}".into(), "placeholder".into(), 1));
+            let f: String = conn
+                .query_row("SELECT file_filters FROM policies WHERE id = 1", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(f, "{}");
+            let a: (Option<i64>, Option<String>, String) = conn
+                .query_row("SELECT cert_expires, cert_sha256_next, limits FROM agents", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+                .unwrap();
+            assert_eq!(a, (None, None, "{}".into()));
+            assert!(conn.execute("UPDATE groups SET parallel_guests = 9", []).is_err());
+            assert!(conn.execute("UPDATE groups SET exclude_disks_mode = 'x'", []).is_err());
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..before].iter().skip(v as usize).count(), 0);
+        old.execute_batch(
+            "INSERT INTO groups (tenant, source_id, policy_id, name, guests) VALUES ('acme', 1, 1, 'g2', '[]');
+             UPDATE agents SET last_seen = 9;",
+        )
+        .unwrap();
     }
 
     /// v17 (access) on top of the previous catalog: users keep ids, roles and

@@ -102,7 +102,10 @@ pack|sign|verify` tooling.
   (quorum), source forms generated from `config_schema` (secret fields write-only and sealed), restore actions from
   `restores[]` with `params_schema`.
 - scheduler: job kinds `plugin_backup`, `plugin_restore`, `plugin_mount`, `plugin_validate`, `plugin_guests` run
-  `nexus-pluginhost`; retention/offsite/replication treat plugin snapshots like any other.
+  `nexus-pluginhost`; retention/offsite/replication treat plugin snapshots like any other. A backup job backs up
+  its guests one after the other, or up to `parallel` at once (job config key, group `parallel_guests` 1..=8,
+  Phase 15f): one sandboxed plugin process and one store handle per guest, the `result {json}` line lists the
+  guests in their configured order.
 - UI: Plugins page (install with signature details, publisher keys), dynamic source forms, restore dialogs.
 
 ## Milestone M9

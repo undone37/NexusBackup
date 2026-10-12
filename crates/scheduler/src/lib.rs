@@ -75,6 +75,7 @@ mod inventory;
 mod lifecycle;
 pub mod orphans;
 mod plugins;
+mod renewal;
 pub mod replica;
 pub mod report_mail;
 mod restore;
@@ -83,6 +84,7 @@ pub mod run;
 mod runctl;
 pub mod schedule;
 pub mod search;
+mod selection;
 pub mod sshkeys;
 pub mod stats;
 
@@ -258,6 +260,10 @@ struct AgentRow {
     cert_sha256: Option<String>,
     token_hash: Option<String>,
     token_expires: Option<i64>,
+    /// renewed certificate issued, not yet confirmed by a session (accepted as a second pin)
+    cert_sha256_next: Option<String>,
+    /// `{bwlimit, nice}` (agent_proto::Limits), sent with every backup
+    limits: Value,
 }
 
 /// A path argument for the file CLIs (never an option).
@@ -298,6 +304,14 @@ struct GroupRow {
     schedule: String,
     gfs: Gfs,
     offsite: bool,
+    /// PVE disks not backed up (`{"*": [...], "<vmid>": [...]}`, disk keys) and how a
+    /// restore treats them (`placeholder` | `omit`)
+    exclude_disks: Value,
+    exclude_disks_mode: String,
+    /// guests backed up at once (PVE and plugin groups)
+    parallel: u32,
+    /// the policy's global file filters (`{exclude, exclude_regex}`)
+    file_filters: Value,
 }
 
 pub struct Scheduler {
@@ -696,6 +710,7 @@ impl Scheduler {
                 self.log_err(|s| s.publish_ssh_keys());
                 self.log_err(|s| s.prune_alerts(now));
                 self.log_err(|s| s.check_expiry(now));
+                self.log_err(|s| s.queue_agent_renewals(now));
                 self.log_err(|s| forward::prune_outbox(&s.db, now));
                 self.log_err(|s| s.check_accounts(now));
             }
@@ -758,7 +773,7 @@ impl Scheduler {
         let c = self.db.conn();
         let mut st = c.prepare(
             "SELECT g.id, g.tenant, g.source_id, g.guests, p.schedule, p.gfs, p.offsite, s.kind, \
-             g.mode, g.selector, g.exclude \
+             g.mode, g.selector, g.exclude, g.exclude_disks, g.exclude_disks_mode, g.parallel_guests, p.file_filters \
              FROM groups g JOIN policies p ON p.id = g.policy_id JOIN sources s ON s.id = g.source_id ORDER BY g.id",
         )?;
         let rows = st.query_map([], |r| {
@@ -826,6 +841,10 @@ impl Scheduler {
                 schedule: r.get(4)?,
                 gfs: gfs_of(&serde_json::from_str(&gfs).unwrap_or(Value::Null)),
                 offsite: r.get::<_, i64>(6)? != 0,
+                exclude_disks: serde_json::from_str(&r.get::<_, String>(11)?).unwrap_or_default(),
+                exclude_disks_mode: r.get(12)?,
+                parallel: r.get::<_, u32>(13)?.clamp(1, 8),
+                file_filters: serde_json::from_str(&r.get::<_, String>(14)?).unwrap_or_default(),
             })
         })?;
         let mut rows: Vec<GroupRow> = rows.collect::<std::result::Result<_, _>>()?;
@@ -1308,11 +1327,12 @@ impl Scheduler {
             .filter(|a| valid_agent_id(a))
             .map(str::to_owned)
         else {
-            return self.agent_info_lines(job, log, None);
+            self.agent_info_lines(job, log, None)?;
+            return self.agent_cert_lines(job, log, None);
         };
         self.agent_info_lines(job, log, Some(&expected))?;
         if job.kind != "agent_enroll" {
-            return Ok(());
+            return self.agent_cert_lines(job, log, Some(&expected));
         }
         for l in log.lines() {
             let Some(v) = l
@@ -1329,7 +1349,8 @@ impl Scheduler {
                 continue;
             }
             let n = self.db.conn().execute(
-                "UPDATE agents SET cert_sha256=?2, enrolled_at=?3, token_hash=NULL, token_expires=NULL, last_seen=?3 \
+                "UPDATE agents SET cert_sha256=?2, enrolled_at=?3, token_hash=NULL, token_expires=NULL, last_seen=?3, \
+                 cert_sha256_next=NULL, cert_issued=NULL, cert_expires=NULL \
                  WHERE id=?1 AND tenant=?4",
                 params![expected, fp, catalog::now(), job.tenant],
             )?;
@@ -1342,7 +1363,8 @@ impl Scheduler {
                 )?;
             }
         }
-        Ok(())
+        // the confirming session's `agent-cert` line: validity of the new certificate
+        self.agent_cert_lines(job, log, Some(&expected))
     }
 
     fn agent_info_lines(&self, job: &Job, log: &str, only: Option<&str>) -> Result<()> {
@@ -1907,9 +1929,17 @@ impl Scheduler {
     }
 
     /// Backup of an NFS/SMB share (one nexus-nas run; exclusive per source).
-    fn plan_share_backup(&self, mut plan: Plan, source_id: i64) -> Result<Plan> {
+    fn plan_share_backup(&self, mut plan: Plan, source_id: i64, policy_filters: &Value) -> Result<Plan> {
         plan.key = format!("source:{source_id}");
         plan.files = self.share_config(&plan.tenant, source_id, &plan.dir)?;
+        // filters only (no secrets): the plain stored config is enough
+        let src: String = self.db.conn().query_row(
+            "SELECT config FROM sources WHERE id=?1 AND tenant=?2",
+            params![source_id, plan.tenant],
+            |r| r.get(0),
+        )?;
+        let src: Value = serde_json::from_str(&src).unwrap_or_default();
+        selection::patch_share_config(&mut plan.files, &src, policy_filters)?;
         plan.steps.push(Step::Cli {
             bin: self.cfg.nas_bin.clone(),
             args: vec![
@@ -2049,7 +2079,8 @@ impl Scheduler {
             .db
             .conn()
             .query_row(
-                "SELECT id, tenant, name, host, port, cert_sha256, token_hash, token_expires FROM agents WHERE id=?1",
+                "SELECT id, tenant, name, host, port, cert_sha256, token_hash, token_expires, cert_sha256_next, limits \
+                 FROM agents WHERE id=?1",
                 [id],
                 |r| {
                     Ok(AgentRow {
@@ -2061,6 +2092,8 @@ impl Scheduler {
                         cert_sha256: r.get(5)?,
                         token_hash: r.get(6)?,
                         token_expires: r.get(7)?,
+                        cert_sha256_next: r.get(8)?,
+                        limits: serde_json::from_str(&r.get::<_, String>(9)?).unwrap_or_default(),
                     })
                 },
             )
@@ -2098,7 +2131,8 @@ impl Scheduler {
             "job": job.id,
         });
         if let Some(a) = a {
-            cfg["agent"] = json!({"id": a.id, "host": a.host, "port": a.port, "cert_sha256": a.cert_sha256});
+            cfg["agent"] = json!({"id": a.id, "host": a.host, "port": a.port, "cert_sha256": a.cert_sha256,
+                                  "cert_sha256_next": a.cert_sha256_next});
         }
         if let (Some(c), Some(e)) = (cfg.as_object_mut(), extra.as_object()) {
             c.extend(e.clone());
@@ -2127,7 +2161,14 @@ impl Scheduler {
     }
 
     /// Backups of Linux agents (one step per agent; the source says what to back up).
-    fn plan_agent_backups(&self, job: &Job, mut plan: Plan, source_id: i64, agents: &[String]) -> Result<Plan> {
+    fn plan_agent_backups(
+        &self,
+        job: &Job,
+        mut plan: Plan,
+        source_id: i64,
+        agents: &[String],
+        policy_filters: &Value,
+    ) -> Result<Plan> {
         let (kind, cfg): (String, String) = self.db.conn().query_row(
             "SELECT kind, config FROM sources WHERE id=?1 AND tenant=?2",
             params![source_id, job.tenant],
@@ -2146,8 +2187,10 @@ impl Scheduler {
             if a.cert_sha256.is_none() {
                 bail!("agent {} ({}) is not enrolled", a.name, a.id);
             }
-            let backup = json!({"paths": src["paths"], "excludes": src["excludes"].as_array().cloned().unwrap_or_default(),
-                                "hooks": src["hooks"].as_bool().unwrap_or(false)});
+            let (excludes, filters) = selection::agent_filters(&src, policy_filters);
+            let backup = json!({"paths": src["paths"], "excludes": excludes,
+                                "hooks": src["hooks"].as_bool().unwrap_or(false),
+                                "filters": filters, "limits": selection::agent_limits(&a.limits)});
             let (f, step) = self.agentctl(&plan.dir, job, &a, "backup", json!({"backup": backup}))?;
             plan.files.push(f);
             plan.steps.push(step);
@@ -2223,34 +2266,34 @@ impl Scheduler {
         }
         match job.kind.as_str() {
             "backup" => {
-                let (source_id, vmids) = match (p["group_id"].as_i64(), p["agent_id"].as_str()) {
+                let (source_id, vmids, group_row) = match (p["group_id"].as_i64(), p["agent_id"].as_str()) {
                     (Some(g), _) => {
                         let g = runctl::restrict(group(g)?, p);
                         if !g.datasets.is_empty() {
                             return self.plan_truenas_backup(plan, g.source_id, &g.datasets);
                         }
                         if g.share {
-                            return self.plan_share_backup(plan, g.source_id);
+                            return self.plan_share_backup(plan, g.source_id, &g.file_filters);
                         }
                         if let Some((_, guests)) = &g.plugin {
                             if g.auto && guests.is_empty() {
                                 bail!("nothing to back up: no guests match the group (inventory)");
                             }
                             let guests = guests.clone();
-                            return self.plan_plugin_backup(job, plan, g.source_id, &guests);
+                            return self.plan_plugin_backup(job, plan, g.source_id, &guests, g.parallel);
                         }
                         if !g.agents.is_empty() {
-                            return self.plan_agent_backups(job, plan, g.source_id, &g.agents);
+                            return self.plan_agent_backups(job, plan, g.source_id, &g.agents, &g.file_filters);
                         }
-                        (g.source_id, g.guests)
+                        (g.source_id, g.guests.clone(), Some(g))
                     }
                     (None, Some(a)) => {
                         let (sid, _) = self.agent_source(tenant, a)?;
-                        return self.plan_agent_backups(job, plan, sid, &[a.to_owned()]);
+                        return self.plan_agent_backups(job, plan, sid, &[a.to_owned()], &Value::Null);
                     }
                     (None, None) => {
                         let v = u32::try_from(num(p, "vmid")?).context("vmid")?;
-                        (self.resolve_source(job, Some(v))?, vec![v])
+                        (self.resolve_source(job, Some(v))?, vec![v], None)
                     }
                 };
                 if vmids.is_empty() {
@@ -2258,6 +2301,17 @@ impl Scheduler {
                 }
                 plan.key = format!("source:{source_id}");
                 plan.files = self.pve_config(tenant, source_id, &dir, &vmids)?;
+                if let Some(g) = &group_row {
+                    // exclude_disks, restore mode, parallel guests (selection.rs)
+                    if let Some((_, body)) = plan.files.iter_mut().find(|(n, _)| n == "pve.json") {
+                        let mut cfg: Value = serde_json::from_slice(body)?;
+                        if let (Some(c), Some(o)) = (cfg.as_object_mut(), selection::pve_options(g, &vmids).as_object())
+                        {
+                            c.extend(o.clone());
+                        }
+                        *body = serde_json::to_vec_pretty(&cfg)?;
+                    }
+                }
                 plan.steps.push(pve(vec!["backup-all".into()]));
             }
             "retention" if p["group_id"].is_null() && p["vmid"].is_null() && p["source"].is_null() => {
@@ -2438,6 +2492,16 @@ impl Scheduler {
                 plan.steps.push(pve(args));
             }
             "restore_files" => return self.plan_restore_files(job, plan, replicated),
+            "agent_renew" => {
+                let a = self.agent(tenant, p["agent_id"].as_str().unwrap_or_default())?;
+                if a.cert_sha256.is_none() {
+                    bail!("agent {} ({}) is not enrolled", a.name, a.id);
+                }
+                plan.key = format!("agent:{}", a.id);
+                let (f, step) = self.agentctl(&dir, job, &a, "renew", json!({}))?;
+                plan.files.push(f);
+                plan.steps.push(step);
+            }
             "agent_update" => {
                 let a = self.agent(tenant, p["agent_id"].as_str().unwrap_or_default())?;
                 plan.key = format!("agent:{}", a.id);

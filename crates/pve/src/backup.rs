@@ -2,6 +2,7 @@
 //! Containers: `crate::ct`.
 
 use crate::api::Api;
+use crate::exclude::{self, Excluded};
 use anyhow::{bail, Context, Result};
 use chunkstore::store::IMAGE_CHUNK_SIZE;
 use chunkstore::{FileEntry, Index, Manifest, Store};
@@ -75,6 +76,9 @@ pub struct Cluster {
     pub fleecing_storage: String,
     /// PVE node name -> SSH endpoint
     pub nodes: BTreeMap<String, SshNode>,
+    /// VM devices not backed up (`drive-scsi1`), per vmid (group `exclude_disks`)
+    pub exclude: BTreeMap<u32, Vec<String>>,
+    pub exclude_mode: exclude::Mode,
 }
 
 #[derive(Deserialize)]
@@ -130,12 +134,28 @@ impl Cluster {
             .with_context(|| format!("guest {vmid} not found in cluster"))
     }
 
+    /// Node of every guest of the cluster (one `/cluster/resources` call).
+    pub fn guest_nodes(&self) -> Result<BTreeMap<u32, String>> {
+        let res = self.api.get("/cluster/resources?type=vm")?;
+        Ok(res
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| Some((u32::try_from(r["vmid"].as_u64()?).ok()?, r["node"].as_str()?.to_owned())))
+            .collect())
+    }
+
     /// Backs up a VM or a container, whichever `vmid` is. Returns the manifest
     /// and the bytes read from the guest.
     pub fn backup_guest(&self, store: &Store, vmid: u32) -> Result<(Manifest, u64)> {
         match self.guest(vmid)?.1.as_str() {
             "qemu" => self.backup_vm(store, vmid),
-            "lxc" => self.backup_ct(store, vmid).map(|(m, st)| (m, st.size)),
+            "lxc" => {
+                if self.exclude.get(&vmid).is_some_and(|x| !x.is_empty()) {
+                    println!("note: excluded disks do not apply to container {vmid} (set backup=0 on mount points)");
+                }
+                self.backup_ct(store, vmid).map(|(m, st)| (m, st.size))
+            }
             t => bail!("guest {vmid} has unsupported type {t}"),
         }
     }
@@ -211,7 +231,25 @@ impl Cluster {
         let source = source_name(vmid);
         let prev = store.list_snapshots()?.into_iter().rfind(|m| m.source == source);
         let (mut names, mut indexes, mut read) = (Vec::new(), Vec::new(), 0);
+        for key in exclude::backup_off(&job.config) {
+            println!("disk {key} of VM {vmid} has backup=0: skipped by PVE");
+        }
+        let excluded = self.exclude.get(&vmid).map(Vec::as_slice).unwrap_or_default();
+        let mut skipped = Excluded {
+            mode: self.exclude_mode,
+            disks: Vec::new(),
+        };
         for dev in &job.devices {
+            if excluded.contains(&dev.name) {
+                let key = exclude::disk_key(&dev.name).to_owned();
+                println!("excluded disk {key} of VM {vmid} ({} bytes): not backed up", dev.size);
+                skipped.disks.push(exclude::Disk {
+                    device: dev.name.clone(),
+                    key,
+                    size: dev.size,
+                });
+                continue;
+            }
             let base = match (dev.bitmap_mode.as_str(), &prev) {
                 ("reuse", Some(m)) if m.indexes.contains(&dev.name) => Some(store.load_index(m, &dev.name)?),
                 ("reuse", _) => bail!("{}: PVE reuses a dirty bitmap but no base snapshot exists", dev.name),
@@ -226,6 +264,9 @@ impl Cluster {
         let mut entries = vec![config_entry(store, "qemu-server.conf", &job.config)?];
         if let Some(fw) = &job.firewall {
             entries.push(config_entry(store, "firewall.fw", fw)?);
+        }
+        if !skipped.disks.is_empty() {
+            entries.push(config_entry(store, exclude::FILE, &serde_json::to_string(&skipped)?)?);
         }
         names.push("config");
         indexes.push(Index::Dynamic { entries });
@@ -281,6 +322,7 @@ impl Cluster {
         archive: &str,
         upid: &str,
     ) -> Result<()> {
+        let excluded = read_excluded(store, m)?;
         let mut served = std::collections::HashSet::new();
         loop {
             if let Some(exit) = self.api.task_status(node, upid)? {
@@ -300,8 +342,22 @@ impl Cluster {
                 std::thread::sleep(Duration::from_secs(1)); // previous serve of this device still finishing
                 continue;
             }
-            if !m.indexes.contains(&device) || device == "config" {
+            if device == "config" {
                 bail!("snapshot has no device {device}");
+            }
+            if !m.indexes.contains(&device) {
+                // an excluded disk (mode placeholder): PVE creates it, we serve zeros
+                let size = excluded
+                    .as_ref()
+                    .and_then(|x| x.placeholder(&device))
+                    .with_context(|| format!("snapshot has no device {device}"))?;
+                eprintln!("{device} was excluded from the backup: restored empty ({size} bytes)");
+                serve(ssh, archive, &device, size, |_, buf| {
+                    buf.fill(0);
+                    Ok(())
+                })
+                .with_context(|| format!("serve {device}"))?;
+                continue;
             }
             let idx = store.load_index(m, &device)?;
             serve_device(store, ssh, archive, &device, &idx).with_context(|| format!("serve {device}"))?;
@@ -361,6 +417,18 @@ fn pull_device(store: &Store, ssh: &SshNode, vmid: u32, dev: &Device, base: Opti
 }
 
 fn serve_device(store: &Store, ssh: &SshNode, archive: &str, device: &str, idx: &Index) -> Result<()> {
+    let mut img = store.image_reader(idx)?;
+    let size = img.size();
+    serve(ssh, archive, device, size, |off, buf| img.read_at(off, buf))
+}
+
+fn serve(
+    ssh: &SshNode,
+    archive: &str,
+    device: &str,
+    size: u64,
+    read_at: impl FnMut(u64, &mut [u8]) -> std::io::Result<()>,
+) -> Result<()> {
     let mut child = Kill(
         ssh.cmd(&format!("restore-serve {archive} {device}"))
             .stdin(Stdio::piped())
@@ -369,9 +437,7 @@ fn serve_device(store: &Store, ssh: &SshNode, archive: &str, device: &str, idx: 
     );
     let r = BufReader::with_capacity(1 << 20, child.0.stdout.take().unwrap());
     let w = BufWriter::with_capacity(1 << 20, child.0.stdin.take().unwrap());
-    let mut img = store.image_reader(idx)?;
-    let size = img.size();
-    nbd::server::serve(r, w, device, size, |off, buf| img.read_at(off, buf))?;
+    nbd::server::serve(r, w, device, size, read_at)?;
     Ok(())
 }
 
@@ -400,6 +466,16 @@ struct CatalogArchive {
     firewall: Option<String>,
     notes: String,
     protected: bool,
+}
+
+/// The snapshot's excluded-disks record (`None`: nothing was excluded).
+pub fn read_excluded(store: &Store, m: &Manifest) -> Result<Option<Excluded>> {
+    if !m.indexes.iter().any(|i| i == "config") {
+        return Ok(None);
+    }
+    read_config(store, m, exclude::FILE)?
+        .map(|t| serde_json::from_str(&t).context("excluded-disks.json"))
+        .transpose()
 }
 
 pub(crate) fn read_config(store: &Store, m: &Manifest, file: &str) -> Result<Option<String>> {
@@ -443,19 +519,84 @@ pub fn build_index(store: &Store) -> Result<serde_json::Value> {
                 device_sizes.insert(d.clone(), size);
             }
         }
+        let size = device_sizes.values().sum();
+        let mut config = read_config(store, &m, "qemu-server.conf")?.unwrap_or_default();
+        if let Some(x) = read_excluded(store, &m)? {
+            let (c, placeholders) = x.catalog(&config);
+            config = c;
+            device_sizes.extend(placeholders);
+        }
         archives.push(CatalogArchive {
             volname: format!("backup/nexus-{vmid}-{}", m.time),
             vmid,
             kind: "qemu",
             ctime: m.time,
-            size: device_sizes.values().sum(),
+            size,
             devices,
             device_sizes,
-            config: read_config(store, &m, "qemu-server.conf")?.unwrap_or_default(),
+            config,
             firewall: read_config(store, &m, "firewall.fw")?,
             notes: String::new(),
             protected: false,
         });
     }
     Ok(serde_json::json!({ "version": 1, "archives": archives }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exclude::{Disk, Mode};
+
+    /// A VM snapshot as `pull` commits it: one backed-up disk, scsi1 excluded.
+    fn snapshot(store: &Store, time: u64, mode: Mode) -> Manifest {
+        let idx = store
+            .store_image_extents(None, IMAGE_CHUNK_SIZE, 1 << 20, &[(0, 1 << 20)], |_, b| {
+                b.fill(7);
+                Ok(())
+            })
+            .unwrap();
+        let conf = "scsi0: local-lvm:vm-101-disk-0,size=1M\nscsi1: local-lvm:vm-101-disk-1,size=4M\n\
+                    #qmdump#map:scsi0:drive-scsi0:local-lvm:raw:\n#qmdump#map:scsi1:drive-scsi1:local-lvm:raw:\n";
+        let x = Excluded {
+            mode,
+            disks: vec![Disk {
+                device: "drive-scsi1".into(),
+                key: "scsi1".into(),
+                size: 4 << 20,
+            }],
+        };
+        let entries = vec![
+            config_entry(store, "qemu-server.conf", conf).unwrap(),
+            config_entry(store, exclude::FILE, &serde_json::to_string(&x).unwrap()).unwrap(),
+        ];
+        store
+            .commit_snapshot(
+                "vm-101",
+                time,
+                &[("drive-scsi0", idx), ("config", Index::Dynamic { entries })],
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn excluded_disks_in_the_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = chunkstore::Keyring::new("t", &[(1, [7; 32])]);
+        let store = Store::open(dir.path(), keys, chunkstore::Options::default()).unwrap();
+        let m = snapshot(&store, 1760000000, Mode::Placeholder);
+        assert_eq!(read_excluded(&store, &m).unwrap().unwrap().keys(), vec!["scsi1"]);
+        snapshot(&store, 1760000100, Mode::Omit);
+        let idx = build_index(&store).unwrap();
+        let a = idx["archives"].as_array().unwrap();
+        // placeholder: sized for the restore, but not a backed-up device (incremental bitmaps)
+        assert_eq!(a[0]["devices"], serde_json::json!(["drive-scsi0"]));
+        assert_eq!(a[0]["device_sizes"]["drive-scsi1"], 4 << 20);
+        assert_eq!(a[0]["size"], 1 << 20);
+        assert!(a[0]["config"].as_str().unwrap().contains("#qmdump#map:scsi1:"));
+        // omit: the disk is gone from the restored config
+        assert_eq!(a[1]["device_sizes"], serde_json::json!({"drive-scsi0": 1 << 20}));
+        let c = a[1]["config"].as_str().unwrap();
+        assert!(!c.contains("scsi1") && c.contains("scsi0:"), "{c}");
+    }
 }

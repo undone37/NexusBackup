@@ -6,7 +6,7 @@
 //! stay in the overlays; `qm disk move` (live drive-mirror) then copies every
 //! disk to real storage and frees the overlays, after which serving stops.
 
-use crate::backup::{read_config, source_name, Cluster, Kill, SshNode};
+use crate::backup::{read_config, read_excluded, source_name, Cluster, Kill, SshNode};
 use anyhow::{bail, Context, Result};
 use chunkstore::{Index, Store};
 use std::collections::BTreeMap;
@@ -38,7 +38,7 @@ pub fn ir_volid(storage: &str, target: u32, archive: &str, device: &str) -> Stri
     format!("{storage}:ir/{target}/{archive}.{device}.qcow2")
 }
 
-fn is_disk_key(k: &str) -> bool {
+pub(crate) fn is_disk_key(k: &str) -> bool {
     if k == "efidisk0" || k == "tpmstate0" {
         return true;
     }
@@ -315,7 +315,12 @@ impl Cluster {
         let link_down = opts.link_down;
         let start = Instant::now();
         let m = store.load_manifest(&source_name(vmid), time)?;
-        let conf = read_config(store, &m, "qemu-server.conf")?.context("snapshot has no qemu-server.conf")?;
+        let mut conf = read_config(store, &m, "qemu-server.conf")?.context("snapshot has no qemu-server.conf")?;
+        // excluded disks have no data to serve: the recovered VM never gets them
+        if let Some(x) = read_excluded(store, &m)? {
+            eprintln!("excluded from the backup, left out: {}", x.keys().join(", "));
+            conf = crate::exclude::omit_config(&conf, &x.keys());
+        }
         let archive = format!("nexus-{vmid}-{time}");
         let devices: Vec<String> = m.indexes.iter().filter(|n| *n != "config").cloned().collect();
         let plan = ir_config(

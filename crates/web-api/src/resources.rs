@@ -486,6 +486,16 @@ pub struct LinuxConfig {
     excludes: Vec<String>,
     #[serde(default)]
     hooks: bool,
+    /// Phase 15e (crate::selection, agents v1.3): include roots, regex excludes,
+    /// nested mounts backed up except the `skip_fstypes` (empty = default list)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    include: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    exclude_regex: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    cross_mounts: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    skip_fstypes: Vec<String>,
 }
 
 impl LinuxConfig {
@@ -516,6 +526,9 @@ impl LinuxConfig {
                 return Err(ApiError::bad("config.excludes: one pattern per entry"));
             }
         }
+        crate::selection::check_include(&self.include, "config.include")?;
+        crate::selection::check_regex(&self.exclude_regex, "config.exclude_regex")?;
+        crate::selection::check_fstypes(&self.skip_fstypes)?;
         Ok(())
     }
 }
@@ -744,6 +757,11 @@ pub struct ShareConfig {
     snapshot_order: Option<String>,
     #[serde(default)]
     excludes: Vec<String>,
+    /// Phase 15e: include roots (share paths, `/projects/a`) and regex excludes
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    include: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    exclude_regex: Vec<String>,
     /// scan threads (1..=64, default 16)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     threads: Option<u32>,
@@ -872,6 +890,8 @@ impl ShareConfig {
         if self.threads.is_some_and(|t| !(1..=64).contains(&t)) {
             return Err(bad("threads: 1..=64".into()));
         }
+        crate::selection::check_include(&self.include, "include")?;
+        crate::selection::check_regex(&self.exclude_regex, "exclude_regex")?;
         Ok(())
     }
 
@@ -1335,6 +1355,9 @@ pub struct PolicyReq {
     /// Phase 15d: minimum consistency of group backups (scheduler `consistency.rs`)
     #[serde(default)]
     require_consistency: RequireConsistency,
+    /// Phase 15e: global excludes for every file source of the policy's groups
+    #[serde(default)]
+    file_filters: crate::selection::FileFilters,
 }
 
 fn yes() -> bool {
@@ -1395,23 +1418,25 @@ impl PolicyReq {
             return Err(ApiError::bad("sla_minutes: 1..=10080"));
         }
         self.require_consistency.check()?;
+        self.file_filters.check()?;
         self.gfs.check()
     }
     /// Any GFS count lowered, offsite disabled, a blackout window added
-    /// (fewer runs: it could stop backups altogether) or the consistency
-    /// requirement relaxed.
+    /// (fewer runs: it could stop backups altogether), the consistency
+    /// requirement relaxed or a global exclude added.
     fn weakened_by(&self, new: &PolicyReq) -> bool {
         self.gfs.lowered_by(&new.gfs)
             || (self.offsite && !new.offsite)
             || new.blackout.iter().any(|w| !self.blackout.contains(w))
             || self.require_consistency.weakened_by(&new.require_consistency)
+            || self.file_filters.widened_by(&new.file_filters)
     }
 }
 
 fn load_policy(c: &Connection, id: i64) -> ApiResult<Option<PolicyReq>> {
     Ok(c.query_row(
-        "SELECT name, schedule, gfs, offsite, retry, blackout, sla_minutes, require_consistency FROM policies \
-         WHERE id = ?1",
+        "SELECT name, schedule, gfs, offsite, retry, blackout, sla_minutes, require_consistency, file_filters \
+         FROM policies WHERE id = ?1",
         [id],
         |r| {
             Ok((
@@ -1426,13 +1451,15 @@ fn load_policy(c: &Connection, id: i64) -> ApiResult<Option<PolicyReq>> {
                     r.get::<_, String>(5)?,
                     r.get::<_, Option<u32>>(6)?,
                     r.get::<_, String>(7)?,
+                    r.get::<_, String>(8)?,
                 ),
             ))
         },
     )
     .optional()?
     .map(
-        |((name, schedule, gfs, offsite), (retry, blackout, sla_minutes, req))| PolicyReq {
+        |((name, schedule, gfs, offsite), (retry, blackout, sla_minutes, req, filters))| PolicyReq {
+            file_filters: serde_json::from_str(&filters).unwrap_or_default(),
             retry: serde_json::from_str(&retry).unwrap_or_default(),
             require_consistency: serde_json::from_str(&req).unwrap_or_default(),
             blackout: serde_json::from_str(&blackout).unwrap_or_default(),
@@ -1453,7 +1480,7 @@ fn load_policy(c: &Connection, id: i64) -> ApiResult<Option<PolicyReq>> {
 fn policy_json(id: i64, p: &PolicyReq) -> Value {
     json!({"id": id, "name": p.name, "schedule": p.schedule, "gfs": p.gfs, "offsite": p.offsite,
            "retry": p.retry, "blackout": p.blackout, "sla_minutes": p.sla_minutes,
-           "require_consistency": p.require_consistency})
+           "require_consistency": p.require_consistency, "file_filters": p.file_filters})
 }
 
 /// A policy as `policy_json` (quorum `old` snapshots compare against it).
@@ -1482,8 +1509,9 @@ pub async fn create_policy(State(st): State<St>, ctx: Ctx, J(r): J<PolicyReq>) -
     let id = {
         let c = st.cat.conn();
         c.execute(
-            "INSERT INTO policies (name, schedule, gfs, offsite, retry, blackout, sla_minutes, require_consistency)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO policies (name, schedule, gfs, offsite, retry, blackout, sla_minutes, require_consistency,
+             file_filters)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 r.name,
                 r.schedule,
@@ -1492,7 +1520,8 @@ pub async fn create_policy(State(st): State<St>, ctx: Ctx, J(r): J<PolicyReq>) -
                 json!(r.retry).to_string(),
                 json!(r.blackout).to_string(),
                 r.sla_minutes,
-                json!(r.require_consistency).to_string()
+                json!(r.require_consistency).to_string(),
+                json!(r.file_filters).to_string()
             ],
         )?;
         c.last_insert_rowid()
@@ -1532,7 +1561,7 @@ pub async fn update_policy(
     }
     st.cat.conn().execute(
         "UPDATE policies SET name = ?2, schedule = ?3, gfs = ?4, offsite = ?5, retry = ?6, blackout = ?7,
-         sla_minutes = ?8, require_consistency = ?9 WHERE id = ?1",
+         sla_minutes = ?8, require_consistency = ?9, file_filters = ?10 WHERE id = ?1",
         params![
             id,
             r.name,
@@ -1542,7 +1571,8 @@ pub async fn update_policy(
             json!(r.retry).to_string(),
             json!(r.blackout).to_string(),
             r.sla_minutes,
-            json!(r.require_consistency).to_string()
+            json!(r.require_consistency).to_string(),
+            json!(r.file_filters).to_string()
         ],
     )?;
     let out = policy_json(id, &r);
@@ -1595,6 +1625,14 @@ pub struct GroupReq {
     /// the schedule's and blackout windows' time zone (IANA, Phase 13b)
     #[serde(default = "utc")]
     timezone: String,
+    /// Phase 15e/f (crate::selection): PVE disks not backed up, their restore mode,
+    /// guests backed up at once
+    #[serde(default = "crate::selection::no_disks")]
+    exclude_disks: Value,
+    #[serde(default = "crate::selection::placeholder")]
+    exclude_disks_mode: String,
+    #[serde(default = "crate::selection::one")]
+    parallel_guests: u32,
 }
 
 fn explicit() -> String {
@@ -1621,6 +1659,12 @@ pub struct GroupUpdate {
     exclude: Vec<Value>,
     #[serde(default = "utc")]
     timezone: String,
+    #[serde(default = "crate::selection::no_disks")]
+    exclude_disks: Value,
+    #[serde(default = "crate::selection::placeholder")]
+    exclude_disks_mode: String,
+    #[serde(default = "crate::selection::one")]
+    parallel_guests: u32,
 }
 
 /// The auto-protect fields of a group request (mode, selector, exclude).
@@ -1711,12 +1755,14 @@ fn group_row(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
         json!({"id": r.get::<_, i64>(0)?, "tenant": r.get::<_, String>(1)?, "source_id": r.get::<_, i64>(2)?,
               "policy_id": r.get::<_, i64>(3)?, "name": r.get::<_, String>(4)?, "guests": list(5)?,
               "mode": r.get::<_, String>(6)?, "selector": list(7)?, "exclude": list(8)?,
-              "timezone": r.get::<_, String>(9)?, "index_files": r.get::<_, bool>(10)?}),
+              "timezone": r.get::<_, String>(9)?, "index_files": r.get::<_, bool>(10)?,
+              "exclude_disks": list(11)?, "exclude_disks_mode": r.get::<_, String>(12)?,
+              "parallel_guests": r.get::<_, u32>(13)?}),
     )
 }
 
-const GROUP_COLS: &str =
-    "id, tenant, source_id, policy_id, name, guests, mode, selector, exclude, timezone, index_files";
+const GROUP_COLS: &str = "id, tenant, source_id, policy_id, name, guests, mode, selector, exclude, timezone, \
+                          index_files, exclude_disks, exclude_disks_mode, parallel_guests";
 
 /// A group as `group_row` (quorum `old` snapshots compare against it).
 pub fn group_value(c: &Connection, id: i64) -> ApiResult<Option<Value>> {
@@ -1751,9 +1797,17 @@ pub async fn create_group(State(st): State<St>, ctx: Ctx, J(mut r): J<GroupReq>)
         };
         check_group(&c, &r.tenant, r.source_id, r.policy_id, &r.name, &mut r.guests, a)?;
         validate::timezone(&r.timezone)?;
+        crate::selection::check_group_fields(
+            &c,
+            r.source_id,
+            &mut r.exclude_disks,
+            &r.exclude_disks_mode,
+            r.parallel_guests,
+        )?;
         c.execute(
-            "INSERT INTO groups (tenant, source_id, policy_id, name, guests, mode, selector, exclude, timezone) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO groups (tenant, source_id, policy_id, name, guests, mode, selector, exclude, timezone, \
+             exclude_disks, exclude_disks_mode, parallel_guests) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 r.tenant,
                 r.source_id,
@@ -1763,7 +1817,10 @@ pub async fn create_group(State(st): State<St>, ctx: Ctx, J(mut r): J<GroupReq>)
                 r.mode,
                 json!(r.selector).to_string(),
                 json!(r.exclude).to_string(),
-                r.timezone
+                r.timezone,
+                r.exclude_disks.to_string(),
+                r.exclude_disks_mode,
+                r.parallel_guests
             ],
         )?;
         let id = c.last_insert_rowid();
@@ -1804,17 +1861,27 @@ pub async fn update_group(
         };
         check_group(&c, &tenant, r.source_id, r.policy_id, &r.name, &mut r.guests, a)?;
         validate::timezone(&r.timezone)?;
+        crate::selection::check_group_fields(
+            &c,
+            r.source_id,
+            &mut r.exclude_disks,
+            &r.exclude_disks_mode,
+            r.parallel_guests,
+        )?;
         let old_pid = old["policy_id"].as_i64().unwrap_or_default();
-        let weakening = old_pid != r.policy_id
+        let weakening = (old_pid != r.policy_id
             && match (load_policy(&c, old_pid)?, load_policy(&c, r.policy_id)?) {
                 (Some(a), Some(b)) => a.weakened_by(&b),
                 _ => false,
-            };
+            })
+            // excluding another disk backs up less (Phase 15e)
+            || crate::selection::disks_added(&old["exclude_disks"], &r.exclude_disks);
         (old, weakening)
     };
     let new = json!({"id": id, "tenant": old["tenant"], "source_id": r.source_id, "policy_id": r.policy_id,
                      "name": r.name, "guests": r.guests, "mode": r.mode, "selector": r.selector, "exclude": r.exclude,
-                     "timezone": r.timezone});
+                     "timezone": r.timezone, "exclude_disks": r.exclude_disks,
+                     "exclude_disks_mode": r.exclude_disks_mode, "parallel_guests": r.parallel_guests});
     let target = format!("group/{id}");
     if weakening {
         let mut p = new.clone();
@@ -1823,7 +1890,8 @@ pub async fn update_group(
     }
     st.cat.conn().execute(
         "UPDATE groups SET source_id = ?2, policy_id = ?3, name = ?4, guests = ?5, mode = ?6, selector = ?7, \
-         exclude = ?8, timezone = ?9 WHERE id = ?1",
+         exclude = ?8, timezone = ?9, exclude_disks = ?10, exclude_disks_mode = ?11, parallel_guests = ?12 \
+         WHERE id = ?1",
         params![
             id,
             r.source_id,
@@ -1833,9 +1901,13 @@ pub async fn update_group(
             r.mode,
             json!(r.selector).to_string(),
             json!(r.exclude).to_string(),
-            r.timezone
+            r.timezone,
+            r.exclude_disks.to_string(),
+            r.exclude_disks_mode,
+            r.parallel_guests
         ],
     )?;
+
     st.audit(ctx.name(), "group.update", &target, json!({"new": new, "old": old}))?;
     Ok(Json(new).into_response())
 }

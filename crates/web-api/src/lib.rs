@@ -42,6 +42,7 @@ pub mod resources;
 pub mod restores;
 pub mod runctl;
 pub mod search;
+pub mod selection;
 pub mod settings;
 pub mod spa;
 pub mod storage;
@@ -498,6 +499,7 @@ pub fn router(st: St) -> Router {
         .route("/agents/{id}", axum::routing::delete(delete_agent))
         .route("/agents/{id}/token", post(new_agent_token))
         .route("/agents/{id}/enroll", post(enroll_agent))
+        .route("/agents/{id}/limits", axum::routing::put(selection::set_agent_limits))
         .route("/snapshots", get(list_snapshots))
         .route(
             "/snapshots/{tenant}/{source}/{time}",

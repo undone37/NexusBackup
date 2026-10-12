@@ -8,8 +8,9 @@ use crate::restore::Restore;
 use crate::scan::{Locator, Root, Scanner};
 use crate::snapshot::{self, Snap};
 use crate::{hooks, update, volumes};
+use agent_core::filter::Filter;
 use agent_core::server::{Ctx, HostInfo, Platform, PreparedJob, Refused, ScanError, ScanOutput};
-use agent_proto::{Entry, Overwrite, Volume};
+use agent_proto::{Entry, Filters, Overwrite, Volume};
 use std::collections::HashSet;
 use std::fs;
 use std::io;
@@ -31,7 +32,7 @@ pub struct Linux;
 pub struct Job {
     snaps: Vec<Snap>,
     roots: Vec<Root>,
-    excludes: Excludes,
+    filter: Filter,
     hooks: bool,
 }
 
@@ -74,17 +75,29 @@ impl Platform for Linux {
         job: u64,
         paths: &[String],
         excludes: &[String],
+        filters: &Filters,
         hooks: bool,
     ) -> Result<PreparedJob<Job>, Refused> {
         let mut norm = vec![];
         for p in paths {
             norm.push(volumes::normalize(p).map_err(bad)?);
         }
+        let mut include = vec![];
+        for p in &filters.include {
+            include.push(volumes::normalize(p).map_err(bad)?.to_string_lossy().into_owned());
+        }
+        let filter = Filter::new(Excludes::new(excludes), &include, &filters.exclude_regex, false).map_err(bad)?;
         let mut mounts = volumes::mounts();
+        let mut nested_notes = vec![];
+        if filters.cross_mounts {
+            let (add, notes) = volumes::nested_roots(&mounts, &norm, &filters.skip_fstypes, &filter);
+            nested_notes.extend(notes);
+            norm.extend(add);
+        }
         // nested btrfs subvolumes count as volumes of their own (like mount points): a
         // path inside one is read from its own snapshot, and they are not included
         // unless requested (a snapshot of the parent shows them as empty directories)
-        let mut nested_notes = vec![];
+        let mut nested_subvols = vec![];
         let btrfs: Vec<volumes::Mount> = mounts
             .iter()
             .filter(|m| m.fstype == "btrfs" && norm.iter().any(|p| p.starts_with(&m.mountpoint)))
@@ -94,15 +107,20 @@ impl Platform for Linux {
             for n in volumes::btrfs_nested(m, &mounts) {
                 let below = norm.iter().any(|p| n.mountpoint.starts_with(p) && *p != n.mountpoint);
                 let requested = norm.iter().any(|p| p.starts_with(&n.mountpoint));
-                if below && !requested && !Excludes::new(excludes).matches(n.mountpoint.as_os_str().as_bytes()) {
-                    nested_notes.push(format!(
-                        "btrfs subvolume {} is not included (like a mount point): add it to the paths to back it up",
-                        n.mountpoint.display()
-                    ));
+                if below && !requested && !filter.excluded(n.mountpoint.as_os_str().as_bytes()) {
+                    if filters.cross_mounts {
+                        nested_subvols.push(n.mountpoint.clone());
+                    } else {
+                        nested_notes.push(format!(
+                            "btrfs subvolume {} is not included (like a mount point): add it to the paths to back it up",
+                            n.mountpoint.display()
+                        ));
+                    }
                 }
                 mounts.push(n);
             }
         }
+        norm.extend(nested_subvols);
         let mut by_mount: Vec<(volumes::Mount, Vec<PathBuf>)> = vec![];
         for p in norm {
             let Some(m) = volumes::containing(&mounts, &p) else {
@@ -176,7 +194,7 @@ impl Platform for Linux {
             job: Job {
                 snaps,
                 roots,
-                excludes: Excludes::new(excludes),
+                filter,
                 hooks,
             },
             snapshots,
@@ -201,7 +219,7 @@ impl Platform for Linux {
             ctx.settings.spool_max_bytes,
         )
         .map_err(|e| ScanError::Refused(Refused(E_INTERNAL, format!("spool: {e}"))))?;
-        let mut scanner = Scanner::new(&j.excludes, cache, locator, Cache::new(id, base));
+        let mut scanner = Scanner::new(&j.filter, cache, locator, Cache::new(id, base));
         scanner.mountpoints = volumes::mounts()
             .into_iter()
             .map(|m| m.mountpoint)
@@ -214,6 +232,16 @@ impl Platform for Linux {
             locator,
             cache: new_cache,
         })
+    }
+
+    fn lower_priority(&self, nice: u8) -> String {
+        match crate::sys::lower_priority(nice) {
+            Ok((n, idle)) => format!(
+                "priority lowered: nice {n}, {} I/O",
+                if idle { "idle" } else { "best-effort" }
+            ),
+            Err(e) => format!("priority not lowered: {e}"),
+        }
     }
 
     fn release_snapshots(&self, ctx: Ctx, j: &mut Job, _id: u64, _success: bool) -> String {

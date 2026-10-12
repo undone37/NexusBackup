@@ -67,7 +67,9 @@ pub struct AgentVerifier {
     provider: Arc<CryptoProvider>,
     roots: RootCertStore,
     expected_cn: String,
-    pin: Option<String>,
+    /// accepted fingerprints (empty = any certificate of the CA): the recorded
+    /// one, plus a renewed one not yet confirmed
+    pins: Vec<String>,
 }
 
 impl ServerCertVerifier for AgentVerifier {
@@ -90,12 +92,11 @@ impl ServerCertVerifier for AgentVerifier {
         if common_name(end_entity).as_deref() != Some(self.expected_cn.as_str()) {
             return Err(Error::InvalidCertificate(CertificateError::NotValidForName));
         }
-        if let Some(pin) = &self.pin {
-            if !pin.eq_ignore_ascii_case(&sha256_hex(end_entity)) {
-                return Err(Error::InvalidCertificate(
-                    CertificateError::ApplicationVerificationFailure,
-                ));
-            }
+        let fp = sha256_hex(end_entity);
+        if !self.pins.is_empty() && !self.pins.iter().any(|p| p.eq_ignore_ascii_case(&fp)) {
+            return Err(Error::InvalidCertificate(
+                CertificateError::ApplicationVerificationFailure,
+            ));
         }
         Ok(ServerCertVerified::assertion())
     }
@@ -142,13 +143,18 @@ pub fn enroll_config(ca: &Ca) -> Result<Arc<ClientConfig>> {
 /// Client config for an mTLS session with agent `agent_id`; `pin` = the
 /// SHA-256 (hex) of the agent certificate recorded at enrollment.
 pub fn session_config(ca: &Ca, agent_id: &str, pin: Option<&str>) -> Result<Arc<ClientConfig>> {
+    session_config_pins(ca, agent_id, pin.as_slice())
+}
+
+/// Like [`session_config`], accepting any of `pins` (certificate renewal).
+pub fn session_config_pins(ca: &Ca, agent_id: &str, pins: &[&str]) -> Result<Arc<ClientConfig>> {
     let mut roots = RootCertStore::empty();
     roots.add(CertificateDer::from(pem_to_der(&ca.ca_pem)?))?;
     let v = AgentVerifier {
         provider: provider(),
         roots,
         expected_cn: format!("{AGENT_CN_PREFIX}{agent_id}"),
-        pin: pin.map(str::to_owned),
+        pins: pins.iter().map(|p| p.to_string()).collect(),
     };
     client_config(ca, Arc::new(v))
 }
@@ -219,6 +225,13 @@ impl Session {
             Message::Error { code, message } => bail!("agent error {code}: {message:?}"),
             m => Ok(m),
         }
+    }
+
+    /// The agent's certificate of this session: (SHA-256 hex, not_before, not_after).
+    pub fn peer_cert(&self) -> Option<(String, i64, i64)> {
+        let der = self.s.conn.peer_certificates()?.first()?;
+        let (nb, na) = crate::ca::cert_validity(der)?;
+        Some((sha256_hex(der), nb, na))
     }
 
     pub fn set_timeout(&mut self, t: Duration) {

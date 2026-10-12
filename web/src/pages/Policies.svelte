@@ -41,7 +41,14 @@
     blackout: [] as BlackoutWindow[],
     sla: '' as string | number,
     cons: { mode: 'off', level: 'crash' } as RequireConsistency,
+    exclude: '',
+    exclude_regex: '',
   });
+  const lines = (v: string) =>
+    v
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
   let f = $state(blank());
 
   function edit(x: Policy | null) {
@@ -56,6 +63,8 @@
           blackout: (x.blackout ?? []).map((w) => ({ ...w, days: [...w.days] })),
           sla: x.sla_minutes ?? '',
           cons: { ...(x.require_consistency ?? { mode: 'off', level: 'crash' }) },
+          exclude: (x.file_filters?.exclude ?? []).join('\n'),
+          exclude_regex: (x.file_filters?.exclude_regex ?? []).join('\n'),
         }
       : blank();
     open = true;
@@ -76,6 +85,7 @@
       blackout: f.blackout,
       sla_minutes: f.sla === '' || f.sla === null ? null : Number(f.sla),
       require_consistency: f.cons,
+      file_filters: { exclude: lines(f.exclude), exclude_regex: lines(f.exclude_regex) },
     };
     // A weakening change comes back as 202 {quorum_id}; act() reports it as pending.
     const r = editing ? await act(put(`/policies/${editing.id}`, body), t.saved) : await act(post('/policies', body), t.created);
@@ -116,6 +126,7 @@
             <th scope="col">{t.runctl.blackout}</th>
             <th scope="col">SLA</th>
             <th scope="col">{t.cons.policy}</th>
+            <th scope="col">{t.policies.fileFilters}</th>
             <th scope="col"><span class="visually-hidden">{t.actions}</span></th>
           </tr>
         </thead>
@@ -138,6 +149,9 @@
                   x.require_consistency?.mode ?? 'off',
                   t.cons.levels[x.require_consistency?.level ?? 'crash'],
                 )}</td
+              >
+              <td class="mono" title={[...(x.file_filters?.exclude ?? []), ...(x.file_filters?.exclude_regex ?? [])].join('  ')}
+                >{(x.file_filters?.exclude?.length ?? 0) + (x.file_filters?.exclude_regex?.length ?? 0) || '—'}</td
               >
               <td class="actions">
                 <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
@@ -215,6 +229,20 @@
         </div>
       </div>
       <p class="hint">{t.cons.policyHint}</p>
+    </fieldset>
+    <fieldset class="field">
+      <legend>{t.policies.fileFilters}</legend>
+      <p class="hint">{t.policies.fileFiltersHint}</p>
+      <div class="form-grid">
+        <div class="field">
+          <label for="p-fx">{t.policies.globalExclude}</label>
+          <textarea id="p-fx" bind:value={f.exclude} spellcheck="false" placeholder={'*.tmp\n/var/cache/**'}></textarea>
+        </div>
+        <div class="field">
+          <label for="p-frx">{t.policies.globalRegex}</label>
+          <textarea id="p-frx" bind:value={f.exclude_regex} spellcheck="false" placeholder={'~$'}></textarea>
+        </div>
+      </div>
     </fieldset>
     <div class="form-actions">
       <button type="button" onclick={() => (open = false)}>{t.cancel}</button>

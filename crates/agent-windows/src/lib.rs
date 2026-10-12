@@ -36,6 +36,13 @@ pub fn excludes(user: &[String]) -> agent_core::glob::Excludes {
     agent_core::glob::Excludes::new_case_insensitive(&all)
 }
 
+/// The filter of a `PrepareEx`: excludes as above, include roots as Windows paths
+/// (`C:\Users\alice`), regexes matched case-insensitively against `/C/Users/…`.
+pub fn filter(user: &[String], f: &agent_proto::Filters) -> Result<agent_core::filter::Filter, String> {
+    let include: Vec<String> = f.include.iter().map(|p| paths::normalize_exclude(p)).collect();
+    agent_core::filter::Filter::new(excludes(user), &include, &f.exclude_regex, true)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

@@ -157,9 +157,53 @@ pub fn meta_of(e: &chunkstore::TreeEntry) -> Meta {
     }
 }
 
+/// Runs `work` for every item with at most `n` at once (group
+/// `parallel_guests`); results in item order. `n` <= 1 runs them in order on
+/// the calling thread.
+pub fn run_parallel<T: Sync, R: Send>(items: &[T], n: usize, work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    if n <= 1 || items.len() <= 1 {
+        return items.iter().map(work).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results: std::sync::Mutex<Vec<Option<R>>> = std::sync::Mutex::new((0..items.len()).map(|_| None).collect());
+    std::thread::scope(|s| {
+        for _ in 0..n.min(items.len()) {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, Ordering::SeqCst);
+                let Some(item) = items.get(i) else { break };
+                let r = work(item);
+                results.lock().unwrap()[i] = Some(r);
+            });
+        }
+    });
+    results
+        .into_inner()
+        .unwrap()
+        .into_iter()
+        .map(|r| r.expect("every item ran"))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parallel_runs_at_most_n_in_item_order() {
+        use std::sync::atomic::AtomicUsize;
+        let (now, max) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let items: Vec<u32> = (0..10).collect();
+        let out = run_parallel(&items, 3, |&i| {
+            let c = now.fetch_add(1, Ordering::SeqCst) + 1;
+            max.fetch_max(c, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(20));
+            now.fetch_sub(1, Ordering::SeqCst);
+            i + 100
+        });
+        assert_eq!(out, (100..110).collect::<Vec<_>>());
+        assert_eq!(max.load(Ordering::SeqCst), 3);
+        assert_eq!(run_parallel(&items, 1, |&i| i), items);
+    }
 
     #[test]
     fn escaping() {

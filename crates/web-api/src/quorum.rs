@@ -272,10 +272,11 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         "source.delete" => changed(c.execute("DELETE FROM sources WHERE id = ?1", [int(p, "id")?])?)?,
         "policy.delete" => changed(c.execute("DELETE FROM policies WHERE id = ?1", [int(p, "id")?])?)?,
         "group.delete" => changed(c.execute("DELETE FROM groups WHERE id = ?1", [int(p, "id")?])?)?,
-        "policy.update" => changed(c.execute(
-            "UPDATE policies SET name = ?2, schedule = ?3, gfs = ?4, offsite = ?5, retry = ?6, blackout = ?7,
+        "policy.update" => {
+            changed(c.execute(
+                "UPDATE policies SET name = ?2, schedule = ?3, gfs = ?4, offsite = ?5, retry = ?6, blackout = ?7,
              sla_minutes = ?8, require_consistency = ?9 WHERE id = ?1",
-            params![
+                params![
                 int(p, "id")?,
                 p["name"].as_str(),
                 p["schedule"].as_str(),
@@ -288,23 +289,40 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
                 p.get("require_consistency")
                     .map_or_else(|| r#"{"mode":"off","level":"crash"}"#.to_owned(), |v| v.to_string())
             ],
-        )?)?,
-        "group.update" => changed(c.execute(
-            "UPDATE groups SET source_id = ?2, policy_id = ?3, name = ?4, guests = ?5, mode = ?6, selector = ?7, \
+            )?)?;
+            c.execute(
+                "UPDATE policies SET file_filters = ?2 WHERE id = ?1",
+                params![int(p, "id")?, p.get("file_filters").unwrap_or(&json!({})).to_string()],
+            )?;
+        }
+        "group.update" => {
+            changed(c.execute(
+                "UPDATE groups SET source_id = ?2, policy_id = ?3, name = ?4, guests = ?5, mode = ?6, selector = ?7, \
              exclude = ?8, timezone = ?9 WHERE id = ?1",
-            params![
-                int(p, "id")?,
-                int(p, "source_id")?,
-                int(p, "policy_id")?,
-                p["name"].as_str(),
-                p["guests"].to_string(),
-                // requests made before v12 carry no mode: explicit
-                p["mode"].as_str().unwrap_or("explicit"),
-                p.get("selector").unwrap_or(&json!([])).to_string(),
-                p.get("exclude").unwrap_or(&json!([])).to_string(),
-                p["timezone"].as_str().unwrap_or("UTC")
-            ],
-        )?)?,
+                params![
+                    int(p, "id")?,
+                    int(p, "source_id")?,
+                    int(p, "policy_id")?,
+                    p["name"].as_str(),
+                    p["guests"].to_string(),
+                    // requests made before v12 carry no mode: explicit
+                    p["mode"].as_str().unwrap_or("explicit"),
+                    p.get("selector").unwrap_or(&json!([])).to_string(),
+                    p.get("exclude").unwrap_or(&json!([])).to_string(),
+                    p["timezone"].as_str().unwrap_or("UTC")
+                ],
+            )?)?;
+            // Phase 15e/f fields (requests made before carry none: defaults)
+            c.execute(
+                "UPDATE groups SET exclude_disks = ?2, exclude_disks_mode = ?3, parallel_guests = ?4 WHERE id = ?1",
+                params![
+                    int(p, "id")?,
+                    p.get("exclude_disks").unwrap_or(&json!({})).to_string(),
+                    p["exclude_disks_mode"].as_str().unwrap_or("placeholder"),
+                    p["parallel_guests"].as_u64().unwrap_or(1)
+                ],
+            )?;
+        }
         "user.update" => return crate::resources::apply_user_update(c, p).map(Some),
         "approvals.disable" => catalog::set_setting(c, "approvals_enabled", "false")?,
         "oidc.update" => crate::oidc::execute(c, p)?,

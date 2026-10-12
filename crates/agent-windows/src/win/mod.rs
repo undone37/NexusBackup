@@ -16,11 +16,11 @@ use crate::usn::{continuity, Changes, Continuity, JournalData};
 use crate::{update, writers};
 use agent_core::cache::{Cache, JournalMark};
 use agent_core::chunk::Locator;
-use agent_core::glob::Excludes;
+use agent_core::filter::Filter;
 use agent_core::server::{
     log, Ctx, HostInfo, Platform, PreparedJob, Refused, ScanError, ScanOutput, E_BAD_REQUEST, E_INTERNAL,
 };
-use agent_proto::{Entry, Overwrite, SnapshotInfo, SnapshotKind, Volume};
+use agent_proto::{Entry, Filters, Overwrite, SnapshotInfo, SnapshotKind, Volume};
 use std::io;
 use std::path::PathBuf;
 use volumes::Vol;
@@ -52,7 +52,7 @@ pub struct Job {
     set: Option<vss::SnapshotSet>,
     vols: Vec<VolJob>,
     roots: Vec<Root>,
-    excludes: Excludes,
+    filter: Filter,
 }
 
 /// A requested path must not pass through a symlink or junction below its volume's
@@ -97,9 +97,13 @@ impl Platform for Windows {
         job: u64,
         paths: &[String],
         excludes: &[String],
+        filters: &Filters,
         hooks: bool,
     ) -> Result<PreparedJob<Job>, Refused> {
         let bad = |m: String| Refused(E_BAD_REQUEST, m);
+        // cross_mounts / skip_fstypes: volumes are walked as requested (mounted
+        // folders are reparse points, never followed), nothing to cross
+        let filter = crate::filter(excludes, filters).map_err(bad)?;
         let excluded_writers = writers::parse_exclusions(&ctx.settings.vss_exclude_writers).map_err(bad)?;
         let mut wanted: Vec<WinPath> = vec![];
         for p in paths {
@@ -239,7 +243,7 @@ impl Platform for Windows {
                 set,
                 vols,
                 roots,
-                excludes: crate::excludes(excludes),
+                filter,
             },
             snapshots,
             consistent,
@@ -292,13 +296,20 @@ impl Platform for Windows {
         )
         .map_err(|e| ScanError::Refused(Refused(E_INTERNAL, format!("spool: {e}"))))?;
         let mut src = source::WinSource { sacl: self.sacl };
-        let mut w = Walker::new(&mut src, &j.excludes, cache, &changes, locator, new_cache);
+        let mut w = Walker::new(&mut src, &j.filter, cache, &changes, locator, new_cache);
         w.run(&j.roots, emit)?;
         Ok(ScanOutput {
             stats: std::mem::take(&mut w.stats),
             locator: w.locator,
             cache: w.new_cache,
         })
+    }
+
+    fn lower_priority(&self, nice: u8) -> String {
+        match sys::background_mode() {
+            Ok(()) => format!("priority lowered (nice {nice}): thread background mode (low CPU and I/O priority)"),
+            Err(e) => format!("priority not lowered: {e}"),
+        }
     }
 
     fn release_snapshots(&self, _ctx: Ctx, j: &mut Job, _id: u64, success: bool) -> String {

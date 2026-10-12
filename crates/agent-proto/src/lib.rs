@@ -14,6 +14,8 @@ pub const MAX_CHUNK: usize = 4 << 20;
 pub const MAX_BATCH: usize = 10_000;
 pub const MAX_PATH: usize = 4096;
 pub const MAX_XATTR: usize = 64 << 10;
+/// include roots / regexes / file system types per `PrepareEx` (each)
+pub const MAX_FILTERS: usize = 256;
 pub const CDC_MIN: u32 = 128 << 10;
 pub const CDC_AVG: u32 = 512 << 10;
 pub const CDC_MAX: u32 = 4 << 20;
@@ -249,10 +251,67 @@ pub enum Message {
         raw_len: u32,
         data: Vec<u8>,
     },
+    // --- v1.3, appended: file filters + limits, certificate renewal ---
+    /// `Prepare` with the full filter set and the appliance-side limits (only if
+    /// `HelloReply.caps` contains CAP_PREPARE2; old agents get `Prepare` with the
+    /// globs only). Answered with `Prepared`.
+    PrepareEx {
+        job: u64,
+        paths: Vec<String>,
+        excludes: Vec<String>,
+        hooks: bool,
+        filters: Filters,
+        limits: Limits,
+    },
+    /// Appliance → agent (CAP_RENEW): generate a new key pair, answer `RenewCsr`.
+    RenewCert,
+    RenewCsr {
+        csr_pem: String,
+    },
+    /// The certificate issued for the `RenewCsr` key (same CN, same CA). The agent
+    /// checks it, swaps key + certificate atomically and answers `RenewOk`; new
+    /// connections use the new identity.
+    RenewDone {
+        cert_pem: String,
+        ca_pem: String,
+    },
+    RenewOk,
 }
 
 /// Capability: the peer understands `WantLz4` / `ChunkLz4` / `RestoreChunkLz4`.
 pub const CAP_LZ4: &str = "lz4";
+/// Capability: the agent understands `PrepareEx` (include roots, regex excludes,
+/// nested mounts by file system type, bandwidth / CPU limits).
+pub const CAP_PREPARE2: &str = "prepare2";
+/// Capability: the agent renews its certificate over the session (`RenewCert`).
+pub const CAP_RENEW: &str = "cert-renew";
+
+/// File selection beyond the glob `excludes` of `Prepare` (docs/agent-protocol.md
+/// "Filters"). Precedence: excluded (glob or regex) wins over included.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Filters {
+    /// whitelist roots (absolute host paths): if not empty, only entries inside one
+    /// of them (and the directories leading to them) are backed up
+    pub include: Vec<String>,
+    /// regular expressions matched against the absolute host path (`/`-separated)
+    pub exclude_regex: Vec<String>,
+    /// back up file systems mounted below the requested paths (each from its own
+    /// snapshot), except the types in `skip_fstypes`
+    pub cross_mounts: bool,
+    /// file system types never descended into when `cross_mounts` is set (empty =
+    /// the agent's default list: proc, sysfs, tmpfs, overlay, nfs, cifs, …)
+    pub skip_fstypes: Vec<String>,
+}
+
+/// Appliance-side limits for one job, enforced by the agent.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
+pub struct Limits {
+    /// bytes per second for chunk data sent to the appliance (0 = unlimited)
+    pub bwlimit: u64,
+    /// CPU / I/O priority of the job: 0 = normal, 1..=19 = nicer (Linux nice +
+    /// best-effort I/O class; Windows background mode for any value > 0)
+    pub nice: u8,
+}
 
 /// LZ4-compresses a chunk for the wire if that saves at least 10 %; `None` =
 /// send it raw (already compressed/encrypted data costs only one fast attempt).
@@ -313,6 +372,14 @@ pub fn check(m: &Message) -> io::Result<()> {
         }
         Message::Want { hashes, .. } | Message::WantLz4 { hashes, .. } if hashes.len() > MAX_BATCH => {
             return Err(bad("want list too long"))
+        }
+        Message::PrepareEx { filters: f, .. }
+            if f.include.len() > MAX_FILTERS
+                || f.exclude_regex.len() > MAX_FILTERS
+                || f.skip_fstypes.len() > MAX_FILTERS
+                || f.include.iter().chain(&f.exclude_regex).any(|p| p.len() > MAX_PATH) =>
+        {
+            return Err(bad("filters exceed limits"))
         }
         _ => return Ok(()),
     };
@@ -438,6 +505,59 @@ mod tests {
         let mut buf = Vec::new();
         write_msg(&mut buf, &m).unwrap();
         assert_eq!(read_msg(&mut &buf[..]).unwrap(), m);
+    }
+
+    #[test]
+    fn v13_messages_keep_old_encodings() {
+        // an old appliance's Prepare decodes unchanged; the new variants come after RestoreChunkLz4 (30)
+        let old = Message::Prepare {
+            job: 7,
+            paths: vec!["/etc".into()],
+            excludes: vec!["*.tmp".into()],
+            hooks: true,
+        };
+        let enc = postcard::to_stdvec(&old).unwrap();
+        assert_eq!(enc[0], 7);
+        assert_eq!(postcard::from_bytes::<Message>(&enc).unwrap(), old);
+        let ex = Message::PrepareEx {
+            job: 7,
+            paths: vec!["/".into()],
+            excludes: vec![],
+            hooks: false,
+            filters: Filters {
+                include: vec!["/home".into()],
+                exclude_regex: vec![r"\.bak$".into()],
+                cross_mounts: true,
+                skip_fstypes: vec![],
+            },
+            limits: Limits {
+                bwlimit: 1 << 20,
+                nice: 10,
+            },
+        };
+        assert_eq!(postcard::to_stdvec(&ex).unwrap()[0], 31);
+        assert_eq!(postcard::to_stdvec(&Message::RenewOk).unwrap(), vec![35]);
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &ex).unwrap();
+        assert_eq!(read_msg(&mut &buf[..]).unwrap(), ex);
+        let Message::PrepareEx { mut filters, .. } = ex else {
+            unreachable!()
+        };
+        filters.exclude_regex = vec!["x".into(); MAX_FILTERS + 1];
+        let mut buf = Vec::new();
+        write_msg(
+            &mut buf,
+            &Message::PrepareEx {
+                job: 1,
+                paths: vec![],
+                excludes: vec![],
+                hooks: false,
+                filters,
+                limits: Limits::default(),
+            },
+        )
+        .unwrap();
+        assert!(read_msg(&mut &buf[..]).is_err(), "filter count limit");
     }
 
     #[test]

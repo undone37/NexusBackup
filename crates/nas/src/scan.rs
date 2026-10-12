@@ -33,7 +33,7 @@
 //! snapshot directories), excluded names. Symlinks are recorded, never followed.
 
 use crate::sys::{self, Kind, Stat, CONFINED};
-use agent_core::glob::Excludes;
+use agent_core::filter::{Filter, Visit};
 use anyhow::{anyhow, Result};
 use chunkstore::{ChunkId, Store, TreeEntry, TreeKind};
 use std::collections::{HashMap, HashSet};
@@ -55,7 +55,8 @@ pub struct Options {
     pub xattrs: bool,
     /// xattr names the file system does not list (`system.nfs4_acl`, `system.cifs_acl`, …)
     pub extra_xattrs: Vec<&'static str>,
-    pub excludes: Excludes,
+    /// globs, regexes and include roots (agent_core::filter), on `/`-prefixed share paths
+    pub filter: Filter,
     /// names per work item in large directories
     pub batch: usize,
     /// tests: called with the path after a file was opened, before it is read
@@ -69,7 +70,7 @@ impl Default for Options {
             threads: 16,
             xattrs: true,
             extra_xattrs: Vec::new(),
-            excludes: Excludes::new(&[]),
+            filter: Filter::default(),
             batch: 256,
             before_read: None,
         }
@@ -354,7 +355,7 @@ impl Scan<'_> {
             let mut abs = Vec::with_capacity(path.len() + n.len() + 2);
             abs.push(b'/');
             abs.extend_from_slice(&join(&path, n));
-            !self.opts.excludes.matches(&abs)
+            self.opts.filter.visit(&abs) != Visit::Skip
         });
         let nb = names.len().div_ceil(self.opts.batch.max(1));
         self.results.lock().unwrap().insert(
@@ -399,7 +400,15 @@ impl Scan<'_> {
                 self.error(format!("{}: path too long or invalid", lossy(&path)));
                 continue;
             }
+            // a directory on the way to an include root: kept, nothing else at its level
+            let pass = self.opts.filter.has_include() && {
+                let mut abs = Vec::with_capacity(path.len() + 1);
+                abs.push(b'/');
+                abs.extend_from_slice(&path);
+                self.opts.filter.visit(&abs) == Visit::Pass
+            };
             match self.one(dirfd, &name, path, xbuf) {
+                Ok(Some((ent, _))) if pass && ent.e.kind != TreeKind::Dir => {}
                 Ok(Some((ent, descend))) => {
                     if let Some(st) = descend {
                         sub.push(Work::Dir {

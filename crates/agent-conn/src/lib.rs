@@ -11,6 +11,7 @@ pub mod ca;
 pub mod enroll;
 pub mod files;
 pub mod map;
+pub mod renew;
 pub mod restore;
 pub mod tarbridge;
 pub mod tls;
@@ -65,6 +66,11 @@ pub fn name(m: &Message) -> &'static str {
         Message::Error { .. } => "Error",
         Message::Writers { .. } => "Writers",
         Message::WritersReport { .. } => "WritersReport",
+        Message::PrepareEx { .. } => "PrepareEx",
+        Message::RenewCert => "RenewCert",
+        Message::RenewCsr { .. } => "RenewCsr",
+        Message::RenewDone { .. } => "RenewDone",
+        Message::RenewOk => "RenewOk",
     }
 }
 

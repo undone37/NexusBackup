@@ -116,6 +116,8 @@ fn real_agent_with_agent_conn() {
         paths: vec![data.to_string_lossy().into_owned()],
         excludes: vec![],
         hooks: false,
+        filters: Default::default(),
+        limits: Default::default(),
     };
     let run = |job: u64| {
         let mut map = MapDb::open(&store_dir).unwrap();
@@ -243,4 +245,126 @@ fn real_agent_with_agent_conn() {
     assert_eq!(m.mode() & 0o7777, 0o600);
     // SAFETY: plain libc getters
     assert_eq!((m.uid(), m.gid()), unsafe { (libc::geteuid(), libc::getegid()) });
+}
+
+/// Starts an initialised + enrolled agent on `paths`; returns (port, pin).
+fn enrolled_agent(paths: &Paths, ca: &Ca) -> (u16, String) {
+    nexus_agent::init(paths, TOKEN, None).unwrap();
+    let port = serve(paths);
+    let e = enroll::enroll(ca, "127.0.0.1", port, &agent_proto::token_digest(TOKEN), ID, T).unwrap();
+    for _ in 0..100 {
+        if let Ok(mut c) = Session::connect(
+            "127.0.0.1",
+            port,
+            session_config(ca, ID, Some(&e.cert_sha256)).unwrap(),
+            T,
+        ) {
+            if c.hello(ID).is_ok() {
+                c.close();
+                return (port, e.cert_sha256);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("no mTLS session after enrollment");
+}
+
+fn serve(paths: &Paths) -> u16 {
+    let settings = Settings {
+        hook_owner: nexus_agent::sys::geteuid(),
+        ..Default::default()
+    };
+    let mut agent = Agent::new(paths.clone(), settings).unwrap();
+    agent.exit_on_update = false;
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || Arc::new(agent).serve(l));
+    port
+}
+
+/// Phase 15e/f: include roots + regex excludes and the bandwidth limit travel in
+/// `PrepareEx`; the certificate is renewed over the session, the old pin stops
+/// working for new connections, the new one survives an agent restart.
+#[test]
+fn filters_limits_and_certificate_renewal() {
+    let d = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let data = d.path().join("host/srv");
+    fs::create_dir_all(data.join("keep/sub")).unwrap();
+    fs::create_dir_all(data.join("other")).unwrap();
+    fs::write(data.join("keep/a.bin"), rnd(3_000_000, 2)).unwrap();
+    fs::write(data.join("keep/sub/b.log"), b"log").unwrap();
+    fs::write(data.join("keep/sub/c.txt"), b"c").unwrap();
+    fs::write(data.join("other/x"), b"x").unwrap();
+    let paths = Paths {
+        config: d.path().join("agent/etc"),
+        state: d.path().join("agent/state"),
+        run: d.path().join("agent/run"),
+    };
+    let ca = Ca::load_or_create(&d.path().join("ca")).unwrap();
+    let (port, pin) = enrolled_agent(&paths, &ca);
+
+    let store_dir = d.path().join("store");
+    let store = Store::open(&store_dir, Keyring::new("acme", &[(1, [9; 32])]), Options::default()).unwrap();
+    let mut map = MapDb::open(&store_dir).unwrap();
+    let mut s = session(&ca, port, &pin);
+    assert!(s.has_cap(agent_proto::CAP_PREPARE2) && s.has_cap(agent_proto::CAP_RENEW));
+    let spec = Spec {
+        job: 1,
+        paths: vec![data.to_string_lossy().into_owned()],
+        excludes: vec![],
+        hooks: false,
+        filters: agent_proto::Filters {
+            include: vec![data.join("keep").to_string_lossy().into_owned()],
+            exclude_regex: vec![r"\.log$".into()],
+            ..Default::default()
+        },
+        limits: agent_proto::Limits {
+            bwlimit: 1_000_000,
+            nice: 5,
+        },
+    };
+    let t = std::time::Instant::now();
+    let r = backup::backup(&store, &mut map, &mut s, ID, &spec, &mut |l| eprintln!("{l}")).unwrap();
+    s.close();
+    // 3 MB of random data at 1 MB/s with one second of burst: about two seconds
+    assert!(t.elapsed() >= Duration::from_millis(1800), "{:?}", t.elapsed());
+    assert!(r.prepare_hook_log.contains("priority"), "{}", r.prepare_hook_log);
+    let m = store.load_manifest(&source_name(ID), r.time).unwrap();
+    let Index::Tree { entries } = store.load_index(&m, TREE_INDEX).unwrap() else {
+        panic!("not a tree")
+    };
+    let rel = data.strip_prefix("/").unwrap().to_string_lossy().into_owned();
+    let names: Vec<String> = entries
+        .iter()
+        .map(|e| String::from_utf8_lossy(&e.path).trim_start_matches(&rel).to_owned())
+        .collect();
+    assert_eq!(names, ["", "/keep", "/keep/a.bin", "/keep/sub", "/keep/sub/c.txt"]);
+
+    // renewal over the session
+    let mut s = session(&ca, port, &pin);
+    let mut issued = None;
+    let n = agent_conn::renew::renew(&ca, &mut s, ID, &mut |r| issued = Some(r.cert_sha256.clone())).unwrap();
+    s.close();
+    assert_eq!(issued.as_deref(), Some(n.cert_sha256.as_str()));
+    assert_ne!(n.cert_sha256, pin);
+    assert!(n.not_after - n.not_before > 9 * 365 * 86400);
+    // new connections present the new certificate: the old pin fails, both pins pass
+    assert!(
+        Session::connect("127.0.0.1", port, session_config(&ca, ID, Some(&pin)).unwrap(), T)
+            .and_then(|mut c| c.hello(ID))
+            .is_err()
+    );
+    let mut c = Session::connect(
+        "127.0.0.1",
+        port,
+        agent_conn::tls::session_config_pins(&ca, ID, &[&pin, &n.cert_sha256]).unwrap(),
+        T,
+    )
+    .unwrap();
+    c.hello(ID).unwrap();
+    assert_eq!(c.peer_cert().unwrap().0, n.cert_sha256);
+    c.close();
+    // the swap is on disk: a restarted agent serves the new identity
+    let port2 = serve(&paths);
+    session(&ca, port2, &n.cert_sha256).close();
 }

@@ -127,6 +127,11 @@ export interface LinuxSourceConfig {
   excludes: string[];
   /** run the agent's pre/post hooks */
   hooks: boolean;
+  /** Phase 15e: include roots, regex excludes, nested mounts (agents of this release) */
+  include?: string[];
+  exclude_regex?: string[];
+  cross_mounts?: boolean;
+  skip_fstypes?: string[];
 }
 
 /** Config of a `truenas` source (docs/truenas-connector.md). Secrets are write-only. */
@@ -192,6 +197,9 @@ export interface ShareSourceConfig {
   snapshot_prefix?: string;
   snapshot_order?: 'name' | 'mtime';
   excludes?: string[];
+  /** Phase 15e: include roots (share paths) and regex excludes */
+  include?: string[];
+  exclude_regex?: string[];
   threads?: number;
   xattrs?: boolean;
   timeout_secs?: number;
@@ -233,6 +241,19 @@ export interface Agent {
   last_seen: number | null;
   version: string | null;
   os: string | null;
+  /** Phase 15f: limits sent with every backup ({} = none) */
+  limits: AgentLimits | Record<string, never>;
+  /** validity of the current certificate (reported by each session; null = not yet known) */
+  cert_issued: number | null;
+  cert_expires: number | null;
+  /** a renewed certificate was issued but no session confirmed it yet */
+  cert_renewal_pending: boolean;
+}
+
+/** PUT /agents/{id}/limits: bytes/s (0 = unlimited, else >= 65536) and nice 0..19 */
+export interface AgentLimits {
+  bwlimit: number;
+  nice: number;
 }
 
 /** One-time enrollment token: only in the answer of POST /agents and POST /agents/{id}/token. */
@@ -265,6 +286,13 @@ export interface Policy {
   sla_minutes: number | null;
   /** Phase 15d */
   require_consistency?: RequireConsistency;
+  /** Phase 15e: global excludes for every agent and share source of the policy's groups */
+  file_filters: FileFilters;
+}
+
+export interface FileFilters {
+  exclude: string[];
+  exclude_regex: string[];
 }
 
 export interface Group {
@@ -292,6 +320,12 @@ export interface Group {
   exclude: string[];
   /** Phase 15g, pve groups: list the VM/CT file systems after each backup (restore micro-VM) for the file search */
   index_files?: boolean;
+  /** Phase 15e (PVE groups): disk keys not backed up, `*` = every guest, else per vmid */
+  exclude_disks: Record<string, string[]>;
+  /** placeholder: a restore recreates excluded disks empty; omit: left out of the restored config */
+  exclude_disks_mode: 'placeholder' | 'omit';
+  /** guests backed up at once (PVE and plugin groups), 1..8 */
+  parallel_guests: number;
 }
 
 export type GroupMode = 'explicit' | 'all' | 'tags';
@@ -334,6 +368,7 @@ export type JobKind =
   | 'restore_files'
   | 'agent_update'
   | 'agent_enroll'
+  | 'agent_renew'
   | 'plugin_validate'
   | 'plugin_guests'
   | 'plugin_backup'

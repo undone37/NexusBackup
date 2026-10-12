@@ -11,6 +11,7 @@ agent-proto = { path = "../agent-proto" }
 base64 = "0.22"
 blake3 = "1"
 fastcdc = "3"
+regex = "1"
 hex = "0.4"
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }

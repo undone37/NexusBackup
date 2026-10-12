@@ -18,6 +18,7 @@
   import { fmtTime } from '../lib/format';
   import { isPaused } from '../lib/schedule';
   import Inventory from '../components/Inventory.svelte';
+  import FileSelection from '../components/FileSelection.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
 
   let items: Source[] = $state([]);
@@ -125,6 +126,11 @@
     paths: '',
     excludes: '',
     hooks: false,
+    // Phase 15e: agents + shares
+    include: '',
+    exclude_regex: '',
+    cross_mounts: false,
+    skip_fstypes: '',
     // truenas
     connect_addr: '',
     tn_user: 'nexusbackup',
@@ -199,6 +205,10 @@
       paths: (l?.paths ?? []).join('\n'),
       excludes: (l?.excludes ?? sh?.excludes ?? []).join('\n'),
       hooks: l?.hooks ?? false,
+      include: (l?.include ?? sh?.include ?? []).join('\n'),
+      exclude_regex: (l?.exclude_regex ?? sh?.exclude_regex ?? []).join('\n'),
+      cross_mounts: l?.cross_mounts ?? false,
+      skip_fstypes: (l?.skip_fstypes ?? []).join('\n'),
       connect_addr: n?.connect_addr ?? '',
       tn_user: n?.user ?? 'nexusbackup',
       ssh_host: n?.ssh.host ?? '',
@@ -281,11 +291,14 @@
       notify('error', t.sources.excludesInvalid);
       return null;
     }
+    const sel = selection(false);
+    if (!sel) return null;
     const config: Record<string, unknown> = {
       host: f.host.trim(),
       port: Number(f.port),
       version: f.version,
       excludes,
+      ...sel,
       threads: Number(f.threads),
       xattrs: f.xattrs,
       timeout_secs: Number(f.timeout_secs),
@@ -365,7 +378,27 @@
       notify('error', t.sources.excludesInvalid);
       return null;
     }
-    return { agent_id: f.agent_id, paths, excludes, hooks: f.hooks };
+    const sel = selection(true);
+    if (!sel) return null;
+    return { agent_id: f.agent_id, paths, excludes, hooks: f.hooks, ...sel };
+  }
+
+  /** Include roots, regex excludes (+ nested mounts for agents), or null (after telling the user). */
+  function selection(agent: boolean): Record<string, unknown> | null {
+    const include = lines(f.include);
+    const exclude_regex = lines(f.exclude_regex);
+    const winPath = (p: string) => /^[A-Za-z]:[\\/]/.test(p);
+    if (include.length > 256 || include.some((p) => !p.startsWith('/') && !(agent && winPath(p)))) {
+      notify('error', t.sources.includeInvalid);
+      return null;
+    }
+    // regex syntax (Rust regex, not JavaScript) is checked by the appliance
+    const out: Record<string, unknown> = { include, exclude_regex };
+    if (agent) {
+      out.cross_mounts = f.cross_mounts;
+      out.skip_fstypes = lines(f.skip_fstypes);
+    }
+    return out;
   }
 
   function pveConfig(): Record<string, unknown> | null {
@@ -860,6 +893,25 @@
         >
         <div class="hint" id="s-hooks-hint">{t.sources.hooksHint}</div>
       </div>
+      <fieldset class="field">
+        <legend>{t.sources.selection}</legend>
+        <FileSelection bind:include={f.include} bind:regex={f.exclude_regex} share={false} />
+        <div class="field">
+          <label class="inline-check"
+            ><input type="checkbox" bind:checked={f.cross_mounts} aria-describedby="s-xm-hint" />{t.sources.crossMounts}</label
+          >
+          <div class="hint" id="s-xm-hint">{t.sources.crossMountsHint}</div>
+        </div>
+        {#if f.cross_mounts}
+          <div class="field">
+            <label for="s-fst">{t.sources.skipFstypes}</label>
+            <textarea id="s-fst" bind:value={f.skip_fstypes} spellcheck="false" placeholder={'vfat\ntmpfs'} aria-describedby="s-fst-hint"
+            ></textarea>
+            <div class="hint" id="s-fst-hint">{t.sources.skipFstypesHint}</div>
+          </div>
+        {/if}
+        <p class="hint">{t.sources.agentVersionNote}</p>
+      </fieldset>
     {:else if isShare}
       {#if f.kind === 'smb'}
         <div class="field">
@@ -883,6 +935,7 @@
         ></textarea>
         <div class="hint" id="n-excl-hint">{t.sources.sh.excludesHint}</div>
       </div>
+      <FileSelection bind:include={f.include} bind:regex={f.exclude_regex} share={true} />
       <p class="muted">{f.kind === 'nfs' ? t.sources.sh.nfsHint : t.sources.sh.shareHint}</p>
     {:else if f.kind === 'truenas'}
       <div class="field">
