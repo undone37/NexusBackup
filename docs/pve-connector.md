@@ -38,7 +38,7 @@ Fleecing is mandatory for provider VM backups; the appliance passes
 
 ## VM backup flow
 1. Appliance: `GET /cluster/resources?type=vm` → node of vmid. `POST /nodes/<node>/vzdump vmid=<id> storage=<storeid> mode=snapshot fleecing=enabled=1,storage=<fs>` → UPID.
-2. Plugin `backup_vm_query_incremental`: for each device return `use` if `index.json` lists a previous archive of this vmid that contains that device, else `new`.
+2. Plugin `backup_vm_query_incremental`: for each device return `use` if the **newest** archive of this vmid in `index.json` contains that device (in its `devices` list), else `new`. Only the newest counts: the appliance builds an incremental on top of its newest snapshot, so a disk that was excluded there and is included again must start with a fresh bitmap.
 3. Plugin `backup_vm` (runs as root):
    - `chgrp nexusbackup` + `chmod g+rw` on the NBD socket and hard-link it to `/run/nexusbackup/jobs/<vmid>.nbd` (same tmpfs); `nbd_socket` in the job JSON is that link. qemu-server's directories (`/run/qemu-server` is `0750 root:www-data`) stay untouched.
    - write `/run/nexusbackup/jobs/<vmid>.json` atomically (tmp + rename, mode 0640 root:nexusbackup):
@@ -59,6 +59,41 @@ Fleecing is mandatory for provider VM backups; the appliance passes
 8. `backup_cleanup(success=0)` after a successful `backup_vm` must not cause the appliance to drop the snapshot (bitmap is already committed; see API doc §2 ordering gotcha). The appliance keeps every snapshot it committed.
 
 Storage plugin properties are global across plugins, hence the `nexus-` prefix.
+
+### Excluded disks (Phase 15e)
+A group can exclude VM disks (`groups.exclude_disks`, disk keys such as `scsi1`, for all guests of the group
+or per vmid). The scheduler passes them to `nexus-pve` as device names:
+`"exclude_disks": {"101": ["drive-scsi1"]}`, `"exclude_disks_mode": "placeholder" | "omit"`.
+- The provider API has no per-disk selection: vzdump still exports every disk without `backup=0` (and the
+  fleecing image still covers writes to an excluded disk for the duration of the job). The appliance simply
+  does not read the excluded devices (`excluded disk scsi1 of VM 101 (<bytes>): not backed up` in the job log)
+  and records them in the snapshot's config index as `excluded-disks.json`
+  (`{"mode":"placeholder","disks":[{"device":"drive-scsi1","key":"scsi1","size":8589934592}]}`).
+- Disks with `backup=0` are left out by PVE itself, as before; the appliance reports them from the guest
+  config (`disk scsi2 of VM 101 has backup=0: skipped by PVE`).
+- Incremental: an excluded disk is not in the snapshot's `devices`, so the next backup after it is included
+  again reads it fully (`new` bitmap, step 2).
+- Restore, mode `placeholder` (default): the catalog keeps the disk's config and `#qmdump#map` lines and lists
+  the device in `device_sizes` only (never in `devices`); PVE allocates the disk with its original size and
+  options and the appliance serves zeros for it: the restored VM has an empty disk in the same slot (format it
+  or restore its content separately). Mode `omit`: the catalog config drops the disk's line and its
+  `#qmdump#map` line, the restored VM has no such disk.
+- Instant recovery always leaves excluded disks out (there is nothing to serve); file-level restore lists only
+  the backed-up disks.
+- Containers: `exclude_disks` does not apply (a note in the job log); mount points with `backup=0` are skipped
+  by vzdump.
+
+### Parallel guests (Phase 15f)
+`"parallel": N` (group `parallel_guests`, 1..=8, default 1 = one guest after the other) lets `backup-all` back
+up up to N guests at once. The nodes of all guests come from one `/cluster/resources` call; each free worker
+takes the next guest on the node with the fewest running backups, so the load spreads over the cluster (at most
+N at once, hence at most N per node). PVE may serialise vzdump runs on one node (global vzdump lock with
+`lockwait`): guests of the same node then wait for each other inside their vzdump task, which is harmless but
+gives no speed-up. Every worker opens its own store handle (per-snapshot `nexus-stats` stay exact); the output
+lines stay whole lines, so `committed …`, `nexus-stats …` and `backup of guest … failed` parse as before and
+retries (13b) re-run exactly the failed guests. Every vzdump task is reported (`upid: …`); a cancelled job stops
+all of them (`task-stop` per reported UPID, newest first). The plugin host does the same for plugin groups
+(`"parallel"` in its job config, one sandboxed plugin process per guest).
 
 ## index.json (appliance → nodes)
 ```json
@@ -171,7 +206,7 @@ Lab-verified PVE 9.2 behaviour this relies on:
 Steps (`nexus-pve <cfg> instant-recover <vmid> <time> <node> <target> <storage> [--link-down]`):
 1. Appliance reads `qemu-server.conf` from the snapshot and rewrites it (`crate::ir::ir_config`):
    every disk with a `#qmdump#map:<key>:<device>:…` line becomes `<storeid>:ir/<target>/<archive>.<device>.qcow2`
-   (options kept, `size=` dropped); disks without a map line (`backup=0`) are left out; the cloud-init
+   (options kept, `size=` dropped); disks without a map line (`backup=0`) and disks excluded by the group (`excluded-disks.json`) are left out; the cloud-init
    drive is recreated as `<storage>:cloudinit`; ISO CD-ROMs are kept; NIC MACs are dropped (PVE assigns
    new ones), `--link-down` adds `link_down=1` to every NIC; `vmgenid` (root-only via the API) and a
    UUID-only `smbios1` are dropped so PVE generates new ones; `meta`, `lock`, `parent`, `onboot`,
