@@ -79,6 +79,7 @@ mod restore_files;
 pub mod run;
 mod runctl;
 pub mod schedule;
+pub mod search;
 pub mod sshkeys;
 pub mod stats;
 
@@ -978,7 +979,7 @@ impl Scheduler {
             if !valid_name(&tenant) || !self.cfg.store_base.join(&tenant).join("keycheck").exists() {
                 continue; // no backups yet
             }
-            for kind in ["gc", "verify"] {
+            for kind in ["gc", "verify", "file_index"] {
                 let last = self.last_run(
                     &format!("{kind}/{tenant}"),
                     "SELECT MAX(created) FROM jobs WHERE kind=?1 AND tenant=?2 AND requested_by='scheduler'",
@@ -1191,6 +1192,7 @@ impl Scheduler {
         if ok && (job.kind == "backup" || job.kind == "plugin_backup") {
             self.inconsistent_alerts(job.id, &job.tenant, &log)?;
             self.record_stats(&job.tenant, &log)?;
+            self.queue_name_index(&job, result.as_ref())?;
         }
         if job.kind == "gc" {
             self.orphan_bookkeeping(&job.tenant, f.stdout.as_deref())?;
@@ -1389,7 +1391,7 @@ impl Scheduler {
                 log.push_str(&format!("[scheduler] download ready: {file} ({size} bytes)\n"));
                 Some(r)
             }
-            "alert_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" => {
+            "alert_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" | "file_search" | "file_index" => {
                 serde_json::from_str(stdout.unwrap_or_default()).ok()
             }
             "plugin_validate" | "plugin_guests" | "inventory" => {
@@ -2198,6 +2200,9 @@ impl Scheduler {
                 .find(|g| g.id == id && g.tenant == tenant)
                 .with_context(|| format!("group {id} not found in tenant {tenant}"))
         };
+        if job.kind == "file_search" || job.kind == "file_index" {
+            return self.plan_files_index(job, plan);
+        }
         if job.kind == "retention"
             && (p["plugin"] == true || p["source"].as_str().is_some_and(|s| s.starts_with("plugin-")))
         {

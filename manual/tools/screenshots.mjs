@@ -487,6 +487,13 @@ async function main() {
       await shot('restore-vm-files-to-host', { height: 1100 });
       await closeDialogs();
     }],
+    // Phase 15g: find a file by name across all snapshots of a tenant
+    ['search', async () => {
+      await go('/search?tenant=acme&q=budget*');
+      await until(`return document.body.innerText.includes('budget-2026-q4.xlsx')`, 'search results', 30000);
+      await settle();
+      await shot('search');
+    }],
     ['plugin-restores', async () => {
       await go(`/snapshots?source=plugin-postgresql-${data.pgId}`);
       await ev(`$rowClick('plugin-postgresql-${data.pgId}', 'Restore'); return true;`);

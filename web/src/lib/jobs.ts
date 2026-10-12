@@ -24,6 +24,8 @@ export const JOB_KINDS: JobKind[] = [
   'replica_enroll',
   'replica_sync',
   'inventory',
+  'file_search',
+  'file_index',
 ];
 
 /** Human-readable job kind (falls back to the raw kind for kinds the UI does not know yet). */

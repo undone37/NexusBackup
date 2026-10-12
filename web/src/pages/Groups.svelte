@@ -206,11 +206,15 @@
       selector: [...(x?.selector ?? [])],
       exclude: [...(x?.exclude ?? [])],
     };
+    indexFiles = !!x?.index_files;
     tagInput = '';
     lastSource = f.source_id;
     guestList = null;
     open = true;
   }
+  // Phase 15g: file index of VM/CT disks (pve groups only, PUT /groups/{id}/index-files)
+  let indexFiles = $state(false);
+  const pveSource = $derived(sources.find((x) => x.id === Number(f.source_id))?.kind === 'pve');
   // Another source: the selected guests/datasets belonged to the old one.
   let lastSource = 0;
   $effect(() => {
@@ -266,6 +270,9 @@
       ? await act(put(`/groups/${editing.id}`, body), t.saved)
       : await act(post('/groups', { tenant: f.tenant, ...body }), t.created);
     if (r) {
+      const id = editing?.id ?? (r.data as Partial<Group>).id;
+      if (pveSource && id && indexFiles !== !!editing?.index_files)
+        await act(put(`/groups/${id}/index-files`, { enabled: indexFiles }), indexFiles ? t.groups.indexFilesOn : t.groups.indexFilesOff);
       open = false;
       load();
     }
@@ -326,6 +333,7 @@
                   >{/if}
                 {#if isPaused(x.maintenance_until)}<span class="chip warn">{t.runctl.inMaintenance}</span>{/if}
                 {#if x.blackout_active}<span class="chip plain">{t.runctl.blackoutNow}</span>{/if}
+                {#if x.index_files}<span class="chip plain">{t.groups.indexFilesShort}</span>{/if}
                 {#if x.timezone && x.timezone !== 'UTC'}<div class="muted">{x.timezone}</div>{/if}</td
               >
               <td>{x.tenant}</td>
@@ -499,6 +507,14 @@
       <div class="field">
         <label for="g-guests">{t.groups.guests}</label>
         <input id="g-guests" class="mono" bind:value={f.guests} placeholder="100, 101, 200" />
+      </div>
+    {/if}
+    {#if pveSource}
+      <div class="field">
+        <label class="inline-check"
+          ><input type="checkbox" bind:checked={indexFiles} aria-describedby="g-idx-hint" />{t.groups.indexFiles}</label
+        >
+        <p class="hint" id="g-idx-hint">{t.groups.indexFilesHint}</p>
       </div>
     {/if}
     <div class="form-actions">

@@ -7,6 +7,7 @@
 //! clock                            compliance clock state
 //! chunks/<hex[..4]>/<hex>          sealed chunks
 //! snapshots/<source>/<time>/<name>.idx
+//! snapshots/<source>/<time>/names      sealed file name index (names.rs; file trees)
 //! snapshots/<source>/<time>/manifest   written last = commit point
 //! ```
 
@@ -607,7 +608,11 @@ impl Store {
         }
     }
 
-    fn snap_dir(&self, source: &str, time: u64) -> PathBuf {
+    pub(crate) fn meta_lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.meta_lock.lock().unwrap()
+    }
+
+    pub(crate) fn snap_dir(&self, source: &str, time: u64) -> PathBuf {
         self.root.join("snapshots").join(source).join(time.to_string())
     }
 
@@ -642,6 +647,9 @@ impl Store {
                 .keys
                 .seal(ctx.as_bytes(), &postcard::to_stdvec(idx).map_err(invalid_ser)?);
             write_atomic(&dir.join(format!("{name}.idx")), &blob)?;
+        }
+        if let Some(names) = crate::names::NameIndex::from_indexes(indexes.iter().map(|(n, i)| (*n, i))) {
+            self.write_names(source, time, &names)?;
         }
         let m = Manifest {
             tenant: self.keys.tenant().to_owned(),

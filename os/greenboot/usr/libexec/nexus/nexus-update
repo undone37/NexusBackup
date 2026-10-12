@@ -556,7 +556,9 @@ def tick(c, now=None):
         st["bootc_error"] = str(e)
     st["api"] = api_view(st)
     write_status(c, st)
-    return 1 if result and result.startswith("error") else 0
+    # a failed check (registry down, private repo without credential) is reported in
+    # status.json and the web UI; it must not leave a failed unit behind (systemd.failed)
+    return 0
 
 
 def log(msg):

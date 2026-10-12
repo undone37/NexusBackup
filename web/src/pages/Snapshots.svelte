@@ -4,7 +4,7 @@
   import { askConfirm } from '../lib/confirm.svelte';
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
-  import { route, navigate } from '../lib/router.svelte';
+  import { route, navigate, href } from '../lib/router.svelte';
   import { fmtBytes, fmtTime, fmtAgo } from '../lib/format';
   import { t } from '../lib/i18n';
   import { notify } from '../lib/notify.svelte';
@@ -246,6 +246,7 @@
   {#if can.hold(session.user)}
     <button type="button" onclick={() => openHold(null)}><IconGavel aria-hidden="true" />{t.snap.holdRange}</button>
   {/if}
+  {#if can.restore(session.user)}<a class="button" href={href('/search' + qs({ tenant }))}>{t.snap.find}</a>{/if}
   <p class="lede">{t.snap.lede}</p>
 </div>
 

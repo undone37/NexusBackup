@@ -144,6 +144,32 @@ pub fn list(r: impl Read, dir: &str) -> Result<Vec<Entry>> {
     Ok(out)
 }
 
+/// Name index kind of a listing kind (`file`, `dir`, …; also the restore VM's).
+pub fn index_kind(k: &str) -> u8 {
+    match k {
+        "file" | "hardlink" => chunkstore::names::KIND_FILE,
+        "dir" => chunkstore::names::KIND_DIR,
+        "symlink" => chunkstore::names::KIND_SYMLINK,
+        _ => chunkstore::names::KIND_OTHER,
+    }
+}
+
+/// Every entry of a container's tar stream as a name index (file search).
+pub fn index(r: impl Read) -> Result<chunkstore::NameIndex> {
+    let mut out = chunkstore::NameIndex::default();
+    for e in tar::Archive::new(r).entries()? {
+        let e = e?;
+        let h = e.header();
+        out.push(
+            &norm(&e.path()?),
+            h.size()?,
+            h.mtime()? as i64,
+            index_kind(kind(h.entry_type())),
+        );
+    }
+    Ok(out)
+}
+
 /// Unix seconds -> zip DOS time (UTC; zip has no time zone). Days-to-civil after
 /// H. Hinnant; out-of-range dates (before 1980) fall back to the zip default.
 fn zip_time(unix: u64) -> zip::DateTime {

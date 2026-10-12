@@ -162,6 +162,8 @@ interface MockGroup {
   /** Phase 13b */
   timezone?: string;
   paused_until?: number | null;
+  /** Phase 15g: index the files of VM/CT disks after each backup */
+  index_files?: boolean;
 }
 interface InvRow {
   guest: string;
@@ -440,6 +442,12 @@ function tick() {
               ? resolveGuests(g!).map((d) => `nas-${gsrc.id}-${String(d).replaceAll('/', '.')}`)
               : (j.params.vmid ? [j.params.vmid] : j.params.agent_id ? [j.params.agent_id] : g ? resolveGuests(g) : []).map(guestName);
         for (const n of names) db.snapshots.push(snap(j.tenant, n, t, 64 << 30, true, false, null));
+        // Phase 15g: groups with index_files list the guests' file systems after the backup
+        if (g?.index_files && gsrc?.kind === 'pve')
+          for (const n of names) {
+            const x = addJob('file_index', j.tenant, { source: n, time: t, source_id: gsrc.id }, 'scheduler');
+            x.plan = [`booting the restore micro-VM for ${n} @ ${t}`, 'walking the guest file systems', 'file index sealed and written'];
+          }
         for (const a of db.agents) if (names.includes(`host-${a.id}`)) a.last_seen = t;
       }
     }
@@ -937,7 +945,7 @@ function seed() {
   const grp = (tenant: string, source_id: number, policy_id: number, name: string, guests: (number | string)[], auto: Partial<MockGroup> = {}): MockGroup => ({
     id: nextId(), tenant, source_id, policy_id, name, guests, mode: 'explicit', selector: [], exclude: [], ...auto,
   });
-  const gProd = grp('initech', sInitech.id, gold.id, 'production', [100, 101, 200]);
+  const gProd = grp('initech', sInitech.id, gold.id, 'production', [100, 101, 200], { index_files: true });
   // auto-protect (Phase 13c): every guest of the PVE pool "dev" except the build runner
   const gDev = grp('initech', sInitech.id, bronze.id, 'development', [], { mode: 'tags', selector: ['pool:dev'], exclude: ['105'] });
   const gAcmeVms = grp('acme', sAcme.id, silver.id, 'acme-vms', [300, 301]);
@@ -1201,6 +1209,7 @@ function groupState(g: (typeof db.groups)[number]) {
     ...g,
     timezone: g.timezone ?? 'UTC',
     paused_until: g.paused_until ?? null,
+    index_files: g.index_files ?? false,
     maintenance_until: src?.maintenance_until ?? null,
     blackout_active: blackoutActive(pol?.blackout ?? [], g.timezone ?? 'UTC', now()),
     resolved_guests: resolveGuests(g),
@@ -1877,6 +1886,16 @@ on('PUT', '/groups/:id', async (c, [id]) => {
   Object.assign(g, next);
   await audit(u.name, 'group.update', `group/${g.id}`, g);
   return [200, g];
+});
+on('PUT', '/groups/:id/index-files', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const g = find(db.groups, (x) => x.id === Number(id), 'group');
+  const src = db.sources.find((s) => s.id === g.source_id);
+  if (src?.kind !== 'pve') throw new HttpError(400, 'index_files applies to Proxmox VE groups (VM/CT disks); other snapshots are always indexed');
+  if (typeof c.body?.enabled !== 'boolean') throw new HttpError(400, 'enabled: true or false');
+  g.index_files = c.body.enabled;
+  await audit(u.name, 'group.index_files', `group/${g.id}`, { tenant: g.tenant, index_files: g.index_files });
+  return [200, { id: g.id, index_files: g.index_files }];
 });
 on('DELETE', '/groups/:id', (c, [id]) => {
   const g = find(db.groups, (x) => x.id === Number(id), 'group');
@@ -2605,6 +2624,101 @@ on('POST', '/jobs/:id/cancel', async (c, [id]) => {
   j.finished = now();
   await audit(u.name, 'job.cancel', `job/${j.id}`, { running: false });
   return [200, { id: j.id, state: 'cancelled' }];
+});
+
+// ---- Phase 15g: file search across snapshots (crates/scheduler/src/search.rs, POST /search)
+/** Every entry of a snapshot's synthetic tree (listDir), paths relative without a leading slash. */
+function walkSnapshot(source: string, time: number): { path: string; kind: string; size: number; mtime: number }[] {
+  const out: { path: string; kind: string; size: number; mtime: number }[] = [];
+  const week = 7 * DAY;
+  const rec = (dir: string) => {
+    for (const e of listDir(dir, source)) {
+      const full = dir === '/' ? `/${e.name}` : `${dir}/${e.name}`;
+      // documents change weekly (several versions across snapshots), the rest stays put
+      const changing = e.kind === 'file' && /\.(pdf|docx|xlsx|odt|txt|sql)$/.test(e.name);
+      const mtime = changing ? Math.floor((time - 3600) / week) * week : Math.min(e.mtime, time - 3600);
+      const size = changing ? e.size + (Math.floor(time / week) % 7) * 1024 : e.size;
+      out.push({ path: full.slice(1), kind: e.kind, size, mtime });
+      if (e.kind === 'dir') rec(full);
+    }
+  };
+  rec('/');
+  return out;
+}
+/** Glob (* ? [abc] [a-z] [!x]) as a RegExp; no wildcard = substring. */
+function globRe(q: string, caseSensitive: boolean): RegExp {
+  const wild = /[*?[]/.test(q);
+  let re = '';
+  for (let i = 0; i < q.length; i++) {
+    const ch = q[i];
+    if (ch === '*') re += '.*';
+    else if (ch === '?') re += '.';
+    else if (ch === '[') {
+      const end = q.indexOf(']', i + 2);
+      if (end < 0) re += '\\[';
+      else {
+        let body = q.slice(i + 1, end);
+        const neg = body.startsWith('!');
+        if (neg) body = body.slice(1);
+        re += `[${neg ? '^' : ''}${body.replace(/[\\\]^]/g, '\\$&')}]`;
+        i = end;
+      }
+    } else re += ch.replace(/[.+^${}()|\\/]/g, '\\$&');
+  }
+  return new RegExp(wild ? `^${re}$` : re, caseSensitive ? '' : 'i');
+}
+/** VM/CT snapshots are indexed only when a group with index_files covers the guest. */
+function vmIndexed(tenant: string, source: string): boolean {
+  const id = Number(source.replace(/^(vm|ct)-/, ''));
+  return db.groups.some((g) => g.tenant === tenant && g.index_files && resolveGuests(g).some((x) => Number(x) === id));
+}
+function searchResult(p: Json, tenant: string) {
+  const t0 = Date.now();
+  const query = String(p.query).replace(/^\/+/, '');
+  const re = globRe(query, !!p.case_sensitive);
+  const full = query.includes('/');
+  const limit = Number(p.limit ?? 500);
+  const snaps = (db.snapshots as any[])
+    .filter((s) => s.tenant === tenant && s.local && (!p.source || s.source === p.source) && (!p.from || s.time >= p.from) && (!p.to || s.time <= p.to))
+    .sort((a, b) => b.time - a.time);
+  const groups = new Map<string, Json>();
+  let [scanned, unindexed, truncated] = [0, 0, false];
+  for (const s of snaps) {
+    if (/^(vm|ct)-/.test(s.source) && !vmIndexed(tenant, s.source)) {
+      unindexed++;
+      continue;
+    }
+    scanned++;
+    for (const e of walkSnapshot(s.source, s.time)) {
+      const name = full ? e.path : e.path.split('/').pop()!;
+      if (!re.test(name)) continue;
+      const k = `${s.source}\0${e.path}\0${e.size}\0${e.mtime}`;
+      const m = groups.get(k);
+      if (m) m.times.push(s.time);
+      else if (groups.size < limit) groups.set(k, { source: s.source, ...e, times: [s.time] });
+      else truncated = true;
+    }
+  }
+  const matches = [...groups.values()].sort((a, b) => a.path.localeCompare(b.path) || a.source.localeCompare(b.source) || b.mtime - a.mtime);
+  return { matches, scanned, unindexed, truncated, elapsed_ms: Date.now() - t0 + 412 };
+}
+on('POST', '/search', async (c) => {
+  const u = need(c.user, 'admin', 'operator', 'tenant_user');
+  const b = c.body ?? {};
+  const tenant = String(b.tenant ?? '');
+  if (u.tenant && u.tenant !== tenant) throw new HttpError(403, 'forbidden');
+  find(db.tenants, (t) => t.name === tenant, 'tenant');
+  const query = String(b.query ?? '').trim();
+  if (!query || query.length > 256) throw new HttpError(400, 'query: 1..=256 characters');
+  if (b.limit !== undefined && !(Number.isInteger(b.limit) && b.limit >= 1 && b.limit <= 2000)) throw new HttpError(400, 'limit: 1..=2000');
+  const p: Json = { query, case_sensitive: !!b.case_sensitive, limit: b.limit ?? 500 };
+  for (const k of ['source', 'from', 'to']) if (b[k] !== undefined && b[k] !== null && b[k] !== '') p[k] = b[k];
+  const j = addJob('file_search', tenant, p, u.name);
+  j.duration = 1;
+  j.plan = [`searching the file indexes of tenant ${tenant} for "${query}"`, 'done'];
+  j.result = searchResult(p, tenant);
+  await audit(u.name, 'file.search', `job/${j.id}`, { tenant, ...p });
+  return [202, { id: j.id }];
 });
 
 // quorum

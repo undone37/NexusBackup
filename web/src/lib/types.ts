@@ -288,6 +288,8 @@ export interface Group {
   selector: string[];
   /** guest ids never protected by this group (mode all/tags) */
   exclude: string[];
+  /** Phase 15g, pve groups: list the VM/CT file systems after each backup (restore micro-VM) for the file search */
+  index_files?: boolean;
 }
 
 export type GroupMode = 'explicit' | 'all' | 'tags';
@@ -337,7 +339,33 @@ export type JobKind =
   | 'plugin_mount'
   | 'replica_enroll'
   | 'replica_sync'
-  | 'inventory';
+  | 'inventory'
+  | 'file_search'
+  | 'file_index';
+
+/** One hit of a `file_search` job: one version of a file (same path, size, mtime) and the snapshots that hold it. */
+export interface SearchMatch {
+  source: string;
+  /** relative, no leading slash (the Files page path is `/` + path) */
+  path: string;
+  kind: 'file' | 'dir' | 'symlink' | 'other';
+  size: number;
+  mtime: number;
+  /** snapshot times holding this version, newest first */
+  times: number[];
+}
+
+/** `job.result` of a finished `file_search` job (POST /search). */
+export interface SearchResult {
+  matches: SearchMatch[];
+  /** snapshots searched */
+  scanned: number;
+  /** snapshots without a file index (VM/CT disks of groups without index_files) */
+  unindexed: number;
+  /** the limit or the time budget was hit */
+  truncated: boolean;
+  elapsed_ms: number;
+}
 
 /** One entry of `nexus-pve files … ls` (crates/pve/src/files.rs `Entry`); agents use the same shape. */
 export interface FileEntry {

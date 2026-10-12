@@ -127,6 +127,52 @@ To download:
 - For TrueNAS datasets and NFS/SMB shares there is no restore back into the dataset or share itself. Download
   the files, or restore them onto a host with an agent (next section), for example a server that mounts the share.
 
+## Find a file
+
+When you do not know which snapshot (or which guest) holds a file, open **Monitor → Find files** (or **Find files**
+on the Snapshots page).
+
+1. Choose the **Tenant** (tenant users search their own tenant only).
+2. Type a **Name or pattern**:
+   - without wildcards the name only has to contain the text (`budget` finds `budget-2026-q4.xlsx`);
+   - `*` stands for any characters, `?` for one character, `[abc]` / `[a-z]` for one of the listed characters,
+     `[!x]` for any character except those listed (`report-202?.pdf`, `*.[ch]`);
+   - without a `/` the pattern is matched against the file or folder name; with a `/` against the whole path from
+     the snapshot root (`home/*/Documents/*.docx`);
+   - upper and lower case are treated alike unless you tick **Case-sensitive**.
+3. Optionally narrow it to one **Guest** and a date range (**Snapshots from / until**), then click **Search**.
+
+![Search results for budget* in tenant acme](images/search.png)
+
+Each row is one version of a file: the same path with the same size and modification time in several snapshots is
+shown once, with the number of snapshots that hold it. Pick the snapshot in the list (default: the newest), then:
+
+- **Open** shows the folder in the file browser of that snapshot ([Browse files](#browse-files-and-download-them-tar-or-zip));
+- **Download** packs the file as a tar archive (needs the download permission);
+- **Restore…** (host snapshots) opens the [restore to a host](#restore-files-to-a-host-agents) dialog for this path.
+
+At most 500 versions are listed, and a search stops after 30 seconds. If either limit is hit, a note asks you to narrow
+the search (a longer name, one guest, a date range). The search runs as a **File search** job; every search is
+recorded in the audit log (`file.search`) with the query.
+
+What is searched:
+
+- Host (agent), TrueNAS, NFS/SMB and plugin snapshots: always. Each snapshot gets its own file index when it is
+  committed; snapshots taken before this release are indexed by the daily maintenance.
+- VM and container snapshots: only for protection groups with **Index files in VM/CT disks** switched on
+  ([05 Policies and groups](05-policies-and-groups.md#index-files-in-vmct-disks)). It costs a restore micro-VM boot
+  (VMs) or a read of the backup (containers) after every backup. Other VM/CT snapshots are counted in a note
+  ("… snapshots have no file index").
+- Snapshots that exist only offsite are not searched.
+
+Privacy: the file names never appear in plaintext in the catalog. The index of a snapshot is stored next to the
+snapshot, encrypted with the tenant key, and is deleted together with the snapshot (retention, manual delete). The
+search runs on the appliance in the scheduler, which opens the indexes with the tenant key; the web interface only
+receives the matches.
+
+> **Status:** The search and the per-snapshot index are covered by unit and scheduler tests with a temporary store.
+> Indexing of VM disks through the restore micro-VM has not run in the VM lab yet.
+
 ## Restore files to a host (agents)
 
 An enrolled agent writes files from a snapshot onto its host. This works for every snapshot with files:

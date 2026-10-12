@@ -407,10 +407,15 @@ CREATE TABLE legal_holds (
 CREATE UNIQUE INDEX legal_holds_open ON legal_holds(tenant, source, time) WHERE state IN ('active','advisory');
 CREATE INDEX legal_holds_snapshot ON legal_holds(tenant, source, time);
 "#;
+/// v19 (Phase 15g, file index, docs/file-index.md): `groups.index_files` — after
+/// each backup of the group, the files in its VM/CT disks are listed (restore
+/// micro-VM / container tar) into the snapshot's sealed name index, so the file
+/// search covers them. File-tree snapshots are always indexed. Purely additive.
+const SCHEMA_V19: &str = "ALTER TABLE groups ADD COLUMN index_files INTEGER NOT NULL DEFAULT 0;";
 
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
-    SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18,
+    SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1134,6 +1139,45 @@ mod tests {
             })
             .unwrap();
         assert_eq!(n, 3);
+    }
+
+    /// v19 (file index flag) on top of the previous catalog: existing groups do
+    /// not index VM/CT disks; the previous release still inserts groups.
+    #[test]
+    fn migration_v19_index_files() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V19).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO tenants (name) VALUES ('acme');
+                 INSERT INTO sources (id, tenant, name, kind, config) VALUES (1, 'acme', 'pve', 'pve', '{}');
+                 INSERT INTO policies (id, name, schedule, gfs) VALUES (1, 'p', 'daily 01:00', '{}');
+                 INSERT INTO groups (tenant, source_id, policy_id, name, guests) VALUES ('acme', 1, 1, 'g', '[100]');",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let on: bool = conn
+                .query_row("SELECT index_files FROM groups", [], |r| r.get(0))
+                .unwrap();
+            assert!(!on);
+            conn.execute("UPDATE groups SET index_files = 1", []).unwrap();
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        old.execute(
+            "INSERT INTO groups (tenant, source_id, policy_id, name, guests) VALUES ('acme', 1, 1, 'h', '[101]')",
+            [],
+        )
+        .unwrap();
     }
 
     /// v11 (backup stats, tenant quotas) on top of the previous catalog: existing
