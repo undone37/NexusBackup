@@ -2041,6 +2041,45 @@ export const en = {
     short: (mode: string, level: string) => (mode === 'off' ? '—' : `${mode}: ${level}`),
     dashTitle: 'Consistency of the newest snapshots',
   },
+  // Phase 17e: optional per-tenant recovery key
+  tkey: {
+    button: 'Recovery key',
+    title: (tenant: string) => `Tenant recovery key: ${tenant}`,
+    intro:
+      'Optional. With a tenant recovery key this tenant can rebuild its own data from its offsite copy on another appliance, without the appliance recovery key. It opens only this tenant’s keys, never other tenants’ or the appliance’s.',
+    none: 'No tenant recovery key. Only the appliance recovery key can rebuild this tenant from the offsite copy.',
+    set: (since: string, by: string, approver: string) => `Set since ${since} (requested by ${by}, approved by ${approver}).`,
+    kid: 'Key ID',
+    generate: 'Generate tenant recovery key',
+    replace: 'Replace tenant recovery key',
+    replaceHint:
+      'Replacing makes the old key useless for new key versions; the next offsite run removes its files from the offsite target (objects under retention lock stay until the lock ends).',
+    quorumHint: 'Needs approval by a second person. After the approval, you (the requester) open the key once here.',
+    requested: (id: number) => `Request #${id} is waiting for approval.`,
+    readyDirect: (id: number) => `Request #${id} is approved (approvals are disabled): open the key now.`,
+    requests: 'Requests',
+    id: '#',
+    by: 'Requested by',
+    approvedBy: 'Approved by',
+    statusCol: 'Status',
+    showUntil: 'Open before',
+    status: {
+      pending: 'waiting for approval',
+      rejected: 'rejected',
+      approved: 'approved: ready to open',
+      expired: 'expired',
+      shown: 'shown',
+    } as Record<string, string>,
+    show: 'Show key once',
+    showConfirm:
+      'The key is generated now and shown only once; it is stored nowhere. Have a safe place ready (password manager, sealed envelope). Any previous tenant recovery key of this tenant is replaced. Show it now?',
+    shownTitle: (tenant: string) => `Tenant recovery key for ${tenant}`,
+    once: 'Shown only now. The appliance keeps only its public part; nobody can display it again. Store it apart from the appliance recovery key.',
+    steps:
+      'To rebuild this tenant on another (set-up) appliance: nexus-offsite <config.json> dr --tenant-key /var/lib/nexus/keyd, with the key on standard input (manual chapter 14). The next offsite run uploads the escrow files for this key.',
+    replaced: (kid: string) => `Replaced key ${kid}.`,
+    readOnly: 'Only administrators request a tenant recovery key.',
+  },
 };
 
 export const t = en;
