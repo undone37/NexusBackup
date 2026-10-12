@@ -19,7 +19,7 @@ const BASE = `https://nexus-m5:${PORT}/`;
 rmSync(`${OUT}/profile`, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
 const PAGES = ['/', '/snapshots', '/snapshots?held=true', '/search', '/storage', '/reports', '/jobs', '/alerts', '/quorum', '/audit', '/tenants', '/sources', '/agents',
-  '/replication', '/policies', '/groups', '/users', '/plugins', '/account'];
+  '/replication', '/policies', '/groups', '/users', '/plugins', '/hardware', '/account'];
 const TABS = ['approvals', 'alerts', 'sso', 'ssh', 'updates', 'anomaly', 'diagnostics', 'console', 'certificate', 'forwarding', 'security'];
 
 const b32 = (s) => {

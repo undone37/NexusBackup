@@ -24,6 +24,10 @@ export const can = {
   // Legal holds (15c): only security officers set them; officers and admins request a release.
   hold: (u: User | null) => u?.role === 'security_officer',
   releaseHold: (u: User | null) => u?.role === 'security_officer' || u?.role === 'admin',
+  // Hardware (16a/b): appliance-wide, read by every non-tenant role; admins request layout changes.
+  viewHardware: (u: User | null) => !!u && u.role !== 'tenant_user' && !u.tenant,
+  manageHardware: (u: User | null) => u?.role === 'admin',
+  scanHardware: (u: User | null) => u?.role === 'admin' || u?.role === 'operator',
 };
 
 export const ROLES: Role[] = ['admin', 'security_officer', 'operator', 'tenant_user', 'viewer'];

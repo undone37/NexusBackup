@@ -31,6 +31,7 @@
   import Groups from './pages/Groups.svelte';
   import Users from './pages/Users.svelte';
   import Plugins from './pages/Plugins.svelte';
+  import Hardware from './pages/Hardware.svelte';
   import Settings from './pages/Settings.svelte';
   import Account from './pages/Account.svelte';
   import IconDashboard from '@lucide/svelte/icons/layout-dashboard';
@@ -50,6 +51,7 @@
   import IconGroups from '@lucide/svelte/icons/boxes';
   import IconUsers from '@lucide/svelte/icons/users';
   import IconPlugins from '@lucide/svelte/icons/puzzle';
+  import IconHardware from '@lucide/svelte/icons/server-cog';
   import IconSettings from '@lucide/svelte/icons/settings';
   import IconMenu from '@lucide/svelte/icons/menu';
   import IconSun from '@lucide/svelte/icons/sun';
@@ -89,6 +91,7 @@
     { path: '/groups', comp: Groups, allow: can.configure, nav: t.nav.groups, section: 'config', icon: IconGroups },
     { path: '/users', comp: Users, allow: can.configure, nav: t.nav.users, section: 'config', icon: IconUsers },
     { path: '/plugins', comp: Plugins, allow: can.viewPlugins, nav: t.nav.plugins, section: 'config', icon: IconPlugins },
+    { path: '/hardware', comp: Hardware, allow: can.viewHardware, nav: t.nav.hardware, section: 'config', icon: IconHardware },
     { path: '/settings', comp: Settings, allow: viewSettings, nav: t.nav.settings, section: 'config', icon: IconSettings },
     { path: '/account', comp: Account, allow: always },
   ];

@@ -249,6 +249,8 @@ const db = {
   },
   /** Phase 14e setting `reports` (scheduled reports) */
   reports: [] as Json[],
+  /** Phase 16a/b: nexus-disks status (GET /hardware) */
+  hardware: {} as Json,
 };
 const nextId = () => ++db.seq;
 
@@ -1229,6 +1231,7 @@ function seed() {
   seedDiag(t);
   seedConsole(t);
   seedHolds(t);
+  seedHardware(t);
 }
 
 // ---------------------------------------------------------------- run control (Phase 13b)
@@ -1609,6 +1612,12 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       else db.snapshots = db.snapshots.filter((y) => y !== x);
       break;
     }
+    case 'disks.create_array':
+    case 'disks.add_spare':
+    case 'disks.replace':
+    case 'disks.grow':
+      hwExecute(action, p, by, qid);
+      break;
     case 'update.apply':
       if (db.updates.available) Object.assign(db.updates, { staged: { ...db.updates.available, since: now() }, status: 'staged' });
       break;
@@ -4182,6 +4191,393 @@ on('GET', '/diagnostics/:id', (c, [id]) => {
   if (!v) throw new HttpError(404, 'diagnostics run not found');
   return [200, v];
 });
+
+// ---------------------------------------------------------------- hardware (Phase 16a/b)
+// What nexus-disks reports (status.json + ops.json), with the web-api's `issues` and `summary`.
+// Rebuilds, reshapes and self-tests advance with mock time; layout requests go through quorum().
+
+function hwAttr(id: number, name: string, value: number, worst: number, thresh: number, raw: number, failing = false): Json {
+  return { id, name, value, worst, thresh, raw, failing };
+}
+function hwSmartAta(o: { temp: number; poh: number; realloc?: number; pending?: number; offline?: number; failed?: boolean; ssd?: boolean; last?: Json; checked: number }): Json {
+  const r = o.realloc ?? 0;
+  const p = o.pending ?? 0;
+  const off = o.offline ?? 0;
+  const attrs = o.ssd
+    ? [hwAttr(5, 'Reallocated_Sector_Ct', 100, 100, 10, r), hwAttr(9, 'Power_On_Hours', 98, 98, 0, o.poh), hwAttr(12, 'Power_Cycle_Count', 99, 99, 0, 38),
+      hwAttr(177, 'Wear_Leveling_Count', 97, 97, 0, 31), hwAttr(194, 'Temperature_Celsius', 100 - o.temp + 31, 61, 0, o.temp), hwAttr(241, 'Total_LBAs_Written', 99, 99, 0, 9483712044)]
+    : [hwAttr(1, 'Raw_Read_Error_Rate', o.failed ? 1 : 200, o.failed ? 1 : 200, 51, o.failed ? 48211 : 0, !!o.failed), hwAttr(3, 'Spin_Up_Time', 176, 175, 21, 8175),
+      hwAttr(5, 'Reallocated_Sector_Ct', o.failed ? 120 : r ? 199 : 200, o.failed ? 120 : 199, 140, r, !!o.failed), hwAttr(9, 'Power_On_Hours', 79, 79, 0, o.poh),
+      hwAttr(194, 'Temperature_Celsius', 112, 101, 0, o.temp), hwAttr(197, 'Current_Pending_Sector', 200, 200, 0, p),
+      hwAttr(198, 'Offline_Uncorrectable', 100, 253, 0, off), hwAttr(199, 'UDMA_CRC_Error_Count', 200, 200, 0, 0)];
+  return {
+    available: true, health: o.failed ? 'failed' : 'passed', temperature: o.temp, power_on_hours: o.poh, reallocated: r, pending: p,
+    offline_uncorrectable: off, percentage_used: null, media_errors: null, critical_warning: null, available_spare: null,
+    self_test: { running: false, remaining: null, last: o.last ?? { type: o.ssd ? 'Short offline' : 'Extended offline', status: 'Completed without error', passed: true, hours: o.poh - 96 } },
+    attributes: attrs, error: null, standby: false, checked: o.checked,
+  };
+}
+function hwSmartNvme(used: number, poh: number, temp: number, checked: number): Json {
+  const nv: Json = {
+    critical_warning: 0, temperature: temp, available_spare: 100, available_spare_threshold: 10, percentage_used: used, data_units_read: 9418265,
+    data_units_written: 21983410, power_cycles: 41, power_on_hours: poh, unsafe_shutdowns: 3, media_errors: 0, num_err_log_entries: 0,
+  };
+  return {
+    available: true, health: 'passed', temperature: temp, power_on_hours: poh, reallocated: null, pending: null, offline_uncorrectable: null,
+    percentage_used: used, media_errors: 0, critical_warning: 0, available_spare: 100,
+    self_test: { running: false, remaining: null, last: { type: 'Short', status: 'Completed without error', passed: true, hours: poh - 26 } },
+    attributes: Object.entries(nv).map(([name, raw]) => ({ id: null, name, value: null, worst: null, thresh: null, raw, failing: false })),
+    error: null, standby: false, checked,
+  };
+}
+function hwDisk(name: string, model: string, serial: string, size: number, type: string, transport: string, role: string, array: string | null, smart: Json, extra: Json = {}): Json {
+  return {
+    name, path: `/dev/${name}`, model, serial, wwn: type === 'nvme' ? `eui.002538${serial.slice(-6).toLowerCase()}` : `0x50014ee2${serial.slice(-6).toLowerCase()}`,
+    size, type, transport, rotational: type === 'hdd', removable: false, role, array, why: null, smart, ...extra,
+  };
+}
+function hwOp(op: string, state: string, by: string, created: number, detail: string | null, params: Json = {}, quorum_id: number | null = null, error: string | null = null): Json {
+  return { id: rand(16), op, state, by, quorum_id, created, finished: state === 'queued' || state === 'running' ? null : created + 2, detail, error, params };
+}
+
+function seedHardware(t: number) {
+  const TB4 = 4000787030016;
+  const HDD = 'WDC WD40EFPX-68C6CN0';
+  const hdd = (name: string, serial: string, role: string, array: string | null, o: Json = {}) =>
+    hwDisk(name, HDD, serial, TB4, 'hdd', 'sata', role, array, hwSmartAta({ temp: 36 + (name.charCodeAt(2) % 4), poh: 15500 + name.charCodeAt(2), checked: t - 1200, ...o }));
+  const ssd = (name: string, serial: string) =>
+    hwDisk(name, 'Samsung SSD 870 EVO 250GB', serial, 250059350016, 'ssd', 'sata', 'system', 'md127', hwSmartAta({ temp: 31, poh: 9120, ssd: true, checked: t - 1200 }));
+  const nvme = (name: string, serial: string, used: number) =>
+    hwDisk(name, 'Samsung SSD 990 PRO 1TB', serial, 1000204886016, 'nvme', 'nvme', 'empty', null, hwSmartNvme(used, 1488, 41, t - 1200));
+  db.hardware = {
+    scanned: t - 120,
+    smart_scanned: t - 1200,
+    tools: { smartctl: true, mdadm: true },
+    store: { path: '/var/lib/nexus/chunkstore', array: 'md126', array_uuid: '3f0c1a2b:4d5e6f70:81920a1b:2c3d4e5f', mounted: true, empty: false },
+    disks: [
+      ssd('sda', 'S6PNNM0T401234A'),
+      ssd('sdb', 'S6PNNM0T401235B'),
+      hdd('sdc', 'WD-WX12D3456701', 'data', 'md126'),
+      hdd('sdd', 'WD-WX12D3456702', 'data', 'md126'),
+      hdd('sde', 'WD-WX12D3456703', 'data', 'md126', { realloc: 24, pending: 8 }),
+      hdd('sdf', 'WD-WX12D3456704', 'data', 'md126', {
+        failed: true, realloc: 1400, pending: 312, offline: 57,
+        last: { type: 'Short offline', status: 'Completed: read failure', passed: false, hours: 15519 },
+      }),
+      hdd('sdg', 'WD-WX12D3456705', 'data', 'md126'),
+      hdd('sdh', 'WD-WX12D3456706', 'empty', null, { poh: 120 }),
+      nvme('nvme0n1', 'S7DNNJ0W100001X', 3),
+      nvme('nvme1n1', 'S7DNNJ0W100002Y', 4),
+      hwDisk('sdi', 'WD Elements 25A2', '575832314131313', 2000398934016, 'hdd', 'usb', 'in_use', null,
+        { available: false, health: null, temperature: null, power_on_hours: null, reallocated: null, pending: null, offline_uncorrectable: null,
+          percentage_used: null, media_errors: null, critical_warning: null, available_spare: null, self_test: null, attributes: [],
+          error: '/dev/sdi: Unknown USB bridge [0x1058:0x25a2 (0x1021)]', standby: false, checked: t - 1200 },
+        { removable: true, why: 'has partitions' }),
+    ],
+    arrays: [
+      {
+        name: 'md126', path: '/dev/md126', md_name: 'nexus-data', uuid: '3f0c1a2b:4d5e6f70:81920a1b:2c3d4e5f', role: 'data', level: 'raid6',
+        raid_devices: 4, size: 8001574060032, used_dev_size: 4000587055104, bitmap: 'Internal', mounts: ['/var/lib/nexus/chunkstore'],
+        fs: { type: 'xfs', uuid: '0e7d8c9b-aaaa-4bbb-8ccc-1234567890ab', size: 8000500318208, used: 3871043584000 },
+        members: [
+          { disk: 'sdc', dev: 'sdc', serial: 'WD-WX12D3456701', state: 'active', slot: 0 },
+          { disk: 'sdd', dev: 'sdd', serial: 'WD-WX12D3456702', state: 'active', slot: 1 },
+          { disk: 'sde', dev: 'sde', serial: 'WD-WX12D3456703', state: 'active', slot: 2 },
+          { disk: 'sdg', dev: 'sdg', serial: 'WD-WX12D3456705', state: 'rebuilding', slot: 3 },
+          { disk: 'sdf', dev: 'sdf', serial: 'WD-WX12D3456704', state: 'faulty', slot: null },
+        ],
+        // the hot spare sdg took over when sdf failed; the rebuild runs for about 8 h
+        sync: { action: 'recover', base: 41, t0: t, secs: 5 * 3600 },
+      },
+      {
+        name: 'md127', path: '/dev/md127', md_name: 'root', uuid: '9a8b7c6d:5e4f3a2b:1c0d9e8f:7a6b5c4d', role: 'system', level: 'raid1',
+        raid_devices: 2, size: 248352203776, used_dev_size: 248352203776, bitmap: 'Internal', mounts: ['/sysroot', '/var', '/etc'],
+        fs: { type: 'xfs', uuid: '6a1f0b2c-1d2e-4f30-8a41-5b6c7d8e9f00', size: 247278460928, used: 22548578304 },
+        members: [
+          { disk: 'sda', dev: 'sda3', serial: 'S6PNNM0T401234A', state: 'active', slot: 0 },
+          { disk: 'sdb', dev: 'sdb3', serial: 'S6PNNM0T401235B', state: 'active', slot: 1 },
+        ],
+        sync: null,
+      },
+    ],
+    ops: [
+      hwOp('add_spare', 'done', 'admin', t - 86400 * 30, 'WD-WX12D3456705 added to md126 as a hot spare', { array: '3f0c1a2b:4d5e6f70:81920a1b:2c3d4e5f', disk: 'WD-WX12D3456705' }, 31),
+      hwOp('selftest', 'done', 'admin', t - 86400 * 2, 'short self-test started on WD-WX12D3456704, about 2 minutes', { disk: 'WD-WX12D3456704', type: 'short' }),
+      hwOp('scan', 'done', 'op', t - 3 * 3600, 'rescan requested'),
+    ],
+  };
+  db.alerts.push(
+    mkAlert({
+      ts: t - 3 * 3600, last_ts: t - 120, count: 37, severity: 'critical', kind: 'disk', key: 'disk:WD-WX12D3456704',
+      message: 'Disk sdf (WDC WD40EFPX-68C6CN0, WD-WX12D3456704): SMART health check failed; 312 pending, 1400 reallocated, 57 offline-uncorrectable sectors',
+    }),
+    mkAlert({
+      ts: t - 3 * 3600, last_ts: t - 120, count: 37, severity: 'critical', kind: 'disk', key: 'disk:md:nexus-data',
+      message: 'Array md126 (nexus-data, raid6): degraded: 3 of 4 devices active, failed member sdf (WD-WX12D3456704)',
+    }),
+    mkAlert({
+      ts: t - 3 * 3600, last_ts: t - 120, count: 37, severity: 'info', kind: 'disk', key: 'disk:md:nexus-data:sync',
+      message: 'Array md126 (nexus-data, raid6): rebuilding 41.0 % (about 295 min left)',
+    }),
+    mkAlert({
+      ts: t - 86400 * 4, last_ts: t - 1200, count: 96, severity: 'warning', kind: 'disk', key: 'disk:WD-WX12D3456703',
+      message: 'Disk sde (WDC WD40EFPX-68C6CN0, WD-WX12D3456703): 8 pending, 24 reallocated sectors', acked_by: 'op',
+      note: 'Replacement disk ordered.',
+    }),
+  );
+}
+
+/** Advances rebuilds / reshapes / self-tests to mock time; finished ones settle. */
+function hwAdvance() {
+  const h = db.hardware;
+  const t = now();
+  for (const a of h.arrays) {
+    const s = a.sync;
+    if (!s) continue;
+    const pct = Math.min(100, s.base + ((100 - s.base) * (t - s.t0)) / s.secs);
+    if (pct < 100) continue;
+    a.sync = null;
+    for (const m of a.members) if (m.state === 'rebuilding') m.state = 'active';
+    if (s.action === 'reshape' && s.grow) {
+      a.raid_devices += 1;
+      const data = a.level === 'raid6' ? a.raid_devices - 2 : a.raid_devices - 1;
+      a.size = a.used_dev_size * data;
+      if (a.fs) a.fs.size = a.size - 1073741824;
+      h.ops.push(hwOp('growfs', 'done', 'nexus-disks', t, `file system on ${a.name} grown to the new array size`, { array: a.uuid }));
+    }
+  }
+  for (const d of h.disks) {
+    const st = d.smart?.self_test;
+    if (!st?.running) continue;
+    const left = st.until - t;
+    if (left > 0) {
+      st.remaining = Math.max(10, Math.ceil((left / st.secs) * 10) * 10);
+      continue;
+    }
+    const nv = d.type === 'nvme';
+    d.smart.self_test = {
+      running: false, remaining: null,
+      last: { type: nv ? (st.kind === 'long' ? 'Extended' : 'Short') : st.kind === 'long' ? 'Extended offline' : 'Short offline', status: 'Completed without error', passed: true, hours: d.smart.power_on_hours },
+    };
+  }
+}
+
+function hwArrayView(a: Json): Json {
+  const s = a.sync;
+  const t = now();
+  const progress = s ? Math.min(99.9, s.base + ((100 - s.base) * (t - s.t0)) / s.secs) : null;
+  const finish = s ? Math.max(1, Math.round((s.secs - (t - s.t0)) / 60)) : null;
+  const inSlot = a.members.filter((m: Json) => m.slot !== null && m.state !== 'spare' && m.state !== 'removed');
+  const active = a.members.filter((m: Json) => m.state === 'active' && m.slot !== null).length;
+  const faulty = a.members.filter((m: Json) => m.state === 'faulty');
+  const degraded = active < a.raid_devices || inSlot.length < a.raid_devices;
+  const action = s?.action ?? null;
+  const state = action === 'recover' ? 'recovering' : action === 'reshape' ? 'reshaping' : action === 'resync' ? 'resyncing' : degraded ? 'degraded' : 'clean';
+  const words = ['clean', degraded ? 'degraded' : '', state === 'recovering' ? 'recovering' : state === 'reshaping' ? 'reshaping' : state === 'resyncing' ? 'resyncing' : ''].filter(Boolean);
+  const issues: Json[] = [];
+  if (degraded) {
+    issues.push({
+      severity: 'critical',
+      message: `degraded: ${active} of ${a.raid_devices} devices active` + (faulty.length ? `, failed member ${faulty.map((m: Json) => `${m.dev} (${m.serial})`).join(', ')}` : ''),
+    });
+  } else if (faulty.length) {
+    issues.push({ severity: 'warning', message: `${faulty.length} failed member(s) still listed: ${faulty.map((m: Json) => m.dev).join(', ')} (replace or remove it)` });
+  }
+  if (action && progress !== null) {
+    const what = { recover: 'rebuilding', reshape: 'reshaping', resync: 'resyncing' }[action as string] ?? action;
+    issues.push({ severity: 'info', message: `${what} ${progress.toFixed(1)} % (about ${finish} min left)` });
+  }
+  const { sync: _s, ...rest } = a;
+  return {
+    ...rest, state, degraded, state_detail: words.join(', '), active_devices: active, failed_devices: faulty.length,
+    spare_devices: a.members.filter((m: Json) => m.state === 'spare' || m.state === 'rebuilding').length,
+    action, progress: progress === null ? null : Math.round(progress * 10) / 10, finish_minutes: finish, issues,
+  };
+}
+
+function hwDiskIssues(d: Json): Json[] {
+  const s = d.smart;
+  const out: Json[] = [];
+  if (!s?.available) return out;
+  if (s.health === 'failed') out.push({ severity: 'critical', message: 'SMART health check failed' });
+  const p = s.pending ?? 0;
+  const r = s.reallocated ?? 0;
+  const o = s.offline_uncorrectable ?? 0;
+  if (p || r || o) {
+    out.push({ severity: 'warning', message: [p && `${p} pending`, r && `${r} reallocated`, o && `${o} offline-uncorrectable`].filter(Boolean).join(', ') + ' sectors' });
+  }
+  if (s.critical_warning) out.push({ severity: 'warning', message: `NVMe critical warning 0x${s.critical_warning.toString(16)}` });
+  if ((s.percentage_used ?? 0) >= 90) out.push({ severity: 'warning', message: `NVMe wear ${s.percentage_used} %` });
+  if (s.media_errors) out.push({ severity: 'warning', message: `${s.media_errors} media errors` });
+  const limit = d.type === 'hdd' ? 55 : 70;
+  if (s.temperature !== null && s.temperature > limit) out.push({ severity: 'warning', message: `temperature ${s.temperature} °C (above ${limit} °C)` });
+  if (s.self_test?.last && !s.self_test.last.passed && !s.self_test.running) out.push({ severity: 'warning', message: `last self-test: ${s.self_test.last.status}` });
+  return out;
+}
+
+function hwView(): Json {
+  hwAdvance();
+  const h = db.hardware;
+  // the mock's own self-test bookkeeping (until, secs, kind) stays inside
+  const test = (st: Json) => st && (({ until: _u, secs: _s, kind: _k, ...x }) => x)(st);
+  const disks = h.disks.map((d: Json) => ({ ...d, issues: hwDiskIssues(d), smart: d.smart && { ...d.smart, self_test: test(d.smart.self_test) } }));
+  const arrays = h.arrays.map(hwArrayView);
+  const all = [...disks, ...arrays].flatMap((x: Json) => x.issues);
+  const crit = all.filter((i: Json) => i.severity === 'critical').length;
+  const warn = all.filter((i: Json) => i.severity === 'warning').length;
+  return {
+    available: true, stale: false, scanned: h.scanned, smart_scanned: h.smart_scanned, tools: h.tools, store: h.store,
+    summary: { state: crit ? 'critical' : warn ? 'warning' : 'ok', disks: disks.length, arrays: arrays.length, warnings: warn, critical: crit },
+    disks, arrays, ops: [...h.ops].reverse(),
+  };
+}
+
+function hwReader(c: Ctx): User {
+  const u = need(c.user, 'admin', 'security_officer', 'operator', 'viewer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  return u;
+}
+const hwDiskBySerial = (serial: unknown) => {
+  const d = db.hardware.disks.find((x: Json) => x.serial === serial);
+  if (!d) throw new HttpError(404, `no disk with serial ${String(serial)}`);
+  return d;
+};
+const hwInfo = (d: Json) => ({ serial: d.serial, model: d.model, size: d.size, name: d.name });
+const hwTyped = (confirm: unknown) => new Set(String(confirm ?? '').split(/[\s,]+/).filter(Boolean));
+function hwEmpty(d: Json, minSize?: number) {
+  if (d.role !== 'empty') throw new HttpError(409, `disk ${d.serial} (${d.name}) is not empty: ${d.role}${d.why ? `, ${d.why}` : ''}`);
+  if (minSize && d.size < minSize) throw new HttpError(409, `disk ${d.serial} (${d.name}) is smaller than the array members`);
+}
+function hwManaged(name: string): Json {
+  const a = db.hardware.arrays.find((x: Json) => x.name === name);
+  if (!a) throw new HttpError(404, 'array not found');
+  if (a.role !== 'data' && a.role !== 'metadata') throw new HttpError(409, `${a.name} is not a data or metadata array: shown only`);
+  return a;
+}
+
+on('GET', '/hardware', (c) => {
+  hwReader(c);
+  return [200, hwView()];
+});
+on('POST', '/hardware/scan', async (c) => {
+  const u = need(c.user, 'admin', 'operator');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  const o = hwOp('scan', 'done', u.name, now(), 'rescan requested');
+  db.hardware.ops.push(o);
+  db.hardware.scanned = db.hardware.smart_scanned = now();
+  for (const d of db.hardware.disks) if (d.smart) d.smart.checked = now();
+  await audit(u.name, 'hardware.scan', `hardware/${o.id}`, {});
+  return [202, { id: o.id, state: 'queued' }];
+});
+on('POST', '/hardware/selftest', async (c) => {
+  const u = need(c.user, 'admin');
+  const { disk, type } = c.body;
+  if (type !== 'short' && type !== 'long') throw new HttpError(400, 'type: short or long');
+  const d = hwDiskBySerial(disk);
+  if (!d.smart?.available) throw new HttpError(409, `SMART is not available on ${d.name}`);
+  if (d.smart.self_test?.running) throw new HttpError(409, `a self-test is running on ${d.name}`);
+  const secs = type === 'short' ? 120 : d.type === 'hdd' ? 465 * 60 : 1800;
+  d.smart.self_test = { ...(d.smart.self_test ?? { last: null }), running: true, remaining: 90, until: now() + secs, secs, kind: type };
+  const o = hwOp('selftest', 'done', u.name, now(), `${type} self-test started on ${d.serial}, about ${Math.round(secs / 60)} minutes`, { disk: d.serial, type });
+  db.hardware.ops.push(o);
+  await audit(u.name, 'hardware.selftest', `disk/${d.serial}`, { type, device: d.name });
+  return [202, { id: o.id, state: 'queued' }];
+});
+on('POST', '/hardware/arrays', async (c) => {
+  const u = need(c.user, 'admin');
+  const { role, level, disks, confirm } = c.body;
+  if (role === 'metadata') throw new HttpError(400, 'the metadata tier is a follow-up: only the data role can be created');
+  if (role !== 'data') throw new HttpError(400, 'role: data');
+  const min: Record<string, number> = { raid1: 2, raid5: 3, raid6: 4, raid10: 4 };
+  if (!min[level]) throw new HttpError(400, 'level: raid1, raid5, raid6 or raid10');
+  if (!Array.isArray(disks) || new Set(disks).size !== disks.length) throw new HttpError(400, 'disks: a list of distinct serial numbers');
+  if (disks.length < min[level]) throw new HttpError(400, `${level} needs at least ${min[level]} disks`);
+  if (level === 'raid10' && disks.length % 2) throw new HttpError(400, 'raid10 needs an even number of disks');
+  const typed = hwTyped(confirm);
+  if (typed.size !== disks.length || !disks.every((s: string) => typed.has(s))) throw new HttpError(400, 'type the serial numbers of the selected disks to confirm');
+  const ds = disks.map(hwDiskBySerial);
+  if (db.hardware.arrays.some((a: Json) => a.role === 'data')) throw new HttpError(409, 'a data array exists already: grow it or add spares');
+  if (db.hardware.store.empty !== true) throw new HttpError(409, 'the store is not empty: a data array is only created while the store holds no backups');
+  ds.forEach((d: Json) => hwEmpty(d));
+  return quorum(u, 'disks.create_array', { op: 'create_array', role, level, disks, disk_info: ds.map(hwInfo) });
+});
+for (const kind of ['spare', 'replace', 'grow']) {
+  on('POST', `/hardware/arrays/:name/${kind}`, async (c, [name]) => {
+    const u = need(c.user, 'admin');
+    const a = hwManaged(decodeURIComponent(name));
+    const d = hwDiskBySerial(c.body.disk);
+    if (String(c.body.confirm ?? '').trim() !== d.serial) throw new HttpError(400, 'type the serial number of the new disk to confirm');
+    hwEmpty(d, a.used_dev_size);
+    const v = hwArrayView(a);
+    const failed = kind === 'replace' ? (c.body.failed ?? null) : undefined;
+    if (kind === 'grow' && (!['raid5', 'raid6'].includes(a.level) || v.state !== 'clean')) {
+      throw new HttpError(409, `${a.name} is ${a.level}, ${v.state}: only a clean raid5 or raid6 array grows by a disk`);
+    }
+    if (kind === 'replace') {
+      if (failed !== null && !a.members.some((m: Json) => m.serial === failed)) throw new HttpError(409, `${failed} is not a member of ${a.name}`);
+      if (failed === null && !v.degraded && !a.members.some((m: Json) => m.state === 'faulty')) {
+        throw new HttpError(409, `${a.name} has no failed member: add the disk as a spare, or name the member to replace`);
+      }
+    }
+    const op = { spare: 'add_spare', replace: 'replace', grow: 'grow' }[kind]!;
+    const params: Json = { op, array: a.uuid, array_name: a.name, disk: d.serial, disk_info: [hwInfo(d)] };
+    if (kind === 'replace') params.failed = failed;
+    return quorum(u, `disks.${op}`, params);
+  });
+}
+
+/** An approved disks.* request: what nexus-disks would do (web-executed quorum action). */
+function hwExecute(action: string, p: Json, by: string, qid: number) {
+  const h = db.hardware;
+  const t = now();
+  const disk = (s: string) => h.disks.find((d: Json) => d.serial === s);
+  const q = qid || null;
+  if (action === 'disks.create_array') {
+    const name = 'md125';
+    const ds = p.disks.map(disk);
+    const min = Math.min(...ds.map((d: Json) => d.size));
+    const n = ds.length;
+    const dataDisks = p.level === 'raid1' ? 1 : p.level === 'raid5' ? n - 1 : p.level === 'raid6' ? n - 2 : Math.floor(n / 2);
+    h.arrays.unshift({
+      name, path: `/dev/${name}`, md_name: 'nexus-data', uuid: rand(16).replace(/(.{8})(?=.)/g, '$1:'), role: 'data', level: p.level,
+      raid_devices: n, size: min * dataDisks, used_dev_size: min, bitmap: 'Internal', mounts: [h.store.path],
+      fs: { type: 'xfs', uuid: rand(16).replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5'), size: min * dataDisks - 1073741824, used: 0 },
+      members: ds.map((d: Json, i: number) => ({ disk: d.name, dev: d.name, serial: d.serial, state: 'active', slot: i })),
+      sync: { action: 'resync', base: 0, t0: t, secs: 6 * 3600 },
+    });
+    for (const d of ds) Object.assign(d, { role: 'data', array: name });
+    Object.assign(h.store, { array: name, array_uuid: h.arrays[0].uuid, mounted: true });
+    h.ops.push(hwOp('create_array', 'done', by, t, `${p.level} ${name} from ${n} disks, XFS, mounted at ${h.store.path}; the initial sync runs in the background`, p, q));
+    return;
+  }
+  const a = h.arrays.find((x: Json) => x.uuid === p.array);
+  const d = disk(p.disk);
+  if (!a || !d) return;
+  Object.assign(d, { role: a.role, array: a.name });
+  if (action === 'disks.add_spare') {
+    const degraded = hwArrayView(a).degraded;
+    a.members.push({ disk: d.name, dev: d.name, serial: d.serial, state: degraded ? 'rebuilding' : 'spare', slot: degraded ? a.raid_devices - 1 : null });
+    if (degraded) a.sync = { action: 'recover', base: 0, t0: t, secs: 8 * 3600 };
+    h.ops.push(hwOp('add_spare', 'done', by, t, `${d.serial} added to ${a.name}${degraded ? ' (rebuild started)' : ' as a hot spare'}`, p, q));
+  } else if (action === 'disks.replace') {
+    const old = a.members.filter((m: Json) => (p.failed ? m.serial === p.failed : m.state === 'faulty'));
+    const working = old.some((m: Json) => m.state === 'active');
+    if (!working) {
+      a.members = a.members.filter((m: Json) => !old.includes(m));
+      for (const m of old) Object.assign(disk(m.serial) ?? {}, { role: 'in_use', array: null, why: 'contains a signature: linux_raid_member' });
+    }
+    // a free slot is rebuilt at once; otherwise (another disk is already rebuilding it) the new disk waits as a spare
+    const used = new Set(a.members.filter((m: Json) => m.slot !== null).map((m: Json) => m.slot));
+    const free = [...Array(a.raid_devices).keys()].find((i) => !used.has(i));
+    a.members.push({ disk: d.name, dev: d.name, serial: d.serial, state: working || free !== undefined ? 'rebuilding' : 'spare', slot: working ? null : (free ?? null) });
+    if (!a.sync && a.members.some((m: Json) => m.state === 'rebuilding')) a.sync = { action: 'recover', base: 0, t0: t, secs: 8 * 3600 };
+    h.ops.push(hwOp('replace', 'done', by, t, working ? `${p.failed} is being replaced by ${d.serial} in ${a.name}` : `${old.map((m: Json) => m.serial).join(', ') || 'failed member'} removed from ${a.name}, ${d.serial} added: rebuild started`, p, q));
+  } else if (action === 'disks.grow') {
+    a.members.push({ disk: d.name, dev: d.name, serial: d.serial, state: 'active', slot: a.raid_devices });
+    a.sync = { action: 'reshape', base: 0, t0: t, secs: 20 * 3600, grow: true };
+    h.ops.push(hwOp('grow', 'done', by, t, `${a.name} reshaping to ${a.raid_devices + 1} devices; the file system grows when the reshape has finished`, p, q));
+  }
+}
 
 // ---------------------------------------------------------------- server glue
 
