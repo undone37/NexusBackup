@@ -46,6 +46,12 @@ struct BackupP {
     /// one Linux agent (its linux source)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent_id: Option<String>,
+    /// group_id only: back up these guests of the group (Phase 13b)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    guests: Option<Vec<Value>>,
+    /// group_id only: the guests that failed in the group's last run
+    #[serde(default, skip_serializing)]
+    failed_only: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -170,7 +176,10 @@ fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiResult<Value>
     Ok(match kind {
         "backup" => {
             crate::replication::refuse_replicated(&st.cat.conn(), tenant)?;
-            let b: BackupP = parse(p)?;
+            let mut b: BackupP = parse(p)?;
+            if b.group_id.is_none() && (b.guests.is_some() || b.failed_only) {
+                return Err(ApiError::bad("params: guests and failed_only need group_id"));
+            }
             match (b.group_id, b.vmid, &b.agent_id) {
                 (None, None, Some(a)) => {
                     agent_name(st, tenant, a)?;
@@ -186,6 +195,7 @@ fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiResult<Value>
                         )
                         .optional()?;
                     ok.ok_or_else(|| ApiError::bad("group_id: no such group in this tenant"))?;
+                    b.guests = crate::runctl::backup_guests(&st.cat.conn(), g, b.guests.take(), b.failed_only)?;
                 }
                 (None, Some(v), None) => validate::vmid(v)?,
                 _ => return Err(ApiError::bad("params: exactly one of group_id, vmid, agent_id")),
@@ -390,6 +400,8 @@ fn job_json(r: &catalog::rusqlite::Row, with_log: bool) -> catalog::rusqlite::Re
         "requested_by": r.get::<_, String>(5)?, "created": r.get::<_, i64>(6)?,
         "started": r.get::<_, Option<i64>>(7)?, "finished": r.get::<_, Option<i64>>(8)?,
         "result": r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
+        "attempt": r.get::<_, i64>(11)?, "retry_of": r.get::<_, Option<i64>>(12)?,
+        "not_before": r.get::<_, Option<i64>>(13)?, "cancel_by": r.get::<_, Option<String>>(14)?,
     });
     if with_log {
         v["log"] = json!(r.get::<_, String>(9)?);
@@ -397,7 +409,8 @@ fn job_json(r: &catalog::rusqlite::Row, with_log: bool) -> catalog::rusqlite::Re
     Ok(v)
 }
 
-const JOB_COLS: &str = "id, kind, tenant, params, state, requested_by, created, started, finished, log, result";
+const JOB_COLS: &str = "id, kind, tenant, params, state, requested_by, created, started, finished, log, result, \
+                        attempt, retry_of, not_before, cancel_by";
 
 pub async fn list_jobs(State(st): State<St>, ctx: Ctx, Q(f): Q<JobFilter>) -> ApiResult<Json<Value>> {
     let c = st.cat.conn();
@@ -427,10 +440,13 @@ pub async fn get_job(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> Api
     Ok(Json(job))
 }
 
-/// Queued jobs only; running jobs are owned by the scheduler.
+/// Queued jobs are cancelled here; running jobs get a cancel request
+/// (`jobs.cancel_by`) that the scheduler carries out (Phase 13b: SIGTERM, then
+/// SIGKILL after 30 s; the job ends `cancelled`). Answers the state after the
+/// request: `cancelled` or `cancelling`.
 pub async fn cancel_job(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
     ctx.require(OPS)?;
-    {
+    let state = {
         let c = st.cat.conn();
         let state: String = c
             .query_row(
@@ -440,18 +456,32 @@ pub async fn cancel_job(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> 
             )
             .optional()?
             .ok_or_else(ApiError::not_found)?;
-        let n = c.execute(
+        let queued = c.execute(
             "UPDATE jobs SET state = 'cancelled', finished = ?2 WHERE id = ?1 AND state = 'queued'",
             params![id, catalog::now()],
         )?;
-        if n == 0 {
-            return Err(ApiError::conflict(format!(
-                "job is {state}, only queued jobs can be cancelled"
-            )));
+        let running = c.execute(
+            "UPDATE jobs SET cancel_by = ?2 WHERE id = ?1 AND state = 'running' AND cancel_by IS NULL",
+            params![id, ctx.name()],
+        )?;
+        match (queued, running) {
+            (1, _) => "cancelled",
+            (_, 1) => "cancelling",
+            _ if state == "running" => return Err(ApiError::conflict("cancellation already requested")),
+            _ => {
+                return Err(ApiError::conflict(format!(
+                    "job is {state}, only queued or running jobs can be cancelled"
+                )))
+            }
         }
-    }
-    st.audit(ctx.name(), "job.cancel", &format!("job/{id}"), json!({}))?;
-    Ok(Json(json!({"id": id, "state": "cancelled"})))
+    };
+    st.audit(
+        ctx.name(),
+        "job.cancel",
+        &format!("job/{id}"),
+        json!({"running": state == "cancelling"}),
+    )?;
+    Ok(Json(json!({"id": id, "state": state})))
 }
 
 /// Streams `<downloads>/<token>.<format>` to the user who requested the

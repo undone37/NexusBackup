@@ -11,6 +11,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use catalog::rusqlite::{params, Connection, OptionalExtension};
+use catalog::schedule::{Retry, Window};
 use catalog::secret::{source_owner, tenant_owner, SealKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -911,7 +912,7 @@ struct PveSourceReq {
 
 fn source_json(c: &Connection, id: i64) -> ApiResult<Value> {
     Ok(c.query_row(
-        "SELECT id, tenant, kind, name, config FROM sources WHERE id = ?1",
+        "SELECT id, tenant, kind, name, config, maintenance_until FROM sources WHERE id = ?1",
         [id],
         |r| {
             let kind: String = r.get(2)?;
@@ -923,7 +924,8 @@ fn source_json(c: &Connection, id: i64) -> ApiResult<Value> {
             };
             Ok(
                 json!({"id": r.get::<_, i64>(0)?, "tenant": r.get::<_, String>(1)?, "kind": kind,
-                      "name": r.get::<_, String>(3)?, "config": config}),
+                      "name": r.get::<_, String>(3)?, "config": config,
+                      "maintenance_until": r.get::<_, Option<i64>>(5)?}),
             )
         },
     )?)
@@ -1321,6 +1323,13 @@ pub struct PolicyReq {
     gfs: Gfs,
     #[serde(default = "yes")]
     offsite: bool,
+    /// Phase 13b run control: retries of failed backups, blackout windows, run-time SLA
+    #[serde(default)]
+    retry: Retry,
+    #[serde(default)]
+    blackout: Vec<Window>,
+    #[serde(default)]
+    sla_minutes: Option<u32>,
 }
 
 fn yes() -> bool {
@@ -1331,43 +1340,68 @@ impl PolicyReq {
     fn check(&self) -> ApiResult<()> {
         validate::name(&self.name, "name")?;
         validate::schedule(&self.schedule)?;
+        let bad = |e: anyhow::Error| ApiError::bad(e.to_string());
+        self.retry.check().map_err(bad)?;
+        if self.blackout.len() > 20 {
+            return Err(ApiError::bad("blackout: at most 20 windows"));
+        }
+        self.blackout.iter().try_for_each(|w| w.check().map_err(bad))?;
+        if self.sla_minutes.is_some_and(|m| !(1..=10080).contains(&m)) {
+            return Err(ApiError::bad("sla_minutes: 1..=10080"));
+        }
         self.gfs.check()
     }
-    /// Any GFS count lowered or offsite disabled.
+    /// Any GFS count lowered, offsite disabled, or a blackout window added
+    /// (fewer runs: it could stop backups altogether).
     fn weakened_by(&self, new: &PolicyReq) -> bool {
-        self.gfs.lowered_by(&new.gfs) || (self.offsite && !new.offsite)
+        self.gfs.lowered_by(&new.gfs)
+            || (self.offsite && !new.offsite)
+            || new.blackout.iter().any(|w| !self.blackout.contains(w))
     }
 }
 
 fn load_policy(c: &Connection, id: i64) -> ApiResult<Option<PolicyReq>> {
     Ok(c.query_row(
-        "SELECT name, schedule, gfs, offsite FROM policies WHERE id = ?1",
+        "SELECT name, schedule, gfs, offsite, retry, blackout, sla_minutes FROM policies WHERE id = ?1",
         [id],
         |r| {
             Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, bool>(3)?,
+                (
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, bool>(3)?,
+                ),
+                (
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, Option<u32>>(6)?,
+                ),
             ))
         },
     )
     .optional()?
-    .map(|(name, schedule, gfs, offsite)| PolicyReq {
-        name,
-        schedule,
-        gfs: serde_json::from_str(&gfs).unwrap_or(Gfs {
-            daily: 0,
-            weekly: 0,
-            monthly: 0,
-            yearly: 0,
-        }),
-        offsite,
-    }))
+    .map(
+        |((name, schedule, gfs, offsite), (retry, blackout, sla_minutes))| PolicyReq {
+            retry: serde_json::from_str(&retry).unwrap_or_default(),
+            blackout: serde_json::from_str(&blackout).unwrap_or_default(),
+            sla_minutes,
+            name,
+            schedule,
+            gfs: serde_json::from_str(&gfs).unwrap_or(Gfs {
+                daily: 0,
+                weekly: 0,
+                monthly: 0,
+                yearly: 0,
+            }),
+            offsite,
+        },
+    ))
 }
 
 fn policy_json(id: i64, p: &PolicyReq) -> Value {
-    json!({"id": id, "name": p.name, "schedule": p.schedule, "gfs": p.gfs, "offsite": p.offsite})
+    json!({"id": id, "name": p.name, "schedule": p.schedule, "gfs": p.gfs, "offsite": p.offsite,
+           "retry": p.retry, "blackout": p.blackout, "sla_minutes": p.sla_minutes})
 }
 
 /// A policy as `policy_json` (quorum `old` snapshots compare against it).
@@ -1396,8 +1430,17 @@ pub async fn create_policy(State(st): State<St>, ctx: Ctx, J(r): J<PolicyReq>) -
     let id = {
         let c = st.cat.conn();
         c.execute(
-            "INSERT INTO policies (name, schedule, gfs, offsite) VALUES (?1, ?2, ?3, ?4)",
-            params![r.name, r.schedule, serde_json::to_string(&r.gfs).unwrap(), r.offsite],
+            "INSERT INTO policies (name, schedule, gfs, offsite, retry, blackout, sla_minutes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                r.name,
+                r.schedule,
+                serde_json::to_string(&r.gfs).unwrap(),
+                r.offsite,
+                json!(r.retry).to_string(),
+                json!(r.blackout).to_string(),
+                r.sla_minutes
+            ],
         )?;
         c.last_insert_rowid()
     };
@@ -1435,13 +1478,17 @@ pub async fn update_policy(
         return gate(&st, &ctx, "policy.update", &target, p);
     }
     st.cat.conn().execute(
-        "UPDATE policies SET name = ?2, schedule = ?3, gfs = ?4, offsite = ?5 WHERE id = ?1",
+        "UPDATE policies SET name = ?2, schedule = ?3, gfs = ?4, offsite = ?5, retry = ?6, blackout = ?7,
+         sla_minutes = ?8 WHERE id = ?1",
         params![
             id,
             r.name,
             r.schedule,
             serde_json::to_string(&r.gfs).unwrap(),
-            r.offsite
+            r.offsite,
+            json!(r.retry).to_string(),
+            json!(r.blackout).to_string(),
+            r.sla_minutes
         ],
     )?;
     let out = policy_json(id, &r);
@@ -1483,6 +1530,13 @@ pub struct GroupReq {
     policy_id: i64,
     name: String,
     guests: Vec<Value>,
+    /// the schedule's and blackout windows' time zone (IANA)
+    #[serde(default = "utc")]
+    timezone: String,
+}
+
+fn utc() -> String {
+    "UTC".into()
 }
 
 #[derive(Deserialize)]
@@ -1492,6 +1546,8 @@ pub struct GroupUpdate {
     policy_id: i64,
     name: String,
     guests: Vec<Value>,
+    #[serde(default = "utc")]
+    timezone: String,
 }
 
 fn check_group(
@@ -1571,11 +1627,12 @@ fn group_row(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
     Ok(
         json!({"id": r.get::<_, i64>(0)?, "tenant": r.get::<_, String>(1)?, "source_id": r.get::<_, i64>(2)?,
               "policy_id": r.get::<_, i64>(3)?, "name": r.get::<_, String>(4)?,
-              "guests": serde_json::from_str::<Value>(&guests).unwrap_or_default()}),
+              "guests": serde_json::from_str::<Value>(&guests).unwrap_or_default(),
+              "timezone": r.get::<_, String>(6)?}),
     )
 }
 
-const GROUP_COLS: &str = "id, tenant, source_id, policy_id, name, guests";
+const GROUP_COLS: &str = "id, tenant, source_id, policy_id, name, guests, timezone";
 
 /// A group as `group_row` (quorum `old` snapshots compare against it).
 pub fn group_value(c: &Connection, id: i64) -> ApiResult<Option<Value>> {
@@ -1595,26 +1652,28 @@ pub async fn list_groups(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value
         ))?
         .query_map([ctx.scope()], group_row)?
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(Json(Value::Array(rows)))
+    Ok(Json(Value::Array(crate::runctl::group_states(&c, rows)?)))
 }
 
 pub async fn create_group(State(st): State<St>, ctx: Ctx, J(mut r): J<GroupReq>) -> ApiResult<Response> {
     ctx.require(ADMIN)?;
-    let out = {
-        let c = st.cat.conn();
-        crate::replication::refuse_replicated(&c, &r.tenant)?;
-        check_group(&c, &r.tenant, r.source_id, r.policy_id, &r.name, &mut r.guests)?;
-        c.execute(
-            "INSERT INTO groups (tenant, source_id, policy_id, name, guests) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![r.tenant, r.source_id, r.policy_id, r.name, json!(r.guests).to_string()],
+    let out =
+        {
+            let c = st.cat.conn();
+            crate::replication::refuse_replicated(&c, &r.tenant)?;
+            check_group(&c, &r.tenant, r.source_id, r.policy_id, &r.name, &mut r.guests)?;
+            validate::timezone(&r.timezone)?;
+            c.execute(
+            "INSERT INTO groups (tenant, source_id, policy_id, name, guests, timezone) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![r.tenant, r.source_id, r.policy_id, r.name, json!(r.guests).to_string(), r.timezone],
         )?;
-        let id = c.last_insert_rowid();
-        c.query_row(
-            &format!("SELECT {GROUP_COLS} FROM groups WHERE id = ?1"),
-            [id],
-            group_row,
-        )?
-    };
+            let id = c.last_insert_rowid();
+            c.query_row(
+                &format!("SELECT {GROUP_COLS} FROM groups WHERE id = ?1"),
+                [id],
+                group_row,
+            )?
+        };
     st.audit(ctx.name(), "group.create", &format!("group/{}", out["id"]), out.clone())?;
     Ok(created(out))
 }
@@ -1640,6 +1699,7 @@ pub async fn update_group(
             .ok_or_else(ApiError::not_found)?;
         let tenant = old["tenant"].as_str().unwrap_or_default().to_owned();
         check_group(&c, &tenant, r.source_id, r.policy_id, &r.name, &mut r.guests)?;
+        validate::timezone(&r.timezone)?;
         let old_pid = old["policy_id"].as_i64().unwrap_or_default();
         let weakening = old_pid != r.policy_id
             && match (load_policy(&c, old_pid)?, load_policy(&c, r.policy_id)?) {
@@ -1649,7 +1709,7 @@ pub async fn update_group(
         (old, weakening)
     };
     let new = json!({"id": id, "tenant": old["tenant"], "source_id": r.source_id, "policy_id": r.policy_id,
-                     "name": r.name, "guests": r.guests});
+                     "name": r.name, "guests": r.guests, "timezone": r.timezone});
     let target = format!("group/{id}");
     if weakening {
         let mut p = new.clone();
@@ -1657,8 +1717,15 @@ pub async fn update_group(
         return gate(&st, &ctx, "group.update", &target, p);
     }
     st.cat.conn().execute(
-        "UPDATE groups SET source_id = ?2, policy_id = ?3, name = ?4, guests = ?5 WHERE id = ?1",
-        params![id, r.source_id, r.policy_id, r.name, json!(r.guests).to_string()],
+        "UPDATE groups SET source_id = ?2, policy_id = ?3, name = ?4, guests = ?5, timezone = ?6 WHERE id = ?1",
+        params![
+            id,
+            r.source_id,
+            r.policy_id,
+            r.name,
+            json!(r.guests).to_string(),
+            r.timezone
+        ],
     )?;
     st.audit(ctx.name(), "group.update", &target, json!({"new": new, "old": old}))?;
     Ok(Json(new).into_response())

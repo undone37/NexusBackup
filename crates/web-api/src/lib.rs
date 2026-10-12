@@ -30,6 +30,7 @@ pub mod plugins;
 pub mod quorum;
 pub mod replication;
 pub mod resources;
+pub mod runctl;
 pub mod settings;
 pub mod spa;
 pub mod tls;
@@ -433,6 +434,10 @@ pub fn router(st: St) -> Router {
         .route("/policies/{id}", put(update_policy).delete(delete_policy))
         .route("/groups", get(list_groups).post(create_group))
         .route("/groups/{id}", put(update_group).delete(delete_group))
+        .route("/groups/{id}/pause", post(runctl::pause_group))
+        .route("/groups/{id}/resume", post(runctl::resume_group))
+        .route("/sources/{id}/maintenance", post(runctl::start_maintenance))
+        .route("/sources/{id}/maintenance/end", post(runctl::end_maintenance))
         .route("/users", get(list_users).post(create_user))
         .route("/users/{id}", put(update_user))
         .route("/agents", get(list_agents).post(create_agent))

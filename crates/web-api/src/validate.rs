@@ -17,24 +17,19 @@ pub fn name(s: &str, what: &str) -> ApiResult<()> {
     }
 }
 
-fn two_digits(s: &str, max: u32) -> bool {
-    s.len() == 2 && s.bytes().all(|b| b.is_ascii_digit()) && s.parse::<u32>().is_ok_and(|v| v <= max)
+/// A policy schedule (`catalog::schedule`: `daily HH:MM`, `hourly MM`,
+/// `every Nh [at MM]`, `Mon,Wed HH:MM`, `monthly D HH:MM`).
+pub fn schedule(s: &str) -> ApiResult<()> {
+    catalog::schedule::Schedule::parse(s)
+        .map(drop)
+        .map_err(|e| ApiError::bad(format!("schedule: {e}")))
 }
 
-/// `daily HH:MM` or `hourly MM`.
-pub fn schedule(s: &str) -> ApiResult<()> {
-    let ok = match s.split_once(' ') {
-        Some(("daily", t)) => t
-            .split_once(':')
-            .is_some_and(|(h, m)| two_digits(h, 23) && two_digits(m, 59)),
-        Some(("hourly", m)) => two_digits(m, 59),
-        _ => false,
-    };
-    if ok {
-        Ok(())
-    } else {
-        Err(ApiError::bad("schedule: expected `daily HH:MM` or `hourly MM`"))
-    }
+/// IANA time zone of a group (`Europe/Berlin`, `UTC`).
+pub fn timezone(s: &str) -> ApiResult<()> {
+    catalog::schedule::tz(s)
+        .map(drop)
+        .map_err(|e| ApiError::bad(format!("timezone: {e}")))
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -192,7 +187,14 @@ mod tests {
         for bad in ["", ".hidden", "a/b", "a b", &"x".repeat(65), "ä"] {
             assert!(name(bad, "n").is_err(), "{bad}");
         }
-        for ok in ["daily 00:00", "daily 23:59", "hourly 05"] {
+        for ok in [
+            "daily 00:00",
+            "daily 23:59",
+            "hourly 05",
+            "every 6h at 15",
+            "Mon-Fri 22:00",
+            "monthly 1 03:00",
+        ] {
             assert!(schedule(ok).is_ok(), "{ok}");
         }
         for bad in [
@@ -202,9 +204,11 @@ mod tests {
             "weekly 01",
             "daily 12:00 ",
             "hourly +5",
+            "every 7h",
         ] {
             assert!(schedule(bad).is_err(), "{bad}");
         }
+        assert!(timezone("Europe/Berlin").is_ok() && timezone("UTC").is_ok() && timezone("CEST").is_err());
         assert!(source_ref("vm-100").is_ok() && source_ref("ct-999").is_ok());
         assert!(source_ref("vm-99").is_err() && source_ref("vm-0100").is_err() && source_ref("xx-100").is_err());
         assert!(source_ref("host-0123456789abcdef").is_ok() && source_ref("host-0123456789ABCDEF").is_err());
