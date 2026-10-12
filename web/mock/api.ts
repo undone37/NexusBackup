@@ -15,6 +15,7 @@ import type { Plugin } from 'vite';
 // The real manifests of the shipped plugins, so the demo's forms and restores match them.
 import pgManifest from '../../plugins/postgresql/manifest.json' with { type: 'json' };
 import truenasManifest from '../../plugins/truenas/manifest.json' with { type: 'json' };
+import m365Manifest from '../../plugins/m365/manifest.json' with { type: 'json' };
 // Phase 13b: the schedule grammar and blackout check the UI uses as well.
 import { blackoutActive, isPaused, parseSchedule, schedulePeriod, validWindow, type BlackoutWindow } from '../src/lib/schedule.ts';
 
@@ -751,7 +752,10 @@ function schemaCheck(schema: Json | undefined, v: Json, prefix: string) {
     if (x === undefined) continue;
     if (p.type === 'array') {
       if (!Array.isArray(x)) throw new HttpError(400, `${prefix}.${k}: array expected`);
-      x.forEach((item, i) => one(`${prefix}.${k}[${i}]`, { type: 'string', ...(p.items ?? {}) }, item));
+      if (p.maxItems !== undefined && x.length > p.maxItems) throw new HttpError(400, `${prefix}.${k}: too many items`);
+      // contract v1.6: lists of objects
+      if (p.items?.type === 'object') x.forEach((item, i) => schemaCheck(p.items, item, `${prefix}.${k}[${i}]`));
+      else x.forEach((item, i) => one(`${prefix}.${k}[${i}]`, { type: 'string', ...(p.items ?? {}) }, item));
     } else one(`${prefix}.${k}`, p, x);
   }
 }
@@ -769,6 +773,22 @@ function pluginSourceConfig(kind: string, cfg: Json, old?: Json): Json {
       if (moved) throw new HttpError(400, `config.${f}: required (the endpoint changed)`);
       out[f] = old[f];
     }
+  }
+  // lists of objects: an item keeps its stored secrets while its other fields stay the same at its position
+  const secrets: string[] = pk.kind.secret_fields ?? [];
+  const plain = (o: Json) => JSON.stringify(Object.entries(o ?? {}).filter(([k]) => !secrets.includes(k)));
+  for (const [k, v] of Object.entries(out)) {
+    if (!Array.isArray(v) || !v.some((x) => x && typeof x === 'object')) continue;
+    out[k] = v.map((item: Json, i: number) => {
+      const prev = old?.[k]?.[i];
+      const it = Object.fromEntries(Object.entries(item).filter(([, x]) => x !== '' && x !== null && x !== undefined));
+      if (!prev || plain(it) !== plain(prev)) return it;
+      for (const f of secrets) if (it[f] === undefined && prev[f] !== undefined) {
+        if (moved) throw new HttpError(400, `config.${k}[${i}].${f}: required (the endpoint changed)`);
+        it[f] = prev[f];
+      }
+      return it;
+    });
   }
   schemaCheck(pk.kind.config_schema, out, 'config');
   return out;
@@ -1237,6 +1257,32 @@ function seed() {
   seedTenantKeys(t);
   seedHolds(t);
   seedHardware(t);
+  seedM365(t);
+}
+
+/** Phase 18a: Microsoft 365 plugin with two apps, a second M365 tenant as restore target (tenant migration). */
+function seedM365(t: number) {
+  db.plugins.push(pluginEntry(structuredClone(m365Manifest) as Json, 'admin', t - 86400 * 8));
+  const m365 = (name: string, domain: string, sp: string, apps: number) => ({
+    id: nextId(),
+    tenant: 'acme',
+    kind: 'plugin:m365',
+    name,
+    config: {
+      tenant_id: domain, client_id: '6f1c0a8e-2b4d-43f7-a5a1-e0b29d8c47f3', certificate: 'SECRET', private_key: 'SECRET',
+      apps: Array.from({ length: apps }, (_, i) => ({ client_id: `${i + 2}a3b4c5d-6e7f-4081-92a3-b4c5d6e7f801`, certificate: 'SECRET' })),
+      exchange: true, onedrive: true, sharepoint: true, teams: true, teams_messages: false, chats: false, teams_export_model: 'B',
+      sharepoint_host: `${sp}.sharepoint.com`, onedrive_host: `${sp}-my.sharepoint.com`,
+    } as Json,
+  });
+  const a = m365('m365-acme', 'acme.onmicrosoft.com', 'acme', 2);
+  const b = m365('m365-acme-new', 'acmegroup.onmicrosoft.com', 'acmegroup', 0);
+  db.sources.push(a, b);
+  for (const [g, gib, hh] of [['u.0c9d1c7a-1111-4222-8333-444455556666', 6.2, 2], ['u.5b2e4f10-aaaa-4bbb-8ccc-ddddeeeeffff', 3.4, 2]] as [string, number, number][])
+    for (let d = 4; d >= 0; d--) {
+      const time = Math.floor(t / 86400 - d) * 86400 + hh * 3600;
+      if (time <= t) db.snapshots.push(snap('acme', `plugin-m365-${a.id}-${g}`, time, Math.round(gib * 2 ** 30), true, d > 0, d > 1 ? time + 7200 : null));
+    }
 }
 
 // ---------------------------------------------------------------- run control (Phase 13b)
@@ -1439,6 +1485,12 @@ function stripSource(s: (typeof db.sources)[number]) {
       else config[k] = v;
     }
     for (const f of secrets) config[`${f}_set`] ??= false;
+    // lists of objects (contract v1.6): `<field>_set` per item
+    for (const [k, v] of Object.entries(config))
+      if (Array.isArray(v) && v.some((x) => x && typeof x === 'object'))
+        config[k] = v.map((item: Json) =>
+          Object.fromEntries(Object.entries(item).map(([f, x]) => (secrets.includes(f) ? [`${f}_set`, x !== undefined && x !== ''] : [f, x]))),
+        );
     return { ...s, config };
   }
   if (s.kind === 'nfs' || s.kind === 'smb') {
@@ -2796,6 +2848,15 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
     else if (Object.keys(p.params ?? {}).length) throw new HttpError(400, 'params: this restore takes none');
     if (kind === 'plugin_mount' && !(Number.isInteger(p.minutes) && p.minutes >= 1 && p.minutes <= 1440))
       throw new HttpError(400, 'minutes: 1..1440');
+    // contract v1.6: restore with another source of the same tenant and kind
+    if (p.target_source_id !== undefined) {
+      if (kind === 'plugin_mount') throw new HttpError(400, 'target_source_id: restores only');
+      if (!r.target_source) throw new HttpError(400, `target_source_id: restore ${rid} cannot run into another source`);
+      const own = db.sources.find((s) => s.id === Number(/^plugin-.+?-(\d+)/.exec(p.source)?.[1]));
+      const tgt = db.sources.find((s) => s.id === Number(p.target_source_id) && s.tenant === tenant);
+      if (!tgt) throw new HttpError(400, 'target_source_id: no such plugin source in this tenant');
+      if (tgt.kind !== own?.kind) throw new HttpError(400, `target_source_id: not a ${own?.kind} source`);
+    }
   }
   if (kind === 'agent_update' || kind === 'agent_renew') {
     if (u.role !== 'admin') throw new HttpError(403, 'requires role admin');

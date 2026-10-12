@@ -91,6 +91,14 @@
   let prValues: FormValues = $state({});
   let prErrors: Record<string, string> = $state({});
   let prMinutes = $state(60);
+  // manifest v1.6 `target_source`: '' = the snapshot's own source
+  let prTarget = $state('');
+  const prOwn = $derived(prSnap ? (sources.find((x) => x.id === parsePluginSnapshot(prSnap!.source)?.sourceId) ?? null) : null);
+  const prTargets = $derived.by(() => {
+    const own = prOwn;
+    if (!prSnap || !own || !prRestore?.target_source) return [];
+    return sources.filter((x) => x.kind === own.kind && x.tenant === prSnap!.tenant && x.id !== own.id);
+  });
   const isMount = (r: PluginRestore | null) => r?.id === 'mount';
 
   function openPluginRestore(s: Snapshot, r: PluginRestore) {
@@ -99,6 +107,7 @@
     prValues = initValues(r.params_schema);
     prErrors = {};
     prMinutes = 60;
+    prTarget = '';
     prOpen = true;
   }
 
@@ -116,7 +125,11 @@
     const base = { source: prSnap.source, time: prSnap.time };
     const job = isMount(prRestore)
       ? { kind: 'plugin_mount', tenant: prSnap.tenant, params: { ...base, params: value, minutes } }
-      : { kind: 'plugin_restore', tenant: prSnap.tenant, params: { ...base, restore: prRestore.id, params: value } };
+      : {
+          kind: 'plugin_restore',
+          tenant: prSnap.tenant,
+          params: { ...base, restore: prRestore.id, params: value, ...(prTarget ? { target_source_id: Number(prTarget) } : {}) },
+        };
     const r = await act(post<{ id: number }>('/jobs', job), (d) => t.snap.jobStarted(d.id));
     busy = false;
     if (r) prOpen = false;
@@ -633,6 +646,16 @@
         {prSnap.tenant} · {fmtTime(prSnap.time)}
         {#if prRestore.app_specific}<span class="chip info">{t.snap.appSpecific}</span>{/if}
       </p>
+      {#if prTargets.length}
+        <div class="field">
+          <label for="pr-target">{t.snap.targetSource}</label>
+          <select id="pr-target" bind:value={prTarget} aria-describedby="pr-target-hint">
+            <option value="">{t.snap.targetSourceOwn(prOwn?.name ?? '')}</option>
+            {#each prTargets as x (x.id)}<option value={String(x.id)}>{x.name}</option>{/each}
+          </select>
+          <div class="hint" id="pr-target-hint">{t.snap.targetSourceHint}</div>
+        </div>
+      {/if}
       {#if prRestore.params_schema && Object.keys(prRestore.params_schema.properties ?? {}).length}
         <SchemaForm schema={prRestore.params_schema} bind:values={prValues} errors={prErrors} />
       {:else if !isMount(prRestore)}

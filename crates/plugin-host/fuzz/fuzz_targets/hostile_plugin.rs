@@ -114,6 +114,7 @@ fuzz_target!(|data: &[u8]| {
                     restore: "x",
                     params: serde_json::json!({}),
                     max_log_bytes: 1 << 16,
+                    target_source_id: None,
                 },
                 &mut out,
             );
