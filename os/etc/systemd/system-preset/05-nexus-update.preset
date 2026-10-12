@@ -6,6 +6,8 @@ disable rpm-ostreed-automatic.timer
 disable podman-auto-update.timer
 enable nexus-update.timer
 enable nexus-update.path
+# Diagnostics requests from the web UI (self-checks, support bundle; also the pre-update checks' tool).
+enable nexus-diag.path
 # Health-check-gated rollback (also in 90-default.preset; repeated so it cannot drift).
 enable greenboot-healthcheck.service
 enable greenboot-set-rollback-trigger.service

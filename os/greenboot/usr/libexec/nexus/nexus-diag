@@ -1,0 +1,628 @@
+#!/usr/bin/python3 -I
+# NexusBackup diagnostics: self-checks and redacted support bundles (Phase 14b).
+#
+#   nexus-diag tick     what nexus-diag.service runs (nexus-diag.path, PathExists=request.json):
+#                       handle pending requests, prune results older than 24 h
+#   nexus-diag checks   print the checks as JSON (nexus-update runs this before it stages or
+#                       applies an update; an admin on the console can run it as well)
+#
+# Control directory (default /var/lib/nexus/diag, 2770 root:nexus-webapi, see
+# tmpfiles.d/nexus-diag.conf) is the interface for the web-api:
+#   request.json   written by the web-api (tmp + rename), at most 4 KiB:
+#                  {"id": <32 hex>, "kind": "checks"|"bundle", "by": <user>, "since": <unix>, "until": <unix>}
+#                  consumed (deleted) by the next tick, which nexus-diag.path starts at once
+#   <id>/status.json  {"id", "kind", "by", "created", "since", "until", "state": running|done|error,
+#                  "error", "files": {"checks.json": bytes, "bundle.tar.gz": bytes}}
+#   <id>/checks.json  the checks (both kinds)
+#   <id>/bundle.tar.gz  the support bundle (kind "bundle"): see BUNDLE below
+#
+# Checks: {id, title, status pass|warn|fail|skip, severity 1-4, detail, manual}. severity:
+# 1 info, 2 warning, 3 error, 4 critical. nexus-update refuses to stage or apply an update
+# while a check with severity >= 3 fails. "manual" is the anchor in the user manual.
+#
+# Redaction (redact() below, tests in os/greenboot/tests/test_nexus_diag.py): every text
+# file of the bundle passes through it. Removed: PEM blocks, Authorization / Cookie
+# headers, bearer and API tokens, values of password/secret/token/key/seed/... fields,
+# passwords in URLs, otpauth secrets, download tokens. Kept: host names and IP
+# addresses (support needs them to follow connections and firewall drops), digests,
+# audit hashes (not secret), user names.
+#
+# Runs as root in its own SELinux domain (nexus_diag_t): read-only access to the
+# journal, audit log, nftables, chrony, systemd state, the catalog and the update status;
+# writes only below the control directory; no network (IPAddressDeny=any, no inet
+# sockets in the policy). Every path and tool can be overridden through NEXUS_DIAG_*
+# environment variables (see DEFAULTS); the unit tests use that. Stdlib only.
+
+import datetime as dt
+import importlib.machinery
+import importlib.util
+import io
+import json
+import os
+import re
+import shutil
+import sqlite3
+import ssl
+import stat
+import subprocess
+import sys
+import tarfile
+import time
+
+DEFAULTS = {
+    "DIR": "/var/lib/nexus/diag",
+    "SETUP_DONE": "/var/lib/nexus/setup-done",
+    "CATALOG": "/var/lib/nexus/catalog/catalog.db",
+    "UPDATE_STATUS": "/var/lib/nexus/update/status.json",
+    "KEYD_SOCKET": "/run/nexus-keyd/keyd.sock",
+    "TLS_CERT": "/etc/nexus/tls/cert.pem",
+    "SELINUX_ENFORCE": "/sys/fs/selinux/enforce",
+    # name=path; /sysroot is the real root file system on a bootc host (/ is composefs, always "full")
+    "DISKS": "store=/var/lib/nexus/chunkstore var=/var root=/sysroot boot=/boot",
+    "DISK_WARN_PCT": "85",
+    "DISK_FAIL_PCT": "95",
+    "CERT_WARN_DAYS": "30",
+    "HEALTH": "/usr/libexec/nexus/nexus-health",  # chain_hash / verify_audit are shared
+    "JOURNALCTL": "journalctl",
+    "CHRONYC": "chronyc",
+    "NFT": "nft",
+    "SYSTEMCTL": "systemctl",
+    "AUSEARCH": "ausearch",
+    "SMARTCTL": "smartctl",
+    "TIMEOUT": "120",  # per tool call
+    "JOURNAL_MAX_MB": "64",  # per journal file in the bundle
+}
+RESULT_TTL = 24 * 3600  # the web-api serves results for 24 h, like file-restore downloads
+KEEP_RESULTS = 20
+MAX_RANGE = 31 * 86400
+MANUAL = "15-troubleshooting-faq.md#check-"
+SEVERITY_BLOCKS_UPDATE = 3
+# a failed core service is an error; any other failed unit (a oneshot that failed once) a warning
+CORE_UNITS = ("nexus-keyd.service", "nexus-web-api.service", "nexus-scheduler.service", "nexus-replicad.service")
+
+
+def cfg(name):
+    return os.environ.get("NEXUS_DIAG_" + name, DEFAULTS[name])
+
+
+def log(msg):
+    print(f"nexus-diag: {msg}", file=sys.stderr, flush=True)
+
+
+def run(*argv, timeout=None):
+    """(exit code, stdout, stderr); 127 when the tool is missing. Never raises."""
+    try:
+        p = subprocess.run(
+            [cfg(argv[0].upper()), *argv[1:]],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout or float(cfg("TIMEOUT")),
+            env={**os.environ, "LC_ALL": "C", "TZ": "UTC", "SYSTEMD_COLORS": "0", "SYSTEMD_PAGER": ""},
+        )
+        return p.returncode, p.stdout, p.stderr
+    except FileNotFoundError:
+        return 127, "", f"{argv[0]}: not installed"
+    except subprocess.TimeoutExpired:
+        return 124, "", f"{argv[0]}: timed out"
+
+
+def health():
+    """nexus-health as a module: one implementation of the audit chain."""
+    sys.dont_write_bytecode = True  # /usr is read-only; never leave __pycache__ next to it
+    loader = importlib.machinery.SourceFileLoader("nexus_health", cfg("HEALTH"))
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(mod)
+    return mod
+
+
+# ---------------------------------------------------------------- redaction
+
+_SECRET_KEYS = (
+    r"pass(?:word|wd|phrase)?|secret|client[_-]?secret|token|api[_-]?key|access[_-]?key|secret[_-]?key|"
+    r"private[_-]?key|totp(?:[_-]?secret|[_-]?seed)?|seed|otp|csrf|session(?:[_-]?id)?|cookie|credentials?|"
+    r"auth(?:orization)?|sas|x-amz-[a-z-]*"
+)
+# password_hash, totp_secret_enc, token_hash, ...
+_SECRET_KEYS = r"(?:" + _SECRET_KEYS + r")(?:[_-](?:hash|enc|sealed|file))?"
+_REDACTIONS = [
+    # PEM blocks (keys, certificates, CSRs): never useful to support, sometimes secret
+    (re.compile(r"-----BEGIN ([A-Z0-9 ]+)-----.*?(?:-----END \1-----|\Z)", re.S), r"[REDACTED PEM \1]"),
+    # HTTP headers
+    (re.compile(r"(?im)\b(authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-csrf-token)(\s*[:=]\s*)[^\r\n]+"), r"\1\2[REDACTED]"),
+    (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 [REDACTED]"),
+    # API tokens (nxt_...), agent / enrollment tokens with a prefix
+    (re.compile(r"\bnx[a-z]_[A-Za-z0-9_-]{8,}"), "[REDACTED TOKEN]"),
+    # otpauth://totp/...?secret=BASE32
+    (re.compile(r"(?i)(otpauth://\S*?[?&]secret=)[A-Za-z2-7=]+"), r"\1[REDACTED]"),
+    # user:password@host in URLs
+    (re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://[^/\s:@]+:)[^@\s/]+@"), r"\1[REDACTED]@"),
+    # download / diagnostics tokens in URLs
+    (re.compile(r"(/(?:downloads|diagnostics)/)[0-9a-f]{32,64}\b"), r"\1[REDACTED]"),
+    # JSON: "password": "...", "token": 123
+    (re.compile(r'(?i)("(?:[a-z0-9_-]*[_-])?(?:' + _SECRET_KEYS + r')"\s*:\s*)("(?:[^"\\]|\\.)*"|[^\s,}\]]+)'), r'\1"[REDACTED]"'),
+    # key=value / key: value in logs, configs and command lines
+    (re.compile(r"(?i)(\b(?:[a-z0-9_-]*[_-])?(?:" + _SECRET_KEYS + r")\b\s*[=:]\s*)(?!\[REDACTED)(\"[^\"]*\"|'[^']*'|[^\s,;&\"']+)"), r"\1[REDACTED]"),
+    # --password VALUE on command lines
+    (re.compile(r"(?i)(--(?:[a-z0-9-]*-)?(?:password|secret|token|key)\s+)(?!\[REDACTED)\S+"), r"\1[REDACTED]"),
+]
+
+
+def redact(text):
+    """Removes secrets from free text (journal lines, JSON, command output). Idempotent."""
+    for rx, repl in _REDACTIONS:
+        text = rx.sub(repl, text)
+    return text
+
+
+# ---------------------------------------------------------------- checks
+
+
+def check(cid, title, fn):
+    """Runs one check; a check that crashes is a warning, never an update blocker."""
+    try:
+        status, severity, detail = fn()
+    except Exception as e:  # a bug or an unexpected host state: visible, but not blocking
+        status, severity, detail = "warn", 2, f"check could not run: {type(e).__name__}: {e}"
+    return {
+        "id": cid,
+        "title": title,
+        "status": status,
+        "severity": severity if status in ("warn", "fail") else 1,
+        "detail": detail,
+        "manual": MANUAL + cid.replace(".", "-"),
+    }
+
+
+def mib(n):
+    return f"{n / 2**30:.1f} GiB" if n >= 2**30 else f"{n // 2**20} MiB"
+
+
+def disk(path):
+    def fn():
+        if not os.path.exists(path):
+            return "skip", 1, f"{path} does not exist"
+        s = os.statvfs(path)
+        total, free = s.f_blocks * s.f_frsize, s.f_bavail * s.f_frsize
+        if not total:
+            return "skip", 1, f"{path}: no size reported"
+        used = 100.0 * (total - free) / total
+        d = f"{path}: {used:.0f} % used, {mib(free)} of {mib(total)} free"
+        if used >= float(cfg("DISK_FAIL_PCT")):
+            return "fail", 3, d
+        if used >= float(cfg("DISK_WARN_PCT")):
+            return "warn", 2, d
+        return "pass", 1, d
+
+    return fn
+
+
+def time_sync():
+    # -c: CSV. tracking: refid, ip, stratum, ref time, system offset, last offset, rms offset,
+    # frequency, residual freq, skew, root delay, root dispersion, update interval, leap status
+    rc, out, err = run("chronyc", "-c", "-n", "tracking")
+    if rc == 127:
+        return "skip", 1, "chronyc not installed"
+    if rc != 0:
+        return "fail", 3, f"chronyd does not answer: {(err or out).strip()[:200]}"
+    f = out.strip().split(",")
+    if len(f) < 14:
+        return "warn", 2, f"unexpected chronyc output: {out.strip()[:200]}"
+    stratum, offset, leap = int(f[2]), float(f[4]), f[13]
+    d = f"stratum {stratum}, offset {offset * 1000:+.1f} ms, {leap.lower()}, reference {f[0]}"
+    if leap.lower().startswith("not synchron") or stratum in (0, 16):
+        return "fail", 3, "clock not synchronised: " + d
+    if abs(offset) > 1.0:
+        return "warn", 2, d
+    return "pass", 1, d
+
+
+def time_nts():
+    # authdata: name, ip, mode, key id, type, key length, last, ...; mode NTS for NTS sources
+    rc, out, err = run("chronyc", "-c", "-n", "authdata")
+    if rc == 127:
+        return "skip", 1, "chronyc not installed"
+    if rc != 0:
+        return "warn", 2, f"chronyc authdata failed: {(err or out).strip()[:200]}"
+    rows = [l.split(",") for l in out.strip().splitlines() if l.count(",") >= 3]
+    nts = [r for r in rows if r[2] == "NTS"]
+    other = [r[0] for r in rows if r[2] != "NTS"]
+    if not nts:
+        return "warn", 2, "no NTS-authenticated time source"
+    d = f"{len(nts)} NTS source(s)"
+    if other:
+        return "warn", 2, d + "; unauthenticated: " + ", ".join(other[:5])
+    return "pass", 1, d
+
+
+def egress():
+    missing = []
+    for s in ("allowed_out_v4", "allowed_out_v6"):
+        rc, out, err = run("nft", "list", "set", "inet", "nexus", s)
+        if rc == 127:
+            return "skip", 1, "nft not installed"
+        if rc != 0:
+            missing.append(s)
+    if missing:
+        return "fail", 3, "nftables table inet nexus incomplete (missing " + ", ".join(missing) + "): outbound filtering is not active"
+    down = [u for u in ("nexus-nft-sync.path", "nexus-nft-sync.timer") if run("systemctl", "is-active", "--quiet", u)[0] != 0]
+    if down:
+        return "warn", 2, "allow-list sync not active: " + ", ".join(down)
+    return "pass", 1, "default-deny output chain loaded, allow-list sync active"
+
+
+def keyd():
+    if not os.path.exists(cfg("SETUP_DONE")):
+        return "skip", 1, "first-boot setup not finished"
+    if run("systemctl", "is-active", "--quiet", "nexus-keyd.service")[0] != 0:
+        return "fail", 4, "nexus-keyd.service is not running: no backups or restores"
+    try:
+        if not stat.S_ISSOCK(os.stat(cfg("KEYD_SOCKET")).st_mode):
+            return "fail", 4, f"{cfg('KEYD_SOCKET')} is not a socket"
+    except OSError as e:
+        return "fail", 4, f"keyd socket {cfg('KEYD_SOCKET')}: {e.strerror}"
+    # keyd loads the KEK when it starts (no TPM sealing yet): running = unlocked
+    return "pass", 1, "key daemon running, socket present"
+
+
+def tls_cert():
+    path = cfg("TLS_CERT")
+    if not os.path.exists(path):
+        return "skip", 1, f"{path} does not exist (first-boot setup not finished?)"
+    info = ssl._ssl._test_decode_cert(path)  # parses only the first certificate; no key access
+    end = ssl.cert_time_to_seconds(info["notAfter"])
+    days = (end - time.time()) / 86400
+    when = dt.datetime.fromtimestamp(end, dt.timezone.utc).strftime("%Y-%m-%d")
+    if days < 0:
+        return "fail", 3, f"web certificate expired on {when}"
+    if days < float(cfg("CERT_WARN_DAYS")):
+        return "warn", 2, f"web certificate expires on {when} ({days:.0f} days)"
+    return "pass", 1, f"web certificate valid until {when}"
+
+
+def catalog_conn():
+    """Read-only connection that never writes the -shm file either (readonly_shm); a
+    catalog nobody has open (no -wal/-shm) is read as immutable."""
+    path = cfg("CATALOG")
+    shm = os.path.exists(path + "-shm") and os.path.exists(path + "-wal")
+    mode = "mode=ro&readonly_shm=1" if shm else "mode=ro&immutable=1"
+    conn = sqlite3.connect(f"file:{path}?{mode}", uri=True, timeout=30)
+    conn.execute("PRAGMA temp_store = MEMORY")  # no temp files (the unit has only a private /tmp)
+    return conn
+
+
+def catalog_integrity():
+    if not os.path.exists(cfg("CATALOG")):
+        return "skip", 1, "no catalog (first-boot setup not finished)"
+    conn = catalog_conn()
+    try:
+        res = [r[0] for r in conn.execute("PRAGMA quick_check")]
+    finally:
+        conn.close()
+    if res != ["ok"]:
+        return "fail", 4, "PRAGMA quick_check: " + "; ".join(res[:5])
+    return "pass", 1, "quick_check ok"
+
+
+def audit_chain():
+    if not os.path.exists(cfg("CATALOG")):
+        return "skip", 1, "no catalog (first-boot setup not finished)"
+    h = health()
+    conn = catalog_conn()
+    try:
+        n = h.verify_audit(conn)
+    except h.Fail as e:
+        return "fail", 4, str(e)
+    finally:
+        conn.close()
+    return "pass", 1, f"{n} entries, hash chain intact"
+
+
+def selinux():
+    try:
+        with open(cfg("SELINUX_ENFORCE")) as f:
+            v = f.read().strip()
+    except FileNotFoundError:
+        return "fail", 4, "SELinux is disabled"
+    if v != "1":
+        return "fail", 4, "SELinux is permissive: the service confinement is not enforced"
+    return "pass", 1, "enforcing"
+
+
+def failed_units():
+    rc, out, err = run("systemctl", "list-units", "--failed", "--plain", "--no-legend", "--no-pager")
+    if rc == 127:
+        return "skip", 1, "systemctl not available"
+    if rc != 0:
+        return "warn", 2, f"systemctl failed: {(err or out).strip()[:200]}"
+    units = [l.split()[0] for l in out.splitlines() if l.strip()]
+    if not units:
+        return "pass", 1, "no failed units"
+    core = [u for u in units if u in CORE_UNITS]
+    d = "failed: " + ", ".join(units[:10]) + (" …" if len(units) > 10 else "")
+    return ("fail", 3, d) if core else ("warn", 2, d)
+
+
+def read_update_status():
+    try:
+        with open(cfg("UPDATE_STATUS")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def bootc():
+    st = read_update_status()
+    if st is None:
+        return "skip", 1, "no update status yet (nexus-update has not run)"
+    if st.get("bootc_error"):
+        return "warn", 2, "bootc status failed: " + str(st["bootc_error"])[:200]
+    booted, staged, rb = st.get("booted") or {}, st.get("staged"), st.get("rollback")
+    parts = [f"booted {booted.get('version') or '?'}"]
+    if staged:
+        parts.append(f"staged {staged.get('version') or staged.get('digest')}")
+    parts.append(f"rollback {rb.get('version') or rb.get('digest')}" if rb else "no rollback image")
+    d = ", ".join(parts)
+    if st.get("rollback_queued"):
+        return "warn", 2, "a rollback is queued for the next boot; " + d
+    if st.get("spec_signature") not in (None, "containerPolicy"):
+        return "warn", 2, f"origin signature mode {st.get('spec_signature')} (nexus-update enforces signatures at the next check); " + d
+    return "pass", 1, d
+
+
+def smart():
+    if not shutil.which(cfg("SMARTCTL")):
+        # smartmontools is not part of the image (most appliances run as VMs; the
+        # hypervisor watches the disks). Installing it adds the check without changes here.
+        return "skip", 1, "smartctl not installed"
+    rc, out, _ = run("smartctl", "--scan")
+    devs = [l.split()[0] for l in out.splitlines() if l.startswith("/dev/")]
+    if not devs:
+        return "skip", 1, "no SMART-capable disks"
+    bad = []
+    for dev in devs:
+        rc, out, _ = run("smartctl", "-H", dev)
+        if rc & 0b1000:  # bit 3: disk failing
+            bad.append(dev)
+    if bad:
+        return "fail", 3, "SMART reports failing disk(s): " + ", ".join(bad)
+    return "pass", 1, f"{len(devs)} disk(s) healthy"
+
+
+def checks():
+    out = []
+    for spec in cfg("DISKS").split():
+        name, path = spec.split("=", 1)
+        out.append(check(f"disk.{name}", f"Disk space: {path}", disk(path)))
+    out += [
+        check("time.sync", "Time synchronisation", time_sync),
+        check("time.nts", "Authenticated time sources (NTS)", time_nts),
+        check("egress", "Outbound firewall", egress),
+        check("keyd", "Key daemon", keyd),
+        check("tls.cert", "Web certificate", tls_cert),
+        check("audit.chain", "Audit log hash chain", audit_chain),
+        check("catalog.integrity", "Catalog integrity", catalog_integrity),
+        check("selinux", "SELinux mode", selinux),
+        check("systemd.failed", "Failed system services", failed_units),
+        check("bootc", "OS image (bootc)", bootc),
+        check("smart", "Disk health (SMART)", smart),
+    ]
+    return out
+
+
+def blocking(cs):
+    """The checks that stop an update."""
+    return [c for c in cs if c["status"] == "fail" and c["severity"] >= SEVERITY_BLOCKS_UPDATE]
+
+
+# ---------------------------------------------------------------- bundle
+
+
+def utc(ts):
+    return dt.datetime.fromtimestamp(ts, dt.timezone.utc)
+
+
+def catalog_stats():
+    """Row counts and audit action counts: no row contents."""
+    if not os.path.exists(cfg("CATALOG")):
+        return {"error": "no catalog"}
+    conn = catalog_conn()
+    try:
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        return {
+            "schema_version": conn.execute("PRAGMA user_version").fetchone()[0],
+            "page_count": conn.execute("PRAGMA page_count").fetchone()[0],
+            "page_size": conn.execute("PRAGMA page_size").fetchone()[0],
+            "rows": {t: conn.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0] for t in tables},
+            "audit_actions": dict(conn.execute("SELECT action, COUNT(*) FROM audit GROUP BY action ORDER BY action").fetchall()) if "audit" in tables else {},
+            "jobs_by_kind_state": [list(r) for r in conn.execute("SELECT kind, state, COUNT(*) FROM jobs GROUP BY kind, state ORDER BY kind, state")] if "jobs" in tables else [],
+        }
+    except sqlite3.Error as e:
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+def tool_text(*argv, timeout=None):
+    rc, out, err = run(*argv, timeout=timeout)
+    head = f"$ {' '.join(argv)}\n# exit {rc}\n"
+    return head + out + (("\n# stderr:\n" + err) if err.strip() else "")
+
+
+def journal(since, until, *args):
+    lim = int(cfg("JOURNAL_MAX_MB")) * 2**20
+    rc, out, err = run(
+        "journalctl", "--no-pager", "-o", "short-iso-precise", "--utc",
+        "--since", f"@{since}", "--until", f"@{until}", *args, timeout=600,
+    )
+    if len(out) > lim:  # keep the newest part: the end of the range is usually what matters
+        out = f"[truncated: first {len(out) - lim} characters dropped]\n" + out[-lim:]
+    return f"$ journalctl --since @{since} --until @{until} {' '.join(args)}\n# exit {rc}\n" + out + (("\n# stderr:\n" + err) if err.strip() else "")
+
+
+def bundle_files(since, until, cs):
+    """name -> text (all redacted by the caller)."""
+    ts = utc(since).strftime("%m/%d/%Y %H:%M:%S").split()
+    te = utc(until).strftime("%m/%d/%Y %H:%M:%S").split()
+    drops = journal(since, until, "-k", "--grep", "nexus-(in|out)-drop")
+    upd = read_update_status()
+    return {
+        "checks.json": json.dumps(cs, indent=1),
+        "journal-nexus.txt": journal(since, until, "-u", "nexus-*", "-u", "greenboot-*", "-u", "chronyd.service", "-u", "nftables.service"),
+        "journal-warnings.txt": journal(since, until, "-p", "warning"),
+        "nft-drops.txt": drops,
+        "avc.txt": tool_text("ausearch", "-m", "AVC,USER_AVC,SELINUX_ERR", "-i", "-ts", *ts, "-te", *te),
+        "update-status.json": json.dumps(upd, indent=1, sort_keys=True) if upd is not None else "no update status\n",
+        "chrony.txt": "\n".join(tool_text("chronyc", "-n", c) for c in ("tracking", "sources", "sourcestats", "authdata")),
+        "systemd-failed.txt": tool_text("systemctl", "list-units", "--failed", "--plain", "--no-pager"),
+        "nexus-units.txt": tool_text("systemctl", "list-units", "nexus-*", "--all", "--plain", "--no-pager"),
+        "nft-ruleset.txt": tool_text("nft", "list", "table", "inet", "nexus"),
+        "catalog-stats.json": json.dumps(catalog_stats(), indent=1),
+        "smart.txt": tool_text("smartctl", "--scan") if shutil.which(cfg("SMARTCTL")) else "smartctl not installed\n",
+    }
+
+
+def write_bundle(path, req, cs):
+    files = {k: redact(v) for k, v in bundle_files(req["since"], req["until"], cs).items()}
+    manifest = {
+        "id": req["id"],
+        "created": int(time.time()),
+        "since": req["since"],
+        "until": req["until"],
+        "requested_by": req["by"],
+        "redacted": "secrets, tokens, keys and passwords removed; host names and IP addresses kept",
+        "files": sorted(files),
+    }
+    files["manifest.json"] = json.dumps(manifest, indent=1)
+    top = f"nexus-support-{utc(manifest['created']).strftime('%Y%m%dT%H%M%SZ')}"
+    tmp = path + ".tmp"
+    with tarfile.open(tmp, "w:gz") as tar:
+        for name, text in sorted(files.items()):
+            data = text.encode()
+            ti = tarfile.TarInfo(f"{top}/{name}")
+            ti.size, ti.mtime, ti.mode = len(data), manifest["created"], 0o644
+            tar.addfile(ti, io.BytesIO(data))
+    os.replace(tmp, path)
+
+
+# ---------------------------------------------------------------- requests
+
+
+def read_small(path, limit=4096):
+    """A control file written by a less privileged user: no symlinks, regular file only."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        return os.read(fd, limit + 1).decode("utf-8", "replace")
+    finally:
+        os.close(fd)
+
+
+def parse_request(s, now):
+    """Validated request dict, or raises ValueError."""
+    if s is None or len(s) > 4096:
+        raise ValueError("missing or oversized request")
+    r = json.loads(s)
+    if not isinstance(r, dict):
+        raise ValueError("request is not an object")
+    if not re.fullmatch(r"[0-9a-f]{32}", str(r.get("id", ""))):
+        raise ValueError("bad id")
+    if r.get("kind") not in ("checks", "bundle"):
+        raise ValueError("bad kind")
+    by = r.get("by")
+    if not isinstance(by, str) or not re.fullmatch(r"[A-Za-z0-9._@-]{1,64}", by):
+        raise ValueError("bad by")
+    until = r.get("until", now)
+    since = r.get("since", until - 86400)
+    if not all(isinstance(x, int) and not isinstance(x, bool) for x in (since, until)) or not (0 <= since < until <= now + 3600) or until - since > MAX_RANGE:
+        raise ValueError("bad time range")
+    return {"id": r["id"], "kind": r["kind"], "by": by, "since": since, "until": until}
+
+
+def write_json(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=1, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def handle(d, req):
+    out = os.path.join(d, req["id"])
+    os.mkdir(out, 0o2750)  # FileExistsError: an id is used once
+    st = {**req, "created": int(time.time()), "state": "running", "error": None, "files": {}}
+    write_json(os.path.join(out, "status.json"), st)
+    try:
+        cs = checks()
+        write_json(os.path.join(out, "checks.json"), cs)
+        st["files"]["checks.json"] = os.path.getsize(os.path.join(out, "checks.json"))
+        if req["kind"] == "bundle":
+            p = os.path.join(out, "bundle.tar.gz")
+            write_bundle(p, req, cs)
+            st["files"]["bundle.tar.gz"] = os.path.getsize(p)
+        st["state"] = "done"
+    except Exception as e:
+        st["state"], st["error"] = "error", f"{type(e).__name__}: {e}"
+        log(f"{req['id']}: {st['error']}")
+    st["finished"] = int(time.time())
+    write_json(os.path.join(out, "status.json"), st)
+    log(f"{req['kind']} {req['id']} for {req['by']}: {st['state']}")
+
+
+def prune(d, now):
+    """Drops results older than 24 h, and all but the newest KEEP_RESULTS."""
+    dirs = []
+    for name in os.listdir(d):
+        p = os.path.join(d, name)
+        if re.fullmatch(r"[0-9a-f]{32}", name) and os.path.isdir(p) and not os.path.islink(p):
+            dirs.append((os.lstat(p).st_mtime, p))
+    dirs.sort(reverse=True)
+    for i, (mtime, p) in enumerate(dirs):
+        if i >= KEEP_RESULTS or now - mtime > RESULT_TTL:
+            shutil.rmtree(p, ignore_errors=True)
+
+
+def tick():
+    d = cfg("DIR")
+    req_path = os.path.join(d, "request.json")
+    for _ in range(10):  # the web-api may queue the next request while we work
+        s = read_small(req_path)
+        if s is None:
+            break
+        try:
+            os.unlink(req_path)  # consume first: a failing request cannot re-trigger the path unit forever
+        except FileNotFoundError:
+            pass
+        try:
+            req = parse_request(s, int(time.time()))
+        except (ValueError, TypeError) as e:
+            log(f"ignoring request: {e}")
+            continue
+        try:
+            handle(d, req)
+        except OSError as e:
+            log(f"{req['id']}: {e}")
+    prune(d, time.time())
+    return 0
+
+
+def main(argv):
+    if argv[1:] == ["checks"]:
+        print(json.dumps(checks(), indent=1))
+        return 0
+    if argv[1:] == ["tick"]:
+        old = os.umask(0o027)
+        try:
+            return tick()
+        finally:
+            os.umask(old)
+    print("usage: nexus-diag tick|checks", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
