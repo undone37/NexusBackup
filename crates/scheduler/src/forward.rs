@@ -629,7 +629,8 @@ impl Forwarder {
 
     fn deliver(&self, cfg: &Forwarding, sink: &'static str, dest: &str, now: i64) -> Result<()> {
         let (mut a, mut e) = self.cursor(sink, dest)?;
-        let (send, batch): (Box<dyn Fn(&[Record]) -> Result<()>>, usize) = match sink {
+        type Send = Box<dyn Fn(&[Record]) -> Result<()>>;
+        let (send, batch): (Send, usize) = match sink {
             "syslog" => {
                 let s = cfg.syslog.clone().context("syslog")?;
                 let host = self.host.clone();

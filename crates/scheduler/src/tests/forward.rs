@@ -13,12 +13,14 @@ use std::sync::Mutex;
 
 const DAY: i64 = 86400;
 
+/// syslog: raw bytes per connection; https: (headers, JSON body) per request
+type Received = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
 struct Server {
     port: u16,
     pem: String,
     der: Vec<u8>,
-    /// syslog: raw bytes per connection; https: (headers, JSON body) per request
-    got: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
+    got: Received,
     /// refuse the TLS handshake (syslog) / answer 500 (https)
     fail: Arc<AtomicBool>,
 }

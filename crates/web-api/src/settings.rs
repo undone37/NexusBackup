@@ -432,6 +432,17 @@ pub async fn test_alerts(State(st): State<St>, ctx: Ctx, body: Bytes) -> ApiResu
         None => json!({}),
     };
     let id = queue(&st, &ctx, "alert_test", p)?;
+    wait_test_job(&st, id, "alert test").await
+}
+
+/// Queues the appliance job `kind` and waits up to 45 s for its JSON result
+/// (slower → 202 `{job_id}`).
+pub async fn run_test_job(st: &St, ctx: &Ctx, kind: &str, p: Value, what: &str) -> ApiResult<Response> {
+    let id = queue(st, ctx, kind, p)?;
+    wait_test_job(st, id, what).await
+}
+
+async fn wait_test_job(st: &St, id: i64, what: &str) -> ApiResult<Response> {
     for _ in 0..180 {
         tokio::time::sleep(Duration::from_millis(250)).await;
         let row: Option<(String, Option<String>, String)> = st
@@ -448,7 +459,7 @@ pub async fn test_alerts(State(st): State<St>, ctx: Ctx, body: Bytes) -> ApiResu
             }
             Some((s, _, log)) if s == "failed" || s == "cancelled" => {
                 return Err(ApiError::conflict(format!(
-                    "alert test failed: {}",
+                    "{what} failed: {}",
                     log.lines().last().unwrap_or("see the job log")
                 )))
             }
