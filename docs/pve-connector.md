@@ -95,6 +95,28 @@ retries (13b) re-run exactly the failed guests. Every vzdump task is reported (`
 all of them (`task-stop` per reported UPID, newest first). The plugin host does the same for plugin groups
 (`"parallel"` in its job config, one sandboxed plugin process per guest).
 
+### Fleecing space guard (Phase 18)
+A VM backup copies every block the guest overwrites into a fleecing image on the node's fleecing storage, usually
+the LVM-thin pool `local-lvm`; a full thin pool pauses **every** VM on it. `nexus-pve` (`crates/pve/src/fleecing.rs`)
+therefore reads `GET /nodes/<node>/storage/<fleecing-storage>/status` (`total`, `avail`; an inactive storage counts as
+unreadable) before each VM and every `interval_secs` (30) while its vzdump task runs; for `type: lvmthin` it also
+reads the pool's metadata use (`GET /storage/<id>` → `vgname`/`thinpool`, then `GET /nodes/<node>/disks/lvmthin`:
+`metadata_size`/`metadata_used`; needs Sys.Audit, skipped when refused). Thresholds per PVE source,
+`"fleecing_guard": {"min_free_pct": 15, "min_free_gib": 20, "cancel_free_pct": 5, "interval_secs": 30}` (defaults):
+- **low**: free below `min_free_pct` % **and** below `min_free_gib` GiB (whichever is smaller counts, so a large pool
+  is not blocked by the percentage and a small one not by the absolute size), or metadata free below
+  `min_free_pct` %: the guest is not started and fails with `fleecing storage <id> on node <n> has … free, below the
+  guard …: guest skipped` (the group's retry policy re-runs it);
+- **critical**: free (or metadata free) below `cancel_free_pct` %: the running vzdump task is stopped (as for a
+  cancelled job) and the guest fails with `… below the critical level (5 %): backup cancelled`. A snapshot that was
+  already committed when the level was reached is kept.
+Every reading before a VM, and every non-ok reading while it runs, is printed as
+`fleecing-space {"node", "storage", "state": "ok"|"low"|"critical", "free", "total", "free_pct", "meta_free_pct"}`.
+The scheduler raises the critical alert `fleecing_space` (key `fleecing_space:<tenant>/<node>/<storage>`, category
+hardware) for low/critical and resolves it when a later reading of that storage is ok. A storage whose status cannot
+be read is not guarded (`note: … not guarded`). Containers have no fleecing and are not checked. Tests:
+`pve::fleecing::tests` (PVE responses as fakes, thresholds, the watcher), `scheduler` `tests::fleecing`.
+
 ## index.json (appliance → nodes)
 ```json
 {"version":1,"archives":[{"volname":"backup/nexus-100-1760000000","vmid":100,"type":"qemu","ctime":1760000000,

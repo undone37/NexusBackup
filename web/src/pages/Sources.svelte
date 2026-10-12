@@ -130,6 +130,9 @@
     nodes: '{}',
     storage: '',
     fleecing_storage: '',
+    fl_min_pct: 15,
+    fl_min_gib: 20,
+    fl_cancel_pct: 5,
     // linux
     agent_id: '',
     paths: '',
@@ -210,6 +213,9 @@
       nodes: JSON.stringify(c?.nodes ?? {}, null, 2),
       storage: c?.storage ?? '',
       fleecing_storage: c?.fleecing_storage ?? '',
+      fl_min_pct: c?.fleecing_guard?.min_free_pct ?? 15,
+      fl_min_gib: c?.fleecing_guard?.min_free_gib ?? 20,
+      fl_cancel_pct: c?.fleecing_guard?.cancel_free_pct ?? 5,
       agent_id: l?.agent_id ?? '',
       paths: (l?.paths ?? []).join('\n'),
       excludes: (l?.excludes ?? sh?.excludes ?? []).join('\n'),
@@ -427,6 +433,12 @@
       storage: f.storage,
       fleecing_storage: f.fleecing_storage,
     };
+    // only what differs from nexus-pve's defaults is stored
+    const guard: Record<string, number> = {};
+    if (Number(f.fl_min_pct) !== 15) guard.min_free_pct = Number(f.fl_min_pct);
+    if (Number(f.fl_min_gib) !== 20) guard.min_free_gib = Number(f.fl_min_gib);
+    if (Number(f.fl_cancel_pct) !== 5) guard.cancel_free_pct = Number(f.fl_cancel_pct);
+    if (Object.keys(guard).length) config.fleecing_guard = guard;
     // Write-only secret: only sent when entered.
     if (f.token_secret) config.token_secret = f.token_secret;
     return config;
@@ -857,6 +869,23 @@
           <label for="s-fl">{t.sources.fleecing}</label>
           <input id="s-fl" bind:value={f.fleecing_storage} />
         </div>
+        <fieldset class="fl-guard">
+          <legend>{t.sources.fleecingGuard}</legend>
+          <p class="hint">{t.sources.fleecingGuardHint}</p>
+          <div class="field">
+            <label for="s-fl-pct">{t.sources.fleecingMinPct}</label>
+            <input id="s-fl-pct" type="number" min="0" max="90" step="1" bind:value={f.fl_min_pct} />
+          </div>
+          <div class="field">
+            <label for="s-fl-gib">{t.sources.fleecingMinGib}</label>
+            <input id="s-fl-gib" type="number" min="0" step="1" bind:value={f.fl_min_gib} />
+          </div>
+          <div class="field">
+            <label for="s-fl-cancel">{t.sources.fleecingCancelPct}</label>
+            <input id="s-fl-cancel" type="number" min="0" max="90" step="1" bind:value={f.fl_cancel_pct} />
+          </div>
+          <p class="hint">{t.sources.fleecingGuardRule}</p>
+        </fieldset>
       {/if}
     </div>
     {#if isPluginKind(f.kind)}

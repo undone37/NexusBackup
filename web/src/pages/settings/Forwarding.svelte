@@ -23,7 +23,7 @@
     sOn: false,
     s: { enabled: true, host: '', port: 6514, ca_pem: '', pin_sha256: '', app_name: 'nexus', facility: 13 },
     hOn: false,
-    h: { enabled: true, url: '', batch_max: 100, ca_pem: '', pin_sha256: '' },
+    h: { enabled: true, url: '', batch_max: 100, ca_pem: '', pin_sha256: '', format: 'json_array' as 'json_array' | 'splunk_hec', index: '' },
     headers: [] as Header[],
   });
 
@@ -33,7 +33,15 @@
       sOn: !!c.syslog,
       s: { enabled: c.syslog?.enabled ?? true, host: c.syslog?.host ?? '', port: c.syslog?.port ?? 6514, ca_pem: c.syslog?.ca_pem ?? '', pin_sha256: c.syslog?.pin_sha256 ?? '', app_name: c.syslog?.app_name ?? 'nexus', facility: c.syslog?.facility ?? 13 },
       hOn: !!c.https,
-      h: { enabled: c.https?.enabled ?? true, url: c.https?.url ?? '', batch_max: c.https?.batch_max ?? 100, ca_pem: c.https?.ca_pem ?? '', pin_sha256: c.https?.pin_sha256 ?? '' },
+      h: {
+        enabled: c.https?.enabled ?? true,
+        url: c.https?.url ?? '',
+        batch_max: c.https?.batch_max ?? 100,
+        ca_pem: c.https?.ca_pem ?? '',
+        pin_sha256: c.https?.pin_sha256 ?? '',
+        format: c.https?.format ?? 'json_array',
+        index: c.https?.index ?? '',
+      },
       headers: Object.keys(c.https?.headers ?? {}).map((name) => ({ name, value: '', stored: true })),
     };
   }
@@ -59,6 +67,7 @@
             batch_max: Number(f.h.batch_max),
             ca_pem: opt(f.h.ca_pem),
             pin_sha256: opt(f.h.pin_sha256),
+            index: f.h.format === 'splunk_hec' ? opt(f.h.index) : null,
             // empty value of a stored header = keep it (null)
             headers: Object.fromEntries(f.headers.filter((h) => h.name.trim()).map((h) => [h.name.trim(), h.value ? h.value : h.stored ? null : ''])),
           }
@@ -79,6 +88,12 @@
     }
     testing = false;
   }
+  // Splunk HEC preset: the token goes into `Authorization: Splunk <token>`
+  function setFormat() {
+    if (f.h.format === 'splunk_hec' && !f.headers.some((h) => h.name.toLowerCase() === 'authorization'))
+      f.headers.push({ name: 'Authorization', value: '', stored: false });
+  }
+  const hec = $derived(f.h.format === 'splunk_hec');
   const label = (k: string) => (k === 'syslog' ? t.settings.fw.syslog : k === 'https' ? t.settings.fw.https : k);
 </script>
 
@@ -160,7 +175,21 @@
               <label for="fw-batch">{t.settings.fw.batch}</label>
               <input id="fw-batch" type="number" min="1" max="1000" bind:value={f.h.batch_max} required />
             </div>
+            <div class="field">
+              <label for="fw-format">{t.settings.fw.format}</label>
+              <select id="fw-format" bind:value={f.h.format} onchange={setFormat} aria-describedby="fw-format-hint">
+                <option value="json_array">{t.settings.fw.formats.json_array}</option>
+                <option value="splunk_hec">{t.settings.fw.formats.splunk_hec}</option>
+              </select>
+            </div>
+            {#if hec}
+              <div class="field">
+                <label for="fw-index">{t.settings.fw.index}</label>
+                <input id="fw-index" class="mono" bind:value={f.h.index} maxlength="80" spellcheck="false" placeholder="main" />
+              </div>
+            {/if}
           </div>
+          <p class="hint" id="fw-format-hint">{hec ? t.settings.fw.hecHint : t.settings.fw.jsonHint}</p>
           <div class="field">
             <div class="card-head">
               <span class="field-label">{t.settings.al.headers}</span>
@@ -170,7 +199,7 @@
             {#each f.headers as h, i (i)}
               <div class="header-row">
                 <input aria-label={t.settings.al.headerName} class="mono" bind:value={h.name} placeholder="Authorization" spellcheck="false" />
-                <input aria-label={t.settings.al.headerValue} type="password" bind:value={h.value} placeholder={h.stored ? t.writeOnlyKeep : ''} autocomplete="new-password" />
+                <input aria-label={t.settings.al.headerValue} type="password" bind:value={h.value} placeholder={h.stored ? t.writeOnlyKeep : hec && h.name.toLowerCase() === 'authorization' ? 'Splunk <HEC token>' : ''} autocomplete="new-password" />
                 <button type="button" class="icon" aria-label={t.settings.al.removeHeader(h.name)} onclick={() => f.headers.splice(i, 1)}><IconX aria-hidden="true" /></button>
               </div>
             {/each}

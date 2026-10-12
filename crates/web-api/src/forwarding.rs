@@ -55,6 +55,12 @@ pub struct HttpsReq {
     ca_pem: Option<String>,
     #[serde(default)]
     pin_sha256: Option<String>,
+    /// `json_array` (default) or `splunk_hec`
+    #[serde(default)]
+    format: forwarding::Format,
+    /// Splunk index (HEC only; empty = the token's default)
+    #[serde(default)]
+    index: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -189,6 +195,18 @@ fn check_https(st: &St, r: HttpsReq, old: Option<&Https>) -> ApiResult<Https> {
         };
         headers.insert(h, sealed);
     }
+    let index = r.index.map(|i| i.trim().to_owned()).filter(|i| !i.is_empty());
+    if let Some(i) = &index {
+        let ok = i.len() <= 80
+            && r.format == forwarding::Format::SplunkHec
+            && i.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
+        if !ok {
+            return Err(ApiError::bad(
+                "https.index: Splunk HEC only; lower-case letters, digits, _ and -, at most 80",
+            ));
+        }
+    }
     Ok(Https {
         enabled: r.enabled,
         url: r.url,
@@ -196,6 +214,8 @@ fn check_https(st: &St, r: HttpsReq, old: Option<&Https>) -> ApiResult<Https> {
         batch_max,
         ca_pem: ca_pem(r.ca_pem, "https")?,
         pin_sha256: pin(r.pin_sha256, "https")?,
+        format: r.format,
+        index,
     })
 }
 

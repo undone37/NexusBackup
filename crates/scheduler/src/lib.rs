@@ -66,10 +66,12 @@
 mod accounts;
 pub mod alerts;
 pub mod anomaly;
+pub mod clock;
 pub mod consistency;
 pub mod disks;
 pub mod expiry;
 pub mod firewall;
+mod fleecing;
 pub mod forward;
 mod holds;
 mod inventory;
@@ -352,6 +354,8 @@ pub struct Scheduler {
     cancel_sent: HashMap<i64, Instant>,
     /// UTC day of the last `audit.anchor` (forward.rs; None = not read yet)
     anchor_day: Option<i64>,
+    /// the tenants' compliance clocks, kept running (clock.rs)
+    clock: clock::Keeper,
 }
 
 /// Agent ids: 16 lowercase hex characters (chosen by the web-api).
@@ -497,6 +501,7 @@ impl Scheduler {
             fw_settle: None,
             cancel_sent: HashMap::new(),
             anchor_day: None,
+            clock: Default::default(),
             alert_tx,
             host: alerts::hostname(),
             now: catalog::now(),
@@ -730,6 +735,7 @@ impl Scheduler {
         self.log_err(|s| s.check_replication_lag(now));
         self.log_err(|s| s.check_forwarding(now));
         self.log_err(|s| s.check_disks(now));
+        self.log_err(|s| s.check_clock());
         self.log_err(|s| s.check_disabled_tenants());
         self.log_err(|s| s.sync_firewall().map(drop));
         self.deliver_alerts()
@@ -1227,6 +1233,9 @@ impl Scheduler {
             self.attach_bookkeeping(&job, ok)?;
         }
         self.agent_bookkeeping(&job, &log)?;
+        if job.kind == "backup" {
+            self.fleecing_bookkeeping(&job, &log)?;
+        }
         if job.kind.starts_with("ssh_key_") {
             self.publish_ssh_keys()?;
             if ok {
@@ -1819,6 +1828,8 @@ impl Scheduler {
             "storage": s(&src, "storage")?,
             // optional in the web-api; VM backups fail in PVE without it
             "fleecing_storage": src["fleecing_storage"].as_str().unwrap_or_default(),
+            // free-space thresholds (absent = nexus-pve's defaults)
+            "fleecing_guard": src.get("fleecing_guard").filter(|g| g.is_object()).cloned().unwrap_or(json!({})),
             "nodes": nodes,
             "vmids": vmids,
         });

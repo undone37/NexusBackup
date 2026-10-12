@@ -111,6 +111,8 @@ pub struct Alert {
     pub count: i64,
     pub severity: String,
     pub kind: String,
+    /// stable category of the kind (`catalog::alerting::category`)
+    pub category: String,
     pub message: String,
     pub hint: String,
     pub tenant: Option<String>,
@@ -235,11 +237,12 @@ pub fn send_mail(s: &Smtp, to: &BTreeSet<String>, a: &Alert) -> Result<()> {
         String::new()
     };
     let msg = b.body(format!(
-        "{}\n\nWhat to do: {}\n\nseverity: {}\nkind: {}\ntenant: {}\nalert id: {}\ntime (unix): {}\n{seen}appliance: {}\n{}\n",
+        "{}\n\nWhat to do: {}\n\nseverity: {}\nkind: {}\ncategory: {}\ntenant: {}\nalert id: {}\ntime (unix): {}\n{seen}appliance: {}\n{}\n",
         a.message,
         a.hint,
         a.severity,
         a.kind,
+        a.category,
         a.tenant.as_deref().unwrap_or("-"),
         a.id,
         a.ts,
@@ -291,6 +294,7 @@ pub fn test(cfg: &AlertsConfig, host: &str, only: Option<&str>) -> Value {
         count: 1,
         severity: "info".into(),
         kind: "test".into(),
+        category: alerting::category("test").into(),
         message: "Test alert from the NexusBackup appliance (Settings → Alert delivery).".into(),
         hint: alerting::hint("test").into(),
         tenant: None,
@@ -396,6 +400,7 @@ mod tests {
             count: 1,
             severity: sev.into(),
             kind: kind.into(),
+            category: alerting::category(kind).into(),
             message: String::new(),
             hint: String::new(),
             tenant: tenant.map(str::to_owned),

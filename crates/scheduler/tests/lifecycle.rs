@@ -395,7 +395,10 @@ esac"#,
     while got.len() < 4 {
         let a = hook.recv_timeout(Duration::from_secs(20)).expect("webhook delivery");
         assert!(a["id"].as_i64().is_some() && a["message"].is_string());
-        got.push(a["kind"].as_str().unwrap().to_owned());
+        // the test moved the compliance clock 2 minutes ahead (above): clock_skew, not counted here
+        if a["kind"] != "clock_skew" {
+            got.push(a["kind"].as_str().unwrap().to_owned());
+        }
     }
     got.sort();
     assert_eq!(got, ["gc_quorum", "inventory", "job_failed", "offsite_lag"]);

@@ -17,7 +17,7 @@
   const admin = $derived(session.user?.role === 'admin');
   const SEVS: Severity[] = ['info', 'warning', 'critical'];
   const KINDS = Object.keys(t.alerts.hints);
-  const FIELDS = 'id, ts, first_ts, last_ts, count, severity, kind, message, hint, tenant, host, alert_url';
+  const FIELDS = 'id, ts, first_ts, last_ts, count, severity, kind, category, message, hint, tenant, host, alert_url';
   // Example bodies (manual chapter 11): Slack incoming webhook, Microsoft Teams workflow (Adaptive Card).
   const EXAMPLES: Record<string, string> = {
     Slack: `{"text": ":rotating_light: [{{severity}}] {{kind}} on {{host}}: {{message}}\\n{{hint}}\\n<{{alert_url}}|Open alert> (seen {{count}}x)"}`,

@@ -95,9 +95,11 @@ then, nobody can delete it: not an administrator, not the API, not a compromised
 **extended**, never shortened.
 
 Locks are measured by the **compliance clock**, not by the system time. The compliance clock moves forward with the
-machine's monotonic clock and catches up with the system time only slowly (at most 1 % faster). Setting the system
-date into the future, or a rogue time server, therefore cannot expire locks early. Backward time jumps are ignored.
-After downtime the clock lags behind and catches up slowly; that only makes locks last longer.
+machine's monotonic clock and catches up with the system time only slowly (at most 0.1 % faster: about 20 minutes
+over a 14-day lock). Setting the system date into the future, or a rogue time server, therefore cannot expire locks
+early. Backward time jumps are ignored. After downtime the clock lags behind and catches up slowly; that only makes
+locks last longer. The appliance watches the difference: the alert `clock_skew` (chapter 11) and the diagnostics
+check `time.compliance` (chapter 15) report a system time that jumped or moved back.
 
 ## Garbage collection and verification
 

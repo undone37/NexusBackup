@@ -13,12 +13,13 @@ The page lists alerts newest first with:
 - **Severity**: `critical`, `warning` or `info`.
 - **Seen**: when the alert was last seen. Below it: how often it was seen and, for repeats, when it was first seen.
   Hover for the exact times.
-- **Kind**: for alerts that belong to a tenant, the tenant is shown below the kind.
+- **Kind**: below it the **category** of the kind (see below) and, for alerts that belong to a tenant, the tenant.
 - **Message**: the latest message. **What to do** opens a short hint for this kind of alert. A note written when
   the alert was acknowledged or resolved is shown below it.
 
-The switch at the top right shows **Open** alerts (the default), **Resolved** ones or **All**. A link from a
-notification (`…/#/alerts?id=<n>`) opens that one alert, whatever its state.
+The switch at the top right shows **Open** alerts (the default), **Resolved** ones or **All**; the list next to it
+limits the page to one **category**. A link from a notification (`…/#/alerts?id=<n>`) opens that one alert,
+whatever its state.
 
 ![Alerts: all alerts, including resolved and auto-resolved ones](images/alerts-all.png)
 
@@ -54,6 +55,18 @@ log (`alert.ack`, `alert.resolve`).
 
 ## Alert kinds
 
+Every kind belongs to one fixed **category**, for filters here and for routing in a SIEM: the category is part of
+webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/alerts?category=…`).
+
+| Category | Kinds |
+|---|---|
+| security | `anomaly`, `console_unlock`, `console_root_shell`, `break_glass`, `firewall_reset`, `mgmt_allow_reset`, `legal_hold_advisory`, `cert_expiry`, `account_dormant`, `inventory`, `clock_skew`, `gc_quorum`, `gc_confirm`, `vault_disabled` |
+| backup | `job_failed`, `sla_missed`, `paused`, `consistency`, `backup_inconsistent`, `orphaned`, `verify`, `offsite_lag`, `inventory_refresh`, `config` |
+| replication | every `replication_…` kind |
+| hardware | `disk`, `fleecing_space` |
+| system | `capacity`, `quota`, `forwarding`, `report`, `tenant_disabled`, `test` and any kind not listed |
+| audit | not an alert category: forwarded audit log entries carry it |
+
 | Kind | Severity | Raised when | Resolves itself when | What to do |
 |---|---|---|---|---|
 | `job_failed` | critical | any job fails (backup, restore, offsite, GC, …); the message ends with the last log lines. Group backups are retried first (policy **Retries**): the alert comes only after the last attempt ("failed after 4 attempts") | the same job succeeds (same tenant, job kind and group, source, agent or guest), e.g. a later retry or **Back up now** | open the job on **Jobs**, read the log, fix the cause, run it again (**Back up now**, e.g. **Guests that failed in the last run**) |
@@ -86,6 +99,8 @@ log (`alert.ack`, `alert.resolve`).
 | `console_unlock` | critical | a one-time code for a root shell on the console was shown to its requester (**Settings → Console access**) | — | make sure the request was planned; revoke the code there if not. See [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console) |
 | `console_root_shell` | critical | a root shell was opened on the appliance console with a one-time code or the recovery key; while it runs every administrator, security officer and operator sees a red banner | — | confirm with the requester (or whoever holds the recovery key) what was done, check the audit log (`console.root_shell`, `console.root_shell_end`), then acknowledge |
 | `disk` | critical: SMART failing, array degraded or failed, bad sectors growing; warning: bad sectors, NVMe wear ≥ 90 % or critical warning, media errors, too hot (HDD > 55 °C, SSD/NVMe > 70 °C), failed self-test, no disk status for 30 minutes; info: rebuild, resync or reshape running (with progress) | the scan of `nexus-disks` (every 5 minutes, SMART hourly) finds a problem; one alert per disk (`disk:<serial>`) and per array (`disk:md:<uuid>`, the rebuild as `disk:md:<uuid>:sync`) | the disk or array is healthy again (a rebuild finished, the disk was replaced) | open **Configuration → Hardware**; replace a failing disk, see [15 Troubleshooting](15-troubleshooting-faq.md#replacing-a-disk) |
+| `fleecing_space` | critical | the fleecing storage of a Proxmox node is below the guard of its source (the VM was skipped) or below the critical level (a running VM backup was cancelled); one alert per node and storage (`fleecing_space:<tenant>/<node>/<storage>`) | a later backup finds enough room on that storage | free space in the storage (usually `local-lvm`), or choose a larger fleecing storage or other limits on the source. See [04 Sources](04-sources.md#proxmox-ve) |
+| `clock_skew` | warning above 1 minute, critical above 10 minutes; info for a lag after a restart | system time and the compliance clock (the clock of retention locks, [01 Concepts](01-concepts.md#retention-locks-and-the-compliance-clock)) differ: system time jumped ahead while the appliance was running, or the compliance clock is ahead (system time moved back); info: the compliance clock was already behind when the scheduler started (the appliance was off) | the difference is under a minute | find out who or what changed the time (Diagnostics: `time.sync`, `time.nts`; the audit log). Locks are never shortened: the compliance clock moves towards system time by at most 0.1 % of the elapsed time. See [15 Troubleshooting](15-troubleshooting-faq.md#check-time-compliance) |
 | `forwarding` | warning | audit / alert forwarding to a syslog or HTTPS sink has failed for 15 minutes (one alert per sink; the message names the destination and the error) | the sink delivers again (or is disabled / removed) | check the receiver (reachable, certificate, token) and **Settings → Forwarding** (**Send test message**); nothing is lost, the backlog follows. See [10 Approvals and audit](10-approvals-and-audit.md#forwarding-to-a-siem) |
 
 ## Expiry warnings
@@ -188,7 +203,7 @@ Without a template, the webhook receives one JSON `POST` per alert:
 ```json
 {
   "id": 1093, "ts": 1791712800, "first_ts": 1791712800, "last_ts": 1791968400, "count": 147,
-  "severity": "warning", "kind": "capacity", "message": "store capacity above 75 % (now 78 %)",
+  "severity": "warning", "kind": "capacity", "category": "system", "message": "store capacity above 75 % (now 78 %)",
   "hint": "The store is filling up. Shorten retention, run GC or add disks. Resolves when usage drops below the threshold.",
   "tenant": null, "host": "backup", "alert_url": "https://backup/#/alerts?id=1093"
 }
@@ -211,7 +226,7 @@ the header values again.
 ### Webhook templates (Slack, Teams, …)
 
 Many chat tools expect their own JSON. Put it in **Body template (optional)**, with placeholders where the alert's
-values go: `{{id}}`, `{{ts}}`, `{{first_ts}}`, `{{last_ts}}`, `{{count}}`, `{{severity}}`, `{{kind}}`,
+values go: `{{id}}`, `{{ts}}`, `{{first_ts}}`, `{{last_ts}}`, `{{count}}`, `{{severity}}`, `{{kind}}`, `{{category}}`,
 `{{message}}`, `{{hint}}`, `{{tenant}}`, `{{host}}`, `{{alert_url}}`.
 
 - Each value is inserted **JSON-escaped without quotes**, so write placeholders inside a JSON string (`"{{message}}"`).
@@ -277,7 +292,8 @@ rule for every alert:
 
 Notification rules pick alerts for people. To feed a log server or SIEM with **every** alert event (raised,
 escalated, acknowledged, resolved), every finished job and the audit log, use **Settings → Forwarding** (syslog
-over TLS and/or HTTPS JSON, in order, at least once); see
+over TLS and/or HTTPS as a JSON array or Splunk HEC events, in order, at least once; every record carries its
+`category`); see
 [10 Approvals and audit](10-approvals-and-audit.md#forwarding-to-a-siem). A sink that fails for 15 minutes raises the
 `forwarding` alert.
 

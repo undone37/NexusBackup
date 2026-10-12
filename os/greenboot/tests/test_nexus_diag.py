@@ -201,12 +201,19 @@ class Host(unittest.TestCase):
         db.execute("CREATE TABLE audit (seq INTEGER PRIMARY KEY, ts INTEGER, actor TEXT, action TEXT, target TEXT, details TEXT, prev_hash TEXT, hash TEXT)")
         db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, password_hash TEXT)")
         db.execute("INSERT INTO users (name, password_hash) VALUES ('alice', '$argon2id$secret')")
+        db.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)")
+        self.clock(2, 0)
         prev = "0" * 64
         for seq, action in enumerate(["setup.init", "auth.login", "auth.login"], 1):
             hsh = h.chain_hash(prev, seq, 1000 + seq, "alice", action, "-", "{}")
             db.execute("INSERT INTO audit VALUES (?,?,?,?,?,?,?,?)", (seq, 1000 + seq, "alice", action, "-", "{}", prev, hsh))
             prev = hsh
         db.commit()
+
+    def clock(self, skew, jump, checked=None):
+        st = {"checked": int(time.time()) if checked is None else checked, "tenant": "acme", "skew_secs": skew, "jump_secs": jump}
+        self._db.execute("INSERT OR REPLACE INTO settings VALUES ('compliance_clock', ?)", (json.dumps(st),))
+        self._db.commit()
 
     def by_id(self, cs):
         return {c["id"]: c for c in cs}
@@ -222,7 +229,7 @@ class Checks(Host):
         cs = self.by_id(self.m.checks())
         self.assertEqual(
             sorted(cs),
-            sorted(["disk.store", "disk.var", "time.sync", "time.nts", "egress", "keyd", "tls.cert", "audit.chain",
+            sorted(["disk.store", "disk.var", "time.sync", "time.nts", "time.compliance", "egress", "keyd", "tls.cert", "audit.chain",
                     "catalog.integrity", "selinux", "systemd.failed", "bootc", "smart"]),
         )
         for cid, c in cs.items():
@@ -269,6 +276,26 @@ class Checks(Host):
             sorted(c["id"] for c in self.m.blocking(list(cs.values()))),
             ["audit.chain", "egress", "keyd", "selinux", "systemd.failed", "time.sync"],
         )
+
+    def test_compliance_clock(self):
+        def c():
+            x = self.by_id(self.m.checks())["time.compliance"]
+            return x["status"], x["severity"]
+
+        self.assertEqual(c(), ("pass", 1))
+        self.clock(3600, 0)  # lag after a restart: catching up
+        self.assertEqual(c(), ("pass", 1))
+        self.assertIn("after a restart", self.by_id(self.m.checks())["time.compliance"]["detail"])
+        self.clock(200, 120)
+        self.assertEqual(c(), ("warn", 2))
+        self.clock(-700, 0)
+        self.assertEqual(c(), ("fail", 2))
+        self.assertEqual(self.m.blocking(self.m.checks()), [], "never an update blocker")
+        self.clock(0, 0, checked=1)
+        self.assertEqual(c(), ("warn", 2))
+        self._db.execute("DELETE FROM settings")
+        self._db.commit()
+        self.assertEqual(c(), ("skip", 1))
 
     def test_disk_thresholds(self):
         os.environ["NEXUS_DIAG_DISK_WARN_PCT"] = "0"
@@ -379,7 +406,7 @@ class Requests(Host):
         self.assertIn("login password=[REDACTED]", text["journal-nexus.txt"])
         self.assertNotIn("hunter2", "".join(text.values()))
         stats = json.loads(text["catalog-stats.json"])
-        self.assertEqual(stats["rows"], {"audit": 3, "users": 1})
+        self.assertEqual(stats["rows"], {"audit": 3, "settings": 1, "users": 1})
         self.assertEqual(stats["audit_actions"], {"auth.login": 2, "setup.init": 1})
         self.assertNotIn("argon2id", "".join(text.values()))
         m = json.loads(text["manifest.json"])

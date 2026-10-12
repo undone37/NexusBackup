@@ -42,9 +42,14 @@ Status of all records below: **Accepted (2026-10-08)**.
 - **Consequences:** PBS / Proxmox crates can be reused; modified network deployments must publish their source.
 
 ## ADR-011 Compliance clock
-- **Decision:** Retention locks use a clock that advances with the monotonic clock, is persisted, and slews forward toward system time by at most 1 % of elapsed time (calibration knob `clock_slew`). Backward jumps are ignored.
-- **Consequences:** Manipulating system time cannot expire locks early (at most +1 %); after downtime locks last longer, never shorter. Upgrade path: TPM NV counter as a hardware anchor.
+- **Decision:** Retention locks use a clock that advances with the monotonic clock, is persisted, and slews forward toward system time by at most 0.1 % of elapsed time (calibration knob `clock_slew`, `chunkstore::clock::DEFAULT_SLEW`). Backward jumps are ignored.
+- **Consequences:** Manipulating system time cannot expire locks early (at most +0.1 %, ≈ 20 min over a 14-day lock); after downtime locks last longer, never shorter. Upgrade path: TPM NV counter as a hardware anchor.
+- **Change (Phase 18, 2026-10-12):** the slew was 1 % (≈ 3.4 h over 14 days); lowered to 0.1 % after the Cohesity comparison (≈ 10 min / 14 days there). The clock only advances while a process holds it: the scheduler now keeps every tenant's clock open (one shared instance per store and process) instead of each short-lived job re-reading the persisted value, which lost the time between jobs. A lag after downtime catches up 10× slower than before (1 h of downtime ≈ 6 weeks); this only lengthens locks. The scheduler raises `clock_skew` (warning > 60 s, critical > 10 min) when system time jumps while it runs or moves back, info for a lag found at start; nexus-diag check `time.compliance`.
 
 ## ADR-012 Commit protocol
 - **Decision:** Chunk files are written as tmp + fsync + rename. At commit, chunk directories are fsynced, then indexes, then the manifest (atomic rename). A snapshot exists if and only if its manifest exists.
 - **Consequences:** kill -9 / power loss leaves only orphan chunks and tmp files, which GC removes (covered by the `survives_kill_9` test).
+
+## ADR-013 Boot menu password derived from the recovery key
+- **Decision (Phase 18, 2026-10-12):** GRUB's superuser password (editing entries, the GRUB command line) is derived from the recovery key (HMAC-SHA256 with the label `nexus-grub-password-v1`, 20 letters; `crates/setup/src/grub.rs`), not generated and shown separately. Boot entries stay unrestricted; rescue mode masked, sulogin never forced, no initramfs shell.
+- **Consequences:** No second secret to store; whoever holds the recovery key computes the password (`nexus-setup grub-password` or a Python one-liner, also off the appliance). The recovery key already opens all data and the console gate, so the derivation adds no new power to it. Rotating the GRUB password means rotating the recovery key (not available yet). HMAC instead of HKDF: the same construction for a uniformly random 32-byte key, and reproducible with Python's standard library.

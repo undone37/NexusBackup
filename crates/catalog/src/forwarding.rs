@@ -53,8 +53,8 @@ pub struct Syslog {
     pub facility: u8,
 }
 
-/// Batched JSON POST (an array of `{type: audit|alert|job, …}`); header values
-/// are sealed to the scheduler at [`header_location`] (write-only in the API).
+/// Batched POST in [`Format`]; header values are sealed to the scheduler at
+/// [`header_location`] (write-only in the API).
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Https {
@@ -69,6 +69,24 @@ pub struct Https {
     pub ca_pem: Option<String>,
     #[serde(default)]
     pub pin_sha256: Option<String>,
+    #[serde(default)]
+    pub format: Format,
+    /// Splunk index of the HEC events (absent = the token's default index)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<String>,
+}
+
+/// Body of an HTTPS batch.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Format {
+    /// one JSON array `[{type: audit|alert|job, category, …}]`
+    #[default]
+    JsonArray,
+    /// Splunk HTTP Event Collector (`/services/collector/event`): newline-separated
+    /// `{"time", "host", "source": "nexusbackup", "sourcetype": "_json", "index"?, "event": {…}}`;
+    /// the token goes into the header `Authorization: Splunk <token>`
+    SplunkHec,
 }
 
 fn yes() -> bool {
@@ -128,7 +146,7 @@ impl Forwarding {
     /// Weakens what leaves the box (needs approval): an enabled sink disabled or
     /// removed, or its destination, trust (CA / pin) or headers changed.
     /// Adding or enabling a sink, and format options (app name, facility, batch
-    /// size), apply at once.
+    /// size, body format, Splunk index), apply at once.
     pub fn weaker_than(&self, old: &Forwarding) -> bool {
         let syslog = old.syslog.as_ref().filter(|o| o.enabled).is_some_and(|o| {
             !self.syslog.as_ref().is_some_and(|n| {
@@ -188,6 +206,16 @@ mod tests {
         }));
         assert!(!edit(&|n| n.syslog.as_mut().unwrap().facility = 16));
         assert!(!edit(&|n| n.https.as_mut().unwrap().batch_max = 10));
+        assert!(
+            !edit(&|n| n.https.as_mut().unwrap().format = Format::SplunkHec),
+            "a format option"
+        );
+        assert_eq!(on.https.as_ref().unwrap().format, Format::JsonArray, "default");
+        let hec: Https = serde_json::from_value(json!({"url": "https://splunk:8088/services/collector/event",
+                                                         "format": "splunk_hec", "index": "nexus"}))
+        .unwrap();
+        assert_eq!((hec.format, hec.index.as_deref()), (Format::SplunkHec, Some("nexus")));
+        assert!(serde_json::from_value::<Https>(json!({"url": "https://x", "format": "xml"})).is_err());
         // a disabled sink may change freely
         let mut off = on.clone();
         off.syslog.as_mut().unwrap().enabled = false;

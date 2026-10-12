@@ -177,7 +177,8 @@ RUN semodule -i /usr/share/selinux/packages/nexus/nexus.pp /usr/share/selinux/pa
  && matchpathcon /usr/libexec/nexus/nexus-diag | grep -q nexus_diag_exec_t \
  && matchpathcon /var/lib/nexus/diag/0123/bundle.tar.gz | grep -q nexus_diag_var_lib_t \
  && matchpathcon /usr/libexec/nexus/nexus-disks | grep -q nexus_disks_exec_t \
- && matchpathcon /var/lib/nexus/disks/status.json | grep -q nexus_disks_var_lib_t
+ && matchpathcon /var/lib/nexus/disks/status.json | grep -q nexus_disks_var_lib_t \
+ && matchpathcon /etc/nexus/grub-user.cfg | grep -q nexus_grub_user_t
 
 # Systemd units, presets, tmpfiles (state dirs with owners and modes).
 COPY os/systemd/*.service os/systemd/*.path os/systemd/*.timer os/systemd/*.socket /usr/lib/systemd/system/
@@ -205,12 +206,17 @@ RUN if [ "$NEXUS_IMAGE_REPO" != ghcr.io/undone37/nexusbackup ]; then \
         /etc/containers/registries.d/nexus-appliance.yaml /etc/nexus/update.conf; fi \
  && python3 -c 'import json; json.load(open("/etc/containers/policy.json"))' \
  && test -f /usr/lib/bootupd/grub2-static/configs.d/08_greenboot.cfg \
+ # boot menu password (Phase 18): bootupd's static GRUB config must still source user.cfg
+ && grep -q 'source ${prefix}/user.cfg' /usr/lib/bootupd/grub2-static/configs.d/01_users.cfg \
+ && grep -q 'password_pbkdf2 root' /usr/lib/bootupd/grub2-static/configs.d/01_users.cfg \
+ && test -x /usr/libexec/nexus/nexus-grub-password \
+ && grep -q 'rd.shell=0' /usr/lib/bootc/kargs.d/10-nexus.toml \
  && ls /etc/pki/nexus/plugin-keys/*.pub >/dev/null \
  && systemctl preset nexus-update.timer nexus-update.path nexus-diag.path nexus-disks.timer nexus-disks.path \
-      smartd.service greenboot-healthcheck.service \
+      nexus-grub-password.service smartd.service greenboot-healthcheck.service \
       greenboot-set-rollback-trigger.service greenboot-success.target \
  && systemctl is-enabled -q nexus-update.timer nexus-update.path nexus-diag.path nexus-disks.timer nexus-disks.path \
-      greenboot-healthcheck.service \
+      nexus-grub-password.service greenboot-healthcheck.service \
       greenboot-set-rollback-trigger.service \
  && test "$(systemctl is-enabled bootc-fetch-apply-updates.timer)" = masked \
  && test "$(systemctl is-enabled rpm-ostreed-automatic.timer)" = masked \
@@ -222,8 +228,13 @@ RUN chronyd -p -f /etc/chrony.conf >/dev/null
 
 # No interactive root (locked password; emergency access only through the console
 # gate on tty2, which replaces that VT's getty: Phase 14c); sshd off. The preset
-# file also governs the first-boot preset-all.
+# file also governs the first-boot preset-all. No rescue mode, and emergency mode's
+# sulogin refuses the locked root (SYSTEMD_SULOGIN_FORCE=0 drop-in; Phase 18, T18).
 RUN usermod -L root \
+ && grep -q '^root:!' /etc/shadow \
+ && systemctl mask rescue.target rescue.service \
+ && test "$(systemctl is-enabled rescue.target)" = masked \
+ && grep -qx 'Environment=SYSTEMD_SULOGIN_FORCE=0' /usr/lib/systemd/system/emergency.service.d/10-nexus.conf \
  && ln -sf /dev/null /etc/systemd/system/getty@tty2.service \
  && ln -sf /dev/null /etc/systemd/system/autovt@tty2.service \
  && systemctl preset sshd.service sshd.socket nftables.service chronyd.service nexus-console-gate.service \

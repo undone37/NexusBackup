@@ -216,8 +216,16 @@ alert events and finished jobs to a log server or SIEM. Two sinks are available;
 - **Syslog over TLS**: RFC 5424 messages with RFC 5425 octet-counting framing over TLS, default port **6514**
   (rsyslog `imtcp` with `StreamDriver.Mode="1"`, syslog-ng `network(transport("tls"))`, most SIEM collectors).
   **App name** (default `nexus`) and **Facility** (default 13, "log audit") go into each message header.
-- **HTTPS (JSON)**: batches of up to **Entries per request** (default 100) entries, POSTed as a JSON array to the
-  URL. Optional **Extra headers** (for example `Authorization: Bearer …` or a collector token) are stored encrypted
+- **HTTPS**: batches of up to **Entries per request** (default 100) entries, POSTed to the URL in the **Body
+  format** chosen:
+  - **JSON array** (default): `[{"type": …, "category": …, …}, …]`;
+  - **Splunk HEC (HTTP Event Collector)**: one event object per line,
+    `{"time": <unix>, "host": "<appliance>", "source": "nexusbackup", "sourcetype": "_json", "index": "<index>", "event": {…}}`,
+    where `event` is the same object the JSON array would contain and `index` is sent only when **Splunk index** is
+    set (otherwise the token's default index). Use the URL `https://<splunk>:8088/services/collector/event`. Choosing
+    this format adds the header row `Authorization`: enter `Splunk <HEC token>` as its value.
+
+  Optional **Extra headers** (for example `Authorization: Bearer …` or a collector token) are stored encrypted
   and never shown again; leave a value empty to keep it. Any 2xx answer counts as delivered.
 
 **Server certificate** (both sinks): paste the CA that signed the receiver's certificate, or the receiver's
@@ -232,9 +240,14 @@ What is sent, in order and at least once:
 
 | Type | Syslog MSGID | Structured data `[nexus@32473 …]` | JSON `type` and fields |
 |---|---|---|---|
-| every audit entry | `audit` | `seq`, `hash`, `actor`, `action`, `target` (details in the message text) | `audit`: `seq`, `ts`, `actor`, `action`, `target`, `details`, `prev_hash`, `hash` |
-| alert raised, escalated, acknowledged, resolved | `alert` | `outbox_seq`, `id`, `event`, `severity`, `kind`, `key`, `tenant` | `alert`: `event`, `id`, `ts`, `severity`, `kind`, `key`, `message`, `tenant`, `alert_url`, … |
-| job finished (ok, failed, cancelled) | `job` | `outbox_seq`, `id`, `kind`, `tenant`, `state`, `requested_by` | `job`: `id`, `kind`, `tenant`, `state`, `requested_by`, `created`, `started`, `finished`, `attempt` |
+| every audit entry | `audit` | `seq`, `category`, `hash`, `actor`, `action`, `target` (details in the message text) | `audit`: `seq`, `ts`, `actor`, `action`, `target`, `details`, `prev_hash`, `hash` |
+| alert raised, escalated, acknowledged, resolved | `alert` | `outbox_seq`, `id`, `event`, `severity`, `kind`, `category`, `key`, `tenant` | `alert`: `event`, `id`, `ts`, `severity`, `kind`, `key`, `message`, `tenant`, `alert_url`, … |
+| job finished (ok, failed, cancelled) | `job` | `outbox_seq`, `id`, `kind`, `category`, `tenant`, `state`, `requested_by` | `job`: `id`, `kind`, `tenant`, `state`, `requested_by`, `created`, `started`, `finished`, `attempt` |
+
+Every record has a stable `category` (also in every JSON object): `audit` for audit entries; for alerts the category
+of their kind (security, backup, replication, hardware, system; table in
+[11 Alerts and monitoring](11-alerts-and-monitoring.md#alert-kinds)); `replication` for replication jobs and
+`backup` for all other jobs. Route on it in the SIEM rather than on individual kinds, which grow with new versions.
 
 Every record also carries the appliance host name (`host` in JSON, HOSTNAME in syslog). Syslog severities: audit
 entries are *notice*; alerts follow their severity (critical = *crit*, warning = *warning*, info = *info*; resolved
@@ -252,7 +265,8 @@ Delivery rules:
 - "At least once" means a batch may arrive twice after a failure in the middle of it; deduplicate by `seq` (audit)
   or `outbox_seq` (alerts, jobs). Syslog has no acknowledgement: a batch counts as delivered when the receiver
   closed the TLS connection cleanly after it.
-- Adding or enabling a sink and changing app name, facility or batch size take effect at once. **Disabling or
+- Adding or enabling a sink and changing app name, facility, batch size, body format or Splunk index take effect
+  at once. **Disabling or
   removing an enabled sink, or changing its server, port, URL, certificate or headers, is a request** that another
   administrator or security officer must approve (`settings forwarding`) while approvals are enabled: otherwise one
   person could quietly stop the audit trail from leaving the appliance.

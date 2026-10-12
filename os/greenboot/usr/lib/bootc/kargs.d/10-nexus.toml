@@ -1,0 +1,5 @@
+# Phase 18 (docs/threat-model.md T18): no shell in the initramfs. When the initramfs cannot
+# mount the root file system, dracut would start an emergency shell with sulogin, and the
+# initramfs's root account has no password. rd.shell=0: no shell; rd.emergency=reboot: try
+# again (after an update, greenboot's boot counter falls back to the previous deployment).
+kargs = ["rd.shell=0", "rd.emergency=reboot"]
