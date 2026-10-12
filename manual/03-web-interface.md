@@ -54,7 +54,7 @@ If the administrators set a **login banner** (for example a legal notice), it ap
 |---|---|
 | **Monitor** | Dashboard, Snapshots, Find files, Storage, Reports, Jobs, Alerts |
 | **Governance** | Approvals, Audit log |
-| **Configuration** | Tenants, Sources, Agents, Replication, Policies, Protection groups, Users, Plugins, Settings |
+| **Configuration** | Tenants, Sources, Agents, Replication, Policies, Protection groups, Users, Plugins, Hardware, Settings |
 
 **Alerts** and **Approvals** carry a counter: open alerts (red when one of them is critical, amber otherwise) and
 pending approval requests. **Collapse sidebar** at the bottom shrinks the sidebar to an icon rail; hover an icon to
@@ -94,6 +94,7 @@ The sidebar shows only what your role may use. The server checks every request a
 | Audit log | ✓ | ✓ | — | — | — |
 | Tenants, Sources, Agents, Policies, Protection groups, Users | ✓ | — | — | — | — |
 | Replication, Plugins | ✓ | read | read | — | — |
+| Hardware | ✓ (changes need approval) | read | read, **Rescan** | — | read (without a tenant) |
 | Settings | ✓ (all tabs) | read (all tabs) | read (Approvals, Appliance SSH keys, Updates) | — | — |
 | My account | ✓ | ✓ | ✓ | ✓ | ✓ |
 
