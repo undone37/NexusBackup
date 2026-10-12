@@ -245,9 +245,13 @@ parameters. While the job runs, the log refreshes every 2 seconds (**Live — re
 
 Alerts the appliance raised, newest first: failed jobs, verification failures, capacity above 75 %, offsite or
 replication lag over 48 hours, inconsistent backups, garbage collections waiting for approval, break-glass recovery
-and more. **Acknowledge** marks an alert as handled (recorded with your name); **Show acknowledged** shows those
-again. The bell in the top bar counts the open alerts. Where alerts are sent (webhook, e-mail) is set under
-**Settings → Alert delivery**. See [11 Alerts and monitoring](11-alerts-and-monitoring.md).
+and more. A problem that repeats while its alert is open is counted on that alert (**Seen**: "147 times").
+**What to do** under each message gives a short hint. **Acknowledge** says someone is on it (recorded with your name
+and an optional note); the alert stays open. **Resolve** closes it with an optional note. Most alerts resolve
+themselves when the next run succeeds (badge **auto-resolved**). The switch at the top shows **Open**, **Resolved** or
+**All** alerts. The bell in the top bar counts the open alerts nobody has acknowledged. Where alerts are sent
+(notification rules for e-mail and webhooks) is set under **Settings → Alert delivery**. See
+[11 Alerts and monitoring](11-alerts-and-monitoring.md).
 
 **Break-glass banner.** If someone used the console recovery for a locked-out administrator, every administrator
 sees a red banner under the top bar: "Break-glass recovery was used: … Check the audit log, then acknowledge." with
@@ -309,7 +313,7 @@ when approvals are enabled.
 | Tab | What it is for | Chapter |
 |---|---|---|
 | **Approvals** | the **Approval requirement**: enable or disable four-eyes approvals | [10 Approvals and audit](10-approvals-and-audit.md#enabling-and-disabling-approvals) |
-| **Alert delivery** | webhook and e-mail (SMTP) for alerts, minimum severity, **Send test** | [11 Alerts and monitoring](11-alerts-and-monitoring.md#delivery-by-webhook-and-e-mail) |
+| **Alert delivery** | notification rules (severity, kinds, tenants → e-mail recipients, webhook with optional template), **Send test** per rule, the SMTP server, reminders and retention | [11 Alerts and monitoring](11-alerts-and-monitoring.md#delivery-notification-rules) |
 | **Single sign-on** | the OpenID Connect identity provider, group mappings, **Test connection** | [09 Users and access](09-users-and-access.md#single-sign-on-oidc) |
 | **Appliance SSH keys** | the public keys the appliance signs in to sources with; **Copy**, **Rotate**, **Retire old key** | [04 Sources](04-sources.md#appliance-ssh-keys) |
 | **Updates** | running, staged, available and rollback image; **Check now**, **Install now** | [13 Updates](13-updates.md#updates-in-the-web-interface) |

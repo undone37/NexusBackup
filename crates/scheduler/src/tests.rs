@@ -1019,6 +1019,11 @@ fn job_failure_resolved_by_success() {
         lifecycle::job_failed_key(&other),
         "job_failed:acme/restore/source/3/vm-100"
     );
+    let by_vmid = Job {
+        params: json!({"vmid": 101}),
+        ..job.clone()
+    };
+    assert_eq!(lifecycle::job_failed_key(&by_vmid), "job_failed:acme/backup/vmid/101");
     for _ in 0..2 {
         let id = manual(&s, "backup", "acme", json!({"group_id": 1}));
         let j = s.job(id).unwrap();

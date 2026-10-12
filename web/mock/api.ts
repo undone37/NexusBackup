@@ -952,16 +952,31 @@ function seed() {
   running.created = t - 5;
 
   // Alerts (messages as the scheduler writes them)
+  // (13f lifecycle: repeats counted on the open alert, success paths resolve them)
   db.alerts.push(
-    { id: nextId(), ts: nightly.finished, severity: 'critical', kind: 'job_failed', message: `backup job ${nightly.id} (initech) failed: ${fleecing}`, acked_by: null },
-    { id: nextId(), ts: retry.finished, severity: 'critical', kind: 'job_failed', message: `backup job ${retry.id} (initech) failed: ${fleecing}`, acked_by: null },
-    { id: nextId(), ts: t - 3 * 3600, severity: 'warning', kind: 'capacity', message: 'store capacity above 75 % (now 78 %)', acked_by: null },
-    {
-      id: nextId(), ts: smbJob.finished, severity: 'warning', kind: 'backup_inconsistent',
-      message: `share-${sSmb.id} — read without a NAS snapshot: not point-in-time consistent (backup job ${smbJob.id}, tenant acme, snapshot share-${sSmb.id})`, acked_by: null,
-    },
-    { id: nextId(), ts: t - 86400 * 3, severity: 'warning', kind: 'offsite_lag', message: 'offsite copy of tenant acme lags by 49 h (oldest snapshot not offsite: vm-300)', acked_by: 'op' },
-    { id: nextId(), ts: t - 86400 * 6, severity: 'warning', kind: 'replication_lag', message: 'replication of tenant globex from hq-primary lags: no successful sync for 50 h', acked_by: 'admin' },
+    mkAlert({
+      ts: nightly.finished! - 2 * 86400, last_ts: nightly.finished, count: 3, severity: 'critical', kind: 'job_failed',
+      key: `job_failed:initech/backup/group/${gProd.id}`, tenant: 'initech', message: `backup job ${nightly.id} (initech) failed: ${fleecing}`,
+    }),
+    mkAlert({
+      ts: retry.finished, severity: 'critical', kind: 'job_failed', key: 'job_failed:initech/backup/vmid/101', tenant: 'initech',
+      message: `backup job ${retry.id} (initech) failed: ${fleecing}`,
+    }),
+    mkAlert({ ts: t - 3 * 86400, last_ts: t - 1800, count: 147, severity: 'warning', kind: 'capacity', key: 'capacity', message: 'store capacity above 75 % (now 78 %)' }),
+    mkAlert({
+      ts: smbJob.finished, severity: 'warning', kind: 'backup_inconsistent', key: `backup_inconsistent:share-${sSmb.id}: no snapshot`,
+      message: `share-${sSmb.id} — read without a NAS snapshot: not point-in-time consistent (backup job ${smbJob.id}, tenant acme, snapshot share-${sSmb.id})`,
+      acked_by: 'op', note: 'Storage team enables NAS snapshots on fs01 next week.',
+    }),
+    mkAlert({
+      ts: t - 86400 * 3, last_ts: t - 86400 * 2, count: 96, severity: 'warning', kind: 'offsite_lag', key: 'offsite_lag:acme', tenant: 'acme',
+      message: 'offsite copy of tenant acme lags by 73 h (oldest snapshot not offsite: 1759500000)', resolved_at: t - 86400 * 2 + 300, resolved_by: 'scheduler', auto: true,
+    }),
+    mkAlert({
+      ts: t - 86400 * 6, last_ts: t - 86400 * 5, count: 40, severity: 'warning', kind: 'replication_lag', key: 'replication_lag:hq-primary:globex', tenant: 'globex',
+      message: 'replication of tenant globex from hq-primary lags: no successful sync for 50 h', acked_by: 'admin',
+      resolved_at: t - 86400 * 5, resolved_by: 'admin', note: 'Primary was in a maintenance window; the next sync caught up.',
+    }),
   );
 
   // Approvals are enabled. Pending: a large GC, deleting a group, weakening a policy, a plugin upgrade.
@@ -978,10 +993,12 @@ function seed() {
   q('replication.key_export', { peer: peerId, keyd_fingerprint: peerKeyd, tenants: ['acme'] }, 'admin', t - 86400 * 20, 'executed', 'so2');
   q('source.delete', { id: 42, name: 'old-esx-import' }, 'admin', t - 86400 * 9, 'rejected', 'so');
   const gcq = q('gc_large', { tenant: 'initech', job: 4711, reason: 'GC would delete 34 % of the stored chunks (limit 20 %)' }, 'scheduler', t - 2 * 3600);
-  db.alerts.push({
-    id: nextId(), ts: gcq.created, severity: 'warning', kind: 'gc_quorum',
-    message: `GC for tenant initech needs approval by an admin or security officer (quorum request ${gcq.id}): GC would delete 34 % of the stored chunks (limit 20 %)`, acked_by: null,
-  });
+  db.alerts.push(
+    mkAlert({
+      ts: gcq.created, severity: 'warning', kind: 'gc_quorum', key: 'gc_quorum:initech', tenant: 'initech',
+      message: `GC for tenant initech needs approval by an admin or security officer (quorum request ${gcq.id}): GC would delete 34 % of the stored chunks (limit 20 %)`,
+    }),
+  );
   q('group.delete', { id: gDev.id, name: 'development' }, 'admin', t - 1800);
   q('policy.update', { ...gold, gfs: { ...gold.gfs, daily: 7, yearly: 1 }, offsite: false, old: { ...gold, gfs: { ...gold.gfs } } }, 'admin', t - 600);
   const pq = q('plugin.install', { id: 'postgresql', version: '1.1.0', publisher: 'nexusbackup', sha256: pg110.sha256, signer: pg110.signer, upgrade_from: '1.0.0' }, 'admin', t - 1500);
@@ -2059,16 +2076,54 @@ on('GET', '/audit/verify', async (c) => {
   return [200, { ok: true, entries: db.audit.length }];
 });
 
-// alerts
-// Alerts have no tenant column: tenant-scoped users get an empty list.
-on('GET', '/alerts', (c) => [200, need(c.user).tenant ? [] : [...db.alerts].sort((a, b) => b.ts - a.ts)]);
-on('POST', '/alerts/:id/ack', async (c, [id]) => {
+// alerts (13f lifecycle). They may name other tenants: tenant-scoped users get an empty list.
+// (a function declaration: the seed runs before the module's consts are initialised)
+function mkAlert(a: Json): Json {
+  // the API's English hint; the UI shows its own i18n text per kind
+  const hint = a.kind === 'job_failed' ? 'Open the job log on the Jobs page, fix the cause and run the job again.' : 'See the alerts chapter of the user manual.';
+  return {
+    id: nextId(), first_ts: a.ts, last_ts: a.ts, count: 1, key: `${a.kind}:${a.message}`, tenant: null, hint,
+    acked_by: null, resolved_at: null, resolved_by: null, note: null, auto: false, ...a,
+  };
+}
+on('GET', '/alerts', (c) => {
+  if (need(c.user).tenant) return [200, []];
+  const s = c.query.get('state') ?? 'all';
+  if (!['open', 'resolved', 'all'].includes(s)) throw new HttpError(400, 'state: open, resolved or all');
+  const id = Number(c.query.get('id') ?? 0);
+  const rows = db.alerts
+    .filter((a) => s === 'all' || (s === 'open') === !a.resolved_at)
+    .filter((a) => !id || a.id === id);
+  return [200, rows.sort((a, b) => b.id - a.id)];
+});
+const alertNote = (b: Json) => {
+  const n = typeof b?.note === 'string' ? b.note.trim() : '';
+  if (n.length > 1000) throw new HttpError(400, 'note: up to 1000 characters');
+  return n || null;
+};
+const alertFor = (c: Ctx, id: string) => {
   const u = need(c.user, 'admin', 'operator', 'security_officer');
   if (u.tenant) throw new HttpError(403, 'forbidden');
   const a = find(db.alerts, (x) => x.id === Number(id), 'alert');
+  if (a.kind === 'break_glass') need(c.user, 'admin', 'security_officer');
+  return { u, a };
+};
+on('POST', '/alerts/:id/ack', async (c, [id]) => {
+  const { u, a } = alertFor(c, id);
+  const note = alertNote(c.body);
+  if (a.acked_by) throw new HttpError(409, 'already acknowledged');
   a.acked_by = u.name;
-  await audit(u.name, 'alert.ack', `alert/${a.id}`, {});
-  return [200, a];
+  if (note) a.note = note;
+  await audit(u.name, 'alert.ack', `alert/${a.id}`, { kind: a.kind, note });
+  return [200, { id: a.id, acked_by: u.name }];
+});
+on('POST', '/alerts/:id/resolve', async (c, [id]) => {
+  const { u, a } = alertFor(c, id);
+  const note = alertNote(c.body);
+  if (a.resolved_at) throw new HttpError(409, 'already resolved');
+  Object.assign(a, { resolved_at: now(), resolved_by: u.name, auto: false, acked_by: a.acked_by ?? u.name }, note ? { note } : {});
+  await audit(u.name, 'alert.resolve', `alert/${a.id}`, { kind: a.kind, note });
+  return [200, { id: a.id, resolved_by: u.name }];
 });
 
 // ---------------------------------------------------------------- Phase 12 (docs/phase12-contract.md)
@@ -2116,9 +2171,26 @@ function seedPhase12(t: number) {
     ],
   };
   db.alertSettings = {
-    webhook_url: 'https://hooks.example.com/services/nexus-backup',
-    smtp: { host: 'mail.example.com', port: 587, starttls: true, from: 'nexus@example.com', to: ['ops@example.com', 'backup-team@example.com'], user: 'nexus', password: 'sealed:demo' },
-    min_severity: 'warning',
+    smtp: { host: 'mail.example.com', port: 587, starttls: true, from: 'nexus@example.com', user: 'nexus', password: 'sealed:demo' },
+    rules: [
+      { name: 'ops-team', min_severity: 'warning', kinds: [], tenants: [], channels: { email: ['ops@example.com', 'backup-team@example.com'], webhook: null } },
+      {
+        name: 'acme-chat', min_severity: 'info', kinds: ['job_failed', 'verify', 'offsite_lag'], tenants: ['acme'],
+        channels: {
+          email: [],
+          webhook: {
+            url: 'https://hooks.slack.com/services/T0000/B0000/acme', headers: {},
+            template: '{"text": ":rotating_light: [{{severity}}] {{kind}} on {{host}}: {{message}}\\n{{hint}}\\n<{{alert_url}}|Open alert> (seen {{count}}x)"}',
+          },
+        },
+      },
+      {
+        name: 'siem', min_severity: 'critical', kinds: [], tenants: [],
+        channels: { email: [], webhook: { url: 'https://siem.example.com/api/events', headers: { Authorization: 'sealed:demo' }, template: null } },
+      },
+    ],
+    reminder_hours: 24,
+    retention_days: { info: 14, warning: 180, critical: 180 },
   };
   db.sshKeys = [
     sshKey('pve', 'Proxmox VE nodes (forced command)', t - 86400 * 90),
@@ -2143,10 +2215,13 @@ function seedPhase12(t: number) {
     password: '', totp_secret: '', auth: 'oidc', oidc_sub: 'f3c1a9e2-5b7d-4e08-9a61-2d4c8b0e7f15',
   });
   // the break-glass alert of an earlier console recovery, acknowledged (the UI banner shows open ones)
-  db.alerts.push({
-    id: nextId(), ts: t - 86400 * 58, severity: 'critical', kind: 'break_glass',
-    message: 'administrator "admin" was reset to pending activation at the console (nexus-setup recover-admin).', acked_by: 'so',
-  });
+  db.alerts.push(
+    mkAlert({
+      ts: t - 86400 * 58, severity: 'critical', kind: 'break_glass',
+      message: 'administrator "admin" was reset to pending activation at the console (nexus-setup recover-admin).', acked_by: 'so',
+      resolved_at: t - 86400 * 58 + 3600, resolved_by: 'so', note: 'Confirmed with J. Weber (lost TOTP device).',
+    }),
+  );
 }
 
 // ---- dashboard KPIs (§1). The job history before the seed is synthetic but deterministic.
@@ -2414,43 +2489,101 @@ on('POST', '/settings/oidc/test', (c) => {
   return [200, { discovery: `ok: ${db.oidc.issuer}/.well-known/openid-configuration`, jwks: 'ok: 2 signing keys (RS256)' }];
 });
 
-// ---- alert delivery (§3)
+// ---- alert delivery (§3; 13f notification rules)
 const pubAlerts = () => {
   const a = structuredClone(db.alertSettings);
   if (a.smtp) {
     a.smtp.password_set = !!a.smtp.password;
     delete a.smtp.password;
   }
+  for (const r of a.rules) {
+    const h = r.channels.webhook?.headers;
+    if (h) for (const k of Object.keys(h)) h[k] = null;
+  }
   return a;
 };
+const TEMPLATE_FIELDS = ['id', 'ts', 'first_ts', 'last_ts', 'count', 'severity', 'kind', 'message', 'hint', 'tenant', 'host', 'alert_url'];
+/** Like catalog::alerting::check_template: placeholders JSON-escaped, the result must be JSON. */
+function checkTemplate(tpl: string): string | null {
+  const sample: Json = { id: 42, ts: 1, first_ts: 1, last_ts: 2, count: 3, severity: 'critical', kind: 'job_failed', message: 'a "quoted"\nline', hint: 'x', tenant: '', host: 'nexus', alert_url: 'https://nexus/#/alerts?id=42' };
+  let bad: string | null = null;
+  const out = tpl.replace(/\{\{([^}]*)\}\}/g, (_, f: string) => {
+    const k = f.trim();
+    if (!TEMPLATE_FIELDS.includes(k)) bad = `unknown placeholder {{${k}}}`;
+    return JSON.stringify(String(sample[k] ?? '')).slice(1, -1);
+  });
+  if (bad) return bad;
+  try {
+    JSON.parse(out);
+    return null;
+  } catch (e) {
+    return `does not render to valid JSON: ${(e as Error).message}`;
+  }
+}
+const mailRe = /^[^@\s]+@[^@\s]+$/;
 on('GET', '/settings/alerts', (c) => (need(c.user, 'admin', 'security_officer'), [200, pubAlerts()]));
 on('PUT', '/settings/alerts', async (c) => {
   const u = need(c.user, 'admin');
   const b = c.body;
-  if (b.webhook_url && !/^https:\/\/\S+$/.test(String(b.webhook_url))) throw new HttpError(400, 'webhook_url: https URL required');
-  if (!['info', 'warning', 'critical'].includes(b.min_severity)) throw new HttpError(400, 'min_severity: info, warning or critical');
+  const old = db.alertSettings;
   let smtp = null;
   if (b.smtp) {
     const s = b.smtp;
     if (!String(s.host ?? '').trim()) throw new HttpError(400, 'smtp.host: required');
     if (!(Number.isInteger(s.port) && s.port > 0 && s.port < 65536)) throw new HttpError(400, 'smtp.port: 1..65535');
-    if (!Array.isArray(s.to) || !s.to.length || s.to.some((x: string) => !/^[^@\s]+@[^@\s]+$/.test(x))) throw new HttpError(400, 'smtp.to: e-mail addresses required');
-    if (!/^[^@\s]+@[^@\s]+$/.test(String(s.from ?? ''))) throw new HttpError(400, 'smtp.from: e-mail address required');
-    smtp = { host: s.host, port: s.port, starttls: !!s.starttls, from: s.from, to: s.to, user: String(s.user ?? ''), password: s.password || db.alertSettings.smtp?.password || '' };
+    if (!mailRe.test(String(s.from ?? ''))) throw new HttpError(400, 'smtp.from: a mail address');
+    smtp = { host: s.host, port: s.port, starttls: !!s.starttls, from: s.from, user: String(s.user ?? ''), password: s.password || old.smtp?.password || '' };
   }
-  db.alertSettings = { webhook_url: b.webhook_url || null, smtp, min_severity: b.min_severity };
-  await audit(u.name, 'settings.alerts', 'settings/alerts', { webhook: !!b.webhook_url, smtp: !!smtp, min_severity: b.min_severity });
-  return [200, pubAlerts()];
+  const rules = (b.rules ?? []) as Json[];
+  const names = new Set<string>();
+  for (const r of rules) {
+    const what = (m: string) => new HttpError(400, `rule ${r.name}: ${m}`);
+    if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(String(r.name)) || names.has(r.name)) throw new HttpError(400, 'rules.name: unique, [A-Za-z0-9._-]{1,64}');
+    names.add(r.name);
+    if (!['info', 'warning', 'critical'].includes(r.min_severity)) throw what('min_severity: info, warning or critical');
+    const email = r.channels?.email ?? [];
+    if (email.some((x: string) => !mailRe.test(x))) throw what('email: up to 16 mail addresses');
+    if (email.length && !smtp) throw what('email needs the SMTP server (smtp)');
+    const w = r.channels?.webhook;
+    if (w) {
+      if (!/^https?:\/\/[^@\s/]+\S*$/.test(String(w.url))) throw what('webhook.url: http(s)://host[:port]/path, without user info');
+      if (w.template) {
+        const e = checkTemplate(w.template);
+        if (e) throw what(`webhook.template: ${e}`);
+      }
+      const prev = old.rules.find((o: Json) => o.name === r.name)?.channels.webhook;
+      for (const [h, v] of Object.entries(w.headers ?? {})) {
+        if (v === null && !(prev && prev.url === w.url && prev.headers?.[h])) throw what(`webhook.headers: a value for ${h} is required (new header or URL changed)`);
+        if (v === '') throw what('webhook.headers: values of 1..=4096 printable characters');
+        w.headers[h] = v === null ? prev.headers[h] : 'sealed:demo';
+      }
+    }
+  }
+  const reminder = Number(b.reminder_hours ?? 24);
+  if (!(reminder >= 0 && reminder <= 720)) throw new HttpError(400, 'reminder_hours: 0 (never) ..= 720');
+  db.alertSettings = { smtp, rules, reminder_hours: reminder, retention_days: b.retention_days ?? old.retention_days };
+  const shown = pubAlerts();
+  await audit(u.name, 'settings.alerts', 'settings/alerts', shown);
+  return [200, shown];
 });
 on('POST', '/settings/alerts/test', async (c) => {
   const u = need(c.user, 'admin');
   const a = db.alertSettings;
+  const only = c.body?.rule as string | undefined;
   const out: Json = {};
-  if (a.webhook_url) out.webhook = /bad|invalid/.test(a.webhook_url) ? 'error: HTTP 404 from the webhook' : 'ok';
-  if (a.smtp) out.smtp = /bad|invalid/.test(a.smtp.host) ? `error: ${a.smtp.host}:${a.smtp.port}: connection refused` : 'ok';
-  await audit(u.name, 'settings.alerts_test', 'settings/alerts', out);
+  const rules = a.rules.filter((r: Json) => !only || r.name === only);
+  if (only && !rules.length) out.rule = `error: no rule named ${only}`;
+  for (const r of rules) {
+    const key = (ch: string) => (only ? ch : `${r.name}/${ch}`);
+    const w = r.channels.webhook;
+    if (w) out[key('webhook')] = /bad|invalid/.test(w.url) ? 'error: HTTP 404 from the webhook' : 'ok';
+    if (r.channels.email.length)
+      out[key('email')] = !a.smtp ? 'error: no SMTP server configured' : /bad|invalid/.test(a.smtp.host) ? `error: ${a.smtp.host}:${a.smtp.port}: connection refused` : 'ok';
+  }
+  await audit(u.name, 'job.create', 'job/0', { kind: 'alert_test', params: only ? { rule: only } : {} });
   return [200, out];
 });
+
 
 // ---- appliance SSH keys (§4)
 on('GET', '/ssh-keys', (c) => (need(c.user, 'admin', 'operator', 'security_officer'), [200, db.sshKeys]));

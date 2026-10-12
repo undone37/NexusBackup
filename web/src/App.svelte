@@ -116,7 +116,7 @@
     if (session.user && route.path === '/login') navigate('/');
   });
 
-  // Badges: open alerts and pending approvals; the break-glass banner (contract §7) for admins.
+  // Badges: open unacknowledged alerts and pending approvals; the break-glass banner (contract §7) for admins.
   let alerts: Alert[] = $state([]);
   let pendingApprovals = $state(0);
   const openAlerts = $derived(alerts.filter((a) => !a.acked_by));
@@ -125,7 +125,7 @@
   async function refreshCounts() {
     const u = session.user;
     if (!u) return;
-    if (can.viewAlerts(u)) alerts = await get<Alert[]>('/alerts').catch(() => alerts);
+    if (can.viewAlerts(u)) alerts = await get<Alert[]>('/alerts?state=open').catch(() => alerts);
     if (can.viewQuorum(u))
       pendingApprovals = await get<QuorumRequest[]>('/quorum')
         .then((q) => q.filter((x) => x.state === 'pending').length)

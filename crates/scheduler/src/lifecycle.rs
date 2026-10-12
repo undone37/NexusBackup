@@ -15,12 +15,12 @@ use serde_json::{json, Value};
 /// Longest stored key (message-derived keys are cut).
 const KEY_MAX: usize = 200;
 
-/// `job_failed:<tenant>/<kind>/<target>`: the group, source, agent or
-/// replication source of the job (plus the guest, if any). A later successful
-/// run of the same job resolves it.
+/// `job_failed:<tenant>/<kind>/<target>`: the group, source, agent,
+/// replication source or guest (vmid) of the job (plus the guest name, if any).
+/// A later successful run of the same job resolves it.
 pub(crate) fn job_failed_key(job: &Job) -> String {
     let p = &job.params;
-    let mut target = ["group_id", "source_id", "agent_id", "replication_source_id"]
+    let mut target = ["group_id", "source_id", "agent_id", "replication_source_id", "vmid"]
         .iter()
         .find_map(|k| match &p[*k] {
             Value::Null => None,
