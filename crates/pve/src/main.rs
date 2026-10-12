@@ -116,12 +116,28 @@ fn main() -> Result<()> {
         }
         ("restore-ct", [vmid, time, node, target, storage, opts @ ..]) => {
             let opts = pve::restore::RestoreOpts::parse(opts)?;
-            let r = cluster.restore_ct(&store, vmid.parse()?, time.parse()?, node, target.parse()?, storage, &opts)?;
+            let r = cluster.restore_ct(
+                &store,
+                vmid.parse()?,
+                time.parse()?,
+                node,
+                target.parse()?,
+                storage,
+                &opts,
+            )?;
             println!("restored {}", serde_json::to_string(&r)?);
         }
         ("restore", [vmid, time, node, target, storage, opts @ ..]) => {
             let opts = pve::restore::RestoreOpts::parse(opts)?;
-            let r = cluster.restore_vm(&store, vmid.parse()?, time.parse()?, node, target.parse()?, storage, &opts)?;
+            let r = cluster.restore_vm(
+                &store,
+                vmid.parse()?,
+                time.parse()?,
+                node,
+                target.parse()?,
+                storage,
+                &opts,
+            )?;
             println!("restored {}", serde_json::to_string(&r)?);
         }
         ("instant-recover", [vmid, time, node, target, storage, opts @ ..]) => {
@@ -131,7 +147,15 @@ fn main() -> Result<()> {
             opts.retain(|o| o != "--no-start" && o != "--start");
             let mut opts = pve::restore::RestoreOpts::parse(&opts)?;
             opts.start = !no_start;
-            let r = cluster.instant_recover(&store, vmid.parse()?, time.parse()?, node, target.parse()?, storage, &opts)?;
+            let r = cluster.instant_recover(
+                &store,
+                vmid.parse()?,
+                time.parse()?,
+                node,
+                target.parse()?,
+                storage,
+                &opts,
+            )?;
             println!("VM running after {:.1?}", r.running_after);
             for (disk, d) in &r.moves {
                 println!("{disk} moved in {d:.1?}");

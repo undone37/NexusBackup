@@ -331,7 +331,10 @@ impl Cluster {
             eprintln!("not backed up, left out: {}", plan.dropped.join(", "));
         }
         let mut plan = plan;
-        let name = opts.name_for(crate::restore::conf_value(&conf, "name").as_deref(), &format!("vm-{vmid}"));
+        let name = opts.name_for(
+            crate::restore::conf_value(&conf, "name").as_deref(),
+            &format!("vm-{vmid}"),
+        );
         plan.params.retain(|(k, _)| k != "name");
         plan.params.push(("name".into(), name));
         if let Some(pool) = &opts.pool {

@@ -1899,3 +1899,166 @@ mod forward;
 mod report_mail;
 /// Phase 13b run control (pause, blackout, retries, SLA, cancel).
 mod runctl;
+
+/// Phase 15d: the connector's `consistency` line ends up in the job result and
+/// `snapshots.consistency`; the policy's `require_consistency` warns (one alert
+/// per source, resolved by a snapshot that meets it) or fails the job.
+#[test]
+fn consistency_recorded_and_policy_enforced() {
+    let e = env(1);
+    let mut s = sched(&e);
+    let pve = e.d.path().join("pve");
+    let level = |lvl: &str| {
+        fs::remove_file(&pve).unwrap();
+        script(
+            &pve,
+            &format!("echo committed vm-100/1000; echo 'consistency vm-100/1000: {lvl} (test)'"),
+        );
+    };
+    let set_policy = |mode: &str, min: &str| {
+        e.db.conn()
+            .execute(
+                "UPDATE policies SET require_consistency=?1",
+                [json!({"mode": mode, "level": min}).to_string()],
+            )
+            .unwrap();
+    };
+    let snap_level = |s: &Scheduler| -> Option<String> {
+        s.db.conn()
+            .query_row(
+                "SELECT consistency FROM snapshots WHERE tenant='t1' AND source='vm-100' AND time=1000",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let open = |s: &Scheduler| -> i64 {
+        s.db.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM alerts WHERE kind='consistency' AND key='consistency:t1/vm-100' AND resolved_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let run = |s: &mut Scheduler| -> i64 {
+        let id = manual(s, "backup", "t1", json!({"group_id": 1}));
+        // the previous run's retention follow-up goes first
+        while state(s, id) == "queued" {
+            s.start_jobs().unwrap();
+            s.wait_idle(Duration::from_secs(20)).unwrap();
+        }
+        id
+    };
+
+    level("crash");
+    let a = run(&mut s);
+    assert_eq!(state(&s, a), "ok");
+    assert_eq!(result_of(&s, a)["consistency"], "crash");
+    assert_eq!(snap_level(&s).as_deref(), Some("crash"));
+    assert_eq!(open(&s), 0, "policy off: no alert");
+
+    set_policy("warn", "application");
+    let b = run(&mut s);
+    assert_eq!(state(&s, b), "ok", "warn keeps the job ok");
+    assert_eq!(open(&s), 1);
+
+    set_policy("fail", "application");
+    let c = run(&mut s);
+    assert_eq!(state(&s, c), "failed");
+    let log: String =
+        s.db.conn()
+            .query_row("SELECT log FROM jobs WHERE id=?1", [c], |r| r.get(0))
+            .unwrap();
+    assert!(
+        log.contains("consistency below the policy minimum (application): vm-100/1000: crash"),
+        "{log}"
+    );
+    assert_eq!(open(&s), 1, "still one alert per source");
+
+    level("application");
+    let d = run(&mut s);
+    assert_eq!(state(&s, d), "ok");
+    assert_eq!(snap_level(&s).as_deref(), Some("application"));
+    assert_eq!(open(&s), 0, "resolved by a snapshot that meets the policy");
+}
+
+/// Phase 15a: restore options become nexus-pve flags; `replace` only through an
+/// approved `restore.replace` request (queued by the scheduler, marked executed).
+#[test]
+fn restore_options_and_replace_approval() {
+    let e = env(2);
+    let mut s = sched(&e);
+    let calls = || fs::read_to_string(e.d.path().join("calls")).unwrap_or_default();
+    let base =
+        json!({"source": "vm-100", "time": 1, "node": "n1", "target": 105, "storage": "local-lvm", "source_id": 1});
+    let mut opts = base.clone();
+    for (k, v) in [
+        ("name_prefix", json!("dr-")),
+        ("pool", json!("dr")),
+        ("start", json!(true)),
+        ("link_down", json!(true)),
+    ] {
+        opts[k] = v;
+    }
+    let a = manual(&s, "restore", "t1", opts);
+    let mut ir = base.clone();
+    ir["start"] = json!(false);
+    ir["target"] = json!(106);
+    let b = manual(&s, "instant_recover", "t1", ir);
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert_eq!((state(&s, a).as_str(), state(&s, b).as_str()), ("ok", "ok"));
+    let c = calls();
+    assert!(
+        c.contains("restore 100 1 n1 105 local-lvm --name-prefix dr- --pool dr --link-down --start"),
+        "{c}"
+    );
+    assert!(c.contains("instant-recover 100 1 n1 106 local-lvm --no-start"), "{c}");
+
+    // replace smuggled in as a plain job param: refused
+    let mut bad = base.clone();
+    bad["replace"] = json!(true);
+    let x = manual(&s, "restore", "t1", bad);
+    let mut evil = base.clone();
+    evil["name"] = json!("a b");
+    let y = manual(&s, "restore", "t1", evil);
+    s.start_jobs().unwrap();
+    assert_eq!((state(&s, x).as_str(), state(&s, y).as_str()), ("failed", "failed"));
+
+    // an approved request (approver bob) becomes the job
+    let q = json!({"tenant": "t1", "kind": "restore", "params": base});
+    s.db.conn()
+        .execute(
+            "INSERT INTO quorum (action, params, requested_by, created, decided_by, decided_at, state)
+             VALUES ('restore.replace', ?1, 'alice', 0, 'bob', 0, 'approved')",
+            [q.to_string()],
+        )
+        .unwrap();
+    let qid = s.db.conn().last_insert_rowid();
+    s.queue_restore_replaces().unwrap();
+    s.queue_restore_replaces().unwrap();
+    let jobs: Vec<i64> = {
+        let c = s.db.conn();
+        let mut st = c
+            .prepare("SELECT id FROM jobs WHERE kind='restore' AND json_extract(params,'$.quorum_id')=?1")
+            .unwrap();
+        st.query_map([qid], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+    };
+    assert_eq!(jobs.len(), 1, "queued once");
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert_eq!(state(&s, jobs[0]), "ok");
+    assert!(
+        calls().contains("restore 100 1 n1 105 local-lvm --replace"),
+        "{}",
+        calls()
+    );
+    let qs: String =
+        s.db.conn()
+            .query_row("SELECT state FROM quorum WHERE id=?1", [qid], |r| r.get(0))
+            .unwrap();
+    assert_eq!(qs, "executed");
+}

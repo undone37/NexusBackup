@@ -111,13 +111,7 @@ impl Api {
     }
 
     /// Synchronous configuration update (`PUT …/config`); `None` values are deleted.
-    pub fn set_config(
-        &self,
-        node: &str,
-        kind: &str,
-        vmid: u32,
-        changes: &[(String, Option<String>)],
-    ) -> Result<()> {
+    pub fn set_config(&self, node: &str, kind: &str, vmid: u32, changes: &[(String, Option<String>)]) -> Result<()> {
         let delete: Vec<&str> = changes
             .iter()
             .filter(|(_, v)| v.is_none())

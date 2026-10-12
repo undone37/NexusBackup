@@ -38,6 +38,7 @@ pub mod quorum;
 pub mod replication;
 pub mod reports;
 pub mod resources;
+pub mod restores;
 pub mod runctl;
 pub mod settings;
 pub mod spa;
@@ -499,6 +500,7 @@ pub fn router(st: St) -> Router {
             axum::routing::delete(delete_snapshot),
         )
         .route("/jobs", get(list_jobs).post(create_job))
+        .route("/restores", post(restores::restore_many))
         .route("/jobs/{id}", get(get_job))
         .route("/jobs/{id}/cancel", post(cancel_job))
         .route("/downloads/{token}", get(download))

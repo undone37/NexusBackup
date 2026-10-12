@@ -58,13 +58,15 @@
 //!
 //! Job params beyond the contract: `source_id` may be given for `backup {vmid}`,
 //! restores and file jobs; without it the source is found via the tenant's
-//! groups (or the tenant's only source). `instant_recover` takes `link_down`.
+//! groups (or the tenant's only source). Restores take the options of [`restore`]
+//! (`name`, `name_prefix`, `pool`, `start`, `link_down`; `replace` via approval).
 //! `files_get` writes `<downloads>/<download_token>.<format>` (token set by the
 //! web-api). Structured results go into `jobs.result` (see [`Scheduler::finish`]).
 
 mod accounts;
 pub mod alerts;
 pub mod anomaly;
+pub mod consistency;
 pub mod expiry;
 pub mod firewall;
 pub mod forward;
@@ -74,6 +76,7 @@ pub mod orphans;
 mod plugins;
 pub mod replica;
 pub mod report_mail;
+mod restore;
 pub mod run;
 mod runctl;
 pub mod schedule;
@@ -86,6 +89,7 @@ use catalog::secret::{source_owner, tenant_owner, SchedulerKey};
 use catalog::Catalog;
 use chunkstore::retention::Gfs;
 use chunkstore::Options;
+use restore::restore_flags;
 use run::{execute, Ctx, Finished, KeySource, Outcome, Plan, Step};
 use schedule::Schedule;
 use serde::Deserialize;
@@ -665,6 +669,7 @@ impl Scheduler {
         self.log_err(|s| s.expire_downloads(catalog::now()));
         self.log_err(|s| s.queue_approved_gc());
         self.log_err(|s| s.queue_snapshot_deletes());
+        self.log_err(|s| s.queue_restore_replaces());
         self.log_err(|s| s.queue_scheduled(now));
         self.log_err(|s| s.queue_maintenance(now));
         self.log_err(|s| s.queue_replication(now));
@@ -1124,7 +1129,7 @@ impl Scheduler {
     }
 
     /// Records a finished job, then queues follow-ups and raises alerts.
-    pub fn finish(&mut self, f: Finished) -> Result<()> {
+    pub fn finish(&mut self, mut f: Finished) -> Result<()> {
         self.running.remove(&f.id);
         self.ctx.cancels.remove(f.id);
         self.cancel_sent.remove(&f.id);
@@ -1136,6 +1141,13 @@ impl Scheduler {
         } else {
             self.failed_result(&job, &log)
         };
+        if ok && (job.kind == "backup" || job.kind == "plugin_backup") {
+            // snapshots.consistency + policy `require_consistency` (crate::consistency)
+            if let Some(why) = self.consistency_bookkeeping(&job, result.as_ref())? {
+                log.push_str(&format!("[scheduler] {why}\n"));
+                f.outcome = Outcome::Failed { alert: None };
+            }
+        }
         let state = match f.outcome {
             Outcome::Ok => "ok",
             Outcome::Cancelled => "cancelled",
@@ -1413,7 +1425,7 @@ impl Scheduler {
                 // `committed <source>/<time>` per guest (nexus-pve backup-all)
                 // nexus-agentctl adds `… chunks transferred (<n> bytes, …)` and an
                 // `inconsistent <source>/<time>: …` line for a backup without a consistent view
-                let snaps: Vec<Value> = log
+                let mut snaps: Vec<Value> = log
                     .lines()
                     .filter_map(|l| {
                         let rest = l.strip_prefix("committed ")?;
@@ -1456,9 +1468,10 @@ impl Scheduler {
                         Some(v)
                     })
                     .collect();
+                self.add_consistency(&job.tenant, log, &mut snaps);
                 let mut r = json!({ "snapshots": snaps });
                 if let [one] = snaps.as_slice() {
-                    for k in ["source", "time", "consistent", "transferred_bytes"] {
+                    for k in ["source", "time", "consistent", "consistency", "transferred_bytes"] {
                         if !one[k].is_null() {
                             r[k] = one[k].clone();
                         }
@@ -1467,9 +1480,9 @@ impl Scheduler {
                 Some(r)
             }
             // `restored {json}` / `enrolled {json}` (nexus-agentctl, nexus-replica), `replicated {json}`
-            "restore_files" | "agent_enroll" | "replica_enroll" | "replica_sync" => {
+            "restore_files" | "agent_enroll" | "replica_enroll" | "replica_sync" | "restore" | "restore_ct" => {
                 let pfx = match job.kind.as_str() {
-                    "restore_files" => "restored ",
+                    "restore_files" | "restore" | "restore_ct" => "restored ",
                     "replica_sync" => "replicated ",
                     _ => "enrolled ",
                 };
@@ -2412,9 +2425,7 @@ impl Scheduler {
                     u32::try_from(num(p, "target")?).context("target")?.to_string(),
                     ident(p, "storage")?.to_owned(),
                 ];
-                if job.kind == "instant_recover" && p["link_down"].as_bool() == Some(true) {
-                    args.push("--link-down".into());
-                }
+                args.extend(restore_flags(job)?);
                 plan.steps.push(pve(args));
             }
             "restore_files" => {

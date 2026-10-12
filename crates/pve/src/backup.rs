@@ -181,7 +181,10 @@ impl Cluster {
         }
         let log = self.api.task_log(&node, &upid).unwrap_or_default();
         let level = crate::consistency::vm_level(&log);
-        println!("{}", crate::consistency::line(&source_name(vmid), manifest.0.time, level));
+        println!(
+            "{}",
+            crate::consistency::line(&source_name(vmid), manifest.0.time, level)
+        );
         Ok(manifest)
     }
 
@@ -269,7 +272,15 @@ impl Cluster {
         )
     }
 
-    fn serve_restore(&self, store: &Store, m: &Manifest, ssh: &SshNode, node: &str, archive: &str, upid: &str) -> Result<()> {
+    fn serve_restore(
+        &self,
+        store: &Store,
+        m: &Manifest,
+        ssh: &SshNode,
+        node: &str,
+        archive: &str,
+        upid: &str,
+    ) -> Result<()> {
         let mut served = std::collections::HashSet::new();
         loop {
             if let Some(exit) = self.api.task_status(node, upid)? {

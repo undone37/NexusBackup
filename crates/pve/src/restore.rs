@@ -81,7 +81,8 @@ impl RestoreOpts {
 /// PVE names (VM `name`, CT `hostname`, pool ids): DNS-name characters only, 1..=63.
 pub fn valid_name(s: &str) -> bool {
     (1..=63).contains(&s.len())
-        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_')
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_')
         && !s.starts_with(['-', '.'])
 }
 
@@ -148,7 +149,11 @@ pub fn link_down_changes(cfg: &Map<String, Value>) -> Vec<(String, Option<String
         .iter()
         .filter(|(k, _)| is_net_key(k))
         .filter_map(|(k, v)| {
-            let opts: Vec<&str> = v.as_str()?.split(',').filter(|o| !o.starts_with("link_down=")).collect();
+            let opts: Vec<&str> = v
+                .as_str()?
+                .split(',')
+                .filter(|o| !o.starts_with("link_down="))
+                .collect();
             Some((k.clone(), Some(format!("{},link_down=1", opts.join(",")))))
         })
         .collect();
@@ -260,16 +265,24 @@ pub fn run(
     let oname = cfg_str(&ocfg, nk).unwrap_or(fallback);
     let renamed = format!("{oname}-replaced-{stamp}");
     let was_running = ops.running(&onode, kind, orig)?;
-    let mut orig_changes = vec![(nk.to_owned(), Some(renamed.clone())), ("onboot".into(), Some("0".into()))];
+    let mut orig_changes = vec![
+        (nk.to_owned(), Some(renamed.clone())),
+        ("onboot".into(), Some("0".into())),
+    ];
     if !o.keep_original_links {
         orig_changes.extend(link_down_changes(&ocfg));
     }
     // the previous values of exactly the keys we change (absent keys are deleted again)
-    let orig_revert: Vec<(String, Option<String>)> =
-        orig_changes.iter().map(|(k, _)| (k.clone(), cfg_str(&ocfg, k))).collect();
+    let orig_revert: Vec<(String, Option<String>)> = orig_changes
+        .iter()
+        .map(|(k, _)| (k.clone(), cfg_str(&ocfg, k)))
+        .collect();
     let new_changes = vec![
         (nk.to_owned(), Some(oname.clone())),
-        ("onboot".into(), Some(cfg_str(&ocfg, "onboot").unwrap_or_else(|| "0".into()))),
+        (
+            "onboot".into(),
+            Some(cfg_str(&ocfg, "onboot").unwrap_or_else(|| "0".into())),
+        ),
     ];
     let new_revert = vec![
         (nk.to_owned(), Some(out.name.clone())),
@@ -318,7 +331,10 @@ pub fn run(
             }
         }
         let rolled = if notes.is_empty() {
-            format!("rolled back: original {orig} unchanged{}", if was_running { " and running" } else { "" })
+            format!(
+                "rolled back: original {orig} unchanged{}",
+                if was_running { " and running" } else { "" }
+            )
         } else {
             format!("ROLLBACK INCOMPLETE: {}", notes.join("; "))
         };
@@ -417,7 +433,10 @@ mod tests {
         assert_eq!(o.name_for(Some("web1"), "vm-100"), "dr-web1");
         o.name = Some("x".into());
         assert_eq!(o.name_for(Some("web1"), "vm-100"), "x");
-        assert_eq!(conf_value("cores: 1\nname: web1\n[snap]\nname: old\n", "name").as_deref(), Some("web1"));
+        assert_eq!(
+            conf_value("cores: 1\nname: web1\n[snap]\nname: old\n", "name").as_deref(),
+            Some("web1")
+        );
         assert_eq!(conf_value("hostname: ct1\n", "name"), None);
         assert_eq!(stamp(0), "197001010000");
         assert_eq!(stamp(1_791_840_600), "202610122130");
@@ -434,7 +453,14 @@ mod tests {
             pool: Some("dr".into()),
             ..Default::default()
         };
-        let p = restore_params("qemu", 105, "nexus:backup/nexus-100-17", "local-lvm", "web1-restore", &o);
+        let p = restore_params(
+            "qemu",
+            105,
+            "nexus:backup/nexus-100-17",
+            "local-lvm",
+            "web1-restore",
+            &o,
+        );
         assert_eq!(get(&p, "archive"), Some("nexus:backup/nexus-100-17"));
         assert_eq!(get(&p, "name"), Some("web1-restore"));
         assert_eq!(get(&p, "pool"), Some("dr"));
@@ -470,7 +496,10 @@ mod tests {
         assert_eq!(
             link_down_changes(&cfg),
             vec![
-                ("net0".into(), Some("virtio=BC:24:11:00:00:01,bridge=vmbr0,link_down=1".into())),
+                (
+                    "net0".into(),
+                    Some("virtio=BC:24:11:00:00:01,bridge=vmbr0,link_down=1".into())
+                ),
                 ("net1".into(), Some("name=eth1,bridge=vmbr1,link_down=1".into())),
             ]
         );
@@ -564,9 +593,19 @@ mod tests {
     }
 
     fn go(f: &Fake, o: &RestoreOpts) -> Result<Restored> {
-        run(f, "qemu", "pve1", 105, 100, "nexus:backup/nexus-100-17", "local-lvm", Some("web1"), o, "202610122130", |p| {
-            f.restore(p)
-        })
+        run(
+            f,
+            "qemu",
+            "pve1",
+            105,
+            100,
+            "nexus:backup/nexus-100-17",
+            "local-lvm",
+            Some("web1"),
+            o,
+            "202610122130",
+            |p| f.restore(p),
+        )
     }
 
     #[test]
@@ -639,7 +678,20 @@ mod tests {
         assert!(e.to_string().contains("no longer exists"), "{e}");
         assert!(f.calls.borrow().is_empty(), "nothing restored");
         let f = Fake::with_original();
-        let e = run(&f, "qemu", "pve1", 100, 100, "a", "s", None, &replace_opts(), "x", |_| Ok(())).unwrap_err();
+        let e = run(
+            &f,
+            "qemu",
+            "pve1",
+            100,
+            100,
+            "a",
+            "s",
+            None,
+            &replace_opts(),
+            "x",
+            |_| Ok(()),
+        )
+        .unwrap_err();
         assert!(e.to_string().contains("already exists"), "{e}");
     }
 }

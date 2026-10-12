@@ -42,9 +42,10 @@ pub fn vm_level(log: &[String]) -> (&'static str, String) {
     {
         return ("crash", format!("guest-agent fs-freeze failed: {}", body(l)));
     }
-    if let Some(l) = log.iter().find(|l| {
-        l.contains("skipping guest filesystem freeze") || l.contains("skipping guest-agent 'fs-freeze'")
-    }) {
+    if let Some(l) = log
+        .iter()
+        .find(|l| l.contains("skipping guest filesystem freeze") || l.contains("skipping guest-agent 'fs-freeze'"))
+    {
         return ("crash", body(l));
     }
     if has("issuing guest-agent 'fs-freeze' command") && has("issuing guest-agent 'fs-thaw' command") {
@@ -59,9 +60,15 @@ pub fn ct_level(log: &[String]) -> (&'static str, String) {
     if has("status = stopped") {
         ("application", "container was stopped (data at rest)".into())
     } else if has("create storage snapshot") {
-        ("crash", "frozen container, storage snapshot (no application quiesce)".into())
+        (
+            "crash",
+            "frozen container, storage snapshot (no application quiesce)".into(),
+        )
     } else if has("backup mode: suspend") {
-        ("crash", "suspend mode: final sync while frozen (no application quiesce)".into())
+        (
+            "crash",
+            "suspend mode: final sync while frozen (no application quiesce)".into(),
+        )
     } else {
         ("unknown", "no snapshot or status line in the vzdump log".into())
     }
@@ -118,7 +125,13 @@ mod tests {
         assert_eq!(r.0, "crash");
         assert!(r.1.contains("VSS writer failed"), "{}", r.1);
         let r = vm(&["INFO: skipping guest filesystem freeze - agent configured but not running?"]);
-        assert_eq!(r, ("crash", "skipping guest filesystem freeze - agent configured but not running?".into()));
+        assert_eq!(
+            r,
+            (
+                "crash",
+                "skipping guest filesystem freeze - agent configured but not running?".into()
+            )
+        );
         assert_eq!(
             vm(&["INFO: skipping guest filesystem freeze - disabled in VM options"]).0,
             "crash"
@@ -139,7 +152,11 @@ mod tests {
     #[test]
     fn no_agent_is_crash_stopped_is_application() {
         assert_eq!(vm(&["INFO: started backup task 'x'"]).0, "crash");
-        let stopped = log(&["INFO: Starting Backup of VM 101 (qemu)", "INFO: status = stopped", "INFO: backup mode: stop"]);
+        let stopped = log(&[
+            "INFO: Starting Backup of VM 101 (qemu)",
+            "INFO: status = stopped",
+            "INFO: backup mode: stop",
+        ]);
         assert_eq!(vm_level(&stopped).0, "application");
         assert_eq!(vm_level(&[]).0, "unknown");
     }
