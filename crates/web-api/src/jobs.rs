@@ -618,10 +618,17 @@ pub struct JobFilter {
 
 fn job_json(r: &catalog::rusqlite::Row, with_log: bool) -> catalog::rusqlite::Result<Value> {
     let p: String = r.get(3)?;
+    let raw = serde_json::from_str::<Value>(&p).unwrap_or_default();
+    // sealed values (an `offsite_attach` recovery key until the scheduler takes it) never leave;
+    // the download token stays visible here (only its requester can use it, see `download`) —
+    // quorum::redact hides it from approval lists (vault mode, 17c)
+    let mut params = crate::quorum::redact(raw.clone());
+    if let Some(tok) = raw.get("download_token") {
+        params["download_token"] = tok.clone();
+    }
     let mut v = json!({
         "id": r.get::<_, i64>(0)?, "kind": r.get::<_, String>(1)?, "tenant": r.get::<_, String>(2)?,
-        // sealed values (an `offsite_attach` recovery key until the scheduler takes it) never leave
-        "params": crate::quorum::redact(serde_json::from_str::<Value>(&p).unwrap_or_default()),
+        "params": params,
         "state": r.get::<_, String>(4)?,
         "requested_by": r.get::<_, String>(5)?, "created": r.get::<_, i64>(6)?,
         "started": r.get::<_, Option<i64>>(7)?, "finished": r.get::<_, Option<i64>>(8)?,
