@@ -43,7 +43,7 @@ fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
-        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | restore-ct <vmid> <time> <node> <target> <storage> | instant-recover <vmid> <time> <node> <target> <storage> [--link-down] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>... | ct-files <vmid> <time> ls [dir]|get <out> <path>... | push-index | list");
+        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | restore-ct <vmid> <time> <node> <target> <storage> | instant-recover <vmid> <time> <node> <target> <storage> [--link-down] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>... | ct-files <vmid> <time> ls [dir]|get <out> <path>... | push-index | list | task-stop <upid>");
     };
     let cfg: Config = serde_json::from_slice(&fs::read(cfg_path)?).context("config")?;
     let keys = keyd::fetch_keyring(&cfg.keyd_socket, &cfg.tenant).context("keyd")?;
@@ -166,6 +166,8 @@ fn main() -> Result<()> {
             }
         }
         ("push-index", []) => cluster.push_index(&store)?,
+        // a cancelled job's vzdump / restore task (the scheduler, crates/scheduler/src/run.rs)
+        ("task-stop", [upid]) => cluster.api.stop_task(upid)?,
         _ => bail!("unknown command"),
     }
     Ok(())

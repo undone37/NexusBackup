@@ -9,6 +9,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod auth;
+pub mod schedule;
 pub mod secret;
 pub use rusqlite;
 
@@ -193,8 +194,33 @@ ALTER TABLE users ADD COLUMN oidc_sub TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS users_oidc_sub ON users(oidc_sub) WHERE oidc_sub IS NOT NULL;
 "#;
 
+/// v11 (Phase 13b, run control, docs/control-plane.md "Run control"):
+/// `policies.retry` (`{count, delay_min}`), `policies.blackout`
+/// (`[{days, from, to, abort}]`, evaluated in the group's time zone),
+/// `policies.sla_minutes` (NULL = no run-time SLA); `groups.paused_until` and
+/// `sources.maintenance_until` (NULL = active, unix time, -1 = indefinitely);
+/// `groups.timezone` (IANA name the schedule is evaluated in); `jobs.not_before`
+/// (retry delay), `jobs.attempt`, `jobs.retry_of` (first job of the chain),
+/// `jobs.cancel_by` (cancel request of a running job: web-api writes it, the
+/// scheduler stops the child and sets `cancelled`), `jobs.sla_alerted`.
+/// Purely additive: the previous release skips it and never reads the columns.
+const SCHEMA_V11: &str = r#"
+ALTER TABLE policies ADD COLUMN retry TEXT NOT NULL DEFAULT '{"count":3,"delay_min":5}';
+ALTER TABLE policies ADD COLUMN blackout TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE policies ADD COLUMN sla_minutes INTEGER;
+ALTER TABLE groups ADD COLUMN paused_until INTEGER;
+ALTER TABLE groups ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC';
+ALTER TABLE sources ADD COLUMN maintenance_until INTEGER;
+ALTER TABLE jobs ADD COLUMN not_before INTEGER;
+ALTER TABLE jobs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE jobs ADD COLUMN retry_of INTEGER;
+ALTER TABLE jobs ADD COLUMN cancel_by TEXT;
+ALTER TABLE jobs ADD COLUMN sla_alerted INTEGER NOT NULL DEFAULT 0;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
+    SCHEMA_V11,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -873,7 +899,7 @@ mod tests {
         {
             let conn = c.conn();
             let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-            assert_eq!(v, 10);
+            assert_eq!(v, MIGRATIONS.len() as i64);
             let auth: String = conn
                 .query_row("SELECT auth FROM users WHERE name = 'admin'", [], |r| r.get(0))
                 .unwrap();
@@ -918,6 +944,72 @@ mod tests {
             })
             .unwrap();
         assert_eq!(n, 3);
+    }
+
+    /// v11 (run control) on top of a v10 catalog: existing policies get the
+    /// default retry (3 x 5 min), no blackout and no SLA; groups run in UTC and
+    /// are not paused; jobs are attempt 1. The v10 release still reads and
+    /// writes policies, groups and jobs afterwards.
+    #[test]
+    fn migration_v11_run_control() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.pragma_update(None, "foreign_keys", "ON").unwrap();
+            for (i, m) in MIGRATIONS[..10].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                r#"INSERT INTO tenants (name) VALUES ('acme');
+                 INSERT INTO sources (id, tenant, kind, name, config) VALUES (7, 'acme', 'pve', 'cluster', '{}');
+                 INSERT INTO policies (id, name, schedule, gfs) VALUES (1, 'p', 'daily 22:00', '{}');
+                 INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (3, 'acme', 7, 1, 'g', '[100]');
+                 INSERT INTO jobs (kind, tenant, params, state, requested_by, created) VALUES ('backup', 'acme', '{}', 'ok', 's', 1);"#,
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+            assert_eq!(v, MIGRATIONS.len() as i64);
+            let pol: (String, String, Option<i64>) = conn
+                .query_row("SELECT retry, blackout, sla_minutes FROM policies", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+                .unwrap();
+            assert_eq!(pol, (r#"{"count":3,"delay_min":5}"#.into(), "[]".into(), None));
+            let g: (Option<i64>, String) = conn
+                .query_row("SELECT paused_until, timezone FROM groups", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .unwrap();
+            assert_eq!(g, (None, "UTC".into()));
+            let m: Option<i64> = conn
+                .query_row("SELECT maintenance_until FROM sources", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(m, None);
+            let j: (i64, Option<i64>, Option<i64>, Option<String>, i64) = conn
+                .query_row(
+                    "SELECT attempt, not_before, retry_of, cancel_by, sla_alerted FROM jobs",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )
+                .unwrap();
+            assert_eq!(j, (1, None, None, None, 0));
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..10].iter().skip(v as usize).count(), 0);
+        old.execute_batch(
+            "INSERT INTO policies (name, schedule, gfs, offsite) VALUES ('q', 'hourly 5', '{}', 0);
+             INSERT INTO groups (tenant, source_id, policy_id, name, guests) VALUES ('acme', 7, 2, 'h', '[]');
+             INSERT INTO jobs (kind, tenant, params, state, requested_by, created) VALUES ('backup', 'acme', '{}', 'queued', 's', 2);",
+        )
+        .unwrap();
     }
 
     /// A fresh catalog runs every migration: all source kinds and the

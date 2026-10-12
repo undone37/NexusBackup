@@ -67,6 +67,7 @@ pub mod firewall;
 mod plugins;
 pub mod replica;
 pub mod run;
+mod runctl;
 pub mod schedule;
 pub mod sshkeys;
 
@@ -166,6 +167,8 @@ pub struct Config {
     /// the appliance's own SSH keys (generated here, docs/phase12-contract.md §4);
     /// skipped when the directory is missing
     pub ssh_dir: PathBuf,
+    /// a cancelled job's connector gets SIGKILL this long after SIGTERM
+    pub cancel_grace_secs: u64,
 }
 
 impl Default for Config {
@@ -211,6 +214,7 @@ impl Default for Config {
             replica_parallel: 4,
             replication_lag_secs: 48 * 3600,
             ssh_dir: "/etc/nexus/ssh".into(),
+            cancel_grace_secs: 30,
         }
     }
 }
@@ -295,6 +299,8 @@ pub struct Scheduler {
     /// last allow-list check from start_jobs; jobs wait until a changed list is applied
     fw_checked: Option<Instant>,
     fw_settle: Option<Instant>,
+    /// running jobs that got SIGTERM (cancel requested), for the SIGKILL deadline
+    cancel_sent: HashMap<i64, Instant>,
 }
 
 /// Agent ids: 16 lowercase hex characters (chosen by the web-api).
@@ -419,6 +425,7 @@ impl Scheduler {
             keys,
             store_options,
             log_max: cfg.log_max,
+            cancels: Default::default(),
         });
         let mut s = Scheduler {
             cfg,
@@ -433,6 +440,7 @@ impl Scheduler {
             last_refresh: i64::MIN,
             fw_checked: None,
             fw_settle: None,
+            cancel_sent: HashMap::new(),
             alert_cursor: 0,
             alert_tx,
             host: alerts::hostname(),
@@ -622,6 +630,7 @@ impl Scheduler {
                 }
                 // a job for a tenant created since the last tick needs its DEK first
                 self.log_err(|s| s.ensure_tenant_keys());
+                self.log_err(|s| s.process_cancels());
                 self.log_err(|s| s.start_jobs());
             }
         }
@@ -646,6 +655,10 @@ impl Scheduler {
         self.log_err(|s| s.queue_replication(now));
         self.log_err(|s| s.execute_key_exports());
         self.log_err(|s| s.queue_ssh_rotations());
+        self.log_err(|s| s.blackout_aborts(now));
+        self.log_err(|s| s.process_cancels());
+        self.log_err(|s| s.check_sla(now));
+        self.log_err(|s| s.check_paused(now));
         self.log_err(|s| s.start_jobs());
         let all = now.saturating_sub(self.last_refresh) >= self.cfg.refresh_secs;
         if all || !self.dirty.is_empty() {
@@ -795,7 +808,8 @@ impl Scheduler {
 
     fn queue_scheduled(&mut self, now: i64) -> Result<()> {
         for g in self.groups()? {
-            let sched = match Schedule::parse(&g.schedule) {
+            let ctl = self.control(g.id)?;
+            let sched = match Schedule::parse(&g.schedule).and_then(|s| s.in_tz(&ctl.tz)) {
                 Ok(s) => s,
                 Err(e) => {
                     self.alert("warning", "config", &format!("group {}: {e}", g.id), None)?;
@@ -818,7 +832,8 @@ impl Scheduler {
                 &[&g.id],
                 now,
             )?;
-            if sched.due(last, now) {
+            // paused, source in maintenance, blackout: a slot that passed meanwhile runs afterwards
+            if sched.due(last, now) && ctl.hold(now).is_none() {
                 self.insert_job("backup", &g.tenant, &json!({"group_id": g.id}))?;
             }
         }
@@ -963,8 +978,12 @@ impl Scheduler {
 
     fn queued(&self) -> Result<Vec<Job>> {
         let c = self.db.conn();
-        let mut st = c.prepare("SELECT id, kind, tenant, params FROM jobs WHERE state='queued' ORDER BY id")?;
-        let rows = st.query_map([], |r| {
+        // retries wait for their delay (`not_before`)
+        let mut st = c.prepare(
+            "SELECT id, kind, tenant, params FROM jobs WHERE state='queued' \
+             AND (not_before IS NULL OR not_before <= ?1) ORDER BY id",
+        )?;
+        let rows = st.query_map([catalog::now()], |r| {
             let p: String = r.get(3)?;
             Ok(Job {
                 id: r.get(0)?,
@@ -1065,15 +1084,21 @@ impl Scheduler {
     /// Records a finished job, then queues follow-ups and raises alerts.
     pub fn finish(&mut self, f: Finished) -> Result<()> {
         self.running.remove(&f.id);
+        self.ctx.cancels.remove(f.id);
+        self.cancel_sent.remove(&f.id);
         let job = self.job(f.id)?;
         let ok = f.outcome == Outcome::Ok;
         let mut log = f.log;
         let result = if ok {
             self.result(&job, f.stdout.as_deref(), &mut log)
         } else {
-            None
+            self.failed_result(&job, &log)
         };
-        let state = if ok { "ok" } else { "failed" };
+        let state = match f.outcome {
+            Outcome::Ok => "ok",
+            Outcome::Cancelled => "cancelled",
+            _ => "failed",
+        };
         self.db.conn().execute(
             "UPDATE jobs SET state=?1, finished=?2, log=?3, result=?4 WHERE id=?5",
             params![
@@ -1134,7 +1159,11 @@ impl Scheduler {
         match f.outcome {
             Outcome::Ok => self.follow_up(&job)?,
             Outcome::Quorum { message } => self.request_gc_quorum(&job, &message)?,
+            Outcome::Cancelled => {}
             Outcome::Failed { alert } => {
+                if alert.is_none() && self.retry_failed(&job, &log)? {
+                    return Ok(()); // job_failed only after the last attempt
+                }
                 let tail: String = log
                     .lines()
                     .rev()
@@ -1157,10 +1186,11 @@ impl Scheduler {
                     }
                     _ => ("critical", "job_failed", "failed"),
                 };
+                let attempts = self.attempt_note(job.id);
                 self.alert(
                     sev,
                     kind,
-                    &format!("{} job {} ({}) {what}: {tail}", job.kind, job.id, job.tenant),
+                    &format!("{} job {} ({}) {what}{attempts}: {tail}", job.kind, job.id, job.tenant),
                     None,
                 )?;
             }
@@ -2085,7 +2115,7 @@ impl Scheduler {
             "backup" => {
                 let (source_id, vmids) = match (p["group_id"].as_i64(), p["agent_id"].as_str()) {
                     (Some(g), _) => {
-                        let g = group(g)?;
+                        let g = runctl::restrict(group(g)?, p);
                         if !g.datasets.is_empty() {
                             return self.plan_truenas_backup(plan, g.source_id, &g.datasets);
                         }
@@ -2622,6 +2652,7 @@ impl Scheduler {
             &[dir.join("offsite.json").to_string_lossy().into_owned(), "list".into()],
             &log,
             true,
+            None,
         );
         let _ = fs::remove_dir_all(&dir);
         let (ok, out) = r?;

@@ -178,6 +178,8 @@ esac"#,
              INSERT INTO sources (id, tenant, kind, name, config) VALUES (1, 'acme', 'pve', 'cluster', '{src}');
              INSERT INTO policies (id, name, schedule, gfs, offsite) VALUES
                (1, 'gold', 'daily 22:00', '{{\"daily\":2,\"weekly\":0,\"monthly\":0,\"yearly\":0}}', 1);
+             -- failures alert right away (no retries, Phase 13b)
+             UPDATE policies SET retry = '{{\"count\":0,\"delay_min\":5}}';
              INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (1, 'acme', 1, 1, 'web', '[100]');"
         ))
         .unwrap();

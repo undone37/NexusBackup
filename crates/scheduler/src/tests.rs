@@ -542,6 +542,7 @@ fn truenas_jobs() {
         keys,
         store_options: test_opts,
         log_max: 1 << 20,
+        cancels: Default::default(),
     };
     let f = run::execute(1, &plan, &ctx);
     assert_eq!(f.outcome, Outcome::Ok, "{}", f.log);
@@ -1248,3 +1249,6 @@ fn capacity_samples_daily() {
         "no store, no sample"
     );
 }
+
+/// Phase 13b run control (pause, blackout, retries, SLA, cancel).
+mod runctl;
