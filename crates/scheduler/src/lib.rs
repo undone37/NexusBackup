@@ -64,6 +64,7 @@
 
 pub mod alerts;
 pub mod firewall;
+pub mod orphans;
 mod plugins;
 pub mod replica;
 pub mod run;
@@ -641,6 +642,7 @@ impl Scheduler {
         self.log_err(|s| s.ensure_tenant_keys());
         self.log_err(|s| s.expire_downloads(catalog::now()));
         self.log_err(|s| s.queue_approved_gc());
+        self.log_err(|s| s.queue_snapshot_deletes());
         self.log_err(|s| s.queue_scheduled(now));
         self.log_err(|s| s.queue_maintenance(now));
         self.log_err(|s| s.queue_replication(now));
@@ -1092,7 +1094,7 @@ impl Scheduler {
         )?;
         if matches!(
             job.kind.as_str(),
-            "backup" | "plugin_backup" | "retention" | "offsite" | "gc" | "replica_sync"
+            "backup" | "plugin_backup" | "retention" | "offsite" | "gc" | "replica_sync" | "snapshot_delete"
         ) {
             self.dirty.insert(job.tenant.clone());
         }
@@ -1118,6 +1120,23 @@ impl Scheduler {
         }
         if ok && (job.kind == "backup" || job.kind == "plugin_backup") {
             self.inconsistent_alerts(job.id, &job.tenant, &log)?;
+        }
+        if job.kind == "gc" {
+            self.orphan_bookkeeping(&job.tenant, f.stdout.as_deref())?;
+        }
+        if ok && job.kind == "snapshot_delete" {
+            let p = &job.params;
+            self.db.audit(
+                ACTOR,
+                "snapshot.delete",
+                &format!(
+                    "snapshot/{}/{}/{}",
+                    job.tenant,
+                    p["source"].as_str().unwrap_or_default(),
+                    p["time"]
+                ),
+                &json!({"job": job.id, "quorum_id": p["quorum_id"], "requested_by": p["requested_by"]}),
+            )?;
         }
         if let Some(q) = job.params["quorum_id"].as_i64() {
             self.db.conn().execute(
@@ -2241,6 +2260,8 @@ impl Scheduler {
                 // quorum-approved, or confirmed by one admin while approvals are disabled
                 // (only honoured while they still are)
                 let confirmed = p["confirmed_by"].is_string() && !catalog::approvals_enabled(&self.db.conn())?;
+                // orphaned sources first, so this GC reclaims their chunks
+                plan.steps.extend(self.orphan_step(tenant)?);
                 plan.steps.push(Step::Gc {
                     approved: p["approved"].as_bool() == Some(true) && (p["quorum_id"].is_i64() || confirmed),
                 });
@@ -2248,6 +2269,13 @@ impl Scheduler {
                     plan.files = f;
                     plan.steps.push(offsite(&["gc"], None));
                 }
+            }
+            "snapshot_delete" => {
+                let source = ident(p, "source")?;
+                plan.steps.push(Step::Delete {
+                    source: source.to_owned(),
+                    time: num(p, "time")?,
+                });
             }
             "verify" => {
                 let parts = self.cfg.verify_parts.max(1);

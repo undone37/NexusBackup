@@ -74,6 +74,17 @@ pub enum Step {
         prefixes: Vec<String>,
         gfs: Gfs,
     },
+    /// GFS for the store sources no group covers ([`crate::orphans`]); stdout
+    /// becomes `{"orphans": {source: deleted}}`
+    Orphans {
+        coverage: crate::orphans::Coverage,
+        gfs: Gfs,
+    },
+    /// one snapshot (approved `snapshot.delete`); refused while locked
+    Delete {
+        source: String,
+        time: u64,
+    },
     Gc {
         approved: bool,
     },
@@ -257,6 +268,48 @@ fn run_steps(plan: &Plan, ctx: &Ctx, log: &Arc<Mutex<BoundedLog>>, stdout: &mut 
                     }
                 }
             }
+            Step::Orphans { coverage, gfs } => {
+                let s = store.as_ref().unwrap();
+                let mut sources: Vec<String> = match s.list_snapshots() {
+                    Ok(ms) => ms
+                        .into_iter()
+                        .map(|m| m.source)
+                        .filter(|x| !coverage.covers(x))
+                        .collect(),
+                    Err(e) => {
+                        log.lock()
+                            .unwrap()
+                            .line(&format!("orphans: listing snapshots failed: {e}"));
+                        return failed;
+                    }
+                };
+                sources.dedup(); // sorted by source
+                let mut out = serde_json::Map::new();
+                for src in &sources {
+                    match s.apply_retention(src, gfs) {
+                        Ok((k, d, l)) => {
+                            log.lock().unwrap().line(&format!(
+                                "retention {src} (in no group): kept {k}, deleted {d}, still locked {l}"
+                            ));
+                            out.insert(src.clone(), d.into());
+                        }
+                        Err(e) => {
+                            log.lock().unwrap().line(&format!("retention {src} failed: {e}"));
+                            return failed;
+                        }
+                    }
+                }
+                *stdout = Some(serde_json::json!({ "orphans": out }).to_string());
+            }
+            Step::Delete { source, time } => match store.as_ref().unwrap().delete_snapshot(source, *time) {
+                Ok(()) => log.lock().unwrap().line(&format!("deleted snapshot {source}/{time}")),
+                Err(e) => {
+                    log.lock()
+                        .unwrap()
+                        .line(&format!("deleting snapshot {source}/{time} failed: {e}"));
+                    return failed;
+                }
+            },
             Step::Func(InProc(f)) => match f() {
                 Ok(out) => *stdout = Some(out),
                 Err(e) => {
