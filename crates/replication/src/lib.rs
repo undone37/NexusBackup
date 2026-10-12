@@ -125,6 +125,18 @@ pub struct SnapshotInfo {
     pub size: u64,
 }
 
+/// A legal hold on the primary (`GET …/tenants/{t}/holds`, Phase 15c): advisory
+/// for the secondary, which never applies it on its own. Primaries before 15c
+/// answer 404 (no holds); unknown fields are ignored for later additions.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct HoldInfo {
+    pub source: String,
+    pub time: u64,
+    pub reason: String,
+    pub held_by: String,
+    pub held_at: i64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct EnrollRequest {

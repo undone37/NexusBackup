@@ -21,6 +21,9 @@ export const can = {
   // Plugins are appliance-wide; admins change them, security officers / operators may look.
   viewPlugins: (u: User | null) => !!u && u.role !== 'tenant_user' && u.role !== 'viewer',
   syncReplication: (u: User | null) => u?.role === 'admin' || u?.role === 'operator',
+  // Legal holds (15c): only security officers set them; officers and admins request a release.
+  hold: (u: User | null) => u?.role === 'security_officer',
+  releaseHold: (u: User | null) => u?.role === 'security_officer' || u?.role === 'admin',
 };
 
 export const ROLES: Role[] = ['admin', 'security_officer', 'operator', 'tenant_user', 'viewer'];

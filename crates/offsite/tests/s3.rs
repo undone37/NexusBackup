@@ -269,7 +269,7 @@ fn s3_target_engine() {
     t.put_if_missing("keys/kek.recovery", b"wrapped").unwrap();
 
     // keep the newest: retention locks its packs and files on S3 (14 days)
-    let (kept, deleted, _) = t.apply_retention(&gfs(1)).unwrap();
+    let (kept, deleted, _) = t.apply_retention(&gfs(1), &Default::default()).unwrap();
     assert_eq!((kept, deleted), (1, 3));
     let w = times[3] + 14 * DAY;
     let key = format!("snapshots/vm-1/{}", times[3]);
@@ -323,7 +323,7 @@ fn s3_target_engine() {
     tb.restore("vm-1", times[3]).unwrap();
     assert_eq!(restored(&b, times[3]), image(3));
     eprintln!("DR rebuild + restore: {:?}", t1.elapsed());
-    let (_, deleted, still) = tb.apply_retention(&gfs(0)).unwrap();
+    let (_, deleted, still) = tb.apply_retention(&gfs(0), &Default::default()).unwrap();
     assert_eq!((deleted, still), (0, 1), "DR copy knows the extended lock");
 
     // monitoring: a pack deleted behind our back (delete marker) is reported,

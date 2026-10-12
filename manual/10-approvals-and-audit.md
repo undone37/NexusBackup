@@ -13,7 +13,7 @@ a different administrator or security officer must approve:
 | Configuration | deleting a tenant, source, policy, protection group or agent (`tenant delete`, `source delete`, …) |
 | Retention | lowering any GFS value or switching off **Copy offsite** (`policy update`); moving a group to a weaker policy (`group update`) |
 | Accounts | granting **Administrator** or **Security officer**, re-enabling such an account, a new activation code for one (`user update`) |
-| Storage | deleting a snapshot by hand (`snapshot delete`; only unlocked snapshots can be requested); a garbage collection that would delete more than 20 % of a tenant's chunks (`gc_large`, requested by `scheduler`) |
+| Storage | deleting a snapshot by hand (`snapshot delete`; only unlocked snapshots without a legal hold can be requested); releasing a legal hold (`snapshot hold release`, see [06 Restores](06-restores.md#legal-hold)); a garbage collection that would delete more than 20 % of a tenant's chunks (`gc_large`, requested by `scheduler`) |
 | Replication | creating a peer, exporting tenant keys to it, revoking a peer, deleting an enrolled replication source, lowering a replication source's retention |
 | Plugins | installing or upgrading a plugin, switching to another installed version, disabling or removing a plugin, adding or removing a publisher key |
 | Single sign-on | saving the single sign-on settings (identity provider, client secret, group mappings), because it changes who can sign in (`oidc update`) |
@@ -31,6 +31,8 @@ Rules:
 - Approving runs the action immediately and cannot be undone. Some actions (the replication key export, a large GC, a snapshot delete)
   are carried out by the scheduler shortly after the approval; their state goes from **Approved** to **Executed**.
 - Requests never show secrets: passwords, keys and activation codes are not part of a request.
+- Some actions only add protection and therefore need no approval, e.g. a security officer putting snapshots on a
+  legal hold. Taking such protection away (releasing the hold) does.
 
 ## Deciding requests
 

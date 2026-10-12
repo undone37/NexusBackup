@@ -52,6 +52,7 @@ replicad); it streams replicad's answers to replication peers without opening st
 | `inventory` (v13) | source_id (FK, ON DELETE CASCADE), guest (vmid / dataset / plugin guest id), name, kind, tags (JSON, e.g. `pool:x`, `tag:y`, `node:n`, `type:qemu`, `type:user`, `license:none`), seen, gone (NULL = present; set when a listing no longer contains the guest, row kept); PK (source_id, guest). Written by the scheduler from `inventory` / `plugin_guests` results |
 | `jobs` | id, kind, tenant, params (JSON), state (`queued`,`running`,`ok`,`failed`,`cancelled`), requested_by, created, started, finished, log, result (JSON, NULL until finished ok; v3; a failed group backup: `{failed_guests}`); v14: not_before (retry delay), attempt, retry_of (first job of the chain), cancel_by (cancel request of a running job), sla_alerted |
 | `snapshots` | tenant, source (`vm-100`/`ct-200`/`host-<agent_id>`/`nas-<id>-<dataset>`/`share-<id>`), time, size, local, offsite, lock_until, verified — refreshed by scheduler |
+| `legal_holds` (v18) | id, tenant, source, time, state (`active`, `released`, `advisory`, `withdrawn`), reason, held_by, held_at, origin (replication source of an advisory), released_by (requester), approved_by, released_at; one open (`active`/`advisory`) row per snapshot (partial unique index), the rest is history. Not a foreign key: the snapshot row is rebuilt by the refresh. See "Legal hold" |
 | `quorum` | id, action, params (JSON), requested_by, created, decided_by, decided_at, state (`pending`,`approved`,`rejected`,`executed`,`expired`) |
 | `audit` | seq PK, ts, actor, action, target, details (JSON), prev_hash, hash |
 | `forward_events` (v16) | seq PK AUTOINCREMENT, ts, type (`alert`,`job`), payload (JSON of the row at that moment) — outbox written by triggers on `alerts` (raised / escalated / acknowledged / resolved) and `jobs` (state → ok/failed/cancelled); pruned when every enabled sink has it and it is older than a day |
@@ -98,6 +99,7 @@ Scheduler thread `forward.rs` (every `forward_poll_secs`, default 5): per enable
 | appliance SSH keys: read / rotate (quorum), retire | read, ✓ | read | read | — | — |
 | OS updates: read / check, apply (quorum) | read, ✓ | read | read | — | — |
 | acknowledge the break-glass alert (other alerts: operator+) | ✓ | ✓ | — | — | — |
+| legal hold (15c): set (one snapshot, a range, apply an advisory) / request a release | request release | set, request release | — | — | — |
 | own sessions: list, end (`/auth/sessions`) | ✓ | ✓ | ✓ | ✓ | ✓ |
 | all sessions: list, end one / a user's / all others (re-auth) | ✓ | — | — | — | — |
 | console access (14c): request + show own code / list, revoke codes; acknowledge `console_*` alerts | ✓, ✓ | list, revoke; ack | — | — | — |
@@ -138,8 +140,10 @@ Auth: `POST /auth/login {name, password, totp}` → `Set-Cookie: nx_session=…;
 | `GET /gc/pending`, `POST /gc/approve-large {tenant}` | read: admin, security_officer, operator; POST: admin | approvals disabled only: GCs waiting for confirmation `[{tenant, job, reason, created}]`; confirming → 202 `{job_id}`, 409 when approvals are enabled or nothing is waiting |
 | `GET /agents`, `POST /agents`, `DELETE /agents/{id}` | read / admin (DELETE → quorum) | POST `{tenant, name, host, port=7444}` → 201 agent + one-time `token` + `install_command` (shown once) |
 | `POST /agents/{id}/token`, `POST /agents/{id}/enroll` | admin | new one-time token (200 `{token, install_command, token_expires}`); enroll → 202 `{id}` of an `agent_enroll` job, 409 without a valid token |
-| `GET /snapshots?tenant=&source=` | read | local/offsite/lock/verified per snapshot |
-| `DELETE /snapshots/{tenant}/{source}/{time}` | admin | → quorum `snapshot.delete` (executed by the scheduler as job `snapshot_delete`, audit `snapshot.delete`); 409 while `lock_until` > now, when only the offsite copy is left, or for a replicated snapshot (`origin` set) |
+| `GET /snapshots?tenant=&source=&held=` | read | local/offsite/lock/verified per snapshot; `hold`: the open legal hold (row of `GET /holds`) or null; `held=true`: only snapshots with one |
+| `DELETE /snapshots/{tenant}/{source}/{time}` | admin | → quorum `snapshot.delete` (executed by the scheduler as job `snapshot_delete`, audit `snapshot.delete`); 409 while `lock_until` > now, when only the offsite copy is left, for a replicated snapshot (`origin` set) or under a legal hold |
+| `POST /snapshots/{tenant}/{source}/{time}/hold {reason}`, `DELETE …/hold` | POST: security_officer; DELETE: security_officer, admin | legal hold (see "Legal hold"): POST holds at once (201 `{id, advisory_from?, primary_held_by?}`, audit `snapshot.hold`; applies an advisory; 404 no snapshot row, 409 already held); DELETE → quorum `snapshot.hold_release` (web-api execute arm; 404 not held, 409 a release is already requested) |
+| `POST /holds {tenant, source?, from, to, reason}`, `GET /holds?tenant=&state=` | POST: security_officer; GET: read (tenant-scoped) | POST holds every snapshot row of the tenant (source) with `from ≤ time ≤ to` → `{held, snapshots}` (one audit `snapshot.hold` on `tenant/<t>` listing them); GET: holds and their history, newest first, with `release_quorum` (pending release request) |
 | `GET /jobs?state=&kind=`, `GET /jobs/{id}` (incl. log) | read | `result` = structured job result (see Clarifications) |
 | `POST /jobs` `{kind, tenant, params}` | per kind (see RBAC) | returns job id; 202 |
 | `POST /jobs/{id}/cancel` | operator/admin | queued → `cancelled` at once; running → `{state: "cancelling"}`, sets `jobs.cancel_by` (the scheduler stops it, see Run control); 409 otherwise |
@@ -354,6 +358,32 @@ mapped, setuid/setgid/sticky cleared, devices/sockets skipped, only xattrs the t
   - `mgmt_allow` (`PUT /settings/mgmt-allow {mgmt_allow: [cidr], force?, confirm?}`; ≤ 64 entries, canonical network form, empty = any): every change is quorum `security.mgmt_allow` (params `{mgmt_allow, old, requested_from}`; refused on approval if the setting changed since). A list that does not contain the requester's address is refused (409) unless `force` and `confirm` = that address. The scheduler writes the list into `allowed.json` (`mgmt`), `nexus-nft-sync` validates it (CIDR literals only) and flushes + refills the interval sets `mgmt_allowed_v4/v6` of `os/nftables.conf` in the same transaction as the outbound sets (empty list → `0.0.0.0/0`, `::/0`; a file without `mgmt` leaves them alone). The input rule accepts new 8443 connections only from these sets; established/related traffic is untouched. The image starts with "any" until the scheduler has written the file. Replication secondaries must be in the list (they pull from 8443).
 - **API tokens** (`tokens.rs`): a token of an expired or disabled (also dormant-disabled) user is refused (401) like its sessions; a viewer cannot create an `operator` token and a viewer token in the catalog stays read-only (`effective` keeps the role, no writes); tokens never download (`can_download` is cleared for token requests).
 - **Console recovery**: `nexus-setup reset-mgmt-allow` (root) clears `mgmt_allow`, opens the sets at once (`nft -f -`), audits `security.mgmt_allow_reset` (actor `console`) and raises the warning alert `mgmt_allow_reset`. `nexus-setup disable-approvals` (root + recovery key, like `recover-admin`) switches approvals off when nobody else can approve any more: audited `approvals.break_glass`, critical alert `break_glass` (banner for admins until acknowledged).
+
+## Legal hold (Phase 15c, `web-api/src/holds.rs`, `catalog::holds`, catalog v18)
+A legal hold keeps one snapshot regardless of retention until its release is approved. It is kept in the catalog,
+not in the store: the store's retention lock (`Manifest.lock_until`) can only grow, so it could never be released.
+- **Set:** security officers only (an additive protection: immediate, no quorum), one snapshot or a time range
+  (`POST /holds`); audited `snapshot.hold`. Admins cannot set holds; they (and security officers) request releases.
+- **Release:** quorum action `snapshot.hold_release` (`{tenant, source, time, hold_id}`), approved by another admin or
+  security officer, executed by the web-api (state `released`, `released_by` = requester, `approved_by`); audited
+  `snapshot.hold_release`. With approvals disabled it executes at once like every gated action.
+- **Enforcement (scheduler):** `Plan.held` = the tenant's active holds, read when a job is planned. Retention steps
+  (`Step::Retention`, the orphan sweep `Step::Orphans`) call `Store::apply_retention_held` (held snapshots are never
+  deleted and count as kept; they still take part in the GFS selection); `Step::Delete` fails for a held snapshot (an
+  approved `snapshot.delete` requested before the hold); `offsite.json` carries `held: [[source, time]]` for the
+  offsite retention (`Target::apply_retention`); `replica.json` carries them for the secondary's own retention. GC is
+  mark-and-sweep over the existing snapshots, so a snapshot retention keeps keeps its chunks (locally and offsite).
+  A hold set while a retention job runs applies from the next job.
+- **Replication:** the primary serves its active holds per tenant on `GET /replication/v1/tenants/{t}/holds`
+  (`[{source, time, reason, held_by, held_at}]`; primaries before 15c answer 404 = none). The secondary stores them as
+  `advisory` rows (`origin` = the replication source; only for snapshots it has) with a warning
+  `legal_hold_advisory:<tenant>/<source>/<time>` (audit `snapshot.hold_advisory`); advisories are never enforced. Its
+  security officer applies one with `POST …/hold` (the row becomes `active`, set by them, the alert resolves); an
+  advisory the primary no longer reports becomes `withdrawn` (audit `snapshot.hold_withdrawn`, alert resolved). A hold
+  applied on the secondary stays until released there.
+- **Alerts:** `GET /alerts` rows carry `snapshot` `{tenant, source, time}` for `anomaly` (the "last snapshot before"
+  named in the message) and `legal_hold_advisory`; the UI offers **Hold last good snapshot** / **Apply hold** there.
+- API tokens: `GET /holds` is readable with `read` scope; setting and releasing are closed to tokens.
 
 ## Break-glass (`nexus-setup recover-admin`, Phase 12 §7)
 Console only (root): `nexus-setup recover-admin [--user NAME] [--force-solo]` asks for the recovery key (checked against keyd's `kek.recovery` as at first boot), resets a local admin account to pending activation (old password and authenticator invalid at once, sessions ended, account enabled) and prints a new one-time activation code (72 h). Without `--user` the only local admin is chosen. With approvals enabled and at least two possible approvers it refuses unless `--force-solo` (recorded in the alert, the audit entry and the banner). Audited `user.break_glass` (actor `console`), critical alert `break_glass`, setting `break_glass`.

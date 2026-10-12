@@ -335,6 +335,7 @@ impl Secondary {
                 gfs: Default::default(),
                 parallel: 4,
                 bwlimit: None,
+                held: Default::default(),
             },
             &mut |l| eprintln!("replica: {l}"),
         )
@@ -438,6 +439,53 @@ fn enroll_sync_incremental_restore_on_secondary_only() {
     // the secondary's keyd wraps the DEK under its own KEK (DR with its recovery key)
     assert!(s.dir.path().join("keyd/tenants/acme/origin").exists());
     assert!(sec_store.verify(|_| true).unwrap().corrupt.is_empty());
+}
+
+/// Legal holds (Phase 15c): the primary's active holds reach the secondary in
+/// every sync report (advisory, applied there by its own security officer);
+/// a released hold is no longer reported. Peers only see their tenants' holds.
+#[test]
+fn legal_holds_travel_as_advisory_metadata() {
+    let (p, s, _, now) = enrolled();
+    let t = p.target();
+    assert!(s.sync(&t, "acme").unwrap().holds.is_empty());
+    let held = now - 2 * DAY;
+    p.st.cat
+        .conn()
+        .execute_batch(&format!(
+            "INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('acme', 'vm-100', {held}, 1, 0),
+               ('other', 'vm-100', {}, 1, 0)",
+            now - DAY
+        ))
+        .unwrap();
+    for (tenant, time) in [("acme", held), ("other", now - DAY)] {
+        let (st, b) = p.call(
+            Method::POST,
+            &format!("/api/v1/snapshots/{tenant}/vm-100/{time}/hold"),
+            &p.so,
+            Some(json!({"reason": "case 4711"})),
+        );
+        assert_eq!(st, StatusCode::CREATED, "{b}");
+    }
+    let r = s.sync(&t, "acme").unwrap();
+    assert_eq!(r.holds.len(), 1, "only the peer's tenant: {r:?}");
+    let h = &r.holds[0];
+    assert_eq!(
+        (h.source.as_str(), h.time, h.reason.as_str(), h.held_by.as_str()),
+        ("vm-100", held, "case 4711", "sam")
+    );
+    // nothing applied on the secondary: its store still follows its own retention
+    assert!(s.store("acme").load_manifest("vm-100", held).is_ok());
+    // released on the primary (requested by the admin, approved by the officer)
+    let (st, b) = p.call(
+        Method::DELETE,
+        &format!("/api/v1/snapshots/acme/vm-100/{held}/hold"),
+        &p.admin,
+        None,
+    );
+    assert_eq!(st, StatusCode::ACCEPTED, "{b}");
+    p.approve(b["quorum_id"].as_i64().unwrap());
+    assert!(s.sync(&t, "acme").unwrap().holds.is_empty());
 }
 
 #[test]

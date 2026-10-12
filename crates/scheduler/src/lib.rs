@@ -68,6 +68,7 @@ pub mod anomaly;
 pub mod expiry;
 pub mod firewall;
 pub mod forward;
+mod holds;
 mod inventory;
 mod lifecycle;
 pub mod orphans;
@@ -2014,6 +2015,7 @@ impl Scheduler {
             "state": self.cfg.offsite_state_base.join(tenant),
             "remote": remote,
             "gfs": {"daily": g.daily, "weekly": g.weekly, "monthly": g.monthly, "yearly": g.yearly},
+            "held": catalog::holds::held(&self.db.conn(), tenant)?,
         });
         for k in ["uploaders", "bwlimit"] {
             if let Some(n) = o[k].as_u64() {
@@ -2188,6 +2190,7 @@ impl Scheduler {
             files: Vec::new(),
             steps: Vec::new(),
             download: None,
+            held: catalog::holds::held(&self.db.conn(), tenant)?,
         };
         let group = |id: i64| -> Result<GroupRow> {
             self.groups()?
@@ -2885,6 +2888,7 @@ impl Scheduler {
             files: Vec::new(),
             steps: vec![Step::Func(run::InProc(step))],
             download: None,
+            held: Default::default(),
         }))
     }
 

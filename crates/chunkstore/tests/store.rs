@@ -319,6 +319,53 @@ fn retention_prunes_unlocked_and_extends_locks() {
     assert_eq!((deleted, locked), (0, 2), "14-day locks from the first run hold");
 }
 
+/// Legal hold (Phase 15c): a held snapshot survives retention that would
+/// delete it and GC keeps its chunks; without the hold the next run prunes it.
+#[test]
+fn retention_skips_held_snapshots_and_gc_keeps_their_chunks() {
+    use chunkstore::retention::Gfs;
+    use std::collections::BTreeSet;
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), 0, 0);
+    let day = 86400;
+    let base = s.compliance_now().unwrap() - 10 * day;
+    let (chunks, size) = s.store_file(&b"evidence"[..]).unwrap();
+    let files = Index::Dynamic {
+        entries: vec![FileEntry {
+            path: "f".into(),
+            mode: 0o644,
+            size,
+            mtime: 0,
+            chunks,
+        }],
+    };
+    let m = s.commit_snapshot("vm-1", base, &[("files", files)]).unwrap();
+    for i in 1..4 {
+        s.commit_snapshot("vm-1", base + i * day, &[] as &[(&str, Index)])
+            .unwrap();
+    }
+    let gfs = Gfs {
+        daily: 1,
+        weekly: 0,
+        monthly: 0,
+        yearly: 0,
+    };
+    let held = BTreeSet::from([base]);
+    assert_eq!(s.apply_retention_held("vm-1", &gfs, &held).unwrap(), (2, 2, 0));
+    let left: Vec<u64> = s.list_snapshots().unwrap().iter().map(|m| m.time).collect();
+    assert_eq!(left, vec![base, base + 3 * day]);
+    assert_eq!(
+        s.load_manifest("vm-1", base).unwrap().lock_until,
+        m.lock_until,
+        "no lock added"
+    );
+    s.gc(true).unwrap();
+    assert_eq!(restore(&s, &m, "files"), b"evidence");
+    // released: the next run prunes it
+    assert_eq!(s.apply_retention("vm-1", &gfs).unwrap(), (1, 1, 0));
+    assert!(s.load_manifest("vm-1", base).is_err());
+}
+
 #[test]
 fn tree_index_roundtrip_and_old_variants_still_decode() {
     use chunkstore::{TreeEntry, TreeKind};

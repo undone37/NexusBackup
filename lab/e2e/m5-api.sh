@@ -2,7 +2,7 @@
 # M5 flow over the REST API only (what the UI does): curl with cookie jar +
 # X-CSRF-Token, TLS verified against the appliance certificate.
 #   lab/e2e/m5.sh setup && lab/e2e/m5.sh start && lab/e2e/m5-api.sh [step...]
-# steps (default: all): config wait-backup check restore verify quorum phase13 phase14d2 access diag audit
+# steps (default: all): config wait-backup check restore verify quorum phase13 legal-hold phase14d2 access diag audit
 #   (not in the default: console, console-check; lab/appliance/console-gate.sh runs them)
 # Lab inputs (env, defaults = dev machine, see lab/README.md):
 #   LAB (/home/ah/nexus-lab), LAB_CA (default: fetched from the node), LAB_TOKEN_SECRET (file;
@@ -313,6 +313,41 @@ step_phase13() {
 	log "locked snapshot lab/$r: delete refused (409)"
 }
 
+# Phase 15c: the security officer holds the oldest vm-100 snapshot (admin may not); a retention run
+# keeps it; delete is refused; the release needs a second approver; everything is audited.
+step_legal_hold() {
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	login so "$SO_PW" "$SO_TOTP"
+	local t r grp j
+	t=$(api so GET "/snapshots?tenant=lab&source=vm-100" | jq -r '[.[] | select(.local) | .time] | min')
+	api admin POST "/snapshots/lab/vm-100/$t/hold" '{"reason":"lab"}' >/dev/null
+	expect 403 "admin may not set a legal hold"
+	api so POST "/snapshots/lab/vm-100/$t/hold" '{"reason":"lab case 15c"}' >/dev/null
+	expect 201 "so sets a legal hold"
+	api so GET "/snapshots?held=true" | jq -e --argjson t "$t" '.[] | select(.source == "vm-100" and .time == $t) | .hold.state == "active"' >/dev/null ||
+		die "held snapshot not listed"
+	grp=$(api admin GET /groups | jq -r '.[0].id')
+	r=$(api admin POST /jobs "$(jq -nc --argjson g "$grp" '{kind:"retention", tenant:"lab", params:{group_id:$g}}')")
+	j=$(wait_job admin "$(jq -r .id <<<"$r")" 300)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "retention job: $(jq -r .log <<<"$j" | tail -5)"
+	sleep 5
+	api so GET "/snapshots?tenant=lab&source=vm-100" | jq -e --argjson t "$t" 'any(.[]; .time == $t and .local)' >/dev/null ||
+		die "held snapshot vm-100/$t gone after retention"
+	api admin DELETE "/snapshots/lab/vm-100/$t" >/dev/null
+	expect 409 "delete of a held snapshot"
+	r=$(api admin DELETE "/snapshots/lab/vm-100/$t/hold")
+	expect 202 "release request"
+	api admin POST "/quorum/$(jq -r .quorum_id <<<"$r")/approve" >/dev/null
+	expect 403 "requester may not approve the release"
+	api so POST "/quorum/$(jq -r .quorum_id <<<"$r")/approve" >/dev/null
+	expect 200 "so approves the release"
+	api so GET "/holds?tenant=lab" | jq -e '.[0].state == "released" and .[0].approved_by == "so"' >/dev/null ||
+		die "hold not released: $(api so GET '/holds?tenant=lab' | jq -c '.[0]')"
+	api so GET "/audit?order=desc&limit=50" | jq -e '[.[].action] | index("snapshot.hold") != null and index("snapshot.hold_release") != null' >/dev/null ||
+		die "legal hold not audited"
+	log "legal hold on lab/vm-100/$t: set by so, kept by retention, delete refused, released with approval"
+}
+
 # Phase 14d on the real appliance: login banner, own sessions, session timeouts (loosening needs the
 # security officer), the management allow-list through the firewall (our own address stays allowed)
 # and back to "any", dormant-account setting, approver warning.
@@ -520,7 +555,7 @@ step_audit() {
 }
 
 steps=("$@")
-[ ${#steps[@]} -gt 0 ] || steps=(config wait-backup check restore verify quorum phase13 phase14d2 access diag audit)
+[ ${#steps[@]} -gt 0 ] || steps=(config wait-backup check restore verify quorum phase13 legal-hold phase14d2 access diag audit)
 for s in "${steps[@]}"; do
 	log "== $s"
 	"step_${s//-/_}"

@@ -783,6 +783,28 @@ async function main() {
       await go('/snapshots?source=vm-300');
       await shot('tenant-user-snapshots');
     }],
+    // Phase 15c: legal hold (security officer): from the anomaly alert, for a time range, release request
+    ['legal-hold', async () => {
+      await login('so');
+      await go('/alerts');
+      await ev(`$rowClick('change-rate anomaly', 'Hold last good snapshot'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #hold-reason')`, 'hold dialog');
+      await shot('alert-hold-last-good');
+      await ev(`$click('Put on hold', document.querySelector('dialog[open]')); return true;`);
+      await settle();
+      await go('/snapshots?tenant=initech');
+      await ev(`$click('Hold a time range'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #hold-from')`, 'hold range dialog');
+      await ev(`$fill('#hold-source', 'vm-101'); $fill('#hold-reason', 'Incident 2026-031: suspected intrusion on app01'); return true;`);
+      await shot('snapshot-hold-range');
+      await closeDialogs();
+      await go('/snapshots?held=true');
+      await ev(`$rowClick('initech', 'Release hold'); return true;`);
+      await confirmOk();
+      await settle();
+      await shot('snapshots-held');
+      await login('admin');
+    }],
     ['approvals-off', async () => {
       // switch approvals off (a request by admin, approved by a security officer) for the remaining pictures
       await login('admin');
