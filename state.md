@@ -287,3 +287,16 @@ Six parallel worktree agents (each merges main into its branch before reporting)
 - [x] add-on: registry pull credential for the private repo (Settings → Updates; nexus-update writes /run/ostree/auth.json only during a fetch); tests test_private_registry_login_only_during_the_fetch, update_registry_credential
 - [x] all Phase 14 parts merged
 - [ ] NEXT (after usage limit): full suite, build image, VM labs (PVE e2e incl. phase13/phase14d2/diag steps, console-gate.sh, forwarding.sh, plugins, ui-smoke), screenshots, CI, release 0.1.0-alpha
+
+## Phase 14 VM verification (2026-10-12)
+- PVE e2e on the real image incl. steps phase13, phase14d2 (tokens, CSR → install → revert), access, diag; console gate (code once, reuse refused, recovery key, shells unconfined_t); 0 AVCs after fixes.
+- Found + fixed in the VM: nexus-tls/nexus-diag could not read web-api requests (UMask 0077), init_t watch on the request files, nexus-update → nexus-diag domain transition, RestrictSUIDSGID vs setgid mkdir, diag keyd socket group, gate scope start (init_t:system start/stop) + no password agent, nexus-update tick no longer leaves a failed unit when the private registry refuses (status.json shows the error).
+- Forwarding lab not yet completed (blocked behind the gate lab); to run with the Phase 15 image.
+
+## Phase 15 — Restore and protection (started 2026-10-12)
+- [x] 15b restore to a host from any file snapshot — merged (no schema)
+- [x] 15c legal hold — merged as catalog v18
+- [x] 15g per-tenant file index + search — merged as catalog v19
+- [x] 15a+15d restore options + consistency — merged as catalog v20
+- [ ] 15e+15f selection + agents (agent re-merging main, v21)
+- [ ] labs (PVE e2e incl. legal-hold, forwarding, console gate, plugins, linux agent xhost), screenshots, CI, release 0.1.0-alpha (Phases 13–15)
