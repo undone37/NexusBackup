@@ -142,6 +142,7 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | Windows agent installer (Phase 20) | **MSI (WiX), suited for GPO/Intune; .deb/.rpm/.msi get SHA256SUMS + cosign blob signatures at release time (no GPG/Authenticode keys yet)** (decided 2026-10-12) | Enterprise deployment. |
 | Endpoint UIs (Phase 24) | **Linux TUI + Windows/Linux desktop GUI showing the last backup sessions (pushed by the appliance after each backup), next run, appliance reachability; "Back up now" is a local request picked up by an appliance poll of every agent (agent still never connects out); roaming laptops only on LAN/VPN (retry when reachable, UI shows "not reachable since"); GUI in Rust + iced with a tray icon (shared Windows/Linux), talking to the local agent service over a socket/named pipe; no end-user self-service restore (restores stay admin-only on the appliance)** (decided 2026-10-12, user request; style inspired by Veeam Agent for Linux/Windows) | End users see protection status on their machine. |
 | Veeam B&R comparison (2026-10-12) | **Configuration backup now (DR blocker); restore tests + recovery plans as Phase 25; the rest placed into Phases 21–24 (docs/veeam-comparison.md)** (decided 2026-10-12, recommended path) | |
+| Edge proxy (Phase 26) | **Separate single VM (DMZ or client network), internet-facing threat model, managed by the appliance which connects out to it; relay only (end-to-end TLS appliance↔agent); built as a separate later phase after Phase 25** (decided 2026-10-12) | Roaming laptops without VPN, without inbound connections to the appliance. |
 | Legal hold (Phase 15) | **Set by the security officer alone (adds protection); release needs approval; advisory to secondaries** (decided 2026-10-12) | Incident tool beyond retention locks. |
 | API tokens (Phase 14) | **Scoped read/operator, expiring, hashed; can never approve, change settings/users/tokens or download** (decided 2026-10-12) | Automation without weakening four-eyes. |
 | Vault mode (Phase 17) | **One-way profile for secondaries; switching off needs approval + recovery key** (decided 2026-10-12) | Protects the vault copy against one stolen admin account. |
@@ -719,6 +720,15 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
 - SureBackup-style automated restore tests in an isolated PVE network (boot, guest-agent ping, port checks), recovery
   plans with daily readiness checks and DR reports; plus the Veeam items placed into Phases 21–24
   (docs/veeam-comparison.md). Configuration backup is done immediately (DR blocker).
+
+### Phase 26 — Edge proxy for roaming agents (added 2026-10-12 by user request)
+- `nexus-edge`: a separate single bootc VM, hosted by the customer in a DMZ or the client network, internet-facing
+  hardened (only the agent port; mTLS before anything else; rate limits; no admin UI on the public port). The appliance
+  connects out to the proxy (enrolled with a one-time token, pushes its config, receives health/logs, updates it) and
+  keeps a control tunnel; laptop agents connect out to the proxy with their agent certificate; the appliance opens the
+  normal backup/restore session to the agent through the proxy, TLS end to end (pinned certs) — the proxy only
+  forwards bytes, holds no keys or data. "Back up now" from the endpoint UI starts within seconds from anywhere.
+  Compromise of the proxy: denial of service + connection metadata, no data, no path to the appliance.
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
