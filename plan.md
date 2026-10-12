@@ -141,6 +141,7 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | Scope while the maintainer is away (2026-10-12) | **Phases 19, 20, then 21–23, each with labs** (decided 2026-10-12) | |
 | Windows agent installer (Phase 20) | **MSI (WiX), suited for GPO/Intune; .deb/.rpm/.msi get SHA256SUMS + cosign blob signatures at release time (no GPG/Authenticode keys yet)** (decided 2026-10-12) | Enterprise deployment. |
 | Endpoint UIs (Phase 24) | **Linux TUI + Windows/Linux desktop GUI showing the last backup sessions (pushed by the appliance after each backup), next run, appliance reachability; "Back up now" is a local request picked up by an appliance poll of every agent (agent still never connects out); roaming laptops only on LAN/VPN (retry when reachable, UI shows "not reachable since"); GUI in Rust + iced with a tray icon (shared Windows/Linux), talking to the local agent service over a socket/named pipe; no end-user self-service restore (restores stay admin-only on the appliance)** (decided 2026-10-12, user request; style inspired by Veeam Agent for Linux/Windows) | End users see protection status on their machine. |
+| Veeam B&R comparison (2026-10-12) | **Configuration backup now (DR blocker); restore tests + recovery plans as Phase 25; the rest placed into Phases 21–24 (docs/veeam-comparison.md)** (decided 2026-10-12, recommended path) | |
 | Legal hold (Phase 15) | **Set by the security officer alone (adds protection); release needs approval; advisory to secondaries** (decided 2026-10-12) | Incident tool beyond retention locks. |
 | API tokens (Phase 14) | **Scoped read/operator, expiring, hashed; can never approve, change settings/users/tokens or download** (decided 2026-10-12) | Automation without weakening four-eyes. |
 | Vault mode (Phase 17) | **One-way profile for secondaries; switching off needs approval + recovery key** (decided 2026-10-12) | Protects the vault copy against one stolen admin account. |
@@ -713,6 +714,11 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
   sessions); new Linux desktop GUI agent package (tray + window, same iced codebase). Appliance: session summaries
   pushed to the agent after each backup; lightweight poll of enrolled agents for queued requests and reachability;
   laptop handling (reachability-based retry, "last seen"). No self-service restore.
+
+### Phase 25 — Recovery assurance (added 2026-10-12 from the Veeam B&R comparison)
+- SureBackup-style automated restore tests in an isolated PVE network (boot, guest-agent ping, port checks), recovery
+  plans with daily readiness checks and DR reports; plus the Veeam items placed into Phases 21–24
+  (docs/veeam-comparison.md). Configuration backup is done immediately (DR blocker).
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
