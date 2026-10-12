@@ -1248,3 +1248,125 @@ fn capacity_samples_daily() {
         "no store, no sample"
     );
 }
+
+fn alerts_of(s: &Scheduler, kind: &str) -> Vec<(String, String)> {
+    let c = s.db.conn();
+    let mut q = c
+        .prepare("SELECT severity, message FROM alerts WHERE kind = ?1 ORDER BY id")
+        .unwrap();
+    let rows = q.query_map([kind], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    rows.map(Result::unwrap).collect()
+}
+
+fn stats_line(source: &str, time: i64, plain: u64, stored: u64) -> String {
+    format!(
+        "nexus-stats {}\n",
+        json!({"source": source, "time": time, "read": plain, "logical": 100 * plain,
+               "new_chunks": 1, "new_plain": plain, "new_stored": stored})
+    )
+}
+
+/// Phase 13d/e: a backup job's `nexus-stats` lines land in `backup_stats`
+/// (idempotent), and a run far above the source's median raises one critical
+/// `anomaly` alert naming the last snapshot before it.
+#[test]
+fn backup_stats_and_anomaly_alert() {
+    let e = env(1);
+    let mut s = sched(&e);
+    fs::remove_file(e.d.path().join("pve")).unwrap();
+    script(
+        &e.d.path().join("pve"),
+        &format!(
+            "echo 'committed vm-100/1000'; echo '{}'",
+            stats_line("vm-100", 1000, 5 << 20, 2 << 20).trim()
+        ),
+    );
+    let id = manual(&s, "backup", "t1", json!({"group_id": 1}));
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert_eq!(state(&s, id), "ok");
+    let row = |t: i64| -> (i64, i64, i64) {
+        s.db.conn()
+            .query_row(
+                "SELECT logical, new_plain, new_stored FROM backup_stats WHERE tenant='t1' AND source='vm-100' AND time=?1",
+                [t],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+    };
+    assert_eq!(row(1000), (500 << 20, 5 << 20, 2 << 20));
+    // a repeat of the same snapshot updates in place
+    s.record_stats("t1", &stats_line("vm-100", 1000, 6 << 20, 3 << 20))
+        .unwrap();
+    assert_eq!(row(1000).1, 6 << 20);
+
+    // history: 5 runs of ~1 GiB, snapshot 1004 kept
+    const G: u64 = 1 << 30;
+    for t in 1001..=1004 {
+        s.record_stats("t1", &stats_line("vm-100", t, G, G / 2)).unwrap();
+    }
+    s.db.conn()
+        .execute(
+            "INSERT INTO snapshots (tenant, source, time, size, local, offsite) VALUES ('t1', 'vm-100', 1004, 1, 1, 0)",
+            [],
+        )
+        .unwrap();
+    assert!(alerts_of(&s, "anomaly").is_empty(), "not enough history yet");
+    // 5 points now (6 MiB, 1 GiB × 4): median 1 GiB, limit 3 GiB
+    s.record_stats("t1", &stats_line("vm-100", 1005, 3 * G, 3 * G / 2))
+        .unwrap();
+    assert!(alerts_of(&s, "anomaly").is_empty(), "at the limit");
+    s.record_stats("t1", &stats_line("vm-100", 1006, 10 * G, 5 * G))
+        .unwrap();
+    let a = alerts_of(&s, "anomaly");
+    assert_eq!(a.len(), 1);
+    assert_eq!(a[0].0, "critical");
+    assert!(
+        a[0].1
+            .starts_with("change-rate anomaly on t1/vm-100: snapshot 1006: 10.0 GiB new data")
+            && a[0].1.ends_with("last snapshot before: vm-100/1004"),
+        "{}",
+        a[0].1
+    );
+    // disabled by the setting
+    catalog::set_setting(&s.db.conn(), "anomaly", r#"{"enabled": false}"#).unwrap();
+    s.db.conn().execute("UPDATE alerts SET acked_by='op'", []).unwrap();
+    s.record_stats("t1", &stats_line("vm-100", 1007, 50 * G, 25 * G))
+        .unwrap();
+    assert_eq!(alerts_of(&s, "anomaly").len(), 1);
+}
+
+/// Phase 13d: soft quota alerts from the latest capacity sample: warning at
+/// 80 %, critical at 100 %; tenants without a quota never alert.
+#[test]
+fn quota_alerts() {
+    let e = env(1);
+    let s = sched(&e);
+    let c = || s.db.conn();
+    c().execute_batch(
+        "UPDATE tenants SET quota_bytes = 1000 WHERE name = 't1';
+         INSERT INTO capacity_samples (day, tenant, used, logical) VALUES
+           ('2026-10-01', 't1', 100, 1), ('2026-10-02', 't1', 850, 1), ('2026-10-02', 't2', 999999, 1);",
+    )
+    .unwrap();
+    s.check_quotas().unwrap();
+    s.check_quotas().unwrap();
+    let a = alerts_of(&s, "quota");
+    assert_eq!(a.len(), 1, "deduplicated: {a:?}");
+    assert_eq!(a[0].0, "warning");
+    assert!(
+        a[0].1.starts_with("tenant t1 uses over 80 % of its storage quota"),
+        "{}",
+        a[0].1
+    );
+    c().execute(
+        "INSERT INTO capacity_samples (day, tenant, used, logical) VALUES ('2026-10-03', 't1', 1200, 1)",
+        [],
+    )
+    .unwrap();
+    s.check_quotas().unwrap();
+    let a = alerts_of(&s, "quota");
+    assert_eq!(a.len(), 2);
+    assert_eq!(a[1].0, "critical");
+    assert!(a[1].1.contains("120 %"), "{}", a[1].1);
+}

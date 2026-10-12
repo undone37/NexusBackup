@@ -353,3 +353,51 @@ fn tree_index_roundtrip_and_old_variants_still_decode() {
     std::thread::sleep(std::time::Duration::from_millis(20));
     assert_eq!(s.gc(true).unwrap().deleted, 0, "tree chunks are marked");
 }
+
+/// New-data accounting (docs/storage-accounting.md): plain vs. sealed bytes of
+/// new chunks, nothing new on a repeat, and the `nexus-stats` line.
+#[test]
+fn written_stats_count_plain_and_sealed_bytes() {
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), 0, 0);
+    let before = s.written();
+    // zeros compress to almost nothing; pseudo-random data stays plain + overhead
+    let st = s.store_file_stats(&vec![0u8; 1 << 20][..]).unwrap();
+    assert_eq!((st.new_chunks, st.new_bytes), (st.chunks.len(), 1 << 20));
+    assert!(st.new_stored > 0 && st.new_stored < st.new_bytes / 10, "{st:?}");
+    let rnd = image(1);
+    let img = s.store_image(&rnd[..], 65536).unwrap();
+    let w = s.written().since(before);
+    assert_eq!(w.plain, (1 << 20) + rnd.len() as u64);
+    assert!(
+        w.stored > st.new_stored + rnd.len() as u64,
+        "random data does not compress: {w:?}"
+    );
+    // the same data again: nothing new
+    let again = s.written();
+    let st2 = s.store_file_stats(&vec![0u8; 1 << 20][..]).unwrap();
+    assert_eq!((st2.new_chunks, st2.new_bytes, st2.new_stored), (0, 0, 0));
+    assert_eq!(s.written().since(again), chunkstore::Written::default());
+
+    let files = Index::Dynamic {
+        entries: vec![FileEntry {
+            path: "z".into(),
+            mode: 0o644,
+            size: st.size,
+            mtime: 0,
+            chunks: st.chunks,
+        }],
+    };
+    let m = s
+        .commit_snapshot("vm-7", 5, &[("disk0", img), ("files", files)])
+        .unwrap();
+    let line = s.stats_line(&m, 42, w).unwrap();
+    let want = format!(
+        "nexus-stats {{\"source\":\"vm-7\",\"time\":5,\"read\":42,\"logical\":{},\"new_chunks\":{},\"new_plain\":{},\"new_stored\":{}}}",
+        (1 << 20) + rnd.len(),
+        w.chunks,
+        w.plain,
+        w.stored
+    );
+    assert_eq!(line, want);
+}

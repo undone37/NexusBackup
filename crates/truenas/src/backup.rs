@@ -170,6 +170,7 @@ pub fn backup(
         }
         let started = Instant::now();
         let before = remote.received;
+        let written = store.written();
         match one(
             store,
             nas,
@@ -198,6 +199,14 @@ pub fn backup(
                     rep.transferred_bytes,
                     if rep.full { ", full read (no reference snapshot)" } else { "" }
                 ));
+                let new = store.written().since(written);
+                match store
+                    .load_manifest(&rep.source, rep.time)
+                    .and_then(|m| store.stats_line(&m, rep.transferred_bytes, new))
+                {
+                    Ok(l) => log(&l),
+                    Err(e) => log(&format!("stats of {}/{}: {e}", rep.source, rep.time)),
+                }
                 r.committed.push(rep);
             }
             Err(e) => {

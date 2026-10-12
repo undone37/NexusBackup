@@ -187,6 +187,7 @@ fn main() -> Result<()> {
                 excludes: b.excludes.clone(),
                 hooks: b.hooks,
             };
+            let written = store.written();
             let r = backup::backup(&store, &mut map, &mut s, &cfg.agent()?.id, &spec, &mut |l| {
                 println!("{l}")
             })?;
@@ -207,6 +208,11 @@ fn main() -> Result<()> {
                 r.wanted_chunks,
                 r.wanted_bytes,
                 r.new_chunks
+            );
+            let m = store.load_manifest(&r.source, r.time)?;
+            println!(
+                "{}",
+                store.stats_line(&m, r.wanted_bytes, store.written().since(written))?
             );
             if !r.consistent || r.inconsistent_files > 0 {
                 println!(

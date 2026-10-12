@@ -44,6 +44,7 @@ pub const WEB_ACTIONS: &[&str] = &[
     "approvals.disable",
     "oidc.update",
     "update.apply",
+    "settings.anomaly",
 ];
 
 /// Who may approve or reject requests (never their own: see [`approve`]).
@@ -235,6 +236,7 @@ fn unchanged_since_request(c: &Connection, action: &str, p: &Value) -> ApiResult
         "policy.update" => crate::resources::policy_value(c, int(p, "id")?)?,
         "group.update" => crate::resources::group_value(c, int(p, "id")?)?,
         "tenant.update" => crate::resources::tenant_value(c, p["name"].as_str().unwrap_or_default())?,
+        "settings.anomaly" => crate::storage::anomaly_value(c)?,
         _ => return Ok(()),
     };
     if current.as_ref() != Some(&p["old"]) {
@@ -288,6 +290,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         "oidc.update" => crate::oidc::execute(c, p)?,
         // the request file for nexus-update is written after the commit (settings::after_approve)
         "update.apply" => {}
+        "settings.anomaly" => catalog::set_setting(c, crate::storage::ANOMALY_SETTING, &p["anomaly"].to_string())?,
         "agent.delete" => {
             let id = p["id"].as_str().unwrap_or_default();
             if crate::agents::agent_in_use(c, id)? {

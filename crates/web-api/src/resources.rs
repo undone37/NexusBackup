@@ -241,12 +241,14 @@ pub fn public_offsite(v: &Value) -> Value {
 
 pub async fn list_tenants(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>> {
     let c = st.cat.conn();
-    let mut s = c.prepare("SELECT name, offsite FROM tenants WHERE ?1 IS NULL OR name = ?1 ORDER BY name")?;
+    let mut s =
+        c.prepare("SELECT name, offsite, quota_bytes FROM tenants WHERE ?1 IS NULL OR name = ?1 ORDER BY name")?;
     let rows = s
         .query_map([ctx.scope()], |r| {
             let o: String = r.get(1)?;
             let o = serde_json::from_str::<Value>(&o).unwrap_or_default();
-            Ok(json!({"name": r.get::<_, String>(0)?, "offsite": public_offsite(&o)}))
+            Ok(json!({"name": r.get::<_, String>(0)?, "offsite": public_offsite(&o),
+                      "quota_bytes": r.get::<_, Option<i64>>(2)?}))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(Value::Array(rows)))

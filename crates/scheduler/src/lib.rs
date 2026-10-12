@@ -63,12 +63,14 @@
 //! web-api). Structured results go into `jobs.result` (see [`Scheduler::finish`]).
 
 pub mod alerts;
+pub mod anomaly;
 pub mod firewall;
 mod plugins;
 pub mod replica;
 pub mod run;
 pub mod schedule;
 pub mod sshkeys;
+pub mod stats;
 
 use anyhow::{bail, Context, Result};
 use catalog::rusqlite::{params, OptionalExtension};
@@ -654,6 +656,7 @@ impl Scheduler {
                 self.last_refresh = now;
                 self.log_err(|s| s.check_capacity());
                 self.log_err(|s| s.sample_capacity(now));
+                self.log_err(|s| s.check_quotas());
                 self.log_err(|s| s.publish_ssh_keys());
             }
         }
@@ -1118,6 +1121,7 @@ impl Scheduler {
         }
         if ok && (job.kind == "backup" || job.kind == "plugin_backup") {
             self.inconsistent_alerts(job.id, &job.tenant, &log)?;
+            self.record_stats(&job.tenant, &log)?;
         }
         if let Some(q) = job.params["quorum_id"].as_i64() {
             self.db.conn().execute(

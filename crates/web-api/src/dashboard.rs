@@ -414,12 +414,13 @@ fn capacity(c: &Connection, scope: Option<&str>, days: i64, now: i64) -> ApiResu
         .map(|(d, used, _)| (day_number(d) as f64, *used as f64))
         .collect();
     let free = fs["free"].as_i64();
+    let (dedup, compression) = crate::storage::ratios(c, scope)?;
     Ok(json!({
         "total": fs["total"], "used": if scope.is_some() { json!(physical) } else { fs["used"].clone() },
         "free": fs["free"], "logical": logical, "physical": physical,
         "reduction": (physical > 0).then(|| logical as f64 / physical as f64),
-        // not measured separately yet (the store keeps no uncompressed chunk sizes)
-        "dedup": Value::Null, "compression": Value::Null,
+        // from backup_stats (docs/storage-accounting.md); null before the first measured backup
+        "dedup": dedup, "compression": compression,
         "per_day": samples.iter().filter(|s| s.0 > window)
             .map(|(d, u, l)| json!({"day": d, "used": u, "logical": l})).collect::<Vec<_>>(),
         "forecast_full_days": forecast_days(&points, free),

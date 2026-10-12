@@ -106,6 +106,15 @@ pub struct FileEntry {
 }
 
 impl Index {
+    /// Logical (plain) size: the image size, or the sum of the file sizes.
+    pub fn size(&self) -> u64 {
+        match self {
+            Index::Fixed { size, .. } => *size,
+            Index::Dynamic { entries } => entries.iter().map(|e| e.size).sum(),
+            Index::Tree { entries } => entries.iter().map(|e| e.size).sum(),
+        }
+    }
+
     pub fn chunk_ids(&self) -> Vec<&ChunkId> {
         match self {
             Index::Fixed { chunks, .. } => chunks.iter().collect(),
@@ -134,6 +143,30 @@ pub struct FileStats {
     /// chunks (and their plain bytes) that were not in the store before
     pub new_chunks: usize,
     pub new_bytes: u64,
+    /// sealed (compressed + encrypted) bytes written for those new chunks
+    pub new_stored: u64,
+}
+
+/// Chunks new to the store, written through one `Store` handle since it was
+/// opened (`Store::written`). A connector backs up one snapshot at a time, so
+/// the difference before/after a snapshot is that snapshot's new data.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct Written {
+    pub chunks: u64,
+    /// plain bytes of the new chunks
+    pub plain: u64,
+    /// sealed bytes on disk of the new chunks (after zstd + AEAD)
+    pub stored: u64,
+}
+
+impl Written {
+    pub fn since(self, before: Written) -> Written {
+        Written {
+            chunks: self.chunks - before.chunks,
+            plain: self.plain - before.plain,
+            stored: self.stored - before.stored,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -220,6 +253,7 @@ pub struct Store {
     chunk_lock: Mutex<()>,
     meta_lock: Mutex<()>,
     dirty_dirs: Mutex<HashSet<PathBuf>>,
+    written: Mutex<Written>,
 }
 
 pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
@@ -293,6 +327,7 @@ impl Store {
             chunk_lock: Mutex::new(()),
             meta_lock: Mutex::new(()),
             dirty_dirs: Mutex::new(HashSet::new()),
+            written: Mutex::new(Written::default()),
         })
     }
 
@@ -331,9 +366,48 @@ impl Store {
 
     /// Returns (chunk id, newly stored).
     pub fn insert_chunk(&self, data: &[u8]) -> io::Result<(ChunkId, bool)> {
+        let (id, stored) = self.insert_chunk_stored(data)?;
+        Ok((id, stored > 0))
+    }
+
+    /// Like `insert_chunk`; returns the sealed size written, 0 if the chunk existed.
+    pub fn insert_chunk_stored(&self, data: &[u8]) -> io::Result<(ChunkId, u64)> {
         let id = self.keys.chunk_id(data);
-        let new = self.store_sealed(&id, || Ok(self.keys.seal_chunk(&id, data)))?;
-        Ok((id, new))
+        let mut stored = 0;
+        let new = self.store_sealed(&id, || {
+            let s = self.keys.seal_chunk(&id, data);
+            stored = s.len() as u64;
+            Ok(s)
+        })?;
+        if !new {
+            return Ok((id, 0));
+        }
+        let mut w = self.written.lock().unwrap();
+        w.chunks += 1;
+        w.plain += data.len() as u64;
+        w.stored += stored;
+        Ok((id, stored))
+    }
+
+    /// Totals of the chunks this handle added to the store (see `Written`).
+    pub fn written(&self) -> Written {
+        *self.written.lock().unwrap()
+    }
+
+    /// The connectors' machine-readable per-snapshot line (docs/storage-accounting.md):
+    /// `nexus-stats {"source","time","read","logical","new_chunks","new_plain","new_stored"}`.
+    /// `read` = bytes read from the source, `logical` = the snapshot's size (sum of
+    /// its indexes), `new` = `written().since(<before the snapshot>)`.
+    pub fn stats_line(&self, m: &Manifest, read: u64, new: Written) -> io::Result<String> {
+        let mut logical = 0;
+        for i in &m.indexes {
+            logical += self.load_index(m, i)?.size();
+        }
+        // source names pass check_name(): no JSON escaping needed
+        Ok(format!(
+            "nexus-stats {{\"source\":\"{}\",\"time\":{},\"read\":{read},\"logical\":{logical},\"new_chunks\":{},\"new_plain\":{},\"new_stored\":{}}}",
+            m.source, m.time, new.chunks, new.plain, new.stored
+        ))
     }
 
     /// Inserts an already sealed chunk (offsite restore / DR). It is fully
@@ -503,12 +577,13 @@ impl Store {
         let mut s = FileStats::default();
         for c in fastcdc::v2020::StreamCDC::new(r, CDC_MIN, CDC_AVG, CDC_MAX) {
             let c = c.map_err(io::Error::other)?;
-            let (id, new) = self.insert_chunk(&c.data)?;
+            let (id, stored) = self.insert_chunk_stored(&c.data)?;
             s.chunks.push(id);
             s.size += c.length as u64;
-            if new {
+            if stored > 0 {
                 s.new_chunks += 1;
                 s.new_bytes += c.length as u64;
+                s.new_stored += stored;
             }
         }
         Ok(s)

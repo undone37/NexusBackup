@@ -32,6 +32,7 @@ pub mod replication;
 pub mod resources;
 pub mod settings;
 pub mod spa;
+pub mod storage;
 pub mod tls;
 pub mod validate;
 
@@ -409,6 +410,9 @@ pub fn router(st: St) -> Router {
         .route("/auth/oidc/start", get(oidc::start))
         .route("/auth/oidc/callback", get(oidc::callback))
         .route("/dashboard", get(dashboard::dashboard))
+        .route("/storage", get(storage::storage))
+        .route("/tenants/{name}/quota", put(storage::put_quota))
+        .route("/settings/anomaly", get(storage::get_anomaly).put(storage::put_anomaly))
         .route("/settings/oidc", get(oidc::get_settings).put(oidc::put_settings))
         .route("/settings/oidc/test", post(oidc::test_settings))
         .route("/settings/alerts", get(settings::get_alerts).put(settings::put_alerts))
