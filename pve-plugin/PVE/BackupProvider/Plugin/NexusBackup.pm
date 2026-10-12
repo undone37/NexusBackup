@@ -113,12 +113,17 @@ sub backup_get_mechanism {
 sub backup_vm_query_incremental {
     my ($self, $vmid, $volumes) = @_;
 
-    my %known;
+    # Only the newest archive counts: the appliance builds an incremental on top
+    # of its newest snapshot, so a disk missing there (excluded by the group,
+    # then included again) must start with a fresh bitmap ('new') instead of
+    # reusing one that was committed while the disk was skipped.
+    my $newest;
     my $index = eval { $self->plugin()->read_index($self->{storeid}) } // { archives => [] };
     for my $a ($index->{archives}->@*) {
         next if $a->{vmid} != $vmid || $a->{type} ne 'qemu';
-        $known{$_} = 1 for $a->{devices}->@*;
+        $newest = $a if !$newest || $a->{ctime} > $newest->{ctime};
     }
+    my %known = map { $_ => 1 } ($newest ? $newest->{devices}->@* : ());
 
     my $res = {};
     for my $device (keys %$volumes) {

@@ -286,6 +286,30 @@ is_deeply([$prov->restore_get_mechanism('backup/nexus-101-1760000100', 'nexus')]
 is_deeply($prov->backup_vm_query_incremental(200, { 'drive-scsi0' => { size => 1 } }),
     { 'drive-scsi0' => 'new' }, 'query_incremental ignores container archives');
 
+# a disk excluded in the newest snapshot gets a fresh bitmap even though an older one has it
+put_index(JSON->new->encode({
+    version => 1,
+    archives => [
+        { volname => 'backup/nexus-101-1760000100', vmid => 101, ctime => 1760000100,
+          devices => ['drive-scsi0', 'drive-scsi1'], config => "cores: 2\n" },
+        { volname => 'backup/nexus-101-1760000500', vmid => 101, ctime => 1760000500,
+          devices => ['drive-scsi0'], device_sizes => { 'drive-scsi0' => 6144, 'drive-scsi1' => 1024 },
+          config => "cores: 2\n" },
+    ],
+}));
+is_deeply($prov->backup_vm_query_incremental(101, { 'drive-scsi0' => { size => 1 },
+    'drive-scsi1' => { size => 1 } }), { 'drive-scsi0' => 'use', 'drive-scsi1' => 'new' },
+    'query_incremental uses the newest archive only (placeholder sizes do not count)');
+put_index(JSON->new->encode({
+    version => 1,
+    archives => [
+        { volname => 'backup/nexus-101-1760000100', vmid => 101, ctime => 1760000100,
+          devices => ['drive-scsi0'], device_sizes => { 'drive-scsi0' => 6144 }, config => "cores: 2\n" },
+        { volname => 'backup/nexus-200-1760000300', vmid => 200, type => 'lxc', ctime => 1760000300,
+          size => 10240, devices => [], config => "arch: amd64\nunprivileged: 1\n", firewall => undef },
+    ],
+}));
+
 # tar command line
 {
     my $cmd = PVE::BackupProvider::Plugin::NexusBackup::ct_tar_command(
