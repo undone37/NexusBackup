@@ -13,7 +13,8 @@ disaster-recovery site.
 
 > **Status:** Replication runs in a two-VM lab (two appliance images, SELinux enforcing): enrollment through the
 > real port 8443, initial sync about 181 MB/s, incremental sync, file restore on the secondary with the primary
-> powered off. A lab rerun after the latest integration is still pending (`state.md`).
+> powered off. A lab rerun after the latest integration is still pending (`state.md`). Sync windows, bandwidth
+> windows and **Close vault now** are covered by automated tests; their run in the two-VM lab is still pending.
 
 ![Replication page: peers and sources](images/replication.png)
 
@@ -27,8 +28,9 @@ pulls from. One appliance can be both, for different tenants.
 |---|---|
 | Create, revoke peers; request a key export; create, change, delete replication sources | **Administrator** |
 | **Sync now** | Administrator, Operator |
+| **Close vault now**; **Request reopening** | Administrator, Security officer |
 | View the page | Administrator, Security officer, Operator (tenant users do not see it) |
-| Approve peer creation, key export, revocation | another Administrator or a Security officer |
+| Approve peer creation, key export, revocation; reopening a closed vault | another Administrator or a Security officer |
 
 ## Step 1 — On the primary: create a peer
 
@@ -94,6 +96,47 @@ versions under **Keys exported**.
   verification, nothing of that snapshot is imported, and a `replication_verify` alert is raised.
 - **Last sync** shows per tenant when the last successful sync was, and the last error if one followed it.
 
+## Sync window and bandwidth windows
+
+Click **Windows** on a source (administrators) to restrict when and how fast the secondary pulls:
+
+- **Sync window**: syncs run only inside these windows (start days, **From**, **To**; none = always). Outside
+  them the firewall of the secondary does not even let it reach the primary, so the copy is offline most of the
+  time (an "air gap" by schedule). The row shows **Outside sync window** then, and **Sync now** is not offered.
+  A sync still running when the window closes is cancelled; the next one continues where it stopped (chunks
+  already fetched stay, a snapshot is committed only when complete). A cancelled sync is not an error.
+- **Bandwidth windows**: **Pause (no transfer)** or **Limit** with a **Rate (MB/s)**, exactly as for offsite
+  uploads ([07 Offsite copies](07-offsite.md)): a pause wins over a limit, the lowest of several limits
+  applies, a limit replaces the **Bandwidth limit** while it is active.
+- **Time zone of the windows** applies to both (default UTC).
+
+![Sync window at night and a limit during office hours](images/replication-windows.png)
+
+Tightening applies at once: a narrower sync window, a longer pause, a lower rate. Widening the sync window,
+removing or shortening a pause, a higher rate or another time zone needs approval by a second person while
+approvals are enabled ([10 Approvals and audit](10-approvals-and-audit.md)). Choose the sync window so that the
+schedule's runs fall into it; the `replication_lag` alert still fires after 48 hours without a successful sync.
+
+## Close vault now
+
+**Close vault now** on a source (administrator or security officer) cuts the secondary off from that primary
+immediately, for example when the primary may be compromised:
+
+- the firewall target of the primary is removed within a few seconds, a running sync is cancelled, queued syncs
+  are dropped and no new ones start;
+- the row shows **Vault closed** with who closed it and since when; the info alert `vault_closed` stays open
+  while it is closed (no `replication_lag` warnings meanwhile);
+- closing needs no approval (it only adds protection) and is recorded in the audit log
+  (`replication_source.close`).
+
+![A closed vault on the secondary](images/replication-closed.png)
+
+**Request reopening** asks for the source to be opened again. Another administrator or security officer
+approves it on the **Approvals** page (action `replication.reopen`); syncs resume with the next scheduled run.
+With approvals disabled the source reopens at once. The API also accepts a closing time
+(`POST /api/v1/replication/sources/{id}/close` with `{"until": <unix time>}`); a closure can be extended but never
+shortened without the approval.
+
 ## Replicated tenants on the secondary
 
 - They are **read-only copies**: the secondary refuses protection groups, agents and backups in them.
@@ -145,6 +188,7 @@ valid for 10 years).
 | `replication_verify` | critical | a fetched object failed verification; nothing was imported |
 | `job_failed` | critical | a sync or enrollment job failed |
 | `legal_hold_advisory` | warning | the primary holds a replicated snapshot under a legal hold (below) |
+| `vault_closed` | info | the source was closed with **Close vault now**; resolves when it is reopened |
 
 See [11 Alerts and monitoring](11-alerts-and-monitoring.md).
 
