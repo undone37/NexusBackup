@@ -187,6 +187,10 @@ struct PluginRestoreP {
     /// plugin_mount: 1..=1440
     #[serde(default, skip_serializing_if = "Option::is_none")]
     minutes: Option<u64>,
+    /// plugin_restore into another source of the same tenant and kind (manifest
+    /// `target_source`, e.g. Microsoft 365 into another M365 tenant)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_source_id: Option<i64>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -386,6 +390,9 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
                     return Err(ApiError::bad("minutes: 1..=1440"));
                 }
                 r.restore = None;
+                if r.target_source_id.is_some() {
+                    return Err(ApiError::bad("target_source_id: restores only"));
+                }
                 "mount".to_owned()
             } else {
                 r.minutes = None;
@@ -412,6 +419,22 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
                 Some(schema) => crate::plugins::check_schema(schema, &r.params, "params", &[])?,
                 None if r.params.as_object().is_some_and(|o| o.is_empty()) => {}
                 None => return Err(ApiError::bad("params: this restore takes no parameters")),
+            }
+            if let Some(tid) = r.target_source_id {
+                // only sources of the same appliance tenant (source_of) and plugin kind
+                if !action.target_source {
+                    return Err(ApiError::bad(format!(
+                        "target_source_id: restore {want} cannot run into another source"
+                    )));
+                }
+                let (tcur, tspec) = crate::plugins::source_of(&st.cat.conn(), tenant, tid)
+                    .map_err(|_| ApiError::bad("target_source_id: no such plugin source in this tenant"))?;
+                if tcur.id != cur.id || tspec.kind != spec.kind {
+                    return Err(ApiError::bad(format!(
+                        "target_source_id: not a {} source",
+                        spec.kind
+                    )));
+                }
             }
             json!(r)
         }

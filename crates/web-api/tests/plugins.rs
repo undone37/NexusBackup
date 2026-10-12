@@ -50,13 +50,16 @@ fn manifest(version: &str) -> Vec<u8> {
         "kinds": [{"kind": "pgx", "title": "PG", "config_schema": {"type": "object", "required": ["host", "user", "password"],
             "properties": {"host": {"type": "string", "format": "hostname"}, "port": {"type": "integer", "format": "port"},
                            "user": {"type": "string", "pattern": "^[a-z_][a-z0-9_]*$"}, "password": {"type": "string", "format": "password"},
-                           "sslmode": {"type": "string", "enum": ["disable", "require"]}, "dbs": {"type": "array", "items": {"type": "string"}}}},
+                           "sslmode": {"type": "string", "enum": ["disable", "require"]}, "dbs": {"type": "array", "items": {"type": "string"}},
+                           "apps": {"type": "array", "maxItems": 4, "items": {"type": "object", "required": ["id", "password"],
+                              "properties": {"id": {"type": "string", "pattern": "^[a-z]+$"}, "password": {"type": "string"}}}}}},
             "secret_fields": ["password"],
             "endpoints": [{"host": "/host", "port": "/port", "default_port": 5432, "proto": "tcp"}],
             "guests": {"title": "Databases", "list": true},
             "restores": [{"id": "download", "title": "Download"},
                          {"id": "to_target", "title": "Restore", "applies_to": "guest", "params_schema": {"type": "object", "required": ["database"],
                             "properties": {"database": {"type": "string", "pattern": "^[a-z]+$"}}}},
+                         {"id": "to_other", "title": "Other source", "target_source": true},
                          {"id": "mount", "title": "Mount", "params_schema": {"type": "object", "properties": {}}}]}]
     }))
     .unwrap()
@@ -514,6 +517,109 @@ async fn plugin_lifecycle_sources_and_jobs() {
         )
         .await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+
+    // lists of objects with secrets (M365 `apps`): sealed per item, kept per item on update
+    let r = t
+        .call(
+            Method::POST,
+            "/api/v1/sources",
+            &admin,
+            Some(json!({"tenant": "acme", "kind": "plugin:pgx", "name": "pg-dr",
+                "config": {"host": "db9", "user": "b", "password": "x", "apps": [{"id": "a", "password": "app-s3cret"}]}})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    let dr = r.body["id"].as_i64().unwrap();
+    assert_eq!(r.body["config"]["apps"], json!([{"id": "a", "password_set": true}]));
+    let opened = |id: i64| {
+        let raw: String =
+            t.st.cat
+                .conn()
+                .query_row("SELECT config FROM sources WHERE id = ?1", [id], |r| r.get(0))
+                .unwrap();
+        assert!(!raw.contains("app-s3cret"));
+        let mut v: Value = serde_json::from_str(&raw).unwrap();
+        t.sk.open_all_with(&source_owner(id), &mut v, &["password"]).unwrap();
+        v
+    };
+    assert_eq!(opened(dr)["apps"][0]["password"], "app-s3cret");
+    let put_apps = |apps: Value| {
+        json!({"name": "pg-dr", "config": {"host": "db9", "user": "b", "apps": apps}})
+    };
+    let r = t
+        .call(Method::PUT, &format!("/api/v1/sources/{dr}"), &admin, Some(put_apps(json!([{"id": "a"}, {"id": "b", "password": "b2"}]))))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(opened(dr)["apps"][0]["password"], "app-s3cret");
+    // another app at position 0: its secret is not taken from the old one
+    for (apps, why) in [
+        (json!([{"id": "b"}]), "config.apps[0].password: required"),
+        (json!([{"id": "B", "password": "x"}]), "must match"),
+        (json!([{"id": "a", "password": "x", "evil": 1}]), "unknown property"),
+    ] {
+        let r = t
+            .call(Method::PUT, &format!("/api/v1/sources/{dr}"), &admin, Some(put_apps(apps)))
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{why}");
+        assert!(r.body["error"].as_str().unwrap().contains(why), "{why}: {:?}", r.body);
+    }
+
+    // restore into another source of the same tenant and kind (manifest `target_source`)
+    let other = |restore: &str, target: Value| {
+        job(
+            "plugin_restore",
+            json!({"source": format!("plugin-pgx-{sid}-db1"), "time": 100, "restore": restore,
+                   "params": {"database": "app"}, "target_source_id": target}),
+        )
+    };
+    let r = t.call(Method::POST, "/api/v1/jobs", &tina, Some(other("to_other", json!(dr)))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "to_other takes no params: {:?}", r.body);
+    let r = t
+        .call(
+            Method::POST,
+            "/api/v1/jobs",
+            &tina,
+            Some(job(
+                "plugin_restore",
+                json!({"source": format!("plugin-pgx-{sid}-db1"), "time": 100, "restore": "to_other", "target_source_id": dr}),
+            )),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let id = r.body["id"].as_i64().unwrap();
+    let stored: String =
+        t.st.cat
+            .conn()
+            .query_row("SELECT params FROM jobs WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&stored).unwrap()["target_source_id"], dr);
+    let r = t.call(Method::POST, "/api/v1/jobs", &tina, Some(other("to_target", json!(dr)))).await;
+    assert!(r.body["error"].as_str().unwrap().contains("cannot run into another source"), "{:?}", r.body);
+    let r = t
+        .call(
+            Method::POST,
+            "/api/v1/sources",
+            &admin,
+            Some(json!({"tenant": "globex", "kind": "plugin:pgx", "name": "pg-globex",
+                "config": {"host": "db8", "user": "b", "password": "x"}})),
+        )
+        .await;
+    let foreign = r.body["id"].as_i64().unwrap();
+    for target in [foreign, 99_999] {
+        let r = t
+            .call(
+                Method::POST,
+                "/api/v1/jobs",
+                &admin,
+                Some(job(
+                    "plugin_restore",
+                    json!({"source": format!("plugin-pgx-{sid}-db1"), "time": 100, "restore": "to_other", "target_source_id": target}),
+                )),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+        assert!(r.body["error"].as_str().unwrap().contains("in this tenant"), "{:?}", r.body);
+    }
 
     // remove refused while a source exists; disable is quorum-gated
     let r = t.call(Method::DELETE, "/api/v1/plugins/pgx", &admin, None).await;
