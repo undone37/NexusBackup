@@ -197,7 +197,7 @@ the source is closed), `vault_closed` (info, while closed),
 verification failure), plus the generic `job_failed`.
 
 ### Windows and closing the vault (Phase 17a/b)
-Per replication source (catalog v23, all in `timezone`, IANA, default UTC):
+Per replication source (catalog v24, all in `timezone`, IANA, default UTC):
 
 - `windows`: bandwidth windows `[{days, from, to, action: "pause"|"limit", rate_bytes?}]` (shared type
   `catalog::schedule::RateWindow`). `nexus-replica` gets them with `bwlimit` and `timezone` in its job config;
