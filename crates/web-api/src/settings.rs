@@ -26,7 +26,7 @@ const OPS_READ: &[&str] = &["admin", "operator", "security_officer"];
 pub const APPLIANCE: &str = "-";
 
 /// Queues an appliance job (scheduler-executed, audited like every job).
-fn queue(st: &St, ctx: &Ctx, kind: &str, p: Value) -> ApiResult<i64> {
+pub(crate) fn queue(st: &St, ctx: &Ctx, kind: &str, p: Value) -> ApiResult<i64> {
     let id = {
         let c = st.cat.conn();
         c.execute(
@@ -131,7 +131,7 @@ pub struct AlertsReq {
     min_severity: Option<String>,
 }
 
-fn mailbox(s: &str) -> bool {
+pub(crate) fn mailbox(s: &str) -> bool {
     let Some((l, d)) = s.split_once('@') else { return false };
     (3..=254).contains(&s.len())
         && !l.is_empty()

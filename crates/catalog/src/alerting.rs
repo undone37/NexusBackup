@@ -40,9 +40,10 @@ const HINTS: &[(&str, &str)] = &[
     ("replication_lag", "Replication from the primary is behind. Check the network path to the primary and the replica_sync job logs. Resolves after the next successful sync."),
     ("replication_verify", "Replicated data failed verification and was not imported. Check the primary's store and run the sync again."),
     ("replication_keys", "The tenant keys on this secondary do not match the primary. Re-export the keys on the primary (needs approval)."),
-    ("break_glass", "An administrator account was reset at the console. Confirm with the person who did it, then acknowledge to clear the banner."),
+    ("break_glass", "An administrator account was reset, or approvals were switched off, at the console. Confirm with the person who did it, then acknowledge to clear the banner."),
     ("account_dormant", "An account was disabled because nobody logged in with it for the configured number of days (Settings → Security). If it is still needed, an admin re-enables it on the Users page; otherwise delete or leave it disabled."),
     ("mgmt_allow_reset", "The management allow-list was cleared at the console (nexus-setup reset-mgmt-allow). Confirm with the person who did it, then set a correct list in Settings → Security."),
+    ("report", "A scheduled report could not be mailed. Check the SMTP server under Settings → Alert delivery (reachable, credentials) and the report's recipients on the Reports page, then use Send now. Resolves after the next successful send."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
 

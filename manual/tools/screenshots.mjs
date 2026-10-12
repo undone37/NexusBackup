@@ -481,6 +481,17 @@ async function main() {
       await until(`return !!document.querySelector('#an-f')`, 'anomaly settings');
       await shot('settings-anomaly');
     }],
+    ['reports', async () => {
+      await go('/reports');
+      await until(`return !!document.querySelector('#r-sched') && document.body.innerText.includes('weekly-ops')`, 'reports page');
+      await ev(`document.querySelector('input[name="report-type"][value="failed"]').click(); return true;`);
+      await settle();
+      await shot('reports', { height: 1300 });
+      await ev(`$rowClick('weekly-ops', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #rs-to')`, 'scheduled report dialog');
+      await shot('report-schedule', { height: 1150 });
+      await closeDialogs();
+    }],
     ['tenants', async () => {
       await go('/tenants');
       await shot('tenants');

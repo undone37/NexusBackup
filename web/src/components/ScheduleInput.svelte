@@ -3,9 +3,14 @@
   import { t } from '../lib/i18n';
   import { DAYS, EVERY, formatSchedule, parseSchedule, type SchedForm } from '../lib/schedule';
 
-  let { value = $bindable(''), id }: { value?: string; id: string } = $props();
-
-  const KINDS = ['daily', 'hours', 'weekdays', 'monthly'] as const;
+  type Kind = 'daily' | 'hours' | 'weekdays' | 'monthly';
+  // `kinds`: the forms offered (scheduled reports: no hourly schedules)
+  let {
+    value = $bindable(''),
+    id,
+    kinds = ['daily', 'hours', 'weekdays', 'monthly'],
+    hint = t.policies.scheduleHint,
+  }: { value?: string; id: string; kinds?: Kind[]; hint?: string } = $props();
   let f: SchedForm = $state(parseSchedule(value) ?? parseSchedule('daily 01:00')!);
   // An outside change of the string (another policy opened) resets the form.
   let last = value;
@@ -36,7 +41,7 @@
     <div class="field">
       <label for="{id}-kind">{t.runctl.kind}</label>
       <select id="{id}-kind" bind:value={f.kind} onchange={sync}>
-        {#each KINDS as k (k)}<option value={k}>{t.runctl.kinds[k]}</option>{/each}
+        {#each kinds as k (k)}<option value={k}>{t.runctl.kinds[k]}</option>{/each}
       </select>
     </div>
     {#if f.kind === 'hours'}
@@ -75,7 +80,7 @@
   <div class="field">
     <label for={id} id="{id}-label">{t.runctl.raw}</label>
     <input {id} class="mono" bind:value required aria-describedby="{id}-hint" />
-    <div class="hint" id="{id}-hint">{t.policies.scheduleHint}</div>
+    <div class="hint" id="{id}-hint">{hint}</div>
   </div>
 </div>
 
