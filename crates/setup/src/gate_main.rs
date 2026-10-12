@@ -107,7 +107,7 @@ fn shell(s: &Session) -> std::io::Result<std::process::ExitStatus> {
 
 fn stop(unit: &str) {
     let _ = Command::new("systemctl")
-        .args(["stop", "--quiet", &format!("{unit}.scope")])
+        .args(["stop", "--quiet", "--no-ask-password", &format!("{unit}.scope")])
         .stderr(Stdio::null())
         .status();
 }
