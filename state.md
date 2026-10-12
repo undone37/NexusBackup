@@ -266,6 +266,6 @@ Parallel worktree agents (schema versions pre-assigned, renumbered on merge if n
 - [x] 13a orphaned-snapshot retention + approved snapshot delete (no schema) — merged 2026-10-12; sweep in daily gc job, `DELETE /snapshots/{t}/{s}/{time}` → quorum `snapshot.delete` → scheduler job; tests orphan_sweep_and_snapshot_delete, snapshot_delete_refuses_locked_and_needs_approval
 - [ ] 13b run control: retries, pause/maintenance, blackout, SLA, schedules + time zones, cancel running jobs, back up selected/failed (v11)
 - [ ] 13c auto-protect + guest inventory, PVE unprotected KPI (v12)
-- [ ] 13d storage accounting (dedup/compression, per tenant/group, growth) + quotas; 13e anomaly alert (v13)
+- [x] 13d storage accounting + quotas; 13e anomaly alert — merged 2026-10-12 as catalog v11 (`backup_stats`, `tenants.quota_bytes`); Storage page, Settings → Anomaly detection; tests backup_stats_and_anomaly_alert, quota_alerts, storage_accounting_quota_and_anomaly_settings
 - [ ] 13f alert lifecycle (resolve/auto-resolve/count/hints) + notification rules + webhook templates (v14)
 - [ ] merge, full suite, VM labs, screenshots, manual, CI

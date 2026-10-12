@@ -25,7 +25,7 @@ Phase 13d/e. User-facing description: manual chapters 03 (Storage page) and 11 (
    | nexus-nas | bytes of files read (changed files) |
    | nexus-truenas | bytes received over SSH (diff + walk + content), per dataset snapshot |
    | nexus-pluginhost | bytes received from the plugin, per guest snapshot |
-3. The scheduler parses the lines of a finished `backup` / `plugin_backup` job into `backup_stats` (catalog v13,
+3. The scheduler parses the lines of a finished `backup` / `plugin_backup` job into `backup_stats` (catalog v11,
    upsert per `(tenant, source, time)`; `stats.rs`), then runs the anomaly check on each row (`anomaly.rs`).
 
 ## Figures (`GET /storage`, dashboard)
@@ -52,7 +52,7 @@ older than 120 days are not read). The dashboard's `capacity.dedup` / `capacity.
 **Approximation.** A chunk is attributed to the snapshot that wrote it first. When that snapshot expires, its bytes
 leave the sums although later snapshots may still reference them, so Stored is a lower bound of the real store size
 (the authority is `capacity_samples.used`, a directory walk) and the ratios lean high for long-lived data. Snapshots
-without stats (taken before v13, replicated from a primary, imported) are not in the sums; the response reports
+without stats (taken before v11, replicated from a primary, imported) are not in the sums; the response reports
 `totals.snapshots` (covered) and `totals.snapshots_all`. An exact per-group figure would need a chunk → snapshots
 reference count per GC mark phase; not worth it for a dashboard.
 
