@@ -8,6 +8,7 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod alerting;
 pub mod auth;
 pub mod secret;
 pub use rusqlite;
@@ -193,8 +194,40 @@ ALTER TABLE users ADD COLUMN oidc_sub TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS users_oidc_sub ON users(oidc_sub) WHERE oidc_sub IS NOT NULL;
 "#;
 
+/// v14 (Phase 13f, alert lifecycle): an alert is raised under a `key`; a repeat
+/// while it is open (`resolved_at` NULL) bumps `count` / `last_ts` instead of
+/// adding a row, the success path resolves it (`auto` = 1, by the scheduler),
+/// people acknowledge (seen, still open) or resolve it with a `note`.
+/// `notified_ts` = last delivery (NULL = due; replaces the scheduler's cursor
+/// file). Backfill: key = kind:message (capacity, offsite_lag and gc_quorum get
+/// the keys the scheduler now uses), acknowledged alerts count as resolved
+/// (that is what an ack meant before), everything counts as delivered. Purely
+/// additive: the previous release skips it and keeps inserting and
+/// acknowledging rows (count 1, key NULL).
+const SCHEMA_V14: &str = r#"
+ALTER TABLE alerts ADD COLUMN key TEXT;
+ALTER TABLE alerts ADD COLUMN tenant TEXT;
+ALTER TABLE alerts ADD COLUMN count INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE alerts ADD COLUMN last_ts INTEGER;
+ALTER TABLE alerts ADD COLUMN resolved_at INTEGER;
+ALTER TABLE alerts ADD COLUMN resolved_by TEXT;
+ALTER TABLE alerts ADD COLUMN note TEXT;
+ALTER TABLE alerts ADD COLUMN auto INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE alerts ADD COLUMN notified_ts INTEGER;
+UPDATE alerts SET last_ts = ts, key = kind || ':' || substr(message, 1, 200),
+  notified_ts = CAST(strftime('%s', 'now') AS INTEGER);
+UPDATE alerts SET key = 'capacity' WHERE kind = 'capacity';
+UPDATE alerts SET key = 'offsite_lag:' || substr(message, 24, instr(message, ' lags') - 24)
+  WHERE kind = 'offsite_lag' AND message LIKE 'offsite copy of tenant % lags%';
+UPDATE alerts SET key = 'gc_quorum:' || substr(message, 15, instr(message, ' needs') - 15)
+  WHERE kind = 'gc_quorum' AND message LIKE 'GC for tenant % needs%';
+UPDATE alerts SET resolved_at = ts, resolved_by = acked_by WHERE acked_by IS NOT NULL;
+CREATE INDEX IF NOT EXISTS alerts_open ON alerts(key) WHERE resolved_at IS NULL;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
+    SCHEMA_V14,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -873,7 +906,7 @@ mod tests {
         {
             let conn = c.conn();
             let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-            assert_eq!(v, 10);
+            assert_eq!(v, MIGRATIONS.len() as i64);
             let auth: String = conn
                 .query_row("SELECT auth FROM users WHERE name = 'admin'", [], |r| r.get(0))
                 .unwrap();
@@ -918,6 +951,76 @@ mod tests {
             })
             .unwrap();
         assert_eq!(n, 3);
+    }
+
+    /// v14 (alert lifecycle) on top of a v10 catalog: keys and last_ts are
+    /// backfilled, acknowledged alerts count as resolved, everything as
+    /// delivered, and the previous release still inserts and acknowledges.
+    #[test]
+    fn migration_v14_alert_lifecycle() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let pos = MIGRATIONS.iter().position(|m| *m == SCHEMA_V14).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..pos].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO alerts (id, ts, severity, kind, message, acked_by) VALUES
+                   (1, 100, 'warning', 'capacity', 'store capacity above 75 % (now 80 %)', NULL),
+                   (2, 200, 'warning', 'offsite_lag', 'offsite copy of tenant acme lags by 49 h (oldest …)', NULL),
+                   (3, 300, 'warning', 'gc_quorum', 'GC for tenant initech needs approval by an admin', 'so'),
+                   (4, 400, 'critical', 'job_failed', 'backup job 9 (acme) failed: x', NULL);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            type Row = (String, i64, i64, Option<i64>, Option<String>, i64);
+            let rows: Vec<Row> = conn
+                .prepare("SELECT key, last_ts, count, resolved_at, resolved_by, notified_ts FROM alerts ORDER BY id")
+                .unwrap()
+                .query_map([], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+                })
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            let keys: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+            assert_eq!(
+                keys,
+                [
+                    "capacity",
+                    "offsite_lag:acme",
+                    "gc_quorum:initech",
+                    "job_failed:backup job 9 (acme) failed: x"
+                ]
+            );
+            assert_eq!((rows[1].1, rows[1].2), (200, 1));
+            assert_eq!(
+                (rows[2].3, rows[2].4.as_deref()),
+                (Some(300), Some("so")),
+                "ack = resolved"
+            );
+            assert_eq!(rows[0].3, None, "unacknowledged stays open");
+            assert!(rows.iter().all(|r| r.5 > 0), "nothing redelivered");
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..pos].iter().skip(v as usize).count(), 0);
+        old.execute_batch(
+            "INSERT INTO alerts (ts, severity, kind, message) VALUES (500, 'info', 'x', 'y');
+             UPDATE alerts SET acked_by = 'op' WHERE id = 1;",
+        )
+        .unwrap();
+        let n: i64 = old
+            .query_row("SELECT count FROM alerts WHERE id = 5", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
     }
 
     /// A fresh catalog runs every migration: all source kinds and the

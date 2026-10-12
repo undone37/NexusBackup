@@ -310,14 +310,21 @@ impl Scheduler {
             }
             for t in &s.tenants {
                 let last = s.status[t]["last_ok"].as_i64().unwrap_or(s.created);
+                let key = format!("replication_lag:{}:{t}", s.name);
                 if now - last > self.cfg.replication_lag_secs {
-                    let pfx = format!("replication of tenant {t} from {} lags", s.name);
-                    self.alert(
+                    self.raise(
                         "warning",
                         "replication_lag",
-                        &format!("{pfx}: no successful sync for {} h", (now - last) / 3600),
-                        Some(&pfx),
+                        &key,
+                        &format!(
+                            "replication of tenant {t} from {} lags: no successful sync for {} h",
+                            s.name,
+                            (now - last) / 3600
+                        ),
+                        Some(t),
                     )?;
+                } else {
+                    self.resolve(&key)?;
                 }
             }
         }

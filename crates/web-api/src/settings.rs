@@ -6,13 +6,16 @@
 use crate::auth::Ctx;
 use crate::quorum::{accepted, request};
 use crate::{ApiError, ApiResult, St, J};
+use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use catalog::alerting::{self, Rule};
 use catalog::rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 const ADMIN: &[&str] = &["admin"];
@@ -46,7 +49,8 @@ fn queue(st: &St, ctx: &Ctx, kind: &str, p: Value) -> ApiResult<i64> {
 pub const ALERTS_SETTING: &str = "alerts";
 /// Location owner of the sealed SMTP password (bound to host, port, user).
 pub const ALERTS_OWNER: &str = "settings/alerts";
-const SEVERITIES: &[&str] = &["info", "warning", "critical"];
+const SEVERITIES: &[&str] = alerting::SEVERITIES;
+const MAX_RULES: usize = 32;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -57,7 +61,9 @@ pub struct SmtpReq {
     #[serde(default = "yes")]
     starttls: bool,
     from: String,
-    to: Vec<String>,
+    /// pre-13f form only (without `rules`): the recipients, now per rule
+    #[serde(default)]
+    to: Option<Vec<String>>,
     #[serde(default)]
     user: Option<String>,
     /// write-only: omitted / null = keep (refused when host, port or user change)
@@ -73,11 +79,54 @@ fn yes() -> bool {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct WebhookReq {
+    url: String,
+    /// write-only values: null = keep the stored one (refused when the URL changes)
+    #[serde(default)]
+    headers: BTreeMap<String, Option<String>>,
+    #[serde(default)]
+    template: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelsReq {
+    #[serde(default)]
+    email: Vec<String>,
+    #[serde(default)]
+    webhook: Option<WebhookReq>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuleReq {
+    name: String,
+    #[serde(default)]
+    min_severity: Option<String>,
+    #[serde(default)]
+    kinds: Vec<String>,
+    #[serde(default)]
+    tenants: Vec<String>,
+    #[serde(default)]
+    channels: ChannelsReq,
+}
+
+/// `{smtp, rules, reminder_hours, retention_days}`; the pre-13f form
+/// `{webhook_url, smtp: {…, to}, min_severity}` (no `rules`) is still accepted
+/// and stored as one rule `default`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AlertsReq {
     #[serde(default)]
-    webhook_url: Option<String>,
-    #[serde(default)]
     smtp: Option<SmtpReq>,
+    #[serde(default)]
+    rules: Option<Vec<RuleReq>>,
+    #[serde(default)]
+    reminder_hours: Option<i64>,
+    #[serde(default)]
+    retention_days: Option<BTreeMap<String, i64>>,
+    #[serde(default)]
+    webhook_url: Option<String>,
     #[serde(default)]
     min_severity: Option<String>,
 }
@@ -90,112 +139,299 @@ fn mailbox(s: &str) -> bool {
         && s.bytes().all(|b| b.is_ascii_graphic() && !b"<>,;\"()[]\\".contains(&b))
 }
 
-fn check_webhook(u: &str) -> ApiResult<()> {
+fn check_webhook(u: &str, what: &str) -> ApiResult<()> {
     let ok = u.len() <= 2048
         && reqwest::Url::parse(u)
             .is_ok_and(|x| matches!(x.scheme(), "https" | "http") && x.host_str().is_some() && x.username().is_empty());
     if ok {
         Ok(())
     } else {
-        Err(ApiError::bad(
-            "webhook_url: http(s)://host[:port]/path, without user info",
-        ))
+        Err(ApiError::bad(format!(
+            "{what}: http(s)://host[:port]/path, without user info"
+        )))
     }
 }
 
+/// The stored setting `alerts` (SMTP server; before 13f also webhook and recipients).
 pub fn load_alerts(c: &catalog::rusqlite::Connection) -> ApiResult<Value> {
     Ok(catalog::setting(c, ALERTS_SETTING)?
         .and_then(|v| serde_json::from_str(&v).ok())
-        .unwrap_or_else(|| json!({"webhook_url": null, "smtp": null, "min_severity": "warning"})))
+        .unwrap_or_else(|| json!({"smtp": null})))
 }
 
-fn public_alerts(mut v: Value) -> Value {
-    if let Some(s) = v["smtp"].as_object_mut() {
-        let set = s.remove("password").is_some_and(|p| !p.is_null());
-        s.insert("password_set".into(), json!(set));
+/// Header values are write-only: shown as null.
+fn public_rule(r: &Rule) -> Value {
+    let mut v = json!(r);
+    if let Some(h) = v["channels"]["webhook"]["headers"].as_object_mut() {
+        h.values_mut().for_each(|x| *x = Value::Null);
     }
     v
 }
 
-pub async fn get_alerts(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>> {
-    ctx.require(SETTINGS_READ)?;
-    Ok(Json(public_alerts(load_alerts(&st.cat.conn())?)))
+fn alerts_view(c: &catalog::rusqlite::Connection) -> ApiResult<Value> {
+    let mut smtp = load_alerts(c)?["smtp"].clone();
+    if let Some(s) = smtp.as_object_mut() {
+        let set = s.remove("password").is_some_and(|p| !p.is_null());
+        s.remove("to");
+        s.insert("password_set".into(), json!(set));
+    }
+    let rules: Vec<Value> = alerting::load_rules(c)?.iter().map(public_rule).collect();
+    Ok(
+        json!({"smtp": smtp, "rules": rules, "reminder_hours": alerting::reminder_hours(c)?,
+              "retention_days": alerting::retention_days(c)?}),
+    )
 }
 
-pub async fn put_alerts(State(st): State<St>, ctx: Ctx, J(r): J<AlertsReq>) -> ApiResult<Json<Value>> {
-    ctx.require(ADMIN)?;
-    let old = load_alerts(&st.cat.conn())?;
+pub async fn get_alerts(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>> {
+    ctx.require(SETTINGS_READ)?;
+    Ok(Json(alerts_view(&st.cat.conn())?))
+}
+
+fn check_smtp(s: SmtpReq, old: &Value) -> ApiResult<Value> {
+    crate::validate::host(&s.host).map_err(|_| ApiError::bad("smtp.host: host name or IP address"))?;
+    if s.port == Some(0) {
+        return Err(ApiError::bad("smtp.port: 1..=65535"));
+    }
+    if !mailbox(&s.from) {
+        return Err(ApiError::bad("smtp.from: a mail address"));
+    }
+    if s.user
+        .as_ref()
+        .is_some_and(|u| !(1..=128).contains(&u.len()) || u.chars().any(char::is_control))
+    {
+        return Err(ApiError::bad("smtp.user: 1..=128 printable characters"));
+    }
+    let mut v = json!({"host": s.host, "port": s.port, "starttls": s.starttls, "from": s.from, "user": s.user});
+    match s.password {
+        Some(p) => {
+            if p.is_empty() || p.len() > 1024 || p.chars().any(char::is_control) {
+                return Err(ApiError::bad("smtp.password: 1..=1024 printable characters"));
+            }
+            v["password"] = json!(p);
+        }
+        None => {
+            if let Some(p) = old["password"].as_str() {
+                if ["host", "port", "user"].iter().any(|k| old[*k] != v[*k]) {
+                    return Err(ApiError::bad(
+                        "smtp.password: required again when host, port or user change",
+                    ));
+                }
+                v["password"] = json!(p);
+            }
+        }
+    }
+    Ok(v)
+}
+
+/// Validates a rule; header values are sealed to the scheduler (null keeps the
+/// stored value of the same rule, header and URL).
+fn check_rule(st: &St, r: RuleReq, old: &[Rule], smtp: bool) -> ApiResult<Rule> {
+    crate::validate::name(&r.name, "rules.name")?;
+    let what = |f: &str| format!("rule {}: {f}", r.name);
     let min = r.min_severity.unwrap_or_else(|| "warning".into());
     if !SEVERITIES.contains(&min.as_str()) {
-        return Err(ApiError::bad("min_severity: info, warning or critical"));
+        return Err(ApiError::bad(what("min_severity: info, warning or critical")));
     }
-    let webhook = r.webhook_url.filter(|u| !u.trim().is_empty());
-    if let Some(u) = &webhook {
-        check_webhook(u)?;
+    if r.kinds.len() > 32 || r.kinds.iter().any(|k| crate::validate::name(k, "kind").is_err()) {
+        return Err(ApiError::bad(what("kinds: up to 32 alert kinds")));
     }
-    let smtp = match r.smtp {
-        None => Value::Null,
-        Some(s) => {
-            crate::validate::host(&s.host).map_err(|_| ApiError::bad("smtp.host: host name or IP address"))?;
-            if s.port == Some(0) {
-                return Err(ApiError::bad("smtp.port: 1..=65535"));
+    if r.tenants.len() > 64 || r.tenants.iter().any(|t| crate::validate::name(t, "tenant").is_err()) {
+        return Err(ApiError::bad(what("tenants: up to 64 tenant names")));
+    }
+    let email = r.channels.email;
+    if email.len() > 16 || !email.iter().all(|t| mailbox(t)) {
+        return Err(ApiError::bad(what("email: up to 16 mail addresses")));
+    }
+    if !email.is_empty() && !smtp {
+        return Err(ApiError::bad(what("email needs the SMTP server (smtp)")));
+    }
+    let webhook = match r.channels.webhook {
+        None => None,
+        Some(w) => {
+            check_webhook(&w.url, &what("webhook.url"))?;
+            if let Some(t) = &w.template {
+                alerting::check_template(t).map_err(|e| ApiError::bad(what(&format!("webhook.template: {e}"))))?;
             }
-            if !mailbox(&s.from) {
-                return Err(ApiError::bad("smtp.from: a mail address"));
+            if w.headers.len() > 16 {
+                return Err(ApiError::bad(what("webhook.headers: at most 16")));
             }
-            if s.to.is_empty() || s.to.len() > 16 || !s.to.iter().all(|t| mailbox(t)) {
-                return Err(ApiError::bad("smtp.to: 1..=16 mail addresses"));
-            }
-            if s.user
-                .as_ref()
-                .is_some_and(|u| !(1..=128).contains(&u.len()) || u.chars().any(char::is_control))
-            {
-                return Err(ApiError::bad("smtp.user: 1..=128 printable characters"));
-            }
-            let mut v = json!({"host": s.host, "port": s.port, "starttls": s.starttls, "from": s.from,
-                               "to": s.to, "user": s.user});
-            match s.password {
-                Some(p) => {
-                    if p.is_empty() || p.len() > 1024 || p.chars().any(char::is_control) {
-                        return Err(ApiError::bad("smtp.password: 1..=1024 printable characters"));
-                    }
-                    v["password"] = json!(p);
+            let prev = old
+                .iter()
+                .find(|o| o.name == r.name)
+                .and_then(|o| o.channels.webhook.as_ref());
+            let mut headers = BTreeMap::new();
+            for (h, val) in w.headers {
+                let token = (1..=64).contains(&h.len())
+                    && h.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b));
+                let reserved = ["host", "content-type", "content-length"].contains(&h.to_ascii_lowercase().as_str());
+                if !token || reserved {
+                    return Err(ApiError::bad(what(&format!(
+                        "webhook.headers: invalid header name {h:?}"
+                    ))));
                 }
-                None => {
-                    let o = &old["smtp"];
-                    if let Some(p) = o["password"].as_str() {
-                        if ["host", "port", "user"].iter().any(|k| o[*k] != v[*k]) {
-                            return Err(ApiError::bad(
-                                "smtp.password: required again when host, port or user change",
-                            ));
+                let sealed = match val {
+                    Some(v) => {
+                        if v.is_empty() || v.len() > 4096 || v.chars().any(char::is_control) {
+                            return Err(ApiError::bad(what(
+                                "webhook.headers: values of 1..=4096 printable characters",
+                            )));
                         }
-                        v["password"] = json!(p);
+                        st.seal_key()?
+                            .seal(&alerting::header_location(&r.name, &h, &w.url), &v)?
                     }
-                }
+                    None => match prev.filter(|p| p.url == w.url).and_then(|p| p.headers.get(&h)) {
+                        Some(v) => v.clone(),
+                        None => {
+                            return Err(ApiError::bad(what(&format!(
+                                "webhook.headers: a value for {h} is required (new header or URL changed)"
+                            ))))
+                        }
+                    },
+                };
+                headers.insert(h, sealed);
             }
-            v
+            Some(alerting::Webhook {
+                url: w.url,
+                headers,
+                template: w.template.filter(|t| !t.trim().is_empty()),
+            })
         }
     };
-    let mut new = json!({"webhook_url": webhook, "smtp": smtp, "min_severity": min});
+    Ok(Rule {
+        name: r.name,
+        min_severity: min,
+        kinds: r.kinds,
+        tenants: r.tenants,
+        channels: alerting::Channels { email, webhook },
+    })
+}
+
+pub async fn put_alerts(State(st): State<St>, ctx: Ctx, J(mut r): J<AlertsReq>) -> ApiResult<Json<Value>> {
+    ctx.require(ADMIN)?;
+    let (old, old_rules) = {
+        let c = st.cat.conn();
+        (load_alerts(&c)?, alerting::load_rules(&c)?)
+    };
+    let legacy = r.rules.is_none();
+    let legacy_to = r.smtp.as_mut().and_then(|s| s.to.take());
+    let smtp = match r.smtp {
+        None => Value::Null,
+        Some(s) => check_smtp(s, &old["smtp"])?,
+    };
+    let rules_req = match r.rules {
+        Some(rules) => {
+            if r.webhook_url.is_some() || r.min_severity.is_some() || legacy_to.is_some() {
+                return Err(ApiError::bad("rules replace webhook_url, min_severity and smtp.to"));
+            }
+            rules
+        }
+        None => {
+            // pre-13f form: one rule `default` for every alert kind and tenant
+            let to = legacy_to.unwrap_or_default();
+            if !smtp.is_null() && to.is_empty() {
+                return Err(ApiError::bad("smtp.to: 1..=16 mail addresses"));
+            }
+            let webhook = r.webhook_url.filter(|u| !u.trim().is_empty());
+            if let Some(u) = &webhook {
+                check_webhook(u, "webhook_url")?;
+            }
+            vec![RuleReq {
+                name: "default".into(),
+                min_severity: Some(r.min_severity.unwrap_or_else(|| "warning".into())),
+                kinds: Vec::new(),
+                tenants: Vec::new(),
+                channels: ChannelsReq {
+                    email: to,
+                    webhook: webhook.map(|url| WebhookReq {
+                        url,
+                        headers: BTreeMap::new(),
+                        template: None,
+                    }),
+                },
+            }]
+        }
+    };
+    if rules_req.len() > MAX_RULES {
+        return Err(ApiError::bad(format!("rules: at most {MAX_RULES}")));
+    }
+    let mut rules = Vec::new();
+    for rr in rules_req {
+        if rules.iter().any(|x: &Rule| x.name == rr.name) {
+            return Err(ApiError::bad(format!("rules: duplicate name {}", rr.name)));
+        }
+        rules.push(check_rule(&st, rr, &old_rules, !smtp.is_null())?);
+    }
+    if legacy && rules[0].channels == alerting::Channels::default() {
+        rules.clear();
+    }
+    let reminder = r.reminder_hours.unwrap_or(alerting::DEFAULT_REMINDER_HOURS);
+    if !(0..=24 * 30).contains(&reminder) {
+        return Err(ApiError::bad("reminder_hours: 0 (never) ..= 720"));
+    }
+    let retention = match r.retention_days {
+        None => alerting::retention_days(&st.cat.conn())?,
+        Some(m) => {
+            if m.iter()
+                .any(|(k, d)| !SEVERITIES.contains(&k.as_str()) || !(1..=3650).contains(d))
+            {
+                return Err(ApiError::bad(
+                    "retention_days: {info, warning, critical}: 1..=3650 days",
+                ));
+            }
+            m
+        }
+    };
+    let mut new = json!({"smtp": smtp});
     if new["smtp"]["password"]
         .as_str()
         .is_some_and(|p| !catalog::secret::is_sealed(p))
     {
         st.seal_key()?.seal_all(ALERTS_OWNER, &mut new)?;
     }
-    catalog::set_setting(&st.cat.conn(), ALERTS_SETTING, &new.to_string())?;
-    let shown = public_alerts(new);
+    let shown = {
+        let c = st.cat.conn();
+        catalog::set_setting(&c, ALERTS_SETTING, &new.to_string())?;
+        catalog::set_setting(&c, alerting::RULES_SETTING, &json!(rules).to_string())?;
+        catalog::set_setting(&c, alerting::REMINDER_SETTING, &reminder.to_string())?;
+        catalog::set_setting(&c, alerting::RETENTION_SETTING, &json!(retention).to_string())?;
+        alerts_view(&c)?
+    };
     st.audit(ctx.name(), "settings.alerts", "settings/alerts", shown.clone())?;
     Ok(Json(shown))
 }
 
-/// One `test` alert through every configured channel, sent by the scheduler
-/// (it holds the SMTP password). Waits up to 45 s for the result
-/// `{webhook?, smtp?}` (`"ok"` / `"error: …"` per configured channel); slower →
-/// 202 `{job_id}` (the result lands in the job).
-pub async fn test_alerts(State(st): State<St>, ctx: Ctx) -> ApiResult<Response> {
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct TestReq {
+    #[serde(default)]
+    rule: Option<String>,
+}
+
+/// A JSON body that may be absent (older clients post without one).
+pub fn opt_body<T: serde::de::DeserializeOwned + Default>(b: &[u8]) -> ApiResult<T> {
+    if b.iter().all(u8::is_ascii_whitespace) {
+        return Ok(T::default());
+    }
+    serde_json::from_slice(b).map_err(|e| ApiError::bad(e.to_string()))
+}
+
+/// One `test` alert through the channels of rule `rule` (every rule if absent),
+/// sent by the scheduler (it holds the secrets). Waits up to 45 s for the
+/// result (`"ok"` / `"error: …"` per channel: `{webhook?, email?}` for one rule,
+/// `{"<rule>/<channel>": …}` for all); slower → 202 `{job_id}` (the result
+/// lands in the job).
+pub async fn test_alerts(State(st): State<St>, ctx: Ctx, body: Bytes) -> ApiResult<Response> {
     ctx.require(ADMIN)?;
-    let id = queue(&st, &ctx, "alert_test", json!({}))?;
+    let r: TestReq = opt_body(&body)?;
+    if let Some(n) = &r.rule {
+        crate::validate::name(n, "rule")?;
+    }
+    let p = match r.rule {
+        Some(n) => json!({"rule": n}),
+        None => json!({}),
+    };
+    let id = queue(&st, &ctx, "alert_test", p)?;
     for _ in 0..180 {
         tokio::time::sleep(Duration::from_millis(250)).await;
         let row: Option<(String, Option<String>, String)> = st

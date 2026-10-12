@@ -64,6 +64,7 @@
 
 pub mod alerts;
 pub mod firewall;
+mod lifecycle;
 mod plugins;
 pub mod replica;
 pub mod run;
@@ -284,7 +285,6 @@ pub struct Scheduler {
     keyed: HashSet<String>,
     dirty: BTreeSet<String>,
     last_refresh: i64,
-    alert_cursor: i64,
     alert_tx: Sender<(alerts::AlertsConfig, alerts::Alert)>,
     host: String,
     /// time of the current tick: `created` of queued jobs (due computation)
@@ -433,7 +433,6 @@ impl Scheduler {
             last_refresh: i64::MIN,
             fw_checked: None,
             fw_settle: None,
-            alert_cursor: 0,
             alert_tx,
             host: alerts::hostname(),
             now: catalog::now(),
@@ -502,13 +501,8 @@ impl Scheduler {
         fs::create_dir_all(&self.cfg.state_dir)?;
         self.publish_secrets_key()?;
         self.migrate_secrets()?;
-        self.alert_cursor = match fs::read_to_string(self.cursor_path()) {
-            Ok(s) => s.trim().parse().unwrap_or(0),
-            Err(_) => self
-                .db
-                .conn()
-                .query_row("SELECT COALESCE(MAX(id), 0) FROM alerts", [], |r| r.get(0))?,
-        };
+        // delivery state is in the catalog since v14 (`alerts.notified_ts`)
+        let _ = fs::remove_file(self.cfg.state_dir.join("alerts.cursor"));
         self.recover()
     }
 
@@ -573,10 +567,6 @@ impl Scheduler {
             }
         }
         Ok(())
-    }
-
-    fn cursor_path(&self) -> PathBuf {
-        self.cfg.state_dir.join("alerts.cursor")
     }
 
     /// Jobs left `running` by a crashed scheduler are failed with a note.
@@ -655,6 +645,7 @@ impl Scheduler {
                 self.log_err(|s| s.check_capacity());
                 self.log_err(|s| s.sample_capacity(now));
                 self.log_err(|s| s.publish_ssh_keys());
+                self.log_err(|s| s.prune_alerts(now));
             }
         }
         self.log_err(|s| s.check_offsite_lag(now));
@@ -955,6 +946,7 @@ impl Scheduler {
             let p: Value = serde_json::from_str(&p).unwrap_or(Value::Null);
             let Some(tenant) = p["tenant"].as_str() else { continue };
             self.insert_job("gc", tenant, &json!({"approved": true, "quorum_id": id}))?;
+            self.resolve(&format!("gc_quorum:{tenant}"))?;
         }
         Ok(())
     }
@@ -1037,11 +1029,12 @@ impl Scheduler {
                 &format!("job/{}", job.id),
                 &json!({"kind": job.kind, "error": msg}),
             )?;
-            self.alert(
+            self.raise(
                 "critical",
                 "job_failed",
+                &lifecycle::job_failed_key(job),
                 &format!("{} job {} ({}) failed: {msg}", job.kind, job.id, job.tenant),
-                None,
+                lifecycle::tenant_of(job),
             )?;
         }
         Ok(())
@@ -1132,7 +1125,10 @@ impl Scheduler {
             )?;
         }
         match f.outcome {
-            Outcome::Ok => self.follow_up(&job)?,
+            Outcome::Ok => {
+                self.resolve_after_ok(&job)?;
+                self.follow_up(&job)?
+            }
             Outcome::Quorum { message } => self.request_gc_quorum(&job, &message)?,
             Outcome::Failed { alert } => {
                 let tail: String = log
@@ -1157,11 +1153,16 @@ impl Scheduler {
                     }
                     _ => ("critical", "job_failed", "failed"),
                 };
-                self.alert(
+                let key = match kind {
+                    "job_failed" => lifecycle::job_failed_key(&job),
+                    _ => format!("{kind}:{}", job.tenant),
+                };
+                self.raise(
                     sev,
                     kind,
+                    &key,
                     &format!("{} job {} ({}) {what}: {tail}", job.kind, job.id, job.tenant),
-                    None,
+                    lifecycle::tenant_of(&job),
                 )?;
             }
         }
@@ -1441,15 +1442,16 @@ impl Scheduler {
                 &format!("tenant/{}", job.tenant),
                 &json!({"job": job.id, "reason": message, "approvals": "disabled"}),
             )?;
-            return self.alert(
+            return self.raise(
                 "warning",
                 "gc_confirm",
+                &format!("gc_confirm:{}", job.tenant),
                 &format!(
                     "GC for tenant {} was not run: {message}. Approvals are disabled, so an admin must confirm it \
                      (Approvals page, or POST /api/v1/gc/approve-large)",
                     job.tenant
                 ),
-                None,
+                Some(&job.tenant),
             );
         }
         // approvals were enabled again since: a stale confirmation no longer applies
@@ -1481,14 +1483,15 @@ impl Scheduler {
             &format!("quorum/{id}"),
             &json!({"action": "gc_large", "tenant": job.tenant, "job": job.id}),
         )?;
-        self.alert(
+        self.raise(
             "warning",
             "gc_quorum",
+            &format!("gc_quorum:{}", job.tenant),
             &format!(
                 "GC for tenant {} needs approval by an admin or security officer (quorum request {id}): {message}",
                 job.tenant
             ),
-            None,
+            Some(&job.tenant),
         )
     }
 
@@ -2699,53 +2702,16 @@ impl Scheduler {
         Ok(n > 0)
     }
 
+    /// An alert without a resolving success path, keyed `kind:<dedupe or message>`
+    /// (see [`Scheduler::raise`]).
     pub fn alert(&self, severity: &str, kind: &str, message: &str, dedupe: Option<&str>) -> Result<()> {
-        let prefix = dedupe.unwrap_or(message);
-        let c = self.db.conn();
-        let dup: i64 = c.query_row(
-            "SELECT COUNT(*) FROM alerts WHERE kind=?1 AND acked_by IS NULL AND substr(message, 1, length(?2)) = ?2",
-            params![kind, prefix],
-            |r| r.get(0),
-        )?;
-        if dup == 0 {
-            c.execute(
-                "INSERT INTO alerts (ts, severity, kind, message) VALUES (?1,?2,?3,?4)",
-                params![catalog::now(), severity, kind, message],
-            )?;
-            eprintln!("<4>alert {severity} {kind}: {message}");
-        }
-        Ok(())
-    }
-
-    fn deliver_alerts(&mut self) -> Result<()> {
-        let rows: Vec<alerts::Alert> = {
-            let c = self.db.conn();
-            let mut st = c.prepare("SELECT id, ts, severity, kind, message FROM alerts WHERE id > ?1 ORDER BY id")?;
-            let rows = st.query_map([self.alert_cursor], |r| {
-                Ok(alerts::Alert {
-                    id: r.get(0)?,
-                    ts: r.get(1)?,
-                    severity: r.get(2)?,
-                    kind: r.get(3)?,
-                    message: r.get(4)?,
-                    host: self.host.clone(),
-                })
-            })?;
-            rows.collect::<std::result::Result<_, _>>()?
-        };
-        let Some(last) = rows.last() else {
-            return Ok(());
-        };
-        self.alert_cursor = last.id;
-        fs::write(self.cursor_path(), format!("{}\n", last.id))?;
-        let cfg = self.alerts_config().unwrap_or_else(|e| {
-            eprintln!("<3>scheduler: alert delivery configuration: {e:#}");
-            alerts::AlertsConfig::default()
-        });
-        for a in rows {
-            let _ = self.alert_tx.send((cfg.clone(), a));
-        }
-        Ok(())
+        self.raise(
+            severity,
+            kind,
+            &format!("{kind}:{}", dedupe.unwrap_or(message)),
+            message,
+            None,
+        )
     }
 
     /// Alert delivery: the catalog setting (web UI), else `/etc/nexus/alerts.json`.
@@ -2756,14 +2722,15 @@ impl Scheduler {
     // ------------------------------------------------------------ appliance jobs
 
     /// Jobs of no tenant (tenant `-`, queued by the web-api settings pages):
-    /// `alert_test`, `ssh_key_rotate` {name, quorum_id}, `ssh_key_retire` {name}.
+    /// `alert_test` {rule?}, `ssh_key_rotate` {name, quorum_id}, `ssh_key_retire` {name}.
     /// They run in-process; their stdout (a JSON object) becomes the result.
     fn plan_appliance(&self, job: &Job) -> Result<Option<Plan>> {
         let step: Box<dyn Fn() -> Result<String, String> + Send> = match job.kind.as_str() {
             "alert_test" => {
                 let cfg = self.alerts_config()?;
                 let host = self.host.clone();
-                Box::new(move || Ok(alerts::test(&cfg, &host).to_string()))
+                let rule = job.params["rule"].as_str().map(str::to_owned);
+                Box::new(move || Ok(alerts::test(&cfg, &host, rule.as_deref()).to_string()))
             }
             "ssh_key_rotate" | "ssh_key_retire" => {
                 let name = ident(&job.params, "name")?.to_owned();
@@ -2920,12 +2887,15 @@ impl Scheduler {
         let used = 1.0 - st.f_bavail as f64 / st.f_blocks as f64;
         if used > self.cfg.capacity_threshold {
             let pfx = format!("store capacity above {:.0} %", self.cfg.capacity_threshold * 100.0);
-            self.alert(
+            self.raise(
                 "warning",
                 "capacity",
+                "capacity",
                 &format!("{pfx} (now {:.0} %)", used * 100.0),
-                Some(&pfx),
+                None,
             )?;
+        } else {
+            self.resolve("capacity")?;
         }
         Ok(())
     }
@@ -2950,14 +2920,20 @@ impl Scheduler {
                     .map(|(_, t)| t)
                     .min()
             };
+            let key = format!("offsite_lag:{tenant}");
             if let Some(t) = oldest.filter(|t| now - t > self.cfg.offsite_lag_secs) {
-                let pfx = format!("offsite copy of tenant {tenant} lags");
-                self.alert(
+                self.raise(
                     "warning",
                     "offsite_lag",
-                    &format!("{pfx} by {} h (oldest snapshot not offsite: {t})", (now - t) / 3600),
-                    Some(&pfx),
+                    &key,
+                    &format!(
+                        "offsite copy of tenant {tenant} lags by {} h (oldest snapshot not offsite: {t})",
+                        (now - t) / 3600
+                    ),
+                    Some(&tenant),
                 )?;
+            } else {
+                self.resolve(&key)?;
             }
         }
         Ok(())
