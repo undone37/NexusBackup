@@ -2359,6 +2359,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "catalog",
  "chunkstore",
  "futures-util",
  "hmac 0.12.1",

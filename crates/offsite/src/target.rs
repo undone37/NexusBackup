@@ -28,6 +28,7 @@
 use crate::pack::{self, Entry};
 use crate::remote::Remote;
 use anyhow::{bail, Context, Result};
+use catalog::schedule::{Bandwidth, Throttle};
 use chunkstore::retention::{self, Gfs};
 use chunkstore::store::write_atomic;
 use chunkstore::{ChunkId, Manifest, Store};
@@ -37,13 +38,13 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::mpsc::sync_channel;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
 pub struct Options {
     /// Parallel uploads (Storage Box allows 10 connections; keep some for restore/verify).
     pub uploaders: usize,
-    /// Bytes per second over all uploaders (`None` = unlimited).
-    pub bwlimit: Option<u64>,
+    /// Bytes per second over all uploaders (`base`, `None` = unlimited) and the
+    /// bandwidth windows (pause / limit), re-evaluated while uploading.
+    pub bandwidth: Bandwidth,
     /// Repack a pack when more than this share of its bytes is dead.
     pub repack_threshold: f64,
 }
@@ -52,7 +53,7 @@ impl Default for Options {
     fn default() -> Self {
         Options {
             uploaders: 4,
-            bwlimit: None,
+            bandwidth: Bandwidth::default(),
             repack_threshold: 0.5,
         }
     }
@@ -346,7 +347,9 @@ impl<'a> Target<'a> {
         self.lock_packs(&shared_packs, lock)?;
         let keys = self.store.keys();
         let (remote, uploaders) = (self.remote, self.opts.uploaders.max(1));
-        let per_thread_bw = self.opts.bwlimit.map(|b| (b / uploaders as u64).max(1));
+        // one bucket over all uploaders; pause windows hold them before the next pack
+        let throttle = (self.opts.bandwidth != Bandwidth::default()).then(|| Throttle::new(self.opts.bandwidth.clone()));
+        let throttle = throttle.as_ref();
         let (tx, rx) = sync_channel::<(String, Vec<u8>, Vec<u8>, Vec<Entry>)>(uploaders);
         let rx = Mutex::new(rx);
         let finished = Mutex::new(Vec::new());
@@ -356,15 +359,16 @@ impl<'a> Target<'a> {
                     let Ok((id, bytes, idx, entries)) = rx.lock().unwrap().recv() else {
                         return;
                     };
-                    let t0 = Instant::now();
+                    if let Some(t) = throttle {
+                        t.wait_open(); // the remotes reconnect a connection dropped meanwhile
+                    }
                     let r = if lock > 0 {
                         remote.put_locked(&pack::remote_path(&id), &bytes, lock)
                     } else {
                         remote.put(&pack::remote_path(&id), &bytes)
                     };
-                    if let (Ok(()), Some(bw)) = (&r, per_thread_bw) {
-                        let want = Duration::from_secs_f64(bytes.len() as f64 / bw as f64);
-                        std::thread::sleep(want.saturating_sub(t0.elapsed()));
+                    if let (Ok(()), Some(t)) = (&r, throttle) {
+                        t.account(bytes.len() as u64);
                     }
                     finished.lock().unwrap().push((id, bytes.len() as u64, idx, entries, r));
                 });

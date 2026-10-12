@@ -3,12 +3,14 @@
 //!
 //! Config: `{source_id, name, url, connect_addr?, cert_pin, peer_id, cred_dir,
 //! keyd_socket, token_file? (enroll), tenant?, store? (sync: the tenant store),
-//! gfs?, bwlimit?, parallel?, held? ([source, time] under a local legal hold)}`.
+//! gfs?, bwlimit?, windows? (bandwidth windows), timezone?, parallel?, held? ([source,
+//! time] under a local legal hold)}`.
 //!
 //! Output lines the scheduler parses: `enrolled {json}`, `replicated {json}`,
 //! `key-mismatch {json}`, `verify-failed {json}`.
 
 use anyhow::{bail, Context, Result};
+use catalog::schedule::{self, Bandwidth, RateWindow};
 use chunkstore::retention::Gfs;
 use replication::client::{enroll, sync, EnrollParams, KeysMissing, SyncParams, VerifyFailed};
 use replication::http::Target;
@@ -32,6 +34,9 @@ struct Config {
     #[serde(default)]
     gfs: Option<GfsCfg>,
     bwlimit: Option<u64>,
+    #[serde(default)]
+    windows: Vec<RateWindow>,
+    timezone: Option<String>,
     parallel: Option<usize>,
     #[serde(default)]
     held: Vec<(String, u64)>,
@@ -70,6 +75,7 @@ fn run() -> Result<()> {
             println!("enrolled {}", serde_json::to_string(&e)?);
         }
         "sync" => {
+            schedule::check_windows(&c.windows)?;
             let d = Gfs::default();
             let g = c.gfs.unwrap_or_default();
             let p = SyncParams {
@@ -85,7 +91,11 @@ fn run() -> Result<()> {
                     yearly: g.yearly.unwrap_or(d.yearly),
                 },
                 parallel: c.parallel.unwrap_or(4),
-                bwlimit: c.bwlimit,
+                bandwidth: Bandwidth {
+                    base: c.bwlimit,
+                    windows: c.windows,
+                    tz: schedule::tz(c.timezone.as_deref().unwrap_or("UTC"))?,
+                },
                 held: c.held.into_iter().collect(),
             };
             let tenant = p.tenant.clone();

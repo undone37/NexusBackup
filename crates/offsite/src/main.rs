@@ -2,6 +2,7 @@
 //! and `nexus-offsite <config.json> dr <keyd-dir>` (fresh appliance: recovery key on stdin).
 
 use anyhow::{bail, Context, Result};
+use catalog::schedule::{self, Bandwidth, RateWindow};
 use chunkstore::retention::Gfs;
 use chunkstore::{Keyring, Options as StoreOptions, Store};
 use offsite::remote::{LocalDir, Remote};
@@ -31,6 +32,10 @@ struct Config {
     uploaders: usize,
     /// bytes per second over all uploaders
     bwlimit: Option<u64>,
+    /// bandwidth windows (pause / limit) in `timezone` (Phase 17a)
+    #[serde(default)]
+    windows: Vec<RateWindow>,
+    timezone: Option<String>,
 }
 
 fn four() -> usize {
@@ -159,9 +164,15 @@ fn main() -> Result<()> {
     };
     let cfg: Config = serde_json::from_slice(&fs::read(cfg_path)?).context("config")?;
     let remote = remote(&cfg.remote, cfg.uploaders.clamp(1, 10))?;
+    schedule::check_windows(&cfg.windows)?;
+    let bandwidth = Bandwidth {
+        base: cfg.bwlimit,
+        windows: cfg.windows.clone(),
+        tz: schedule::tz(cfg.timezone.as_deref().unwrap_or("UTC"))?,
+    };
     let opts = || Options {
         uploaders: cfg.uploaders,
-        bwlimit: cfg.bwlimit,
+        bandwidth: bandwidth.clone(),
         ..Default::default()
     };
 

@@ -7,6 +7,7 @@
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use catalog::rusqlite::params;
+use catalog::schedule::{Action, Bandwidth, RateWindow};
 use catalog::secret::{SchedulerKey, TotpKey};
 use catalog::Catalog;
 use chunkstore::{Index, Keyring, Options, Store};
@@ -325,6 +326,10 @@ impl Secondary {
     }
 
     fn sync(&self, t: &Target, tenant: &str) -> anyhow::Result<client::SyncReport> {
+        self.sync_bw(t, tenant, Default::default())
+    }
+
+    fn sync_bw(&self, t: &Target, tenant: &str, bandwidth: Bandwidth) -> anyhow::Result<client::SyncReport> {
         client::sync(
             &SyncParams {
                 target: t.clone(),
@@ -334,7 +339,7 @@ impl Secondary {
                 keyd_socket: self.keyd_sock.clone(),
                 gfs: Default::default(),
                 parallel: 4,
-                bwlimit: None,
+                bandwidth,
                 held: Default::default(),
             },
             &mut |l| eprintln!("replica: {l}"),
@@ -439,6 +444,41 @@ fn enroll_sync_incremental_restore_on_secondary_only() {
     // the secondary's keyd wraps the DEK under its own KEK (DR with its recovery key)
     assert!(s.dir.path().join("keyd/tenants/acme/origin").exists());
     assert!(sec_store.verify(|_| true).unwrap().corrupt.is_empty());
+}
+
+/// Phase 17a: the chunk download follows the bandwidth windows; a sync that
+/// was cancelled (window closed, vault closed) after fetching chunks but before
+/// committing the snapshot resumes: the chunks stay, only the manifest is missing.
+#[test]
+fn bandwidth_windows_and_resume_after_cancel() {
+    let (p, s, _, now) = enrolled();
+    let t = p.target();
+    let hhmm = |x: u64| format!("{:02}:{:02}", (x % DAY) / 3600, (x % 3600) / 60);
+    let limit = Bandwidth {
+        windows: vec![RateWindow {
+            days: vec![],
+            from: hhmm(now - 120),
+            to: hhmm(now + 900),
+            action: Action::Limit,
+            rate_bytes: Some(4_000_000),
+        }],
+        ..Default::default()
+    };
+    let t0 = std::time::Instant::now();
+    let r = s.sync_bw(&t, "acme", limit).unwrap();
+    assert_eq!(r.imported.len(), 3);
+    let secs = t0.elapsed().as_secs_f64();
+    assert!(secs >= 0.8 * r.bytes_fetched as f64 / 4e6, "{} bytes in {secs} s", r.bytes_fetched);
+    // what a cancelled sync leaves behind: the newest snapshot's chunks, no manifest
+    let newest = now - DAY;
+    // (the snapshot directory without its manifest, as the store writes it last)
+    let snap = s.dir.path().join(format!("store/acme/snapshots/vm-100/{newest}"));
+    std::fs::remove_dir_all(&snap).unwrap();
+    assert!(s.store("acme").load_manifest("vm-100", newest).is_err());
+    let r = s.sync(&t, "acme").unwrap();
+    assert_eq!(r.imported, vec![format!("vm-100/{newest}")]);
+    assert_eq!(r.chunks_fetched, 0, "resumed without fetching again: {r:?}");
+    assert!(r.chunks_present > 0);
 }
 
 /// Legal holds (Phase 15c): the primary's active holds reach the secondary in
