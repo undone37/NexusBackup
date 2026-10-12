@@ -24,6 +24,8 @@ pub struct Object {
     pub rpo: i64,
     /// every group of the object is paused (or its source in maintenance, Phase 13b)
     pub paused: bool,
+    /// its tenant is deactivated (Phase 17f): never a breach, shown as `deactivated`
+    pub deactivated: bool,
     /// names of the groups that back it up
     pub groups: Vec<String>,
 }
@@ -129,6 +131,7 @@ pub fn objects(c: &Connection, scope: Option<&str>, now: i64) -> rusqlite::Resul
                     kind: kind.clone(),
                     rpo: r,
                     paused,
+                    deactivated: false,
                     groups: Vec::new(),
                 });
             o.rpo = o.rpo.min(r);
@@ -137,6 +140,11 @@ pub fn objects(c: &Connection, scope: Option<&str>, now: i64) -> rusqlite::Resul
                 o.groups.push(group.clone());
             }
         }
+    }
+    let off = catalog::tenants::all_disabled(c)?;
+    for o in objs.values_mut().filter(|o| off.contains(&o.tenant)) {
+        o.paused = true;
+        o.deactivated = true;
     }
     Ok(objs)
 }
@@ -148,7 +156,8 @@ pub struct Status {
     pub source: String,
     pub last_ok: Option<i64>,
     pub age: Option<i64>,
-    /// `ok`, `breach`, `never` (no backup yet) or `paused` (overdue, but paused on purpose)
+    /// `ok`, `breach`, `never` (no backup yet), `paused` (overdue, but paused on purpose)
+    /// or `deactivated` (the tenant is deactivated)
     pub sla: &'static str,
 }
 
@@ -174,6 +183,7 @@ pub fn assess(c: &Connection, scope: Option<&str>, now: i64) -> rusqlite::Result
         let age = last_ok.map(|t| (now - t).max(0));
         let over = |a: i64| a as f64 > o.rpo as f64 * SLA_FACTOR;
         let sla = match age {
+            _ if o.deactivated => "deactivated",
             None => "never",
             Some(a) if over(a) && o.paused => "paused",
             Some(a) if over(a) => "breach",

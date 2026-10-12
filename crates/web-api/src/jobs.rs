@@ -471,9 +471,14 @@ pub async fn create_job(State(st): State<St>, ctx: Ctx, J(r): J<JobReq>) -> ApiR
         .query_row("SELECT 1 FROM tenants WHERE name = ?1", [&r.tenant], |_| Ok(()))
         .optional()?;
     tenant_ok.ok_or_else(|| ApiError::bad("tenant: does not exist"))?;
+    crate::tenants::refuse_paused(&st.cat.conn(), &r.tenant, &r.kind)?;
     let params = check_params(&st, &r.kind, &r.tenant, r.params)?;
     if params.get("replace").is_some() {
         return request_replace(&st, &ctx, &r.kind, &r.tenant, params).map(|o| crate::quorum::accepted(o, json!({})));
+    }
+    // vault mode: restores and downloads only through approval (`vault.restore`)
+    if let Some(res) = crate::vault::gate_jobs(&st, &ctx, &r.tenant, &[(r.kind.as_str(), &params)])? {
+        return Ok(res);
     }
     let id = {
         let c = st.cat.conn();

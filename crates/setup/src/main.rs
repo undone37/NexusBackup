@@ -10,6 +10,9 @@ const USAGE: &str = "usage: nexus-setup [options]
        nexus-setup disable-approvals [--root DIR] [--catalog FILE] [--keyd-dir DIR]
                                 break-glass: switch approvals off when nobody else can approve any more;
                                 asks for the recovery key (stdin)
+       nexus-setup vault-disable [--root DIR] [--catalog FILE] [--keyd-dir DIR]
+                                switch vault mode off after an approved vault.disable request;
+                                asks for the recovery key (stdin)
        nexus-setup reset-firewall [--root DIR] [--catalog FILE]
                                 clear every inbound firewall restriction (web UI reachable from any
                                 address again); reset-mgmt-allow is the old name
@@ -185,6 +188,24 @@ fn disable_approvals(args: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// `vault-disable`: the console half of switching vault mode off (Phase 17c).
+fn vault_disable(args: &[String]) -> Result<ExitCode> {
+    let o = parse(args)?;
+    if o.dry_run || o.script.is_some() || o.force_network {
+        bail!("vault-disable takes only path options");
+    }
+    if o.root == std::path::Path::new("/") && unsafe { libc::geteuid() } != 0 {
+        bail!("must run as root on the appliance console");
+    }
+    eprint!("Recovery key (as printed at first boot): ");
+    let mut key = zeroize::Zeroizing::new(String::new());
+    std::io::stdin().read_line(&mut key)?;
+    let id = setup::recover::vault_disable(&o.paths, &key)?;
+    println!("Vault mode is off (approved request {id}). Restores and downloads no longer need approval;");
+    println!("approvals stay enabled. This was audited (vault.disable) and raised a warning alert.");
+    Ok(ExitCode::SUCCESS)
+}
+
 /// `reset-firewall` (old name `reset-mgmt-allow`): console recovery from an
 /// inbound firewall lockout.
 fn reset_firewall(args: &[String]) -> Result<ExitCode> {
@@ -220,6 +241,16 @@ fn main() -> ExitCode {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("nexus-setup disable-approvals: {e:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if args.first().is_some_and(|a| a == "vault-disable") {
+        keyd::harden_process();
+        return match vault_disable(&args[1..]) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("nexus-setup vault-disable: {e:#}");
                 ExitCode::FAILURE
             }
         };
