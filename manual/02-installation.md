@@ -4,8 +4,8 @@ This chapter is for **administrators** who install the appliance and for the **s
 present at the console during first boot.
 
 > **Status:** The appliance image and the first-boot wizard run end to end in the lab (a VM with SELinux
-> enforcing). There is **no published release yet**: no signed image on the release registry, no installer ISO and
-> no tested installation on physical hardware. The disk layout of plan §12.2 (mirrored system disks, NVMe metadata
+> enforcing). Release 0.0.1-alpha is published (signed image and installer ISO), but there is **no tested
+> installation on physical hardware** yet. The disk layout of plan §12.2 (mirrored system disks, NVMe metadata
 > tier, RAID6 data tier), full-disk encryption with LUKS2 and TPM, and first-boot disk initialization are **not
 > implemented yet**. Treat this chapter as the procedure for test installations.
 
@@ -29,8 +29,8 @@ Plan for 30–40 % headroom. The appliance raises a warning alert when the store
 
 ### What you need
 
-- The appliance image (a bootc container image built from `os/Containerfile`) and a way to write it to the
-  system disk (see below).
+- The installer ISO from the [GitHub release](https://github.com/undone37/NexusBackup/releases), written to a USB
+  stick or mounted as virtual media (see below).
 - A free IPv4 address on the management network (or DHCP), a host name, and DNS servers.
 - Two people for first boot, if you want approvals (four-eyes principle) from the start: the **administrator** and
   a **security officer**, each with their own authenticator app (TOTP) on a phone or hardware token.
@@ -38,8 +38,30 @@ Plan for 30–40 % headroom. The appliance raises a warning alert when the store
 
 ## Install the image
 
-The appliance is a bootc image based on AlmaLinux 10. It is installed with `bootc install to-disk`, which writes the
-image to a disk and makes it bootable:
+### From the installer ISO (recommended)
+
+Each release has an installer ISO, `nexusbackup-<version>-x86_64.iso` (about 1.9 GB), with a `.sha256` file next to
+it. It contains the signed appliance image, so installation needs no network.
+
+1. Check the download: `sha256sum -c nexusbackup-<version>-x86_64.iso.sha256`.
+2. Write it to a USB stick (`dd if=nexusbackup-….iso of=/dev/sdX bs=4M conv=fsync`, or any image writer), or attach
+   it as virtual media (iDRAC/iLO, or a VM's CD drive). Boot in UEFI mode (legacy BIOS boot is untested).
+3. Boot from it. The installer (Anaconda) asks only for the **installation destination**: pick the system disk.
+   **Everything on that disk is erased.** Language, keyboard, time zone (UTC) and the locked root account are preset;
+   accounts and the network are set up later by the first-boot wizard.
+4. Start the installation (about 1–5 minutes), then reboot and remove the medium. The console shows the setup
+   wizard (next section).
+
+The installed appliance follows `ghcr.io/undone37/nexusbackup:stable` for updates. On its first update check it
+switches to signature enforcement, so from then on it accepts only images signed with the release key (see
+[13 Updates](13-updates.md)).
+
+> **Status:** Tested in a UEFI virtual machine (QEMU, unattended install of the 0.0.1-alpha ISO, first boot into
+> the wizard with SELinux enforcing: `lab/appliance/iso-test.sh`). Not yet tested on physical servers.
+
+### From the container image (advanced)
+
+Without the ISO, `bootc install to-disk` writes the image to a disk and makes it bootable:
 
 ```sh
 podman build -f os/Containerfile -t localhost/nexus-os:dev .      # build (repository root as context)
@@ -51,12 +73,10 @@ podman run --rm --privileged --pid=host -v /dev:/dev -v /var/lib/containers:/var
 ```
 
 `--target-imgref` names the image the appliance follows for updates. `--enforce-container-sigpolicy` makes the
-appliance accept only signed updates from that repository right away. Without it, the appliance switches to
-signature enforcement on its first update check (see [13 Updates](13-updates.md)).
+appliance accept only signed updates from that repository right away.
 
-> **Status:** Only the lab procedure is tested: `lab/appliance/build-disk.sh` boots an installer VM and runs
-> exactly this `bootc install to-disk` onto a virtual disk (about 2 minutes, a 1.7 GB disk image). Installation
-> on physical servers, RAID set-up and the multi-disk layout are not tested.
+> **Status:** `lab/appliance/build-disk.sh` runs exactly this `bootc install to-disk` onto a virtual disk in the lab
+> (about 2 minutes, a 1.7 GB disk image).
 
 The installed system has:
 

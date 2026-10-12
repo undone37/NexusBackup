@@ -113,6 +113,13 @@ podman is the only host tool needed, plus `jq`/`openssl` for check-trust.
    then points `:stable` at the digest (skopeo, `--preserve-digests`, copied under the
    appliance policy, so an unsigned digest cannot be promoted). Appliances pick it up at
    their next check. Publish the draft release.
+5. The `iso` workflow (`.github/workflows/iso.yml`) starts when the release workflow succeeds: it builds
+   `nexusbackup-<version>-x86_64.iso` with bootc-image-builder (`anaconda-iso`, config `release/iso/config.toml`)
+   around the release digest from `release-metadata.json` and uploads it with a `.sha256` to the release. For an
+   existing release: `gh workflow run iso.yml -f tag=vX.Y.Z`. The ISO embeds the image (no signature inside); the
+   installed system switches to signature enforcement on its first update check. Check an ISO before publishing
+   with `lab/appliance/iso-test.sh <iso>` (unattended UEFI install in QEMU, then a screenshot of the first-boot
+   wizard).
 
 `release/test-local.sh` runs this whole chain against a throwaway `registry:2` on
 127.0.0.1 with the TEST key and a freshly generated untrusted key.
