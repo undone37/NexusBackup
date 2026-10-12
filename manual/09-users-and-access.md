@@ -17,9 +17,32 @@ Every person who works with the appliance gets an own account with a role. There
 | **Security officer** | approve or reject requests of others; read everything incl. the audit log and verify the chain; read replication, plugins and all **Settings** tabs | change configuration, run backups or restores |
 | **Operator** | run backups (**Back up now**), restores and file downloads; cancel queued jobs; acknowledge alerts; start a replication sync; read approvals, replication, plugins and the **Settings** tabs Approvals, Appliance SSH keys and Updates | change configuration, approve requests, read the audit log |
 | **Tenant user** | see one tenant's dashboard, snapshots and jobs; restore and download that tenant's data | everything else |
+| **Viewer** | read-only: the dashboard, snapshots (and their file lists), jobs and their logs, storage, sources, groups, policies, agents and users of its scope; with no tenant also the alerts | run any job (no backups, no restores, not even browsing files), download, acknowledge alerts, see approvals, the audit log, replication, plugins or settings, change anything |
 
-Any account can be limited to one tenant with the **Tenant** field (required for tenant users). Tenant-scoped
-accounts see only their tenant's data and do not see alerts, approvals, replication or settings.
+Any account except administrators and security officers can be limited to one tenant with the **Tenant** field
+(required for tenant users, optional for viewers: a viewer without a tenant sees all tenants, for example an
+auditor or a management dashboard). Tenant-scoped accounts see only their tenant's data and do not see alerts,
+approvals, replication or settings. Secrets (source passwords, keys, tokens) are never shown to anybody; they are
+write-only.
+
+The role list also contains **Tenant admin** in the catalog; it is reserved for a later release and cannot be
+assigned yet.
+
+### Download privilege
+
+Downloading restored files to the browser (**Files → Prepare download**) is a separate privilege, **May download
+files**, set per account on the **Users** page. By default administrators, operators and tenant users have it;
+viewers and security officers do not (they cannot request it either: viewers run no jobs, and a security officer's
+job is approvals and the audit log). Without it, the Files page still lists the files but offers no download, and
+the API refuses `files_get` jobs and download links (403), also for downloads prepared before the privilege was
+taken away. Restores to a VM, container or agent path are not affected.
+
+### Account expiry
+
+An account can get an end date (**Account expires**, e.g. for a contractor). From that day on it cannot sign in
+(the refusal is audited with the reason `expired`), its open sessions end at the next request, and an expired
+administrator or security officer no longer counts as a possible approver. Clearing the date makes the account
+usable again. The last administrator without an end date cannot get one.
 
 The appliance needs at least one enabled administrator; the last one cannot be disabled or demoted. For approvals to
 work you need at least two people who can approve (administrators or security officers), see
@@ -31,18 +54,21 @@ Open **Configuration → Users**.
 
 ![Users](images/users.png)
 
-The **State** column shows **Active**, **Disabled** or **Pending activation** with the date until which the code is
-valid ("waiting for the second code part" or "code expired" are also possible). Accounts that sign in through the
-identity provider carry an extra **Single sign-on** chip and offer only **Edit** (see
-[Single sign-on accounts on the Users page](#single-sign-on-accounts-on-the-users-page)).
+The **State** column shows **Active**, **Disabled**, **expired …** or **Pending activation** with the date until
+which the code is valid ("waiting for the second code part" or "code expired" are also possible). Further chips:
+**expires …** (an end date is set), **no downloads** (the download privilege was taken away) and **Single sign-on**
+(accounts that sign in through the identity provider; they offer only **Edit**, see
+[Single sign-on accounts on the Users page](#single-sign-on-accounts-on-the-users-page)). **Last sign-in** shows
+when the account last signed in; it is what [dormant accounts](#dormant-accounts) are measured by.
 
 ## Creating an account
 
 This creates a local account. Single sign-on accounts are not created here; they appear at their first sign-in.
 
 1. Click **New user**.
-2. Enter the **Name** (letters, digits, `.`, `_`, `-`), choose the **Role** and, for tenant users, the **Tenant**.
-   There is no password field.
+2. Enter the **Name** (letters, digits, `.`, `_`, `-`), choose the **Role** and, for tenant users (optionally for
+   viewers), the **Tenant**. **May download files** follows the role's default until you change it; **Account
+   expires** is empty (never) unless you pick a date. There is no password field.
 
    ![New user dialog](images/user-new.png)
 
@@ -102,7 +128,11 @@ minutes like a sign-in.
 
 ## Changing an account
 
-Click **Edit** next to a local account to change its **Role**, **Tenant** or the **Disabled** flag.
+Click **Edit** next to a local account to change its **Role**, **Tenant**, **May download files**, **Account
+expires** or the **Disabled** flag. Every change ends the account's sessions (the person signs in again with the
+new rights); **End all sessions** ends them without changing anything.
+
+![Editing an account: download privilege, expiry date and End all sessions](images/user-edit-access.png)
 
 - Granting **Administrator** or **Security officer** needs approval when approvals are enabled. A pending account must
   be activated by its owner before it can get a privileged role.
@@ -132,12 +162,16 @@ If you are the **only** administrator and lost your authenticator or password, n
 the web interface. Use the console break-glass procedure with the recovery key: see
 [14 Disaster recovery](14-disaster-recovery.md#break-glass-the-only-administrator-lost-their-authenticator).
 
-> **Status:** There is no procedure yet for the case that approvals can no longer be granted because approvers are
-> unavailable. Always keep at least two people who can sign in as administrator or security officer.
+If approvals can no longer be granted because approvers are unavailable, see
+[10 Approvals and audit](10-approvals-and-audit.md#when-approvers-are-unavailable). Keep at least three people who
+can approve.
 
 ## Sessions and sign-in protection
 
-- Sessions end after 30 minutes without activity and after 12 hours at the latest.
+- Sessions end after **30 minutes** without activity and after **12 hours** at the latest by default. An
+  administrator changes both in **Settings → Security → Session timeouts** (idle 5–120 minutes, absolute 1–24 hours).
+  Shorter timeouts apply at once, also to open sessions; longer ones are an approval request
+  (`security.session`) while approvals are enabled.
 - 5 failed sign-ins (or activation attempts) for a user or from an address within 15 minutes lock further attempts for
   15 minutes.
 - Each authenticator code can be used once; a replayed code is refused.
@@ -147,6 +181,42 @@ the web interface. Use the console break-glass procedure with the recovery key: 
 
 > **Status:** Local accounts support only TOTP authenticators. WebAuthn (security keys) is planned; with single
 > sign-on, the identity provider can require security keys.
+
+### Your sessions (My account)
+
+Click your name in the top bar to open **My account**. It shows your role, tenant, download privilege and end date,
+and every browser that is signed in with your account: address, browser (user agent), when it signed in and when it
+was last active. **This browser** marks the current one. **End session** signs the other browser out at its next
+request (audited `session.revoke`). If you see a session you do not recognise, end it and change your password.
+
+![My account: sessions](images/account-sessions.png)
+
+Administrators see the sessions of all users in **Settings → Security → Sessions of all users** and can end any of
+them, all sessions of one user (**Users → Edit → End all sessions**, `session.revoke_user`), or, for a suspected
+stolen session, **End all other sessions on the appliance** (everybody except you; needs your password and a fresh
+authenticator code, audited `session.revoke_all`). Single sign-on administrators have no password on the appliance
+and cannot use the last one; a local administrator can.
+
+### Dormant accounts
+
+With **Settings → Security → Dormant accounts** set to a number of days (30–3650; 0 = off, the default; 90 is a
+common policy), the appliance disables accounts nobody has signed in with for that long, within a day. Each one is
+audited (`user.dormant_disabled`, actor `scheduler`) and raises an info alert (`account_dormant`); an administrator
+re-enables the account on the Users page if it is still needed. Never disabled: the last enabled local
+administrator, and, with approvals enabled, an administrator or security officer whose loss would leave fewer than
+two people who can approve. Accounts waiting for activation and expired accounts are not counted as dormant. After
+an upgrade, the time counts from the upgrade (accounts get their first "last sign-in" then).
+
+### Login banner
+
+**Settings → Security → Login banner** sets a text (up to 2000 characters, plain text, line breaks kept) that the
+sign-in page shows above the form, for example a legal notice ("Authorised use only …"). Changes are audited
+(`security.login_banner`).
+
+![Settings: Security](images/settings-security.png)
+
+> **Status:** Viewers, the download privilege, expiry dates, sessions, timeouts, dormant accounts and the login
+> banner are tested in the API and the demo backend; a run on the appliance image (lab) is pending.
 
 ## Single sign-on (OIDC)
 
@@ -167,7 +237,7 @@ How it works:
 - **SSO accounts never take over local accounts.** Accounts are matched by the IdP's subject, not by name. If a local
   account already has the same user name, the SSO sign-in is refused (audited as `auth.oidc_denied`).
 - **The highest privilege wins.** If several mappings match, the user gets the role of the highest-privileged one:
-  Administrator, then Security officer, then Operator, then Tenant user.
+  Administrator, then Security officer, then Operator, then Tenant user, then Viewer.
 - **Multi-factor authentication is the IdP's job.** Single sign-on accounts have no password and no authenticator on
   the appliance and cannot use the appliance sign-in form. Enforce MFA at the IdP (see the examples below).
 - **Local accounts keep working** as break-glass access, for example when the IdP is down. Keep at least one local
@@ -247,8 +317,9 @@ Open **Configuration → Settings → Single sign-on** (administrators; security
    | **Button text on the sign-in page** | e.g. `Sign in with Keycloak` (required, at most 64 characters) |
 
 2. Under **Group mappings**, click **Add mapping** for each group: **IdP group** (the group name or ID exactly as the
-   IdP sends it), **Role**, and, for the role **Tenant user** only, the one **Tenant** the user may see (an appliance
-   account belongs to one tenant or to all; the other roles always see all tenants). The
+   IdP sends it), **Role**, and, for the roles **Tenant user** (required) and **Viewer** (optional), the one
+   **Tenant** the user may see (an appliance account belongs to one tenant or to all; the other roles always see all
+   tenants). The
    bin icon removes a mapping. While the list is empty, the page warns "No mappings yet: nobody can sign in with
    single sign-on."
 3. Click **Save**. With approvals enabled, saving creates an approval request (`oidc.update`) because it changes who

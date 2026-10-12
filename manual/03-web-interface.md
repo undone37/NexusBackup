@@ -37,9 +37,12 @@ For appliance accounts:
 - New accounts are activated with an activation code through **Activate account** below the form; see
   [09 Users and access](09-users-and-access.md#activating-your-account).
 
-A session ends after 30 minutes without activity and after 12 hours at the latest. You then see "Your session has
-expired. Please sign in again." If single sign-on fails, the sign-in page shows the reason in a red box; see
+A session ends after 30 minutes without activity and after 12 hours at the latest (an administrator can change both
+in **Settings → Security**). You then see "Your session has expired. Please sign in again." An account with an end
+date cannot sign in from that day on. If single sign-on fails, the sign-in page shows the reason in a red box; see
 [15 Troubleshooting](15-troubleshooting-faq.md#single-sign-on).
+
+If the administrators set a **login banner** (for example a legal notice), it appears in a blue box above the form.
 
 ## Layout
 
@@ -64,7 +67,9 @@ hidden; open it with the **Menu** button at the top left.
 - the **Approvals** button (stamp icon) with the number of pending requests, for roles that see approvals;
 - the **Alerts** button (bell icon) with the number of open alerts, for roles that see alerts;
 - the **theme** button (see below);
-- your user name and role, and for tenant-scoped accounts your tenant (e.g. "Tenant user · acme");
+- your user name and role, and for tenant-scoped accounts your tenant (e.g. "Tenant user · acme"); click it to open
+  **My account** with your sessions (see
+  [09 Users and access](09-users-and-access.md#your-sessions-my-account));
 - **Sign out** (arrow icon).
 
 **Theme (light / dark).** By default the interface follows your operating system's light or dark setting. The theme
@@ -79,18 +84,23 @@ Keyboard users: the first Tab stop is **Skip to content**.
 
 The sidebar shows only what your role may use. The server checks every request again; hiding is a convenience.
 
-| Page | Administrator | Security officer | Operator | Tenant user |
-|---|---|---|---|---|
-| Dashboard, Snapshots, Storage, Jobs | ✓ | ✓ | ✓ | ✓ (own tenant) |
-| Alerts | ✓ | ✓ | ✓ | — |
-| Approvals | ✓ | ✓ (decides) | ✓ (read) | — |
-| Audit log | ✓ | ✓ | — | — |
-| Tenants, Sources, Agents, Policies, Protection groups, Users | ✓ | — | — | — |
-| Replication, Plugins | ✓ | read | read | — |
-| Settings | ✓ (all tabs) | read (all tabs) | read (Approvals, Appliance SSH keys, Updates) | — |
+| Page | Administrator | Security officer | Operator | Tenant user | Viewer |
+|---|---|---|---|---|---|
+| Dashboard, Snapshots, Storage, Jobs | ✓ | ✓ | ✓ | ✓ (own tenant) | read (its scope) |
+| Alerts | ✓ | ✓ | ✓ | — | read (without a tenant) |
+| Approvals | ✓ | ✓ (decides) | ✓ (read) | — | — |
+| Audit log | ✓ | ✓ | — | — | — |
+| Tenants, Sources, Agents, Policies, Protection groups, Users | ✓ | — | — | — | — |
+| Replication, Plugins | ✓ | read | read | — | — |
+| Settings | ✓ (all tabs) | read (all tabs) | read (Approvals, Appliance SSH keys, Updates) | — | — |
+| My account | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 Accounts limited to one tenant (any role with a tenant set) see only that tenant's data and do not see the Alerts,
-Approvals, Replication and Settings pages. A security officer can see snapshots but cannot start restores.
+Approvals, Replication and Settings pages. A security officer can see snapshots but cannot start restores. A viewer
+sees the same pages as a tenant user (or, without a tenant, all tenants and the alerts) but has no buttons that start
+or change anything: no **Back up now**, no restores, no file browsing or downloads, no acknowledging alerts.
+
+![Dashboard of the appliance-wide viewer "auditor"](images/dashboard-viewer.png)
 
 ![Dashboard of an operator: no configuration pages except Replication, Plugins and Settings](images/dashboard-operator.png)
 
@@ -374,8 +384,8 @@ back in time. See [10 Approvals and audit](10-approvals-and-audit.md#audit-log).
 
 **Configuration → Settings** holds the appliance-wide settings. Only administrators change them; security officers
 see every tab read-only ("Read-only: only administrators change these settings."), operators see **Approvals**,
-**Appliance SSH keys** and **Updates**. Changes that weaken protection or change who can sign in need a second person
-when approvals are enabled.
+**Appliance SSH keys** and **Updates**; viewers and tenant users see no settings. Changes that weaken protection or
+change who can sign in need a second person when approvals are enabled.
 
 | Tab | What it is for | Chapter |
 |---|---|---|
@@ -385,6 +395,7 @@ when approvals are enabled.
 | **Appliance SSH keys** | the public keys the appliance signs in to sources with; **Copy**, **Rotate**, **Retire old key** | [04 Sources](04-sources.md#appliance-ssh-keys) |
 | **Updates** | running, staged, available and rollback image; **Check now**, **Install now** | [13 Updates](13-updates.md#updates-in-the-web-interface) |
 | **Anomaly detection** | thresholds of the change-rate `anomaly` alert | [11 Alerts and monitoring](11-alerts-and-monitoring.md#change-rate-anomalies) |
+| **Security** | management allow-list, session timeouts, dormant accounts, login banner; sessions of all users (administrators) | [02 Installation](02-installation.md#management-allow-list), [09 Users and access](09-users-and-access.md#sessions-and-sign-in-protection) |
 
 ![Settings: Approvals](images/settings-approvals.png)
 
@@ -397,6 +408,8 @@ when approvals are enabled.
 ![Settings: Updates](images/settings-updates.png)
 
 ![Settings: Anomaly detection](images/settings-anomaly.png)
+
+![Settings: Security](images/settings-security.png)
 
 ## Messages and dialogs
 

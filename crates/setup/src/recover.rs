@@ -128,6 +128,53 @@ pub fn recover_admin(paths: &Paths, user: Option<&str>, force_solo: bool, recove
     })
 }
 
+/// `nexus-setup disable-approvals` (Phase 14d, manual chapter 10 "When approvers
+/// are unavailable"): approvals are enabled but nobody besides the requester can
+/// approve any more (the other approver left or lost their authenticator), so not
+/// even disabling approvals can be approved. Needs the recovery key like
+/// `recover-admin`; switches approvals off, audited `approvals.break_glass`
+/// (actor `console`) with a critical `break_glass` alert (banner for every
+/// administrator until acknowledged). Returns the alert id.
+pub fn disable_approvals(paths: &Paths, recovery_key: &str) -> Result<i64> {
+    if !paths.setup_done.exists() {
+        bail!("the appliance is not set up yet");
+    }
+    keyd::check_recovery_key(&paths.keyd_dir, recovery_key.trim())
+        .map_err(|e| anyhow::anyhow!("recovery key rejected: {e}"))?;
+    let cat = Catalog::open(&paths.catalog).with_context(|| format!("opening {}", paths.catalog.display()))?;
+    let (alert, approvers) = {
+        let mut c = cat.conn();
+        let tx = c.transaction()?;
+        if !catalog::approvals_enabled(&tx)? {
+            bail!("approvals are already disabled");
+        }
+        let approvers = catalog::possible_approvers(&tx)?;
+        catalog::set_setting(&tx, "approvals_enabled", "false")?;
+        tx.execute(
+            "INSERT INTO alerts (ts, last_ts, severity, kind, key, message) VALUES (?1, ?1, 'critical', 'break_glass',
+             'break_glass:approvals', ?2)",
+            params![
+                catalog::now(),
+                format!(
+                    "break-glass: approvals were disabled at the console with the recovery key (possible approvers: {}); \
+                     add approvers and enable approvals again in Settings → Approvals",
+                    if approvers.is_empty() { "none".to_owned() } else { approvers.join(", ") }
+                )
+            ],
+        )?;
+        let alert = tx.last_insert_rowid();
+        tx.commit()?;
+        (alert, approvers)
+    };
+    cat.audit(
+        ACTOR,
+        "approvals.break_glass",
+        "settings/approvals_enabled",
+        &json!({"enabled": false, "possible_approvers": approvers, "alert": alert}),
+    )?;
+    Ok(alert)
+}
+
 /// `nexus-setup reset-mgmt-allow` (Phase 14d): someone locked themselves out
 /// with the management allow-list (Settings → Security). Clears the setting
 /// (empty = any address), audited `security.mgmt_allow_reset` (actor
@@ -253,6 +300,35 @@ mod tests {
             .unwrap();
         assert_eq!(n, 1);
         assert!(cat.verify_audit().is_ok());
+    }
+
+    #[test]
+    fn disables_approvals_with_the_recovery_key() {
+        let (_d, paths, rk) = appliance();
+        {
+            let cat = Catalog::open(&paths.catalog).unwrap();
+            catalog::set_setting(&cat.conn(), "approvals_enabled", "true").unwrap();
+        }
+        let wrong = keyd::format_recovery_key(&[9; 32]);
+        assert!(disable_approvals(&paths, &wrong).is_err());
+        let alert = disable_approvals(&paths, &rk).unwrap();
+        let cat = Catalog::open(&paths.catalog).unwrap();
+        assert!(!catalog::approvals_enabled(&cat.conn()).unwrap());
+        let kind: String = cat
+            .conn()
+            .query_row("SELECT kind FROM alerts WHERE id = ?1", [alert], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kind, "break_glass");
+        assert!(disable_approvals(&paths, &rk).is_err(), "already disabled");
+        let n: i64 = cat
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM audit WHERE action = 'approvals.break_glass'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
     }
 
     #[test]

@@ -17,6 +17,7 @@ a different administrator or security officer must approve:
 | Replication | creating a peer, exporting tenant keys to it, revoking a peer, deleting an enrolled replication source, lowering a replication source's retention |
 | Plugins | installing or upgrading a plugin, switching to another installed version, disabling or removing a plugin, adding or removing a publisher key |
 | Single sign-on | saving the single sign-on settings (identity provider, client secret, group mappings), because it changes who can sign in (`oidc update`) |
+| Access | longer session timeouts (`security session`); every change of the management allow-list (`security mgmt allow`), see [09 Users and access](09-users-and-access.md#sessions-and-sign-in-protection) and [02 Installation](02-installation.md#management-allow-list) |
 | Appliance SSH keys | rotating an appliance SSH key (`ssh key rotate`) |
 | Updates | **Install now**: installing an available appliance update without waiting for the maintenance window (`update apply`) |
 | Approvals | disabling the approval requirement itself (`approvals disable`) |
@@ -90,6 +91,46 @@ With approvals **disabled**:
 
 ![Approvals disabled, with a large GC waiting for confirmation](images/approvals-disabled.png)
 
+### Fewer than three approvers
+
+With approvals enabled and fewer than **three** people who can approve (enabled, activated, not expired
+administrators and security officers), **Settings → Approvals** and the Dashboard (for administrators and security
+officers) warn: "Only 2 people can approve requests. If one of them is unavailable, nothing can be approved …". With
+two approvers, each request needs exactly the other one; if that person is on holiday, ill or has left, nothing can
+be approved, not even adding a third approver or disabling approvals. Add a third administrator or security officer
+before that happens. [Dormant accounts](09-users-and-access.md#dormant-accounts) never disable an approver who is
+needed to keep two of them.
+
+### When approvers are unavailable
+
+Go through these steps in order; stop at the first that works.
+
+1. **Temporary absence.** Nothing is lost by waiting: requests expire after 72 hours and can be made again. Urgent
+   restores and backups never need approval.
+2. **Another approver exists.** Any enabled administrator or security officer other than the requester can decide.
+   Check **Settings → Approvals** for the number of possible approvers, and **Users** for disabled or expired ones
+   that an administrator could re-enable (re-enabling an approver needs approval itself, so this only works while a
+   second approver is still there).
+3. **The missing approver is a local administrator** who lost the password or authenticator: if you have the
+   recovery key and console access, `nexus-setup recover-admin --user <name> --force-solo` gives that account a new
+   activation code (see [14 Disaster recovery](14-disaster-recovery.md#break-glass-the-only-administrator-lost-their-authenticator)).
+   Its owner, or the person taking over the role, activates it and can approve again.
+4. **Nobody else can approve** (for example administrator plus one security officer who has left): on the console,
+   as root, run
+
+   ```sh
+   nexus-setup disable-approvals
+   ```
+
+   and enter the recovery key. This switches approvals off at once (audited `approvals.break_glass`, actor
+   `console`) and raises a critical `break_glass` alert: every administrator sees a red banner until it is
+   acknowledged. Then create and activate the new approvers on **Users** (without approvals that takes effect
+   directly), and switch **Enable approvals** on again in **Settings → Approvals**; enabling is immediate.
+   Pending requests are not executed by this; they expire or are decided after approvals are on again.
+
+The console steps need root on the appliance console **and** the recovery key; both are recorded and alerted, so
+they cannot be used unnoticed.
+
 ## Audit log
 
 Open **Audit log** (administrators and security officers).
@@ -129,7 +170,8 @@ The audit table itself is append-only in the database (updates and deletes are r
 
 ## Good practice
 
-- Have at least two security officers, so approvals continue when one is absent.
+- Have at least three people who can approve (for example one administrator and two security officers), so
+  approvals continue when one is absent. Below three, the appliance shows a warning.
 - Review pending requests daily; they expire after 72 hours.
 - Verify the audit chain regularly, for example weekly, and after any incident.
 - Acknowledge alerts about approvals (`gc_quorum`) only after the request was decided.
