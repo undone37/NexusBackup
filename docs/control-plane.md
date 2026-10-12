@@ -494,6 +494,44 @@ neverallow: no other nexus domain transitions to `unconfined_t`; only `nexus_web
 files, only it and the gate read them. The unit is deliberately unsandboxed (the shell inherits the unit's
 namespaces and capability bounding set).
 
+## Tenant recovery key (Phase 17e, `keyd::tenant_key`, `catalog::tenant_key`, `web-api/src/tenant_key.rs`)
+Optional second escrow of one tenant's DEKs, so that tenant can rebuild its data from its offsite copy on another
+appliance **without** the appliance recovery key (which opens every tenant).
+
+- **Key.** 32 random bytes (OS RNG), written like the appliance recovery key: 16 groups of 4 hex digits (256 bits).
+  The bytes are used directly as an **X25519 secret key**; the public key is `X25519(key, basepoint)`. Key id `kid` =
+  the first 16 hex digits of the public key.
+- **Generation, show once.** `tenant.recovery_key` quorum request (admin; while approvals are enabled another admin or
+  security officer approves; the row stays `approved`, nobody executes it). The requester opens it once within 24 h:
+  `POST /tenants/{t}/recovery-key/{id}/show` generates the key in the web-api (`catalog::tenant_key::generate`),
+  claims the row (`approved` → `executed`, exactly once), stores **only the public key** in the setting
+  `tenant_recovery_key:<t>` `{public, kid, set_at, requested_by, approved_by, quorum}` and returns the key in the
+  answer. It is never written anywhere; the audit entry `tenant.recovery_key_shown` carries `kid` and the replaced
+  `kid` (a test scans audit, quorum params, settings and alerts for the key). A new request while one is pending or
+  approved is refused (409). Opening a new key **replaces** the old one. `GET /tenants/{t}/recovery-key` (admin,
+  security officer): the status (`kid`, since, by, approved by) and the last 20 requests. Not open to API tokens.
+- **Sealing without the secret.** Before each offsite run the scheduler sends the public key from the catalog to keyd
+  (`tenant-recovery <t> <pubkey hex | none>`); keyd keeps it as `tenants/<t>/tenant-recovery.pub` and writes, per DEK
+  version `v`, `tenants/<t>/tenant-escrow.<kid>.<v>` = libsodium-style **sealed box** (crypto_box 0.9 `seal`:
+  ephemeral X25519 + XSalsa20-Poly1305, nonce = BLAKE2b(epk ‖ pk); the primitive already used for replication DEK
+  exports) of `NXTRK1\0\0 ‖ u8 len ‖ tenant ‖ u32 LE v ‖ DEK`. Every later DEK version (`keyd tenant-rotate`, a
+  replica import, a tenant-level DR install) is sealed the moment keyd stores it, using only the public key. A changed
+  or removed key deletes the old `tenant-escrow.*` files first; the scheduler drops them from the escrow dir.
+- **Offsite.** The files travel with the normal escrow (`escrow <t>` answer) to `keys/tenants/<t>/tenant-escrow.<kid>.<v>`
+  (put if missing; locked like the other escrow files on S3 with Object Lock). The `kid` in the name means a replaced
+  key never collides with the old files; after the upload `nexus-offsite` deletes `tenant-escrow.*` objects of other
+  key ids (best effort: a locked object version stays until its lock ends, only a delete marker is added).
+- **Tenant-level DR.** `nexus-offsite <cfg> dr --tenant-key <keyd-dir>` (key on stdin, never on the command line) on
+  an appliance whose keyd is initialized (own KEK): lists `keys/tenants/<t>/`, opens the `tenant-escrow.<kid>.*`
+  files of this key, checks the sealed tenant name and version against the file name and `<t>`, stores the DEKs
+  wrapped under the local KEK (refused if the tenant already has a different DEK for a version) and rebuilds the
+  offsite inventory. `kek.recovery` and other tenants' files are never read. The appliance-wide `dr` skips the
+  tenant escrow files.
+- **What the appliance holds:** the public key only (catalog + keyd dir). Root on the appliance gets the DEKs anyway
+  (KEK), so the public key adds nothing there.
+- Continuing offsite copies from the rebuilt appliance into the **same** target is not supported (its `kek.recovery`
+  belongs to the old appliance): give the rebuilt tenant a new target or prefix.
+
 ## First boot (`nexus-setup`, console TUI)
 Network (NetworkManager, static/DHCP on the management NIC) → admin account + TOTP enrollment (QR in terminal, code confirmation) → second person: "create it now (recommended)" = security officer account + TOTP, entered at the console by that person, or "later" (audit `setup.second_person_later`; script mode `"second_person_later": true`) → `keyd init`: recovery key shown once, re-entry of 3 random groups required → TLS certificate (self-signed, SAN = hostname + IPs; fingerprint shown) → metrics token → `/var/lib/nexus/setup-done` (writes `settings.approvals_enabled`: enabled with two people, **disabled with a single administrator** — the TUI and the script output say so; audit `setup.approvals`) → enable `nexus-web-api`, `nexus-scheduler`, `nexus-keyd`, `nexus-replicad` (`nexus-nasmount.socket` is enabled by the image preset).
 

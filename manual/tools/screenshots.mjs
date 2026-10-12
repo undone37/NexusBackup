@@ -763,6 +763,24 @@ async function main() {
       await shot('console-shell-banner');
       await api('POST', '/mock/console-gate', { end: true });
     }],
+    ['tenant-key', async () => {
+      // Phase 17e: tenant recovery key: request, approval by a second person, shown once to the requester
+      const r = await api('POST', '/tenants/initech/recovery-key');
+      if (r.status === 202) {
+        await login('so');
+        await api('POST', `/quorum/${r.body.quorum_id}/approve`);
+        await login('admin');
+      }
+      await go('/tenants');
+      await ev(`$rowClick('initech', 'Recovery key'); return true;`);
+      await until(`return !!$button('Show key once')`, 'tenant key requests');
+      await shot('tenant-key');
+      await ev(`$click('Show key once'); return true;`);
+      await confirmOk();
+      await until(`return !!document.querySelector('dialog[open] .tkey-code')`, 'tenant key shown');
+      await shot('tenant-key-shown');
+      await closeDialogs();
+    }],
     // Phase 14d: API tokens (My account, Users) and the web certificate
     ['tokens', async () => {
       await go('/account');
