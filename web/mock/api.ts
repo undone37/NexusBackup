@@ -208,6 +208,7 @@ const db = {
   alertSettings: {} as Json,
   sshKeys: [] as Json[],
   updates: {} as Json,
+  pullAuth: null as null | { username: string },
   /** Phase 14b diagnostics runs (GET /diagnostics) */
   diag: [] as Json[],
   /** Phase 13e setting `anomaly` */
@@ -3438,6 +3439,21 @@ const pubUpdates = () => {
   return rest;
 };
 on('GET', '/updates', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, pubUpdates()]));
+on('GET', '/updates/registry', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, { configured: !!db.pullAuth, username: db.pullAuth?.username ?? null }]));
+on('PUT', '/updates/registry', async (c) => {
+  const u = need(c.user, 'admin');
+  const b = c.body as { username?: string; token?: string };
+  if (!b.username || !b.token || /\s/.test(b.username + b.token)) return [400, { error: 'username and token: printable characters, no spaces' }];
+  db.pullAuth = { username: b.username };
+  await audit(u.name, 'update.registry_auth', 'appliance/update', { username: b.username });
+  return [200, { configured: true, username: b.username }];
+});
+on('DELETE', '/updates/registry', async (c) => {
+  const u = need(c.user, 'admin');
+  db.pullAuth = null;
+  await audit(u.name, 'update.registry_auth_removed', 'appliance/update', {});
+  return [200, { configured: false, username: null }];
+});
 on('POST', '/updates/check', async (c) => {
   const u = need(c.user, 'admin');
   Object.assign(db.updates, { status: 'checking', checking_since: now() });

@@ -41,6 +41,7 @@
 
 import datetime as dt
 import fcntl
+import base64
 import json
 import os
 import socket
@@ -60,6 +61,8 @@ CONF_DEFAULTS = {
     "NEXUS_UPDATE_DIR": "/var/lib/nexus/update",
     "NEXUS_UPDATE_LOCK": "/run/nexus-update.lock",
     "NEXUS_UPDATE_DIAG": "/usr/libexec/nexus/nexus-diag",
+    # where bootc/ostree look for registry credentials (tmpfs: gone at reboot)
+    "NEXUS_UPDATE_AUTHFILE": "/run/ostree/auth.json",
 }
 REQUESTS = ("stage", "apply", "rollback")
 INHIBIT_MAX_AGE = 6 * 3600
@@ -229,6 +232,45 @@ def summary(st):
     }
 
 
+class PullAuth:
+    """Registry login for a private image repository, for the duration of a fetch.
+
+    The control plane stores {"username", "token"} (a read-only pull token) in
+    <update dir>/pull-auth.json; this writes bootc's auth file for the registry host
+    of NEXUS_IMAGE_REPO (0600, tmpfs) and removes it again afterwards."""
+
+    def __init__(self, c):
+        self.c = c
+        self.path = c["NEXUS_UPDATE_AUTHFILE"]
+        self.wrote = False
+
+    def __enter__(self):
+        raw = read_small(os.path.join(self.c["NEXUS_UPDATE_DIR"], "pull-auth.json"), 4096)
+        if not raw:
+            return self
+        try:
+            a = json.loads(raw)
+            user, token = str(a["username"]), str(a["token"])
+        except (ValueError, KeyError, TypeError):
+            raise Error("pull-auth.json is not {username, token}")
+        host = self.c["NEXUS_IMAGE_REPO"].split("/", 1)[0]
+        cred = base64.b64encode(f"{user}:{token}".encode()).decode()
+        os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
+        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"auths": {host: {"auth": cred}}}, f)
+        self.wrote = True
+        return self
+
+    def __exit__(self, *exc):
+        if self.wrote:
+            try:
+                os.unlink(self.path)
+            except FileNotFoundError:
+                pass
+        return False
+
+
 class Egress:
     """Opens 443/tcp to the registry hosts in the nexus nftables sets for the duration of a fetch."""
 
@@ -293,7 +335,7 @@ def stage(c):
     s = summary(bootc_status())
     if s["spec_image"] is None:
         raise Error("not a bootc host (bootc status has no spec image)")
-    with Egress(c):
+    with Egress(c), PullAuth(c):
         if s["spec_image"] != target or s["spec_signature"] != "containerPolicy":
             # first run after install, or channel/repo changed: pin the signed origin
             log(f"switching origin {s['spec_image']} ({s['spec_signature']}) -> {target} (signature enforced)")

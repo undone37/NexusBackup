@@ -33,6 +33,9 @@ def entry(img, sig, digest, version, download_only=False):
             "downloadOnly": download_only}
 if os.path.exists(os.path.join(d, "fail")):
     sys.exit("bootc: simulated failure")
+af = os.environ.get("NEXUS_UPDATE_AUTHFILE", "")
+if a[0] in ("switch", "upgrade") and af and os.path.exists(af):  # what a fetch would log in with
+    open(os.path.join(d, "seen-auth.json"), "w").write(open(af).read())
 if a[:2] == ["status", "--json"]:
     print(json.dumps(st)); sys.exit(0)
 if a[0] == "switch":
@@ -134,6 +137,7 @@ class Agent(unittest.TestCase):
             "NEXUS_UPDATE_LOCK": str(self.d / "lock"),
             "NEXUS_UPDATE_EGRESS": "none",
             "NEXUS_UPDATE_DIAG": str(self.d / "nexus-diag"),
+            "NEXUS_UPDATE_AUTHFILE": str(self.d / "run-ostree/auth.json"),
             # only the first tick checks, unless a test says otherwise
             "NEXUS_UPDATE_CHECK_HOURS": "1000",
         }
@@ -212,6 +216,18 @@ class Agent(unittest.TestCase):
         self.assertEqual(self.status()["staged"]["digest"], "sha256:bbb")
         self.tick(utc(2026, 10, 9, 12, 30))
         self.assertEqual(self.calls(), [], "nothing lost any more: no extra fetch")
+
+    def test_private_registry_login_only_during_the_fetch(self):
+        self.registry_serves("sha256:bbb", "1.1.0")
+        self.tick()
+        self.assertFalse((self.d / "seen-auth.json").exists(), "no credential configured: no auth file")
+        (self.d / "ctl/pull-auth.json").write_text(json.dumps({"username": "bot", "token": "ghp_x"}))
+        self.registry_serves("sha256:ccc", "1.2.0")
+        (self.d / "ctl/request").write_text("stage\n")
+        self.tick()
+        seen = json.loads((self.d / "seen-auth.json").read_text())
+        self.assertEqual(seen, {"auths": {"ghcr.io": {"auth": "Ym90OmdocF94"}}})  # base64("bot:ghp_x")
+        self.assertFalse((self.d / "run-ostree/auth.json").exists(), "removed after the fetch")
 
     def test_check_interval(self):
         os.environ["NEXUS_UPDATE_CHECK_HOURS"] = "24"

@@ -1559,3 +1559,44 @@ async fn alert_rules_validation_and_secrets() {
             .unwrap();
     assert!(!audit.contains("s3cret-token") && !audit.contains("sealed:v1:"));
 }
+
+/// Pull credential for a private image repository: admin writes, staff read
+/// (never the token), stored 0600 for nexus-update, removable, audited.
+#[tokio::test]
+async fn update_registry_credential() {
+    let t = T::new();
+    let alice = t.login("alice").await;
+    let otto = t.login("otto").await;
+    let tina = t.login("tina").await;
+    let body = json!({"username": "bot", "token": "ghp_secret"});
+    assert_eq!(
+        t.put("/api/v1/updates/registry", &otto, body.clone()).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        t.get("/api/v1/updates/registry", &tina).await.status,
+        StatusCode::FORBIDDEN
+    );
+    let bad = t
+        .put(
+            "/api/v1/updates/registry",
+            &alice,
+            json!({"username": "bot", "token": "a b"}),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+    let r = t.put("/api/v1/updates/registry", &alice, body).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let f = t.st.update_dir.get().unwrap().join("pull-auth.json");
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
+    let r = t.get("/api/v1/updates/registry", &otto).await;
+    assert_eq!(r.body, json!({"configured": true, "username": "bot"}));
+    assert!(!r.body.to_string().contains("ghp_secret"));
+    assert_eq!(t.audit_count("update.registry_auth"), 1);
+    let r = t
+        .send(T::req(Method::DELETE, "/api/v1/updates/registry", Some(&alice), None))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(!f.exists());
+}

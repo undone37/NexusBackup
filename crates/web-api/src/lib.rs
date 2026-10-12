@@ -456,6 +456,12 @@ pub fn router(st: St) -> Router {
         .route("/updates", get(settings::get_updates))
         .route("/updates/check", post(settings::check_updates))
         .route("/updates/apply", post(settings::apply_update))
+        .route(
+            "/updates/registry",
+            get(settings::get_registry_auth)
+                .put(settings::put_registry_auth)
+                .delete(settings::delete_registry_auth),
+        )
         .route("/diagnostics", get(diag::list))
         .route("/diagnostics/checks", post(diag::run_checks))
         .route("/diagnostics/bundle", post(diag::create_bundle))

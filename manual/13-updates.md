@@ -69,6 +69,18 @@ administrators see the buttons.
 The web interface does not change the maintenance window and has no rollback button; use the console commands below.
 
 <a id="pre-update-checks"></a>
+## Private image repository
+
+While the image repository is private (as during the 0.x test releases), the appliance needs a read-only pull
+credential to download updates. Under **Settings → Updates → Registry credential** an administrator enters a user
+name and a token; for GitHub (`ghcr.io`) that is a personal access token with only the `read:packages` scope. The
+token is write-only: the page shows only the user name afterwards.
+
+The appliance writes the credential into the update control directory (mode 0600). `nexus-update` turns it into
+bootc's login file `/run/ostree/auth.json` (memory only) just for the download and deletes that file afterwards;
+signature verification is unchanged. **Remove** deletes the credential. Both actions are audited
+(`update.registry_auth`, `update.registry_auth_removed`).
+
 ## Pre-update checks
 
 Before the appliance downloads an update, and again before it reboots into one, it runs the self-checks of

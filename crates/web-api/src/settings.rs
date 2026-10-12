@@ -599,6 +599,73 @@ pub async fn apply_update(State(st): State<St>, ctx: Ctx) -> ApiResult<Response>
     Ok(accepted(o, json!({})))
 }
 
+/// Pull credential for a private image repository (`nexus-update` turns it into
+/// bootc's auth file only while it fetches). The token is write-only.
+const PULL_AUTH: &str = "pull-auth.json";
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryAuth {
+    username: String,
+    token: String,
+}
+
+pub async fn get_registry_auth(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>> {
+    ctx.require(OPS_READ)?;
+    let raw: Option<Value> = std::fs::read(update_dir(&st).join(PULL_AUTH))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    Ok(Json(match raw {
+        Some(v) => json!({"configured": true, "username": v["username"]}),
+        None => json!({"configured": false, "username": null}),
+    }))
+}
+
+pub async fn put_registry_auth(State(st): State<St>, ctx: Ctx, J(r): J<RegistryAuth>) -> ApiResult<Json<Value>> {
+    ctx.require(ADMIN)?;
+    let ok = |s: &str, max| !s.is_empty() && s.len() <= max && s.chars().all(|c| c.is_ascii_graphic());
+    if !ok(&r.username, 128) || !ok(&r.token, 512) {
+        return Err(ApiError::bad(
+            "username and token: 1-128 / 1-512 printable characters, no spaces",
+        ));
+    }
+    let dir = update_dir(&st);
+    let tmp = dir.join(".pull-auth.tmp");
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", tmp.display()))?;
+        f.write_all(json!({"username": r.username, "token": r.token}).to_string().as_bytes())
+            .map_err(|e| anyhow::anyhow!("{}: {e}", tmp.display()))?;
+    }
+    std::fs::rename(&tmp, dir.join(PULL_AUTH)).map_err(|e| anyhow::anyhow!("{}: {e}", dir.display()))?;
+    st.audit(
+        ctx.name(),
+        "update.registry_auth",
+        "appliance/update",
+        json!({"username": r.username}),
+    )?;
+    Ok(Json(json!({"configured": true, "username": r.username})))
+}
+
+pub async fn delete_registry_auth(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>> {
+    ctx.require(ADMIN)?;
+    let _ = std::fs::remove_file(update_dir(&st).join(PULL_AUTH)); // absent = nothing to do
+    st.audit(
+        ctx.name(),
+        "update.registry_auth_removed",
+        "appliance/update",
+        json!({}),
+    )?;
+    Ok(Json(json!({"configured": false, "username": null})))
+}
+
 /// After an executed quorum action (approved, or direct with approvals off).
 pub fn after_approve(st: &St, action: &str, actor: &str, p: &Value) {
     let r = match action {

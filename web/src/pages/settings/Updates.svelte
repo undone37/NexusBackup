@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { get, post, act, errText } from '../../lib/api';
+  import { get, post, put, del, act, errText } from '../../lib/api';
   import { askConfirm } from '../../lib/confirm.svelte';
   import { session } from '../../lib/session.svelte';
   import { fmtAgo, fmtTime } from '../../lib/format';
@@ -15,8 +15,13 @@
   let u = $state<UpdatesStatus | null>(null);
   let error: string | null = $state(null);
 
+  let reg = $state<{ configured: boolean; username: string | null } | null>(null);
+  let regUser = $state('');
+  let regToken = $state('');
+
   async function load() {
     try {
+      reg = await get('/updates/registry');
       u = await get<UpdatesStatus>('/updates');
       error = null;
     } catch (e) {
@@ -42,6 +47,17 @@
 
   async function check() {
     if (await act(post('/updates/check'), t.settings.upd.checkStarted)) load();
+  }
+  async function saveReg(e: SubmitEvent) {
+    e.preventDefault();
+    if (await act(put('/updates/registry', { username: regUser.trim(), token: regToken.trim() }), t.settings.upd.reg.saved)) {
+      regToken = '';
+      load();
+    }
+  }
+  async function removeReg() {
+    if (!(await askConfirm(t.settings.upd.reg.removeConfirm))) return;
+    if (await act(del('/updates/registry'), t.settings.upd.reg.removed)) load();
   }
   async function apply() {
     if (!u?.available) return;
@@ -109,5 +125,30 @@
         </div>
       {/if}
     </section>
+    {#if reg}
+      <section class="card" aria-labelledby="reg-h">
+        <div class="card-head">
+          <h2 id="reg-h">{t.settings.upd.reg.title}</h2>
+          <span class="chip {reg.configured ? 'ok' : ''}">{reg.configured ? t.settings.upd.reg.configured(reg.username ?? '') : t.settings.upd.reg.none}</span>
+        </div>
+        <p class="muted">{t.settings.upd.reg.intro}</p>
+        {#if admin}
+          <form class="form-grid" onsubmit={saveReg}>
+            <div class="field">
+              <label for="reg-user">{t.settings.upd.reg.user}</label>
+              <input id="reg-user" bind:value={regUser} required maxlength="128" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label for="reg-token">{t.settings.upd.reg.token}</label>
+              <input id="reg-token" type="password" bind:value={regToken} required maxlength="512" autocomplete="new-password" />
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="primary">{t.settings.upd.reg.save}</button>
+              {#if reg.configured}<button type="button" onclick={removeReg}>{t.settings.upd.reg.remove}</button>{/if}
+            </div>
+          </form>
+        {/if}
+      </section>
+    {/if}
   {/if}
 </div>

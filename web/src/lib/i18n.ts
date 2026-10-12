@@ -937,6 +937,20 @@ export const en = {
       applyConfirm: (v: string) =>
         `Install version ${v} now instead of waiting for the maintenance window? The appliance downloads it and reboots into it (automatic rollback if the health checks fail). With approvals enabled a second person must approve.`,
       applied: 'Update staged.',
+      reg: {
+        title: 'Registry credential',
+        intro:
+          'Needed only while the image repository is private: a read-only pull token (for GitHub: a token with read:packages). The appliance uses it only while it downloads an update; it is never shown again.',
+        user: 'User name',
+        token: 'Token',
+        configured: (u: string) => `Configured for ${u}`,
+        none: 'None (the repository is public)',
+        save: 'Save credential',
+        remove: 'Remove',
+        removeConfirm: 'Remove the registry credential? Updates from a private repository will fail until a new one is saved.',
+        saved: 'Registry credential saved.',
+        removed: 'Registry credential removed.',
+      },
       upToDate: 'No newer image available.',
       since: (s: string) => `since ${s}`,
       none: 'none',
