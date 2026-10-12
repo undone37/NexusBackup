@@ -274,6 +274,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
             let name = p["name"].as_str().unwrap_or_default();
             crate::resources::tenant_deletable(c, name)?;
             changed(c.execute("DELETE FROM tenants WHERE name = ?1", [name])?)?;
+            catalog::tenant_key::remove(c, name)?;
         }
         "source.delete" => changed(c.execute("DELETE FROM sources WHERE id = ?1", [int(p, "id")?])?)?,
         "policy.delete" => changed(c.execute("DELETE FROM policies WHERE id = ?1", [int(p, "id")?])?)?,
