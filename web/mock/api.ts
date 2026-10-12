@@ -1003,6 +1003,7 @@ function seed() {
     status: { globex: { last_ok: day(0, 4) + 480, last_error: null, imported: 3, bytes: 734003200, remote: 41, key_versions: [1] } },
   });
   seedPhase12(t);
+  seedPhase13a(t);
 }
 
 // ---------------------------------------------------------------- helpers
@@ -1217,6 +1218,13 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'ssh_key.rotate':
       rotateSshKey(p.name);
       break;
+    case 'snapshot.delete': {
+      // the scheduler's `snapshot_delete` job; an offsite copy stays (offsite retention)
+      const x = find(db.snapshots, (y) => y.tenant === p.tenant && y.source === p.source && y.time === p.time, 'snapshot');
+      if (x.offsite) x.local = false;
+      else db.snapshots = db.snapshots.filter((y) => y !== x);
+      break;
+    }
     case 'update.apply':
       if (db.updates.available) Object.assign(db.updates, { staged: { ...db.updates.available, since: now() }, status: 'staged' });
       break;
@@ -1908,6 +1916,16 @@ on('POST', '/gc/approve-large', async (c) => {
 });
 
 // snapshots / jobs / downloads
+on('DELETE', '/snapshots/:tenant/:source/:time', (c, [tenant, source, time]) => {
+  const u = need(c.user, 'admin');
+  const [tn, src, tm] = [decodeURIComponent(tenant), decodeURIComponent(source), Number(time)];
+  if (u.tenant && u.tenant !== tn) throw new HttpError(403, 'forbidden');
+  const x = find(db.snapshots as any[], (y) => y.tenant === tn && y.source === src && y.time === tm, 'snapshot');
+  if (!x.local) throw new HttpError(409, 'only the offsite copy is left: it follows the offsite retention');
+  if (x.origin) throw new HttpError(409, "replicated snapshot: it follows the replication source's retention");
+  if (x.lock_until > now()) throw new HttpError(409, `snapshot is locked until ${x.lock_until} (unix time)`);
+  return quorum(u, 'snapshot.delete', { tenant: tn, source: src, time: tm });
+});
 on('GET', '/snapshots', (c) => {
   const u = need(c.user);
   const tq = c.query.get('tenant');
@@ -2095,6 +2113,18 @@ function rotateSshKey(name: string) {
   const k = find(db.sshKeys, (x) => x.name === name, 'ssh key');
   const fresh = sshKey(k.name, k.purpose, now());
   Object.assign(k, { ...fresh, previous: { public_key: k.public_key, fingerprint: k.fingerprint, created: k.created } });
+}
+
+/** Phase 13a: legacy-ftp (vm-103) left its group; its old snapshots are unlocked and pruned as orphans. */
+function seedPhase13a(t: number) {
+  for (const d of [100, 70, 40]) {
+    const time = Math.floor(t / 86400 - d) * 86400 + 3 * 3600;
+    db.snapshots.push(snap('initech', 'vm-103', time, 18 * 2 ** 30, true, d > 40, time + 3600));
+  }
+  db.alerts.push({
+    id: nextId(), ts: t - 86400 * 2 + 3 * 3600, severity: 'info', kind: 'orphaned',
+    message: 'initech/vm-103 is in no protection group; pruned with the default retention', acked_by: null,
+  });
 }
 
 /** Runs after the main seed so the ids and random values of the older demo data stay the same. */

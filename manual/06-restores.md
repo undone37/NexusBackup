@@ -304,6 +304,23 @@ gone:
 
 ![Replicated snapshots of tenant globex](images/snapshots-replicated.png)
 
+## Deleting a snapshot
+
+Retention deletes snapshots on its own (see [05 Policies and protection groups](05-policies-and-groups.md)). To remove
+a restore point earlier, an administrator clicks **Delete** in its row on **Snapshots** and confirms.
+
+![Deleting an unlocked snapshot](images/snapshot-delete.png)
+
+- **Delete** appears only when the snapshot's retention lock has expired (**Locked until** shows —). A locked
+  snapshot cannot be deleted by anyone; the appliance refuses the request.
+- Only the local copy is deleted. An offsite copy stays until the offsite retention removes it; a snapshot that
+  exists only offsite has no **Delete**.
+- Snapshots replicated from another appliance have no **Delete**: they follow the replication source's retention.
+- With approvals enabled, the deletion is a `snapshot.delete` request that a second person approves on
+  **Approvals** (see [10 Approvals and audit](10-approvals-and-audit.md)). After approval (or at once with approvals
+  disabled) the scheduler deletes the snapshot in a **snapshot_delete** job. The next garbage collection frees the
+  space its data used, unless other snapshots share it.
+
 ## Restore from the offsite copy
 
 The web UI has no restore from the offsite tier. Restores always read the local store. The offsite engine can

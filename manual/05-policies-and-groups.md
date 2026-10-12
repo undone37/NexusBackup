@@ -98,9 +98,23 @@ does with `acme-databases` and `acme-pg-cluster`. See [04 Sources](04-sources.md
 - **Delete** needs approval when approvals are enabled. Deleting a group stops future backups. Existing snapshots are
   not deleted.
 
-> **Status:** Retention runs as part of a group's backups, with that group's policy. Snapshots of guests that no
-> longer belong to any group are therefore not pruned automatically, and the web interface has no function to delete
-> individual snapshots. They keep using space until the guest is in a group again.
+### Snapshots of objects in no group
+
+Retention normally runs after a group's backups, with that group's policy. Snapshots of a guest, host, dataset or
+share that no longer belongs to any group of its tenant (the guest was removed from its group, the group was deleted,
+or it was backed up once by hand) are *orphaned*. The daily maintenance prunes them before garbage collection with the
+default retention (14 daily, 4 weekly, 6 monthly, 2 yearly), so the newest restore points stay and the space of the
+older ones is freed. Retention locks are respected as always. The first time this happens for an object, an `orphaned`
+info alert names it (see [11 Alerts and monitoring](11-alerts-and-monitoring.md)).
+
+- Put the object into a group again to give it that group's retention instead.
+- To remove restore points you no longer need before they expire, delete them one by one on **Snapshots** once their
+  lock has expired (see [06 Restores](06-restores.md#deleting-a-snapshot)).
+- Tenants replicated from another appliance are not affected: their snapshots follow the replication source's
+  retention.
+
+> **Status:** The default retention for orphaned snapshots can be changed only in the catalog setting `orphan_gfs`
+> (JSON like a policy's retention, e.g. `{"daily":7,"weekly":4,"monthly":3,"yearly":1}`); there is no page for it yet.
 - Groups cannot be created in a tenant that is replicated from another appliance: replicated tenants receive no local
   backups (see [08 Replication](08-replication.md)).
 

@@ -310,6 +310,10 @@ export const en = {
     restorePathHint: 'Write files onto a host with an agent',
     instantHint:
       'The guest starts immediately from the backup over NBD; disks are moved to the target storage while it runs.',
+    deleteLabel: (s: string, time: string) => `Delete snapshot ${s} @ ${time}`,
+    deleteConfirm: (s: string, time: string) =>
+      `Delete the local snapshot ${s} @ ${time}? An offsite copy follows the offsite retention. When approvals are enabled, a second person (admin or security officer) must approve it; the deletion runs as a job afterwards.`,
+    deleteQueued: 'Deletion queued.',
   },
   files: {
     title: (s: string, time: string) => `Files in ${s} @ ${time}`,

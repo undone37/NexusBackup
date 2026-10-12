@@ -403,6 +403,12 @@ async function main() {
       await closeDialogs();
       await go('/snapshots?tenant=globex');
       await shot('snapshots-replicated');
+      // an unlocked snapshot of a guest in no group (Phase 13a): Delete asks first
+      await go('/snapshots?source=vm-103');
+      await ev(`$rowClick('vm-103', 'Delete'); return true;`);
+      await until(`return !!$button('Confirm')`, 'confirmation dialog');
+      await shot('snapshot-delete');
+      await closeDialogs();
     }],
     ['files', async () => {
       const s = data.vm100;
