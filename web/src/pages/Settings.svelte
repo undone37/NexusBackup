@@ -10,9 +10,11 @@
   import SshKeys from './settings/SshKeys.svelte';
   import Updates from './settings/Updates.svelte';
   import Anomaly from './settings/Anomaly.svelte';
+  import Diagnostics from './settings/Diagnostics.svelte';
 
   // Tabs per role (docs/phase12-contract.md: alerts + SSO readable by admins and security officers,
-  // SSH keys + updates also by operators; only admins change anything — the server decides).
+  // SSH keys + updates also by operators; diagnostics: checks for both, support bundles for admins;
+  // only admins change anything — the server decides).
   // appliance-wide settings: never for tenant-scoped accounts (as the route guard in App.svelte)
   const officer = (u: User | null) => !u?.tenant && (u?.role === 'admin' || u?.role === 'security_officer');
   const staff = (u: User | null) => officer(u) || (!u?.tenant && u?.role === 'operator');
@@ -23,6 +25,7 @@
     { id: 'ssh', comp: SshKeys, allow: staff },
     { id: 'updates', comp: Updates, allow: staff },
     { id: 'anomaly', comp: Anomaly, allow: officer },
+    { id: 'diagnostics', comp: Diagnostics, allow: officer },
   ];
   const tabs = $derived(TABS.filter((x) => x.allow(session.user)));
   const tab = $derived(tabs.find((x) => x.id === route.query.get('tab')) ?? tabs[0]);

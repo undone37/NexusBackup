@@ -645,6 +645,12 @@ async function main() {
       await shot('settings-ssh-keys');
       await go('/settings?tab=updates');
       await shot('settings-updates');
+      // Phase 14b: self-checks (seeded run) and a support bundle the mock finishes after ~3 s
+      await go('/settings?tab=diagnostics');
+      await until(`return !!document.querySelector('#diag-checks-h') && document.querySelectorAll('tbody tr').length > 10`, 'diagnostics checks');
+      await ev(`$click('Create bundle'); return true;`);
+      await until(`return [...document.querySelectorAll('.chip')].some((c) => c.textContent.trim() === 'Ready')`, 'support bundle ready');
+      await shot('settings-diagnostics', { height: 1700 });
     }],
     ['approvals', async () => {
       await go('/quorum');
