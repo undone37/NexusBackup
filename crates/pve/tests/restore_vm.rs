@@ -204,6 +204,19 @@ fn single_file_restore_from_disk_images() {
         }
         assert!(vm.ls("/vda1/hello.txt").is_err(), "ls of a file");
 
+        // the name index walk (file search, groups.index_files): every file system,
+        // paths as in the file browser; the entry cap stops it early
+        let t = Instant::now();
+        let (names, complete) = restorevm::index(vm, 1_000_000, Duration::from_secs(300))?;
+        eprintln!("name index: {} entries in {:.1?}", names.len(), t.elapsed());
+        assert!(complete);
+        for (p, _, _) in expect {
+            let want = format!("{}/dir/sub/ünïcödé ✓.txt", &p[1..]);
+            assert!(names.iter().any(|e| e.0 == want && e.1 == 16), "{want} not indexed");
+        }
+        let (few, complete) = restorevm::index(vm, 3, Duration::from_secs(300))?;
+        assert!(!complete && few.len() < 100);
+
         // large file as tar (ext4) and a whole dataset as zip (ZFS)
         let d = tempfile::tempdir_in(target())?;
         let tar_p = d.path().join("big.tar");

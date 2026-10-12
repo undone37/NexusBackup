@@ -1659,11 +1659,12 @@ fn group_row(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
         json!({"id": r.get::<_, i64>(0)?, "tenant": r.get::<_, String>(1)?, "source_id": r.get::<_, i64>(2)?,
               "policy_id": r.get::<_, i64>(3)?, "name": r.get::<_, String>(4)?, "guests": list(5)?,
               "mode": r.get::<_, String>(6)?, "selector": list(7)?, "exclude": list(8)?,
-              "timezone": r.get::<_, String>(9)?}),
+              "timezone": r.get::<_, String>(9)?, "index_files": r.get::<_, bool>(10)?}),
     )
 }
 
-const GROUP_COLS: &str = "id, tenant, source_id, policy_id, name, guests, mode, selector, exclude, timezone";
+const GROUP_COLS: &str =
+    "id, tenant, source_id, policy_id, name, guests, mode, selector, exclude, timezone, index_files";
 
 /// A group as `group_row` (quorum `old` snapshots compare against it).
 pub fn group_value(c: &Connection, id: i64) -> ApiResult<Option<Value>> {

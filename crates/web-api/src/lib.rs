@@ -39,6 +39,7 @@ pub mod replication;
 pub mod reports;
 pub mod resources;
 pub mod runctl;
+pub mod search;
 pub mod settings;
 pub mod spa;
 pub mod storage;
@@ -484,6 +485,8 @@ pub fn router(st: St) -> Router {
         .route("/groups", get(list_groups).post(create_group))
         .route("/groups/{id}", put(update_group).delete(delete_group))
         .route("/groups/{id}/pause", post(runctl::pause_group))
+        .route("/groups/{id}/index-files", put(search::put_index_files))
+        .route("/search", post(search::search))
         .route("/groups/{id}/resume", post(runctl::resume_group))
         .route("/sources/{id}/maintenance", post(runctl::start_maintenance))
         .route("/sources/{id}/maintenance/end", post(runctl::end_maintenance))

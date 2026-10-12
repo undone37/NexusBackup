@@ -482,11 +482,59 @@ pub fn boot(cfg: &Config, work: &Path, initrd: &Path, disks: &[Disk], append: &s
     Ok(vm)
 }
 
-/// `nexus-pve … files <vmid> <time> mounts | ls <path> | get <out.tar|out.zip> <path>…`:
+/// Entries listed into a VM's name index at most, and the time a walk may take
+/// (the restore micro-VM runs meanwhile; docs/file-index.md).
+pub const INDEX_MAX_ENTRIES: usize = 5_000_000;
+pub const INDEX_BUDGET: Duration = Duration::from_secs(3600);
+
+/// Walks the guest file systems (`ls` from `/`, symlinks not followed) into a
+/// name index; paths are `<mountpoint>/<path>` like in the file browser.
+/// Unreadable directories are skipped. Returns (index, complete).
+pub fn index(vm: &mut Vm, max_entries: usize, budget: Duration) -> Result<(chunkstore::NameIndex, bool)> {
+    let t = Instant::now();
+    let mut out = chunkstore::NameIndex::default();
+    let mut dirs = vec![String::new()];
+    let mut errors = 0;
+    while let Some(dir) = dirs.pop() {
+        if out.len() >= max_entries || t.elapsed() > budget {
+            eprintln!("index: stopped after {} entries in {:.0?}", out.len(), t.elapsed());
+            return Ok((out, false));
+        }
+        let entries = match vm.ls(&format!("/{dir}")) {
+            Ok(e) => {
+                errors = 0;
+                e
+            }
+            Err(e) => {
+                eprintln!("index: /{dir}: {e:#}");
+                errors += 1;
+                if errors > 100 {
+                    bail!("index: the restore VM stopped answering");
+                }
+                continue;
+            }
+        };
+        for e in entries {
+            let path = if dir.is_empty() {
+                e.name
+            } else {
+                format!("{dir}/{}", e.name)
+            };
+            let kind = crate::files::index_kind(&e.kind);
+            out.push(&path, e.size, e.mtime, kind);
+            if kind == chunkstore::names::KIND_DIR {
+                dirs.push(path);
+            }
+        }
+    }
+    Ok((out, true))
+}
+
+/// `nexus-pve … files <vmid> <time> mounts | ls <path> | get <out.tar|out.zip> <path>… | index`:
 /// all fixed indexes (disks) of the VM snapshot attached. Image directory from
 /// `NEXUS_RESTORE_VM_DIR` (default `/usr/lib/nexus/restore-vm`), QEMU from `NEXUS_QEMU`.
 pub fn cli(store: &Store, vmid: u32, time: u64, args: &[String]) -> Result<()> {
-    let usage = "files <vmid> <time> mounts | ls <path> | get <out.tar|out.zip> <path>...";
+    let usage = "files <vmid> <time> mounts | ls <path> | get <out.tar|out.zip> <path>... | index";
     let m = store.load_manifest(&crate::backup::source_name(vmid), time)?;
     let mut disks = Vec::new();
     for name in &m.indexes {
@@ -509,6 +557,12 @@ pub fn cli(store: &Store, vmid: u32, time: u64, args: &[String]) -> Result<()> {
     with_vm(store, &refs, &cfg, |vm| {
         match args {
             [c] if c == "mounts" => println!("{}", serde_json::to_string_pretty(&vm.mounts()?)?),
+            // the snapshot's name index for the file search (groups.index_files)
+            [c] if c == "index" => {
+                let (names, complete) = index(vm, INDEX_MAX_ENTRIES, INDEX_BUDGET)?;
+                store.write_names(&m.source, m.time, &names)?;
+                println!("{}", serde_json::json!({"entries": names.len(), "complete": complete}));
+            }
             [c, path] if c == "ls" => println!("{}", serde_json::to_string_pretty(&vm.ls(path)?)?),
             [c, out, paths @ ..] if c == "get" && !paths.is_empty() => {
                 let out = Path::new(out);

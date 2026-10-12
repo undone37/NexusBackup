@@ -1899,3 +1899,5 @@ mod forward;
 mod report_mail;
 /// Phase 13b run control (pause, blackout, retries, SLA, cancel).
 mod runctl;
+/// Phase 15g file search and name index jobs.
+mod search;

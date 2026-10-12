@@ -1,4 +1,4 @@
-//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | restore-ct <vmid> <time> <node> <target> <storage> | instant-recover <vmid> <time> <node> <target> <storage> [--link-down] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>... | ct-files <vmid> <time> ls [dir]|get <out> <path>... | push-index | list | inventory`.
+//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | restore-ct <vmid> <time> <node> <target> <storage> | instant-recover <vmid> <time> <node> <target> <storage> [--link-down] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | push-index | list | inventory`.
 //! `backup-all` backs up every guest in `vmids`, VM or container (type from /cluster/resources).
 
 use anyhow::{bail, Context, Result};
@@ -43,7 +43,7 @@ fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
-        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | restore-ct <vmid> <time> <node> <target> <storage> | instant-recover <vmid> <time> <node> <target> <storage> [--link-down] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>... | ct-files <vmid> <time> ls [dir]|get <out> <path>... | push-index | list | inventory | task-stop <upid>");
+        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> | restore-ct <vmid> <time> <node> <target> <storage> | instant-recover <vmid> <time> <node> <target> <storage> [--link-down] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | push-index | list | inventory | task-stop <upid>");
     };
     let cfg: Config = serde_json::from_slice(&fs::read(cfg_path)?).context("config")?;
     if let ("inventory", []) = (cmd.as_str(), rest) {
@@ -201,13 +201,19 @@ fn ct_files(store: &Store, vmid: &str, time: &str, cmd: &str, args: &[String]) -
     match (cmd, args) {
         ("ls", [dir]) => println!("{}", serde_json::to_string_pretty(&pve::files::list(r, dir)?)?),
         ("ls", []) => println!("{}", serde_json::to_string_pretty(&pve::files::list(r, "")?)?),
+        // the snapshot's name index for the file search (groups.index_files)
+        ("index", []) => {
+            let names = pve::files::index(r)?;
+            store.write_names(&m.source, m.time, &names)?;
+            println!("{}", serde_json::json!({"entries": names.len(), "complete": true}));
+        }
         ("get", [out, paths @ ..]) if !paths.is_empty() => {
             let out = std::path::Path::new(out);
             let fmt = pve::files::Format::from_path(out)?;
             let n = pve::files::extract(r, paths, fmt, fs::File::create_new(out)?)?;
             println!("{n} entries written to {}", out.display());
         }
-        _ => bail!("ct-files <vmid> <time> ls [dir] | get <out.tar|out.zip> <path>..."),
+        _ => bail!("ct-files <vmid> <time> ls [dir] | get <out.tar|out.zip> <path>... | index"),
     }
     Ok(())
 }

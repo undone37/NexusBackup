@@ -52,7 +52,7 @@ If the administrators set a **login banner** (for example a legal notice), it ap
 
 | Group | Pages |
 |---|---|
-| **Monitor** | Dashboard, Snapshots, Jobs, Alerts |
+| **Monitor** | Dashboard, Snapshots, Find files, Storage, Reports, Jobs, Alerts |
 | **Governance** | Approvals, Audit log |
 | **Configuration** | Tenants, Sources, Agents, Replication, Policies, Protection groups, Users, Plugins, Settings |
 
@@ -87,6 +87,7 @@ The sidebar shows only what your role may use. The server checks every request a
 | Page | Administrator | Security officer | Operator | Tenant user | Viewer |
 |---|---|---|---|---|---|
 | Dashboard, Snapshots, Storage, Reports (CSV downloads), Jobs | ✓ | ✓ | ✓ | ✓ (own tenant) | read (its scope) |
+| Find files | ✓ | — | ✓ | ✓ (own tenant) | — |
 | Reports: scheduled reports | ✓ | read | — | — | — |
 | Alerts | ✓ | ✓ | ✓ | — | read (without a tenant) |
 | Approvals | ✓ | ✓ (decides) | ✓ (read) | — | — |
@@ -325,6 +326,16 @@ See [06 Restores](06-restores.md).
 
 Reading a VM's file systems starts an isolated restore micro-VM in the background, so the first listing of a VM
 snapshot takes a few seconds.
+
+## Find files
+
+**Find files** (also linked from the Snapshots page) searches file and folder names across all snapshots of a tenant:
+a name or pattern (`*`, `?`, `[a-z]`), optionally one guest and a date range. Each result row is one version of a file
+(same path, size and modification time) with the snapshots that hold it; pick a snapshot and click **Open** (file
+browser at that folder), **Download** or, for host snapshots, **Restore…**. Details:
+[06 Restores](06-restores.md#find-a-file).
+
+![Search results for budget* in tenant acme](images/search.png)
 
 ## Jobs
 

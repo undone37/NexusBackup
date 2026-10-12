@@ -97,9 +97,22 @@ pub enum Step {
     /// In-process work without the store (appliance jobs): `Ok` output becomes
     /// the captured stdout, `Err` goes to the log and fails the job.
     Func(InProc),
+    /// In-process read/maintenance work on the tenant's store (file search,
+    /// name index backfill, crate::search): `Ok` output becomes the captured stdout.
+    Store(StoreOp),
 }
 
 pub struct InProc(pub Box<dyn Fn() -> Result<String, String> + Send>);
+
+pub type StoreFn = dyn Fn(&Store) -> Result<String, String> + Send;
+
+pub struct StoreOp(pub Box<StoreFn>);
+
+impl std::fmt::Debug for StoreOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StoreOp")
+    }
+}
 
 impl std::fmt::Debug for InProc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -389,6 +402,13 @@ fn run_steps(id: i64, plan: &Plan, ctx: &Ctx, log: &Arc<Mutex<BoundedLog>>, stdo
                     log.lock()
                         .unwrap()
                         .line(&format!("deleting snapshot {source}/{time} failed: {e}"));
+                    return failed;
+                }
+            },
+            Step::Store(StoreOp(f)) => match f(store.as_ref().unwrap()) {
+                Ok(out) => *stdout = Some(out),
+                Err(e) => {
+                    log.lock().unwrap().line(&format!("[scheduler] {e}"));
                     return failed;
                 }
             },

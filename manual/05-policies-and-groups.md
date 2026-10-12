@@ -145,6 +145,20 @@ Notes:
   `inventory_refresh` warning is raised (once while it is open).
 - Microsoft 365 tags by Entra group (`group:<name>`) are not available yet.
 
+### Index files in VM/CT disks
+
+Files of host, TrueNAS, NFS/SMB and plugin snapshots are always findable under **Monitor → Find files**
+([06 Restores](06-restores.md#find-a-file)). The files inside VM and container disks are not, unless you switch
+it on per group: open **Edit** on a Proxmox VE group and tick **Index files in VM/CT disks (boots the restore
+micro-VM after every backup)**. The list of groups shows a **File index** label for such groups.
+
+After each backup of the group, the appliance queues a **File index** job per VM or container snapshot. For a VM it
+starts the restore micro-VM, mounts the guest file systems read-only and lists them; for a container it reads the
+stored tar stream. The file list is sealed with the tenant key and stored next to the snapshot. Costs: a micro-VM boot
+(a few seconds with KVM) plus the walk over all files for every VM snapshot, and a full read of the container's
+backup for every CT snapshot, so the index job can take minutes for large guests. Only snapshots taken while the
+flag is on are indexed. Turning it on or off is recorded in the audit log (`group.index_files`).
+
 ### Changing and deleting groups
 
 - **Edit** lets you change the name, source, policy, guests, the **What to protect** choice, tags and exclusions. Moving a group to a policy that is weaker in any
