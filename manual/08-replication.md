@@ -57,7 +57,7 @@ person's approval (**Approvals**, action `replication peer create`). The code wo
      Compare it out of band. The secondary pins this certificate and refuses any other.
    - **Tenants**: comma separated, e.g. `globex`. They must be tenants of the peer on the primary.
      Missing tenants are created on the secondary.
-   - **Schedule**: `daily HH:MM` or `hourly MM`.
+   - **Schedule**: `daily HH:MM` or `hourly MM` (UTC; the other forms of [05](05-policies-and-groups.md#schedules) work too).
    - **Retention (GFS)**: **Daily**, **Weekly**, **Monthly**, **Yearly**. This is the retention on the
      secondary, independent of the primary.
    - **Bandwidth limit (MB/s, empty = unlimited)**.

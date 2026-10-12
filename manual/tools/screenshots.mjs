@@ -360,9 +360,9 @@ async function main() {
       await go('/jobs');
       await shot('jobs');
       const jobs = (await api('GET', '/jobs')).body;
-      const failed = jobs.find((j) => j.kind === 'backup' && j.state === 'failed' && j.params.group_id);
+      const failed = jobs.find((j) => j.kind === 'backup' && j.state === 'failed' && j.params.group_id && !j.retry_of);
       const smb = jobs.filter((j) => j.kind === 'backup' && j.tenant === 'acme' && j.state === 'ok').find((j) => j.params.group_id);
-      const running = jobs.find((j) => j.state === 'running' || j.state === 'queued');
+      const running = jobs.find((j) => j.state === 'running') ?? jobs.find((j) => j.state === 'queued');
       await go(`/jobs/${running.id}`, 2500);
       await shot('job-running');
       await go(`/jobs/${failed.id}`);
@@ -512,7 +512,12 @@ async function main() {
       await ev(`$rowClick('gold', 'Edit'); return true;`);
       await until(`return !!document.querySelector('dialog[open] #p-sched')`, 'policy dialog');
       await ev(`$fill('#p-daily', '7'); return true;`);
-      await shot('policy-edit');
+      await shot('policy-edit', { height: 1500 });
+      await closeDialogs();
+      // run control (Phase 13b): weekday schedule, retries, a blackout window with abort
+      await ev(`$rowClick('bronze', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #bw-from-0')`, 'policy dialog with blackout window');
+      await shot('policy-runcontrol', { height: 1600 });
       await closeDialogs();
     }],
     ['groups', async () => {
@@ -531,6 +536,23 @@ async function main() {
       await ev(`$rowClick('production', 'Edit'); return true;`);
       await until(`return !!document.querySelector('dialog[open] #g-guests')`, 'PVE group dialog');
       await shot('group-pve');
+      await closeDialogs();
+      // run control (Phase 13b): back up now (inside a blackout window), pause
+      await ev(`$rowClick('development', 'Back up now'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input[value="failed"]')`, 'back up now dialog');
+      await shot('group-backup-now');
+      await closeDialogs();
+      await ev(`$rowClick('production', 'Back up now'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input[value="some"]')`, 'back up now dialog');
+      await ev(`$check('dialog[open] input[value="some"]'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input[type="checkbox"][value="101"]')`, 'guest list');
+      await ev(`$check('dialog[open] input[type="checkbox"][value="101"]'); return true;`);
+      await shot('group-backup-guests');
+      await closeDialogs();
+      await ev(`$rowClick('acme-vms', 'Pause'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #pause-for')`, 'pause dialog');
+      await ev(`$fill('#pause-for', '14'); return true;`);
+      await shot('group-pause');
       await closeDialogs();
     }],
     ['users', async () => {

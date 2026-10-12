@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { get, post, act, errText } from '../lib/api';
+  import { get, errText } from '../lib/api';
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
   import { href } from '../lib/router.svelte';
@@ -10,6 +10,8 @@
   import { parsePluginSnapshot, pluginKinds, type KindInfo } from '../lib/plugins';
   import type { Agent, Alert, ApprovalsState, Dashboard as DashboardData, Group, Job, Plugin, Policy, Snapshot, Source } from '../lib/types';
   import Check from '../components/Check.svelte';
+  import BackupNow from '../components/BackupNow.svelte';
+  import { isPaused, schedulePeriod } from '../lib/schedule';
   import JobState from '../components/JobState.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import KpiTile from '../components/KpiTile.svelte';
@@ -59,7 +61,7 @@
   const worstKind = kindName;
   // only what needs action; healthy objects are counted in the protection chart
   const attention = $derived(pr?.worst.filter((w) => w.sla !== 'ok') ?? []);
-  const slaCls: Record<string, string> = { ok: 'ok', breach: 'bad', never: 'warn' };
+  const slaCls: Record<string, string> = { ok: 'ok', breach: 'bad', never: 'warn', paused: 'plain' };
   const toneOf = (bad: boolean, warn: boolean): '' | 'bad' | 'warn' => (bad ? 'bad' : warn ? 'warn' : '');
 
   let groups: Group[] = $state([]);
@@ -194,18 +196,23 @@
   const showAlerts = $derived(can.viewAlerts(session.user));
   const policyOf = (g: Group) => policies.find((p) => p.id === g.policy_id);
 
-  function status(g: Group, s: Snapshot | undefined): 'ok' | 'stale' | 'missing' {
+  function status(g: Group, s: Snapshot | undefined): 'ok' | 'stale' | 'missing' | 'paused' {
     if (!s) return 'missing';
     // same rule as the KPIs (docs/phase12-contract.md §1): breach after 1.5 × the policy period (RPO)
-    const rpo = policyOf(g)?.schedule.startsWith('hourly') ? 3600 : 86400;
+    const rpo = schedulePeriod(policyOf(g)?.schedule ?? '');
     const maxAge = 1.5 * rpo;
-    return Date.now() / 1000 - s.time > maxAge ? 'stale' : 'ok';
+    if (Date.now() / 1000 - s.time <= maxAge) return 'ok';
+    // paused on purpose (Phase 13b): not overdue
+    return isPaused(g.paused_until) || isPaused(g.maintenance_until) ? 'paused' : 'stale';
   }
-  const statusCls = { ok: 'ok', stale: 'warn', missing: 'bad' };
+  const statusCls = { ok: 'ok', stale: 'warn', missing: 'bad', paused: 'plain' };
 
 
-  async function backupNow(g: Group) {
-    await act(post('/jobs', { kind: 'backup', tenant: g.tenant, params: { group_id: g.id } }), t.dash.backupQueued);
+  let bnOpen = $state(false);
+  let bnGroup: Group | null = $state(null);
+  function backupNow(g: Group) {
+    bnGroup = g;
+    bnOpen = true;
   }
 </script>
 
@@ -437,7 +444,7 @@
                     <Check on={ver} title={ver ? `${t.dash.verified}: ${fmtTime(ver.verified)}` : ''} />
                     <span class="muted">{ver ? fmtAgo(ver.time) : ''}</span>
                   </td>
-                  <td><span class="chip {statusCls[st]}">{t.dash[st]}</span></td>
+                  <td><span class="chip {statusCls[st]}">{st === 'paused' ? t.runctl.paused : t.dash[st]}</span></td>
                   {#if can.backup(session.user) && i === 0}
                     <td class="actions" rowspan={guestsOf(g).length}>
                       <button type="button" class="small" onclick={() => backupNow(g)}><IconPlay aria-hidden="true" />{t.dash.runBackup}</button>
@@ -497,3 +504,5 @@
     </section>{/if}
   </div>
 {/if}
+
+<BackupNow bind:open={bnOpen} group={bnGroup} label={(v) => (bnGroup ? guestLabel(bnGroup, v) : String(v))} />

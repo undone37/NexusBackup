@@ -136,8 +136,11 @@ struct Obj {
     paused: bool,
 }
 
+/// (tenant, source id, guests, schedule, source kind, source name, source config, paused)
+type GroupRow = (String, i64, String, String, String, String, String, bool);
+
 fn protection(c: &Connection, scope: Option<&str>, now: i64) -> ApiResult<Value> {
-    let rows: Vec<(String, i64, String, String, String, String, String, bool)> = c
+    let rows: Vec<GroupRow> = c
         .prepare(
             "SELECT g.tenant, g.source_id, g.guests, p.schedule, s.kind, s.name, s.config,
                     g.paused_until = -1 OR g.paused_until > ?2 OR s.maintenance_until = -1 OR s.maintenance_until > ?2

@@ -24,7 +24,9 @@ duplicate; after you acknowledge it, a condition that persists (for example a fu
 
 | Kind | Severity | Raised when | What to do |
 |---|---|---|---|
-| `job_failed` | critical | any job fails (backup, restore, offsite, GC, …); the message ends with the last log lines | open the job on **Jobs**, read the log, fix the cause, run it again (**Back up now**) |
+| `job_failed` | critical | any job fails (backup, restore, offsite, GC, …); the message ends with the last log lines. Group backups are retried first (policy **Retries**): the alert comes after the last attempt ("failed after 4 attempts") | open the job on **Jobs**, read the log, fix the cause, run it again (**Back up now**, e.g. **Guests that failed in the last run**) |
+| `sla_missed` | warning | a group backup runs longer than its policy's **Run-time SLA**; once per job | check why the run is slow (source load, network, a hanging guest); cancel it on **Jobs** if needed, or raise the SLA |
+| `paused` | warning | a group was paused, or a source put into maintenance, for more than 7 days or indefinitely; once per pause | make sure the pause is intended; **Resume** the group / **End maintenance** when the work is done |
 | `verify` | critical | the daily verification found missing or corrupt chunks (locally or in the offsite sample) | see [15 Troubleshooting](15-troubleshooting-faq.md#verification-failed); do not run GC until it is understood |
 | `inventory` | critical | the offsite inventory check found packs missing on the target or unknown packs there; or a locked snapshot disappeared from the local store | treat as a possible attack or storage fault; check the offsite target, see [07 Offsite copies](07-offsite.md) |
 | `capacity` | warning | the chunk store is more than 75 % full | add storage, or review retention; GC only frees chunks no snapshot uses any more |

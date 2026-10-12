@@ -555,7 +555,7 @@ mod tests {
             blackout(&[day.clone(), night.clone()], utc, D + 5 * HOUR),
             Some((D - 2 * HOUR, true))
         );
-        assert_eq!(abort_since(&[day.clone()], utc, D + 9 * HOUR), None);
+        assert_eq!(abort_since(std::slice::from_ref(&day), utc, D + 9 * HOUR), None);
         assert_eq!(abort_since(&[night], utc, D + 5 * HOUR), Some(D - 2 * HOUR));
         // in Berlin (UTC+2 in October): 08:00 local = 06:00 UTC
         assert_eq!(

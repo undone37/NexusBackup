@@ -1,6 +1,8 @@
 // Shapes of the /api/v1 resources (docs/control-plane.md). Times are unix seconds.
 // JSON columns of the catalog (offsite, config, gfs, guests, params, details) arrive parsed.
 
+import type { BlackoutWindow } from './schedule';
+
 export type Role = 'admin' | 'security_officer' | 'operator' | 'tenant_user';
 
 export interface User {
@@ -190,6 +192,8 @@ interface SourceBase {
   id: number;
   tenant: string;
   name: string;
+  /** Phase 13b: null = active, -1 = indefinitely, else unix time */
+  maintenance_until?: number | null;
 }
 export type PveSource = SourceBase & { kind: 'pve'; config: SourceConfig };
 export type LinuxSource = SourceBase & { kind: 'linux'; config: LinuxSourceConfig };
@@ -246,6 +250,10 @@ export interface Policy {
   schedule: string;
   gfs: Gfs;
   offsite: boolean;
+  /** Phase 13b run control */
+  retry: { count: number; delay_min: number };
+  blackout: BlackoutWindow[];
+  sla_minutes: number | null;
 }
 
 export interface Group {
@@ -256,6 +264,13 @@ export interface Group {
   name: string;
   /** pve: VM/CT IDs; linux: exactly `[source.config.agent_id]`; truenas: datasets of the source; nfs/smb: none (the share) */
   guests: (number | string)[];
+  /** IANA zone of the schedule and blackout windows */
+  timezone: string;
+  /** GET /groups only: null = active, -1 = indefinitely, else unix time */
+  paused_until?: number | null;
+  /** of the group's source */
+  maintenance_until?: number | null;
+  blackout_active?: boolean;
 }
 
 export type JobState = 'queued' | 'running' | 'ok' | 'failed' | 'cancelled';
@@ -335,6 +350,11 @@ export interface Job {
   finished: number | null;
   log?: string;
   result?: JobResult | null;
+  /** Phase 13b: retry chain and cancel request of a running job */
+  attempt?: number;
+  retry_of?: number | null;
+  not_before?: number | null;
+  cancel_by?: string | null;
 }
 
 export interface Snapshot {
@@ -566,7 +586,7 @@ export interface PluginGuest {
 
 // ---------------------------------------------------------------- Phase 12 (docs/phase12-contract.md)
 
-export type Sla = 'ok' | 'breach' | 'never';
+export type Sla = 'ok' | 'breach' | 'never' | 'paused';
 
 /** GET /dashboard?days=7|30 (§1). Byte counts; ratios and forecasts are null when unknown. */
 export interface Dashboard {
@@ -578,6 +598,8 @@ export interface Dashboard {
     unprotected: number;
     sla_ok: number;
     sla_breach: number;
+    /** behind the RPO, but every group of the object is paused (no breach) */
+    sla_paused?: number;
     never: number;
     worst: {
       source: string;
