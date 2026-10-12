@@ -293,6 +293,11 @@ impl Platform for Linux {
         // systemd restarts the service (RestartForceExitStatus=75)
         std::process::exit(update::RESTART_EXIT_CODE)
     }
+
+    fn layout(&self) -> Result<String, Refused> {
+        let run = agent_core::config::Paths::default().run;
+        Ok(crate::layout::capture_json(&run.to_string_lossy()))
+    }
 }
 
 pub fn os_name() -> String {
@@ -304,10 +309,19 @@ pub fn os_name() -> String {
 }
 
 pub fn caps() -> Vec<String> {
-    let mut c: Vec<String> = ["fallback", "xattrs", "acl", "hardlinks", "hooks", "restore", "update"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let mut c: Vec<String> = [
+        "fallback",
+        "xattrs",
+        "acl",
+        "hardlinks",
+        "hooks",
+        "restore",
+        "update",
+        agent_proto::CAP_LAYOUT,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     for (tool, cap) in [("lvcreate", "lvm"), ("zfs", "zfs"), ("btrfs", "btrfs")] {
         if volumes::tool(tool).is_some() {
             c.push(cap.into());

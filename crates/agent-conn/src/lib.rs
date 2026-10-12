@@ -71,6 +71,11 @@ pub fn name(m: &Message) -> &'static str {
         Message::RenewCsr { .. } => "RenewCsr",
         Message::RenewDone { .. } => "RenewDone",
         Message::RenewOk => "RenewOk",
+        Message::GetLayout => "GetLayout",
+        Message::Layout { .. } => "Layout",
+        Message::RescueApply { .. } => "RescueApply",
+        Message::RescueFinish { .. } => "RescueFinish",
+        Message::RescueDone { .. } => "RescueDone",
     }
 }
 

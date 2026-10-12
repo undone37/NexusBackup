@@ -2,6 +2,8 @@
 //! docs/agent-linux.md.
 
 pub mod hooks;
+pub mod layout;
+pub mod rescue;
 pub mod restore;
 pub mod scan;
 pub mod server;

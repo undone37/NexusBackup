@@ -1,0 +1,170 @@
+{
+   "blockdevices": [
+      {
+         "name": "sda",
+         "kname": "sda",
+         "type": "disk",
+         "size": "21474836480",
+         "fstype": null,
+         "uuid": null,
+         "label": null,
+         "partuuid": null,
+         "mountpoint": null,
+         "rm": "0",
+         "model": null,
+         "log-sec": "512",
+         "children": [
+            {
+               "name": "sda1",
+               "kname": "sda1",
+               "type": "part",
+               "size": "1073741824",
+               "fstype": "ext4",
+               "uuid": "bbbb-boot",
+               "label": null,
+               "partuuid": null,
+               "mountpoint": "/boot",
+               "rm": "0",
+               "model": null,
+               "log-sec": "512"
+            },
+            {
+               "name": "sda2",
+               "kname": "sda2",
+               "type": "part",
+               "size": "16106127360",
+               "fstype": "btrfs",
+               "uuid": "cccc-btrfs",
+               "label": "fedora",
+               "partuuid": null,
+               "mountpoint": "/",
+               "rm": "0",
+               "model": null,
+               "log-sec": "512"
+            },
+            {
+               "name": "sda3",
+               "kname": "sda3",
+               "type": "part",
+               "size": "2147483648",
+               "fstype": "crypto_LUKS",
+               "uuid": "dddd-luks",
+               "label": null,
+               "partuuid": null,
+               "mountpoint": null,
+               "rm": "0",
+               "model": null,
+               "log-sec": "512",
+               "children": [
+                  {
+                     "name": "luks-dddd",
+                     "kname": "luks-dddd",
+                     "type": "crypt",
+                     "size": "2130706432",
+                     "fstype": "ext4",
+                     "uuid": "eeee-sec",
+                     "label": null,
+                     "partuuid": null,
+                     "mountpoint": "/srv/secret",
+                     "rm": "0",
+                     "model": null,
+                     "log-sec": "512"
+                  }
+               ]
+            }
+         ]
+      },
+      {
+         "name": "sdb",
+         "kname": "sdb",
+         "type": "disk",
+         "size": "4294967296",
+         "fstype": null,
+         "uuid": null,
+         "label": null,
+         "partuuid": null,
+         "mountpoint": null,
+         "rm": "0",
+         "model": null,
+         "log-sec": "512",
+         "children": [
+            {
+               "name": "sdb1",
+               "kname": "sdb1",
+               "type": "part",
+               "size": "4294967296",
+               "fstype": "linux_raid_member",
+               "uuid": "ffff",
+               "label": null,
+               "partuuid": null,
+               "mountpoint": null,
+               "rm": "0",
+               "model": null,
+               "log-sec": "512",
+               "children": [
+                  {
+                     "name": "md0",
+                     "kname": "md0",
+                     "type": "raid1",
+                     "size": "4294967296",
+                     "fstype": "ext4",
+                     "uuid": "aaaa-md",
+                     "label": null,
+                     "partuuid": null,
+                     "mountpoint": "/srv/md",
+                     "rm": "0",
+                     "model": null,
+                     "log-sec": "512"
+                  }
+               ]
+            }
+         ]
+      },
+      {
+         "name": "sdc",
+         "kname": "sdc",
+         "type": "disk",
+         "size": "4294967296",
+         "fstype": null,
+         "uuid": null,
+         "label": null,
+         "partuuid": null,
+         "mountpoint": null,
+         "rm": "0",
+         "model": null,
+         "log-sec": "512",
+         "children": [
+            {
+               "name": "sdc1",
+               "kname": "sdc1",
+               "type": "part",
+               "size": "4294967296",
+               "fstype": "linux_raid_member",
+               "uuid": "ffff",
+               "label": null,
+               "partuuid": null,
+               "mountpoint": null,
+               "rm": "0",
+               "model": null,
+               "log-sec": "512",
+               "children": [
+                  {
+                     "name": "md0",
+                     "kname": "md0",
+                     "type": "raid1",
+                     "size": "4294967296",
+                     "fstype": "ext4",
+                     "uuid": "aaaa-md",
+                     "label": null,
+                     "partuuid": null,
+                     "mountpoint": "/srv/md",
+                     "rm": "0",
+                     "model": null,
+                     "log-sec": "512"
+                  }
+               ]
+            }
+         ]
+      }
+   ]
+}

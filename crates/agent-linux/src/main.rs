@@ -13,6 +13,7 @@ usage:
   nexus-agent run [--state DIR] [--config DIR]
   nexus-agent status [--state DIR] [--config DIR]
   nexus-agent hooks test [--config DIR]
+  nexus-agent rescue [--rescue-config FILE]   (rescue ISO: bare-metal recovery console)
   nexus-agent version
 defaults: --config /etc/nexus-agent --state /var/lib/nexus-agent
 --token - reads the token from stdin (keeps it out of the process list)";
@@ -32,6 +33,7 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
     let mut paths = Paths::default();
     let mut token = None;
     let mut port = None;
+    let mut rescue_config = None;
     let mut words = vec![];
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -41,6 +43,7 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             "--port" => port = Some(val("--port")?.parse::<u16>().map_err(|_| "invalid --port")?),
             "--state" => paths.state = PathBuf::from(val("--state")?),
             "--config" => paths.config = PathBuf::from(val("--config")?),
+            "--rescue-config" => rescue_config = Some(PathBuf::from(val("--rescue-config")?)),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(ExitCode::SUCCESS);
@@ -66,6 +69,10 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         ["run"] => run(paths),
+        ["rescue"] => {
+            nexus_agent::rescue::main(rescue_config)?;
+            Ok(ExitCode::SUCCESS)
+        }
         ["status"] => {
             print!("{}", nexus_agent::status(&paths));
             Ok(ExitCode::SUCCESS)

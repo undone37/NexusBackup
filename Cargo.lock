@@ -114,6 +114,8 @@ dependencies = [
  "rcgen",
  "ring",
  "rustls",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

@@ -1,0 +1,34 @@
+{
+   "filesystems": [
+      {
+         "target": "/",
+         "source": "/dev/sda2[/root]",
+         "fstype": "btrfs",
+         "options": "rw,relatime,seclabel,compress=zstd:1,subvol=/root"
+      },
+      {
+         "target": "/boot",
+         "source": "/dev/sda1",
+         "fstype": "ext4",
+         "options": "rw,relatime"
+      },
+      {
+         "target": "/home",
+         "source": "/dev/sda2[/home]",
+         "fstype": "btrfs",
+         "options": "rw,relatime,compress=zstd:1,subvol=/home"
+      },
+      {
+         "target": "/srv/secret",
+         "source": "/dev/mapper/luks-dddd",
+         "fstype": "ext4",
+         "options": "rw"
+      },
+      {
+         "target": "/srv/md",
+         "source": "/dev/md0",
+         "fstype": "ext4",
+         "options": "rw"
+      }
+   ]
+}

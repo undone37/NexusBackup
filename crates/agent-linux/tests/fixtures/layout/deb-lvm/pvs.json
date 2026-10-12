@@ -1,0 +1,20 @@
+{
+  "report": [
+    {
+      "pv": [
+        {
+          "pv_name": "/dev/vda1",
+          "pv_uuid": "Pv0aaa-1111",
+          "pv_size": "11676942336",
+          "vg_name": "vg0"
+        },
+        {
+          "pv_name": "/dev/vdb",
+          "pv_uuid": "Pv1bbb-2222",
+          "pv_size": "8589934592",
+          "vg_name": "vgdata"
+        }
+      ]
+    }
+  ]
+}
