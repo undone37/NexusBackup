@@ -3,6 +3,8 @@
 //!
 //! Schedule forms (all evaluated in a time zone, default UTC):
 //! - `hourly MM`, `every Nh` / `every Nh at MM` (N divides 24: slots at local hours 0, N, 2N, …)
+//! - `every Nm` (N ≥ 5 divides 60: slots at minutes 0, N, 2N, … of every hour; frequent
+//!   WAL-only runs of database plugins)
 //! - `daily HH:MM`
 //! - `Mon,Wed,Fri HH:MM`, also ranges (`Mon-Fri HH:MM`)
 //! - `monthly D HH:MM` (D 1..=31; a month without day D runs on its last day)
@@ -29,6 +31,10 @@ pub enum Kind {
     Hours {
         every: u32,
         minute: u32,
+    },
+    /// every `every` minutes (5..=30, divides 60), from the full hour
+    Minutes {
+        every: u32,
     },
     /// on the weekdays of the mask (bit 0 = Monday; 0x7f = daily)
     Days {
@@ -93,7 +99,7 @@ impl Schedule {
     /// Parses in UTC (see [`Schedule::in_tz`]). Single spaces only.
     pub fn parse(s: &str) -> Result<Self> {
         let bad = || {
-            format!("bad schedule {s:?}: expected `daily HH:MM`, `hourly MM`, `every Nh [at MM]`, `Mon,Wed HH:MM` or `monthly D HH:MM`")
+            format!("bad schedule {s:?}: expected `daily HH:MM`, `hourly MM`, `every Nh [at MM]`, `every Nm`, `Mon,Wed HH:MM` or `monthly D HH:MM`")
         };
         let parts: Vec<&str> = s.split(' ').collect();
         let kind = match parts.as_slice() {
@@ -109,6 +115,14 @@ impl Schedule {
                 every: 1,
                 minute: digits(m, 59, true).with_context(bad)?,
             },
+            ["every", n] if n.ends_with('m') => {
+                let every = n
+                    .strip_suffix('m')
+                    .and_then(|n| digits(n, 30, false))
+                    .filter(|n| *n >= 5 && 60 % n == 0)
+                    .with_context(|| format!("bad schedule {s:?}: `every Nm` needs N in 5,6,10,12,15,20,30"))?;
+                Kind::Minutes { every }
+            }
             ["every", n] | ["every", n, "at", _] => {
                 let every = n
                     .strip_suffix('h')
@@ -145,6 +159,9 @@ impl Schedule {
     fn slots_on(&self, date: NaiveDate) -> Vec<(u32, u32)> {
         match self.kind {
             Kind::Hours { every, minute } => (0..24).step_by(every as usize).map(|h| (h, minute)).collect(),
+            Kind::Minutes { every } => (0..24)
+                .flat_map(|h| (0..60).step_by(every as usize).map(move |m| (h, m)))
+                .collect(),
             Kind::Days { mask, hour, minute } => {
                 if mask & (1 << date.weekday().num_days_from_monday()) != 0 {
                     vec![(hour, minute)]
@@ -193,6 +210,7 @@ impl Schedule {
     pub fn period(self) -> i64 {
         match self.kind {
             Kind::Hours { every, .. } => every as i64 * 3600,
+            Kind::Minutes { every } => every as i64 * 60,
             Kind::Days { mask, .. } => {
                 // longest gap between two run days of the week
                 let days: Vec<i64> = (0..7).filter(|d| mask & (1 << d) != 0).collect();
@@ -371,6 +389,8 @@ mod tests {
         assert_eq!(p("hourly 07").kind, Kind::Hours { every: 1, minute: 7 });
         assert_eq!(p("every 6h").kind, Kind::Hours { every: 6, minute: 0 });
         assert_eq!(p("every 4h at 15").kind, Kind::Hours { every: 4, minute: 15 });
+        assert_eq!(p("every 15m").kind, Kind::Minutes { every: 15 });
+        assert_eq!(p("every 5m").kind, Kind::Minutes { every: 5 });
         assert_eq!(
             p("Mon,Wed,Fri 01:30").kind,
             Kind::Days {
@@ -412,6 +432,12 @@ mod tests {
             "every 0h",
             "every 6",
             "every 6h at 60",
+            "every 4m",
+            "every 7m",
+            "every 60m",
+            "every 0m",
+            "every 15m at 05",
+            "every m",
             "monthly 0 01:00",
             "monthly 32 01:00",
             "Fri-Mon 01:00",
@@ -448,6 +474,22 @@ mod tests {
         assert_eq!(e.last_slot(D + 13 * HOUR), D + 12 * HOUR + 30 * 60);
         assert_eq!(e.last_slot(D + 12 * HOUR + 29 * 60), D + 6 * HOUR + 30 * 60);
         assert_eq!(e.last_slot(D + 10 * 60), D - 6 * HOUR + 30 * 60);
+    }
+
+    #[test]
+    fn last_slot_minutes() {
+        let s = p("every 15m");
+        assert_eq!(s.period(), 15 * 60);
+        assert_eq!(s.last_slot(D + 10 * HOUR + 14 * 60), D + 10 * HOUR);
+        assert_eq!(s.last_slot(D + 10 * HOUR + 15 * 60), D + 10 * HOUR + 15 * 60);
+        assert_eq!(s.last_slot(D + 10 * HOUR + 59 * 60), D + 10 * HOUR + 45 * 60);
+        assert_eq!(s.last_slot(D + 5 * 60), D, "midnight");
+        assert_eq!(s.last_slot(D - 1), D - 15 * 60, "across midnight");
+        assert!(s.due(D + 10 * HOUR + 1, D + 10 * HOUR + 15 * 60));
+        assert!(!s.due(D + 10 * HOUR + 15 * 60 + 2, D + 10 * HOUR + 29 * 60));
+        // half-hour time zone: slots stay on the local quarter hours
+        let k = p("every 30m").in_tz("Asia/Kolkata").unwrap(); // UTC+05:30
+        assert_eq!(k.last_slot(D + 10 * HOUR + 10 * 60), D + 10 * HOUR);
     }
 
     #[test]

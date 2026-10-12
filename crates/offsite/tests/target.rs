@@ -50,6 +50,7 @@ fn upload_dr_retention_gc_verify() {
     let (kept, deleted, locked) = t
         .apply_retention(
             &Gfs {
+                recent: 0,
                 daily: 1,
                 weekly: 0,
                 monthly: 0,
@@ -64,6 +65,7 @@ fn upload_dr_retention_gc_verify() {
     let (_, _, locked) = t
         .apply_retention(
             &Gfs {
+                recent: 0,
                 daily: 0,
                 weekly: 0,
                 monthly: 0,
@@ -192,6 +194,7 @@ fn hostile_box_listing_and_footer() {
 
 fn gfs(daily: u32) -> Gfs {
     Gfs {
+        recent: 0,
         daily,
         weekly: 0,
         monthly: 0,

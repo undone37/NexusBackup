@@ -520,6 +520,7 @@ fn truenas_jobs() {
             .unwrap();
     }
     let gfs = Gfs {
+        recent: 0,
         daily: 1,
         weekly: 0,
         monthly: 0,

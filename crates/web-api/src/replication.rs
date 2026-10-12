@@ -983,6 +983,7 @@ pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -
     let (peer_id, token) = split_code(&r.code).ok_or_else(|| ApiError::bad("code: expected <peer-id>.<token>"))?;
     validate::schedule(&r.schedule)?;
     let gfs = r.gfs.unwrap_or(validate::Gfs {
+        recent: 0,
         daily: 14,
         weekly: 4,
         monthly: 6,
@@ -1087,6 +1088,7 @@ pub async fn update_source(
         .unwrap_or_else(|| old["schedule"].as_str().unwrap_or_default().to_owned());
     validate::schedule(&schedule)?;
     let old_gfs: validate::Gfs = serde_json::from_value(old["gfs"].clone()).unwrap_or(validate::Gfs {
+        recent: 0,
         daily: 14,
         weekly: 4,
         monthly: 6,

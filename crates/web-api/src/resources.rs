@@ -1467,6 +1467,7 @@ fn load_policy(c: &Connection, id: i64) -> ApiResult<Option<PolicyReq>> {
             name,
             schedule,
             gfs: serde_json::from_str(&gfs).unwrap_or(Gfs {
+                recent: 0,
                 daily: 0,
                 weekly: 0,
                 monthly: 0,

@@ -232,6 +232,7 @@ fn s3_multipart_100mib() {
 
 fn gfs(daily: u32) -> Gfs {
     Gfs {
+        recent: 0,
         daily,
         weekly: 0,
         monthly: 0,

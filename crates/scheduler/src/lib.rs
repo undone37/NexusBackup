@@ -437,6 +437,7 @@ fn gfs_of(v: &Value) -> Gfs {
     let d = Gfs::default();
     let f = |k: &str, def: u32| v[k].as_u64().map_or(def, |n| n.min(10_000) as u32);
     Gfs {
+        recent: f("recent", d.recent),
         daily: f("daily", d.daily),
         weekly: f("weekly", d.weekly),
         monthly: f("monthly", d.monthly),
@@ -1983,6 +1984,7 @@ impl Scheduler {
         Ok(gs
             .into_iter()
             .reduce(|a, b| Gfs {
+                recent: 0, // offsite copies keep the period classes only
                 daily: a.daily.max(b.daily),
                 weekly: a.weekly.max(b.weekly),
                 monthly: a.monthly.max(b.monthly),

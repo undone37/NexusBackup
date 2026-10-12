@@ -738,7 +738,8 @@ export const en = {
     lede: 'Schedules and grandfather-father-son retention for protection groups.',
     new: 'New policy',
     schedule: 'Schedule',
-    scheduleHint: '"daily HH:MM", "hourly MM", "every 6h at MM", "Mon,Wed,Fri HH:MM" or "monthly D HH:MM" (time zone of the group)',
+    scheduleHint:
+      '"daily HH:MM", "hourly MM", "every 6h at MM", "every 15m", "Mon,Wed,Fri HH:MM" or "monthly D HH:MM" (time zone of the group)',
     gfs: 'Retention (GFS)',
     daily: 'Daily',
     weekly: 'Weekly',
@@ -1749,9 +1750,14 @@ export const en = {
   },
   runctl: {
     kind: 'Runs',
-    kinds: { daily: 'Daily', hours: 'Every N hours', weekdays: 'On weekdays', monthly: 'Monthly' } as Record<string, string>,
+    kinds: { daily: 'Daily', minutes: 'Every N minutes', hours: 'Every N hours', weekdays: 'On weekdays', monthly: 'Monthly' } as Record<
+      string,
+      string
+    >,
     every: 'Every',
     hoursN: (n: number) => (n === 1 ? 'hour' : `${n} hours`),
+    minutesN: (n: number) => `${n} minutes`,
+    minutesHint: 'From the full hour. For frequent runs that send only what changed, e.g. PostgreSQL WAL.',
     at: 'At',
     minute: 'Minute',
     days: 'Days',
