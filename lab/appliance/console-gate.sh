@@ -20,12 +20,13 @@ T0=$(date +%s)
 log() { printf '[%4ss] %s\n' $(($(date +%s) - T0)) "$*" >&2; }
 
 log "real gate on tty2"
-con run 'set -e
+# in a subshell: `set -e` must not end the serial root shell itself
+con run '( set -e
 systemctl is-active nexus-console-gate.service
 test "$(systemctl is-enabled getty@tty2.service)" = masked
-ps -eo label,tty,comm | grep "nexus_consolegate_t.*tty2.*nexus-console-gat"
+ps -eo label,tty,comm | grep "nexus_consolegate_t.*tty2.*nexus-console-g" # comm: 15 chars
 ls -ldZ /var/lib/nexus/console-unlock | grep -E "^drwx------\. .*nexus-webapi nexus-webapi .*nexus_console_unlock_t"
-ls -dZ /run/nexus-console-gate | grep nexus_consolegate_var_run_t'
+ls -dZ /run/nexus-console-gate | grep nexus_consolegate_var_run_t )'
 
 log "one-time code from the API"
 "$here/e2e.sh" api console
