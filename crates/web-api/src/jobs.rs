@@ -581,22 +581,35 @@ pub async fn download(State(st): State<St>, ctx: Ctx, Path(token): Path<String>)
 pub struct SnapFilter {
     tenant: Option<String>,
     source: Option<String>,
+    /// only snapshots with an open (active or advisory) legal hold
+    held: Option<bool>,
 }
 
 pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>) -> ApiResult<Json<Value>> {
     let c = st.cat.conn();
+    // the open legal hold (v18) of each snapshot, if any
     let rows = c
-        .prepare(
-            "SELECT tenant, source, time, size, local, offsite, lock_until, verified, origin FROM snapshots
-             WHERE (?1 IS NULL OR tenant = ?1) AND (?2 IS NULL OR source = ?2) AND (?3 IS NULL OR tenant = ?3)
-             ORDER BY tenant, source, time DESC",
-        )?
-        .query_map(params![f.tenant, f.source, ctx.scope()], |r| {
+        .prepare(&format!(
+            "SELECT s.tenant, s.source, s.time, s.size, s.local, s.offsite, s.lock_until, s.verified, s.origin,
+                    h.id IS NOT NULL, {} FROM snapshots s
+             LEFT JOIN legal_holds h ON h.tenant = s.tenant AND h.source = s.source AND h.time = s.time
+               AND h.state IN ('active','advisory')
+             WHERE (?1 IS NULL OR s.tenant = ?1) AND (?2 IS NULL OR s.source = ?2) AND (?3 IS NULL OR s.tenant = ?3)
+               AND (?4 IS NULL OR ?4 = 0 OR h.id IS NOT NULL)
+             ORDER BY s.tenant, s.source, s.time DESC",
+            crate::holds::COLUMNS
+        ))?
+        .query_map(params![f.tenant, f.source, ctx.scope(), f.held], |r| {
+            let hold = if r.get::<_, bool>(9)? {
+                crate::holds::row(r)?
+            } else {
+                Value::Null
+            };
             Ok(json!({
                 "tenant": r.get::<_, String>(0)?, "source": r.get::<_, String>(1)?, "time": r.get::<_, i64>(2)?,
                 "size": r.get::<_, i64>(3)?, "local": r.get::<_, bool>(4)?, "offsite": r.get::<_, bool>(5)?,
                 "lock_until": r.get::<_, i64>(6)?, "verified": r.get::<_, Option<i64>>(7)?,
-                "origin": r.get::<_, Option<String>>(8)?,
+                "origin": r.get::<_, Option<String>>(8)?, "hold": hold,
             }))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -605,8 +618,9 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
 
 /// Deletes one local snapshot (admin, approval action `snapshot.delete`, executed
 /// by the scheduler). Refused at once while it is locked, when only the offsite
-/// copy is left (offsite retention) and for replicated snapshots (the
-/// replication source's retention; a deleted one would be fetched again).
+/// copy is left (offsite retention), for replicated snapshots (the
+/// replication source's retention; a deleted one would be fetched again) and
+/// under a legal hold (the scheduler checks the hold again when it runs).
 pub async fn delete_snapshot(
     State(st): State<St>,
     ctx: Ctx,
@@ -642,6 +656,11 @@ pub async fn delete_snapshot(
         return Err(ApiError::conflict(format!(
             "snapshot is locked until {lock_until} (unix time)"
         )));
+    }
+    if catalog::holds::active(&st.cat.conn(), &tenant, &source, time)?.is_some() {
+        return Err(ApiError::conflict(
+            "snapshot is under a legal hold: release it first (needs approval)",
+        ));
     }
     let o = crate::quorum::request(
         &st,

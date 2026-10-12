@@ -316,10 +316,56 @@ a restore point earlier, an administrator clicks **Delete** in its row on **Snap
 - Only the local copy is deleted. An offsite copy stays until the offsite retention removes it; a snapshot that
   exists only offsite has no **Delete**.
 - Snapshots replicated from another appliance have no **Delete**: they follow the replication source's retention.
+- A snapshot under a [legal hold](#legal-hold) has no **Delete**; the appliance refuses it until the hold is released.
 - With approvals enabled, the deletion is a `snapshot.delete` request that a second person approves on
   **Approvals** (see [10 Approvals and audit](10-approvals-and-audit.md)). After approval (or at once with approvals
   disabled) the scheduler deletes the snapshot in a **snapshot_delete** job. The next garbage collection frees the
   space its data used, unless other snapshots share it.
+
+## Legal hold
+
+A legal hold keeps a snapshot for as long as it is needed as evidence or as the last good copy after an incident,
+whatever its retention says. While a snapshot is held:
+
+- the protection group's retention, the retention of [snapshots in no group](05-policies-and-groups.md#snapshots-of-objects-in-no-group),
+  the offsite retention and the retention of a replication secondary never delete it;
+- garbage collection keeps all its data;
+- **Delete** is not offered, and a delete request approved earlier fails.
+
+The hold adds protection only; nothing else about the snapshot changes (restores work as usual).
+
+**Setting a hold** is up to the **security officer**, takes effect at once and is recorded in the audit log
+(`snapshot.hold`):
+
+- one snapshot: **Legal hold…** in its row on **Snapshots**, enter the reason (case or ticket reference) and
+  **Put on hold**;
+- many snapshots at once, e.g. everything since an incident began: **Hold a time range…** at the top of
+  **Snapshots**, choose the tenant, optionally one guest, the time range and the reason;
+- from a change-rate `anomaly` alert: **Hold last good snapshot** on **Alerts** puts the last snapshot before the
+  anomaly on hold (see [11 Alerts and monitoring](11-alerts-and-monitoring.md#change-rate-anomalies)).
+
+![Holding every snapshot of a guest in a time range](images/snapshot-hold-range.png)
+
+Held snapshots carry a **Legal hold** badge (hover it for who set it, when and why). **Legal holds only** in the
+filter bar lists them.
+
+![Snapshots under a legal hold](images/snapshots-held.png)
+
+**Releasing a hold** needs a second person: a security officer or an administrator clicks **Release hold**, and
+another administrator or security officer approves the `snapshot hold release` request on **Approvals** (see
+[10 Approvals and audit](10-approvals-and-audit.md)). Until then the badge shows **release requested** and the hold
+stays in force. After the release the snapshot follows its retention again and may be deleted by the next run.
+The holds and their history (who set and released them, who approved) are also available over the API
+(`GET /api/v1/holds`).
+
+On a **replication secondary** the primary's holds are only advice: they show as **Hold advised by <primary>** and
+raise a `legal_hold_advisory` alert, but the secondary's retention ignores them until its own security officer
+clicks **Apply hold…** (or **Apply hold** on the alert). See
+[08 Replication](08-replication.md#legal-holds-from-the-primary).
+
+> **Status:** Retention reads the holds when a job starts; a hold set while a retention job is already running
+> applies from the next run. The VM lab verifies that a hold blocks retention; the offsite and replication paths are
+> covered by integration tests.
 
 ## Restore from the offsite copy
 

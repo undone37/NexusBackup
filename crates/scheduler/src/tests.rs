@@ -537,6 +537,7 @@ fn truenas_jobs() {
             gfs,
         }],
         download: None,
+        held: Default::default(),
     };
     let keys: KeySource = Arc::new(|t: &str| Ok(Keyring::new(t, &[(1, [7; 32])])));
     let ctx = Ctx {
@@ -1895,6 +1896,8 @@ mod accounts;
 mod expiry;
 /// Phase 14a audit / alert forwarding.
 mod forward;
+/// Phase 15c legal holds (retention, orphan sweep, delete, offsite config, advisories).
+mod holds;
 /// Phase 14e scheduled reports.
 mod report_mail;
 /// Phase 13b run control (pause, blackout, retries, SLA, cancel).

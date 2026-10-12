@@ -81,6 +81,7 @@ const READ: &[&str] = &[
     "/groups",
     "/agents",
     "/snapshots",
+    "/holds",
     "/jobs",
     "/jobs/*",
     "/alerts",

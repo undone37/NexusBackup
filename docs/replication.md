@@ -195,6 +195,13 @@ is skipped; jobs that open the store wait until the first sync imported the keys
 `replication_keys` (critical, key version mismatch / no export), `replication_verify` (critical,
 verification failure), plus the generic `job_failed`.
 
+### Legal holds (Phase 15c)
+After the snapshots, `nexus-replica sync` fetches `GET …/tenants/{t}/holds` (`[HoldInfo {source, time, reason,
+held_by, held_at}]`, the primary's active holds; 404 from older primaries = none) and reports them as `holds` in the
+`replicated` line. The scheduler keeps them as advisory `legal_holds` rows (docs/control-plane.md "Legal hold"),
+never enforced until a security officer of the secondary applies one. The secondary's own active holds go to
+`nexus-replica` as `held` and are skipped by its retention (step 6).
+
 ## 8. Catalog (v7)
 
 | Table | Columns |

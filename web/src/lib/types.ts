@@ -412,6 +412,34 @@ export interface Snapshot {
   verified: number | null;
   /** replication source the snapshot came from (null = local backup) */
   origin?: string | null;
+  /** open legal hold (15c): `active` (enforced) or `advisory` (reported by the primary) */
+  hold?: LegalHold | null;
+}
+
+/** A legal hold and its history (Phase 15c, GET /holds). */
+export interface LegalHold {
+  id: number;
+  tenant: string;
+  source: string;
+  time: number;
+  state: 'active' | 'released' | 'advisory' | 'withdrawn';
+  reason: string;
+  held_by: string;
+  held_at: number;
+  /** replication source that reported it (advisory, or applied from an advisory) */
+  origin: string | null;
+  released_by: string | null;
+  approved_by: string | null;
+  released_at: number | null;
+  /** pending (or approved, not yet executed) release request */
+  release_quorum: number | null;
+}
+
+/** The snapshot an alert offers to put on hold (anomaly, legal-hold advisory). */
+export interface SnapshotRef {
+  tenant: string;
+  source: string;
+  time: number;
 }
 
 /** Primary: an enrolled (or pending) secondary appliance (docs/replication.md). */
@@ -536,6 +564,8 @@ export interface Alert {
   note: string | null;
   /** resolved by the appliance (the problem went away) */
   auto: boolean;
+  /** 15c: the snapshot a security officer may put on hold from the alert */
+  snapshot?: SnapshotRef | null;
 }
 
 export interface LoginResponse {

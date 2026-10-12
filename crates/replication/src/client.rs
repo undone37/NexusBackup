@@ -6,8 +6,8 @@
 use crate::ca::{common_name, new_key_and_csr, pem_to_der, write_private};
 use crate::http::{client_config, Conn, Target};
 use crate::{
-    hex, proof, proof_eq, sha256_hex, unhex, EnrollRequest, EnrollResponse, KeyExport, SessionEnd, SnapshotInfo,
-    ALPN_ENROLL, ALPN_PEER, CN_PREFIX, EXPORTER_LABEL, MAX_CHUNK, MAX_FILE, MISSING, PREFIX,
+    hex, proof, proof_eq, sha256_hex, unhex, EnrollRequest, EnrollResponse, HoldInfo, KeyExport, SessionEnd,
+    SnapshotInfo, ALPN_ENROLL, ALPN_PEER, CN_PREFIX, EXPORTER_LABEL, MAX_CHUNK, MAX_FILE, MISSING, PREFIX,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use chunkstore::retention::{keep, Gfs};
@@ -141,6 +141,9 @@ pub struct SyncParams {
     pub parallel: usize,
     /// bytes per second (None = unlimited)
     pub bwlimit: Option<u64>,
+    /// `(source, time)` under a legal hold applied on this appliance: kept by
+    /// the local retention
+    pub held: BTreeSet<(String, u64)>,
 }
 
 #[derive(Serialize, Debug, Default)]
@@ -161,6 +164,8 @@ pub struct SyncReport {
     /// `source: kept, deleted, still locked`
     pub retention: Vec<String>,
     pub key_versions: Vec<u32>,
+    /// the primary's legal holds (advisory; empty from primaries before 15c)
+    pub holds: Vec<HoldInfo>,
     pub secs: f64,
 }
 
@@ -414,10 +419,26 @@ fn sync_inner(
         report.imported.push(id);
     }
 
-    // 4. independent retention (never because the primary deleted something)
+    // 4. the primary's legal holds: reported, never applied here (advisory)
+    let (s, b) = peer.call("GET", &format!("{PREFIX}/tenants/{t}/holds"), None, 16 << 20)?;
+    match s {
+        200 => {
+            report.holds = serde_json::from_slice::<Vec<HoldInfo>>(&b)
+                .context("holds")?
+                .into_iter()
+                .filter(|h| crate::valid_name(&h.source))
+                .collect();
+        }
+        404 => {} // primary before Phase 15c
+        _ => log(&format!("holds: {}", crate::http::error_text(s, &b))),
+    }
+
+    // 5. independent retention (never because the primary deleted something),
+    // skipping the holds applied here
     let sources: BTreeSet<String> = store.list_snapshots()?.into_iter().map(|m| m.source).collect();
     for src in sources {
-        let (k, d, l) = store.apply_retention(&src, &p.gfs)?;
+        let held: BTreeSet<u64> = p.held.iter().filter(|(s, _)| *s == src).map(|(_, t)| *t).collect();
+        let (k, d, l) = store.apply_retention_held(&src, &p.gfs, &held)?;
         report
             .retention
             .push(format!("{src}: kept {k}, deleted {d}, still locked {l}"));

@@ -71,7 +71,8 @@ log (`alert.ack`, `alert.resolve`).
 | `replication_verify` | critical | (secondary) replicated data failed verification; nothing was imported | — | check the primary; the next sync retries |
 | `config` | warning | the scheduler cannot use a group or replication source configuration | — | fix the configuration named in the message |
 | `orphaned` | info | snapshots of an object that is in no protection group of its tenant were found; they are pruned with the default retention (shown once per object) | — | put the object into a group if it should keep being protected with that group's retention, or ignore it; see [05 Policies and protection groups](05-policies-and-groups.md#snapshots-of-objects-in-no-group) |
-| `anomaly` | critical | a backup added far more new data than usual for its source, or new data that suddenly does not compress (see [Change-rate anomalies](#change-rate-anomalies)) | — | check the source for mass changes or encryption (ransomware) before the last good snapshot expires; the message names it |
+| `anomaly` | critical | a backup added far more new data than usual for its source, or new data that suddenly does not compress (see [Change-rate anomalies](#change-rate-anomalies)) | — | check the source for mass changes or encryption (ransomware); a security officer puts the last good snapshot on hold with **Hold last good snapshot** |
+| `legal_hold_advisory` | warning | (secondary) the primary holds a replicated snapshot under a legal hold; not applied here (one alert per snapshot) | a security officer applies the hold, or the primary releases it | decide whether the hold applies here too; **Apply hold** on the alert. See [08 Replication](08-replication.md#legal-holds-from-the-primary) |
 | `quota` | warning at 80 %, critical at 100 % | a tenant's store reached 80 % or 100 % of its soft quota (**Tenants**); one alert per tenant, escalated at 100 % | usage is back under 80 % | review retention or what the tenant backs up, or raise the quota; backups continue either way |
 | `cert_expiry` | info at 90 days, warning at 30, critical at 7 (API tokens: info, last 7 days) | a certificate, the IdP client secret or an API token expires soon (see [Expiry warnings](#expiry-warnings)); one alert per item, escalated | renewed (new certificate, new secret date, token revoked or replaced) | renew as the message says |
 | `account_dormant` | info | an account was disabled because nobody signed in with it for the configured number of days (**Settings → Security → Dormant accounts**; one alert per account) | — | re-enable the account on **Users** if it is still needed, else leave it disabled. See [09 Users and access](09-users-and-access.md#dormant-accounts) |
@@ -120,8 +121,15 @@ change-rate anomaly on acme/share-6: snapshot 1791580000: 412.0 GiB new data, li
 ```
 
 The message names the tenant, the source, the time of the suspicious snapshot and the **last snapshot before** it:
-the one to restore from if the data was encrypted. Act before that snapshot reaches the end of its retention. While
-the alert is open, further anomalies of the same source raise its count instead of a second alert.
+the one to restore from if the data was encrypted. While the alert is open, further anomalies of the same source
+raise its count instead of a second alert.
+
+A **security officer** sees **Hold last good snapshot** on the alert. It opens the legal hold dialog for that snapshot
+with a prepared reason; after **Put on hold** no retention, garbage collection or delete removes it until a release
+is approved ([06 Restores](06-restores.md#legal-hold)). Without a hold, act before the snapshot reaches the end of
+its retention.
+
+![Hold last good snapshot on an anomaly alert](images/alert-hold-last-good.png)
 
 The thresholds are in **Configuration → Settings → Anomaly detection** (administrators; security officers read
 only): **Detect unusual change rates**, **Alert above this multiple of the median**, **Median over the last runs**

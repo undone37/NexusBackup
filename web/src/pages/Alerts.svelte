@@ -9,6 +9,9 @@
   import type { Alert } from '../lib/types';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import Modal from '../components/Modal.svelte';
+  import HoldDialog from '../components/HoldDialog.svelte';
+  import IconGavel from '@lucide/svelte/icons/gavel';
+  import type { SnapshotRef } from '../lib/types';
 
   // ?id=<n> (the alert_url of notifications) shows that alert whatever its state
   const focus = Number(route.query.get('id') ?? 0) || null;
@@ -50,6 +53,20 @@
     note = '';
     open = true;
   }
+  // 15c: "Hold last good snapshot" (anomaly) / "Apply hold" (advisory from the primary)
+  let holdOpen = $state(false);
+  let holdTarget: SnapshotRef | null = $state(null);
+  let holdReason = $state('');
+  function hold(a: Alert) {
+    if (!a.snapshot) return;
+    holdTarget = a.snapshot;
+    const origin = /^primary (\S+) holds/.exec(a.message)?.[1] ?? '?';
+    holdReason =
+      a.kind === 'anomaly' ? t.alerts.holdReasonAnomaly(`${a.snapshot.tenant}/${a.snapshot.source}`) : t.alerts.holdReasonAdvisory(origin);
+    holdOpen = true;
+  }
+  const ref = (s: SnapshotRef) => `${s.source} @ ${fmtTime(s.time)}`;
+
   async function submit(e: SubmitEvent) {
     e.preventDefault();
     if (!dlg) return;
@@ -120,6 +137,15 @@
                   </span>
                   {#if a.auto}<span class="chip ok" title={t.alerts.autoTitle}>{t.alerts.auto}</span>{/if}
                 {:else if can.ackAlert(session.user)}
+                  {#if a.snapshot && can.hold(session.user)}
+                    <button
+                      type="button"
+                      class="small"
+                      onclick={() => hold(a)}
+                      aria-label={a.kind === 'anomaly' ? t.alerts.holdLastGoodLabel(ref(a.snapshot)) : t.alerts.applyHoldLabel(ref(a.snapshot))}
+                      ><IconGavel aria-hidden="true" />{a.kind === 'anomaly' ? t.alerts.holdLastGood : t.alerts.applyHold}</button
+                    >
+                  {/if}
                   {#if a.acked_by}
                     <span class="muted small">{t.alerts.acked} {t.alerts.ackedBy(a.acked_by)}</span>
                   {:else}
@@ -155,6 +181,8 @@
   {/if}
 </Modal>
 
+<HoldDialog bind:open={holdOpen} target={holdTarget} reason={holdReason} ondone={load} />
+
 <style>
   tr.resolved td {
     color: var(--muted);
@@ -178,3 +206,4 @@
     white-space: nowrap;
   }
 </style>
+

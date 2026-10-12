@@ -187,7 +187,7 @@ impl Scheduler {
         let cfg = self.replica_config(
             &s,
             json!({"tenant": job.tenant, "store": self.cfg.store_base.join(&job.tenant), "gfs": s.gfs,
-                   "bwlimit": s.bwlimit, "parallel": self.cfg.replica_parallel}),
+                   "bwlimit": s.bwlimit, "parallel": self.cfg.replica_parallel, "held": plan.held}),
         );
         plan.files
             .push(("replica.json".into(), serde_json::to_vec_pretty(&cfg)?));
@@ -258,6 +258,11 @@ impl Scheduler {
                 "UPDATE replication_sources SET status=?2, last_sync=?3 WHERE id=?1",
                 params![id, status.to_string(), now],
             )?;
+            // a report without `holds` (before 15c) leaves the advisories alone
+            if let Ok(h) = serde_json::from_value::<Vec<replication::HoldInfo>>(r["holds"].clone()) {
+                let imported: Vec<String> = serde_json::from_value(r["imported"].clone()).unwrap_or_default();
+                self.hold_advisories(&job.tenant, &s.name, &h, &imported)?;
+            }
         } else if !ok {
             let tail: String = log
                 .lines()
