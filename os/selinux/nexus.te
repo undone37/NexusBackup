@@ -898,6 +898,9 @@ neverallow nexus_tls_t self:capability *;
 nexus_daemon(diag)
 # nexus-update (root, unconfined_service_t: its script is bin_t) runs the checks before it
 # stages an update: same domain as from the path unit (found in the VM: chronyc denied)
+gen_require(`
+	type unconfined_service_t;
+')
 domtrans_pattern(unconfined_service_t, nexus_diag_exec_t, nexus_diag_t)
 allow unconfined_service_t nexus_diag_t:process2 { nnp_transition nosuid_transition };
 type nexus_diag_var_lib_t;	# /var/lib/nexus/diag: requests (web-api) and results (nexus-diag)
