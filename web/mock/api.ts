@@ -4370,11 +4370,11 @@ function seedHardware(t: number) {
       message: 'Disk sdf (WDC WD40EFPX-68C6CN0, WD-WX12D3456704): SMART health check failed; 312 pending, 1400 reallocated, 57 offline-uncorrectable sectors',
     }),
     mkAlert({
-      ts: t - 3 * 3600, last_ts: t - 120, count: 37, severity: 'critical', kind: 'disk', key: 'disk:md:nexus-data',
+      ts: t - 3 * 3600, last_ts: t - 120, count: 37, severity: 'critical', kind: 'disk', key: 'disk:md:3f0c1a2b:4d5e6f70:81920a1b:2c3d4e5f',
       message: 'Array md126 (nexus-data, raid6): degraded: 3 of 4 devices active, failed member sdf (WD-WX12D3456704)',
     }),
     mkAlert({
-      ts: t - 3 * 3600, last_ts: t - 120, count: 37, severity: 'info', kind: 'disk', key: 'disk:md:nexus-data:sync',
+      ts: t - 3 * 3600, last_ts: t - 120, count: 37, severity: 'info', kind: 'disk', key: 'disk:md:3f0c1a2b:4d5e6f70:81920a1b:2c3d4e5f:sync',
       message: 'Array md126 (nexus-data, raid6): rebuilding 41.0 % (about 295 min left)',
     }),
     mkAlert({
