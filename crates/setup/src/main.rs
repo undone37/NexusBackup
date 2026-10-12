@@ -17,6 +17,11 @@ const USAGE: &str = "usage: nexus-setup [options]
        nexus-setup vault-disable [--root DIR] [--catalog FILE] [--keyd-dir DIR]
                                 switch vault mode off after an approved vault.disable request;
                                 asks for the recovery key (stdin)
+       nexus-setup restore-config (BUNDLE | --offsite TARGET.json [--appliance ID]) [--dry-run] [--root DIR] [path options]
+                                new appliance, before first boot setup is finished: restore the configuration
+                                of a lost appliance from a configuration backup (a downloaded bundle, or the
+                                newest one on an offsite target: a JSON file {\"remote\": ...} as in a nexus-offsite job);
+                                asks for the recovery key of the lost appliance (stdin)
        nexus-setup reset-firewall [--root DIR] [--catalog FILE]
                                 clear every inbound firewall restriction (web UI reachable from any
                                 address again); reset-mgmt-allow is the old name
@@ -246,6 +251,70 @@ fn vault_disable(args: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// `restore-config`: a new appliance takes over the configuration of a lost one.
+fn restore_config(args: &[String]) -> Result<ExitCode> {
+    let (mut bundle, mut offsite, mut appliance, mut rest) = (None, None, None, Vec::new());
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--offsite" => offsite = Some(PathBuf::from(it.next().context("--offsite needs a file")?)),
+            "--appliance" => appliance = Some(it.next().context("--appliance needs an id")?.clone()),
+            x if !x.starts_with("--") && bundle.is_none() && rest.is_empty() => bundle = Some(PathBuf::from(x)),
+            _ => rest.push(a.clone()),
+        }
+    }
+    let o = parse(&rest)?;
+    if o.script.is_some() || o.force_network {
+        bail!("restore-config takes a bundle or --offsite, --appliance, --dry-run and path options");
+    }
+    let real = o.root == std::path::Path::new("/");
+    if real && unsafe { libc::geteuid() } != 0 {
+        bail!("must run as root on the appliance console");
+    }
+    let bytes = match (bundle, offsite) {
+        (Some(b), None) => std::fs::read(&b).with_context(|| format!("reading {}", b.display()))?,
+        (None, Some(t)) => {
+            let target: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&t).with_context(|| format!("reading {}", t.display()))?)
+                    .context("offsite target file")?;
+            let nft = (real && !o.dry_run).then(|| std::path::Path::new("/usr/sbin/nft"));
+            let (id, time, b) = setup::cfgbackup::fetch(&target, appliance.as_deref(), nft)?;
+            println!("Fetched the newest configuration backup of appliance {id} ({time}, {} bytes).", b.len());
+            b
+        }
+        _ => bail!("give either a bundle file or --offsite TARGET.json"),
+    };
+    let h = setup::cfgbackup::header(&bytes)?;
+    println!(
+        "Bundle of appliance {} (host {}), created {} (unix time), {} files.",
+        h["appliance"].as_str().unwrap_or("?"),
+        h["host"].as_str().unwrap_or("?"),
+        h["created"],
+        h["files"].as_array().map_or(0, Vec::len)
+    );
+    check_start(&o.paths, false)?;
+    let runner: Box<dyn Runner> = if o.dry_run {
+        Box::new(DryRunRunner)
+    } else {
+        Box::new(SystemRunner)
+    };
+    let mut s = Setup::open(o.paths, runner, o.dry_run, real)?;
+    eprint!("Recovery key of the lost appliance: ");
+    let mut key = zeroize::Zeroizing::new(String::new());
+    std::io::stdin().read_line(&mut key)?;
+    let r = s.restore_config(&bytes, &key)?;
+    for l in &s.log {
+        eprintln!("+ {l}");
+    }
+    println!(
+        "Configuration of appliance {} restored ({} files). The services are started; the recovery key stays the same.",
+        r.appliance, r.files
+    );
+    println!("Next: sign in to the web UI, upload the plugins again (if any), then recover the tenants' data:");
+    println!("Tenants -> Attach offsite copy, or nexus-offsite ... dr (manual chapter 14). Audited as setup.restore_config.");
+    Ok(ExitCode::SUCCESS)
+}
+
 /// `reset-firewall` (old name `reset-mgmt-allow`): console recovery from an
 /// inbound firewall lockout.
 fn reset_firewall(args: &[String]) -> Result<ExitCode> {
@@ -303,6 +372,16 @@ fn main() -> ExitCode {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("nexus-setup reset-firewall: {e:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if args.first().is_some_and(|a| a == "restore-config") {
+        keyd::harden_process();
+        return match restore_config(&args[1..]) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("nexus-setup restore-config: {e:#}");
                 ExitCode::FAILURE
             }
         };

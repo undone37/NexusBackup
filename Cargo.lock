@@ -2000,12 +2000,15 @@ dependencies = [
 name = "keyd"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "chacha20poly1305",
  "chunkstore",
  "crypto_box",
  "libc",
  "rand 0.8.8",
  "tempfile",
  "zeroize",
+ "zstd",
 ]
 
 [[package]]
@@ -3669,6 +3672,7 @@ dependencies = [
  "keyd",
  "libc",
  "nftsync",
+ "offsite",
  "qrcode",
  "rand 0.8.8",
  "ratatui",

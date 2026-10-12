@@ -7,6 +7,7 @@
 //! kek.recovery          KEK wrapped under the offline recovery key (escrow, copied offsite)
 //! tenants/<t>/dek.<v>   tenant DEK version v wrapped under the KEK
 //! tenants/<t>/tenant-recovery.pub, tenant-escrow.<kid>.<v>   optional tenant recovery key (`tenant_key`)
+//! (no file)            X25519 key for configuration backups, derived from the KEK (`config_bundle`)
 //! ```
 //! DR: new machine + `kek.recovery` + `tenants/` + recovery key -> `recover()`.
 //! Tenant-level DR: tenant recovery key + `tenant-escrow.*` -> `tenant_key::open` / `install`.
@@ -21,6 +22,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use zeroize::{Zeroize, Zeroizing};
 
+pub mod config_bundle;
 pub mod tenant_key;
 
 pub type Key = Zeroizing<[u8; 32]>;
