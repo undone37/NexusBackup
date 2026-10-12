@@ -1,6 +1,7 @@
 //! Guest inventory (Phase 13c, auto-protect): every VM and container of the
 //! cluster from `/cluster/resources?type=vm`, with the tags groups select on:
-//! `type:qemu|lxc`, `node:<node>`, `pool:<pool>`, `tag:<tag>` (PVE tags).
+//! `type:qemu|lxc`, `node:<node>`, `pool:<pool>`, `tag:<tag>` (PVE tags). Templates
+//! are left out: they cannot be backed up (fleecing), an `all` group would fail on them.
 //! Output of `nexus-pve <cfg> inventory`: `{"guests": [{id, title, kind, tags}]}`.
 
 use crate::api::Api;
@@ -16,6 +17,9 @@ pub fn parse(resources: &Value) -> Vec<Value> {
         .filter_map(|r| {
             let vmid = r["vmid"].as_u64().filter(|v| (1..=999_999_999).contains(v))?;
             let kind = r["type"].as_str().filter(|t| *t == "qemu" || *t == "lxc")?;
+            if r["template"].as_u64() == Some(1) {
+                return None;
+            }
             let mut tags = vec![format!("type:{kind}")];
             if let Some(n) = r["node"].as_str().filter(|n| !n.is_empty()) {
                 tags.push(format!("node:{n}"));
@@ -31,9 +35,6 @@ pub fn parse(resources: &Value) -> Vec<Value> {
                 .filter(|t| !t.is_empty())
             {
                 tags.push(format!("tag:{t}"));
-            }
-            if r["template"].as_u64() == Some(1) {
-                tags.push("template".into());
             }
             let title = r["name"].as_str().unwrap_or_default();
             Some((
@@ -66,13 +67,12 @@ mod tests {
             {"id": "qemu/0", "vmid": 0, "type": "qemu", "node": "pve1"}
         ]);
         let g = parse(&sample);
-        assert_eq!(g.len(), 3);
+        assert_eq!(g.len(), 2, "no templates, storages or invalid vmids");
         assert_eq!(
             g[0],
             json!({"id": "100", "title": "web", "kind": "qemu", "tags": ["type:qemu", "node:pve1", "pool:prod"]})
         );
         assert_eq!(g[1]["tags"], json!(["type:lxc", "node:pve2", "tag:infra", "tag:prod"]));
-        assert_eq!(g[2]["tags"], json!(["type:qemu", "node:pve1", "template"]));
         assert_eq!(parse(&json!({"unexpected": 1})), Vec::<Value>::new());
     }
 }

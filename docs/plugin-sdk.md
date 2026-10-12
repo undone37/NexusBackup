@@ -71,6 +71,8 @@ Rules (checked by `nexus-plugin pack` and again by the appliance):
   "default_port": 443, "proto": "tcp"}`). `sandbox.network: "none"` = no network.
 - `guests`: `{"title", "list": true}` if a group selects guests; implement `list_guests`. Every guest gets its own
   snapshot (`plugin-<id>-<source>-<guest>`); guest ids are `[A-Za-z0-9._-]{1,64}`.
+  To let auto-protect groups select guests by tag (e.g. `type:user`), implement `list_tagged_guests` instead and
+  return `TaggedGuest { id, title, size, tags }` (contract v1.5; up to 64 tags of at most 128 bytes, printable).
 - `restores`: `download` is mandatory and done by the appliance (files + your streams below `.nexus-streams/`).
   Others (`[a-z0-9_-]`) call your `restore` with `ctx.params["restore"]` = the id; their `params_schema` drives the
   restore dialog. An entry with id `mount` enables the mount operation. Restore parameters are visible in the job
