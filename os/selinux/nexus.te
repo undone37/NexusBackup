@@ -423,6 +423,9 @@ corenet_tcp_connect_all_unreserved_ports(nexus_offsite_t)
 # wrapped key escrow is uploaded with the packs
 read_files_pattern(nexus_offsite_t, nexus_escrow_t, nexus_escrow_t)
 list_dirs_pattern(nexus_offsite_t, nexus_escrow_t, nexus_escrow_t)
+# attach (17d): the one-time recovery key file in its job dir is removed once read
+# (the key itself goes to keyd over its socket, nexus_job_domain)
+delete_files_pattern(nexus_offsite_t, nexus_scheduler_var_run_t, nexus_scheduler_var_run_t)
 
 ########################################
 # Restore micro-VM (QEMU, -sandbox on, no NIC): kernel + initramfs, /dev/kvm,

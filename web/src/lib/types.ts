@@ -378,7 +378,26 @@ export type JobKind =
   | 'replica_sync'
   | 'inventory'
   | 'file_search'
-  | 'file_index';
+  | 'file_index'
+  | 'offsite_list'
+  | 'offsite_restore'
+  | 'offsite_attach';
+
+/** One snapshot of an `offsite_list` result (Phase 17d, `nexus-offsite list --json`). */
+export interface OffsiteListed {
+  source: string;
+  time: number;
+  /** logical size; null when the snapshot is not in this appliance's offsite inventory */
+  size: number | null;
+  /** offsite retention lock (0 = none / unknown) */
+  lock_until: number;
+  /** in this appliance's offsite inventory */
+  inventory: boolean;
+  /** its manifest is on the offsite target */
+  remote: boolean;
+  /** a copy is in the local store */
+  local: boolean;
+}
 
 /** One hit of a `file_search` job: one version of a file (same path, size, mtime) and the snapshots that hold it. */
 export interface SearchMatch {

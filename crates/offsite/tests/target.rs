@@ -350,3 +350,47 @@ fn held_snapshots_survive_offsite_retention_and_gc() {
     let (_, deleted, _) = t.apply_retention(&gfs(1), &Default::default()).unwrap();
     assert_eq!(deleted, 1);
 }
+
+/// Offsite in the UI (Phase 17d): the listing cross-checks inventory, box and
+/// local store; a fetched-back snapshot is locked locally for the keep time,
+/// so local retention leaves it alone until then.
+#[test]
+fn listing_and_fetch_back_survives_local_retention() {
+    let d = tempfile::tempdir().unwrap();
+    let box_ = LocalDir(d.path().join("box"));
+    let a = store(&d.path().join("a"));
+    let now = a.compliance_now().unwrap();
+    for v in 0..3 {
+        backup(&a, now - (5 - v) * DAY, v);
+    }
+    let t = {
+        let mut t = Target::open(&a, &box_, d.path().join("state"), Options::default()).unwrap();
+        t.upload().unwrap();
+        t
+    };
+    let (t0, t1, t2) = (now - 5 * DAY, now - 4 * DAY, now - 3 * DAY);
+    // local retention removed the oldest one; the box lost the newest manifest
+    a.delete_snapshot("vm-1", t0).unwrap();
+    std::fs::remove_file(d.path().join(format!("box/snapshots/vm-1/{t2}/manifest"))).unwrap();
+    let l = t.listing().unwrap();
+    let flags: Vec<(u64, bool, bool, bool)> = l.iter().map(|x| (x.time, x.inventory, x.remote, x.local)).collect();
+    assert_eq!(
+        flags,
+        [(t0, true, true, false), (t1, true, true, true), (t2, true, false, true)]
+    );
+    assert_eq!(l[0].size, Some(48 * 65536), "logical size from the sealed indexes");
+
+    // box snapshots this appliance's inventory does not know (another state dir)
+    let other = Target::open(&a, &box_, d.path().join("state-2"), Options::default()).unwrap();
+    let l = other.listing().unwrap();
+    assert_eq!(l.len(), 2);
+    assert!(l.iter().all(|x| !x.inventory && x.remote && x.size.is_none()));
+
+    // fetch back with a 7-day keep, then a retention that keeps nothing
+    t.fetch("vm-1", t0, 7 * DAY).unwrap();
+    assert_eq!(restored(&a, t0), image(0));
+    assert!(a.load_manifest("vm-1", t0).unwrap().lock_until >= now + 7 * DAY);
+    let (_, deleted, locked) = a.apply_retention("vm-1", &gfs(0)).unwrap();
+    assert_eq!((deleted, locked), (2, 1), "the fetched copy stays while its lock runs");
+    assert!(a.load_manifest("vm-1", t0).is_ok());
+}

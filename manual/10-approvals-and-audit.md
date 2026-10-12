@@ -10,7 +10,7 @@ a different administrator or security officer must approve:
 
 | Area | Action (as shown on the Approvals page) |
 |---|---|
-| Configuration | deleting a tenant, source, policy, protection group or agent (`tenant delete`, `source delete`, …) |
+| Configuration | deleting a tenant, source, policy, protection group or agent (`tenant delete`, `source delete`, …); attaching the offsite copy of a lost appliance as a tenant (`tenant attach_offsite`: after the approval the requester enters the old recovery key once, see [14 Disaster recovery](14-disaster-recovery.md#attach-an-offsite-copy-in-the-web-ui)) |
 | Retention | lowering any GFS value, switching off **Copy offsite** or relaxing the required consistency (`policy update`); moving a group to a weaker policy (`group update`) |
 | Restore | replacing the original guest with a restored copy (`restore replace`, see [06 Restores](06-restores.md#replace-the-original-guest)) |
 | Accounts | granting **Administrator** or **Security officer**, re-enabling such an account, a new activation code for one (`user update`) |
@@ -30,7 +30,7 @@ Rules:
 
 - The requester can never decide their own request. Any **other** enabled administrator or security officer can.
 - A request expires after **72 hours** without a decision.
-- Approving runs the action immediately and cannot be undone. Some actions (the replication key export, a large GC, a snapshot delete, a restore that replaces the original)
+- Approving runs the action immediately and cannot be undone. Some actions (the replication key export, a large GC, a snapshot delete, a restore that replaces the original, attaching an offsite copy)
   are carried out by the scheduler shortly after the approval; their state goes from **Approved** to **Executed**.
 - Requests never show secrets: passwords, keys and activation codes are not part of a request.
 - Some actions only add protection and therefore need no approval, e.g. a security officer putting snapshots on a

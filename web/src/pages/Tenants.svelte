@@ -3,13 +3,21 @@
   import { onMount } from 'svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
   import { t } from '../lib/i18n';
-  import { session } from '../lib/session.svelte';
-  import { fmtBytes } from '../lib/format';
-  import type { Tenant, TenantOffsite, SftpRemote, S3Remote } from '../lib/types';
+  import { fmtBytes, fmtTime } from '../lib/format';
+  import type { OffsiteListed, QuorumRequest, Tenant, TenantOffsite, SftpRemote, S3Remote } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import TenantRecoveryKey from '../components/TenantRecoveryKey.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
+  import IconCloud from '@lucide/svelte/icons/cloud';
+  import IconLink from '@lucide/svelte/icons/link';
+  import IconKey from '@lucide/svelte/icons/key-round';
+  import IconCloudDown from '@lucide/svelte/icons/cloud-download';
+  import { session } from '../lib/session.svelte';
+  import { can } from '../lib/roles';
+  import { route, navigate } from '../lib/router.svelte';
+  import { runJob } from '../lib/jobs';
+  import { fetchFromOffsite, listedStatus } from '../lib/offsite';
 
   let items: Tenant[] = $state([]);
   // tenant whose recovery key dialog is open (17e)
@@ -25,8 +33,26 @@
       error = errText(e);
     }
     loaded = true;
+    loadRequests();
   }
-  onMount(load);
+  onMount(async () => {
+    await load();
+    // `?offsite=<tenant>` opens that tenant's offsite copy (links, ui-smoke)
+    const o = items.find((x) => x.name === route.query.get('offsite'));
+    if (o && can.restore(session.user)) openCopy(o);
+  });
+
+  // Phase 17d: attach requests (`tenant.attach_offsite`) still open
+  let requests: QuorumRequest[] = $state([]);
+  async function loadRequests() {
+    if (!can.attachOffsite(session.user)) return;
+    try {
+      const qs = await get<QuorumRequest[]>('/quorum');
+      requests = qs.filter((q) => q.action === 'tenant.attach_offsite' && (q.state === 'pending' || q.state === 'approved'));
+    } catch {
+      requests = [];
+    }
+  }
   const canKey = $derived(['admin', 'security_officer'].includes(session.user?.role ?? ''));
 
   /** The remote of a tenant; older UI versions stored the SFTP fields flat. */
@@ -44,6 +70,8 @@
   }
 
   let open = $state(false);
+  // "Attach offsite copy" uses the same target form (step 1: request + approval)
+  let attaching = $state(false);
   let editing: Tenant | null = $state(null);
   let name = $state('');
   let kind: 'none' | 'sftp' | 's3' = $state('none');
@@ -68,7 +96,8 @@
   const GIB = 2 ** 30;
   let quota: number | null = $state(null);
 
-  function edit(x: Tenant | null) {
+  function edit(x: Tenant | null, attach = false) {
+    attaching = attach;
     editing = x;
     name = x?.name ?? '';
     const r = remoteOf(x?.offsite);
@@ -96,6 +125,7 @@
     uploaders = x?.offsite?.uploaders ?? 4;
     bwlimit = x?.offsite?.bwlimit ? String(Math.round(x.offsite.bwlimit / 1024)) : '';
     quota = x?.quota_bytes ? +(x.quota_bytes / GIB).toFixed(2) : null;
+    if (attach) kind = 'sftp';
     open = true;
   }
 
@@ -129,6 +159,16 @@
   async function save(e: SubmitEvent) {
     e.preventDefault();
     const o = offsite();
+    if (attaching) {
+      const r = await act(post<{ quorum_id?: number }>('/tenants/attach', { name, offsite: o }), t.offsite.attachDirect);
+      if (!r) return;
+      open = false;
+      await loadRequests();
+      // approvals disabled: the request is approved at once, the key can follow
+      const q = requests.find((x) => x.id === r.data.quorum_id && x.state === 'approved');
+      if (!r.quorum && q) openKey(q);
+      return;
+    }
     const r = editing
       ? await act(put(`/tenants/${encodeURIComponent(editing.name)}`, { offsite: o }), t.saved)
       : await act(post('/tenants', { name, offsite: o }), t.created);
@@ -141,6 +181,71 @@
     }
   }
 
+  // Step 2 of the attach: the requester enters the old appliance's recovery key once.
+  let keyOpen = $state(false);
+  let keyReq: QuorumRequest | null = $state(null);
+  let recoveryKey = $state('');
+  let busy = $state(false);
+  function openKey(q: QuorumRequest) {
+    keyReq = q;
+    recoveryKey = '';
+    keyOpen = true;
+  }
+  async function runAttach(e: SubmitEvent) {
+    e.preventDefault();
+    if (!keyReq) return;
+    busy = true;
+    const r = await act(post<{ id: number }>(`/tenants/attach/${keyReq.id}/run`, { recovery_key: recoveryKey }), (d) =>
+      t.offsite.runStarted(d.id),
+    );
+    busy = false;
+    recoveryKey = '';
+    if (r && !r.quorum) {
+      keyOpen = false;
+      navigate(`/jobs/${r.data.id}`);
+    }
+  }
+  const reqName = (q: QuorumRequest) => String(q.params.name ?? '');
+  const reqTarget = (q: QuorumRequest) => summary(q.params.offsite as TenantOffsite | undefined);
+
+  // Offsite copy of a tenant: `offsite_list` (what the target holds), fetch back
+  let copyOpen = $state(false);
+  let copyOf: Tenant | null = $state(null);
+  let listed: OffsiteListed[] | null = $state(null);
+  let listedAt = $state(0);
+  let checking = $state(false);
+  let abort: AbortController | null = null;
+  function openCopy(x: Tenant) {
+    copyOf = x;
+    listed = null;
+    copyOpen = true;
+    check();
+  }
+  async function check() {
+    if (!copyOf) return;
+    abort?.abort();
+    abort = new AbortController();
+    checking = true;
+    try {
+      const r = await runJob('offsite_list', copyOf.name, {}, abort.signal);
+      if (r?.job.state === 'ok') {
+        listed = (r.job.result?.snapshots as OffsiteListed[] | undefined) ?? [];
+        listedAt = r.job.finished ?? Date.now() / 1000;
+      } else if (r) error = (r.job.log ?? '').split('\n').filter(Boolean).pop() ?? r.job.state;
+    } catch (e) {
+      error = errText(e);
+    }
+    checking = false;
+  }
+  $effect(() => {
+    if (!copyOpen) abort?.abort();
+  });
+  async function fetchBack(x: OffsiteListed) {
+    if (!copyOf) return;
+    const id = await fetchFromOffsite(copyOf.name, x.source, x.time);
+    if (id) navigate(`/jobs/${id}`);
+  }
+
   async function remove(x: Tenant) {
     if (!(await askConfirm(t.confirmDelete(`${t.tenant} "${x.name}"`)))) return;
     if (await act(del(`/tenants/${encodeURIComponent(x.name)}`), t.deleted)) load();
@@ -149,7 +254,12 @@
 
 <div class="page-head">
   <h1>{t.tenants.title}</h1>
-  <button type="button" class="primary" onclick={() => edit(null)}><IconPlus aria-hidden="true" />{t.tenants.new}</button>
+  {#if can.configure(session.user)}
+    <button type="button" class="primary" onclick={() => edit(null)}><IconPlus aria-hidden="true" />{t.tenants.new}</button>
+  {/if}
+  {#if can.attachOffsite(session.user)}
+    <button type="button" onclick={() => edit(null, true)}><IconLink aria-hidden="true" />{t.offsite.attach}</button>
+  {/if}
   <p class="lede">{t.tenants.lede}</p>
 </div>
 <ErrorBanner {error} />
@@ -183,9 +293,16 @@
               <td>{r ? (x.offsite?.uploaders ?? 4) : '—'}</td>
               <td>{x.quota_bytes ? fmtBytes(x.quota_bytes) : '—'}</td>
               <td class="actions">
-                <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
+                {#if r && can.restore(session.user)}
+                  <button type="button" class="small" onclick={() => openCopy(x)} aria-label={t.offsite.copyLabel(x.name)}
+                    ><IconCloud aria-hidden="true" />{t.offsite.copy}</button
+                  >
+                {/if}
+                {#if can.configure(session.user)}<button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>{/if}
                 {#if canKey}<button type="button" class="small" onclick={() => (keyOf = x.name)}>{t.tkey.button}</button>{/if}
-                <button type="button" class="small danger" onclick={() => remove(x)}>{t.delete}</button>
+                {#if can.configure(session.user)}
+                  <button type="button" class="small danger" onclick={() => remove(x)}>{t.delete}</button>
+                {/if}
               </td>
             </tr>
           {/each}
@@ -195,27 +312,76 @@
   {/if}
 </div>
 
+{#if requests.length}
+  <section class="card" aria-labelledby="att-h">
+    <h2 id="att-h">{t.offsite.requests}</h2>
+    <p class="muted">{t.offsite.requestsIntro}</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">{t.offsite.reqTenant}</th>
+            <th scope="col">{t.offsite.reqTarget}</th>
+            <th scope="col">{t.offsite.reqBy}</th>
+            <th scope="col">{t.offsite.reqState}</th>
+            <th scope="col"><span class="visually-hidden">{t.actions}</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each requests as q (q.id)}
+            <tr>
+              <td><strong>{reqName(q)}</strong> <span class="muted">#{q.id}</span></td>
+              <td class="mono">{reqTarget(q)}</td>
+              <td>{q.requested_by}</td>
+              <td>
+                {#if q.state === 'pending'}<span class="chip warn">{t.offsite.waitApproval}</span>
+                {:else}<span class="chip ok">{t.quorum.states.approved}{q.decided_by ? ` · ${q.decided_by}` : ''}</span>{/if}
+              </td>
+              <td class="actions">
+                {#if q.state === 'approved' && q.requested_by === session.user?.name}
+                  <button type="button" class="small primary" onclick={() => openKey(q)}><IconKey aria-hidden="true" />{t.offsite.enterKey}</button>
+                {/if}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{/if}
+
 <TenantRecoveryKey bind:tenant={keyOf} />
 
-<Modal bind:open title={editing ? `${t.tenant}: ${editing.name}` : t.tenants.new} wide>
+<Modal bind:open title={attaching ? t.offsite.attachTitle : editing ? `${t.tenant}: ${editing.name}` : t.tenants.new} wide>
   <form onsubmit={save}>
+    {#if attaching}<p class="muted">{t.offsite.attachIntro}</p>{/if}
     {#if !editing}
       <div class="field">
-        <label for="t-name">{t.name}</label>
-        <input id="t-name" bind:value={name} required pattern="[a-z0-9][a-z0-9\-]*" maxlength="32" />
+        <label for="t-name">{attaching ? t.offsite.attachName : t.name}</label>
+        <input
+          id="t-name"
+          bind:value={name}
+          required
+          pattern="[a-z0-9][a-z0-9\-]*"
+          maxlength="32"
+          aria-describedby={attaching ? 't-name-hint' : undefined}
+        />
+        {#if attaching}<div class="hint" id="t-name-hint">{t.offsite.attachNameHint}</div>{/if}
       </div>
     {/if}
-    <div class="field">
-      <label for="t-quota">{t.storage.quotaField}</label>
-      <input id="t-quota" type="number" min="0.001" step="any" bind:value={quota} aria-describedby="t-quota-hint" />
-      <div class="hint" id="t-quota-hint">{t.storage.quotaHint}</div>
-    </div>
+    {#if !attaching}
+      <div class="field">
+        <label for="t-quota">{t.storage.quotaField}</label>
+        <input id="t-quota" type="number" min="0.001" step="any" bind:value={quota} aria-describedby="t-quota-hint" />
+        <div class="hint" id="t-quota-hint">{t.storage.quotaHint}</div>
+      </div>
+    {/if}
     <fieldset>
       <legend>{t.tenants.offsite}</legend>
       <div class="field">
         <label for="t-kind">{t.tenants.target}</label>
         <select id="t-kind" bind:value={kind}>
-          {#each ['none', 'sftp', 's3'] as k (k)}<option value={k}>{t.tenants.targets[k]}</option>{/each}
+          {#each attaching ? ['sftp', 's3'] : ['none', 'sftp', 's3'] as k (k)}<option value={k}>{t.tenants.targets[k]}</option>{/each}
         </select>
       </div>
       {#if kind === 'sftp'}
@@ -318,7 +484,79 @@
     </fieldset>
     <div class="form-actions">
       <button type="button" onclick={() => (open = false)}>{t.cancel}</button>
-      <button type="submit" class="primary">{editing ? t.save : t.create}</button>
+      <button type="submit" class="primary">{attaching ? t.offsite.attach : editing ? t.save : t.create}</button>
     </div>
   </form>
+</Modal>
+
+<Modal bind:open={keyOpen} title={keyReq ? t.offsite.keyTitle(reqName(keyReq)) : ''}>
+  <form onsubmit={runAttach}>
+    <p class="muted">{t.offsite.keyIntro}</p>
+    <div class="field">
+      <label for="att-key">{t.offsite.key}</label>
+      <input
+        id="att-key"
+        class="mono"
+        type="password"
+        bind:value={recoveryKey}
+        required
+        autocomplete="off"
+        spellcheck="false"
+        aria-describedby="att-key-hint"
+      />
+      <div class="hint" id="att-key-hint">{t.offsite.keyHint}</div>
+    </div>
+    <div class="form-actions">
+      <button type="button" onclick={() => (keyOpen = false)}>{t.cancel}</button>
+      <button type="submit" class="primary" disabled={busy}>{t.offsite.run}</button>
+    </div>
+  </form>
+</Modal>
+
+<Modal bind:open={copyOpen} title={copyOf ? t.offsite.copyTitle(copyOf.name) : ''} wide>
+  <p class="muted">{t.offsite.copyIntro}</p>
+  {#if checking}
+    <p class="muted" aria-busy="true">{t.offsite.checking}</p>
+  {:else if listed}
+    <p>{t.offsite.checked(listed.length, fmtTime(listedAt))}</p>
+    {#if listed.length}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">{t.offsite.source}</th>
+              <th scope="col">{t.time}</th>
+              <th scope="col" class="num">{t.offsite.size}</th>
+              <th scope="col">{t.offsite.lock}</th>
+              <th scope="col">{t.offsite.status}</th>
+              <th scope="col"><span class="visually-hidden">{t.actions}</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each listed as x (`${x.source}/${x.time}`)}
+              {@const [cls, text] = listedStatus(x)}
+              <tr>
+                <td class="mono">{x.source}</td>
+                <td class="nowrap">{fmtTime(x.time)}</td>
+                <td class="num">{x.size === null ? '—' : fmtBytes(x.size)}</td>
+                <td class="nowrap">{x.lock_until > Date.now() / 1000 ? fmtTime(x.lock_until) : '—'}</td>
+                <td><span class="chip {cls}">{text}</span></td>
+                <td class="actions">
+                  {#if !x.local && x.remote && x.inventory}
+                    <button type="button" class="small" onclick={() => fetchBack(x)} aria-label={t.offsite.fetchLabel(x.source, fmtTime(x.time))}
+                      ><IconCloudDown aria-hidden="true" />{t.offsite.fetch}</button
+                    >
+                  {/if}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  {/if}
+  <div class="form-actions">
+    <button type="button" onclick={check} disabled={checking}>{t.offsite.check}</button>
+    <button type="button" onclick={() => (copyOpen = false)}>{t.close}</button>
+  </div>
 </Modal>

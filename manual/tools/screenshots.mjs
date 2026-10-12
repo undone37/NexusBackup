@@ -594,6 +594,23 @@ async function main() {
       await shot('tenant-sftp');
       await closeDialogs();
     }],
+    // Phase 17d: offsite-only snapshots, a tenant's offsite copy, attaching an offsite copy (two steps)
+    ['offsite', async () => {
+      await go('/snapshots?tenant=initech&where=offsite');
+      await shot('snapshots-offsite');
+      await go('/tenants?offsite=initech');
+      await until(`return document.querySelector('dialog[open]')?.innerText.includes('missing on the target')`, 'offsite listing', 30000);
+      await shot('tenant-offsite-copy', { height: 1100 });
+      await closeDialogs();
+      await ev(`[...document.querySelectorAll('.page-head button')].find((b) => b.innerText.includes('Attach offsite copy')).click(); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #t-host')`, 'attach dialog');
+      await shot('tenant-attach', { height: 1150 });
+      await closeDialogs();
+      await ev(`$rowClick('umbrella', 'Enter recovery key'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #att-key')`, 'recovery key dialog');
+      await shot('tenant-attach-key');
+      await closeDialogs();
+    }],
     ['sources', async () => {
       await go('/sources');
       await ev(`$rowClick('pg-shop', 'Validate connection'); return true;`);

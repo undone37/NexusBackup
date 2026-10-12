@@ -92,7 +92,8 @@ The sidebar shows only what your role may use. The server checks every request a
 | Alerts | ✓ | ✓ | ✓ | — | read (without a tenant) |
 | Approvals | ✓ | ✓ (decides) | ✓ (read) | — | — |
 | Audit log | ✓ | ✓ | — | — | — |
-| Tenants, Sources, Agents, Policies, Protection groups, Users | ✓ | — | — | — | — |
+| Tenants | ✓ | **Attach offsite copy** only | — | — | — |
+| Sources, Agents, Policies, Protection groups, Users | ✓ | — | — | — | — |
 | Replication, Plugins | ✓ | read | read | — | — |
 | Hardware | ✓ (changes need approval) | read | read, **Rescan** | — | read (without a tenant) |
 | Settings | ✓ (all tabs) | read (all tabs) | read (Approvals, Appliance SSH keys, Updates) | — | — |

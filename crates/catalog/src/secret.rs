@@ -83,6 +83,14 @@ pub fn tenant_owner(name: &str) -> String {
     format!("tenant/{name}/offsite")
 }
 
+/// Location of the recovery key the requester of an approved
+/// `tenant.attach_offsite` (quorum `id`) submits once: sealed into the
+/// `offsite_attach` job's params by the web-api, opened and removed from the
+/// row by the scheduler when the job starts (docs/control-plane.md "Attach an offsite copy").
+pub fn attach_key_location(quorum_id: i64, tenant: &str) -> String {
+    format!("attach/{quorum_id}/{tenant}/recovery-key")
+}
+
 fn binding(o: &Map<String, Value>) -> String {
     let mut v: Vec<Value> = BINDING_FIELDS
         .iter()

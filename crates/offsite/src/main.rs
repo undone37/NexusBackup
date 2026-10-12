@@ -1,7 +1,10 @@
-//! `nexus-offsite <config.json> upload | retention | gc | verify [packs] | check | list | restore <source> <time>`
-//! and `nexus-offsite <config.json> dr [--tenant-key] <keyd-dir>` (fresh appliance: the
-//! appliance recovery key on stdin, or with `--tenant-key` the tenant recovery key; never on
-//! the command line, where other processes could read it).
+//! `nexus-offsite <config.json> upload | retention | gc | verify [packs] | check | list [--json]
+//! | restore <source> <time> [<keep-secs>]`, `nexus-offsite <config.json> dr [--tenant-key] <keyd-dir>`
+//! (fresh appliance: the appliance recovery key on stdin, or with `--tenant-key` the tenant
+//! recovery key; never on the command line, where other processes could read it) and
+//! `nexus-offsite <config.json> attach <key-file>` (web UI, Phase 17d: the escrow and the
+//! appliance recovery key go to keyd over its socket, the file is removed once read; then the
+//! inventory is rebuilt from the box).
 
 use anyhow::{bail, Context, Result};
 use chunkstore::retention::Gfs;
@@ -157,7 +160,7 @@ fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
-        bail!("usage: nexus-offsite <config.json> upload | retention | gc | verify [packs] | check | list | restore <source> <time> | dr [--tenant-key] <keyd-dir>");
+        bail!("usage: nexus-offsite <config.json> upload | retention | gc | verify [packs] | check | list [--json] | restore <source> <time> [<keep-secs>] | dr [--tenant-key] <keyd-dir> | attach <recovery-key-file>");
     };
     let cfg: Config = serde_json::from_slice(&fs::read(cfg_path)?).context("config")?;
     let remote = remote(&cfg.remote, cfg.uploaders.clamp(1, 10))?;
@@ -166,6 +169,27 @@ fn main() -> Result<()> {
         bwlimit: cfg.bwlimit,
         ..Default::default()
     };
+
+    if cmd == "attach" {
+        // running appliance (web UI): keyd re-wraps the escrowed DEKs under its own KEK
+        let key_file = PathBuf::from(rest.first().context("attach <recovery-key-file>")?);
+        let rk = zeroize::Zeroizing::new(fs::read_to_string(&key_file).context("recovery key file")?);
+        let _ = fs::remove_file(&key_file);
+        let files = offsite::dr::appliance_escrow(remote.as_ref(), &cfg.tenant)?;
+        let vs = keyd::request_attach(&cfg.keyd_socket, &cfg.tenant, &rk, &files).context(
+            "keyd refused the keys: wrong recovery key, or the tenant has other keys on this appliance (keyd journal)",
+        )?;
+        println!("keys of tenant {} imported: versions {vs:?}", cfg.tenant);
+        let keys = keyd::fetch_keyring(&cfg.keyd_socket, &cfg.tenant).context("keyd")?;
+        let store = Store::open(&cfg.store, keys, StoreOptions::default())?;
+        let mut t = Target::open(&store, remote.as_ref(), cfg.state.clone(), opts())?;
+        let packs = t.rebuild_from_remote()?;
+        println!(
+            "attach: keys recovered, {packs} packs and {} snapshots indexed",
+            t.snapshots()?.len()
+        );
+        return Ok(());
+    }
 
     if cmd == "dr" {
         // Fresh appliance: escrowed keys from the box + recovery key, inventory from the box.
@@ -249,9 +273,17 @@ fn main() -> Result<()> {
             }
         }
         ("list", []) => t.snapshots()?.iter().for_each(|(s, time)| println!("{s}/{time}")),
+        ("list", [json]) if json == "--json" => println!("{}", serde_json::to_string(&t.listing()?)?),
         ("restore", [source, time]) => {
             let m = t.restore(source, time.parse()?)?;
             println!("restored {}/{} into the local store", m.source, m.time);
+        }
+        ("restore", [source, time, keep]) => {
+            let m = t.fetch(source, time.parse()?, keep.parse()?)?;
+            println!(
+                "restored {}/{} into the local store, kept locally for at least {keep} s",
+                m.source, m.time
+            );
         }
         _ => bail!("unknown command"),
     }
