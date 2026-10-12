@@ -3676,7 +3676,8 @@ async fn tenant_offsite_windows_tighten_direct_weaken_quorum() {
     };
     let put = |o: Value| t.put("/api/v1/tenants/acme", &admin, json!({"offsite": o}));
     assert_eq!(put(base.clone()).await.status, StatusCode::OK);
-    let pause = json!([{"days": ["Mon", "Tue", "Wed", "Thu", "Fri"], "from": "08:00", "to": "18:00", "action": "pause"}]);
+    let pause =
+        json!([{"days": ["Mon", "Tue", "Wed", "Thu", "Fri"], "from": "08:00", "to": "18:00", "action": "pause"}]);
     for bad in [
         json!({"windows": [{"from": "08:00", "to": "18:00", "action": "limit"}]}),
         json!({"windows": [{"from": "08:00", "to": "18:00", "action": "nap"}]}),
@@ -3684,10 +3685,16 @@ async fn tenant_offsite_windows_tighten_direct_weaken_quorum() {
     ] {
         assert_eq!(put(with(bad.clone())).await.status, StatusCode::BAD_REQUEST, "{bad}");
     }
-    let r = put(with(json!({"windows": pause, "timezone": "Europe/Berlin", "bwlimit": 10_000_000}))).await;
+    let r = put(with(
+        json!({"windows": pause, "timezone": "Europe/Berlin", "bwlimit": 10_000_000}),
+    ))
+    .await;
     assert_eq!(r.status, StatusCode::OK, "a pause and a limit added: {:?}", r.body);
     assert_eq!(r.body["offsite"]["windows"], pause);
-    let r = put(with(json!({"windows": pause, "timezone": "Europe/Berlin", "bwlimit": 5_000_000}))).await;
+    let r = put(with(
+        json!({"windows": pause, "timezone": "Europe/Berlin", "bwlimit": 5_000_000}),
+    ))
+    .await;
     assert_eq!(r.status, StatusCode::OK, "lower limit");
     for weak in [
         json!({"timezone": "Europe/Berlin", "bwlimit": 5_000_000}),

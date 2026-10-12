@@ -468,7 +468,11 @@ fn bandwidth_windows_and_resume_after_cancel() {
     let r = s.sync_bw(&t, "acme", limit).unwrap();
     assert_eq!(r.imported.len(), 3);
     let secs = t0.elapsed().as_secs_f64();
-    assert!(secs >= 0.8 * r.bytes_fetched as f64 / 4e6, "{} bytes in {secs} s", r.bytes_fetched);
+    assert!(
+        secs >= 0.8 * r.bytes_fetched as f64 / 4e6,
+        "{} bytes in {secs} s",
+        r.bytes_fetched
+    );
     // what a cancelled sync leaves behind: the newest snapshot's chunks, no manifest
     let newest = now - DAY;
     // (the snapshot directory without its manifest, as the store writes it last)
@@ -1100,10 +1104,12 @@ fn source_windows_close_and_reopen() {
         &p.admin,
         Method::POST,
         "/api/v1/replication/sources",
-        Some(json!({"name": "prim", "url": "10.0.2.2:28443", "code": "0123456789abcdef.ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        Some(
+            json!({"name": "prim", "url": "10.0.2.2:28443", "code": "0123456789abcdef.ABCDEFGHIJKLMNOPQRSTUVWXYZ",
                     "fingerprint": "ab".repeat(32), "tenants": ["dr1"], "schedule": "hourly 05",
                     "sync_window": [{"from": "22:00", "to": "06:00"}], "timezone": "Europe/Berlin",
-                    "windows": [{"from": "08:00", "to": "18:00", "action": "pause"}]})),
+                    "windows": [{"from": "08:00", "to": "18:00", "action": "pause"}]}),
+        ),
     );
     assert_eq!(st, StatusCode::CREATED, "{b}");
     let id = b["source"]["id"].as_i64().unwrap();
@@ -1165,12 +1171,11 @@ fn source_windows_close_and_reopen() {
     let (st, b) = c(&p.admin, Method::POST, &close, None);
     assert_eq!(st, StatusCode::OK, "{b}");
     assert_eq!(b["closed_until"], -1);
-    let jobs: String = p
-        .st
-        .cat
-        .conn()
-        .query_row("SELECT state FROM jobs WHERE kind = 'replica_sync'", [], |r| r.get(0))
-        .unwrap();
+    let jobs: String =
+        p.st.cat
+            .conn()
+            .query_row("SELECT state FROM jobs WHERE kind = 'replica_sync'", [], |r| r.get(0))
+            .unwrap();
     assert_eq!(jobs, "cancelled");
     assert_eq!(c(&p.admin, Method::POST, &close, None).0, StatusCode::CONFLICT);
     // manual sync refused while closed (the source is not enrolled here: fake it)

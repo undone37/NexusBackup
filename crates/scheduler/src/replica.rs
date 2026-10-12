@@ -211,7 +211,10 @@ impl Scheduler {
             bail!("tenant {} is not replicated by source {}", job.tenant, s.name);
         }
         if s.closed(self.now) {
-            bail!("replication source {} is closed (vault closed): no syncs until it is reopened", s.name);
+            bail!(
+                "replication source {} is closed (vault closed): no syncs until it is reopened",
+                s.name
+            );
         }
         if !s.open(self.now) {
             bail!("replication source {} is outside its sync window", s.name);

@@ -19,7 +19,9 @@ impl Scheduler {
     /// Bandwidth of a tenant's offsite uploads (`tenants.offsite`: `bwlimit`,
     /// `windows`, `timezone`).
     pub(crate) fn offsite_bandwidth(&self, tenant: &str) -> Result<Option<Bandwidth>> {
-        let Some(o) = self.offsite_cfg(tenant)? else { return Ok(None) };
+        let Some(o) = self.offsite_cfg(tenant)? else {
+            return Ok(None);
+        };
         Ok(Some(Bandwidth {
             base: o["bwlimit"].as_u64(),
             windows: serde_json::from_value(o["windows"].clone()).unwrap_or_default(),

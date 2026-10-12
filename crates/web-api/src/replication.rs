@@ -1175,8 +1175,8 @@ pub async fn update_source(
         tz: new_tz,
     };
     let now = catalog::now();
-    let weaker = old_bw.weaker(&new_bw, now)
-        || schedule::sync_widened(&sync_window_of(&old), old_bw.tz, &new_sync, new_tz, now);
+    let weaker =
+        old_bw.weaker(&new_bw, now) || schedule::sync_widened(&sync_window_of(&old), old_bw.tz, &new_sync, new_tz, now);
     if old_gfs.lowered_by(&gfs) || weaker {
         let q = request(
             &st,
@@ -1264,7 +1264,9 @@ pub async fn sync_source(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) ->
         return Err(ApiError::conflict("the replication source is not enrolled yet"));
     }
     if is_closed(&s) {
-        return Err(ApiError::conflict("the vault is closed: reopen the replication source first"));
+        return Err(ApiError::conflict(
+            "the vault is closed: reopen the replication source first",
+        ));
     }
     if !schedule::sync_open(&sync_window_of(&s), bandwidth_of(&s).tz, catalog::now()) {
         return Err(ApiError::conflict(

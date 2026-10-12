@@ -369,7 +369,7 @@ fn upload_follows_bandwidth_windows() {
     let d = tempfile::tempdir().unwrap();
     let a = store(&d.path().join("a"));
     backup(&a, n - DAY, 0); // ~3 MiB in one pack
-    // active now: 2 MB/s (the base would allow far more); a pause later today
+                            // active now: 2 MB/s (the base would allow far more); a pause later today
     let bandwidth = Bandwidth {
         base: Some(1 << 30),
         windows: vec![

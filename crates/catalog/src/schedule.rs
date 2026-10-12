@@ -918,13 +918,21 @@ mod tests {
         assert!(check_windows(&bw.windows).is_ok());
         assert_eq!(bw.limit_at(D + 7 * HOUR), Limit::Rate(10_000_000), "base");
         assert_eq!(bw.limit_at(D + 9 * HOUR), Limit::Rate(1_000_000));
-        assert_eq!(bw.limit_at(D + 12 * HOUR + 30 * 60), Limit::Rate(500_000), "lowest rate wins");
+        assert_eq!(
+            bw.limit_at(D + 12 * HOUR + 30 * 60),
+            Limit::Rate(500_000),
+            "lowest rate wins"
+        );
         assert_eq!(bw.limit_at(D + 18 * HOUR), Limit::Rate(10_000_000), "end exclusive");
         // midnight wrap: Thursday 23:00 → Friday 02:00
         assert_eq!(bw.limit_at(D + HOUR), Limit::Paused);
         assert_eq!(bw.limit_at(D - HOUR), Limit::Paused);
         assert_eq!(bw.limit_at(D + 2 * HOUR), Limit::Rate(10_000_000));
-        assert_eq!(bw.limit_at(D + 23 * HOUR + 30 * 60), Limit::Rate(10_000_000), "Friday not listed");
+        assert_eq!(
+            bw.limit_at(D + 23 * HOUR + 30 * 60),
+            Limit::Rate(10_000_000),
+            "Friday not listed"
+        );
         assert_eq!(bw.paused_until(D + HOUR), Some(D + 2 * HOUR));
         assert_eq!(bw.paused_until(D + 3 * HOUR), None);
         // a limit window may allow more than the base; no base = unlimited
@@ -1012,8 +1020,14 @@ mod tests {
         };
         assert!(!old.weaker(&old, D), "unchanged");
         assert!(old.weaker(&with(vec![]), D), "pause removed");
-        assert!(old.weaker(&with(vec![rw(&[], "09:00", "18:00", None)]), D), "pause shortened");
-        assert!(!old.weaker(&with(vec![rw(&[], "07:00", "19:00", None)]), D), "pause widened");
+        assert!(
+            old.weaker(&with(vec![rw(&[], "09:00", "18:00", None)]), D),
+            "pause shortened"
+        );
+        assert!(
+            !old.weaker(&with(vec![rw(&[], "07:00", "19:00", None)]), D),
+            "pause widened"
+        );
         assert!(
             !old.weaker(&with(vec![pause.clone(), rw(&[], "20:00", "22:00", Some(10))]), D),
             "a lower limit added"
@@ -1036,14 +1050,29 @@ mod tests {
             ),
             "time zone moved the pause"
         );
-        assert!(old.weaker(&Bandwidth { base: None, ..old.clone() }, D), "base removed");
+        assert!(
+            old.weaker(
+                &Bandwidth {
+                    base: None,
+                    ..old.clone()
+                },
+                D
+            ),
+            "base removed"
+        );
         // sync windows
         let night = vec![span(&[], "22:00", "06:00")];
         assert!(sync_open(&night, Tz::UTC, D + HOUR) && !sync_open(&night, Tz::UTC, D + 12 * HOUR));
         assert!(sync_open(&[], Tz::UTC, D), "no window: always");
         assert!(!sync_widened(&night, Tz::UTC, &night, Tz::UTC, D));
-        assert!(!sync_widened(&night, Tz::UTC, &[span(&[], "23:00", "05:00")], Tz::UTC, D), "narrower");
-        assert!(sync_widened(&night, Tz::UTC, &[span(&[], "21:00", "06:00")], Tz::UTC, D), "wider");
+        assert!(
+            !sync_widened(&night, Tz::UTC, &[span(&[], "23:00", "05:00")], Tz::UTC, D),
+            "narrower"
+        );
+        assert!(
+            sync_widened(&night, Tz::UTC, &[span(&[], "21:00", "06:00")], Tz::UTC, D),
+            "wider"
+        );
         assert!(sync_widened(&night, Tz::UTC, &[], Tz::UTC, D), "removed = always open");
         assert!(!sync_widened(&[], Tz::UTC, &night, Tz::UTC, D), "added");
         assert!(check_spans(&night).is_ok() && check_spans(&[span(&["x"], "01:00", "02:00")]).is_err());
@@ -1057,7 +1086,10 @@ mod tests {
         let th = Throttle::with_clock(
             Bandwidth {
                 base: None,
-                windows: vec![rw(&[], "08:00", "10:00", Some(100_000)), rw(&[], "10:00", "11:00", None)],
+                windows: vec![
+                    rw(&[], "08:00", "10:00", Some(100_000)),
+                    rw(&[], "10:00", "11:00", None),
+                ],
                 tz: Tz::UTC,
             },
             Arc::new(move || c.load(Ordering::Relaxed)),

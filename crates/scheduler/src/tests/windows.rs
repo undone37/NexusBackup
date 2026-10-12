@@ -74,7 +74,12 @@ fn sync_window_gates_firewall_syncs_and_cancels() {
     assert_eq!(cfg["windows"][0]["rate_bytes"], 1000);
     assert_eq!(cfg["timezone"], "UTC");
     // a manual sync queued meanwhile
-    let queued = manual(&s, "replica_sync", "r1", json!({"replication_source_id": 1, "tenant": "r1"}));
+    let queued = manual(
+        &s,
+        "replica_sync",
+        "r1",
+        json!({"replication_source_id": 1, "tenant": "r1"}),
+    );
 
     // the window closes (06:00): no target, no new syncs, running cancelled, queued dropped
     s.now = D + 30 * 3600;
@@ -88,11 +93,10 @@ fn sync_window_gates_firewall_syncs_and_cancels() {
             .query_row("SELECT cancel_by FROM jobs WHERE id=?1", [id], |r| r.get(0))
             .unwrap();
     assert_eq!(by, "sync_window");
-    let status: String = s
-        .db
-        .conn()
-        .query_row("SELECT status FROM replication_sources", [], |r| r.get(0))
-        .unwrap();
+    let status: String =
+        s.db.conn()
+            .query_row("SELECT status FROM replication_sources", [], |r| r.get(0))
+            .unwrap();
     assert_eq!(status, "{}", "a cancelled sync is no error");
     assert_eq!(count(&s, "SELECT COUNT(*) FROM alerts"), 0, "no job_failed");
     s.now = D + 31 * 3600 + 5;
@@ -118,10 +122,18 @@ fn sync_window_gates_firewall_syncs_and_cancels() {
 #[test]
 fn closed_vault() {
     let (_e, mut s) = replica_env();
-    exec(&s, "UPDATE replication_sources SET sync_window = '[]', closed_until = -1, closed_by = 'sofia'");
+    exec(
+        &s,
+        "UPDATE replication_sources SET sync_window = '[]', closed_until = -1, closed_by = 'sofia'",
+    );
     s.now = D + 12 * 3600;
     assert!(s.replication_targets().unwrap().is_empty());
-    let queued = manual(&s, "replica_sync", "r1", json!({"replication_source_id": 1, "tenant": "r1"}));
+    let queued = manual(
+        &s,
+        "replica_sync",
+        "r1",
+        json!({"replication_source_id": 1, "tenant": "r1"}),
+    );
     s.replication_windows(s.now).unwrap();
     assert_eq!(state(&s, queued), "cancelled");
     let job = Job {
@@ -174,18 +186,20 @@ fn offsite_pause_window_postpones_the_upload() {
         "windows": [{"from": "08:00", "to": "18:00", "action": "pause"},
                     {"from": "18:00", "to": "20:00", "action": "limit", "rate_bytes": 100}]});
     s.db.conn()
-        .execute("UPDATE tenants SET offsite = ?1 WHERE name = 't1'", [offsite.to_string()])
+        .execute(
+            "UPDATE tenants SET offsite = ?1 WHERE name = 't1'",
+            [offsite.to_string()],
+        )
         .unwrap();
     // 10:00 Berlin (CEST) = 08:00 UTC: paused until 18:00 Berlin = 16:00 UTC
     s.now = D + 8 * 3600;
     let id = manual(&s, "offsite", "t1", json!({}));
     s.start_jobs().unwrap();
     assert_eq!(state(&s, id), "queued");
-    let nb: i64 = s
-        .db
-        .conn()
-        .query_row("SELECT not_before FROM jobs WHERE id=?1", [id], |r| r.get(0))
-        .unwrap();
+    let nb: i64 =
+        s.db.conn()
+            .query_row("SELECT not_before FROM jobs WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
     assert_eq!(nb, D + 16 * 3600);
     // outside the pause: planned, the windows go into offsite.json
     s.now = D + 17 * 3600;

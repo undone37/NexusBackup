@@ -348,7 +348,8 @@ impl<'a> Target<'a> {
         let keys = self.store.keys();
         let (remote, uploaders) = (self.remote, self.opts.uploaders.max(1));
         // one bucket over all uploaders; pause windows hold them before the next pack
-        let throttle = (self.opts.bandwidth != Bandwidth::default()).then(|| Throttle::new(self.opts.bandwidth.clone()));
+        let throttle =
+            (self.opts.bandwidth != Bandwidth::default()).then(|| Throttle::new(self.opts.bandwidth.clone()));
         let throttle = throttle.as_ref();
         let (tx, rx) = sync_channel::<(String, Vec<u8>, Vec<u8>, Vec<Entry>)>(uploaders);
         let rx = Mutex::new(rx);
