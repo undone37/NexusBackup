@@ -152,3 +152,46 @@ peer announced them.
   verify the BLAKE3 hash of the decompressed data as before. A `ChunkLz4` that was not asked for is refused.
 - Old peers never see the new messages (variants appended; negotiation by capability). Storage is unaffected: chunks are
   stored zstd-compressed and sealed exactly as before.
+
+## v1.3 — filters, limits, certificate renewal (additive, Phase 15e/f)
+Old peers are unaffected: the variants are appended after `RestoreChunkLz4` (tags 31–35, checked by
+`agent-proto` tests; an old appliance's `Prepare` decodes unchanged) and are only sent when the agent announced them.
+All agents built on `agent-core` announce both capabilities.
+
+- **Capability `prepare2`** → the appliance sends `PrepareEx { job, paths, excludes, hooks, filters, limits }`
+  instead of `Prepare` (answered with `Prepared` as before):
+  - `Filters { include, exclude_regex, cross_mounts, skip_fstypes }` (limits: ≤ 256 entries each, ≤ 4096 bytes each).
+    The agent compiles them once (`agent_core::filter`, regex size limit 1 MiB) and refuses invalid ones with
+    `Error 400` before anything is snapshotted. Selection rules ("Filters"): an entry matched by a glob or a regex
+    (absolute host path, `/`-separated; Windows `/C/…`, case-insensitive) is skipped and not descended; with
+    include roots, only entries inside a root are taken and the directories leading to a root are kept but filtered;
+    **exclusion wins** over inclusion. `cross_mounts` (Linux): data file systems mounted below the requested paths
+    become roots of their own (own snapshot), except types in `skip_fstypes` (empty = the default list in
+    `agent_core::filter::DEFAULT_SKIP_FSTYPES`) and except mounts at or below an excluded directory; skipped network
+    and data file systems are named in `Prepared.hook_log`. The NAS connector applies the same `Filter` to share
+    paths (`/` = share root).
+  - `Limits { bwlimit, nice }`: `bwlimit` bytes/s is a token bucket (one second of burst) on the chunk data the agent
+    sends for `Want`/`WantLz4` (wire bytes); `nice` 1–19 lowers the session thread's priority for the rest of the
+    connection, only ever downwards (Linux: `setpriority` on the thread to max(current, nice) — the unit already runs
+    with `Nice=10` and best-effort 7 — and from 15 on `ioprio_set` idle class, inherited by hooks; Windows:
+    `THREAD_MODE_BACKGROUND_BEGIN`). The agent reports what it did in `Prepared.hook_log`.
+  - Agents without `prepare2` get `Prepare` with the globs only; `nexus-agentctl` logs "this agent version ignores …"
+    for every non-empty filter / limit.
+- **Capability `cert-renew`** → certificate renewal over the established mTLS session:
+  `RenewCert` → the agent generates a **new** key pair (kept in memory) and answers `RenewCsr { csr_pem }`; the
+  appliance signs it exactly like at enrollment (same CN `nexus-agent:<id>`, serverAuth, same CA, 10 years) and
+  prints `renew-issued {json}` (the scheduler stores the fingerprint as `agents.cert_sha256_next`, a second accepted
+  pin); then `RenewDone { cert_pem, ca_pem }` → the agent checks that the certificate is for its new key, names its
+  id and is signed by the CA it **already trusts** (a different CA is refused), writes `agent.key.new` and
+  `agent.crt.new` (the certificate last marks a complete pair), renames key then certificate, switches new
+  connections to the new identity and answers `RenewOk`. A crash during the swap is rolled forward (certificate
+  present) or back (only the key) at the next start (`config::finish_identity_swap`). The appliance confirms with a
+  session pinned to the new fingerprint only (`renewed {json}`).
+- Every mTLS session prints `agent-cert {"agent_id", "cert_sha256", "not_before", "not_after"}` for the certificate
+  the agent presented: the scheduler keeps `agents.cert_issued` / `cert_expires` current and promotes
+  `cert_sha256_next` when the agent presents it (renewal interrupted after the swap). Automatic renewal: when less
+  than 30 days or 10 % of the lifetime are left (job `agent_renew`, `auto: true`; a failed one is retried after a
+  day); "Renew certificate now" queues the same job. Audit `agent.cert_renewed`; the `cert_expiry:agent:<id>` alert
+  is resolved.
+- **Re-enrollment** keeps the agent id: a new token for an existing agent (`POST /agents/{id}/token`), `nexus-agent
+  init` on the host, the usual enrollment; the scheduler replaces the pin and clears the renewal state.

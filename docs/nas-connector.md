@@ -126,7 +126,10 @@ the **supported, documented setup** (user decision 2026-10-10); the admin config
 - **Consistency**: `consistent = true` only for a NAS snapshot with no inconsistent and no unreadable
   entry; otherwise the job prints `inconsistent share-<id>/<time>: …` and the scheduler raises
   `backup_inconsistent` (as for agents without a snapshot).
-- **Excludes**: patterns as for agents (`*.tmp`, `/path/**`), matched against `/<path in the share>`.
+- **Excludes**: patterns as for agents (`*.tmp`, `/path/**`), matched against `/<path in the share>`; also
+  regex excludes and include roots (`include`, `exclude_regex` in nas.json, Phase 15e) with the same rules as the
+  agents (`agent_core::filter`: exclusion wins, directories leading to an include root are kept), and the global
+  excludes of the group's policy (merged by the scheduler). Nested mounts are never descended (no `cross_mounts`).
 - **Memory**: entries are held in memory until the commit (one sealed `Index::Tree`, like agents and
   TrueNAS): ~0.5–0.7 KB per entry (path, chunk list, xattrs; more with an NFSv4 ACL per file) plus the
   previous tree; the 1M-entry incremental peaked at 0.73 GB (lab). Streaming the tree index needs a split tree index format in

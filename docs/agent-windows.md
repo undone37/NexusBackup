@@ -154,6 +154,14 @@ Linux; downloads via `nexus-agentctl files` contain it as such).
 6. `Release`: `BackupComplete` on success (writers mark the backup), `AbortBackup`
    otherwise; the set is deleted and the non-persistent shadow copies disappear (also
    when the process dies — no journal needed, unlike Linux).
+7. `PrepareEx` (protocol v1.3): include roots are given as Windows paths (`C:\Users\alice`,
+   normalised to `/C/Users/alice`) and compared case-insensitively; regex excludes match
+   the `/C/…` form case-insensitively; `cross_mounts` / `skip_fstypes` are ignored (the
+   listed volumes are walked, mounted folders are reparse points and never followed).
+   `Limits::nice` > 0 puts the session thread into background mode
+   (`SetThreadPriority(THREAD_MODE_BACKGROUND_BEGIN)`: lowest CPU, very low I/O and memory
+   priority); `bwlimit` paces the `Want` data in agent-core. Certificate renewal
+   (`RenewCert`) and the atomic key/certificate swap are shared agent-core code.
 
 ## Restore
 
@@ -217,7 +225,8 @@ next reboot". Refused while jobs or a restore run.
   only on request, a junction swapped in after `mkdir`.
 - `scan.rs`: the generic walk over a simulated source (metadata from a map, data from
   temp files): entries, SD/attrs/times, ADS order and data, links not followed, data
-  reparse points read, hard links, case-insensitive excludes, `Want` of every chunk;
+  reparse points read, hard links, case-insensitive excludes, include roots in Windows
+  form + case-insensitive regex excludes (`include_roots_and_regex_excludes`), `Want` of every chunk;
   USN + cache decisions (record forces a read, streams follow their file id, reset =
   full read, metadata change); live-mode inconsistency; unreadable objects are errors.
 - `writers.rs`: state names, application writers, `vss_exclude_writers` parsing,
@@ -253,6 +262,9 @@ Everything in `src/win/` has only been compiled, never executed:
 - restore of security descriptors with foreign SIDs, SACLs, read-only files, streams on
   directories, hard links, junctions;
 - self-update by rename of the running image and the reboot fallback;
+- background mode (`THREAD_MODE_BACKGROUND_BEGIN`) of the session thread for `Limits::nice`,
+  and the certificate swap (`agent.key`/`agent.crt` renames over existing files) on NTFS;
+
 - interoperability with `agent-conn` over a real network (the protocol code is shared
   and tested by the Linux interop test).
 

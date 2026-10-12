@@ -45,6 +45,14 @@ appliance confirms by connecting with mTLS and `Hello`.
 mTLS: client certificate must chain to the stored CA (webpki), carry an explicit clientAuth
 EKU and `CN=nexus-appliance:<id>` (optionally pinned). `Hello` must be the first message.
 
+Certificate renewal (protocol v1.3, capability `cert-renew`, docs/agent-protocol.md): the
+appliance asks over an mTLS session (`RenewCert`); the agent generates a new key pair, sends
+its CSR, checks the issued certificate (new key, own id, the CA it already trusts) and
+swaps `agent.key` + `agent.crt` atomically (`*.new` files, certificate last; an interrupted
+swap is completed or rolled back at the next start). New connections use the new identity;
+running ones keep theirs. Re-enrollment (`nexus-agent init` with a new token for the same
+agent) keeps the agent id.
+
 ## Backup
 
 - `Prepare`: run pre hooks (if `hooks`), then one snapshot per affected volume:
@@ -71,6 +79,16 @@ EKU and `CN=nexus-appliance:<id>` (optionally pinned). `Hello` must be the first
   one job never collide. The walk does not descend into other mounts (it keeps the mount
   point directory itself) unless that mount is also requested; excludes are shell globs
   (`*.tmp` on the name, `/var/cache/**` on the full path).
+- `PrepareEx` (v1.3): regex excludes and include roots (`agent_core::filter`, same rules as
+  the NAS connector: exclusion wins, the directories leading to an include root are kept);
+  `cross_mounts` adds every data file system mounted below the requested paths (and nested
+  btrfs subvolumes) as a root of its own with its own snapshot, except the `skip_fstypes`
+  (default: pseudo, in-memory, overlay, network file systems), mounts at or below an
+  excluded directory and anything below a skipped mount; skipped network/data file systems
+  are noted in the job log. Limits: `bwlimit` paces the `Want` data (token bucket in
+  agent-core), `nice` lowers the session thread's CPU priority (never raises it: the unit
+  runs with `Nice=10`, best-effort 7) and from 15 on uses the idle I/O class.
+
 - Device entries keep their file type bits (`S_IFBLK`/`S_IFCHR`) in `mode`; all other
   entries carry permission bits (`& 0o7777`).
 - xattrs: everything `llistxattr` returns (user, trusted, security incl. SELinux labels and

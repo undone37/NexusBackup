@@ -236,7 +236,10 @@ impl Platform for Linux {
 
     fn lower_priority(&self, nice: u8) -> String {
         match crate::sys::lower_priority(nice) {
-            Ok(()) => format!("priority lowered: nice {nice}, best-effort I/O"),
+            Ok((n, idle)) => format!(
+                "priority lowered: nice {n}, {} I/O",
+                if idle { "idle" } else { "best-effort" }
+            ),
             Err(e) => format!("priority not lowered: {e}"),
         }
     }
