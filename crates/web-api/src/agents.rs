@@ -36,7 +36,8 @@ fn default_port() -> u16 {
     DEFAULT_PORT
 }
 
-const COLS: &str = "id, tenant, name, host, port, enrolled_at, cert_sha256, token_expires, last_seen, version, os";
+const COLS: &str = "id, tenant, name, host, port, enrolled_at, cert_sha256, token_expires, last_seen, version, os, \
+                    limits, cert_issued, cert_expires, cert_sha256_next IS NOT NULL";
 
 fn agent_row(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
     Ok(json!({
@@ -45,6 +46,10 @@ fn agent_row(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
         "cert_sha256": r.get::<_, Option<String>>(6)?, "token_expires": r.get::<_, Option<i64>>(7)?,
         "last_seen": r.get::<_, Option<i64>>(8)?, "version": r.get::<_, Option<String>>(9)?,
         "os": r.get::<_, Option<String>>(10)?,
+        // Phase 15f: limits sent with every backup, certificate validity / renewal in progress
+        "limits": serde_json::from_str::<Value>(&r.get::<_, String>(11)?).unwrap_or_default(),
+        "cert_issued": r.get::<_, Option<i64>>(12)?, "cert_expires": r.get::<_, Option<i64>>(13)?,
+        "cert_renewal_pending": r.get::<_, bool>(14)?,
     }))
 }
 
@@ -119,6 +124,9 @@ pub async fn create_agent(State(st): State<St>, ctx: Ctx, J(r): J<AgentReq>) -> 
 }
 
 /// A fresh one-time token (re-install / re-enrollment); the old one is void.
+/// Re-enrollment of an enrolled agent (it lost its key, the host was reinstalled)
+/// keeps the agent id: sources, groups and `host-<id>` snapshots stay attached,
+/// the new certificate replaces the pinned one when the enrollment job ran.
 pub async fn new_agent_token(State(st): State<St>, ctx: Ctx, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     ctx.require(ADMIN)?;
     let a = agent_value(&st.cat.conn(), &id)?.ok_or_else(ApiError::not_found)?;
@@ -135,8 +143,9 @@ pub async fn new_agent_token(State(st): State<St>, ctx: Ctx, Path(id): Path<Stri
         ctx.name(),
         "agent.token",
         &format!("agent/{id}"),
-        json!({"token_expires": expires}),
+        json!({"token_expires": expires, "reenroll": a["enrolled_at"].is_i64()}),
     )?;
+
     Ok(Json(
         json!({"id": id, "token": token, "install_command": install_command(&token), "token_expires": expires}),
     ))

@@ -24,7 +24,7 @@ const RESTORE_KINDS: &[&str] = &[
     "plugin_mount",
 ];
 /// Kinds only an admin may request (they change software or trust on a host).
-const ADMIN_KINDS: &[&str] = &["agent_update", "agent_enroll"];
+const ADMIN_KINDS: &[&str] = &["agent_update", "agent_enroll", "agent_renew"];
 pub const DOWNLOAD_TTL_SECS: i64 = 24 * 3600;
 
 #[derive(Deserialize)]
@@ -237,7 +237,7 @@ fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiResult<Value>
             r.agent_id = Some(target_agent);
             json!(r)
         }
-        "agent_update" | "agent_enroll" => {
+        "agent_update" | "agent_enroll" | "agent_renew" => {
             let a: AgentP = parse(p)?;
             agent_name(st, tenant, &a.agent_id)?;
             json!(a)
