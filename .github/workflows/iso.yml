@@ -25,9 +25,8 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BIB: quay.io/centos-bootc/bootc-image-builder:latest
     steps:
+      # the ISO config comes from the workflow's own commit (older tags predate release/iso/)
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.TAG }}
 
       - name: Image digest of the release
         run: |
