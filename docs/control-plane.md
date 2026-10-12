@@ -463,6 +463,58 @@ not in the store: the store's retention lock (`Manifest.lock_until`) can only gr
   named in the message) and `legal_hold_advisory`; the UI offers **Hold last good snapshot** / **Apply hold** there.
 - API tokens: `GET /holds` is readable with `read` scope; setting and releasing are closed to tokens.
 
+## Offsite in the UI (Phase 17d, `scheduler/src/offsite_ui.rs`, `web-api/src/offsite.rs`, `offsite/src/target/browse.rs`)
+No catalog migration. Job kinds (RBAC like restores: admin, operator, tenant_user in its tenant; never viewer or
+security officer; closed to API tokens like every new route/kind not on the allow-list):
+- `offsite_list {}`: `nexus-offsite <cfg> list --json` → result `{snapshots: [{source, time, size, lock_until,
+  inventory, remote, local}]}`: every snapshot of the offsite inventory (logical size from its sealed indexes, offsite
+  lock) plus every snapshot whose manifest is on the target, cross-checked: `remote: false` = the inventory knows it
+  but the target lost its manifest; `inventory: false` = on the target but unknown here; `local` = a copy is in the
+  store. Refused (400) for tenants without an offsite target.
+- `offsite_restore {source, time}`: only for a catalog row with `offsite=1, local=0` (409 if local, 404 otherwise);
+  `nexus-offsite <cfg> restore <source> <time> <keep>` fetches the snapshot (chunks verified on insert, manifest
+  last) and extends its **store lock** to compliance-now + `offsite_fetch_keep_secs` (scheduler config, default 7 days;
+  locks only grow, a longer lock stays). That is the "pulled back" protection: local retention counts it as still
+  locked and prunes it after the keep time; it needs no catalog flag. An approved `snapshot.delete` is refused for the
+  same time. The finished job marks the tenant dirty, the refresh sets `local=1`; the daily name-index backfill adds
+  it to the file search. Plan key `tenant:<t>` (serialised with the tenant's offsite upload).
+- UI: Snapshots filter **Copies** (all / local / offsite only, client side), **Fetch from offsite** on offsite-only
+  rows instead of Browse/Restore; Tenants → **Offsite copy** (the listing, fetch per row; `?offsite=<tenant>`).
+
+## Attach an offsite copy (Phase 17d, DR without the console)
+A tenant's offsite copy written by another (lost) appliance is attached to a running appliance:
+1. `POST /tenants/attach {name, offsite}` (admin or security officer): the original tenant name (DEK labels, AADs and
+   the escrow path are bound to it) and the target as for a new tenant (`check_offsite`; SFTP needs host + user,
+   S3 its `secret_key`, sealed to the scheduler with `tenant_owner(name)`). Refused if the tenant exists or an attach
+   for it is pending / approved within the window. Quorum action **`tenant.attach_offsite`** `{name, offsite}` — no
+   key in it (approvers read quorum params). Approved by a different admin or security officer; it is not executed by
+   the web-api (state stays `approved`).
+2. `POST /tenants/attach/{quorum_id}/run {recovery_key}` (only the requester, ≤ 72 h after the approval
+   (`ATTACH_WINDOW_SECS`), tenant still absent, no attach job queued/running for the request): the key (keyd's format,
+   normalised) is sealed to the scheduler at location `attach/<quorum id>/<tenant>/recovery-key`
+   (`catalog::secret::attach_key_location`) into an `offsite_attach {attach_quorum, recovery_key}` job (`tenant` = the
+   new name); audited `tenant.attach_offsite.run` `{quorum_id, job}` (never the key). `GET /jobs` redacts sealed
+   values. With approvals disabled step 1 yields an `approved` row at once.
+3. Scheduler: planning first removes `recovery_key` from the job row (`json_remove`, whatever happens next), checks
+   the request (approved, inside the window, same tenant, tenant absent), opens the key (bound to that request) and
+   the request's offsite config, and writes the job dir (0700 in the scheduler's runtime dir; `recovery.key` 0600).
+   `nexus-offsite <cfg> attach <dir>/recovery.key` reads and deletes the file, fetches `keys/kek.recovery` and
+   `keys/tenants/<t>/dek.*` from the target and sends key + escrow to keyd (`attach-escrow <tenant> <len>` + body, see
+   `keyd::attach_escrow`): keyd opens the *old* KEK with the recovery key, unwraps the DEKs, re-wraps them under its
+   own KEK (nothing of the old KEK or the recovery key is stored; refused if the tenant has other keys here or a
+   replication origin; idempotent), then the inventory is rebuilt from the target (`rebuild_from_remote`). On success
+   the scheduler inserts the tenant (offsite config from the request), sets the request `executed`, audits
+   `tenant.attach_offsite` (`requested_by`, `approved_by`, job) and refreshes: the snapshots appear offsite-only and
+   can be fetched and restored. A failed run (wrong key) leaves the request `approved`: the requester may submit the
+   key again inside the window. Job retries never apply (the key is used once).
+4. Egress: while a `tenant.attach_offsite` request is approved, not executed and inside the window, its target is in
+   the outbound allow-list (`Scheduler::attach_targets` in `sync_firewall`), before the tenant exists.
+- The target keeps the **old** appliance's escrow (`put_if_missing` never overwrites it): the old recovery key stays the
+  key for this offsite copy. Do not rotate an attached tenant's DEKs (keyd CLI only): the new version would be wrapped
+  under this appliance's KEK, which the old `kek.recovery` on the target does not open (17e per-tenant recovery keys).
+- Sources, policies and groups are not attached: configure them again; backups then continue into the same store and
+  target (dedup against the rebuilt inventory).
+
 ## Break-glass (`nexus-setup recover-admin`, Phase 12 §7)
 Console only (root): `nexus-setup recover-admin [--user NAME] [--force-solo]` asks for the recovery key (checked against keyd's `kek.recovery` as at first boot), resets a local admin account to pending activation (old password and authenticator invalid at once, sessions ended, account enabled) and prints a new one-time activation code (72 h). Without `--user` the only local admin is chosen. With approvals enabled and at least two possible approvers it refuses unless `--force-solo` (recorded in the alert, the audit entry and the banner). Audited `user.break_glass` (actor `console`), critical alert `break_glass`, setting `break_glass`.
 

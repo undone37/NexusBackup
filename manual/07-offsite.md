@@ -148,11 +148,30 @@ Provider notes:
   yet. Prefer providers with stable addresses, or expect occasional retries. Allowing provider IP ranges is
   an open item.
 
+## Check the offsite copy
+
+Click **Offsite copy** on a tenant row (**Configuration → Tenants**). The appliance reads the offsite target and
+compares it with what it knows (a **List offsite copy** job, usually a few seconds). The dialog lists every
+snapshot with its size, its offsite lock and a status:
+
+- **local and offsite**: the normal case.
+- **offsite only**: local retention removed the local copy. **Fetch from offsite** brings it back
+  ([06 Restores](06-restores.md#restore-from-the-offsite-copy)).
+- **missing on the target**: the appliance uploaded it, but its manifest is gone from the target. Check the target
+  (deleted files, a wrong base directory or prefix). The inventory check of the next offsite run raises an alert too.
+- **not in this appliance's inventory**: on the target, but not uploaded by this appliance (for example by another
+  appliance using the same target by mistake).
+
+**Check offsite copy** reads the target again. Administrators, operators and the tenant's own users can open it.
+
+![The offsite copy of tenant initech](images/tenant-offsite-copy.png)
+
 ## Firewall
 
 You do not open anything by hand. The scheduler adds each tenant's offsite endpoint (SFTP host:port, or the S3
 endpoint, as `<bucket>.<host>` for virtual-hosted style) to the outbound allow-list. All other outbound
-traffic is dropped.
+traffic is dropped. For **Attach offsite copy** ([14 Disaster recovery](14-disaster-recovery.md#attach-an-offsite-copy-in-the-web-ui))
+the target is allowed as soon as the request is approved, before the tenant exists, for at most 72 hours.
 
 > **Status:** S3 was tested against MinIO (Object Lock compliance, restricted user, TLS): locks, refused
 > overwrite and version deletion, GC skipping locked packs, DR with locks restored. A run against a real
