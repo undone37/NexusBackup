@@ -58,6 +58,7 @@ pub const WEB_ACTIONS: &[&str] = &[
     catalog::vault::ENABLE,
     catalog::vault::RESTORE,
     catalog::tenants::DISABLE_ACTION,
+    crate::impersonate::ACTION,
 ];
 
 /// Who may approve or reject requests (never their own: see [`approve`]).
@@ -283,6 +284,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         "tenant.delete" => {
             let name = p["name"].as_str().unwrap_or_default();
             crate::resources::tenant_deletable(c, name)?;
+            catalog::tenancy::bury(c, name, requested_by)?;
             changed(c.execute("DELETE FROM tenants WHERE name = ?1", [name])?)?;
             catalog::tenant_key::remove(c, name)?;
         }
@@ -311,8 +313,16 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
                 "UPDATE policies SET file_filters = ?2 WHERE id = ?1",
                 params![int(p, "id")?, p.get("file_filters").unwrap_or(&json!({})).to_string()],
             )?;
+            // Phase 19b (requests made before carry none: unchanged)
+            if let Some(t) = p.get("tier") {
+                c.execute(
+                    "UPDATE policies SET tier = ?2 WHERE id = ?1",
+                    params![int(p, "id")?, t.as_str()],
+                )?;
+            }
         }
         "group.update" => {
+            crate::tenancy::check_requested_policy(c, p, requested_by)?;
             changed(c.execute(
                 "UPDATE groups SET source_id = ?2, policy_id = ?3, name = ?4, guests = ?5, mode = ?6, selector = ?7, \
              exclude = ?8, timezone = ?9 WHERE id = ?1",
@@ -352,6 +362,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         catalog::vault::DISABLE => return Ok(None),
         catalog::vault::RESTORE => return crate::vault::execute_restore(c, p, requested_by).map(Some),
         catalog::tenants::DISABLE_ACTION => crate::tenants::execute_disable(c, p, requested_by)?,
+        crate::impersonate::ACTION => crate::impersonate::execute(c, p, requested_by)?,
         "oidc.update" => crate::oidc::execute(c, p)?,
         // the request file for nexus-update is written after the commit (settings::after_approve)
         "update.apply" => {}
@@ -387,17 +398,19 @@ pub struct QuorumFilter {
 }
 
 /// Readable by admin, security_officer and operator (an admin needs to see
-/// the state of their own requests); not by tenant users.
+/// the state of their own requests); tenant admins see their own requests
+/// only; not by tenant users.
 pub async fn list_quorum(State(st): State<St>, ctx: Ctx, Q(f): Q<QuorumFilter>) -> ApiResult<Json<Value>> {
-    ctx.require(&["admin", "security_officer", "operator"])?;
+    ctx.require(&["admin", "security_officer", "operator", "tenant_admin"])?;
     expire(&st)?;
+    let own = ctx.is_tenant_admin().then(|| ctx.name().to_owned());
     let c = st.cat.conn();
     let mut stmt = c.prepare(
         "SELECT id, action, params, requested_by, created, decided_by, decided_at, state FROM quorum
-         WHERE ?1 IS NULL OR state = ?1 ORDER BY id DESC LIMIT 500",
+         WHERE (?1 IS NULL OR state = ?1) AND (?2 IS NULL OR requested_by = ?2) ORDER BY id DESC LIMIT 500",
     )?;
     let rows = stmt
-        .query_map([&f.state], |r| {
+        .query_map(params![f.state, own], |r| {
             let p: String = r.get(2)?;
             let created: i64 = r.get(4)?;
             Ok(json!({

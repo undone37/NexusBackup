@@ -197,14 +197,15 @@ pub struct Limits {
     pub nice: u8,
 }
 
-/// `PUT /agents/{id}/limits` (admin): stored on the agent, sent with every backup.
+/// `PUT /agents/{id}/limits` (admin, tenant admin of the agent's tenant): stored
+/// on the agent, sent with every backup.
 pub async fn set_agent_limits(
     State(st): State<St>,
     ctx: Ctx,
     Path(id): Path<String>,
     J(l): J<Limits>,
 ) -> ApiResult<Json<Value>> {
-    ctx.require(&["admin"])?;
+    ctx.require(crate::auth::TENANT_WRITERS)?;
     if l.nice > 19 {
         return Err(ApiError::bad("nice: 0..=19"));
     }
@@ -214,7 +215,11 @@ pub async fn set_agent_limits(
     let old: String = st
         .cat
         .conn()
-        .query_row("SELECT limits FROM agents WHERE id = ?1", [&id], |r| r.get(0))
+        .query_row(
+            "SELECT limits FROM agents WHERE id = ?1 AND (?2 IS NULL OR tenant = ?2)",
+            params![id, ctx.scope()],
+            |r| r.get(0),
+        )
         .map_err(|_| ApiError::not_found())?;
     st.cat.conn().execute(
         "UPDATE agents SET limits = ?2 WHERE id = ?1",
