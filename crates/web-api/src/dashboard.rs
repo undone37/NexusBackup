@@ -436,7 +436,10 @@ fn capacity(c: &Connection, scope: Option<&str>, days: i64, now: i64) -> ApiResu
     Ok(json!({
         "total": fs["total"], "used": if scope.is_some() { json!(physical) } else { fs["used"].clone() },
         "free": fs["free"], "logical": logical, "physical": physical,
-        "reduction": (physical > 0).then(|| logical as f64 / physical as f64),
+        // measured (daily capacity sample); before the first sample, the stats' dedup × compression
+        "reduction": (physical > 0)
+            .then(|| logical as f64 / physical as f64)
+            .or(dedup.zip(compression).map(|(d, c)| d * c)),
         // from backup_stats (docs/storage-accounting.md); null before the first measured backup
         "dedup": dedup, "compression": compression,
         "per_day": samples.iter().filter(|s| s.0 > window)

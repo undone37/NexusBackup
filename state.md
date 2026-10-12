@@ -271,4 +271,7 @@ Parallel worktree agents (schema versions pre-assigned, renumbered on merge if n
 - [x] all five merged (catalog v11–v14), full local suite green, CI green on the merge commits
 - [x] screenshots regenerated (78); UI fixes from the review: storage bars neutral, "RPO breached" label unified
 - [x] PVE e2e on the Phase 13 image (`lab/appliance/e2e.sh all`, new `phase13` step in lab/e2e/m5-api.sh): backup, restore, verify, quorum, storage figures (dedup 2.5×, compression 3.0×), inventory via the real PVE API, auto group `all` minus 200 → [100], pause, cancel of a running backup (no snapshot committed), locked delete refused; **0 AVCs**. Found + fixed: `setpgid` denied to nexus_scheduler_t (13b process groups) → every job spawn failed
-- [ ] plugin lab (example, PostgreSQL, OIDC) + UI smoke on the real API
+- [x] plugin lab on the Phase 13 image (example plugin incl. incremental + sha256 check, PostgreSQL backup + restore to the alternate server, OIDC alice/tina/nobody), 0 unexpected AVCs; fixed: lab skip list was overwritten by later plugin steps
+- [x] UI smoke on the real API: 84 page views (admin + SO, light + dark, incl. Storage and Settings → Anomaly), 0 problems; fixed: Data reduction tile empty before the first capacity sample (falls back to dedup × compression)
+
+**Phase 13 complete (2026-10-12).** Next: Phase 14 (security and operations), then release 0.1.0-alpha.

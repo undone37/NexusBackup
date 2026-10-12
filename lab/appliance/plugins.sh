@@ -130,7 +130,7 @@ backup() {
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "backup: $(jq -r .log <<<"$j" | tail -n 30)"
 	log "backup job $(jq -r .id <<<"$j") ok in $(jq '.finished - .started' <<<"$j") s: $(jq -c .result <<<"$j")"
 	{ jq -r .log <<<"$j" | grep "not backed up" || true; } | while read -r l; do log "$l"; done
-	jq -r .log <<<"$j" | sed -n 's/^.*not backed up: \(.*\): [^:]*$/\1/p' >"$S/skipped"
+	jq -r .log <<<"$j" | sed -n 's/^.*not backed up: \(.*\): [^:]*$/\1/p' >>"$S/skipped" # appended: every plugin step adds its skips (setup starts empty)
 	log "domains during the backup: $(con run 'sort -u /run/nexus-lab-ps 2>/dev/null | sed "s/  */ /g"' | tr '\n' ';')"
 }
 
