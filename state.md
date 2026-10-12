@@ -284,4 +284,5 @@ Six parallel worktree agents (each merges main into its branch before reporting)
 - [ ] 14d1 (agent re-merging main: v17, combined My account page, token expiry checks) viewer role, download privilege, expiry, sessions list/revoke, timeouts, dormant accounts, login banner, management allow-list, approver-count warning
 - [x] 14d2 — merged 2026-10-12 as catalog v15 (api_tokens): tokens (allow-list middleware), `nexus-tls` helper + crates/webtls, per-handshake cert reload, `cert_expiry` alerts, My account / Settings → Certificate; lab step `m5-api.sh phase14d2` (to run in the VM)
 - [x] 14e reports — merged 2026-10-12 (no schema): crates/reports (protection, failed, sla, storage), `GET /reports/{type}.csv`, `settings/reports`, scheduler `report_send` jobs; Reports page
-- [ ] merge, full suite, VM labs (PVE e2e, plugins, forwarding, console gate), screenshots, CI, release 0.1.0-alpha
+- [x] add-on: registry pull credential for the private repo (Settings → Updates; nexus-update writes /run/ostree/auth.json only during a fetch); tests test_private_registry_login_only_during_the_fetch, update_registry_credential
+- [ ] merge 14d1, full suite, VM labs (PVE e2e incl. phase13/phase14d2/diag steps, console-gate.sh, forwarding.sh, plugins, ui-smoke), screenshots, CI, release 0.1.0-alpha
