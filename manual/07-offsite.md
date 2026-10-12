@@ -15,7 +15,11 @@ without the original one ([14 Disaster recovery](14-disaster-recovery.md)).
   and sealed with the tenant key (XChaCha20-Poly1305).
 - **Snapshot files**: the sealed indexes and the manifest of every snapshot. The manifest is written last, so
   a snapshot counts as offsite only when all its data is there.
-- **Key escrow** (`keys/`): the tenant's data keys, wrapped. Only the recovery key can open them.
+- **Key escrow** (`keys/`): the tenant's data keys, wrapped. Only the recovery key can open them. If the tenant
+  has a **tenant recovery key**, its data keys are also stored sealed to that key
+  (`keys/tenants/<tenant>/tenant-escrow.*`), so the tenant can rebuild from this copy on its own
+  ([14 Disaster recovery](14-disaster-recovery.md#the-tenant-recovery-key-optional)). When that key is replaced,
+  the next upload removes the old key's files (on S3 with Object Lock they stay until their lock ends).
 
 The provider sees random names and ciphertext. Chunk IDs are keyed hashes, so the provider cannot even test
 whether a known file is stored.

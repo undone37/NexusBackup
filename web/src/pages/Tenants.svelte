@@ -7,6 +7,7 @@
   import type { OffsiteListed, QuorumRequest, Tenant, TenantOffsite, SftpRemote, S3Remote } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
+  import TenantRecoveryKey from '../components/TenantRecoveryKey.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
   import IconCloud from '@lucide/svelte/icons/cloud';
   import IconLink from '@lucide/svelte/icons/link';
@@ -19,6 +20,8 @@
   import { fetchFromOffsite, listedStatus } from '../lib/offsite';
 
   let items: Tenant[] = $state([]);
+  // tenant whose recovery key dialog is open (17e)
+  let keyOf: string | null = $state(null);
   let error: string | null = $state(null);
   let loaded = $state(false);
 
@@ -50,6 +53,7 @@
       requests = [];
     }
   }
+  const canKey = $derived(['admin', 'security_officer'].includes(session.user?.role ?? ''));
 
   /** The remote of a tenant; older UI versions stored the SFTP fields flat. */
   function remoteOf(o: TenantOffsite | undefined): SftpRemote | S3Remote | null {
@@ -294,8 +298,9 @@
                     ><IconCloud aria-hidden="true" />{t.offsite.copy}</button
                   >
                 {/if}
+                {#if can.configure(session.user)}<button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>{/if}
+                {#if canKey}<button type="button" class="small" onclick={() => (keyOf = x.name)}>{t.tkey.button}</button>{/if}
                 {#if can.configure(session.user)}
-                  <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
                   <button type="button" class="small danger" onclick={() => remove(x)}>{t.delete}</button>
                 {/if}
               </td>
@@ -344,6 +349,8 @@
     </div>
   </section>
 {/if}
+
+<TenantRecoveryKey bind:tenant={keyOf} />
 
 <Modal bind:open title={attaching ? t.offsite.attachTitle : editing ? `${t.tenant}: ${editing.name}` : t.tenants.new} wide>
   <form onsubmit={save}>

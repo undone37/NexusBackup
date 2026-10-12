@@ -1289,6 +1289,7 @@ function seed() {
   seedReports(t);
   seedDiag(t);
   seedConsole(t);
+  seedTenantKeys(t);
   seedHolds(t);
   seedHardware(t);
 }
@@ -1463,7 +1464,7 @@ function find<T>(xs: T[], pred: (x: T) => boolean, what: string): T {
 // approved requests the scheduler executes (state stays `approved` until it has)
 // (console.unlock: nobody executes it; the requester then fetches the code once, 14c)
 // (tenant.attach_offsite: the requester then submits the recovery key, the scheduler runs the attach, 17d)
-const SCHEDULER_ACTIONS = ['replication.key_export', 'gc_large', 'console.unlock', 'tenant.attach_offsite'];
+const SCHEDULER_ACTIONS = ['replication.key_export', 'gc_large', 'console.unlock', 'tenant.recovery_key', 'tenant.attach_offsite'];
 // 202 {quorum_id, ...extra} like web-api's `accepted()`; with approvals disabled the
 // action runs at once (200 {approvals: "disabled", executed}).
 async function quorum(u: User, action: string, params: Json, extra: Json = {}): Promise<[number, Json]> {
@@ -1626,6 +1627,7 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       break;
     case 'tenant.delete':
       db.tenants = db.tenants.filter((g) => g.name !== p.name);
+      tenantKeys.delete(p.name);
       break;
     case 'settings.anomaly':
       db.anomaly = structuredClone(p.anomaly);
@@ -5091,3 +5093,73 @@ function seedHolds(t: number) {
     }),
   );
 }
+
+// ---------------------------------------------------------------- tenant recovery key (Phase 17e)
+// The appliance keeps only the public key; here a random 64-hex stand-in (kid = its first 16 digits).
+
+const TKEY_TTL = 24 * 3600;
+const tenantKeys = new Map<string, { kid: string; set_at: number; requested_by: string; approved_by: string }>();
+function tkeyStatus(q: Json, t = now()): string {
+  if (q.state === 'pending' || q.state === 'rejected') return q.state;
+  if (q.state === 'approved') return q.decided_at && q.decided_at + TKEY_TTL > t ? 'approved' : 'expired';
+  if (q.state === 'executed') return 'shown';
+  return 'expired';
+}
+const tkeyRows = (tenant: string) =>
+  db.quorum.filter((q) => q.action === 'tenant.recovery_key' && q.params.tenant === tenant).sort((a, b) => b.id - a.id);
+function tkeyUser(c: Ctx, tenant: string, ...roles: Role[]): User {
+  const u = need(c.user, ...roles);
+  if (u.tenant && u.tenant !== tenant) throw new HttpError(403, 'forbidden');
+  find(db.tenants, (x) => x.name === tenant, 'tenant');
+  return u;
+}
+function seedTenantKeys(t: number) {
+  // acme set up a tenant recovery key three weeks ago
+  const q = {
+    id: nextId(), action: 'tenant.recovery_key', params: { tenant: 'acme', replace: false },
+    requested_by: 'admin', created: t - 86400 * 21, decided_by: 'so', decided_at: t - 86400 * 21 + 900, state: 'executed',
+  };
+  db.quorum.push(q);
+  tenantKeys.set('acme', { kid: rand(8), set_at: t - 86400 * 21 + 1200, requested_by: 'admin', approved_by: 'so' });
+}
+on('GET', '/tenants/:tenant/recovery-key', (c, [tn]) => {
+  const tenant = decodeURIComponent(tn);
+  tkeyUser(c, tenant, 'admin', 'security_officer');
+  return [
+    200,
+    {
+      tenant,
+      key: tenantKeys.get(tenant) ?? null,
+      requests: tkeyRows(tenant).slice(0, 20).map((q) => ({
+        id: q.id, requested_by: q.requested_by, created: q.created, decided_by: q.decided_by, decided_at: q.decided_at,
+        show_until: q.decided_at ? q.decided_at + TKEY_TTL : null, status: tkeyStatus(q),
+      })),
+    },
+  ];
+});
+on('POST', '/tenants/:tenant/recovery-key', async (c, [tn]) => {
+  const tenant = decodeURIComponent(tn);
+  const u = tkeyUser(c, tenant, 'admin');
+  if (tkeyRows(tenant).some((q) => ['pending', 'approved'].includes(tkeyStatus(q))))
+    throw new HttpError(409, "a request for this tenant's recovery key is still open");
+  return quorum(u, 'tenant.recovery_key', { tenant, replace: tenantKeys.has(tenant) });
+});
+on('POST', '/tenants/:tenant/recovery-key/:id/show', async (c, [tn, id]) => {
+  const tenant = decodeURIComponent(tn);
+  const u = tkeyUser(c, tenant, 'admin');
+  const q = find(tkeyRows(tenant), (x) => x.id === Number(id), 'request');
+  if (q.requested_by !== u.name) throw new HttpError(403, 'forbidden');
+  const st = tkeyStatus(q);
+  if (st === 'shown') throw new HttpError(409, 'this key was already shown');
+  if (st !== 'approved') throw new HttpError(409, `request is ${st}`);
+  const raw = rand(32);
+  const key = Array.from({ length: 16 }, (_, i) => raw.slice(i * 4, i * 4 + 4)).join('-');
+  const kid = rand(8);
+  const replaced = tenantKeys.get(tenant)?.kid ?? null;
+  q.state = 'executed';
+  tenantKeys.set(tenant, { kid, set_at: now(), requested_by: q.requested_by, approved_by: q.decided_by });
+  await audit(u.name, 'tenant.recovery_key_shown', `tenant/${tenant}/recovery-key`, {
+    kid, replaced, quorum_id: q.id, approved_by: q.decided_by, approvals: q.decided_by === q.requested_by ? 'disabled' : 'enabled',
+  });
+  return [200, { tenant, key, kid, replaced }];
+});

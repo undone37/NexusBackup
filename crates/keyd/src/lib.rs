@@ -6,8 +6,10 @@
 //! kek.local             KEK sealed to this machine (see `seal`)
 //! kek.recovery          KEK wrapped under the offline recovery key (escrow, copied offsite)
 //! tenants/<t>/dek.<v>   tenant DEK version v wrapped under the KEK
+//! tenants/<t>/tenant-recovery.pub, tenant-escrow.<kid>.<v>   optional tenant recovery key (`tenant_key`)
 //! ```
 //! DR: new machine + `kek.recovery` + `tenants/` + recovery key -> `recover()`.
+//! Tenant-level DR: tenant recovery key + `tenant-escrow.*` -> `tenant_key::open` / `install`.
 
 use chunkstore::crypto::{generate_key, hex, parse_hex, unwrap_key, wrap_key};
 use chunkstore::store::write_atomic;
@@ -18,6 +20,8 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use zeroize::{Zeroize, Zeroizing};
+
+pub mod tenant_key;
 
 pub type Key = Zeroizing<[u8; 32]>;
 
@@ -121,6 +125,7 @@ fn add_dek(dir: &Path, tenant: &str, v: u32) -> io::Result<u32> {
     let td = tenant_dir(dir, tenant)?;
     fs::create_dir_all(&td)?;
     write_atomic(&td.join(format!("dek.{v}")), &wrap_key(&kek, &dek, &label(tenant, v)))?;
+    tenant_key::on_new_dek(dir, tenant, v, &dek)?;
     Ok(v)
 }
 
@@ -163,7 +168,8 @@ pub fn tenant_deks(dir: &Path, tenant: &str) -> io::Result<Vec<(u32, Key)>> {
 }
 
 /// Escrow files for the offsite copy: `kek.recovery` (KEK under the offline
-/// recovery key) and the tenant's DEKs (under the KEK). All wrapped, no secret in clear.
+/// recovery key), the tenant's DEKs (under the KEK) and, if set, the DEKs
+/// sealed to the tenant recovery key. All wrapped, no secret in clear.
 pub fn export_escrow(dir: &Path, tenant: &str) -> io::Result<Vec<(String, Vec<u8>)>> {
     let mut out = vec![("kek.recovery".to_owned(), fs::read(dir.join("kek.recovery"))?)];
     let td = tenant_dir(dir, tenant)?;
@@ -173,14 +179,21 @@ pub fn export_escrow(dir: &Path, tenant: &str) -> io::Result<Vec<(String, Vec<u8
             fs::read(td.join(format!("dek.{v}")))?,
         ));
     }
+    for (name, bytes) in tenant_key::escrow_files(dir, tenant)? {
+        out.push((format!("tenants/{tenant}/{name}"), bytes));
+    }
     Ok(out)
 }
 
 /// DR on a fresh appliance: installs escrow files; follow with `recover()`.
-/// Refuses to replace an existing, different `kek.recovery`.
+/// Refuses to replace an existing, different `kek.recovery`. Tenant recovery
+/// escrow files are skipped (the appliance recovery key does not need them).
 pub fn import_escrow(dir: &Path, files: &[(String, Vec<u8>)]) -> io::Result<()> {
     fs::create_dir_all(dir.join("tenants"))?;
     for (name, bytes) in files {
+        if name.rsplit('/').next().is_some_and(tenant_key::is_escrow_file) && name.starts_with("tenants/") {
+            continue;
+        }
         let target = match name.split('/').collect::<Vec<_>>().as_slice() {
             ["kek.recovery"] => dir.join("kek.recovery"),
             ["tenants", t, f] if f.strip_prefix("dek.").is_some_and(|v| v.parse::<u32>().is_ok()) => {
@@ -428,6 +441,7 @@ pub fn import_sealed(dir: &Path, tenant: &str, origin: &str, blob: &[u8]) -> io:
     for (v, k) in &deks {
         if !have.contains(v) {
             write_atomic(&td.join(format!("dek.{v}")), &wrap_key(&kek, k, &label(tenant, *v)))?;
+            tenant_key::on_new_dek(dir, tenant, *v, k)?;
         }
     }
     versions(dir, tenant)
@@ -495,6 +509,8 @@ fn peer_uid(s: &UnixStream) -> io::Result<u32> {
 /// - `replica-pubkey\n` → 32-byte X25519 public key for DEK exports (docs/replication.md)
 /// - `export-for <tenant> <peer-pubkey hex> <quorum id>\n` → DEK export sealed to that key
 /// - `import-sealed <tenant> <origin> <len>\n` + `len` bytes → N x u32 LE versions now present
+/// - `tenant-recovery <tenant> <pubkey hex | none>\n` → `1` (changed) or `0`: sets the
+///   tenant recovery public key (`tenant_key::set`)
 /// - `attach-escrow <tenant> <len>\n` + `len` bytes (recovery key line, then escrow files
 ///   encoded like the `escrow` answer) → N x u32 LE versions now present ([`attach_escrow`])
 ///
@@ -609,6 +625,29 @@ pub fn answer_with_body(dir: &Path, line: &str, body: &[u8]) -> io::Result<Zeroi
         eprintln!("keyd: attached DEKs of tenant {tenant} from an offsite escrow: versions {vs:?}");
         return Ok(Zeroizing::new(vs.iter().flat_map(|v| v.to_le_bytes()).collect()));
     }
+    if let Some(rest) = line.strip_prefix("tenant-recovery ") {
+        let [tenant, pk] = rest.split(' ').collect::<Vec<_>>()[..] else {
+            return Err(err(
+                io::ErrorKind::InvalidInput,
+                "tenant-recovery <tenant> <pubkey|none>",
+            ));
+        };
+        let pk: Option<[u8; 32]> = match pk {
+            "none" => None,
+            h => Some(parse_hex(h).ok_or_else(|| err(io::ErrorKind::InvalidInput, "invalid public key"))?),
+        };
+        let changed = tenant_key::set(dir, tenant, pk.as_ref())?;
+        if changed {
+            eprintln!(
+                "keyd: tenant {tenant}: tenant recovery key {}",
+                pk.map_or_else(
+                    || "removed".to_owned(),
+                    |p| format!("set (id {})", tenant_key::key_id(&p))
+                )
+            );
+        }
+        return Ok(Zeroizing::new(vec![if changed { b'1' } else { b'0' }]));
+    }
     let tenant = match line.split_once(' ') {
         Some(("escrow", t)) => {
             return Ok(Zeroizing::new(encode_escrow(&export_escrow(dir, t)?)));
@@ -680,6 +719,13 @@ fn request_raw(socket: &Path, line: &str, body: &[u8]) -> io::Result<Vec<u8>> {
         return Err(err(io::ErrorKind::PermissionDenied, "keyd refused the request"));
     }
     Ok(buf)
+}
+
+/// Scheduler: sets (or removes) the tenant recovery public key from the
+/// catalog; keyd seals all DEK versions to it. Returns whether it changed.
+pub fn request_tenant_recovery(socket: &Path, tenant: &str, public: Option<&[u8; 32]>) -> io::Result<bool> {
+    let pk = public.map_or_else(|| "none".to_owned(), hex);
+    Ok(request_raw(socket, &format!("tenant-recovery {tenant} {pk}"), &[])? == b"1")
 }
 
 /// Secondary: this appliance's X25519 public key for DEK exports.
@@ -980,6 +1026,44 @@ mod tests {
         pt.join().unwrap();
         assert!(body_len("import-sealed a b 0\n").is_err());
         assert!(body_len(&format!("import-sealed a b {}\n", MAX_EXPORT + 1)).is_err());
+    }
+
+    /// Phase 17e: the scheduler sets the tenant recovery public key over the
+    /// socket; the escrow answer then carries the sealed DEKs.
+    #[test]
+    fn socket_tenant_recovery() {
+        let d = tempfile::tempdir().unwrap();
+        init(d.path()).unwrap();
+        create_tenant(d.path(), "acme").unwrap();
+        let sock = d.path().join("k.sock");
+        let me = unsafe { libc::getuid() };
+        let l = UnixListener::bind(&sock).unwrap();
+        let dir = d.path().to_owned();
+        let srv = std::thread::spawn(move || {
+            for _ in 0..5 {
+                let _ = handle(l.accept().unwrap().0, &dir, me);
+            }
+        });
+        let (key, public) = tenant_key::generate();
+        assert!(request_tenant_recovery(&sock, "acme", Some(&public)).unwrap());
+        assert!(!request_tenant_recovery(&sock, "acme", Some(&public)).unwrap());
+        assert!(request_tenant_recovery(&sock, "nope", Some(&public)).is_err());
+        let esc = fetch_escrow(&sock, "acme").unwrap();
+        let files: Vec<_> = esc
+            .iter()
+            .filter_map(|(n, b)| Some((n.strip_prefix("tenants/acme/")?.to_owned(), b.clone())))
+            .collect();
+        assert_eq!(tenant_key::open("acme", &key, &files).unwrap().len(), 1);
+        // the appliance-key DR skips them
+        let b = tempfile::tempdir().unwrap();
+        import_escrow(b.path(), &esc).unwrap();
+        assert!(!b.path().join("tenants/acme").read_dir().unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("tenant-")));
+        assert!(request_tenant_recovery(&sock, "acme", None).unwrap());
+        srv.join().unwrap();
     }
 
     #[test]

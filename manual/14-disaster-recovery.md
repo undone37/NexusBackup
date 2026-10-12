@@ -14,6 +14,7 @@ lost (hardware failure, fire, ransomware on the management network) and how the 
 | Scenario | What you need | Where the data comes from |
 |---|---|---|
 | Appliance lost, tenant has an offsite target | recovery key + offsite credentials (SFTP key or S3 access key) + new hardware | Storage Box or S3 bucket ([07 Offsite](07-offsite.md)) |
+| A customer (tenant) rebuilds its own data elsewhere, without the appliance recovery key | that tenant's **tenant recovery key** + its offsite credentials + an appliance set up with the image | the tenant's offsite target ([Recover one tenant with its tenant recovery key](#recover-one-tenant-with-its-tenant-recovery-key)) |
 | Appliance lost, tenant is replicated | the secondary appliance (it has its own keys) | the secondary's local store ([08 Replication](08-replication.md)) |
 | Single snapshot damaged locally | nothing extra | `verify` finds it; restore an older snapshot, or fetch it from offsite (below) |
 | The only administrator lost the authenticator or password | recovery key + local console | [Break-glass](#break-glass-the-only-administrator-lost-their-authenticator) (below) |
@@ -36,6 +37,34 @@ During first boot the key service creates the appliance master key (KEK) and sho
 Keep the recovery key offline and separate from the offsite credentials (see
 [02 Installation](02-installation.md#store-the-recovery-key)). A replicated secondary has its **own** recovery key:
 store that one too.
+
+### The tenant recovery key (optional)
+
+The appliance recovery key opens **every** tenant. A managed service provider usually cannot hand it to one
+customer. For that case a tenant can get its own **tenant recovery key**: it opens only that tenant's data keys
+in its offsite copy, never other tenants' and never the appliance's key.
+
+1. On **Tenants**, click **Recovery key** in the tenant's row. The dialog shows whether the tenant has a key (with
+   its **Key ID** and since when) and the recent requests.
+2. **Generate tenant recovery key** (or **Replace tenant recovery key**). An administrator requests it; while
+   approvals are enabled, a second person (another administrator or a security officer) approves it on
+   **Approvals** ([10 Approvals and audit](10-approvals-and-audit.md)).
+3. After the approval, the requester opens the dialog again and clicks **Show key once** within 24 hours. The key
+   (16 groups of 4 hex digits, like the appliance recovery key) is generated at this moment and shown **once**. The
+   appliance keeps only its public part: nobody can display it again. Hand it to the customer through a safe channel
+   and store it apart from the appliance recovery key.
+
+![Tenant recovery key requests](images/tenant-key.png)
+
+![Tenant recovery key, shown once](images/tenant-key-shown.png)
+
+- Before the next offsite run the key service seals all of the tenant's data keys to the new key; the run uploads
+  them to `keys/tenants/<tenant>/tenant-escrow.*`. Data keys created later (key rotation) are sealed automatically,
+  without the key. A tenant without an offsite target gets nothing offsite.
+- **Replacing** needs an approval again. The old key no longer receives new data keys, and the next offsite run
+  removes its files from the target (on S3 with Object Lock the old objects stay until their lock ends).
+- Who holds the key and the tenant's offsite credentials can read that tenant's offsite copy. Treat it like the
+  recovery key, for one tenant.
 
 ## Incident: hold the good snapshots first
 
@@ -169,6 +198,39 @@ the appliance image installed. One run recovers **one tenant** (each tenant has 
 > root console of an installed appliance under SELinux enforcing; the policy restricts access to key files to the
 > key service and the setup wizard, so these commands may need adjustments there. If you face a real disaster, contact the project before you
 > run first boot on the replacement hardware.
+
+## Recover one tenant with its tenant recovery key
+
+For a tenant that has a [tenant recovery key](#the-tenant-recovery-key-optional). It runs on **another appliance
+that has been set up** (first boot done, so its key service has its own master key), for example the customer's own
+appliance. The appliance recovery key of the original appliance is not needed, and nothing of other tenants is
+unlocked.
+
+1. Do **not** create the tenant on the new appliance yet: the scheduler would give it a new data key, and the import
+   below refuses a tenant that already has different keys.
+2. Write the job configuration as in [Recover a tenant from the offsite copy](#recover-a-tenant-from-the-offsite-copy-console),
+   step 2.
+3. Recover the tenant's keys with the tenant recovery key (read from standard input, never typed on the command line):
+
+   ```sh
+   /usr/libexec/nexus/nexus-offsite /root/dr/initech.json dr --tenant-key /var/lib/nexus/keyd
+   ```
+
+   This reads only `keys/tenants/<tenant>/tenant-escrow.*` from the target, opens the files of this key, checks
+   that they belong to this tenant, stores the data keys under this appliance's own master key and indexes every
+   pack and snapshot. Output: `DR: keys recovered with the tenant recovery key, <n> packs and <m> snapshots
+   indexed`. A wrong key, another tenant's name, or a tenant that already has different keys here is refused.
+   The command runs as root: hand the new key files to the key service afterwards with
+   `chown -R nexus-keyd:nexus-keyd /var/lib/nexus/keyd/tenants/initech && restorecon -R /var/lib/nexus/keyd`.
+4. Create the tenant with the **same name** (**Tenants → New tenant**); it uses the imported keys. Continue with
+   steps 5 and 6 above (list, restore, bring the data back).
+5. Give the tenant a **new** offsite target (or another prefix) on the new appliance. The old target's key escrow
+   belongs to the old appliance; do not upload into it from the new one.
+
+> **Status:** The tenant-level DR is tested against a local directory target (key import, other tenants refused,
+> the appliance escrow untouched, a restored disk compared with the original) and the key rotation and replacement
+> in unit tests. It has not been run on an installed appliance, from the web UI, or against a real Storage Box or
+> S3 provider. There is no **Tenants → Attach** flow for it in the web UI yet.
 
 ## Recover from a replicated secondary
 

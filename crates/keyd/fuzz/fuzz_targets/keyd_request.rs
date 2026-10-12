@@ -1,5 +1,5 @@
 //! keyd socket protocol: request lines (`<tenant>`, `ensure <tenant>`,
-//! `escrow <tenant>`, `replica-pubkey`, `export-for …`; `import-sealed` gets an
+//! `escrow <tenant>`, `replica-pubkey`, `export-for …`, `tenant-recovery …`; `import-sealed` gets an
 //! empty body here) as read from the socket (at most 128 bytes), and the
 //! client-side escrow answer decoder. Invariants: no panic, nothing created
 //! outside `tenants/<valid name>/`, DEK answers are whole 36-byte records,
@@ -55,7 +55,12 @@ fuzz_target!(|data: &[u8]| {
                 let files = keyd::parse_escrow(&out).unwrap();
                 assert!(files
                     .iter()
-                    .all(|(n, _)| n == "kek.recovery" || n.starts_with(&format!("tenants/{t}/dek."))));
+                    .all(|(n, _)| n == "kek.recovery"
+                        || n.starts_with(&format!("tenants/{t}/dek."))
+                        || n.starts_with(&format!("tenants/{t}/tenant-escrow."))));
+            } else if let Some(rest) = l.strip_prefix("tenant-recovery ") {
+                assert!(valid(rest.split(' ').next().unwrap()));
+                assert!(out[..] == *b"0" || out[..] == *b"1");
             } else {
                 assert!(!out.is_empty() && out.len() % 36 == 0);
             }
