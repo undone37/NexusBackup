@@ -203,6 +203,9 @@ Each row has two controls (not for security officers, who cannot restore):
 | `plugin-…` | the plugin's restores that apply to this kind of snapshot, e.g. **Restore database dump to a server** only on database snapshots and **Point-in-time restore** only on cluster snapshots of PostgreSQL |
 | `nas-`, `share-` | no menu: download only |
 
+Administrators also see **Delete** on snapshots whose retention lock has expired, that have a local copy and that were
+not replicated from another appliance (see [06 Restores](06-restores.md#deleting-a-snapshot)).
+
 See [06 Restores](06-restores.md).
 
 ## Files

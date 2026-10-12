@@ -1248,3 +1248,117 @@ fn capacity_samples_daily() {
         "no store, no sample"
     );
 }
+
+/// Phase 13a: the gc job prunes sources no group covers (setting `orphan_gfs`),
+/// alerts once per orphan and audits what it deleted; approved `snapshot.delete`
+/// requests become `snapshot_delete` jobs (refused while locked).
+#[test]
+fn orphan_sweep_and_snapshot_delete() {
+    let e = env(4);
+    let mut s = sched(&e);
+    let st = chunkstore::Store::open(
+        e.cfg.store_base.join("t1"),
+        Keyring::new("t1", &[(1, [7; 32])]),
+        test_opts(),
+    )
+    .unwrap();
+    let day = 86400;
+    for src in ["vm-100", "vm-999", "ct-201"] {
+        for t in [day, 2 * day, 3 * day] {
+            st.commit_snapshot(src, t, &[("tree", chunkstore::Index::Tree { entries: vec![] })])
+                .unwrap();
+        }
+    }
+    catalog::set_setting(
+        &s.db.conn(),
+        orphans::ORPHAN_GFS,
+        r#"{"daily":1,"weekly":0,"monthly":0,"yearly":0}"#,
+    )
+    .unwrap();
+    let left = |src: &str| -> Vec<u64> {
+        st.list_snapshots()
+            .unwrap()
+            .into_iter()
+            .filter(|m| m.source == src)
+            .map(|m| m.time)
+            .collect()
+    };
+    let one = |s: &Scheduler, sql: &str| -> i64 { s.db.conn().query_row(sql, [], |r| r.get(0)).unwrap() };
+    for _ in 0..2 {
+        let id = manual(&s, "gc", "t1", json!({}));
+        s.start_jobs().unwrap();
+        s.wait_idle(Duration::from_secs(20)).unwrap();
+        assert_eq!(state(&s, id), "ok");
+    }
+    assert_eq!(left("vm-100").len(), 3, "group-covered source untouched");
+    assert_eq!(left("vm-999"), vec![3 * day]);
+    assert_eq!(left("ct-201"), vec![3 * day]);
+    assert_eq!(
+        one(&s, "SELECT COUNT(*) FROM alerts WHERE kind = 'orphaned'"),
+        2,
+        "once per source"
+    );
+    let msg: String =
+        s.db.conn()
+            .query_row(
+                "SELECT message FROM alerts WHERE kind = 'orphaned' ORDER BY id LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert!(msg.starts_with("t1/ct-201 is in no protection group"), "{msg}");
+    assert_eq!(
+        one(&s, "SELECT COUNT(*) FROM audit WHERE action = 'retention.orphans'"),
+        1,
+        "audited only when something was deleted"
+    );
+    // replicated tenants keep the replication source's retention
+    s.db.conn()
+        .execute(
+            "INSERT INTO replication_sources (id, name, url, peer_id, cert_pin, tenants, schedule, state, created) \
+             VALUES (1, 'p', '10.0.2.2:28443', '0123456789abcdef', 'PIN', '[\"t1\"]', 'hourly 00', 'enrolled', 0)",
+            [],
+        )
+        .unwrap();
+    assert!(s.orphan_step("t1").unwrap().is_none());
+    s.db.conn().execute("DELETE FROM replication_sources", []).unwrap();
+
+    // approved deletes: one unlocked, one locked; a self-decided one waits while approvals are on
+    st.extend_lock("vm-100", 2 * day, u64::MAX / 2).unwrap();
+    for (t, by) in [(day, "sam"), (2 * day, "sam"), (3 * day, "alice")] {
+        let p = json!({"tenant": "t1", "source": "vm-100", "time": t});
+        s.db.conn()
+            .execute(
+                "INSERT INTO quorum (action, params, requested_by, created, decided_by, decided_at, state) \
+                 VALUES ('snapshot.delete', ?1, 'alice', 1, ?2, 2, 'approved')",
+                params![p.to_string(), by],
+            )
+            .unwrap();
+    }
+    catalog::set_setting(&s.db.conn(), "approvals_enabled", "true").unwrap();
+    s.queue_snapshot_deletes().unwrap();
+    s.queue_snapshot_deletes().unwrap();
+    assert_eq!(
+        one(&s, "SELECT COUNT(*) FROM jobs WHERE kind = 'snapshot_delete'"),
+        2,
+        "one job per approval"
+    );
+    for _ in 0..2 {
+        // one per tenant at a time
+        s.start_jobs().unwrap();
+        s.wait_idle(Duration::from_secs(20)).unwrap();
+    }
+    assert_eq!(left("vm-100"), vec![2 * day, 3 * day]);
+    assert_eq!(
+        one(
+            &s,
+            "SELECT COUNT(*) FROM jobs WHERE kind = 'snapshot_delete' AND state = 'failed'"
+        ),
+        1
+    );
+    assert_eq!(one(&s, "SELECT COUNT(*) FROM quorum WHERE state = 'executed'"), 2);
+    assert_eq!(
+        one(&s, "SELECT COUNT(*) FROM audit WHERE action = 'snapshot.delete'"),
+        1
+    );
+}

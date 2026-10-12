@@ -1131,3 +1131,62 @@ async fn oidc_state_binding_replay_and_redirects() {
         );
     }
 }
+
+// ---------------------------------------------------------------- snapshot delete (Phase 13a)
+
+#[tokio::test]
+async fn snapshot_delete_refuses_locked_and_needs_approval() {
+    let t = T::new();
+    let now = catalog::now();
+    t.exec(&format!(
+        "INSERT INTO snapshots (tenant, source, time, size, local, offsite, lock_until, origin) VALUES
+           ('acme', 'vm-100', 1, 10, 1, 0, 0, NULL),
+           ('acme', 'vm-100', 2, 10, 1, 1, {}, NULL),
+           ('acme', 'vm-100', 3, 10, 0, 1, 0, NULL),
+           ('acme', 'vm-100', 4, 10, 1, 0, 0, 'prim'),
+           ('globex', 'vm-700', 1, 10, 1, 0, 0, NULL);",
+        now + 3600
+    ));
+    let alice = t.login("alice").await;
+    let otto = t.login("otto").await;
+    let tina = t.login("tina").await;
+    let sam = t.login("sam").await;
+    let del = |path: &str, s: &S| T::req(Method::DELETE, path, Some(s), None);
+    for (who, path, want) in [
+        (&otto, "/api/v1/snapshots/acme/vm-100/1", StatusCode::FORBIDDEN),
+        (&tina, "/api/v1/snapshots/acme/vm-100/1", StatusCode::FORBIDDEN),
+        (&alice, "/api/v1/snapshots/acme/vm-100/9", StatusCode::NOT_FOUND),
+        (&alice, "/api/v1/snapshots/acme/vm-100/2", StatusCode::CONFLICT), // locked
+        (&alice, "/api/v1/snapshots/acme/vm-100/3", StatusCode::CONFLICT), // offsite only
+        (&alice, "/api/v1/snapshots/acme/vm-100/4", StatusCode::CONFLICT), // replicated
+        (&alice, "/api/v1/snapshots/acme/..%2Fx/1", StatusCode::BAD_REQUEST),
+    ] {
+        let r = t.send(del(path, who)).await;
+        assert_eq!(r.status, want, "{path}: {:?}", r.body);
+    }
+    assert_eq!(t.audit_count("quorum.request"), 0, "refused before any request");
+    // approvals on: a request another approver approves for the scheduler
+    let r = t.send(del("/api/v1/snapshots/acme/vm-100/1", &alice)).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    let r = t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({})).await;
+    assert_eq!(r.body["state"], "approved", "the scheduler deletes it");
+    let p: String =
+        t.st.cat
+            .conn()
+            .query_row("SELECT params FROM quorum WHERE id = ?1", [q], |r| r.get(0))
+            .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&p).unwrap(),
+        json!({"tenant": "acme", "source": "vm-100", "time": 1})
+    );
+    // approvals off: an approved work item at once
+    t.approvals(false);
+    let r = t.send(del("/api/v1/snapshots/globex/vm-700/1", &alice)).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(
+        (r.body["approvals"].as_str(), r.body["state"].as_str()),
+        (Some("disabled"), Some("approved"))
+    );
+    assert_eq!(t.audit_count("snapshot.delete"), 1);
+}

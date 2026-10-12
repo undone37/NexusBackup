@@ -440,6 +440,10 @@ pub fn router(st: St) -> Router {
         .route("/agents/{id}/token", post(new_agent_token))
         .route("/agents/{id}/enroll", post(enroll_agent))
         .route("/snapshots", get(list_snapshots))
+        .route(
+            "/snapshots/{tenant}/{source}/{time}",
+            axum::routing::delete(delete_snapshot),
+        )
         .route("/jobs", get(list_jobs).post(create_job))
         .route("/jobs/{id}", get(get_job))
         .route("/jobs/{id}/cancel", post(cancel_job))
