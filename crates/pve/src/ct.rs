@@ -170,10 +170,15 @@ impl Cluster {
         if exit != "OK" {
             eprintln!("warning: vzdump task for CT {vmid} ended with {exit}; snapshot kept");
         }
+        let log = self.api.task_log(&node, &upid).unwrap_or_default();
+        let level = crate::consistency::ct_level(&log);
+        println!("{}", crate::consistency::line(&source_name(vmid), m.time, level));
         Ok((m, stats))
     }
 
-    /// Full restore of snapshot `ct-<vmid>/<time>` as unprivileged CT `target` on `node`.
+    /// Full restore of snapshot `ct-<vmid>/<time>` as unprivileged CT `target` on
+    /// `node` with the options of `crate::restore`.
+    #[allow(clippy::too_many_arguments)]
     pub fn restore_ct(
         &self,
         store: &Store,
@@ -182,35 +187,53 @@ impl Cluster {
         node: &str,
         target: u32,
         target_storage: &str,
-    ) -> Result<String> {
+        opts: &crate::restore::RestoreOpts,
+    ) -> Result<crate::restore::Restored> {
         let m = store.load_manifest(&source_name(vmid), time)?;
         let root = root_tar(store, &m)?;
+        let conf = crate::backup::read_config(store, &m, CONFIG_FILE)?.unwrap_or_default();
         let ssh = self.ssh(node)?;
         let archive = format!("nexus-{vmid}-{time}");
         let volid = format!("{}:backup/{archive}", self.storage);
-        let upid = self.api.start_ct_restore(node, target, &volid, target_storage)?;
-        let mut served = false;
-        loop {
-            if let Some(exit) = self.api.task_status(node, &upid)? {
-                if exit != "OK" {
-                    let log = self.api.task_log(node, &upid).unwrap_or_default();
-                    bail!("restore task ended with {exit}: {}", log.join("\n"));
-                }
-                return Ok(exit);
-            }
-            if !served {
-                if let Ok(out) = ssh.run(&format!("restore-job {archive}"), None) {
-                    let req: serde_json::Value = serde_json::from_slice(&out).context("restore job JSON")?;
-                    if req["type"].as_str() != Some("lxc") {
-                        bail!("pending restore request for {archive} is not a container restore");
+        let name = crate::restore::conf_value(&conf, "hostname");
+        let stamp = crate::restore::stamp(crate::restore::unix_now());
+        crate::restore::run(
+            self,
+            "lxc",
+            node,
+            target,
+            vmid,
+            &volid,
+            target_storage,
+            name.as_deref(),
+            opts,
+            &stamp,
+            |params| {
+                let upid = self.api.start_restore(node, "lxc", params)?;
+                let mut served = false;
+                loop {
+                    if let Some(exit) = self.api.task_status(node, &upid)? {
+                        if exit != "OK" {
+                            let log = self.api.task_log(node, &upid).unwrap_or_default();
+                            bail!("restore task ended with {exit}: {}", log.join("\n"));
+                        }
+                        return Ok(());
                     }
-                    serve_ct(store, ssh, &archive, &root).context("serve container archive")?;
-                    served = true;
-                    continue;
+                    if !served {
+                        if let Ok(out) = ssh.run(&format!("restore-job {archive}"), None) {
+                            let req: serde_json::Value = serde_json::from_slice(&out).context("restore job JSON")?;
+                            if req["type"].as_str() != Some("lxc") {
+                                bail!("pending restore request for {archive} is not a container restore");
+                            }
+                            serve_ct(store, ssh, &archive, &root).context("serve container archive")?;
+                            served = true;
+                            continue;
+                        }
+                    }
+                    std::thread::sleep(Duration::from_secs(1));
                 }
-            }
-            std::thread::sleep(Duration::from_secs(1));
-        }
+            },
+        )
     }
 }
 

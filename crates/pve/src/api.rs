@@ -101,37 +101,58 @@ impl Api {
         upid.as_str().map(reported).context("vzdump returned no UPID")
     }
 
-    /// Restores a provider archive (`<storeid>:backup/<name>`) as VM `vmid`; returns the UPID.
-    pub fn start_restore(&self, node: &str, vmid: u32, archive: &str, storage: &str) -> Result<String> {
-        let id = vmid.to_string();
-        let upid = self.post(
-            &format!("/nodes/{node}/qemu"),
-            &[
-                ("vmid", id.as_str()),
-                ("archive", archive),
-                ("storage", storage),
-                ("unique", "1"),
-            ],
-        )?;
+    /// Restores a provider archive (`<storeid>:backup/<name>`) as a new VM (`kind`
+    /// "qemu") or container ("lxc"); `params` from `crate::restore::restore_params`.
+    /// Returns the UPID.
+    pub fn start_restore(&self, node: &str, kind: &str, params: &[(String, String)]) -> Result<String> {
+        let form: Vec<(&str, &str)> = params.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let upid = self.post(&format!("/nodes/{node}/{kind}"), &form)?;
         upid.as_str().map(reported).context("restore returned no UPID")
     }
 
-    /// Restores a provider container archive as CT `vmid` (unprivileged; PVE refuses
-    /// privileged restores from providers); returns the UPID.
-    pub fn start_ct_restore(&self, node: &str, vmid: u32, archive: &str, storage: &str) -> Result<String> {
-        let id = vmid.to_string();
-        let upid = self.post(
-            &format!("/nodes/{node}/lxc"),
-            &[
-                ("vmid", id.as_str()),
-                ("ostemplate", archive),
-                ("restore", "1"),
-                ("unprivileged", "1"),
-                ("storage", storage),
-                ("unique", "1"),
-            ],
-        )?;
-        upid.as_str().map(reported).context("restore returned no UPID")
+    /// Synchronous configuration update (`PUT …/config`); `None` values are deleted.
+    pub fn set_config(
+        &self,
+        node: &str,
+        kind: &str,
+        vmid: u32,
+        changes: &[(String, Option<String>)],
+    ) -> Result<()> {
+        let delete: Vec<&str> = changes
+            .iter()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.as_str())
+            .collect();
+        let delete = delete.join(",");
+        let mut form: Vec<(&str, &str)> = changes
+            .iter()
+            .filter_map(|(k, v)| Some((k.as_str(), v.as_deref()?)))
+            .collect();
+        if !delete.is_empty() {
+            form.push(("delete", &delete));
+        }
+        let url = format!("{}/nodes/{node}/{kind}/{vmid}/config", self.base);
+        self.send(self.http.put(url).form(&form))?;
+        Ok(())
+    }
+
+    /// Guest configuration (VM or container).
+    pub fn guest_config(&self, node: &str, kind: &str, vmid: u32) -> Result<serde_json::Map<String, Value>> {
+        match self.get(&format!("/nodes/{node}/{kind}/{vmid}/config"))? {
+            Value::Object(m) => Ok(m),
+            v => bail!("unexpected guest config: {v}"),
+        }
+    }
+
+    pub fn guest_running(&self, node: &str, kind: &str, vmid: u32) -> Result<bool> {
+        let st = self.get(&format!("/nodes/{node}/{kind}/{vmid}/status/current"))?;
+        Ok(st["status"].as_str() == Some("running"))
+    }
+
+    /// `status/<action>` (start, shutdown, stop) run to completion.
+    pub fn guest_power(&self, node: &str, kind: &str, vmid: u32, action: &str, form: &[(&str, &str)]) -> Result<()> {
+        let upid = self.post_task(&format!("/nodes/{node}/{kind}/{vmid}/status/{action}"), form)?;
+        self.run_task(node, &upid, Duration::from_secs(900))
     }
 
     /// POST returning a task UPID.

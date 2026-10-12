@@ -389,9 +389,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS users_oidc_sub ON users(oidc_sub) WHERE oidc_s
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 "#;
 
+/// v18 (Phase 15d, consistency, docs/control-plane.md "Consistency"):
+/// `snapshots.consistency` (`application` = quiesced: guest-agent freeze, VSS
+/// writers, hooks, or the guest was stopped; `crash` = point-in-time snapshot
+/// without quiesce; `inconsistent` = read live; `unknown`; NULL = before v18 /
+/// not recorded, e.g. replicated or offsite-only rows). Set by the scheduler from
+/// the backup job's log. `policies.require_consistency` (JSON
+/// `{"mode": "off"|"warn"|"fail", "level": "application"|"crash"}`). Purely
+/// additive: the previous release skips both columns.
+const SCHEMA_V18: &str = r#"
+ALTER TABLE snapshots ADD COLUMN consistency TEXT
+  CHECK (consistency IN ('application','crash','inconsistent','unknown'));
+ALTER TABLE policies ADD COLUMN require_consistency TEXT NOT NULL DEFAULT '{"mode":"off","level":"crash"}';
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
-    SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17,
+    SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1381,6 +1395,52 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM api_tokens", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0, "tokens follow their user");
+    }
+
+    /// v18 (consistency) on top of the previous catalog: existing snapshots have
+    /// no level (NULL), policies require nothing; the level is checked; the
+    /// previous release still writes both tables.
+    #[test]
+    fn migration_v18_consistency() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V18).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO policies (id, name, schedule, gfs) VALUES (1, 'p', 'daily 22:00', '{}');
+                 INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('t', 'vm-100', 1, 1, 0);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+            assert_eq!(v, MIGRATIONS.len() as i64);
+            let lvl: Option<String> = conn
+                .query_row("SELECT consistency FROM snapshots", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(lvl, None);
+            let req: String = conn
+                .query_row("SELECT require_consistency FROM policies", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(req, r#"{"mode":"off","level":"crash"}"#);
+            conn.execute("UPDATE snapshots SET consistency = 'application'", [])
+                .unwrap();
+            assert!(conn.execute("UPDATE snapshots SET consistency = 'app'", []).is_err());
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        old.execute_batch(
+            "INSERT INTO policies (name, schedule, gfs) VALUES ('q', 'hourly 5', '{}');
+             INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('t', 'vm-100', 2, 1, 0);",
+        )
+        .unwrap();
     }
 
     /// A fresh catalog runs every migration: all source kinds and the

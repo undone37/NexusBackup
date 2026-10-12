@@ -295,7 +295,9 @@ pub struct IrReport {
 impl Cluster {
     /// Instant recovery of snapshot `vm-<vmid>/<time>` as VM `target` on `node`;
     /// disks end up on `target_storage`. Returns once all disks are moved (or the
-    /// VM is destroyed); serves the disks meanwhile.
+    /// VM is destroyed); serves the disks meanwhile. Options (`crate::restore`):
+    /// `link_down`, `start` (without it the disks are moved while the VM is off),
+    /// name / name prefix and pool; `replace` is not offered here.
     #[allow(clippy::too_many_arguments)]
     pub fn instant_recover(
         &self,
@@ -305,8 +307,12 @@ impl Cluster {
         node: &str,
         target: u32,
         target_storage: &str,
-        link_down: bool,
+        opts: &crate::restore::RestoreOpts,
     ) -> Result<IrReport> {
+        if opts.replace {
+            bail!("instant recovery cannot replace the original; use a full restore");
+        }
+        let link_down = opts.link_down;
         let start = Instant::now();
         let m = store.load_manifest(&source_name(vmid), time)?;
         let conf = read_config(store, &m, "qemu-server.conf")?.context("snapshot has no qemu-server.conf")?;
@@ -324,6 +330,13 @@ impl Cluster {
         if !plan.dropped.is_empty() {
             eprintln!("not backed up, left out: {}", plan.dropped.join(", "));
         }
+        let mut plan = plan;
+        let name = opts.name_for(crate::restore::conf_value(&conf, "name").as_deref(), &format!("vm-{vmid}"));
+        plan.params.retain(|(k, _)| k != "name");
+        plan.params.push(("name".into(), name));
+        if let Some(pool) = &opts.pool {
+            plan.params.push(("pool".into(), pool.clone()));
+        }
         if self.guest(target).is_ok() {
             bail!("VM {target} already exists");
         }
@@ -338,11 +351,17 @@ impl Cluster {
             let upid = api.post_task(&format!("/nodes/{node}/qemu"), &form)?;
             api.run_task(node, &upid, Duration::from_secs(600))
                 .context("create VM")?;
-            let upid = api.post_task(&format!("/nodes/{node}/qemu/{target}/status/start"), &[])?;
-            api.run_task(node, &upid, Duration::from_secs(600))
-                .context("start VM")?;
+            if opts.start {
+                let upid = api.post_task(&format!("/nodes/{node}/qemu/{target}/status/start"), &[])?;
+                api.run_task(node, &upid, Duration::from_secs(600))
+                    .context("start VM")?;
+            }
             let running_after = start.elapsed();
-            eprintln!("VM {target} running after {running_after:.1?}; moving disks to {target_storage}");
+            if opts.start {
+                eprintln!("VM {target} running after {running_after:.1?}; moving disks to {target_storage}");
+            } else {
+                eprintln!("VM {target} created (not started) after {running_after:.1?}; moving disks to {target_storage}");
+            }
 
             let mut report = IrReport {
                 running_after,
