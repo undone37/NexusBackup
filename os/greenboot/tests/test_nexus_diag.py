@@ -170,6 +170,9 @@ class Host(unittest.TestCase):
             "NEXUS_DIAG_DISKS": f"store={self.d / 'store'} var={self.d}",
             "NEXUS_DIAG_HEALTH": str(HEALTH),
             "NEXUS_DIAG_SMARTCTL": str(self.d / "no-smartctl"),
+            # the temp dirs live on the build host's disk (a CI runner may be > 90 % full)
+            "NEXUS_DIAG_DISK_WARN_PCT": "101",
+            "NEXUS_DIAG_DISK_FAIL_PCT": "101",
             **{f"NEXUS_DIAG_{t.upper()}": str(bin_ / t) for t in ("chronyc", "nft", "systemctl", "journalctl", "ausearch")},
         }
         self._old = {k: os.environ.get(k) for k in self.env}
@@ -275,8 +278,7 @@ class Checks(Host):
             c = self.by_id(self.m.checks())["disk.var"]
             self.assertEqual((c["status"], c["severity"]), ("fail", 3))
         finally:
-            os.environ.pop("NEXUS_DIAG_DISK_WARN_PCT")
-            os.environ.pop("NEXUS_DIAG_DISK_FAIL_PCT", None)
+            os.environ["NEXUS_DIAG_DISK_WARN_PCT"] = os.environ["NEXUS_DIAG_DISK_FAIL_PCT"] = "101"
 
     def test_missing_tools_and_files_skip(self):
         for k in ("NEXUS_DIAG_CHRONYC", "NEXUS_DIAG_NFT"):
