@@ -21,6 +21,8 @@ pub struct AlertFilter {
     /// `open` (not resolved), `resolved`, `all` (default)
     state: Option<String>,
     id: Option<i64>,
+    /// one of `catalog::alerting::CATEGORIES`
+    category: Option<String>,
 }
 
 /// Alerts may name other tenants (and most have none), so tenant-scoped users
@@ -35,16 +37,26 @@ pub async fn list_alerts(State(st): State<St>, ctx: Ctx, Q(f): Q<AlertFilter>) -
         Some("resolved") => Some(true),
         Some(_) => return Err(ApiError::bad("state: open, resolved or all")),
     };
+    if f.category
+        .as_deref()
+        .is_some_and(|c| !catalog::alerting::CATEGORIES.contains(&c))
+    {
+        return Err(ApiError::bad(format!(
+            "category: one of {}",
+            catalog::alerting::CATEGORIES.join(", ")
+        )));
+    }
     let c = st.cat.conn();
     let rows = c
-        .prepare(
+        .prepare(&format!(
             "SELECT id, ts, COALESCE(last_ts, ts), count, severity, kind, key, tenant, message, acked_by,
                     resolved_at, resolved_by, note, auto FROM alerts
              WHERE (?1 IS NULL OR (acked_by IS NOT NULL) = ?1) AND (?2 IS NULL OR (resolved_at IS NOT NULL) = ?2)
-               AND (?3 IS NULL OR id = ?3)
+               AND (?3 IS NULL OR id = ?3) AND (?4 IS NULL OR {} = ?4)
              ORDER BY id DESC LIMIT 1000",
-        )?
-        .query_map(params![f.acked, resolved, f.id], |r| {
+            catalog::alerting::category_sql()
+        ))?
+        .query_map(params![f.acked, resolved, f.id, f.category], |r| {
             let kind: String = r.get(5)?;
             let (key, tenant, message) = (
                 r.get::<_, Option<String>>(6)?,
@@ -54,7 +66,7 @@ pub async fn list_alerts(State(st): State<St>, ctx: Ctx, Q(f): Q<AlertFilter>) -
             Ok(json!({
                 "id": r.get::<_, i64>(0)?, "ts": r.get::<_, i64>(1)?, "first_ts": r.get::<_, i64>(1)?,
                 "last_ts": r.get::<_, i64>(2)?, "count": r.get::<_, i64>(3)?, "severity": r.get::<_, String>(4)?,
-                "hint": catalog::alerting::hint(&kind), "kind": kind,
+                "hint": catalog::alerting::hint(&kind), "category": catalog::alerting::category(&kind), "kind": kind,
                 // the snapshot a security officer may put on hold from here (anomaly, advisory)
                 "snapshot": crate::holds::alert_snapshot(&kind, key.as_deref(), &message, tenant.as_deref()),
                 "key": key, "tenant": tenant, "message": message, "acked_by": r.get::<_, Option<String>>(9)?,

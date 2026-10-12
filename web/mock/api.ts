@@ -1098,7 +1098,7 @@ function seed() {
     Object.assign(j, { created: start, started: start + 2, finished: start + secs, state, log, plan: [], result });
     return j;
   };
-  const fleecing = 'vm-101: fleecing storage local-lvm on pve2 is full (98 %)';
+  const fleecing = 'backup of guest 101 failed: fleecing storage local-lvm on node pve2 has 3.1 GiB (3 %) free, below the guard (15 % or 20 GiB free, whichever is smaller): guest skipped';
   const nightly = old(addJob('backup', 'initech', { group_id: gProd.id }, 'scheduler'), day(0, 1), 'failed', [
     'starting backup of vm-100 via node pve1',
     'dirty bitmap valid: incremental',
@@ -1169,6 +1169,15 @@ function seed() {
     mkAlert({
       ts: retry.finished, severity: 'critical', kind: 'job_failed', key: 'job_failed:initech/backup/vmid/101', tenant: 'initech',
       message: `backup job ${retry.id} (initech) failed: ${fleecing}`,
+    }),
+    mkAlert({
+      ts: retry.finished, severity: 'critical', kind: 'fleecing_space', key: 'fleecing_space:initech/pve2/local-lvm', tenant: 'initech',
+      message: `fleecing storage local-lvm on node pve2 has 3.1 GiB (3.1 %) free, below the critical level: running backups on this node are cancelled (backup job ${retry.id}, tenant initech)`,
+    }),
+    mkAlert({
+      ts: t - 86400 * 4, last_ts: t - 86400 * 2, severity: 'info', kind: 'clock_skew', key: 'clock_skew',
+      message: 'the compliance clock of tenant acme is 14 min 0 s behind system time since the last restart (the appliance was off, or system time was changed while it was off); it catches up at 0.1 % of elapsed time, retention locks last longer meanwhile',
+      resolved_at: t - 86400 * 2, resolved_by: 'scheduler', auto: true,
     }),
     mkAlert({ ts: t - 3 * 86400, last_ts: t - 1800, count: 147, severity: 'warning', kind: 'capacity', key: 'capacity', message: 'store capacity above 75 % (now 78 %)' }),
     mkAlert({
@@ -1345,7 +1354,7 @@ function seedRunControl(t: number) {
     Object.assign(second, {
       created: (first.finished ?? t) + 1, started: (first.finished ?? t) + 600, finished: (first.finished ?? t) + 640, state: 'failed', plan: [],
       result: { failed_guests: [101] },
-      log: ['starting backup of vm-101 via node pve2', 'ERROR: vm-101: fleecing storage local-lvm on pve2 is full (98 %)', `[scheduler] attempt 2 of 3 failed; retry as job ${db.seq + 1} in 10 min for [101]`].join('\n'),
+      log: ['starting backup of vm-101 via node pve2', 'ERROR: backup of guest 101 failed: fleecing storage local-lvm on node pve2 has 3.1 GiB (3 %) free, below the guard (15 % or 20 GiB free, whichever is smaller): guest skipped', `[scheduler] attempt 2 of 3 failed; retry as job ${db.seq + 1} in 10 min for [101]`].join('\n'),
     });
     const third = addJob('backup', 'initech', { group_id: prod.id, guests: [101] }, 'scheduler', { attempt: 3, retry_of: first.id });
     Object.assign(third, { created: (second.finished ?? t) + 1, not_before: t + 8 * 60 });
@@ -3084,15 +3093,29 @@ function mkAlert(a: Json): Json {
     acked_by: null, resolved_at: null, resolved_by: null, note: null, auto: false, ...a,
   };
 }
+/** Like catalog::alerting::category (Phase 18). */
+const ALERT_CATEGORIES = ['security', 'backup', 'replication', 'hardware', 'system', 'audit'];
+const ALERT_CATEGORY: Record<string, string> = {
+  anomaly: 'security', console_unlock: 'security', console_root_shell: 'security', break_glass: 'security',
+  mgmt_allow_reset: 'security', firewall_reset: 'security', legal_hold_advisory: 'security', cert_expiry: 'security',
+  account_dormant: 'security', inventory: 'security', clock_skew: 'security', gc_quorum: 'security', gc_confirm: 'security',
+  job_failed: 'backup', sla_missed: 'backup', paused: 'backup', consistency: 'backup', backup_inconsistent: 'backup',
+  orphaned: 'backup', verify: 'backup', offsite_lag: 'backup', inventory_refresh: 'backup', config: 'backup',
+  disk: 'hardware', fleecing_space: 'hardware',
+};
+const alertCategory = (kind: string) => (kind.startsWith('replication_') ? 'replication' : (ALERT_CATEGORY[kind] ?? 'system'));
 on('GET', '/alerts', (c) => {
   if (need(c.user).tenant) return [200, []];
   const s = c.query.get('state') ?? 'all';
   if (!['open', 'resolved', 'all'].includes(s)) throw new HttpError(400, 'state: open, resolved or all');
   const id = Number(c.query.get('id') ?? 0);
+  const cat = c.query.get('category');
+  if (cat && !ALERT_CATEGORIES.includes(cat)) throw new HttpError(400, `category: one of ${ALERT_CATEGORIES.join(', ')}`);
   const rows = db.alerts
     .filter((a) => s === 'all' || (s === 'open') === !a.resolved_at)
     .filter((a) => !id || a.id === id)
-    .map((a): Json => ({ ...a, snapshot: alertSnapshot(a) }));
+    .map((a): Json => ({ ...a, category: alertCategory(a.kind), snapshot: alertSnapshot(a) }))
+    .filter((a) => !cat || a.category === cat);
   return [200, rows.sort((a, b) => b.id - a.id)];
 });
 const alertNote = (b: Json) => {
@@ -3589,7 +3612,13 @@ on('PUT', '/settings/forwarding', async (c) => {
         headers[k] = prev;
       } else headers[k] = v;
     }
-    https = { enabled: h.enabled ?? true, url: h.url, headers, batch_max: batch, ca_pem: pem(h.ca_pem, 'https'), pin_sha256: pin(h.pin_sha256, 'https') };
+    const format = h.format ?? 'json_array';
+    if (!['json_array', 'splunk_hec'].includes(format)) throw new HttpError(400, 'https.format: json_array or splunk_hec');
+    const index = typeof h.index === 'string' && h.index.trim() ? h.index.trim() : null;
+    if (index && (format !== 'splunk_hec' || !/^[a-z0-9_-]{1,80}$/.test(index)))
+      throw new HttpError(400, 'https.index: Splunk HEC only; lower-case letters, digits, _ and -, at most 80');
+    https = { enabled: h.enabled ?? true, url: h.url, headers, batch_max: batch, ca_pem: pem(h.ca_pem, 'https'), pin_sha256: pin(h.pin_sha256, 'https'), format };
+    if (index) https.index = index;
   }
   const next = { syslog, https };
   const same = (a: Json, b: Json | null, keys: string[]) => !!a && !!b && b.enabled && keys.every((k) => JSON.stringify(a[k]) === JSON.stringify(b[k]));
@@ -3913,10 +3942,10 @@ const pubAlerts = () => {
   }
   return a;
 };
-const TEMPLATE_FIELDS = ['id', 'ts', 'first_ts', 'last_ts', 'count', 'severity', 'kind', 'message', 'hint', 'tenant', 'host', 'alert_url'];
+const TEMPLATE_FIELDS = ['id', 'ts', 'first_ts', 'last_ts', 'count', 'severity', 'kind', 'category', 'message', 'hint', 'tenant', 'host', 'alert_url'];
 /** Like catalog::alerting::check_template: placeholders JSON-escaped, the result must be JSON. */
 function checkTemplate(tpl: string): string | null {
-  const sample: Json = { id: 42, ts: 1, first_ts: 1, last_ts: 2, count: 3, severity: 'critical', kind: 'job_failed', message: 'a "quoted"\nline', hint: 'x', tenant: '', host: 'nexus', alert_url: 'https://nexus/#/alerts?id=42' };
+  const sample: Json = { id: 42, ts: 1, first_ts: 1, last_ts: 2, count: 3, severity: 'critical', kind: 'job_failed', category: 'backup', message: 'a "quoted"\nline', hint: 'x', tenant: '', host: 'nexus', alert_url: 'https://nexus/#/alerts?id=42' };
   let bad: string | null = null;
   const out = tpl.replace(/\{\{([^}]*)\}\}/g, (_, f: string) => {
     const k = f.trim();
@@ -4188,6 +4217,7 @@ function diagChecks(t: number): Json[] {
     c('disk.boot', 'Disk space: /boot', 'pass', 1, '/boot: 42 % used, 557 MiB of 960 MiB free'),
     c('time.sync', 'Time synchronisation', 'pass', 1, 'stratum 2, offset +0.4 ms, normal, reference C035676C'),
     c('time.nts', 'Authenticated time sources (NTS)', 'pass', 1, '4 NTS source(s)'),
+    c('time.compliance', 'Compliance clock', 'pass', 1, 'tenant acme: compliance clock 0 s behind system time'),
     c('egress', 'Outbound firewall', 'pass', 1, 'default-deny output chain loaded, allow-list sync active'),
     c('keyd', 'Key daemon', 'pass', 1, 'key daemon running, socket present'),
     c('tls.cert', 'Web certificate', 'warn', 2, `web certificate expires on ${day(21)} (21 days)`),

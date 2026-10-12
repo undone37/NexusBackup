@@ -5,12 +5,24 @@
 //! locks early. Backward system-time jumps are ignored (clock never goes back).
 //! After downtime the clock lags real time and catches up slowly; that only
 //! makes locks last longer, which is the safe direction.
+//!
+//! The clock only advances while a process holds it, so every opener of the
+//! same state file in one process shares one instance ([`ComplianceClock::shared`]),
+//! and the scheduler keeps each tenant's clock open (`scheduler/src/clock.rs`):
+//! time between two short-lived openers is not lost.
 
 use std::fs;
 use std::io;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+/// Default forward slew: 0.1 % of elapsed time (≈ 20 minutes over a 14-day
+/// lock; ADR-011). Was 1 % before Phase 18.
+pub const DEFAULT_SLEW: f64 = 0.001;
+
+/// Clocks open in this process, by state file.
+static OPEN: Mutex<Vec<(PathBuf, Weak<ComplianceClock>)>> = Mutex::new(Vec::new());
 
 /// Pure step: `prev` compliance time, `elapsed` monotonic seconds since then,
 /// `sys` current system time. `slew` = max forward correction per elapsed second.
@@ -69,6 +81,25 @@ impl ComplianceClock {
         Ok(clock)
     }
 
+    /// The process-wide instance for `path` (opened if nobody holds it), so
+    /// stores and the scheduler's clock keeper advance one clock together.
+    /// The first opener's `slew` counts.
+    pub fn shared(path: PathBuf, slew: f64) -> io::Result<Arc<Self>> {
+        // the same file under another spelling (relative path, symlink) is the same clock
+        let key = match (path.parent().map(fs::canonicalize), path.file_name()) {
+            (Some(Ok(dir)), Some(name)) => dir.join(name),
+            _ => path.clone(),
+        };
+        let mut open = OPEN.lock().unwrap();
+        open.retain(|(_, w)| w.strong_count() > 0);
+        if let Some(c) = open.iter().find(|(p, _)| *p == key).and_then(|(_, w)| w.upgrade()) {
+            return Ok(c);
+        }
+        let c = Arc::new(Self::open(path, slew)?);
+        open.push((key, Arc::downgrade(&c)));
+        Ok(c)
+    }
+
     /// Current compliance time in unix seconds. Persists at most once a minute.
     pub fn now(&self) -> io::Result<u64> {
         let mut s = self.state.lock().unwrap();
@@ -92,6 +123,29 @@ mod tests {
         // attacker sets system time +1 year; after 1 h only 1 % of 1 h is accepted
         let t = step(1000.0, 3600.0, 1000.0 + 365.0 * 86400.0, 0.01);
         assert_eq!(t, 1000.0 + 3600.0 + 36.0);
+    }
+
+    #[test]
+    fn default_slew_caps_a_year_jump_at_twenty_minutes_per_two_weeks() {
+        let two_weeks = 14.0 * 86400.0;
+        let t = step(0.0, two_weeks, 1e9, DEFAULT_SLEW);
+        assert!((t - two_weeks - 1209.6).abs() < 1e-6, "{t}");
+    }
+
+    #[test]
+    fn shared_per_file_and_reopened_after_drop() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("clock");
+        let a = ComplianceClock::shared(p.clone(), DEFAULT_SLEW).unwrap();
+        let b = ComplianceClock::shared(d.path().join(".").join("clock"), DEFAULT_SLEW).unwrap();
+        assert!(Arc::ptr_eq(&a, &b), "one instance per file");
+        let other = ComplianceClock::shared(d.path().join("clock2"), DEFAULT_SLEW).unwrap();
+        assert!(!Arc::ptr_eq(&a, &other));
+        let t = a.now().unwrap();
+        drop((a, b));
+        fs::write(&p, format!("{}\n", t - 3600)).unwrap();
+        let c = ComplianceClock::shared(p, DEFAULT_SLEW).unwrap();
+        assert!(c.now().unwrap() < t, "nobody held it: the file counts again");
     }
 
     #[test]

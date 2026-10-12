@@ -148,6 +148,7 @@ impl Scheduler {
                     count: r.get(3)?,
                     severity: r.get(4)?,
                     hint: alerting::hint(&kind).into(),
+                    category: alerting::category(&kind).into(),
                     kind,
                     message: r.get(6)?,
                     tenant: r.get(7)?,

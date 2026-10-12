@@ -214,6 +214,8 @@ async fn forwarding_settings_sealing_and_weakening_approval() {
         ("/syslog/facility", json!(24)),
         ("/syslog/host", json!("bad host")),
         ("/syslog/app_name", json!("two words")),
+        ("/https/format", json!("xml")),
+        ("/https/index", json!("main")), // json_array has no index
     ] {
         let mut b = cfg.clone();
         let (sink, field) = path[1..].split_once('/').unwrap();
@@ -246,6 +248,28 @@ async fn forwarding_settings_sealing_and_weakening_approval() {
     let r = t.put("/api/v1/settings/forwarding", &alice, keep.clone()).await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     assert_eq!(t.setting()["https"]["headers"]["Authorization"], json!(sealed));
+    // Splunk HEC body with an index: a format option too (no approval)
+    let mut hec = keep.clone();
+    hec["https"]["format"] = json!("splunk_hec");
+    hec["https"]["index"] = json!("Main");
+    assert_eq!(
+        t.put("/api/v1/settings/forwarding", &alice, hec.clone()).await.status,
+        StatusCode::BAD_REQUEST,
+        "Splunk index names are lower-case"
+    );
+    hec["https"]["index"] = json!("nexus_audit");
+    let r = t.put("/api/v1/settings/forwarding", &alice, hec).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(
+        (r.body["https"]["format"].as_str(), r.body["https"]["index"].as_str()),
+        (Some("splunk_hec"), Some("nexus_audit"))
+    );
+    let r = t.put("/api/v1/settings/forwarding", &alice, keep.clone()).await;
+    assert_eq!(
+        (r.status, r.body["https"]["format"].as_str()),
+        (StatusCode::OK, Some("json_array"))
+    );
+    assert!(r.body["https"].get("index").is_none());
     // null with a changed URL: a value is required
     let mut moved = keep.clone();
     moved["https"]["url"] = json!("https://other.example/in");

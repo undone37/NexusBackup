@@ -178,9 +178,42 @@ fn full_run_then_refuse_then_reconfigure_network() {
 
     // recovery key: printed once, matches the KEK, never persisted
     let key = recovery_key(&stdout);
+    let rk = key.clone();
     assert_eq!(stdout.matches(key.as_str()).count(), 1);
     keyd::check_recovery_key(&e.p("var/lib/nexus/keyd"), &key).unwrap();
     assert_key_not_persisted(&e, &key, &stderr);
+
+    // Phase 18: the boot menu password's hash (derived from the key) for nexus-grub-password
+    let cfg = fs::read_to_string(e.p("etc/nexus/grub-user.cfg")).unwrap();
+    assert_eq!(mode(&e.p("etc/nexus/grub-user.cfg")), 0o600);
+    let hash = cfg.trim_end().strip_prefix("GRUB2_PASSWORD=").unwrap();
+    let salt = hash.split('.').nth(4).unwrap();
+    let salt: Vec<u8> = (0..salt.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&salt[i..i + 2], 16).unwrap())
+        .collect();
+    let pw = setup::grub::password(&key).unwrap();
+    assert_eq!(setup::grub::pbkdf2_hash(&pw, &salt), hash);
+    assert!(stdout.contains("+ (dry-run) systemctl start --no-block nexus-grub-password.service"));
+    // `grub-password` prints the same password from the key alone
+    let out = {
+        use std::io::Write;
+        let mut c = Command::new(env!("CARGO_BIN_EXE_nexus-setup"))
+            .arg("grub-password")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        writeln!(c.stdin.take().unwrap(), "{}", key.to_uppercase()).unwrap();
+        c.wait_with_output().unwrap()
+    };
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains(&setup::grub::grouped(&pw)),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 
     // catalog rows
     let c = e.catalog();
@@ -230,6 +263,7 @@ fn full_run_then_refuse_then_reconfigure_network() {
         "setup.tls",
         "setup.metrics_token",
         "setup.totp_key",
+        "setup.grub_password",
         "setup.done",
     ] {
         assert!(actions.contains(&want), "{want} missing in {actions:?}");
@@ -259,6 +293,40 @@ fn full_run_then_refuse_then_reconfigure_network() {
     }
     let kek_recovery = fs::read(e.p("var/lib/nexus/keyd/kek.recovery")).unwrap();
     drop(c);
+
+    // `grub-password --install` on a finished appliance: only with the right key, audited
+    let install = |k: &str| {
+        use std::io::Write;
+        let mut c = Command::new(env!("CARGO_BIN_EXE_nexus-setup"))
+            .args([
+                "grub-password",
+                "--install",
+                "--dry-run",
+                "--root",
+                e.root.to_str().unwrap(),
+            ])
+            .env_remove("NEXUS_SETUP_ROOT")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        writeln!(c.stdin.take().unwrap(), "{k}").unwrap();
+        c.wait_with_output().unwrap()
+    };
+    let before = fs::read(e.p("etc/nexus/grub-user.cfg")).unwrap();
+    let out = install(&"00".repeat(32));
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("recovery key rejected"));
+    assert_eq!(fs::read(e.p("etc/nexus/grub-user.cfg")).unwrap(), before);
+    let out = install(&rk);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_ne!(fs::read(e.p("etc/nexus/grub-user.cfg")).unwrap(), before, "new salt");
+    let n = audit_actions(&e.catalog())
+        .iter()
+        .filter(|(_, a, _)| a == "setup.grub_password")
+        .count();
+    assert_eq!(n, 2);
 
     // a finished appliance refuses a second run …
     let (out, _, stderr) = e.run(&e.answers("192.0.2.10"), &[]);

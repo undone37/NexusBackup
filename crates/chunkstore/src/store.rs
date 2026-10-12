@@ -45,7 +45,7 @@ impl Default for Options {
             min_lock_secs: 14 * 86400,
             gc_grace_secs: 86400,
             gc_max_delete_fraction: 0.2,
-            clock_slew: 0.01,
+            clock_slew: crate::clock::DEFAULT_SLEW,
         }
     }
 }
@@ -248,7 +248,7 @@ impl Read for ChunkReader<'_> {
 pub struct Store {
     root: PathBuf,
     keys: Keyring,
-    clock: ComplianceClock,
+    clock: std::sync::Arc<ComplianceClock>,
     opts: Options,
     // ponytail: one lock for exists/touch vs. sweep/unlink; per-prefix locks if contention shows.
     chunk_lock: Mutex<()>,
@@ -319,7 +319,7 @@ impl Store {
         if unsafe { libc::syncfs(File::open(&root)?.as_raw_fd()) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        let clock = ComplianceClock::open(root.join("clock"), opts.clock_slew)?;
+        let clock = ComplianceClock::shared(root.join("clock"), opts.clock_slew)?;
         Ok(Store {
             root,
             keys,

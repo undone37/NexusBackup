@@ -139,6 +139,8 @@ type nexus_escrow_t;		# wrapped key escrow uploaded to the boxes
 files_type(nexus_escrow_t)
 type nexus_etc_t;		# /etc/nexus (scheduler.json, alerts.json, smtp-password)
 files_config_file(nexus_etc_t)
+type nexus_grub_user_t;		# /etc/nexus/grub-user.cfg: boot menu password hash (Phase 18)
+files_config_file(nexus_grub_user_t)
 type nexus_webapi_secret_t;	# TLS key/cert, metrics token
 files_config_file(nexus_webapi_secret_t)
 type nexus_webapi_var_lib_t;	# web-api state: totp.key (encrypts TOTP seeds, review H-2)
@@ -472,6 +474,11 @@ manage_files_pattern(nexus_setup_t, nexus_webapi_secret_t, nexus_webapi_secret_t
 filetrans_pattern(nexus_setup_t, nexus_etc_t, nexus_webapi_secret_t, dir, "tls")
 filetrans_pattern(nexus_setup_t, nexus_etc_t, nexus_webapi_secret_t, file, "metrics-token")
 filetrans_pattern(nexus_setup_t, nexus_etc_t, nexus_webapi_secret_t, file, ".metrics-token.tmp")
+# boot menu password hash (crates/setup/src/grub.rs); nexus-grub-password (root, unconfined_service_t
+# like nexus-update: it remounts /boot) copies it to /boot/grub2/user.cfg
+manage_files_pattern(nexus_setup_t, nexus_grub_user_t, nexus_grub_user_t)
+filetrans_pattern(nexus_setup_t, nexus_etc_t, nexus_grub_user_t, file, "grub-user.cfg")
+filetrans_pattern(nexus_setup_t, nexus_etc_t, nexus_grub_user_t, file, ".grub-user.cfg.tmp")
 files_search_etc(nexus_setup_t)
 # user/group names for chown (nss: files, then systemd-userdbd), hostname, NIC list
 auth_read_passwd(nexus_setup_t)

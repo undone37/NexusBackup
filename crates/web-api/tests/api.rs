@@ -1193,6 +1193,38 @@ async fn source_secrets_are_write_only() {
     )
     .await;
     assert_eq!(stored(&t), "n3w-token");
+    // Phase 18: the fleecing space guard is validated and returned
+    let guarded = |g: Value| {
+        let mut c = src_cfg(None);
+        c["fleecing_storage"] = json!("local-lvm");
+        c["fleecing_guard"] = g;
+        json!({"name": "pve-main", "config": c})
+    };
+    let r = t
+        .put(
+            &format!("/api/v1/sources/{id}"),
+            &admin,
+            guarded(json!({"min_free_pct": 20, "min_free_gib": 50, "cancel_free_pct": 4})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(
+        r.body["config"]["fleecing_guard"],
+        json!({"min_free_pct": 20.0, "min_free_gib": 50.0, "cancel_free_pct": 4.0})
+    );
+    for bad in [
+        json!({"min_free_pct": 95}),
+        json!({"min_free_pct": 5, "cancel_free_pct": 10}),
+        json!({"cancel_free_pct": 20}),
+        json!({"min_free_gib": -1}),
+        json!({"interval_secs": 1}),
+        json!({"bogus": 1}),
+    ] {
+        let r = t
+            .put(&format!("/api/v1/sources/{id}"), &admin, guarded(bad.clone()))
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}: {:?}", r.body);
+    }
     // creating without a secret is refused, so is an inline secret in opaque blobs
     assert_eq!(
         t.post(

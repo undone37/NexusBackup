@@ -116,6 +116,8 @@ export interface SourceConfig {
   nodes: Record<string, unknown>;
   storage: string;
   fleecing_storage: string;
+  /** Phase 18: fleecing space guard (absent fields = defaults 15 % / 20 GiB / 5 %) */
+  fleecing_guard?: { min_free_pct?: number; min_free_gib?: number; cancel_free_pct?: number; interval_secs?: number };
 }
 
 /** Config of a `linux` source (a host with an enrolled backup agent). No secrets. */
@@ -595,7 +597,17 @@ export interface AuditEntry {
 /** Setting `forwarding` (GET/PUT /settings/forwarding); header values are write-only (null = stored). */
 export interface ForwardingSettings {
   syslog: { enabled: boolean; host: string; port: number; ca_pem: string | null; pin_sha256: string | null; app_name: string; facility: number } | null;
-  https: { enabled: boolean; url: string; headers: Record<string, string | null>; batch_max: number; ca_pem: string | null; pin_sha256: string | null } | null;
+  https: {
+    enabled: boolean;
+    url: string;
+    headers: Record<string, string | null>;
+    batch_max: number;
+    ca_pem: string | null;
+    pin_sha256: string | null;
+    /** Phase 18: body format (default json_array) and the Splunk index */
+    format?: 'json_array' | 'splunk_hec';
+    index?: string | null;
+  } | null;
 }
 
 /** GET /audit/forwarding: delivery state per configured sink. */
@@ -629,6 +641,8 @@ export interface Alert {
   count: number;
   severity: 'info' | 'warning' | 'critical';
   kind: string;
+  /** Phase 18: stable category of the kind (security, backup, replication, hardware, system) */
+  category: string;
   key: string | null;
   tenant: string | null;
   message: string;

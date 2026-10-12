@@ -386,6 +386,45 @@ pub struct PveConfig {
     storage: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fleecing_storage: Option<String>,
+    /// free-space thresholds of the fleecing storage (nexus-pve `fleecing::Guard`; absent = defaults)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fleecing_guard: Option<FleecingGuard>,
+}
+
+/// Phase 18: skip a guest below `min_free_pct` % and `min_free_gib` GiB free (whichever
+/// is smaller), cancel a running backup below `cancel_free_pct` %.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FleecingGuard {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    min_free_pct: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    min_free_gib: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cancel_free_pct: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    interval_secs: Option<u64>,
+}
+
+impl FleecingGuard {
+    fn check(&self) -> ApiResult<()> {
+        let pct = |v: Option<f64>| v.is_none_or(|p| (0.0..=90.0).contains(&p));
+        if !pct(self.min_free_pct) || !pct(self.cancel_free_pct) {
+            return Err(ApiError::bad("fleecing_guard: percentages 0..=90"));
+        }
+        if self.min_free_gib.is_some_and(|g| !(0.0..=1_000_000.0).contains(&g)) {
+            return Err(ApiError::bad("fleecing_guard.min_free_gib: 0..=1000000"));
+        }
+        if self.cancel_free_pct.unwrap_or(5.0) > self.min_free_pct.unwrap_or(15.0) {
+            return Err(ApiError::bad(
+                "fleecing_guard: cancel_free_pct must not exceed min_free_pct",
+            ));
+        }
+        if self.interval_secs.is_some_and(|i| !(5..=3600).contains(&i)) {
+            return Err(ApiError::bad("fleecing_guard.interval_secs: 5..=3600"));
+        }
+        Ok(())
+    }
 }
 
 impl PveConfig {
@@ -423,6 +462,9 @@ impl PveConfig {
         validate::name(&self.storage, "storage")?;
         if let Some(f) = &self.fleecing_storage {
             validate::name(f, "fleecing_storage")?;
+        }
+        if let Some(g) = &self.fleecing_guard {
+            g.check()?;
         }
         Ok(())
     }

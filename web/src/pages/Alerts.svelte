@@ -19,10 +19,12 @@
   let error: string | null = $state(null);
   let loaded = $state(false);
   let filter: 'open' | 'resolved' | 'all' = $state(focus ? 'all' : 'open');
+  let category = $state('');
+  const CATEGORIES = ['security', 'backup', 'replication', 'hardware', 'system'];
 
   async function load() {
     try {
-      alerts = await get<Alert[]>(`/alerts?state=${filter}`);
+      alerts = await get<Alert[]>(`/alerts?state=${filter}${category ? `&category=${category}` : ''}`);
       error = null;
     } catch (e) {
       error = errText(e);
@@ -88,6 +90,12 @@
       <button type="button" aria-pressed={filter === f} onclick={() => setFilter(f)}>{t.alerts.filters[f]}</button>
     {/each}
   </div>
+  <select class="cat-filter" bind:value={category} onchange={load} aria-label={t.alerts.category}>
+    <option value="">{t.alerts.allCategories}</option>
+    {#each CATEGORIES as c (c)}
+      <option value={c}>{t.alerts.categories[c]}</option>
+    {/each}
+  </select>
   <p class="lede">{t.alerts.lede}</p>
 </div>
 
@@ -120,6 +128,7 @@
               </td>
               <td>
                 <span class="mono">{a.kind}</span>
+                <div class="muted small">{t.alerts.categories[a.category] ?? a.category}</div>
                 {#if a.tenant}<div class="muted small">{t.alerts.tenant}: {a.tenant}</div>{/if}
               </td>
               <td>
@@ -204,6 +213,9 @@
   }
   td.actions {
     white-space: nowrap;
+  }
+  .cat-filter {
+    width: auto;
   }
 </style>
 

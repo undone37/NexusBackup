@@ -264,6 +264,17 @@ fn generated_config_keeps_secrets_in_files() {
     assert_eq!(cfg["store"], json!(e.cfg.store_base.join("t1")));
     assert_eq!(cfg["nodes"]["n1"]["key"], json!(p.dir.join("node-n1.key")));
     assert!(!String::from_utf8_lossy(&p.files[4].1).contains("s3cret"));
+    assert_eq!(cfg["fleecing_guard"], json!({}), "nexus-pve defaults");
+    // Phase 18: the source's fleecing guard goes to nexus-pve as is
+    e.db.conn()
+        .execute(
+            "UPDATE sources SET config = json_set(config, '$.fleecing_guard', json('{\"min_free_pct\": 25}')) WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    let p = s.plan(&job).unwrap();
+    let cfg: Value = serde_json::from_slice(&p.files[4].1).unwrap();
+    assert_eq!(cfg["fleecing_guard"], json!({"min_free_pct": 25}));
 }
 
 /// Review H-2: legacy plaintext secrets are sealed at startup (audited), the
@@ -1892,9 +1903,13 @@ fn inventory_jobs_and_auto_protect() {
 }
 /// Phase 14d account housekeeping and the management allow-list.
 mod accounts;
+/// Phase 18: compliance clock keeper and the `clock_skew` alert.
+mod clock;
 /// Phase 14d certificate / secret / token expiry alerts.
 mod disks;
 mod expiry;
+/// Phase 18: fleecing space alerts from nexus-pve's `fleecing-space` lines.
+mod fleecing;
 /// Phase 14a audit / alert forwarding.
 mod forward;
 /// Phase 15c legal holds (retention, orphan sweep, delete, offsite config, advisories).

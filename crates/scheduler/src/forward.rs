@@ -9,8 +9,11 @@
 //!   `[nexus@32473 seq=".." hash=".." actor=".." action=".." target=".."]`.
 //!   Syslog has no acknowledgement: a batch counts as delivered when the
 //!   connection closed cleanly after it (close_notify, then the receiver's EOF).
-//! - **https**: POST of a JSON array `[{type: "audit"|"alert"|"job", …}]`, any
-//!   2xx = delivered.
+//! - **https**: POST of a JSON array `[{type: "audit"|"alert"|"job", category, …}]`,
+//!   or Splunk HEC events (`format: splunk_hec`, [`hec_body`]); any 2xx = delivered.
+//!
+//! Every record carries a stable `category` (`catalog::alerting::category` for
+//! alerts; `audit` for audit entries; `backup` / `replication` for jobs).
 //!
 //! Cursors (`forward_state`) advance only after a delivered batch, so a crash
 //! or a failing sink repeats rather than skips. A sink whose destination
@@ -126,6 +129,25 @@ pub fn rfc3339(ts: i64) -> String {
     )
 }
 
+/// The record's category (SIEM routing): alerts by kind, audit entries `audit`,
+/// jobs `replication` (replica_*) or `backup`.
+pub fn category(r: &Record) -> &'static str {
+    match r {
+        Record::Audit { .. } => "audit",
+        Record::Event { kind, payload, .. } if kind == "alert" => {
+            catalog::alerting::category(payload["kind"].as_str().unwrap_or_default())
+        }
+        Record::Event { payload, .. } => {
+            if payload["kind"].as_str().is_some_and(|k| k.starts_with("replica_")) {
+                "replication"
+            } else {
+                "backup"
+            }
+        }
+        Record::Test { .. } => "system",
+    }
+}
+
 fn sev_of_alert(s: &str) -> u8 {
     match s {
         "critical" => 2,
@@ -161,6 +183,7 @@ pub fn rfc5424(r: &Record, host: &str, app: &str, facility: u8) -> String {
             "audit",
             vec![
                 ("seq", seq.to_string()),
+                ("category", "audit".into()),
                 ("hash", hash.clone()),
                 ("actor", actor.clone()),
                 ("action", action.clone()),
@@ -190,6 +213,7 @@ pub fn rfc5424(r: &Record, host: &str, app: &str, facility: u8) -> String {
                     ("event", event.clone()),
                     ("severity", str_of(&p["severity"])),
                     ("kind", str_of(&p["kind"])),
+                    ("category", category(r).into()),
                     ("key", str_of(&p["key"])),
                     ("tenant", str_of(&p["tenant"])),
                 ],
@@ -219,6 +243,7 @@ pub fn rfc5424(r: &Record, host: &str, app: &str, facility: u8) -> String {
                     ("outbox_seq", seq.to_string()),
                     ("id", str_of(&p["id"])),
                     ("kind", str_of(&p["kind"])),
+                    ("category", category(r).into()),
                     ("tenant", str_of(&p["tenant"])),
                     ("state", state.clone()),
                     ("requested_by", str_of(&p["requested_by"])),
@@ -272,7 +297,7 @@ pub fn json_record(r: &Record, host: &str) -> Value {
             prev_hash,
             hash,
         } => json!({
-            "type": "audit", "host": host, "seq": seq, "ts": ts, "actor": actor, "action": action,
+            "type": "audit", "category": "audit", "host": host, "seq": seq, "ts": ts, "actor": actor, "action": action,
             "target": target, "details": serde_json::from_str::<Value>(details).unwrap_or_else(|_| json!(details)),
             "prev_hash": prev_hash, "hash": hash,
         }),
@@ -280,6 +305,7 @@ pub fn json_record(r: &Record, host: &str) -> Value {
             let mut v = payload.clone();
             if let Some(o) = v.as_object_mut() {
                 o.insert("type".into(), json!(kind));
+                o.insert("category".into(), json!(category(r)));
                 o.insert("host".into(), json!(host));
                 o.insert("outbox_seq".into(), json!(seq));
                 o.insert("event_ts".into(), json!(ts));
@@ -292,7 +318,7 @@ pub fn json_record(r: &Record, host: &str) -> Value {
             v
         }
         Record::Test { ts } => json!({
-            "type": "test", "host": host, "ts": ts,
+            "type": "test", "category": "system", "host": host, "ts": ts,
             "message": "Test message from the NexusBackup appliance (Settings → Forwarding).",
         }),
     }
@@ -475,13 +501,43 @@ pub fn open_headers(h: &Https, key: &SchedulerKey) -> Result<BTreeMap<String, St
         .collect()
 }
 
+/// Time of a record (unix seconds).
+fn record_ts(r: &Record) -> i64 {
+    match r {
+        Record::Audit { ts, .. } | Record::Event { ts, .. } | Record::Test { ts } => *ts,
+    }
+}
+
+/// Splunk HTTP Event Collector batch: one event object per record, newline-separated.
+pub fn hec_body(records: &[Record], host: &str, index: Option<&str>) -> String {
+    let mut out = String::new();
+    for r in records {
+        let mut ev = json!({"time": record_ts(r), "host": host, "source": "nexusbackup", "sourcetype": "_json",
+                            "event": json_record(r, host)});
+        if let Some(i) = index {
+            ev["index"] = json!(i);
+        }
+        out.push_str(&ev.to_string());
+        out.push('\n');
+    }
+    out
+}
+
 pub fn send_https(h: &Https, headers: &BTreeMap<String, String>, host: &str, records: &[Record]) -> Result<()> {
     let client = reqwest::blocking::Client::builder()
         .use_preconfigured_tls(tls_config(h.ca_pem.as_deref(), h.pin_sha256.as_deref())?)
         .timeout(Duration::from_secs(30))
         .build()?;
-    let body: Vec<Value> = records.iter().map(|r| json_record(r, host)).collect();
-    let mut req = client.post(&h.url).json(&body);
+    let body = match h.format {
+        forwarding::Format::JsonArray => {
+            serde_json::to_string(&records.iter().map(|r| json_record(r, host)).collect::<Vec<_>>())?
+        }
+        forwarding::Format::SplunkHec => hec_body(records, host, h.index.as_deref()),
+    };
+    let mut req = client
+        .post(&h.url)
+        .header("Content-Type", "application/json")
+        .body(body);
     for (k, v) in headers {
         req = req.header(k, v);
     }
@@ -814,7 +870,7 @@ mod tests {
         assert_eq!(
             m,
             format!(
-                "<109>1 2025-10-12T08:30:00Z nexus_1 nexus - audit [nexus@32473 seq=\"7\" hash=\"{}\" actor=\"alice\" \
+                "<109>1 2025-10-12T08:30:00Z nexus_1 nexus - audit [nexus@32473 seq=\"7\" category=\"audit\" hash=\"{}\" actor=\"alice\" \
                  action=\"user.create\" target=\"user/b\\\"o\\]b\\\\\"] user.create user/b\"o]b\\ by alice: {{\"x\":\"é\\n\"}}",
                 "ab".repeat(32)
             )
@@ -852,6 +908,45 @@ mod tests {
             (Some("audit"), Some(1))
         );
         assert_eq!(json_record(&ev, "h")["alert_url"], "https://h/#/alerts?id=9");
+        assert_eq!(
+            json_record(&ev, "h")["category"],
+            "backup",
+            "verify alerts are backup alerts"
+        );
+        assert_eq!(j["category"], "audit");
+        assert!(m.contains(" category=\"backup\" "), "{m}");
+        assert!(rfc5424(&job, "h", "nexus", 13).contains(" category=\"backup\" "));
+    }
+
+    /// Splunk HEC: one event object per line, the record as `event`, the index when set.
+    #[test]
+    fn hec_events() {
+        let recs = [
+            audit(7, "{}"),
+            Record::Event {
+                seq: 3,
+                ts: 1_760_000_000,
+                kind: "alert".into(),
+                payload: json!({"event": "raised", "id": 9, "severity": "critical", "kind": "anomaly", "message": "m"}),
+            },
+        ];
+        let body = hec_body(&recs, "nexus1", Some("backup"));
+        let lines: Vec<Value> = body.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(lines.len(), 2);
+        assert!(body.ends_with('\n'));
+        assert_eq!(lines[0]["time"], 1_760_257_800);
+        assert_eq!(
+            (lines[0]["source"].as_str(), lines[0]["sourcetype"].as_str()),
+            (Some("nexusbackup"), Some("_json"))
+        );
+        assert_eq!(
+            (lines[0]["host"].as_str(), lines[0]["index"].as_str()),
+            (Some("nexus1"), Some("backup"))
+        );
+        assert_eq!(lines[0]["event"]["category"], "audit");
+        assert_eq!(lines[1]["event"]["category"], "security");
+        assert_eq!(lines[1]["event"]["kind"], "anomaly");
+        assert!(hec_body(&recs, "h", None).lines().all(|l| !l.contains("\"index\"")));
     }
 
     #[test]

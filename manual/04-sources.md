@@ -198,6 +198,7 @@ pveum acl modify /sdn/zones/localnetwork --tokens 'nexus@pve!backup' --roles PVE
 | **API token secret** | the token's secret (write-only) |
 | **NexusBackup storage ID on PVE** | the PVE storage ID of the NexusBackup storage from step 3 (e.g. `nexus`). Backups run through this storage. |
 | **Fleecing storage** | the fleecing storage, e.g. `local-lvm`. VM backups fail without it. |
+| **Fleecing space guard** | **Skip a guest below (% free)** (default 15) **… and below (GiB free)** (default 20), **Cancel a running backup below (% free)** (default 5). See below. |
 | **CA certificate (PEM)** | the cluster CA (`/etc/pve/pve-root-ca.pem`). The appliance pins TLS to it. |
 | **Nodes (JSON: name → SSH settings)** | every node with its SSH endpoint and the key and known_hosts files on the appliance |
 
@@ -212,6 +213,21 @@ Example for **Nodes**:
 
 Then create a protection group with the VM/CT IDs to back up, or one that protects all guests or the guests of a pool
 or tag ([auto-protect](05-policies-and-groups.md#auto-protect-all-guests-or-guests-by-tag)).
+
+**Fleecing space guard.** While a VM is backed up, every block the guest overwrites is first copied to the
+fleecing storage of its node. If that storage (usually the LVM-thin pool `local-lvm`) runs full, Proxmox pauses
+**every** VM on it. So before each VM, and every 30 seconds while it runs, the appliance reads the storage's free
+space (for LVM-thin also its metadata):
+
+- below **both** skip limits (15 % and 20 GiB by default: whichever is smaller counts) the guest is skipped. The job
+  log says `fleecing storage local-lvm on node pve2 has … free, below the guard …: guest skipped`; the group's retry
+  policy runs it again later;
+- below the cancel limit (5 %) a running backup is cancelled at once;
+- both raise the critical alert `fleecing_space` for that node and storage (category hardware,
+  [11 Alerts and monitoring](11-alerts-and-monitoring.md)); it resolves when a later backup finds enough room.
+
+The API token needs to read the storage (the PVEAuditor role covers it, also the LVM-thin metadata); if it cannot,
+the job log says `not guarded` and the backup runs without the guard. Containers use no fleecing and are not checked.
 
 Limits: VM templates cannot be backed up (fleecing). Container restores need staging space in the node's
 `/var/tmp`, and every container backup reads the full tree. After a VM or host restart the dirty bitmap is lost,

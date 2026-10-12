@@ -1058,6 +1058,7 @@ impl App<'_> {
                 }
                 l.extend([
                     Line::from("Hex digits 0-9 A-F only (no letter O, no I). Keep it offline, in a safe."),
+                    Line::from("It also yields the boot menu (GRUB) password: nexus-setup grub-password."),
                     Line::from("Next you must re-enter 3 randomly chosen groups to prove it was recorded."),
                     Line::from(""),
                 ]);

@@ -58,6 +58,7 @@
 
 # configuration and secrets
 /etc/nexus(/.*)?				gen_context(system_u:object_r:nexus_etc_t,s0)
+/etc/nexus/grub-user\.cfg		--	gen_context(system_u:object_r:nexus_grub_user_t,s0)
 /etc/nexus/tls(/.*)?				gen_context(system_u:object_r:nexus_webapi_secret_t,s0)
 # imported chain + key (web.pem, web.pem.prev and their temp names): written by nexus-tls only
 /etc/nexus/tls/web\..*			--	gen_context(system_u:object_r:nexus_tls_web_t,s0)

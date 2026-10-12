@@ -6,6 +6,7 @@ pub mod consistency;
 pub mod ct;
 pub mod exclude;
 pub mod files;
+pub mod fleecing;
 pub mod inventory;
 pub mod ir;
 pub mod parallel;
