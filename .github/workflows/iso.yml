@@ -1,0 +1,65 @@
+name: iso
+# Installer ISO for a released image: bootc-image-builder (anaconda-iso) around the image digest of a
+# release, attached to that GitHub release with its SHA256SUMS. Runs after the release workflow, or by hand
+# for an existing release: gh workflow run iso.yml -f tag=v0.0.1-alpha
+on:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: release tag (vX.Y.Z[-pre])
+        required: true
+
+permissions:
+  contents: write # upload the ISO to the release
+  packages: read # pull the (private) image
+
+jobs:
+  iso:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BIB: quay.io/centos-bootc/bootc-image-builder:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Image digest of the release
+        run: |
+          [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "bad tag $TAG"; exit 1; }
+          gh release download "$TAG" -p release-metadata.json
+          img=$(jq -er .image release-metadata.json)
+          [[ $img =~ ^ghcr\.io/[a-z0-9/_.-]+@sha256:[0-9a-f]{64}$ ]] || { echo "bad image $img"; exit 1; }
+          echo "IMAGE=$img" >> "$GITHUB_ENV"
+          echo "ISO=nexusbackup-${TAG#v}-x86_64.iso" >> "$GITHUB_ENV"
+
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+
+      - name: Pull
+        run: |
+          echo "$GH_TOKEN" | sudo podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          sudo podman pull "$IMAGE"
+          sudo podman pull "$BIB"
+
+      - name: Build the ISO
+        run: |
+          mkdir out
+          sudo podman run --rm --privileged --security-opt label=type:unconfined_t \
+            -v "$PWD/release/iso/config.toml:/config.toml:ro" -v "$PWD/out:/output" \
+            -v /var/lib/containers/storage:/var/lib/containers/storage \
+            "$BIB" --type anaconda-iso --rootfs xfs --use-librepo=True "$IMAGE"
+          sudo find out -name '*.iso' -exec mv {} "$ISO" \;
+          sudo chown "$USER" "$ISO"
+          ls -l "$ISO"
+          # GitHub release assets are limited to 2 GiB
+          [ "$(stat -c %s "$ISO")" -lt 2147483648 ] || { echo "ISO larger than 2 GiB"; exit 1; }
+          sha256sum "$ISO" > "$ISO.sha256"
+
+      - name: Attach to the release
+        run: gh release upload "$TAG" "$ISO" "$ISO.sha256" --clobber

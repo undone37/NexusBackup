@@ -1,0 +1,12 @@
+# bootc-image-builder config for the installer ISO (.github/workflows/iso.yml, docs/release.md "Installer ISO").
+# Anaconda installs the embedded, signed release image; bootc-image-builder adds the ostreecontainer line.
+# Disk selection stays interactive (it wipes the chosen disk). Accounts, network and TLS come from the
+# first-boot wizard (nexus-setup), so root stays locked and no user is created here.
+[customizations.installer.kickstart]
+contents = """
+lang en_US.UTF-8
+keyboard us
+timezone Etc/UTC --utc
+rootpw --lock
+firstboot --disable
+"""
