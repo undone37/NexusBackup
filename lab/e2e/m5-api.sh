@@ -2,7 +2,7 @@
 # M5 flow over the REST API only (what the UI does): curl with cookie jar +
 # X-CSRF-Token, TLS verified against the appliance certificate.
 #   lab/e2e/m5.sh setup && lab/e2e/m5.sh start && lab/e2e/m5-api.sh [step...]
-# steps (default: all): config wait-backup check restore verify quorum audit
+# steps (default: all): config wait-backup check restore verify quorum phase13 audit
 # Lab inputs (env, defaults = dev machine, see lab/README.md):
 #   LAB (/home/ah/nexus-lab), LAB_CA (default: fetched from the node), LAB_TOKEN_SECRET (file;
 #   default: secret part of $LAB/api-token), LAB_SSH_KEY (private key whose public half is in the
@@ -254,6 +254,64 @@ step_quorum() {
 	log "requester approving own request #$q: 403; rejected by so"
 }
 
+# Phase 13 on the real appliance: storage figures from the connectors' stats, guest inventory +
+# auto-protect, pause, cancelling a running backup, alert lifecycle fields, locked snapshot delete.
+step_phase13() {
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	local src grp pol r j id
+	src=$(api admin GET /sources | jq -r '.[0].id')
+	grp=$(api admin GET /groups | jq -r '.[0].id')
+	pol=$(api admin GET /groups | jq -r '.[0].policy_id')
+	# 13d: the first backups wrote backup_stats
+	r=$(api admin GET /storage)
+	jq -e '.totals.dedup != null and .totals.compression != null and .totals.logical > 0' <<<"$r" >/dev/null ||
+		die "storage figures: $(jq -c .totals <<<"$r")"
+	log "storage: $(jq -c '.totals | {logical, data_in, stored, dedup, compression}' <<<"$r")"
+	# 13c: inventory refresh through the real PVE API, then an `all` group minus an exclusion
+	r=$(api admin POST /jobs "$(jq -nc --argjson s "$src" '{kind:"inventory", tenant:"lab", params:{source_id:$s}}')")
+	j=$(wait_job admin "$(jq -r .id <<<"$r")" 300)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "inventory job: $(jq -r .log <<<"$j" | tail -5)"
+	r=$(api admin GET "/sources/$src/inventory")
+	jq -e '[.guests[] | select(.gone == null) | .guest] | (index("100") != null and index("200") != null)' <<<"$r" >/dev/null ||
+		die "inventory: $(jq -c '[.guests[] | {guest, tags}]' <<<"$r")"
+	log "inventory: $(jq -c '[.guests[] | {guest, name, tags}]' <<<"$r")"
+	id=$(api admin POST /groups "$(jq -nc --argjson s "$src" --argjson p "$pol" \
+		'{tenant:"lab", source_id:$s, policy_id:$p, name:"auto", guests:[], mode:"all", exclude:["200"]}')" | jq -r .id)
+	expect 201 "create auto group"
+	api admin GET /groups | jq -e --argjson id "$id" '.[] | select(.id == $id) | .resolved_guests == [100]' >/dev/null ||
+		die "auto group resolution: $(api admin GET /groups | jq -c --argjson id "$id" '.[] | select(.id == $id)')"
+	log "auto group #$id (all minus 200) resolves to [100]"
+	# 13b: pause it indefinitely (no scheduled runs), visible on the group
+	api admin POST "/groups/$id/pause" '{}' >/dev/null
+	expect 200 "pause group"
+	api admin GET /groups | jq -e --argjson id "$id" '.[] | select(.id == $id) | .paused_until == -1' >/dev/null || die "not paused"
+	log "auto group paused indefinitely"
+	# 13b: cancel a running backup; no snapshot may appear for it
+	local before
+	before=$(api admin GET "/snapshots?tenant=lab" | jq '[.[] | select(.source == "vm-100") | .time] | max')
+	r=$(api admin POST /jobs "$(jq -nc --argjson g "$grp" '{kind:"backup", tenant:"lab", params:{group_id:$g}}')")
+	id=$(jq -r .id <<<"$r")
+	for _ in $(seq 120); do
+		[ "$(api admin GET "/jobs/$id" | jq -r .state)" = running ] && break
+		sleep 1
+	done
+	sleep 5
+	api admin POST "/jobs/$id/cancel" >/dev/null
+	expect 200 "cancel running job"
+	j=$(wait_job admin "$id" 180)
+	[ "$(jq -r .state <<<"$j")" = cancelled ] || die "job $id: $(jq -r .state <<<"$j")"
+	sleep 5
+	[ "$(api admin GET "/snapshots?tenant=lab" | jq '[.[] | select(.source == "vm-100") | .time] | max')" = "$before" ] ||
+		die "a cancelled backup left a snapshot"
+	log "running backup #$id cancelled, no snapshot committed"
+	# 13f: lifecycle fields on alerts; 13a: a locked snapshot cannot be deleted
+	api admin GET "/alerts?state=all" | jq -e 'all(.[]; has("count") and has("resolved_at"))' >/dev/null || die "alert lifecycle fields"
+	r=$(api admin GET "/snapshots?tenant=lab" | jq -r '[.[] | select(.local)][0] | "\(.source)/\(.time)"')
+	api admin DELETE "/snapshots/lab/$r" >/dev/null
+	expect 409 "delete of a locked snapshot"
+	log "locked snapshot lab/$r: delete refused (409)"
+}
+
 step_audit() {
 	login so "$SO_PW" "$SO_TOTP"
 	api so GET /audit/verify | jq -c . >&2
@@ -262,7 +320,7 @@ step_audit() {
 }
 
 steps=("$@")
-[ ${#steps[@]} -gt 0 ] || steps=(config wait-backup check restore verify quorum audit)
+[ ${#steps[@]} -gt 0 ] || steps=(config wait-backup check restore verify quorum phase13 audit)
 for s in "${steps[@]}"; do
 	log "== $s"
 	"step_${s//-/_}"
