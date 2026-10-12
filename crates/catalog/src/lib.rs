@@ -8,6 +8,7 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod access;
 pub mod alerting;
 pub mod auth;
 pub mod inventory;
@@ -283,9 +284,47 @@ ALTER TABLE jobs ADD COLUMN cancel_by TEXT;
 ALTER TABLE jobs ADD COLUMN sla_alerted INTEGER NOT NULL DEFAULT 0;
 "#;
 
+/// v15 (Phase 14d, access, docs/control-plane.md "Access"): `users` rebuilt for a
+/// wider role CHECK (`viewer`: read-only; `tenant_admin`: reserved for Phase 18c,
+/// not accepted by the web-api yet) plus `can_download` (NULL = the role's
+/// default, see [`access::role_can_download`]; 0/1 = set by an admin), `expires`
+/// (no login from then on; NULL = never) and `last_login` (dormant accounts;
+/// backfilled with the migration time for activated accounts, so that a later
+/// `dormant_days` counts from the upgrade). `sessions` rebuilt with a numeric
+/// `id` (listed and revoked by it; the cookie digest never leaves the server),
+/// the client `ip` and `user_agent`. Same rebuild procedure as v4 (ids, rows and
+/// constraints kept; foreign keys checked). The previous release skips it and
+/// treats `viewer` accounts like unknown roles (every role check fails).
+const SCHEMA_V15: &str = r#"
+CREATE TABLE users_v15 (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, totp_secret TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('admin','security_officer','operator','tenant_user','viewer','tenant_admin')),
+  tenant TEXT, disabled INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL,
+  totp_last_step INTEGER NOT NULL DEFAULT 0, activation_hash TEXT, activation_expires INTEGER,
+  auth TEXT NOT NULL DEFAULT 'local' CHECK (auth IN ('local','oidc')), oidc_sub TEXT,
+  can_download INTEGER CHECK (can_download IN (0,1)), expires INTEGER, last_login INTEGER);
+INSERT INTO users_v15 (id, name, password_hash, totp_secret, role, tenant, disabled, created, totp_last_step,
+  activation_hash, activation_expires, auth, oidc_sub, last_login)
+  SELECT id, name, password_hash, totp_secret, role, tenant, disabled, created, totp_last_step,
+  activation_hash, activation_expires, auth, oidc_sub,
+  CASE WHEN activation_hash IS NULL THEN CAST(strftime('%s', 'now') AS INTEGER) END FROM users;
+CREATE TABLE sessions_v15 (
+  id INTEGER PRIMARY KEY, id_hash TEXT NOT NULL UNIQUE, user_id INTEGER NOT NULL REFERENCES users(id),
+  csrf TEXT NOT NULL, created INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+  ip TEXT NOT NULL DEFAULT '', user_agent TEXT NOT NULL DEFAULT '');
+INSERT INTO sessions_v15 (id_hash, user_id, csrf, created, last_seen)
+  SELECT id_hash, user_id, csrf, created, last_seen FROM sessions;
+DROP TABLE sessions;
+DROP TABLE users;
+ALTER TABLE users_v15 RENAME TO users;
+ALTER TABLE sessions_v15 RENAME TO sessions;
+CREATE UNIQUE INDEX IF NOT EXISTS users_oidc_sub ON users(oidc_sub) WHERE oidc_sub IS NOT NULL;
+CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
-    SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14,
+    SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -314,14 +353,14 @@ pub fn approvals_enabled(c: &Connection) -> rusqlite::Result<bool> {
     Ok(setting(c, "approvals_enabled")?.is_none_or(|v| v != "false"))
 }
 
-/// Users who could approve a quorum request: enabled, activated admins and
-/// security officers.
+/// Users who could approve a quorum request: enabled, activated, unexpired
+/// admins and security officers.
 pub fn possible_approvers(c: &Connection) -> rusqlite::Result<Vec<String>> {
     c.prepare(
         "SELECT name FROM users WHERE role IN ('admin','security_officer') AND disabled = 0
-         AND activation_hash IS NULL ORDER BY name",
+         AND activation_hash IS NULL AND (expires IS NULL OR expires > ?1) ORDER BY name",
     )?
-    .query_map([], |r| r.get(0))?
+    .query_map([now()], |r| r.get(0))?
     .collect()
 }
 
@@ -1050,6 +1089,101 @@ mod tests {
         let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
         assert_eq!(MIGRATIONS[..before].iter().skip(v as usize).count(), 0);
         old.execute("INSERT INTO tenants (name) VALUES ('beta')", []).unwrap();
+    }
+
+    /// v15 (access) on top of the previous catalog: users keep ids, roles and
+    /// credentials, get `can_download` NULL (role default), no expiry and a
+    /// `last_login` (activated accounts only); sessions survive with a numeric
+    /// id; `viewer` is accepted, unknown roles still are not. The previous
+    /// release still logs in (reads users, inserts sessions) afterwards.
+    #[test]
+    fn migration_v15_access() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V15).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            c.pragma_update(None, "foreign_keys", "ON").unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO users (id, name, password_hash, totp_secret, role, tenant, created, totp_last_step)
+                   VALUES (7, 'alice', 'h', 's', 'admin', NULL, 1, 42);
+                 INSERT INTO users (id, name, password_hash, totp_secret, role, tenant, created, activation_hash)
+                   VALUES (8, 'pend', '!', '', 'tenant_user', 'acme', 2, 'abc');
+                 INSERT INTO users (id, name, password_hash, totp_secret, role, created, auth, oidc_sub)
+                   VALUES (9, 'sso', '!oidc', '', 'operator', 3, 'oidc', 'iss|1');
+                 INSERT INTO sessions (id_hash, user_id, csrf, created, last_seen) VALUES ('h1', 7, 'c', 10, 11);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+            assert_eq!(v, MIGRATIONS.len() as i64);
+            let (step, dl, exp, ll): (i64, Option<i64>, Option<i64>, Option<i64>) = conn
+                .query_row(
+                    "SELECT totp_last_step, can_download, expires, last_login FROM users WHERE id = 7",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .unwrap();
+            assert_eq!((step, dl, exp), (42, None, None));
+            assert!(ll.is_some_and(|t| t > 1_700_000_000));
+            let ll: Option<i64> = conn
+                .query_row("SELECT last_login FROM users WHERE id = 8", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(ll, None, "pending accounts never logged in");
+            let (sid, uid, ip): (i64, i64, String) = conn
+                .query_row("SELECT id, user_id, ip FROM sessions WHERE id_hash = 'h1'", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+                .unwrap();
+            assert!(sid > 0 && uid == 7 && ip.is_empty());
+            conn.execute(
+                "INSERT INTO users (name, password_hash, totp_secret, role, created) VALUES ('vic', 'h', 's', 'viewer', 4)",
+                [],
+            )
+            .unwrap();
+            assert!(conn
+                .execute(
+                    "INSERT INTO users (name, password_hash, totp_secret, role, created) VALUES ('x', 'h', 's', 'root', 4)",
+                    []
+                )
+                .is_err());
+            assert!(
+                conn.execute(
+                    "INSERT INTO users (name, password_hash, totp_secret, role, created, oidc_sub) VALUES ('y', 'h', 's', 'viewer', 4, 'iss|1')",
+                    []
+                )
+                .is_err(),
+                "oidc_sub index rebuilt"
+            );
+            assert!(
+                conn.execute(
+                    "INSERT INTO sessions (id_hash, user_id, csrf, created, last_seen) VALUES ('h2', 99, 'c', 1, 1)",
+                    []
+                )
+                .is_err(),
+                "sessions still reference users"
+            );
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..before].iter().skip(v as usize).count(), 0);
+        old.execute(
+            "INSERT INTO sessions (id_hash, user_id, csrf, created, last_seen) VALUES ('h3', 7, 'c', 1, 1)",
+            [],
+        )
+        .unwrap();
+        let n: i64 = old
+            .query_row("SELECT COUNT(*) FROM users WHERE id IN (7, 8, 9)", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 3);
     }
 
     /// v14 (run control) on top of the previous catalog: existing policies get the

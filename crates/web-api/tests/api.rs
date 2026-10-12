@@ -1545,6 +1545,8 @@ async fn rbac_matrix_and_audit_completeness() {
     let admin = t.login("alice").await;
     let ids = seed(&t, &admin).await;
     t.add_user("rbac-victim", "operator", None);
+    t.add_user("vic", "viewer", None);
+    t.add_user("vera", "viewer", Some("acme"));
     let victim = t.ids["rbac-victim"];
     let (agent, _) = add_agent(&t, &admin).await;
     t.st.cat
@@ -1559,6 +1561,8 @@ async fn rbac_matrix_and_audit_completeness() {
         ('S', t.login("sam").await),
         ('O', t.login("otto").await),
         ('T', t.login("tina").await),
+        ('V', t.login("vic").await),
+        ('W', t.login("vera").await),
     ];
     t.st.cat
         .conn()
@@ -1574,7 +1578,8 @@ async fn rbac_matrix_and_audit_completeness() {
     let r = t.delete(&format!("/api/v1/groups/{}", ids["grp_globex"]), &adam).await;
     let qid = r.body["quorum_id"].as_i64().unwrap();
     let (src, grp, pol, job) = (ids["src_acme"], ids["grp_acme"], ids["policy"], ids["job_acme"]);
-    let all = "ASOT";
+    // V = appliance-wide viewer, W = viewer of tenant acme: read-only
+    let all = "ASOTVW";
 
     let calls: Vec<(Method, String, Option<Value>, &str)> = vec![
         (Method::GET, "/api/v1/auth/me".into(), None, all),
@@ -1714,7 +1719,49 @@ async fn rbac_matrix_and_audit_completeness() {
             Some(json!({})),
             "AO",
         ),
-        (Method::GET, format!("/api/v1/downloads/{}", "ab".repeat(32)), None, all),
+        (
+            Method::GET,
+            format!("/api/v1/downloads/{}", "ab".repeat(32)),
+            None,
+            "AOT",
+        ),
+        (Method::GET, "/api/v1/storage".into(), None, all),
+        (Method::GET, "/api/v1/dashboard".into(), None, all),
+        (Method::GET, "/api/v1/auth/sessions".into(), None, all),
+        (Method::DELETE, "/api/v1/auth/sessions/999999".into(), None, all),
+        (Method::GET, "/api/v1/sessions".into(), None, "A"),
+        (Method::DELETE, "/api/v1/sessions/999999".into(), None, "A"),
+        (
+            Method::POST,
+            format!("/api/v1/users/{victim}/sessions/revoke"),
+            Some(json!({})),
+            "A",
+        ),
+        (Method::GET, "/api/v1/settings/security".into(), None, "AS"),
+        (
+            Method::PUT,
+            "/api/v1/settings/session".into(),
+            Some(json!({"idle_min": 30, "absolute_h": 12})),
+            "A",
+        ),
+        (
+            Method::PUT,
+            "/api/v1/settings/dormant".into(),
+            Some(json!({"days": 0})),
+            "A",
+        ),
+        (
+            Method::PUT,
+            "/api/v1/settings/banner".into(),
+            Some(json!({"banner": "Authorised use only."})),
+            "A",
+        ),
+        (
+            Method::PUT,
+            "/api/v1/settings/mgmt-allow".into(),
+            Some(json!({"mgmt_allow": ["10.0.0.0/8"], "force": true, "confirm": "unknown"})),
+            "A",
+        ),
         (Method::GET, "/api/v1/quorum".into(), None, "ASO"),
         (Method::GET, "/api/v1/audit".into(), None, "AS"),
         (Method::GET, "/api/v1/audit/verify".into(), None, "AS"),
@@ -3338,7 +3385,8 @@ async fn single_admin_default_and_recommendation() {
     let v = t.get("/api/v1/settings/approvals", &admin).await.body;
     assert_eq!(
         v,
-        json!({"enabled": false, "possible_approvers": 1, "recommend": false, "pending_disable": null})
+        json!({"enabled": false, "possible_approvers": 1, "recommend": false, "few_approvers": false,
+               "pending_disable": null})
     );
     let r = t
         .post(

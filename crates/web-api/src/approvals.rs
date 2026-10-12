@@ -26,8 +26,15 @@ const READ: &[&str] = &["admin", "security_officer", "operator"];
 /// Settings key prefix the scheduler writes for a GC waiting for confirmation.
 pub const GC_CONFIRM: &str = "gc_confirm/";
 
-/// `{enabled, possible_approvers, recommend, pending_disable}`; `recommend` drives
-/// the dashboard banner (approvals off although two people could approve).
+/// Below this many possible approvers, one absence can block every approval
+/// (the requester never approves their own request): `few_approvers` warning.
+pub const SAFE_APPROVERS: usize = 3;
+
+/// `{enabled, possible_approvers, recommend, few_approvers, pending_disable}`;
+/// `recommend` drives the dashboard banner (approvals off although two people
+/// could approve), `few_approvers` the warning that approvals are on with fewer
+/// than three people who could approve (manual chapter 10: what to do when
+/// approvers are unavailable).
 pub async fn get_approvals(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>> {
     ctx.require(READ)?;
     let c = st.cat.conn();
@@ -44,6 +51,7 @@ pub async fn get_approvals(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Val
         "enabled": enabled,
         "possible_approvers": n,
         "recommend": !enabled && n >= 2,
+        "few_approvers": enabled && n < SAFE_APPROVERS,
         "pending_disable": pending,
     })))
 }

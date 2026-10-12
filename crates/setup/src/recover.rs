@@ -128,6 +128,50 @@ pub fn recover_admin(paths: &Paths, user: Option<&str>, force_solo: bool, recove
     })
 }
 
+/// `nexus-setup reset-mgmt-allow` (Phase 14d): someone locked themselves out
+/// with the management allow-list (Settings → Security). Clears the setting
+/// (empty = any address), audited `security.mgmt_allow_reset` (actor
+/// `console`) with a warning alert; returns the list that was removed. The
+/// caller also opens the firewall sets at once ([`open_mgmt_firewall`]); the
+/// scheduler rewrites the firewall file on its next tick either way.
+pub fn reset_mgmt_allow(paths: &Paths) -> Result<Vec<String>> {
+    if !paths.setup_done.exists() {
+        bail!("the appliance is not set up yet: there is no allow-list to reset");
+    }
+    let cat = Catalog::open(&paths.catalog).with_context(|| format!("opening {}", paths.catalog.display()))?;
+    let old = {
+        let mut c = cat.conn();
+        let tx = c.transaction()?;
+        let old = catalog::access::mgmt_allow(&tx)?;
+        catalog::set_setting(&tx, catalog::access::MGMT_ALLOW, "[]")?;
+        tx.execute(
+            "INSERT INTO alerts (ts, last_ts, severity, kind, key, message) VALUES (?1, ?1, 'warning', 'mgmt_allow_reset',
+             'mgmt_allow_reset', ?2)",
+            params![
+                catalog::now(),
+                format!(
+                    "the management allow-list ({}) was cleared at the console: the web UI is reachable from any address again",
+                    if old.is_empty() { "empty".to_owned() } else { old.join(", ") }
+                )
+            ],
+        )?;
+        tx.commit()?;
+        old
+    };
+    cat.audit(
+        ACTOR,
+        "security.mgmt_allow_reset",
+        "settings/mgmt_allow",
+        &json!({"old": old}),
+    )?;
+    Ok(old)
+}
+
+/// Opens `mgmt_allowed_v4/v6` to any address right away (root, real appliance).
+pub fn open_mgmt_firewall(nft: &std::path::Path) -> Result<()> {
+    nftsync::apply(nft, &nftsync::script(None, &nftsync::mgmt_state(&[])))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +253,34 @@ mod tests {
             .unwrap();
         assert_eq!(n, 1);
         assert!(cat.verify_audit().is_ok());
+    }
+
+    #[test]
+    fn resets_the_management_allow_list() {
+        let (_d, paths, _rk) = appliance();
+        catalog::set_setting(
+            &Catalog::open(&paths.catalog).unwrap().conn(),
+            catalog::access::MGMT_ALLOW,
+            r#"["192.0.2.0/24"]"#,
+        )
+        .unwrap();
+        assert_eq!(reset_mgmt_allow(&paths).unwrap(), vec!["192.0.2.0/24"]);
+        let cat = Catalog::open(&paths.catalog).unwrap();
+        assert!(catalog::access::mgmt_allow(&cat.conn()).unwrap().is_empty());
+        let n: i64 = cat
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM audit WHERE action = 'security.mgmt_allow_reset' AND actor = 'console'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        let kind: String = cat
+            .conn()
+            .query_row("SELECT kind FROM alerts ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kind, "mgmt_allow_reset");
     }
 
     #[test]

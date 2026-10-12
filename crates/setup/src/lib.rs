@@ -227,7 +227,8 @@ pub enum KeyState {
 pub fn check_start(paths: &Paths, force_reconfigure_network: bool) -> Result<()> {
     if paths.setup_done.exists() && !force_reconfigure_network {
         bail!(
-            "setup already completed ({} exists); use --force-reconfigure-network to change the management network",
+            "setup already completed ({} exists); use --force-reconfigure-network to change the management network, \
+             recover-admin for a lost admin login, reset-mgmt-allow after a management allow-list lockout",
             paths.setup_done.display()
         );
     }

@@ -1812,6 +1812,12 @@ pub struct UserReq {
     role: String,
     #[serde(default)]
     tenant: Option<String>,
+    /// default: the role's ([`catalog::access::role_can_download`])
+    #[serde(default)]
+    can_download: Option<bool>,
+    /// unix time from which the account cannot log in; default never
+    #[serde(default)]
+    expires: Option<i64>,
 }
 
 /// All fields optional; `tenant: null` clears the restriction.
@@ -1824,6 +1830,12 @@ pub struct UserUpdate {
     tenant: Option<Value>,
     #[serde(default)]
     disabled: Option<bool>,
+    /// download privilege (`files_get`)
+    #[serde(default)]
+    can_download: Option<bool>,
+    /// unix time, or `null` = never expires
+    #[serde(default, deserialize_with = "present")]
+    expires: Option<Value>,
     /// own account only
     #[serde(default)]
     password: Option<String>,
@@ -1867,6 +1879,13 @@ fn check_user_tenant(c: &Connection, role: &str, tenant: Option<&str>) -> ApiRes
     Ok(())
 }
 
+fn check_expires(e: Option<i64>) -> ApiResult<()> {
+    if e.is_some_and(|e| !(0..=253_402_300_799).contains(&e)) {
+        return Err(ApiError::bad("expires: unix time (seconds) or null"));
+    }
+    Ok(())
+}
+
 async fn hash(pw: String) -> ApiResult<String> {
     tokio::task::spawn_blocking(move || catalog::auth::hash_password(&pw))
         .await
@@ -1897,6 +1916,7 @@ pub async fn create_user(State(st): State<St>, ctx: Ctx, J(r): J<UserReq>) -> Ap
         validate::name(t, "tenant")?;
     }
     check_user_tenant(&st.cat.conn(), &r.role, r.tenant.as_deref())?;
+    check_expires(r.expires)?;
     let privileged = validate::privileged(&r.role);
     let gated = privileged && crate::quorum::enabled(&st)?;
     let (code, digest) = activation::new_part();
@@ -1909,9 +1929,21 @@ pub async fn create_user(State(st): State<St>, ctx: Ctx, J(r): J<UserReq>) -> Ap
     let user = {
         let c = st.cat.conn();
         c.execute(
-            "INSERT INTO users (name, password_hash, totp_secret, role, tenant, disabled, created, activation_hash, activation_expires)
-             VALUES (?1, ?2, '', ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![r.name, catalog::NO_PASSWORD, r.role, r.tenant, gated, now, stored, expires],
+            "INSERT INTO users (name, password_hash, totp_secret, role, tenant, disabled, created, activation_hash,
+               activation_expires, can_download, expires)
+             VALUES (?1, ?2, '', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                r.name,
+                catalog::NO_PASSWORD,
+                r.role,
+                r.tenant,
+                gated,
+                now,
+                stored,
+                expires,
+                r.can_download,
+                r.expires
+            ],
         )?;
         User::load(&c, c.last_insert_rowid())?
     };
@@ -1984,6 +2016,12 @@ pub fn apply_user_update(c: &Connection, p: &Value) -> ApiResult<Value> {
     if let Some(d) = p["disabled"].as_bool() {
         c.execute("UPDATE users SET disabled = ?2 WHERE id = ?1", params![id, d])?;
     }
+    if let Some(d) = p["can_download"].as_bool() {
+        c.execute("UPDATE users SET can_download = ?2 WHERE id = ?1", params![id, d])?;
+    }
+    if let Some(e) = p.get("expires") {
+        c.execute("UPDATE users SET expires = ?2 WHERE id = ?1", params![id, e.as_i64()])?;
+    }
     if let Some(h) = p["password_hash"].as_str() {
         c.execute("UPDATE users SET password_hash = ?2 WHERE id = ?1", params![id, h])?;
     }
@@ -2044,7 +2082,7 @@ pub async fn update_user(
         if r.password.is_some() || r.reset_totp || r.new_activation || role_change || tenant_change {
             return Err(ApiError::bad(
                 "OIDC account: credentials, role and tenant come from the identity provider (mappings); \
-                 only `disabled` can be changed here",
+                 only `disabled`, `can_download` and `expires` can be changed here",
             ));
         }
     }
@@ -2087,6 +2125,25 @@ pub async fn update_user(
         Some(_) => return Err(ApiError::bad("tenant: string or null")),
     };
     let disabled = r.disabled.unwrap_or(old.disabled);
+    let expires = match &r.expires {
+        None => old.expires,
+        Some(Value::Null) => None,
+        Some(v) => Some(v.as_i64().ok_or_else(|| ApiError::bad("expires: unix time or null"))?),
+    };
+    if expires != old.expires {
+        check_expires(expires)?;
+        // the account that can always fix things must not run out unnoticed
+        let unexpiring_admins: i64 = st.cat.conn().query_row(
+            "SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0 AND expires IS NULL AND id != ?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        if expires.is_some() && role == "admin" && unexpiring_admins == 0 {
+            return Err(ApiError::conflict(
+                "expires: the last admin without an expiry date cannot get one",
+            ));
+        }
+    }
     let approvals = crate::quorum::enabled(&st)?;
     let others_enabled: i64 = {
         let c = st.cat.conn();
@@ -2118,6 +2175,12 @@ pub async fn update_user(
     }
     if disabled != old.disabled {
         p["disabled"] = json!(disabled);
+    }
+    if let Some(d) = r.can_download.filter(|d| *d != old.can_download) {
+        p["can_download"] = json!(d);
+    }
+    if expires != old.expires {
+        p["expires"] = json!(expires);
     }
     if let Some(pw) = r.password {
         if pw.len() > 1024 {

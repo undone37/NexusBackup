@@ -62,6 +62,7 @@
 //! `files_get` writes `<downloads>/<download_token>.<format>` (token set by the
 //! web-api). Structured results go into `jobs.result` (see [`Scheduler::finish`]).
 
+mod accounts;
 pub mod alerts;
 pub mod anomaly;
 pub mod firewall;
@@ -672,6 +673,7 @@ impl Scheduler {
                 self.log_err(|s| s.check_quotas());
                 self.log_err(|s| s.publish_ssh_keys());
                 self.log_err(|s| s.prune_alerts(now));
+                self.log_err(|s| s.check_accounts(now));
             }
         }
         self.log_err(|s| s.check_offsite_lag(now));
@@ -907,7 +909,9 @@ impl Scheduler {
             targets.extend(firewall::alert_targets(&a));
         }
         targets.extend(firewall::oidc_targets(&self.db.conn())?);
-        let changed = nftsync::write_allowed(&self.cfg.nft_allowed, firewall::resolve(&targets))?;
+        // inbound: the management allow-list (Settings → Security; empty = any)
+        let mgmt = catalog::access::mgmt_allow(&self.db.conn())?;
+        let changed = nftsync::write_allowed(&self.cfg.nft_allowed, firewall::resolve(&targets), Some(&mgmt))?;
         if changed {
             eprintln!(
                 "scheduler: firewall allow-list updated ({} destinations)",

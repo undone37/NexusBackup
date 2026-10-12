@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
+pub mod access;
 pub mod activation;
 pub mod agents;
 pub mod alerts;
@@ -493,6 +494,7 @@ pub fn router(st: St) -> Router {
         )
         .route("/replication/sources/{id}/enroll", post(repl::enroll_source))
         .route("/replication/sources/{id}/sync", post(repl::sync_source))
+        .merge(access::routes())
         .fallback(api_not_found);
     // peer API: only on replication TLS connections (see `connection_scope`)
     let peer = Router::new()
