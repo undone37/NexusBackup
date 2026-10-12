@@ -27,6 +27,7 @@ pub mod certs;
 pub mod console;
 pub mod dashboard;
 pub mod diag;
+pub mod forwarding;
 pub mod inventory;
 pub mod jobs;
 pub mod oidc;
@@ -502,6 +503,13 @@ pub fn router(st: St) -> Router {
         .route("/quorum/{id}/reject", post(reject))
         .route("/audit", get(list_audit))
         .route("/audit/verify", get(verify_audit))
+        .route("/audit.csv", get(export_audit))
+        .route("/audit/forwarding", get(forwarding::status))
+        .route(
+            "/settings/forwarding",
+            get(forwarding::get_settings).put(forwarding::put_settings),
+        )
+        .route("/settings/forwarding/test", post(forwarding::test))
         .route("/alerts", get(alerts::list_alerts))
         .route("/alerts/{id}/ack", post(alerts::ack_alert))
         .route("/alerts/{id}/resolve", post(alerts::resolve_alert))

@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub mod alerting;
 pub mod auth;
 pub mod console;
+pub mod forwarding;
 pub mod inventory;
 pub mod schedule;
 pub mod secret;
@@ -299,9 +300,57 @@ CREATE TABLE IF NOT EXISTS api_tokens (
   created INTEGER NOT NULL, last_used INTEGER, last_ip TEXT, UNIQUE (user_id, name));
 "#;
 
+/// v16 (Phase 14a, forwarding, docs/control-plane.md "Forwarding"): the
+/// forwarder follows `audit` by `seq`; alert and job events have no such
+/// sequence (alert rows change, jobs finish out of id order), so triggers write
+/// them to the outbox `forward_events` (strictly increasing `seq`, payload =
+/// the row as JSON at that moment): alert raised / escalated / acknowledged /
+/// resolved, job finished. `forward_state`: per sink (`syslog`, `https`) the
+/// destination, the last delivered audit seq and event seq, and the delivery
+/// status. Purely additive: the previous release skips it; the triggers keep
+/// filling the outbox there (pruned again after the upgrade).
+const SCHEMA_V16: &str = r#"
+CREATE TABLE IF NOT EXISTS forward_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, type TEXT NOT NULL CHECK (type IN ('alert','job')),
+  payload TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS forward_state (
+  sink TEXT PRIMARY KEY, dest TEXT NOT NULL, audit_seq INTEGER NOT NULL DEFAULT 0, event_seq INTEGER NOT NULL DEFAULT 0,
+  last_ok INTEGER, last_error TEXT, last_error_ts INTEGER, failing_since INTEGER);
+CREATE TRIGGER IF NOT EXISTS forward_alert_raised AFTER INSERT ON alerts BEGIN
+  INSERT INTO forward_events (ts, type, payload) VALUES (CAST(strftime('%s','now') AS INTEGER), 'alert',
+    json_object('event','raised','id',NEW.id,'ts',NEW.ts,'severity',NEW.severity,'kind',NEW.kind,'key',NEW.key,
+                'message',NEW.message,'tenant',NEW.tenant));
+END;
+CREATE TRIGGER IF NOT EXISTS forward_alert_escalated AFTER UPDATE OF severity ON alerts
+  WHEN NEW.severity <> OLD.severity BEGIN
+  INSERT INTO forward_events (ts, type, payload) VALUES (CAST(strftime('%s','now') AS INTEGER), 'alert',
+    json_object('event','escalated','id',NEW.id,'ts',NEW.ts,'severity',NEW.severity,'kind',NEW.kind,'key',NEW.key,
+                'message',NEW.message,'tenant',NEW.tenant,'count',NEW.count));
+END;
+CREATE TRIGGER IF NOT EXISTS forward_alert_acked AFTER UPDATE OF acked_by ON alerts
+  WHEN OLD.acked_by IS NULL AND NEW.acked_by IS NOT NULL BEGIN
+  INSERT INTO forward_events (ts, type, payload) VALUES (CAST(strftime('%s','now') AS INTEGER), 'alert',
+    json_object('event','acknowledged','id',NEW.id,'ts',NEW.ts,'severity',NEW.severity,'kind',NEW.kind,'key',NEW.key,
+                'message',NEW.message,'tenant',NEW.tenant,'by',NEW.acked_by));
+END;
+CREATE TRIGGER IF NOT EXISTS forward_alert_resolved AFTER UPDATE OF resolved_at ON alerts
+  WHEN OLD.resolved_at IS NULL AND NEW.resolved_at IS NOT NULL BEGIN
+  INSERT INTO forward_events (ts, type, payload) VALUES (CAST(strftime('%s','now') AS INTEGER), 'alert',
+    json_object('event','resolved','id',NEW.id,'ts',NEW.ts,'severity',NEW.severity,'kind',NEW.kind,'key',NEW.key,
+                'message',NEW.message,'tenant',NEW.tenant,'by',NEW.resolved_by,'auto',NEW.auto,'note',NEW.note,
+                'count',NEW.count));
+END;
+CREATE TRIGGER IF NOT EXISTS forward_job_finished AFTER UPDATE OF state ON jobs
+  WHEN NEW.state IN ('ok','failed','cancelled') AND OLD.state NOT IN ('ok','failed','cancelled') BEGIN
+  INSERT INTO forward_events (ts, type, payload) VALUES (CAST(strftime('%s','now') AS INTEGER), 'job',
+    json_object('id',NEW.id,'kind',NEW.kind,'tenant',NEW.tenant,'state',NEW.state,'requested_by',NEW.requested_by,
+                'created',NEW.created,'started',NEW.started,'finished',NEW.finished,'attempt',NEW.attempt));
+END;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
-    SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15,
+    SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1384,5 +1433,87 @@ mod tests {
         .unwrap();
         let n: i64 = old.query_row("SELECT COUNT(*) FROM groups", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 2);
+    }
+
+    /// v16 (forwarding outbox) on top of the previous catalog: the outbox and
+    /// the delivery state start empty; alert raise / ack / resolve and job
+    /// completion each add one event, in order; the previous release still
+    /// writes alerts and jobs afterwards.
+    #[test]
+    fn migration_v16_forwarding_outbox() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V16).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO jobs (kind, tenant, params, state, requested_by, created) VALUES ('backup','t','{}','running','s',1);
+                 INSERT INTO alerts (ts, severity, kind, message) VALUES (1, 'info', 'x', 'old');",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+            assert_eq!(v, MIGRATIONS.len() as i64);
+            let n = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+            assert_eq!(n("SELECT COUNT(*) FROM forward_events"), 0);
+            assert_eq!(n("SELECT COUNT(*) FROM forward_state"), 0);
+            conn.execute_batch(
+                "INSERT INTO alerts (ts, last_ts, severity, kind, key, message) VALUES (5, 5, 'warning', 'k', 'k:1', 'm');
+                 UPDATE alerts SET count = count + 1 WHERE key = 'k:1';
+                 UPDATE alerts SET severity = 'critical' WHERE key = 'k:1';
+                 UPDATE alerts SET acked_by = 'alice' WHERE key = 'k:1';
+                 UPDATE alerts SET resolved_at = 9, resolved_by = 'alice' WHERE key = 'k:1';
+                 UPDATE jobs SET log = 'x';
+                 UPDATE jobs SET state = 'ok', finished = 7;
+                 UPDATE jobs SET state = 'ok';",
+            )
+            .unwrap();
+            let ev: Vec<(String, String)> = conn
+                .prepare("SELECT type, payload FROM forward_events ORDER BY seq")
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            let events: Vec<(String, String)> = ev
+                .iter()
+                .map(|(t, p)| {
+                    let v: serde_json::Value = serde_json::from_str(p).unwrap();
+                    let e = v["event"]
+                        .as_str()
+                        .map_or_else(|| v["state"].to_string(), str::to_owned);
+                    (t.clone(), e)
+                })
+                .collect();
+            let want = [
+                ("alert", "raised"),
+                ("alert", "escalated"),
+                ("alert", "acknowledged"),
+                ("alert", "resolved"),
+                ("job", "\"ok\""),
+            ];
+            assert_eq!(events, want.map(|(a, b)| (a.to_owned(), b.to_owned())).to_vec());
+            let job: serde_json::Value = serde_json::from_str(&ev[4].1).unwrap();
+            assert_eq!(
+                (job["finished"].as_i64(), job["kind"].as_str()),
+                (Some(7), Some("backup"))
+            );
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..before].iter().skip(v as usize).count(), 0);
+        old.execute_batch(
+            "INSERT INTO alerts (ts, severity, kind, message) VALUES (2, 'info', 'y', 'older release');
+             INSERT INTO jobs (kind, tenant, params, state, requested_by, created) VALUES ('gc','t','{}','queued','s',2);",
+        )
+        .unwrap();
     }
 }

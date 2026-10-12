@@ -3508,14 +3508,17 @@ dependencies = [
  "plugin-manager",
  "plugin-proto",
  "rand 0.8.8",
+ "rcgen",
  "replication",
  "reports",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "truenas",
+ "webpki-roots",
  "zeroize",
 ]
 

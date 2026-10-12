@@ -19,6 +19,7 @@ a different administrator or security officer must approve:
 | Single sign-on | saving the single sign-on settings (identity provider, client secret, group mappings), because it changes who can sign in (`oidc update`) |
 | Appliance SSH keys | rotating an appliance SSH key (`ssh key rotate`) |
 | Updates | **Install now**: installing an available appliance update without waiting for the maintenance window (`update apply`) |
+| Monitoring | weakening anomaly detection (`settings anomaly`); disabling or removing an enabled forwarding sink, or changing its destination, certificate trust or headers (`settings forwarding`, see [Forwarding](#forwarding-to-a-siem)) |
 | Approvals | disabling the approval requirement itself (`approvals disable`) |
 | Console access | a root shell on the appliance console (`console unlock`, **Settings → Console access**): after the approval the requester shows the one-time code once; see [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console) |
 
@@ -100,6 +101,22 @@ Open **Audit log** (administrators and security officers).
 Every entry has a sequence number (**#**), **Time**, **Actor**, **Action**, **Target**, **Details** and **Hash**.
 Entries are listed newest first; **Load more** pages back in time.
 
+### Filtering and exporting
+
+The filter bar narrows the list; click **Apply** (or press Enter), **Clear** shows everything again:
+
+- **Actor**: exactly this user (or `scheduler`, `web-api`, `system`, `setup`);
+- **Action**: actions starting with the text, for example `user.` for all account changes or `quorum.approve`;
+- **Target**: targets containing the text, for example `tenant/acme`;
+- **From** / **To**: days (in your browser's time zone, both inclusive).
+
+**Export CSV** downloads every entry matching the current filters as `nexus-audit.csv`, oldest first, with the
+columns `seq, ts, actor, action, target, details, prev_hash, hash` (`ts` in Unix seconds, `details` as JSON). Each
+row carries its own and the previous entry's hash, so an auditor can check the exported rows against the chain or
+against the copies a SIEM received. The export itself is recorded (`audit.export`, with the filters). Values are
+exported unchanged (the hashes cover them): open the file in a spreadsheet as text, not by double-clicking, so that
+no cell is evaluated as a formula.
+
 What is recorded:
 
 - every change made through the web interface or API (create, update, delete, job requests), including the
@@ -127,14 +144,81 @@ recomputes every hash. "Chain intact (N entries)." means no entry was altered, r
 
 The audit table itself is append-only in the database (updates and deletes are refused by triggers).
 
+Once a day the scheduler appends an **`audit.anchor`** entry (actor `scheduler`, target `audit/chain`) whose details
+are the sequence number and hash of the newest entry at that moment (`head_seq`, `head_hash`). With forwarding
+configured (next section), the anchor and every other entry leave the appliance, so the chain head is held outside
+the box at least daily.
+
 > **Status:** The chain proves integrity only against changes that do not recompute it. A process with write access
-> to the catalog database (or root) could rebuild the whole chain. The chain is not yet anchored outside the appliance:
-> audit entries go to the local system journal without their details, and the image has no log-forwarding
-> (syslog/SIEM) configuration yet. Keep this in mind when you rely on the audit log for compliance.
+> to the catalog database (or root) could rebuild the whole chain on the appliance. What the appliance cannot rewrite
+> is what it has already forwarded: compare the hashes your SIEM received (every forwarded audit entry carries `seq`
+> and `hash`, and the daily `audit.anchor`) with **Export CSV** or the Audit log. Without a forwarding sink the
+> chain is anchored nowhere outside the appliance; configure one when you rely on the audit log for compliance.
+
+## Forwarding to a SIEM
+
+**Configuration → Settings → Forwarding** (administrators change it, security officers read it) sends the audit log,
+alert events and finished jobs to a log server or SIEM. Two sinks are available; you can use either or both:
+
+![Settings: Forwarding](images/settings-forwarding.png)
+
+- **Syslog over TLS**: RFC 5424 messages with RFC 5425 octet-counting framing over TLS, default port **6514**
+  (rsyslog `imtcp` with `StreamDriver.Mode="1"`, syslog-ng `network(transport("tls"))`, most SIEM collectors).
+  **App name** (default `nexus`) and **Facility** (default 13, "log audit") go into each message header.
+- **HTTPS (JSON)**: batches of up to **Entries per request** (default 100) entries, POSTed as a JSON array to the
+  URL. Optional **Extra headers** (for example `Authorization: Bearer …` or a collector token) are stored encrypted
+  and never shown again; leave a value empty to keep it. Any 2xx answer counts as delivered.
+
+**Server certificate** (both sinks): paste the CA that signed the receiver's certificate, or the receiver's
+certificate itself, as PEM; or enter the SHA-256 fingerprint of the receiver's certificate (for example from
+`openssl x509 -in server.pem -noout -fingerprint -sha256`). With neither, the receiver needs a certificate from a
+public CA. There is no option to switch certificate checks off.
+
+**Send test message** sends one test message (syslog MSGID `test`, JSON `{"type": "test"}`) to every configured
+sink, enabled or not, and shows "ok" or the error per sink.
+
+What is sent, in order and at least once:
+
+| Type | Syslog MSGID | Structured data `[nexus@32473 …]` | JSON `type` and fields |
+|---|---|---|---|
+| every audit entry | `audit` | `seq`, `hash`, `actor`, `action`, `target` (details in the message text) | `audit`: `seq`, `ts`, `actor`, `action`, `target`, `details`, `prev_hash`, `hash` |
+| alert raised, escalated, acknowledged, resolved | `alert` | `outbox_seq`, `id`, `event`, `severity`, `kind`, `key`, `tenant` | `alert`: `event`, `id`, `ts`, `severity`, `kind`, `key`, `message`, `tenant`, `alert_url`, … |
+| job finished (ok, failed, cancelled) | `job` | `outbox_seq`, `id`, `kind`, `tenant`, `state`, `requested_by` | `job`: `id`, `kind`, `tenant`, `state`, `requested_by`, `created`, `started`, `finished`, `attempt` |
+
+Every record also carries the appliance host name (`host` in JSON, HOSTNAME in syslog). Syslog severities: audit
+entries are *notice*; alerts follow their severity (critical = *crit*, warning = *warning*, info = *info*; resolved
+= *notice*); failed jobs are *warning*. `32473` in the structured-data ID is the example enterprise number reserved
+for documentation (RFC 5612); filter on the SD-ID or the app name.
+
+Delivery rules:
+
+- The appliance remembers, per sink, the last audit entry and the last event it delivered. A new destination
+  starts from the first audit entry, so the receiver gets the whole history.
+- When the receiver is down or refuses the certificate, nothing is skipped: the appliance keeps the backlog, retries
+  (10 seconds, doubling up to 5 minutes) and sends everything once it works again. After **15 minutes** of failure it
+  raises a `forwarding` alert (warning), resolved after the next delivered batch (see
+  [11 Alerts and monitoring](11-alerts-and-monitoring.md)).
+- "At least once" means a batch may arrive twice after a failure in the middle of it; deduplicate by `seq` (audit)
+  or `outbox_seq` (alerts, jobs). Syslog has no acknowledgement: a batch counts as delivered when the receiver
+  closed the TLS connection cleanly after it.
+- Adding or enabling a sink and changing app name, facility or batch size take effect at once. **Disabling or
+  removing an enabled sink, or changing its server, port, URL, certificate or headers, is a request** that another
+  administrator or security officer must approve (`settings forwarding`) while approvals are enabled: otherwise one
+  person could quietly stop the audit trail from leaving the appliance.
+- The appliance's firewall allows connections to the configured sinks only (see
+  [15 Troubleshooting](15-troubleshooting-faq.md) if a test fails with "No route to host" right after saving: the
+  allow-list is applied within a few seconds).
+
+The **Forwarding** box on the Audit log shows, per sink, its destination, its state (**up to date**, **N entries
+behind**, **failing since …** or **disabled**), the last delivered sequence number against the newest one, the last
+successful delivery and the last error.
 
 ## Good practice
 
 - Have at least two security officers, so approvals continue when one is absent.
 - Review pending requests daily; they expire after 72 hours.
 - Verify the audit chain regularly, for example weekly, and after any incident.
+- Forward the audit log to a system the appliance's administrators cannot change, and compare a recent
+  `audit.anchor` there with the Audit log from time to time. Let the SIEM alert you when no `audit.anchor` has
+  arrived for more than a day: forwarding stopped (receiver, network, or someone disabled it).
 - Acknowledge alerts about approvals (`gc_quorum`) only after the request was decided.

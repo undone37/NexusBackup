@@ -400,6 +400,11 @@ async function main() {
       await until(`return document.body.innerText.includes('Chain intact')`, 'audit verification');
       await shot('audit');
     }],
+    ['forwarding', async () => {
+      await go('/settings?tab=forwarding');
+      await until(`return !!document.querySelector('#fw-host')`, 'forwarding settings');
+      await shot('settings-forwarding', { height: 1300 });
+    }],
     ['snapshots', async () => {
       await go('/snapshots?tenant=initech');
       await shot('snapshots');

@@ -167,6 +167,17 @@ pub fn oidc_targets(c: &catalog::rusqlite::Connection) -> anyhow::Result<Vec<(St
     Ok(out)
 }
 
+/// Forwarding sinks (forward.rs), enabled or not ("Send test message" works
+/// for a disabled one): the syslog server and the HTTPS endpoint.
+pub fn forward_targets(f: &catalog::forwarding::Forwarding) -> Vec<(String, u16)> {
+    let mut out = Vec::new();
+    if let Some(s) = &f.syslog {
+        out.push((s.host.trim_matches(['[', ']']).to_owned(), s.port));
+    }
+    out.extend(f.https.as_ref().and_then(|h| url_target(&h.url)));
+    out
+}
+
 /// `host:port` / `[v6]:port` → (host, port); None without a valid port.
 fn split_host_port(s: &str) -> Option<(String, u16)> {
     let (h, p) = s.rsplit_once(':')?;
@@ -273,6 +284,19 @@ mod tests {
             oidc_targets(&conn).unwrap(),
             vec![("idp.example.com".into(), 443), ("keys.example.com".into(), 8443)]
         );
+    }
+
+    #[test]
+    fn forwarding() {
+        let f: catalog::forwarding::Forwarding = serde_json::from_value(json!({
+            "syslog": {"host": "[2001:db8::7]", "enabled": false},
+            "https": {"url": "https://siem.example:8443/in"}}))
+        .unwrap();
+        assert_eq!(
+            forward_targets(&f),
+            vec![("2001:db8::7".into(), 6514), ("siem.example".into(), 8443)]
+        );
+        assert!(forward_targets(&Default::default()).is_empty());
     }
 
     #[test]

@@ -481,6 +481,28 @@ export interface AuditEntry {
   hash: string;
 }
 
+/** Setting `forwarding` (GET/PUT /settings/forwarding); header values are write-only (null = stored). */
+export interface ForwardingSettings {
+  syslog: { enabled: boolean; host: string; port: number; ca_pem: string | null; pin_sha256: string | null; app_name: string; facility: number } | null;
+  https: { enabled: boolean; url: string; headers: Record<string, string | null>; batch_max: number; ca_pem: string | null; pin_sha256: string | null } | null;
+}
+
+/** GET /audit/forwarding: delivery state per configured sink. */
+export interface ForwardingStatus {
+  head_seq: number;
+  sinks: {
+    sink: 'syslog' | 'https';
+    dest: string;
+    enabled: boolean;
+    audit_seq: number;
+    event_seq: number;
+    last_ok: number | null;
+    last_error: string | null;
+    last_error_ts: number | null;
+    failing_since: number | null;
+  }[];
+}
+
 export interface AuditVerify {
   ok: boolean;
   entries?: number;

@@ -1,0 +1,8 @@
+# Forwarding testbox (lab only): rsyslog with TLS (imtcp + gtls, RFC 5425 octet counting) and a tiny
+# HTTPS JSON sink, for lab/appliance/forwarding.sh. Certificates and output are mounted at run time.
+FROM quay.io/centos/centos:stream10
+RUN dnf -y install --setopt=install_weak_deps=False rsyslog rsyslog-gnutls python3 && dnf clean all
+COPY rsyslog.conf /etc/rsyslog-lab.conf
+COPY sink.py /usr/local/bin/sink.py
+# rsyslog in the background, the HTTPS sink in the foreground (podman stop ends both)
+CMD ["/bin/sh", "-c", "rsyslogd -f /etc/rsyslog-lab.conf -i /tmp/rsyslogd.pid && exec python3 /usr/local/bin/sink.py"]

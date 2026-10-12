@@ -115,12 +115,97 @@ pub struct AuditFilter {
     before: Option<i64>,
     order: Option<String>,
     limit: Option<u32>,
+    /// exact user (or `scheduler`, `web-api`, …)
+    actor: Option<String>,
+    /// prefix (`user.`, `quorum.approve`)
+    action: Option<String>,
+    /// substring (`tenant/acme`)
+    target: Option<String>,
+    /// unix seconds, inclusive
+    from: Option<i64>,
+    to: Option<i64>,
 }
 
 const AUDITORS: &[&str] = &["admin", "security_officer"];
 
+/// `WHERE` of the audit filters: `?1` after, `?2` before, `?3` actor, `?4`
+/// action prefix, `?5` target substring, `?6` from, `?7` to.
+const AUDIT_WHERE: &str = "seq > ?1 AND seq < ?2 AND (?3 IS NULL OR actor = ?3) \
+     AND (?4 IS NULL OR substr(action, 1, length(?4)) = ?4) AND (?5 IS NULL OR instr(target, ?5) > 0) \
+     AND (?6 IS NULL OR ts >= ?6) AND (?7 IS NULL OR ts <= ?7)";
+
+/// seq, ts, actor, action, target, details, prev_hash, hash
+type AuditRow = (i64, i64, String, String, String, String, String, String);
+
+impl AuditFilter {
+    fn check(&self) -> ApiResult<()> {
+        for (k, v) in [
+            ("actor", &self.actor),
+            ("action", &self.action),
+            ("target", &self.target),
+        ] {
+            if v.as_ref().is_some_and(|s| s.len() > 256) {
+                return Err(ApiError::bad(format!("{k}: at most 256 characters")));
+            }
+        }
+        Ok(())
+    }
+
+    /// Empty filter strings (an empty form field) mean "any".
+    fn text(v: &Option<String>) -> Option<&str> {
+        v.as_deref().filter(|s| !s.is_empty())
+    }
+
+    /// One page of entries after `after` / before `before`.
+    fn query(&self, c: &catalog::rusqlite::Connection, desc: bool, limit: u32) -> ApiResult<Vec<AuditRow>> {
+        Ok(c.prepare(&format!(
+            "SELECT seq, ts, actor, action, target, details, prev_hash, hash FROM audit WHERE {AUDIT_WHERE} \
+             ORDER BY seq {} LIMIT ?8",
+            if desc { "DESC" } else { "ASC" }
+        ))?
+        .query_map(
+            catalog::rusqlite::params![
+                self.after.unwrap_or(0),
+                self.before.unwrap_or(i64::MAX),
+                Self::text(&self.actor),
+                Self::text(&self.action),
+                Self::text(&self.target),
+                self.from,
+                self.to,
+                limit
+            ],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                ))
+            },
+        )?
+        .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// The filters given (audited with the export).
+    fn shown(&self) -> Value {
+        let mut v = json!({"actor": self.actor, "action": self.action, "target": self.target,
+                           "from": self.from, "to": self.to, "after": self.after, "before": self.before});
+        if let Some(o) = v.as_object_mut() {
+            o.retain(|_, x| !x.is_null() && x != "");
+        }
+        v
+    }
+}
+
+/// Filters: `actor` (exact), `action` (prefix), `target` (substring), `from` /
+/// `to` (unix seconds); pages with `after` / `before` + `limit`.
 pub async fn list_audit(State(st): State<St>, ctx: Ctx, Q(f): Q<AuditFilter>) -> ApiResult<Json<Value>> {
     ctx.require(AUDITORS)?;
+    f.check()?;
     // ascending from `after` (default); newest first with `before` or `order=desc`
     let desc = match f.order.as_deref() {
         None => f.before.is_some(),
@@ -128,31 +213,79 @@ pub async fn list_audit(State(st): State<St>, ctx: Ctx, Q(f): Q<AuditFilter>) ->
         Some("asc") if f.before.is_none() => false,
         Some(_) => return Err(ApiError::bad("order: asc or desc (before implies desc)")),
     };
-    let c = st.cat.conn();
-    let rows = c
-        .prepare(&format!(
-            "SELECT seq, ts, actor, action, target, details, prev_hash, hash FROM audit \
-             WHERE seq > ?1 AND seq < ?2 ORDER BY seq {} LIMIT ?3",
-            if desc { "DESC" } else { "ASC" }
-        ))?
-        .query_map(
-            catalog::rusqlite::params![
-                f.after.unwrap_or(0),
-                f.before.unwrap_or(i64::MAX),
-                f.limit.unwrap_or(500).min(1000)
-            ],
-            |r| {
-                let d: String = r.get(5)?;
-                Ok(json!({
-                    "seq": r.get::<_, i64>(0)?, "ts": r.get::<_, i64>(1)?, "actor": r.get::<_, String>(2)?,
-                    "action": r.get::<_, String>(3)?, "target": r.get::<_, String>(4)?,
-                    "details": serde_json::from_str::<Value>(&d).unwrap_or(Value::String(d)),
-                    "prev_hash": r.get::<_, String>(6)?, "hash": r.get::<_, String>(7)?,
-                }))
-            },
-        )?
-        .collect::<Result<Vec<_>, _>>()?;
+    let rows = f.query(&st.cat.conn(), desc, f.limit.unwrap_or(500).min(1000))?;
+    let rows = rows
+        .into_iter()
+        .map(|(seq, ts, actor, action, target, d, prev, hash)| {
+            json!({
+                "seq": seq, "ts": ts, "actor": actor, "action": action, "target": target,
+                "details": serde_json::from_str::<Value>(&d).unwrap_or(Value::String(d)),
+                "prev_hash": prev, "hash": hash,
+            })
+        })
+        .collect();
     Ok(Json(Value::Array(rows)))
+}
+
+/// RFC 4180 field: quoted when it contains a comma, quote or line break.
+/// Values are exported unchanged (the hashes cover them): open the file as
+/// text rather than letting a spreadsheet evaluate cells.
+fn csv_field(s: &str) -> String {
+    if s.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_owned()
+    }
+}
+
+/// `GET /audit.csv`: the filtered entries, oldest first, with `prev_hash` and
+/// `hash` (each row can be checked against the chain), streamed in pages of
+/// 1000. Audited as `audit.export` (with the filters) before the first row.
+pub async fn export_audit(State(st): State<St>, ctx: Ctx, Q(mut f): Q<AuditFilter>) -> ApiResult<Response> {
+    use tokio::io::AsyncWriteExt;
+    ctx.require(AUDITORS)?;
+    f.check()?;
+    if f.order.is_some() || f.limit.is_some() {
+        return Err(ApiError::bad(
+            "audit.csv: no order or limit (all matching rows, oldest first)",
+        ));
+    }
+    st.audit(ctx.name(), "audit.export", "audit", f.shown())?;
+    let (mut w, r) = tokio::io::duplex(64 << 10);
+    tokio::spawn(async move {
+        let mut out = String::from("seq,ts,actor,action,target,details,prev_hash,hash\r\n");
+        loop {
+            let page = match f.query(&st.cat.conn(), false, 1000) {
+                Ok(p) => p,
+                Err(e) => {
+                    // the body ends early: the client sees an incomplete transfer
+                    return eprintln!("<3>web-api: audit.csv: {}", e.1);
+                }
+            };
+            let Some(last) = page.last().map(|r| r.0) else { break };
+            for (seq, ts, actor, action, target, d, prev, hash) in page {
+                let row = [actor, action, target, d].map(|x| csv_field(&x)).join(",");
+                out.push_str(&format!("{seq},{ts},{row},{prev},{hash}\r\n"));
+            }
+            if w.write_all(out.as_bytes()).await.is_err() {
+                return;
+            }
+            out.clear();
+            f.after = Some(last);
+        }
+        let _ = w.write_all(out.as_bytes()).await;
+    });
+    let mut res = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(r)).into_response();
+    let h = res.headers_mut();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/csv; charset=utf-8"),
+    );
+    h.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_static("attachment; filename=\"nexus-audit.csv\""),
+    );
+    Ok(res)
 }
 
 pub async fn verify_audit(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>> {

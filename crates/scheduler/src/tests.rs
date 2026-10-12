@@ -1891,6 +1891,8 @@ fn inventory_jobs_and_auto_protect() {
 }
 /// Phase 14d certificate / secret / token expiry alerts.
 mod expiry;
+/// Phase 14a audit / alert forwarding.
+mod forward;
 /// Phase 14e scheduled reports.
 mod report_mail;
 /// Phase 13b run control (pause, blackout, retries, SLA, cancel).

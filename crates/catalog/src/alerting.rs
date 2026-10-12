@@ -42,6 +42,7 @@ const HINTS: &[(&str, &str)] = &[
     ("replication_keys", "The tenant keys on this secondary do not match the primary. Re-export the keys on the primary (needs approval)."),
     ("break_glass", "An administrator account was reset at the console. Confirm with the person who did it, then acknowledge to clear the banner."),
     ("cert_expiry", "A certificate, secret or API token expires soon. Renew it as the message says (web certificate: Settings → Certificate; agents and replication secondaries: enroll again; IdP secret: Settings → Single sign-on; tokens: create a new one). Resolves once renewed."),
+    ("forwarding", "Audit and alert forwarding to the named syslog or HTTPS sink has failed for 15 minutes. Check the receiver (reachable, certificate, credentials) and Settings → Forwarding; nothing is lost, the backlog is sent when it works again. Resolves after the next delivered batch."),
     ("report", "A scheduled report could not be mailed. Check the SMTP server under Settings → Alert delivery (reachable, credentials) and the report's recipients on the Reports page, then use Send now. Resolves after the next successful send."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];

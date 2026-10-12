@@ -212,6 +212,13 @@ const db = {
   diag: [] as Json[],
   /** Phase 13e setting `anomaly` */
   anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30 } as Json,
+  /** Phase 14a setting `forwarding` (header values: plaintext here, null in responses) */
+  forwarding: {
+    syslog: { enabled: true, host: 'siem.example.com', port: 6514, ca_pem: null, pin_sha256: '3f'.repeat(32), app_name: 'nexus', facility: 13 },
+    https: null,
+  } as Json,
+  /** last delivery error per sink (none = the forwarder keeps up) */
+  forwardErr: {} as Record<string, string>,
   /** Phase 14e setting `reports` (scheduled reports) */
   reports: [] as Json[],
 };
@@ -1428,6 +1435,9 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'settings.anomaly':
       db.anomaly = structuredClone(p.anomaly);
       break;
+    case 'settings.forwarding':
+      db.forwarding = structuredClone(p.forwarding);
+      break;
     case 'policy.update':
       Object.assign(find(db.policies, (x) => x.id === p.id, 'policy'), next);
       break;
@@ -2426,14 +2436,57 @@ for (const verb of ['approve', 'reject'] as const) {
 }
 
 // audit
+// filters as the web-api: actor exact, action prefix, target substring, from/to unix seconds
+function auditFiltered(q: URLSearchParams): Json[] {
+  const after = Number(q.get('after') ?? 0);
+  const before = q.get('before');
+  const [actor, action, target] = ['actor', 'action', 'target'].map((k) => q.get(k) || null);
+  const from = q.get('from') ? Number(q.get('from')) : null;
+  const to = q.get('to') ? Number(q.get('to')) : null;
+  return db.audit.filter(
+    (e) =>
+      e.seq > after &&
+      (before === null || e.seq < Number(before)) &&
+      (!actor || e.actor === actor) &&
+      (!action || e.action.startsWith(action)) &&
+      (!target || e.target.includes(target)) &&
+      (from === null || e.ts >= from) &&
+      (to === null || e.ts <= to),
+  );
+}
 on('GET', '/audit', (c) => {
   need(c.user, 'admin', 'security_officer');
-  const after = Number(c.query.get('after') ?? 0);
   const before = c.query.get('before');
   const limit = Math.min(Number(c.query.get('limit') ?? 500), 1000);
   const desc = before !== null || c.query.get('order') === 'desc';
-  const xs = db.audit.filter((e) => e.seq > after && (before === null || e.seq < Number(before)));
+  const xs = auditFiltered(c.query);
   return [200, (desc ? [...xs].reverse() : xs).slice(0, limit)];
+});
+async function auditCsv(u: User, q: URLSearchParams): Promise<string> {
+  const shown: Json = {};
+  for (const k of ['actor', 'action', 'target', 'from', 'to', 'after', 'before']) if (q.get(k)) shown[k] = /^(from|to|after|before)$/.test(k) ? Number(q.get(k)) : q.get(k);
+  const rows = auditFiltered(q);
+  await audit(u.name, 'audit.export', 'audit', shown);
+  const f = (s: string) => (/[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
+  return ['seq,ts,actor,action,target,details,prev_hash,hash', ...rows.map((e) => [e.seq, e.ts, f(e.actor), f(e.action), f(e.target), f(JSON.stringify(e.details)), e.prev_hash, e.hash].join(','))].join('\r\n') + '\r\n';
+}
+on('GET', '/audit/forwarding', (c) => {
+  need(c.user, 'admin', 'security_officer');
+  const head = db.audit.length;
+  const f = db.forwarding;
+  const sinks = (['syslog', 'https'] as const)
+    .filter((k) => f[k])
+    .map((k) => {
+      const err = db.forwardErr[k];
+      const dest = k === 'syslog' ? `${f.syslog.host}:${f.syslog.port}` : f.https.url;
+      return {
+        sink: k, dest, enabled: f[k].enabled,
+        audit_seq: !f[k].enabled ? Math.max(0, head - 12) : err ? Math.max(0, head - 3) : head,
+        event_seq: err ? 40 : 42,
+        last_ok: now() - (err ? 1500 : 4), last_error: err ?? null, last_error_ts: err ? now() - 20 : null, failing_since: err ? now() - 1500 : null,
+      };
+    });
+  return [200, { head_seq: head, sinks }];
 });
 on('GET', '/audit/verify', async (c) => {
   need(c.user, 'admin', 'security_officer');
@@ -2907,6 +2960,74 @@ on('PUT', '/settings/anomaly', async (c) => {
   return [200, next];
 });
 
+// ---- forwarding (14a): header values write-only; weakening an enabled sink needs approval
+function pubForwarding(f: Json = db.forwarding): Json {
+  const v = structuredClone(f);
+  if (v.https) v.https.headers = Object.fromEntries(Object.keys(v.https.headers ?? {}).map((k) => [k, null]));
+  return v;
+}
+on('GET', '/settings/forwarding', (c) => (need(c.user, 'admin', 'security_officer'), [200, pubForwarding()]));
+on('PUT', '/settings/forwarding', async (c) => {
+  const u = need(c.user, 'admin');
+  const old = db.forwarding;
+  const pin = (v: unknown, w: string) => {
+    if (v === null || v === undefined || String(v).trim() === '') return null;
+    const h = String(v).replace(/:/g, '').trim();
+    if (!/^[0-9a-fA-F]{64}$/.test(h)) throw new HttpError(400, `${w}.pin_sha256: 64 hex digits (SHA-256 of the certificate)`);
+    return h.toLowerCase();
+  };
+  const pem = (v: unknown, w: string) => {
+    if (v === null || v === undefined || String(v).trim() === '') return null;
+    if (!String(v).includes('-----BEGIN CERTIFICATE-----')) throw new HttpError(400, `${w}.ca_pem: PEM certificate(s), at most 64 KiB`);
+    return String(v);
+  };
+  const s = c.body.syslog;
+  const h = c.body.https;
+  let syslog: Json | null = null;
+  if (s) {
+    if (!/^[A-Za-z0-9.:[\]-]{1,253}$/.test(s.host ?? '')) throw new HttpError(400, 'syslog.host: host name or IP address');
+    const facility = s.facility ?? 13;
+    if (!(Number.isInteger(facility) && facility >= 0 && facility <= 23)) throw new HttpError(400, 'syslog.facility: 0..=23');
+    const app = s.app_name ?? 'nexus';
+    if (!/^[!-~]{1,48}$/.test(app)) throw new HttpError(400, 'syslog.app_name: 1..=48 printable ASCII characters, no spaces');
+    syslog = { enabled: s.enabled ?? true, host: s.host, port: s.port ?? 6514, ca_pem: pem(s.ca_pem, 'syslog'), pin_sha256: pin(s.pin_sha256, 'syslog'), app_name: app, facility };
+  }
+  let https: Json | null = null;
+  if (h) {
+    if (!/^https:\/\/[^/@\s]+(\/\S*)?$/.test(h.url ?? '')) throw new HttpError(400, 'https.url: https://host[:port]/path, without user info');
+    const batch = h.batch_max ?? 100;
+    if (!(Number.isInteger(batch) && batch >= 1 && batch <= 1000)) throw new HttpError(400, 'https.batch_max: 1..=1000');
+    const headers: Json = {};
+    for (const [k, v] of Object.entries(h.headers ?? {})) {
+      if (v === null) {
+        const prev = old.https?.url === h.url ? old.https.headers?.[k] : undefined;
+        if (prev === undefined) throw new HttpError(400, `https.headers: a value for ${k} is required (new header or URL changed)`);
+        headers[k] = prev;
+      } else headers[k] = v;
+    }
+    https = { enabled: h.enabled ?? true, url: h.url, headers, batch_max: batch, ca_pem: pem(h.ca_pem, 'https'), pin_sha256: pin(h.pin_sha256, 'https') };
+  }
+  const next = { syslog, https };
+  const same = (a: Json, b: Json | null, keys: string[]) => !!a && !!b && b.enabled && keys.every((k) => JSON.stringify(a[k]) === JSON.stringify(b[k]));
+  const weaker =
+    (old.syslog?.enabled && !same(old.syslog, syslog, ['host', 'port', 'ca_pem', 'pin_sha256'])) ||
+    (old.https?.enabled && !same(old.https, https, ['url', 'ca_pem', 'pin_sha256', 'headers']));
+  if (weaker) return quorum(u, 'settings.forwarding', { forwarding: next, old: pubForwarding(old) });
+  db.forwarding = next;
+  const shown = pubForwarding();
+  await audit(u.name, 'settings.forwarding', 'settings/forwarding', shown);
+  return [200, shown];
+});
+on('POST', '/settings/forwarding/test', async (c) => {
+  const u = need(c.user, 'admin');
+  const f = db.forwarding;
+  const out: Json = {};
+  if (f.syslog) out.syslog = /bad|invalid/.test(f.syslog.host) ? `error: connecting ${f.syslog.host}:${f.syslog.port}: connection refused` : 'ok';
+  if (f.https) out.https = /bad|invalid/.test(f.https.url) ? 'error: HTTP status client error (401 Unauthorized)' : 'ok';
+  if (!f.syslog && !f.https) out.forwarding = 'error: no sink configured';
+  await audit(u.name, 'job.create', 'job/0', { kind: 'forward_test', params: {} });
+  return [200, out];
+});
 // ---- Phase 14e reports: CSV downloads and scheduled reports (docs/control-plane.md "Reports")
 const REPORT_TYPES = ['protection', 'failed', 'sla', 'storage'];
 const isoTime = (ts: number | null | undefined) => (ts ? new Date(ts * 1000).toISOString().replace('.000Z', 'Z') : '');
@@ -3576,6 +3697,11 @@ async function handle(req: Req, res: Res) {
       res.setHeader('Content-Disposition', `attachment; filename="${d.filename}"`);
       return send(200, d.body, 'application/octet-stream');
     }
+    if (path === '/audit.csv' && method === 'GET') {
+      const u = need(user, 'admin', 'security_officer');
+      res.setHeader('Content-Disposition', 'attachment; filename="nexus-audit.csv"');
+      return send(200, await auditCsv(u, url.searchParams), 'text/csv; charset=utf-8');
+    }
     const bytes = method === 'GET' ? null : await readBody(req);
     // Plugin uploads are raw bundles, everything else JSON.
     const raw = method === 'POST' && path === '/plugins' ? bytes : null;
@@ -3738,11 +3864,18 @@ export function mockApi(): Plugin {
       [t - 86400 - 3600, 'admin', 'job.create', 'job/plugin_restore', { kind: 'plugin_restore', tenant: 'acme', restore: 'pitr' }],
       [t - 5400, 'admin', 'job.create', 'job/backup', { kind: 'backup', tenant: 'initech', params: { vmid: 101 } }],
       [t - 3605, 'unknown-user', 'auth.login_failed', 'session', {}],
+      [t - 86400 * 8, 'admin', 'settings.forwarding', 'settings/forwarding', { syslog: { host: 'siem.example.com', port: 6514 }, https: null }],
     ];
+    // the scheduler's daily anchor (head seq + hash leave the box with the forwarding)
+    for (let d = 7; d >= 1; d--) hist.push([t - 86400 * d - 3000, 'scheduler', 'audit.anchor', 'audit/chain', { head_seq: 0, head_hash: '' }]);
     for (const q of [...db.quorum].filter((x) => x.state === 'pending').sort((a, b) => a.created - b.created))
       hist.push([q.created, q.requested_by, 'quorum.request', `quorum/${q.id}`, { action: q.action, params: q.params }]);
     hist.sort((a, b) => a[0] - b[0]);
-    for (const [ts, actor, action, target, details] of hist) await audit(actor, action, target, details, ts);
+    for (const [ts, actor, action, target, details] of hist) {
+      const head = db.audit[db.audit.length - 1];
+      const d = action === 'audit.anchor' ? { head_seq: head?.seq ?? 0, head_hash: head?.hash ?? '0'.repeat(64) } : details;
+      await audit(actor, action, target, d, ts);
+    }
   })();
   const mw = (req: Req, res: Res, next: () => void) => {
     if (!req.url?.startsWith('/api/v1/')) return next();

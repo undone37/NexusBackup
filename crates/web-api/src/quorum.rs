@@ -45,6 +45,7 @@ pub const WEB_ACTIONS: &[&str] = &[
     "oidc.update",
     "update.apply",
     "settings.anomaly",
+    "settings.forwarding",
 ];
 
 /// Who may approve or reject requests (never their own: see [`approve`]).
@@ -67,6 +68,8 @@ pub fn redact(mut v: Value) -> Value {
                     }
                 }
             }
+            // e.g. the sealed header values of a `settings.forwarding` request
+            Value::String(s) if catalog::secret::is_sealed(s) => *v = json!("<redacted>"),
             Value::Array(a) => a.iter_mut().for_each(walk),
             _ => {}
         }
@@ -237,6 +240,7 @@ fn unchanged_since_request(c: &Connection, action: &str, p: &Value) -> ApiResult
         "group.update" => crate::resources::group_value(c, int(p, "id")?)?,
         "tenant.update" => crate::resources::tenant_value(c, p["name"].as_str().unwrap_or_default())?,
         "settings.anomaly" => crate::storage::anomaly_value(c)?,
+        "settings.forwarding" => crate::forwarding::value(c)?,
         _ => return Ok(()),
     };
     if current.as_ref() != Some(&p["old"]) {
@@ -301,6 +305,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         // the request file for nexus-update is written after the commit (settings::after_approve)
         "update.apply" => {}
         "settings.anomaly" => catalog::set_setting(c, crate::storage::ANOMALY_SETTING, &p["anomaly"].to_string())?,
+        "settings.forwarding" => catalog::set_setting(c, catalog::forwarding::SETTING, &p["forwarding"].to_string())?,
         "agent.delete" => {
             let id = p["id"].as_str().unwrap_or_default();
             if crate::agents::agent_in_use(c, id)? {

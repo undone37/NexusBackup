@@ -380,7 +380,11 @@ where they are switched on and off. See [10 Approvals and audit](10-approvals-an
 ![Audit log after verifying the chain](images/audit.png)
 
 Every recorded action, newest first. **Verify chain** recomputes the hash chain over all entries; **Load more** pages
-back in time. See [10 Approvals and audit](10-approvals-and-audit.md#audit-log).
+back in time. The filter bar narrows the list by **Actor** (exact), **Action** (prefix, e.g. `user.`), **Target**
+(contains) and a **From** / **To** day range; **Export CSV** downloads the matching entries with their hashes
+(recorded as `audit.export`). The **Forwarding** box shows each configured syslog / HTTPS sink: destination, state
+(up to date, entries behind, failing, disabled), the last delivered entry against the newest, the last delivery and
+the last error. See [10 Approvals and audit](10-approvals-and-audit.md#audit-log).
 
 ## Configuration pages
 
@@ -428,6 +432,7 @@ when approvals are enabled.
 | **Updates** | running, staged, available and rollback image; **Check now**, **Install now** | [13 Updates](13-updates.md#updates-in-the-web-interface) |
 | **Anomaly detection** | thresholds of the change-rate `anomaly` alert | [11 Alerts and monitoring](11-alerts-and-monitoring.md#change-rate-anomalies) |
 | **Certificate** | the web certificate (chain, fingerprints, expiry), a certificate request generated on the appliance, importing the signed certificate, reverting | [02 Installation](02-installation.md#use-your-own-certificate) |
+| **Forwarding** | the syslog-over-TLS and HTTPS (JSON) sinks that receive the audit log, alert events and finished jobs; **Send test message** | [10 Approvals and audit](10-approvals-and-audit.md#forwarding-to-a-siem) |
 | **Diagnostics** | **Run checks** (self-checks with a help link each; the same checks gate updates), **Create bundle** (redacted support bundle for a time range, administrators only, downloadable for 24 h) | [15 Troubleshooting](15-troubleshooting-faq.md#diagnostics-and-support-bundles) |
 | **Console access** | requests for an emergency root shell on the appliance console, **Show code** (once), **Revoke** (administrators and security officers only) | [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console) |
 
@@ -444,6 +449,7 @@ when approvals are enabled.
 ![Settings: Anomaly detection](images/settings-anomaly.png)
 
 ![Settings: Certificate](images/settings-certificate.png)
+![Settings: Forwarding](images/settings-forwarding.png)
 ![Settings: Diagnostics](images/settings-diagnostics.png)
 ![Settings: Console access](images/settings-console.png)
 

@@ -79,6 +79,7 @@ log (`alert.ack`, `alert.resolve`).
 | `console_unlock` | critical | a one-time code for a root shell on the console was shown to its requester (**Settings → Console access**) | — | make sure the request was planned; revoke the code there if not. See [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console) |
 | `console_root_shell` | critical | a root shell was opened on the appliance console with a one-time code or the recovery key; while it runs every administrator, security officer and operator sees a red banner | — | confirm with the requester (or whoever holds the recovery key) what was done, check the audit log (`console.root_shell`, `console.root_shell_end`), then acknowledge |
 
+| `forwarding` | warning | audit / alert forwarding to a syslog or HTTPS sink has failed for 15 minutes (one alert per sink; the message names the destination and the error) | the sink delivers again (or is disabled / removed) | check the receiver (reachable, certificate, token) and **Settings → Forwarding** (**Send test message**); nothing is lost, the backlog follows. See [10 Approvals and audit](10-approvals-and-audit.md#forwarding-to-a-siem) |
 ## Expiry warnings
 
 The scheduler checks every 15 minutes what expires and raises one `cert_expiry` alert per item: **info** 90 days
@@ -255,8 +256,19 @@ rule for every alert:
 
 > **Status:** The alert lifecycle (counting, auto-resolve, reminders, retention) and the notification rules
 > (routing, templates, sealed headers) are covered by the scheduler and API tests and were tried in the web interface
-> against the demo backend. They have not yet been run on an installed appliance in the VM labs. Syslog and HTTPS
-> forwarding channels follow in a later release.
+> against the demo backend. They have not yet been run on an installed appliance in the VM labs.
+
+### Forwarding to syslog or a SIEM
+
+Notification rules pick alerts for people. To feed a log server or SIEM with **every** alert event (raised,
+escalated, acknowledged, resolved), every finished job and the audit log, use **Settings → Forwarding** (syslog
+over TLS and/or HTTPS JSON, in order, at least once); see
+[10 Approvals and audit](10-approvals-and-audit.md#forwarding-to-a-siem). A sink that fails for 15 minutes raises the
+`forwarding` alert.
+
+> **Status:** Forwarding is covered by scheduler tests against local TLS syslog and HTTPS receivers (resume after a
+> restart, nothing skipped after failures) and by API tests; the lab step `lab/appliance/forwarding.sh` checks it
+> on an installed appliance against an rsyslog container.
 
 ## Scheduled reports
 
