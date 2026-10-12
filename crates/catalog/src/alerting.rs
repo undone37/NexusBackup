@@ -41,6 +41,7 @@ const HINTS: &[(&str, &str)] = &[
     ("replication_verify", "Replicated data failed verification and was not imported. Check the primary's store and run the sync again."),
     ("replication_keys", "The tenant keys on this secondary do not match the primary. Re-export the keys on the primary (needs approval)."),
     ("break_glass", "An administrator account was reset at the console. Confirm with the person who did it, then acknowledge to clear the banner."),
+    ("forwarding", "Audit and alert forwarding to the named syslog or HTTPS sink has failed for 15 minutes. Check the receiver (reachable, certificate, credentials) and Settings → Forwarding; nothing is lost, the backlog is sent when it works again. Resolves after the next delivered batch."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
 
