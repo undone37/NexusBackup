@@ -598,18 +598,25 @@ export const en = {
       "This change allows more bandwidth or a wider sync window: it needs approval.",
   },
   sources: {
-    title: "Sources",
-    lede: "Systems the appliance backs up: hypervisors, hosts, NAS systems, file shares and plugin sources.",
-    new: "New source",
-    host: "API host",
-    port: "API port",
-    caPem: "CA certificate (PEM)",
-    tokenId: "API token ID",
-    tokenSecret: "API token secret",
-    nodes: "Nodes (JSON: name → SSH settings)",
-    storage: "NexusBackup storage ID on PVE",
-    fleecing: "Fleecing storage",
-    kind: "Source type",
+    title: 'Sources',
+    lede: 'Systems the appliance backs up: hypervisors, hosts, NAS systems, file shares and plugin sources.',
+    new: 'New source',
+    host: 'API host',
+    port: 'API port',
+    caPem: 'CA certificate (PEM)',
+    tokenId: 'API token ID',
+    tokenSecret: 'API token secret',
+    nodes: 'Nodes (JSON: name → SSH settings)',
+    storage: 'NexusBackup storage ID on PVE',
+    fleecing: 'Fleecing storage',
+    fleecingGuard: 'Fleecing space guard',
+    fleecingGuardHint:
+      'Before each VM and every 30 s while it runs, the free space of the fleecing storage on its node is checked. A full LVM-thin pool pauses every VM on it.',
+    fleecingMinPct: 'Skip a guest below (% free)',
+    fleecingMinGib: '… and below (GiB free)',
+    fleecingCancelPct: 'Cancel a running backup below (% free)',
+    fleecingGuardRule: 'A guest is skipped when the free space is below both limits (whichever is smaller); the alert fleecing_space is raised.',
+    kind: 'Source type',
     kinds: {
       pve: "Proxmox VE cluster",
       linux: "Linux or Windows host (agent)",
@@ -1114,43 +1121,32 @@ export const en = {
     } as Record<string, string>,
     fw: {
       intro:
-        "Sends the audit log (every entry with its sequence number and hash), alert events (raised, escalated, acknowledged, resolved) and finished jobs to your SIEM, in order and at least once. If a receiver is down, the appliance keeps the backlog and retries; after 15 minutes it raises a forwarding alert. Once a day the scheduler writes an audit.anchor entry with the current chain head, so the head leaves the appliance at least daily.",
-      quorumHint:
-        "Adding or enabling a sink applies at once. Disabling or removing an enabled sink, or changing its destination, certificate trust or headers, needs a second person when approvals are enabled.",
-      syslog: "Syslog over TLS",
-      syslogIntro:
-        "RFC 5424 messages with RFC 5425 framing over TLS (port 6514), for rsyslog, syslog-ng or a SIEM collector.",
-      https: "HTTPS (JSON)",
-      httpsIntro:
-        "Batches of entries as a JSON array, POSTed to the URL. Any 2xx answer counts as delivered.",
-      enabled: "Enabled",
-      configure: "Configure this sink",
-      host: "Server",
-      port: "Port",
-      appName: "App name",
-      facility: "Facility",
-      url: "URL (https://)",
-      batch: "Entries per request",
-      trust: "Server certificate",
-      trustHint:
-        "Paste the CA (or the server certificate itself) as PEM, or the SHA-256 fingerprint of the server certificate. Neither: the server needs a certificate from a public CA.",
-      caPem: "CA or server certificate (PEM)",
-      pin: "SHA-256 fingerprint",
-      test: "Send test message",
-      facilities: {
-        13: "log audit (13)",
-        4: "auth (4)",
-        10: "authpriv (10)",
-        3: "daemon (3)",
-        16: "local0 (16)",
-        17: "local1 (17)",
-        18: "local2 (18)",
-        19: "local3 (19)",
-        20: "local4 (20)",
-        21: "local5 (21)",
-        22: "local6 (22)",
-        23: "local7 (23)",
-      } as Record<number, string>,
+        'Sends the audit log (every entry with its sequence number and hash), alert events (raised, escalated, acknowledged, resolved) and finished jobs to your SIEM, in order and at least once. If a receiver is down, the appliance keeps the backlog and retries; after 15 minutes it raises a forwarding alert. Once a day the scheduler writes an audit.anchor entry with the current chain head, so the head leaves the appliance at least daily.',
+      quorumHint: 'Adding or enabling a sink applies at once. Disabling or removing an enabled sink, or changing its destination, certificate trust or headers, needs a second person when approvals are enabled.',
+      syslog: 'Syslog over TLS',
+      syslogIntro: 'RFC 5424 messages with RFC 5425 framing over TLS (port 6514), for rsyslog, syslog-ng or a SIEM collector.',
+      https: 'HTTPS (JSON)',
+      httpsIntro: 'Batches of entries POSTed to the URL, as a JSON array or as Splunk HEC events. Any 2xx answer counts as delivered.',
+      format: 'Body format',
+      formats: { json_array: 'JSON array', splunk_hec: 'Splunk HEC (HTTP Event Collector)' } as Record<string, string>,
+      jsonHint: 'One JSON array per request: [{"type": "audit" | "alert" | "job", "category": …, …}].',
+      hecHint:
+        'One event object per line ({"time", "host", "source": "nexusbackup", "sourcetype": "_json", "event": {…}}). URL: https://<splunk>:8088/services/collector/event; header Authorization with the value Splunk <HEC token>.',
+      index: 'Splunk index (optional)',
+      enabled: 'Enabled',
+      configure: 'Configure this sink',
+      host: 'Server',
+      port: 'Port',
+      appName: 'App name',
+      facility: 'Facility',
+      url: 'URL (https://)',
+      batch: 'Entries per request',
+      trust: 'Server certificate',
+      trustHint: 'Paste the CA (or the server certificate itself) as PEM, or the SHA-256 fingerprint of the server certificate. Neither: the server needs a certificate from a public CA.',
+      caPem: 'CA or server certificate (PEM)',
+      pin: 'SHA-256 fingerprint',
+      test: 'Send test message',
+      facilities: { 13: 'log audit (13)', 4: 'auth (4)', 10: 'authpriv (10)', 3: 'daemon (3)', 16: 'local0 (16)', 17: 'local1 (17)', 18: 'local2 (18)', 19: 'local3 (19)', 20: 'local4 (20)', 21: 'local5 (21)', 22: 'local6 (22)', 23: 'local7 (23)' } as Record<number, string>,
     },
     readOnly: "Read-only: only administrators change these settings.",
     test: "Send test",
@@ -1591,16 +1587,22 @@ export const en = {
     resolved: "Resolved",
     resolvedDone: "Alert resolved.",
     resolvedBy: (n: string, when: string) => `Resolved by ${n} ${when}`,
-    auto: "auto-resolved",
-    autoTitle:
-      "The appliance resolved this alert because the problem went away.",
-    filter: "Show",
-    filters: { open: "Open", resolved: "Resolved", all: "All" } as Record<
-      string,
-      string
-    >,
-    seen: "Seen",
-    count: (n: number) => (n === 1 ? "once" : `${n} times`),
+    auto: 'auto-resolved',
+    autoTitle: 'The appliance resolved this alert because the problem went away.',
+    filter: 'Show',
+    filters: { open: 'Open', resolved: 'Resolved', all: 'All' } as Record<string, string>,
+    category: 'Category',
+    allCategories: 'All categories',
+    categories: {
+      security: 'Security',
+      backup: 'Backup',
+      replication: 'Replication',
+      hardware: 'Hardware',
+      system: 'System',
+      audit: 'Audit',
+    } as Record<string, string>,
+    seen: 'Seen',
+    count: (n: number) => (n === 1 ? 'once' : `${n} times`),
     firstLast: (first: string, last: string) => `first ${first}, last ${last}`,
     tenant: "Tenant",
     whatToDo: "What to do",
@@ -1622,45 +1624,28 @@ export const en = {
     holdReasonAdvisory: (origin: string) =>
       `Legal hold advised by the primary ${origin}`,
     hints: {
-      job_failed:
-        "Open the job log on the Jobs page, fix the cause (source reachable, credentials, space) and run the job again. The alert resolves itself after the next successful run.",
-      verify:
-        "Stored data failed verification. Do not delete snapshots; check the store disks (SMART) and the offsite target, then run Verify again. Resolves after a successful verify.",
-      inventory:
-        "Snapshots disappeared or differ from the catalog. Check the store and the offsite target for manual deletion or tampering and review the audit log. Resolves after a clean offsite check.",
-      capacity:
-        "The store is filling up. Shorten retention, run GC or add disks. Resolves when usage drops below the threshold.",
-      offsite_lag:
-        "Offsite copies are behind. Check the offsite target (reachable, credentials, quota) and the offsite job logs. Resolves when the copy has caught up.",
-      gc_quorum:
-        "A garbage collection would delete an unusually large amount of data. Find out why (retention change, deleted group), then approve or reject the request on the Approvals page.",
-      gc_confirm:
-        "A garbage collection would delete an unusually large amount of data and approvals are disabled. Find out why, then confirm or leave it on the Approvals page.",
-      config:
-        "A schedule or setting is invalid. Correct it on the named group or replication source.",
-      backup_inconsistent:
-        "The backup is not point-in-time consistent. Enable snapshots on the source (NAS, LVM, ZFS, btrfs or plugin quiescing) or back it up while it is idle.",
-      replication_lag:
-        "Replication from the primary is behind. Check the network path to the primary and the replica_sync job logs. Resolves after the next successful sync.",
-      replication_verify:
-        "Replicated data failed verification and was not imported. Check the primary's store and run the sync again.",
-      replication_keys:
-        "The tenant keys on this secondary do not match the primary. Re-export the keys on the primary (needs approval).",
-      break_glass:
-        "An administrator account was reset at the console. Confirm with the person who did it, then acknowledge to clear the banner.",
-      forwarding:
-        "Audit and alert forwarding to the named syslog or HTTPS sink has failed for 15 minutes. Check the receiver (reachable, certificate, credentials) and Settings → Forwarding; nothing is lost, the backlog is sent when it works again. Resolves after the next delivered batch.",
-      report:
-        "A scheduled report could not be mailed. Check the SMTP server under Settings → Alert delivery (reachable, credentials) and the report's recipients on the Reports page, then use Send now. Resolves after the next successful send.",
-      console_unlock:
-        "A one-time code for a root shell on the appliance console was issued. Make sure the request (Settings → Console access) was planned, then acknowledge.",
-      console_root_shell:
-        "Someone opened a root shell on the appliance console. Confirm with the requester (or whoever holds the recovery key) what was done, check the audit log, then acknowledge.",
-      anomaly:
-        "Much more new data than usual, or new data that no longer compresses (typical for ransomware encrypting files). Check the source. A security officer can put the last good snapshot on legal hold right here, so that retention cannot remove it while you investigate.",
-      legal_hold_advisory:
-        "The primary holds this replicated snapshot under a legal hold. Holds are not applied here automatically: a security officer applies it with Apply hold. Resolves once applied or when the primary releases its hold.",
-      disk: "A disk or RAID array needs attention (SMART failing, bad sectors, temperature, NVMe wear, degraded or rebuilding array). Open Configuration → Hardware; replace a failed disk as the manual describes. Resolves when the disk or array is healthy again.",
+      job_failed: 'Open the job log on the Jobs page, fix the cause (source reachable, credentials, space) and run the job again. The alert resolves itself after the next successful run.',
+      verify: 'Stored data failed verification. Do not delete snapshots; check the store disks (SMART) and the offsite target, then run Verify again. Resolves after a successful verify.',
+      inventory: 'Snapshots disappeared or differ from the catalog. Check the store and the offsite target for manual deletion or tampering and review the audit log. Resolves after a clean offsite check.',
+      capacity: 'The store is filling up. Shorten retention, run GC or add disks. Resolves when usage drops below the threshold.',
+      offsite_lag: 'Offsite copies are behind. Check the offsite target (reachable, credentials, quota) and the offsite job logs. Resolves when the copy has caught up.',
+      gc_quorum: 'A garbage collection would delete an unusually large amount of data. Find out why (retention change, deleted group), then approve or reject the request on the Approvals page.',
+      gc_confirm: 'A garbage collection would delete an unusually large amount of data and approvals are disabled. Find out why, then confirm or leave it on the Approvals page.',
+      config: 'A schedule or setting is invalid. Correct it on the named group or replication source.',
+      backup_inconsistent: 'The backup is not point-in-time consistent. Enable snapshots on the source (NAS, LVM, ZFS, btrfs or plugin quiescing) or back it up while it is idle.',
+      replication_lag: 'Replication from the primary is behind. Check the network path to the primary and the replica_sync job logs. Resolves after the next successful sync.',
+      replication_verify: "Replicated data failed verification and was not imported. Check the primary's store and run the sync again.",
+      replication_keys: 'The tenant keys on this secondary do not match the primary. Re-export the keys on the primary (needs approval).',
+      break_glass: 'An administrator account was reset at the console. Confirm with the person who did it, then acknowledge to clear the banner.',
+      forwarding: 'Audit and alert forwarding to the named syslog or HTTPS sink has failed for 15 minutes. Check the receiver (reachable, certificate, credentials) and Settings → Forwarding; nothing is lost, the backlog is sent when it works again. Resolves after the next delivered batch.',
+      report: "A scheduled report could not be mailed. Check the SMTP server under Settings → Alert delivery (reachable, credentials) and the report's recipients on the Reports page, then use Send now. Resolves after the next successful send.",
+      console_unlock: 'A one-time code for a root shell on the appliance console was issued. Make sure the request (Settings → Console access) was planned, then acknowledge.',
+      console_root_shell: 'Someone opened a root shell on the appliance console. Confirm with the requester (or whoever holds the recovery key) what was done, check the audit log, then acknowledge.',
+      anomaly: 'Much more new data than usual, or new data that no longer compresses (typical for ransomware encrypting files). Check the source. A security officer can put the last good snapshot on legal hold right here, so that retention cannot remove it while you investigate.',
+      legal_hold_advisory: 'The primary holds this replicated snapshot under a legal hold. Holds are not applied here automatically: a security officer applies it with Apply hold. Resolves once applied or when the primary releases its hold.',
+      disk: 'A disk or RAID array needs attention (SMART failing, bad sectors, temperature, NVMe wear, degraded or rebuilding array). Open Configuration → Hardware; replace a failed disk as the manual describes. Resolves when the disk or array is healthy again.',
+      clock_skew: 'System time and the compliance clock (retention locks) differ. A lag after a restart is normal: the compliance clock catches up slowly and locks last longer meanwhile. A jump while running, or a compliance clock ahead of system time, means system time was changed by hand or a time source is wrong: check Diagnostics (time.sync, time.nts) and the audit log. Resolves when the difference is below a minute.',
+      fleecing_space: 'The fleecing storage of a Proxmox node (usually local-lvm) is nearly full. A full LVM-thin pool pauses every VM on it, so guests are skipped below the guard and a running backup is cancelled below the critical level. Free space in that storage or choose a larger fleecing storage for the source, and adjust the guard on the source if needed. Resolves when a backup finds enough space again.',
       vault_closed:
         "A replication source was closed with Close vault (pause pulling now): no syncs, the primary is not reachable from here. Nothing to do while that is intended; reopening needs approval (Replication page). Resolves when the source is reopened.",
     } as Record<string, string>,

@@ -3,6 +3,7 @@
 
 use crate::api::Api;
 use crate::exclude::{self, Excluded};
+use crate::fleecing::{self, Level};
 use anyhow::{bail, Context, Result};
 use chunkstore::store::IMAGE_CHUNK_SIZE;
 use chunkstore::{FileEntry, Index, Manifest, Store};
@@ -11,6 +12,7 @@ use std::collections::BTreeMap;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 #[derive(Deserialize, Clone)]
@@ -74,6 +76,7 @@ pub struct Cluster {
     pub api: Api,
     pub storage: String,
     pub fleecing_storage: String,
+    pub fleecing_guard: fleecing::Guard,
     /// PVE node name -> SSH endpoint
     pub nodes: BTreeMap<String, SshNode>,
     /// VM devices not backed up (`drive-scsi1`), per vmid (group `exclude_disks`)
@@ -183,17 +186,36 @@ impl Cluster {
             Some(&serde_json::to_vec(&build_index(store)?)?),
         )
         .with_context(|| format!("push index to {node}"))?;
+        self.check_fleecing(&node)?;
         let fleecing = format!("enabled=1,storage={}", self.fleecing_storage);
         let upid = self.api.start_backup(&node, vmid, &self.storage, Some(&fleecing))?;
-        let job = self.wait_job(&node, ssh, vmid, &upid, "qemu")?;
-        let result = self.pull(store, ssh, vmid, &job);
-        let done = match &result {
-            Ok(_) => "ok".to_owned(),
-            Err(e) => format!("fail {}", e.to_string().replace(['\n', '\''], " ")),
+        // the fleecing storage is watched while the guest runs; critical = vzdump stopped
+        let stop = AtomicBool::new(false);
+        let (pulled, tripped) = std::thread::scope(|sc| {
+            let watcher = sc.spawn(|| self.watch_fleecing(&node, &upid, &stop));
+            let pulled = self.wait_job(&node, ssh, vmid, &upid, "qemu").and_then(|job| {
+                let result = self.pull(store, ssh, vmid, &job);
+                let done = match &result {
+                    Ok(_) => "ok".to_owned(),
+                    Err(e) => format!("fail {}", e.to_string().replace(['\n', '\''], " ")),
+                };
+                let signalled = ssh.run(&format!("done {vmid} {done}"), None);
+                let manifest = result?;
+                signalled?;
+                Ok(manifest)
+            });
+            stop.store(true, Ordering::SeqCst);
+            (pulled, watcher.join().unwrap_or(None))
+        });
+        let manifest = match (pulled, tripped) {
+            (Err(e), Some(why)) => {
+                bail!(
+                    "fleecing storage {} on node {node}: {why} ({e:#})",
+                    self.fleecing_storage
+                )
+            }
+            (r, _) => r?,
         };
-        let signalled = ssh.run(&format!("done {vmid} {done}"), None);
-        let manifest = result?;
-        signalled?;
         let exit = self.api.wait_task(&node, &upid, Duration::from_secs(3600))?;
         if exit != "OK" {
             // ponytail: snapshot is kept (bitmap already committed); alerting comes with the scheduler
@@ -206,6 +228,60 @@ impl Cluster {
             crate::consistency::line(&source_name(vmid), manifest.0.time, level)
         );
         Ok(manifest)
+    }
+
+    /// Before a VM: its node's fleecing storage must have room (fleecing.rs);
+    /// an unreadable status is not guarded.
+    fn check_fleecing(&self, node: &str) -> Result<()> {
+        let (fl, g) = (&self.fleecing_storage, &self.fleecing_guard);
+        if fl.is_empty() {
+            return Ok(());
+        }
+        let s = match fleecing::space(&self.api, node, fl) {
+            Ok(s) => s,
+            Err(e) => {
+                println!("note: fleecing storage {fl} on node {node}: free space unknown ({e:#}); not guarded");
+                return Ok(());
+            }
+        };
+        let level = g.level(&s);
+        fleecing::report(node, fl, &s, level);
+        if level != Level::Ok {
+            bail!(
+                "fleecing storage {fl} on node {node} has {}, below the guard ({} % or {} GiB free, whichever is smaller): guest skipped",
+                g.describe(&s),
+                g.min_free_pct,
+                g.min_free_gib
+            );
+        }
+        Ok(())
+    }
+
+    /// While a VM backup runs: stops its vzdump task when the fleecing storage
+    /// drops below the critical level; returns why.
+    fn watch_fleecing(&self, node: &str, upid: &str, stop: &AtomicBool) -> Option<String> {
+        let (fl, g) = (&self.fleecing_storage, self.fleecing_guard);
+        if fl.is_empty() {
+            return None;
+        }
+        g.watch(
+            Duration::from_secs(g.interval_secs.max(5)),
+            stop,
+            || {
+                let s = fleecing::space(&self.api, node, fl)?;
+                let level = g.level(&s);
+                if level != Level::Ok {
+                    fleecing::report(node, fl, &s, level);
+                }
+                Ok((s, level))
+            },
+            || {
+                eprintln!("fleecing storage {fl} on node {node} below the critical level: stopping {upid}");
+                if let Err(e) = self.api.stop_task(upid) {
+                    eprintln!("task-stop {upid}: {e:#}");
+                }
+            },
+        )
     }
 
     /// Polls `job <vmid>` until the plugin published the job of the running vzdump task.

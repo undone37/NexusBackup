@@ -1379,6 +1379,25 @@ async fn alert_ack_and_resolve() {
         t.get("/api/v1/alerts?state=bogus", &otto).await.status,
         StatusCode::BAD_REQUEST
     );
+    // Phase 18: stable category per kind, and a filter by it
+    assert_eq!(
+        (a1["category"].as_str(), all[0]["category"].as_str()),
+        (Some("backup"), Some("system"))
+    );
+    let sys = t.get("/api/v1/alerts?category=system", &otto).await.body;
+    assert_eq!(
+        sys.as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["id"].as_i64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![2]
+    );
+    assert_eq!(t.get("/api/v1/alerts?category=security", &otto).await.body, json!([]));
+    assert_eq!(
+        t.get("/api/v1/alerts?category=bogus", &otto).await.status,
+        StatusCode::BAD_REQUEST
+    );
     // acknowledge with a note: still open
     let r = t
         .post("/api/v1/alerts/1/ack", &otto, json!({"note": "looking into it"}))

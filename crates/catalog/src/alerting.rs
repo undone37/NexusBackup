@@ -50,11 +50,63 @@ const HINTS: &[(&str, &str)] = &[
     ("firewall_reset", "Every inbound firewall restriction was cleared at the console (nexus-setup reset-firewall): the web UI and the other services accept connections from any address again. Confirm with the person who did it, then set correct source lists in Settings → Firewall."),
     ("report", "A scheduled report could not be mailed. Check the SMTP server under Settings → Alert delivery (reachable, credentials) and the report's recipients on the Reports page, then use Send now. Resolves after the next successful send."),
     ("legal_hold_advisory", "The primary holds this replicated snapshot under a legal hold. Holds are not applied here automatically: a security officer applies it with Apply hold (Alerts or Snapshots page). Resolves once applied or when the primary releases its hold."),
+    ("clock_skew", "System time and the compliance clock (retention locks) differ. A lag after a restart is normal: the compliance clock catches up slowly and locks last longer meanwhile. A jump while running or a clock that is ahead means system time was changed by hand or a time source is wrong: check Diagnostics (time.sync, time.nts) and the audit log. Resolves when the difference is below a minute."),
+    ("fleecing_space", "The fleecing storage of a Proxmox node (usually local-lvm) is nearly full. A full LVM-thin pool pauses every VM on it, so guests are skipped below the guard and a running backup is cancelled below the critical level. Free space in that storage (or use a larger one as the source's fleecing storage) and adjust the guard on the source if needed. Resolves when a backup finds enough space again."),
     ("disk", "A disk or RAID array needs attention (SMART failing, bad sectors, temperature, NVMe wear, degraded or rebuilding array). Open Configuration → Hardware; replace a failed disk as the troubleshooting chapter describes. Resolves when the disk or array is healthy again."),
     ("tenant_disabled", "The tenant is deactivated (Tenants page): no backups, offsite copies or replication run for it and its accounts cannot sign in; its other alerts are suppressed. Retention keeps running. Reactivate it on the Tenants page when it is needed again."),
     ("vault_disabled", "Vault mode was switched off at the console with the recovery key after an approved request. Confirm with the people who requested and approved it (audit: vault.disable)."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
+
+/// Stable category of every alert kind (SIEM routing, Alerts page filter);
+/// `audit` is the category of forwarded audit records. Unknown kinds: `system`.
+pub const CATEGORIES: &[&str] = &["security", "backup", "replication", "hardware", "system", "audit"];
+
+const CATEGORY: &[(&str, &str)] = &[
+    ("anomaly", "security"),
+    ("console_unlock", "security"),
+    ("console_root_shell", "security"),
+    ("break_glass", "security"),
+    ("mgmt_allow_reset", "security"),
+    ("firewall_reset", "security"),
+    ("legal_hold_advisory", "security"),
+    ("cert_expiry", "security"),
+    ("account_dormant", "security"),
+    ("inventory", "security"),
+    ("clock_skew", "security"),
+    ("gc_quorum", "security"),
+    ("gc_confirm", "security"),
+    ("vault_disabled", "security"),
+    ("job_failed", "backup"),
+    ("sla_missed", "backup"),
+    ("paused", "backup"),
+    ("consistency", "backup"),
+    ("backup_inconsistent", "backup"),
+    ("orphaned", "backup"),
+    ("verify", "backup"),
+    ("offsite_lag", "backup"),
+    ("inventory_refresh", "backup"),
+    ("config", "backup"),
+    ("disk", "hardware"),
+    ("fleecing_space", "hardware"),
+];
+
+pub fn category(kind: &str) -> &'static str {
+    if kind.starts_with("replication_") {
+        return "replication";
+    }
+    CATEGORY.iter().find(|(k, _)| *k == kind).map_or("system", |(_, c)| c)
+}
+
+/// [`category`] as an SQL expression over the column `kind` (filters).
+pub fn category_sql() -> String {
+    let mut s = String::from("CASE WHEN substr(kind, 1, 12) = 'replication_' THEN 'replication'");
+    for (k, c) in CATEGORY {
+        s.push_str(&format!(" WHEN kind = '{k}' THEN '{c}'"));
+    }
+    s.push_str(" ELSE 'system' END");
+    s
+}
 
 pub fn hint(kind: &str) -> &'static str {
     HINTS
@@ -186,6 +238,7 @@ pub const TEMPLATE_FIELDS: &[&str] = &[
     "count",
     "severity",
     "kind",
+    "category",
     "message",
     "hint",
     "tenant",
@@ -227,7 +280,7 @@ pub fn check_template(template: &str) -> Result<(), String> {
         return Err("at most 8192 bytes".into());
     }
     let sample = json!({"id": 42, "ts": 1760000000, "first_ts": 1760000000, "last_ts": 1760003600, "count": 3,
-        "severity": "critical", "kind": "job_failed", "message": "backup \"nightly\" failed:\n\tC:\\data \u{1}",
+        "severity": "critical", "kind": "job_failed", "category": "backup", "message": "backup \"nightly\" failed:\n\tC:\\data \u{1}",
         "hint": hint("job_failed"), "tenant": null, "host": "nexus", "alert_url": "https://nexus/#/alerts?id=42"});
     let body = render(template, &sample)?;
     serde_json::from_str::<Value>(&body).map_err(|e| format!("does not render to valid JSON: {e}"))?;
@@ -286,6 +339,54 @@ mod tests {
         assert!(check_template(r#"{"text": {{message}}}"#).is_err(), "unquoted string");
         assert!(check_template(r#"{"text": "x""#).is_err());
         assert!(check_template(&"x".repeat(9000)).is_err());
+    }
+
+    #[test]
+    fn categories() {
+        for (kind, cat) in [
+            ("anomaly", "security"),
+            ("console_root_shell", "security"),
+            ("legal_hold_advisory", "security"),
+            ("firewall_reset", "security"),
+            ("cert_expiry", "security"),
+            ("job_failed", "backup"),
+            ("sla_missed", "backup"),
+            ("consistency", "backup"),
+            ("orphaned", "backup"),
+            ("replication_lag", "replication"),
+            ("replication_keys", "replication"),
+            ("disk", "hardware"),
+            ("fleecing_space", "hardware"),
+            ("capacity", "system"),
+            ("quota", "system"),
+            ("forwarding", "system"),
+            ("report", "system"),
+            ("vault_disabled", "security"),
+            ("tenant_disabled", "system"),
+            ("something_new", "system"),
+        ] {
+            assert_eq!(category(kind), cat, "{kind}");
+            assert!(CATEGORIES.contains(&cat));
+        }
+        // the SQL expression agrees
+        let c = Connection::open_in_memory().unwrap();
+        for kind in [
+            "anomaly",
+            "replication_verify",
+            "replicationx",
+            "disk",
+            "capacity",
+            "x'y",
+        ] {
+            let sql: String = c
+                .query_row(
+                    &format!("SELECT {} FROM (SELECT ?1 AS kind)", category_sql()),
+                    [kind],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(sql, category(kind), "{kind}");
+        }
     }
 
     #[test]

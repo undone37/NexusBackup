@@ -38,6 +38,38 @@ Keep the recovery key offline and separate from the offsite credentials (see
 [02 Installation](02-installation.md#store-the-recovery-key)). A replicated secondary has its **own** recovery key:
 store that one too.
 
+### Boot menu password
+
+The boot menu (GRUB) boots the appliance without any input. Changing a boot entry (key `e`) or opening the GRUB
+command line (key `c`) asks for a user and a password, so nobody at the console can start the appliance with a
+changed kernel command line (for example a root shell instead of the system). The emergency and rescue modes of the
+system do not offer a shell either.
+
+- **User:** `root`. **Password:** 20 lower-case letters, derived from the recovery key. There is nothing else to
+  store: whoever holds the recovery key can compute it.
+- On the appliance (root shell on the console) or on any Linux machine with the `nexus-setup` program:
+
+  ```sh
+  nexus-setup grub-password        # asks for the recovery key, prints: Password: xxxxx xxxxx xxxxx xxxxx
+  ```
+
+  Type it at the GRUB prompt without the spaces. GRUB uses the US keyboard layout; the letters were chosen so that
+  they are on the same keys on US, German and French keyboards (no a, m, q, w, y, z).
+- Without `nexus-setup`, Python 3 computes the same password (replace the key):
+
+  ```sh
+  python3 -c 'import hmac,hashlib,sys; k=bytes.fromhex("".join(c for c in sys.argv[1] if c not in "- ")); n=int.from_bytes(hmac.new(k,b"nexus-grub-password-v1",hashlib.sha256).digest()[:16],"big"); print("".join("bcdefghijklnoprstuvx"[n//20**i%20] for i in range(20)))' 'ABCD-1234-…'
+  ```
+
+- Appliances set up before this version have no boot menu password yet. Set it once from a root shell on the console:
+  `nexus-setup grub-password --install` (asks for the recovery key, checks it, audited as `setup.grub_password`).
+- The password does not protect the firmware: set a BIOS/UEFI password and disable booting from other media
+  ([02 Installation](02-installation.md#store-the-recovery-key)).
+
+> **Status:** Implemented in Phase 18 (unit tests; the image build checks the GRUB configuration, the masked rescue
+> mode and the kernel arguments). The appliance VM test `lab/appliance/grub-lock.sh` drives the GRUB menu over the
+> serial console; it has not been used on real hardware yet.
+
 ### The tenant recovery key (optional)
 
 The appliance recovery key opens **every** tenant. A managed service provider usually cannot hand it to one

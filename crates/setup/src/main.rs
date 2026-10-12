@@ -10,6 +10,10 @@ const USAGE: &str = "usage: nexus-setup [options]
        nexus-setup disable-approvals [--root DIR] [--catalog FILE] [--keyd-dir DIR]
                                 break-glass: switch approvals off when nobody else can approve any more;
                                 asks for the recovery key (stdin)
+       nexus-setup grub-password [--install [--dry-run] [--root DIR] [--catalog FILE] [--keyd-dir DIR]]
+                                print the boot menu (GRUB) password derived from the recovery key (stdin);
+                                needs nothing else, so it also works on another Linux machine. --install
+                                (appliance, root): check the key against keyd and set the password (audited)
        nexus-setup vault-disable [--root DIR] [--catalog FILE] [--keyd-dir DIR]
                                 switch vault mode off after an approved vault.disable request;
                                 asks for the recovery key (stdin)
@@ -188,6 +192,42 @@ fn disable_approvals(args: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// `grub-password`: the boot menu password of a recovery key; `--install` sets it.
+fn grub_password(args: &[String]) -> Result<ExitCode> {
+    let install = args.iter().any(|a| a == "--install");
+    let rest: Vec<String> = args.iter().filter(|a| *a != "--install").cloned().collect();
+    let o = parse(&rest)?;
+    if o.script.is_some() || o.force_network || (!install && rest.iter().any(|a| a.starts_with("--"))) {
+        bail!("grub-password takes only --install and, with it, --dry-run and path options");
+    }
+    let real = o.root == std::path::Path::new("/");
+    if install && real && !o.dry_run && unsafe { libc::geteuid() } != 0 {
+        bail!("--install must run as root on the appliance console");
+    }
+    eprint!("Recovery key (as printed at first boot): ");
+    let mut key = zeroize::Zeroizing::new(String::new());
+    std::io::stdin().read_line(&mut key)?;
+    let pw = setup::grub::password(key.trim())?;
+    if install {
+        keyd::check_recovery_key(&o.paths.keyd_dir, key.trim())
+            .map_err(|e| anyhow::anyhow!("recovery key rejected: {e}"))?;
+        let runner: Box<dyn Runner> = if o.dry_run {
+            Box::new(DryRunRunner)
+        } else {
+            Box::new(SystemRunner)
+        };
+        let mut s = Setup::open(o.paths, runner, o.dry_run, real)?;
+        s.grub_password(key.trim())?;
+        for l in &s.log {
+            eprintln!("+ {l}");
+        }
+        println!("The boot menu password is set (audited as setup.grub_password).");
+    }
+    println!("Boot menu (GRUB) user: root");
+    println!("Password: {}   (type it without the spaces)", setup::grub::grouped(&pw));
+    Ok(ExitCode::SUCCESS)
+}
+
 /// `vault-disable`: the console half of switching vault mode off (Phase 17c).
 fn vault_disable(args: &[String]) -> Result<ExitCode> {
     let o = parse(args)?;
@@ -263,6 +303,16 @@ fn main() -> ExitCode {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("nexus-setup reset-firewall: {e:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if args.first().is_some_and(|a| a == "grub-password") {
+        keyd::harden_process();
+        return match grub_password(&args[1..]) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("nexus-setup grub-password: {e:#}");
                 ExitCode::FAILURE
             }
         };

@@ -136,7 +136,9 @@ The appliance now creates its master key (KEK). All tenant keys are wrapped with
    shows the key again (until it is confirmed).
 
 After confirmation the key is removed from the screen and from memory. It is **never written to disk or to a
-log**. If the wizard was interrupted after the key was created but before you confirmed it, the key cannot be shown
+log**. The wizard then also sets the **boot menu password** (the GRUB password that protects the kernel command line,
+see [14 Disaster recovery](14-disaster-recovery.md#boot-menu-password)). It is derived from the recovery key, so
+there is nothing else to write down. If the wizard was interrupted after the key was created but before you confirmed it, the key cannot be shown
 again: type it in full (64 hex digits, dashes optional) or reinstall the appliance (nothing has been encrypted yet).
 
 ### Step 5: TLS certificate
@@ -182,6 +184,8 @@ offsite credentials you can restore on new hardware (see [14 Disaster recovery](
   master key of the building.
 - The appliance cannot show it again. If you lose it while the appliance still works, your backups stay readable,
   but you lose the disaster-recovery path. There is no function to issue a new recovery key yet.
+- Also protect the console of the machine itself: set a firmware (BIOS/UEFI, iDRAC/iLO) password and disable
+  booting from other media. The appliance protects its own boot menu with a password, but not the firmware.
 
 ## First sign-in
 

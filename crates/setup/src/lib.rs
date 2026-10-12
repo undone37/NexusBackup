@@ -33,6 +33,7 @@ use std::process::{Command, Stdio};
 use zeroize::Zeroizing;
 
 pub mod gate;
+pub mod grub;
 pub mod recover;
 pub mod script;
 pub mod tui;
@@ -50,6 +51,8 @@ pub const SERVICES: [&str; 4] = [
     "nexus-replicad.service",
 ];
 pub const WEB_PORT: u16 = 8443;
+/// Installs `/etc/nexus/grub-user.cfg` as `/boot/grub2/user.cfg` (also at every boot).
+pub const GRUB_UNIT: &str = "nexus-grub-password.service";
 
 // ---------------------------------------------------------------- paths
 
@@ -61,6 +64,8 @@ pub struct Paths {
     pub metrics_token: PathBuf,
     /// web-api-only key for TOTP seeds (0600 nexus-webapi)
     pub totp_key: PathBuf,
+    /// boot menu password hash (`grub`), installed into /boot by nexus-grub-password
+    pub grub_user: PathBuf,
     pub setup_done: PathBuf,
     pub lock: PathBuf,
     /// Read-only NIC enumeration; not prefixed by `--root`.
@@ -76,6 +81,7 @@ impl Paths {
             tls_dir: p("etc/nexus/tls"),
             metrics_token: p("etc/nexus/metrics-token"),
             totp_key: p("var/lib/nexus/webapi/totp.key"),
+            grub_user: p("etc/nexus/grub-user.cfg"),
             setup_done: p("var/lib/nexus/setup-done"),
             lock: p("var/lib/nexus/.setup.lock"),
             sys_class_net: PathBuf::from("/sys/class/net"),
@@ -943,7 +949,24 @@ impl Setup {
             "keyd",
             json!({"method": "groups", "groups": groups}),
         )?;
+        self.grub_password(key.expose())?;
         Ok(true)
+    }
+
+    /// The boot menu password derived from the recovery key (`grub`): its hash
+    /// goes to `/etc/nexus/grub-user.cfg` (0600 root) and nexus-grub-password
+    /// installs it into /boot. The caller has checked the key against keyd.
+    /// A unit that does not start is only logged: it runs at every boot.
+    pub fn grub_password(&mut self, recovery_key: &str) -> Result<()> {
+        let pw = grub::password(recovery_key)?;
+        mkdir(self.paths.grub_user.parent().unwrap(), 0o755)?;
+        self.write_file(&self.paths.grub_user, grub::user_cfg(&pw).as_bytes(), 0o600, None, None)?;
+        self.audit("setup.grub_password", "boot/grub2/user.cfg", json!({"unit": GRUB_UNIT}))?;
+        if let Err(e) = self.cmd("systemctl", &["start", "--no-block", GRUB_UNIT]) {
+            self.log
+                .push(format!("warning: {e:#} (it runs again at the next boot)"));
+        }
+        Ok(())
     }
 
     /// Resume after an interrupted run: the key cannot be shown again, so the
@@ -954,7 +977,8 @@ impl Setup {
             self.audit("setup.keyd.challenge_failed", "keyd", json!({"method": "full"}))?;
             bail!("recovery key rejected: {e}");
         }
-        self.audit("setup.keyd.confirmed", "keyd", json!({"method": "full"}))
+        self.audit("setup.keyd.confirmed", "keyd", json!({"method": "full"}))?;
+        self.grub_password(&entered)
     }
 
     // ---- 5. TLS

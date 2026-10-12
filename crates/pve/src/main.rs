@@ -22,6 +22,9 @@ struct Config {
     storage: String,
     #[serde(default)]
     fleecing_storage: String,
+    /// free-space thresholds of the fleecing storage (source `fleecing_guard`)
+    #[serde(default)]
+    fleecing_guard: pve::fleecing::Guard,
     #[serde(default)]
     nodes: BTreeMap<String, SshNode>,
     /// guests (VMs and containers) protected by `backup-all` (scheduled via systemd timer)
@@ -97,6 +100,7 @@ fn main() -> Result<()> {
         api,
         storage: cfg.storage,
         fleecing_storage: cfg.fleecing_storage,
+        fleecing_guard: cfg.fleecing_guard,
         nodes: cfg.nodes,
         exclude,
         exclude_mode: cfg.exclude_disks_mode,

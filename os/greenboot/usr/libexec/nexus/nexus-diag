@@ -237,6 +237,37 @@ def time_nts():
     return "pass", 1, d
 
 
+def time_compliance():
+    """The compliance clock (retention locks, ADR-011) against system time, as the scheduler
+    measured it (setting compliance_clock; the stores are closed to nexus-diag)."""
+    if not os.path.exists(cfg("CATALOG")):
+        return "skip", 1, "no catalog (first-boot setup not finished)"
+    conn = catalog_conn()
+    try:
+        row = conn.execute("SELECT value FROM settings WHERE key = 'compliance_clock'").fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return "skip", 1, "not measured yet (no tenant store, or the scheduler has not run)"
+    st = json.loads(row[0])
+    skew, jump = int(st.get("skew_secs") or 0), int(st.get("jump_secs") or 0)
+    d = f"tenant {st.get('tenant')}: compliance clock {abs(skew)} s {'ahead of' if skew < 0 else 'behind'} system time"
+    if jump:
+        d += f", {jump} s of it from a system time jump while running"
+    age = time.time() - int(st.get("checked") or 0)
+    if age > 900:
+        return "warn", 2, f"last measured {age / 60:.0f} min ago (is nexus-scheduler running?); " + d
+    # severity 2 at most: the compliance clock never makes an update unsafe
+    bad = max(jump, -skew)
+    if bad > 600:
+        return "fail", 2, d
+    if bad > 60:
+        return "warn", 2, d
+    if skew > 60:
+        return "pass", 1, d + " after a restart (downtime); it catches up slowly, locks last longer meanwhile"
+    return "pass", 1, d
+
+
 def egress():
     missing = []
     for s in ("allowed_out_v4", "allowed_out_v6"):
@@ -416,6 +447,7 @@ def checks():
     out += [
         check("time.sync", "Time synchronisation", time_sync),
         check("time.nts", "Authenticated time sources (NTS)", time_nts),
+        check("time.compliance", "Compliance clock", time_compliance),
         check("egress", "Outbound firewall", egress),
         check("keyd", "Key daemon", keyd),
         check("tls.cert", "Web certificate", tls_cert),
