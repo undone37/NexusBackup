@@ -11,6 +11,18 @@
   import type { ReplicationPeer, ReplicationSource, Tenant } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
+  import BlackoutEditor from '../components/BlackoutEditor.svelte';
+  import {
+    bandwidthWeaker,
+    isPaused,
+    syncOpen,
+    syncWidened,
+    timeZones,
+    validRateWindow,
+    validWindow,
+    type RateWindow,
+    type Span,
+  } from '../lib/schedule';
 
   let peers: ReplicationPeer[] = $state([]);
   let sources: ReplicationSource[] = $state([]);
@@ -141,6 +153,53 @@
     if (await act(put(`/replication/sources/${s.id}`, { schedule: v.trim() }), t.saved)) load();
   }
 
+  // ---- windows (17a) and close vault (17b)
+  const zones = timeZones();
+  const span = (w: Span) => `${w.days.length ? w.days.join(',') + ' ' : ''}${w.from}–${w.to}`;
+  let winOpen = $state(false);
+  let wf = $state({ id: 0, name: '', windows: [] as RateWindow[], sync: [] as Span[], tz: 'UTC', mbps: '' });
+  let winOld: ReplicationSource | null = $state(null);
+  function editWindows(s: ReplicationSource) {
+    winOld = s;
+    wf = {
+      id: s.id,
+      name: s.name,
+      windows: $state.snapshot(s.windows ?? []),
+      sync: $state.snapshot(s.sync_window ?? []),
+      tz: s.timezone ?? 'UTC',
+      mbps: s.bwlimit ? String(s.bwlimit / 1e6) : '',
+    };
+    winOpen = true;
+  }
+  const wfBase = $derived(wf.mbps ? Math.round(Number(wf.mbps) * 1e6) : null);
+  const winWeaker = $derived.by(() => {
+    const o = winOld as ReplicationSource | null;
+    if (!o || !winOpen) return false;
+    const tz = o.timezone ?? 'UTC';
+    return (
+      bandwidthWeaker({ windows: o.windows ?? [], base: o.bwlimit, tz }, { windows: wf.windows, base: wfBase, tz: wf.tz }) ||
+      syncWidened(o.sync_window ?? [], tz, wf.sync, wf.tz)
+    );
+  });
+  async function saveWindows(e: SubmitEvent) {
+    e.preventDefault();
+    if (!wf.windows.every(validRateWindow) || !wf.sync.every(validWindow)) return;
+    const body = { windows: $state.snapshot(wf.windows), sync_window: $state.snapshot(wf.sync), timezone: wf.tz, bwlimit: wfBase };
+    if (await act(put(`/replication/sources/${wf.id}`, body), t.saved)) {
+      winOpen = false;
+      load();
+    }
+  }
+  const closed = (s: ReplicationSource) => isPaused(s.closed_until, now);
+  async function closeVault(s: ReplicationSource) {
+    if (!(await askConfirm(t.repl.closeConfirm(s.name)))) return;
+    if (await act(post(`/replication/sources/${s.id}/close`, {}), t.repl.closedDone)) load();
+  }
+  async function reopen(s: ReplicationSource) {
+    if (!(await askConfirm(t.repl.reopenConfirm(s.name)))) return;
+    if (await act(post(`/replication/sources/${s.id}/reopen`, {}), t.repl.reopenDone)) load();
+  }
+
   async function copy(text: string) {
     try {
       await navigator.clipboard.writeText(text);
@@ -244,8 +303,28 @@
             <tr>
               <td><strong>{s.name}</strong></td>
               <td class="mono">{s.url}<div class="muted" title={s.cert_pin}>{shortFp(s.cert_pin)}</div></td>
-              <td><span class="chip {stateCls[s.state] ?? ''}">{t.repl.states[s.state] ?? s.state}</span></td>
-              <td class="mono">{s.schedule}</td>
+              <td>
+                <span class="chip {stateCls[s.state] ?? ''}">{t.repl.states[s.state] ?? s.state}</span>
+                {#if closed(s)}
+                  <div><span class="chip bad">{t.repl.closed}</span></div>
+                  <div class="muted">
+                    {t.repl.closedSince(fmtTime(s.closed_at), s.closed_by ?? '?')},
+                    {s.closed_until === -1 ? t.repl.closedForever : t.repl.closedUntil(fmtTime(s.closed_until))}
+                  </div>
+                {:else if !syncOpen(s.sync_window ?? [], s.timezone ?? 'UTC', now)}
+                  <div><span class="chip info">{t.repl.outsideWindow}</span></div>
+                {/if}
+              </td>
+              <td>
+                <span class="mono nowrap">{s.schedule}</span>
+                {#if s.sync_window?.length || s.windows?.length}
+                  <div class="muted">
+                    {#if s.sync_window?.length}{t.repl.syncWindowShort}: {s.sync_window.map(span).join(', ')}<br />{/if}
+                    {#if s.windows?.length}{t.windows.bandwidth}: {t.windows.short(s.windows.length)}<br />{/if}
+                    {s.timezone}
+                  </div>
+                {/if}
+              </td>
               <td>
                 {#each s.tenants as tn (tn)}
                   {@const st = s.status?.[tn]}
@@ -259,12 +338,20 @@
                 {/each}
               </td>
               <td class="mono">{s.keyd_fingerprint ?? '—'}</td>
-              <td class="actions">
-                {#if s.state === 'enrolled' && can.syncReplication(session.user)}
+              <td class="actions stack">
+                {#if s.state === 'enrolled' && !closed(s) && syncOpen(s.sync_window ?? [], s.timezone ?? 'UTC', now) && can.syncReplication(session.user)}
                   <button type="button" class="small" onclick={() => syncNow(s)}>{t.repl.syncNow}</button>
+                {/if}
+                {#if can.closeVault(session.user)}
+                  {#if closed(s)}
+                    <button type="button" class="small" onclick={() => reopen(s)}>{t.repl.reopen}</button>
+                  {:else}
+                    <button type="button" class="small danger" onclick={() => closeVault(s)}>{t.repl.closeVault}</button>
+                  {/if}
                 {/if}
                 {#if admin}
                   <button type="button" class="small" onclick={() => setSchedule(s)}>{t.repl.schedule}</button>
+                  <button type="button" class="small" onclick={() => editWindows(s)}>{t.repl.windows}</button>
                   {#if s.state !== 'enrolled'}
                     <button type="button" class="small" onclick={() => newCode(s)}>{t.repl.newCode}</button>
                   {/if}
@@ -373,3 +460,39 @@
     </div>
   </form>
 </Modal>
+
+<Modal bind:open={winOpen} title={t.repl.windowsTitle(wf.name)} wide>
+  <form onsubmit={saveWindows}>
+    <p class="hint">{t.windows.gatedHint}</p>
+    <BlackoutEditor bind:windows={wf.sync} mode="span" idp="w-sync" legend={t.windows.syncWindow} hint={t.windows.syncWindowHint} />
+    <BlackoutEditor bind:windows={wf.windows} mode="rate" idp="w-bw" legend={t.windows.bandwidth} hint={t.windows.bandwidthHint} />
+    <div class="form-grid">
+      <div class="field">
+        <label for="w-tz">{t.windows.timezone}</label>
+        <select id="w-tz" bind:value={wf.tz}>
+          {#each zones as z (z)}<option value={z}>{z}</option>{/each}
+        </select>
+      </div>
+      <div class="field">
+        <label for="w-bw">{t.repl.bwlimit}</label>
+        <input id="w-bw" type="number" min="0" step="0.1" bind:value={wf.mbps} />
+      </div>
+    </div>
+    {#if winWeaker}<p class="banner warn" role="status">{t.windows.weaker}</p>{/if}
+    <div class="form-actions">
+      <button type="button" onclick={() => (winOpen = false)}>{t.cancel}</button>
+      <button type="submit" class="primary">{t.save}</button>
+    </div>
+  </form>
+</Modal>
+
+<style>
+  /* the source row has up to five actions: let them wrap instead of widening the table */
+  td.stack {
+    white-space: normal;
+    min-width: 15rem;
+  }
+  td.stack > button {
+    margin: 0.15rem 0 0.15rem 0.35rem;
+  }
+</style>

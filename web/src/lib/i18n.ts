@@ -495,6 +495,25 @@ export const en = {
     lock: 'Object Lock (compliance mode): lock every object until its snapshot may be deleted',
     lockHint: 'Only for buckets created with Object Lock. Use credentials without DeleteObjectVersion (docs/s3-offsite.md).',
     locked: 'locked',
+    windowsHint:
+      'Pause or limit offsite uploads at certain times, for example during business hours. An upload that would start in a pause waits for its end; a running one holds before its next pack. Tightening applies directly; allowing more bandwidth needs approval, like other changes of an existing offsite target.',
+  },
+  // Phase 17a: bandwidth windows and sync windows (offsite, replication sources)
+  windows: {
+    action: 'Action',
+    pause: 'Pause (no transfer)',
+    limit: 'Limit',
+    rate: 'Rate (MB/s)',
+    bandwidth: 'Bandwidth windows',
+    bandwidthHint:
+      'Times when the transfer pauses or is limited (time zone below). A pause wins over a limit, the lowest of several limits applies, and a limit replaces the base limit while it is active (it may also allow more, e.g. at night).',
+    syncWindow: 'Sync window',
+    syncWindowHint:
+      'Syncs run, and the primary is reachable through the firewall, only inside these windows (none = always). A sync still running when the window closes is cancelled; the next one resumes where it stopped.',
+    timezone: 'Time zone of the windows',
+    short: (n: number) => (n ? `${n} window${n === 1 ? '' : 's'}` : '—'),
+    gatedHint: 'Tightening (a longer pause, a lower rate, a narrower sync window) applies at once. Anything that allows more needs approval by a second person.',
+    weaker: 'This change allows more bandwidth or a wider sync window: it needs approval.',
   },
   sources: {
     title: 'Sources',
@@ -732,6 +751,23 @@ export const en = {
     never: 'never synced',
     error: 'Last error',
     gfsHint: 'Retention here, independent of the primary. Lowering it later needs approval.',
+    // Phase 17a/b
+    windows: 'Windows',
+    windowsTitle: (n: string) => `Windows of "${n}"`,
+    syncWindowShort: 'Sync window',
+    outsideWindow: 'Outside sync window',
+    closed: 'Vault closed',
+    closedSince: (when: string, by: string) => `Closed since ${when} by ${by}`,
+    closedUntil: (d: string) => `until ${d}`,
+    closedForever: 'until reopened (needs approval)',
+    closeVault: 'Close vault now',
+    closeConfirm: (n: string) =>
+      `Close the vault "${n}" now? Syncs from this primary stop at once (a running sync is cancelled) and the firewall no longer lets this appliance reach it. Reopening needs approval by a second person.`,
+    closedDone: 'Vault closed.',
+    reopen: 'Request reopening',
+    reopenConfirm: (n: string) =>
+      `Request reopening "${n}"? Another administrator or security officer must approve it; syncs resume after that.`,
+    reopenDone: 'Reopened.',
   },
   policies: {
     title: 'Policies',
@@ -1364,6 +1400,8 @@ export const en = {
       gc_confirm: 'A garbage collection would delete an unusually large amount of data and approvals are disabled. Find out why, then confirm or leave it on the Approvals page.',
       config: 'A schedule or setting is invalid. Correct it on the named group or replication source.',
       backup_inconsistent: 'The backup is not point-in-time consistent. Enable snapshots on the source (NAS, LVM, ZFS, btrfs or plugin quiescing) or back it up while it is idle.',
+      vault_closed:
+        'The replication source was closed with Close vault now: no syncs, the primary is not reachable from here. Nothing to do while that is intended; reopening needs approval (Replication page). Resolves when the source is reopened.',
       replication_lag: 'Replication from the primary is behind. Check the network path to the primary and the replica_sync job logs. Resolves after the next successful sync.',
       replication_verify: "Replicated data failed verification and was not imported. Check the primary's store and run the sync again.",
       replication_keys: 'The tenant keys on this secondary do not match the primary. Re-export the keys on the primary (needs approval).',

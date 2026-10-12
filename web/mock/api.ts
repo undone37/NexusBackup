@@ -16,7 +16,20 @@ import type { Plugin } from 'vite';
 import pgManifest from '../../plugins/postgresql/manifest.json' with { type: 'json' };
 import truenasManifest from '../../plugins/truenas/manifest.json' with { type: 'json' };
 // Phase 13b: the schedule grammar and blackout check the UI uses as well.
-import { blackoutActive, isPaused, parseSchedule, schedulePeriod, validWindow, type BlackoutWindow } from '../src/lib/schedule.ts';
+import {
+  bandwidthWeaker,
+  blackoutActive,
+  isPaused,
+  parseSchedule,
+  schedulePeriod,
+  syncOpen,
+  syncWidened,
+  validRateWindow,
+  validWindow,
+  type BlackoutWindow,
+  type RateWindow,
+  type Span,
+} from '../src/lib/schedule.ts';
 
 interface Req {
   method?: string;
@@ -864,6 +877,9 @@ function seed() {
         remote: { type: 'sftp', host: 'u123456.storagebox.example.net', port: 23, user: 'u123456', host_key: DEMO_HOST_KEY('box'), base_dir: 'nexus', key_file: '/etc/nexus/offsite/initech.key' },
         bwlimit: 20480 * 1024,
         uploaders: 4,
+        // Phase 17a: no uploads during office hours
+        windows: [{ days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], from: '08:00', to: '18:00', action: 'pause' }],
+        timezone: 'Europe/Berlin',
       },
       quota_bytes: 32 * 2 ** 40,
     },
@@ -1226,6 +1242,10 @@ function seed() {
     tenants: ['globex'], schedule: 'daily 04:00', gfs: { daily: 14, weekly: 4, monthly: 6, yearly: 2 }, bwlimit: 50_000_000,
     state: 'enrolled', cert_sha256: rand(32), keyd_fingerprint: keydFp(), created: t - 86400 * 30, last_sync: day(0, 4) + 480,
     status: { globex: { last_ok: day(0, 4) + 480, last_error: null, imported: 3, bytes: 734003200, remote: 41, key_versions: [1] } },
+    // Phase 17a/b: syncs only at night, 10 MB/s while the office is open
+    windows: [{ days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], from: '07:00', to: '19:00', action: 'limit', rate_bytes: 10_000_000 }],
+    sync_window: [{ days: [], from: '22:00', to: '06:00' }],
+    timezone: 'Europe/Berlin', closed_until: null, closed_by: null, closed_at: null,
   });
   seedPhase12(t);
   seedPhase13a(t);
@@ -1501,6 +1521,11 @@ function noInlineSecrets(v: unknown) {
 }
 
 // tenants.offsite: an S3 remote may carry its secret_key (write-only, "sealed" here); omitted on PUT = keep
+/** Bandwidth windows (Phase 17a) as the web-api validates them. */
+function checkWindows(w: RateWindow[]) {
+  if (!Array.isArray(w) || w.length > 32 || !w.every(validRateWindow)) throw new HttpError(400, 'windows: from/to different HH:MM, limit needs rate_bytes > 0');
+}
+
 function tenantOffsite(body: Json, old?: Json): Json {
   const o = structuredClone(body ?? {});
   const r = o.remote;
@@ -1568,6 +1593,17 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'tenant.update':
       find(db.tenants, (x) => x.name === p.name, 'tenant').offsite = structuredClone(p.offsite);
       break;
+    case 'replication_source.update': {
+      const { id: _id, name: _n, ...fields } = next;
+      Object.assign(find(db.replSources, (x) => x.id === p.id, 'replication source'), structuredClone(fields));
+      break;
+    }
+    case 'replication.reopen': {
+      const r = find(db.replSources, (x) => x.id === p.id, 'replication source');
+      Object.assign(r, { closed_until: null, closed_by: null, closed_at: null });
+      for (const a of db.alerts.filter((x) => x.key === `vault_closed:${r.id}` && !x.resolved_at)) Object.assign(a, { resolved_at: now(), resolved_by: 'scheduler' });
+      break;
+    }
     case 'tenant.delete':
       db.tenants = db.tenants.filter((g) => g.name !== p.name);
       break;
@@ -1730,7 +1766,12 @@ on('PUT', '/tenants/:name', async (c, [name]) => {
   const u = need(c.user, 'admin');
   const t = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant');
   const next = tenantOffsite(c.body.offsite, t.offsite);
-  if (Object.keys(t.offsite ?? {}).length && JSON.stringify(next) !== JSON.stringify(t.offsite))
+  checkWindows(next.windows ?? []);
+  // Phase 17a: only the bandwidth part tightened (bwlimit, windows, timezone): direct
+  const rest = ({ bwlimit: _b, windows: _w, timezone: _z, ...r }: Json) => JSON.stringify(r);
+  const bw = (o: Json) => ({ windows: o.windows ?? [], base: o.bwlimit, tz: o.timezone ?? 'UTC' });
+  const tightened = rest(next) === rest(t.offsite ?? {}) && !bandwidthWeaker(bw(t.offsite ?? {}), bw(next));
+  if (Object.keys(t.offsite ?? {}).length && JSON.stringify(next) !== JSON.stringify(t.offsite) && !tightened)
     return quorum(u, 'tenant.update', { name: t.name, offsite: publicOffsite(next), old: { name: t.name, offsite: publicOffsite(t.offsite) } });
   t.offsite = next;
   await audit(u.name, 'tenant.update', `tenant/${t.name}`, {});
@@ -2145,6 +2186,7 @@ on('POST', '/replication/sources', async (c) => {
   const r = {
     id: nextId(), name, url, peer_id: code.split('.')[0], cert_pin: pin, tenants, schedule, gfs, bwlimit, state: 'enrolling',
     cert_sha256: null, keyd_fingerprint: null, created: now(), last_sync: null, status: {},
+    windows: c.body.windows ?? [], sync_window: c.body.sync_window ?? [], timezone: c.body.timezone ?? 'UTC', closed_until: null, closed_by: null, closed_at: null,
   };
   db.replSources.push(r);
   const j = addJob('replica_enroll', tenants[0], { replication_source_id: r.id }, u.name);
@@ -2155,6 +2197,8 @@ on('POST', '/replication/sources/:id/sync', async (c, [id]) => {
   const u = need(c.user, 'admin', 'operator');
   const r = findRs(id);
   if (r.state !== 'enrolled') throw new HttpError(409, 'replication source is not enrolled');
+  if (isPaused(r.closed_until)) throw new HttpError(409, 'the vault is closed: reopen the replication source first');
+  if (!syncOpen(r.sync_window ?? [], r.timezone ?? 'UTC')) throw new HttpError(409, 'outside the sync window: the primary is not reachable now');
   const jobs = (r.tenants as string[]).map((tn) => addJob('replica_sync', tn, { replication_source_id: r.id, tenant: tn }, u.name).id);
   await audit(u.name, 'job.create', `replication_source/${r.id}`, { kind: 'replica_sync', jobs });
   return [202, { jobs }];
@@ -2167,12 +2211,52 @@ on('POST', '/replication/sources/:id/enroll', async (c, [id]) => {
   await audit(u.name, 'replication_source.enroll', `replication_source/${r.id}`, {});
   return [202, { job: nextId() }];
 });
+// like web-api: weakening (lower GFS, more bandwidth, a wider sync window) needs approval
 on('PUT', '/replication/sources/:id', async (c, [id]) => {
   const u = need(c.user, 'admin');
   const r = findRs(id);
-  if (c.body.schedule) r.schedule = c.body.schedule;
+  const b = c.body;
+  const next = {
+    schedule: b.schedule ?? r.schedule,
+    gfs: b.gfs ?? r.gfs,
+    bwlimit: b.bwlimit === undefined ? r.bwlimit : b.bwlimit,
+    windows: (b.windows ?? r.windows ?? []) as RateWindow[],
+    sync_window: (b.sync_window ?? r.sync_window ?? []) as Span[],
+    timezone: b.timezone ?? r.timezone ?? 'UTC',
+  };
+  checkWindows(next.windows);
+  if (!next.sync_window.every(validWindow)) throw new HttpError(400, 'sync_window: from/to must be different HH:MM times');
+  const lowered = (['daily', 'weekly', 'monthly', 'yearly'] as const).some((k) => (next.gfs[k] ?? 0) < (r.gfs?.[k] ?? 0));
+  const weaker =
+    bandwidthWeaker({ windows: r.windows ?? [], base: r.bwlimit, tz: r.timezone ?? 'UTC' }, { windows: next.windows, base: next.bwlimit, tz: next.timezone }) ||
+    syncWidened(r.sync_window ?? [], r.timezone ?? 'UTC', next.sync_window, next.timezone);
+  if (lowered || weaker) return quorum(u, 'replication_source.update', { id: r.id, name: r.name, ...next });
+  Object.assign(r, next);
   await audit(u.name, 'replication_source.update', `replication_source/${r.id}`, c.body);
   return [200, r];
+});
+// Phase 17b: close vault now (admin, security officer; direct), reopen (quorum replication.reopen)
+on('POST', '/replication/sources/:id/close', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  const r = findRs(id);
+  const until = c.body?.until ?? -1;
+  if (isPaused(r.closed_until) && (r.closed_until === -1 || (until !== -1 && until <= r.closed_until)))
+    throw new HttpError(409, 'the vault is already closed at least that long; reopening needs approval');
+  Object.assign(r, { closed_until: until, closed_by: u.name, closed_at: now() });
+  for (const j of db.jobs.filter((x) => x.kind === 'replica_sync' && x.params.replication_source_id === r.id && x.state === 'queued'))
+    Object.assign(j, { state: 'cancelled', finished: now() });
+  db.alerts.push({
+    id: nextId(), ts: now(), severity: 'info', kind: 'vault_closed', key: `vault_closed:${r.id}`, acked_by: null,
+    message: `replication source ${r.name} is closed (by ${u.name}) until it is reopened: no syncs, the primary is not reachable`,
+  });
+  await audit(u.name, 'replication_source.close', `replication-source/${r.id}`, { name: r.name, closed_until: until });
+  return [200, r];
+});
+on('POST', '/replication/sources/:id/reopen', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  const r = findRs(id);
+  if (r.closed_until === null) throw new HttpError(409, 'the replication source is not closed');
+  return quorum(u, 'replication.reopen', { id: r.id, name: r.name, url: r.url, closed_until: r.closed_until, closed_by: r.closed_by });
 });
 on('DELETE', '/replication/sources/:id', async (c, [id]) => {
   const u = need(c.user, 'admin');

@@ -1,18 +1,44 @@
 <script lang="ts">
-  // Blackout windows of a policy (Phase 13b): start days, from/to (group time zone), abort.
+  // Daily windows: start days, from/to (a time zone given by the caller).
+  // mode blackout: policy blackout windows (13b, with "abort");
+  // mode rate: bandwidth windows (17a, pause or limit with a rate);
+  // mode span: replication sync window (17a, days and times only).
   import { t } from '../lib/i18n';
-  import { DAYS, type BlackoutWindow } from '../lib/schedule';
+  import { DAYS, type BlackoutWindow, type RateWindow, type Span } from '../lib/schedule';
   import IconPlus from '@lucide/svelte/icons/plus';
   import IconX from '@lucide/svelte/icons/x';
 
-  let { windows = $bindable([]) }: { windows?: BlackoutWindow[] } = $props();
-  const add = () => (windows = [...windows, { days: [], from: '08:00', to: '18:00', abort: false }]);
+  type Mode = 'blackout' | 'rate' | 'span';
+  type W = Span & Partial<BlackoutWindow> & Partial<RateWindow>;
+  let {
+    windows = $bindable([]),
+    mode = 'blackout',
+    legend,
+    hint,
+    idp = 'bw',
+  }: { windows?: W[]; mode?: Mode; legend?: string; hint?: string; idp?: string } = $props();
+  const fresh = (): W =>
+    mode === 'rate'
+      ? { days: [], from: '08:00', to: '18:00', action: 'pause' }
+      : mode === 'span'
+        ? { days: [], from: '22:00', to: '06:00' }
+        : { days: [], from: '08:00', to: '18:00', abort: false };
+  const add = () => (windows = [...windows, fresh()]);
   const remove = (i: number) => (windows = windows.filter((_, j) => j !== i));
+  // rates are edited in MB/s, stored in bytes per second
+  const mbps = (w: W) => (w.rate_bytes ? w.rate_bytes / 1e6 : '');
+  function setRate(w: W, v: string) {
+    w.rate_bytes = v ? Math.round(Number(v) * 1e6) || undefined : undefined;
+  }
+  function setAction(w: W, a: string) {
+    w.action = a as RateWindow['action'];
+    if (a === 'pause') delete w.rate_bytes;
+  }
 </script>
 
 <fieldset class="field">
-  <legend>{t.runctl.blackout}</legend>
-  <p class="hint">{t.runctl.blackoutHint}</p>
+  <legend>{legend ?? t.runctl.blackout}</legend>
+  <p class="hint">{hint ?? t.runctl.blackoutHint}</p>
   {#each windows as w, i (i)}
     <div class="window">
       <div class="days" role="group" aria-label="{t.runctl.days} {i + 1}">
@@ -23,16 +49,35 @@
       </div>
       <div class="form-grid">
         <div class="field">
-          <label for="bw-from-{i}">{t.runctl.from}</label>
-          <input id="bw-from-{i}" type="time" bind:value={w.from} required />
+          <label for="{idp}-from-{i}">{t.runctl.from}</label>
+          <input id="{idp}-from-{i}" type="time" bind:value={w.from} required />
         </div>
         <div class="field">
-          <label for="bw-to-{i}">{t.runctl.to}</label>
-          <input id="bw-to-{i}" type="time" bind:value={w.to} required />
+          <label for="{idp}-to-{i}">{t.runctl.to}</label>
+          <input id="{idp}-to-{i}" type="time" bind:value={w.to} required />
         </div>
+        {#if mode === 'rate'}
+          <div class="field">
+            <label for="{idp}-act-{i}">{t.windows.action}</label>
+            <select id="{idp}-act-{i}" value={w.action} onchange={(e) => setAction(w, e.currentTarget.value)}>
+              <option value="pause">{t.windows.pause}</option>
+              <option value="limit">{t.windows.limit}</option>
+            </select>
+          </div>
+          {#if w.action === 'limit'}
+            <div class="field">
+              <label for="{idp}-rate-{i}">{t.windows.rate}</label>
+              <input id="{idp}-rate-{i}" type="number" min="0.01" step="any" required value={mbps(w)} oninput={(e) => setRate(w, e.currentTarget.value)} />
+            </div>
+          {/if}
+        {/if}
       </div>
       <div class="row">
-        <label class="inline-check"><input type="checkbox" bind:checked={w.abort} />{t.runctl.abort}</label>
+        {#if mode === 'blackout'}
+          <label class="inline-check"><input type="checkbox" bind:checked={w.abort} />{t.runctl.abort}</label>
+        {:else}
+          <span></span>
+        {/if}
         <button type="button" class="small icon-text" onclick={() => remove(i)}><IconX aria-hidden="true" />{t.runctl.removeWindow}</button>
       </div>
     </div>

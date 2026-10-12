@@ -21,6 +21,8 @@ export const can = {
   // Plugins are appliance-wide; admins change them, security officers / operators may look.
   viewPlugins: (u: User | null) => !!u && u.role !== 'tenant_user' && u.role !== 'viewer',
   syncReplication: (u: User | null) => u?.role === 'admin' || u?.role === 'operator',
+  // "Close vault now" (17b): admins and security officers; reopening is a request either may make
+  closeVault: (u: User | null) => u?.role === 'admin' || u?.role === 'security_officer',
   // Legal holds (15c): only security officers set them; officers and admins request a release.
   hold: (u: User | null) => u?.role === 'security_officer',
   releaseHold: (u: User | null) => u?.role === 'security_officer' || u?.role === 'admin',
