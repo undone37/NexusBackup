@@ -140,11 +140,7 @@ pub fn check_regex(list: &[String], what: &str) -> ApiResult<()> {
 pub fn check_include(list: &[String], what: &str) -> ApiResult<()> {
     patterns(list, what)?;
     for p in list {
-        let b = p.as_bytes();
-        let windows = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/');
-        if !windows {
-            validate::host_path(p, what)?;
-        }
+        validate::host_path(p, what)?;
     }
     Ok(())
 }

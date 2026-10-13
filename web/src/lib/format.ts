@@ -69,3 +69,6 @@ export function niceMax(v: number): number {
   for (const m of [1, 1.2, 1.6, 2, 2.4, 3, 4, 5, 6, 8, 10]) if (m * p >= v) return m * p;
   return 10 * p;
 }
+
+/** Absolute host path: `/srv/x`, or `C:\x` / `C:/x` for Windows agents. */
+export const absHostPath = (p: string) => p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p);

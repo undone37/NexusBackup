@@ -2,7 +2,7 @@
   import { post, act } from '../lib/api';
   import { navigate } from '../lib/router.svelte';
   import { hostAgentId } from '../lib/jobs';
-  import { fmtAgo, fmtTime } from '../lib/format';
+  import { absHostPath, fmtAgo, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import { session } from '../lib/session.svelte';
   import type { Agent, Overwrite } from '../lib/types';
@@ -71,7 +71,7 @@
   const agent = $derived(candidates.find((a) => a.id === agentId) ?? null);
   // owners are mapped only when the files go back onto the host they came from
   const otherHost = $derived(!!agent && agent.id !== own);
-  const targetOk = $derived(target.startsWith('/'));
+  const targetOk = $derived(absHostPath(target));
   const ready = $derived(!!agent && targetOk && confirm === agent.name && paths.length > 0 && !busy);
 
   async function submit(e: SubmitEvent) {

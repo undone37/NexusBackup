@@ -99,8 +99,19 @@ pub fn agent_id(s: &str) -> ApiResult<()> {
     }
 }
 
-/// Absolute path on a host without `.`/`..` components (restore targets).
+/// `C:\Users\a` / `C:/Users/a` -> `/C/Users/a`, the Windows agent's path form in snapshots
+/// (docs/agent-windows.md "Paths"); `None` for anything else.
+pub fn windows_canonical(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'))
+        .then(|| format!("/{}{}", &s[..1], s[2..].replace('\\', "/")))
+}
+
+/// Absolute path on a host without `.`/`..` components (restore targets); Windows agents
+/// also take `C:\...` (checked in its canonical form).
 pub fn host_path(s: &str, what: &str) -> ApiResult<()> {
+    let canonical = windows_canonical(s);
+    let s = canonical.as_deref().unwrap_or(s);
     guest_path(s).map_err(|_| {
         ApiError::bad(format!(
             "{what}: must be absolute, at most 4096 bytes, without control characters"
@@ -250,6 +261,11 @@ mod tests {
         assert!(source_ref("host-0123456789abcdef").is_ok() && source_ref("host-0123456789ABCDEF").is_err());
         assert!(
             host_path("/srv/x", "t").is_ok()
+                && host_path("C:\\Users\\a", "t").is_ok()
+                && host_path("C:/Users/a", "t").is_ok()
+                && host_path("C:\\Users\\..\\Windows", "t").is_err()
+                && windows_canonical("C:\\Users\\a b").as_deref() == Some("/C/Users/a b")
+                && windows_canonical("/srv").is_none()
                 && host_path("/srv/../etc", "t").is_err()
                 && host_path("srv", "t").is_err()
         );

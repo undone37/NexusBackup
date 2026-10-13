@@ -3,7 +3,9 @@
 //! The `windows` crate does not project `IVssBackupComponents` (a C++ abstract class in
 //! the SDK), so its vtable is declared here with `windows_core::interface`, in the
 //! exact slot order of vsbackup.h (checked against mingw-w64's `vsbackup.h`); unused
-//! slots are placeholders that are never called.
+//! slots are placeholders that are never called. `VSS_ID` parameters passed by value in C
+//! are declared as `*const GUID`: the x64 ABI passes a 16-byte struct by hidden pointer,
+//! and spelling that out keeps the call independent of how the macro lowers a by-value GUID.
 //!
 //! Sequence: CreateVssBackupComponents → InitializeForBackup → SetContext(BACKUP) →
 //! DisableWriterClasses(excluded) → SetBackupState(no component selection, COPY) →
@@ -20,7 +22,7 @@
 use crate::writers;
 use agent_proto::VssWriter;
 use std::ffi::c_void;
-use windows::Win32::Storage::Vss::{IVssAsync, VSS_SNAPSHOT_PROP};
+use windows::Win32::Storage::Vss::{IVssAsync, IVssEnumObject, VSS_OBJECT_PROP, VSS_SNAPSHOT_PROP};
 use windows_core::{IUnknown, IUnknown_Vtbl, Interface, BSTR, GUID, HRESULT};
 
 #[windows_core::interface("665c1d5f-c218-414d-a05d-7fef5f9d5c86")]
@@ -68,14 +70,21 @@ unsafe trait IVssBackupComponents: IUnknown {
     fn PostRestore(&self, a: *mut Option<IVssAsync>) -> HRESULT;
     fn SetContext(&self, ctx: i32) -> HRESULT;
     fn StartSnapshotSet(&self, set: *mut GUID) -> HRESULT;
-    fn AddToSnapshotSet(&self, volume: *const u16, provider: GUID, snap: *mut GUID) -> HRESULT;
+    fn AddToSnapshotSet(&self, volume: *const u16, provider: *const GUID, snap: *mut GUID) -> HRESULT;
     fn DoSnapshotSet(&self, a: *mut Option<IVssAsync>) -> HRESULT;
-    fn DeleteSnapshots(&self, id: GUID, kind: i32, force: i32, deleted: *mut i32, nondeleted: *mut GUID) -> HRESULT;
+    fn DeleteSnapshots(
+        &self,
+        id: *const GUID,
+        kind: i32,
+        force: i32,
+        deleted: *mut i32,
+        nondeleted: *mut GUID,
+    ) -> HRESULT;
     fn ImportSnapshots(&self, a: *mut Option<IVssAsync>) -> HRESULT;
-    fn BreakSnapshotSet(&self, set: GUID) -> HRESULT;
-    fn GetSnapshotProperties(&self, snap: GUID, prop: *mut VSS_SNAPSHOT_PROP) -> HRESULT;
-    fn Query(&self) -> HRESULT;
-    fn IsVolumeSupported(&self, provider: GUID, volume: *const u16, supported: *mut i32) -> HRESULT;
+    fn BreakSnapshotSet(&self, set: *const GUID) -> HRESULT;
+    fn GetSnapshotProperties(&self, snap: *const GUID, prop: *mut VSS_SNAPSHOT_PROP) -> HRESULT;
+    fn Query(&self, id: *const GUID, queried: i32, returned: i32, e: *mut Option<IVssEnumObject>) -> HRESULT;
+    fn IsVolumeSupported(&self, provider: *const GUID, volume: *const u16, supported: *mut i32) -> HRESULT;
     fn DisableWriterClasses(&self, ids: *const GUID, n: u32) -> HRESULT;
     fn EnableWriterClasses(&self, ids: *const GUID, n: u32) -> HRESULT;
     fn DisableWriterInstances(&self, ids: *const GUID, n: u32) -> HRESULT;
@@ -92,9 +101,30 @@ extern "system" {
 
 const VSS_CTX_BACKUP: i32 = 0;
 const VSS_BT_COPY: i32 = 5;
+const VSS_OBJECT_NONE: i32 = 1;
 const VSS_OBJECT_SNAPSHOT_SET: i32 = 2;
+const VSS_OBJECT_SNAPSHOT: i32 = 3;
 const VSS_S_ASYNC_FINISHED: i32 = 0x0004_230A;
 const VSS_S_ASYNC_CANCELLED: i32 = 0x0004_230B;
+
+/// The device path of a filled VSS_SNAPSHOT_PROP (empty for NULL); frees its strings.
+///
+/// # Safety
+/// `p` was filled by VSS (or is all zero).
+unsafe fn take_device(p: &mut VSS_SNAPSHOT_PROP) -> String {
+    // SAFETY: NUL-terminated string owned by VSS, or NULL (checked); freed right after.
+    unsafe {
+        let d = if p.m_pwszSnapshotDeviceObject.is_null() {
+            String::new()
+        } else {
+            windows_core::PCWSTR(p.m_pwszSnapshotDeviceObject)
+                .to_string()
+                .unwrap_or_default()
+        };
+        VssFreeSnapshotPropertiesInternal(p);
+        d
+    }
+}
 
 fn hr_text(hr: HRESULT) -> String {
     let name = match hr.0 as u32 {
@@ -238,7 +268,7 @@ impl SnapshotSet {
         let mut id = GUID::zeroed();
         // SAFETY: valid NUL-terminated volume name; GUID_NULL = default provider.
         check("AddToSnapshotSet", unsafe {
-            self.bc.AddToSnapshotSet(w.as_ptr(), GUID::zeroed(), &mut id)
+            self.bc.AddToSnapshotSet(w.as_ptr(), &GUID::zeroed(), &mut id)
         })?;
         self.members.push((volume.to_string(), id));
         Ok(())
@@ -309,20 +339,57 @@ impl SnapshotSet {
     }
 
     /// Shadow copy device of a member (`\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN`).
+    /// Windows Server 2022 answers GetSnapshotProperties with S_OK and an untouched struct
+    /// (found in the PVE lab; ids, slot and layout verified), so the device comes from
+    /// `Query` (all snapshots, matched by id) when GetSnapshotProperties leaves it empty.
     pub fn device(&self, idx: usize) -> Result<String, String> {
         let (_, id) = self.members.get(idx).ok_or("no such snapshot")?;
         let mut p = VSS_SNAPSHOT_PROP::default();
-        // SAFETY: valid object and out struct; freed below.
-        unsafe {
-            check("GetSnapshotProperties", self.bc.GetSnapshotProperties(*id, &mut p))?;
-            let dev = windows_core::PCWSTR(p.m_pwszSnapshotDeviceObject)
-                .to_string()
-                .unwrap_or_default();
-            VssFreeSnapshotPropertiesInternal(&mut p);
-            if dev.is_empty() {
-                return Err("snapshot without device object".into());
+        // SAFETY: valid object and out struct; freed below. Never hand a NULL to wcslen.
+        let dev = unsafe {
+            check("GetSnapshotProperties", self.bc.GetSnapshotProperties(id, &mut p))?;
+            let d = take_device(&mut p);
+            if d.is_empty() {
+                self.device_by_query(id)?
+            } else {
+                d
             }
-            Ok(dev)
+        };
+        if dev.is_empty() {
+            return Err("snapshot without device object".into());
+        }
+        Ok(dev)
+    }
+
+    /// The device of snapshot `id` from `Query(GUID_NULL, VSS_OBJECT_NONE, VSS_OBJECT_SNAPSHOT)`.
+    unsafe fn device_by_query(&self, id: &GUID) -> Result<String, String> {
+        let mut e: Option<IVssEnumObject> = None;
+        // SAFETY: valid object; documented arguments for "all snapshots".
+        unsafe {
+            check(
+                "Query",
+                self.bc
+                    .Query(&GUID::zeroed(), VSS_OBJECT_NONE, VSS_OBJECT_SNAPSHOT, &mut e),
+            )?;
+            let e = e.ok_or("VSS Query: no enumerator")?;
+            let mut found = String::new();
+            loop {
+                let mut prop = [VSS_OBJECT_PROP::default()];
+                let mut n = 0u32;
+                if e.Next(&mut prop, &mut n).is_err() || n == 0 {
+                    break;
+                }
+                if prop[0].Type.0 != VSS_OBJECT_SNAPSHOT {
+                    continue;
+                }
+                let snap = &mut prop[0].Obj.Snap;
+                let hit = snap.m_SnapshotId == *id;
+                let d = take_device(snap);
+                if hit {
+                    found = d;
+                }
+            }
+            Ok(found)
         }
     }
 
@@ -346,7 +413,7 @@ impl SnapshotSet {
             if self.done {
                 let _ = self
                     .bc
-                    .DeleteSnapshots(self.set, VSS_OBJECT_SNAPSHOT_SET, 1, &mut deleted, &mut bad);
+                    .DeleteSnapshots(&self.set, VSS_OBJECT_SNAPSHOT_SET, 1, &mut deleted, &mut bad);
             }
         }
         notes

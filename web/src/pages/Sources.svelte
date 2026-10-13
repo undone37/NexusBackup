@@ -15,7 +15,7 @@
   import PauseDialog from '../components/PauseDialog.svelte';
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
-  import { fmtTime } from '../lib/format';
+  import { absHostPath, fmtTime } from '../lib/format';
   import { isPaused } from '../lib/schedule';
   import Inventory from '../components/Inventory.svelte';
   import ChangeTrends from '../components/ChangeTrends.svelte';
@@ -410,7 +410,7 @@
   function linuxConfig(): Record<string, unknown> | null {
     const paths = lines(f.paths);
     const excludes = lines(f.excludes);
-    if (!paths.length || paths.length > 64 || paths.some((p) => !p.startsWith('/'))) {
+    if (!paths.length || paths.length > 64 || paths.some((p) => !absHostPath(p))) {
       notify('error', t.sources.pathsInvalid);
       return null;
     }
@@ -427,8 +427,7 @@
   function selection(agent: boolean): Record<string, unknown> | null {
     const include = lines(f.include);
     const exclude_regex = lines(f.exclude_regex);
-    const winPath = (p: string) => /^[A-Za-z]:[\\/]/.test(p);
-    if (include.length > 256 || include.some((p) => !p.startsWith('/') && !(agent && winPath(p)))) {
+    if (include.length > 256 || include.some((p) => (agent ? !absHostPath(p) : !p.startsWith('/')))) {
       notify('error', t.sources.includeInvalid);
       return null;
     }

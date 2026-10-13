@@ -350,7 +350,11 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
             if r.paths.is_empty() || r.paths.len() > 1000 {
                 return Err(ApiError::bad("paths: 1..=1000 entries"));
             }
-            for x in &r.paths {
+            for x in &mut r.paths {
+                // snapshot entries of Windows agents are /C/...
+                if let Some(c) = validate::windows_canonical(x) {
+                    *x = c;
+                }
                 validate::host_path(x, "paths")?;
             }
             validate::host_path(&r.target, "target")?;

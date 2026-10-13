@@ -929,7 +929,7 @@ export const en = {
     noAgents:
       "No agent in this tenant yet — create and enroll one under Agents first.",
     paths: "Paths to back up (one absolute path per line)",
-    pathsHint: "1 to 64 absolute paths, e.g. /etc and /home.",
+    pathsHint: "1 to 64 absolute paths, e.g. /etc and /home (Windows: C:\\Users, D:\\Data).",
     pathsInvalid: "Paths: 1 to 64 absolute paths (one per line) are required.",
     excludes: "Exclude patterns (one glob per line, optional)",
     excludesHint: "Up to 256 patterns, e.g. *.tmp or /var/cache/**.",

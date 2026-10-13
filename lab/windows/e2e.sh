@@ -80,7 +80,7 @@ Set-Content "$d\streams.txt" "main"; Set-Content "$d\streams.txt" -Stream extra 
 Set-Content "$d\streams.txt" -Stream Zone.Identifier "[ZoneTransfer]`r`nZoneId=3"
 Set-Content "$d\übergröße-日本語-ünïcödé.txt" "unicode"
 New-Item -ItemType HardLink -Path "$d\hardlink.txt" -Target "$d\sub\file1.txt" | Out-Null
-New-Item -ItemType SymbolicLink -Path "$d\sym-rel.txt" -Target "sub\file2.txt" | Out-Null
+cmd /c mklink "$d\sym-rel.txt" "sub\file2.txt" | Out-Null
 New-Item -ItemType SymbolicLink -Path "$d\sym-dir" -Target "$d\sub" | Out-Null
 New-Item -ItemType Junction -Path "$d\junction" -Target "$d\sub" | Out-Null
 $p = "\\?\$d\deep" + ("\" + "x" * 60) * 5; [IO.Directory]::CreateDirectory($p) | Out-Null
