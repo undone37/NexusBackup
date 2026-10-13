@@ -330,7 +330,7 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 ## Phase 19 — Tier 3 (2026-10-13)
 - [x] 19b tenant_admin, policy tiers, view as tenant, immutable tenant uid + tombstones (v25, T30–T32)
 - [x] 19c mail export eml/mbox/PST (plugin contract v1.9, m365 1.3.0); Outlook import lab pending
-- [ ] 19a BMR/P2V (rescue agent, layout capture, PVE P2V)
+- [x] 19a BMR/P2V (layout capture, rescue ISO, unattended P2V; lab: blank VM recovered + booted, v29, protocol v1.6)
 
 ## Phase 20 — Agent packages (2026-10-12)
 - [x] .deb/.rpm x86_64+aarch64, MSI (wixl), release packages job, sign-blobs / verify --blobs
