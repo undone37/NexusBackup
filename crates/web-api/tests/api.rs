@@ -3910,6 +3910,12 @@ async fn tenant_admin_routes_classified() {
         ("POST", "/groups/{id}/resume", format!("/api/v1/groups/{grp}/resume"), e(), 'Y'),
         ("PUT", "/groups/{id}/index-files", format!("/api/v1/groups/{grp}/index-files"), Some(json!({"enabled": true})), 'Y'),
         ("POST", "/search", "/api/v1/search".into(), Some(json!({"tenant": "acme", "query": "etc"})), 'Y'),
+        // Phase 31b: instant search (own tenant), index status, scope rules of own groups; rebuild is the admin's
+        ("GET", "/files/search", "/api/v1/files/search?tenant=acme&q=etc".into(), none(), 'Y'),
+        ("GET", "/files/index-status", "/api/v1/files/index-status".into(), none(), 'Y'),
+        ("POST", "/files/index/rebuild", "/api/v1/files/index/rebuild".into(), Some(json!({"tenant": "acme"})), 'N'),
+        ("GET", "/groups/{id}/index-rules", format!("/api/v1/groups/{grp}/index-rules"), none(), 'Y'),
+        ("PUT", "/groups/{id}/index-rules", format!("/api/v1/groups/{grp}/index-rules"), Some(json!({"exclude": ["/tmp2"]})), 'Y'),
         ("POST", "/sources/{id}/maintenance", format!("/api/v1/sources/{src}/maintenance"), Some(json!({"hours": 1})), 'Y'),
         ("POST", "/sources/{id}/maintenance/end", format!("/api/v1/sources/{src}/maintenance/end"), e(), 'Y'),
         ("GET", "/users", "/api/v1/users".into(), none(), 'Y'),
