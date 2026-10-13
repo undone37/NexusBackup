@@ -660,11 +660,30 @@ ALTER TABLE snapshots ADD COLUMN damaged INTEGER;
 ALTER TABLE snapshots ADD COLUMN damaged_at INTEGER;
 "#;
 
+/// v33 (Phase 21e, docs/malware-scan.md): the opt-in YARA scan. `yara_rules`
+/// (admin-supplied rule files, appliance-wide, no feed: name, text, sha256,
+/// uploader) and `snapshot_scans` (one row per finished `snapshot_scan` job:
+/// counts, `complete` = within the time budget, `matches` = `[{rule, path}]`
+/// (at most 1000 kept, `matches_total` counts all), `rules` = sha256 over the
+/// rule set used). A hit also sets `snapshots.anomaly` (v28). Purely additive:
+/// the previous release ignores both tables.
+const SCHEMA_V33: &str = r#"
+CREATE TABLE yara_rules (
+  name TEXT PRIMARY KEY, text TEXT NOT NULL, sha256 TEXT NOT NULL,
+  uploaded_by TEXT NOT NULL, uploaded_at INTEGER NOT NULL);
+CREATE TABLE snapshot_scans (
+  job_id INTEGER PRIMARY KEY, tenant TEXT NOT NULL, source TEXT NOT NULL, time INTEGER NOT NULL,
+  finished INTEGER NOT NULL, rules TEXT NOT NULL, files INTEGER NOT NULL, skipped INTEGER NOT NULL,
+  errors INTEGER NOT NULL, complete INTEGER NOT NULL, matches_total INTEGER NOT NULL,
+  matches TEXT NOT NULL DEFAULT '[]');
+CREATE INDEX snapshot_scans_snapshot ON snapshot_scans(tenant, source, time);
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
-    SCHEMA_V29, SCHEMA_V31, SCHEMA_V32,
+    SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -2602,5 +2621,40 @@ mod tests {
             .query_row("SELECT damaged FROM snapshots", [], |r| r.get(0))
             .unwrap();
         assert_eq!(d, Some(2));
+    }
+
+    /// v33 (YARA rules, scan results) on top of the previous catalog.
+    #[test]
+    fn migration_v33_snapshot_scans() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V33).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        conn.execute_batch(
+            "INSERT INTO yara_rules VALUES ('r.yar', 'rule x { condition: true }', 'ab', 'alice', 1);
+             INSERT INTO snapshot_scans (job_id, tenant, source, time, finished, rules, files, skipped, errors,
+               complete, matches_total, matches)
+             VALUES (7, 't', 'vm-100', 5, 9, 'ab', 10, 1, 0, 1, 1, '[{\"rule\":\"r.yar:x\",\"path\":\"/vda1/a\"}]');",
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT matches_total FROM snapshot_scans WHERE tenant='t' AND source='vm-100' AND time=5",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        assert!(conn
+            .execute("INSERT INTO yara_rules VALUES ('r.yar', 'x', 'cd', 'bob', 2)", [])
+            .is_err());
     }
 }

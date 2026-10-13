@@ -52,6 +52,7 @@ pub mod rescue;
 pub mod resources;
 pub mod restores;
 pub mod runctl;
+pub mod scan;
 pub mod search;
 pub mod selection;
 pub mod settings;
@@ -561,6 +562,13 @@ pub fn router(st: St) -> Router {
             post(changes::clear),
         )
         .route("/stats/trends", get(changes::trends))
+        .route("/snapshots/{tenant}/{source}/{time}/scan", post(scan::scan_snapshot))
+        .route("/scans", get(scan::list_scans))
+        .route("/scan/rules", get(scan::list_rules))
+        .route(
+            "/scan/rules/{name}",
+            axum::routing::put(scan::put_rule).delete(scan::delete_rule),
+        )
         .route(
             "/snapshots/{tenant}/{source}/{time}",
             axum::routing::delete(delete_snapshot),

@@ -708,6 +708,44 @@ export interface Snapshot {
   /** Phase 21d: number of referenced chunks that failed verify (null = healthy) */
   damaged?: number | null;
   damaged_at?: number | null;
+  /** Phase 21e: the latest YARA scan, null = never scanned */
+  scan?: SnapshotScanSummary | null;
+}
+
+export interface SnapshotScanSummary {
+  job: number;
+  finished: number;
+  matches: number;
+  /** false: the time budget ran out */
+  complete: boolean;
+}
+
+/** Restore option `scan_first` (Phase 21e): on a hit, refuse or restore with the NICs down. */
+export type ScanFirst = 'refuse' | 'link_down';
+
+/** One admin-supplied YARA rule file (GET /scan/rules). */
+export interface YaraRule {
+  name: string;
+  size: number;
+  sha256: string;
+  uploaded_by: string;
+  uploaded_at: number;
+}
+
+/** One finished scan (GET /scans). */
+export interface SnapshotScan {
+  job: number;
+  tenant: string;
+  source: string;
+  time: number;
+  finished: number;
+  rules: string;
+  files: number;
+  skipped: number;
+  errors: number;
+  complete: boolean;
+  matches_total: number;
+  matches: { rule: string; path: string }[];
 }
 
 export interface SnapshotAnomaly {

@@ -30,7 +30,10 @@ param(
     # ChannelMessage.Read.All (protected API: Microsoft must approve)
     [switch] $TeamsMessages,
     # Chat.Read.All + Chat.ReadBasic.All (protected, metered API)
-    [switch] $Chats
+    [switch] $Chats,
+    # Device.Read.All + Application.Read.All (source option "Entra ID directory objects";
+    # groups and members use Group.Read.All)
+    [switch] $Entra
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -42,16 +45,17 @@ if ([bool]$CertFile -ne [bool]$KeyFile) { throw '-CertFile and -KeyFile go toget
 # Application permissions (docs/m365.md, "API permissions")
 $perms = if ($BackupOnly) {
     @('User.Read.All', 'Mail.Read', 'Calendars.Read', 'Contacts.Read', 'Sites.Read.All', 'Files.Read.All',
-      'Team.ReadBasic.All', 'Channel.ReadBasic.All')
+      'Team.ReadBasic.All', 'Channel.ReadBasic.All', 'Group.Read.All')
 } else {
     @('User.Read.All', 'Mail.ReadWrite', 'Calendars.ReadWrite', 'Contacts.ReadWrite', 'Sites.ReadWrite.All',
-      'Files.ReadWrite.All', 'Team.ReadBasic.All', 'Channel.ReadBasic.All')
+      'Files.ReadWrite.All', 'Team.ReadBasic.All', 'Channel.ReadBasic.All', 'Group.Read.All')
 }
 if ($TeamsMessages) {
     $perms += 'ChannelMessage.Read.All'
     if (-not $BackupOnly) { $perms += @('Teamwork.Migrate.All', 'Channel.Create') }
 }
 if ($Chats) { $perms += @('Chat.Read.All', 'Chat.ReadBasic.All') }
+if ($Entra) { $perms += @('Device.Read.All', 'Application.Read.All') }
 
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 if (-not $IsWindows) { chmod 700 $Out }

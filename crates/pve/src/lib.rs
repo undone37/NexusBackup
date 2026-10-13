@@ -13,3 +13,4 @@ pub mod p2v;
 pub mod parallel;
 pub mod restore;
 pub mod restorevm;
+pub mod scan;

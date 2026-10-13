@@ -59,6 +59,7 @@ const HINTS: &[(&str, &str)] = &[
     ("config_backup", "The appliance configuration backup (catalog, key files) could not be made or uploaded to an offsite target. Open Configuration → Settings → Backup of this appliance and the job log; check that nexus-keyd runs and the offsite target is reachable, then Run now. Resolves after the next successful run (per target)."),
     ("incident", "A security officer put the appliance into incident mode: snapshots in the chosen range are held, backup groups are paused, every other session and all API tokens were ended. Investigate; leaving incident mode needs a second approver (Settings → Incident mode). Resolves when incident mode ends."),
     ("dek_rotation", "The tenant's data encryption key is older than the configured rotation interval (Settings → Security). Rotate it at the appliance console (root shell): runuser -u nexus-keyd -- /usr/libexec/nexus/keyd tenant-rotate /var/lib/nexus/keyd <tenant>. New snapshots use the new key, older ones stay readable; on a replication primary export the keys again afterwards. Resolves once rotated."),
+    ("malware", "The YARA scan found matches of the administrators' rules in a snapshot (rule and path: Snapshots page, scan results). The snapshot is flagged as anomalous, so restores and holds default to an earlier clean snapshot, and restores with Scan first are refused or run with the network disconnected. Check the files and the source; if a rule was too broad, a security officer clears the flag on the Snapshots page. Resolve the alert by hand."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
 
@@ -68,6 +69,7 @@ pub const CATEGORIES: &[&str] = &["security", "backup", "replication", "hardware
 
 const CATEGORY: &[(&str, &str)] = &[
     ("anomaly", "security"),
+    ("malware", "security"),
     ("console_unlock", "security"),
     ("console_root_shell", "security"),
     ("break_glass", "security"),
@@ -352,6 +354,7 @@ mod tests {
     fn categories() {
         for (kind, cat) in [
             ("anomaly", "security"),
+            ("malware", "security"),
             ("console_root_shell", "security"),
             ("legal_hold_advisory", "security"),
             ("firewall_reset", "security"),

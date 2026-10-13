@@ -253,8 +253,77 @@ fn single_file_restore_from_disk_images() {
         let names: Vec<&str> = files.iter().map(|f| f.0.as_str()).collect();
         assert!(names.contains(&"vda2/dir/sub/ünïcödé ✓.txt") && names.contains(&"lvm/vgtest-data/hello.txt"));
         assert_eq!(files.iter().find(|f| f.0 == "vda2/dir/70k.txt").unwrap().2.len(), 70000);
+
+        // YARA scan in the VM (Phase 21e): every file system, symlinks never followed
+        // (`rootlink -> /` would reach the VM's own /etc/hostname), large files skipped
+        assert!(vm
+            .rules(&serde_json::json!([{"name": "bad.yar", "text": "rule {"}]))
+            .is_err());
+        vm.rules(&serde_json::json!([
+            {"name": "a.yar", "text": "rule HelloXfs { strings: $a = \"hello from xfs\" condition: $a }"},
+            {"name": "b.yar", "text": "rule Uni { strings: $a = \"unicode content\" condition: $a }\n\
+                                       rule VmHost { strings: $a = \"nexus-restore-vm\" condition: $a }"}
+        ]))?;
+        let t = Instant::now();
+        let r = vm.scan(&pve::scan::limits(600, 2), Duration::from_secs(900))?;
+        eprintln!("yara scan: {r} in {:.1?}", t.elapsed());
+        let m: Vec<(String, String)> = r["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| (m["rule"].as_str().unwrap().into(), m["path"].as_str().unwrap().into()))
+            .collect();
+        assert!(
+            m.contains(&("a.yar:HelloXfs".into(), "/vda2/hello.txt".into())),
+            "{m:?}"
+        );
+        for (p, _, _) in expect {
+            assert!(
+                m.contains(&("b.yar:Uni".into(), format!("{p}/dir/sub/ünïcödé ✓.txt"))),
+                "{p}: {m:?}"
+            );
+        }
+        assert!(!m.iter().any(|x| x.0.contains("VmHost")), "followed a symlink: {m:?}");
+        assert!(r["skipped"].as_u64().unwrap() >= 2, "big.bin is over the size limit");
+        assert_eq!(r["complete"], true);
         Ok(())
     })
     .unwrap();
+
+    // file-tree snapshots: a tar from the store streamed into a VM without disks
+    let (data, n) = store.store_file(&b"padding X5O-TEST-SIGNATURE padding"[..]).unwrap();
+    let tree = Index::Tree {
+        entries: vec![chunkstore::TreeEntry {
+            path: b"home/u/report.docx".to_vec(),
+            kind: chunkstore::TreeKind::File,
+            mode: 0o644,
+            uid: 0,
+            gid: 0,
+            size: n,
+            mtime_ns: 0,
+            ctime_ns: 0,
+            inode: 1,
+            rdev: 0,
+            link_target: None,
+            xattrs: vec![],
+            chunks: data,
+            inconsistent: false,
+        }],
+    };
+    let m = store.commit_snapshot("host-a", 5, &[("files", tree)]).unwrap();
+    let r = restorevm::with_vm(&store, &[], &cfg, |vm| {
+        vm.rules(
+            &serde_json::json!([{"name": "t.yar", "text": "rule Sig { strings: $a = \"X5O-TEST\" condition: $a }"}]),
+        )?;
+        vm.scan_tar(&pve::scan::limits(600, 1), Duration::from_secs(900), |w| {
+            pve::scan::tree_tar(&store, &m, pve::scan::MAX_SIZE, w)?;
+            Ok(())
+        })
+    })
+    .unwrap();
+    eprintln!("yara tree scan: {r}");
+    assert_eq!(r["files"], 1);
+    assert_eq!(r["matches"][0]["rule"], "t.yar:Sig");
+    assert_eq!(r["matches"][0]["path"], "home/u/report.docx");
     let _ = std::io::stderr().flush();
 }

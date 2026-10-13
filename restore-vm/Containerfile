@@ -14,3 +14,5 @@ RUN apt-get install -y --no-install-recommends zfs-dkms zfsutils-linux \
  && modinfo -k "$KVER" zfs | grep -E '^(filename|version|vermagic)'
 RUN apt-get install -y --no-install-recommends lvm2 mdadm util-linux fdisk busybox-static \
       e2fsprogs xfsprogs ntfs-3g btrfs-progs dosfstools
+# YARA scanner for the opt-in malware scan (Phase 21e): runs only inside the VM
+RUN apt-get install -y --no-install-recommends yara

@@ -595,6 +595,7 @@ export const en = {
       file_index: "File index",
       file_changes: "File change signals",
       snapshot_diff: "Snapshot diff",
+      snapshot_scan: "Malware scan (YARA)",
       offsite_list: "List offsite copy",
       offsite_restore: "Fetch from offsite",
       offsite_attach: "Attach offsite copy",
@@ -1479,6 +1480,7 @@ export const en = {
       ssh: "Appliance SSH keys",
       updates: "Updates",
       anomaly: "Anomaly detection",
+      malware: "Malware scan",
       certificate: "Certificate",
       forwarding: "Forwarding",
       diagnostics: "Diagnostics",
@@ -2056,6 +2058,7 @@ export const en = {
         "A security officer put the appliance into incident mode: snapshots in the chosen range are held, backup groups are paused, every other session and all API tokens were ended. Investigate; leaving incident mode needs a second approver (Settings → Incident mode). Resolves when incident mode ends.",
       dek_rotation:
         "The tenant's data encryption key is older than the rotation interval (Settings → Security). Rotate it at the appliance console (root shell, manual chapter 14): runuser -u nexus-keyd -- /usr/libexec/nexus/keyd tenant-rotate /var/lib/nexus/keyd <tenant>. New snapshots use the new key; older ones stay readable. Resolves once rotated.",
+      malware: "The YARA scan found matches of the administrators' rules in a snapshot (rule and path: Snapshots page, scan results). The snapshot is flagged as anomalous, so restores and holds default to an earlier clean snapshot, and restores with Scan first are refused or run with the network disconnected. Check the files and the source; if a rule was too broad, a security officer clears the flag on the Snapshots page. Resolve the alert by hand.",
       vault_closed:
         "A replication source was closed with Close vault (pause pulling now): no syncs, the primary is not reachable from here. Nothing to do while that is intended; reopening needs approval (Replication page). Resolves when the source is reopened.",
     } as Record<string, string>,
@@ -3112,6 +3115,58 @@ export const en = {
     on: "required",
     off: "optional",
     pending: (id: number) => `Change waiting for approval (request #${id}).`,
+  },
+  // Phase 21e: opt-in YARA scan of a snapshot in the restore micro-VM
+  scan: {
+    intro:
+      "YARA rule files you upload here are used to scan snapshots for malware before you rely on them: on request (Snapshots page → Scan) or as \"Scan first\" in a restore dialog. The scanner runs only inside the restore micro-VM: no network, the snapshot's disks read-only. There is no rule feed: you choose the rules (your own or published ones) and keep them current.",
+    limits:
+      "Limits: files over 64 MiB are skipped, 60 s per file, 4 hours per scan (shorter on request), 2 vCPUs, one scan at a time. At most 50 rule files, 256 KiB each, 1 MiB together.",
+    ruleCount: (n: number) => (n === 1 ? "1 rule file" : `${n} rule files`),
+    noRules: "No rules: scans are off",
+    file: "File",
+    size: "Size",
+    uploadedBy: "Uploaded",
+    total: (size: string) => `Together ${size} of 1 MiB.`,
+    upload: "Add or replace a rule file",
+    chooseFile: "Rule file (.yar)",
+    fileName: "Name",
+    fileNameHint: "Letters, digits, dot, dash, underscore; up to 64 characters. The same name replaces the file. Matches show as <name>:<rule>.",
+    text: "Rules",
+    textHint: "YARA source text. It is compiled in the micro-VM at the start of each scan: a syntax error fails that scan job with the compiler's message.",
+    save: "Save rule file",
+    tooLarge: (max: string) => `The file is larger than ${max}.`,
+    uploaded: (n: string) => `Rule file ${n} saved.`,
+    deleted: (n: string) => `Rule file ${n} deleted.`,
+    deleteConfirm: (n: string) => `Delete the rule file ${n}? Scans no longer use its rules.`,
+    deleteLabel: (n: string) => `Delete rule file ${n}`,
+    scan: "Scan",
+    scanLabel: (s: string, at: string) => `Scan ${s} from ${at} for malware`,
+    scanConfirm: (s: string, at: string) =>
+      `Scan ${s} from ${at} with the uploaded YARA rules? The scan runs in the restore micro-VM and may take up to 4 hours; a match flags the snapshot and raises a critical alert.`,
+    started: (id: number) => `Malware scan started (job ${id}).`,
+    clean: "Scanned: clean",
+    hits: (n: number) => (n === 1 ? "Malware: 1 match" : `Malware: ${n} matches`),
+    incomplete: "Scan incomplete",
+    chipTitle: (at: string) => `Last YARA scan ${at}; open the results`,
+    resultsTitle: (s: string, at: string) => `Malware scans of ${s} from ${at}`,
+    none: "This snapshot has not been scanned.",
+    scanOf: (at: string) => `Scan of ${at}`,
+    summary: (at: string, files: number, skipped: number, errors: number) =>
+      `${at} · ${files} files scanned, ${skipped} skipped (too large), ${errors} errors`,
+    job: (id: number) => `Job ${id}`,
+    rulesUsed: (r: string) => `Rules: ${r || "—"}`,
+    rule: "Rule",
+    path: "Path",
+    moreMatches: (n: number) => `… and ${n} more matches (the first 1000 are kept).`,
+    resultsHint: (budget: string) =>
+      `A scan that hit its time budget (${budget} by default) is incomplete: the files it did not reach are unchecked. A match also flags the snapshot as anomalous; a security officer clears the flag if it was a false positive.`,
+    first: "Scan first (YARA)",
+    firstOff: "Off: restore at once",
+    firstRefuse: "Scan; on a match refuse the restore",
+    firstLinkDown: "Scan; on a match restore with the network disconnected",
+    firstHint:
+      "The snapshot is scanned in the restore micro-VM before the restore starts (needs uploaded rules: Settings → Malware scan). A scan that does not finish in time counts as a match; a failed scan refuses the restore.",
   },
 };
 
