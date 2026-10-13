@@ -617,11 +617,48 @@ CREATE TABLE passkeys (
 CREATE INDEX passkeys_user ON passkeys(user_id);
 "#;
 
+/// v34 (Phase 25, docs/control-plane.md "Restore tests and recovery plans"):
+/// `restore_tests` (one row per tested guest snapshot: passed / failed /
+/// cancelled / skipped, the checks as JSON, the job and the recovery run it
+/// belonged to), `restore_test_schedules` (per PVE group: test the newest
+/// snapshot of each guest every N days on a node / storage, isolated bridge,
+/// checks), `recovery_plans` (ordered guests in waves with delays and checks,
+/// target node / storage, test bridge, network map for a real execution, RPO,
+/// the last readiness check) and `recovery_runs` (test runs and approved
+/// executions with the plan as run and the per-guest results; kept when the
+/// plan is deleted: the DR report). Purely additive.
+const SCHEMA_V34: &str = r#"
+CREATE TABLE restore_tests (
+  id INTEGER PRIMARY KEY, tenant TEXT NOT NULL, source TEXT NOT NULL, time INTEGER NOT NULL,
+  job_id INTEGER NOT NULL, run_id INTEGER,
+  state TEXT NOT NULL CHECK (state IN ('passed','failed','cancelled','skipped')),
+  started INTEGER NOT NULL, finished INTEGER NOT NULL, details TEXT NOT NULL DEFAULT '{}',
+  UNIQUE (job_id, source));
+CREATE INDEX restore_tests_source ON restore_tests(tenant, source, finished);
+CREATE TABLE restore_test_schedules (
+  group_id INTEGER PRIMARY KEY REFERENCES groups(id) ON DELETE CASCADE,
+  every_days INTEGER NOT NULL CHECK (every_days BETWEEN 1 AND 365), node TEXT NOT NULL, storage TEXT NOT NULL,
+  bridge TEXT, checks TEXT NOT NULL DEFAULT '{}', last_run INTEGER);
+CREATE TABLE recovery_plans (
+  id INTEGER PRIMARY KEY, tenant TEXT NOT NULL REFERENCES tenants(name), name TEXT NOT NULL,
+  source_id INTEGER NOT NULL REFERENCES sources(id), node TEXT NOT NULL, storage TEXT NOT NULL,
+  test_bridge TEXT, network_map TEXT NOT NULL DEFAULT '{}', steps TEXT NOT NULL DEFAULT '[]',
+  rpo_hours INTEGER NOT NULL DEFAULT 24, readiness TEXT, readiness_at INTEGER,
+  created INTEGER NOT NULL, created_by TEXT NOT NULL, UNIQUE (tenant, name));
+CREATE TABLE recovery_runs (
+  id INTEGER PRIMARY KEY, plan_id INTEGER NOT NULL, tenant TEXT NOT NULL,
+  mode TEXT NOT NULL CHECK (mode IN ('test','execute')),
+  state TEXT NOT NULL DEFAULT 'running' CHECK (state IN ('running','passed','failed','cancelled')),
+  requested_by TEXT NOT NULL, quorum_id INTEGER, job_id INTEGER, plan TEXT NOT NULL,
+  results TEXT NOT NULL DEFAULT '[]', started INTEGER NOT NULL, finished INTEGER);
+CREATE INDEX recovery_runs_plan ON recovery_runs(plan_id, id);
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
-    SCHEMA_V31,
+    SCHEMA_V31, SCHEMA_V34,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1351,6 +1388,65 @@ mod tests {
             })
             .unwrap();
         assert_eq!(n, 3);
+    }
+
+    /// v34 (restore tests, recovery plans) on top of the previous catalog: empty
+    /// tables; a group's schedule goes with the group; the previous release
+    /// still writes policies.
+    #[test]
+    fn migration_v34_recovery() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V34).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO tenants (name) VALUES ('t');
+                 INSERT INTO sources (id, tenant, kind, name, config) VALUES (1, 't', 'pve', 's', '{}');
+                 INSERT INTO policies (id, name, schedule, gfs) VALUES (1, 'p', 'daily 22:00', '{}');
+                 INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (1, 't', 1, 1, 'g', '[100]');",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            conn.execute_batch(
+                "INSERT INTO restore_test_schedules (group_id, every_days, node, storage) VALUES (1, 7, 'pve1', 'local-lvm');
+                 INSERT INTO restore_tests (tenant, source, time, job_id, state, started, finished)
+                   VALUES ('t', 'vm-100', 5, 1, 'passed', 6, 7);
+                 INSERT INTO recovery_plans (tenant, name, source_id, node, storage, created, created_by)
+                   VALUES ('t', 'dr', 1, 'pve1', 'local-lvm', 1, 'a');
+                 INSERT INTO recovery_runs (plan_id, tenant, mode, requested_by, plan, started) VALUES (1, 't', 'test', 'a', '{}', 1);",
+            )
+            .unwrap();
+            assert!(conn
+                .execute(
+                    "INSERT INTO restore_tests (tenant, source, time, job_id, state, started, finished)
+                     VALUES ('t', 'vm-100', 5, 1, 'passed', 6, 7)",
+                    [],
+                )
+                .is_err());
+            assert!(conn
+                .execute("UPDATE restore_test_schedules SET every_days = 0", [])
+                .is_err());
+            conn.execute("DELETE FROM groups", []).unwrap();
+            let n: i64 = conn
+                .query_row("SELECT COUNT(*) FROM restore_test_schedules", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0);
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        old.execute(
+            "INSERT INTO policies (id, name, schedule, gfs) VALUES (2, 'q', 'daily 22:00', '{}')",
+            [],
+        )
+        .unwrap();
     }
 
     /// v31 (passkeys) on top of the previous catalog: the table starts empty,

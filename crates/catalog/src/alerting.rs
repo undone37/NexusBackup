@@ -56,6 +56,8 @@ const HINTS: &[(&str, &str)] = &[
     ("tenant_disabled", "The tenant is deactivated (Tenants page): no backups, offsite copies or replication run for it and its accounts cannot sign in; its other alerts are suppressed. Retention keeps running. Reactivate it on the Tenants page when it is needed again."),
     ("vault_disabled", "Vault mode was switched off at the console with the recovery key after an approved request. Confirm with the people who requested and approved it (audit: vault.disable)."),
     ("config_backup", "The appliance configuration backup (catalog, key files) could not be made or uploaded to an offsite target. Open Configuration → Settings → Backup of this appliance and the job log; check that nexus-keyd runs and the offsite target is reachable, then Run now. Resolves after the next successful run (per target)."),
+    ("restore_test", "A restore test of a guest's snapshot failed: the isolated test copy did not start, its guest agent did not answer, a port was not listening or the custom check failed (details on the Restore tests page). Check the guest (agent installed and enabled, services start without network) and the snapshot; run the test again. Resolves after the next passed test of that guest."),
+    ("recovery_plan", "A recovery plan is not ready (a snapshot older than its RPO, the target node offline, too little space on the target storage, a missing bridge, a blocking alert) or its test run or execution failed. Open the Recovery plans page for the failed checks. Resolves after the next passed readiness check or test run."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
 
