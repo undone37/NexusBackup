@@ -365,4 +365,4 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 - [ ] 23b MySQL/MariaDB plugin, Windows workload runbooks
 
 ## Phase 26 — Edge proxy (2026-10-13)
-- [ ] nexus-edge relay, agent rendezvous, appliance control channel, edge image
+- [x] nexus-edge relay, agent rendezvous (protocol v1.7), appliance control channel, Edges page, edge image Containerfile (v39, T53–T55); open: VM lab `lab/edge/e2e.sh`, CI edge image, edge OS updates, HA
