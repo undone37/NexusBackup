@@ -191,6 +191,7 @@ export const en = {
         idp: "The identity provider reported an error. Please try again or contact your administrator.",
         token:
           "The answer of the identity provider could not be verified. Contact your administrator.",
+        org: "No organization sign-in matches what you entered. Check the e-mail address or organization name, or sign in with an appliance account.",
       })[code] ??
       `Single sign-on failed (${code}). Please try again or contact your administrator.`,
   },
@@ -2373,6 +2374,7 @@ export const en = {
       failed: "Failed jobs",
       sla: "SLA and RPO breaches",
       storage: "Storage",
+      usage: "Usage per tenant (billing)",
     } as Record<string, string>,
     typeHints: {
       protection:
@@ -2382,6 +2384,8 @@ export const en = {
       sla: "Gaps between good backups longer than RPO × 1.5, and backups that ran longer than the policy's run-time SLA (sla_missed alerts), in the range.",
       storage:
         "Per tenant and protection group: logical size, data in, stored, deduplication, compression and growth. Current state.",
+      usage:
+        "Per tenant over the range (for billing): protected objects backed up, logical, measured stored and offsite bytes as daily average and peak. A monthly schedule (monthly 1 07:00) mails the previous month.",
     } as Record<string, string>,
     from: "From",
     to: "To (inclusive)",
@@ -3167,6 +3171,93 @@ export const en = {
     firstLinkDown: "Scan; on a match restore with the network disconnected",
     firstHint:
       "The snapshot is scanned in the restore micro-VM before the restore starts (needs uploaded rules: Settings → Malware scan). A scan that does not finish in time counts as a match; a failed scan refuses the restore.",
+  },
+  /** Phase 23a: service-provider operations */
+  sp: {
+    usage: {
+      title: "Monthly usage (billing)",
+      sub: "Per tenant: protected objects and daily average / peak of the stored data",
+      month: "Month",
+      objects: "Objects",
+      objectsHint: "Protected objects (guests, hosts, shares, datasets, plugin objects) with at least one backup in the month",
+      backups: "Backups",
+      logical: "Logical avg / peak",
+      stored: "Stored avg / peak",
+      offsite: "Offsite avg / peak",
+      offsiteHint: "Logical size of the snapshots that have an offsite copy (the remote side is not measured)",
+      days: "Days sampled",
+      running: "The month is not over yet: the figures cover the days up to today.",
+      hint: "Stored is the measured size of the tenant store (one sample per day); averages cover the sampled days. The CSV has the same columns plus the immutable tenant ID; a scheduled report of type Usage mails it every month (Reports → Scheduled reports, schedule monthly 1 07:00).",
+    },
+    sim: {
+      title: "Restore point preview",
+      chart: (n: number, days: number) => `Kept restore points over the next ${days} days, ending at ${n}`,
+      now: "now",
+      inMonths: (m: number) => `in ${m} months`,
+      points: "Restore points",
+      classes: { recent: "recent", daily: "daily", weekly: "weekly", monthly: "monthly", yearly: "yearly" } as Record<string, string>,
+      was: (v: string | number) => `before: ${v}`,
+      oldest: "Oldest restore point then",
+      stored: "Estimated store use",
+      storedHow: (full: string, delta: string, n: number) =>
+        `A compressed full copy (${full}) plus ${delta} of new data per restore point, from the measured backups of ${n} source${n === 1 ? "" : "s"}. An estimate: changes between weekly or monthly points overlap, deduplication across sources is not counted.`,
+      noStats: "No measured backups in scope yet: no size estimate.",
+      legend: "Solid: with the change. Dashed: the current policy.",
+      truncated: (n: number) => `Only the first ${n} runs are simulated.`,
+    },
+    keep: {
+      legend: "Retention",
+      toggle: "Keep these snapshots until a date (in addition to the policy)",
+      until: "Keep until (inclusive)",
+      hint: "The new snapshots get a store lock until the end of that day: retention, garbage collection and deletion cannot remove them before, and nobody can shorten the lock. Dates beyond the limit an administrator set (90 days by default) need approval.",
+      settingTitle: "Backups kept until a date",
+      settingIntro: "\"Back up now\" can lock the new snapshots until a date. A lock cannot be undone and holds storage, so dates further out need approval.",
+      maxDays: "Without approval up to (days)",
+      maxDaysHint: "1 to 3650. Lowering applies at once; raising needs approval.",
+    },
+    idp: {
+      button: "Sign-in",
+      label: (n: string) => `Identity provider of tenant ${n}`,
+      title: (n: string) => `Sign-in for tenant ${n}`,
+      intro: (n: string) =>
+        `Users of ${n} sign in through their own identity provider (OIDC). Its groups map to the tenant roles of ${n} only; nobody signing in here becomes a provider administrator. Changes need approval.`,
+      domains: "E-mail domains",
+      domainsHint: "Separated by spaces, e.g. example.com. On the login page, users enter their e-mail address (or the tenant name) and are sent to this provider. A domain belongs to one tenant.",
+      mappingsIntro: (n: string) => `Group of the user at the provider → role in tenant ${n}. No matching group: the sign-in is refused.`,
+    },
+    login: {
+      title: "Sign in with your organization",
+      field: "E-mail address or organization",
+      hint: "Your organization's own sign-in, if your service provider set one up.",
+      submit: "Continue",
+    },
+    wiz: {
+      title: "New tenant",
+      stepTenant: "Tenant",
+      stepPlan: "Quota and tier",
+      stepAdmin: "Tenant admin",
+      stepOffsite: "Offsite",
+      stepReview: "Review",
+      nameHint: "Lowercase letters, digits and dashes. The name and the tenant ID can never change, and a deleted tenant's name is never used again.",
+      tier: "Policy tier",
+      noTier: "None (assign policies later)",
+      tierHint: "The tenant's admins may use the policies of this tier. If none exists yet, one is created from the tier template.",
+      admin: "First tenant admin (user name, optional)",
+      adminHint: "Gets a one-time activation code to set a password and authenticator. Tenant admins manage the tenant's sources, groups and users, never the appliance.",
+      offsiteHint: "Optional; can also be set up later with Edit. The SSH key for SFTP is installed on the appliance, only its path is entered here.",
+      back: "Back",
+      next: "Next",
+      create: "Create tenant",
+      ok: "done",
+      failed: "failed",
+      doTenant: (n: string) => `Create tenant ${n}`,
+      withOffsite: "with offsite target",
+      doQuota: "Set the soft quota",
+      doTier: (tier: string) => `Assign the ${tier} policies`,
+      assignedN: (n: number) => `${n} polic${n === 1 ? "y" : "ies"}`,
+      doAdmin: (n: string) => `Create tenant admin ${n}`,
+      done: (n: string) => `Tenant ${n} is set up.`,
+    },
   },
 };
 

@@ -14,8 +14,15 @@
   import IconCopy from '@lucide/svelte/icons/copy';
   import IconSend from '@lucide/svelte/icons/plug-zap';
 
+  // Phase 23a: with `tenant`, the tenant's own IdP (GET/PUT /tenants/{name}/oidc): tenant roles of
+  // that tenant only, plus the e-mail domains the login page sends to it
+  let { tenant = null }: { tenant?: string | null } = $props();
+  const base = $derived(tenant ? `/tenants/${encodeURIComponent(tenant)}/oidc` : '/settings/oidc');
+  const roles = $derived(tenant ? (['tenant_admin', 'tenant_user', 'viewer'] as Role[]) : ROLES);
+  let domains = $state('');
+
   const id = $props.id();
-  const admin = $derived(session.user?.role === 'admin');
+  const admin = $derived(session.user?.role === 'admin' && !session.user?.tenant);
   const redirect = `${location.origin}/api/v1/auth/oidc/callback`;
   let error: string | null = $state(null);
   let loaded = $state(false);
@@ -53,11 +60,12 @@
       secret_expires: o.client_secret_expires ? new Date(o.client_secret_expires * 1000).toISOString().slice(0, 10) : '',
     };
     secretSet = !!o.client_secret_set;
+    domains = (o.domains ?? []).join(' ');
   }
 
   async function load() {
     try {
-      fill(await get<OidcSettings>('/settings/oidc'));
+      fill(await get<OidcSettings>(base));
       error = null;
     } catch (e) {
       error = errText(e);
@@ -77,8 +85,12 @@
     e.preventDefault();
     const scopes = split(f.scopes);
     // tenant users and tenant admins (Phase 19b) need exactly one tenant
-    const oneTenant = (r: string) => r === 'tenant_user' || r === 'tenant_admin';
-    const mappings = f.mappings.map((m) => ({ group: m.group.trim(), role: m.role, tenants: oneTenant(m.role) && m.tenants ? [m.tenants] : [] }));
+    const oneTenant = (r: string) => !tenant && (r === 'tenant_user' || r === 'tenant_admin');
+    const mappings = f.mappings.map((m) => ({
+      group: m.group.trim(),
+      role: m.role,
+      tenants: tenant ? [tenant] : oneTenant(m.role) && m.tenants ? [m.tenants] : [],
+    }));
     if (
       !/^https:\/\/\S+$/.test(f.issuer.trim()) ||
       !f.client_id.trim() ||
@@ -100,9 +112,10 @@
       mappings,
       client_secret_expires: f.secret_expires ? Date.parse(`${f.secret_expires}T00:00:00Z`) / 1000 : null,
       ...(f.client_secret ? { client_secret: f.client_secret } : {}),
+      ...(tenant ? { domains: split(domains).map((d) => d.replace(/^@/, '').toLowerCase()) } : {}),
     };
     busy = true;
-    const r = await act(put<OidcSettings>('/settings/oidc', body), t.saved);
+    const r = await act(put<OidcSettings>(base, body), t.saved);
     busy = false;
     if (r && !r.quorum) fill(r.data);
     else if (r) f.client_secret = '';
@@ -112,7 +125,7 @@
     testing = true;
     result = null;
     try {
-      result = (await post<Record<string, string>>('/settings/oidc/test')).data as Record<string, string>;
+      result = (await post<Record<string, string>>(`${base}/test`)).data as Record<string, string>;
     } catch (e) {
       notify('error', errText(e));
     }
@@ -125,7 +138,7 @@
   <p class="muted" aria-busy="true">{t.loading}</p>
 {:else}
   <form class="settings-section" onsubmit={save}>
-    <p class="intro muted">{t.settings.oidc.intro}</p>
+    <p class="intro muted">{tenant ? t.sp.idp.intro(tenant) : t.settings.oidc.intro}</p>
     {#if !admin}<p class="banner info">{t.settings.readOnly}</p>{/if}
     <fieldset disabled={!admin} class="plain">
       <section class="card" aria-labelledby="{id}-idp">
@@ -193,16 +206,23 @@
           <label for="{id}-label">{t.settings.oidc.label}</label>
           <input id="{id}-label" bind:value={f.label} required maxlength="64" placeholder="Sign in with Keycloak" />
         </div>
+        {#if tenant}
+          <div class="field">
+            <label for="{id}-dom">{t.sp.idp.domains}</label>
+            <input id="{id}-dom" class="mono" bind:value={domains} autocomplete="off" spellcheck="false" placeholder="example.com" aria-describedby="{id}-dom-hint" />
+            <div class="hint" id="{id}-dom-hint">{t.sp.idp.domainsHint}</div>
+          </div>
+        {/if}
       </section>
 
       <section class="card" aria-labelledby="{id}-map">
         <div class="card-head">
           <h2 id="{id}-map">{t.settings.oidc.mappings}</h2>
-          <button type="button" class="small" onclick={() => f.mappings.push({ group: '', role: 'operator', tenants: '' })}
+          <button type="button" class="small" onclick={() => f.mappings.push({ group: '', role: tenant ? 'tenant_user' : 'operator', tenants: '' })}
             ><IconPlus aria-hidden="true" />{t.settings.oidc.addMapping}</button
           >
         </div>
-        <p class="muted">{t.settings.oidc.mappingsIntro}</p>
+        <p class="muted">{tenant ? t.sp.idp.mappingsIntro(tenant) : t.settings.oidc.mappingsIntro}</p>
         {#if f.mappings.length === 0}
           <p class="banner warn">{t.settings.oidc.noMappings}</p>
         {:else}
@@ -222,12 +242,14 @@
                 spellcheck="false"
               />
               <select bind:value={m.role} aria-labelledby="{id}-h-r">
-                {#each ROLES as r (r)}<option value={r}>{t.roles[r]}</option>{/each}
+                {#each roles as r (r)}<option value={r}>{t.roles[r]}</option>{/each}
               </select>
               <!-- an appliance user has one tenant: only tenant users and tenant admins get one, the other roles see all -->
-              {@const scoped = m.role === 'tenant_user' || m.role === 'tenant_admin'}
+              {@const scoped = !tenant && (m.role === 'tenant_user' || m.role === 'tenant_admin')}
               <select bind:value={m.tenants} aria-labelledby="{id}-h-t" required={scoped} disabled={!scoped}>
-                {#if scoped}
+                {#if tenant}
+                  <option value={tenant}>{tenant}</option>
+                {:else if scoped}
                   <option value="" disabled>{t.settings.oidc.pickTenant}</option>
                   {#each tenants as tn (tn.name)}<option value={tn.name}>{tn.name}</option>{/each}
                 {:else}
