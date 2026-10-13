@@ -16,6 +16,8 @@ const RESTORE_KINDS: &[&str] = &[
     "restore",
     "restore_ct",
     "instant_recover",
+    // Phase 22b: one disk attached to an existing VM of the tenant (scheduler checks the target)
+    "instant_disk",
     "files_list",
     "files_get",
     "restore_files",
@@ -132,6 +134,25 @@ pub(crate) struct RestoreP {
     /// replace: leave the original's NICs connected
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_original_links: Option<bool>,
+}
+
+/// Instant disk recovery (Phase 22b, `nexus-pve instant-disk`): one disk of a VM
+/// snapshot attached to the existing VM `target` (a VM a group of the tenant
+/// protects on the same source; checked by the scheduler) as `key` (default:
+/// the first free scsi slot), optionally moved to `move_to` afterwards.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct InstantDiskP {
+    source: String,
+    time: i64,
+    /// `drive-scsi1`
+    device: String,
+    node: String,
+    target: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    move_to: Option<String>,
 }
 
 /// PVE guest / pool names (DNS-name characters, 1..=63, no leading `-` or `.`).
@@ -377,6 +398,26 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
                 v["replace"] = json!(true); // taken out again by create_job (approval)
             }
             v
+        }
+        "instant_disk" => {
+            let r: InstantDiskP = parse(p)?;
+            if !r.source.starts_with("vm-") {
+                return Err(ApiError::bad("source: instant_disk needs a vm-<vmid> snapshot"));
+            }
+            let slot_ok = |k: &str| crate::selection::valid_disk_key(k) && !k.starts_with("efidisk") && !k.starts_with("tpmstate");
+            if !r.device.strip_prefix("drive-").is_some_and(slot_ok) {
+                return Err(ApiError::bad("device: a data disk of the snapshot (drive-scsi1, …)"));
+            }
+            if r.key.as_deref().is_some_and(|k| !slot_ok(k) || k.starts_with("unused")) {
+                return Err(ApiError::bad("key: a free disk slot of the target VM (scsi5, virtio2, …)"));
+            }
+            validate::name(&r.node, "node")?;
+            validate::vmid(r.target)?;
+            if let Some(m) = &r.move_to {
+                validate::name(m, "move_to")?;
+            }
+            snapshot_exists(st, tenant, &r.source, r.time)?;
+            json!(r)
         }
         "files_list" => {
             let f: FilesListP = parse(p)?;

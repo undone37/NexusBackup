@@ -1583,6 +1583,16 @@ impl Scheduler {
                         let id = rest.split_whitespace().next()?;
                         let (s, t) = id.rsplit_once('/')?;
                         let mut v = json!({"source": s, "time": t.parse::<i64>().ok()?});
+                        if s.starts_with("nas-") || s.starts_with("share-") {
+                            // `… in <s>s: <n> entries, …` (Phase 22b sizing note, web-api nasops)
+                            if let Some(n) = rest
+                                .split_once(": ")
+                                .and_then(|(_, x)| x.split_once(" entries"))
+                                .and_then(|(n, _)| n.parse::<u64>().ok())
+                            {
+                                v["entries"] = json!(n);
+                            }
+                        }
                         if s.starts_with("nas-") {
                             // `…, <n> bytes transferred[, full read …]` (nexus-truenas)
                             if let Some(n) = rest

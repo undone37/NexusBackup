@@ -443,6 +443,39 @@ pub struct PveConfig {
     /// free-space thresholds of the fleecing storage (nexus-pve `fleecing::Guard`; absent = defaults)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fleecing_guard: Option<FleecingGuard>,
+    /// Phase 22b: at most this many guests of the source at once (caps the groups' parallel guests)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_parallel: Option<u32>,
+    /// Phase 22b: at most n guests at once with a disk on the PVE storage
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    storage_caps: std::collections::BTreeMap<String, u32>,
+    /// Phase 22b: appliance-side read limit (bytes/s + limit windows)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    read_limit: Option<catalog::schedule::ReadLimit>,
+}
+
+/// Phase 22b source limits (crate::nasops has the checks shared with TrueNAS / shares).
+fn check_caps(max_parallel: Option<u32>, caps: &std::collections::BTreeMap<String, u32>) -> ApiResult<()> {
+    if max_parallel.is_some_and(|m| !(1..=8).contains(&m)) {
+        return Err(ApiError::bad("max_parallel: 1..=8"));
+    }
+    if caps.len() > 64 {
+        return Err(ApiError::bad("storage_caps: at most 64 storages"));
+    }
+    for (s, n) in caps {
+        validate::name(s, "storage_caps")?;
+        if !(1..=8).contains(n) {
+            return Err(ApiError::bad("storage_caps: 1..=8 guests per storage"));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn check_read_limit(r: &Option<catalog::schedule::ReadLimit>) -> ApiResult<()> {
+    match r {
+        Some(r) => r.check().map_err(|e| ApiError::bad(format!("{e:#}"))),
+        None => Ok(()),
+    }
 }
 
 /// Phase 18: skip a guest below `min_free_pct` % and `min_free_gib` GiB free (whichever
@@ -520,6 +553,8 @@ impl PveConfig {
         if let Some(g) = &self.fleecing_guard {
             g.check()?;
         }
+        check_caps(self.max_parallel, &self.storage_caps)?;
+        check_read_limit(&self.read_limit)?;
         Ok(())
     }
 }
@@ -685,6 +720,12 @@ pub struct TrueNasConfig {
     sudo: bool,
     #[serde(default = "yes")]
     zfs_sudo: bool,
+    /// Phase 22b "use existing snapshots": back up the newest `<prefix>*` snapshot
+    /// (periodic snapshot task) instead of creating `nexus-<id>-<time>` ones
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    existing_snapshots: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    read_limit: Option<catalog::schedule::ReadLimit>,
 }
 
 fn unix_user(s: &str, what: &str) -> ApiResult<()> {
@@ -729,6 +770,7 @@ impl TrueNasConfig {
             recursive: self.recursive,
             sudo: self.sudo,
             zfs_sudo: self.zfs_sudo,
+            existing_prefix: self.existing_snapshots.clone(),
         }
     }
 
@@ -779,6 +821,16 @@ impl TrueNasConfig {
                 return Err(ApiError::bad(format!("datasets: {d:?} overlaps another dataset")));
             }
         }
+        if self
+            .existing_snapshots
+            .as_deref()
+            .is_some_and(|p| !truenas::valid_snap_prefix(p))
+        {
+            return Err(ApiError::bad(
+                "existing_snapshots: the snapshot name prefix, [A-Za-z0-9][A-Za-z0-9_-]{0,31} (e.g. auto-)",
+            ));
+        }
+        check_read_limit(&self.read_limit)?;
         if let Some(p) = &self.ssh.public_key {
             ssh_public_key(p, "ssh.public_key")?;
             validate::text(p, "ssh.public_key", 8192)?;
@@ -866,6 +918,9 @@ pub struct ShareConfig {
     xattrs: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     timeout_secs: Option<u32>,
+    /// Phase 22b: appliance-side read limit
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    read_limit: Option<catalog::schedule::ReadLimit>,
 }
 
 impl ShareConfig {
@@ -988,12 +1043,46 @@ impl ShareConfig {
         }
         crate::selection::check_include(&self.include, "include")?;
         crate::selection::check_regex(&self.exclude_regex, "exclude_regex")?;
+        check_read_limit(&self.read_limit)?;
         Ok(())
     }
 
     fn has_secret(&self) -> bool {
         self.password.is_some() || self.keytab.is_some()
     }
+}
+
+/// Checks a new NFS/SMB source config and inserts it with its secrets sealed
+/// (bound to the row id, so: insert, then seal; the caller commits).
+pub(crate) fn insert_share(
+    tx: &Connection,
+    pk: &SealKey,
+    tenant: &str,
+    kind: &str,
+    name: &str,
+    config: Value,
+) -> ApiResult<i64> {
+    let cfg: ShareConfig = parse_config(config)?;
+    cfg.check(kind)?;
+    if kind == "smb" && !cfg.has_secret() {
+        return Err(ApiError::bad(
+            "config.password (or config.keytab with sec krb5): required",
+        ));
+    }
+    if cfg.sec.as_deref() == Some("krb5") && (cfg.keytab.is_none() || cfg.principal.is_none()) {
+        return Err(ApiError::bad(
+            "config.keytab and config.principal: required with sec krb5",
+        ));
+    }
+    tx.execute(
+        "INSERT INTO sources (tenant, kind, name, config) VALUES (?1, ?2, ?3, '{}')",
+        params![tenant, kind, name],
+    )?;
+    let id = tx.last_insert_rowid();
+    let mut v = serde_json::to_value(&cfg).map_err(anyhow::Error::from)?;
+    pk.seal_all(&source_owner(id), &mut v)?;
+    tx.execute("UPDATE sources SET config = ?2 WHERE id = ?1", params![id, v.to_string()])?;
+    Ok(id)
 }
 
 fn parse_config<T: serde::de::DeserializeOwned>(v: Value) -> ApiResult<T> {
@@ -1055,11 +1144,12 @@ pub async fn list_sources(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Valu
         .prepare("SELECT id FROM sources WHERE ?1 IS NULL OR tenant = ?1 ORDER BY tenant, name")?
         .query_map([ctx.scope()], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
-    Ok(Json(Value::Array(
-        ids.into_iter()
-            .map(|id| source_json(&c, id))
-            .collect::<Result<_, _>>()?,
-    )))
+    let mut rows: Vec<Value> = ids
+        .into_iter()
+        .map(|id| source_json(&c, id))
+        .collect::<Result<_, _>>()?;
+    crate::nasops::annotate(&c, &mut rows)?; // Phase 22b: NAS sizing note, overlap warning
+    Ok(Json(Value::Array(rows)))
 }
 
 pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -> ApiResult<Response> {
@@ -1139,37 +1229,14 @@ pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -
             return Ok(created(out));
         }
         kind @ ("nfs" | "smb") => {
-            let cfg: ShareConfig = parse_config(r.config)?;
-            cfg.check(kind)?;
-            if kind == "smb" && !cfg.has_secret() {
-                return Err(ApiError::bad(
-                    "config.password (or config.keytab with sec krb5): required",
-                ));
-            }
-            if cfg.sec.as_deref() == Some("krb5") && (cfg.keytab.is_none() || cfg.principal.is_none()) {
-                return Err(ApiError::bad(
-                    "config.keytab and config.principal: required with sec krb5",
-                ));
-            }
             let pk = st.seal_key()?;
             let (id, out) = {
                 let mut c = st.cat.conn();
                 if !exists(&c, "SELECT 1 FROM tenants WHERE name = ?1", [&r.tenant])? {
                     return Err(ApiError::bad("tenant: does not exist"));
                 }
-                // the sealed secret is bound to the row id: insert, then seal, in one transaction
                 let tx = c.transaction()?;
-                tx.execute(
-                    "INSERT INTO sources (tenant, kind, name, config) VALUES (?1, ?2, ?3, '{}')",
-                    params![r.tenant, kind, r.name],
-                )?;
-                let id = tx.last_insert_rowid();
-                let mut v = serde_json::to_value(&cfg).map_err(anyhow::Error::from)?;
-                pk.seal_all(&source_owner(id), &mut v)?;
-                tx.execute(
-                    "UPDATE sources SET config = ?2 WHERE id = ?1",
-                    params![id, v.to_string()],
-                )?;
+                let id = insert_share(&tx, &pk, &r.tenant, kind, &r.name, r.config)?;
                 tx.commit()?;
                 (id, source_json(&c, id)?)
             };
