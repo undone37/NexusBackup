@@ -586,24 +586,27 @@ fn pull_device(
         // locally and names the all-zero blocks (an older helper refuses: nothing skipped)
         zero = zero_map(ssh, vmid, &dev.name, &scan_extents(base, dev.size, &dirty), at);
     }
-    // only runs of at least MIN_ZERO_RUN are skipped: each skip splits the reads, and short
-    // NBD reads over SSH are latency-bound (fragmented 64 KiB holes cut a 150 MB/s read to 29 MB/s)
-    zero.retain(|z| z.1 >= MIN_ZERO_RUN);
     let (mut read, mut skipped) = (0, 0);
+    // where the time goes: NBD read round trips (request -> complete reply) vs. local work
+    let (mut requests, mut waited, started) = (0u64, std::time::Duration::ZERO, std::time::Instant::now());
     let total = Store::image_extents_bytes(base, IMAGE_CHUNK_SIZE, dev.size, &dirty);
     let mut meter = Meter::new(exclude::disk_key(&dev.name), at.0, at.1, Some(total));
     let idx = store.store_image_extents(base, IMAGE_CHUNK_SIZE, dev.size, &dirty, |off, buf| {
-        for (a, b, is_zero) in split_zero(&zero, off, buf.len() as u64) {
-            let part = &mut buf[(a - off) as usize..(b - off) as usize];
-            if is_zero {
-                part.fill(0);
-                skipped += b - a;
-            } else {
-                read += b - a;
-                c.read_at(a, part)?;
-                if let Some(t) = limit {
-                    t.account(b - a);
-                }
+        // one NBD request per range at most: a range that is zero as a whole is filled locally,
+        // anything else is read in one piece (each request waits for a round trip through SSH;
+        // splitting a 4 MiB chunk around small holes made reads latency-bound)
+        let len = buf.len() as u64;
+        if split_zero(&zero, off, len).as_slice() == [(off, off + len, true)] {
+            buf.fill(0);
+            skipped += len;
+        } else {
+            read += len;
+            let t0 = std::time::Instant::now();
+            c.read_at(off, buf)?;
+            requests += 1;
+            waited += t0.elapsed();
+            if let Some(t) = limit {
+                t.account(len);
             }
         }
         meter.add(buf.len() as u64);
@@ -613,6 +616,16 @@ fn pull_device(
     c.disconnect()?;
     if skipped > 0 {
         println!("{}: {skipped} bytes unallocated (zero), not transferred", dev.name);
+    }
+    if requests > 0 {
+        let total = started.elapsed();
+        println!(
+            "{}: {requests} NBD reads, {read} bytes in {total:.1?} ({:.0} MB/s): {:.2} ms per read waiting for the node, {:.0}% of the time",
+            dev.name,
+            read as f64 / total.as_secs_f64().max(1e-3) / 1e6,
+            waited.as_secs_f64() * 1e3 / requests as f64,
+            100.0 * waited.as_secs_f64() / total.as_secs_f64().max(1e-3)
+        );
     }
     Ok((idx, read))
 }
@@ -719,7 +732,6 @@ fn zero_map(ssh: &SshNode, vmid: u32, export: &str, extents: &[(u64, u64)], at: 
 }
 
 const ALLOCATION: &str = "base:allocation";
-const MIN_ZERO_RUN: u64 = 1 << 20;
 const NBD_STATE_ZERO: u32 = 2;
 
 /// `[off, off+len)` split at the zero extents (sorted, disjoint): `(start, end, is_zero)`.
