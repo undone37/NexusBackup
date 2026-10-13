@@ -366,3 +366,10 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 
 ## Phase 26 — Edge proxy (2026-10-13)
 - [x] nexus-edge relay, agent rendezvous (protocol v1.7), appliance control channel, Edges page, edge image Containerfile (v39, T53–T55); open: VM lab `lab/edge/e2e.sh`, CI edge image, edge OS updates, HA
+
+## Final lab (2026-10-13, in progress)
+- [x] All phases 13–26 merged; local gates green at 8420e13
+- Fixed by the lab: image web stage copies openapi.json; restorevm stage installs yara; guest selection accepts 100/"100"; dontaudit lsblk userdb; lab cancel step uses ct-200 only, auto group name unique
+- [ ] `lab/appliance/e2e.sh all` on a fresh image (running), then network.sh, pve-nas-ops.sh, config-restore.sh, forwarding.sh, disks.sh, grub-lock.sh, restore-test/recovery-plan, lab/edge, lab/linux/bmr.sh
+- [ ] CI: gh-runner rootless podman broken ("podman system migrate") — needs the maintainer on the runner host
+- [ ] screenshots regenerate, tag v0.1.0-alpha (draft)
