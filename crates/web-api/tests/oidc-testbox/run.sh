@@ -16,6 +16,15 @@ here=$(cd "$(dirname "$0")" && pwd)
 KC=${KC:-26.4.0}
 IMG=quay.io/keycloak/keycloak:$KC
 NAME=nexus-oidc-testbox
+# CI: one container name per workflow run. A container stuck in "stopping" (state from before a runner
+# restart, SIGKILL -> EPERM) can neither be removed nor reused; a fresh name sidesteps it, and the
+# containers of earlier runs are removed below whenever podman lets us.
+if [ -n "${GITHUB_RUN_ID:-}" ]; then
+	BASE_NAME=$NAME
+	NAME=$NAME-r$GITHUB_RUN_ID
+	podman ps -a --format '{{.Names}}' 2>/dev/null | grep -E "^$BASE_NAME-r[0-9]+" | grep -v "^$NAME" |
+		while read -r old; do podman rm -f -t 0 "$old" >/dev/null 2>&1 || true; done || true
+fi
 if [ "${TLS:-0}" = 1 ]; then
 	PORT=${PORT:-18444}
 	KCHOST=kc.nexus-lab

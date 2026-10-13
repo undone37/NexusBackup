@@ -25,6 +25,15 @@ MAX_CONN=${MAX_CONN:-10}
 BASE=${BASE:-docker.io/library/debian:trixie}
 IMG=localhost/nexus-offsite-testbox:latest
 NAME=nexus-offsite-testbox
+# CI: one container name per workflow run. A container stuck in "stopping" (state from before a runner
+# restart, SIGKILL -> EPERM) can neither be removed nor reused; a fresh name sidesteps it, and the
+# containers of earlier runs are removed below whenever podman lets us.
+if [ -n "${GITHUB_RUN_ID:-}" ]; then
+	BASE_NAME=$NAME
+	NAME=$NAME-r$GITHUB_RUN_ID
+	podman ps -a --format '{{.Names}}' 2>/dev/null | grep -E "^$BASE_NAME-r[0-9]+" | grep -v "^$NAME" |
+		while read -r old; do podman rm -f -t 0 "$old" >/dev/null 2>&1 || true; done || true
+fi
 
 # remove container $1 whatever state it is in (hung after a cancelled CI run: conmon gone, storage-only
 # leftovers); prints podman's view if the name is still taken
