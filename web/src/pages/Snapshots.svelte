@@ -876,10 +876,10 @@
           <p id="pr-range-label">
             <strong>{t.snap.recoverable}</strong>
             {#if range.from_time >= range.to_time}
-              {t.snap.recoverableBaseOnly(fmtTime(range.to_time), range.to_lsn)}
+              {t.snap.recoverableBaseOnly(fmtTime(range.to_time), range.to_lsn, range.unit === 'binlog')}
             {:else}
               {t.snap.recoverableRange(fmtTime(range.from_time), fmtTime(range.to_time))}
-              <span class="muted mono">LSN {range.from_lsn} → {range.to_lsn}{range.timeline ? ` · ${t.snap.timeline} ${range.timeline}` : ''}</span>
+              <span class="muted mono">{t.snap.positionUnit(range.unit)} {range.from_lsn} → {range.to_lsn}{range.timeline ? ` · ${t.snap.timeline} ${range.timeline}` : ''}</span>
             {/if}
           </p>
           {#if range.from_time < range.to_time}

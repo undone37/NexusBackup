@@ -1,0 +1,141 @@
+{
+  "id": "mysql",
+  "name": "MySQL / MariaDB",
+  "version": "1.0.0",
+  "publisher": "nexusbackup",
+  "api": 1,
+  "kinds": [
+    {
+      "kind": "mysql",
+      "title": "MySQL (8.0 or newer) / MariaDB (10.6 or newer) server",
+      "config_schema": {
+        "type": "object",
+        "required": ["host", "user", "password"],
+        "properties": {
+          "host": { "type": "string", "format": "hostname", "title": "Server" },
+          "port": { "type": "integer", "format": "port", "title": "Port", "default": 3306 },
+          "user": {
+            "type": "string",
+            "title": "User",
+            "description": "Account with the backup privileges (see the manual: SELECT, SHOW VIEW, TRIGGER, EVENT, LOCK TABLES, PROCESS, RELOAD, REPLICATION CLIENT/SLAVE, …)",
+            "pattern": "^[A-Za-z0-9_.@-]{1,80}$"
+          },
+          "password": { "type": "string", "format": "password", "title": "Password", "maxLength": 1024 },
+          "sslmode": {
+            "type": "string",
+            "title": "TLS",
+            "enum": ["require", "verify-full", "disable"],
+            "default": "require",
+            "description": "require = encrypted, certificate not checked; verify-full = CA (below, else public CAs) + host name"
+          },
+          "ca_cert": { "type": "string", "title": "CA certificate (PEM, verify-full)", "maxLength": 16384 },
+          "databases_include": {
+            "type": "array",
+            "title": "Databases offered (patterns, empty = all)",
+            "items": { "type": "string", "maxLength": 128 }
+          },
+          "databases_exclude": {
+            "type": "array",
+            "title": "Databases hidden (patterns)",
+            "items": { "type": "string", "maxLength": 128 }
+          },
+          "dump_via": {
+            "type": "string",
+            "title": "Database dumps",
+            "enum": ["auto", "ssh", "connection"],
+            "default": "auto",
+            "description": "ssh = mysqldump / mariadb-dump on the database host; connection = generated over the TLS connection; auto = SSH when configured"
+          },
+          "full_every_days": {
+            "type": "integer",
+            "title": "New base backup every … days (server backups)",
+            "minimum": 1,
+            "maximum": 365,
+            "default": 7
+          },
+          "ssh_host": { "type": "string", "format": "hostname", "title": "Database host for SSH (server backups, physical restores, SSH dumps)" },
+          "ssh_port": { "type": "integer", "format": "port", "title": "SSH port", "default": 22 },
+          "ssh_user": {
+            "type": "string",
+            "title": "SSH user (reads the data directory, e.g. mysql)",
+            "pattern": "^[a-z_][a-z0-9_-]{0,31}$",
+            "default": "mysql"
+          },
+          "ssh_key": { "type": "string", "format": "password", "title": "SSH private key (OpenSSH, unencrypted)", "maxLength": 16384 },
+          "ssh_host_key": {
+            "type": "string",
+            "title": "SSH host key (known_hosts line or public key)",
+            "maxLength": 4096
+          },
+          "restore_host": { "type": "string", "format": "hostname", "title": "Alternate restore server" },
+          "restore_port": { "type": "integer", "format": "port", "title": "Alternate server port", "default": 3306 },
+          "restore_user": {
+            "type": "string",
+            "title": "Alternate server user (CREATE + the objects of the dump)",
+            "pattern": "^[A-Za-z0-9_.@-]{1,80}$"
+          },
+          "restore_password": { "type": "string", "format": "password", "title": "Alternate server password", "maxLength": 1024 }
+        }
+      },
+      "secret_fields": ["password", "restore_password", "ssh_key"],
+      "endpoints": [
+        { "host": "/host", "port": "/port", "default_port": 3306, "proto": "tcp" },
+        { "host": "/restore_host", "port": "/restore_port", "default_port": 3306, "proto": "tcp" },
+        { "host": "/ssh_host", "port": "/ssh_port", "default_port": 22, "proto": "tcp" }
+      ],
+      "guests": { "title": "Databases (logical dumps; none selected = whole server: base backup + binlog)", "list": true },
+      "backup": { "incremental": true, "consistent": "application" },
+      "restores": [
+        { "id": "download", "title": "Download (tar/zip)" },
+        {
+          "id": "to_target",
+          "title": "Restore database dump to a server",
+          "applies_to": "guest",
+          "params_schema": {
+            "type": "object",
+            "required": ["database"],
+            "properties": {
+              "database": { "type": "string", "title": "Target database", "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.$-]{0,63}$" },
+              "server": {
+                "type": "string",
+                "title": "Server",
+                "enum": ["source", "alternate"],
+                "default": "source"
+              },
+              "into_existing": { "type": "boolean", "title": "Restore into an existing database (tables of the dump are replaced)", "default": false }
+            }
+          }
+        },
+        {
+          "id": "pitr",
+          "title": "Physical / point-in-time restore (new data directory via SSH)",
+          "app_specific": true,
+          "applies_to": "source",
+          "params_schema": {
+            "type": "object",
+            "required": ["directory"],
+            "properties": {
+              "directory": {
+                "type": "string",
+                "title": "New data directory on the SSH host (must not exist)",
+                "pattern": "^/[A-Za-z0-9._/-]{1,1023}$"
+              },
+              "target_time": {
+                "type": "string",
+                "title": "Recover to time (e.g. 2026-10-10 14:30:00+00; all targets empty = end of the snapshot)",
+                "pattern": "^([0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}(:[0-9]{2}(\\.[0-9]{1,6})?)?( ?(Z|[+-][0-9]{2}(:?[0-9]{2})?))?)?$"
+              },
+              "target_position": {
+                "type": "string",
+                "title": "… or to binlog position (file:position, e.g. mysql-bin.000042:1234)",
+                "pattern": "^([A-Za-z0-9._-]{1,255}:[0-9]{1,20})?$"
+              },
+              "base_only": { "type": "boolean", "title": "Base backup only (no binlog replay)", "default": false }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "sandbox": { "network": "endpoints", "tmp_mb": 256, "memory_mb": 1024 }
+}

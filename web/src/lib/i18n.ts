@@ -379,8 +379,11 @@ export const en = {
     // Phase 18b: recoverable range of a cluster snapshot (PostgreSQL)
     recoverable: "Recoverable:",
     recoverableRange: (a: string, b: string) => `any time from ${a} to ${b}`,
-    recoverableBaseOnly: (a: string, lsn: string) =>
-      `only the end of the base backup (${a}, LSN ${lsn}); later snapshots of this source add the WAL after it`,
+    recoverableBaseOnly: (a: string, pos: string, binlog = false) =>
+      binlog
+        ? `only the base backup (${a}, binlog ${pos}); later snapshots of this source add the binlog after it`
+        : `only the end of the base backup (${a}, LSN ${pos}); later snapshots of this source add the WAL after it`,
+    positionUnit: (unit?: string) => (unit === 'binlog' ? 'binlog' : 'LSN'),
     timeline: "timeline",
     pickTime: "Pick a time in this range",
     pickTimeHint:

@@ -263,6 +263,52 @@ Linux; downloads via `nexus-agentctl files` contain it as such).
    priority); `bwlimit` paces the `Want` data in agent-core. Certificate renewal
    (`RenewCert`) and the atomic key/certificate swap are shared agent-core code.
 
+## SQL Server and Exchange (on-premises)
+
+The agent is a file-level backup with VSS in **copy mode** (`VSS_BT_COPY`). For the database writers this means:
+
+- **Consistent files:** `SqlServerWriter` and the Exchange writer (`Microsoft Exchange Writer`, Exchange 2013–2019
+  and Subscription Edition) freeze their databases for the snapshot, so the `.mdf`/`.ndf`/`.ldf` and `.edb`/log
+  files in the snapshot are application-consistent: SQL Server attaches them (rolling back open transactions),
+  Exchange databases reach *Clean Shutdown* with `eseutil /r` and the logs from the same snapshot (see below). Check the job
+  log's writer summary for `[ok]`: a failed or excluded writer makes the snapshot crash-consistent only.
+- **Logs are never truncated:** a copy backup is invisible to the applications' backup history. SQL Server does
+  not record it as a full backup in `msdb` (it is `is_copy_only`) and does not truncate or advance the transaction
+  log; Exchange does not truncate its transaction logs and does not update *Last Full Backup*. In the **FULL** or
+  **BULK_LOGGED** recovery model (SQL Server) or without *circular logging* (Exchange) the logs keep growing until
+  something else truncates them.
+- **No log chain and no point in time:** restores give the database as it was at the snapshot. The agent does not
+  back up or replay transaction logs (open item: MSSQL log chain / PITR; Exchange full-VSS mode).
+
+How to combine it with native log backups (recommended for production databases):
+
+- **SQL Server:** keep the native backups for the log chain and use the agent for the files they produce.
+  1. A SQL Server Agent job (or Ola Hallengren's maintenance solution) takes `BACKUP DATABASE … TO DISK` (full,
+     e.g. nightly) and `BACKUP LOG … TO DISK` (e.g. every 15 minutes) into a folder such as `D:\SQLBackup`.
+     These own the log chain and truncate the log.
+  2. The agent's group includes `D:\SQLBackup` (and, if wanted, the data files themselves as a second,
+     VSS-consistent copy). Its copy-mode snapshot does not break the native chain, so both coexist.
+  3. Restore: download/restore the `.bak` and `.trn` files from a snapshot to a folder, then `RESTORE DATABASE …
+     WITH NORECOVERY`, `RESTORE LOG … WITH STOPAT = '…', RECOVERY` on the server. Keep native retention on disk
+     short and let the appliance keep the history.
+  - Databases in the **SIMPLE** recovery model need no log backups; the agent's VSS copy alone is a usable
+    backup of them (restore the files, attach them).
+  - Do **not** use another VSS-based product in non-copy (full) mode on the same server unless it is the one
+    that owns the chain: its full backups and the native ones would then interleave.
+- **Exchange:** VSS copy mode never truncates Exchange logs, and Exchange has no native log-backup command, so:
+  - in a **DAG**, enable *circular logging* on the databases (`Set-MailboxDatabase -CircularLoggingEnabled $true`;
+    with continuous replication circular logging the copies stay in sync) and use the agent for the database
+    folders on one passive copy; or
+  - keep a product that runs a **full** VSS backup (the only thing that truncates Exchange logs) and use the agent
+    on top of it for longer retention / offsite copies of its output; or
+  - for a single server without such a product, enable circular logging; then the snapshot is the only recovery
+    point (no roll-forward from logs).
+  - Restore: restore the database (`.edb`) and its log folder to a free location, bring the database into *Clean
+    Shutdown* with `eseutil /r <prefix> /l <logs> /s <system> /d <db folder>` (check with `eseutil /mh`), then
+    mount it as a **Recovery Database** (`New-MailboxDatabase -Recovery …`) and copy mailboxes or items out with
+    `New-MailboxRestoreRequest`. Do not overwrite a live database's files.
+  - Exchange Online is backed up by the M365 plugin (docs/m365.md), not by the agent.
+
 ## Restore
 
 Target `/D/restore` (or `D:\restore`); a drive root (also via a link) needs

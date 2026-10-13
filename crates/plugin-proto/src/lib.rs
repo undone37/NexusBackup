@@ -994,4 +994,16 @@ mod tests {
         assert_eq!(r("pitr").as_deref(), Some("source"));
         assert_eq!(r("download"), None);
     }
+
+    /// The shipped MySQL/MariaDB manifest (Phase 23b): valid, same restore split as PostgreSQL.
+    #[test]
+    fn mysql_manifest() {
+        let m: Manifest = serde_json::from_str(include_str!("../../../plugins/mysql/manifest.json")).unwrap();
+        assert_eq!(m.validate(), Ok(()));
+        let k = &m.kinds[0];
+        let r = |id: &str| k.restores.iter().find(|r| r.id == id).unwrap().applies_to.clone();
+        assert_eq!(r("to_target").as_deref(), Some("guest"));
+        assert_eq!(r("pitr").as_deref(), Some("source"));
+        assert_eq!(Manifest::source_kind(&k.kind), "plugin:mysql");
+    }
 }

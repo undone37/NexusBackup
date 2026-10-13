@@ -880,8 +880,8 @@ export interface SourceTrend {
 
 /** Plugin snapshot metadata (protocol v1.6 `SnapshotMeta`); known keys are shown. */
 export interface SnapshotMeta {
-  /** point-in-time restore range: unix seconds and LSNs (PostgreSQL cluster snapshots) */
-  recoverable?: { from_time: number; to_time: number; from_lsn: string; to_lsn: string; timeline?: number };
+  /** point-in-time restore range: unix seconds and positions (PostgreSQL LSNs; `unit: "binlog"` = MySQL/MariaDB `file:position`, Phase 23b) */
+  recoverable?: { from_time: number; to_time: number; from_lsn: string; to_lsn: string; timeline?: number; unit?: string };
   /** Phase 22b: VM identity of a `vm-` snapshot; `changed` = the VMID was reused (new chain) */
   identity?: {
     vmgenid: string | null;

@@ -1,0 +1,23 @@
+[package]
+name = "mysql"
+version = "1.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+description = "NexusBackup plugin: MySQL / MariaDB logical dumps, mariadb-backup / XtraBackup + binlog, point-in-time restore"
+
+[dependencies]
+anyhow = "1"
+plugin-sdk = { path = "../../crates/plugin-sdk" }
+russh = { version = "0.64", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "net"] }
+webpki-roots = "1"
+
+[dev-dependencies]
+plugin-sdk = { path = "../../crates/plugin-sdk", features = ["testing"] }

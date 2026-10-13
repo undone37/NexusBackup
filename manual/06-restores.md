@@ -579,6 +579,63 @@ free on the restore host when the source runs there too.
 > start by the plugin) and 18 (earlier version of the test) in the plugin's container test box. A run on the
 > appliance image (VM lab) is still pending.
 
+## MySQL and MariaDB restores
+
+The MySQL / MariaDB plugin ([04 Sources](04-sources.md#mysql-and-mariadb-mysql-80-or-newer-mariadb-106-or-newer-tested-mysql-84-mariadb-118),
+[docs/mysql.md](../docs/mysql.md)) produces the same two kinds of snapshots as PostgreSQL:
+
+| Snapshot | Contains | Useful restores |
+|---|---|---|
+| `plugin-mysql-<source>-<db>` (database snapshot) | logical dump of one database (stream `<db>.sql`) | **Restore database dump to a server**, download |
+| `plugin-mysql-<source>` (server snapshot, group without databases) | `base/` (the backup tool's xbstream, in pieces) and `binlog/` | **Physical / point-in-time restore (new data directory via SSH)**, download |
+
+### Restore a database dump to a server
+
+1. Open **Restore** on a database snapshot and choose **Restore database dump to a server**.
+2. Enter the **Target database**, choose **Server** (`source` or `alternate`), and tick **Restore into an existing
+   database (tables of the dump are replaced)** only if you want that: the dump drops and recreates each of its
+   tables, views, routines, triggers and events; other objects of the database stay.
+3. Click **Start**.
+
+A new database gets the character set and collation of the original. The statements run one by one over the TLS
+connection; if one fails, the job log names it and a database the restore created is dropped again. The account
+needs the restore privileges listed in [04 Sources](04-sources.md) (and `SET_ANY_DEFINER` / `SET USER` for objects
+of other accounts).
+
+### Physical and point-in-time restore
+
+1. Open **Restore** on a server snapshot and choose **Physical / point-in-time restore (new data directory via
+   SSH)**.
+2. The box at the top shows the **recoverable range**: from the end of the base backup to the time of the run, with
+   the binlog positions (`file:position`). Pick a time (your local time; it fills **Recover to time** in UTC), or
+   fill in at most one target yourself:
+   - **Recover to time**, e.g. `2026-10-10 14:30:00+00` (binlog event times; whole seconds; events before it are
+     replayed);
+   - **… or to binlog position**, e.g. `mysql-bin.000042:1234` (from `SHOW BINARY LOG STATUS` / `SHOW MASTER STATUS`
+     or `mysqlbinlog` output; replay stops before the event at that position);
+   - none = the end of the snapshot;
+   - or tick **Base backup only (no binlog replay)**: the state at the end of the base backup.
+3. Enter the **New data directory on the SSH host (must not exist)** and click **Start**.
+
+The plugin connects over SSH to the database host of the source (host key pinned), unpacks the base backup into
+the new directory (`mbstream -x` / `xbstream -x`) and prepares it (`--prepare`). For a point in time it then
+writes the needed binlog files into `<dir>/.nexus-binlog/`, starts a temporary server on the directory (Unix socket
+in the directory only, no network, no grant checks, no binlog), replays the binlog from the base backup's position
+to the target (`mysqlbinlog … | mysql`), shuts the temporary server down and removes the helper files. The result
+is a stopped data directory owned by the SSH user. Start a server of the same version on it, for example:
+
+```sh
+mysqld --datadir=/var/lib/mysql-restore --port=3307 --socket=/run/mysqld/restore.sock   # or mariadbd
+```
+
+The restore always uses a new directory and never touches the running server. Replaying many hours of binlog takes
+time: for a recent target choose the newest snapshot (its base backup is the same, but a later snapshot holds the
+binlog up to its own time).
+
+> **Status:** Tested against MariaDB 11.8 and MySQL 8.4 (time, position, end, base only) in the plugin's container
+> test box. MySQL servers with `gtid_mode = ON` are replayed with `--skip-gtids` (the temporary server runs without
+> GTIDs; the restored server's `gtid_executed` ends at the base backup). A run on the appliance image is pending.
+
 ## Microsoft 365 restores
 
 Microsoft 365 snapshots (`plugin-m365-<source>-u.…` for a user, `-s.…` for a site, `-t.…` for a team, `-g.…` for a

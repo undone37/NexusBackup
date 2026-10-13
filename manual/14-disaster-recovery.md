@@ -679,6 +679,109 @@ snapshot used, the target, the boot time and every check. Print it to PDF from t
 > against a simulated Proxmox VE. A test run on the PVE lab is a lab step (`lab/e2e/m5-api.sh recovery-plan`); a
 > real execution on a second cluster has not been run yet.
 
+## Restore an Active Directory domain controller
+
+Domain controllers are protected as **Proxmox VE VMs** (crash-consistent image plus the guest's VSS writers when the
+QEMU guest agent runs with VSS support). The Windows agent backs up files, not the system state: it is not a way to
+restore a DC. This runbook covers restoring a DC VM from a `vm-` snapshot.
+
+### First: do you need a DC restore at all?
+
+- **Deleted users, groups or OUs:** restore them from the **AD Recycle Bin** (`Restore-ADObject`, or *Active
+  Directory Administrative Center → Deleted Objects*) if it is enabled. This needs no backup and no downtime.
+- **One DC is broken, others are healthy:** do not restore it. Remove it (forced demotion or *metadata cleanup* in
+  *Active Directory Users and Computers*), install a fresh Windows VM and promote it; it replicates everything from
+  the healthy DCs.
+- **Restore a DC from a snapshot** only when all DCs of the domain are lost (forest recovery), when the deleted
+  objects are past the Recycle Bin (then an authoritative restore, below), or when a rebuild is not possible.
+- Never restore a snapshot older than the **tombstone lifetime** (180 days by default, attribute `tombstoneLifetime`
+  of `CN=Directory Service,CN=Windows NT,CN=Services` in the configuration partition): it would reintroduce lingering
+  objects.
+
+### VM-GenerationID and USN rollback
+
+> **Warning: USN rollback.** Every DC numbers its changes with update sequence numbers (USNs); its replication
+> partners remember the highest USN they received from it. A DC brought back to an older state *without knowing it
+> was restored* hands out USNs again that its partners already saw. They ignore those changes for good: the
+> directory diverges silently (passwords, group memberships, deletions differ between DCs). Windows detects some of
+> these cases afterwards (event ID **2095** in *Directory Service*, replication paused, `Dsa Not Writable` set to 4
+> under `HKLM\SYSTEM\CurrentControlSet\Services\NTDS\Parameters`). There is no repair: the affected DC must be
+> forcibly demoted, its metadata cleaned up and the DC rebuilt.
+
+Windows Server 2012 and newer prevent this on hypervisors that expose a **VM-GenerationID** (Proxmox VE: the
+`vmgenid` option of the VM, default for VMs created with PVE 5.1 or newer). When a DC boots and finds that the ID
+changed, it assumes it was restored: it resets its *invocation ID* (its partners then accept its changes as new),
+discards its RID pool and re-synchronises SYSVOL non-authoritatively from a partner. Check before you rely on it:
+
+- the DC VM's configuration in Proxmox VE has a `vmgenid:` line (not `vmgenid: 0`); add it with `qm set <vmid>
+  --vmgenid 1` on the node (root) if it is missing, and back the VM up again;
+- **every restore path of the appliance gives the restored VM a new VM-GenerationID:** a full restore runs PVE's own
+  restore, which generates a new `vmgenid`; instant recovery drops it so PVE generates a new one. A Proxmox VE
+  *snapshot rollback* also changes it. Copying disk images by hand (or restoring a VM that had no `vmgenid`) does
+  **not**: do not use those for a DC.
+- the guest runs Windows Server 2012 or newer (older DCs have no safeguard; restore them only in DSRM as below).
+
+### Non-authoritative restore (the normal case)
+
+The restored DC takes back its old state and then receives every newer change from the other DCs.
+
+1. Make sure the broken original no longer answers on the network (shut it down). If it still runs, use **Replace
+   the original guest** ([06 Restores](06-restores.md#replace-the-original-guest)), which shuts it down and
+   disconnects its network for you.
+2. Restore the snapshot (**Full restore** or **Instant recover**) with **Disconnect the network** ticked and
+   **Power on** off.
+3. Check the restored VM's configuration in Proxmox VE: a `vmgenid:` line with a value different from the original
+   VM's.
+4. Start the VM, reconnect the network (`link_down=0` on its NICs) and sign in. Check the *Directory Service* event
+   log for the restore detection (event ID **2170**: the generation ID changed, invocation ID reset) and **no** event
+   2095.
+5. Check replication: `repadmin /showrepl`, `repadmin /replsummary`, `dcdiag /v`. SYSVOL (DFSR) logs event **4614**
+   and then **4604** when its non-authoritative sync from a partner is done.
+
+Without a usable VM-GenerationID (no `vmgenid`, Windows Server 2008 R2 or older), do the restore in **Directory
+Services Restore Mode** instead: keep the network disconnected, boot the restored VM into DSRM (`bcdedit /set
+safeboot dsrepair` before it shuts down, or F8 at boot), sign in with the DSRM password, then reboot normally
+(`bcdedit /deletevalue safeboot`). Booting the restored database once in DSRM makes Windows mark it as restored
+(invocation ID reset). Only then reconnect the network.
+
+### Authoritative restore (bring back deleted objects)
+
+An authoritative restore makes selected objects of the restored DC win over the other DCs, so deleted objects come
+back everywhere.
+
+1. Restore the DC VM from a snapshot taken **before** the deletion, network disconnected, and boot it into **DSRM**
+   (see above).
+2. In an elevated prompt:
+
+   ```text
+   ntdsutil
+   activate instance ntds
+   authoritative restore
+   restore subtree "OU=Sales,DC=example,DC=com"      (or: restore object "CN=Jane Doe,OU=Sales,DC=example,DC=com")
+   quit
+   quit
+   ```
+
+   ntdsutil raises the version numbers of those objects and writes an `.ldf` file with their back-links (group
+   memberships) into the current directory.
+3. Reboot normally, reconnect the network and let replication run (`repadmin /syncall /AdeP`).
+4. Import the back-links on a DC that holds the infrastructure role: `ldifde -i -k -f <file>.ldf`.
+5. For **SYSVOL** (Group Policy files) an authoritative restore is a separate step: on the restored DC set
+   `msDFSR-Options = 1` on `CN=SYSVOL Subscription,CN=Domain System Volume,CN=DFSR-LocalSettings,CN=<DC>,OU=Domain
+   Controllers,…` and stop DFSR on all other DCs before (Microsoft's "authoritative synchronization of DFSR-replicated
+   SYSVOL", the D4 equivalent). Only do this when the SYSVOL content itself must be rolled back.
+
+Restoring the **whole forest** (all DCs lost or the directory corrupted everywhere) follows Microsoft's *Active
+Directory Forest Recovery Guide*: restore one DC per domain non-authoritatively (in DSRM, network isolated from any
+surviving DC), seize the FSMO roles, raise the RID pool, reset the `krbtgt` password twice, clean up the other DCs'
+metadata, then promote new DCs. Restore the VMs into an isolated network (a PVE bridge without uplink) for this; a
+[recovery plan](#recovery-plans) with an isolated test bridge lets you rehearse it.
+
+> **Status:** Runbook only. The appliance's part is what [06 Restores](06-restores.md) describes (full restore and
+> instant recovery lab-verified on Proxmox VE 9; the new `vmgenid` comes from PVE's restore and from the instant
+> recovery configuration rewrite; replacing the original is unit-tested). The Windows side (generation-ID detection,
+> DSRM, ntdsutil) has not been run with a domain controller in the lab.
+
 ## Practise
 
 Run a drill at least once a year and after major changes:
