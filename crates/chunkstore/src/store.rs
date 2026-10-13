@@ -552,6 +552,17 @@ impl Store {
                 .collect();
             if prev_size < end {
                 reads.push((prev_size.max(start), end)); // grown disk / no base
+                                                         // merge with the dirty extents: a full backup (fresh bitmap: everything dirty,
+                                                         // no base) read every chunk twice before
+                reads.sort_unstable();
+                let mut merged: Vec<(u64, u64)> = Vec::with_capacity(reads.len());
+                for (a, b) in reads {
+                    match merged.last_mut() {
+                        Some(last) if a <= last.1 => last.1 = last.1.max(b),
+                        _ => merged.push((a, b)),
+                    }
+                }
+                reads = merged;
             }
             let base = prev_chunks.get(n as usize);
             if reads.is_empty() && ((n + 1) * cs).min(prev_size) == end {

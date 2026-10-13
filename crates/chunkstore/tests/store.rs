@@ -470,3 +470,32 @@ fn written_stats_count_plain_and_sealed_bytes() {
     );
     assert_eq!(line, want);
 }
+
+/// A full backup (fresh bitmap: every extent dirty, no base) reads each byte once; a grown
+/// disk with dirty extents in the new tail reads the tail once too (both were read twice).
+#[test]
+fn extents_are_read_once() {
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), 0, 0);
+    let cs = 65536usize;
+    let v1 = image(1);
+    let count = |data: &[u8], prev: Option<&Index>, dirty: &[(u64, u64)]| {
+        let mut n = 0u64;
+        let idx = s
+            .store_image_extents(prev, cs, data.len() as u64, dirty, |off, buf| {
+                n += buf.len() as u64;
+                buf.copy_from_slice(&data[off as usize..off as usize + buf.len()]);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(idx, s.store_image(data, cs).unwrap());
+        (idx, n)
+    };
+    let (i1, n) = count(&v1, None, &[(0, v1.len() as u64)]);
+    assert_eq!(n, v1.len() as u64, "full backup");
+    let mut v2 = v1.clone();
+    v2.extend(vec![9u8; 3 * 65536]);
+    let tail = (v1.len() as u64, 3 * 65536u64);
+    let (_, n) = count(&v2, Some(&i1), &[tail]);
+    assert_eq!(n, tail.1, "grown disk, tail dirty");
+}
