@@ -74,11 +74,14 @@ secrets() {
 	[ -f "$dir/nexus.secret" ] || head -c 24 /dev/urandom | base64 | tr -d '/+=' >"$dir/nexus.secret"
 }
 
+# The box directory is mounted into both containers: ",z" (shared SELinux label). ",Z" gave each
+# container a private label in turn, so on an SELinux host (the AlmaLinux CI runner) the first one
+# lost access to its sshd host key ("kex_exchange_identification: Connection closed").
 run() { # name, publish args…
 	local n=$1
 	shift
 	podman_purge "$n"
-	podman run -d --name "$n" --label nexus.checkout="$root" "$@" -v "$dir/box:/testbox:ro,Z" \
+	podman run -d --name "$n" --label nexus.checkout="$root" "$@" -v "$dir/box:/testbox:ro,z" \
 		-e POSTGRES_PASSWORD="$(cat "$dir/postgres.secret")" -e NEXUS_PASSWORD="$(cat "$dir/nexus.secret")" \
 		"$IMG" >/dev/null
 }
