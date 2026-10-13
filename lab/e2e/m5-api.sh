@@ -279,7 +279,7 @@ step_phase13() {
 		die "inventory: $(jq -c '[.guests[] | {guest, tags}]' <<<"$r")"
 	log "inventory: $(jq -c '[.guests[] | {guest, name, tags}]' <<<"$r")"
 	id=$(api admin POST /groups "$(jq -nc --argjson s "$src" --argjson p "$pol" \
-		'{tenant:"lab", source_id:$s, policy_id:$p, name:"auto", guests:[], mode:"all", exclude:["200"]}')" | jq -r .id)
+		'{tenant:"lab", source_id:$s, policy_id:$p, name:("auto-" + (now | floor | tostring)), guests:[], mode:"all", exclude:["200"]}')" | jq -r .id)
 	expect 201 "create auto group"
 	api admin GET /groups | jq -e --argjson id "$id" '.[] | select(.id == $id) | .resolved_guests == [100]' >/dev/null ||
 		die "auto group resolution: $(api admin GET /groups | jq -c --argjson id "$id" '.[] | select(.id == $id)')"
