@@ -612,39 +612,72 @@ fn pull_device(
     let (mut requests, mut waited, started) = (0u64, std::time::Duration::ZERO, std::time::Instant::now());
     let total = Store::image_extents_bytes(base, IMAGE_CHUNK_SIZE, dev.size, &dirty);
     let mut meter = Meter::new(exclude::disk_key(&dev.name), at.0, at.1, Some(total));
-    let idx = store.store_image_extents(base, IMAGE_CHUNK_SIZE, dev.size, &dirty, |off, buf| {
-        // one NBD request per range at most: a range that is zero as a whole is filled locally,
-        // anything else is read in one piece (each request waits for a round trip through SSH;
-        // splitting a 4 MiB chunk around small holes made reads latency-bound)
-        let len = buf.len() as u64;
-        if split_zero(&zero, off, len).as_slice() == [(off, off + len, true)] {
-            buf.fill(0);
-            skipped += len;
-        } else {
-            read += len;
-            let t0 = std::time::Instant::now();
-            c.read_at(off, buf)?;
-            requests += 1;
-            waited += t0.elapsed();
-            if let Some(t) = limit {
-                t.account(len);
+    // the ranges store_image_extents will ask for, in order; whole-zero ones are filled locally,
+    // the others are fetched ahead by a reader thread with READ_AHEAD requests in flight (one
+    // request at a time paid a full SSH round trip per 4 MiB)
+    let is_zero = |(a, b): (u64, u64)| split_zero(&zero, a, b - a).as_slice() == [(a, b, true)];
+    let fetch: Vec<(u64, u64)> = Store::image_extents_reads(base, IMAGE_CHUNK_SIZE, dev.size, &dirty)
+        .into_iter()
+        .filter(|&r| !is_zero(r))
+        .map(|(a, b)| (a, b - a))
+        .collect();
+    let (tx, rx) = std::sync::mpsc::sync_channel::<(u64, Vec<u8>)>(READ_AHEAD);
+    let idx = std::thread::scope(|scope| -> Result<Index> {
+        let reader = scope.spawn(move || -> std::io::Result<()> {
+            let r = c.read_many(&fetch, READ_AHEAD, |i, data| {
+                // the consumer stopped (store error): end quietly, its error is the one reported
+                tx.send((fetch[i].0, data))
+                    .map_err(|_| std::io::Error::other("consumer gone"))
+            });
+            if r.is_ok() {
+                c.disconnect()?;
             }
-        }
-        meter.add(buf.len() as u64);
-        Ok(())
+            r
+        });
+        let idx = store.store_image_extents(base, IMAGE_CHUNK_SIZE, dev.size, &dirty, |off, buf| {
+            let len = buf.len() as u64;
+            if is_zero((off, off + len)) {
+                buf.fill(0);
+                skipped += len;
+            } else {
+                let t0 = std::time::Instant::now();
+                let (got, data) = rx.recv().map_err(|_| std::io::Error::other("NBD reader stopped"))?;
+                waited += t0.elapsed();
+                if got != off || data.len() != buf.len() {
+                    return Err(std::io::Error::other(format!(
+                        "read-ahead out of step: got {got}+{}, want {off}+{len}",
+                        data.len()
+                    )));
+                }
+                buf.copy_from_slice(&data);
+                read += len;
+                requests += 1;
+                if let Some(t) = limit {
+                    t.account(len);
+                }
+            }
+            meter.add(len);
+            Ok(())
+        });
+        drop(rx);
+        let reader = reader.join().map_err(|_| anyhow::anyhow!("NBD reader panicked"))?;
+        // a store error wins (the reader then only saw "consumer gone"); else the reader's error
+        let idx = idx?;
+        reader.with_context(|| format!("read {}", dev.name))?;
+        Ok(idx)
     })?;
     meter.finish();
-    c.disconnect()?;
     if skipped > 0 {
         println!("{}: {skipped} bytes unallocated (zero), not transferred", dev.name);
     }
     if requests > 0 {
         let total = started.elapsed();
         println!(
-            "{}: {requests} NBD reads, {read} bytes in {total:.1?} ({:.0} MB/s): {:.2} ms per read waiting for the node, {:.0}% of the time ({} chunk workers)",
+            "{}: {requests} NBD reads, {read} bytes in {total:.1?} ({:.0} MB/s): {:.2} ms per read waiting for data from the node ({} in flight), {:.0}% of the time ({} chunk workers)",
             dev.name,
             read as f64 / total.as_secs_f64().max(1e-3) / 1e6,
             waited.as_secs_f64() * 1e3 / requests as f64,
+            READ_AHEAD,
             100.0 * waited.as_secs_f64() / total.as_secs_f64().max(1e-3),
             store.chunk_workers()
         );
@@ -754,6 +787,8 @@ fn zero_map(ssh: &SshNode, vmid: u32, export: &str, extents: &[(u64, u64)], at: 
 }
 
 const ALLOCATION: &str = "base:allocation";
+/// NBD read requests in flight per device (4 MiB each).
+const READ_AHEAD: usize = 8;
 type NbdClient = nbd::Client<BufReader<std::process::ChildStdout>, BufWriter<std::process::ChildStdin>>;
 const NBD_STATE_ZERO: u32 = 2;
 
