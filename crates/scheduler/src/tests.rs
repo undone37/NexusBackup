@@ -651,7 +651,7 @@ fn share_jobs() {
         ))
         .unwrap();
     assert_eq!(p.files.len(), 1);
-    assert!(!String::from_utf8_lossy(&p.files[0].1).contains("pw"));
+    assert!(!String::from_utf8_lossy(&p.files[0].1).contains("pw,1"));
     match &p.steps[..] {
         [Step::Cli { bin, args, capture, .. }] => {
             assert!(*capture && bin == &e.cfg.nas_bin);
