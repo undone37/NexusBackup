@@ -30,6 +30,7 @@ pub fn rank(severity: &str) -> u8 {
 const HINTS: &[(&str, &str)] = &[
     ("job_failed", "Open the job log on the Jobs page, fix the cause (source reachable, credentials, space) and run the job again. The alert resolves itself after the next successful run."),
     ("verify", "Stored data failed verification. Do not delete snapshots; check the store disks (SMART) and the offsite target, then run Verify again. Resolves after a successful verify."),
+    ("snapshot_damaged", "Snapshots reference chunks that failed verification. Do not delete them; run Repair on the Snapshots page (fetches the chunks from the offsite target or the replication primary). The next backup of each affected source reads its data in full. Resolves when no snapshot is damaged any more."),
     ("inventory", "Snapshots disappeared or differ from the catalog. Check the store and the offsite target for manual deletion or tampering and review the audit log. Resolves after a clean offsite check."),
     ("capacity", "The store is filling up. Shorten retention, run GC or add disks. Resolves when usage drops below the threshold."),
     ("offsite_lag", "Offsite copies are behind. Check the offsite target (reachable, credentials, quota) and the offsite job logs. Resolves when the copy has caught up."),
@@ -58,6 +59,8 @@ const HINTS: &[(&str, &str)] = &[
     ("config_backup", "The appliance configuration backup (catalog, key files) could not be made or uploaded to an offsite target. Open Configuration → Settings → Backup of this appliance and the job log; check that nexus-keyd runs and the offsite target is reachable, then Run now. Resolves after the next successful run (per target)."),
     ("restore_test", "A restore test of a guest's snapshot failed: the isolated test copy did not start, its guest agent did not answer, a port was not listening or the custom check failed (details on the Restore tests page). Check the guest (agent installed and enabled, services start without network) and the snapshot; run the test again. Resolves after the next passed test of that guest."),
     ("recovery_plan", "A recovery plan is not ready (a snapshot older than its RPO, the target node offline, too little space on the target storage, a missing bridge, a blocking alert) or its test run or execution failed. Open the Recovery plans page for the failed checks. Resolves after the next passed readiness check or test run."),
+    ("incident", "A security officer put the appliance into incident mode: snapshots in the chosen range are held, backup groups are paused, every other session and all API tokens were ended. Investigate; leaving incident mode needs a second approver (Settings → Incident mode). Resolves when incident mode ends."),
+    ("dek_rotation", "The tenant's data encryption key is older than the configured rotation interval (Settings → Security). Rotate it at the appliance console (root shell): runuser -u nexus-keyd -- /usr/libexec/nexus/keyd tenant-rotate /var/lib/nexus/keyd <tenant>. New snapshots use the new key, older ones stay readable; on a replication primary export the keys again afterwards. Resolves once rotated."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
 
@@ -80,6 +83,8 @@ const CATEGORY: &[(&str, &str)] = &[
     ("gc_quorum", "security"),
     ("gc_confirm", "security"),
     ("vault_disabled", "security"),
+    ("incident", "security"),
+    ("dek_rotation", "security"),
     ("job_failed", "backup"),
     ("sla_missed", "backup"),
     ("paused", "backup"),
@@ -87,6 +92,7 @@ const CATEGORY: &[(&str, &str)] = &[
     ("backup_inconsistent", "backup"),
     ("orphaned", "backup"),
     ("verify", "backup"),
+    ("snapshot_damaged", "backup"),
     ("offsite_lag", "backup"),
     ("inventory_refresh", "backup"),
     ("config", "backup"),

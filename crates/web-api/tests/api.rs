@@ -3768,6 +3768,7 @@ fn registered_routes() -> std::collections::BTreeSet<(String, String)> {
         include_str!("../src/tenants.rs"),
         include_str!("../src/tenancy.rs"),
         include_str!("../src/vault.rs"),
+        include_str!("../src/incident.rs"),
         include_str!("../src/passkeys.rs"),
     ] {
         for piece in src.split(".route(").skip(1) {
@@ -3918,6 +3919,14 @@ async fn tenant_admin_routes_classified() {
         ("POST", "/agents/{id}/token", format!("/api/v1/agents/{agent}/token"), e(), 'Y'),
         ("POST", "/agents/{id}/enroll", format!("/api/v1/agents/{agent}/enroll"), e(), 'Y'),
         ("PUT", "/agents/{id}/limits", format!("/api/v1/agents/{agent}/limits"), Some(json!({"bwlimit": 1 << 20, "nice": 10})), 'Y'),
+        // Phase 19a bare-metal recovery: provider roles only (admin, operator)
+        ("POST", "/agents/{id}/rescue", format!("/api/v1/agents/{agent}/rescue"), e(), 'N'),
+        ("POST", "/agents/{id}/p2v", format!("/api/v1/agents/{agent}/p2v"), Some(json!({"time": 1, "source_id": src, "node": "n", "storage": "s", "iso": "local:iso/x.iso"})), 'N'),
+        ("GET", "/rescue", "/api/v1/rescue".into(), none(), 'N'),
+        ("POST", "/rescue/checkin", "".into(), none(), '-'),
+        ("GET", "/rescue/{id}", "/api/v1/rescue/0123456789abcdef".into(), none(), 'N'),
+        ("POST", "/rescue/{id}/start", "/api/v1/rescue/0123456789abcdef/start".into(), Some(json!({"time": 1})), 'N'),
+        ("POST", "/rescue/{id}/cancel", "/api/v1/rescue/0123456789abcdef/cancel".into(), e(), 'N'),
         ("POST", "/agents/bulk", "/api/v1/agents/bulk".into(), Some(json!({"csv": "host,tenant\nta-bulk,acme"})), 'Y'),
         ("GET", "/fleets", "/api/v1/fleets".into(), none(), 'N'),
         ("POST", "/fleets", "/api/v1/fleets".into(), Some(json!({"name": "f", "tenant": "acme", "expires_days": 1})), 'N'),
@@ -4002,6 +4011,11 @@ async fn tenant_admin_routes_classified() {
         ("PUT", "/settings/session", "/api/v1/settings/session".into(), Some(json!({"idle_min": 30, "absolute_h": 12})), 'N'),
         ("PUT", "/settings/dormant", "/api/v1/settings/dormant".into(), Some(json!({"days": 0})), 'N'),
         ("PUT", "/settings/banner", "/api/v1/settings/banner".into(), Some(json!({"banner": "x"})), 'N'),
+        ("PUT", "/settings/max-sessions", "/api/v1/settings/max-sessions".into(), Some(json!({"max": 5})), 'N'),
+        ("PUT", "/settings/dek-rotation", "/api/v1/settings/dek-rotation".into(), Some(json!({"days": 365})), 'N'),
+        ("GET", "/incident", "/api/v1/incident".into(), none(), 'N'),
+        ("POST", "/incident", "/api/v1/incident".into(), Some(json!({"reason": "x"})), 'N'),
+        ("POST", "/incident/leave", "/api/v1/incident/leave".into(), e(), 'N'),
         ("PUT", "/settings/mgmt-allow", "/api/v1/settings/mgmt-allow".into(), Some(json!({"mgmt_allow": ["10.0.0.0/8"]})), 'N'),
         ("GET", "/firewall", "/api/v1/firewall".into(), none(), 'N'),
         ("PUT", "/firewall/inbound/{service}", "/api/v1/firewall/inbound/icmp".into(), Some(json!({"allow": ["10.0.0.0/8"], "enabled": true})), 'N'),
@@ -4229,7 +4243,7 @@ async fn tenant_admin_scope_policies_users_and_approvals() {
     let job = |kind: &str, params: Value| json!({"kind": kind, "tenant": "acme", "params": params});
     let r = t.post("/api/v1/jobs", &dana, job("backup", json!({"vmid": 100}))).await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
-    for kind in ["retention", "gc", "offsite", "verify"] {
+    for kind in ["retention", "gc", "offsite", "verify", "chunk_repair"] {
         assert_eq!(
             t.post("/api/v1/jobs", &dana, job(kind, json!({}))).await.status,
             StatusCode::FORBIDDEN,
@@ -4420,5 +4434,50 @@ async fn tenant_names_are_tombstoned_and_uids_immutable() {
         .conn()
         .execute("UPDATE tenants SET uid = 'x' WHERE name = 'acme'", [])
         .is_err());
+    t.finish();
+}
+
+/// Phase 21d: `chunk_repair` is admin-only (no parameters), and the snapshot
+/// list carries the damage flag of the last verify / repair.
+#[tokio::test]
+async fn chunk_repair_is_admin_only_and_snapshots_show_damage() {
+    let t = T::new();
+    t.st.cat
+        .conn()
+        .execute_batch(
+            "INSERT INTO snapshots (tenant, source, time, local, offsite, damaged, damaged_at) \
+             VALUES ('acme', 'vm-100', 1000, 1, 0, 2, 5), ('acme', 'vm-100', 2000, 1, 0, NULL, NULL);",
+        )
+        .unwrap();
+    let job = |p: Value| json!({"kind": "chunk_repair", "tenant": "acme", "params": p});
+    for (who, want) in [
+        ("otto", StatusCode::FORBIDDEN),
+        ("tina", StatusCode::FORBIDDEN),
+        ("sam", StatusCode::FORBIDDEN),
+        ("alice", StatusCode::ACCEPTED),
+    ] {
+        let s = t.login(who).await;
+        let r = t.post("/api/v1/jobs", &s, job(json!({}))).await;
+        assert_eq!(r.status, want, "{who}: {:?}", r.body);
+    }
+    let alice = t.login("alice").await;
+    let r = t.post("/api/v1/jobs", &alice, job(json!({"source": "vm-100"}))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "no parameters");
+    let tina = t.login("tina").await;
+    let snaps = t.get("/api/v1/snapshots?tenant=acme", &tina).await.body;
+    let by_time = |time: i64| {
+        snaps
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["time"] == time)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(
+        (by_time(1000)["damaged"].clone(), by_time(1000)["damaged_at"].clone()),
+        (json!(2), json!(5))
+    );
+    assert_eq!(by_time(2000)["damaged"], Value::Null);
     t.finish();
 }

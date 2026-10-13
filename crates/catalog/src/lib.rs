@@ -617,6 +617,49 @@ CREATE TABLE passkeys (
 CREATE INDEX passkeys_user ON passkeys(user_id);
 "#;
 
+/// v29 (Phase 19a, docs/bmr.md): `rescue_sessions` — bare-metal recovery / P2V of a
+/// Linux agent's host. `id` is the rescue agent's temporary agent id; `lookup` the
+/// public lookup key of the one-time recovery token (`agent_proto::rescue_lookup`);
+/// `token_hash` its digest sealed to the scheduler (NULL once the rescue agent is
+/// enrolled); `state` issued → waiting (checked in) → running → done | failed |
+/// cancelled | expired; `host`/`port`/`disks` from the rescue console's check-in;
+/// `snapshot_time` the chosen snapshot; `p2v` the PVE VM parameters (NULL = bare
+/// metal). Purely additive: the previous release never reads it. (v30 is reserved; ordered before v31.)
+const SCHEMA_V29: &str = r#"
+CREATE TABLE rescue_sessions (
+    id            TEXT PRIMARY KEY,
+    tenant        TEXT NOT NULL,
+    agent_id      TEXT NOT NULL,
+    lookup        TEXT NOT NULL UNIQUE,
+    token_hash    TEXT,
+    token_expires INTEGER NOT NULL,
+    state         TEXT NOT NULL DEFAULT 'issued',
+    host          TEXT,
+    port          INTEGER,
+    disks         TEXT NOT NULL DEFAULT '[]',
+    checked_in    INTEGER,
+    cert_sha256   TEXT,
+    snapshot_time INTEGER,
+    reboot        INTEGER NOT NULL DEFAULT 1,
+    step          TEXT,
+    job_id        INTEGER,
+    p2v           TEXT,
+    message       TEXT,
+    created       INTEGER NOT NULL,
+    created_by    TEXT NOT NULL
+);
+CREATE INDEX rescue_sessions_agent ON rescue_sessions (agent_id);
+"#;
+
+/// v32 (Phase 21d, health check with repair): snapshots that reference chunks
+/// which failed verify (`damaged` = number of distinct bad chunks, NULL =
+/// healthy; `damaged_at` = first detection). Set and cleared by the scheduler
+/// after verify and `chunk_repair` jobs. Purely additive.
+const SCHEMA_V32: &str = r#"
+ALTER TABLE snapshots ADD COLUMN damaged INTEGER;
+ALTER TABLE snapshots ADD COLUMN damaged_at INTEGER;
+"#;
+
 /// v34 (Phase 25, docs/control-plane.md "Restore tests and recovery plans"):
 /// `restore_tests` (one row per tested guest snapshot: passed / failed /
 /// cancelled / skipped, the checks as JSON, the job and the recovery run it
@@ -658,7 +701,7 @@ const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
-    SCHEMA_V31, SCHEMA_V34,
+    SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V34,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1388,6 +1431,34 @@ mod tests {
             })
             .unwrap();
         assert_eq!(n, 3);
+    }
+
+    /// v29 (rescue sessions) on top of the previous catalog: the table exists and
+    /// the lookup key is unique.
+    #[test]
+    fn migration_v29_rescue_sessions() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V29).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let ins = "INSERT INTO rescue_sessions (id, tenant, agent_id, lookup, token_expires, created, created_by) \
+                   VALUES (?1, 't', '0123456789abcdef', ?2, 1, 1, 'admin')";
+        conn.execute(ins, ["a", "l1"]).unwrap();
+        assert!(conn.execute(ins, ["b", "l1"]).is_err(), "lookup is unique");
+        let (state, disks, reboot): (String, String, bool) = conn
+            .query_row("SELECT state, disks, reboot FROM rescue_sessions", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!((state.as_str(), disks.as_str(), reboot), ("issued", "[]", true));
     }
 
     /// v34 (restore tests, recovery plans) on top of the previous catalog: empty
@@ -2589,5 +2660,43 @@ mod tests {
             .query_row("SELECT anomaly FROM snapshots WHERE time = 5", [], |r| r.get(0))
             .unwrap();
         assert_eq!(a.as_deref(), Some("x"), "the flag survives the refresh upsert");
+    }
+
+    /// v32 (damaged snapshots) on top of the previous catalog: existing
+    /// snapshots are healthy; the flag survives the scheduler's refresh upsert.
+    #[test]
+    fn migration_v32_damaged_snapshots() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V32).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('t', 'vm-1', 5, 1, 0);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let d: Option<i64> = conn
+            .query_row("SELECT damaged FROM snapshots", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(d, None);
+        conn.execute("UPDATE snapshots SET damaged = 2, damaged_at = 6", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('t', 'vm-1', 5, 1, 0) \
+             ON CONFLICT (tenant, source, time) DO UPDATE SET local = 1",
+            [],
+        )
+        .unwrap();
+        let d: Option<i64> = conn
+            .query_row("SELECT damaged FROM snapshots", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(d, Some(2));
     }
 }

@@ -18,6 +18,7 @@
   import Security from './settings/Security.svelte';
   import Firewall from './settings/Firewall.svelte';
   import Vault from './settings/Vault.svelte';
+  import Incident from './settings/Incident.svelte';
 
   // Tabs per role (docs/phase12-contract.md: alerts + SSO readable by admins and security officers,
   // SSH keys + updates also by operators; diagnostics: checks for both, support bundles for admins;
@@ -40,6 +41,7 @@
     { id: 'security', comp: Security, allow: officer },
     { id: 'firewall', comp: Firewall, allow: officer },
     { id: 'vault', comp: Vault, allow: staff },
+    { id: 'incident', comp: Incident, allow: officer },
   ];
   const tabs = $derived(TABS.filter((x) => x.allow(session.user)));
   const tab = $derived(tabs.find((x) => x.id === route.query.get('tab')) ?? tabs[0]);

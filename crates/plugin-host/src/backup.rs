@@ -105,6 +105,10 @@ pub fn load_base(store: &Store, source: &str) -> Result<Option<Base>> {
     else {
         return Ok(None);
     };
+    // a base with bad chunks (verify) is not built upon: the plugin sends everything again
+    if store.is_damaged(&m)? {
+        return Ok(None);
+    }
     let entries = match store.load_index(&m, FILES_INDEX)? {
         Index::Tree { entries } => entries,
         _ => bail!("{source}/{}: `files` is not a tree index", m.time),

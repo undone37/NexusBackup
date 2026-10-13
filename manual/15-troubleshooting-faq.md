@@ -208,10 +208,14 @@ create the replication source again with it.
 A `verify` alert means missing or corrupt chunks in the local store or in the sampled offsite packs.
 
 1. Do not confirm or approve garbage collections until the cause is known.
-2. Read the verify job's log: it names the chunks and the affected snapshots.
+2. Read the verify job's log (counts of corrupt and missing chunks). **Snapshots** marks the
+   affected snapshots **Damaged**, and the `snapshot_damaged` alert names them.
 3. Check the appliance's disks (hardware errors, file system).
-4. Restore affected guests from an older snapshot, from the offsite copy (command line, see
-   [14 Disaster recovery](14-disaster-recovery.md)) or from the replication secondary.
+4. Run **Repair** on **Snapshots** (administrators). It fetches the bad chunks from the offsite
+   target or, on a replication secondary, from the primary. See
+   [11 Alerts and monitoring](11-alerts-and-monitoring.md#verification-and-repair).
+5. Chunks that no copy has come back when the source delivers the same data again in its next
+   (full) backup. Otherwise restore the affected guests from an older snapshot.
 
 An `inventory` alert (packs missing on the offsite target, or a locked snapshot missing locally) can mean an attack.
 Check the target's own snapshots (Storage Box) or object versions (S3) and the audit log.
@@ -268,6 +272,17 @@ recorded in the audit log (`diag.bundle`, `download.get`).
 **Only one request at a time.** "A diagnostics request is waiting to run" means another request has not started yet;
 try again a minute later.
 
+### Security posture
+
+The checks named `posture.*` are recommendations for a hardened appliance: approvals with at least three approvers,
+audit forwarding that delivers, offsite copies with Object Lock, an inbound allow-list for the web UI, your own web
+certificate, no dormant administrators, a second factor for every account and the boot menu password. They run with
+the other checks and appear in their own **Security posture** card on **Settings → Diagnostics**; each is either OK or
+a warning and never blocks an update. Each row's **Help** leads to its line in the table below.
+
+> **Status:** Added in Phase 21b (nexus-diag unit tests and the demo backend); a run on the appliance image is
+> pending.
+
 ### The checks
 
 | Check | What it checks | What to do |
@@ -287,6 +302,14 @@ try again a minute later.
 | <a id="check-selinux"></a>`selinux` SELinux mode | Whether SELinux enforces the service confinement. Permissive or disabled is critical. | The appliance always boots enforcing. If this fails, the kernel command line was changed; contact support. |
 | <a id="check-systemd-failed"></a>`systemd.failed` Failed system services | Services that have failed. A failed key daemon, web-api, scheduler or replication daemon is an error, any other failed unit a warning. | The bundle's journal names the reason. A reboot restarts all services. |
 | <a id="check-bootc"></a>`bootc` OS image (bootc) | Booted, staged and rollback image as the update agent last saw them; a queued rollback or an unsigned origin is a warning. | An unsigned origin is fixed by the next update check. A queued rollback takes effect at the next reboot. |
+| <a id="check-posture-approvals"></a>`posture.approvals` Security posture: approvals | Approvals are on and at least three active administrators or security officers can approve. | Switch approvals on and add approvers ([10 Approvals and audit](10-approvals-and-audit.md#fewer-than-three-approvers)). |
+| <a id="check-posture-forwarding"></a>`posture.forwarding` Security posture: audit forwarding | A syslog or HTTPS sink is configured and enabled, and each one delivered its last batch (not failing). | Configure **Settings → Forwarding** ([10 Approvals and audit](10-approvals-and-audit.md#forwarding-to-a-siem)); if it fails, see the `forwarding` alert. |
+| <a id="check-posture-offsite_lock"></a>`posture.offsite_lock` Security posture: offsite lock | Every tenant copies offsite to S3 with Object Lock (an SFTP or local target, or no offsite copy, counts as not locked). | Use an S3 target with Object Lock ([07 Offsite](07-offsite.md)). A Storage Box with snapshots protects too, but the appliance cannot verify it: the warning stays. |
+| <a id="check-posture-inbound"></a>`posture.inbound` Security posture: inbound allow-list | The web UI and API (port 8443) accept connections only from listed networks. | Set the source list of **Web UI and API** in **Settings → Firewall** ([02 Installation](02-installation.md#inbound-firewall)). |
+| <a id="check-posture-certificate"></a>`posture.certificate` Security posture: own web certificate | An imported certificate (signed by your CA) is served instead of the self-signed one. | [02 Installation](02-installation.md#use-your-own-certificate). |
+| <a id="check-posture-dormant_admins"></a>`posture.dormant_admins` Security posture: dormant administrators | Every active administrator and security officer signed in within the dormant-account period (**Settings → Security**; 90 days when that is off). | Disable or delete accounts that are no longer needed; the people behind the others should sign in. |
+| <a id="check-posture-totp"></a>`posture.totp` Security posture: second factor | Every active local account has an authenticator (TOTP). Single sign-on accounts are counted; their second factor is the identity provider's. | Reset the account (it then activates with a new authenticator); for single sign-on, require MFA at the identity provider. |
+| <a id="check-posture-grub"></a>`posture.grub` Security posture: boot menu password | The boot menu password hash exists and is installed in `/boot/grub2/user.cfg`. | Set it at the console with `nexus-setup` ([14 Disaster recovery](14-disaster-recovery.md#boot-menu-password)). |
 | <a id="check-smart"></a>`smart` Disk health (SMART) | The last scan of `nexus-disks` (**Configuration → Hardware**): a disk SMART reports as failing or a failed array is an error, a degraded array or bad sectors a warning, a status older than an hour a warning. Skipped before the first scan. In a virtual machine most disks have no SMART; the hypervisor watches them. | See [Replacing a disk](#replacing-a-disk). If the status is old, check `systemctl status nexus-disks.timer` on the console. |
 
 ## Disks and RAID

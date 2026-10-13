@@ -289,6 +289,20 @@
   <p class="lede">{scope} · {t.dash.lastDays(days)}</p>
 </div>
 <ErrorBanner {error} />
+{#if kpi?.incident}
+  <!-- Phase 21b: incident mode is active -->
+  <section class="card incident-card" aria-labelledby="dash-incident">
+    <div class="card-head">
+      <h2 id="dash-incident">{t.incident.dashTitle}</h2>
+      <span class="chip bad">{t.incident.open}</span>
+    </div>
+    <p><strong>{kpi.incident.reason}</strong></p>
+    <p class="muted">
+      {t.incident.dashText(kpi.incident.by, fmtAgo(kpi.incident.since))}
+      {#if can.viewQuorum(session.user)}<a href={href('/settings?tab=incident')}>{t.incident.open}</a>{/if}
+    </p>
+  </section>
+{/if}
 {#if approvals?.recommend && !dismissed && can.configure(session.user)}
   <div class="banner warn approvals-banner" role="status">
     <span>{t.dash.approvalsBanner(approvals.possible_approvers)} <a href={href('/settings?tab=approvals')}>{t.dash.approvalsLink}</a></span>
@@ -642,6 +656,10 @@
 <BackupNow bind:open={bnOpen} group={bnGroup} label={(v) => (bnGroup ? guestLabel(bnGroup, v) : String(v))} />
 
 <style>
+  .incident-card {
+    border-color: var(--bad);
+    margin-bottom: 1rem;
+  }
   /* with the hardware tile: nine key figures, 3 × 3 on wide screens */
   @media (min-width: 1181px) {
     .kpis.nine {

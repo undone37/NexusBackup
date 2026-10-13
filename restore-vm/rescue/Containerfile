@@ -1,0 +1,11 @@
+# Builder for the bare-metal recovery ISO (docs/bmr.md): Debian 13 kernel and the
+# userland the rescue agent drives (partitioning, LVM, mkfs, network), plus
+# grub-mkrescue / xorriso for the hybrid BIOS + UEFI image. Used by build.sh;
+# nothing is installed on the host.
+ARG BASE=docker.io/library/debian:trixie
+FROM ${BASE}
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends linux-image-amd64 kmod cpio zstd xz-utils ca-certificates \
+      util-linux fdisk gdisk lvm2 e2fsprogs xfsprogs btrfs-progs dosfstools busybox-static iproute2 \
+      grub-pc-bin grub-efi-amd64-bin grub-common xorriso mtools

@@ -1,0 +1,11 @@
+DEVNAME=/dev/vda15
+LABEL_FATBOOT=UEFI
+LABEL=UEFI
+UUID=7C2E-1A0B
+TYPE=vfat
+
+DEVNAME=/dev/mapper/vgdata-xfs
+LABEL=srvxfs
+UUID=9a7c3e1d-44b2-4d7e-a9b3-5c6d7e8f9a33
+TYPE=xfs
+

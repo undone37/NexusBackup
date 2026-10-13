@@ -14,6 +14,8 @@
   let error: string | null = $state(null);
   let sess = $state({ idle_min: 30, absolute_h: 12 });
   let dormant = $state(0);
+  let maxSessions = $state(5);
+  let dekDays = $state(365);
   let banner = $state('');
   let sessions: SessionInfo[] = $state([]);
   // Phase 21c: passkey requirement for admins / security officers, relying party ID
@@ -26,6 +28,8 @@
       cur = await get<SecuritySettings>('/settings/security');
       sess = { ...cur.session };
       dormant = cur.dormant_days;
+      maxSessions = cur.max_sessions;
+      dekDays = cur.dek_rotation_days;
       banner = cur.login_banner;
       pk = await get<PasskeySettings>('/settings/passkeys');
       pkf = { ...pk.policy };
@@ -48,6 +52,14 @@
   async function saveDormant(e: SubmitEvent) {
     e.preventDefault();
     if (await act(put('/settings/dormant', { days: Number(dormant) }), t.saved)) load();
+  }
+  async function saveMaxSessions(e: SubmitEvent) {
+    e.preventDefault();
+    if (await act(put('/settings/max-sessions', { max: Number(maxSessions) }), t.saved)) load();
+  }
+  async function saveDek(e: SubmitEvent) {
+    e.preventDefault();
+    if (await act(put('/settings/dek-rotation', { days: Number(dekDays) }), t.saved)) load();
   }
   async function saveBanner(e: SubmitEvent) {
     e.preventDefault();
@@ -112,6 +124,40 @@
             <label for="sec-abs">{t.access.absolute}</label>
             <input id="sec-abs" type="number" min="1" max="24" step="1" bind:value={sess.absolute_h} required />
           </div>
+        </div>
+      </fieldset>
+      {#if isAdmin}<div class="form-actions"><button type="submit" class="primary">{t.save}</button></div>{/if}
+    </form>
+  </section>
+
+  <section class="card settings-section" aria-labelledby="sec-max">
+    <div class="card-head">
+      <h2 id="sec-max">{t.access.maxSessions}</h2>
+      <span class="chip plain">{cur.max_sessions}</span>
+    </div>
+    <p>{t.access.maxSessionsHint}</p>
+    <form onsubmit={saveMaxSessions}>
+      <fieldset disabled={!isAdmin}>
+        <div class="field">
+          <label for="sec-max-n">{t.access.maxSessionsLabel}</label>
+          <input id="sec-max-n" type="number" min="1" max="50" step="1" bind:value={maxSessions} required />
+        </div>
+      </fieldset>
+      {#if isAdmin}<div class="form-actions"><button type="submit" class="primary">{t.save}</button></div>{/if}
+    </form>
+  </section>
+
+  <section class="card settings-section" aria-labelledby="sec-dek">
+    <div class="card-head">
+      <h2 id="sec-dek">{t.access.dekRotation}</h2>
+      <span class="chip {cur.dek_rotation_days ? 'ok' : 'warn'}">{cur.dek_rotation_days ? `${cur.dek_rotation_days} d` : t.quorum.off}</span>
+    </div>
+    <p>{t.access.dekRotationHint}</p>
+    <form onsubmit={saveDek}>
+      <fieldset disabled={!isAdmin}>
+        <div class="field">
+          <label for="sec-dek-days">{t.access.dekRotationDays}</label>
+          <input id="sec-dek-days" type="number" min="0" max="3650" step="1" bind:value={dekDays} required />
         </div>
       </fieldset>
       {#if isAdmin}<div class="form-actions"><button type="submit" class="primary">{t.save}</button></div>{/if}

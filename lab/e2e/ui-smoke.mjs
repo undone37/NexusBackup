@@ -24,7 +24,7 @@ const PAGES = ['/', '/snapshots', '/snapshots?held=true', '/snapshots?where=offs
 // Phase 19b: a tenant admin's reduced navigation (only when the lab has such an account: TA_USER/TA_PW/TA_TOTP)
 const TENANT_PAGES = ['/', '/snapshots', '/search', '/changes', '/restore-tests', '/storage', '/reports', '/jobs', '/quorum', '/audit', '/sources', '/agents', '/agents?tab=fleet', '/groups',
   '/recovery-plans', '/users', '/account'];
-const TABS = ['approvals', 'alerts', 'sso', 'ssh', 'updates', 'anomaly', 'diagnostics', 'configBackup', 'console', 'certificate', 'forwarding', 'security', 'firewall', 'vault'];
+const TABS = ['approvals', 'alerts', 'sso', 'ssh', 'updates', 'anomaly', 'diagnostics', 'configBackup', 'console', 'certificate', 'forwarding', 'security', 'firewall', 'vault', 'incident'];
 
 const b32 = (s) => {
   const a = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -138,6 +138,15 @@ for (const [user, pw, secret] of [['admin', sec.ADMIN_PW, sec.ADMIN_TOTP], ['so'
   for (const theme of ['light', 'dark']) {
     await cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
     for (const p of PAGES) await visit('#' + p, theme, user);
+    // Phase 19a: the bare-metal recovery dialog of the first Linux agent (admins/operators, when there is one)
+    await visit('#/agents', theme, user);
+    if (await ev(`const b = document.querySelector('button[data-bmr]'); b?.click(); return !!b;`)) {
+      where = `${user}/${theme}#/agents (bare-metal recovery dialog)`;
+      if (!(await until(`return !!document.querySelector('dialog[open]')`, 5000))) problems.push(`${where}: dialog did not open`);
+      await sleep(1000);
+      visited.push(where);
+      await ev(`document.querySelectorAll('dialog[open]').forEach((d) => d.close()); return true;`);
+    }
     for (const tab of TABS) {
       // tabs the role may not see fall back to the first one: still a valid render
       await visit(`#/settings?tab=${tab}`, theme, user);

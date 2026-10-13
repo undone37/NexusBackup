@@ -434,6 +434,17 @@ export const en = {
     releaseQueued: "Hold released.",
     holdRange: "Hold a time range…",
     holdTitle: "Legal hold",
+    // Phase 21d: health check with repair
+    damaged: "Damaged",
+    damagedTitle: (n: number, since: string) =>
+      `${n} chunk(s) of this snapshot failed verification (since ${since}). Restores of the affected files fail until it is repaired.`,
+    damagedBanner: (n: number, tenant: string) =>
+      `${n} snapshot(s) of tenant ${tenant} reference data that failed verification. The next backup of each affected source reads in full; Repair fetches the data from the offsite target or the replication primary.`,
+    repair: "Repair",
+    repairLabel: (tenant: string) => `Repair the damaged snapshots of tenant ${tenant}`,
+    repairConfirm: (tenant: string) =>
+      `Fetch the chunks that failed verification for tenant ${tenant} from its offsite target or replication primary? Every chunk is verified before it is stored.`,
+    repairQueued: "Repair job queued.",
     // Phase 21a: anomaly flags
     anomalous: "Anomalous",
     anomalousTitle: (reason: string) => `Flagged as anomalous: ${reason}`,
@@ -589,7 +600,10 @@ export const en = {
       offsite_list: "List offsite copy",
       offsite_restore: "Fetch from offsite",
       offsite_attach: "Attach offsite copy",
+      bmr: "Bare-metal recovery",
+      p2v: "Restore host as PVE VM",
       fleet_scan: "Fleet discovery scan",
+      chunk_repair: "Repair bad chunks",
       config_backup: "Configuration backup",
       config_upload: "Upload configuration backup",
       config_rekey: "Restore tenant keys from offsite",
@@ -983,6 +997,94 @@ export const en = {
     bulkOnce:
       "The tokens are shown only now. Download the CSV and hand each token to the host's installer; then click Enroll next to each agent.",
     bulkDownload: "Download CSV",
+  },
+  // Phase 19a: bare-metal recovery and P2V of Linux agent hosts
+  bmr: {
+    action: "Bare-metal recovery",
+    title: (n: string) => `Bare-metal recovery of ${n}`,
+    intro:
+      "Restores the whole machine from a host snapshot onto new or wiped disks: partitions, LVM, file systems and the boot loader are recreated (not LUKS, software RAID or ZFS) from the layout stored with the snapshot, then the files are restored. The target machine boots the NexusBackup rescue ISO, which checks in with the appliance using a one-time recovery token.",
+    issueTitle: "1. Issue a recovery token",
+    reboot: "Reboot into the restored system when done",
+    issue: "Issue recovery token",
+    issueConfirm: (n: string) =>
+      `Issue a one-time recovery token for "${n}"? Open recovery sessions of this agent that have not started are cancelled.`,
+    issued: "Recovery token issued.",
+    tokenOnce:
+      "This recovery token is shown only once and is valid for 4 hours. Copy it now; if it is lost, issue a new one.",
+    token: "Recovery token",
+    expires: "Valid until",
+    steps: [
+      "Download the rescue ISO nexus-rescue-<version>.iso from the GitHub release of this appliance version (or build it with restore-vm/rescue/build.sh).",
+      "Boot the machine to restore from the ISO (USB stick, virtual media or CD).",
+      "At the rescue console, set up the network (DHCP or a static address).",
+      "Enter the appliance address and the recovery token; the console checks in and appears below as \"Waiting\".",
+      "Pick the target disks at the console and confirm them by typing their names.",
+      "Choose the snapshot below and click \"Start recovery\".",
+    ],
+    sessionsTitle: "2. Recovery sessions",
+    sessions: "Recoveries",
+    sessionsIntro:
+      "Bare-metal recoveries and P2V restores of agent hosts. A session waits for the rescue console to check in; the recovery starts when a snapshot is chosen.",
+    none: "No recovery sessions for this agent.",
+    agent: "Agent",
+    created: "Issued",
+    states: {
+      issued: "Token issued",
+      waiting: "Waiting",
+      running: "Running",
+      done: "Done",
+      failed: "Failed",
+      cancelled: "Cancelled",
+      expired: "Expired",
+    } as Record<string, string>,
+    stepNames: {
+      apply: "Recreating the disk layout",
+      restore: "Restoring files",
+      finish: "Boot loader and finishing",
+    } as Record<string, string>,
+    waitingConsole: "Waiting for the rescue console to check in.",
+    checkedIn: (s: string) => `Rescue console checked in ${s}`,
+    address: "Address",
+    disks: "Disks",
+    snapshot: "Snapshot",
+    noSnapshots: "No host snapshots of this agent yet.",
+    layout: "Machine layout",
+    eraseWarn:
+      "The target disks named at the rescue console are erased and repartitioned.",
+    start: "Start recovery",
+    startConfirm: (host: string, disks: string) =>
+      `Start the recovery on ${host}? The disks ${disks} are erased and repartitioned.`,
+    started: (id: number) => `Recovery started as job #${id}.`,
+    cancel: "Cancel session",
+    cancelConfirm: "Cancel this recovery session? Its token stops working.",
+    cancelled: "Session cancelled.",
+    job: (id: number) => `Job #${id}`,
+    rebootAfter: "reboots when done",
+    p2vChip: "P2V",
+    p2vVm: (vmid: number | string, node: string) => `VM ${vmid} on ${node}`,
+    p2vTitle: "3. Restore as PVE VM (P2V)",
+    p2vIntro:
+      "Creates a VM on a Proxmox VE cluster with disks sized like the snapshot's layout and boots it from the rescue ISO (already uploaded to the cluster); the recovery then runs unattended into the new VM. Nothing on the original machine changes.",
+    source: "PVE source",
+    noPve: "No PVE source in this agent's tenant.",
+    node: "Node",
+    storage: "VM disk storage",
+    iso: "Rescue ISO volume",
+    isoHint: "e.g. local:iso/nexus-rescue-0.2.0.iso",
+    isoStorage: "ISO storage for the config disk (optional)",
+    isoStorageHint: "Default: the storage of the rescue ISO.",
+    bridge: "Network bridge",
+    memory: "Memory (MiB)",
+    cores: "Cores",
+    vmid: "VM ID (optional)",
+    vmidHint: "Empty: the next free ID.",
+    vmName: "VM name (optional)",
+    p2vSubmit: "Create VM and restore",
+    p2vConfirm: (n: string, node: string) =>
+      `Create a new VM on ${node} and restore "${n}" into it?`,
+    p2vStarted: (id: number) => `P2V started as job #${id}.`,
+    loadFailed: "Loading recovery sessions failed",
   },
   // Phase 24a: endpoint status, UI policy, laptop options (Agents page)
   ep: {
@@ -1391,6 +1493,7 @@ export const en = {
       security: "Security",
       firewall: "Firewall",
       vault: "Vault",
+      incident: "Incident mode",
     } as Record<string, string>,
     fw: {
       intro:
@@ -1654,6 +1757,11 @@ export const en = {
       } as Record<number, string>,
       summary: (pass: number, warn: number, fail: number) =>
         `${pass} OK · ${warn} warning${warn === 1 ? "" : "s"} · ${fail} failed`,
+      posture: "Security posture",
+      postureIntro:
+        "Recommendations for a hardened appliance, from the latest self-check run. A warning never blocks an update; Help explains how to fix it.",
+      postureNone: "No posture results yet: run the checks.",
+      postureSummary: (pass: number, warn: number) => `${pass} of ${pass + warn} recommendations met`,
       blocksUpdates:
         'Updates are blocked until the failed checks marked "error" or "critical" are fixed.',
       bundle: "Support bundle",
@@ -1929,6 +2037,7 @@ export const en = {
     hints: {
       job_failed: 'Open the job log on the Jobs page, fix the cause (source reachable, credentials, space) and run the job again. The alert resolves itself after the next successful run.',
       verify: 'Stored data failed verification. Do not delete snapshots; check the store disks (SMART) and the offsite target, then run Verify again. Resolves after a successful verify.',
+      snapshot_damaged: 'Snapshots reference chunks that failed verification. Do not delete them; run Repair on the Snapshots page (fetches the chunks from the offsite target or the replication primary). The next backup of each affected source reads its data in full. Resolves when no snapshot is damaged any more.',
       inventory: 'Snapshots disappeared or differ from the catalog. Check the store and the offsite target for manual deletion or tampering and review the audit log. Resolves after a clean offsite check.',
       capacity: 'The store is filling up. Shorten retention, run GC or add disks. Resolves when usage drops below the threshold.',
       offsite_lag: 'Offsite copies are behind. Check the offsite target (reachable, credentials, quota) and the offsite job logs. Resolves when the copy has caught up.',
@@ -1951,6 +2060,10 @@ export const en = {
       fleecing_space: 'The fleecing storage of a Proxmox node (usually local-lvm) is nearly full. A full LVM-thin pool pauses every VM on it, so guests are skipped below the guard and a running backup is cancelled below the critical level. Free space in that storage or choose a larger fleecing storage for the source, and adjust the guard on the source if needed. Resolves when a backup finds enough space again.',
       restore_test: "A restore test of a guest's snapshot failed: the isolated test copy did not start, its guest agent did not answer, a port was not listening or the custom check failed (details on the Restore tests page). Check the guest (agent installed and enabled, services start without network) and the snapshot, then test again. Resolves after the next passed test of that guest.",
       recovery_plan: "A recovery plan is not ready (a snapshot older than its RPO, the target node offline, too little space on the target storage, a missing bridge, a blocking alert) or its test run or execution failed. Open the Recovery plans page for the failed checks. Resolves after the next passed readiness check or test run.",
+      incident:
+        "A security officer put the appliance into incident mode: snapshots in the chosen range are held, backup groups are paused, every other session and all API tokens were ended. Investigate; leaving incident mode needs a second approver (Settings → Incident mode). Resolves when incident mode ends.",
+      dek_rotation:
+        "The tenant's data encryption key is older than the rotation interval (Settings → Security). Rotate it at the appliance console (root shell, manual chapter 14): runuser -u nexus-keyd -- /usr/libexec/nexus/keyd tenant-rotate /var/lib/nexus/keyd <tenant>. New snapshots use the new key; older ones stay readable. Resolves once rotated.",
       vault_closed:
         "A replication source was closed with Close vault (pause pulling now): no syncs, the primary is not reachable from here. Nothing to do while that is intended; reopening needs approval (Replication page). Resolves when the source is reopened.",
     } as Record<string, string>,
@@ -2542,6 +2655,14 @@ export const en = {
     dormantHint:
       "Accounts nobody has signed in with for this many days are disabled automatically (audited, info alert). Never the last administrator, never an approver who is needed for approvals. 0 = off; 90 is a common policy.",
     dormantDays: "Disable after (days, 0 = off, else 30–3650)",
+    maxSessions: "Sessions per account",
+    maxSessionsHint:
+      "How many browsers may be signed in with one account at the same time. A new sign-in beyond the limit ends the account's oldest session (audited). Default 5.",
+    maxSessionsLabel: "Concurrent sessions (1–50)",
+    dekRotation: "Encryption key rotation reminder",
+    dekRotationHint:
+      "Raises an info alert per tenant whose data encryption key is older than this. Rotating is done at the console (manual chapter 14). 0 = off; default 365.",
+    dekRotationDays: "Remind after (days, 0 = off, else 30–3650)",
     banner: "Login banner",
     bannerHint:
       "Shown on the sign-in page above the form, as plain text (line breaks kept, up to 2000 characters). Empty = none.",
@@ -2553,6 +2674,46 @@ export const en = {
       `A change is waiting for approval (request #${id}).`,
     fewApprovers: (n: number) =>
       `Only ${n} ${n === 1 ? "person" : "people"} can approve requests. If one of them is unavailable, nothing can be approved (the requester never approves their own request). Add a third administrator or security officer; the user manual (chapter 10, "When approvers are unavailable") describes the way out.`,
+  },
+  incident: {
+    intro:
+      "For a suspected attack (ransomware, a stolen administrator account). One action, at once: puts the snapshots of the chosen tenants and sources in a time range on legal hold, pauses all (or the chosen) backup groups, ends every session except yours and revokes all API tokens, and raises a critical alert. Leaving incident mode needs a second person (also while approvals are off); it resumes the groups it paused. Holds stay until each is released.",
+    banner: (by: string, since: string, reason: string) =>
+      `Incident mode since ${since} (${by}): ${reason}. Groups stay paused; leaving needs approval.`,
+    open: "Incident mode",
+    activeTitle: "Incident mode is active",
+    since: (when: string, by: string) => `since ${when}, entered by ${by}`,
+    reason: "Reason",
+    reasonHint: "One line, e.g. the ticket number. Shown in the banner and the audit log.",
+    holdTitle: "Hold snapshots",
+    hold: "Put snapshots on legal hold",
+    tenants: "Tenants",
+    tenantsHint: "None selected = all tenants.",
+    sources: "Sources (optional)",
+    sourcesHint: "Comma-separated, e.g. vm-100, nas-3-tank.data. Empty = every source.",
+    from: "Taken from",
+    to: "Taken until",
+    groupsTitle: "Pause backup groups",
+    allGroups: "All groups",
+    chosenGroups: "Only these groups",
+    reauth: "Confirm with your password and a fresh authenticator code.",
+    password: "Current password",
+    totp: "Authenticator code",
+    enter: "Enter incident mode",
+    enterConfirm:
+      "Enter incident mode now? Everybody else is signed out and all API tokens stop working at once.",
+    entered: "Incident mode entered.",
+    held: (n: number) => `${n} snapshot${n === 1 ? "" : "s"} held`,
+    paused: (n: number) => `${n} group${n === 1 ? "" : "s"} paused`,
+    ended: (s: number, tk: number) => `${s} session${s === 1 ? "" : "s"} and ${tk} API token${tk === 1 ? "" : "s"} ended`,
+    leave: "Request to leave incident mode",
+    leaveConfirm: "Request to leave incident mode? Another administrator or security officer approves it on the Approvals page.",
+    leaveRequested: "Leaving incident mode is waiting for approval.",
+    leavePending: (id: number) => `Leaving is waiting for approval (request #${id}).`,
+    last: (when: string, by: string, approver: string) => `Last incident ended ${when} (requested by ${by}, approved by ${approver}).`,
+    officerOnly: "Only a security officer can enter incident mode.",
+    dashTitle: "Incident mode",
+    dashText: (by: string, since: string) => `Entered by ${by} ${since}. Backups are paused until it is left.`,
   },
   firewall: {
     intro:

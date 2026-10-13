@@ -1,0 +1,18 @@
+{
+  "report": [
+    {
+      "vg": [
+        {
+          "vg_name": "vg0",
+          "vg_uuid": "Vg0-uuid",
+          "vg_extent_size": "4194304"
+        },
+        {
+          "vg_name": "vgdata",
+          "vg_uuid": "Vgd-uuid",
+          "vg_extent_size": "4194304"
+        }
+      ]
+    }
+  ]
+}

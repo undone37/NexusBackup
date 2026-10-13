@@ -69,6 +69,7 @@
   import IconExpand from '@lucide/svelte/icons/panel-left-open';
   import IconGlass from '@lucide/svelte/icons/shield-alert';
   import IconTerminal from '@lucide/svelte/icons/square-terminal';
+  import IconSiren from '@lucide/svelte/icons/siren';
   import { fmtTime } from './lib/format';
 
   type Allow = (u: User | null) => boolean;
@@ -152,6 +153,8 @@
   const glass = $derived(session.user?.role === 'admin' ? openAlerts.find((a) => a.kind === 'break_glass') : undefined);
   // A root shell running on the appliance console (14c; GET /auth/me), for every appliance-wide role.
   let shell: ConsoleShell | null = $state(null);
+  // Phase 21b: incident mode (GET /auth/me; appliance-wide accounts only)
+  const incident = $derived(session.incident);
   async function refreshCounts() {
     const u = session.user;
     if (!u) return;
@@ -161,6 +164,7 @@
       session.vault = !!me.vault_mode;
       session.impersonating = me.impersonating ?? null;
       if (can.viewQuorum(u)) shell = me.console_shell ?? null;
+      session.incident = me.incident ?? null;
     }
     if (viewApprovals(u))
       pendingApprovals = await get<QuorumRequest[]>('/quorum')
@@ -193,6 +197,7 @@
       session.vault = !!me.vault_mode;
       session.impersonating = me.impersonating ?? null;
       shell = me.console_shell ?? null;
+      session.incident = me.incident ?? null;
     } catch {
       setSession(null, null);
     }
@@ -337,6 +342,15 @@
             {t.impersonate.bannerAudit}
           </p>
           <button type="button" class="small" onclick={endImpersonation}>{t.impersonate.end}</button>
+        </div>
+      {/if}
+      {#if incident}
+        <div class="glass" role="alert">
+          <IconSiren aria-hidden="true" />
+          <p>
+            <strong>{t.incident.banner(incident.by, fmtTime(incident.since), incident.reason)}</strong>
+            {#if can.viewQuorum(session.user)}<a href={href('/settings?tab=incident')}>{t.incident.open}</a>{/if}
+          </p>
         </div>
       {/if}
       {#if shell}

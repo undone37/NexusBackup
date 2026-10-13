@@ -37,6 +37,7 @@ pub mod forwarding;
 pub mod hardware;
 pub mod holds;
 pub mod impersonate;
+pub mod incident;
 pub mod inventory;
 pub mod jobs;
 pub mod offsite;
@@ -48,6 +49,7 @@ pub mod quorum;
 pub mod recovery;
 pub mod replication;
 pub mod reports;
+pub mod rescue;
 pub mod resources;
 pub mod restores;
 pub mod runctl;
@@ -534,6 +536,14 @@ pub fn router(st: St) -> Router {
         .route("/agents/{id}", axum::routing::delete(delete_agent))
         .route("/agents/{id}/token", post(new_agent_token))
         .route("/agents/{id}/enroll", post(enroll_agent))
+        // Phase 19a: bare-metal recovery / P2V (rescue.rs)
+        .route("/agents/{id}/rescue", post(crate::rescue::create))
+        .route("/agents/{id}/p2v", post(crate::rescue::p2v))
+        .route("/rescue", get(crate::rescue::list))
+        .route("/rescue/checkin", post(crate::rescue::checkin))
+        .route("/rescue/{id}", get(crate::rescue::get))
+        .route("/rescue/{id}/start", post(crate::rescue::start))
+        .route("/rescue/{id}/cancel", post(crate::rescue::cancel))
         .route("/agents/{id}/limits", axum::routing::put(selection::set_agent_limits))
         .route("/agents/bulk", post(fleet::bulk_agents))
         .route("/fleets", get(fleet::list_fleets).post(fleet::create_fleet))
@@ -630,6 +640,7 @@ pub fn router(st: St) -> Router {
         .merge(tenants::routes())
         .merge(tenancy::routes())
         .merge(vault::routes())
+        .merge(incident::routes())
         .fallback(api_not_found);
     // peer API: only on replication TLS connections (see `connection_scope`)
     let peer = Router::new()

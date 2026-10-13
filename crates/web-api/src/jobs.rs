@@ -27,10 +27,11 @@ const RESTORE_KINDS: &[&str] = &[
 ];
 /// Kinds only an admin may request (they change software or trust on a host);
 /// tenant admins too, for their own tenant's agents (Phase 19b).
-const ADMIN_KINDS: &[&str] = &["agent_update", "agent_enroll", "agent_renew"];
+/// `chunk_repair` (Phase 21d): admin only; the provider's, like verify.
+const ADMIN_KINDS: &[&str] = &["agent_update", "agent_enroll", "agent_renew", "chunk_repair"];
 /// Appliance maintenance: never requested by a tenant admin (retention, GC,
 /// offsite copy and verification belong to the provider).
-const PROVIDER_KINDS: &[&str] = &["offsite", "retention", "gc", "verify"];
+const PROVIDER_KINDS: &[&str] = &["offsite", "retention", "gc", "verify", "chunk_repair"];
 /// Start and cancel jobs of a tenant (scoped by `Ctx::sees`).
 const RUNNERS: &[&str] = &["admin", "operator", "tenant_admin"];
 pub const DOWNLOAD_TTL_SECS: i64 = 24 * 3600;
@@ -228,6 +229,10 @@ fn has_offsite(st: &St, tenant: &str) -> ApiResult<()> {
         Err(ApiError::bad("tenant: has no offsite target"))
     }
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Empty {}
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -531,6 +536,10 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
             }
             json!(r)
         }
+        "chunk_repair" => {
+            let _: Empty = parse(p)?;
+            json!({})
+        }
         "offsite" | "retention" | "gc" | "verify" => {
             let m: MaintP = parse(p)?;
             if let Some(s) = &m.source {
@@ -832,7 +841,8 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
         .prepare(&format!(
             "SELECT s.tenant, s.source, s.time, s.size, s.local, s.offsite, s.lock_until, s.verified, s.origin,
                     h.id IS NOT NULL, s.consistency, s.meta, s.anomaly, s.anomaly_at, s.anomaly_cleared_by,
-                    s.anomaly_cleared_at, s.anomaly_note, {} FROM snapshots s
+                    s.anomaly_cleared_at, s.anomaly_note, {}, s.damaged AS damaged, s.damaged_at AS damaged_at
+             FROM snapshots s
              LEFT JOIN legal_holds h ON h.tenant = s.tenant AND h.source = s.source AND h.time = s.time
                AND h.state IN ('active','advisory')
              WHERE (?1 IS NULL OR s.tenant = ?1) AND (?2 IS NULL OR s.source = ?2) AND (?3 IS NULL OR s.tenant = ?3)
@@ -862,6 +872,9 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
                     None => Value::Null,
                 },
                 "anomalous": r.get::<_, Option<String>>(12)?.is_some() && r.get::<_, Option<i64>>(15)?.is_none(),
+                // Phase 21d: references chunks that failed verify (count of bad chunks)
+                "damaged": r.get::<_, Option<i64>>("damaged")?,
+                "damaged_at": r.get::<_, Option<i64>>("damaged_at")?,
             }))
         })?
         .collect::<Result<Vec<_>, _>>()?;

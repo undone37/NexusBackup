@@ -48,6 +48,8 @@ pub struct Report {
     pub prepare_hook_log: String,
     pub release_hook_log: String,
     pub scan: ScanStats,
+    /// machine layout JSON (agents with CAP_LAYOUT), stored as `.nexus-system/layout.json`
+    pub layout: Option<String>,
 }
 
 /// Newest committed snapshot of this agent (the `base` of the next scan).
@@ -113,14 +115,25 @@ pub fn backup(
     spec: &Spec,
     log: &mut dyn FnMut(&str),
 ) -> Result<Report> {
-    let base = last_snapshot(store, agent_id)?;
+    let newest = last_snapshot(store, agent_id)?;
+    // a base with bad chunks (verify): no base, so the agent re-reads instead of using its cache
+    let base = match newest {
+        Some(t) if store.is_damaged(&store.load_manifest(&source_name(agent_id), t)?)? => {
+            log("base snapshot references bad chunks (verify): full read without the agent's metadata cache");
+            None
+        }
+        b => b,
+    };
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let mut r = Report {
         source: source_name(agent_id),
-        time: now.max(base.map_or(0, |b| b + 1)),
+        time: now.max(newest.map_or(0, |b| b + 1)),
         base,
         ..Default::default()
     };
+    if s.has_cap(agent_proto::CAP_LAYOUT) {
+        r.layout = fetch_layout(s, log)?;
+    }
     if s.has_cap(CAP_PREPARE2) {
         s.send(&Message::PrepareEx {
             job: spec.job,
@@ -184,6 +197,85 @@ pub fn backup(
             Err(e)
         }
     }
+}
+
+/// `GetLayout` (docs/bmr.md "Layout"). A layout that does not parse is logged and
+/// left out: the backup itself does not depend on it.
+fn fetch_layout(s: &mut Session, log: &mut dyn FnMut(&str)) -> Result<Option<String>> {
+    s.send(&Message::GetLayout)?;
+    match s.recv()? {
+        Message::Layout { json } => match serde_json::from_str::<agent_proto::layout::Layout>(&json) {
+            Ok(l) => {
+                log(&format!(
+                    "layout: {} disk(s), {} volume group(s), {} file system(s), {} firmware{}",
+                    l.disks.len(),
+                    l.vgs.len(),
+                    l.filesystems.len(),
+                    if l.firmware.is_empty() { "?" } else { &l.firmware },
+                    if l.warnings.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", {} note(s)", l.warnings.len())
+                    }
+                ));
+                for w in &l.warnings {
+                    log(&format!("layout note: {w:?}"));
+                }
+                Ok(Some(json))
+            }
+            Err(e) => {
+                log(&format!(
+                    "warning: the agent's machine layout does not parse ({e}); not stored"
+                ));
+                Ok(None)
+            }
+        },
+        Message::Error { message, .. } => {
+            log(&format!("warning: no machine layout: {message:?}"));
+            Ok(None)
+        }
+        m => bail!("unexpected answer to GetLayout: {}", name(&m)),
+    }
+}
+
+/// The synthetic `.nexus-system/layout.json` entries (replacing any the host had).
+fn add_layout(store: &Store, tree: &mut Vec<TreeEntry>, json: &str, time: u64) -> Result<()> {
+    use agent_proto::layout::LAYOUT_PATH;
+    let dir = LAYOUT_PATH.rsplit_once('/').map(|x| x.0).unwrap_or_default().as_bytes();
+    tree.retain(|e| e.path != LAYOUT_PATH.as_bytes());
+    let ns = i64::try_from(time).unwrap_or(0).saturating_mul(1_000_000_000);
+    let base = TreeEntry {
+        path: dir.to_vec(),
+        kind: TreeKind::Dir,
+        mode: 0o700,
+        uid: 0,
+        gid: 0,
+        size: 0,
+        mtime_ns: ns,
+        ctime_ns: ns,
+        inode: 0,
+        rdev: 0,
+        link_target: None,
+        xattrs: vec![],
+        chunks: vec![],
+        inconsistent: false,
+    };
+    if !tree.iter().any(|e| e.path == dir) {
+        tree.push(base.clone());
+    }
+    let mut chunks = vec![];
+    for c in json.as_bytes().chunks(agent_proto::MAX_CHUNK) {
+        chunks.push(store.insert_chunk(c)?.0);
+    }
+    tree.push(TreeEntry {
+        path: LAYOUT_PATH.as_bytes().to_vec(),
+        kind: TreeKind::File,
+        mode: 0o600,
+        size: json.len() as u64,
+        chunks,
+        ..base
+    });
+    Ok(())
 }
 
 fn release(s: &mut Session, job: u64, success: bool) -> Result<String> {
@@ -343,7 +435,7 @@ fn collect_and_commit(
         if lz4 { " (lz4)" } else { "" },
         r.new_chunks
     ));
-    let tree: Vec<TreeEntry> = entries
+    let mut tree: Vec<TreeEntry> = entries
         .into_iter()
         .map(|e| TreeEntry {
             chunks: e.chunks.iter().map(|(h, _)| keyed[h]).collect(),
@@ -362,5 +454,8 @@ fn collect_and_commit(
             inconsistent: e.inconsistent,
         })
         .collect();
+    if let Some(json) = &r.layout {
+        add_layout(store, &mut tree, json, r.time)?;
+    }
     Ok(store.commit_snapshot(&r.source, r.time, &[(TREE_INDEX, Index::Tree { entries: tree })])?)
 }

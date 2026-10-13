@@ -15,6 +15,7 @@ export const JOB_KINDS: JobKind[] = [
   'retention',
   'gc',
   'verify',
+  'chunk_repair',
   'agent_enroll',
   'agent_update',
   'agent_renew',

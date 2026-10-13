@@ -1994,6 +1994,8 @@ fn inventory_jobs_and_auto_protect() {
 }
 /// Phase 14d account housekeeping and the management allow-list.
 mod accounts;
+/// Phase 19a bare-metal recovery and P2V jobs.
+mod bmr;
 /// Phase 21a file-level change signals, snapshot flags and the snapshot diff.
 mod changes;
 /// Phase 18: compliance clock keeper and the `clock_skew` alert.
@@ -2017,6 +2019,8 @@ mod holds;
 mod offsite_ui;
 /// Phase 25 restore tests and recovery plans.
 mod recovery;
+/// Phase 21d health check with repair (bad chunks, damaged snapshots, chunk_repair).
+mod repair;
 /// Phase 14e scheduled reports.
 mod report_mail;
 /// Phase 15b restore to a host (VM/CT files through a staging tar).
