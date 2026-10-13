@@ -58,7 +58,7 @@ step_create() {
 	fi
 	pve "qm create $VMID --name nexus-appliance --machine q35 --cpu host --cores $CPUS --memory $MEM --balloon 0 \
 		--scsihw virtio-scsi-single --virtio0 $STORAGE:0,import-from=local:import/nexus-appliance.qcow2,discard=on,iothread=1 \
-		--net0 virtio,bridge=$BRIDGE --serial0 socket --vga serial0 --rng0 source=/dev/urandom --boot order=virtio0 \
+		--net0 virtio,bridge=$BRIDGE --serial0 socket --vga std --rng0 source=/dev/urandom --boot order=virtio0 \
 		--onboot 1 --description 'NexusBackup appliance (lab, lab/pvehost/deploy.sh)' >/dev/null && qm start $VMID && qm status $VMID"
 }
 
