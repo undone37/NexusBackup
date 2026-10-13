@@ -298,6 +298,10 @@ impl Platform for Linux {
         let run = agent_core::config::Paths::default().run;
         Ok(crate::layout::capture_json(&run.to_string_lossy()))
     }
+
+    fn power_state(&self) -> agent_proto::PowerState {
+        crate::power::state()
+    }
 }
 
 pub fn os_name() -> String {

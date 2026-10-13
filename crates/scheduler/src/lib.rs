@@ -68,8 +68,10 @@ pub mod alerts;
 pub mod anomaly;
 mod bmr;
 pub mod clock;
+mod config_backup;
 pub mod consistency;
 pub mod disks;
+mod endpoint;
 pub mod expiry;
 pub mod firewall;
 mod fleecing;
@@ -205,6 +207,15 @@ pub struct Config {
     pub forward_poll_secs: u64,
     /// nexus-disks status and operations (disks.rs; skipped while there is no status)
     pub disks_dir: PathBuf,
+    /// endpoint status poll of every enrolled agent (endpoint.rs); 0 = off
+    pub agent_poll_secs: u64,
+    /// agents polled at once
+    pub agent_poll_concurrency: usize,
+    /// appliance configuration backup (config_backup.rs): schedule, control dir of
+    /// nexus-config-backup (skipped when missing), how long a run may take
+    pub config_backup: String,
+    pub config_backup_dir: PathBuf,
+    pub config_backup_timeout_secs: u64,
 }
 
 impl Default for Config {
@@ -255,6 +266,11 @@ impl Default for Config {
             inventory_secs: 3600,
             forward_poll_secs: 5,
             disks_dir: catalog::hardware::DIR.into(),
+            agent_poll_secs: 120,
+            agent_poll_concurrency: 8,
+            config_backup: "daily 02:30".into(),
+            config_backup_dir: lib.join("config-backup"),
+            config_backup_timeout_secs: 1800,
         }
     }
 }
@@ -359,6 +375,8 @@ pub struct Scheduler {
     anchor_day: Option<i64>,
     /// the tenants' compliance clocks, kept running (clock.rs)
     clock: clock::Keeper,
+    /// endpoint status poll of the agents (endpoint.rs)
+    poll: endpoint::PollState,
 }
 
 /// Agent ids: 16 lowercase hex characters (chosen by the web-api).
@@ -506,6 +524,7 @@ impl Scheduler {
             cancel_sent: HashMap::new(),
             anchor_day: None,
             clock: Default::default(),
+            poll: Default::default(),
             alert_tx,
             host: alerts::hostname(),
             now: catalog::now(),
@@ -719,6 +738,10 @@ impl Scheduler {
         self.log_err(|s| s.check_paused(now));
         self.log_err(|s| s.queue_inventory(now));
         self.log_err(|s| s.queue_reports(now));
+        self.log_err(|s| s.collect_agent_poll(None));
+        self.log_err(|s| s.start_agent_poll(now));
+        self.log_err(|s| s.queue_config_backup(now));
+        self.log_err(|s| s.queue_rekeys(now));
         self.log_err(|s| s.start_jobs());
         let all = now.saturating_sub(self.last_refresh) >= self.cfg.refresh_secs;
         if all || !self.dirty.is_empty() {
@@ -922,7 +945,7 @@ impl Scheduler {
             )?;
             // paused, source in maintenance, blackout: a slot that passed meanwhile runs afterwards
             if sched.due(last, now) && ctl.hold(now).is_none() {
-                self.insert_job("backup", &g.tenant, &json!({"group_id": g.id}))?;
+                self.queue_group_backup(&g, now)?; // laptop policies (endpoint.rs)
             }
         }
         Ok(())
@@ -1229,6 +1252,9 @@ impl Scheduler {
         if job.kind == "report_send" && state != "cancelled" {
             return self.report_finished(&job, ok, &log, result.as_ref());
         }
+        if job.kind.starts_with("config_") && state != "cancelled" {
+            return self.config_finished(&job, ok, &log, result.as_ref());
+        }
         if matches!(
             job.kind.as_str(),
             "backup"
@@ -1249,6 +1275,7 @@ impl Scheduler {
         if job.kind == "bmr" || job.kind == "p2v" {
             self.rescue_bookkeeping(&job, &log, ok)?;
         }
+        self.endpoint_bookkeeping(&job, state, &log)?;
         if job.kind == "backup" {
             self.fleecing_bookkeeping(&job, &log)?;
         }
@@ -1478,7 +1505,7 @@ impl Scheduler {
                 Some(r)
             }
             "alert_test" | "forward_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" | "file_search"
-            | "file_index" => serde_json::from_str(stdout.unwrap_or_default()).ok(),
+            | "file_index" | "config_backup" => serde_json::from_str(stdout.unwrap_or_default()).ok(),
             "offsite_list" => match serde_json::from_str::<Value>(stdout.unwrap_or_default().trim()) {
                 Ok(s @ Value::Array(_)) => Some(json!({ "snapshots": s })),
                 _ => {
@@ -2073,10 +2100,12 @@ impl Scheduler {
             let rows = st.query_map([], |r| r.get(0))?;
             rows.collect::<Result<_, _>>()?
         };
-        // replicated tenants get the primary's DEKs (keyd import-sealed), never a local one
+        // replicated tenants get the primary's DEKs (keyd import-sealed), never a local one;
+        // after a configuration restore the offsite escrow's (config_backup.rs)
         let replicated = self.replicated_tenants()?;
+        let restoring = self.rekey_pending()?;
         for t in tenants {
-            if self.keyed.contains(&t) || replicated.contains_key(&t) {
+            if self.keyed.contains(&t) || replicated.contains_key(&t) || restoring.contains(&t) {
                 continue;
             }
             (self.ctx.keys)(&t).with_context(|| format!("keys for tenant {t}"))?;
@@ -2293,6 +2322,15 @@ impl Scheduler {
     }
 
     pub fn plan(&self, job: &Job) -> Result<Plan> {
+        if let Some(plan) = self.plan_config(job)? {
+            return Ok(plan); // config_backup.rs
+        }
+        if self.rekey_pending()?.contains(&job.tenant) {
+            bail!(
+                "the keys of tenant {} are still being restored from its offsite copy after the configuration restore",
+                job.tenant
+            );
+        }
         if let Some(plan) = self.plan_appliance(job)? {
             return Ok(plan);
         }

@@ -665,6 +665,11 @@ async function main() {
       await until(`return !!document.querySelector('dialog[open] #l-bw')`, 'limits dialog');
       await shot('agent-limits');
       await closeDialogs();
+      // Phase 24a: endpoint status of a laptop (UI policy, laptop options, sessions)
+      await ev(`$rowClick('nb07', 'Endpoint'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #ep-bat') && document.body.innerText.includes('on the agent')`, 'endpoint dialog');
+      await shot('agent-endpoint');
+      await closeDialogs();
     }],
     // Phase 19a: bare-metal recovery of web01, whose rescue console checked in (seeded session "waiting")
     ['agents-bmr', async () => {
@@ -812,6 +817,10 @@ async function main() {
       await ev(`$click('Create bundle'); return true;`);
       await until(`return [...document.querySelectorAll('.chip')].some((c) => c.textContent.trim() === 'Ready')`, 'support bundle ready');
       await shot('settings-diagnostics', { height: 1700 });
+      // appliance configuration backup: seeded daily runs and uploads to the tenants' offsite targets
+      await go('/settings?tab=configBackup');
+      await until(`return !!document.querySelector('#cfgb-runs-h') && document.querySelectorAll('tbody tr').length > 2`, 'config backup runs');
+      await shot('settings-config-backup', { height: 1300 });
     }],
     ['console', async () => {
       // emergency console root access (14c): request, approval, the code shown once, the banner while the shell runs

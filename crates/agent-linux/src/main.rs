@@ -143,6 +143,30 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
     }
 }
 
+/// The local UI socket (docs/endpoint-ui.md): `/run/nexus-agent/ui.sock`, group
+/// `nexus-agent-ui`; the run directory only allows traversal (0711).
+fn serve_ui(agent: &Arc<server::Agent>) {
+    let paths = &agent.paths;
+    if let Err(e) = ensure_dir(&paths.run, 0o711) {
+        eprintln!("nexus-agent: {}: {e}; no local UI socket", paths.run.display());
+        return;
+    }
+    let group = agent_core::ui::unix::group_id(agent_ui_proto::SOCKET_GROUP);
+    if group.is_none() {
+        eprintln!(
+            "nexus-agent: group {} missing: the UI socket is root-only",
+            agent_ui_proto::SOCKET_GROUP
+        );
+    }
+    match agent_core::ui::unix::bind(&paths.ui_socket(), group) {
+        Ok(l) => {
+            let a = agent.clone();
+            std::thread::spawn(move || agent_core::ui::unix::serve(a, l));
+        }
+        Err(e) => eprintln!("nexus-agent: {}: {e}; no local UI socket", paths.ui_socket().display()),
+    }
+}
+
 /// Prints the output of an end-user command, or its error with the documented exit code.
 fn user_exit(res: Result<String, endpoint::Failure>) -> ExitCode {
     match res {
@@ -192,6 +216,8 @@ fn run(paths: Paths) -> Result<ExitCode, String> {
         env!("CARGO_PKG_VERSION"),
         listener.local_addr().map_err(|e| e.to_string())?
     );
-    Arc::new(agent).serve(listener).map_err(|e| e.to_string())?;
+    let agent = Arc::new(agent);
+    serve_ui(&agent);
+    agent.serve(listener).map_err(|e| e.to_string())?;
     Ok(ExitCode::SUCCESS)
 }

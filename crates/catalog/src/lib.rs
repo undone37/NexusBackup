@@ -530,15 +530,46 @@ INSERT INTO audit_tenants (seq, tenant)
   WHERE t IS NOT NULL;
 "#;
 
-/// v26 (Phase 19a, docs/bmr.md): `rescue_sessions` — bare-metal recovery / P2V of a
+/// v26 (Phase 24a, docs/endpoint-ui.md): endpoint status of the agents.
+/// `agents.reachable` (last poll answered: 1/0, NULL = never polled), `last_poll`,
+/// `poll_failures` (consecutive, for the backoff), `power` (`{on_battery,
+/// battery_percent, metered, network_name}` from the last `PollReply`),
+/// `ui_policy` (`{accent, header, hide_backup_now, hide_tray}`) with
+/// `ui_policy_version` (bumped on change) and `ui_policy_seen` (version the agent
+/// stored), `laptop` (`{min_battery, skip_metered, run_missed, retry_hours}`),
+/// `missed_at` (a scheduled run was skipped or failed; queued again when the
+/// agent is reachable and fit, within `retry_hours`), `last_request` (`{id,
+/// queued_at, received, jobs}` of the last "back up now" request from the
+/// endpoint). `agent_sessions`: one summary per (agent, job) for the endpoint UI,
+/// `delivered` once the agent acknowledged it. Purely additive: the previous
+/// release ignores the columns and the table.
+const SCHEMA_V26: &str = r#"
+ALTER TABLE agents ADD COLUMN reachable INTEGER;
+ALTER TABLE agents ADD COLUMN last_poll INTEGER;
+ALTER TABLE agents ADD COLUMN poll_failures INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE agents ADD COLUMN power TEXT;
+ALTER TABLE agents ADD COLUMN ui_policy TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE agents ADD COLUMN ui_policy_version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE agents ADD COLUMN ui_policy_seen INTEGER;
+ALTER TABLE agents ADD COLUMN laptop TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE agents ADD COLUMN missed_at INTEGER;
+ALTER TABLE agents ADD COLUMN last_request TEXT;
+CREATE TABLE agent_sessions (
+  agent_id TEXT NOT NULL, job_id INTEGER NOT NULL, tenant TEXT NOT NULL, summary TEXT NOT NULL,
+  created INTEGER NOT NULL, delivered INTEGER, PRIMARY KEY (agent_id, job_id));
+CREATE INDEX agent_sessions_pending ON agent_sessions(agent_id) WHERE delivered IS NULL;
+"#;
+
+/// v29 (Phase 19a, docs/bmr.md): `rescue_sessions` — bare-metal recovery / P2V of a
 /// Linux agent's host. `id` is the rescue agent's temporary agent id; `lookup` the
 /// public lookup key of the one-time recovery token (`agent_proto::rescue_lookup`);
 /// `token_hash` its digest sealed to the scheduler (NULL once the rescue agent is
 /// enrolled); `state` issued → waiting (checked in) → running → done | failed |
 /// cancelled | expired; `host`/`port`/`disks` from the rescue console's check-in;
 /// `snapshot_time` the chosen snapshot; `p2v` the PVE VM parameters (NULL = bare
-/// metal). Purely additive: the previous release never reads it.
-const SCHEMA_V26: &str = r#"
+/// metal). Purely additive: the previous release never reads it. (v27 / v28 are
+/// reserved for Phases 24d / 21a.)
+const SCHEMA_V29: &str = r#"
 CREATE TABLE rescue_sessions (
     id            TEXT PRIMARY KEY,
     tenant        TEXT NOT NULL,
@@ -567,7 +598,7 @@ CREATE INDEX rescue_sessions_agent ON rescue_sessions (agent_id);
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
-    SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26,
+    SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V29,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1299,13 +1330,13 @@ mod tests {
         assert_eq!(n, 3);
     }
 
-    /// v26 (rescue sessions) on top of the previous catalog: the table exists and
+    /// v29 (rescue sessions) on top of the previous catalog: the table exists and
     /// the lookup key is unique.
     #[test]
-    fn migration_v26_rescue_sessions() {
+    fn migration_v29_rescue_sessions() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.db");
-        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V26).unwrap();
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V29).unwrap();
         {
             let c = Connection::open(&p).unwrap();
             for (i, m) in MIGRATIONS[..before].iter().enumerate() {
@@ -1325,6 +1356,48 @@ mod tests {
             })
             .unwrap();
         assert_eq!((state.as_str(), disks.as_str(), reboot), ("issued", "[]", true));
+    }
+
+    /// v26 (endpoint status) on top of the previous catalog: existing agents are
+    /// unpolled with an empty policy; the previous release still updates agents.
+    #[test]
+    fn migration_v26_endpoint_status() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V26).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO tenants (name) VALUES ('t'); \
+                 INSERT INTO agents (id, tenant, name, host, port) VALUES ('0123456789abcdef', 't', 'a', 'h', 7444);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let row: (Option<i64>, i64, String, String, i64) = conn
+                .query_row(
+                    "SELECT reachable, poll_failures, ui_policy, laptop, ui_policy_version FROM agents",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )
+                .unwrap();
+            assert_eq!(row, (None, 0, "{}".into(), "{}".into(), 0));
+            conn.execute(
+                "INSERT INTO agent_sessions (agent_id, job_id, tenant, summary, created) VALUES ('0123456789abcdef', 1, 't', '{}', 1)",
+                [],
+            )
+            .unwrap();
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        old.execute("UPDATE agents SET last_seen = 5, version = '0.1'", [])
+            .unwrap();
     }
 
     /// v24 (replication windows, close vault) on top of the previous catalog:

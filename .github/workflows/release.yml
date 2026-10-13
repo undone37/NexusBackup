@@ -144,8 +144,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   packages:
-    # Agent packages next to the image: nexus-agent .deb/.rpm (x86_64 + aarch64) and the
-    # Windows MSI, built and checked in rootless podman containers (release/packages.sh,
+    # Agent packages next to the image: nexus-agent and nexus-agent-desktop .deb/.rpm
+    # (x86_64 + aarch64) and the Windows MSI (agent + desktop UI), built and checked in rootless podman containers (release/packages.sh,
     # release/test-packages.sh; nothing is installed on the runner), uploaded to the draft
     # release with SHA256SUMS. Not signed: the release manager runs release/sign.sh sign-blobs.
     needs: image

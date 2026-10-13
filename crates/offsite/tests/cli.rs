@@ -102,3 +102,44 @@ fn attach_list_and_fetch_with_a_second_keyd() {
     assert_eq!(restored(&b, time), image(1));
     assert!(b.load_manifest("vm-1", time).unwrap().lock_until >= b.compliance_now().unwrap() + 604000);
 }
+
+/// After a configuration restore appliance C has A's KEK (kek.recovery from the
+/// bundle + the recovery key): `rekey` installs the tenant's wrapped DEKs from the
+/// box without the recovery key and indexes the copy; a foreign KEK is refused.
+#[test]
+fn rekey_after_config_restore() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path();
+    let box_ = root.join("box");
+    let (ka, kc, kx) = (root.join("keyd-a"), root.join("keyd-c"), root.join("keyd-x"));
+    for k in [&ka, &kc, &kx] {
+        fs::create_dir_all(k).unwrap();
+    }
+    let (rk, sock_a) = keyd(&ka);
+    let cfg_a = config(root, "a", &sock_a, &box_);
+    let keys = keyd::ensure_keyring(&sock_a, "acme").unwrap();
+    let a = Store::open(root.join("a/store"), keys, StoreOptions::default()).unwrap();
+    backup(&a, a.compliance_now().unwrap() - DAY, 1);
+    for (name, bytes) in keyd::export_escrow(&ka, "acme").unwrap() {
+        let p = root.join("a/escrow").join(name);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, bytes).unwrap();
+    }
+    assert!(run(&cfg_a, &["upload"]).0);
+
+    // a foreign appliance (own KEK) cannot rekey from A's escrow
+    let (_, sock_x) = keyd(&kx);
+    let (ok, out) = run(&config(root, "x", &sock_x, &box_), &["rekey"]);
+    assert!(!ok && out.contains("keyd refused"), "{out}");
+
+    fs::write(kc.join("kek.recovery"), fs::read(ka.join("kek.recovery")).unwrap()).unwrap();
+    keyd::recover(&kc, &rk).unwrap();
+    let sock_c = kc.join("k.sock");
+    let l = UnixListener::bind(&sock_c).unwrap();
+    let (dir, me) = (kc.clone(), unsafe { libc::getuid() });
+    std::thread::spawn(move || keyd::serve(l, &dir, me));
+    let (ok, out) = run(&config(root, "c", &sock_c, &box_), &["rekey"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("1 snapshots indexed"), "{out}");
+    assert!(!out.contains(&rk));
+}

@@ -290,6 +290,67 @@ export interface Agent {
   cert_expires: number | null;
   /** a renewed certificate was issued but no session confirmed it yet */
   cert_renewal_pending: boolean;
+  /** Phase 24a endpoint status (scheduler poll every 2 min; null = never polled) */
+  reachable?: boolean | null;
+  last_poll?: number | null;
+  power?: AgentPower | null;
+  ui_policy?: AgentUiPolicy | Record<string, never>;
+  ui_policy_version?: number;
+  /** version the agent has stored (null = not yet delivered) */
+  ui_policy_seen?: number | null;
+  laptop?: AgentLaptop | Record<string, never>;
+  /** a skipped / failed scheduled run waits for the agent (run_missed) */
+  missed_at?: number | null;
+  /** last "back up now" request from the endpoint */
+  last_request?: AgentRequest | null;
+}
+
+export interface AgentPower {
+  on_battery: boolean | null;
+  battery_percent: number | null;
+  metered: boolean | null;
+  network_name: string | null;
+}
+
+/** PUT /agents/{id}/ui-policy (admins): branding / visibility of the endpoint UIs */
+export interface AgentUiPolicy {
+  accent: string;
+  header: string;
+  hide_backup_now: boolean;
+  hide_tray: boolean;
+}
+
+/** PUT /agents/{id}/laptop: skip scheduled runs on battery / metered networks, catch up missed runs */
+export interface AgentLaptop {
+  min_battery: number;
+  skip_metered: boolean;
+  run_missed: boolean;
+  retry_hours: number;
+}
+
+export interface AgentRequest {
+  id: string;
+  queued_at: number | null;
+  received: number;
+  jobs: number[];
+  refused: string | null;
+}
+
+/** GET /agents/{id}/sessions: what the endpoint UI shows (newest first) */
+export interface AgentSession {
+  job: number;
+  kind: 'Backup' | 'Restore';
+  started: number;
+  ended: number;
+  result: 'Success' | 'Warning' | 'Failed' | 'Cancelled';
+  read_bytes: number;
+  transferred_bytes: number;
+  new_bytes: number;
+  warnings: number;
+  first_error: string;
+  snapshot_time: number | null;
+  /** the agent acknowledged it (null = waits for the next poll) */
+  delivered: number | null;
 }
 
 /** PUT /agents/{id}/limits: bytes/s (0 = unlimited, else >= 65536) and nice 0..19 */
@@ -1164,6 +1225,28 @@ export interface DiagCheck {
   detail: string;
   /** anchor in the user manual, e.g. "15-troubleshooting-faq.md#check-disk-var" */
   manual: string;
+}
+
+/** one config_backup / config_upload job (GET /settings/config-backup) */
+export interface ConfigBackupRun {
+  id: number;
+  kind: 'config_backup' | 'config_upload';
+  state: string;
+  created: number;
+  finished: number | null;
+  requested_by: string;
+  target: string | null;
+  result: { bytes?: number; files?: string[] | number } | null;
+}
+
+/** GET /settings/config-backup */
+export interface ConfigBackupStatus {
+  appliance_id: string | null;
+  last_success: number | null;
+  running: boolean;
+  latest: { appliance: string; created: number; bytes: number; sha256: string | null; files: number | null } | null;
+  targets: { tenant: string; last: ConfigBackupRun | null; last_ok: number | null }[];
+  runs: ConfigBackupRun[];
 }
 
 /** GET /diagnostics/{id} */

@@ -144,6 +144,16 @@ interface Agent {
   cert_issued: number | null;
   cert_expires: number | null;
   cert_renewal_pending: boolean;
+  /** Phase 24a: endpoint status (poll), UI policy, laptop options */
+  reachable: boolean | null;
+  last_poll: number | null;
+  power: Json | null;
+  ui_policy: Json;
+  ui_policy_version: number;
+  ui_policy_seen: number | null;
+  laptop: Json;
+  missed_at: number | null;
+  last_request: Json | null;
 }
 interface Job {
   id: number;
@@ -214,6 +224,8 @@ const db = {
   /** kind: pve | linux | nfs | smb | plugin:<kind> */
   sources: [] as { id: number; tenant: string; kind: string; name: string; config: Json; maintenance_until?: number | null }[],
   agents: [] as Agent[],
+  /** Phase 24a: session summaries per agent id (newest first) */
+  agentSessions: {} as Record<string, Json[]>,
   replPeers: [] as Json[],
   replSources: [] as Json[],
   policies: [] as {
@@ -263,6 +275,8 @@ const db = {
   pullAuth: null as null | { username: string },
   /** Phase 14b diagnostics runs (GET /diagnostics) */
   diag: [] as Json[],
+  /** appliance configuration backup: the bundle on disk (latest.json of nexus-config-backup) */
+  cfgBackup: { appliance_id: null as string | null, latest: null as Json | null },
   /** Phase 13e setting `anomaly` */
   anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30 } as Json,
   /** Phase 14a setting `forwarding` (header values: plaintext here, null in responses) */
@@ -513,6 +527,7 @@ function tick() {
       if (j.kind.startsWith('plugin_')) pluginResult(j, t);
       if (j.kind === 'inventory' || j.kind === 'plugin_guests') inventoryResult(j, t);
       if (j.kind === 'report_send') reportSent(j);
+      if (j.kind === 'config_backup') cfgBackupDone(j, t);
       if (j.kind.startsWith('offsite_')) offsiteResult(j, t);
       const ag = db.agents.find((a) => a.id === j.params.agent_id);
       if (j.kind === 'agent_enroll' && ag) {
@@ -1060,12 +1075,45 @@ function seed() {
     cert_issued: state === 'enrolled' ? t - 86400 * 20 : null,
     cert_expires: state === 'enrolled' ? t - 86400 * 20 + 3650 * 86400 : null,
     cert_renewal_pending: false,
+    reachable: state === 'enrolled' ? true : null,
+    last_poll: state === 'enrolled' ? t - 70 : null,
+    power: state === 'enrolled' ? { on_battery: false, battery_percent: null, metered: false, network_name: null } : null,
+    ui_policy: {},
+    ui_policy_version: 0,
+    ui_policy_seen: null,
+    laptop: {},
+    missed_at: null,
+    last_request: null,
   });
   const web01 = agent('acme', 'web01', '198.51.100.31', 'enrolled', 'Debian GNU/Linux 13 (trixie)');
   const fs02 = agent('acme', 'fs02', 'fs02.acme.example.com', 'enrolled', 'Windows Server 2022 Standard (10.0.20348)');
   // Phase 15f: web01 is throttled during business-hours backups
   web01.limits = { bwlimit: 20 * 1024 * 1024, nice: 10 };
-  db.agents.push(web01, fs02, agent('initech', 'db01', 'db01.initech.example.com', 'pending'), agent('initech', 'build01', '192.0.2.40', 'expired'));
+  // Phase 24a: a laptop on battery that skipped last night's run and asked for a backup
+  const nb07 = agent('acme', 'nb07', 'nb07.acme.example.com', 'enrolled', 'Ubuntu 24.04.3 LTS');
+  nb07.power = { on_battery: true, battery_percent: 14, metered: false, network_name: 'ACME-Office' };
+  nb07.laptop = { min_battery: 20, skip_metered: true, run_missed: true, retry_hours: 24 };
+  nb07.missed_at = t - 3600 * 9;
+  nb07.last_request = { id: rand(8), queued_at: t - 400, received: t - 330, jobs: [], refused: null };
+  nb07.ui_policy = { accent: '#0a7f5a', header: 'ACME IT', hide_backup_now: false, hide_tray: false };
+  nb07.ui_policy_version = 2;
+  nb07.ui_policy_seen = 2;
+  fs02.reachable = false;
+  fs02.last_poll = t - 50;
+  db.agents.push(web01, fs02, nb07, agent('initech', 'db01', 'db01.initech.example.com', 'pending'), agent('initech', 'build01', '192.0.2.40', 'expired'));
+  for (const a of [web01, fs02, nb07]) {
+    db.agentSessions[a.id] = Array.from({ length: 8 }, (_, i) => {
+      const ended = t - 86400 * i - 3600 * 2;
+      const failed = a === nb07 && i === 1;
+      return {
+        job: 9000 - i * 10 - db.agents.indexOf(a), kind: 'Backup', started: ended - 600, ended,
+        result: failed ? 'Failed' : i === 3 ? 'Warning' : 'Success',
+        read_bytes: 4.2e9, transferred_bytes: failed ? 0 : 3.1e8 + i * 1e7, new_bytes: failed ? 0 : 9e7,
+        warnings: i === 3 ? 2 : 0, first_error: failed ? 'connect nb07.acme.example.com:7444: connection timed out' : '',
+        snapshot_time: failed ? null : ended - 60, delivered: i === 0 && a === fs02 ? null : ended + 120,
+      };
+    });
+  }
   const sWeb01 = {
     id: nextId(),
     tenant: 'acme',
@@ -1411,6 +1459,7 @@ function seed() {
   seedPhase14d2(t);
   seedReports(t);
   seedDiag(t);
+  seedCfgBackup(t);
   seedConsole(t);
   seedTenantKeys(t);
   seedHolds(t);
@@ -2798,6 +2847,15 @@ on('POST', '/agents', async (c) => {
     cert_issued: null,
     cert_expires: null,
     cert_renewal_pending: false,
+    reachable: null,
+    last_poll: null,
+    power: null,
+    ui_policy: {},
+    ui_policy_version: 0,
+    ui_policy_seen: null,
+    laptop: {},
+    missed_at: null,
+    last_request: null,
   };
   const tok = await issueToken(a);
   db.agents.push(a);
@@ -2823,6 +2881,42 @@ on('PUT', '/agents/:id/limits', async (c, [id]) => {
   a.limits = { bwlimit, nice };
   await audit(u.name, 'agent.limits', `agent/${a.id}`, { new: a.limits, old });
   return [200, pubAgent(a)];
+});
+// Phase 24a: endpoint UI policy (admins), laptop options, session summaries
+on('PUT', '/agents/:id/ui-policy', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const a = findAgent(u, id);
+  const b = c.body ?? {};
+  for (const k of Object.keys(b)) if (!['accent', 'header', 'hide_backup_now', 'hide_tray'].includes(k)) throw new HttpError(400, `unknown field ${k}`);
+  const accent = b.accent ?? '';
+  const header = b.header ?? '';
+  if (accent && !/^#[0-9a-fA-F]{6}$/.test(accent)) throw new HttpError(400, 'accent: #rrggbb or empty');
+  if (header.length > 64 || /[\u0000-\u001f]/.test(header)) throw new HttpError(400, 'header: at most 64 characters, no control characters');
+  const old = a.ui_policy;
+  a.ui_policy = { accent, header, hide_backup_now: !!b.hide_backup_now, hide_tray: !!b.hide_tray };
+  a.ui_policy_version = (a.ui_policy_version ?? 0) + 1;
+  await audit(u.name, 'agent.ui_policy', `agent/${a.id}`, { tenant: a.tenant, new: a.ui_policy, old });
+  return [200, pubAgent(a)];
+});
+on('PUT', '/agents/:id/laptop', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const a = findAgent(u, id);
+  const b = c.body ?? {};
+  for (const k of Object.keys(b)) if (!['min_battery', 'skip_metered', 'run_missed', 'retry_hours'].includes(k)) throw new HttpError(400, `unknown field ${k}`);
+  const min_battery = b.min_battery ?? 0;
+  const retry_hours = b.retry_hours ?? 0;
+  if (!(Number.isInteger(min_battery) && min_battery >= 0 && min_battery <= 100)) throw new HttpError(400, 'min_battery: 0..=100');
+  if (!(Number.isInteger(retry_hours) && retry_hours >= 0 && retry_hours <= 336)) throw new HttpError(400, 'retry_hours: 0..=336');
+  const old = a.laptop;
+  a.laptop = { min_battery, skip_metered: !!b.skip_metered, run_missed: !!b.run_missed, retry_hours };
+  if (!a.laptop.run_missed) a.missed_at = null;
+  await audit(u.name, 'agent.laptop', `agent/${a.id}`, { tenant: a.tenant, new: a.laptop, old });
+  return [200, pubAgent(a)];
+});
+on('GET', '/agents/:id/sessions', (c, [id]) => {
+  const a = findAgent(need(c.user), id);
+  const limit = Math.min(Number(c.query.get('limit') ?? 30) || 30, 100);
+  return [200, (db.agentSessions[a.id] ?? []).slice(0, limit)];
 });
 on('POST', '/agents/:id/enroll', async (c, [id]) => {
   const u = need(c.user, 'admin', 'tenant_admin');
@@ -5034,6 +5128,71 @@ on('GET', '/diagnostics/:id', (c, [id]) => {
   const v = diagView(u, find(db.diag, (x) => x.id === id, 'diagnostics run'));
   if (!v) throw new HttpError(404, 'diagnostics run not found');
   return [200, v];
+});
+
+// ---- appliance configuration backup (Settings -> Backup of this appliance)
+const cfgTargets = () => db.tenants.filter((x) => x.offsite?.remote).map((x) => x.name);
+const CFG_FILES = 14;
+function cfgBackupDone(j: Job, t: number) {
+  const c = db.cfgBackup;
+  c.appliance_id ??= '3f9a0c51d2e8b746';
+  c.latest = { appliance: c.appliance_id, created: t, bytes: 1_843_200 + Math.floor(Math.random() * 20_000), sha256: rand(32), files: CFG_FILES };
+  j.result = { appliance: c.appliance_id, created: t, bytes: c.latest.bytes, sha256: c.latest.sha256, files: CFG_FILES };
+  for (const target of cfgTargets())
+    addJob('config_upload', '-', { target, appliance: c.appliance_id, created: t, backup_job: j.id }, 'scheduler', {
+      plan: [`uploaded config/${c.appliance_id}/${t}.bundle (${c.latest.bytes} bytes)`],
+      duration: 3,
+    });
+}
+function seedCfgBackup(t: number) {
+  for (const d of [2, 1]) {
+    const at = t - d * 86400 + 3600;
+    const j = addJob('config_backup', '-', {}, 'scheduler', { state: 'ok', created: at, started: at, finished: at + 6, log: 'nexus-config-backup: bundle sealed' });
+    cfgBackupDone(j, at + 6);
+    for (const u of db.jobs.filter((x) => x.kind === 'config_upload' && x.state === 'queued'))
+      Object.assign(u, { state: 'ok', created: at + 6, started: at + 7, finished: at + 12, log: u.plan.join('\n') });
+  }
+}
+const cfgReader = (c: { user: User | null }) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  if (u.tenant) throw new HttpError(403, 'appliance-wide');
+  return u;
+};
+const cfgRun = (j: Job) => ({ id: j.id, kind: j.kind, state: j.state, created: j.created, finished: j.finished, requested_by: j.requested_by, target: j.params.target ?? null, result: j.result ?? null });
+on('GET', '/settings/config-backup', (c) => {
+  cfgReader(c);
+  const jobs = db.jobs.filter((j) => j.kind === 'config_backup' || j.kind === 'config_upload');
+  const last = (pred: (j: Job) => boolean) => jobs.filter(pred).at(-1) ?? null;
+  const okAt = (pred: (j: Job) => boolean) => last((j) => pred(j) && j.state === 'ok')?.finished ?? null;
+  return [200, {
+    appliance_id: db.cfgBackup.appliance_id,
+    last_success: okAt((j) => j.kind === 'config_backup'),
+    running: jobs.some((j) => j.kind === 'config_backup' && ['queued', 'running'].includes(j.state)),
+    latest: db.cfgBackup.latest,
+    targets: cfgTargets().map((tenant) => {
+      const mine = (j: Job) => j.kind === 'config_upload' && j.params.target === tenant;
+      const l = last(mine);
+      return { tenant, last: l && cfgRun(l), last_ok: okAt(mine) };
+    }),
+    runs: jobs.slice(-20).reverse().map(cfgRun),
+  }];
+});
+on('POST', '/settings/config-backup/run', async (c) => {
+  const u = need(c.user, 'admin');
+  if (u.tenant) throw new HttpError(403, 'appliance-wide');
+  if (db.jobs.some((j) => j.kind === 'config_backup' && ['queued', 'running'].includes(j.state))) throw new HttpError(409, 'a configuration backup is already queued or running');
+  const j = addJob('config_backup', '-', {}, u.name, { plan: ['request written', 'nexus-config-backup: catalog snapshot', 'nexus-config-backup: bundle sealed'], duration: 4 });
+  await audit(u.name, 'job.create', `job/${j.id}`, { kind: 'config_backup', params: {} });
+  return [202, { job_id: j.id }];
+});
+on('GET', '/settings/config-backup/download', async (c) => {
+  const u = need(c.user, 'admin');
+  if (u.tenant || !canDownload(u)) throw new HttpError(403, 'forbidden');
+  const l = db.cfgBackup.latest;
+  if (!l) throw new HttpError(404, 'not found');
+  await audit(u.name, 'download.get', `config_backup/${l.appliance}`, { kind: 'config_backup', bytes: l.bytes, created: l.created, sha256: l.sha256 });
+  c.res.setHeader('Content-Disposition', `attachment; filename="nexus-config-${l.appliance}-${l.created}.bundle"`);
+  return [200, 'NXCFGB1 (mock bundle: sealed to the recovery key)\n', 'application/octet-stream'];
 });
 
 // ---------------------------------------------------------------- hardware (Phase 16a/b)

@@ -12,6 +12,7 @@
   import AgentsRescue from './AgentsRescue.svelte';
   import { can } from '../lib/roles';
   import { session } from '../lib/session.svelte';
+  import AgentEndpoint from '../components/AgentEndpoint.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
 
@@ -133,6 +134,20 @@
     return t.agents.limitsShort(l.bwlimit ? `${fmtBytes(l.bwlimit)}/s` : '', l.nice ?? 0);
   };
 
+  // Phase 24a: endpoint status and settings
+  let epOpen = $state(false);
+  let epAgent: Agent | null = $state(null);
+  function endpoint(a: Agent) {
+    epAgent = a;
+    epOpen = true;
+  }
+  async function epSaved() {
+    await load();
+    epAgent = items.find((x) => x.id === epAgent?.id) ?? null;
+  }
+  const pendingRequest = (a: Agent) =>
+    a.last_request && !a.last_request.refused && now - a.last_request.received < 3600 ? a.last_request : null;
+
   async function remove(a: Agent) {
     if (!(await askConfirm(t.confirmDelete(t.agents.deleteWhat(a.name))))) return;
     if (await act(del(`/agents/${encodeURIComponent(a.id)}`), t.deleted)) load();
@@ -170,6 +185,7 @@
             <th scope="col">{t.agents.hostShort}</th>
             <th scope="col">{t.agents.status}</th>
             <th scope="col">{t.agents.lastSeen}</th>
+            <th scope="col">{t.ep.column}</th>
             <th scope="col">{t.agents.version} / {t.agents.os}</th>
             <th scope="col">{t.agents.cert}</th>
             <th scope="col">{t.agents.limits}</th>
@@ -192,6 +208,27 @@
                 {/if}
               </td>
               <td class="nowrap" title={fmtTime(a.last_seen)}>{fmtAgo(a.last_seen, now)}</td>
+              <td>
+                {#if st === 'enrolled'}
+                  {#if a.reachable === true}
+                    <span class="chip ok" title={t.ep.lastPoll(fmtTime(a.last_poll ?? null))}>{t.ep.reachable}</span>
+                  {:else if a.reachable === false}
+                    <span class="chip warn" title={t.ep.lastPoll(fmtTime(a.last_poll ?? null))}>{t.ep.unreachable}</span>
+                  {:else}
+                    <span class="chip info">{t.ep.neverPolled}</span>
+                  {/if}
+                  {#if a.power?.on_battery}
+                    <div class="muted">{t.ep.onBattery(a.power.battery_percent != null ? String(a.power.battery_percent) : '')}</div>
+                  {/if}
+                  {#if a.power?.metered}<div class="muted">{t.ep.metered}{a.power.network_name ? ` (${a.power.network_name})` : ''}</div>{/if}
+                  {#if pendingRequest(a)}
+                    <div><span class="chip info">{t.ep.requested(fmtAgo(a.last_request!.received, now))}</span></div>
+                  {:else if a.last_request?.refused && now - a.last_request.received < 3600}
+                    <div class="muted">{t.ep.requestRefused(a.last_request.refused)}</div>
+                  {/if}
+                  {#if a.missed_at}<div class="muted">{t.ep.missed(fmtTime(a.missed_at))}</div>{/if}
+                {:else}—{/if}
+              </td>
               <td>
                 <span class="mono">{a.version ?? '—'}</span>
                 {#if a.os}<div class="muted">{a.os}</div>{/if}
@@ -223,6 +260,9 @@
                 <button type="button" class="small" onclick={() => limits(a)}>{t.agents.limits}</button>
                 {#if bmrOk(a)}
                   <button type="button" class="small" data-bmr={a.id} onclick={() => rescue?.openFor(a)}>{t.bmr.action}</button>
+                {/if}
+                {#if st === 'enrolled'}
+                  <button type="button" class="small" onclick={() => endpoint(a)}>{t.ep.button}</button>
                 {/if}
                 <button type="button" class="small danger" onclick={() => remove(a)}>{t.delete}</button>
               </td>
@@ -307,3 +347,5 @@
     </div>
   </form>
 </Modal>
+
+<AgentEndpoint bind:open={epOpen} agent={epAgent} onsaved={epSaved} />

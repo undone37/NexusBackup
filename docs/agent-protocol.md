@@ -215,8 +215,42 @@ All agents built on `agent-core` announce both capabilities.
 - **Re-enrollment** keeps the agent id: a new token for an existing agent (`POST /agents/{id}/token`), `nexus-agent
   init` on the host, the usual enrollment; the scheduler replaces the pin and clears the renewal state.
 
-## v1.4 — machine layout and bare-metal recovery (additive, Phase 19a, docs/bmr.md)
-Appended after `RenewOk` (tags 36–40, checked by `agent-proto` tests); sent only to agents announcing them.
+## v1.4 — endpoint status (additive, Phase 24a)
+Appended after `RenewOk` (tags 36–39, checked by `agent-proto` tests); sent only to agents announcing **capability
+`poll`** (all agents built on `agent-core`). Older agents keep working: the appliance only opens the session and
+says `Hello` (reachability, version, OS).
+
+- `SessionSummary { summary, status }` → `SummaryAck { job }`: after a backup or file restore of the agent the
+  scheduler stores one `Summary { job, kind: Backup|Restore, started, ended, result: Success|Warning|Failed|Cancelled,
+  read_bytes, transferred_bytes, new_bytes, warnings, first_error, snapshot_time, log_tail }` (catalog
+  `agent_sessions`; `log_tail` = the agent's part of the job log, ≤ 200 lines of ≤ 1 KiB) and delivers it with the
+  next poll session (oldest first, ≤ 20 per session) until acknowledged. The agent keeps the newest 100 (by end
+  time, one per job) in `<state>/ui-state.json` (root only).
+- `Poll { status, ack }` → `PollReply { requests, power, policy_version, busy }`: every 2 minutes per enrolled agent
+  of an active tenant (`nexus-agentctl <cfg> poll`, one process for all due agents, ≤ 8 sessions at once, 20 s I/O
+  timeout; backoff 4, 8, 15 minutes while unreachable). `status = ApplianceStatus { appliance, now, next_run,
+  ui_policy: UiPolicy { accent, header, hide_backup_now, hide_tray }, policy_version }` (also part of every
+  `SessionSummary`). `requests` = "back up now" requests queued by local users (`BackupRequest { id ≤ 64 hex,
+  queued_at }`, ≤ 16); the agent keeps each until an `ack` names it (or 7 days), so a scheduler restart between
+  queueing and acknowledging repeats it — the scheduler deduplicates by id (jobs carry `request_id`). `power =
+  PowerState { on_battery, battery_percent, metered, network_name }` (each optional = unknown). `busy` = a backup
+  session is active on the agent.
+- Limits (receiver-checked): `log_tail` ≤ 200 lines, lines and `first_error` ≤ 1024 bytes, `appliance` / `header` ≤
+  256 bytes, `accent` ≤ 16, `ack` / `requests` ≤ 16 entries with ids ≤ 64 bytes, `network_name` ≤ 256 bytes.
+- Output of `nexus-agentctl … poll`: one line `poll {"agent_id", "ok", "error"?, "info", "poll", "delivered":
+  [job…], "requests": [{id, queued_at}], "power", "policy_version", "busy"}` per agent (request ids other than hex
+  are dropped). The scheduler records `agents.reachable / last_poll / last_seen / poll_failures / power /
+  ui_policy_seen`, marks summaries delivered, queues one backup per group of the agent for a new request
+  (`requested_by = agent:<id>`, params `{group_id, guests: [id], request_id}`; at most one per 10 minutes; audit
+  `agent.request_backup` with actor `agent:<id>`) and acknowledges it in the next poll. Laptop policies
+  (`agents.laptop`) and missed runs: docs/endpoint-ui.md.
+
+Local side (agent ↔ endpoint UIs): crate `agent-ui-proto`, docs/endpoint-ui.md "Local IPC". Nothing on the local
+socket reaches the appliance except the requests above; it cannot change configuration, start a restore or read
+backup data.
+
+## v1.5 — machine layout and bare-metal recovery (additive, Phase 19a, docs/bmr.md)
+Appended after `PollReply` (tags 40–44, checked by `agent-proto` tests); sent only to agents announcing them.
 
 - **Capability `layout`** (Linux agents): at the start of a backup the appliance sends `GetLayout`; the agent answers
   `Layout { json }` (`agent_proto::layout::Layout`, ≤ `MAX_LAYOUT` = 1 MiB, every field defaulted so other versions

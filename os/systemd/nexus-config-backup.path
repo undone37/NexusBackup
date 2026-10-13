@@ -1,0 +1,11 @@
+[Unit]
+Description=NexusBackup configuration backup requests from the scheduler
+
+[Path]
+# nexus-scheduler (job config_backup) writes /var/lib/nexus/config-backup/request.json
+# (tmp + rename); nexus-config-backup consumes (deletes) it and answers in status.json
+PathExists=/var/lib/nexus/config-backup/request.json
+Unit=nexus-config-backup.service
+
+[Install]
+WantedBy=paths.target

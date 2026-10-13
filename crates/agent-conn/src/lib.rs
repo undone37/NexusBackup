@@ -11,6 +11,7 @@ pub mod ca;
 pub mod enroll;
 pub mod files;
 pub mod map;
+pub mod poll;
 pub mod renew;
 pub mod rescue;
 pub mod restore;
@@ -72,6 +73,10 @@ pub fn name(m: &Message) -> &'static str {
         Message::RenewCsr { .. } => "RenewCsr",
         Message::RenewDone { .. } => "RenewDone",
         Message::RenewOk => "RenewOk",
+        Message::SessionSummary { .. } => "SessionSummary",
+        Message::SummaryAck { .. } => "SummaryAck",
+        Message::Poll { .. } => "Poll",
+        Message::PollReply { .. } => "PollReply",
         Message::GetLayout => "GetLayout",
         Message::Layout { .. } => "Layout",
         Message::RescueApply { .. } => "RescueApply",

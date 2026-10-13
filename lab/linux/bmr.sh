@@ -59,13 +59,17 @@ step_backup() {
 	local src cfg r j t0=$SECONDS
 	src=$(api admin GET /sources | jq -r --arg a "$AGENT" '[.[] | select(.kind=="linux" and .config.agent_id==$a)][0].id')
 	cfg=$(jq -nc --arg a "$AGENT" '{agent_id:$a, paths:["/"], cross_mounts:true, hooks:true,
-		excludes:["/var/cache/apt/archives/*.deb", "/var/tmp/*", "/tmp/*"]}')
+		excludes:["/var/cache/apt/archives/*.deb", "/var/tmp/*", "/tmp/*"],
+		exclude_regex:["^/srv/plain(/|$)", "^/var/lib/nexus-agent/spool(/|$)"]}')
+	# /srv/plain (the image'"'"'s former root, read live: no snapshot) would fill the small root
+	# file system with the agent'"'"'s spool and overflow the root LV'"'"'s thick snapshot; it is
+	# recreated empty
 	if [ -z "$src" ] || [ "$src" = null ]; then
 		api admin POST /sources "$(jq -nc --arg t "$TENANT" --argjson c "$cfg" '{tenant:$t, kind:"linux", name:"deb-lvm-full", config:$c}')" >/dev/null
 		expect 201 "create source"
 	else
 		api admin PUT "/sources/$src" "$(api admin GET /sources | jq -c --argjson id "$src" --argjson c "$cfg" \
-			'.[] | select(.id==$id) | {name, config:(.config + $c)}')" >/dev/null
+			'.[] | select(.id==$id) | {name, config:(.config + $c | del(.token_secret_set))}')" >/dev/null
 		expect 200 "whole-system source"
 	fi
 	r=$(api admin POST /jobs "$(jq -nc --arg t "$TENANT" --arg a "$AGENT" '{kind:"backup", tenant:$t, params:{agent_id:$a}}')")

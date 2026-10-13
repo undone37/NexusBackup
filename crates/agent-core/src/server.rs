@@ -169,6 +169,10 @@ pub trait Platform: Send + Sync + 'static {
     }
     /// After `RescueDone` of a `RescueFinish { reboot: true }` was sent.
     fn reboot(&self) {}
+    /// Battery / metered network state for `PollReply` (laptop policies); unknown by default.
+    fn power_state(&self) -> agent_proto::PowerState {
+        agent_proto::PowerState::default()
+    }
 }
 
 #[derive(Clone)]
@@ -192,6 +196,8 @@ pub struct Agent<P: Platform> {
     active_jobs: AtomicUsize,
     /// restart after a successful self-update (off in tests)
     pub exit_on_update: bool,
+    /// endpoint status for the local UIs (crate::ui)
+    pub ui: crate::ui::Ui,
 }
 
 static LOG_TIMESTAMPS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -299,13 +305,14 @@ impl<P: Platform> Agent<P> {
         let mode = load_mode(&paths, &settings)?;
         Ok(Agent {
             platform,
-            paths,
             settings,
             mode: RwLock::new(mode),
             enroll_lock: Mutex::new(()),
             connections: AtomicUsize::new(0),
             active_jobs: AtomicUsize::new(0),
             exit_on_update: true,
+            ui: crate::ui::Ui::load(&paths),
+            paths,
         })
     }
 
@@ -511,7 +518,12 @@ impl<P: Platform> Session<'_, P> {
                 caps: {
                     let mut c = info.caps;
                     // wire compression, filters + limits and certificate renewal live in the shared core
-                    for cap in [agent_proto::CAP_LZ4, agent_proto::CAP_PREPARE2, agent_proto::CAP_RENEW] {
+                    for cap in [
+                        agent_proto::CAP_LZ4,
+                        agent_proto::CAP_PREPARE2,
+                        agent_proto::CAP_RENEW,
+                        agent_proto::CAP_POLL,
+                    ] {
                         if !c.iter().any(|x| x == cap) {
                             c.push(cap.into());
                         }
@@ -521,6 +533,7 @@ impl<P: Platform> Session<'_, P> {
             },
         )?;
         log(format!("session with appliance {}", self.appliance));
+        self.agent.ui.seen(crate::ui::now());
         loop {
             let m = match read_msg(s) {
                 Ok(m) => m,
@@ -549,6 +562,16 @@ impl<P: Platform> Session<'_, P> {
                     limits,
                 } => self.prepare(s, job, paths, excludes, filters, limits, hooks)?,
                 Message::RenewCert => self.renew_begin(s)?,
+                Message::SessionSummary { summary, status } => {
+                    let job = summary.job;
+                    self.agent.ui.record_summary(summary, status, crate::ui::now());
+                    write_msg(s, &Message::SummaryAck { job })?
+                }
+                Message::Poll { status, ack } => {
+                    let power = self.agent.platform.power_state();
+                    let reply = self.agent.ui.poll(status, &ack, power, crate::ui::now());
+                    write_msg(s, &reply)?
+                }
                 Message::RenewDone { cert_pem, ca_pem } => self.renew_done(s, &cert_pem, &ca_pem)?,
                 Message::Writers { job } => match self.jobs.get(&job) {
                     Some(j) => write_msg(
@@ -685,6 +708,7 @@ impl<P: Platform> Session<'_, P> {
             }
         }
         self.agent.active_jobs.fetch_add(1, Ordering::SeqCst);
+        self.agent.ui.job_started(crate::ui::now());
         self.jobs.insert(
             job,
             Job {
@@ -719,6 +743,9 @@ impl<P: Platform> Session<'_, P> {
         let mut batch: Vec<Entry> = vec![];
         let mut bytes = 0usize;
         let mut emit = |e: Entry| -> io::Result<()> {
+            if e.kind == agent_proto::Kind::File && !e.unchanged {
+                agent.ui.job_progress(e.size, 0);
+            }
             bytes += 96
                 + e.path.len()
                 + e.link_target.as_ref().map_or(0, Vec::len)
@@ -776,7 +803,9 @@ impl<P: Platform> Session<'_, P> {
             return error(s, E_UNKNOWN_JOB, format!("job {job} has no scan"));
         };
         let mut missing = vec![];
+        let ui = &self.agent.ui;
         let mut pace = |n: usize| {
+            ui.job_progress(0, n as u64);
             if let Some(b) = bucket.as_mut() {
                 b.throttle(n as u64);
             }
@@ -847,6 +876,7 @@ impl<P: Platform> Session<'_, P> {
         }
         text.push_str(&agent.platform.finish_job(ctx, j.inner, job, success));
         agent.active_jobs.fetch_sub(1, Ordering::SeqCst);
+        agent.ui.job_ended();
         log(format!("job {job} released (success={success})"));
         Some(text)
     }

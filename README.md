@@ -85,7 +85,8 @@ agent packages:
 | `nexusbackup-<v>-x86_64.iso` | the appliance (installer; updates come as signed bootc images) |
 | `nexus-agent_<v>-1_amd64.deb`, `nexus-agent_<v>-1_arm64.deb` | Debian, Ubuntu (x86_64, aarch64) |
 | `nexus-agent-<v>-1.x86_64.rpm`, `nexus-agent-<v>-1.aarch64.rpm` | RHEL/AlmaLinux/Rocky, Fedora, SUSE (x86_64, aarch64) |
-| `nexus-agent-<v>-x64.msi` | Windows Server 2016+ (silent install for GPO/Intune: `msiexec /i … /qn`) |
+| `nexus-agent-desktop_<v>-1_{amd64,arm64}.deb`, `nexus-agent-desktop-<v>-1.{x86_64,aarch64}.rpm` | Linux desktops: tray icon + status window for users (needs `nexus-agent`) |
+| `nexus-agent-<v>-x64.msi` | Windows Server 2016+, includes the tray icon + status window (silent install for GPO/Intune: `msiexec /i … /qn`) |
 | `SHA256SUMS`, `*.sig` | checksums and cosign signatures with the release key |
 
 Check a download: `sha256sum -c --ignore-missing SHA256SUMS` and `cosign verify-blob --key nexus-release-<…>.pub
