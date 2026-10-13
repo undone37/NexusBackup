@@ -29,6 +29,29 @@ The reference sizing (plan §3.2 and §12.3) covers 5 tenants with 1–2 TB of r
 
 Plan for 30–40 % headroom. The appliance raises a warning alert when the store is more than 75 % full.
 
+### Running NexusBackup as a virtual machine
+
+The appliance runs as a VM as well as on its own hardware (the lab runs it in QEMU/KVM). Keep these rules:
+
+- **Never on the Proxmox VE cluster it protects.** If that cluster fails (storage, quorum, ransomware with
+  hypervisor access), the backups fail with it. Run the VM on a separate host or cluster, ideally in another fire
+  compartment, and keep its offsite copies (chapter 7) as for a physical appliance.
+- **Virtual TPM:** a vTPM lives in a file on the host. Whoever can copy the VM's disks can usually copy the vTPM
+  state too, so it does not protect the disks the way a hardware TPM does (relevant once disk encryption with TPM
+  unlock exists; see [Known gaps](#known-gaps-after-installation)). Restrict who administers the host, and keep the
+  recovery key offline as for any appliance.
+- **Separate virtual disks** for the system, the metadata (catalog) and the data array, each its own virtual disk
+  (ideally on different datastores; the data disks on the capacity storage). Do not put the data array onto a single
+  thin-provisioned disk on the same datastore as the VMs it protects. Create the data array in the web UI as on
+  hardware ([Data disks](#data-disks)); SMART is not available inside a VM (the hypervisor watches the disks).
+- **Memory:** size it as for hardware (32–64 GB for the reference sizing, more for large NAS shares, see the table
+  above); do not overcommit or balloon it (memory ballooning off, reservation on), and give it at least 8 vCPUs.
+- **Network:** use separate virtual NICs (or VLANs) for management, data and replication and configure them in
+  **Settings → Network** ([Network interfaces](#network-interfaces)). With jumbo frames, the virtual switch and the
+  physical uplinks need the same MTU; the path-MTU check shows mismatches.
+- **No snapshots of the running appliance** at the hypervisor as a "backup": a reverted appliance sees an older
+  catalog than its store and its offsite copies. Use the configuration backup (chapter 14) instead.
+
 ### What you need
 
 - The installer ISO from the [GitHub release](https://github.com/undone37/NexusBackup/releases), written to a USB
@@ -102,8 +125,12 @@ Keys in forms: Tab or Up/Down moves between fields, Left/Right chooses an option
 2. Choose **DHCP** or **static**. For static, enter the address with prefix (for example `192.0.2.10/24`), the
    gateway and the DNS servers (comma-separated).
 3. Enter the host name (for example `backup.example.com`).
+4. Optional, when the switch port expects it: **Bond with NICs** (more cards bonded with the chosen one, as `bond0`;
+   **Bond mode** active-backup or 802.3ad / LACP), a **VLAN ID** (the management network is tagged), an **MTU**.
 
-The wizard creates the NetworkManager profile `nexus-mgmt`. Only IPv4 is supported for now.
+The wizard creates the NetworkManager profile `nexus-mgmt` (with a bond, VLAN or MTU it lets `nexus-net` write the
+same profiles **Settings → Network** writes). Only IPv4 is supported for now. More interfaces (data, replication)
+are added later in the web UI ([Network interfaces](#network-interfaces)).
 
 ### Step 2: administrator account
 
@@ -168,7 +195,8 @@ Run this on the local console as root:
 nexus-setup --force-reconfigure-network
 ```
 
-It redoes only the network step, creates a **new self-signed TLS certificate** (the addresses in it change, so the
+It redoes only the network step (removing the interfaces added in **Settings → Network**), creates a **new
+self-signed TLS certificate** (the addresses in it change, so the
 fingerprint changes too) and restarts the web API. Tell everybody who pinned the old fingerprint, for example the
 secondary appliance of a replication. An imported certificate (next section) is not touched: if the new addresses are
 not in it, generate a new request and import a new certificate.
@@ -263,7 +291,9 @@ way: generate a new request, install the new certificate.
   replication primaries, the alert webhook and SMTP relay, forwarding receivers, the identity provider). A small
   privileged helper (`nexus-nft-sync`) applies it to the firewall within seconds of a change, and every 30 minutes.
   DNS servers and the NTS time servers are allowed automatically. **Settings → Firewall → Outbound (automatic)** shows
-  the current list. Blocked connections are logged with the prefix `nexus-out-drop:`.
+  the current list. Blocked connections are logged with the prefix `nexus-out-drop:`. Sources, offsite targets and
+  replication primaries are bound to the interface of their role when **Settings → Network** gives the role one
+  ([Network interfaces](#network-interfaces)).
 - Extra static destinations can be listed by root on the console in `/etc/nexus/allowed-hosts`, one
   `host port [proto]` per line.
 - The sources never connect to the appliance. The appliance connects to them (pull model).
@@ -272,6 +302,60 @@ way: generate a new request, install the new certificate.
 > configuration change); the inbound rules start with the defaults (web UI from any address) until then. Outbound
 > rules work with resolved IP addresses, which is fragile for endpoints behind rotating DNS (for example large S3
 > providers or CDNs).
+
+<a id="network-interfaces"></a>
+
+### Network interfaces (bond, VLAN, MTU, routes, roles)
+
+![Settings → Network](images/settings-network.png)
+
+**Settings → Network** (administrators change; security officers and operators read) configures the network cards
+beyond the management network of the first-boot wizard:
+
+- **Interfaces:** a network card, a **bond** of several cards (**active-backup**, which works with any switch, or
+  **802.3ad / LACP**, which needs a LACP group on the switch), or a **VLAN** (tagged, on a card or a bond). Each has
+  an optional **MTU** (1280–9216; jumbo frames: 9000), static addresses (IPv4 or IPv6, `address/prefix`) or IPv4 by
+  DHCP, and **static routes** (`10.30.0.0/16 via 10.0.20.1`). A **data network without a gateway** needs neither a
+  gateway nor routes: sources in its own subnet are reached directly.
+- **Roles:** at most one interface per role. **Management** carries the web UI and API and the default route (only
+  it can have a default gateway and DNS servers; DHCP on other interfaces never takes the default route). **Data**:
+  the PVE hosts, agents, NFS/SMB servers and TrueNAS systems are pulled through it. **Replication**: a secondary pulls
+  from its primaries through it. **Offsite copies leave through** selects the role whose interface the offsite
+  targets use (default: management).
+- **Bound egress:** the outbound firewall binds the destinations of a role to its interface: a PVE host can only be
+  reached through the data interface, even if a route points elsewhere. A role without an interface uses any
+  interface, as before. Alerting, single sign-on, forwarding, DNS and time are never bound.
+
+Changes are collected as a draft (**Add interface**, **Edit**, **Remove**) and sent with **Request change**; every
+change needs approval. On approval `nexus-net` writes the NetworkManager profiles `nexus-*.nmconnection` and
+activates them; if an activation fails, the previous profiles come back at once. Recent changes and their outcome
+are listed on the page and in the audit log (`network.apply`, `network.op`).
+
+**Changing the management interface.** Giving another interface the management role (for example moving it onto a
+bond, adding a VLAN tag or changing its address) is applied like any change, but then **must be confirmed within 120
+seconds**: the page shows a countdown with **Keep the new configuration** and **Revert now**. Keep it only if you
+reach the page through the new configuration; if the address changed, open the web UI at the new address (sign in
+again; the browser warns about the certificate if the new address is not in it) and confirm there. Without a
+confirmation, or after a reboot inside the window, the previous configuration is restored automatically. Once the
+management interface is configured here, it can be changed but not removed.
+
+**Path MTU.** Every hour (and with **Check now**) the appliance pings each source, offsite and replication
+destination with "don't fragment" set at the full MTU of the interface its route uses. "MTU 9000 does not pass; the
+path takes 1500" means a switch or router on the way has a smaller MTU: large transfers would stall. Set the same MTU
+on the appliance, the switches and the source, or a smaller one here. A destination routed through another interface
+than its role's is flagged too (the firewall blocks it). Destinations that do not answer ping are not judged. The
+diagnostics check `network.mtu` reports the same ([15 Troubleshooting](15-troubleshooting-faq.md#check-network-mtu)).
+
+**Lock-out.** If the web UI is unreachable after a network change, reconfigure the management network at the console
+(`nexus-setup --force-reconfigure-network`, see [Changing the network later](#changing-the-network-later)). That
+starts from scratch: the interfaces added in **Settings → Network** are removed and must be added again.
+
+![Interface dialog](images/network-edit.png)
+
+> **Status:** The helper, the approval and confirmation flow, the bound egress and the path-MTU check are tested
+> against fake tools (`nmcli`, `ip`) and in the web UI against the demo backend. The run on an appliance VM with extra
+> NICs (bond + VLAN, `lab/appliance/network.sh`) is pending, and so is any test with a real LACP switch. IPv6 on the
+> management interface of the wizard is not supported (static IPv6 addresses on other interfaces are).
 
 <a id="management-allow-list"></a>
 
