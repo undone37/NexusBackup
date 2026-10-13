@@ -3765,6 +3765,7 @@ fn registered_routes() -> std::collections::BTreeSet<(String, String)> {
         include_str!("../src/firewall.rs"),
         include_str!("../src/holds.rs"),
         include_str!("../src/hardware.rs"),
+        include_str!("../src/network.rs"),
         include_str!("../src/tenants.rs"),
         include_str!("../src/tenancy.rs"),
         include_str!("../src/vault.rs"),
