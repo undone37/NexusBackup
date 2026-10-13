@@ -613,6 +613,80 @@ export interface Group {
   scan_budget_min?: number | null;
   /** record the SHA-256 of every file in the name index (IOC hash hunt) */
   file_hashes?: boolean;
+  /** Phase 29, GET /groups only: days between full reads (change-tracking check); null = the default, 0 = off */
+  full_read_days?: number | null;
+  /** the default for this group's kind (90 PVE VMs, 30 agents / NAS / TrueNAS) */
+  full_read_default?: number;
+}
+
+/** Phase 29: GET /full-reads (one row per source). */
+export interface FullRead {
+  tenant: string;
+  source: string;
+  next_due: number | null;
+  last_at: number | null;
+  last_snapshot: number | null;
+  last_job: number | null;
+  result: 'clean' | 'drift' | 'no_baseline' | null;
+  changed: number | null;
+  unreported: number | null;
+  unreported_bytes: number | null;
+  details: { tracker?: string; examples?: string[]; compared?: number; baseline?: number | null; [k: string]: unknown } | null;
+  last_clean_at: number | null;
+}
+
+/** Phase 29: one snapshot of a scan back (`job.result.scanned[]`). */
+export interface ScanBackItem {
+  time: number;
+  /** the ordinary `snapshot_scan` job of this snapshot (details: GET /scans) */
+  job: number;
+  matches_total: number;
+  complete: boolean;
+  /** ended at the first match */
+  stopped: boolean;
+}
+
+/** Phase 29: `job.result` of a `scan_back` job. */
+export interface ScanBackResult {
+  source: string;
+  from: number;
+  scanned: ScanBackItem[];
+  recommended: number | null;
+  truncated: boolean;
+}
+
+/** Phase 29: incident-mode / lockdown freezes. */
+export interface Freeze {
+  config?: boolean;
+  deletions: boolean;
+  restores: boolean;
+}
+
+/** Phase 29: GET /auth/me `freeze` (appliance-wide accounts). */
+export interface FreezeBanner {
+  config: boolean;
+  deletions: boolean;
+  restores: boolean;
+  tenants: { tenant: string; deletions: boolean; restores: boolean }[];
+}
+
+/** Phase 29: GET /auth/me `step_up`. */
+export interface StepUpState {
+  since: number;
+  until: number;
+  reason: string;
+  done: boolean;
+}
+
+/** Phase 29: GET /risk (active marks). */
+export interface RiskMark {
+  user_id: number;
+  user: string;
+  role: string;
+  tenant: string | null;
+  since: number;
+  until: number;
+  reason: string;
 }
 
 export type GroupMode = 'explicit' | 'all' | 'tags';
@@ -674,7 +748,8 @@ export type JobKind =
   | 'offsite_restore'
   | 'offsite_attach'
   | 'fleet_scan'
-  | 'hash_hunt';
+  | 'hash_hunt'
+  | 'scan_back';
 
 /** One snapshot of an `offsite_list` result (Phase 17d, `nexus-offsite list --json`). */
 export interface OffsiteListed {
@@ -838,6 +913,10 @@ export interface Snapshot {
   scan?: SnapshotScanSummary | null;
   /** Phase 28: verdict of the latest scan, null = unscanned */
   scan_state?: ScanState | null;
+  /** Phase 29: anomaly or scan hit, not cleared (production restores need approval `restore.infected`) */
+  flagged?: boolean;
+  /** Phase 29: the recommended restore point of the source's newest scan back (unix time, this snapshot) */
+  clean_point?: number | null;
 }
 
 export type ScanState = 'clean' | 'hit' | 'incomplete';
@@ -879,6 +958,9 @@ export interface LockdownInfo {
   by: string;
   reason: string;
   lift_quorum: number | null;
+  /** Phase 29 */
+  freeze?: Freeze | null;
+  freeze_lift_quorum?: number | null;
 }
 
 /** GET /auth/devices. */
@@ -1175,6 +1257,10 @@ export interface LoginResponse {
   impersonating?: Impersonation | null;
   /** Phase 21b: incident mode is active (appliance-wide accounts only) */
   incident?: IncidentBanner | null;
+  /** Phase 29: frozen configuration / deletions / restores (appliance-wide accounts) */
+  freeze?: FreezeBanner | null;
+  /** Phase 29: the account is marked by a risk signal: sensitive requests need a step-up */
+  step_up?: StepUpState | null;
 }
 
 /** Phase 21b: the incident banner (GET /auth/me, /dashboard). */
@@ -1200,6 +1286,9 @@ export interface Incident {
   approved_by?: string;
   resumed?: number;
   leave_quorum: number | null;
+  /** Phase 29: active freezes of incident mode, and a pending lift request */
+  freeze?: Freeze | null;
+  freeze_lift_quorum?: number | null;
 }
 
 /** `GET /vault` (Phase 17c); `checks` and the requests only for appliance-wide roles. */
@@ -1472,6 +1561,8 @@ export interface Dashboard {
     verify_failed: number;
   };
   /** Phase 25: the newest restore test result per guest within the window */
+  /** Phase 29: full reads (change-tracking check) */
+  full_reads?: { sources: number; verified: number; drift: number; never: number; oldest_verified: number | null };
   restore_tests?: { tested: number; passed: number; failed: number; last: number | null; failing: { tenant: string; source: string; finished: number }[] };
 }
 

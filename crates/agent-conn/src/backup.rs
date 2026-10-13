@@ -6,12 +6,20 @@
 //! length → `insert_chunk` → record plain → keyed → build `Index::Tree` →
 //! commit → `Release { success: true }`. Any failure before the commit ends
 //! with `Release { success: false }` and nothing committed.
+//!
+//! Scheduled full read (Phase 29, `Spec::full_read`): the Scan goes without a
+//! base, so the agent skips its metadata cache (and the Windows agent its USN
+//! journal) and reads every file. After the commit the new tree is compared
+//! with the previous snapshot (`chunkstore::drift`): a file with the same
+//! size, mtime, ctime and inode but other chunks is one the cache would have
+//! kept stale. Logged as one `full-read <source>/<time> {json}` line.
 
 use crate::map::MapDb;
 use crate::tls::Session;
 use crate::{hex, name, source_name, valid_rel_path, TREE_INDEX};
 use agent_proto::{BaseRef, Entry, Filters, Hash, Kind, Limits, Message, ScanStats, CAP_PREPARE2, MAX_BATCH};
 use anyhow::{bail, Context, Result};
+use chunkstore::drift::{self, Drift};
 use chunkstore::progress::Meter;
 use chunkstore::{ChunkId, Index, Manifest, Store, TreeEntry, TreeKind};
 use std::collections::{HashMap, HashSet};
@@ -29,6 +37,9 @@ pub struct Spec {
     /// hash while they read (`ScanHashed`); for older agents and unchanged
     /// files the store fills in (previous snapshot, else read back).
     pub file_hashes: bool,
+    /// Phase 29: read everything and check this change tracker ("metadata-cache",
+    /// or "usn" for Windows agents); None = incremental as usual
+    pub full_read: Option<&'static str>,
 }
 
 #[derive(Debug, Default)]
@@ -55,6 +66,8 @@ pub struct Report {
     pub scan: ScanStats,
     /// machine layout JSON (agents with CAP_LAYOUT), stored as `.nexus-system/layout.json`
     pub layout: Option<String>,
+    /// Phase 29: result of a full read (`Spec::full_read`)
+    pub full_read: Option<Drift>,
 }
 
 /// Newest committed snapshot of this agent (the `base` of the next scan).
@@ -127,6 +140,10 @@ pub fn backup(
             log("base snapshot references bad chunks (verify): full read without the agent's metadata cache");
             None
         }
+        _ if spec.full_read.is_some() => {
+            log("full read (Phase 29): no base, the agent reads every file without its metadata cache");
+            None
+        }
         b => b,
     };
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
@@ -193,6 +210,16 @@ pub fn backup(
                 Err(e) => log(&format!("warning: release after commit failed: {e:#}")),
             }
             r.time = m.time;
+            if let Some(tracker) = spec.full_read {
+                let d = compare(store, &m, newest, tracker).unwrap_or_else(|e| {
+                    log(&format!(
+                        "full read: comparison with the previous snapshot failed: {e:#}"
+                    ));
+                    Drift::none()
+                });
+                log(&d.line(&r.source, r.time));
+                r.full_read = Some(d);
+            }
             Ok(r)
         }
         Err(e) => {
@@ -202,6 +229,24 @@ pub fn backup(
             Err(e)
         }
     }
+}
+
+fn tree_of(store: &Store, m: &Manifest) -> Result<Vec<TreeEntry>> {
+    match store.load_index(m, TREE_INDEX)? {
+        Index::Tree { entries } => Ok(entries),
+        _ => bail!("{}/{} is not a file tree snapshot", m.source, m.time),
+    }
+}
+
+/// Full read: the committed tree against the previous snapshot `prev`.
+fn compare(store: &Store, m: &Manifest, prev: Option<u64>, tracker: &str) -> Result<Drift> {
+    let Some(p) = prev else {
+        return Ok(Drift::none());
+    };
+    let old = tree_of(store, &store.load_manifest(&m.source, p)?)?;
+    let mut d = Drift::new(tracker, Some(p));
+    drift::tree(&mut d, &old, &tree_of(store, m)?, drift::metadata_differs);
+    Ok(d)
 }
 
 /// `GetLayout` (docs/bmr.md "Layout"). A layout that does not parse is logged and

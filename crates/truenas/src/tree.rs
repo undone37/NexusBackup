@@ -16,6 +16,7 @@ use crate::diff::Line;
 use crate::stream::{self, Member};
 use crate::walk::WalkEntry;
 use anyhow::{bail, Context, Result};
+use chunkstore::drift::{self, Drift};
 use chunkstore::{ChunkId, Store, TreeEntry, TreeKind};
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -113,6 +114,16 @@ pub fn plan(
         p.entries.push(e);
     }
     p
+}
+
+/// Phase 29 full read: `full` (everything read) against the previous tree.
+/// A file is reported when the `usual` plan (same walk) would have read it;
+/// changed content it would have reused is unreported. Tracker "zfs-diff".
+pub fn drift(prev: &[TreeEntry], usual: &Plan, full: &[TreeEntry], baseline: Option<u64>) -> Drift {
+    let read: HashSet<&[u8]> = usual.need.iter().map(|&i| usual.entries[i].path.as_slice()).collect();
+    let mut d = Drift::new("zfs-diff", baseline);
+    drift::tree(&mut d, prev, full, |_, e| read.contains(e.path.as_slice()));
+    d
 }
 
 /// Consumes the tar stream of `read` for `plan.need` (same order): files are
@@ -276,6 +287,36 @@ mod tests {
         // no reference: everything is read even with a previous tree
         let p5 = plan(vec![w("e/a", TreeKind::File, 3, 5, 1)], Some(&prev), None, &|_| true);
         assert_eq!(p5.need, vec![0]);
+    }
+
+    /// Phase 29: a content change the usual plan would have reused (zfs diff
+    /// silent, size and mtime equal) is unreported; one it reads is not.
+    #[test]
+    fn full_read_drift_against_the_usual_plan() {
+        let walk = || {
+            vec![
+                w("d", TreeKind::Dir, 2, 0, 1),
+                w("d/same", TreeKind::File, 3, 5, 1),
+                w("d/silent", TreeKind::File, 4, 3, 1),
+                w("d/touched", TreeKind::File, 5, 2, 1),
+            ]
+        };
+        let mut prev = plan(walk(), None, None, &|_| true).entries;
+        for (e, c) in prev.iter_mut().skip(1).zip([1u8, 2, 3]) {
+            e.chunks = vec![[c; 32]];
+        }
+        let mut now = walk();
+        now[3].mtime_ns = 9;
+        let usual = plan(now.clone(), Some(&prev), Some(&HashSet::new()), &|_| true);
+        assert_eq!(usual.need, vec![3]);
+        let mut full = plan(now, None, None, &|_| true).entries;
+        for (e, c) in full.iter_mut().skip(1).zip([1u8, 8, 9]) {
+            e.chunks = vec![[c; 32]];
+        }
+        let d = drift(&prev, &usual, &full, Some(4));
+        assert_eq!((d.tracker.as_str(), d.baseline), ("zfs-diff", Some(4)));
+        assert_eq!((d.compared, d.changed, d.unreported, d.unreported_bytes), (3, 2, 1, 3));
+        assert_eq!(d.examples, ["d/silent"]);
     }
 
     #[test]

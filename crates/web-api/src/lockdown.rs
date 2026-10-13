@@ -15,6 +15,12 @@
 //! running. Lifting is the approval action `tenant.lockdown.lift` (always a
 //! second person, even with approvals disabled): the groups it paused resume,
 //! the alert resolves, holds stay. State: `tenant_lockdowns` (v43).
+//!
+//! Freezes (Phase 29): entering may also freeze the tenant's deletions
+//! (snapshot deletes, retention, GC, offsite and replica pruning) and its
+//! restores to production (catalog::incident); its configuration is refused by
+//! the lockdown anyway. They end with the lockdown, or earlier with the
+//! approval action `incident.freeze.lift` (scope `tenant`).
 
 use crate::auth::{reauth, ClientIp, Ctx};
 use crate::{validate, ApiError, ApiResult, St, J};
@@ -36,6 +42,7 @@ pub fn routes() -> Router<St> {
         .route("/lockdowns", get(list))
         .route("/tenants/{name}/lockdown", get(status).post(enter))
         .route("/tenants/{name}/lockdown/lift", post(lift))
+        .route("/tenants/{name}/lockdown/freeze/lift", post(lift_freeze))
 }
 
 fn alert_key(tenant: &str) -> String {
@@ -108,7 +115,8 @@ pub async fn list(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>> {
         if let Some(v) = load(&c, &t)? {
             out.push(
                 json!({"tenant": t, "since": v["since"], "by": v["by"], "reason": v["reason"],
-                            "lift_quorum": lift_quorum(&c, &t)?}),
+                            "lift_quorum": lift_quorum(&c, &t)?, "freeze": v["freeze"],
+                            "freeze_lift_quorum": crate::incident::freeze_lift_quorum(&c, Some(&t))?}),
             );
         }
     }
@@ -122,6 +130,7 @@ pub async fn status(State(st): State<St>, ctx: Ctx, Path(name): Path<String>) ->
     let c = st.cat.conn();
     let mut v = load(&c, &name)?.unwrap_or_else(|| json!({"active": false}));
     v["lift_quorum"] = json!(lift_quorum(&c, &name)?);
+    v["freeze_lift_quorum"] = json!(crate::incident::freeze_lift_quorum(&c, Some(&name))?);
     Ok(Json(v))
 }
 
@@ -139,8 +148,20 @@ pub struct EnterReq {
     /// absent = hold every snapshot of the tenant; `null` = hold nothing
     #[serde(default = "all", deserialize_with = "range_or_null")]
     hold: Option<Option<Range>>,
+    /// Phase 29: deletions / restores to production frozen while it lasts
+    #[serde(default)]
+    freeze: TenantFreeze,
     current_password: Option<String>,
     current_totp: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct TenantFreeze {
+    #[serde(default)]
+    deletions: bool,
+    #[serde(default)]
+    restores: bool,
 }
 
 fn all() -> Option<Option<Range>> {
@@ -247,6 +268,7 @@ pub async fn enter(
             "hold": match &r.hold { None => json!("all"), Some(None) => Value::Null,
                                     Some(Some(h)) => json!({"from": h.from, "to": h.to}) },
             "held": held, "paused": paused, "sessions_ended": sessions, "tokens_revoked": tokens, "alert": alert,
+            "freeze": {"config": false, "deletions": r.freeze.deletions, "restores": r.freeze.restores},
         });
         tx.execute(
             "INSERT INTO tenant_lockdowns (tenant, active, state) VALUES (?1, 1, ?2)
@@ -285,6 +307,34 @@ pub async fn lift(State(st): State<St>, ctx: Ctx, Path(name): Path<String>) -> A
         LOCKDOWN_LIFT,
         &format!("tenant/{name}"),
         json!({"tenant": name, "since": since}),
+    )?;
+    Ok((StatusCode::ACCEPTED, Json(json!({"quorum_id": id}))).into_response())
+}
+
+/// `POST /tenants/{name}/lockdown/freeze/lift`: the approval request
+/// `incident.freeze.lift` for the lockdown's freezes (always a second person).
+pub async fn lift_freeze(State(st): State<St>, ctx: Ctx, Path(name): Path<String>) -> ApiResult<Response> {
+    require(&ctx, ENTER)?;
+    validate::name(&name, "tenant")?;
+    let since = {
+        let c = st.cat.conn();
+        let Some(v) = load(&c, &name)?.filter(|v| v["active"] == true) else {
+            return Err(ApiError::conflict("the tenant is not locked down"));
+        };
+        if !catalog::incident::tenant(&c, &name)?.any() {
+            return Err(ApiError::conflict("nothing is frozen"));
+        }
+        if crate::incident::freeze_lift_quorum(&c, Some(&name))?.is_some() {
+            return Err(ApiError::conflict("lifting the freezes is already requested"));
+        }
+        v["since"].clone()
+    };
+    let id = crate::quorum::pending(
+        &st,
+        ctx.name(),
+        catalog::incident::FREEZE_LIFT,
+        &format!("tenant/{name}"),
+        json!({"scope": "tenant", "tenant": name, "since": since}),
     )?;
     Ok((StatusCode::ACCEPTED, Json(json!({"quorum_id": id}))).into_response())
 }

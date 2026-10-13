@@ -166,6 +166,7 @@ fn layout_in_snapshot_and_recovery_onto_rescue_agent() {
         filters: Default::default(),
         limits: Default::default(),
         file_hashes: false,
+        full_read: None,
     };
     let r = backup::backup(&store, &mut map, &mut s, ID, &spec, &mut |l| eprintln!("{l}")).unwrap();
     s.close();

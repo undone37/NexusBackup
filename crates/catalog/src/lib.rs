@@ -15,8 +15,10 @@ pub mod console;
 pub mod firewall;
 pub mod fleet;
 pub mod forwarding;
+pub mod fullread;
 pub mod hardware;
 pub mod holds;
+pub mod incident;
 pub mod inventory;
 pub mod network;
 pub mod priority;
@@ -805,11 +807,46 @@ CREATE TABLE login_devices (
 ALTER TABLE users ADD COLUMN email TEXT;
 "#;
 
+/// v44 (Phase 29, docs/netbackup-comparison.md Tier 1):
+/// - scheduled full read: `groups.full_read_days` (NULL = default, 90 days for
+///   Proxmox VE VM groups and 30 for the others; 0 = off) and `full_reads`, one
+///   row per (tenant, source): when the next full read is due (staggered by
+///   source), the outcome of the last one (`result` = `clean` | `drift` |
+///   `no_baseline`, counts, `details` JSON) and when the source was last
+///   verified without drift (`last_clean_at`);
+/// - scan back: `snapshots.clean_point` = when a scan back marked the snapshot
+///   as the recommended restore point of its source (one per source);
+/// - risk signals: `login_hours` (sign-in hours per account, the baseline of
+///   the unusual-hour rule), `users.risk_since/risk_until/risk_reason` (the
+///   account needs a step-up while marked) and `sessions.step_up_at` (when the
+///   session re-authenticated).
+///
+/// Incident and lockdown freezes live in the existing JSON state (setting
+/// `incident`, `tenant_lockdowns.state`). Purely additive: the previous
+/// release ignores the columns and tables.
+const SCHEMA_V44: &str = r#"
+ALTER TABLE groups ADD COLUMN full_read_days INTEGER;
+CREATE TABLE full_reads (
+  tenant TEXT NOT NULL, source TEXT NOT NULL, next_due INTEGER NOT NULL,
+  last_at INTEGER, last_snapshot INTEGER, last_job INTEGER, result TEXT,
+  changed INTEGER, unreported INTEGER, unreported_bytes INTEGER, details TEXT, last_clean_at INTEGER,
+  PRIMARY KEY (tenant, source));
+ALTER TABLE snapshots ADD COLUMN clean_point INTEGER;
+CREATE TABLE login_hours (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, hour INTEGER NOT NULL,
+  count INTEGER NOT NULL, last_seen INTEGER NOT NULL, PRIMARY KEY (user_id, hour));
+ALTER TABLE users ADD COLUMN risk_since INTEGER;
+ALTER TABLE users ADD COLUMN risk_until INTEGER;
+ALTER TABLE users ADD COLUMN risk_reason TEXT;
+ALTER TABLE sessions ADD COLUMN step_up_at INTEGER;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
     SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V34, SCHEMA_V37, SCHEMA_V39, SCHEMA_V40, SCHEMA_V43,
+    SCHEMA_V44,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -3017,5 +3054,55 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM login_devices", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0, "devices go with the account");
+    }
+
+    /// v44 (Phase 29) on top of the previous catalog: full reads default per
+    /// kind (NULL), no clean points, no risk marks; login hours go with the account.
+    #[test]
+    fn migration_v44_full_reads_clean_points_risk() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V44).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO tenants (name) VALUES ('t');
+                 INSERT INTO snapshots (tenant, source, time, size, local, offsite, lock_until) VALUES ('t','vm-1',1,0,1,0,0);
+                 INSERT INTO users (name, password_hash, totp_secret, role, created) VALUES ('ann','x','y','admin',1);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let (cp, risk): (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT s.clean_point, u.risk_until FROM snapshots s, users u",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((cp, risk), (None, None));
+        conn.execute_batch(
+            "INSERT INTO full_reads (tenant, source, next_due) VALUES ('t', 'vm-1', 5);
+             INSERT INTO login_hours (user_id, hour, count, last_seen) VALUES (1, 9, 3, 1);",
+        )
+        .unwrap();
+        assert!(
+            conn.execute(
+                "INSERT INTO full_reads (tenant, source, next_due) VALUES ('t', 'vm-1', 6)",
+                []
+            )
+            .is_err(),
+            "one row per source"
+        );
+        conn.execute("DELETE FROM users", []).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM login_hours", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "hours go with the account");
     }
 }

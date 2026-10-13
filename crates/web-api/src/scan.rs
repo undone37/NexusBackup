@@ -11,6 +11,12 @@
 //! - `GET /scans?tenant=&source=&time=`: finished scans, newest first (any role,
 //!   tenant-scoped): counts and matches `[{rule, path}]`.
 //! - The restore option `scan_first` lives in `jobs::create_job`.
+//! - `POST /snapshots/{tenant}/{source}/{time}/scan-back {budget_min?, max?}`
+//!   (Phase 29): queues a `scan_back` job that scans the source's snapshots
+//!   from this one back, newest first, each scan stopping at its first match,
+//!   until one is clean; that one becomes the recommended restore point
+//!   (`snapshots.clean_point`). Same roles as a scan; audited
+//!   `snapshot.scan_back_request`.
 
 use crate::auth::Ctx;
 use crate::{validate, ApiError, ApiResult, St, J, Q};
@@ -258,4 +264,80 @@ pub async fn list_scans(State(st): State<St>, ctx: Ctx, Q(f): Q<ScanFilter>) -> 
         )?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(Value::Array(rows)))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScanBackReq {
+    /// time budget per snapshot in minutes (default: the scanner's)
+    #[serde(default)]
+    budget_min: Option<u64>,
+    /// snapshots scanned at most (default 30)
+    #[serde(default)]
+    max: Option<u64>,
+}
+
+/// `POST /snapshots/{tenant}/{source}/{time}/scan-back` (module doc).
+pub async fn scan_back(
+    State(st): State<St>,
+    ctx: Ctx,
+    Path((tenant, source, time)): Path<(String, String, i64)>,
+    J(r): J<ScanBackReq>,
+) -> ApiResult<Response> {
+    ctx.require(SCANNERS)?;
+    validate::name(&tenant, "tenant")?;
+    validate::source_ref(&source)?;
+    ctx.owns(&tenant)?;
+    if r.budget_min.is_some_and(|b| !(1..=1440).contains(&b)) {
+        return Err(ApiError::bad("budget_min: 1..=1440"));
+    }
+    if r.max.is_some_and(|m| !(1..=100).contains(&m)) {
+        return Err(ApiError::bad("max: 1..=100"));
+    }
+    let mut params = json!({"source": source, "from": time});
+    if let Some(b) = r.budget_min {
+        params["budget"] = json!(b * 60);
+    }
+    if let Some(m) = r.max {
+        params["max"] = json!(m);
+    }
+    let id = {
+        let c = st.cat.conn();
+        c.query_row(
+            "SELECT 1 FROM snapshots WHERE tenant=?1 AND source=?2 AND time=?3 AND local=1",
+            params![tenant, source, time],
+            |_| Ok(()),
+        )
+        .optional()?
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no such local snapshot".into()))?;
+        if !has_rules(&c)? {
+            return Err(ApiError::conflict("no YARA rules uploaded (Settings → Malware scan)"));
+        }
+        let running: Option<i64> = c
+            .query_row(
+                "SELECT id FROM jobs WHERE kind = 'scan_back' AND tenant = ?1 AND state IN ('queued', 'running')
+                   AND json_extract(params, '$.source') = ?2 LIMIT 1",
+                params![tenant, source],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(j) = running {
+            return Err(ApiError::conflict(format!(
+                "a scan back of this source is already queued (job {j})"
+            )));
+        }
+        c.execute(
+            "INSERT INTO jobs (kind, tenant, params, state, requested_by, created) \
+             VALUES ('scan_back', ?1, ?2, 'queued', ?3, ?4)",
+            params![tenant, params.to_string(), ctx.name(), catalog::now()],
+        )?;
+        c.last_insert_rowid()
+    };
+    st.audit(
+        ctx.name(),
+        "snapshot.scan_back_request",
+        &format!("snapshot/{tenant}/{source}/{time}"),
+        json!({"tenant": tenant, "job": id, "params": params}),
+    )?;
+    Ok((StatusCode::ACCEPTED, Json(json!({"id": id}))).into_response())
 }

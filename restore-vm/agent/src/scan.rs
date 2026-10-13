@@ -14,7 +14,9 @@
 //! Limits: files over `max_size` are skipped, `file_timeout` per file
 //! (`yara -a`), `threads` scanner threads (`-p`, at most the VM's vCPUs) and
 //! an overall `budget`: afterwards `yara` is killed and the report says
-//! `complete: false`.
+//! `complete: false`. `stop_on_match` (scan back, Phase 29: only "is this
+//! snapshot clean?" matters) kills `yara` at the first match and ends the
+//! scan: `stopped: true`, `complete: false`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -48,6 +50,9 @@ pub(crate) struct Limits {
     /// seconds for the whole scan
     pub budget: u64,
     pub threads: u32,
+    /// end the scan at the first match
+    #[serde(default)]
+    pub stop_on_match: bool,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -66,8 +71,10 @@ pub(crate) struct Report {
     pub errors: u64,
     pub matches: Vec<Match>,
     pub matches_total: u64,
-    /// false: the budget ran out
+    /// false: the budget ran out, or stopped at a match
     pub complete: bool,
+    /// ended at the first match (`stop_on_match`)
+    pub stopped: bool,
     pub seconds: u64,
 }
 
@@ -139,7 +146,21 @@ impl Scan {
         Instant::now() >= self.deadline
     }
 
+    /// Out of budget or stopped at a match: nothing more is scanned
+    /// (`complete` turns false).
+    fn halted(&mut self) -> bool {
+        if self.report.stopped || self.expired() {
+            self.report.complete = false;
+            return true;
+        }
+        false
+    }
+
     fn found(&mut self, rule: &str, path: String) {
+        if self.limits.stop_on_match {
+            self.report.stopped = true;
+            self.report.complete = false;
+        }
         self.report.matches_total += 1;
         if self.report.matches.len() < MATCHES_KEPT {
             self.report.matches.push(Match {
@@ -151,11 +172,7 @@ impl Scan {
 
     /// Runs `yara` over `files` (scan path, reported path); kills it at the deadline.
     fn run(&mut self, files: &[(PathBuf, String)]) -> io::Result<()> {
-        if files.is_empty() {
-            return Ok(());
-        }
-        if self.expired() {
-            self.report.complete = false;
+        if files.is_empty() || self.halted() {
             return Ok(());
         }
         let list = Path::new(DIR).join("list");
@@ -198,9 +215,8 @@ impl Scan {
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             }
-            if self.expired() {
+            if self.halted() {
                 let _ = child.kill();
-                self.report.complete = false;
                 break;
             }
         }
@@ -217,8 +233,7 @@ impl Scan {
         for mp in mountpoints {
             let mut dirs = vec![PathBuf::from(format!("{}{mp}", crate::MNT))];
             while let Some(d) = dirs.pop() {
-                if self.expired() {
-                    self.report.complete = false;
+                if self.halted() {
                     return Ok(());
                 }
                 let Ok(rd) = fs::read_dir(&d) else {
@@ -270,10 +285,7 @@ impl Scan {
         let mut a = tar::Archive::new(r);
         for e in a.entries()? {
             let mut e = e?;
-            if e.header().entry_type() != tar::EntryType::Regular || self.expired() {
-                if self.expired() {
-                    self.report.complete = false;
-                }
+            if self.halted() || e.header().entry_type() != tar::EntryType::Regular {
                 continue; // the iterator skips the data
             }
             let size = e.header().size()?;
@@ -438,10 +450,41 @@ mod tests {
             file_timeout: 1,
             budget: 0,
             threads: 1,
+            stop_on_match: false,
         });
         s.run(&[(PathBuf::from("/nonexistent"), "x".into())]).unwrap();
         let r = s.finish();
         assert!(!r.complete);
+        assert!(!r.stopped);
         assert_eq!(r.files, 0);
+    }
+
+    /// stop_on_match: the first match ends the scan; later batches are not run.
+    /// Without it every match is collected and the scan goes on.
+    #[test]
+    fn stop_on_match_ends_the_scan() {
+        let limits = |stop_on_match| Limits {
+            max_size: 10,
+            file_timeout: 1,
+            budget: 3600,
+            threads: 1,
+            stop_on_match,
+        };
+        let mut s = Scan::new(limits(true));
+        s.found("r:X", "/a".into());
+        s.run(&[(PathBuf::from("/nonexistent"), "x".into())]).unwrap();
+        let r = s.finish();
+        assert!(r.stopped && !r.complete);
+        assert_eq!((r.matches_total, r.files), (1, 0));
+        let mut s = Scan::new(limits(false));
+        s.found("r:X", "/a".into());
+        s.found("r:X", "/b".into());
+        assert!(!s.halted());
+        let r = s.finish();
+        assert!(!r.stopped && r.complete);
+        assert_eq!(r.matches_total, 2);
+        // the appliance sends the field only for scan back: absent = false
+        let l: Limits = serde_json::from_str(r#"{"max_size":1,"file_timeout":1,"budget":1,"threads":1}"#).unwrap();
+        assert!(!l.stop_on_match);
     }
 }

@@ -206,6 +206,36 @@ stay** until each is released. Revoked API tokens do not come back. Audit: `tena
 > **Status:** Implemented in Phase 28 and tested in the API (`crates/web-api/tests/phase28.rs`), the scheduler and
 > the demo backend; a run on the appliance image (lab) is pending.
 
+### Freezes during an incident
+
+Incident mode and a tenant lockdown can also **freeze** what an attacker with a stolen account would do next. Tick
+them in the **Freeze** part of the incident mode form or the lockdown dialog:
+
+- **Freeze configuration changes** (incident mode only; a lockdown always refuses changes of its tenant): every change
+  on the appliance is refused with "incident mode: configuration changes are frozen", except signing in and out and
+  your own account, incident mode and lockdowns, deciding approvals, disabling accounts, ending sessions and revoking
+  tokens, acknowledging alerts, legal holds, pausing groups, jobs (backups and restores), scans, hash hunts, searches
+  and diagnostics;
+- **Freeze deletions:** no snapshot can be deleted, and the scheduler skips retention, garbage collection, orphan
+  cleanup, offsite retention and replica retention (job log `[scheduler] deletions frozen (incident mode): … skipped`);
+- **Freeze restores to production:** restores that replace originals, start with the network connected, attach a
+  disk to a running VM or overwrite files are refused; isolated restores (network disconnected, another path,
+  downloads) still work ([06 Restores](06-restores.md#flagged-snapshots-restores-to-production-need-approval)).
+
+![Incident mode with freezes](images/settings-incident-freeze.png)
+
+The incident status lists the active freezes, and every appliance-wide account sees a banner (a lockdown's freezes
+also show on its tenant's row).
+
+![Incident mode is active with freezes](images/settings-incident-frozen.png)
+
+**Lift freezes** asks for a second person, also when approvals are off: *another* administrator or security officer
+approves `incident.freeze.lift` on **Approvals**. Incident mode or the lockdown stays active; leaving incident mode or
+lifting the lockdown ends its freezes as well. Audit: `incident.enter` and `tenant.lockdown` record the freezes,
+`quorum.request` / `quorum.approve` the lift.
+
+> **Status:** Implemented in Phase 29 (API and scheduler tests, demo backend); a lab run is pending.
+
 ## Attach an offsite copy in the web UI
 
 Use this on a new appliance that went through first boot normally (it has its own recovery key). You need:

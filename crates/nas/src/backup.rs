@@ -8,11 +8,19 @@
 //! false`; files that changed while they were read are marked `inconsistent`
 //! either way, entries that could not be read are reported (and also make the
 //! snapshot not consistent).
+//!
+//! Scheduled full read (Phase 29, `Spec::full_read`): the scan runs without the
+//! previous snapshot (no metadata cache: every file is read), and the result
+//! is compared with it (`chunkstore::drift`): a file with the cache key of the
+//! previous entry (size, mtime, ctime, inode) but other chunks is one the
+//! cache would have kept stale. Logged as one `full-read <source>/<time> {json}`
+//! line after the commit.
 
 use crate::mount::{self, Order};
 use crate::scan::{self, Prev, Report};
 use crate::{source_name, TREE_INDEX};
 use anyhow::{bail, Result};
+use chunkstore::drift::{self, Drift};
 use chunkstore::{Index, Store, TreeEntry};
 use std::os::fd::OwnedFd;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -29,6 +37,8 @@ pub struct Spec {
     pub source_id: u64,
     pub scan: scan::Options,
     pub snapshot: Option<Snap>,
+    /// Phase 29: ignore the metadata cache, compare with the previous snapshot
+    pub full_read: bool,
 }
 
 #[derive(Debug)]
@@ -41,6 +51,8 @@ pub struct Outcome {
     /// a previous snapshot was used as metadata cache
     pub incremental: bool,
     pub report: Report,
+    /// Phase 29: the comparison of a full read (`Spec::full_read`)
+    pub full_read: Option<Drift>,
 }
 
 pub fn load_tree(store: &Store, source: &str, time: u64) -> Result<Vec<TreeEntry>> {
@@ -78,7 +90,10 @@ pub fn backup(store: &Store, share_root: &OwnedFd, spec: &Spec, log: &(dyn Fn(&s
         },
         None => None,
     };
-    let prev = prev_tree.as_deref().map(Prev::new);
+    if spec.full_read {
+        log("full read (Phase 29): every file is read, the metadata cache is not used");
+    }
+    let prev = prev_tree.as_deref().filter(|_| !spec.full_read).map(Prev::new);
 
     let mut snapshot = None;
     let snap_fd;
@@ -102,15 +117,27 @@ pub fn backup(store: &Store, share_root: &OwnedFd, spec: &Spec, log: &(dyn Fn(&s
     };
     let (entries, report) = scan::scan(store, root, &spec.scan, prev.as_ref(), log)?;
     drop(prev);
+    let full_read = spec.full_read.then(|| match (&prev_tree, prev_time) {
+        (Some(old), Some(t)) => {
+            let mut d = Drift::new("metadata-cache", Some(t));
+            drift::tree(&mut d, old, &entries, drift::metadata_differs);
+            d
+        }
+        _ => Drift::none(),
+    });
     drop(prev_tree);
     store.commit_snapshot(&source, time, &[(TREE_INDEX, Index::Tree { entries })])?;
+    if let Some(d) = &full_read {
+        log(&d.line(&source, time));
+    }
     let consistent = snapshot.is_some() && report.inconsistent == 0 && report.error_count == 0;
     Ok(Outcome {
         source,
         time,
         snapshot,
         consistent,
-        incremental: prev_time.is_some(),
+        incremental: prev_time.is_some() && !spec.full_read,
         report,
+        full_read,
     })
 }

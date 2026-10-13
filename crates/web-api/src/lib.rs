@@ -36,10 +36,13 @@ pub mod endpoint;
 pub mod firewall;
 pub mod fleet;
 pub mod forwarding;
+pub mod freeze;
+pub mod fullread;
 pub mod hardware;
 pub mod holds;
 pub mod impersonate;
 pub mod incident;
+pub mod infected;
 pub mod inventory;
 pub mod jobs;
 pub mod keep;
@@ -60,6 +63,7 @@ pub mod reports;
 pub mod rescue;
 pub mod resources;
 pub mod restores;
+pub mod risk;
 pub mod runctl;
 pub mod scan;
 pub mod search;
@@ -241,9 +245,14 @@ impl AppState {
     /// During an API token request the token's user is recorded as
     /// `<user> via token <name>`.
     pub fn audit(&self, actor: &str, action: &str, target: &str, details: serde_json::Value) -> Result<(), ApiError> {
+        let account = actor;
         let actor = crate::tokens::audit_actor(actor);
         self.cat
             .audit(&crate::impersonate::audit_actor(&actor), action, target, &details)?;
+        // Phase 29: risk signals of the acting account (never fails the request)
+        if let Err(e) = crate::risk::observe(&self.cat.conn(), account, action, &details) {
+            eprintln!("risk signals: {}", e.1);
+        }
         Ok(())
     }
 }
@@ -595,6 +604,7 @@ pub fn router(st: St) -> Router {
         )
         .route("/stats/trends", get(changes::trends))
         .route("/snapshots/{tenant}/{source}/{time}/scan", post(scan::scan_snapshot))
+        .route("/snapshots/{tenant}/{source}/{time}/scan-back", post(scan::scan_back))
         .route("/scans", get(scan::list_scans))
         .route("/scan/rules", get(scan::list_rules))
         .route(
@@ -686,6 +696,8 @@ pub fn router(st: St) -> Router {
         .merge(lockdown::routes())
         .merge(threat::routes())
         .merge(devices::routes())
+        .merge(risk::routes())
+        .merge(fullread::routes())
         .fallback(api_not_found);
     // peer API: only on replication TLS connections (see `connection_scope`)
     let peer = Router::new()
@@ -710,6 +722,7 @@ pub fn router(st: St) -> Router {
         .route("/api/openapi.json", get(openapi::document))
         .fallback(spa::serve)
         .layer(axum::extract::DefaultBodyLimit::max(1 << 20))
+        .layer(middleware::from_fn_with_state(st.clone(), freeze::layer))
         .layer(middleware::from_fn_with_state(st.clone(), tokens::layer))
         .layer(middleware::from_fn(impersonate::layer))
         .layer(middleware::from_fn(connection_scope))

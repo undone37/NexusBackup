@@ -30,6 +30,7 @@
   import JobState from '../components/JobState.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import KpiTile from '../components/KpiTile.svelte';
+  import ChangeTracking from '../components/ChangeTracking.svelte';
   import StackedBars from '../components/charts/StackedBars.svelte';
   import TrendLine from '../components/charts/TrendLine.svelte';
   import Ring from '../components/charts/Ring.svelte';
@@ -544,6 +545,7 @@
         </details>
       </section>
     {/if}
+    {#if kpi.full_reads?.sources}<ChangeTracking summary={kpi.full_reads} />{/if}
   </div>
 {:else if !kpiError}
   <p class="muted" aria-busy="true">{t.loading}</p>

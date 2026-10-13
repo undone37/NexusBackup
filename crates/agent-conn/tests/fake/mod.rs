@@ -31,11 +31,11 @@ pub enum Malice {
 
 #[derive(Clone)]
 pub struct CacheEntry {
-    size: u64,
-    mtime: i64,
-    ctime: i64,
-    inode: u64,
-    chunks: Vec<(Hash, u32)>,
+    pub size: u64,
+    pub mtime: i64,
+    pub ctime: i64,
+    pub inode: u64,
+    pub chunks: Vec<(Hash, u32)>,
 }
 
 pub struct State {

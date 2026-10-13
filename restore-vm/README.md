@@ -88,9 +88,12 @@ Each request is one JSON line. Each reply is one JSON line:
   zero-filled and listed in `errors`, so the archive stays valid.
 - `{"cmd":"rules","rules":[{"name","text"}…]}` compiles YARA rules with `yarac`
   (Phase 21e, docs/malware-scan.md; one namespace per file).
-- `{"cmd":"scan","limits":{max_size,file_timeout,budget,threads}}` scans every
-  mounted file system with `yara --scan-list` (symlinks never followed) and
-  replies `{"ok":{files,skipped,errors,matches,matches_total,complete,seconds}}`.
+- `{"cmd":"scan","limits":{max_size,file_timeout,budget,threads,stop_on_match?}}`
+  scans every mounted file system with `yara --scan-list` (symlinks never
+  followed) and replies
+  `{"ok":{files,skipped,errors,matches,matches_total,complete,stopped,seconds}}`.
+  `stop_on_match` (optional, default false; sent only by the scan back, Phase 29)
+  ends the scan at the first match: `stopped: true`, `complete: false`.
 - `{"cmd":"scantar","limits":{…}}` replies `{"ok":"send"}`; the appliance then
   sends `[u32 BE len][bytes]` frames of a tar (zero-length frame = end) of a
   file-tree or container snapshot, and the agent replies with the report.

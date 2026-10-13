@@ -653,6 +653,10 @@ pub async fn create_job(State(st): State<St>, ctx: Ctx, J(r): J<JobReq>) -> ApiR
     }
     // Phase 28: a locked-down tenant gets no backups and no restores that overwrite
     crate::lockdown::refuse_job(&st.cat.conn(), &r.tenant, &r.kind, &params)?;
+    // Phase 29: frozen restores to production; flagged snapshots to production need approval
+    if let Some(res) = crate::infected::gate(&st, &ctx, &r.kind, &r.tenant, &params)? {
+        return Ok(res);
+    }
     if params.get("replace").is_some() {
         return request_replace(&st, &ctx, &r.kind, &r.tenant, params).map(|o| crate::quorum::accepted(o, json!({})));
     }
@@ -922,7 +926,8 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
                     (SELECT json_object('job', job_id, 'finished', finished, 'matches', matches_total,
                        'complete', json(CASE WHEN complete = 1 THEN 'true' ELSE 'false' END)) FROM snapshot_scans x
                      WHERE x.tenant = s.tenant AND x.source = s.source AND x.time = s.time
-                     ORDER BY job_id DESC LIMIT 1) AS scan, s.scan_state AS scan_state
+                     ORDER BY job_id DESC LIMIT 1) AS scan, s.scan_state AS scan_state,
+                    s.clean_point AS clean_point
              FROM snapshots s
 
              LEFT JOIN legal_holds h ON h.tenant = s.tenant AND h.source = s.source AND h.time = s.time
@@ -961,6 +966,12 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
                 "scan": r.get::<_, Option<String>>("scan")?.and_then(|v| serde_json::from_str::<Value>(&v).ok()),
                 // Phase 28: its verdict `clean` | `hit` | `incomplete`, null = unscanned
                 "scan_state": r.get::<_, Option<String>>("scan_state")?,
+                // Phase 29: restoring it to production needs approval `restore.infected`
+                "flagged": r.get::<_, Option<i64>>(15)?.is_none()
+                    && (r.get::<_, Option<String>>(12)?.is_some()
+                        || r.get::<_, Option<String>>("scan_state")?.as_deref() == Some("hit")),
+                // Phase 29: marked by a scan back as the source's recommended restore point
+                "clean_point": r.get::<_, Option<i64>>("clean_point")?,
             }))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -984,6 +995,11 @@ pub async fn delete_snapshot(
         return Err(ApiError::forbidden());
     }
     crate::lockdown::refuse(&st.cat.conn(), &tenant, "deletes")?;
+    if catalog::incident::frozen(&st.cat.conn(), &tenant)?.deletions {
+        return Err(ApiError::conflict(
+            "incident mode: deletions are frozen; lifting the freeze needs a second approver",
+        ));
+    }
     let row: Option<(bool, i64, Option<String>)> = st
         .cat
         .conn()

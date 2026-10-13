@@ -1,4 +1,4 @@
-import type { Impersonation, IncidentBanner, RestorePriority, User } from './types';
+import type { FreezeBanner, Impersonation, IncidentBanner, RestorePriority, StepUpState, User } from './types';
 
 // The CSRF token lives in memory only (never localStorage); after a reload it is
 // recovered from GET /auth/me.
@@ -6,6 +6,7 @@ import type { Impersonation, IncidentBanner, RestorePriority, User } from './typ
 // `impersonating`: "view as tenant" is active (Phase 19b; from GET /auth/me): banner + end button.
 // `incident`: incident mode is active (Phase 21b; from GET /auth/me, set at once by Settings → Incident mode).
 // `priority`: the restore-priority switch (Phase 22b; GET /restore-priority, set at once by the Dashboard).
+// `freeze` / `stepUp`: incident-mode freezes and the account's risk mark (Phase 29; from GET /auth/me).
 export const session = $state<{
   user: User | null;
   csrf: string | null;
@@ -14,6 +15,8 @@ export const session = $state<{
   impersonating: Impersonation | null;
   incident: IncidentBanner | null;
   priority: RestorePriority | null;
+  freeze: FreezeBanner | null;
+  stepUp: StepUpState | null;
 }>({
   user: null,
   csrf: null,
@@ -22,6 +25,8 @@ export const session = $state<{
   impersonating: null,
   incident: null,
   priority: null,
+  freeze: null,
+  stepUp: null,
 });
 
 export function setSession(user: User | null, csrf: string | null) {

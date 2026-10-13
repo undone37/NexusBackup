@@ -56,6 +56,9 @@
     if (running && !(await askConfirm(t.runctl.cancelConfirm(Number(id))))) return;
     if (await act(post(`/jobs/${encodeURIComponent(id)}/cancel`), running ? t.runctl.cancelling : t.jobs.cancelled)) load();
   }
+  // Phase 29: the scan back's scanned snapshots and recommended restore point
+  import ScanBackResult from '../components/ScanBackResult.svelte';
+  import type { ScanBackResult as ScanBackResultData } from '../lib/types';
 </script>
 
 <div class="page-head">
@@ -197,6 +200,12 @@
     </section>
   {/if}
   {@const res = job.result}
+  {#if res && job.kind === 'scan_back' && Array.isArray((res as unknown as ScanBackResultData).scanned)}
+    <section class="card" aria-labelledby="jr-sb">
+      <h2 id="jr-sb">{t.jobs.result}</h2>
+      <ScanBackResult result={res as unknown as ScanBackResultData} tenant={job.tenant} />
+    </section>
+  {/if}
   {#if res && job.kind.startsWith('plugin_') && job.kind !== 'plugin_backup'}
     <section class="card" aria-labelledby="jr">
       <h2 id="jr">{t.jobs.result}</h2>

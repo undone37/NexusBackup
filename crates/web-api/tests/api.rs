@@ -3775,6 +3775,8 @@ fn registered_routes() -> std::collections::BTreeSet<(String, String)> {
         include_str!("../src/devices.rs"),
         include_str!("../src/passkeys.rs"),
         include_str!("../src/tenant_idp.rs"),
+        include_str!("../src/fullread.rs"),
+        include_str!("../src/risk.rs"),
     ] {
         for piece in src.split(".route(").skip(1) {
             let piece = piece.split(".merge(").next().unwrap().split("\n}").next().unwrap();
@@ -4091,6 +4093,16 @@ async fn tenant_admin_routes_classified() {
         ("GET", "/auth/devices", "/api/v1/auth/devices".into(), none(), 'Y'),
         ("DELETE", "/auth/devices/{fp}", "/api/v1/auth/devices/0123456789abcdef".into(), none(), 'Y'),
         ("PUT", "/auth/email", "/api/v1/auth/email".into(), Some(json!({"email": null})), 'Y'),
+        // Phase 29: full read of own groups, scan back in own tenant, own step-up; freezes and
+        // risk marks are the provider's
+        ("PUT", "/groups/{id}/full-read", format!("/api/v1/groups/{grp}/full-read"), Some(json!({"days": 5})), 'Y'),
+        ("GET", "/full-reads", "/api/v1/full-reads".into(), none(), 'Y'),
+        ("POST", "/snapshots/{tenant}/{source}/{time}/scan-back", format!("{snap}/scan-back"), e(), 'Y'),
+        ("POST", "/incident/freeze/lift", "/api/v1/incident/freeze/lift".into(), e(), 'N'),
+        ("POST", "/tenants/{name}/lockdown/freeze/lift", "/api/v1/tenants/acme/lockdown/freeze/lift".into(), e(), 'N'),
+        ("POST", "/auth/step-up", "/api/v1/auth/step-up".into(), e(), 'Y'),
+        ("GET", "/risk", "/api/v1/risk".into(), none(), 'N'),
+        ("POST", "/users/{id}/risk/clear", "/api/v1/users/1/risk/clear".into(), e(), 'N'),
     ];
     let classified: std::collections::BTreeSet<(String, String)> =
         table.iter().map(|(m, p, ..)| (m.to_string(), p.to_string())).collect();

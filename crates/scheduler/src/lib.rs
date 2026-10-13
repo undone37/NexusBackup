@@ -80,6 +80,8 @@ pub mod firewall;
 mod fleecing;
 mod fleet;
 pub mod forward;
+mod freeze;
+mod fullread;
 mod holds;
 mod inventory;
 mod keep;
@@ -101,6 +103,7 @@ mod restore_files;
 pub mod run;
 mod runctl;
 mod scan;
+mod scanback;
 pub mod schedule;
 pub mod search;
 mod selection;
@@ -369,6 +372,8 @@ struct GroupRow {
     file_filters: Value,
     /// Phase 28: SHA-256 per file in the name index (IOC hash hunt)
     file_hashes: bool,
+    /// Phase 29: days between full reads (effective, 0 = off; catalog::fullread)
+    full_read_days: i64,
 }
 
 pub struct Scheduler {
@@ -873,7 +878,7 @@ impl Scheduler {
         let mut st = c.prepare(
             "SELECT g.id, g.tenant, g.source_id, g.guests, p.schedule, p.gfs, p.offsite, s.kind, \
              g.mode, g.selector, g.exclude, g.exclude_disks, g.exclude_disks_mode, g.parallel_guests, p.file_filters, \
-             g.file_hashes \
+             g.file_hashes, g.full_read_days \
              FROM groups g JOIN policies p ON p.id = g.policy_id JOIN sources s ON s.id = g.source_id ORDER BY g.id",
         )?;
         let rows = st.query_map([], |r| {
@@ -946,6 +951,7 @@ impl Scheduler {
                 parallel: r.get::<_, u32>(13)?.clamp(1, 8),
                 file_filters: serde_json::from_str(&r.get::<_, String>(14)?).unwrap_or_default(),
                 file_hashes: r.get(15)?,
+                full_read_days: catalog::fullread::days(r.get(16)?, &kind),
             })
         })?;
         let mut rows: Vec<GroupRow> = rows.collect::<std::result::Result<_, _>>()?;
@@ -1217,6 +1223,9 @@ impl Scheduler {
             if self.hold_for_scan(&job)? {
                 continue; // scan first: waits for its snapshot_scan (scan.rs)
             }
+            if self.drive_scan_back(&job)? {
+                continue; // scan back: drives its snapshot_scan jobs (scanback.rs)
+            }
             let plan = match self.plan(&job) {
                 Ok(p) => p,
                 Err(e) => {
@@ -1312,6 +1321,10 @@ impl Scheduler {
                 log.push_str(&format!("[scheduler] {why}\n"));
                 f.outcome = Outcome::Failed { alert: None };
             }
+        }
+        if job.kind == "backup" {
+            // Phase 29: full reads (fullread.rs); snapshots committed before a failure count too
+            self.full_read_bookkeeping(&job, &mut log)?;
         }
         let state = match f.outcome {
             Outcome::Ok => "ok",
@@ -2469,8 +2482,11 @@ impl Scheduler {
     }
 
     pub fn plan(&self, job: &Job) -> Result<Plan> {
+        self.check_restore_guard(job)?; // freeze.rs (Phase 29)
         let mut plan = self.plan_job(job)?;
         self.patch_file_hashes(job, &mut plan)?;
+        self.patch_full_read(job, &mut plan)?; // fullread.rs
+        self.patch_freeze(job, &mut plan)?; // freeze.rs
         Ok(plan)
     }
 

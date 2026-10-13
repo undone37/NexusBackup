@@ -12,7 +12,7 @@ a different administrator or security officer must approve:
 |---|---|
 | Configuration | deleting a tenant, source, policy, protection group or agent (`tenant delete`, `source delete`, …); attaching the offsite copy of a lost appliance as a tenant (`tenant attach_offsite`: after the approval the requester enters the old recovery key once, see [14 Disaster recovery](14-disaster-recovery.md#attach-an-offsite-copy-in-the-web-ui)) |
 | Retention | lowering any GFS value, switching off **Copy offsite** or relaxing the required consistency (`policy update`); moving a group to a weaker policy (`group update`) |
-| Restore | replacing the original guest with a restored copy (`restore replace`, see [06 Restores](06-restores.md#replace-the-original-guest)) |
+| Restore | replacing the original guest with a restored copy (`restore replace`, see [06 Restores](06-restores.md#replace-the-original-guest)); restoring a flagged snapshot to production (`restore of a flagged snapshot to production`, action `restore.infected`; with approvals disabled administrators only, see [06 Restores](06-restores.md#flagged-snapshots-restores-to-production-need-approval)) |
 | Backups kept until a date | **Back up now** with a **Keep until** date beyond the limit (`backup keep`: the approver sees the date, the job and the limit; approving starts the backup); raising that limit (`settings keep_until`). See [05 Policies and groups](05-policies-and-groups.md#back-up-now) |
 | Accounts | granting **Administrator** or **Security officer**, re-enabling such an account, a new activation code for one (`user update`) |
 | Storage | deleting a snapshot by hand (`snapshot delete`; only unlocked snapshots without a legal hold can be requested); releasing a legal hold (`snapshot hold release`, see [06 Restores](06-restores.md#legal-hold)); a garbage collection that would delete more than 20 % of a tenant's chunks (`gc_large`, requested by `scheduler`) |
@@ -33,6 +33,9 @@ a different administrator or security officer must approve:
 Rules:
 
 - The requester can never decide their own request. Any **other** enabled administrator or security officer can.
+- Leaving incident mode (`incident leave`), lifting a tenant lockdown (`tenant lockdown lift`) and lifting incident or
+  lockdown freezes (`lift freezes`, action `incident.freeze.lift`) always need a second person, also with approvals
+  disabled ([14 Disaster recovery](14-disaster-recovery.md#freezes-during-an-incident)).
 - **Tenant admins** need the same approvals as administrators for the same actions (for example deleting a group or
   moving it to a weaker policy). The approvers are always the provider's administrators and security officers: a
   tenant admin never approves or rejects anything. The **Approvals** page of a tenant admin lists only their own

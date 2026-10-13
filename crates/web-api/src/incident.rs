@@ -14,6 +14,13 @@
 //! groups the incident paused are resumed (to their earlier pause, if any),
 //! the alert is resolved; holds stay. State: setting `incident` (the last
 //! incident is kept with `active: false`); history: the audit log.
+//!
+//! Freezes (Phase 29, docs/control-plane.md "Incident freezes"): entering may
+//! also freeze configuration changes (every changing API call is refused, see
+//! crate::freeze), deletions (snapshot deletes, retention, GC, offsite and
+//! replica pruning) and restores to production (catalog::incident). They end
+//! with incident mode, or earlier with the approval action
+//! `incident.freeze.lift` (always a second person, like leaving).
 
 use crate::auth::{reauth, ClientIp, Ctx};
 use crate::{validate, ApiError, ApiResult, St, J};
@@ -37,6 +44,7 @@ pub fn routes() -> Router<St> {
     Router::new()
         .route("/incident", get(status).post(enter))
         .route("/incident/leave", post(leave))
+        .route("/incident/freeze/lift", post(lift_freeze))
 }
 
 /// The stored incident (active or the last one), if any.
@@ -66,8 +74,70 @@ pub fn banner(c: &Connection, ctx: &Ctx) -> ApiResult<Value> {
     }
     Ok(load(c)?.filter(|v| v["active"] == true).map_or(
         Value::Null,
-        |v| json!({"since": v["since"], "by": v["by"], "reason": v["reason"]}),
+        |v| json!({"since": v["since"], "by": v["by"], "reason": v["reason"], "freeze": v["freeze"]}),
     ))
+}
+
+/// The freeze banner (`/auth/me`): `{config, deletions, restores, tenants:
+/// [{tenant, deletions, restores}]}` for appliance-wide accounts while anything
+/// is frozen, else null.
+pub fn freeze_banner(c: &Connection, ctx: &Ctx) -> ApiResult<Value> {
+    if ctx.scope().is_some() || ctx.user.role == "tenant_user" {
+        return Ok(Value::Null);
+    }
+    let a = catalog::incident::appliance(c)?;
+    let names: Vec<String> = c
+        .prepare("SELECT tenant FROM tenant_lockdowns WHERE active = 1 ORDER BY tenant")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    let mut tenants = Vec::new();
+    for t in names {
+        let f = catalog::incident::tenant(c, &t)?;
+        if f.any() {
+            tenants.push(json!({"tenant": t, "deletions": f.deletions, "restores": f.restores}));
+        }
+    }
+    if !a.any() && tenants.is_empty() {
+        return Ok(Value::Null);
+    }
+    Ok(json!({"config": a.config, "deletions": a.deletions, "restores": a.restores, "tenants": tenants}))
+}
+
+/// The freeze options of an enter request (`config` only appliance-wide).
+#[derive(Deserialize, Default, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+pub struct FreezeReq {
+    #[serde(default)]
+    pub config: bool,
+    #[serde(default)]
+    pub deletions: bool,
+    #[serde(default)]
+    pub restores: bool,
+}
+
+impl FreezeReq {
+    pub fn json(&self) -> Value {
+        json!({"config": self.config, "deletions": self.deletions, "restores": self.restores})
+    }
+    pub fn any(&self) -> bool {
+        self.config || self.deletions || self.restores
+    }
+}
+
+/// The pending `incident.freeze.lift` request of a scope (`appliance` or a tenant).
+pub fn freeze_lift_quorum(c: &Connection, tenant: Option<&str>) -> ApiResult<Option<i64>> {
+    Ok(c.query_row(
+        "SELECT id FROM quorum WHERE action = ?1 AND state = 'pending'
+           AND json_extract(params, '$.scope') = ?2 AND (?3 IS NULL OR json_extract(params, '$.tenant') = ?3)
+         ORDER BY id DESC LIMIT 1",
+        params![
+            catalog::incident::FREEZE_LIFT,
+            if tenant.is_some() { "tenant" } else { "appliance" },
+            tenant
+        ],
+        |r| r.get(0),
+    )
+    .optional()?)
 }
 
 fn leave_quorum(c: &Connection) -> ApiResult<Option<i64>> {
@@ -88,6 +158,7 @@ pub async fn status(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>> {
     let c = st.cat.conn();
     let mut v = load(&c)?.unwrap_or_else(|| json!({"active": false}));
     v["leave_quorum"] = json!(leave_quorum(&c)?);
+    v["freeze_lift_quorum"] = json!(freeze_lift_quorum(&c, None)?);
     Ok(Json(v))
 }
 
@@ -114,6 +185,9 @@ pub struct EnterReq {
     /// absent = pause every group; `[]` = none
     #[serde(default)]
     groups: Option<Vec<i64>>,
+    /// Phase 29: what else is frozen while the incident lasts
+    #[serde(default)]
+    freeze: FreezeReq,
     current_password: Option<String>,
     current_totp: Option<String>,
 }
@@ -202,12 +276,25 @@ pub async fn enter(State(st): State<St>, ctx: Ctx, ClientIp(ip): ClientIp, J(r):
         }
         let sessions = tx.execute("DELETE FROM sessions WHERE id_hash != ?1", [&ctx.sid])?;
         let tokens = tx.execute("DELETE FROM api_tokens", [])?;
+        let frozen: Vec<&str> = [
+            (r.freeze.config, "configuration"),
+            (r.freeze.deletions, "deletions"),
+            (r.freeze.restores, "restores to production"),
+        ]
+        .into_iter()
+        .filter_map(|(on, what)| on.then_some(what))
+        .collect();
         let msg = format!(
             "incident mode entered by {}: {reason} ({} snapshots held, {} groups paused, {sessions} sessions and \
-             {tokens} API tokens ended)",
+             {tokens} API tokens ended{})",
             ctx.name(),
             held.len(),
-            paused.len()
+            paused.len(),
+            if frozen.is_empty() {
+                String::new()
+            } else {
+                format!("; frozen: {}", frozen.join(", "))
+            }
         );
         tx.execute(
             "INSERT INTO alerts (ts, last_ts, severity, kind, key, message) VALUES (?1, ?1, 'critical', 'incident', ?2, ?3)",
@@ -218,6 +305,7 @@ pub async fn enter(State(st): State<St>, ctx: Ctx, ClientIp(ip): ClientIp, J(r):
             "active": true, "since": now, "by": ctx.name(), "reason": reason,
             "hold": r.hold.as_ref().map(|h| json!({"tenants": h.tenants, "sources": h.sources, "from": h.from, "to": h.to})),
             "held": held, "paused": paused, "sessions_ended": sessions, "tokens_revoked": tokens, "alert": alert,
+            "freeze": r.freeze.json(),
         });
         catalog::set_setting(&tx, SETTING, &v.to_string())?;
         tx.commit()?;
@@ -278,6 +366,65 @@ pub fn execute(c: &Connection, p: &Value, approver: &str, requested_by: &str) ->
     v["ended_by"] = json!(requested_by);
     v["approved_by"] = json!(approver);
     v["resumed"] = json!(resumed);
+    catalog::set_setting(c, SETTING, &v.to_string())?;
+    Ok(())
+}
+
+/// `POST /incident/freeze/lift`: the approval request `incident.freeze.lift`
+/// for the appliance-wide freezes (always a second person).
+pub async fn lift_freeze(State(st): State<St>, ctx: Ctx) -> ApiResult<Response> {
+    ctx.require(LEAVERS)?;
+    if ctx.scope().is_some() {
+        return Err(ApiError::forbidden());
+    }
+    let since = {
+        let c = st.cat.conn();
+        let Some(v) = load(&c)?.filter(|v| v["active"] == true) else {
+            return Err(ApiError::conflict("incident mode is not active"));
+        };
+        if !catalog::incident::appliance(&c)?.any() {
+            return Err(ApiError::conflict("nothing is frozen"));
+        }
+        if freeze_lift_quorum(&c, None)?.is_some() {
+            return Err(ApiError::conflict("lifting the freezes is already requested"));
+        }
+        v["since"].clone()
+    };
+    let id = crate::quorum::pending(
+        &st,
+        ctx.name(),
+        catalog::incident::FREEZE_LIFT,
+        "appliance",
+        json!({"scope": "appliance", "since": since}),
+    )?;
+    Ok((StatusCode::ACCEPTED, Json(json!({"quorum_id": id}))).into_response())
+}
+
+/// Quorum execute arm of `incident.freeze.lift` (appliance or tenant scope):
+/// the freezes end, incident mode / the lockdown stays.
+pub fn execute_freeze_lift(c: &Connection, p: &Value, approver: &str) -> ApiResult<()> {
+    let off = json!({"config": false, "deletions": false, "restores": false});
+    let now = catalog::now();
+    if p["scope"] == "tenant" {
+        let tenant = p["tenant"].as_str().unwrap_or_default();
+        let mut v = crate::lockdown::load(c, tenant)?
+            .filter(|v| v["active"] == true && v["since"] == p["since"])
+            .ok_or_else(|| ApiError::conflict("this lockdown is no longer active"))?;
+        v["freeze_before_lift"] = v["freeze"].take();
+        v["freeze"] = off;
+        v["freeze_lifted"] = json!({"at": now, "approved_by": approver});
+        c.execute(
+            "UPDATE tenant_lockdowns SET state = ?2 WHERE tenant = ?1",
+            params![tenant, v.to_string()],
+        )?;
+        return Ok(());
+    }
+    let mut v = load(c)?
+        .filter(|v| v["active"] == true && v["since"] == p["since"])
+        .ok_or_else(|| ApiError::conflict("this incident is no longer active"))?;
+    v["freeze_before_lift"] = v["freeze"].take();
+    v["freeze"] = off;
+    v["freeze_lifted"] = json!({"at": now, "approved_by": approver});
     catalog::set_setting(c, SETTING, &v.to_string())?;
     Ok(())
 }

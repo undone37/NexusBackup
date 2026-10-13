@@ -50,7 +50,7 @@ Status: **has** = built (lab-proven at least), **partial** = some of it built or
 | **Architecture / storage / dedup** | | | |
 | Topology | primary server + media servers + storage units; Flex (containerised instances), Flex Scale (4–16 nodes) [8] | one appliance; scale-out only as groundwork (docs/scale-out.md) | different by design |
 | Dedup | MSDP: global per pool, client-side dedup, fingerprint cache, cloud tier (MSDP-C), Instant Access from MSDP [5][10] | per-tenant keyed dedup, agent-side chunking, always-on XChaCha20 envelope encryption | has |
-| Incremental change tracking | Accelerator (track log, change journal) with scheduled **forced rescan** [12] | dirty bitmaps (PVE), USN journal (Windows), metadata cache (Linux, NAS); a full read only happens when tracking is lost | partial (no scheduled full read) |
+| Incremental change tracking | Accelerator (track log, change journal) with scheduled **forced rescan** [12] | dirty bitmaps (PVE), USN journal (Windows), metadata cache (Linux, NAS); scheduled full read per group with drift check (Phase 29) | has |
 | Immutability | MSDP WORM in compliance or enterprise mode (enterprise: security admin can lift locks), cloud Object Lock, local WORM cache for MSDP-C (11.2) [5][13] | extend-only store locks on a compliance clock, no role can shorten them; S3 Object Lock offsite | has (stricter) |
 | **Lifecycle / replication** | | | |
 | Copy management | Storage lifecycle policies: any chain of backup → duplicate → replicate → import, retention per copy, retries until done [14] | local copy + one offsite target per tenant + replication; offsite retention = largest GFS class of the tenant's policies | partial |
@@ -60,10 +60,10 @@ Status: **has** = built (lab-proven at least), **partial** = some of it built or
 | **Security / cyber resilience** | | | |
 | Multi-person authorization | MPA tickets for image expiry, hold removal, security settings, keys, policy changes, WORM changes; exempt users possible [16] | quorum on all destructive/weakening actions, no exemptions | has |
 | Backup anomaly detection | ML clustering on image size, file count, KB transferred, dedup rate, job duration; sensitivity setting [17] | change-rate and compression anomalies, ransom-note names, mass renames, snapshot diff, trend sparklines | has (no duration signal) |
-| User-behaviour / risk engine | unusual sign-in time, unusual policy updates/deletes, MFA challenge for suspicious configuration changes, risk score [2][3] | failed-login metric, dormant-account disable, posture checks; new-device notice is Commvault Tier 1 #4 | partial |
+| User-behaviour / risk engine | unusual sign-in time, unusual policy updates/deletes, MFA challenge for suspicious configuration changes, risk score [2][3] | failed-login metric, dormant-account disable, posture checks, new-device notice (Phase 28), deterministic risk signals with step-up (Phase 29) | has (no score) |
 | Malware scanning | on-demand and anomaly-triggered scans, Trend Micro, Sophos, NextGen scanner, YARA (11.1), abort on first infection (11.1), file SHA-256 hashes for IOC matching (11.2), permission "recover from infected images" [4][5][18] | YARA in an offline restore micro-VM, "scan first" restores; scheduled scans and IOC hashes are Commvault Tier 1 #1/#2 | partial |
 | Clean restore | `bpcleanrestore`: infected files replaced by their last clean version [19] | restore dialogs default to the newest clean snapshot; synthetic clean restore is Commvault Tier 2 | partial |
-| Freeze / lockdown | freeze mode: blocks configuration changes, backups/SLP, restores and image expiry; maintenance mode auto-reverts [4][20] | incident mode: holds, paused groups, all other sessions and tokens ended; configuration stays editable | partial |
+| Freeze / lockdown | freeze mode: blocks configuration changes, backups/SLP, restores and image expiry; maintenance mode auto-reverts [4][20] | incident mode: holds, paused groups, all other sessions and tokens ended, optional freezes of configuration, deletions and restores to production (Phase 29); tenant lockdown with its own freezes | has |
 | Least privilege | RBAC with custom roles and object groups, role elevation (11.2) [5] | fixed roles (admin, operator, SO, viewer, tenant roles), scoped API tokens, passkeys | partial |
 | Post-quantum crypto | hybrid PQC for TLS 1.3 via the OQS provider (11.0) [3] | XChaCha20 data (256-bit keys, quantum-robust); X25519 in TLS, tenant escrow sealed boxes and replication key export | missing |
 | Management access control | network access control for web APIs (11.1) [4] | inbound firewall per service with approval | has |
@@ -121,6 +121,31 @@ new-device sign-in notice (#4), synthetic clean restore (NetBackup `bpcleanresto
 | 3 | **Scan back to the last clean snapshot.** Job `scan_back {source, from}`: scans `from`, then older snapshots one by one, each scan **stopping at its first match**; the first complete clean scan is marked "verified clean" and offered as the restore point; optional bisect over long chains. Abort-on-first-hit also for normal scans (`stop_on_match`, default on for `scan_first`) | abort malware scan on infection, "move to the next recovery point" (11.1) [4] | S | `crates/scheduler` scan.rs, restore micro-VM scan runner (`nexus-pve scan` flag), Snapshots page; complements Commvault #1 (schedules) |
 | 4 | **Freeze options for incident mode.** Checkboxes when entering: *freeze configuration* (every configuration-changing API call is refused, including by admins, except incident, approvals and user lock/disable endpoints); *freeze deletions* (retention, GC, offsite retention and replication pruning paused; locks keep running); *freeze restores to production* (only downloads and isolated restore tests). Leaving stays a two-person action. Pairs with Commvault #3 (tenant-scoped lockdown) | freeze mode, maintenance mode (11.1) [4][20] | S–M | `crates/web-api/src/incident.rs` (middleware check), `crates/scheduler` (maintenance gates), manual 14 |
 | 5 | **Risk signals on privileged activity.** Deterministic rules, no ML: sign-in at an hour the account has not used in 90 days; burst of weakening requests (≥ N retention/approval/firewall/forwarding changes in an hour); bulk deletes or hold-release requests; download volume far above the account's median; first API token use from a new network. Raises `user_risk` (category security) and marks the session "step-up": the next sensitive action asks for password + TOTP/passkey again. Same tables as Commvault #4 (seen devices) | risk engine: unusual sign-in time, unusual policy changes, MFA for suspicious configuration changes [2][3] | S–M | `crates/web-api` auth/audit hooks, `crates/catalog` (per-account activity summary), alerts |
+
+**Status (Phase 29): all five Tier 1 items are implemented** (API, scheduler, connector and UI tests, demo backend;
+lab runs pending). Deviations from the proposals above:
+
+- **#1 Full read:** a per-group setting (`groups.full_read_days`, `PUT /groups/{id}/full-read`), not a policy field;
+  on by default (90 days PVE VM groups, 30 days agents/NAS/TrueNAS), 0 = off. Containers and plugin sources have no
+  full read. A PVE VM keeps reusing its dirty bitmap during the full read (so the tracker's report can be compared);
+  without a reusable bitmap there is no baseline. Drift raises `change_tracking` as **critical** (not warning); the
+  result per source is on the Dashboard (`GET /full-reads`).
+- **#2 Infected restores:** applies to every **flagged** snapshot (anomaly or scan hit, not cleared), not only YARA
+  hits. No forced `link_down`: the dialogs offer the isolated variants and a production restore becomes the approval
+  `restore.infected`; with approvals off only administrators (security officers do not restore at all). Downloads,
+  mounts and other isolated restores stay open to the usual roles; API tokens are refused.
+- **#3 Scan back:** job `scan_back` running one ordinary `snapshot_scan` per snapshot with `stop_on_match`, newest
+  first, at most 30 (up to 100) snapshots; the recommended snapshot is marked (`clean_point`, badge "Recommended
+  restore point") and preferred by the restore dialogs. No bisect; stop-on-match is used for scan back only (normal
+  scans and scan first still list all matches).
+- **#4 Freezes:** checkboxes when entering incident mode (configuration, deletions, restores to production) and, for
+  deletions and restores, in the tenant lockdown dialog. A frozen configuration still accepts jobs (backups continue),
+  holds, pauses, scans, approvals and account disabling; updates are refused like other configuration changes.
+  Lifting a freeze is its own second-person approval (`incident.freeze.lift`); leaving incident mode ends it too.
+- **#5 Risk signals:** four rules (unusual hour, >= 5 weakening requests or >= 10 delete requests per hour, download
+  volume); the "first API token use from a new network" rule was left out (Phase 28's device records cover sessions
+  only). A mark lasts 24 hours: step-up once per session (428 until `POST /auth/step-up`), API tokens read-only,
+  cleared by a second person (`GET /risk`, `POST /users/{id}/risk/clear`).
 
 ### Tier 2: clear benefit, larger effort or smaller audience
 
@@ -196,12 +221,13 @@ new-device sign-in notice (#4), synthetic clean restore (NetBackup `bpcleanresto
 1. **Numbering.** The Commvault review proposes its Tier 1 as Phase 28 and its Tier 2 as Phase 29. Proposal: Phase 29
    = Commvault Tier 2 items chosen by the maintainer **plus** NetBackup Tier 1 (#1–#5, all S–M, several touch the
    same files as Commvault #1/#3/#4); NetBackup Tier 2 as Phase 30, each item decided separately.
-2. **Forced full read defaults (#1).** On by default (30 days agents/NAS, 90 days PVE), or off with a recommendation?
+2. **Forced full read defaults (#1).** *Decided in Phase 29: on by default per group (90/30 days).* On by default (30 days agents/NAS, 90 days PVE), or off with a recommendation?
    A full read of a PVE VM costs I/O on production storage and fleecing space. Proposal: on, staggered by source id
    so not all guests rescan on the same night, skipped while restore priority is on.
-3. **Infected-snapshot restores (#2).** Approval (four eyes) or only security officers? Proposal: approval when
+3. **Infected-snapshot restores (#2).** *Decided in Phase 29: approval; administrators only with approvals off.* Approval (four eyes) or only security officers? Proposal: approval when
    approvals are on; security officer only when they are off.
-4. **Freeze configuration (#4).** Should a frozen appliance still accept updates (security fixes during an incident)?
+4. **Freeze configuration (#4).** *Phase 29: a frozen configuration refuses updates like any change; lift the
+   freeze (approval) to update.* Should a frozen appliance still accept updates (security fixes during an incident)?
    Proposal: OS updates allowed only through an approval; agent rollouts (Phase 27) frozen.
 5. **Second offsite target (Tier 2).** This revisits plan §2 "Offsite retention identical to local". Proposal: keep
    "identical" as the default and allow *longer* offsite retention only (never shorter), so the original customer

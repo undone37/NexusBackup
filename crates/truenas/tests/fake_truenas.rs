@@ -56,6 +56,7 @@ fn spec() -> Spec {
         recursive: true,
         existing: None,
         pace: None,
+        full_read: false,
     }
 }
 
@@ -371,4 +372,45 @@ fn existing_snapshots_mode() {
     )]);
     let r4 = backup(&l.store, &mut l.nas, &l.t, &ex(stale), &mut |_| {}).unwrap();
     assert!(r4.committed[0].full);
+}
+
+/// Phase 29: a full read reads every file and finds the in-place change zfs diff
+/// (the fake reports no `M` for an edit of the same object) and the size/mtime
+/// check missed.
+#[test]
+fn full_read_finds_what_zfs_diff_missed() {
+    let mut l = lab();
+    let d = l.data.clone();
+    put(&d.join("docs/a.txt"), b"first\n");
+    put(&d.join("docs/b.txt"), b"other\n");
+    put(&d.join("big.bin"), &pseudo_random(1 << 20, 5));
+    let spec = || Spec {
+        recursive: false,
+        ..spec()
+    };
+    let r1 = backup(&l.store, &mut l.nas, &l.t, &spec(), &mut |_| {}).unwrap();
+    assert!(r1.committed[0].full_read.is_none());
+    // same object, same size and mtime, other content
+    let p = d.join("docs/a.txt");
+    let mtime = fs::metadata(&p).unwrap().modified().unwrap();
+    let mut f = fs::OpenOptions::new().write(true).open(&p).unwrap();
+    f.write_all(b"FIRST\n").unwrap();
+    f.set_modified(mtime).unwrap();
+    drop(f);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let mut log = Vec::new();
+    let full = Spec {
+        full_read: true,
+        ..spec()
+    };
+    let r2 = backup(&l.store, &mut l.nas, &l.t, &full, &mut |s| log.push(s.to_owned())).unwrap();
+    let c2 = &r2.committed[0];
+    assert!(!c2.full && c2.reused_files == 0, "{c2:?}");
+    assert_matches(&l.store, &tree(&l.store, "nas-7-tank.data", r2.time), &d);
+    let x = c2.full_read.as_ref().unwrap();
+    assert_eq!((x.tracker.as_str(), x.baseline), ("zfs-diff", Some(r1.time)));
+    assert_eq!((x.compared, x.changed, x.unreported, x.unreported_bytes), (3, 1, 1, 6));
+    assert_eq!(x.examples, ["docs/a.txt"]);
+    let want = format!("full-read nas-7-tank.data/{} {{\"tracker\":\"zfs-diff\"", r2.time);
+    assert!(log.iter().any(|s| s.starts_with(&want)), "{log:?}");
 }

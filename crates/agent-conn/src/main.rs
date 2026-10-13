@@ -156,6 +156,9 @@ struct BackupCfg {
     /// Phase 28: SHA-256 per file in the name index (group option `file_hashes`)
     #[serde(default)]
     file_hashes: bool,
+    /// Phase 29: scheduled full read (set by the scheduler when due)
+    #[serde(default)]
+    full_read: bool,
 }
 
 #[derive(Deserialize)]
@@ -396,8 +399,13 @@ fn main() -> Result<()> {
             let ca = Ca::load_or_create(&cfg.ca_dir)?;
             let store = cfg.store()?;
             let mut map = MapDb::open(cfg.store.as_deref().unwrap())?;
-            let (mut s, _) = cfg.session(&ca)?;
+            let (mut s, info) = cfg.session(&ca)?;
             let t = Instant::now();
+            // the Windows agent's change tracker is the USN journal (with the cache)
+            let tracker = match info.os.to_ascii_lowercase().contains("windows") {
+                true => "usn",
+                false => "metadata-cache",
+            };
             let spec = BackupSpec {
                 job: cfg.job,
                 paths: b.paths.clone(),
@@ -406,6 +414,7 @@ fn main() -> Result<()> {
                 filters: b.filters.clone(),
                 limits: b.limits,
                 file_hashes: b.file_hashes,
+                full_read: b.full_read.then_some(tracker),
             };
             let written = store.written();
             let agent = cfg.agent()?;

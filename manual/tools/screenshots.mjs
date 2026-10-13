@@ -1423,6 +1423,97 @@ async function main() {
       await ev(`document.querySelector('#acc-dev').scrollIntoView(); window.scrollBy(0, -80); return true;`);
       await shot('account-devices', { scrolled: true });
     }],
+    // Phase 29 (NetBackup Tier 1): full read (group option, dashboard card), scan back to the last clean snapshot
+    // and the recommended restore point, a production restore of a flagged snapshot, incident-mode freezes,
+    // risk signals with the step-up dialog and the list of marked accounts
+    ['phase29', async () => {
+      await login('admin');
+      await go('/groups');
+      await ev(`$rowClick('acme-fs02', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #g-full-read')`, 'group dialog');
+      await ev(`$fill('#g-full-read', '14'); document.querySelector('dialog[open] #g-full-read').closest('fieldset').scrollIntoView({ block: 'center' }); return true;`);
+      await shot('group-full-read', { height: 1100 });
+      await closeDialogs();
+      await go('/', 900);
+      await until(`return !!document.querySelector('#c-ct') && document.querySelector('#c-ct').closest('section').querySelector('tbody tr')`, 'change tracking card');
+      await ev(`document.querySelector('#c-ct').closest('section').scrollIntoView(); window.scrollBy(0, -80); return true;`);
+      await sleep(300);
+      await shot('dashboard-change-tracking', { scrolled: true });
+      // scan back from the infected snapshot of fs02
+      const fs02 = (await api('GET', '/agents')).body.find((a) => a.name === 'fs02');
+      await go(`/snapshots?source=host-${fs02.id}`);
+      await until(`return !!document.querySelector('button[data-scan-back]')`, 'scan back button');
+      await ev(`document.querySelector('button[data-scan-back]').click(); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #sb-budget')`, 'scan back dialog');
+      await shot('snapshot-scan-back');
+      await ev(`$click('Start scan back'); return true;`);
+      await until(`return document.querySelector('dialog[open]')?.innerText.includes('Recommended restore point:')`, 'scan back result', 40000);
+      await sleep(400);
+      await shot('snapshot-scan-back-result');
+      await closeDialogs();
+      await go(`/snapshots?source=host-${fs02.id}`);
+      await until(`return document.body.innerText.includes('Recommended restore point')`, 'recommended restore point');
+      await ev(`document.querySelector('.clean-point').closest('tr').scrollIntoView({ block: 'center' }); return true;`);
+      await shot('snapshots-clean-point', { scrolled: true });
+      // a production restore of the flagged vm-301 snapshot
+      await go('/snapshots?source=vm-301');
+      await ev(`$rowClick('Anomalous', 'Restore'); return true;`);
+      await until(`return !!$button('Full restore')`, 'restore menu');
+      await ev(`$click('Full restore'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #r-target')`, 'restore dialog');
+      await ev(`$click('Use the flagged snapshot instead'); return true;`);
+      await until(`return document.querySelector('dialog[open]')?.innerText.includes('restore.infected')`, 'flagged-restore notice');
+      await ev(`$fill('#r-target', '9301'); $fill('#r-storage', 'local-lvm'); return true;`);
+      await shot('restore-infected', { height: 1150 });
+      await closeDialogs();
+      // incident mode with freezes (security officer); the lift is requested, then incident mode is left
+      await login('so');
+      await go('/settings?tab=incident');
+      await until(`return !!document.querySelector('#inc-reason')`, 'incident form');
+      await ev(`$fill('#inc-reason', 'Ticket SEC-2026-140: suspicious deletes by an administrator account'); $fill('#inc-pw', 'nexus'); $fill('#inc-totp', '492039');
+        return true;`);
+      await ev(`const boxes = [...document.querySelectorAll('main fieldset input[type=checkbox]')].filter((b) => /Freeze/.test(b.closest('label').textContent)); boxes.forEach((b) => { if (!b.checked) b.click(); }); boxes[0].closest('fieldset').scrollIntoView({ block: 'center' }); return true;`);
+      await shot('settings-incident-freeze', { scrolled: true });
+      await ev(`$click('Enter incident mode'); return true;`);
+      await confirmOk();
+      await until(`return document.body.innerText.includes('Incident mode is active') && document.body.innerText.includes('Frozen:')`, 'incident with freezes');
+      await settle();
+      await shot('settings-incident-frozen');
+      await ev(`$click('Lift freezes'); return true;`);
+      await confirmOk();
+      await settle();
+      await ev(`$click('Request to leave incident mode'); return true;`);
+      await confirmOk();
+      await settle();
+      await login('admin');
+      for (const q of (await api('GET', '/quorum')).body.filter((x) => ['incident.freeze.lift', 'incident.leave'].includes(x.action) && x.state === 'pending'))
+        await api('POST', `/quorum/${q.id}/approve`);
+      // risk signal: so2 deletes ten hash lists within minutes (rule c), then its next change asks to step up
+      await login('so2');
+      for (let i = 1; i <= 10; i++) {
+        await api('PUT', `/hash-lists/tmp-${i}`, { text: `${'ab'.repeat(32)}\n` });
+        await api('DELETE', `/hash-lists/tmp-${i}`);
+      }
+      await go('/settings?tab=iocHashes');
+      await until(`return !!document.querySelector('#hl-text')`, 'hash lists');
+      await ev(`$fill('#hl-name', 'ir-case-4799'); $fill('#hl-text', '${'cd'.repeat(32)}'); document.querySelector('#hl-text').closest('form').requestSubmit(); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #su-pw')`, 'step-up dialog');
+      await ev(`$fill('#su-pw', 'nexus'); $fill('#su-totp', '492039'); return true;`);
+      await shot('step-up-dialog');
+      await ev(`$click('Confirm and continue'); return true;`);
+      await until(`return !document.querySelector('dialog[open]') && document.body.innerText.includes('ir-case-4799')`, 'list uploaded after the step-up');
+      await settle();
+      await shot('step-up-banner');
+      await login('so');
+      await go('/settings?tab=security');
+      await until(`return !!document.querySelector('#risk-h') && document.body.innerText.includes('so2')`, 'marked accounts');
+      await ev(`document.querySelector('#risk-h').closest('section').scrollIntoView({ block: 'end' }); window.scrollBy(0, 40); return true;`);
+      await shot('settings-risk-marks', { scrolled: true });
+      await ev(`$rowClick('so2', 'Clear'); return true;`);
+      await confirmOk();
+      await settle();
+      await login('admin');
+    }],
   ];
 
   let failed = 0;

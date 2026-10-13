@@ -55,6 +55,9 @@ struct Config {
     references: std::collections::HashMap<String, Reference>,
     #[serde(default)]
     read_limit: Option<catalog::schedule::ReadLimit>,
+    /// Phase 29: scheduled full read (set by the scheduler when due)
+    #[serde(default)]
+    full_read: bool,
 }
 
 #[derive(Deserialize)]
@@ -194,6 +197,7 @@ fn main() -> Result<()> {
                         .collect(),
                 }),
                 pace: throttle.map(|t| -> truenas::remote::Pace { std::sync::Arc::new(move |n| t.account(n)) }),
+                full_read: cfg.full_read,
             };
             let r = backup::backup(&store, &mut api, &ssh, &spec, &mut |l| println!("{l}"))?;
             api.close();

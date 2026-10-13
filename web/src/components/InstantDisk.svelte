@@ -10,6 +10,7 @@
   import { t } from '../lib/i18n';
   import type { Group, Snapshot } from '../lib/types';
   import Modal from './Modal.svelte';
+  import InfectedNotice from './InfectedNotice.svelte';
 
   let { open = $bindable(false), snap, nodes = [] }: { open?: boolean; snap: Snapshot | null; nodes?: string[] } = $props();
   let groups: Group[] = $state([]);
@@ -63,6 +64,7 @@
   {#if snap}
     <form onsubmit={submit}>
       <p class="muted">{snap.tenant} · {fmtTime(snap.time)}</p>
+      <InfectedNotice {snap} production />
       <p class="banner info">{t.idr.intro}</p>
       <div class="form-grid">
         <div class="field">

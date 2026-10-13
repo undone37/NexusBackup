@@ -76,6 +76,7 @@ fn spec(o: scan::Options) -> Spec {
         source_id: 4,
         scan: o,
         snapshot: None,
+        full_read: false,
     }
 }
 
@@ -399,4 +400,54 @@ fn read_limit_paces_content() {
         "{:?}",
         t.elapsed()
     );
+}
+
+/// Phase 29: a full read ignores the metadata cache and finds the file the
+/// cache kept stale (here: a previous snapshot whose README chunks do not
+/// match the file although size, mtime, ctime and inode do).
+#[test]
+fn full_read_finds_what_the_metadata_cache_missed() {
+    let d = tempfile::tempdir().unwrap();
+    let share = d.path().join("share");
+    tree(&share);
+    let root = mount::open_local(&share).unwrap();
+    let st = store(&d.path().join("store"));
+    let o1 = backup::backup(&st, &root, &spec(opts(4)), &quiet).unwrap();
+    assert!(o1.full_read.is_none());
+    let mut stale = tree_of(&st, "share-4", o1.time);
+    let readme = stale.iter_mut().find(|e| e.path == b"docs/README.txt").unwrap();
+    let (other, _) = st.store_file(&b"hello sharE\n"[..]).unwrap();
+    readme.chunks = other.clone();
+    st.commit_snapshot("share-4", o1.time + 1, &[("tree", Index::Tree { entries: stale })])
+        .unwrap();
+    // the incremental trusts the cache: the stale content stays
+    let o2 = backup::backup(&st, &root, &spec(opts(4)), &quiet).unwrap();
+    assert_eq!(o2.report.files_read, 0);
+    let readme = |t| {
+        by_path(&tree_of(&st, "share-4", t))[&b"docs/README.txt"[..]]
+            .chunks
+            .clone()
+    };
+    assert_eq!(readme(o2.time), other);
+    let lines = std::sync::Mutex::new(Vec::new());
+    let log = |l: &str| lines.lock().unwrap().push(l.to_owned());
+    let o3 = backup::backup(
+        &st,
+        &root,
+        &Spec {
+            full_read: true,
+            ..spec(opts(4))
+        },
+        &log,
+    )
+    .unwrap();
+    assert!(!o3.incremental);
+    assert_eq!(o3.report.reused_files, 0, "no metadata cache");
+    assert_eq!(readme(o3.time), readme(o1.time), "read again");
+    let f = o3.full_read.unwrap();
+    assert_eq!((f.tracker.as_str(), f.baseline), ("metadata-cache", Some(o2.time)));
+    assert_eq!((f.changed, f.unreported, f.unreported_bytes), (1, 1, 12));
+    assert_eq!(f.examples, ["docs/README.txt"]);
+    let want = format!("full-read share-4/{} {{", o3.time);
+    assert!(lines.lock().unwrap().iter().any(|l| l.starts_with(&want)));
 }

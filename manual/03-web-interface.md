@@ -186,6 +186,10 @@ data reduction factor before the first backup).
 
 ![The "Not in a group" list on the Dashboard](images/dashboard-unprotected.png)
 
+- **Change tracking**: shown once full reads are recorded. How many sources the scheduled full read **verified**,
+  found with **drift** (changes the change tracking did not report) or **never checked**, and the sources with drift
+  first. See [11 Alerts and monitoring](11-alerts-and-monitoring.md#change-tracking-scheduled-full-reads).
+
 Hover over a bar or ring segment to see its value. Screen readers get each chart as a table.
 
 If the key figures cannot be loaded, a banner says so; the table below still works.
@@ -445,6 +449,12 @@ themselves when the next run succeeds (badge **auto-resolved**). The switch at t
 sees a red banner under the top bar: "Break-glass recovery was used: … Check the audit log, then acknowledge." with
 **Open audit log** and **Acknowledge**. It stays until an administrator acknowledges it. See
 [14 Disaster recovery](14-disaster-recovery.md#break-glass-the-only-administrator-lost-their-authenticator).
+
+**Freeze and step-up banners.** While incident mode or a tenant lockdown freezes configuration changes, deletions or
+restores to production, appliance-wide accounts see a red banner naming what is frozen
+([14 Disaster recovery](14-disaster-recovery.md#freezes-during-an-incident)). An account marked by a risk signal sees
+a yellow banner with the reason; its first change in each session opens **Confirm it is you**
+([09 Users and access](09-users-and-access.md#risk-signals-and-step-up)).
 
 ## Approvals
 

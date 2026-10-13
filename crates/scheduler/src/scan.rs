@@ -84,6 +84,10 @@ impl Scheduler {
         if let Some(b) = p["budget"].as_u64() {
             args.push(b.to_string());
         }
+        // Phase 29: scans of a scan back stop at their first match (scanback.rs)
+        if p["stop_on_match"] == true {
+            args.push("--stop-on-match".into());
+        }
         plan.steps.push(Step::Cli {
             bin: self.cfg.pve_bin.clone(),
             args,
@@ -202,20 +206,25 @@ impl Scheduler {
                 } else {
                     ("malware", "YARA scan")
                 };
-                self.raise(
-                    "critical",
-                    kind,
-                    &format!("{kind}:{}/{source}", job.tenant),
-                    &format!(
-                        "{what} of {}/{source} snapshot {time}: {why}, e.g. {} in {}; {last}",
-                        job.tenant,
-                        first["rule"].as_str().unwrap_or("?"),
-                        first["path"].as_str().unwrap_or("?")
-                    ),
-                    Some(&job.tenant),
-                )?;
+                // Phase 29: the hits of a scan back are expected (scanback.rs): flagged, no alert
+                let quiet = job.params["for_scan_back"].is_i64();
+                if !quiet {
+                    self.raise(
+                        "critical",
+                        kind,
+                        &format!("{kind}:{}/{source}", job.tenant),
+                        &format!(
+                            "{what} of {}/{source} snapshot {time}: {why}, e.g. {} in {}; {last}",
+                            job.tenant,
+                            first["rule"].as_str().unwrap_or("?"),
+                            first["path"].as_str().unwrap_or("?")
+                        ),
+                        Some(&job.tenant),
+                    )?;
+                }
             }
         }
+        self.scan_back_step(job, ok, r)?; // scanback.rs
         let Some(rid) = job.params["for_job"].as_i64() else {
             return Ok(());
         };

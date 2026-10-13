@@ -379,6 +379,43 @@ If you get such a notice and it was not you: change your password, end the unkno
 administrator. The device check is a heuristic: a new browser or network of your own also raises it, and someone who
 copies your browser's identification from the same network is not noticed.
 
+### Risk signals and step-up
+
+The appliance watches what privileged accounts do and marks an account when its behaviour looks like a stolen
+account or an insider at work. The rules are fixed and deterministic:
+
+| Signal | Rule | Severity |
+|---|---|---|
+| Unusual hour | a sign-in at an hour of day (UTC, plus or minus one hour) the account has not used in the last 90 days, once it has at least 10 sign-ins of history | warning |
+| Weakening burst | 5 or more weakening requests within one hour: switching approvals off, cutting retention in a policy, changing the management allow-list, firewall or forwarding, deleting offsite or replication settings, vault or keep-until changes, releasing holds | critical |
+| Bulk deletes | 10 or more delete requests within one hour (snapshots, sources, groups, agents, tenants, policies) | critical |
+| Download volume | downloads in 24 hours above ten times the account's median daily volume of the last 30 days, and above 1 GiB | warning |
+
+A signal raises the alert `user_risk` (security category, forwarded to the SIEM) and **marks the account for 24
+hours**. While it is marked:
+
+- the **first change of each session** (any request that is not a plain read) asks the user to **confirm it is
+  them**: password plus an authenticator code, or a passkey when the code field is left empty. The change is sent
+  again right after; later changes in the same session go through. Reading is never blocked;
+- the account's **API tokens cannot change anything** (they still read);
+- the user sees a banner with the reason and the end of the mark.
+
+![Confirm it is you](images/step-up-dialog.png)
+
+![The banner of a marked account](images/step-up-banner.png)
+
+The step-up does not stop an attacker who also has the password and the second factor, but it stops a stolen
+session cookie or API token, and every signal reaches the security team at once. Security officers and
+administrators see the marked accounts under **Settings → Security → Accounts marked by risk signals** (administrators
+also on the **Users** page) and **Clear** a mark once the owner confirmed it was them (audited `user.risk_clear`;
+nobody clears their own mark). If it was not the owner: disable the account, end its sessions and enter incident
+mode if needed ([14 Disaster recovery](14-disaster-recovery.md#incident-mode)).
+
+![Accounts marked by risk signals](images/settings-risk-marks.png)
+
+> **Status:** Implemented in Phase 29 (API tests, demo backend). Single sign-on accounts have no local password: they
+> cannot complete the step-up in this version; clear their mark after checking with the owner.
+
 ### Concurrent sessions
 
 **Settings → Security → Sessions per account** limits how many browsers may be signed in with one account at the

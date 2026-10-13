@@ -147,6 +147,20 @@ for (const [user, pw, secret] of [['admin', sec.ADMIN_PW, sec.ADMIN_TOTP], ['so'
       visited.push(where);
       await ev(`document.querySelectorAll('dialog[open]').forEach((d) => d.close()); return true;`);
     }
+    // Phase 29: the scan-back dialog of a flagged snapshot (when there is one) and the group dialog's full-read field
+    for (const [hash, sel, what, must] of [
+      ['#/snapshots', 'button[data-scan-back]', 'scan-back dialog', '#sb-budget'],
+      ['#/groups', 'button[data-group-edit]', 'group dialog (full read)', '#g-full-read'],
+    ]) {
+      await visit(hash, theme, user);
+      if (await ev(`const b = document.querySelector(${JSON.stringify(sel)}); b?.click(); return !!b;`)) {
+        where = `${user}/${theme}${hash} (${what})`;
+        if (!(await until(`return !!document.querySelector('dialog[open] ${must}')`, 5000))) problems.push(`${where}: dialog did not open`);
+        await sleep(800);
+        visited.push(where);
+        await ev(`document.querySelectorAll('dialog[open]').forEach((d) => d.close()); return true;`);
+      }
+    }
     for (const tab of TABS) {
       // tabs the role may not see fall back to the first one: still a valid render
       await visit(`#/settings?tab=${tab}`, theme, user);

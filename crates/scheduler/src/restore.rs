@@ -1,6 +1,7 @@
 //! Restore options (Phase 15a, docs/control-plane.md "Restore options"): job
 //! params → `nexus-pve restore|restore-ct|instant-recover` flags
-//! (`crates/pve/src/restore.rs`), and approved `restore.replace` requests → restore jobs.
+//! (`crates/pve/src/restore.rs`), and approved `restore.replace` / `restore.infected`
+//! (Phase 29: a production restore of a flagged snapshot, any restore kind) requests → jobs.
 
 use crate::{Job, Scheduler};
 use anyhow::{bail, Context, Result};
@@ -53,20 +54,22 @@ pub(crate) fn restore_flags(job: &Job) -> Result<Vec<String>> {
 }
 
 impl Scheduler {
-    /// Approved `restore.replace` requests (web-api `jobs.rs`) become restore jobs.
+    /// Approved `restore.replace` and `restore.infected` requests (web-api
+    /// `jobs.rs`, `infected.rs`) become restore jobs.
     pub(crate) fn queue_restore_replaces(&mut self) -> Result<()> {
-        let rows: Vec<(i64, String, String, Option<String>)> = {
+        let rows: Vec<(i64, String, String, String, Option<String>)> = {
             let c = self.db.conn();
             let mut st = c.prepare(
-                "SELECT q.id, q.params, q.requested_by, q.decided_by FROM quorum q \
-                 WHERE q.action='restore.replace' AND q.state='approved' \
-                 AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind IN ('restore','restore_ct') \
-                                 AND json_extract(j.params,'$.quorum_id')=q.id)",
+                "SELECT q.id, q.action, q.params, q.requested_by, q.decided_by FROM quorum q \
+                 WHERE q.action IN ('restore.replace', 'restore.infected') AND q.state='approved' \
+                 AND NOT EXISTS (SELECT 1 FROM jobs j WHERE json_extract(j.params,'$.quorum_id')=q.id \
+                                 AND j.kind IN ('restore','restore_ct','instant_recover','instant_disk', \
+                                                'restore_files','plugin_restore'))",
             )?;
-            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?;
             rows.collect::<std::result::Result<_, _>>()?
         };
-        for (id, p, by, decided) in rows {
+        for (id, action, p, by, decided) in rows {
             if decided.as_deref() == Some(by.as_str()) && catalog::approvals_enabled(&self.db.conn())? {
                 continue;
             }
@@ -76,11 +79,17 @@ impl Scheduler {
             else {
                 continue;
             };
-            if kind != "restore" && kind != "restore_ct" {
+            let infected = action == catalog::incident::RESTORE_INFECTED;
+            if !infected && kind != "restore" && kind != "restore_ct" {
+                continue;
+            }
+            if infected && !catalog::incident::production_restore(kind, &Value::Object(params.clone())) {
                 continue;
             }
             let mut params = params.clone();
-            params.insert("replace".into(), json!(true));
+            if !infected {
+                params.insert("replace".into(), json!(true));
+            }
             params.insert("quorum_id".into(), json!(id));
             params.insert("requested_by".into(), json!(by));
             self.insert_job(kind, tenant, &Value::Object(params))?;

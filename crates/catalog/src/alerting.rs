@@ -68,6 +68,8 @@ const HINTS: &[(&str, &str)] = &[
     ("hash_hunt_hit", "An IOC hash hunt found files whose SHA-256 is on an uploaded hash list (results: Hash hunt page). The snapshots that contain them are flagged as anomalous. Check the source machine for the files; restore a clean version from an earlier snapshot with the results page's restore action; if the list entry was wrong, a security officer clears the flags on the Snapshots page. Resolve the alert by hand."),
     ("tenant_lockdown", "A security officer or administrator locked one tenant down: its snapshots are held, its groups paused, its users' sessions and API tokens ended and its accounts cannot sign in; deletes, overwriting restores and configuration changes for it are refused. Other tenants keep running. Investigate; lifting the lockdown needs a second approver (Tenants page). Resolves when the lockdown is lifted."),
     ("login_new_device", "An account signed in from a browser family and client network it never used before (the message names both). If that was the account owner (new laptop, travel, a changed network), acknowledge and resolve the alert. If not, disable the account on the Users page, end its sessions and review the audit log for what it did."),
+    ("change_tracking", "A scheduled full read of a source found data that changed since the previous snapshot although its change tracking (Proxmox VE dirty bitmap, agent metadata cache or USN journal, NAS metadata cache, ZFS diff) had not reported it (examples in the message and on the Dashboard, Change tracking). Snapshots taken with change tracking since the last verified full read may miss these changes. The newest snapshot is complete (it was read in full). Find the cause (storage or hypervisor bug, restored or cloned disks, tools that preserve timestamps, ransomware that does), keep the full-read interval short until it is understood, and resolve the alert by hand."),
+    ("user_risk", "An account did something unusual for it (the message names the rule: sign-in at an hour it never used, a burst of requests that weaken protection, many deletes in a short time, far more downloads than usual). Until the mark ends or a security officer clears it, the account must re-enter its password and second factor before its next change in each session, and its API tokens cannot change anything. Ask the account owner; if it was not them, disable the account, end its sessions and review the audit log."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
 
@@ -96,6 +98,7 @@ const CATEGORY: &[(&str, &str)] = &[
     ("hash_hunt_hit", "security"),
     ("tenant_lockdown", "security"),
     ("login_new_device", "security"),
+    ("user_risk", "security"),
     ("dek_rotation", "security"),
     ("job_failed", "backup"),
     ("sla_missed", "backup"),
@@ -110,6 +113,7 @@ const CATEGORY: &[(&str, &str)] = &[
     ("config", "backup"),
     ("vmid_reused", "backup"),
     ("restore_priority", "backup"),
+    ("change_tracking", "backup"),
     ("disk", "hardware"),
     ("fleecing_space", "hardware"),
 ];
@@ -391,6 +395,8 @@ mod tests {
             ("hash_hunt_hit", "security"),
             ("tenant_lockdown", "security"),
             ("login_new_device", "security"),
+            ("user_risk", "security"),
+            ("change_tracking", "backup"),
             ("something_new", "system"),
         ] {
             assert_eq!(category(kind), cat, "{kind}");

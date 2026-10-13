@@ -65,6 +65,10 @@
   let ldPassword = $state('');
   let ldTotp = $state('');
   let ldBusy = $state(false);
+  // Phase 29: freezes of the lockdown (configuration of the tenant is always refused)
+  let ldFreeze = $state({ deletions: false, restores: false });
+  const ldParts = (l: LockdownInfo) =>
+    [l.freeze?.deletions && t.p29.freeze.names.deletions, l.freeze?.restores && t.p29.freeze.names.restores].filter((x): x is string => !!x);
   function openLockdown(x: Tenant) {
     const local = (ts: number) => {
       const d = new Date(ts * 1000);
@@ -78,13 +82,19 @@
     ldTo = local(now);
     ldPassword = '';
     ldTotp = '';
+    ldFreeze = { deletions: false, restores: false };
     ldOpen = true;
   }
   async function submitLockdown(e: SubmitEvent) {
     e.preventDefault();
     if (!ldOf) return;
     const ts = (v: string) => Math.floor(new Date(v).getTime() / 1000);
-    const body: Record<string, unknown> = { reason: ldReason.trim(), current_password: ldPassword, current_totp: ldTotp.trim() };
+    const body: Record<string, unknown> = {
+      reason: ldReason.trim(),
+      freeze: { ...ldFreeze },
+      current_password: ldPassword,
+      current_totp: ldTotp.trim(),
+    };
     if (ldHold === 'none') body.hold = null;
     if (ldHold === 'range') body.hold = { from: ts(ldFrom), to: ts(ldTo) };
     ldBusy = true;
@@ -94,6 +104,10 @@
       ldOpen = false;
       load();
     }
+  }
+  async function liftFreeze(x: Tenant) {
+    if (!(await askConfirm(t.p29.freeze.liftConfirm))) return;
+    if (await act(post(`/tenants/${encodeURIComponent(x.name)}/lockdown/freeze/lift`), t.p29.freeze.liftRequested)) loadLockdowns();
   }
   async function liftLockdown(x: Tenant) {
     if (!(await askConfirm(t.lockdown.liftConfirm(x.name)))) return;
@@ -449,6 +463,8 @@
                   {@const l = lockOf(x.name)!}
                   <span class="chip bad" title={t.lockdown.chipTitle(l.by, fmtTime(l.since), l.reason)}>{t.lockdown.chip}</span>
                   {#if l.lift_quorum}<span class="chip warn plain">{t.lockdown.liftPending}</span>{/if}
+                  {#if ldParts(l).length}<span class="chip warn plain">{t.p29.freeze.chip(ldParts(l))}</span>{/if}
+                  {#if l.freeze_lift_quorum}<span class="chip warn plain">{t.p29.freeze.liftPendingShort}</span>{/if}
                 {/if}
               </td>
               <td class="mono">
@@ -496,6 +512,9 @@
                     >
                   {:else if !lockOf(x.name)?.lift_quorum}
                     <button type="button" class="small" onclick={() => liftLockdown(x)} aria-label={t.lockdown.liftLabel(x.name)}>{t.lockdown.lift}</button>
+                  {/if}
+                  {#if lockOf(x.name) && ldParts(lockOf(x.name)!).length && !lockOf(x.name)?.freeze_lift_quorum}
+                    <button type="button" class="small" onclick={() => liftFreeze(x)} aria-label={t.p29.freeze.liftLabel(x.name)}>{t.p29.freeze.lift}</button>
                   {/if}
                 {/if}
                 {#if canKey}<button type="button" class="small" onclick={() => (keyOf = x.name)}>{t.tkey.button}</button>{/if}
@@ -850,6 +869,18 @@
           </div>
         </div>
       {/if}
+    </fieldset>
+    <fieldset>
+      <legend>{t.p29.freeze.legend}</legend>
+      <p class="hint">{t.p29.freeze.introTenant}</p>
+      <div class="field">
+        <label class="inline-check"><input type="checkbox" bind:checked={ldFreeze.deletions} aria-describedby="ld-frz-del-hint" />{t.p29.freeze.deletions}</label>
+        <p class="hint" id="ld-frz-del-hint">{t.p29.freeze.deletionsHint}</p>
+      </div>
+      <div class="field">
+        <label class="inline-check"><input type="checkbox" bind:checked={ldFreeze.restores} aria-describedby="ld-frz-res-hint" />{t.p29.freeze.restores}</label>
+        <p class="hint" id="ld-frz-res-hint">{t.p29.freeze.restoresHint}</p>
+      </div>
     </fieldset>
     <p>{t.incident.reauth}</p>
     <div class="form-grid">

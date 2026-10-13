@@ -456,3 +456,26 @@ through the PVE guest agent (`lab/windows/gexec.py`, no Windows passwords), dev 
 - [ ] lab: scheduled scan and hash hunt on the appliance image with a real agent (Linux, Windows), lockdown with a
   tenant admin session, new-device mail through the lab SMTP sink
 - [ ] VM disk file hashes (opt-in with `index_files`), MD5/SHA-1 lists (decided: SHA-256 only for now)
+
+## Phase 29 — NetBackup Tier 1 (2026-10-14)
+- [x] catalog v44 (`groups.full_read_days`, `full_reads`, `snapshots.clean_point`, `login_hours`,
+  `users.risk_since/risk_until/risk_reason`, `sessions.step_up_at`; migration test), `catalog::fullread`,
+  `catalog::incident` (freezes, production-restore rule, flagged snapshots), alert kinds + hints, threat model T64–T65
+- [x] scheduled full read: due per source (staggered), connector configs patched (PVE whole-disk read with the reused
+  bitmap as the "reported" set, agents without base, NAS without cache, TrueNAS against the zfs-diff plan),
+  `chunkstore::drift`, `full-read` lines -> `full_reads`, job log line, `change_tracking`; group setting, list,
+  dashboard summary
+- [x] restores of flagged snapshots to production: approval `restore.infected` (web-api, scheduler poller and
+  plan-time re-check), administrators only with approvals off, `/restores` refuses flagged items without link_down
+- [x] scan back: `POST .../scan-back`, scheduler drives stop-on-match scans newest first, `clean_point`, restore VM agent
+  `stop_on_match`, `nexus-pve scan --stop-on-match` and manual `scan-back`
+- [x] freezes: incident (configuration middleware, deletions, restores) and lockdown (deletions, restores), banner in
+  `/auth/me`, `incident.freeze.lift`; scheduler trims retention/GC/offsite pruning, replica `prune: false`
+- [x] risk signals: unusual sign-in hour, weakening burst, bulk deletes, download volume; `user_risk`, 428 step-up,
+  `POST /auth/step-up`, `GET /risk`, clear
+- [x] tests: catalog (v44, incident, fullread), web-api `tests/phase29.rs` + freeze/risk unit tests, scheduler
+  `tests/phase29.rs`, chunkstore/pve/agent-conn/nas/truenas/restore VM agent; UI, mock, manual, screenshots, ui-smoke
+- [ ] lab: full read against the PVE host (bitmap reuse with a real VM), scan back in the real restore VM, step-up with
+  a passkey in the browser
+- [ ] open: first-API-token-use-from-a-new-network rule, risk thresholds as settings, gating BMR/P2V of flagged
+  snapshots, downloads of flagged snapshots limited to admins

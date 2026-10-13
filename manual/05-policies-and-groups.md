@@ -254,6 +254,33 @@ Both options apply at once (no approval: they only add detection) and are audite
 `group.file_hashes`). Administrators and tenant administrators set them here; security officers can set the scan
 schedule through the API (`PUT /api/v1/groups/{id}/threat-scan`).
 
+### Full read (change-tracking check)
+
+Incremental backups trust **change tracking**: the dirty bitmap of a Proxmox VM, the agents' metadata cache (size,
+modification time, inode) or the Windows USN journal, the metadata cache of NFS/SMB shares and `zfs diff` on
+TrueNAS. If the tracker misses a change (a crash of the PVE host while the VM wrote, a file changed with its old
+modification time restored, a journal that wrapped), the snapshots look fine but lack that change. A scheduled
+**full read** finds this out.
+
+**Full read (change-tracking check) → Days between full reads** in the group's dialog: every this many days the next
+backup of each guest or source of the group reads everything instead of trusting the tracker, still asks the tracker
+what it would have reported, and compares the result with the previous snapshot. Data that changed although the
+tracker did not report it is **unreported**. Empty = the default (**90 days** for Proxmox VE groups, **30 days** for
+agents, NFS/SMB shares and TrueNAS), **0** = off. Containers and plugin sources have no full read (containers are
+read in full by every backup anyway).
+
+![Protection group: full read](images/group-full-read.png)
+
+The full-read backup is a normal snapshot (complete and usable). It takes as long as a first backup and moves the
+whole source over the network, so a long interval suits large VMs. The result of each source is shown on the
+**Dashboard** in the **Change tracking** card ([11 Alerts and monitoring](11-alerts-and-monitoring.md#change-tracking-scheduled-full-reads));
+a source with unreported changes raises the critical alert `change_tracking`. The interval applies at once (no
+approval) and is audited (`group.full_read`); administrators and tenant administrators set it, through the API
+`PUT /api/v1/groups/{id}/full-read {"days": null | 0..365}`.
+
+> **Status:** Implemented in Phase 29 (scheduler, connectors and API tests, demo backend); a lab run with a real
+> PVE dirty bitmap and the Windows agent's USN journal is pending.
+
 ### Excluded disks and parallel guests (Proxmox VE)
 
 A Proxmox VE group has two more settings in its dialog:

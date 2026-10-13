@@ -150,6 +150,9 @@ pub struct SyncParams {
     /// reports another uid for the name serves a different tenant (deleted and
     /// re-created) and is refused. `None`: first sync or a legacy primary.
     pub tenant_uid: Option<String>,
+    /// false while incident mode or a lockdown freezes deletions (Phase 29):
+    /// the independent retention deletes nothing
+    pub prune: bool,
 }
 
 #[derive(Serialize, Debug, Default)]
@@ -432,7 +435,10 @@ fn sync_inner(
     // 5. independent retention (never because the primary deleted something),
     // skipping the holds applied here
     let sources: BTreeSet<String> = store.list_snapshots()?.into_iter().map(|m| m.source).collect();
-    for src in sources {
+    if !p.prune {
+        log("retention: deletions are frozen (incident mode), nothing deleted");
+    }
+    for src in sources.into_iter().filter(|_| p.prune) {
         let held: BTreeSet<u64> = p.held.iter().filter(|(s, _)| *s == src).map(|(_, t)| *t).collect();
         let (k, d, l) = store.apply_retention_held(&src, &p.gfs, &held)?;
         report

@@ -265,7 +265,7 @@ fn single_file_restore_from_disk_images() {
                                        rule VmHost { strings: $a = \"nexus-restore-vm\" condition: $a }"}
         ]))?;
         let t = Instant::now();
-        let r = vm.scan(&pve::scan::limits(600, 2), Duration::from_secs(900))?;
+        let r = vm.scan(&pve::scan::limits(600, 2, false), Duration::from_secs(900))?;
         eprintln!("yara scan: {r} in {:.1?}", t.elapsed());
         let m: Vec<(String, String)> = r["matches"]
             .as_array()
@@ -286,6 +286,14 @@ fn single_file_restore_from_disk_images() {
         assert!(!m.iter().any(|x| x.0.contains("VmHost")), "followed a symlink: {m:?}");
         assert!(r["skipped"].as_u64().unwrap() >= 2, "big.bin is over the size limit");
         assert_eq!(r["complete"], true);
+        assert_eq!(r["stopped"], false);
+        // scan back (Phase 29): the first match ends the scan
+        let r = vm.scan(&pve::scan::limits(600, 1, true), Duration::from_secs(900))?;
+        assert_eq!(
+            (&r["stopped"], &r["complete"]),
+            (&serde_json::json!(true), &serde_json::json!(false))
+        );
+        assert!(r["matches_total"].as_u64().unwrap() >= 1, "{r}");
         Ok(())
     })
     .unwrap();
@@ -315,7 +323,7 @@ fn single_file_restore_from_disk_images() {
         vm.rules(
             &serde_json::json!([{"name": "t.yar", "text": "rule Sig { strings: $a = \"X5O-TEST\" condition: $a }"}]),
         )?;
-        vm.scan_tar(&pve::scan::limits(600, 1), Duration::from_secs(900), |w| {
+        vm.scan_tar(&pve::scan::limits(600, 1, false), Duration::from_secs(900), |w| {
             pve::scan::tree_tar(&store, &m, pve::scan::MAX_SIZE, w)?;
             Ok(())
         })

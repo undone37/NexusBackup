@@ -1082,3 +1082,72 @@ every alert. On its first delivery the scheduler also mails it to the account's 
 profile, `PUT /auth/email`, or the OIDC `email` claim unless `email_verified` is false) through the alert SMTP
 server. `GET /auth/devices` lists the caller's devices and address, `DELETE /auth/devices/{fingerprint}` forgets one.
 At most 50 devices per account are kept.
+
+## Incident freezes (Phase 29)
+- `POST /incident` takes `freeze: {config, deletions, restores}` (booleans, optional); `GET /incident` returns
+  `freeze` (null = none) and `freeze_lift_quorum`. `POST /tenants/{name}/lockdown` takes `freeze: {deletions,
+  restores}` (the tenant's configuration is always refused by a lockdown); `GET /lockdowns` and `GET
+  /tenants/{name}/lockdown` rows carry `freeze` and `freeze_lift_quorum`.
+- Frozen configuration: every non-GET call answers 409 "incident mode: configuration changes are frozen …" except
+  sign-in/out and the own account, incident and lockdown endpoints, approve/reject, disabling users, alert ack/resolve,
+  ending sessions and revoking tokens, creating holds, pausing groups, jobs (create/cancel), scans, hunts, search,
+  diff and diagnostics.
+- Frozen deletions: snapshot delete requests 409; the scheduler skips retention, GC, orphan cleanup, offsite
+  retention and GC and replica retention (job log `[scheduler] deletions frozen (incident mode): … skipped`).
+- Frozen restores: production restores (see "Restores of flagged snapshots") answer 409 or are refused by the
+  scheduler; isolated restores run.
+- Lifting: `POST /incident/freeze/lift` / `POST /tenants/{name}/lockdown/freeze/lift` (security officers, admins) →
+  202 `{quorum_id}`, approval `incident.freeze.lift` `{scope: "appliance" | "tenant", tenant?, since}`, always a
+  second person. Leaving incident mode or lifting the lockdown ends its freezes.
+- `GET /auth/me` → `freeze: null | {config, deletions, restores, tenants: [{tenant, deletions, restores}]}` for
+  appliance-wide accounts (banner in the UI).
+
+## Risk signals and step-up (Phase 29)
+- Rules (deterministic, per account): (a) a sign-in at an hour (UTC, +-1 h) not used in the last 90 days, with at
+  least 10 sign-ins of history → warning; (b) >= 5 weakening requests within one hour (approvals off, retention cuts
+  in policy updates, management allow-list / firewall / forwarding changes, offsite or replication deletes, vault /
+  keep changes, hold releases) → critical; (c) >= 10 delete requests within one hour (snapshots, sources, groups,
+  agents, tenants, policies) → critical; (d) downloads in 24 h above max(10 x the account's median daily volume over
+  30 days, 1 GiB) → warning.
+- A signal raises `user_risk` (security category, key `user_risk:<user id>:<rule>`) and marks the account for 24 h
+  (`users.risk_since`, `risk_until`, `risk_reason`).
+- While marked, the first non-GET request of each session answers **428** `{"error": "step-up required: …"}` until
+  the session re-authenticates: `POST /auth/step-up {current_password, current_totp}` (TOTP code or passkey
+  assertion JSON, as in the other re-authentications) → 200 `{step_up_at}`. The UI opens its step-up dialog on any
+  428 and repeats the request once. API tokens of a marked account get 403 on non-GET calls.
+- `GET /auth/me` → `step_up: null | {since, until, reason, done}`. `GET /risk` (admins, security officers) lists the
+  active marks `[{user_id, user, role, tenant, since, until, reason}]`; `POST /users/{id}/risk/clear` (admins,
+  security officers, not their own) ends a mark, audited `user.risk_clear`.
+
+## Restores of flagged snapshots (Phase 29)
+- Flagged = `anomaly` set and not cleared, or `scan_state = "hit"` and not cleared. `GET /snapshots` rows carry
+  `flagged` and `clean_point` (the recommended restore point of the source's newest scan back, unix time, or null).
+- Production restores: `restore` / `restore_ct` with `replace` or without `link_down: true`; `instant_recover`
+  without `link_down: true`; `instant_disk`; `restore_files` with `target` "/" or `overwrite` other than "never";
+  `plugin_restore`. Isolated: link_down restores, `restore_files` to another path with "never", downloads, mounts,
+  restore tests.
+- `POST /jobs` with a production restore of a flagged snapshot: approvals on → 202 `{quorum_id, infected: true}`
+  (approval `restore.infected` `{tenant, kind, params, reason}`; the scheduler queues the restore after approval);
+  approvals off → administrators only: 200 `{approvals: "disabled", executed: false, quorum_id, state: "approved",
+  infected: true}`; other roles 403 ("… restore it isolated: network disconnected or another path"); API tokens
+  403. `POST /restores` refuses flagged items without `link_down` (409).
+- Scan back: `POST /snapshots/{tenant}/{source}/{time}/scan-back {budget_min?: 1..=1440, max?: 1..=100}` → 202
+  `{id}` (job `scan_back`; admins, operators, security officers, tenant admins; 409 without YARA rules; audited
+  `snapshot.scan_back_request`). The job runs one `snapshot_scan` with `stop_on_match` per snapshot, newest first,
+  until one is complete and clean; result `{source, from, scanned: [{time, job, matches_total, complete, stopped}],
+  recommended, truncated}`. Each scan is booked like any scan (verdict, flags, alerts); `snapshots.clean_point` is set
+  on the recommended snapshot and cleared on the source's others.
+
+## Full read (Phase 29)
+- `groups.full_read_days` (NULL = default: 90 for PVE VM groups, 30 for agents / NAS / TrueNAS; 0 = off). `PUT
+  /groups/{id}/full-read {"days": null | 0..=365}` (admins, tenant admins of the group's tenant), audited
+  `group.full_read`; `GET /groups` rows carry `full_read_days` and `full_read_default`.
+- When a source is due, the scheduler sets the connector's full-read flag for that backup (`pve.json` `full_read:
+  [vmids]`, agent `backup.full_read`, `nas.json` / `truenas.json` `full_read: true`). The connector ignores change
+  tracking but still asks the tracker what it would have reported, reads everything, commits the snapshot as usual
+  and prints `full-read <source>/<time> {tracker, baseline, compared, changed, unreported, unreported_bytes,
+  examples}`. The scheduler records it in `full_reads` (one row per source: next due, last run, result `clean` /
+  `drift` / `no_baseline`, counts, details, last clean run) and raises `change_tracking` (critical, key
+  `change_tracking:<tenant>/<source>`) on unreported changes; a clean full read resolves it.
+- `GET /full-reads?tenant=&source=` (every reading role, tenant-scoped) returns the rows; `GET /dashboard` has
+  `full_reads: {sources, verified, drift, never, oldest_verified}` (Dashboard card "Change tracking").

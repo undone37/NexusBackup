@@ -131,6 +131,19 @@ hardware) for low/critical and resolves it when a later reading of that storage 
 be read is not guarded (`note: … not guarded`). Containers have no fleecing and are not checked. Tests:
 `pve::fleecing::tests` (PVE responses as fakes, thresholds, the watcher), `scheduler` `tests::fleecing`.
 
+## Full read (Phase 29)
+
+A dirty bitmap that misses a write keeps stale blocks in every later snapshot without an error. When a VM is due
+for its scheduled full read, the scheduler lists it in pve.json `full_read: [<vmid>, …]`. For such a VM the
+connector still asks for the bitmap as usual (the node may reuse it, `bitmap_mode` "reuse"), keeps its extents as
+the "reported" ones, but reads the whole device (`backup::read_plan`). After the device index is built, every
+chunk of the range both snapshots cover is compared with the base (`chunkstore::drift::fixed`): a chunk whose ID
+differs while no reported extent overlaps it is unreported. After the commit (next to the `identity` line) one line
+per VM: `full-read <source>/<time> {"tracker", "baseline", "compared", "changed", "unreported", "unreported_bytes", "examples"}`, tracker `dirty-bitmap`, examples `drive-scsi0@<offset>`. Without a
+reusable bitmap (`new`/`none`, unreadable bitmap, no base) the read is full anyway and nothing is compared:
+tracker `none`, baseline null. Containers are read in full on every backup: `note: full read does not apply to
+container <vmid> …`. Tests: `backup::tests::full_read_finds_changes_the_bitmap_missed`, `chunkstore::drift`.
+
 ## Instant disk recovery (Phase 22b, `crates/pve/src/idr.rs`, Veeam row 7)
 `nexus-pve … instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>]` (scheduler
 job `instant_disk`): one device of a VM snapshot attached to the existing VM `target` through the instant-recovery

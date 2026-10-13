@@ -1978,6 +1978,7 @@ pub async fn list_groups(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value
         .collect::<Result<Vec<_>, _>>()?;
     let mut rows = crate::runctl::group_states(&c, rows)?;
     crate::threat::group_extras(&c, &mut rows)?; // Phase 28
+    crate::fullread::group_extras(&c, &mut rows)?; // Phase 29
     Ok(Json(Value::Array(rows)))
 }
 

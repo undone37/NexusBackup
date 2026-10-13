@@ -64,7 +64,7 @@
     return Object.keys(b).map((k) => ({ k, before: a[k], after: b[k], changed: JSON.stringify(a[k]) !== JSON.stringify(b[k]) }));
   }
   const others = (q: QuorumRequest) => (q.params && 'old' in q.params ? [] : Object.entries(q.params ?? {}));
-  const humanize = (a: string) => a.replace(/[_.]/g, ' ');
+  const humanize = (a: string) => t.quorum.actions[a] ?? a.replace(/[_.]/g, ' ');
   // Phase 23a: a retention-weakening policy change shows its restore point preview (old dashed)
   const simOf = (p: Record<string, unknown> | undefined): SimInput | null =>
     p && typeof p.schedule === 'string' && p.gfs && typeof p.gfs === 'object' ? { schedule: p.schedule, gfs: p.gfs as SimInput['gfs'] } : null;

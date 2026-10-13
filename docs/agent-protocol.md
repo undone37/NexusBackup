@@ -95,6 +95,11 @@ These pin down points the message table leaves open; an agent must behave as des
   hard-link targets are valid relative paths; one hash has one length across all entries.
 - **Base.** `Scan.base` = time of the newest committed `host-<agent_id>` snapshot in the appliance store (or
   none). The agent compares against the metadata cache it committed at its last `Release{success: true}`.
+  Without a base the agent uses neither the cache nor (Windows) the USN journal and reads every file: the
+  appliance sends no base after a damaged base snapshot and for a scheduled full read (Phase 29, config
+  `backup.full_read: true`). After a full read the appliance compares the tree with the previous snapshot
+  (same size, mtime, ctime and inode but other chunks = unreported) and prints `full-read <source>/<time> {"tracker", "baseline", "compared", "changed", "unreported", "unreported_bytes", "examples"}`
+  (tracker `usn` for Windows agents, else `metadata-cache`). No protocol change.
 - **Want.** The appliance requests every hash that is not in its mapping index *or* whose mapped chunk is
   missing in the store (GC) — including hashes of `unchanged` files, so an agent must be able to deliver those
   (re-read the file). ≤ 10 000 hashes per `Want`, sorted; the agent answers with exactly the requested chunks

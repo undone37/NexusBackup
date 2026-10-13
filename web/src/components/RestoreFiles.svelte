@@ -1,14 +1,15 @@
 <script lang="ts">
-  import { post, act } from '../lib/api';
+  import { get, post, act, qs } from '../lib/api';
   import { navigate } from '../lib/router.svelte';
   import { hostAgentId } from '../lib/jobs';
   import { absHostPath, fmtAgo, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import { session } from '../lib/session.svelte';
-  import type { Agent, Overwrite } from '../lib/types';
+  import type { Agent, Overwrite, Snapshot } from '../lib/types';
   import type { Snippet } from 'svelte';
   import Modal from './Modal.svelte';
   import ScanFirst from './ScanFirst.svelte';
+  import InfectedNotice from './InfectedNotice.svelte';
 
   // Restore files of a snapshot (host, NAS share / TrueNAS dataset, plugin file tree, or
   // VM/CT files through the restore micro-VM) onto a path of an agent of the same tenant.
@@ -58,9 +59,22 @@
       overwrite = 'never';
       confirm = '';
       scanFirst = '';
+      // Phase 29: is the snapshot flagged (a production restore of it needs approval)?
+      snap = null;
+      get<Snapshot[]>('/snapshots' + qs({ tenant, source }))
+        .then((xs) => (snap = xs.find((x) => x.time === time) ?? null))
+        .catch(() => {});
     }
     wasOpen = open;
   });
+  let snap: Snapshot | null = $state(null);
+  // Phase 29: original paths or overwriting = a production restore
+  const production = $derived(target.trim() === '/' || overwrite !== 'never');
+  function isolatePath() {
+    overwrite = 'never';
+    if (target.trim() === '/') target = '';
+    document.getElementById(`${id}-target`)?.focus();
+  }
   // (Also runs when the agent list arrives after the dialog opened.)
   $effect(() => {
     if (!open || agentId) return;
@@ -142,6 +156,7 @@
       </div>
     </div>
     {#if otherHost}<p class="banner info">{t.restoreFiles.otherHost}</p>{/if}
+    <InfectedNotice {snap} {production} onisolatePath={isolatePath} />
     <ScanFirst bind:value={scanFirst} />
     {#if agent}
       <div class="field">

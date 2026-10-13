@@ -60,8 +60,8 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 
 | Category | Kinds |
 |---|---|
-| security | `anomaly`, `malware`, `scan_hit`, `hash_hunt_hit`, `tenant_lockdown`, `login_new_device`, `console_unlock`, `console_root_shell`, `break_glass`, `firewall_reset`, `mgmt_allow_reset`, `legal_hold_advisory`, `cert_expiry`, `account_dormant`, `inventory`, `clock_skew`, `gc_quorum`, `gc_confirm`, `vault_disabled`, `incident`, `dek_rotation` |
-| backup | `job_failed`, `sla_missed`, `paused`, `consistency`, `backup_inconsistent`, `orphaned`, `verify`, `snapshot_damaged`, `offsite_lag`, `inventory_refresh`, `config`, `vmid_reused`, `restore_priority` |
+| security | `anomaly`, `malware`, `scan_hit`, `hash_hunt_hit`, `tenant_lockdown`, `login_new_device`, `user_risk`, `console_unlock`, `console_root_shell`, `break_glass`, `firewall_reset`, `mgmt_allow_reset`, `legal_hold_advisory`, `cert_expiry`, `account_dormant`, `inventory`, `clock_skew`, `gc_quorum`, `gc_confirm`, `vault_disabled`, `incident`, `dek_rotation` |
+| backup | `job_failed`, `sla_missed`, `paused`, `consistency`, `backup_inconsistent`, `orphaned`, `verify`, `snapshot_damaged`, `change_tracking`, `offsite_lag`, `inventory_refresh`, `config`, `vmid_reused`, `restore_priority` |
 | replication | every `replication_…` kind |
 | hardware | `disk`, `fleecing_space` |
 | system | `capacity`, `quota`, `forwarding`, `report`, `tenant_disabled`, `test` and any kind not listed |
@@ -93,6 +93,8 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 | `malware` | critical | a YARA scan found matches of the uploaded rules in a snapshot (see [Malware scan (YARA)](#malware-scan-yara)); the snapshot is flagged as anomalous | — (resolve by hand) | open the scan results on **Snapshots**, check the files and the source; a security officer clears the flag if a rule was too broad |
 | `scan_hit` | critical | a **scheduled** scan of a protection group found matches in the newest snapshot of a source (`scan_hit:<tenant>/<source>`); the snapshot is flagged | — (resolve by hand) | as `malware`; the recovery calendar shows the snapshot red. See [Scheduled scans](#scheduled-scans-and-the-recovery-calendar) |
 | `hash_hunt_hit` | critical | an IOC hash hunt found files whose SHA-256 is on an uploaded list (`hash_hunt_hit:<tenant>`); the snapshots holding them are flagged | — (resolve by hand) | open the results on **Hash hunt**; check the source machine; restore a clean version. See [IOC hash hunt](#ioc-hash-hunt) |
+| `change_tracking` | critical | a scheduled full read found changes the change tracking did not report (`change_tracking:<tenant>/<source>`); the message names the tracker, how many changes were unreported and examples | the next full read of that source is clean | see [Change tracking](#change-tracking-scheduled-full-reads); incremental snapshots since the last clean full read may lack changes |
+| `user_risk` | critical (weakening burst, bulk deletes), warning (unusual hour, download volume) | a risk signal fired for an account (`user_risk:<account id>:<rule>`); the account must step up for 24 hours | — (resolve by hand) | ask the owner; disable the account if it was not them, else clear the mark. See [09 Users and access](09-users-and-access.md#risk-signals-and-step-up) |
 | `tenant_lockdown` | critical | a security officer or administrator locked one tenant down (`tenant_lockdown:<tenant>`) | the lockdown is lifted (approved) | investigate; see [14 Disaster recovery](14-disaster-recovery.md#tenant-lockdown) |
 | `login_new_device` | warning (administrators, security officers), info (other roles) | an account signed in from a browser and network it never used before (`login_new_device:<account id>:<fingerprint>`); also mailed to the account's own address when one is set | — (resolve by hand) | confirm with the account owner; if it was not them, disable the account and check the audit log. See [09 Users and access](09-users-and-access.md#sign-in-devices-and-the-new-device-notice) |
 | `legal_hold_advisory` | warning | (secondary) the primary holds a replicated snapshot under a legal hold; not applied here (one alert per snapshot) | a security officer applies the hold, or the primary releases it | decide whether the hold applies here too; **Apply hold** on the alert. See [08 Replication](08-replication.md#legal-holds-from-the-primary) |
@@ -159,6 +161,26 @@ needs the snapshot to know which chunks belong to it.
 > in integration tests; the repair from a real Storage Box / S3 target and the PVE full re-read after a damaged base
 > still need a run in the lab. A primary cannot repair from its secondary (the secondary does not serve data);
 > use the offsite copy there. The daily share means bit rot in a chunk can stay unnoticed for up to seven days.
+
+### Change tracking: scheduled full reads
+
+Protection groups read their sources in full every so many days (**Full read** in the group's dialog,
+[05 Policies and protection groups](05-policies-and-groups.md#full-read-change-tracking-check)) and compare that with
+what the change tracking reported. The **Change tracking** card on the **Dashboard** sums it up: how many sources were
+**verified** (the last full read found nothing unreported), have **drift** and were **never checked**, and the age of
+the oldest verification. Below it, the sources with drift first: the last full read, the result, the tracker
+(dirty bitmap, metadata cache, USN journal, zfs diff), how many changes were **unreported** (chunks or files, with
+their size; examples such as `drive-scsi0@0x3a2400000` or file paths under the source in the tooltip) and when the
+next full read is due.
+
+![The Change tracking card](images/dashboard-change-tracking.png)
+
+**Drift** raises the critical `change_tracking` alert. The snapshot of the full read itself is complete; the
+incremental snapshots between the last clean full read and this one may lack the unreported changes, so for a
+restore of data from that period prefer the full-read snapshot or check the restored data. Look for the cause (a
+crash of the Proxmox host while the VM ran, a program that restores modification times, a USN journal that wrapped,
+a clock jump) and set a short interval until a full read is clean again; the alert then resolves itself. **No
+baseline** means there was nothing to compare with (the first snapshot, or a VM whose dirty bitmap was new).
 
 ## Expiry warnings
 
@@ -316,6 +338,33 @@ coloured by their state, with arrows for earlier months. Selecting one opens its
 restore to path, …).
 
 ![The recovery calendar of a file server](images/snapshots-recovery-calendar.png)
+
+### Scan back to the last clean snapshot
+
+When a snapshot is flagged or a scan found matches, the question is: which snapshot is the newest clean one?
+**Scan back** answers it. On **Snapshots** the button appears on flagged snapshots and scan hits; on **Alerts** the
+`malware` and `scan_hit` alerts offer **Scan back to last clean** (for the source in the alert, starting at its
+newest flagged snapshot). Administrators, operators, security officers and tenant administrators may start it, as
+with a scan.
+
+![Scan back: options](images/snapshot-scan-back.png)
+
+The scan back scans the snapshots of the source **newest first**, starting at the chosen one, one ordinary
+**Malware scan (YARA)** job per snapshot. Each scan **stops at its first match** (finding one match is enough to rule
+a snapshot out), so infected snapshots go quickly. It ends at the first snapshot whose scan is **complete and clean**:
+that one becomes the **Recommended restore point**. Options: **Minutes per snapshot** (the time budget of each
+scan; a scan that runs out of time is incomplete and does not count as clean) and **At most snapshots** (default
+30, at most 100). Without YARA rules the scan back is refused.
+
+![Scan back: the result](images/snapshot-scan-back-result.png)
+
+The dialog follows the job and shows every scanned snapshot with its verdict and scan job. Matches flag the
+snapshots like any scan; the recommended snapshot gets the badge **Recommended restore point** in the snapshot list
+(only the one of the newest scan back of a source), and restore dialogs opened on a flagged snapshot switch to it.
+If the maximum was reached before a clean snapshot, the result says so: start another scan back at the oldest
+scanned snapshot. Audit: `snapshot.scan_back_request`; the job kind is `scan_back`.
+
+![The recommended restore point](images/snapshots-clean-point.png)
 
 ### IOC hash hunt
 

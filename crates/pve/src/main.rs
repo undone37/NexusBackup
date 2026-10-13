@@ -1,4 +1,4 @@
-//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] | restore-test <spec.json> | lab-check <spec.json> | push-index | list | inventory`.
+//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] [--stop-on-match] | scan-back <source> <from-time> <rules.json> [budget-secs-per-snapshot] [max-snapshots] | restore-test <spec.json> | lab-check <spec.json> | push-index | list | inventory`.
 //! `backup-all` backs up every guest in `vmids`, VM or container (type from /cluster/resources).
 
 use anyhow::{bail, Context, Result};
@@ -47,6 +47,9 @@ struct Config {
     /// `backup-all`: at most this many guests at once with a disk on the storage (source `storage_caps`)
     #[serde(default)]
     storage_caps: std::collections::HashMap<String, usize>,
+    /// VMs due for a scheduled full read (Phase 29, set by the scheduler)
+    #[serde(default)]
+    full_read: std::collections::BTreeSet<u32>,
 }
 
 fn one() -> usize {
@@ -67,7 +70,7 @@ fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
-        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] | restore-test <spec.json> | lab-check <spec.json> | push-index | list | inventory | task-stop <upid> | p2v <req.json> <layout.json> | p2v-cleanup <node> <vmid> <volid>");
+        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] [--stop-on-match] | scan-back <source> <from-time> <rules.json> [budget-secs-per-snapshot] [max-snapshots] | restore-test <spec.json> | lab-check <spec.json> | push-index | list | inventory | task-stop <upid> | p2v <req.json> <layout.json> | p2v-cleanup <node> <vmid> <volid>");
     };
     let cfg: Config = serde_json::from_slice(&fs::read(cfg_path)?).context("config")?;
     // P2V (docs/bmr.md): API only, no store or keys
@@ -104,9 +107,21 @@ fn main() -> Result<()> {
         }
         ("files", [vmid, time, args @ ..]) => return pve::restorevm::cli(&store, vmid.parse()?, time.parse()?, args),
         // opt-in YARA scan in the restore micro-VM (Phase 21e, any local snapshot)
-        ("scan", [source, time, rules, budget @ ..]) if budget.len() <= 1 => {
-            let budget = budget.first().map(|b| b.parse()).transpose()?;
-            return pve::scan::cli(&store, source, time.parse()?, std::path::Path::new(rules), budget);
+        // `--stop-on-match` (Phase 29 scan back, one job per snapshot): end at the first match
+        ("scan", [source, time, rules, opt @ ..]) => {
+            let stop = opt.last().is_some_and(|o| o == "--stop-on-match");
+            let opt = &opt[..opt.len() - usize::from(stop)];
+            if opt.len() > 1 {
+                bail!("scan <source> <time> <rules.json> [budget-secs] [--stop-on-match]");
+            }
+            let budget = opt.first().map(|b| b.parse()).transpose()?;
+            return pve::scan::cli(&store, source, time.parse()?, std::path::Path::new(rules), budget, stop);
+        }
+        // scan back to the last clean snapshot (Phase 29)
+        ("scan-back", [source, from, rules, opt @ ..]) if opt.len() <= 2 => {
+            let budget = opt.first().map(|b| b.parse()).transpose()?;
+            let max = opt.get(1).map(|m| m.parse()).transpose()?;
+            return pve::scan::back_cli(&store, source, from.parse()?, std::path::Path::new(rules), budget, max);
         }
         ("list", []) => {
             println!("{}", serde_json::to_string_pretty(&pve::backup::build_index(&store)?)?);
@@ -133,6 +148,7 @@ fn main() -> Result<()> {
         exclude,
         exclude_mode: cfg.exclude_disks_mode,
         read_limit: cfg.read_limit.as_ref().map(|r| r.throttle()).transpose()?.flatten(),
+        full_read: cfg.full_read,
     };
     match (cmd.as_str(), rest) {
         ("backup", [vmid]) => {

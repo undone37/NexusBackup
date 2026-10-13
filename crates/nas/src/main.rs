@@ -63,6 +63,9 @@ struct Config {
     /// appliance-side read limit of the source (Phase 22b)
     #[serde(default)]
     read_limit: Option<catalog::schedule::ReadLimit>,
+    /// Phase 29: scheduled full read (set by the scheduler when due)
+    #[serde(default)]
+    full_read: bool,
 }
 
 #[derive(Deserialize)]
@@ -305,6 +308,7 @@ fn main() -> Result<()> {
                         })
                     })
                     .transpose()?,
+                full_read: cfg.full_read,
             };
             let before = store.written();
             let o = backup::backup(&store, &root, &spec, &log)?;

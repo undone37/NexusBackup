@@ -59,6 +59,7 @@ fn lab_backup_round() {
         recursive: c["recursive"].as_bool().unwrap_or(false),
         existing: None,
         pace: None,
+        full_read: false,
     };
     let t = std::time::Instant::now();
     let r = backup(&store, &mut api, &ssh, &spec, &mut |l| println!("{l}")).unwrap();
