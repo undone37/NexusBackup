@@ -28,6 +28,21 @@ REPLICA_PORT=${REPLICA_PORT:-$((15434 + k * 10))}
 IMG=localhost/nexus-pg-testbox:$PG
 NAME=${NAME:-nexus-pg-testbox$([ $k = 0 ] || echo "-w$k")}
 
+# remove container $1 whatever state it is in (hung after a cancelled CI run: conmon gone, storage-only
+# leftovers); prints podman's view if the name is still taken
+podman_purge() {
+	podman stop -t 0 "$1" >/dev/null 2>&1 || true
+	podman container cleanup "$1" >/dev/null 2>&1 || true
+	podman rm -f -t 0 "$1" >/dev/null 2>&1 || true
+	podman rm --storage "$1" >/dev/null 2>&1 || true
+	if podman container exists "$1" 2>/dev/null || podman ps -a --external --format '{{.Names}}' 2>/dev/null | grep -qx "$1"; then
+		echo "run.sh: container $1 still exists after removal:" >&2
+		podman ps -a --external --filter "name=^$1\$" --format '{{.ID}} {{.Status}} {{.Names}}' >&2 || true
+		podman rm -f -t 0 "$1" >&2 || true
+		podman rm --storage "$1" >&2 || true
+	fi
+}
+
 secrets() {
 	mkdir -p "$dir/box"
 	chmod 700 "$dir"
@@ -50,9 +65,7 @@ secrets() {
 run() { # name, publish args…
 	local n=$1
 	shift
-	podman rm -f "$n" >/dev/null 2>&1 || true
-	# a run killed while creating (CI cancel) leaves a storage-only container podman rm -f does not see
-	podman rm --storage "$n" >/dev/null 2>&1 || true
+	podman_purge "$n"
 	podman run -d --name "$n" --label nexus.checkout="$root" "$@" -v "$dir/box:/testbox:ro,Z" \
 		-e POSTGRES_PASSWORD="$(cat "$dir/postgres.secret")" -e NEXUS_PASSWORD="$(cat "$dir/nexus.secret")" \
 		"$IMG" >/dev/null

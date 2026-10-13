@@ -26,6 +26,21 @@ BASE=${BASE:-docker.io/library/debian:trixie}
 IMG=localhost/nexus-offsite-testbox:latest
 NAME=nexus-offsite-testbox
 
+# remove container $1 whatever state it is in (hung after a cancelled CI run: conmon gone, storage-only
+# leftovers); prints podman's view if the name is still taken
+podman_purge() {
+	podman stop -t 0 "$1" >/dev/null 2>&1 || true
+	podman container cleanup "$1" >/dev/null 2>&1 || true
+	podman rm -f -t 0 "$1" >/dev/null 2>&1 || true
+	podman rm --storage "$1" >/dev/null 2>&1 || true
+	if podman container exists "$1" 2>/dev/null || podman ps -a --external --format '{{.Names}}' 2>/dev/null | grep -qx "$1"; then
+		echo "run.sh: container $1 still exists after removal:" >&2
+		podman ps -a --external --filter "name=^$1\$" --format '{{.ID}} {{.Status}} {{.Names}}' >&2 || true
+		podman rm -f -t 0 "$1" >&2 || true
+		podman rm --storage "$1" >&2 || true
+	fi
+}
+
 keys() {
 	mkdir -p "$dir/hostkey"
 	chmod 755 "$dir/hostkey"
@@ -53,9 +68,7 @@ case ${1:-} in
 start)
 	keys
 	podman build -q --build-arg BASE="$BASE" -t "$IMG" -f "$here/Containerfile" "$here" >/dev/null
-	podman rm -f "$NAME" >/dev/null 2>&1 || true
-	# a run killed while creating (CI cancel) leaves a storage-only container podman rm -f does not see
-	podman rm --storage "$NAME" >/dev/null 2>&1 || true
+	podman_purge "$NAME"
 	podman run -d --name "$NAME" -e MAX_CONN="$MAX_CONN" -p "127.0.0.1:$PORT:22" \
 		-v "$dir/hostkey:/etc/ssh/hostkey:ro,Z" "$IMG" >/dev/null
 	wait_ready

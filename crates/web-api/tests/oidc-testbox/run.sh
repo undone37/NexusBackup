@@ -29,6 +29,21 @@ else
 fi
 
 # lab CA + server certificate for kc.nexus-lab (TLS=1)
+# remove container $1 whatever state it is in (hung after a cancelled CI run: conmon gone, storage-only
+# leftovers); prints podman's view if the name is still taken
+podman_purge() {
+	podman stop -t 0 "$1" >/dev/null 2>&1 || true
+	podman container cleanup "$1" >/dev/null 2>&1 || true
+	podman rm -f -t 0 "$1" >/dev/null 2>&1 || true
+	podman rm --storage "$1" >/dev/null 2>&1 || true
+	if podman container exists "$1" 2>/dev/null || podman ps -a --external --format '{{.Names}}' 2>/dev/null | grep -qx "$1"; then
+		echo "run.sh: container $1 still exists after removal:" >&2
+		podman ps -a --external --filter "name=^$1\$" --format '{{.ID}} {{.Status}} {{.Names}}' >&2 || true
+		podman rm -f -t 0 "$1" >&2 || true
+		podman rm --storage "$1" >&2 || true
+	fi
+}
+
 certs() {
 	mkdir -p "$dir"
 	[ -f "$dir/ca.crt" ] && return 0
@@ -58,9 +73,7 @@ start)
 		exit 0
 	fi
 	podman image exists "$IMG" || podman pull -q "$IMG" >/dev/null
-	podman rm -f "$NAME" >/dev/null 2>&1 || true
-	# a run killed while creating (CI cancel) leaves a storage-only container podman rm -f does not see
-	podman rm --storage "$NAME" >/dev/null 2>&1 || true
+	podman_purge "$NAME"
 	if [ "${TLS:-0}" = 1 ]; then
 		certs
 		podman run -d --name "$NAME" -p "127.0.0.1:$PORT:8443" \
