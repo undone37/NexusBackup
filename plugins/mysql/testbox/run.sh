@@ -18,7 +18,7 @@ dir=$root/target/my-testbox
 # git worktrees and CI runner checkouts (parallel test runs) get their own container names and ports, so one run
 # cannot remove or reuse another's testbox; the main checkout keeps the defaults (lab scripts).
 k=0
-case $root in */worktrees/* | */_work/*) k=$(($(printf %s "$root" | cksum | cut -d' ' -f1) % 400 + 1)) ;; esac
+XX
 MARIADB_PORT=${MARIADB_PORT:-$((23306 + k * 10))}
 MARIADB_SSH_PORT=${MARIADB_SSH_PORT:-$((23307 + k * 10))}
 MYSQL_PORT=${MYSQL_PORT:-$((23308 + k * 10))}

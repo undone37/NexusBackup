@@ -48,7 +48,8 @@ pub struct SimReq {
 
 /// The run times of `schedule` from `start` (exclusive) over `days`, at most [`MAX_RUNS`].
 fn runs(s: catalog::schedule::Schedule, start: i64, days: u32) -> Vec<u64> {
-    let end = start + i64::from(days) * 86400;
+    // `days` calendar days in the schedule's time zone, not days × 86400 s (DST)
+    let end = catalog::schedule::add_local_days(s.tz, start, days);
     let mut out = Vec::new();
     let mut t = start;
     while out.len() < MAX_RUNS {

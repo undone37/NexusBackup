@@ -20,7 +20,7 @@ PG=${PG:-17}
 # git worktrees and CI runner checkouts (parallel test runs) get their own container names and ports, so one run
 # cannot remove or reuse another's testbox; the main checkout keeps the defaults (lab scripts).
 k=0
-case $root in */worktrees/* | */_work/*) k=$(($(printf %s "$root" | cksum | cut -d' ' -f1) % 400 + 1)) ;; esac
+XX
 PORT=${PORT:-$((15432 + k * 10))}
 ALT_PORT=${ALT_PORT:-$((15433 + k * 10))}
 SSH_PORT=${SSH_PORT:-$([ $k = 0 ] && echo 12222 || echo $((12225 + k * 10)))}

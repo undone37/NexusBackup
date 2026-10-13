@@ -759,8 +759,44 @@ pub fn paused(until: Option<i64>, now: i64) -> bool {
     until.is_some_and(|u| u == -1 || u > now)
 }
 
+/// `t` plus `days` calendar days in `tz`, at the same wall-clock time (a gap or fold from a
+/// DST change resolves to the earliest valid instant). A fixed `days × 86400 s` drifts by the
+/// DST shifts in between and drops or adds a daily run at the end of a window.
+pub fn add_local_days(tz: Tz, t: i64, days: u32) -> i64 {
+    let Some(local) = tz.timestamp_opt(t, 0).single() else {
+        return t + i64::from(days) * 86400;
+    };
+    let target = local.naive_local() + Duration::days(i64::from(days));
+    match tz.from_local_datetime(&target) {
+        LocalResult::Single(d) => d.timestamp(),
+        LocalResult::Ambiguous(a, _) => a.timestamp(),
+        LocalResult::None => tz
+            .from_local_datetime(&(target + Duration::hours(1)))
+            .earliest()
+            .map_or(t + i64::from(days) * 86400, |d| d.timestamp()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn add_local_days_keeps_the_wall_clock_across_dst() {
+        let berlin: Tz = "Europe/Berlin".parse().unwrap();
+        // 2026-10-13 22:55 CEST; 400 days later crosses 3 DST changes (net +1 h): still 22:55
+        let t = berlin.with_ymd_and_hms(2026, 10, 13, 22, 55, 0).unwrap().timestamp();
+        let e = add_local_days(berlin, t, 400);
+        let end = berlin.timestamp_opt(e, 0).unwrap();
+        assert_eq!(
+            (end.date_naive(), end.time()),
+            (
+                NaiveDate::from_ymd_opt(2027, 11, 17).unwrap(),
+                NaiveTime::from_hms_opt(22, 55, 0).unwrap()
+            )
+        );
+        assert_ne!(e, t + 400 * 86400, "a plain 400 x 86400 s would end at 21:55 local");
+        assert_eq!(add_local_days(Tz::UTC, 1000, 2), 1000 + 2 * 86400);
+    }
     use super::*;
 
     const HOUR: i64 = 3600;
