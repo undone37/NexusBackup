@@ -16,6 +16,7 @@ import type { Plugin } from 'vite';
 import pgManifest from '../../plugins/postgresql/manifest.json' with { type: 'json' };
 import truenasManifest from '../../plugins/truenas/manifest.json' with { type: 'json' };
 import m365Manifest from '../../plugins/m365/manifest.json' with { type: 'json' };
+import mysqlManifest from '../../plugins/mysql/manifest.json' with { type: 'json' };
 // Phase 13b: the schedule grammar and blackout check the UI uses as well.
 import {
   bandwidthWeaker,
@@ -712,6 +713,20 @@ function listDir(path: string, source: string): Json[] {
         };
     return tree[path] ?? [];
   }
+  if (source.startsWith('plugin-mysql-')) {
+    // plugins/mysql (Phase 23b): a database snapshot holds `<db>.sql`; the server snapshot base/ (xbstream pieces) + binlog/
+    const db_ = /^plugin-mysql-\d+-(.+)$/.exec(source)?.[1];
+    const tree: Record<string, Json[]> = db_
+      ? { '/': [d('.nexus-streams')], '/.nexus-streams': [f(`${db_}.sql`, 734_003_200)] }
+      : {
+          '/': [d('base'), d('binlog')],
+          '/base': [f('000000', 32 << 20), f('000001', 32 << 20), f('000002', 9_437_184)],
+          '/binlog': [d('mysql-bin.000412'), d('mysql-bin.000413')],
+          '/binlog/mysql-bin.000412': [f('0000000004', 1_048_572)],
+          '/binlog/mysql-bin.000413': [f('0000000004', 4_120_771), f('0000004120775', 88_120)],
+        };
+    return tree[path] ?? [];
+  }
   if (source.startsWith('plugin-m365-')) {
     // plugins/m365: a user's mailbox + OneDrive (mail as .eml per folder, docs/m365.md)
     const tree: Record<string, Json[]> = {
@@ -1219,7 +1234,19 @@ function seed() {
       ssh_host: 'nas02.acme.example.com', ssh_port: 22, ssh_user: 'nexusbackup', ssh_host_key: DEMO_HOST_KEY('nas02'), ssh_private_key: 'SECRET', datasets: ['tank/media'], recursive: false, sudo: true, zfs_sudo: true,
     } as Json,
   };
-  db.sources.push(sPg, sNas02);
+  // Phase 23b: MySQL / MariaDB plugin 1.0.0, an ERP MariaDB (dumps over SSH + server backups with binlog)
+  db.plugins.push(pluginEntry(withAppliesTo(structuredClone(mysqlManifest) as Json), 'admin', t - 86400 * 3));
+  const sMy = {
+    id: nextId(),
+    tenant: 'acme',
+    kind: 'plugin:mysql',
+    name: 'erp-mariadb',
+    config: {
+      host: 'erp-db.acme.example.com', port: 3306, user: 'nexus_backup', password: 'SECRET', sslmode: 'verify-full', ca_cert: '-----BEGIN CERTIFICATE-----\n(demo CA)\n-----END CERTIFICATE-----\n',
+      dump_via: 'auto', full_every_days: 7, ssh_host: 'erp-db.acme.example.com', ssh_port: 22, ssh_user: 'mysql', ssh_key: 'SECRET', ssh_host_key: DEMO_HOST_KEY('erp-db'),
+    } as Json,
+  };
+  db.sources.push(sPg, sNas02, sMy);
 
   const grp = (tenant: string, source_id: number, policy_id: number, name: string, guests: (number | string)[], auto: Partial<MockGroup> = {}): MockGroup => ({
     id: nextId(), tenant, source_id, policy_id, name, guests, mode: 'explicit', selector: [], exclude: [],
@@ -1248,6 +1275,8 @@ function seed() {
     gDbs,
     grp('acme', sPg.id, silver.id, 'acme-pg-cluster', []),
     grp('acme', sNas02.id, silver.id, 'acme-nas02', ['tank.media']),
+    grp('acme', sMy.id, hourly.id, 'acme-erp-db', ['erp']),
+    grp('acme', sMy.id, silver.id, 'acme-erp-server', []),
   );
   // guest inventory (scheduler `inventory` jobs, 20 minutes ago)
   const inv = (sid: number, rows: [string, string, string, string[]][]) =>
@@ -1274,6 +1303,10 @@ function seed() {
     ['shop', 'shop', '', []],
     ['crm', 'crm', '', []],
     ['analytics', 'analytics (reporting)', '', []],
+  ]);
+  inv(sMy.id, [
+    ['erp', 'erp', '', []],
+    ['erp_archive', 'erp_archive', '', []],
   ]);
   inv(sNas02.id, [
     ['tank.media', 'tank/media (/mnt/tank/media)', '', []],
@@ -1315,6 +1348,21 @@ function seed() {
       const from = cl[0].time + 140;
       (s as Json).meta = { recoverable: { from_time: from, from_lsn: lsn(0), to_time: i ? s.time - 3 : from, to_lsn: lsn(i), timeline: 1 } };
     });
+  }
+  // Phase 23b: MariaDB server snapshots (base backup of the oldest + binlog up to each) and hourly dumps
+  series('acme', `plugin-mysql-${sMy.id}`, 0.07, { hh: 23, skip: 1, days: 3 });
+  {
+    const cl = db.snapshots.filter((s) => s.source === `plugin-mysql-${sMy.id}`).sort((a, b) => a.time - b.time);
+    cl.forEach((s, i) => {
+      const from = cl[0].time + 95;
+      (s as Json).meta = {
+        recoverable: { from_time: from, from_lsn: 'mysql-bin.000412:1077', to_time: i ? s.time - 2 : from, to_lsn: i ? `mysql-bin.000413:${4_120_775 + i * 88_120}` : 'mysql-bin.000412:1077', unit: 'binlog' },
+      };
+    });
+  }
+  for (let h = 0; h < 3; h++) {
+    const time = Math.floor(t / 3600 - h) * 3600 + 20 * 60;
+    if (time <= t) db.snapshots.push(snap('acme', `plugin-mysql-${sMy.id}-erp`, time, 700 << 20, true, h > 1, null));
   }
   for (const dbName of ['shop', 'crm']) {
     for (let h = 0; h < 4; h++) {

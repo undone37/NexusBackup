@@ -1,0 +1,15 @@
+# MySQL 8.4 + sshd + Percona XtraBackup 8.4 for the plugin's integration test (see run.sh).
+# The image's minimal server package has no mysqlbinlog: it is taken from the client RPM.
+FROM docker.io/library/mysql:8.4
+RUN microdnf -y install openssh-server cpio && rpm -i https://repo.percona.com/yum/percona-release-latest.noarch.rpm \
+    && percona-release enable-only pxb-84-lts release && microdnf -y install percona-xtrabackup-84 \
+    && printf '[m84]\nname=MySQL 8.4\nbaseurl=https://repo.mysql.com/yum/mysql-8.4-community/el/9/x86_64/\ngpgcheck=1\ngpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-mysql\nmodule_hotfixes=true\n' >/etc/yum.repos.d/m84.repo \
+    && cd /tmp && microdnf -y download "mysql-community-client-$(rpm -q --qf '%{VERSION}' mysql-community-server-minimal)" \
+    && rpm2cpio mysql-community-client-*.rpm | cpio -idm ./usr/bin/mysqlbinlog && install -m 755 usr/bin/mysqlbinlog /usr/bin/ \
+    && rm -rf /tmp/* /etc/ssh/ssh_host_* && microdnf clean all \
+    && usermod -p "*" -s /bin/bash -d /home/mysql mysql && install -d -o mysql -g mysql -m 755 /home/mysql
+COPY init.sh /docker-entrypoint-initdb.d/50-nexus.sh
+COPY entrypoint.sh /usr/local/bin/testbox-entrypoint
+RUN chmod 755 /usr/local/bin/testbox-entrypoint /docker-entrypoint-initdb.d/50-nexus.sh
+ENTRYPOINT ["/usr/local/bin/testbox-entrypoint"]
+CMD ["mysqld"]

@@ -1,0 +1,12 @@
+# MariaDB 11 + sshd for the plugin's integration test (see run.sh): the server to back up
+# (binlog on, TLS with the testbox CA) and the SSH host that runs mariadb-dump /
+# mariadb-backup and receives physical restores (SSH as mysql, key auth only).
+FROM docker.io/library/mariadb:11
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        openssh-server && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_* && mkdir -p /run/sshd \
+    && usermod -p "*" -s /bin/bash -d /home/mysql mysql && install -d -o mysql -g mysql -m 755 /home/mysql
+COPY init.sh /docker-entrypoint-initdb.d/50-nexus.sh
+COPY entrypoint.sh /usr/local/bin/testbox-entrypoint
+RUN chmod 755 /usr/local/bin/testbox-entrypoint /docker-entrypoint-initdb.d/50-nexus.sh
+ENTRYPOINT ["/usr/local/bin/testbox-entrypoint"]
+CMD ["mariadbd"]

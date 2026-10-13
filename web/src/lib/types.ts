@@ -754,7 +754,8 @@ export interface SourceTrend {
 /** Plugin snapshot metadata (protocol v1.6 `SnapshotMeta`); known keys are shown. */
 export interface SnapshotMeta {
   /** point-in-time restore range: unix seconds and LSNs (PostgreSQL cluster snapshots) */
-  recoverable?: { from_time: number; to_time: number; from_lsn: string; to_lsn: string; timeline?: number };
+  /** positions: PostgreSQL LSNs; `unit: "binlog"` (MySQL/MariaDB, Phase 23b) = `file:position` */
+  recoverable?: { from_time: number; to_time: number; from_lsn: string; to_lsn: string; timeline?: number; unit?: string };
   [k: string]: unknown;
 }
 

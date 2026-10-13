@@ -3613,6 +3613,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "mysql"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "plugin-sdk",
+ "russh",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.10.9",
+ "tokio",
+ "webpki-roots",
+]
+
+[[package]]
 name = "naga"
 version = "27.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
