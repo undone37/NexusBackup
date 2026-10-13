@@ -1109,6 +1109,8 @@ files_read_etc_runtime_files(nexus_disks_t)
 auth_read_passwd(nexus_disks_t)
 # lsblk -O resolves the OWNER column through systemd-userdb; the helper never uses it
 dontaudit nexus_disks_t systemd_userdbd_runtime_t:dir { search read };
+# nexus-diag's posture checks resolve users through NSS (passwd suffices)
+dontaudit nexus_diag_t systemd_userdbd_runtime_t:dir { search read };
 dev_read_urand(nexus_disks_t)
 kernel_read_kernel_sysctls(nexus_disks_t)
 # its control dir: consumes req-*.json, writes status/ops/state and the mkfs protofile
