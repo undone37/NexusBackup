@@ -1,0 +1,27 @@
+[package]
+name = "fileindex"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "nexus-index: per-tenant file search index (embedded Tantivy, sealed segments), Phase 31b"
+
+[dependencies]
+anyhow = "1"
+chunkstore = { path = "../chunkstore" }
+fsindex = { path = "../fsindex" }
+index-proto = { path = "../index-proto" }
+keyd = { path = "../keyd" }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+stable_deref_trait = "1"
+tantivy = { version = "0.26", default-features = false, features = ["lz4-compression"] }
+
+[[bin]]
+name = "nexus-index"
+path = "src/main.rs"
+
+[dev-dependencies]
+tantivy-fst = "0.5"
+tempfile = "3"

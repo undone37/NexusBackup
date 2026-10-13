@@ -123,7 +123,7 @@ impl NameIndex {
     }
 }
 
-fn ctx(source: &str, time: u64) -> String {
+pub(crate) fn ctx(source: &str, time: u64) -> String {
     format!("names:{source}/{time}")
 }
 
