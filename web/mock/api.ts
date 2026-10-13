@@ -4163,6 +4163,7 @@ const ALERT_CATEGORY: Record<string, string> = {
   vault_disabled: 'security', incident: 'security', dek_rotation: 'security',
   job_failed: 'backup', sla_missed: 'backup', paused: 'backup', consistency: 'backup', backup_inconsistent: 'backup',
   orphaned: 'backup', verify: 'backup', snapshot_damaged: 'backup', offsite_lag: 'backup', inventory_refresh: 'backup', config: 'backup',
+  vmid_reused: 'backup', restore_priority: 'backup',
   disk: 'hardware', fleecing_space: 'hardware',
 };
 const alertCategory = (kind: string) => (kind.startsWith('replication_') ? 'replication' : (ALERT_CATEGORY[kind] ?? 'system'));

@@ -158,6 +158,36 @@ export interface SourceConfig {
   fleecing_storage: string;
   /** Phase 18: fleecing space guard (absent fields = defaults 15 % / 20 GiB / 5 %) */
   fleecing_guard?: { min_free_pct?: number; min_free_gib?: number; cancel_free_pct?: number; interval_secs?: number };
+  /** Phase 22b: at most this many guests of the source at once (caps the groups' parallel guests, 1..=8) */
+  max_parallel?: number;
+  /** Phase 22b: at most n guests at once with a disk on the PVE storage */
+  storage_caps?: Record<string, number>;
+  read_limit?: ReadLimit;
+}
+
+/** Phase 22b: appliance-side read limit of a source (bytes/s + `limit` windows in `timezone`). */
+export interface ReadLimit {
+  bwlimit?: number;
+  windows?: { days: string[]; from: string; to: string; action: 'limit'; rate_bytes: number }[];
+  timezone?: string;
+}
+
+/** Phase 22b: sizing note of share / TrueNAS sources (newest backup's entries, RAM estimate). */
+export interface SourceSizing {
+  entries: number;
+  est_ram_bytes: number;
+  mem_total: number | null;
+  warn: boolean;
+}
+
+/** Phase 22b: the restore-priority switch (GET /restore-priority). */
+export interface RestorePriority {
+  active: boolean;
+  until?: number;
+  since?: number;
+  by?: string;
+  reason?: string;
+  max_hours: number;
 }
 
 /** Config of a `linux` source (a host with an enrolled backup agent). No secrets. */
@@ -204,6 +234,9 @@ export interface TrueNasSourceConfig {
   recursive: boolean;
   sudo: boolean;
   zfs_sudo: boolean;
+  /** Phase 22b "use existing snapshots": prefix of the periodic snapshots to back up (e.g. `auto-`) */
+  existing_snapshots?: string;
+  read_limit?: ReadLimit;
   /** returned by the API: the line for the TrueNAS user's "SSH public key" field */
   authorized_keys?: string;
 }
@@ -245,6 +278,7 @@ export interface ShareSourceConfig {
   threads?: number;
   xattrs?: boolean;
   timeout_secs?: number;
+  read_limit?: ReadLimit;
 }
 
 interface SourceBase {
@@ -253,6 +287,9 @@ interface SourceBase {
   name: string;
   /** Phase 13b: null = active, -1 = indefinitely, else unix time */
   maintenance_until?: number | null;
+  /** Phase 22b (share / TrueNAS sources): other listed sources backing up the same paths */
+  overlaps?: { id: number; name: string }[];
+  sizing?: SourceSizing | null;
 }
 export type PveSource = SourceBase & { kind: 'pve'; config: SourceConfig };
 export type LinuxSource = SourceBase & { kind: 'linux'; config: LinuxSourceConfig };
@@ -552,6 +589,7 @@ export type JobKind =
   | 'restore'
   | 'restore_ct'
   | 'instant_recover'
+  | 'instant_disk'
   | 'files_list'
   | 'files_get'
   | 'offsite'
@@ -755,6 +793,15 @@ export interface SourceTrend {
 export interface SnapshotMeta {
   /** point-in-time restore range: unix seconds and LSNs (PostgreSQL cluster snapshots) */
   recoverable?: { from_time: number; to_time: number; from_lsn: string; to_lsn: string; timeline?: number };
+  /** Phase 22b: VM identity of a `vm-` snapshot; `changed` = the VMID was reused (new chain) */
+  identity?: {
+    vmgenid: string | null;
+    smbios_uuid: string | null;
+    changed: boolean;
+    previous: { vmgenid: string | null; smbios_uuid: string | null } | null;
+  };
+  /** Phase 22b: the TrueNAS snapshot a `nas-` snapshot was read from */
+  zfs_snapshot?: string;
   [k: string]: unknown;
 }
 

@@ -25,6 +25,7 @@
   } from '../lib/types';
   import Check from '../components/Check.svelte';
   import BackupNow from '../components/BackupNow.svelte';
+  import RestorePriority from '../components/RestorePriority.svelte';
   import { isPaused, schedulePeriod } from '../lib/schedule';
   import JobState from '../components/JobState.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
@@ -300,6 +301,9 @@
       {#if can.viewQuorum(session.user)}<a href={href('/settings?tab=incident')}>{t.incident.open}</a>{/if}
     </p>
   </section>
+{/if}
+{#if (session.user?.role === 'admin' || session.user?.role === 'operator') && !session.user?.tenant}
+  <RestorePriority />
 {/if}
 {#if approvals?.recommend && !dismissed && can.configure(session.user)}
   <div class="banner warn approvals-banner" role="status">

@@ -35,6 +35,8 @@
   import IconCloudDown from '@lucide/svelte/icons/cloud-download';
   import IconWrench from '@lucide/svelte/icons/wrench';
   import { fetchFromOffsite } from '../lib/offsite';
+  import InstantDisk from '../components/InstantDisk.svelte';
+  import IconDisk from '@lucide/svelte/icons/hard-drive-download';
 
   let snaps: Snapshot[] = $state([]);
   let tenants: Tenant[] = $state([]);
@@ -273,6 +275,14 @@
   });
   const origVmid = (s: Snapshot | null) => s?.source.replace(/^(vm|ct)-/, '') ?? '';
 
+  // Phase 22b: instant disk recovery (one disk attached to an existing VM)
+  let idrOpen = $state(false);
+  let idrSnap: Snapshot | null = $state(null);
+  function openInstantDisk(s: Snapshot) {
+    idrSnap = preferClean(s);
+    idrOpen = true;
+  }
+
   async function startRestore(e: SubmitEvent) {
     e.preventDefault();
     if (!sel) return;
@@ -396,8 +406,10 @@
     // TrueNAS datasets and NFS/SMB shares (docs/truenas-connector.md, docs/nas-connector.md)
     if (s.source.startsWith('nas-') || s.source.startsWith('share-')) return [toHost];
     const items: MenuItem[] = [{ label: t.snap.fullRestore, hint: t.snap.fullRestoreHint, icon: IconRestore, onselect: () => openRestore(s, 'restore') }];
-    if (s.source.startsWith('vm-'))
+    if (s.source.startsWith('vm-')) {
       items.push({ label: t.snap.instant, hint: t.snap.instantHintShort, icon: IconZap, onselect: () => openRestore(s, 'instant') });
+      items.push({ label: t.idr.menu, hint: t.idr.menuHint, icon: IconDisk, onselect: () => openInstantDisk(s) });
+    }
     // VM/CT files: chosen in the file browser (restore micro-VM), then restored onto a host
     items.push({ label: t.snap.restoreFilesToHost, hint: t.snap.restoreFilesToHostHint, icon: IconHost, onselect: () => browse(s) });
     return items;
@@ -547,6 +559,20 @@
                   </div>
                 {/if}
                 {#if s.origin}<div><span class="chip info">{t.snap.replicatedFrom(s.origin)}</span></div>{/if}
+                {#if s.meta?.identity?.changed}
+                  <div>
+                    <span
+                      class="chip warn"
+                      title={t.snap.identityChangedTitle(
+                        s.meta.identity.previous?.vmgenid ?? '?',
+                        s.meta.identity.vmgenid ?? '?',
+                        s.meta.identity.previous?.smbios_uuid ?? '?',
+                        s.meta.identity.smbios_uuid ?? '?',
+                      )}>{t.snap.identityChanged}</span
+                    >
+                  </div>
+                {/if}
+                {#if s.meta?.zfs_snapshot}<div class="muted small mono">@{s.meta.zfs_snapshot}</div>{/if}
                 {#if s.damaged}
                   <div>
                     <span class="chip bad" title={t.snap.damagedTitle(s.damaged, fmtTime(s.damaged_at ?? 0))}>{t.snap.damaged}</span>
@@ -715,6 +741,8 @@
     </form>
   {/if}
 </Modal>
+
+<InstantDisk bind:open={idrOpen} snap={idrSnap} nodes={nodesOf(idrSnap?.tenant)} />
 
 <Modal bind:open={manyOpen} title={t.ropts.manyTitle} wide>
   <form onsubmit={startMany}>

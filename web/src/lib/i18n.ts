@@ -398,6 +398,10 @@ export const en = {
     fullRestore: "Full restore to a new VM / container",
     fullRestoreHint: "Restore onto a Proxmox VE node",
     instantHintShort: "Start now from the backup, move disks live",
+    // Phase 22b: VM identity per snapshot
+    identityChanged: "New VM identity",
+    identityChangedTitle: (oldGen: string, newGen: string, oldUuid: string, newUuid: string) =>
+      `The VMID was reused or the VM replaced: vmgenid ${oldGen} → ${newGen}, SMBIOS UUID ${oldUuid} → ${newUuid}. This snapshot starts a new chain; older snapshots of this VMID belong to the previous VM.`,
     restorePathHint: "Write files onto a host with an agent",
     restoreToHost: "Restore to a host…",
     restoreToHostHint:
@@ -573,6 +577,7 @@ export const en = {
       restore: "Restore VM",
       restore_ct: "Restore container",
       instant_recover: "Instant recover",
+      instant_disk: "Instant disk recovery",
       files_list: "List files",
       files_get: "Download files",
       offsite: "Offsite copy",
@@ -682,6 +687,100 @@ export const en = {
       "Pause or limit offsite uploads at certain times, for example during business hours. An upload that would start in a pause waits for its end; a running one holds before its next pack. Tightening applies directly; allowing more bandwidth needs approval, like other changes of an existing offsite target.",
   },
   // Phase 17a: bandwidth windows and sync windows (offsite, replication sources)
+  // Phase 22b: concurrency caps and read limits of a source
+  limits: {
+    title: "Limits",
+    hintPve:
+      "Protects the cluster during the day: at most this many guests of the source at once (whatever the groups ask for), at most n guests at once with a disk on a busy storage, and a cap on what the appliance reads. One backup job per source runs at a time, so these bound everything the appliance reads from it.",
+    hint: "A cap on what the appliance reads from this source, e.g. lower during office hours. One backup job per source runs at a time.",
+    maxParallel: "Guests at once (source cap)",
+    maxParallelHint: "Caps the parallel guests of every group of this source (1–8). Empty = as the group says.",
+    noCap: "as the group says",
+    storageCaps: "Guests at once per PVE storage",
+    storageCapsHint: "One storage=n per line (n 1–8), e.g. ceph-ssd=2: a guest with a disk there waits while n others run; guests on other storages pass it.",
+    rate: "Read limit (MB/s)",
+    rateHint: "Outside the windows below. Empty = unlimited.",
+    unlimited: "unlimited",
+    windows: "Read-limit windows",
+    windowsHint:
+      "Times with a different read rate (time zone above), e.g. 20 MB/s on weekdays 07:00–19:00. The lowest active window applies and replaces the base rate. There is no pause: a paused read would stall a running backup; keep backups out of a time span with a blackout window in the policy.",
+    invalid: {
+      max_parallel: "Guests at once: a number from 1 to 8 (or empty).",
+      storage_caps: "Guests per PVE storage: one storage=n per line, n from 1 to 8.",
+      read_limit: "Read limit: a rate above 0 MB/s; every window needs a rate.",
+    },
+  },
+  // Phase 22b: NAS sizing note, overlap warning, split, skipped files, TrueNAS existing snapshots
+  nas: {
+    sizing: (entries: string, ram: string, mem: string | null) =>
+      `Last backup: ${entries} entries, needs about ${ram} of RAM${mem ? ` (appliance: ${mem})` : ''}.`,
+    sizingWarnShort: "split it",
+    sizingWarn:
+      "Every entry of a run is held in memory (previous and new tree). Split the share by include roots (Split) so each part runs on its own, or give the appliance more memory.",
+    overlap: (names: string) => `overlaps ${names}`,
+    overlapTitle:
+      "Another source backs up the same paths (same server and share or dataset, overlapping include roots): the files are read and stored twice. Narrow the include roots or remove one source.",
+    split: "Split…",
+    splitTitle: (name: string) => `Split ${name} by include roots`,
+    splitHint:
+      "Creates one new source per include root (its own snapshots, runs and retention) with copies of this source's groups. This source stays as it is: delete it (or narrow its include roots) once the new ones have backed up, or the files are stored twice. Its snapshots stay until retention removes them.",
+    roots: "Include roots (one per line)",
+    rootsHint: "2–32 share paths, e.g. /projects, /home; within this source's include roots and not overlapping each other.",
+    splitPassword: "The stored password is sealed to this source and cannot be copied: enter it again.",
+    copyGroups: "Copy this source's groups (policy, schedule, time zone) to every new source",
+    splitDone: "Split: new sources created.",
+    skippedCsv: "Skipped files (CSV)",
+    skippedHint: "The entries this backup could not read (path, reason), at most the first 1000.",
+    existing: "Use existing snapshots (periodic snapshot task)",
+    existingHint:
+      "Back up each dataset's newest snapshot with the prefix below instead of creating and deleting nexus-… snapshots; the next run reads only what changed since the snapshot the last backup came from. Nothing is created or deleted on TrueNAS. Paste the authorized_keys line again after switching: it allows these snapshot names.",
+    existingPrefix: "Snapshot name prefix",
+  },
+  // Phase 22b: restore priority
+  priority: {
+    title: "Restore priority",
+    active: "on",
+    inactive: "off",
+    intro:
+      "During a disaster recovery: holds scheduled backups, GC, verify, file indexing, offsite uploads and replication so restores get the disks and the network. Restores and manual jobs run as usual; running jobs finish. Ends on its own (at most 24 hours, renewable).",
+    hours: "For",
+    renewFor: "Renew for",
+    hoursN: (h: number) => `${h} hour${h === 1 ? "" : "s"}`,
+    reason: "Reason",
+    reasonHint: "e.g. DR of the ERP cluster, ticket 4711",
+    turnOn: "Turn on",
+    renew: "Renew",
+    turnOff: "Turn off",
+    confirm: (h: number) =>
+      `Turn restore priority on for ${h} hour${h === 1 ? "" : "s"}? Scheduled backups, GC, verify, offsite uploads and replication wait until it ends; due backups run afterwards.`,
+    on: "Restore priority is on.",
+    renewed: "Restore priority renewed.",
+    off: "Restore priority is off; held jobs start now.",
+    until: (when: string) => `Until ${when}`,
+    since: (by: string, ago: string) => `turned on by ${by} ${ago}`,
+    banner: (until: string, by: string, reason: string) =>
+      `Restore priority until ${until} (${by}${reason ? `: ${reason}` : ''}).`,
+    bannerHeld: "Scheduled backups, GC, verify, offsite uploads and replication are held.",
+    manage: "Dashboard",
+  },
+  // Phase 22b: instant disk recovery
+  idr: {
+    menu: "Attach one disk to a VM…",
+    menuHint: "Instant disk recovery: serve one disk to an existing VM",
+    title: (s: string) => `Instant disk recovery: ${s}`,
+    intro:
+      "One disk of this backup is attached to an existing VM (hot-plugged if it runs), served from the appliance like an instant recovery. With a storage below it is then moved there live and the appliance stops serving; without, it keeps serving until you move the disk (qm disk move) or detach and remove it. The target must be a VM a group of this tenant protects.",
+    disk: "Disk of the backup",
+    diskHint: "Its slot in the backed-up VM, e.g. scsi1.",
+    target: "Attach to VM (VMID)",
+    targetHint: "A VM protected by a group of this tenant, on the node above.",
+    key: "As slot (optional)",
+    keyAuto: "first free scsi slot",
+    moveTo: "Then move to storage (optional)",
+    moveToHint: "e.g. local-lvm. Empty = keep serving from the appliance.",
+    attach: "Attach disk",
+    requested: "Instant disk recovery requested; it starts after approval.",
+  },
   windows: {
     action: "Action",
     pause: "Pause (no transfer)",
@@ -2051,6 +2150,10 @@ export const en = {
       legal_hold_advisory: 'The primary holds this replicated snapshot under a legal hold. Holds are not applied here automatically: a security officer applies it with Apply hold. Resolves once applied or when the primary releases its hold.',
       disk: 'A disk or RAID array needs attention (SMART failing, bad sectors, temperature, NVMe wear, degraded or rebuilding array). Open Configuration → Hardware; replace a failed disk as the manual describes. Resolves when the disk or array is healthy again.',
       clock_skew: 'System time and the compliance clock (retention locks) differ. A lag after a restart is normal: the compliance clock catches up slowly and locks last longer meanwhile. A jump while running, or a compliance clock ahead of system time, means system time was changed by hand or a time source is wrong: check Diagnostics (time.sync, time.nts) and the audit log. Resolves when the difference is below a minute.',
+      vmid_reused:
+        "A VM's identity (vmgenid / SMBIOS UUID) changed between two backups: its VMID now belongs to another VM (deleted and re-created, or replaced by a restore). The newest snapshot starts a new chain (read in full); older snapshots of that VMID belong to the previous VM and age out with retention. Check that the right VM is protected; put a legal hold on the old snapshots if they must be kept. Resolve the alert once checked.",
+      restore_priority:
+        "Restore priority is on (Dashboard): scheduled backups, GC, verify, file indexing, offsite uploads and replication syncs wait so restores get the disks and network. It ends on its own after at most 24 hours, or turn it off on the Dashboard when the recovery is done. Resolves when it is off.",
       fleecing_space: 'The fleecing storage of a Proxmox node (usually local-lvm) is nearly full. A full LVM-thin pool pauses every VM on it, so guests are skipped below the guard and a running backup is cancelled below the critical level. Free space in that storage or choose a larger fleecing storage for the source, and adjust the guard on the source if needed. Resolves when a backup finds enough space again.',
       incident:
         "A security officer put the appliance into incident mode: snapshots in the chosen range are held, backup groups are paused, every other session and all API tokens were ended. Investigate; leaving incident mode needs a second approver (Settings → Incident mode). Resolves when incident mode ends.",
