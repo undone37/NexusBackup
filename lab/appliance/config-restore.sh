@@ -129,10 +129,13 @@ ls -lZ /var/lib/nexus/webapi /var/lib/nexus/scheduler /etc/nexus/ssh /etc/nexus/
 		api admin GET /tenants | jq -c '[.[] | .name]' >&2
 		for _ in $(seq 300); do
 			st=$(api admin GET /jobs | jq -r '[.[] | select(.kind=="config_rekey")][0].state // "none"')
-			[ "$st" = ok ] && break
+			case $st in ok | failed | cancelled) break ;; esac
 			sleep 2
 		done
-		[ "$st" = ok ] || die "config_rekey: $st"
+		if [ "$st" != ok ]; then
+			j=$(api admin GET /jobs | jq -r '[.[] | select(.kind=="config_rekey")][0].id')
+			die "config_rekey: $st: $(api admin GET "/jobs/$j" | jq -r .log | tail -15)"
+		fi
 		log "B: tenant keys restored from the offsite escrow"
 		api admin GET '/snapshots?tenant=lab' | jq -r '.[] | "  \(.source) \(.time) local=\(.local) offsite=\(.offsite)"' >&2
 		api admin GET '/snapshots?tenant=lab' | jq -e '[.[] | select(.offsite)] | length > 0' >/dev/null ||

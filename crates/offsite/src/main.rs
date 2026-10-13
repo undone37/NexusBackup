@@ -222,6 +222,17 @@ fn main() -> Result<()> {
         ("upload", []) => {
             let escrow = escrow_files(&cfg.escrow_dir)?;
             for (name, bytes) in &escrow {
+                // escrow is write-once (a compromised appliance must not replace it); keys of
+                // another appliance (reinstall on an old target) would silently break DR
+                if remote
+                    .get(&format!("keys/{name}"), 0, None)
+                    .is_ok_and(|have| have != *bytes)
+                {
+                    bail!(
+                        "the offsite target holds other escrowed keys (keys/{name}): it belongs to another appliance \
+                         or an earlier installation; use a new target or path (keys are never overwritten)"
+                    );
+                }
                 t.put_if_missing(&format!("keys/{name}"), bytes)?;
             }
             let st = t.upload()?;

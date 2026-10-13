@@ -143,3 +143,36 @@ fn rekey_after_config_restore() {
     assert!(out.contains("1 snapshots indexed"), "{out}");
     assert!(!out.contains(&rk));
 }
+
+/// A reinstalled appliance (new KEK) pointed at the old target: the write-once escrow
+/// would keep the old keys and DR would silently break, so the upload is refused.
+#[test]
+fn upload_refuses_another_appliances_escrow() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path();
+    let box_ = root.join("box");
+    let mut sock = Vec::new();
+    for n in ["a", "b"] {
+        let k = root.join(format!("keyd-{n}"));
+        fs::create_dir_all(&k).unwrap();
+        let (_, s) = keyd(&k);
+        let keys = keyd::ensure_keyring(&s, "acme").unwrap();
+        let st = Store::open(root.join(n).join("store"), keys, StoreOptions::default()).unwrap();
+        backup(&st, st.compliance_now().unwrap() - 3 * DAY, 1);
+        for (name, bytes) in keyd::export_escrow(&k, "acme").unwrap() {
+            let p = root.join(n).join("escrow").join(name);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, bytes).unwrap();
+        }
+        sock.push(s);
+    }
+    assert!(run(&config(root, "a", &sock[0], &box_), &["upload"]).0);
+    let kept = fs::read(box_.join("keys/kek.recovery")).unwrap();
+    let (ok, out) = run(&config(root, "b", &sock[1], &box_), &["upload"]);
+    assert!(!ok && out.contains("other escrowed keys"), "{out}");
+    assert_eq!(
+        fs::read(box_.join("keys/kek.recovery")).unwrap(),
+        kept,
+        "A's escrow untouched"
+    );
+}

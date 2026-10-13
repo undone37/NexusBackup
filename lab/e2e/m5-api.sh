@@ -46,6 +46,9 @@ OFFSITE_HOST_KEY=${OFFSITE_HOST_KEY:-"[$APPL_HOST]:2223 $(cut -d' ' -f1,2 "$TEST
 . "$here/api-lib.sh"
 
 step_config() {
+	# a fresh install gets a fresh offsite target: the escrowed keys are write-once and an
+	# upload refuses another installation's keys (crates/offsite "other escrowed keys")
+	podman exec "${OFFSITE_TESTBOX_NAME:-nexus-offsite-testbox}" rm -rf /srv/sftp/data/m5 2>/dev/null || true
 	login admin "$ADMIN_PW" "$ADMIN_TOTP"
 	api admin POST /tenants "$(jq -nc --arg k "$APPL_OFFSITE_KEY" --arg hk "$OFFSITE_HOST_KEY" --arg h "$APPL_HOST" \
 		'{name:"lab", offsite:{remote:{type:"sftp", host:$h, port:2223, user:"tenant", key_file:$k, host_key:$hk, base_dir:"m5"}, uploaders:4}}')" >/dev/null
