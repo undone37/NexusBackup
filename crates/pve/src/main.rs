@@ -1,4 +1,4 @@
-//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | push-index | list | inventory`.
+//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] | restore-test <spec.json> | lab-check <spec.json> | push-index | list | inventory`.
 //! `backup-all` backs up every guest in `vmids`, VM or container (type from /cluster/resources).
 
 use anyhow::{bail, Context, Result};
@@ -67,7 +67,7 @@ fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
-        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | push-index | list | inventory | task-stop <upid> | p2v <req.json> <layout.json> | p2v-cleanup <node> <vmid> <volid>");
+        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] | restore-test <spec.json> | lab-check <spec.json> | push-index | list | inventory | task-stop <upid> | p2v <req.json> <layout.json> | p2v-cleanup <node> <vmid> <volid>");
     };
     let cfg: Config = serde_json::from_slice(&fs::read(cfg_path)?).context("config")?;
     // P2V (docs/bmr.md): API only, no store or keys
@@ -103,6 +103,11 @@ fn main() -> Result<()> {
                 .map_err(Into::into);
         }
         ("files", [vmid, time, args @ ..]) => return pve::restorevm::cli(&store, vmid.parse()?, time.parse()?, args),
+        // opt-in YARA scan in the restore micro-VM (Phase 21e, any local snapshot)
+        ("scan", [source, time, rules, budget @ ..]) if budget.len() <= 1 => {
+            let budget = budget.first().map(|b| b.parse()).transpose()?;
+            return pve::scan::cli(&store, source, time.parse()?, std::path::Path::new(rules), budget);
+        }
         ("list", []) => {
             println!("{}", serde_json::to_string_pretty(&pve::backup::build_index(&store)?)?);
             return Ok(());
@@ -317,12 +322,44 @@ fn main() -> Result<()> {
                 bail!("failed guests: {failed:?}");
             }
         }
+        // restore tests / recovery plans (crates/pve/src/restoretest.rs): one `restore-test {json}` per guest
+        ("restore-test", [spec]) => {
+            let spec: pve::restoretest::Spec = serde_json::from_slice(&fs::read(spec)?).context("restore test spec")?;
+            on_sigterm();
+            let lab = pve::restoretest::PveLab {
+                cluster: &cluster,
+                store: &store,
+                spec: &spec,
+            };
+            let out = pve::restoretest::run(&lab, &spec, &|r| {
+                println!("restore-test {}", serde_json::to_string(r).unwrap_or_default());
+            });
+            let bad = out.iter().filter(|r| r.state != "passed").count();
+            if bad > 0 {
+                bail!("{bad} of {} guests did not pass", out.len());
+            }
+        }
+        ("lab-check", [spec]) => {
+            let spec: pve::restoretest::Spec = serde_json::from_slice(&fs::read(spec)?).context("restore test spec")?;
+            println!("{}", pve::restoretest::lab_check(&cluster, &spec));
+        }
         ("push-index", []) => cluster.push_index(&store)?,
         // a cancelled job's vzdump / restore task (the scheduler, crates/scheduler/src/run.rs)
         ("task-stop", [upid]) => cluster.api.stop_task(upid)?,
         _ => bail!("unknown command"),
     }
     Ok(())
+}
+
+/// SIGTERM (job cancelled) lets a restore test destroy its guests first.
+fn on_sigterm() {
+    extern "C" fn term(_: libc::c_int) {
+        pve::restoretest::CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    // SAFETY: the handler only stores to an atomic (async-signal-safe)
+    unsafe {
+        libc::signal(libc::SIGTERM, term as extern "C" fn(libc::c_int) as libc::sighandler_t);
+    }
 }
 
 fn api(a: ApiFile) -> Result<Api> {

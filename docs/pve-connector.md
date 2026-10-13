@@ -328,6 +328,17 @@ volumes it owns (`check_volume_access`, owner = target vmid). `vmgenid` can only
 hence it is never sent. Lab token: PVEVMAdmin + PVEDatastoreAdmin + PVEAuditor on `/`,
 PVESDNUser on `/sdn/zones/localnetwork` (unchanged).
 
+## Restore tests (Phase 25, `restoretest.rs`)
+`nexus-pve <cfg> restore-test <spec.json>` boots VMs with the IR flow above, but never moves a disk: the VM
+runs on the overlays while it is checked, then it is hard-stopped and destroyed (`purge=1`,
+`destroy-unreferenced-disks=1`; `free_image` drops the overlays) and serving ends with it. Containers are
+fully restored (container restore flow) with the links down and destroyed afterwards. Checks use the guest
+agent API (`agent/ping`, `agent/get-osinfo`, `agent/exec` + `agent/exec-status`) and `status/current`
+(container init PID). Extra privileges: `VM.GuestAgent.Audit` and `VM.GuestAgent.Unrestricted` (PVE 9; PVE 8:
+`VM.Monitor`) on the test VMIDs (990000 and up), `Sys.Audit` for `lab-check` (`/nodes`, node network, storage
+status); PVEVMAdmin + PVEAuditor cover them. Full description: docs/control-plane.md "Restore tests and
+recovery plans".
+
 ## Known issues
 - `api()` returns 11 → every PVE CLI call prints "implementing an older storage API" (current APIVER 14). Decide: return `PVE::Storage::APIVER` within a tested range.
 - vzdump `bwlimit` is not enforced (plugin logs a warning); bandwidth limiting belongs on the appliance side.

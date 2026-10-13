@@ -31,8 +31,13 @@ fn main() {
         let team = t.add_team("Project X", &["General"]);
         let ch = t.team(&team).channels[0].0.clone();
         t.add_chat(&team, &ch, &alice, "kickoff", None, None);
+        t.add_member(&team, &alice, true);
+        t.add_device("ALICE-LAPTOP");
+        t.add_application("Payroll");
     }
-    println!("{}", serde_json::to_string_pretty(&m.config()).unwrap());
+    let mut cfg = m.config();
+    cfg["entra"] = true.into();
+    println!("{}", serde_json::to_string_pretty(&cfg).unwrap());
     eprintln!("Graph mock on https://127.0.0.1:{} (Ctrl-C to stop)", m.port);
     loop {
         std::thread::park();

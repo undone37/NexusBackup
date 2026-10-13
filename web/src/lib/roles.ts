@@ -43,6 +43,8 @@ export const can = {
   scanHardware: (u: User | null) => u?.role === 'admin' || u?.role === 'operator',
   // Attach an offsite copy (17d): an admin or a security officer requests, another one approves.
   attachOffsite: (u: User | null) => u?.role === 'admin' || u?.role === 'security_officer',
+  // YARA scan of a snapshot (21e): admins, operators, tenant admins and security officers
+  scan: (u: User | null) => !!u && ['admin', 'operator', 'tenant_admin', 'security_officer'].includes(u.role),
 };
 
 export const ROLES: Role[] = ['admin', 'security_officer', 'operator', 'tenant_admin', 'tenant_user', 'viewer'];

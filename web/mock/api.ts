@@ -281,6 +281,9 @@ const db = {
   cfgBackup: { appliance_id: null as string | null, latest: null as Json | null },
   /** Phase 13e setting `anomaly` */
   anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30, ransom_notes: [] } as Json,
+  /** Phase 21e: admin-supplied YARA rule files and finished snapshot scans */
+  yaraRules: [] as Json[],
+  scans: [] as Json[],
   /** Phase 14a setting `forwarding` (header values: plaintext here, null in responses) */
   forwarding: {
     syslog: { enabled: true, host: 'siem.example.com', port: 6514, ca_pem: null, pin_sha256: '3f'.repeat(32), app_name: 'nexus', facility: 13 },
@@ -524,6 +527,7 @@ function planFor(kind: string, p: Json): string[] {
 
 function tick() {
   const t = now();
+  recoveryTick(null, t);
   for (const j of db.jobs) {
     if (j.state === 'queued' && t - j.created >= 1 && !(j.not_before && j.not_before > t)) {
       j.state = 'running';
@@ -555,6 +559,7 @@ function tick() {
       if (j.kind === 'inventory' || j.kind === 'plugin_guests') inventoryResult(j, t);
       if (j.kind === 'report_send') reportSent(j);
       if (j.kind === 'config_backup') cfgBackupDone(j, t);
+      if (j.kind === 'restore_test' || j.kind.startsWith('recovery_')) recoveryTick(j, t);
       if (j.kind.startsWith('offsite_')) offsiteResult(j, t);
       if (j.kind === 'chunk_repair') repairDone(j, t);
       const ag = db.agents.find((a) => a.id === j.params.agent_id);
@@ -1548,11 +1553,13 @@ function seed() {
   seedHolds(t);
   seedAnomalies(t);
   seedDamage(t);
+  seedScans(t);
   seedHardware(t);
   seedM365(t);
   seedRescue(t);
   seedTenantAdmin(t);
   seedFleet(t);
+  seedRecovery(t);
 }
 
 /** Phase 19b: policy tiers, acme's assigned policies, its tenant admin "tara", a deleted tenant name.
@@ -1605,7 +1612,7 @@ function seedM365(t: number) {
   if (start + 540 <= t) {
     const stamp = (i: number) => new Date((start + 2 + i * 90) * 1000).toISOString();
     const lines = [
-      'starting nexus-pluginhost: m365 1.3.0 (sandbox: landlock + seccomp)',
+      'starting nexus-pluginhost: m365 1.4.0 (sandbox: landlock + seccomp)',
       `base ${user}/${start - 86400} (18,422 entries)`,
       'plugin[warn]: skipped mail/Inbox/Quarterly report ~3f9a0c1d2e4b.eml: GET /v1.0/users/…/messages/…/$value: 500 ErrorInternalServerError',
       'plugin[warn]: skipped onedrive/Projects/model.xlsx: GET /v1.0/drives/…/items/…/content: 503 serviceNotAvailable',
@@ -1829,7 +1836,7 @@ function find<T>(xs: T[], pred: (x: T) => boolean, what: string): T {
 // (console.unlock: nobody executes it; the requester then fetches the code once, 14c)
 // (tenant.attach_offsite: the requester then submits the recovery key, the scheduler runs the attach, 17d)
 // (vault.disable: completed at the console with the recovery key, 17c)
-const SCHEDULER_ACTIONS = ['replication.key_export', 'gc_large', 'console.unlock', 'tenant.recovery_key', 'tenant.attach_offsite', 'vault.disable'];
+const SCHEDULER_ACTIONS = ['recovery_plan.execute', 'replication.key_export', 'gc_large', 'console.unlock', 'tenant.recovery_key', 'tenant.attach_offsite', 'vault.disable'];
 // 202 {quorum_id, ...extra} like web-api's `accepted()`; with approvals disabled the
 // action runs at once (200 {approvals: "disabled", executed}).
 async function quorum(u: User, action: string, params: Json, extra: Json = {}): Promise<[number, Json]> {
@@ -3904,7 +3911,7 @@ on('GET', '/snapshots', (c) => {
   const held = c.query.get('held') === 'true';
   const xs = byTenant(u, db.snapshots as any[])
     .filter((s) => (!tq || s.tenant === tq) && (!sq || s.source === sq))
-    .map((s) => ({ ...s, hold: holdView(openHold(s.tenant, s.source, s.time)), anomaly: s.anomaly ?? null, anomalous: anomalous(s) }))
+    .map((s) => ({ ...s, hold: holdView(openHold(s.tenant, s.source, s.time)), anomaly: s.anomaly ?? null, anomalous: anomalous(s), scan: scanSummary(s) }))
     .filter((s) => !held || s.hold);
   return [200, xs.sort((a, b) => b.time - a.time)];
 });
@@ -3993,6 +4000,7 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
     if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time)) throw new HttpError(404, 'no such snapshot');
   }
   if (kind === 'agent_enroll') throw new HttpError(400, 'use POST /agents/{id}/enroll');
+  if (kind === 'restore_test') checkRestoreTest(tenant, p);
   if (kind === 'inventory') {
     const src = find(db.sources, (s) => s.id === Number(p.source_id) && s.tenant === tenant, 'source in tenant');
     if (!hasInventory(src)) throw new HttpError(400, 'source_id: this source has no guest inventory');
@@ -4064,6 +4072,7 @@ on('POST', '/jobs', async (c) => {
   if (kind === 'chunk_repair' && u.role !== 'admin') throw new HttpError(403, 'forbidden');
   if (kind === 'chunk_repair' && Object.keys(params).length) throw new HttpError(400, 'params: chunk_repair takes no parameters');
   if (kind === 'files_list' && !String(params.path ?? '').startsWith('/')) throw new HttpError(400, 'path: must be absolute');
+  const scanFirst = takeScanFirst(kind, params);
   checkJob(u, kind, tenant, params);
   if (kind === 'files_get' && !canDownload(u)) throw new HttpError(403, 'this account may not download files');
   if (kind === 'files_get' && params.params && Object.keys(params.params).length) {
@@ -4090,7 +4099,7 @@ on('POST', '/jobs', async (c) => {
   const p = kind === 'files_get' ? { ...params, download_token: rand(32) } : params;
   const gated = await vaultGate(u, tenant, [{ kind, params: p }]);
   if (gated) return gated;
-  const j = addJob(kind, tenant, p, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
+  const j = scanFirst ? scanFirstJob(u, kind, tenant, p, scanFirst) : addJob(kind, tenant, p, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
   if (kind.startsWith('plugin_')) j.duration = { plugin_validate: 3, plugin_guests: 3, plugin_restore: 14, plugin_mount: 6 }[kind as string] ?? 10;
   if (kind === 'inventory') j.duration = 3;
   if (kind === 'offsite_list') j.duration = 3;
@@ -4349,7 +4358,7 @@ function mkAlert(a: Json): Json {
 /** Like catalog::alerting::category (Phase 18). */
 const ALERT_CATEGORIES = ['security', 'backup', 'replication', 'hardware', 'system', 'audit'];
 const ALERT_CATEGORY: Record<string, string> = {
-  anomaly: 'security', console_unlock: 'security', console_root_shell: 'security', break_glass: 'security',
+  anomaly: 'security', malware: 'security', console_unlock: 'security', console_root_shell: 'security', break_glass: 'security',
   mgmt_allow_reset: 'security', firewall_reset: 'security', legal_hold_advisory: 'security', cert_expiry: 'security',
   account_dormant: 'security', inventory: 'security', clock_skew: 'security', gc_quorum: 'security', gc_confirm: 'security',
   vault_disabled: 'security', incident: 'security', dek_rotation: 'security',
@@ -5106,7 +5115,8 @@ on('GET', '/dashboard', (c) => {
   const key = `${u.tenant ?? '*'}/${days}`;
   const hit = dashCache.get(key);
   if (hit && now() - hit.at < 60) return [200, { ...hit.body, incident: incidentBanner(u) }];
-  const body = dashboard(u, days);
+  const body: Json = dashboard(u, days);
+  body.restore_tests = rtKpi(u, days);
   dashCache.set(key, { at: now(), body });
   return [200, { ...body, incident: incidentBanner(u) }];
 });
@@ -6195,6 +6205,369 @@ on('POST', '/mock/console-gate', async (c) => {
   return [200, consoleShell];
 });
 
+// ---------------------------------------------------------------- restore tests and recovery plans (Phase 25)
+// Like web-api recovery.rs + scheduler recovery.rs: restore_test jobs (manual or per group schedule),
+// recovery plans with readiness, test runs and approved executions, the DR report.
+
+const rt = {
+  tests: [] as Json[],
+  schedules: [] as Json[],
+  plans: [] as Json[],
+  runs: [] as Json[],
+};
+const RT_RUNNERS: Role[] = ['admin', 'operator', 'tenant_admin'];
+
+function rtChecks(c: Json | undefined, ct: boolean) {
+  const x = c ?? {};
+  if (x.boot_timeout !== undefined && (x.boot_timeout < 30 || x.boot_timeout > 3600)) throw new HttpError(400, 'checks.boot_timeout: 30..=3600 seconds');
+  if ((x.ports ?? []).length > 16 || (x.ports ?? []).some((p: number) => !(p >= 1 && p <= 65535))) throw new HttpError(400, 'checks.ports: at most 16 ports 1..=65535');
+  if (x.agent === false && ((x.ports ?? []).length || (x.command ?? []).length)) throw new HttpError(400, 'checks: ports and command run through the guest agent');
+  if (ct && (x.agent === true || (x.ports ?? []).length || (x.command ?? []).length))
+    throw new HttpError(400, 'checks: containers have no guest agent (only boot_timeout; the init process is checked)');
+}
+const rtName = (v: unknown, what: string) => {
+  if (typeof v !== 'string' || !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(v)) throw new HttpError(400, `${what}: must match [A-Za-z0-9._-]{1,64} without a leading dot`);
+};
+function checkRestoreTest(tenant: string, p: Json) {
+  if (!/^(vm|ct)-\d+$/.test(String(p.source ?? ''))) throw new HttpError(400, 'source: vm-<vmid> or ct-<vmid>');
+  rtName(p.node, 'node');
+  rtName(p.storage, 'storage');
+  if (p.bridge) rtName(p.bridge, 'bridge');
+  rtChecks(p.checks, String(p.source).startsWith('ct-'));
+  if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time && s.local)) throw new HttpError(404, 'no such local snapshot');
+}
+
+/** One guest's mock result: vm-101 never answers (its backups fail too), the rest passes. */
+function rtResult(source: string, time: number, wave: number, target: number, name: string, checks: Json, start: number, test = true): Json {
+  const ct = source.startsWith('ct-');
+  const bad = source === 'vm-101';
+  const boot = ct ? 6 : 38 + (Number(source.slice(3)) % 20);
+  const list: Json[] = ct
+    ? [{ name: 'init', ok: true, detail: `init PID ${4000 + target % 1000} running after ${boot} s` }]
+    : [{ name: 'running', ok: true, detail: 'running after 3 s' }];
+  if (!ct && bad) list.push({ name: 'guest_agent', ok: false, detail: `the QEMU guest agent did not answer within ${checks?.boot_timeout ?? 600} s` });
+  if (!ct && !bad && checks?.agent !== false) {
+    list.push({ name: 'guest_agent', ok: true, detail: `answered after ${boot} s` });
+    for (const p of checks?.ports ?? []) list.push({ name: `tcp/${p}`, ok: true, detail: 'listening' });
+    if ((checks?.command ?? []).length) list.push({ name: 'command', ok: true, detail: `exit 0 (expected ${checks.expect_exit ?? 0}): active` });
+  }
+  return {
+    source, time, wave, target, name, state: bad ? 'failed' : 'passed', started: start, finished: start + boot + 40,
+    boot_secs: bad ? null : boot, checks: list, error: null, destroyed: test ? true : null,
+  };
+}
+const rtLatest = (tenant: string, source: string) =>
+  (db.snapshots as Json[]).filter((s) => s.tenant === tenant && s.source === source && s.local).sort((a, b) => b.time - a.time)[0];
+const rtGuestName = (source: string) => ({ 'vm-100': 'erp-app', 'vm-101': 'erp-db', 'vm-102': 'reporting', 'ct-200': 'proxy', 'vm-300': 'shop-web', 'vm-301': 'shop-db' } as Json)[source] ?? source;
+
+function rtRecord(tenant: string, job: number, run: number | null, r: Json) {
+  rt.tests.push({ id: nextId(), tenant, job_id: job, run_id: run, ...r });
+  const key = `restore_test:${tenant}/${r.source}`;
+  const open = db.alerts.find((a) => a.key === key && !a.resolved_at);
+  if (r.state === 'passed' && open) Object.assign(open, { resolved_at: r.finished, resolved_by: 'scheduler', auto: true });
+  if (r.state === 'failed' && !open && run === null)
+    db.alerts.push(mkAlert({ ts: r.finished, severity: 'warning', kind: 'restore_test', key, tenant,
+      message: `restore test of ${r.source} (${r.time}) failed (job ${job}): ${(r.checks as Json[]).filter((c) => !c.ok).map((c) => `${c.name}: ${c.detail}`).join('; ')}` }));
+}
+
+/** tick(): finished restore-test / recovery jobs, approved executions. */
+function recoveryTick(j: Job | null, t: number) {
+  if (!j) {
+    for (const q of db.quorum.filter((x) => x.action === 'recovery_plan.execute' && x.state === 'approved')) {
+      if (rt.runs.some((r) => r.quorum_id === q.id)) continue;
+      const run = { id: nextId(), plan_id: q.params.plan_id, tenant: q.params.tenant, mode: 'execute', state: 'running', requested_by: q.requested_by,
+        quorum_id: q.id, job_id: null as number | null, plan: q.params.plan, results: [], started: t, finished: null };
+      const job = addJob('recovery_execute', run.tenant, { run_id: run.id, plan_id: run.plan_id, quorum_id: q.id }, 'scheduler', { plan: rtPlanLines(run.plan, false), duration: 20 });
+      run.job_id = job.id;
+      rt.runs.push(run);
+    }
+    return;
+  }
+  if (j.kind === 'restore_test') {
+    const r = rtResult(j.params.source, j.params.time, 0, 990001, `nxtest-${rtGuestName(j.params.source)}`, j.params.checks, j.started ?? t);
+    rtRecord(j.tenant, j.id, null, { ...r, finished: t });
+    if (r.state === 'failed') {
+      j.state = 'failed';
+      j.log += '\nERROR: 1 of 1 guests did not pass';
+    }
+  }
+  if (j.kind === 'recovery_test' || j.kind === 'recovery_execute') {
+    const run = rt.runs.find((r) => r.id === j.params.run_id);
+    if (!run) return;
+    const test = j.kind === 'recovery_test';
+    let base = j.started ?? t;
+    run.results = (run.plan.steps as Json[]).map((s, i) => {
+      const snap = rtLatest(run.tenant, s.source);
+      const r = rtResult(s.source, snap?.time ?? 0, s.wave, test ? 990001 + i : s.target ?? Number(s.source.slice(3)),
+        test ? `nxtest-${rtGuestName(s.source)}` : rtGuestName(s.source), s.checks, base, test);
+      base += 2;
+      return r;
+    });
+    for (const r of run.results) rtRecord(run.tenant, j.id, run.id, r);
+    run.state = run.results.every((r: Json) => r.state === 'passed') ? 'passed' : 'failed';
+    run.finished = t;
+    if (run.state === 'failed') {
+      j.state = 'failed';
+      j.log += `\nERROR: ${run.results.filter((r: Json) => r.state !== 'passed').length} of ${run.results.length} guests did not pass`;
+    }
+  }
+  if (j.kind === 'recovery_readiness') {
+    const p = rt.plans.find((x) => x.id === j.params.plan_id);
+    if (p) p.readiness = rtReadiness(p, t);
+  }
+}
+
+function rtPlanLines(p: Json, test: boolean): string[] {
+  const lines = [`nexus-pve restore-test: ${test ? 'test run' : 'EXECUTION'} of plan ${p.name} on ${p.node} / ${p.storage}`];
+  for (const s of p.steps as Json[]) lines.push(`wave ${s.wave}: ${s.source} ${test ? `as nxtest-${rtGuestName(s.source)}` : `restored as ${s.target ?? s.source.slice(3)}`}`);
+  lines.push(test ? 'checks done; destroying the test guests' : 'all guests restored and started');
+  return lines;
+}
+
+function rtReadiness(p: Json, t: number): Json {
+  const checks: Json[] = [];
+  let need = 0;
+  for (const s of p.steps as Json[]) {
+    const snap = rtLatest(p.tenant, s.source);
+    if (!snap) checks.push({ name: `snapshot ${s.source}`, ok: false, detail: 'no local snapshot' });
+    else {
+      need += snap.size;
+      const age = t - snap.time;
+      checks.push({ name: `snapshot ${s.source}`, ok: age <= p.rpo_hours * 3600, detail: `newest local snapshot ${Math.floor(age / 3600)} h old (RPO ${p.rpo_hours} h)` });
+    }
+  }
+  checks.push({ name: `node ${p.node}`, ok: true, detail: 'online' });
+  checks.push({ name: `target storage ${p.storage}`, ok: true, detail: `active, ${Math.max(2048, Math.round(need / 2 ** 30) * 3)} GiB free` });
+  checks.push({ name: 'instant recovery storage nexus', ok: true, detail: 'active, 41210 GiB free' });
+  checks.push({ name: 'bridges', ok: true, detail: 'present' });
+  const blocking = db.alerts.filter((a) => !a.resolved_at && (p.steps as Json[]).some((s) => a.key === `restore_test:${p.tenant}/${s.source}`));
+  checks.push({ name: 'alerts', ok: !blocking.length, detail: blocking.length ? blocking.map((a) => a.message).join('; ') : 'no blocking alerts' });
+  return { ok: checks.every((c) => c.ok), at: t, checks };
+}
+
+function seedRecovery(t: number) {
+  const src = db.sources.find((s) => s.tenant === 'initech' && s.kind === 'pve')!;
+  const acme = db.sources.find((s) => s.tenant === 'acme' && s.kind === 'pve')!;
+  const prod = db.groups.find((g) => g.tenant === 'initech' && g.name === 'production')!;
+  rt.schedules.push({ group_id: prod.id, every_days: 7, node: 'pve2', storage: 'local-lvm', bridge: 'nxlab', checks: { ports: [22], boot_timeout: 900 }, last_run: t - 2 * DAY });
+  // two weeks of scheduled tests of the production group; vm-101's agent never answers
+  for (const d of [9, 2]) {
+    for (const source of ['vm-100', 'vm-101', 'ct-200']) {
+      const snap = (db.snapshots as Json[]).filter((s) => s.tenant === 'initech' && s.source === source && s.local && s.time < t - d * DAY).sort((a, b) => b.time - a.time)[0];
+      if (!snap) continue;
+      const j = addJob('restore_test', 'initech', { source, time: snap.time, node: 'pve2', storage: 'local-lvm', bridge: 'nxlab', checks: source.startsWith('ct-') ? { boot_timeout: 900 } : { ports: [22], boot_timeout: 900 }, group_id: prod.id, source_id: src.id }, 'scheduler');
+      const at = t - d * DAY + 3 * 3600 + (source === 'vm-101' ? 900 : source === 'ct-200' ? 1800 : 0);
+      const r = rtResult(source, snap.time, 0, 990001, `nxtest-${rtGuestName(source)}`, j.params.checks, at);
+      Object.assign(j, { state: r.state === 'passed' ? 'ok' : 'failed', created: at, started: at, finished: r.finished, log: rtPlanLines({ name: '-', node: 'pve2', storage: 'local-lvm', steps: [{ source, wave: 0 }] }, true).join('\n') });
+      rtRecord('initech', j.id, null, r);
+    }
+  }
+  const plan = (tenant: string, s: Json, name: string, steps: Json[], extra: Json = {}) => {
+    const p = { id: nextId(), tenant, name, source_id: s.id, node: tenant === 'acme' ? 'acme-pve1' : 'pve2', storage: 'local-lvm', test_bridge: 'nxlab',
+      network_map: { vmbr0: 'vmbr20' }, steps, rpo_hours: 24, readiness: null as Json | null, created: t - 30 * DAY, created_by: 'admin', ...extra };
+    rt.plans.push(p);
+    p.readiness = rtReadiness(p, t - 6 * 3600);
+    return p;
+  };
+  const erp = plan('initech', src, 'erp-site-b', [
+    { source: 'vm-102', wave: 1, delay: 0, checks: { ports: [5432], boot_timeout: 900 } },
+    { source: 'vm-100', wave: 2, delay: 60, checks: { ports: [443], command: ['systemctl', 'is-active', 'erp'] } },
+    { source: 'ct-200', wave: 2, delay: 60, checks: {} },
+  ]);
+  plan('acme', acme, 'shop', [
+    { source: 'vm-301', wave: 1, checks: { ports: [3306] } },
+    { source: 'vm-300', wave: 2, delay: 30, checks: { ports: [443] } },
+  ], { rpo_hours: 12, test_bridge: null, network_map: {} });
+  // a passed test run of the ERP plan three days ago
+  const at = t - 3 * DAY + 10 * 3600;
+  const { readiness: _r, created: _c, created_by: _b, ...asRun } = erp;
+  const run = { id: nextId(), plan_id: erp.id, tenant: 'initech', mode: 'test', state: 'running', requested_by: 'operator', quorum_id: null, job_id: null as number | null,
+    plan: asRun, results: [] as Json[], started: at, finished: null as number | null };
+  rt.runs.push(run);
+  const j = addJob('recovery_test', 'initech', { run_id: run.id, plan_id: erp.id }, 'operator', { plan: rtPlanLines(erp, true), created: at });
+  Object.assign(j, { state: 'ok', started: at, finished: at + 420, log: rtPlanLines(erp, true).join('\n') });
+  run.job_id = j.id;
+  run.results = (erp.steps as Json[]).map((s, i) => {
+    const snap = (db.snapshots as Json[]).filter((x) => x.tenant === 'initech' && x.source === s.source && x.local && x.time < at).sort((a, b) => b.time - a.time)[0];
+    return rtResult(s.source, snap?.time ?? 0, s.wave, 990101 + i, `nxtest-${rtGuestName(s.source)}`, s.checks, at + (s.wave - 1) * 160);
+  });
+  for (const r of run.results) rtRecord('initech', j.id, run.id, r);
+  Object.assign(run, { state: 'passed', finished: at + 420 });
+}
+
+on('GET', '/restore-tests', (c) => {
+  const u = need(c.user);
+  const tq = c.query.get('tenant');
+  const sq = c.query.get('source');
+  const rows = byTenant(u, rt.tests as any[])
+    .filter((x) => (!tq || x.tenant === tq) && (!sq || x.source === sq))
+    .sort((a, b) => b.finished - a.finished || b.id - a.id);
+  return [200, rows.slice(0, Number(c.query.get('limit') ?? 500))];
+});
+on('GET', '/restore-tests/schedules', (c) => {
+  const u = need(c.user);
+  return [200, rt.schedules
+    .map((s) => { const g = db.groups.find((x) => x.id === s.group_id)!; return { ...s, group: g?.name, tenant: g?.tenant }; })
+    .filter((s) => s.tenant && (!u.tenant || s.tenant === u.tenant))];
+});
+on('PUT', '/restore-tests/schedules/:id', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
+  if (db.sources.find((s) => s.id === g.source_id)?.kind !== 'pve') throw new HttpError(400, 'restore tests need a group of a Proxmox VE source');
+  const b = c.body;
+  if (!(b.every_days >= 1 && b.every_days <= 365)) throw new HttpError(400, 'every_days: 1..=365');
+  rtName(b.node, 'node');
+  rtName(b.storage, 'storage');
+  if (b.bridge) rtName(b.bridge, 'bridge');
+  rtChecks(b.checks, false);
+  const cur = rt.schedules.find((s) => s.group_id === g.id);
+  const v = { group_id: g.id, every_days: b.every_days, node: b.node, storage: b.storage, bridge: b.bridge || null, checks: b.checks ?? {}, last_run: cur?.last_run ?? null };
+  if (cur) Object.assign(cur, v);
+  else rt.schedules.push(v);
+  await audit(u.name, 'restore_test.schedule', `group/${g.id}`, b);
+  return [200, b];
+});
+on('DELETE', '/restore-tests/schedules/:id', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
+  find(rt.schedules, (s) => s.group_id === g.id, 'schedule');
+  rt.schedules = rt.schedules.filter((s) => s.group_id !== g.id);
+  await audit(u.name, 'restore_test.unschedule', `group/${g.id}`, {});
+  return [200, {}];
+});
+
+const rtPlan = (u: User, id: string) => find(byTenant(u, rt.plans as any[]), (p) => p.id === Number(id), 'recovery plan');
+function checkPlan(tenant: string, b: Json) {
+  rtName(b.name, 'name');
+  if (!db.sources.some((s) => s.id === b.source_id && s.tenant === tenant && s.kind === 'pve')) throw new HttpError(400, 'source_id: no PVE source of this tenant');
+  rtName(b.node, 'node');
+  rtName(b.storage, 'storage');
+  if (b.test_bridge) rtName(b.test_bridge, 'test_bridge');
+  for (const [k, v] of Object.entries(b.network_map ?? {})) (rtName(k, 'network_map'), rtName(v, 'network_map'));
+  if (!(b.rpo_hours >= 1 && b.rpo_hours <= 8760)) throw new HttpError(400, 'rpo_hours: 1..=8760');
+  const steps: Json[] = b.steps ?? [];
+  if (!steps.length || steps.length > 50) throw new HttpError(400, 'steps: 1..=50 guests');
+  const ids = new Set<string>();
+  for (const s of steps) {
+    if (!/^(vm|ct)-\d+$/.test(String(s.source ?? ''))) throw new HttpError(400, 'source: vm-<vmid> or ct-<vmid>');
+    if (ids.has(s.source.slice(3))) throw new HttpError(400, `steps: ${s.source} twice`);
+    ids.add(s.source.slice(3));
+    if (!((s.wave ?? 1) >= 1 && (s.wave ?? 1) <= 20) || (s.delay ?? 0) > 3600) throw new HttpError(400, 'steps: wave 1..=20, delay 0..=3600 seconds');
+    rtChecks(s.checks, s.source.startsWith('ct-'));
+  }
+}
+const rtOut = (p: Json) => {
+  const last = rt.runs.filter((r) => r.plan_id === p.id).at(-1);
+  return { ...p, last_run: last ? { id: last.id, mode: last.mode, state: last.state, started: last.started, finished: last.finished } : null };
+};
+function rtQueueReadiness(p: Json, by: string) {
+  addJob('recovery_readiness', p.tenant, { plan_id: p.id }, by, { plan: [`nexus-pve lab-check: ${p.node}, ${p.storage}`, 'readiness stored'], duration: 3 });
+}
+on('GET', '/recovery-plans', (c) => {
+  const u = need(c.user);
+  const tq = c.query.get('tenant');
+  return [200, byTenant(u, rt.plans as any[]).filter((p) => !tq || p.tenant === tq).sort((a, b) => (a.tenant + a.name < b.tenant + b.name ? -1 : 1)).map(rtOut)];
+});
+on('POST', '/recovery-plans', async (c) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const b: Json = { test_bridge: null, network_map: {}, rpo_hours: 24, ...c.body };
+  const tenant = u.tenant ?? b.tenant;
+  if (u.tenant && b.tenant && b.tenant !== u.tenant) throw new HttpError(403, 'forbidden');
+  find(db.tenants, (x) => x.name === tenant, 'tenant');
+  checkPlan(tenant, b);
+  if (rt.plans.some((p) => p.tenant === tenant && p.name === b.name)) throw new HttpError(409, 'a recovery plan with this name exists');
+  const p = { id: nextId(), tenant, name: b.name, source_id: b.source_id, node: b.node, storage: b.storage, test_bridge: b.test_bridge || null,
+    network_map: b.network_map, steps: b.steps.map((s: Json) => ({ wave: 1, delay: 0, checks: {}, ...s })), rpo_hours: b.rpo_hours, readiness: null, created: now(), created_by: u.name };
+  rt.plans.push(p);
+  rtQueueReadiness(p, u.name);
+  await audit(u.name, 'recovery_plan.create', `recovery_plan/${p.id}`, b);
+  return [201, p];
+});
+on('PUT', '/recovery-plans/:id', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const p = rtPlan(u, id);
+  const b: Json = { test_bridge: null, network_map: {}, rpo_hours: 24, ...c.body };
+  checkPlan(p.tenant, b);
+  if (rt.plans.some((x) => x.id !== p.id && x.tenant === p.tenant && x.name === b.name)) throw new HttpError(409, 'a recovery plan with this name exists');
+  const old = { ...p };
+  Object.assign(p, { name: b.name, source_id: b.source_id, node: b.node, storage: b.storage, test_bridge: b.test_bridge || null, network_map: b.network_map,
+    steps: b.steps.map((s: Json) => ({ wave: 1, delay: 0, checks: {}, ...s })), rpo_hours: b.rpo_hours });
+  rtQueueReadiness(p, u.name);
+  await audit(u.name, 'recovery_plan.update', `recovery_plan/${p.id}`, { old, new: b });
+  return [200, p];
+});
+on('DELETE', '/recovery-plans/:id', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const p = rtPlan(u, id);
+  rt.plans = rt.plans.filter((x) => x.id !== p.id);
+  await audit(u.name, 'recovery_plan.delete', `recovery_plan/${p.id}`, { old: p });
+  return [200, {}];
+});
+on('POST', '/recovery-plans/:id/readiness', async (c, [id]) => {
+  const u = need(c.user, ...RT_RUNNERS);
+  const p = rtPlan(u, id);
+  rtQueueReadiness(p, u.name);
+  const j = db.jobs.at(-1)!;
+  await audit(u.name, 'recovery_plan.readiness', `recovery_plan/${p.id}`, { job: j.id });
+  return [202, { id: j.id }];
+});
+on('POST', '/recovery-plans/:id/test', async (c, [id]) => {
+  const u = need(c.user, ...RT_RUNNERS);
+  const p = rtPlan(u, id);
+  if (rt.runs.some((r) => r.plan_id === p.id && r.state === 'running')) throw new HttpError(409, 'a run of this plan is in progress');
+  const { readiness: _r, created: _c, created_by: _b, ...asRun } = p;
+  const run = { id: nextId(), plan_id: p.id, tenant: p.tenant, mode: 'test', state: 'running', requested_by: u.name, quorum_id: null, job_id: null as number | null,
+    plan: structuredClone(asRun), results: [], started: now(), finished: null };
+  rt.runs.push(run);
+  const j = addJob('recovery_test', p.tenant, { run_id: run.id, plan_id: p.id }, u.name, { plan: rtPlanLines(p, true), duration: 14 });
+  run.job_id = j.id;
+  await audit(u.name, 'recovery_plan.test', `recovery_plan/${p.id}`, { run: run.id, job: j.id });
+  return [202, { run_id: run.id, job_id: j.id }];
+});
+on('POST', '/recovery-plans/:id/execute', async (c, [id]) => {
+  const u = need(c.user, ...RT_RUNNERS);
+  const p = rtPlan(u, id);
+  if (c.body.confirm !== p.name) throw new HttpError(400, `confirm: type the plan's name (${p.name}) to confirm`);
+  const { readiness: _r, created: _c, created_by: _b, ...asRun } = p;
+  return quorum(u, 'recovery_plan.execute', { tenant: p.tenant, plan_id: p.id, plan: structuredClone(asRun) });
+});
+on('GET', '/recovery-plans/:id/runs', (c, [id]) => {
+  const u = need(c.user);
+  const p = rtPlan(u, id);
+  return [200, rt.runs.filter((r) => r.plan_id === p.id).sort((a, b) => b.id - a.id).map(({ plan: _p, plan_id: _i, tenant: _t, ...r }) => r)];
+});
+on('GET', '/recovery-runs/:id/report', (c, [id]) => {
+  const u = need(c.user);
+  const r = find(byTenant(u, rt.runs as any[]), (x) => x.id === Number(id), 'run');
+  const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+  const iso = (x: number | null | undefined) => (x ? new Date(x * 1000).toISOString().replace('.000', '') : '');
+  const rows = (r.results as Json[])
+    .map((g) => `<tr><td>${g.wave ?? ''}</td><td>${esc(g.source)}</td><td>${iso(g.time)}</td><td>${g.target ?? '–'} ${esc(g.name)}</td><td>${esc(g.state)}</td><td>${g.boot_secs ?? '–'} s</td><td>${(g.checks ?? []).map((ch: Json) => `${ch.ok ? '✓' : '✗'} ${esc(ch.name)}: ${esc(ch.detail)}`).join('<br>')}</td></tr>`)
+    .join('');
+  c.res.setHeader('Content-Disposition', `attachment; filename="dr-report-run-${r.id}.html"`);
+  return [200, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>DR report</title></head><body style="font-family:Arial,sans-serif">
+<h1>${r.mode === 'execute' ? 'Disaster recovery execution' : 'Recovery plan test run'}: ${esc(r.plan.name)}</h1>
+<p>tenant ${esc(r.tenant)} · run ${r.id} · ${esc(r.state.toUpperCase())} · requested by ${esc(r.requested_by)} · ${iso(r.started)} – ${iso(r.finished)}</p>
+<table border="1" cellpadding="4" style="border-collapse:collapse"><tr><th>Wave</th><th>Guest</th><th>Snapshot</th><th>Restored as</th><th>Result</th><th>Boot</th><th>Checks</th></tr>${rows}</table>
+<p>Times are UTC. (mock report)</p></body></html>`, 'text/html; charset=utf-8'];
+});
+
+/** Dashboard KPI: the newest passed/failed result per guest within the window. */
+function rtKpi(u: User, days: number) {
+  const since = (Math.floor(now() / DAY) - days + 1) * DAY;
+  const newest = new Map<string, Json>();
+  for (const r of byTenant(u, rt.tests as any[]).filter((x) => x.state === "passed" || x.state === "failed")) {
+    const k = `${r.tenant}/${r.source}`;
+    const cur = newest.get(k);
+    if (!cur || r.finished > cur.finished) newest.set(k, r);
+  }
+  const rows = [...newest.values()].filter((r) => r.finished >= since);
+  const failing = rows.filter((r) => r.state === "failed");
+  return { tested: rows.length, passed: rows.length - failing.length, failed: failing.length,
+    last: rows.reduce((m: number | null, r) => Math.max(m ?? 0, r.finished), null),
+    failing: failing.slice(0, 10).map((r) => ({ tenant: r.tenant, source: r.source, finished: r.finished })) };
+}
+
 export function mockApi(): Plugin {
   seed();
   // Audit entries for the seed, so the viewer and chain verification have data.
@@ -6899,4 +7272,158 @@ function seedAnomalies(t: number) {
       reason: '48.0 GiB new data, limit 18.0 GiB (3× the median 6.0 GiB of the last 14 runs)', at: fa.time + 1300,
       cleared_by: 'so', cleared_at: fa.time + 86400, note: 'Database reorganisation by the DBA (change CHG-2291), checked with the application owner',
     };
+}
+
+// ---------------------------------------------------------------- Phase 21e: YARA scan (docs/malware-scan.md)
+
+const SCAN_FIRST_KINDS = ['restore', 'restore_ct', 'instant_recover', 'restore_files', 'files_get', 'plugin_restore'];
+const scanSummary = (s: Json) => {
+  const x = (db.scans as Json[]).filter((y) => y.tenant === s.tenant && y.source === s.source && y.time === s.time).sort((a, b) => b.job - a.job)[0];
+  return x ? { job: x.job, finished: x.finished, matches: x.matches_total, complete: x.complete } : null;
+};
+const ruleLabel = () => (db.yaraRules as Json[]).map((r) => `${r.name}@${r.sha256.slice(0, 12)}`).join(',');
+const sha = (text: string) => {
+  let h = '';
+  for (let i = 0; i < 8; i++) h += Math.floor(noise(`${i}:${text}`) * 1e8).toString(16).padStart(8, '0');
+  return h;
+};
+
+/** `scan_first` of a job request (web-api scan::take_scan_first): validated and removed. */
+function takeScanFirst(kind: string, params: Json): string | null {
+  const v = params.scan_first;
+  delete params.scan_first;
+  if (v === undefined || v === null) return null;
+  if (!SCAN_FIRST_KINDS.includes(kind)) throw new HttpError(400, 'scan_first: only for restores and downloads');
+  if (v === 'link_down' && !['restore', 'restore_ct', 'instant_recover'].includes(kind))
+    throw new HttpError(400, 'scan_first: link_down only for VM and container restores');
+  if (v !== 'refuse' && v !== 'link_down') throw new HttpError(400, 'scan_first: refuse or link_down');
+  if (!db.yaraRules.length) throw new HttpError(409, 'scan_first: no YARA rules uploaded (Settings → Malware scan)');
+  return v;
+}
+
+/** The scan result the mock "finds": matches for snapshots seeded as infected. */
+function mockScan(j: Job, tenant: string, source: string, time: number) {
+  const known = (db.snapshots as Json[]).find((x) => x.tenant === tenant && x.source === source && x.time === time);
+  const hits: Json[] = known?.infected ?? [];
+  const r = { files: 18_412, skipped: 3, errors: 0, matches: hits, matches_total: hits.length, complete: true, seconds: 412, source, time };
+  j.duration = 6;
+  j.plan = ['booting the restore micro-VM (no network, disks read-only)', `compiling ${db.yaraRules.length} rule file(s)`, `scanning ${source}`, `${hits.length} matches`];
+  j.result = r;
+  db.scans.push({ job: j.id, tenant, finished: now() + 6, rules: ruleLabel(), ...r });
+  if (hits.length && known) {
+    const why = `YARA: ${hits.length} matches (${[...new Set(hits.map((m) => m.rule))].slice(0, 3).join(', ')})`;
+    known.anomaly = { reason: known.anomaly?.reason && !known.anomaly.cleared_at ? `${known.anomaly.reason}; ${why}` : why, at: now(), cleared_by: null, cleared_at: null, note: null };
+  }
+  return hits.length;
+}
+
+/** A restore with `scan_first`: its scan job first, then the restore (refused or with the NICs down on a hit). */
+function scanFirstJob(u: User, kind: string, tenant: string, p: Json, mode: string): Job {
+  const scan = addJob('snapshot_scan', tenant, { source: p.source, time: p.time, for_job: null }, 'scheduler');
+  const hits = mockScan(scan, tenant, p.source, p.time);
+  const params = { ...p, scan_first: mode, scan_job: scan.id };
+  if (!hits) return addJob(kind, tenant, { ...params, scan: { job: scan.id, matches: 0 } }, u.name);
+  if (mode === 'link_down')
+    return addJob(kind, tenant, { ...params, link_down: true, scan: { job: scan.id, matches: hits } }, u.name, {
+      log: `[scheduler] scan first: ${hits} YARA matches in the snapshot (scan job ${scan.id}); restoring with the network disconnected\n`,
+    });
+  return addJob(kind, tenant, params, u.name, { fail: `scan first: ${hits} YARA matches in the snapshot (scan job ${scan.id}); restore refused` });
+}
+
+on('GET', '/scan/rules', (c) => {
+  need(c.user, 'admin', 'security_officer');
+  return [200, (db.yaraRules as Json[]).map(({ text: _t, ...r }) => r).sort((a, b) => (a.name < b.name ? -1 : 1))];
+});
+on('PUT', '/scan/rules/:name', async (c, [name]) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  const n = decodeURIComponent(name);
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(n)) throw new HttpError(400, 'name: [A-Za-z0-9._-]{1,64} without a leading dot');
+  const text = String(c.body?.text ?? '');
+  if (!text.trim() || text.length > 256 * 1024) throw new HttpError(400, 'text: 1 to 256 KiB of YARA rules');
+  if (!text.includes('rule')) throw new HttpError(400, 'text: no YARA rule in the file');
+  const others = (db.yaraRules as Json[]).filter((r) => r.name !== n);
+  if (others.length >= 50 || others.reduce((x, r) => x + r.size, 0) + text.length > 2 ** 20)
+    throw new HttpError(400, 'at most 50 rule files and 1 MiB together');
+  const r = { name: n, text, size: text.length, sha256: sha(text), uploaded_by: u.name, uploaded_at: now() };
+  db.yaraRules = [...others, r];
+  const out = { name: n, size: r.size, sha256: r.sha256 };
+  await audit(u.name, 'scan.rules_put', `yara_rule/${n}`, out);
+  return [200, out];
+});
+on('DELETE', '/scan/rules/:name', async (c, [name]) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  const n = decodeURIComponent(name);
+  const r = find(db.yaraRules as Json[], (x) => x.name === n, 'rule file');
+  db.yaraRules = (db.yaraRules as Json[]).filter((x) => x !== r);
+  await audit(u.name, 'scan.rules_delete', `yara_rule/${n}`, { sha256: r.sha256 });
+  return [204, null];
+});
+on('POST', '/snapshots/:tenant/:source/:time/scan', async (c, [tenant, source, time]) => {
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'security_officer');
+  const [tn, src, tm] = [decodeURIComponent(tenant), decodeURIComponent(source), Number(time)];
+  if (u.tenant && u.tenant !== tn) throw new HttpError(403, 'forbidden');
+  const b = c.body?.budget_min;
+  if (b !== undefined && !(Number.isInteger(b) && b >= 1 && b <= 1440)) throw new HttpError(400, 'budget_min: 1..=1440');
+  find(db.snapshots as Json[], (y) => y.tenant === tn && y.source === src && y.time === tm && y.local, 'local snapshot');
+  if (!db.yaraRules.length) throw new HttpError(409, 'no YARA rules uploaded (Settings → Malware scan)');
+  const params: Json = { source: src, time: tm, ...(b ? { budget: b * 60 } : {}) };
+  const j = addJob('snapshot_scan', tn, params, u.name);
+  const hits = mockScan(j, tn, src, tm);
+  if (hits)
+    db.alerts.push(
+      mkAlert({
+        ts: now(), severity: 'critical', kind: 'malware', key: `malware:${tn}/${src}`, tenant: tn,
+        message: `YARA scan of ${tn}/${src} snapshot ${tm}: YARA: ${hits} matches, e.g. ${j.result!.matches[0].rule} in ${j.result!.matches[0].path}`,
+      }),
+    );
+  await audit(u.name, 'snapshot.scan_request', `snapshot/${tn}/${src}/${tm}`, { tenant: tn, job: j.id, params });
+  return [202, { id: j.id }];
+});
+on('GET', '/scans', (c) => {
+  const u = need(c.user);
+  const [tq, sq, tm] = [c.query.get('tenant'), c.query.get('source'), c.query.get('time')];
+  const xs = byTenant(u, db.scans as any[]).filter((x) => (!tq || x.tenant === tq) && (!sq || x.source === sq) && (!tm || x.time === Number(tm)));
+  return [200, xs.sort((a, b) => b.job - a.job).slice(0, 50)];
+});
+
+function seedScans(t: number) {
+  const text = [
+    'rule LockBit3_Ransom_Note {',
+    '  meta: description = "LockBit 3.0 ransom note"',
+    '  strings: $a = "~~~ LockBit 3.0" ascii wide',
+    '  condition: $a',
+    '}',
+  ].join('\n');
+  db.yaraRules.push(
+    { name: 'lockbit.yar', text, size: text.length, sha256: sha(text), uploaded_by: 'so', uploaded_at: t - 86400 * 6 },
+    { name: 'webshells.yar', text: 'rule Php_Webshell { strings: $a = "eval(base64_decode(" condition: $a }', size: 70, sha256: sha('ws'), uploaded_by: 'so', uploaded_at: t - 86400 * 20 },
+  );
+  const newest = (tenant: string, source: string, n = 0) =>
+    (db.snapshots as Json[]).filter((s) => s.tenant === tenant && s.source === source && s.local).sort((a, b) => b.time - a.time)[n];
+  // the encrypted file server (seedAnomalies): ransom notes found by the rules
+  const fs = db.agents.find((a) => a.name === 'fs02');
+  const enc = fs && newest('acme', `host-${fs.id}`);
+  if (enc)
+    enc.infected = [
+      { rule: 'lockbit.yar:LockBit3_Ransom_Note', path: 'Users/HOW_TO_DECRYPT.txt' },
+      { rule: 'lockbit.yar:LockBit3_Ransom_Note', path: 'Users/anna/Documents/HOW_TO_DECRYPT.txt' },
+      { rule: 'lockbit.yar:LockBit3_Ransom_Note', path: 'Shares/Finance/HOW_TO_DECRYPT.txt' },
+    ];
+  // finished scans: the infected one and a clean one before it, plus a clean VM
+  const done = (s: Json | undefined, at: number) => {
+    if (!s) return;
+    const j = addJob('snapshot_scan', s.tenant, { source: s.source, time: s.time }, 'so', { state: 'ok', started: at - 400, finished: at });
+    mockScan(j, s.tenant, s.source, s.time);
+    db.scans[db.scans.length - 1].finished = at;
+  };
+  if (fs) done(newest('acme', `host-${fs.id}`, 1), t - 86400 * 2);
+  done(enc, (enc?.time ?? t) + 5400);
+  done(newest('initech', 'vm-100'), t - 3600);
+  if (enc)
+    db.alerts.push(
+      mkAlert({
+        ts: enc.time + 5400, severity: 'critical', kind: 'malware', key: `malware:acme/${enc.source}`, tenant: 'acme',
+        message: `YARA scan of acme/${enc.source} snapshot ${enc.time}: YARA: 3 matches (lockbit.yar:LockBit3_Ransom_Note), e.g. lockbit.yar:LockBit3_Ransom_Note in Users/HOW_TO_DECRYPT.txt`,
+      }),
+    );
 }

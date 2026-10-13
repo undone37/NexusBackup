@@ -1068,6 +1068,54 @@ async function main() {
       await closeDialogs();
       await login('admin');
     }],
+    // Phase 21e: YARA rule files, scan results of a snapshot, "scan first" in the restore dialog
+    ['malware-scan', async () => {
+      await login('so');
+      await go('/settings?tab=malware');
+      await until(`return !!document.querySelector('#ms-text') && document.body.innerText.includes('lockbit.yar')`, 'malware scan settings');
+      await shot('settings-malware-scan');
+      const fs02 = (await api('GET', '/agents')).body.find((a) => a.name === 'fs02');
+      await go(`/snapshots?source=host-${fs02.id}`);
+      await until(`return !!$button('Malware: 3 matches')`, 'scanned snapshot');
+      await shot('snapshots-scan');
+      await ev(`$click('Malware: 3 matches'); return true;`);
+      await until(`return !!document.querySelector('dialog[open]') && document.querySelector('dialog[open]').innerText.includes('HOW_TO_DECRYPT')`, 'scan results');
+      await shot('snapshot-scan-results');
+      await closeDialogs();
+      await login('admin');
+      await go('/snapshots?source=vm-100');
+      await ev(`$rowClick('vm-100', 'Restore'); return true;`);
+      await until(`return !!$button('Full restore')`, 'restore menu');
+      await ev(`$click('Full restore'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] select[id$="-scan"]')`, 'restore dialog');
+      await ev(`$fill('select[id$="-scan"]', 'link_down'); return true;`);
+      await shot('restore-scan-first', { height: 1100 });
+      await closeDialogs();
+    }],
+    // Phase 25: restore tests (seeded schedule and results, vm-101 failing) and recovery plans
+    ['recovery', async () => {
+      await login('admin');
+      await go('/restore-tests');
+      await until(`return !!document.querySelector('#rt-res-h') && document.querySelectorAll('tbody tr').length > 4`, 'restore test results');
+      await shot('restore-tests', { height: 1150 });
+      await ev(`$click('Test a snapshot'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #rt-guest')`, 'restore test dialog');
+      await ev(`const s = document.querySelector('#rt-guest'); s.value = 'initech/vm-100'; s.dispatchEvent(new Event('change')); return true;`);
+      await ev(`$fill('#rt-c-ports', '22, 443'); return true;`);
+      await shot('restore-test-dialog', { height: 1000 });
+      await closeDialogs();
+      await go('/recovery-plans');
+      await until(`return document.body.innerText.includes('erp-site-b')`, 'recovery plans');
+      await shot('recovery-plans', { height: 1250 });
+      await ev(`[...[...document.querySelectorAll('section.plan')].find((s) => s.innerText.includes('erp-site-b')).querySelectorAll('button')].find((b) => b.textContent.trim() === 'Edit').click(); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #rp-name')`, 'plan editor');
+      await shot('recovery-plan-edit', { height: 1250 });
+      await closeDialogs();
+      await ev(`[...[...document.querySelectorAll('section.plan')].find((s) => s.innerText.includes('erp-site-b')).querySelectorAll('button')].find((b) => b.textContent.trim() === 'Runs').click(); return true;`);
+      await until(`return !!document.querySelector('dialog[open] table')`, 'plan runs');
+      await shot('recovery-plan-runs');
+      await closeDialogs();
+    }],
     // Phase 17b: a security officer closes the vault; reopening is requested by an admin and approved
     // Phase 22b: source limits, NAS overlap / sizing / split, skipped files, VM identity,
     // instant disk recovery, restore priority (turned off again at the end)

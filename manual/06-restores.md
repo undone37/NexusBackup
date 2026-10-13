@@ -63,9 +63,34 @@ Snapshots whose flag a security officer cleared (**Flag cleared**) count as clea
 
 ![The restore dialog of a flagged snapshot](images/restore-flagged-clean.png)
 
-> **Status:** "Secure restore" (scanning a snapshot with YARA rules in the restore micro-VM before restoring it) is
-> not part of this release; it is planned as a separate step. The file browser and **Find files** show flagged
-> snapshots without a notice.
+> **Status:** The file browser and **Find files** show flagged snapshots without a notice.
+
+### Scan first (secure restore)
+
+When YARA rules are uploaded (**Settings → Malware scan**, see
+[11 Alerts and monitoring](11-alerts-and-monitoring.md#malware-scan-yara)), the **Full restore**, **Instant
+recover**, plugin restore and **Restore to a host…** dialogs offer **Scan first (YARA)**:
+
+- **Off: restore at once** (default);
+- **Scan; on a match refuse the restore**: the restore job waits on **Jobs** (state *queued*, log "scan first:
+  snapshot_scan job … queued") until the snapshot was scanned in the restore micro-VM. Clean: it runs. A match, or a
+  scan that ran out of time: the job fails with "scan first: … restore refused" (audit `restore.refused`);
+- **Scan; on a match restore with the network disconnected** (full restore and instant recovery only): on a match
+  the guest is restored anyway, with every network card disconnected (`link_down`, audit `restore.link_down`), so
+  you can inspect or clean it without it reaching the network.
+
+A scan that fails (no rules any more, rules that do not compile, the micro-VM did not start) always refuses the
+restore. A match also flags the snapshot and raises a `malware` alert, so the next restore dialog defaults to the
+latest clean snapshot before it. Scanning a large VM takes time (one scan at a time, at most 4 hours); for
+urgent restores scan the snapshot ahead (**Scan** on **Snapshots**).
+
+![Scan first in the restore dialog](images/restore-scan-first.png)
+
+> **Status:** The scan runs in the restore micro-VM with Debian's `yara` 4.5. The micro-VM test boots it with real
+> file systems (ext4, XFS, NTFS, btrfs, vfat, LVM, ZFS) and a file-tree tar and checks matches, skipped large files
+> and that symlinks are not followed; the hold-and-verdict logic is covered by scheduler tests. A run on the
+> appliance VM against a real VM snapshot is a lab step that is still open. **Restore several** and downloads from
+> the file browser have no scan-first option in the UI.
 
 ### Consistency
 
@@ -242,6 +267,59 @@ need a rescan to see a hot-plugged disk. In vault mode the attach is a request t
 
 > **Status:** Implemented and tested against the scheduler and API; the overlay path is the one of instant recovery.
 > The lab check on PVE (hot-plug into a running VM, move, detach) is pending.
+
+## Restore tests
+
+A backup is only as good as the restore. A **restore test** proves that a VM or container snapshot boots: the
+appliance starts an isolated copy of it on a Proxmox node, checks it and destroys it again. Open **Monitor →
+Restore tests**.
+
+![Restore tests: the production group's schedule and the latest results](images/restore-tests.png)
+
+What a test does:
+
+1. **Start isolated.** A VM boots straight from the backup (the instant recovery overlays, nothing is copied
+   and no disk is moved). A container is restored fully to the target storage (Proxmox VE has no overlay for
+   containers). The copy gets the next free VMID from 990000 upwards and the name `nxtest-<name>`. All its
+   network links are down, or, if you name an **isolated bridge or VNet**, its NICs are on that bridge (VLAN
+   tags removed). Use a bridge without an uplink: then the guests of a recovery plan reach each other and
+   nothing else.
+2. **Check.** VMs: the VM runs, and the QEMU guest agent answers within the **boot timeout** (default 600 s).
+   Optional: **TCP ports that must listen** (checked inside the guest through the guest agent with `ss` or
+   `netstat`, because the network is isolated) and a **custom check command** run through the guest agent with
+   its expected exit code (for example `systemctl is-active nginx`). Containers: the init process must still
+   run 10 s after the start (containers have no guest agent).
+3. **Destroy.** The copy is stopped and destroyed with its disks, always: also when the start or a check
+   failed and when you cancel the job. If destroying fails, the result says so and names the VMID; remove that
+   guest on the node by hand (its name starts with `nxtest-`).
+
+Every tested snapshot gets a result row (passed or failed, the checks, the boot time and the job). A failed test
+raises the warning **restore_test** for that guest; the next passed test resolves it. The dashboard tile
+**Restore tests** shows how many guests passed their newest test in the selected period.
+
+**Test a snapshot now:** click **Test a snapshot**, choose the guest and the snapshot, the target node and
+storage, optionally the isolated bridge, and the checks.
+
+![Test a snapshot](images/restore-test-dialog.png)
+
+**Test regularly:** **Add schedule** tests the newest local snapshot of every guest of a protection group every
+N days (one guest at a time, the first run right away). The schedule belongs to a group of a Proxmox VE source;
+deleting the group deletes the schedule.
+
+Who: admins, operators and tenant admins start tests; admins and tenant admins edit schedules; everyone sees
+the results of their tenants. Tenant users do not start tests.
+
+Requirements and limits:
+
+- The QEMU guest agent must be installed and enabled in the VM (option **QEMU Guest Agent** in Proxmox VE), or
+  untick **QEMU guest agent must answer** (then only "running" is checked; ports and commands need the agent).
+- VMs with a TPM state and templates cannot be booted from the backup (as for instant recovery).
+- A container test needs space for the whole container on the target storage while it runs.
+- Many guests in a schedule run one after another; plan the interval so that one round fits.
+
+> **Status:** The test flow (waves, checks, always destroying, cancellation) and the scheduler and API are covered
+> by unit and integration tests against a simulated Proxmox VE. A run on the PVE lab is a lab step
+> (`lab/e2e/m5-api.sh restore-test`), not yet done; Windows guests (port probe with `netstat`) are untested.
 
 ## Browse files and download them (tar or zip)
 

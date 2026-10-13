@@ -34,6 +34,10 @@
   import IconCheck from '@lucide/svelte/icons/shield-check';
   import IconCloudDown from '@lucide/svelte/icons/cloud-download';
   import IconWrench from '@lucide/svelte/icons/wrench';
+  import IconScan from '@lucide/svelte/icons/scan-search';
+  import ScanFirst from '../components/ScanFirst.svelte';
+  import ScanResults from '../components/ScanResults.svelte';
+  import type { ScanFirst as ScanFirstOpt } from '../lib/types';
   import { fetchFromOffsite } from '../lib/offsite';
   import InstantDisk from '../components/InstantDisk.svelte';
   import IconDisk from '@lucide/svelte/icons/hard-drive-download';
@@ -105,6 +109,7 @@
   let prValues: FormValues = $state({});
   let prErrors: Record<string, string> = $state({});
   let prMinutes = $state(60);
+  let prScan: ScanFirstOpt | '' = $state('');
   // manifest v1.6 `target_source`: '' = the snapshot's own source
   let prTarget = $state('');
   const prOwn = $derived(prSnap ? (sources.find((x) => x.id === parsePluginSnapshot(prSnap!.source)?.sourceId) ?? null) : null);
@@ -121,6 +126,7 @@
     prValues = initValues(r.params_schema);
     prErrors = {};
     prMinutes = 60;
+    prScan = '';
     prPick = '';
     prTarget = '';
     prOpen = true;
@@ -172,7 +178,13 @@
       : {
           kind: 'plugin_restore',
           tenant: prSnap.tenant,
-          params: { ...base, restore: prRestore.id, params: value, ...(prTarget ? { target_source_id: Number(prTarget) } : {}) },
+          params: {
+            ...base,
+            restore: prRestore.id,
+            params: value,
+            ...(prTarget ? { target_source_id: Number(prTarget) } : {}),
+            ...(prScan ? { scan_first: prScan } : {}),
+          },
         };
     const r = await act(post<{ id: number }>('/jobs', job), (d) => t.snap.jobStarted(d.id));
     busy = false;
@@ -245,6 +257,17 @@
   let rLinkDown = $state(false);
   let rReplace = $state(false);
   let rKeepLinks = $state(false);
+  let rScan: ScanFirstOpt | '' = $state('');
+
+  // Phase 21e: YARA scan of a snapshot (results in ScanResults)
+  let scanOpen = $state(false);
+  let scanSnap: Snapshot | null = $state(null);
+  async function startScan(s: Snapshot) {
+    if (!(await askConfirm(t.scan.scanConfirm(s.source, fmtTime(s.time))))) return;
+    const path = `/snapshots/${encodeURIComponent(s.tenant)}/${encodeURIComponent(s.source)}/${s.time}/scan`;
+    const r = await act(post<{ id: number }>(path, {}), (d) => t.scan.started(d.id));
+    if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
+  }
 
   const pveSources = $derived(sources.filter((s): s is PveSource => s.kind === 'pve'));
   const nodesOf = (tenant: string | undefined) => [
@@ -268,6 +291,7 @@
     rLinkDown = m === 'instant';
     rReplace = false;
     rKeepLinks = false;
+    rScan = '';
     dlgOpen = true;
   }
   $effect(() => {
@@ -300,6 +324,7 @@
     if (rName.trim() && mode !== 'instant') params.name = rName.trim();
     else if (rPrefix.trim()) params.name_prefix = rPrefix.trim();
     if (rPool.trim()) params.pool = rPool.trim();
+    if (rScan) params.scan_first = rScan;
     if (rReplace && mode === 'restore') {
       params.replace = true;
       if (rKeepLinks) params.keep_original_links = true;
@@ -590,6 +615,17 @@
                     >
                   </div>
                 {/if}
+                {#if s.scan}
+                  <div>
+                    <button
+                      type="button"
+                      class="chip plain linkish {s.scan.matches ? 'bad' : s.scan.complete ? 'ok' : 'warn'}"
+                      title={t.scan.chipTitle(fmtTime(s.scan.finished))}
+                      onclick={() => ((scanSnap = s), (scanOpen = true))}
+                      >{s.scan.matches ? t.scan.hits(s.scan.matches) : s.scan.complete ? t.scan.clean : t.scan.incomplete}</button
+                    >
+                  </div>
+                {/if}
                 {#if offsiteOnly(s)}<div><span class="chip info plain">{t.offsite.onlyOffsite}</span></div>{/if}
                 {#if s.hold?.state === 'active'}
                   <div>
@@ -636,6 +672,11 @@
                       class="button small"
                       href={href('/changes' + qs({ tenant: s.tenant, source: s.source, time: s.time }))}
                       aria-label={t.snap.changesLabel(s.source, fmtTime(s.time))}><IconDiff aria-hidden="true" />{t.snap.changes}</a
+                    >
+                  {/if}
+                  {#if can.scan(session.user) && s.local}
+                    <button type="button" class="small" onclick={() => startScan(s)} aria-label={t.scan.scanLabel(s.source, fmtTime(s.time))}
+                      ><IconScan aria-hidden="true" />{t.scan.scan}</button
                     >
                   {/if}
                   {#if can.hold(session.user) && s.anomalous}
@@ -722,6 +763,7 @@
           <label class="inline-check"><input id="r-linkdown" type="checkbox" bind:checked={rLinkDown} />{t.ropts.linkDown}</label>
           <div class="hint">{t.ropts.linkDownHint}</div>
         </div>
+        <ScanFirst bind:value={rScan} linkDown />
         {#if mode === 'restore' && can.backup(session.user)}
           <div class="field">
             <label class="inline-check"><input id="r-replace" type="checkbox" bind:checked={rReplace} />{t.ropts.replace}</label>
@@ -873,6 +915,7 @@
       {:else if !isMount(prRestore)}
         <p class="muted">{t.snap.noParams}</p>
       {/if}
+      {#if !isMount(prRestore)}<ScanFirst bind:value={prScan} />{/if}
       {#if isMount(prRestore)}
         <div class="field">
           <label for="pr-min">{t.snap.mountMinutes}</label>
@@ -907,6 +950,8 @@
     {#if flaggedOf}<FlaggedNotice flagged={flaggedOf} clean={cleanBefore(flaggedOf)} using={rfSnap} onswitch={(x) => (rfSnap = x)} />{/if}
   </RestoreFiles>
 {/if}
+
+<ScanResults bind:open={scanOpen} snap={scanSnap} />
 
 <Modal bind:open={clearOpen} title={t.snap.clearTitle}>
   {#if clearSnap}
@@ -954,6 +999,17 @@
   }
   .range p {
     margin: 0 0 0.25rem;
+  }
+  /* the scan chip opens the results: a button that looks like the other chips */
+  button.linkish {
+    border: 0;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.78rem;
+    font-weight: 600;
+    line-height: 1.45;
+    min-height: 0;
+    padding: 0.08rem 0.55rem 0.08rem 0.45rem;
   }
   .reason {
     max-width: 22rem;

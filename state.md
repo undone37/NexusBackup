@@ -348,10 +348,10 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 - [x] 21c passkeys (WebAuthn second factor, v31, T37)
 - [x] 21b incident mode, posture checks, session cap, DEK reminder (settings only, T40–T41)
 - [x] 21d CVE scan (grype in release + weekly), CIS report, damaged-chunk detection + repair from offsite/primary (v32, T39, T42)
-- [ ] 21e YARA + secure restore + Entra ID
+- [x] 21e YARA scan in the restore micro-VM + scan-first restores, Entra ID export (m365 1.4.0, v33, T43) — Phase 21 complete (code)
 
 ## Phase 25 — Recovery assurance (2026-10-13)
-- [ ] restore tests (isolated instant recovery + guest-agent checks), recovery plans, readiness checks, DR report (v34)
+- [x] restore tests (isolated instant recovery + guest-agent checks), recovery plans, readiness checks, DR report (v34, T44); PVE lab `m5-api.sh restore-test recovery-plan` pending
 
 ## Runner note (2026-10-13)
 - CI failures on 970ede6/5233b5a were the self-hosted runner's shared rootless podman ("invalid internal status … podman system migrate") — transient, podman healthy again; not fixed on the host (would stop all containers). PG testbox now per-checkout (worktrees, runner).

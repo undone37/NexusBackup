@@ -2021,6 +2021,8 @@ mod limits;
 mod offsite_ui;
 /// Phase 22b restore priority.
 mod priority;
+/// Phase 25 restore tests and recovery plans.
+mod recovery;
 /// Phase 21d health check with repair (bad chunks, damaged snapshots, chunk_repair).
 mod repair;
 /// Phase 14e scheduled reports.
@@ -2029,6 +2031,8 @@ mod report_mail;
 mod restore_files;
 /// Phase 13b run control (pause, blackout, retries, SLA, cancel).
 mod runctl;
+/// Phase 21e YARA scan of a snapshot and scan-first restores.
+mod scan;
 /// Phase 15g file search and name index jobs.
 mod search;
 /// Phase 17f tenant deactivation.
