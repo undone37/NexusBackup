@@ -411,7 +411,10 @@ through the PVE guest agent (`lab/windows/gexec.py`, no Windows passwords), dev 
   have `backup=0` ended "ok" with only EFI/TPM state (now a warning); every full VM backup read each block twice
   (chunkstore merged ranges); zero/unallocated regions were transported (now skipped via base:allocation);
   no live progress for running jobs (now: progress lines, live log, job page + list)
-- [ ] redeploy with the fixes, full + incremental backup of the Windows VMs, byte-exact restore check
+- [x] byte-exact restore check (`lab/pvehost/verify.sh exact`, stopped VM 200, zvol sha256 equal) before and after
+  the zero skip; zero blocks: base:allocation does not help on zvol/LVM (QEMU reports no holes on block devices),
+  the node helper's `zeromap` scans the frozen export locally: VM 200 read 1.51 GB instead of 17.25 GB, restore identical
+- [ ] Windows full + incremental + restore test (`verify.sh windows`)
 
 ## Live job progress (2026-10-13)
 - [x] Connectors print `progress {json}` lines on stderr (`chunkstore::progress`: item/part/done/total/entries/end,
