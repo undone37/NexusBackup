@@ -3667,8 +3667,10 @@ name = "setup"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "catalog",
  "crossterm 0.28.1",
+ "ed25519-dalek",
  "keyd",
  "libc",
  "nftsync",

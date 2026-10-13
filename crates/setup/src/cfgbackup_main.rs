@@ -7,8 +7,12 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    // umask 077 (files are chmod'ed explicitly), not dumpable, memory locked: key files pass through
-    keyd::harden_process();
+    // umask 077 (files are chmod'ed explicitly), not dumpable: key files pass through. No
+    // mlockall (keyd::harden_process): the unit has no CAP_IPC_LOCK and the catalog can be large.
+    unsafe {
+        libc::umask(0o077);
+    }
+    keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg = |i: usize, d: &str| PathBuf::from(args.get(i).map_or(d, String::as_str));
     if args.first().map(String::as_str) != Some("tick") || args.len() > 4 {

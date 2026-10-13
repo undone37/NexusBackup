@@ -282,6 +282,56 @@ pub fn fetch(target: &Value, appliance: Option<&str>, nft: Option<&Path>) -> Res
     res
 }
 
+fn ssh_string(out: &mut Vec<u8>, b: &[u8]) {
+    out.extend_from_slice(&(b.len() as u32).to_be_bytes());
+    out.extend_from_slice(b);
+}
+
+/// A throwaway ed25519 key for fetching from a Storage Box during a restore:
+/// (OpenSSH private key PEM, `ssh-ed25519 <b64> <comment>`). Same format as the
+/// scheduler's own keys (`scheduler::sshkeys::generate`); the restored
+/// `/etc/nexus/ssh` brings the lost appliance's keys back afterwards.
+pub fn ssh_key(comment: &str) -> (Zeroizing<String>, String) {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    let seed = Zeroizing::new(rand::random::<[u8; 32]>());
+    let pk = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    let mut blob = Vec::new();
+    ssh_string(&mut blob, b"ssh-ed25519");
+    ssh_string(&mut blob, &pk);
+    let check: [u8; 4] = rand::random();
+    let mut private = Zeroizing::new(Vec::new());
+    private.extend_from_slice(&check);
+    private.extend_from_slice(&check);
+    ssh_string(&mut private, b"ssh-ed25519");
+    ssh_string(&mut private, &pk);
+    let mut both = Zeroizing::new([0u8; 64]);
+    both[..32].copy_from_slice(&*seed);
+    both[32..].copy_from_slice(&pk);
+    ssh_string(&mut private, &*both);
+    ssh_string(&mut private, comment.as_bytes());
+    let mut pad = 1u8;
+    while private.len() % 8 != 0 {
+        private.push(pad);
+        pad += 1;
+    }
+    let mut body = Zeroizing::new(b"openssh-key-v1\0".to_vec());
+    ssh_string(&mut body, b"none");
+    ssh_string(&mut body, b"none");
+    ssh_string(&mut body, b"");
+    body.extend_from_slice(&1u32.to_be_bytes());
+    ssh_string(&mut body, &blob);
+    ssh_string(&mut body, &private);
+    let b64 = Zeroizing::new(STANDARD.encode(&*body));
+    let mut pem = Zeroizing::new(String::from("-----BEGIN OPENSSH PRIVATE KEY-----\n"));
+    for chunk in b64.as_bytes().chunks(70) {
+        pem.push_str(std::str::from_utf8(chunk).unwrap_or_default());
+        pem.push('\n');
+    }
+    pem.push_str("-----END OPENSSH PRIVATE KEY-----\n");
+    (pem, format!("ssh-ed25519 {} {comment}", STANDARD.encode(&blob)))
+}
+
 /// Header of a bundle without the key (shown before the recovery key is asked for).
 pub fn header(bundle: &[u8]) -> Result<Value> {
     Ok(serde_json::from_slice(&config_bundle::header(bundle)?).context("bundle header")?)
@@ -461,6 +511,15 @@ mod tests {
             fs::set_permissions(&p, fs::Permissions::from_mode(*mode)).unwrap();
         }
         (d, paths, rk, run)
+    }
+
+    /// The restore key is a valid OpenSSH key (the SFTP client parses it).
+    #[test]
+    fn restore_ssh_key_parses() {
+        let (pem, line) = ssh_key("nexus-restore");
+        assert!(line.starts_with("ssh-ed25519 ") && line.ends_with(" nexus-restore"));
+        assert!(offsite::sftp::parse_host_key(&line).is_ok());
+        assert!(pem.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----"));
     }
 
     #[test]
