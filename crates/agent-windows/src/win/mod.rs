@@ -20,7 +20,8 @@ use agent_core::cache::{Cache, JournalMark};
 use agent_core::chunk::Locator;
 use agent_core::filter::Filter;
 use agent_core::server::{
-    log, Ctx, HostInfo, Platform, PreparedJob, Refused, ScanError, ScanOutput, E_BAD_REQUEST, E_INTERNAL,
+    log, Ctx, HostInfo, Installed, Platform, PreparedJob, Refused, ScanError, ScanOutput, Staged, E_BAD_REQUEST,
+    E_INTERNAL,
 };
 use agent_proto::{Entry, Filters, Overwrite, SnapshotInfo, SnapshotKind, Volume};
 use std::io;
@@ -368,5 +369,83 @@ impl Platform for Windows {
     }
     fn power_state(&self) -> agent_proto::PowerState {
         power::state()
+    }
+
+    fn host_facts(&self) -> Option<agent_proto::release::HostFacts> {
+        let packaged = agent_core::update::packaged(&agent_core::update::package_marker());
+        Some(agent_proto::release::HostFacts {
+            os: "windows".into(),
+            arch: "x86_64".into(),
+            install: agent_core::update::install_type(packaged.as_deref(), "manual"),
+            // the MSI carries the desktop UI: no separate package to select
+            gui_version: None,
+        })
+    }
+
+    fn native_binary(&self, binary: &[u8]) -> bool {
+        update::is_pe_x64(binary)
+    }
+
+    fn install_update(&self, ctx: Ctx, staged: &[Staged], rollback: bool) -> Result<Installed, String> {
+        let main = staged.last().ok_or("nothing staged")?;
+        if staged.len() != 1 {
+            return Err("a Windows update carries one artifact".into());
+        }
+        match main.kind.as_str() {
+            agent_proto::release::KIND_BINARY => {
+                let exe = std::env::current_exe().map_err(|e| format!("current executable: {e}"))?;
+                let data = std::fs::read(&main.path).map_err(|e| format!("{}: {e}", main.path.display()))?;
+                let how = update::install(&exe, &data, sys::move_at_reboot).map_err(|e| format!("installing update: {e}"))?;
+                let _ = std::fs::remove_file(&main.path);
+                match how {
+                    update::Installed::Now => Ok(Installed::Restart(format!(
+                        "updated {} -> {}",
+                        env!("CARGO_PKG_VERSION"),
+                        main.version
+                    ))),
+                    update::Installed::AtReboot => Ok(Installed::Started(
+                        format!("update to {} staged; it takes effect after the next reboot", main.version),
+                        String::new(),
+                    )),
+                }
+            }
+            agent_proto::release::KIND_MSI => {
+                if rollback {
+                    return Err(
+                        "Windows Installer refuses downgrades (MajorUpgrade): roll an MSI install back by installing the older MSI by hand"
+                            .into(),
+                    );
+                }
+                let log = ctx.paths.state.join(update::MSI_LOG);
+                let _ = std::fs::remove_file(&log);
+                let args = update::msiexec_args(&main.path, &log, &agent_core::update::staging_dir(ctx.paths))?;
+                let exe = update::msiexec(std::env::var_os("SystemRoot"));
+                let spawn = |flags: u32| {
+                    use std::os::windows::process::CommandExt;
+                    std::process::Command::new(&exe)
+                        .args(&args)
+                        .creation_flags(flags)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                };
+                // breakaway is refused when the job does not allow it: then without it
+                // (the service's job, if any, does not kill children on stop)
+                spawn(update::DETACHED_FLAGS)
+                    .or_else(|_| spawn(update::DETACHED_FLAGS & !update::CREATE_BREAKAWAY_FROM_JOB))
+                    .map_err(|e| format!("{}: {e}", exe.display()))?;
+                Ok(Installed::Started(
+                    format!("msiexec installs {} (log {})", main.name, log.display()),
+                    log.to_string_lossy().into_owned(),
+                ))
+            }
+            k => Err(format!("{k} artifacts are not installed on Windows")),
+        }
+    }
+
+    fn install_result(&self, ctx: Ctx, _pending: &agent_core::update::Pending) -> agent_core::update::InstallResult {
+        let log = std::fs::read(ctx.paths.state.join(update::MSI_LOG)).ok();
+        update::parse_msi_log(log.as_deref())
     }
 }

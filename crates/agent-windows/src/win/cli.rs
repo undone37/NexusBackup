@@ -344,6 +344,18 @@ fn log_to_file(paths: &Paths) {
 
 fn run(paths: Paths, service: Option<()>) -> Result<(), String> {
     std::hint::black_box(crate::update::VERSION_MARKER);
+    // start watchdog of a freshly swapped binary (docs/agent-update-plan.md): the third
+    // start without reaching "listening" puts nexus-agent.exe.prev back
+    if let Ok(exe) = std::env::current_exe() {
+        let restore = || crate::update::restore_prev(&exe);
+        if agent_core::update::watchdog_on_start(&paths, env!("CARGO_PKG_VERSION"), &restore)
+            == agent_core::update::Watchdog::Reverted
+        {
+            eprintln!("nexus-agent: the new version did not start; the previous binary is back, restarting");
+            // the service control manager restarts the service (failure actions)
+            std::process::exit(crate::update::RESTART_EXIT_CODE);
+        }
+    }
     let settings = Settings::load(&paths)?;
     secure(&paths)?;
     let _ = std::fs::remove_dir_all(paths.spool_dir());
