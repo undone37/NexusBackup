@@ -587,7 +587,12 @@ fn update_release(cfg: &Config) -> Result<()> {
     let releases = agent_core::releases::scan(&dirs, &keys);
     let rel = agent_core::releases::find(&releases, &u.version)
         .filter(|r| r.usable())
-        .with_context(|| format!("release {} is not in the store or not signed by a pinned key", u.version))?;
+        .with_context(|| {
+            format!(
+                "release {} is not in the store or not signed by a pinned key",
+                u.version
+            )
+        })?;
     let ca = Ca::load_or_create(&cfg.ca_dir)?;
     let (mut s, info) = cfg.session(&ca)?;
     let result = |state: &str, version: &str, error: &str| {
@@ -598,8 +603,17 @@ fn update_release(cfg: &Config) -> Result<()> {
     };
     let older = agent_core::releases::older(&u.version, &info.version);
     if u.version == info.version || (older && !u.rollback) {
-        result("failed", &info.version, &format!("the agent runs {}; {} is not newer", info.version, u.version));
-        bail!("agent {} runs {}, not older than {}", info.agent_id, info.version, u.version);
+        result(
+            "failed",
+            &info.version,
+            &format!("the agent runs {}; {} is not newer", info.version, u.version),
+        );
+        bail!(
+            "agent {} runs {}, not older than {}",
+            info.agent_id,
+            info.version,
+            u.version
+        );
     }
     if u.rollback && !older {
         bail!("a rollback must go to an older release");
@@ -629,7 +643,15 @@ fn update_release(cfg: &Config) -> Result<()> {
         }
     }) {
         let msg = format!("{e:#}");
-        result(if msg.contains("agent error 409") { "busy" } else { "failed" }, &info.version, &msg);
+        result(
+            if msg.contains("agent error 409") {
+                "busy"
+            } else {
+                "failed"
+            },
+            &info.version,
+            &msg,
+        );
         return Err(e);
     }
     s.close();

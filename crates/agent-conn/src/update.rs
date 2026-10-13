@@ -81,7 +81,13 @@ pub fn plan(release: &Release, host: &HostFacts, caps: &[String]) -> Result<Plan
         .manifest
         .as_ref()
         .filter(|_| release.usable())
-        .with_context(|| format!("release {} is not usable: {}", release.version, release.error.clone().unwrap_or_default()))?;
+        .with_context(|| {
+            format!(
+                "release {} is not usable: {}",
+                release.version,
+                release.error.clone().unwrap_or_default()
+            )
+        })?;
     if caps.iter().any(|c| c == CAP_UPDATE2) {
         let arts: Vec<Artifact> = m.select(host).into_iter().cloned().collect();
         if arts.is_empty() {
@@ -165,7 +171,9 @@ pub fn push_release(
                     if n == 0 {
                         break;
                     }
-                    s.send(&Message::UpdateChunk { data: buf[..n].to_vec() })?;
+                    s.send(&Message::UpdateChunk {
+                        data: buf[..n].to_vec(),
+                    })?;
                     n_file += n as u64;
                     sent += n as u64;
                     progress(sent, total);

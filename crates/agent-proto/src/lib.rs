@@ -629,9 +629,7 @@ pub fn check(m: &Message) -> io::Result<()> {
             return Err(bad("update exceeds limits"))
         }
         Message::UpdateChunk { data } if data.len() > MAX_CHUNK => return Err(bad("update chunk too large")),
-        Message::UpdateState { json } if json.len() > MAX_UPDATE_STATE => {
-            return Err(bad("update state too large"))
-        }
+        Message::UpdateState { json } if json.len() > MAX_UPDATE_STATE => return Err(bad("update state too large")),
         Message::SessionSummary { summary, status } => {
             let s = summary;
             if s.log_tail.len() > MAX_LOG_TAIL
@@ -988,7 +986,10 @@ mod tests {
         };
         assert_eq!(postcard::to_stdvec(&begin).unwrap()[0], 49);
         assert_eq!(postcard::to_stdvec(&Message::UpdateReady).unwrap(), vec![50]);
-        assert_eq!(postcard::to_stdvec(&Message::UpdateCommit { apply: true }).unwrap(), vec![52, 1]);
+        assert_eq!(
+            postcard::to_stdvec(&Message::UpdateCommit { apply: true }).unwrap(),
+            vec![52, 1]
+        );
         assert_eq!(postcard::to_stdvec(&Message::UpdateStaged).unwrap(), vec![53]);
         assert_eq!(postcard::to_stdvec(&Message::UpdateStatus).unwrap(), vec![54]);
         // the old single-frame update keeps its tag (old agents)

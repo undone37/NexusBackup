@@ -808,7 +808,16 @@ impl<P: Platform> Session<'_, P> {
                     manifest_sig,
                     rollback,
                 } => {
-                    let r = self.update_begin(&kind, &name, size, sha256, signature, &manifest, &manifest_sig, rollback);
+                    let r = self.update_begin(
+                        &kind,
+                        &name,
+                        size,
+                        sha256,
+                        signature,
+                        &manifest,
+                        &manifest_sig,
+                        rollback,
+                    );
                     match r {
                         Ok(()) => write_msg(s, &Message::UpdateReady)?,
                         Err(Refused(code, msg)) => {
@@ -1192,7 +1201,10 @@ impl<P: Platform> Session<'_, P> {
         };
         if self.receiving.is_some() {
             self.update_abort();
-            return Err(Refused(E_BAD_REQUEST, "UpdateBegin before the previous UpdateCommit".into()));
+            return Err(Refused(
+                E_BAD_REQUEST,
+                "UpdateBegin before the previous UpdateCommit".into(),
+            ));
         }
         let keys = crate::update::load_keys(&self.agent.paths.release_keys());
         let current = self.agent.platform.host_info().agent_version;
@@ -1365,7 +1377,10 @@ impl<P: Platform> Session<'_, P> {
         let digest: [u8; 32] = sha2::Digest::finalize(r.hasher.clone()).into();
         if r.written != r.announced.artifact.size || digest != r.sha256 {
             let _ = fs::remove_file(&r.path);
-            return Err(Refused(E_BAD_REQUEST, "received data differs in size or SHA-256".into()));
+            return Err(Refused(
+                E_BAD_REQUEST,
+                "received data differs in size or SHA-256".into(),
+            ));
         }
         r.file
             .sync_all()

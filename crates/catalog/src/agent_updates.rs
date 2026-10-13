@@ -191,7 +191,11 @@ pub fn scope_agents(c: &Connection, scope: &Scope, within: Option<&str>) -> Resu
             continue;
         }
         if let Some(o) = &scope.os {
-            let windows = os.as_deref().unwrap_or_default().to_ascii_lowercase().contains("windows");
+            let windows = os
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .contains("windows");
             if (o == "windows") != windows {
                 continue;
             }
@@ -255,7 +259,11 @@ pub fn create(
         bail!(
             "no agent in the scope needs {} ({})",
             spec.version,
-            if spec.rollback { "none runs a newer version" } else { "all run it or a newer one" }
+            if spec.rollback {
+                "none runs a newer version"
+            } else {
+                "all run it or a newer one"
+            }
         );
     }
     c.execute(
@@ -585,7 +593,10 @@ mod tests {
         s.scope.os = Some("mac".into());
         assert!(s.check().is_err());
         assert!(serde_json::from_value::<Spec>(json!({"version": "1.0.0", "bogus": 1})).is_err());
-        assert_eq!(skip_reason(Some("0.2.0"), "0.2.0", false).unwrap(), "already runs 0.2.0");
+        assert_eq!(
+            skip_reason(Some("0.2.0"), "0.2.0", false).unwrap(),
+            "already runs 0.2.0"
+        );
         assert!(skip_reason(Some("0.3.0"), "0.2.0", false).is_some());
         assert!(skip_reason(Some("0.1.0"), "0.2.0", true).is_some());
         assert!(skip_reason(None, "0.2.0", false).is_none());
@@ -596,11 +607,32 @@ mod tests {
             "windows": [{"days": ["Sat"], "from": "02:00", "to": "05:00"}]}))
         .unwrap();
         put_setting(&c, &st, "alice", 5).unwrap();
-        put_setting(&c, &Setting { canary: 3, ..st.clone() }, "bob", 6).unwrap();
+        put_setting(
+            &c,
+            &Setting {
+                canary: 3,
+                ..st.clone()
+            },
+            "bob",
+            6,
+        )
+        .unwrap();
         let v = settings(&c).unwrap();
         assert_eq!(v.len(), 1);
-        assert_eq!((v[0]["canary"].as_i64(), v[0]["updated_by"].as_str()), (Some(3), Some("bob")));
+        assert_eq!(
+            (v[0]["canary"].as_i64(), v[0]["updated_by"].as_str()),
+            (Some(3), Some("bob"))
+        );
         assert_eq!(v[0]["group_id"], Value::Null);
-        assert!(put_setting(&c, &Setting { mode: "often".into(), ..st }, "x", 1).is_err());
+        assert!(put_setting(
+            &c,
+            &Setting {
+                mode: "often".into(),
+                ..st
+            },
+            "x",
+            1
+        )
+        .is_err());
     }
 }

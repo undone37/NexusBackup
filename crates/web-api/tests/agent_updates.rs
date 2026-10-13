@@ -151,7 +151,6 @@ impl T {
     }
 }
 
-
 const A1: &str = "a000000000000001";
 const A2: &str = "a000000000000002";
 const W1: &str = "a000000000000003";
@@ -252,12 +251,21 @@ async fn releases_upload_list_download_and_tags() {
         "0.2.0",
         &[
             ("linux-x86_64/nexus-agent", "binary", "linux", "x86_64", b"v2"),
-            ("linux-x86_64/nexus-agent_0.2.0_amd64.deb", "deb", "linux", "x86_64", b"!<arch>v2"),
+            (
+                "linux-x86_64/nexus-agent_0.2.0_amd64.deb",
+                "deb",
+                "linux",
+                "x86_64",
+                b"!<arch>v2",
+            ),
         ],
     );
     let body = tar_of(&src.path().join("0.2.0"), "0.2.0");
     for s in [&otto, &tam] {
-        assert_eq!(t.raw("/api/v1/agent-releases", s, body.clone()).await.status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            t.raw("/api/v1/agent-releases", s, body.clone()).await.status,
+            StatusCode::FORBIDDEN
+        );
     }
     let r = t.raw("/api/v1/agent-releases", &alice, body.clone()).await;
     assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
@@ -270,7 +278,13 @@ async fn releases_upload_list_download_and_tags() {
     // foreign key, tampered artifact, path tricks: refused, nothing left behind
     let other = tempfile::tempdir().unwrap();
     Signer::new().write_release(other.path(), "0.3.0", &[("a", "binary", "linux", "x86_64", b"x")]);
-    let r = t.raw("/api/v1/agent-releases", &alice, tar_of(&other.path().join("0.3.0"), ".")).await;
+    let r = t
+        .raw(
+            "/api/v1/agent-releases",
+            &alice,
+            tar_of(&other.path().join("0.3.0"), "."),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
     assert!(r.body["error"].as_str().unwrap().contains("manifest"));
     let d = signer.write_release(other.path(), "0.4.0", &[("a", "binary", "linux", "x86_64", b"x")]);
@@ -278,7 +292,9 @@ async fn releases_upload_list_download_and_tags() {
     let r = t.raw("/api/v1/agent-releases", &alice, tar_of(&d, "0.4.0")).await;
     assert!(r.body["error"].as_str().unwrap().contains("SHA-256"), "{:?}", r.body);
     assert_eq!(
-        t.raw("/api/v1/agent-releases", &alice, b"not a tar".to_vec()).await.status,
+        t.raw("/api/v1/agent-releases", &alice, b"not a tar".to_vec())
+            .await
+            .status,
         StatusCode::BAD_REQUEST
     );
     let up: Vec<String> = std::fs::read_dir(root.join("upload"))
@@ -302,9 +318,12 @@ async fn releases_upload_list_download_and_tags() {
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     assert_eq!(r.body["name"], "nexus-agent_0.2.0_amd64.deb");
     let url = r.body["url"].as_str().unwrap().to_owned();
-    let (st, data) = t.download(&url.replace("/api/", "/api/v1/"), &tam).await;
+    let (st, data) = t.download(&url, &tam).await;
     assert_eq!((st, data.as_slice()), (StatusCode::OK, &b"!<arch>v2"[..]));
-    assert_eq!(t.download(&url.replace("/api/", "/api/v1/"), &alice).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        t.download(&url, &alice).await.0,
+        StatusCode::NOT_FOUND
+    );
     assert_eq!(
         t.post("/api/v1/agent-releases/0.2.0/download", &tina, json!({"artifact": "x"}))
             .await
@@ -321,17 +340,36 @@ async fn releases_upload_list_download_and_tags() {
     // tags: tenant writers of the agent's tenant
     let tr = &t;
     let put = |s: &S, id: &str, tags: Value| {
-        let (path, s) = (format!("/api/v1/agents/{id}/tags"), S { cookie: s.cookie.clone(), csrf: s.csrf.clone() });
+        let (path, s) = (
+            format!("/api/v1/agents/{id}/tags"),
+            S {
+                cookie: s.cookie.clone(),
+                csrf: s.csrf.clone(),
+            },
+        );
         async move { tr.call(Method::PUT, &path, Some(&s), Some(json!({"tags": tags}))).await }
     };
     assert_eq!(put(&tam, A1, json!(["web", "eu"])).await.status, StatusCode::OK);
     assert_eq!(put(&tam, W1, json!(["x"])).await.status, StatusCode::FORBIDDEN);
     assert_eq!(put(&otto, A1, json!(["x"])).await.status, StatusCode::FORBIDDEN);
-    assert_eq!(put(&alice, A1, json!(["Bad Tag"])).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        put(&alice, A1, json!(["Bad Tag"])).await.status,
+        StatusCode::BAD_REQUEST
+    );
     let a = t.get("/api/v1/agents", &alice).await;
-    let web1 = a.body.as_array().unwrap().iter().find(|a| a["id"] == A1).unwrap().clone();
+    let web1 = a
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == A1)
+        .unwrap()
+        .clone();
     assert_eq!(web1["tags"], json!(["eu", "web"]));
-    assert_eq!((web1["protocol"].as_str(), web1["install"].as_str()), (Some("1.8"), None));
+    assert_eq!(
+        (web1["protocol"].as_str(), web1["install"].as_str()),
+        (Some("1.8"), None)
+    );
 
     // single-agent update job: the recommended release, never a downgrade
     let job = |id: &str, v: Option<&str>| {
@@ -345,35 +383,53 @@ async fn releases_upload_list_download_and_tags() {
     assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
     let params: String = t.one(&format!("SELECT params FROM jobs WHERE id = {}", r.body["id"]));
     assert_eq!(serde_json::from_str::<Value>(&params).unwrap()["version"], "0.2.0");
-    assert_eq!(t.post("/api/v1/jobs", &alice, job(A2, None)).await.status, StatusCode::CONFLICT);
+    assert_eq!(
+        t.post("/api/v1/jobs", &alice, job(A2, None)).await.status,
+        StatusCode::CONFLICT
+    );
     assert_eq!(
         t.post("/api/v1/jobs", &alice, job(A1, Some("9.9.9"))).await.status,
         StatusCode::BAD_REQUEST
     );
-    assert_eq!(t.post("/api/v1/jobs", &otto, job(A1, None)).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        t.post("/api/v1/jobs", &otto, job(A1, None)).await.status,
+        StatusCode::FORBIDDEN
+    );
 
     // delete: uploaded only, not while a rollout needs it
     assert_eq!(
-        t.call(Method::DELETE, "/api/v1/agent-releases/0.1.0", Some(&alice), None).await.status,
+        t.call(Method::DELETE, "/api/v1/agent-releases/0.1.0", Some(&alice), None)
+            .await
+            .status,
         StatusCode::CONFLICT
     );
     assert_eq!(
-        t.call(Method::DELETE, "/api/v1/agent-releases/0.2.0", Some(&otto), None).await.status,
+        t.call(Method::DELETE, "/api/v1/agent-releases/0.2.0", Some(&otto), None)
+            .await
+            .status,
         StatusCode::FORBIDDEN
     );
-    let r = t.post("/api/v1/agent-rollouts", &alice, json!({"version": "0.2.0"})).await;
+    let r = t
+        .post("/api/v1/agent-rollouts", &alice, json!({"version": "0.2.0"}))
+        .await;
     assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
     assert_eq!(
-        t.call(Method::DELETE, "/api/v1/agent-releases/0.2.0", Some(&alice), None).await.status,
+        t.call(Method::DELETE, "/api/v1/agent-releases/0.2.0", Some(&alice), None)
+            .await
+            .status,
         StatusCode::CONFLICT
     );
     let id = r.body["id"].as_i64().unwrap();
-    t.post(&format!("/api/v1/agent-rollouts/{id}/cancel"), &alice, json!({})).await;
+    t.post(&format!("/api/v1/agent-rollouts/{id}/cancel"), &alice, json!({}))
+        .await;
     assert_eq!(
-        t.call(Method::DELETE, "/api/v1/agent-releases/0.2.0", Some(&alice), None).await.status,
+        t.call(Method::DELETE, "/api/v1/agent-releases/0.2.0", Some(&alice), None)
+            .await
+            .status,
         StatusCode::OK
     );
-    let audit: i64 = t.one("SELECT COUNT(*) FROM audit WHERE action IN ('agent.release.upload','agent.release.delete','agent.tags')");
+    let audit: i64 = t
+        .one("SELECT COUNT(*) FROM audit WHERE action IN ('agent.release.upload','agent.release.delete','agent.tags')");
     assert_eq!(audit, 3);
 }
 
@@ -399,18 +455,30 @@ async fn rollouts_roles_states_and_approved_rollback() {
     );
     let spec = json!({"version": "0.2.0", "scope": {"tenant": "acme"}, "canary": 1, "windows": [{"days": ["Sat"], "from": "01:00", "to": "05:00"}]});
     for s in [&otto, &tam, &sam] {
-        assert_eq!(t.post("/api/v1/agent-rollouts", s, spec.clone()).await.status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            t.post("/api/v1/agent-rollouts", s, spec.clone()).await.status,
+            StatusCode::FORBIDDEN
+        );
     }
-    assert_eq!(t.get("/api/v1/agent-rollouts", &tam).await.status, StatusCode::FORBIDDEN);
     assert_eq!(
-        t.post("/api/v1/agent-rollouts", &alice, json!({"version": "7.0.0"})).await.status,
+        t.get("/api/v1/agent-rollouts", &tam).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        t.post("/api/v1/agent-rollouts", &alice, json!({"version": "7.0.0"}))
+            .await
+            .status,
         StatusCode::BAD_REQUEST,
         "not in the store"
     );
     assert_eq!(
-        t.post("/api/v1/agent-rollouts", &alice, json!({"version": "0.2.0", "concurrency": 0}))
-            .await
-            .status,
+        t.post(
+            "/api/v1/agent-rollouts",
+            &alice,
+            json!({"version": "0.2.0", "concurrency": 0})
+        )
+        .await
+        .status,
         StatusCode::BAD_REQUEST
     );
     let r = t.post("/api/v1/agent-rollouts", &alice, spec.clone()).await;
@@ -418,7 +486,10 @@ async fn rollouts_roles_states_and_approved_rollback() {
     let id = r.body["id"].as_i64().unwrap();
     assert_eq!(r.body["state"], "running");
     // web2 already runs 0.2.0
-    assert_eq!(r.body["counts"], json!({"total": 2, "waiting": 1, "queued": 0, "running": 0, "ok": 0, "failed": 0, "skipped": 1, "cancelled": 0}));
+    assert_eq!(
+        r.body["counts"],
+        json!({"total": 2, "waiting": 1, "queued": 0, "running": 0, "ok": 0, "failed": 0, "skipped": 1, "cancelled": 0})
+    );
     let d = t.get(&format!("/api/v1/agent-rollouts/{id}"), &otto).await;
     assert_eq!(d.status, StatusCode::OK);
     assert_eq!(d.body["items"].as_array().unwrap().len(), 2);
@@ -432,7 +503,9 @@ async fn rollouts_roles_states_and_approved_rollback() {
     assert_eq!(act("resume").await.status, StatusCode::CONFLICT);
     assert_eq!(act("pause").await.body["state"], "paused");
     assert_eq!(
-        t.post(&format!("/api/v1/agent-rollouts/{id}/pause"), &otto, json!({})).await.status,
+        t.post(&format!("/api/v1/agent-rollouts/{id}/pause"), &otto, json!({}))
+            .await
+            .status,
         StatusCode::FORBIDDEN
     );
     assert_eq!(act("resume").await.body["state"], "running");
@@ -447,10 +520,15 @@ async fn rollouts_roles_states_and_approved_rollback() {
     assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
     let (q, rid) = (r.body["quorum_id"].as_i64().unwrap(), r.body["id"].as_i64().unwrap());
     let g = t.get(&format!("/api/v1/agent-rollouts/{rid}"), &alice).await;
-    assert_eq!((g.body["state"].as_str(), g.body["quorum_id"].as_i64()), (Some("pending_approval"), Some(q)));
+    assert_eq!(
+        (g.body["state"].as_str(), g.body["quorum_id"].as_i64()),
+        (Some("pending_approval"), Some(q))
+    );
     assert_eq!(g.body["counts"]["waiting"], 1, "only web2 runs something newer");
     assert_eq!(
-        t.post(&format!("/api/v1/quorum/{q}/approve"), &alice, json!({})).await.status,
+        t.post(&format!("/api/v1/quorum/{q}/approve"), &alice, json!({}))
+            .await
+            .status,
         StatusCode::FORBIDDEN,
         "not the requester"
     );
@@ -460,9 +538,13 @@ async fn rollouts_roles_states_and_approved_rollback() {
     let g = t.get(&format!("/api/v1/agent-rollouts/{rid}"), &alice).await;
     assert_eq!(g.body["state"], "running");
     assert_eq!(
-        t.post("/api/v1/agent-rollouts", &alice, json!({"version": "0.2.0", "rollback": true}))
-            .await
-            .status,
+        t.post(
+            "/api/v1/agent-rollouts",
+            &alice,
+            json!({"version": "0.2.0", "rollback": true})
+        )
+        .await
+        .status,
         StatusCode::BAD_REQUEST,
         "a rollback goes to an older release"
     );
@@ -472,19 +554,34 @@ async fn rollouts_roles_states_and_approved_rollback() {
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     assert_eq!(r.body["approvals"], "disabled");
     let rid = r.body["id"].as_i64().unwrap();
-    assert_eq!(t.get(&format!("/api/v1/agent-rollouts/{rid}"), &alice).await.body["state"], "running");
+    assert_eq!(
+        t.get(&format!("/api/v1/agent-rollouts/{rid}"), &alice).await.body["state"],
+        "running"
+    );
 
     // automatic mode settings
     let put = |s, b: Value| t.call(Method::PUT, "/api/v1/agent-update-settings", Some(s), Some(b));
     let st = json!({"tenant": "acme", "mode": "automatic", "windows": [{"days": [], "from": "02:00", "to": "04:00"}], "canary": 2, "soak_minutes": 30});
     assert_eq!(put(&otto, st.clone()).await.status, StatusCode::FORBIDDEN);
-    assert_eq!(put(&alice, json!({"tenant": "nope", "mode": "automatic"})).await.status, StatusCode::BAD_REQUEST);
-    assert_eq!(put(&alice, json!({"tenant": "acme", "mode": "often"})).await.status, StatusCode::BAD_REQUEST);
-    assert_eq!(put(&alice, json!({"tenant": "acme", "group_id": 999, "mode": "manual"})).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        put(&alice, json!({"tenant": "nope", "mode": "automatic"})).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        put(&alice, json!({"tenant": "acme", "mode": "often"})).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        put(&alice, json!({"tenant": "acme", "group_id": 999, "mode": "manual"}))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
     assert_eq!(put(&alice, st).await.status, StatusCode::OK);
     let l = t.get("/api/v1/agent-update-settings", &otto).await;
     assert_eq!(l.body[0]["mode"], "automatic");
     assert_eq!(l.body[0]["canary"], 2);
-    let n: i64 = t.one("SELECT COUNT(*) FROM audit WHERE action LIKE 'agent.rollout.%' OR action = 'agent.update_settings'");
+    let n: i64 =
+        t.one("SELECT COUNT(*) FROM audit WHERE action LIKE 'agent.rollout.%' OR action = 'agent.update_settings'");
     assert_eq!(n, 7, "3 creates, pause, resume, cancel and the setting");
 }

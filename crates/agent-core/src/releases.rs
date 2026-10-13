@@ -71,7 +71,10 @@ impl Release {
 /// the listed size. `full` also checks every artifact's SHA-256 and own signature
 /// (uploads; the image's tree is read-only and was checked at build time).
 pub fn load(dir: &Path, source: &'static str, keys: &[(String, Vec<u8>)], full: bool) -> Release {
-    let version = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let version = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let mut r = Release {
         version,
         dir: dir.to_owned(),
@@ -109,7 +112,8 @@ fn load_into(r: &mut Release, keys: &[(String, Vec<u8>)], full: bool) -> Result<
             return Err(format!("{}: not a regular file of {} bytes", a.name, a.size));
         }
         let sig = r.dir.join(format!("{}.sig", a.name));
-        let sig = read_limited(&sig, agent_proto::MAX_SIGNATURE as u64).map_err(|_| format!("{}.sig missing", a.name))?;
+        let sig =
+            read_limited(&sig, agent_proto::MAX_SIGNATURE as u64).map_err(|_| format!("{}.sig missing", a.name))?;
         if full {
             let data = fs::read(&p).map_err(|e| format!("{}: {e}", a.name))?;
             use sha2::Digest;
@@ -154,7 +158,7 @@ pub fn scan(dirs: &[(PathBuf, &'static str)], keys: &[(String, Vec<u8>)]) -> Vec
             }
         }
     }
-    out.sort_by(|a, b| parse_version(&b.version).cmp(&parse_version(&a.version)));
+    out.sort_by_key(|a| std::cmp::Reverse(parse_version(&a.version)));
     out
 }
 
@@ -290,7 +294,10 @@ mod tests {
         let dirs = vec![(img.clone(), "image"), (up.clone(), "upload")];
         let rs = scan(&dirs, &keys);
         let v: Vec<(&str, bool)> = rs.iter().map(|r| (r.version.as_str(), r.usable())).collect();
-        assert_eq!(v, [("0.12.0", false), ("0.11.0", false), ("0.10.0", true), ("0.1.0", true)]);
+        assert_eq!(
+            v,
+            [("0.12.0", false), ("0.11.0", false), ("0.10.0", true), ("0.1.0", true)]
+        );
         assert!(rs[0].error.as_deref().unwrap().contains("bytes"));
         assert!(rs[1].error.as_deref().unwrap().contains("manifest"));
         assert_eq!(recommended(&rs).unwrap().version, "0.10.0");
@@ -302,7 +309,10 @@ mod tests {
         let d = s.write_release(&up, "0.13.0", &bin(b"abc"));
         assert!(load(&d, "upload", &keys, true).usable());
         fs::write(d.join("linux-x86_64/nexus-agent"), b"abd").unwrap();
-        assert!(load(&d, "upload", &keys, false).usable(), "quick scan checks sizes only");
+        assert!(
+            load(&d, "upload", &keys, false).usable(),
+            "quick scan checks sizes only"
+        );
         assert!(load(&d, "upload", &keys, true).error.unwrap().contains("SHA-256"));
         // a manifest whose version differs from the directory
         let d = s.write_release(&up, "0.14.0", &bin(b"a"));

@@ -393,7 +393,10 @@ impl Platform for Linux {
                     format!(
                         "installing {} with {} in {}",
                         staged.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", "),
-                        argv.iter().skip_while(|a| *a != "--").nth(1).map_or("?", String::as_str),
+                        argv.iter()
+                            .skip_while(|a| *a != "--")
+                            .nth(1)
+                            .map_or("?", String::as_str),
                         update::UPDATE_UNIT
                     ),
                     update::UPDATE_UNIT.into(),

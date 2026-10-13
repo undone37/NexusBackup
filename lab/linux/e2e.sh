@@ -18,6 +18,10 @@
 #     download  files_get tar + zip of the data directory, content checked against the VM
 #     db        restore the DB dump directory, drop the database, load the dump, count rows
 #     update    agent_update: wrong signature refused, signed 0.1.1 (lab/linux/bump-bundle.sh) accepted
+#     agent_deb (not default, Phase 27) replace the bundle by the .deb DEB_OLD, init + enroll again
+#     update_deb (not default, Phase 27) upload the signed release RELEASE_TAR, update the .deb agent in-band
+#               (chunked, apt-get in the transient unit), version + update state checked. Not run in the VM
+#               lab yet; the same path runs in a container with lab/linux/update-deb.sh
 #     xhost     (not default; OTHER=<second running lab VM with its agent step done>) the host snapshot
 #               restored onto the other VM's agent (Phase 15b): content + modes equal, root-owned, no setuid
 # env: ROOT (target/linux-root; appliance VM: $LAB/appliance/root), PORT (18453; VM: 28443),
@@ -523,6 +527,58 @@ step_update() {
 	j=$(wait_job admin "$(jq -r .id <<<"$r")" 1800)
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "backup after update: $(jq -r .log <<<"$j" | tail -n 30)"
 	record_backup after_update "$j"
+}
+
+# Phase 27 (docs/agent-update-plan.md), Debian VMs, not default: replace the bundle install by
+# the .deb of the current version (DEB_OLD), initialise and enroll it again (same agent id)
+step_agent_deb() {
+	state
+	[ -n "${AGENT:-}" ] || die "no agent for $VM (step agent)"
+	[ -f "${DEB_OLD:-}" ] || die "DEB_OLD: the current version's .deb (lab/linux/update-deb.sh: target/update-deb/pkg-<v>/)"
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	local r tok j
+	"$here/vm.sh" "$VM" put "$DEB_OLD" /tmp/agent.deb
+	vm 'sudo systemctl disable --now nexus-agent; sudo rm -f /etc/systemd/system/nexus-agent.service /usr/local/sbin/nexus-agent /usr/local/sbin/nexus-agent.prev; sudo systemctl daemon-reload'
+	vm 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/agent.deb >/dev/null && dpkg-query -W nexus-agent' | sed 's/^/  vm: /' >&2
+	r=$(api admin POST "/agents/$AGENT/token")
+	expect 200 "new token"
+	tok=$(jq -r .token <<<"$r")
+	vm "echo $tok | sudo nexus-agent init --token - >/dev/null && sudo systemctl enable --now nexus-agent && systemctl is-active nexus-agent" >/dev/null ||
+		die "packaged agent not running"
+	r=$(api admin POST "/agents/$AGENT/enroll")
+	expect 202 "enroll"
+	j=$(wait_job admin "$(jq -r .id <<<"$r")" 300)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "enroll: $(jq -r .log <<<"$j" | tail -n 20)"
+	api admin GET /agents | jq -e --arg id "$AGENT" '.[] | select(.id==$id) | .install == "deb" and .protocol == "1.8"' >/dev/null ||
+		die "agent not reported as a v1.8 deb install"
+	result agent_deb "$(vm 'dpkg-query -W -f="\${Version}" nexus-agent')"
+}
+
+# Phase 27, not default: upload the signed release RELEASE_TAR (release/sign.sh sign-agent-release;
+# lab/linux/update-deb.sh leaves one in target/update-deb/store/), update the .deb agent in-band
+# (chunked, apt-get in the transient unit nexus-agent-update) and check the result
+step_update_deb() {
+	state
+	[ -f "${RELEASE_TAR:-}" ] || die "RELEASE_TAR: nexus-agent-release-<v>-signed.tar"
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	local v r j t0=$SECONDS
+	v=$(tar -tf "$RELEASE_TAR" | head -1 | cut -d/ -f1)
+	curl -s --cacert "$ROOT/etc/nexus/tls/cert.pem" --resolve "nexus-m5:$PORT:127.0.0.1" -b "$S/admin.jar" \
+		-H "X-CSRF-Token: $(cat "$S/admin.csrf")" -H 'Content-Type: application/x-tar' --data-binary "@$RELEASE_TAR" \
+		-o "$S/body" -w '%{http_code}' "$BASE/agent-releases" >"$S/status"
+	[ "$(status)" = 201 ] || [ "$(status)" = 409 ] || die "release upload: HTTP $(status) $(cat "$S/body")"
+	api admin GET /agent-releases | jq -e --arg v "$v" '.releases[] | select(.version==$v) | .signed' >/dev/null ||
+		die "release $v not listed as signed"
+	r=$(api admin POST /jobs "$(jq -nc --arg t "$TENANT" --arg a "$AGENT" --arg v "$v" '{kind:"agent_update", tenant:$t, params:{agent_id:$a, version:$v}}')")
+	expect 202 "agent_update (deb)"
+	j=$(wait_job admin "$(jq -r .id <<<"$r")" 900)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "deb update: $(jq -r .log <<<"$j" | tail -n 30)"
+	job_line "$j" '^update-plan ' | grep -q '"mode":"chunked"' || die "not the chunked path"
+	api admin GET /agents | jq -e --arg id "$AGENT" --arg v "$v" '.[] | select(.id==$id) | .version == $v and .update_state == "ok"' >/dev/null ||
+		die "agent state after the update: $(api admin GET /agents | jq -c --arg id "$AGENT" '.[] | select(.id==$id) | {version, update_state, update_error}')"
+	[ "$(vm 'dpkg-query -W -f="\${Version}" nexus-agent')" = "$v-1" ] || die "dpkg version"
+	vm 'sudo cat /var/lib/nexus-agent/update-state.json; echo; systemctl is-active nexus-agent' | sed 's/^/  vm: /' >&2
+	result update_deb "-> $v ($((SECONDS - t0)) s)"
 }
 
 steps=("$@")

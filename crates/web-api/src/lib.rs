@@ -598,8 +598,14 @@ pub fn router(st: St) -> Router {
                 .post(agent_updates::upload_release)
                 .layer(axum::extract::DefaultBodyLimit::max(agent_updates::MAX_UPLOAD as usize)),
         )
-        .route("/agent-releases/{version}", axum::routing::delete(agent_updates::delete_release))
-        .route("/agent-releases/{version}/download", post(agent_updates::download_token))
+        .route(
+            "/agent-releases/{version}",
+            axum::routing::delete(agent_updates::delete_release),
+        )
+        .route(
+            "/agent-releases/{version}/download",
+            post(agent_updates::download_token),
+        )
         .route(
             "/agent-rollouts",
             get(agent_updates::list_rollouts).post(agent_updates::create_rollout),

@@ -395,7 +395,8 @@ impl Platform for Windows {
             agent_proto::release::KIND_BINARY => {
                 let exe = std::env::current_exe().map_err(|e| format!("current executable: {e}"))?;
                 let data = std::fs::read(&main.path).map_err(|e| format!("{}: {e}", main.path.display()))?;
-                let how = update::install(&exe, &data, sys::move_at_reboot).map_err(|e| format!("installing update: {e}"))?;
+                let how =
+                    update::install(&exe, &data, sys::move_at_reboot).map_err(|e| format!("installing update: {e}"))?;
                 let _ = std::fs::remove_file(&main.path);
                 match how {
                     update::Installed::Now => Ok(Installed::Restart(format!(
@@ -404,7 +405,10 @@ impl Platform for Windows {
                         main.version
                     ))),
                     update::Installed::AtReboot => Ok(Installed::Started(
-                        format!("update to {} staged; it takes effect after the next reboot", main.version),
+                        format!(
+                            "update to {} staged; it takes effect after the next reboot",
+                            main.version
+                        ),
                         String::new(),
                     )),
                 }

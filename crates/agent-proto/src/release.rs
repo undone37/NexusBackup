@@ -262,11 +262,26 @@ mod tests {
                 art("linux-x86_64/nexus-agent", KIND_BINARY, "linux", "x86_64"),
                 art("linux-aarch64/nexus-agent", KIND_BINARY, "linux", "aarch64"),
                 art("linux-x86_64/nexus-agent_0.2.0_amd64.deb", KIND_DEB, "linux", "x86_64"),
-                art("linux-x86_64/nexus-agent-desktop_0.2.0-1_amd64.deb", KIND_DESKTOP_DEB, "linux", "x86_64"),
-                art("linux-aarch64/nexus-agent-0.2.0-1.aarch64.rpm", KIND_RPM, "linux", "aarch64"),
+                art(
+                    "linux-x86_64/nexus-agent-desktop_0.2.0-1_amd64.deb",
+                    KIND_DESKTOP_DEB,
+                    "linux",
+                    "x86_64",
+                ),
+                art(
+                    "linux-aarch64/nexus-agent-0.2.0-1.aarch64.rpm",
+                    KIND_RPM,
+                    "linux",
+                    "aarch64",
+                ),
                 art("windows-x64/nexus-agent-0.2.0-x64.msi", KIND_MSI, "windows", "x86_64"),
                 art("windows-x64/nexus-agent.exe", KIND_BINARY, "windows", "x86_64"),
-                art("linux-x86_64/nexus-agent-0.2.0-x86_64.tar.gz", KIND_BUNDLE, "linux", "x86_64"),
+                art(
+                    "linux-x86_64/nexus-agent-0.2.0-x86_64.tar.gz",
+                    KIND_BUNDLE,
+                    "linux",
+                    "x86_64",
+                ),
             ],
         }
     }
@@ -371,8 +386,16 @@ mod tests {
             HostFacts::from_caps("Windows Server 2022 Standard", &old),
             host("windows", "x86_64", "manual", None)
         );
-        let bad: Vec<String> = vec!["update2".into(), "arch=sparc".into(), "install=zip".into(), "gui=x".into()];
-        assert_eq!(HostFacts::from_caps("Linux", &bad), host("linux", "x86_64", "manual", None));
+        let bad: Vec<String> = vec![
+            "update2".into(),
+            "arch=sparc".into(),
+            "install=zip".into(),
+            "gui=x".into(),
+        ];
+        assert_eq!(
+            HostFacts::from_caps("Linux", &bad),
+            host("linux", "x86_64", "manual", None)
+        );
         assert_eq!(protocol_of(&caps), "1.8");
         assert_eq!(protocol_of(&old), "1.7");
     }

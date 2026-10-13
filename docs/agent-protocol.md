@@ -129,10 +129,11 @@ These pin down points the message table leaves open; an agent must behave as des
   ACLs, `security.*` labels and `trusted.*` of the other machine are dropped), alternate data streams
   (`win.ads`) only onto Windows agents. Skipped entries and xattrs are counted in the job log
   (`restore to another host: skipped …`), not reported as errors.
-- **Update.** The update directory (`/usr/share/nexus/agent`) holds `nexus-agent`, `nexus-agent.sig`,
-  `nexus-agent.version`; the whole binary travels in one frame, so it must stay below 8 MiB (open: chunked
-  update for bigger binaries). After `UpdateDone` the appliance reconnects (≤ 120 s) and expects the new
-  version in `HelloReply`.
+- **Update.** Agents before v1.8: the binary travels in one `Update` frame (below 8 MiB), from the release
+  store's `binary` artifact or, without any release in the store, the legacy files `nexus-agent`,
+  `nexus-agent.sig`, `nexus-agent.version` in `/usr/share/nexus/agent`. Agents with v1.8 get chunked
+  updates with their own package type (see "v1.8"). After `UpdateDone` the appliance reconnects (120 s for
+  binary swaps, 600 s for package installs) and expects the new version in `HelloReply`.
 - **Downloads** from tree snapshots need no agent: `nexus-agentctl files <agent> <time> ls|get` (same JSON
   and tar/zip formats as VM/CT files; tar keeps owners, modes, mtimes, links, devices and xattrs as PAX
   `SCHILY.xattr.*`).
@@ -349,3 +350,26 @@ edge relays its TLS records byte for byte; it holds no key of either side.
   edge is assigned), then through the edge, and prints `"via": "direct" | "edge"` in `agent-info`. The scheduler
   keeps one `nexus-agentctl … edge-link` per enrolled edge (`edge-health`, `edge-wake`, `edge-log`, `edge-updated`
   lines) and enrolls edges with `edge-enroll` (`edge-enrolled {json}`).
+
+## v1.8 — agent updates pushed from the appliance (additive, Phase 27, docs/agent-update-plan.md)
+- **Capability `update2`** (agents built on `agent-core` with a platform that installs updates; not the rescue
+  agent). Host facts travel as capabilities as well: `arch=x86_64|aarch64`, `install=bundle|deb|rpm|msi|manual`,
+  `gui=<version>` (desktop UI package installed). They are not new `HelloReply` fields: `HelloReply` is a postcard
+  struct variant and an appliance would fail to decode an older agent's reply. `agent_proto::release::HostFacts`
+  parses them; agents without them are treated as bundle (Linux) or manual (Windows) installs on x86_64.
+- **Messages** (tags 49–55, appended after v1.7's `EdgeSet` = 48; checked by `agent-proto` tests):
+  `UpdateBegin { kind, name, size, sha256, signature, manifest, manifest_sig, rollback }` → `UpdateReady` | `Error`;
+  then `UpdateChunk { data }` (≤ 4 MiB each, no answer); `UpdateCommit { apply }` → `UpdateStaged` (more
+  artifacts follow, e.g. the desktop package of the same release) or, with `apply`, `UpdateDone` | `Error`.
+  `UpdateStatus` → `UpdateState { json }` (the agent's `update-state.json`, `{}` when no update ran; `state`
+  `installing` while an install runs). Limits: artifact 512 MiB, signature 64 KiB, manifest 256 KiB, name 200
+  bytes, state 16 KiB.
+- **Checks on the agent** before any data: `self_update = off` refuses; busy → `Error 409`; the artifact kind
+  must be the install's own; the release manifest must verify with a pinned release key and list the artifact
+  with this name, kind, OS, architecture, size and SHA-256; strictly newer, or with `rollback` older but not
+  below the agent's compiled-in `ROLLBACK_FLOOR`. After the data: SHA-256 and size, the artifact's own
+  signature, and for a binary the embedded version marker and the executable format.
+- **Errors**: 403 refused (self-update off, wrong kind, signature, version), 409 busy, 400 protocol violations
+  (data without `UpdateBegin`, more data than announced, size or hash mismatch), 500 install failures.
+- Release store, manifest format, installing, the start watchdog, the scheduler's rollouts and the API:
+  docs/agent-update-plan.md "Implementation".

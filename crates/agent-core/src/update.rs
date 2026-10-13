@@ -545,11 +545,7 @@ pub const RESTART_GRACE_SECS: u64 = 120;
 /// Settles a pending package install of a running agent (called at start and every
 /// 30 s): this version is the target: ok; else the installer's result decides.
 /// Returns true while it is still pending.
-pub fn settle_package(
-    paths: &crate::config::Paths,
-    current: &str,
-    result: &dyn Fn(&Pending) -> InstallResult,
-) -> bool {
+pub fn settle_package(paths: &crate::config::Paths, current: &str, result: &dyn Fn(&Pending) -> InstallResult) -> bool {
     settle_package_at(paths, current, result, now())
 }
 
@@ -736,10 +732,16 @@ mod tests {
     #[test]
     fn version_rules_with_rollback_floor() {
         assert!(check_version("0.2.0", "0.1.0", false, "0.1.0").is_ok());
-        assert!(check_version("0.1.0", "0.1.0", true, "0.1.0").unwrap_err().contains("already"));
-        assert!(check_version("0.1.0", "0.2.0", false, "0.1.0").unwrap_err().contains("downgrade"));
+        assert!(check_version("0.1.0", "0.1.0", true, "0.1.0")
+            .unwrap_err()
+            .contains("already"));
+        assert!(check_version("0.1.0", "0.2.0", false, "0.1.0")
+            .unwrap_err()
+            .contains("downgrade"));
         assert!(check_version("0.1.0", "0.2.0", true, "0.1.0").is_ok());
-        assert!(check_version("0.1.5", "0.3.0", true, "0.2.0").unwrap_err().contains("oldest"));
+        assert!(check_version("0.1.5", "0.3.0", true, "0.2.0")
+            .unwrap_err()
+            .contains("oldest"));
         assert!(check_version("0.2.0", "0.3.0", true, "0.2.0").is_ok());
         assert!(check_version("x", "0.1.0", false, "0.1.0").is_err());
         assert!(parse_version(ROLLBACK_FLOOR).is_some());
@@ -797,38 +799,114 @@ mod tests {
             gui_version: None,
         };
         let check = |m: &[u8], msig: &[u8], kind: &str, name: &str, d: &[u8], install: &str, cur: &str, rb: bool| {
-            check_announced(&keys, m, msig, kind, name, d.len() as u64, &sha(d), &host(install), cur, rb)
+            check_announced(
+                &keys,
+                m,
+                msig,
+                kind,
+                name,
+                d.len() as u64,
+                &sha(d),
+                &host(install),
+                cur,
+                rb,
+            )
         };
-        let a = check(&m, &msig, "deb", "linux-x86_64/nexus-agent_0.2.0_amd64.deb", &deb, "deb", "0.1.0", false)
-            .unwrap();
+        let a = check(
+            &m,
+            &msig,
+            "deb",
+            "linux-x86_64/nexus-agent_0.2.0_amd64.deb",
+            &deb,
+            "deb",
+            "0.1.0",
+            false,
+        )
+        .unwrap();
         assert_eq!(a.manifest.version, "0.2.0");
         assert_eq!(a.key, "k.pub");
         // the data itself: its own signature
         check_artifact_data(&a, &deb, &sign(&kp, &deb), &keys, &|_| false).unwrap();
         assert!(check_artifact_data(&a, &deb, &sign(&kp, b"other"), &keys, &|_| false).is_err());
         // binary: version marker and format
-        let b = check(&m, &msig, "binary", "linux-x86_64/nexus-agent", &bin, "bundle", "0.1.0", false).unwrap();
+        let b = check(
+            &m,
+            &msig,
+            "binary",
+            "linux-x86_64/nexus-agent",
+            &bin,
+            "bundle",
+            "0.1.0",
+            false,
+        )
+        .unwrap();
         check_artifact_data(&b, &bin, &sign(&kp, &bin), &keys, &|x| x.starts_with(b"\x7fELF")).unwrap();
         assert!(check_artifact_data(&b, &bin, &sign(&kp, &bin), &keys, &|_| false)
             .unwrap_err()
             .contains("platform"));
         // install type decides the kind: no binary swap under dpkg, no deb on a bundle
-        assert!(check(&m, &msig, "binary", "linux-x86_64/nexus-agent", &bin, "deb", "0.1.0", false)
-            .unwrap_err()
-            .contains("own package type"));
-        assert!(check(&m, &msig, "deb", "linux-x86_64/nexus-agent_0.2.0_amd64.deb", &deb, "bundle", "0.1.0", false)
-            .is_err());
+        assert!(check(
+            &m,
+            &msig,
+            "binary",
+            "linux-x86_64/nexus-agent",
+            &bin,
+            "deb",
+            "0.1.0",
+            false
+        )
+        .unwrap_err()
+        .contains("own package type"));
+        assert!(check(
+            &m,
+            &msig,
+            "deb",
+            "linux-x86_64/nexus-agent_0.2.0_amd64.deb",
+            &deb,
+            "bundle",
+            "0.1.0",
+            false
+        )
+        .is_err());
         // unsigned / foreign-key manifest
         let (other, _) = keypair();
-        assert!(check(&m, &sign(&other, &m), "deb", "linux-x86_64/nexus-agent_0.2.0_amd64.deb", &deb, "deb", "0.1.0", false)
-            .unwrap_err()
-            .contains("manifest"));
+        assert!(check(
+            &m,
+            &sign(&other, &m),
+            "deb",
+            "linux-x86_64/nexus-agent_0.2.0_amd64.deb",
+            &deb,
+            "deb",
+            "0.1.0",
+            false
+        )
+        .unwrap_err()
+        .contains("manifest"));
         // not listed, wrong kind, wrong data
         assert!(check(&m, &msig, "deb", "linux-x86_64/other.deb", &deb, "deb", "0.1.0", false).is_err());
-        assert!(check(&m, &msig, "deb", "linux-x86_64/nexus-agent", &bin, "deb", "0.1.0", false).is_err());
-        assert!(check(&m, &msig, "deb", "linux-x86_64/nexus-agent_0.2.0_amd64.deb", b"x", "deb", "0.1.0", false)
-            .unwrap_err()
-            .contains("SHA-256"));
+        assert!(check(
+            &m,
+            &msig,
+            "deb",
+            "linux-x86_64/nexus-agent",
+            &bin,
+            "deb",
+            "0.1.0",
+            false
+        )
+        .is_err());
+        assert!(check(
+            &m,
+            &msig,
+            "deb",
+            "linux-x86_64/nexus-agent_0.2.0_amd64.deb",
+            b"x",
+            "deb",
+            "0.1.0",
+            false
+        )
+        .unwrap_err()
+        .contains("SHA-256"));
         // wrong architecture
         let mut aarch = host("deb");
         aarch.arch = "aarch64".into();
@@ -847,11 +925,40 @@ mod tests {
         .unwrap_err()
         .contains("aarch64"));
         // downgrade only as a rollback, never below the floor
-        assert!(check(&m, &msig, "deb", "linux-x86_64/nexus-agent_0.2.0_amd64.deb", &deb, "deb", "0.3.0", false)
-            .unwrap_err()
-            .contains("downgrade"));
-        assert!(check(&m, &msig, "deb", "linux-x86_64/nexus-agent_0.2.0_amd64.deb", &deb, "deb", "0.3.0", true).is_ok());
-        assert!(check(&m, &msig, "deb", "linux-x86_64/nexus-agent_0.2.0_amd64.deb", &deb, "deb", "0.2.0", true).is_err());
+        assert!(check(
+            &m,
+            &msig,
+            "deb",
+            "linux-x86_64/nexus-agent_0.2.0_amd64.deb",
+            &deb,
+            "deb",
+            "0.3.0",
+            false
+        )
+        .unwrap_err()
+        .contains("downgrade"));
+        assert!(check(
+            &m,
+            &msig,
+            "deb",
+            "linux-x86_64/nexus-agent_0.2.0_amd64.deb",
+            &deb,
+            "deb",
+            "0.3.0",
+            true
+        )
+        .is_ok());
+        assert!(check(
+            &m,
+            &msig,
+            "deb",
+            "linux-x86_64/nexus-agent_0.2.0_amd64.deb",
+            &deb,
+            "deb",
+            "0.2.0",
+            true
+        )
+        .is_err());
     }
 
     fn paths() -> (tempfile::TempDir, crate::config::Paths) {
@@ -899,7 +1006,10 @@ mod tests {
         assert_eq!(restored.get(), 1);
         assert!(read_pending(&p).is_none());
         let s = state(&p);
-        assert_eq!((s.state.as_str(), s.from.as_str(), s.to.as_str()), ("rolled_back", "0.1.0", "0.2.0"));
+        assert_eq!(
+            (s.state.as_str(), s.from.as_str(), s.to.as_str()),
+            ("rolled_back", "0.1.0", "0.2.0")
+        );
         // a new version that listens is done
         write_pending(&p, &pending("binary")).unwrap();
         assert_eq!(watchdog_on_start(&p, "0.2.0", &restore), Watchdog::Continue);
@@ -911,11 +1021,28 @@ mod tests {
         assert_eq!(watchdog_on_start(&p, "0.1.0", &restore), Watchdog::Continue);
         assert_eq!(state(&p).state, "rolled_back");
         // a restore that fails is reported, the agent keeps running
-        write_pending(&p, &Pending { starts: 2, ..pending("binary") }).unwrap();
-        assert_eq!(watchdog_on_start(&p, "0.2.0", &|| Err("gone".into())), Watchdog::Continue);
+        write_pending(
+            &p,
+            &Pending {
+                starts: 2,
+                ..pending("binary")
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            watchdog_on_start(&p, "0.2.0", &|| Err("gone".into())),
+            Watchdog::Continue
+        );
         assert!(state(&p).error.contains("gone"));
         // package installs are not the watchdog's business
-        write_pending(&p, &Pending { starts: 9, ..pending("deb") }).unwrap();
+        write_pending(
+            &p,
+            &Pending {
+                starts: 9,
+                ..pending("deb")
+            },
+        )
+        .unwrap();
         assert_eq!(watchdog_on_start(&p, "0.2.0", &restore), Watchdog::Continue);
         assert_eq!(read_pending(&p).unwrap().starts, 9);
     }
@@ -938,7 +1065,10 @@ mod tests {
         let failed = |_: &Pending| InstallResult::Failed("exit status 100".into(), vec!["E: broken".into()]);
         assert!(!settle_package_at(&p, "0.1.0", &failed, 1100));
         let s = state(&p);
-        assert_eq!((s.state.as_str(), s.log.as_slice()), ("failed", &["E: broken".to_string()][..]));
+        assert_eq!(
+            (s.state.as_str(), s.log.as_slice()),
+            ("failed", &["E: broken".to_string()][..])
+        );
         // succeeded but the agent was not restarted into the new version
         write_pending(&p, &pending("deb")).unwrap();
         let ok = |_: &Pending| InstallResult::Succeeded;
@@ -951,7 +1081,6 @@ mod tests {
         assert!(read_pending(&p).is_some());
         assert_eq!(tail_lines("a\n\nb\nc\n", 2), ["b", "c"]);
     }
-
 
     #[test]
     fn key_parsing_and_versions() {

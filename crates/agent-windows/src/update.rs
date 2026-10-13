@@ -128,8 +128,10 @@ pub fn decode_log(b: &[u8]) -> String {
     if utf16 {
         let start = if b.starts_with(&[0xFF, 0xFE]) { 2 } else { 0 };
         let u: Vec<u16> = b[start..]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
             .collect();
         String::from_utf16_lossy(&u)
     } else {
@@ -156,7 +158,10 @@ pub fn parse_msi_log(b: Option<&[u8]>) -> InstallResult {
         Some(c) => {
             // the lines around the first failing action are the useful part
             let lines: Vec<&str> = text.lines().collect();
-            let at = lines.iter().position(|l| l.contains("Return value 3")).unwrap_or(lines.len());
+            let at = lines
+                .iter()
+                .position(|l| l.contains("Return value 3"))
+                .unwrap_or(lines.len());
             let from = at.saturating_sub(15);
             let tail = agent_core::update::tail_lines(&lines[from..lines.len().min(at + 1)].join("\n"), 20);
             let why = match c {
@@ -175,7 +180,11 @@ pub fn parse_msi_log(b: Option<&[u8]>) -> InstallResult {
 /// be renamed: it goes aside as `<exe>.failed`, `<exe>.prev` takes its place; the
 /// service control manager restarts the previous version.
 pub fn restore_prev(exe: &Path) -> Result<(), String> {
-    let name = exe.file_name().ok_or("executable has no name")?.to_string_lossy().into_owned();
+    let name = exe
+        .file_name()
+        .ok_or("executable has no name")?
+        .to_string_lossy()
+        .into_owned();
     let dir = exe.parent().ok_or("executable has no directory")?;
     let prev = dir.join(format!("{name}.prev"));
     let failed = dir.join(format!("{name}.failed"));

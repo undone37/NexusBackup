@@ -47,6 +47,31 @@ jobs:
       - name: Pin the release public key(s), drop the TEST key
         run: release/inject-keys.sh
 
+      # Phase 27: the image ships the newest signed agent release (os/agent-release ->
+      # /usr/share/nexus/agent). CI cannot sign: the release manager signs the tree of the
+      # packages job offline (release/sign.sh sign-agent-release) and attaches
+      # nexus-agent-release-<v>-signed.tar to this release (or an earlier one). Without it
+      # the image ships no agent release (agents are then updated with uploads).
+      - name: Signed agent release for the image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p out/agent-release
+          for from in "$GITHUB_REF_NAME" ""; do
+            gh release download $from --pattern 'nexus-agent-release-*-signed.tar' --dir out/agent-release --clobber 2>/dev/null && break
+          done
+          shopt -s nullglob
+          tars=(out/agent-release/nexus-agent-release-*-signed.tar)
+          if [ ${#tars[@]} -eq 0 ]; then
+            echo "::warning::no signed agent release attached: the image ships none (docs/agent-update-plan.md)"
+            exit 0
+          fi
+          tar -C out/agent-release -xf "${tars[-1]}"
+          for d in out/agent-release/*/; do
+            release/verify.sh --agent-release "$d"
+            cp -a "$d" os/agent-release/
+          done
+
       - name: Build
         run: |
           podman build --pull=always \
@@ -226,7 +251,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd target/packages
-          gh release upload "$GITHUB_REF_NAME" ./*.deb ./*.rpm ./*.msi SHA256SUMS --clobber
+          gh release upload "$GITHUB_REF_NAME" ./*.deb ./*.rpm ./*.msi SHA256SUMS ./nexus-agent-release-*.tar --clobber
           {
             echo "### Agent packages (NOT signed)"
             echo
@@ -235,4 +260,6 @@ jobs:
             echo '```'
             echo
             echo "Next: \`release/sign.sh sign-blobs\` (offline key), \`release/verify.sh --blobs\`, upload the .sig files."
+            echo "Agent release for the appliance image: unpack nexus-agent-release-*.tar, \`release/sign.sh sign-agent-release <dir>\`,"
+            echo "\`release/verify.sh --agent-release <dir>\`, attach nexus-agent-release-<v>-signed.tar (next image build ships it)."
           } >> "$GITHUB_STEP_SUMMARY"

@@ -758,6 +758,26 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
   swap with a start watchdog; chunked transfer; per-agent update state; rollouts with waves, canary, failure
   threshold, busy/window handling; optional automatic mode; rollback only with approval; installer downloads from
   the appliance. Details and proposed decisions: `docs/agent-update-plan.md`.
+- **Implemented 2026-10-14 (27a, 27b, 27c)**; contract and deviations: `docs/agent-update-plan.md` "Implementation".
+  Catalog v41, protocol v1.8, threat model T57–T59, alert kinds `agent_update_failed` / `rollout_paused`, quorum
+  action `agent.rollback`. Deviations and decisions taken during implementation:
+  - Host facts (`arch`, `install`, `gui`) travel as `HelloReply.caps` entries (`arch=…`, `install=…`, `gui=…`), not as
+    new `HelloReply` fields: a postcard struct variant cannot grow without breaking the decoding of older agents.
+  - Rollback marker: instead of a signed marker per version pair, each agent build carries a compiled-in
+    `ROLLBACK_FLOOR` (part of the signed binary); an approved rollback may go down to it, never below. MSI installs
+    cannot be rolled back in-band (Windows Installer refuses downgrades).
+  - Start watchdog: checked by the agent binary at the start of `run` (Linux and Windows), not by an `ExecStartPre`
+    shell snippet; the unit stays shell-free and the binary is signed and verified before the swap.
+  - Package-install results: no wrapper process; the agent settles a pending install itself (new version listening =
+    ok; the transient unit's `Result`/exit status and journal tail, or the MSI verbose log, = failed; 30 min timeout).
+  - Agents keep the single-frame `Update` for v1.7 and older; package-installed agents refuse it (no binary swap under
+    a package manager). Without any signed release in the store the scheduler still uses the legacy update directory.
+  - Windows (UTC) for rollout maintenance windows; group policy blackout windows are honoured per agent; the failure
+    share counts only from 5 finished agents (the count threshold and a failed canary pause at once).
+  - Image builds ship the newest signed agent release attached to a GitHub release
+    (`nexus-agent-release-<v>-signed.tar`, signed offline with `release/sign.sh sign-agent-release`); CI cannot sign,
+    so a release's own agent tree reaches the image with the next build (or by upload).
+  - Agent tags (`agents.tags`, `PUT /agents/{id}/tags`) were added for the "tag" rollout scope.
 
 ### Phase 28+ — Commvault-inspired items (proposed 2026-10-13)
 - Tier 1 (scheduled threat scans, IOC hash hunting, tenant lockdown, new-device sign-in notice) as Phase 28, Tier 2 as Phase 29; details and open questions: `docs/commvault-comparison.md`.

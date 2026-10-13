@@ -518,8 +518,12 @@ fn chunked_update_from_the_release_store() {
         hook_owner: nexus_agent::sys::geteuid(),
         ..Default::default()
     };
-    let mut agent =
-        Agent::with_platform(nexus_agent::server::Linux::with_exe(exe.clone()), paths.clone(), settings).unwrap();
+    let mut agent = Agent::with_platform(
+        nexus_agent::server::Linux::with_exe(exe.clone()),
+        paths.clone(),
+        settings,
+    )
+    .unwrap();
     agent.exit_on_update = false;
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = l.local_addr().unwrap().port();

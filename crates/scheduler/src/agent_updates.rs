@@ -165,7 +165,11 @@ impl Scheduler {
                     &format!(
                         "update of agent {name} to {} {}: {}",
                         target.as_deref().unwrap_or("the new release"),
-                        if s == "rolled_back" { "was rolled back" } else { "failed" },
+                        if s == "rolled_back" {
+                            "was rolled back"
+                        } else {
+                            "failed"
+                        },
                         error.as_deref().unwrap_or("")
                     ),
                     crate::lifecycle::tenant_of(job),
@@ -297,12 +301,11 @@ impl Scheduler {
             params![id, now],
         )?;
         let count = |sql: &str| -> Result<i64> {
-            Ok(self
-                .db
-                .conn()
-                .query_row(&format!("SELECT COUNT(*) FROM agent_rollout_items WHERE rollout_id = ?1 AND {sql}"), [id], |r| {
-                    r.get(0)
-                })?)
+            Ok(self.db.conn().query_row(
+                &format!("SELECT COUNT(*) FROM agent_rollout_items WHERE rollout_id = ?1 AND {sql}"),
+                [id],
+                |r| r.get(0),
+            )?)
         };
         // failure threshold; a failed canary always pauses
         let failed = count("state = 'failed'")?;
@@ -313,7 +316,10 @@ impl Scheduler {
         } else if r.max_failures > 0 && failed >= r.max_failures {
             Some(format!("{failed} agents failed (threshold {})", r.max_failures))
         } else if r.max_pct > 0 && finished >= MIN_SAMPLE && failed * 100 >= r.max_pct * finished {
-            Some(format!("{failed} of {finished} agents failed (threshold {} %)", r.max_pct))
+            Some(format!(
+                "{failed} of {finished} agents failed (threshold {} %)",
+                r.max_pct
+            ))
         } else {
             None
         };
@@ -322,7 +328,12 @@ impl Scheduler {
                 "UPDATE agent_rollouts SET state = 'paused', reason = ?2 WHERE id = ?1",
                 params![id, why],
             )?;
-            self.db.audit(ACTOR, "agent.rollout.pause", &format!("agent-rollout/{id}"), &json!({"reason": why}))?;
+            self.db.audit(
+                ACTOR,
+                "agent.rollout.pause",
+                &format!("agent-rollout/{id}"),
+                &json!({"reason": why}),
+            )?;
             self.raise(
                 "warning",
                 ALERT_PAUSED,
@@ -338,7 +349,12 @@ impl Scheduler {
                 "UPDATE agent_rollouts SET state = 'done', finished = ?2 WHERE id = ?1",
                 params![id, now],
             )?;
-            self.db.audit(ACTOR, "agent.rollout.done", &format!("agent-rollout/{id}"), &json!({"failed": failed}))?;
+            self.db.audit(
+                ACTOR,
+                "agent.rollout.done",
+                &format!("agent-rollout/{id}"),
+                &json!({"failed": failed}),
+            )?;
             return Ok(());
         }
         // canary wave finished: soak, then the rest
@@ -382,9 +398,23 @@ impl Scheduler {
             if free == 0 {
                 break;
             }
-            if let Some(why) = self.update_hold(&tenant, &agent, now)? {
-                let _ = why; // stays waiting; picked up later
+            // updated meanwhile (another rollout, by hand): nothing to do
+            let current: Option<String> = self
+                .db
+                .conn()
+                .query_row("SELECT version FROM agents WHERE id = ?1", [&agent], |r| r.get(0))
+                .optional()?
+                .flatten();
+            if let Some(why) = au::skip_reason(current.as_deref(), &r.version, r.rollback) {
+                self.db.conn().execute(
+                    "UPDATE agent_rollout_items SET state = 'skipped', error = ?3, updated = ?4 \
+                     WHERE rollout_id = ?1 AND agent_id = ?2",
+                    params![id, agent, why, now],
+                )?;
                 continue;
+            }
+            if self.update_hold(&tenant, &agent, now)?.is_some() {
+                continue; // busy, unreachable or blacked out: stays waiting, picked up later
             }
             let mut p = json!({"agent_id": agent, "version": r.version, "rollout_id": id});
             if r.rollback {

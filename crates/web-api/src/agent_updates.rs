@@ -116,9 +116,14 @@ async fn receive(body: Body, to: &std::path::Path) -> ApiResult<()> {
         if let Ok(data) = frame.into_data() {
             n += data.len() as u64;
             if n > MAX_UPLOAD {
-                return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE, "release larger than 512 MiB".into()));
+                return Err(ApiError(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "release larger than 512 MiB".into(),
+                ));
             }
-            f.write_all(&data).await.map_err(|e| ApiError::internal(e.to_string()))?;
+            f.write_all(&data)
+                .await
+                .map_err(|e| ApiError::internal(e.to_string()))?;
         }
     }
     f.flush().await.map_err(|e| ApiError::internal(e.to_string()))?;
@@ -144,7 +149,11 @@ fn install_upload(p: &ReleasePaths, incoming: &std::path::Path) -> ApiResult<Rel
             return Err(bad("too many files in the release".into()));
         }
         let path = e.path().map_err(|e| bad(format!("tar: {e}")))?.into_owned();
-        let name = path.to_string_lossy().trim_start_matches("./").trim_end_matches('/').to_owned();
+        let name = path
+            .to_string_lossy()
+            .trim_start_matches("./")
+            .trim_end_matches('/')
+            .to_owned();
         if name.is_empty() {
             continue;
         }
@@ -194,7 +203,10 @@ fn install_upload(p: &ReleasePaths, incoming: &std::path::Path) -> ApiResult<Rel
         return Err(bad(format!("release {} refused: {e}", m.version)));
     }
     if p.image.join(&m.version).exists() || p.upload.join(&m.version).exists() {
-        return Err(ApiError::conflict(format!("release {} is already in the store", m.version)));
+        return Err(ApiError::conflict(format!(
+            "release {} is already in the store",
+            m.version
+        )));
     }
     // the web-api runs with umask 0077: the scheduler and nexus-agentctl read through
     // the group of the (setgid) store directory
@@ -245,7 +257,12 @@ pub async fn delete_release(State(st): State<St>, ctx: Ctx, Path(version): Path<
         return Err(ApiError::conflict("a rollout of this release is still active"));
     }
     std::fs::remove_dir_all(&dir).map_err(|e| ApiError::internal(e.to_string()))?;
-    st.audit(ctx.name(), "agent.release.delete", &format!("agent-release/{version}"), json!({}))?;
+    st.audit(
+        ctx.name(),
+        "agent.release.delete",
+        &format!("agent-release/{version}"),
+        json!({}),
+    )?;
     Ok(Json(json!({"version": version, "deleted": true})))
 }
 
@@ -271,7 +288,9 @@ pub async fn download_token(
     let rs = tokio::task::spawn_blocking(move || p.scan())
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
-    let rel = releases::find(&rs, &version).filter(|r| r.usable()).ok_or_else(ApiError::not_found)?;
+    let rel = releases::find(&rs, &version)
+        .filter(|r| r.usable())
+        .ok_or_else(ApiError::not_found)?;
     let a = rel
         .manifest
         .as_ref()
@@ -289,7 +308,7 @@ pub async fn download_token(
         )?;
     }
     Ok(Json(json!({
-        "token": token, "url": format!("/api/downloads/{token}"),
+        "token": token, "url": format!("/api/v1/downloads/{token}"),
         "name": a.name.rsplit('/').next().unwrap_or(&a.name), "size": a.size, "sha256": a.sha256, "expires": expires,
     })))
 }
@@ -312,7 +331,9 @@ pub fn installer_file(st: &St, token: &str, user: &str) -> ApiResult<Option<(Pat
         return Err(ApiError::not_found());
     }
     let rs = paths(st).scan();
-    let rel = releases::find(&rs, &version).filter(|r| r.usable()).ok_or_else(ApiError::not_found)?;
+    let rel = releases::find(&rs, &version)
+        .filter(|r| r.usable())
+        .ok_or_else(ApiError::not_found)?;
     let a = rel
         .manifest
         .as_ref()
@@ -329,7 +350,12 @@ pub struct TagsReq {
 }
 
 /// `PUT /agents/{id}/tags` (rollout scope).
-pub async fn set_tags(State(st): State<St>, ctx: Ctx, Path(id): Path<String>, J(r): J<TagsReq>) -> ApiResult<Json<Value>> {
+pub async fn set_tags(
+    State(st): State<St>,
+    ctx: Ctx,
+    Path(id): Path<String>,
+    J(r): J<TagsReq>,
+) -> ApiResult<Json<Value>> {
     ctx.require(TENANT_WRITERS)?;
     if r.tags.len() > 16 || r.tags.iter().any(|t| !au::valid_tag(t)) {
         return Err(ApiError::bad("tags: at most 16, each [a-z0-9_.-]{1,32}"));
@@ -382,7 +408,9 @@ pub async fn create_rollout(State(st): State<St>, ctx: Ctx, J(spec): J<Spec>) ->
         )));
     }
     if spec.rollback && releases::recommended(&rs).is_some_and(|r| !releases::older(&version, &r.version)) {
-        return Err(ApiError::bad("rollback: the target must be older than the newest release"));
+        return Err(ApiError::bad(
+            "rollback: the target must be older than the newest release",
+        ));
     }
     let state = if spec.rollback { "pending_approval" } else { "running" };
     let id = {
@@ -420,7 +448,9 @@ pub async fn create_rollout(State(st): State<St>, ctx: Ctx, J(spec): J<Spec>) ->
 
 /// Quorum execution of `agent.rollback`: the approved rollout starts.
 pub fn execute_rollback(c: &catalog::rusqlite::Connection, p: &Value) -> ApiResult<()> {
-    let id = p["rollout_id"].as_i64().ok_or_else(|| ApiError::bad("quorum params: rollout_id"))?;
+    let id = p["rollout_id"]
+        .as_i64()
+        .ok_or_else(|| ApiError::bad("quorum params: rollout_id"))?;
     let n = c.execute(
         "UPDATE agent_rollouts SET state = 'running' WHERE id = ?1 AND state = 'pending_approval'",
         [id],
@@ -468,7 +498,12 @@ pub async fn rollout_action(
         }
         tx.commit()?;
     }
-    st.audit(ctx.name(), &format!("agent.rollout.{action}"), &format!("agent-rollout/{id}"), json!({}))?;
+    st.audit(
+        ctx.name(),
+        &format!("agent.rollout.{action}"),
+        &format!("agent-rollout/{id}"),
+        json!({}),
+    )?;
     let v = au::get(&st.cat.conn(), id, false).map_err(|e| ApiError::internal(e.to_string()))?;
     Ok(Json(v.unwrap_or_default()))
 }

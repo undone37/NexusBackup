@@ -878,7 +878,10 @@ pub async fn download(State(st): State<St>, ctx: Ctx, Path(token): Path<String>)
         )?;
         let mut res = Body::from_stream(tokio_util::io::ReaderStream::new(file)).into_response();
         let h = res.headers_mut();
-        h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
+        h.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/octet-stream"),
+        );
         h.insert(header::CONTENT_LENGTH, HeaderValue::from(meta.len()));
         h.insert(
             header::CONTENT_DISPOSITION,

@@ -2974,9 +2974,7 @@ mod tests {
             .unwrap();
         assert_eq!((state.as_str(), wave), ("running", 0));
         assert!(conn.execute("UPDATE agents SET update_state = 'bogus'", []).is_err());
-        assert!(conn
-            .execute("UPDATE agent_rollouts SET state = 'bogus'", [])
-            .is_err());
+        assert!(conn.execute("UPDATE agent_rollouts SET state = 'bogus'", []).is_err());
         assert!(conn
             .execute("UPDATE agent_update_settings SET mode = 'sometimes'", [])
             .is_err());

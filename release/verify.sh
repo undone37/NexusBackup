@@ -10,6 +10,9 @@
 #   release/verify.sh --blobs DIR                 agent packages (release/sign.sh sign-blobs):
 #       SHA256SUMS matches, and SHA256SUMS and every file it lists carry a .sig that
 #       cosign verify-blob accepts with a release key
+#   release/verify.sh --agent-release DIR         agent release tree (release/sign.sh
+#       sign-agent-release): manifest.json and every artifact it lists carry a .sig that
+#       cosign verify-blob accepts with a release key, sizes and SHA-256 match
 #
 # Keys: VERIFY_KEYS="a.pub b.pub" or, by default, the keys pinned in
 # os/etc/containers/policy.json (--blobs: release/keys/*.pub, the keys the agents pin).
@@ -51,12 +54,34 @@ if [ "${1:-}" = --blobs ]; then
 	exit 0
 fi
 
+if [ "${1:-}" = --agent-release ]; then
+	[ $# = 2 ] || die "usage: verify.sh --agent-release DIR"
+	if [ -n "${VERIFY_KEYS:-}" ]; then
+		read -ra keys <<<"$VERIFY_KEYS"
+	else
+		keys=("$REPO_ROOT"/release/keys/*.pub)
+	fi
+	[ -f "${keys[0]}" ] || die "no keys"
+	verify_blob "$2/manifest.json"
+	n=0
+	while read -r name size sum; do
+		[[ $name =~ ^[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$ ]] || die "unexpected artifact name: $name"
+		[ "$(stat -c %s "$2/$name")" = "$size" ] || die "$name: size differs from manifest.json"
+		[ "$(sha256sum "$2/$name" | cut -d' ' -f1)" = "$sum" ] || die "$name: sha256 differs from manifest.json"
+		verify_blob "$2/$name"
+		n=$((n + 1))
+	done < <(python3 -I -c 'import json,sys
+for a in json.load(open(sys.argv[1]))["artifacts"]: print(a["name"], a["size"], a["sha256"])' "$2/manifest.json")
+	echo "agent release $(basename "$(realpath "$2")"): manifest + $n artifacts verified"
+	exit 0
+fi
+
 policy=0
 if [ "${1:-}" = --policy ]; then
 	policy=1
 	shift
 fi
-[ $# = 1 ] || die "usage: verify.sh [--policy] IMAGE@sha256:... | --blobs DIR"
+[ $# = 1 ] || die "usage: verify.sh [--policy] IMAGE@sha256:... | --blobs DIR | --agent-release DIR"
 ref=$1
 require_digest_ref "$ref"
 require_trusted_repo "$ref"

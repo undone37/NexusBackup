@@ -166,7 +166,10 @@ pub fn package_command(
         }
         paths.push(s.to_owned());
     }
-    let run = tools.systemd_run.as_ref().ok_or("systemd-run not found (package updates need systemd)")?;
+    let run = tools
+        .systemd_run
+        .as_ref()
+        .ok_or("systemd-run not found (package updates need systemd)")?;
     let mut argv: Vec<String> = vec![
         run.to_string_lossy().into_owned(),
         format!("--unit={UPDATE_UNIT}"),
@@ -346,7 +349,12 @@ mod tests {
         let a = package_command("deb", &deb, staging, false, &tools).unwrap();
         assert_eq!(a[0], "/usr/bin/systemd-run");
         assert!(a.contains(&format!("--unit={UPDATE_UNIT}")));
-        let tail: Vec<&str> = a.iter().skip_while(|x| *x != "--").skip(1).map(String::as_str).collect();
+        let tail: Vec<&str> = a
+            .iter()
+            .skip_while(|x| *x != "--")
+            .skip(1)
+            .map(String::as_str)
+            .collect();
         assert_eq!(
             tail,
             [
@@ -364,7 +372,12 @@ mod tests {
         assert!(a.contains(&"--allow-downgrades".to_string()));
         let rpm = vec![staging.join("nexus-agent-0.2.0-1.x86_64.rpm")];
         let a = package_command("rpm", &rpm, staging, false, &tools).unwrap();
-        let tail: Vec<&str> = a.iter().skip_while(|x| *x != "--").skip(1).map(String::as_str).collect();
+        let tail: Vec<&str> = a
+            .iter()
+            .skip_while(|x| *x != "--")
+            .skip(1)
+            .map(String::as_str)
+            .collect();
         assert_eq!(
             tail,
             [
@@ -393,7 +406,10 @@ mod tests {
             vec![staging.join("x/../../y.deb")],
             vec![],
         ] {
-            assert!(package_command("deb", &bad, staging, false, &no_dnf).is_err(), "{bad:?}");
+            assert!(
+                package_command("deb", &bad, staging, false, &no_dnf).is_err(),
+                "{bad:?}"
+            );
         }
         assert!(package_command("msi", &deb, staging, false, &no_dnf).is_err());
         let none = Tools {
@@ -448,7 +464,6 @@ mod tests {
         assert!(native(&fake_binary("0.2.0")) == cfg!(target_arch = "x86_64"));
         assert!(["x86_64", "aarch64"].contains(&arch()));
     }
-
 
     #[test]
     fn key_parsing_and_versions() {
