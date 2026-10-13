@@ -363,6 +363,17 @@ async fn backup_now_guests_failed_only_and_cancel_running() {
         serde_json::from_str::<Value>(&p).unwrap(),
         json!({"group_id": 1, "guests": [101, 102]})
     );
+    // "101" and 101 are the same guest; stored in the group's own form, once
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &otto,
+            job(json!({"group_id": 1, "guests": ["101", 101]})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let p: String = t.one(&format!("SELECT params FROM jobs WHERE id = {}", r.body["id"]));
+    assert_eq!(serde_json::from_str::<Value>(&p).unwrap()["guests"], json!([101]));
     for p in [
         json!({"group_id": 1, "guests": [300]}),
         json!({"group_id": 1, "guests": []}),

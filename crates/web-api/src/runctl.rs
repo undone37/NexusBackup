@@ -175,10 +175,19 @@ pub fn backup_guests(
             _ => Err(ApiError::conflict("the group's last run did not fail")),
         };
     }
-    let Some(mut g) = guests else { return Ok(None) };
-    if g.is_empty() || g.iter().any(|x| !all.contains(x)) {
+    let Some(g) = guests else { return Ok(None) };
+    // 100 and "100" name the same guest; keep the group's own form
+    let key = |v: &Value| v.as_str().map_or_else(|| v.to_string(), str::to_owned);
+    let mut out = Vec::new();
+    for x in &g {
+        match all.iter().find(|a| key(a) == key(x)) {
+            Some(a) if !out.contains(a) => out.push(a.clone()),
+            Some(_) => {}
+            None => return Err(ApiError::bad("guests: a non-empty subset of the group's guests")),
+        }
+    }
+    if out.is_empty() {
         return Err(ApiError::bad("guests: a non-empty subset of the group's guests"));
     }
-    g.dedup();
-    Ok(Some(g))
+    Ok(Some(out))
 }

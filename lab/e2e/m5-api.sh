@@ -295,6 +295,7 @@ step_phase13() {
 	local before
 	before=$(api admin GET "/snapshots?tenant=lab" | jq '[.[] | select(.source == "ct-200") | .time] | max')
 	r=$(api admin POST /jobs "$(jq -nc --argjson g "$grp" '{kind:"backup", tenant:"lab", params:{group_id:$g, guests:[200]}}')")
+	expect 202 "backup ct-200 only"
 	id=$(jq -r .id <<<"$r")
 	for _ in $(seq 120); do
 		[ "$(api admin GET "/jobs/$id" | jq -r .state)" = running ] && break
