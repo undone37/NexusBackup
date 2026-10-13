@@ -362,7 +362,7 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 
 ## Phase 23 — Service providers and workloads (2026-10-13)
 - [x] 23a billing export, per-tenant IdP, onboarding wizard, restore point simulator, keep-until, OpenAPI + nexusctl (v37, T47–T49)
-- [ ] 23b MySQL/MariaDB plugin, Windows workload runbooks
+- [x] 23b MySQL/MariaDB plugin (dumps, physical + binlog, PITR; T56), AD restore runbook, SQL Server/Exchange notes; open: MSSQL PITR, Exchange full-VSS, Hyper-V, Windows BMR, arm64
 
 ## Phase 26 — Edge proxy (2026-10-13)
 - [x] nexus-edge relay, agent rendezvous (protocol v1.7), appliance control channel, Edges page, edge image Containerfile (v39, T53–T55); open: VM lab `lab/edge/e2e.sh`, CI edge image, edge OS updates, HA
