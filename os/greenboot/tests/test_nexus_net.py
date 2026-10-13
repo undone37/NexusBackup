@@ -6,7 +6,9 @@ path-MTU check and console-apply, against a fake nmcli / ip and a fake /sys/clas
 Run: python3 -m unittest discover -s os/greenboot/tests -v
 """
 
+import contextlib
 import importlib.machinery
+import io
 import importlib.util
 import json
 import os
@@ -380,7 +382,9 @@ class Console(Base):
         self.request("a" * 32, {"interfaces": [{"name": "ens6", "kind": "ethernet", "role": "data", "dhcp": True}]})
         self.m.tick()
         self.assertIn("nexus-ens6.nmconnection", self.files())
-        self.assertEqual(self.m.main(["nexus-net", "console-apply", json.dumps(cfg)]), 0)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(self.m.main(["nexus-net", "console-apply", json.dumps(cfg)]), 0)
+        self.assertIn("nexus-mgmt", out.getvalue())
         self.assertEqual(self.files(), ["nexus-bond0-port-ens3.nmconnection", "nexus-bond0-port-ens4.nmconnection",
                                         "nexus-bond0.nmconnection", "nexus-mgmt.nmconnection"])
         self.assertIn("bond0.10", (self.nm / "nexus-mgmt.nmconnection").read_text())

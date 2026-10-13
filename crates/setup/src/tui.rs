@@ -322,10 +322,7 @@ impl App<'_> {
             Field::text("DNS servers", ""),
             Field::text("Hostname", &self.s.management().map(|m| m.0).unwrap_or_default()),
             Field::text("Bond with NICs", ""),
-            Field::choice(
-                "Bond mode",
-                vec!["active-backup".into(), "802.3ad (LACP)".into()],
-            ),
+            Field::choice("Bond mode", vec!["active-backup".into(), "802.3ad (LACP)".into()]),
             Field::text("VLAN ID", ""),
             Field::text("MTU", ""),
         ]);

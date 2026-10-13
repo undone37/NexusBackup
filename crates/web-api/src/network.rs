@@ -94,10 +94,19 @@ fn queued(d: &Path) -> Vec<Value> {
         })
         .filter_map(|e| {
             let r = read_json(&e.path())?;
-            let created = e.metadata().ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-            Some(json!({"id": r["id"], "op": r["op"], "by": r["by"], "quorum_id": r["quorum_id"], "state": "queued",
+            let created = e
+                .metadata()
+                .ok()?
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_secs();
+            Some(
+                json!({"id": r["id"], "op": r["op"], "by": r["by"], "quorum_id": r["quorum_id"], "state": "queued",
                         "created": created, "finished": null, "detail": null, "error": null,
-                        "params": {"config": r["config"]}}))
+                        "params": {"config": r["config"]}}),
+            )
         })
         .collect()
 }
@@ -133,8 +142,10 @@ pub async fn get_network(State(st): State<St>, ctx: Ctx, ClientIp(ip): ClientIp)
     let pending = v["pending"]
         .as_object()
         .filter(|p| p["deadline"].as_i64().is_some_and(|t| t > now))
-        .map(|p| json!({"id": p["id"], "by": p["by"], "deadline": p["deadline"],
-                        "remaining": p["deadline"].as_i64().unwrap_or(now) - now}));
+        .map(|p| {
+            json!({"id": p["id"], "by": p["by"], "deadline": p["deadline"],
+                        "remaining": p["deadline"].as_i64().unwrap_or(now) - now})
+        });
     Ok(Json(json!({
         "available": s.is_some(),
         "stale": scanned.is_some_and(|t| now - t > STALE_SECS),
@@ -195,7 +206,11 @@ pub async fn confirm(State(st): State<St>, ctx: Ctx, ClientIp(ip): ClientIp, J(r
             "no such change waits for confirmation (confirmed, reverted or rolled back already)",
         ));
     }
-    write_file(&st, "confirm.json", &json!({"id": r.id, "keep": r.keep, "by": ctx.name()}))?;
+    write_file(
+        &st,
+        "confirm.json",
+        &json!({"id": r.id, "keep": r.keep, "by": ctx.name()}),
+    )?;
     let action = if r.keep { "network.confirm" } else { "network.revert" };
     st.audit(ctx.name(), action, "network", json!({"id": r.id, "from": ip}))?;
     Ok((StatusCode::ACCEPTED, Json(json!({"id": r.id, "keep": r.keep}))).into_response())

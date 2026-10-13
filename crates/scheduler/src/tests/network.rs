@@ -75,10 +75,7 @@ fn network_ops_audited_once() {
             .collect()
     };
     assert_eq!(rows.len(), 2, "{rows:?}");
-    assert_eq!(
-        (rows[0].0.as_str(), rows[0].1.as_str()),
-        ("nexus-net", "network/apply")
-    );
+    assert_eq!((rows[0].0.as_str(), rows[0].1.as_str()), ("nexus-net", "network/apply"));
     assert!(rows[0].2.contains("rolled_back"));
     assert_eq!(rows[1].1, "network/mtu_check");
 }

@@ -116,7 +116,10 @@ impl<'a> Host<'a> {
             .filter(|d| d["kind"] == "nic")
             .filter_map(|d| d["name"].as_str())
             .collect();
-        let had_mgmt = applied(s).interfaces.iter().any(|i| i.role.as_deref() == Some("management"));
+        let had_mgmt = applied(s)
+            .interfaces
+            .iter()
+            .any(|i| i.role.as_deref() == Some("management"));
         let console_mgmt = s["management"]["ifname"]
             .as_str()
             .filter(|_| s["management"]["source"] == "console");
@@ -137,8 +140,7 @@ pub fn applied(status: &Value) -> Config {
 pub fn parse_cidr(s: &str) -> Option<(IpAddr, u8)> {
     let (a, p) = s.split_once('/')?;
     let a: IpAddr = a.parse().ok()?;
-    let p: u8 = (!p.is_empty() && p.len() <= 3 && p.bytes().all(|b| b.is_ascii_digit()))
-        .then(|| p.parse().ok())??;
+    let p: u8 = (!p.is_empty() && p.len() <= 3 && p.bytes().all(|b| b.is_ascii_digit())).then(|| p.parse().ok())??;
     (p <= if a.is_ipv4() { 32 } else { 128 }).then_some((a, p))
 }
 
@@ -184,7 +186,9 @@ pub fn validate(c: &Config, host: &Host) -> Result<(), String> {
     for i in &c.interfaces {
         let n = i.name.as_str();
         if !ifname_ok(n) {
-            return Err(format!("{n:?}: an interface name has 1-15 letters, digits, '.', '_' or '-'"));
+            return Err(format!(
+                "{n:?}: an interface name has 1-15 letters, digits, '.', '_' or '-'"
+            ));
         }
         let mut uses = |nic: &str, what: String| -> Result<(), String> {
             if !host.nics.contains(&nic) {
@@ -204,7 +208,9 @@ pub fn validate(c: &Config, host: &Host) -> Result<(), String> {
             }
             "bond" => {
                 if host.nics.contains(&n) {
-                    return Err(format!("{n}: a bond needs a new name (e.g. bond0), not a network card's"));
+                    return Err(format!(
+                        "{n}: a bond needs a new name (e.g. bond0), not a network card's"
+                    ));
                 }
                 if i.parent.is_some() || i.vlan_id.is_some() {
                     return Err(format!("{n}: a bond has no parent or VLAN ID"));
@@ -221,8 +227,11 @@ pub fn validate(c: &Config, host: &Host) -> Result<(), String> {
             }
             "vlan" => {
                 if host.nics.contains(&n) {
-                    return Err(format!("{n}: a VLAN needs a new name (e.g. {}.{}), not a network card's",
-                        i.parent.as_deref().unwrap_or("eth0"), i.vlan_id.unwrap_or(10)));
+                    return Err(format!(
+                        "{n}: a VLAN needs a new name (e.g. {}.{}), not a network card's",
+                        i.parent.as_deref().unwrap_or("eth0"),
+                        i.vlan_id.unwrap_or(10)
+                    ));
                 }
                 if !i.ports.is_empty() || i.mode.is_some() {
                     return Err(format!("{n}: a VLAN has no ports or mode"));
@@ -241,12 +250,22 @@ pub fn validate(c: &Config, host: &Host) -> Result<(), String> {
                         }
                     }
                     None if host.nics.contains(&p) => {}
-                    None => return Err(format!("{n}: parent {p:?} is neither a network card nor an interface here")),
+                    None => {
+                        return Err(format!(
+                            "{n}: parent {p:?} is neither a network card nor an interface here"
+                        ))
+                    }
                 }
-                if c.interfaces.iter().any(|x| x.kind == "bond" && x.ports.iter().any(|q| q == p)) {
+                if c.interfaces
+                    .iter()
+                    .any(|x| x.kind == "bond" && x.ports.iter().any(|q| q == p))
+                {
                     return Err(format!("{n}: {p} is a bond port; put the VLAN on the bond"));
                 }
-                if c.interfaces.iter().any(|x| x.kind == "vlan" && x.name != n && x.parent == i.parent && x.vlan_id == i.vlan_id) {
+                if c.interfaces
+                    .iter()
+                    .any(|x| x.kind == "vlan" && x.name != n && x.parent == i.parent && x.vlan_id == i.vlan_id)
+                {
                     return Err(format!("{n}: VLAN {} on {p} twice", i.vlan_id.unwrap_or(0)));
                 }
             }
@@ -303,19 +322,29 @@ pub fn validate(c: &Config, host: &Host) -> Result<(), String> {
             }
         }
         for r in &i.routes {
-            let (net, p) = parse_cidr(&r.to).ok_or_else(|| format!("{n}: route {:?} is not a network (10.30.0.0/16)", r.to))?;
+            let (net, p) =
+                parse_cidr(&r.to).ok_or_else(|| format!("{n}: route {:?} is not a network (10.30.0.0/16)", r.to))?;
             if p == 0 {
-                return Err(format!("{n}: no default route here; the management interface's gateway is the default"));
+                return Err(format!(
+                    "{n}: no default route here; the management interface's gateway is the default"
+                ));
             }
             if masked(net, p) != net {
-                return Err(format!("{n}: route {} has host bits set (did you mean {}/{p}?)", r.to, masked(net, p)));
+                return Err(format!(
+                    "{n}: route {} has host bits set (did you mean {}/{p}?)",
+                    r.to,
+                    masked(net, p)
+                ));
             }
             if let Some(v) = &r.via {
-                let v: IpAddr = v.parse().map_err(|_| format!("{n}: next hop {v:?} is not an address"))?;
+                let v: IpAddr = v
+                    .parse()
+                    .map_err(|_| format!("{n}: next hop {v:?} is not an address"))?;
                 if v.is_ipv4() != net.is_ipv4() || !host_ok(&v) {
                     return Err(format!("{n}: next hop {v} does not fit route {}", r.to));
                 }
-                if !(i.dhcp && v.is_ipv4()) && !nets.iter().any(|x| in_subnet(v, *x)) {
+                let on_dhcp = i.dhcp && v.is_ipv4();
+                if !on_dhcp && !nets.iter().any(|x| in_subnet(v, *x)) {
                     return Err(format!("{n}: next hop {v} is not in a subnet of {n}"));
                 }
             }
@@ -342,7 +371,11 @@ pub fn management_chain(c: &Config) -> Vec<&Iface> {
     let mut out = Vec::new();
     if let Some(m) = c.interfaces.iter().find(|i| i.role.as_deref() == Some("management")) {
         out.push(m);
-        if let Some(p) = m.parent.as_deref().and_then(|p| c.interfaces.iter().find(|x| x.name == p)) {
+        if let Some(p) = m
+            .parent
+            .as_deref()
+            .and_then(|p| c.interfaces.iter().find(|x| x.name == p))
+        {
             out.push(p);
         }
     }
@@ -364,7 +397,11 @@ pub fn egress(c: &Config) -> BTreeMap<&'static str, String> {
             .map(|i| i.name.clone())
     };
     let mut out = BTreeMap::new();
-    for (k, role) in [("data", "data"), ("replication", "replication"), ("offsite", c.offsite_role.as_str())] {
+    for (k, role) in [
+        ("data", "data"),
+        ("replication", "replication"),
+        ("offsite", c.offsite_role.as_str()),
+    ] {
         if let Some(n) = of(role) {
             out.insert(k, n);
         }
@@ -402,7 +439,10 @@ mod tests {
         let e = egress(&c);
         assert_eq!(e.get("data").map(String::as_str), Some("bond0.20"));
         assert_eq!(e.get("replication").map(String::as_str), Some("ens6"));
-        assert!(!e.contains_key("offsite"), "management not configured here: any interface");
+        assert!(
+            !e.contains_key("offsite"),
+            "management not configured here: any interface"
+        );
         assert!(!management_changed(&Config::default(), &c));
         // every field serialized (the helper compares `old` as JSON)
         let v = serde_json::to_value(&c).unwrap();
@@ -417,28 +457,81 @@ mod tests {
             assert!(e.contains(want), "{e} / {want}");
         };
         bad(json!([{"name": "ens9", "kind": "ethernet"}]), "no network card");
-        bad(json!([{"name": "bond0", "kind": "bond", "ports": ["ens4"], "mode": "balance-rr"}]), "active-backup");
-        bad(json!([{"name": "bond0", "kind": "bond", "ports": ["ens4"], "mode": "802.3ad"},
-                   {"name": "ens4", "kind": "ethernet"}]), "used twice");
-        bad(json!([{"name": "bond0", "kind": "bond", "ports": ["ens3"], "mode": "802.3ad"}]), "management network card");
-        bad(json!([{"name": "v", "kind": "vlan", "parent": "ens4", "vlan_id": 4095}]), "1 to 4094");
-        bad(json!([{"name": "v", "kind": "vlan", "parent": "ens9", "vlan_id": 5}]), "neither");
-        bad(json!([{"name": "bond0", "kind": "bond", "ports": ["ens4"], "mode": "802.3ad"},
-                   {"name": "v", "kind": "vlan", "parent": "ens4", "vlan_id": 5}]), "bond port");
-        bad(json!([{"name": "bond0", "kind": "bond", "ports": ["ens4"], "mode": "802.3ad", "mtu": 1500},
-                   {"name": "v", "kind": "vlan", "parent": "bond0", "vlan_id": 5, "mtu": 9000}]), "larger than");
-        bad(json!([{"name": "ens4", "kind": "ethernet", "role": "data"}, {"name": "ens5", "kind": "ethernet", "role": "data"}]), "only one");
+        bad(
+            json!([{"name": "bond0", "kind": "bond", "ports": ["ens4"], "mode": "balance-rr"}]),
+            "active-backup",
+        );
+        bad(
+            json!([{"name": "bond0", "kind": "bond", "ports": ["ens4"], "mode": "802.3ad"},
+                   {"name": "ens4", "kind": "ethernet"}]),
+            "used twice",
+        );
+        bad(
+            json!([{"name": "bond0", "kind": "bond", "ports": ["ens3"], "mode": "802.3ad"}]),
+            "management network card",
+        );
+        bad(
+            json!([{"name": "v", "kind": "vlan", "parent": "ens4", "vlan_id": 4095}]),
+            "1 to 4094",
+        );
+        bad(
+            json!([{"name": "v", "kind": "vlan", "parent": "ens9", "vlan_id": 5}]),
+            "neither",
+        );
+        bad(
+            json!([{"name": "bond0", "kind": "bond", "ports": ["ens4"], "mode": "802.3ad"},
+                   {"name": "v", "kind": "vlan", "parent": "ens4", "vlan_id": 5}]),
+            "bond port",
+        );
+        bad(
+            json!([{"name": "bond0", "kind": "bond", "ports": ["ens4"], "mode": "802.3ad", "mtu": 1500},
+                   {"name": "v", "kind": "vlan", "parent": "bond0", "vlan_id": 5, "mtu": 9000}]),
+            "larger than",
+        );
+        bad(
+            json!([{"name": "ens4", "kind": "ethernet", "role": "data"}, {"name": "ens5", "kind": "ethernet", "role": "data"}]),
+            "only one",
+        );
         bad(json!([{"name": "ens4", "kind": "ethernet", "mtu": 100}]), "MTU");
-        bad(json!([{"name": "ens4", "kind": "ethernet", "addresses": ["10.0.0.5"]}]), "address/prefix");
-        bad(json!([{"name": "ens4", "kind": "ethernet", "addresses": ["10.0.0.5/24"], "gateway": "10.0.0.1"}]), "only the management");
-        bad(json!([{"name": "ens4", "kind": "ethernet", "role": "management", "addresses": ["10.0.0.5/24"], "gateway": "10.1.0.1"}]), "subnets");
-        bad(json!([{"name": "ens4", "kind": "ethernet", "role": "management"}]), "DHCP or an address");
-        bad(json!([{"name": "ens4", "kind": "ethernet", "addresses": ["10.0.0.5/24"], "routes": [{"to": "0.0.0.0/0", "via": "10.0.0.1"}]}]), "default route");
-        bad(json!([{"name": "ens4", "kind": "ethernet", "addresses": ["10.0.0.5/24"], "routes": [{"to": "10.30.1.0/16"}]}]), "host bits");
-        bad(json!([{"name": "ens4", "kind": "ethernet", "addresses": ["10.0.0.5/24"], "routes": [{"to": "10.30.0.0/16", "via": "10.9.0.1"}]}]), "not in a subnet");
-        bad(json!([{"name": "ens4", "kind": "ethernet", "addresses": ["10.0.0.5/24"]}, {"name": "ens5", "kind": "ethernet", "addresses": ["10.0.0.5/16"]}]), "twice");
-        bad(json!([{"name": "x;rm", "kind": "bond", "ports": ["ens4"], "mode": "802.3ad"}]), "interface name");
-        assert!(serde_json::from_value::<Config>(json!({"interfaces": [{"name": "a", "kind": "bond", "x": 1}]})).is_err());
+        bad(
+            json!([{"name": "ens4", "kind": "ethernet", "addresses": ["10.0.0.5"]}]),
+            "address/prefix",
+        );
+        bad(
+            json!([{"name": "ens4", "kind": "ethernet", "addresses": ["10.0.0.5/24"], "gateway": "10.0.0.1"}]),
+            "only the management",
+        );
+        bad(
+            json!([{"name": "ens4", "kind": "ethernet", "role": "management", "addresses": ["10.0.0.5/24"], "gateway": "10.1.0.1"}]),
+            "subnets",
+        );
+        bad(
+            json!([{"name": "ens4", "kind": "ethernet", "role": "management"}]),
+            "DHCP or an address",
+        );
+        bad(
+            json!([{"name": "ens4", "kind": "ethernet", "addresses": ["10.0.0.5/24"], "routes": [{"to": "0.0.0.0/0", "via": "10.0.0.1"}]}]),
+            "default route",
+        );
+        bad(
+            json!([{"name": "ens4", "kind": "ethernet", "addresses": ["10.0.0.5/24"], "routes": [{"to": "10.30.1.0/16"}]}]),
+            "host bits",
+        );
+        bad(
+            json!([{"name": "ens4", "kind": "ethernet", "addresses": ["10.0.0.5/24"], "routes": [{"to": "10.30.0.0/16", "via": "10.9.0.1"}]}]),
+            "not in a subnet",
+        );
+        bad(
+            json!([{"name": "ens4", "kind": "ethernet", "addresses": ["10.0.0.5/24"]}, {"name": "ens5", "kind": "ethernet", "addresses": ["10.0.0.5/16"]}]),
+            "twice",
+        );
+        bad(
+            json!([{"name": "x;rm", "kind": "bond", "ports": ["ens4"], "mode": "802.3ad"}]),
+            "interface name",
+        );
+        assert!(
+            serde_json::from_value::<Config>(json!({"interfaces": [{"name": "a", "kind": "bond", "x": 1}]})).is_err()
+        );
     }
 
     #[test]
@@ -459,7 +552,11 @@ mod tests {
         assert!(e.contains("cannot be removed"), "{e}");
         // a change elsewhere is not a management change
         let mut c2 = c.clone();
-        c2.interfaces.push(cfg(json!({"interfaces": [{"name": "ens5", "kind": "ethernet", "role": "data", "dhcp": true}]})).interfaces.remove(0));
+        c2.interfaces.push(
+            cfg(json!({"interfaces": [{"name": "ens5", "kind": "ethernet", "role": "data", "dhcp": true}]}))
+                .interfaces
+                .remove(0),
+        );
         assert!(!management_changed(&c, &c2));
         let st = json!({"config": c2, "devices": [{"name": "ens3", "kind": "nic"}, {"name": "bond0", "kind": "bond"}],
                         "management": {"ifname": "bond0", "source": "config"}});

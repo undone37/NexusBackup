@@ -495,7 +495,9 @@ impl NetConfig {
         let base = if l.bond.is_empty() {
             self.nic.clone()
         } else {
-            let ports = std::iter::once(self.nic.clone()).chain(l.bond.iter().cloned()).collect();
+            let ports = std::iter::once(self.nic.clone())
+                .chain(l.bond.iter().cloned())
+                .collect();
             out.push(Iface {
                 name: BOND_NAME.into(),
                 kind: "bond".into(),
@@ -885,8 +887,14 @@ impl Setup {
         if cfg.link.is_plain() {
             // the management network from scratch: every appliance profile goes, also the
             // interfaces of Settings → Network (nexus-net notices and starts from empty)
-            let names = self.cmd("nmcli", &["-g", "NAME", "connection", "show"]).unwrap_or_default();
-            for n in names.lines().map(str::trim).filter(|n| n.starts_with("nexus-") && *n != NM_CONNECTION) {
+            let names = self
+                .cmd("nmcli", &["-g", "NAME", "connection", "show"])
+                .unwrap_or_default();
+            for n in names
+                .lines()
+                .map(str::trim)
+                .filter(|n| n.starts_with("nexus-") && *n != NM_CONNECTION)
+            {
                 let _ = self.cmd("nmcli", &["connection", "delete", n]);
             }
             // absent on first run; anything else surfaces in the `add` below
@@ -910,10 +918,9 @@ impl Setup {
         }
         let ips = match &cfg.ipv4 {
             Ipv4Config::Static { address, .. } => vec![IpAddr::V4(*address)],
-            Ipv4Config::Dhcp => parse_nmcli_addresses(&self.cmd(
-                "nmcli",
-                &["-g", "IP4.ADDRESS", "device", "show", &cfg.mgmt_ifname()],
-            )?),
+            Ipv4Config::Dhcp => {
+                parse_nmcli_addresses(&self.cmd("nmcli", &["-g", "IP4.ADDRESS", "device", "show", &cfg.mgmt_ifname()])?)
+            }
         };
         let hostname = cfg.hostname.clone().unwrap_or_else(|| self.hostname());
         let (method, gateway, dns) = match &cfg.ipv4 {
@@ -1388,7 +1395,10 @@ mod tests {
         c.link.vlan = None;
         let n = c.network_config();
         assert_eq!(n.interfaces.len(), 1);
-        assert_eq!((n.interfaces[0].name.as_str(), n.interfaces[0].addresses.len()), ("bond0", 1));
+        assert_eq!(
+            (n.interfaces[0].name.as_str(), n.interfaces[0].addresses.len()),
+            ("bond0", 1)
+        );
         // VLAN with MTU on a plain NIC: the NIC gets the MTU too
         c.link = Link {
             vlan: Some(4094),
@@ -1408,9 +1418,10 @@ mod tests {
         };
         c.nic = "eth0".into();
         assert!(c.validate().is_err(), "a NIC twice");
-        let j: NetConfig =
-            serde_json::from_str(r#"{"nic":"eth1","method":"dhcp","link":{"bond":["eth2"],"bond_mode":"active-backup"}}"#)
-                .unwrap();
+        let j: NetConfig = serde_json::from_str(
+            r#"{"nic":"eth1","method":"dhcp","link":{"bond":["eth2"],"bond_mode":"active-backup"}}"#,
+        )
+        .unwrap();
         assert_eq!(j.network_config().interfaces[0].ports, vec!["eth1", "eth2"]);
     }
 

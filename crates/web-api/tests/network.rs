@@ -48,8 +48,10 @@ fn empty_config() -> Value {
 /// What nexus-net reports for a host with five NICs, the management network from the console on
 /// ens3, nothing configured here yet.
 fn status(now: i64, config: Value, pending: Value) -> Value {
-    let nic = |n: &str| json!({"name": n, "kind": "nic", "mac": "52:54:00:00:00:01", "mtu": 1500, "state": "up",
-                               "speed": 1000, "master": null, "addresses": []});
+    let nic = |n: &str| {
+        json!({"name": n, "kind": "nic", "mac": "52:54:00:00:00:01", "mtu": 1500, "state": "up",
+                               "speed": 1000, "master": null, "addresses": []})
+    };
     json!({"version": 1, "scanned": now,
            "devices": [nic("ens3"), nic("ens4"), nic("ens5"), nic("ens6"), nic("ens7")],
            "config": config, "reset": null,
@@ -219,15 +221,18 @@ async fn status_roles_and_validation() {
     assert_eq!(r.body["available"], false);
     assert_eq!(r.body["config"], empty_config());
     assert_eq!(
-        t.call(Method::GET, "/api/v1/network", Some(&vera), None)
-            .await
-            .status,
+        t.call(Method::GET, "/api/v1/network", Some(&vera), None).await.status,
         StatusCode::FORBIDDEN,
         "tenant-scoped viewer"
     );
     // no status: nothing can be changed yet
     let r = t
-        .call(Method::PUT, "/api/v1/network", Some(&alice), Some(json!({"config": data_config()})))
+        .call(
+            Method::PUT,
+            "/api/v1/network",
+            Some(&alice),
+            Some(json!({"config": data_config()})),
+        )
         .await;
     assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.body);
 
@@ -243,7 +248,10 @@ async fn status_roles_and_validation() {
     // only admins change it; the server validates against the NICs the helper reported
     assert_eq!(t.put_net(&otto, data_config()).await.status, StatusCode::FORBIDDEN);
     for (cfg, want) in [
-        (json!({"interfaces": [{"name": "ens9", "kind": "ethernet"}]}), "no network card"),
+        (
+            json!({"interfaces": [{"name": "ens9", "kind": "ethernet"}]}),
+            "no network card",
+        ),
         (
             json!({"interfaces": [{"name": "bond0", "kind": "bond", "ports": ["ens3"], "mode": "802.3ad"}]}),
             "management network card",
@@ -255,9 +263,18 @@ async fn status_roles_and_validation() {
     ] {
         let r = t.put_net(&alice, cfg).await;
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{want}");
-        assert!(r.body["error"].as_str().unwrap_or_default().contains(want), "{:?}", r.body);
+        assert!(
+            r.body["error"].as_str().unwrap_or_default().contains(want),
+            "{:?}",
+            r.body
+        );
     }
-    let r = t.put_net(&alice, json!({"interfaces": [{"name": "ens4", "kind": "ethernet", "bogus": 1}]})).await;
+    let r = t
+        .put_net(
+            &alice,
+            json!({"interfaces": [{"name": "ens4", "kind": "ethernet", "bogus": 1}]}),
+        )
+        .await;
     assert!(r.status.is_client_error());
     // unchanged: nothing to approve
     let r = t.put_net(&alice, empty_config()).await;
@@ -272,7 +289,12 @@ async fn apply_needs_approval_then_request_file() {
     let now = catalog::now();
     t.helper_status(&status(now, empty_config(), Value::Null));
     let r = t
-        .call(Method::PUT, "/api/v1/network", Some(&alice), Some(json!({"config": data_config()})))
+        .call(
+            Method::PUT,
+            "/api/v1/network",
+            Some(&alice),
+            Some(json!({"config": data_config()})),
+        )
         .await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
     let qid = r.body["quorum_id"].as_i64().unwrap();
@@ -280,17 +302,29 @@ async fn apply_needs_approval_then_request_file() {
     let r = t.call(Method::GET, "/api/v1/network", Some(&alice), None).await;
     assert_eq!(r.body["request_pending"], qid);
     let r = t
-        .call(Method::POST, &format!("/api/v1/quorum/{qid}/approve"), Some(&ada), Some(json!({})))
+        .call(
+            Method::POST,
+            &format!("/api/v1/quorum/{qid}/approve"),
+            Some(&ada),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     assert_eq!(r.body["state"], "executed");
     let reqs = t.take_requests();
     assert_eq!(reqs.len(), 1);
     let q = &reqs[0];
-    assert_eq!((q["op"].as_str(), q["by"].as_str(), q["quorum_id"].as_i64()), (Some("apply"), Some("alice"), Some(qid)));
+    assert_eq!(
+        (q["op"].as_str(), q["by"].as_str(), q["quorum_id"].as_i64()),
+        (Some("apply"), Some("alice"), Some(qid))
+    );
     assert_eq!(q["old"], empty_config());
     assert_eq!(q["config"]["interfaces"][1]["vlan_id"], 20);
-    assert_eq!(q["config"]["interfaces"][0]["gateway"], Value::Null, "every field serialized");
+    assert_eq!(
+        q["config"]["interfaces"][0]["gateway"],
+        Value::Null,
+        "every field serialized"
+    );
     assert_eq!(t.audit_count("network.apply"), 1);
 
     // approvals off: the request file at once; a management move is flagged for the approver
@@ -298,28 +332,36 @@ async fn apply_needs_approval_then_request_file() {
     let mgmt = json!({"interfaces": [{"name": "bond1", "kind": "bond", "ports": ["ens3", "ens7"], "mode": "active-backup",
                                       "role": "management", "addresses": ["192.0.2.10/24"], "gateway": "192.0.2.1"}]});
     let r = t
-        .call(Method::PUT, "/api/v1/network", Some(&alice), Some(json!({"config": mgmt})))
+        .call(
+            Method::PUT,
+            "/api/v1/network",
+            Some(&alice),
+            Some(json!({"config": mgmt})),
+        )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     assert_eq!(r.body["executed"], true);
     assert_eq!(t.take_requests().len(), 1);
-    let p: String = t
-        .st
-        .cat
-        .conn()
-        .query_row(
-            "SELECT details FROM audit WHERE action = 'network.apply' ORDER BY seq DESC LIMIT 1",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
+    let p: String =
+        t.st.cat
+            .conn()
+            .query_row(
+                "SELECT details FROM audit WHERE action = 'network.apply' ORDER BY seq DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
     assert!(p.contains("\"management_change\":true"), "{p}");
 }
 
 #[tokio::test]
 async fn confirm_and_mtu_check() {
     let t = T::new();
-    let (alice, otto, vic) = (login(&t, "alice").await, login(&t, "otto").await, login(&t, "vic").await);
+    let (alice, otto, vic) = (
+        login(&t, "alice").await,
+        login(&t, "otto").await,
+        login(&t, "vic").await,
+    );
     let now = catalog::now();
     let pid = "e".repeat(32);
     t.helper_status(&status(
@@ -332,7 +374,12 @@ async fn confirm_and_mtu_check() {
     assert!(r.body["pending"]["remaining"].as_i64().unwrap() > 90);
     // no other change meanwhile
     let r = t
-        .call(Method::PUT, "/api/v1/network", Some(&alice), Some(json!({"config": data_config()})))
+        .call(
+            Method::PUT,
+            "/api/v1/network",
+            Some(&alice),
+            Some(json!({"config": data_config()})),
+        )
         .await;
     assert_eq!(r.status, StatusCode::CONFLICT);
     assert_eq!(t.confirm(&otto, &pid, true).await.status, StatusCode::FORBIDDEN);
@@ -342,13 +389,20 @@ async fn confirm_and_mtu_check() {
     let c: Value = serde_json::from_slice(&std::fs::read(t.net.join("confirm.json")).unwrap()).unwrap();
     assert_eq!(c, json!({"id": pid, "keep": true, "by": "alice"}));
     use std::os::unix::fs::PermissionsExt;
-    let mode = std::fs::metadata(t.net.join("confirm.json")).unwrap().permissions().mode();
+    let mode = std::fs::metadata(t.net.join("confirm.json"))
+        .unwrap()
+        .permissions()
+        .mode();
     assert_eq!(mode & 0o777, 0o640);
     assert_eq!(t.audit_count("network.confirm"), 1);
     assert_eq!(t.confirm(&alice, &pid, false).await.status, StatusCode::ACCEPTED);
     assert_eq!(t.audit_count("network.revert"), 1);
     // past the deadline: gone
-    t.helper_status(&status(now, empty_config(), json!({"id": pid, "by": "alice", "deadline": now - 1})));
+    t.helper_status(&status(
+        now,
+        empty_config(),
+        json!({"id": pid, "by": "alice", "deadline": now - 1}),
+    ));
     assert_eq!(t.confirm(&alice, &pid, true).await.status, StatusCode::CONFLICT);
     let r = t.call(Method::GET, "/api/v1/network", Some(&vic), None).await;
     assert_eq!(r.body["pending"], Value::Null);

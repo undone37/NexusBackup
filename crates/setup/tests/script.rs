@@ -552,7 +552,10 @@ fn bond_and_vlan_through_nexus_net() {
                             "link": {"bond": ["eno2"], "bond_mode": "802.3ad", "vlan": 20, "mtu": 9000}});
     let (out, stdout, stderr) = e.run(&ans, &[]);
     assert!(out.status.success(), "{stdout}\n{stderr}");
-    assert!(stdout.contains("+ (dry-run) /usr/libexec/nexus/nexus-net console-apply"), "{stdout}");
+    assert!(
+        stdout.contains("+ (dry-run) /usr/libexec/nexus/nexus-net console-apply"),
+        "{stdout}"
+    );
     assert!(!stdout.contains("nmcli connection add"), "{stdout}");
     assert!(stdout.contains("+ (dry-run) nmcli -g IP4.ADDRESS device show bond0.20"));
     let a = audit_actions(&e.catalog());
