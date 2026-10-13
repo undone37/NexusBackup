@@ -170,6 +170,29 @@ impl Scheduler {
         cfg
     }
 
+    /// `chunk_repair` of a replicated tenant (Phase 21d): `nexus-replica repair`
+    /// fetches the bad chunks from the primary; only while the source is enrolled,
+    /// open and inside its sync window (the outbound firewall allows it then).
+    pub(crate) fn replica_repair(&self, tenant: &str, dir: &std::path::Path) -> Result<Option<((String, Vec<u8>), Step)>> {
+        let Some(s) = self.replication_sources()?.into_iter().find(|s| {
+            s.state == "enrolled" && s.tenants.iter().any(|t| t == tenant) && s.open(self.now)
+        }) else {
+            return Ok(None);
+        };
+        let cfg = self.replica_config(
+            &s,
+            json!({"tenant": tenant, "store": self.cfg.store_base.join(tenant), "bwlimit": s.bwlimit,
+                   "windows": s.windows, "timezone": s.timezone}),
+        );
+        let step = Step::Cli {
+            bin: self.cfg.replica_bin.clone(),
+            args: vec![dir.join("replica.json").to_string_lossy().into_owned(), "repair".into()],
+            alert: None,
+            capture: false,
+        };
+        Ok(Some((("replica.json".into(), serde_json::to_vec_pretty(&cfg)?), step)))
+    }
+
     /// Plans `replica_enroll` / `replica_sync` (spawned `nexus-replica`).
     pub(crate) fn plan_replica(&self, job: &Job, mut plan: Plan) -> Result<Plan> {
         let id = job.params["replication_source_id"]

@@ -469,6 +469,14 @@ fn run_steps(id: i64, plan: &Plan, ctx: &Ctx, log: &Arc<Mutex<BoundedLog>>, stdo
                             r.corrupt.len(),
                             r.missing.len()
                         ));
+                        // Phase 21d: bad chunks listed, damaged snapshots reported (crate::repair)
+                        match crate::repair::after_verify(store.as_ref().unwrap(), &r) {
+                            Ok(out) => *stdout = Some(out),
+                            Err(e) => {
+                                log.lock().unwrap().line(&format!("marking bad chunks failed: {e}"));
+                                return Outcome::Failed { alert: Some("verify") };
+                            }
+                        }
                         if !r.corrupt.is_empty() || !r.missing.is_empty() {
                             return Outcome::Failed { alert: Some("verify") };
                         }
