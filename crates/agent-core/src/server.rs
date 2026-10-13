@@ -405,7 +405,6 @@ impl<P: Platform> Agent<P> {
             Mode::Locked(_) => {
                 // read the client's request first: closing with unread data makes the
                 // kernel send a RST that can overtake the answer (client sees EPIPE)
-                s.sock.set_read_timeout(Some(Duration::from_secs(30)))?;
                 let _ = read_msg(&mut s);
                 error(
                     &mut s,
