@@ -15,7 +15,8 @@ ExecStart=/usr/libexec/nexus/nexus-disks tick
 # files; the policy allows directory listing only). No DAC override: request files are read
 # through the group.
 SupplementaryGroups=nexus-webapi
-CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
+# CAP_MKNOD: mdadm --create always makes a temporary node for the new md device
+CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_MKNOD
 AmbientCapabilities=
 UMask=0022
 TimeoutStartSec=30min

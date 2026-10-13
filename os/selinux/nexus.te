@@ -1095,6 +1095,7 @@ gen_require(`
 	type systemd_userdbd_runtime_t;
 	type mount_var_run_t;
 	type debugfs_t;
+	type device_t;
 	type cert_t;
 	type mdadm_var_run_t;
 	type systemd_unit_file_t;
@@ -1129,7 +1130,10 @@ manage_dirs_pattern(nexus_disks_t, nexus_disks_var_lib_t, nexus_disks_var_lib_t)
 manage_files_pattern(nexus_disks_t, nexus_disks_var_lib_t, nexus_disks_var_lib_t)
 # ATA pass-through (SMART), md ioctls / NVMe admin commands / xfs_growfs; listing the store
 # (0700 nexus-chunkstore) without a DAC override
-allow nexus_disks_t self:capability { sys_rawio sys_admin dac_read_search };
+allow nexus_disks_t self:capability { sys_rawio sys_admin dac_read_search mknod };
+# mdadm --create: a temporary block node for the new md device in /dev (device_t), removed again
+allow nexus_disks_t device_t:dir { add_name remove_name write };
+allow nexus_disks_t device_t:blk_file { create unlink getattr open read write ioctl };
 # disks and md devices (block and NVMe character devices: fixed_disk_device_t)
 storage_raw_rw_fixed_disk(nexus_disks_t)
 storage_getattr_fixed_disk_dev(nexus_disks_t)
