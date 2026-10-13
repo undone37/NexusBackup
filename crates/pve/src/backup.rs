@@ -82,6 +82,8 @@ pub struct Cluster {
     /// VM devices not backed up (`drive-scsi1`), per vmid (group `exclude_disks`)
     pub exclude: BTreeMap<u32, Vec<String>>,
     pub exclude_mode: exclude::Mode,
+    /// appliance-side read limit of the source (Phase 22b), shared by all guests of the run
+    pub read_limit: Option<std::sync::Arc<catalog::schedule::Throttle>>,
 }
 
 #[derive(Deserialize)]
@@ -137,14 +139,19 @@ impl Cluster {
             .with_context(|| format!("guest {vmid} not found in cluster"))
     }
 
-    /// Node of every guest of the cluster (one `/cluster/resources` call).
-    pub fn guest_nodes(&self) -> Result<BTreeMap<u32, String>> {
+    /// (node, type) of every guest of the cluster (one `/cluster/resources` call).
+    pub fn guest_nodes(&self) -> Result<BTreeMap<u32, (String, String)>> {
         let res = self.api.get("/cluster/resources?type=vm")?;
         Ok(res
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|r| Some((u32::try_from(r["vmid"].as_u64()?).ok()?, r["node"].as_str()?.to_owned())))
+            .filter_map(|r| {
+                Some((
+                    u32::try_from(r["vmid"].as_u64()?).ok()?,
+                    (r["node"].as_str()?.to_owned(), r["type"].as_str()?.to_owned()),
+                ))
+            })
             .collect())
     }
 
@@ -308,6 +315,12 @@ impl Cluster {
         let prev = store.list_snapshots()?.into_iter().rfind(|m| m.source == source);
         // build_index hid its devices from the node (fresh bitmaps); a reuse now is a stale node index
         let prev_damaged = prev.as_ref().map(|m| store.is_damaged(m)).transpose()?.unwrap_or(false);
+        // VM identity (Phase 22b): a changed vmgenid / SMBIOS UUID means the VMID now
+        // belongs to another VM (deleted and re-created, or restored over)
+        let prev_conf = match &prev {
+            Some(m) => read_config(store, m, "qemu-server.conf")?,
+            None => None,
+        };
         let (mut names, mut indexes, mut read) = (Vec::new(), Vec::new(), 0);
         for key in exclude::backup_off(&job.config) {
             println!("disk {key} of VM {vmid} has backup=0: skipped by PVE");
@@ -339,8 +352,8 @@ impl Cluster {
                 ("reuse", _) => bail!("{}: PVE reuses a dirty bitmap but no base snapshot exists", dev.name),
                 _ => None,
             };
-            let (idx, n) =
-                pull_device(store, ssh, vmid, dev, base.as_ref()).with_context(|| format!("device {}", dev.name))?;
+            let (idx, n) = pull_device(store, ssh, vmid, dev, base.as_ref(), self.read_limit.as_deref())
+                .with_context(|| format!("device {}", dev.name))?;
             read += n;
             names.push(dev.name.as_str());
             indexes.push(idx);
@@ -355,7 +368,21 @@ impl Cluster {
         names.push("config");
         indexes.push(Index::Dynamic { entries });
         let refs: Vec<(&str, Index)> = names.into_iter().zip(indexes).collect();
-        Ok((store.commit_snapshot(&source, time, &refs)?, read))
+        let m = store.commit_snapshot(&source, time, &refs)?;
+        let id = Identity::of(&job.config);
+        let previous = prev_conf.as_deref().map(Identity::of);
+        let changed = previous.as_ref().is_some_and(|p| id.differs(p));
+        if changed {
+            println!(
+                "warning: VM {vmid} has a new identity (vmgenid / SMBIOS UUID changed): the VMID was reused or the VM was replaced; this snapshot starts a new chain"
+            );
+        }
+        println!(
+            "identity {source}/{time} {}",
+            serde_json::json!({"vmgenid": id.vmgenid, "smbios_uuid": id.smbios_uuid, "changed": changed,
+                               "previous": if changed { serde_json::to_value(&previous).unwrap_or_default() } else { serde_json::Value::Null }})
+        );
+        Ok((m, read))
     }
 
     /// Full restore of snapshot `vm-<vmid>/<time>` as VM `target` on `node` with
@@ -468,7 +495,14 @@ impl Drop for Kill {
 }
 
 /// Returns the device index and the bytes read from the export.
-fn pull_device(store: &Store, ssh: &SshNode, vmid: u32, dev: &Device, base: Option<&Index>) -> Result<(Index, u64)> {
+fn pull_device(
+    store: &Store,
+    ssh: &SshNode,
+    vmid: u32,
+    dev: &Device,
+    base: Option<&Index>,
+    limit: Option<&catalog::schedule::Throttle>,
+) -> Result<(Index, u64)> {
     let mut child = Kill(
         ssh.cmd(&format!("nbd {vmid}"))
             .stdin(Stdio::piped())
@@ -494,7 +528,11 @@ fn pull_device(store: &Store, ssh: &SshNode, vmid: u32, dev: &Device, base: Opti
     let mut read = 0;
     let idx = store.store_image_extents(base, IMAGE_CHUNK_SIZE, dev.size, &dirty, |off, buf| {
         read += buf.len() as u64;
-        c.read_at(off, buf)
+        c.read_at(off, buf)?;
+        if let Some(t) = limit {
+            t.account(buf.len() as u64);
+        }
+        Ok(())
     })?;
     c.disconnect()?;
     Ok((idx, read))
@@ -560,6 +598,40 @@ pub fn read_excluded(store: &Store, m: &Manifest) -> Result<Option<Excluded>> {
     read_config(store, m, exclude::FILE)?
         .map(|t| serde_json::from_str(&t).context("excluded-disks.json"))
         .transpose()
+}
+
+/// Identity of a VM from its `qemu-server.conf` (current section only).
+#[derive(Serialize, Debug, Default, PartialEq)]
+pub struct Identity {
+    pub vmgenid: Option<String>,
+    pub smbios_uuid: Option<String>,
+}
+
+impl Identity {
+    pub fn of(conf: &str) -> Identity {
+        let mut id = Identity::default();
+        for line in conf.lines().take_while(|l| !l.starts_with('[')) {
+            let Some((k, v)) = line.split_once(':') else { continue };
+            match k.trim() {
+                "vmgenid" => id.vmgenid = Some(v.trim().to_ascii_lowercase()).filter(|v| !v.is_empty() && v != "0"),
+                "smbios1" => {
+                    id.smbios_uuid = v
+                        .trim()
+                        .split(',')
+                        .find_map(|o| o.strip_prefix("uuid="))
+                        .map(str::to_ascii_lowercase)
+                }
+                _ => {}
+            }
+        }
+        id
+    }
+
+    /// A field set on both sides differs (a field added later is no change).
+    pub fn differs(&self, old: &Identity) -> bool {
+        let ne = |a: &Option<String>, b: &Option<String>| matches!((a, b), (Some(a), Some(b)) if a != b);
+        ne(&self.vmgenid, &old.vmgenid) || ne(&self.smbios_uuid, &old.smbios_uuid)
+    }
 }
 
 pub(crate) fn read_config(store: &Store, m: &Manifest, file: &str) -> Result<Option<String>> {
@@ -634,6 +706,23 @@ pub fn build_index(store: &Store) -> Result<serde_json::Value> {
 mod tests {
     use super::*;
     use crate::exclude::{Disk, Mode};
+
+    #[test]
+    fn identity_of_a_config() {
+        let a = Identity::of(
+            "name: web\nsmbios1: uuid=13E1FD94-5545-4e60-8309-3e50cb85a8c0,manufacturer=QUNNRQ==\nvmgenid: 5b65ecd1-44f5-4b88-8b6c-96cd092a9d2e\n\n[snap]\nvmgenid: 00000000-0000-0000-0000-000000000001\n",
+        );
+        assert_eq!(a.vmgenid.as_deref(), Some("5b65ecd1-44f5-4b88-8b6c-96cd092a9d2e"), "snapshot section ignored");
+        assert_eq!(a.smbios_uuid.as_deref(), Some("13e1fd94-5545-4e60-8309-3e50cb85a8c0"));
+        assert!(!a.differs(&a));
+        // vmgenid added later (older config without it): no change
+        let old = Identity::of("smbios1: uuid=13e1fd94-5545-4e60-8309-3e50cb85a8c0\n");
+        assert!(!a.differs(&old));
+        // re-created VM: new SMBIOS UUID and vmgenid
+        let new = Identity::of("smbios1: uuid=aaaaaaaa-5545-4e60-8309-3e50cb85a8c0\nvmgenid: 1\n");
+        assert!(new.differs(&a));
+        assert!(!Identity::of("").differs(&a), "nothing known: no change");
+    }
 
     /// A VM snapshot as `pull` commits it: one backed-up disk, scsi1 excluded.
     fn snapshot(store: &Store, time: u64, mode: Mode) -> Manifest {

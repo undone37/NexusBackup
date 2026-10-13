@@ -148,7 +148,13 @@ impl Cluster {
                 .spawn()?,
         );
         let mut stdin = child.0.stdin.take().unwrap();
-        let stdout = BufReader::with_capacity(1 << 20, child.0.stdout.take().unwrap());
+        let stdout = BufReader::with_capacity(
+            1 << 20,
+            catalog::schedule::Throttled {
+                inner: child.0.stdout.take().unwrap(),
+                limit: self.read_limit.clone(),
+            },
+        );
         let (m, stats) = match pull_ct(store, vmid, &job, stdout) {
             Ok(r) => r,
             Err(e) => {

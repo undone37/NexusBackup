@@ -38,6 +38,12 @@ struct Config {
     exclude_disks: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     exclude_disks_mode: pve::exclude::Mode,
+    /// appliance-side read limit of the source (Phase 22b)
+    #[serde(default)]
+    read_limit: Option<catalog::schedule::ReadLimit>,
+    /// `backup-all`: at most this many guests at once with a disk on the storage (source `storage_caps`)
+    #[serde(default)]
+    storage_caps: std::collections::HashMap<String, usize>,
 }
 
 fn one() -> usize {
@@ -118,6 +124,7 @@ fn main() -> Result<()> {
         nodes: cfg.nodes,
         exclude,
         exclude_mode: cfg.exclude_disks_mode,
+        read_limit: cfg.read_limit.as_ref().map(|r| r.throttle()).transpose()?.flatten(),
     };
     match (cmd.as_str(), rest) {
         ("backup", [vmid]) => {
@@ -226,12 +233,27 @@ fn main() -> Result<()> {
                 vmids.iter().copied().filter(|&vmid| one(&store, vmid)).collect()
             } else {
                 let nodes = cluster.guest_nodes()?;
-                let items: Vec<(u32, String)> = vmids
+                let items: Vec<pve::parallel::Item<u32>> = vmids
                     .iter()
-                    .map(|v| (*v, nodes.get(v).cloned().unwrap_or_default()))
+                    .map(|v| {
+                        let node = nodes.get(v).map(|(n, _)| n.clone()).unwrap_or_default();
+                        // per-storage caps need the guest's disks (one config read per guest)
+                        let storages = match nodes.get(v) {
+                            Some((n, kind)) if !cfg.storage_caps.is_empty() => cluster
+                                .api
+                                .guest_config(n, kind, *v)
+                                .map(|c| pve::parallel::guest_storages(&c))
+                                .unwrap_or_else(|e| {
+                                    println!("note: storages of guest {v} unknown ({e:#}); not capped");
+                                    Vec::new()
+                                }),
+                            _ => Vec::new(),
+                        };
+                        pve::parallel::Item { item: *v, node, storages }
+                    })
                     .collect();
                 // each guest gets its own Store handle: `written()` deltas stay per snapshot
-                let res = pve::parallel::run(&items, cfg.parallel.min(8), |&vmid| {
+                let res = pve::parallel::run(&items, cfg.parallel.min(8), &cfg.storage_caps, |&vmid| {
                     let own = keyd::fetch_keyring(&keyd_socket, &tenant)
                         .context("keyd")
                         .and_then(|k| Ok(Store::open(&store_root, k, Options::default())?));

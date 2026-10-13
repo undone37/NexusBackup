@@ -57,6 +57,8 @@ fn lab_backup_round() {
         source_id: c["source_id"].as_u64().unwrap(),
         datasets: c["datasets"].as_array().unwrap().iter().map(s).collect(),
         recursive: c["recursive"].as_bool().unwrap_or(false),
+        existing: None,
+        pace: None,
     };
     let t = std::time::Instant::now();
     let r = backup(&store, &mut api, &ssh, &spec, &mut |l| println!("{l}")).unwrap();

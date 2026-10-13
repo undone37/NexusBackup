@@ -651,6 +651,74 @@ impl Throttle {
     }
 }
 
+/// Appliance-side read limit of a source (Phase 22b, docs/control-plane.md
+/// "Concurrency caps and read limits"): `bwlimit` bytes per second (`None` =
+/// unlimited) plus `limit` windows in `timezone`. Stored in the source config
+/// (PVE, TrueNAS, NFS/SMB) and handed to the connector unchanged. Pause windows
+/// are refused: a paused read would stall a running backup (VM fleecing grows);
+/// keep backups out of a time span with a blackout window instead.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ReadLimit {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bwlimit: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<RateWindow>,
+    #[serde(default = "utc_name")]
+    pub timezone: String,
+}
+
+fn utc_name() -> String {
+    "UTC".into()
+}
+
+impl ReadLimit {
+    pub fn check(&self) -> Result<()> {
+        if self.bwlimit == Some(0) {
+            bail!("read_limit.bwlimit: bytes per second > 0 (omit for unlimited)");
+        }
+        check_windows(&self.windows).context("read_limit.windows")?;
+        if self.windows.iter().any(|w| w.action == Action::Pause) {
+            bail!("read_limit.windows: only `limit` windows (a paused read would stall a running backup; use a blackout window)");
+        }
+        tz(&self.timezone).context("read_limit.timezone")?;
+        Ok(())
+    }
+
+    pub fn bandwidth(&self) -> Result<Bandwidth> {
+        Ok(Bandwidth {
+            base: self.bwlimit,
+            windows: self.windows.clone(),
+            tz: tz(&self.timezone)?,
+        })
+    }
+
+    /// A shared throttle for all reads of one connector run (`None` = no limit at all).
+    pub fn throttle(&self) -> Result<Option<Arc<Throttle>>> {
+        if self.bwlimit.is_none() && self.windows.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Arc::new(Throttle::new(self.bandwidth()?))))
+    }
+}
+
+/// A reader paced by a shared [`Throttle`] (the connectors' read limit);
+/// `None` reads unlimited.
+pub struct Throttled<R> {
+    pub inner: R,
+    pub limit: Option<Arc<Throttle>>,
+}
+
+impl<R: std::io::Read> std::io::Read for Throttled<R> {
+    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(b)?;
+        if let Some(t) = &self.limit {
+            t.account(n as u64);
+        }
+        Ok(n)
+    }
+}
+
 // ------------------------------------------------------------- retry
 
 /// `policies.retry`: failed backups are retried `count` times, `delay_min` apart.
@@ -1043,6 +1111,40 @@ mod tests {
             serde_json::from_str(r#"[{"from":"08:00","to":"18:00","action":"limit","rate_bytes":5}]"#).unwrap();
         assert_eq!(j[0].action, Action::Limit);
         assert!(serde_json::from_str::<Vec<RateWindow>>(r#"[{"from":"08:00","to":"18:00","action":"stop"}]"#).is_err());
+    }
+
+    #[test]
+    fn read_limit() {
+        let r: ReadLimit = serde_json::from_str(
+            r#"{"bwlimit":100000000,"windows":[{"from":"08:00","to":"18:00","action":"limit","rate_bytes":20000000}],"timezone":"Europe/Berlin"}"#,
+        )
+        .unwrap();
+        r.check().unwrap();
+        let bw = r.bandwidth().unwrap();
+        assert_eq!(bw.base, Some(100_000_000));
+        assert!(r.throttle().unwrap().is_some());
+        assert!(ReadLimit::default().throttle().unwrap().is_none(), "nothing set: no throttle");
+        assert_eq!(serde_json::from_str::<ReadLimit>("{}").unwrap().timezone, "UTC");
+        for bad in [
+            r#"{"bwlimit":0}"#,
+            r#"{"windows":[{"from":"01:00","to":"02:00","action":"pause"}]}"#,
+            r#"{"timezone":"Mars/Base"}"#,
+        ] {
+            assert!(serde_json::from_str::<ReadLimit>(bad).unwrap().check().is_err(), "{bad}");
+        }
+        assert!(serde_json::from_str::<ReadLimit>(r#"{"rate":1}"#).is_err());
+        // the reader passes the data through and accounts it
+        let t = Arc::new(Throttle::new(Bandwidth {
+            base: Some(1 << 30),
+            ..Default::default()
+        }));
+        let mut r = Throttled {
+            inner: &b"hello"[..],
+            limit: Some(t),
+        };
+        let mut s = String::new();
+        std::io::Read::read_to_string(&mut r, &mut s).unwrap();
+        assert_eq!(s, "hello");
     }
 
     #[test]

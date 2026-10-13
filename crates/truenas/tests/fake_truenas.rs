@@ -54,6 +54,8 @@ fn spec() -> Spec {
         source_id: SID,
         datasets: vec!["tank/data".into()],
         recursive: true,
+        existing: None,
+        pace: None,
     }
 }
 
@@ -285,4 +287,71 @@ fn hostile_walk_fails_dataset_and_keeps_reference() {
     assert_eq!(l.nas.snaps["tank/data"], vec![format!("nexus-7-{}", r1.time)]);
     assert_eq!(l.nas.snaps["tank/data/child"], vec![format!("nexus-7-{}", r2.time)]);
     assert!(l.store.load_manifest("nas-7-tank.data", r2.time).is_err());
+}
+
+/// "Use existing snapshots" (Phase 22b): the newest `auto-*` snapshot is read,
+/// nothing is created or deleted, the next run diffs against the snapshot the
+/// last backup came from; no new periodic snapshot = skipped, not failed.
+#[test]
+fn existing_snapshots_mode() {
+    use std::collections::HashMap;
+    use truenas::backup::Existing;
+    let mut l = lab();
+    put(&l.data.join("docs/a.txt"), b"first\n");
+    put(&l.data.join("big.bin"), &pseudo_random(1 << 20, 3));
+    let ex = |refs: HashMap<String, (u64, String)>| Spec {
+        datasets: vec!["tank/data".into()],
+        recursive: false,
+        existing: Some(Existing {
+            prefix: "auto-".into(),
+            references: refs,
+        }),
+        ..spec()
+    };
+    // no periodic snapshot yet: the dataset fails with a hint
+    let r0 = backup(&l.store, &mut l.nas, &l.t, &ex(HashMap::new()), &mut |_| {}).unwrap();
+    assert!(r0.failed[0].1.contains("periodic snapshot task"), "{:?}", r0.failed);
+
+    l.nas.create_snapshot("tank/data", "auto-2026-10-12_00-00", false).unwrap();
+    put(&l.data.join("docs/b.txt"), b"after the first periodic snapshot\n");
+    l.nas.create_snapshot("tank/data", "auto-2026-10-13_00-00", false).unwrap();
+    put(&l.data.join("docs/live.txt"), b"not in any snapshot\n");
+    let mut log = Vec::new();
+    let r1 = backup(&l.store, &mut l.nas, &l.t, &ex(HashMap::new()), &mut |s| log.push(s.to_owned())).unwrap();
+    assert!(r1.failed.is_empty(), "{:?} {log:?}", r1.failed);
+    let c1 = &r1.committed[0];
+    assert!(c1.full);
+    assert_eq!(c1.snapshot, "auto-2026-10-13_00-00", "the newest one");
+    let t1 = tree(&l.store, "nas-7-tank.data", r1.time);
+    assert!(t1.iter().any(|e| e.path == b"docs/b.txt"));
+    assert!(!t1.iter().any(|e| e.path == b"docs/live.txt"), "read from the snapshot, not live");
+    assert_eq!(
+        l.nas.snaps["tank/data"],
+        vec!["auto-2026-10-12_00-00", "auto-2026-10-13_00-00"],
+        "nothing created or deleted"
+    );
+    let refs = HashMap::from([(
+        "nas-7-tank.data".to_string(),
+        (r1.time, "auto-2026-10-13_00-00".to_string()),
+    )]);
+    // same newest snapshot again: skipped
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let r2 = backup(&l.store, &mut l.nas, &l.t, &ex(refs.clone()), &mut |_| {}).unwrap();
+    assert!(r2.failed.is_empty() && r2.committed.is_empty());
+    assert!(r2.skipped[0].1.contains("no new snapshot"), "{:?}", r2.skipped);
+    // a new periodic snapshot: incremental via zfs diff against the recorded one
+    l.nas.create_snapshot("tank/data", "auto-2026-10-14_00-00", false).unwrap();
+    let r3 = backup(&l.store, &mut l.nas, &l.t, &ex(refs), &mut |_| {}).unwrap();
+    let c3 = &r3.committed[0];
+    assert!(!c3.full && c3.snapshot == "auto-2026-10-14_00-00", "{c3:?}");
+    assert_eq!(c3.files_read, 1, "only live.txt is new: {c3:?}");
+    let t3 = tree(&l.store, "nas-7-tank.data", r3.time);
+    let big = |t: &[TreeEntry]| t.iter().find(|e| e.path == b"big.bin").unwrap().chunks.clone();
+    assert_eq!(big(&t1), big(&t3), "unchanged file reused");
+    // a reference recorded for an older store snapshot is not trusted: full read
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    l.nas.create_snapshot("tank/data", "auto-2026-10-15_00-00", false).unwrap();
+    let stale = HashMap::from([("nas-7-tank.data".to_string(), (r1.time, "auto-2026-10-13_00-00".to_string()))]);
+    let r4 = backup(&l.store, &mut l.nas, &l.t, &ex(stale), &mut |_| {}).unwrap();
+    assert!(r4.committed[0].full);
 }
