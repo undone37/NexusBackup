@@ -3,23 +3,32 @@ import type { Role, User } from './types';
 // UI-side mirror of the RBAC table. Only used to hide controls — the server decides.
 export const can = {
   configure: (u: User | null) => u?.role === 'admin',
-  backup: (u: User | null) => u?.role === 'admin' || u?.role === 'operator',
+  // Tenant-owned config (sources, agents, groups, the tenant's users): admins, and tenant admins
+  // within their own tenant (Phase 19b).
+  manageTenant: (u: User | null) => u?.role === 'admin' || u?.role === 'tenant_admin',
+  backup: (u: User | null) => u?.role === 'admin' || u?.role === 'operator' || u?.role === 'tenant_admin',
   // viewers: read-only, no job kinds at all (Phase 14d)
   restore: (u: User | null) => !!u && u.role !== 'security_officer' && u.role !== 'viewer',
   // files_get: the account's download privilege (Users page)
   download: (u: User | null) => !!u?.can_download,
-  cancelJob: (u: User | null) => u?.role === 'admin' || u?.role === 'operator',
+  cancelJob: (u: User | null) => u?.role === 'admin' || u?.role === 'operator' || u?.role === 'tenant_admin',
   // approvers: admins and security officers (never the requester — the server checks)
   decideQuorum: (u: User | null) => u?.role === 'admin' || u?.role === 'security_officer',
   viewQuorum: (u: User | null) => !!u && u.role !== 'tenant_user' && u.role !== 'viewer' && !u.tenant,
+  // Tenant admins list their own requests (Phase 19b); they never decide.
+  viewOwnQuorum: (u: User | null) => u?.role === 'tenant_admin',
   // Alerts are appliance-wide (no tenant column); tenant-scoped users get an empty list.
   viewAlerts: (u: User | null) => !!u && !u.tenant,
-  audit: (u: User | null) => u?.role === 'admin' || u?.role === 'security_officer',
-  ackAlert: (u: User | null) => !!u && u.role !== 'tenant_user' && u.role !== 'viewer',
+  // tenant admins: the entries concerning their tenant only (server-side filter, Phase 19b)
+  audit: (u: User | null) => u?.role === 'admin' || u?.role === 'security_officer' || u?.role === 'tenant_admin',
+  verifyAudit: (u: User | null) => u?.role === 'admin' || u?.role === 'security_officer',
+  // "View as tenant" (Phase 19b): admins only, read-only by default; acting as tenant admin needs approval.
+  impersonate: (u: User | null) => u?.role === 'admin',
+  ackAlert: (u: User | null) => !!u && u.role !== 'tenant_user' && u.role !== 'viewer' && !u.tenant,
   // Replication peers/sources are appliance-wide: not for tenant-scoped users.
   viewReplication: (u: User | null) => !!u && u.role !== 'tenant_user' && u.role !== 'viewer' && !u.tenant,
   // Plugins are appliance-wide; admins change them, security officers / operators may look.
-  viewPlugins: (u: User | null) => !!u && u.role !== 'tenant_user' && u.role !== 'viewer',
+  viewPlugins: (u: User | null) => !!u && u.role !== 'tenant_user' && u.role !== 'viewer' && !u.tenant,
   syncReplication: (u: User | null) => u?.role === 'admin' || u?.role === 'operator',
   // "Close vault now" (17b): admins and security officers; reopening is a request either may make
   closeVault: (u: User | null) => u?.role === 'admin' || u?.role === 'security_officer',
@@ -34,4 +43,6 @@ export const can = {
   attachOffsite: (u: User | null) => u?.role === 'admin' || u?.role === 'security_officer',
 };
 
-export const ROLES: Role[] = ['admin', 'security_officer', 'operator', 'tenant_user', 'viewer'];
+export const ROLES: Role[] = ['admin', 'security_officer', 'operator', 'tenant_admin', 'tenant_user', 'viewer'];
+/** Roles a tenant admin may hand out (own tenant only, Phase 19b). */
+export const TENANT_ROLES: Role[] = ['tenant_admin', 'tenant_user', 'viewer'];

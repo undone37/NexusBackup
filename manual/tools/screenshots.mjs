@@ -937,6 +937,36 @@ async function main() {
       await go('/snapshots?source=vm-300');
       await shot('tenant-user-snapshots');
     }],
+    // Phase 19b: assigned policies, tier templates, "view as tenant", the tenant admin's own pages
+    ['tenant-admin', async () => {
+      await login('admin');
+      await go('/tenants');
+      await ev(`$click('Edit', $row('acme').querySelector('td:nth-last-child(2)')); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input[type=checkbox]')`, 'assigned policies dialog');
+      await shot('tenants-assigned-policies');
+      await closeDialogs();
+      await go('/policies');
+      await ev(`$click('Create from template'); return true;`);
+      await sleep(400);
+      await shot('policies-templates');
+      await ev(`document.querySelectorAll('[popover]').forEach((p) => p.hidePopover?.()); return true;`);
+      await go('/tenants');
+      await ev(`$rowClick('acme', 'View as tenant'); return true;`);
+      await sleep(300);
+      await shot('tenants-view-as');
+      await ev(`$click('Read-only view', document); return true;`);
+      await confirmOk();
+      await until(`return !!document.querySelector('.glass.impersonating')`, 'impersonation banner');
+      await go('/', 900);
+      await shot('impersonation-banner');
+      await api('POST', '/auth/impersonation/end', {});
+      await login('tara');
+      await go('/users');
+      await shot('users-tenant-admin');
+      await go('/audit');
+      await shot('audit-tenant-admin');
+      await login('admin');
+    }],
     // Phase 15c: legal hold (security officer): from the anomaly alert, for a time range, release request
     ['legal-hold', async () => {
       await login('so');

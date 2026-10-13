@@ -544,6 +544,10 @@ main {
 .glass button:hover {
   background: rgb(255 255 255 / 14%);
 }
+/* "view as tenant" banner (Phase 19b): informational, not an alarm */
+.glass.impersonating {
+  background: var(--accent);
+}
 
 @media (max-width: 900px) {
   .shell,

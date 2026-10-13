@@ -11,7 +11,6 @@ use catalog::rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-const OPS: &[&str] = &["admin", "operator"];
 /// Kinds a tenant_user may request (restores only, own tenant).
 const RESTORE_KINDS: &[&str] = &[
     "restore",
@@ -26,8 +25,14 @@ const RESTORE_KINDS: &[&str] = &[
     "offsite_list",
     "offsite_restore",
 ];
-/// Kinds only an admin may request (they change software or trust on a host).
+/// Kinds only an admin may request (they change software or trust on a host);
+/// tenant admins too, for their own tenant's agents (Phase 19b).
 const ADMIN_KINDS: &[&str] = &["agent_update", "agent_enroll", "agent_renew"];
+/// Appliance maintenance: never requested by a tenant admin (retention, GC,
+/// offsite copy and verification belong to the provider).
+const PROVIDER_KINDS: &[&str] = &["offsite", "retention", "gc", "verify"];
+/// Start and cancel jobs of a tenant (scoped by `Ctx::sees`).
+const RUNNERS: &[&str] = &["admin", "operator", "tenant_admin"];
 pub const DOWNLOAD_TTL_SECS: i64 = 24 * 3600;
 
 #[derive(Deserialize)]
@@ -544,6 +549,7 @@ pub async fn create_job(State(st): State<St>, ctx: Ctx, J(r): J<JobReq>) -> ApiR
         "admin" => true,
         "operator" => !ADMIN_KINDS.contains(&r.kind.as_str()),
         "tenant_user" => RESTORE_KINDS.contains(&r.kind.as_str()),
+        "tenant_admin" => !PROVIDER_KINDS.contains(&r.kind.as_str()),
         "viewer" | "security_officer" => false,
         _ => false,
     };
@@ -605,7 +611,7 @@ fn request_replace(
     tenant: &str,
     mut params: Value,
 ) -> ApiResult<crate::quorum::Outcome> {
-    ctx.require(OPS)?;
+    ctx.require(RUNNERS)?;
     if ctx.token.is_some() {
         return Err(ApiError(
             StatusCode::FORBIDDEN,
@@ -700,7 +706,7 @@ pub async fn get_job(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> Api
 /// SIGKILL after 30 s; the job ends `cancelled`). Answers the state after the
 /// request: `cancelled` or `cancelling`.
 pub async fn cancel_job(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
-    ctx.require(OPS)?;
+    ctx.require(RUNNERS)?;
     let state = {
         let c = st.cat.conn();
         let (state, replace): (String, bool) = c

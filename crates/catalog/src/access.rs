@@ -80,10 +80,10 @@ pub fn login_banner(c: &Connection) -> rusqlite::Result<String> {
 }
 
 /// Download privilege of a role when the account has no explicit
-/// `can_download`: admins, operators and tenant users restore files to the
-/// browser; viewers and security officers (approvals, audit) do not.
+/// `can_download`: admins, operators, tenant admins and tenant users restore
+/// files to the browser; viewers and security officers (approvals, audit) do not.
 pub fn role_can_download(role: &str) -> bool {
-    matches!(role, "admin" | "operator" | "tenant_user")
+    matches!(role, "admin" | "operator" | "tenant_admin" | "tenant_user")
 }
 
 /// `a.b.c.d/n`, `v6/n` or a bare address (= /32, /128), normalised to the

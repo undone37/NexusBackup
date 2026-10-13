@@ -13,7 +13,7 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "clippy, rustfmt" }
       - run: command -v qemu-img >/dev/null || { sudo apt-get update && sudo apt-get install -y qemu-utils; }
@@ -35,8 +35,8 @@ jobs:
     runs-on: self-hosted
     defaults: { run: { working-directory: web } }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with: { node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json }
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run check
@@ -47,11 +47,11 @@ jobs:
     # No Windows runner on purpose (docs/agent-windows.md "Untested").
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test -p agent-core -p agent-windows
       - run: crates/agent-windows/build.sh --test-key --clippy
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nexus-agent-windows
           path: target/agent-dist/windows/
@@ -60,6 +60,8 @@ jobs:
     # audit-check reports through a check run
     permissions: { contents: read, checks: write }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      # the self-hosted runner has no preinstalled cargo (GitHub-hosted runners do)
+      - uses: dtolnay/rust-toolchain@stable
       - uses: rustsec/audit-check@v2
         with: { token: "${{ secrets.GITHUB_TOKEN }}" }

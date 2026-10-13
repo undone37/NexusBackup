@@ -87,6 +87,15 @@ pub fn status_common(paths: &Paths, version: &str) -> String {
             keys.iter().map(|k| k.0.clone()).collect::<Vec<_>>().join(", ")
         }
     ));
+    let packaged = update::packaged(&update::package_marker());
+    if let Some(p) = &packaged {
+        out.push_str(&format!("installed from: {p} package\n"));
+    }
+    if let Some(why) =
+        update::self_update_blocked(settings.as_ref().ok().and_then(|s| s.self_update), packaged.as_deref())
+    {
+        out.push_str(&format!("self-update: off; {why}\n"));
+    }
     match cache::Cache::load(paths) {
         Some(c) => out.push_str(&format!("metadata cache: {} files from job {}\n", c.files.len(), c.job)),
         None => out.push_str("metadata cache: none (next backup reads everything)\n"),

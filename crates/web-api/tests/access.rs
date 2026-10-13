@@ -324,13 +324,14 @@ async fn viewer_reads_within_its_scope_and_writes_nothing() {
         ),
         (json!("viewer"), json!("acme"), json!(false))
     );
-    // admins create viewers with or without a tenant; tenant_user still needs one
+    // admins create viewers with or without a tenant; tenant_user and tenant_admin need one
     let alice = t.login("alice").await;
     for (body, ok) in [
         (json!({"name": "v1", "role": "viewer"}), true),
         (json!({"name": "v2", "role": "viewer", "tenant": "globex"}), true),
         (json!({"name": "t1", "role": "tenant_user"}), false),
-        (json!({"name": "ta", "role": "tenant_admin", "tenant": "acme"}), false),
+        (json!({"name": "ta", "role": "tenant_admin", "tenant": "acme"}), true),
+        (json!({"name": "ta2", "role": "tenant_admin"}), false),
     ] {
         let r = t.post("/api/v1/users", &alice, body.clone()).await;
         assert_eq!(r.status.is_success(), ok, "{body}: {:?}", r.body);

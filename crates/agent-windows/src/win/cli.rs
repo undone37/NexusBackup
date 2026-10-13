@@ -26,6 +26,8 @@ usage:
   nexus-agent.exe init --token <T|-> [--port 7444]   initialise enrollment (token from the UI)
   nexus-agent.exe install                            register + start the service (auto start, restart on failure)
   nexus-agent.exe uninstall                          stop and remove the service (keeps config/state)
+  nexus-agent.exe service-setup                      MSI: secure %ProgramData%\\NexusAgent, failure actions of the service
+  nexus-agent.exe purge-data --yes                   MSI uninstall with PURGE=1: delete config and state (enrollment)
   nexus-agent.exe status
   nexus-agent.exe run                                run in the foreground (debugging)
   nexus-agent.exe version
@@ -58,7 +60,7 @@ pub fn main() -> ExitCode {
 
 fn real_main(args: &[String]) -> Result<ExitCode, String> {
     let mut paths = Paths::default();
-    let (mut token, mut port, mut words) = (None, None, vec![]);
+    let (mut token, mut port, mut words, mut yes) = (None, None, vec![], false);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = |n: &str| it.next().cloned().ok_or(format!("{n} needs a value"));
@@ -67,6 +69,8 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             "--port" => port = Some(val("--port")?.parse::<u16>().map_err(|_| "invalid --port")?),
             "--state" => paths.state = PathBuf::from(val("--state")?),
             "--config" => paths.config = PathBuf::from(val("--config")?),
+            "--version" | "-V" => words.push("version".into()),
+            "--yes" => yes = true,
             "-h" | "--help" | "/?" => {
                 println!("{USAGE}");
                 return Ok(ExitCode::SUCCESS);
@@ -94,6 +98,16 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
         }
         ["install"] => install(&paths).map(|_| ExitCode::SUCCESS),
         ["uninstall"] => uninstall().map(|_| ExitCode::SUCCESS),
+        ["service-setup"] => service_setup(&paths).map(|_| ExitCode::SUCCESS),
+        ["purge-data"] if yes => {
+            let base = base_of(&paths);
+            match std::fs::remove_dir_all(&base) {
+                Ok(()) => println!("{} deleted", base.display()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("{}: {e}", base.display())),
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         ["status"] => {
             print!("{}", status(&paths));
             Ok(ExitCode::SUCCESS)
@@ -163,6 +177,15 @@ fn install(paths: &Paths) -> Result<(), String> {
         .create_service(&info, ServiceAccess::CHANGE_CONFIG | ServiceAccess::START)
         .map_err(|e| format!("create service: {e}"))?;
     let _ = s.set_description("NexusBackup pull-model backup agent (mTLS, VSS, USN journal)");
+    failure_actions(&s)?;
+    s.start::<&str>(&[]).map_err(|e| format!("start service: {e}"))?;
+    println!("service {SERVICE_NAME} installed and started");
+    Ok(())
+}
+
+/// Restart after 2 s / 10 s / 60 s (counter reset after a day), also after a stop with a
+/// non-zero exit code (self-update exits with 75).
+fn failure_actions(s: &windows_service::service::Service) -> Result<(), String> {
     s.update_failure_actions(ServiceFailureActions {
         reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(86_400)),
         reboot_msg: None,
@@ -185,9 +208,25 @@ fn install(paths: &Paths) -> Result<(), String> {
     .map_err(|e| format!("failure actions: {e}"))?;
     // a stop with a non-zero exit code (self-update) also triggers the restart
     s.set_failure_actions_on_non_crash_failures(true)
-        .map_err(|e| format!("failure actions flag: {e}"))?;
-    s.start::<&str>(&[]).map_err(|e| format!("start service: {e}"))?;
-    println!("service {SERVICE_NAME} installed and started");
+        .map_err(|e| format!("failure actions flag: {e}"))
+}
+
+/// The MSI registers the service itself (ServiceInstall table) and runs this deferred,
+/// as LocalSystem, after InstallServices: the protected ACL on `%ProgramData%\NexusAgent`
+/// (also covers the release keys the MSI put there) and the failure actions, which the
+/// MSI tables cannot express without the WiX util extension.
+fn service_setup(paths: &Paths) -> Result<(), String> {
+    secure(paths)?;
+    let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .map_err(|e| format!("service manager: {e}"))?;
+    let s = m
+        .open_service(SERVICE_NAME, ServiceAccess::CHANGE_CONFIG)
+        .map_err(|e| format!("open service: {e}"))?;
+    failure_actions(&s)?;
+    println!(
+        "service {SERVICE_NAME}: failure actions set, {} secured",
+        base_of(paths).display()
+    );
     Ok(())
 }
 
@@ -283,7 +322,7 @@ fn log_to_file(paths: &Paths) {
     agent_core::server::log_timestamps(true);
 }
 
-fn run(paths: Paths, _service: Option<()>) -> Result<(), String> {
+fn run(paths: Paths, service: Option<()>) -> Result<(), String> {
     std::hint::black_box(crate::update::VERSION_MARKER);
     let settings = Settings::load(&paths)?;
     secure(&paths)?;
@@ -301,6 +340,11 @@ fn run(paths: Paths, _service: Option<()>) -> Result<(), String> {
     };
     let agent = Agent::with_platform(platform, paths, settings.clone())?;
     match agent.mode() {
+        // the MSI starts the service before enrollment: stop cleanly (no failure-action restarts)
+        Mode::Uninitialized if service.is_some() => {
+            eprintln!("nexus-agent: not initialised; run nexus-agent.exe init --token - and start the service");
+            return Ok(());
+        }
         Mode::Uninitialized => return Err("not initialised: run nexus-agent.exe init --token <T>".into()),
         Mode::Locked(_) => eprintln!("nexus-agent: enrollment LOCKED; run nexus-agent.exe init again"),
         Mode::Enroll(_) => eprintln!("nexus-agent: waiting for enrollment by the appliance"),

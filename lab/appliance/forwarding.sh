@@ -74,13 +74,25 @@ forward() {
 	apienv
 	local r head
 	r=$(api admin PUT /settings/forwarding "$(settings true)")
-	expect 200 "PUT /settings/forwarding"
+	if [ "$(status)" = 202 ]; then # a rerun: changing an existing sink needs approval
+		api so POST "/quorum/$(jq -r .quorum_id <<<"$r")/approve" >/dev/null
+		expect 200 "so approves the forwarding change"
+		r=$(api admin GET /settings/forwarding)
+	else
+		expect 200 "PUT /settings/forwarding"
+	fi
 	[ "$(jq -r '.https.headers.Authorization' <<<"$r")" = null ] || die "header value shown: $r"
 	log "forwarding configured: syslog $APPL_HOST:$FWD_SYSLOG_PORT (CA), https (pin)"
 	# the scheduler adds the sinks to the egress allow-list on its next tick (<= 30 s)
 	for _ in $(seq 20); do
 		r=$(api admin POST /settings/forwarding/test '{}')
-		expect 200 "forwarding test"
+		if [ "$(status)" = 202 ]; then # still running after the API's 45 s (firewall settle): wait for the job
+			j=$(wait_job admin "$(jq -r .job_id <<<"$r")" 300)
+			[ "$(jq -r .state <<<"$j")" = ok ] || die "forwarding test job: $(jq -r .log <<<"$j" | tail -3)"
+			r=$(jq -c .result <<<"$j")
+		else
+			expect 200 "forwarding test"
+		fi
 		jq -e '[.[] | startswith("ok")] | all' <<<"$r" >/dev/null && break
 		sleep 5
 	done

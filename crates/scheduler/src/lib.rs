@@ -1471,9 +1471,8 @@ impl Scheduler {
                 log.push_str(&format!("[scheduler] download ready: {file} ({size} bytes)\n"));
                 Some(r)
             }
-            "alert_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" | "file_search" | "file_index" => {
-                serde_json::from_str(stdout.unwrap_or_default()).ok()
-            }
+            "alert_test" | "forward_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" | "file_search"
+            | "file_index" => serde_json::from_str(stdout.unwrap_or_default()).ok(),
             "offsite_list" => match serde_json::from_str::<Value>(stdout.unwrap_or_default().trim()) {
                 Ok(s @ Value::Array(_)) => Some(json!({ "snapshots": s })),
                 _ => {
