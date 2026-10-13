@@ -47,8 +47,6 @@ CONF=/etc/nexus-agent
 
 # binary: atomic replace (a running agent keeps its old inode until restarted)
 install -d -m 0755 /usr/local/sbin
-# local users in this group may use the endpoint UIs (/run/nexus-agent/ui.sock)
-getent group nexus-agent-ui >/dev/null 2>&1 || groupadd --system nexus-agent-ui
 install -m 0755 -o root -g root "$here/nexus-agent" "$BIN.new"
 mv -f "$BIN.new" "$BIN"
 
