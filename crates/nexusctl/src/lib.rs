@@ -78,8 +78,13 @@ pub fn parse_global(args: &[String]) -> Result<Cli> {
     Ok(cli)
 }
 
+/// (positional arguments, `--name value` options; flags with an empty value)
+type Args = (Vec<String>, Vec<(String, String)>);
+/// A table column: the field of each row and how to show it.
+type Col<'a> = (&'a str, fn(&Value) -> String);
+
 /// `--name value` options of a command; the rest stay positional.
-fn opts(args: &[String], names: &[&str], flags: &[&str]) -> Result<(Vec<String>, Vec<(String, String)>)> {
+fn opts(args: &[String], names: &[&str], flags: &[&str]) -> Result<Args> {
     let (mut pos, mut out) = (vec![], vec![]);
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -209,7 +214,7 @@ pub fn table(head: &[&str], rows: Vec<Vec<String>>) -> String {
     out.join("\n") + "\n"
 }
 
-fn rows(v: &Value, cols: &[(&str, fn(&Value) -> String)]) -> Vec<Vec<String>> {
+fn rows(v: &Value, cols: &[Col]) -> Vec<Vec<String>> {
     v.as_array()
         .into_iter()
         .flatten()

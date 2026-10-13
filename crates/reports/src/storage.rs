@@ -222,7 +222,8 @@ pub fn estimate(c: &Connection, policy_id: Option<i64>, scope: Option<&str>) -> 
         })?
         .collect::<Result<_, _>>()?;
     // (tenant, source) -> rows newest first: (logical, new_plain, new_stored)
-    let mut per: BTreeMap<(String, String), Vec<(i64, i64, i64)>> = BTreeMap::new();
+    type Hist = Vec<(i64, i64, i64)>;
+    let mut per: BTreeMap<(String, String), Hist> = BTreeMap::new();
     let mut q = c.prepare(
         "SELECT tenant, source, logical, new_plain, new_stored FROM backup_stats WHERE ?1 IS NULL OR tenant = ?1
          ORDER BY time DESC",

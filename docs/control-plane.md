@@ -245,6 +245,12 @@ Headers on every response: `Content-Security-Policy: default-src 'self'; script-
   current_totp}` (re-authentication like a password change; OIDC accounts instead need a session ≤ 15 min old;
   at most 20 per user) → 201 with `token`, `DELETE /auth/tokens/{id}` own or (admin) any. Audited `token.create`,
   `token.revoke`.
+- Phase 23a: `GET /usage` (billing export, JSON or `format=csv`) and `GET /openapi.json` are on `tokens::READ`;
+  the SIEM pull is `GET /audit?since_seq=<seq>` (alias of `after`). The published description
+  (`crates/web-api/openapi.json`, OpenAPI 3.1, hand-maintained) is served at `/api/openapi.json` (no auth) and
+  `/api/v1/openapi.json`; `openapi.rs`'s test fails when a route on the allow-list is missing from it or the document
+  shows a route tokens cannot reach. The `nexusctl` crate is a client on top of it (blocking reqwest, token from
+  `NEXUS_TOKEN`).
 
 ## Web certificate (Phase 14d, crate `webtls`, `crates/web-api/src/certs.rs`)
 - `/etc/nexus/tls/cert.pem` + `key.pem`: the self-signed **identity** from nexus-setup. Replication secondaries pin
@@ -686,6 +692,35 @@ the account no longer being an admin, or the tenant being deleted end it as well
   while deactivated, resolved on reactivation).
 - Dashboard / reports: objects of the tenant have SLA state `deactivated` (counted as `sla_deactivated`, never a
   breach; also `paused` for the SLA report's breach intervals); `protection.deactivated_tenants` lists them.
+
+## Service-provider operations (Phase 23a)
+
+- **Usage export** (`reports::usage`, `web-api/src/usage.rs`): per tenant over `[from, to)`, objects = distinct
+  sources in `backup_stats` ∪ `snapshots` with a time in the period, logical / stored / offsite = average and peak of
+  the daily `capacity_samples` (`logical`, `used` = measured store walk, `offsite` = Σ size of snapshots with an
+  offsite copy, v37). `GET /usage?month=YYYY-MM[&tenant][&format=csv]`, every role, tenant-scoped; CSV audited
+  `report.export`. Report type `usage` (ranged), so a scheduled `monthly 1 07:00` report mails the previous month.
+- **Tenant IdPs** (`web-api/src/tenant_idp.rs`, catalog v37 `tenant_idps`): the `oidc::Settings` of a tenant plus
+  `domains` (unique across tenants) and the recorded `endpoints` (firewall). `GET|PUT /tenants/{name}/oidc`,
+  `POST …/oidc/test`; PUT is the approval action `tenant_oidc.update` (compares `old`). Mappings: tenant roles of that
+  tenant only (empty tenant list = this tenant), re-checked in `oidc::provision`. Login: `GET /auth/oidc` says
+  `organizations: bool`; `GET /auth/oidc/start?org=<e-mail | tenant>` resolves the IdP (domain via `json_each`),
+  passes an e-mail as `login_hint`, and keeps the tenant in the pending login; the callback uses that tenant's IdP.
+  Accounts: `oidc_sub = tenant:<name>|<iss>|<sub>`. The discovery cache is keyed by issuer + CA (several IdPs).
+- **Restore point simulator** (`web-api/src/simulate.rs`): `POST /policies/simulate {schedule, gfs, timezone?,
+  policy_id?, tenant?, days?}` runs `Schedule::next_slot` forward (≤ 1100 days, ≤ 20 000 runs) and
+  `retention::keep` (crate `retention`, the store's own rule, re-exported as `chunkstore::retention`) after each run (sampled to ~60 points); the estimate (`reports::storage::estimate`)
+  = Σ latest logical / measured compression + (points − 1) × Σ per-source median `new_stored` (first backup
+  excluded) over the sources the policy's groups cover. Readable by admin, security officer, operator, tenant admin,
+  viewer (for the approvals page). Not on the token allow-list.
+- **Keep until** (`web-api/src/keep.rs`, `scheduler/src/keep.rs`): `backup` / `plugin_backup` params take
+  `keep_until` (1 h … 10 years ahead). Beyond setting `keep_until_max_days` (default 90; `GET|PUT
+  /settings/keep-until`, raising = approval `settings.keep_until`) the job request becomes the approval
+  `backup.keep`, executed by the web-api by queuing the job for the requester. After an ok job the scheduler calls
+  `Store::extend_lock(source, time, keep_until)` for every `nexus-stats` snapshot of the job (locks only grow),
+  audits `snapshot.keep_until` and refreshes the tenant (catalog `lock_until`).
+- **Onboarding wizard**: UI only (`TenantWizard.svelte`), the existing calls in order: `POST /tenants`, `PUT
+  …/quota`, `PUT …/policies` (policies of the tier, else `POST /policies/templates`), `POST /users` (tenant_admin).
 
 ## Break-glass (`nexus-setup recover-admin`, Phase 12 §7)
 Console only (root): `nexus-setup recover-admin [--user NAME] [--force-solo]` asks for the recovery key (checked against keyd's `kek.recovery` as at first boot), resets a local admin account to pending activation (old password, authenticator and passkeys invalid at once, sessions ended, account enabled) and prints a new one-time activation code (72 h). Without `--user` the only local admin is chosen. With approvals enabled and at least two possible approvers it refuses unless `--force-solo` (recorded in the alert, the audit entry and the banner). Audited `user.break_glass` (actor `console`), critical alert `break_glass`, setting `break_glass`.

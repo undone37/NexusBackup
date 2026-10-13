@@ -329,6 +329,37 @@ primary: replicated tenants take no new backups on the secondary. To protect the
 > **Status:** Restore on a secondary with the primary powered off was tested in the two-appliance lab (file download
 > from a replicated VM snapshot). A full VM restore on the secondary was not part of that test.
 
+### Interim backups on the secondary (new local tenant)
+
+When the primary stays down for days, the protected systems (or the VMs you restored at the DR site) need backups in
+the meantime. The secondary is not promoted (its replicated tenants never take backups, so the replicated copies stay
+exactly as the primary wrote them). Back the systems up into a **new local tenant** on the secondary instead:
+
+1. **Create the tenant** on the secondary: **Configuration → Tenants → New tenant**, for example `acme-interim`, with
+   a policy tier and, if the customer administers it, a tenant admin
+   ([09 Users and access](09-users-and-access.md#onboarding-a-new-tenant)). It gets its own encryption keys. Write
+   down its recovery key or create a tenant recovery key as for any tenant.
+2. **Add the sources** to the interim tenant: the DR site's Proxmox VE cluster (the same steps as on the primary,
+   [04 Sources](04-sources.md#proxmox-ve), including the node plugin and the secondary's SSH key on every node), NAS
+   shares, plugin sources. **Agents**: create the host again in the interim tenant and enroll it with the new token;
+   the agent then answers the secondary. Re-enroll it with the primary when it is back.
+3. **Create protection groups** and run **Back up now** once to confirm a first good backup.
+4. **Offsite**: give the interim tenant its own offsite target or prefix if you need one. Never point it at the
+   primary tenant's offsite path (other keys).
+5. **When the primary is back** (repaired or rebuilt from the configuration backup and offsite copy): enroll the
+   agents and add the sources there again; the primary's tenant continues with its old history. The interim tenant's
+   snapshots cannot be merged into it (different keys and tenant ID). Keep the interim tenant on the secondary until
+   its snapshots are no longer needed: pause its groups, keep restoring from it if needed, and delete it at the end
+   (with approval).
+
+Restores of the gap period come from the interim tenant on the secondary; everything older comes from the replicated
+tenant (or the primary). Name the interim tenant so it is obvious which customer it belongs to: tenant names are never
+reused after deletion.
+
+> **Status:** This runbook uses only regular functions (tenants, sources, enrollment). It has not been run end to end
+> in the two-appliance lab yet; that test (full VM restore on the secondary, interim tenant, re-enrollment on the
+> rebuilt primary) is planned.
+
 ## Emergency root shell on the console
 
 The appliance has no root password and no SSH server. Tasks that need root (the network change, update rollback, SSH

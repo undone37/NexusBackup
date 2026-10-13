@@ -30,6 +30,71 @@ Open **Configuration → Sources**. Only administrators see this page.
 - **Inventory** (Proxmox VE, TrueNAS and plugin sources that list guests) shows the source's guest inventory, see
   below.
 
+### Remote sites: a site VPN (WireGuard)
+
+A service provider's appliance often stands in the provider's data center while a tenant's Proxmox VE cluster, hosts
+or NAS are at the customer's site. Never expose those systems' management ports to the internet. Connect the sites
+with a **site-to-site VPN**. The pattern below uses WireGuard; IPsec works the same way. The appliance itself runs
+no VPN: the tunnel ends on a router or firewall at each site, and the appliance reaches the customer's networks
+through a route.
+
+```text
+ provider site                                   customer site (tenant acme)
+ ┌──────────────┐   ┌────────────┐  WireGuard    ┌────────────┐   ┌─────────────────────┐
+ │  NexusBackup │───│ VPN router │══════════════│ VPN router │───│ PVE nodes, agents,  │
+ │  192.0.2.10  │   │ 10.99.0.1  │  UDP 51820    │ 10.99.0.2  │   │ NAS 198.51.100.0/24 │
+ └──────────────┘   └────────────┘               └────────────┘   └─────────────────────┘
+```
+
+1. **One tunnel per customer site**, with its own key pair. On the provider's router, `AllowedIPs` of the peer lists
+   only the customer's server networks; the customer's router lists only the appliance's address
+   (`192.0.2.10/32`), not your whole data center:
+
+   ```ini
+   # provider router, /etc/wireguard/wg-acme.conf
+   [Interface]
+   Address = 10.99.0.1/30
+   ListenPort = 51820
+   PrivateKey = <provider key>
+   [Peer]
+   PublicKey = <customer key>
+   AllowedIPs = 10.99.0.2/32, 198.51.100.0/24
+   PersistentKeepalive = 25
+
+   # customer router
+   [Interface]
+   Address = 10.99.0.2/30
+   PrivateKey = <customer key>
+   [Peer]
+   PublicKey = <provider key>
+   Endpoint = vpn.provider.example.net:51820
+   AllowedIPs = 10.99.0.1/32, 192.0.2.10/32
+   PersistentKeepalive = 25
+   ```
+
+2. **Route** the customer's networks via the provider's VPN router: a static route on the default gateway of the
+   appliance's network (the appliance sends everything that is not local to its gateway). Address ranges of different
+   customers must not overlap; if they do, translate them on the customer's router (1:1 NAT into a range you assign)
+   and create the sources with the translated addresses.
+3. **Filter in the tunnel**: on the customer's router allow only connections **from** the appliance's address **to**
+   what the sources need: Proxmox VE API 8006 and SSH 22 on every node, the agent port 7444, NFS 2049 / SMB 445,
+   TrueNAS 443 and 22, a plugin's database port. Nothing needs to connect to the appliance (pull model), so allow no
+   connections from the customer's side into your network.
+4. **MTU**: WireGuard adds 60–80 bytes. Use MTU 1420 on the tunnel (default) and let the routers clamp the TCP MSS
+   (`iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu`), otherwise large
+   NBD or SSH transfers stall.
+5. Create the sources with the customer's (or translated) addresses as usual. The appliance's outbound firewall
+   allows them automatically.
+
+Bandwidth: a site's upload usually limits the first full backup. Plan it (or seed it on site, e.g. with a temporary
+appliance and an offsite copy attached on the provider's appliance, see
+[14 Disaster recovery](14-disaster-recovery.md#attach-an-offsite-copy-in-the-web-ui)) and use the agents' bandwidth
+limits and the policy's blackout windows for business hours. Monitor the tunnel on the routers; a down tunnel shows
+on the appliance as failed backups of that tenant's sources.
+
+> **Status:** This is a network pattern outside the appliance; the appliance needs no change for it. A per-tenant
+> VLAN interface on the appliance itself is planned for a later release.
+
 ### Guest inventory
 
 The appliance lists the guests of every Proxmox VE, TrueNAS and guest-listing plugin source once an hour (job

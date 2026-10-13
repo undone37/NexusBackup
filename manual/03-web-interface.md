@@ -238,6 +238,33 @@ appliance raises a `quota` warning at 80 % and a critical alert at 100 % of the 
 [11 Alerts and monitoring](11-alerts-and-monitoring.md#alert-kinds)). A quota never stops a backup; it applies
 without approval.
 
+### Monthly usage (billing)
+
+**Monthly usage (billing)** at the bottom of the Storage page lists, per tenant and calendar month (pick the month at
+the top right):
+
+| Column | Meaning |
+|---|---|
+| **Objects** | protected objects (guests, hosts, shares, datasets, plugin objects) with at least one backup in the month, also when the snapshot has expired since |
+| **Backups** | snapshots taken in the month |
+| **Logical avg / peak** | the full size of the kept snapshots, averaged over the month's daily samples, and its highest value |
+| **Stored avg / peak** | the **measured** size of the tenant's store (one sample per day): the figure to bill storage by |
+| **Offsite avg / peak** | the logical size of the snapshots that have an offsite copy (the remote side itself is not measured) |
+| **Days sampled** | days with a sample; days the appliance was off are left out of the averages |
+
+For the running month the figures cover the days up to today. **Download CSV** exports the same table with the
+period, the immutable tenant ID (match customers by it, not by name) and the soft quota; the download is audited
+(`report.export`). The same table is the report type **Usage** on the Reports page, and a scheduled report of that
+type with the schedule `monthly 1 07:00` mails last month's usage to billing every month. API tokens may read it too
+(`GET /api/v1/usage?month=2026-10&format=csv`, or `nexusctl usage --month 2026-10 --csv`, see
+[09 Users and access](09-users-and-access.md#api-tokens)).
+
+![Monthly usage per tenant](images/storage-usage.png)
+
+> **Status:** The usage export is new in this release (unit tests of the figures, API tests for scoping, CSV and API
+> tokens, tried against the demo backend). The offsite figure needs the daily samples of this release: earlier days
+> show no offsite value. Not yet run on an installed appliance in the VM labs.
+
 ## Reports
 
 **Monitor → Reports** exports four reports as CSV files and, for administrators, mails them on a schedule
@@ -252,9 +279,10 @@ older `consistent` flag as `crash` / `inconsistent`) | current state |
 | **Failed jobs** | every job that failed in the range: job number, tenant, kind, what it worked on (group, source, agent, guest), times, attempt and the first error line of its log | from – to |
 | **SLA and RPO breaches** | `rpo_breach` rows: the periods in which an object had no good backup for longer than RPO × 1.5 (start, end or empty while it lasts, hours, limit); `sla_missed` rows: backups that ran longer than their policy's run-time SLA | from – to |
 | **Storage** | one row per tenant and per protection group: snapshots, logical size, data in, stored, saved (bytes), deduplication, compression, data reduction, measured store size, soft quota and growth over 7 / 30 / 90 days (tenant rows) | current state |
+| **Usage per tenant (billing)** | one row per tenant: period, tenant ID, objects, backups, logical / measured stored / offsite bytes as daily average and peak, days sampled, soft quota (see [Monthly usage](#monthly-usage-billing)) | from – to |
 
 1. Choose the report.
-2. For **Failed jobs** and **SLA and RPO breaches**, set **From** and **To** (whole UTC days, **To** included; at most
+2. For **Failed jobs**, **SLA and RPO breaches** and **Usage**, set **From** and **To** (whole UTC days, **To** included; at most
    400 days). Without dates the last 7 days are used.
 3. Accounts that see all tenants can limit the report to one **Tenant**. Tenant-scoped accounts always get their own
    tenant only.

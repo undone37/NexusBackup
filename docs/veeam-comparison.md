@@ -13,9 +13,9 @@ planned (checked against plan.md Phases 13–24 and docs/cohesity-comparison.md)
 | 6 | SOBR evacuate / move backups | Online store migration to a new array (chunk copy + switch-over) | M–L | Phase 22 |
 | 7 | Instant Disk Recovery | Attach one disk from a backup to an existing VM (NBD overlay, optional disk move) | S–M | Phase 22 |
 | 8 | Secure Restore (AV scan before restore) | Restore option "scan first" using the Phase 21 YARA scan; hit → refuse or force link down | S | Phase 21 |
-| 9 | Restore point simulator / capacity planning | GFS preview in the policy dialog with estimated stored bytes from measured stats; also in retention-weakening approvals | S–M | Phase 23 |
-| 10 | REST API + PowerShell | Published OpenAPI document + `nexusctl` CLI using API tokens | S–M | Phase 23 |
-| 11 | VeeamZIP (ad-hoc full with own retention) | "Back up now, keep until <date>" (store lock with expiry; approval beyond N days) | S | Phase 23 |
+| 9 | Restore point simulator / capacity planning | GFS preview in the policy dialog with estimated stored bytes from measured stats; also in retention-weakening approvals | S–M | **done** (Phase 23a: `POST /policies/simulate`, policy dialog + approvals page) |
+| 10 | REST API + PowerShell | Published OpenAPI document + `nexusctl` CLI using API tokens | S–M | **done** (Phase 23a: `/api/openapi.json`, crate `nexusctl`; packaging open) |
+| 11 | VeeamZIP (ad-hoc full with own retention) | "Back up now, keep until <date>" (store lock with expiry; approval beyond N days) | S | **done** (Phase 23a: `keep_until`, setting `keep_until_max_days` = 90) |
 | 12 | Rotated drives | Removable-disk offsite backend (disk-set identity, wrong/missing disk states, catch-up) | M | Phase 22 |
 | 13 | Veeam Explorer for AD | Export AD objects (LDIF/CSV, diff between snapshots) from a DC snapshot in the restore microVM | L | Phase 23 |
 

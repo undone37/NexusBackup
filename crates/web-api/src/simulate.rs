@@ -3,7 +3,7 @@
 //!
 //! Runs the policy's schedule forward from now over `days` (default 400, at
 //! most 1100, at most [`MAX_RUNS`] runs) and applies the store's own GFS rule
-//! (`chunkstore::retention::keep`, the code retention runs) after every run:
+//! (`retention::keep`, the code retention runs) after every run:
 //! the answer has the kept restore points over time (sampled), the classes at
 //! the end of the horizon and the oldest restore point. The size estimate uses
 //! the measured `backup_stats` of the sources the policy's groups cover (or the
@@ -20,7 +20,7 @@ use crate::validate::Gfs;
 use crate::{validate, ApiError, ApiResult, St, J};
 use axum::extract::State;
 use axum::Json;
-use chunkstore::retention::{self, Class};
+use retention::Class;
 use serde::Deserialize;
 use serde_json::{json, Value};
 

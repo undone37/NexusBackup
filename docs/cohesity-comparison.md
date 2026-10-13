@@ -138,3 +138,7 @@ tenant" (keeps the no-failover decision) + lab test of a full VM restore on the 
 SIEMs. Workloads by relevance: MSSQL (log chain, PITR, per-database restore), MySQL/MariaDB plugin
 (mariadb-backup + binlog PITR), Exchange on-prem full-VSS mode (log truncation), AD restore runbook, Hyper-V host-level,
 Windows BMR, Windows client OS + Linux arm64 agent support. Cohesity supports neither Proxmox VE nor TrueNAS directly.
+Status (Phase 23a): usage export, per-tenant OIDC IdP, onboarding wizard, WireGuard site-VPN pattern (manual 04),
+interim-backup DR runbook (manual 14) and the audit pull route (`/audit?since_seq=`) are done; per-tenant VLAN
+interfaces and the lab test of a full VM restore on the secondary are open (Phase 19b did impersonation, tiers and
+immutable tenant IDs).

@@ -24,8 +24,8 @@ nas = { path = "../nas", default-features = false }
 plugin-manager = { path = "../plugin-manager" }
 plugin-proto = { path = "../plugin-proto", features = ["bundle"] }
 reports = { path = "../reports" }
-# restore point simulator: the GFS rule retention runs (`retention::keep`; no store access)
-chunkstore = { path = "../chunkstore" }
+# restore point simulator: the GFS rule retention runs (`retention::keep`; not the store)
+retention = { path = "../retention" }
 regex = { version = "1", default-features = false, features = ["std", "perf", "unicode"] }
 # protocol types only (no chunk store, no keyd): docs/replication.md §2
 repl_proto = { package = "replication", path = "../replication", default-features = false }
@@ -54,6 +54,7 @@ tempfile = "3"
 # tests/replication.rs: two appliances in one process (primary: replicad + keyd +
 # scheduler; secondary: the nexus-replica client library + keyd)
 repl_proto = { package = "replication", path = "../replication" }
+chunkstore = { path = "../chunkstore" }
 keyd = { path = "../keyd" }
 scheduler = { path = "../scheduler" }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
