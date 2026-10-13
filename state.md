@@ -403,3 +403,12 @@ through the PVE guest agent (`lab/windows/gexec.py`, no Windows passwords), dev 
   enrollment, backup, restore identical (1237 entries)
 - [ ] GUI on Windows checked by the maintainer (new icon + web UI palette), MSI major upgrade (needs a bumped
   version), appliance VM on pve-test backing up the Windows VMs through PVE
+- [x] Appliance VM 201 on pve-test (`lab/pvehost/deploy.sh`: upload, create, tunnel, setup with static 10.2.34.211,
+  PVE source): plugin package on the host, storage `nexus` (fleecing local-zfs), user `nexusbackup` with the
+  forced-command key, token `nexus@pve!backup`. VM 200 (arm64) backed up and restored as VM 210, boots to login.
+- Found on the PVE host and fixed: plugin reported storage API 11 on PVE 9.2.21 ("older storage API" warning; API 16
+  reviewed); manual granted the PVE roles to the token only (privsep = intersection: empty inventory); VMs whose disks
+  have `backup=0` ended "ok" with only EFI/TPM state (now a warning); every full VM backup read each block twice
+  (chunkstore merged ranges); zero/unallocated regions were transported (now skipped via base:allocation);
+  no live progress for running jobs (in progress)
+- [ ] redeploy with the fixes, full + incremental backup of the Windows VMs, byte-exact restore check
