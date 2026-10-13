@@ -291,6 +291,10 @@ pub fn accept(c: &mut Connection, candidate: i64, actor: &str, now: i64) -> Resu
     if state != "awaiting" {
         bail!("the candidate was already {state}");
     }
+    // vault mode: no new agents (the web-api refuses them too; this covers auto-accept)
+    if crate::vault::enabled(&tx)? {
+        bail!("vault mode is on: no new agents on this appliance");
+    }
     let f = load(&tx, &fleet_id)?.context("fleet gone")?;
     if let Some(why) = f.unusable(now) {
         bail!("{why}");
