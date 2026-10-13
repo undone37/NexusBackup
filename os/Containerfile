@@ -19,6 +19,8 @@ WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY web/ ./
+# the mock backend (vite.config.ts) imports the OpenAPI document
+COPY crates/web-api/openapi.json /src/crates/web-api/openapi.json
 # the dev mock (loaded by vite.config.ts) imports the shipped plugins' manifests
 COPY plugins/ /src/plugins/
 RUN npm run build
