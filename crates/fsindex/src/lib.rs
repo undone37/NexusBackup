@@ -107,6 +107,26 @@ impl Volume {
     }
 }
 
+/// The sealed per-snapshot volume report (`fsindex` side file, crate
+/// chunkstore `snapfile.rs`): what was found on each volume and, for the next
+/// snapshot, which chunks each volume's parse read.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct Report {
+    pub version: u32,
+    pub volumes: Vec<VolumeRec>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct VolumeRec {
+    pub volume: Volume,
+    /// (disk index name, chunk index, chunk id hex) the parse read
+    #[serde(default)]
+    pub reads: Vec<(String, u64, String)>,
+}
+
+/// Side file name of the report.
+pub const REPORT_FILE: &str = "fsindex";
+
 /// One listed entry; `path` relative to the volume root, `/`-separated.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {

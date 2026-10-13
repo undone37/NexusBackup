@@ -592,9 +592,20 @@ pub const INDEX_BUDGET: Duration = Duration::from_secs(3600);
 /// name index; paths are `<mountpoint>/<path>` like in the file browser.
 /// Unreadable directories are skipped. Returns (index, complete).
 pub fn index(vm: &mut Vm, max_entries: usize, budget: Duration) -> Result<(chunkstore::NameIndex, bool)> {
+    index_roots(vm, &[String::new()], max_entries, budget)
+}
+
+/// [`index`] below the given mountpoints only (`vda2`, `lvm/vg-data`, `zfs`):
+/// the volumes nexus-fsindex cannot parse (crates/pve/src/fsindex.rs).
+pub fn index_roots(
+    vm: &mut Vm,
+    roots: &[String],
+    max_entries: usize,
+    budget: Duration,
+) -> Result<(chunkstore::NameIndex, bool)> {
     let t = Instant::now();
     let mut out = chunkstore::NameIndex::default();
-    let mut dirs = vec![String::new()];
+    let mut dirs = roots.to_vec();
     let mut errors = 0;
     while let Some(dir) = dirs.pop() {
         if out.len() >= max_entries || t.elapsed() > budget {
@@ -631,11 +642,16 @@ pub fn index(vm: &mut Vm, max_entries: usize, budget: Duration) -> Result<(chunk
     Ok((out, true))
 }
 
-/// `nexus-pve … files <vmid> <time> mounts | ls <path> | get <out.tar|out.zip> <path>… | index`:
+/// `nexus-pve … files <vmid> <time> mounts | ls <path> | get <out.tar|out.zip> <path>… | index | index-vm`
+/// (`index`: crates/pve/src/fsindex.rs; `index-vm`: the walk in the micro-VM):
 /// all fixed indexes (disks) of the VM snapshot attached. Image directory from
 /// `NEXUS_RESTORE_VM_DIR` (default `/usr/lib/nexus/restore-vm`), QEMU from `NEXUS_QEMU`.
 pub fn cli(store: &Store, vmid: u32, time: u64, args: &[String]) -> Result<()> {
-    let usage = "files <vmid> <time> mounts | ls <path> | get <out.tar|out.zip> <path>... | index";
+    let usage = "files <vmid> <time> mounts | ls <path> | get <out.tar|out.zip> <path>... | index | index-vm";
+    // Phase 31a: the name index without booting the micro-VM (sandboxed parser)
+    if matches!(args, [c] if c == "index") {
+        return crate::fsindex::cli(store, &crate::backup::source_name(vmid), time);
+    }
     let m = store.load_manifest(&crate::backup::source_name(vmid), time)?;
     let mut disks = Vec::new();
     for name in &m.indexes {
@@ -652,7 +668,7 @@ pub fn cli(store: &Store, vmid: u32, time: u64, args: &[String]) -> Result<()> {
         match args {
             [c] if c == "mounts" => println!("{}", serde_json::to_string_pretty(&vm.mounts()?)?),
             // the snapshot's name index for the file search (groups.index_files)
-            [c] if c == "index" => {
+            [c] if c == "index-vm" => {
                 let (names, complete) = index(vm, INDEX_MAX_ENTRIES, INDEX_BUDGET)?;
                 store.write_names(&m.source, m.time, &names)?;
                 println!("{}", serde_json::json!({"entries": names.len(), "complete": complete}));

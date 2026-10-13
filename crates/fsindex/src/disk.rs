@@ -181,6 +181,28 @@ impl Seek for Vol {
     }
 }
 
+/// A volume that reads zeros past its end (crate `ntfs` turns a short read
+/// inside a structure into a panic; zeros become a parse error instead).
+#[derive(Clone)]
+pub struct Padded(pub Vol);
+
+impl Read for Padded {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let v = &mut self.0;
+        let n = (buf.len() as u64).min(v.size.saturating_sub(v.pos)) as usize;
+        v.read_at(v.pos, &mut buf[..n])?;
+        buf[n..].fill(0);
+        v.pos = v.pos.saturating_add(buf.len() as u64);
+        Ok(buf.len())
+    }
+}
+
+impl Seek for Padded {
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        self.0.seek(to)
+    }
+}
+
 /// Never writes (crate `fatfs` wants a read-write device): every write fails.
 impl Write for Vol {
     fn write(&mut self, _: &[u8]) -> io::Result<usize> {

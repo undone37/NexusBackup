@@ -1,0 +1,73 @@
+[package]
+name = "fsindex-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "AGPL-3.0-only"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+fsindex = { path = ".." }
+
+# not part of the main workspace (nightly + sanitizers); see docs/security-review.md
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "part_table"
+path = "fuzz_targets/part_table.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lvm_meta"
+path = "fuzz_targets/lvm_meta.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ext4_walk"
+path = "fuzz_targets/ext4_walk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ntfs_walk"
+path = "fuzz_targets/ntfs_walk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fat_walk"
+path = "fuzz_targets/fat_walk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "exfat_walk"
+path = "fuzz_targets/exfat_walk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "helper_frames"
+path = "fuzz_targets/helper_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "disk_walk"
+path = "fuzz_targets/disk_walk.rs"
+test = false
+doc = false
+bench = false

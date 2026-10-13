@@ -27,7 +27,7 @@ pub fn read_pv(v: &Vol) -> Result<Pv, String> {
     let sector = (0..4)
         .find(|s| head.get(s * 512..s * 512 + 8) == Some(b"LABELONE") && head.get(s * 512 + 24..s * 512 + 32) == Some(b"LVM2 001"))
         .ok_or("no LVM label")?;
-    let lab = &head[sector * 512..sector * 512 + 512];
+    let lab = head.get(sector * 512..sector * 512 + 512).ok_or("LVM label truncated")?;
     if le64(lab, 8) != sector as u64 {
         return Err("LVM label: wrong sector".into());
     }
@@ -75,7 +75,7 @@ pub fn read_pv(v: &Vol) -> Result<Pv, String> {
 
 fn read_mda(v: &Vol, mda: u64, msize: u64) -> Result<Option<(u64, String)>, String> {
     let h = v.read_vec(mda, 512).map_err(|e| e.to_string())?;
-    if h.get(4..20) != Some(MDA_MAGIC) {
+    if h.len() < 512 || h.get(4..20) != Some(MDA_MAGIC) {
         return Err("metadata area magic".into());
     }
     if crate::part::crc32_lvm(&h[4..512]) != le32(&h, 0) {

@@ -233,4 +233,171 @@ put("nas", "helper_request", "krb5",
             ("sec", "krb5"), ("timeout", "60"), ("share", "share"), ("sign", "1"), ("seal", "0"),
             ("keytab", "0502000000"), ("principal", "backup@LAB.EXAMPLE")))
 put("nas", "helper_request", "answer", "error nfs: access denied by server\n")
+
+# ---------------------------------------------------------------- fsindex
+# small images from the local tools (skipped if missing), cut to the fuzzer's
+# max_len (64 KiB): headers, first directories, FAT/MFT starts; crafted
+# partition tables, LVM metadata and helper frames
+import shutil, subprocess, tempfile, zlib
+
+
+def find_tool(name):
+    return shutil.which(name) or next((p for p in (f"/usr/sbin/{name}", f"/sbin/{name}") if os.path.exists(p)), None)
+
+
+def tool_img(size_kb, cmd, create=True, cut=65536):
+    exe = find_tool(cmd[0])
+    if not exe:
+        return None
+    with tempfile.TemporaryDirectory() as d:
+        img = os.path.join(d, "img")
+        if create:
+            with open(img, "wb") as f:
+                f.truncate(size_kb * 1024)
+        r = subprocess.run([exe] + [a.replace("IMG", img) for a in cmd[1:]], capture_output=True)
+        if r.returncode != 0:
+            return None
+        with open(img, "rb") as f:
+            return f.read(cut)
+
+
+for target, name, kb, cmd, create in [
+    ("ext4_walk", "ext2-1k", 64, ["mke2fs", "-q", "-F", "-t", "ext2", "-b", "1024", "-N", "16", "IMG"], True),
+    ("ext4_walk", "ext4-1k", 64,
+     ["mke2fs", "-q", "-F", "-t", "ext4", "-b", "1024", "-N", "16", "-O", "^has_journal,^resize_inode", "IMG"], True),
+    ("fat_walk", "fat12", 64, ["mkfs.fat", "-C", "IMG", "64"], False),
+    ("exfat_walk", "exfat", 4096, ["mkfs.exfat", "IMG"], True),
+    ("ntfs_walk", "ntfs", 2048, ["mkntfs", "-F", "-Q", "-q", "IMG"], True),
+]:
+    data = tool_img(kb, cmd, create)
+    if data:
+        put("fsindex", target, name, data)
+        put("fsindex", "disk_walk", name, data)
+
+
+def gpt_disk(sectors=128):
+    d = bytearray(sectors * 512)
+    d[446 + 4] = 0xee
+    d[446 + 8:446 + 16] = struct.pack("<II", 1, sectors - 1)
+    d[510:512] = b"\x55\xaa"
+    arr = bytearray(128 * 4)
+    arr[0:16] = bytes.fromhex("79d3d6e607f5c244a23c238f2a3df928")
+    arr[16:32] = b"\x11" * 16
+    arr[32:48] = struct.pack("<QQ", 34, 100)
+    h = bytearray(92)
+    h[0:8] = b"EFI PART"
+    h[12:16] = struct.pack("<I", 92)
+    h[40:56] = struct.pack("<QQ", 34, sectors - 2)
+    h[72:80] = struct.pack("<Q", 2)
+    h[80:88] = struct.pack("<II", 4, 128)
+    h[88:92] = struct.pack("<I", zlib.crc32(bytes(arr)))
+    h[16:20] = struct.pack("<I", zlib.crc32(bytes(h)))
+    d[512:604] = h
+    d[1024:1024 + len(arr)] = arr
+    return bytes(d)
+
+
+def mbr_disk():
+    d = bytearray(64 * 1024)
+
+    def ent(s, i, t, lba, n):
+        s[446 + i * 16 + 4] = t
+        s[446 + i * 16 + 8:446 + i * 16 + 16] = struct.pack("<II", lba, n)
+
+    ent(d, 0, 0x83, 8, 20)
+    ent(d, 1, 0x05, 40, 80)
+    d[510:512] = b"\x55\xaa"
+    e1 = bytearray(512)
+    ent(e1, 0, 0x8e, 2, 10)
+    ent(e1, 1, 0x05, 20, 30)
+    e1[510:512] = b"\x55\xaa"
+    d[40 * 512:41 * 512] = e1
+    e2 = bytearray(512)
+    ent(e2, 0, 0x07, 2, 10)
+    e2[510:512] = b"\x55\xaa"
+    d[60 * 512:61 * 512] = e2
+    return bytes(d)
+
+
+for n, data in [("gpt", gpt_disk()), ("mbr-ebr", mbr_disk())]:
+    put("fsindex", "part_table", n, data)
+    put("fsindex", "disk_walk", n, data)
+
+LVM_TEXT = """vg0 {
+id = "Vg0Id1-aaaa-bbbb-cccc-dddd-eeee-ffffff"
+seqno = 7
+status = ["RESIZEABLE", "READ", "WRITE"]
+extent_size = 8192
+physical_volumes {
+pv0 { id = "AAAAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAAAA" device = "/dev/vda2" pe_start = 2048 pe_count = 100 }
+pv1 { id = "BBBBBB-BBBB-BBBB-BBBB-BBBB-BBBB-BBBBBB" device = "/dev/vdb" pe_start = 2048 pe_count = 100 }
+}
+logical_volumes {
+root { id = "r" status = ["READ", "WRITE", "VISIBLE"] segment_count = 2
+segment1 { start_extent = 0 extent_count = 10 type = "striped" stripe_count = 1 stripes = ["pv0", 0] }
+segment2 { start_extent = 10 extent_count = 4 type = "striped" stripe_count = 2 stripe_size = 128 stripes = ["pv0", 10, "pv1", 0] } }
+m { id = "m" status = ["READ", "WRITE", "VISIBLE"]
+segment1 { start_extent = 0 extent_count = 2 type = "raid1" device_count = 2 raids = ["m_rmeta_0", "m_rimage_0", "m_rmeta_1", "m_rimage_1"] } }
+m_rimage_0 { id = "x" status = ["READ"] segment1 { start_extent = 0 extent_count = 2 type = "striped" stripe_count = 1 stripes = ["pv1", 50] } }
+}
+}
+contents = "Text Format Volume Group"
+version = 1
+"""
+
+
+def lvm_crc(b):
+    c = 0xf597a6cf
+    for x in b:
+        c ^= x
+        for _ in range(8):
+            c = (c >> 1) ^ 0xEDB88320 if c & 1 else c >> 1
+    return c
+
+
+def pv_disk(text):
+    d = bytearray(16 * 1024)
+    lab = bytearray(512)
+    lab[0:8] = b"LABELONE"
+    lab[8:16] = struct.pack("<Q", 1)
+    lab[20:24] = struct.pack("<I", 32)
+    lab[24:32] = b"LVM2 001"
+    lab[32:64] = b"A" * 32
+    lab[72:80] = struct.pack("<Q", 1 << 20)
+    lab[104:120] = struct.pack("<QQ", 4096, 12288)
+    lab[16:20] = struct.pack("<I", lvm_crc(lab[20:512]))
+    d[512:1024] = lab
+    h = bytearray(512)
+    h[4:20] = b" LVM2 x[5A%r0N*>"
+    h[20:24] = struct.pack("<I", 1)
+    h[24:40] = struct.pack("<QQ", 4096, 12288)
+    h[40:56] = struct.pack("<QQ", 512, len(text))
+    h[0:4] = struct.pack("<I", lvm_crc(h[4:512]))
+    d[4096:4608] = h
+    d[4608:4608 + len(text)] = text.encode()
+    return bytes(d)
+
+
+put("fsindex", "lvm_meta", "text", LVM_TEXT)
+put("fsindex", "lvm_meta", "pv", pv_disk(LVM_TEXT))
+put("fsindex", "disk_walk", "pv", pv_disk(LVM_TEXT))
+
+
+def fx_frame(tag, payload):
+    return tag + struct.pack("<I", len(payload)) + payload
+
+
+def fx_ent(path, kind=0, size=5, mtime=1700000000):
+    p = path.encode()
+    return bytes([kind]) + struct.pack("<QqH", size, mtime, len(p)) + p
+
+
+vol_json = json.dumps({"key": "drive-scsi0@0+1", "browse": "vda1", "device": "drive-scsi0", "fs": "ext4",
+                       "size": 1, "state": "indexed"}).encode()
+put("fsindex", "helper_frames", "listing",
+    fx_frame(b"B", vol_json) + fx_frame(b"E", fx_ent("etc", 1) + fx_ent("etc/hosts")) + fx_frame(b"Z", vol_json)
+    + fx_frame(b"Q", b""))
+put("fsindex", "helper_frames", "hostile",
+    fx_frame(b"B", vol_json.replace(b"vda1", b"../x")) + fx_frame(b"E", fx_ent("../etc/passwd") + fx_ent("/abs")))
+
 print("seeds written")

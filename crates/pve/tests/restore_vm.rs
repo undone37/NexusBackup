@@ -327,3 +327,83 @@ fn single_file_restore_from_disk_images() {
     assert_eq!(r["matches"][0]["path"], "home/u/report.docx");
     let _ = std::io::stderr().flush();
 }
+
+/// Phase 31a: the sandboxed parser lists the same entries as the micro-VM walk
+/// for every file system it reads (ext4, NTFS, FAT, ext4 on LVM); XFS, btrfs
+/// and ZFS are reported as unsupported. Directory sizes and times differ by
+/// design (the kernel reports block sizes; not compared).
+/// Needs the micro-VM image, its fixtures, /dev/kvm and a built nexus-fsindex:
+/// `cargo build --release -p fsindex && cargo test --release -p pve --test restore_vm fsindex_matches -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn fsindex_matches_micro_vm_listing() {
+    let cfg = Config {
+        image_dir: target().join("restore-vm"),
+        boot_timeout: Duration::from_secs(60),
+        ..Default::default()
+    };
+    if !cfg.image_dir.join("vmlinuz").is_file() || !restorevm::kvm_usable() {
+        eprintln!("restore VM image or /dev/kvm missing, skipping");
+        return;
+    }
+    let fx = fixtures(&cfg, &big_payload());
+    let sd = tempfile::tempdir_in(target()).unwrap();
+    let store = Store::open(sd.path(), Keyring::new("t", &[(1, [7; 32])]), Options::default()).unwrap();
+    let i0 = store_image(&store, &fx.join("disk0.img"));
+    let i1 = store_image(&store, &fx.join("disk1.img"));
+    let m = store
+        .commit_snapshot("vm-300", 7, &[("drive-scsi0", i0.clone()), ("drive-scsi1", i1.clone())])
+        .unwrap();
+    let t = Instant::now();
+    let (vm_names, complete) = restorevm::with_vm(&store, &[("drive-scsi0", &i0), ("drive-scsi1", &i1)], &cfg, |vm| {
+        restorevm::index(vm, 1_000_000, Duration::from_secs(600))
+    })
+    .unwrap();
+    assert!(complete);
+    let vm_secs = t.elapsed();
+    let exe = std::env::current_exe().unwrap();
+    let helper = exe.parent().unwrap().parent().unwrap().join("nexus-fsindex");
+    assert!(helper.is_file(), "build nexus-fsindex first (cargo build -p fsindex)");
+    std::env::set_var("NEXUS_FSINDEX", &helper);
+    std::env::set_var("NEXUS_FSINDEX_NO_VM", "1");
+    let t = Instant::now();
+    let r = pve::fsindex::index(&store, &m, fsindex::Limits::default()).unwrap();
+    eprintln!("micro-VM walk {vm_secs:.1?}, nexus-fsindex {:.1?}: {r}", t.elapsed());
+    let ours = store.load_names(&m).unwrap().unwrap();
+    type Set = std::collections::BTreeSet<(String, u8, u64, i64)>;
+    let set = |n: &chunkstore::NameIndex, root: &str| -> Set {
+        n.iter()
+            .filter(|e| e.0.starts_with(&format!("{root}/")))
+            .map(|(p, s, t, k)| (p.to_owned(), k, if k == 0 { s } else { 0 }, if k == 0 { t } else { 0 }))
+            .collect()
+    };
+    for root in ["vda1", "vda3", "vda5", "lvm/vgtest-data"] {
+        let (a, b) = (set(&vm_names, root), set(&ours, root));
+        assert!(!a.is_empty(), "{root}: micro-VM listed nothing");
+        assert_eq!(a, b, "{root}: micro-VM vs nexus-fsindex");
+    }
+    let states: Vec<(String, String)> = r["volumes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| (v["browse"].as_str().unwrap().into(), v["state"].as_str().unwrap().into()))
+        .collect();
+    for b in ["vda2", "vda4", "vdb1"] {
+        assert!(states.contains(&(b.into(), "unsupported".into())), "{b}: {states:?}");
+    }
+
+    // the next snapshot: unchanged volumes reused, XFS / btrfs / ZFS through the micro-VM
+    std::env::remove_var("NEXUS_FSINDEX_NO_VM");
+    std::env::set_var("NEXUS_RESTORE_VM_DIR", &cfg.image_dir);
+    let m2 = store
+        .commit_snapshot("vm-300", 8, &[("drive-scsi0", i0.clone()), ("drive-scsi1", i1.clone())])
+        .unwrap();
+    let t = Instant::now();
+    let r = pve::fsindex::index(&store, &m2, fsindex::Limits::default()).unwrap();
+    eprintln!("second snapshot with the micro-VM fallback {:.1?}: {r}", t.elapsed());
+    assert_eq!((r["reused"].as_u64(), r["micro_vm"].as_bool()), (Some(4), Some(true)), "{r}");
+    let ours = store.load_names(&m2).unwrap().unwrap();
+    for root in ["vda1", "vda2", "vda3", "vda4", "vda5", "lvm/vgtest-data", "zfs"] {
+        assert_eq!(set(&vm_names, root), set(&ours, root), "{root}: micro-VM vs nexus-fsindex + fallback");
+    }
+}

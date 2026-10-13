@@ -1,0 +1,20 @@
+vg0 {
+id = "Vg0Id1-aaaa-bbbb-cccc-dddd-eeee-ffffff"
+seqno = 7
+status = ["RESIZEABLE", "READ", "WRITE"]
+extent_size = 8192
+physical_volumes {
+pv0 { id = "AAAAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAAAA" device = "/dev/vda2" pe_start = 2048 pe_count = 100 }
+pv1 { id = "BBBBBB-BBBB-BBBB-BBBB-BBBB-BBBB-BBBBBB" device = "/dev/vdb" pe_start = 2048 pe_count = 100 }
+}
+logical_volumes {
+root { id = "r" status = ["READ", "WRITE", "VISIBLE"] segment_count = 2
+segment1 { start_extent = 0 extent_count = 10 type = "striped" stripe_count = 1 stripes = ["pv0", 0] }
+segment2 { start_extent = 10 extent_count = 4 type = "striped" stripe_count = 2 stripe_size = 128 stripes = ["pv0", 10, "pv1", 0] } }
+m { id = "m" status = ["READ", "WRITE", "VISIBLE"]
+segment1 { start_extent = 0 extent_count = 2 type = "raid1" device_count = 2 raids = ["m_rmeta_0", "m_rimage_0", "m_rmeta_1", "m_rimage_1"] } }
+m_rimage_0 { id = "x" status = ["READ"] segment1 { start_extent = 0 extent_count = 2 type = "striped" stripe_count = 1 stripes = ["pv1", 50] } }
+}
+}
+contents = "Text Format Volume Group"
+version = 1

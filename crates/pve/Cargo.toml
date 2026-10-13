@@ -10,6 +10,7 @@ agent-proto = { path = "../agent-proto" }
 anyhow = "1"
 catalog = { path = "../catalog" }
 chunkstore = { path = "../chunkstore" }
+fsindex = { path = "../fsindex" }
 keyd = { path = "../keyd" }
 libc = "0.2"
 nbd = { path = "../nbd" }

@@ -91,6 +91,22 @@ pub fn decode_entries(mut b: &[u8], out: &mut Vec<Entry>) -> io::Result<()> {
     Ok(())
 }
 
+/// A `B` / `Z` payload from the helper (hostile on the parent side): the
+/// browse path becomes a prefix of name-index paths, so it must be relative
+/// and without `.`/`..`/empty components.
+pub fn parse_volume(p: &[u8]) -> io::Result<Volume> {
+    let v: Volume = serde_json::from_slice(p)?;
+    let ok = !v.browse.is_empty()
+        && v.browse.len() <= 512
+        && v.key.len() <= 1024
+        && !v.browse.contains('\0')
+        && v.browse.split('/').all(|c| !c.is_empty() && c != "." && c != "..");
+    if !ok {
+        return Err(invalid("malformed volume"));
+    }
+    Ok(v)
+}
+
 /// The helper's end of the pipe.
 pub struct Chan<R, W> {
     pub r: R,

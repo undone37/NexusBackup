@@ -4,7 +4,7 @@
 //! of `$FILE_NAME` (Windows updates that lazily). DOS 8.3 aliases and the NTFS
 //! metadata files are left out. `$LogFile` is never replayed.
 
-use crate::disk::Vol;
+use crate::disk::{Padded, Vol};
 use crate::walk::Out;
 use crate::{nt_to_unix, Volume, KIND_DIR, KIND_FILE, KIND_SYMLINK, MAX_DEPTH, MAX_PATH};
 use ntfs::structured_values::{NtfsFileNamespace, NtfsStandardInformation, NtfsVolumeFlags};
@@ -18,7 +18,7 @@ const TAG_MOUNT_POINT: u32 = 0xA000_0003;
 const FIRST_USER_RECORD: u64 = 16;
 const ROOT: u64 = 5;
 
-fn reparse_tag(f: &NtfsFile, fs: &mut Vol) -> Option<u32> {
+fn reparse_tag(f: &NtfsFile, fs: &mut Padded) -> Option<u32> {
     let mut attrs = f.attributes();
     while let Some(item) = attrs.next(fs) {
         let item = item.ok()?;
@@ -33,7 +33,7 @@ fn reparse_tag(f: &NtfsFile, fs: &mut Vol) -> Option<u32> {
 }
 
 pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
-    let mut fs = v.clone();
+    let mut fs = Padded(v.clone());
     let ntfs = Ntfs::new(&mut fs).map_err(|e| format!("ntfs: {e}"))?;
     info.uuid = Some(format!("{:016X}", ntfs.serial_number()));
     if let Some(Ok(n)) = ntfs.volume_name(&mut fs) {

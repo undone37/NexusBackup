@@ -215,6 +215,9 @@ pub fn parse(v: &Vol) -> io::Result<Table> {
             continue;
         }
         if let Some(pt) = mbr_type(t) {
+            if (lba + n) * SECTOR > size {
+                return Ok(Table::Corrupt(format!("partition {} outside the disk", i + 1)));
+            }
             out.push(Part {
                 number: i as u32 + 1,
                 start: lba * SECTOR,

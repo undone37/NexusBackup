@@ -18,7 +18,9 @@ shift $(($# < 2 ? $# : 2))
 all=(nbd:nbd_client nbd:nbd_server chunkstore:sealed_open chunkstore:meta_decode
      offsite:pack_parse offsite:hostile_box offsite:s3_xml pve:ct_records pve:tar_files pve:agent_frames
      pve:agent_request keyd:keyd_request web-api:validators web-api:api_router truenas:hostile_stream
-     nas:helper_request replication:hostile_primary plugin-host:hostile_plugin)
+     nas:helper_request replication:hostile_primary plugin-host:hostile_plugin
+     fsindex:part_table fsindex:lvm_meta fsindex:ext4_walk fsindex:ntfs_walk fsindex:fat_walk
+     fsindex:exfat_walk fsindex:helper_frames fsindex:disk_walk)
 if [ $# -gt 0 ]; then targets=("$@"); else targets=("${all[@]}"); fi
 san=${SANITIZER:-none}
 logs=target/fuzz-logs

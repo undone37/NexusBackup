@@ -5,6 +5,7 @@
 //! volume marked `failed`; at most [`MAX_RESTARTS`] times.
 
 use crate::proto::{decode_entries, read_frame, write_frame, Config};
+
 use crate::{Entry, Limits, Volume};
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, BufReader, BufWriter, Write};
@@ -158,7 +159,7 @@ fn run_once(
                     w.flush()?;
                 }
                 b'B' => {
-                    let v: Volume = serde_json::from_slice(&p)?;
+                    let v: Volume = crate::proto::parse_volume(&p)?;
                     let parseable = v.state.is_empty();
                     let i = match known.get(&v.key) {
                         Some(&i) => i,
@@ -195,7 +196,7 @@ fn run_once(
                     }
                 }
                 b'Z' => {
-                    let v: Volume = serde_json::from_slice(&p)?;
+                    let v: Volume = crate::proto::parse_volume(&p)?;
                     let i = *known.get(&v.key).ok_or_else(|| io::Error::other("end of an unknown volume"))?;
                     if v.state.is_empty() {
                         return Err(io::Error::other("volume ended without a state"));
