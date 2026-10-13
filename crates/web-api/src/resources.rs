@@ -1081,7 +1081,10 @@ pub(crate) fn insert_share(
     let id = tx.last_insert_rowid();
     let mut v = serde_json::to_value(&cfg).map_err(anyhow::Error::from)?;
     pk.seal_all(&source_owner(id), &mut v)?;
-    tx.execute("UPDATE sources SET config = ?2 WHERE id = ?1", params![id, v.to_string()])?;
+    tx.execute(
+        "UPDATE sources SET config = ?2 WHERE id = ?1",
+        params![id, v.to_string()],
+    )?;
     Ok(id)
 }
 

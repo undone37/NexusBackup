@@ -93,7 +93,10 @@ fn coverage(s: &Value) -> Option<(String, Vec<String>)> {
     match s["kind"].as_str()? {
         "nfs" => Some((format!("nfs|{host}|{}", c["export"].as_str()?), roots(c))),
         // SMB share names are case-insensitive
-        "smb" => Some((format!("smb|{host}|{}", c["share"].as_str()?.to_ascii_lowercase()), roots(c))),
+        "smb" => Some((
+            format!("smb|{host}|{}", c["share"].as_str()?.to_ascii_lowercase()),
+            roots(c),
+        )),
         "truenas" => Some((
             format!("truenas|{host}"),
             c["datasets"]
@@ -122,7 +125,10 @@ pub fn annotate(c: &Connection, rows: &mut [Value]) -> ApiResult<()> {
             })
             .map(|j| json!({"id": rows[j]["id"], "name": rows[j]["name"]}))
             .collect();
-        let (id, tenant) = (rows[i]["id"].as_i64().unwrap_or_default(), rows[i]["tenant"].as_str().unwrap_or_default());
+        let (id, tenant) = (
+            rows[i]["id"].as_i64().unwrap_or_default(),
+            rows[i]["tenant"].as_str().unwrap_or_default(),
+        );
         let entries = if rows[i]["kind"] == "truenas" {
             last_entries(c, tenant, &format!("nas-{id}-"), false)?
         } else {
@@ -178,8 +184,13 @@ pub async fn split(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>, J(r): J<
     let within = roots(&base);
     for (i, a) in r.roots.iter().enumerate() {
         let a = format!("/{}", a.trim_matches('/'));
-        if !within.iter().any(|w| w == "/" || a == *w || a.starts_with(&format!("{w}/"))) {
-            return Err(ApiError::bad(format!("roots: {a} is outside the source's include roots")));
+        if !within
+            .iter()
+            .any(|w| w == "/" || a == *w || a.starts_with(&format!("{w}/")))
+        {
+            return Err(ApiError::bad(format!(
+                "roots: {a} is outside the source's include roots"
+            )));
         }
         if r.roots[..i]
             .iter()
@@ -314,7 +325,10 @@ pub async fn skipped(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> Api
     });
     let mut res = skipped_csv(&log, errors).into_response();
     let h = res.headers_mut();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/csv; charset=utf-8"));
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/csv; charset=utf-8"),
+    );
     h.insert(
         header::CONTENT_DISPOSITION,
         HeaderValue::from_str(&format!("attachment; filename=\"nexus-job-{id}-skipped.csv\""))
@@ -335,7 +349,10 @@ mod tests {
         let csv = skipped_csv(log, Some(5));
         let lines: Vec<&str> = csv.split("\r\n").collect();
         assert_eq!(lines[0], "path,reason,kind");
-        assert_eq!(lines[1], "\"docs/a, b.txt\",open: Permission denied (os error 13),error");
+        assert_eq!(
+            lines[1],
+            "\"docs/a, b.txt\",open: Permission denied (os error 13),error"
+        );
         assert_eq!(lines[2], "mnt/x,\"nested mount, not descended\",note");
         assert_eq!(lines[3], "'=cmd|calc,read: EIO,error", "formula neutralised");
         assert!(lines[4].starts_with(",3 more not listed"));
@@ -364,8 +381,19 @@ mod tests {
         )
         .unwrap();
         annotate(&c, &mut rows).unwrap();
-        let ids = |r: &Value| -> Vec<i64> { r["overlaps"].as_array().unwrap().iter().map(|o| o["id"].as_i64().unwrap()).collect() };
-        assert_eq!(ids(&rows[0]), vec![2], "same share (case-insensitive), whole share covers /projects");
+        let ids = |r: &Value| -> Vec<i64> {
+            r["overlaps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|o| o["id"].as_i64().unwrap())
+                .collect()
+        };
+        assert_eq!(
+            ids(&rows[0]),
+            vec![2],
+            "same share (case-insensitive), whole share covers /projects"
+        );
         assert_eq!(ids(&rows[2]), Vec::<i64>::new());
         assert_eq!(ids(&rows[3]), Vec::<i64>::new(), "/a and /ab do not overlap");
         assert_eq!(ids(&rows[5]), vec![7]);

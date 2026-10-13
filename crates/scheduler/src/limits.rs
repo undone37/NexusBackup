@@ -148,7 +148,10 @@ mod tests {
         assert_eq!(m.len(), 2, "{m:?}");
         assert_eq!(m[0].0, "vm-100");
         assert_eq!(m[0].2["identity"]["changed"], true);
-        assert_eq!(m[1], ("nas-3-tank.data".to_string(), 5, json!({"zfs_snapshot": "auto-1"})));
+        assert_eq!(
+            m[1],
+            ("nas-3-tank.data".to_string(), 5, json!({"zfs_snapshot": "auto-1"}))
+        );
         let mut snaps = vec![json!({"source": "vm-100", "time": 1700000000})];
         attach_identity(log, &mut snaps);
         assert_eq!(snaps[0]["meta"]["identity"]["previous"]["vmgenid"], "a");

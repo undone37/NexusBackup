@@ -34,7 +34,9 @@ fn restore_priority_holds_and_expires() {
     let gc = s.insert_job("gc", "t2", &json!({})).unwrap();
     let manual_backup = manual(&s, "backup", "t1", json!({"group_id": 2}));
     s.check_restore_priority(now).unwrap();
-    assert!(open_alert(&s).unwrap().contains("restore priority is on (by alice: DR)"));
+    assert!(open_alert(&s)
+        .unwrap()
+        .contains("restore priority is on (by alice: DR)"));
     s.start_jobs().unwrap();
     assert_eq!(s.running(), vec![(manual_backup, "source:2".into())]);
     assert_eq!(state(&s, sched_backup), "queued");
@@ -43,7 +45,11 @@ fn restore_priority_holds_and_expires() {
     s.queue_maintenance(now + 86400 * 2).unwrap();
     let n: i64 =
         s.db.conn()
-            .query_row("SELECT COUNT(*) FROM jobs WHERE kind IN ('verify','file_index')", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE kind IN ('verify','file_index')",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
     assert_eq!(n, 0);
     s.wait_idle(Duration::from_secs(20)).unwrap();
@@ -62,6 +68,10 @@ fn restore_priority_holds_and_expires() {
             .unwrap();
     assert_eq!(audited, 1);
     s.start_jobs().unwrap();
-    assert!(s.running().iter().any(|(id, _)| *id == sched_backup), "{:?}", s.running());
+    assert!(
+        s.running().iter().any(|(id, _)| *id == sched_backup),
+        "{:?}",
+        s.running()
+    );
     s.wait_idle(Duration::from_secs(20)).unwrap();
 }

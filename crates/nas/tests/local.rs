@@ -377,7 +377,9 @@ fn read_limit_paces_content() {
     let d = tempfile::tempdir().unwrap();
     let share = d.path().join("share");
     fs::create_dir_all(&share).unwrap();
-    let data: Vec<u8> = (0..3u32 << 20).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
+    let data: Vec<u8> = (0..3u32 << 20)
+        .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
+        .collect();
     fs::write(share.join("big"), &data).unwrap();
     let root = mount::open_local(&share).unwrap();
     let st = store(&d.path().join("store"));
@@ -392,5 +394,9 @@ fn read_limit_paces_content() {
     let t = std::time::Instant::now();
     let (_, r) = scan::scan(&st, &root, &o, None, &quiet).unwrap();
     assert_eq!(r.bytes_read, 3 << 20);
-    assert!(t.elapsed() >= std::time::Duration::from_millis(1300), "{:?}", t.elapsed());
+    assert!(
+        t.elapsed() >= std::time::Duration::from_millis(1300),
+        "{:?}",
+        t.elapsed()
+    );
 }

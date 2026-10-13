@@ -88,7 +88,11 @@ pub fn script(fc: &Fc, t: &Tools) -> Result<String> {
     } else {
         String::new()
     };
-    if fc.existing_prefix.as_deref().is_some_and(|p| !crate::valid_snap_prefix(p)) {
+    if fc
+        .existing_prefix
+        .as_deref()
+        .is_some_and(|p| !crate::valid_snap_prefix(p))
+    {
         bail!("forced command: invalid existing snapshot prefix");
     }
     let comp = "[A-Za-z0-9_][A-Za-z0-9_-]*";
@@ -232,7 +236,10 @@ mod tests {
     #[test]
     fn existing_prefix_in_the_script() {
         let t = Tools::default();
-        assert!(script(&fc(), &t).unwrap().contains("E=\"\""), "no prefix: only nexus- snapshots");
+        assert!(
+            script(&fc(), &t).unwrap().contains("E=\"\""),
+            "no prefix: only nexus- snapshots"
+        );
         let s = script(
             &Fc {
                 existing_prefix: Some("auto-".into()),

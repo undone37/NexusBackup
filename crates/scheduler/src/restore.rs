@@ -108,14 +108,20 @@ impl Scheduler {
             .filter(|d| d.strip_prefix("drive-").is_some_and(crate::selection::valid_disk_key))
             .context("device: drive-<slot>")?;
         let node = p["node"].as_str().filter(|n| pve_name(n)).context("node")?;
-        let target = p["target"].as_u64().and_then(|t| u32::try_from(t).ok()).context("target")?;
+        let target = p["target"]
+            .as_u64()
+            .and_then(|t| u32::try_from(t).ok())
+            .context("target")?;
         let sid = self.resolve_source(job, Some(vmid))?;
         let protected = self
             .groups()?
             .into_iter()
             .any(|g| g.tenant == job.tenant && g.source_id == sid && g.guests.contains(&target));
         if !protected {
-            bail!("VM {target} is not protected by a group of tenant {} on this source", job.tenant);
+            bail!(
+                "VM {target} is not protected by a group of tenant {} on this source",
+                job.tenant
+            );
         }
         plan.key = format!("guest:{}/{source}", job.tenant);
         plan.files = self.pve_config(&job.tenant, sid, &plan.dir, &[])?;

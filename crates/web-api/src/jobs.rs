@@ -404,12 +404,16 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
             if !r.source.starts_with("vm-") {
                 return Err(ApiError::bad("source: instant_disk needs a vm-<vmid> snapshot"));
             }
-            let slot_ok = |k: &str| crate::selection::valid_disk_key(k) && !k.starts_with("efidisk") && !k.starts_with("tpmstate");
+            let slot_ok = |k: &str| {
+                crate::selection::valid_disk_key(k) && !k.starts_with("efidisk") && !k.starts_with("tpmstate")
+            };
             if !r.device.strip_prefix("drive-").is_some_and(slot_ok) {
                 return Err(ApiError::bad("device: a data disk of the snapshot (drive-scsi1, …)"));
             }
             if r.key.as_deref().is_some_and(|k| !slot_ok(k) || k.starts_with("unused")) {
-                return Err(ApiError::bad("key: a free disk slot of the target VM (scsi5, virtio2, …)"));
+                return Err(ApiError::bad(
+                    "key: a free disk slot of the target VM (scsi5, virtio2, …)",
+                ));
             }
             validate::name(&r.node, "node")?;
             validate::vmid(r.target)?;

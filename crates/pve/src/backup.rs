@@ -712,7 +712,11 @@ mod tests {
         let a = Identity::of(
             "name: web\nsmbios1: uuid=13E1FD94-5545-4e60-8309-3e50cb85a8c0,manufacturer=QUNNRQ==\nvmgenid: 5b65ecd1-44f5-4b88-8b6c-96cd092a9d2e\n\n[snap]\nvmgenid: 00000000-0000-0000-0000-000000000001\n",
         );
-        assert_eq!(a.vmgenid.as_deref(), Some("5b65ecd1-44f5-4b88-8b6c-96cd092a9d2e"), "snapshot section ignored");
+        assert_eq!(
+            a.vmgenid.as_deref(),
+            Some("5b65ecd1-44f5-4b88-8b6c-96cd092a9d2e"),
+            "snapshot section ignored"
+        );
         assert_eq!(a.smbios_uuid.as_deref(), Some("13e1fd94-5545-4e60-8309-3e50cb85a8c0"));
         assert!(!a.differs(&a));
         // vmgenid added later (older config without it): no change

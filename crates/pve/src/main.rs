@@ -262,7 +262,10 @@ fn main() -> Result<()> {
             };
             let parallel = match cfg.max_parallel {
                 Some(m) if m < cfg.parallel => {
-                    println!("note: parallel guests capped at {m} by the source (group asks for {})", cfg.parallel);
+                    println!(
+                        "note: parallel guests capped at {m} by the source (group asks for {})",
+                        cfg.parallel
+                    );
                     m.max(1)
                 }
                 _ => cfg.parallel,
@@ -287,7 +290,11 @@ fn main() -> Result<()> {
                                 }),
                             _ => Vec::new(),
                         };
-                        pve::parallel::Item { item: *v, node, storages }
+                        pve::parallel::Item {
+                            item: *v,
+                            node,
+                            storages,
+                        }
                     })
                     .collect();
                 // each guest gets its own Store handle: `written()` deltas stay per snapshot

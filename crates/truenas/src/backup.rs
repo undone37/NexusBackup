@@ -296,9 +296,9 @@ pub fn backup(
     for (ds, _) in &r.skipped {
         if spec.existing.is_none()
             && spec
-            .datasets
-            .iter()
-            .any(|root| under(ds, root) && roots_ok.contains(&root))
+                .datasets
+                .iter()
+                .any(|root| under(ds, root) && roots_ok.contains(&root))
         {
             let _ = nas.delete_snapshot(ds, &snap);
         }
@@ -356,7 +356,9 @@ fn existing_pick(
         .filter(|(t, _)| Some(*t) == prev)
         .map(|(_, n)| n.clone());
     if used.as_deref() == Some(newest.as_str()) {
-        log(&format!("{ds}: {newest} was already backed up; waiting for the next periodic snapshot"));
+        log(&format!(
+            "{ds}: {newest} was already backed up; waiting for the next periodic snapshot"
+        ));
         return Ok(None);
     }
     let reference = match used {
@@ -366,7 +368,9 @@ fn existing_pick(
             None
         }
         None if prev.is_some() => {
-            log(&format!("{ds}: no reference snapshot recorded for the last backup, reading everything"));
+            log(&format!(
+                "{ds}: no reference snapshot recorded for the last backup, reading everything"
+            ));
             None
         }
         None => None,

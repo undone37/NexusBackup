@@ -312,19 +312,29 @@ fn existing_snapshots_mode() {
     let r0 = backup(&l.store, &mut l.nas, &l.t, &ex(HashMap::new()), &mut |_| {}).unwrap();
     assert!(r0.failed[0].1.contains("periodic snapshot task"), "{:?}", r0.failed);
 
-    l.nas.create_snapshot("tank/data", "auto-2026-10-12_00-00", false).unwrap();
+    l.nas
+        .create_snapshot("tank/data", "auto-2026-10-12_00-00", false)
+        .unwrap();
     put(&l.data.join("docs/b.txt"), b"after the first periodic snapshot\n");
-    l.nas.create_snapshot("tank/data", "auto-2026-10-13_00-00", false).unwrap();
+    l.nas
+        .create_snapshot("tank/data", "auto-2026-10-13_00-00", false)
+        .unwrap();
     put(&l.data.join("docs/live.txt"), b"not in any snapshot\n");
     let mut log = Vec::new();
-    let r1 = backup(&l.store, &mut l.nas, &l.t, &ex(HashMap::new()), &mut |s| log.push(s.to_owned())).unwrap();
+    let r1 = backup(&l.store, &mut l.nas, &l.t, &ex(HashMap::new()), &mut |s| {
+        log.push(s.to_owned())
+    })
+    .unwrap();
     assert!(r1.failed.is_empty(), "{:?} {log:?}", r1.failed);
     let c1 = &r1.committed[0];
     assert!(c1.full);
     assert_eq!(c1.snapshot, "auto-2026-10-13_00-00", "the newest one");
     let t1 = tree(&l.store, "nas-7-tank.data", r1.time);
     assert!(t1.iter().any(|e| e.path == b"docs/b.txt"));
-    assert!(!t1.iter().any(|e| e.path == b"docs/live.txt"), "read from the snapshot, not live");
+    assert!(
+        !t1.iter().any(|e| e.path == b"docs/live.txt"),
+        "read from the snapshot, not live"
+    );
     assert_eq!(
         l.nas.snaps["tank/data"],
         vec!["auto-2026-10-12_00-00", "auto-2026-10-13_00-00"],
@@ -340,7 +350,9 @@ fn existing_snapshots_mode() {
     assert!(r2.failed.is_empty() && r2.committed.is_empty());
     assert!(r2.skipped[0].1.contains("no new snapshot"), "{:?}", r2.skipped);
     // a new periodic snapshot: incremental via zfs diff against the recorded one
-    l.nas.create_snapshot("tank/data", "auto-2026-10-14_00-00", false).unwrap();
+    l.nas
+        .create_snapshot("tank/data", "auto-2026-10-14_00-00", false)
+        .unwrap();
     let r3 = backup(&l.store, &mut l.nas, &l.t, &ex(refs), &mut |_| {}).unwrap();
     let c3 = &r3.committed[0];
     assert!(!c3.full && c3.snapshot == "auto-2026-10-14_00-00", "{c3:?}");
@@ -350,8 +362,13 @@ fn existing_snapshots_mode() {
     assert_eq!(big(&t1), big(&t3), "unchanged file reused");
     // a reference recorded for an older store snapshot is not trusted: full read
     std::thread::sleep(std::time::Duration::from_millis(1100));
-    l.nas.create_snapshot("tank/data", "auto-2026-10-15_00-00", false).unwrap();
-    let stale = HashMap::from([("nas-7-tank.data".to_string(), (r1.time, "auto-2026-10-13_00-00".to_string()))]);
+    l.nas
+        .create_snapshot("tank/data", "auto-2026-10-15_00-00", false)
+        .unwrap();
+    let stale = HashMap::from([(
+        "nas-7-tank.data".to_string(),
+        (r1.time, "auto-2026-10-13_00-00".to_string()),
+    )]);
     let r4 = backup(&l.store, &mut l.nas, &l.t, &ex(stale), &mut |_| {}).unwrap();
     assert!(r4.committed[0].full);
 }

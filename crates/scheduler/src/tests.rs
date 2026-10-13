@@ -2017,10 +2017,10 @@ mod forward;
 mod holds;
 /// Phase 22b source limits, VM identity, TrueNAS existing-snapshot references.
 mod limits;
-/// Phase 22b restore priority.
-mod priority;
 /// Phase 17d offsite in the UI (list, fetch back, attach an offsite copy).
 mod offsite_ui;
+/// Phase 22b restore priority.
+mod priority;
 /// Phase 21d health check with repair (bad chunks, damaged snapshots, chunk_repair).
 mod repair;
 /// Phase 14e scheduled reports.

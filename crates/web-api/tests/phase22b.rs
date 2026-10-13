@@ -170,7 +170,6 @@ impl T {
     }
 }
 
-
 fn pve_cfg() -> Value {
     json!({
         "host": "pve1.lab.local", "port": 8006,
@@ -189,13 +188,25 @@ async fn restore_priority_switch() {
     assert_eq!((r.status, r.body["active"].clone()), (StatusCode::OK, json!(false)));
     assert_eq!(r.body["max_hours"], 24);
     let on = json!({"hours": 4, "reason": "DR of the ERP cluster"});
-    assert_eq!(t.put("/api/v1/restore-priority", &tina, on.clone()).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        t.put("/api/v1/restore-priority", &tina, on.clone()).await.status,
+        StatusCode::FORBIDDEN
+    );
     for bad in [json!({"hours": 0}), json!({"hours": 25}), json!({"hours": 2, "x": 1})] {
-        assert!(t.put("/api/v1/restore-priority", &otto, bad.clone()).await.status.is_client_error(), "{bad}");
+        assert!(
+            t.put("/api/v1/restore-priority", &otto, bad.clone())
+                .await
+                .status
+                .is_client_error(),
+            "{bad}"
+        );
     }
     let r = t.put("/api/v1/restore-priority", &otto, on.clone()).await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
-    assert_eq!((r.body["active"].clone(), r.body["by"].clone()), (json!(true), json!("otto")));
+    assert_eq!(
+        (r.body["active"].clone(), r.body["by"].clone()),
+        (json!(true), json!("otto"))
+    );
     let until = r.body["until"].as_i64().unwrap();
     assert!((until - catalog::now() - 4 * 3600).abs() < 5);
     let since = r.body["since"].as_i64().unwrap();
@@ -211,7 +222,10 @@ async fn restore_priority_switch() {
         "SELECT COUNT(*) FROM audit WHERE action = 'restore_priority.on' AND json_extract(details, '$.renewed') = 1",
     );
     assert_eq!(renewed, 1);
-    assert_eq!(t.delete("/api/v1/restore-priority", &tina).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        t.delete("/api/v1/restore-priority", &tina).await.status,
+        StatusCode::FORBIDDEN
+    );
     let r = t.delete("/api/v1/restore-priority", &otto).await;
     assert_eq!((r.status, r.body["active"].clone()), (StatusCode::OK, json!(false)));
     let n: i64 = t.one("SELECT COUNT(*) FROM audit WHERE action = 'restore_priority.off'");
@@ -232,7 +246,10 @@ async fn source_caps_and_read_limits() {
         ("storage_caps", json!({"ceph": 0})),
         ("storage_caps", json!({"bad name": 1})),
         ("read_limit", json!({"bwlimit": 0})),
-        ("read_limit", json!({"windows": [{"from": "08:00", "to": "18:00", "action": "pause"}]})),
+        (
+            "read_limit",
+            json!({"windows": [{"from": "08:00", "to": "18:00", "action": "pause"}]}),
+        ),
         ("read_limit", json!({"timezone": "Nowhere/City"})),
         ("read_limit", json!({"rate": 1})),
     ] {
@@ -255,7 +272,11 @@ async fn source_caps_and_read_limits() {
     let smb = json!({"host": "fs1.lab", "share": "Data", "user": "backup", "password": "pw",
                      "read_limit": {"bwlimit": 10_000_000}});
     let r = t
-        .post("/api/v1/sources", &alice, json!({"tenant": "acme", "kind": "smb", "name": "s", "config": smb}))
+        .post(
+            "/api/v1/sources",
+            &alice,
+            json!({"tenant": "acme", "kind": "smb", "name": "s", "config": smb}),
+        )
         .await;
     assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
     assert_eq!(r.body["config"]["read_limit"]["bwlimit"], 10_000_000);
@@ -282,10 +303,17 @@ async fn truenas_existing_snapshots() {
     for bad in ["", "-auto", "auto snap", "a/b", "x".repeat(33).as_str()] {
         let mut c = truenas_cfg();
         c["existing_snapshots"] = json!(bad);
-        assert_eq!(t.post("/api/v1/sources", &alice, src(c)).await.status, StatusCode::BAD_REQUEST, "{bad:?}");
+        assert_eq!(
+            t.post("/api/v1/sources", &alice, src(c)).await.status,
+            StatusCode::BAD_REQUEST,
+            "{bad:?}"
+        );
     }
     let r = t.post("/api/v1/sources", &alice, src(truenas_cfg())).await;
-    assert!(!r.body["config"]["authorized_keys"].as_str().unwrap().contains("E=\\\"auto-"));
+    assert!(!r.body["config"]["authorized_keys"]
+        .as_str()
+        .unwrap()
+        .contains("E=\\\"auto-"));
     let mut c = truenas_cfg();
     c["existing_snapshots"] = json!("auto-");
     c["read_limit"] = json!({"bwlimit": 1_000_000});
@@ -306,7 +334,11 @@ async fn nas_overlap_split_sizing_and_skipped_csv() {
     let smb = json!({"host": "fs1.lab", "share": "Data", "user": "backup", "password": "pw",
                      "include": ["/projects", "/home"]});
     let r = t
-        .post("/api/v1/sources", &alice, json!({"tenant": "acme", "kind": "smb", "name": "data", "config": smb}))
+        .post(
+            "/api/v1/sources",
+            &alice,
+            json!({"tenant": "acme", "kind": "smb", "name": "data", "config": smb}),
+        )
         .await;
     assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
     let id = r.body["id"].as_i64().unwrap();
@@ -316,32 +348,61 @@ async fn nas_overlap_split_sizing_and_skipped_csv() {
     let url = format!("/api/v1/sources/{id}/split");
     for (b, why) in [
         (json!({"roots": ["/projects"], "password": "pw"}), "one root"),
-        (json!({"roots": ["/projects/a", "/projects"], "password": "pw"}), "overlapping roots"),
-        (json!({"roots": ["/projects/a", "/srv"], "password": "pw"}), "outside the include roots"),
+        (
+            json!({"roots": ["/projects/a", "/projects"], "password": "pw"}),
+            "overlapping roots",
+        ),
+        (
+            json!({"roots": ["/projects/a", "/srv"], "password": "pw"}),
+            "outside the include roots",
+        ),
         (json!({"roots": ["/projects/a", "/home"]}), "SMB without the password"),
     ] {
         let r = t.post(&url, &alice, b).await;
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{why}: {:?}", r.body);
     }
     assert_eq!(
-        t.post(&url, &tina, json!({"roots": ["/projects/a", "/home"], "password": "pw"})).await.status,
+        t.post(
+            &url,
+            &tina,
+            json!({"roots": ["/projects/a", "/home"], "password": "pw"})
+        )
+        .await
+        .status,
         StatusCode::FORBIDDEN
     );
-    let r = t.post(&url, &alice, json!({"roots": ["/projects/a", "/home"], "password": "pw"})).await;
-    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
-    let ids: Vec<i64> = r.body["sources"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect();
-    assert_eq!(ids.len(), 2);
-    let g: (String, i64, String) = t
-        .st
-        .cat
-        .conn()
-        .query_row(
-            &format!("SELECT name, policy_id, timezone FROM groups WHERE source_id = {}", ids[0]),
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    let r = t
+        .post(
+            &url,
+            &alice,
+            json!({"roots": ["/projects/a", "/home"], "password": "pw"}),
         )
-        .unwrap();
-    assert_eq!(g, ("files-1".to_string(), 1, "Europe/Berlin".to_string()), "group copied");
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    let ids: Vec<i64> = r.body["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 2);
+    let g: (String, i64, String) =
+        t.st.cat
+            .conn()
+            .query_row(
+                &format!(
+                    "SELECT name, policy_id, timezone FROM groups WHERE source_id = {}",
+                    ids[0]
+                ),
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+    assert_eq!(
+        g,
+        ("files-1".to_string(), 1, "Europe/Berlin".to_string()),
+        "group copied"
+    );
     let n: i64 = t.one("SELECT COUNT(*) FROM audit WHERE action = 'source.split'");
     assert_eq!(n, 1);
     // the list warns: the original still covers both new sources
@@ -353,12 +414,27 @@ async fn nas_overlap_split_sizing_and_skipped_csv() {
     ));
     let job: i64 = t.one("SELECT MAX(id) FROM jobs");
     let list = t.get("/api/v1/sources", &alice).await.body;
-    let row = |sid: i64| list.as_array().unwrap().iter().find(|s| s["id"] == sid).unwrap().clone();
+    let row = |sid: i64| {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == sid)
+            .unwrap()
+            .clone()
+    };
     let orig = row(id);
-    let over: Vec<i64> = orig["overlaps"].as_array().unwrap().iter().map(|o| o["id"].as_i64().unwrap()).collect();
+    let over: Vec<i64> = orig["overlaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["id"].as_i64().unwrap())
+        .collect();
     assert_eq!(over, ids);
     assert_eq!(row(ids[0])["overlaps"][0]["id"], id);
-    assert!(row(ids[0])["overlaps"].as_array().unwrap().len() == 1, "/projects/a and /home do not overlap");
+    assert!(
+        row(ids[0])["overlaps"].as_array().unwrap().len() == 1,
+        "/projects/a and /home do not overlap"
+    );
     assert_eq!(orig["sizing"]["entries"], 2_500_000);
     assert_eq!(orig["sizing"]["est_ram_bytes"], 2_500_000u64 * 800);
     assert!(row(ids[1])["sizing"].is_null());
@@ -371,7 +447,10 @@ async fn nas_overlap_split_sizing_and_skipped_csv() {
     );
     t.exec("INSERT INTO jobs (kind, tenant, params, state, requested_by, created) VALUES ('backup', 'globex', '{}', 'ok', 'x', 1)");
     let other: i64 = t.one("SELECT MAX(id) FROM jobs");
-    assert_eq!(t.get(&format!("/api/v1/jobs/{other}/skipped.csv"), &tina).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        t.get(&format!("/api/v1/jobs/{other}/skipped.csv"), &tina).await.status,
+        StatusCode::NOT_FOUND
+    );
 }
 
 #[tokio::test]
@@ -392,11 +471,26 @@ async fn instant_disk_requests() {
     ] {
         let mut p = ok.clone();
         p[k] = v.clone();
-        let r = t.post("/api/v1/jobs", &tina, json!({"kind": "instant_disk", "tenant": "acme", "params": p})).await;
+        let r = t
+            .post(
+                "/api/v1/jobs",
+                &tina,
+                json!({"kind": "instant_disk", "tenant": "acme", "params": p}),
+            )
+            .await;
         assert!(r.status.is_client_error(), "{k}={v}: {:?}", r.body);
     }
-    let r = t.post("/api/v1/jobs", &tina, json!({"kind": "instant_disk", "tenant": "acme", "params": ok})).await;
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &tina,
+            json!({"kind": "instant_disk", "tenant": "acme", "params": ok}),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
     let p: String = t.one("SELECT params FROM jobs WHERE kind = 'instant_disk'");
-    assert!(p.contains("\"key\":\"scsi5\"") && p.contains("\"move_to\":\"local-lvm\""), "{p}");
+    assert!(
+        p.contains("\"key\":\"scsi5\"") && p.contains("\"move_to\":\"local-lvm\""),
+        "{p}"
+    );
 }

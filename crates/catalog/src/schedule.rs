@@ -1133,14 +1133,20 @@ mod tests {
         let bw = r.bandwidth().unwrap();
         assert_eq!(bw.base, Some(100_000_000));
         assert!(r.throttle().unwrap().is_some());
-        assert!(ReadLimit::default().throttle().unwrap().is_none(), "nothing set: no throttle");
+        assert!(
+            ReadLimit::default().throttle().unwrap().is_none(),
+            "nothing set: no throttle"
+        );
         assert_eq!(serde_json::from_str::<ReadLimit>("{}").unwrap().timezone, "UTC");
         for bad in [
             r#"{"bwlimit":0}"#,
             r#"{"windows":[{"from":"01:00","to":"02:00","action":"pause"}]}"#,
             r#"{"timezone":"Mars/Base"}"#,
         ] {
-            assert!(serde_json::from_str::<ReadLimit>(bad).unwrap().check().is_err(), "{bad}");
+            assert!(
+                serde_json::from_str::<ReadLimit>(bad).unwrap().check().is_err(),
+                "{bad}"
+            );
         }
         assert!(serde_json::from_str::<ReadLimit>(r#"{"rate":1}"#).is_err());
         // the reader passes the data through and accounts it

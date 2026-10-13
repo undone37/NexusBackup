@@ -127,7 +127,10 @@ mod tests {
             serde_json::from_str(r#"{"scsi0":"a:1","scsi1":"a:2","virtio0":"a:3","unused0":"a:4"}"#).unwrap();
         assert_eq!(pick_key(&cfg, None).unwrap(), "scsi2");
         assert_eq!(pick_key(&cfg, Some("virtio1")).unwrap(), "virtio1");
-        assert!(pick_key(&cfg, Some("scsi0")).unwrap_err().to_string().contains("already used"));
+        assert!(pick_key(&cfg, Some("scsi0"))
+            .unwrap_err()
+            .to_string()
+            .contains("already used"));
         for bad in ["efidisk0", "net0", "scsi", "tpmstate0"] {
             assert!(pick_key(&cfg, Some(bad)).is_err(), "{bad}");
         }

@@ -156,14 +156,22 @@ mod tests {
 
     #[test]
     fn storage_cap_lets_others_pass() {
-        let items = [it(0, "a", &["ceph"]), it(1, "b", &["ceph", "lvm"]), it(2, "a", &["lvm"])];
+        let items = [
+            it(0, "a", &["ceph"]),
+            it(1, "b", &["ceph", "lvm"]),
+            it(2, "a", &["lvm"]),
+        ];
         let caps = HashMap::from([("ceph".to_string(), 1)]);
         let mut st = State {
             pending: vec![1, 2],
             ..Default::default()
         };
         st.storages.insert("ceph".into(), 1);
-        assert_eq!(pick(&st, &items, &caps), Some(1), "guest 1 waits for ceph, guest 2 passes");
+        assert_eq!(
+            pick(&st, &items, &caps),
+            Some(1),
+            "guest 1 waits for ceph, guest 2 passes"
+        );
         st.pending = vec![1];
         assert_eq!(pick(&st, &items, &caps), None);
     }
