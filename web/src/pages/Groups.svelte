@@ -451,7 +451,7 @@
       <div class="field">
         <label for="g-pol">{t.groups.policy}</label>
         <select id="g-pol" bind:value={f.policy_id} required>
-          {#each policies as p (p.id)}<option value={p.id}>{p.name} ({p.schedule})</option>{/each}
+          {#each policies as p (p.id)}<option value={p.id}>{p.name} ({p.schedule}){p.tier ? ` · ${t.tiers.names[p.tier]}` : ''}</option>{/each}
         </select>
       </div>
       <div class="field">

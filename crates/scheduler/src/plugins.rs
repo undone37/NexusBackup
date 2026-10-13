@@ -217,6 +217,21 @@ impl Scheduler {
                 plan.files = self.plugin_cfg(job, &cur, &kind, sid, config, extra)?;
                 plan.steps.push(self.host_step(&plan, &[op.into()], false));
             }
+            "files_get" if p["params"].as_object().is_some_and(|o| !o.is_empty()) => {
+                // v1.9 download with conversion (e.g. M365 mail as mbox / PST): the plugin
+                // runs, but with neither the source's secrets nor network
+                let source = ident(p, "source")?;
+                let sid = self.plugin_snapshot(job, source)?;
+                let (cur, kind, _) = self.plugin_source(&job.tenant, sid)?;
+                plan.key = format!("guest:{}/{source}", job.tenant);
+                let snap = json!({"source": source, "time": num(p, "time")?, "params": p["params"].clone()});
+                plan.files = self.plugin_cfg(job, &cur, &kind, sid, json!({}), json!({ "restore": snap }))?;
+                let out = self.cfg.downloads.join(download_file(p)?);
+                let mut args = vec!["export".to_owned(), out.to_string_lossy().into_owned()];
+                args.extend(file_paths(p)?);
+                plan.download = Some(out);
+                plan.steps.push(self.host_step(&plan, &args, true));
+            }
             "files_list" | "files_get" => {
                 let source = ident(p, "source")?;
                 self.plugin_snapshot(job, source)?;

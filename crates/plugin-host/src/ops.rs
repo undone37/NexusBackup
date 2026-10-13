@@ -100,13 +100,21 @@ pub fn guests(peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&str)) -> Res
 }
 
 /// Random access to the files of a snapshot (chunk offsets computed on first use).
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     store: &'a Store,
     offsets: HashMap<Vec<u8>, Vec<u64>>,
     cached: Option<(ChunkId, Vec<u8>)>,
 }
 
-impl Reader<'_> {
+impl<'a> Reader<'a> {
+    pub(crate) fn new(store: &'a Store) -> Reader<'a> {
+        Reader {
+            store,
+            offsets: HashMap::new(),
+            cached: None,
+        }
+    }
+
     fn chunk(&mut self, id: &ChunkId) -> Result<&[u8]> {
         if self.cached.as_ref().is_none_or(|(c, _)| c != id) {
             self.cached = Some((*id, self.store.read_chunk(id)?));
@@ -114,7 +122,7 @@ impl Reader<'_> {
         Ok(&self.cached.as_ref().unwrap().1)
     }
 
-    fn read(&mut self, e: &chunkstore::TreeEntry, off: u64, len: u32) -> Result<Vec<u8>> {
+    pub(crate) fn read(&mut self, e: &chunkstore::TreeEntry, off: u64, len: u32) -> Result<Vec<u8>> {
         if !self.offsets.contains_key(&e.path) {
             let mut v = Vec::with_capacity(e.chunks.len() + 1);
             let mut pos = 0u64;

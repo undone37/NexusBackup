@@ -9,6 +9,7 @@
 //! everything the plugin says before it reaches the job log.
 
 pub mod backup;
+pub mod export;
 pub mod files;
 pub mod inproc;
 pub mod landlock;
@@ -75,7 +76,7 @@ impl Timeouts {
                 op: Duration::from_secs(300),
                 idle: Duration::from_secs(120),
             },
-            Backup | Restore => Timeouts {
+            Backup | Restore | Export => Timeouts {
                 op: Duration::from_secs(24 * 3600),
                 idle: Duration::from_secs(900),
             },

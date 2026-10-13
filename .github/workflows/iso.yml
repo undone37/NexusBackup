@@ -26,7 +26,7 @@ jobs:
       BIB: quay.io/centos-bootc/bootc-image-builder:latest
     steps:
       # the ISO config comes from the workflow's own commit (older tags predate release/iso/)
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Image digest of the release
         run: |

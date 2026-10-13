@@ -4,7 +4,7 @@
   import { askConfirm } from '../lib/confirm.svelte';
   import { notify } from '../lib/notify.svelte';
   import { session } from '../lib/session.svelte';
-  import { ROLES } from '../lib/roles';
+  import { ROLES, TENANT_ROLES } from '../lib/roles';
   import { fmtAgo, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import type { Activation, Role, Tenant, User } from '../lib/types';
@@ -23,6 +23,11 @@
   const privRole = (r: string) => r === 'admin' || r === 'security_officer';
   // single-sign-on accounts: role / tenants follow the IdP group mapping, credentials live at the IdP
   const isSso = (x: User | null) => x?.auth === 'oidc';
+
+  // Phase 19b: a tenant admin manages the accounts of its own tenant (tenant admins, tenant users,
+  // viewers); the tenant is fixed to theirs (the server enforces both).
+  const tenantAdmin = $derived(session.user?.role === 'tenant_admin');
+  const roleChoices = $derived(tenantAdmin ? TENANT_ROLES : ROLES);
 
   let items: User[] = $state([]);
   let tenants: Tenant[] = $state([]);
@@ -44,7 +49,7 @@
   let editing: User | null = $state(null);
   let f = $state({ name: '', password: '', role: 'operator' as Role, tenant: '', disabled: false, canDownload: true, expires: '' });
   // Phase 14d: download privilege defaults by role; expiry as a date (end of that day, local time)
-  const roleDownloads = (r: Role) => r === 'admin' || r === 'operator' || r === 'tenant_user';
+  const roleDownloads = (r: Role) => r === 'admin' || r === 'operator' || r === 'tenant_admin' || r === 'tenant_user';
   const dateOf = (ts: number | null | undefined) => {
     if (!ts) return '';
     const d = new Date(ts * 1000);
@@ -86,8 +91,8 @@
     f = {
       name: x?.name ?? '',
       password: '',
-      role: x?.role ?? 'operator',
-      tenant: x?.tenant ?? '',
+      role: x?.role ?? (tenantAdmin ? 'tenant_user' : 'operator'),
+      tenant: x?.tenant ?? (tenantAdmin ? (session.user?.tenant ?? '') : ''),
       disabled: x?.disabled ?? false,
       canDownload: x?.can_download ?? true,
       expires: dateOf(x?.expires),
@@ -193,6 +198,7 @@
   <button type="button" class="primary" onclick={() => edit(null)}><IconPlus aria-hidden="true" />{t.users.new}</button>
   <p class="lede">{t.users.lede}</p>
 </div>
+{#if tenantAdmin}<p class="muted">{t.users.tenantAdminHint}</p>{/if}
 <ErrorBanner {error} />
 
 <div class="card">
@@ -230,8 +236,10 @@
               </td>
               <td class="nowrap">{x.last_login ? fmtAgo(x.last_login) : t.ago.never}</td>
               <td class="actions">
+                {#if !tenantAdmin || TENANT_ROLES.includes(x.role)}
                 <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
-                {#if isSso(x)}
+                {/if}
+                {#if isSso(x) || (tenantAdmin && !TENANT_ROLES.includes(x.role))}
                   <!-- password and authenticator are managed by the identity provider -->
                 {:else if isSelf(x)}
                   <button type="button" class="small" onclick={() => resetTotp(x)}>{t.users.resetTotp}</button>
@@ -247,7 +255,7 @@
   {/if}
 </div>
 
-{#if session.user?.role === 'admin'}<ApiTokens all />{/if}
+{#if session.user?.role === 'admin' && !session.impersonating}<ApiTokens all />{/if}
 
 <Modal bind:open title={editing ? `${t.users.title}: ${editing.name}` : t.users.new}>
   <form onsubmit={save}>
@@ -271,13 +279,19 @@
       <div class="field">
         <label for="u-role">{t.users.role}</label>
         <select id="u-role" bind:value={f.role} disabled={isSso(editing)}>
-          {#each ROLES as r (r)}<option value={r}>{t.roles[r]}</option>{/each}
+          {#each roleChoices as r (r)}<option value={r}>{t.roles[r]}</option>{/each}
         </select>
       </div>
       <div class="field">
         <label for="u-tenant">{t.tenant}</label>
-        <select id="u-tenant" bind:value={f.tenant} required={f.role === 'tenant_user'} disabled={isSso(editing)} aria-describedby="u-tenant-hint">
-          <option value="">{t.allTenants}</option>
+        <select
+          id="u-tenant"
+          bind:value={f.tenant}
+          required={f.role === 'tenant_user' || f.role === 'tenant_admin'}
+          disabled={isSso(editing) || tenantAdmin}
+          aria-describedby="u-tenant-hint"
+        >
+          {#if !tenantAdmin}<option value="">{t.allTenants}</option>{/if}
           {#each tenants as tn (tn.name)}<option value={tn.name}>{tn.name}</option>{/each}
         </select>
         <div class="hint" id="u-tenant-hint">{t.users.tenantHint}</div>

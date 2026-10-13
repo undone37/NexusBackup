@@ -4,12 +4,15 @@
   import { get, post, put, del, act, errText } from '../lib/api';
   import { t } from '../lib/i18n';
   import { fmtBytes, fmtTime } from '../lib/format';
-  import type { OffsiteListed, QuorumRequest, Tenant, TenantOffsite, SftpRemote, S3Remote } from '../lib/types';
+  import type { LoginResponse, OffsiteListed, Policy, QuorumRequest, Tenant, TenantOffsite, TenantTombstone, SftpRemote, S3Remote } from '../lib/types';
+  import { copyText } from '../lib/clipboard';
+  import { setSession } from '../lib/session.svelte';
   import Modal from '../components/Modal.svelte';
   import BlackoutEditor from '../components/BlackoutEditor.svelte';
   import { bandwidthWeaker, timeZones, validRateWindow, type RateWindow } from '../lib/schedule';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import TenantRecoveryKey from '../components/TenantRecoveryKey.svelte';
+  import Menu from '../components/Menu.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
   import IconCloud from '@lucide/svelte/icons/cloud';
   import IconLink from '@lucide/svelte/icons/link';
@@ -36,6 +39,47 @@
     }
     loaded = true;
     loadRequests();
+    loadTenancy();
+  }
+
+  // Phase 19b: assigned policies (admin), deleted names (admin, security officer)
+  let policies: Policy[] = $state([]);
+  let tombstones: TenantTombstone[] = $state([]);
+  async function loadTenancy() {
+    if (can.configure(session.user)) policies = await get<Policy[]>('/policies').catch(() => []);
+    if (canKey) tombstones = await get<TenantTombstone[]>('/tenants/tombstones').catch(() => []);
+  }
+  const policyName = (id: number) => policies.find((p) => p.id === id)?.name ?? `#${id}`;
+  let assignOf: Tenant | null = $state(null);
+  let assignOpen = $state(false);
+  let assigned: number[] = $state([]);
+  function openAssign(x: Tenant) {
+    assignOf = x;
+    assigned = [...(x.policies ?? [])];
+    assignOpen = true;
+  }
+  async function saveAssign(e: SubmitEvent) {
+    e.preventDefault();
+    if (!assignOf) return;
+    const path = `/tenants/${encodeURIComponent(assignOf.name)}/policies`;
+    if (await act(put(path, { policy_ids: assigned }), t.tenants.assignedSaved)) {
+      assignOpen = false;
+      load();
+    }
+  }
+
+  // "View as tenant" (read-only, immediately) / "Act as tenant admin" (approval)
+  async function impersonate(x: Tenant, elevated: boolean) {
+    const q = elevated ? t.impersonate.actConfirm(x.name) : t.impersonate.viewConfirm(x.name);
+    if (!(await askConfirm(q))) return;
+    const o = await act(post(`/tenants/${encodeURIComponent(x.name)}/impersonate`, { elevated }), t.impersonate.started(x.name));
+    if (!o || o.quorum) return;
+    const me = await get<LoginResponse>('/auth/me').catch(() => null);
+    if (me) {
+      setSession(me.user, me.csrf);
+      session.impersonating = me.impersonating ?? null;
+      navigate('/');
+    }
   }
   onMount(async () => {
     await load();
@@ -310,6 +354,7 @@
             <th scope="col">{t.tenants.offsite}</th>
             <th scope="col">{t.tenants.uploaders}</th>
             <th scope="col">{t.storage.quota}</th>
+            {#if can.configure(session.user)}<th scope="col">{t.tenants.assigned}</th>{/if}
             <th scope="col"><span class="visually-hidden">{t.actions}</span></th>
           </tr>
         </thead>
@@ -317,7 +362,17 @@
           {#each items as x (x.name)}
             {@const r = remoteOf(x.offsite)}
             <tr>
-              <td><strong>{x.name}</strong></td>
+              <td>
+                <strong>{x.name}</strong>
+                {#each x.tiers ?? [] as tier (tier)}<span class="chip accent">{t.tiers.names[tier]}</span>{/each}
+                {#if x.uid}
+                  <div>
+                    <button type="button" class="link mono muted" title={`${t.tenants.uid}: ${x.uid} — ${t.tenants.uidHint}`} onclick={() => copyText(x.uid ?? '')}
+                      >{x.uid.slice(0, 8)}…</button
+                    >
+                  </div>
+                {/if}
+              </td>
               <td>
                 {#if x.disabled}
                   <span class="chip warn" title={t.tdis.since(x.disabled_by ?? '—', fmtTime(x.disabled_at), x.disabled_reason ?? '')}>{t.tdis.deactivated}</span>
@@ -332,7 +387,25 @@
               </td>
               <td>{r ? (x.offsite?.uploaders ?? 4) : '—'}</td>
               <td>{x.quota_bytes ? fmtBytes(x.quota_bytes) : '—'}</td>
+              {#if can.configure(session.user)}
+                <td class="nowrap">
+                  <span title={(x.policies ?? []).map(policyName).join(', ')}
+                    >{(x.policies ?? []).length ? t.tenants.assignedN((x.policies ?? []).length) : t.tenants.assignedNone}</span
+                  >
+                  <button type="button" class="small" onclick={() => openAssign(x)} aria-label={`${t.tenants.assigned}: ${x.name}`}>{t.edit}</button>
+                </td>
+              {/if}
               <td class="actions">
+                {#if can.impersonate(session.user)}
+                  <Menu
+                    label={t.impersonate.view}
+                    ariaLabel={`${t.impersonate.view}: ${x.name}`}
+                    items={[
+                      { label: t.impersonate.viewReadOnly, hint: t.impersonate.viewShort, title: t.impersonate.viewHint, onselect: () => impersonate(x, false) },
+                      { label: t.impersonate.act, hint: t.impersonate.actShort, title: t.impersonate.actHint, onselect: () => impersonate(x, true) },
+                    ]}
+                  />
+                {/if}
                 {#if r && can.restore(session.user)}
                   <button type="button" class="small" onclick={() => openCopy(x)} aria-label={t.offsite.copyLabel(x.name)}
                     ><IconCloud aria-hidden="true" />{t.offsite.copy}</button
@@ -396,6 +469,56 @@
     </div>
   </section>
 {/if}
+
+{#if canKey && tombstones.length}
+  <section class="card" aria-labelledby="tomb-h">
+    <h2 id="tomb-h">{t.tenants.tombstones}</h2>
+    <p class="muted">{t.tenants.tombstonesHint}</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">{t.name}</th>
+            <th scope="col">{t.tenants.uid}</th>
+            <th scope="col">{t.tenants.deletedAt}</th>
+            <th scope="col">{t.tenants.deletedBy}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each tombstones as x (x.name)}
+            <tr>
+              <td><strong>{x.name}</strong></td>
+              <td class="mono">{x.uid ?? '—'}</td>
+              <td>{fmtTime(x.deleted_at)}</td>
+              <td>{x.deleted_by}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{/if}
+
+<Modal bind:open={assignOpen} title={assignOf ? `${t.tenants.assigned}: ${assignOf.name}` : ''}>
+  <form onsubmit={saveAssign}>
+    <p class="muted" id="assign-hint">{t.tenants.assignedHint}</p>
+    <fieldset aria-describedby="assign-hint">
+      <legend>{t.tenants.assigned}</legend>
+      {#each policies as p (p.id)}
+        <label class="inline-check">
+          <input type="checkbox" value={p.id} bind:group={assigned} />
+          {p.name}
+          {#if p.tier}<span class="chip accent">{t.tiers.names[p.tier]}</span>{/if}
+          <span class="muted mono">{p.schedule}</span>
+        </label>
+      {/each}
+    </fieldset>
+    <div class="form-actions">
+      <button type="button" onclick={() => (assignOpen = false)}>{t.cancel}</button>
+      <button type="submit" class="primary">{t.save}</button>
+    </div>
+  </form>
+</Modal>
 
 <TenantRecoveryKey bind:tenant={keyOf} />
 

@@ -3,12 +3,15 @@
   import { get, errText } from '../lib/api';
   import { route, href } from '../lib/router.svelte';
   import { runJob, downloadUrl, fileEntries, hostAgentId, restorableToHost } from '../lib/jobs';
+  import { pluginKinds, snapshotKind } from '../lib/plugins';
+  import { buildValue, initValues, type FormValues } from '../lib/schema';
   import { fmtBytes, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import { can } from '../lib/roles';
   import { session } from '../lib/session.svelte';
-  import type { Agent, FileEntry, Job } from '../lib/types';
+  import type { Agent, FileEntry, Job, JsonSchema, Plugin, Source } from '../lib/types';
   import ErrorBanner from '../components/ErrorBanner.svelte';
+  import SchemaForm from '../components/SchemaForm.svelte';
   import RestoreFiles from '../components/RestoreFiles.svelte';
 
   // Snapshot coordinates come from the URL (#/files?tenant=&source=&time=).
@@ -80,12 +83,48 @@
     ready = null;
   }
 
+  // Contract v1.9: a plugin whose `download` has a params_schema converts the download
+  // (e.g. Microsoft 365 mail as mbox or PST); the default values mean "as stored".
+  let convSchema: JsonSchema | undefined = $state(undefined);
+  let convValues: FormValues = $state({});
+  let convErrors: Record<string, string> = $state({});
+  if (source.startsWith('plugin-'))
+    Promise.all([get<Plugin[]>('/plugins'), get<Source[]>('/sources').catch(() => [] as Source[])])
+      .then(([plugins, sources]) => {
+        const k = snapshotKind(source, sources, pluginKinds(plugins));
+        const schema = k?.kind.restores.find((r) => r.id === 'download')?.params_schema;
+        if (schema && Object.keys(schema.properties ?? {}).length) {
+          convSchema = schema;
+          convValues = initValues(schema);
+        }
+      })
+      .catch(() => {
+        /* the plain download only */
+      });
+
+  /** Conversion parameters to send (none when they are the defaults). */
+  function convParams(): Record<string, unknown> | null | false {
+    if (!convSchema) return null;
+    const { value, errors } = buildValue(convSchema, convValues);
+    convErrors = errors;
+    if (Object.keys(errors).length) return false;
+    const defaults = buildValue(convSchema, initValues(convSchema)).value;
+    return JSON.stringify(value) === JSON.stringify(defaults) ? null : value;
+  }
+
   async function prepare() {
+    const params = convParams();
+    if (params === false) return;
     preparing = true;
     ready = null;
     error = null;
     try {
-      const r = await runJob('files_get', tenant, { source, time, paths: selected, format }, ctl.signal);
+      const r = await runJob(
+        'files_get',
+        tenant,
+        { source, time, paths: selected, format, ...(params ? { params } : {}) },
+        ctl.signal,
+      );
       if (!r || failed(r.job)) return;
       if (r.token) ready = { token: r.token, filename: `${source}-${time}.${format}` };
     } catch (e) {
@@ -185,6 +224,13 @@
 </div>
 
 <div class="card">
+  {#if convSchema && can.download(session.user)}
+    <fieldset>
+      <legend>{t.files.convert}</legend>
+      <p class="muted">{t.files.convertHint}</p>
+      <SchemaForm schema={convSchema} bind:values={convValues} errors={convErrors} />
+    </fieldset>
+  {/if}
   <div class="row">
     <strong>{t.files.selected(selected.length)}</strong>
     {#if can.download(session.user)}

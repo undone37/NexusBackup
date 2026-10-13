@@ -1,0 +1,3 @@
+# rpmlint filters for nexus-agent (release/test-packages.sh)
+# one static (musl) binary for every distribution, no shared-library dependencies
+addFilter("statically-linked-binary")

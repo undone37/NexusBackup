@@ -2,7 +2,7 @@
 //! writes; destructive or weakening changes go through the quorum).
 
 use crate::activation;
-use crate::auth::{reauth, ClientIp, Ctx, User, USER_COLS};
+use crate::auth::{reauth, ClientIp, Ctx, User, TENANT_WRITERS, USER_COLS};
 use crate::quorum::{accepted, gate, Outcome};
 use crate::validate::{self, Gfs};
 use crate::{ApiError, ApiResult, St, J};
@@ -279,17 +279,24 @@ pub fn public_offsite(v: &Value) -> Value {
 pub async fn list_tenants(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>> {
     let c = st.cat.conn();
     let mut s = c.prepare(
-        "SELECT name, offsite, quota_bytes, disabled, disabled_at, disabled_by, disabled_reason FROM tenants
-         WHERE ?1 IS NULL OR name = ?1 ORDER BY name",
+        "SELECT name, offsite, quota_bytes, disabled, disabled_at, disabled_by, disabled_reason, uid,
+           (SELECT json_group_array(tp.policy_id) FROM tenant_policies tp WHERE tp.tenant = tenants.name),
+           (SELECT json_group_array(DISTINCT p.tier) FROM tenant_policies tp JOIN policies p ON p.id = tp.policy_id
+            WHERE tp.tenant = tenants.name AND p.tier IS NOT NULL)
+         FROM tenants WHERE ?1 IS NULL OR name = ?1 ORDER BY name",
     )?;
     let rows = s
         .query_map([ctx.scope()], |r| {
             let o: String = r.get(1)?;
             let o = serde_json::from_str::<Value>(&o).unwrap_or_default();
+            let list = |i: usize| -> catalog::rusqlite::Result<Value> {
+                Ok(serde_json::from_str::<Value>(&r.get::<_, String>(i)?).unwrap_or_else(|_| json!([])))
+            };
             Ok(json!({"name": r.get::<_, String>(0)?, "offsite": public_offsite(&o),
                       "quota_bytes": r.get::<_, Option<i64>>(2)?, "disabled": r.get::<_, bool>(3)?,
                       "disabled_at": r.get::<_, Option<i64>>(4)?, "disabled_by": r.get::<_, Option<String>>(5)?,
-                      "disabled_reason": r.get::<_, Option<String>>(6)?}))
+                      "disabled_reason": r.get::<_, Option<String>>(6)?, "uid": r.get::<_, Option<String>>(7)?,
+                      "policies": list(8)?, "tiers": list(9)?}))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(Value::Array(rows)))
@@ -299,6 +306,12 @@ pub async fn create_tenant(State(st): State<St>, ctx: Ctx, J(r): J<TenantReq>) -
     ctx.require(ADMIN)?;
     crate::vault::refuse(&st.cat.conn(), "new tenants")?;
     validate::name(&r.name, "name")?;
+    // its DEK labels, AADs and escrow paths were bound to the name (Phase 19b)
+    if catalog::tenancy::tombstoned(&st.cat.conn(), &r.name)? {
+        return Err(ApiError::conflict(
+            "tenant name was used before by a deleted tenant: names are never reused, choose another one",
+        ));
+    }
     let s3 = check_offsite(&r.offsite)?;
     if s3.as_ref().is_some_and(|s| s.secret_key.is_none()) {
         return Err(ApiError::bad("offsite.remote.secret_key: required"));
@@ -1050,7 +1063,8 @@ pub async fn list_sources(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Valu
 }
 
 pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -> ApiResult<Response> {
-    ctx.require(ADMIN)?;
+    ctx.require(TENANT_WRITERS)?;
+    ctx.owns(&r.tenant)?;
     crate::vault::refuse(&st.cat.conn(), "new sources")?;
     validate::name(&r.name, "name")?;
     match r.kind.as_str() {
@@ -1218,7 +1232,7 @@ pub async fn update_source(
     Path(id): Path<i64>,
     J(r): J<SourceUpdate>,
 ) -> ApiResult<Json<Value>> {
-    ctx.require(ADMIN)?;
+    ctx.require(TENANT_WRITERS)?;
     validate::name(&r.name, "name")?;
     let (tenant, kind): (String, String) = st
         .cat
@@ -1228,6 +1242,7 @@ pub async fn update_source(
         })
         .optional()?
         .ok_or_else(ApiError::not_found)?;
+    ctx.owns(&tenant)?;
     if kind.starts_with("plugin:") {
         crate::plugins::update_source(&st, id, &kind, &r.name, r.config)?;
         let out = source_json(&st.cat.conn(), id)?;
@@ -1396,7 +1411,7 @@ pub async fn update_source(
 }
 
 pub async fn delete_source(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> ApiResult<Response> {
-    ctx.require(ADMIN)?;
+    ctx.require(TENANT_WRITERS)?;
     let (tenant, name) = {
         let c = st.cat.conn();
         let row: (String, String) = c
@@ -1405,6 +1420,7 @@ pub async fn delete_source(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) 
             })
             .optional()?
             .ok_or_else(ApiError::not_found)?;
+        ctx.owns(&row.0)?;
         if exists(&c, "SELECT 1 FROM groups WHERE source_id = ?1", [id])? {
             return Err(ApiError::conflict("source is still used by groups"));
         }
@@ -1442,6 +1458,9 @@ pub struct PolicyReq {
     /// Phase 15e: global excludes for every file source of the policy's groups
     #[serde(default)]
     file_filters: crate::selection::FileFilters,
+    /// Phase 19b: bronze / silver / gold (templates), shown in SLA reports
+    #[serde(default)]
+    tier: Option<String>,
 }
 
 fn yes() -> bool {
@@ -1503,6 +1522,9 @@ impl PolicyReq {
         }
         self.require_consistency.check()?;
         self.file_filters.check()?;
+        if self.tier.as_deref().is_some_and(|t| !catalog::tenancy::tier_ok(t)) {
+            return Err(ApiError::bad("tier: bronze, silver, gold or null"));
+        }
         self.gfs.check()
     }
     /// Any GFS count lowered, offsite disabled, a blackout window added
@@ -1519,7 +1541,7 @@ impl PolicyReq {
 
 fn load_policy(c: &Connection, id: i64) -> ApiResult<Option<PolicyReq>> {
     Ok(c.query_row(
-        "SELECT name, schedule, gfs, offsite, retry, blackout, sla_minutes, require_consistency, file_filters \
+        "SELECT name, schedule, gfs, offsite, retry, blackout, sla_minutes, require_consistency, file_filters, tier \
          FROM policies WHERE id = ?1",
         [id],
         |r| {
@@ -1536,13 +1558,15 @@ fn load_policy(c: &Connection, id: i64) -> ApiResult<Option<PolicyReq>> {
                     r.get::<_, Option<u32>>(6)?,
                     r.get::<_, String>(7)?,
                     r.get::<_, String>(8)?,
+                    r.get::<_, Option<String>>(9)?,
                 ),
             ))
         },
     )
     .optional()?
     .map(
-        |((name, schedule, gfs, offsite), (retry, blackout, sla_minutes, req, filters))| PolicyReq {
+        |((name, schedule, gfs, offsite), (retry, blackout, sla_minutes, req, filters, tier))| PolicyReq {
+            tier,
             file_filters: serde_json::from_str(&filters).unwrap_or_default(),
             retry: serde_json::from_str(&retry).unwrap_or_default(),
             require_consistency: serde_json::from_str(&req).unwrap_or_default(),
@@ -1565,7 +1589,7 @@ fn load_policy(c: &Connection, id: i64) -> ApiResult<Option<PolicyReq>> {
 fn policy_json(id: i64, p: &PolicyReq) -> Value {
     json!({"id": id, "name": p.name, "schedule": p.schedule, "gfs": p.gfs, "offsite": p.offsite,
            "retry": p.retry, "blackout": p.blackout, "sla_minutes": p.sla_minutes,
-           "require_consistency": p.require_consistency, "file_filters": p.file_filters})
+           "require_consistency": p.require_consistency, "file_filters": p.file_filters, "tier": p.tier})
 }
 
 /// A policy as `policy_json` (quorum `old` snapshots compare against it).
@@ -1573,11 +1597,17 @@ pub fn policy_value(c: &Connection, id: i64) -> ApiResult<Option<Value>> {
     Ok(load_policy(c, id)?.map(|p| policy_json(id, &p)))
 }
 
-pub async fn list_policies(State(st): State<St>, _ctx: Ctx) -> ApiResult<Json<Value>> {
+/// Tenant-scoped users see the policies assigned to their tenant or used by
+/// its groups (Phase 19b), everyone else all of them.
+pub async fn list_policies(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>> {
     let c = st.cat.conn();
     let ids: Vec<i64> = c
-        .prepare("SELECT id FROM policies ORDER BY name")?
-        .query_map([], |r| r.get(0))?
+        .prepare(
+            "SELECT id FROM policies WHERE ?1 IS NULL
+               OR id IN (SELECT policy_id FROM tenant_policies WHERE tenant = ?1)
+               OR id IN (SELECT policy_id FROM groups WHERE tenant = ?1) ORDER BY name",
+        )?
+        .query_map([ctx.scope()], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
     let mut out = Vec::new();
     for id in ids {
@@ -1595,8 +1625,8 @@ pub async fn create_policy(State(st): State<St>, ctx: Ctx, J(r): J<PolicyReq>) -
         let c = st.cat.conn();
         c.execute(
             "INSERT INTO policies (name, schedule, gfs, offsite, retry, blackout, sla_minutes, require_consistency,
-             file_filters)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             file_filters, tier)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 r.name,
                 r.schedule,
@@ -1606,7 +1636,8 @@ pub async fn create_policy(State(st): State<St>, ctx: Ctx, J(r): J<PolicyReq>) -
                 json!(r.blackout).to_string(),
                 r.sla_minutes,
                 json!(r.require_consistency).to_string(),
-                json!(r.file_filters).to_string()
+                json!(r.file_filters).to_string(),
+                r.tier
             ],
         )?;
         c.last_insert_rowid()
@@ -1646,7 +1677,7 @@ pub async fn update_policy(
     }
     st.cat.conn().execute(
         "UPDATE policies SET name = ?2, schedule = ?3, gfs = ?4, offsite = ?5, retry = ?6, blackout = ?7,
-         sla_minutes = ?8, require_consistency = ?9, file_filters = ?10 WHERE id = ?1",
+         sla_minutes = ?8, require_consistency = ?9, file_filters = ?10, tier = ?11 WHERE id = ?1",
         params![
             id,
             r.name,
@@ -1657,7 +1688,8 @@ pub async fn update_policy(
             json!(r.blackout).to_string(),
             r.sla_minutes,
             json!(r.require_consistency).to_string(),
-            json!(r.file_filters).to_string()
+            json!(r.file_filters).to_string(),
+            r.tier
         ],
     )?;
     let out = policy_json(id, &r);
@@ -1677,6 +1709,9 @@ pub async fn delete_policy(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) 
         let p = load_policy(&c, id)?.ok_or_else(ApiError::not_found)?;
         if exists(&c, "SELECT 1 FROM groups WHERE policy_id = ?1", [id])? {
             return Err(ApiError::conflict("policy is still used by groups"));
+        }
+        if exists(&c, "SELECT 1 FROM tenant_policies WHERE policy_id = ?1", [id])? {
+            return Err(ApiError::conflict("policy is still assigned to tenants"));
         }
         p.name
     };
@@ -1871,10 +1906,12 @@ pub async fn list_groups(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value
 }
 
 pub async fn create_group(State(st): State<St>, ctx: Ctx, J(mut r): J<GroupReq>) -> ApiResult<Response> {
-    ctx.require(ADMIN)?;
+    ctx.require(TENANT_WRITERS)?;
+    ctx.owns(&r.tenant)?;
     crate::vault::refuse(&st.cat.conn(), "new protection groups")?;
     let out = {
         let c = st.cat.conn();
+        crate::tenancy::check_policy(&c, &ctx, &r.tenant, r.policy_id)?;
         crate::replication::refuse_replicated(&c, &r.tenant)?;
         let a = Auto {
             mode: &mut r.mode,
@@ -1928,7 +1965,7 @@ pub async fn update_group(
     Path(id): Path<i64>,
     J(mut r): J<GroupUpdate>,
 ) -> ApiResult<Response> {
-    ctx.require(ADMIN)?;
+    ctx.require(TENANT_WRITERS)?;
     let (old, weakening) = {
         let c = st.cat.conn();
         let old = c
@@ -1940,6 +1977,10 @@ pub async fn update_group(
             .optional()?
             .ok_or_else(ApiError::not_found)?;
         let tenant = old["tenant"].as_str().unwrap_or_default().to_owned();
+        ctx.owns(&tenant)?;
+        if r.policy_id != old["policy_id"].as_i64().unwrap_or_default() {
+            crate::tenancy::check_policy(&c, &ctx, &tenant, r.policy_id)?;
+        }
         let a = Auto {
             mode: &mut r.mode,
             selector: &mut r.selector,
@@ -1999,7 +2040,7 @@ pub async fn update_group(
 }
 
 pub async fn delete_group(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> ApiResult<Response> {
-    ctx.require(ADMIN)?;
+    ctx.require(TENANT_WRITERS)?;
     let g = st
         .cat
         .conn()
@@ -2010,6 +2051,7 @@ pub async fn delete_group(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -
         )
         .optional()?
         .ok_or_else(ApiError::not_found)?;
+    ctx.owns(g["tenant"].as_str().unwrap_or_default())?;
     gate(&st, &ctx, "group.delete", &format!("group/{id}"), g)
 }
 
@@ -2084,7 +2126,9 @@ fn check_user_tenant(c: &Connection, role: &str, tenant: Option<&str>) -> ApiRes
                 return Err(ApiError::bad("tenant: does not exist"));
             }
         }
-        None if role == "tenant_user" => return Err(ApiError::bad("tenant: required for tenant_user")),
+        None if role == "tenant_user" || role == "tenant_admin" => {
+            return Err(ApiError::bad(format!("tenant: required for {role}")))
+        }
         None => {}
     }
     Ok(())
@@ -2119,10 +2163,15 @@ pub async fn list_users(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>
 /// code (shown once). With approvals enabled, an admin or security_officer is
 /// created *disabled* with a quorum request that enables it; the requester gets
 /// only part 1 of a split code, the approver part 2 (crate::activation).
-pub async fn create_user(State(st): State<St>, ctx: Ctx, J(r): J<UserReq>) -> ApiResult<Response> {
-    ctx.require(ADMIN)?;
+pub async fn create_user(State(st): State<St>, ctx: Ctx, J(mut r): J<UserReq>) -> ApiResult<Response> {
+    ctx.require(TENANT_WRITERS)?;
     validate::name(&r.name, "name")?;
     validate::role(&r.role)?;
+    // a tenant admin's accounts belong to their tenant (default: theirs)
+    if ctx.is_tenant_admin() && r.tenant.is_none() {
+        r.tenant = ctx.scope().map(str::to_owned);
+    }
+    crate::tenancy::check_user_change(&ctx, None, &r.role, r.tenant.as_deref())?;
     if let Some(t) = &r.tenant {
         validate::name(t, "tenant")?;
     }
@@ -2284,8 +2333,11 @@ pub async fn update_user(
     Path(id): Path<i64>,
     J(mut r): J<UserUpdate>,
 ) -> ApiResult<Response> {
-    ctx.require(ADMIN)?;
+    ctx.require(TENANT_WRITERS)?;
     let old = User::load(&st.cat.conn(), id)?;
+    if ctx.is_tenant_admin() && !ctx.sees(old.tenant.as_deref().unwrap_or("")) {
+        return Err(ApiError::forbidden());
+    }
     let own = id == ctx.user.id;
     if old.auth == "oidc" {
         let role_change = r.role.as_ref().is_some_and(|x| *x != old.role);
@@ -2335,6 +2387,7 @@ pub async fn update_user(
         }
         Some(_) => return Err(ApiError::bad("tenant: string or null")),
     };
+    crate::tenancy::check_user_change(&ctx, Some(&old), &role, tenant.as_deref())?;
     let disabled = r.disabled.unwrap_or(old.disabled);
     let expires = match &r.expires {
         None => old.expires,

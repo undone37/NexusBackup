@@ -867,6 +867,11 @@ impl<P: Platform> Session<'_, P> {
         if self.agent.active_jobs.load(Ordering::SeqCst) > 0 || self.restore.is_some() {
             return error(s, E_BUSY, "jobs are running; update refused");
         }
+        let packaged = crate::update::packaged(&crate::update::package_marker());
+        if let Some(why) = crate::update::self_update_blocked(self.agent.settings.self_update, packaged.as_deref()) {
+            log(format!("update refused: {why}"));
+            return error(s, E_REFUSED, why);
+        }
         match self.agent.platform.update(self.agent.ctx(), version, binary, signature) {
             Ok(msg) => {
                 log(&msg);

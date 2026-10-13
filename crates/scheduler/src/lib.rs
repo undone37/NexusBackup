@@ -1485,8 +1485,8 @@ impl Scheduler {
                 log.push_str(&format!("[scheduler] download ready: {file} ({size} bytes)\n"));
                 Some(r)
             }
-            "alert_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" | "file_search" | "file_index"
-            | "config_backup" => serde_json::from_str(stdout.unwrap_or_default()).ok(),
+            "alert_test" | "forward_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" | "file_search"
+            | "file_index" | "config_backup" => serde_json::from_str(stdout.unwrap_or_default()).ok(),
             "offsite_list" => match serde_json::from_str::<Value>(stdout.unwrap_or_default().trim()) {
                 Ok(s @ Value::Array(_)) => Some(json!({ "snapshots": s })),
                 _ => {
@@ -3273,8 +3273,14 @@ impl Scheduler {
         for e in fs::read_dir(&self.cfg.downloads)? {
             let e = e?;
             let m = e.metadata()?;
-            if m.is_file() && now - m.mtime() > self.cfg.download_ttl_secs {
+            if now - m.mtime() <= self.cfg.download_ttl_secs {
+                continue;
+            }
+            if m.is_file() {
                 fs::remove_file(e.path())?;
+            } else if m.is_dir() && e.file_name().to_string_lossy().ends_with(".d") {
+                // staging dir of an export (nexus-pluginhost export) left by a crash
+                fs::remove_dir_all(e.path())?;
             }
         }
         Ok(())
