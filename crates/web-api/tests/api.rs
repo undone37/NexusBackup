@@ -4037,6 +4037,12 @@ async fn tenant_admin_routes_classified() {
         ("POST", "/hardware/arrays/{name}/grow", "/api/v1/hardware/arrays/md0/grow".into(), Some(json!({"disk": "sdb", "confirm": "x"})), 'N'),
         ("POST", "/tenants/{name}/deactivate", "/api/v1/tenants/acme/deactivate".into(), Some(json!({"reason": "x"})), 'N'),
         ("POST", "/tenants/{name}/reactivate", "/api/v1/tenants/acme/reactivate".into(), e(), 'N'),
+        // Phase 22b: restore priority is the provider's; NAS split and skipped files are the tenant's
+        ("GET", "/restore-priority", "/api/v1/restore-priority".into(), none(), 'Y'),
+        ("PUT", "/restore-priority", "/api/v1/restore-priority".into(), Some(json!({"hours": 1})), 'N'),
+        ("DELETE", "/restore-priority", "/api/v1/restore-priority".into(), none(), 'N'),
+        ("POST", "/sources/{id}/split", format!("/api/v1/sources/{src}/split"), Some(json!({"roots": ["/a", "/b"]})), 'Y'),
+        ("GET", "/jobs/{id}/skipped.csv", "/api/v1/jobs/999/skipped.csv".into(), none(), 'Y'),
         ("GET", "/vault", "/api/v1/vault".into(), none(), 'Y'),
         ("PUT", "/vault", "/api/v1/vault".into(), Some(json!({"enabled": true})), 'N'),
         ("GET", "/tenants/tombstones", "/api/v1/tenants/tombstones".into(), none(), 'N'),
