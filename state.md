@@ -370,6 +370,8 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 ## Final lab (2026-10-13, in progress)
 - [x] All phases 13–26 merged; local gates green at 8420e13
 - Fixed by the lab: image web stage copies openapi.json; restorevm stage installs yara; guest selection accepts 100/"100"; dontaudit lsblk userdb; lab cancel step uses ct-200 only, auto group name unique
-- [ ] `lab/appliance/e2e.sh all` on a fresh image (running), then network.sh, pve-nas-ops.sh, config-restore.sh, forwarding.sh, disks.sh, grub-lock.sh, restore-test/recovery-plan, lab/edge, lab/linux/bmr.sh
-- [ ] CI: gh-runner rootless podman broken ("podman system migrate") — needs the maintainer on the runner host
+- [x] `lab/appliance/e2e.sh all` on a fresh image: all 12 API steps, 0 nexus AVCs (only bootc's chcon probe)
+- [x] forwarding.sh all (1..129 at both sinks, equal hashes, outage + backlog, quorum disable) and pve-nas-ops.sh all (priority, limits, identity, instant disk)
+- [ ] network.sh, config-restore.sh, disks.sh, grub-lock.sh, restore-test/recovery-plan, lab/edge, lab/linux/bmr.sh
+- [x] CI: gh-runner rootless podman repaired by the maintainer (linger, store reset, XDG_RUNTIME_DIR in the runner .env)
 - [ ] screenshots regenerate, tag v0.1.0-alpha (draft)
