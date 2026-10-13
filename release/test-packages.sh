@@ -131,13 +131,17 @@ grep -P "^AgentServiceControl\tNexusAgent\t163\t" /tmp/sc >/dev/null || fail "Se
 msiinfo export "$m" CustomAction | tee /tmp/ca
 grep -P "^ServiceSetup\t3090\tAgentExe\tservice-setup" /tmp/ca >/dev/null || fail "ServiceSetup: deferred, no impersonation, exe from file"
 grep -P "^PurgeData\t3154\tAgentExe\tpurge-data --yes" /tmp/ca >/dev/null || fail "PurgeData: deferred, no impersonation, ignore result"
-grep -P "^FleetInit\t3154\tAgentExe\tinit --fleet-secret \"\[FLEETSECRET\]\"" /tmp/ca >/dev/null || fail "FleetInit: deferred, no impersonation, ignore result"
+grep -P "^FleetInit\t11346\tAgentExe\tinit --fleet-secret \"\[FLEETSECRET\]\"" /tmp/ca >/dev/null || fail "FleetInit: deferred, no impersonation, ignore result, HideTarget (secret not in the MSI log)"
 msiinfo export "$m" InstallExecuteSequence | tee /tmp/seq
 grep -P "^ServiceSetup\tNOT REMOVE=\"ALL\"\t" /tmp/seq >/dev/null || fail "ServiceSetup condition"
 # Windows refuses RemoveExistingProducts inside the install script without InstallExecute (error 2613)
 v=$(grep -P "^InstallValidate\t" /tmp/seq | cut -f3); i=$(grep -P "^InstallInitialize\t" /tmp/seq | cut -f3)
 r=$(grep -P "^RemoveExistingProducts\t" /tmp/seq | cut -f3)
 [ "$r" -gt "$v" ] && [ "$r" -lt "$i" ] || fail "RemoveExistingProducts ($r) not between InstallValidate and InstallInitialize"
+# PurgeData runs nexus-agent.exe: after DeleteServices, before RemoveFiles deletes the exe (error 1721)
+d=$(grep -P "^DeleteServices\t" /tmp/seq | cut -f3); f=$(grep -P "^RemoveFiles\t" /tmp/seq | cut -f3)
+pd=$(grep -P "^PurgeData\t" /tmp/seq | cut -f3)
+[ "$pd" -gt "$d" ] && [ "$pd" -lt "$f" ] || fail "PurgeData ($pd) not between DeleteServices and RemoveFiles"
 grep -P "^PurgeData\tREMOVE=\"ALL\" AND PURGE=\"1\" AND NOT UPGRADINGPRODUCTCODE\t" /tmp/seq >/dev/null || fail "PurgeData condition"
 grep -P "^FleetInit\tFLEETSECRET AND NOT REMOVE=\"ALL\"\t" /tmp/seq >/dev/null || fail "FleetInit condition"
 msiinfo export "$m" Upgrade | grep -qi "F0236C93-DDCE-4B09-A197-525C84656168" || fail "UpgradeCode"

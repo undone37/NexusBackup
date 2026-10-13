@@ -210,10 +210,18 @@ RUN dnf -y install --setopt=install_weak_deps=False msitools && dnf clean all")
 	name=nexus-agent-$wversion-x64.msi
 	podman run --rm --security-opt label=disable -v "$PWD/$stage:/stage" -w /stage "$msi_img" \
 		sh -c "wixl -a x64 -D Version=$wversion -o /stage/$name nexus-agent.wxs &&
-		msibuild /stage/$name -q \"UPDATE InstallExecuteSequence SET Sequence = 1401 WHERE Action = 'RemoveExistingProducts'\""
-	# ^ wixl schedules RemoveExistingProducts after the last custom action, inside the install script without
-	#   InstallExecute: Windows refuses that (error 2613, every install failed on Windows Server 2022). 1401 =
-	#   right after InstallValidate, the WiX default (old version removed before the new one is installed).
+		msibuild /stage/$name -q \"UPDATE InstallExecuteSequence SET Sequence = 1401 WHERE Action = 'RemoveExistingProducts'\" &&
+		msibuild /stage/$name -q \"UPDATE InstallExecuteSequence SET Sequence = 2001 WHERE Action = 'PurgeData'\" &&
+		msibuild /stage/$name -q \"UPDATE CustomAction SET Type = 11346 WHERE Action = 'FleetInit'\""
+	# ^ wixl ignores After= relative to standard actions and appends RemoveExistingProducts and PurgeData after
+	#   the last custom action (found on Windows Server 2022):
+	#   - RemoveExistingProducts inside the install script without InstallExecute: error 2613, every install
+	#     failed. 1401 = right after InstallValidate, the WiX default (old version removed first).
+	#   - PurgeData after RemoveFiles: nexus-agent.exe was gone, error 1721, PURGE=1 never deleted anything.
+	#     2001 = right after DeleteServices, before RemoveFiles (3500).
+	#   wixl also drops HideTarget: FleetInit (3154 = deferred, no impersonation, exe from a file) gets
+	#   msidbCustomActionTypeHideTarget (0x2000) = 11346, or the verbose log shows the fleet secret in its
+	#   CustomActionSchedule line (MsiHiddenProperties does not cover expanded targets).
 	mv "$stage/$name" "$out/"
 	rm -rf "$stage"
 fi

@@ -14,6 +14,7 @@
 #     confine  junction to C:\Windows inside the target: overwrite=always restore writes nothing under C:\Windows
 #     update   agent_update on an MSI install: refused ("package")
 #     service  taskkill /f -> SCM restarts the service; sc stop -> stays stopped; start again
+#     fleet    (not default) PURGE=1 uninstall, MSI with FLEETSECRET, fleet scan + accept -> enrolled
 #     ntds     (DC, not default) source with C:\Windows\NTDS: NTDS writer [ok], consistent
 # env: as lab/linux/e2e.sh (ROOT, PORT); MSI (target/packages/nexus-agent-<v>-x64.msi); HOST (VM address the
 #      appliance connects to; default: from the guest agent)
@@ -246,6 +247,41 @@ step_update() {
 	j=$(wait_job admin "$(jq -r .id <<<"$r")" 300)
 	[ "$(jq -r .state <<<"$j")" = failed ] || die "update of an MSI install was not refused"
 	result update_msi "refused: $(jq -r .log <<<"$j" | grep -iE 'package|msi|self.update' | head -1)"
+}
+
+# fleet enrollment through the MSI: uninstall with PURGE=1 (enrollment gone), a fleet secret for this VM's
+# address, msiexec /i ... FLEETSECRET=..., scan, accept the candidate, the agent is enrolled; a backup works
+step_fleet() {
+	state
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	local host r sec fid j cand
+	host=$(win '(Get-NetIPAddress -AddressFamily IPv4 | ? { $_.IPAddress -notlike "127.*" -and $_.PrefixOrigin -ne "WellKnown" } | Select -First 1).IPAddress' | tr -d '\r\n')
+	win '$p = Get-Package "NexusBackup Agent" -ErrorAction SilentlyContinue; if ($p) { Start-Process msiexec -Wait -ArgumentList "/x $($p.FastPackageReference) /qn PURGE=1" }; Test-Path $env:ProgramData\NexusAgent' | grep -qx False ||
+		die "PURGE=1 left %ProgramData%\\NexusAgent"
+	[ -n "${AGENT:-}" ] && api admin DELETE "/agents/$AGENT" >/dev/null
+	r=$(api admin POST /fleets "$(jq -nc --arg t "$TENANT" --arg h "$host/32" '{name:"lab-fleet", tenant:$t, expires_days:1, ranges:[$h]}')")
+	expect 201 "create fleet"
+	sec=$(jq -r .secret <<<"$r")
+	fid=$(jq -r .id <<<"$r")
+	# the secret goes into an MSI property (hidden from the MSI log by MsiHiddenProperties)
+	win "\$p = Start-Process msiexec -Wait -PassThru -ArgumentList '/i C:\\nexus-lab\\agent.msi /qn FLEETSECRET=$sec /l*v C:\\nexus-lab\\msi-fleet.log'; \"msiexec exit \$(\$p.ExitCode)\"" >&2
+	win "if (Select-String -Path C:\\nexus-lab\\msi-fleet.log -SimpleMatch '${sec#*.*.}' -Quiet) { 'SECRET IN LOG' } else { 'secret not in the MSI log' }" | tee /dev/stderr | grep -q 'not in' ||
+		die "fleet secret appears in the MSI log"
+	r=$(api admin POST "/fleets/$fid/scan")
+	expect 202 "fleet scan"
+	j=$(wait_job admin "$(jq -r .id <<<"$r")" 300)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "fleet scan: $(jq -r .log <<<"$j" | tail -n 20)"
+	cand=$(api admin GET /fleet/candidates | jq -r --arg f "$fid" '[.[] | select(.fleet_id==$f and .state=="awaiting")][0].id // empty')
+	[ -n "$cand" ] || die "no fleet candidate after the scan: $(jq -r .log <<<"$j" | tail -n 10)"
+	r=$(api admin POST "/fleet/candidates/$cand/accept")
+	expect 200 "accept candidate"
+	AGENT=$(jq -r .agent_id <<<"$r")
+	printf 'AGENT=%s\nNAME=%s\n' "$AGENT" "$(jq -r .name <<<"$r")" >"$S/win-$VMID.env"
+	NAME=$(jq -r .name <<<"$r")
+	j=$(wait_job admin "$(jq -r .job <<<"$r")" 300)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "fleet enrollment: $(jq -r .log <<<"$j" | tail -n 20)"
+	api admin GET /agents | jq -e --arg id "$AGENT" '.[] | select(.id==$id) | .cert_sha256 != null' >/dev/null || die "agent not enrolled"
+	result fleet "MSI FLEETSECRET -> scan -> accept -> enrolled ($AGENT)"
 }
 
 # domain controller: the NTDS writer takes part and the AD database files are in the snapshot
