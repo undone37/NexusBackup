@@ -112,7 +112,7 @@ podman is the only host tool needed, plus `jq`/`openssl` for check-trust.
 4. `release/promote.sh ghcr.io/undone37/nexusbackup@sha256:D stable` verifies again,
    then points `:stable` at the digest (skopeo, `--preserve-digests`, copied under the
    appliance policy, so an unsigned digest cannot be promoted). Appliances pick it up at
-   their next check. Publish the draft release.
+   their next check. Publish the draft release once the package signatures (step 6) are attached.
 5. The `iso` workflow (`.github/workflows/iso.yml`) starts when the release workflow succeeds: it builds
    `nexusbackup-<version>-x86_64.iso` with bootc-image-builder (`anaconda-iso`, config `release/iso/config.toml`)
    around the release digest from `release-metadata.json` and uploads it with a `.sha256` to the release. For an
@@ -120,6 +120,26 @@ podman is the only host tool needed, plus `jq`/`openssl` for check-trust.
    installed system switches to signature enforcement on its first update check. Check an ISO before publishing
    with `lab/appliance/iso-test.sh <iso>` (unattended UEFI install in QEMU, then a screenshot of the first-boot
    wizard).
+
+6. The `packages` job of `release.yml` (after the image job) builds the agent packages with
+   `release/packages.sh` (nexus-agent `.deb`/`.rpm` for x86_64 and aarch64, the Windows
+   MSI, `SHA256SUMS`; rootless podman only: Rust image, nfpm, Fedora msitools; release keys
+   from `release/keys/`), checks them with `release/test-packages.sh` (install/remove in
+   debian:13, almalinux:10, fedora; lintian/rpmlint errors fail; MSI tables) and uploads them
+   to the draft. CI does not sign them. Sign on the key machine (offline, `--network none`,
+   the passphrase is asked once), verify, upload the signatures:
+   ```sh
+   gh release download vX.Y.Z -D pkgs -p '*.deb' -p '*.rpm' -p '*.msi' -p SHA256SUMS
+   COSIGN_KEY=... release/sign.sh sign-blobs pkgs     # checks SHA256SUMS, writes <file>.sig + SHA256SUMS.sig
+   release/verify.sh --blobs pkgs                    # every file + SHA256SUMS, against release/keys/*.pub
+   gh release upload vX.Y.Z pkgs/*.sig
+   ```
+   Users check a download with `sha256sum -c --ignore-missing SHA256SUMS` and
+   `cosign verify-blob --key <release key>.pub --signature <file>.sig --insecure-ignore-tlog=true <file>`.
+   No native package signatures (GPG for apt/dnf, Authenticode for the MSI): there is no
+   package repository and no code-signing certificate yet (plan.md §2). Package installs
+   do not self-update (docs/agent-linux.md "Self-update"); the agent binaries for the
+   appliance's **Update agent** job are signed separately with `sign-blob`.
 
 `release/test-local.sh` runs this whole chain against a throwaway `registry:2` on
 127.0.0.1 with the TEST key and a freshly generated untrusted key.

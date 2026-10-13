@@ -146,6 +146,43 @@ pub fn check_candidate(
     Ok((key, embedded))
 }
 
+/// Marker file shipped by the deb/rpm/msi packages (content: the package type). A
+/// package-managed binary is updated by the package manager, not by `Update`.
+pub fn package_marker() -> PathBuf {
+    #[cfg(not(windows))]
+    return PathBuf::from("/usr/lib/nexus-agent/package-managed");
+    #[cfg(windows)]
+    std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join("package-managed")))
+        .unwrap_or_default()
+}
+
+/// The package type if this agent was installed from a package.
+pub fn packaged(marker: &Path) -> Option<String> {
+    let t = fs::read_to_string(marker).ok()?;
+    let t = t.trim();
+    Some(if t.is_empty() || t.len() > 16 {
+        "package".into()
+    } else {
+        t.to_string()
+    })
+}
+
+/// Why `Update` is refused before any check, if it is: `self_update` in agent.conf
+/// wins; unset, package installs leave updates to the package manager (a self-update
+/// would replace a file the package owns, and the next package upgrade or repair would
+/// silently undo or fight it).
+pub fn self_update_blocked(setting: Option<bool>, packaged: Option<&str>) -> Option<String> {
+    match (setting, packaged) {
+        (Some(true), _) | (None, None) => None,
+        (Some(false), _) => Some("self-update is off (self_update = off in agent.conf)".into()),
+        (None, Some(p)) => Some(format!(
+            "installed from a {p} package: update it with the package manager (or set self_update = on in agent.conf)"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,6 +230,23 @@ mod tests {
         let (_, other) = keypair();
         assert!(verify(BLOB, BLOB_SIG, &[("other".into(), other)]).is_err());
         assert!(verify(BLOB, BLOB_SIG, &[]).is_err());
+    }
+
+    #[test]
+    fn package_installs_leave_updates_to_the_package_manager() {
+        let t = tempfile::tempdir().unwrap();
+        let m = t.path().join("package-managed");
+        assert_eq!(packaged(&m), None);
+        fs::write(&m, "deb\n").unwrap();
+        assert_eq!(packaged(&m).as_deref(), Some("deb"));
+        fs::write(&m, "").unwrap();
+        assert_eq!(packaged(&m).as_deref(), Some("package"));
+        assert_eq!(self_update_blocked(None, None), None);
+        assert!(self_update_blocked(None, Some("rpm")).unwrap().contains("rpm package"));
+        assert_eq!(self_update_blocked(Some(true), Some("msi")), None);
+        assert!(self_update_blocked(Some(false), None)
+            .unwrap()
+            .contains("self_update = off"));
     }
 
     fn native(b: &[u8]) -> bool {

@@ -70,6 +70,8 @@
   const always: Allow = (u) => !!u;
   // Settings: approvals (everyone non-tenant), alerts / SSO (admin, security officer), SSH keys / updates (+ operator).
   const viewSettings: Allow = (u) => !!u && u.role !== 'tenant_user' && u.role !== 'viewer' && !u.tenant;
+  // Approvals list: appliance-wide roles, and tenant admins for their own requests (Phase 19b).
+  const viewApprovals: Allow = (u) => can.viewQuorum(u) || can.viewOwnQuorum(u);
 
   // Routes; `nav` entries appear in the sidebar (filtered by role — the server still decides).
   const routes: { path: string; comp: Component<any>; allow: Allow; nav?: string; section?: Section; icon?: Component<any> }[] = [
@@ -82,15 +84,15 @@
     { path: '/jobs', comp: Jobs, allow: always, nav: t.nav.jobs, section: 'monitor', icon: IconJobs },
     { path: '/jobs/:id', comp: JobDetail, allow: always },
     { path: '/alerts', comp: Alerts, allow: can.viewAlerts, nav: t.nav.alerts, section: 'monitor', icon: IconAlerts },
-    { path: '/quorum', comp: Quorum, allow: can.viewQuorum, nav: t.nav.quorum, section: 'governance', icon: IconApprovals },
+    { path: '/quorum', comp: Quorum, allow: viewApprovals, nav: t.nav.quorum, section: 'governance', icon: IconApprovals },
     { path: '/audit', comp: Audit, allow: can.audit, nav: t.nav.audit, section: 'governance', icon: IconAudit },
     { path: '/tenants', comp: Tenants, allow: can.attachOffsite, nav: t.nav.tenants, section: 'config', icon: IconTenants },
-    { path: '/sources', comp: Sources, allow: can.configure, nav: t.nav.sources, section: 'config', icon: IconSources },
-    { path: '/agents', comp: Agents, allow: can.configure, nav: t.nav.agents, section: 'config', icon: IconAgents },
+    { path: '/sources', comp: Sources, allow: can.manageTenant, nav: t.nav.sources, section: 'config', icon: IconSources },
+    { path: '/agents', comp: Agents, allow: can.manageTenant, nav: t.nav.agents, section: 'config', icon: IconAgents },
     { path: '/replication', comp: Replication, allow: can.viewReplication, nav: t.nav.replication, section: 'config', icon: IconReplication },
     { path: '/policies', comp: Policies, allow: can.configure, nav: t.nav.policies, section: 'config', icon: IconPolicies },
-    { path: '/groups', comp: Groups, allow: can.configure, nav: t.nav.groups, section: 'config', icon: IconGroups },
-    { path: '/users', comp: Users, allow: can.configure, nav: t.nav.users, section: 'config', icon: IconUsers },
+    { path: '/groups', comp: Groups, allow: can.manageTenant, nav: t.nav.groups, section: 'config', icon: IconGroups },
+    { path: '/users', comp: Users, allow: can.manageTenant, nav: t.nav.users, section: 'config', icon: IconUsers },
     { path: '/plugins', comp: Plugins, allow: can.viewPlugins, nav: t.nav.plugins, section: 'config', icon: IconPlugins },
     { path: '/hardware', comp: Hardware, allow: can.viewHardware, nav: t.nav.hardware, section: 'config', icon: IconHardware },
     { path: '/settings', comp: Settings, allow: viewSettings, nav: t.nav.settings, section: 'config', icon: IconSettings },
@@ -148,9 +150,10 @@
     const me = await get<LoginResponse>('/auth/me').catch(() => null);
     if (me) {
       session.vault = !!me.vault_mode;
+      session.impersonating = me.impersonating ?? null;
       if (can.viewQuorum(u)) shell = me.console_shell ?? null;
     }
-    if (can.viewQuorum(u))
+    if (viewApprovals(u))
       pendingApprovals = await get<QuorumRequest[]>('/quorum')
         .then((q) => q.filter((x) => x.state === 'pending').length)
         .catch(() => pendingApprovals);
@@ -179,6 +182,7 @@
       const me = await get<LoginResponse>('/auth/me');
       setSession(me.user, me.csrf);
       session.vault = !!me.vault_mode;
+      session.impersonating = me.impersonating ?? null;
       shell = me.console_shell ?? null;
     } catch {
       setSession(null, null);
@@ -194,6 +198,17 @@
     }
     setSession(null, null);
     navigate('/');
+  }
+
+  // "View as tenant" (Phase 19b): back to the admin's own role.
+  async function endImpersonation() {
+    if (!(await act(post('/auth/impersonation/end'), t.impersonate.ended))) return;
+    const me = await get<LoginResponse>('/auth/me').catch(() => null);
+    if (me) {
+      setSession(me.user, me.csrf);
+      session.impersonating = me.impersonating ?? null;
+    }
+    navigate('/tenants');
   }
 
   function skipToMain() {
@@ -276,7 +291,7 @@
             <span class="chip accent vault-badge" title={t.vault.badgeTitle}><IconVault aria-hidden="true" />{t.vault.badge}</span>
           {/if}
         {/if}
-        {#if can.viewQuorum(session.user)}
+        {#if viewApprovals(session.user)}
           <a class="icon-btn" href={href('/quorum')} aria-label={t.nav.approvalsPending(pendingApprovals)} title={t.nav.approvalsPending(pendingApprovals)}>
             <IconApprovals aria-hidden="true" />
             {#if pendingApprovals}<span class="dot warn" aria-hidden="true">{pendingApprovals}</span>{/if}
@@ -301,6 +316,20 @@
         <button type="button" class="icon-btn" onclick={logout} aria-label={t.nav.logout} title={t.nav.logout}><IconLogout aria-hidden="true" /></button>
       </header>
 
+      {#if session.impersonating}
+        <div class="glass impersonating" role="status">
+          <IconTenants aria-hidden="true" />
+          <p>
+            <strong>
+              {session.impersonating.role === 'viewer'
+                ? t.impersonate.bannerView(session.impersonating.tenant)
+                : t.impersonate.bannerAct(session.impersonating.tenant)}
+            </strong>
+            {t.impersonate.bannerAudit}
+          </p>
+          <button type="button" class="small" onclick={endImpersonation}>{t.impersonate.end}</button>
+        </div>
+      {/if}
       {#if shell}
         <div class="glass" role="alert">
           <IconTerminal aria-hidden="true" />

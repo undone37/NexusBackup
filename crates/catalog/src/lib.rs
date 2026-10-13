@@ -19,6 +19,7 @@ pub mod holds;
 pub mod inventory;
 pub mod schedule;
 pub mod secret;
+pub mod tenancy;
 pub mod tenant_key;
 pub mod tenants;
 pub mod vault;
@@ -491,10 +492,48 @@ ALTER TABLE replication_sources ADD COLUMN closed_by TEXT;
 ALTER TABLE replication_sources ADD COLUMN closed_at INTEGER;
 "#;
 
+/// v25 (Phase 19b, tenant admins, docs/control-plane.md "Tenant admins"):
+/// `tenant_policies` (the policies the provider assigned to a tenant: a
+/// tenant_admin's groups use only these), `policies.tier` (bronze / silver /
+/// gold from the templates, shown in SLA reports), `tenants.uid` (random
+/// 128 bit, set once by a trigger for every new row, backfilled here; name and
+/// uid are immutable: DEK labels, AADs and escrow paths stay bound to the name),
+/// `tenant_tombstones` (deleted names are never handed out again),
+/// `sessions.impersonating` / `impersonating_role` ("view as tenant") and
+/// `audit_tenants` (the tenant an audit entry concerns, beside the hash chain:
+/// the chain format is unchanged; backfilled from `details.tenant` and
+/// `tenant/<name>` targets). The previous release ignores all of it (renames are
+/// impossible there too; a deleted name could be re-created).
+const SCHEMA_V25: &str = r#"
+CREATE TABLE tenant_policies (
+  tenant TEXT NOT NULL REFERENCES tenants(name), policy_id INTEGER NOT NULL REFERENCES policies(id),
+  PRIMARY KEY (tenant, policy_id));
+ALTER TABLE policies ADD COLUMN tier TEXT CHECK (tier IN ('bronze','silver','gold'));
+ALTER TABLE tenants ADD COLUMN uid TEXT;
+UPDATE tenants SET uid = lower(hex(randomblob(16))) WHERE uid IS NULL;
+CREATE UNIQUE INDEX tenants_uid ON tenants(uid);
+CREATE TRIGGER tenants_uid_new AFTER INSERT ON tenants WHEN NEW.uid IS NULL
+  BEGIN UPDATE tenants SET uid = lower(hex(randomblob(16))) WHERE name = NEW.name; END;
+CREATE TRIGGER tenants_immutable BEFORE UPDATE OF name, uid ON tenants
+  WHEN OLD.uid IS NOT NULL AND (NEW.name IS NOT OLD.name OR NEW.uid IS NOT OLD.uid)
+  BEGIN SELECT RAISE(ABORT, 'tenant name and uid are immutable'); END;
+CREATE TABLE tenant_tombstones (
+  name TEXT PRIMARY KEY, uid TEXT, deleted_at INTEGER NOT NULL, deleted_by TEXT NOT NULL);
+ALTER TABLE sessions ADD COLUMN impersonating TEXT;
+ALTER TABLE sessions ADD COLUMN impersonating_role TEXT CHECK (impersonating_role IN ('viewer','tenant_admin'));
+CREATE TABLE audit_tenants (seq INTEGER PRIMARY KEY, tenant TEXT NOT NULL);
+CREATE INDEX audit_tenants_tenant ON audit_tenants(tenant, seq);
+INSERT INTO audit_tenants (seq, tenant)
+  SELECT seq, t FROM (SELECT seq, COALESCE(
+      CASE WHEN json_valid(details) AND json_type(details, '$.tenant') = 'text' THEN json_extract(details, '$.tenant') END,
+      CASE WHEN target LIKE 'tenant/%' THEN substr(target, 8) END) AS t FROM audit)
+  WHERE t IS NOT NULL;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
-    SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24,
+    SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -611,6 +650,12 @@ impl Catalog {
             "INSERT INTO audit (seq, ts, actor, action, target, details, prev_hash, hash) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             params![seq, ts, actor, action, target, details, prev, hash],
         )?;
+        if let Some(t) = tenancy::audit_tenant(&tx, actor, target, &details)? {
+            tx.execute(
+                "INSERT INTO audit_tenants (seq, tenant) VALUES (?1, ?2)",
+                params![seq, t],
+            )?;
+        }
         tx.commit()?;
         // ponytail: journald picks this up and forwards it (rsyslog/TLS configured in the OS image)
         eprintln!("<6>nexus-audit seq={seq} actor={actor} action={action} target={target} hash={hash}");
@@ -2089,5 +2134,94 @@ mod tests {
         let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
         assert_eq!(MIGRATIONS[..before].iter().skip(v as usize).count(), 0);
         old.execute("DELETE FROM snapshots WHERE tenant = 'acme'", []).unwrap();
+    }
+
+    /// v25 (tenant admins) on top of the previous catalog: existing tenants get
+    /// distinct uids, new ones get one from the trigger; names and uids are
+    /// immutable; old audit entries naming a tenant are indexed (chain intact);
+    /// sessions, policies and the previous release keep working.
+    #[test]
+    fn migration_v25_tenancy() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V25).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch("INSERT INTO tenants (name) VALUES ('acme'), ('globex');")
+                .unwrap();
+        }
+        {
+            // entries written by the previous release
+            let old = Catalog {
+                conn: Mutex::new(Connection::open(&p).unwrap()),
+            };
+            let raw = |a: &str, t: &str, d: &serde_json::Value| {
+                let c = old.conn();
+                let (seq, prev): (i64, String) = c
+                    .query_row("SELECT seq, hash FROM audit ORDER BY seq DESC LIMIT 1", [], |r| {
+                        Ok((r.get(0)?, r.get(1)?))
+                    })
+                    .optional()
+                    .unwrap()
+                    .unwrap_or((0, "0".repeat(64)));
+                let h = chain_hash(&prev, seq + 1, 5, "alice", a, t, &d.to_string());
+                c.execute(
+                    "INSERT INTO audit (seq, ts, actor, action, target, details, prev_hash, hash) VALUES (?1,5,'alice',?2,?3,?4,?5,?6)",
+                    params![seq + 1, a, t, d.to_string(), prev, h],
+                )
+                .unwrap();
+            };
+            raw("tenant.create", "tenant/acme", &json!({}));
+            raw("job.create", "job/1", &json!({"tenant": "globex"}));
+            raw("settings.x", "settings", &json!({}));
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+            assert_eq!(v, MIGRATIONS.len() as i64);
+            let uids: Vec<String> = conn
+                .prepare("SELECT uid FROM tenants ORDER BY name")
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(uids.len(), 2);
+            assert!(uids[0] != uids[1] && uids.iter().all(|u| u.len() == 32));
+            assert!(conn
+                .execute("UPDATE tenants SET name = 'acme2' WHERE name = 'acme'", [])
+                .is_err());
+            let idx: Vec<(i64, String)> = conn
+                .prepare("SELECT seq, tenant FROM audit_tenants ORDER BY seq")
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(idx, vec![(1, "acme".to_owned()), (2, "globex".to_owned())]);
+            conn.execute_batch(
+                "INSERT INTO policies (id, name, schedule, gfs) VALUES (4, 'p', 'daily 01:00', '{}');
+                 INSERT INTO tenant_policies (tenant, policy_id) VALUES ('acme', 4);
+                 UPDATE policies SET tier = 'gold';",
+            )
+            .unwrap();
+            assert!(conn.execute("UPDATE policies SET tier = 'platinum'", []).is_err());
+        }
+        assert_eq!(c.verify_audit().unwrap(), 3);
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        let v: i64 = old.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(MIGRATIONS[..before].iter().skip(v as usize).count(), 0);
+        old.execute("INSERT INTO tenants (name) VALUES ('initech')", [])
+            .unwrap();
+        let u: Option<String> = old
+            .query_row("SELECT uid FROM tenants WHERE name = 'initech'", [], |r| r.get(0))
+            .unwrap();
+        assert!(u.is_some_and(|u| u.len() == 32));
     }
 }

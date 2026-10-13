@@ -226,7 +226,9 @@ impl Scheduler {
         let cfg = self.replica_config(
             &s,
             json!({"tenant": job.tenant, "store": self.cfg.store_base.join(&job.tenant), "gfs": s.gfs,
-                   "bwlimit": s.bwlimit, "windows": s.windows, "timezone": s.timezone, "parallel": self.cfg.replica_parallel, "held": plan.held}),
+                   "bwlimit": s.bwlimit, "windows": s.windows, "timezone": s.timezone, "parallel": self.cfg.replica_parallel, "held": plan.held,
+                   // Phase 19b: the primary tenant's uid seen at the first sync (null = not yet / legacy primary)
+                   "tenant_uid": s.status[&job.tenant]["primary_uid"]}),
         );
         plan.files
             .push(("replica.json".into(), serde_json::to_vec_pretty(&cfg)?));
@@ -293,6 +295,10 @@ impl Scheduler {
             entry["remote"] = r["remote"].clone();
             entry["key_versions"] = r["key_versions"].clone();
             entry["job"] = json!(job.id);
+            // trust on first use: later syncs refuse a primary tenant with another uid
+            if entry["primary_uid"].is_null() && r["tenant_uid"].is_string() {
+                entry["primary_uid"] = r["tenant_uid"].clone();
+            }
             self.db.conn().execute(
                 "UPDATE replication_sources SET status=?2, last_sync=?3 WHERE id=?1",
                 params![id, status.to_string(), now],

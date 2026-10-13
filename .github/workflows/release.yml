@@ -1,6 +1,6 @@
 name: release
 # Tag v* -> build the bootc appliance image, push it to ghcr.io, attach an SBOM, and
-# open a DRAFT GitHub release with the digest. CI does NOT sign: the release key is
+# open a DRAFT GitHub release with the digest; then the agent packages (.deb/.rpm/.msi). CI does NOT sign: the release key is
 # offline. The release manager signs the printed digest with release/sign.sh, checks
 # it with release/verify.sh and moves the channel tag with release/promote.sh
 # (docs/release.md).
@@ -29,7 +29,7 @@ jobs:
       digest: ${{ steps.push.outputs.digest }}
       image: ${{ steps.push.outputs.image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Release constants
         run: grep -E '^[A-Z_][A-Z0-9_]*=' release/config.env >> "$GITHUB_ENV"
@@ -123,6 +123,14 @@ jobs:
           release/promote.sh $IMAGE_REF stable
           \`\`\`
 
+          Agent packages (.deb/.rpm/.msi + SHA256SUMS, attached by the \`packages\` job): sign them offline too:
+
+          \`\`\`sh
+          gh release download $GITHUB_REF_NAME -D pkgs -p '*.deb' -p '*.rpm' -p '*.msi' -p SHA256SUMS
+          release/sign.sh sign-blobs pkgs && release/verify.sh --blobs pkgs
+          gh release upload $GITHUB_REF_NAME pkgs/*.sig
+          \`\`\`
+
           Then publish this draft. See docs/release.md.
           EOF
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" \
@@ -133,4 +141,36 @@ jobs:
             echo "\`$IMAGE_REF\`"
             echo
             echo "Next: \`release/sign.sh sign $IMAGE_REF\` (offline key), \`release/verify.sh --policy\`, \`release/promote.sh\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  packages:
+    # Agent packages next to the image: nexus-agent .deb/.rpm (x86_64 + aarch64) and the
+    # Windows MSI, built and checked in rootless podman containers (release/packages.sh,
+    # release/test-packages.sh; nothing is installed on the runner), uploaded to the draft
+    # release with SHA256SUMS. Not signed: the release manager runs release/sign.sh sign-blobs.
+    needs: image
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build (release keys from release/keys)
+        run: release/packages.sh
+
+      - name: Check (install on debian:13 / almalinux:10 / fedora, lintian, rpmlint, MSI tables)
+        run: release/test-packages.sh
+
+      - name: Attach to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd target/packages
+          gh release upload "$GITHUB_REF_NAME" ./*.deb ./*.rpm ./*.msi SHA256SUMS --clobber
+          {
+            echo "### Agent packages (NOT signed)"
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+            echo
+            echo "Next: \`release/sign.sh sign-blobs\` (offline key), \`release/verify.sh --blobs\`, upload the .sig files."
           } >> "$GITHUB_STEP_SUMMARY"

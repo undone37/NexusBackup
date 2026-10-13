@@ -76,13 +76,15 @@
   async function save(e: SubmitEvent) {
     e.preventDefault();
     const scopes = split(f.scopes);
-    const mappings = f.mappings.map((m) => ({ group: m.group.trim(), role: m.role, tenants: m.role === 'tenant_user' && m.tenants ? [m.tenants] : [] }));
+    // tenant users and tenant admins (Phase 19b) need exactly one tenant
+    const oneTenant = (r: string) => r === 'tenant_user' || r === 'tenant_admin';
+    const mappings = f.mappings.map((m) => ({ group: m.group.trim(), role: m.role, tenants: oneTenant(m.role) && m.tenants ? [m.tenants] : [] }));
     if (
       !/^https:\/\/\S+$/.test(f.issuer.trim()) ||
       !f.client_id.trim() ||
       !f.label.trim() ||
       !scopes.includes('openid') ||
-      mappings.some((m) => !m.group || (m.role === 'tenant_user' && !m.tenants.length))
+      mappings.some((m) => !m.group || (oneTenant(m.role) && !m.tenants.length))
     ) {
       notify('error', t.settings.oidc.invalid);
       return;
@@ -222,9 +224,10 @@
               <select bind:value={m.role} aria-labelledby="{id}-h-r">
                 {#each ROLES as r (r)}<option value={r}>{t.roles[r]}</option>{/each}
               </select>
-              <!-- an appliance user has one tenant: only tenant users get one, the other roles see all -->
-              <select bind:value={m.tenants} aria-labelledby="{id}-h-t" required={m.role === 'tenant_user'} disabled={m.role !== 'tenant_user'}>
-                {#if m.role === 'tenant_user'}
+              <!-- an appliance user has one tenant: only tenant users and tenant admins get one, the other roles see all -->
+              {@const scoped = m.role === 'tenant_user' || m.role === 'tenant_admin'}
+              <select bind:value={m.tenants} aria-labelledby="{id}-h-t" required={scoped} disabled={!scoped}>
+                {#if scoped}
                   <option value="" disabled>{t.settings.oidc.pickTenant}</option>
                   {#each tenants as tn (tn.name)}<option value={tn.name}>{tn.name}</option>{/each}
                 {:else}

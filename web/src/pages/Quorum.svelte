@@ -19,14 +19,18 @@
   let settings: ApprovalsState | null = $state(null);
   let gc: GcPending[] = $state([]);
   const isAdmin = $derived(session.user?.role === 'admin');
+  // Phase 19b: tenant admins see their own requests only (no settings, no GC confirmations)
+  const own = $derived(session.user?.role === 'tenant_admin');
 
   async function load() {
     try {
-      [items, settings, gc] = await Promise.all([
-        get<QuorumRequest[]>('/quorum'),
-        get<ApprovalsState>('/settings/approvals'),
-        get<GcPending[]>('/gc/pending'),
-      ]);
+      if (own) items = await get<QuorumRequest[]>('/quorum');
+      else
+        [items, settings, gc] = await Promise.all([
+          get<QuorumRequest[]>('/quorum'),
+          get<ApprovalsState>('/settings/approvals'),
+          get<GcPending[]>('/gc/pending'),
+        ]);
       error = null;
     } catch (e) {
       error = errText(e);
@@ -96,7 +100,7 @@
     {/if}
     <label class="inline-check"><input type="checkbox" bind:checked={onlyPending} />{t.quorum.onlyPending}</label>
   </div>
-  <p class="lede">{t.quorum.intro}</p>
+  <p class="lede">{own ? t.quorum.ownOnly : t.quorum.intro}</p>
 </div>
 
 <ErrorBanner {error} />

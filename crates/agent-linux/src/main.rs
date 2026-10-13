@@ -13,7 +13,7 @@ usage:
   nexus-agent run [--state DIR] [--config DIR]
   nexus-agent status [--state DIR] [--config DIR]
   nexus-agent hooks test [--config DIR]
-  nexus-agent version
+  nexus-agent version (or --version)
 defaults: --config /etc/nexus-agent --state /var/lib/nexus-agent
 --token - reads the token from stdin (keeps it out of the process list)";
 
@@ -41,6 +41,7 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             "--port" => port = Some(val("--port")?.parse::<u16>().map_err(|_| "invalid --port")?),
             "--state" => paths.state = PathBuf::from(val("--state")?),
             "--config" => paths.config = PathBuf::from(val("--config")?),
+            "--version" | "-V" => words.push("version".into()),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(ExitCode::SUCCESS);

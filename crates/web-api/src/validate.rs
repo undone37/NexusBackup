@@ -185,16 +185,23 @@ pub fn host(s: &str) -> ApiResult<()> {
     }
 }
 
-/// `viewer` (v15): read-only, appliance-wide or one tenant. The catalog also
-/// accepts `tenant_admin` (Phase 18c); the API does not hand it out yet.
-pub const ROLES: [&str; 5] = ["admin", "security_officer", "operator", "tenant_user", "viewer"];
+/// `viewer` (v15): read-only, appliance-wide or one tenant. `tenant_admin`
+/// (Phase 19b): manages one tenant (crate::tenancy, docs/control-plane.md).
+pub const ROLES: [&str; 6] = [
+    "admin",
+    "security_officer",
+    "operator",
+    "tenant_admin",
+    "tenant_user",
+    "viewer",
+];
 
 pub fn role(s: &str) -> ApiResult<()> {
     if ROLES.contains(&s) {
         Ok(())
     } else {
         Err(ApiError::bad(
-            "role: must be admin, security_officer, operator, tenant_user or viewer",
+            "role: must be admin, security_officer, operator, tenant_admin, tenant_user or viewer",
         ))
     }
 }
