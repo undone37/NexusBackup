@@ -1165,6 +1165,24 @@ esac"
         !String::from_utf8_lossy(&p.files[0].1).contains("PRIVATE"),
         "downloads get no secrets"
     );
+    // v1.9: a download with conversion runs the plugin (export), still without secrets
+    let p = s
+        .plan(&job(
+            36,
+            "files_get",
+            json!({"source": "plugin-pgx-9-db1", "time": 5, "paths": ["/mail"], "format": "zip",
+                   "download_token": "b".repeat(64), "params": {"mail_format": "pst"}}),
+        ))
+        .unwrap();
+    let c: Value = serde_json::from_slice(&p.files[0].1).unwrap();
+    assert!(!c.to_string().contains("PRIVATE"), "exports get no secrets");
+    assert_eq!(c["config"], json!({}));
+    assert_eq!(c["restore"]["params"]["mail_format"], "pst");
+    assert!(c["plugin"]["id"].is_string());
+    assert!(
+        matches!(&p.steps[..], [Step::Cli { args, .. }] if args[1] == "export" && args[2].ends_with(&format!("{}.zip", "b".repeat(64))) && args[3] == "/mail")
+    );
+    assert!(p.download.is_some());
     assert!(s
         .plan(&job(
             33,
@@ -1968,6 +1986,8 @@ fn inventory_jobs_and_auto_protect() {
 mod accounts;
 /// Phase 18: compliance clock keeper and the `clock_skew` alert.
 mod clock;
+/// Appliance configuration backup (config_backup / config_upload).
+mod config_backup;
 /// Phase 14d certificate / secret / token expiry alerts.
 mod disks;
 mod expiry;

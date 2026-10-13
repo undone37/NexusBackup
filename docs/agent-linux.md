@@ -21,8 +21,10 @@ is the agent crate version (what self-update compares), release `1`.
 Contents: `/usr/bin/nexus-agent`, `/usr/lib/systemd/system/nexus-agent.service` (the bundle's
 unit with `ExecStart=/usr/bin/nexus-agent run`), `/etc/nexus-agent/{hooks.d/{pre,post},release-keys}`
 (0700 / keys 0644 as config files), `/usr/lib/nexus-agent/package-managed` (`deb` or `rpm`),
-`/usr/share/doc/nexus-agent/` (README, copyright, `examples/hooks.d/pre/*.example`). No system
-user (the agent must run as root, see the unit), no dependencies (static binary).
+`/usr/share/doc/nexus-agent/` (README, copyright, `examples/hooks.d/pre/*.example`),
+`/usr/lib/sysusers.d/nexus-agent.conf` (group `nexus-agent-ui`, created by postinst with
+`systemd-sysusers`, fallback `groupadd -r`; kept on removal). No system user (the agent must run
+as root, see the unit), no dependencies (static binary).
 
 Maintainer scripts (`postinst.sh`, `prerm.sh`, `postrm.sh`; the same files for deb and rpm,
 they tell the two calling conventions apart):
@@ -62,7 +64,7 @@ echo '<token from the UI>' | sudo ./install.sh --token -          # on the serve
 `/etc/nexus-agent/{hooks.d/{pre,post},release-keys}` and, with a token, runs
 `nexus-agent init` and starts the service. Other commands (as root; with `sudo` use the full
 path `/usr/local/sbin/nexus-agent`, EL and Fedora keep `/usr/local/sbin` out of sudo's `secure_path`): `nexus-agent status`,
-`nexus-agent hooks test`, `nexus-agent init --token <T>` (re-enrollment; also clears the
+`nexus-agent hooks test`, `nexus-agent tui`, `nexus-agent init --token <T>` (re-enrollment; also clears the
 lock after 5 failed proofs), `nexus-agent run` (the service).
 
 Files: `/etc/nexus-agent` (0700): `agent.conf`, `token` (`agent_proto::token_digest`, deleted
@@ -251,6 +253,31 @@ from a deb package: update it with the package manager …") unless `agent.conf`
 `self_update = on`; `self_update = off` disables it for bundle installs too. `nexus-agent
 status` shows the state. The appliance's **Update agent** job then fails with that message;
 bundle installs keep updating as before.
+
+## End-user status: `nexus-agent tui` and the status commands
+
+Design: docs/endpoint-ui.md (Veeam Agent for Linux style). Module `crates/agent-linux/src/endpoint/`; it uses only
+the local IPC contract (`crates/agent-ui-proto`: socket `/run/nexus-agent/ui.sock`, root:`nexus-agent-ui` 0660,
+newline-delimited JSON) and never reads agent files, so it runs as any user in the group.
+
+- `nexus-agent tui` (ratatui + crossterm, same binary): header (agent, appliance, managed by, next run, last
+  success, state, "not reached since …"), "Latest backup sessions" (result label + glyph, start, duration,
+  transferred, warnings), session detail (summary / data / first error / log tail), log view, confirm dialog for
+  **S** (request backup; hidden when `ui_policy.hide_backup_now`), progress bar while running (percent if known,
+  bytes). Keyboard only, 80×24, `NO_COLOR` = monochrome (results are labelled, never colour only; selection is
+  reverse video). Accent colour and header text come from `ui_policy`. Reloads every 10 s (2 s while running).
+- `nexus-agent status [--json]`, `sessions [--limit N] [--json]` (default 20), `session <id> [--json]`,
+  `request-backup [--json]`; `--socket PATH` overrides the socket (tests). JSON = the contract's reply types.
+  As root, plain `status` also prints the local diagnostics (`agent_core::status_common`, volumes), even when the
+  service is down (package checks and lab use that).
+- Exit codes: `0` ok, `1` error (usage, invalid answer), `2` permission denied on the socket ("add your user to
+  the group nexus-agent-ui"), `3` service not running (no socket / refused), `4` the agent refused (rate limit,
+  policy, unknown session).
+- Tests: rendering snapshots with ratatui's `TestBackend` (80×24, UTC, monochrome) for the main, detail, log,
+  confirm, requested, running, unreachable, empty and service-down screens in
+  `crates/agent-linux/src/endpoint/snapshots/` (`UPDATE_SNAPSHOTS=1 cargo test -p agent-linux endpoint`; the
+  dumps are the manual's screenshots, manual/04-sources.md "On the endpoint"); CLI output and exit codes against a
+  fake service on a temporary socket (`tests/endpoint_cli.rs`).
 
 ## systemd hardening
 

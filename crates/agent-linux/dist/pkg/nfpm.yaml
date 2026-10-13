@@ -28,6 +28,10 @@ contents:
   - src: nexus-agent.service
     dst: /usr/lib/systemd/system/nexus-agent.service
     file_info: { mode: 0644 }
+  # group nexus-agent-ui: end users allowed to use the UI socket (created in postinst)
+  - src: sysusers.conf
+    dst: /usr/lib/sysusers.d/nexus-agent.conf
+    file_info: { mode: 0644 }
   # Documentation: `type: doc` (%doc) for rpm; nfpm's deb packager drops doc entries, so
   # every file is listed twice. Database dump hooks: copy one without .example to
   # /etc/nexus-agent/hooks.d/pre/ (0700). One by one: nfpm's rpm packager does not expand

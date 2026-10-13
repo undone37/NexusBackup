@@ -20,6 +20,12 @@ if { [ -x /usr/sbin/lvm ] || [ -x /sbin/lvm ]; } && [ ! -e /etc/modules-load.d/n
 	modprobe dm-thin-pool 2>/dev/null || true
 fi
 
+# group for end users of `nexus-agent tui` / `status` (the socket is root:nexus-agent-ui 0660)
+if command -v systemd-sysusers >/dev/null 2>&1; then
+	systemd-sysusers nexus-agent.conf >/dev/null 2>&1 || true
+fi
+getent group nexus-agent-ui >/dev/null 2>&1 || groupadd -r nexus-agent-ui 2>/dev/null || true
+
 systemd=0
 [ -d /run/systemd/system ] && systemd=1
 [ $systemd = 1 ] && systemctl daemon-reload >/dev/null 2>&1 || true
@@ -67,6 +73,8 @@ Fleet deployment: nexus-agent init --fleet-secret - (or the secret in
 
 Then click "Enroll" on the appliance. Allow TCP 7444 from the appliance only.
 Database dump hooks: /usr/share/doc/nexus-agent/examples/hooks.d/pre/
+End users see the backup status with `nexus-agent tui` once they are in the group
+nexus-agent-ui (usermod -aG nexus-agent-ui <user>).
 Updates come from the package manager (self-update is off for package installs).
 
 EOF

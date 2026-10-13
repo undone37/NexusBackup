@@ -115,6 +115,7 @@ for t in "${targets[@]}"; do
 	install -m 0644 crates/agent-linux/dist/pkg/nfpm.yaml "$stage/"
 	install -m 0755 crates/agent-linux/dist/pkg/{postinst,prerm,postrm}.sh "$stage/"
 	install -m 0644 crates/agent-linux/dist/pkg/lintian-overrides "$stage/"
+	install -m 0644 crates/agent-linux/dist/pkg/sysusers.conf "$stage/"
 	cat >"$stage/changelog.yml" <<-EOF
 		- semver: $version-1
 		  date: $(git log -1 --format=%cI 2>/dev/null || date -u +%FT%TZ)

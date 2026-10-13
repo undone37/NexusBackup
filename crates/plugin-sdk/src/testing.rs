@@ -149,6 +149,11 @@ impl Host {
 
     /// `config`: the source config (its endpoints become the sandbox's TCP ports, as in the appliance).
     fn peer(&self, op_secs: Duration, config: &Value) -> Result<Box<dyn Peer>> {
+        self.peer_ports(op_secs, plugin_host::endpoint_ports(&self.manifest, &self.kind, config))
+    }
+
+    /// `tcp_ports`: the sandbox's TCP connect allow-list (Some(empty): none at all).
+    fn peer_ports(&self, op_secs: Duration, tcp_ports: Option<Vec<u16>>) -> Result<Box<dyn Peer>> {
         *self.job.borrow_mut() += 1;
         Ok(match &self.launch {
             Launch::Binary { dir, sha, manifest } => {
@@ -156,7 +161,7 @@ impl Host {
                     dir: dir.clone(),
                     bin_sha256: sha.clone(),
                     manifest: Some(manifest.clone()),
-                    tcp_ports: plugin_host::endpoint_ports(&self.manifest, &self.kind, config),
+                    tcp_ports,
                     limits: Limits::from_manifest(self.manifest.sandbox.as_ref(), op_secs.as_secs()),
                     job: *self.job.borrow(),
                 };
@@ -262,6 +267,43 @@ impl Host {
             },
             &mut self.out(),
         )
+    }
+
+    /// The `download` with conversion (contract v1.9) as `nexus-pluginhost export` runs
+    /// it: no config, no network; the staged files are packed into `out` (.tar / .zip).
+    pub fn export(
+        &self,
+        source: &str,
+        time: u64,
+        paths: &[String],
+        params: Value,
+        out: &Path,
+    ) -> Result<plugin_host::export::Report> {
+        let snap = self.snapshot(source, time)?;
+        let mut p = self.peer_ports(self.timeout, Some(Vec::new()))?;
+        let mut params = params;
+        if let (Some(o), Some((_, _, Some(g)))) = (params.as_object_mut(), plugin_proto::parse_source_name(source)) {
+            o.insert("guest".into(), json!(g));
+        }
+        let staging = out.with_extension("d");
+        let r = plugin_host::export::run(
+            &self.store,
+            p.as_mut(),
+            &snap,
+            &plugin_host::export::Params {
+                job: *self.job.borrow(),
+                kind: &self.kind,
+                config: "{}",
+                params,
+                paths,
+                max_files: 1_000_000,
+                max_bytes: 1 << 40,
+            },
+            &staging,
+            &mut self.out(),
+        )?;
+        plugin_host::export::pack(&staging, out)?;
+        Ok(r)
     }
 
     pub fn mount(&self, config: &Value, source: &str, time: u64, params: Value, duration: Duration) -> Result<Value> {

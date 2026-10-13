@@ -67,6 +67,7 @@ mod accounts;
 pub mod alerts;
 pub mod anomaly;
 pub mod clock;
+mod config_backup;
 pub mod consistency;
 pub mod disks;
 pub mod expiry;
@@ -205,6 +206,11 @@ pub struct Config {
     pub forward_poll_secs: u64,
     /// nexus-disks status and operations (disks.rs; skipped while there is no status)
     pub disks_dir: PathBuf,
+    /// appliance configuration backup (config_backup.rs): schedule, control dir of
+    /// nexus-config-backup (skipped when missing), how long a run may take
+    pub config_backup: String,
+    pub config_backup_dir: PathBuf,
+    pub config_backup_timeout_secs: u64,
 }
 
 impl Default for Config {
@@ -255,6 +261,9 @@ impl Default for Config {
             inventory_secs: 3600,
             forward_poll_secs: 5,
             disks_dir: catalog::hardware::DIR.into(),
+            config_backup: "daily 02:30".into(),
+            config_backup_dir: lib.join("config-backup"),
+            config_backup_timeout_secs: 1800,
         }
     }
 }
@@ -720,6 +729,8 @@ impl Scheduler {
         self.log_err(|s| s.queue_inventory(now));
         self.log_err(|s| s.queue_fleet_scans(now));
         self.log_err(|s| s.queue_reports(now));
+        self.log_err(|s| s.queue_config_backup(now));
+        self.log_err(|s| s.queue_rekeys(now));
         self.log_err(|s| s.start_jobs());
         let all = now.saturating_sub(self.last_refresh) >= self.cfg.refresh_secs;
         if all || !self.dirty.is_empty() {
@@ -1230,6 +1241,9 @@ impl Scheduler {
         if job.kind == "report_send" && state != "cancelled" {
             return self.report_finished(&job, ok, &log, result.as_ref());
         }
+        if job.kind.starts_with("config_") && state != "cancelled" {
+            return self.config_finished(&job, ok, &log, result.as_ref());
+        }
         if matches!(
             job.kind.as_str(),
             "backup"
@@ -1479,7 +1493,7 @@ impl Scheduler {
                 Some(r)
             }
             "alert_test" | "forward_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" | "file_search"
-            | "file_index" => serde_json::from_str(stdout.unwrap_or_default()).ok(),
+            | "file_index" | "config_backup" => serde_json::from_str(stdout.unwrap_or_default()).ok(),
             "offsite_list" => match serde_json::from_str::<Value>(stdout.unwrap_or_default().trim()) {
                 Ok(s @ Value::Array(_)) => Some(json!({ "snapshots": s })),
                 _ => {
@@ -2074,10 +2088,12 @@ impl Scheduler {
             let rows = st.query_map([], |r| r.get(0))?;
             rows.collect::<Result<_, _>>()?
         };
-        // replicated tenants get the primary's DEKs (keyd import-sealed), never a local one
+        // replicated tenants get the primary's DEKs (keyd import-sealed), never a local one;
+        // after a configuration restore the offsite escrow's (config_backup.rs)
         let replicated = self.replicated_tenants()?;
+        let restoring = self.rekey_pending()?;
         for t in tenants {
-            if self.keyed.contains(&t) || replicated.contains_key(&t) {
+            if self.keyed.contains(&t) || replicated.contains_key(&t) || restoring.contains(&t) {
                 continue;
             }
             (self.ctx.keys)(&t).with_context(|| format!("keys for tenant {t}"))?;
@@ -2294,6 +2310,15 @@ impl Scheduler {
     }
 
     pub fn plan(&self, job: &Job) -> Result<Plan> {
+        if let Some(plan) = self.plan_config(job)? {
+            return Ok(plan); // config_backup.rs
+        }
+        if self.rekey_pending()?.contains(&job.tenant) {
+            bail!(
+                "the keys of tenant {} are still being restored from its offsite copy after the configuration restore",
+                job.tenant
+            );
+        }
         if let Some(plan) = self.plan_appliance(job)? {
             return Ok(plan);
         }
@@ -3260,8 +3285,14 @@ impl Scheduler {
         for e in fs::read_dir(&self.cfg.downloads)? {
             let e = e?;
             let m = e.metadata()?;
-            if m.is_file() && now - m.mtime() > self.cfg.download_ttl_secs {
+            if now - m.mtime() <= self.cfg.download_ttl_secs {
+                continue;
+            }
+            if m.is_file() {
                 fs::remove_file(e.path())?;
+            } else if m.is_dir() && e.file_name().to_string_lossy().ends_with(".d") {
+                // staging dir of an export (nexus-pluginhost export) left by a crash
+                fs::remove_dir_all(e.path())?;
             }
         }
         Ok(())

@@ -7,7 +7,7 @@ appliance.
 
 > **Status:** NexusBackup is **lab-proven, not production-ready**. All functions described here run end to end in a
 > nested lab with SELinux enforcing. Real hardware, scale tests, a real Hetzner Storage Box run, the external
-> penetration test, TPM/LUKS disk encryption, an appliance configuration backup and the release key ceremony are still
+> penetration test, TPM/LUKS disk encryption, a VM drill of the configuration restore and the release key ceremony are still
 > open. Each chapter marks lab-only or missing parts with a **Status** note.
 
 ## Who reads what
@@ -15,6 +15,7 @@ appliance.
 | Audience | Start with |
 |---|---|
 | **Administrators** (install, configure) | 01, 02, 04, 05, 07, 09, 12, 13, 14 |
+| **Host administrators** (agents on servers) | 16 (Linux), 17 (Windows) |
 | **Security officers** (approve, audit) | 01, 09, 10, 14 |
 | **Operators** (daily operation, restores) | 03, 06, 11, 15 |
 | **Tenant users** (restore own data) | 03 (Signing in, Snapshots, Files), 06, 09 (Activating your account) |
@@ -46,6 +47,10 @@ appliance.
 14. [Disaster recovery](14-disaster-recovery.md): the recovery key, recovery from offsite or a secondary, break-glass
     for a locked-out sole administrator
 15. [Troubleshooting and FAQ](15-troubleshooting-faq.md)
+16. [Linux agent](16-linux-agent.md): installing (.deb, .rpm, bundle), enrolling, firewall, `agent.conf`,
+    snapshots, database hooks, updates, removal
+17. [Windows agent](17-windows-agent.md): MSI, silent install with GPO/Intune, enrolling, firewall, `agent.conf`,
+    VSS writers, updates, removal
 
 ## Conventions
 

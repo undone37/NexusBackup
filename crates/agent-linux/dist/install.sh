@@ -66,6 +66,10 @@ for h in "$here"/hooks.d/pre/*.example; do
 	install -m 0600 -o root -g root "$h" "$CONF/hooks.d/pre/"
 done
 
+# end users of `nexus-agent tui` / `status` (socket root:nexus-agent-ui 0660)
+getent group nexus-agent-ui >/dev/null 2>&1 || groupadd -r nexus-agent-ui 2>/dev/null ||
+	echo "install.sh: warning: could not create the group nexus-agent-ui" >&2
+
 # LVM snapshots need the device-mapper targets; the unit forbids module loading
 if [ -x /usr/sbin/lvm ] || [ -x /sbin/lvm ]; then
 	printf 'dm-snapshot\ndm-thin-pool\n' >/etc/modules-load.d/nexus-agent.conf
@@ -94,7 +98,7 @@ if [ -f "$CONF/agent.key" ] && [ -d /run/systemd/system ]; then
 	systemctl restart nexus-agent.service
 fi
 
-"$BIN" status
+"$BIN" status || true # exit 3 until the service runs
 cat <<EOF
 
 Allow TCP ${port:-7444} from the appliance only (firewalld: a rich rule with the

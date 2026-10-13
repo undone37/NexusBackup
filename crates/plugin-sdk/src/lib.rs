@@ -23,12 +23,14 @@
 //! an `Err` into the protocol's `Error` (code from [`PluginError`], else 1). Plugins
 //! never see store, keys or catalog; they only name paths and send bytes.
 
+pub mod export;
 pub mod meta;
 pub mod sink;
 pub mod source;
 #[cfg(feature = "testing")]
 pub mod testing;
 
+pub use export::{Export, Output};
 pub use plugin_proto as proto;
 pub use plugin_proto::{BaseEntry, Guest, Kind, Meta, Op, TaggedGuest};
 pub use sink::{Sink, StreamWriter, WalkOptions, WalkStats};
@@ -188,6 +190,11 @@ pub trait Plugin {
     fn mount(&mut self, _ctx: &Ctx, _m: &mut Mount) -> Result<String> {
         Err(error(95, "mount is not supported by this plugin"))
     }
+    /// Download with conversion (contract v1.9; manifest: the `download` restore has a
+    /// `params_schema`, `ctx.params["params"]` are the user's values). Default: unsupported.
+    fn export(&mut self, _ctx: &Ctx, _ex: &mut Export) -> Result<String> {
+        Err(error(95, "export is not supported by this plugin"))
+    }
 }
 
 /// Runs the plugin on stdin/stdout and exits (status 0 = Done sent).
@@ -283,6 +290,14 @@ pub fn run_with<P: Plugin>(mut p: P, r: Box<dyn Read + Send>, w: Box<dyn Write +
         Op::Restore => {
             let mut src = Source::new(chan.clone());
             p.restore(&ctx, &mut src).map(|summary| Message::Done {
+                state: None,
+                consistent: true,
+                summary,
+            })
+        }
+        Op::Export => {
+            let mut ex = Export::new(chan.clone());
+            p.export(&ctx, &mut ex).map(|summary| Message::Done {
                 state: None,
                 consistent: true,
                 summary,

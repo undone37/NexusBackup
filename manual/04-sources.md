@@ -254,6 +254,9 @@ Copy the token now. If it is lost, click **New token** (an earlier unused token 
 
 ### 2. Install the agent on the host
 
+Step-by-step guides for the host administrator, including firewall rules, `agent.conf` and troubleshooting:
+[16 Linux agent](16-linux-agent.md) and [17 Windows agent](17-windows-agent.md).
+
 Download the package for the host from the release page (see the README, "Downloads") and check it against
 `SHA256SUMS`. The release manager signs every package with the release key (`<file>.sig`, cosign). Install it, then
 enroll the agent with the token. The token is read from stdin, so it never appears in the process list or the shell
@@ -537,6 +540,11 @@ Agent sources and NFS/SMB sources share the same selection rules:
   xfs, btrfs, zfs, vfat, …) are ever included. Skipped network and data file systems are named in the job log. The
   Windows agent backs up the volumes you list (mounted folders are not followed) and ignores this setting; NFS/SMB
   sources never descend into nested mounts.
+
+### On the endpoint: status and backup now
+
+End users of a host see its backup status with `nexus-agent tui` (Linux): see
+[16 Linux agent](16-linux-agent.md#on-the-endpoint-status-and-backup-now).
 
 ## TrueNAS
 
