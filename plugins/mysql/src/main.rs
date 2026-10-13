@@ -147,17 +147,16 @@ fn field_of(e: &anyhow::Error, prefix: &str) -> String {
 
 /// Tables of non-transactional engines in the connection's database.
 fn non_transactional(c: &mut Conn) -> Result<Vec<String>> {
-    Ok(c
-        .query(
-            "SELECT TABLE_NAME, ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() \
+    Ok(c.query(
+        "SELECT TABLE_NAME, ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() \
              AND TABLE_TYPE = 'BASE TABLE' AND ENGINE NOT IN ('InnoDB', 'ROCKSDB') ORDER BY TABLE_NAME",
-        )?
-        .into_iter()
-        .map(|r| {
-            let get = |i: usize| r.get(i).cloned().flatten().unwrap_or_default();
-            format!("{} ({})", get(0), get(1))
-        })
-        .collect())
+    )?
+    .into_iter()
+    .map(|r| {
+        let get = |i: usize| r.get(i).cloned().flatten().unwrap_or_default();
+        format!("{} ({})", get(0), get(1))
+    })
+    .collect())
 }
 
 /// Current binlog position (`SHOW BINARY LOG STATUS` on MySQL 8.4, `SHOW MASTER STATUS` before).
@@ -183,7 +182,10 @@ impl Plugin for Mysql {
         if (c.mariadb && (major, minor) < (10, 6)) || (!c.mariadb && major < 8) {
             return Ok(invalid(
                 "host",
-                format!("{} is not supported (MySQL 8.0 / MariaDB 10.6 or newer)", c.server_version),
+                format!(
+                    "{} is not supported (MySQL 8.0 / MariaDB 10.6 or newer)",
+                    c.server_version
+                ),
             ));
         }
         if let Err(e) = c.query("SHOW DATABASES") {
@@ -275,7 +277,10 @@ impl Plugin for Mysql {
             let nt = non_transactional(&mut c)?;
             s.write_all(dump::header(&mut c, db)?.as_bytes())?;
             let ssh = ssh_of(ctx)?;
-            let cnf = ssh::defaults_file(&ctx.config["user"].as_str().unwrap_or_default(), ctx.config["password"].as_str().unwrap_or_default());
+            let cnf = ssh::defaults_file(
+                ctx.config["user"].as_str().unwrap_or_default(),
+                ctx.config["password"].as_str().unwrap_or_default(),
+            );
             let extra = if c.mariadb { "" } else { " --set-gtid-purged=OFF" };
             let mut e = ssh.exec(&ssh::with_defaults(
                 cnf.len(),
@@ -294,7 +299,10 @@ impl Plugin for Mysql {
         } else {
             let st = dump::dump(&mut c, db, &mut s)?;
             if !st.skipped.is_empty() {
-                ctx.warn(format!("not in the dump (no privilege to read the definition): {}", st.skipped.join(", ")));
+                ctx.warn(format!(
+                    "not in the dump (no privilege to read the definition): {}",
+                    st.skipped.join(", ")
+                ));
             }
             (
                 format!(
@@ -369,7 +377,10 @@ fn restore_dump(ctx: &Ctx, src: &mut Source) -> Result<String> {
         let h = dump::read_header(&mut r)?;
         if !exists {
             let mut sql = format!("CREATE DATABASE {}", ident(&db));
-            let cs = |k: &str| h[k].as_str().filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'));
+            let cs = |k: &str| {
+                h[k].as_str()
+                    .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+            };
             if let Some(v) = cs("charset") {
                 sql += &format!(" CHARACTER SET {v}");
             }

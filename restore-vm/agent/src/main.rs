@@ -9,6 +9,10 @@
 //! - `{"cmd":"tar","paths":["/vda1/etc", …]}` → `{"ok":"tar"}`, then frames
 //!   `[u32 BE len][len bytes]` of a tar stream, a zero-length frame, then
 //!   `{"ok":{"entries":N,"errors":[…]}}`
+//! - `{"cmd":"rules","rules":[{"name","text"}…]}` → compiles YARA rules (`scan.rs`)
+//! - `{"cmd":"scan","limits":{…}}` → YARA scan of every mounted file system
+//! - `{"cmd":"scantar","limits":{…}}` → `{"ok":"send"}`, then the appliance sends
+//!   frames of a tar stream (zero-length frame = end), then the scan report
 //! - `{"cmd":"quit"}` → `{"ok":"bye"}`, power off
 //!
 //! Paths are `/<mountpoint>/<path inside the file system>`. `.`/`..`/NUL are
@@ -29,9 +33,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+mod scan;
+
 const MNT: &str = "/mnt";
 const PORT_NAME: &str = "org.nexusbackup.agent";
-const MAX_LINE: u64 = 64 << 10;
+/// requests from the appliance; `rules` carries up to 1 MiB of YARA rules (escaped)
+const MAX_LINE: u64 = 8 << 20;
 const MAX_PATH: usize = 4096;
 const FRAME: usize = 1 << 20;
 const MODULES: &[&str] = &[
@@ -96,6 +103,9 @@ pub(crate) enum Req {
     Mounts,
     Ls { path: String },
     Tar { paths: Vec<String> },
+    Rules { rules: Vec<scan::Rule> },
+    Scan { limits: scan::Limits },
+    Scantar { limits: scan::Limits },
     Quit,
 }
 
@@ -738,6 +748,13 @@ fn serve(mut r: impl BufRead, mut w: impl Write, mounts: &[Mount]) -> io::Result
                 }
                 Err(e) => Err(e),
             },
+            Req::Rules { rules } => scan::compile(&rules).map(|n| serde_json::json!({ "rules": n })),
+            Req::Scan { limits } => {
+                let mut s = scan::Scan::new(limits);
+                s.mounts(&mountpoints)
+                    .and_then(|_| Ok(serde_json::to_value(s.finish())?))
+            }
+            Req::Scantar { limits } => scan::serve_tar(&mut r, &mut w, limits),
             Req::Quit => {
                 send_line(&mut w, &serde_json::json!({"ok": "bye"}))?;
                 return Ok(());

@@ -548,6 +548,10 @@ main {
 .glass.impersonating {
   background: var(--accent);
 }
+/* restore priority (Phase 22b): background work is held */
+.glass.priority {
+  background: var(--warn);
+}
 
 @media (max-width: 900px) {
   .shell,

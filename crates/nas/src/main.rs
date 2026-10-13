@@ -57,6 +57,9 @@ struct Config {
     threads: usize,
     #[serde(default = "yes")]
     xattrs: bool,
+    /// appliance-side read limit of the source (Phase 22b)
+    #[serde(default)]
+    read_limit: Option<catalog::schedule::ReadLimit>,
 }
 
 #[derive(Deserialize)]
@@ -258,6 +261,7 @@ impl Config {
 
             batch: 256,
             before_read: None,
+            limit: self.read_limit.as_ref().map(|r| r.throttle()).transpose()?.flatten(),
         })
     }
 }

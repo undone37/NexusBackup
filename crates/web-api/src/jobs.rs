@@ -16,6 +16,8 @@ const RESTORE_KINDS: &[&str] = &[
     "restore",
     "restore_ct",
     "instant_recover",
+    // Phase 22b: one disk attached to an existing VM of the tenant (scheduler checks the target)
+    "instant_disk",
     "files_list",
     "files_get",
     "restore_files",
@@ -132,6 +134,25 @@ pub(crate) struct RestoreP {
     /// replace: leave the original's NICs connected
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_original_links: Option<bool>,
+}
+
+/// Instant disk recovery (Phase 22b, `nexus-pve instant-disk`): one disk of a VM
+/// snapshot attached to the existing VM `target` (a VM a group of the tenant
+/// protects on the same source; checked by the scheduler) as `key` (default:
+/// the first free scsi slot), optionally moved to `move_to` afterwards.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct InstantDiskP {
+    source: String,
+    time: i64,
+    /// `drive-scsi1`
+    device: String,
+    node: String,
+    target: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    move_to: Option<String>,
 }
 
 /// PVE guest / pool names (DNS-name characters, 1..=63, no leading `-` or `.`).
@@ -378,6 +399,30 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
             }
             v
         }
+        "instant_disk" => {
+            let r: InstantDiskP = parse(p)?;
+            if !r.source.starts_with("vm-") {
+                return Err(ApiError::bad("source: instant_disk needs a vm-<vmid> snapshot"));
+            }
+            let slot_ok = |k: &str| {
+                crate::selection::valid_disk_key(k) && !k.starts_with("efidisk") && !k.starts_with("tpmstate")
+            };
+            if !r.device.strip_prefix("drive-").is_some_and(slot_ok) {
+                return Err(ApiError::bad("device: a data disk of the snapshot (drive-scsi1, …)"));
+            }
+            if r.key.as_deref().is_some_and(|k| !slot_ok(k) || k.starts_with("unused")) {
+                return Err(ApiError::bad(
+                    "key: a free disk slot of the target VM (scsi5, virtio2, …)",
+                ));
+            }
+            validate::name(&r.node, "node")?;
+            validate::vmid(r.target)?;
+            if let Some(m) = &r.move_to {
+                validate::name(m, "move_to")?;
+            }
+            snapshot_exists(st, tenant, &r.source, r.time)?;
+            json!(r)
+        }
         "files_list" => {
             let f: FilesListP = parse(p)?;
             validate::guest_path(&f.path)?;
@@ -547,6 +592,8 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
             }
             json!(m)
         }
+        // Phase 25: an isolated restore test (recovery.rs)
+        "restore_test" => crate::recovery::check_test(st, tenant, p)?,
         _ => return Err(ApiError::bad("kind: unknown job kind")),
     })
 }
@@ -582,7 +629,13 @@ pub async fn create_job(State(st): State<St>, ctx: Ctx, J(r): J<JobReq>) -> ApiR
         .optional()?;
     tenant_ok.ok_or_else(|| ApiError::bad("tenant: does not exist"))?;
     crate::tenants::refuse_paused(&st.cat.conn(), &r.tenant, &r.kind)?;
-    let params = check_params(&st, &r.kind, &r.tenant, r.params)?;
+    let mut raw = r.params;
+    // Phase 21e: YARA scan before the restore (scheduler `scan.rs` holds the job)
+    let scan_first = crate::scan::take_scan_first(&st.cat.conn(), &r.kind, &mut raw)?;
+    let mut params = check_params(&st, &r.kind, &r.tenant, raw)?;
+    if let Some(s) = scan_first {
+        params["scan_first"] = json!(s);
+    }
     if params.get("replace").is_some() {
         return request_replace(&st, &ctx, &r.kind, &r.tenant, params).map(|o| crate::quorum::accepted(o, json!({})));
     }
@@ -839,8 +892,13 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
         .prepare(&format!(
             "SELECT s.tenant, s.source, s.time, s.size, s.local, s.offsite, s.lock_until, s.verified, s.origin,
                     h.id IS NOT NULL, s.consistency, s.meta, s.anomaly, s.anomaly_at, s.anomaly_cleared_by,
-                    s.anomaly_cleared_at, s.anomaly_note, {}, s.damaged AS damaged, s.damaged_at AS damaged_at
+                    s.anomaly_cleared_at, s.anomaly_note, {}, s.damaged AS damaged, s.damaged_at AS damaged_at,
+                    (SELECT json_object('job', job_id, 'finished', finished, 'matches', matches_total,
+                       'complete', json(CASE WHEN complete = 1 THEN 'true' ELSE 'false' END)) FROM snapshot_scans x
+                     WHERE x.tenant = s.tenant AND x.source = s.source AND x.time = s.time
+                     ORDER BY job_id DESC LIMIT 1) AS scan
              FROM snapshots s
+
              LEFT JOIN legal_holds h ON h.tenant = s.tenant AND h.source = s.source AND h.time = s.time
                AND h.state IN ('active','advisory')
              WHERE (?1 IS NULL OR s.tenant = ?1) AND (?2 IS NULL OR s.source = ?2) AND (?3 IS NULL OR s.tenant = ?3)
@@ -873,6 +931,8 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
                 // Phase 21d: references chunks that failed verify (count of bad chunks)
                 "damaged": r.get::<_, Option<i64>>("damaged")?,
                 "damaged_at": r.get::<_, Option<i64>>("damaged_at")?,
+                // Phase 21e: the latest YARA scan `{job, finished, matches, complete}`
+                "scan": r.get::<_, Option<String>>("scan")?.and_then(|v| serde_json::from_str::<Value>(&v).ok()),
             }))
         })?
         .collect::<Result<Vec<_>, _>>()?;

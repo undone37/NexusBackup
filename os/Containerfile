@@ -178,6 +178,8 @@ RUN semodule -i /usr/share/selinux/packages/nexus/nexus.pp /usr/share/selinux/pa
  && matchpathcon /var/lib/nexus/diag/0123/bundle.tar.gz | grep -q nexus_diag_var_lib_t \
  && matchpathcon /usr/libexec/nexus/nexus-disks | grep -q nexus_disks_exec_t \
  && matchpathcon /var/lib/nexus/disks/status.json | grep -q nexus_disks_var_lib_t \
+ && matchpathcon /usr/libexec/nexus/nexus-net | grep -q nexus_net_exec_t \
+ && matchpathcon /var/lib/nexus/net/status.json | grep -q nexus_net_var_lib_t \
  && matchpathcon /etc/nexus/grub-user.cfg | grep -q nexus_grub_user_t \
  && matchpathcon /usr/libexec/nexus/nexus-config-backup | grep -q nexus_cfgbackup_exec_t \
  && matchpathcon /var/lib/nexus/config-backup/latest.bundle | grep -q nexus_cfgbackup_var_lib_t
@@ -215,9 +217,10 @@ RUN if [ "$NEXUS_IMAGE_REPO" != ghcr.io/undone37/nexusbackup ]; then \
  && grep -q 'rd.shell=0' /usr/lib/bootc/kargs.d/10-nexus.toml \
  && ls /etc/pki/nexus/plugin-keys/*.pub >/dev/null \
  && systemctl preset nexus-update.timer nexus-update.path nexus-diag.path nexus-disks.timer nexus-disks.path \
-      nexus-grub-password.service smartd.service greenboot-healthcheck.service \
+      nexus-net.timer nexus-net.path nexus-grub-password.service smartd.service greenboot-healthcheck.service \
       greenboot-set-rollback-trigger.service greenboot-success.target \
  && systemctl is-enabled -q nexus-update.timer nexus-update.path nexus-diag.path nexus-disks.timer nexus-disks.path \
+      nexus-net.timer nexus-net.path \
       nexus-grub-password.service greenboot-healthcheck.service \
       greenboot-set-rollback-trigger.service \
  && test "$(systemctl is-enabled bootc-fetch-apply-updates.timer)" = masked \

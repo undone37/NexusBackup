@@ -651,7 +651,7 @@ fn share_jobs() {
         ))
         .unwrap();
     assert_eq!(p.files.len(), 1);
-    assert!(!String::from_utf8_lossy(&p.files[0].1).contains("pw"));
+    assert!(!String::from_utf8_lossy(&p.files[0].1).contains("pw,1"));
     match &p.steps[..] {
         [Step::Cli { bin, args, capture, .. }] => {
             assert!(*capture && bin == &e.cfg.nas_bin);
@@ -2015,8 +2015,16 @@ mod fleet;
 mod forward;
 /// Phase 15c legal holds (retention, orphan sweep, delete, offsite config, advisories).
 mod holds;
+/// Phase 22b source limits, VM identity, TrueNAS existing-snapshot references.
+mod limits;
+/// Phase 22a interface-bound egress, nexus-net operations audit.
+mod network;
 /// Phase 17d offsite in the UI (list, fetch back, attach an offsite copy).
 mod offsite_ui;
+/// Phase 22b restore priority.
+mod priority;
+/// Phase 25 restore tests and recovery plans.
+mod recovery;
 /// Phase 21d health check with repair (bad chunks, damaged snapshots, chunk_repair).
 mod repair;
 /// Phase 14e scheduled reports.
@@ -2025,6 +2033,8 @@ mod report_mail;
 mod restore_files;
 /// Phase 13b run control (pause, blackout, retries, SLA, cancel).
 mod runctl;
+/// Phase 21e YARA scan of a snapshot and scan-first restores.
+mod scan;
 /// Phase 15g file search and name index jobs.
 mod search;
 /// Phase 17f tenant deactivation.

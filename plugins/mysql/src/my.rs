@@ -262,7 +262,12 @@ impl Conn {
             return Err(err_packet(&hs).into());
         }
         if hs.first() != Some(&10) {
-            bail!("{}:{}: not a MySQL/MariaDB server (protocol {:?})", o.host, o.port, hs.first());
+            bail!(
+                "{}:{}: not a MySQL/MariaDB server (protocol {:?})",
+                o.host,
+                o.port,
+                hs.first()
+            );
         }
         let mut p = 1;
         let version = String::from_utf8_lossy(&cstr(&hs, &mut p)?).into_owned();
@@ -309,7 +314,12 @@ impl Conn {
             Box::new(tcp)
         } else {
             if server_caps & SSL == 0 {
-                bail!("{}:{}: the server does not offer TLS (TLS mode {:?})", o.host, o.port, o.ssl);
+                bail!(
+                    "{}:{}: the server does not offer TLS (TLS mode {:?})",
+                    o.host,
+                    o.port,
+                    o.ssl
+                );
             }
             caps |= SSL;
             tcp.write_all(&frame(&head(caps), &mut seq))?;
@@ -486,7 +496,11 @@ impl Conn {
 
     /// First column of the first row.
     pub fn value(&mut self, sql: &str) -> Result<Option<String>> {
-        Ok(self.query(sql)?.into_iter().next().and_then(|r| r.into_iter().next().flatten()))
+        Ok(self
+            .query(sql)?
+            .into_iter()
+            .next()
+            .and_then(|r| r.into_iter().next().flatten()))
     }
 
     pub fn exec(&mut self, sql: &str) -> Result<()> {
@@ -648,7 +662,10 @@ mod tests {
         }
         assert_eq!(lenenc(&[0xfb], &mut 0).unwrap(), None);
         let e = err_packet(b"\xff\x15\x04#28000Access denied");
-        assert_eq!((e.code, e.state.as_str(), e.message.as_str()), (1045, "28000", "Access denied"));
+        assert_eq!(
+            (e.code, e.state.as_str(), e.message.as_str()),
+            (1045, "28000", "Access denied")
+        );
         assert!(is_eof(&[0xfe, 0, 0, 2, 0]));
         assert!(!is_eof(&[0xfe, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
     }

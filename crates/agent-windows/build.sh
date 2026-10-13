@@ -62,7 +62,7 @@ if [ $clippy = 1 ]; then
 fi
 run cargo build --locked -p agent-windows --release --target "$TARGET"
 
-bin=target/windows-container/$TARGET/release/nexus-agent.exe
+bin=target/windows-container/$TARGET/release/nexus-agent-windows.exe
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/agent-windows/Cargo.toml | head -1)
 size=$(stat -c %s "$bin")
 limit=$((8 * 1024 * 1024 - 4096))

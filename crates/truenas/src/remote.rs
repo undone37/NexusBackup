@@ -87,7 +87,8 @@ fn check_args(ds: &str, snaps: &[&str]) -> Result<()> {
             .and_then(|(id, _)| (!id.starts_with('0')).then(|| id.parse::<u64>().ok())?)
             .is_some_and(|id| crate::parse_snap_name(id, s).is_some())
     };
-    if !crate::valid_dataset(ds) || !snaps.iter().all(|s| snap_ok(s)) {
+    // or an existing (periodic) snapshot in "use existing snapshots" mode
+    if !crate::valid_dataset(ds) || !snaps.iter().all(|s| snap_ok(s) || crate::valid_snap_name(s)) {
         bail!("invalid dataset or snapshot name");
     }
     Ok(())
@@ -97,11 +98,35 @@ pub struct Remote<'a> {
     pub t: &'a dyn Transport,
     /// bytes received over SSH (diff + walk + tar)
     pub received: u64,
+    /// called with the bytes of every walk / content read (the connector's read limit, Phase 22b)
+    pub pace: Option<Pace>,
+}
+
+pub type Pace = std::sync::Arc<dyn Fn(u64) + Send + Sync>;
+
+/// A reader that reports every read to an optional [`Pace`] (which may sleep).
+pub struct Paced<R> {
+    r: R,
+    pace: Option<Pace>,
+}
+
+impl<R: Read> Read for Paced<R> {
+    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.r.read(b)?;
+        if let Some(p) = &self.pace {
+            p(n as u64);
+        }
+        Ok(n)
+    }
 }
 
 impl<'a> Remote<'a> {
     pub fn new(t: &'a dyn Transport) -> Self {
-        Remote { t, received: 0 }
+        Remote {
+            t,
+            received: 0,
+            pace: None,
+        }
     }
 
     fn spawn(&self, cmd: &str, stdin: bool) -> Result<(Child, ChildStdout, JoinHandle<String>)> {
@@ -146,7 +171,13 @@ impl<'a> Remote<'a> {
         check_args(ds, &[snap])?;
         let cmd = format!("walk {ds} {snap}");
         let (mut child, out, err) = self.spawn(&cmd, false)?;
-        let mut counted = Counted { r: out, n: 0 };
+        let mut counted = Counted {
+            r: Paced {
+                r: out,
+                pace: self.pace.clone(),
+            },
+            n: 0,
+        };
         let res = walk::read_all(&mut BufReader::with_capacity(1 << 20, &mut counted));
         self.received += counted.n;
         if res.is_err() {
@@ -163,7 +194,7 @@ impl<'a> Remote<'a> {
         ds: &str,
         snap: &str,
         paths: Vec<Vec<u8>>,
-        f: impl FnOnce(&mut stream::Reader<BufReader<ChildStdout>>) -> Result<T>,
+        f: impl FnOnce(&mut stream::Reader<BufReader<Paced<ChildStdout>>>) -> Result<T>,
     ) -> Result<T> {
         check_args(ds, &[snap])?;
         if paths.is_empty() || !paths.iter().all(|p| crate::valid_rel_path(p)) {
@@ -180,6 +211,10 @@ impl<'a> Remote<'a> {
             }
             w.flush()
         });
+        let out = Paced {
+            r: out,
+            pace: self.pace.clone(),
+        };
         let mut tar = stream::Reader::new(BufReader::with_capacity(1 << 20, out));
         let res = f(&mut tar).and_then(|v| tar.finish(1 << 20).map(|_| v));
         self.received += tar.bytes;

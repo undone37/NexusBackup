@@ -38,6 +38,7 @@ pub const GATED_KINDS: &[&str] = &[
     "restore",
     "restore_ct",
     "instant_recover",
+    "instant_disk",
     "files_get",
     "restore_files",
     "plugin_restore",

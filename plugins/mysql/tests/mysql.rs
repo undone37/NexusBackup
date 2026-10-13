@@ -67,7 +67,9 @@ impl Box {
     }
 
     fn port(&self, what: &str) -> u16 {
-        self.var(&format!("{}_{what}", self.flavor.to_uppercase())).parse().unwrap()
+        self.var(&format!("{}_{what}", self.flavor.to_uppercase()))
+            .parse()
+            .unwrap()
     }
 
     fn client(&self) -> &str {
@@ -82,7 +84,17 @@ impl Box {
     fn sql(&self, db: &str, sql: &str) -> String {
         let pw = format!("-p{}", self.var("ROOT_PASSWORD"));
         let mut c = Command::new("podman")
-            .args(["exec", "-i", &self.container(), self.client(), "-uroot", &pw, "-N", "-B", db])
+            .args([
+                "exec",
+                "-i",
+                &self.container(),
+                self.client(),
+                "-uroot",
+                &pw,
+                "-N",
+                "-B",
+                db,
+            ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -97,7 +109,11 @@ impl Box {
     /// The server's own dump of a database (schema, data, routines, triggers, events), without comments.
     fn tool_dump(&self, db: &str) -> String {
         let pw = format!("-p{}", self.var("ROOT_PASSWORD"));
-        let tool = if self.flavor == "mariadb" { "mariadb-dump" } else { "mysqldump" };
+        let tool = if self.flavor == "mariadb" {
+            "mariadb-dump"
+        } else {
+            "mysqldump"
+        };
         let mut args: Vec<String> = vec!["exec".into(), self.container(), tool.into(), "-uroot".into(), pw];
         for a in [
             "--skip-comments",
@@ -220,9 +236,15 @@ CREATE DEFINER = app EVENT cleanup ON SCHEDULE EVERY 1 DAY STARTS '2030-01-01 00
 /// The first differing lines (with their numbers) of two dumps.
 fn diff(a: &str, b: &str) -> Vec<String> {
     let (a, b): (Vec<&str>, Vec<&str>) = (a.lines().collect(), b.lines().collect());
-    let i = a.iter().zip(&b).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len()));
+    let i = a
+        .iter()
+        .zip(&b)
+        .position(|(x, y)| x != y)
+        .unwrap_or(a.len().min(b.len()));
     let cut = |l: Option<&&str>| l.map_or("<end>".to_owned(), |l| l.chars().take(300).collect());
-    (i..i + 3).map(|k| format!("{k}: {} | {}", cut(a.get(k)), cut(b.get(k)))).collect()
+    (i..i + 3)
+        .map(|k| format!("{k}: {} | {}", cut(a.get(k)), cut(b.get(k))))
+        .collect()
 }
 
 #[test]
@@ -267,14 +289,23 @@ fn validate_guests_dumps_and_restores() {
         let mut bad = cfg.clone();
         bad["ca_cert"] = json!("");
         let v = h.validate(&bad).unwrap();
-        assert_eq!((v["valid"].as_bool(), v["field"].as_str()), (Some(false), Some("sslmode")), "{v}");
+        assert_eq!(
+            (v["valid"].as_bool(), v["field"].as_str()),
+            (Some(false), Some("sslmode")),
+            "{v}"
+        );
         let mut bad = cfg.clone();
         bad["ssh_host_key"] = json!("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl");
         let v = h.validate(&bad).unwrap();
         assert_eq!(v["field"], "ssh_host", "{v}");
 
         let g = h.guests(&cfg).unwrap();
-        let ids: Vec<&str> = g["guests"].as_array().unwrap().iter().filter_map(|x| x["id"].as_str()).collect();
+        let ids: Vec<&str> = g["guests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|x| x["id"].as_str())
+            .collect();
         assert_eq!(ids, ["other", "shop"], "{g}");
 
         let want = b.tool_dump("shop");
@@ -288,21 +319,43 @@ fn validate_guests_dumps_and_restores() {
             "{flavor}: {:?}",
             h.log()
         );
-        assert!(r.summary.contains("3002 rows") || r.summary.contains("rows"), "{}", r.summary);
+        assert!(
+            r.summary.contains("3002 rows") || r.summary.contains("rows"),
+            "{}",
+            r.summary
+        );
         assert!(h.log().iter().any(|l| l.contains("logs (MyISAM)")), "{:?}", h.log());
         let out = h
-            .restore(&native, &r.source, r.time, "to_target", json!({"database": "shop_copy"}))
+            .restore(
+                &native,
+                &r.source,
+                r.time,
+                "to_target",
+                json!({"database": "shop_copy"}),
+            )
             .unwrap();
         assert!(out.summary.contains("restored into shop_copy"), "{}", out.summary);
         let have = b.tool_dump("shop_copy");
         assert!(want == have, "{flavor} native dump differs: {:#?}", diff(&want, &have));
-        assert_eq!(b.sql("shop_copy", "CALL paid_count(@n); SELECT @n, net(100), COUNT(*) FROM a_top"), "1\t81.00\t1");
+        assert_eq!(
+            b.sql(
+                "shop_copy",
+                "CALL paid_count(@n); SELECT @n, net(100), COUNT(*) FROM a_top"
+            ),
+            "1\t81.00\t1"
+        );
         if flavor == "mariadb" {
             // like mariadb-dump: the next value not cached (CACHE 1000)
             assert_eq!(b.sql("shop_copy", "SELECT NEXTVAL(seq)"), "1100");
         }
         // a second restore under the same name is refused
-        let e = h.restore(&native, &r.source, r.time, "to_target", json!({"database": "shop_copy"}));
+        let e = h.restore(
+            &native,
+            &r.source,
+            r.time,
+            "to_target",
+            json!({"database": "shop_copy"}),
+        );
         assert!(format!("{:#}", e.unwrap_err()).contains("exists"));
 
         // mysqldump / mariadb-dump over SSH → the alternate server
@@ -331,8 +384,15 @@ fn validate_guests_dumps_and_restores() {
         )
         .unwrap();
         let have = b.tool_dump("shop_copy2");
-        assert!(want == have, "{flavor} into existing differs: {:#?}", diff(&want, &have));
-        b.sql("", "DROP DATABASE shop_copy; DROP DATABASE shop_copy2; DROP DATABASE other");
+        assert!(
+            want == have,
+            "{flavor} into existing differs: {:#?}",
+            diff(&want, &have)
+        );
+        b.sql(
+            "",
+            "DROP DATABASE shop_copy; DROP DATABASE shop_copy2; DROP DATABASE other",
+        );
     }
 }
 
@@ -355,7 +415,12 @@ fn server_backup_and_point_in_time_restore() {
         let count = "SELECT COUNT(*) FROM pitr.t";
 
         let full = h.backup(&cfg, None).unwrap();
-        assert!(full.summary.starts_with("full:"), "{flavor}: {} {:?}", full.summary, h.log());
+        assert!(
+            full.summary.starts_with("full:"),
+            "{flavor}: {} {:?}",
+            full.summary,
+            h.log()
+        );
         assert!(full.consistent);
         let fr = full.meta.clone().expect("snapshot meta")["recoverable"].clone();
         assert_eq!(fr["unit"], "binlog", "{fr}");
@@ -363,7 +428,14 @@ fn server_backup_and_point_in_time_restore() {
         b.sql("pitr", "INSERT INTO t VALUES (3, 'B'), (4, 'B')");
         std::thread::sleep(Duration::from_millis(1100));
         let t1 = b.sql("", "SELECT UTC_TIMESTAMP()");
-        let pos = b.sql("", if flavor == "mariadb" { "SHOW MASTER STATUS" } else { "SHOW BINARY LOG STATUS" });
+        let pos = b.sql(
+            "",
+            if flavor == "mariadb" {
+                "SHOW MASTER STATUS"
+            } else {
+                "SHOW BINARY LOG STATUS"
+            },
+        );
         let mut it = pos.split('\t');
         let pos = format!("{}:{}", it.next().unwrap(), it.next().unwrap());
         std::thread::sleep(Duration::from_millis(1100));
@@ -372,7 +444,11 @@ fn server_backup_and_point_in_time_restore() {
         let inc = h.backup(&cfg, None).unwrap();
         assert!(inc.summary.starts_with("incremental:"), "{} {:?}", inc.summary, h.log());
         assert_eq!(inc.base, Some(full.time));
-        assert!(inc.transferred < 1 << 20, "only binlog is transferred: {}", inc.transferred);
+        assert!(
+            inc.transferred < 1 << 20,
+            "only binlog is transferred: {}",
+            inc.transferred
+        );
         let ir = inc.meta.clone().unwrap()["recoverable"].clone();
         assert_eq!(ir["from_lsn"], fr["from_lsn"]);
         assert_ne!(ir["to_lsn"], fr["to_lsn"], "{ir}");
@@ -404,7 +480,13 @@ fn server_backup_and_point_in_time_restore() {
         assert!(r.summary.contains("prepared"), "{}", r.summary);
         assert_eq!(b.query_restored("/home/mysql/r4", count), "2", "{flavor} base only");
         // an existing directory is refused, a time outside the range too
-        let e = h.restore(&cfg, &idle.source, idle.time, "pitr", json!({"directory": "/home/mysql/r1"}));
+        let e = h.restore(
+            &cfg,
+            &idle.source,
+            idle.time,
+            "pitr",
+            json!({"directory": "/home/mysql/r1"}),
+        );
         assert!(e.is_err());
         let e = h.restore(
             &cfg,

@@ -222,8 +222,10 @@ const db = {
     /** Phase 19b: immutable id (derived from the name in the mock when unset) */
     uid?: string;
   }[],
-  /** kind: pve | linux | nfs | smb | plugin:<kind> */
-  sources: [] as { id: number; tenant: string; kind: string; name: string; config: Json; maintenance_until?: number | null }[],
+  /** kind: pve | linux | nfs | smb | plugin:<kind>; `sizing_entries`: Phase 22b demo entry count of the newest share/TrueNAS run */
+  sources: [] as { id: number; tenant: string; kind: string; name: string; config: Json; maintenance_until?: number | null; sizing_entries?: number }[],
+  /** Phase 22b: the restore-priority switch (null = off) */
+  priority: null as { until: number; since: number; by: string; reason: string } | null,
   agents: [] as Agent[],
   /** Phase 24a: session summaries per agent id (newest first) */
   agentSessions: {} as Record<string, Json[]>,
@@ -280,6 +282,9 @@ const db = {
   cfgBackup: { appliance_id: null as string | null, latest: null as Json | null },
   /** Phase 13e setting `anomaly` */
   anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30, ransom_notes: [] } as Json,
+  /** Phase 21e: admin-supplied YARA rule files and finished snapshot scans */
+  yaraRules: [] as Json[],
+  scans: [] as Json[],
   /** Phase 14a setting `forwarding` (header values: plaintext here, null in responses) */
   forwarding: {
     syslog: { enabled: true, host: 'siem.example.com', port: 6514, ca_pem: null, pin_sha256: '3f'.repeat(32), app_name: 'nexus', facility: 13 },
@@ -304,6 +309,8 @@ const db = {
   reports: [] as Json[],
   /** Phase 16a/b: nexus-disks status (GET /hardware) */
   hardware: {} as Json,
+  /** Phase 22a: nexus-net status (GET /network) */
+  network: {} as Json,
   /** Phase 19a: bare-metal recovery / P2V sessions (GET /rescue) */
   rescue: [] as Json[],
   /** Phase 21b setting `incident` (active or the last one) */
@@ -338,7 +345,7 @@ function addJob(kind: string, tenant: string, params: Json, by: string, opts: Pa
     result: null,
     plan: planFor(kind, params),
     duration:
-      { files_list: 3, files_get: 5, backup: 12, restore: 16, restore_ct: 12, instant_recover: 10, restore_files: 8, agent_enroll: 5, agent_update: 6, agent_renew: 4 }[kind] ?? 8,
+      { files_list: 3, files_get: 5, backup: 12, restore: 16, restore_ct: 12, instant_recover: 10, instant_disk: 8, restore_files: 8, agent_enroll: 5, agent_update: 6, agent_renew: 4 }[kind] ?? 8,
     ...opts,
   };
   db.jobs.push(j);
@@ -497,6 +504,14 @@ function planFor(kind: string, p: Json): string[] {
         `live disk move to ${p.storage}: 100%`,
         'instant recovery complete',
       ];
+    case 'instant_disk':
+      return [
+        `exporting ${p.device} of ${src} @ ${p.time} via NBD over SSH to ${p.node}`,
+        `${p.device} attached to VM ${p.target} as ${p.key ?? 'scsi2'} (hot-plugged)`,
+        ...(p.move_to
+          ? [`live disk move of ${p.key ?? 'scsi2'} to ${p.move_to}: 40%`, `live disk move of ${p.key ?? 'scsi2'} to ${p.move_to}: 100%`, 'disk moved; serving stopped']
+          : [`serving ${p.key ?? 'scsi2'} until it is moved (qm disk move ${p.target} ${p.key ?? 'scsi2'} <storage> --delete 1) or detached`]),
+      ];
     case 'bmr':
       return [
         `enrolling the rescue agent with the session's token proofs (host-${p.source_agent} @ ${p.time})`,
@@ -515,6 +530,7 @@ function planFor(kind: string, p: Json): string[] {
 
 function tick() {
   const t = now();
+  recoveryTick(null, t);
   for (const j of db.jobs) {
     if (j.state === 'queued' && t - j.created >= 1 && !(j.not_before && j.not_before > t)) {
       j.state = 'running';
@@ -546,6 +562,7 @@ function tick() {
       if (j.kind === 'inventory' || j.kind === 'plugin_guests') inventoryResult(j, t);
       if (j.kind === 'report_send') reportSent(j);
       if (j.kind === 'config_backup') cfgBackupDone(j, t);
+      if (j.kind === 'restore_test' || j.kind.startsWith('recovery_')) recoveryTick(j, t);
       if (j.kind.startsWith('offsite_')) offsiteResult(j, t);
       if (j.kind === 'chunk_repair') repairDone(j, t);
       const ag = db.agents.find((a) => a.id === j.params.agent_id);
@@ -1086,6 +1103,16 @@ function seed() {
   });
   // `storage` = ID of the NexusBackup storage on the cluster (pvesm add nexusbackup nexus …)
   const sInitech = pve('initech', 'pve-cluster', '192.0.2.10', { pve1: '192.0.2.11', pve2: '192.0.2.12' }, 'nexus');
+  // Phase 22b: at most 2 guests at once, one on the Ceph pool, 50 MB/s during office hours
+  Object.assign(sInitech.config, {
+    max_parallel: 2,
+    storage_caps: { 'ceph-ssd': 1 },
+    read_limit: {
+      bwlimit: 200_000_000,
+      windows: [{ days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], from: '07:00', to: '19:00', action: 'limit', rate_bytes: 50_000_000 }],
+      timezone: 'Europe/Berlin',
+    },
+  });
   const sAcme = pve('acme', 'acme-pve', '198.51.100.10', { 'acme-pve1': '198.51.100.11' }, 'nexus');
   // globex takes no local backups (replicated tenant): its DR cluster is only a restore target.
   const sGlobex = pve('globex', 'globex-dr-pve', '203.0.113.20', { 'dr-pve1': '203.0.113.21' }, 'nexus');
@@ -1180,7 +1207,10 @@ function seed() {
       host: 'nas01.acme.example.com', port: 443, ca_pem: '-----BEGIN CERTIFICATE-----\n(TrueNAS certificate, demo)\n-----END CERTIFICATE-----\n', user: 'nexusbackup', token_secret: 'SECRET',
       ssh: { host: 'nas01.acme.example.com', port: 22, user: 'nexusbackup', host_key: DEMO_HOST_KEY('nas01'), key_pem: 'SECRET', public_key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIApplianceDemoPublicKey000000000000 nexus-appliance', from: '198.51.100.5' },
       datasets: ['tank/projects', 'tank/home'], recursive: false, sudo: true, zfs_sudo: true,
+      // Phase 22b: back up the periodic snapshots TrueNAS takes anyway
+      existing_snapshots: 'auto-',
     } as Json,
+    sizing_entries: 2_350_000,
   };
   // NFS/SMB shares (docs/nas-connector.md): one share per source, groups without guests.
   const sNfs = {
@@ -1189,15 +1219,25 @@ function seed() {
     kind: 'nfs' as const,
     name: 'filer-projects',
     config: { host: 'filer.acme.example.com', port: 2049, version: '4.2', export: '/export/projects', snapshot_dir: '.snapshot', snapshot_prefix: 'nightly.', snapshot_order: 'name', excludes: ['*.tmp'], threads: 16, xattrs: true, timeout_secs: 60 } as Json,
+    sizing_entries: 184_000,
   };
   const sSmb = {
     id: nextId(),
     tenant: 'acme',
     kind: 'smb' as const,
     name: 'fs01-data',
-    config: { host: 'fs01.acme.example.com', port: 445, version: '3.1.1', share: 'Data', user: 'svc-backup', domain: 'ACME', sec: 'ntlmssp', sign: true, seal: true, password: 'SECRET', excludes: [], threads: 16, xattrs: true, timeout_secs: 60 } as Json,
+    config: { host: 'fs01.acme.example.com', port: 445, version: '3.1.1', share: 'Data', user: 'svc-backup', domain: 'ACME', sec: 'ntlmssp', sign: true, seal: true, password: 'SECRET', excludes: [], threads: 16, xattrs: true, timeout_secs: 60, read_limit: { bwlimit: 80_000_000, timezone: 'Europe/Berlin' } } as Json,
+    sizing_entries: 6_400_000,
   };
-  db.sources.push(sWeb01, sFs02, sNas01, sNfs, sSmb);
+  // Phase 22b: a second source on the same share overlaps fs01-data (the overlap warning)
+  const sSmbProj = {
+    id: nextId(),
+    tenant: 'acme',
+    kind: 'smb' as const,
+    name: 'fs01-projects',
+    config: { host: 'fs01.acme.example.com', port: 445, version: '3.1.1', share: 'data', user: 'svc-backup', domain: 'ACME', sec: 'ntlmssp', sign: true, seal: true, password: 'SECRET', excludes: [], include: ['/Projects'], threads: 16, xattrs: true, timeout_secs: 60 } as Json,
+  };
+  db.sources.push(sWeb01, sFs02, sNas01, sNfs, sSmb, sSmbProj);
 
   // Plugins: PostgreSQL 1.0.0 installed, 1.1.0 uploaded and waiting for approval; TrueNAS plugin 1.0.0.
   // (Both carry the current manifest, so the UI shows today's PostgreSQL forms.)
@@ -1330,12 +1370,25 @@ function seed() {
   // Phase 17d: older monthlies of vm-100 only offsite (local retention pruned them)
   for (const d of [35, 66, 97]) db.snapshots.push(snap('initech', 'vm-100', day(d, 1), Math.round(39.6 * 2 ** 30), false, true, d === 35 ? day(d, 1) + 7200 : null));
   series('initech', 'vm-102', 30, { offsite: false, hh: 3 });
+  // Phase 22b: VM identity per snapshot; VMID 102 was deleted and re-created two days ago
+  {
+    const v = db.snapshots.filter((s) => s.tenant === 'initech' && s.source === 'vm-102').sort((a, b) => a.time - b.time);
+    const oldId = { vmgenid: '5b65ecd1-44f5-4b88-8b6c-96cd092a9d2e', smbios_uuid: '13e1fd94-5545-4e60-8309-3e50cb85a8c0' };
+    const newId = { vmgenid: 'c0a8f3e2-71d4-4b2a-9e55-0f3d2b7c1a90', smbios_uuid: '8f2e4c61-0b9d-4f7a-a3c2-5e1d9b6a7c34' };
+    v.forEach((s, i) => {
+      const fresh = i >= v.length - 2;
+      (s as Json).meta = { identity: { ...(fresh ? newId : oldId), changed: i === v.length - 2, previous: i === v.length - 2 ? oldId : null } };
+    });
+  }
   series('acme', 'vm-300', 60, { hh: 22, skip: 1 });
   series('acme', 'vm-301', 25, { hh: 22, skip: 1 });
   series('acme', `host-${web01.id}`, 0.4, { hh: 22, skip: 1 });
   series('acme', `host-${fs02.id}`, 210, { hh: 22, skip: 1, days: 6 });
   series('acme', `nas-${sNas01.id}-tank.projects`, 1_800, { hh: 22, skip: 1, days: 5 });
   series('acme', `nas-${sNas01.id}-tank.home`, 640, { hh: 22, skip: 1, days: 5 });
+  // Phase 22b: the periodic TrueNAS snapshot each dataset snapshot was read from
+  for (const s of db.snapshots.filter((x) => x.source.startsWith(`nas-${sNas01.id}-`)))
+    (s as Json).meta = { zfs_snapshot: `auto-${new Date((s.time - 1800) * 1000).toISOString().slice(0, 16).replace('T', '_').replace(':', '-')}` };
   series('acme', `share-${sNfs.id}`, 3, { hh: 22, skip: 1, days: 5 });
   series('acme', `share-${sSmb.id}`, 0.9, { hh: 3, offsite: false, days: 3 });
   series('acme', `plugin-truenas-${sNas02.id}-tank.media`, 2_400, { hh: 22, skip: 1, days: 3 });
@@ -1404,6 +1457,11 @@ function seed() {
     'mounting //fs01.acme.example.com/Data read-only (SMB 3.1.1, signed + encrypted)',
     'no NAS snapshot directory configured: reading the live share',
     'scan: 48,211 files, 921 MiB, 12 changed',
+    // Phase 22b: entries the scan could not read (Skipped files CSV on the job page)
+    'error Finance/2026/payroll.xlsx: open: Permission denied (os error 13)',
+    'error Finance/2026/~$payroll.xlsx: open: The process cannot access the file (sharing violation)',
+    'error note: Archive/old-dfs: nested mount, not descended',
+    `committed share-${sSmb.id}/${day(0, 3)} in 640.0s: 48211 entries, 12 files read (1048576 bytes), 48199 unchanged files reused, 3 new chunks, 1048576 bytes transferred, 1 inconsistent, 2 errors, 75 entries/s, live share (no NAS snapshot)`,
     `inconsistent share-${sSmb.id}`,
     'snapshot committed',
   ], 640, { snapshots: [{ source: `share-${sSmb.id}`, time: day(0, 3), consistent: false }] });
@@ -1452,6 +1510,11 @@ function seed() {
     mkAlert({
       ts: retry.finished, severity: 'critical', kind: 'job_failed', key: 'job_failed:initech/backup/vmid/101', tenant: 'initech',
       message: `backup job ${retry.id} (initech) failed: ${fleecing}`,
+    }),
+    mkAlert({
+      ts: t - 86400 * 2 + 3 * 3600, severity: 'warning', kind: 'vmid_reused', key: 'vmid_reused:initech/vm-102', tenant: 'initech',
+      message:
+        'vm-102: the VM identity changed in snapshot ' + String(day(1, 3)) + ' (vmgenid 5b65ecd1-44f5-4b88-8b6c-96cd092a9d2e → c0a8f3e2-71d4-4b2a-9e55-0f3d2b7c1a90, SMBIOS UUID 13e1fd94-5545-4e60-8309-3e50cb85a8c0 → 8f2e4c61-0b9d-4f7a-a3c2-5e1d9b6a7c34): the VMID was reused or the VM replaced; older snapshots of vm-102 belong to the previous VM',
     }),
     mkAlert({
       ts: retry.finished, severity: 'critical', kind: 'fleecing_space', key: 'fleecing_space:initech/pve2/local-lvm', tenant: 'initech',
@@ -1540,11 +1603,14 @@ function seed() {
   seedHolds(t);
   seedAnomalies(t);
   seedDamage(t);
+  seedScans(t);
   seedHardware(t);
+  seedNetwork(t);
   seedM365(t);
   seedRescue(t);
   seedTenantAdmin(t);
   seedFleet(t);
+  seedRecovery(t);
 }
 
 /** Phase 19b: policy tiers, acme's assigned policies, its tenant admin "tara", a deleted tenant name.
@@ -1597,7 +1663,7 @@ function seedM365(t: number) {
   if (start + 540 <= t) {
     const stamp = (i: number) => new Date((start + 2 + i * 90) * 1000).toISOString();
     const lines = [
-      'starting nexus-pluginhost: m365 1.3.0 (sandbox: landlock + seccomp)',
+      'starting nexus-pluginhost: m365 1.4.0 (sandbox: landlock + seccomp)',
       `base ${user}/${start - 86400} (18,422 entries)`,
       'plugin[warn]: skipped mail/Inbox/Quarterly report ~3f9a0c1d2e4b.eml: GET /v1.0/users/…/messages/…/$value: 500 ErrorInternalServerError',
       'plugin[warn]: skipped onedrive/Projects/model.xlsx: GET /v1.0/drives/…/items/…/content: 503 serviceNotAvailable',
@@ -1821,7 +1887,7 @@ function find<T>(xs: T[], pred: (x: T) => boolean, what: string): T {
 // (console.unlock: nobody executes it; the requester then fetches the code once, 14c)
 // (tenant.attach_offsite: the requester then submits the recovery key, the scheduler runs the attach, 17d)
 // (vault.disable: completed at the console with the recovery key, 17c)
-const SCHEDULER_ACTIONS = ['replication.key_export', 'gc_large', 'console.unlock', 'tenant.recovery_key', 'tenant.attach_offsite', 'vault.disable'];
+const SCHEDULER_ACTIONS = ['recovery_plan.execute', 'replication.key_export', 'gc_large', 'console.unlock', 'tenant.recovery_key', 'tenant.attach_offsite', 'vault.disable'];
 // 202 {quorum_id, ...extra} like web-api's `accepted()`; with approvals disabled the
 // action runs at once (200 {approvals: "disabled", executed}).
 async function quorum(u: User, action: string, params: Json, extra: Json = {}): Promise<[number, Json]> {
@@ -1887,6 +1953,9 @@ function truenasConfig(cfg: Json, old?: Json): Json {
   if (!c.host) throw new HttpError(400, 'host: required');
   if (!Array.isArray(c.datasets) || !c.datasets.length || c.datasets.length > 64) throw new HttpError(400, 'datasets: 1 to 64 dataset names required');
   if (!String(c.ca_pem ?? '').includes('BEGIN CERTIFICATE')) throw new HttpError(400, 'ca_pem: PEM certificate required');
+  if (c.existing_snapshots !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(c.existing_snapshots))
+    throw new HttpError(400, 'existing_snapshots: the snapshot name prefix, [A-Za-z0-9][A-Za-z0-9_-]{0,31} (e.g. auto-)');
+  checkReadLimit(c.read_limit);
   if (!c.token_secret) {
     if (!old?.token_secret) throw new HttpError(400, 'token_secret (API key): required');
     c.token_secret = old.token_secret;
@@ -2103,6 +2172,9 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'disks.replace':
     case 'disks.grow':
       hwExecute(action, p, by, qid);
+      break;
+    case 'network.apply':
+      netExecute(p, by, qid);
       break;
     case 'update.apply':
       if (db.updates.available) Object.assign(db.updates, { staged: { ...db.updates.available, since: now() }, status: 'staged' });
@@ -2338,7 +2410,7 @@ on('POST', '/tenants/:name/reactivate', async (c, [name]) => {
 });
 
 // Phase 17c: vault mode (web-api `vault.rs`)
-const VAULT_KINDS = ['restore', 'restore_ct', 'instant_recover', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount', 'offsite_restore'];
+const VAULT_KINDS = ['restore', 'restore_ct', 'instant_recover', 'instant_disk', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount', 'offsite_restore'];
 function vaultRefuse(what: string) {
   if (db.vault.enabled) throw new HttpError(409, `vault mode is on: ${what} are not allowed on this appliance (Settings → Vault)`);
 }
@@ -2393,8 +2465,106 @@ async function vaultGate(u: User, tenant: string, jobs: { kind: string; params: 
   return [202, { quorum_id: q.id, vault: true }];
 }
 
+// Phase 22b: restore priority (web-api priority.rs)
+const prioValue = () => {
+  const p = db.priority && db.priority.until > now() ? db.priority : null;
+  return p ? { active: true, ...p, max_hours: 24 } : { active: false, max_hours: 24 };
+};
+on('GET', '/restore-priority', (c) => {
+  need(c.user);
+  return [200, prioValue()];
+});
+on('PUT', '/restore-priority', async (c) => {
+  const u = need(c.user, 'admin', 'operator');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  const h = Number(c.body.hours);
+  if (!(Number.isInteger(h) && h >= 1 && h <= 24)) throw new HttpError(400, 'hours: 1..=24 (renew it if the recovery takes longer)');
+  const old = db.priority && db.priority.until > now() ? db.priority : null;
+  db.priority = { until: now() + h * 3600, since: old?.since ?? now(), by: u.name, reason: String(c.body.reason ?? '').trim() };
+  await audit(u.name, 'restore_priority.on', 'restore_priority', { until: db.priority.until, hours: h, reason: db.priority.reason, renewed: !!old });
+  db.alerts = db.alerts.filter((a) => a.key !== 'restore_priority' || a.resolved_at);
+  db.alerts.push(mkAlert({ ts: now(), severity: 'warning', kind: 'restore_priority', key: 'restore_priority',
+    message: `restore priority is on (by ${u.name}${db.priority.reason ? `: ${db.priority.reason}` : ''}) until ${new Date(db.priority.until * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC: scheduled backups, GC, verify, offsite uploads and replication are held` }));
+  return [200, prioValue()];
+});
+on('DELETE', '/restore-priority', async (c) => {
+  const u = need(c.user, 'admin', 'operator');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  if (db.priority) {
+    await audit(u.name, 'restore_priority.off', 'restore_priority', { since: db.priority.since, until: db.priority.until });
+    db.priority = null;
+    for (const a of db.alerts) if (a.key === 'restore_priority' && !a.resolved_at) Object.assign(a, { resolved_at: now(), resolved_by: 'scheduler', auto: true });
+  }
+  return [200, prioValue()];
+});
+
 // sources
-on('GET', '/sources', (c) => [200, byTenant(need(c.user), db.sources).map(stripSource)]);
+on('GET', '/sources', (c) => [200, annotateSources(byTenant(need(c.user), db.sources).map(stripSource))]);
+/** Phase 22b (web-api nasops.rs): sizing note and overlap warning of share / TrueNAS sources. */
+const MEM_TOTAL = 32 * 2 ** 30;
+function annotateSources(rows: Json[]): Json[] {
+  const roots = (c: Json) => ((c.include ?? []).length ? c.include.map((r: string) => '/' + r.replace(/^\/+|\/+$/g, '')) : ['/']);
+  const cov = (s: Json): [string, string[]] | null => {
+    const c = s.config ?? {};
+    const host = String(c.host ?? '').toLowerCase();
+    if (s.kind === 'nfs') return [`nfs|${host}|${c.export}`, roots(c)];
+    if (s.kind === 'smb') return [`smb|${host}|${String(c.share).toLowerCase()}`, roots(c)];
+    if (s.kind === 'truenas') return [`truenas|${host}`, (c.datasets ?? []).map((d: string) => '/' + d)];
+    return null;
+  };
+  const under = (x: string, r: string) => r === '/' || x === r || x.startsWith(r + '/');
+  const cs = rows.map(cov);
+  return rows.map((s, i) => {
+    const mine = cs[i];
+    if (!mine) return s;
+    const overlaps = rows
+      .filter((_, j) => j !== i && cs[j]?.[0] === mine[0] && mine[1].some((a) => cs[j]![1].some((b) => under(a, b) || under(b, a))))
+      .map((o) => ({ id: o.id, name: o.name }));
+    const n = db.sources.find((x) => x.id === s.id)?.sizing_entries;
+    const est = n ? n * 800 : 0;
+    const { sizing_entries: _n, ...rest } = s;
+    return { ...rest, overlaps, sizing: n ? { entries: n, est_ram_bytes: est, mem_total: MEM_TOTAL, warn: n >= 5_000_000 || est * 4 > MEM_TOTAL } : null };
+  });
+}
+/** Phase 22b read limit (catalog::schedule::ReadLimit): bytes/s + limit windows, no pause. */
+function checkReadLimit(r: Json) {
+  if (r === undefined) return;
+  for (const k of Object.keys(r ?? {})) if (!['bwlimit', 'windows', 'timezone'].includes(k)) throw new HttpError(400, `read_limit: unknown field "${k}"`);
+  if (r.bwlimit !== undefined && !(r.bwlimit > 0)) throw new HttpError(400, 'read_limit.bwlimit: bytes per second > 0 (omit for unlimited)');
+  if ((r.windows ?? []).some((w: Json) => w.action !== 'limit' || !(w.rate_bytes > 0)))
+    throw new HttpError(400, 'read_limit.windows: only `limit` windows with rate_bytes > 0 (a paused read would stall a running backup; use a blackout window)');
+}
+function checkCaps(c: Json) {
+  if (c.max_parallel !== undefined && !(Number.isInteger(c.max_parallel) && c.max_parallel >= 1 && c.max_parallel <= 8)) throw new HttpError(400, 'max_parallel: 1..=8');
+  for (const [s, n] of Object.entries(c.storage_caps ?? {}))
+    if (!NAME_RE.test(s) || !(Number.isInteger(n) && (n as number) >= 1 && (n as number) <= 8)) throw new HttpError(400, 'storage_caps: 1..=8 guests per storage');
+  checkReadLimit(c.read_limit);
+}
+on('POST', '/sources/:id/split', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  vaultRefuse('new sources');
+  const s = find(byTenant(u, db.sources), (x) => x.id === Number(id), 'source');
+  if (s.kind !== 'nfs' && s.kind !== 'smb') throw new HttpError(400, 'only NFS and SMB share sources can be split');
+  const roots: string[] = (c.body.roots ?? []).map((r: string) => '/' + String(r).replace(/^\/+|\/+$/g, ''));
+  if (roots.length < 2 || roots.length > 32) throw new HttpError(400, 'roots: 2..=32 include roots');
+  const within: string[] = (s.config.include ?? []).length ? s.config.include : ['/'];
+  const under = (x: string, r: string) => r === '/' || x === r || x.startsWith(r + '/');
+  roots.forEach((a, i) => {
+    if (!within.some((w) => under(a, w))) throw new HttpError(400, `roots: ${a} is outside the source's include roots`);
+    if (roots.slice(0, i).some((b) => under(a, b) || under(b, a))) throw new HttpError(400, `roots: ${a} overlaps another root`);
+  });
+  if (s.kind === 'smb' && !c.body.password) throw new HttpError(400, 'password: required (the stored one is sealed to the original source)');
+  const ids: number[] = [];
+  roots.forEach((r, i) => {
+    const n = { id: nextId(), tenant: s.tenant, kind: s.kind, name: `${s.name.slice(0, 56)}-${i + 1}`, config: { ...structuredClone(s.config), include: [r], ...(c.body.password ? { password: c.body.password } : {}) } };
+    db.sources.push(n);
+    ids.push(n.id);
+    if (c.body.copy_groups !== false)
+      for (const g of db.groups.filter((x) => x.source_id === s.id)) db.groups.push({ ...structuredClone(g), id: nextId(), source_id: n.id, name: `${g.name.slice(0, 56)}-${i + 1}`, paused_until: null });
+  });
+  await audit(u.name, 'source.split', `source/${s.id}`, { tenant: s.tenant, roots, sources: ids });
+  return [201, { sources: ids }];
+});
 // linux source config: {agent_id, paths (absolute, 1..=64), excludes (0..=256), hooks}; unknown fields refused.
 function linuxConfig(tenant: string, cfg: Json): Json {
   for (const k of Object.keys(cfg ?? {}))
@@ -2431,12 +2601,13 @@ function selection(cfg: Json, agent: boolean): Json {
 
 // nfs/smb source config: NFS and SMB fields must not be mixed (deny_unknown_fields in the web-api).
 function shareConfig(kind: string, cfg: Json): Json {
-  const common = ['host', 'port', 'version', 'snapshot_dir', 'snapshot_prefix', 'snapshot_order', 'excludes', 'include', 'exclude_regex', 'threads', 'xattrs', 'timeout_secs'];
+  const common = ['host', 'port', 'version', 'snapshot_dir', 'snapshot_prefix', 'snapshot_order', 'excludes', 'include', 'exclude_regex', 'threads', 'xattrs', 'timeout_secs', 'read_limit'];
   const own = kind === 'nfs' ? ['export', 'mount_port'] : ['share', 'user', 'domain', 'sec', 'sign', 'seal', 'password', 'keytab', 'principal'];
   for (const k of Object.keys(cfg ?? {})) if (![...common, ...own].includes(k)) throw new HttpError(400, `config: unknown field "${k}"`);
   if (!cfg?.host) throw new HttpError(400, 'host: required');
   if (kind === 'nfs' && !String(cfg.export ?? '').startsWith('/')) throw new HttpError(400, 'export: absolute path required');
   if (kind === 'smb' && !cfg.share) throw new HttpError(400, 'share: required');
+  checkReadLimit(cfg.read_limit);
   const { include: _i, exclude_regex: _r, ...rest } = cfg;
   return { ...rest, ...selection(cfg, false) };
 }
@@ -2478,6 +2649,7 @@ on('POST', '/sources', async (c) => {
   }
   if (!config?.token_secret) throw new HttpError(400, 'token_secret required');
   noInlineSecrets(config.nodes);
+  checkCaps(config);
   const s = { id: nextId(), tenant, kind: 'pve' as const, name, config: config ?? {} };
   db.sources.push(s);
   await audit(u.name, 'source.create', `source/${s.id}`, { name });
@@ -2512,6 +2684,7 @@ on('PUT', '/sources/:id', async (c, [id]) => {
     return [200, stripSource(s)];
   }
   const cfg = { ...(c.body.config ?? {}) };
+  checkCaps(cfg);
   if (!cfg.token_secret) cfg.token_secret = s.config.token_secret;
   Object.assign(s, { name: c.body.name ?? s.name, config: cfg });
   await audit(u.name, 'source.update', `source/${s.id}`, {});
@@ -3792,7 +3965,7 @@ on('GET', '/snapshots', (c) => {
   const held = c.query.get('held') === 'true';
   const xs = byTenant(u, db.snapshots as any[])
     .filter((s) => (!tq || s.tenant === tq) && (!sq || s.source === sq))
-    .map((s) => ({ ...s, hold: holdView(openHold(s.tenant, s.source, s.time)), anomaly: s.anomaly ?? null, anomalous: anomalous(s) }))
+    .map((s) => ({ ...s, hold: holdView(openHold(s.tenant, s.source, s.time)), anomaly: s.anomaly ?? null, anomalous: anomalous(s), scan: scanSummary(s) }))
     .filter((s) => !held || s.hold);
   return [200, xs.sort((a, b) => b.time - a.time)];
 });
@@ -3808,11 +3981,33 @@ on('GET', '/jobs', (c) => {
   const xs = byTenant(u, db.jobs).filter((j) => (!s || j.state === s) && (!k || j.kind === k));
   return [200, xs.sort((a, b) => b.id - a.id).slice(0, 100).map((j) => pubJob(j, false))];
 });
+// Phase 22b (web-api nasops.rs): the `error …` lines of a backup log as CSV
+on('GET', '/jobs/:id/skipped.csv', (c, [id]) => {
+  const j = find(byTenant(need(c.user), db.jobs), (x) => x.id === Number(id), 'job');
+  if (j.kind !== 'backup') throw new HttpError(400, 'skipped files: backup jobs only');
+  const f = (s: string) => {
+    const v = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+    return /[",\r\n]/.test(v) ? `"${v.replaceAll('"', '""')}"` : v;
+  };
+  let out = 'path,reason,kind\r\n';
+  for (const raw of String(j.log ?? '').split('\n')) {
+    // the demo log lines carry a time stamp
+    const l = raw.replace(/^\d{4}-\d\d-\d\dT\S+ /, '');
+    if (!l.startsWith('error ')) continue;
+    let m = l.slice(6);
+    const note = m.startsWith('note: ');
+    if (note) m = m.slice(6);
+    const i = m.indexOf(': ');
+    out += `${f(i < 0 ? '' : m.slice(0, i))},${f(i < 0 ? m : m.slice(i + 2))},${note ? 'note' : 'error'}\r\n`;
+  }
+  c.res.setHeader('Content-Disposition', `attachment; filename="nexus-job-${j.id}-skipped.csv"`);
+  return [200, out, 'text/csv; charset=utf-8'];
+});
 on('GET', '/jobs/:id', (c, [id]) => {
   const u = need(c.user);
   return [200, pubJob(find(byTenant(u, db.jobs), (j) => j.id === Number(id), 'job'), true)];
 });
-const RESTORE_KINDS = ['restore', 'restore_ct', 'instant_recover', 'files_list', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount', 'offsite_list', 'offsite_restore'];
+const RESTORE_KINDS = ['restore', 'restore_ct', 'instant_recover', 'instant_disk', 'files_list', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount', 'offsite_list', 'offsite_restore'];
 /** Source + kind of a plugin snapshot name (plugin-<id>-<source id>[-<guest>]). */
 function pluginSnapshotKind(tenant: string, name: string) {
   const parts = name.replace(/^plugin-/, '').split('-');
@@ -3848,7 +4043,18 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
     }
   }
   if (kind === 'restore' || kind === 'restore_ct' || kind === 'instant_recover') checkRestore(kind, tenant, p);
+  if (kind === 'instant_disk') {
+    // Phase 22b (web-api jobs.rs; the target check is the scheduler's)
+    const slot = (k: unknown) => typeof k === 'string' && /^(scsi|virtio|sata|ide)\d{1,3}$/.test(k);
+    if (!String(p.source ?? '').startsWith('vm-')) throw new HttpError(400, 'source: instant_disk needs a vm-<vmid> snapshot');
+    if (!slot(String(p.device ?? '').replace(/^drive-/, '')) || !String(p.device).startsWith('drive-')) throw new HttpError(400, 'device: a data disk of the snapshot (drive-scsi1, …)');
+    if (p.key !== undefined && !slot(p.key)) throw new HttpError(400, 'key: a free disk slot of the target VM (scsi5, virtio2, …)');
+    if (!(p.target >= 100 && p.target <= 999999999)) throw new HttpError(400, 'vmid: must be within 100..=999999999');
+    if (p.move_to !== undefined && !NAME_RE.test(p.move_to)) throw new HttpError(400, 'move_to: invalid storage name');
+    if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time)) throw new HttpError(404, 'no such snapshot');
+  }
   if (kind === 'agent_enroll') throw new HttpError(400, 'use POST /agents/{id}/enroll');
+  if (kind === 'restore_test') checkRestoreTest(tenant, p);
   if (kind === 'inventory') {
     const src = find(db.sources, (s) => s.id === Number(p.source_id) && s.tenant === tenant, 'source in tenant');
     if (!hasInventory(src)) throw new HttpError(400, 'source_id: this source has no guest inventory');
@@ -3920,6 +4126,7 @@ on('POST', '/jobs', async (c) => {
   if (kind === 'chunk_repair' && u.role !== 'admin') throw new HttpError(403, 'forbidden');
   if (kind === 'chunk_repair' && Object.keys(params).length) throw new HttpError(400, 'params: chunk_repair takes no parameters');
   if (kind === 'files_list' && !String(params.path ?? '').startsWith('/')) throw new HttpError(400, 'path: must be absolute');
+  const scanFirst = takeScanFirst(kind, params);
   checkJob(u, kind, tenant, params);
   if (kind === 'files_get' && !canDownload(u)) throw new HttpError(403, 'this account may not download files');
   if (kind === 'files_get' && params.params && Object.keys(params.params).length) {
@@ -3946,7 +4153,7 @@ on('POST', '/jobs', async (c) => {
   const p = kind === 'files_get' ? { ...params, download_token: rand(32) } : params;
   const gated = await vaultGate(u, tenant, [{ kind, params: p }]);
   if (gated) return gated;
-  const j = addJob(kind, tenant, p, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
+  const j = scanFirst ? scanFirstJob(u, kind, tenant, p, scanFirst) : addJob(kind, tenant, p, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
   if (kind.startsWith('plugin_')) j.duration = { plugin_validate: 3, plugin_guests: 3, plugin_restore: 14, plugin_mount: 6 }[kind as string] ?? 10;
   if (kind === 'inventory') j.duration = 3;
   if (kind === 'offsite_list') j.duration = 3;
@@ -4205,12 +4412,13 @@ function mkAlert(a: Json): Json {
 /** Like catalog::alerting::category (Phase 18). */
 const ALERT_CATEGORIES = ['security', 'backup', 'replication', 'hardware', 'system', 'audit'];
 const ALERT_CATEGORY: Record<string, string> = {
-  anomaly: 'security', console_unlock: 'security', console_root_shell: 'security', break_glass: 'security',
+  anomaly: 'security', malware: 'security', console_unlock: 'security', console_root_shell: 'security', break_glass: 'security',
   mgmt_allow_reset: 'security', firewall_reset: 'security', legal_hold_advisory: 'security', cert_expiry: 'security',
   account_dormant: 'security', inventory: 'security', clock_skew: 'security', gc_quorum: 'security', gc_confirm: 'security',
   vault_disabled: 'security', incident: 'security', dek_rotation: 'security',
   job_failed: 'backup', sla_missed: 'backup', paused: 'backup', consistency: 'backup', backup_inconsistent: 'backup',
   orphaned: 'backup', verify: 'backup', snapshot_damaged: 'backup', offsite_lag: 'backup', inventory_refresh: 'backup', config: 'backup',
+  vmid_reused: 'backup', restore_priority: 'backup',
   disk: 'hardware', fleecing_space: 'hardware',
 };
 const alertCategory = (kind: string) => (kind.startsWith('replication_') ? 'replication' : (ALERT_CATEGORY[kind] ?? 'system'));
@@ -4961,7 +5169,8 @@ on('GET', '/dashboard', (c) => {
   const key = `${u.tenant ?? '*'}/${days}`;
   const hit = dashCache.get(key);
   if (hit && now() - hit.at < 60) return [200, { ...hit.body, incident: incidentBanner(u) }];
-  const body = dashboard(u, days);
+  const body: Json = dashboard(u, days);
+  body.restore_tests = rtKpi(u, days);
   dashCache.set(key, { at: now(), body });
   return [200, { ...body, incident: incidentBanner(u) }];
 });
@@ -5346,6 +5555,7 @@ function diagChecks(t: number): Json[] {
     c('systemd.failed', 'Failed system services', 'pass', 1, 'no failed units'),
     c('bootc', 'OS image (bootc)', 'pass', 1, `booted ${db.updates.booted?.version}, rollback ${db.updates.rollback?.version}`),
     c('smart', 'Disk health (SMART)', 'skip', 1, 'smartctl not installed'),
+    c('network.mtu', 'Network: path MTU', 'warn', 2, '10.30.4.20 (data): interface bond0.20 has MTU 9000, the path takes 1500'),
     // Phase 21b security posture (recommendations: pass / warn, never update blockers)
     ...postureChecks().map((x) => c(x[0], x[1], x[2] ? 'pass' : 'warn', x[2] ? 1 : 2, x[3])),
   ];
@@ -5464,6 +5674,172 @@ on('GET', '/settings/config-backup/download', async (c) => {
   await audit(u.name, 'download.get', `config_backup/${l.appliance}`, { kind: 'config_backup', bytes: l.bytes, created: l.created, sha256: l.sha256 });
   c.res.setHeader('Content-Disposition', `attachment; filename="nexus-config-${l.appliance}-${l.created}.bundle"`);
   return [200, 'NXCFGB1 (mock bundle: sealed to the recovery key)\n', 'application/octet-stream'];
+});
+
+// ---------------------------------------------------------------- network (Phase 22a)
+// nexus-net as the web-api sees it (GET /network): devices, the applied configuration, a
+// management change waiting for its confirmation, the path-MTU results, operations.
+const NET_FIELDS = { ports: [], mode: null, parent: null, vlan_id: null, role: null, mtu: null, dhcp: false, addresses: [], gateway: null, dns: [], routes: [] };
+const netIface = (x: Json): Json => ({ ...structuredClone(NET_FIELDS), ...x });
+function seedNetwork(t: number) {
+  const nic = (name: string, mac: string, state: string, speed: number | null, master: string | null = null, addresses: string[] = []) => ({
+    name, kind: 'nic', mac, mtu: master ? 9000 : 1500, state, speed, master, addresses,
+  });
+  db.network = {
+    scanned: t - 240,
+    devices: [
+      nic('ens3', '3c:ec:ef:10:22:01', 'up', 1000, null, ['192.0.2.10/24']),
+      nic('ens4', '3c:ec:ef:10:22:02', 'up', 25000, 'bond0'),
+      nic('ens5', '3c:ec:ef:10:22:03', 'up', 25000, 'bond0'),
+      nic('ens6', '3c:ec:ef:10:22:04', 'up', 10000, null, ['172.16.50.5/24']),
+      nic('ens7', '3c:ec:ef:10:22:05', 'down', null),
+      { name: 'bond0', kind: 'bond', mac: '3c:ec:ef:10:22:02', mtu: 9000, state: 'up', speed: 50000, master: null, addresses: [] },
+      { name: 'bond0.20', kind: 'vlan', mac: '3c:ec:ef:10:22:02', mtu: 9000, state: 'up', speed: 50000, master: null, addresses: ['10.0.20.5/24'] },
+    ],
+    config: {
+      interfaces: [
+        netIface({ name: 'bond0', kind: 'bond', ports: ['ens4', 'ens5'], mode: '802.3ad', mtu: 9000 }),
+        netIface({ name: 'bond0.20', kind: 'vlan', parent: 'bond0', vlan_id: 20, role: 'data', mtu: 9000, addresses: ['10.0.20.5/24'], routes: [{ to: '10.30.0.0/16', via: '10.0.20.1' }] }),
+        netIface({ name: 'ens6', kind: 'ethernet', role: 'replication', addresses: ['172.16.50.5/24'] }),
+      ],
+      offsite_role: 'management',
+    },
+    management: { ifname: 'ens3', source: 'console' },
+    reset: null,
+    pending: null as Json | null,
+    mtu: {
+      ts: t - 1800,
+      results: [
+        { role: 'data', addr: '10.0.20.11', dev: 'bond0.20', expected_dev: 'bond0.20', mtu: 9000, result: 'ok', path_mtu: null },
+        { role: 'data', addr: '10.0.20.12', dev: 'bond0.20', expected_dev: 'bond0.20', mtu: 9000, result: 'ok', path_mtu: null },
+        { role: 'data', addr: '10.30.4.20', dev: 'bond0.20', expected_dev: 'bond0.20', mtu: 9000, result: 'mismatch', path_mtu: 1500 },
+        { role: 'replication', addr: '172.16.50.9', dev: 'ens6', expected_dev: 'ens6', mtu: 1500, result: 'ok', path_mtu: null },
+        { role: 'offsite', addr: '198.51.100.40', dev: 'ens3', expected_dev: null, mtu: 1500, result: 'no_reply', path_mtu: null },
+      ],
+    },
+    ops: [
+      { id: rand(16), op: 'apply', state: 'done', by: 'admin', quorum_id: null, created: t - 6 * 86400, finished: t - 6 * 86400 + 4, detail: 'applied: nexus-bond0, nexus-ens6, nexus-bond0.20', error: null },
+    ] as Json[],
+  };
+}
+function netView() {
+  const n = db.network;
+  const t = now();
+  if (n.pending && n.pending.deadline <= t) netFinish(false, null);
+  return {
+    available: true, stale: false, scanned: n.scanned, devices: n.devices, config: n.config, management: n.management, reset: n.reset,
+    pending: n.pending ? { id: n.pending.id, by: n.pending.by, deadline: n.pending.deadline, remaining: n.pending.deadline - t } : null,
+    mtu: n.mtu, ops: [...n.ops].sort((a: Json, b: Json) => b.created - a.created),
+    request_pending: db.quorum.filter((q) => q.action === 'network.apply' && q.state === 'pending').pop()?.id ?? null,
+    confirm_secs: 120, client_ip: CLIENT_IP,
+  };
+}
+const netMgmtChain = (c: Json) => {
+  const m = c.interfaces.find((i: Json) => i.role === 'management');
+  return JSON.stringify(m ? [m, c.interfaces.find((i: Json) => i.name === m.parent) ?? null] : []);
+};
+function netValidate(c: Json) {
+  const nics = db.network.devices.filter((d: Json) => d.kind === 'nic').map((d: Json) => d.name);
+  const used = new Map<string, string>();
+  const roles = new Set<string>();
+  const ifs: Json[] = Array.isArray(c?.interfaces) ? c.interfaces : [];
+  if (ifs.length > 16) throw new HttpError(400, 'at most 16 interfaces');
+  const take = (nic: string, what: string, n: string) => {
+    if (!nics.includes(nic)) throw new HttpError(400, `${n}: there is no network card "${nic}"`);
+    if (used.has(nic)) throw new HttpError(400, `${nic} is used twice (${used.get(nic)} and ${what})`);
+    used.set(nic, what);
+  };
+  for (const i of ifs) {
+    const n = String(i.name ?? '');
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$/.test(n)) throw new HttpError(400, `"${n}": an interface name has 1-15 letters, digits, '.', '_' or '-'`);
+    if (i.kind === 'ethernet') take(n, `interface ${n}`, n);
+    else if (i.kind === 'bond') {
+      if (!['active-backup', '802.3ad'].includes(i.mode)) throw new HttpError(400, `${n}: bond mode must be active-backup or 802.3ad (LACP)`);
+      if (!i.ports?.length || i.ports.length > 8) throw new HttpError(400, `${n}: a bond has 1 to 8 ports`);
+      for (const p of i.ports) take(p, `bond ${n}`, n);
+    } else if (i.kind === 'vlan') {
+      if (!(i.vlan_id >= 1 && i.vlan_id <= 4094)) throw new HttpError(400, `${n}: VLAN ID must be 1 to 4094`);
+      if (!ifs.some((x) => x.name === i.parent && x.kind !== 'vlan') && !nics.includes(i.parent)) throw new HttpError(400, `${n}: parent "${i.parent}" is neither a network card nor an interface here`);
+    } else throw new HttpError(400, `${n}: kind must be ethernet, bond or vlan`);
+    if (i.role) {
+      if (roles.has(i.role)) throw new HttpError(400, `only one interface can have the role ${i.role}`);
+      roles.add(i.role);
+    }
+    if (i.mtu != null && !(i.mtu >= 1280 && i.mtu <= 9216)) throw new HttpError(400, `${n}: MTU must be 1280 to 9216`);
+    for (const a of i.addresses ?? []) if (!/^[0-9a-fA-F:.]+\/\d{1,3}$/.test(a)) throw new HttpError(400, `${n}: "${a}" is not address/prefix (192.0.2.10/24)`);
+    if (i.gateway && i.role !== 'management') throw new HttpError(400, `${n}: only the management interface has a default gateway; reach other networks with routes`);
+    if (i.role === 'management' && !i.dhcp && !(i.addresses ?? []).length) throw new HttpError(400, `${n}: the management interface needs DHCP or an address`);
+    for (const r of i.routes ?? []) if (!/\/\d{1,3}$/.test(r.to) || /\/0$/.test(r.to)) throw new HttpError(400, `${n}: route "${r.to}" is not a network (10.30.0.0/16)`);
+  }
+  const hadMgmt = db.network.config.interfaces.some((i: Json) => i.role === 'management');
+  if (hadMgmt && !roles.has('management')) throw new HttpError(400, 'the management interface cannot be removed, only changed (or reset at the console)');
+  if (!roles.has('management') && used.has(db.network.management.ifname))
+    throw new HttpError(400, `${db.network.management.ifname} is the management network card (set at the console); it cannot be used as ${used.get(db.network.management.ifname)}. Give an interface the management role to move the management network.`);
+}
+function netFinish(keep: boolean, by: string | null) {
+  const n = db.network;
+  const p = n.pending;
+  if (!p) return;
+  const op = n.ops.find((o: Json) => o.id === p.id);
+  if (keep) Object.assign(op, { state: 'done', detail: `applied; management change confirmed by ${by}`, finished: now() });
+  else {
+    n.config = p.prev;
+    Object.assign(op, { state: 'rolled_back', detail: by ? `reverted by ${by}` : 'not confirmed within 120 s', finished: now() });
+  }
+  n.management = n.config.interfaces.some((i: Json) => i.role === 'management')
+    ? { ifname: n.config.interfaces.find((i: Json) => i.role === 'management').name, source: 'config' }
+    : { ifname: 'ens3', source: 'console' };
+  n.pending = null;
+}
+/** An approved network.apply: what nexus-net would do. */
+function netExecute(p: Json, by: string, qid: number) {
+  const n = db.network;
+  if (JSON.stringify(n.config) !== JSON.stringify(p.old)) {
+    n.ops.push({ id: rand(16), op: 'apply', state: 'refused', by, quorum_id: qid || null, created: now(), finished: now(), detail: null, error: 'the network configuration changed since this request was made; request the change again' });
+    return;
+  }
+  const prev = n.config;
+  n.config = structuredClone(p.config);
+  const id = rand(16);
+  if (netMgmtChain(prev) !== netMgmtChain(n.config)) {
+    n.ops.push({ id, op: 'apply', state: 'confirming', by, quorum_id: qid || null, created: now(), finished: null, detail: null, error: null });
+    n.pending = { id, by, deadline: now() + 120, prev };
+  } else {
+    n.ops.push({ id, op: 'apply', state: 'done', by, quorum_id: qid || null, created: now(), finished: now(), detail: `applied: ${n.config.interfaces.map((i: Json) => `nexus-${i.name}`).join(', ') || 'profiles removed'}`, error: null });
+  }
+}
+function netReader(c: { user: User | null }) {
+  const u = need(c.user, 'admin', 'security_officer', 'operator', 'viewer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  return u;
+}
+on('GET', '/network', (c) => (netReader(c), [200, netView()]));
+on('PUT', '/network', async (c) => {
+  const u = netReader(c);
+  need(u, 'admin');
+  const n = db.network;
+  if (n.pending && n.pending.deadline > now()) throw new HttpError(409, 'a change of the management interface waits for its confirmation; confirm or revert it first');
+  const cfg = { interfaces: (c.body.config?.interfaces ?? []).map(netIface), offsite_role: c.body.config?.offsite_role ?? 'management' };
+  if (JSON.stringify(cfg) === JSON.stringify(n.config)) return [200, { unchanged: true }];
+  netValidate(cfg);
+  return quorum(u, 'network.apply', { config: cfg, old: structuredClone(n.config), management_change: netMgmtChain(n.config) !== netMgmtChain(cfg) });
+});
+on('POST', '/network/confirm', async (c) => {
+  const u = need(netReader(c), 'admin');
+  const p = db.network.pending;
+  if (!p || p.id !== c.body.id || p.deadline <= now()) throw new HttpError(409, 'no such change waits for confirmation (confirmed, reverted or rolled back already)');
+  const keep = !!c.body.keep;
+  netFinish(keep, u.name);
+  await audit(u.name, keep ? 'network.confirm' : 'network.revert', 'network', { id: p.id, from: CLIENT_IP });
+  return [202, { id: p.id, keep }];
+});
+on('POST', '/network/mtu-check', async (c) => {
+  const u = need(netReader(c), 'admin', 'operator');
+  const id = rand(16);
+  db.network.ops.push({ id, op: 'mtu_check', state: 'done', by: u.name, quorum_id: null, created: now(), finished: now(), detail: 'path-MTU check requested', error: null });
+  db.network.mtu.ts = now();
+  await audit(u.name, 'network.mtu_check', 'network', { id });
+  return [202, { id, state: 'queued' }];
 });
 
 // ---------------------------------------------------------------- hardware (Phase 16a/b)
@@ -6049,6 +6425,369 @@ on('POST', '/mock/console-gate', async (c) => {
   await audit('console', 'console.root_shell', `console-unlock/${q.id}`, { method: 'code', hours: q.params.hours, unlock: q.id });
   return [200, consoleShell];
 });
+
+// ---------------------------------------------------------------- restore tests and recovery plans (Phase 25)
+// Like web-api recovery.rs + scheduler recovery.rs: restore_test jobs (manual or per group schedule),
+// recovery plans with readiness, test runs and approved executions, the DR report.
+
+const rt = {
+  tests: [] as Json[],
+  schedules: [] as Json[],
+  plans: [] as Json[],
+  runs: [] as Json[],
+};
+const RT_RUNNERS: Role[] = ['admin', 'operator', 'tenant_admin'];
+
+function rtChecks(c: Json | undefined, ct: boolean) {
+  const x = c ?? {};
+  if (x.boot_timeout !== undefined && (x.boot_timeout < 30 || x.boot_timeout > 3600)) throw new HttpError(400, 'checks.boot_timeout: 30..=3600 seconds');
+  if ((x.ports ?? []).length > 16 || (x.ports ?? []).some((p: number) => !(p >= 1 && p <= 65535))) throw new HttpError(400, 'checks.ports: at most 16 ports 1..=65535');
+  if (x.agent === false && ((x.ports ?? []).length || (x.command ?? []).length)) throw new HttpError(400, 'checks: ports and command run through the guest agent');
+  if (ct && (x.agent === true || (x.ports ?? []).length || (x.command ?? []).length))
+    throw new HttpError(400, 'checks: containers have no guest agent (only boot_timeout; the init process is checked)');
+}
+const rtName = (v: unknown, what: string) => {
+  if (typeof v !== 'string' || !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(v)) throw new HttpError(400, `${what}: must match [A-Za-z0-9._-]{1,64} without a leading dot`);
+};
+function checkRestoreTest(tenant: string, p: Json) {
+  if (!/^(vm|ct)-\d+$/.test(String(p.source ?? ''))) throw new HttpError(400, 'source: vm-<vmid> or ct-<vmid>');
+  rtName(p.node, 'node');
+  rtName(p.storage, 'storage');
+  if (p.bridge) rtName(p.bridge, 'bridge');
+  rtChecks(p.checks, String(p.source).startsWith('ct-'));
+  if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time && s.local)) throw new HttpError(404, 'no such local snapshot');
+}
+
+/** One guest's mock result: vm-101 never answers (its backups fail too), the rest passes. */
+function rtResult(source: string, time: number, wave: number, target: number, name: string, checks: Json, start: number, test = true): Json {
+  const ct = source.startsWith('ct-');
+  const bad = source === 'vm-101';
+  const boot = ct ? 6 : 38 + (Number(source.slice(3)) % 20);
+  const list: Json[] = ct
+    ? [{ name: 'init', ok: true, detail: `init PID ${4000 + target % 1000} running after ${boot} s` }]
+    : [{ name: 'running', ok: true, detail: 'running after 3 s' }];
+  if (!ct && bad) list.push({ name: 'guest_agent', ok: false, detail: `the QEMU guest agent did not answer within ${checks?.boot_timeout ?? 600} s` });
+  if (!ct && !bad && checks?.agent !== false) {
+    list.push({ name: 'guest_agent', ok: true, detail: `answered after ${boot} s` });
+    for (const p of checks?.ports ?? []) list.push({ name: `tcp/${p}`, ok: true, detail: 'listening' });
+    if ((checks?.command ?? []).length) list.push({ name: 'command', ok: true, detail: `exit 0 (expected ${checks.expect_exit ?? 0}): active` });
+  }
+  return {
+    source, time, wave, target, name, state: bad ? 'failed' : 'passed', started: start, finished: start + boot + 40,
+    boot_secs: bad ? null : boot, checks: list, error: null, destroyed: test ? true : null,
+  };
+}
+const rtLatest = (tenant: string, source: string) =>
+  (db.snapshots as Json[]).filter((s) => s.tenant === tenant && s.source === source && s.local).sort((a, b) => b.time - a.time)[0];
+const rtGuestName = (source: string) => ({ 'vm-100': 'erp-app', 'vm-101': 'erp-db', 'vm-102': 'reporting', 'ct-200': 'proxy', 'vm-300': 'shop-web', 'vm-301': 'shop-db' } as Json)[source] ?? source;
+
+function rtRecord(tenant: string, job: number, run: number | null, r: Json) {
+  rt.tests.push({ id: nextId(), tenant, job_id: job, run_id: run, ...r });
+  const key = `restore_test:${tenant}/${r.source}`;
+  const open = db.alerts.find((a) => a.key === key && !a.resolved_at);
+  if (r.state === 'passed' && open) Object.assign(open, { resolved_at: r.finished, resolved_by: 'scheduler', auto: true });
+  if (r.state === 'failed' && !open && run === null)
+    db.alerts.push(mkAlert({ ts: r.finished, severity: 'warning', kind: 'restore_test', key, tenant,
+      message: `restore test of ${r.source} (${r.time}) failed (job ${job}): ${(r.checks as Json[]).filter((c) => !c.ok).map((c) => `${c.name}: ${c.detail}`).join('; ')}` }));
+}
+
+/** tick(): finished restore-test / recovery jobs, approved executions. */
+function recoveryTick(j: Job | null, t: number) {
+  if (!j) {
+    for (const q of db.quorum.filter((x) => x.action === 'recovery_plan.execute' && x.state === 'approved')) {
+      if (rt.runs.some((r) => r.quorum_id === q.id)) continue;
+      const run = { id: nextId(), plan_id: q.params.plan_id, tenant: q.params.tenant, mode: 'execute', state: 'running', requested_by: q.requested_by,
+        quorum_id: q.id, job_id: null as number | null, plan: q.params.plan, results: [], started: t, finished: null };
+      const job = addJob('recovery_execute', run.tenant, { run_id: run.id, plan_id: run.plan_id, quorum_id: q.id }, 'scheduler', { plan: rtPlanLines(run.plan, false), duration: 20 });
+      run.job_id = job.id;
+      rt.runs.push(run);
+    }
+    return;
+  }
+  if (j.kind === 'restore_test') {
+    const r = rtResult(j.params.source, j.params.time, 0, 990001, `nxtest-${rtGuestName(j.params.source)}`, j.params.checks, j.started ?? t);
+    rtRecord(j.tenant, j.id, null, { ...r, finished: t });
+    if (r.state === 'failed') {
+      j.state = 'failed';
+      j.log += '\nERROR: 1 of 1 guests did not pass';
+    }
+  }
+  if (j.kind === 'recovery_test' || j.kind === 'recovery_execute') {
+    const run = rt.runs.find((r) => r.id === j.params.run_id);
+    if (!run) return;
+    const test = j.kind === 'recovery_test';
+    let base = j.started ?? t;
+    run.results = (run.plan.steps as Json[]).map((s, i) => {
+      const snap = rtLatest(run.tenant, s.source);
+      const r = rtResult(s.source, snap?.time ?? 0, s.wave, test ? 990001 + i : s.target ?? Number(s.source.slice(3)),
+        test ? `nxtest-${rtGuestName(s.source)}` : rtGuestName(s.source), s.checks, base, test);
+      base += 2;
+      return r;
+    });
+    for (const r of run.results) rtRecord(run.tenant, j.id, run.id, r);
+    run.state = run.results.every((r: Json) => r.state === 'passed') ? 'passed' : 'failed';
+    run.finished = t;
+    if (run.state === 'failed') {
+      j.state = 'failed';
+      j.log += `\nERROR: ${run.results.filter((r: Json) => r.state !== 'passed').length} of ${run.results.length} guests did not pass`;
+    }
+  }
+  if (j.kind === 'recovery_readiness') {
+    const p = rt.plans.find((x) => x.id === j.params.plan_id);
+    if (p) p.readiness = rtReadiness(p, t);
+  }
+}
+
+function rtPlanLines(p: Json, test: boolean): string[] {
+  const lines = [`nexus-pve restore-test: ${test ? 'test run' : 'EXECUTION'} of plan ${p.name} on ${p.node} / ${p.storage}`];
+  for (const s of p.steps as Json[]) lines.push(`wave ${s.wave}: ${s.source} ${test ? `as nxtest-${rtGuestName(s.source)}` : `restored as ${s.target ?? s.source.slice(3)}`}`);
+  lines.push(test ? 'checks done; destroying the test guests' : 'all guests restored and started');
+  return lines;
+}
+
+function rtReadiness(p: Json, t: number): Json {
+  const checks: Json[] = [];
+  let need = 0;
+  for (const s of p.steps as Json[]) {
+    const snap = rtLatest(p.tenant, s.source);
+    if (!snap) checks.push({ name: `snapshot ${s.source}`, ok: false, detail: 'no local snapshot' });
+    else {
+      need += snap.size;
+      const age = t - snap.time;
+      checks.push({ name: `snapshot ${s.source}`, ok: age <= p.rpo_hours * 3600, detail: `newest local snapshot ${Math.floor(age / 3600)} h old (RPO ${p.rpo_hours} h)` });
+    }
+  }
+  checks.push({ name: `node ${p.node}`, ok: true, detail: 'online' });
+  checks.push({ name: `target storage ${p.storage}`, ok: true, detail: `active, ${Math.max(2048, Math.round(need / 2 ** 30) * 3)} GiB free` });
+  checks.push({ name: 'instant recovery storage nexus', ok: true, detail: 'active, 41210 GiB free' });
+  checks.push({ name: 'bridges', ok: true, detail: 'present' });
+  const blocking = db.alerts.filter((a) => !a.resolved_at && (p.steps as Json[]).some((s) => a.key === `restore_test:${p.tenant}/${s.source}`));
+  checks.push({ name: 'alerts', ok: !blocking.length, detail: blocking.length ? blocking.map((a) => a.message).join('; ') : 'no blocking alerts' });
+  return { ok: checks.every((c) => c.ok), at: t, checks };
+}
+
+function seedRecovery(t: number) {
+  const src = db.sources.find((s) => s.tenant === 'initech' && s.kind === 'pve')!;
+  const acme = db.sources.find((s) => s.tenant === 'acme' && s.kind === 'pve')!;
+  const prod = db.groups.find((g) => g.tenant === 'initech' && g.name === 'production')!;
+  rt.schedules.push({ group_id: prod.id, every_days: 7, node: 'pve2', storage: 'local-lvm', bridge: 'nxlab', checks: { ports: [22], boot_timeout: 900 }, last_run: t - 2 * DAY });
+  // two weeks of scheduled tests of the production group; vm-101's agent never answers
+  for (const d of [9, 2]) {
+    for (const source of ['vm-100', 'vm-101', 'ct-200']) {
+      const snap = (db.snapshots as Json[]).filter((s) => s.tenant === 'initech' && s.source === source && s.local && s.time < t - d * DAY).sort((a, b) => b.time - a.time)[0];
+      if (!snap) continue;
+      const j = addJob('restore_test', 'initech', { source, time: snap.time, node: 'pve2', storage: 'local-lvm', bridge: 'nxlab', checks: source.startsWith('ct-') ? { boot_timeout: 900 } : { ports: [22], boot_timeout: 900 }, group_id: prod.id, source_id: src.id }, 'scheduler');
+      const at = t - d * DAY + 3 * 3600 + (source === 'vm-101' ? 900 : source === 'ct-200' ? 1800 : 0);
+      const r = rtResult(source, snap.time, 0, 990001, `nxtest-${rtGuestName(source)}`, j.params.checks, at);
+      Object.assign(j, { state: r.state === 'passed' ? 'ok' : 'failed', created: at, started: at, finished: r.finished, log: rtPlanLines({ name: '-', node: 'pve2', storage: 'local-lvm', steps: [{ source, wave: 0 }] }, true).join('\n') });
+      rtRecord('initech', j.id, null, r);
+    }
+  }
+  const plan = (tenant: string, s: Json, name: string, steps: Json[], extra: Json = {}) => {
+    const p = { id: nextId(), tenant, name, source_id: s.id, node: tenant === 'acme' ? 'acme-pve1' : 'pve2', storage: 'local-lvm', test_bridge: 'nxlab',
+      network_map: { vmbr0: 'vmbr20' }, steps, rpo_hours: 24, readiness: null as Json | null, created: t - 30 * DAY, created_by: 'admin', ...extra };
+    rt.plans.push(p);
+    p.readiness = rtReadiness(p, t - 6 * 3600);
+    return p;
+  };
+  const erp = plan('initech', src, 'erp-site-b', [
+    { source: 'vm-102', wave: 1, delay: 0, checks: { ports: [5432], boot_timeout: 900 } },
+    { source: 'vm-100', wave: 2, delay: 60, checks: { ports: [443], command: ['systemctl', 'is-active', 'erp'] } },
+    { source: 'ct-200', wave: 2, delay: 60, checks: {} },
+  ]);
+  plan('acme', acme, 'shop', [
+    { source: 'vm-301', wave: 1, checks: { ports: [3306] } },
+    { source: 'vm-300', wave: 2, delay: 30, checks: { ports: [443] } },
+  ], { rpo_hours: 12, test_bridge: null, network_map: {} });
+  // a passed test run of the ERP plan three days ago
+  const at = t - 3 * DAY + 10 * 3600;
+  const { readiness: _r, created: _c, created_by: _b, ...asRun } = erp;
+  const run = { id: nextId(), plan_id: erp.id, tenant: 'initech', mode: 'test', state: 'running', requested_by: 'operator', quorum_id: null, job_id: null as number | null,
+    plan: asRun, results: [] as Json[], started: at, finished: null as number | null };
+  rt.runs.push(run);
+  const j = addJob('recovery_test', 'initech', { run_id: run.id, plan_id: erp.id }, 'operator', { plan: rtPlanLines(erp, true), created: at });
+  Object.assign(j, { state: 'ok', started: at, finished: at + 420, log: rtPlanLines(erp, true).join('\n') });
+  run.job_id = j.id;
+  run.results = (erp.steps as Json[]).map((s, i) => {
+    const snap = (db.snapshots as Json[]).filter((x) => x.tenant === 'initech' && x.source === s.source && x.local && x.time < at).sort((a, b) => b.time - a.time)[0];
+    return rtResult(s.source, snap?.time ?? 0, s.wave, 990101 + i, `nxtest-${rtGuestName(s.source)}`, s.checks, at + (s.wave - 1) * 160);
+  });
+  for (const r of run.results) rtRecord('initech', j.id, run.id, r);
+  Object.assign(run, { state: 'passed', finished: at + 420 });
+}
+
+on('GET', '/restore-tests', (c) => {
+  const u = need(c.user);
+  const tq = c.query.get('tenant');
+  const sq = c.query.get('source');
+  const rows = byTenant(u, rt.tests as any[])
+    .filter((x) => (!tq || x.tenant === tq) && (!sq || x.source === sq))
+    .sort((a, b) => b.finished - a.finished || b.id - a.id);
+  return [200, rows.slice(0, Number(c.query.get('limit') ?? 500))];
+});
+on('GET', '/restore-tests/schedules', (c) => {
+  const u = need(c.user);
+  return [200, rt.schedules
+    .map((s) => { const g = db.groups.find((x) => x.id === s.group_id)!; return { ...s, group: g?.name, tenant: g?.tenant }; })
+    .filter((s) => s.tenant && (!u.tenant || s.tenant === u.tenant))];
+});
+on('PUT', '/restore-tests/schedules/:id', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
+  if (db.sources.find((s) => s.id === g.source_id)?.kind !== 'pve') throw new HttpError(400, 'restore tests need a group of a Proxmox VE source');
+  const b = c.body;
+  if (!(b.every_days >= 1 && b.every_days <= 365)) throw new HttpError(400, 'every_days: 1..=365');
+  rtName(b.node, 'node');
+  rtName(b.storage, 'storage');
+  if (b.bridge) rtName(b.bridge, 'bridge');
+  rtChecks(b.checks, false);
+  const cur = rt.schedules.find((s) => s.group_id === g.id);
+  const v = { group_id: g.id, every_days: b.every_days, node: b.node, storage: b.storage, bridge: b.bridge || null, checks: b.checks ?? {}, last_run: cur?.last_run ?? null };
+  if (cur) Object.assign(cur, v);
+  else rt.schedules.push(v);
+  await audit(u.name, 'restore_test.schedule', `group/${g.id}`, b);
+  return [200, b];
+});
+on('DELETE', '/restore-tests/schedules/:id', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
+  find(rt.schedules, (s) => s.group_id === g.id, 'schedule');
+  rt.schedules = rt.schedules.filter((s) => s.group_id !== g.id);
+  await audit(u.name, 'restore_test.unschedule', `group/${g.id}`, {});
+  return [200, {}];
+});
+
+const rtPlan = (u: User, id: string) => find(byTenant(u, rt.plans as any[]), (p) => p.id === Number(id), 'recovery plan');
+function checkPlan(tenant: string, b: Json) {
+  rtName(b.name, 'name');
+  if (!db.sources.some((s) => s.id === b.source_id && s.tenant === tenant && s.kind === 'pve')) throw new HttpError(400, 'source_id: no PVE source of this tenant');
+  rtName(b.node, 'node');
+  rtName(b.storage, 'storage');
+  if (b.test_bridge) rtName(b.test_bridge, 'test_bridge');
+  for (const [k, v] of Object.entries(b.network_map ?? {})) (rtName(k, 'network_map'), rtName(v, 'network_map'));
+  if (!(b.rpo_hours >= 1 && b.rpo_hours <= 8760)) throw new HttpError(400, 'rpo_hours: 1..=8760');
+  const steps: Json[] = b.steps ?? [];
+  if (!steps.length || steps.length > 50) throw new HttpError(400, 'steps: 1..=50 guests');
+  const ids = new Set<string>();
+  for (const s of steps) {
+    if (!/^(vm|ct)-\d+$/.test(String(s.source ?? ''))) throw new HttpError(400, 'source: vm-<vmid> or ct-<vmid>');
+    if (ids.has(s.source.slice(3))) throw new HttpError(400, `steps: ${s.source} twice`);
+    ids.add(s.source.slice(3));
+    if (!((s.wave ?? 1) >= 1 && (s.wave ?? 1) <= 20) || (s.delay ?? 0) > 3600) throw new HttpError(400, 'steps: wave 1..=20, delay 0..=3600 seconds');
+    rtChecks(s.checks, s.source.startsWith('ct-'));
+  }
+}
+const rtOut = (p: Json) => {
+  const last = rt.runs.filter((r) => r.plan_id === p.id).at(-1);
+  return { ...p, last_run: last ? { id: last.id, mode: last.mode, state: last.state, started: last.started, finished: last.finished } : null };
+};
+function rtQueueReadiness(p: Json, by: string) {
+  addJob('recovery_readiness', p.tenant, { plan_id: p.id }, by, { plan: [`nexus-pve lab-check: ${p.node}, ${p.storage}`, 'readiness stored'], duration: 3 });
+}
+on('GET', '/recovery-plans', (c) => {
+  const u = need(c.user);
+  const tq = c.query.get('tenant');
+  return [200, byTenant(u, rt.plans as any[]).filter((p) => !tq || p.tenant === tq).sort((a, b) => (a.tenant + a.name < b.tenant + b.name ? -1 : 1)).map(rtOut)];
+});
+on('POST', '/recovery-plans', async (c) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const b: Json = { test_bridge: null, network_map: {}, rpo_hours: 24, ...c.body };
+  const tenant = u.tenant ?? b.tenant;
+  if (u.tenant && b.tenant && b.tenant !== u.tenant) throw new HttpError(403, 'forbidden');
+  find(db.tenants, (x) => x.name === tenant, 'tenant');
+  checkPlan(tenant, b);
+  if (rt.plans.some((p) => p.tenant === tenant && p.name === b.name)) throw new HttpError(409, 'a recovery plan with this name exists');
+  const p = { id: nextId(), tenant, name: b.name, source_id: b.source_id, node: b.node, storage: b.storage, test_bridge: b.test_bridge || null,
+    network_map: b.network_map, steps: b.steps.map((s: Json) => ({ wave: 1, delay: 0, checks: {}, ...s })), rpo_hours: b.rpo_hours, readiness: null, created: now(), created_by: u.name };
+  rt.plans.push(p);
+  rtQueueReadiness(p, u.name);
+  await audit(u.name, 'recovery_plan.create', `recovery_plan/${p.id}`, b);
+  return [201, p];
+});
+on('PUT', '/recovery-plans/:id', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const p = rtPlan(u, id);
+  const b: Json = { test_bridge: null, network_map: {}, rpo_hours: 24, ...c.body };
+  checkPlan(p.tenant, b);
+  if (rt.plans.some((x) => x.id !== p.id && x.tenant === p.tenant && x.name === b.name)) throw new HttpError(409, 'a recovery plan with this name exists');
+  const old = { ...p };
+  Object.assign(p, { name: b.name, source_id: b.source_id, node: b.node, storage: b.storage, test_bridge: b.test_bridge || null, network_map: b.network_map,
+    steps: b.steps.map((s: Json) => ({ wave: 1, delay: 0, checks: {}, ...s })), rpo_hours: b.rpo_hours });
+  rtQueueReadiness(p, u.name);
+  await audit(u.name, 'recovery_plan.update', `recovery_plan/${p.id}`, { old, new: b });
+  return [200, p];
+});
+on('DELETE', '/recovery-plans/:id', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const p = rtPlan(u, id);
+  rt.plans = rt.plans.filter((x) => x.id !== p.id);
+  await audit(u.name, 'recovery_plan.delete', `recovery_plan/${p.id}`, { old: p });
+  return [200, {}];
+});
+on('POST', '/recovery-plans/:id/readiness', async (c, [id]) => {
+  const u = need(c.user, ...RT_RUNNERS);
+  const p = rtPlan(u, id);
+  rtQueueReadiness(p, u.name);
+  const j = db.jobs.at(-1)!;
+  await audit(u.name, 'recovery_plan.readiness', `recovery_plan/${p.id}`, { job: j.id });
+  return [202, { id: j.id }];
+});
+on('POST', '/recovery-plans/:id/test', async (c, [id]) => {
+  const u = need(c.user, ...RT_RUNNERS);
+  const p = rtPlan(u, id);
+  if (rt.runs.some((r) => r.plan_id === p.id && r.state === 'running')) throw new HttpError(409, 'a run of this plan is in progress');
+  const { readiness: _r, created: _c, created_by: _b, ...asRun } = p;
+  const run = { id: nextId(), plan_id: p.id, tenant: p.tenant, mode: 'test', state: 'running', requested_by: u.name, quorum_id: null, job_id: null as number | null,
+    plan: structuredClone(asRun), results: [], started: now(), finished: null };
+  rt.runs.push(run);
+  const j = addJob('recovery_test', p.tenant, { run_id: run.id, plan_id: p.id }, u.name, { plan: rtPlanLines(p, true), duration: 14 });
+  run.job_id = j.id;
+  await audit(u.name, 'recovery_plan.test', `recovery_plan/${p.id}`, { run: run.id, job: j.id });
+  return [202, { run_id: run.id, job_id: j.id }];
+});
+on('POST', '/recovery-plans/:id/execute', async (c, [id]) => {
+  const u = need(c.user, ...RT_RUNNERS);
+  const p = rtPlan(u, id);
+  if (c.body.confirm !== p.name) throw new HttpError(400, `confirm: type the plan's name (${p.name}) to confirm`);
+  const { readiness: _r, created: _c, created_by: _b, ...asRun } = p;
+  return quorum(u, 'recovery_plan.execute', { tenant: p.tenant, plan_id: p.id, plan: structuredClone(asRun) });
+});
+on('GET', '/recovery-plans/:id/runs', (c, [id]) => {
+  const u = need(c.user);
+  const p = rtPlan(u, id);
+  return [200, rt.runs.filter((r) => r.plan_id === p.id).sort((a, b) => b.id - a.id).map(({ plan: _p, plan_id: _i, tenant: _t, ...r }) => r)];
+});
+on('GET', '/recovery-runs/:id/report', (c, [id]) => {
+  const u = need(c.user);
+  const r = find(byTenant(u, rt.runs as any[]), (x) => x.id === Number(id), 'run');
+  const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+  const iso = (x: number | null | undefined) => (x ? new Date(x * 1000).toISOString().replace('.000', '') : '');
+  const rows = (r.results as Json[])
+    .map((g) => `<tr><td>${g.wave ?? ''}</td><td>${esc(g.source)}</td><td>${iso(g.time)}</td><td>${g.target ?? '–'} ${esc(g.name)}</td><td>${esc(g.state)}</td><td>${g.boot_secs ?? '–'} s</td><td>${(g.checks ?? []).map((ch: Json) => `${ch.ok ? '✓' : '✗'} ${esc(ch.name)}: ${esc(ch.detail)}`).join('<br>')}</td></tr>`)
+    .join('');
+  c.res.setHeader('Content-Disposition', `attachment; filename="dr-report-run-${r.id}.html"`);
+  return [200, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>DR report</title></head><body style="font-family:Arial,sans-serif">
+<h1>${r.mode === 'execute' ? 'Disaster recovery execution' : 'Recovery plan test run'}: ${esc(r.plan.name)}</h1>
+<p>tenant ${esc(r.tenant)} · run ${r.id} · ${esc(r.state.toUpperCase())} · requested by ${esc(r.requested_by)} · ${iso(r.started)} – ${iso(r.finished)}</p>
+<table border="1" cellpadding="4" style="border-collapse:collapse"><tr><th>Wave</th><th>Guest</th><th>Snapshot</th><th>Restored as</th><th>Result</th><th>Boot</th><th>Checks</th></tr>${rows}</table>
+<p>Times are UTC. (mock report)</p></body></html>`, 'text/html; charset=utf-8'];
+});
+
+/** Dashboard KPI: the newest passed/failed result per guest within the window. */
+function rtKpi(u: User, days: number) {
+  const since = (Math.floor(now() / DAY) - days + 1) * DAY;
+  const newest = new Map<string, Json>();
+  for (const r of byTenant(u, rt.tests as any[]).filter((x) => x.state === "passed" || x.state === "failed")) {
+    const k = `${r.tenant}/${r.source}`;
+    const cur = newest.get(k);
+    if (!cur || r.finished > cur.finished) newest.set(k, r);
+  }
+  const rows = [...newest.values()].filter((r) => r.finished >= since);
+  const failing = rows.filter((r) => r.state === "failed");
+  return { tested: rows.length, passed: rows.length - failing.length, failed: failing.length,
+    last: rows.reduce((m: number | null, r) => Math.max(m ?? 0, r.finished), null),
+    failing: failing.slice(0, 10).map((r) => ({ tenant: r.tenant, source: r.source, finished: r.finished })) };
+}
 
 export function mockApi(): Plugin {
   seed();
@@ -6754,4 +7493,158 @@ function seedAnomalies(t: number) {
       reason: '48.0 GiB new data, limit 18.0 GiB (3× the median 6.0 GiB of the last 14 runs)', at: fa.time + 1300,
       cleared_by: 'so', cleared_at: fa.time + 86400, note: 'Database reorganisation by the DBA (change CHG-2291), checked with the application owner',
     };
+}
+
+// ---------------------------------------------------------------- Phase 21e: YARA scan (docs/malware-scan.md)
+
+const SCAN_FIRST_KINDS = ['restore', 'restore_ct', 'instant_recover', 'restore_files', 'files_get', 'plugin_restore'];
+const scanSummary = (s: Json) => {
+  const x = (db.scans as Json[]).filter((y) => y.tenant === s.tenant && y.source === s.source && y.time === s.time).sort((a, b) => b.job - a.job)[0];
+  return x ? { job: x.job, finished: x.finished, matches: x.matches_total, complete: x.complete } : null;
+};
+const ruleLabel = () => (db.yaraRules as Json[]).map((r) => `${r.name}@${r.sha256.slice(0, 12)}`).join(',');
+const sha = (text: string) => {
+  let h = '';
+  for (let i = 0; i < 8; i++) h += Math.floor(noise(`${i}:${text}`) * 1e8).toString(16).padStart(8, '0');
+  return h;
+};
+
+/** `scan_first` of a job request (web-api scan::take_scan_first): validated and removed. */
+function takeScanFirst(kind: string, params: Json): string | null {
+  const v = params.scan_first;
+  delete params.scan_first;
+  if (v === undefined || v === null) return null;
+  if (!SCAN_FIRST_KINDS.includes(kind)) throw new HttpError(400, 'scan_first: only for restores and downloads');
+  if (v === 'link_down' && !['restore', 'restore_ct', 'instant_recover'].includes(kind))
+    throw new HttpError(400, 'scan_first: link_down only for VM and container restores');
+  if (v !== 'refuse' && v !== 'link_down') throw new HttpError(400, 'scan_first: refuse or link_down');
+  if (!db.yaraRules.length) throw new HttpError(409, 'scan_first: no YARA rules uploaded (Settings → Malware scan)');
+  return v;
+}
+
+/** The scan result the mock "finds": matches for snapshots seeded as infected. */
+function mockScan(j: Job, tenant: string, source: string, time: number) {
+  const known = (db.snapshots as Json[]).find((x) => x.tenant === tenant && x.source === source && x.time === time);
+  const hits: Json[] = known?.infected ?? [];
+  const r = { files: 18_412, skipped: 3, errors: 0, matches: hits, matches_total: hits.length, complete: true, seconds: 412, source, time };
+  j.duration = 6;
+  j.plan = ['booting the restore micro-VM (no network, disks read-only)', `compiling ${db.yaraRules.length} rule file(s)`, `scanning ${source}`, `${hits.length} matches`];
+  j.result = r;
+  db.scans.push({ job: j.id, tenant, finished: now() + 6, rules: ruleLabel(), ...r });
+  if (hits.length && known) {
+    const why = `YARA: ${hits.length} matches (${[...new Set(hits.map((m) => m.rule))].slice(0, 3).join(', ')})`;
+    known.anomaly = { reason: known.anomaly?.reason && !known.anomaly.cleared_at ? `${known.anomaly.reason}; ${why}` : why, at: now(), cleared_by: null, cleared_at: null, note: null };
+  }
+  return hits.length;
+}
+
+/** A restore with `scan_first`: its scan job first, then the restore (refused or with the NICs down on a hit). */
+function scanFirstJob(u: User, kind: string, tenant: string, p: Json, mode: string): Job {
+  const scan = addJob('snapshot_scan', tenant, { source: p.source, time: p.time, for_job: null }, 'scheduler');
+  const hits = mockScan(scan, tenant, p.source, p.time);
+  const params = { ...p, scan_first: mode, scan_job: scan.id };
+  if (!hits) return addJob(kind, tenant, { ...params, scan: { job: scan.id, matches: 0 } }, u.name);
+  if (mode === 'link_down')
+    return addJob(kind, tenant, { ...params, link_down: true, scan: { job: scan.id, matches: hits } }, u.name, {
+      log: `[scheduler] scan first: ${hits} YARA matches in the snapshot (scan job ${scan.id}); restoring with the network disconnected\n`,
+    });
+  return addJob(kind, tenant, params, u.name, { fail: `scan first: ${hits} YARA matches in the snapshot (scan job ${scan.id}); restore refused` });
+}
+
+on('GET', '/scan/rules', (c) => {
+  need(c.user, 'admin', 'security_officer');
+  return [200, (db.yaraRules as Json[]).map(({ text: _t, ...r }) => r).sort((a, b) => (a.name < b.name ? -1 : 1))];
+});
+on('PUT', '/scan/rules/:name', async (c, [name]) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  const n = decodeURIComponent(name);
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(n)) throw new HttpError(400, 'name: [A-Za-z0-9._-]{1,64} without a leading dot');
+  const text = String(c.body?.text ?? '');
+  if (!text.trim() || text.length > 256 * 1024) throw new HttpError(400, 'text: 1 to 256 KiB of YARA rules');
+  if (!text.includes('rule')) throw new HttpError(400, 'text: no YARA rule in the file');
+  const others = (db.yaraRules as Json[]).filter((r) => r.name !== n);
+  if (others.length >= 50 || others.reduce((x, r) => x + r.size, 0) + text.length > 2 ** 20)
+    throw new HttpError(400, 'at most 50 rule files and 1 MiB together');
+  const r = { name: n, text, size: text.length, sha256: sha(text), uploaded_by: u.name, uploaded_at: now() };
+  db.yaraRules = [...others, r];
+  const out = { name: n, size: r.size, sha256: r.sha256 };
+  await audit(u.name, 'scan.rules_put', `yara_rule/${n}`, out);
+  return [200, out];
+});
+on('DELETE', '/scan/rules/:name', async (c, [name]) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  const n = decodeURIComponent(name);
+  const r = find(db.yaraRules as Json[], (x) => x.name === n, 'rule file');
+  db.yaraRules = (db.yaraRules as Json[]).filter((x) => x !== r);
+  await audit(u.name, 'scan.rules_delete', `yara_rule/${n}`, { sha256: r.sha256 });
+  return [204, null];
+});
+on('POST', '/snapshots/:tenant/:source/:time/scan', async (c, [tenant, source, time]) => {
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'security_officer');
+  const [tn, src, tm] = [decodeURIComponent(tenant), decodeURIComponent(source), Number(time)];
+  if (u.tenant && u.tenant !== tn) throw new HttpError(403, 'forbidden');
+  const b = c.body?.budget_min;
+  if (b !== undefined && !(Number.isInteger(b) && b >= 1 && b <= 1440)) throw new HttpError(400, 'budget_min: 1..=1440');
+  find(db.snapshots as Json[], (y) => y.tenant === tn && y.source === src && y.time === tm && y.local, 'local snapshot');
+  if (!db.yaraRules.length) throw new HttpError(409, 'no YARA rules uploaded (Settings → Malware scan)');
+  const params: Json = { source: src, time: tm, ...(b ? { budget: b * 60 } : {}) };
+  const j = addJob('snapshot_scan', tn, params, u.name);
+  const hits = mockScan(j, tn, src, tm);
+  if (hits)
+    db.alerts.push(
+      mkAlert({
+        ts: now(), severity: 'critical', kind: 'malware', key: `malware:${tn}/${src}`, tenant: tn,
+        message: `YARA scan of ${tn}/${src} snapshot ${tm}: YARA: ${hits} matches, e.g. ${j.result!.matches[0].rule} in ${j.result!.matches[0].path}`,
+      }),
+    );
+  await audit(u.name, 'snapshot.scan_request', `snapshot/${tn}/${src}/${tm}`, { tenant: tn, job: j.id, params });
+  return [202, { id: j.id }];
+});
+on('GET', '/scans', (c) => {
+  const u = need(c.user);
+  const [tq, sq, tm] = [c.query.get('tenant'), c.query.get('source'), c.query.get('time')];
+  const xs = byTenant(u, db.scans as any[]).filter((x) => (!tq || x.tenant === tq) && (!sq || x.source === sq) && (!tm || x.time === Number(tm)));
+  return [200, xs.sort((a, b) => b.job - a.job).slice(0, 50)];
+});
+
+function seedScans(t: number) {
+  const text = [
+    'rule LockBit3_Ransom_Note {',
+    '  meta: description = "LockBit 3.0 ransom note"',
+    '  strings: $a = "~~~ LockBit 3.0" ascii wide',
+    '  condition: $a',
+    '}',
+  ].join('\n');
+  db.yaraRules.push(
+    { name: 'lockbit.yar', text, size: text.length, sha256: sha(text), uploaded_by: 'so', uploaded_at: t - 86400 * 6 },
+    { name: 'webshells.yar', text: 'rule Php_Webshell { strings: $a = "eval(base64_decode(" condition: $a }', size: 70, sha256: sha('ws'), uploaded_by: 'so', uploaded_at: t - 86400 * 20 },
+  );
+  const newest = (tenant: string, source: string, n = 0) =>
+    (db.snapshots as Json[]).filter((s) => s.tenant === tenant && s.source === source && s.local).sort((a, b) => b.time - a.time)[n];
+  // the encrypted file server (seedAnomalies): ransom notes found by the rules
+  const fs = db.agents.find((a) => a.name === 'fs02');
+  const enc = fs && newest('acme', `host-${fs.id}`);
+  if (enc)
+    enc.infected = [
+      { rule: 'lockbit.yar:LockBit3_Ransom_Note', path: 'Users/HOW_TO_DECRYPT.txt' },
+      { rule: 'lockbit.yar:LockBit3_Ransom_Note', path: 'Users/anna/Documents/HOW_TO_DECRYPT.txt' },
+      { rule: 'lockbit.yar:LockBit3_Ransom_Note', path: 'Shares/Finance/HOW_TO_DECRYPT.txt' },
+    ];
+  // finished scans: the infected one and a clean one before it, plus a clean VM
+  const done = (s: Json | undefined, at: number) => {
+    if (!s) return;
+    const j = addJob('snapshot_scan', s.tenant, { source: s.source, time: s.time }, 'so', { state: 'ok', started: at - 400, finished: at });
+    mockScan(j, s.tenant, s.source, s.time);
+    db.scans[db.scans.length - 1].finished = at;
+  };
+  if (fs) done(newest('acme', `host-${fs.id}`, 1), t - 86400 * 2);
+  done(enc, (enc?.time ?? t) + 5400);
+  done(newest('initech', 'vm-100'), t - 3600);
+  if (enc)
+    db.alerts.push(
+      mkAlert({
+        ts: enc.time + 5400, severity: 'critical', kind: 'malware', key: `malware:acme/${enc.source}`, tenant: 'acme',
+        message: `YARA scan of acme/${enc.source} snapshot ${enc.time}: YARA: 3 matches (lockbit.yar:LockBit3_Ransom_Note), e.g. lockbit.yar:LockBit3_Ransom_Note in Users/HOW_TO_DECRYPT.txt`,
+      }),
+    );
 }

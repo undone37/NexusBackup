@@ -83,6 +83,13 @@ pub fn run(ctx: &Ctx, c: &Config, mut g: Graph, src: &mut Source) -> Result<Stri
         .or_else(|| parse_source_name(source).and_then(|x| x.2))
         .and_then(|g| Guest::parse(&g))
         .ok_or_else(|| error(22, "this snapshot is not one of a user, site, team or group"))?;
+    if guest == Guest::Directory {
+        return Err(error(
+            22,
+            "Entra ID directory snapshots are export only: download the JSON files (Graph offers no faithful \
+             re-creation of directory objects; restore to Entra is not supported)",
+        ));
+    }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
@@ -107,6 +114,7 @@ pub fn run(ctx: &Ctx, c: &Config, mut g: Graph, src: &mut Source) -> Result<Stri
         "to_original" => match &guest {
             Guest::User(u) | Guest::Team(u) | Guest::Group(u) => u.clone(),
             Guest::Site(..) => guest.site_id(&sp_host).unwrap_or_default(),
+            Guest::Directory => return Err(error(22, "Entra ID directory snapshots are export only")),
         },
         "to_other" => {
             let t = p["target"].as_str().map(str::trim).filter(|t| !t.is_empty());
@@ -236,6 +244,7 @@ fn resolve_target(g: &mut Graph, guest: &Guest, t: &str) -> Result<String> {
                 .context("site without id")?
                 .to_owned()
         }
+        Guest::Directory => return Err(error(22, "Entra ID directory snapshots are export only")),
         Guest::Team(_) | Guest::Group(_) => {
             let team = matches!(guest, Guest::Team(_));
             let (one, list) = if team {

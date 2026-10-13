@@ -97,10 +97,15 @@ pub fn files_to_replay(st: &State, target_file: Option<&str>) -> Result<Vec<Stri
         bail!("the snapshot's binlog does not start with {}", st.base_file);
     }
     if let Some(t) = target_file {
-        let i = files
-            .iter()
-            .position(|f| f == t)
-            .ok_or_else(|| error(22, format!("target_position: binlog {t} is not in this snapshot ({})", files.join(", "))))?;
+        let i = files.iter().position(|f| f == t).ok_or_else(|| {
+            error(
+                22,
+                format!(
+                    "target_position: binlog {t} is not in this snapshot ({})",
+                    files.join(", ")
+                ),
+            )
+        })?;
         files.truncate(i + 1);
     }
     Ok(files)
@@ -127,16 +132,27 @@ pub fn pitr(ctx: &Ctx, src: &mut Source, ssh: &Ssh) -> Result<String> {
         .and_then(|s| serde_json::from_slice(s).ok())
         .context("this snapshot holds no server backup (restore a database snapshot with \"to_target\")")?;
     let p = &ctx.params["params"];
-    let dir = p["directory"].as_str().unwrap_or_default().trim_end_matches('/').to_owned();
+    let dir = p["directory"]
+        .as_str()
+        .unwrap_or_default()
+        .trim_end_matches('/')
+        .to_owned();
     if !dir.starts_with('/')
         || dir.len() < 2
         || dir.split('/').any(|c| c == "..")
         || !dir.bytes().all(|b| b.is_ascii_alphanumeric() || b"._/-".contains(&b))
     {
-        return Err(error(22, format!("params.directory: an absolute path of {DIR_PATTERN}")));
+        return Err(error(
+            22,
+            format!("params.directory: an absolute path of {DIR_PATTERN}"),
+        ));
     }
     let base_only = p["base_only"].as_bool().unwrap_or(false);
-    let time = p["target_time"].as_str().filter(|s| !s.trim().is_empty()).map(parse_time).transpose()?;
+    let time = p["target_time"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .map(parse_time)
+        .transpose()?;
     let pos = p["target_position"]
         .as_str()
         .filter(|s| !s.trim().is_empty())
@@ -161,18 +177,38 @@ pub fn pitr(ctx: &Ctx, src: &mut Source, ssh: &Ssh) -> Result<String> {
             ));
         }
     }
-    let files = if base_only { Vec::new() } else { files_to_replay(&st, pos.as_ref().map(|p| p.0.as_str()))? };
+    let files = if base_only {
+        Vec::new()
+    } else {
+        files_to_replay(&st, pos.as_ref().map(|p| p.0.as_str()))?
+    };
     let q = sh_quote(&dir);
     let (extract, tool, server, client, binlog, admin) = if st.mariadb {
-        ("mbstream -x", "$(command -v mariadb-backup || command -v mariabackup)", "mariadbd", "mariadb", "mariadb-binlog", "mariadb-admin")
+        (
+            "mbstream -x",
+            "$(command -v mariadb-backup || command -v mariabackup)",
+            "mariadbd",
+            "mariadb",
+            "mariadb-binlog",
+            "mariadb-admin",
+        )
     } else {
-        ("xbstream -x", "xtrabackup", "mysqld", "mysql", "mysqlbinlog", "mysqladmin")
+        (
+            "xbstream -x",
+            "xtrabackup",
+            "mysqld",
+            "mysql",
+            "mysqlbinlog",
+            "mysqladmin",
+        )
     };
 
     // 1. unpack the base backup into the new directory
     ctx.info(format!("unpacking the base backup into {dir}"));
-    ssh.run(&format!("umask 077 && mkdir -p -- \"$(dirname -- {q})\" && mkdir -- {q}"))
-        .map_err(|e| error(17, format!("directory {dir}: {e:#}")))?;
+    ssh.run(&format!(
+        "umask 077 && mkdir -p -- \"$(dirname -- {q})\" && mkdir -- {q}"
+    ))
+    .map_err(|e| error(17, format!("directory {dir}: {e:#}")))?;
     let mut e = ssh.exec(&format!("cd -- {q} && exec {extract}"))?;
     {
         let mut w = BufWriter::with_capacity(1 << 20, &mut e);
@@ -258,7 +294,8 @@ pub fn pitr(ctx: &Ctx, src: &mut Source, ssh: &Ssh) -> Result<String> {
         list.join(" "),
         bq = sh_quote(&bdir),
     );
-    ssh.run(&format!("bash -c {}", sh_quote(&script))).context("binlog replay")?;
+    ssh.run(&format!("bash -c {}", sh_quote(&script)))
+        .context("binlog replay")?;
     Ok(format!(
         "{dir}: base backup of {} recovered to {target}; start a {} server of the same version on it",
         fmt_time(st.full_time),
@@ -288,7 +325,10 @@ mod tests {
 
     #[test]
     fn positions_and_files() {
-        assert_eq!(parse_position("mysql-bin.000004:1234").unwrap(), ("mysql-bin.000004".into(), 1234));
+        assert_eq!(
+            parse_position("mysql-bin.000004:1234").unwrap(),
+            ("mysql-bin.000004".into(), 1234)
+        );
         assert!(parse_position("x;rm:1").is_err());
         assert!(parse_position("1234").is_err());
         let pc = |f: &str, start, len| Piece {
@@ -308,7 +348,12 @@ mod tests {
             base_file: "b.1".into(),
             base_pos: 158,
             base_time: 0,
-            binlog: vec![pc("b.1", 4, 100), pc("b.1", 104, 50), pc("b.2", 4, 10), pc("b.3", 4, 10)],
+            binlog: vec![
+                pc("b.1", 4, 100),
+                pc("b.1", 104, 50),
+                pc("b.2", 4, 10),
+                pc("b.3", 4, 10),
+            ],
             next_file: "b.3".into(),
             next_pos: 14,
             to_time: 0,

@@ -51,6 +51,20 @@ impl Default for Config {
     }
 }
 
+impl Config {
+    /// Defaults; image directory from `NEXUS_RESTORE_VM_DIR`, QEMU from `NEXUS_QEMU`.
+    pub fn from_env() -> Self {
+        let mut cfg = Config::default();
+        if let Some(d) = std::env::var_os("NEXUS_RESTORE_VM_DIR") {
+            cfg.image_dir = d.into();
+        }
+        if let Some(q) = std::env::var_os("NEXUS_QEMU") {
+            cfg.qemu = q.into();
+        }
+        cfg
+    }
+}
+
 /// A file system the agent found (mounted when `mountpoint` is set).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Mount {
@@ -207,6 +221,8 @@ pub struct Vm {
     desync: bool,
     /// boot until the agent was ready
     pub boot_time: Duration,
+    /// longest silence of the agent within one request (`Config::io_timeout`)
+    io_timeout: Duration,
 }
 
 impl Vm {
@@ -274,6 +290,51 @@ impl Vm {
         Ok((n, t.finish()?))
     }
 
+    /// Compiles admin YARA rules (`[{name, text}]`) in the VM (Phase 21e,
+    /// `crate::scan`); a compile error comes back as the agent's error.
+    pub fn rules(&mut self, rules: &serde_json::Value) -> Result<()> {
+        self.request(serde_json::json!({"cmd": "rules", "rules": rules}))?;
+        Ok(())
+    }
+
+    /// YARA scan of every mounted file system; the agent answers once done
+    /// (within `wait`: its budget plus a margin).
+    pub fn scan(&mut self, limits: &serde_json::Value, wait: Duration) -> Result<serde_json::Value> {
+        self.w.set_read_timeout(Some(wait))?;
+        let r = self.request(serde_json::json!({"cmd": "scan", "limits": limits}));
+        self.w.set_read_timeout(Some(self.io_timeout))?;
+        r
+    }
+
+    /// YARA scan of a tar stream that `feed` writes into the VM (file-tree and
+    /// container snapshots). A failed feed leaves the protocol out of sync: the
+    /// VM is then killed on shutdown.
+    pub fn scan_tar(
+        &mut self,
+        limits: &serde_json::Value,
+        wait: Duration,
+        feed: impl FnOnce(&mut dyn Write) -> Result<()>,
+    ) -> Result<serde_json::Value> {
+        let v = self.request(serde_json::json!({"cmd": "scantar", "limits": limits}))?;
+        if v != "send" {
+            bail!("unexpected scantar response {v}");
+        }
+        self.desync = true;
+        self.w.set_read_timeout(Some(wait))?;
+        self.w.set_write_timeout(Some(wait))?;
+        let mut f = Frames {
+            w: &self.w,
+            buf: Vec::with_capacity(FRAME_OUT),
+        };
+        feed(&mut f)?;
+        f.finish()?;
+        let r = self.response();
+        self.desync = r.is_err();
+        self.w.set_read_timeout(Some(self.io_timeout))?;
+        self.w.set_write_timeout(None)?;
+        r
+    }
+
     /// Asks the agent to power off; kills QEMU after `timeout`.
     pub fn shutdown(&mut self, timeout: Duration) {
         // out of sync (unfinished tar stream): the agent cannot take commands, kill
@@ -311,6 +372,45 @@ pub fn parse_response(line: &[u8]) -> Result<serde_json::Value> {
         bail!("agent: {}", e.as_str().unwrap_or("?"));
     }
     Ok(o.remove("ok").unwrap_or_default())
+}
+
+const FRAME_OUT: usize = 1 << 20;
+
+/// `[u32 BE len][data]` frames to the agent (`scan_tar`); `finish` sends the end frame.
+struct Frames<W: Write> {
+    w: W,
+    buf: Vec<u8>,
+}
+
+impl<W: Write> Frames<W> {
+    fn flush_frame(&mut self) -> io::Result<()> {
+        if !self.buf.is_empty() {
+            self.w.write_all(&(self.buf.len() as u32).to_be_bytes())?;
+            self.w.write_all(&self.buf)?;
+            self.buf.clear();
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> io::Result<()> {
+        self.flush_frame()?;
+        self.w.write_all(&0u32.to_be_bytes())?;
+        self.w.flush()
+    }
+}
+
+impl<W: Write> Write for Frames<W> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        let n = data.len().min(FRAME_OUT - self.buf.len());
+        self.buf.extend_from_slice(&data[..n]);
+        if self.buf.len() == FRAME_OUT {
+            self.flush_frame()?;
+        }
+        Ok(n)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Tar stream from the agent (decoded frames).
@@ -465,6 +565,7 @@ pub fn boot(cfg: &Config, work: &Path, initrd: &Path, disks: &[Disk], append: &s
         log,
         desync: false,
         boot_time: Duration::ZERO,
+        io_timeout: cfg.io_timeout,
     };
     let mut line = Vec::new();
     let ready = (&mut vm.r)
@@ -547,14 +648,7 @@ pub fn cli(store: &Store, vmid: u32, time: u64, args: &[String]) -> Result<()> {
         bail!("snapshot has no disk images");
     }
     let refs: Vec<(&str, &Index)> = disks.iter().map(|(n, i)| (*n, i)).collect();
-    let mut cfg = Config::default();
-    if let Some(d) = std::env::var_os("NEXUS_RESTORE_VM_DIR") {
-        cfg.image_dir = d.into();
-    }
-    if let Some(q) = std::env::var_os("NEXUS_QEMU") {
-        cfg.qemu = q.into();
-    }
-    with_vm(store, &refs, &cfg, |vm| {
+    with_vm(store, &refs, &Config::from_env(), |vm| {
         match args {
             [c] if c == "mounts" => println!("{}", serde_json::to_string_pretty(&vm.mounts()?)?),
             // the snapshot's name index for the file search (groups.index_files)

@@ -3,7 +3,7 @@
 //! (`nft -j`) and write [`STATUS_FILE`] (0644, read by the web-api):
 //!
 //! - the elements of the sets this tool manages (inbound `in_*`, outbound
-//!   `allowed_out_*`, `dns_servers_*`, `nts_servers_*`),
+//!   `allowed_out_*`, `bound_out_*` and `probe_*` (Phase 22a), `dns_servers_*`, `nts_servers_*`),
 //! - the recent blocked inbound attempts from the dynamic sets
 //!   `in_drops_v4/v6` (source . protocol . port; each packet refreshes the
 //!   element's 24 h timeout, so `timeout - expires` is the time since the last
@@ -45,7 +45,7 @@ pub struct Drop {
 
 fn managed(set: &str) -> bool {
     (set.starts_with("in_") && !set.starts_with("in_drops_"))
-        || ["allowed_out_", "dns_servers_", "nts_servers_"]
+        || ["allowed_out_", "bound_out_", "probe_", "dns_servers_", "nts_servers_"]
             .iter()
             .any(|p| set.starts_with(p))
 }

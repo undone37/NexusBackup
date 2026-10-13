@@ -25,6 +25,7 @@
   } from '../lib/types';
   import Check from '../components/Check.svelte';
   import BackupNow from '../components/BackupNow.svelte';
+  import RestorePriority from '../components/RestorePriority.svelte';
   import { isPaused, schedulePeriod } from '../lib/schedule';
   import JobState from '../components/JobState.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
@@ -41,6 +42,7 @@
   import IconTrend from '@lucide/svelte/icons/trending-up';
   import IconCloud from '@lucide/svelte/icons/cloud-upload';
   import IconLock from '@lucide/svelte/icons/lock';
+  import IconRestoreTest from '@lucide/svelte/icons/flask-conical';
   import IconPlay from '@lucide/svelte/icons/play';
   import IconHardware from '@lucide/svelte/icons/server-cog';
 
@@ -68,6 +70,7 @@
   const notInGroup = $derived(pr ? Math.max(0, pr.objects - pr.sla_ok - pr.sla_breach - pr.never) : 0);
   const cap = $derived(kpi?.capacity);
   const os = $derived(kpi?.offsite);
+  const rtk = $derived(kpi?.restore_tests);
   const jb = $derived(kpi?.jobs);
   const usedShare = $derived(cap && cap.total > 0 ? cap.used / cap.total : null);
   let kinds: Map<string, KindInfo> = $state(new Map());
@@ -301,6 +304,9 @@
     </p>
   </section>
 {/if}
+{#if (session.user?.role === 'admin' || session.user?.role === 'operator') && !session.user?.tenant}
+  <RestorePriority />
+{/if}
 {#if approvals?.recommend && !dismissed && can.configure(session.user)}
   <div class="banner warn approvals-banner" role="status">
     <span>{t.dash.approvalsBanner(approvals.possible_approvers)} <a href={href('/settings?tab=approvals')}>{t.dash.approvalsLink}</a></span>
@@ -318,7 +324,7 @@
 {#if kpiError}<p class="banner warn" role="status">{kpiError}</p>{/if}
 
 {#if kpi && pr && jb && cap && os}
-  <section class="kpis" class:nine={!!hwSum} aria-label={t.dash.title}>
+  <section class="kpis" class:nine={!!rtk !== !!hwSum} class:ten={!!rtk && !!hwSum} aria-label={t.dash.title}>
     <KpiTile
       icon={IconShield}
       label={t.dash.kProtection}
@@ -380,6 +386,17 @@
       meter={os.lock_coverage}
       tone={toneOf(os.verify_failed > 0, os.lock_coverage !== null && os.lock_coverage < 1)}
     />
+    {#if rtk}
+      <KpiTile
+        icon={IconRestoreTest}
+        label={t.rtest.kpi}
+        value={rtk.tested ? `${rtk.passed}/${rtk.tested}` : '—'}
+        sub={rtk.tested ? t.rtest.kpiSub(rtk.passed, rtk.tested, fmtAgo(rtk.last)) : t.rtest.kpiNone}
+        meter={rtk.tested ? rtk.passed / rtk.tested : null}
+        tone={toneOf(rtk.failed > 0, rtk.tested === 0)}
+        href={href(rtk.failed ? '/restore-tests?state=failed' : '/restore-tests')}
+      />
+    {/if}
     {#if hwSum}
       <KpiTile
         icon={IconHardware}
@@ -651,6 +668,10 @@
   @media (min-width: 1181px) {
     .kpis.nine {
       grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    /* restore tests and hardware: ten, 5 × 2 */
+    .kpis.ten {
+      grid-template-columns: repeat(5, minmax(0, 1fr));
     }
   }
 </style>

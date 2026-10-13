@@ -20,6 +20,9 @@
   import Inventory from '../components/Inventory.svelte';
   import ChangeTrends from '../components/ChangeTrends.svelte';
   import FileSelection from '../components/FileSelection.svelte';
+  import SourceLimits from '../components/SourceLimits.svelte';
+  import { limitsConfig, limitsForm } from '../lib/limits';
+  import { fmtBytes } from '../lib/format';
   import IconPlus from '@lucide/svelte/icons/plus';
 
   let items: Source[] = $state([]);
@@ -177,6 +180,10 @@
     threads: 16,
     xattrs: true,
     timeout_secs: 60,
+    // Phase 22b: caps / read limit, TrueNAS "use existing snapshots"
+    lim: limitsForm(),
+    tn_existing: false,
+    tn_prefix: 'auto-',
   });
   const pk = $derived(isPluginKind(f.kind) ? (kindsAll.get(f.kind) ?? null) : null);
   const pSecretSet = $derived.by(() => {
@@ -256,6 +263,9 @@
       threads: sh?.threads ?? 16,
       xattrs: sh?.xattrs ?? true,
       timeout_secs: sh?.timeout_secs ?? 60,
+      lim: limitsForm(c ?? n ?? sh),
+      tn_existing: !!n?.existing_snapshots,
+      tn_prefix: n?.existing_snapshots ?? 'auto-',
     };
     const ps = x && isPlugin(x) ? x : null;
     const k = ps ? kindsAll.get(ps.kind) : undefined;
@@ -319,6 +329,7 @@
       xattrs: f.xattrs,
       timeout_secs: Number(f.timeout_secs),
     };
+    if (!withLimits(config)) return null;
     if (f.snapshot_dir.trim()) {
       config.snapshot_dir = f.snapshot_dir.trim();
       if (f.snapshot_prefix.trim()) config.snapshot_prefix = f.snapshot_prefix.trim();
@@ -379,7 +390,20 @@
     };
     if (f.connect_addr.trim()) config.connect_addr = f.connect_addr.trim();
     if (f.token_secret) config.token_secret = f.token_secret;
+    if (f.tn_existing) config.existing_snapshots = f.tn_prefix.trim();
+    if (!withLimits(config)) return null;
     return config;
+  }
+
+  /** Phase 22b: adds the caps / read limit; false (after telling the user) when invalid. */
+  function withLimits(config: Record<string, unknown>): boolean {
+    const l = limitsConfig(f.lim, f.kind === 'pve');
+    if (typeof l === 'string') {
+      notify('error', t.limits.invalid[l as keyof typeof t.limits.invalid]);
+      return false;
+    }
+    Object.assign(config, l);
+    return true;
   }
 
   /** Config of a linux source, or null (after telling the user) when invalid. */
@@ -442,6 +466,7 @@
     if (Object.keys(guard).length) config.fleecing_guard = guard;
     // Write-only secret: only sent when entered.
     if (f.token_secret) config.token_secret = f.token_secret;
+    if (!withLimits(config)) return null;
     return config;
   }
 
@@ -507,6 +532,30 @@
     if (await act(post(`/sources/${x.id}/maintenance/end`), t.runctl.maintenanceEnded)) load();
   }
 
+  // Phase 22b: split a share source by include roots (one new source per root).
+  let splitOpen = $state(false);
+  let splitOf: Source | null = $state(null);
+  let sp = $state({ roots: '', password: '', copy_groups: true });
+  function openSplit(x: Source) {
+    splitOf = x;
+    sp = { roots: (x.kind === 'nfs' || x.kind === 'smb' ? (x.config.include ?? []) : []).join('\n'), password: '', copy_groups: true };
+    splitOpen = true;
+  }
+  async function split(e: SubmitEvent) {
+    e.preventDefault();
+    const x = splitOf;
+    if (!x) return;
+    const body: Record<string, unknown> = { roots: lines(sp.roots), copy_groups: sp.copy_groups };
+    if (sp.password) body.password = sp.password;
+    const r = await act(post<{ sources: number[] }>(`/sources/${x.id}/split`, body), t.nas.splitDone);
+    if (r) {
+      splitOpen = false;
+      load();
+    }
+  }
+  const sizingText = (x: Source) =>
+    x.sizing ? t.nas.sizing(x.sizing.entries.toLocaleString(), fmtBytes(x.sizing.est_ram_bytes), x.sizing.mem_total ? fmtBytes(x.sizing.mem_total) : null) : '';
+
   async function remove(x: Source) {
     if (!(await askConfirm(t.confirmDelete(`${t.groups.source} "${x.name}"`)))) return;
     if (await act(del(`/sources/${x.id}`), t.deleted)) load();
@@ -545,7 +594,14 @@
                 ><strong>{x.name}</strong>
                 {#if isPaused(x.maintenance_until)}<span class="chip warn"
                     >{x.maintenance_until === -1 ? t.runctl.inMaintenance : t.runctl.maintenanceUntil(fmtTime(x.maintenance_until))}</span
-                  >{/if}</td
+                  >{/if}
+                {#if x.overlaps?.length}<span class="chip warn" title={t.nas.overlapTitle}
+                    >{t.nas.overlap(x.overlaps.map((o) => o.name).join(', '))}</span
+                  >{/if}
+                {#if x.sizing}<div class="hint">
+                    {sizingText(x)}
+                    {#if x.sizing.warn}<span class="chip warn" title={t.nas.sizingWarn}>{t.nas.sizingWarnShort}</span>{/if}
+                  </div>{/if}</td
               >
               <td>{x.tenant}</td>
               <td>{kindTitle(x.kind)}</td>
@@ -594,6 +650,9 @@
                 {/if}
                 {#if hasInventory(x)}
                   <button type="button" class="small" onclick={() => ((invOf = x), (invOpen = true))}>{t.inventory.open}</button>
+                {/if}
+                {#if x.kind === 'nfs' || x.kind === 'smb'}
+                  <button type="button" class="small" onclick={() => openSplit(x)}>{t.nas.split}</button>
                 {/if}
                 {#if can.backup(session.user)}
                   {#if isPaused(x.maintenance_until)}
@@ -998,6 +1057,18 @@
         <label class="inline-check"><input type="checkbox" bind:checked={f.zfs_sudo} />{t.sources.tn.zfsSudo}</label>
       </div>
       <div class="field">
+        <label class="inline-check"
+          ><input type="checkbox" bind:checked={f.tn_existing} aria-describedby="t-ex-hint" />{t.nas.existing}</label
+        >
+        <div class="hint" id="t-ex-hint">{t.nas.existingHint}</div>
+      </div>
+      {#if f.tn_existing}
+        <div class="field">
+          <label for="t-ex-p">{t.nas.existingPrefix}</label>
+          <input id="t-ex-p" class="mono" bind:value={f.tn_prefix} required pattern="[A-Za-z0-9][A-Za-z0-9_\-]{'{0,31}'}" spellcheck="false" />
+        </div>
+      {/if}
+      <div class="field">
         <label for="t-cert">{t.sources.tn.cert}</label>
         <textarea id="t-cert" class="mono" bind:value={f.ca_pem} required spellcheck="false" aria-describedby="t-cert-hint"
         ></textarea>
@@ -1045,6 +1116,9 @@
         <textarea id="s-nodes" bind:value={f.nodes} spellcheck="false"></textarea>
       </div>
     {/if}
+    {#if f.kind === 'pve' || f.kind === 'truenas' || isShare}
+      <SourceLimits bind:form={f.lim} pve={f.kind === 'pve'} />
+    {/if}
     <div class="form-actions">
       <button type="button" onclick={() => (open = false)}>{t.cancel}</button>
       <button type="submit" class="primary" disabled={(f.kind === 'linux' && !f.agent_id) || (isPluginKind(f.kind) && !pk)}>{editing ? t.save : t.create}</button>
@@ -1061,4 +1135,29 @@
 />
 <Modal bind:open={invOpen} title={t.inventory.title(invOf?.name ?? '')} wide>
   {#if invOf}<Inventory source={invOf} />{/if}
+</Modal>
+<Modal bind:open={splitOpen} title={t.nas.splitTitle(splitOf?.name ?? '')}>
+  <form onsubmit={split}>
+    <p class="hint">{t.nas.splitHint}</p>
+    <div class="field">
+      <label for="sp-roots">{t.nas.roots}</label>
+      <textarea id="sp-roots" class="mono" bind:value={sp.roots} required spellcheck="false" placeholder={'/projects\n/home'} aria-describedby="sp-roots-hint"
+      ></textarea>
+      <div class="hint" id="sp-roots-hint">{t.nas.rootsHint}</div>
+    </div>
+    {#if splitOf?.kind === 'smb'}
+      <div class="field">
+        <label for="sp-pw">{t.sources.sh.password}</label>
+        <input id="sp-pw" type="password" autocomplete="new-password" bind:value={sp.password} required aria-describedby="sp-pw-hint" />
+        <div class="hint" id="sp-pw-hint">{t.nas.splitPassword}</div>
+      </div>
+    {/if}
+    <div class="field">
+      <label class="inline-check"><input type="checkbox" bind:checked={sp.copy_groups} />{t.nas.copyGroups}</label>
+    </div>
+    <div class="form-actions">
+      <button type="button" onclick={() => (splitOpen = false)}>{t.cancel}</button>
+      <button type="submit" class="primary">{t.nas.split}</button>
+    </div>
+  </form>
 </Modal>

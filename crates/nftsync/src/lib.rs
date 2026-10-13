@@ -12,6 +12,11 @@
 //!   (written by NetworkManager),
 //! - `nts_servers_v4/v6` from the `server`/`pool` lines with `nts` in
 //!   /etc/chrony.conf, resolved after the DNS sets are in place,
+//! - `bound_out_v4/v6` (addr . proto . port . oifname, Phase 22a) from the file's `roles`:
+//!   the destinations of a role (data: sources and agents; offsite; replication) that has an
+//!   interface (Settings → Network) may only leave through it; a role without one goes
+//!   into `allowed_out_*` like any destination. `probe_v4/v6`: every role destination's
+//!   address, for the ICMP echo of nexus-net's path-MTU check,
 //! - `in_<service>_v4/v6` (inbound, Phase 16c: who may open connections to a
 //!   service of [`INBOUND_SERVICES`]) from the file's `inbound` rules (catalog
 //!   setting `inbound`): enabled with an empty list = any address (`0.0.0.0/0`,
@@ -78,6 +83,28 @@ pub struct Allowed {
     /// inbound rules per service id; `None` = not managed
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inbound: Option<BTreeMap<String, InboundRule>>,
+    /// destinations per role ([`ROLES`]), bound to the role's interface when it has one
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub roles: BTreeMap<String, RoleTargets>,
+}
+
+/// Roles whose destinations can be bound to an interface (catalog::network egress).
+pub const ROLES: &[&str] = &["data", "offsite", "replication"];
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RoleTargets {
+    /// the interface they must leave through; `None` = any (the role has no interface)
+    #[serde(default)]
+    pub iface: Option<String>,
+    pub endpoints: Vec<Endpoint>,
+}
+
+/// A Linux interface name as nft gets it (quoted): 1-15 of `[A-Za-z0-9_.-]`.
+pub fn ifname_ok(n: &str) -> bool {
+    (1..=15).contains(&n.len())
+        && n.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+        && n.as_bytes()[0].is_ascii_alphanumeric()
 }
 
 /// Services with `in_<id>_v4/v6` sets in os/nftables.conf (catalog::firewall
@@ -165,10 +192,19 @@ fn usable(a: &IpAddr) -> bool {
 impl Allowed {
     pub fn parse(bytes: &[u8]) -> Result<Allowed> {
         let a: Allowed = serde_json::from_slice(bytes).context("allowed.json")?;
-        if a.endpoints.len() > MAX_ENDPOINTS {
-            bail!("allowed.json: {} endpoints (max {MAX_ENDPOINTS})", a.endpoints.len());
+        let n = a.endpoints.len() + a.roles.values().map(|r| r.endpoints.len()).sum::<usize>();
+        if n > MAX_ENDPOINTS {
+            bail!("allowed.json: {n} endpoints (max {MAX_ENDPOINTS})");
         }
-        for e in &a.endpoints {
+        for (role, r) in &a.roles {
+            if !ROLES.contains(&role.as_str()) {
+                bail!("allowed.json: unknown role {role:?}");
+            }
+            if let Some(i) = r.iface.as_deref().filter(|i| !ifname_ok(i)) {
+                bail!("allowed.json: {role}: refused interface name {i:?}");
+            }
+        }
+        for e in a.endpoints.iter().chain(a.roles.values().flat_map(|r| &r.endpoints)) {
             if e.port == 0 || !usable(&e.addr) {
                 bail!(
                     "allowed.json: refused endpoint {} {} {}",
@@ -213,14 +249,32 @@ impl Allowed {
 /// Returns whether it was written. A missing parent directory means the
 /// firewall sync is not installed (development): nothing is written.
 /// `inbound`: the inbound rules (unknown services and invalid entries dropped).
+/// `roles`: destinations per role (unknown roles and invalid interface names dropped).
 pub fn write_allowed(
     path: &Path,
     endpoints: impl IntoIterator<Item = Endpoint>,
     inbound: Option<&BTreeMap<String, InboundRule>>,
+    roles: &BTreeMap<String, RoleTargets>,
 ) -> Result<bool> {
-    let set: BTreeSet<Endpoint> = endpoints
-        .into_iter()
-        .filter(|e| usable(&e.addr) && e.port != 0)
+    let ok = |e: &Endpoint| usable(&e.addr) && e.port != 0;
+    let set: BTreeSet<Endpoint> = endpoints.into_iter().filter(ok).collect();
+    let mut budget = MAX_ENDPOINTS.saturating_sub(set.len());
+    let roles: BTreeMap<String, RoleTargets> = roles
+        .iter()
+        .filter(|(id, r)| ROLES.contains(&id.as_str()) && r.iface.as_deref().is_none_or(ifname_ok))
+        .map(|(id, r)| {
+            let eps: BTreeSet<Endpoint> = r.endpoints.iter().copied().filter(ok).collect();
+            let eps: Vec<Endpoint> = eps.into_iter().take(budget).collect();
+            budget -= eps.len();
+            (
+                id.clone(),
+                RoleTargets {
+                    iface: r.iface.clone(),
+                    endpoints: eps,
+                },
+            )
+        })
+        .filter(|(_, r)| !r.endpoints.is_empty())
         .collect();
     let inbound = inbound.map(|m| {
         m.iter()
@@ -246,6 +300,7 @@ pub fn write_allowed(
     let a = Allowed {
         endpoints: set.into_iter().take(MAX_ENDPOINTS).collect(),
         inbound,
+        roles,
     };
     let mut data = serde_json::to_vec_pretty(&a)?;
     data.push(b'\n');
@@ -387,13 +442,35 @@ pub fn desired(dns: Option<&[IpAddr]>, nts: Option<&[IpAddr]>, allowed: Option<&
         }
     }
     if let Some(a) = allowed {
+        // role destinations without an interface are plain destinations
+        let mut plain = a.endpoints.clone();
+        let mut bound: Vec<(Endpoint, &str)> = Vec::new();
+        let mut probe: Vec<IpAddr> = Vec::new();
+        for r in a.roles.values() {
+            match r.iface.as_deref() {
+                Some(i) => bound.extend(r.endpoints.iter().map(|e| (*e, i))),
+                None => plain.extend(r.endpoints.iter().copied()),
+            }
+            probe.extend(r.endpoints.iter().map(|e| e.addr));
+        }
         let (v4, v6) = split(
-            &a.endpoints,
+            &plain,
             |e| e.addr.is_ipv4(),
             |e| format!("{} . {} . {}", e.addr, e.proto.as_str(), e.port),
         );
         st.insert("allowed_out_v4".into(), v4);
         st.insert("allowed_out_v6".into(), v6);
+        // the interface name was checked (ifname_ok): quoted as an nft string
+        let (v4, v6) = split(
+            &bound,
+            |(e, _)| e.addr.is_ipv4(),
+            |(e, i)| format!("{} . {} . {} . \"{i}\"", e.addr, e.proto.as_str(), e.port),
+        );
+        st.insert("bound_out_v4".into(), v4);
+        st.insert("bound_out_v6".into(), v6);
+        let (v4, v6) = split(&probe, IpAddr::is_ipv4, IpAddr::to_string);
+        st.insert("probe_v4".into(), v4);
+        st.insert("probe_v6".into(), v6);
         if let Some(m) = &a.inbound {
             st.extend(inbound_states(m));
         }
@@ -523,6 +600,7 @@ mod tests {
                 },
             ],
             inbound: None,
+            roles: BTreeMap::new(),
         };
         let dns: Vec<IpAddr> = vec!["10.0.2.3".parse().unwrap()];
         let want = desired(Some(&dns), None, Some(&a));
@@ -530,14 +608,17 @@ mod tests {
             script(None, &want),
             "flush set inet nexus allowed_out_v4\nadd element inet nexus allowed_out_v4 { 10.0.2.2 . tcp . 10022 }\n\
              flush set inet nexus allowed_out_v6\nadd element inet nexus allowed_out_v6 { 2001:db8::1 . tcp . 23 }\n\
+             flush set inet nexus bound_out_v4\nflush set inet nexus bound_out_v6\n\
              flush set inet nexus dns_servers_v4\nadd element inet nexus dns_servers_v4 { 10.0.2.3 }\n\
-             flush set inet nexus dns_servers_v6\n"
+             flush set inet nexus dns_servers_v6\n\
+             flush set inet nexus probe_v4\nflush set inet nexus probe_v6\n"
         );
         assert!(!script(None, &want).contains("nts_servers"));
         // incremental: only our own stale elements go, nothing is flushed
         let a2 = Allowed {
             endpoints: vec![a.endpoints[2]],
             inbound: None,
+            roles: BTreeMap::new(),
         };
         let s = script(Some(&want), &desired(Some(&dns), None, Some(&a2)));
         assert_eq!(
@@ -610,12 +691,12 @@ mod tests {
             proto: Proto::Tcp,
             port: 22,
         };
-        assert!(write_allowed(&p, [e, e], None).unwrap());
+        assert!(write_allowed(&p, [e, e], None, &BTreeMap::new()).unwrap());
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o644);
-        assert!(!write_allowed(&p, [e], None).unwrap());
+        assert!(!write_allowed(&p, [e], None, &BTreeMap::new()).unwrap());
         assert_eq!(Allowed::load(&p).unwrap().endpoints, vec![e]);
-        assert!(!write_allowed(&d.join("missing/allowed.json"), [e], None).unwrap());
+        assert!(!write_allowed(&d.join("missing/allowed.json"), [e], None, &BTreeMap::new()).unwrap());
         let rule = |allow: &[&str]| InboundRule {
             enabled: true,
             allow: allow.iter().map(|s| s.to_string()).collect(),
@@ -624,11 +705,88 @@ mod tests {
             ("web".to_owned(), rule(&["10.1.2.3/16", "bad", "10.1.0.0/16"])),
             ("telnet".to_owned(), rule(&[])),
         ]);
-        assert!(write_allowed(&p, [e], Some(&m)).unwrap());
+        assert!(write_allowed(&p, [e], Some(&m), &BTreeMap::new()).unwrap());
         assert_eq!(
             Allowed::load(&p).unwrap().inbound,
             Some(BTreeMap::from([("web".to_owned(), rule(&["10.1.0.0/16"]))]))
         );
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn role_binding() {
+        let ep = |a: &str, port: u16| Endpoint {
+            addr: a.parse().unwrap(),
+            proto: Proto::Tcp,
+            port,
+        };
+        let a = Allowed::parse(
+            br#"{"endpoints":[{"addr":"192.0.2.9","proto":"tcp","port":443}],"roles":{
+                "data":{"iface":"bond0.20","endpoints":[{"addr":"10.0.20.7","proto":"tcp","port":8006},
+                                                         {"addr":"2001:db8::7","proto":"tcp","port":22}]},
+                "offsite":{"endpoints":[{"addr":"198.51.100.40","proto":"tcp","port":23}]}}}"#,
+        )
+        .unwrap();
+        let want = desired(None, None, Some(&a));
+        assert_eq!(
+            want["bound_out_v4"],
+            BTreeSet::from(["10.0.20.7 . tcp . 8006 . \"bond0.20\"".to_owned()])
+        );
+        assert_eq!(
+            want["bound_out_v6"],
+            BTreeSet::from(["2001:db8::7 . tcp . 22 . \"bond0.20\"".to_owned()])
+        );
+        // a role without an interface: any interface, like every other destination
+        assert!(want["allowed_out_v4"].contains("198.51.100.40 . tcp . 23"));
+        assert!(want["allowed_out_v4"].contains("192.0.2.9 . tcp . 443"));
+        assert!(!want["allowed_out_v4"].contains("10.0.20.7 . tcp . 8006"));
+        assert_eq!(
+            want["probe_v4"],
+            BTreeSet::from(["10.0.20.7".to_owned(), "198.51.100.40".to_owned()])
+        );
+        // without roles the bound sets are emptied (a role lost its interface)
+        let s = script(None, &desired(None, None, Some(&Allowed::default())));
+        assert!(s.contains("flush set inet nexus bound_out_v4\n") && s.contains("flush set inet nexus probe_v6\n"));
+        for bad in [
+            r#"{"endpoints":[],"roles":{"mgmt":{"endpoints":[]}}}"#,
+            r#"{"endpoints":[],"roles":{"data":{"iface":"eth0\" } ; flush ruleset","endpoints":[]}}}"#,
+            r#"{"endpoints":[],"roles":{"data":{"iface":"0123456789abcdef","endpoints":[]}}}"#,
+            r#"{"endpoints":[],"roles":{"data":{"endpoints":[{"addr":"127.0.0.1","proto":"tcp","port":1}]}}}"#,
+            r#"{"endpoints":[],"roles":{"data":{"endpoints":[],"x":1}}}"#,
+        ] {
+            assert!(Allowed::parse(bad.as_bytes()).is_err(), "{bad}");
+        }
+        // writing drops what the reader would refuse
+        let d = std::env::temp_dir().join(format!("nftsync-roles-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("allowed.json");
+        let roles = BTreeMap::from([
+            (
+                "data".to_owned(),
+                RoleTargets {
+                    iface: Some("bond0.20".into()),
+                    endpoints: vec![ep("10.0.20.7", 8006), ep("127.0.0.1", 1)],
+                },
+            ),
+            (
+                "bogus".to_owned(),
+                RoleTargets {
+                    iface: None,
+                    endpoints: vec![ep("10.0.0.1", 1)],
+                },
+            ),
+            (
+                "replication".to_owned(),
+                RoleTargets {
+                    iface: Some("bad name".into()),
+                    endpoints: vec![ep("10.0.0.2", 8443)],
+                },
+            ),
+        ]);
+        assert!(write_allowed(&p, [], None, &roles).unwrap());
+        let back = Allowed::load(&p).unwrap();
+        assert_eq!(back.roles.len(), 1);
+        assert_eq!(back.roles["data"].endpoints, vec![ep("10.0.20.7", 8006)]);
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

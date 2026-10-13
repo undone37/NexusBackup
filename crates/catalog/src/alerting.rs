@@ -57,8 +57,13 @@ const HINTS: &[(&str, &str)] = &[
     ("tenant_disabled", "The tenant is deactivated (Tenants page): no backups, offsite copies or replication run for it and its accounts cannot sign in; its other alerts are suppressed. Retention keeps running. Reactivate it on the Tenants page when it is needed again."),
     ("vault_disabled", "Vault mode was switched off at the console with the recovery key after an approved request. Confirm with the people who requested and approved it (audit: vault.disable)."),
     ("config_backup", "The appliance configuration backup (catalog, key files) could not be made or uploaded to an offsite target. Open Configuration → Settings → Backup of this appliance and the job log; check that nexus-keyd runs and the offsite target is reachable, then Run now. Resolves after the next successful run (per target)."),
+    ("restore_test", "A restore test of a guest's snapshot failed: the isolated test copy did not start, its guest agent did not answer, a port was not listening or the custom check failed (details on the Restore tests page). Check the guest (agent installed and enabled, services start without network) and the snapshot; run the test again. Resolves after the next passed test of that guest."),
+    ("recovery_plan", "A recovery plan is not ready (a snapshot older than its RPO, the target node offline, too little space on the target storage, a missing bridge, a blocking alert) or its test run or execution failed. Open the Recovery plans page for the failed checks. Resolves after the next passed readiness check or test run."),
     ("incident", "A security officer put the appliance into incident mode: snapshots in the chosen range are held, backup groups are paused, every other session and all API tokens were ended. Investigate; leaving incident mode needs a second approver (Settings → Incident mode). Resolves when incident mode ends."),
     ("dek_rotation", "The tenant's data encryption key is older than the configured rotation interval (Settings → Security). Rotate it at the appliance console (root shell): runuser -u nexus-keyd -- /usr/libexec/nexus/keyd tenant-rotate /var/lib/nexus/keyd <tenant>. New snapshots use the new key, older ones stay readable; on a replication primary export the keys again afterwards. Resolves once rotated."),
+    ("vmid_reused", "A VM's identity (vmgenid / SMBIOS UUID) changed between two backups: its VMID now belongs to another VM (deleted and re-created, or replaced by a restore). The newest snapshot starts a new chain (read in full); older snapshots of that VMID belong to the previous VM and age out with retention. Check that the right VM is protected; put a legal hold on the old snapshots if they must be kept. Resolve the alert once checked."),
+    ("restore_priority", "Restore priority is on (Dashboard): scheduled backups, GC, verify, file indexing, offsite uploads and replication syncs wait so restores get the disks and network. It ends on its own after at most 24 hours, or turn it off on the Dashboard when the recovery is done. Resolves when it is off."),
+    ("malware", "The YARA scan found matches of the administrators' rules in a snapshot (rule and path: Snapshots page, scan results). The snapshot is flagged as anomalous, so restores and holds default to an earlier clean snapshot, and restores with Scan first are refused or run with the network disconnected. Check the files and the source; if a rule was too broad, a security officer clears the flag on the Snapshots page. Resolve the alert by hand."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
 
@@ -68,6 +73,7 @@ pub const CATEGORIES: &[&str] = &["security", "backup", "replication", "hardware
 
 const CATEGORY: &[(&str, &str)] = &[
     ("anomaly", "security"),
+    ("malware", "security"),
     ("console_unlock", "security"),
     ("console_root_shell", "security"),
     ("break_glass", "security"),
@@ -94,6 +100,8 @@ const CATEGORY: &[(&str, &str)] = &[
     ("offsite_lag", "backup"),
     ("inventory_refresh", "backup"),
     ("config", "backup"),
+    ("vmid_reused", "backup"),
+    ("restore_priority", "backup"),
     ("disk", "hardware"),
     ("fleecing_space", "hardware"),
 ];
@@ -352,6 +360,7 @@ mod tests {
     fn categories() {
         for (kind, cat) in [
             ("anomaly", "security"),
+            ("malware", "security"),
             ("console_root_shell", "security"),
             ("legal_hold_advisory", "security"),
             ("firewall_reset", "security"),

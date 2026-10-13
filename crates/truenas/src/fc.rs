@@ -34,6 +34,8 @@ pub struct Fc {
     pub sudo: bool,
     /// run `zfs diff` through `sudo -n` instead of relying on `zfs allow … diff`
     pub zfs_sudo: bool,
+    /// "use existing snapshots" (Phase 22b): snapshots named `<prefix>…` are allowed too
+    pub existing_prefix: Option<String>,
 }
 
 /// Absolute tool paths (TrueNAS defaults; tests point them elsewhere).
@@ -86,6 +88,13 @@ pub fn script(fc: &Fc, t: &Tools) -> Result<String> {
     } else {
         String::new()
     };
+    if fc
+        .existing_prefix
+        .as_deref()
+        .is_some_and(|p| !crate::valid_snap_prefix(p))
+    {
+        bail!("forced command: invalid existing snapshot prefix");
+    }
     let comp = "[A-Za-z0-9_][A-Za-z0-9_-]*";
     let stmts = [
         "set -f -o pipefail".to_owned(),
@@ -101,7 +110,8 @@ pub fn script(fc: &Fc, t: &Tools) -> Result<String> {
         format!(
             "ok(){{ [[ $1 =~ ^{comp}(/{comp})*$ ]] || return 1; for r in $A; do [[ $1 == \"$r\" ]] && return 0; [[ $R == 1 && $1 == \"$r\"/* ]] && return 0; done; return 1; }}"
         ),
-        "sn(){ [[ $1 =~ ^nexus-[1-9][0-9]{0,9}-[1-9][0-9]{0,19}$ ]]; }".to_owned(),
+        format!("E=\"{}\"", fc.existing_prefix.as_deref().unwrap_or("")),
+        "sn(){ [[ $1 =~ ^nexus-[1-9][0-9]{0,9}-[1-9][0-9]{0,19}$ ]] || [[ -n $E && $1 == \"$E\"* && $1 =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$ ]]; }".to_owned(),
         "if [[ $o == hello && -z $d ]]; then echo \"nexus-fc 1\"; exit 0; fi".to_owned(),
         format!(
             "if [[ $o == diff ]]; then ok \"$d\" && sn \"$a\" && sn \"$b\" && [[ -z $x ]] || f usage; exec $Z {} diff -FH \"$d@$a\" \"$d@$b\"; fi",
@@ -200,6 +210,7 @@ mod tests {
             recursive: true,
             sudo: true,
             zfs_sudo: false,
+            existing_prefix: None,
         }
     }
 
@@ -220,6 +231,31 @@ mod tests {
         // every quote inside the option value is escaped
         let inner = &line[line.find("command=\"").unwrap() + 9..line.rfind("\" ssh-ed25519").unwrap()];
         assert!(inner.match_indices('"').all(|(i, _)| inner.as_bytes()[i - 1] == b'\\'));
+    }
+
+    #[test]
+    fn existing_prefix_in_the_script() {
+        let t = Tools::default();
+        assert!(
+            script(&fc(), &t).unwrap().contains("E=\"\""),
+            "no prefix: only nexus- snapshots"
+        );
+        let s = script(
+            &Fc {
+                existing_prefix: Some("auto-".into()),
+                ..fc()
+            },
+            &t,
+        )
+        .unwrap();
+        assert!(s.contains("E=\"auto-\"") && !s.contains('\''));
+        for bad in ["", "-x", "a b", "a\"b", "a/b", &"a".repeat(33)] {
+            let f = Fc {
+                existing_prefix: Some(bad.into()),
+                ..fc()
+            };
+            assert!(script(&f, &t).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

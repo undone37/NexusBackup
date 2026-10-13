@@ -6,7 +6,7 @@
   import { can } from './lib/roles';
   import { t } from './lib/i18n';
   import { theme, setTheme, nextTheme } from './lib/theme.svelte';
-  import type { Alert, ConsoleShell, LoginResponse, QuorumRequest, User } from './lib/types';
+  import type { Alert, ConsoleShell, LoginResponse, QuorumRequest, RestorePriority, User } from './lib/types';
   import Logo from './components/Logo.svelte';
   import Notices from './components/Notices.svelte';
   import ConfirmDialog from './components/ConfirmDialog.svelte';
@@ -19,6 +19,8 @@
   import Files from './pages/Files.svelte';
   import Search from './pages/Search.svelte';
   import Changes from './pages/Changes.svelte';
+  import RestoreTests from './pages/RestoreTests.svelte';
+  import RecoveryPlans from './pages/RecoveryPlans.svelte';
   import Jobs from './pages/Jobs.svelte';
   import JobDetail from './pages/JobDetail.svelte';
   import Alerts from './pages/Alerts.svelte';
@@ -40,6 +42,8 @@
   import IconSnapshots from '@lucide/svelte/icons/database-backup';
   import IconSearch from '@lucide/svelte/icons/file-search';
   import IconCompare from '@lucide/svelte/icons/git-compare';
+  import IconRestoreTest from '@lucide/svelte/icons/flask-conical';
+  import IconRecovery from '@lucide/svelte/icons/life-buoy';
   import IconStorage from '@lucide/svelte/icons/hard-drive';
   import IconReports from '@lucide/svelte/icons/file-spreadsheet';
   import IconJobs from '@lucide/svelte/icons/list-checks';
@@ -66,6 +70,7 @@
   import IconGlass from '@lucide/svelte/icons/shield-alert';
   import IconTerminal from '@lucide/svelte/icons/square-terminal';
   import IconSiren from '@lucide/svelte/icons/siren';
+  import IconLifeBuoy from '@lucide/svelte/icons/life-buoy';
   import { fmtTime } from './lib/format';
 
   type Allow = (u: User | null) => boolean;
@@ -82,6 +87,7 @@
     { path: '/snapshots', comp: Snapshots, allow: always, nav: t.nav.snapshots, section: 'monitor', icon: IconSnapshots },
     { path: '/search', comp: Search, allow: can.restore, nav: t.nav.search, section: 'monitor', icon: IconSearch },
     { path: '/changes', comp: Changes, allow: can.restore, nav: t.nav.changes, section: 'monitor', icon: IconCompare },
+    { path: '/restore-tests', comp: RestoreTests, allow: always, nav: t.nav.restoreTests, section: 'monitor', icon: IconRestoreTest },
     { path: '/storage', comp: Storage, allow: always, nav: t.nav.storage, section: 'monitor', icon: IconStorage },
     { path: '/reports', comp: Reports, allow: always, nav: t.nav.reports, section: 'monitor', icon: IconReports },
     { path: '/files', comp: Files, allow: can.restore },
@@ -94,6 +100,7 @@
     { path: '/sources', comp: Sources, allow: can.manageTenant, nav: t.nav.sources, section: 'config', icon: IconSources },
     { path: '/agents', comp: Agents, allow: can.manageTenant, nav: t.nav.agents, section: 'config', icon: IconAgents },
     { path: '/replication', comp: Replication, allow: can.viewReplication, nav: t.nav.replication, section: 'config', icon: IconReplication },
+    { path: '/recovery-plans', comp: RecoveryPlans, allow: always, nav: t.nav.recoveryPlans, section: 'config', icon: IconRecovery },
     { path: '/policies', comp: Policies, allow: can.configure, nav: t.nav.policies, section: 'config', icon: IconPolicies },
     { path: '/groups', comp: Groups, allow: can.manageTenant, nav: t.nav.groups, section: 'config', icon: IconGroups },
     { path: '/users', comp: Users, allow: can.manageTenant, nav: t.nav.users, section: 'config', icon: IconUsers },
@@ -160,6 +167,8 @@
       if (can.viewQuorum(u)) shell = me.console_shell ?? null;
       session.incident = me.incident ?? null;
     }
+    // Phase 22b: restore priority (banner for everyone)
+    session.priority = await get<RestorePriority>('/restore-priority').catch(() => session.priority);
     if (viewApprovals(u))
       pendingApprovals = await get<QuorumRequest[]>('/quorum')
         .then((q) => q.filter((x) => x.state === 'pending').length)
@@ -344,6 +353,16 @@
           <p>
             <strong>{t.incident.banner(incident.by, fmtTime(incident.since), incident.reason)}</strong>
             {#if can.viewQuorum(session.user)}<a href={href('/settings?tab=incident')}>{t.incident.open}</a>{/if}
+          </p>
+        </div>
+      {/if}
+      {#if session.priority?.active}
+        <div class="glass priority" role="status">
+          <IconLifeBuoy aria-hidden="true" />
+          <p>
+            <strong>{t.priority.banner(fmtTime(session.priority.until ?? 0), session.priority.by ?? '?', session.priority.reason ?? '')}</strong>
+            {t.priority.bannerHeld}
+            {#if can.backup(session.user) && !session.user.tenant}<a href={href('/')}>{t.priority.manage}</a>{/if}
           </p>
         </div>
       {/if}

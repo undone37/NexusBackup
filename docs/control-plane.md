@@ -14,6 +14,7 @@ console TUI first boot. Plan §11.
 | `nexus-tls` (oneshot, `nexus-tls.path`, Phase 14d) | root, no capabilities, group `nexus-webapi` | its request dir `/var/lib/nexus/tls` (0770 root:nexus-webapi), `/etc/nexus/tls/web.pem*` and `pending/` | network, catalog, the identity certificate/key `cert.pem`/`key.pem` (SELinux `nexus_tls_t`) |
 | `nexus-config-backup` (oneshot, `nexus-config-backup.path`) | root, only `CAP_DAC_READ_SEARCH`, group `nexus-catalog` | read: catalog, TOTP/secrets keys, agent CA, replication keys, `/etc/nexus/ssh`, TLS identity, keyd's published public key; write: `/var/lib/nexus/config-backup` (sealed bundle) | network, keyd socket and state, stores, escrow, downloads (SELinux `nexus_cfgbackup_t`; see "Configuration backup") |
 | `nexus-disks` (oneshot, `nexus-disks.timer` + `.path`, Phase 16, docs/hardware.md) | root, CAP_SYS_RAWIO / SYS_ADMIN / DAC_READ_SEARCH, group `nexus-webapi` | block devices (smartctl, mdadm, mkfs.xfs, xfs_growfs), its dir `/var/lib/nexus/disks` (2771 root:nexus-webapi), the store's mount unit in `/etc/systemd/system`, stop/start of the scheduler and replicad around the mount | network, catalog, keys, store contents (SELinux `nexus_disks_t`) |
+| `nexus-net` (oneshot, `nexus-net.path` + `.timer`, Phase 22a, "Network interfaces") | root, only `CAP_NET_RAW`, group `nexus-webapi` | NetworkManager keyfiles `nexus-*.nmconnection`, `nmcli` (D-Bus), netlink, ICMP echo to the role destinations, its dir `/var/lib/nexus/net` (2771 root:nexus-webapi), the scheduler's `allowed.json` (read) | TCP/UDP, catalog, keys, store (SELinux `nexus_net_t`) |
 | `nexus-replicad` (docs/replication.md) | `nexus-chunkstore` (group `nexus-replicad`, domain `nexus_replicad_t`) | tenant stores **read-only**, replication CA + token-sealing key `/var/lib/nexus/replicad`, its socket `/run/nexus-replicad/replicad.sock` (web-api uid only) | keyd, catalog, network |
 
 The web-api also connects to the replicad socket and reads `/run/nexus-replicad/ca.pem` (replication CA
@@ -349,6 +350,31 @@ mapped, setuid/setgid/sticky cleared, devices/sockets skipped, only xattrs the t
   directly, anything else stays quorum `tenant.update`. Replication sources: weakening → `replication_source.update`
   quorum; reopening a closed vault → `replication.reopen`.
 
+## Concurrency caps and read limits (Phase 22b, `catalog::schedule::ReadLimit`, `scheduler/src/limits.rs`)
+- **Per source**: one backup job per source runs at a time (plan key `source:<id>`), so a source's limits bound
+  everything the appliance reads from it. PVE sources: `max_parallel` (1..=8) caps the groups' `parallel_guests`
+  (nexus-pve applies `min`, logs `note: parallel guests capped …`); `storage_caps` (`{storage: 1..=8}`): `backup-all`
+  reads each guest's config (`/nodes/<n>/<qemu|lxc>/<id>/config`, only when caps are set), derives its storages
+  (`pve::parallel::guest_storages`: disk keys, `rootfs`, `mpN`; no CD-ROMs, bind mounts) and a worker skips guests
+  whose storage is at its cap (others pass; a worker waits on a condvar when all pending guests are capped).
+- **Read limit** (PVE, TrueNAS, NFS/SMB): `read_limit: {bwlimit?, windows: [limit only], timezone}` in the source
+  config, copied into the connector's job config; the connector builds one `Throttle` per run (shared by the parallel
+  guests / scan threads, re-evaluated every 10 s like offsite). Paced: NBD reads of VM disks, the container tar
+  stream, TrueNAS walk + content streams (`truenas::remote::Pace` hook, the client feature stays catalog-free), NAS
+  file contents (`catalog::schedule::Throttled`). Pause windows are refused by `ReadLimit::check` (a stalled read
+  would hold vzdump / grow fleecing): time-of-day exclusion is the policy's blackout. Not gated: limits only reduce
+  load. PSI-based backoff is not implemented (open).
+
+## Restore priority (Phase 22b, `catalog::priority`, `web-api/src/priority.rs`, `scheduler/src/priority.rs`)
+- Setting `restore_priority` = `{until, since, by, reason}`; `PUT /restore-priority {hours 1..=24, reason}` (admin,
+  operator; renewing keeps `since`), `DELETE`, `GET` (every signed-in user: the banner). Audited
+  `restore_priority.on` (with `renewed`) / `.off`; no approval (it only delays background work and always expires).
+- Scheduler: while on, `queue_scheduled`, `queue_maintenance` (gc / verify / file_index) and `queue_replication`
+  queue nothing (due slots run afterwards, as after a pause) and `start_jobs` leaves queued `gc`, `verify`,
+  `file_index`, `offsite`, `replica_sync` and scheduler-requested backups (incl. retries) waiting. Manual jobs and
+  restores run. `check_restore_priority` keeps the warning `restore_priority` open while on, clears an expired
+  setting (audit `restore_priority.expire`, actor scheduler) and resolves the alert.
+
 ## Restore options (Phase 15a, `crates/pve/src/restore.rs`, `crates/scheduler/src/restore.rs`)
 - `restore` / `restore_ct` / `instant_recover` params: `source, time, node, target, storage` plus optional `name`
   or `name_prefix` (not both; PVE name characters, 1..=63, no leading `-`/`.`), `pool`, `start` (bool; instant
@@ -468,6 +494,17 @@ WebAuthn credentials as a **second factor** of local accounts, next to TOTP (no 
 - **Re-authentication** (`auth::reauth`): `current_totp` may carry the assertion as JSON (starts with `{`); options from `/auth/passkeys/challenge`.
 - **Policy** `passkeys` `{require_privileged, rp_id}`: `GET /settings/passkeys` (admin, security officer) → `{policy, rp_id (effective or null), without_passkey: [names], pending}`; `PUT /settings/passkeys` (admin). Turning `require_privileged` on with the same `rp_id` applies directly (audited `security.passkeys` with `without_passkey`) but is refused (409) when the acting admin has no passkey for the effective RP ID or no local admin has one; every other change is quorum `security.passkeys` (`{passkeys, old}`, refused at execution if the setting changed); changing `rp_id` while the requirement is on is refused. While on, local admins / security officers: TOTP refused at login and re-authentication (reason "totp refused: passkey required"; the login error names passkeys for every failure), the last passkey cannot be removed (409), granting the role to an activated account without a passkey is refused (409; with `new_activation` allowed), and activation requires one (`POST /auth/activate/passkey {name, code}` → creation options; `complete` takes `passkey` + `passkey_name`; `begin` answers `passkey_required`).
 - **Recovery**: a new activation code (`user.update` with `new_activation`) and `nexus-setup recover-admin` delete the account's passkeys.
+
+## Network interfaces (Phase 22a, `catalog::network`, `web-api/src/network.rs`, `os/greenboot/usr/libexec/nexus/nexus-net`)
+Extra NICs, bonds (active-backup, 802.3ad), VLANs, MTU, static addresses and routes, and one interface per role
+(`management`, `data`, `replication`). Plan §12.4.
+- **Configuration** (`catalog::network::Config`, every field always serialized): `{interfaces: [{name, kind: ethernet|bond|vlan, ports, mode, parent, vlan_id, role, mtu, dhcp, addresses, gateway, dns, routes: [{to, via}]}], offsite_role}`. Validated by the web-api against the NICs the helper reports and again by the helper (same rules): names 1–15 of `[A-Za-z0-9_.-]`; a NIC used once (ethernet entry or bond port); VLAN 1–4094 on a NIC or a bond (not on a bond port, not on a VLAN), its MTU ≤ the parent's; MTU 1280–9216; at most 8 addresses / 4 DNS / 32 routes per interface; a default gateway (and the default route) **only on the management interface**, every other interface gets `never-default` (also with DHCP); routes are networks (host bits clear, never `/0`) with an optional next hop in one of the interface's subnets. While the configuration has no management interface, the console's NIC (`nexus-mgmt` of nexus-setup) cannot be used by it; once it has one, it cannot be dropped again (console reset only).
+- **Helper** `nexus-net` (root oneshot, `nexus-net.path` on `req-*.json` / `pending.json`, `nexus-net.timer` every 15 min; Python stdlib; SELinux `nexus_net_t`: keyfiles in `/etc/NetworkManager/system-connections` (`NetworkManager_etc_rw_t`), `nmcli` over D-Bus, netlink, ICMP echo; no TCP/UDP, no keys/catalog/store). Control dir `/var/lib/nexus/net` (2771 root:nexus-webapi): `req-<id>.json` + `confirm.json` (web-api, 0640), `status.json` / `ops.json` / `config.json` (0644), `pending.json` (0600). It writes one keyfile per interface (`nexus-<name>.nmconnection`, bond ports `nexus-<name>-port-<nic>`; the management interface is `nexus-mgmt` / `nexus-mgmt-port-<nic>`, the names nexus-setup uses; 0600, deterministic UUIDs), removes the ones it owns that are no longer wanted, runs `nmcli connection reload` and `nmcli connection up` for the changed profiles (bonds and NICs before VLANs; ports come up with their bond). Writing keyfiles + reload was chosen over `nmcli connection add/modify`: the policy is the same D-Bus chat plus one directory, and a rollback is "put the old files back".
+- **Apply** (`req.op = apply`, `{config, old}`): refused if `old` is not the applied configuration; any failed activation restores the previous keyfiles at once (`error`). A change of the management interface or what it sits on (its VLAN parent) waits for `confirm.json` `{id, keep}` until `CONFIRM_SECS` (120 s): keep → `done`; revert or timeout → previous keyfiles back (`rolled_back`). `pending.json` holds the previous keyfiles, so a reboot or crash inside the window is decided at the next start (the path unit watches it). `config.json` records the SHA-256 of every keyfile written: when they no longer match (nexus-setup reconfigured the network at the console), the applied configuration resets to empty (`status.reset`).
+- **API**: `GET /network` (admin, security officer, operator, viewer; never tenant-scoped; closed to API tokens) → `{available, stale (> 1 h), scanned, devices: [{name, kind: nic|bond|vlan|bridge|other, mac, mtu, state, speed, master, addresses}], config, management: {ifname, source: console|config}, reset, pending: {id, by, deadline, remaining} | null, mtu: {ts, results} | null, ops (+ queued requests), request_pending, confirm_secs, client_ip}`. `PUT /network {config}` (admin): 409 without a status or while a management change waits; unchanged → `{unchanged: true}`; 400 invalid; else quorum `network.apply` (`{config, old, management_change}`; web-executed, the request file is written in `network::after_approve`). `POST /network/confirm {id, keep}` (admin; 409 unless that change is pending; audit `network.confirm` / `network.revert` with the client address). `POST /network/mtu-check` (admin, operator; audit `network.mtu_check`). The scheduler audits finished helper operations once as `network.op` (actor `nexus-net`).
+- **Bound egress**: the scheduler groups the outbound destinations by role (`data`: PVE API/SSH, TrueNAS, NFS/SMB, agents, plugins, rescue agents, fleet ranges; `offsite`: tenants' offsite targets and approved attach requests; `replication`: the primaries) and writes them as `roles: {<role>: {iface, endpoints}}` into `allowed.json`; `iface` = the applied configuration's interface of that role (`offsite` → the interface of `offsite_role`), none when the role has no interface. `nexus-nft-sync` loads destinations with an interface into `bound_out_v4/v6` (`addr . proto . port . oifname`, rule `... th dport . oifname @bound_out_v4 accept`) and the others into `allowed_out_*`; alerting, OIDC, forwarding, DNS and NTS stay unbound. The interface name is checked (`[A-Za-z0-9_.-]{1,15}`) and quoted. Routing still decides the interface: a destination routed elsewhere is rejected (the path-MTU check flags it).
+- **Path-MTU check**: hourly and on request the helper takes every role destination's address from `allowed.json` (≤ 64), the route's interface (`ip -j route get`) and its MTU, sends one small and one full-size ICMP echo with DF (`IP_PMTUDISC_PROBE`, connected ping socket; raw socket with `CAP_NET_RAW` as fallback) and, when only the small one passes, searches the path MTU. Results `ok | mismatch (path_mtu) | no_reply | no_route` plus the expected interface. The output chain allows echo requests to these addresses only (`probe_v4/v6`, filled by nft-sync). `nexus-diag` (no network itself) reports them as the check `network.mtu` (warning on a mismatch or a wrong interface, stale after 3 h; never an update blocker).
+- **Console**: the wizard's network step takes optional bond NICs + mode, VLAN ID and MTU (`NetConfig.link`); then it runs `nexus-net console-apply <json>` (domain transition `nexus_setup_t` → `nexus_net_t`), which replaces every `nexus-*` profile with the management interface only, without confirmation. The plain step (no link options) deletes every `nexus-*` profile and adds `nexus-mgmt` with nmcli as before; either way the interfaces of Settings → Network are gone (the helper notices).
 
 ## Inbound firewall (Phase 16c, `web-api/src/firewall.rs`, `catalog::firewall`, `nftsync`)
 Outbound stays automatic (scheduler allow-list, `scheduler/src/firewall.rs`); inbound is configured per service.
@@ -885,6 +922,62 @@ Daily sealed bundle of the appliance configuration, so a replacement appliance c
   keyd already has (console `nexus-offsite dr`) is released at the next tick.
 - Lab: `lab/appliance/config-restore.sh` (A backs up to the SFTP testbox; fresh B restores; tenant keys + offsite
   snapshots on B).
+
+## Restore tests and recovery plans (Phase 25, `pve/src/restoretest.rs`, `scheduler/src/recovery.rs`, `web-api/src/recovery.rs`, `reports/src/dr.rs`, catalog v34)
+
+SureBackup-style restore tests and recovery orchestration (docs/veeam-comparison.md rows 2 and 4).
+
+**`nexus-pve <cfg> restore-test <spec.json>`** runs a spec `{mode: test|execute, node, storage, bridge?,
+network_map?, vmid_base, guests: [{source, time, wave, delay, checks, target?}]}`:
+
+- test: a VM boots from instant-recovery overlays (`Cluster::ir_session`: never moved, served while it runs);
+  a container is fully restored (`restore_ct`, links down, `onboot=0`). NICs: `link_down=1`, or on the
+  isolated bridge with VLAN tags removed (`ir::isolate_net`). Name `nxtest-<name>`, VMIDs: the first free ones
+  from `vmid_base` (990000 + (job id mod 90) × 100). Waves start in order (each waits for its largest delay and
+  for the previous wave's checks); all guests stay up until the last wave was checked, then every guest is
+  destroyed (hard stop, `DELETE …?purge=1&destroy-unreferenced-disks=1`), also after a failed start or check
+  and on SIGTERM (job cancel: `restoretest::CANCEL`, the checks stop, guests are destroyed before exiting).
+- execute: full restore (`restore_vm`/`restore_ct`) under the original VMID and name (or `target`), bridges
+  renamed by `network_map` (`ir::map_net`), started, checked, kept. A wave with a failed guest stops the run
+  (later guests `skipped`).
+- checks: VM running; QEMU guest agent `ping` within `boot_timeout` (default 600 s); TCP ports listening
+  inside the guest via guest-agent `exec` of `ss -ltn || netstat -ltn` (Windows: `netstat -an -p TCP`, chosen by
+  `get-osinfo`), polled until all listen (boot timeout, at least 60 s after the agent answered); custom command
+  via guest-agent `exec` with expected exit code and `command_timeout`. Containers: the init PID still runs
+  after 10 s.
+- output: one `restore-test {json}` line per guest (state passed/failed/cancelled/skipped, target, name,
+  boot_secs, checks, error, destroyed); exit 1 unless all passed.
+
+**`nexus-pve <cfg> lab-check <spec.json>`**: node online (`/nodes`), target storage and IR storage status,
+bridges of the test bridge / network map missing on the node (`/nodes/{node}/network`, SDN VNets).
+
+**Scheduler jobs** (`recovery.rs`): `restore_test` (key `guest:<tenant>/<source>`, scheduled ones
+`restore_test:group/<id>`), `recovery_test` / `recovery_execute` (key `recovery_plan:<id>`, the plan of the
+`recovery_runs` row with the newest local snapshot per guest), `recovery_readiness` (daily 05:30 UTC per plan,
+first run when the web-api creates or changes a plan). Results → `restore_tests` rows and the run's `results`.
+Alerts: `restore_test:<tenant>/<source>` (warning, resolved by the next pass; test kinds only),
+`recovery_run:<plan>` (warning for a failed test run, critical for a failed execution), `recovery_ready:<plan>`
+(warning; checks: local snapshot within the RPO per guest, node online, storages active with free space ≥ the
+guests' snapshot sizes, bridges present, no open `restore_test:` alert of the plan's guests nor `verify:` /
+`inventory:` alert of the tenant). Group schedules (`restore_test_schedules`): newest local snapshot per guest
+every N days (first run at once). Approved `recovery_plan.execute` requests (not self-approved while approvals
+are on) become a run + `recovery_execute` job; the job sets the request `executed`.
+
+**API:**
+
+| Route | Who | |
+|---|---|---|
+| `GET /restore-tests?tenant&source&limit` | everyone (own tenant) | results, newest first |
+| `POST /jobs {kind: "restore_test", params: {source, time, node, storage, bridge?, checks?, source_id?}}` | admin, operator, tenant_admin | local snapshot required; containers: `boot_timeout` only |
+| `GET /restore-tests/schedules`, `PUT/DELETE /restore-tests/schedules/{group_id}` | read: everyone; write: admin, tenant_admin | PVE groups only, `every_days` 1–365 |
+| `GET/POST /recovery-plans`, `PUT/DELETE /recovery-plans/{id}` | read: everyone; write: admin, tenant_admin | ≤ 50 steps, waves 1–20, delay ≤ 3600 s, RPO 1–8760 h; runs survive a plan delete |
+| `POST /recovery-plans/{id}/readiness`, `/test` | admin, operator, tenant_admin | 202; one running run per plan |
+| `POST /recovery-plans/{id}/execute {confirm}` | admin, operator, tenant_admin (no API token) | typed plan name; approval `recovery_plan.execute` with the plan as it will run |
+| `GET /recovery-plans/{id}/runs`, `GET /recovery-runs/{id}/report` | everyone (own tenant) | DR report: self-contained HTML (CSP `default-src 'none'`), attachment |
+
+`GET /dashboard` has `restore_tests: {tested, passed, failed, last, failing}` (newest result per guest within the
+window). API tokens: `GET /restore-tests`, `GET /recovery-plans` (read scope). Vault mode: tests and test runs
+need no approval (isolated, destroyed, nothing leaves the cluster); an execution always goes through the gate.
 
 ## First boot (`nexus-setup`, console TUI)
 Network (NetworkManager, static/DHCP on the management NIC) → admin account + TOTP enrollment (QR in terminal, code confirmation) → second person: "create it now (recommended)" = security officer account + TOTP, entered at the console by that person, or "later" (audit `setup.second_person_later`; script mode `"second_person_later": true`) → `keyd init`: recovery key shown once, re-entry of 3 random groups required → TLS certificate (self-signed, SAN = hostname + IPs; fingerprint shown) → metrics token → `/var/lib/nexus/setup-done` (writes `settings.approvals_enabled`: enabled with two people, **disabled with a single administrator** — the TUI and the script output say so; audit `setup.approvals`) → enable `nexus-web-api`, `nexus-scheduler`, `nexus-keyd`, `nexus-replicad` (`nexus-nasmount.socket` is enabled by the image preset).

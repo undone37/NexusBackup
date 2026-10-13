@@ -48,9 +48,58 @@ pub(crate) fn is_disk_key(k: &str) -> bool {
     })
 }
 
-fn is_net_key(k: &str) -> bool {
+pub(crate) fn is_net_key(k: &str) -> bool {
     k.strip_prefix("net")
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// A NIC value (VM or CT `netN`) isolated for a restore test: on `bridge`
+/// (VLAN tag dropped, link up), or without one `link_down=1`.
+pub fn isolate_net(v: &str, bridge: Option<&str>) -> String {
+    let mut opts: Vec<String> = v
+        .split(',')
+        .filter(|o| !(o.starts_with("link_down=") || (bridge.is_some() && o.starts_with("tag="))))
+        .map(|o| match (bridge, o.strip_prefix("bridge=")) {
+            (Some(b), Some(_)) => format!("bridge={b}"),
+            _ => o.to_owned(),
+        })
+        .collect();
+    if bridge.is_none() {
+        opts.push("link_down=1".into());
+    }
+    opts.join(",")
+}
+
+/// A NIC value with its bridge renamed by `map` (recovery plan network mapping).
+pub fn map_net(v: &str, map: &BTreeMap<String, String>) -> String {
+    v.split(',')
+        .map(|o| match o.strip_prefix("bridge=").and_then(|b| map.get(b)) {
+            Some(to) => format!("bridge={to}"),
+            None => o.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Hard stop (if running) and destroy with purge: restore-test guests only.
+pub fn destroy_guest(api: &crate::api::Api, node: &str, kind: &str, vmid: u32) -> Result<()> {
+    if api.guest_status(node, kind, vmid).map(|(r, _)| r).unwrap_or(true) {
+        let stop = api
+            .post_task(&format!("/nodes/{node}/{kind}/{vmid}/status/stop"), &[])
+            .and_then(|upid| api.run_task(node, &upid, Duration::from_secs(300)));
+        if let Err(e) = stop {
+            eprintln!("stopping {kind} {vmid}: {e:#}");
+        }
+    }
+    let upid = api
+        .delete_task(&format!(
+            "/nodes/{node}/{kind}/{vmid}?purge=1&destroy-unreferenced-disks=1"
+        ))
+        .with_context(|| format!("destroy {kind} {vmid}"))?;
+    api.run_task(node, &upid, Duration::from_secs(900))
+        .with_context(|| format!("destroy {kind} {vmid}"))?;
+    eprintln!("destroyed {kind} {vmid}");
+    Ok(())
 }
 
 /// Rewrites the backed-up `qemu-server.conf` into creation parameters for the
@@ -312,45 +361,8 @@ impl Cluster {
         if opts.replace {
             bail!("instant recovery cannot replace the original; use a full restore");
         }
-        let link_down = opts.link_down;
         let start = Instant::now();
-        let m = store.load_manifest(&source_name(vmid), time)?;
-        let mut conf = read_config(store, &m, "qemu-server.conf")?.context("snapshot has no qemu-server.conf")?;
-        // excluded disks have no data to serve: the recovered VM never gets them
-        if let Some(x) = read_excluded(store, &m)? {
-            eprintln!("excluded from the backup, left out: {}", x.keys().join(", "));
-            conf = crate::exclude::omit_config(&conf, &x.keys());
-        }
-        let archive = format!("nexus-{vmid}-{time}");
-        let devices: Vec<String> = m.indexes.iter().filter(|n| *n != "config").cloned().collect();
-        let plan = ir_config(
-            &conf,
-            &self.storage,
-            target,
-            &archive,
-            &devices,
-            target_storage,
-            link_down,
-        )?;
-        if !plan.dropped.is_empty() {
-            eprintln!("not backed up, left out: {}", plan.dropped.join(", "));
-        }
-        let mut plan = plan;
-        let name = opts.name_for(
-            crate::restore::conf_value(&conf, "name").as_deref(),
-            &format!("vm-{vmid}"),
-        );
-        plan.params.retain(|(k, _)| k != "name");
-        plan.params.push(("name".into(), name));
-        if let Some(pool) = &opts.pool {
-            plan.params.push(("pool".into(), pool.clone()));
-        }
-        if self.guest(target).is_ok() {
-            bail!("VM {target} already exists");
-        }
-        // the node plugin sizes the overlays from the catalog
-        self.push_index(store)?;
-
+        let (m, archive, plan) = self.ir_prepare(store, vmid, time, target, target_storage, opts, None)?;
         let disks: Vec<(String, String)> = plan.disks.iter().map(|d| (d.key.clone(), d.device.clone())).collect();
         self.serve_ir(store, &m, node, target, &archive, &disks, |api| {
             let id = target.to_string();
@@ -403,6 +415,113 @@ impl Cluster {
         })
     }
 
+    /// The target VM's creation parameters for snapshot `vm-<vmid>/<time>`
+    /// (excluded disks left out, name / pool from `opts`; NICs on `bridge`
+    /// ([`isolate_net`]), else link down with `opts.link_down`), after checking
+    /// that `target` is free and pushing the index the node plugin sizes the
+    /// overlays from. Returns (manifest, archive, plan).
+    #[allow(clippy::too_many_arguments)]
+    fn ir_prepare(
+        &self,
+        store: &Store,
+        vmid: u32,
+        time: u64,
+        target: u32,
+        target_storage: &str,
+        opts: &crate::restore::RestoreOpts,
+        bridge: Option<&str>,
+    ) -> Result<(chunkstore::Manifest, String, IrConfig)> {
+        let m = store.load_manifest(&source_name(vmid), time)?;
+        let mut conf = read_config(store, &m, "qemu-server.conf")?.context("snapshot has no qemu-server.conf")?;
+        // excluded disks have no data to serve: the recovered VM never gets them
+        if let Some(x) = read_excluded(store, &m)? {
+            eprintln!("excluded from the backup, left out: {}", x.keys().join(", "));
+            conf = crate::exclude::omit_config(&conf, &x.keys());
+        }
+        let archive = format!("nexus-{vmid}-{time}");
+        let devices: Vec<String> = m.indexes.iter().filter(|n| *n != "config").cloned().collect();
+        let mut plan = ir_config(
+            &conf,
+            &self.storage,
+            target,
+            &archive,
+            &devices,
+            target_storage,
+            opts.link_down && bridge.is_none(),
+        )?;
+        if !plan.dropped.is_empty() {
+            eprintln!("not backed up, left out: {}", plan.dropped.join(", "));
+        }
+        if bridge.is_some() {
+            for (_, v) in plan.params.iter_mut().filter(|(k, _)| is_net_key(k)) {
+                *v = isolate_net(v, bridge);
+            }
+        }
+        let name = opts.name_for(
+            crate::restore::conf_value(&conf, "name").as_deref(),
+            &format!("vm-{vmid}"),
+        );
+        plan.params.retain(|(k, _)| k != "name");
+        plan.params.push(("name".into(), name));
+        if let Some(pool) = &opts.pool {
+            plan.params.push(("pool".into(), pool.clone()));
+        }
+        if self.guest(target).is_ok() {
+            bail!("VM {target} already exists");
+        }
+        // the node plugin sizes the overlays from the catalog
+        self.push_index(store)?;
+        Ok((m, archive, plan))
+    }
+
+    /// Restore test (`crate::restoretest`): boots snapshot `vm-<vmid>/<time>` as
+    /// VM `target` named `name` on `node` from IR overlays that are never moved,
+    /// NICs isolated (on `bridge`, else link down), runs `inside` while serving,
+    /// then destroys the VM with its overlays, also when starting it failed.
+    /// Errors: creating, starting or destroying the VM (`inside` keeps its own results).
+    #[allow(clippy::too_many_arguments)]
+    pub fn ir_session(
+        &self,
+        store: &Store,
+        vmid: u32,
+        time: u64,
+        node: &str,
+        target: u32,
+        target_storage: &str,
+        name: &str,
+        bridge: Option<&str>,
+        inside: &mut dyn FnMut(),
+    ) -> Result<()> {
+        let opts = crate::restore::RestoreOpts {
+            name: Some(name.to_owned()),
+            link_down: true,
+            ..Default::default()
+        };
+        let (m, archive, plan) = self.ir_prepare(store, vmid, time, target, target_storage, &opts, bridge)?;
+        let disks: Vec<(String, String)> = plan.disks.iter().map(|d| (d.key.clone(), d.device.clone())).collect();
+        self.serve_ir(store, &m, node, target, &archive, &disks, |api| {
+            let id = target.to_string();
+            let mut form: Vec<(&str, &str)> = vec![("vmid", id.as_str())];
+            form.extend(plan.params.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+            let upid = api.post_task(&format!("/nodes/{node}/qemu"), &form)?;
+            if let Err(e) = api.run_task(node, &upid, Duration::from_secs(600)) {
+                // a half-created VM goes too
+                let _ = destroy_guest(api, node, "qemu", target);
+                return Err(e.context("create VM"));
+            }
+            let started = api
+                .post_task(&format!("/nodes/{node}/qemu/{target}/status/start"), &[])
+                .and_then(|upid| api.run_task(node, &upid, Duration::from_secs(600)))
+                .context("start VM");
+            if started.is_ok() {
+                inside();
+            }
+            let destroyed = destroy_guest(api, node, "qemu", target);
+            started?;
+            destroyed
+        })
+    }
+
     /// Resumes serving the IR volumes VM `target` still uses (e.g. after an
     /// appliance restart); returns when none are left or the VM is gone.
     pub fn ir_resume(&self, store: &Store, node: &str, target: u32) -> Result<()> {
@@ -431,7 +550,7 @@ impl Cluster {
     /// `target` references no IR volume any more (or is gone), then stops all
     /// sessions. Moved disks no longer use the backing, so stopping is safe.
     #[allow(clippy::too_many_arguments)]
-    fn serve_ir<T>(
+    pub(crate) fn serve_ir<T>(
         &self,
         store: &Store,
         m: &chunkstore::Manifest,
@@ -633,5 +752,29 @@ scsi0: local-lvm:vm-100-disk-0,size=2G
                 ("unused0".into(), "nexus-100-1760000000".into(), "drive-virtio0".into()),
             ]
         );
+    }
+
+    #[test]
+    fn isolates_and_maps_nics() {
+        let v = "virtio=BC:24:11:C0:4F:D0,bridge=vmbr0,firewall=1,tag=20,link_down=0";
+        assert_eq!(
+            isolate_net(v, None),
+            "virtio=BC:24:11:C0:4F:D0,bridge=vmbr0,firewall=1,tag=20,link_down=1"
+        );
+        assert_eq!(
+            isolate_net(v, Some("nxlab")),
+            "virtio=BC:24:11:C0:4F:D0,bridge=nxlab,firewall=1"
+        );
+        let ct = "name=eth0,bridge=vmbr1,hwaddr=AA:BB:CC:DD:EE:FF,ip=dhcp,type=veth";
+        assert_eq!(
+            isolate_net(ct, None),
+            "name=eth0,bridge=vmbr1,hwaddr=AA:BB:CC:DD:EE:FF,ip=dhcp,type=veth,link_down=1"
+        );
+        let map: BTreeMap<String, String> = [("vmbr1".to_owned(), "vmbr9".to_owned())].into();
+        assert_eq!(
+            map_net(ct, &map),
+            "name=eth0,bridge=vmbr9,hwaddr=AA:BB:CC:DD:EE:FF,ip=dhcp,type=veth"
+        );
+        assert_eq!(map_net(v, &map), v, "unmapped bridges stay");
     }
 }

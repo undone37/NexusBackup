@@ -947,6 +947,16 @@ async function main() {
       await shot('firewall-edit', { height: 1000 });
       await closeDialogs();
     }],
+    // Phase 22a: Settings → Network (bond + VLAN for data, replication NIC, path MTU) + interface dialog
+    ['network', async () => {
+      await go('/settings?tab=network');
+      await until(`return document.body.innerText.includes('Path MTU') && document.body.innerText.includes('bond0.20')`, 'network tab');
+      await shot('settings-network', { height: 1900 });
+      await ev(`$rowClick('bond0.20', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #ni-vlan')`, 'interface dialog');
+      await shot('network-edit', { height: 1150 });
+      await closeDialogs();
+    }],
     // Phase 17c: Settings → Vault (the demo appliance is a primary: preconditions not met)
     ['vault', async () => {
       await go('/settings?tab=vault');
@@ -1068,7 +1078,103 @@ async function main() {
       await closeDialogs();
       await login('admin');
     }],
+    // Phase 21e: YARA rule files, scan results of a snapshot, "scan first" in the restore dialog
+    ['malware-scan', async () => {
+      await login('so');
+      await go('/settings?tab=malware');
+      await until(`return !!document.querySelector('#ms-text') && document.body.innerText.includes('lockbit.yar')`, 'malware scan settings');
+      await shot('settings-malware-scan');
+      const fs02 = (await api('GET', '/agents')).body.find((a) => a.name === 'fs02');
+      await go(`/snapshots?source=host-${fs02.id}`);
+      await until(`return !!$button('Malware: 3 matches')`, 'scanned snapshot');
+      await shot('snapshots-scan');
+      await ev(`$click('Malware: 3 matches'); return true;`);
+      await until(`return !!document.querySelector('dialog[open]') && document.querySelector('dialog[open]').innerText.includes('HOW_TO_DECRYPT')`, 'scan results');
+      await shot('snapshot-scan-results');
+      await closeDialogs();
+      await login('admin');
+      await go('/snapshots?source=vm-100');
+      await ev(`$rowClick('vm-100', 'Restore'); return true;`);
+      await until(`return !!$button('Full restore')`, 'restore menu');
+      await ev(`$click('Full restore'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] select[id$="-scan"]')`, 'restore dialog');
+      await ev(`$fill('select[id$="-scan"]', 'link_down'); return true;`);
+      await shot('restore-scan-first', { height: 1100 });
+      await closeDialogs();
+    }],
+    // Phase 25: restore tests (seeded schedule and results, vm-101 failing) and recovery plans
+    ['recovery', async () => {
+      await login('admin');
+      await go('/restore-tests');
+      await until(`return !!document.querySelector('#rt-res-h') && document.querySelectorAll('tbody tr').length > 4`, 'restore test results');
+      await shot('restore-tests', { height: 1150 });
+      await ev(`$click('Test a snapshot'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #rt-guest')`, 'restore test dialog');
+      await ev(`const s = document.querySelector('#rt-guest'); s.value = 'initech/vm-100'; s.dispatchEvent(new Event('change')); return true;`);
+      await ev(`$fill('#rt-c-ports', '22, 443'); return true;`);
+      await shot('restore-test-dialog', { height: 1000 });
+      await closeDialogs();
+      await go('/recovery-plans');
+      await until(`return document.body.innerText.includes('erp-site-b')`, 'recovery plans');
+      await shot('recovery-plans', { height: 1250 });
+      await ev(`[...[...document.querySelectorAll('section.plan')].find((s) => s.innerText.includes('erp-site-b')).querySelectorAll('button')].find((b) => b.textContent.trim() === 'Edit').click(); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #rp-name')`, 'plan editor');
+      await shot('recovery-plan-edit', { height: 1250 });
+      await closeDialogs();
+      await ev(`[...[...document.querySelectorAll('section.plan')].find((s) => s.innerText.includes('erp-site-b')).querySelectorAll('button')].find((b) => b.textContent.trim() === 'Runs').click(); return true;`);
+      await until(`return !!document.querySelector('dialog[open] table')`, 'plan runs');
+      await shot('recovery-plan-runs');
+      await closeDialogs();
+    }],
     // Phase 17b: a security officer closes the vault; reopening is requested by an admin and approved
+    // Phase 22b: source limits, NAS overlap / sizing / split, skipped files, VM identity,
+    // instant disk recovery, restore priority (turned off again at the end)
+    ['pve-nas-ops', async () => {
+      await login('admin');
+      await go('/sources');
+      await until(`return document.body.innerText.includes('overlaps')`, 'overlap warning');
+      await ev(`const r = $row('fs01-projects'); window.scrollTo(0, r.getBoundingClientRect().top + window.scrollY - 360); return true;`);
+      await shot('sources-nas', { scrolled: true });
+      await ev(`$rowClick('pve-cluster', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #lim-par')`, 'limits fieldset');
+      await ev(`document.querySelector('dialog[open] #lim-par').closest('fieldset').scrollIntoView(); return true;`);
+      await shot('source-limits', { height: 1100, scrolled: true });
+      await closeDialogs();
+      await ev(`$rowClick('fs01-data', 'Split'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #sp-roots')`, 'split dialog');
+      await ev(`$fill('#sp-roots', '/Finance\\n/Projects\\n/Home'); $fill('#sp-pw', 'demo-password'); return true;`);
+      await shot('source-split');
+      await closeDialogs();
+      const jobs = (await api('GET', '/jobs')).body.filter((j) => j.kind === 'backup' && j.tenant === 'acme');
+      for (const j of jobs) {
+        const d = (await api('GET', `/jobs/${j.id}`)).body;
+        if (!/^(\d{4}-\d\d-\d\dT\S+ )?error /m.test(d.log ?? '')) continue;
+        await go(`/jobs/${j.id}`);
+        await until(`return document.body.innerText.includes('Skipped files (CSV)')`, 'skipped files link');
+        await shot('job-skipped-files');
+        break;
+      }
+      await go('/snapshots?tenant=initech&source=vm-102');
+      await until(`return document.body.innerText.includes('New VM identity')`, 'identity chip');
+      await shot('snapshots-identity');
+      await go('/snapshots?source=vm-100');
+      await ev(`$rowClick('vm-100', 'Restore'); return true;`);
+      await until(`return !!$button('Attach one disk')`, 'restore menu');
+      await ev(`$click('Attach one disk'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #idr-target')`, 'instant disk dialog');
+      await ev(`$fill('#idr-target', '101'); $fill('#idr-move', 'local-lvm'); return true;`);
+      await shot('snapshot-instant-disk', { height: 1000 });
+      await closeDialogs();
+      await go('/');
+      await until(`return !!document.querySelector('#prio-r')`, 'restore priority card');
+      await ev(`$fill('#prio-h', '8'); $fill('#prio-r', 'DR of the ERP cluster, ticket 4711'); $click('Turn on'); return true;`);
+      await confirmOk();
+      await until(`return document.body.innerText.includes('Restore priority until')`, 'restore priority banner');
+      await settle();
+      await shot('restore-priority');
+      await ev(`$click('Turn off'); return true;`);
+      await until(`return !document.body.innerText.includes('Restore priority until')`, 'restore priority off');
+    }],
     ['vault-close', async () => {
       await login('so');
       await go('/replication');

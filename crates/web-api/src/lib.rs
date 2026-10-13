@@ -40,18 +40,23 @@ pub mod impersonate;
 pub mod incident;
 pub mod inventory;
 pub mod jobs;
+pub mod nasops;
+pub mod network;
 pub mod offsite;
 pub mod oidc;
 pub mod ops;
 pub mod passkeys;
 pub mod plugins;
+pub mod priority;
 pub mod quorum;
+pub mod recovery;
 pub mod replication;
 pub mod reports;
 pub mod rescue;
 pub mod resources;
 pub mod restores;
 pub mod runctl;
+pub mod scan;
 pub mod search;
 pub mod selection;
 pub mod settings;
@@ -135,6 +140,8 @@ pub struct AppState {
     pub console_dir: std::sync::OnceLock<PathBuf>,
     /// nexus-disks control dir (default: env `NEXUS_DISKS_DIR` or /var/lib/nexus/disks)
     pub disks_dir: std::sync::OnceLock<PathBuf>,
+    /// nexus-net control dir (default: env `NEXUS_NET_DIR` or /var/lib/nexus/net)
+    pub net_dir: std::sync::OnceLock<PathBuf>,
     /// nexus-nft-sync status file (default: env `NEXUS_NFT_STATUS` or /run/nexus-nft-status/status.json)
     pub nft_status: std::sync::OnceLock<PathBuf>,
     /// `GET /dashboard` answers, ≤ 60 s old
@@ -170,6 +177,7 @@ impl AppState {
             config_backup_dir: std::sync::OnceLock::new(),
             console_dir: std::sync::OnceLock::new(),
             disks_dir: std::sync::OnceLock::new(),
+            net_dir: std::sync::OnceLock::new(),
             nft_status: std::sync::OnceLock::new(),
             dashboard: Default::default(),
             oidc: Default::default(),
@@ -519,6 +527,11 @@ pub fn router(st: St) -> Router {
         .route("/sources", get(list_sources).post(create_source))
         .route("/sources/{id}", put(update_source).delete(delete_source))
         .route("/sources/{id}/inventory", get(inventory::list))
+        .route("/sources/{id}/split", post(nasops::split))
+        .route(
+            "/restore-priority",
+            get(priority::get).put(priority::put).delete(priority::delete),
+        )
         .route("/policies", get(list_policies).post(create_policy))
         .route("/policies/{id}", put(update_policy).delete(delete_policy))
         .route("/groups", get(list_groups).post(create_group))
@@ -561,6 +574,29 @@ pub fn router(st: St) -> Router {
             post(changes::clear),
         )
         .route("/stats/trends", get(changes::trends))
+        .route("/snapshots/{tenant}/{source}/{time}/scan", post(scan::scan_snapshot))
+        .route("/scans", get(scan::list_scans))
+        .route("/scan/rules", get(scan::list_rules))
+        .route(
+            "/scan/rules/{name}",
+            axum::routing::put(scan::put_rule).delete(scan::delete_rule),
+        )
+        .route("/restore-tests", get(recovery::list_tests))
+        .route("/restore-tests/schedules", get(recovery::list_schedules))
+        .route(
+            "/restore-tests/schedules/{group_id}",
+            put(recovery::put_schedule).delete(recovery::delete_schedule),
+        )
+        .route("/recovery-plans", get(recovery::list_plans).post(recovery::create_plan))
+        .route(
+            "/recovery-plans/{id}",
+            put(recovery::update_plan).delete(recovery::delete_plan),
+        )
+        .route("/recovery-plans/{id}/readiness", post(recovery::readiness))
+        .route("/recovery-plans/{id}/test", post(recovery::test_run))
+        .route("/recovery-plans/{id}/execute", post(recovery::execute))
+        .route("/recovery-plans/{id}/runs", get(recovery::runs))
+        .route("/recovery-runs/{id}/report", get(recovery::report))
         .route(
             "/snapshots/{tenant}/{source}/{time}",
             axum::routing::delete(delete_snapshot),
@@ -569,6 +605,7 @@ pub fn router(st: St) -> Router {
         .route("/restores", post(restores::restore_many))
         .route("/jobs/{id}", get(get_job))
         .route("/jobs/{id}/cancel", post(cancel_job))
+        .route("/jobs/{id}/skipped.csv", get(nasops::skipped))
         .route("/downloads/{token}", get(download))
         .route("/quorum", get(list_quorum))
         .route("/console/unlock", get(console::list).post(console::request_unlock))
@@ -620,6 +657,7 @@ pub fn router(st: St) -> Router {
         .merge(firewall::routes())
         .merge(holds::routes())
         .merge(hardware::routes())
+        .merge(network::routes())
         .merge(tenants::routes())
         .merge(tenancy::routes())
         .merge(vault::routes())

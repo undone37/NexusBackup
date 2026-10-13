@@ -206,9 +206,10 @@ impl Read for Exec<'_> {
 impl Write for Exec<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         // a remote command that exited never opens the window again: give up after 10 minutes
-        let r = self.ssh.rt.block_on(async {
-            tokio::time::timeout(Duration::from_secs(600), self.ch.data_bytes(buf.to_vec())).await
-        });
+        let r = self
+            .ssh
+            .rt
+            .block_on(async { tokio::time::timeout(Duration::from_secs(600), self.ch.data_bytes(buf.to_vec())).await });
         match r {
             Ok(Ok(())) => {}
             Ok(Err(e)) => return Err(io::Error::new(io::ErrorKind::BrokenPipe, format!("ssh: {e}"))),

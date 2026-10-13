@@ -11,10 +11,12 @@
 #
 # Usage: register-app.sh [--name NAME] [--out DIR] [--days N]
 #                        [--cert FILE --key FILE] [--backup-only]
-#                        [--teams-messages] [--chats]
+#                        [--teams-messages] [--chats] [--entra]
 #   --backup-only     read permissions only (no restores into Microsoft 365)
 #   --teams-messages  ChannelMessage.Read.All (protected API: Microsoft must approve)
 #   --chats           Chat.Read.All + Chat.ReadBasic.All (protected, metered API)
+#   --entra           Device.Read.All + Application.Read.All (source option "Entra ID
+#                     directory objects"; groups and members use Group.Read.All)
 #   Several apps (source field "Further app registrations"): run it once per app
 #   with different names.
 set -euo pipefail
@@ -28,6 +30,7 @@ key=""
 backup_only=0
 teams_messages=0
 chats=0
+entra=0
 
 die() {
 	echo "register-app: $*" >&2
@@ -44,7 +47,8 @@ while [ $# -gt 0 ]; do
 	--backup-only) backup_only=1; shift ;;
 	--teams-messages) teams_messages=1; shift ;;
 	--chats) chats=1; shift ;;
-	-h | --help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+	--entra) entra=1; shift ;;
+	-h | --help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 	*) die "unknown option $1 (--help)" ;;
 	esac
 done
@@ -58,16 +62,17 @@ fi
 # Application permissions (docs/m365.md, "API permissions")
 if [ "$backup_only" = 1 ]; then
 	perms=(User.Read.All Mail.Read Calendars.Read Contacts.Read Sites.Read.All Files.Read.All
-		Team.ReadBasic.All Channel.ReadBasic.All)
+		Team.ReadBasic.All Channel.ReadBasic.All Group.Read.All)
 else
 	perms=(User.Read.All Mail.ReadWrite Calendars.ReadWrite Contacts.ReadWrite Sites.ReadWrite.All
-		Files.ReadWrite.All Team.ReadBasic.All Channel.ReadBasic.All)
+		Files.ReadWrite.All Team.ReadBasic.All Channel.ReadBasic.All Group.Read.All)
 fi
 if [ "$teams_messages" = 1 ]; then
 	perms+=(ChannelMessage.Read.All)
 	[ "$backup_only" = 1 ] || perms+=(Teamwork.Migrate.All Channel.Create)
 fi
 [ "$chats" = 1 ] && perms+=(Chat.Read.All Chat.ReadBasic.All)
+[ "$entra" = 1 ] && perms+=(Device.Read.All Application.Read.All)
 
 tenant=$(az account show --query tenantId -o tsv) || die "not signed in: az login --tenant <tenant> --allow-no-subscriptions"
 

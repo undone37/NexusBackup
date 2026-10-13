@@ -26,6 +26,9 @@ ReadWritePaths=-/var/lib/nexus/diag
 # hardware (Configuration -> Hardware): req-<id>.json for nexus-disks.path, status.json and
 # ops.json read back (2771 root:nexus-webapi, tmpfiles.d/nexus-disks.conf)
 ReadWritePaths=-/var/lib/nexus/disks
+# network (Settings -> Network): req-<id>.json and confirm.json for nexus-net, status.json and
+# ops.json read back (2771 root:nexus-webapi, tmpfiles.d/nexus-net.conf)
+ReadWritePaths=-/var/lib/nexus/net
 # console unlock codes (hash files, 0700 nexus-webapi; read + deleted by nexus-console-gate)
 ReadWritePaths=/var/lib/nexus/console-unlock
 # plugin uploads (docs/plugin-system.md): bundle + signature into the staging dir

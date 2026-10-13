@@ -158,6 +158,36 @@ export interface SourceConfig {
   fleecing_storage: string;
   /** Phase 18: fleecing space guard (absent fields = defaults 15 % / 20 GiB / 5 %) */
   fleecing_guard?: { min_free_pct?: number; min_free_gib?: number; cancel_free_pct?: number; interval_secs?: number };
+  /** Phase 22b: at most this many guests of the source at once (caps the groups' parallel guests, 1..=8) */
+  max_parallel?: number;
+  /** Phase 22b: at most n guests at once with a disk on the PVE storage */
+  storage_caps?: Record<string, number>;
+  read_limit?: ReadLimit;
+}
+
+/** Phase 22b: appliance-side read limit of a source (bytes/s + `limit` windows in `timezone`). */
+export interface ReadLimit {
+  bwlimit?: number;
+  windows?: { days: string[]; from: string; to: string; action: 'limit'; rate_bytes: number }[];
+  timezone?: string;
+}
+
+/** Phase 22b: sizing note of share / TrueNAS sources (newest backup's entries, RAM estimate). */
+export interface SourceSizing {
+  entries: number;
+  est_ram_bytes: number;
+  mem_total: number | null;
+  warn: boolean;
+}
+
+/** Phase 22b: the restore-priority switch (GET /restore-priority). */
+export interface RestorePriority {
+  active: boolean;
+  until?: number;
+  since?: number;
+  by?: string;
+  reason?: string;
+  max_hours: number;
 }
 
 /** Config of a `linux` source (a host with an enrolled backup agent). No secrets. */
@@ -204,6 +234,9 @@ export interface TrueNasSourceConfig {
   recursive: boolean;
   sudo: boolean;
   zfs_sudo: boolean;
+  /** Phase 22b "use existing snapshots": prefix of the periodic snapshots to back up (e.g. `auto-`) */
+  existing_snapshots?: string;
+  read_limit?: ReadLimit;
   /** returned by the API: the line for the TrueNAS user's "SSH public key" field */
   authorized_keys?: string;
 }
@@ -245,6 +278,7 @@ export interface ShareSourceConfig {
   threads?: number;
   xattrs?: boolean;
   timeout_secs?: number;
+  read_limit?: ReadLimit;
 }
 
 interface SourceBase {
@@ -253,6 +287,9 @@ interface SourceBase {
   name: string;
   /** Phase 13b: null = active, -1 = indefinitely, else unix time */
   maintenance_until?: number | null;
+  /** Phase 22b (share / TrueNAS sources): other listed sources backing up the same paths */
+  overlaps?: { id: number; name: string }[];
+  sizing?: SourceSizing | null;
 }
 export type PveSource = SourceBase & { kind: 'pve'; config: SourceConfig };
 export type LinuxSource = SourceBase & { kind: 'linux'; config: LinuxSourceConfig };
@@ -552,6 +589,7 @@ export type JobKind =
   | 'restore'
   | 'restore_ct'
   | 'instant_recover'
+  | 'instant_disk'
   | 'files_list'
   | 'files_get'
   | 'offsite'
@@ -708,6 +746,44 @@ export interface Snapshot {
   /** Phase 21d: number of referenced chunks that failed verify (null = healthy) */
   damaged?: number | null;
   damaged_at?: number | null;
+  /** Phase 21e: the latest YARA scan, null = never scanned */
+  scan?: SnapshotScanSummary | null;
+}
+
+export interface SnapshotScanSummary {
+  job: number;
+  finished: number;
+  matches: number;
+  /** false: the time budget ran out */
+  complete: boolean;
+}
+
+/** Restore option `scan_first` (Phase 21e): on a hit, refuse or restore with the NICs down. */
+export type ScanFirst = 'refuse' | 'link_down';
+
+/** One admin-supplied YARA rule file (GET /scan/rules). */
+export interface YaraRule {
+  name: string;
+  size: number;
+  sha256: string;
+  uploaded_by: string;
+  uploaded_at: number;
+}
+
+/** One finished scan (GET /scans). */
+export interface SnapshotScan {
+  job: number;
+  tenant: string;
+  source: string;
+  time: number;
+  finished: number;
+  rules: string;
+  files: number;
+  skipped: number;
+  errors: number;
+  complete: boolean;
+  matches_total: number;
+  matches: { rule: string; path: string }[];
 }
 
 export interface SnapshotAnomaly {
@@ -753,9 +829,17 @@ export interface SourceTrend {
 
 /** Plugin snapshot metadata (protocol v1.6 `SnapshotMeta`); known keys are shown. */
 export interface SnapshotMeta {
-  /** point-in-time restore range: unix seconds and LSNs (PostgreSQL cluster snapshots) */
-  /** positions: PostgreSQL LSNs; `unit: "binlog"` (MySQL/MariaDB, Phase 23b) = `file:position` */
+  /** point-in-time restore range: unix seconds and positions (PostgreSQL LSNs; `unit: "binlog"` = MySQL/MariaDB `file:position`, Phase 23b) */
   recoverable?: { from_time: number; to_time: number; from_lsn: string; to_lsn: string; timeline?: number; unit?: string };
+  /** Phase 22b: VM identity of a `vm-` snapshot; `changed` = the VMID was reused (new chain) */
+  identity?: {
+    vmgenid: string | null;
+    smbios_uuid: string | null;
+    changed: boolean;
+    previous: { vmgenid: string | null; smbios_uuid: string | null } | null;
+  };
+  /** Phase 22b: the TrueNAS snapshot a `nas-` snapshot was read from */
+  zfs_snapshot?: string;
   [k: string]: unknown;
 }
 
@@ -1247,6 +1331,8 @@ export interface Dashboard {
     last_verify: number | null;
     verify_failed: number;
   };
+  /** Phase 25: the newest restore test result per guest within the window */
+  restore_tests?: { tested: number; passed: number; failed: number; last: number | null; failing: { tenant: string; source: string; finished: number }[] };
 }
 
 /** GET /auth/oidc (no session). */
@@ -1664,4 +1750,185 @@ export interface Hardware {
   disks: HwDisk[];
   arrays: HwArray[];
   ops: HwOp[];
+}
+
+// Phase 22a: Settings → Network (GET /network, catalog::network)
+export type NetRole = 'management' | 'data' | 'replication';
+export interface NetRoute {
+  to: string;
+  via: string | null;
+}
+export interface NetIface {
+  name: string;
+  kind: 'ethernet' | 'bond' | 'vlan';
+  ports: string[];
+  mode: 'active-backup' | '802.3ad' | null;
+  parent: string | null;
+  vlan_id: number | null;
+  role: NetRole | null;
+  mtu: number | null;
+  dhcp: boolean;
+  addresses: string[];
+  gateway: string | null;
+  dns: string[];
+  routes: NetRoute[];
+}
+export interface NetConfig {
+  interfaces: NetIface[];
+  offsite_role: NetRole;
+}
+export interface NetDevice {
+  name: string;
+  kind: 'nic' | 'bond' | 'vlan' | 'bridge' | 'other';
+  mac: string;
+  mtu: number;
+  state: string;
+  speed: number | null;
+  master: string | null;
+  addresses: string[];
+}
+export interface NetMtuResult {
+  role: string;
+  addr: string;
+  dev: string | null;
+  expected_dev: string | null;
+  mtu: number | null;
+  result: 'ok' | 'mismatch' | 'no_reply' | 'no_route';
+  path_mtu: number | null;
+}
+export interface NetOp {
+  id: string;
+  op: 'apply' | 'mtu_check';
+  state: 'queued' | 'running' | 'confirming' | 'done' | 'refused' | 'error' | 'rolled_back';
+  by: string;
+  quorum_id: number | null;
+  created: number | null;
+  finished: number | null;
+  detail: string | null;
+  error: string | null;
+}
+export interface NetworkState {
+  available: boolean;
+  stale: boolean;
+  scanned: number | null;
+  devices: NetDevice[];
+  config: NetConfig;
+  management: { ifname: string | null; source: 'console' | 'config' } | null;
+  reset: number | null;
+  pending: { id: string; by: string; deadline: number; remaining: number } | null;
+  mtu: { ts: number; results: NetMtuResult[] } | null;
+  ops: NetOp[];
+  request_pending: number | null;
+  confirm_secs: number;
+  client_ip: string;
+}
+
+// ---- Phase 25: restore tests and recovery plans
+
+/** Checks of a restore test (VMs: guest agent, ports, command; containers: boot timeout only). */
+export interface RtChecks {
+  boot_timeout?: number;
+  agent?: boolean;
+  ports?: number[];
+  command?: string[];
+  expect_exit?: number;
+  command_timeout?: number;
+}
+
+export interface RtCheck {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+/** GET /restore-tests */
+export interface RestoreTest {
+  id: number;
+  tenant: string;
+  source: string;
+  time: number;
+  job_id: number;
+  run_id: number | null;
+  state: 'passed' | 'failed' | 'cancelled' | 'skipped';
+  started: number;
+  finished: number;
+  target: number | null;
+  name: string | null;
+  boot_secs: number | null;
+  checks: RtCheck[] | null;
+  error: string | null;
+  destroyed: boolean | null;
+}
+
+/** GET /restore-tests/schedules */
+export interface RtSchedule {
+  group_id: number;
+  group: string;
+  tenant: string;
+  every_days: number;
+  node: string;
+  storage: string;
+  bridge: string | null;
+  checks: RtChecks;
+  last_run: number | null;
+}
+
+export interface PlanStep {
+  source: string;
+  wave: number;
+  delay?: number;
+  checks?: RtChecks;
+  target?: number;
+}
+
+export interface Readiness {
+  ok: boolean;
+  at: number;
+  checks: RtCheck[];
+}
+
+/** GET /recovery-plans */
+export interface RecoveryPlan {
+  id: number;
+  tenant: string;
+  name: string;
+  source_id: number;
+  node: string;
+  storage: string;
+  test_bridge: string | null;
+  network_map: Record<string, string>;
+  steps: PlanStep[];
+  rpo_hours: number;
+  readiness: Readiness | null;
+  created: number;
+  created_by: string;
+  last_run: { id: number; mode: 'test' | 'execute'; state: string; started: number; finished: number | null } | null;
+}
+
+export interface RunResult {
+  source: string;
+  time?: number;
+  wave?: number;
+  target?: number | null;
+  name?: string;
+  state?: string;
+  started?: number;
+  finished?: number;
+  boot_secs?: number | null;
+  checks?: RtCheck[];
+  error?: string | null;
+  destroyed?: boolean | null;
+}
+
+/** GET /recovery-plans/{id}/runs */
+export interface RecoveryRun {
+  id: number;
+  mode: 'test' | 'execute';
+  state: 'running' | 'passed' | 'failed' | 'cancelled';
+  requested_by: string;
+  quorum_id: number | null;
+  job_id: number | null;
+  results: RunResult[];
+  started: number;
+  finished: number | null;
 }

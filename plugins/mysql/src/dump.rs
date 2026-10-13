@@ -43,7 +43,10 @@ pub fn header(c: &mut Conn, db: &str) -> Result<String> {
          WHERE SCHEMA_NAME = {}",
         lit_str(db)
     ))?;
-    let r = r.into_iter().next().with_context(|| format!("database {db:?} not found"))?;
+    let r = r
+        .into_iter()
+        .next()
+        .with_context(|| format!("database {db:?} not found"))?;
     let get = |i: usize| r.get(i).cloned().flatten().unwrap_or_default();
     Ok(format!(
         "-- nexus: {}\n",
@@ -87,8 +90,7 @@ pub fn value(col: &Column, v: Option<&[u8]>, out: &mut Vec<u8>) {
 }
 
 fn strs(c: &mut Conn, sql: &str) -> Result<Vec<Vec<String>>> {
-    Ok(c
-        .query(sql)?
+    Ok(c.query(sql)?
         .into_iter()
         .map(|r| r.into_iter().map(Option::unwrap_or_default).collect())
         .collect())
@@ -129,11 +131,19 @@ fn object(w: &mut impl Write, drop: &str, env: &Env, body: &str, compound: bool)
                   collation_connection = @nexus_saved_co;\n";
     }
     if let Some(m) = env.sql_mode {
-        writeln!(w, "SET @nexus_saved_sql_mode = @@sql_mode;\nSET sql_mode = {};", lit_str(m))?;
+        writeln!(
+            w,
+            "SET @nexus_saved_sql_mode = @@sql_mode;\nSET sql_mode = {};",
+            lit_str(m)
+        )?;
         reset += "SET sql_mode = @nexus_saved_sql_mode;\n";
     }
     if let Some(tz) = env.tz {
-        writeln!(w, "SET @nexus_saved_tz = @@time_zone;\nSET time_zone = {};", lit_str(tz))?;
+        writeln!(
+            w,
+            "SET @nexus_saved_tz = @@time_zone;\nSET time_zone = {};",
+            lit_str(tz)
+        )?;
         reset += "SET time_zone = @nexus_saved_tz;\n";
     }
     if compound {
@@ -190,7 +200,11 @@ pub fn dump(c: &mut Conn, db: &str, w: &mut impl Write) -> Result<Stats> {
                 w,
                 "DROP TABLE IF EXISTS {0};\nDROP VIEW IF EXISTS {0};\nCREATE VIEW {0} AS SELECT {1};",
                 ident(name),
-                if cols.is_empty() { "1 AS `x`".into() } else { cols.join(", ") }
+                if cols.is_empty() {
+                    "1 AS `x`".into()
+                } else {
+                    cols.join(", ")
+                }
             )?;
             views.push(name.clone());
             continue;
@@ -287,7 +301,13 @@ pub fn dump(c: &mut Conn, db: &str, w: &mut impl Write) -> Result<Stats> {
                     tz: None,
                     charset: Some((&s[3], &s[4])),
                 };
-                object(w, &format!("DROP {} IF EXISTS {}", r[1], ident(&r[0])), &env, &s[2], true)?;
+                object(
+                    w,
+                    &format!("DROP {} IF EXISTS {}", r[1], ident(&r[0])),
+                    &env,
+                    &s[2],
+                    true,
+                )?;
                 st.routines += 1;
             }
             None => st.skipped.push(format!("{} {}", r[1].to_lowercase(), r[0])),
@@ -306,7 +326,13 @@ pub fn dump(c: &mut Conn, db: &str, w: &mut impl Write) -> Result<Stats> {
                     tz: None,
                     charset: Some((&s[3], &s[4])),
                 };
-                object(w, &format!("DROP TRIGGER IF EXISTS {}", ident(&r[0])), &env, &s[2], true)?;
+                object(
+                    w,
+                    &format!("DROP TRIGGER IF EXISTS {}", ident(&r[0])),
+                    &env,
+                    &s[2],
+                    true,
+                )?;
                 st.triggers += 1;
             }
             None => st.skipped.push(format!("trigger {}", r[0])),

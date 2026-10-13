@@ -123,8 +123,7 @@ pub fn binlog_on(c: &mut Conn) -> Result<bool> {
 
 /// Binary log files the server still has.
 pub fn binlogs(c: &mut Conn) -> Result<Vec<String>> {
-    Ok(c
-        .query("SHOW BINARY LOGS")?
+    Ok(c.query("SHOW BINARY LOGS")?
         .into_iter()
         .filter_map(|r| r.into_iter().next().flatten())
         .collect())
@@ -137,7 +136,13 @@ pub struct Report {
 }
 
 /// Backup of the server: incremental on top of the previous snapshot if possible, else full.
-pub fn backup(ctx: &Ctx, sink: &mut Sink, o: &Opts, ssh: impl FnOnce() -> Result<Ssh>, full_days: u64) -> Result<Report> {
+pub fn backup(
+    ctx: &Ctx,
+    sink: &mut Sink,
+    o: &Opts,
+    ssh: impl FnOnce() -> Result<Ssh>,
+    full_days: u64,
+) -> Result<Report> {
     let mut c = Conn::connect(o)?;
     if !binlog_on(&mut c)? {
         bail!(
@@ -172,7 +177,11 @@ pub fn backup(ctx: &Ctx, sink: &mut Sink, o: &Opts, ssh: impl FnOnce() -> Result
 fn incremental(ctx: &Ctx, sink: &mut Sink, c: &mut Conn, mut st: State) -> Result<Report> {
     sink.entry(b"base", meta(Kind::Dir, 0, st.full_time))?;
     for i in 0..st.base_pieces {
-        let len = if i + 1 == st.base_pieces { st.base_last } else { PIECE as u64 };
+        let len = if i + 1 == st.base_pieces {
+            st.base_last
+        } else {
+            PIECE as u64
+        };
         sink.unchanged(base_path(i).as_bytes(), meta(Kind::File, len, st.full_time))?;
     }
     sink.entry(b"binlog", meta(Kind::Dir, 0, st.full_time))?;
@@ -206,7 +215,10 @@ fn incremental(ctx: &Ctx, sink: &mut Sink, c: &mut Conn, mut st: State) -> Resul
 
 /// Parses `… binlog position: filename 'mysql-bin.000002', position '342'` of the tool's stderr.
 pub fn parse_position(stderr: &str) -> Option<(String, u64)> {
-    let l = stderr.lines().rev().find(|l| l.contains("binlog position: filename '"))?;
+    let l = stderr
+        .lines()
+        .rev()
+        .find(|l| l.contains("binlog position: filename '"))?;
     let rest = &l[l.find("filename '")? + 10..];
     let file = &rest[..rest.find('\'')?];
     let rest = &rest[rest.find("position '")? + 10..];
@@ -230,7 +242,11 @@ fn send_pieces(sink: &mut Sink, r: &mut impl Read, t0: u64) -> Result<(u64, u64,
         if len == 0 && n > 0 {
             return Ok((n, last, total));
         }
-        sink.file(base_path(n).as_bytes(), meta(Kind::File, len as u64, t0), &mut &buf[..len])?;
+        sink.file(
+            base_path(n).as_bytes(),
+            meta(Kind::File, len as u64, t0),
+            &mut &buf[..len],
+        )?;
         n += 1;
         last = len as u64;
         total += len as u64;
@@ -244,9 +260,16 @@ fn full(ctx: &Ctx, sink: &mut Sink, c: &mut Conn, o: &Opts, ssh: &Ssh, server: S
     let (tool, label) = if c.mariadb {
         ("t=$(command -v mariadb-backup || command -v mariabackup) || { echo 'mariadb-backup not found' >&2; exit 127; }", "mariadb-backup")
     } else {
-        ("t=$(command -v xtrabackup) || { echo 'xtrabackup (Percona XtraBackup) not found' >&2; exit 127; }", "xtrabackup")
+        (
+            "t=$(command -v xtrabackup) || { echo 'xtrabackup (Percona XtraBackup) not found' >&2; exit 127; }",
+            "xtrabackup",
+        )
     };
-    ctx.info(format!("base backup of {} {} with {label} over SSH", if c.mariadb { "MariaDB" } else { "MySQL" }, c.server_version));
+    ctx.info(format!(
+        "base backup of {} {} with {label} over SSH",
+        if c.mariadb { "MariaDB" } else { "MySQL" },
+        c.server_version
+    ));
     let t0 = now();
     let cnf = defaults_file(&o.user, &o.password);
     let mut e = ssh.exec(&with_defaults(
@@ -398,7 +421,10 @@ pub fn pull(
         }
         // MariaDB 11 writes end position 0 into the events inside a transaction: checked by the next one with a position
         if log_pos != 0 && (log_pos < size || log_pos - size != off) {
-            bail!("binlog dump: event at {cur}:{} does not continue {cur}:{off}", log_pos.saturating_sub(size));
+            bail!(
+                "binlog dump: event at {cur}:{} does not continue {cur}:{off}",
+                log_pos.saturating_sub(size)
+            );
         }
         buf.extend_from_slice(ev);
         off += size;
