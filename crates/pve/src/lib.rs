@@ -11,4 +11,5 @@ pub mod inventory;
 pub mod ir;
 pub mod parallel;
 pub mod restore;
+pub mod restoretest;
 pub mod restorevm;

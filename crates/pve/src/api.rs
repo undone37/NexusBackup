@@ -69,6 +69,21 @@ impl Api {
         self.send(self.http.post(format!("{}{path}", self.base)).form(form))
     }
 
+    /// DELETE returning a task UPID (guest destroy).
+    pub fn delete_task(&self, path: &str) -> Result<String> {
+        let upid = self.send(self.http.delete(format!("{}{path}", self.base)))?;
+        upid.as_str()
+            .map(str::to_owned)
+            .with_context(|| format!("DELETE {path} returned no UPID"))
+    }
+
+    /// `(running, pid)` of a guest (`status/current`).
+    pub fn guest_status(&self, node: &str, kind: &str, vmid: u32) -> Result<(bool, Option<u64>)> {
+        let st = self.get(&format!("/nodes/{node}/{kind}/{vmid}/status/current"))?;
+        let pid = st["pid"].as_u64().or_else(|| st["pid"].as_str()?.parse().ok());
+        Ok((st["status"].as_str() == Some("running"), pid))
+    }
+
     /// Stops a running task (`DELETE /nodes/{node}/tasks/{upid}`; the node is
     /// the UPID's second field). A task that already ended is left alone.
     pub fn stop_task(&self, upid: &str) -> Result<()> {
