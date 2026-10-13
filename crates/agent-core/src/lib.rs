@@ -14,6 +14,7 @@ pub mod limit;
 pub mod restore;
 pub mod server;
 pub mod tls;
+pub mod ui;
 pub mod update;
 
 use config::{ensure_dir, write_atomic, Paths, Settings};

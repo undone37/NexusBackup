@@ -36,7 +36,8 @@ fn default_port() -> u16 {
 }
 
 const COLS: &str = "id, tenant, name, host, port, enrolled_at, cert_sha256, token_expires, last_seen, version, os, \
-                    limits, cert_issued, cert_expires, cert_sha256_next IS NOT NULL";
+                    limits, cert_issued, cert_expires, cert_sha256_next IS NOT NULL, reachable, last_poll, power, \
+                    ui_policy, ui_policy_version, ui_policy_seen, laptop, missed_at, last_request";
 
 fn agent_row(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
     Ok(json!({
@@ -49,7 +50,19 @@ fn agent_row(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
         "limits": serde_json::from_str::<Value>(&r.get::<_, String>(11)?).unwrap_or_default(),
         "cert_issued": r.get::<_, Option<i64>>(12)?, "cert_expires": r.get::<_, Option<i64>>(13)?,
         "cert_renewal_pending": r.get::<_, bool>(14)?,
+        // Phase 24a endpoint status (crate::endpoint, scheduler endpoint.rs)
+        "reachable": r.get::<_, Option<bool>>(15)?, "last_poll": r.get::<_, Option<i64>>(16)?,
+        "power": json_col(r, 17)?,
+        "ui_policy": json_col(r, 18)?, "ui_policy_version": r.get::<_, i64>(19)?,
+        "ui_policy_seen": r.get::<_, Option<i64>>(20)?, "laptop": json_col(r, 21)?,
+        "missed_at": r.get::<_, Option<i64>>(22)?, "last_request": json_col(r, 23)?,
     }))
+}
+
+fn json_col(r: &catalog::rusqlite::Row, i: usize) -> catalog::rusqlite::Result<Value> {
+    Ok(r.get::<_, Option<String>>(i)?
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(Value::Null))
 }
 
 /// An agent as the API shows it (never the token digest), tenant-checked.

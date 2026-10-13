@@ -52,6 +52,34 @@ warnings (accepted): no man page, 0700 directories under `/etc`, maintainer scri
 repositories) is not done: there is no repository yet; the files are signed with cosign
 (docs/release.md).
 
+## Desktop package (`nexus-agent-desktop`)
+
+For Linux workstations and laptops: `nexus-agent-desktop_<v>-1_{amd64,arm64}.deb`,
+`nexus-agent-desktop-<v>-1.{x86_64,aarch64}.rpm` (release/packages.sh), depends on `nexus-agent` of the same version
+or newer. It installs `nexus-agent-gui` (crates/agent-gui; tray icon + status window, docs/endpoint-ui.md), the menu
+entry `/usr/share/applications/nexus-agent-gui.desktop` ("NexusBackup Agent", opens the window), the XDG autostart
+entry `/etc/xdg/autostart/nexus-agent-gui.desktop` (tray at every desktop login; a user switches it off with a copy
+containing `Hidden=true` in `~/.config/autostart/`) and the icon in `/usr/share/icons/hicolor/scalable/apps/`.
+
+- **Access:** the GUI reads the agent service's socket `/run/nexus-agent/ui.sock` (group `nexus-agent-ui`, 0660).
+  The package adds **nobody** to that group; the administrator decides who sees the status:
+  `usermod -aG nexus-agent-ui <user>` (effective after the next login). Without it the window says so.
+- **Binary:** glibc build on Debian 11 (`crates/agent-gui/build.sh`): runs on glibc ≥ 2.31 (Debian 11+, Ubuntu
+  20.04+, RHEL/Alma/Rocky 9+, Fedora, openSUSE Leap 15.4+). It links only glibc; the display libraries are loaded at
+  run time and are present on every desktop (package recommends): X11 or Wayland client libraries and xkbcommon
+  (Debian/Ubuntu: `libx11-6 libx11-xcb1 libxcursor1 libxrandr2 libxi6 libxkbcommon0 libxkbcommon-x11-0
+  libwayland-client0 libwayland-cursor0`; Fedora/RHEL: `libX11 libX11-xcb libXcursor libXrandr libXi libxkbcommon
+  libxkbcommon-x11 libwayland-client libwayland-cursor`; openSUSE: `libX11-6 libxkbcommon0 libwayland-client0`) and
+  a sans-serif font (DejaVu, Noto, …). Rendering is software (tiny-skia): no GPU driver or OpenGL needed.
+- **Tray:** StatusNotifierItem over D-Bus (pure Rust, no GTK or libappindicator): shown by KDE Plasma, Xfce, Cinnamon,
+  MATE, LXQt, Budgie; **GNOME needs the "AppIndicator and KStatusNotifierItem Support" extension** (Ubuntu ships it
+  enabled). Without a tray host the menu entry still opens the window; a second start only opens the window of the
+  running instance.
+- **Per-user settings:** `~/.config/nexus-agent-gui/settings.json` (notifications on failure/warning, off by
+  default; chart metric). Notifications go through the desktop's notification service (D-Bus).
+- Checked by `release/test-packages.sh`: refused without `nexus-agent`, installed with it on debian:13 and fedora,
+  `desktop-file-validate`, `--version`, no users added to `nexus-agent-ui`.
+
 ## Install from the bundle (any systemd distribution)
 
 ```

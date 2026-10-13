@@ -62,7 +62,7 @@ setup() {
 		 "pve_bin": "$BIN/nexus-pve", "offsite_bin": "$BIN/nexus-offsite",
 		 "agentctl_bin": "$BIN/nexus-agentctl", "agent_update_dir": "$ROOT/agent-update",
 		 "truenas_bin": "$BIN/nexus-truenas", "nas_bin": "$BIN/nexus-nas",
-		 "alerts_config": "$etc/alerts.json", "tick_secs": 5, "refresh_secs": 60}
+		 "alerts_config": "$etc/alerts.json", "tick_secs": 5, "refresh_secs": 60, "agent_poll_secs": 10}
 	EOF
 }
 

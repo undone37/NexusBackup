@@ -53,11 +53,24 @@
             <!-- self-update off: the MSI owns nexus-agent.exe (agent_core::update::package_marker) -->
             <File Id="PackageManaged" Name="package-managed" Source="package-managed.msi" KeyPath="yes" />
           </Component>
+          <!-- desktop UI (tray icon + status window, crates/agent-gui): started at every user
+               logon through the per-machine Run key (users can switch it off in Task Manager >
+               Startup); the Start menu entry opens the window -->
+          <Component Id="Gui" Guid="*" Win64="yes">
+            <File Id="GuiExe" Name="nexus-agent-gui.exe" Source="nexus-agent-gui.exe" KeyPath="yes" />
+            <!-- not advertised (a Shortcut nested in File becomes an advertised one in wixl) -->
+            <Shortcut Id="GuiStartMenu" Directory="ProgramMenuFolder" Name="NexusBackup Agent"
+                      Description="Backup status of this computer" Target="[#GuiExe]" Arguments="--open"
+                      WorkingDirectory="INSTALLDIR" />
+            <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                           Name="NexusBackupAgentGui" Type="string" Value="&quot;[INSTALLDIR]nexus-agent-gui.exe&quot;" />
+          </Component>
           <Component Id="Readme" Guid="*" Win64="yes">
             <File Id="Readme" Name="README.md" Source="README.md" KeyPath="yes" />
           </Component>
         </Directory>
       </Directory>
+      <Directory Id="ProgramMenuFolder" />
       <Directory Id="CommonAppDataFolder">
         <Directory Id="DataDir" Name="NexusAgent">
           <Directory Id="ConfigDir" Name="config">
@@ -72,6 +85,7 @@
     <Feature Id="Complete" Title="NexusBackup Agent" Level="1">
       <ComponentRef Id="Agent" />
       <ComponentRef Id="Marker" />
+      <ComponentRef Id="Gui" />
       <ComponentRef Id="Readme" />
       <?include keyrefs.wxi ?>
     </Feature>

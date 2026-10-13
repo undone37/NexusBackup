@@ -380,5 +380,12 @@ fn run(paths: Paths, service: Option<()>) -> Result<(), String> {
         env!("CARGO_PKG_VERSION"),
         listener.local_addr().map_err(|e| e.to_string())?
     );
-    Arc::new(agent).serve(listener).map_err(|e| e.to_string())
+    let agent = Arc::new(agent);
+    let a = agent.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = super::pipe::serve(a) {
+            eprintln!("nexus-agent: local UI pipe {}: {e}", agent_ui_proto::PIPE_NAME);
+        }
+    });
+    agent.serve(listener).map_err(|e| e.to_string())
 }

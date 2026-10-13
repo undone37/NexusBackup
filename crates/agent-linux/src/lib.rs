@@ -3,6 +3,7 @@
 
 pub mod endpoint;
 pub mod hooks;
+pub mod power;
 pub mod restore;
 pub mod scan;
 pub mod server;

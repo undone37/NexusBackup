@@ -204,6 +204,18 @@ impl Schedule {
         best.unwrap_or(i64::MIN)
     }
 
+    /// First slot (unix seconds) after `now`, within the next 63 days (endpoint UIs).
+    pub fn next_slot(self, now: i64) -> Option<i64> {
+        let today = local(self.tz, now).date_naive();
+        (0..=63).map(|d| today + Duration::days(d)).find_map(|d| {
+            self.slots_on(d)
+                .into_iter()
+                .map(|(h, m)| to_utc(self.tz, d, h, m))
+                .filter(|t| *t > now)
+                .min()
+        })
+    }
+
     /// Due iff a slot passed since the last run (`last_run` = when the last
     /// scheduled job was queued, or when the scheduler first saw the item).
     pub fn due(self, last_run: i64, now: i64) -> bool {
@@ -766,6 +778,23 @@ mod tests {
         let ny = 20_089 * DAY; // 2025-01-01
         assert_eq!(m.last_slot(ny - 1), ny - DAY);
         assert_eq!(m.last_slot(ny), ny);
+    }
+
+    #[test]
+    fn next_slot() {
+        let s = p("daily 22:00");
+        assert_eq!(s.next_slot(D + 22 * HOUR - 1), Some(D + 22 * HOUR));
+        assert_eq!(
+            s.next_slot(D + 22 * HOUR),
+            Some(D + DAY + 22 * HOUR),
+            "strictly after now"
+        );
+        assert_eq!(
+            p("hourly 15").next_slot(D + 23 * HOUR + 20 * 60),
+            Some(D + DAY + 15 * 60)
+        );
+        let m = p("monthly 31 01:00");
+        assert!(m.next_slot(D).is_some_and(|t| t > D && t < D + 32 * DAY));
     }
 
     #[test]

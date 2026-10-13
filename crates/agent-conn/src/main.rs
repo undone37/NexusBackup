@@ -1,4 +1,4 @@
-//! `nexus-agentctl <config.json> enroll | backup | restore | update | hello | renew | fleet-scan |
+//! `nexus-agentctl <config.json> enroll | backup | restore | update | hello | renew | fleet-scan | poll |
 //! files <agent-id> <time> ls <dir> | files <agent-id> <time> get <out.tar|out.zip> <path>...`
 //!
 //! Spawned by the scheduler with a generated 0600 config (docs/agent-protocol.md
@@ -52,6 +52,21 @@ struct Config {
     fleet: Option<FleetCfg>,
     #[serde(default = "timeout")]
     timeout_secs: u64,
+    /// `poll`: the due agents (agent_conn::poll)
+    #[serde(default)]
+    poll: Option<PollCfg>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PollCfg {
+    agents: Vec<agent_conn::poll::Target>,
+    #[serde(default = "concurrency")]
+    concurrency: usize,
+}
+
+fn concurrency() -> usize {
+    8
 }
 
 /// `fleet-scan`: the fleet id, the file with the fleet secret digest, the addresses
@@ -181,7 +196,7 @@ impl Config {
 fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: nexus-agentctl <config.json> enroll | backup | restore | update | hello | renew | fleet-scan | files <agent-id> <time> ls <dir> | files <agent-id> <time> get <out.tar|out.zip> <path>...";
+    let usage = "usage: nexus-agentctl <config.json> enroll | backup | restore | update | hello | renew | fleet-scan | poll | files <agent-id> <time> ls <dir> | files <agent-id> <time> get <out.tar|out.zip> <path>...";
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
         bail!("{usage}");
     };
@@ -250,6 +265,17 @@ fn main() -> Result<()> {
                 f.targets.len(),
                 f.port,
                 t.elapsed()
+            );
+        }
+        ("poll", []) => {
+            let p = cfg.poll.as_ref().context("config: poll missing")?;
+            let ca = Ca::load_or_create(&cfg.ca_dir)?;
+            agent_conn::poll::poll_all(
+                &ca,
+                &p.agents,
+                p.concurrency,
+                Duration::from_secs(cfg.timeout_secs.min(60)),
+                &mut |v| println!("poll {v}"),
             );
         }
         ("hello", []) => {

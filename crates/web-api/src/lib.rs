@@ -29,6 +29,7 @@ pub mod config_backup;
 pub mod console;
 pub mod dashboard;
 pub mod diag;
+pub mod endpoint;
 pub mod firewall;
 pub mod fleet;
 pub mod forwarding;
@@ -537,6 +538,9 @@ pub fn router(st: St) -> Router {
         .route("/fleet/candidates", get(fleet::list_candidates))
         .route("/fleet/candidates/{id}/accept", post(fleet::accept_candidate))
         .route("/fleet/candidates/{id}/reject", post(fleet::reject_candidate))
+        .route("/agents/{id}/ui-policy", axum::routing::put(endpoint::set_ui_policy))
+        .route("/agents/{id}/laptop", axum::routing::put(endpoint::set_laptop))
+        .route("/agents/{id}/sessions", get(endpoint::agent_sessions))
         .route("/snapshots", get(list_snapshots))
         .route(
             "/snapshots/{tenant}/{source}/{time}",

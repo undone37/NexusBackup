@@ -53,7 +53,9 @@ CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_FOWNER CAP_CHOWN 
 # unshares its own mount namespace when started outside systemd)
 PrivateMounts=yes
 RuntimeDirectory=nexus-agent
-RuntimeDirectoryMode=0700
+# 0711: the local UI socket ui.sock (root:nexus-agent-ui 0660) must be reachable;
+# snapshot mount points below it stay private (PrivateMounts) and are not listable
+RuntimeDirectoryMode=0711
 StateDirectory=nexus-agent
 StateDirectoryMode=0700
 NoNewPrivileges=yes

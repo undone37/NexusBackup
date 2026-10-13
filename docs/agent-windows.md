@@ -112,6 +112,28 @@ from the appliance in the Windows firewall (GPO / Intune endpoint protection pro
 **Untested on Windows** like the rest of the MSI (see below); `release/test-packages.sh`
 checks the custom action row and its condition on Linux.
 
+## Desktop UI (`nexus-agent-gui.exe`)
+
+The MSI also installs the desktop UI from `crates/agent-gui` (shared with Linux desktops, docs/endpoint-ui.md):
+tray icon with the protection state and a Control Panel window (status, bar chart of the last 30 sessions, session
+details, "Request backup now"). It talks only to the agent service's named pipe `\\.\pipe\nexus-agent-ui` (local
+interactive users; nothing on the pipe changes configuration or reads backup data) and never to the network.
+
+- Cross-compiled with the agent's mingw builder image: `crates/agent-gui/build.sh` (also Linux x86_64/aarch64;
+  `--clippy` for the Windows target). iced with the tiny-skia software renderer (no GPU driver needed, works over RDP),
+  tray via tray-icon (Win32 notification area). Imports only Windows system DLLs (checked by the script); about 3.5 MB.
+- MSI: `C:\Program Files\NexusBackup Agent\nexus-agent-gui.exe`, Start menu entry "NexusBackup Agent" (`--open`), and
+  the **per-machine** Run key `HKLM\Software\Microsoft\Windows\CurrentVersion\Run\NexusBackupAgentGui`, so it starts
+  in the tray at every user logon (decision: the MSI is per machine and GPO/Intune deploy it in device context; a
+  per-user HKCU entry would need every user to run an installer). Users switch it off in Task Manager > Startup;
+  administrators remove the value by GPO. One instance per logon session (named mutex).
+- Updates: the GUI is replaced by the next MSI (major upgrade); a running GUI keeps the file in use, so Windows
+  Installer asks to close it (interactive) or replaces it at the next restart (`/qn`).
+- Desktop notifications on failed / warning backups are off by default; the setting is per user
+  (`%APPDATA%\NexusBackup\agent-gui.json`).
+- **Untested on Windows** like the agent itself (no Windows VMs): the tray, pipe access for non-admin users and the
+  Run key belong to the manual test plan below.
+
 ## Manual install (without the MSI)
 
 As Administrator, on the server:
@@ -419,3 +441,10 @@ controller (NTDS), Exchange on 2019 if available.
     refused; `msiexec /x … /qn` → service and Program Files gone, `%ProgramData%\NexusAgent`
     kept; reinstall → enrolled again; `msiexec /x … /qn PURGE=1` → `%ProgramData%\NexusAgent`
     gone. Deploy once through a GPO (computer software installation) and once through Intune.
+12. **Desktop UI:** after the MSI, log on as a non-admin user (also over RDP): tray icon appears
+    (Run key), tooltip shows the state; the Start menu entry opens the window; a second start
+    does not create a second tray icon; "Request backup now" queues a request (shown as
+    *Requested*, started by the next appliance poll), a second request within 10 minutes is
+    refused; stop the service → icon "not connected to the service"; enable notifications and
+    let a backup fail → toast; light/dark follow the Windows setting; keyboard-only operation
+    (arrows, T, B, R, N, Esc); uninstall while the GUI runs.

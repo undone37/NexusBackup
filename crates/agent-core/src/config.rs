@@ -5,7 +5,8 @@
 //! deployment, adopted at the next start), `agent.key` (private key, 0600), `enroll.crt` (self-signed, enrollment mode),
 //! `agent.crt` + `ca.crt` + `agent.id` (after enrollment), `hooks.d/{pre,post}/`,
 //! `release-keys/*.pub` (pinned cosign keys for self-update).
-//! `/var/lib/nexus-agent` (0700): `enroll.failures`, `cache/`, `spool/`, `snapshots.journal`.
+//! `/var/lib/nexus-agent` (0700): `enroll.failures`, `cache/`, `spool/`, `snapshots.journal`, `ui-state.json`.
+//! `/run/nexus-agent` (0711): snapshot mount points, `ui.sock` (root:nexus-agent-ui 0660).
 //!
 //! Windows: the same names below `%ProgramData%\NexusAgent\config` and `...\state`; the
 //! directory `%ProgramData%\NexusAgent` carries a protected ACL (SYSTEM + Administrators
@@ -100,6 +101,14 @@ impl Paths {
     }
     pub fn journal(&self) -> PathBuf {
         self.state.join("snapshots.journal")
+    }
+    /// session summaries, appliance status and queued requests for the endpoint UIs
+    pub fn ui_state(&self) -> PathBuf {
+        self.state.join("ui-state.json")
+    }
+    /// local IPC socket of the endpoint UIs (Linux)
+    pub fn ui_socket(&self) -> PathBuf {
+        self.run.join("ui.sock")
     }
 }
 

@@ -70,6 +70,7 @@ pub mod clock;
 mod config_backup;
 pub mod consistency;
 pub mod disks;
+mod endpoint;
 pub mod expiry;
 pub mod firewall;
 mod fleecing;
@@ -206,6 +207,10 @@ pub struct Config {
     pub forward_poll_secs: u64,
     /// nexus-disks status and operations (disks.rs; skipped while there is no status)
     pub disks_dir: PathBuf,
+    /// endpoint status poll of every enrolled agent (endpoint.rs); 0 = off
+    pub agent_poll_secs: u64,
+    /// agents polled at once
+    pub agent_poll_concurrency: usize,
     /// appliance configuration backup (config_backup.rs): schedule, control dir of
     /// nexus-config-backup (skipped when missing), how long a run may take
     pub config_backup: String,
@@ -261,6 +266,8 @@ impl Default for Config {
             inventory_secs: 3600,
             forward_poll_secs: 5,
             disks_dir: catalog::hardware::DIR.into(),
+            agent_poll_secs: 120,
+            agent_poll_concurrency: 8,
             config_backup: "daily 02:30".into(),
             config_backup_dir: lib.join("config-backup"),
             config_backup_timeout_secs: 1800,
@@ -368,6 +375,8 @@ pub struct Scheduler {
     anchor_day: Option<i64>,
     /// the tenants' compliance clocks, kept running (clock.rs)
     clock: clock::Keeper,
+    /// endpoint status poll of the agents (endpoint.rs)
+    poll: endpoint::PollState,
 }
 
 /// Agent ids: 16 lowercase hex characters (chosen by the web-api).
@@ -515,6 +524,7 @@ impl Scheduler {
             cancel_sent: HashMap::new(),
             anchor_day: None,
             clock: Default::default(),
+            poll: Default::default(),
             alert_tx,
             host: alerts::hostname(),
             now: catalog::now(),
@@ -729,6 +739,8 @@ impl Scheduler {
         self.log_err(|s| s.queue_inventory(now));
         self.log_err(|s| s.queue_fleet_scans(now));
         self.log_err(|s| s.queue_reports(now));
+        self.log_err(|s| s.collect_agent_poll(None));
+        self.log_err(|s| s.start_agent_poll(now));
         self.log_err(|s| s.queue_config_backup(now));
         self.log_err(|s| s.queue_rekeys(now));
         self.log_err(|s| s.start_jobs());
@@ -934,7 +946,7 @@ impl Scheduler {
             )?;
             // paused, source in maintenance, blackout: a slot that passed meanwhile runs afterwards
             if sched.due(last, now) && ctl.hold(now).is_none() {
-                self.insert_job("backup", &g.tenant, &json!({"group_id": g.id}))?;
+                self.queue_group_backup(&g, now)?; // laptop policies (endpoint.rs)
             }
         }
         Ok(())
@@ -1264,6 +1276,7 @@ impl Scheduler {
         if job.kind == "fleet_scan" {
             self.fleet_bookkeeping(&job, &log)?;
         }
+        self.endpoint_bookkeeping(&job, state, &log)?;
         if job.kind == "backup" {
             self.fleecing_bookkeeping(&job, &log)?;
         }
