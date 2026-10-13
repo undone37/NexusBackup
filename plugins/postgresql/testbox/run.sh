@@ -51,7 +51,7 @@ run() { # name, publish args…
 	local n=$1
 	shift
 	podman rm -f "$n" >/dev/null 2>&1 || true
-	podman run -d --name "$n" "$@" -v "$dir/box:/testbox:ro,Z" \
+	podman run -d --name "$n" --label nexus.checkout="$root" "$@" -v "$dir/box:/testbox:ro,Z" \
 		-e POSTGRES_PASSWORD="$(cat "$dir/postgres.secret")" -e NEXUS_PASSWORD="$(cat "$dir/nexus.secret")" \
 		"$IMG" >/dev/null
 }
@@ -67,8 +67,16 @@ ready() {
 	return 1
 }
 
+# containers of checkouts that no longer exist (deleted worktrees) are removed at every start
+prune() {
+	podman ps -a --filter label=nexus.checkout --format '{{.Names}} {{.Labels}}' 2>/dev/null |
+		sed -n 's/^\([^ ]*\) .*nexus\.checkout:\([^] ,]*\).*/\1 \2/p' |
+		while read -r n path; do [ -d "$path" ] || podman rm -f "$n" >/dev/null 2>&1 || true; done
+}
+
 case ${1:-} in
 start)
+	prune
 	secrets
 	podman build -q --build-arg BASE="docker.io/library/postgres:$PG" -t "$IMG" -f "$here/Containerfile" "$here" >/dev/null
 	run "$NAME" -p "127.0.0.1:$PORT:5432" -p "127.0.0.1:$SSH_PORT:22" -p "127.0.0.1:$REPLICA_PORT:5433"
@@ -77,6 +85,7 @@ start)
 	ready "$NAME-alt"
 	echo "pg-testbox up: PostgreSQL $PG on 127.0.0.1:$PORT (ssh $SSH_PORT), alternate on 127.0.0.1:$ALT_PORT"
 	;;
+prune) prune ;;
 stop) podman rm -f "$NAME" "$NAME-alt" >/dev/null 2>&1 || true ;;
 env)
 	[ -f "$dir/nexus.secret" ] || {

@@ -47,7 +47,7 @@ secrets() {
 run() { # flavor, db port, ssh port
 	local n=$NAME-$1
 	podman rm -f "$n" >/dev/null 2>&1 || true
-	podman run -d --name "$n" -p "127.0.0.1:$2:3306" -p "127.0.0.1:$3:22" -v "$dir/box:/testbox:ro,Z" \
+	podman run -d --name "$n" --label nexus.checkout="$root" -p "127.0.0.1:$2:3306" -p "127.0.0.1:$3:22" -v "$dir/box:/testbox:ro,Z" \
 		-e MARIADB_ROOT_PASSWORD="$(cat "$dir/root.secret")" -e MYSQL_ROOT_PASSWORD="$(cat "$dir/root.secret")" \
 		-e NEXUS_PASSWORD="$(cat "$dir/nexus.secret")" "localhost/nexus-my-testbox:$1" >/dev/null
 }
@@ -66,8 +66,16 @@ ready() {
 	return 1
 }
 
+# containers of checkouts that no longer exist (deleted worktrees) are removed at every start
+prune() {
+	podman ps -a --filter label=nexus.checkout --format '{{.Names}} {{.Labels}}' 2>/dev/null |
+		sed -n 's/^\([^ ]*\) .*nexus\.checkout:\([^] ,]*\).*/\1 \2/p' |
+		while read -r n path; do [ -d "$path" ] || podman rm -f "$n" >/dev/null 2>&1 || true; done
+}
+
 case ${1:-} in
 start)
+	prune
 	secrets
 	for f in mariadb mysql; do
 		podman build -q -t "localhost/nexus-my-testbox:$f" -f "$here/Containerfile.$f" "$here" >/dev/null
@@ -78,6 +86,7 @@ start)
 	ready mysql
 	echo "my-testbox up: MariaDB on 127.0.0.1:$MARIADB_PORT (ssh $MARIADB_SSH_PORT), MySQL on 127.0.0.1:$MYSQL_PORT (ssh $MYSQL_SSH_PORT)"
 	;;
+prune) prune ;;
 stop) podman rm -f "$NAME-mariadb" "$NAME-mysql" >/dev/null 2>&1 || true ;;
 env)
 	[ -f "$dir/nexus.secret" ] || {
