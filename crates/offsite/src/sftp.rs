@@ -72,11 +72,14 @@ pub struct SftpConfig {
     pub backoff: Duration,
 }
 
+/// Hetzner Storage Box SFTP port
+pub const DEFAULT_PORT: u16 = 23;
+
 impl SftpConfig {
     pub fn new(host: &str, user: &str, key_file: impl Into<PathBuf>, host_key: &str) -> Self {
         SftpConfig {
             host: host.into(),
-            port: 23,
+            port: DEFAULT_PORT,
             user: user.into(),
             key_file: key_file.into(),
             host_key: host_key.into(),

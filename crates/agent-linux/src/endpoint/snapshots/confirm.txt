@@ -1,0 +1,24 @@
+┌ NexusBackup Agent ───────────────────────────────────────────────────────────┐
+│Agent: web01                         Version: 0.6.0                           │
+│Appliance: 3f9a1c22                  Managed by: nexus01.example.com          │
+│Next run: 2026-10-13 22:00           Last success: 2026-10-13 02:05           │
+│State: Idle                                                                   │
+│Appliance contact: reachable                                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Latest backup sessions ──────────────────────────────────────────────────────┐
+│  Result ┌ Back up now ─────────────────────────────────────────────┐         │
+│> [+] Suc│Request a backup of this computer now?                    │         │
+│  [!] War│                                                          │         │
+│  [+] Suc│The appliance starts it at its next poll                  │         │
+│  [x] Fai│(usually within a few minutes).                           │         │
+│  [+] Suc│[Y] Request backup    [N] Cancel                          │         │
+│  [-] Can└──────────────────────────────────────────────────────────┘         │
+│  [+] Success   2026-10-07 02:05     15:09      1.2 GiB         0             │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ Y  Request backup   N  Cancel

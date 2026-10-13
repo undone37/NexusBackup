@@ -548,6 +548,21 @@ async function main() {
       await shot('snapshot-m365-other-tenant');
       await closeDialogs();
     }],
+    // Phase 19c: mail export of a mailbox snapshot as Outlook PST (contract v1.9 download with conversion)
+    ['m365-export', async () => {
+      const sources = (await api('GET', '/sources')).body;
+      const m = sources.find((s) => s.name === 'm365-acme');
+      const src = `plugin-m365-${m.id}-u.0c9d1c7a-1111-4222-8333-444455556666`;
+      const snaps = (await api('GET', `/snapshots?source=${src}`)).body;
+      const time = Math.max(...snaps.filter((x) => x.local).map((x) => x.time));
+      await go(`/files?tenant=acme&source=${src}&time=${time}&path=/`);
+      await until(`return !!$button('mail/') && !!document.querySelector('fieldset select')`, 'mailbox listing with conversion', 30000);
+      await ev(`document.querySelector('input[aria-label="Select mail"]').click(); document.querySelector('input[aria-label="Select recoverable"]').click(); $fill('#fmt', 'zip'); $fill('fieldset select', 'pst'); return true;`);
+      await ev(`$click('Prepare download'); return true;`);
+      await until(`return !!$button('Download ')`, 'download ready', 30000);
+      await settle();
+      await shot('files-m365-pst', { height: 1100 });
+    }],
     ['storage', async () => {
       await go('/storage');
       await until(`return !!document.querySelector('#s-group-table')`, 'storage page');
@@ -794,6 +809,10 @@ async function main() {
       await ev(`$click('Create bundle'); return true;`);
       await until(`return [...document.querySelectorAll('.chip')].some((c) => c.textContent.trim() === 'Ready')`, 'support bundle ready');
       await shot('settings-diagnostics', { height: 1700 });
+      // appliance configuration backup: seeded daily runs and uploads to the tenants' offsite targets
+      await go('/settings?tab=configBackup');
+      await until(`return !!document.querySelector('#cfgb-runs-h') && document.querySelectorAll('tbody tr').length > 2`, 'config backup runs');
+      await shot('settings-config-backup', { height: 1300 });
     }],
     ['console', async () => {
       // emergency console root access (14c): request, approval, the code shown once, the banner while the shell runs

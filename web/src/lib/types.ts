@@ -1186,6 +1186,28 @@ export interface DiagCheck {
   manual: string;
 }
 
+/** one config_backup / config_upload job (GET /settings/config-backup) */
+export interface ConfigBackupRun {
+  id: number;
+  kind: 'config_backup' | 'config_upload';
+  state: string;
+  created: number;
+  finished: number | null;
+  requested_by: string;
+  target: string | null;
+  result: { bytes?: number; files?: string[] | number } | null;
+}
+
+/** GET /settings/config-backup */
+export interface ConfigBackupStatus {
+  appliance_id: string | null;
+  last_success: number | null;
+  running: boolean;
+  latest: { appliance: string; created: number; bytes: number; sha256: string | null; files: number | null } | null;
+  targets: { tenant: string; last: ConfigBackupRun | null; last_ok: number | null }[];
+  runs: ConfigBackupRun[];
+}
+
 /** GET /diagnostics/{id} */
 export interface DiagRun {
   id: string;

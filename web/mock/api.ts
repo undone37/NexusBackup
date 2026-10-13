@@ -275,6 +275,8 @@ const db = {
   pullAuth: null as null | { username: string },
   /** Phase 14b diagnostics runs (GET /diagnostics) */
   diag: [] as Json[],
+  /** appliance configuration backup: the bundle on disk (latest.json of nexus-config-backup) */
+  cfgBackup: { appliance_id: null as string | null, latest: null as Json | null },
   /** Phase 13e setting `anomaly` */
   anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30 } as Json,
   /** Phase 14a setting `forwarding` (header values: plaintext here, null in responses) */
@@ -438,6 +440,15 @@ function planFor(kind: string, p: Json): string[] {
         'attach: keys recovered, 37 packs and 5 snapshots indexed',
       ];
     case 'files_get':
+      if (p.params?.mail_format)
+        // contract v1.9: the plugin converts (no secrets, no network), the host packs its output
+        return [
+          `$ nexus-pluginhost plugin.json export ${p.download_token}.${p.format} ${(p.paths ?? []).join(' ')}`,
+          'sandbox: landlock ABI 6 (tcp ports), seccomp allowlist, no_new_privs, memory 2048 MiB',
+          `plugin: converting mail as ${p.params.mail_format}${p.params.mail_format === 'pst' ? ` (files of at most ${p.params.pst_max_gb ?? 20} GB)` : ''}`,
+          `exported {"files": 4, "summary": "exported 5 messages as ${p.params.mail_format === 'pst' ? 'PST (u.0c9d1c7a-1111-4222-8333-444455556666.pst)' : 'mbox (4 folders)'}, 4 other items as stored"}`,
+          '4 entries written',
+        ];
       return [`mounting ${src} @ ${p.time}`, `packing ${(p.paths ?? []).length} path(s) as ${p.format}`, 'archive ready'];
     case 'restore':
     case 'restore_ct': {
@@ -503,6 +514,7 @@ function tick() {
       if (j.kind.startsWith('plugin_')) pluginResult(j, t);
       if (j.kind === 'inventory' || j.kind === 'plugin_guests') inventoryResult(j, t);
       if (j.kind === 'report_send') reportSent(j);
+      if (j.kind === 'config_backup') cfgBackupDone(j, t);
       if (j.kind.startsWith('offsite_')) offsiteResult(j, t);
       const ag = db.agents.find((a) => a.id === j.params.agent_id);
       if (j.kind === 'agent_enroll' && ag) {
@@ -658,6 +670,25 @@ function listDir(path: string, source: string): Json[] {
           '/data': [d('base'), d('global'), d('pg_wal'), f('PG_VERSION', 3), f('backup_manifest', 412_771), f('postgresql.auto.conf', 88)],
           '/wal': [f('00000001000000A200000041', 16 << 20), f('00000001000000A200000042', 16 << 20), f('00000001000000A200000043', 16 << 20)],
         };
+    return tree[path] ?? [];
+  }
+  if (source.startsWith('plugin-m365-')) {
+    // plugins/m365: a user's mailbox + OneDrive (mail as .eml per folder, docs/m365.md)
+    const tree: Record<string, Json[]> = {
+      '/': [d('calendar'), d('contacts'), d('mail'), d('onedrive'), d('recoverable')],
+      '/mail': [d('Inbox'), d('Sent Items')],
+      '/mail/Inbox': [d('Projects'), f('Quarterly report ~3f9a0c1d2e4b.eml', 412_771), f('Lunch on Friday ~9c1e22a0b7d4.eml', 6_211)],
+      '/mail/Inbox/Projects': [f('Kickoff agenda ~1b0e9d7c33a2.eml', 88_412)],
+      '/mail/Sent Items': [f('Re: Quarterly report ~77ad01c4e9b0.eml', 9_870)],
+      '/recoverable': [d('Deletions')],
+      '/recoverable/Deletions': [f('Old newsletter ~5e2c0f8a9d11.eml', 31_220)],
+      '/calendar': [d('Calendar')],
+      '/calendar/Calendar': [f('2026-10-12 Planning ~5eb8a464f306.ics', 2_104)],
+      '/contacts': [d('Contacts')],
+      '/contacts/Contacts': [f('Bob Builder ~0a1b2c3d4e5f.vcf', 611)],
+      '/onedrive': [d('Documents')],
+      '/onedrive/Documents': [f('budget-2026.xlsx', 501_877)],
+    };
     return tree[path] ?? [];
   }
   if (source.startsWith('nas-') || source.startsWith('share-') || source.startsWith('plugin-truenas-')) {
@@ -1415,6 +1446,7 @@ function seed() {
   seedPhase14d2(t);
   seedReports(t);
   seedDiag(t);
+  seedCfgBackup(t);
   seedConsole(t);
   seedTenantKeys(t);
   seedHolds(t);
@@ -1473,7 +1505,7 @@ function seedM365(t: number) {
   if (start + 540 <= t) {
     const stamp = (i: number) => new Date((start + 2 + i * 90) * 1000).toISOString();
     const lines = [
-      'starting nexus-pluginhost: m365 1.2.0 (sandbox: landlock + seccomp)',
+      'starting nexus-pluginhost: m365 1.3.0 (sandbox: landlock + seccomp)',
       `base ${user}/${start - 86400} (18,422 entries)`,
       'plugin[warn]: skipped mail/Inbox/Quarterly report ~3f9a0c1d2e4b.eml: GET /v1.0/users/…/messages/…/$value: 500 ErrorInternalServerError',
       'plugin[warn]: skipped onedrive/Projects/model.xlsx: GET /v1.0/drives/…/items/…/content: 503 serviceNotAvailable',
@@ -3494,6 +3526,18 @@ on('POST', '/jobs', async (c) => {
   if (kind === 'files_list' && !String(params.path ?? '').startsWith('/')) throw new HttpError(400, 'path: must be absolute');
   checkJob(u, kind, tenant, params);
   if (kind === 'files_get' && !canDownload(u)) throw new HttpError(403, 'this account may not download files');
+  if (kind === 'files_get' && params.params && Object.keys(params.params).length) {
+    // contract v1.9: only plugin snapshots whose `download` has a params_schema (web-api jobs.rs)
+    const pid = /^plugin-([a-z0-9-]+?)-\d+/.exec(String(params.source ?? ''))?.[1];
+    const plugin = db.plugins.find((x: Json) => x.id === pid && x.current);
+    const schema = plugin?.manifest?.kinds?.[0]?.restores?.find((r: Json) => r.id === 'download')?.params_schema;
+    if (!schema) throw new HttpError(400, "params: this snapshot's download takes no parameters");
+    for (const [k, v] of Object.entries(params.params as Json)) {
+      const prop = schema.properties?.[k];
+      if (!prop) throw new HttpError(400, `params: unknown field ${k}`);
+      if (prop.enum && !prop.enum.includes(v)) throw new HttpError(400, `params.${k}: one of ${prop.enum.join(', ')}`);
+    }
+  }
   if (PAUSED_KINDS.includes(kind) && tenantOff(tenant)) throw new HttpError(409, `tenant ${tenant} is deactivated: no ${kind} jobs until it is reactivated`);
   if (kind === 'backup') backupGuests(params);
   if (params.replace) {
@@ -4953,6 +4997,71 @@ on('GET', '/diagnostics/:id', (c, [id]) => {
   const v = diagView(u, find(db.diag, (x) => x.id === id, 'diagnostics run'));
   if (!v) throw new HttpError(404, 'diagnostics run not found');
   return [200, v];
+});
+
+// ---- appliance configuration backup (Settings -> Backup of this appliance)
+const cfgTargets = () => db.tenants.filter((x) => x.offsite?.remote).map((x) => x.name);
+const CFG_FILES = 14;
+function cfgBackupDone(j: Job, t: number) {
+  const c = db.cfgBackup;
+  c.appliance_id ??= '3f9a0c51d2e8b746';
+  c.latest = { appliance: c.appliance_id, created: t, bytes: 1_843_200 + Math.floor(Math.random() * 20_000), sha256: rand(32), files: CFG_FILES };
+  j.result = { appliance: c.appliance_id, created: t, bytes: c.latest.bytes, sha256: c.latest.sha256, files: CFG_FILES };
+  for (const target of cfgTargets())
+    addJob('config_upload', '-', { target, appliance: c.appliance_id, created: t, backup_job: j.id }, 'scheduler', {
+      plan: [`uploaded config/${c.appliance_id}/${t}.bundle (${c.latest.bytes} bytes)`],
+      duration: 3,
+    });
+}
+function seedCfgBackup(t: number) {
+  for (const d of [2, 1]) {
+    const at = t - d * 86400 + 3600;
+    const j = addJob('config_backup', '-', {}, 'scheduler', { state: 'ok', created: at, started: at, finished: at + 6, log: 'nexus-config-backup: bundle sealed' });
+    cfgBackupDone(j, at + 6);
+    for (const u of db.jobs.filter((x) => x.kind === 'config_upload' && x.state === 'queued'))
+      Object.assign(u, { state: 'ok', created: at + 6, started: at + 7, finished: at + 12, log: u.plan.join('\n') });
+  }
+}
+const cfgReader = (c: { user: User | null }) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  if (u.tenant) throw new HttpError(403, 'appliance-wide');
+  return u;
+};
+const cfgRun = (j: Job) => ({ id: j.id, kind: j.kind, state: j.state, created: j.created, finished: j.finished, requested_by: j.requested_by, target: j.params.target ?? null, result: j.result ?? null });
+on('GET', '/settings/config-backup', (c) => {
+  cfgReader(c);
+  const jobs = db.jobs.filter((j) => j.kind === 'config_backup' || j.kind === 'config_upload');
+  const last = (pred: (j: Job) => boolean) => jobs.filter(pred).at(-1) ?? null;
+  const okAt = (pred: (j: Job) => boolean) => last((j) => pred(j) && j.state === 'ok')?.finished ?? null;
+  return [200, {
+    appliance_id: db.cfgBackup.appliance_id,
+    last_success: okAt((j) => j.kind === 'config_backup'),
+    running: jobs.some((j) => j.kind === 'config_backup' && ['queued', 'running'].includes(j.state)),
+    latest: db.cfgBackup.latest,
+    targets: cfgTargets().map((tenant) => {
+      const mine = (j: Job) => j.kind === 'config_upload' && j.params.target === tenant;
+      const l = last(mine);
+      return { tenant, last: l && cfgRun(l), last_ok: okAt(mine) };
+    }),
+    runs: jobs.slice(-20).reverse().map(cfgRun),
+  }];
+});
+on('POST', '/settings/config-backup/run', async (c) => {
+  const u = need(c.user, 'admin');
+  if (u.tenant) throw new HttpError(403, 'appliance-wide');
+  if (db.jobs.some((j) => j.kind === 'config_backup' && ['queued', 'running'].includes(j.state))) throw new HttpError(409, 'a configuration backup is already queued or running');
+  const j = addJob('config_backup', '-', {}, u.name, { plan: ['request written', 'nexus-config-backup: catalog snapshot', 'nexus-config-backup: bundle sealed'], duration: 4 });
+  await audit(u.name, 'job.create', `job/${j.id}`, { kind: 'config_backup', params: {} });
+  return [202, { job_id: j.id }];
+});
+on('GET', '/settings/config-backup/download', async (c) => {
+  const u = need(c.user, 'admin');
+  if (u.tenant || !canDownload(u)) throw new HttpError(403, 'forbidden');
+  const l = db.cfgBackup.latest;
+  if (!l) throw new HttpError(404, 'not found');
+  await audit(u.name, 'download.get', `config_backup/${l.appliance}`, { kind: 'config_backup', bytes: l.bytes, created: l.created, sha256: l.sha256 });
+  c.res.setHeader('Content-Disposition', `attachment; filename="nexus-config-${l.appliance}-${l.created}.bundle"`);
+  return [200, 'NXCFGB1 (mock bundle: sealed to the recovery key)\n', 'application/octet-stream'];
 });
 
 // ---------------------------------------------------------------- hardware (Phase 16a/b)

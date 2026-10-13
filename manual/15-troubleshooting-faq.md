@@ -354,5 +354,5 @@ Schedules and retention periods use UTC. The web interface shows times in the br
 
 **Is the appliance production-ready?**
 Not yet. All functions run end to end in the lab, but real-hardware tests, a real Storage Box run, the external
-penetration test, TPM/LUKS disk encryption, an appliance configuration backup and the release key ceremony are still
+penetration test, TPM/LUKS disk encryption, a VM drill of the configuration restore and the release key ceremony are still
 open. The **Status** notes in each chapter say what is lab-only.

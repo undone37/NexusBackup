@@ -1,6 +1,6 @@
 # Project State
 
-_Last updated: 2026-10-11_
+_Last updated: 2026-10-13_
 
 ## Decisions (see plan.md §2, docs/adr.md)
 - License AGPL-3.0 · AEAD XChaCha20-Poly1305 · git + GitHub Actions
@@ -156,7 +156,7 @@ Decisions (user, 2026-10-09): order Linux agent → Windows agent → TrueNAS �
 - [x] Dependabot: lru upgraded 0.12.5 → 0.18.5 via ratatui 0.29 → 0.30.2 (first-boot TUI; builds unchanged, tests green); paste dropped; deny.toml ignores for lru/paste removed; cargo audit: only atomic-polyfill (unmaintained, allowed)
 
 ## Production gaps (deferred by user decision 2026-10-09: continue plan order first)
-SSH key management for sources, appliance config backup (catalog, totp.key, secrets.key), agent/TrueNAS cert renewal, minimal PVE token privileges, scale/soak tests on real hardware, multi-node PVE, GitHub push + CI + release, agent bundle in the image, TPM/LUKS, H-3 uid split; user-side: release key, real Storage Box, external pentest, pilot tenant
+SSH key management for sources, agent/TrueNAS cert renewal, minimal PVE token privileges, scale/soak tests on real hardware, multi-node PVE, GitHub push + CI + release, agent bundle in the image, TPM/LUKS, H-3 uid split; user-side: release key, real Storage Box, external pentest, pilot tenant
 
 ## Phase 7 — NAS (NFS/SMB) (merged 2026-10-09)
 - [x] `crates/nas`: helper `nexus-nasmount` (socket-activated per connection, CAP_SYS_ADMIN only, SELinux `nexus_nasmount_t`, SO_PEERCRED, fuzzed request parser) builds the mount with fsopen/fsconfig/fsmount (ro,nosuid,nodev,noexec,nosymfollow), never attaches it and hands the detached mount fd to the connector → kernel cleans up on exit; connector `nexus-nas` (`nexus_nas_t`): parallel deterministic scan, reuse by path/inode+size+mtime+ctime, inconsistent detection, NAS snapshot dirs, FastCDC, `share-<id>` Tree snapshots, tar/zip download (no restore to share in v1); catalog v6 kinds nfs/smb with sealed SMB password/keytab; scheduler, nft (2049/mountd, 445), UI, docs/nas-connector.md
@@ -321,3 +321,27 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 ## Urgent hardening (2026-10-12)
 - [x] GRUB password (ADR-013), fleecing guard, compliance clock fix + clock_skew, Splunk HEC + alert categories
 - [ ] VM labs for 16/17/18/hardening (grub-lock.sh, disks.sh, firewall step, offsite-fetch, PG 1.2.0 bundle, vault mode, windows)
+
+## Release candidate lab (2026-10-12/13, worktree at b481b7a)
+- [x] e2e all (incl. phase13, legal-hold, phase14d2, access, diag), firewall lockout + console reset, console gate, console-check
+- [x] forwarding lab found forward_test result dropped → fixed (5233b5a); rerun pending
+- [ ] disks.sh, grub-lock.sh, forwarding rerun, offsite-fetch, config-restore.sh
+
+## Phase 19 — Tier 3 (2026-10-13)
+- [x] 19b tenant_admin, policy tiers, view as tenant, immutable tenant uid + tombstones (v25, T30–T32)
+- [x] 19c mail export eml/mbox/PST (plugin contract v1.9, m365 1.3.0); Outlook import lab pending
+- [ ] 19a BMR/P2V (rescue agent, layout capture, PVE P2V)
+
+## Phase 20 — Agent packages (2026-10-12)
+- [x] .deb/.rpm x86_64+aarch64, MSI (wixl), release packages job, sign-blobs / verify --blobs
+- [x] manual chapters 16 (Linux agent) and 17 (Windows agent)
+
+## Configuration backup (2026-10-13)
+- [x] sealed daily bundle to offsite targets, `nexus-setup restore-config`, wizard key b, tenant key rekey from escrow; VM lab `lab/appliance/config-restore.sh` pending
+
+## Phase 24 — Endpoint UIs (2026-10-13)
+- [x] 24b Linux TUI + CLI (`nexus-agent tui|status|sessions|session|request-backup`, group nexus-agent-ui)
+- [ ] 24a protocol/IPC/poll, 24c GUI, 24d fleet enrollment
+
+## Phase 21 — Security and ransomware (2026-10-13)
+- [ ] 21a anomalous snapshots, file-level change signals, snapshot diff, sparklines
