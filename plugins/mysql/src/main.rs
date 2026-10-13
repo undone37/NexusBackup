@@ -1,4 +1,4 @@
-//! MySQL / MariaDB plugin (docs/mysql.md, plugins/mysql/README.md).
+//! MySQL / MariaDB plugin (docs/mysql.md).
 //!
 //! Guests are databases: a group with databases gets one logical dump per database
 //! (stream `<db>.sql`, restorable to the source or an alternate server), made by
