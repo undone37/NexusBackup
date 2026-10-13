@@ -289,10 +289,12 @@ step_phase13() {
 	expect 200 "pause group"
 	api admin GET /groups | jq -e --argjson id "$id" '.[] | select(.id == $id) | .paused_until == -1' >/dev/null || die "not paused"
 	log "auto group paused indefinitely"
-	# 13b: cancel a running backup; no snapshot may appear for it
+	# 13b: cancel a running backup; no snapshot may appear for it. Only ct-200 (a full
+	# vzdump read, ~1 min): vm-100's incremental finishes within seconds and is committed
+	# per guest before a cancel could reach it
 	local before
-	before=$(api admin GET "/snapshots?tenant=lab" | jq '[.[] | select(.source == "vm-100") | .time] | max')
-	r=$(api admin POST /jobs "$(jq -nc --argjson g "$grp" '{kind:"backup", tenant:"lab", params:{group_id:$g}}')")
+	before=$(api admin GET "/snapshots?tenant=lab" | jq '[.[] | select(.source == "ct-200") | .time] | max')
+	r=$(api admin POST /jobs "$(jq -nc --argjson g "$grp" '{kind:"backup", tenant:"lab", params:{group_id:$g, guests:[200]}}')")
 	id=$(jq -r .id <<<"$r")
 	for _ in $(seq 120); do
 		[ "$(api admin GET "/jobs/$id" | jq -r .state)" = running ] && break
@@ -304,7 +306,7 @@ step_phase13() {
 	j=$(wait_job admin "$id" 180)
 	[ "$(jq -r .state <<<"$j")" = cancelled ] || die "job $id: $(jq -r .state <<<"$j")"
 	sleep 5
-	[ "$(api admin GET "/snapshots?tenant=lab" | jq '[.[] | select(.source == "vm-100") | .time] | max')" = "$before" ] ||
+	[ "$(api admin GET "/snapshots?tenant=lab" | jq '[.[] | select(.source == "ct-200") | .time] | max')" = "$before" ] ||
 		die "a cancelled backup left a snapshot"
 	log "running backup #$id cancelled, no snapshot committed"
 	# 13f: lifecycle fields on alerts; 13a: a locked snapshot cannot be deleted
