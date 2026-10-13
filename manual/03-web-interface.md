@@ -463,6 +463,7 @@ when approvals are enabled.
 | **Certificate** | the web certificate (chain, fingerprints, expiry), a certificate request generated on the appliance, importing the signed certificate, reverting | [02 Installation](02-installation.md#use-your-own-certificate) |
 | **Forwarding** | the syslog-over-TLS and HTTPS (JSON) sinks that receive the audit log, alert events and finished jobs; **Send test message** | [10 Approvals and audit](10-approvals-and-audit.md#forwarding-to-a-siem) |
 | **Diagnostics** | **Run checks** (self-checks with a help link each; the same checks gate updates), **Create bundle** (redacted support bundle for a time range, administrators only, downloadable for 24 h) | [15 Troubleshooting](15-troubleshooting-faq.md#diagnostics-and-support-bundles) |
+| **Backup of this appliance** | the daily configuration backup (sealed with the recovery key): last successful run, newest bundle, upload per offsite target, recent runs; **Run now** and **Download latest** (administrators) | [14 Disaster recovery](14-disaster-recovery.md#the-configuration-backup) |
 | **Console access** | requests for an emergency root shell on the appliance console, **Show code** (once), **Revoke** (administrators and security officers only) | [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console) |
 | **Security** | session timeouts, dormant accounts, login banner; sessions of all users (administrators); a link to the firewall | [09 Users and access](09-users-and-access.md#sessions-and-sign-in-protection) |
 | **Firewall** | inbound rules per service (who may reach the web UI, ping), recent blocked attempts, the automatic outbound allow-list (read-only) | [02 Installation](02-installation.md#inbound-firewall) |
@@ -483,6 +484,7 @@ when approvals are enabled.
 ![Settings: Certificate](images/settings-certificate.png)
 ![Settings: Forwarding](images/settings-forwarding.png)
 ![Settings: Diagnostics](images/settings-diagnostics.png)
+![Settings: Backup of this appliance](images/settings-config-backup.png)
 ![Settings: Console access](images/settings-console.png)
 
 ![Settings: Security](images/settings-security.png)

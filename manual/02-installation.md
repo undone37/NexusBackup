@@ -399,8 +399,10 @@ These are open production items (see `state.md`, "Production gaps"):
   `/etc/nexus/ssh/pve.key`). These files must be placed there by root on the console (owner `nexus-chunkstore`, mode
   0600). For TrueNAS sources the key is entered in the web UI instead (see [04 Sources](04-sources.md)).
 - **SFTP keys for the Storage Box** are also files on the appliance; the web UI only takes the path.
-- **Appliance configuration backup:** the catalog (users, sources, policies) and the keys `totp.key` and
-  `secrets.key` are not backed up automatically (see [14 Disaster recovery](14-disaster-recovery.md)).
+- **Appliance configuration backup:** made daily and uploaded to the tenants' offsite targets; it opens only with
+  the recovery key. A replacement appliance restores it at first boot (key **b** on the wizard's overview, see
+  [14 Disaster recovery](14-disaster-recovery.md#new-appliance-from-a-configuration-backup)). Not yet run on an
+  installed appliance.
 - **Disk encryption:** LUKS2 with TPM unlock is deferred. Backup data is always encrypted per chunk, but the master
   key file (`kek.local`) is protected only by file permissions and SELinux, not by a TPM.
 - **Certificate renewal** for agents and TrueNAS pins is not automated. The appliance warns before agent,

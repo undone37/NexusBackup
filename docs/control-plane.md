@@ -12,6 +12,7 @@ console TUI first boot. Plan §11.
 | `nexus-setup` (console TUI, first boot) | root | keyd CLI, catalog DB, TLS files, creates the TOTP key | network until configured |
 | `nexus-console-gate` (tty2, Phase 14c) | root, domain `nexus_consolegate_t` | catalog DB (audit, alerts, banner setting), keyd files (recovery key check, read), `/var/lib/nexus/console-unlock` (read + delete), PID 1 (transient scope); starts the root shell (`unconfined_t`) | network |
 | `nexus-tls` (oneshot, `nexus-tls.path`, Phase 14d) | root, no capabilities, group `nexus-webapi` | its request dir `/var/lib/nexus/tls` (0770 root:nexus-webapi), `/etc/nexus/tls/web.pem*` and `pending/` | network, catalog, the identity certificate/key `cert.pem`/`key.pem` (SELinux `nexus_tls_t`) |
+| `nexus-config-backup` (oneshot, `nexus-config-backup.path`) | root, only `CAP_DAC_READ_SEARCH`, group `nexus-catalog` | read: catalog, TOTP/secrets keys, agent CA, replication keys, `/etc/nexus/ssh`, TLS identity, keyd's published public key; write: `/var/lib/nexus/config-backup` (sealed bundle) | network, keyd socket and state, stores, escrow, downloads (SELinux `nexus_cfgbackup_t`; see "Configuration backup") |
 | `nexus-disks` (oneshot, `nexus-disks.timer` + `.path`, Phase 16, docs/hardware.md) | root, CAP_SYS_RAWIO / SYS_ADMIN / DAC_READ_SEARCH, group `nexus-webapi` | block devices (smartctl, mdadm, mkfs.xfs, xfs_growfs), its dir `/var/lib/nexus/disks` (2771 root:nexus-webapi), the store's mount unit in `/etc/systemd/system`, stop/start of the scheduler and replicad around the mount | network, catalog, keys, store contents (SELinux `nexus_disks_t`) |
 | `nexus-replicad` (docs/replication.md) | `nexus-chunkstore` (group `nexus-replicad`, domain `nexus_replicad_t`) | tenant stores **read-only**, replication CA + token-sealing key `/var/lib/nexus/replicad`, its socket `/run/nexus-replicad/replicad.sock` (web-api uid only) | keyd, catalog, network |
 
@@ -730,7 +731,71 @@ appliance **without** the appliance recovery key (which opens every tenant).
 - **What the appliance holds:** the public key only (catalog + keyd dir). Root on the appliance gets the DEKs anyway
   (KEK), so the public key adds nothing there.
 - Continuing offsite copies from the rebuilt appliance into the **same** target is not supported (its `kek.recovery`
-  belongs to the old appliance): give the rebuilt tenant a new target or prefix.
+  belongs to the old appliance): give the rebuilt tenant a new target or prefix. (After a configuration restore the
+  KEK is the old one, so that appliance continues into the same targets.)
+
+## Configuration backup (`keyd::config_bundle`, `setup/src/cfgbackup.rs`, `scheduler/src/config_backup.rs`, `web-api/src/config_backup.rs`)
+Daily sealed bundle of the appliance configuration, so a replacement appliance can take over (manual chapter 14
+"New appliance from a configuration backup"; Veeam comparison item 1).
+
+- **Crypto.** keyd derives an X25519 key pair from the KEK (`blake3::derive_key("NexusBackup 2026 config-backup
+  x25519 v1", KEK)`) and, when `serve` starts, publishes the public key and the (already wrapped) `kek.recovery` as
+  `config-backup.pub` / `kek.recovery` (0644) in its runtime dir `/run/nexus-keyd` (0750 nexus-keyd). The helper seals
+  a random bundle key to the public key (crypto_box sealed box, as for tenant recovery escrow and replication DEK
+  exports) and encrypts the payload with XChaCha20-Poly1305 under it. Format: `NXCFGB1\0 | u32 n | header JSON
+  (clear) | u32 n | kek.recovery | u32 n | sealed bundle key | nonce | AEAD(zstd(entries))`, AAD = everything before
+  the nonce. Entries: path relative to `/`, file/dir, mode, user and group **names**, data. Opening: recovery key →
+  `kek.recovery` → KEK → X25519 secret → bundle key. The appliance creates bundles without the recovery key; the
+  helper never holds anything that opens one.
+- **Contents** (`cfgbackup::INCLUDE`): catalog snapshot (`VACUUM INTO` the helper's private /tmp, read-only
+  connection: consistent while the services write), `webapi/totp.key`, `scheduler/secrets.key`,
+  `scheduler/agent-ca/`, `scheduler/replica/`, `replicad/`, `/etc/nexus/ssh/`, `/etc/nexus/tls/{cert,key,web}.pem`,
+  `/etc/nexus/metrics-token`, plus the recorded parent directories. Plugin list and publisher keys are catalog rows.
+  Excluded: keyd's state (KEK, tenant DEKs: escrowed offsite), stores, escrow, offsite inventories, downloads,
+  plugin binaries and uploads, the pending CSR key, job configs.
+- **Helper** `nexus-config-backup` (root oneshot, `nexus-config-backup.path` on
+  `/var/lib/nexus/config-backup/request.json`; dir 2770 root:nexus-catalog): `CapabilityBoundingSet=CAP_DAC_READ_SEARCH`
+  only (reads the other services' 0600 key files, writes only its dir), `PrivateNetwork=yes`, `PrivateTmp=yes`,
+  `InaccessiblePaths=` keyd state, stores, escrow, downloads, staging, pending key, job configs. SELinux
+  `nexus_cfgbackup_t`: read-only on exactly the bundle's file types (the "only X reads Y" neverallows for the agent
+  CA, replication keys, scheduler secret and TOTP key name it as the one exception), the keyd runtime files but not
+  the socket, no sockets at all, no capability but `dac_read_search`; it writes `status.json` (per request),
+  `latest.json` + `latest.bundle` (0640) on success.
+- **Jobs.** `config_backup` (appliance job, daily `Config::config_backup` = `daily 02:30`, "Run now" in Settings):
+  writes the request (`{id, appliance}`), waits for `status.json` of that id (`config_backup_timeout_secs`, 30 min).
+  The appliance id is the setting `appliance_id` (16 hex digits, created on the first run; restored with the catalog).
+  On success one `config_upload {target, appliance, created}` per tenant with an offsite target (not deactivated):
+  `nexus-offsite <job cfg> config-put latest.bundle <id> <created>` → `config/<id>/<created>.bundle`, then retention
+  `offsite::config` (newest per day for 14 days + per month for 12 months, `chunkstore::retention::keep`); with
+  Object Lock put locked for 14 days, monthly keepers extended to the monthly lock; deleting a locked bundle is
+  logged, not an error. Alerts (warning, kind `config_backup`): key `config_backup` (bundle not made),
+  `config_backup:<tenant>` (upload failed); each resolves after the next success.
+- **API.** `GET /settings/config-backup` (admin, security officer; not tenant-scoped): appliance id, last success,
+  latest bundle, targets with last upload, last 20 runs. `POST /settings/config-backup/run` (admin; 409 while one is
+  queued/running). `GET /settings/config-backup/download` (admin with `can_download`): the latest bundle, audited
+  `download.get` `config_backup/<id>`; no approval (useless without the recovery key). None is open to API tokens.
+- **Restore** (`nexus-setup restore-config <bundle> | --offsite <target.json> [--appliance id]`, and key **b** on
+  the first-boot wizard's overview with a target form; refused once `setup-done` exists). Opens the bundle with the
+  recovery key (wrong key: nothing changed). If the wizard already ran `keyd init` and keyd holds no tenant keys, its
+  state is replaced. Files are staged in `/var/lib/nexus/.config-restore` with their recorded mode and owner and
+  renamed into place (the catalog after its `-wal`/`-shm` were removed; migrations run on open), then `restorecon -R
+  /var/lib/nexus /etc/nexus`: setup never gets read access to the key types. `kek.recovery` is installed and
+  `keyd::recover` re-seals the KEK: the recovery key stays the same. Plugin rows in a live state become `failed`
+  ("upload the plugin bundle again"). Setting `config_restore_keys` = tenants with an offsite target. Audit
+  `setup.restore_config`, boot menu password, `setup-done`, services enabled. The `--offsite` fetch opens the
+  outbound firewall for the target's addresses with `nft add element` (as nexus-update for the registry) and removes
+  them afterwards; for SFTP the wizard generates a throwaway ed25519 key and shows its public half. This is why
+  `nexus-setup.service` allows AF_INET/AF_INET6 and CAP_NET_ADMIN, and `nexus_setup_t` may connect to SSH/HTTP/
+  unreserved ports, resolve names, run nft and restorecon.
+- **Tenant keys after a restore.** The scheduler creates no DEK for a tenant in `config_restore_keys` and refuses
+  its jobs; it queues `config_rekey {target}`: `nexus-offsite rekey` reads `keys/tenants/<t>/dek.*` from the target
+  and sends them to keyd `import-wrapped <t> <len>` (`keyd::import_wrapped`: every file must unwrap under this KEK
+  with the tenant's label, so only this appliance's own keys go in; no recovery key; refused for replicated tenants
+  and conflicting versions), then rebuilds the offsite inventory. Success removes the tenant from the setting (audit
+  `tenant.keys_restored`); failure raises warning `config_restore:<t>` and retries after an hour. A tenant whose keys
+  keyd already has (console `nexus-offsite dr`) is released at the next tick.
+- Lab: `lab/appliance/config-restore.sh` (A backs up to the SFTP testbox; fresh B restores; tenant keys + offsite
+  snapshots on B).
 
 ## First boot (`nexus-setup`, console TUI)
 Network (NetworkManager, static/DHCP on the management NIC) → admin account + TOTP enrollment (QR in terminal, code confirmation) → second person: "create it now (recommended)" = security officer account + TOTP, entered at the console by that person, or "later" (audit `setup.second_person_later`; script mode `"second_person_later": true`) → `keyd init`: recovery key shown once, re-entry of 3 random groups required → TLS certificate (self-signed, SAN = hostname + IPs; fingerprint shown) → metrics token → `/var/lib/nexus/setup-done` (writes `settings.approvals_enabled`: enabled with two people, **disabled with a single administrator** — the TUI and the script output say so; audit `setup.approvals`) → enable `nexus-web-api`, `nexus-scheduler`, `nexus-keyd`, `nexus-replicad` (`nexus-nasmount.socket` is enabled by the image preset).

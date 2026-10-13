@@ -263,6 +263,8 @@ const db = {
   pullAuth: null as null | { username: string },
   /** Phase 14b diagnostics runs (GET /diagnostics) */
   diag: [] as Json[],
+  /** appliance configuration backup: the bundle on disk (latest.json of nexus-config-backup) */
+  cfgBackup: { appliance_id: null as string | null, latest: null as Json | null },
   /** Phase 13e setting `anomaly` */
   anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30 } as Json,
   /** Phase 14a setting `forwarding` (header values: plaintext here, null in responses) */
@@ -500,6 +502,7 @@ function tick() {
       if (j.kind.startsWith('plugin_')) pluginResult(j, t);
       if (j.kind === 'inventory' || j.kind === 'plugin_guests') inventoryResult(j, t);
       if (j.kind === 'report_send') reportSent(j);
+      if (j.kind === 'config_backup') cfgBackupDone(j, t);
       if (j.kind.startsWith('offsite_')) offsiteResult(j, t);
       const ag = db.agents.find((a) => a.id === j.params.agent_id);
       if (j.kind === 'agent_enroll' && ag) {
@@ -1398,6 +1401,7 @@ function seed() {
   seedPhase14d2(t);
   seedReports(t);
   seedDiag(t);
+  seedCfgBackup(t);
   seedConsole(t);
   seedTenantKeys(t);
   seedHolds(t);
@@ -4903,6 +4907,71 @@ on('GET', '/diagnostics/:id', (c, [id]) => {
   const v = diagView(u, find(db.diag, (x) => x.id === id, 'diagnostics run'));
   if (!v) throw new HttpError(404, 'diagnostics run not found');
   return [200, v];
+});
+
+// ---- appliance configuration backup (Settings -> Backup of this appliance)
+const cfgTargets = () => db.tenants.filter((x) => x.offsite?.remote).map((x) => x.name);
+const CFG_FILES = 14;
+function cfgBackupDone(j: Job, t: number) {
+  const c = db.cfgBackup;
+  c.appliance_id ??= '3f9a0c51d2e8b746';
+  c.latest = { appliance: c.appliance_id, created: t, bytes: 1_843_200 + Math.floor(Math.random() * 20_000), sha256: rand(32), files: CFG_FILES };
+  j.result = { appliance: c.appliance_id, created: t, bytes: c.latest.bytes, sha256: c.latest.sha256, files: CFG_FILES };
+  for (const target of cfgTargets())
+    addJob('config_upload', '-', { target, appliance: c.appliance_id, created: t, backup_job: j.id }, 'scheduler', {
+      plan: [`uploaded config/${c.appliance_id}/${t}.bundle (${c.latest.bytes} bytes)`],
+      duration: 3,
+    });
+}
+function seedCfgBackup(t: number) {
+  for (const d of [2, 1]) {
+    const at = t - d * 86400 + 3600;
+    const j = addJob('config_backup', '-', {}, 'scheduler', { state: 'ok', created: at, started: at, finished: at + 6, log: 'nexus-config-backup: bundle sealed' });
+    cfgBackupDone(j, at + 6);
+    for (const u of db.jobs.filter((x) => x.kind === 'config_upload' && x.state === 'queued'))
+      Object.assign(u, { state: 'ok', created: at + 6, started: at + 7, finished: at + 12, log: u.plan.join('\n') });
+  }
+}
+const cfgReader = (c: { user: User | null }) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  if (u.tenant) throw new HttpError(403, 'appliance-wide');
+  return u;
+};
+const cfgRun = (j: Job) => ({ id: j.id, kind: j.kind, state: j.state, created: j.created, finished: j.finished, requested_by: j.requested_by, target: j.params.target ?? null, result: j.result ?? null });
+on('GET', '/settings/config-backup', (c) => {
+  cfgReader(c);
+  const jobs = db.jobs.filter((j) => j.kind === 'config_backup' || j.kind === 'config_upload');
+  const last = (pred: (j: Job) => boolean) => jobs.filter(pred).at(-1) ?? null;
+  const okAt = (pred: (j: Job) => boolean) => last((j) => pred(j) && j.state === 'ok')?.finished ?? null;
+  return [200, {
+    appliance_id: db.cfgBackup.appliance_id,
+    last_success: okAt((j) => j.kind === 'config_backup'),
+    running: jobs.some((j) => j.kind === 'config_backup' && ['queued', 'running'].includes(j.state)),
+    latest: db.cfgBackup.latest,
+    targets: cfgTargets().map((tenant) => {
+      const mine = (j: Job) => j.kind === 'config_upload' && j.params.target === tenant;
+      const l = last(mine);
+      return { tenant, last: l && cfgRun(l), last_ok: okAt(mine) };
+    }),
+    runs: jobs.slice(-20).reverse().map(cfgRun),
+  }];
+});
+on('POST', '/settings/config-backup/run', async (c) => {
+  const u = need(c.user, 'admin');
+  if (u.tenant) throw new HttpError(403, 'appliance-wide');
+  if (db.jobs.some((j) => j.kind === 'config_backup' && ['queued', 'running'].includes(j.state))) throw new HttpError(409, 'a configuration backup is already queued or running');
+  const j = addJob('config_backup', '-', {}, u.name, { plan: ['request written', 'nexus-config-backup: catalog snapshot', 'nexus-config-backup: bundle sealed'], duration: 4 });
+  await audit(u.name, 'job.create', `job/${j.id}`, { kind: 'config_backup', params: {} });
+  return [202, { job_id: j.id }];
+});
+on('GET', '/settings/config-backup/download', async (c) => {
+  const u = need(c.user, 'admin');
+  if (u.tenant || !canDownload(u)) throw new HttpError(403, 'forbidden');
+  const l = db.cfgBackup.latest;
+  if (!l) throw new HttpError(404, 'not found');
+  await audit(u.name, 'download.get', `config_backup/${l.appliance}`, { kind: 'config_backup', bytes: l.bytes, created: l.created, sha256: l.sha256 });
+  c.res.setHeader('Content-Disposition', `attachment; filename="nexus-config-${l.appliance}-${l.created}.bundle"`);
+  return [200, 'NXCFGB1 (mock bundle: sealed to the recovery key)\n', 'application/octet-stream'];
 });
 
 // ---------------------------------------------------------------- hardware (Phase 16a/b)

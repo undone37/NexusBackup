@@ -2044,12 +2044,15 @@ dependencies = [
 name = "keyd"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "chacha20poly1305",
  "chunkstore",
  "crypto_box",
  "libc",
  "rand 0.8.8",
  "tempfile",
  "zeroize",
+ "zstd",
 ]
 
 [[package]]
@@ -3740,11 +3743,14 @@ name = "setup"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "catalog",
  "crossterm 0.28.1",
+ "ed25519-dalek",
  "keyd",
  "libc",
  "nftsync",
+ "offsite",
  "qrcode",
  "rand 0.8.8",
  "ratatui",

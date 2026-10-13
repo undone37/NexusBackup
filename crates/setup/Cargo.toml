@@ -13,13 +13,20 @@ path = "src/main.rs"
 name = "nexus-console-gate"
 path = "src/gate_main.rs"
 
+[[bin]]
+name = "nexus-config-backup"
+path = "src/cfgbackup_main.rs"
+
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 catalog = { path = "../catalog" }
 crossterm = "0.28"
+ed25519-dalek = "3"
 keyd = { path = "../keyd" }
 libc = "0.2"
 nftsync = { path = "../nftsync" }
+offsite = { path = "../offsite" }
 qrcode = { version = "0.14", default-features = false }
 rand = "0.8"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
