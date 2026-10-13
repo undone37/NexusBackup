@@ -104,6 +104,7 @@ const CATEGORY: &[(&str, &str)] = &[
     ("config", "backup"),
     ("vmid_reused", "backup"),
     ("restore_priority", "backup"),
+    ("index_backlog", "backup"),
     ("disk", "hardware"),
     ("fleecing_space", "hardware"),
 ];

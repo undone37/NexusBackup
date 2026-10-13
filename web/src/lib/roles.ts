@@ -45,6 +45,8 @@ export const can = {
   attachOffsite: (u: User | null) => u?.role === 'admin' || u?.role === 'security_officer',
   // YARA scan of a snapshot (21e): admins, operators, tenant admins and security officers
   scan: (u: User | null) => !!u && ['admin', 'operator', 'tenant_admin', 'security_officer'].includes(u.role),
+  // File search and index status (Phase 31b): admins, operators, tenant admins and tenant users
+  search: (u: User | null) => !!u && ['admin', 'operator', 'tenant_admin', 'tenant_user'].includes(u.role),
 };
 
 export const ROLES: Role[] = ['admin', 'security_officer', 'operator', 'tenant_admin', 'tenant_user', 'viewer'];

@@ -126,7 +126,14 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
     }
     // classify; PVs feed the LVM pass
     let mut todo: Vec<(Vol, Volume, Walker)> = Vec::new();
-    let classify = |vol: &Vol, mut info: Volume, ptype: &PType, texts: &mut Vec<String>, pvs: &mut lvm::PvMap, todo: &mut Vec<(Vol, Volume, Walker)>, reports: &mut Vec<Volume>, at: Option<(usize, u64)>| {
+    let classify = |vol: &Vol,
+                    mut info: Volume,
+                    ptype: &PType,
+                    texts: &mut Vec<String>,
+                    pvs: &mut lvm::PvMap,
+                    todo: &mut Vec<(Vol, Volume, Walker)>,
+                    reports: &mut Vec<Volume>,
+                    at: Option<(usize, u64)>| {
         let unsupported = |mut info: Volume, fs: &str, why: &str| {
             info.fs = fs.into();
             info.state = "unsupported".into();
@@ -135,10 +142,22 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
         };
         match ptype {
             PType::Reserved => return,
-            PType::Ldm => return reports.push(unsupported(info, "ldm", "Windows dynamic disk (LDM) is not indexed yet")),
-            PType::StorageSpaces => return reports.push(unsupported(info, "storage_spaces", "Storage Spaces are not indexed")),
+            PType::Ldm => {
+                return reports.push(unsupported(
+                    info,
+                    "ldm",
+                    "Windows dynamic disk (LDM) is not indexed yet",
+                ))
+            }
+            PType::StorageSpaces => {
+                return reports.push(unsupported(info, "storage_spaces", "Storage Spaces are not indexed"))
+            }
             PType::LinuxRaid => {
-                return reports.push(unsupported(info, "linux_raid_member", "Linux software RAID (md) is not indexed yet"))
+                return reports.push(unsupported(
+                    info,
+                    "linux_raid_member",
+                    "Linux software RAID (md) is not indexed yet",
+                ))
             }
             PType::Zfs => return reports.push(unsupported(info, "zfs_member", "ZFS inside the guest is not indexed")),
             _ => {}
@@ -166,7 +185,11 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
                         texts.extend(pv.text);
                         pvs.insert(pv.uuid, at);
                     }
-                    (Ok(_), None) => reports.push(unsupported(info, "LVM2_member", "LVM physical volume inside a logical volume")),
+                    (Ok(_), None) => reports.push(unsupported(
+                        info,
+                        "LVM2_member",
+                        "LVM physical volume inside a logical volume",
+                    )),
                     (Err(e), _) => {
                         info.fs = "LVM2_member".into();
                         info.state = "failed".into();
@@ -193,7 +216,16 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
     };
     for c in cands {
         let at = c.vol_disk_offset();
-        classify(&c.vol, c.info, &c.ptype, &mut texts, &mut pvs, &mut todo, &mut reports, Some(at));
+        classify(
+            &c.vol,
+            c.info,
+            &c.ptype,
+            &mut texts,
+            &mut pvs,
+            &mut todo,
+            &mut reports,
+            Some(at),
+        );
     }
     for lv in lvm::volumes(&texts, &pvs) {
         let info = Volume {
@@ -215,7 +247,16 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
                     size: vol.size(),
                     ..info
                 };
-                classify(&vol, info, &PType::Data, &mut texts, &mut pvs, &mut todo, &mut reports, None);
+                classify(
+                    &vol,
+                    info,
+                    &PType::Data,
+                    &mut texts,
+                    &mut pvs,
+                    &mut todo,
+                    &mut reports,
+                    None,
+                );
             }
         }
     }
@@ -293,7 +334,10 @@ impl Vol {
 fn seg_key(segs: &[Segment]) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for s in segs {
-        for x in [s.start, s.len, s.stripe].into_iter().chain(s.legs.iter().flat_map(|(d, o)| [*d as u64, *o])) {
+        for x in [s.start, s.len, s.stripe]
+            .into_iter()
+            .chain(s.legs.iter().flat_map(|(d, o)| [*d as u64, *o]))
+        {
             for b in x.to_le_bytes() {
                 h = (h ^ b as u64).wrapping_mul(0x100_0000_01b3);
             }

@@ -41,7 +41,10 @@ const ALLOWED: &[i64] = &[
 ];
 
 fn rlimit(res: libc::__rlimit_resource_t, v: u64) -> io::Result<()> {
-    let l = libc::rlimit { rlim_cur: v, rlim_max: v };
+    let l = libc::rlimit {
+        rlim_cur: v,
+        rlim_max: v,
+    };
     // SAFETY: plain system call with a valid pointer
     if unsafe { libc::setrlimit(res, &l) } != 0 {
         return Err(io::Error::last_os_error());
@@ -54,10 +57,15 @@ pub fn program() -> io::Result<BpfProgram> {
     let e = |e: seccompiler::BackendError| io::Error::other(format!("seccomp: {e}"));
     let arch = TargetArch::try_from(std::env::consts::ARCH).map_err(|e| io::Error::other(format!("seccomp: {e}")))?;
     let rules: BTreeMap<i64, Vec<SeccompRule>> = ALLOWED.iter().map(|s| (*s, Vec::new())).collect();
-    SeccompFilter::new(rules, SeccompAction::Errno(libc::EPERM as u32), SeccompAction::Allow, arch)
-        .map_err(e)?
-        .try_into()
-        .map_err(e)
+    SeccompFilter::new(
+        rules,
+        SeccompAction::Errno(libc::EPERM as u32),
+        SeccompAction::Allow,
+        arch,
+    )
+    .map_err(e)?
+    .try_into()
+    .map_err(e)
 }
 
 /// Confines the current process. `mem_mb`: address space; `cpu_secs`: CPU time.

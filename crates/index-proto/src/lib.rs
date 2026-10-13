@@ -23,7 +23,9 @@ pub const DEFAULT_LIMIT: usize = 50;
 pub enum Request {
     Search(SearchReq),
     /// Something changed in the tenant's store (commit, deletion, hold): sync soon.
-    Sync { tenant: String },
+    Sync {
+        tenant: String,
+    },
     /// The rules of the tenant's sources (scheduler, from the groups).
     Config {
         tenant: String,
@@ -34,7 +36,9 @@ pub enum Request {
         tenant: Option<String>,
     },
     /// Drop the tenant's index and build it again from the name indexes.
-    Rebuild { tenant: String },
+    Rebuild {
+        tenant: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
@@ -330,7 +334,9 @@ pub fn call(socket: &Path, req: &Request, timeout: Duration) -> io::Result<serde
     if let Some(e) = v.get("err") {
         return Err(io::Error::other(e.as_str().unwrap_or("nexus-index error").to_owned()));
     }
-    v.get("ok").cloned().ok_or_else(|| io::Error::other("nexus-index: malformed answer"))
+    v.get("ok")
+        .cloned()
+        .ok_or_else(|| io::Error::other("nexus-index: malformed answer"))
 }
 
 #[cfg(test)]
@@ -344,7 +350,8 @@ mod tests {
         assert_eq!((s.limit, s.mode, s.deleted), (DEFAULT_LIMIT, Mode::Auto, Deleted::Any));
         assert!(s.validate().is_ok());
         assert!(serde_json::from_str::<Request>(r#"{"op":"search","tenant":"t","bogus":1}"#).is_err());
-        let r: Request = serde_json::from_str(r#"{"op":"config","tenant":"t","sources":{"vm-1":{"exclude":["/data"]}}}"#).unwrap();
+        let r: Request =
+            serde_json::from_str(r#"{"op":"config","tenant":"t","sources":{"vm-1":{"exclude":["/data"]}}}"#).unwrap();
         let Request::Config { sources, .. } = r else { panic!() };
         assert!(sources["vm-1"].enabled && sources["vm-1"].defaults);
     }

@@ -10,6 +10,7 @@
 // (S3 Object Lock offsite, replicated to the peer "dr-site"), initech (Storage Box offsite) and globex
 // (replicated from the primary "hq-primary"). Only example domains (example.com/.net) and
 // documentation address ranges (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24) are used.
+// NEXUS_MOCK_INDEX_DOWN=1 simulates a stopped file search index (GET /files/search 503, Find files falls back).
 
 import type { Plugin } from 'vite';
 // The real manifests of the shipped plugins, so the demo's forms and restores match them.
@@ -206,8 +207,10 @@ interface MockGroup {
   /** Phase 13b */
   timezone?: string;
   paused_until?: number | null;
-  /** Phase 15g: index the files of VM/CT disks after each backup */
+  /** Phase 15g: index the files of VM/CT disks after each backup (Phase 31b: on by default for new pve groups) */
   index_files?: boolean;
+  /** Phase 31b: search scope (GET/PUT /groups/{id}/index-rules); absent = the defaults */
+  index_rules?: { defaults: boolean; include: string[]; exclude: string[] };
   /** Phase 15e/f */
   exclude_disks?: Record<string, string[]>;
   exclude_disks_mode?: 'placeholder' | 'omit';
@@ -634,7 +637,7 @@ function tick() {
         if (g?.index_files && gsrc?.kind === 'pve')
           for (const n of names) {
             const x = addJob('file_index', j.tenant, { source: n, time: t, source_id: gsrc.id }, 'scheduler');
-            x.plan = [`booting the restore micro-VM for ${n} @ ${t}`, 'walking the guest file systems', 'file index sealed and written'];
+            x.plan = [`listing the guest file systems of ${n} @ ${t} (sandboxed parser)`, 'file index sealed and written', 'search index updated'];
           }
         for (const a of db.agents) if (names.includes(`host-${a.id}`)) a.last_seen = t;
       }
@@ -716,8 +719,32 @@ function pluginResult(j: Job, t: number) {
   }
 }
 
+/** Phase 31b demo: the Windows VM (system volume vda2, a BitLocker data volume vdb1 the parser skips). */
+const WIN_VMS = new Set(['vm-101']);
 function listDir(path: string, source: string): Json[] {
   const t = now() - 86400 * 3;
+  // VM disks as the file browser shows them: partitions first (vda2 = the root or C: volume)
+  if (source.startsWith('vm-') && (path === '/vda2' || path.startsWith('/vda2/'))) {
+    const rest = path.slice(5) || '/';
+    if (!WIN_VMS.has(source)) return listDir(rest, source);
+    const f = (name: string, size: number) => ({ name, kind: 'file', size, mtime: t });
+    const d = (name: string) => ({ name, kind: 'dir', size: 0, mtime: t });
+    const tree: Record<string, Json[]> = {
+      '/': [d('Data'), d('Users'), d('Windows')],
+      '/Data': [d('SQL')],
+      '/Data/SQL': [f('erp.mdf', 8_589_934_592), f('erp_log.ldf', 1_073_741_824)],
+      '/Users': [d('alice'), d('bob')],
+      '/Users/alice': [d('AppData'), d('Documents')],
+      '/Users/alice/AppData': [d('Local')],
+      '/Users/alice/AppData/Local': [f('thumbcache.db', 4_194_304)],
+      '/Users/alice/Documents': [f('budget-2026-forecast.xlsx', 311_204), f('contract-draft.docx', 88_412)],
+      '/Users/bob': [d('Documents')],
+      '/Users/bob/Documents': [f('erp-export.csv', 2_204_611)],
+      '/Windows': [d('System32')],
+      '/Windows/System32': [f('ntoskrnl.exe', 11_534_336)],
+    };
+    return tree[rest] ?? [];
+  }
   if (source.startsWith('host-')) {
     const win = db.agents.find((a) => `host-${a.id}` === source)?.os?.startsWith('Windows');
     if (!win) return hostDir(path, t);
@@ -1321,7 +1348,11 @@ function seed() {
   });
   // auto-protect (Phase 13c): every guest of the PVE pool "dev" except the build runner
   const gDev = grp('initech', sInitech.id, bronze.id, 'development', [], { mode: 'tags', selector: ['pool:dev'], exclude: ['105'] });
-  const gAcmeVms = grp('acme', sAcme.id, silver.id, 'acme-vms', [300, 301]);
+  const gAcmeVms = grp('acme', sAcme.id, silver.id, 'acme-vms', [300, 301], {
+    index_files: true,
+    // Phase 31b: a custom search scope (the shop's upload cache stays out, its logs stay in)
+    index_rules: { defaults: true, include: ['/var/log'], exclude: ['/var/www/shop/cache'] },
+  });
   const gSmb = grp('acme', sSmb.id, bronze.id, 'acme-fs01', []);
   const gDbs = grp('acme', sPg.id, hourly.id, 'acme-databases', ['shop', 'crm']);
   db.groups.push(
@@ -1562,6 +1593,16 @@ function seed() {
     mkAlert({
       ts: retry.finished, severity: 'critical', kind: 'fleecing_space', key: 'fleecing_space:initech/pve2/local-lvm', tenant: 'initech',
       message: `fleecing storage local-lvm on node pve2 has 3.1 GiB (3.1 %) free, below the critical level: running backups on this node are cancelled (backup job ${retry.id}, tenant initech)`,
+    }),
+    mkAlert({
+      ts: t - 86400 * 9, severity: 'warning', kind: 'index_backlog', key: 'index_backlog:initech', tenant: 'initech',
+      message: 'tenant initech: 3 snapshots wait more than 48 h for file indexing (oldest vm-101, 52 h): file index jobs failed (see Jobs)',
+      resolved_at: t - 86400 * 8, resolved_by: 'scheduler', auto: true,
+    }),
+    mkAlert({
+      ts: t - 86400 * 12, severity: 'warning', kind: 'index_space', key: 'index_space',
+      message: 'file indexing paused: the index volume has 18.2 GiB free, below the floor of 20 GiB; new snapshots wait for indexing',
+      resolved_at: t - 86400 * 11, resolved_by: 'scheduler', auto: true,
     }),
     mkAlert({
       ts: t - 86400 * 4, last_ts: t - 86400 * 2, severity: 'info', kind: 'clock_skew', key: 'clock_skew',
@@ -2929,6 +2970,8 @@ on('POST', '/groups', async (c) => {
   const src = find(db.sources, (s) => s.id === g.source_id && s.tenant === g.tenant, 'source in tenant');
   Object.assign(g, checkMode(src, c.body), groupSelection(src, c.body));
   if (g.mode === 'explicit') checkGuests(src, g.guests);
+  // Phase 31b: VM/CT file index on by default for new Proxmox VE groups
+  if (src.kind === 'pve') g.index_files = true;
   db.groups.push(g);
   await audit(u.name, 'group.create', `group/${g.id}`, g);
   return [201, g];
@@ -4021,7 +4064,7 @@ on('GET', '/snapshots', (c) => {
   const held = c.query.get('held') === 'true';
   const xs = byTenant(u, db.snapshots as any[])
     .filter((s) => (!tq || s.tenant === tq) && (!sq || s.source === sq))
-    .map((s) => ({ ...s, hold: holdView(openHold(s.tenant, s.source, s.time)), anomaly: s.anomaly ?? null, anomalous: anomalous(s), scan: scanSummary(s) }))
+    .map((s) => ({ ...s, hold: holdView(openHold(s.tenant, s.source, s.time)), anomaly: s.anomaly ?? null, anomalous: anomalous(s), scan: scanSummary(s), ...snapIndex(s) }))
     .filter((s) => !held || s.hold);
   return [200, xs.sort((a, b) => b.time - a.time)];
 });
@@ -4343,9 +4386,8 @@ on('POST', '/jobs/:id/cancel', async (c, [id]) => {
 
 // ---- Phase 15g: file search across snapshots (crates/scheduler/src/search.rs, POST /search)
 /** Every entry of a snapshot's synthetic tree (listDir), paths relative without a leading slash. */
-function walkSnapshot(source: string, time: number): { path: string; kind: string; size: number; mtime: number }[] {
+function walkSnapshot(source: string, time: number, root = '/', week = 7 * DAY): { path: string; kind: string; size: number; mtime: number }[] {
   const out: { path: string; kind: string; size: number; mtime: number }[] = [];
-  const week = 7 * DAY;
   const rec = (dir: string) => {
     for (const e of listDir(dir, source)) {
       const full = dir === '/' ? `/${e.name}` : `${dir}/${e.name}`;
@@ -4357,7 +4399,7 @@ function walkSnapshot(source: string, time: number): { path: string; kind: strin
       if (e.kind === 'dir') rec(full);
     }
   };
-  rec('/');
+  rec(root);
   return out;
 }
 /** Glob (* ? [abc] [a-z] [!x]) as a RegExp; no wildcard = substring. */
@@ -4434,6 +4476,236 @@ on('POST', '/search', async (c) => {
   j.result = searchResult(p, tenant);
   await audit(u.name, 'file.search', `job/${j.id}`, { tenant, ...p });
   return [202, { id: j.id }];
+});
+
+// ---- Phase 31b: instant file search (nexus-index, crates/fileindex; GET /files/search)
+// NEXUS_MOCK_INDEX_DOWN=1: the index service is down (503 / available false), the UI falls back to POST /search.
+const INDEX_DOWN = !!process.env.NEXUS_MOCK_INDEX_DOWN;
+const DEFAULT_INDEX_EXCLUDES = [
+  '/$Recycle.Bin', '/Windows', '/Program Files', '/Program Files (x86)', '/ProgramData', '/System Volume Information',
+  '/Users/*/AppData', '/Recovery', '/proc', '/sys', '/dev', '/run', '/tmp', '/usr', '/lib', '/lib64', '/boot',
+  '/var/cache', '/var/tmp', '/var/lib/docker', '/var/lib/containerd',
+];
+const srcKindOf = (source: string) => /^(vm|ct|host|nas|share|plugin)-/.exec(source)?.[1] ?? 'plugin';
+/** Index state of one snapshot (the demo's partial / failed / pending cases are fixed). */
+function snapIndex(s: Json): { index_state: string | null; index_reason: string | null } {
+  if (s.origin || !s.local) return { index_state: null, index_reason: null };
+  if (/^(vm|ct)-/.test(s.source)) {
+    if (!vmIndexed(s.tenant, s.source)) return { index_state: 'off', index_reason: null };
+    const all = (db.snapshots as Json[]).filter((x) => x.tenant === s.tenant && x.source === s.source && x.local).sort((a, b) => b.time - a.time);
+    const i = all.indexOf(s);
+    if (WIN_VMS.has(s.source)) return { index_state: 'partial', index_reason: 'vdb1: BitLocker-encrypted volume' };
+    if (i === 0 && s.source === 'vm-300') return { index_state: 'pending', index_reason: null };
+    if (i === 3 && s.source === 'vm-301') return { index_state: 'partial', index_reason: 'vdb1: XFS, listed only by the restore micro-VM (not installed)' };
+    if (i === 5 && s.source === 'vm-100') return { index_state: 'failed', index_reason: 'vda: corrupted partition table (GPT header checksum)' };
+  }
+  return { index_state: 'indexed', index_reason: null };
+}
+/** Most specific rule wins (component count); an include beats an exclude of the same length. */
+function inScope(guest: string, rules: { defaults: boolean; include: string[]; exclude: string[] }): boolean {
+  const win = /^([A-Za-z]):\//.exec(guest);
+  const comps = (win ? guest.slice(3) : guest.replace(/^\/+/, '')).split('/').filter(Boolean);
+  const drive = win?.[1].toUpperCase();
+  const match = (rule: string): number => {
+    let rc = rule.split('/').filter(Boolean);
+    let path = comps;
+    if (drive && rc.length && /^[A-Za-z]$/.test(rc[0])) {
+      if (rc[0].toUpperCase() !== drive) return -1;
+      rc = rc.slice(1);
+    }
+    if (rc.length > path.length) return -1;
+    for (let i = 0; i < rc.length; i++) {
+      const re = new RegExp('^' + rc[i].split('*').map((x) => x.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*') + '$', 'i');
+      if (!re.test(path[i])) return -1;
+    }
+    return rc.length;
+  };
+  let best = -1;
+  let keep = true;
+  const excl = [...(rules.defaults ? DEFAULT_INDEX_EXCLUDES : []), ...rules.exclude];
+  for (const r of excl) {
+    const n = match(r);
+    if (n > best) [best, keep] = [n, false];
+  }
+  for (const r of rules.include) {
+    const n = match(r);
+    if (n >= best && n >= 0) [best, keep] = [n, true];
+  }
+  return keep;
+}
+const rulesOf = (g: MockGroup | undefined) => g?.index_rules ?? { defaults: true, include: [], exclude: [] };
+interface Doc { source: string; path: string; browse: string; kind: string; versions: Json[] }
+/** The tenant's search index: one document per path and source, versions by (size, mtime). */
+function tenantIndex(tenant: string): { docs: Doc[]; snaps: Map<string, Json[]> } {
+  const bySource = new Map<string, Json[]>();
+  for (const s of db.snapshots as Json[])
+    if (s.tenant === tenant && s.local && !s.origin) bySource.set(s.source, [...(bySource.get(s.source) ?? []), s]);
+  const docs: Doc[] = [];
+  const snaps = new Map<string, Json[]>();
+  for (const [source, xs] of bySource) {
+    xs.sort((a, b) => a.time - b.time);
+    snaps.set(source, xs.map((s) => ({ time: s.time, state: snapIndex(s).index_state ?? 'unindexed', reason: snapIndex(s).index_reason })).reverse());
+    const indexed = xs.filter((s) => ['indexed', 'partial'].includes(snapIndex(s).index_state ?? ''));
+    if (!indexed.length) continue;
+    const rules = rulesOf(groupOfSource(tenant, source));
+    const vm = source.startsWith('vm-');
+    const win = WIN_VMS.has(source) || !!db.agents.find((a) => `host-${a.id}` === source)?.os?.startsWith('Windows');
+    const guestPath = (rel: string) =>
+      vm ? (win ? 'C:/' + rel.slice(5) : '/' + rel.slice(5)) : win ? rel.replace(/^([A-Z])\//, '$1:/').replace(/^([A-Z])$/, '$1:/') : '/' + rel;
+    const map = new Map<string, Doc & { vmap: Map<string, Json> }>();
+    const newest = indexed[indexed.length - 1].time;
+    for (const s of indexed) {
+      // documents change every other day here, so the version timeline has several entries
+      const entries = walkSnapshot(source, s.time, vm ? '/vda2' : '/', 2 * DAY);
+      // a deleted file: the draft was removed four days ago (older snapshots still hold it)
+      if (/^(nas|share)-/.test(source) && s.time < newest - 3 * DAY)
+        entries.push({ path: '2026/Q4/budget-2026-q4-draft.xlsx', kind: 'file', size: 498_102, mtime: newest - 9 * DAY });
+      if (vm && !win && s.time < newest - 2 * DAY) entries.push({ path: 'vda2/home/alice/old-notes.txt', kind: 'file', size: 2_048, mtime: newest - 20 * DAY });
+      for (const e of entries) {
+        const guest = guestPath(e.path);
+        if (!inScope(guest, rules)) continue;
+        let d = map.get(e.path);
+        if (!d) map.set(e.path, (d = { source, path: guest, browse: e.path, kind: e.kind, versions: [], vmap: new Map() }));
+        const vk = `${e.size}\0${e.mtime}`;
+        const v = d.vmap.get(vk);
+        if (v) v.times.push(s.time);
+        else d.vmap.set(vk, { size: e.kind === 'dir' ? 0 : e.size, mtime: e.mtime, first: s.time, gone: null, times: [s.time] });
+      }
+    }
+    for (const d of map.values()) {
+      const vs = [...d.vmap.values()];
+      for (const v of vs) {
+        const last = Math.max(...v.times);
+        v.gone = indexed.find((s) => s.time > last && !vs.some((o) => o.times.includes(s.time)))?.time ?? (vs.some((o) => o.first > last) ? vs.filter((o) => o.first > last).sort((a, b) => a.first - b.first)[0].first : null);
+        v.times.sort((a: number, b: number) => b - a);
+      }
+      vs.sort((a, b) => b.first - a.first);
+      // the oldest draft version's snapshots were pruned by retention: "snapshot deleted"
+      if (d.browse.endsWith('budget-2026-q4-draft.xlsx'))
+        vs.push({ size: 471_330, mtime: vs[vs.length - 1].first - 30 * DAY, first: vs[vs.length - 1].first - 28 * DAY, gone: vs[vs.length - 1].first, times: [] });
+      docs.push({ source: d.source, path: d.path, browse: d.browse, kind: d.kind, versions: vs });
+    }
+  }
+  return { docs, snaps };
+}
+function wordsMatch(q: string, path: string): boolean {
+  const toks = path.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  return q.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean).every((w) => toks.some((x) => x.startsWith(w)));
+}
+const intParam = (q: URLSearchParams, k: string): number | undefined => {
+  const v = q.get(k);
+  if (v === null || v === '') return undefined;
+  if (!/^\d+$/.test(v)) throw new HttpError(400, `${k}: a non-negative integer`);
+  return Number(v);
+};
+on('GET', '/files/search', async (c) => {
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'tenant_user');
+  if (INDEX_DOWN) throw new HttpError(503, 'the file search index is not available (nexus-index is not running); use POST /search');
+  const t0 = Date.now();
+  const q = c.query;
+  const tenant = u.tenant ?? q.get('tenant') ?? '';
+  if (u.tenant && q.get('tenant') && q.get('tenant') !== u.tenant) throw new HttpError(403, 'forbidden: another tenant');
+  if (!tenant) throw new HttpError(400, 'tenant: required');
+  find(db.tenants, (x) => x.name === tenant, 'tenant');
+  const text = (q.get('q') ?? '').trim();
+  if (text.length > 256) throw new HttpError(400, 'q: at most 256 characters');
+  const mode = q.get('mode') ?? 'auto';
+  if (!['auto', 'name', 'path', 'words'].includes(mode)) throw new HttpError(400, 'mode: auto, name, path or words');
+  const kinds = (q.get('kind') ?? '').split(',').filter(Boolean);
+  if (kinds.some((k) => !['vm', 'ct', 'host', 'nas', 'share', 'plugin'].includes(k))) throw new HttpError(400, 'kind: vm, ct, host, nas, share, plugin');
+  const exts = (q.get('ext') ?? '').split(',').filter(Boolean).map((x) => x.toLowerCase());
+  if (exts.some((x) => !/^[a-z0-9_~-]{1,16}$/.test(x))) throw new HttpError(400, 'ext: extensions without dots, comma separated');
+  const [smin, smax, mfrom, mto] = ['size_min', 'size_max', 'mtime_from', 'mtime_to'].map((k) => intParam(q, k));
+  const entry = q.get('entry') ?? '';
+  if (entry && !['file', 'dir'].includes(entry)) throw new HttpError(400, 'entry: file or dir');
+  const deleted = q.get('deleted') ?? 'any';
+  if (!['any', 'only', 'exclude'].includes(deleted)) throw new HttpError(400, 'deleted: any, only or exclude');
+  const limit = intParam(q, 'limit') ?? 50;
+  if (limit < 1 || limit > 200) throw new HttpError(400, 'limit: 1..=200');
+  const cursor = q.get('cursor');
+  if (cursor !== null && !/^\d+$/.test(cursor)) throw new HttpError(400, 'cursor: as returned in next');
+  const filtered = exts.length || smin !== undefined || smax !== undefined || mfrom !== undefined || mto !== undefined || deleted === 'only';
+  if (!text && !filtered) throw new HttpError(400, 'q: required unless a filter (ext, size, mtime, deleted=only) is set');
+  const source = q.get('source');
+  const group = q.get('group') ? Number(q.get('group')) : undefined;
+  const how = mode !== 'auto' ? mode : text.includes('/') ? 'path' : /[*?]/.test(text) ? 'name' : 'words';
+  const re = text ? globRe(how === 'path' ? text.replace(/^\/+/, '') : text, false) : null;
+  const { docs, snaps } = tenantIndex(tenant);
+  const verOk = (v: Json) =>
+    (smin === undefined || v.size >= smin) && (smax === undefined || v.size <= smax) && (mfrom === undefined || v.mtime >= mfrom) && (mto === undefined || v.mtime <= mto);
+  const hits = docs
+    .filter((d) => {
+      if (source && d.source !== source) return false;
+      if (kinds.length && !kinds.includes(srcKindOf(d.source))) return false;
+      if (group !== undefined && groupOfSource(tenant, d.source)?.id !== group) return false;
+      if (entry === 'dir' ? d.kind !== 'dir' : entry === 'file' ? d.kind === 'dir' : false) return false;
+      const name = d.path.split('/').pop() ?? '';
+      if (exts.length && (d.kind === 'dir' || !exts.includes(name.split('.').pop()!.toLowerCase()) || !name.includes('.'))) return false;
+      if (deleted === 'only' && !d.versions[0].gone) return false;
+      if (deleted === 'exclude' && d.versions[0].gone) return false;
+      if (!d.versions.some(verOk)) return false;
+      if (!re) return true;
+      if (how === 'words') return wordsMatch(text, d.path);
+      if (how === 'path') return re.test(d.path.replace(/^\/+/, '')) || re.test(d.path.replace(/^[A-Za-z]:\//, '')) || re.test(d.browse);
+      return re.test(name);
+    })
+    .sort((a, b) => a.path.localeCompare(b.path) || a.source.localeCompare(b.source));
+  const from = Number(cursor ?? 0);
+  const page = hits.slice(from, from + limit);
+  const pending = [...snaps.values()].flat().filter((x) => x.state === 'pending').length;
+  await audit(u.name, 'file.search', `tenant/${tenant}`, { tenant, q: text, mode, source, group, kind: kinds, ext: exts, deleted });
+  return [200, {
+    hits: page,
+    next: from + limit < hits.length ? String(from + limit) : null,
+    elapsed_ms: Date.now() - t0 + 9,
+    pending,
+    snapshots: Object.fromEntries([...new Set(page.map((h) => h.source))].map((s) => [s, snaps.get(s) ?? []])),
+  }];
+});
+on('GET', '/files/index-status', (c) => {
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'tenant_user');
+  if (INDEX_DOWN) return [200, { available: false }];
+  const want = u.tenant ?? c.query.get('tenant');
+  if (u.tenant && c.query.get('tenant') && c.query.get('tenant') !== u.tenant) throw new HttpError(403, 'forbidden: another tenant');
+  const tenants = db.tenants.filter((x) => !want || x.name === want).map((tn) => {
+    const { docs, snaps } = tenantIndex(tn.name);
+    const all = [...snaps.values()].flat();
+    const pend = all.filter((x) => x.state === 'pending');
+    const versions = docs.reduce((n, d) => n + d.versions.length, 0) * 1873;
+    return {
+      tenant: tn.name,
+      docs: versions,
+      bytes: versions * 214,
+      sources: [...snaps.keys()].length,
+      snapshots_indexed: all.filter((x) => x.state === 'indexed' || x.state === 'partial').length,
+      snapshots_pending: pend.length,
+      oldest_pending: pend.length ? Math.min(...pend.map((x) => x.time)) : null,
+      snapshots_unindexed: all.filter((x) => x.state === 'off' || x.state === 'failed' || x.state === 'unindexed').length,
+      last_sync: now() - 140,
+      error: null,
+    };
+  });
+  return [200, { available: true, paused: false, free_bytes: Math.round(7.4 * 2 ** 40), floor_bytes: 20 * GiB, cache_bytes: 96 << 20, cache_limit: 256 << 20, tenants }];
+});
+const rulesView = (g: MockGroup) => ({ id: g.id, ...rulesOf(g), default_excludes: DEFAULT_INDEX_EXCLUDES });
+on('GET', '/groups/:id/index-rules', (c, [id]) => {
+  const u = need(c.user);
+  return [200, rulesView(find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group'))];
+});
+on('PUT', '/groups/:id/index-rules', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
+  const b = c.body ?? {};
+  if (typeof b.defaults !== 'boolean') throw new HttpError(400, 'defaults: true or false');
+  for (const k of ['include', 'exclude']) {
+    if (!Array.isArray(b[k]) || b[k].some((r: unknown) => typeof r !== 'string')) throw new HttpError(400, `${k}: a list of paths`);
+    if (b[k].length > 64) throw new HttpError(400, `${k}: at most 64 rules`);
+    const bad = b[k].find((r: string) => !/^(\/[^/\\\x00-\x1f]+)+$/.test(r) || r.length > 1024 || r.split('/').some((x) => x === '.' || x === '..'));
+    if (bad !== undefined) throw new HttpError(400, `${k}: invalid rule "${bad}" (absolute path with / separators)`);
+  }
+  g.index_rules = { defaults: b.defaults, include: [...new Set<string>(b.include)], exclude: [...new Set<string>(b.exclude)] };
+  await audit(u.name, 'group.index_rules', `group/${g.id}`, { tenant: g.tenant, ...g.index_rules });
+  return [200, rulesView(g)];
 });
 
 // quorum
@@ -4553,7 +4825,7 @@ const ALERT_CATEGORY: Record<string, string> = {
   vault_disabled: 'security', incident: 'security', dek_rotation: 'security',
   job_failed: 'backup', sla_missed: 'backup', paused: 'backup', consistency: 'backup', backup_inconsistent: 'backup',
   orphaned: 'backup', verify: 'backup', snapshot_damaged: 'backup', offsite_lag: 'backup', inventory_refresh: 'backup', config: 'backup',
-  vmid_reused: 'backup', restore_priority: 'backup',
+  vmid_reused: 'backup', restore_priority: 'backup', index_backlog: 'backup', index_space: 'system',
   disk: 'hardware', fleecing_space: 'hardware',
 };
 const alertCategory = (kind: string) => (kind.startsWith('replication_') ? 'replication' : (ALERT_CATEGORY[kind] ?? 'system'));

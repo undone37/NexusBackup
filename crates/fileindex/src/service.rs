@@ -87,7 +87,9 @@ pub fn valid_tenant(t: &str) -> bool {
 
 /// Free bytes of the file system holding `p`.
 fn free_bytes(p: &Path) -> u64 {
-    let Ok(c) = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()) else { return 0 };
+    let Ok(c) = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()) else {
+        return 0;
+    };
     // SAFETY: statvfs with a valid path and an out struct
     let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
@@ -177,7 +179,10 @@ impl Service {
             let mut w = t.idx.writer()?;
             let sources: BTreeSet<String> = snaps.keys().chain(st.sources.keys()).cloned().collect();
             for s in sources {
-                let times: Vec<u64> = snaps.get(&s).map(|v| v.iter().filter(|x| x.1).map(|x| x.0).collect()).unwrap_or_default();
+                let times: Vec<u64> = snaps
+                    .get(&s)
+                    .map(|v| v.iter().filter(|x| x.1).map(|x| x.0).collect())
+                    .unwrap_or_default();
                 let rules = st.config.get(&s).cloned().unwrap_or_default();
                 match t.idx.sync_source(&mut w, &mut st, &t.reader, &s, &times, &rules) {
                     Ok(c) => changed |= c,
@@ -243,9 +248,20 @@ impl Service {
             let ing = st.sources.get(&s).map(|x| x.ingested.clone()).unwrap_or_default();
             let unindexed = snaps
                 .get(&s)
-                .map(|v| v.iter().map(|x| x.0).filter(|x| ing.binary_search(x).is_err()).collect())
+                .map(|v| {
+                    v.iter()
+                        .map(|x| x.0)
+                        .filter(|x| ing.binary_search(x).is_err())
+                        .collect()
+                })
                 .unwrap_or_default();
-            sources.insert(s, SourceSnaps { indexed: ing, unindexed });
+            sources.insert(
+                s,
+                SourceSnaps {
+                    indexed: ing,
+                    unindexed,
+                },
+            );
         }
         let pending = t.status.lock().unwrap().snapshots_pending;
         Ok(SearchResp {
@@ -348,7 +364,10 @@ impl Service {
     /// Closes the readers of tenants unused for `idle_secs` (memory).
     fn evict(&self) {
         let idle = Duration::from_secs(self.cfg.idle_secs);
-        self.tenants.lock().unwrap().retain(|_, t| t.used.lock().unwrap().elapsed() < idle);
+        self.tenants
+            .lock()
+            .unwrap()
+            .retain(|_, t| t.used.lock().unwrap().elapsed() < idle);
     }
 
     /// The sync loop: nudged tenants soon, every tenant each `sync_secs`.

@@ -84,7 +84,11 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                 info.skipped_entries += 1;
                 continue;
             }
-            let path = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            let path = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{rel}/{name}")
+            };
             if path.len() > MAX_PATH {
                 info.skipped_entries += 1;
                 continue;
@@ -124,7 +128,11 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             } else {
                 0
             };
-            if depth == 1 && kind == KIND_DIR && name.eq_ignore_ascii_case("System32") && rel.eq_ignore_ascii_case("Windows") {
+            if depth == 1
+                && kind == KIND_DIR
+                && name.eq_ignore_ascii_case("System32")
+                && rel.eq_ignore_ascii_case("Windows")
+            {
                 info.windows = true;
             }
             if !out.emit(info, &path, size, nt_to_unix(mtime), kind)? {

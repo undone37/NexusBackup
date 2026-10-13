@@ -27,7 +27,7 @@ export interface RawBody {
 }
 const isRaw = (b: unknown): b is RawBody => !!b && typeof b === 'object' && 'raw' in b && 'headers' in b;
 
-async function request(method: string, path: string, body?: unknown): Promise<{ status: number; data: unknown }> {
+async function request(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<{ status: number; data: unknown }> {
   const raw = isRaw(body) ? body : null;
   const headers: Record<string, string> = { Accept: 'application/json', ...(raw?.headers ?? {}) };
   if (body !== undefined && !raw) headers['Content-Type'] = 'application/json';
@@ -40,8 +40,11 @@ async function request(method: string, path: string, body?: unknown): Promise<{ 
       credentials: 'same-origin',
       cache: 'no-store',
       body: raw ? raw.raw : body === undefined ? undefined : JSON.stringify(body),
+      signal,
     });
-  } catch {
+  } catch (e) {
+    // a cancelled request (AbortController) is not a network error
+    if (signal?.aborted) throw e;
     throw new ApiError(0, t.err.network);
   }
   const text = await r.text();
@@ -66,8 +69,9 @@ async function request(method: string, path: string, body?: unknown): Promise<{ 
   return { status: r.status, data };
 }
 
-export async function get<T>(path: string): Promise<T> {
-  return (await request('GET', path)).data as T;
+/** GET; `signal` cancels the request (the promise then rejects with the abort reason). */
+export async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
+  return (await request('GET', path, undefined, signal)).data as T;
 }
 
 async function mutate<T>(method: string, path: string, body?: unknown): Promise<Outcome<T>> {

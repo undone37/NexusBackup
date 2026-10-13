@@ -135,7 +135,10 @@ pub fn build(ix: &TenantIndex, r: &SearchReq) -> Result<Box<dyn Query>, String> 
     let u = |v: Option<u64>, field| v.map_or(Bound::Unbounded, |v| Bound::Included(Term::from_field_u64(field, v)));
     let i = |v: Option<i64>, field| v.map_or(Bound::Unbounded, |v| Bound::Included(Term::from_field_i64(field, v)));
     if r.size_min.is_some() || r.size_max.is_some() {
-        must.push((Occur::Must, Box::new(RangeQuery::new(u(r.size_min, f.size), u(r.size_max, f.size)))));
+        must.push((
+            Occur::Must,
+            Box::new(RangeQuery::new(u(r.size_min, f.size), u(r.size_max, f.size))),
+        ));
     }
     if r.mtime_from.is_some() || r.mtime_to.is_some() {
         must.push((
@@ -147,18 +150,27 @@ pub fn build(ix: &TenantIndex, r: &SearchReq) -> Result<Box<dyn Query>, String> 
         let k = if e == "dir" { 1 } else { 0 };
         must.push((
             Occur::Must,
-            Box::new(TermQuery::new(Term::from_field_u64(f.kind, k), IndexRecordOption::Basic)),
+            Box::new(TermQuery::new(
+                Term::from_field_u64(f.kind, k),
+                IndexRecordOption::Basic,
+            )),
         ));
     }
     match r.deleted {
         Deleted::Any => {}
         Deleted::Only => must.push((
             Occur::Must,
-            Box::new(RangeQuery::new(Bound::Included(Term::from_field_u64(f.gone, 1)), Bound::Unbounded)),
+            Box::new(RangeQuery::new(
+                Bound::Included(Term::from_field_u64(f.gone, 1)),
+                Bound::Unbounded,
+            )),
         )),
         Deleted::Exclude => must.push((
             Occur::Must,
-            Box::new(TermQuery::new(Term::from_field_u64(f.gone, 0), IndexRecordOption::Basic)),
+            Box::new(TermQuery::new(
+                Term::from_field_u64(f.gone, 0),
+                IndexRecordOption::Basic,
+            )),
         )),
     }
     Ok(if must.is_empty() {
@@ -183,13 +195,20 @@ pub fn run(ix: &TenantIndex, r: &SearchReq) -> Result<(Vec<Hit>, Option<String>)
     let mut next = None;
     let mut scanned = 0;
     let fk = |a: DocAddress| -> Option<u64> {
-        searcher.segment_reader(a.segment_ord).fast_fields().u64("fkey").ok()?.first(a.doc_id)
+        searcher
+            .segment_reader(a.segment_ord)
+            .fast_fields()
+            .u64("fkey")
+            .ok()?
+            .first(a.doc_id)
     };
     'outer: loop {
         let page: Vec<(Option<String>, DocAddress)> = searcher
             .search(
                 &q,
-                &TopDocs::with_limit(batch).and_offset(off).order_by_string_fast_field("path_lc", Order::Asc),
+                &TopDocs::with_limit(batch)
+                    .and_offset(off)
+                    .order_by_string_fast_field("path_lc", Order::Asc),
             )
             .map_err(|e| e.to_string())?;
         for (i, (p, a)) in page.iter().enumerate() {
@@ -226,7 +245,12 @@ pub fn run(ix: &TenantIndex, r: &SearchReq) -> Result<(Vec<Hit>, Option<String>)
         if r.deleted == Deleted::Only && docs.iter().any(|d| u(d, f.gone) == 0) {
             continue;
         }
-        let s = |d: &TantivyDocument, field| d.get_first(field).and_then(|v| v.as_str()).unwrap_or_default().to_owned();
+        let s = |d: &TantivyDocument, field| {
+            d.get_first(field)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_owned()
+        };
         let newest = &docs[0];
         hits.push(Hit {
             source: s(newest, f.src),
@@ -250,7 +274,12 @@ pub fn run(ix: &TenantIndex, r: &SearchReq) -> Result<(Vec<Hit>, Option<String>)
 
 /// Sources of the hits (for the timeline marks).
 pub fn hit_sources(hits: &[Hit]) -> Vec<String> {
-    let mut v: Vec<String> = hits.iter().map(|h| h.source.clone()).collect::<HashSet<_>>().into_iter().collect();
+    let mut v: Vec<String> = hits
+        .iter()
+        .map(|h| h.source.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
     v.sort();
     v
 }
@@ -280,7 +309,10 @@ mod tests {
         assert!(!re(&path_regex("/etc/*.conf"), "/etc/x/resolv.conf"));
         assert!(re(&path_regex("/etc/**.conf"), "/etc/x/resolv.conf"));
         assert!(re(&path_regex("users/*/documents"), "c:/users/ann/documents"));
-        assert!(re(&path_regex("C:/Users"), "c:/users/ann/x.docx"), "prefix without wildcard");
+        assert!(
+            re(&path_regex("C:/Users"), "c:/users/ann/x.docx"),
+            "prefix without wildcard"
+        );
         assert!(!re(&path_regex("C:/Users"), "d:/c:/users"));
         assert!(re(&path_regex("/var/lib/mysql"), "/var/lib/mysql/ibdata1"));
         assert_eq!(words("Angebot Müller-2026.docx"), ["angebot", "müller", "2026", "docx"]);

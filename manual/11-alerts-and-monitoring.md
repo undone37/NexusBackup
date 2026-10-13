@@ -61,10 +61,10 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 | Category | Kinds |
 |---|---|
 | security | `anomaly`, `malware`, `console_unlock`, `console_root_shell`, `break_glass`, `firewall_reset`, `mgmt_allow_reset`, `legal_hold_advisory`, `cert_expiry`, `account_dormant`, `inventory`, `clock_skew`, `gc_quorum`, `gc_confirm`, `vault_disabled`, `incident`, `dek_rotation` |
-| backup | `job_failed`, `sla_missed`, `paused`, `consistency`, `backup_inconsistent`, `orphaned`, `verify`, `snapshot_damaged`, `offsite_lag`, `inventory_refresh`, `config`, `vmid_reused`, `restore_priority` |
+| backup | `job_failed`, `sla_missed`, `paused`, `consistency`, `backup_inconsistent`, `orphaned`, `verify`, `snapshot_damaged`, `offsite_lag`, `inventory_refresh`, `config`, `vmid_reused`, `restore_priority`, `index_backlog` |
 | replication | every `replication_…` kind |
 | hardware | `disk`, `fleecing_space` |
-| system | `capacity`, `quota`, `forwarding`, `report`, `tenant_disabled`, `test` and any kind not listed |
+| system | `capacity`, `quota`, `forwarding`, `report`, `tenant_disabled`, `index_space`, `test` and any kind not listed |
 | audit | not an alert category: forwarded audit log entries carry it |
 
 | Kind | Severity | Raised when | Resolves itself when | What to do |
@@ -88,6 +88,8 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 | `config` | warning | the scheduler cannot use a group or replication source configuration | — | fix the configuration named in the message |
 | `vmid_reused` | warning | a VM's identity (vmgenid / SMBIOS UUID) changed between two backups: the VMID belongs to another VM now (`vmid_reused:<tenant>/vm-<id>`) | — (resolve by hand) | check that the group protects the VM you mean; the old snapshots belong to the previous VM. See [04 Sources](04-sources.md#vm-identity-and-reused-vmids) |
 | `restore_priority` | warning | restore priority is on (scheduled backups, GC, verify, offsite and replication are held) | it is turned off or expires | turn it off when the recovery is done. See [14 Disaster recovery](14-disaster-recovery.md#restore-priority) |
+| `index_backlog` | warning | a snapshot has waited more than 48 hours to be added to the file search (one alert per tenant) | the waiting snapshots are indexed | check the **File index** jobs on **Jobs** and the index service; files of those snapshots are not found by **Find files** meanwhile, browsing and restores work. See [06 Restores](06-restores.md#find-a-file) |
+| `index_space` | warning | file indexing paused: the volume holding the search index is below its free space floor | indexing runs again | free space on the store (retention, GC) or add disks; **Storage** shows the index size and the free space. See [03 The web interface](03-web-interface.md#storage) |
 | `orphaned` | info | snapshots of an object that is in no protection group of its tenant were found; they are pruned with the default retention (shown once per object) | — | put the object into a group if it should keep being protected with that group's retention, or ignore it; see [05 Policies and protection groups](05-policies-and-groups.md#snapshots-of-objects-in-no-group) |
 | `anomaly` | critical | a backup added far more new data than usual for its source, or new data that suddenly does not compress (see [Change-rate anomalies](#change-rate-anomalies)); or its files show ransom-note names or a mass rename ([File-level change signals](#file-level-change-signals)). The snapshot is flagged as anomalous | — | check the source for mass changes or encryption (ransomware), compare the snapshot with the previous one under **Snapshot changes**; a security officer puts the last clean snapshot on hold with **Hold last good snapshot** |
 | `malware` | critical | a YARA scan found matches of the uploaded rules in a snapshot (see [Malware scan (YARA)](#malware-scan-yara)); the snapshot is flagged as anomalous | — (resolve by hand) | open the scan results on **Snapshots**, check the files and the source; a security officer clears the flag if a rule was too broad |
@@ -255,8 +257,8 @@ are marked in the lists.
 The comparison runs on the appliance as a **Snapshot diff** job with the tenant key: it reads only the sealed file
 name indexes (names, sizes, times), never file contents. It is open to the roles that may search files
 (administrators, operators, tenant administrators and tenant users for their own tenant) and recorded in the audit
-log (`snapshot.diff`). Snapshots without a file index (VM disks of groups that do not index their guests' files,
-offsite-only copies) cannot be compared.
+log (`snapshot.diff`). Snapshots without a file index (VM disks of groups with the file index off, offsite-only
+copies) cannot be compared.
 
 ![Snapshot changes: a mass rename with ransom notes](images/snapshot-changes.png)
 

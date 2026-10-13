@@ -60,7 +60,9 @@ impl Ex {
 
     fn next(&self, c: u32) -> Result<u32, String> {
         let mut b = [0u8; 4];
-        self.v.read_at(self.fat + c as u64 * 4, &mut b).map_err(|e| e.to_string())?;
+        self.v
+            .read_at(self.fat + c as u64 * 4, &mut b)
+            .map_err(|e| e.to_string())?;
         Ok(u32::from_le_bytes(b))
     }
 
@@ -84,7 +86,7 @@ impl Ex {
             } else {
                 match self.next(c)? {
                     0xffff_ffff => break,
-                    n if n < 2 || n >= 0xffff_fff7 => return Err("exfat: broken cluster chain".into()),
+                    n if !(2..0xffff_fff7).contains(&n) => return Err("exfat: broken cluster chain".into()),
                     n => n,
                 }
             };

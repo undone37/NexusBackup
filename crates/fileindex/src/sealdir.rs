@@ -36,13 +36,16 @@ use tantivy::HasLen;
 pub const BLOCK: usize = 256 << 10;
 const MAGIC: &[u8; 8] = b"NXIX1\0\0\0";
 
+/// (file, block number)
+type BlockKey = (Arc<str>, usize);
+
 /// Decrypted blocks of all open index files, bounded in bytes.
 pub struct BlockCache {
     cap: usize,
     bytes: usize,
     tick: u64,
-    map: HashMap<(Arc<str>, usize), (u64, Arc<[u8]>)>,
-    order: BTreeMap<u64, (Arc<str>, usize)>,
+    map: HashMap<BlockKey, (u64, Arc<[u8]>)>,
+    order: BTreeMap<u64, BlockKey>,
 }
 
 impl BlockCache {
@@ -122,7 +125,10 @@ fn name(p: &Path) -> io::Result<String> {
     // tantivy only uses flat file names
     match p.to_str() {
         Some(s) if !s.is_empty() && !s.contains('/') && s != "." && s != ".." => Ok(s.to_owned()),
-        _ => Err(io::Error::new(io::ErrorKind::InvalidInput, format!("index file name {p:?}"))),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("index file name {p:?}"),
+        )),
     }
 }
 
@@ -235,7 +241,10 @@ unsafe impl stable_deref_trait::StableDeref for ArcSlice {}
 impl FileHandle for Handle {
     fn read_bytes(&self, range: Range<usize>) -> io::Result<OwnedBytes> {
         if range.start > range.end || range.end > self.len {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "read beyond the index file"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "read beyond the index file",
+            ));
         }
         if range.is_empty() {
             return Ok(OwnedBytes::empty());
@@ -358,10 +367,17 @@ fn read_table(file: &File, name: &str, keys: &Keyring) -> io::Result<(Vec<(u64, 
     let plain = u64::from_le_bytes(table[..8].try_into().unwrap());
     let blocks: Vec<(u64, u32)> = table[8..]
         .chunks(12)
-        .map(|c| (u64::from_le_bytes(c[..8].try_into().unwrap()), u32::from_le_bytes(c[8..].try_into().unwrap())))
+        .map(|c| {
+            (
+                u64::from_le_bytes(c[..8].try_into().unwrap()),
+                u32::from_le_bytes(c[8..].try_into().unwrap()),
+            )
+        })
         .collect();
     let ok = plain.div_ceil(BLOCK as u64) == blocks.len() as u64
-        && blocks.iter().all(|(o, n)| *o >= MAGIC.len() as u64 && o + *n as u64 <= toff);
+        && blocks
+            .iter()
+            .all(|(o, n)| *o >= MAGIC.len() as u64 && o + *n as u64 <= toff);
     if !ok {
         return Err(bad("table"));
     }
@@ -381,13 +397,18 @@ impl Drop for LockGuard {
 
 impl Directory for SealedDir {
     fn get_file_handle(&self, path: &Path) -> Result<Arc<dyn FileHandle>, OpenReadError> {
-        let (n, full) = self.path(path).map_err(|e| OpenReadError::wrap_io_error(e, path.to_owned()))?;
+        let (n, full) = self
+            .path(path)
+            .map_err(|e| OpenReadError::wrap_io_error(e, path.to_owned()))?;
         let file = match File::open(&full) {
             Ok(f) => f,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(OpenReadError::FileDoesNotExist(path.to_owned())),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(OpenReadError::FileDoesNotExist(path.to_owned()))
+            }
             Err(e) => return Err(OpenReadError::wrap_io_error(e, path.to_owned())),
         };
-        let (blocks, len) = read_table(&file, &n, &self.keys).map_err(|e| OpenReadError::wrap_io_error(e, path.to_owned()))?;
+        let (blocks, len) =
+            read_table(&file, &n, &self.keys).map_err(|e| OpenReadError::wrap_io_error(e, path.to_owned()))?;
         Ok(Arc::new(Handle {
             file,
             cache_key: Arc::from(format!("{}{n}", self.id)),
@@ -416,12 +437,16 @@ impl Directory for SealedDir {
     }
 
     fn exists(&self, path: &Path) -> Result<bool, OpenReadError> {
-        let (_, full) = self.path(path).map_err(|e| OpenReadError::wrap_io_error(e, path.to_owned()))?;
+        let (_, full) = self
+            .path(path)
+            .map_err(|e| OpenReadError::wrap_io_error(e, path.to_owned()))?;
         Ok(full.exists())
     }
 
     fn open_write(&self, path: &Path) -> Result<WritePtr, OpenWriteError> {
-        let (n, full) = self.path(path).map_err(|e| OpenWriteError::wrap_io_error(e, path.to_owned()))?;
+        let (n, full) = self
+            .path(path)
+            .map_err(|e| OpenWriteError::wrap_io_error(e, path.to_owned()))?;
         let mut f = match File::options().write(true).create_new(true).open(&full) {
             Ok(f) => f,
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
@@ -429,7 +454,8 @@ impl Directory for SealedDir {
             }
             Err(e) => return Err(OpenWriteError::wrap_io_error(e, path.to_owned())),
         };
-        f.write_all(MAGIC).map_err(|e| OpenWriteError::wrap_io_error(e, path.to_owned()))?;
+        f.write_all(MAGIC)
+            .map_err(|e| OpenWriteError::wrap_io_error(e, path.to_owned()))?;
         let w = Writer {
             out: BufWriter::with_capacity(1 << 20, f),
             name: n,
@@ -444,10 +470,14 @@ impl Directory for SealedDir {
     }
 
     fn atomic_read(&self, path: &Path) -> Result<Vec<u8>, OpenReadError> {
-        let (n, full) = self.path(path).map_err(|e| OpenReadError::wrap_io_error(e, path.to_owned()))?;
+        let (n, full) = self
+            .path(path)
+            .map_err(|e| OpenReadError::wrap_io_error(e, path.to_owned()))?;
         let b = match fs::read(&full) {
             Ok(b) => b,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(OpenReadError::FileDoesNotExist(path.to_owned())),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(OpenReadError::FileDoesNotExist(path.to_owned()))
+            }
             Err(e) => return Err(OpenReadError::wrap_io_error(e, path.to_owned())),
         };
         self.keys
@@ -524,7 +554,10 @@ mod tests {
         // atomic files
         d.atomic_write(Path::new("meta.json"), b"{\"segments\":[]}").unwrap();
         assert_eq!(d.atomic_read(Path::new("meta.json")).unwrap(), b"{\"segments\":[]}");
-        assert!(!fs::read(t.path().join("meta.json")).unwrap().windows(8).any(|w| w == b"segments"));
+        assert!(!fs::read(t.path().join("meta.json"))
+            .unwrap()
+            .windows(8)
+            .any(|w| w == b"segments"));
         assert!(d.open_write(Path::new("seg.idx")).is_err(), "write once");
         d.delete(Path::new("seg.idx")).unwrap();
         assert!(!d.exists(Path::new("seg.idx")).unwrap());

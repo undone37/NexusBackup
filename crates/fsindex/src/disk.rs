@@ -39,7 +39,9 @@ impl DiskIo for Local<Vec<u8>> {
     }
     fn read(&mut self, d: usize, off: u64, buf: &mut [u8]) -> io::Result<()> {
         let src = &self.disks[d];
-        let end = off.checked_add(buf.len() as u64).ok_or_else(|| invalid("offset overflow"))?;
+        let end = off
+            .checked_add(buf.len() as u64)
+            .ok_or_else(|| invalid("offset overflow"))?;
         if end > src.len() as u64 {
             return Err(invalid("read beyond the end of the disk"));
         }
@@ -118,7 +120,11 @@ impl Vol {
     /// (disk, offset, bytes available there) of volume offset `off`.
     fn locate(&self, off: u64) -> io::Result<(usize, u64, u64)> {
         let i = self.segs.partition_point(|s| s.start + s.len <= off);
-        let s = self.segs.get(i).filter(|s| s.start <= off).ok_or_else(|| invalid("read beyond the volume"))?;
+        let s = self
+            .segs
+            .get(i)
+            .filter(|s| s.start <= off)
+            .ok_or_else(|| invalid("read beyond the volume"))?;
         let rel = off - s.start;
         let left = s.len - rel;
         if s.legs.len() == 1 {
@@ -225,11 +231,13 @@ pub fn le16(b: &[u8], at: usize) -> u16 {
 }
 
 pub fn le32(b: &[u8], at: usize) -> u32 {
-    b.get(at..at + 4).map_or(0, |s| u32::from_le_bytes(s.try_into().unwrap()))
+    b.get(at..at + 4)
+        .map_or(0, |s| u32::from_le_bytes(s.try_into().unwrap()))
 }
 
 pub fn le64(b: &[u8], at: usize) -> u64 {
-    b.get(at..at + 8).map_or(0, |s| u64::from_le_bytes(s.try_into().unwrap()))
+    b.get(at..at + 8)
+        .map_or(0, |s| u64::from_le_bytes(s.try_into().unwrap()))
 }
 
 #[cfg(test)]
@@ -266,9 +274,7 @@ mod tests {
         let all = v.read_vec(0, 100).unwrap();
         assert_eq!(
             all,
-            [
-                8, 9, 10, 11, 100, 101, 102, 103, 12, 13, 14, 15, 104, 105, 106, 107, 40, 41, 42, 43, 44, 45, 46, 47
-            ]
+            [8, 9, 10, 11, 100, 101, 102, 103, 12, 13, 14, 15, 104, 105, 106, 107, 40, 41, 42, 43, 44, 45, 46, 47]
         );
         let mut x = [0u8; 3];
         v.read_at(14, &mut x).unwrap();

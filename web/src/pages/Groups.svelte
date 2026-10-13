@@ -8,7 +8,7 @@
   import { t } from '../lib/i18n';
   import { runJob } from '../lib/jobs';
   import { isPluginKind, pluginKinds } from '../lib/plugins';
-  import type { Agent, Group, GroupMode, Inventory, Plugin, PluginGuest, Policy, Source, Tenant } from '../lib/types';
+  import type { Agent, Group, GroupMode, IndexRules, Inventory, Plugin, PluginGuest, Policy, Source, Tenant } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import BackupNow from '../components/BackupNow.svelte';
@@ -245,14 +245,60 @@
       disksMode: x?.exclude_disks_mode ?? 'placeholder',
       parallel: x?.parallel_guests ?? 1,
     };
-    indexFiles = !!x?.index_files;
+    // Phase 31b: on by default for new Proxmox VE groups
+    indexFiles = x ? !!x.index_files : true;
+    rules = null;
+    scope = { defaults: true, include: '', exclude: '' };
+    if (x) loadRules(x.id);
     tagInput = '';
     lastSource = f.source_id;
     guestList = null;
     open = true;
   }
-  // Phase 15g: file index of VM/CT disks (pve groups only, PUT /groups/{id}/index-files)
-  let indexFiles = $state(false);
+  // Phase 15g/31b: file index of VM/CT disks (pve groups only, PUT /groups/{id}/index-files)
+  let indexFiles = $state(true);
+  // Phase 31b: search scope rules (GET/PUT /groups/{id}/index-rules); new groups start with the defaults
+  const DEFAULT_EXCLUDES = [
+    '/$Recycle.Bin', '/Windows', '/Program Files', '/Program Files (x86)', '/ProgramData', '/System Volume Information',
+    '/Users/*/AppData', '/Recovery', '/proc', '/sys', '/dev', '/run', '/tmp', '/usr', '/lib', '/lib64', '/boot',
+    '/var/cache', '/var/tmp', '/var/lib/docker', '/var/lib/containerd',
+  ];
+  let rules: IndexRules | null = $state(null);
+  let scope = $state({ defaults: true, include: '', exclude: '' });
+  const canWrite = $derived(can.manageTenant(session.user));
+  async function loadRules(id: number) {
+    try {
+      const r = await get<IndexRules>(`/groups/${id}/index-rules`);
+      if (editing?.id !== id) return;
+      rules = r;
+      scope = { defaults: r.defaults, include: r.include.join('\n'), exclude: r.exclude.join('\n') };
+    } catch {
+      /* no rules shown: the defaults apply */
+    }
+  }
+  const ruleLines = (v: string) => v.split('\n').map((l) => l.trim()).filter(Boolean);
+  // absolute, / separators, no empty or relative components; * only inside a component
+  const RULE_RE = /^(\/[^/\\\x00-\x1f]+)+$/;
+  const ruleOk = (r: string) => RULE_RE.test(r) && !r.split('/').some((c) => c === '.' || c === '..') && r.length <= 1024;
+  /** The rules from the form, or null after telling the user what is wrong. */
+  function scopeBody(): { defaults: boolean; include: string[]; exclude: string[] } | null {
+    const include = ruleLines(scope.include);
+    const exclude = ruleLines(scope.exclude);
+    const bad = [...include, ...exclude].find((r) => !ruleOk(r));
+    if (bad) {
+      notify('error', t.groups.scopeInvalid(bad));
+      return null;
+    }
+    if (include.length > 64 || exclude.length > 64) {
+      notify('error', t.groups.scopeTooMany);
+      return null;
+    }
+    return { defaults: scope.defaults, include, exclude };
+  }
+  const sameRules = (a: { defaults: boolean; include: string[]; exclude: string[] }, b: IndexRules | null) =>
+    b
+      ? a.defaults === b.defaults && a.include.join('\n') === b.include.join('\n') && a.exclude.join('\n') === b.exclude.join('\n')
+      : a.defaults && !a.include.length && !a.exclude.length;
   // Another source: the selected guests/datasets belonged to the old one.
   let lastSource = 0;
   $effect(() => {
@@ -295,6 +341,8 @@
     }
     const exclude_disks = pveSource ? excludeDisks() : {};
     if (!exclude_disks) return;
+    const scopeNew = canWrite ? scopeBody() : null;
+    if (canWrite && !scopeNew) return;
     // The tenant is fixed after creation (PUT rejects unknown fields, incl. tenant).
     // Excluding another disk comes back as 202 {quorum_id}: act() reports it as pending.
     const body = {
@@ -315,8 +363,11 @@
       : await act(post('/groups', { tenant: f.tenant, ...body }), t.created);
     if (r) {
       const id = editing?.id ?? (r.data as Partial<Group>).id;
-      if (pveSource && id && indexFiles !== !!editing?.index_files)
+      const was = editing ? !!editing.index_files : ((r.data as Partial<Group>).index_files ?? false);
+      if (pveSource && id && !r.quorum && indexFiles !== was)
         await act(put(`/groups/${id}/index-files`, { enabled: indexFiles }), indexFiles ? t.groups.indexFilesOn : t.groups.indexFilesOff);
+      if (scopeNew && id && !r.quorum && !sameRules(scopeNew, rules))
+        await act(put(`/groups/${id}/index-rules`, scopeNew), t.groups.scopeSaved);
       open = false;
       load();
     }
@@ -559,12 +610,19 @@
       </div>
     {/if}
     {#if pveSource}
-      <div class="field">
-        <label class="inline-check"
-          ><input type="checkbox" bind:checked={indexFiles} aria-describedby="g-idx-hint" />{t.groups.indexFiles}</label
-        >
+      <fieldset class="field">
+        <legend>{t.groups.indexFiles}</legend>
+        <div class="row">
+          {#each [true, false] as on (on)}
+            <label class="inline-check"
+              ><input type="radio" name="g-idx" value={on} bind:group={indexFiles} aria-describedby="g-idx-hint" />{t.groups.indexFilesModes[
+                on ? 'on' : 'off'
+              ]}</label
+            >
+          {/each}
+        </div>
         <p class="hint" id="g-idx-hint">{t.groups.indexFilesHint}</p>
-      </div>
+      </fieldset>
       <fieldset class="field">
         <legend>{t.groups.disks}</legend>
         <div class="field">
@@ -589,6 +647,26 @@
         </div>
       </fieldset>
     {/if}
+    <fieldset class="field" id="g-scope">
+      <legend>{t.groups.scope}</legend>
+      <p class="hint">{t.groups.scopeHint}</p>
+      <label class="inline-check"
+        ><input type="checkbox" bind:checked={scope.defaults} disabled={!canWrite} aria-describedby="g-scope-defaults" />{t.groups.scopeDefaults}</label
+      >
+      <p class="hint mono" id="g-scope-defaults">{t.groups.scopeDefaultList((rules?.default_excludes ?? DEFAULT_EXCLUDES).join(', '))}</p>
+      <div class="form-grid">
+        <div class="field">
+          <label for="g-scope-inc">{t.groups.scopeInclude}</label>
+          <textarea id="g-scope-inc" class="mono" rows="3" bind:value={scope.include} readonly={!canWrite} spellcheck="false" placeholder="/var/log"
+          ></textarea>
+        </div>
+        <div class="field">
+          <label for="g-scope-exc">{t.groups.scopeExclude}</label>
+          <textarea id="g-scope-exc" class="mono" rows="3" bind:value={scope.exclude} readonly={!canWrite} spellcheck="false" placeholder="/data/tmp"
+          ></textarea>
+        </div>
+      </div>
+    </fieldset>
     {#if parallelSource}
       <div class="field">
         <label for="g-par">{t.groups.parallel}</label>

@@ -125,7 +125,10 @@ fn gpt_at(v: &Vol, lba: u64, ss: u64) -> Result<Vec<Part>, String> {
         return Err("GPT entry array".into());
     }
     let arr = v
-        .read_vec(entries_lba.checked_mul(ss).ok_or("GPT entry array")?, (count * esize) as usize)
+        .read_vec(
+            entries_lba.checked_mul(ss).ok_or("GPT entry array")?,
+            (count * esize) as usize,
+        )
         .map_err(|e| e.to_string())?;
     if arr.len() as u64 != count * esize || crc32(&arr) != le32(&h, 88) {
         return Err("GPT entry array checksum".into());
@@ -195,7 +198,9 @@ pub fn parse(v: &Vol) -> io::Result<Table> {
         }
     }
     if protective {
-        return Ok(Table::Corrupt(gpt_err.unwrap_or_else(|| "protective MBR without a GPT".into())));
+        return Ok(Table::Corrupt(
+            gpt_err.unwrap_or_else(|| "protective MBR without a GPT".into()),
+        ));
     }
     if let Some(e) = gpt_err {
         return Ok(Table::Corrupt(e));
@@ -319,11 +324,20 @@ mod tests {
             s[510] = 0x55;
             s[511] = 0xaa;
         }
-        let Table::Mbr(p) = parse(&vol(d.clone())).unwrap() else { panic!() };
-        let got: Vec<_> = p.iter().map(|p| (p.number, p.start / 512, p.len / 512, p.ptype.clone())).collect();
+        let Table::Mbr(p) = parse(&vol(d.clone())).unwrap() else {
+            panic!()
+        };
+        let got: Vec<_> = p
+            .iter()
+            .map(|p| (p.number, p.start / 512, p.len / 512, p.ptype.clone()))
+            .collect();
         assert_eq!(
             got,
-            [(1, 2048, 1000, PType::Data), (5, 3110, 100, PType::Lvm), (6, 3310, 50, PType::Data)]
+            [
+                (1, 2048, 1000, PType::Data),
+                (5, 3110, 100, PType::Lvm),
+                (6, 3310, 50, PType::Data)
+            ]
         );
         // a loop in the EBR chain
         {
@@ -363,9 +377,14 @@ mod tests {
         h[16..20].copy_from_slice(&c.to_le_bytes());
         d[512..604].copy_from_slice(&h);
         d[1024..1024 + arr.len()].copy_from_slice(&arr);
-        let Table::Gpt(p) = parse(&vol(d.clone())).unwrap() else { panic!() };
+        let Table::Gpt(p) = parse(&vol(d.clone())).unwrap() else {
+            panic!()
+        };
         assert_eq!(p.len(), 1);
-        assert_eq!((p[0].number, p[0].start, p[0].ptype.clone()), (1, 2048 * 512, PType::Lvm));
+        assert_eq!(
+            (p[0].number, p[0].start, p[0].ptype.clone()),
+            (1, 2048 * 512, PType::Lvm)
+        );
         assert_eq!(p[0].guid.as_deref(), Some("11111111-1111-1111-1111-111111111111"));
         d[1024 + 33] ^= 1; // entry array checksum no longer matches
         assert_eq!(

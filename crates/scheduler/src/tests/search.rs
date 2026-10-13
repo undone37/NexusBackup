@@ -168,43 +168,48 @@ fn vm_index_follows_group_backups() {
     // a volume the parser could not read: partial, with the reason (no file names)
     assert_eq!(
         state(&s),
-        ("partial".into(), Some("vdb1: BitLocker-encrypted volume".into()), Some(3))
+        (
+            "partial".into(),
+            Some("vdb1: BitLocker-encrypted volume".into()),
+            Some(3)
+        )
     );
     // refresh: group -> sources for the search filter; a pending row older than 48 h alerts
     s.index_pending("t1", "vm-100", 4, 1).unwrap();
-    s.db.conn().execute("UPDATE snapshot_index SET queued = 1 WHERE time = 4", []).unwrap();
+    s.db.conn()
+        .execute("UPDATE snapshot_index SET queued = 1 WHERE time = 4", [])
+        .unwrap();
     s.index_maintenance(catalog::now()).unwrap();
-    let srcs: Vec<String> = s
-        .db
-        .conn()
-        .prepare("SELECT source FROM group_sources WHERE group_id = 1 ORDER BY source")
-        .unwrap()
-        .query_map([], |r| r.get(0))
-        .unwrap()
-        .map(|x| x.unwrap())
-        .collect();
+    let srcs: Vec<String> =
+        s.db.conn()
+            .prepare("SELECT source FROM group_sources WHERE group_id = 1 ORDER BY source")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|x| x.unwrap())
+            .collect();
     assert_eq!(srcs, ["ct-100", "vm-100"]);
-    let open: i64 = s
-        .db
-        .conn()
-        .query_row(
-            "SELECT COUNT(*) FROM alerts WHERE kind = 'index_backlog' AND resolved_at IS NULL",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
+    let open: i64 =
+        s.db.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM alerts WHERE kind = 'index_backlog' AND resolved_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
     assert_eq!(open, 1);
-    s.db.conn().execute("DELETE FROM snapshot_index WHERE time = 4", []).unwrap();
-    s.index_maintenance(catalog::now()).unwrap();
-    let open: i64 = s
-        .db
-        .conn()
-        .query_row(
-            "SELECT COUNT(*) FROM alerts WHERE kind = 'index_backlog' AND resolved_at IS NULL",
-            [],
-            |r| r.get(0),
-        )
+    s.db.conn()
+        .execute("DELETE FROM snapshot_index WHERE time = 4", [])
         .unwrap();
+    s.index_maintenance(catalog::now()).unwrap();
+    let open: i64 =
+        s.db.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM alerts WHERE kind = 'index_backlog' AND resolved_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
     assert_eq!(open, 0, "resolved");
     let job = Job {
         id: 99,

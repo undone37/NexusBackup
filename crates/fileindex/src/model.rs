@@ -109,7 +109,13 @@ fn vkey(source: &str, browse: &str, size: u64, mtime: i64, kind: u8) -> u64 {
     if kind == chunkstore::names::KIND_DIR {
         return hash(&[source.as_bytes(), browse.as_bytes(), b"dir"]);
     }
-    hash(&[source.as_bytes(), browse.as_bytes(), &size.to_le_bytes(), &mtime.to_le_bytes(), &[kind]])
+    hash(&[
+        source.as_bytes(),
+        browse.as_bytes(),
+        &size.to_le_bytes(),
+        &mtime.to_le_bytes(),
+        &[kind],
+    ])
 }
 
 pub fn fkey(source: &str, browse: &str) -> u64 {
@@ -188,8 +194,11 @@ pub struct TenantIndex {
 
 fn ext_of(name: &str) -> Option<String> {
     let (stem, e) = name.rsplit_once('.')?;
-    (!stem.is_empty() && !e.is_empty() && e.len() <= 32 && e.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-'))
-        .then(|| e.to_lowercase())
+    (!stem.is_empty()
+        && !e.is_empty()
+        && e.len() <= 32
+        && e.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-'))
+    .then(|| e.to_lowercase())
 }
 
 impl TenantIndex {
@@ -280,7 +289,9 @@ impl TenantIndex {
 
     /// The entries of one snapshot the rules let in, by version key.
     fn entries(r: &MetaReader, source: &str, time: u64, rules: &Rules) -> anyhow::Result<Option<HashMap<u64, Open>>> {
-        let Some(names) = r.load_names(source, time)? else { return Ok(None) };
+        let Some(names) = r.load_names(source, time)? else {
+            return Ok(None);
+        };
         let g = Guest::for_snapshot(r, source, time, &names);
         let mut out = HashMap::with_capacity(names.len());
         for (p, size, mtime, kind) in names.iter() {
@@ -288,7 +299,11 @@ impl TenantIndex {
             if !rules.allows(&path) {
                 continue;
             }
-            let (size, mtime) = if kind == chunkstore::names::KIND_DIR { (0, mtime) } else { (size, mtime) };
+            let (size, mtime) = if kind == chunkstore::names::KIND_DIR {
+                (0, mtime)
+            } else {
+                (size, mtime)
+            };
             out.insert(
                 vkey(source, p, size, mtime, kind),
                 Open {
@@ -362,14 +377,23 @@ impl TenantIndex {
     }
 
     /// Removes a source's documents and walks all its snapshots again.
-    fn rebuild_source(&self, w: &mut IndexWriter, r: &MetaReader, source: &str, times: &[u64], rules: &Rules) -> anyhow::Result<()> {
+    fn rebuild_source(
+        &self,
+        w: &mut IndexWriter,
+        r: &MetaReader,
+        source: &str,
+        times: &[u64],
+        rules: &Rules,
+    ) -> anyhow::Result<()> {
         w.delete_term(Term::from_field_text(self.f.src, source));
         if !rules.enabled() {
             return Ok(());
         }
         let mut open: HashMap<u64, Open> = HashMap::new();
         for &t in times {
-            let Some(mut cur) = Self::entries(r, source, t, rules)? else { continue };
+            let Some(mut cur) = Self::entries(r, source, t, rules)? else {
+                continue;
+            };
             // closed: in the open set, not in this snapshot
             let gone: Vec<u64> = open.keys().filter(|k| !cur.contains_key(k)).copied().collect();
             for k in gone {
@@ -388,16 +412,29 @@ impl TenantIndex {
 
     /// Adds snapshot `t` after the ingested `prev`: new versions open, the
     /// versions that disappeared close (`gone = t`).
-    fn append(&self, w: &mut IndexWriter, r: &MetaReader, source: &str, prev: u64, t: u64, rules: &Rules) -> anyhow::Result<()> {
+    fn append(
+        &self,
+        w: &mut IndexWriter,
+        r: &MetaReader,
+        source: &str,
+        prev: u64,
+        t: u64,
+        rules: &Rules,
+    ) -> anyhow::Result<()> {
         if !rules.enabled() {
             return Ok(());
         }
-        let Some(cur) = Self::entries(r, source, t, rules)? else { return Ok(()) };
+        let Some(cur) = Self::entries(r, source, t, rules)? else {
+            return Ok(());
+        };
         let old = Self::entries(r, source, prev, rules)?.unwrap_or_default();
         let searcher = self.reader.searcher();
         for (k, _) in old.iter().filter(|(k, _)| !cur.contains_key(k)) {
             let term = Term::from_field_u64(self.f.okey, *k);
-            let hits = searcher.search(&TermQuery::new(term.clone(), IndexRecordOption::Basic), &DocSetCollector)?;
+            let hits = searcher.search(
+                &TermQuery::new(term.clone(), IndexRecordOption::Basic),
+                &DocSetCollector,
+            )?;
             for a in hits {
                 let d: TantivyDocument = searcher.doc(a)?;
                 let v = self.open_of(&d);
@@ -434,7 +471,10 @@ impl TenantIndex {
             .map(|k| {
                 (
                     Occur::Should,
-                    Box::new(TermQuery::new(Term::from_field_u64(self.f.fkey, *k), IndexRecordOption::Basic)) as Box<dyn Query>,
+                    Box::new(TermQuery::new(
+                        Term::from_field_u64(self.f.fkey, *k),
+                        IndexRecordOption::Basic,
+                    )) as Box<dyn Query>,
                 )
             })
             .collect();

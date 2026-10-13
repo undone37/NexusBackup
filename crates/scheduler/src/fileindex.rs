@@ -84,7 +84,15 @@ impl Scheduler {
         Ok(())
     }
 
-    fn index_state(&self, job: &Job, source: &str, time: i64, ok: bool, result: Option<&Value>, log: &str) -> Result<()> {
+    fn index_state(
+        &self,
+        job: &Job,
+        source: &str,
+        time: i64,
+        ok: bool,
+        result: Option<&Value>,
+        log: &str,
+    ) -> Result<()> {
         let (state, reason, entries, volumes) = match result {
             Some(r) if ok => {
                 let vols = r["volumes"].as_array().cloned().unwrap_or_default();
@@ -108,7 +116,11 @@ impl Scheduler {
                 )
             }
             _ => {
-                let last = log.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("file index job failed");
+                let last = log
+                    .lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("file index job failed");
                 ("failed", Some(last.chars().take(300).collect()), None, None)
             }
         };
@@ -192,7 +204,9 @@ impl Scheduler {
             let mut st = c.prepare(
                 "SELECT tenant, COUNT(*), MIN(queued) FROM snapshot_index WHERE state = 'pending' AND queued < ?1 GROUP BY tenant",
             )?;
-            let rows = st.query_map([now - BACKLOG_SECS], |r| Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?))))?;
+            let rows = st.query_map([now - BACKLOG_SECS], |r| {
+                Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?)))
+            })?;
             for r in rows {
                 let (t, v) = r?;
                 late.insert(t, v);

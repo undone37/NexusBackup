@@ -60,7 +60,12 @@ enum Run {
 
 /// Lists all volumes. `reuse(v)`: the caller has an unchanged listing of `v`
 /// (answer: skip the parse, `Listed::reused`).
-pub fn list(src: &mut dyn Source, helper: &Helper, limits: Limits, reuse: &mut dyn FnMut(&Volume) -> bool) -> io::Result<Vec<Listed>> {
+pub fn list(
+    src: &mut dyn Source,
+    helper: &Helper,
+    limits: Limits,
+    reuse: &mut dyn FnMut(&Volume) -> bool,
+) -> io::Result<Vec<Listed>> {
     let mut out: Vec<Listed> = Vec::new();
     let mut known: HashMap<String, usize> = HashMap::new();
     let mut crashed: BTreeSet<String> = BTreeSet::new();
@@ -68,7 +73,10 @@ pub fn list(src: &mut dyn Source, helper: &Helper, limits: Limits, reuse: &mut d
         match run_once(src, helper, limits, reuse, &mut out, &mut known, &crashed)? {
             Run::Done => return Ok(out),
             Run::Crashed(key, why) => {
-                eprintln!("fsindex: helper failed on volume {key}: {why} (attempt {})", attempt + 1);
+                eprintln!(
+                    "fsindex: helper failed on volume {key}: {why} (attempt {})",
+                    attempt + 1
+                );
                 if let Some(&i) = known.get(&key) {
                     let l = &mut out[i];
                     l.entries.clear();
@@ -109,7 +117,11 @@ fn run_once(
     let mut w = BufWriter::new(child.stdin.take().unwrap());
     let mut r = BufReader::with_capacity(1 << 20, child.stdout.take().unwrap());
     let cfg = Config {
-        disks: names.iter().enumerate().map(|(i, n)| (n.clone(), src.size(i))).collect(),
+        disks: names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.clone(), src.size(i)))
+            .collect(),
         limits,
         cache_bytes: 128 << 20,
     };
@@ -197,7 +209,9 @@ fn run_once(
                 }
                 b'Z' => {
                     let v: Volume = crate::proto::parse_volume(&p)?;
-                    let i = *known.get(&v.key).ok_or_else(|| io::Error::other("end of an unknown volume"))?;
+                    let i = *known
+                        .get(&v.key)
+                        .ok_or_else(|| io::Error::other("end of an unknown volume"))?;
                     if v.state.is_empty() {
                         return Err(io::Error::other("volume ended without a state"));
                     }
@@ -206,7 +220,12 @@ fn run_once(
                     current = None;
                 }
                 b'Q' => return Ok(Run::Done),
-                b'X' => return Err(io::Error::other(format!("fsindex helper: {}", String::from_utf8_lossy(&p)))),
+                b'X' => {
+                    return Err(io::Error::other(format!(
+                        "fsindex helper: {}",
+                        String::from_utf8_lossy(&p)
+                    )))
+                }
                 _ => return Err(io::Error::other(format!("unexpected frame {tag:#x} from the helper"))),
             }
         }
@@ -228,9 +247,9 @@ fn run_once(
         }
         Err(e) => match current.map(|i| out[i].volume.key.clone()) {
             // a broken pipe inside a volume: the helper died there
-            Some(k) if matches!(e.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::UnexpectedEof) => {
-                Ok(Run::Crashed(k, status.map_or_else(|e| e.to_string(), |s| s.to_string())))
-            }
+            Some(k) if matches!(e.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::UnexpectedEof) => Ok(
+                Run::Crashed(k, status.map_or_else(|e| e.to_string(), |s| s.to_string())),
+            ),
             _ => Err(e),
         },
     }

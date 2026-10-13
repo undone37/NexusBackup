@@ -61,7 +61,9 @@ impl Source for StoreSource<'_> {
             let i = match self.cache.iter().position(|(k, _)| *k == (d, n)) {
                 Some(i) => i,
                 None => {
-                    let id = ids.get(n as usize).ok_or_else(|| io::Error::other("chunk outside the index"))?;
+                    let id = ids
+                        .get(n as usize)
+                        .ok_or_else(|| io::Error::other("chunk outside the index"))?;
                     let data = self.store.read_chunk(id)?;
                     if self.cache.len() >= CHUNK_CACHE {
                         self.cache.pop_back();
@@ -88,7 +90,10 @@ pub fn helper_bin() -> PathBuf {
     if let Some(p) = std::env::var_os("NEXUS_FSINDEX") {
         return p.into();
     }
-    if let Some(p) = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("nexus-fsindex"))) {
+    if let Some(p) = std::env::current_exe()
+        .ok()
+        .and_then(|e| Some(e.parent()?.join("nexus-fsindex")))
+    {
         if p.is_file() {
             return p;
         }
@@ -156,13 +161,22 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
             && !rec.reads.is_empty()
             && rec.reads.iter().all(|(disk, c, id)| {
                 disk_no.get(disk).is_some_and(|&d| {
-                    src.disks[d].2.get(*c as usize).is_some_and(|cur| chunkstore::crypto::hex(cur) == *id)
+                    src.disks[d]
+                        .2
+                        .get(*c as usize)
+                        .is_some_and(|cur| chunkstore::crypto::hex(cur) == *id)
                 })
             })
     };
     let reusable: HashMap<String, VolumeRec> = prev
         .as_ref()
-        .map(|(_, r)| r.volumes.iter().filter(|v| unchanged(v)).map(|v| (v.volume.key.clone(), v.clone())).collect())
+        .map(|(_, r)| {
+            r.volumes
+                .iter()
+                .filter(|v| unchanged(v))
+                .map(|v| (v.volume.key.clone(), v.clone()))
+                .collect()
+        })
         .unwrap_or_default();
     let helper = Helper::new(&helper_bin());
     // live progress (docs/control-plane.md "Live progress"): the volume being listed
@@ -212,7 +226,10 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
             reused += 1;
         }
     }
-    let parsed = listed.iter().filter(|l| !l.reused && l.volume.state == "indexed").count();
+    let parsed = listed
+        .iter()
+        .filter(|l| !l.reused && l.volume.state == "indexed")
+        .count();
     let fallback = vm_fallback(store, &idx, &mut listed, limits);
     let mut vols: Vec<Volume> = listed.iter().map(|l| l.volume.clone()).collect();
     fsindex::mapping::assign(&mut vols);
@@ -288,7 +305,8 @@ fn vm_fallback(store: &Store, idx: &[(String, Index)], listed: &mut [Listed], li
         .filter(|&i| listed[i].volume.state == "unsupported" && VM_FALLBACK.contains(&listed[i].volume.fs.as_str()))
         .collect();
     let cfg = crate::restorevm::Config::from_env();
-    if want.is_empty() || std::env::var_os("NEXUS_FSINDEX_NO_VM").is_some() || !cfg.image_dir.join("vmlinuz").is_file() {
+    if want.is_empty() || std::env::var_os("NEXUS_FSINDEX_NO_VM").is_some() || !cfg.image_dir.join("vmlinuz").is_file()
+    {
         return false;
     }
     let mut roots: Vec<String> = want

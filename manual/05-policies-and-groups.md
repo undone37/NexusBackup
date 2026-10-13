@@ -217,19 +217,44 @@ Notes:
   `inventory_refresh` warning is raised (once while it is open).
 - Microsoft 365 tags by Entra group (`group:<name>`) are not available yet.
 
-### Index files in VM/CT disks
+### File index of VM/CT disks
 
 Files of host, TrueNAS, NFS/SMB and plugin snapshots are always findable under **Monitor → Find files**
-([06 Restores](06-restores.md#find-a-file)). The files inside VM and container disks are not, unless you switch
-it on per group: open **Edit** on a Proxmox VE group and tick **Index files in VM/CT disks (boots the restore
-micro-VM after every backup)**. The list of groups shows a **File index** label for such groups.
+([06 Restores](06-restores.md#find-a-file)). For VM and container snapshots it is a setting of the Proxmox VE group:
+**File index: On (default) / Off** in the group's dialog. New Proxmox VE groups have it on; the list of groups shows a
+**File index** label for them.
+
+![Group dialog: file index and file search scope](images/group-search-scope.png)
 
 After each backup of the group, the appliance queues a **File index** job per VM or container snapshot. For a VM it
-starts the restore micro-VM, mounts the guest file systems read-only and lists them; for a container it reads the
-stored tar stream. The file list is sealed with the tenant key and stored next to the snapshot. Costs: a micro-VM boot
-(a few seconds with KVM) plus the walk over all files for every VM snapshot, and a full read of the container's
-backup for every CT snapshot, so the index job can take minutes for large guests. Only snapshots taken while the
-flag is on are indexed. Turning it on or off is recorded in the audit log (`group.index_files`).
+reads the partition tables and file systems of the backed-up disks itself, with a sandboxed parser that only reads
+(no VM is booted, nothing is mounted): GPT and MBR partitions, LVM (linear, striped, mirrored), ext4, NTFS, FAT and
+exFAT. XFS, btrfs and ZFS volumes are listed with the restore micro-VM instead. A container's stored tar stream is
+read directly. Only the metadata of changed volumes is read again, so the job usually takes seconds to a few minutes.
+Linux paths are shown with their mount points from the guest's `/etc/fstab`, Windows paths with `C:` for the system
+volume. Volumes the parser cannot read (BitLocker or LUKS encryption, ReFS, Storage Spaces, Windows dynamic disks) are
+skipped and reported per snapshot (**partly indexed** on the Snapshots page and in the search). Only snapshots taken
+while the setting is on are indexed. Turning it on or off is recorded in the audit log (`group.index_files`).
+
+### File search scope
+
+**File search scope** in the group's dialog (every kind of group) decides which folders of the group's sources go
+into the search index. It never limits backups, browsing, downloads or restores: a file outside the scope is still in
+the snapshot, it is just not found by **Find files**.
+
+- **Leave out system folders (recommended)**, on by default, leaves out `/$Recycle.Bin`, `/Windows`,
+  `/Program Files`, `/Program Files (x86)`, `/ProgramData`, `/System Volume Information`, `/Users/*/AppData`,
+  `/Recovery`, `/proc`, `/sys`, `/dev`, `/run`, `/tmp`, `/usr`, `/lib`, `/lib64`, `/boot`, `/var/cache`,
+  `/var/tmp`, `/var/lib/docker` and `/var/lib/containerd`. `/var` itself stays searchable (databases, web and mail
+  data live there).
+- **Include anyway** and **Leave out** take one rule per line, at most 64 each: absolute paths with `/` separators
+  (also for Windows), `*` matches within one folder name (`/Users/*/Downloads`). `/C/…` applies to one Windows drive,
+  `/…` to every drive. The most specific (longest) rule wins, so `/var/log` under **Include anyway** brings back the
+  logs of an otherwise left-out tree, and `/data/tmp` under **Leave out** hides a scratch folder.
+
+Changing the rules re-reads the existing file lists into the search index (no backup or disk read is needed). It
+needs an administrator or a tenant administrator and is recorded in the audit log (`group.index_rules`).
+
 ### Excluded disks and parallel guests (Proxmox VE)
 
 A Proxmox VE group has two more settings in its dialog:

@@ -562,7 +562,10 @@ pub fn router(st: St) -> Router {
         .route("/files/search", get(filesearch::search))
         .route("/files/index-status", get(filesearch::index_status))
         .route("/files/index/rebuild", post(filesearch::rebuild))
-        .route("/groups/{id}/index-rules", get(filesearch::get_rules).put(filesearch::put_rules))
+        .route(
+            "/groups/{id}/index-rules",
+            get(filesearch::get_rules).put(filesearch::put_rules),
+        )
         .route("/groups/{id}/resume", post(runctl::resume_group))
         .route("/sources/{id}/maintenance", post(runctl::start_maintenance))
         .route("/sources/{id}/maintenance/end", post(runctl::end_maintenance))

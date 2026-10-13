@@ -17,7 +17,11 @@ fn keys() -> Keyring {
 fn e(path: &str, size: u64, mtime: i64) -> TreeEntry {
     TreeEntry {
         path: path.as_bytes().to_vec(),
-        kind: if size == u64::MAX { TreeKind::Dir } else { TreeKind::File },
+        kind: if size == u64::MAX {
+            TreeKind::Dir
+        } else {
+            TreeKind::File
+        },
         mode: 0o644,
         uid: 0,
         gid: 0,
@@ -34,7 +38,8 @@ fn e(path: &str, size: u64, mtime: i64) -> TreeEntry {
 }
 
 fn commit(s: &Store, src: &str, t: u64, es: Vec<TreeEntry>) {
-    s.commit_snapshot(src, t, &[("tree", Index::Tree { entries: es })]).unwrap();
+    s.commit_snapshot(src, t, &[("tree", Index::Tree { entries: es })])
+        .unwrap();
 }
 
 fn svc(base: &Path) -> Arc<Service> {
@@ -94,13 +99,24 @@ fn versions_rules_paths_retention_paging() {
         &store,
         "host-w1",
         150,
-        vec![e("C/Users/ann/Plan.xlsx", 10, 40), e("C/Windows/notepad.exe", 9, 1), e("D/Data/x.pdf", 3, 2)],
+        vec![
+            e("C/Users/ann/Plan.xlsx", 10, 40),
+            e("C/Windows/notepad.exe", 9, 1),
+            e("D/Data/x.pdf", 3, 2),
+        ],
     );
     // a VM snapshot listed by nexus-fsindex: name index + volume report
     let disk = store.store_image(&[0u8; 512][..], 4096).unwrap();
     store.commit_snapshot("vm-100", 160, &[("drive-scsi0", disk)]).unwrap();
     let mut n = NameIndex::default();
-    for (p, k) in [("vda1", 1), ("vda1/etc", 1), ("vda1/etc/hosts", 0), ("vda2", 1), ("vda2/ann", 1), ("vda2/ann/cv.pdf", 0)] {
+    for (p, k) in [
+        ("vda1", 1),
+        ("vda1/etc", 1),
+        ("vda1/etc/hosts", 0),
+        ("vda2", 1),
+        ("vda2/ann", 1),
+        ("vda2/ann/cv.pdf", 0),
+    ] {
         n.push(p, 11, 50, k);
     }
     store.write_names("vm-100", 160, &n).unwrap();
@@ -130,8 +146,15 @@ fn versions_rules_paths_retention_paging() {
     // versions, newest first; deleted in 300
     let h = find(&s, "report");
     assert_eq!(h.len(), 1, "{h:?}");
-    assert_eq!((h[0].source.as_str(), h[0].path.as_str(), h[0].browse.as_str()), ("host-a1", "/home/ann/report.txt", "home/ann/report.txt"));
-    let v: Vec<_> = h[0].versions.iter().map(|v| (v.size, v.mtime, v.first, v.gone)).collect();
+    assert_eq!(
+        (h[0].source.as_str(), h[0].path.as_str(), h[0].browse.as_str()),
+        ("host-a1", "/home/ann/report.txt", "home/ann/report.txt")
+    );
+    let v: Vec<_> = h[0]
+        .versions
+        .iter()
+        .map(|v| (v.size, v.mtime, v.first, v.gone))
+        .collect();
     assert_eq!(v, [(6, 20, 200, Some(300)), (5, 10, 100, Some(200))]);
     // name glob, words, extension, deleted files, path prefix
     assert_eq!(find(&s, "*.DOCX")[0].path, "/home/ann/Angebot Müller.docx");
@@ -155,12 +178,22 @@ fn versions_rules_paths_retention_paging() {
             ..Default::default()
         })
         .unwrap();
-    assert_eq!(del.hits.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(), ["/home/ann/report.txt"]);
+    assert_eq!(
+        del.hits.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(),
+        ["/home/ann/report.txt"]
+    );
     assert!(find(&s, "/usr/bin").is_empty(), "default exclude");
-    assert_eq!(find(&s, "/var/lib/mysql")[0].path, "/var/lib/mysql/ibdata1", "/var stays");
+    assert_eq!(
+        find(&s, "/var/lib/mysql")[0].path,
+        "/var/lib/mysql/ibdata1",
+        "/var stays"
+    );
     // the VM's guest paths, browse paths for the actions
     let h = find(&s, "/etc/hosts");
-    assert_eq!((h[0].source.as_str(), h[0].browse.as_str()), ("vm-100", "vda1/etc/hosts"));
+    assert_eq!(
+        (h[0].source.as_str(), h[0].browse.as_str()),
+        ("vm-100", "vda1/etc/hosts")
+    );
     assert_eq!(find(&s, "cv.pdf")[0].path, "/home/ann/cv.pdf");
     // Windows agent: drive letters, Windows excluded by default
     assert_eq!(find(&s, "plan.xlsx")[0].path, "C:/Users/ann/Plan.xlsx");
@@ -193,7 +226,11 @@ fn versions_rules_paths_retention_paging() {
     // retention: snapshot 100 goes, its only version with it
     store.delete_snapshot("host-a1", 100).unwrap();
     s.sync("acme").unwrap();
-    let v: Vec<_> = find(&s, "report")[0].versions.iter().map(|v| (v.first, v.gone)).collect();
+    let v: Vec<_> = find(&s, "report")[0]
+        .versions
+        .iter()
+        .map(|v| (v.first, v.gone))
+        .collect();
     assert_eq!(v, [(200, Some(300))]);
 
     // rules: exclude /home/ann for host-a1
@@ -226,7 +263,11 @@ fn versions_rules_paths_retention_paging() {
 fn paging_has_no_gaps_or_duplicates() {
     let d = tempfile::tempdir().unwrap();
     let store = Store::open(d.path().join("store/acme"), keys(), Options::default()).unwrap();
-    let files = |n: u64| (0..n).map(|i| e(&format!("data/file-{i:03}.txt"), i, 1)).collect::<Vec<_>>();
+    let files = |n: u64| {
+        (0..n)
+            .map(|i| e(&format!("data/file-{i:03}.txt"), i, 1))
+            .collect::<Vec<_>>()
+    };
     commit(&store, "share-1", 1, files(130));
     // a second version of every tenth file
     let mut v2 = files(130);

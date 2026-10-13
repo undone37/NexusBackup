@@ -91,7 +91,9 @@ pub fn probe(v: &Vol) -> Kind {
     // ZFS vdev label: uberblock magic in the uberblock array (label 0 at 128 KiB)
     // (1 KiB slots; only the slots of written transaction groups carry the magic)
     if let Ok(l) = v.read_vec(128 << 10, 128 << 10) {
-        let magic = |s: &[u8]| le32(s, 0) == 0x00ba_b10c || (s.len() >= 8 && u32::from_be_bytes([s[4], s[5], s[6], s[7]]) == 0x00ba_b10c);
+        let magic = |s: &[u8]| {
+            le32(s, 0) == 0x00ba_b10c || (s.len() >= 8 && u32::from_be_bytes([s[4], s[5], s[6], s[7]]) == 0x00ba_b10c)
+        };
         if l.chunks(1024).any(magic) {
             return Kind::Unsupported("zfs_member", "ZFS inside the guest is not indexed");
         }

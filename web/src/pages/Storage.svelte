@@ -2,9 +2,10 @@
   import { onMount } from 'svelte';
   import { get, errText } from '../lib/api';
   import { session } from '../lib/session.svelte';
-  import { fmtBytes, fmtPct, fmtRatio, fmtTime } from '../lib/format';
+  import { fmtAgo, fmtBytes, fmtPct, fmtRatio, fmtTime } from '../lib/format';
+  import { can } from '../lib/roles';
   import { t } from '../lib/i18n';
-  import type { Storage, StorageGrowth } from '../lib/types';
+  import type { IndexStatus, Storage, StorageGrowth } from '../lib/types';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import KpiTile from '../components/KpiTile.svelte';
   import TrendLine from '../components/charts/TrendLine.svelte';
@@ -18,7 +19,15 @@
   // GET /storage (docs/storage-accounting.md): Logical / Data in / Stored / Saved per tenant and group.
   let data = $state<Storage | null>(null);
   let error: string | null = $state(null);
+  // Phase 31b: the file search index (GET /files/index-status), for the roles that may search
+  let index = $state<IndexStatus | null>(null);
   onMount(async () => {
+    if (can.search(session.user))
+      get<IndexStatus>('/files/index-status')
+        .then((x) => (index = x))
+        .catch(() => {
+          /* no index section */
+        });
     try {
       data = await get<Storage>('/storage');
     } catch (e) {
@@ -154,6 +163,58 @@
     {/if}
     <p class="hint">{t.storage.coverage(tot.snapshots, tot.snapshots_all)} {t.storage.approx}</p>
   </section>
+
+  {#if index}
+    <section class="card" aria-labelledby="s-index">
+      <div class="card-head"><div><h2 id="s-index">{t.storage.index}</h2><div class="sub">{t.storage.indexSub}</div></div></div>
+      {#if !index.available}
+        <p class="banner warn">{t.storage.indexDown}</p>
+      {:else}
+        {#if index.paused}
+          <p class="banner warn">{t.storage.indexPaused(fmtBytes(index.free_bytes), fmtBytes(index.floor_bytes))}</p>
+        {/if}
+        <div class="table-wrap">
+          <table id="s-index-table">
+            <thead>
+              <tr>
+                <th scope="col">{t.tenant}</th>
+                <th scope="col" class="num">{t.storage.indexSize}</th>
+                <th scope="col" class="num">{t.storage.indexDocs}</th>
+                <th scope="col" class="num">{t.storage.indexSources}</th>
+                <th scope="col" class="num">{t.storage.indexIndexed}</th>
+                <th scope="col" class="num">{t.storage.indexPending}</th>
+                <th scope="col" class="num">{t.storage.indexUnindexed}</th>
+                <th scope="col">{t.storage.indexLastSync}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each index.tenants ?? [] as x (x.tenant)}
+                <tr>
+                  <th scope="row">{x.tenant}</th>
+                  <td class="num">{fmtBytes(x.bytes)}</td>
+                  <td class="num">{x.docs.toLocaleString('en-US')}</td>
+                  <td class="num">{x.sources}</td>
+                  <td class="num">{x.snapshots_indexed}</td>
+                  <td class="num"
+                    >{#if x.snapshots_pending}<span class="chip warn plain">{x.snapshots_pending}</span>
+                      {#if x.oldest_pending}<div class="muted small">{t.storage.indexOldest(fmtAgo(x.oldest_pending))}</div>{/if}{:else}0{/if}</td
+                  >
+                  <td class="num">{x.snapshots_unindexed}</td>
+                  <td class="nowrap"
+                    >{fmtAgo(x.last_sync)}{#if x.error}<div><span class="chip bad" title={x.error}>{x.error}</span></div>{/if}</td
+                  >
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        <p class="hint">
+          {t.storage.indexFree(fmtBytes(index.free_bytes), fmtBytes(index.floor_bytes), fmtBytes(index.cache_bytes), fmtBytes(index.cache_limit))}
+          {t.storage.indexHint}
+        </p>
+      {/if}
+    </section>
+  {/if}
 
   <UsageSection />
 {:else if !error}

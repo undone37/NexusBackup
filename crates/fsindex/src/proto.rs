@@ -82,10 +82,19 @@ pub fn decode_entries(mut b: &[u8], out: &mut Vec<Entry>) -> io::Result<()> {
         let n = u16::from_le_bytes([b[17], b[18]]) as usize;
         let p = b.get(19..19 + n).ok_or_else(|| invalid("truncated entry"))?;
         let path = String::from_utf8_lossy(p).into_owned();
-        if kind > crate::KIND_OTHER || path.is_empty() || path.starts_with('/') || path.split('/').any(|c| c.is_empty() || c == "." || c == "..") {
+        if kind > crate::KIND_OTHER
+            || path.is_empty()
+            || path.starts_with('/')
+            || path.split('/').any(|c| c.is_empty() || c == "." || c == "..")
+        {
             return Err(invalid("malformed entry"));
         }
-        out.push(Entry { path, size, mtime, kind });
+        out.push(Entry {
+            path,
+            size,
+            mtime,
+            kind,
+        });
         b = &b[19 + n..];
     }
     Ok(())

@@ -19,7 +19,10 @@ pub struct Rules {
 }
 
 fn comps(p: &str) -> Vec<String> {
-    p.split('/').filter(|c| !c.is_empty()).map(|c| c.to_lowercase()).collect()
+    p.split('/')
+        .filter(|c| !c.is_empty())
+        .map(|c| c.to_lowercase())
+        .collect()
 }
 
 /// `*` any run, `?` one character, within one component (lowercase input).
@@ -148,7 +151,11 @@ mod tests {
 
     #[test]
     fn most_specific_wins() {
-        let r = rules("vm-1", &["/var/cache/important", "/C/Windows/Temp"], &["/srv/*/logs", "/D/Data"]);
+        let r = rules(
+            "vm-1",
+            &["/var/cache/important", "/C/Windows/Temp"],
+            &["/srv/*/logs", "/D/Data"],
+        );
         assert!(r.allows("/var/cache/important/a"));
         assert!(!r.allows("/var/cache/other"));
         assert!(!r.allows("/srv/web/logs/a.log") && r.allows("/srv/web/htdocs/a"));

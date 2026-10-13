@@ -350,48 +350,84 @@ To download:
 ## Find a file
 
 When you do not know which snapshot (or which guest) holds a file, open **Monitor → Find files** (or **Find files**
-on the Snapshots page).
+on the Snapshots page). The search answers while you type: results appear about 0.3 seconds after the last key
+press, and **Enter** searches at once.
 
 1. Choose the **Tenant** (tenant users search their own tenant only).
-2. Type a **Name or pattern**:
-   - without wildcards the name only has to contain the text (`budget` finds `budget-2026-q4.xlsx`);
-   - `*` stands for any characters, `?` for one character, `[abc]` / `[a-z]` for one of the listed characters,
-     `[!x]` for any character except those listed (`report-202?.pdf`, `*.[ch]`);
-   - without a `/` the pattern is matched against the file or folder name; with a `/` against the whole path from
-     the snapshot root (`home/*/Documents/*.docx`);
-   - upper and lower case are treated alike unless you tick **Case-sensitive**.
-3. Optionally narrow it to one **Guest** and a date range (**Snapshots from / until**), then click **Search**.
+2. Type a **Name, path or words**. **Match** decides how the text is read; **Auto** (the default) picks:
+   - **Path** when the text contains a `/`: a pattern against the whole guest path, `*` within one folder name
+     (`/home/*/Documents/*.docx`, `C:/Users/*/Desktop/*`, or `Users/*/Documents/*` for every drive);
+   - **Name** when it contains `*` or `?`: a pattern against the file or folder name (`budget*.xlsx`,
+     `report-202?.pdf`);
+   - **Words** otherwise: every word must start a word of the name or path (`report 2026` finds
+     `/srv/reports/q3-2026.pdf`). Upper and lower case are treated alike.
+3. Optionally narrow it to one **Source** (`vm-100`, `host-…`, `share-…`) or one **Protection group**.
+4. **More filters** offers the **Source kind** (VMs, containers, agents, NAS, shares, plugins), **Extensions**
+   (`pdf, docx`, without dots), a size range (**Size from / up to** with a unit), the modification time
+   (**Modified from / until**), the **Type** (files only, folders only) and **Deleted files** (show all, only
+   deleted, hide deleted). With a filter set, the text may stay empty: for example all `.pst` files above 2 GiB,
+   or everything deleted in the last week. **Reset filters** clears them.
 
-![Search results for budget* in tenant acme](images/search.png)
+![Search results for budget* in tenant acme, one row expanded to its version timeline](images/search.png)
 
-Each row is one version of a file: the same path with the same size and modification time in several snapshots is
-shown once, with the number of snapshots that hold it. Pick the snapshot in the list (default: the newest), then:
+Each row is one path in one source, with the size and modification time of its newest version, the number of
+versions and, if it no longer exists in the newest snapshot, a **deleted** chip with the date of the first snapshot
+without it. Paths are shown as the guest sees them: `/home/ann/report.docx` in a Linux VM, `C:/Users/ann/…` in a
+Windows VM or agent, `vol3/…` (or the volume label) for a volume without a mount point. 50 rows are listed at a
+time; **Load more** fetches the next ones, sorted by path.
+
+The arrow at the start of a row opens its **version timeline**: one line per version (size, modification time,
+**First seen** in which snapshot, **Until** the snapshot that no longer has it, or **current**), with the snapshots
+that hold it. Pick the snapshot (default: the newest holding that version), then:
 
 - **Open** shows the folder in the file browser of that snapshot ([Browse files](#browse-files-and-download-them-tar-or-zip));
 - **Download** packs the file as a tar archive (needs the download permission);
 - **Restore…** (host snapshots) opens the [restore to a host](#restore-files-to-a-host-agents) dialog for this path.
 
-At most 500 versions are listed, and a search stops after 30 seconds. If either limit is hit, a note asks you to narrow
-the search (a longer name, one guest, a date range). The search runs as a **File search** job; every search is
-recorded in the audit log (`file.search`) with the query.
+A version whose snapshots were all deleted by retention says **snapshot deleted** and has no actions. Below the
+versions, a strip shows every local snapshot of the source, oldest on the left: green indexed, amber waiting or partly
+indexed, red failed, grey file index off. Snapshots that are not fully indexed are listed with the reason, because
+files that only they hold cannot be found:
+
+| Shown | Why | What to do |
+|---|---|---|
+| waiting to be indexed | the snapshot was taken a moment ago, or the index service is catching up (a note above the results counts them) | wait; after 48 hours the alert `index_backlog` is raised |
+| partly indexed: `vdb1: BitLocker-encrypted volume` (or LUKS) | the volume is encrypted inside the guest; the appliance has no key | browse and restore the disk with the restore micro-VM, or protect that data with an agent |
+| partly indexed: `ReFS`, `Storage Spaces`, Windows dynamic disks | file systems and volume managers the parser does not read yet | as above; Windows dynamic disks are planned |
+| partly indexed: `XFS` / `btrfs` / `ZFS`, listed only by the restore micro-VM | these are listed by the restore micro-VM; without it installed the volume is skipped | browse and restore them as usual: the file browser uses the restore micro-VM |
+| partly indexed: corrupted partition table, missing LVM disk, parser limit | the disk layout cannot be read safely | check the guest; the rest of the snapshot is indexed |
+| file index off | the VM/CT group has the file index switched off ([05](05-policies-and-groups.md#file-index-of-vmct-disks)) | switch it on; later snapshots are indexed |
+
+Crash-consistent VM snapshots are read as they are on disk (no journal replay), so files changed in the last
+seconds before the snapshot may be missing from the index; they are still in the snapshot.
 
 What is searched:
 
-- Host (agent), TrueNAS, NFS/SMB and plugin snapshots: always. Each snapshot gets its own file index when it is
-  committed; snapshots taken before this release are indexed by the daily maintenance.
-- VM and container snapshots: only for protection groups with **Index files in VM/CT disks** switched on
-  ([05 Policies and groups](05-policies-and-groups.md#index-files-in-vmct-disks)). It costs a restore micro-VM boot
-  (VMs) or a read of the backup (containers) after every backup. Other VM/CT snapshots are counted in a note
-  ("… snapshots have no file index").
+- Host (agent), TrueNAS, NFS/SMB and plugin snapshots: always. Their file list is written when the snapshot is
+  committed.
+- VM and container snapshots: for protection groups with the **File index** on (the default for new Proxmox VE
+  groups, [05 Policies and groups](05-policies-and-groups.md#file-index-of-vmct-disks)). After each backup a
+  **File index** job lists the guest file systems with a sandboxed parser, without booting a VM.
+- Only the folders in the group's **File search scope** ([05](05-policies-and-groups.md#file-search-scope)): by
+  default system folders such as `/usr`, `/proc`, `C:/Windows` and `C:/Users/*/AppData` are left out. Browsing,
+  downloads and restores always show everything.
 - Snapshots that exist only offsite are not searched.
 
-Privacy: the file names never appear in plaintext in the catalog. The index of a snapshot is stored next to the
-snapshot, encrypted with the tenant key, and is deleted together with the snapshot (retention, manual delete). The
-search runs on the appliance in the scheduler, which opens the indexes with the tenant key; the web interface only
-receives the matches.
+When the index service is not running, **Find files** says so and falls back to the older search job: it starts with
+**Search** (not while typing), uses only the name or pattern and the source, and lists at most 500 versions within 30
+seconds. **Try the instant search again** switches back.
 
-> **Status:** The search and the per-snapshot index are covered by unit and scheduler tests with a temporary store.
-> Indexing of VM disks through the restore micro-VM has not run in the VM lab yet.
+Privacy: file names never appear in plaintext in the catalog. The per-snapshot file lists and the search index of a
+tenant are sealed with the tenant key; the search runs on the appliance, and the web interface only receives the
+results. Every search is recorded in the audit log (`file.search`) with the query and filters. Only names, sizes and
+times are indexed, never file contents. When a snapshot is deleted, its versions disappear from the search at once.
+
+The index size per tenant (file versions, size on disk, snapshots waiting) is shown on **Storage**
+([03 The web interface](03-web-interface.md#storage)). If the index volume runs low on free space, indexing pauses
+and the alert `index_space` is raised; searching keeps working with what is indexed.
+
+> **Status:** The search index and the sandboxed parser are covered by unit tests with real disk images and by fuzz
+> tests. The VM lab run of indexing after real Proxmox VE backups is still open.
 
 ## Restore files to a host (agents)
 

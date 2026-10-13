@@ -72,7 +72,9 @@ pub fn assign(vols: &mut [Volume]) {
         v.mount = None;
     }
     // Linux: the root file system is the one whose own fstab mounts it at `/`
-    let with_fstab: Vec<usize> = (0..vols.len()).filter(|&i| vols[i].fstab.is_some() && listed(&vols[i])).collect();
+    let with_fstab: Vec<usize> = (0..vols.len())
+        .filter(|&i| vols[i].fstab.is_some() && listed(&vols[i]))
+        .collect();
     let root = with_fstab
         .iter()
         .copied()
@@ -89,7 +91,10 @@ pub fn assign(vols: &mut [Volume]) {
             if mp == "/" {
                 continue;
             }
-            if let Some(v) = vols.iter_mut().find(|v| v.mount.is_none() && listed(v) && names(&spec, v)) {
+            if let Some(v) = vols
+                .iter_mut()
+                .find(|v| v.mount.is_none() && listed(v) && names(&spec, v))
+            {
                 v.mount = Some(mp);
             }
         }
@@ -132,7 +137,7 @@ impl Mapper {
     pub fn new(vols: &[Volume]) -> Mapper {
         let pre = prefixes(vols);
         let mut map: Vec<(String, String)> = vols.iter().zip(pre).map(|(v, p)| (v.browse.clone(), p)).collect();
-        map.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        map.sort_by_key(|a| std::cmp::Reverse(a.0.len()));
         Mapper { map }
     }
 

@@ -309,7 +309,9 @@ async fn instant_search_through_nexus_index() {
         )
         .unwrap();
     let (alice, tina, vic) = (t.login("alice").await, t.login("tina").await, t.login("vic").await);
-    let r = t.get("/api/v1/files/search?q=report&group=1&ext=.DOCX,pdf&deleted=any", &tina).await;
+    let r = t
+        .get("/api/v1/files/search?q=report&group=1&ext=.DOCX,pdf&deleted=any", &tina)
+        .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     let h = &r.body["hits"][0];
     assert_eq!(h["path"], "/home/ann/report.docx");
@@ -318,7 +320,10 @@ async fn instant_search_through_nexus_index() {
     assert_eq!(h["versions"][1]["times"], json!([200, 100]));
     assert_eq!(r.body["next"], "50");
     let marks = &r.body["snapshots"]["vm-100"];
-    assert_eq!(marks[0], json!({"time": 400, "state": "partial", "reason": "vdb1: BitLocker-encrypted volume"}));
+    assert_eq!(
+        marks[0],
+        json!({"time": 400, "state": "partial", "reason": "vdb1: BitLocker-encrypted volume"})
+    );
     assert_eq!(marks[1], json!({"time": 300, "state": "indexed"}));
     // what nexus-index got: the tenant user's own tenant, the group's sources, clean extensions
     let req = seen.lock().unwrap().last().unwrap().clone();
@@ -326,10 +331,28 @@ async fn instant_search_through_nexus_index() {
     assert_eq!(req["sources"], json!(["ct-100", "vm-100"]));
     assert_eq!(req["ext"], json!(["docx", "pdf"]));
     // scoping, roles, validation
-    assert_eq!(t.get("/api/v1/files/search?q=x&tenant=globex", &tina).await.status, StatusCode::FORBIDDEN);
-    assert_eq!(t.get("/api/v1/files/search?q=x&tenant=acme", &vic).await.status, StatusCode::FORBIDDEN);
-    assert_eq!(t.get("/api/v1/files/search?q=x", &alice).await.status, StatusCode::BAD_REQUEST, "tenant needed");
-    for bad in ["q=", "q=x&mode=regex", "q=x&limit=0", "q=x&source=../x", "q=x&group=2", "q=x&kind=disk", "q=x&bogus=1"] {
+    assert_eq!(
+        t.get("/api/v1/files/search?q=x&tenant=globex", &tina).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        t.get("/api/v1/files/search?q=x&tenant=acme", &vic).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        t.get("/api/v1/files/search?q=x", &alice).await.status,
+        StatusCode::BAD_REQUEST,
+        "tenant needed"
+    );
+    for bad in [
+        "q=",
+        "q=x&mode=regex",
+        "q=x&limit=0",
+        "q=x&source=../x",
+        "q=x&group=2",
+        "q=x&kind=disk",
+        "q=x&bogus=1",
+    ] {
         let r = t.get(&format!("/api/v1/files/search?tenant=acme&{bad}"), &alice).await;
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}: {:?}", r.body);
     }
@@ -338,37 +361,81 @@ async fn instant_search_through_nexus_index() {
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
     assert!(r.body["error"].as_str().unwrap().contains("regex"));
     // audited with the query
-    let n: i64 = t.one("SELECT COUNT(*) FROM audit WHERE action = 'file.search' AND json_extract(details, '$.q') = 'report'");
+    let n: i64 =
+        t.one("SELECT COUNT(*) FROM audit WHERE action = 'file.search' AND json_extract(details, '$.q') = 'report'");
     assert_eq!(n, 1);
     // status for the Storage page
     let r = t.get("/api/v1/files/index-status", &tina).await;
-    assert_eq!((r.body["available"].clone(), r.body["tenants"][0]["docs"].clone()), (json!(true), json!(2)));
-    assert_eq!(seen.lock().unwrap().last().unwrap()["tenant"], "acme", "tenant users: their tenant");
+    assert_eq!(
+        (r.body["available"].clone(), r.body["tenants"][0]["docs"].clone()),
+        (json!(true), json!(2))
+    );
+    assert_eq!(
+        seen.lock().unwrap().last().unwrap()["tenant"],
+        "acme",
+        "tenant users: their tenant"
+    );
 
     // index rules per group
     let r = t.get("/api/v1/groups/1/index-rules", &tina).await;
-    assert_eq!((r.body["defaults"].clone(), r.body["include"].clone()), (json!(true), json!([])));
-    assert!(r.body["default_excludes"].as_array().unwrap().contains(&json!("/Users/*/AppData")));
+    assert_eq!(
+        (r.body["defaults"].clone(), r.body["include"].clone()),
+        (json!(true), json!([]))
+    );
+    assert!(r.body["default_excludes"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("/Users/*/AppData")));
     let otto = t.login("otto").await;
     assert_eq!(
-        t.put("/api/v1/groups/1/index-rules", &otto, json!({"exclude": ["/srv/tmp"]})).await.status,
+        t.put("/api/v1/groups/1/index-rules", &otto, json!({"exclude": ["/srv/tmp"]}))
+            .await
+            .status,
         StatusCode::FORBIDDEN
     );
-    for bad in [json!({"exclude": ["srv"]}), json!({"include": ["/a/../b"]}), json!({"exclude": vec!["/x"; 65]})] {
-        assert_eq!(t.put("/api/v1/groups/1/index-rules", &alice, bad).await.status, StatusCode::BAD_REQUEST);
+    for bad in [
+        json!({"exclude": ["srv"]}),
+        json!({"include": ["/a/../b"]}),
+        json!({"exclude": vec!["/x"; 65]}),
+    ] {
+        assert_eq!(
+            t.put("/api/v1/groups/1/index-rules", &alice, bad).await.status,
+            StatusCode::BAD_REQUEST
+        );
     }
     let r = t
-        .put("/api/v1/groups/1/index-rules", &alice, json!({"defaults": false, "include": ["/var/log/"], "exclude": ["/C/Temp", "/C/Temp"]}))
+        .put(
+            "/api/v1/groups/1/index-rules",
+            &alice,
+            json!({"defaults": false, "include": ["/var/log/"], "exclude": ["/C/Temp", "/C/Temp"]}),
+        )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
-    assert_eq!((r.body["include"].clone(), r.body["exclude"].clone()), (json!(["/var/log"]), json!(["/C/Temp"])));
-    assert_eq!(t.get("/api/v1/groups/2/index-rules", &tina).await.status, StatusCode::NOT_FOUND, "other tenant");
+    assert_eq!(
+        (r.body["include"].clone(), r.body["exclude"].clone()),
+        (json!(["/var/log"]), json!(["/C/Temp"]))
+    );
+    assert_eq!(
+        t.get("/api/v1/groups/2/index-rules", &tina).await.status,
+        StatusCode::NOT_FOUND,
+        "other tenant"
+    );
     let n: i64 = t.one("SELECT COUNT(*) FROM audit WHERE action = 'group.index_rules' AND target = 'group/1'");
     assert_eq!(n, 1);
     // the snapshot list carries the index state
     let r = t.get("/api/v1/snapshots?source=vm-100", &alice).await;
-    let s400 = r.body.as_array().unwrap().iter().find(|s| s["time"] == 400).unwrap().clone();
-    assert_eq!((s400["index_state"].clone(), s400["index_reason"].clone()), (json!("partial"), json!("vdb1: BitLocker-encrypted volume")));
+    let s400 = r
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["time"] == 400)
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (s400["index_state"].clone(), s400["index_reason"].clone()),
+        (json!("partial"), json!("vdb1: BitLocker-encrypted volume"))
+    );
 }
 
 #[tokio::test]

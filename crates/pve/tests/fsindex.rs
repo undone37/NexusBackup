@@ -43,7 +43,14 @@ fn ext4(dir: &Path, files: &[(&str, &str)], uuid: &str, out: &Path) -> bool {
     let Some(mkfs) = tool("mkfs.ext4") else { return false };
     // fixed hash seed + no lazy init: the same tree gives the same metadata bytes
     Command::new(mkfs)
-        .args(["-q", "-F", "-U", uuid, "-E", "hash_seed=6d5c5e5d-0000-4000-8000-000000000001,lazy_itable_init=0"])
+        .args([
+            "-q",
+            "-F",
+            "-U",
+            uuid,
+            "-E",
+            "hash_seed=6d5c5e5d-0000-4000-8000-000000000001,lazy_itable_init=0",
+        ])
         .arg("-d")
         .arg(&tree)
         .arg(out)
@@ -63,8 +70,20 @@ fn disk(dir: &Path, name: &str, root: &Path, home: &[(&str, &str)]) -> Option<Ve
     let img = dir.join(format!("{name}.img"));
     fs::File::create(&img).unwrap().set_len(40 << 20).unwrap();
     let ok = Command::new(tool("sgdisk")?)
-        .args(["-U", "12345678-0000-4000-8000-0000000000ab", "-n", "1:2048:+16M", "-n", "2:34816:+16M"])
-        .args(["-u", "1:aaaaaaaa-0000-4000-8000-000000000001", "-u", "2:aaaaaaaa-0000-4000-8000-000000000002"])
+        .args([
+            "-U",
+            "12345678-0000-4000-8000-0000000000ab",
+            "-n",
+            "1:2048:+16M",
+            "-n",
+            "2:34816:+16M",
+        ])
+        .args([
+            "-u",
+            "1:aaaaaaaa-0000-4000-8000-000000000001",
+            "-u",
+            "2:aaaaaaaa-0000-4000-8000-000000000002",
+        ])
         .arg(&img)
         .output()
         .is_ok_and(|o| o.status.success());
@@ -80,7 +99,11 @@ fn disk(dir: &Path, name: &str, root: &Path, home: &[(&str, &str)]) -> Option<Ve
 }
 
 fn paths(n: &NameIndex) -> Vec<String> {
-    let mut v: Vec<String> = n.iter().map(|e| e.0.to_owned()).filter(|p| !p.contains("lost+found")).collect();
+    let mut v: Vec<String> = n
+        .iter()
+        .map(|e| e.0.to_owned())
+        .filter(|p| !p.contains("lost+found"))
+        .collect();
     v.sort();
     v
 }
@@ -91,8 +114,15 @@ fn index_reuse_and_change() {
     let fstab = "UUID=11111111-2222-4333-8444-555555555555 / ext4 defaults 0 1\n\
                  UUID=66666666-7777-4888-8999-000000000000 /home ext4 defaults 0 2\n";
     let root = d.path().join("root.img");
-    let built = ext4(d.path(), &[("etc/fstab", fstab), ("etc/hostname", "web1")], "11111111-2222-4333-8444-555555555555", &root);
-    let a = built.then(|| disk(d.path(), "a", &root, &[("ann/notes.txt", "v1"), ("bob/x.bin", "0123")])).flatten();
+    let built = ext4(
+        d.path(),
+        &[("etc/fstab", fstab), ("etc/hostname", "web1")],
+        "11111111-2222-4333-8444-555555555555",
+        &root,
+    );
+    let a = built
+        .then(|| disk(d.path(), "a", &root, &[("ann/notes.txt", "v1"), ("bob/x.bin", "0123")]))
+        .flatten();
     let Some(a) = a else {
         eprintln!("skip: mkfs.ext4 / sgdisk missing");
         return;
@@ -109,19 +139,36 @@ fn index_reuse_and_change() {
     )
     .unwrap();
     let idx = s.store_image(&a[..], 4 << 20).unwrap();
-    let m1 = s.commit_snapshot("vm-100", 1000, &[("drive-scsi0", idx.clone())]).unwrap();
+    let m1 = s
+        .commit_snapshot("vm-100", 1000, &[("drive-scsi0", idx.clone())])
+        .unwrap();
     let r1 = pve::fsindex::index(&s, &m1, fsindex::Limits::default()).unwrap();
-    assert_eq!((r1["parsed"].as_u64(), r1["reused"].as_u64()), (Some(2), Some(0)), "{r1}");
+    assert_eq!(
+        (r1["parsed"].as_u64(), r1["reused"].as_u64()),
+        (Some(2), Some(0)),
+        "{r1}"
+    );
     let n1 = s.load_names(&m1).unwrap().unwrap();
     assert_eq!(
         paths(&n1),
         [
-            "vda1", "vda1/etc", "vda1/etc/fstab", "vda1/etc/hostname", "vda2", "vda2/ann", "vda2/ann/notes.txt",
-            "vda2/bob", "vda2/bob/x.bin"
+            "vda1",
+            "vda1/etc",
+            "vda1/etc/fstab",
+            "vda1/etc/hostname",
+            "vda2",
+            "vda2/ann",
+            "vda2/ann/notes.txt",
+            "vda2/bob",
+            "vda2/bob/x.bin"
         ]
     );
     let rep: Report = serde_json::from_slice(&s.read_snap_file("vm-100", 1000, REPORT_FILE).unwrap().unwrap()).unwrap();
-    let mounts: Vec<_> = rep.volumes.iter().map(|v| (v.volume.browse.as_str(), v.volume.mount.as_deref())).collect();
+    let mounts: Vec<_> = rep
+        .volumes
+        .iter()
+        .map(|v| (v.volume.browse.as_str(), v.volume.mount.as_deref()))
+        .collect();
     assert_eq!(mounts, [("vda1", Some("/")), ("vda2", Some("/home"))]);
     assert!(rep.volumes.iter().all(|v| !v.reads.is_empty()));
     // the job result names no labels / UUIDs / fstab contents
@@ -131,17 +178,34 @@ fn index_reuse_and_change() {
     // the same disk again: both volumes reused, the same listing
     let m2 = s.commit_snapshot("vm-100", 2000, &[("drive-scsi0", idx)]).unwrap();
     let r2 = pve::fsindex::index(&s, &m2, fsindex::Limits::default()).unwrap();
-    assert_eq!((r2["parsed"].as_u64(), r2["reused"].as_u64()), (Some(0), Some(2)), "{r2}");
+    assert_eq!(
+        (r2["parsed"].as_u64(), r2["reused"].as_u64()),
+        (Some(0), Some(2)),
+        "{r2}"
+    );
     assert_eq!(paths(&s.load_names(&m2).unwrap().unwrap()), paths(&n1));
 
     // /home changed: only that volume is parsed again
-    let Some(b) = disk(d.path(), "b", &root, &[("ann/notes.txt", "v2 longer"), ("bob/x.bin", "0123"), ("bob/new.doc", "n")]) else {
+    let Some(b) = disk(
+        d.path(),
+        "b",
+        &root,
+        &[
+            ("ann/notes.txt", "v2 longer"),
+            ("bob/x.bin", "0123"),
+            ("bob/new.doc", "n"),
+        ],
+    ) else {
         return;
     };
     let idx = s.store_image(&b[..], 4 << 20).unwrap();
     let m3 = s.commit_snapshot("vm-100", 3000, &[("drive-scsi0", idx)]).unwrap();
     let r3 = pve::fsindex::index(&s, &m3, fsindex::Limits::default()).unwrap();
-    assert_eq!((r3["parsed"].as_u64(), r3["reused"].as_u64()), (Some(1), Some(1)), "{r3}");
+    assert_eq!(
+        (r3["parsed"].as_u64(), r3["reused"].as_u64()),
+        (Some(1), Some(1)),
+        "{r3}"
+    );
     let n3 = s.load_names(&m3).unwrap().unwrap();
     assert!(paths(&n3).contains(&"vda2/bob/new.doc".to_string()));
     let notes = n3.iter().find(|e| e.0 == "vda2/ann/notes.txt").unwrap();

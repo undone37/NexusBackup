@@ -58,7 +58,9 @@ fn serve(svc: &Service, mut s: UnixStream) {
 }
 
 fn main() -> anyhow::Result<()> {
-    let path = std::env::args().nth(1).unwrap_or_else(|| "/etc/nexus/index.json".into());
+    let path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "/etc/nexus/index.json".into());
     let cfg: Config = match std::fs::read(&path) {
         Ok(b) => serde_json::from_slice(&b)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
@@ -90,7 +92,9 @@ fn main() -> anyhow::Result<()> {
     std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o660))?;
     eprintln!("nexus-index: listening on {}", sock.display());
     let s2 = svc.clone();
-    std::thread::Builder::new().name("sync".into()).spawn(move || s2.run_sync())?;
+    std::thread::Builder::new()
+        .name("sync".into())
+        .spawn(move || s2.run_sync())?;
     let conns = Arc::new(AtomicUsize::new(0));
     for c in l.incoming() {
         let Ok(c) = c else { continue };

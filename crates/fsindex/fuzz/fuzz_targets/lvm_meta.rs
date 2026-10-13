@@ -9,7 +9,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 fn vol(data: &[u8]) -> Vol {
-    let io: Io = Rc::new(RefCell::new(Local { disks: vec![data.to_vec()] }));
+    let io: Io = Rc::new(RefCell::new(Local {
+        disks: vec![data.to_vec()],
+    }));
     Vol::region(io, 0, 0, data.len() as u64)
 }
 

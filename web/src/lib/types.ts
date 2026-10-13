@@ -599,7 +599,7 @@ export interface Group {
   selector: string[];
   /** guest ids never protected by this group (mode all/tags) */
   exclude: string[];
-  /** Phase 15g, pve groups: list the VM/CT file systems after each backup (restore micro-VM) for the file search */
+  /** pve groups: list the VM/CT file systems after each backup (sandboxed parser, Phase 31) for the file search; default on */
   index_files?: boolean;
   /** Phase 15e (PVE groups): disk keys not backed up, `*` = every guest, else per vmid */
   exclude_disks: Record<string, string[]>;
@@ -707,6 +707,85 @@ export interface SearchResult {
   /** the limit or the time budget was hit */
   truncated: boolean;
   elapsed_ms: number;
+}
+
+/** Phase 31b: index state of a snapshot (GET /snapshots, GET /files/search `snapshots`). */
+export type IndexState = 'indexed' | 'pending' | 'partial' | 'failed' | 'off' | 'unindexed';
+
+/** One version of a file in the search index (same size and mtime across consecutive snapshots). */
+export interface FileVersion {
+  size: number;
+  mtime: number;
+  /** first snapshot holding this version */
+  first: number;
+  /** first indexed snapshot without it; null = still present in the newest indexed snapshot */
+  gone: number | null;
+  /** local snapshots holding this version, newest first; empty = those snapshots were deleted */
+  times: number[];
+}
+
+/** One hit of GET /files/search: a path in one source with its versions (newest first). */
+export interface FileHit {
+  source: string;
+  /** guest path as shown (`/home/…`, `C:/Users/…`, `vol3/…`) */
+  path: string;
+  /** file-browser path without a leading slash (Files page, files_get, restores) */
+  browse: string;
+  kind: 'file' | 'dir' | 'symlink' | 'other';
+  versions: FileVersion[];
+}
+
+export interface IndexSnap {
+  time: number;
+  state: IndexState;
+  reason?: string | null;
+}
+
+/** GET /files/search */
+export interface FileSearchResult {
+  hits: FileHit[];
+  next: string | null;
+  elapsed_ms: number;
+  /** snapshots waiting to be indexed */
+  pending: number;
+  /** every local snapshot of each hit source, newest first */
+  snapshots: Record<string, IndexSnap[]>;
+}
+
+export interface IndexTenantStatus {
+  tenant: string;
+  /** file versions */
+  docs: number;
+  /** sealed index size on disk */
+  bytes: number;
+  sources: number;
+  snapshots_indexed: number;
+  snapshots_pending: number;
+  oldest_pending: number | null;
+  snapshots_unindexed: number;
+  last_sync: number | null;
+  error: string | null;
+}
+
+/** GET /files/index-status */
+export interface IndexStatus {
+  available: boolean;
+  paused?: boolean;
+  free_bytes?: number;
+  floor_bytes?: number;
+  cache_bytes?: number;
+  cache_limit?: number;
+  tenants?: IndexTenantStatus[];
+}
+
+/** GET/PUT /groups/{id}/index-rules */
+export interface IndexRules {
+  id: number;
+  /** leave out the default system folders */
+  defaults: boolean;
+  include: string[];
+  exclude: string[];
+  default_excludes: string[];
 }
 
 /** One entry of `nexus-pve files … ls` (crates/pve/src/files.rs `Entry`); agents use the same shape. */
@@ -829,6 +908,9 @@ export interface Snapshot {
   damaged_at?: number | null;
   /** Phase 21e: the latest YARA scan, null = never scanned */
   scan?: SnapshotScanSummary | null;
+  /** Phase 31b: file index state (null = not applicable) and the reason of partial / failed */
+  index_state?: IndexState | null;
+  index_reason?: string | null;
 }
 
 export interface SnapshotScanSummary {

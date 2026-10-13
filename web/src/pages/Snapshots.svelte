@@ -603,6 +603,13 @@
                     <span class="chip bad" title={t.snap.damagedTitle(s.damaged, fmtTime(s.damaged_at ?? 0))}>{t.snap.damaged}</span>
                   </div>
                 {/if}
+                {#if s.index_state && t.snap.indexChip[s.index_state]}
+                  <div>
+                    <span class="chip plain {s.index_state === 'failed' ? 'bad' : 'warn'}" title={s.index_reason ? t.snap.indexTitle(s.index_reason) : undefined}
+                      >{t.snap.indexChip[s.index_state]}</span
+                    >
+                  </div>
+                {/if}
                 {#if s.anomalous && s.anomaly}
                   <div><span class="chip bad" title={t.snap.anomalousTitle(s.anomaly.reason)}>{t.snap.anomalous}</span></div>
                   <div class="muted small reason">{s.anomaly.reason}</div>

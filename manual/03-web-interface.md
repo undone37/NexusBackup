@@ -233,6 +233,15 @@ wrote (plain and stored). The page sums these up for the snapshots that are stil
 - Snapshots taken before this release and replicated snapshots carry no statistics. The note below the table says how
   many of the kept snapshots are covered.
 
+**File search index** (for the roles that may search files): per tenant the size of the sealed search index on
+disk, the number of file versions in it, the sources, the indexed snapshots, the snapshots **Waiting** to be indexed
+(with the age of the oldest) and those **Not indexed** (file index off, or indexing failed), and the time of the last
+update. Expect about 2 GB per 10 million file versions. The note below the table shows the free space on the index
+volume: below the floor, indexing pauses (a banner here and on Find files, alert `index_space`) and resumes on its
+own when space is freed. If the index service is not running, the section says so.
+
+![File search index per tenant](images/storage-index.png)
+
 **Soft quotas**: administrators set a tenant's quota in GiB on **Tenants** (**Edit**, **Soft storage quota**). The
 appliance raises a `quota` warning at 80 % and a critical alert at 100 % of the measured store size (see
 [11 Alerts and monitoring](11-alerts-and-monitoring.md#alert-kinds)). A quota never stops a backup; it applies
@@ -327,7 +336,9 @@ Snapshot names tell you what was backed up:
 whether the local copy passed verification. **Locked until** is the retention lock (— when it has expired).
 **Consistency** is the snapshot's consistency level; hover over the badge for its meaning (see
 [06 Restores](06-restores.md#consistency)). Snapshots received from another appliance carry a **Replicated from …**
-label.
+label. VM and container snapshots whose files are not fully in the file search show **index pending**, **partly
+indexed** or **index failed**; hover over it for the reason (for example an encrypted volume), see
+[06 Restores](06-restores.md#find-a-file).
 
 **Restore several** (top right) restores many VMs and containers of one tenant in one step, see
 [06 Restores](06-restores.md#restore-several-guests-at-once).
@@ -366,13 +377,18 @@ snapshot takes a few seconds.
 
 ## Find files
 
-**Find files** (also linked from the Snapshots page) searches file and folder names across all snapshots of a tenant:
-a name or pattern (`*`, `?`, `[a-z]`), optionally one guest and a date range. Each result row is one version of a file
-(same path, size and modification time) with the snapshots that hold it; pick a snapshot and click **Open** (file
-browser at that folder), **Download** or, for host snapshots, **Restore…**. Details:
+**Find files** (also linked from the Snapshots page) searches file and folder names across all snapshots of a tenant
+while you type: a name pattern (`budget*.xlsx`), a path pattern (`/home/*/Documents/*`) or words, optionally one
+source or protection group. **More filters** adds the source kind, extensions, a size range, the modification time,
+files or folders only, and deleted files. Each row is one path in one source with its newest version, the number of
+versions and a **deleted** chip if it is gone; the arrow opens its version timeline, where you pick a snapshot and
+click **Open** (file browser at that folder), **Download** or, for host snapshots, **Restore…**. A strip below the
+versions marks the snapshots of that source that are not (fully) indexed, with the reason. Details:
 [06 Restores](06-restores.md#find-a-file).
 
-![Search results for budget* in tenant acme](images/search.png)
+![Search results for budget* in tenant acme, one row expanded to its version timeline](images/search.png)
+
+![More filters: only deleted spreadsheets](images/search-filters.png)
 
 ## Jobs
 

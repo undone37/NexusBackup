@@ -52,7 +52,13 @@ fn ingest_and_search() {
         st.tenants[0].docs,
         st.tenants[0].bytes >> 20
     );
-    for q in ["module_4711.rs", "*.rs", "/home/user7/projects/p42/**", "nothing-matches-this", "module 4711"] {
+    for q in [
+        "module_4711.rs",
+        "*.rs",
+        "/home/user7/projects/p42/**",
+        "nothing-matches-this",
+        "module 4711",
+    ] {
         let t = Instant::now();
         let r = svc
             .search(&SearchReq {
@@ -62,7 +68,12 @@ fn ingest_and_search() {
                 ..Default::default()
             })
             .unwrap();
-        println!("{q:?}: {:.1?}, {} hits, more: {}", t.elapsed(), r.hits.len(), r.next.is_some());
+        println!(
+            "{q:?}: {:.1?}, {} hits, more: {}",
+            t.elapsed(),
+            r.hits.len(),
+            r.next.is_some()
+        );
     }
     // one more day: incremental append
     let mut n = NameIndex::default();
@@ -80,6 +91,10 @@ fn ingest_and_search() {
     let t = Instant::now();
     svc.sync("acme").unwrap();
     let st = svc.status(Some("acme")).unwrap();
-    println!("append one snapshot {:.1?}: {} versions", t.elapsed(), st.tenants[0].docs);
+    println!(
+        "append one snapshot {:.1?}: {} versions",
+        t.elapsed(),
+        st.tenants[0].docs
+    );
     assert_eq!(st.tenants[0].snapshots_pending, 0);
 }

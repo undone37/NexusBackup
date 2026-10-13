@@ -444,6 +444,8 @@ export const en = {
     holdTitle: "Legal hold",
     // Phase 21d: health check with repair
     damaged: "Damaged",
+    indexChip: { pending: "index pending", partial: "partly indexed", failed: "index failed" } as Record<string, string>,
+    indexTitle: (reason: string) => `File index: ${reason}`,
     damagedTitle: (n: number, since: string) =>
       `${n} chunk(s) of this snapshot failed verification (since ${since}). Restores of the affected files fail until it is repaired.`,
     damagedBanner: (n: number, tenant: string) =>
@@ -1453,11 +1455,22 @@ export const en = {
       "1 = one after the other. PVE: spread across nodes first (a node may run its vzdump jobs one by one). Plugin sources: separate plugin processes.",
     disksShort: (n: number) => `${n} disk${n === 1 ? "" : "s"} excluded`,
     parallelShort: (n: number) => `${n} at once`,
-    indexFiles:
-      "Index files in VM/CT disks (boots the restore micro-VM after every backup)",
+    indexFiles: "File index",
+    indexFilesModes: { on: "On (default)", off: "Off" } as Record<string, string>,
     indexFilesHint:
-      "Makes the files inside the guests findable under Find files. Each backup is followed by a file index job that starts the restore micro-VM and lists the guest file systems: extra time and load per backup.",
+      "On: after each backup a file index job lists the files in the VM/CT disks with a sandboxed parser (no restore VM is booted) and adds them to Find files. Off: the guests' files are not searchable; browsing and restores still work.",
     indexFilesShort: "File index",
+    scope: "File search scope",
+    scopeHint:
+      "Which folders of this group's sources go into the search index. Browsing, downloads and restores never depend on it. Rules: absolute paths with / (also for Windows), at most 64 per list; * matches within one folder name; /C/… is one Windows drive, /… every drive; the most specific rule wins.",
+    scopeDefaults: "Leave out system folders (recommended)",
+    scopeDefaultList: (l: string) => `Left out: ${l}`,
+    scopeInclude: "Include anyway (one rule per line)",
+    scopeExclude: "Leave out (one rule per line)",
+    scopeSaved: "File search scope saved.",
+    scopeInvalid: (x: string) => `Invalid rule "${x}": absolute paths with /, * within a folder name only.`,
+    scopeTooMany: "At most 64 rules per list.",
+    scopeShort: "Custom search scope",
     indexFilesOn: "File indexing switched on.",
     indexFilesOff: "File indexing switched off.",
   },
@@ -1497,13 +1510,70 @@ export const en = {
   },
   search: {
     title: "Find files",
-    lede: "Search file and folder names across all snapshots of a tenant, then open, download or restore the version you need.",
+    lede: "Search file and folder names across all snapshots of a tenant as you type, see every version of a file, then open, download or restore the version you need.",
     tenant: "Tenant",
-    query: "Name or pattern",
+    query: "Name, path or words",
     queryHint:
-      "Wildcards: * (any characters), ? (one character), [abc] / [a-z] / [!x] (one of / not one of). Without wildcards the name only has to contain the text. With a / the pattern is matched against the whole path (e.g. home/*/report*.pdf), otherwise against the file or folder name.",
-    source: "Guest",
-    anySource: "All guests",
+      "Words find names and paths containing them (report 2026). * and ? match any characters / one character in a name (budget*.xlsx). With a / the pattern is matched against the whole path (/home/*/report*.pdf, C:/Users/*/Documents/*).",
+    mode: "Match",
+    modes: { auto: "Auto", name: "Name", path: "Path", words: "Words" } as Record<string, string>,
+    source: "Source",
+    anySource: "All sources",
+    group: "Protection group",
+    anyGroup: "All groups",
+    moreFilters: "More filters",
+    kinds: "Source kind",
+    kindNames: { vm: "VMs", ct: "Containers", host: "Agents", nas: "NAS", share: "Shares", plugin: "Plugins" } as Record<string, string>,
+    ext: "Extensions",
+    extHint: "Comma separated, without dots, e.g. pdf, docx",
+    sizeMin: "Size from",
+    sizeMax: "Size up to",
+    sizeUnit: "Size unit",
+    modFrom: "Modified from",
+    modTo: "Modified until",
+    entry: "Type",
+    entries: { "": "Files and folders", file: "Files only", dir: "Folders only" } as Record<string, string>,
+    deleted: "Deleted files",
+    deletedModes: { any: "Show all", only: "Only deleted", exclude: "Hide deleted" } as Record<string, string>,
+    reset: "Reset filters",
+    needQuery: "Type a name, a path or words, or set a filter (extension, size, modification time or only deleted files).",
+    hits: (n: number, more: boolean, ms: number) =>
+      `${n}${more ? "+" : ""} result${n === 1 && !more ? "" : "s"} (${ms} ms).`,
+    pending: (n: number) =>
+      `${n} snapshot${n === 1 ? " is" : "s are"} still waiting to be indexed: files that only they hold are not found yet.`,
+    paused:
+      "File indexing is paused: the index volume is low on free space. New snapshots are not added to the search until space is freed.",
+    loadMore: "Load more",
+    loadingMore: "Loading…",
+    kind: { file: "file", dir: "folder", symlink: "link", other: "other" } as Record<string, string>,
+    versions: "Versions",
+    status: "Status",
+    deletedOn: (d: string) => `deleted ${d}`,
+    current: "current",
+    expand: (p: string) => `Versions of ${p}`,
+    timeline: "Version timeline",
+    firstSeen: "First seen",
+    until: "Until",
+    inSnapshot: "Snapshot",
+    snapshotDeleted: "snapshot deleted",
+    snapshotDeletedHint:
+      "The snapshots holding this version were deleted (retention): it can no longer be opened or restored.",
+    pickSnapshot: (p: string, v: string) => `Snapshot of ${p}, version modified ${v}`,
+    strip: (src: string) => `Snapshots of ${src}`,
+    stripSummary: (n: number, not: number) =>
+      `${n} snapshot${n === 1 ? "" : "s"}${not ? `, ${not} not (fully) indexed` : ", all indexed"}.`,
+    states: {
+      indexed: "indexed",
+      pending: "waiting to be indexed",
+      partial: "partly indexed",
+      failed: "indexing failed",
+      off: "file index off",
+      unindexed: "not indexed",
+    } as Record<string, string>,
+    stateAt: (time: string, state: string, reason: string) => `${time}: ${state}${reason ? ` (${reason})` : ""}`,
+    fallback:
+      "The instant file search is not available right now (the index service is not running). Searching with a search job instead: slower, Enter or Search starts it, and only the name or pattern and the source are used.",
+    retryInstant: "Try the instant search again",
     from: "Snapshots from",
     to: "Snapshots until",
     caseSensitive: "Case-sensitive",
@@ -1526,11 +1596,11 @@ export const en = {
     truncated:
       "Not all results are shown (result limit or time limit reached). Narrow the search: a longer name, a guest or a date range.",
     unindexed: (n: number) =>
-      `${n} snapshot${n === 1 ? " has" : "s have"} no file index and ${n === 1 ? "was" : "were"} not searched: VM and container disks are indexed only for protection groups with "Index files" switched on.`,
+      `${n} snapshot${n === 1 ? " has" : "s have"} no file index and ${n === 1 ? "was" : "were"} not searched: VM and container disks are indexed only for protection groups with the file index on.`,
     none: "No file or folder matches.",
     failed: "The search failed — see the job log.",
     privacy:
-      "File names are kept in a sealed index per snapshot, encrypted with the tenant key; the search runs on the appliance with that key. Offsite-only snapshots are not searched.",
+      "File names are kept in sealed indexes, encrypted with the tenant key; the search runs on the appliance with that key and is recorded in the audit log. Only names, sizes and times are indexed, never file contents. Offsite-only snapshots are not searched.",
   },
   inventory: {
     title: (n: string) => `Guest inventory: ${n}`,
@@ -2245,6 +2315,10 @@ export const en = {
       dek_rotation:
         "The tenant's data encryption key is older than the rotation interval (Settings → Security). Rotate it at the appliance console (root shell, manual chapter 14): runuser -u nexus-keyd -- /usr/libexec/nexus/keyd tenant-rotate /var/lib/nexus/keyd <tenant>. New snapshots use the new key; older ones stay readable. Resolves once rotated.",
       malware: "The YARA scan found matches of the administrators' rules in a snapshot (rule and path: Snapshots page, scan results). The snapshot is flagged as anomalous, so restores and holds default to an earlier clean snapshot, and restores with Scan first are refused or run with the network disconnected. Check the files and the source; if a rule was too broad, a security officer clears the flag on the Snapshots page. Resolve the alert by hand.",
+      index_backlog:
+        "A snapshot has waited more than 48 hours to be added to the file search (Find files). Usually file index jobs fail (see Jobs, kind File index) or the index service is stopped or paused for space. Its files are found again once it is indexed; browsing and restores work meanwhile. Resolves when the backlog is indexed.",
+      index_space:
+        "File indexing is paused: the volume holding the search index is below its free space floor. New snapshots wait (Find files shows how many). Free space on the store or shorten retention; indexing resumes on its own. Resolves when indexing runs again.",
       vault_closed:
         "A replication source was closed with Close vault (pause pulling now): no syncs, the primary is not reachable from here. Nothing to do while that is intended; reopening needs approval (Replication page). Resolves when the source is reopened.",
     } as Record<string, string>,
@@ -2526,6 +2600,23 @@ export const en = {
       "A chunk counts for the snapshot that wrote it first. When that snapshot expires, its chunks drop out of these sums even if later snapshots still use them, so Stored can be lower than the measured store size.",
     empty:
       "No measured backups yet. Figures appear after the first backup with this release.",
+    index: "File search index",
+    indexSub: "Sealed per tenant, on the store volume",
+    indexDown: "The file search index service is not running: Find files falls back to slower search jobs.",
+    indexPaused: (free: string, floor: string) =>
+      `File indexing is paused: ${free} free on the index volume, below the floor of ${floor}. New snapshots wait until space is freed.`,
+    indexSize: "Index size",
+    indexDocs: "File versions",
+    indexSources: "Sources",
+    indexIndexed: "Indexed snapshots",
+    indexPending: "Waiting",
+    indexUnindexed: "Not indexed",
+    indexLastSync: "Last update",
+    indexOldest: (ago: string) => `oldest ${ago}`,
+    indexFree: (free: string, floor: string, cache: string, limit: string) =>
+      `${free} free on the index volume (indexing pauses below ${floor}). Decrypted block cache: ${cache} of ${limit}.`,
+    indexHint:
+      "Names, sizes and times of every file version (about 2 GB per 10 million versions). Snapshots not indexed: VM/CT groups with the file index off, or volumes the parser cannot read (see the Snapshots page).",
     quotaField: "Soft storage quota (GiB, empty = none)",
     quotaHint:
       "Warning at 80 %, critical alert at 100 % of the measured store size. Backups are never stopped.",

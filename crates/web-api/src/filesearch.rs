@@ -71,7 +71,12 @@ async fn call(st: &St, req: Request) -> ApiResult<Value> {
 }
 
 fn list(s: &Option<String>) -> Option<Vec<String>> {
-    s.as_ref().map(|s| s.split(',').map(|x| x.trim().to_owned()).filter(|x| !x.is_empty()).collect())
+    s.as_ref().map(|s| {
+        s.split(',')
+            .map(|x| x.trim().to_owned())
+            .filter(|x| !x.is_empty())
+            .collect()
+    })
 }
 
 /// The tenant a request is about: tenant users always their own.
@@ -136,7 +141,11 @@ pub async fn search(State(st): State<St>, ctx: Ctx, Q(f): Q<SearchQuery>) -> Api
         mode,
         sources: sources.clone(),
         kinds: list(&f.kind),
-        ext: list(&f.ext).map(|v| v.into_iter().map(|e| e.trim_start_matches('.').to_lowercase()).collect()),
+        ext: list(&f.ext).map(|v| {
+            v.into_iter()
+                .map(|e| e.trim_start_matches('.').to_lowercase())
+                .collect()
+        }),
         size_min: f.size_min,
         size_max: f.size_max,
         mtime_from: f.mtime_from,
@@ -272,7 +281,12 @@ pub struct RebuildReq {
 pub async fn rebuild(State(st): State<St>, ctx: Ctx, J(r): J<RebuildReq>) -> ApiResult<Json<Value>> {
     ctx.require(&["admin"])?;
     validate::name(&r.tenant, "tenant")?;
-    st.audit(ctx.name(), "file.index_rebuild", &format!("tenant/{}", r.tenant), json!({}))?;
+    st.audit(
+        ctx.name(),
+        "file.index_rebuild",
+        &format!("tenant/{}", r.tenant),
+        json!({}),
+    )?;
     Ok(Json(call(&st, Request::Rebuild { tenant: r.tenant }).await?))
 }
 
@@ -316,7 +330,12 @@ fn yes() -> bool {
 
 /// Which files of the group's sources go into the search index. Not a
 /// weakening of protection (no approval): it only shapes the search.
-pub async fn put_rules(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>, J(r): J<RulesReq>) -> ApiResult<Json<Value>> {
+pub async fn put_rules(
+    State(st): State<St>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+    J(r): J<RulesReq>,
+) -> ApiResult<Json<Value>> {
     ctx.require(TENANT_WRITERS)?;
     group_tenant(&st, &ctx, id)?;
     let clean = |v: Vec<String>, what: &str| -> ApiResult<Vec<String>> {

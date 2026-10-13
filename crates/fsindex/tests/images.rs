@@ -19,7 +19,11 @@ use std::time::{Duration, SystemTime};
 const MTIME: i64 = 1_700_000_000;
 
 fn tool(name: &str) -> Option<PathBuf> {
-    for d in std::env::var("PATH").unwrap_or_default().split(':').chain(["/usr/sbin", "/sbin"]) {
+    for d in std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .chain(["/usr/sbin", "/sbin"])
+    {
         let p = Path::new(d).join(name);
         if p.is_file() {
             return Some(p);
@@ -49,7 +53,8 @@ fn run(name: &str, args: &[&str]) -> bool {
 
 fn touch(p: &Path, t: i64) {
     let f = File::options().write(true).open(p).or_else(|_| File::open(p)).unwrap();
-    f.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(t as u64)).unwrap();
+    f.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(t as u64))
+        .unwrap();
 }
 
 /// The sample tree: (path, kind, size).
@@ -67,7 +72,15 @@ fn sample(root: &Path, fstab: &str) -> Vec<(String, u8, u64)> {
         fs::write(&path, data).unwrap();
         out.push((p.to_string(), 0u8, data.len() as u64));
     }
-    for d in ["etc", "home", "home/ann", "home/ann/Projekte", "var", "var/lib", "var/lib/mysql"] {
+    for d in [
+        "etc",
+        "home",
+        "home/ann",
+        "home/ann/Projekte",
+        "var",
+        "var/lib",
+        "var/lib/mysql",
+    ] {
         out.push((d.to_string(), 1, 0));
     }
     // children before parents: a directory's mtime changes when entries are added
@@ -112,7 +125,10 @@ fn list(paths: &[&Path]) -> Vec<Listed> {
 
 fn vol<'a>(l: &'a [Listed], browse: &str) -> &'a Listed {
     l.iter().find(|x| x.volume.browse == browse).unwrap_or_else(|| {
-        panic!("no volume {browse}: {:#?}", l.iter().map(|x| &x.volume).collect::<Vec<_>>())
+        panic!(
+            "no volume {browse}: {:#?}",
+            l.iter().map(|x| &x.volume).collect::<Vec<_>>()
+        )
     })
 }
 
@@ -121,7 +137,11 @@ fn got(l: &Listed, ignore: &[&str]) -> Vec<(String, u8, u64)> {
     let mut v: Vec<_> = l
         .entries
         .iter()
-        .filter(|e| !ignore.iter().any(|i| e.path == *i || e.path.starts_with(&format!("{i}/"))))
+        .filter(|e| {
+            !ignore
+                .iter()
+                .any(|i| e.path == *i || e.path.starts_with(&format!("{i}/")))
+        })
         .map(|e| (e.path.clone(), e.kind, e.size))
         .collect();
     v.sort();
@@ -130,7 +150,12 @@ fn got(l: &Listed, ignore: &[&str]) -> Vec<(String, u8, u64)> {
 
 fn put(disk: &Path, off: u64, img: &Path) {
     let data = fs::read(img).unwrap();
-    File::options().write(true).open(disk).unwrap().write_all_at(&data, off).unwrap();
+    File::options()
+        .write(true)
+        .open(disk)
+        .unwrap()
+        .write_all_at(&data, off)
+        .unwrap();
 }
 
 fn sized(p: &Path, n: u64) {
@@ -150,7 +175,18 @@ fn gpt_disk_with_ext4_root_and_fat_esp_plus_ntfs_disk() {
     // ext4 root (files and mtimes from the directory, no root needed)
     if !run(
         "mkfs.ext4",
-        &["-q", "-F", "-L", "root", "-U", ext_uuid, "-d", tree.to_str().unwrap(), p("ext.img").to_str().unwrap(), "24M"],
+        &[
+            "-q",
+            "-F",
+            "-L",
+            "root",
+            "-U",
+            ext_uuid,
+            "-d",
+            tree.to_str().unwrap(),
+            p("ext.img").to_str().unwrap(),
+            "24M",
+        ],
     ) {
         return;
     }
@@ -159,9 +195,20 @@ fn gpt_disk_with_ext4_root_and_fat_esp_plus_ntfs_disk() {
     fs::write(&efi, b"MZ boot loader").unwrap();
     touch(&efi, MTIME);
     let fat = p("fat.img");
-    if !run("mkfs.vfat", &["-C", "-i", "7A3B1C2D", "-n", "ESP", fat.to_str().unwrap(), "8192"])
-        || !run("mmd", &["-i", fat.to_str().unwrap(), "::/EFI", "::/EFI/debian"])
-        || !run("mcopy", &["-m", "-i", fat.to_str().unwrap(), efi.to_str().unwrap(), "::/EFI/debian/grubx64.efi"])
+    if !run(
+        "mkfs.vfat",
+        &["-C", "-i", "7A3B1C2D", "-n", "ESP", fat.to_str().unwrap(), "8192"],
+    ) || !run("mmd", &["-i", fat.to_str().unwrap(), "::/EFI", "::/EFI/debian"])
+        || !run(
+            "mcopy",
+            &[
+                "-m",
+                "-i",
+                fat.to_str().unwrap(),
+                efi.to_str().unwrap(),
+                "::/EFI/debian/grubx64.efi",
+            ],
+        )
     {
         return;
     }
@@ -170,7 +217,17 @@ fn gpt_disk_with_ext4_root_and_fat_esp_plus_ntfs_disk() {
     sized(&disk, 40 << 20);
     if !run(
         "sgdisk",
-        &["-n", "1:2048:+8M", "-t", "1:ef00", "-n", "2:18432:+24M", "-t", "2:8300", disk.to_str().unwrap()],
+        &[
+            "-n",
+            "1:2048:+8M",
+            "-t",
+            "1:ef00",
+            "-n",
+            "2:18432:+24M",
+            "-t",
+            "2:8300",
+            disk.to_str().unwrap(),
+        ],
     ) {
         return;
     }
@@ -179,13 +236,25 @@ fn gpt_disk_with_ext4_root_and_fat_esp_plus_ntfs_disk() {
 
     let l = list(&[&disk]);
     let root = vol(&l, "vda2");
-    assert_eq!((root.volume.fs.as_str(), root.volume.state.as_str()), ("ext4", "indexed"), "{:?}", root.volume);
+    assert_eq!(
+        (root.volume.fs.as_str(), root.volume.state.as_str()),
+        ("ext4", "indexed"),
+        "{:?}",
+        root.volume
+    );
     assert_eq!(got(root, &["lost+found"]), expect);
-    assert!(root.entries.iter().all(|e| e.path == "lost+found" || e.mtime == MTIME), "{:?}", root.entries);
+    assert!(
+        root.entries.iter().all(|e| e.path == "lost+found" || e.mtime == MTIME),
+        "{:?}",
+        root.entries
+    );
     assert_eq!(root.volume.uuid.as_deref(), Some(ext_uuid));
     assert!(root.volume.fstab.as_deref().unwrap().contains("/boot/efi"));
     let esp = vol(&l, "vda1");
-    assert_eq!((esp.volume.fs.as_str(), esp.volume.uuid.as_deref()), ("vfat", Some("7A3B-1C2D")));
+    assert_eq!(
+        (esp.volume.fs.as_str(), esp.volume.uuid.as_deref()),
+        ("vfat", Some("7A3B-1C2D"))
+    );
     assert_eq!(
         got(esp, &[]),
         [
@@ -199,7 +268,10 @@ fn gpt_disk_with_ext4_root_and_fat_esp_plus_ntfs_disk() {
     fsindex::mapping::assign(&mut vols);
     let m = fsindex::mapping::Mapper::new(&vols);
     assert_eq!(m.guest("vda2/home/ann/report 2026.txt"), "/home/ann/report 2026.txt");
-    assert_eq!(m.guest("vda1/EFI/debian/grubx64.efi"), "/boot/efi/EFI/debian/grubx64.efi");
+    assert_eq!(
+        m.guest("vda1/EFI/debian/grubx64.efi"),
+        "/boot/efi/EFI/debian/grubx64.efi"
+    );
     // the parse of each volume read only part of the disk (its metadata)
     assert!(!root.reads.is_empty() && root.reads.iter().all(|(d, _)| *d == 0));
 }
@@ -225,12 +297,18 @@ fn ntfs_whole_disk_windows_volume() {
         touch(&mnt.join("Users/ann/Documents/Angebot Müller.docx"), MTIME);
         io::Result::Ok(())
     })();
-    let umount = run("fusermount", &["-u", mnt.to_str().unwrap()]) || run("fusermount3", &["-u", mnt.to_str().unwrap()]);
+    let umount =
+        run("fusermount", &["-u", mnt.to_str().unwrap()]) || run("fusermount3", &["-u", mnt.to_str().unwrap()]);
     expect.unwrap();
     assert!(umount, "unmount");
     let l = list(&[&img]);
     let v = vol(&l, "vda");
-    assert_eq!((v.volume.fs.as_str(), v.volume.state.as_str()), ("ntfs", "indexed"), "{:?}", v.volume);
+    assert_eq!(
+        (v.volume.fs.as_str(), v.volume.state.as_str()),
+        ("ntfs", "indexed"),
+        "{:?}",
+        v.volume
+    );
     assert!(v.volume.windows);
     assert_eq!(v.volume.label.as_deref(), Some("WinSys"));
     let e = got(v, &[]);
@@ -301,7 +379,12 @@ fn exfat_entries() {
 
     let l = list(&[&img]);
     let v = vol(&l, "vda");
-    assert_eq!((v.volume.fs.as_str(), v.volume.state.as_str()), ("exfat", "indexed"), "{:?}", v.volume);
+    assert_eq!(
+        (v.volume.fs.as_str(), v.volume.state.as_str()),
+        ("exfat", "indexed"),
+        "{:?}",
+        v.volume
+    );
     assert_eq!(v.volume.label.as_deref(), Some("STICK"));
     assert_eq!(
         got(v, &[]),
@@ -361,9 +444,15 @@ fn pv(disk: &mut [u8], uuid: &str, text: &str) {
 fn lvm_linear_and_striped_lvs_with_ext4() {
     let d = tempfile::tempdir().unwrap();
     let tree = d.path().join("tree");
-    let expect = sample(&tree, "/dev/mapper/vg--data-root / ext4 defaults 0 1\n/dev/vg-data/home /home ext4 defaults 0 2\n");
+    let expect = sample(
+        &tree,
+        "/dev/mapper/vg--data-root / ext4 defaults 0 1\n/dev/vg-data/home /home ext4 defaults 0 2\n",
+    );
     let img = d.path().join("ext.img");
-    if !run("mkfs.ext4", &["-q", "-F", "-d", tree.to_str().unwrap(), img.to_str().unwrap(), "8M"]) {
+    if !run(
+        "mkfs.ext4",
+        &["-q", "-F", "-d", tree.to_str().unwrap(), img.to_str().unwrap(), "8M"],
+    ) {
         return;
     }
     let fsimg = fs::read(&img).unwrap();
@@ -408,7 +497,12 @@ segment1 { start_extent = 0 extent_count = 2 type = "striped" stripe_count = 2 s
     let l = list(&[&pa, &pb]);
     for lv in ["lvm/vg--data-root", "lvm/vg--data-home"] {
         let v = vol(&l, lv);
-        assert_eq!((v.volume.fs.as_str(), v.volume.state.as_str()), ("ext4", "indexed"), "{lv}: {:?}", v.volume);
+        assert_eq!(
+            (v.volume.fs.as_str(), v.volume.state.as_str()),
+            ("ext4", "indexed"),
+            "{lv}: {:?}",
+            v.volume
+        );
         assert_eq!(got(v, &["lost+found"]), expect, "{lv}");
     }
     let mut vols: Vec<Volume> = l.iter().map(|x| x.volume.clone()).collect();
@@ -424,7 +518,12 @@ segment1 { start_extent = 0 extent_count = 2 type = "striped" stripe_count = 2 s
     for lv in ["lvm/vg--data-root", "lvm/vg--data-home"] {
         let v = vol(&l, lv);
         assert_eq!(v.volume.state, "unsupported");
-        assert!(v.volume.reason.as_deref().unwrap().contains("physical volume missing (pv1)"));
+        assert!(v
+            .volume
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("physical volume missing (pv1)"));
     }
 }
 
@@ -462,9 +561,16 @@ fn unsupported_volumes_are_reported() {
     let l = list(&refs);
     let states: BTreeSet<(String, String, String)> = l
         .iter()
-        .map(|x| (x.volume.fs.clone(), x.volume.state.clone(), x.volume.reason.clone().unwrap_or_default()))
+        .map(|x| {
+            (
+                x.volume.fs.clone(),
+                x.volume.state.clone(),
+                x.volume.reason.clone().unwrap_or_default(),
+            )
+        })
         .collect();
-    let has = |fs: &str, state: &str, why: &str| states.iter().any(|(f, s, r)| f == fs && s == state && r.contains(why));
+    let has =
+        |fs: &str, state: &str, why: &str| states.iter().any(|(f, s, r)| f == fs && s == state && r.contains(why));
     assert!(has("luks", "unsupported", "LUKS"), "{states:?}");
     if tool("mkfs.xfs").is_some() {
         assert!(has("xfs", "unsupported", "XFS"), "{states:?}");
@@ -511,13 +617,20 @@ fn hostile_volumes_fail_alone() {
     let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
     let l = list(&refs);
     assert_eq!(l.len(), 3, "{l:?}");
-    assert!(l.iter().all(|x| x.volume.state == "failed"), "{:?}", l.iter().map(|x| &x.volume).collect::<Vec<_>>());
+    assert!(
+        l.iter().all(|x| x.volume.state == "failed"),
+        "{:?}",
+        l.iter().map(|x| &x.volume).collect::<Vec<_>>()
+    );
 }
 
 /// The helper cannot open files or sockets once confined.
 #[test]
 fn helper_sandbox() {
-    let out = Command::new(env!("CARGO_BIN_EXE_nexus-fsindex")).arg("--sandbox-check").output().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_nexus-fsindex"))
+        .arg("--sandbox-check")
+        .output()
+        .unwrap();
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{s} {}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(s.trim(), "open: denied, socket: denied, exec: denied");
@@ -530,7 +643,10 @@ fn reuse_skips_the_parse() {
     let tree = d.path().join("tree");
     sample(&tree, "");
     let img = d.path().join("ext.img");
-    if !run("mkfs.ext4", &["-q", "-F", "-d", tree.to_str().unwrap(), img.to_str().unwrap(), "8M"]) {
+    if !run(
+        "mkfs.ext4",
+        &["-q", "-F", "-d", tree.to_str().unwrap(), img.to_str().unwrap(), "8M"],
+    ) {
         return;
     }
     let mut src = Files {

@@ -20,7 +20,9 @@ use std::path::{Path, PathBuf};
 fn check(name: &str) -> io::Result<()> {
     let ok = !name.is_empty()
         && name.len() <= 32
-        && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         && !matches!(name, "manifest" | "names")
         && !name.ends_with("idx");
     if ok {
@@ -61,10 +63,14 @@ fn keys_of(root: &Path) -> io::Result<Vec<(String, u64)>> {
         Err(e) => return Err(e),
     };
     for src in dir.flatten() {
-        let Some(source) = src.file_name().to_str().map(str::to_owned) else { continue };
+        let Some(source) = src.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
         let Ok(times) = fs::read_dir(src.path()) else { continue };
         for t in times.flatten() {
-            let Some(time) = t.file_name().to_str().and_then(|s| s.parse::<u64>().ok()) else { continue };
+            let Some(time) = t.file_name().to_str().and_then(|s| s.parse::<u64>().ok()) else {
+                continue;
+            };
             if t.path().join("manifest").exists() {
                 out.push((source.clone(), time));
             }
@@ -82,7 +88,10 @@ impl Store {
         let dir = self.snap_dir(source, time);
         let _g = self.meta_lock();
         if !dir.join("manifest").exists() {
-            return Err(io::Error::new(io::ErrorKind::NotFound, format!("snapshot {source}/{time}")));
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("snapshot {source}/{time}"),
+            ));
         }
         let blob = self.keys().seal(format!("{name}:{source}/{time}").as_bytes(), data);
         write_atomic(&dir.join(name), &blob)
@@ -113,7 +122,10 @@ pub struct MetaReader {
 
 impl MetaReader {
     pub fn new(root: impl Into<PathBuf>, keys: Keyring) -> MetaReader {
-        MetaReader { root: root.into(), keys }
+        MetaReader {
+            root: root.into(),
+            keys,
+        }
     }
 
     pub fn keys(&self) -> &Keyring {
@@ -175,7 +187,10 @@ mod tests {
         let disk = s.store_image(&[1u8; 100][..], 4096).unwrap();
         s.commit_snapshot("vm-1", 5, &[("drive-scsi0", disk)]).unwrap();
         s.write_snap_file("vm-1", 5, "fsindex", b"secret volume list").unwrap();
-        assert_eq!(s.read_snap_file("vm-1", 5, "fsindex").unwrap().unwrap(), b"secret volume list");
+        assert_eq!(
+            s.read_snap_file("vm-1", 5, "fsindex").unwrap().unwrap(),
+            b"secret volume list"
+        );
         assert_eq!(s.read_snap_file("vm-1", 5, "other").unwrap(), None);
         let raw = std::fs::read(d.path().join("snapshots/vm-1/5/fsindex")).unwrap();
         assert!(!raw.windows(6).any(|w| w == b"secret"));
@@ -210,10 +225,18 @@ mod tests {
         r.check_keys().unwrap();
         assert_eq!(r.snapshot_keys().unwrap().len(), 2);
         assert!(r.has_names("host-a", 6) && !r.has_names("vm-1", 5));
-        assert_eq!(r.load_names("host-a", 6).unwrap().unwrap().iter().next().unwrap().0, "etc/hosts");
+        assert_eq!(
+            r.load_names("host-a", 6).unwrap().unwrap().iter().next().unwrap().0,
+            "etc/hosts"
+        );
         assert_eq!(r.load_names("vm-1", 5).unwrap(), None);
-        assert_eq!(r.read_snap_file("vm-1", 5, "fsindex").unwrap().unwrap(), b"secret volume list");
-        assert!(MetaReader::new(d.path(), Keyring::new("t", &[(1, [5; 32])])).check_keys().is_err());
+        assert_eq!(
+            r.read_snap_file("vm-1", 5, "fsindex").unwrap().unwrap(),
+            b"secret volume list"
+        );
+        assert!(MetaReader::new(d.path(), Keyring::new("t", &[(1, [5; 32])]))
+            .check_keys()
+            .is_err());
         s.delete_snapshot("vm-1", 5).unwrap();
         assert_eq!(s.snapshot_keys().unwrap(), vec![("host-a".to_string(), 6)]);
     }

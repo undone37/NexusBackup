@@ -512,12 +512,25 @@ async function main() {
       await shot('restore-vm-files-to-host', { height: 1100 });
       await closeDialogs();
     }],
-    // Phase 15g: find a file by name across all snapshots of a tenant
+    // Phase 31b: instant file search with a version timeline, then the filters (only deleted spreadsheets)
     ['search', async () => {
-      await go('/search?tenant=acme&q=budget*');
+      // the share with the most local snapshots (its old ones still hold a deleted draft)
+      const counts = {};
+      for (const s of (await api('GET', '/snapshots?tenant=acme')).body) if (s.source.startsWith('share-') && s.local) counts[s.source] = (counts[s.source] ?? 0) + 1;
+      const share = Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0];
+      await go(`/search?tenant=acme&q=budget*&source=${share}`);
       await until(`return document.body.innerText.includes('budget-2026-q4.xlsx')`, 'search results', 30000);
       await settle();
-      await shot('search');
+      await ev(`[...document.querySelectorAll('tbody tr')].find((tr) => tr.textContent.includes('budget-2026-q4.xlsx') && !tr.textContent.includes('draft')).querySelector('button[aria-expanded]').click(); return true;`);
+      await until(`return !!document.querySelector('table.versions') && !!document.querySelector('.strip')`, 'version timeline');
+      await shot('search', { height: 1000 });
+      await go('/search?tenant=acme');
+      await ev(`$click('More filters'); return true;`);
+      await until(`return !!document.querySelector('#s-deleted')`, 'more filters');
+      await ev(`$fill('#s-ext', 'xlsx'); $fill('#s-deleted', 'only'); return true;`);
+      await until(`return document.body.innerText.includes('budget-2026-q4-draft.xlsx')`, 'deleted files', 30000);
+      await settle();
+      await shot('search-filters', { height: 1000 });
     }],
     ['plugin-restores', async () => {
       await go(`/snapshots?source=plugin-postgresql-${data.pgId}`);
@@ -580,6 +593,11 @@ async function main() {
       await go('/storage');
       await until(`return !!document.querySelector('#s-group-table')`, 'storage page');
       await shot('storage', { height: 1500 });
+      // Phase 31b: the file search index per tenant
+      await until(`return !!document.querySelector('#s-index-table')`, 'file search index');
+      await ev(`document.querySelector('#s-index').closest('section').scrollIntoView({ block: 'center' }); return true;`);
+      await sleep(300);
+      await shot('storage-index', { scrolled: true });
       await go('/settings?tab=anomaly');
       await until(`return !!document.querySelector('#an-f')`, 'anomaly settings');
       await shot('settings-anomaly');
@@ -770,6 +788,13 @@ async function main() {
       // Phase 15e/f: excluded disks, restore mode, parallel guests (lower part of the same dialog)
       await until(`return !!document.querySelector('dialog[open] #g-par')`, 'disk selection fields');
       await shot('group-disks', { height: 1500 });
+      await closeDialogs();
+      // Phase 31b: file index (on by default) and the file search scope of a PVE group
+      await ev(`$rowClick('acme-vms', 'Edit'); return true;`);
+      await until(`return document.querySelector('dialog[open] #g-scope-inc')?.value === '/var/log'`, 'search scope rules');
+      await ev(`document.querySelector('dialog[open] #g-scope').scrollIntoView({ block: 'end' }); return true;`);
+      await sleep(300);
+      await shot('group-search-scope', { height: 1100 });
       await closeDialogs();
       // Phase 13c: auto-protect by PVE pool with one exclusion
       await ev(`$rowClick('development', 'Edit'); return true;`);

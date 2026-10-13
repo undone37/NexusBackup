@@ -386,7 +386,12 @@ fn fsindex_matches_micro_vm_listing() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|v| (v["browse"].as_str().unwrap().into(), v["state"].as_str().unwrap().into()))
+        .map(|v| {
+            (
+                v["browse"].as_str().unwrap().into(),
+                v["state"].as_str().unwrap().into(),
+            )
+        })
         .collect();
     for b in ["vda2", "vda4", "vdb1"] {
         assert!(states.contains(&(b.into(), "unsupported".into())), "{b}: {states:?}");
@@ -401,9 +406,17 @@ fn fsindex_matches_micro_vm_listing() {
     let t = Instant::now();
     let r = pve::fsindex::index(&store, &m2, fsindex::Limits::default()).unwrap();
     eprintln!("second snapshot with the micro-VM fallback {:.1?}: {r}", t.elapsed());
-    assert_eq!((r["reused"].as_u64(), r["micro_vm"].as_bool()), (Some(4), Some(true)), "{r}");
+    assert_eq!(
+        (r["reused"].as_u64(), r["micro_vm"].as_bool()),
+        (Some(4), Some(true)),
+        "{r}"
+    );
     let ours = store.load_names(&m2).unwrap().unwrap();
     for root in ["vda1", "vda2", "vda3", "vda4", "vda5", "lvm/vgtest-data", "zfs"] {
-        assert_eq!(set(&vm_names, root), set(&ours, root), "{root}: micro-VM vs nexus-fsindex + fallback");
+        assert_eq!(
+            set(&vm_names, root),
+            set(&ours, root),
+            "{root}: micro-VM vs nexus-fsindex + fallback"
+        );
     }
 }

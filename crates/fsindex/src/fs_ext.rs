@@ -41,7 +41,11 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                 continue;
             }
             let name = String::from_utf8_lossy(name_b);
-            let path = if rel.is_empty() { name.into_owned() } else { format!("{rel}/{name}") };
+            let path = if rel.is_empty() {
+                name.into_owned()
+            } else {
+                format!("{rel}/{name}")
+            };
             if path.len() > MAX_PATH {
                 info.skipped_entries += 1;
                 continue;

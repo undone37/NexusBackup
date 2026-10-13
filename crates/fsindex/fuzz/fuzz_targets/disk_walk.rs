@@ -8,15 +8,23 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 fn vol(data: &[u8]) -> Vol {
-    let io: Io = Rc::new(RefCell::new(Local { disks: vec![data.to_vec()] }));
+    let io: Io = Rc::new(RefCell::new(Local {
+        disks: vec![data.to_vec()],
+    }));
     Vol::region(io, 0, 0, data.len() as u64)
 }
 
 struct Null;
 impl fsindex::walk::Driver for Null {
-    fn begin(&mut self, _: &fsindex::Volume) -> std::io::Result<bool> { Ok(true) }
-    fn entry(&mut self, _: &str, _: u64, _: i64, _: u8) -> std::io::Result<()> { Ok(()) }
-    fn end(&mut self, _: &fsindex::Volume) -> std::io::Result<()> { Ok(()) }
+    fn begin(&mut self, _: &fsindex::Volume) -> std::io::Result<bool> {
+        Ok(true)
+    }
+    fn entry(&mut self, _: &str, _: u64, _: i64, _: u8) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn end(&mut self, _: &fsindex::Volume) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -24,8 +32,13 @@ fuzz_target!(|data: &[u8]| {
     // other panic (partition tables, LVM, probe) escapes and aborts
     static QUIET: std::sync::Once = std::sync::Once::new();
     QUIET.call_once(|| std::panic::set_hook(Box::new(|_| {})));
-    let io: Io = Rc::new(RefCell::new(Local { disks: vec![data.to_vec()] }));
+    let io: Io = Rc::new(RefCell::new(Local {
+        disks: vec![data.to_vec()],
+    }));
     let _ = vol(data);
-    let limits = fsindex::Limits { max_entries: 100_000, budget_secs: 10 };
+    let limits = fsindex::Limits {
+        max_entries: 100_000,
+        budget_secs: 10,
+    };
     let _ = fsindex::walk::run(io, &["d0".to_string()], limits, &mut Null);
 });

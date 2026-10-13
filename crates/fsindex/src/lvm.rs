@@ -25,9 +25,14 @@ pub struct Pv {
 pub fn read_pv(v: &Vol) -> Result<Pv, String> {
     let head = v.read_vec(0, 2048).map_err(|e| e.to_string())?;
     let sector = (0..4)
-        .find(|s| head.get(s * 512..s * 512 + 8) == Some(b"LABELONE") && head.get(s * 512 + 24..s * 512 + 32) == Some(b"LVM2 001"))
+        .find(|s| {
+            head.get(s * 512..s * 512 + 8) == Some(b"LABELONE")
+                && head.get(s * 512 + 24..s * 512 + 32) == Some(b"LVM2 001")
+        })
         .ok_or("no LVM label")?;
-    let lab = head.get(sector * 512..sector * 512 + 512).ok_or("LVM label truncated")?;
+    let lab = head
+        .get(sector * 512..sector * 512 + 512)
+        .ok_or("LVM label truncated")?;
     if le64(lab, 8) != sector as u64 {
         return Err("LVM label: wrong sector".into());
     }
@@ -105,7 +110,10 @@ fn read_mda(v: &Vol, mda: u64, msize: u64) -> Result<Option<(u64, String)>, Stri
     let text = String::from_utf8_lossy(buf.split(|b| *b == 0).next().unwrap_or(&[])).into_owned();
     let seq = parse(&text)
         .ok()
-        .and_then(|c| c.iter().find_map(|(_, v)| v.sec()?.iter().find(|(k, _)| k == "seqno")?.1.int()))
+        .and_then(|c| {
+            c.iter()
+                .find_map(|(_, v)| v.sec()?.iter().find(|(k, _)| k == "seqno")?.1.int())
+        })
         .unwrap_or(0);
     Ok(Some((seq as u64, text)))
 }
@@ -314,7 +322,8 @@ pub fn volumes(texts: &[String], pvs: &PvMap) -> Vec<Lv> {
         let Ok(top) = parse(t) else { continue };
         for (name, v) in top {
             let Some(sec) = v.sec() else { continue };
-            let (Some(id), Some(seq)) = (get(sec, "id").and_then(Val::str), get(sec, "seqno").and_then(Val::int)) else {
+            let (Some(id), Some(seq)) = (get(sec, "id").and_then(Val::str), get(sec, "seqno").and_then(Val::int))
+            else {
                 continue;
             };
             let key = format!("{id}\0{name}");
@@ -346,7 +355,12 @@ fn vg_volumes(vg: &str, sec: &[(String, Val)], pvs: &PvMap) -> Vec<Lv> {
     let mut missing = Vec::new();
     for (pname, p) in get(sec, "physical_volumes").and_then(Val::sec).unwrap_or(&empty) {
         let Some(p) = p.sec() else { continue };
-        let id: String = get(p, "id").and_then(Val::str).unwrap_or_default().chars().filter(|c| *c != '-').collect();
+        let id: String = get(p, "id")
+            .and_then(Val::str)
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| *c != '-')
+            .collect();
         let pe_start = get(p, "pe_start").and_then(Val::int).unwrap_or(-1);
         match pvs.get(&id) {
             Some((d, off)) if pe_start >= 0 => {
@@ -372,7 +386,10 @@ fn vg_volumes(vg: &str, sec: &[(String, Val)], pvs: &PvMap) -> Vec<Lv> {
         .map(|(n, _)| n.as_str())
         .collect();
     if !(1..=(1 << 30)).contains(&ext) {
-        return visible.iter().map(|n| lv(n, Err("volume group: invalid extent size".into()))).collect();
+        return visible
+            .iter()
+            .map(|n| lv(n, Err("volume group: invalid extent size".into())))
+            .collect();
     }
     if !missing.is_empty() {
         let why = format!("volume group {vg}: physical volume missing ({})", missing.join(", "));
@@ -397,15 +414,23 @@ impl Ctx<'_> {
         if depth > 4 {
             return Err("logical volume stacked too deeply".into());
         }
-        let lv = get(self.lvs, name).and_then(Val::sec).ok_or_else(|| format!("logical volume {name} not in the metadata"))?;
+        let lv = get(self.lvs, name)
+            .and_then(Val::sec)
+            .ok_or_else(|| format!("logical volume {name} not in the metadata"))?;
         let mut segs = Vec::new();
         for (k, s) in lv {
             if !k.starts_with("segment") {
                 continue;
             }
             let Some(s) = s.sec() else { continue };
-            let start = get(s, "start_extent").and_then(Val::int).filter(|x| *x >= 0).ok_or("segment start")? as u64;
-            let count = get(s, "extent_count").and_then(Val::int).filter(|x| *x > 0).ok_or("segment length")? as u64;
+            let start = get(s, "start_extent")
+                .and_then(Val::int)
+                .filter(|x| *x >= 0)
+                .ok_or("segment start")? as u64;
+            let count = get(s, "extent_count")
+                .and_then(Val::int)
+                .filter(|x| *x > 0)
+                .ok_or("segment length")? as u64;
             let (lstart, len) = (
                 start.checked_mul(self.ext).ok_or("segment start")?,
                 count.checked_mul(self.ext).ok_or("segment length")?,
@@ -415,7 +440,7 @@ impl Ctx<'_> {
                 "striped" | "linear" => {
                     let stripes = get(s, "stripes").and_then(Val::list).ok_or("segment without stripes")?;
                     let n = stripes.len() / 2;
-                    if n == 0 || stripes.len() % 2 != 0 || count % n as u64 != 0 {
+                    if n == 0 || stripes.len() % 2 != 0 || !count.is_multiple_of(n as u64) {
                         return Err("striped segment layout".into());
                     }
                     let mut legs = Vec::new();
@@ -423,11 +448,17 @@ impl Ctx<'_> {
                         let (Some(pv), Some(pe)) = (pair[0].str(), pair[1].int().filter(|x| *x >= 0)) else {
                             return Err("striped segment layout".into());
                         };
-                        let (d, base) = self.pv_at.get(pv).ok_or_else(|| format!("unknown physical volume {pv}"))?;
+                        let (d, base) = self
+                            .pv_at
+                            .get(pv)
+                            .ok_or_else(|| format!("unknown physical volume {pv}"))?;
                         legs.push((*d, base + pe as u64 * self.ext));
                     }
                     let stripe = if n > 1 {
-                        let sz = get(s, "stripe_size").and_then(Val::int).filter(|x| *x > 0).ok_or("stripe size")?;
+                        let sz = get(s, "stripe_size")
+                            .and_then(Val::int)
+                            .filter(|x| *x > 0)
+                            .ok_or("stripe size")?;
                         sz as u64 * 512
                     } else {
                         0
@@ -491,7 +522,11 @@ fn crop(segs: &[Segment], from: u64, len: u64, to: u64) -> Result<Vec<Segment>, 
         out.push(Segment {
             start: a - from + to,
             len: b - a,
-            legs: s.legs.iter().map(|(d, o)| (*d, if s.legs.len() > 1 { *o } else { o + (a - s.start) })).collect(),
+            legs: s
+                .legs
+                .iter()
+                .map(|(d, o)| (*d, if s.legs.len() > 1 { *o } else { o + (a - s.start) }))
+                .collect(),
             stripe: s.stripe,
         });
     }
@@ -551,19 +586,36 @@ version = 1
         assert_eq!(
             lvs[0].map.as_ref().unwrap(),
             &vec![
-                Segment { start: 0, len: 10 * e, legs: vec![(0, base0)], stripe: 0 },
-                Segment { start: 10 * e, len: 4 * e, legs: vec![(0, base0 + 10 * e), (1, base1)], stripe: 65536 },
+                Segment {
+                    start: 0,
+                    len: 10 * e,
+                    legs: vec![(0, base0)],
+                    stripe: 0
+                },
+                Segment {
+                    start: 10 * e,
+                    len: 4 * e,
+                    legs: vec![(0, base0 + 10 * e), (1, base1)],
+                    stripe: 65536
+                },
             ]
         );
         assert_eq!(
             lvs[1].map.as_ref().unwrap(),
-            &vec![Segment { start: 0, len: 2 * e, legs: vec![(1, base1 + 50 * e)], stripe: 0 }]
+            &vec![Segment {
+                start: 0,
+                len: 2 * e,
+                legs: vec![(1, base1 + 50 * e)],
+                stripe: 0
+            }]
         );
         assert!(lvs[2].map.as_ref().unwrap_err().contains("thin"));
         // a missing PV skips the whole volume group
         pvs.remove("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
         let lvs = volumes(&[META.to_owned()], &pvs);
-        assert!(lvs.iter().all(|l| l.map.as_ref().unwrap_err().contains("physical volume missing (pv1)")));
+        assert!(lvs
+            .iter()
+            .all(|l| l.map.as_ref().unwrap_err().contains("physical volume missing (pv1)")));
     }
 
     #[test]
@@ -572,6 +624,9 @@ version = 1
         assert!(parse(&"a {".repeat(100)).is_err());
         assert!(parse("x = \"unterminated").is_err());
         assert!(parse("x = [1, \"a\", [2]] y { }").is_ok());
-        assert_eq!(volumes(&["vg { id = \"i\" seqno = 1 extent_size = 0 }".into()], &PvMap::new()), vec![]);
+        assert_eq!(
+            volumes(&["vg { id = \"i\" seqno = 1 extent_size = 0 }".into()], &PvMap::new()),
+            vec![]
+        );
     }
 }

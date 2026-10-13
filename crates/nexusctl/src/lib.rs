@@ -382,7 +382,9 @@ pub fn run(c: &Client, cmd: &[String], as_json: bool) -> Result<String> {
             };
             let (pos, mut o) = opts(
                 rest,
-                &["tenant", "source", "group", "kind", "ext", "deleted", "limit", "cursor", "mode"],
+                &[
+                    "tenant", "source", "group", "kind", "ext", "deleted", "limit", "cursor", "mode",
+                ],
                 &[],
             )?;
             o.push(("q".into(), pos.join(" ")));
