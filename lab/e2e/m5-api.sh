@@ -697,7 +697,13 @@ rt_leftovers() {
 }
 rt_run() { # rt_run SOURCE CHECKS-JSON -> job JSON
 	local src=$1 checks=$2 time r
-	time=$(api admin GET "/snapshots?tenant=lab&source=$src" | jq '[.[] | select(.local)] | max_by(.time).time')
+	# the catalog's snapshot list is refreshed after the backup: wait for a local one
+	for _ in $(seq 60); do
+		time=$(api admin GET "/snapshots?tenant=lab&source=$src" | jq '[.[] | select(.local)] | max_by(.time).time')
+		[ "$time" != null ] && break
+		sleep 5
+	done
+	[ "$time" != null ] || die "no local snapshot of $src"
 	r=$(api admin POST /jobs "$(jq -nc --arg s "$src" --argjson t "$time" --argjson c "$checks" \
 		'{kind:"restore_test", tenant:"lab", params:{source:$s, time:$t, node:"pve1", storage:"local-lvm", checks:$c}}')")
 	expect 202 "restore_test $src"
