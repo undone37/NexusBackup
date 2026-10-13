@@ -178,7 +178,7 @@
   {/if}
   <section class="card" aria-labelledby="jl">
     <h2 id="jl">{t.jobs.log}</h2>
-    {#if job.kind === 'backup' && /^error /m.test(job.log ?? '')}
+    {#if job.kind === 'backup' && /^(\d{4}-\d\d-\d\dT\S+ )?error /m.test(job.log ?? '')}
       <!-- Phase 22b: entries a share backup could not read -->
       <p>
         <a class="button small" href={`${API}/jobs/${job.id}/skipped.csv`} download={`nexus-job-${job.id}-skipped.csv`} title={t.nas.skippedHint}

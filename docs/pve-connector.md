@@ -95,6 +95,18 @@ retries (13b) re-run exactly the failed guests. Every vzdump task is reported (`
 all of them (`task-stop` per reported UPID, newest first). The plugin host does the same for plugin groups
 (`"parallel"` in its job config, one sandboxed plugin process per guest).
 
+Phase 22b: the source's `max_parallel` caps N, and `storage_caps` caps the guests per PVE storage (see
+docs/control-plane.md "Concurrency caps and read limits"); the read limit paces the NBD reads of all workers.
+
+### VM identity (Phase 22b)
+`pull` compares the identity of the new job's `qemu-server.conf` (`vmgenid`, `smbios1: uuid=`; current section only,
+`backup::Identity`) with the previous snapshot's stored config. A field set on both sides that differs means the VMID
+now belongs to another VM. After the commit it prints `identity vm-<id>/<time> {"vmgenid", "smbios_uuid", "changed",
+"previous"}`; the scheduler keeps it in `snapshots.meta.identity` (merged with `json_patch`, also for partly failed
+group runs) and raises `vmid_reused` (warning, key `vmid_reused:<tenant>/vm-<id>`). The new VM's QEMU has no dirty
+bitmap of ours, so PVE starts a fresh one and the first backup reads all disks: the "new chain". The old snapshots
+stay under the same source name and age out with retention (no rename: restore, retention and offsite stay simple).
+
 ### Fleecing space guard (Phase 18)
 A VM backup copies every block the guest overwrites into a fleecing image on the node's fleecing storage, usually
 the LVM-thin pool `local-lvm`; a full thin pool pauses **every** VM on it. `nexus-pve` (`crates/pve/src/fleecing.rs`)
@@ -116,6 +128,20 @@ The scheduler raises the critical alert `fleecing_space` (key `fleecing_space:<t
 hardware) for low/critical and resolves it when a later reading of that storage is ok. A storage whose status cannot
 be read is not guarded (`note: … not guarded`). Containers have no fleecing and are not checked. Tests:
 `pve::fleecing::tests` (PVE responses as fakes, thresholds, the watcher), `scheduler` `tests::fleecing`.
+
+## Instant disk recovery (Phase 22b, `crates/pve/src/idr.rs`, Veeam row 7)
+`nexus-pve … instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>]` (scheduler
+job `instant_disk`): one device of a VM snapshot attached to the existing VM `target` through the instant-recovery
+overlay `<storeid>:ir/<target>/<archive>.<device>.qcow2` (the node plugin creates it on activation, sized from the
+index; `serve_ir` serves it over `ir-serve` exactly as for instant recovery). `PUT /nodes/<n>/qemu/<target>/config`
+sets `<slot>: <volid>` (hot-plug on a running VM; default slot: first free `scsiN`). With `--move-to` a `move_disk`
+(`delete=1`) copies it to real storage; serving ends when the target VM references no IR volume any more (moved, or
+detached and the `unusedN` entry removed) or is gone; `ir-serve <node> <target>` resumes after a restart. Refused:
+`config`, EFI/TPM state devices, devices not in the snapshot (excluded disks named), a target on another node or not
+a VM, a used slot. The scheduler only accepts a target that a group of the job's tenant protects on the snapshot's
+source (a tenant cannot hand its data to a foreign VM or touch another tenant's VM). Result line: `attached {json}`.
+Not lab-verified yet: hot-plug of an `ir/` volume via `PUT config` (the creation path is the lab-verified one of
+instant recovery).
 
 ## index.json (appliance → nodes)
 ```json
