@@ -81,6 +81,7 @@ mod fleet;
 pub mod forward;
 mod holds;
 mod inventory;
+mod keep;
 mod lifecycle;
 mod offsite_ui;
 pub mod orphans;
@@ -1317,6 +1318,7 @@ impl Scheduler {
         if ok && (job.kind == "backup" || job.kind == "plugin_backup") {
             self.inconsistent_alerts(job.id, &job.tenant, &log)?;
             self.record_stats(&job.tenant, &log)?;
+            self.keep_until_bookkeeping(&job, &log)?;
             self.queue_name_index(&job, result.as_ref())?;
             self.queue_changes_after_backup(&job.tenant, &log)?;
         }
@@ -3265,14 +3267,16 @@ impl Scheduler {
             }
             let used = dir_bytes(&root);
             let c = self.db.conn();
-            let logical: i64 = c.query_row(
-                "SELECT COALESCE(SUM(size), 0) FROM snapshots WHERE tenant = ?1 AND local = 1",
+            // offsite (Phase 23a usage export): logical size of the snapshots with an offsite copy
+            let (logical, offsite): (i64, i64) = c.query_row(
+                "SELECT COALESCE(SUM(CASE WHEN local = 1 THEN size END), 0),
+                        COALESCE(SUM(CASE WHEN offsite = 1 THEN size END), 0) FROM snapshots WHERE tenant = ?1",
                 [&tenant],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )?;
             c.execute(
-                "INSERT OR REPLACE INTO capacity_samples (day, tenant, used, logical) VALUES (?1, ?2, ?3, ?4)",
-                params![day, tenant, used as i64, logical],
+                "INSERT OR REPLACE INTO capacity_samples (day, tenant, used, logical, offsite) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![day, tenant, used as i64, logical, offsite],
             )?;
         }
         Ok(())

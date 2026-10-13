@@ -3692,6 +3692,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexusctl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "catalog",
+ "reqwest",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "web-api",
+]
+
+[[package]]
 name = "nftsync"
 version = "0.1.0"
 dependencies = [

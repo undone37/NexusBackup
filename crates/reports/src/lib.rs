@@ -11,6 +11,8 @@
 //!   `sla_missed` alerts (backup still running after the policy's SLA) in the range.
 //! - `storage`: per tenant and group: logical, data in, stored, ratios, growth
 //!   (current state, docs/storage-accounting.md; the range is not used).
+//! - `usage`: per tenant over the range (billing, Phase 23a): protected objects,
+//!   logical / measured stored / offsite bytes as daily average and peak (`usage.rs`).
 //!
 //! CSV: RFC 4180 (comma, CRLF, fields with `,` `"` CR LF quoted, `"` doubled),
 //! UTF-8 without BOM, times ISO 8601 UTC (`2026-10-12T07:00:00Z`), bytes as
@@ -23,6 +25,7 @@ use std::fmt::Write as _;
 
 pub mod protection;
 pub mod storage;
+pub mod usage;
 
 const DAY: i64 = 86400;
 /// Rows of each report in the mail body (all rows are in the attachment).
@@ -35,10 +38,11 @@ pub enum Kind {
     Failed,
     Sla,
     Storage,
+    Usage,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 4] = [Kind::Protection, Kind::Failed, Kind::Sla, Kind::Storage];
+    pub const ALL: [Kind; 5] = [Kind::Protection, Kind::Failed, Kind::Sla, Kind::Storage, Kind::Usage];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -46,6 +50,7 @@ impl Kind {
             Kind::Failed => "failed",
             Kind::Sla => "sla",
             Kind::Storage => "storage",
+            Kind::Usage => "usage",
         }
     }
 
@@ -59,12 +64,13 @@ impl Kind {
             Kind::Failed => "Failed jobs",
             Kind::Sla => "SLA and RPO breaches",
             Kind::Storage => "Storage",
+            Kind::Usage => "Usage per tenant (billing)",
         }
     }
 
     /// Whether the report covers a time range (else it is the current state).
     pub fn ranged(self) -> bool {
-        matches!(self, Kind::Failed | Kind::Sla)
+        matches!(self, Kind::Failed | Kind::Sla | Kind::Usage)
     }
 }
 
@@ -206,6 +212,7 @@ pub fn generate(
         Kind::Failed => failed(c, scope, from, to),
         Kind::Sla => protection::sla(c, scope, from, to, now),
         Kind::Storage => storage::table(c, scope, now),
+        Kind::Usage => usage::table(c, scope, from, to),
     }
 }
 
@@ -356,7 +363,7 @@ impl Scheduled {
         t.dedup();
         if t.is_empty() || t.len() != self.types.len() {
             return Err(format!(
-                "report {}: types: one or more of protection, failed, sla, storage, each once",
+                "report {}: types: one or more of protection, failed, sla, storage, usage, each once",
                 self.name
             ));
         }

@@ -153,15 +153,26 @@ fn url_target(u: &str) -> Option<(String, u16)> {
 /// JWKS endpoints of the last discovery (`settings.oidc_endpoints`, recorded by
 /// the web-api), while OIDC is configured. The browser reaches the authorization
 /// endpoint itself.
+/// Tenants' own IdPs (Phase 23a, `tenant_idps`) likewise, with their recorded endpoints.
 pub fn oidc_targets(c: &catalog::rusqlite::Connection) -> anyhow::Result<Vec<(String, u16)>> {
+    let mut idps: Vec<(Option<String>, Option<String>)> =
+        vec![(catalog::setting(c, "oidc")?, catalog::setting(c, "oidc_endpoints")?)];
+    let mut q = c.prepare("SELECT settings, endpoints FROM tenant_idps ORDER BY tenant")?;
+    for r in q.query_map([], |r| Ok((Some(r.get(0)?), r.get(1)?)))? {
+        idps.push(r?);
+    }
     let mut out = Vec::new();
-    let Some(s) = catalog::setting(c, "oidc")?.and_then(|v| serde_json::from_str::<Value>(&v).ok()) else {
-        return Ok(out);
-    };
-    out.extend(s["issuer"].as_str().and_then(url_target));
-    if let Some(e) = catalog::setting(c, "oidc_endpoints")?.and_then(|v| serde_json::from_str::<Value>(&v).ok()) {
-        for k in ["token_endpoint", "jwks_uri"] {
-            out.extend(e[k].as_str().and_then(url_target).filter(|t| !out.contains(t)));
+    let parse = |v: Option<String>| v.and_then(|v| serde_json::from_str::<Value>(&v).ok());
+    for (s, e) in idps {
+        let Some(s) = parse(s) else {
+            continue;
+        };
+        let mut add = |t: Option<(String, u16)>| out.extend(t.filter(|t| !out.contains(t)));
+        add(s["issuer"].as_str().and_then(url_target));
+        if let Some(e) = parse(e) {
+            for k in ["token_endpoint", "jwks_uri"] {
+                add(e[k].as_str().and_then(url_target));
+            }
         }
     }
     Ok(out)
@@ -283,6 +294,21 @@ mod tests {
         assert_eq!(
             oidc_targets(&conn).unwrap(),
             vec![("idp.example.com".into(), 443), ("keys.example.com".into(), 8443)]
+        );
+        // a tenant's own IdP (Phase 23a)
+        conn.execute_batch(
+            r#"INSERT INTO tenants (name) VALUES ('acme');
+               INSERT INTO tenant_idps (tenant, settings, endpoints) VALUES ('acme',
+                 '{"issuer": "https://login.acme.example/x"}', '{"jwks_uri": "https://idp.example.com/k"}');"#,
+        )
+        .unwrap();
+        assert_eq!(
+            oidc_targets(&conn).unwrap(),
+            vec![
+                ("idp.example.com".into(), 443),
+                ("keys.example.com".into(), 8443),
+                ("login.acme.example".into(), 443)
+            ]
         );
     }
 

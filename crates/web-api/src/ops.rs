@@ -112,6 +112,8 @@ pub async fn metrics(State(st): State<St>, headers: HeaderMap) -> ApiResult<Resp
 #[serde(deny_unknown_fields)]
 pub struct AuditFilter {
     after: Option<i64>,
+    /// SIEM pull (Phase 23a): the same as `after` (entries with a higher seq, oldest first)
+    since_seq: Option<i64>,
     before: Option<i64>,
     order: Option<String>,
     limit: Option<u32>,
@@ -241,6 +243,12 @@ fn scope_filter(ctx: &Ctx, f: &mut AuditFilter) -> ApiResult<()> {
     ctx.require(READERS)?;
     if let Some(t) = ctx.scope() {
         f.tenant = Some(t.to_owned());
+    }
+    if let Some(s) = f.since_seq.take() {
+        if f.after.is_some() {
+            return Err(ApiError::bad("since_seq: an alias of after, give one of them"));
+        }
+        f.after = Some(s);
     }
     Ok(())
 }
