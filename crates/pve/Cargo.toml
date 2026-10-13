@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 agent-proto = { path = "../agent-proto" }
 anyhow = "1"
+catalog = { path = "../catalog" }
 chunkstore = { path = "../chunkstore" }
 keyd = { path = "../keyd" }
 libc = "0.2"

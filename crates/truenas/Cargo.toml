@@ -9,13 +9,14 @@ rust-version.workspace = true
 # the connector (client + store backup + CLI); without features only
 # names/validation and the forced-command generator (web-api, scheduler)
 default = ["connector"]
-connector = ["client", "dep:agent-conn", "dep:keyd", "dep:serde"]
+connector = ["client", "dep:agent-conn", "dep:catalog", "dep:keyd", "dep:serde"]
 # API client, SSH streams and their parsers, tree planning (plugins/truenas)
 client = ["dep:chunkstore", "dep:libc", "dep:pem", "dep:rustls", "dep:serde_json", "dep:tungstenite"]
 
 [dependencies]
 agent-conn = { path = "../agent-conn", optional = true }
 anyhow = "1"
+catalog = { path = "../catalog", optional = true }
 chunkstore = { path = "../chunkstore", optional = true }
 keyd = { path = "../keyd", optional = true }
 libc = { version = "0.2", optional = true }

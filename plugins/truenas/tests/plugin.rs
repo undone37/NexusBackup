@@ -466,6 +466,7 @@ fn sandboxed_binary_over_wss_and_ssh() {
             recursive: true,
             sudo: false,
             zfs_sudo: false,
+            existing_prefix: None,
         },
         &Tools {
             zfs: td.path().join("nas/bin/zfs").to_str().unwrap().to_owned(),

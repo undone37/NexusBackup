@@ -41,11 +41,13 @@ pub mod incident;
 pub mod inventory;
 pub mod jobs;
 pub mod network;
+pub mod nasops;
 pub mod offsite;
 pub mod oidc;
 pub mod ops;
 pub mod passkeys;
 pub mod plugins;
+pub mod priority;
 pub mod quorum;
 pub mod recovery;
 pub mod replication;
@@ -525,6 +527,11 @@ pub fn router(st: St) -> Router {
         .route("/sources", get(list_sources).post(create_source))
         .route("/sources/{id}", put(update_source).delete(delete_source))
         .route("/sources/{id}/inventory", get(inventory::list))
+        .route("/sources/{id}/split", post(nasops::split))
+        .route(
+            "/restore-priority",
+            get(priority::get).put(priority::put).delete(priority::delete),
+        )
         .route("/policies", get(list_policies).post(create_policy))
         .route("/policies/{id}", put(update_policy).delete(delete_policy))
         .route("/groups", get(list_groups).post(create_group))
@@ -598,6 +605,7 @@ pub fn router(st: St) -> Router {
         .route("/restores", post(restores::restore_many))
         .route("/jobs/{id}", get(get_job))
         .route("/jobs/{id}/cancel", post(cancel_job))
+        .route("/jobs/{id}/skipped.csv", get(nasops::skipped))
         .route("/downloads/{token}", get(download))
         .route("/quorum", get(list_quorum))
         .route("/console/unlock", get(console::list).post(console::request_unlock))

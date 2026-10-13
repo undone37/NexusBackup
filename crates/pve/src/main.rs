@@ -1,4 +1,4 @@
-//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] | restore-test <spec.json> | lab-check <spec.json> | push-index | list | inventory`.
+//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] | restore-test <spec.json> | lab-check <spec.json> | push-index | list | inventory`.
 //! `backup-all` backs up every guest in `vmids`, VM or container (type from /cluster/resources).
 
 use anyhow::{bail, Context, Result};
@@ -38,6 +38,15 @@ struct Config {
     exclude_disks: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     exclude_disks_mode: pve::exclude::Mode,
+    /// appliance-side read limit of the source (Phase 22b)
+    #[serde(default)]
+    read_limit: Option<catalog::schedule::ReadLimit>,
+    /// `backup-all`: per-source cap of `parallel` (source `max_parallel`, Phase 22b)
+    #[serde(default)]
+    max_parallel: Option<usize>,
+    /// `backup-all`: at most this many guests at once with a disk on the storage (source `storage_caps`)
+    #[serde(default)]
+    storage_caps: std::collections::HashMap<String, usize>,
 }
 
 fn one() -> usize {
@@ -58,7 +67,7 @@ fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
-        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] | restore-test <spec.json> | lab-check <spec.json> | push-index | list | inventory | task-stop <upid> | p2v <req.json> <layout.json> | p2v-cleanup <node> <vmid> <volid>");
+        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] | restore-test <spec.json> | lab-check <spec.json> | push-index | list | inventory | task-stop <upid> | p2v <req.json> <layout.json> | p2v-cleanup <node> <vmid> <volid>");
     };
     let cfg: Config = serde_json::from_slice(&fs::read(cfg_path)?).context("config")?;
     // P2V (docs/bmr.md): API only, no store or keys
@@ -123,6 +132,7 @@ fn main() -> Result<()> {
         nodes: cfg.nodes,
         exclude,
         exclude_mode: cfg.exclude_disks_mode,
+        read_limit: cfg.read_limit.as_ref().map(|r| r.throttle()).transpose()?.flatten(),
     };
     match (cmd.as_str(), rest) {
         ("backup", [vmid]) => {
@@ -206,6 +216,34 @@ fn main() -> Result<()> {
                 bail!("disk moves failed: {}", r.move_errors.join("; "));
             }
         }
+        // instant disk recovery (Phase 22b): one disk attached to an existing VM
+        ("instant-disk", [vmid, time, device, node, target, opts @ ..]) => {
+            let (mut key, mut move_to) = (None, None);
+            let mut it = opts.iter();
+            while let Some(o) = it.next() {
+                match o.as_str() {
+                    "--key" => key = Some(it.next().context("--key <slot>")?.as_str()),
+                    "--move-to" => move_to = Some(it.next().context("--move-to <storage>")?.as_str()),
+                    x => bail!("instant-disk: unknown option {x}"),
+                }
+            }
+            let r = cluster.instant_disk(
+                &store,
+                vmid.parse()?,
+                time.parse()?,
+                device,
+                node,
+                target.parse()?,
+                key,
+                move_to,
+            )?;
+            for (disk, d) in &r.moves {
+                println!("{disk} moved in {d:.1?}");
+            }
+            if !r.move_errors.is_empty() {
+                bail!("disk move failed: {}", r.move_errors.join("; "));
+            }
+        }
         // resume serving an instant recovery (e.g. after an appliance restart)
         ("ir-serve", [node, target]) => cluster.ir_resume(&store, node, target.parse()?)?,
         ("backup-all", []) => {
@@ -227,16 +265,45 @@ fn main() -> Result<()> {
                     }
                 }
             };
-            let failed: Vec<u32> = if cfg.parallel <= 1 || vmids.len() <= 1 {
+            let parallel = match cfg.max_parallel {
+                Some(m) if m < cfg.parallel => {
+                    println!(
+                        "note: parallel guests capped at {m} by the source (group asks for {})",
+                        cfg.parallel
+                    );
+                    m.max(1)
+                }
+                _ => cfg.parallel,
+            };
+            let failed: Vec<u32> = if parallel <= 1 || vmids.len() <= 1 {
                 vmids.iter().copied().filter(|&vmid| one(&store, vmid)).collect()
             } else {
                 let nodes = cluster.guest_nodes()?;
-                let items: Vec<(u32, String)> = vmids
+                let items: Vec<pve::parallel::Item<u32>> = vmids
                     .iter()
-                    .map(|v| (*v, nodes.get(v).cloned().unwrap_or_default()))
+                    .map(|v| {
+                        let node = nodes.get(v).map(|(n, _)| n.clone()).unwrap_or_default();
+                        // per-storage caps need the guest's disks (one config read per guest)
+                        let storages = match nodes.get(v) {
+                            Some((n, kind)) if !cfg.storage_caps.is_empty() => cluster
+                                .api
+                                .guest_config(n, kind, *v)
+                                .map(|c| pve::parallel::guest_storages(&c))
+                                .unwrap_or_else(|e| {
+                                    println!("note: storages of guest {v} unknown ({e:#}); not capped");
+                                    Vec::new()
+                                }),
+                            _ => Vec::new(),
+                        };
+                        pve::parallel::Item {
+                            item: *v,
+                            node,
+                            storages,
+                        }
+                    })
                     .collect();
                 // each guest gets its own Store handle: `written()` deltas stay per snapshot
-                let res = pve::parallel::run(&items, cfg.parallel.min(8), |&vmid| {
+                let res = pve::parallel::run(&items, parallel.min(8), &cfg.storage_caps, |&vmid| {
                     let own = keyd::fetch_keyring(&keyd_socket, &tenant)
                         .context("keyd")
                         .and_then(|k| Ok(Store::open(&store_root, k, Options::default())?));

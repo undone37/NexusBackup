@@ -10,12 +10,13 @@ description = "NexusBackup NAS connector (NFS/SMB shares, file level) and its pr
 # the connector (scan, store, CLI nexus-nas); without it only names/validation,
 # the mount option builder and the helper protocol (web-api, scheduler, nexus-nasmount)
 default = ["connector"]
-connector = ["dep:agent-conn", "dep:agent-core", "dep:chunkstore", "dep:keyd", "dep:serde", "dep:serde_json"]
+connector = ["dep:agent-conn", "dep:agent-core", "dep:catalog", "dep:chunkstore", "dep:keyd", "dep:serde", "dep:serde_json"]
 
 [dependencies]
 agent-conn = { path = "../agent-conn", optional = true }
 agent-core = { path = "../agent-core", optional = true }
 anyhow = "1"
+catalog = { path = "../catalog", optional = true }
 chunkstore = { path = "../chunkstore", optional = true }
 keyd = { path = "../keyd", optional = true }
 libc = "0.2"

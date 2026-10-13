@@ -44,6 +44,21 @@ struct Config {
     zfs_sudo: bool,
     #[serde(default = "timeout")]
     timeout_secs: u64,
+    /// "use existing snapshots" (Phase 22b): back up the newest `<prefix>*` snapshot
+    #[serde(default)]
+    existing_snapshots: Option<String>,
+    /// store source -> {time, snapshot} of the newest store snapshot (from the catalog)
+    #[serde(default)]
+    references: std::collections::HashMap<String, Reference>,
+    #[serde(default)]
+    read_limit: Option<catalog::schedule::ReadLimit>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Reference {
+    time: u64,
+    snapshot: String,
 }
 
 fn yes() -> bool {
@@ -132,6 +147,7 @@ impl Config {
             recursive: self.recursive,
             sudo: self.sudo,
             zfs_sudo: self.zfs_sudo,
+            existing_prefix: self.existing_snapshots.clone(),
         }
     }
 }
@@ -157,10 +173,20 @@ fn main() -> Result<()> {
             let store = cfg.store()?;
             let mut api = cfg.api()?;
             let ssh = cfg.ssh()?;
+            let throttle = cfg.read_limit.as_ref().map(|r| r.throttle()).transpose()?.flatten();
             let spec = Spec {
                 source_id: cfg.source_id,
                 datasets: cfg.datasets.clone(),
                 recursive: cfg.recursive,
+                existing: cfg.existing_snapshots.as_ref().map(|prefix| backup::Existing {
+                    prefix: prefix.clone(),
+                    references: cfg
+                        .references
+                        .iter()
+                        .map(|(k, r)| (k.clone(), (r.time, r.snapshot.clone())))
+                        .collect(),
+                }),
+                pace: throttle.map(|t| -> truenas::remote::Pace { std::sync::Arc::new(move |n| t.account(n)) }),
             };
             let r = backup::backup(&store, &mut api, &ssh, &spec, &mut |l| println!("{l}"))?;
             api.close();
@@ -172,7 +198,7 @@ fn main() -> Result<()> {
                 json!({
                     "time": r.time,
                     "datasets": r.committed,
-                    "snapshots": r.committed.iter().map(|c| json!({"source": c.source, "time": c.time})).collect::<Vec<_>>(),
+                    "snapshots": r.committed.iter().map(|c| json!({"source": c.source, "time": c.time, "meta": {"zfs_snapshot": c.snapshot}})).collect::<Vec<_>>(),
                     "failed": r.failed.iter().map(|(d, e)| json!({"dataset": d, "error": e})).collect::<Vec<_>>(),
                     "skipped": r.skipped.iter().map(|(d, e)| json!({"dataset": d, "reason": e})).collect::<Vec<_>>(),
                     "deleted_snapshots": r.deleted_snapshots,

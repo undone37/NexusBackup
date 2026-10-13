@@ -350,6 +350,31 @@ mapped, setuid/setgid/sticky cleared, devices/sockets skipped, only xattrs the t
   directly, anything else stays quorum `tenant.update`. Replication sources: weakening → `replication_source.update`
   quorum; reopening a closed vault → `replication.reopen`.
 
+## Concurrency caps and read limits (Phase 22b, `catalog::schedule::ReadLimit`, `scheduler/src/limits.rs`)
+- **Per source**: one backup job per source runs at a time (plan key `source:<id>`), so a source's limits bound
+  everything the appliance reads from it. PVE sources: `max_parallel` (1..=8) caps the groups' `parallel_guests`
+  (nexus-pve applies `min`, logs `note: parallel guests capped …`); `storage_caps` (`{storage: 1..=8}`): `backup-all`
+  reads each guest's config (`/nodes/<n>/<qemu|lxc>/<id>/config`, only when caps are set), derives its storages
+  (`pve::parallel::guest_storages`: disk keys, `rootfs`, `mpN`; no CD-ROMs, bind mounts) and a worker skips guests
+  whose storage is at its cap (others pass; a worker waits on a condvar when all pending guests are capped).
+- **Read limit** (PVE, TrueNAS, NFS/SMB): `read_limit: {bwlimit?, windows: [limit only], timezone}` in the source
+  config, copied into the connector's job config; the connector builds one `Throttle` per run (shared by the parallel
+  guests / scan threads, re-evaluated every 10 s like offsite). Paced: NBD reads of VM disks, the container tar
+  stream, TrueNAS walk + content streams (`truenas::remote::Pace` hook, the client feature stays catalog-free), NAS
+  file contents (`catalog::schedule::Throttled`). Pause windows are refused by `ReadLimit::check` (a stalled read
+  would hold vzdump / grow fleecing): time-of-day exclusion is the policy's blackout. Not gated: limits only reduce
+  load. PSI-based backoff is not implemented (open).
+
+## Restore priority (Phase 22b, `catalog::priority`, `web-api/src/priority.rs`, `scheduler/src/priority.rs`)
+- Setting `restore_priority` = `{until, since, by, reason}`; `PUT /restore-priority {hours 1..=24, reason}` (admin,
+  operator; renewing keeps `since`), `DELETE`, `GET` (every signed-in user: the banner). Audited
+  `restore_priority.on` (with `renewed`) / `.off`; no approval (it only delays background work and always expires).
+- Scheduler: while on, `queue_scheduled`, `queue_maintenance` (gc / verify / file_index) and `queue_replication`
+  queue nothing (due slots run afterwards, as after a pause) and `start_jobs` leaves queued `gc`, `verify`,
+  `file_index`, `offsite`, `replica_sync` and scheduler-requested backups (incl. retries) waiting. Manual jobs and
+  restores run. `check_restore_priority` keeps the warning `restore_priority` open while on, clears an expired
+  setting (audit `restore_priority.expire`, actor scheduler) and resolves the alert.
+
 ## Restore options (Phase 15a, `crates/pve/src/restore.rs`, `crates/scheduler/src/restore.rs`)
 - `restore` / `restore_ct` / `instant_recover` params: `source, time, node, target, storage` plus optional `name`
   or `name_prefix` (not both; PVE name characters, 1..=63, no leading `-`/`.`), `pool`, `start` (bool; instant

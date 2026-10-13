@@ -139,6 +139,7 @@ impl Config {
             recursive: self.recursive,
             sudo: self.sudo,
             zfs_sudo: self.zfs_sudo,
+            existing_prefix: None,
         }
     }
 

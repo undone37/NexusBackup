@@ -88,6 +88,23 @@ pub fn parse_snap_name(source_id: u64, name: &str) -> Option<u64> {
         .then(|| t.parse().ok())?
 }
 
+/// Prefix of the existing (periodic) snapshots a source may read in "use
+/// existing snapshots" mode (Phase 22b): `[A-Za-z0-9][A-Za-z0-9_-]{0,31}`.
+pub fn valid_snap_prefix(p: &str) -> bool {
+    (1..=32).contains(&p.len())
+        && p.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric())
+        && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// A snapshot name the connector may pass to the forced command: ours
+/// (`nexus-<id>-<time>`) or an existing one (`[A-Za-z0-9][A-Za-z0-9_-]{0,127}`,
+/// e.g. TrueNAS' default `auto-%Y-%m-%d_%H-%M`); the forced command also checks the prefix.
+pub fn valid_snap_name(s: &str) -> bool {
+    (1..=128).contains(&s.len())
+        && s.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric())
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 /// Relative path from TrueNAS: raw bytes, `/`-separated, no empty, `.` or `..`
 /// component, no NUL, at most [`MAX_PATH`] bytes.
 pub fn valid_rel_path(p: &[u8]) -> bool {

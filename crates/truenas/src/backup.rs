@@ -22,6 +22,30 @@ pub struct Spec {
     /// configured roots
     pub datasets: Vec<String>,
     pub recursive: bool,
+    /// "use existing snapshots" mode (Phase 22b): back up each dataset's newest
+    /// snapshot with this name prefix (TrueNAS periodic snapshot task, e.g. `auto-`)
+    /// instead of creating and rotating `nexus-<source>-<time>` snapshots
+    pub existing: Option<Existing>,
+    /// read limit hook (crate::remote::Pace)
+    pub pace: Option<crate::remote::Pace>,
+}
+
+/// The snapshots an "existing snapshots" run may diff against.
+#[derive(Default, Clone)]
+pub struct Existing {
+    pub prefix: String,
+    /// store source -> (store snapshot time, TrueNAS snapshot it was read from):
+    /// the newest snapshot's `meta.zfs_snapshot` from the catalog
+    pub references: HashMap<String, (u64, String)>,
+}
+
+/// Newest snapshot name with `prefix` (periodic snapshot names sort by time, e.g.
+/// `auto-2026-10-13_00-00`).
+pub fn newest_with_prefix<'a>(names: &'a [String], prefix: &str) -> Option<&'a String> {
+    names
+        .iter()
+        .filter(|n| !prefix.is_empty() && n.starts_with(prefix))
+        .max()
 }
 
 #[derive(Serialize, Debug, Clone, Default)]
@@ -40,6 +64,8 @@ pub struct DatasetReport {
     pub new_bytes: u64,
     /// bytes received over SSH (diff + walk + content)
     pub transferred_bytes: u64,
+    /// the TrueNAS snapshot read (`nexus-<source>-<time>` or an existing one)
+    pub snapshot: String,
     pub changes: usize,
     pub secs: f64,
 }
@@ -152,10 +178,14 @@ pub fn backup(
         .fold(now()?, u64::max);
     let snap = snap_name(spec.source_id, r.time);
 
-    // one atomic (recursive) snapshot per root
+    // one atomic (recursive) snapshot per root; none in "existing snapshots" mode
     let mut roots_ok: Vec<&String> = Vec::new();
     for root in &spec.datasets {
         if !work.iter().any(|(rt, _)| rt == root) {
+            continue;
+        }
+        if spec.existing.is_some() {
+            roots_ok.push(root);
             continue;
         }
         match nas.create_snapshot(root, &snap, spec.recursive) {
@@ -164,22 +194,41 @@ pub fn backup(
         }
     }
     let mut remote = Remote::new(t);
+    remote.pace = spec.pace.clone();
     for (root, d) in &work {
         if !roots_ok.contains(&root) {
             continue;
         }
+        let prev = prev_of(&d.name);
+        let pick = match &spec.existing {
+            None => created_pick(nas, spec.source_id, &d.name, r.time, prev, log),
+            Some(x) => existing_pick(nas, spec.source_id, x, &d.name, prev, log),
+        };
+        let (use_snap, reference) = match pick {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                r.skipped
+                    .push((d.name.clone(), "no new snapshot since the last backup".into()));
+                continue;
+            }
+            Err(e) => {
+                log(&format!("dataset {} failed: {e:#}", d.name));
+                r.failed.push((d.name.clone(), format!("{e:#}")));
+                continue;
+            }
+        };
         let started = Instant::now();
         let before = remote.received;
         let written = store.written();
         match one(
             store,
-            nas,
             &mut remote,
             spec.source_id,
             d,
             r.time,
-            prev_of(&d.name),
-            log,
+            &use_snap,
+            reference.as_deref(),
+            prev,
         ) {
             Ok(mut rep) => {
                 rep.transferred_bytes = remote.received - before;
@@ -216,9 +265,10 @@ pub fn backup(
         }
     }
     // rotation: per dataset, keep only the newest committed snapshot of this source
+    // (existing snapshots belong to TrueNAS' periodic task: never deleted)
     let committed: Vec<&str> = r.committed.iter().map(|c| c.dataset.as_str()).collect();
     for (root, d) in &work {
-        if !roots_ok.contains(&root) {
+        if !roots_ok.contains(&root) || spec.existing.is_some() {
             continue;
         }
         let names = match nas.snapshots(&d.name) {
@@ -244,10 +294,11 @@ pub fn backup(
     }
     // a recursive snapshot also exists on skipped children: drop it
     for (ds, _) in &r.skipped {
-        if spec
-            .datasets
-            .iter()
-            .any(|root| under(ds, root) && roots_ok.contains(&root))
+        if spec.existing.is_none()
+            && spec
+                .datasets
+                .iter()
+                .any(|root| under(ds, root) && roots_ok.contains(&root))
         {
             let _ = nas.delete_snapshot(ds, &snap);
         }
@@ -255,45 +306,100 @@ pub fn backup(
     Ok(r)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn one(
-    store: &Store,
+/// Create mode: the snapshot just created and, as reference, the last committed
+/// one if it still exists on TrueNAS.
+fn created_pick(
     nas: &mut dyn Nas,
-    remote: &mut Remote,
     source_id: u64,
-    d: &Dataset,
+    ds: &str,
     time: u64,
     prev: Option<u64>,
     log: &mut dyn FnMut(&str),
-) -> Result<DatasetReport> {
-    let mp = d.mountpoint.as_deref().context("not mounted")?;
-    let source = source_name(source_id, &d.name);
+) -> Result<Option<(String, Option<String>)>> {
     let snap = snap_name(source_id, time);
     let ours: Vec<u64> = nas
-        .snapshots(&d.name)?
+        .snapshots(ds)?
         .iter()
         .filter_map(|n| parse_snap_name(source_id, n))
         .collect();
     if !ours.contains(&time) {
-        bail!("snapshot {}@{snap} missing", d.name);
+        bail!("snapshot {ds}@{snap} missing");
     }
-    // the reference: the last committed snapshot, if it still exists on TrueNAS
     let reference = prev.filter(|p| ours.contains(p));
     if let (Some(p), None) = (prev, reference) {
         log(&format!(
-            "{}: reference snapshot {} is gone, reading everything",
-            d.name,
+            "{ds}: reference snapshot {} is gone, reading everything",
             snap_name(source_id, p)
         ));
     }
-    let diff = match reference {
-        Some(p) => Some(remote.diff(&d.name, &snap_name(source_id, p), &snap, mp)?),
+    Ok(Some((snap, reference.map(|p| snap_name(source_id, p)))))
+}
+
+/// "Existing snapshots" mode: the newest snapshot with the prefix and, as
+/// reference, the one the last committed store snapshot was read from (if it
+/// still exists). `None` = that is still the newest one (nothing new to read).
+fn existing_pick(
+    nas: &mut dyn Nas,
+    source_id: u64,
+    x: &Existing,
+    ds: &str,
+    prev: Option<u64>,
+    log: &mut dyn FnMut(&str),
+) -> Result<Option<(String, Option<String>)>> {
+    let names = nas.snapshots(ds)?;
+    let newest = newest_with_prefix(&names, &x.prefix)
+        .with_context(|| format!("no snapshot {ds}@{}* (is the periodic snapshot task set up?)", x.prefix))?
+        .clone();
+    let used = x
+        .references
+        .get(&source_name(source_id, ds))
+        .filter(|(t, _)| Some(*t) == prev)
+        .map(|(_, n)| n.clone());
+    if used.as_deref() == Some(newest.as_str()) {
+        log(&format!(
+            "{ds}: {newest} was already backed up; waiting for the next periodic snapshot"
+        ));
+        return Ok(None);
+    }
+    let reference = match used {
+        Some(u) if names.contains(&u) => Some(u),
+        Some(u) => {
+            log(&format!("{ds}: reference snapshot {u} is gone, reading everything"));
+            None
+        }
+        None if prev.is_some() => {
+            log(&format!(
+                "{ds}: no reference snapshot recorded for the last backup, reading everything"
+            ));
+            None
+        }
         None => None,
     };
-    let walk = remote.walk(&d.name, &snap)?;
-    let prev_tree = match reference {
-        Some(p) => Some(load_tree(store, &source, p)?),
+    log(&format!("{ds}: reading existing snapshot {newest}"));
+    Ok(Some((newest, reference)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn one(
+    store: &Store,
+    remote: &mut Remote,
+    source_id: u64,
+    d: &Dataset,
+    time: u64,
+    snap: &str,
+    reference: Option<&str>,
+    prev: Option<u64>,
+) -> Result<DatasetReport> {
+    let mp = d.mountpoint.as_deref().context("not mounted")?;
+    let source = source_name(source_id, &d.name);
+    let diff = match reference {
+        Some(p) => Some(remote.diff(&d.name, p, snap, mp)?),
         None => None,
+    };
+    let walk = remote.walk(&d.name, snap)?;
+    let prev_tree = match (reference, prev) {
+        (Some(_), Some(p)) => Some(load_tree(store, &source, p)?),
+        _ => None,
     };
     let changed = diff.as_ref().map(|l| changed_inodes(&walk, l));
     let mut p = plan(walk, prev_tree.as_deref(), changed.as_ref(), &|id| store.has_chunk(id));
@@ -306,6 +412,7 @@ fn one(
         reused_files: p.reused_files,
         reused_bytes: p.reused_bytes,
         changes: diff.as_ref().map_or(0, Vec::len),
+        snapshot: snap.to_owned(),
         ..Default::default()
     };
     if !p.need.is_empty() {
@@ -315,7 +422,7 @@ fn one(
             .iter()
             .filter(|&&i| p.entries[i].kind == chunkstore::TreeKind::File)
             .count();
-        let (bytes, nc, nb) = remote.read(&d.name, &snap, paths, |tar: &mut stream::Reader<_>| {
+        let (bytes, nc, nb) = remote.read(&d.name, snap, paths, |tar: &mut stream::Reader<_>| {
             fill(store, &mut p, tar)
         })?;
         rep.bytes_read = bytes;

@@ -3,43 +3,90 @@
 //! next guest on the node with the fewest running backups, so the load spreads
 //! over the cluster (PVE may serialise vzdump runs on one node with its global
 //! vzdump lock: guests of that node then simply wait for each other).
+//!
+//! Per-storage caps (source `storage_caps`, Phase 22b): a guest with a disk on a
+//! storage that already has its cap of running backups waits; other guests pass it.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
+
+/// One guest to back up: its node and the PVE storages of its disks.
+pub struct Item<T> {
+    pub item: T,
+    pub node: String,
+    pub storages: Vec<String>,
+}
+
+#[derive(Default)]
+struct State {
+    pending: Vec<usize>,
+    /// running backups per node and per storage
+    nodes: HashMap<String, usize>,
+    storages: HashMap<String, usize>,
+}
 
 /// Index into `pending` of the next item: the first one whose node has the
-/// fewest running backups.
-pub fn pick(pending: &[usize], nodes: &[&str], running: &HashMap<String, usize>) -> Option<usize> {
-    pending
+/// fewest running backups among those whose storages are all below their cap.
+fn pick<T>(st: &State, items: &[Item<T>], caps: &HashMap<String, usize>) -> Option<usize> {
+    st.pending
         .iter()
         .enumerate()
-        .min_by_key(|(pos, &i)| (running.get(nodes[i]).copied().unwrap_or(0), *pos))
+        .filter(|(_, &i)| {
+            items[i].storages.iter().all(|s| {
+                caps.get(s)
+                    .is_none_or(|c| st.storages.get(s).copied().unwrap_or(0) < (*c).max(1))
+            })
+        })
+        .min_by_key(|(pos, &i)| (st.nodes.get(&items[i].node).copied().unwrap_or(0), *pos))
         .map(|(pos, _)| pos)
 }
 
-/// Runs `work` for every `(item, node)` with at most `n` at once; results in
-/// item order.
-pub fn run<T: Sync, R: Send>(items: &[(T, String)], n: usize, work: impl Fn(&T) -> R + Sync) -> Vec<R> {
-    let nodes: Vec<&str> = items.iter().map(|(_, n)| n.as_str()).collect();
-    let state = Mutex::new(((0..items.len()).collect::<Vec<_>>(), HashMap::<String, usize>::new()));
+/// Runs `work` for every item with at most `n` at once and at most `caps[s]`
+/// running on storage `s`; results in item order.
+pub fn run<T: Sync, R: Send>(
+    items: &[Item<T>],
+    n: usize,
+    caps: &HashMap<String, usize>,
+    work: impl Fn(&T) -> R + Sync,
+) -> Vec<R> {
+    let state = Mutex::new(State {
+        pending: (0..items.len()).collect(),
+        ..Default::default()
+    });
+    let freed = Condvar::new();
     let results: Mutex<Vec<Option<R>>> = Mutex::new((0..items.len()).map(|_| None).collect());
     std::thread::scope(|s| {
         for _ in 0..n.clamp(1, items.len().max(1)) {
             s.spawn(|| loop {
                 let i = {
                     let mut st = state.lock().unwrap();
-                    let (pending, running) = &mut *st;
-                    let Some(pos) = pick(pending, &nodes, running) else {
-                        break;
+                    let pos = loop {
+                        if st.pending.is_empty() {
+                            break None;
+                        }
+                        match pick(&st, items, caps) {
+                            Some(p) => break Some(p),
+                            // every pending guest waits for a capped storage
+                            None => st = freed.wait(st).unwrap(),
+                        }
                     };
-                    let i = pending.remove(pos);
-                    *running.entry(nodes[i].to_owned()).or_default() += 1;
+                    let Some(pos) = pos else { break };
+                    let i = st.pending.remove(pos);
+                    *st.nodes.entry(items[i].node.clone()).or_default() += 1;
+                    for x in &items[i].storages {
+                        *st.storages.entry(x.clone()).or_default() += 1;
+                    }
                     i
                 };
-                let r = work(&items[i].0);
+                let r = work(&items[i].item);
                 let mut st = state.lock().unwrap();
-                *st.1.entry(nodes[i].to_owned()).or_default() -= 1;
+                *st.nodes.entry(items[i].node.clone()).or_default() -= 1;
+                for x in &items[i].storages {
+                    *st.storages.entry(x.clone()).or_default() -= 1;
+                }
                 results.lock().unwrap()[i] = Some(r);
+                drop(st);
+                freed.notify_all();
             });
         }
     });
@@ -51,30 +98,89 @@ pub fn run<T: Sync, R: Send>(items: &[(T, String)], n: usize, work: impl Fn(&T) 
         .collect()
 }
 
+/// PVE storages of a guest config (`/nodes/<n>/qemu|lxc/<id>/config`): the
+/// storage of every disk volume (VM disks, container rootfs / mount points);
+/// CD-ROMs, `none` and bind mounts (absolute paths) are not storages.
+pub fn guest_storages(cfg: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    let mut out: Vec<String> = cfg
+        .iter()
+        .filter(|(k, _)| crate::ir::is_disk_key(k) || *k == "rootfs" || is_mp(k))
+        .filter_map(|(_, v)| v.as_str())
+        .filter(|v| !v.split(',').any(|o| o == "media=cdrom"))
+        .filter_map(|v| v.split(',').next()?.split_once(':').map(|(s, _)| s.to_owned()))
+        .filter(|s| !s.is_empty() && !s.starts_with('/'))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn is_mp(k: &str) -> bool {
+    k.strip_prefix("mp")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
+    fn it(i: u32, node: &str, storages: &[&str]) -> Item<u32> {
+        Item {
+            item: i,
+            node: node.into(),
+            storages: storages.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
     #[test]
     fn picks_the_least_busy_node_in_order() {
-        let nodes = ["a", "a", "b", "c"];
-        let mut running = HashMap::new();
-        assert_eq!(pick(&[0, 1, 2, 3], &nodes, &running), Some(0), "idle: list order");
-        running.insert("a".to_string(), 1);
-        assert_eq!(pick(&[1, 2, 3], &nodes, &running), Some(1), "b before the busy a");
-        running.insert("b".to_string(), 1);
-        running.insert("c".to_string(), 2);
-        assert_eq!(pick(&[1, 3], &nodes, &running), Some(0), "a(1) before c(2)");
-        assert_eq!(pick(&[], &nodes, &running), None);
+        let items = [it(0, "a", &[]), it(1, "a", &[]), it(2, "b", &[]), it(3, "c", &[])];
+        let caps = HashMap::new();
+        let mut st = State {
+            pending: vec![0, 1, 2, 3],
+            ..Default::default()
+        };
+        assert_eq!(pick(&st, &items, &caps), Some(0), "idle: list order");
+        st.pending = vec![1, 2, 3];
+        st.nodes.insert("a".into(), 1);
+        assert_eq!(pick(&st, &items, &caps), Some(1), "b before the busy a");
+        st.nodes.insert("b".into(), 1);
+        st.nodes.insert("c".into(), 2);
+        st.pending = vec![1, 3];
+        assert_eq!(pick(&st, &items, &caps), Some(0), "a(1) before c(2)");
+        st.pending.clear();
+        assert_eq!(pick(&st, &items, &caps), None);
+    }
+
+    #[test]
+    fn storage_cap_lets_others_pass() {
+        let items = [
+            it(0, "a", &["ceph"]),
+            it(1, "b", &["ceph", "lvm"]),
+            it(2, "a", &["lvm"]),
+        ];
+        let caps = HashMap::from([("ceph".to_string(), 1)]);
+        let mut st = State {
+            pending: vec![1, 2],
+            ..Default::default()
+        };
+        st.storages.insert("ceph".into(), 1);
+        assert_eq!(
+            pick(&st, &items, &caps),
+            Some(1),
+            "guest 1 waits for ceph, guest 2 passes"
+        );
+        st.pending = vec![1];
+        assert_eq!(pick(&st, &items, &caps), None);
     }
 
     #[test]
     fn runs_at_most_n_and_keeps_order() {
-        let items: Vec<(u32, String)> = (0..12).map(|i| (i, format!("n{}", i % 3))).collect();
+        let items: Vec<Item<u32>> = (0..12).map(|i| it(i, &format!("n{}", i % 3), &[])).collect();
         let (now, max) = (AtomicUsize::new(0), AtomicUsize::new(0));
-        let out = run(&items, 3, |&i| {
+        let out = run(&items, 3, &HashMap::new(), |&i| {
             let c = now.fetch_add(1, Ordering::SeqCst) + 1;
             max.fetch_max(c, Ordering::SeqCst);
             std::thread::sleep(Duration::from_millis(20));
@@ -83,7 +189,56 @@ mod tests {
         });
         assert_eq!(out, (0..12).map(|i| i * 2).collect::<Vec<_>>());
         assert_eq!(max.load(Ordering::SeqCst), 3);
-        assert!(run(&Vec::<(u32, String)>::new(), 4, |&i| i).is_empty());
-        assert_eq!(run(&items[..1], 8, |&i| i + 1), vec![1]);
+        assert!(run(&Vec::<Item<u32>>::new(), 4, &HashMap::new(), |&i| i).is_empty());
+        assert_eq!(run(&items[..1], 8, &HashMap::new(), |&i| i + 1), vec![1]);
+    }
+
+    #[test]
+    fn storage_cap_bounds_concurrency() {
+        // 8 guests on ceph (cap 2) and 4 on lvm: never more than 2 ceph backups at once
+        let items: Vec<Item<u32>> = (0..12)
+            .map(|i| it(i, &format!("n{}", i % 3), if i < 8 { &["ceph"] } else { &["lvm"] }))
+            .collect();
+        let caps = HashMap::from([("ceph".to_string(), 2)]);
+        let (ceph, ceph_max, all, all_max) = (
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+        );
+        let out = run(&items, 6, &caps, |&i| {
+            let c = all.fetch_add(1, Ordering::SeqCst) + 1;
+            all_max.fetch_max(c, Ordering::SeqCst);
+            if i < 8 {
+                let c = ceph.fetch_add(1, Ordering::SeqCst) + 1;
+                ceph_max.fetch_max(c, Ordering::SeqCst);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+            if i < 8 {
+                ceph.fetch_sub(1, Ordering::SeqCst);
+            }
+            all.fetch_sub(1, Ordering::SeqCst);
+            i
+        });
+        assert_eq!(out, (0..12).collect::<Vec<_>>());
+        assert_eq!(ceph_max.load(Ordering::SeqCst), 2, "ceph capped at 2");
+        assert!(all_max.load(Ordering::SeqCst) > 2, "lvm guests ran beside them");
+    }
+
+    #[test]
+    fn storages_of_a_config() {
+        let vm: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+            r#"{"scsi0":"ceph:vm-100-disk-0,size=4G","virtio1":"local-lvm:vm-100-disk-1,size=1G",
+                "ide2":"local:iso/x.iso,media=cdrom","efidisk0":"ceph:vm-100-disk-2,size=1M",
+                "sata0":"none,media=cdrom","net0":"virtio=AA:BB,bridge=vmbr0","memory":1024}"#,
+        )
+        .unwrap();
+        assert_eq!(guest_storages(&vm), vec!["ceph", "local-lvm"]);
+        let ct: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+            r#"{"rootfs":"local-zfs:subvol-200-disk-0,size=8G","mp0":"tank:subvol-200-disk-1,mp=/data",
+                "mp1":"/srv/bind,mp=/bind"}"#,
+        )
+        .unwrap();
+        assert_eq!(guest_storages(&ct), vec!["local-zfs", "tank"]);
     }
 }

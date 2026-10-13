@@ -8,6 +8,7 @@ export const JOB_KINDS: JobKind[] = [
   'restore',
   'restore_ct',
   'instant_recover',
+  'instant_disk',
   'files_list',
   'files_get',
   'restore_files',

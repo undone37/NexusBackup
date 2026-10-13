@@ -267,6 +267,7 @@ pub fn fake(root: &Path) -> (FakeNas, LocalFc, PathBuf) {
         recursive: true,
         sudo: false,
         zfs_sudo: false,
+        existing_prefix: Some("auto-".into()),
     };
     // the authorized_keys line, dequoted the way sshd does it
     let line = fc::authorized_keys(&fc, &tools, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest t@x", None).unwrap();

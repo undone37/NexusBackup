@@ -241,6 +241,33 @@ Limits:
 > **Status:** Lab-verified on PVE 9.2 (single node). Behaviour after a node reboot during instant recovery is
 > untested.
 
+## Instant disk recovery (one disk to an existing VM)
+
+When one disk is lost or damaged (a data volume, a deleted database disk), attach it from the backup to a running
+VM instead of restoring the whole VM:
+
+1. Open **Restore** on a `vm-` snapshot and choose **Attach one disk to a VM…**.
+2. Enter **Disk of the backup** (its slot in the backed-up VM, e.g. `scsi1`), **Target node** and **Attach to VM
+   (VMID)**: a VM that a protection group of the same tenant protects, on that node. Another tenant's VMs, or VMs
+   in no group, are refused.
+3. Optional: **As slot** (default: the first free `scsi` slot of the target VM) and **Then move to storage**.
+4. Click **Attach disk**.
+
+![Instant disk recovery dialog](images/snapshot-instant-disk.png)
+
+The disk is served exactly like an instant recovery: the node creates a qcow2 overlay whose backing file is the
+appliance's read-only export, and attaches it to the VM (hot-plugged if the VM runs; the guest sees a new disk).
+Guest writes go into the overlay. With **Then move to storage** the disk is moved there live and the appliance
+stops serving when the move is done. Without, the job keeps running and serving until you move the disk
+(`qm disk move <vmid> <slot> <storage> --delete 1`) or detach it and remove the unused entry. Cancelling the job
+stops serving: the guest's reads of that disk then fail, so move or detach it first.
+
+Limits: EFI and TPM state disks cannot be attached, nor disks that were excluded from the backup. The guest may
+need a rescan to see a hot-plugged disk. In vault mode the attach is a request that a second person approves.
+
+> **Status:** Implemented and tested against the scheduler and API; the overlay path is the one of instant recovery.
+> The lab check on PVE (hot-plug into a running VM, move, detach) is pending.
+
 ## Restore tests
 
 A backup is only as good as the restore. A **restore test** proves that a VM or container snapshot boots: the

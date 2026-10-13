@@ -2017,8 +2017,12 @@ mod forward;
 mod holds;
 /// Phase 22a interface-bound egress, nexus-net operations audit.
 mod network;
+/// Phase 22b source limits, VM identity, TrueNAS existing-snapshot references.
+mod limits;
 /// Phase 17d offsite in the UI (list, fetch back, attach an offsite copy).
 mod offsite_ui;
+/// Phase 22b restore priority.
+mod priority;
 /// Phase 25 restore tests and recovery plans.
 mod recovery;
 /// Phase 21d health check with repair (bad chunks, damaged snapshots, chunk_repair).

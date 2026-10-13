@@ -231,6 +231,17 @@ restore button, file browser on a `nas-` snapshot: 6/6, no CSP or console proble
 Fuzzing (`lab/fuzz/run.sh 600 1 truenas:hostile_stream`): 15 M executions of the diff, walk, tar and
 fill parsers on hostile input, no crash.
 
+## 7a. "Use existing snapshots" (Phase 22b)
+Source field `existing_snapshots: "<prefix>"` (`[A-Za-z0-9][A-Za-z0-9_-]{0,31}`, e.g. `auto-`): no snapshot is
+created or deleted. Per dataset the newest snapshot with the prefix (by name: TrueNAS' periodic naming sorts by
+time) is read; the reference for `zfs diff` is the snapshot the newest store snapshot was read from, which the
+connector reports per dataset (`result` → `snapshots[].meta.zfs_snapshot`) and the scheduler keeps in
+`snapshots.meta` and hands back as `references: {source: {time, snapshot}}` (used only if `time` equals the
+store's newest snapshot of that dataset and the snapshot still exists; else full read). The same newest snapshot as
+last time = dataset skipped ("no new snapshot"), not failed. The forced command accepts snapshot names
+`<prefix>[A-Za-z0-9_-]*` in addition to `nexus-<id>-<time>` (`fc::Fc::existing_prefix`, variable `E` in the
+script; the `authorized_keys` line changes, re-paste). Tests: `tests/fake_truenas.rs` `existing_snapshots_mode`.
+
 ## 8. Limitations and open points
 - **Needs a decision**: the privilege model (sudo for find/tar/realpath/zfs behind the forced command,
   §1). A forced-command escape would be root on TrueNAS; the command is small, tested and fuzzed, but
