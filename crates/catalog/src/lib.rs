@@ -602,6 +602,55 @@ ALTER TABLE backup_stats ADD COLUMN files_changed INTEGER;
 ALTER TABLE backup_stats ADD COLUMN files_deleted INTEGER;
 "#;
 
+/// v31 (Phase 21c, passkeys, docs/control-plane.md "Passkeys"): `passkeys`
+/// holds the WebAuthn credentials registered as a second factor: credential id
+/// (base64url, unique appliance-wide), COSE algorithm (-7 ES256, -8 EdDSA), the
+/// raw public key (uncompressed P-256 point or Ed25519 key), the relying party ID
+/// it was registered for and the signature counter. Purely additive: the
+/// previous release ignores the table (passkey users sign in with TOTP there).
+const SCHEMA_V31: &str = r#"
+CREATE TABLE passkeys (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  cred_id TEXT NOT NULL UNIQUE, name TEXT NOT NULL, alg INTEGER NOT NULL CHECK (alg IN (-7, -8)),
+  public_key BLOB NOT NULL, rp_id TEXT NOT NULL, sign_count INTEGER NOT NULL DEFAULT 0,
+  created INTEGER NOT NULL, last_used INTEGER);
+CREATE INDEX passkeys_user ON passkeys(user_id);
+"#;
+
+/// v29 (Phase 19a, docs/bmr.md): `rescue_sessions` — bare-metal recovery / P2V of a
+/// Linux agent's host. `id` is the rescue agent's temporary agent id; `lookup` the
+/// public lookup key of the one-time recovery token (`agent_proto::rescue_lookup`);
+/// `token_hash` its digest sealed to the scheduler (NULL once the rescue agent is
+/// enrolled); `state` issued → waiting (checked in) → running → done | failed |
+/// cancelled | expired; `host`/`port`/`disks` from the rescue console's check-in;
+/// `snapshot_time` the chosen snapshot; `p2v` the PVE VM parameters (NULL = bare
+/// metal). Purely additive: the previous release never reads it. (v30 is reserved; ordered before v31.)
+const SCHEMA_V29: &str = r#"
+CREATE TABLE rescue_sessions (
+    id            TEXT PRIMARY KEY,
+    tenant        TEXT NOT NULL,
+    agent_id      TEXT NOT NULL,
+    lookup        TEXT NOT NULL UNIQUE,
+    token_hash    TEXT,
+    token_expires INTEGER NOT NULL,
+    state         TEXT NOT NULL DEFAULT 'issued',
+    host          TEXT,
+    port          INTEGER,
+    disks         TEXT NOT NULL DEFAULT '[]',
+    checked_in    INTEGER,
+    cert_sha256   TEXT,
+    snapshot_time INTEGER,
+    reboot        INTEGER NOT NULL DEFAULT 1,
+    step          TEXT,
+    job_id        INTEGER,
+    p2v           TEXT,
+    message       TEXT,
+    created       INTEGER NOT NULL,
+    created_by    TEXT NOT NULL
+);
+CREATE INDEX rescue_sessions_agent ON rescue_sessions (agent_id);
+"#;
+
 /// v33 (Phase 21e, docs/malware-scan.md): the opt-in YARA scan. `yara_rules`
 /// (admin-supplied rule files, appliance-wide, no feed: name, text, sha256,
 /// uploader) and `snapshot_scans` (one row per finished `snapshot_scan` job:
@@ -625,7 +674,7 @@ const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
-    SCHEMA_V33,
+    SCHEMA_V29, SCHEMA_V31, SCHEMA_V33,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1355,6 +1404,78 @@ mod tests {
             })
             .unwrap();
         assert_eq!(n, 3);
+    }
+
+    /// v29 (rescue sessions) on top of the previous catalog: the table exists and
+    /// the lookup key is unique.
+    #[test]
+    fn migration_v29_rescue_sessions() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V29).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let ins = "INSERT INTO rescue_sessions (id, tenant, agent_id, lookup, token_expires, created, created_by) \
+                   VALUES (?1, 't', '0123456789abcdef', ?2, 1, 1, 'admin')";
+        conn.execute(ins, ["a", "l1"]).unwrap();
+        assert!(conn.execute(ins, ["b", "l1"]).is_err(), "lookup is unique");
+        let (state, disks, reboot): (String, String, bool) = conn
+            .query_row("SELECT state, disks, reboot FROM rescue_sessions", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!((state.as_str(), disks.as_str(), reboot), ("issued", "[]", true));
+    }
+
+    /// v31 (passkeys) on top of the previous catalog: the table starts empty,
+    /// credentials go when their user goes; the previous release still signs in.
+    #[test]
+    fn migration_v31_passkeys() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V31).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute(
+                "INSERT INTO users (name, password_hash, totp_secret, role, created) VALUES ('a', 'h', 's', 'admin', 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            conn.execute(
+                "INSERT INTO passkeys (user_id, cred_id, name, alg, public_key, rp_id, created) VALUES (1, 'x', 'k', -7, x'04', 'h', 1)",
+                [],
+            )
+            .unwrap();
+            assert!(conn
+                .execute(
+                    "INSERT INTO passkeys (user_id, cred_id, name, alg, public_key, rp_id, created) VALUES (1, 'y', 'k', -257, x'04', 'h', 1)",
+                    [],
+                )
+                .is_err());
+            conn.execute("DELETE FROM users", []).unwrap();
+            let n: i64 = conn
+                .query_row("SELECT COUNT(*) FROM passkeys", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0);
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        old.execute("UPDATE users SET last_login = 5", []).unwrap();
     }
 
     /// v26 (endpoint status) on top of the previous catalog: existing agents are

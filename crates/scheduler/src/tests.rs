@@ -1994,6 +1994,8 @@ fn inventory_jobs_and_auto_protect() {
 }
 /// Phase 14d account housekeeping and the management allow-list.
 mod accounts;
+/// Phase 19a bare-metal recovery and P2V jobs.
+mod bmr;
 /// Phase 21a file-level change signals, snapshot flags and the snapshot diff.
 mod changes;
 /// Phase 18: compliance clock keeper and the `clock_skew` alert.

@@ -376,6 +376,49 @@ written.
 > another host also against the real Linux agent; the VM lab run is pending. The Windows agent has been built and
 > unit-tested only. It has never run on Windows, so treat Windows restores as untested.
 
+## Bare-metal recovery (Linux hosts)
+
+Rebuilds a Linux host from a snapshot onto empty disks: after a disk failure, on new hardware, or as a new
+Proxmox VE VM. The appliance recreates the partitions, LVM volumes and file systems (with their original UUIDs),
+restores every file and reinstalls the boot loader. Details and limits: `docs/bmr.md`.
+
+![Bare-metal recovery](images/agents-bmr.png)
+
+**Before you need it:** the host's backup must cover the whole system (path `/` with **Include nested mounts**),
+and you need the rescue ISO `nexus-rescue-<version>.iso` from the release page (or built with
+`restore-vm/rescue/build.sh`) on a USB stick or as a virtual CD.
+
+1. **Agents** → the host's agent → **Bare-metal recovery** → **Issue recovery token** (admin or operator). The
+   token is shown once and is valid for 4 hours. Leave **Reboot when done** on unless you want to check the result
+   from the rescue console first.
+2. Boot the machine from the rescue ISO (in UEFI mode if the original booted UEFI; Secure Boot off).
+3. At the console: choose DHCP or a static address, enter the appliance address (as in your browser, e.g.
+   `nexus.example.com` or `192.0.2.10:8443`) and the token. Then pick the target disks — one per disk of the
+   original machine, in the same order (the web UI lists the original disks) — and type their names again to
+   confirm. Nothing is erased yet.
+4. The console checks in with the appliance. In the web UI the session changes to **waiting** and shows the
+   machine's address and disks. Pick the snapshot and click **Start recovery**. The disks you confirmed at the
+   console are erased now.
+5. Follow the progress (recreate disks → restore files → boot loader) in the session or in the job. When it is
+   done, the machine reboots into the restored system. SELinux systems relabel once and reboot again.
+
+The target disks must be at least as large as the original ones; the extra space stays unallocated. Not supported:
+encrypted (LUKS) volumes, software RAID (md) and ZFS — the recovery refuses them and says why; restore such
+hosts by installing a minimal system and using **Restore files to a host**.
+
+### Restore as PVE VM
+
+**Agents** → **Bare-metal recovery** → **Restore as PVE VM** creates a new VM on a Proxmox VE source of the tenant
+with one disk per original disk (same size), UEFI if the original booted UEFI, and boots it from the rescue ISO
+together with a small config disk that carries the appliance address and a one-time token. The recovery then runs
+without anyone at the console, and the VM boots the restored system. Upload the rescue ISO to an ISO storage of the
+cluster once and enter its volume (e.g. `local:iso/nexus-rescue-0.1.0.iso`). The VM network must reach the
+appliance's web address (DHCP), and the appliance must reach the VM on port 7444.
+
+> **Status:** tested end to end in QEMU (`lab/linux/bmr.sh`, `docs/bmr.md` "Lab"): a Debian 13 VM with LVM, a thin
+> pool and BIOS boot was recovered onto blank disks and booted with identical files. Not yet tested: a UEFI source
+> machine, real hardware, and "Restore as PVE VM" against a real Proxmox VE cluster.
+
 ## Plugin restores (PostgreSQL)
 
 Plugin snapshots offer the restores declared by the plugin in their **Restore** menu. Restores marked

@@ -17,11 +17,16 @@
 //! and, after the code from the new authenticator matched, clears the activation.
 //! Failures count toward the login rate limiter (per user and per IP) and are
 //! audited (`auth.activate_failed`); the TOTP step is consumed as at login.
+//!
+//! Passkeys (Phase 21c, crate::passkeys): `POST /auth/activate/passkey {name,
+//! code}` answers creation options; `complete` takes the result as `passkey`
+//! (optional, required for admins / security officers while the passkey policy
+//! is on: `passkey_required` in the `begin` answer).
 
 use crate::auth::{locked_out, record_failure, ClientIp};
 use crate::{ct_eq, sha256_hex, validate, ApiError, ApiResult, St, J};
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::Json;
 use catalog::rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
@@ -91,10 +96,16 @@ pub struct CompleteReq {
     code: String,
     password: String,
     totp: String,
+    #[serde(default)]
+    passkey: Option<crate::passkeys::Registration>,
+    #[serde(default)]
+    passkey_name: String,
 }
 
 struct Pending {
     id: i64,
+    /// TOTP is refused for this account later: a passkey must be registered
+    passkey_required: bool,
     stored: String,
     seed: String,
     last_step: i64,
@@ -132,7 +143,8 @@ fn check(st: &St, ip: &str, name: &str, code: &str) -> ApiResult<Pending> {
         st.cat
             .conn()
             .query_row(
-                "SELECT id, activation_hash, activation_expires, disabled, totp_secret, totp_last_step FROM users WHERE name = ?1",
+                "SELECT id, activation_hash, activation_expires, disabled, totp_secret, totp_last_step, role, auth
+                 FROM users WHERE name = ?1",
                 [name],
                 |r| {
                     Ok((
@@ -142,6 +154,7 @@ fn check(st: &St, ip: &str, name: &str, code: &str) -> ApiResult<Pending> {
                         r.get::<_, i64>(3)? != 0,
                         r.get::<_, String>(4)?,
                         r.get::<_, i64>(5)?,
+                        (r.get::<_, String>(6)?, r.get::<_, String>(7)?),
                     ))
                 },
             )
@@ -156,8 +169,9 @@ fn check(st: &St, ip: &str, name: &str, code: &str) -> ApiResult<Pending> {
         Some((_, Some(stored), ..)) if !code_matches(&stored, code) => Err("code"),
         Some((_, _, exp, ..)) if exp.unwrap_or(0) <= catalog::now() => Err("expired"),
         Some((_, _, _, true, ..)) => Err("disabled"),
-        Some((id, Some(stored), _, false, seed, last_step)) => Ok(Pending {
+        Some((id, Some(stored), _, false, seed, last_step, (role, auth))) => Ok(Pending {
             id,
+            passkey_required: crate::passkeys::required(&st.cat.conn(), &role, &auth)?,
             stored,
             seed,
             last_step,
@@ -193,7 +207,23 @@ pub async fn begin(State(st): State<St>, ClientIp(ip): ClientIp, J(r): J<BeginRe
         &format!("user/{}", r.name),
         json!({"ip": ip}),
     )?;
-    Ok(Json(json!({"name": r.name, "totp_uri": uri, "totp_secret": secret})))
+    Ok(Json(
+        json!({"name": r.name, "totp_uri": uri, "totp_secret": secret, "passkey_required": p.passkey_required}),
+    ))
+}
+
+/// Creation options for a passkey registered during activation.
+pub async fn passkey_options(
+    State(st): State<St>,
+    ClientIp(ip): ClientIp,
+    headers: HeaderMap,
+    uri: Uri,
+    J(r): J<BeginReq>,
+) -> ApiResult<Json<Value>> {
+    let p = check(&st, &ip, &r.name, &r.code)?;
+    let c = st.cat.conn();
+    let rp = crate::passkeys::rp_id(&c, &headers, &uri)?;
+    Ok(Json(crate::passkeys::creation_options(&c, p.id, &r.name, &rp)?))
 }
 
 /// Sets the password, proves the authenticator and activates the account.
@@ -202,6 +232,12 @@ pub async fn complete(State(st): State<St>, ClientIp(ip): ClientIp, J(r): J<Comp
     if r.password.len() > 1024 || r.password.chars().count() < 12 {
         return Err(ApiError::bad("password: at least 12 and at most 1024 characters"));
     }
+    if p.passkey_required && r.passkey.is_none() {
+        return Err(ApiError::bad(
+            "a passkey is required for this role: register one in this step (TOTP alone is not accepted)",
+        ));
+    }
+    let passkey_name = crate::passkeys::check_name(&r.passkey_name)?;
     let step = if p.seed.is_empty() {
         None
     } else {
@@ -228,6 +264,24 @@ pub async fn complete(State(st): State<St>, ClientIp(ip): ClientIp, J(r): J<Comp
     let Some(step) = step.filter(|s| *s > p.last_step) else {
         return fail("totp");
     };
+    // after the TOTP check: a wrong code does not use up the passkey challenge
+    let passkey = match &r.passkey {
+        Some(reg) => match crate::passkeys::verify_registration(reg, p.id) {
+            Ok(k) => Some(k),
+            Err(reason) => {
+                record_failure(
+                    &st,
+                    ("anonymous", "auth.activate_failed", &target),
+                    (&ukey, &ikey, &ip),
+                    json!({"ip": ip, "reason": format!("passkey: {reason}")}),
+                )?;
+                return Err(ApiError::bad(format!(
+                    "passkey not accepted ({reason}): register it again"
+                )));
+            }
+        },
+        None => None,
+    };
     let pw = r.password;
     let hash = tokio::task::spawn_blocking(move || catalog::auth::hash_password(&pw))
         .await
@@ -243,7 +297,21 @@ pub async fn complete(State(st): State<St>, ClientIp(ip): ClientIp, J(r): J<Comp
         return fail("totp replay or concurrent activation");
     }
     st.limiter.lock().unwrap().clear(&ukey);
-    st.audit(&r.name, "user.activate", &target, json!({"ip": ip}))?;
+    if let Some(k) = &passkey {
+        let id = crate::passkeys::store(&st.cat.conn(), p.id, &passkey_name, k)?;
+        st.audit(
+            &r.name,
+            "passkey.register",
+            &target,
+            json!({"passkey": id, "name": passkey_name, "activation": true}),
+        )?;
+    }
+    st.audit(
+        &r.name,
+        "user.activate",
+        &target,
+        json!({"ip": ip, "passkey": passkey.is_some()}),
+    )?;
     Ok(Json(json!({"ok": true})))
 }
 

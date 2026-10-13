@@ -65,6 +65,18 @@ pub fn agent_token_location(id: &str, host: &str, port: u16) -> String {
     format!("agent/{id}/token@{host}:{port}")
 }
 
+/// Location of a rescue session's sealed recovery token digest
+/// (`rescue_sessions.token_hash`, docs/bmr.md), bound to the session's original agent.
+pub fn rescue_token_location(id: &str, agent: &str) -> String {
+    format!("rescue/{id}/token@agent/{agent}")
+}
+
+/// Location of the plaintext recovery token of a P2V session (written onto the
+/// config disk of the new VM by the scheduler; `rescue_sessions.p2v` `token`).
+pub fn rescue_p2v_token_location(id: &str, agent: &str) -> String {
+    format!("rescue/{id}/p2v-token@agent/{agent}")
+}
+
 /// Location of a replication peer's enrollment token digest on the primary
 /// (`replication_peers.token_hash`, sealed to nexus-replicad, docs/replication.md).
 pub fn replication_peer_token_location(id: &str) -> String {

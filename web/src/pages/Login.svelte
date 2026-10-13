@@ -5,9 +5,11 @@
   import { t } from '../lib/i18n';
   import { href, route } from '../lib/router.svelte';
   import type { LoginResponse, OidcPublic } from '../lib/types';
+  import { getPasskey, passkeysSupported } from '../lib/passkey';
   import Logo from '../components/Logo.svelte';
   import AuthHero from '../components/AuthHero.svelte';
   import IconKey from '@lucide/svelte/icons/key-round';
+  import IconFingerprint from '@lucide/svelte/icons/fingerprint';
 
   let name = $state('');
   let password = $state('');
@@ -33,10 +35,28 @@
 
   async function submit(e: SubmitEvent) {
     e.preventDefault();
+    if (!totp.trim()) {
+      error = t.login.totpMissing;
+      return;
+    }
+    await signIn(async () => ({ totp }));
+  }
+
+  // Phase 21c: password + passkey instead of the authenticator code
+  async function withPasskey(e: MouseEvent) {
+    const form = (e.currentTarget as HTMLButtonElement).form;
+    if (form && !form.reportValidity()) return;
+    await signIn(async () => {
+      const o = await post<Record<string, any>>('/auth/login/passkey', { name });
+      return { passkey: await getPasskey(o.data) };
+    });
+  }
+
+  async function signIn(second: () => Promise<Record<string, unknown>>) {
     busy = true;
     error = null;
     try {
-      const r = await post<LoginResponse>('/auth/login', { name, password, totp });
+      const r = await post<LoginResponse>('/auth/login', { name, password, ...(await second()) });
       if (!r.quorum) setSession(r.data.user, r.data.csrf);
     } catch (err) {
       error = errText(err);
@@ -78,12 +98,16 @@
           autocomplete="one-time-code"
           pattern={'[0-9]{6}'}
           maxlength="6"
-          required
           aria-describedby="l-totp-hint"
         />
         <div class="hint" id="l-totp-hint">{t.login.totpHint}</div>
       </div>
       <button class="primary" type="submit" disabled={busy}>{busy ? t.login.busy : t.login.submit}</button>
+      {#if passkeysSupported()}
+        <button class="passkey" type="button" disabled={busy} onclick={withPasskey}
+          ><IconFingerprint aria-hidden="true" />{t.passkeys.signIn}</button
+        >
+      {/if}
       <p class="alt muted">{t.login.activateQ} <a href={href('/activate')}>{t.login.activateLink}</a></p>
     </form>
   </div>

@@ -1,0 +1,52 @@
+{
+   "filesystems": [
+      {
+         "target": "/sys",
+         "source": "sysfs",
+         "fstype": "sysfs",
+         "options": "rw"
+      },
+      {
+         "target": "/",
+         "source": "/dev/mapper/vg0-root",
+         "fstype": "ext4",
+         "options": "rw,relatime,errors=remount-ro"
+      },
+      {
+         "target": "/boot/efi",
+         "source": "/dev/vda15",
+         "fstype": "vfat",
+         "options": "rw,relatime,fmask=0077"
+      },
+      {
+         "target": "/var/lib/postgresql",
+         "source": "/dev/mapper/vgdata-data",
+         "fstype": "ext4",
+         "options": "rw,relatime"
+      },
+      {
+         "target": "/srv/xfs",
+         "source": "/dev/mapper/vgdata-xfs",
+         "fstype": "xfs",
+         "options": "rw,relatime"
+      },
+      {
+         "target": "/run/nexus-agent/7/0",
+         "source": "/dev/mapper/vg0-nexus--snap--7--0",
+         "fstype": "ext4",
+         "options": "ro"
+      },
+      {
+         "target": "/media/usb",
+         "source": "/dev/sdc",
+         "fstype": "vfat",
+         "options": "rw"
+      },
+      {
+         "target": "/tmp",
+         "source": "tmpfs",
+         "fstype": "tmpfs",
+         "options": "rw"
+      }
+   ]
+}

@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+agent-proto = { path = "../agent-proto" }
 anyhow = "1"
 chunkstore = { path = "../chunkstore" }
 keyd = { path = "../keyd" }

@@ -671,6 +671,14 @@ async function main() {
       await shot('agent-endpoint');
       await closeDialogs();
     }],
+    // Phase 19a: bare-metal recovery of web01, whose rescue console checked in (seeded session "waiting")
+    ['agents-bmr', async () => {
+      await go('/agents');
+      await ev(`$rowClick('web01', 'Bare-metal recovery'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] select[id^="bmr-snap-"]')`, 'recovery dialog with snapshot picker');
+      await shot('agents-bmr', { height: 1500 });
+      await closeDialogs();
+    }],
     // Phase 24d: fleet secrets, agents found by fleet scans, CSV bulk enrollment
     ['agents-fleet', async () => {
       await go('/agents?tab=fleet');
@@ -876,6 +884,21 @@ async function main() {
       await go('/users');
       await ev(`[...document.querySelectorAll('section.card')].pop()?.scrollIntoView(); return true;`);
       await shot('users-tokens', { scrolled: true });
+    }],
+    // Phase 21c: passkeys (My account, the add dialog, Settings → Security); the browser's own
+    // passkey prompt cannot be captured (the mock answers without it)
+    ['passkeys', async () => {
+      await go('/account');
+      await ev(`[...document.querySelectorAll('section.card h2')].find((h) => h.textContent === 'Passkeys')?.scrollIntoView(); return true;`);
+      await shot('account-passkeys', { scrolled: true });
+      await ev(`$click('Add passkey'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input[type=password]')`, 'passkey dialog');
+      await ev(`$fill('dialog[open] input[maxlength="64"]', 'Security key (desk)'); $fill('dialog[open] input[type=password]', 'nexus'); return true;`);
+      await shot('passkey-add', { height: 1000 });
+      await closeDialogs();
+      await go('/settings?tab=security');
+      await ev(`document.querySelector('#sec-pk')?.closest('section').scrollIntoView({ block: 'center' }); return true;`);
+      await shot('settings-passkeys', { scrolled: true });
     }],
     ['certificate', async () => {
       await go('/settings?tab=certificate');

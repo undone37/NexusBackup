@@ -1,0 +1,98 @@
+{
+  "report": [
+    {
+      "lv": [
+        {
+          "lv_name": "root",
+          "lv_uuid": "root-uuid",
+          "lv_size": "9663676416",
+          "segtype": "linear",
+          "pool_lv": "",
+          "vg_name": "vg0",
+          "lv_dm_path": "/dev/mapper/vg0-root",
+          "lv_metadata_size": ""
+        },
+        {
+          "lv_name": "swap",
+          "lv_uuid": "swap-uuid",
+          "lv_size": "1073741824",
+          "segtype": "linear",
+          "pool_lv": "",
+          "vg_name": "vg0",
+          "lv_dm_path": "/dev/mapper/vg0-swap",
+          "lv_metadata_size": ""
+        },
+        {
+          "lv_name": "nexus-snap-7-0",
+          "lv_uuid": "nexus-snap-7-0-uuid",
+          "lv_size": "1073741824",
+          "segtype": "snapshot",
+          "pool_lv": "",
+          "vg_name": "vg0",
+          "lv_dm_path": "/dev/mapper/vg0-nexus--snap--7--0",
+          "lv_metadata_size": ""
+        },
+        {
+          "lv_name": "data",
+          "lv_uuid": "data-uuid",
+          "lv_size": "2147483648",
+          "segtype": "linear",
+          "pool_lv": "",
+          "vg_name": "vgdata",
+          "lv_dm_path": "/dev/mapper/vgdata-data",
+          "lv_metadata_size": ""
+        },
+        {
+          "lv_name": "pool",
+          "lv_uuid": "pool-uuid",
+          "lv_size": "4294967296",
+          "segtype": "thin-pool",
+          "pool_lv": "",
+          "vg_name": "vgdata",
+          "lv_dm_path": "/dev/mapper/vgdata-pool",
+          "lv_metadata_size": "4194304"
+        },
+        {
+          "lv_name": "[pool_tdata]",
+          "lv_uuid": "[pool_tdata]-uuid",
+          "lv_size": "4294967296",
+          "segtype": "linear",
+          "pool_lv": "",
+          "vg_name": "vgdata",
+          "lv_dm_path": "",
+          "lv_metadata_size": ""
+        },
+        {
+          "lv_name": "[pool_tmeta]",
+          "lv_uuid": "[pool_tmeta]-uuid",
+          "lv_size": "4194304",
+          "segtype": "linear",
+          "pool_lv": "",
+          "vg_name": "vgdata",
+          "lv_dm_path": "",
+          "lv_metadata_size": ""
+        },
+        {
+          "lv_name": "[lvol0_pmspare]",
+          "lv_uuid": "[lvol0_pmspare]-uuid",
+          "lv_size": "4194304",
+          "segtype": "linear",
+          "pool_lv": "",
+          "vg_name": "vgdata",
+          "lv_dm_path": "",
+          "lv_metadata_size": ""
+        },
+        {
+          "lv_name": "xfs",
+          "lv_uuid": "xfs-uuid",
+          "lv_size": "3221225472",
+          "segtype": "thin",
+          "pool_lv": "pool",
+          "vg_name": "vgdata",
+          "lv_dm_path": "/dev/mapper/vgdata-xfs",
+          "lv_metadata_size": ""
+        }
+      ]
+    }
+  ]
+}

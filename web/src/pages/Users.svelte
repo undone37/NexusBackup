@@ -6,6 +6,7 @@
   import { session } from '../lib/session.svelte';
   import { ROLES, TENANT_ROLES } from '../lib/roles';
   import { fmtAgo, fmtTime } from '../lib/format';
+  import { secondFactor } from '../lib/passkey';
   import { t } from '../lib/i18n';
   import type { Activation, Role, Tenant, User } from '../lib/types';
   import Modal from '../components/Modal.svelte';
@@ -74,9 +75,10 @@
     }
   }
   // Re-authentication of the acting user: every password / authenticator change
-  // (own or another user's) needs the current password and a fresh TOTP code.
+  // (own or another user's) needs the current password and a fresh TOTP code (or a passkey,
+  // Phase 21c: an empty code field means "confirm with a passkey").
   let re = $state({ password: '', totp: '' });
-  const reauth = () => ({ current_password: re.password, current_totp: re.totp.trim() });
+  const reauth = async () => ({ current_password: re.password, current_totp: await secondFactor(re.totp) });
   let resetFor: User | null = $state(null);
   let resetOpen = $state(false);
   const privileged = $derived(f.role === 'admin' || f.role === 'security_officer');
@@ -124,8 +126,12 @@
       const body: Record<string, unknown> = isSso(editing) ? { disabled: f.disabled } : { role: f.role, tenant, disabled: f.disabled };
       if (f.canDownload !== editing.can_download) body.can_download = f.canDownload;
       if (tsOf(f.expires) !== (editing.expires ?? null)) body.expires = tsOf(f.expires);
-      if (f.password && isSelf(editing)) Object.assign(body, { password: f.password }, reauth());
-      const r = await act(put<UserResp>(`/users/${editing.id}`, body), t.saved);
+      const id = editing.id;
+      const extra = f.password && isSelf(editing) ? reauth().then((a) => ({ password: f.password, ...a })) : Promise.resolve({});
+      const r = await act(
+        extra.then((x) => put<UserResp>(`/users/${id}`, { ...body, ...x })),
+        t.saved,
+      );
       if (!r) return;
       open = false;
     }
@@ -147,7 +153,10 @@
     e.preventDefault();
     const x = resetFor;
     if (!x) return;
-    const r = await act(put<UserResp>(`/users/${x.id}`, { reset_totp: true, ...reauth() }), t.saved);
+    const r = await act(
+      reauth().then((a) => put<UserResp>(`/users/${x.id}`, { reset_totp: true, ...a })),
+      t.saved,
+    );
     re = { password: '', totp: '' };
     if (!r) return;
     resetOpen = false;
@@ -164,7 +173,10 @@
     e.preventDefault();
     const x = actFor;
     if (!x) return;
-    const r = await act(put<UserResp>(`/users/${x.id}`, { new_activation: true, ...reauth() }), t.saved);
+    const r = await act(
+      reauth().then((a) => put<UserResp>(`/users/${x.id}`, { new_activation: true, ...a })),
+      t.saved,
+    );
     re = { password: '', totp: '' };
     if (!r) return;
     actOpen = false;
@@ -345,12 +357,13 @@
       <input
         id="{id}-cur-totp"
         bind:value={re.totp}
-        required
         inputmode="numeric"
         pattern={'[0-9]{6}'}
         maxlength="6"
         autocomplete="one-time-code"
+        aria-describedby="{id}-cur-totp-hint"
       />
+      <div class="hint" id="{id}-cur-totp-hint">{t.passkeys.totpOrPasskey}</div>
     </div>
   </div>
 {/snippet}
