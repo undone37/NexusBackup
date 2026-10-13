@@ -156,13 +156,27 @@ fn file_changes_flag_and_diff() {
         .iter()
         .map(|x| x["path"].as_str().unwrap())
         .collect();
-    assert_eq!(paths, ["docs/f010.docx", "docs/f011.docx", "docs/f012.docx", "docs/f013.docx", "docs/f014.docx"]);
+    assert_eq!(
+        paths,
+        [
+            "docs/f010.docx",
+            "docs/f011.docx",
+            "docs/f012.docx",
+            "docs/f013.docx",
+            "docs/f014.docx"
+        ]
+    );
     // default base = the previous snapshot
     let (_, r) = run(&mut s, "snapshot_diff", "t1", json!({"source": "host-a1", "time": 2}));
     assert_eq!((r["base"].as_u64(), r["total"].as_u64()), (Some(1), Some(2)));
     // another tenant's store has no such snapshot; bad parameters fail
     store(&e, "t2");
-    let (st, _) = run(&mut s, "snapshot_diff", "t2", json!({"source": "host-a1", "time": 3, "base": 1}));
+    let (st, _) = run(
+        &mut s,
+        "snapshot_diff",
+        "t2",
+        json!({"source": "host-a1", "time": 3, "base": 1}),
+    );
     assert_eq!(st, "failed");
     for bad in [
         json!({"source": "host-a1", "time": 3, "base": 3}),
@@ -181,11 +195,7 @@ fn file_changes_flag_and_diff() {
 fn changes_follow_backups() {
     let e = env(1);
     let s = sched(&e);
-    let log = format!(
-        "{}{}",
-        stats_line("host-a1", 5, 1, 1),
-        stats_line("vm-100", 5, 1, 1)
-    );
+    let log = format!("{}{}", stats_line("host-a1", 5, 1, 1), stats_line("vm-100", 5, 1, 1));
     s.queue_changes_after_backup("t1", &log).unwrap();
     let jobs: Vec<String> =
         s.db.conn()

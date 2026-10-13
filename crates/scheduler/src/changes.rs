@@ -125,7 +125,11 @@ fn ext(path: &str) -> Option<String> {
 pub fn signals(base: &NameIndex, cur: &NameIndex, notes: &[Glob]) -> Value {
     let ch = diff(base, cur);
     let count = |c: &str| ch.iter().filter(|x| x.change == c).count() as u64;
-    let old_exts: HashSet<String> = base.iter().filter(|e| e.3 != KIND_DIR).filter_map(|e| ext(e.0)).collect();
+    let old_exts: HashSet<String> = base
+        .iter()
+        .filter(|e| e.3 != KIND_DIR)
+        .filter_map(|e| ext(e.0))
+        .collect();
     let added: Vec<&Change> = ch.iter().filter(|x| x.change == "added").collect();
     let mut new_exts: HashMap<String, u64> = HashMap::new();
     for c in &added {
@@ -262,7 +266,11 @@ impl Scheduler {
             }))));
             return Ok(plan);
         }
-        let base = p.get("base").filter(|b| !b.is_null()).map(|_| num(p, "base")).transpose()?;
+        let base = p
+            .get("base")
+            .filter(|b| !b.is_null())
+            .map(|_| num(p, "base"))
+            .transpose()?;
         if base.is_some_and(|b| b >= time) {
             bail!("base: an earlier snapshot than time");
         }
@@ -439,7 +447,10 @@ mod tests {
         day[0].1 = 11;
         day.push(("d/new.docx", 1, 2));
         let r = signals(&base, &idx(&day), &notes);
-        assert_eq!((r["added"].as_u64(), r["changed"].as_u64(), r["deleted"].as_u64()), (Some(1), Some(1), Some(0)));
+        assert_eq!(
+            (r["added"].as_u64(), r["changed"].as_u64(), r["deleted"].as_u64()),
+            (Some(1), Some(1), Some(0))
+        );
         assert_eq!(finding(&r), None);
         // a note dropped into a folder
         day.push(("d/HOW_TO_DECRYPT.txt", 1, 2));
@@ -451,7 +462,10 @@ mod tests {
         after.extend(enc.iter().map(|p| (p.as_str(), 10, 3)));
         let r = signals(&base, &idx(&after), &notes);
         let why = finding(&r).unwrap();
-        assert!(why.contains("mass rename: 150 of 200 files deleted, 150 added") && why.contains(".lockbit"), "{why}");
+        assert!(
+            why.contains("mass rename: 150 of 200 files deleted, 150 added") && why.contains(".lockbit"),
+            "{why}"
+        );
         // a clean-up (deletions without new extensions) is no rename
         let r = signals(&base, &idx(&b[150..]), &notes);
         assert_eq!(finding(&r), None);

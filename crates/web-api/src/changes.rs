@@ -105,7 +105,10 @@ pub async fn diff(State(st): State<St>, ctx: Ctx, J(r): J<DiffReq>) -> ApiResult
     if r.base.is_some_and(|b| b >= r.time) {
         return Err(ApiError::bad("base: an earlier snapshot than time"));
     }
-    if r.change.as_deref().is_some_and(|c| !["added", "changed", "deleted"].contains(&c)) {
+    if r.change
+        .as_deref()
+        .is_some_and(|c| !["added", "changed", "deleted"].contains(&c))
+    {
         return Err(ApiError::bad("change: added, changed or deleted"));
     }
     if !(1..=DIFF_MAX_LIMIT).contains(&r.limit) || r.offset > 1 << 32 {

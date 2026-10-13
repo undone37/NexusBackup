@@ -158,7 +158,6 @@ impl T {
     }
 }
 
-
 fn seed(t: &T) {
     t.st.cat
         .conn()
@@ -184,36 +183,78 @@ async fn anomaly_flag_listed_and_cleared_by_security_officer() {
     seed(&t);
     let (alice, sam, tina) = (t.login("alice").await, t.login("sam").await, t.login("tina").await);
     let r = t.get("/api/v1/snapshots?tenant=acme", &tina).await;
-    let s2 = r.body.as_array().unwrap().iter().find(|s| s["time"] == 2).unwrap().clone();
+    let s2 = r
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["time"] == 2)
+        .unwrap()
+        .clone();
     assert_eq!(s2["anomalous"], true);
     assert_eq!(s2["anomaly"]["reason"], "mass rename: 150 of 200 files deleted");
-    let s1 = r.body.as_array().unwrap().iter().find(|s| s["time"] == 1).unwrap().clone();
+    let s1 = r
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["time"] == 1)
+        .unwrap()
+        .clone();
     assert_eq!((&s1["anomalous"], &s1["anomaly"]), (&json!(false), &Value::Null));
 
     let url = "/api/v1/snapshots/acme/share-3/2/anomaly/clear";
     for s in [&alice, &tina] {
-        assert_eq!(t.post(url, s, json!({"note": "ok"})).await.status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            t.post(url, s, json!({"note": "ok"})).await.status,
+            StatusCode::FORBIDDEN
+        );
     }
-    assert_eq!(t.post(url, &sam, json!({"note": " "})).await.status, StatusCode::BAD_REQUEST);
     assert_eq!(
-        t.post("/api/v1/snapshots/acme/share-3/1/anomaly/clear", &sam, json!({"note": "x"}))
-            .await
-            .status,
+        t.post(url, &sam, json!({"note": " "})).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        t.post(
+            "/api/v1/snapshots/acme/share-3/1/anomaly/clear",
+            &sam,
+            json!({"note": "x"})
+        )
+        .await
+        .status,
         StatusCode::CONFLICT
     );
     assert_eq!(
-        t.post("/api/v1/snapshots/acme/share-3/9/anomaly/clear", &sam, json!({"note": "x"}))
-            .await
-            .status,
+        t.post(
+            "/api/v1/snapshots/acme/share-3/9/anomaly/clear",
+            &sam,
+            json!({"note": "x"})
+        )
+        .await
+        .status,
         StatusCode::NOT_FOUND
     );
     let r = t
-        .post(url, &sam, json!({"note": "planned migration to .docx.v2, checked with the owner"}))
+        .post(
+            url,
+            &sam,
+            json!({"note": "planned migration to .docx.v2, checked with the owner"}),
+        )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
-    assert_eq!(t.post(url, &sam, json!({"note": "again"})).await.status, StatusCode::CONFLICT);
+    assert_eq!(
+        t.post(url, &sam, json!({"note": "again"})).await.status,
+        StatusCode::CONFLICT
+    );
     let r = t.get("/api/v1/snapshots?tenant=acme&source=share-3", &alice).await;
-    let s2 = r.body.as_array().unwrap().iter().find(|s| s["time"] == 2).unwrap().clone();
+    let s2 = r
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["time"] == 2)
+        .unwrap()
+        .clone();
     assert_eq!(s2["anomalous"], false);
     assert_eq!(s2["anomaly"]["cleared_by"], "sam");
     assert_eq!(s2["anomaly"]["reason"], "mass rename: 150 of 200 files deleted");
@@ -246,19 +287,47 @@ async fn diff_queues_a_job() {
         assert_eq!(job.body["params"]["change"], "deleted");
     }
     for s in [&vic, &sam] {
-        assert_eq!(t.post("/api/v1/snapshots/diff", s, q.clone()).await.status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            t.post("/api/v1/snapshots/diff", s, q.clone()).await.status,
+            StatusCode::FORBIDDEN
+        );
     }
     let g = json!({"tenant": "globex", "source": "vm-200", "time": 5});
-    assert_eq!(t.post("/api/v1/snapshots/diff", &tina, g).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        t.post("/api/v1/snapshots/diff", &tina, g).await.status,
+        StatusCode::FORBIDDEN
+    );
     for (bad, code) in [
-        (json!({"tenant": "acme", "source": "share-3", "time": 2, "base": 2}), StatusCode::BAD_REQUEST),
-        (json!({"tenant": "acme", "source": "share-3", "time": 2, "change": "x"}), StatusCode::BAD_REQUEST),
-        (json!({"tenant": "acme", "source": "share-3", "time": 2, "limit": 0}), StatusCode::BAD_REQUEST),
-        (json!({"tenant": "acme", "source": "../x", "time": 2}), StatusCode::BAD_REQUEST),
-        (json!({"tenant": "acme", "source": "share-3", "time": 3}), StatusCode::NOT_FOUND),
-        (json!({"tenant": "acme", "source": "share-3", "time": 2, "base": 0}), StatusCode::NOT_FOUND),
+        (
+            json!({"tenant": "acme", "source": "share-3", "time": 2, "base": 2}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"tenant": "acme", "source": "share-3", "time": 2, "change": "x"}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"tenant": "acme", "source": "share-3", "time": 2, "limit": 0}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"tenant": "acme", "source": "../x", "time": 2}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"tenant": "acme", "source": "share-3", "time": 3}),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            json!({"tenant": "acme", "source": "share-3", "time": 2, "base": 0}),
+            StatusCode::NOT_FOUND,
+        ),
     ] {
-        assert_eq!(t.post("/api/v1/snapshots/diff", &otto, bad.clone()).await.status, code, "{bad}");
+        assert_eq!(
+            t.post("/api/v1/snapshots/diff", &otto, bad.clone()).await.status,
+            code,
+            "{bad}"
+        );
     }
     let n: i64 = t.one("SELECT COUNT(*) FROM audit WHERE action = 'snapshot.diff'");
     assert_eq!(n, 2);
@@ -310,9 +379,15 @@ async fn ransom_note_patterns_in_the_setting() {
     with["ransom_notes"] = json!(["*.crypt-note"]);
     let r = t.put("/api/v1/settings/anomaly", &alice, with.clone()).await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
-    assert_eq!(t.get("/api/v1/settings/anomaly", &alice).await.body["ransom_notes"], json!(["*.crypt-note"]));
+    assert_eq!(
+        t.get("/api/v1/settings/anomaly", &alice).await.body["ransom_notes"],
+        json!(["*.crypt-note"])
+    );
     let r = t.put("/api/v1/settings/anomaly", &alice, base).await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
     with["ransom_notes"] = json!(["a/b"]);
-    assert_eq!(t.put("/api/v1/settings/anomaly", &alice, with).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        t.put("/api/v1/settings/anomaly", &alice, with).await.status,
+        StatusCode::BAD_REQUEST
+    );
 }

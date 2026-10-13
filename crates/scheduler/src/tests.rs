@@ -1976,6 +1976,8 @@ fn inventory_jobs_and_auto_protect() {
 }
 /// Phase 14d account housekeeping and the management allow-list.
 mod accounts;
+/// Phase 21a file-level change signals, snapshot flags and the snapshot diff.
+mod changes;
 /// Phase 18: compliance clock keeper and the `clock_skew` alert.
 mod clock;
 /// Phase 14d certificate / secret / token expiry alerts.
@@ -1997,8 +1999,6 @@ mod restore_files;
 mod runctl;
 /// Phase 15g file search and name index jobs.
 mod search;
-/// Phase 21a file-level change signals, snapshot flags and the snapshot diff.
-mod changes;
 /// Phase 17f tenant deactivation.
 mod tenants;
 /// Phase 17a/b bandwidth and sync windows, close vault.
