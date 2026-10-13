@@ -86,13 +86,15 @@ limits() {
 
 identity() {
 	login admin "$ADMIN_PW" "$ADMIN_TOTP"
-	pve "qm set 100 --vmgenid 1 && qm set 100 --smbios1 uuid=\$(cat /proc/sys/kernel/random/uuid)"
+	# a running VM keeps vmgenid/smbios1 changes pending until it restarts (the backup reads the
+	# active config): stop it so the new identity is the active one
+	pve "qm stop 100 >/dev/null 2>&1 || true; qm set 100 --vmgenid 1 && qm set 100 --smbios1 uuid=\$(cat /proc/sys/kernel/random/uuid)"
 	pve "qm config 100 | grep -E '^(vmgenid|smbios1)'"
 	local j
 	j=$(backup_now)
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "backup after the identity change"
 	api admin GET '/alerts?state=open' | jq -e 'any(.[]; .kind == "vmid_reused" and (.key | endswith("/vm-100")))' >/dev/null ||
-		die "no vmid_reused alert"
+		die "no vmid_reused alert; alerts: $(api admin GET '/alerts?state=open' | jq -c '[.[] | {kind, key}]'); identity: $(api admin GET '/snapshots?tenant=lab&source=vm-100' | jq -c 'max_by(.time).meta.identity')"
 	api admin GET '/snapshots?tenant=lab&source=vm-100' | jq -e 'max_by(.time).meta.identity | .changed == true and .previous.vmgenid != null' >/dev/null ||
 		die "snapshot meta.identity not recorded"
 	log "identity change detected"

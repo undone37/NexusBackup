@@ -41,7 +41,8 @@ apienv() {
 	login so "$SO_PW" "$SO_TOTP"
 }
 
-testbox() { "$TB" start; }
+# fresh receiver logs: seqs restart with every appliance install, old lines would satisfy wait_all
+testbox() { "$TB" start && eval "$("$TB" env)" && : >"$FWD_SYSLOG_LOG" && : >"$FWD_HTTPS_LOG"; }
 
 # the forwarding setting as the lab uses it (enabled = $1 for the syslog sink)
 settings() {
@@ -103,8 +104,8 @@ forward() {
 	head=$(head_seq)
 	wait_all "$head"
 	# "seq hash" of every entry: on the appliance, at rsyslog, at the HTTPS sink
-	api admin GET "/audit?after=0&limit=1000" | jq -r '.[] | "\(.seq) \(.hash)"' | sort -u >"$S/hashes"
-	sed -n 's/.* audit \[nexus@32473 seq="\([0-9]*\)" hash="\([0-9a-f]*\)".*/\1 \2/p' "$FWD_SYSLOG_LOG" | sort -u >"$S/syslog-hashes"
+	api admin GET "/audit?after=0&limit=1000" | jq -r --argjson h "$head" '.[] | select(.seq <= $h) | "\(.seq) \(.hash)"' | sort -u >"$S/hashes"
+	sed -n 's/.* audit \[nexus@32473 seq="\([0-9]*\)"[^]]* hash="\([0-9a-f]*\)".*/\1 \2/p' "$FWD_SYSLOG_LOG" | sort -u >"$S/syslog-hashes"
 	jq -r '.[] | select(.type == "audit") | "\(.seq) \(.hash)"' "$FWD_HTTPS_LOG" | sort -u >"$S/https-hashes"
 	for f in syslog-hashes https-hashes; do
 		[ -z "$(comm -23 "$S/hashes" "$S/$f")" ] || die "$f: missing or different: $(comm -23 "$S/hashes" "$S/$f" | head -n 3)"
