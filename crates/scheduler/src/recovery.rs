@@ -210,7 +210,8 @@ impl Scheduler {
     /// Group schedules: the newest local snapshot of every guest once the
     /// schedule's days have passed since its last run.
     pub(crate) fn queue_restore_tests(&mut self, now: i64) -> Result<()> {
-        let rows: Vec<(i64, i64, String, String, Option<String>, String, Option<i64>)> = {
+        type Row = (i64, i64, String, String, Option<String>, String, Option<i64>);
+        let rows: Vec<Row> = {
             let c = self.db.conn();
             let mut st = c.prepare(
                 "SELECT group_id, every_days, node, storage, bridge, checks, last_run FROM restore_test_schedules",

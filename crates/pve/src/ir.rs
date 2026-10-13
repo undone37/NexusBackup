@@ -58,7 +58,7 @@ pub(crate) fn is_net_key(k: &str) -> bool {
 pub fn isolate_net(v: &str, bridge: Option<&str>) -> String {
     let mut opts: Vec<String> = v
         .split(',')
-        .filter(|o| !o.starts_with("link_down=") && !(bridge.is_some() && o.starts_with("tag=")))
+        .filter(|o| !(o.starts_with("link_down=") || (bridge.is_some() && o.starts_with("tag="))))
         .map(|o| match (bridge, o.strip_prefix("bridge=")) {
             (Some(b), Some(_)) => format!("bridge={b}"),
             _ => o.to_owned(),
