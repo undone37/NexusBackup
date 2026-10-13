@@ -17,12 +17,16 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 dir=$root/target/pg-testbox
 PG=${PG:-17}
-PORT=${PORT:-15432}
-ALT_PORT=${ALT_PORT:-15433}
-SSH_PORT=${SSH_PORT:-12222}
-REPLICA_PORT=${REPLICA_PORT:-15434}
+# git worktrees (parallel test runs) get their own container names and ports, so one run
+# cannot remove or reuse another's testbox; the main checkout keeps the defaults (lab scripts).
+k=0
+case $root in */worktrees/*) k=$(($(printf %s "$root" | cksum | cut -d' ' -f1) % 400 + 1)) ;; esac
+PORT=${PORT:-$((15432 + k * 10))}
+ALT_PORT=${ALT_PORT:-$((15433 + k * 10))}
+SSH_PORT=${SSH_PORT:-$([ $k = 0 ] && echo 12222 || echo $((12225 + k * 10)))}
+REPLICA_PORT=${REPLICA_PORT:-$((15434 + k * 10))}
 IMG=localhost/nexus-pg-testbox:$PG
-NAME=${NAME:-nexus-pg-testbox}
+NAME=${NAME:-nexus-pg-testbox$([ $k = 0 ] || echo "-w$k")}
 
 secrets() {
 	mkdir -p "$dir/box"
