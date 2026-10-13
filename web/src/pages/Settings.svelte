@@ -21,6 +21,7 @@
   import Vault from './settings/Vault.svelte';
   import Incident from './settings/Incident.svelte';
   import MalwareScan from './settings/MalwareScan.svelte';
+  import HashLists from './settings/HashLists.svelte';
   import Edges from './settings/Edges.svelte';
 
   // Tabs per role (docs/phase12-contract.md: alerts + SSO readable by admins and security officers,
@@ -37,6 +38,7 @@
     { id: 'updates', comp: Updates, allow: staff },
     { id: 'anomaly', comp: Anomaly, allow: officer },
     { id: 'malware', comp: MalwareScan, allow: officer },
+    { id: 'iocHashes', comp: HashLists, allow: officer },
     { id: 'certificate', comp: Certificate, allow: officer },
     { id: 'forwarding', comp: Forwarding, allow: officer },
     { id: 'diagnostics', comp: Diagnostics, allow: officer },

@@ -610,6 +610,8 @@ pub fn new_session(st: &AppState, user_id: i64, ip: &str, headers: &HeaderMap) -
         "DELETE FROM sessions WHERE last_seen < ?1 OR created < ?2",
         params![now - lim.idle_secs(), now - lim.absolute_secs()],
     )?;
+    // Phase 28: new-device sign-in notice (crate::devices)
+    crate::devices::check(&c, user_id, ip, &ua)?;
     c.execute(
         "INSERT INTO sessions (id_hash, user_id, csrf, created, last_seen, ip, user_agent)
          VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6)",

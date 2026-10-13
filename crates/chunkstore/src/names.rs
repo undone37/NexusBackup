@@ -4,14 +4,30 @@
 //! file-tree snapshots (agents, NAS, plugins), later for VM/CT disks (opt-in,
 //! nexus-pve `files … index`), and goes away with the snapshot directory.
 //! File names never leave the tenant's sealed store; searching needs the key.
+//!
+//! Format versions (both postcard, sealed): v1 (context `names:<source>/<time>`)
+//! has paths, sizes, mtimes and kinds; v2 (context `names2:<source>/<time>`,
+//! Phase 28) adds the SHA-256 of regular files for the IOC hash hunt (sparse:
+//! `(entry index, hash)`). An index without hashes is still written as v1, so
+//! the previous release reads every snapshot taken without `file_hashes`.
+//! Readers try v2, then v1. The name index never goes offsite (derived data).
 
 use crate::crypto::invalid;
-use crate::store::{write_atomic, Index, Manifest, Store, TreeKind};
+use crate::store::{write_atomic, Index, Manifest, Store, TreeEntry, TreeKind};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 
 pub const FILE: &str = "names";
+
+/// SHA-256 of a regular file's content (IOC hash hunt, Phase 28).
+pub type Sha256 = [u8; 32];
+
+/// SHA-256 of the empty file (files without chunks need no read).
+pub const EMPTY_SHA256: Sha256 = [
+    0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24, 0x27, 0xae, 0x41,
+    0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55,
+];
 
 /// Column layout: one NUL-separated string for all paths (decodes with one
 /// copy instead of one allocation per name) plus parallel arrays.
@@ -23,12 +39,44 @@ pub struct NameIndex {
     /// seconds
     pub mtime: Vec<i64>,
     pub kind: Vec<u8>,
+    /// v2: `(entry index, SHA-256)` of regular files, ascending by index;
+    /// empty = no hashes recorded (written as v1)
+    #[serde(default)]
+    pub sha256: Vec<(u32, Sha256)>,
+}
+
+/// On-disk layouts (postcard is positional: one struct per version).
+#[derive(Serialize, Deserialize)]
+struct V1 {
+    paths: String,
+    size: Vec<u64>,
+    mtime: Vec<i64>,
+    kind: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct V2 {
+    paths: String,
+    size: Vec<u64>,
+    mtime: Vec<i64>,
+    kind: Vec<u8>,
+    sha256: Vec<(u32, Sha256)>,
 }
 
 pub const KIND_FILE: u8 = 0;
 pub const KIND_DIR: u8 = 1;
 pub const KIND_SYMLINK: u8 = 2;
 pub const KIND_OTHER: u8 = 3;
+
+/// A path as the index stores it: no leading `/`, NUL as U+FFFD.
+pub fn normalise(path: &str) -> std::borrow::Cow<'_, str> {
+    let path = path.trim_start_matches('/');
+    if path.contains('\0') {
+        path.replace('\0', "\u{FFFD}").into()
+    } else {
+        path.into()
+    }
+}
 
 pub fn kind_name(k: u8) -> &'static str {
     match k {
@@ -54,21 +102,53 @@ impl NameIndex {
     }
 
     /// Appends one entry. Leading `/` are dropped; NUL (impossible in file
-    /// names, but hostile sources) becomes U+FFFD.
+    /// names, but hostile sources) becomes U+FFFD ([`normalise`]).
     pub fn push(&mut self, path: &str, size: u64, mtime: i64, kind: u8) {
-        let path = path.trim_start_matches('/');
+        let path = normalise(path);
         if path.is_empty() {
             return;
         }
-        if path.contains('\0') {
-            self.paths.push_str(&path.replace('\0', "\u{FFFD}"));
-        } else {
-            self.paths.push_str(path);
-        }
+        self.paths.push_str(&path);
         self.paths.push('\0');
         self.size.push(size);
         self.mtime.push(mtime);
         self.kind.push(kind);
+    }
+
+    /// Records the SHA-256 of entry `i` (call in ascending `i`; a repeated or
+    /// out-of-order index is ignored).
+    pub fn set_hash(&mut self, i: usize, h: Sha256) {
+        let i = i as u32;
+        if (i as usize) < self.len() && self.sha256.last().is_none_or(|(l, _)| *l < i) {
+            self.sha256.push((i, h));
+        }
+    }
+
+    /// The SHA-256 of entry `i`, if recorded.
+    pub fn hash(&self, i: usize) -> Option<&Sha256> {
+        let i = i as u32;
+        self.sha256
+            .binary_search_by_key(&i, |(x, _)| *x)
+            .ok()
+            .map(|k| &self.sha256[k].1)
+    }
+
+    pub fn has_hashes(&self) -> bool {
+        !self.sha256.is_empty()
+    }
+
+    /// `(path, size, sha256)` of every entry with a recorded hash.
+    pub fn hashed(&self) -> impl Iterator<Item = (&str, u64, &Sha256)> + '_ {
+        let mut want = self.sha256.iter().peekable();
+        self.iter().enumerate().filter_map(move |(i, (p, s, _, _))| {
+            while want.peek().is_some_and(|(x, _)| (*x as usize) < i) {
+                want.next();
+            }
+            match want.peek() {
+                Some((x, h)) if *x as usize == i => Some((p, s, h)),
+                _ => None,
+            }
+        })
     }
 
     /// `(path, size, mtime, kind)` in insertion order.
@@ -85,6 +165,15 @@ impl NameIndex {
     /// disks, container tar streams: their names need the guest file systems).
     /// Plugin streams (`streams`) are listed below `.nexus-streams/`.
     pub fn from_indexes<'a>(indexes: impl IntoIterator<Item = (&'a str, &'a Index)>) -> Option<NameIndex> {
+        Self::from_indexes_hashed(indexes, &mut |_| Ok(None)).ok().flatten()
+    }
+
+    /// [`Self::from_indexes`], asking `hash` for the SHA-256 of every regular
+    /// file of the tree (Phase 28; `None` = not known).
+    pub fn from_indexes_hashed<'a>(
+        indexes: impl IntoIterator<Item = (&'a str, &'a Index)>,
+        hash: &mut dyn FnMut(&TreeEntry) -> io::Result<Option<Sha256>>,
+    ) -> io::Result<Option<NameIndex>> {
         let mut out = NameIndex::default();
         let (mut tree, mut streams) = (false, Vec::new());
         for (name, idx) in indexes {
@@ -98,12 +187,18 @@ impl NameIndex {
                             TreeKind::Symlink => KIND_SYMLINK,
                             _ => KIND_OTHER,
                         };
+                        let before = out.len();
                         out.push(
                             &String::from_utf8_lossy(&e.path),
                             e.size,
                             e.mtime_ns.div_euclid(1_000_000_000),
                             kind,
                         );
+                        if out.len() > before && e.kind == TreeKind::File {
+                            if let Some(h) = hash(e)? {
+                                out.set_hash(before, h);
+                            }
+                        }
                     }
                 }
                 Index::Dynamic { entries } if name == STREAMS_INDEX => streams.extend(entries),
@@ -111,7 +206,7 @@ impl NameIndex {
             }
         }
         if !tree {
-            return None;
+            return Ok(None);
         }
         if !streams.is_empty() {
             out.push(STREAMS_DIR, 0, 0, KIND_DIR);
@@ -119,7 +214,7 @@ impl NameIndex {
         for s in streams {
             out.push(&format!("{STREAMS_DIR}/{}", s.path), s.size, s.mtime, KIND_FILE);
         }
-        Some(out)
+        Ok(Some(out))
     }
 }
 
@@ -127,21 +222,67 @@ fn ctx(source: &str, time: u64) -> String {
     format!("names:{source}/{time}")
 }
 
+fn ctx2(source: &str, time: u64) -> String {
+    format!("names2:{source}/{time}")
+}
+
+fn ser(e: postcard::Error) -> io::Error {
+    invalid(format!("serialization: {e}"))
+}
+
 impl Store {
-    /// Seals and writes the name index of `source/time` (replacing an older one).
+    /// Seals and writes the name index of `source/time` (replacing an older
+    /// one): v2 when it carries hashes, else v1.
     pub fn write_names(&self, source: &str, time: u64, names: &NameIndex) -> io::Result<()> {
-        let blob = self.keys().seal(
-            ctx(source, time).as_bytes(),
-            &postcard::to_stdvec(names).map_err(|e| invalid(format!("serialization: {e}")))?,
-        );
+        let blob = if names.has_hashes() {
+            let v = V2 {
+                paths: names.paths.clone(),
+                size: names.size.clone(),
+                mtime: names.mtime.clone(),
+                kind: names.kind.clone(),
+                sha256: names.sha256.clone(),
+            };
+            self.keys()
+                .seal(ctx2(source, time).as_bytes(), &postcard::to_stdvec(&v).map_err(ser)?)
+        } else {
+            let v = V1 {
+                paths: names.paths.clone(),
+                size: names.size.clone(),
+                mtime: names.mtime.clone(),
+                kind: names.kind.clone(),
+            };
+            self.keys()
+                .seal(ctx(source, time).as_bytes(), &postcard::to_stdvec(&v).map_err(ser)?)
+        };
         write_atomic(&self.snap_dir(source, time).join(FILE), &blob)
     }
 
-    /// Decodes a sealed name index of `source/time` (wrong key or a file of
-    /// another snapshot: error).
+    /// Decodes a sealed name index of `source/time`, v2 or v1 (wrong key or a
+    /// file of another snapshot: error).
     pub fn decode_names(&self, source: &str, time: u64, sealed: &[u8]) -> io::Result<NameIndex> {
-        postcard::from_bytes(&self.keys().open(ctx(source, time).as_bytes(), sealed)?.1)
-            .map_err(|e| invalid(format!("serialization: {e}")))
+        if let Ok((_, plain)) = self.keys().open(ctx2(source, time).as_bytes(), sealed) {
+            let v: V2 = postcard::from_bytes(&plain).map_err(ser)?;
+            let n = NameIndex {
+                paths: v.paths,
+                size: v.size,
+                mtime: v.mtime,
+                kind: v.kind,
+                sha256: v.sha256,
+            };
+            if n.sha256.windows(2).any(|w| w[0].0 >= w[1].0) || n.sha256.last().is_some_and(|l| l.0 as usize >= n.len())
+            {
+                return Err(invalid("name index: hash entries out of order"));
+            }
+            return Ok(n);
+        }
+        let v: V1 = postcard::from_bytes(&self.keys().open(ctx(source, time).as_bytes(), sealed)?.1).map_err(ser)?;
+        Ok(NameIndex {
+            paths: v.paths,
+            size: v.size,
+            mtime: v.mtime,
+            kind: v.kind,
+            sha256: Vec::new(),
+        })
     }
 
     /// The stored name index of a committed snapshot, `None` if it has none.
@@ -325,5 +466,129 @@ mod tests {
         assert_eq!(s.backfill_names().unwrap(), (0, 3));
         let m = s.load_manifest("nas-1-tank.data", 1).unwrap();
         assert_eq!(s.load_names(&m).unwrap().unwrap().len(), 1);
+    }
+
+    fn sha(d: &[u8]) -> Sha256 {
+        <sha2::Sha256 as sha2::Digest>::digest(d).into()
+    }
+
+    fn file(s: &Store, path: &str, data: &[u8]) -> TreeEntry {
+        let st = s.store_file_stats(data).unwrap();
+        TreeEntry {
+            chunks: st.chunks,
+            ..entry(path, TreeKind::File, data.len() as u64)
+        }
+    }
+
+    /// Phase 28: v1 stays readable, v2 carries hashes; hashes come from the
+    /// read, the previous snapshot or the store.
+    #[test]
+    fn file_hashes_fresh_carried_and_computed() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::open(d.path(), keys("acme", 1), opts()).unwrap();
+        // hashing off: v1, no hashes
+        let a = file(&s, "a.txt", b"alpha");
+        let m = s
+            .commit_snapshot(
+                "host-a1",
+                1,
+                &[(
+                    "tree",
+                    Index::Tree {
+                        entries: vec![a.clone()],
+                    },
+                )],
+            )
+            .unwrap();
+        assert!(!s.load_names(&m).unwrap().unwrap().has_hashes());
+        assert_eq!(s.take_hash_stats(), None);
+        // on: the old file's hash is read back from the store, a new one hashed while read
+        s.enable_file_hashes();
+        let b = file(&s, "dir/b.bin", &[7u8; 300_000]);
+        let empty = entry("empty", TreeKind::File, 0);
+        let tree = Index::Tree {
+            entries: vec![entry("dir", TreeKind::Dir, 0), a.clone(), b.clone(), empty],
+        };
+        let m = s.commit_snapshot("host-a1", 2, &[("tree", tree)]).unwrap();
+        let st = s.take_hash_stats().unwrap();
+        assert_eq!((st.fresh, st.carried, st.computed, st.failed), (1, 0, 1, 0));
+        let n = s.load_names(&m).unwrap().unwrap();
+        let h: Vec<_> = n.hashed().map(|(p, sz, h)| (p.to_owned(), sz, *h)).collect();
+        assert_eq!(
+            h,
+            vec![
+                ("a.txt".into(), 5, sha(b"alpha")),
+                ("dir/b.bin".into(), 300_000, sha(&[7u8; 300_000])),
+                ("empty".into(), 0, EMPTY_SHA256),
+            ]
+        );
+        assert_eq!(n.hash(0), None, "directories carry none");
+        // the sealed file is v2: not readable as v1, the previous release fails instead of mis-reading
+        let raw = fs::read(d.path().join("snapshots/host-a1/2/names")).unwrap();
+        assert!(s.keys().open(b"names:host-a1/2", &raw).is_err());
+        // next snapshot: unchanged files carry their hash over (also renamed), no read
+        let moved = TreeEntry {
+            path: b"moved.bin".to_vec(),
+            ..b.clone()
+        };
+        let m = s
+            .commit_snapshot(
+                "host-a1",
+                3,
+                &[(
+                    "tree",
+                    Index::Tree {
+                        entries: vec![a, moved],
+                    },
+                )],
+            )
+            .unwrap();
+        let st = s.take_hash_stats().unwrap();
+        assert_eq!((st.fresh, st.carried, st.computed), (0, 2, 0));
+        let n = s.load_names(&m).unwrap().unwrap();
+        assert_eq!(
+            n.hashed().nth(1).map(|x| (x.0, *x.2)),
+            Some(("moved.bin", sha(&[7u8; 300_000])))
+        );
+        // a hash recorded by an agent (keyed chunk list) wins over reading
+        let c = file(&s, "c", b"gamma");
+        s.record_file_hash(&c.chunks, [9; 32]);
+        let m = s
+            .commit_snapshot("host-a1", 4, &[("tree", Index::Tree { entries: vec![c] })])
+            .unwrap();
+        assert_eq!(s.load_names(&m).unwrap().unwrap().hash(0), Some(&[9; 32]));
+        // VM snapshots have no tree: nothing to hash
+        let disk = s.store_image(&[1u8; 10][..], 4096).unwrap();
+        s.commit_snapshot("vm-1", 5, &[("drive-scsi0", disk)]).unwrap();
+        assert_eq!(s.take_hash_stats(), None);
+    }
+
+    #[test]
+    fn hash_entries_are_validated() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::open(d.path(), keys("acme", 1), opts()).unwrap();
+        s.commit_snapshot("host-a1", 1, &[("tree", Index::Tree { entries: vec![] })])
+            .unwrap();
+        let mut n = NameIndex::default();
+        n.push("a", 1, 1, KIND_FILE);
+        n.push("b", 1, 1, KIND_FILE);
+        n.set_hash(1, [1; 32]);
+        n.set_hash(0, [2; 32]); // out of order: ignored
+        n.set_hash(5, [3; 32]); // beyond the entries: ignored
+        assert_eq!(n.sha256, vec![(1, [1; 32])]);
+        s.write_names("host-a1", 1, &n).unwrap();
+        let m = s.load_manifest("host-a1", 1).unwrap();
+        assert_eq!(s.load_names(&m).unwrap().unwrap(), n);
+        // a forged out-of-range entry is refused on read
+        let bad = postcard::to_stdvec(&V2 {
+            paths: "a\0".into(),
+            size: vec![1],
+            mtime: vec![1],
+            kind: vec![KIND_FILE],
+            sha256: vec![(3, [0; 32])],
+        })
+        .unwrap();
+        let sealed = s.keys().seal(b"names2:host-a1/1", &bad);
+        assert!(s.decode_names("host-a1", 1, &sealed).is_err());
     }
 }

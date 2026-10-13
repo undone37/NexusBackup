@@ -785,6 +785,43 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
   approval for restoring malware-flagged snapshots to production, scan back to the last clean snapshot, incident-mode
   freezes, privileged-activity risk signals) with Phase 29, Tier 2 as Phase 30; details: `docs/netbackup-comparison.md`.
 
+### Phase 28 — Commvault Tier 1 (implemented 2026-10-14)
+Scheduled threat scans with a per-snapshot verdict and recovery calendar, IOC hash hunting over per-file SHA-256 in
+the sealed name index, tenant lockdown, new-device sign-in notice (catalog v43, threat model T62–T63, alert kinds
+`scan_hit`, `hash_hunt_hit`, `tenant_lockdown`, `login_new_device`, approval `tenant.lockdown.lift`). Details:
+docs/malware-scan.md "Scheduled scans", docs/file-index.md "File hashes", docs/control-plane.md "Tenant lockdown" /
+"New-device sign-in", docs/agent-protocol.md "v1.8 notes — file hashes". Deviations from the proposal
+(docs/commvault-comparison.md) and decisions taken on the way:
+- **Scan schedule** is the policy schedule grammar per group (UI: off / daily at / custom), not a fixed "daily latest"
+  switch; only the newest local snapshot of each source without a verdict is scanned. "After each backup" is not
+  offered (open question 4: the queue might never drain). Scans on request keep raising `malware`; only scheduled
+  scans raise `scan_hit`. A snapshot already scanned is not scanned again when the rules change (rescan on request).
+- **Verdict** is a catalog column `snapshots.scan_state` (newest scan), backfilled from `snapshot_scans`; a hit whose
+  anomaly flag a security officer cleared still shows red in the calendar but counts as clean for "latest clean".
+- **File hashes:** SHA-256 only (open question 2). Name index v2 is a new sealing context (`names2:`); indexes without
+  hashes stay v1, so the previous release reads them; after a rollback v2 indexes are unreadable for search there
+  (accepted). Hashes come from the reader (agents with `file-hash`, NAS/TrueNAS/plugin connectors), else carried over
+  from the previous snapshot by identical chunk list, else read back from the store (old agents, first run after
+  switching on: no forced full read on the source). Containers are hashed in the `file_index` job (with
+  `index_files`); **VM disks are not hashed** (open question 3: later, opt-in). Hash cache in the store: about
+  100 bytes per file of one backup.
+- **Agent protocol:** `ScanHashed`/`EntryHashes` appended as tags 49/50 behind capability `file-hash`, documented in
+  the v1.8 notes without a version change. The v1.8 agent-update messages (Phase 27) must be ordered after or before
+  them consistently when both are merged (both unreleased; the `agent-proto` tests pin the tags).
+- **Hunt:** appliance-wide lists (admins, security officers), hunts per tenant (admins, operators, security officers,
+  tenant admins); in-process in the scheduler like the file search, 30 minute budget, at most 2000 file versions.
+  Hits flag up to 500 snapshots (newest first) and raise one `hash_hunt_hit` per tenant. Results through the jobs
+  API (`hash_hunt` job result); no separate results table.
+- **Tenant lockdown** goes beyond the proposal: the tenant's accounts cannot sign in while it lasts (password,
+  passkey, OIDC, tokens), and agent updates/renewals and changes of its tenant settings are refused as well. Scans,
+  hunts, restores to new targets and downloads stay allowed. Entering: security officers **and** admins
+  (appliance-wide), re-authenticated; lifting always needs a second person.
+- **New-device notice:** device = browser family + OS from the user agent and the /24 (IPv4) or /48 (IPv6) prefix;
+  the account's first sign-in is the baseline (no alert); at most 50 devices per account. The mail to the account goes
+  through the alert SMTP server on the alert's first delivery only (not reminders); the address comes from **My
+  account** or the OIDC `email` claim (unless `email_verified` is false). Changing group options needs no approval
+  (detection, not protection; audited).
+
 ### Phase 31 — Guest file index without the restore micro-VM (proposed 2026-10-13 by user request)
 - VM/CT disk file systems (GPT/MBR, LVM2, NTFS, ext4, FAT; XFS/btrfs/LDM later) parsed read-only by a sandboxed
   helper without keys (`nexus-fsindex`), incremental per changed metadata chunk; one search index per tenant in an

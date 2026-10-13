@@ -4,7 +4,7 @@
   import { get, post, put, del, act, errText } from '../lib/api';
   import { t } from '../lib/i18n';
   import { fmtBytes, fmtTime } from '../lib/format';
-  import type { LoginResponse, OffsiteListed, Policy, QuorumRequest, Tenant, TenantOffsite, TenantTombstone, SftpRemote, S3Remote } from '../lib/types';
+  import type { LockdownInfo, LoginResponse, OffsiteListed, Policy, QuorumRequest, Tenant, TenantOffsite, TenantTombstone, SftpRemote, S3Remote } from '../lib/types';
   import { copyText } from '../lib/clipboard';
   import { setSession } from '../lib/session.svelte';
   import Modal from '../components/Modal.svelte';
@@ -20,6 +20,7 @@
   import IconLink from '@lucide/svelte/icons/link';
   import IconKey from '@lucide/svelte/icons/key-round';
   import IconCloudDown from '@lucide/svelte/icons/cloud-download';
+  import IconLockdown from '@lucide/svelte/icons/shield-ban';
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
   import { route, navigate } from '../lib/router.svelte';
@@ -46,6 +47,57 @@
     loaded = true;
     loadRequests();
     loadTenancy();
+    loadLockdowns();
+  }
+
+  // Phase 28: tenant lockdown (incident mode for one tenant); lifting needs approval
+  let lockdowns: LockdownInfo[] = $state([]);
+  async function loadLockdowns() {
+    if (can.lockdown(session.user)) lockdowns = await get<LockdownInfo[]>('/lockdowns').catch(() => []);
+  }
+  const lockOf = (name: string) => lockdowns.find((l) => l.tenant === name) ?? null;
+  let ldOf: Tenant | null = $state(null);
+  let ldOpen = $state(false);
+  let ldReason = $state('');
+  let ldHold: 'all' | 'range' | 'none' = $state('all');
+  let ldFrom = $state('');
+  let ldTo = $state('');
+  let ldPassword = $state('');
+  let ldTotp = $state('');
+  let ldBusy = $state(false);
+  function openLockdown(x: Tenant) {
+    const local = (ts: number) => {
+      const d = new Date(ts * 1000);
+      return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    };
+    const now = Math.floor(Date.now() / 1000);
+    ldOf = x;
+    ldReason = '';
+    ldHold = 'all';
+    ldFrom = local(now - 7 * 86400);
+    ldTo = local(now);
+    ldPassword = '';
+    ldTotp = '';
+    ldOpen = true;
+  }
+  async function submitLockdown(e: SubmitEvent) {
+    e.preventDefault();
+    if (!ldOf) return;
+    const ts = (v: string) => Math.floor(new Date(v).getTime() / 1000);
+    const body: Record<string, unknown> = { reason: ldReason.trim(), current_password: ldPassword, current_totp: ldTotp.trim() };
+    if (ldHold === 'none') body.hold = null;
+    if (ldHold === 'range') body.hold = { from: ts(ldFrom), to: ts(ldTo) };
+    ldBusy = true;
+    const ok = await act(post(`/tenants/${encodeURIComponent(ldOf.name)}/lockdown`, body), t.lockdown.done(ldOf.name));
+    ldBusy = false;
+    if (ok) {
+      ldOpen = false;
+      load();
+    }
+  }
+  async function liftLockdown(x: Tenant) {
+    if (!(await askConfirm(t.lockdown.liftConfirm(x.name)))) return;
+    if (await act(post(`/tenants/${encodeURIComponent(x.name)}/lockdown/lift`), t.lockdown.liftRequested)) loadLockdowns();
   }
 
   // Phase 19b: assigned policies (admin), deleted names (admin, security officer)
@@ -348,6 +400,9 @@
   <p class="lede">{t.tenants.lede}</p>
 </div>
 <ErrorBanner {error} />
+{#each lockdowns as l (l.tenant)}
+  <p class="banner error" role="alert">{t.lockdown.banner(l.tenant, l.by, fmtTime(l.since), l.reason)}</p>
+{/each}
 
 <div class="card">
   {#if !loaded}
@@ -387,8 +442,13 @@
                 {#if x.disabled}
                   <span class="chip warn" title={t.tdis.since(x.disabled_by ?? '—', fmtTime(x.disabled_at), x.disabled_reason ?? '')}>{t.tdis.deactivated}</span>
                   <div class="muted">{x.disabled_reason}</div>
-                {:else}
+                {:else if !lockOf(x.name)}
                   <span class="chip ok">{t.tdis.active}</span>
+                {/if}
+                {#if lockOf(x.name)}
+                  {@const l = lockOf(x.name)!}
+                  <span class="chip bad" title={t.lockdown.chipTitle(l.by, fmtTime(l.since), l.reason)}>{t.lockdown.chip}</span>
+                  {#if l.lift_quorum}<span class="chip warn plain">{t.lockdown.liftPending}</span>{/if}
                 {/if}
               </td>
               <td class="mono">
@@ -428,6 +488,15 @@
                 {:else}
                   <button type="button" class="small" onclick={() => deactivate(x)}>{t.tdis.deactivate}</button>
                 {/if}
+                {/if}
+                {#if can.lockdown(session.user)}
+                  {#if !lockOf(x.name)}
+                    <button type="button" class="small danger" onclick={() => openLockdown(x)} aria-label={t.lockdown.actionLabel(x.name)}
+                      ><IconLockdown aria-hidden="true" />{t.lockdown.action}</button
+                    >
+                  {:else if !lockOf(x.name)?.lift_quorum}
+                    <button type="button" class="small" onclick={() => liftLockdown(x)} aria-label={t.lockdown.liftLabel(x.name)}>{t.lockdown.lift}</button>
+                  {/if}
                 {/if}
                 {#if canKey}<button type="button" class="small" onclick={() => (keyOf = x.name)}>{t.tkey.button}</button>{/if}
                 {#if canKey}
@@ -755,4 +824,47 @@
 <TenantWizard bind:open={wizardOpen} ondone={load} />
 <Modal bind:open={idpOpen} wide title={idpOf ? t.sp.idp.title(idpOf) : ''}>
   {#if idpOf}<Sso tenant={idpOf} />{/if}
+</Modal>
+
+<Modal bind:open={ldOpen} title={ldOf ? t.lockdown.title(ldOf.name) : ''}>
+  <form onsubmit={submitLockdown}>
+    <p>{t.lockdown.intro}</p>
+    <div class="field">
+      <label for="ld-reason">{t.lockdown.reason}</label>
+      <input id="ld-reason" maxlength="500" bind:value={ldReason} required />
+    </div>
+    <fieldset>
+      <legend>{t.lockdown.hold}</legend>
+      <label class="inline-check"><input type="radio" name="ld-hold" value="all" bind:group={ldHold} />{t.lockdown.holdAll}</label>
+      <label class="inline-check"><input type="radio" name="ld-hold" value="range" bind:group={ldHold} />{t.lockdown.holdRange}</label>
+      <label class="inline-check"><input type="radio" name="ld-hold" value="none" bind:group={ldHold} />{t.lockdown.holdNone}</label>
+      {#if ldHold === 'range'}
+        <div class="form-grid">
+          <div class="field">
+            <label for="ld-from">{t.lockdown.from}</label>
+            <input id="ld-from" type="datetime-local" bind:value={ldFrom} required />
+          </div>
+          <div class="field">
+            <label for="ld-to">{t.lockdown.to}</label>
+            <input id="ld-to" type="datetime-local" bind:value={ldTo} required />
+          </div>
+        </div>
+      {/if}
+    </fieldset>
+    <p>{t.incident.reauth}</p>
+    <div class="form-grid">
+      <div class="field">
+        <label for="ld-pw">{t.incident.password}</label>
+        <input id="ld-pw" type="password" autocomplete="current-password" bind:value={ldPassword} required />
+      </div>
+      <div class="field">
+        <label for="ld-totp">{t.incident.totp}</label>
+        <input id="ld-totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{'{'}6{'}'}" bind:value={ldTotp} required />
+      </div>
+    </div>
+    <div class="form-actions">
+      <button type="button" onclick={() => (ldOpen = false)}>{t.cancel}</button>
+      <button type="submit" class="danger" disabled={ldBusy || !ldReason.trim()}><IconLockdown aria-hidden="true" />{t.lockdown.confirm}</button>
+    </div>
+  </form>
 </Modal>

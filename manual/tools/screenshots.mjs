@@ -1396,6 +1396,53 @@ async function main() {
       await until(`return document.body.innerText.includes('Your account is active')`, 'activation done');
       await shot('activate-done');
     }],
+    // Phase 28 (last: the lockdown ends acme's sessions and tokens): scheduled scans + recovery calendar, IOC hash lists and the hash hunt, tenant
+    // lockdown, sign-in devices
+    ['threat', async () => {
+      await login('admin');
+      await go('/groups');
+      const g = (await api('GET', '/groups')).body.find((x) => x.tenant === 'acme' && x.scan_schedule);
+      await ev(`$rowClick(${JSON.stringify(g.name)}, 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #g-scan')`, 'group dialog');
+      await ev(`document.querySelector('dialog[open] #g-scan').closest('fieldset').scrollIntoView(); return true;`);
+      await shot('group-threat-scan', { height: 1300 });
+      await closeDialogs();
+      const fs02 = (await api('GET', '/agents')).body.find((a) => a.name === 'fs02');
+      await go(`/snapshots?source=host-${fs02.id}`);
+      await until(`return !!document.querySelector('#cal-h') && document.querySelectorAll('table.cal button.chip').length > 3`, 'recovery calendar');
+      await shot('snapshots-recovery-calendar', { height: 1250 });
+      await login('so');
+      await go('/settings?tab=iocHashes');
+      await until(`return !!document.querySelector('#hl-text') && document.body.innerText.includes('ir-case-4711')`, 'hash lists');
+      await shot('settings-ioc-hash-lists');
+      await go('/hunt');
+      await until(`return !!$button('Show results')`, 'recent hunts');
+      await ev(`$click('Show results'); return true;`);
+      await until(`return document.body.innerText.includes('Invoice_2026-10.pdf.exe')`, 'hunt results');
+      await settle();
+      await shot('hash-hunt', { height: 1100 });
+      await go('/tenants');
+      await ev(`$rowClick('acme', 'Lock down…'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #ld-reason')`, 'lockdown dialog');
+      await ev(`$fill('#ld-reason', 'Ticket SEC-2026-131: admin credentials of acme leaked'); $fill('#ld-pw', 'nexus'); $fill('#ld-totp', '492039'); return true;`);
+      await shot('tenant-lockdown', { height: 1000 });
+      // the demo holds nothing (holds outlive the lockdown)
+      await ev(`document.querySelector('dialog[open] input[name="ld-hold"][value="none"]').click(); return true;`);
+      await ev(`$click('Lock down now', document.querySelector('dialog[open]')); return true;`);
+      await until(`return document.body.innerText.includes('Tenant acme is locked down')`, 'locked down');
+      await settle();
+      await shot('tenants-locked');
+      await ev(`$rowClick('acme', 'Request lift'); return true;`);
+      await confirmOk();
+      await settle();
+      await login('admin');
+      const q = (await api('GET', '/quorum')).body.find((x) => x.action === 'tenant.lockdown.lift' && x.state === 'pending');
+      await api('POST', `/quorum/${q.id}/approve`);
+      await go('/account');
+      await until(`return !!document.querySelector('#acc-dev') && document.body.innerText.includes('Safari on macOS')`, 'sign-in devices');
+      await ev(`document.querySelector('#acc-dev').scrollIntoView(); window.scrollBy(0, -80); return true;`);
+      await shot('account-devices', { scrolled: true });
+    }],
   ];
 
   let failed = 0;

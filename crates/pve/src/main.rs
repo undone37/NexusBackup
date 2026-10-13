@@ -388,8 +388,8 @@ fn ct_files(store: &Store, vmid: &str, time: &str, cmd: &str, args: &[String]) -
         ("ls", [dir]) => println!("{}", serde_json::to_string_pretty(&pve::files::list(r, dir)?)?),
         ("ls", []) => println!("{}", serde_json::to_string_pretty(&pve::files::list(r, "")?)?),
         // the snapshot's name index for the file search (groups.index_files)
-        ("index", []) => {
-            let names = pve::files::index(r)?;
+        ("index", rest) if rest.iter().all(|a| a == "hashes") => {
+            let names = pve::files::index(r, !rest.is_empty())?;
             store.write_names(&m.source, m.time, &names)?;
             println!("{}", serde_json::json!({"entries": names.len(), "complete": true}));
         }

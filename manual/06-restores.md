@@ -59,9 +59,16 @@ Every restore dialog opened on a flagged snapshot (**Full restore**, **Instant r
 before it**. A yellow notice names both snapshots; **Use the flagged snapshot instead** switches back (for example to
 fetch files changed after the last clean snapshot that were not hit), **Use the latest clean snapshot** returns.
 **Restore several** picks the latest clean snapshot of each guest and notes when a newer flagged one was skipped.
-Snapshots whose flag a security officer cleared (**Flag cleared**) count as clean.
+Snapshots whose flag a security officer cleared (**Flag cleared**) count as clean. When malware scans ran (on
+request or scheduled per group), **the newest snapshot a scan found clean is preferred** over newer snapshots that
+were never scanned, both in these dialogs and in **Restore several**.
 
 ![The restore dialog of a flagged snapshot](images/restore-flagged-clean.png)
+
+Filter the Snapshots page to one guest or source to see its **Recovery calendar**: every snapshot of the month by
+day, coloured by its scan state (green scanned clean, red matches or flagged, yellow scan incomplete, grey not
+scanned). Selecting a snapshot opens its first restore action. See
+[11 Alerts and monitoring](11-alerts-and-monitoring.md#scheduled-scans-and-the-recovery-calendar).
 
 > **Status:** The file browser and **Find files** show flagged snapshots without a notice.
 

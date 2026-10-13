@@ -30,6 +30,7 @@ pub mod changes;
 pub mod config_backup;
 pub mod console;
 pub mod dashboard;
+pub mod devices;
 pub mod diag;
 pub mod edges;
 pub mod endpoint;
@@ -43,6 +44,7 @@ pub mod incident;
 pub mod inventory;
 pub mod jobs;
 pub mod keep;
+pub mod lockdown;
 pub mod nasops;
 pub mod network;
 pub mod offsite;
@@ -71,6 +73,7 @@ pub mod tenancy;
 pub mod tenant_idp;
 pub mod tenant_key;
 pub mod tenants;
+pub mod threat;
 pub mod tls;
 pub mod tokens;
 pub mod usage;
@@ -716,6 +719,9 @@ pub fn router(st: St) -> Router {
         .merge(tenancy::routes())
         .merge(vault::routes())
         .merge(incident::routes())
+        .merge(lockdown::routes())
+        .merge(threat::routes())
+        .merge(devices::routes())
         .fallback(api_not_found);
     // peer API: only on replication TLS connections (see `connection_scope`)
     let peer = Router::new()

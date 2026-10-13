@@ -66,6 +66,10 @@ const HINTS: &[(&str, &str)] = &[
     ("malware", "The YARA scan found matches of the administrators' rules in a snapshot (rule and path: Snapshots page, scan results). The snapshot is flagged as anomalous, so restores and holds default to an earlier clean snapshot, and restores with Scan first are refused or run with the network disconnected. Check the files and the source; if a rule was too broad, a security officer clears the flag on the Snapshots page. Resolve the alert by hand."),
     ("agent_update_failed", "An agent update failed (signature, version, package install or the agent did not come back with the new version). Open the job log of the agent_update job and the agent's update state on Agents > Updates; fix the cause and update again. Resolves after the next successful update of that agent."),
     ("rollout_paused", "An agent rollout was paused: a canary failed or the failure threshold was reached. Check the failed agents on Agents > Updates, then resume or cancel the rollout. Resolves when the rollout is resumed, cancelled or done."),
+    ("scan_hit", "The scheduled YARA scan of a protection group found matches of the administrators' rules in the newest snapshot of a source (rule and path: Snapshots page, scan results; the recovery calendar shows the snapshot red). The snapshot is flagged as anomalous, so restores and holds default to the latest scanned-clean snapshot. Check the files and the source; if a rule was too broad, a security officer clears the flag on the Snapshots page. Resolve the alert by hand."),
+    ("hash_hunt_hit", "An IOC hash hunt found files whose SHA-256 is on an uploaded hash list (results: Hash hunt page). The snapshots that contain them are flagged as anomalous. Check the source machine for the files; restore a clean version from an earlier snapshot with the results page's restore action; if the list entry was wrong, a security officer clears the flags on the Snapshots page. Resolve the alert by hand."),
+    ("tenant_lockdown", "A security officer or administrator locked one tenant down: its snapshots are held, its groups paused, its users' sessions and API tokens ended and its accounts cannot sign in; deletes, overwriting restores and configuration changes for it are refused. Other tenants keep running. Investigate; lifting the lockdown needs a second approver (Tenants page). Resolves when the lockdown is lifted."),
+    ("login_new_device", "An account signed in from a browser family and client network it never used before (the message names both). If that was the account owner (new laptop, travel, a changed network), acknowledge and resolve the alert. If not, disable the account on the Users page, end its sessions and review the audit log for what it did."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
 
@@ -90,6 +94,10 @@ const CATEGORY: &[(&str, &str)] = &[
     ("gc_confirm", "security"),
     ("vault_disabled", "security"),
     ("incident", "security"),
+    ("scan_hit", "security"),
+    ("hash_hunt_hit", "security"),
+    ("tenant_lockdown", "security"),
+    ("login_new_device", "security"),
     ("dek_rotation", "security"),
     ("job_failed", "backup"),
     ("sla_missed", "backup"),
@@ -381,6 +389,10 @@ mod tests {
             ("report", "system"),
             ("vault_disabled", "security"),
             ("tenant_disabled", "system"),
+            ("scan_hit", "security"),
+            ("hash_hunt_hit", "security"),
+            ("tenant_lockdown", "security"),
+            ("login_new_device", "security"),
             ("something_new", "system"),
         ] {
             assert_eq!(category(kind), cat, "{kind}");

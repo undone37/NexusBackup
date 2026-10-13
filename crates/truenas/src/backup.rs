@@ -263,6 +263,9 @@ pub fn backup(
                     Ok(l) => log(&l),
                     Err(e) => log(&format!("stats of {}/{}: {e}", rep.source, rep.time)),
                 }
+                if let Some(h) = store.take_hash_stats() {
+                    log(&h.to_string());
+                }
                 r.committed.push(rep);
                 item.ok();
             }

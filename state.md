@@ -475,3 +475,23 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   service's job object, MSI failure log parsing (1603), watchdog revert of a manual install, rollback refused for MSI
 - [ ] Appliance image with a signed agent release (os/agent-release) built and booted; SELinux of the upload dir
   (`nexus_agent_release_t`) and of nexus-agentctl reading /etc/pki/nexus/cosign checked under enforcing
+## Phase 28 — Commvault Tier 1 (2026-10-14)
+- [x] catalog v43 (`groups.scan_schedule/scan_budget_min/file_hashes`, `snapshots.scan_state`, `hash_lists`,
+  `tenant_lockdowns`, `login_devices`, `users.email`; migration test), alert kinds + hints, threat model T62–T63
+- [x] scheduled YARA scans per group (scheduler `threat.rs`, newest unscanned snapshot per source, `scan_hit`),
+  scan verdict per snapshot, "latest clean" prefers scanned-clean (scheduler + UI), recovery calendar (Snapshots)
+- [x] IOC hash hunt: name index v2 with SHA-256 (chunkstore), store hash cache + carry-over + read-back, agents
+  hash while reading (`CAP_FILE_HASH`: `ScanHashed`/`EntryHashes`, old agents keep working), NAS/TrueNAS/plugin
+  connectors, CT index (`ct-files … index hashes`); hash lists API + settings tab, `hash_hunt` job, Hash hunt page
+  with restore / hold actions, `hash_hunt_hit`
+- [x] tenant lockdown (holds, pauses, sessions/tokens ended, sign-in blocked, changes/deletes/overwriting restores
+  refused in web-api and scheduler, lift by approval `tenant.lockdown.lift`), Tenants page
+- [x] new-device sign-in notice (`login_new_device`, SIEM via the alert triggers, mail to the account's address),
+  My account: sign-in devices + e-mail
+- [x] tests: chunkstore (v1/v2, fresh/carried/computed), agent-proto/agent-core/agent-conn (fake agent with and
+  without the capability, hostile hash lists), pve (CT index hashes), scheduler `tests/threat.rs`, web-api
+  `tests/phase28.rs` + tenant-admin route classification; mock, manual 03/05/06/09/11/14, 7 new screenshots
+  (scene `threat`), ui-smoke pages
+- [ ] lab: scheduled scan and hash hunt on the appliance image with a real agent (Linux, Windows), lockdown with a
+  tenant admin session, new-device mail through the lab SMTP sink
+- [ ] VM disk file hashes (opt-in with `index_files`), MD5/SHA-1 lists (decided: SHA-256 only for now)

@@ -15,9 +15,10 @@
 
 use crate::clock::ComplianceClock;
 use crate::crypto::{hex, invalid, parse_hex, ChunkId, Keyring};
+use crate::names::{NameIndex, Sha256};
 use crate::pipeline::{ChunkSink, Job};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
@@ -264,6 +265,59 @@ pub struct Store {
     dirty_dirs: Mutex<HashSet<PathBuf>>,
     written: Mutex<Written>,
     workers: usize,
+    /// Phase 28 (`enable_file_hashes`): SHA-256 of files stored through this
+    /// handle, by their chunk list; consumed by the next commit
+    file_hashes: Mutex<Option<HashMap<[u8; 16], Sha256>>>,
+    hash_stats: Mutex<Option<HashStats>>,
+}
+
+/// Where the file hashes of the last committed snapshot came from (`Store::take_hash_stats`).
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct HashStats {
+    /// computed while the data was read (connector or agent)
+    pub fresh: u64,
+    /// same chunk list as in the previous snapshot of the source
+    pub carried: u64,
+    /// read back from the store (old agents, the first run with hashes)
+    pub computed: u64,
+    /// unreadable chunks: no hash recorded
+    pub failed: u64,
+}
+
+impl std::fmt::Display for HashStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "file hashes: {} while reading, {} from the previous snapshot, {} read back from the store, {} failed",
+            self.fresh, self.carried, self.computed, self.failed
+        )
+    }
+}
+
+/// Key of a file's chunk list in the hash cache (128-bit BLAKE3 prefix).
+pub fn chunk_list_key(chunks: &[ChunkId]) -> [u8; 16] {
+    let mut h = blake3::Hasher::new();
+    h.update(&(chunks.len() as u64).to_le_bytes());
+    for c in chunks {
+        h.update(c);
+    }
+    h.finalize().as_bytes()[..16].try_into().expect("16 bytes")
+}
+
+/// A reader that hashes what passes through it (SHA-256).
+struct ShaRead<R> {
+    inner: R,
+    h: Option<sha2::Sha256>,
+}
+
+impl<R: Read> Read for ShaRead<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if let Some(h) = self.h.as_mut() {
+            sha2::Digest::update(h, &buf[..n]);
+        }
+        Ok(n)
+    }
 }
 
 pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
@@ -340,6 +394,8 @@ impl Store {
             dirty_dirs: Mutex::new(HashSet::new()),
             written: Mutex::new(Written::default()),
             workers,
+            file_hashes: Mutex::new(None),
+            hash_stats: Mutex::new(None),
         })
     }
 
@@ -655,6 +711,19 @@ impl Store {
     /// A file of more than one chunk is inserted on `chunk_workers()` threads
     /// while the next chunks are read (pipeline.rs); a one-chunk file inline.
     pub fn store_file_stats(&self, r: impl Read) -> io::Result<FileStats> {
+        let hashing = self.file_hashes.lock().unwrap().is_some();
+        let mut r = ShaRead {
+            inner: r,
+            h: hashing.then(<sha2::Sha256 as sha2::Digest>::new),
+        };
+        let s = self.store_file_inner(&mut r)?;
+        if let Some(h) = r.h.take() {
+            self.record_file_hash(&s.chunks, sha2::Digest::finalize(h).into());
+        }
+        Ok(s)
+    }
+
+    fn store_file_inner(&self, r: impl Read) -> io::Result<FileStats> {
         let mut cdc = fastcdc::v2020::StreamCDC::new(r, CDC_MIN, CDC_AVG, CDC_MAX);
         let mut next = || cdc.next().transpose().map_err(io::Error::other);
         let mut lens = Vec::new();
@@ -725,6 +794,106 @@ impl Store {
         write_atomic(&self.snap_dir(&m.source, m.time).join("manifest"), &blob)
     }
 
+    /// Phase 28: record the SHA-256 of every regular file in the name index of
+    /// the snapshots committed through this handle (group option
+    /// `file_hashes`). Files stored with `store_file*` are hashed while read;
+    /// [`Self::record_file_hash`] adds hashes computed elsewhere (agents); the
+    /// rest come from the previous snapshot of the source (same chunk list) or
+    /// are read back from the store.
+    pub fn enable_file_hashes(&self) {
+        self.file_hashes.lock().unwrap().get_or_insert_with(HashMap::new);
+    }
+
+    pub fn file_hashes_enabled(&self) -> bool {
+        self.file_hashes.lock().unwrap().is_some()
+    }
+
+    /// The SHA-256 of a file with these (keyed) chunks, for the next commit.
+    /// Ignored unless hashing is enabled.
+    pub fn record_file_hash(&self, chunks: &[ChunkId], sha: Sha256) {
+        if let Some(m) = self.file_hashes.lock().unwrap().as_mut() {
+            m.insert(chunk_list_key(chunks), sha);
+        }
+    }
+
+    /// Where the hashes of the last commit came from (`None`: hashing off or no file tree).
+    pub fn take_hash_stats(&self) -> Option<HashStats> {
+        self.hash_stats.lock().unwrap().take()
+    }
+
+    /// Hashes of the newest earlier snapshot of `source`, by chunk list.
+    fn previous_hashes(&self, source: &str, time: u64) -> io::Result<HashMap<[u8; 16], Sha256>> {
+        let mut out = HashMap::new();
+        let prev = match fs::read_dir(self.root.join("snapshots").join(source)) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u64>().ok())
+                .filter(|t| *t < time && self.snap_dir(source, *t).join("manifest").exists())
+                .max(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e),
+        };
+        let Some(t) = prev else { return Ok(out) };
+        let m = self.load_manifest(source, t)?;
+        let Some(names) = self.load_names(&m)?.filter(|n| n.has_hashes()) else {
+            return Ok(out);
+        };
+        let by_path: HashMap<&str, &Sha256> = names.hashed().map(|(p, _, h)| (p, h)).collect();
+        for name in &m.indexes {
+            if let Index::Tree { entries } = self.load_index(&m, name)? {
+                for e in entries.iter().filter(|e| e.kind == TreeKind::File) {
+                    let raw = String::from_utf8_lossy(&e.path);
+                    let p = crate::names::normalise(&raw);
+                    if let Some(h) = by_path.get(&*p) {
+                        out.insert(chunk_list_key(&e.chunks), **h);
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The name index of a new snapshot, with file hashes when enabled.
+    fn names_for_commit(&self, source: &str, time: u64, indexes: &[(&str, Index)]) -> io::Result<Option<NameIndex>> {
+        let plain = || NameIndex::from_indexes(indexes.iter().map(|(n, i)| (*n, i)));
+        *self.hash_stats.lock().unwrap() = None;
+        let Some(fresh) = self.file_hashes.lock().unwrap().as_mut().map(std::mem::take) else {
+            return Ok(plain());
+        };
+        if !indexes.iter().any(|(_, i)| matches!(i, Index::Tree { .. })) {
+            return Ok(plain());
+        }
+        let prev = self.previous_hashes(source, time)?;
+        let mut st = HashStats::default();
+        let names = NameIndex::from_indexes_hashed(indexes.iter().map(|(n, i)| (*n, i)), &mut |e| {
+            if e.chunks.is_empty() {
+                return Ok((e.size == 0).then_some(crate::names::EMPTY_SHA256));
+            }
+            let k = chunk_list_key(&e.chunks);
+            if let Some(h) = fresh.get(&k) {
+                st.fresh += 1;
+                return Ok(Some(*h));
+            }
+            if let Some(h) = prev.get(&k) {
+                st.carried += 1;
+                return Ok(Some(*h));
+            }
+            let mut h = <sha2::Sha256 as sha2::Digest>::new();
+            for id in &e.chunks {
+                match self.read_chunk(id) {
+                    Ok(d) => sha2::Digest::update(&mut h, &d),
+                    Err(_) => {
+                        st.failed += 1;
+                        return Ok(None);
+                    }
+                }
+            }
+            st.computed += 1;
+            Ok(Some(sha2::Digest::finalize(h).into()))
+        })?;
+        *self.hash_stats.lock().unwrap() = Some(st);
+        Ok(names)
+    }
+
     /// Commits a snapshot. All chunks were inserted before; their directory
     /// entries are made durable first, then indexes, then the manifest.
     pub fn commit_snapshot(&self, source: &str, time: u64, indexes: &[(&str, Index)]) -> io::Result<Manifest> {
@@ -749,7 +918,7 @@ impl Store {
                 .seal(ctx.as_bytes(), &postcard::to_stdvec(idx).map_err(invalid_ser)?);
             write_atomic(&dir.join(format!("{name}.idx")), &blob)?;
         }
-        if let Some(names) = crate::names::NameIndex::from_indexes(indexes.iter().map(|(n, i)| (*n, i))) {
+        if let Some(names) = self.names_for_commit(source, time, indexes)? {
             self.write_names(source, time, &names)?;
         }
         let m = Manifest {

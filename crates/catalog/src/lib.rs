@@ -819,11 +819,50 @@ CREATE TABLE agent_downloads (
   requested_by TEXT NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL);
 "#;
 
+/// v43 (Phase 28, docs/commvault-comparison.md Tier 1):
+/// - scheduled threat scans: `groups.scan_schedule` (schedule grammar of the
+///   policies, NULL = off; the newest local snapshot of each of the group's
+///   sources gets a `snapshot_scan` when due) and `groups.scan_budget_min`
+///   (NULL = the scanner's default); `snapshots.scan_state` = the verdict of the
+///   newest finished YARA scan (`clean` | `hit` | `incomplete`, NULL = unscanned),
+///   filled from `snapshot_scans` here;
+/// - IOC hash hunting: `groups.file_hashes` (record SHA-256 per file in the name
+///   index) and `hash_lists` (uploaded IOC lists, appliance-wide: normalised
+///   lower-case hex, one per line);
+/// - tenant lockdown: `tenant_lockdowns` (one row per tenant, the lockdown as
+///   JSON, `active`);
+/// - new-device sign-in notice: `login_devices` (account, fingerprint of
+///   user-agent family + client network prefix) and `users.email` (where the
+///   notice is mailed; from the profile or the OIDC `email` claim).
+///
+/// Purely additive: the previous release ignores the columns and tables.
+const SCHEMA_V43: &str = r#"
+ALTER TABLE groups ADD COLUMN scan_schedule TEXT;
+ALTER TABLE groups ADD COLUMN scan_budget_min INTEGER;
+ALTER TABLE groups ADD COLUMN file_hashes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE snapshots ADD COLUMN scan_state TEXT;
+UPDATE snapshots SET scan_state = (
+  SELECT CASE WHEN x.matches_total > 0 THEN 'hit' WHEN x.complete = 1 THEN 'clean' ELSE 'incomplete' END
+  FROM snapshot_scans x WHERE x.tenant = snapshots.tenant AND x.source = snapshots.source
+    AND x.time = snapshots.time ORDER BY x.job_id DESC LIMIT 1);
+CREATE TABLE hash_lists (
+  name TEXT PRIMARY KEY, hashes TEXT NOT NULL, count INTEGER NOT NULL, sha256 TEXT NOT NULL,
+  uploaded_by TEXT NOT NULL, uploaded_at INTEGER NOT NULL);
+CREATE TABLE tenant_lockdowns (
+  tenant TEXT PRIMARY KEY, active INTEGER NOT NULL, state TEXT NOT NULL);
+CREATE TABLE login_devices (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, fingerprint TEXT NOT NULL,
+  family TEXT NOT NULL, prefix TEXT NOT NULL, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+  PRIMARY KEY (user_id, fingerprint));
+ALTER TABLE users ADD COLUMN email TEXT;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
     SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V34, SCHEMA_V37, SCHEMA_V39, SCHEMA_V40, SCHEMA_V41,
+    SCHEMA_V43,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -3023,5 +3062,64 @@ mod tests {
             .is_err(),
             "names are unique"
         );
+    }
+
+    /// v43 (Phase 28) on top of the previous catalog: a scanned snapshot gets
+    /// its state from the newest scan, groups keep scanning and hashing off.
+    #[test]
+    fn migration_v43_threat_scans_hashes_lockdown_devices() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V43).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO tenants (name) VALUES ('t');
+                 INSERT INTO snapshots (tenant, source, time, size, local, offsite, lock_until) VALUES
+                   ('t','vm-1',1,0,1,0,0), ('t','vm-1',2,0,1,0,0), ('t','vm-1',3,0,1,0,0), ('t','vm-1',4,0,1,0,0);
+                 INSERT INTO snapshot_scans (job_id, tenant, source, time, finished, rules, files, skipped, errors,
+                   complete, matches_total) VALUES
+                   (1,'t','vm-1',1,1,'r',5,0,0,1,0), (2,'t','vm-1',2,1,'r',5,0,0,1,3),
+                   (3,'t','vm-1',3,1,'r',5,0,0,0,0), (4,'t','vm-1',1,1,'r',5,0,0,1,1);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let states: Vec<Option<String>> = conn
+            .prepare("SELECT scan_state FROM snapshots ORDER BY time")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        // snapshot 1: the newest scan (job 4) found a match
+        assert_eq!(
+            states,
+            [Some("hit".into()), Some("hit".into()), Some("incomplete".into()), None]
+        );
+        conn.execute_batch(
+            "INSERT INTO users (name, password_hash, totp_secret, role, created) VALUES ('ann','x','y','admin',1);
+             INSERT INTO login_devices (user_id, fingerprint, family, prefix, first_seen, last_seen)
+               VALUES (1, 'f', 'Firefox on Linux', '192.0.2.0/24', 1, 1);
+             INSERT INTO tenant_lockdowns (tenant, active, state) VALUES ('t', 1, '{}');
+             INSERT INTO hash_lists (name, hashes, count, sha256, uploaded_by, uploaded_at) VALUES ('l','',0,'x','ann',1);",
+        )
+        .unwrap();
+        assert!(conn
+            .execute(
+                "INSERT INTO login_devices (user_id, fingerprint, family, prefix, first_seen, last_seen) VALUES (1,'f','a','b',1,1)",
+                [],
+            )
+            .is_err());
+        conn.execute("DELETE FROM users", []).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM login_devices", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "devices go with the account");
     }
 }

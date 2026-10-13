@@ -350,6 +350,7 @@ pub async fn update_tenant(
     J(r): J<TenantUpdate>,
 ) -> ApiResult<Response> {
     ctx.require(ADMIN)?;
+    crate::lockdown::refuse(&st.cat.conn(), &name, "tenant changes")?;
     let mut s3 = check_offsite(&r.offsite)?;
     let old = tenant_value(&st.cat.conn(), &name)?.ok_or_else(ApiError::not_found)?;
     if let Some(new) = s3.as_mut().filter(|s| s.secret_key.is_none()) {
@@ -410,6 +411,7 @@ pub async fn delete_tenant(State(st): State<St>, ctx: Ctx, Path(name): Path<Stri
         if !exists(&c, "SELECT 1 FROM tenants WHERE name = ?1", [&name])? {
             return Err(ApiError::not_found());
         }
+        crate::lockdown::refuse(&c, &name, "deletes")?;
         tenant_deletable(&c, &name)?;
     }
     gate(
@@ -1313,6 +1315,7 @@ pub async fn update_source(
         .optional()?
         .ok_or_else(ApiError::not_found)?;
     ctx.owns(&tenant)?;
+    crate::lockdown::refuse(&st.cat.conn(), &tenant, "source changes")?;
     if kind.starts_with("plugin:") {
         crate::plugins::update_source(&st, id, &kind, &r.name, r.config)?;
         let out = source_json(&st.cat.conn(), id)?;
@@ -1491,6 +1494,7 @@ pub async fn delete_source(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) 
             .optional()?
             .ok_or_else(ApiError::not_found)?;
         ctx.owns(&row.0)?;
+        crate::lockdown::refuse(&c, &row.0, "deletes")?;
         if exists(&c, "SELECT 1 FROM groups WHERE source_id = ?1", [id])? {
             return Err(ApiError::conflict("source is still used by groups"));
         }
@@ -1972,7 +1976,9 @@ pub async fn list_groups(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value
         ))?
         .query_map([ctx.scope()], group_row)?
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(Json(Value::Array(crate::runctl::group_states(&c, rows)?)))
+    let mut rows = crate::runctl::group_states(&c, rows)?;
+    crate::threat::group_extras(&c, &mut rows)?; // Phase 28
+    Ok(Json(Value::Array(rows)))
 }
 
 pub async fn create_group(State(st): State<St>, ctx: Ctx, J(mut r): J<GroupReq>) -> ApiResult<Response> {
@@ -2048,6 +2054,7 @@ pub async fn update_group(
             .ok_or_else(ApiError::not_found)?;
         let tenant = old["tenant"].as_str().unwrap_or_default().to_owned();
         ctx.owns(&tenant)?;
+        crate::lockdown::refuse(&c, &tenant, "group changes")?;
         if r.policy_id != old["policy_id"].as_i64().unwrap_or_default() {
             crate::tenancy::check_policy(&c, &ctx, &tenant, r.policy_id)?;
         }
@@ -2122,6 +2129,7 @@ pub async fn delete_group(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -
         .optional()?
         .ok_or_else(ApiError::not_found)?;
     ctx.owns(g["tenant"].as_str().unwrap_or_default())?;
+    crate::lockdown::refuse(&st.cat.conn(), g["tenant"].as_str().unwrap_or_default(), "deletes")?;
     gate(&st, &ctx, "group.delete", &format!("group/{id}"), g)
 }
 

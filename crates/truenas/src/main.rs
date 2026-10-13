@@ -24,6 +24,9 @@ use truenas::{parse_snap_name, parse_source_name, TREE_INDEX};
 #[serde(deny_unknown_fields)]
 struct Config {
     tenant: String,
+    /// Phase 28: SHA-256 per file in the name index (group option `file_hashes`)
+    #[serde(default)]
+    file_hashes: bool,
     #[serde(default)]
     store: Option<PathBuf>,
     #[serde(default)]
@@ -110,7 +113,11 @@ impl Config {
         let root = self.store.as_ref().context("config: store missing")?;
         let sock = self.keyd_socket.as_ref().context("config: keyd_socket missing")?;
         let keys = keyd::fetch_keyring(sock, &self.tenant).context("keyd")?;
-        Ok(Store::open(root, keys, Options::default())?)
+        let s = Store::open(root, keys, Options::default())?;
+        if self.file_hashes {
+            s.enable_file_hashes();
+        }
+        Ok(s)
     }
     fn api(&self) -> Result<Api> {
         let a = self.api.as_ref().context("config: api missing")?;

@@ -663,6 +663,7 @@ impl<P: Platform> Session<'_, P> {
                         agent_proto::CAP_RENEW,
                         agent_proto::CAP_POLL,
                         agent_proto::CAP_EDGE,
+                        agent_proto::CAP_FILE_HASH,
                     ] {
                         if !c.iter().any(|x| x == cap) {
                             c.push(cap.into());
@@ -734,7 +735,13 @@ impl<P: Platform> Session<'_, P> {
                     )?,
                     None => error(s, E_UNKNOWN_JOB, format!("unknown job {job}"))?,
                 },
-                Message::Scan { job, base } => self.scan(s, job, base.map(|b| b.time))?,
+                Message::Scan { job, base } => self.scan(s, job, base.map(|b| b.time), false)?,
+                Message::ScanHashed { job, base } => {
+                    crate::chunk::set_file_hashing(true);
+                    let r = self.scan(s, job, base.map(|b| b.time), true);
+                    crate::chunk::set_file_hashing(false);
+                    r?
+                }
                 Message::Want { job, hashes } => self.want(s, job, &hashes, false)?,
                 Message::WantLz4 { job, hashes } => self.want(s, job, &hashes, true)?,
                 Message::Release { job, success } => match self.release(job, success) {
@@ -925,7 +932,8 @@ impl<P: Platform> Session<'_, P> {
         )
     }
 
-    fn scan(&mut self, s: &mut Stream, job: u64, base: Option<u64>) -> io::Result<()> {
+    /// `hashed` (ScanHashed, CAP_FILE_HASH): `EntryHashes` after every `Entries`.
+    fn scan(&mut self, s: &mut Stream, job: u64, base: Option<u64>, hashed: bool) -> io::Result<()> {
         let agent = self.agent;
         let Some(j) = self.jobs.get_mut(&job) else {
             return error(s, E_UNKNOWN_JOB, format!("unknown job {job}"));
@@ -933,10 +941,19 @@ impl<P: Platform> Session<'_, P> {
         j.scan = None;
         let cache = base.and_then(|_| Cache::load(&agent.paths));
         let mut batch: Vec<Entry> = vec![];
+        let mut hashes: Vec<Option<Hash>> = vec![];
         let mut bytes = 0usize;
         let mut emit = |e: Entry| -> io::Result<()> {
             if e.kind == agent_proto::Kind::File && !e.unchanged {
                 agent.ui.job_progress(e.size, 0);
+            }
+            if hashed {
+                let read = e.kind == agent_proto::Kind::File && !e.unchanged && !e.chunks.is_empty();
+                hashes.push(if read {
+                    crate::chunk::take_file_hash(&e.chunks)
+                } else {
+                    None
+                });
             }
             bytes += 96
                 + e.path.len()
@@ -951,6 +968,14 @@ impl<P: Platform> Session<'_, P> {
                         batch: std::mem::take(&mut batch),
                     },
                 )?;
+                if hashed {
+                    write_msg(
+                        s,
+                        &Message::EntryHashes {
+                            hashes: std::mem::take(&mut hashes),
+                        },
+                    )?;
+                }
                 bytes = 0;
             }
             Ok(())
@@ -965,6 +990,9 @@ impl<P: Platform> Session<'_, P> {
         };
         if !batch.is_empty() {
             write_msg(s, &Message::Entries { batch })?;
+            if hashed {
+                write_msg(s, &Message::EntryHashes { hashes })?;
+            }
         }
         let ScanOutput { stats, locator, cache } = out;
         log(format!(

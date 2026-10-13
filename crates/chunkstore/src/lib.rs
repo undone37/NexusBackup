@@ -13,4 +13,6 @@ pub mod store;
 pub use crypto::{ChunkId, Keyring};
 pub use names::NameIndex;
 pub use pipeline::ChunkSink;
-pub use store::{FileEntry, FileStats, Index, Manifest, Options, Store, TreeEntry, TreeKind, Written};
+pub use store::{
+    chunk_list_key, FileEntry, FileStats, HashStats, Index, Manifest, Options, Store, TreeEntry, TreeKind, Written,
+};

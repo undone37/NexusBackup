@@ -95,6 +95,8 @@ pub fn name(m: &Message) -> &'static str {
         Message::UpdateStaged => "UpdateStaged",
         Message::UpdateStatus => "UpdateStatus",
         Message::UpdateState { .. } => "UpdateState",
+        Message::ScanHashed { .. } => "ScanHashed",
+        Message::EntryHashes { .. } => "EntryHashes",
     }
 }
 

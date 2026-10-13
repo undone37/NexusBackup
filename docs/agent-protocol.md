@@ -373,3 +373,25 @@ edge relays its TLS records byte for byte; it holds no key of either side.
   (data without `UpdateBegin`, more data than announced, size or hash mismatch), 500 install failures.
 - Release store, manifest format, installing, the start watchdog, the scheduler's rollouts and the API:
   docs/agent-update-plan.md "Implementation".
+
+## v1.8 notes — file hashes for the IOC hash hunt (additive, Phase 28, capability `file-hash`)
+Part of the v1.8 notes; the version number stays 1 (`VERSION`) and nothing changes for agents without the
+capability. Owned here: the two messages below; the rest of v1.8 (agent updates) is described in its own section.
+
+- **Capability `file-hash`** (`CAP_FILE_HASH`, all agents built on `agent-core`): the agent computes the SHA-256 of
+  every file it reads in a scan when the appliance asks for it.
+- `ScanHashed { job, base }` (tag 56, appended after the v1.8 update messages 49–55): like `Scan`. Sent instead of `Scan` only
+  to agents with the capability, and only when the group has `file_hashes` on.
+- `EntryHashes { hashes: [Option<[u8; 32]>] }` (tag 57), agent → appliance, right after every `Entries` batch of a
+  `ScanHashed`: one element per entry of that batch, same order; `None` = not a regular file, not read in this scan
+  (unchanged, taken from the agent's metadata cache) or the read failed. At most `MAX_BATCH` elements (`check`).
+- The agent hashes while it chunks (`agent_core::chunk`, same read; no second pass); a hash belongs to the file
+  whose chunk list it was computed with, so Windows alternate data streams read in between do not mix up.
+- **Appliance:** `nexus-agentctl` refuses `Entries` without the `EntryHashes` of the previous batch, a list of
+  the wrong length and `EntryHashes` outside `ScanHashed`. A hash is recorded only for regular files with chunks,
+  keyed by the file's keyed chunk list; at commit the store writes the name index v2
+  (docs/file-index.md "File hashes"). Files the agent did not read carry the hash of the previous snapshot when
+  their chunk list is the same; anything left is read back from the store. An agent without the capability gets
+  `Scan` as before and the appliance computes every hash from the stored chunks (a log line says so).
+- A lying agent can only hide or fake hashes of its own files: the hashes are used for the IOC search alone, never
+  for deduplication or integrity.
