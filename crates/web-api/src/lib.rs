@@ -35,6 +35,7 @@ pub mod firewall;
 pub mod fleet;
 pub mod forwarding;
 pub mod hardware;
+pub mod network;
 pub mod holds;
 pub mod impersonate;
 pub mod incident;
@@ -135,6 +136,8 @@ pub struct AppState {
     pub console_dir: std::sync::OnceLock<PathBuf>,
     /// nexus-disks control dir (default: env `NEXUS_DISKS_DIR` or /var/lib/nexus/disks)
     pub disks_dir: std::sync::OnceLock<PathBuf>,
+    /// nexus-net control dir (default: env `NEXUS_NET_DIR` or /var/lib/nexus/net)
+    pub net_dir: std::sync::OnceLock<PathBuf>,
     /// nexus-nft-sync status file (default: env `NEXUS_NFT_STATUS` or /run/nexus-nft-status/status.json)
     pub nft_status: std::sync::OnceLock<PathBuf>,
     /// `GET /dashboard` answers, ≤ 60 s old
@@ -170,6 +173,7 @@ impl AppState {
             config_backup_dir: std::sync::OnceLock::new(),
             console_dir: std::sync::OnceLock::new(),
             disks_dir: std::sync::OnceLock::new(),
+            net_dir: std::sync::OnceLock::new(),
             nft_status: std::sync::OnceLock::new(),
             dashboard: Default::default(),
             oidc: Default::default(),
@@ -620,6 +624,7 @@ pub fn router(st: St) -> Router {
         .merge(firewall::routes())
         .merge(holds::routes())
         .merge(hardware::routes())
+        .merge(network::routes())
         .merge(tenants::routes())
         .merge(tenancy::routes())
         .merge(vault::routes())

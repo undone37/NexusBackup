@@ -270,7 +270,39 @@ pub struct NetConfig {
     pub ipv4: Ipv4Config,
     #[serde(default)]
     pub hostname: Option<String>,
+    /// bond / VLAN / MTU of the management interface (Phase 22a)
+    #[serde(default, skip_serializing_if = "Link::is_plain")]
+    pub link: Link,
 }
+
+/// Bond, VLAN and MTU of the management interface (Phase 22a). Any of them set: the profiles
+/// are written by `nexus-net console-apply` (the keyfiles Settings → Network writes, from
+/// [`NetConfig::network_config`]); none: the plain `nmcli connection add` of before.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Link {
+    /// more NICs bonded with `nic` (as `bond0`)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bond: Vec<String>,
+    /// active-backup (default) or 802.3ad (LACP; the switch ports must be a LACP group)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bond_mode: Option<String>,
+    /// tagged VLAN on the NIC or bond
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vlan: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtu: Option<u32>,
+}
+
+impl Link {
+    pub fn is_plain(&self) -> bool {
+        self.bond.is_empty() && self.vlan.is_none() && self.mtu.is_none()
+    }
+}
+
+/// The root helper that writes NetworkManager keyfiles (Settings → Network).
+pub const NEXUS_NET: &str = "/usr/libexec/nexus/nexus-net";
+pub const BOND_NAME: &str = "bond0";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Nic {
@@ -384,6 +416,18 @@ impl NetConfig {
         if let Some(h) = &self.hostname {
             validate_hostname(h)?;
         }
+        if !self.link.is_plain() {
+            // the shape only: whether the NICs exist is checked when it is applied
+            let nics: Vec<&str> = std::iter::once(self.nic.as_str())
+                .chain(self.link.bond.iter().map(String::as_str))
+                .collect();
+            let host = catalog::network::Host {
+                nics,
+                console_mgmt: None,
+                had_mgmt: false,
+            };
+            catalog::network::validate(&self.network_config(), &host).map_err(|e| anyhow!(e))?;
+        }
         if let Ipv4Config::Static {
             address,
             prefix,
@@ -408,6 +452,95 @@ impl NetConfig {
             }
         }
         Ok(())
+    }
+
+    /// The interface the management addresses end up on.
+    pub fn mgmt_ifname(&self) -> String {
+        let base = if self.link.bond.is_empty() {
+            self.nic.clone()
+        } else {
+            BOND_NAME.to_owned()
+        };
+        match self.link.vlan {
+            Some(id) if base.len() + 1 + id.to_string().len() <= 15 => format!("{base}.{id}"),
+            Some(id) => format!("vlan{id}"),
+            None => base,
+        }
+    }
+
+    /// The management interface as a Settings → Network configuration (catalog::network):
+    /// what `nexus-net console-apply` writes when the link is not plain.
+    pub fn network_config(&self) -> catalog::network::Config {
+        use catalog::network::{Config, Iface};
+        let l = &self.link;
+        let mut ip = Iface {
+            role: Some("management".into()),
+            mtu: l.mtu,
+            ..Default::default()
+        };
+        match &self.ipv4 {
+            Ipv4Config::Dhcp => ip.dhcp = true,
+            Ipv4Config::Static {
+                address,
+                prefix,
+                gateway,
+                dns,
+            } => {
+                ip.addresses = vec![format!("{address}/{prefix}")];
+                ip.gateway = gateway.map(|g| g.to_string());
+                ip.dns = dns.iter().map(|d| d.to_string()).collect();
+            }
+        }
+        let mut out = Vec::new();
+        let base = if l.bond.is_empty() {
+            self.nic.clone()
+        } else {
+            let ports = std::iter::once(self.nic.clone()).chain(l.bond.iter().cloned()).collect();
+            out.push(Iface {
+                name: BOND_NAME.into(),
+                kind: "bond".into(),
+                ports,
+                mode: Some(l.bond_mode.clone().unwrap_or_else(|| "active-backup".into())),
+                mtu: l.mtu,
+                ..Default::default()
+            });
+            BOND_NAME.into()
+        };
+        ip.name = self.mgmt_ifname();
+        match l.vlan {
+            Some(id) => {
+                if l.bond.is_empty() && l.mtu.is_some() {
+                    // the VLAN's MTU needs the NIC's
+                    out.push(Iface {
+                        name: self.nic.clone(),
+                        kind: "ethernet".into(),
+                        mtu: l.mtu,
+                        ..Default::default()
+                    });
+                }
+                ip.kind = "vlan".into();
+                ip.parent = Some(base);
+                ip.vlan_id = Some(id);
+                out.push(ip);
+            }
+            None if l.bond.is_empty() => {
+                ip.kind = "ethernet".into();
+                out.push(ip);
+            }
+            // the bond itself carries the addresses
+            None => {
+                let b = &mut out[0];
+                ip.name = b.name.clone();
+                ip.kind = b.kind.clone();
+                ip.ports = std::mem::take(&mut b.ports);
+                ip.mode = b.mode.take();
+                *b = ip;
+            }
+        }
+        Config {
+            interfaces: out,
+            offsite_role: "management".into(),
+        }
     }
 
     /// `nmcli connection add …` arguments (pure, for tests and display).
@@ -749,16 +882,38 @@ impl Setup {
         if let Some(h) = &cfg.hostname {
             self.cmd("hostnamectl", &["set-hostname", h])?;
         }
-        // absent on first run; anything else surfaces in the `add` below
-        let _ = self.cmd("nmcli", &["connection", "delete", NM_CONNECTION]);
-        let add = cfg.nmcli_add_args();
-        self.cmd("nmcli", &add.iter().map(String::as_str).collect::<Vec<_>>())?;
-        self.cmd("nmcli", &["--wait", "30", "connection", "up", NM_CONNECTION])?;
+        if cfg.link.is_plain() {
+            // the management network from scratch: every appliance profile goes, also the
+            // interfaces of Settings → Network (nexus-net notices and starts from empty)
+            let names = self.cmd("nmcli", &["-g", "NAME", "connection", "show"]).unwrap_or_default();
+            for n in names.lines().map(str::trim).filter(|n| n.starts_with("nexus-") && *n != NM_CONNECTION) {
+                let _ = self.cmd("nmcli", &["connection", "delete", n]);
+            }
+            // absent on first run; anything else surfaces in the `add` below
+            let _ = self.cmd("nmcli", &["connection", "delete", NM_CONNECTION]);
+            let add = cfg.nmcli_add_args();
+            self.cmd("nmcli", &add.iter().map(String::as_str).collect::<Vec<_>>())?;
+            self.cmd("nmcli", &["--wait", "30", "connection", "up", NM_CONNECTION])?;
+        } else {
+            // bond / VLAN / MTU: the keyfiles of Settings → Network, written by nexus-net
+            // (it replaces every appliance profile and activates the new ones)
+            if !self.dry_run {
+                let nics = list_nics(&self.paths.sys_class_net)?;
+                for n in std::iter::once(&cfg.nic).chain(&cfg.link.bond) {
+                    if !nics.iter().any(|x| &x.name == n) {
+                        bail!("there is no network card {n}");
+                    }
+                }
+            }
+            let j = serde_json::to_string(&cfg.network_config())?;
+            self.cmd(NEXUS_NET, &["console-apply", &j])?;
+        }
         let ips = match &cfg.ipv4 {
             Ipv4Config::Static { address, .. } => vec![IpAddr::V4(*address)],
-            Ipv4Config::Dhcp => {
-                parse_nmcli_addresses(&self.cmd("nmcli", &["-g", "IP4.ADDRESS", "device", "show", &cfg.nic])?)
-            }
+            Ipv4Config::Dhcp => parse_nmcli_addresses(&self.cmd(
+                "nmcli",
+                &["-g", "IP4.ADDRESS", "device", "show", &cfg.mgmt_ifname()],
+            )?),
         };
         let hostname = cfg.hostname.clone().unwrap_or_else(|| self.hostname());
         let (method, gateway, dns) = match &cfg.ipv4 {
@@ -769,7 +924,7 @@ impl Setup {
             "setup.network",
             &format!("nic/{}", cfg.nic),
             json!({"nic": cfg.nic, "method": method, "addresses": ips, "gateway": gateway, "dns": dns,
-                   "hostname": hostname, "dry_run": self.dry_run}),
+                   "hostname": hostname, "link": cfg.link, "dry_run": self.dry_run}),
         )?;
         Ok(ips)
     }
@@ -1157,6 +1312,7 @@ mod tests {
                 dns: vec!["192.0.2.53".parse().unwrap()],
             },
             hostname: Some("nexus01".into()),
+            link: Link::default(),
         }
     }
 
@@ -1186,6 +1342,7 @@ mod tests {
             nic: "eno1".into(),
             ipv4: Ipv4Config::Dhcp,
             hostname: None,
+            link: Link::default(),
         };
         assert!(d.nmcli_add_args().join(" ").ends_with("ipv4.method auto"));
 
@@ -1205,6 +1362,56 @@ mod tests {
         );
         let j: NetConfig = serde_json::from_str(r#"{"nic":"eth1","method":"dhcp"}"#).unwrap();
         assert_eq!(j.ipv4, Ipv4Config::Dhcp);
+        assert!(j.link.is_plain());
+    }
+
+    /// Phase 22a: bond / VLAN / MTU at the console become a Settings → Network configuration.
+    #[test]
+    fn management_link() {
+        let mut c = stat("192.0.2.10", 24, Some("192.0.2.1"));
+        c.link = Link {
+            bond: vec!["eth1".into()],
+            bond_mode: Some("802.3ad".into()),
+            vlan: Some(20),
+            mtu: Some(9000),
+        };
+        c.validate().unwrap();
+        assert_eq!(c.mgmt_ifname(), "bond0.20");
+        let n = serde_json::to_value(c.network_config()).unwrap();
+        assert_eq!(n["interfaces"][0]["kind"], "bond");
+        assert_eq!(n["interfaces"][0]["ports"], serde_json::json!(["eth0", "eth1"]));
+        assert_eq!(n["interfaces"][0]["role"], Value::Null);
+        assert_eq!(n["interfaces"][1]["parent"], "bond0");
+        assert_eq!(n["interfaces"][1]["role"], "management");
+        assert_eq!(n["interfaces"][1]["gateway"], "192.0.2.1");
+        // bond without VLAN: the bond carries the addresses
+        c.link.vlan = None;
+        let n = c.network_config();
+        assert_eq!(n.interfaces.len(), 1);
+        assert_eq!((n.interfaces[0].name.as_str(), n.interfaces[0].addresses.len()), ("bond0", 1));
+        // VLAN with MTU on a plain NIC: the NIC gets the MTU too
+        c.link = Link {
+            vlan: Some(4094),
+            mtu: Some(9000),
+            ..Default::default()
+        };
+        c.nic = "enp0s31f6".into();
+        let n = c.network_config();
+        assert_eq!(n.interfaces[0].name, "enp0s31f6");
+        assert_eq!(n.interfaces[1].name, "enp0s31f6.4094");
+        c.validate().unwrap();
+        c.link.mtu = Some(100);
+        assert!(c.validate().is_err());
+        c.link = Link {
+            bond: vec!["eth0".into()],
+            ..Default::default()
+        };
+        c.nic = "eth0".into();
+        assert!(c.validate().is_err(), "a NIC twice");
+        let j: NetConfig =
+            serde_json::from_str(r#"{"nic":"eth1","method":"dhcp","link":{"bond":["eth2"],"bond_mode":"active-backup"}}"#)
+                .unwrap();
+        assert_eq!(j.network_config().interfaces[0].ports, vec!["eth1", "eth2"]);
     }
 
     #[test]
