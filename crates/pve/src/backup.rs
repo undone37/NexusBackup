@@ -586,6 +586,9 @@ fn pull_device(
         // locally and names the all-zero blocks (an older helper refuses: nothing skipped)
         zero = zero_map(ssh, vmid, &dev.name, &scan_extents(base, dev.size, &dirty), at);
     }
+    // only runs of at least MIN_ZERO_RUN are skipped: each skip splits the reads, and short
+    // NBD reads over SSH are latency-bound (fragmented 64 KiB holes cut a 150 MB/s read to 29 MB/s)
+    zero.retain(|z| z.1 >= MIN_ZERO_RUN);
     let (mut read, mut skipped) = (0, 0);
     let total = Store::image_extents_bytes(base, IMAGE_CHUNK_SIZE, dev.size, &dirty);
     let mut meter = Meter::new(exclude::disk_key(&dev.name), at.0, at.1, Some(total));
@@ -716,6 +719,7 @@ fn zero_map(ssh: &SshNode, vmid: u32, export: &str, extents: &[(u64, u64)], at: 
 }
 
 const ALLOCATION: &str = "base:allocation";
+const MIN_ZERO_RUN: u64 = 1 << 20;
 const NBD_STATE_ZERO: u32 = 2;
 
 /// `[off, off+len)` split at the zero extents (sorted, disjoint): `(start, end, is_zero)`.
