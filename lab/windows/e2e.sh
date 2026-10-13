@@ -14,6 +14,7 @@
 #     confine  junction to C:\Windows inside the target: overwrite=always restore writes nothing under C:\Windows
 #     update   agent_update on an MSI install: refused ("package")
 #     service  taskkill /f -> SCM restarts the service; sc stop -> stays stopped; start again
+#     ntds     (DC, not default) source with C:\Windows\NTDS: NTDS writer [ok], consistent
 # env: as lab/linux/e2e.sh (ROOT, PORT); MSI (target/packages/nexus-agent-<v>-x64.msi); HOST (VM address the
 #      appliance connects to; default: from the guest agent)
 set -euo pipefail
@@ -245,6 +246,35 @@ step_update() {
 	j=$(wait_job admin "$(jq -r .id <<<"$r")" 300)
 	[ "$(jq -r .state <<<"$j")" = failed ] || die "update of an MSI install was not refused"
 	result update_msi "refused: $(jq -r .log <<<"$j" | grep -iE 'package|msi|self.update' | head -1)"
+}
+
+# domain controller: the NTDS writer takes part and the AD database files are in the snapshot
+step_ntds() {
+	state
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	local src j
+	src=$(api admin GET /sources | jq -r --arg n "$NAME" '.[] | select(.name==$n) | .id')
+	api admin PUT "/sources/$src" "$(jq -nc --arg n "$NAME" --arg a "$AGENT" --arg d "$DATA" \
+		'{name:$n, config:{agent_id:$a, paths:[$d, "C:\\Windows\\NTDS"], excludes:["*.tmp"]}}')" >/dev/null
+	expect 200 "source with NTDS"
+	j=$(backup)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "backup: $(jq -r .log <<<"$j" | tail -n 30)"
+	jq -r .log <<<"$j" | grep -E 'NTDS|writers:' | sed 's/^/  log: /' >&2
+	jq -r .log <<<"$j" | grep -qE '\[ok\] NTDS' || die "NTDS writer did not take part"
+	jq -r .log <<<"$j" | grep -q '^inconsistent ' && die "backup not consistent"
+	# the restored database must be in a clean state (what the writer's freeze guarantees)
+	local t r
+	t="C:\\nexus-lab\\ntds-restore\\$(date +%s)"
+	r=$(api admin POST /jobs "$(jq -nc --arg t "$TENANT" --arg s "host-$AGENT" --argjson tm "$(latest)" --arg tg "$t" --arg c "$NAME" \
+		'{kind:"restore_files", tenant:$t, params:{source:$s, time:$tm, paths:["C:\\Windows\\NTDS"], target:$tg, overwrite:"never", confirm:$c}}')")
+	expect 202 "restore NTDS"
+	j=$(wait_job admin "$(jq -r .id <<<"$r")" 1800)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "restore NTDS: $(jq -r .log <<<"$j" | tail -n 20)"
+	local st
+	st=$(win "esentutl /mh (Get-ChildItem -LiteralPath '$t' -Recurse -Filter ntds.dit | Select -First 1 -Expand FullName) | Select-String 'State:'")
+	log "restored ntds.dit: $st"
+	grep -q 'Clean Shutdown' <<<"$st" || die "restored ntds.dit not clean: $st"
+	result ntds "NTDS writer ok, restored ntds.dit: Clean Shutdown"
 }
 
 step_service() {
