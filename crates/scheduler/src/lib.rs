@@ -1460,6 +1460,7 @@ impl Scheduler {
                 let tail: String = log
                     .lines()
                     .rev()
+                    .filter(|l| !run::is_time_mark(l))
                     .take(3)
                     .collect::<Vec<_>>()
                     .into_iter()

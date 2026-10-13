@@ -2060,6 +2060,10 @@ fieldset.plain {
 
 /* ================================================================ misc */
 
+pre.log .log-time {
+  color: var(--muted);
+  user-select: none;
+}
 pre.log {
   background: #0b1320;
   color: #d5deea;

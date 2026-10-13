@@ -424,6 +424,8 @@ source), the page says so below the figures; the figures are those of the last r
 
 ![A share backup that was not point-in-time consistent](images/job-inconsistent.png)
 
+Every log line shows the time it was written (local time of your browser). Logs of jobs from before this change show no time column.
+
 ## Alerts
 
 ![Alerts](images/alerts.png)

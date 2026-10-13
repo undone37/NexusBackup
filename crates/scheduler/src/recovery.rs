@@ -589,7 +589,11 @@ impl Scheduler {
                 );
             }
             _ => {
-                let tail = log.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("no answer");
+                let tail = log
+                    .lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty() && !crate::run::is_time_mark(l))
+                    .unwrap_or("no answer");
                 check(
                     "target".into(),
                     false,

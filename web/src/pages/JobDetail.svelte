@@ -5,7 +5,7 @@
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
   import { href } from '../lib/router.svelte';
-  import { terminal, downloadUrl, kindLabel } from '../lib/jobs';
+  import { terminal, downloadUrl, kindLabel, logLines, clock } from '../lib/jobs';
   import { fmtBytes, fmtDuration, fmtRate, fmtTime, fmtValue } from '../lib/format';
   import { t } from '../lib/i18n';
   import type { Job } from '../lib/types';
@@ -35,6 +35,9 @@
   }
 
   const live = $derived(!!job && !terminal(job.state));
+  // logs written before the time marks (and plain logs) show without a time column
+  const logView = $derived(logLines(job?.log));
+  const logTimed = $derived(logView.some((l) => l.time !== null));
   const prog = $derived(job?.state === 'running' ? (job.progress ?? null) : null);
   // the connector reports about every 2 s while data flows; a long gap means it waits (vzdump start, a slow source)
   const quiet = $derived(prog?.updated ? Math.max(0, Date.now() / 1000 - prog.updated) : 0);
@@ -261,7 +264,8 @@
         >
       </p>
     {/if}
-    <pre class="log" bind:this={logEl} aria-labelledby="jl">{job.log || '…'}</pre>
+    <pre class="log" bind:this={logEl} aria-labelledby="jl">{#if job.log}{#each logView as l, i (i)}{#if logTimed}<span class="log-time">{l.time === null ? '        ' : clock(l.time)}</span> {/if}{l.text}
+{/each}{:else}…{/if}</pre>
   </section>
 {:else if !error}
   <p class="muted" aria-busy="true">{t.loading}</p>

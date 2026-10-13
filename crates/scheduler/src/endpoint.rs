@@ -190,7 +190,7 @@ pub fn summary(job: &Job, agent: &str, state: &str, started: i64, ended: i64, lo
             .find(|l| l.contains("rror"))
             .or(lines.last())
             .copied()
-            .or(log.lines().last())
+            .or(log.lines().rev().find(|l| !crate::run::is_time_mark(l)))
             .map(|l| l.chars().take(MAX_LOG_LINE).collect::<String>())
             .unwrap_or_default()
     } else {

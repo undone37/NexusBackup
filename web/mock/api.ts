@@ -4080,8 +4080,28 @@ function mockProgress(j: Job): Json | null {
 const pubJob = (j: Job, withLog: boolean) => {
   const { plan: _p, duration: _d, fail: _f, cancel_at: _c, items: _i, log, ...rest } = j;
   const out = { attempt: 1, retry_of: null, not_before: null, cancel_by: null, ...rest, progress: mockProgress(j) };
-  return withLog ? { ...out, log } : out;
+  return withLog ? { ...out, log: timeMarked(j, log) } : out;
 };
+/** Like the scheduler: an `@<unix seconds>` mark before output whenever the second changed. The
+ * mock's logs carry ISO times at the line start; they become marks (the real log lines have none). */
+function timeMarked(j: Job, log: string): string {
+  if (!log || /^@\d+$/m.test(log)) return log;
+  let last = -1;
+  let t = j.started ?? null;
+  return log
+    .split('\n')
+    .map((l) => {
+      const m = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) (.*)$/.exec(l);
+      if (m) {
+        t = Math.floor(Date.parse(m[1]) / 1000);
+        l = m[2];
+      }
+      if (t === null || t === last || l === '') return l;
+      last = t;
+      return `@${t}\n${l}`;
+    })
+    .join('\n');
+}
 on('GET', '/jobs', (c) => {
   const u = need(c.user);
   const s = c.query.get('state');

@@ -86,3 +86,21 @@ export function agentStatus(a: Agent, now = Date.now() / 1000): AgentStatus {
   if (a.enrolled_at !== null) return 'enrolled';
   return a.token_expires !== null && a.token_expires > now ? 'pending' : 'expired';
 }
+
+/** Job log lines with their time: `@<unix seconds>` mark lines (written by the scheduler before
+ * output whenever the second changed) set the time of the lines after them and are not shown. */
+export function logLines(log: string | null | undefined): { time: number | null; text: string }[] {
+  const out: { time: number | null; text: string }[] = [];
+  let time: number | null = null;
+  for (const text of (log ?? '').split('\n')) {
+    const m = /^@(\d+)$/.exec(text);
+    if (m) time = Number(m[1]);
+    else out.push({ time, text });
+  }
+  if (out.length && out[out.length - 1].text === '') out.pop();
+  return out;
+}
+
+/** HH:MM:SS of a unix time, local. */
+export const clock = (s: number) =>
+  new Date(s * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });

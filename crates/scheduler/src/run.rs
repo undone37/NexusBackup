@@ -28,6 +28,16 @@ pub struct BoundedLog {
     truncated: bool,
     /// changes so far (the live writer compares)
     seq: u64,
+    /// second of the last `@<unix seconds>` time mark
+    mark: u64,
+}
+
+/// A time mark line of a job log: `@<unix seconds>`, written before output whenever the second
+/// changed. Parsers match line prefixes (`committed `, `nexus-stats ` …) and pass over these; the
+/// UI shows them as the time of the lines that follow.
+pub fn is_time_mark(line: &str) -> bool {
+    line.strip_prefix('@')
+        .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
 }
 
 impl BoundedLog {
@@ -37,11 +47,21 @@ impl BoundedLog {
             max: max.max(64),
             truncated: false,
             seq: 0,
+            mark: 0,
         }
     }
 
     pub fn push(&mut self, s: &str) {
         self.seq += 1;
+        if self.buf.is_empty() || self.buf.ends_with('\n') {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            if now != self.mark && !s.is_empty() {
+                self.mark = now;
+                self.buf.push_str(&format!("@{now}\n"));
+            }
+        }
         self.buf.push_str(s);
         if self.buf.len() > self.max {
             let mut cut = self.buf.len() - self.max * 3 / 4;
@@ -763,6 +783,18 @@ mod tests {
     }
 
     #[test]
+    fn log_gets_time_marks_parsers_ignore() {
+        let mut l = BoundedLog::new(1 << 20);
+        l.line("committed vm-1/2");
+        l.line("nexus-stats {}");
+        let out = l.finish();
+        assert!(is_time_mark(out.lines().next().unwrap()), "{out}");
+        assert!(out.lines().filter(|x| is_time_mark(x)).count() <= 2, "{out}");
+        assert!(out.lines().any(|x| x == "committed vm-1/2"));
+        assert!(!is_time_mark("@") && !is_time_mark("@12a") && !is_time_mark("committed @1"));
+    }
+
+    #[test]
     fn progress_lines_split_across_reads_stay_out_of_the_log() {
         let log = Mutex::new(BoundedLog::new(1 << 16));
         let progress: Progress = Default::default();
@@ -774,9 +806,15 @@ mod tests {
             Some(&progress),
             false,
         );
-        assert_eq!(log.lock().unwrap().snapshot(), "one\ntwo\n");
+        let text = |log: &Mutex<BoundedLog>| {
+            let s = log.lock().unwrap().snapshot();
+            s.split_inclusive('\n')
+                .filter(|x| !is_time_mark(x.trim_end()))
+                .collect::<String>()
+        };
+        assert_eq!(text(&log), "one\ntwo\n");
         l.feed(b"ee", &log, Some(&progress), true);
-        assert_eq!(log.lock().unwrap().snapshot(), "one\ntwo\nthree");
+        assert_eq!(text(&log), "one\ntwo\nthree");
         let p = progress.lock().unwrap().snapshot(Instant::now()).unwrap();
         assert_eq!((p["item"].as_str(), p["done"].as_u64()), (Some("vm-1"), Some(7)));
     }
