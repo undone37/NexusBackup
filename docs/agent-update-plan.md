@@ -1,6 +1,7 @@
 # Plan: pushing agent updates from the appliance (Phase 27)
 
-Status: proposed 2026-10-13, not started. Scope: Linux agent (bundle, `.deb`, `.rpm`; x86_64 + aarch64),
+Status: proposed 2026-10-13, decided and implemented 2026-10-14 (see "Implementation" at the end; "Where we are
+today" describes the state before Phase 27). Scope: Linux agent (bundle, `.deb`, `.rpm`; x86_64 + aarch64),
 Windows agent (MSI, manual install), and the desktop GUI that ships with them.
 
 ## Where we are today

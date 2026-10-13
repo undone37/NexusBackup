@@ -598,11 +598,12 @@ pub fn settle_package_at(
     }
 }
 
-/// Splits installer output into its last `n` non-empty lines.
+/// Splits installer output into its last `n` non-empty lines (progress lines rewritten
+/// with `\r` keep only their last state).
 pub fn tail_lines(text: &str, n: usize) -> Vec<String> {
     let lines: Vec<String> = text
         .lines()
-        .map(str::trim_end)
+        .map(|l| l.trim_end().rsplit('\r').next().unwrap_or_default().trim_end())
         .filter(|l| !l.is_empty())
         .map(str::to_owned)
         .collect();
@@ -1080,6 +1081,10 @@ mod tests {
         assert!(!settle_package_at(&p, "0.1.0", &failed, 1100));
         assert!(read_pending(&p).is_some());
         assert_eq!(tail_lines("a\n\nb\nc\n", 2), ["b", "c"]);
+        assert_eq!(
+            tail_lines("(Reading 5%\r(Reading 100%\r\nok", 5),
+            ["(Reading 100%", "ok"]
+        );
     }
 
     #[test]

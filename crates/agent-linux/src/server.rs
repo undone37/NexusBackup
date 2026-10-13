@@ -415,15 +415,34 @@ impl Platform for Linux {
         };
         let Ok(show) = crate::volumes::run_tool(
             "systemctl",
-            &["show", unit, "--property=LoadState,ActiveState,Result,ExecMainStatus"],
+            &[
+                "show",
+                unit,
+                "--property=LoadState,ActiveState,Result,ExecMainStatus,InvocationID",
+            ],
         ) else {
             return InstallResult::Unknown;
         };
         match update::parse_unit_show(&show) {
             InstallResult::Failed(e, _) => {
-                let log = crate::volumes::run_tool("journalctl", &["-u", unit, "-n", "30", "--no-pager", "-o", "cat"])
-                    .map(|t| agent_core::update::tail_lines(&t, 30))
-                    .unwrap_or_default();
+                // this attempt only (the unit name is reused by every update)
+                let inv = show
+                    .lines()
+                    .find_map(|l| l.strip_prefix("InvocationID="))
+                    .unwrap_or_default()
+                    .trim();
+                let filter = if inv.len() == 32 && inv.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    format!("_SYSTEMD_INVOCATION_ID={inv}")
+                } else {
+                    format!("_SYSTEMD_UNIT={unit}")
+                };
+                let since = format!("@{}", pending.started);
+                let log = crate::volumes::run_tool(
+                    "journalctl",
+                    &[&filter, "--since", &since, "-n", "30", "--no-pager", "-o", "cat"],
+                )
+                .map(|t| agent_core::update::tail_lines(&t, 30))
+                .unwrap_or_default();
                 let _ = crate::volumes::run_tool("systemctl", &["reset-failed", unit]);
                 InstallResult::Failed(e, log)
             }

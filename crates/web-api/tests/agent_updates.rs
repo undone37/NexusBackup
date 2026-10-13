@@ -320,10 +320,7 @@ async fn releases_upload_list_download_and_tags() {
     let url = r.body["url"].as_str().unwrap().to_owned();
     let (st, data) = t.download(&url, &tam).await;
     assert_eq!((st, data.as_slice()), (StatusCode::OK, &b"!<arch>v2"[..]));
-    assert_eq!(
-        t.download(&url, &alice).await.0,
-        StatusCode::NOT_FOUND
-    );
+    assert_eq!(t.download(&url, &alice).await.0, StatusCode::NOT_FOUND);
     assert_eq!(
         t.post("/api/v1/agent-releases/0.2.0/download", &tina, json!({"artifact": "x"}))
             .await
