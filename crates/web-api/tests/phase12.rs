@@ -817,7 +817,10 @@ async fn oidc_settings_quorum_and_login_flow() {
     let sam = t.login("sam").await;
     // nothing configured
     let r = t.anon("/api/v1/auth/oidc", None).await;
-    assert_eq!(r.body, json!({"enabled": false, "label": "Sign in with SSO"}));
+    assert_eq!(
+        r.body,
+        json!({"enabled": false, "label": "Sign in with SSO", "organizations": false})
+    );
     assert_eq!(
         t.anon("/api/v1/auth/oidc/start", None).await.location(),
         "/#/login?oidc_error=disabled"
@@ -871,7 +874,7 @@ async fn oidc_settings_quorum_and_login_flow() {
     );
     assert_eq!(
         t.anon("/api/v1/auth/oidc", None).await.body,
-        json!({"enabled": true, "label": "Sign in with Fake IdP"})
+        json!({"enabled": true, "label": "Sign in with Fake IdP", "organizations": false})
     );
     // test endpoint: discovery + JWKS, endpoints recorded for the firewall
     let r = t.post("/api/v1/settings/oidc/test", &alice, json!({})).await;
@@ -1620,4 +1623,127 @@ async fn update_registry_credential() {
         .await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(!f.exists());
+}
+
+/// Phase 23a: a tenant's own IdP. Mappings only to tenant roles of that tenant,
+/// approval like `oidc.update`, the login page picks it by tenant name or e-mail
+/// domain, accounts stay separate from the appliance IdP's (same issuer here).
+#[tokio::test]
+async fn tenant_idp_login() {
+    let t = T::new();
+    let idp = fake_idp().await;
+    let alice = t.login("alice").await;
+    let sam = t.login("sam").await;
+    let base = json!({"enabled": true, "issuer": idp.url, "client_id": "nexusbackup", "client_secret": "client-s3cret",
+        "scopes": ["openid"], "label": "ACME login", "domains": ["ACME.example", "@acme-corp.example"]});
+    let with = |m: Value| {
+        let mut v = base.clone();
+        v["mappings"] = m;
+        v
+    };
+    // provider roles or another tenant: refused
+    for m in [
+        json!([{"group": "g", "role": "admin", "tenants": []}]),
+        json!([{"group": "g", "role": "tenant_admin", "tenants": ["globex"]}]),
+    ] {
+        let r = t.put("/api/v1/tenants/acme/oidc", &alice, with(m)).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    }
+    // the appliance-wide endpoint takes no domains
+    assert_eq!(
+        t.put("/api/v1/settings/oidc", &alice, with(json!([]))).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    let maps = json!([{"group": "acme-admins", "role": "tenant_admin", "tenants": []},
+                      {"group": "acme-staff", "role": "viewer", "tenants": ["acme"]}]);
+    assert_eq!(
+        t.put("/api/v1/tenants/acme/oidc", &sam, with(maps.clone()))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let r = t.put("/api/v1/tenants/acme/oidc", &alice, with(maps.clone())).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    assert_eq!(t.anon("/api/v1/auth/oidc", None).await.body["organizations"], false);
+    let r = t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({})).await;
+    assert_eq!(r.body["state"], "executed", "{:?}", r.body);
+    let g = t.get("/api/v1/tenants/acme/oidc", &sam).await;
+    assert_eq!(g.body["domains"], json!(["acme.example", "acme-corp.example"]));
+    assert_eq!(g.body["mappings"][0]["tenants"], json!(["acme"]));
+    assert_eq!(
+        (g.body["client_secret_set"].as_bool(), g.body.get("client_secret")),
+        (Some(true), None)
+    );
+    assert_eq!(
+        t.get("/api/v1/tenants/acme/oidc", &t.login("otto").await).await.status,
+        StatusCode::FORBIDDEN
+    );
+    // the anonymous login page learns only that organisations exist
+    assert_eq!(
+        t.anon("/api/v1/auth/oidc", None).await.body,
+        json!({"enabled": false, "label": "Sign in with SSO", "organizations": true})
+    );
+    // a domain belongs to one tenant
+    t.approvals(false);
+    let mut other = base.clone();
+    other["domains"] = json!(["acme.example"]);
+    other["mappings"] = json!([{"group": "x", "role": "tenant_user", "tenants": []}]);
+    assert_eq!(
+        t.put("/api/v1/tenants/globex/oidc", &alice, other).await.status,
+        StatusCode::CONFLICT
+    );
+    // unknown organisation / domain
+    for org in ["nobody", "x%40unknown.example"] {
+        assert_eq!(
+            t.anon(&format!("/api/v1/auth/oidc/start?org={org}"), None)
+                .await
+                .location(),
+            "/#/login?oidc_error=org"
+        );
+    }
+    let r = t.post("/api/v1/tenants/acme/oidc/test", &alice, json!({})).await;
+    assert_eq!(r.body, json!({"discovery": "ok", "jwks": "ok: 1 keys"}));
+    let ep: Option<String> =
+        t.st.cat
+            .conn()
+            .query_row("SELECT endpoints FROM tenant_idps WHERE tenant = 'acme'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+    assert!(ep.unwrap().contains("/jwks"));
+
+    // login by e-mail domain: a tenant admin of acme, with a login hint for the IdP
+    idp.st.lock().unwrap().user = json!({"sub": "kc-9", "preferred_username": "acme.boss", "groups": ["acme-admins"]});
+    unlock(&t);
+    let r = t.anon("/api/v1/auth/oidc/start?org=boss%40ACME.example", None).await;
+    assert!(
+        r.location().contains("login_hint=boss%40ACME.example"),
+        "{}",
+        r.location()
+    );
+    let r = oidc_login(&t, &idp, "/&org=acme").await;
+    let me = t.get("/api/v1/auth/me", &session_of(&r)).await;
+    assert_eq!(
+        (me.body["user"]["role"].as_str(), me.body["user"]["tenant"].as_str()),
+        (Some("tenant_admin"), Some("acme"))
+    );
+    let sub: String =
+        t.st.cat
+            .conn()
+            .query_row("SELECT oidc_sub FROM users WHERE name = 'acme.boss'", [], |r| r.get(0))
+            .unwrap();
+    assert_eq!(sub, format!("tenant:acme|{}|kc-9", idp.url));
+    // a group of no mapping: denied
+    idp.st.lock().unwrap().user = json!({"sub": "kc-10", "preferred_username": "x", "groups": ["nexus-admins"]});
+    assert_eq!(
+        oidc_login(&t, &idp, "/&org=acme").await.location(),
+        "/#/login?oidc_error=denied"
+    );
+    // a deactivated tenant's IdP is not offered any more
+    t.exec("UPDATE tenants SET disabled = 1 WHERE name = 'acme'");
+    assert_eq!(
+        t.anon("/api/v1/auth/oidc/start?org=acme", None).await.location(),
+        "/#/login?oidc_error=org"
+    );
 }

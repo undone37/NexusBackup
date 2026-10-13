@@ -63,6 +63,9 @@ struct BackupP {
     /// group_id only: the guests that failed in the group's last run
     #[serde(default, skip_serializing)]
     failed_only: bool,
+    /// Phase 23a: lock the new snapshots until then (crate::keep)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    keep_until: Option<i64>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -200,6 +203,9 @@ struct PluginSourceP {
     source_id: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     guests: Option<Vec<String>>,
+    /// plugin_backup only (Phase 23a, crate::keep)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    keep_until: Option<i64>,
 }
 
 /// `inventory`: refresh the guest inventory of one source (crate::inventory).
@@ -304,6 +310,7 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
         "backup" => {
             crate::replication::refuse_replicated(&st.cat.conn(), tenant)?;
             let mut b: BackupP = parse(p)?;
+            crate::keep::check(b.keep_until)?;
             if b.group_id.is_none() && (b.guests.is_some() || b.failed_only) {
                 return Err(ApiError::bad("params: guests and failed_only need group_id"));
             }
@@ -467,9 +474,13 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
                 crate::replication::refuse_replicated(&st.cat.conn(), tenant)?;
             }
             let c = st.cat.conn();
+            crate::keep::check(r.keep_until)?;
             let (_, spec) = crate::plugins::source_of(&c, tenant, r.source_id)?;
             if kind != "plugin_backup" {
                 r.guests = None;
+                if r.keep_until.is_some() {
+                    return Err(ApiError::bad("keep_until: backups only"));
+                }
             } else if let Some(g) = &r.guests {
                 let mut v: Vec<Value> = g.iter().map(|x| json!(x)).collect();
                 let k = format!("plugin:{}", spec.kind);
@@ -641,6 +652,10 @@ pub async fn create_job(State(st): State<St>, ctx: Ctx, J(r): J<JobReq>) -> ApiR
     }
     // vault mode: restores and downloads only through approval (`vault.restore`)
     if let Some(res) = crate::vault::gate_jobs(&st, &ctx, &r.tenant, &[(r.kind.as_str(), &params)])? {
+        return Ok(res);
+    }
+    // Phase 23a: a lock beyond `keep_until_max_days` needs approval
+    if let Some(res) = crate::keep::gate_job(&st, &ctx, &r.kind, &r.tenant, &params)? {
         return Ok(res);
     }
     let id = {

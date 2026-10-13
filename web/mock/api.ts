@@ -16,6 +16,8 @@ import type { Plugin } from 'vite';
 import pgManifest from '../../plugins/postgresql/manifest.json' with { type: 'json' };
 import truenasManifest from '../../plugins/truenas/manifest.json' with { type: 'json' };
 import m365Manifest from '../../plugins/m365/manifest.json' with { type: 'json' };
+// Phase 23a: the published API description, served as is
+import openapiDoc from '../../crates/web-api/openapi.json' with { type: 'json' };
 // Phase 13b: the schedule grammar and blackout check the UI uses as well.
 import {
   bandwidthWeaker,
@@ -318,6 +320,9 @@ const db = {
   rescue: [] as Json[],
   /** Phase 21b setting `incident` (active or the last one) */
   incident: null as Json | null,
+  /** Phase 23a: tenants' own IdPs (`tenant_idps`), setting `keep_until_max_days` */
+  tenantIdps: {} as Record<string, Json>,
+  keepMaxDays: 90,
 };
 const nextId = () => ++db.seq;
 
@@ -612,6 +617,10 @@ function tick() {
               ? resolveGuests(g!).map((d) => `nas-${gsrc.id}-${String(d).replaceAll('/', '.')}`)
               : (j.params.vmid ? [j.params.vmid] : j.params.agent_id ? [j.params.agent_id] : g ? resolveGuests(g) : []).map(guestName);
         for (const n of names) db.snapshots.push(snap(j.tenant, n, t, 64 << 30, true, false, null));
+        // Phase 23a: "keep until" extends the store lock of the new snapshots
+        if (j.params.keep_until)
+          for (const x of db.snapshots.filter((y) => y.tenant === j.tenant && y.time === t && names.includes(y.source)))
+            x.lock_until = Math.max(x.lock_until, j.params.keep_until);
         // Phase 15g: groups with index_files list the guests' file systems after the backup
         if (g?.index_files && gsrc?.kind === 'pve')
           for (const n of names) {
@@ -2091,6 +2100,18 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'oidc.update':
       db.oidc = { ...db.oidc, ...next, client_secret: db.quorumSecrets.get(qid)?.client_secret ?? db.oidc.client_secret };
       db.quorumSecrets.delete(qid);
+      break;
+    // Phase 23a
+    case 'tenant_oidc.update': {
+      const cur = db.tenantIdps[p.tenant] ?? {};
+      db.tenantIdps[p.tenant] = { ...p.settings, domains: p.domains, client_secret: db.quorumSecrets.get(qid)?.client_secret ?? cur.client_secret };
+      db.quorumSecrets.delete(qid);
+      break;
+    }
+    case 'backup.keep':
+      return { job_id: addJob(p.kind, p.tenant, p.params, by).id };
+    case 'settings.keep_until':
+      db.keepMaxDays = p.max_days;
       break;
     case 'ssh_key.rotate':
       rotateSshKey(p.name);
@@ -4110,6 +4131,13 @@ on('POST', '/jobs', async (c) => {
   const p = kind === 'files_get' ? { ...params, download_token: rand(32) } : params;
   const gated = await vaultGate(u, tenant, [{ kind, params: p }]);
   if (gated) return gated;
+  // Phase 23a: "back up now, keep until" (web-api keep.rs): beyond the limit an approval
+  if (p.keep_until !== undefined) {
+    if (kind !== 'backup' && kind !== 'plugin_backup') throw new HttpError(400, 'keep_until: backups only');
+    if (!(Number.isInteger(p.keep_until) && p.keep_until >= now() + 3600 && p.keep_until <= now() + 3650 * DAY))
+      throw new HttpError(400, 'keep_until: a time between one hour and 3650 days from now');
+    if (p.keep_until > now() + db.keepMaxDays * DAY) return quorum(u, 'backup.keep', { tenant, kind, params: p, max_days: db.keepMaxDays });
+  }
   const j = scanFirst ? scanFirstJob(u, kind, tenant, p, scanFirst) : addJob(kind, tenant, p, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
   if (kind.startsWith('plugin_')) j.duration = { plugin_validate: 3, plugin_guests: 3, plugin_restore: 14, plugin_mount: 6 }[kind as string] ?? 10;
   if (kind === 'inventory') j.duration = 3;
@@ -4922,7 +4950,7 @@ on('POST', '/settings/forwarding/test', async (c) => {
   return [200, out];
 });
 // ---- Phase 14e reports: CSV downloads and scheduled reports (docs/control-plane.md "Reports")
-const REPORT_TYPES = ['protection', 'failed', 'sla', 'storage'];
+const REPORT_TYPES = ['protection', 'failed', 'sla', 'storage', 'usage'];
 const isoTime = (ts: number | null | undefined) => (ts ? new Date(ts * 1000).toISOString().replace('.000Z', 'Z') : '');
 /** RFC 4180 like reports::Table::csv (formula-like text neutralised). */
 function toCsv(columns: string[], rows: unknown[][]): string {
@@ -5001,6 +5029,14 @@ function reportTable(u: User, kind: string, scope: string | null, from: number, 
     return [
       ['job', 'tenant', 'kind', 'target', 'created', 'finished', 'attempt', 'error'],
       jobs.sort((a, b) => a.finished! - b.finished!).map((j) => [j.id, j.tenant, j.kind, target(j.params), isoTime(j.created), isoTime(j.finished), j.attempt ?? 1, errLine(j.log || j.fail || '')]),
+    ];
+  }
+  if (kind === 'usage') {
+    const rows = usageRows(v, from, to);
+    const d = (x: number) => isoDay(x);
+    return [
+      ['period_start', 'period_end', 'tenant', 'tenant_uid', 'objects', 'backups', 'logical_avg_bytes', 'logical_peak_bytes', 'stored_avg_bytes', 'stored_peak_bytes', 'offsite_avg_bytes', 'offsite_peak_bytes', 'days_sampled', 'quota_bytes'],
+      rows.map((r) => [d(from), d(to - 1), r.tenant, r.tenant_uid, r.objects, r.backups, r.logical_avg, r.logical_peak, r.stored_avg, r.stored_peak, r.offsite_avg, r.offsite_peak, r.days_sampled, r.quota_bytes ?? '']),
     ];
   }
   const s = storageStats(v);
@@ -5139,8 +5175,19 @@ const pubOidc = () => {
   const { client_secret, ...rest } = db.oidc;
   return { ...structuredClone(rest), client_secret_set: !!client_secret };
 };
-on('GET', '/auth/oidc', () => [200, db.oidc.enabled ? { enabled: true, label: db.oidc.label } : { enabled: false }]);
+on('GET', '/auth/oidc', () => [
+  200,
+  { ...(db.oidc.enabled ? { enabled: true, label: db.oidc.label } : { enabled: false }), organizations: Object.values(db.tenantIdps).some((x) => x.enabled) },
+]);
 on('GET', '/auth/oidc/start', (c) => {
+  // Phase 23a: a tenant's own IdP by e-mail domain or tenant name (no IdP in the mock either)
+  const org = String(c.query.get('org') ?? '').trim().toLowerCase();
+  if (org) {
+    const dom = org.includes('@') ? org.split('@').pop() : null;
+    const hit = Object.entries(db.tenantIdps).find(([n, x]) => x.enabled && (dom ? (x.domains ?? []).includes(dom) : n === org));
+    c.res.setHeader('Location', hit ? '/#/login?oidc_error=idp' : '/#/login?oidc_error=org');
+    return [302, ''];
+  }
   if (!db.oidc.enabled) {
     c.res.setHeader('Location', '/#/login?oidc_error=disabled');
     return [302, ''];
@@ -5212,6 +5259,173 @@ on('POST', '/settings/oidc/test', (c) => {
   if (/bad|invalid/.test(host)) return [200, { discovery: `error: ${host}: connection refused`, jwks: 'error: discovery failed' }];
   return [200, { discovery: `ok: ${db.oidc.issuer}/.well-known/openid-configuration`, jwks: 'ok: 2 signing keys (RS256)' }];
 });
+
+// ---- Phase 23a: service-provider operations (web-api usage.rs, simulate.rs, keep.rs, tenant_idp.rs, openapi.rs)
+const pubIdp = (n: string) => {
+  const { client_secret, ...rest } = db.tenantIdps[n] ?? { enabled: false, issuer: '', client_id: '', scopes: ['openid', 'profile', 'email'], username_claim: 'preferred_username', groups_claim: 'groups', label: '', mappings: [], domains: [] };
+  return { ...structuredClone(rest), client_secret_set: !!client_secret, tenant: n };
+};
+on('GET', '/tenants/:name/oidc', (c, [name]) => {
+  const u = need(c.user, 'admin', 'security_officer', 'tenant_admin');
+  const n = decodeURIComponent(name);
+  if (u.tenant && u.tenant !== n) throw new HttpError(403, 'forbidden');
+  find(db.tenants, (x) => x.name === n, 'tenant');
+  return [200, pubIdp(n)];
+});
+on('PUT', '/tenants/:name/oidc', async (c, [name]) => {
+  const u = need(c.user, 'admin');
+  const n = decodeURIComponent(name);
+  find(db.tenants, (x) => x.name === n, 'tenant');
+  const b = c.body;
+  if (b.enabled && (typeof b.issuer !== 'string' || !/^https:\/\/[^\s/]+/.test(b.issuer))) throw new HttpError(400, 'issuer: https URL required');
+  if (!Array.isArray(b.mappings)) throw new HttpError(400, 'mappings: array required');
+  for (const m of b.mappings) {
+    if (!TENANT_ROLES.includes(m.role)) throw new HttpError(400, "mappings: a tenant's IdP maps to tenant_admin, tenant_user or viewer only");
+    if ((m.tenants ?? []).some((x: string) => x !== n)) throw new HttpError(400, `mappings: only tenant ${n}`);
+    m.tenants = [n];
+  }
+  const domains = ((b.domains ?? []) as string[]).map((d) => d.trim().replace(/^@/, '').toLowerCase());
+  if (domains.some((d) => !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(d))) throw new HttpError(400, 'domains: not a domain name');
+  const taken = Object.entries(db.tenantIdps).find(([o, x]) => o !== n && (x.domains ?? []).some((d: string) => domains.includes(d)));
+  if (taken) throw new HttpError(409, `domains: belongs to tenant ${taken[0]}`);
+  const { client_secret, domains: _d, ...rest } = b;
+  const settings = { ...rest, mappings: b.mappings, enabled: !!b.enabled };
+  if (db.approvals) {
+    const q = await quorum(u, 'tenant_oidc.update', { tenant: n, settings, domains, client_secret_changed: !!client_secret });
+    if (client_secret) db.quorumSecrets.set(q[1].quorum_id, { client_secret });
+    return q;
+  }
+  db.tenantIdps[n] = { ...settings, domains, client_secret: client_secret || db.tenantIdps[n]?.client_secret };
+  await audit(u.name, 'tenant_oidc.update', `tenant/${n}`, { approvals: 'disabled', enabled: settings.enabled });
+  return [200, pubIdp(n)];
+});
+on('POST', '/tenants/:name/oidc/test', (c, [name]) => {
+  need(c.user, 'admin');
+  const x = db.tenantIdps[decodeURIComponent(name)];
+  if (!x?.issuer) throw new HttpError(400, 'no IdP configured for this tenant');
+  return [200, { discovery: 'ok', jwks: 'ok: 1 keys' }];
+});
+
+/** Usage rows of [from, to) from the demo's snapshots and the simulated store size (daily samples). */
+function usageRows(u: User, from: number, to: number) {
+  const end = Math.min(to, now());
+  const days: number[] = [];
+  for (let d = from + DAY - 1; d < end + DAY - 1 && d - DAY + 1 < end; d += DAY) days.push(Math.min(d, end));
+  const st = storageStats(u);
+  return st.tenants.map((x: Json) => {
+    const snaps = db.snapshots.filter((s) => s.tenant === x.tenant);
+    const inRange = snaps.filter((s) => s.time >= from && s.time < to);
+    const series = days.map((e) => {
+      const kept = snaps.filter((s) => s.time <= e);
+      return {
+        logical: kept.filter((s) => s.local).reduce((a, s) => a + s.size, 0),
+        // measured store size: the logical size after the demo's data reduction (dedup × compression)
+        stored: Math.round(kept.filter((s) => s.local).reduce((a, s) => a + s.size, 0) / 3.4),
+        offsite: kept.filter((s) => s.offsite).reduce((a, s) => a + s.size, 0),
+      };
+    });
+    const avg = (k: 'logical' | 'stored' | 'offsite') => (series.length ? Math.round(series.reduce((a, s) => a + s[k], 0) / series.length) : null);
+    const peak = (k: 'logical' | 'stored' | 'offsite') => (series.length ? Math.max(...series.map((s) => s[k])) : null);
+    return {
+      tenant: x.tenant, tenant_uid: tenantUid(x.tenant), objects: new Set(inRange.map((s) => s.source)).size, backups: inRange.length,
+      logical_avg: avg('logical'), logical_peak: peak('logical'), stored_avg: avg('stored'), stored_peak: peak('stored'),
+      offsite_avg: avg('offsite'), offsite_peak: peak('offsite'), days_sampled: series.length, quota_bytes: x.quota_bytes ?? null,
+    };
+  });
+}
+on('GET', '/usage', async (c) => {
+  const u = need(c.user);
+  const month = c.query.get('month') || isoDay(now()).slice(0, 7);
+  const m = /^(\d{4})-(\d{2})$/.exec(month);
+  if (!m || +m[2] < 1 || +m[2] > 12) throw new HttpError(400, 'month: YYYY-MM');
+  const from = Date.UTC(+m[1], +m[2] - 1, 1) / 1000;
+  const end = Date.UTC(+m[1], +m[2], 1) / 1000;
+  if (from > now()) throw new HttpError(400, 'month: lies in the future');
+  const want = c.query.get('tenant') || null;
+  if (u.tenant && want && want !== u.tenant) throw new HttpError(403, 'forbidden');
+  const v: User = { ...u, tenant: u.tenant ?? want };
+  const to = Math.min(end, now());
+  if (c.query.get('format') === 'csv') {
+    const [cols, rows] = reportTable(v, 'usage', v.tenant, from, to);
+    await audit(u.name, 'report.export', 'report/usage', { type: 'usage', month, tenant: v.tenant, rows: rows.length });
+    c.res.setHeader('Content-Disposition', `attachment; filename="nexus-usage-${v.tenant ? `${v.tenant}-` : ''}${month}.csv"`);
+    return [200, toCsv(cols, rows), 'text/csv; charset=utf-8'];
+  }
+  return [200, { month, from, to, complete: end <= now(), tenants: usageRows(v, from, to) }];
+});
+
+/** chunkstore::retention::keep (UTC periods; `recent` hours before the newest snapshot). */
+function keepGfs(times: number[], g: Json): Map<number, string[]> {
+  const sorted = [...new Set(times)].sort((a, b) => b - a);
+  const out = new Map<number, string[]>();
+  const add = (t: number, c: string) => out.set(t, [...(out.get(t) ?? []), c]);
+  if (sorted.length && g.recent > 0) for (const t of sorted.filter((t) => t > sorted[0] - g.recent * 3600)) add(t, 'recent');
+  const period = (c: string, t: number) => {
+    const d = new Date(t * 1000);
+    const days = Math.floor(t / DAY);
+    return c === 'daily' ? days : c === 'weekly' ? Math.floor((days + 3) / 7) : c === 'monthly' ? d.getUTCFullYear() * 12 + d.getUTCMonth() : d.getUTCFullYear();
+  };
+  for (const c of ['daily', 'weekly', 'monthly', 'yearly']) {
+    let last: number | null = null;
+    let left = Number(g[c]) || 0;
+    for (const t of sorted) {
+      if (!left) break;
+      const p = period(c, t);
+      if (last !== p) {
+        last = p;
+        left--;
+        add(t, c);
+      }
+    }
+  }
+  return out;
+}
+on('POST', '/policies/simulate', (c) => {
+  const u = need(c.user, 'admin', 'security_officer', 'operator', 'tenant_admin', 'viewer');
+  const { schedule, gfs, policy_id, days = 400 } = c.body;
+  const sch = parseSchedule(String(schedule ?? ''));
+  if (!sch) throw new HttpError(400, `bad schedule "${schedule}"`);
+  if (!gfs || ['daily', 'weekly', 'monthly', 'yearly'].some((k) => !(Number.isInteger(gfs[k]) && gfs[k] >= 0 && gfs[k] <= 1000))) throw new HttpError(400, 'gfs: values must be within 0..=1000');
+  if (!(days >= 1 && days <= 1100)) throw new HttpError(400, 'days: 1..=1100');
+  const step = Math.max(300, schedulePeriod(String(schedule)));
+  const t0 = now();
+  const times: number[] = [];
+  for (let t = t0 + step; t <= t0 + days * DAY && times.length < 20000; t += step) times.push(t);
+  const every = Math.max(1, Math.ceil(times.length / 60));
+  const series: Json[] = [];
+  for (let i = every - 1; i < times.length; i += every) series.push({ run: i + 1, t: times[i], points: keepGfs(times.slice(0, i + 1), gfs).size });
+  if (times.length && series.at(-1)?.run !== times.length) series.push({ run: times.length, t: times.at(-1), points: keepGfs(times, gfs).size });
+  const kept = keepGfs(times, gfs);
+  const count = (k: string) => [...kept.values()].filter((v) => v.includes(k)).length;
+  const peak = Math.max(0, ...series.map((p) => p.points));
+  // estimate from the demo's snapshots of the policy's groups (or the user's tenants)
+  const groups = db.groups.filter((g) => (!policy_id || g.policy_id === policy_id) && (!u.tenant || g.tenant === u.tenant));
+  const sources = [...new Set(groups.flatMap((g) => resolveGuests(g).map(guestName)))].filter((n) => db.snapshots.some((s) => s.source === n));
+  const latest = sources.map((n) => db.snapshots.filter((s) => s.source === n).sort((a, b) => b.time - a.time)[0]?.size ?? 0);
+  const full = Math.round(latest.reduce((a, b) => a + b, 0) / 2.2);
+  const delta = Math.round(full * 0.018);
+  const size = (n: number) => full + Math.max(0, n - 1) * delta;
+  return [
+    200,
+    {
+      runs: times.length, days, truncated: times.length >= 20000, series,
+      final: { points: kept.size, peak, recent: count('recent'), daily: count('daily'), weekly: count('weekly'), monthly: count('monthly'), yearly: count('yearly'), oldest: [...kept.keys()].sort((a, b) => a - b)[0] ?? null, newest: times.at(-1) ?? null },
+      estimate: sources.length ? { sources: sources.length, samples: sources.length * 30, compression: 2.2, full, delta, stored: size(kept.size), stored_peak: size(peak) } : null,
+    },
+  ];
+});
+on('GET', '/settings/keep-until', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, { max_days: db.keepMaxDays }]));
+on('PUT', '/settings/keep-until', async (c) => {
+  const u = need(c.user, 'admin');
+  const n = c.body.max_days;
+  if (!(Number.isInteger(n) && n >= 1 && n <= 3650)) throw new HttpError(400, 'max_days: 1..=3650');
+  if (n > db.keepMaxDays) return quorum(u, 'settings.keep_until', { max_days: n, old: db.keepMaxDays });
+  const old = db.keepMaxDays;
+  db.keepMaxDays = n;
+  await audit(u.name, 'settings.keep_until', 'settings/keep_until', { max_days: n, old });
+  return [200, { max_days: n }];
+});
+on('GET', '/openapi.json', () => [200, openapiDoc]);
 
 // ---- alert delivery (§3; 13f notification rules)
 const pubAlerts = () => {

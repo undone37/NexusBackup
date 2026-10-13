@@ -1592,6 +1592,8 @@ fn capacity_samples_daily() {
             )
             .unwrap();
     assert_eq!(row, ("2026-10-11".into(), 1001, 4000));
+    // Phase 23a: logical bytes with an offsite copy (none here)
+    assert_eq!(one("SELECT offsite FROM capacity_samples WHERE tenant = 't1'"), 0);
     // once per day: a second refresh the same day keeps the sample
     fs::write(t1.join("chunks/b"), vec![0u8; 5000]).unwrap();
     s.sample_capacity(now + 3600).unwrap();
@@ -2142,4 +2144,52 @@ fn forward_test_result_is_stored() {
         json!({"forwarding": "error: no sink configured"}),
         "stored, not NULL"
     );
+}
+
+/// Phase 23a: "back up now, keep until": the snapshots a backup with
+/// `keep_until` wrote get their store lock extended (audited); others keep theirs.
+#[test]
+fn keep_until_locks_new_snapshots() {
+    let e = env(1);
+    let mut s = sched(&e);
+    let st = chunkstore::Store::open(
+        e.cfg.store_base.join("t1"),
+        Keyring::new("t1", &[(1, [7; 32])]),
+        test_opts(),
+    )
+    .unwrap();
+    for t in [1000, 2000] {
+        st.commit_snapshot("vm-100", t, &[("tree", chunkstore::Index::Tree { entries: vec![] })])
+            .unwrap();
+    }
+    fs::remove_file(e.d.path().join("pve")).unwrap();
+    script(
+        &e.d.path().join("pve"),
+        &format!("echo '{}'", stats_line("vm-100", 2000, 10, 5).trim()),
+    );
+    let until = catalog::now() + 30 * 86400;
+    let id = manual(&s, "backup", "t1", json!({"group_id": 1, "keep_until": until}));
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert_eq!(state(&s, id), "ok");
+    let lock = |t: u64| {
+        st.list_snapshots()
+            .unwrap()
+            .into_iter()
+            .find(|m| m.time == t)
+            .unwrap()
+            .lock_until
+    };
+    assert_eq!(lock(2000), until as u64);
+    assert!(lock(1000) < until as u64, "not written by this job");
+    assert!(st.delete_snapshot("vm-100", 2000).is_err(), "locked");
+    let n: i64 =
+        s.db.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM audit WHERE action = 'snapshot.keep_until'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert_eq!(n, 1);
 }

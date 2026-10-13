@@ -13,12 +13,13 @@ a different administrator or security officer must approve:
 | Configuration | deleting a tenant, source, policy, protection group or agent (`tenant delete`, `source delete`, …); attaching the offsite copy of a lost appliance as a tenant (`tenant attach_offsite`: after the approval the requester enters the old recovery key once, see [14 Disaster recovery](14-disaster-recovery.md#attach-an-offsite-copy-in-the-web-ui)) |
 | Retention | lowering any GFS value, switching off **Copy offsite** or relaxing the required consistency (`policy update`); moving a group to a weaker policy (`group update`) |
 | Restore | replacing the original guest with a restored copy (`restore replace`, see [06 Restores](06-restores.md#replace-the-original-guest)) |
+| Backups kept until a date | **Back up now** with a **Keep until** date beyond the limit (`backup keep`: the approver sees the date, the job and the limit; approving starts the backup); raising that limit (`settings keep_until`). See [05 Policies and groups](05-policies-and-groups.md#back-up-now) |
 | Accounts | granting **Administrator** or **Security officer**, re-enabling such an account, a new activation code for one (`user update`) |
 | Storage | deleting a snapshot by hand (`snapshot delete`; only unlocked snapshots without a legal hold can be requested); releasing a legal hold (`snapshot hold release`, see [06 Restores](06-restores.md#legal-hold)); a garbage collection that would delete more than 20 % of a tenant's chunks (`gc_large`, requested by `scheduler`) |
 | Replication | creating a peer, exporting tenant keys to it, revoking a peer, deleting an enrolled replication source, lowering a replication source's retention or loosening its windows (a wider sync window, a pause removed or shortened, a higher rate; `replication source update`); reopening a vault closed with **Close vault (pause pulling now)** (`replication reopen`, see [08 Replication](08-replication.md#close-vault-pause-pulling-now)) |
 | Offsite | changing or removing an existing offsite target, including bandwidth windows that let more through (`tenant update`; tightening the windows applies at once, see [07 Offsite copies](07-offsite.md#bandwidth-windows)) |
 | Plugins | installing or upgrading a plugin, switching to another installed version, disabling or removing a plugin, adding or removing a publisher key |
-| Single sign-on | saving the single sign-on settings (identity provider, client secret, group mappings), because it changes who can sign in (`oidc update`) |
+| Single sign-on | saving the single sign-on settings (identity provider, client secret, group mappings), because it changes who can sign in (`oidc update`); the same for a tenant's own identity provider (`tenant_oidc update`, see [09 Users and access](09-users-and-access.md#a-tenants-own-identity-provider)) |
 | Access | longer session timeouts (`security session`); every change of an inbound firewall rule (`firewall inbound`: the approver sees the service, the old and new source lists, whether it is switched on, and the requester's address), see [09 Users and access](09-users-and-access.md#sessions-and-sign-in-protection) and [02 Installation](02-installation.md#inbound-firewall) |
 | Appliance SSH keys | rotating an appliance SSH key (`ssh key rotate`) |
 | Updates | **Install now**: installing an available appliance update without waiting for the maintenance window (`update apply`) |
@@ -55,6 +56,12 @@ Each request shows the action, who requested it and when, when it expires, and i
 and groups you see a **Change** table: **Before** and **After** for every field, with changed rows highlighted.
 
 ![The change table of a weakened policy](images/approvals-diff.png)
+
+A policy change also shows the **Restore point preview** below the table: how many restore points the policy keeps
+over the next 400 days and the estimated store use, dashed for the policy as it is and solid with the change (see
+[05 Policies and groups](05-policies-and-groups.md#restore-point-preview)).
+
+![The restore point preview of a policy change](images/approval-simulator.png)
 
 Before you approve:
 
@@ -225,6 +232,19 @@ the box at least daily.
 > is what it has already forwarded: compare the hashes your SIEM received (every forwarded audit entry carries `seq`
 > and `hash`, and the daily `audit.anchor`) with **Export CSV** or the Audit log. Without a forwarding sink the
 > chain is anchored nowhere outside the appliance; configure one when you rely on the audit log for compliance.
+
+### Pulling the audit log (SIEM)
+
+Instead of (or in addition to) forwarding, a SIEM can **pull** the audit log with a read-only API token of a security
+officer (or an administrator): `GET /api/v1/audit?since_seq=<last seq it has>&limit=1000` returns the next entries
+oldest first, each with `seq`, `ts`, `actor`, `action`, `target`, `details`, `prev_hash` and `hash`. Store the highest
+`seq` and ask again with it; an empty list means nothing new. The hashes let the SIEM check the chain itself
+([Verifying the chain](#verifying-the-chain)); `GET /api/v1/audit/verify` checks it on the appliance. A tenant admin's
+token gets the entries of their tenant only.
+
+```sh
+curl -s -H "Authorization: Bearer $TOKEN" "https://backup.example.com:8443/api/v1/audit?since_seq=48211&limit=1000"
+```
 
 ## Forwarding to a SIEM
 

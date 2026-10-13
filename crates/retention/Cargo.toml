@@ -1,0 +1,9 @@
+[package]
+name = "retention"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GFS retention rule (which snapshots to keep, their locks); shared by the chunk store, offsite and the web-api's restore point preview"
+
+[dependencies]

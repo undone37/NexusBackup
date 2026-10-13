@@ -18,7 +18,7 @@
   import IconSend from '@lucide/svelte/icons/send';
 
   // GET /reports/{type}.csv (docs/control-plane.md "Reports"); scheduled reports: setting `reports`.
-  const TYPES: ReportType[] = ['protection', 'failed', 'sla', 'storage'];
+  const TYPES: ReportType[] = ['protection', 'failed', 'sla', 'storage', 'usage'];
   const isoDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
   let type = $state<ReportType>('protection');
   let from = $state(isoDay(Date.now() - 6 * 86400_000));
@@ -26,7 +26,7 @@
   let tenant = $state('');
   let tenants: Tenant[] = $state([]);
   const scoped = $derived(!!session.user?.tenant);
-  const ranged = $derived(type === 'failed' || type === 'sla');
+  const ranged = $derived(type === 'failed' || type === 'sla' || type === 'usage');
   const badRange = $derived(ranged && from > to);
   const csvUrl = $derived(
     `${API}/reports/${type}.csv${qs({ from: ranged ? from : null, to: ranged ? to : null, tenant: scoped ? null : tenant })}`,

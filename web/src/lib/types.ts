@@ -1390,6 +1390,8 @@ export interface Dashboard {
 export interface OidcPublic {
   enabled: boolean;
   label?: string;
+  /** Phase 23a: some tenant has its own IdP ("sign in with your organisation") */
+  organizations?: boolean;
 }
 
 export interface OidcMapping {
@@ -1412,6 +1414,8 @@ export interface OidcSettings {
   mappings: OidcMapping[];
   /** Phase 14d: when the client secret expires at the IdP (unix time; expiry alerts) */
   client_secret_expires?: number | null;
+  /** Phase 23a, tenant IdPs only (GET/PUT /tenants/{name}/oidc): e-mail domains of its users */
+  domains?: string[];
 }
 
 export type Severity = 'info' | 'warning' | 'critical';
@@ -1685,7 +1689,7 @@ export interface CertStatus {
 }
 
 /** Phase 14e reports (GET /reports/{type}.csv). */
-export type ReportType = 'protection' | 'failed' | 'sla' | 'storage';
+export type ReportType = 'protection' | 'failed' | 'sla' | 'storage' | 'usage';
 
 /** A scheduled report (setting `reports`, GET/PUT /settings/reports). */
 export interface ScheduledReport {
@@ -1801,6 +1805,50 @@ export interface Hardware {
   disks: HwDisk[];
   arrays: HwArray[];
   ops: HwOp[];
+}
+
+/** Phase 23a: POST /policies/simulate (restore point simulator). */
+export interface Simulation {
+  runs: number;
+  days: number;
+  truncated: boolean;
+  series: { run: number; t: number; points: number }[];
+  final: {
+    points: number;
+    peak: number;
+    recent: number;
+    daily: number;
+    weekly: number;
+    monthly: number;
+    yearly: number;
+    oldest: number | null;
+    newest: number | null;
+  };
+  /** null: no measured backups in scope */
+  estimate: { sources: number; samples: number; compression: number; full: number; delta: number; stored: number; stored_peak: number } | null;
+}
+
+/** Phase 23a: GET /usage?month=YYYY-MM (billing). */
+export interface UsageRow {
+  tenant: string;
+  tenant_uid: string | null;
+  objects: number;
+  backups: number;
+  logical_avg: number | null;
+  logical_peak: number | null;
+  stored_avg: number | null;
+  stored_peak: number | null;
+  offsite_avg: number | null;
+  offsite_peak: number | null;
+  days_sampled: number;
+  quota_bytes: number | null;
+}
+export interface Usage {
+  month: string;
+  from: number;
+  to: number;
+  complete: boolean;
+  tenants: UsageRow[];
 }
 
 // Phase 22a: Settings → Network (GET /network, catalog::network)

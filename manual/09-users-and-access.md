@@ -46,6 +46,30 @@ administrator **assigned** to the tenant (**Configuration → Tenants**, **Assig
 
 ![The Users page of a tenant admin](images/users-tenant-admin.png)
 
+### Onboarding a new tenant
+
+**Configuration → Tenants → New tenant** (administrators) walks through what a new customer needs, in five steps:
+
+1. **Tenant**: the name (lowercase letters, digits, dashes). Name and tenant ID never change, and a deleted tenant's
+   name is never used again.
+2. **Quota and tier**: the soft storage quota (optional) and the **policy tier** the customer bought. The tenant gets
+   the policies of that tier assigned; if there is none yet, one is created from the tier template
+   ([05 Policies and groups](05-policies-and-groups.md#assigned-policies-and-tiers)).
+3. **Tenant admin**: the user name of the customer's first tenant admin (optional). The wizard creates the account and
+   shows its one-time **activation code** at the end; hand it over as described in
+   [Creating an account](#creating-an-account).
+4. **Offsite**: none, a Hetzner Storage Box (SFTP) or S3 object storage. The SFTP key is installed on the appliance;
+   only its path is entered. More options (bandwidth windows, storage classes) are under **Edit** afterwards.
+5. **Review** and **Create tenant**: the steps run one after the other and each shows **done** or **failed** with the
+   reason; a failed step stops the rest (fix it with **Edit** on the tenant, or on the Users page).
+
+![The new tenant wizard](images/tenant-wizard.png)
+
+![The wizard's result with the tenant admin's activation code](images/tenant-wizard-done.png)
+
+Every step is the same action as on the individual pages, with the same checks and audit entries (`tenant.create`,
+`tenant.quota`, `tenant.policies`, `user.create`).
+
 ### View as tenant (impersonation)
 
 To see what a customer sees, an administrator opens **Configuration → Tenants**, **View as tenant** on the tenant's
@@ -429,6 +453,32 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
 No CSRF header is needed with a token. The Prometheus `/metrics` endpoint keeps its own token
 ([11 Alerts](11-alerts-and-monitoring.md#metrics-prometheus)).
 
+**API description.** `https://<appliance>/api/openapi.json` is the OpenAPI 3.1 description of the endpoints tokens
+can use (plus the billing export); it needs no sign-in and describes the API only, nothing about your appliance.
+Import it into Postman or generate a client from it. `GET /api/v1/usage` (monthly usage per tenant, also as CSV with
+`format=csv`) is open to read tokens.
+
+**`nexusctl`.** A small command-line client for scripts and administrators' workstations (Linux, from the source
+tree: `cargo build --release -p nexusctl`):
+
+```sh
+export NEXUS_URL=https://backup.example.com:8443 NEXUS_TOKEN=nxt_… NEXUS_CA=/etc/ssl/nexus-ca.pem
+nexusctl jobs --state failed            # jobs, newest first (--kind, --tenant, --limit)
+nexusctl job 4711 --log                 # one job's state and log
+nexusctl snapshots --tenant acme        # snapshots with size, local/offsite, lock
+nexusctl sources                        # sources; `nexusctl groups` for protection groups
+nexusctl run 12 --keep-until 2027-06-30 # back up group 12 now (operator token), keep until that day
+nexusctl usage --month 2026-10 --csv    # the billing export
+nexusctl openapi                        # the API description
+```
+
+`--json` prints the API's answer instead of a table. `NEXUS_CA` (or `--ca`) names the PEM file of the appliance's
+certificate or its CA when it is not publicly trusted. A run whose `--keep-until` lies beyond the approval limit
+creates an approval request and says so.
+
+> **Status:** The OpenAPI document is maintained by hand; a test checks that it covers every endpoint on the token
+> allow-list. `nexusctl` is tested against the web-api in process; it is not packaged yet (build it from source).
+
 ## Single sign-on (OIDC)
 
 With single sign-on, people sign in with the account of your organization's identity provider (IdP) through OpenID
@@ -559,3 +609,34 @@ local accounts are not affected.
 
 If sign-in through the IdP fails, the sign-in page shows the reason; see
 [15 Troubleshooting](15-troubleshooting-faq.md#single-sign-on).
+
+### A tenant's own identity provider
+
+A service provider's customers usually have their own IdP. **Configuration → Tenants**, **Sign-in** on the tenant's
+row (administrators change it, security officers and the tenant's admins can read it) sets up an OIDC provider for
+**this tenant only**:
+
+- the same fields as the appliance-wide single sign-on (issuer, client ID and secret, scopes, claims, button text),
+  registered at the customer's IdP with the same redirect URI;
+- **E-mail domains** of the customer's users (e.g. `example.com`); a domain belongs to one tenant;
+- **Group mappings** to the tenant roles **Tenant admin**, **Tenant user** and **Viewer** of this tenant only. Nobody
+  signing in through a tenant's IdP becomes an administrator, operator or security officer, or sees another tenant.
+
+Saving needs approval like the appliance-wide settings (it decides who can sign in; action `tenant_oidc.update`).
+**Test connection** checks the discovery document and the signing keys.
+
+![A tenant's own identity provider](images/tenant-idp.png)
+
+Once a tenant has an enabled IdP, the sign-in page offers **Sign in with your organization**: the user enters their
+e-mail address (or the tenant name) and is sent to their tenant's IdP (the address is passed on as a login hint).
+The page never lists tenant names. Unknown domains or names answer "No organization sign-in matches".
+
+![Sign in with your organization](images/login-org.png)
+
+Accounts created through a tenant's IdP are separate from those of the appliance-wide IdP, even when both use the same
+issuer: the account is bound to the tenant, the issuer and the IdP's subject. A deactivated tenant's IdP is not offered.
+The appliance opens the issuer's and the token and key endpoints' addresses in its outbound firewall automatically.
+
+> **Status:** Tenant IdPs are new in this release. The sign-in flow is tested end to end against a test IdP in the
+> API tests (mapping limits, domain lookup, separate accounts, deactivated tenants); a real Keycloak or Entra ID per
+> tenant has not been tried in the VM labs yet.

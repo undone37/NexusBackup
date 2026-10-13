@@ -361,7 +361,7 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 - [x] 22b concurrency caps, read limits, restore priority, VM identity, NAS sizing/split/overlap/skipped CSV, TrueNAS existing snapshots, instant disk recovery (T50–T52); open: removable-disk offsite, store migration, small-chunk packing
 
 ## Phase 23 — Service providers and workloads (2026-10-13)
-- [ ] 23a billing export, per-tenant IdP, onboarding wizard, GFS simulator, keep-until, OpenAPI + nexusctl
+- [x] 23a billing export, per-tenant IdP, onboarding wizard, restore point simulator, keep-until, OpenAPI + nexusctl (v37, T47–T49)
 - [ ] 23b MySQL/MariaDB plugin, Windows workload runbooks
 
 ## Phase 26 — Edge proxy (2026-10-13)
