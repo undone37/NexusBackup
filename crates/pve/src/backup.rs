@@ -527,7 +527,7 @@ fn pull_device(
         .map(String::as_str)
         .filter(|_| dev.bitmap_mode != "none")
         .collect();
-    let mut c = nbd::Client::connect(r, w, &dev.name, &meta)?;
+    let mut c = nbd::Client::connect_opt(r, w, &dev.name, &meta, &[ALLOCATION])?;
     if c.size() != dev.size {
         bail!("export size {} != job size {}", c.size(), dev.size);
     }
@@ -535,17 +535,59 @@ fn pull_device(
         Some(ctx) => nbd::flagged(&c.block_status(ctx)?, 1),
         None => vec![(0, dev.size)],
     };
-    let mut read = 0;
+    // regions the export reports as reading zero (unallocated / discarded) are filled locally,
+    // never transported; plain holes without NBD_STATE_ZERO are read (their content is unspecified)
+    let zero = match c.context_id(ALLOCATION) {
+        Some(_) => nbd::flagged(&c.block_status(ALLOCATION)?, NBD_STATE_ZERO),
+        None => Vec::new(),
+    };
+    let (mut read, mut skipped) = (0, 0);
     let idx = store.store_image_extents(base, IMAGE_CHUNK_SIZE, dev.size, &dirty, |off, buf| {
-        read += buf.len() as u64;
-        c.read_at(off, buf)?;
-        if let Some(t) = limit {
-            t.account(buf.len() as u64);
+        for (a, b, is_zero) in split_zero(&zero, off, buf.len() as u64) {
+            let part = &mut buf[(a - off) as usize..(b - off) as usize];
+            if is_zero {
+                part.fill(0);
+                skipped += b - a;
+            } else {
+                read += b - a;
+                c.read_at(a, part)?;
+                if let Some(t) = limit {
+                    t.account(b - a);
+                }
+            }
         }
         Ok(())
     })?;
     c.disconnect()?;
+    if skipped > 0 {
+        println!("{}: {skipped} bytes unallocated (zero), not transferred", dev.name);
+    }
     Ok((idx, read))
+}
+
+const ALLOCATION: &str = "base:allocation";
+const NBD_STATE_ZERO: u32 = 2;
+
+/// `[off, off+len)` split at the zero extents (sorted, disjoint): `(start, end, is_zero)`.
+fn split_zero(zero: &[(u64, u64)], off: u64, len: u64) -> Vec<(u64, u64, bool)> {
+    let end = off + len;
+    let mut out = Vec::new();
+    let mut pos = off;
+    let first = zero.partition_point(|&(o, l)| o + l <= off);
+    for &(o, l) in zero[first..].iter().take_while(|&&(o, _)| o < end) {
+        let (zs, ze) = (o.max(pos), (o + l).min(end));
+        if zs > pos {
+            out.push((pos, zs, false));
+        }
+        if ze > zs {
+            out.push((zs, ze, true));
+        }
+        pos = pos.max(ze);
+    }
+    if pos < end {
+        out.push((pos, end, false));
+    }
+    out
 }
 
 fn serve_device(store: &Store, ssh: &SshNode, archive: &str, device: &str, idx: &Index) -> Result<()> {
@@ -714,6 +756,24 @@ pub fn build_index(store: &Store) -> Result<serde_json::Value> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn split_zero_regions() {
+        let zero = [(100u64, 50u64), (300, 100)];
+        assert_eq!(split_zero(&zero, 0, 100), vec![(0, 100, false)]);
+        assert_eq!(
+            split_zero(&zero, 0, 200),
+            vec![(0, 100, false), (100, 150, true), (150, 200, false)]
+        );
+        assert_eq!(split_zero(&zero, 120, 20), vec![(120, 140, true)]);
+        assert_eq!(
+            split_zero(&zero, 140, 300),
+            vec![(140, 150, true), (150, 300, false), (300, 400, true), (400, 440, false)]
+        );
+        assert_eq!(split_zero(&[], 5, 10), vec![(5, 15, false)]);
+        assert_eq!(split_zero(&zero, 400, 10), vec![(400, 410, false)]);
+    }
+
     use super::*;
     use crate::exclude::{Disk, Mode};
 

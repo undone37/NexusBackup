@@ -78,7 +78,13 @@ fn with_len(s: &str) -> Vec<u8> {
 impl<R: Read, W: Write> Client<R, W> {
     /// Handshake and enter transmission for `export`, requesting the given
     /// meta contexts (e.g. `qemu:dirty-bitmap:<name>`, `base:allocation`).
-    pub fn connect(mut r: R, mut w: W, export: &str, meta: &[&str]) -> io::Result<Self> {
+    pub fn connect(r: R, w: W, export: &str, meta: &[&str]) -> io::Result<Self> {
+        Self::connect_opt(r, w, export, meta, &[])
+    }
+
+    /// Like `connect`; the `optional` meta contexts are requested too, but a server
+    /// without them is fine (check `context_id` afterwards).
+    pub fn connect_opt(mut r: R, mut w: W, export: &str, meta: &[&str], optional: &[&str]) -> io::Result<Self> {
         if u64_(&mut r)? != NBDMAGIC || u64_(&mut r)? != IHAVEOPT {
             return Err(proto("not a newstyle NBD server"));
         }
@@ -102,11 +108,16 @@ impl<R: Read, W: Write> Client<R, W> {
         if !structured && !meta.is_empty() {
             return Err(proto("server refuses structured replies, needed for meta contexts"));
         }
+        let wanted: Vec<&str> = if structured {
+            meta.iter().chain(optional).copied().collect()
+        } else {
+            Vec::new()
+        };
 
-        if !meta.is_empty() {
+        if !wanted.is_empty() {
             let mut d = with_len(export);
-            d.extend((meta.len() as u32).to_be_bytes());
-            meta.iter().for_each(|m| d.extend(with_len(m)));
+            d.extend((wanted.len() as u32).to_be_bytes());
+            wanted.iter().for_each(|m| d.extend(with_len(m)));
             c.option(OPT_SET_META_CONTEXT, &d)?;
             loop {
                 let (ty, data) = c.opt_reply(OPT_SET_META_CONTEXT)?;

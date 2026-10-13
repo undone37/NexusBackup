@@ -132,3 +132,48 @@ fn server_interops_with_qemu_img() {
     assert_eq!(std::fs::read(&out).unwrap(), data);
     srv.join().unwrap().unwrap();
 }
+
+/// `base:allocation` as an optional context: unwritten areas read as zero (NBD_STATE_ZERO,
+/// flag 2), written ones do not; a missing optional context is not an error.
+#[test]
+fn allocation_reports_zero_regions() {
+    if Command::new("qemu-nbd").arg("--version").output().is_err() {
+        eprintln!("qemu-nbd missing, skipping");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let img = d.path().join("a.qcow2");
+    let img = img.to_str().unwrap();
+    run("qemu-img", &["create", "-q", "-f", "qcow2", img, "64M"]);
+    run("qemu-io", &["-f", "qcow2", "-c", "write -q -P 0xab 16M 1M", img]);
+    let sock = d.path().join("nbd.sock");
+    let _srv = Kill(
+        Command::new("qemu-nbd")
+            .args(["-r", "-f", "qcow2", "-k", sock.to_str().unwrap(), img])
+            .spawn()
+            .unwrap(),
+    );
+    let s = (0..100)
+        .find_map(|_| {
+            UnixStream::connect(&sock).ok().or_else(|| {
+                std::thread::sleep(Duration::from_millis(50));
+                None
+            })
+        })
+        .expect("qemu-nbd socket");
+    let mut c = nbd::Client::connect_opt(
+        s.try_clone().unwrap(),
+        s,
+        "",
+        &[],
+        &["base:allocation", "qemu:no-such-context"],
+    )
+    .unwrap();
+    assert!(c.context_id("base:allocation").is_some() && c.context_id("qemu:no-such-context").is_none());
+    let zero = nbd::flagged(&c.block_status("base:allocation").unwrap(), 2);
+    assert_eq!(
+        zero,
+        vec![(0, 16 << 20), (17 << 20, 47 << 20)],
+        "everything but the written MiB"
+    );
+}
