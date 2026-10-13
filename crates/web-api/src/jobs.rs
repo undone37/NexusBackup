@@ -651,6 +651,8 @@ pub async fn create_job(State(st): State<St>, ctx: Ctx, J(r): J<JobReq>) -> ApiR
     if let Some(s) = scan_first {
         params["scan_first"] = json!(s);
     }
+    // Phase 28: a locked-down tenant gets no backups and no restores that overwrite
+    crate::lockdown::refuse_job(&st.cat.conn(), &r.tenant, &r.kind, &params)?;
     if params.get("replace").is_some() {
         return request_replace(&st, &ctx, &r.kind, &r.tenant, params).map(|o| crate::quorum::accepted(o, json!({})));
     }
@@ -920,7 +922,7 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
                     (SELECT json_object('job', job_id, 'finished', finished, 'matches', matches_total,
                        'complete', json(CASE WHEN complete = 1 THEN 'true' ELSE 'false' END)) FROM snapshot_scans x
                      WHERE x.tenant = s.tenant AND x.source = s.source AND x.time = s.time
-                     ORDER BY job_id DESC LIMIT 1) AS scan
+                     ORDER BY job_id DESC LIMIT 1) AS scan, s.scan_state AS scan_state
              FROM snapshots s
 
              LEFT JOIN legal_holds h ON h.tenant = s.tenant AND h.source = s.source AND h.time = s.time
@@ -957,6 +959,8 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
                 "damaged_at": r.get::<_, Option<i64>>("damaged_at")?,
                 // Phase 21e: the latest YARA scan `{job, finished, matches, complete}`
                 "scan": r.get::<_, Option<String>>("scan")?.and_then(|v| serde_json::from_str::<Value>(&v).ok()),
+                // Phase 28: its verdict `clean` | `hit` | `incomplete`, null = unscanned
+                "scan_state": r.get::<_, Option<String>>("scan_state")?,
             }))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -979,6 +983,7 @@ pub async fn delete_snapshot(
     if !ctx.sees(&tenant) {
         return Err(ApiError::forbidden());
     }
+    crate::lockdown::refuse(&st.cat.conn(), &tenant, "deletes")?;
     let row: Option<(bool, i64, Option<String>)> = st
         .cat
         .conn()

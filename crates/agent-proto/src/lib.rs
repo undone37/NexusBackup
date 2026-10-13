@@ -360,7 +360,26 @@ pub enum Message {
     },
     /// Answer to `SetEdge`.
     EdgeSet,
+    // --- Phase 28, appended (CAP_FILE_HASH; documented with the v1.8 notes, no
+    // version change: only agents announcing the capability are sent these) ---
+    /// Like `Scan`, but the agent sends `EntryHashes` right after every `Entries`
+    /// batch: the SHA-256 of the regular files it read (IOC hash hunt).
+    ScanHashed {
+        job: u64,
+        base: Option<BaseRef>,
+    },
+    /// Agent → appliance after each `Entries` batch of a `ScanHashed`: one element
+    /// per entry of that batch (same order); `None` = not a regular file, not read
+    /// in this scan (unchanged) or the read failed. The appliance never trusts it
+    /// for anything but the IOC search (a lying agent only hides its own files).
+    EntryHashes {
+        hashes: Vec<Option<Hash>>,
+    },
 }
+
+/// Capability: the agent computes the SHA-256 of the files it reads when asked
+/// with `ScanHashed` and answers `EntryHashes` (Phase 28).
+pub const CAP_FILE_HASH: &str = "file-hash";
 
 /// Capability: the agent understands `SetEdge` and keeps an edge rendezvous (v1.7).
 pub const CAP_EDGE: &str = "edge";
@@ -546,6 +565,7 @@ pub fn check(m: &Message) -> io::Result<()> {
         {
             return Err(bad("chunk too large"))
         }
+        Message::EntryHashes { hashes } if hashes.len() > MAX_BATCH => return Err(bad("too many hashes in one batch")),
         Message::Want { hashes, .. } | Message::WantLz4 { hashes, .. } if hashes.len() > MAX_BATCH => {
             return Err(bad("want list too long"))
         }
@@ -876,6 +896,34 @@ mod tests {
                 power: PowerState::default(),
                 policy_version: 0,
                 busy: false,
+            },
+        )
+        .unwrap();
+        assert!(read_msg(&mut &buf[..]).is_err());
+    }
+
+    /// Phase 28 (CAP_FILE_HASH): appended after `EdgeSet`, bounded like a batch.
+    #[test]
+    fn file_hash_messages_are_appended() {
+        let m = Message::ScanHashed {
+            job: 7,
+            base: Some(BaseRef { time: 9 }),
+        };
+        assert_eq!(postcard::to_stdvec(&m).unwrap()[0], 49);
+        let h = Message::EntryHashes {
+            hashes: vec![None, Some([3; 32])],
+        };
+        assert_eq!(postcard::to_stdvec(&h).unwrap()[0], 50);
+        for m in [m, h] {
+            let mut buf = Vec::new();
+            write_msg(&mut buf, &m).unwrap();
+            assert_eq!(read_msg(&mut &buf[..]).unwrap(), m);
+        }
+        let mut buf = Vec::new();
+        write_msg(
+            &mut buf,
+            &Message::EntryHashes {
+                hashes: vec![None; MAX_BATCH + 1],
             },
         )
         .unwrap();

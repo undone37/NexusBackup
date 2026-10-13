@@ -110,6 +110,15 @@ pub async fn pause_group(
 
 pub async fn resume_group(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
     crate::incident::refuse_while_active(&st.cat.conn())?;
+    {
+        let c = st.cat.conn();
+        let t: Option<String> = c
+            .query_row("SELECT tenant FROM groups WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?;
+        if let Some(t) = t {
+            crate::lockdown::refuse(&c, &t, "resuming its groups")?;
+        }
+    }
     set(&st, &ctx, "groups", "paused_until", id, None, "group.resume")
 }
 

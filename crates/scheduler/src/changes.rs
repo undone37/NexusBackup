@@ -392,8 +392,18 @@ impl Scheduler {
     }
 
     /// "last snapshot before: <source>/<time>" naming the newest clean snapshot
-    /// before `time` (the alert's "hold last good snapshot" target).
+    /// before `time` (the alert's "hold last good snapshot" target); a snapshot
+    /// a YARA scan found clean is preferred (Phase 28).
     pub(crate) fn last_clean(&self, tenant: &str, source: &str, time: i64) -> Result<String> {
+        let scanned: Option<i64> = self.db.conn().query_row(
+            "SELECT MAX(time) FROM snapshots WHERE tenant=?1 AND source=?2 AND time < ?3
+               AND (anomaly IS NULL OR anomaly_cleared_at IS NOT NULL) AND scan_state = 'clean'",
+            params![tenant, source, time],
+            |r| r.get(0),
+        )?;
+        if let Some(t) = scanned {
+            return Ok(format!("last scanned-clean snapshot before: {source}/{t}"));
+        }
         let t: Option<i64> = self.db.conn().query_row(
             "SELECT MAX(time) FROM snapshots WHERE tenant=?1 AND source=?2 AND time < ?3
                AND (anomaly IS NULL OR anomaly_cleared_at IS NOT NULL)",

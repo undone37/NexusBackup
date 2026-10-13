@@ -67,6 +67,10 @@ pub struct State {
     pub updates: Vec<(String, usize, usize)>,
     /// appliance client cert CN seen in the last mTLS session
     pub peer_cn: Option<String>,
+    /// Phase 28: announce CAP_FILE_HASH and answer `ScanHashed`
+    pub file_hash: bool,
+    /// `EntryHashes` sent with one hash too few (hostile agent)
+    pub short_hashes: bool,
 }
 
 pub struct FakeAgent {
@@ -114,6 +118,8 @@ impl FakeAgent {
             version: "0.1.0".into(),
             updates: Vec::new(),
             peer_cn: None,
+            file_hash: false,
+            short_hashes: false,
         }));
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
@@ -215,7 +221,11 @@ fn serve(tcp: TcpStream, st: &Arc<Mutex<State>>) -> std::io::Result<()> {
                         kernel: "6.12".into(),
                         hostname: "fake".into(),
                         agent_version: g.version.clone(),
-                        caps: vec!["scan".into(), "restore".into()],
+                        caps: if g.file_hash {
+                            vec!["scan".into(), "restore".into(), agent_proto::CAP_FILE_HASH.into()]
+                        } else {
+                            vec!["scan".into(), "restore".into()]
+                        },
                     },
                 )?;
             }
@@ -228,7 +238,8 @@ fn serve(tcp: TcpStream, st: &Arc<Mutex<State>>) -> std::io::Result<()> {
                     hook_log: "pre-hook ok\n".into(),
                 },
             )?,
-            Message::Scan { base, .. } => scan(&mut s, &mut g, base)?,
+            Message::Scan { base, .. } => scan(&mut s, &mut g, base, false)?,
+            Message::ScanHashed { base, .. } => scan(&mut s, &mut g, base, true)?,
             Message::Want { hashes, .. } => {
                 for h in hashes {
                     g.wanted.push(h);
@@ -457,8 +468,9 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn scan(s: &mut Tls, g: &mut State, base: Option<BaseRef>) -> std::io::Result<()> {
+fn scan(s: &mut Tls, g: &mut State, base: Option<BaseRef>, hashed: bool) -> std::io::Result<()> {
     g.scans.push(base.clone());
+    let mut shas: Vec<Option<Hash>> = Vec::new();
     let mut paths = Vec::new();
     let root = g.root.clone();
     walk(&root, &root, &mut paths);
@@ -514,15 +526,18 @@ fn scan(s: &mut Tls, g: &mut State, base: Option<BaseRef>) -> std::io::Result<()
                 g.data.insert(h, c.to_vec());
                 chunks.push((h, c.len() as u32));
             }
+            let sha: Hash = <sha2::Sha256 as sha2::Digest>::digest(&data).into();
             match cached {
                 Some(c) => {
                     e.unchanged = true;
                     e.chunks = c.chunks;
                     stats.unchanged += 1;
+                    shas.push(None);
                 }
                 None => {
                     e.chunks = chunks;
                     stats.read_bytes += e.size;
+                    shas.push((!e.chunks.is_empty()).then_some(sha));
                 }
             }
             cache.insert(
@@ -536,11 +551,21 @@ fn scan(s: &mut Tls, g: &mut State, base: Option<BaseRef>) -> std::io::Result<()
                 },
             );
         }
+        if e.kind != Kind::File {
+            shas.push(None);
+        }
         entries.push(e);
     }
     g.pending = Some(cache);
-    for b in entries.chunks(3) {
+    for (b, h) in entries.chunks(3).zip(shas.chunks(3)) {
         write_msg(s, &Message::Entries { batch: b.to_vec() })?;
+        if hashed {
+            let mut h = h.to_vec();
+            if g.short_hashes {
+                h.pop();
+            }
+            write_msg(s, &Message::EntryHashes { hashes: h })?;
+        }
     }
     write_msg(s, &Message::ScanDone { stats })
 }

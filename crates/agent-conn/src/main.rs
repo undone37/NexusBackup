@@ -153,6 +153,9 @@ struct BackupCfg {
     filters: agent_proto::Filters,
     #[serde(default)]
     limits: agent_proto::Limits,
+    /// Phase 28: SHA-256 per file in the name index (group option `file_hashes`)
+    #[serde(default)]
+    file_hashes: bool,
 }
 
 #[derive(Deserialize)]
@@ -402,6 +405,7 @@ fn main() -> Result<()> {
                 hooks: b.hooks,
                 filters: b.filters.clone(),
                 limits: b.limits,
+                file_hashes: b.file_hashes,
             };
             let written = store.written();
             let agent = cfg.agent()?;
@@ -430,6 +434,9 @@ fn main() -> Result<()> {
                 "{}",
                 store.stats_line(&m, r.wanted_bytes, store.written().since(written))?
             );
+            if let Some(h) = store.take_hash_stats() {
+                println!("{h}");
+            }
             if !r.consistent || r.inconsistent_files > 0 {
                 println!(
                     "inconsistent {}/{}: consistent={} ({} files changed while read without a snapshot)",

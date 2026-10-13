@@ -862,6 +862,9 @@ fn provision(st: &St, s: &Settings, claims: &Value) -> ApiResult<Result<Provisio
         if catalog::tenants::disabled(&tx, t)? {
             return Ok(Err(("tenant_disabled", format!("tenant {t} is deactivated"))));
         }
+        if catalog::tenants::locked_down(&tx, t)? {
+            return Ok(Err(("tenant_disabled", format!("tenant {t} is locked down"))));
+        }
     }
     let user = match existing {
         Some(u) if u.disabled => {
@@ -1214,6 +1217,15 @@ pub async fn callback(
     let target = format!("user/{}", user.name);
     for (action, details) in audits {
         st.audit("web-api", &action, &target, details)?;
+    }
+    // Phase 28: the IdP's address for the new-device notice (unless marked unverified)
+    if let Some(e) = claims["email"]
+        .as_str()
+        .filter(|e| crate::devices::valid_email(e) && claims["email_verified"] != false)
+    {
+        st.cat
+            .conn()
+            .execute("UPDATE users SET email = ?2 WHERE id = ?1", params![user.id, e])?;
     }
     let (cookie, _csrf) = new_session(&st, user.id, &ip, &headers)?;
     st.audit(

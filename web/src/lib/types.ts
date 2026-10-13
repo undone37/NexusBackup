@@ -607,6 +607,12 @@ export interface Group {
   exclude_disks_mode: 'placeholder' | 'omit';
   /** guests backed up at once (PVE and plugin groups), 1..8 */
   parallel_guests: number;
+  /** Phase 28, GET /groups only: scheduled YARA scan (policy schedule grammar), null = off */
+  scan_schedule?: string | null;
+  /** minutes per scheduled scan, null = the scanner's default (240) */
+  scan_budget_min?: number | null;
+  /** record the SHA-256 of every file in the name index (IOC hash hunt) */
+  file_hashes?: boolean;
 }
 
 export type GroupMode = 'explicit' | 'all' | 'tags';
@@ -667,7 +673,8 @@ export type JobKind =
   | 'offsite_list'
   | 'offsite_restore'
   | 'offsite_attach'
-  | 'fleet_scan';
+  | 'fleet_scan'
+  | 'hash_hunt';
 
 /** One snapshot of an `offsite_list` result (Phase 17d, `nexus-offsite list --json`). */
 export interface OffsiteListed {
@@ -829,6 +836,58 @@ export interface Snapshot {
   damaged_at?: number | null;
   /** Phase 21e: the latest YARA scan, null = never scanned */
   scan?: SnapshotScanSummary | null;
+  /** Phase 28: verdict of the latest scan, null = unscanned */
+  scan_state?: ScanState | null;
+}
+
+export type ScanState = 'clean' | 'hit' | 'incomplete';
+
+/** One uploaded IOC hash list (GET /hash-lists, Phase 28). */
+export interface HashList {
+  name: string;
+  count: number;
+  sha256: string;
+  uploaded_by: string;
+  uploaded_at: number;
+}
+
+/** One file version of a hash hunt result. */
+export interface HuntMatch {
+  source: string;
+  path: string;
+  size: number;
+  sha256: string;
+  lists: string[];
+  /** snapshot times holding it, newest first */
+  times: number[];
+}
+
+/** `job.result` of a `hash_hunt` job. */
+export interface HuntResult {
+  matches: HuntMatch[];
+  scanned: number;
+  unhashed: number;
+  truncated: boolean;
+  hashes: number;
+  elapsed_ms: number;
+}
+
+/** GET /lockdowns (active tenant lockdowns, Phase 28). */
+export interface LockdownInfo {
+  tenant: string;
+  since: number;
+  by: string;
+  reason: string;
+  lift_quorum: number | null;
+}
+
+/** GET /auth/devices. */
+export interface LoginDevice {
+  fingerprint: string;
+  family: string;
+  prefix: string;
+  first_seen: number;
+  last_seen: number;
 }
 
 export interface SnapshotScanSummary {

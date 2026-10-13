@@ -37,6 +37,7 @@
   import IconScan from '@lucide/svelte/icons/scan-search';
   import ScanFirst from '../components/ScanFirst.svelte';
   import ScanResults from '../components/ScanResults.svelte';
+  import RecoveryCalendar from '../components/RecoveryCalendar.svelte';
   import type { ScanFirst as ScanFirstOpt } from '../lib/types';
   import { fetchFromOffsite } from '../lib/offsite';
   import InstantDisk from '../components/InstantDisk.svelte';
@@ -209,11 +210,14 @@
 
   const guestNames = $derived([...new Set(snaps.map((s) => s.source))].sort());
 
-  // Phase 21a: dialogs opened on a flagged snapshot default to the latest clean one before it
+  // Phase 21a: dialogs opened on a flagged snapshot default to the latest clean one before it;
+  // Phase 28: one a malware scan found clean is preferred over newer unscanned ones
+  const preferScanned = (list: Snapshot[]) =>
+    list.filter((x) => x.scan_state === 'clean').sort((a, b) => b.time - a.time)[0] ?? list.sort((a, b) => b.time - a.time)[0] ?? null;
   const cleanBefore = (s: Snapshot) =>
-    snaps
-      .filter((x) => x.tenant === s.tenant && x.source === s.source && x.local && !x.anomalous && x.time < s.time)
-      .sort((a, b) => b.time - a.time)[0] ?? null;
+    preferScanned(
+      snaps.filter((x) => x.tenant === s.tenant && x.source === s.source && x.local && !x.anomalous && x.time < s.time),
+    );
   let flaggedOf: Snapshot | null = $state(null);
   function preferClean(s: Snapshot): Snapshot {
     flaggedOf = s.anomalous ? s : null;
@@ -345,12 +349,14 @@
   let manyBase = $state('');
   let groups: Group[] = $state([]);
   const manyLatest = $derived.by(() => {
-    const m = new Map<string, Snapshot>();
-    // the latest clean snapshot of each guest (Phase 21a)
+    const by = new Map<string, Snapshot[]>();
+    // the latest clean snapshot of each guest (Phase 21a), a scanned-clean one first (Phase 28)
     for (const s of snaps)
-      if (s.tenant === manyTenant && s.local && !s.anomalous && /^(vm|ct)-\d+$/.test(s.source) && (m.get(s.source)?.time ?? -1) < s.time)
-        m.set(s.source, s);
-    return [...m.values()].sort((a, b) => a.source.localeCompare(b.source, undefined, { numeric: true }));
+      if (s.tenant === manyTenant && s.local && !s.anomalous && /^(vm|ct)-\d+$/.test(s.source))
+        by.set(s.source, [...(by.get(s.source) ?? []), s]);
+    return [...by.values()]
+      .map((l) => preferScanned(l)!)
+      .sort((a, b) => a.source.localeCompare(b.source, undefined, { numeric: true }));
   });
   const newerFlagged = (s: Snapshot) =>
     snaps.filter((x) => x.tenant === s.tenant && x.source === s.source && x.local && x.anomalous && x.time > s.time).sort((a, b) => b.time - a.time)[0];
@@ -485,6 +491,21 @@
   function browse(s: Snapshot) {
     navigate('/files' + qs({ tenant: s.tenant, source: s.source, time: s.time, path: '/' }));
   }
+
+  // Phase 28: recovery calendar when the list shows one source
+  const calSnaps = $derived.by(() => {
+    const src = route.query.get('source');
+    if (!src || !shown.length || shown.some((x) => x.source !== src)) return [];
+    const tn = shown[0].tenant;
+    return shown.filter((x) => x.tenant === tn);
+  });
+  function pickFromCalendar(s: Snapshot) {
+    if (!can.restore(session.user)) return;
+    if (offsiteOnly(s)) return void fetchBack(s);
+    const first = restoreItems(s)[0];
+    if (first) first.onselect();
+    else browse(s);
+  }
 </script>
 
 <div class="page-head">
@@ -541,6 +562,8 @@
     {/if}
   </div>
 {/each}
+
+{#if calSnaps.length}<RecoveryCalendar snaps={calSnaps} onpick={pickFromCalendar} />{/if}
 
 <div class="card">
   {#if !loaded}

@@ -362,6 +362,23 @@ stolen session, **End all other sessions on the appliance** (everybody except yo
 authenticator code, audited `session.revoke_all`). Single sign-on administrators have no password on the appliance
 and cannot use the last one; a local administrator can.
 
+### Sign-in devices and the new-device notice
+
+Every sign-in records the **device** of the account: the browser and operating system (from the user agent) and the
+network (the first three parts of an IPv4 address, `/24`, or the first 48 bits of an IPv6 address). **My account →
+Sign-in devices** lists them with first and last use; **Forget** removes one. The first sign-in of an account sets
+the baseline. After that, a sign-in from a combination the account has never used raises the alert
+`login_new_device` (warning for administrators and security officers, info for the other roles), which is
+forwarded to the SIEM like every alert and, when an **E-mail for sign-in notices** is set, also mailed to the
+account itself through the alert SMTP server (**Settings → Alert delivery**). Single sign-on accounts take the
+address from the identity provider's `email` claim at every sign-in.
+
+![My account: sign-in devices](images/account-devices.png)
+
+If you get such a notice and it was not you: change your password, end the unknown session above and tell an
+administrator. The device check is a heuristic: a new browser or network of your own also raises it, and someone who
+copies your browser's identification from the same network is not noticed.
+
 ### Concurrent sessions
 
 **Settings → Security → Sessions per account** limits how many browsers may be signed in with one account at the

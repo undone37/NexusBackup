@@ -212,6 +212,10 @@ interface MockGroup {
   exclude_disks?: Record<string, string[]>;
   exclude_disks_mode?: 'placeholder' | 'omit';
   parallel_guests?: number;
+  /** Phase 28 */
+  scan_schedule?: string | null;
+  scan_budget_min?: number | null;
+  file_hashes?: boolean;
 }
 interface InvRow {
   guest: string;
@@ -1655,6 +1659,7 @@ function seed() {
   seedFleet(t);
   seedRecovery(t);
   seedEdges(t);
+  seedPhase28(t);
 }
 
 /** Phase 19b: policy tiers, acme's assigned policies, its tenant admin "tara", a deleted tenant name.
@@ -1774,6 +1779,9 @@ function groupState(g: (typeof db.groups)[number]) {
     timezone: g.timezone ?? 'UTC',
     paused_until: g.paused_until ?? null,
     index_files: g.index_files ?? false,
+    scan_schedule: g.scan_schedule ?? null,
+    scan_budget_min: g.scan_budget_min ?? null,
+    file_hashes: g.file_hashes ?? false,
     maintenance_until: src?.maintenance_until ?? null,
     blackout_active: blackoutActive(pol?.blackout ?? [], g.timezone ?? 'UTC', now()),
     resolved_guests: resolveGuests(g),
@@ -2199,6 +2207,9 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       addJob(p.kind, p.tenant, { ...p.params, replace: true, quorum_id: qid, requested_by: by }, 'scheduler');
       break;
     }
+    case 'tenant.lockdown.lift':
+      liftLockdown(p, by, decider);
+      break;
     case 'incident.leave': {
       const v = db.incident;
       if (!v?.active || v.since !== p.since) throw new HttpError(409, 'this incident is no longer active');
@@ -2292,7 +2303,7 @@ on('POST', '/auth/login', async (c) => {
   if (f && f.until > now()) throw new HttpError(429, 'too many failed sign-ins; try again in 15 minutes');
   const u = db.users.find((x) => x.name === name);
   const expired = !!u?.expires && u.expires <= now();
-  if (!u || u.disabled || tenantOff(u.tenant) || expired || u.act || !u.password || u.password !== password || !(passkey ? pkAssertionOk(u, passkey) : /^\d{6}$/.test(String(totp)) && !pkRequired(u))) {
+  if (!u || u.disabled || tenantOff(u.tenant) || lockedDown(u.tenant) || expired || u.act || !u.password || u.password !== password || !(passkey ? pkAssertionOk(u, passkey) : /^\d{6}$/.test(String(totp)) && !pkRequired(u))) {
     const g = f && f.until === 0 ? f : { count: 0, until: 0 };
     g.count++;
     if (g.count >= 5) g.until = now() + 900;
@@ -2306,6 +2317,7 @@ on('POST', '/auth/login', async (c) => {
   const ua = String(c.headers['user-agent'] ?? '').slice(0, 256);
   db.sessions.set(sid, { id: nextId(), userId: u.id, csrf, created: now(), last: now(), ip: '198.51.100.17', ua });
   u.last_login = now();
+  deviceSeen(u, ua, '198.51.100.17'); // Phase 28
   // Phase 21b: beyond `max_sessions` the account's oldest sessions end
   const mine = [...db.sessions.entries()].filter(([, x]) => x.userId === u.id).sort((a, b) => b[1].created - a[1].created || b[1].id - a[1].id);
   const over = mine.slice(db.security.max_sessions);
@@ -4012,6 +4024,7 @@ on('DELETE', '/snapshots/:tenant/:source/:time', (c, [tenant, source, time]) => 
   if (x.origin) throw new HttpError(409, "replicated snapshot: it follows the replication source's retention");
   if (x.lock_until > now()) throw new HttpError(409, `snapshot is locked until ${x.lock_until} (unix time)`);
   if (activeHold(tn, src, tm)) throw new HttpError(409, 'snapshot is under a legal hold: release it first (needs approval)');
+  lockdownRefuse(tn, 'deletes');
   return quorum(u, 'snapshot.delete', { tenant: tn, source: src, time: tm });
 });
 on('GET', '/snapshots', (c) => {
@@ -4021,7 +4034,7 @@ on('GET', '/snapshots', (c) => {
   const held = c.query.get('held') === 'true';
   const xs = byTenant(u, db.snapshots as any[])
     .filter((s) => (!tq || s.tenant === tq) && (!sq || s.source === sq))
-    .map((s) => ({ ...s, hold: holdView(openHold(s.tenant, s.source, s.time)), anomaly: s.anomaly ?? null, anomalous: anomalous(s), scan: scanSummary(s) }))
+    .map((s) => ({ ...s, hold: holdView(openHold(s.tenant, s.source, s.time)), anomaly: s.anomaly ?? null, anomalous: anomalous(s), scan: scanSummary(s), scan_state: scanState(s) }))
     .filter((s) => !held || s.hold);
   return [200, xs.sort((a, b) => b.time - a.time)];
 });
@@ -4256,6 +4269,7 @@ on('POST', '/jobs', async (c) => {
   if (kind === 'files_list' && !String(params.path ?? '').startsWith('/')) throw new HttpError(400, 'path: must be absolute');
   const scanFirst = takeScanFirst(kind, params);
   checkJob(u, kind, tenant, params);
+  lockdownRefuseJob(tenant, kind, params); // Phase 28
   if (kind === 'files_get' && !canDownload(u)) throw new HttpError(403, 'this account may not download files');
   if (kind === 'files_get' && params.params && Object.keys(params.params).length) {
     // contract v1.9: only plugin snapshots whose `download` has a params_schema (web-api jobs.rs)
@@ -4551,6 +4565,7 @@ const ALERT_CATEGORY: Record<string, string> = {
   mgmt_allow_reset: 'security', firewall_reset: 'security', legal_hold_advisory: 'security', cert_expiry: 'security',
   account_dormant: 'security', inventory: 'security', clock_skew: 'security', gc_quorum: 'security', gc_confirm: 'security',
   vault_disabled: 'security', incident: 'security', dek_rotation: 'security',
+  scan_hit: 'security', hash_hunt_hit: 'security', tenant_lockdown: 'security', login_new_device: 'security',
   job_failed: 'backup', sla_missed: 'backup', paused: 'backup', consistency: 'backup', backup_inconsistent: 'backup',
   orphaned: 'backup', verify: 'backup', snapshot_damaged: 'backup', offsite_lag: 'backup', inventory_refresh: 'backup', config: 'backup',
   vmid_reused: 'backup', restore_priority: 'backup',
@@ -8086,3 +8101,332 @@ on('PUT', '/agents/:id/edge', async (c, [id]) => {
   await audit(u.name, 'agent.edge', `agent/${a.id}`, { tenant: a.tenant, edge: edge_id, old });
   return [200, pubAgent(a)];
 });
+
+// ---------------------------------------------------------------- Phase 28: threat scans, hash hunt, lockdown, devices
+
+/** Verdict of the newest scan (catalog `snapshots.scan_state`): seeded on the snapshot, else from the scans. */
+function scanState(s: Json): string | null {
+  if (s.scan_state !== undefined) return s.scan_state;
+  const x = scanSummary(s);
+  return x ? (x.matches ? 'hit' : x.complete ? 'clean' : 'incomplete') : null;
+}
+
+const p28 = {
+  lists: [] as { name: string; hashes: string[]; sha256: string; uploaded_by: string; uploaded_at: number }[],
+  /** files with a recorded SHA-256 the demo hunts can find: [tenant, source, path, size, sha256, times] */
+  hashed: [] as { tenant: string; source: string; path: string; size: number; sha256: string; times: number[] }[],
+  lockdowns: [] as Json[],
+  devices: [] as { user_id: number; fingerprint: string; family: string; prefix: string; first_seen: number; last_seen: number }[],
+  emails: {} as Record<number, string>,
+};
+const hex64 = (seed: string) => (sha(seed) + sha(`${seed}#2`)).slice(0, 64);
+const lockedDown = (tenant: string | null | undefined) => !!tenant && p28.lockdowns.some((l) => l.tenant === tenant && l.active);
+function lockdownRefuse(tenant: string, what: string) {
+  if (lockedDown(tenant)) throw new HttpError(409, `tenant ${tenant} is locked down: ${what} are refused until the lockdown is lifted (approval)`);
+}
+/** web-api `lockdown::refuse_job`. */
+function lockdownRefuseJob(tenant: string, kind: string, p: Json) {
+  const overwrites =
+    ['backup', 'agent_update', 'agent_renew', 'plugin_restore'].includes(kind) ||
+    ((kind === 'restore' || kind === 'restore_ct') && !!p.replace) ||
+    (kind === 'restore_files' && !!p.overwrite && p.overwrite !== 'never');
+  if (overwrites) lockdownRefuse(tenant, `${kind} jobs that change its data`);
+}
+
+function uaFamily(ua: string): string {
+  const b = ([['Edg/', 'Edge'], ['OPR/', 'Opera'], ['Firefox/', 'Firefox'], ['Chrome/', 'Chrome'], ['Safari/', 'Safari'], ['curl/', 'curl']] as const).find(([k]) => ua.includes(k))?.[1] ?? 'other';
+  const os = ([['Windows', 'Windows'], ['Android', 'Android'], ['iPhone', 'iOS'], ['Mac OS X', 'macOS'], ['Macintosh', 'macOS'], ['Linux', 'Linux']] as const).find(([k]) => ua.includes(k))?.[1];
+  return os ? `${b} on ${os}` : b;
+}
+const ipPrefix = (ip: string) => (/^\d+\.\d+\.\d+\.\d+$/.test(ip) ? `${ip.split('.').slice(0, 3).join('.')}.0/24` : 'unknown');
+/** web-api `devices::check`: records the device of a new session, raises `login_new_device` for an unseen one. */
+function deviceSeen(u: User, ua: string, ip: string) {
+  const family = uaFamily(ua);
+  const prefix = ipPrefix(ip);
+  const fingerprint = sha(`${family}\n${prefix}`).slice(0, 16);
+  const mine = p28.devices.filter((d) => d.user_id === u.id);
+  const known = mine.find((d) => d.fingerprint === fingerprint);
+  if (known) return void (known.last_seen = now());
+  p28.devices.push({ user_id: u.id, fingerprint, family, prefix, first_seen: now(), last_seen: now() });
+  if (!mine.length) return;
+  db.alerts.push(
+    mkAlert({
+      ts: now(), severity: u.role === 'admin' || u.role === 'security_officer' ? 'warning' : 'info', kind: 'login_new_device',
+      key: `login_new_device:${u.id}:${fingerprint}`, tenant: u.tenant,
+      message: `account ${u.name} (${u.role}) signed in from a new device: ${family} from ${prefix} (address ${ip})`,
+    }),
+  );
+}
+
+// group options
+on('PUT', '/groups/:id/threat-scan', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin', 'security_officer');
+  const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
+  const b = c.body ?? {};
+  const schedule = typeof b.schedule === 'string' && b.schedule.trim() ? b.schedule.trim() : null;
+  if (schedule && !parseSchedule(schedule)) throw new HttpError(400, 'schedule: not a valid schedule');
+  const budget = b.budget_min ?? null;
+  if (budget !== null && !(Number.isInteger(budget) && budget >= 1 && budget <= 1440)) throw new HttpError(400, 'budget_min: 1..=1440');
+  lockdownRefuse(g.tenant, 'group changes');
+  g.scan_schedule = schedule;
+  g.scan_budget_min = budget;
+  const out = { id: g.id, tenant: g.tenant, scan_schedule: schedule, scan_budget_min: budget, rules: db.yaraRules.length > 0 };
+  await audit(u.name, 'group.threat_scan', `group/${g.id}`, out);
+  return [200, out];
+});
+on('PUT', '/groups/:id/file-hashes', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
+  if (typeof c.body?.enabled !== 'boolean') throw new HttpError(400, 'enabled: true or false');
+  lockdownRefuse(g.tenant, 'group changes');
+  g.file_hashes = c.body.enabled;
+  const out = { id: g.id, tenant: g.tenant, file_hashes: g.file_hashes };
+  await audit(u.name, 'group.file_hashes', `group/${g.id}`, out);
+  return [200, out];
+});
+
+// IOC hash lists
+function parseHashList(text: string): [string[], number] {
+  const out = new Set<string>();
+  let skipped = 0;
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const hex = line.split(/[,;\t ]/).map((f) => f.trim().replace(/^"|"$/g, '')).filter((f) => f.length >= 32 && /^[0-9a-fA-F]+$/.test(f));
+    const h = hex.find((f) => f.length === 64);
+    if (h) out.add(h.toLowerCase());
+    else if (hex.length) skipped++;
+  }
+  return [[...out].sort(), skipped];
+}
+const pubList = (l: (typeof p28.lists)[number]) => ({ name: l.name, count: l.hashes.length, sha256: l.sha256, uploaded_by: l.uploaded_by, uploaded_at: l.uploaded_at });
+on('GET', '/hash-lists', (c) => {
+  need(c.user, 'admin', 'security_officer');
+  return [200, p28.lists.map(pubList).sort((a, b) => (a.name < b.name ? -1 : 1))];
+});
+on('PUT', '/hash-lists/:name', async (c, [name]) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  const n = decodeURIComponent(name);
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(n)) throw new HttpError(400, 'name: must match [A-Za-z0-9._-]{1,64} without a leading dot');
+  const [hashes, skipped] = parseHashList(String(c.body?.text ?? ''));
+  if (!hashes.length) throw new HttpError(400, 'text: no SHA-256 hash in the file (MD5 and SHA-1 are not supported)');
+  if (hashes.length > 100_000) throw new HttpError(400, 'text: at most 100000 hashes per list');
+  const others = p28.lists.filter((l) => l.name !== n);
+  if (others.length >= 20 || others.reduce((x, l) => x + l.hashes.length, 0) + hashes.length > 500_000)
+    throw new HttpError(400, 'at most 20 lists and 500000 hashes together');
+  const l = { name: n, hashes, sha256: hex64(hashes.join('\n')), uploaded_by: u.name, uploaded_at: now() };
+  p28.lists = [...others, l];
+  const out = { name: n, count: hashes.length, skipped, sha256: l.sha256 };
+  await audit(u.name, 'hash_list.put', `hash_list/${n}`, out);
+  return [200, out];
+});
+on('DELETE', '/hash-lists/:name', async (c, [name]) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  const l = find(p28.lists, (x) => x.name === decodeURIComponent(name), 'hash list');
+  p28.lists = p28.lists.filter((x) => x !== l);
+  await audit(u.name, 'hash_list.delete', `hash_list/${l.name}`, { sha256: l.sha256 });
+  return [204, null];
+});
+
+/** The scheduler's `hash_hunt` over the demo's hashed files. */
+function runHunt(j: Job, tenant: string, p: Json, seeding = false) {
+  const lists = p.lists ? p28.lists.filter((l) => p.lists.includes(l.name)) : p28.lists;
+  const listed = new Map<string, string[]>();
+  for (const l of lists) for (const h of l.hashes) listed.set(h, [...(listed.get(h) ?? []), l.name]);
+  const files = p28.hashed.filter((f) => f.tenant === tenant && (!p.source || f.source === p.source));
+  const inRange = (t: number) => (!p.from || t >= p.from) && (!p.to || t <= p.to);
+  const matches = files
+    .filter((f) => listed.has(f.sha256))
+    .map((f) => ({ source: f.source, path: f.path, size: f.size, sha256: f.sha256, lists: listed.get(f.sha256)!, times: f.times.filter(inRange) }))
+    .filter((m) => m.times.length);
+  const snaps = (db.snapshots as Json[]).filter((s) => s.tenant === tenant && s.local && (!p.source || s.source === p.source) && inRange(s.time));
+  const hashedSources = new Set(p28.hashed.filter((f) => f.tenant === tenant).map((f) => f.source));
+  j.duration = 4;
+  j.plan = [`hash hunt in ${tenant}: ${listed.size} hashes from ${lists.length} list(s)`, `${snaps.length} snapshots`, `${matches.length} file versions on a list`];
+  j.result = {
+    matches, scanned: snaps.length, unhashed: snaps.filter((s) => !hashedSources.has(s.source)).length, truncated: false,
+    hashes: listed.size, elapsed_ms: 1840,
+  };
+  if (matches.length && !seeding) {
+    for (const m of matches)
+      for (const t of m.times) {
+        const s = (db.snapshots as Json[]).find((x) => x.tenant === tenant && x.source === m.source && x.time === t);
+        if (s && !anomalous(s)) s.anomaly = { reason: `IOC hash: 1 file(s) on a hash list (hunt job ${j.id}), e.g. ${m.path}`, at: now(), cleared_by: null, cleared_at: null, note: null };
+      }
+    const first = matches[0];
+    db.alerts.push(
+      mkAlert({
+        ts: now(), severity: 'critical', kind: 'hash_hunt_hit', key: `hash_hunt_hit:${tenant}`, tenant,
+        message: `IOC hash hunt (job ${j.id}) in tenant ${tenant}: ${matches.length} file versions on a hash list in ${new Set(matches.flatMap((m) => m.times.map((t) => `${m.source}/${t}`))).size} snapshots, e.g. ${first.path} in ${first.source} (${first.lists[0]})`,
+      }),
+    );
+  }
+}
+on('POST', '/hunts', async (c) => {
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'security_officer');
+  const b = c.body ?? {};
+  const tenant = String(b.tenant ?? '');
+  find(db.tenants, (x) => x.name === tenant, 'tenant');
+  if (u.tenant && u.tenant !== tenant) throw new HttpError(403, 'forbidden');
+  if (b.from && b.to && b.from > b.to) throw new HttpError(400, 'from: after to');
+  const params: Json = {};
+  if (b.lists !== undefined) {
+    if (!Array.isArray(b.lists) || !b.lists.length) throw new HttpError(400, 'lists: name at least one list, or leave it out for all');
+    for (const l of b.lists) if (!p28.lists.some((x) => x.name === l)) throw new HttpError(400, `lists: no list ${l}`);
+    params.lists = b.lists;
+  } else if (!p28.lists.length) throw new HttpError(409, 'no IOC hash lists uploaded (Settings → IOC hash lists)');
+  for (const k of ['source', 'from', 'to']) if (b[k] !== undefined && b[k] !== null) params[k] = b[k];
+  const j = addJob('hash_hunt', tenant, params, u.name);
+  runHunt(j, tenant, params);
+  await audit(u.name, 'hash_hunt.request', `job/${j.id}`, { tenant, params });
+  return [202, { id: j.id }];
+});
+
+// tenant lockdown
+const liftQuorum = (tenant: string) => db.quorum.find((q) => q.action === 'tenant.lockdown.lift' && q.state === 'pending' && q.params.tenant === tenant)?.id ?? null;
+function needLockdown(u: User | null): User {
+  const x = need(u, 'security_officer', 'admin');
+  if (x.tenant) throw new HttpError(403, 'forbidden');
+  return x;
+}
+on('GET', '/lockdowns', (c) => {
+  const u = need(c.user, 'admin', 'security_officer', 'operator', 'viewer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  return [200, p28.lockdowns.filter((l) => l.active).map((l) => ({ tenant: l.tenant, since: l.since, by: l.by, reason: l.reason, lift_quorum: liftQuorum(l.tenant) }))];
+});
+on('GET', '/tenants/:name/lockdown', (c, [name]) => {
+  const u = need(c.user, 'admin', 'security_officer', 'operator', 'viewer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  const tn = decodeURIComponent(name);
+  const l = p28.lockdowns.find((x) => x.tenant === tn);
+  return [200, { ...(l ?? { active: false }), lift_quorum: liftQuorum(tn) }];
+});
+on('POST', '/tenants/:name/lockdown', async (c, [name]) => {
+  const u = needLockdown(c.user);
+  const tn = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant').name;
+  const b = c.body ?? {};
+  const reason = String(b.reason ?? '').trim();
+  if (!reason || reason.length > 500 || /[\u0000-\u001f]/.test(reason)) throw new HttpError(400, 'reason: 1 to 500 characters, one line');
+  if (!b.current_password || !b.current_totp) throw new HttpError(400, 'current_password and current_totp are required');
+  if (b.current_password !== u.password || !/^\d{6}$/.test(String(b.current_totp))) throw new HttpError(403, 're-authentication failed: wrong current password or TOTP code');
+  if (lockedDown(tn)) throw new HttpError(409, 'the tenant is already locked down');
+  const range: [number, number] | null = b.hold === null ? null : b.hold ? [b.hold.from, b.hold.to] : [-Infinity, Infinity];
+  if (range && range[0] > range[1]) throw new HttpError(400, 'hold: from must not be after to');
+  const held: string[] = [];
+  if (range)
+    for (const x of db.snapshots as Json[])
+      if (x.tenant === tn && x.time >= range[0] && x.time <= range[1] && holdOne(x.tenant, x.source, x.time, `tenant lockdown: ${reason}`, u.name))
+        held.push(`${x.source}/${x.time}`);
+  const paused: Json[] = [];
+  for (const g of db.groups.filter((x) => x.tenant === tn && x.paused_until !== -1)) {
+    paused.push({ id: g.id, prev: g.paused_until ?? null });
+    g.paused_until = -1;
+  }
+  let sessions = 0;
+  for (const [sid, s] of [...db.sessions]) if (sid !== c.sid && db.users.find((y) => y.id === s.userId)?.tenant === tn) (db.sessions.delete(sid), sessions++);
+  const mine = new Set(db.users.filter((y) => y.tenant === tn).map((y) => y.id));
+  const before = p14.tokens.length;
+  p14.tokens.splice(0, p14.tokens.length, ...p14.tokens.filter((x) => !mine.has(x.user_id)));
+  const tokens = before - p14.tokens.length;
+  const t = now();
+  const msg = `tenant ${tn} locked down by ${u.name}: ${reason} (${held.length} snapshots held, ${paused.length} groups paused, ${sessions} sessions and ${tokens} API tokens of its accounts ended)`;
+  const alert = mkAlert({ ts: t, severity: 'critical', kind: 'tenant_lockdown', key: `tenant_lockdown:${tn}`, tenant: tn, message: msg });
+  db.alerts.push(alert);
+  const v = {
+    active: true, tenant: tn, since: t, by: u.name, reason, hold: b.hold === undefined ? 'all' : b.hold, held, paused,
+    sessions_ended: sessions, tokens_revoked: tokens, alert: alert.id,
+  };
+  p28.lockdowns = [...p28.lockdowns.filter((x) => x.tenant !== tn), v];
+  dashCache.clear();
+  await audit(u.name, 'tenant.lockdown', `tenant/${tn}`, { lockdown: v });
+  return [201, v];
+});
+on('POST', '/tenants/:name/lockdown/lift', async (c, [name]) => {
+  const u = needLockdown(c.user);
+  const tn = decodeURIComponent(name);
+  const l = p28.lockdowns.find((x) => x.tenant === tn && x.active);
+  if (!l) throw new HttpError(409, 'the tenant is not locked down');
+  if (liftQuorum(tn)) throw new HttpError(409, 'lifting the lockdown is already requested');
+  // always a second person, even with approvals disabled
+  const q = { id: nextId(), action: 'tenant.lockdown.lift', params: { tenant: tn, since: l.since }, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
+  db.quorum.push(q);
+  await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action: q.action, params: q.params });
+  return [202, { quorum_id: q.id }];
+});
+/** Quorum arm of `tenant.lockdown.lift`. */
+function liftLockdown(p: Json, by: string, decider: string) {
+  const l = p28.lockdowns.find((x) => x.tenant === p.tenant && x.active && x.since === p.since);
+  if (!l) throw new HttpError(409, 'this lockdown is no longer active');
+  let resumed = 0;
+  for (const g of l.paused) {
+    const x = db.groups.find((y) => y.id === g.id);
+    if (x && x.paused_until === -1) (x.paused_until = g.prev === -1 || (g.prev && g.prev > now()) ? g.prev : null, resumed++);
+  }
+  for (const a of db.alerts) if (a.key === `tenant_lockdown:${p.tenant}` && !a.resolved_at) Object.assign(a, { resolved_at: now(), resolved_by: decider || by });
+  Object.assign(l, { active: false, ended_at: now(), ended_by: by, approved_by: decider || by, resumed });
+}
+
+// sign-in devices and the account's address
+on('GET', '/auth/devices', (c) => {
+  const u = need(c.user);
+  const devices = p28.devices.filter((d) => d.user_id === u.id).sort((a, b) => b.last_seen - a.last_seen).map(({ user_id: _u, ...d }) => d);
+  return [200, { devices, email: p28.emails[u.id] ?? null }];
+});
+on('DELETE', '/auth/devices/:fp', async (c, [fp]) => {
+  const u = need(c.user);
+  const d = find(p28.devices, (x) => x.user_id === u.id && x.fingerprint === fp, 'device');
+  p28.devices = p28.devices.filter((x) => x !== d);
+  await audit(u.name, 'user.device_forget', `user/${u.name}`, { fingerprint: fp });
+  return [204, null];
+});
+on('PUT', '/auth/email', async (c) => {
+  const u = need(c.user);
+  const e = typeof c.body?.email === 'string' ? c.body.email.trim() : '';
+  if (e && !/^[^\s@<>,;]+@[^\s@<>,;.]+(\.[^\s@<>,;.]+)+$/.test(e)) throw new HttpError(400, 'email: not a mail address');
+  if (e) p28.emails[u.id] = e;
+  else delete p28.emails[u.id];
+  await audit(u.name, 'user.email', `user/${u.name}`, { email: e || null });
+  return [200, { email: e || null }];
+});
+
+function seedPhase28(t: number) {
+  // scheduled scans and file hashes on acme's groups
+  for (const g of db.groups.filter((x) => x.tenant === 'acme')) {
+    g.scan_schedule = 'daily 03:00';
+    g.file_hashes = true;
+  }
+  const g2 = db.groups.find((x) => x.tenant === 'initech');
+  if (g2) g2.scan_schedule = 'Sun 02:00';
+  // the encrypted file server: daily scheduled scans found every snapshot clean until the newest one
+  const fs = db.agents.find((a) => a.name === 'fs02');
+  const fsSnaps = fs ? (db.snapshots as Json[]).filter((s) => s.tenant === 'acme' && s.source === `host-${fs.id}` && s.local).sort((a, b) => b.time - a.time) : [];
+  fsSnaps.forEach((s, i) => {
+    if (i === 0) return; // the infected one: its seeded scan says hit
+    s.scan_state = i === 4 ? 'incomplete' : i > 14 ? null : 'clean';
+  });
+  // IOC lists and a finished hunt
+  const evil = hex64('invoice-dropper');
+  const loader = hex64('cobalt-loader');
+  p28.lists.push(
+    { name: 'cert-advisory-2026-41', hashes: [evil, loader, hex64('a'), hex64('b'), hex64('c')].sort(), sha256: hex64('l1'), uploaded_by: 'so', uploaded_at: t - 86400 * 2 },
+    { name: 'ir-case-4711', hashes: [evil, hex64('d')].sort(), sha256: hex64('l2'), uploaded_by: 'so', uploaded_at: t - 3600 * 5 },
+  );
+  if (fs && fsSnaps.length > 3)
+    p28.hashed.push(
+      { tenant: 'acme', source: `host-${fs.id}`, path: 'Users/anna/Downloads/Invoice_2026-10.pdf.exe', size: 412_672, sha256: evil, times: fsSnaps.slice(0, 2).map((s) => s.time) },
+      { tenant: 'acme', source: `host-${fs.id}`, path: 'ProgramData/Updater/svchost32.dll', size: 98_304, sha256: loader, times: [fsSnaps[0].time] },
+      { tenant: 'acme', source: `host-${fs.id}`, path: 'Users/anna/Documents/plan.docx', size: 23_552, sha256: hex64('benign'), times: fsSnaps.map((s) => s.time) },
+    );
+  const hunt = addJob('hash_hunt', 'acme', {}, 'so', { state: 'ok', started: t - 3000, finished: t - 2990 });
+  hunt.created = t - 3010;
+  runHunt(hunt, 'acme', {}, true); // no flags / alert in the seed: the other pictures stay as they were
+  // sign-in devices (the screenshot browser signs in as Chrome on Linux from 198.51.100.17)
+  const dev = (u: User | undefined, family: string, prefix: string, first: number, last: number) =>
+    u && p28.devices.push({ user_id: u.id, fingerprint: sha(`${family}\n${prefix}`).slice(0, 16), family, prefix, first_seen: t - first, last_seen: t - last });
+  const admin = db.users.find((u) => u.name === 'admin');
+  dev(admin, 'Firefox on Windows', '198.51.100.0/24', 86400 * 90, 1200);
+  dev(admin, 'Safari on macOS', '192.0.2.0/24', 86400 * 30, 5400);
+  dev(admin, 'Chrome on Linux', '198.51.100.0/24', 86400 * 12, 86400);
+  if (admin) p28.emails[admin.id] = 'admin@example.com';
+  dev(db.users.find((u) => u.name === 'op'), 'Chrome on Linux', '198.51.100.0/24', 86400 * 60, 86400)
+}

@@ -36,7 +36,8 @@ pub fn routes() -> Router<St> {
 /// tokens are refused.
 pub fn blocked(c: &Connection, user: &User) -> ApiResult<bool> {
     Ok(match &user.tenant {
-        Some(t) => catalog::tenants::disabled(c, t)?,
+        // Phase 28: a locked-down tenant's accounts as well (crate::lockdown)
+        Some(t) => catalog::tenants::disabled(c, t)? || catalog::tenants::locked_down(c, t)?,
         None => false,
     })
 }

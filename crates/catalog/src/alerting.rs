@@ -64,6 +64,10 @@ const HINTS: &[(&str, &str)] = &[
     ("vmid_reused", "A VM's identity (vmgenid / SMBIOS UUID) changed between two backups: its VMID now belongs to another VM (deleted and re-created, or replaced by a restore). The newest snapshot starts a new chain (read in full); older snapshots of that VMID belong to the previous VM and age out with retention. Check that the right VM is protected; put a legal hold on the old snapshots if they must be kept. Resolve the alert once checked."),
     ("restore_priority", "Restore priority is on (Dashboard): scheduled backups, GC, verify, file indexing, offsite uploads and replication syncs wait so restores get the disks and network. It ends on its own after at most 24 hours, or turn it off on the Dashboard when the recovery is done. Resolves when it is off."),
     ("malware", "The YARA scan found matches of the administrators' rules in a snapshot (rule and path: Snapshots page, scan results). The snapshot is flagged as anomalous, so restores and holds default to an earlier clean snapshot, and restores with Scan first are refused or run with the network disconnected. Check the files and the source; if a rule was too broad, a security officer clears the flag on the Snapshots page. Resolve the alert by hand."),
+    ("scan_hit", "The scheduled YARA scan of a protection group found matches of the administrators' rules in the newest snapshot of a source (rule and path: Snapshots page, scan results; the recovery calendar shows the snapshot red). The snapshot is flagged as anomalous, so restores and holds default to the latest scanned-clean snapshot. Check the files and the source; if a rule was too broad, a security officer clears the flag on the Snapshots page. Resolve the alert by hand."),
+    ("hash_hunt_hit", "An IOC hash hunt found files whose SHA-256 is on an uploaded hash list (results: Hash hunt page). The snapshots that contain them are flagged as anomalous. Check the source machine for the files; restore a clean version from an earlier snapshot with the results page's restore action; if the list entry was wrong, a security officer clears the flags on the Snapshots page. Resolve the alert by hand."),
+    ("tenant_lockdown", "A security officer or administrator locked one tenant down: its snapshots are held, its groups paused, its users' sessions and API tokens ended and its accounts cannot sign in; deletes, overwriting restores and configuration changes for it are refused. Other tenants keep running. Investigate; lifting the lockdown needs a second approver (Tenants page). Resolves when the lockdown is lifted."),
+    ("login_new_device", "An account signed in from a browser family and client network it never used before (the message names both). If that was the account owner (new laptop, travel, a changed network), acknowledge and resolve the alert. If not, disable the account on the Users page, end its sessions and review the audit log for what it did."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
 
@@ -88,6 +92,10 @@ const CATEGORY: &[(&str, &str)] = &[
     ("gc_confirm", "security"),
     ("vault_disabled", "security"),
     ("incident", "security"),
+    ("scan_hit", "security"),
+    ("hash_hunt_hit", "security"),
+    ("tenant_lockdown", "security"),
+    ("login_new_device", "security"),
     ("dek_rotation", "security"),
     ("job_failed", "backup"),
     ("sla_missed", "backup"),
@@ -379,6 +387,10 @@ mod tests {
             ("report", "system"),
             ("vault_disabled", "security"),
             ("tenant_disabled", "system"),
+            ("scan_hit", "security"),
+            ("hash_hunt_hit", "security"),
+            ("tenant_lockdown", "security"),
+            ("login_new_device", "security"),
             ("something_new", "system"),
         ] {
             assert_eq!(category(kind), cat, "{kind}");

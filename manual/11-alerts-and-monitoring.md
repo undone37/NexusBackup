@@ -60,7 +60,7 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 
 | Category | Kinds |
 |---|---|
-| security | `anomaly`, `malware`, `console_unlock`, `console_root_shell`, `break_glass`, `firewall_reset`, `mgmt_allow_reset`, `legal_hold_advisory`, `cert_expiry`, `account_dormant`, `inventory`, `clock_skew`, `gc_quorum`, `gc_confirm`, `vault_disabled`, `incident`, `dek_rotation` |
+| security | `anomaly`, `malware`, `scan_hit`, `hash_hunt_hit`, `tenant_lockdown`, `login_new_device`, `console_unlock`, `console_root_shell`, `break_glass`, `firewall_reset`, `mgmt_allow_reset`, `legal_hold_advisory`, `cert_expiry`, `account_dormant`, `inventory`, `clock_skew`, `gc_quorum`, `gc_confirm`, `vault_disabled`, `incident`, `dek_rotation` |
 | backup | `job_failed`, `sla_missed`, `paused`, `consistency`, `backup_inconsistent`, `orphaned`, `verify`, `snapshot_damaged`, `offsite_lag`, `inventory_refresh`, `config`, `vmid_reused`, `restore_priority` |
 | replication | every `replication_…` kind |
 | hardware | `disk`, `fleecing_space` |
@@ -91,6 +91,10 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 | `orphaned` | info | snapshots of an object that is in no protection group of its tenant were found; they are pruned with the default retention (shown once per object) | — | put the object into a group if it should keep being protected with that group's retention, or ignore it; see [05 Policies and protection groups](05-policies-and-groups.md#snapshots-of-objects-in-no-group) |
 | `anomaly` | critical | a backup added far more new data than usual for its source, or new data that suddenly does not compress (see [Change-rate anomalies](#change-rate-anomalies)); or its files show ransom-note names or a mass rename ([File-level change signals](#file-level-change-signals)). The snapshot is flagged as anomalous | — | check the source for mass changes or encryption (ransomware), compare the snapshot with the previous one under **Snapshot changes**; a security officer puts the last clean snapshot on hold with **Hold last good snapshot** |
 | `malware` | critical | a YARA scan found matches of the uploaded rules in a snapshot (see [Malware scan (YARA)](#malware-scan-yara)); the snapshot is flagged as anomalous | — (resolve by hand) | open the scan results on **Snapshots**, check the files and the source; a security officer clears the flag if a rule was too broad |
+| `scan_hit` | critical | a **scheduled** scan of a protection group found matches in the newest snapshot of a source (`scan_hit:<tenant>/<source>`); the snapshot is flagged | — (resolve by hand) | as `malware`; the recovery calendar shows the snapshot red. See [Scheduled scans](#scheduled-scans-and-the-recovery-calendar) |
+| `hash_hunt_hit` | critical | an IOC hash hunt found files whose SHA-256 is on an uploaded list (`hash_hunt_hit:<tenant>`); the snapshots holding them are flagged | — (resolve by hand) | open the results on **Hash hunt**; check the source machine; restore a clean version. See [IOC hash hunt](#ioc-hash-hunt) |
+| `tenant_lockdown` | critical | a security officer or administrator locked one tenant down (`tenant_lockdown:<tenant>`) | the lockdown is lifted (approved) | investigate; see [14 Disaster recovery](14-disaster-recovery.md#tenant-lockdown) |
+| `login_new_device` | warning (administrators, security officers), info (other roles) | an account signed in from a browser and network it never used before (`login_new_device:<account id>:<fingerprint>`); also mailed to the account's own address when one is set | — (resolve by hand) | confirm with the account owner; if it was not them, disable the account and check the audit log. See [09 Users and access](09-users-and-access.md#sign-in-devices-and-the-new-device-notice) |
 | `legal_hold_advisory` | warning | (secondary) the primary holds a replicated snapshot under a legal hold; not applied here (one alert per snapshot) | a security officer applies the hold, or the primary releases it | decide whether the hold applies here too; **Apply hold** on the alert. See [08 Replication](08-replication.md#legal-holds-from-the-primary) |
 | `quota` | warning at 80 %, critical at 100 % | a tenant's store reached 80 % or 100 % of its soft quota (**Tenants**); one alert per tenant, escalated at 100 % | usage is back under 80 % | review retention or what the tenant backs up, or raise the quota; backups continue either way |
 | `cert_expiry` | info at 90 days, warning at 30, critical at 7 (API tokens: info, last 7 days) | a certificate, the IdP client secret or an API token expires soon (see [Expiry warnings](#expiry-warnings)); one alert per item, escalated | renewed (new certificate, new secret date, token revoked or replaced) | renew as the message says |
@@ -289,7 +293,61 @@ The same scan can run before a restore: **Scan first** in the restore dialogs, s
 [06 Restores](06-restores.md#scan-first-secure-restore).
 
 > **Status:** Rules are compiled in the micro-VM at the start of each scan, so a syntax error only shows as a
-> failed scan job (with the compiler's message). Scans run on request or before a restore, not after every backup.
+> failed scan job (with the compiler's message). Scans run on request, before a restore, or on a group's schedule
+> (below); not after every backup.
+
+### Scheduled scans and the recovery calendar
+
+A protection group can scan its newest snapshots on a schedule: **Scheduled malware scan** in the group's dialog
+([05 Policies and protection groups](05-policies-and-groups.md#threat-detection-scheduled-scans-and-file-hashes)),
+for example **Daily** at 03:00. When it is due, the scheduler queues one **Malware scan (YARA)** job for the newest
+local snapshot of each guest or source of the group that has no scan result yet; a snapshot already scanned is not
+scanned again, and no new snapshot since the last run means no scan. The jobs queue behind each other and behind scans
+on request (one at a time), with the group's time budget. Nothing is queued while there are no rules, during restore
+priority, or for a deactivated tenant.
+
+Every snapshot carries the result of its newest scan: **clean**, **matches** or **incomplete** (or none: not scanned).
+A hit of a scheduled scan raises the critical `scan_hit` alert (scans on request keep raising `malware`) and flags
+the snapshot as usual. Restore and hold dialogs prefer the newest **scanned-clean** snapshot
+([06 Restores](06-restores.md#anomalous-snapshots-restore-the-latest-clean-one)).
+
+Filter **Snapshots** to one guest or source to see its **Recovery calendar**: the snapshots of a month by day,
+coloured by their state, with arrows for earlier months. Selecting one opens its first restore action (full restore,
+restore to path, …).
+
+![The recovery calendar of a file server](images/snapshots-recovery-calendar.png)
+
+### IOC hash hunt
+
+Threat intelligence feeds, CERT advisories and your own incident response publish **SHA-256 hashes of known-bad
+files** (indicators of compromise). The hash hunt searches all snapshots of a tenant for them **without a restore**:
+the SHA-256 of every file is recorded in the sealed file index of each snapshot when the group has **Record file
+hashes** on ([05](05-policies-and-groups.md#threat-detection-scheduled-scans-and-file-hashes)).
+
+1. **Settings → IOC hash lists** (administrators and security officers): upload a text file (one hash per line, `#`
+   starts a comment) or a CSV (the first SHA-256 of each line is used; MD5 and SHA-1 values are skipped and
+   counted). Up to 20 lists of 100 000 hashes, 500 000 together. The same name replaces a list. Audited with the
+   list's SHA-256 (`hash_list.put`, `hash_list.delete`).
+
+   ![Settings: IOC hash lists](images/settings-ioc-hash-lists.png)
+
+2. **Monitor → Hash hunt** (administrators, operators, security officers; tenant administrators for their tenant):
+   choose the tenant, optionally lists, a source and a time range, **Start hunt**. The appliance opens the tenant's
+   file indexes with the tenant key and compares the hashes; nothing leaves the appliance. A hunt over many
+   snapshots takes seconds to minutes (at most 30 minutes, then the result is marked incomplete).
+3. The results list every file version found: path, size, hash, the lists it is on, the source and the snapshots
+   that hold it. **Open** shows it in the file browser, **Restore…** restores files (for example an earlier,
+   clean version from a snapshot before the first hit) to a host, **Legal hold…** (security officers) holds the
+   snapshot as evidence. Hits flag the snapshots (reason `IOC hash: …`) and raise the critical `hash_hunt_hit` alert.
+   **Recent hunts** keeps the last results.
+
+![Hash hunt results](images/hash-hunt.png)
+
+Snapshots taken before **Record file hashes** was switched on, and VM disks, have no hashes; the result says how many
+snapshots could not be searched. Audit: `hash_hunt.request`, `hash_hunt.hits`.
+
+> **Status:** Implemented in Phase 28 and tested in the API, the scheduler, the store and against agents with and
+> without the hashing capability; not yet run on the lab appliance. VM disk files are not hashed.
 
 ### Change trends
 

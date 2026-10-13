@@ -18,6 +18,7 @@
   import Reports from './pages/Reports.svelte';
   import Files from './pages/Files.svelte';
   import Search from './pages/Search.svelte';
+  import Hunt from './pages/Hunt.svelte';
   import Changes from './pages/Changes.svelte';
   import RestoreTests from './pages/RestoreTests.svelte';
   import RecoveryPlans from './pages/RecoveryPlans.svelte';
@@ -41,6 +42,7 @@
   import IconVault from '@lucide/svelte/icons/lock-keyhole';
   import IconSnapshots from '@lucide/svelte/icons/database-backup';
   import IconSearch from '@lucide/svelte/icons/file-search';
+  import IconHunt from '@lucide/svelte/icons/fingerprint';
   import IconCompare from '@lucide/svelte/icons/git-compare';
   import IconRestoreTest from '@lucide/svelte/icons/flask-conical';
   import IconRecovery from '@lucide/svelte/icons/life-buoy';
@@ -86,6 +88,7 @@
     { path: '/', comp: Dashboard, allow: always, nav: t.nav.dashboard, section: 'monitor', icon: IconDashboard },
     { path: '/snapshots', comp: Snapshots, allow: always, nav: t.nav.snapshots, section: 'monitor', icon: IconSnapshots },
     { path: '/search', comp: Search, allow: can.restore, nav: t.nav.search, section: 'monitor', icon: IconSearch },
+    { path: '/hunt', comp: Hunt, allow: can.hunt, nav: t.nav.hunt, section: 'monitor', icon: IconHunt },
     { path: '/changes', comp: Changes, allow: can.restore, nav: t.nav.changes, section: 'monitor', icon: IconCompare },
     { path: '/restore-tests', comp: RestoreTests, allow: always, nav: t.nav.restoreTests, section: 'monitor', icon: IconRestoreTest },
     { path: '/storage', comp: Storage, allow: always, nav: t.nav.storage, section: 'monitor', icon: IconStorage },

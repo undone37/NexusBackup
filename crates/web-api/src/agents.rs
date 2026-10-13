@@ -235,6 +235,7 @@ pub async fn delete_agent(State(st): State<St>, ctx: Ctx, Path(id): Path<String>
         let c = st.cat.conn();
         let a = agent_value(&c, &id)?.ok_or_else(ApiError::not_found)?;
         ctx.owns(a["tenant"].as_str().unwrap_or_default())?;
+        crate::lockdown::refuse(&c, a["tenant"].as_str().unwrap_or_default(), "deletes")?;
         if agent_in_use(&c, &id)? {
             return Err(ApiError::conflict("agent is still used by a source"));
         }

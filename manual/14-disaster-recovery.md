@@ -173,6 +173,39 @@ accounts that may be compromised, and review the audit log of the incident perio
 > **Status:** Implemented in Phase 21b and tested in the API (`crates/web-api/tests/incident.rs`) and the demo
 > backend; a run on the appliance image (lab) is pending.
 
+### Tenant lockdown
+
+When only **one tenant** is affected (a customer's administrator account is compromised, one customer's file server
+is being encrypted), lock that tenant down instead of the whole appliance: **Configuration → Tenants → Lock down…**
+on the tenant's row (security officers and administrators of the appliance).
+
+![Lock down a tenant](images/tenant-lockdown.png)
+
+Give a **Reason** (the ticket), choose the **Legal hold** (every snapshot of the tenant, the snapshots of a time range,
+or none), confirm with your password and a fresh authenticator code, then **Lock down now**. At once, in one step:
+
+- the tenant's snapshots are put on legal hold,
+- its protection groups are paused,
+- every session and API token of the tenant's accounts ends, and **they cannot sign in** until the lockdown is lifted,
+- the critical alert `tenant_lockdown` is raised (forwarded to your SIEM).
+
+While it lasts, everything that would change or remove the tenant's data is refused: backups, deleting snapshots,
+sources, groups, agents or the tenant, changing its sources, groups and agents, resuming its groups, agent updates,
+and restores that overwrite (replace a guest, restore files with **Overwrite** set, plugin restores into the source).
+**Restores to new targets, downloads, scans and hash hunts stay possible**, so you can investigate and recover.
+All other tenants keep running. The Tenants page shows a banner and **Locked down** on the tenant.
+
+![A locked-down tenant](images/tenants-locked.png)
+
+**Lifting** needs a second person, also with approvals switched off: **Request lift** on the tenant's row, then
+*another* administrator or security officer approves `tenant.lockdown.lift` on **Approvals**. The groups the lockdown
+paused resume (an earlier pause comes back), the alert resolves and the tenant's accounts can sign in again. **Holds
+stay** until each is released. Revoked API tokens do not come back. Audit: `tenant.lockdown`, `quorum.request`,
+`quorum.approve`.
+
+> **Status:** Implemented in Phase 28 and tested in the API (`crates/web-api/tests/phase28.rs`), the scheduler and
+> the demo backend; a run on the appliance image (lab) is pending.
+
 ## Attach an offsite copy in the web UI
 
 Use this on a new appliance that went through first boot normally (it has its own recovery key). You need:

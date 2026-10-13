@@ -2123,6 +2123,8 @@ mod scan;
 mod search;
 /// Phase 17f tenant deactivation.
 mod tenants;
+/// Phase 28 scheduled threat scans, hash hunt, file hashes, tenant lockdown, new-device mail.
+mod threat;
 /// Phase 17a/b bandwidth and sync windows, close vault.
 mod windows;
 

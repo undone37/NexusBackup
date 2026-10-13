@@ -122,6 +122,9 @@ impl Env {
         s
     }
     fn backup(&self, store: &Store, pin: &str, job: u64) -> anyhow::Result<backup::Report> {
+        self.backup_with(store, pin, job, false)
+    }
+    fn backup_with(&self, store: &Store, pin: &str, job: u64, file_hashes: bool) -> anyhow::Result<backup::Report> {
         let mut map = MapDb::open(&self.store_dir).unwrap();
         let mut s = self.session(pin);
         let r = backup::backup(
@@ -136,12 +139,75 @@ impl Env {
                 hooks: true,
                 filters: Default::default(),
                 limits: Default::default(),
+                file_hashes,
             },
             &mut |l| eprintln!("{l}"),
         );
         s.close();
         r
     }
+}
+
+fn sha_hex(d: &[u8]) -> String {
+    sha256_hex(d)
+}
+
+/// `(path, sha256 hex)` of the hashed files of a snapshot's name index.
+fn hashed(store: &Store, time: u64) -> Vec<(String, String)> {
+    let m = store.load_manifest(&source_name(ID), time).unwrap();
+    let n = store.load_names(&m).unwrap().unwrap();
+    n.hashed().map(|(p, _, h)| (p.to_owned(), agent_conn::hex(h))).collect()
+}
+
+/// Phase 28: file hashes from an agent with CAP_FILE_HASH (while reading), from
+/// an older agent (read back from the store), carried over for unchanged files;
+/// a hostile agent's hash list of the wrong length fails the backup.
+#[test]
+fn file_hashes_from_new_and_old_agents() {
+    let e = Env::new();
+    let pin = e.enroll();
+    let store = e.store();
+    let want: Vec<(String, String)> = [
+        "etc/hostname",
+        "etc/ssh/sshd_config",
+        "var/empty",
+        "var/label.xattr",
+        "var/lib/db/copy.bin",
+        "var/lib/db/data.bin",
+    ]
+    .iter()
+    .map(|p| (p.to_string(), sha_hex(&fs::read(e.root.join(p)).unwrap())))
+    .collect();
+    // an older agent: the appliance computes the hashes from the stored chunks
+    let r = e.backup_with(&store, &pin, 1, true).unwrap();
+    let mut got = hashed(&store, r.time);
+    got.sort();
+    assert_eq!(got, want);
+    let st = store.take_hash_stats().unwrap();
+    assert_eq!((st.fresh, st.computed), (0, 5), "{st:?}");
+    // an agent with the capability: hashes while reading (and the store has nothing to read)
+    e.agent.st.lock().unwrap().file_hash = true;
+    e.agent.st.lock().unwrap().cache = None; // a full read
+    fs::write(e.root.join("etc/hostname"), b"web02\n").unwrap();
+    let r = e.backup_with(&store, &pin, 2, true).unwrap();
+    let st = store.take_hash_stats().unwrap();
+    assert_eq!((st.fresh, st.computed, st.failed), (5, 0, 0), "{st:?}");
+    let got = hashed(&store, r.time);
+    assert!(got.contains(&("etc/hostname".into(), sha_hex(b"web02\n"))));
+    // incremental: unchanged files are not read, their hashes carry over
+    let r = e.backup_with(&store, &pin, 3, true).unwrap();
+    assert!(r.unchanged >= 5);
+    let st = store.take_hash_stats().unwrap();
+    assert_eq!((st.fresh, st.carried, st.computed), (0, 5, 0), "{st:?}");
+    assert_eq!(hashed(&store, r.time).len(), 6);
+    // hashes off (the next job opens its own store handle): the name index is v1 again
+    let off = e.store();
+    let r = e.backup(&off, &pin, 4).unwrap();
+    assert!(hashed(&off, r.time).is_empty());
+    // a hostile agent: one hash too few
+    e.agent.st.lock().unwrap().short_hashes = true;
+    let err = e.backup_with(&store, &pin, 5, true).unwrap_err();
+    assert!(format!("{err:#}").contains("hashes for"), "{err:#}");
 }
 
 fn tree(store: &Store, time: u64) -> Vec<chunkstore::TreeEntry> {

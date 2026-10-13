@@ -601,6 +601,9 @@ pub fn run(store: &Store, peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&
         r.entries, r.files, r.unchanged, r.streams, r.bytes, r.transferred, r.new_bytes, r.consistent
     ));
     (log.out)(&store.stats_line(&m, r.transferred, store.written().since(written))?);
+    if let Some(h) = store.take_hash_stats() {
+        (log.out)(&h.to_string());
+    }
     if !r.consistent {
         (log.out)(&format!(
             "inconsistent {id}: the plugin reported no consistent view ({})",

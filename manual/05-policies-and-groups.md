@@ -230,6 +230,30 @@ stored tar stream. The file list is sealed with the tenant key and stored next t
 (a few seconds with KVM) plus the walk over all files for every VM snapshot, and a full read of the container's
 backup for every CT snapshot, so the index job can take minutes for large guests. Only snapshots taken while the
 flag is on are indexed. Turning it on or off is recorded in the audit log (`group.index_files`).
+### Threat detection: scheduled scans and file hashes
+
+The **Threat detection** part of a group's dialog (every source kind) has two options:
+
+- **Scheduled malware scan:** **Off**, **Daily** at a time, or a **Custom schedule** (the same forms as a policy
+  schedule), in the group's time zone, and an optional **Time budget per scan** (minutes, default 240). When the
+  schedule is due, the newest local snapshot of each guest or source of the group that has not been scanned yet is
+  scanned with the YARA rules from **Settings → Malware scan**, one scan at a time inside the restore micro-VM.
+  Without rules nothing is scanned (saving the option says so). The list of groups shows **Scan: daily 03:00**.
+  Details and the recovery calendar: [11 Alerts and monitoring](11-alerts-and-monitoring.md#scheduled-scans-and-the-recovery-calendar).
+- **Record file hashes (IOC hash hunt):** the SHA-256 of every file is stored in the snapshot's sealed file index,
+  so the **Hash hunt** page can search all snapshots for known-bad files without a restore. Agents with the
+  capability (version with Phase 28) compute the hashes while they read; for older agents, shares, TrueNAS
+  datasets and plugin file trees the appliance computes them, and unchanged files take the hash of the previous
+  snapshot. The first backup after switching it on reads the files once more from the store, so it takes longer.
+  Containers are hashed together with **Index files in VM/CT disks**; VM disks are not hashed yet. The list of
+  groups shows **File hashes**. See [11 Alerts and monitoring](11-alerts-and-monitoring.md#ioc-hash-hunt).
+
+![Protection group: threat detection](images/group-threat-scan.png)
+
+Both options apply at once (no approval: they only add detection) and are audited (`group.threat_scan`,
+`group.file_hashes`). Administrators and tenant administrators set them here; security officers can set the scan
+schedule through the API (`PUT /api/v1/groups/{id}/threat-scan`).
+
 ### Excluded disks and parallel guests (Proxmox VE)
 
 A Proxmox VE group has two more settings in its dialog:

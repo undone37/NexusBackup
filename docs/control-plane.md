@@ -61,6 +61,7 @@ replicad); it streams replicad's answers to replication peers without opening st
 | `forward_events` (v16) | seq PK AUTOINCREMENT, ts, type (`alert`,`job`), payload (JSON of the row at that moment) — outbox written by triggers on `alerts` (raised / escalated / acknowledged / resolved) and `jobs` (state → ok/failed/cancelled); pruned when every enabled sink has it and it is older than a day |
 | `forward_state` (v16) | sink PK (`syslog`,`https`), dest, audit_seq, event_seq (last delivered), last_ok, last_error, last_error_ts, failing_since |
 | `alerts` | id, ts (first seen), severity, kind, message (latest), acked_by; v12 (13f lifecycle): key (dedup key, one open alert per key), tenant, count, last_ts, resolved_at, resolved_by, note, auto (resolved by the scheduler), notified_ts (last delivery; NULL = due) |
+| Phase 28 (v43) | `groups.scan_schedule` (schedule grammar, NULL = off), `groups.scan_budget_min`, `groups.file_hashes`; `snapshots.scan_state` (`clean`/`hit`/`incomplete`, NULL = unscanned); `hash_lists` (name PK, hashes (normalised hex lines), count, sha256, uploaded_by, uploaded_at); `tenant_lockdowns` (tenant PK, active, state JSON); `login_devices` (user_id FK ON DELETE CASCADE, fingerprint, family, prefix, first_seen, last_seen; PK (user_id, fingerprint)); `users.email` — see "Tenant lockdown", "New-device sign-in", docs/malware-scan.md, docs/file-index.md |
 | `replication_peers` (v7, primary) | id (16 hex), name, tenants (JSON), state (`pending`,`approved`,`enrolled`,`revoked`), cert_sha256, keyd_pub, token_hash (`sealed:v1:` to replicad), token_expires, enroll_failures, key_exports (JSON, DEKs sealed to the peer's keyd), created, created_by, enrolled_at, last_seen, revoked |
 | `replication_sources` (v7, secondary) | id, name, url (`host:port`), peer_id, cert_pin, tenants (JSON), schedule, gfs, bwlimit, token_hash (`sealed:v1:` to the scheduler), state (`enrolling`,`enrolled`,`failed`), cert_sha256, keyd_pub, created, last_sync, status (JSON per tenant); v24: windows, sync_window (JSON), timezone, closed_until (-1 = until reopened), closed_by, closed_at |
 
@@ -1056,3 +1057,28 @@ need no approval (isolated, destroyed, nothing leaves the cluster); an execution
 Network (NetworkManager, static/DHCP on the management NIC) → admin account + TOTP enrollment (QR in terminal, code confirmation) → second person: "create it now (recommended)" = security officer account + TOTP, entered at the console by that person, or "later" (audit `setup.second_person_later`; script mode `"second_person_later": true`) → `keyd init`: recovery key shown once, re-entry of 3 random groups required → TLS certificate (self-signed, SAN = hostname + IPs; fingerprint shown) → metrics token → `/var/lib/nexus/setup-done` (writes `settings.approvals_enabled`: enabled with two people, **disabled with a single administrator** — the TUI and the script output say so; audit `setup.approvals`) → enable `nexus-web-api`, `nexus-scheduler`, `nexus-keyd`, `nexus-replicad` (`nexus-nasmount.socket` is enabled by the image preset).
 
 Tenant keys: tenants are created in the UI; the scheduler asks keyd `ensure <tenant>` (keyd creates DEK v1 on first use, only for the chunkstore uid) and refreshes the wrapped escrow files via `escrow <tenant>` before each offsite run.
+
+## Tenant lockdown (Phase 28)
+Incident mode limited to one tenant (`crates/web-api/src/lockdown.rs`). `POST /tenants/{name}/lockdown {reason,
+hold?, current_password, current_totp}` by a security officer or an admin (appliance-wide, re-authenticated) — at
+once, in one transaction: legal holds on the tenant's snapshots (all; `hold: {from, to}` = a time range, `null` =
+none), its groups paused indefinitely, every session and API token of its accounts ended, critical alert
+`tenant_lockdown` (tenant set). While it lasts the tenant's accounts cannot sign in (password, passkey, OIDC, tokens:
+`tenants::blocked`), and the web-api and the scheduler refuse with 409 / a failed job: backups, agent updates and
+renewals, restores that overwrite (replace a guest, files with `if_older`/`always`, plugin restores), snapshot
+deletes, deletes and changes of the tenant's sources, groups and agents, tenant changes and deletion, resuming its
+groups. Restores to new targets, downloads, scans and hash hunts stay possible. Other tenants are not affected.
+Lifting: `POST /tenants/{name}/lockdown/lift` → approval `tenant.lockdown.lift` (always a second admin or security
+officer, also with approvals disabled); the groups it paused resume (an earlier pause comes back), the alert
+resolves, holds stay. `GET /lockdowns` (active ones, with the pending lift request), `GET /tenants/{name}/lockdown`.
+State: `tenant_lockdowns` (catalog v43); history: audit (`tenant.lockdown`, `quorum.*`).
+
+## New-device sign-in (Phase 28)
+Every new session records the account's device (`login_devices`, catalog v43): the browser family and operating
+system from the user agent and the client network prefix (IPv4 /24, IPv6 /48), fingerprinted. The first sign-in of
+an account sets its baseline; afterwards an unseen combination raises `login_new_device` (warning for admins and
+security officers, info otherwise; key `login_new_device:<user id>:<fingerprint>`), forwarded to the SIEM sinks like
+every alert. On its first delivery the scheduler also mails it to the account's own address (`users.email`: the
+profile, `PUT /auth/email`, or the OIDC `email` claim unless `email_verified` is false) through the alert SMTP
+server. `GET /auth/devices` lists the caller's devices and address, `DELETE /auth/devices/{fingerprint}` forgets one.
+At most 50 devices per account are kept.

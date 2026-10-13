@@ -15,6 +15,30 @@ use serde_json::{json, Value};
 /// Longest stored key (message-derived keys are cut).
 const KEY_MAX: usize = 200;
 
+/// Phase 28: raised by the web-api at sign-in, key `login_new_device:<user id>:<fingerprint>`.
+pub const LOGIN_NEW_DEVICE: &str = "login_new_device";
+
+/// The account address of a `login_new_device` alert, if the account has one.
+pub(crate) fn device_alert_email(
+    c: &catalog::rusqlite::Connection,
+    id: i64,
+) -> catalog::rusqlite::Result<Option<String>> {
+    let key: String = c.query_row("SELECT key FROM alerts WHERE id = ?1", [id], |r| r.get(0))?;
+    let Some(uid) = key
+        .strip_prefix("login_new_device:")
+        .and_then(|k| k.split(':').next())
+        .and_then(|u| u.parse::<i64>().ok())
+    else {
+        return Ok(None);
+    };
+    c.query_row(
+        "SELECT email FROM users WHERE id = ?1 AND email IS NOT NULL AND email != ''",
+        [uid],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
 /// `job_failed:<tenant>/<kind>/<target>`: the group, source, agent,
 /// replication source or guest (vmid) of the job (plus the guest name, if any).
 /// A later successful run of the same job resolves it.
@@ -134,6 +158,8 @@ impl Scheduler {
     /// ones, for delivery (`notified_ts` records it).
     pub(crate) fn deliver_alerts(&mut self) -> Result<()> {
         let now = catalog::now();
+        // Phase 28: first delivery of a new-device sign-in also goes to the account's own address
+        let mut account_mail: Vec<(i64, String)> = Vec::new();
         let rows: Vec<alerts::Alert> = {
             let c = self.db.conn();
             let remind = alerting::reminder_hours(&c)? * 3600;
@@ -163,6 +189,14 @@ impl Scheduler {
                 })
             })?;
             let rows: Vec<alerts::Alert> = rows.collect::<std::result::Result<_, _>>()?;
+            for a in rows.iter().filter(|a| a.kind == LOGIN_NEW_DEVICE) {
+                let first: bool = c.query_row("SELECT notified_ts IS NULL FROM alerts WHERE id = ?1", [a.id], |r| {
+                    r.get(0)
+                })?;
+                if let Some(email) = device_alert_email(&c, a.id)?.filter(|_| first) {
+                    account_mail.push((a.id, email));
+                }
+            }
             for a in &rows {
                 c.execute("UPDATE alerts SET notified_ts = ?2 WHERE id = ?1", params![a.id, now])?;
             }
@@ -176,6 +210,24 @@ impl Scheduler {
             alerts::AlertsConfig::default()
         });
         for a in rows {
+            if let Some((_, to)) = account_mail.iter().find(|(id, _)| *id == a.id) {
+                if cfg.smtp.is_some() {
+                    let own = alerts::AlertsConfig {
+                        smtp: cfg.smtp.clone(),
+                        rules: vec![alerting::Rule {
+                            name: "account".into(),
+                            min_severity: "info".into(),
+                            kinds: vec![LOGIN_NEW_DEVICE.into()],
+                            tenants: Vec::new(),
+                            channels: alerting::Channels {
+                                email: vec![to.clone()],
+                                webhook: None,
+                            },
+                        }],
+                    };
+                    let _ = self.alert_tx.send((own, a.clone()));
+                }
+            }
             let _ = self.alert_tx.send((cfg.clone(), a));
         }
         Ok(())

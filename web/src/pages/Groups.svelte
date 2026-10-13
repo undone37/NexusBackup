@@ -13,6 +13,7 @@
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import BackupNow from '../components/BackupNow.svelte';
   import PauseDialog from '../components/PauseDialog.svelte';
+  import ScheduleInput from '../components/ScheduleInput.svelte';
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
   import { isPaused, timeZones } from '../lib/schedule';
@@ -246,6 +247,14 @@
       parallel: x?.parallel_guests ?? 1,
     };
     indexFiles = !!x?.index_files;
+    // Phase 28: scheduled scan + file hashes
+    const sched = x?.scan_schedule ?? null;
+    const daily = sched ? /^daily (\d{2}:\d{2})$/.exec(sched) : null;
+    scanMode = !sched ? 'off' : daily ? 'daily' : 'custom';
+    scanAt = daily ? daily[1] : '03:00';
+    scanCustom = sched && !daily ? sched : 'Sun 03:00';
+    scanBudget = x?.scan_budget_min ? String(x.scan_budget_min) : '';
+    fileHashes = !!x?.file_hashes;
     tagInput = '';
     lastSource = f.source_id;
     guestList = null;
@@ -253,6 +262,13 @@
   }
   // Phase 15g: file index of VM/CT disks (pve groups only, PUT /groups/{id}/index-files)
   let indexFiles = $state(false);
+  // Phase 28: scheduled YARA scan (PUT /groups/{id}/threat-scan) and file hashes (PUT /groups/{id}/file-hashes)
+  let scanMode: 'off' | 'daily' | 'custom' = $state('off');
+  let scanAt = $state('03:00');
+  let scanCustom = $state('');
+  let scanBudget = $state('');
+  let fileHashes = $state(false);
+  const scanSchedule = () => (scanMode === 'off' ? null : scanMode === 'daily' ? `daily ${scanAt}` : scanCustom.trim() || null);
   // Another source: the selected guests/datasets belonged to the old one.
   let lastSource = 0;
   $effect(() => {
@@ -317,6 +333,14 @@
       const id = editing?.id ?? (r.data as Partial<Group>).id;
       if (pveSource && id && indexFiles !== !!editing?.index_files)
         await act(put(`/groups/${id}/index-files`, { enabled: indexFiles }), indexFiles ? t.groups.indexFilesOn : t.groups.indexFilesOff);
+      const sched = scanSchedule();
+      const budget = scanBudget.trim() ? Number(scanBudget) : null;
+      if (id && (sched !== (editing?.scan_schedule ?? null) || budget !== (editing?.scan_budget_min ?? null))) {
+        const sr = await act(put<{ rules: boolean }>(`/groups/${id}/threat-scan`, { schedule: sched, budget_min: budget }), t.groups.scanSaved);
+        if (sr && sched && sr.data?.rules === false) notify('info', t.groups.scanNoRules);
+      }
+      if (id && fileHashes !== !!editing?.file_hashes)
+        await act(put(`/groups/${id}/file-hashes`, { enabled: fileHashes }), fileHashes ? t.groups.fileHashesOn : t.groups.fileHashesOff);
       open = false;
       load();
     }
@@ -378,6 +402,8 @@
                 {#if isPaused(x.maintenance_until)}<span class="chip warn">{t.runctl.inMaintenance}</span>{/if}
                 {#if x.blackout_active}<span class="chip plain">{t.runctl.blackoutNow}</span>{/if}
                 {#if x.index_files}<span class="chip plain">{t.groups.indexFilesShort}</span>{/if}
+                {#if x.scan_schedule}<span class="chip plain">{t.groups.scanShort(x.scan_schedule)}</span>{/if}
+                {#if x.file_hashes}<span class="chip plain">{t.groups.fileHashesShort}</span>{/if}
                 {#if x.timezone && x.timezone !== 'UTC'}<div class="muted">{x.timezone}</div>{/if}
                 {#if diskCount(x) || (x.parallel_guests ?? 1) > 1}<div class="muted">
                     {[diskCount(x) ? t.groups.disksShort(diskCount(x)) : '', (x.parallel_guests ?? 1) > 1 ? t.groups.parallelShort(x.parallel_guests) : '']
@@ -558,6 +584,40 @@
         <input id="g-guests" class="mono" bind:value={f.guests} placeholder="100, 101, 200" />
       </div>
     {/if}
+    <fieldset class="field">
+      <legend>{t.groups.threat}</legend>
+      <div class="field">
+        <label for="g-scan">{t.groups.scanSchedule}</label>
+        <select id="g-scan" bind:value={scanMode} aria-describedby="g-scan-hint">
+          <option value="off">{t.groups.scanOff}</option>
+          <option value="daily">{t.groups.scanDaily}</option>
+          <option value="custom">{t.groups.scanCustom}</option>
+        </select>
+        <p class="hint" id="g-scan-hint">{t.groups.scanHint}</p>
+      </div>
+      {#if scanMode === 'daily'}
+        <div class="field">
+          <label for="g-scan-at">{t.groups.scanAt}</label>
+          <input id="g-scan-at" type="time" bind:value={scanAt} required />
+        </div>
+      {:else if scanMode === 'custom'}
+        <fieldset>
+          <legend>{t.groups.scanCustomLabel}</legend>
+          <ScheduleInput id="g-scan-custom" bind:value={scanCustom} kinds={['weekdays', 'daily', 'monthly', 'hours']} />
+        </fieldset>
+      {/if}
+      {#if scanMode !== 'off'}
+        <div class="field">
+          <label for="g-scan-budget">{t.groups.scanBudget}</label>
+          <input id="g-scan-budget" type="number" min="1" max="1440" bind:value={scanBudget} aria-describedby="g-scan-budget-hint" />
+          <p class="hint" id="g-scan-budget-hint">{t.groups.scanBudgetHint}</p>
+        </div>
+      {/if}
+      <div class="field">
+        <label class="inline-check"><input type="checkbox" bind:checked={fileHashes} aria-describedby="g-hash-hint" />{t.groups.fileHashes}</label>
+        <p class="hint" id="g-hash-hint">{t.groups.fileHashesHint}</p>
+      </div>
+    </fieldset>
     {#if pveSource}
       <div class="field">
         <label class="inline-check"

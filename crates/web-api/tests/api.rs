@@ -3770,6 +3770,9 @@ fn registered_routes() -> std::collections::BTreeSet<(String, String)> {
         include_str!("../src/tenancy.rs"),
         include_str!("../src/vault.rs"),
         include_str!("../src/incident.rs"),
+        include_str!("../src/lockdown.rs"),
+        include_str!("../src/threat.rs"),
+        include_str!("../src/devices.rs"),
         include_str!("../src/passkeys.rs"),
         include_str!("../src/tenant_idp.rs"),
     ] {
@@ -4073,6 +4076,21 @@ async fn tenant_admin_routes_classified() {
         ("GET", "/tenants/{name}/oidc", "/api/v1/tenants/acme/oidc".into(), none(), 'Y'),
         ("PUT", "/tenants/{name}/oidc", "/api/v1/tenants/acme/oidc".into(), Some(json!({"enabled": false, "issuer": "", "client_id": "", "label": "x"})), 'N'),
         ("POST", "/tenants/{name}/oidc/test", "/api/v1/tenants/acme/oidc/test".into(), e(), 'N'),
+        // Phase 28: threat scans and file hashes of own groups, hunts in own tenant, own devices;
+        // IOC lists and lockdowns are the provider's
+        ("PUT", "/groups/{id}/threat-scan", format!("/api/v1/groups/{grp}/threat-scan"), Some(json!({"schedule": "daily 02:00"})), 'Y'),
+        ("PUT", "/groups/{id}/file-hashes", format!("/api/v1/groups/{grp}/file-hashes"), Some(json!({"enabled": false})), 'Y'),
+        ("GET", "/hash-lists", "/api/v1/hash-lists".into(), none(), 'N'),
+        ("PUT", "/hash-lists/{name}", "/api/v1/hash-lists/feed".into(), Some(json!({"text": "x"})), 'N'),
+        ("DELETE", "/hash-lists/{name}", "/api/v1/hash-lists/feed".into(), none(), 'N'),
+        ("POST", "/hunts", "/api/v1/hunts".into(), Some(json!({"tenant": "acme"})), 'Y'),
+        ("GET", "/lockdowns", "/api/v1/lockdowns".into(), none(), 'N'),
+        ("GET", "/tenants/{name}/lockdown", "/api/v1/tenants/acme/lockdown".into(), none(), 'N'),
+        ("POST", "/tenants/{name}/lockdown", "/api/v1/tenants/acme/lockdown".into(), Some(json!({"reason": "x"})), 'N'),
+        ("POST", "/tenants/{name}/lockdown/lift", "/api/v1/tenants/acme/lockdown/lift".into(), e(), 'N'),
+        ("GET", "/auth/devices", "/api/v1/auth/devices".into(), none(), 'Y'),
+        ("DELETE", "/auth/devices/{fp}", "/api/v1/auth/devices/0123456789abcdef".into(), none(), 'Y'),
+        ("PUT", "/auth/email", "/api/v1/auth/email".into(), Some(json!({"email": null})), 'Y'),
     ];
     let classified: std::collections::BTreeSet<(String, String)> =
         table.iter().map(|(m, p, ..)| (m.to_string(), p.to_string())).collect();

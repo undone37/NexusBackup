@@ -118,6 +118,7 @@ fn real_agent_with_agent_conn() {
         hooks: false,
         filters: Default::default(),
         limits: Default::default(),
+        file_hashes: true,
     };
     let run = |job: u64| {
         let mut map = MapDb::open(&store_dir).unwrap();
@@ -139,6 +140,9 @@ fn real_agent_with_agent_conn() {
         r1.wanted_bytes
     );
     assert!(r1.scan.errors.is_empty(), "{:?}", r1.scan.errors);
+    // Phase 28: the agent hashed every file it read (CAP_FILE_HASH); the store read nothing back
+    let h = store.take_hash_stats().unwrap();
+    assert!(h.fresh >= 4 && h.computed == 0 && h.failed == 0, "{h:?}");
     // second backup: everything unchanged, nothing transferred
     std::thread::sleep(Duration::from_millis(1100)); // distinct snapshot time
     let r2 = run(2);
@@ -146,6 +150,12 @@ fn real_agent_with_agent_conn() {
     assert_eq!(r2.wanted_chunks, 0, "no transfer when nothing changed");
     assert_eq!(r2.scan.read_bytes, 0, "unchanged files are not re-read");
     assert!(r2.unchanged >= 5);
+    let h = store.take_hash_stats().unwrap();
+    // only the machine layout the appliance adds is hashed afresh
+    assert!(
+        h.fresh <= 1 && h.carried >= 4 && h.computed == 0,
+        "unchanged files carry their hash: {h:?}"
+    );
     // mapping index lost: the appliance Wants chunks of `unchanged` files, the agent
     // re-reads them from the files
     fs::remove_file(store_dir.join("agent-map.db")).unwrap();
@@ -169,6 +179,14 @@ fn real_agent_with_agent_conn() {
     assert!(entries
         .iter()
         .any(|e| e.path == format!("{rel}/db/data.bin").as_bytes() && e.kind == TreeKind::File));
+    let names = store.load_names(&m).unwrap().unwrap();
+    let want = agent_conn::ca::sha256_hex(&fs::read(data.join("db/data.bin")).unwrap());
+    assert!(
+        names
+            .hashed()
+            .any(|(p, _, h)| p == format!("{rel}/db/data.bin") && agent_conn::hex(h) == want),
+        "SHA-256 of data.bin in the name index"
+    );
 
     // restore into a fresh directory
     let target = d.path().join("restored");
@@ -322,6 +340,7 @@ fn filters_limits_and_certificate_renewal() {
             bwlimit: 1_000_000,
             nice: 5,
         },
+        file_hashes: false,
     };
     let t = std::time::Instant::now();
     let r = backup::backup(&store, &mut map, &mut s, ID, &spec, &mut |l| eprintln!("{l}")).unwrap();

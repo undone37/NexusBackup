@@ -162,6 +162,18 @@ impl Scheduler {
                     r["matches"].to_string()
                 ],
             )?;
+            // Phase 28: the snapshot's verdict (recovery calendar, "latest clean")
+            let state = if total > 0 {
+                "hit"
+            } else if complete {
+                "clean"
+            } else {
+                "incomplete"
+            };
+            self.db.conn().execute(
+                "UPDATE snapshots SET scan_state = ?4 WHERE tenant = ?1 AND source = ?2 AND time = ?3",
+                params![job.tenant, source, time, state],
+            )?;
             self.db.audit(
                 ACTOR,
                 "snapshot.scan",
@@ -184,12 +196,18 @@ impl Scheduler {
                 self.flag_snapshot(&job.tenant, &source, time, &why)?;
                 let first = &r["matches"][0];
                 let last = self.last_clean(&job.tenant, &source, time)?;
+                // Phase 28: scheduled scans (threat.rs) raise their own kind
+                let (kind, what) = if job.params["scheduled"] == true {
+                    ("scan_hit", "Scheduled YARA scan")
+                } else {
+                    ("malware", "YARA scan")
+                };
                 self.raise(
                     "critical",
-                    "malware",
-                    &format!("malware:{}/{source}", job.tenant),
+                    kind,
+                    &format!("{kind}:{}/{source}", job.tenant),
                     &format!(
-                        "YARA scan of {}/{source} snapshot {time}: {why}, e.g. {} in {}; {last}",
+                        "{what} of {}/{source} snapshot {time}: {why}, e.g. {} in {}; {last}",
                         job.tenant,
                         first["rule"].as_str().unwrap_or("?"),
                         first["path"].as_str().unwrap_or("?")

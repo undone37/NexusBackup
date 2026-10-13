@@ -88,6 +88,8 @@ pub fn name(m: &Message) -> &'static str {
         Message::RescueDone { .. } => "RescueDone",
         Message::SetEdge { .. } => "SetEdge",
         Message::EdgeSet => "EdgeSet",
+        Message::ScanHashed { .. } => "ScanHashed",
+        Message::EntryHashes { .. } => "EntryHashes",
     }
 }
 

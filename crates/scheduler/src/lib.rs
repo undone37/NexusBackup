@@ -109,6 +109,7 @@ pub mod sshkeys;
 pub mod stats;
 mod tenant_key;
 mod tenants;
+pub mod threat;
 mod windows;
 
 use anyhow::{bail, Context, Result};
@@ -366,6 +367,8 @@ struct GroupRow {
     parallel: u32,
     /// the policy's global file filters (`{exclude, exclude_regex}`)
     file_filters: Value,
+    /// Phase 28: SHA-256 per file in the name index (IOC hash hunt)
+    file_hashes: bool,
 }
 
 pub struct Scheduler {
@@ -767,6 +770,7 @@ impl Scheduler {
         self.log_err(|s| s.queue_restore_replaces());
         self.log_err(|s| s.check_restore_priority(now)); // priority.rs
         self.log_err(|s| s.queue_scheduled(now));
+        self.log_err(|s| s.queue_threat_scans(now)); // threat.rs
         self.log_err(|s| s.queue_maintenance(now));
         self.log_err(|s| s.queue_replication(now));
         self.log_err(|s| s.replication_windows(now));
@@ -868,7 +872,8 @@ impl Scheduler {
         let c = self.db.conn();
         let mut st = c.prepare(
             "SELECT g.id, g.tenant, g.source_id, g.guests, p.schedule, p.gfs, p.offsite, s.kind, \
-             g.mode, g.selector, g.exclude, g.exclude_disks, g.exclude_disks_mode, g.parallel_guests, p.file_filters \
+             g.mode, g.selector, g.exclude, g.exclude_disks, g.exclude_disks_mode, g.parallel_guests, p.file_filters, \
+             g.file_hashes \
              FROM groups g JOIN policies p ON p.id = g.policy_id JOIN sources s ON s.id = g.source_id ORDER BY g.id",
         )?;
         let rows = st.query_map([], |r| {
@@ -940,6 +945,7 @@ impl Scheduler {
                 exclude_disks_mode: r.get(12)?,
                 parallel: r.get::<_, u32>(13)?.clamp(1, 8),
                 file_filters: serde_json::from_str(&r.get::<_, String>(14)?).unwrap_or_default(),
+                file_hashes: r.get(15)?,
             })
         })?;
         let mut rows: Vec<GroupRow> = rows.collect::<std::result::Result<_, _>>()?;
@@ -1409,6 +1415,9 @@ impl Scheduler {
         if job.kind == "snapshot_scan" {
             self.scan_bookkeeping(&job, ok, result.as_ref())?;
         }
+        if ok && job.kind == "hash_hunt" {
+            self.hunt_bookkeeping(&job, result.as_ref())?; // threat.rs
+        }
         if job.kind == "gc" {
             self.orphan_bookkeeping(&job.tenant, f.stdout.as_deref())?;
         }
@@ -1616,7 +1625,7 @@ impl Scheduler {
                 Some(r)
             }
             "alert_test" | "forward_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" | "file_search"
-            | "file_index" | "file_changes" | "snapshot_diff" | "config_backup" | "snapshot_scan" => {
+            | "file_index" | "file_changes" | "snapshot_diff" | "config_backup" | "snapshot_scan" | "hash_hunt" => {
                 serde_json::from_str(stdout.unwrap_or_default()).ok()
             }
             "offsite_list" => match serde_json::from_str::<Value>(stdout.unwrap_or_default().trim()) {
@@ -2460,6 +2469,43 @@ impl Scheduler {
     }
 
     pub fn plan(&self, job: &Job) -> Result<Plan> {
+        let mut plan = self.plan_job(job)?;
+        self.patch_file_hashes(job, &mut plan)?;
+        Ok(plan)
+    }
+
+    /// Phase 28: a backup of a group with `file_hashes` (or of an agent in such a
+    /// group) tells its connector to record file hashes.
+    fn patch_file_hashes(&self, job: &Job, plan: &mut Plan) -> Result<()> {
+        if job.kind != "backup" {
+            return Ok(());
+        }
+        let p = &job.params;
+        let on = self.groups()?.into_iter().any(|g| {
+            g.tenant == job.tenant
+                && g.file_hashes
+                && (p["group_id"].as_i64() == Some(g.id)
+                    || (p["group_id"].is_null()
+                        && p["agent_id"].as_str().is_some_and(|a| g.agents.iter().any(|x| x == a))))
+        });
+        if !on {
+            return Ok(());
+        }
+        for (name, body) in plan.files.iter_mut().filter(|(n, _)| n.ends_with(".json")) {
+            let mut cfg: Value = serde_json::from_slice(body)?;
+            if cfg["backup"].is_object() {
+                cfg["backup"]["file_hashes"] = json!(true); // nexus-agentctl
+            } else if ["nas.json", "truenas.json", "plugin.json"].contains(&name.as_str()) {
+                cfg["file_hashes"] = json!(true);
+            } else {
+                continue;
+            }
+            *body = serde_json::to_vec_pretty(&cfg)?;
+        }
+        Ok(())
+    }
+
+    fn plan_job(&self, job: &Job) -> Result<Plan> {
         Self::check_scanned(job)?; // scan.rs
         if let Some(plan) = self.plan_config(job)? {
             return Ok(plan); // config_backup.rs
@@ -2495,6 +2541,7 @@ impl Scheduler {
         // that opens the store before the primary's DEKs were imported (keyd
         // `ensure` would create a local DEK and block the import)
         self.refuse_disabled(tenant, &job.kind)?;
+        self.refuse_locked(job)?; // threat.rs
         let replicated = self.replicated_tenants()?.contains_key(tenant);
         if replicated && job.kind == "backup" {
             bail!("tenant {tenant} is replicated from a primary: no local backups");
@@ -2541,6 +2588,9 @@ impl Scheduler {
         };
         if job.kind == "file_search" || job.kind == "file_index" {
             return self.plan_files_index(job, plan);
+        }
+        if job.kind == "hash_hunt" {
+            return self.plan_hunt(job, plan); // threat.rs
         }
         match job.kind.as_str() {
             "bmr" => return self.plan_bmr(job, plan), // bmr.rs
