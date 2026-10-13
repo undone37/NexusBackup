@@ -531,6 +531,8 @@ export type JobKind =
   | 'inventory'
   | 'file_search'
   | 'file_index'
+  | 'file_changes'
+  | 'snapshot_diff'
   | 'offsite_list'
   | 'offsite_restore'
   | 'offsite_attach'
@@ -657,6 +659,51 @@ export interface Snapshot {
   consistency?: Consistency | null;
   /** Phase 18b: plugin snapshot metadata (e.g. PostgreSQL's recoverable range), null = none */
   meta?: SnapshotMeta | null;
+  /** Phase 21a: change-rate or file-level anomaly flag (kept after a security officer cleared it) */
+  anomaly?: SnapshotAnomaly | null;
+  /** flagged and not cleared */
+  anomalous?: boolean;
+}
+
+export interface SnapshotAnomaly {
+  reason: string;
+  at: number | null;
+  cleared_by: string | null;
+  cleared_at: number | null;
+  note: string | null;
+}
+
+/** One changed path of a `snapshot_diff` job (POST /snapshots/diff). */
+export interface DiffEntry {
+  path: string;
+  change: 'added' | 'changed' | 'deleted';
+  kind: 'file' | 'dir' | 'symlink' | 'other';
+  size: number;
+  mtime: number;
+  old_size: number | null;
+  old_mtime: number | null;
+}
+
+/** `job.result` of a `snapshot_diff` job; `indexed: false` = a name index is missing. */
+export interface DiffResult {
+  indexed: boolean;
+  base: number | null;
+  time: number;
+  added?: number;
+  changed?: number;
+  deleted?: number;
+  /** entries of the selected change type */
+  total?: number;
+  offset?: number;
+  limit?: number;
+  entries?: DiffEntry[];
+}
+
+/** GET /stats/trends: the last 30 runs of one source, oldest first. */
+export interface SourceTrend {
+  tenant: string;
+  source: string;
+  runs: { time: number; new_plain: number; new_stored: number; files_changed: number | null; anomalous: boolean }[];
 }
 
 /** Plugin snapshot metadata (protocol v1.6 `SnapshotMeta`); known keys are shown. */
@@ -1302,6 +1349,8 @@ export interface AnomalySettings {
   factor: number;
   history: number;
   floor_bytes: number;
+  /** Phase 21a: extra ransom-note file name globs */
+  ransom_notes?: string[];
 }
 
 /** Phase 14d: GET /auth/sessions, GET /sessions. */

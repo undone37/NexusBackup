@@ -6,6 +6,7 @@
   import { t } from '../lib/i18n';
   import type { SnapshotRef } from '../lib/types';
   import Modal from './Modal.svelte';
+  import type { Snippet } from 'svelte';
 
   let {
     open = $bindable(false),
@@ -15,6 +16,7 @@
     tenant: preset = '',
     sources = [],
     ondone,
+    children,
   }: {
     open?: boolean;
     /** one snapshot; null = time range */
@@ -26,6 +28,8 @@
     /** guest names offered in range mode */
     sources?: string[];
     ondone?: () => void;
+    /** shown above the form (Phase 21a: the flagged-snapshot notice) */
+    children?: Snippet;
   } = $props();
 
   const local = (ts: number) => {
@@ -80,6 +84,7 @@
     <p class="muted">{target ? t.snap.holdIntro : t.snap.holdRangeIntro}</p>
     {#if target}
       <p><span class="mono">{target.source}</span> · {target.tenant} · {fmtTime(target.time)}</p>
+      {@render children?.()}
     {:else}
       <div class="form-grid two">
         <div class="field">

@@ -19,10 +19,10 @@ const sec = Object.fromEntries(
 const BASE = `https://nexus-m5:${PORT}/`;
 rmSync(`${OUT}/profile`, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
-const PAGES = ['/', '/snapshots', '/snapshots?held=true', '/snapshots?where=offsite', '/tenants?offsite=lab', '/search', '/storage', '/reports', '/jobs', '/alerts', '/quorum', '/audit', '/tenants', '/sources', '/agents', '/agents?tab=fleet',
+const PAGES = ['/', '/snapshots', '/snapshots?held=true', '/snapshots?where=offsite', '/tenants?offsite=lab', '/search', '/changes', '/storage', '/reports', '/jobs', '/alerts', '/quorum', '/audit', '/tenants', '/sources', '/agents', '/agents?tab=fleet',
   '/replication', '/policies', '/groups', '/users', '/plugins', '/hardware', '/account'];
 // Phase 19b: a tenant admin's reduced navigation (only when the lab has such an account: TA_USER/TA_PW/TA_TOTP)
-const TENANT_PAGES = ['/', '/snapshots', '/search', '/storage', '/reports', '/jobs', '/quorum', '/audit', '/sources', '/agents', '/agents?tab=fleet', '/groups',
+const TENANT_PAGES = ['/', '/snapshots', '/search', '/changes', '/storage', '/reports', '/jobs', '/quorum', '/audit', '/sources', '/agents', '/agents?tab=fleet', '/groups',
   '/users', '/account'];
 const TABS = ['approvals', 'alerts', 'sso', 'ssh', 'updates', 'anomaly', 'diagnostics', 'configBackup', 'console', 'certificate', 'forwarding', 'security', 'firewall', 'vault'];
 

@@ -278,7 +278,7 @@ const db = {
   /** appliance configuration backup: the bundle on disk (latest.json of nexus-config-backup) */
   cfgBackup: { appliance_id: null as string | null, latest: null as Json | null },
   /** Phase 13e setting `anomaly` */
-  anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30 } as Json,
+  anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30, ransom_notes: [] } as Json,
   /** Phase 14a setting `forwarding` (header values: plaintext here, null in responses) */
   forwarding: {
     syslog: { enabled: true, host: 'siem.example.com', port: 6514, ca_pem: null, pin_sha256: '3f'.repeat(32), app_name: 'nexus', facility: 13 },
@@ -1456,6 +1456,7 @@ function seed() {
   seedConsole(t);
   seedTenantKeys(t);
   seedHolds(t);
+  seedAnomalies(t);
   seedHardware(t);
   seedM365(t);
   seedTenantAdmin(t);
@@ -3406,7 +3407,7 @@ on('GET', '/snapshots', (c) => {
   const held = c.query.get('held') === 'true';
   const xs = byTenant(u, db.snapshots as any[])
     .filter((s) => (!tq || s.tenant === tq) && (!sq || s.source === sq))
-    .map((s) => ({ ...s, hold: holdView(openHold(s.tenant, s.source, s.time)) }))
+    .map((s) => ({ ...s, hold: holdView(openHold(s.tenant, s.source, s.time)), anomaly: s.anomaly ?? null, anomalous: anomalous(s) }))
     .filter((s) => !held || s.hold);
   return [200, xs.sort((a, b) => b.time - a.time)];
 });
@@ -4274,16 +4275,19 @@ on('PUT', '/tenants/:name/quota', async (c, [name]) => {
 on('GET', '/settings/anomaly', (c) => (need(c.user, 'admin', 'security_officer'), [200, db.anomaly]));
 on('PUT', '/settings/anomaly', async (c) => {
   const u = need(c.user, 'admin');
-  const { enabled, factor, history, floor_bytes, ...rest } = c.body;
+  const { enabled, factor, history, floor_bytes, ransom_notes = [], ...rest } = c.body;
   if (Object.keys(rest).length) throw new HttpError(400, `unknown field \`${Object.keys(rest)[0]}\``);
   if (typeof enabled !== 'boolean') throw new HttpError(400, 'enabled: boolean required');
   if (!(factor >= 1.5 && factor <= 100)) throw new HttpError(400, 'factor: 1.5..=100');
   if (!(Number.isInteger(history) && history >= 5 && history <= 100)) throw new HttpError(400, 'history: 5..=100 runs');
   if (!(Number.isInteger(floor_bytes) && floor_bytes >= 2 ** 20 && floor_bytes <= 2 ** 50)) throw new HttpError(400, 'floor_bytes: 1 MiB..=1 PiB');
-  const next = { enabled, factor, history, floor_bytes };
+  if (!Array.isArray(ransom_notes) || ransom_notes.length > 100 || ransom_notes.some((g: unknown) => typeof g !== 'string' || !g.trim() || g.length > 100 || g.includes('/')))
+    throw new HttpError(400, 'ransom_notes: at most 100 file name patterns of 1..=100 characters, no `/`');
+  const next = { enabled, factor, history, floor_bytes, ransom_notes };
   const old = db.anomaly;
   // weakening the detection (a ransomware signal) needs approval
-  if ((old.enabled && !enabled) || factor > old.factor || floor_bytes > old.floor_bytes)
+  const dropped = (old.ransom_notes ?? []).some((g: string) => !ransom_notes.includes(g));
+  if ((old.enabled && !enabled) || factor > old.factor || floor_bytes > old.floor_bytes || dropped)
     return quorum(u, 'settings.anomaly', { anomaly: next, old: structuredClone(old) });
   db.anomaly = next;
   await audit(u.name, 'settings.anomaly', 'settings/anomaly', next);
@@ -6115,3 +6119,142 @@ on('POST', '/agents/bulk', async (c) => {
   for (const a of out) await audit(u.name, 'agent.create', `agent/${a.id}`, { tenant: a.tenant, name: a.name, host: a.host, bulk: true });
   return [201, { created: out.length, agents: out, csv: csv.join('\n') + '\n' }];
 });
+
+// ---------------------------------------------------------------- ransomware signals (Phase 21a)
+// Snapshot anomaly flags (cleared by a security officer), the snapshot diff job (computed from
+// the mock file trees) and per-source change trends.
+
+const RENAMED = /\.(pdf|docx|xlsx|odt|txt|sql|jpg|png)$/;
+/** The mock tree of a snapshot; a snapshot flagged for a mass rename shows the encryption. */
+function mockTree(s: Json): { path: string; kind: string; size: number; mtime: number }[] {
+  const xs = walkSnapshot(s.source, s.time);
+  if (!String(s.anomaly?.reason ?? '').includes('mass rename')) return xs;
+  const out = xs.map((e) => (e.kind === 'file' && RENAMED.test(e.path) ? { ...e, path: `${e.path}.lockbit3`, size: e.size + 512, mtime: s.time - 900 } : e));
+  for (const d of xs.filter((e) => e.kind === 'dir').slice(0, 12)) out.push({ path: `${d.path}/HOW_TO_DECRYPT.txt`, kind: 'file', size: 2210, mtime: s.time - 880 });
+  return out;
+}
+function mockDiff(base: Json, cur: Json) {
+  const map = (s: Json) => new Map(mockTree(s).filter((e) => e.kind !== 'dir').map((e) => [e.path, e]));
+  const [b, c] = [map(base), map(cur)];
+  const out: Json[] = [];
+  for (const [p, e] of c) {
+    const o = b.get(p);
+    if (!o) out.push({ path: p, change: 'added', kind: e.kind, size: e.size, mtime: e.mtime, old_size: null, old_mtime: null });
+    else if (o.size !== e.size || o.mtime !== e.mtime)
+      out.push({ path: p, change: 'changed', kind: e.kind, size: e.size, mtime: e.mtime, old_size: o.size, old_mtime: o.mtime });
+  }
+  for (const [p, e] of b) if (!c.has(p)) out.push({ path: p, change: 'deleted', kind: e.kind, size: e.size, mtime: e.mtime, old_size: e.size, old_mtime: e.mtime });
+  return out.sort((x, y) => (x.path < y.path ? -1 : 1));
+}
+const anomalous = (s: Json) => !!s.anomaly && !s.anomaly.cleared_at;
+
+on('POST', '/snapshots/diff', async (c) => {
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'tenant_user');
+  const b = c.body ?? {};
+  const tenant = String(b.tenant ?? '');
+  if (u.tenant && u.tenant !== tenant) throw new HttpError(403, 'forbidden');
+  const time = Number(b.time);
+  if (b.base !== undefined && b.base !== null && !(Number(b.base) < time)) throw new HttpError(400, 'base: an earlier snapshot than time');
+  if (b.change && !['added', 'changed', 'deleted'].includes(b.change)) throw new HttpError(400, 'change: added, changed or deleted');
+  const limit = b.limit ?? 200;
+  if (!(Number.isInteger(limit) && limit >= 1 && limit <= 1000)) throw new HttpError(400, 'limit: 1..=1000');
+  const offset = Number(b.offset ?? 0);
+  const local = (db.snapshots as Json[]).filter((s) => s.tenant === tenant && s.source === b.source && s.local);
+  const cur = local.find((s) => s.time === time);
+  if (!cur) throw new HttpError(404, `no local snapshot ${b.source}/${time}`);
+  const base = b.base ? local.find((s) => s.time === Number(b.base)) : local.filter((s) => s.time < time).sort((x, y) => y.time - x.time)[0];
+  if (b.base && !base) throw new HttpError(404, `no local snapshot ${b.source}/${b.base}`);
+  const p: Json = { tenant, source: b.source, time, ...(b.base ? { base: Number(b.base) } : {}), ...(b.change ? { change: b.change } : {}), offset, limit };
+  const j = addJob('snapshot_diff', tenant, p, u.name);
+  j.duration = 1;
+  j.plan = [`comparing the file indexes of ${b.source}`, 'done'];
+  if (!base) j.result = { indexed: false, base: null, time };
+  else if (/^(vm|ct)-/.test(b.source) && !vmIndexed(tenant, b.source)) j.result = { indexed: false, base: base.time, time };
+  else {
+    const all = mockDiff(base, cur);
+    const n = (k: string) => all.filter((x) => x.change === k).length;
+    const sel = all.filter((x) => !b.change || x.change === b.change);
+    j.result = { indexed: true, base: base.time, time, added: n('added'), changed: n('changed'), deleted: n('deleted'), total: sel.length, offset, limit, entries: sel.slice(offset, offset + limit) };
+  }
+  await audit(u.name, 'snapshot.diff', `job/${j.id}`, p);
+  return [202, { id: j.id }];
+});
+
+on('POST', '/snapshots/:tenant/:source/:time/anomaly/clear', async (c, [tenant, source, time]) => {
+  const u = need(c.user, 'security_officer');
+  const [tn, src, tm] = [decodeURIComponent(tenant), decodeURIComponent(source), Number(time)];
+  if (u.tenant && u.tenant !== tn) throw new HttpError(403, 'forbidden');
+  const note = String(c.body?.note ?? '').trim();
+  if (!note || note.length > 1000) throw new HttpError(400, 'note: 1 to 1000 characters, one line');
+  const s = find(db.snapshots as Json[], (y) => y.tenant === tn && y.source === src && y.time === tm, 'snapshot');
+  if (!anomalous(s)) throw new HttpError(409, 'snapshot is not flagged as anomalous');
+  Object.assign(s.anomaly, { cleared_by: u.name, cleared_at: now(), note });
+  const out = { tenant: tn, reason: s.anomaly.reason, note };
+  await audit(u.name, 'snapshot.anomaly_clear', `snapshot/${tn}/${src}/${tm}`, out);
+  return [200, out];
+});
+
+/** Stable pseudo-random 0..1 per key (trend figures stay put across reloads). */
+function noise(k: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < k.length; i++) h = Math.imul(h ^ k.charCodeAt(i), 16777619);
+  return ((h >>> 0) % 1000) / 1000;
+}
+on('GET', '/stats/trends', (c) => {
+  const u = need(c.user);
+  const tq = c.query.get('tenant');
+  const by = new Map<string, Json[]>();
+  for (const s of byTenant(u, db.snapshots as any[]).filter((x) => x.local && (!tq || x.tenant === tq))) {
+    const k = `${s.tenant}\0${s.source}`;
+    by.set(k, [...(by.get(k) ?? []), s]);
+  }
+  const out = [...by.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, xs]) => {
+    const [tenant, source] = k.split('\0');
+    const indexed = !/^(vm|ct)-/.test(source) || vmIndexed(tenant, source);
+    const runs = xs
+      .sort((a, b) => a.time - b.time)
+      .slice(-30)
+      .map((s) => {
+        const r = noise(`${source}/${s.time}`);
+        const bad = !!s.anomaly;
+        const plain = Math.round(s.size * (0.004 + r * 0.012) * (bad ? 14 : 1));
+        return {
+          time: s.time, new_plain: plain, new_stored: Math.round(plain * (bad ? 0.99 : 0.48)),
+          files_changed: indexed ? Math.round((40 + r * 160) * (bad ? 30 : 1)) : null, anomalous: anomalous(s),
+        };
+      });
+    return { tenant, source, runs };
+  });
+  return [200, out];
+});
+
+function seedAnomalies(t: number) {
+  const newest = (tenant: string, source: string, n = 0) =>
+    (db.snapshots as Json[]).filter((s) => s.tenant === tenant && s.source === source && s.local).sort((a, b) => b.time - a.time)[n];
+  // the change-rate anomaly of the seeded alert (seedHolds) flags its snapshot
+  const bad = newest('acme', 'vm-301');
+  if (bad) bad.anomaly = { reason: '21.4 GiB new data that does not compress (1.01, usually 2.08): possibly encrypted', at: bad.time + 1500, cleared_by: null, cleared_at: null, note: null };
+  // a file-level finding on the fs02 file server: mass rename + ransom notes
+  const fs = db.agents.find((a) => a.name === 'fs02');
+  const enc = fs && newest('acme', `host-${fs.id}`);
+  if (enc) {
+    const prev = newest('acme', enc.source, 1);
+    enc.anomaly = {
+      reason: '12 ransom-note file name(s), e.g. Users/HOW_TO_DECRYPT.txt; mass rename: 412 of 2,906 files deleted, 412 added with new extensions (.lockbit3, .txt)',
+      at: enc.time + 2400, cleared_by: null, cleared_at: null, note: null,
+    };
+    db.alerts.push(
+      mkAlert({
+        ts: enc.time + 2400, severity: 'critical', kind: 'anomaly', key: `anomaly:acme/${enc.source}`, tenant: 'acme',
+        message: `file-level anomaly on acme/${enc.source}: snapshot ${enc.time}: ${enc.anomaly.reason} (424 added, 3 changed, 412 deleted); last snapshot before: ${enc.source}/${prev?.time ?? 0}`,
+      }),
+    );
+  }
+  // an older false alarm on initech, cleared with a note
+  const fa = newest('initech', 'vm-102', 4);
+  if (fa)
+    fa.anomaly = {
+      reason: '48.0 GiB new data, limit 18.0 GiB (3× the median 6.0 GiB of the last 14 runs)', at: fa.time + 1300,
+      cleared_by: 'so', cleared_at: fa.time + 86400, note: 'Database reorganisation by the DBA (change CHG-2291), checked with the application owner',
+    };
+}

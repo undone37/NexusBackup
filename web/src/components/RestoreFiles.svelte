@@ -6,6 +6,7 @@
   import { t } from '../lib/i18n';
   import { session } from '../lib/session.svelte';
   import type { Agent, Overwrite } from '../lib/types';
+  import type { Snippet } from 'svelte';
   import Modal from './Modal.svelte';
 
   // Restore files of a snapshot (host, NAS share / TrueNAS dataset, plugin file tree, or
@@ -18,7 +19,17 @@
     time,
     paths,
     agents,
-  }: { open?: boolean; tenant: string; source: string; time: number; paths: string[]; agents: Agent[] } = $props();
+    children,
+  }: {
+    open?: boolean;
+    tenant: string;
+    source: string;
+    time: number;
+    paths: string[];
+    agents: Agent[];
+    /** shown above the form (Phase 21a: the flagged-snapshot notice) */
+    children?: Snippet;
+  } = $props();
 
   const id = $props.id();
   const OVERWRITE: Overwrite[] = ['never', 'if_older', 'always'];
@@ -78,6 +89,7 @@
 <Modal bind:open title={t.restoreFiles.title(source)} wide>
   <form onsubmit={submit}>
     <p class="muted">{tenant} · {fmtTime(time)}</p>
+    {@render children?.()}
     <p class="banner warn">{t.restoreFiles.intro}</p>
     <div class="field">
       <span class="muted" id="{id}-paths">{t.restoreFiles.paths}</span>
