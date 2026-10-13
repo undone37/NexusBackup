@@ -7,7 +7,7 @@ appliance.
 
 > **Status:** NexusBackup is **lab-proven, not production-ready**. All functions described here run end to end in a
 > nested lab with SELinux enforcing. Real hardware, scale tests, a real Hetzner Storage Box run, the external
-> penetration test, TPM/LUKS disk encryption, an appliance configuration backup and the release key ceremony are still
+> penetration test, TPM/LUKS disk encryption, a VM drill of the configuration restore and the release key ceremony are still
 > open. Each chapter marks lab-only or missing parts with a **Status** note.
 
 ## Who reads what
