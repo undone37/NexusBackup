@@ -8,6 +8,7 @@
   import { copyText } from '../lib/clipboard';
   import { fmtTime, fmtAgo } from '../lib/format';
   import { t } from '../lib/i18n';
+  import { secondFactor } from '../lib/passkey';
   import type { ApiToken } from '../lib/types';
   import Modal from './Modal.svelte';
   import ErrorBanner from './ErrorBanner.svelte';
@@ -48,8 +49,12 @@
   async function create(e: SubmitEvent) {
     e.preventDefault();
     const body: Record<string, unknown> = { name: f.name.trim(), scope: f.scope, days: Number(f.days) };
-    if (local) Object.assign(body, { current_password: f.password, current_totp: f.totp.trim() });
-    const r = await act(post<ApiToken>('/auth/tokens', body), t.tokens.created);
+    const pw = f.password;
+    const second = local ? secondFactor(f.totp) : Promise.resolve('');
+    const r = await act(
+      second.then((totp) => post<ApiToken>('/auth/tokens', local ? { ...body, current_password: pw, current_totp: totp } : body)),
+      t.tokens.created,
+    );
     f.password = '';
     f.totp = '';
     if (!r || r.quorum) return;
@@ -143,7 +148,8 @@
           </div>
           <div class="field">
             <label for="{id}-totp">{t.users.currentTotp}</label>
-            <input id="{id}-totp" bind:value={f.totp} required inputmode="numeric" pattern={'[0-9]{6}'} maxlength="6" autocomplete="one-time-code" />
+            <input id="{id}-totp" bind:value={f.totp} inputmode="numeric" pattern={'[0-9]{6}'} maxlength="6" autocomplete="one-time-code" aria-describedby="{id}-totp-hint" />
+            <div class="hint" id="{id}-totp-hint">{t.passkeys.totpOrPasskey}</div>
           </div>
         </div>
       </fieldset>

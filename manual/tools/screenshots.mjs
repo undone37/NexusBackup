@@ -871,6 +871,21 @@ async function main() {
       await ev(`[...document.querySelectorAll('section.card')].pop()?.scrollIntoView(); return true;`);
       await shot('users-tokens', { scrolled: true });
     }],
+    // Phase 21c: passkeys (My account, the add dialog, Settings → Security); the browser's own
+    // passkey prompt cannot be captured (the mock answers without it)
+    ['passkeys', async () => {
+      await go('/account');
+      await ev(`[...document.querySelectorAll('section.card h2')].find((h) => h.textContent === 'Passkeys')?.scrollIntoView(); return true;`);
+      await shot('account-passkeys', { scrolled: true });
+      await ev(`$click('Add passkey'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input[type=password]')`, 'passkey dialog');
+      await ev(`$fill('dialog[open] input[maxlength="64"]', 'Security key (desk)'); $fill('dialog[open] input[type=password]', 'nexus'); return true;`);
+      await shot('passkey-add', { height: 1000 });
+      await closeDialogs();
+      await go('/settings?tab=security');
+      await ev(`document.querySelector('#sec-pk')?.closest('section').scrollIntoView({ block: 'center' }); return true;`);
+      await shot('settings-passkeys', { scrolled: true });
+    }],
     ['certificate', async () => {
       await go('/settings?tab=certificate');
       await until(`return document.body.innerText.includes('SHA-256 fingerprint')`, 'certificate tab');

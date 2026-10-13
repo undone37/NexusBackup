@@ -378,7 +378,7 @@ Procedure:
 
    `--user` names the administrator account to reset (here `admin`).
 2. Enter the recovery key when asked. A wrong key is refused.
-3. The command resets the account to **Pending activation**: its old password and authenticator stop working. It prints a new **one-time activation code**.
+3. The command resets the account to **Pending activation**: its old password, authenticator and passkeys stop working. It prints a new **one-time activation code**.
 4. If approvals are enabled and at least two people could approve, the command refuses, because the reset bypasses
    the four-eyes rule. If those people really cannot help (for example a security officer exists but no other
    administrator), repeat it with `--force-solo`. The recovery is then flagged as a solo action in the audit log and

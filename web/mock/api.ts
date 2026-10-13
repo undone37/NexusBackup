@@ -1672,6 +1672,8 @@ function startActivation(x: User, split: boolean): Json {
   x.totp_secret = '';
   x.act = { parts: split ? [normCode(code), null] : [normCode(code)], expires: split ? null : now() + ACT_SECS, failures: 0 };
   for (const [sid, s] of db.sessions) if (s.userId === x.id) db.sessions.delete(sid);
+  pkSeed();
+  pk.keys = pk.keys.filter((k) => k.user_id !== x.id); // lost passkeys: recovered by a new activation
   return { code, parts: split ? 2 : 1, part: 1, expires: x.act.expires, path: activationPath(x.name) };
 }
 
@@ -1927,6 +1929,9 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'settings.anomaly':
       db.anomaly = structuredClone(p.anomaly);
       break;
+    case 'security.passkeys':
+      pk.policy = structuredClone(p.passkeys);
+      break;
     case 'security.session':
       db.security.session = structuredClone(p.session);
       break;
@@ -2011,6 +2016,8 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
           Object.assign(x, { password: '', totp_secret: '' });
           x.act = { parts: [db.quorumSecrets.get(qid)?.part1 ?? '', normCode(code)], expires: now() + ACT_SECS, failures: 0 };
           for (const [sid, s] of db.sessions) if (s.userId === x.id) db.sessions.delete(sid);
+          pkSeed();
+          pk.keys = pk.keys.filter((k) => k.user_id !== x.id);
         }
         db.quorumSecrets.delete(qid);
         Object.assign(x, fields);
@@ -2048,12 +2055,12 @@ const on = (method: string, path: string, h: Handler) =>
 on('GET', '/health', () => [200, { ok: true }]);
 
 on('POST', '/auth/login', async (c) => {
-  const { name = '', password = '', totp = '' } = c.body;
+  const { name = '', password = '', totp = '', passkey } = c.body;
   const f = db.failures.get(name);
   if (f && f.until > now()) throw new HttpError(429, 'too many failed sign-ins; try again in 15 minutes');
   const u = db.users.find((x) => x.name === name);
   const expired = !!u?.expires && u.expires <= now();
-  if (!u || u.disabled || tenantOff(u.tenant) || expired || u.act || !u.password || u.password !== password || !/^\d{6}$/.test(String(totp))) {
+  if (!u || u.disabled || tenantOff(u.tenant) || expired || u.act || !u.password || u.password !== password || !(passkey ? pkAssertionOk(u, passkey) : /^\d{6}$/.test(String(totp)) && !pkRequired(u))) {
     const g = f && f.until === 0 ? f : { count: 0, until: 0 };
     g.count++;
     if (g.count >= 5) g.until = now() + 900;
@@ -2068,7 +2075,7 @@ on('POST', '/auth/login', async (c) => {
   db.sessions.set(sid, { id: nextId(), userId: u.id, csrf, created: now(), last: now(), ip: '198.51.100.17', ua });
   u.last_login = now();
   c.res.setHeader('Set-Cookie', `nx_session=${sid}; HttpOnly; SameSite=Strict; Path=/`);
-  await audit(u.name, 'auth.login', 'session', {});
+  await audit(u.name, 'auth.login', 'session', { method: passkey ? 'passkey' : 'totp' });
   return [200, { csrf, user: pub(u) }];
 });
 on('POST', '/auth/logout', (c) => {
@@ -2972,7 +2979,7 @@ on('PUT', '/users/:id', async (c, [id]) => {
   if (b.password || b.reset_totp || b.new_activation) {
     if (!b.current_password || !b.current_totp)
       throw new HttpError(400, 'current_password and current_totp are required to change a password or authenticator');
-    if (b.current_password !== u.password || !/^\d{6}$/.test(String(b.current_totp))) {
+    if (b.current_password !== u.password || !secondOk(u, b.current_totp)) {
       await audit(u.name, 'auth.reauth_failed', `user/${u.id}`, {});
       throw new HttpError(403, 're-authentication failed: wrong current password or TOTP code');
     }
@@ -3148,16 +3155,18 @@ on('POST', '/auth/activate/begin', async (c) => {
   const secret = b32();
   pendingTotp.set(x.name, secret);
   await audit(x.name, 'user.activate_begin', `user/${x.id}`, {});
-  return [200, { name: x.name, totp_uri: totpUri(x.name, secret), totp_secret: secret }];
+  return [200, { name: x.name, totp_uri: totpUri(x.name, secret), totp_secret: secret, passkey_required: pkRequired(x) }];
 });
 on('POST', '/auth/activate/complete', async (c) => {
-  const { name = '', code = '', password = '', totp = '' } = c.body;
+  const { name = '', code = '', password = '', totp = '', passkey, passkey_name = '' } = c.body;
   const x = await checkActivation(String(name), String(code));
+  if (pkRequired(x) && !passkey) throw new HttpError(400, 'a passkey is required for this role: register one in this step (TOTP alone is not accepted)');
   if (String(password).length < 12) throw new HttpError(400, 'password must have at least 12 characters');
   const secret = pendingTotp.get(x.name);
   if (!secret) throw new HttpError(409, 'start the activation first');
   if (!/^\d{6}$/.test(String(totp))) throw new HttpError(401, 'invalid authenticator code');
   Object.assign(x, { password, totp_secret: secret, act: null });
+  if (passkey) await pkStore(x, String(passkey_name), passkey);
   pendingTotp.delete(x.name);
   db.failures.delete(`act:${x.name}`);
   await audit(x.name, 'user.activate', `user/${x.id}`, {});
@@ -3242,7 +3251,7 @@ on('POST', '/users/:id/sessions/revoke', async (c, [id]) => {
 on('POST', '/sessions/revoke-all', async (c) => {
   const u = need(c.user, 'admin');
   if (!c.body.current_password || !c.body.current_totp) throw new HttpError(400, 'current_password and current_totp are required');
-  if (c.body.current_password !== u.password || !/^\d{6}$/.test(String(c.body.current_totp))) throw new HttpError(403, 're-authentication failed: wrong current password or TOTP code');
+  if (c.body.current_password !== u.password || !secondOk(u, c.body.current_totp)) throw new HttpError(403, 're-authentication failed: wrong current password or TOTP code');
   let n = 0;
   for (const sid of [...db.sessions.keys()]) if (sid !== c.sid) (db.sessions.delete(sid), n++);
   await audit(u.name, 'session.revoke_all', 'appliance', { revoked: n });
@@ -3260,6 +3269,146 @@ on('PUT', '/settings/session', async (c) => {
   db.security.session = next;
   await audit(u.name, 'security.session', 'settings/session', { session: next, old });
   return [200, next];
+});
+// passkeys (Phase 21c, crate::passkeys): options carry `mock: true`, so the SPA skips the browser
+// prompt (web/src/lib/passkey.ts); any answer naming a registered credential id verifies here.
+const MOCK_RP = 'backup.example.com';
+const pk = {
+  policy: { require_privileged: false, rp_id: '' },
+  keys: [] as { id: number; user_id: number; cred: string; name: string; alg: 'ES256' | 'EdDSA'; rp_id: string; created: number; last_used: number | null }[],
+  seeded: false,
+};
+const pkRp = () => pk.policy.rp_id || MOCK_RP;
+function pkSeed() {
+  if (pk.seeded) return;
+  pk.seeded = true;
+  const admin = db.users.find((x) => x.name === 'admin');
+  if (!admin) return;
+  const t = now();
+  pk.keys.push(
+    { id: nextId(), user_id: admin.id, cred: rand(16), name: 'YubiKey 5C NFC', alg: 'ES256', rp_id: MOCK_RP, created: t - 86400 * 40, last_used: t - 3600 * 5 },
+    { id: nextId(), user_id: admin.id, cred: rand(16), name: 'Laptop (Touch ID)', alg: 'ES256', rp_id: MOCK_RP, created: t - 86400 * 12, last_used: t - 86400 * 2 },
+  );
+}
+const pkOf = (u: User) => (pkSeed(), pk.keys.filter((k) => k.user_id === u.id));
+const pkRequired = (u: User) => pk.policy.require_privileged && (u.auth ?? 'local') === 'local' && (u.role === 'admin' || u.role === 'security_officer');
+/** A passkey assertion (object or its JSON in `current_totp`) of one of `u`'s passkeys. */
+function pkAssertionOk(u: User, v: unknown): boolean {
+  let a: Json | null = null;
+  try {
+    a = typeof v === 'string' ? JSON.parse(v) : (v as Json);
+  } catch {
+    return false;
+  }
+  const k = a && pkOf(u).find((x) => x.cred === a!.id && x.rp_id === pkRp());
+  if (k) k.last_used = now();
+  return !!k;
+}
+/** Second factor of a re-authentication: TOTP (unless the policy requires a passkey) or a passkey. */
+const secondOk = (u: User, v: unknown) => (/^\d{6}$/.test(String(v ?? '')) && !pkRequired(u)) || (String(v ?? '').startsWith('{') && pkAssertionOk(u, v));
+const pkPub = (k: (typeof pk.keys)[number]) => ({ id: k.id, name: k.name, alg: k.alg, rp_id: k.rp_id, created: k.created, last_used: k.last_used });
+const pkCreateOptions = (u: User) => ({
+  mock: true,
+  challenge: rand(32),
+  rp: { id: pkRp(), name: 'NexusBackup' },
+  user: { id: rand(8), name: u.name, displayName: u.name },
+  pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -8 }],
+  attestation: 'none',
+  excludeCredentials: pkOf(u).map((k) => ({ type: 'public-key', id: k.cred })),
+});
+const pkGetOptions = (creds: string[]) => ({ mock: true, challenge: rand(32), rpId: pkRp(), allowCredentials: creds.map((id) => ({ type: 'public-key', id })), userVerification: 'preferred' });
+async function pkStore(u: User, name: string, cred: Json | undefined) {
+  if (!cred?.id) throw new HttpError(400, 'passkey not accepted: credential');
+  if (pkOf(u).length >= 10) throw new HttpError(409, 'at most 10 passkeys per account');
+  const k = { id: nextId(), user_id: u.id, cred: String(cred.id), name: name.trim() || 'Passkey', alg: 'ES256' as const, rp_id: pkRp(), created: now(), last_used: null };
+  pk.keys.push(k);
+  await audit(u.name, 'passkey.register', `user/${u.name}`, { passkey: k.id, name: k.name, rp_id: k.rp_id });
+  return k;
+}
+const pkLocal = (u: User) => {
+  if ((u.auth ?? 'local') !== 'local') throw new HttpError(403, 'forbidden: passkeys belong to local accounts');
+  return u;
+};
+on('GET', '/auth/passkeys', (c) => {
+  const u = need(c.user);
+  return [200, { passkeys: pkOf(u).map(pkPub), required: pkRequired(u) }];
+});
+on('POST', '/auth/passkeys/register/begin', async (c) => {
+  const u = pkLocal(need(c.user));
+  if (c.body.current_password !== u.password || !secondOk(u, c.body.current_totp)) {
+    await audit(u.name, 'auth.reauth_failed', `user/${u.name}`, { for: 'passkey.register' });
+    throw new HttpError(403, 're-authentication failed: wrong current password, TOTP code or passkey');
+  }
+  return [200, pkCreateOptions(u)];
+});
+on('POST', '/auth/passkeys/register', async (c) => {
+  const u = pkLocal(need(c.user));
+  const k = await pkStore(u, String(c.body.name ?? ''), c.body.credential);
+  return [200, { id: k.id, name: k.name }];
+});
+on('POST', '/auth/passkeys/challenge', (c) => {
+  const u = pkLocal(need(c.user));
+  const creds = pkOf(u).filter((k) => k.rp_id === pkRp());
+  if (!creds.length) throw new HttpError(400, 'no passkey registered for this host name');
+  return [200, pkGetOptions(creds.map((k) => k.cred))];
+});
+on('PUT', '/auth/passkeys/:id', async (c, [id]) => {
+  const u = need(c.user);
+  const k = pkOf(u).find((x) => String(x.id) === id);
+  if (!k) throw new HttpError(404, 'not found');
+  const name = String(c.body.name ?? '').trim();
+  if (!name || name.length > 64) throw new HttpError(400, 'name: up to 64 characters');
+  const old = k.name;
+  k.name = name;
+  await audit(u.name, 'passkey.rename', `user/${u.name}`, { passkey: k.id, name, old });
+  return [200, { id: k.id, name }];
+});
+on('DELETE', '/auth/passkeys/:id', async (c, [id]) => {
+  const u = need(c.user);
+  const k = pkOf(u).find((x) => String(x.id) === id);
+  if (!k) throw new HttpError(404, 'not found');
+  if (pkOf(u).length === 1 && pkRequired(u))
+    throw new HttpError(409, 'passkeys are required for your role: register another passkey before removing the last one');
+  pk.keys = pk.keys.filter((x) => x !== k);
+  await audit(u.name, 'passkey.remove', `user/${u.name}`, { passkey: k.id, name: k.name });
+  return [200, { ok: true }];
+});
+on('POST', '/auth/login/passkey', (c) => {
+  const u = db.users.find((x) => x.name === c.body.name && !x.act && (x.auth ?? 'local') === 'local');
+  const creds = u ? pkOf(u).filter((k) => k.rp_id === pkRp()).map((k) => k.cred) : [];
+  return [200, pkGetOptions(creds.length ? creds : [`decoy-${c.body.name}`])];
+});
+on('POST', '/auth/activate/passkey', async (c) => {
+  const x = await checkActivation(String(c.body.name ?? ''), String(c.body.code ?? ''));
+  return [200, pkCreateOptions(x)];
+});
+const pkWithout = () =>
+  db.users
+    .filter((x) => (x.role === 'admin' || x.role === 'security_officer') && (x.auth ?? 'local') === 'local' && !x.disabled && !x.act)
+    .filter((x) => !pkOf(x).some((k) => k.rp_id === pkRp()))
+    .map((x) => x.name)
+    .sort();
+on('GET', '/settings/passkeys', (c) => {
+  need(c.user, 'admin', 'security_officer');
+  const pending = db.quorum.filter((q) => q.action === 'security.passkeys' && q.state === 'pending').at(-1)?.id ?? null;
+  return [200, { policy: pk.policy, rp_id: pkRp(), without_passkey: pkWithout(), pending }];
+});
+on('PUT', '/settings/passkeys', async (c) => {
+  const u = need(c.user, 'admin');
+  const next = { require_privileged: !!c.body.require_privileged, rp_id: String(c.body.rp_id ?? '').trim().toLowerCase() };
+  if (next.rp_id && !/^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(next.rp_id)) throw new HttpError(400, 'rp_id: a host name (lowercase, no IP address, no port), or empty');
+  const old = { ...pk.policy };
+  if (next.require_privileged === old.require_privileged && next.rp_id === old.rp_id) return [200, { policy: old }];
+  if (old.require_privileged && next.require_privileged && next.rp_id !== old.rp_id)
+    throw new HttpError(409, 'turn the passkey requirement off before changing the relying party ID (existing passkeys stop working)');
+  if (next.require_privileged && !pkOf(u).some((k) => k.rp_id === (next.rp_id || MOCK_RP)))
+    throw new HttpError(409, `register a passkey for your own account (host name ${next.rp_id || MOCK_RP}) first: the requirement would lock you out`);
+  if (next.require_privileged && !old.require_privileged && next.rp_id === old.rp_id) {
+    pk.policy = next;
+    await audit(u.name, 'security.passkeys', 'settings/passkeys', { passkeys: next, old, without_passkey: pkWithout() });
+    return [200, { policy: next, without_passkey: pkWithout() }];
+  }
+  return quorum(u, 'security.passkeys', { passkeys: next, old });
 });
 on('PUT', '/settings/dormant', async (c) => {
   const u = need(c.user, 'admin');
@@ -4856,7 +5005,7 @@ on('POST', '/auth/tokens', async (c) => {
   if (!Number.isInteger(days) || days < 1 || days > 365) throw new HttpError(400, 'days: 1..=365');
   if (scope !== 'read' && scope !== 'operator') throw new HttpError(400, 'scope: read or operator');
   if (scope === 'operator' && (u.role === 'security_officer' || u.role === 'viewer')) throw new HttpError(400, 'scope: operator tokens need the admin, operator or tenant user role');
-  if (u.auth !== 'oidc' && (current_password !== u.password || !/^\d{6}$/.test(String(current_totp ?? ''))))
+  if (u.auth !== 'oidc' && (current_password !== u.password || !secondOk(u, current_totp)))
     throw new HttpError(current_password === undefined ? 400 : 403, 're-authentication failed: wrong current password or TOTP code');
   if (p14.tokens.some((x) => x.user_id === u.id && x.name === name)) throw new HttpError(409, 'conflicts with existing data (duplicate name or still referenced)');
   const secret = rand(32);

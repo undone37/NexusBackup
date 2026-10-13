@@ -1281,6 +1281,24 @@ export interface SecuritySettings {
   pending: { session: number | null; mgmt_allow: number | null };
 }
 
+/** Phase 21c: one of my passkeys (GET /auth/passkeys). */
+export interface Passkey {
+  id: number;
+  name: string;
+  alg: 'ES256' | 'EdDSA';
+  rp_id: string;
+  created: number;
+  last_used: number | null;
+}
+
+/** Phase 21c: GET /settings/passkeys (`rp_id` = effective host name, null if this page was opened by IP). */
+export interface PasskeySettings {
+  policy: { require_privileged: boolean; rp_id: string };
+  rp_id: string | null;
+  without_passkey: string[];
+  pending: number | null;
+}
+
 /** Phase 16c: one inbound service of GET /firewall (allow empty = any address). */
 export interface FirewallService {
   id: string;
