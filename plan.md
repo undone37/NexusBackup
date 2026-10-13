@@ -748,6 +748,13 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
   forwards bytes, holds no keys or data. "Back up now" from the endpoint UI starts within seconds from anywhere.
   Compromise of the proxy: denial of service + connection metadata, no data, no path to the appliance.
 
+### Phase 27 — Agent updates pushed from the appliance (proposed 2026-10-13 by user request)
+- Signed agent releases ship with each appliance image (or are uploaded, signature-checked); per-OS/arch artifact
+  selection; package installs updated with their own package type (deb/rpm/MSI, GUI included), bundles by binary
+  swap with a start watchdog; chunked transfer; per-agent update state; rollouts with waves, canary, failure
+  threshold, busy/window handling; optional automatic mode; rollback only with approval; installer downloads from
+  the appliance. Details and proposed decisions: `docs/agent-update-plan.md`.
+
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
 ---
