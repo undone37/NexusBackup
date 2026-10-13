@@ -2021,6 +2021,8 @@ mod report_mail;
 mod restore_files;
 /// Phase 13b run control (pause, blackout, retries, SLA, cancel).
 mod runctl;
+/// Phase 21e YARA scan of a snapshot and scan-first restores.
+mod scan;
 /// Phase 15g file search and name index jobs.
 mod search;
 /// Phase 17f tenant deactivation.

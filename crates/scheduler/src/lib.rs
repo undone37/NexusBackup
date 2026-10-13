@@ -90,6 +90,7 @@ mod restore;
 mod restore_files;
 pub mod run;
 mod runctl;
+mod scan;
 pub mod schedule;
 pub mod search;
 mod selection;
@@ -1135,6 +1136,9 @@ impl Scheduler {
             if self.hold_offsite(&job)? {
                 continue; // pause window: waits for its end
             }
+            if self.hold_for_scan(&job)? {
+                continue; // scan first: waits for its snapshot_scan (scan.rs)
+            }
             let plan = match self.plan(&job) {
                 Ok(p) => p,
                 Err(e) => {
@@ -1236,7 +1240,7 @@ impl Scheduler {
             _ => "failed",
         };
         self.db.conn().execute(
-            "UPDATE jobs SET state=?1, finished=?2, log=?3, result=?4 WHERE id=?5",
+            "UPDATE jobs SET state=?1, finished=?2, log=log || ?3, result=?4 WHERE id=?5",
             params![
                 state,
                 catalog::now(),
@@ -1315,6 +1319,9 @@ impl Scheduler {
         }
         if ok && job.kind == "file_changes" {
             self.changes_bookkeeping(&job, result.as_ref())?;
+        }
+        if job.kind == "snapshot_scan" {
+            self.scan_bookkeeping(&job, ok, result.as_ref())?;
         }
         if job.kind == "gc" {
             self.orphan_bookkeeping(&job.tenant, f.stdout.as_deref())?;
@@ -1517,7 +1524,7 @@ impl Scheduler {
                 Some(r)
             }
             "alert_test" | "forward_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" | "file_search"
-            | "file_index" | "file_changes" | "snapshot_diff" | "config_backup" => {
+            | "file_index" | "file_changes" | "snapshot_diff" | "config_backup" | "snapshot_scan" => {
                 serde_json::from_str(stdout.unwrap_or_default()).ok()
             }
             "offsite_list" => match serde_json::from_str::<Value>(stdout.unwrap_or_default().trim()) {
@@ -2336,6 +2343,7 @@ impl Scheduler {
     }
 
     pub fn plan(&self, job: &Job) -> Result<Plan> {
+        Self::check_scanned(job)?; // scan.rs
         if let Some(plan) = self.plan_config(job)? {
             return Ok(plan); // config_backup.rs
         }
@@ -2405,6 +2413,9 @@ impl Scheduler {
         }
         if job.kind == "file_changes" || job.kind == "snapshot_diff" {
             return self.plan_changes(job, plan); // changes.rs
+        }
+        if job.kind == "snapshot_scan" {
+            return self.plan_scan(job, plan); // scan.rs
         }
         if job.kind.starts_with("offsite_") {
             return self.plan_offsite_ui(job, plan); // offsite_ui.rs

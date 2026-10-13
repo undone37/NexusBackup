@@ -56,6 +56,7 @@ const HINTS: &[(&str, &str)] = &[
     ("tenant_disabled", "The tenant is deactivated (Tenants page): no backups, offsite copies or replication run for it and its accounts cannot sign in; its other alerts are suppressed. Retention keeps running. Reactivate it on the Tenants page when it is needed again."),
     ("vault_disabled", "Vault mode was switched off at the console with the recovery key after an approved request. Confirm with the people who requested and approved it (audit: vault.disable)."),
     ("config_backup", "The appliance configuration backup (catalog, key files) could not be made or uploaded to an offsite target. Open Configuration → Settings → Backup of this appliance and the job log; check that nexus-keyd runs and the offsite target is reachable, then Run now. Resolves after the next successful run (per target)."),
+    ("malware", "The YARA scan found matches of the administrators' rules in a snapshot (rule and path: Snapshots page, scan results). The snapshot is flagged as anomalous, so restores and holds default to an earlier clean snapshot, and restores with Scan first are refused or run with the network disconnected. Check the files and the source; if a rule was too broad, a security officer clears the flag on the Snapshots page. Resolve the alert by hand."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
 
@@ -65,6 +66,7 @@ pub const CATEGORIES: &[&str] = &["security", "backup", "replication", "hardware
 
 const CATEGORY: &[(&str, &str)] = &[
     ("anomaly", "security"),
+    ("malware", "security"),
     ("console_unlock", "security"),
     ("console_root_shell", "security"),
     ("break_glass", "security"),
@@ -346,6 +348,7 @@ mod tests {
     fn categories() {
         for (kind, cat) in [
             ("anomaly", "security"),
+            ("malware", "security"),
             ("console_root_shell", "security"),
             ("legal_hold_advisory", "security"),
             ("firewall_reset", "security"),
