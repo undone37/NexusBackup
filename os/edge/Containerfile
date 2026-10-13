@@ -87,8 +87,8 @@ COPY os/etc/systemd/system.conf.d/50-nexus-console.conf /etc/systemd/system.conf
 # repository's /dev/null symlinks)
 RUN ln -sf /dev/null /etc/systemd/system/bootc-fetch-apply-updates.timer \
  && ln -sf /dev/null /etc/systemd/system/rpm-ostreed-automatic.timer
-RUN nft -c -f /etc/sysconfig/nftables.conf \
- && systemctl enable nftables.service chronyd.service nexus-edge.service nexus-edge-setup.service \
+# (no `nft -c` here: it needs netlink, which a rootless build lacks; lab/edge check verifies the loaded ruleset)
+RUN systemctl enable nftables.service chronyd.service nexus-edge.service nexus-edge-setup.service \
  && { systemctl disable sshd.service sshd.socket 2>/dev/null || true; } \
  && ! systemctl is-enabled -q sshd.service \
  && usermod -L root && grep -q '^root:!' /etc/shadow \

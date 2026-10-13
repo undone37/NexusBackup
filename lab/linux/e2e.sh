@@ -310,8 +310,9 @@ step_endpoint() {
 		[ "$i" = 60 ] && die "summary of job $id did not reach the agent"
 		sleep 2
 	done
+	# deb-plain has no snapshots: its backups are inconsistent and end as warning
 	r=$(ui_call "{\"op\":\"session\",\"id\":$id}")
-	jq -e '.result == "success" and (.log_tail | length) > 0' <<<"$r" >/dev/null || die "session $id on the agent: $r"
+	jq -e '(.result == "success" or .result == "warning") and (.log_tail | length) > 0' <<<"$r" >/dev/null || die "session $id on the agent: $r"
 	result endpoint_request_job "$id"
 }
 
