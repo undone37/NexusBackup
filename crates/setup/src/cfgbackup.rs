@@ -367,12 +367,7 @@ impl Setup {
 
         // the catalog is replaced under our feet: let go of it first
         self.cat = Catalog::open_memory()?;
-        let stage = self.paths.root.join("var/lib/nexus/.config-restore");
-        let _ = fs::remove_dir_all(&stage);
-        mkdir(&stage, 0o700)?;
-        let res = self.put_entries(&opened.entries, &stage);
-        let _ = fs::remove_dir_all(&stage);
-        res?;
+        self.put_entries(&opened.entries)?;
         self.cat = crate::open_catalog(&self.paths.catalog, &self.owner)?;
 
         mkdir(&keyd_dir, 0o700)?;
@@ -450,8 +445,9 @@ impl Setup {
     }
 
     /// Directories first (bundle order: parents before children), files staged
-    /// in `stage` with their final mode/owner and renamed into place.
-    fn put_entries(&self, entries: &[Entry], stage: &Path) -> Result<()> {
+    /// next to their target (same file system: /etc and /var are separate on
+    /// bootc) with their final mode/owner and renamed into place.
+    fn put_entries(&self, entries: &[Entry]) -> Result<()> {
         for (i, e) in entries.iter().enumerate() {
             let t = target(&self.paths, &e.path);
             if e.dir {
@@ -459,7 +455,8 @@ impl Setup {
             } else {
                 let parent = t.parent().ok_or_else(|| anyhow!("no parent"))?;
                 fs::create_dir_all(parent)?;
-                let s = stage.join(i.to_string());
+                let s = parent.join(format!(".nexus-restore-{i}.tmp"));
+                let _ = fs::remove_file(&s);
                 fs::OpenOptions::new()
                     .write(true)
                     .create_new(true)
