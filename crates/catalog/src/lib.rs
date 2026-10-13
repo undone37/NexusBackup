@@ -18,6 +18,7 @@ pub mod forwarding;
 pub mod hardware;
 pub mod holds;
 pub mod inventory;
+pub mod network;
 pub mod schedule;
 pub mod secret;
 pub mod tenancy;

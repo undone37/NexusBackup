@@ -1,0 +1,59 @@
+[Unit]
+Description=NexusBackup network interfaces: NetworkManager profiles for NICs, bonds, VLANs and roles; path-MTU check
+# Started by nexus-net.path (requests from the web-api, a pending management change) and
+# nexus-net.timer (status every 15 minutes, path-MTU check hourly). docs/control-plane.md
+# "Network interfaces".
+Wants=NetworkManager.service
+After=NetworkManager.service
+StartLimitIntervalSec=60
+StartLimitBurst=20
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/nexus/nexus-net tick
+# root, because it writes /etc/NetworkManager/system-connections (root 0700, keyfiles 0600) and
+# NetworkManager only takes connection changes from root; SELinux (nexus_net_t) limits it to
+# that dir, nmcli over D-Bus, netlink and ICMP echo. No DAC override: request files are read
+# through the group. CAP_NET_RAW: ICMP echo through a raw socket where ping sockets are not
+# allowed (net.ipv4.ping_group_range).
+SupplementaryGroups=nexus-webapi
+CapabilityBoundingSet=CAP_NET_RAW
+AmbientCapabilities=
+UMask=0077
+# a management change waits up to 120 s for its confirmation; activations up to 30 s each
+TimeoutStartSec=15min
+
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nexus/net /etc/NetworkManager/system-connections
+# key material, credentials, the catalog and job state are not even visible
+InaccessiblePaths=-/var/lib/nexus/keyd -/var/lib/nexus/escrow -/var/lib/nexus/offsite -/var/lib/nexus/catalog
+InaccessiblePaths=-/var/lib/nexus/scheduler -/var/lib/nexus/replicad -/var/lib/nexus/webapi -/etc/nexus
+InaccessiblePaths=-/run/nexus-keyd -/run/nexus-scheduler -/var/lib/nexus/downloads -/var/lib/nexus/plugins-staging
+InaccessiblePaths=-/var/lib/nexus/diag -/var/lib/nexus/tls -/var/lib/nexus/console-unlock -/var/lib/nexus/chunkstore
+
+# The host's network namespace (it configures it); inet only for ICMP echo (path-MTU check).
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+PrivateIPC=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+LimitCORE=0
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM

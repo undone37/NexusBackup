@@ -82,6 +82,7 @@ pub mod forward;
 mod holds;
 mod inventory;
 mod lifecycle;
+pub mod network;
 mod offsite_ui;
 pub mod orphans;
 mod plugins;
@@ -213,6 +214,8 @@ pub struct Config {
     pub forward_poll_secs: u64,
     /// nexus-disks status and operations (disks.rs; skipped while there is no status)
     pub disks_dir: PathBuf,
+    /// nexus-net status (interface roles for bound egress) and operations (network.rs)
+    pub net_dir: PathBuf,
     /// endpoint status poll of every enrolled agent (endpoint.rs); 0 = off
     pub agent_poll_secs: u64,
     /// agents polled at once
@@ -272,6 +275,7 @@ impl Default for Config {
             inventory_secs: 3600,
             forward_poll_secs: 5,
             disks_dir: catalog::hardware::DIR.into(),
+            net_dir: catalog::network::DIR.into(),
             agent_poll_secs: 120,
             agent_poll_concurrency: 8,
             config_backup: "daily 02:30".into(),
@@ -775,6 +779,7 @@ impl Scheduler {
         self.log_err(|s| s.check_replication_lag(now));
         self.log_err(|s| s.check_forwarding(now));
         self.log_err(|s| s.check_disks(now));
+        self.log_err(|s| s.audit_net_ops());
         self.log_err(|s| s.check_clock());
         self.log_err(|s| s.check_disabled_tenants());
         self.log_err(|s| s.sync_firewall().map(drop));
@@ -965,7 +970,11 @@ impl Scheduler {
 
     /// Writes the outbound allow-list (sources, offsite boxes, alert delivery)
     /// for nexus-nft-sync; the file only changes when the destinations do.
+    /// Sources and agents (role data), offsite targets and replication primaries
+    /// go into the file per role, bound to the role's interface when Settings →
+    /// Network gives it one (network.rs); everything else leaves through any.
     fn sync_firewall(&self) -> Result<bool> {
+        // role data: everything the appliance pulls backups from
         let mut targets = Vec::new();
         {
             let c = self.db.conn();
@@ -1008,13 +1017,16 @@ impl Scheduler {
         targets.extend(self.rescue_targets()?);
         // fleet enrollment: the scanned ranges on the agent port (crate::fleet)
         targets.extend(self.fleet_targets()?);
+        let data = std::mem::take(&mut targets);
+        let mut offsite = Vec::new();
         for (_, o) in self.tenants()? {
-            targets.extend(firewall::offsite_targets(&o));
+            offsite.extend(firewall::offsite_targets(&o));
         }
         // approved "attach an offsite copy" requests: the target before the tenant exists
-        targets.extend(self.attach_targets()?);
+        offsite.extend(self.attach_targets()?);
         // secondary: the primaries' management ports (docs/replication.md §10)
-        targets.extend(self.replication_targets()?);
+        let replication = self.replication_targets()?;
+        let roles = self.egress_roles([("data", data), ("offsite", offsite), ("replication", replication)]);
         if let Ok(a) = self.alerts_config() {
             targets.extend(firewall::alert_targets(&a));
         }
@@ -1023,11 +1035,17 @@ impl Scheduler {
         targets.extend(firewall::forward_targets(&fwd));
         // inbound: per-service source lists (Settings → Firewall; empty = any)
         let inbound = nftsync::inbound_map(catalog::firewall::load(&self.db.conn())?.effective());
-        let changed = nftsync::write_allowed(&self.cfg.nft_allowed, firewall::resolve(&targets), Some(&inbound))?;
+        let changed = nftsync::write_allowed(
+            &self.cfg.nft_allowed,
+            firewall::resolve(&targets),
+            Some(&inbound),
+            &roles,
+        )?;
         if changed {
             eprintln!(
-                "scheduler: firewall allow-list updated ({} destinations)",
-                targets.len()
+                "scheduler: firewall allow-list updated ({} destinations, {} by role)",
+                targets.len(),
+                roles.values().map(|r| r.endpoints.len()).sum::<usize>()
             );
         }
         Ok(changed)

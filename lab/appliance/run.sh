@@ -10,7 +10,9 @@
 # env: LAB (/home/ah/nexus-lab), PORT (28443), MEM (3072), CPUS (4), TPM=1 (swtpm),
 #      EXTRA_DISKS=N: N virtio data disks (serial NXLAB-D<i>, EXTRA_GB each, default 2),
 #      NVME=N: N emulated NVMe drives (serial NXLAB-NVME<i>, SMART log works: lab/appliance/disks.sh);
-#      their qcow2 files persist in $LAB/appliance/extra (delete them for blank disks)
+#      their qcow2 files persist in $LAB/appliance/extra (delete them for blank disks);
+#      EXTRA_NICS=N: N more virtio NICs (MAC 52:54:00:4e:58:0<i>) on one QEMU hub (a switch without
+#      a host side: bonds, VLANs and a peer in a netns inside the guest, lab/appliance/network.sh)
 set -euo pipefail
 LAB=${LAB:-/home/ah/nexus-lab}
 D=$LAB/appliance
@@ -37,6 +39,9 @@ start() {
 				-device nvme,drive=nv$i,serial=NXLAB-NVME$i)
 		done
 	fi
+	for i in $(seq 1 "${EXTRA_NICS:-0}"); do
+		extra+=(-netdev hubport,id=hn$i,hubid=1 -device virtio-net-pci,netdev=hn$i,mac=52:54:00:4e:58:0$i)
+	done
 	if [ "${TPM:-0}" = 1 ]; then
 		mkdir -p "$D/tpm"
 		swtpm socket --tpm2 --tpmstate dir="$D/tpm" --ctrl type=unixio,path="$D/swtpm.sock" \
@@ -74,5 +79,5 @@ case ${1:-} in
 start) shift; start "$@" ;;
 stop) stop ;;
 console) exec socat -,raw,echo=0,escape=0x1d UNIX-CONNECT:"$D/console.sock" ;;
-*) sed -n '2,14p' "$0" >&2; exit 2 ;;
+*) sed -n '2,16p' "$0" >&2; exit 2 ;;
 esac

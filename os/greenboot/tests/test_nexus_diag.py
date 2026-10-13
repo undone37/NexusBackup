@@ -170,6 +170,7 @@ class Host(unittest.TestCase):
             "NEXUS_DIAG_DISKS": f"store={self.d / 'store'} var={self.d}",
             "NEXUS_DIAG_HEALTH": str(HEALTH),
             "NEXUS_DIAG_DISKS_STATUS": str(self.d / "disks.json"),
+            "NEXUS_DIAG_NET_STATUS": str(self.d / "net.json"),
             "NEXUS_DIAG_GRUB_USER": str(self.d / "grub-user.cfg"),
             "NEXUS_DIAG_GRUB_BOOT": str(self.d / "grub-boot.cfg"),
             # the temp dirs live on the build host's disk (a CI runner may be > 90 % full)
@@ -236,10 +237,10 @@ class Checks(Host):
         self.assertEqual(
             sorted(cs),
             sorted(["disk.store", "disk.var", "time.sync", "time.nts", "time.compliance", "egress", "keyd", "tls.cert", "audit.chain",
-                    "catalog.integrity", "selinux", "systemd.failed", "bootc", "smart"]),
+                    "catalog.integrity", "selinux", "systemd.failed", "bootc", "smart", "network.mtu"]),
         )
         for cid, c in cs.items():
-            want = "skip" if cid == "smart" else "pass"
+            want = "skip" if cid in ("smart", "network.mtu") else "pass"
             self.assertEqual(c["status"], want, c)
             self.assertEqual(c["severity"], 1)
             self.assertEqual(c["manual"], "15-troubleshooting-faq.md#check-" + cid.replace(".", "-"))
@@ -335,6 +336,28 @@ class Checks(Host):
         ok["scanned"] = 0
         (self.d / "disks.json").write_text(json.dumps(ok))
         self.assertIn("nexus-disks.timer", self.by_id(self.m.checks())["smart"]["detail"])
+
+    def test_network_mtu(self):
+        now = int(time.time())
+
+        def status(results, ts=now):
+            (self.d / "net.json").write_text(json.dumps({"mtu": {"ts": ts, "results": results}}))
+            return self.by_id(self.m.checks())["network.mtu"]
+
+        self.assertEqual(status([])["status"], "pass")
+        ok = {"role": "data", "addr": "10.0.20.7", "dev": "bond0.20", "expected_dev": "bond0.20", "mtu": 9000,
+              "result": "ok", "path_mtu": None}
+        silent = dict(ok, addr="10.0.20.8", result="no_reply")
+        c = status([ok, silent])
+        self.assertEqual(c["status"], "pass")
+        self.assertIn("1 destination(s)", c["detail"])
+        c = status([ok, dict(ok, addr="10.30.0.9", result="mismatch", path_mtu=1500)])
+        self.assertEqual((c["status"], c["severity"]), ("warn", 2))
+        self.assertIn("10.30.0.9 (data): interface bond0.20 has MTU 9000, the path takes 1500", c["detail"])
+        c = status([dict(ok, dev="ens3")])
+        self.assertIn("routed through ens3", c["detail"])
+        self.assertEqual(status([ok], ts=now - 5 * 3600)["status"], "warn")
+        self.assertEqual(self.m.blocking([status([dict(ok, result="mismatch")])]), [], "never blocks an update")
 
     def test_missing_tools_and_files_skip(self):
         for k in ("NEXUS_DIAG_CHRONYC", "NEXUS_DIAG_NFT"):

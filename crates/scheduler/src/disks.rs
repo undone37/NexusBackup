@@ -32,7 +32,7 @@ impl Scheduler {
     pub fn check_disks(&self, now: i64) -> Result<()> {
         let dir = &self.cfg.disks_dir;
         if let Some(ops) = read(&dir.join("ops.json")) {
-            self.audit_disk_ops(&ops)?;
+            self.audit_helper_ops(&ops, AUDITED_SETTING, ACTOR_DISKS, "hardware")?;
         }
         // no status at all: no monitoring here (a VM without the helper, tests); nothing to say
         let Some(status) = read(&dir.join("status.json")) else {
@@ -108,8 +108,10 @@ impl Scheduler {
         Ok(())
     }
 
-    fn audit_disk_ops(&self, ops: &Value) -> Result<()> {
-        let mut seen: Vec<String> = catalog::setting(&self.db.conn(), AUDITED_SETTING)?
+    /// Audits a root helper's finished operations once each (`<area>.op`, target
+    /// `<area>/<op>`); `seen_setting` keeps the newest 100 ids.
+    pub(crate) fn audit_helper_ops(&self, ops: &Value, seen_setting: &str, actor: &str, area: &str) -> Result<()> {
+        let mut seen: Vec<String> = catalog::setting(&self.db.conn(), seen_setting)?
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
         let before = seen.len();
@@ -117,14 +119,14 @@ impl Scheduler {
             let (Some(id), Some(state)) = (o["id"].as_str(), o["state"].as_str()) else {
                 continue;
             };
-            if !matches!(state, "done" | "refused" | "error") || seen.iter().any(|s| s == id) {
+            if !matches!(state, "done" | "refused" | "error" | "rolled_back") || seen.iter().any(|s| s == id) {
                 continue;
             }
             let op = o["op"].as_str().unwrap_or("?");
             self.db.audit(
-                ACTOR_DISKS,
-                "hardware.op",
-                &format!("hardware/{op}"),
+                actor,
+                &format!("{area}.op"),
+                &format!("{area}/{op}"),
                 &json!({"id": id, "op": op, "state": state, "requested_by": o["by"], "quorum_id": o["quorum_id"],
                         "params": o["params"], "detail": o["detail"], "error": o["error"]}),
             )?;
@@ -132,7 +134,7 @@ impl Scheduler {
         }
         if seen.len() != before {
             let keep = seen.len().saturating_sub(100);
-            catalog::set_setting(&self.db.conn(), AUDITED_SETTING, &serde_json::to_string(&seen[keep..])?)?;
+            catalog::set_setting(&self.db.conn(), seen_setting, &serde_json::to_string(&seen[keep..])?)?;
         }
         Ok(())
     }

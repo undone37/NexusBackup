@@ -543,6 +543,32 @@ fn dhcp_queries_the_address_and_cert_has_hostname_only_in_dry_run() {
     assert_eq!(tls["san"], json!(["backup-01"]));
 }
 
+/// Phase 22a: a bonded, tagged management interface goes through nexus-net (console-apply).
+#[test]
+fn bond_and_vlan_through_nexus_net() {
+    let e = env();
+    let mut ans = e.answers("192.0.2.10");
+    ans["network"] = json!({"nic": "eno1", "method": "dhcp",
+                            "link": {"bond": ["eno2"], "bond_mode": "802.3ad", "vlan": 20, "mtu": 9000}});
+    let (out, stdout, stderr) = e.run(&ans, &[]);
+    assert!(out.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("+ (dry-run) /usr/libexec/nexus/nexus-net console-apply"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("nmcli connection add"), "{stdout}");
+    assert!(stdout.contains("+ (dry-run) nmcli -g IP4.ADDRESS device show bond0.20"));
+    let a = audit_actions(&e.catalog());
+    let net = &a.iter().find(|(_, act, _)| act == "setup.network").unwrap().2;
+    assert_eq!(net["link"]["vlan"], 20);
+    // invalid: the same NIC twice
+    let mut ans = e.answers("192.0.2.10");
+    ans["network"] = json!({"nic": "eno1", "method": "dhcp", "link": {"bond": ["eno1"]}});
+    let (out, _, stderr) = e.run(&ans, &["--force-reconfigure-network"]);
+    assert!(!out.status.success());
+    assert!(stderr.contains("used twice"), "{stderr}");
+}
+
 #[test]
 fn usage_errors() {
     let out = Command::new(env!("CARGO_BIN_EXE_nexus-setup"))
