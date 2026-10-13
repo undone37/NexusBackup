@@ -272,6 +272,13 @@ stolen session, **End all other sessions on the appliance** (everybody except yo
 authenticator code, audited `session.revoke_all`). Single sign-on administrators have no password on the appliance
 and cannot use the last one; a local administrator can.
 
+### Concurrent sessions
+
+**Settings → Security → Sessions per account** limits how many browsers may be signed in with one account at the
+same time (1–50, default 5). A new sign-in beyond the limit ends the account's oldest session; this is audited
+(`session.limit`, with the number of sessions ended). It applies at the next sign-in of each account; changes are
+audited (`security.max_sessions`).
+
 ### Dormant accounts
 
 With **Settings → Security → Dormant accounts** set to a number of days (30–3650; 0 = off, the default; 90 is a
@@ -291,7 +298,9 @@ sign-in page shows above the form, for example a legal notice ("Authorised use o
 ![Settings: Security](images/settings-security.png)
 
 > **Status:** Viewers, the download privilege, expiry dates, sessions, timeouts, dormant accounts and the login
-> banner are tested in the API and the demo backend; a run on the appliance image (lab) is pending.
+> banner are tested in the API and the demo backend; a run on the appliance image (lab) is pending. The session
+> limit and the encryption key rotation reminder ([14 Disaster recovery](14-disaster-recovery.md#rotating-a-tenants-encryption-key))
+> were added in Phase 21b (API and demo backend tests).
 
 ## API tokens
 

@@ -1192,6 +1192,7 @@ export const en = {
       security: "Security",
       firewall: "Firewall",
       vault: "Vault",
+      incident: "Incident mode",
     } as Record<string, string>,
     fw: {
       intro:
@@ -1455,6 +1456,11 @@ export const en = {
       } as Record<number, string>,
       summary: (pass: number, warn: number, fail: number) =>
         `${pass} OK · ${warn} warning${warn === 1 ? "" : "s"} · ${fail} failed`,
+      posture: "Security posture",
+      postureIntro:
+        "Recommendations for a hardened appliance, from the latest self-check run. A warning never blocks an update; Help explains how to fix it.",
+      postureNone: "No posture results yet: run the checks.",
+      postureSummary: (pass: number, warn: number) => `${pass} of ${pass + warn} recommendations met`,
       blocksUpdates:
         'Updates are blocked until the failed checks marked "error" or "critical" are fixed.',
       bundle: "Support bundle",
@@ -1750,6 +1756,10 @@ export const en = {
       disk: 'A disk or RAID array needs attention (SMART failing, bad sectors, temperature, NVMe wear, degraded or rebuilding array). Open Configuration → Hardware; replace a failed disk as the manual describes. Resolves when the disk or array is healthy again.',
       clock_skew: 'System time and the compliance clock (retention locks) differ. A lag after a restart is normal: the compliance clock catches up slowly and locks last longer meanwhile. A jump while running, or a compliance clock ahead of system time, means system time was changed by hand or a time source is wrong: check Diagnostics (time.sync, time.nts) and the audit log. Resolves when the difference is below a minute.',
       fleecing_space: 'The fleecing storage of a Proxmox node (usually local-lvm) is nearly full. A full LVM-thin pool pauses every VM on it, so guests are skipped below the guard and a running backup is cancelled below the critical level. Free space in that storage or choose a larger fleecing storage for the source, and adjust the guard on the source if needed. Resolves when a backup finds enough space again.',
+      incident:
+        "A security officer put the appliance into incident mode: snapshots in the chosen range are held, backup groups are paused, every other session and all API tokens were ended. Investigate; leaving incident mode needs a second approver (Settings → Incident mode). Resolves when incident mode ends.",
+      dek_rotation:
+        "The tenant's data encryption key is older than the rotation interval (Settings → Security). Rotate it at the appliance console (root shell, manual chapter 14): runuser -u nexus-keyd -- /usr/libexec/nexus/keyd tenant-rotate /var/lib/nexus/keyd <tenant>. New snapshots use the new key; older ones stay readable. Resolves once rotated.",
       vault_closed:
         "A replication source was closed with Close vault (pause pulling now): no syncs, the primary is not reachable from here. Nothing to do while that is intended; reopening needs approval (Replication page). Resolves when the source is reopened.",
     } as Record<string, string>,
@@ -2336,6 +2346,14 @@ export const en = {
     dormantHint:
       "Accounts nobody has signed in with for this many days are disabled automatically (audited, info alert). Never the last administrator, never an approver who is needed for approvals. 0 = off; 90 is a common policy.",
     dormantDays: "Disable after (days, 0 = off, else 30–3650)",
+    maxSessions: "Sessions per account",
+    maxSessionsHint:
+      "How many browsers may be signed in with one account at the same time. A new sign-in beyond the limit ends the account's oldest session (audited). Default 5.",
+    maxSessionsLabel: "Concurrent sessions (1–50)",
+    dekRotation: "Encryption key rotation reminder",
+    dekRotationHint:
+      "Raises an info alert per tenant whose data encryption key is older than this. Rotating is done at the console (manual chapter 14). 0 = off; default 365.",
+    dekRotationDays: "Remind after (days, 0 = off, else 30–3650)",
     banner: "Login banner",
     bannerHint:
       "Shown on the sign-in page above the form, as plain text (line breaks kept, up to 2000 characters). Empty = none.",
@@ -2347,6 +2365,46 @@ export const en = {
       `A change is waiting for approval (request #${id}).`,
     fewApprovers: (n: number) =>
       `Only ${n} ${n === 1 ? "person" : "people"} can approve requests. If one of them is unavailable, nothing can be approved (the requester never approves their own request). Add a third administrator or security officer; the user manual (chapter 10, "When approvers are unavailable") describes the way out.`,
+  },
+  incident: {
+    intro:
+      "For a suspected attack (ransomware, a stolen administrator account). One action, at once: puts the snapshots of the chosen tenants and sources in a time range on legal hold, pauses all (or the chosen) backup groups, ends every session except yours and revokes all API tokens, and raises a critical alert. Leaving incident mode needs a second person (also while approvals are off); it resumes the groups it paused. Holds stay until each is released.",
+    banner: (by: string, since: string, reason: string) =>
+      `Incident mode since ${since} (${by}): ${reason}. Groups stay paused; leaving needs approval.`,
+    open: "Incident mode",
+    activeTitle: "Incident mode is active",
+    since: (when: string, by: string) => `since ${when}, entered by ${by}`,
+    reason: "Reason",
+    reasonHint: "One line, e.g. the ticket number. Shown in the banner and the audit log.",
+    holdTitle: "Hold snapshots",
+    hold: "Put snapshots on legal hold",
+    tenants: "Tenants",
+    tenantsHint: "None selected = all tenants.",
+    sources: "Sources (optional)",
+    sourcesHint: "Comma-separated, e.g. vm-100, nas-3-tank.data. Empty = every source.",
+    from: "Taken from",
+    to: "Taken until",
+    groupsTitle: "Pause backup groups",
+    allGroups: "All groups",
+    chosenGroups: "Only these groups",
+    reauth: "Confirm with your password and a fresh authenticator code.",
+    password: "Current password",
+    totp: "Authenticator code",
+    enter: "Enter incident mode",
+    enterConfirm:
+      "Enter incident mode now? Everybody else is signed out and all API tokens stop working at once.",
+    entered: "Incident mode entered.",
+    held: (n: number) => `${n} snapshot${n === 1 ? "" : "s"} held`,
+    paused: (n: number) => `${n} group${n === 1 ? "" : "s"} paused`,
+    ended: (s: number, tk: number) => `${s} session${s === 1 ? "" : "s"} and ${tk} API token${tk === 1 ? "" : "s"} ended`,
+    leave: "Request to leave incident mode",
+    leaveConfirm: "Request to leave incident mode? Another administrator or security officer approves it on the Approvals page.",
+    leaveRequested: "Leaving incident mode is waiting for approval.",
+    leavePending: (id: number) => `Leaving is waiting for approval (request #${id}).`,
+    last: (when: string, by: string, approver: string) => `Last incident ended ${when} (requested by ${by}, approved by ${approver}).`,
+    officerOnly: "Only a security officer can enter incident mode.",
+    dashTitle: "Incident mode",
+    dashText: (by: string, since: string) => `Entered by ${by} ${since}. Backups are paused until it is left.`,
   },
   firewall: {
     intro:

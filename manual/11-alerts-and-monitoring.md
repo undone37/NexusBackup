@@ -60,7 +60,7 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 
 | Category | Kinds |
 |---|---|
-| security | `anomaly`, `console_unlock`, `console_root_shell`, `break_glass`, `firewall_reset`, `mgmt_allow_reset`, `legal_hold_advisory`, `cert_expiry`, `account_dormant`, `inventory`, `clock_skew`, `gc_quorum`, `gc_confirm`, `vault_disabled` |
+| security | `anomaly`, `console_unlock`, `console_root_shell`, `break_glass`, `firewall_reset`, `mgmt_allow_reset`, `legal_hold_advisory`, `cert_expiry`, `account_dormant`, `inventory`, `clock_skew`, `gc_quorum`, `gc_confirm`, `vault_disabled`, `incident`, `dek_rotation` |
 | backup | `job_failed`, `sla_missed`, `paused`, `consistency`, `backup_inconsistent`, `orphaned`, `verify`, `offsite_lag`, `inventory_refresh`, `config` |
 | replication | every `replication_…` kind |
 | hardware | `disk`, `fleecing_space` |
@@ -91,6 +91,8 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 | `quota` | warning at 80 %, critical at 100 % | a tenant's store reached 80 % or 100 % of its soft quota (**Tenants**); one alert per tenant, escalated at 100 % | usage is back under 80 % | review retention or what the tenant backs up, or raise the quota; backups continue either way |
 | `cert_expiry` | info at 90 days, warning at 30, critical at 7 (API tokens: info, last 7 days) | a certificate, the IdP client secret or an API token expires soon (see [Expiry warnings](#expiry-warnings)); one alert per item, escalated | renewed (new certificate, new secret date, token revoked or replaced) | renew as the message says |
 | `account_dormant` | info | an account was disabled because nobody signed in with it for the configured number of days (**Settings → Security → Dormant accounts**; one alert per account) | — | re-enable the account on **Users** if it is still needed, else leave it disabled. See [09 Users and access](09-users-and-access.md#dormant-accounts) |
+| `incident` | critical | a security officer entered incident mode (holds, paused groups, sessions and API tokens ended) | incident mode is left (approved) | investigate; see [14 Disaster recovery](14-disaster-recovery.md#incident-mode) |
+| `dek_rotation` | info | a tenant's data encryption key is older than the reminder interval (**Settings → Security**; one alert per tenant) | the key is rotated, or the reminder is switched off | rotate at the console; see [14 Disaster recovery](14-disaster-recovery.md#rotating-a-tenants-encryption-key) |
 | `firewall_reset` | warning | every inbound firewall restriction was cleared on the console (`nexus-setup reset-firewall`) | — | confirm with the person who did it, then set correct source lists in **Settings → Firewall**. See [02 Installation](02-installation.md#inbound-firewall) |
 | `tenant_disabled` | info | a tenant is deactivated (**Tenants**); its other alerts are muted meanwhile (one alert per tenant) | the tenant is reactivated | nothing, if intended; reactivate the tenant when it is needed again. See [09 Users and access](09-users-and-access.md#deactivating-a-tenant) |
 | `vault_disabled` | warning | vault mode was switched off at the console (`nexus-setup vault-disable`) after an approved request | — | confirm with the requester and the approver (audit `vault.disable`), then acknowledge. See [08 Replication](08-replication.md#vault-mode-secondary-only) |

@@ -308,3 +308,39 @@ successful delivery and the last error.
   `audit.anchor` there with the Audit log from time to time. Let the SIEM alert you when no `audit.anchor` has
   arrived for more than a day: forwarding stopped (receiver, network, or someone disabled it).
 - Acknowledge alerts about approvals (`gc_quorum`) only after the request was decided.
+- Check **Settings → Diagnostics → Security posture** after setting the appliance up and after organisational
+  changes (see [15 Troubleshooting](15-troubleshooting-faq.md#security-posture)).
+
+## Separation of duties and out-of-band management (BMC/IPMI)
+
+Approvals, legal holds and incident mode protect against one person or one stolen account only if the people and the
+management paths really are separate. These are recommendations; the appliance cannot enforce them.
+
+**People and accounts**
+
+- Give the **administrator** and the **security officer** roles to different people. The administrator configures and
+  operates; the security officer approves, holds evidence, reads the audit log and can enter incident mode. One person
+  with both an admin and a security officer account can approve their own changes in practice.
+- **No shared accounts.** Every person signs in with their own account and their own authenticator; the audit log
+  then names who did what, and an account can be ended without changing everybody's password. Scripts use API tokens
+  bound to a person's account.
+- At least three people who can approve (above), and nobody whose daily work is configuring the appliance holds the
+  recovery key alone: keep it sealed with a second person or in a safe with a sign-out log.
+- Accounts of people who leave are disabled the same day; [dormant accounts](09-users-and-access.md#dormant-accounts)
+  catch the ones that are forgotten.
+
+**Out-of-band management (BMC, IPMI, iDRAC, iLO)**
+
+The baseboard management controller of a hardware appliance gives full control below the operating system: power,
+virtual console (where the console gate and the emergency root shell live), virtual media (boot another system) and
+firmware updates. Treat it as more powerful than any account in the web UI.
+
+- Put the BMC on a **separate management network** that is not reachable from the production or user networks, and
+  never from the internet. Do not share the BMC port with a data port ("shared LOM").
+- Use personal BMC accounts (or the BMC's directory login) instead of the default account; change the default
+  password; turn off protocols you do not use (IPMI over LAN, SNMP v1/v2, unencrypted web).
+- Give BMC access to as few people as possible, and preferably **not** to the people who administer the backup
+  appliance's web UI: someone with both can bypass approvals by booting another system.
+- Keep the BMC firmware current and forward its event log to your SIEM along with the appliance's audit log.
+- For a virtual appliance, the same applies to the hypervisor: whoever administers the VM (console, snapshots, disk
+  images) can bypass the appliance's controls. Never run it on the cluster it protects.

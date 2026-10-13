@@ -192,26 +192,53 @@ async fn incident_mode_enters_at_once_and_leaves_by_approval() {
         let r = t.post("/api/v1/incident", s, t.reauth("alice", body.clone())).await;
         assert_eq!(r.status, StatusCode::FORBIDDEN, "security officers only");
     }
-    assert_eq!(t.post("/api/v1/incident", &sam, body.clone()).await.status, StatusCode::BAD_REQUEST, "re-authentication");
+    assert_eq!(
+        t.post("/api/v1/incident", &sam, body.clone()).await.status,
+        StatusCode::BAD_REQUEST,
+        "re-authentication"
+    );
     let mut bad = body.clone();
     bad["groups"] = json!([99]);
-    assert_eq!(t.post("/api/v1/incident", &sam, t.reauth("sam", bad)).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        t.post("/api/v1/incident", &sam, t.reauth("sam", bad)).await.status,
+        StatusCode::BAD_REQUEST
+    );
     let mut bad = body.clone();
     bad["hold"]["tenants"] = json!(["nobody"]);
-    assert_eq!(t.post("/api/v1/incident", &sam, t.reauth("sam", bad)).await.status, StatusCode::BAD_REQUEST);
-    assert_eq!(t.one::<i64>("SELECT COUNT(*) FROM legal_holds"), 0, "nothing applied on errors");
+    assert_eq!(
+        t.post("/api/v1/incident", &sam, t.reauth("sam", bad)).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        t.one::<i64>("SELECT COUNT(*) FROM legal_holds"),
+        0,
+        "nothing applied on errors"
+    );
 
     let r = t.post("/api/v1/incident", &sam, t.reauth("sam", body.clone())).await;
     assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
     assert_eq!(r.body["held"], json!(["acme/vm-100/1000"]));
-    assert_eq!(r.body["paused"], json!([{"id": 1, "prev": null}, {"id": 2, "prev": later}]));
-    assert_eq!((r.body["sessions_ended"].clone(), r.body["tokens_revoked"].clone()), (json!(4), json!(1)));
+    assert_eq!(
+        r.body["paused"],
+        json!([{"id": 1, "prev": null}, {"id": 2, "prev": later}])
+    );
+    assert_eq!(
+        (r.body["sessions_ended"].clone(), r.body["tokens_revoked"].clone()),
+        (json!(4), json!(1))
+    );
     assert_eq!(t.one::<String>("SELECT state FROM legal_holds"), "active");
     assert_eq!(t.one::<i64>("SELECT COUNT(*) FROM groups WHERE paused_until = -1"), 2);
-    assert_eq!(t.one::<Option<i64>>("SELECT paused_until FROM groups WHERE id = 3"), None);
+    assert_eq!(
+        t.one::<Option<i64>>("SELECT paused_until FROM groups WHERE id = 3"),
+        None
+    );
     assert_eq!(t.one::<i64>("SELECT COUNT(*) FROM api_tokens"), 0);
     for s in [&alice, &otto, &tina, &sam2] {
-        assert_eq!(t.get("/api/v1/auth/me", s).await.status, StatusCode::UNAUTHORIZED, "other sessions ended");
+        assert_eq!(
+            t.get("/api/v1/auth/me", s).await.status,
+            StatusCode::UNAUTHORIZED,
+            "other sessions ended"
+        );
     }
     let me = t.get("/api/v1/auth/me", &sam).await;
     assert_eq!(me.status, StatusCode::OK, "the officer's own session stays");
@@ -220,15 +247,23 @@ async fn incident_mode_enters_at_once_and_leaves_by_approval() {
         t.one::<String>("SELECT severity || ' ' || kind FROM alerts WHERE resolved_at IS NULL"),
         "critical incident"
     );
-    assert_eq!(t.one::<i64>("SELECT COUNT(*) FROM audit WHERE action = 'incident.enter'"), 1);
     assert_eq!(
-        t.post("/api/v1/incident", &sam, t.reauth("sam", body.clone())).await.status,
+        t.one::<i64>("SELECT COUNT(*) FROM audit WHERE action = 'incident.enter'"),
+        1
+    );
+    assert_eq!(
+        t.post("/api/v1/incident", &sam, t.reauth("sam", body.clone()))
+            .await
+            .status,
         StatusCode::CONFLICT
     );
 
     // banners and state; tenant accounts see none
     let (alice, otto, tina) = (t.login("alice").await, t.login("otto").await, t.login("tina").await);
-    assert_eq!(t.get("/api/v1/dashboard", &otto).await.body["incident"]["reason"], "ransomware on fileserver");
+    assert_eq!(
+        t.get("/api/v1/dashboard", &otto).await.body["incident"]["reason"],
+        "ransomware on fileserver"
+    );
     assert_eq!(t.get("/api/v1/auth/me", &tina).await.body["incident"], Value::Null);
     assert_eq!(t.get("/api/v1/incident", &tina).await.status, StatusCode::FORBIDDEN);
     assert_eq!(t.get("/api/v1/incident", &otto).await.body["active"], true);
@@ -238,11 +273,17 @@ async fn incident_mode_enters_at_once_and_leaves_by_approval() {
 
     // leaving: a request, approved by another approver even with approvals disabled
     t.exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('approvals_enabled', 'false')");
-    assert_eq!(t.post("/api/v1/incident/leave", &otto, json!({})).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        t.post("/api/v1/incident/leave", &otto, json!({})).await.status,
+        StatusCode::FORBIDDEN
+    );
     let r = t.post("/api/v1/incident/leave", &sam, json!({})).await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
     let q = r.body["quorum_id"].as_i64().unwrap();
-    assert_eq!(t.post("/api/v1/incident/leave", &alice, json!({})).await.status, StatusCode::CONFLICT);
+    assert_eq!(
+        t.post("/api/v1/incident/leave", &alice, json!({})).await.status,
+        StatusCode::CONFLICT
+    );
     assert_eq!(t.get("/api/v1/incident", &alice).await.body["leave_quorum"], json!(q));
     let r = t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({})).await;
     assert_eq!(r.status, StatusCode::FORBIDDEN, "not by the requester");
@@ -250,17 +291,37 @@ async fn incident_mode_enters_at_once_and_leaves_by_approval() {
     assert_eq!(r.body["state"], "executed", "{:?}", r.body);
     let v = t.get("/api/v1/incident", &alice).await.body;
     assert_eq!(
-        (v["active"].clone(), v["ended_by"].clone(), v["approved_by"].clone(), v["resumed"].clone()),
+        (
+            v["active"].clone(),
+            v["ended_by"].clone(),
+            v["approved_by"].clone(),
+            v["resumed"].clone()
+        ),
         (json!(false), json!("sam"), json!("alice"), json!(2))
     );
-    assert_eq!(t.one::<Option<i64>>("SELECT paused_until FROM groups WHERE id = 1"), None);
-    assert_eq!(t.one::<Option<i64>>("SELECT paused_until FROM groups WHERE id = 2"), Some(later));
+    assert_eq!(
+        t.one::<Option<i64>>("SELECT paused_until FROM groups WHERE id = 1"),
+        None
+    );
+    assert_eq!(
+        t.one::<Option<i64>>("SELECT paused_until FROM groups WHERE id = 2"),
+        Some(later)
+    );
     assert_eq!(t.one::<i64>("SELECT COUNT(*) FROM alerts WHERE resolved_at IS NULL"), 0);
     assert_eq!(t.one::<String>("SELECT state FROM legal_holds"), "active", "holds stay");
     assert_eq!(t.get("/api/v1/auth/me", &alice).await.body["incident"], Value::Null);
-    assert_eq!(t.post("/api/v1/groups/1/resume", &otto, json!({})).await.status, StatusCode::OK);
-    assert_eq!(t.post("/api/v1/incident/leave", &sam, json!({})).await.status, StatusCode::CONFLICT);
-    assert_eq!(t.one::<i64>("SELECT COUNT(*) FROM audit WHERE action = 'incident.leave'"), 1);
+    assert_eq!(
+        t.post("/api/v1/groups/1/resume", &otto, json!({})).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        t.post("/api/v1/incident/leave", &sam, json!({})).await.status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        t.one::<i64>("SELECT COUNT(*) FROM audit WHERE action = 'incident.leave'"),
+        1
+    );
 }
 
 /// Everything held / paused when the request names no tenants and no groups.
@@ -281,7 +342,10 @@ async fn session_cap_drops_the_oldest_and_settings_are_admin_only() {
     let alice = t.login("alice").await;
     let sam = t.login("sam").await;
     let sec = t.get("/api/v1/settings/security", &sam).await.body;
-    assert_eq!((sec["max_sessions"].clone(), sec["dek_rotation_days"].clone()), (json!(5), json!(365)));
+    assert_eq!(
+        (sec["max_sessions"].clone(), sec["dek_rotation_days"].clone()),
+        (json!(5), json!(365))
+    );
     for (body, path) in [
         (json!({"max": 2}), "/api/v1/settings/max-sessions"),
         (json!({"days": 90}), "/api/v1/settings/dek-rotation"),
@@ -296,17 +360,35 @@ async fn session_cap_drops_the_oldest_and_settings_are_admin_only() {
     ] {
         assert_eq!(t.put(path, &alice, body).await.status, StatusCode::BAD_REQUEST);
     }
-    assert_eq!(t.get("/api/v1/settings/security", &alice).await.body["dek_rotation_days"], 90);
+    assert_eq!(
+        t.get("/api/v1/settings/security", &alice).await.body["dek_rotation_days"],
+        90
+    );
     // a third login of alice ends her oldest session
     t.exec("UPDATE sessions SET created = created - 100");
     let a2 = t.login("alice").await;
     assert_eq!(t.get("/api/v1/auth/me", &alice).await.status, StatusCode::OK);
     let _a3 = t.login("alice").await;
-    assert_eq!(t.get("/api/v1/auth/me", &alice).await.status, StatusCode::UNAUTHORIZED, "oldest ended");
+    assert_eq!(
+        t.get("/api/v1/auth/me", &alice).await.status,
+        StatusCode::UNAUTHORIZED,
+        "oldest ended"
+    );
     assert_eq!(t.get("/api/v1/auth/me", &a2).await.status, StatusCode::OK);
-    assert_eq!(t.get("/api/v1/auth/me", &sam).await.status, StatusCode::OK, "per account");
-    assert_eq!(t.one::<i64>("SELECT COUNT(*) FROM audit WHERE action = 'session.limit'"), 1);
+    assert_eq!(
+        t.get("/api/v1/auth/me", &sam).await.status,
+        StatusCode::OK,
+        "per account"
+    );
+    assert_eq!(
+        t.one::<i64>("SELECT COUNT(*) FROM audit WHERE action = 'session.limit'"),
+        1
+    );
     for a in ["security.max_sessions", "security.dek_rotation"] {
-        assert_eq!(t.one::<i64>(&format!("SELECT COUNT(*) FROM audit WHERE action = '{a}'")), 1, "{a}");
+        assert_eq!(
+            t.one::<i64>(&format!("SELECT COUNT(*) FROM audit WHERE action = '{a}'")),
+            1,
+            "{a}"
+        );
     }
 }

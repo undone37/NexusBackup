@@ -160,7 +160,12 @@ fn dek_rotation_reminder() {
             .collect::<Result<_, _>>()
             .unwrap()
     };
-    let ages = |t1: i64| vec![("t1".to_owned(), 1, now - t1 * DAY), ("t2".to_owned(), 3, now - 10 * DAY)];
+    let ages = |t1: i64| {
+        vec![
+            ("t1".to_owned(), 1, now - t1 * DAY),
+            ("t2".to_owned(), 3, now - 10 * DAY),
+        ]
+    };
     s.dek_reminders(now, &ages(365)).unwrap();
     assert_eq!(
         open(&s),

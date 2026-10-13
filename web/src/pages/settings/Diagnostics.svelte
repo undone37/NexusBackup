@@ -37,7 +37,14 @@
 
   // the newest run that has checks (a bundle carries them as well), or the one in progress
   const latest = $derived(runs.find((r) => r.checks || busy(r)) ?? null);
-  const checks = $derived(latest?.checks ?? []);
+  // Phase 21b: the security posture rows (posture.*) get their own card
+  const isPosture = (c: { id: string }) => c.id.startsWith('posture.');
+  const checks = $derived((latest?.checks ?? []).filter((c) => !isPosture(c)));
+  const posture = $derived((latest?.checks ?? []).filter(isPosture));
+  const postureTitle = (title: string) => {
+    const x = title.replace(/^Security posture: /, '');
+    return x.charAt(0).toUpperCase() + x.slice(1);
+  };
   const count = (s: string) => checks.filter((c) => c.status === s).length;
   const blocks = $derived(checks.some((c) => c.status === 'fail' && c.severity >= 3));
   const bundles = $derived(runs.filter((r) => r.kind === 'bundle'));
@@ -121,6 +128,33 @@
       {/if}
     </section>
 
+    <section class="card" aria-labelledby="diag-posture-h">
+      <div class="card-head">
+        <h2 id="diag-posture-h">{t.settings.diag.posture}</h2>
+        {#if posture.length}
+          <span class="chip {posture.some((c) => c.status === 'warn') ? 'warn' : 'ok'}"
+            >{t.settings.diag.postureSummary(posture.filter((c) => c.status === 'pass').length, posture.filter((c) => c.status === 'warn').length)}</span
+          >
+        {/if}
+      </div>
+      <p class="muted">{t.settings.diag.postureIntro}</p>
+      {#if !posture.length}
+        <p class="empty">{t.settings.diag.postureNone}</p>
+      {:else}
+        <ul class="posture">
+          {#each posture as c (c.id)}
+            <li>
+              <span class="chip {stCls[c.status] ?? ''}">{t.settings.diag.statuses[c.status] ?? c.status}</span>
+              <span><strong>{postureTitle(c.title)}</strong> <span class="muted small">— {c.detail}</span></span>
+              <a class="button small" href={manualUrl(c.manual)} target="_blank" rel="noopener noreferrer" aria-label={t.settings.diag.helpLabel(c.title)}
+                ><IconHelp aria-hidden="true" />{t.settings.diag.help}</a
+              >
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
+
     {#if admin}
       <section class="card" aria-labelledby="diag-bundle-h">
         <div class="card-head"><h2 id="diag-bundle-h">{t.settings.diag.bundle}</h2></div>
@@ -190,5 +224,21 @@
   }
   h3 {
     margin-top: 1.25rem;
+  }
+  .posture {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  .posture li {
+    display: grid;
+    grid-template-columns: 6rem 1fr auto;
+    gap: 0.75rem;
+    align-items: center;
+    padding: 0.4rem 0;
+    border-top: 1px solid var(--border);
+  }
+  .posture li > .chip {
+    justify-self: start;
   }
 </style>

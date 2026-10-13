@@ -27,7 +27,11 @@ impl Scheduler {
             .into_iter()
             .filter(|t| !replicated.contains_key(t))
             // keyd down (or tests without keyd): no reminder, no noise
-            .filter_map(|t| keyd::request_dek_age(&self.cfg.keyd_socket, &t).ok().map(|(v, ts)| (t, v, ts)))
+            .filter_map(|t| {
+                keyd::request_dek_age(&self.cfg.keyd_socket, &t)
+                    .ok()
+                    .map(|(v, ts)| (t, v, ts))
+            })
             .collect();
         self.dek_reminders(now, &ages)
     }

@@ -803,7 +803,7 @@ async function main() {
       await until(`return !!document.querySelector('#diag-checks-h') && document.querySelectorAll('tbody tr').length > 10`, 'diagnostics checks');
       await ev(`$click('Create bundle'); return true;`);
       await until(`return [...document.querySelectorAll('.chip')].some((c) => c.textContent.trim() === 'Ready')`, 'support bundle ready');
-      await shot('settings-diagnostics', { height: 1700 });
+      await shot('settings-diagnostics', { height: 2400 });
       // appliance configuration backup: seeded daily runs and uploads to the tenants' offsite targets
       await go('/settings?tab=configBackup');
       await until(`return !!document.querySelector('#cfgb-runs-h') && document.querySelectorAll('tbody tr').length > 2`, 'config backup runs');
@@ -1027,6 +1027,29 @@ async function main() {
       await ev(`const c = document.querySelector('.page-head input[type=checkbox]'); if (c?.checked) c.click(); return true;`);
       await sleep(300);
       await shot('approvals-disabled');
+    }],
+    // Phase 21b: incident mode (security officer): the form, the active state, the banner and dashboard card;
+    // leaving is requested and approved by an admin at the end, so later scenes see a normal appliance
+    ['incident', async () => {
+      await login('so');
+      await go('/settings?tab=incident');
+      await until(`return !!document.querySelector('#inc-reason')`, 'incident form');
+      await ev(`$fill('#inc-reason', 'Ticket SEC-2026-114: ransomware note found on fs01'); $fill('#inc-sources', 'vm-100, vm-101'); $fill('#inc-pw', 'nexus'); $fill('#inc-totp', '492039'); return true;`);
+      await shot('settings-incident', { height: 1300 });
+      await ev(`$click('Enter incident mode'); return true;`);
+      await confirmOk();
+      await until(`return document.body.innerText.includes('Incident mode is active')`, 'incident active');
+      await settle();
+      await shot('settings-incident-active');
+      await go('/', 900);
+      await shot('dashboard-incident');
+      await go('/settings?tab=incident');
+      await ev(`$click('Request to leave incident mode'); return true;`);
+      await confirmOk();
+      await settle();
+      await login('admin');
+      const q = (await api('GET', '/quorum')).body.find((x) => x.action === 'incident.leave' && x.state === 'pending');
+      await api('POST', `/quorum/${q.id}/approve`);
     }],
     ['login-sso', async () => {
       jar.clear();

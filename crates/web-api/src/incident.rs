@@ -64,9 +64,10 @@ pub fn banner(c: &Connection, ctx: &Ctx) -> ApiResult<Value> {
     if ctx.scope().is_some() || ctx.user.role == "tenant_user" {
         return Ok(Value::Null);
     }
-    Ok(load(c)?
-        .filter(|v| v["active"] == true)
-        .map_or(Value::Null, |v| json!({"since": v["since"], "by": v["by"], "reason": v["reason"]})))
+    Ok(load(c)?.filter(|v| v["active"] == true).map_or(
+        Value::Null,
+        |v| json!({"since": v["since"], "by": v["by"], "reason": v["reason"]}),
+    ))
 }
 
 fn leave_quorum(c: &Connection) -> ApiResult<Option<i64>> {
@@ -135,7 +136,15 @@ pub async fn enter(State(st): State<St>, ctx: Ctx, ClientIp(ip): ClientIp, J(r):
             return Err(ApiError::bad("hold: from must not be after to"));
         }
     }
-    reauth(&st, &ctx, &ip, r.current_password, r.current_totp, "enter incident mode").await?;
+    reauth(
+        &st,
+        &ctx,
+        &ip,
+        r.current_password,
+        r.current_totp,
+        "enter incident mode",
+    )
+    .await?;
     let now = catalog::now();
     let v = {
         let mut c = st.cat.conn();
@@ -214,7 +223,12 @@ pub async fn enter(State(st): State<St>, ctx: Ctx, ClientIp(ip): ClientIp, J(r):
         tx.commit()?;
         v
     };
-    st.audit(ctx.name(), "incident.enter", "appliance", json!({"ip": ip, "incident": v}))?;
+    st.audit(
+        ctx.name(),
+        "incident.enter",
+        "appliance",
+        json!({"ip": ip, "incident": v}),
+    )?;
     Ok((StatusCode::CREATED, Json(v)).into_response())
 }
 

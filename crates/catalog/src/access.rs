@@ -222,10 +222,16 @@ mod tests {
         crate::set_setting(&conn, SESSION, r#"{"idle_min":1,"absolute_h":2}"#).unwrap();
         assert_eq!(session_limits(&conn).unwrap(), d, "out of range: defaults");
         assert_eq!(dormant_days(&conn).unwrap(), 0);
-        assert_eq!((max_sessions(&conn).unwrap(), dek_rotation_days(&conn).unwrap()), (5, 365));
+        assert_eq!(
+            (max_sessions(&conn).unwrap(), dek_rotation_days(&conn).unwrap()),
+            (5, 365)
+        );
         crate::set_setting(&conn, MAX_SESSIONS, "0").unwrap();
         crate::set_setting(&conn, DEK_ROTATION_DAYS, "0").unwrap();
-        assert_eq!((max_sessions(&conn).unwrap(), dek_rotation_days(&conn).unwrap()), (5, 0));
+        assert_eq!(
+            (max_sessions(&conn).unwrap(), dek_rotation_days(&conn).unwrap()),
+            (5, 0)
+        );
         crate::set_setting(&conn, MGMT_ALLOW, r#"["10.1.0.0/16","bad"]"#).unwrap();
         assert_eq!(mgmt_allow(&conn).unwrap(), vec!["10.1.0.0/16"]);
     }

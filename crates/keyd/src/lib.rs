@@ -162,7 +162,9 @@ pub fn dek_age(dir: &Path, tenant: &str) -> io::Result<(u32, i64)> {
         .last()
         .ok_or_else(|| err(io::ErrorKind::NotFound, format!("no tenant {tenant}")))?;
     let m = fs::metadata(tenant_dir(dir, tenant)?.join(format!("dek.{v}")))?.modified()?;
-    let ts = m.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    let ts = m
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
     Ok((v, ts))
 }
 
@@ -1227,8 +1229,12 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         init(d.path()).unwrap();
         create_tenant(d.path(), "acme").unwrap();
-        let f = fs::File::options().write(true).open(d.path().join("tenants/acme/dek.1")).unwrap();
-        f.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_000_000)).unwrap();
+        let f = fs::File::options()
+            .write(true)
+            .open(d.path().join("tenants/acme/dek.1"))
+            .unwrap();
+        f.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_000_000))
+            .unwrap();
         assert_eq!(dek_age(d.path(), "acme").unwrap(), (1, 1_000_000));
         rotate_tenant(d.path(), "acme").unwrap();
         let sock = d.path().join("keyd.sock");
