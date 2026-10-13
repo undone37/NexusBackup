@@ -19,6 +19,10 @@ pub enum Op {
     Backup,
     Restore,
     Mount,
+    /// v1.9 (appended): the generic download with plugin-side conversion (`download`
+    /// restore with a `params_schema`); the plugin lists (`BaseList`) and reads
+    /// (`ReadFile`) the snapshot and writes the download's files with `Output`.
+    Export,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -218,7 +222,20 @@ pub enum Message {
     SnapshotMeta {
         json: String,
     },
+    // v1.9 (appended after `SnapshotMeta`)
+    /// Export only (plugin → host): write `bytes` at `offset` of the output file
+    /// `name` (a relative path below the download; created on first use). Writes may
+    /// go back (e.g. a PST header written last); the host packs the files as the
+    /// download's tar/zip after `Done`.
+    Output {
+        name: String,
+        offset: u64,
+        bytes: Vec<u8>,
+    },
 }
+
+/// Upper bound of one export output file (`Output.offset + len`): 64 GiB.
+pub const MAX_OUTPUT_FILE: u64 = 64 << 30;
 
 /// Samples per `Warnings` message and bytes per sample.
 pub const MAX_WARNING_SAMPLES: usize = 20;
@@ -292,6 +309,15 @@ pub fn check(m: &Message) -> io::Result<()> {
                 return Err(bad("invalid path"));
             }
             check_meta(meta)
+        }
+        Message::Output { name, offset, bytes }
+            if bytes.len() > MAX_DATA
+                || !valid_path(name.as_bytes())
+                || name.len() > 1024
+                || name.split('/').next() == Some(STREAMS_DIR)
+                || offset.saturating_add(bytes.len() as u64) > MAX_OUTPUT_FILE =>
+        {
+            Err(bad("invalid output write"))
         }
         Message::Data { bytes } | Message::FileData { bytes } if bytes.len() > MAX_DATA => {
             Err(bad("data frame too large"))
@@ -685,6 +711,35 @@ mod tests {
         }
         assert!(valid_plugin_id("example-files") && !valid_plugin_id("pg-15") && !valid_plugin_id("a--b"));
         assert!(valid_guest_id("db_1.x") && !valid_guest_id("-x") && !valid_guest_id("a/b") && !valid_guest_id(""));
+    }
+
+    /// v1.9: `Output` is appended after `SnapshotMeta` (27), `Op::Export` after `Mount`;
+    /// output names are relative paths outside the streams dir, files at most 64 GiB.
+    #[test]
+    fn export_output() {
+        let m = Message::Output {
+            name: "mail/Inbox.mbox".into(),
+            offset: 7,
+            bytes: b"From x".to_vec(),
+        };
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &m).unwrap();
+        assert_eq!(buf[4], 27, "wire index: after SnapshotMeta (26)");
+        assert_eq!(read_msg(&mut &buf[..]).unwrap(), m);
+        assert_eq!(postcard::to_stdvec(&Op::Export).unwrap(), [5]);
+        let bad = |name: &str, offset: u64| {
+            check(&Message::Output {
+                name: name.into(),
+                offset,
+                bytes: vec![0; 10],
+            })
+            .is_err()
+        };
+        assert!(!bad("a/b.pst", 0) && !bad("x", MAX_OUTPUT_FILE - 10));
+        for n in ["", "/abs", "a/../b", ".nexus-streams/x", "a//b"] {
+            assert!(bad(n, 0), "{n:?}");
+        }
+        assert!(bad("x", MAX_OUTPUT_FILE - 9) && bad("x", u64::MAX));
     }
 
     /// v1.5 tags are a new appended variant: a v1.4 plugin's `Guests` frame is byte

@@ -162,6 +162,11 @@ struct FilesGetP {
     time: i64,
     paths: Vec<String>,
     format: String,
+    /// plugin snapshots (contract v1.9): conversion parameters of the plugin's
+    /// `download` restore (its `params_schema`, e.g. M365 `mail_format`); the plugin
+    /// then converts the selection (`nexus-pluginhost export`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    params: Option<Value>,
     /// set by the web-api: the scheduler writes `<downloads>/<token>.<format>`
     #[serde(default, skip_deserializing)]
     download_token: String,
@@ -386,6 +391,23 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
                 return Err(ApiError::bad("format: tar or zip"));
             }
             snapshot_exists(st, tenant, &f.source, f.time)?;
+            if f.params
+                .as_ref()
+                .is_some_and(|v| v.is_null() || v.as_object().is_some_and(|o| o.is_empty()))
+            {
+                f.params = None;
+            }
+            if let Some(v) = &f.params {
+                let schema = plugin_proto::parse_source_name(&f.source)
+                    .filter(|_| f.source.starts_with("plugin-"))
+                    .and_then(|(pid, sid, _)| {
+                        let (cur, spec) = crate::plugins::source_of(&st.cat.conn(), tenant, sid as i64).ok()?;
+                        let r = spec.restores.into_iter().find(|r| r.id == "download")?;
+                        (cur.id == pid).then_some(r.params_schema).flatten()
+                    })
+                    .ok_or_else(|| ApiError::bad("params: this snapshot's download takes no parameters"))?;
+                crate::plugins::check_schema(&schema, v, "params", &[])?;
+            }
             f.download_token = random_hex();
             json!(f)
         }

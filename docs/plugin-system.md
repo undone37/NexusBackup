@@ -2,7 +2,7 @@
 
 Status: v1 (2026-10-10), implementation notes v1.1 (2026-10-10, see "Implementation (v1.1)" at the end), additive
 v1.2 (2026-10-10, TrueNAS + PostgreSQL plugins, see "v1.2" at the end), additive v1.3 (2026-10-11, Microsoft 365
-plugin, see "v1.3" at the end), additive v1.4 (2026-10-11, restores per snapshot kind, see "v1.4" at the end), additive v1.5 (2026-10-12, tagged guests, see "v1.5"), additive v1.6 (2026-10-12, restore into another source and lists of objects, see "v1.6"), additive v1.7 (2026-10-12, skipped items as warnings, see "v1.7"), additive v1.8 (2026-10-12, snapshot metadata and endpoint host lists, see "v1.8"). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
+plugin, see "v1.3" at the end), additive v1.4 (2026-10-11, restores per snapshot kind, see "v1.4" at the end), additive v1.5 (2026-10-12, tagged guests, see "v1.5"), additive v1.6 (2026-10-12, restore into another source and lists of objects, see "v1.6"), additive v1.7 (2026-10-12, skipped items as warnings, see "v1.7"), additive v1.8 (2026-10-12, snapshot metadata and endpoint host lists, see "v1.8"), additive v1.9 (2026-10-13, download with conversion, see "v1.9"). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
 speaking a **versioned protocol**, with a **Rust SDK**; trust = **project release key + publisher keys an admin adds
 with quorum**; reference plugin **PostgreSQL**; the **TrueNAS** connector is ported to the SDK; the restore API covers
 **download, restore to original/alternate target, application-specific restore and mount/instant access**.
@@ -317,3 +317,30 @@ Additive; `api: 1` unchanged.
   start after restore, primary selection among several servers. Tested: `crates/plugin-proto` (wire index, limits,
   host lists), `crates/plugin-host/tests/host.rs` (metadata in the report, twice = violation),
   `crates/scheduler` (result → `snapshots.meta`), `plugins/postgresql/tests/pg.rs` (real PostgreSQL 14 and 17).
+
+## v1.9 — download with conversion (2026-10-13, Phase 19c mail export)
+Additive; `api: 1` unchanged.
+- A kind's **`download` restore may have a `params_schema`**: the plugin then converts downloads (Microsoft 365:
+  `mail_format` eml / mbox / pst). The web-api accepts `params` in a `files_get` job only for plugin snapshots
+  whose `download` has a schema and checks them against it (400 otherwise); empty params = the plain download.
+  The scheduler plans `nexus-pluginhost <job.json> export <downloads>/<token>.<tar|zip> <path>…` with the job
+  config `restore` = `{source, time, params}` and **`config` = `{}`** (no secrets of the source).
+- **`Op::Export`** (appended after `Mount`, wire index 5): `Init.params` as for a restore plus `paths` (the
+  selection). The plugin runs with no TCP connect rule at all (Landlock, `tcp_ports` = empty). It may send
+  `BaseList { after }` (answered with a `BaseEntries` page of the **selected** entries, path order, empty = end),
+  `ReadFile { path, offset, len }` (answered with `FileData`, or `Error` for a path outside the selection),
+  `Output`, `Log`, `Progress`, finally `Done` or `Error`. Request/answer only, so output never blocks on input.
+- **`Output { name, offset, bytes }`** (plugin → host, export only; appended after `SnapshotMeta`, wire index 27):
+  write `bytes` (≤ 4 MiB) at `offset` of the download file `name` (relative path, not below `.nexus-streams`,
+  ≤ 1024 bytes, offset + length ≤ 64 GiB; `check` refuses anything else). Writes may go back (a PST header is
+  written last). The host (`plugin_host::export`) stages the files in a 0700 directory `<out>.d` (no links
+  followed, at most 1,000,000 files and 16 TiB), packs them as tar/zip after `Done` (removing each staged file
+  once packed) and removes the staging directory on any failure; the scheduler deletes left-over `*.d`
+  directories with the downloads after their 24 h. Result line `exported {json}` plus `<n> entries written to …`.
+- SDK: `Plugin::export(&mut self, ctx, &mut Export)` (default: unsupported, code 95); `Export::list`,
+  `read_file` / `read_all` / `reader`, `output(name)` → `Output` (`Write + Seek`, buffered; `finish()`).
+  Testing: `plugin_sdk::testing::Host::export`. A plugin that implements it needs a v1.9 host; an older host never
+  sends `Op::Export` (it has no `export` command), so v1.8 plugins are unaffected.
+- Tested: `crates/plugin-proto` (wire indices, output limits), `crates/plugin-host` (staging bounds, packing),
+  `crates/scheduler` (plan without secrets), `crates/web-api/tests/plugins.rs` (params against the schema),
+  `plugins/m365/tests/export.rs` (in-process and the real binary in the sandbox).

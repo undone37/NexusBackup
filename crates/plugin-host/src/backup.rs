@@ -88,7 +88,7 @@ impl Base {
 }
 
 /// Upper bound of an entry's encoded size in a `BaseEntries` frame.
-fn entry_size(path: &[u8], m: &Meta) -> usize {
+pub(crate) fn entry_size(path: &[u8], m: &Meta) -> usize {
     path.len()
         + 96
         + m.link_target.as_ref().map_or(0, Vec::len)
@@ -646,6 +646,7 @@ pub(crate) fn msg_name(m: &Message) -> &'static str {
         Message::TaggedGuests { .. } => "TaggedGuests",
         Message::Warnings { .. } => "Warnings",
         Message::SnapshotMeta { .. } => "SnapshotMeta",
+        Message::Output { .. } => "Output",
     }
 }
 
