@@ -8,7 +8,7 @@
 #   network.sh peer     console: netns peer with NIC 3, VLAN 20, 10.20.0.9/24, MTU 9000
 #   network.sh apply    bond0 (NIC 1+2, active-backup, MTU 9000) + bond0.20 (VLAN 20, role data,
 #                       10.20.0.5/24, no gateway) through approval: keyfiles 0600 with the NetworkManager
-#                       label, bond and VLAN up, the peer answers a 9000-byte DF ping
+#                       label, bond and VLAN up with MTU 9000 (the 9000-byte path: see mtu)
 #   network.sh egress   an NFS source on 10.20.0.9: the firewall file binds it to bond0.20
 #                       (bound_out_v4 holds `10.20.0.9 . tcp . 2049 . "bond0.20"`)
 #   network.sh mtu      path-MTU check: ok at 9000; with a 1500-byte limit in the peer: mismatch
@@ -119,13 +119,14 @@ apply() {
 	[ "$(jq -r .state <<<"$o")" = "done" ] || die "apply: $o"
 	log "apply: $(jq -r .detail <<<"$o")"
 	con run 'ls -lZ /etc/NetworkManager/system-connections/; nmcli -t -f NAME,DEVICE,STATE connection show --active;
-		ip -br addr show bond0.20; cat /sys/class/net/bond0/bonding/mode; ip -d link show bond0.20 | grep -o "mtu [0-9]*";
-		ping -c 2 -W 2 -M do -s 8972 10.20.0.9' | tee "$S/apply.txt"
+		ip -br addr show bond0.20; cat /sys/class/net/bond0/bonding/mode; ip -d link show bond0.20 | grep -o "mtu [0-9]*"' | tee "$S/apply.txt"
 	grep -q 'nexus-bond0.20.nmconnection' "$S/apply.txt" || die "keyfile missing"
 	grep -E 'nexus-bond0.nmconnection' "$S/apply.txt" | grep -q '^-rw-------.*NetworkManager_etc_rw_t' || die "keyfile mode/label"
 	grep -q '10.20.0.5/24' "$S/apply.txt" || die "bond0.20 has no address"
 	grep -q 'active-backup' "$S/apply.txt" || die "bond mode"
-	grep -q ' 0% packet loss' "$S/apply.txt" || die "9000-byte DF ping to the peer failed"
+	# no ping from the console here: default-deny egress drops it (the peer is no source yet);
+	# the 9000-byte path is checked by nexus-net's own probe in the mtu step
+	grep -q '^mtu 9000' "$S/apply.txt" || die "bond0.20 MTU is not 9000"
 	[ "$(api admin GET '/audit?action=network.op' | jq length)" -ge 1 ] || die "network.op not audited"
 	log "bond0 + VLAN 20 applied, jumbo frames to the peer"
 }
