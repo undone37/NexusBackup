@@ -117,12 +117,15 @@ grep -P "^AgentServiceControl\tNexusAgent\t163\t" /tmp/sc >/dev/null || fail "Se
 msiinfo export "$m" CustomAction | tee /tmp/ca
 grep -P "^ServiceSetup\t3090\tAgentExe\tservice-setup" /tmp/ca >/dev/null || fail "ServiceSetup: deferred, no impersonation, exe from file"
 grep -P "^PurgeData\t3154\tAgentExe\tpurge-data --yes" /tmp/ca >/dev/null || fail "PurgeData: deferred, no impersonation, ignore result"
+grep -P "^FleetInit\t3154\tAgentExe\tinit --fleet-secret \"\[FLEETSECRET\]\"" /tmp/ca >/dev/null || fail "FleetInit: deferred, no impersonation, ignore result"
 msiinfo export "$m" InstallExecuteSequence | tee /tmp/seq
 grep -P "^ServiceSetup\tNOT REMOVE=\"ALL\"\t" /tmp/seq >/dev/null || fail "ServiceSetup condition"
 grep -P "^PurgeData\tREMOVE=\"ALL\" AND PURGE=\"1\" AND NOT UPGRADINGPRODUCTCODE\t" /tmp/seq >/dev/null || fail "PurgeData condition"
+grep -P "^FleetInit\tFLEETSECRET AND NOT REMOVE=\"ALL\"\t" /tmp/seq >/dev/null || fail "FleetInit condition"
 msiinfo export "$m" Upgrade | grep -qi "F0236C93-DDCE-4B09-A197-525C84656168" || fail "UpgradeCode"
 msiinfo export "$m" Property | tee /tmp/prop | grep -P "^(ProductVersion|UpgradeCode|ARPNOMODIFY|SecureCustomProperties)\t"
 ! grep -qi token /tmp/prop || fail "token property in the MSI"
+grep -qP "^MsiHiddenProperties\tFLEETSECRET$" /tmp/prop || fail "FLEETSECRET not hidden from the MSI log"
 msiinfo suminfo "$m" | grep -E "^(Template|Title|Subject)"
 msiinfo suminfo "$m" | grep -q "^Template: x64;" || fail "not an x64 package"
 rm -rf /tmp/x && mkdir /tmp/x && msiextract -C /tmp/x "$m" | sort | tee /tmp/files

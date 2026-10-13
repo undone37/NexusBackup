@@ -1,7 +1,8 @@
 //! File layout and `agent.conf` settings (shared by all agents).
 //!
 //! Linux: `/etc/nexus-agent` (0700 root): `agent.conf`, `token` (sha256 of the enrollment
-//! token), `agent.key` (private key, 0600), `enroll.crt` (self-signed, enrollment mode),
+//! token or fleet secret), `fleet` (fleet id), `fleet-secret` (dropped by a package
+//! deployment, adopted at the next start), `agent.key` (private key, 0600), `enroll.crt` (self-signed, enrollment mode),
 //! `agent.crt` + `ca.crt` + `agent.id` (after enrollment), `hooks.d/{pre,post}/`,
 //! `release-keys/*.pub` (pinned cosign keys for self-update).
 //! `/var/lib/nexus-agent` (0700): `enroll.failures`, `cache/`, `spool/`, `snapshots.journal`.
@@ -56,6 +57,16 @@ impl Paths {
     }
     pub fn token(&self) -> PathBuf {
         self.config.join("token")
+    }
+    /// fleet id while awaiting fleet enrollment (`init --fleet-secret`; `token` then
+    /// holds the fleet secret's digest)
+    pub fn fleet(&self) -> PathBuf {
+        self.config.join("fleet")
+    }
+    /// fleet secret dropped by a package deployment (Ansible, MSI `FLEETSECRET`):
+    /// adopted and deleted at the next start ([`crate::adopt_fleet_secret`])
+    pub fn fleet_secret(&self) -> PathBuf {
+        self.config.join("fleet-secret")
     }
     pub fn key(&self) -> PathBuf {
         self.config.join("agent.key")

@@ -5913,6 +5913,6 @@ on('POST', '/agents/bulk', async (c) => {
     out.push(pubAgent(a));
     csv.push([a.name, a.tenant, a.host, a.port, v.group ?? '', a.id, tok.token, tok.token_expires, tok.install_command].join(','));
   }
-  await audit(u.name, 'agent.bulk_create', 'agents', { count: out.length, agents: out.map((a) => ({ id: a.id, tenant: a.tenant, name: a.name, host: a.host })) });
+  for (const a of out) await audit(u.name, 'agent.create', `agent/${a.id}`, { tenant: a.tenant, name: a.name, host: a.host, bulk: true });
   return [201, { created: out.length, agents: out, csv: csv.join('\n') + '\n' }];
 });

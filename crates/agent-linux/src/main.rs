@@ -10,12 +10,14 @@ use std::sync::Arc;
 const USAGE: &str = "\
 usage:
   nexus-agent init --token <T> [--port 7444] [--state DIR] [--config DIR]
+  nexus-agent init --fleet-secret <S> [--port 7444] [--state DIR] [--config DIR]
   nexus-agent run [--state DIR] [--config DIR]
   nexus-agent status [--state DIR] [--config DIR]
   nexus-agent hooks test [--config DIR]
   nexus-agent version (or --version)
 defaults: --config /etc/nexus-agent --state /var/lib/nexus-agent
---token - reads the token from stdin (keeps it out of the process list)";
+--token - / --fleet-secret - read the value from stdin (keeps it out of the process list);
+a fleet secret in /etc/nexus-agent/fleet-secret is adopted (and deleted) at the next start";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -31,6 +33,7 @@ fn main() -> ExitCode {
 fn real_main(args: &[String]) -> Result<ExitCode, String> {
     let mut paths = Paths::default();
     let mut token = None;
+    let mut fleet = None;
     let mut port = None;
     let mut words = vec![];
     let mut it = args.iter();
@@ -38,6 +41,7 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
         let mut val = |name: &str| it.next().cloned().ok_or(format!("{name} needs a value"));
         match a.as_str() {
             "--token" => token = Some(val("--token")?),
+            "--fleet-secret" => fleet = Some(val("--fleet-secret")?),
             "--port" => port = Some(val("--port")?.parse::<u16>().map_err(|_| "invalid --port")?),
             "--state" => paths.state = PathBuf::from(val("--state")?),
             "--config" => paths.config = PathBuf::from(val("--config")?),
@@ -53,17 +57,26 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
     let words: Vec<&str> = words.iter().map(String::as_str).collect();
     match words.as_slice() {
         ["init"] => {
-            let mut token = token.ok_or("init needs --token <T>")?;
-            if token == "-" {
-                token.clear();
+            let (prompt, value) = match (token, fleet) {
+                (Some(t), None) => ("One-time enrollment token: ", t),
+                (None, Some(f)) => ("Fleet secret: ", f),
+                _ => return Err("init needs --token <T> or --fleet-secret <S>".into()),
+            };
+            let mut value = value;
+            if value == "-" {
+                value.clear();
                 if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-                    eprint!("One-time enrollment token: ");
+                    eprint!("{prompt}");
                 }
                 std::io::stdin()
-                    .read_line(&mut token)
+                    .read_line(&mut value)
                     .map_err(|e| format!("stdin: {e}"))?;
             }
-            println!("{}", nexus_agent::init(&paths, &token, port)?);
+            if prompt.starts_with("Fleet") {
+                println!("{}", nexus_agent::init_fleet(&paths, &value, port)?);
+            } else {
+                println!("{}", nexus_agent::init(&paths, &value, port)?);
+            }
             Ok(ExitCode::SUCCESS)
         }
         ["run"] => run(paths),
@@ -100,9 +113,17 @@ fn run(paths: Paths) -> Result<ExitCode, String> {
     for m in snapshot::cleanup_leftovers(&paths) {
         eprintln!("nexus-agent: {m}");
     }
+    // a package deployment's fleet secret (docs/agent-linux.md "Fleet deployment")
+    match agent_core::adopt_fleet_secret(&paths, &sys::uname().1) {
+        Some(Ok(m)) => eprintln!("nexus-agent: {m}"),
+        Some(Err(e)) => eprintln!("nexus-agent: fleet secret: {e}"),
+        None => {}
+    }
     let agent = server::Agent::new(paths, settings.clone())?;
     match agent.mode() {
-        server::Mode::Uninitialized => return Err("not initialised: run nexus-agent init --token <T>".into()),
+        server::Mode::Uninitialized => {
+            return Err("not initialised: run nexus-agent init --token <T> (or --fleet-secret <S>)".into())
+        }
         server::Mode::Locked(_) => eprintln!("nexus-agent: enrollment LOCKED; run nexus-agent init again"),
         server::Mode::Enroll(_) => eprintln!("nexus-agent: waiting for enrollment by the appliance"),
         server::Mode::Mtls { agent_id, .. } => eprintln!("nexus-agent: enrolled as {agent_id}"),

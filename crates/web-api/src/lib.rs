@@ -29,6 +29,7 @@ pub mod console;
 pub mod dashboard;
 pub mod diag;
 pub mod firewall;
+pub mod fleet;
 pub mod forwarding;
 pub mod hardware;
 pub mod holds;
@@ -522,6 +523,13 @@ pub fn router(st: St) -> Router {
         .route("/agents/{id}/token", post(new_agent_token))
         .route("/agents/{id}/enroll", post(enroll_agent))
         .route("/agents/{id}/limits", axum::routing::put(selection::set_agent_limits))
+        .route("/agents/bulk", post(fleet::bulk_agents))
+        .route("/fleets", get(fleet::list_fleets).post(fleet::create_fleet))
+        .route("/fleets/{id}", axum::routing::delete(fleet::revoke_fleet))
+        .route("/fleets/{id}/scan", post(fleet::scan_fleet))
+        .route("/fleet/candidates", get(fleet::list_candidates))
+        .route("/fleet/candidates/{id}/accept", post(fleet::accept_candidate))
+        .route("/fleet/candidates/{id}/reject", post(fleet::reject_candidate))
         .route("/snapshots", get(list_snapshots))
         .route(
             "/snapshots/{tenant}/{source}/{time}",

@@ -28,6 +28,49 @@ pub fn init(paths: &Paths, token: &str, port: Option<u16>, hostname: &str) -> Re
     if token.len() < 16 || !token.bytes().all(|b| b.is_ascii_graphic()) {
         return Err("token looks invalid (expected the value shown in the appliance UI)".into());
     }
+    init_digest(paths, &agent_proto::token_digest(token), None, port, hostname)
+}
+
+/// `nexus-agent init --fleet-secret <S>`: like [`init`], with a reusable fleet secret
+/// (docs/agent-protocol.md "Fleet enrollment"): the agent waits until an appliance
+/// that knows the secret finds it in a scan and the admin accepts it. Refused on an
+/// enrolled agent (a package upgrade or GPO re-run must not drop the enrollment;
+/// re-enrollment uses a one-time token).
+pub fn init_fleet(paths: &Paths, secret: &str, port: Option<u16>, hostname: &str) -> Result<String, String> {
+    let id = agent_proto::fleet_id(secret)
+        .ok_or("fleet secret looks invalid (expected nxf1.<id>.<secret> as shown in the appliance UI)")?;
+    if paths.agent_id().exists() && paths.cert().exists() {
+        return Err("already enrolled: a fleet secret only initialises new agents (re-enroll with --token)".into());
+    }
+    init_digest(paths, &agent_proto::token_digest(secret), Some(id), port, hostname)
+}
+
+/// A fleet secret file dropped by a package deployment: adopted (if the agent is not
+/// initialised yet) and deleted in any case. `None` = no file.
+pub fn adopt_fleet_secret(paths: &Paths, hostname: &str) -> Option<Result<String, String>> {
+    let f = paths.fleet_secret();
+    let secret = fs::read_to_string(&f).ok()?;
+    let r = if fs::remove_file(&f).is_err() {
+        Err(format!("{}: cannot delete it; not adopted", f.display()))
+    } else if paths.token().exists() || paths.cert().exists() {
+        Err(format!(
+            "{} ignored and deleted: the agent is already initialised",
+            f.display()
+        ))
+    } else {
+        init_fleet(paths, &secret, None, hostname)
+            .map(|fp| format!("fleet secret adopted (enrollment certificate sha256 {fp})"))
+    };
+    Some(r)
+}
+
+fn init_digest(
+    paths: &Paths,
+    digest: &str,
+    fleet: Option<&str>,
+    port: Option<u16>,
+    hostname: &str,
+) -> Result<String, String> {
     let io = |p: &std::path::Path, e: std::io::Error| format!("{}: {e}", p.display());
     ensure_dir(&paths.config, 0o700).map_err(|e| io(&paths.config, e))?;
     ensure_dir(&paths.state, 0o700).map_err(|e| io(&paths.state, e))?;
@@ -35,7 +78,13 @@ pub fn init(paths: &Paths, token: &str, port: Option<u16>, hostname: &str) -> Re
         .filter(|h| !h.is_empty())
         .unwrap_or_else(|| "localhost".into());
     let (key_pem, cert_pem) = tls::new_identity(&hostname)?;
-    for p in [paths.cert(), paths.ca(), paths.agent_id(), paths.failures()] {
+    for p in [
+        paths.cert(),
+        paths.ca(),
+        paths.agent_id(),
+        paths.failures(),
+        paths.fleet(),
+    ] {
         match fs::remove_file(&p) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(io(&p, e)),
             _ => {}
@@ -43,8 +92,10 @@ pub fn init(paths: &Paths, token: &str, port: Option<u16>, hostname: &str) -> Re
     }
     write_atomic(&paths.key(), key_pem.as_bytes(), 0o600).map_err(|e| io(&paths.key(), e))?;
     write_atomic(&paths.enroll_cert(), cert_pem.as_bytes(), 0o644).map_err(|e| io(&paths.enroll_cert(), e))?;
-    write_atomic(&paths.token(), agent_proto::token_digest(token).as_bytes(), 0o600)
-        .map_err(|e| io(&paths.token(), e))?;
+    if let Some(id) = fleet {
+        write_atomic(&paths.fleet(), id.as_bytes(), 0o600).map_err(|e| io(&paths.fleet(), e))?;
+    }
+    write_atomic(&paths.token(), digest.as_bytes(), 0o600).map_err(|e| io(&paths.token(), e))?;
     if let Some(port) = port {
         let mut text = fs::read_to_string(paths.conf()).unwrap_or_default();
         text = text

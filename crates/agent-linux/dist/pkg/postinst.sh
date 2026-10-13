@@ -35,6 +35,16 @@ if [ $upgrade = 1 ]; then
 	exit 0
 fi
 
+if [ -f /etc/nexus-agent/fleet-secret ] && [ ! -f /etc/nexus-agent/agent.key ]; then
+	# fleet deployment (Ansible & co. put the secret there first): the agent adopts it at start
+	chmod 0600 /etc/nexus-agent/fleet-secret
+	if [ $systemd = 1 ]; then
+		systemctl enable --now nexus-agent.service >/dev/null 2>&1 || true
+	fi
+	echo "nexus-agent: fleet secret found; service enabled, waiting for the appliance's scan"
+	exit 0
+fi
+
 if [ -f /etc/nexus-agent/agent.key ]; then
 	# reinstalled on an enrolled host (the config survives a removal): serve again
 	if [ $systemd = 1 ]; then
@@ -51,6 +61,9 @@ appliance (Configuration > Agents > New agent), as root:
 
   nexus-agent init --token -              # paste the token, press Enter
   systemctl enable --now nexus-agent
+
+Fleet deployment: nexus-agent init --fleet-secret - (or the secret in
+/etc/nexus-agent/fleet-secret, mode 0600), then systemctl enable --now nexus-agent.
 
 Then click "Enroll" on the appliance. Allow TCP 7444 from the appliance only.
 Database dump hooks: /usr/share/doc/nexus-agent/examples/hooks.d/pre/

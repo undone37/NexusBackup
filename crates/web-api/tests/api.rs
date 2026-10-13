@@ -1720,6 +1720,14 @@ async fn rbac_matrix_and_audit_completeness() {
         (Method::DELETE, format!("/api/v1/agents/{agent}"), None, "AD"),
         (
             Method::POST,
+            "/api/v1/agents/bulk".into(),
+            Some(json!({"csv": "host,tenant\nrbac-bulk,acme"})),
+            "AD",
+        ),
+        (Method::GET, "/api/v1/fleets".into(), None, "A"),
+        (Method::GET, "/api/v1/fleet/candidates".into(), None, all),
+        (
+            Method::POST,
             "/api/v1/jobs".into(),
             Some(json!({"kind": "agent_update", "tenant": "acme", "params": {"agent_id": agent}})),
             "AD",

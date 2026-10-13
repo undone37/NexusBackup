@@ -1973,6 +1973,8 @@ mod disks;
 mod expiry;
 /// Phase 18: fleecing space alerts from nexus-pve's `fleecing-space` lines.
 mod fleecing;
+/// Phase 24d fleet enrollment (scan, auto-accept, enrollment with the fleet secret).
+mod fleet;
 /// Phase 14a audit / alert forwarding.
 mod forward;
 /// Phase 15c legal holds (retention, orphan sweep, delete, offsite config, advisories).

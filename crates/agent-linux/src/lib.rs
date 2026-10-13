@@ -25,6 +25,14 @@ pub fn init(paths: &Paths, token: &str, port: Option<u16>) -> Result<String, Str
     ))
 }
 
+/// `nexus-agent init --fleet-secret <S>` (docs/agent-linux.md "Fleet deployment").
+pub fn init_fleet(paths: &Paths, secret: &str, port: Option<u16>) -> Result<String, String> {
+    let fp = agent_core::init_fleet(paths, secret, port, &sys::uname().1)?;
+    Ok(format!(
+        "initialised for fleet enrollment (secret stored as sha256 only)\nenrollment certificate sha256 {fp}\nstart the service: systemctl enable --now nexus-agent; the appliance finds it in its next scan"
+    ))
+}
+
 /// `nexus-agent status`
 pub fn status(paths: &Paths) -> String {
     let mut out = agent_core::status_common(paths, env!("CARGO_PKG_VERSION"));

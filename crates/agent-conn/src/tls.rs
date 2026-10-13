@@ -181,7 +181,7 @@ impl Session {
         let mut last = None;
         let mut tcp = None;
         for a in addrs {
-            match TcpStream::connect_timeout(&a, Duration::from_secs(15)) {
+            match TcpStream::connect_timeout(&a, timeout.min(Duration::from_secs(15))) {
                 Ok(t) => {
                     tcp = Some(t);
                     break;
