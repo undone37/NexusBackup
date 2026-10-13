@@ -254,45 +254,86 @@ Copy the token now. If it is lost, click **New token** (an earlier unused token 
 
 ### 2. Install the agent on the host
 
-**Linux:** the agent is a static binary for all distributions, shipped as a bundle
-(`nexus-agent-<v>-x86_64.tar.gz`). Unpack the bundle and install it with the token on stdin:
+Step-by-step guides for the host administrator, including firewall rules, `agent.conf` and troubleshooting:
+[16 Linux agent](16-linux-agent.md) and [17 Windows agent](17-windows-agent.md).
+
+Download the package for the host from the release page (see the README, "Downloads") and check it against
+`SHA256SUMS`. The release manager signs every package with the release key (`<file>.sig`, cosign). Install it, then
+enroll the agent with the token. The token is read from stdin, so it never appears in the process list or the shell
+history.
+
+**Debian, Ubuntu** (`nexus-agent_<v>-1_amd64.deb` or `_arm64.deb`):
+
+```sh
+sudo apt install ./nexus-agent_<v>-1_amd64.deb
+sudo nexus-agent init --token -          # paste the token, press Enter
+sudo systemctl enable --now nexus-agent
+```
+
+**RHEL, AlmaLinux, Rocky, Fedora** (`nexus-agent-<v>-1.x86_64.rpm` or `.aarch64.rpm`):
+
+```sh
+sudo dnf install ./nexus-agent-<v>-1.x86_64.rpm
+sudo nexus-agent init --token -
+sudo systemctl enable --now nexus-agent
+```
+
+The package installs `/usr/bin/nexus-agent`, the systemd unit, `/etc/nexus-agent/` (mode 0700, hook directories,
+release keys) and the database hook examples in `/usr/share/doc/nexus-agent/examples/`. It does not start the
+service before enrollment and prints these commands after the installation. Allow TCP 7444 from the appliance's
+address in the host firewall. Removing the package (`apt remove`, `dnf remove`) keeps `/etc/nexus-agent`, so a
+reinstall keeps its enrollment. `apt purge` deletes the enrollment too.
+
+**Other Linux distributions:** use the bundle `nexus-agent-<v>-x86_64.tar.gz` (built with
+`crates/agent-linux/dist/build-bundle.sh`). It installs to `/usr/local/sbin`:
 
 ```sh
 tar xzf nexus-agent-<v>-x86_64.tar.gz && cd nexus-agent-<v>-x86_64
-sudo ./install.sh --token -          # paste the token, press Enter
+sudo ./install.sh --token -          # paste the token, press Enter; enrolls and starts the service
 ```
 
-`install.sh` installs `/usr/local/sbin/nexus-agent`, the systemd unit, and `/etc/nexus-agent/` (hook directories,
-release keys). It then enrolls the agent and starts the service. If the agent is already installed, use the
-command shown in the dialog and paste the token when asked:
+To enroll a bundle installation again, use the full path `sudo /usr/local/sbin/nexus-agent init --token -`.
+EL and Fedora keep `/usr/local/sbin` out of sudo's path, so the shorter command shown in the dialog fails there.
 
-```sh
-sudo /usr/local/sbin/nexus-agent init --token -
-```
-
-The token never appears in the process list or the shell history. Allow TCP 7444 from the appliance's address in
-the host firewall.
-
-**Windows (Server 2016 or newer):** as Administrator:
+**Windows (Server 2016 or newer)** (`nexus-agent-<v>-x64.msi`): double-click the MSI or install it silently, then
+enroll in an elevated PowerShell:
 
 ```bat
-mkdir "C:\Program Files\NexusAgent"
-copy nexus-agent.exe "C:\Program Files\NexusAgent\"
-rem copy release-keys\*.pub to %ProgramData%\NexusAgent\config\release-keys\ (create the directory)
-cd "C:\Program Files\NexusAgent"
-nexus-agent.exe init --token -
-nexus-agent.exe install
+msiexec /i nexus-agent-<v>-x64.msi /qn
+cd "C:\Program Files\NexusBackup Agent"
+.\nexus-agent.exe init --token -
+sc.exe start NexusAgent
 ```
 
-Open TCP 7444 in the Windows firewall for the appliance's address only. The service `NexusAgent` runs as
-LocalSystem.
+The MSI installs `nexus-agent.exe` to `C:\Program Files\NexusBackup Agent`, registers the service `NexusAgent`
+(LocalSystem, automatic start, restart on failure), and puts the release keys in `%ProgramData%\NexusAgent`, which
+only SYSTEM and Administrators can read. It appears in **Apps & features** as "NexusBackup Agent". Before enrollment
+the service starts and stops again by itself.
 
-> **Status:** The Windows agent is **built and unit-tested only. It has never run on Windows.** There is a manual
-> test plan in `docs/agent-windows.md`. Do not rely on it for production data before that test plan has been run.
+**Silent installation with GPO or Intune.** Deploy the MSI as it is: `msiexec /i nexus-agent-<v>-x64.msi /qn` (GPO:
+computer software installation; Intune: line-of-business app, install context device). Uninstall:
+`msiexec /x nexus-agent-<v>-x64.msi /qn`. This keeps the enrollment in `%ProgramData%\NexusAgent`. Add `PURGE=1` to
+delete it as well. A newer MSI replaces an older one in place and keeps the enrollment. The MSI deliberately has no
+token property. Tokens are per host and used once, and MSI properties end up in installer logs and in GPO/Intune
+configuration. Enroll each host afterwards, for example with a remote PowerShell or an Intune script that pipes the
+host's token into `nexus-agent.exe init --token -`. Open TCP 7444 in the Windows firewall for the appliance's
+address only. The MSI does not add a firewall rule.
+
+**Updates.** Package installations are updated with the package manager (new `.deb`/`.rpm`/`.msi`). The appliance's
+**Update agent** action is refused by them ("installed from a deb package …"), so the agent never replaces a file
+the package manager owns. To allow it anyway, set `self_update = on` in `agent.conf`. Bundle installations and manual
+Windows installations update themselves through **Update agent**.
+
+> **Status:** The Windows agent and its MSI are **built and checked on Linux only. They have never run on Windows.**
+> The MSI tables are validated with msitools, but no real installation has been tested. There is a manual test plan in
+> `docs/agent-windows.md`. Do not rely on them for production data before that test plan has been run.
 >
-> **Status:** The appliance image does not ship an agent bundle yet (`/usr/share/nexus/agent`). The release
-> process must provide it. Until then, build the bundle with `crates/agent-linux/dist/build-bundle.sh` (Linux) or
-> `crates/agent-windows/build.sh` (Windows).
+> **Status:** The `.deb` and `.rpm` packages are installed and removed in Debian 13, AlmaLinux 10 and Fedora
+> containers at every release. The aarch64 packages are built and the binary is started under emulation. They have
+> not run on real arm64 hardware yet.
+>
+> **Status:** The appliance image does not ship an agent bundle for **Update agent** yet (`/usr/share/nexus/agent`).
+> The release process must provide it.
 
 ### 3. Enroll
 
@@ -302,7 +343,7 @@ issues the agent's client certificate and pins the agent's certificate. The stat
 Statuses: **Token pending** (waiting for enrollment), **Token expired** (issue a **New token**), **Enrolled**.
 
 - **Update agent** sends the current signed agent release. The agent verifies the signature, refuses downgrades,
-  and restarts.
+  and restarts. Agents installed from a package refuse it (see "Updates" above).
 - **Re-enroll (new token)** replaces **New token** on an enrolled agent (see [Re-enrolling](#re-enrolling-an-agent)).
 - **Renew certificate** renews the agent's certificate now (see [Certificate renewal](#certificate-renewal)).
 - **Limits** sets a bandwidth and CPU limit for the agent's backups (see [Limits](#bandwidth-and-cpu-limits)).
@@ -430,6 +471,217 @@ Agent sources and NFS/SMB sources share the same selection rules:
   xfs, btrfs, zfs, vfat, …) are ever included. Skipped network and data file systems are named in the job log. The
   Windows agent backs up the volumes you list (mounted folders are not followed) and ignores this setting; NFS/SMB
   sources never descend into nested mounts.
+
+### On the endpoint: status and backup now
+
+Users of a Linux host can see whether their computer is protected, without access to the appliance. The agent shows
+the session summaries the appliance sends after every backup, and lets them ask for a backup now. The command works
+over SSH, at 80×24 or larger, and needs no mouse. It never starts a restore and never changes the configuration:
+restores stay with the administrator on the appliance.
+
+**Who may use it:** root and members of the group `nexus-agent-ui` (created when the package is installed). To add
+a user, run `sudo usermod -aG nexus-agent-ui alice`. The user must then log in again. Without the group, the commands
+stop with "permission denied … add your user to the group nexus-agent-ui".
+
+**Control panel:** `nexus-agent tui`. The main screen lists the latest backup sessions, newest first. Each session
+shows its result as a text label, not only a colour: `[+] Success`, `[!] Warning`, `[x] Failed`, `[-] Cancelled`.
+Above the list are the agent, the appliance that manages it, the next scheduled run, the last successful backup and
+whether the appliance has reached the computer recently ("not reached since …" for laptops away from the network).
+
+```text
+┌ NexusBackup Agent ───────────────────────────────────────────────────────────┐
+│Agent: web01                         Version: 0.6.0                           │
+│Appliance: 3f9a1c22                  Managed by: nexus01.example.com          │
+│Next run: 2026-10-13 22:00           Last success: 2026-10-13 02:05           │
+│State: Idle                                                                   │
+│Appliance contact: reachable                                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Latest backup sessions ──────────────────────────────────────────────────────┐
+│  Result        Start             Duration  Transferred  Warnings             │
+│> [+] Success   2026-10-13 02:05     14:07      1.1 GiB         0             │
+│  [!] Warning   2026-10-12 02:05     15:09      1.2 GiB         2             │
+│  [+] Success   2026-10-11 02:05     13:05      1.0 GiB         0             │
+│  [x] Failed    2026-10-10 02:05     14:38      1.1 GiB         0             │
+│  [+] Success   2026-10-09 02:05     15:09      1.2 GiB         0             │
+│  [-] Cancelled 2026-10-08 02:05     13:05      1.0 GiB         0             │
+│  [+] Success   2026-10-07 02:05     15:09      1.2 GiB         0             │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ Enter  Details   S  Back up now   L  Log   R  Refresh   Q  Quit
+```
+
+Keys: **Up/Down** select a session, **Enter** opens it, **S** asks for a backup now, **L** shows the log of the
+selected session, **R** reloads, and **Q** or **Esc** quits. The screen also reloads by itself every 10 seconds, or
+every 2 seconds while a backup runs. Set `NO_COLOR=1` for a monochrome display.
+
+**Session details** (**Enter**): the summary (result, start, duration, processing rate, warnings) and the data
+amounts (read, transferred, new, restore point). The first error and the last lines of the job log follow.
+**L** opens the full log tail. **Esc** returns to the list.
+
+```text
+┌ NexusBackup Agent ───────────────────────────────────────────────────────────┐
+│Agent: web01                         Version: 0.6.0                           │
+│Appliance: 3f9a1c22                  Managed by: nexus01.example.com          │
+│Next run: 2026-10-13 22:00           Last success: 2026-10-13 02:05           │
+│State: Idle                                                                   │
+│Appliance contact: reachable                                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Session 1188 (backup) ───────────────────┐┌ Data ────────────────────────────┐
+│Result       [!] Warning                  ││Read         48.0 GiB             │
+│Start        2026-10-12 02:05             ││Transferred  1.2 GiB              │
+│Duration     15:09                        ││New          700.0 MiB            │
+│Rate         54.1 MiB/s                   ││Point        2026-10-12 02:05     │
+│Warnings     2                            ││                                  │
+└──────────────────────────────────────────┘└──────────────────────────────────┘
+┌ Log (last lines) ────────────────────────────────────────────────────────────┐
+│13:52:10 job 1188 started (policy daily-files)                                │
+│13:52:11 snapshot: LVM thin vg0/root                                          │
+│13:52:40 warning: /home/anna/.cache/x: file vanished                          │
+│13:58:02 warning: /srv/db.sock: socket skipped                                │
+│14:04:44 48.0 GiB read, 1.7 GiB transferred                                   │
+│14:04:45 snapshot released, job finished with 2 warnings                      │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ L  Log   R  Refresh   Esc  Back   Q  Quit
+```
+
+**Back up now** (**S**): after you confirm, the request waits on the computer, shown as *Backup requested*. The
+appliance picks it up at its next poll, within a few minutes when the computer is reachable. The agent never
+connects out. You can request one backup every 10 minutes. The administrator can hide **S** for an agent. While a
+backup runs, a progress bar shows the percentage (not known for the very first backup) and the bytes read and
+transferred.
+
+```text
+┌ NexusBackup Agent ───────────────────────────────────────────────────────────┐
+│Agent: web01                         Version: 0.6.0                           │
+│Appliance: 3f9a1c22                  Managed by: nexus01.example.com          │
+│Next run: 2026-10-13 22:00           Last success: 2026-10-13 02:05           │
+│State: Idle                                                                   │
+│Appliance contact: reachable                                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Latest backup sessions ──────────────────────────────────────────────────────┐
+│  Result ┌ Back up now ─────────────────────────────────────────────┐         │
+│> [+] Suc│Request a backup of this computer now?                    │         │
+│  [!] War│                                                          │         │
+│  [+] Suc│The appliance starts it at its next poll                  │         │
+│  [x] Fai│(usually within a few minutes).                           │         │
+│  [+] Suc│[Y] Request backup    [N] Cancel                          │         │
+│  [-] Can└──────────────────────────────────────────────────────────┘         │
+│  [+] Success   2026-10-07 02:05     15:09      1.2 GiB         0             │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ Y  Request backup   N  Cancel
+```
+
+```text
+┌ NexusBackup Agent ───────────────────────────────────────────────────────────┐
+│Agent: web01                         Version: 0.6.0                           │
+│Appliance: 3f9a1c22                  Managed by: nexus01.example.com          │
+│Next run: 2026-10-13 22:00           Last success: 2026-10-13 02:05           │
+│State: Backup requested (waiting for the appliance)                           │
+│Appliance contact: reachable                                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+ Backup requested at 2026-10-13 14:05; it starts at the appliance's next poll.
+┌ Latest backup sessions ──────────────────────────────────────────────────────┐
+│  Result        Start             Duration  Transferred  Warnings             │
+│> [+] Success   2026-10-13 02:05     14:07      1.1 GiB         0             │
+│  [!] Warning   2026-10-12 02:05     15:09      1.2 GiB         2             │
+│  [+] Success   2026-10-11 02:05     13:05      1.0 GiB         0             │
+│  [x] Failed    2026-10-10 02:05     14:38      1.1 GiB         0             │
+│  [+] Success   2026-10-09 02:05     15:09      1.2 GiB         0             │
+│  [-] Cancelled 2026-10-08 02:05     13:05      1.0 GiB         0             │
+│  [+] Success   2026-10-07 02:05     15:09      1.2 GiB         0             │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ Enter  Details   S  Back up now   L  Log   R  Refresh   Q  Quit
+```
+
+```text
+┌ NexusBackup Agent ───────────────────────────────────────────────────────────┐
+│Agent: web01                         Version: 0.6.0                           │
+│Appliance: 3f9a1c22                  Managed by: nexus01.example.com          │
+│Next run: 2026-10-13 22:00           Last success: 2026-10-13 02:05           │
+│State: Backup running                                                         │
+│Appliance contact: reachable                                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+███████████Running 42 %  read 20.0 GiB, transferred 610.0 MiB  (5:30)
+┌ Latest backup sessions ──────────────────────────────────────────────────────┐
+│  Result        Start             Duration  Transferred  Warnings             │
+│> [+] Success   2026-10-13 02:05     14:07      1.1 GiB         0             │
+│  [!] Warning   2026-10-12 02:05     15:09      1.2 GiB         2             │
+│  [+] Success   2026-10-11 02:05     13:05      1.0 GiB         0             │
+│  [x] Failed    2026-10-10 02:05     14:38      1.1 GiB         0             │
+│  [+] Success   2026-10-09 02:05     15:09      1.2 GiB         0             │
+│  [-] Cancelled 2026-10-08 02:05     13:05      1.0 GiB         0             │
+│  [+] Success   2026-10-07 02:05     15:09      1.2 GiB         0             │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ Enter  Details   S  Back up now   L  Log   R  Refresh   Q  Quit
+```
+
+If the appliance has not reached the computer for a while (a laptop away from the office network or the VPN), the
+header shows when it was last reached. A missed scheduled backup runs when the computer is reachable again.
+
+```text
+┌ NexusBackup Agent ───────────────────────────────────────────────────────────┐
+│Agent: web01                         Version: 0.6.0                           │
+│Appliance: 3f9a1c22                  Managed by: nexus01.example.com          │
+│Next run: 2026-10-13 22:00           Last success: 2026-10-13 02:05           │
+│State: Idle                                                                   │
+│Appliance contact: not reached since 2026-10-10 14:05                         │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Latest backup sessions ──────────────────────────────────────────────────────┐
+│  Result        Start             Duration  Transferred  Warnings             │
+│> [+] Success   2026-10-13 02:05     14:07      1.1 GiB         0             │
+│  [!] Warning   2026-10-12 02:05     15:09      1.2 GiB         2             │
+│  [+] Success   2026-10-11 02:05     13:05      1.0 GiB         0             │
+│  [x] Failed    2026-10-10 02:05     14:38      1.1 GiB         0             │
+│  [+] Success   2026-10-09 02:05     15:09      1.2 GiB         0             │
+│  [-] Cancelled 2026-10-08 02:05     13:05      1.0 GiB         0             │
+│  [+] Success   2026-10-07 02:05     15:09      1.2 GiB         0             │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ Enter  Details   S  Back up now   L  Log   R  Refresh   Q  Quit
+```
+
+**Scripts:** the same data is available on the command line, also as JSON:
+
+```
+nexus-agent status [--json]                 # protection status
+nexus-agent sessions [--limit N] [--json]   # latest sessions (default 20)
+nexus-agent session <id> [--json]           # one session with its log tail
+nexus-agent request-backup [--json]         # ask for a backup at the next poll
+```
+
+Exit codes: `0` ok, `1` error, `2` no permission on the socket (not in `nexus-agent-ui`), `3` agent service not
+running, `4` refused by the agent (rate limit, hidden by the administrator, unknown session). As root,
+`nexus-agent status` also prints the local diagnostics (listen address, enrollment, certificates, cache).
+
+> **Status:** The control panel and the commands were tested against a simulated agent service (screens above are
+> rendered by the tests). Testing on a real host against the appliance's session summaries and poll is pending.
 
 ## TrueNAS
 

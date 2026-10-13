@@ -10,7 +10,7 @@ on new hardware, or as a new Proxmox VE VM ("Restore as PVE VM", P2V). The piece
 | rescue ISO `nexus-rescue-<version>.iso` | `restore-vm/rescue/` (build.sh, mkrescue.sh, init) |
 | rescue agent (console, check-in, recreate, finish) | `crates/agent-linux/src/rescue/` (`nexus-agent rescue`) |
 | recovery driver on the appliance | `crates/agent-conn/src/rescue.rs`, `nexus-agentctl … rescue` |
-| sessions, recovery tokens, check-in, P2V | `crates/web-api/src/rescue.rs`, catalog v25 `rescue_sessions` |
+| sessions, recovery tokens, check-in, P2V | `crates/web-api/src/rescue.rs`, catalog v26 `rescue_sessions` |
 | `bmr` / `p2v` jobs, firewall | `crates/scheduler/src/bmr.rs` |
 | PVE VM + config disk | `crates/pve/src/p2v.rs` (`nexus-pve … p2v`, `p2v-cleanup`) |
 

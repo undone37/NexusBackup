@@ -124,15 +124,21 @@ pub struct AuditFilter {
     /// unix seconds, inclusive
     from: Option<i64>,
     to: Option<i64>,
+    /// entries concerning this tenant (`audit_tenants`, Phase 19b); forced to
+    /// their own for tenant admins
+    tenant: Option<String>,
 }
 
 const AUDITORS: &[&str] = &["admin", "security_officer"];
+/// The tenant-scoped audit view (list, CSV): tenant admins see their tenant only.
+const READERS: &[&str] = &["admin", "security_officer", "tenant_admin"];
 
 /// `WHERE` of the audit filters: `?1` after, `?2` before, `?3` actor, `?4`
-/// action prefix, `?5` target substring, `?6` from, `?7` to.
+/// action prefix, `?5` target substring, `?6` from, `?7` to, `?9` tenant.
 const AUDIT_WHERE: &str = "seq > ?1 AND seq < ?2 AND (?3 IS NULL OR actor = ?3) \
      AND (?4 IS NULL OR substr(action, 1, length(?4)) = ?4) AND (?5 IS NULL OR instr(target, ?5) > 0) \
-     AND (?6 IS NULL OR ts >= ?6) AND (?7 IS NULL OR ts <= ?7)";
+     AND (?6 IS NULL OR ts >= ?6) AND (?7 IS NULL OR ts <= ?7) \
+     AND (?9 IS NULL OR seq IN (SELECT seq FROM audit_tenants WHERE tenant = ?9))";
 
 /// seq, ts, actor, action, target, details, prev_hash, hash
 type AuditRow = (i64, i64, String, String, String, String, String, String);
@@ -143,6 +149,7 @@ impl AuditFilter {
             ("actor", &self.actor),
             ("action", &self.action),
             ("target", &self.target),
+            ("tenant", &self.tenant),
         ] {
             if v.as_ref().is_some_and(|s| s.len() > 256) {
                 return Err(ApiError::bad(format!("{k}: at most 256 characters")));
@@ -172,7 +179,8 @@ impl AuditFilter {
                 Self::text(&self.target),
                 self.from,
                 self.to,
-                limit
+                limit,
+                Self::text(&self.tenant)
             ],
             |r| {
                 Ok((
@@ -192,7 +200,7 @@ impl AuditFilter {
 
     /// The filters given (audited with the export).
     fn shown(&self) -> Value {
-        let mut v = json!({"actor": self.actor, "action": self.action, "target": self.target,
+        let mut v = json!({"actor": self.actor, "action": self.action, "target": self.target, "tenant": self.tenant,
                            "from": self.from, "to": self.to, "after": self.after, "before": self.before});
         if let Some(o) = v.as_object_mut() {
             o.retain(|_, x| !x.is_null() && x != "");
@@ -203,8 +211,8 @@ impl AuditFilter {
 
 /// Filters: `actor` (exact), `action` (prefix), `target` (substring), `from` /
 /// `to` (unix seconds); pages with `after` / `before` + `limit`.
-pub async fn list_audit(State(st): State<St>, ctx: Ctx, Q(f): Q<AuditFilter>) -> ApiResult<Json<Value>> {
-    ctx.require(AUDITORS)?;
+pub async fn list_audit(State(st): State<St>, ctx: Ctx, Q(mut f): Q<AuditFilter>) -> ApiResult<Json<Value>> {
+    scope_filter(&ctx, &mut f)?;
     f.check()?;
     // ascending from `after` (default); newest first with `before` or `order=desc`
     let desc = match f.order.as_deref() {
@@ -227,6 +235,16 @@ pub async fn list_audit(State(st): State<St>, ctx: Ctx, Q(f): Q<AuditFilter>) ->
     Ok(Json(Value::Array(rows)))
 }
 
+/// Admins and security officers filter freely; a tenant-scoped reader (tenant
+/// admin) gets the entries concerning their tenant only.
+fn scope_filter(ctx: &Ctx, f: &mut AuditFilter) -> ApiResult<()> {
+    ctx.require(READERS)?;
+    if let Some(t) = ctx.scope() {
+        f.tenant = Some(t.to_owned());
+    }
+    Ok(())
+}
+
 /// RFC 4180 field: quoted when it contains a comma, quote or line break.
 /// Values are exported unchanged (the hashes cover them): open the file as
 /// text rather than letting a spreadsheet evaluate cells.
@@ -243,7 +261,7 @@ fn csv_field(s: &str) -> String {
 /// 1000. Audited as `audit.export` (with the filters) before the first row.
 pub async fn export_audit(State(st): State<St>, ctx: Ctx, Q(mut f): Q<AuditFilter>) -> ApiResult<Response> {
     use tokio::io::AsyncWriteExt;
-    ctx.require(AUDITORS)?;
+    scope_filter(&ctx, &mut f)?;
     f.check()?;
     if f.order.is_some() || f.limit.is_some() {
         return Err(ApiError::bad(

@@ -1,0 +1,4 @@
+# Independent PST readers for plugins/m365/tests/pst.rs (lab container, built on demand):
+# readpst (libpst, pst-utils) and pffinfo / pffexport (libpff, pff-tools).
+FROM docker.io/library/debian:trixie
+RUN apt-get update && apt-get install -y --no-install-recommends pst-utils pff-tools && rm -rf /var/lib/apt/lists/*

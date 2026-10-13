@@ -373,7 +373,10 @@ pub async fn session_start(State(st): State<St>, pc: PeerConn, J(r): J<SessionRe
         &format!("replication-peer/{}", p.id),
         json!({"tenant": r.tenant, "session": id, "remote": remote.map(|a| a.ip().to_string())}),
     )?;
-    Ok(Json(json!({"session": id})))
+    // Phase 19b: the tenant's immutable uid; secondaries refuse a re-created
+    // tenant of the same name (older secondaries ignore the field)
+    let uid = catalog::tenancy::uid(&st.cat.conn(), &r.tenant)?;
+    Ok(Json(json!({"session": id, "tenant_uid": uid})))
 }
 
 pub async fn session_end(

@@ -46,7 +46,7 @@ pub struct RestoreMany {
 
 /// 202 `{ids}`: every item validated before any job is created.
 pub async fn restore_many(State(st): State<St>, ctx: Ctx, J(r): J<RestoreMany>) -> ApiResult<Response> {
-    ctx.require(&["admin", "operator", "tenant_user"])?;
+    ctx.require(&["admin", "operator", "tenant_admin", "tenant_user"])?;
     validate::name(&r.tenant, "tenant")?;
     if !ctx.sees(&r.tenant) {
         return Err(ApiError::forbidden());

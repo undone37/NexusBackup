@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the bare-metal recovery ISO target/rescue/nexus-rescue-<version>.iso
 # (docs/bmr.md; no root, no host packages; needs podman, rustup, cargo):
-#   1. nexus-agent as a static musl binary (crates/agent-linux/dist/build-bundle.sh)
+#   1. nexus-agent as a static musl binary (the flags of crates/agent-linux/dist/build-bundle.sh)
 #   2. a podman builder image from debian:trixie (Containerfile; layer-cached)
 #   3. kernel + initramfs (agent in rescue mode, tools, modules) and a hybrid
 #      BIOS + UEFI ISO made by grub-mkrescue (mkrescue.sh, --network none)
@@ -19,7 +19,10 @@ mkdir -p "$out"
 
 agent=$root/target/x86_64-unknown-linux-musl/release/nexus-agent
 if [ -z "${SKIP_AGENT:-}" ] || [ ! -x "$agent" ]; then
-	"$root/crates/agent-linux/dist/build-bundle.sh" --test-key >/dev/null
+	rustup target list --installed | grep -qx x86_64-unknown-linux-musl || rustup target add x86_64-unknown-linux-musl
+	CARGO_PROFILE_RELEASE_LTO=true CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 CARGO_PROFILE_RELEASE_OPT_LEVEL=s \
+		CARGO_PROFILE_RELEASE_STRIP=symbols cargo build --manifest-path "$root/Cargo.toml" -q --locked \
+		-p agent-linux --release --target x86_64-unknown-linux-musl
 fi
 install -m 0755 "$agent" "$out/nexus-agent"
 

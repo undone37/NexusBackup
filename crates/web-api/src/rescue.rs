@@ -206,6 +206,9 @@ pub struct CheckinDisk {
     size: u64,
 }
 
+/// (session id, tenant, agent, p2v, snapshot time, job) of a check-in's session.
+type CheckinRow = (String, String, String, Option<String>, Option<i64>, Option<i64>);
+
 /// `POST /rescue/checkin` (rescue console, no login). Unknown lookups count as
 /// failures of the client's IP (login rate limiter): 5 in 15 minutes lock it out.
 pub async fn checkin(State(st): State<St>, ClientIp(ip): ClientIp, J(r): J<CheckinReq>) -> ApiResult<Json<Value>> {
@@ -234,7 +237,7 @@ pub async fn checkin(State(st): State<St>, ClientIp(ip): ClientIp, J(r): J<Check
     }
     let c = st.cat.conn();
     expire(&c)?;
-    let found: Option<(String, String, String, Option<String>, Option<i64>, Option<i64>)> = if lookup_ok {
+    let found: Option<CheckinRow> = if lookup_ok {
         c.query_row(
             "SELECT id, tenant, agent_id, p2v, snapshot_time, job_id FROM rescue_sessions \
              WHERE lookup = ?1 AND state IN ('issued','waiting') AND token_hash IS NOT NULL",

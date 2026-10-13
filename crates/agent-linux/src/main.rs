@@ -1,6 +1,7 @@
 //! `nexus-agent` CLI.
 
 use nexus_agent::config::{ensure_dir, Paths, Settings};
+use nexus_agent::endpoint::{self, cli, exit, Clock};
 use nexus_agent::{server, snapshot, sys};
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -11,10 +12,17 @@ const USAGE: &str = "\
 usage:
   nexus-agent init --token <T> [--port 7444] [--state DIR] [--config DIR]
   nexus-agent run [--state DIR] [--config DIR]
-  nexus-agent status [--state DIR] [--config DIR]
   nexus-agent hooks test [--config DIR]
   nexus-agent rescue [--rescue-config FILE]   (rescue ISO: bare-metal recovery console)
-  nexus-agent version
+  nexus-agent version (or --version)
+end users (root or members of the group nexus-agent-ui):
+  nexus-agent tui                        control panel: sessions, status, back up now
+  nexus-agent status [--json]            protection status (as root also local diagnostics)
+  nexus-agent sessions [--limit N] [--json]
+  nexus-agent session <id> [--json]      one session with its log tail
+  nexus-agent request-backup [--json]    ask the appliance for a backup at its next poll
+  exit codes: 0 ok, 1 error, 2 no permission on the socket, 3 agent service not running,
+  4 refused by the agent (rate limit, policy, unknown session); --socket PATH for tests
 defaults: --config /etc/nexus-agent --state /var/lib/nexus-agent
 --token - reads the token from stdin (keeps it out of the process list)";
 
@@ -34,6 +42,9 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
     let mut token = None;
     let mut port = None;
     let mut rescue_config = None;
+    let mut json = false;
+    let mut limit = 20;
+    let mut sock = PathBuf::from(endpoint::proto::SOCKET_PATH);
     let mut words = vec![];
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -44,6 +55,10 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             "--state" => paths.state = PathBuf::from(val("--state")?),
             "--config" => paths.config = PathBuf::from(val("--config")?),
             "--rescue-config" => rescue_config = Some(PathBuf::from(val("--rescue-config")?)),
+            "--json" => json = true,
+            "--limit" => limit = val("--limit")?.parse::<usize>().map_err(|_| "invalid --limit")?,
+            "--socket" => sock = PathBuf::from(val("--socket")?),
+            "--version" | "-V" => words.push("version".into()),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(ExitCode::SUCCESS);
@@ -74,7 +89,43 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         ["status"] => {
-            print!("{}", nexus_agent::status(&paths));
+            let res = cli::run(&cli::Command::Status, &sock, json, Clock::Local);
+            if let Ok(out) = &res {
+                print!("{out}");
+            }
+            // root: the local diagnostics too (also when the service is down)
+            // SAFETY: trivial syscall
+            if !json && unsafe { libc::geteuid() } == 0 {
+                if res.is_ok() {
+                    println!();
+                }
+                print!("{}", nexus_agent::status(&paths));
+            }
+            Ok(user_exit(res.map(|_| String::new())))
+        }
+        ["sessions"] => Ok(user_exit(cli::run(
+            &cli::Command::Sessions { limit },
+            &sock,
+            json,
+            Clock::Local,
+        ))),
+        ["session", id] => {
+            let id = id.parse::<u64>().map_err(|_| format!("invalid session id {id}"))?;
+            Ok(user_exit(cli::run(
+                &cli::Command::Session { id },
+                &sock,
+                json,
+                Clock::Local,
+            )))
+        }
+        ["request-backup"] => Ok(user_exit(cli::run(
+            &cli::Command::RequestBackup,
+            &sock,
+            json,
+            Clock::Local,
+        ))),
+        ["tui"] => {
+            endpoint::tui::run(&sock).map_err(|e| format!("terminal: {e}"))?;
             Ok(ExitCode::SUCCESS)
         }
         ["hooks", "test"] => {
@@ -89,6 +140,20 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         _ => Err(USAGE.into()),
+    }
+}
+
+/// Prints the output of an end-user command, or its error with the documented exit code.
+fn user_exit(res: Result<String, endpoint::Failure>) -> ExitCode {
+    match res {
+        Ok(out) => {
+            print!("{out}");
+            ExitCode::from(exit::OK)
+        }
+        Err(f) => {
+            eprintln!("nexus-agent: {}", f.message);
+            ExitCode::from(f.code)
+        }
     }
 }
 

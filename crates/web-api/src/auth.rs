@@ -97,7 +97,14 @@ pub struct Ctx {
     pub sid: String,
     pub csrf: String,
     pub token: Option<crate::tokens::TokenRef>,
+    /// "view as tenant" (Phase 19b, `crate::impersonate`): the admin's session
+    /// acts as `user.role` (viewer or tenant_admin) of `user.tenant`; the tenant
+    pub impersonating: Option<String>,
 }
+
+/// Writers of a tenant's own configuration (sources, groups, agents, its
+/// users): admins appliance-wide, tenant admins in their tenant ([`Ctx::owns`]).
+pub const TENANT_WRITERS: &[&str] = &["admin", "tenant_admin"];
 
 impl Ctx {
     pub fn require(&self, roles: &[&str]) -> ApiResult<()> {
@@ -113,6 +120,17 @@ impl Ctx {
     }
     pub fn sees(&self, tenant: &str) -> bool {
         self.scope().is_none_or(|t| t == tenant)
+    }
+    /// 403 unless the object's `tenant` is within the user's scope.
+    pub fn owns(&self, tenant: &str) -> ApiResult<()> {
+        if self.sees(tenant) {
+            Ok(())
+        } else {
+            Err(ApiError::forbidden())
+        }
+    }
+    pub fn is_tenant_admin(&self) -> bool {
+        self.user.role == "tenant_admin"
     }
     pub fn name(&self) -> &str {
         &self.user.name
@@ -138,6 +156,7 @@ impl FromRequestParts<St> for Ctx {
                 sid: String::new(),
                 csrf: String::new(),
                 token: Some(t.token.clone()),
+                impersonating: None,
             });
         }
         let token = session_cookie(parts).ok_or_else(ApiError::unauthorized)?;
@@ -147,7 +166,8 @@ impl FromRequestParts<St> for Ctx {
         let row = c
             .query_row(
                 &format!(
-                    "SELECT s.csrf, s.created, s.last_seen, {} FROM sessions s JOIN users u ON u.id = s.user_id
+                    "SELECT s.csrf, s.created, s.last_seen, s.impersonating, s.impersonating_role, {}
+                     FROM sessions s JOIN users u ON u.id = s.user_id
                      WHERE s.id_hash = ?1 AND u.activation_hash IS NULL",
                     USER_COLS
                         .split(", ")
@@ -161,12 +181,13 @@ impl FromRequestParts<St> for Ctx {
                         r.get::<_, String>(0)?,
                         r.get::<_, i64>(1)?,
                         r.get::<_, i64>(2)?,
-                        User::from_row(r, 3)?,
+                        (r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?),
+                        User::from_row(r, 5)?,
                     ))
                 },
             )
             .optional()?;
-        let Some((csrf, created, last_seen, user)) = row else {
+        let Some((csrf, created, last_seen, imp, mut user)) = row else {
             return Err(ApiError::unauthorized());
         };
         if user.expired(now) {
@@ -199,11 +220,13 @@ impl FromRequestParts<St> for Ctx {
             "UPDATE sessions SET last_seen = ?1 WHERE id_hash = ?2",
             params![now, sid],
         )?;
+        let impersonating = crate::impersonate::apply(&c, &sid, &mut user, imp)?;
         Ok(Ctx {
             user,
             sid,
             csrf,
             token: None,
+            impersonating,
         })
     }
 }
@@ -580,7 +603,12 @@ pub async fn me(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<serde_json::Va
     let bg = crate::dashboard::break_glass(&st.cat.conn(), &ctx)?;
     let shell = crate::console::shell_banner(&st.cat.conn(), &ctx)?;
     let vault = catalog::vault::enabled(&st.cat.conn())?;
+    let imp = ctx
+        .impersonating
+        .as_ref()
+        .map(|t| json!({"tenant": t, "role": ctx.user.role}));
     Ok(Json(
-        json!({"user": ctx.user, "csrf": ctx.csrf, "break_glass": bg, "console_shell": shell, "vault_mode": vault}),
+        json!({"user": ctx.user, "csrf": ctx.csrf, "break_glass": bg, "console_shell": shell, "vault_mode": vault,
+               "impersonating": imp}),
     ))
 }

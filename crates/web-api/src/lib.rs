@@ -32,6 +32,7 @@ pub mod firewall;
 pub mod forwarding;
 pub mod hardware;
 pub mod holds;
+pub mod impersonate;
 pub mod inventory;
 pub mod jobs;
 pub mod offsite;
@@ -50,6 +51,7 @@ pub mod selection;
 pub mod settings;
 pub mod spa;
 pub mod storage;
+pub mod tenancy;
 pub mod tenant_key;
 pub mod tenants;
 pub mod tls;
@@ -213,8 +215,9 @@ impl AppState {
     /// During an API token request the token's user is recorded as
     /// `<user> via token <name>`.
     pub fn audit(&self, actor: &str, action: &str, target: &str, details: serde_json::Value) -> Result<(), ApiError> {
+        let actor = crate::tokens::audit_actor(actor);
         self.cat
-            .audit(&crate::tokens::audit_actor(actor), action, target, &details)?;
+            .audit(&crate::impersonate::audit_actor(&actor), action, target, &details)?;
         Ok(())
     }
 }
@@ -588,6 +591,7 @@ pub fn router(st: St) -> Router {
         .merge(holds::routes())
         .merge(hardware::routes())
         .merge(tenants::routes())
+        .merge(tenancy::routes())
         .merge(vault::routes())
         .fallback(api_not_found);
     // peer API: only on replication TLS connections (see `connection_scope`)
@@ -613,6 +617,7 @@ pub fn router(st: St) -> Router {
         .fallback(spa::serve)
         .layer(axum::extract::DefaultBodyLimit::max(1 << 20))
         .layer(middleware::from_fn_with_state(st.clone(), tokens::layer))
+        .layer(middleware::from_fn(impersonate::layer))
         .layer(middleware::from_fn(connection_scope))
         .layer(middleware::from_fn(security_headers))
         .with_state(st)

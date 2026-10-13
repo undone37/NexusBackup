@@ -186,8 +186,23 @@ pub struct NetIf {
 }
 
 impl Layout {
-    /// The disk holding `/` (or the first disk): the boot loader target.
+    /// The boot loader target: the disk with the EFI system partition (UEFI) or a
+    /// BIOS boot partition / bootable MBR partition (BIOS), else the disk holding
+    /// `/boot` or `/` (or the first disk).
     pub fn boot_disk(&self) -> Option<&Disk> {
+        let marker = |d: &&Disk| {
+            d.partitions.iter().any(|p| {
+                let t = p.ptype.to_ascii_uppercase();
+                if self.firmware == "uefi" {
+                    t == "C12A7328-F81F-11D2-BA4B-00A0C93EC93B" || t == "EF"
+                } else {
+                    t == "21686148-6449-6E6F-744E-656564454649" || p.bootable
+                }
+            })
+        };
+        if let Some(d) = self.disks.iter().find(marker) {
+            return Some(d);
+        }
         let root = self
             .filesystems
             .iter()
@@ -283,5 +298,11 @@ mod tests {
         };
         assert_eq!(l.boot_disk().unwrap().name, "vda", "root LV on a PV of vda");
         assert_eq!(l.esp().unwrap().device, "/dev/vda1");
+        // BIOS: the disk with the BIOS boot partition wins over the disk holding `/`
+        let mut b = l.clone();
+        b.firmware = "bios".into();
+        b.disks[1].partitions[0].ptype = "21686148-6449-6E6F-744E-656564454649".into();
+        b.vgs[0].pvs[0].device = "/dev/vdb".into();
+        assert_eq!(b.boot_disk().unwrap().name, "vda");
     }
 }

@@ -1,0 +1,24 @@
+┌ ACME IT backup ──────────────────────────────────────────────────────────────┐
+│Agent: web01                         Version: 0.6.0                           │
+│Appliance: 3f9a1c22                  Managed by: nexus01.example.com          │
+│Next run: 2026-10-13 22:00           Last success: never                      │
+│State: Idle                                                                   │
+│Appliance contact: reachable                                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Latest backup sessions ──────────────────────────────────────────────────────┐
+│No backup sessions yet.                                                       │
+│The appliance sends a summary to this computer after every backup.            │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ R  Refresh   Q  Quit

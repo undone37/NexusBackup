@@ -1,0 +1,24 @@
+┌ NexusBackup Agent ───────────────────────────────────────────────────────────┐
+│Agent: web01                         Version: 0.6.0                           │
+│Appliance: 3f9a1c22                  Managed by: nexus01.example.com          │
+│Next run: 2026-10-13 22:00           Last success: 2026-10-13 02:05           │
+│State: Idle                                                                   │
+│Appliance contact: reachable                                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Session 1188 (backup) ───────────────────┐┌ Data ────────────────────────────┐
+│Result       [!] Warning                  ││Read         48.0 GiB             │
+│Start        2026-10-12 02:05             ││Transferred  1.2 GiB              │
+│Duration     15:09                        ││New          700.0 MiB            │
+│Rate         54.1 MiB/s                   ││Point        2026-10-12 02:05     │
+│Warnings     2                            ││                                  │
+└──────────────────────────────────────────┘└──────────────────────────────────┘
+┌ Log (last lines) ────────────────────────────────────────────────────────────┐
+│13:52:10 job 1188 started (policy daily-files)                                │
+│13:52:11 snapshot: LVM thin vg0/root                                          │
+│13:52:40 warning: /home/anna/.cache/x: file vanished                          │
+│13:58:02 warning: /srv/db.sock: socket skipped                                │
+│14:04:44 48.0 GiB read, 1.7 GiB transferred                                   │
+│14:04:45 snapshot released, job finished with 2 warnings                      │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ L  Log   R  Refresh   Esc  Back   Q  Quit

@@ -12,15 +12,18 @@
 
 pub mod auth;
 pub mod backup;
+pub mod export;
 pub mod format;
 pub mod graph;
+pub mod mail;
+pub mod pst;
 pub mod restore;
 
 use auth::{Bad, Credential};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use base64::Engine;
 use graph::{Graph, Settings};
-use plugin_sdk::{error, BackupResult, Ctx, Plugin, Result, Sink, Source, TaggedGuest as SdkGuest, Validation};
+use plugin_sdk::{error, BackupResult, Ctx, Export, Plugin, Result, Sink, Source, TaggedGuest as SdkGuest, Validation};
 use serde_json::Value;
 
 pub const GRAPH_HOST: &str = "graph.microsoft.com";
@@ -702,6 +705,11 @@ impl Plugin for M365 {
     fn restore(&mut self, ctx: &Ctx, src: &mut Source) -> Result<String> {
         let (c, g) = connect(ctx)?;
         restore::run(ctx, &c, g, src)
+    }
+
+    /// Download with conversion (mail as mbox / PST): no config, no network.
+    fn export(&mut self, ctx: &Ctx, ex: &mut Export) -> Result<String> {
+        export::run(ctx, ex)
     }
 }
 

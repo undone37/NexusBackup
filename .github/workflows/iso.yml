@@ -26,7 +26,7 @@ jobs:
       BIB: quay.io/centos-bootc/bootc-image-builder:latest
     steps:
       # the ISO config comes from the workflow's own commit (older tags predate release/iso/)
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Image digest of the release
         run: |
@@ -60,3 +60,26 @@ jobs:
 
       - name: Attach to the release
         run: gh release upload "$TAG" "$ISO" "$ISO.sha256" --clobber
+
+  # bare-metal recovery ISO (docs/bmr.md), built from the release's own sources
+  rescue:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: self-hosted
+    env:
+      TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Check the tag
+        run: '[[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "bad tag $TAG"; exit 1; }'
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+      - name: Build and attach the rescue ISO
+        run: |
+          [ -x restore-vm/rescue/build.sh ] || { echo "$TAG predates the rescue ISO"; exit 0; }
+          restore-vm/rescue/build.sh
+          cd target/rescue
+          iso=$(ls nexus-rescue-*.iso)
+          sha256sum "$iso" > "$iso.sha256"
+          cp manifest.txt rescue-manifest.txt
+          gh release upload "$TAG" "$iso" "$iso.sha256" rescue-manifest.txt --clobber

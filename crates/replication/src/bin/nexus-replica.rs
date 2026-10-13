@@ -40,6 +40,9 @@ struct Config {
     parallel: Option<usize>,
     #[serde(default)]
     held: Vec<(String, u64)>,
+    /// Phase 19b: the primary tenant's uid seen before (null: first sync / legacy)
+    #[serde(default)]
+    tenant_uid: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -98,6 +101,7 @@ fn run() -> Result<()> {
                     tz: schedule::tz(c.timezone.as_deref().unwrap_or("UTC"))?,
                 },
                 held: c.held.into_iter().collect(),
+                tenant_uid: c.tenant_uid,
             };
             let tenant = p.tenant.clone();
             let r = sync(&p, &mut |l| println!("{l}"));

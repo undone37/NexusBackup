@@ -1,0 +1,121 @@
+# nexus-agent .deb / .rpm (nfpm, run from its container by release/packages.sh).
+# Paths are relative to the staging directory release/packages.sh prepares:
+#   nexus-agent (static musl binary), nexus-agent.service (ExecStart=/usr/bin/nexus-agent),
+#   package-managed, copyright, changelog.yml, README.md, release-keys/*.pub,
+#   hooks.d/pre/*.example, and the maintainer scripts and lintian-overrides of this directory.
+name: nexus-agent
+arch: ${PKG_ARCH}
+platform: linux
+version: ${PKG_VERSION}
+release: "1"
+section: admin
+priority: optional
+maintainer: NexusBackup maintainers <undone37@users.noreply.github.com>
+vendor: NexusBackup
+homepage: https://github.com/undone37/NexusBackup
+license: AGPL-3.0-only
+description: |-
+  NexusBackup backup agent (pull model, mutual TLS)
+  nexus-agent lets a NexusBackup appliance back up and restore the files of
+  this host. It listens on TCP 7444 (TLS 1.3), never connects out, and is
+  enrolled once with a one-time token from the appliance. Static binary.
+changelog: changelog.yml
+
+contents:
+  - src: nexus-agent
+    dst: /usr/bin/nexus-agent
+    file_info: { mode: 0755 }
+  - src: nexus-agent.service
+    dst: /usr/lib/systemd/system/nexus-agent.service
+    file_info: { mode: 0644 }
+  # group nexus-agent-ui: end users allowed to use the UI socket (created in postinst)
+  - src: sysusers.conf
+    dst: /usr/lib/sysusers.d/nexus-agent.conf
+    file_info: { mode: 0644 }
+  # Documentation: `type: doc` (%doc) for rpm; nfpm's deb packager drops doc entries, so
+  # every file is listed twice. Database dump hooks: copy one without .example to
+  # /etc/nexus-agent/hooks.d/pre/ (0700). One by one: nfpm's rpm packager does not expand
+  # globs for doc entries (release/packages.sh checks that every example is listed).
+  - src: README.md
+    dst: /usr/share/doc/nexus-agent/README.md
+    type: doc
+    packager: rpm
+    file_info: { mode: 0644 }
+  - src: README.md
+    dst: /usr/share/doc/nexus-agent/README.md
+    packager: deb
+    file_info: { mode: 0644 }
+  - src: copyright
+    dst: /usr/share/doc/nexus-agent/copyright
+    type: doc
+    packager: rpm
+    file_info: { mode: 0644 }
+  - src: copyright
+    dst: /usr/share/doc/nexus-agent/copyright
+    packager: deb
+    file_info: { mode: 0644 }
+  - src: hooks.d/pre/10-postgresql.example
+    dst: /usr/share/doc/nexus-agent/examples/hooks.d/pre/10-postgresql.example
+    type: doc
+    packager: rpm
+    file_info: { mode: 0644 }
+  - src: hooks.d/pre/10-postgresql.example
+    dst: /usr/share/doc/nexus-agent/examples/hooks.d/pre/10-postgresql.example
+    packager: deb
+    file_info: { mode: 0644 }
+  - src: hooks.d/pre/20-mysql.example
+    dst: /usr/share/doc/nexus-agent/examples/hooks.d/pre/20-mysql.example
+    type: doc
+    packager: rpm
+    file_info: { mode: 0644 }
+  - src: hooks.d/pre/20-mysql.example
+    dst: /usr/share/doc/nexus-agent/examples/hooks.d/pre/20-mysql.example
+    packager: deb
+    file_info: { mode: 0644 }
+  # one static (musl) binary for every distribution on purpose
+  - src: lintian-overrides
+    dst: /usr/share/lintian/overrides/nexus-agent
+    packager: deb
+    file_info: { mode: 0644 }
+  # config tree: root only; hooks must be root-owned and not group/world-writable
+  - dst: /etc/nexus-agent
+    type: dir
+    file_info: { mode: 0700 }
+  - dst: /etc/nexus-agent/hooks.d
+    type: dir
+    file_info: { mode: 0700 }
+  - dst: /etc/nexus-agent/hooks.d/pre
+    type: dir
+    file_info: { mode: 0700 }
+  - dst: /etc/nexus-agent/hooks.d/post
+    type: dir
+    file_info: { mode: 0700 }
+  - dst: /etc/nexus-agent/release-keys
+    type: dir
+    file_info: { mode: 0755 }
+  - src: release-keys/*.pub
+    dst: /etc/nexus-agent/release-keys/
+    type: config|noreplace
+    file_info: { mode: 0644 }
+  - dst: /usr/lib/nexus-agent
+    type: dir
+    file_info: { mode: 0755 }
+  # "deb" or "rpm" (written by release/packages.sh before each run): self-update stays
+  # off for package installs (agent_core::update::package_marker). Not in `overrides`:
+  # override contents replace the list above instead of extending it.
+  - src: package-managed
+    dst: /usr/lib/nexus-agent/package-managed
+    file_info: { mode: 0644 }
+
+scripts:
+  postinstall: postinst.sh
+  preremove: prerm.sh
+  postremove: postrm.sh
+
+rpm:
+  group: Applications/Archiving
+  summary: NexusBackup backup agent (pull model, mutual TLS)
+  compression: zstd
+
+deb:
+  compression: xz

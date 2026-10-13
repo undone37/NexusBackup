@@ -56,7 +56,8 @@ fn manifest(version: &str) -> Vec<u8> {
             "secret_fields": ["password"],
             "endpoints": [{"host": "/host", "port": "/port", "default_port": 5432, "proto": "tcp"}],
             "guests": {"title": "Databases", "list": true},
-            "restores": [{"id": "download", "title": "Download"},
+            "restores": [{"id": "download", "title": "Download", "params_schema": {"type": "object",
+                            "properties": {"mail_format": {"type": "string", "enum": ["eml", "mbox", "pst"]}}}},
                          {"id": "to_target", "title": "Restore", "applies_to": "guest", "params_schema": {"type": "object", "required": ["database"],
                             "properties": {"database": {"type": "string", "pattern": "^[a-z]+$"}}}},
                          {"id": "to_other", "title": "Other source", "target_source": true},
@@ -460,6 +461,40 @@ async fn plugin_lifecycle_sources_and_jobs() {
         )
         .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    // contract v1.9: a download with conversion takes the params of the plugin's `download`
+    let get = |source: String, params: Value| {
+        job(
+            "files_get",
+            json!({"source": source, "time": 100, "paths": ["/"], "format": "zip", "params": params}),
+        )
+    };
+    let r = t
+        .call(
+            Method::POST,
+            "/api/v1/jobs",
+            &tina,
+            Some(get(format!("plugin-pgx-{sid}-db1"), json!({"mail_format": "pst"}))),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let id = r.body["id"].as_i64().unwrap();
+    let p: String =
+        t.st.cat
+            .conn()
+            .query_row("SELECT params FROM jobs WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+    assert!(p.contains(r#""mail_format":"pst""#), "{p}");
+    for bad in [json!({"mail_format": "doc"}), json!({"other": 1}), json!("x")] {
+        let r = t
+            .call(
+                Method::POST,
+                "/api/v1/jobs",
+                &tina,
+                Some(get(format!("plugin-pgx-{sid}-db1"), bad.clone())),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}: {:?}", r.body);
+    }
     // Phase 15b: the plugin's file tree (it offers `download`) onto an agent of the tenant
     t.st.cat
         .conn()
