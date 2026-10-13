@@ -307,6 +307,51 @@ export interface AgentToken {
 
 export type AgentStatus = 'enrolled' | 'pending' | 'expired';
 
+/** Phase 24d: fleet secret (GET /fleets; the secret itself only in the POST answer) */
+export interface Fleet {
+  id: string;
+  name: string;
+  tenant: string;
+  created: number;
+  created_by: string;
+  expires: number;
+  max_uses: number | null;
+  uses: number;
+  revoked: boolean;
+  auto_accept: boolean;
+  port: number;
+  /** CIDR (≤ /22 resp. /118), addresses or host names the scheduler scans */
+  ranges: string[];
+  /** template group (protection group of a linux source) for new agents */
+  group: string | null;
+  group_rules: { pattern: string; group: string }[];
+  last_scan: number | null;
+  /** candidates awaiting acceptance */
+  awaiting: number;
+}
+
+export interface FleetCreated extends Fleet {
+  secret: string;
+  install: { linux: string; linux_file: string; windows: string };
+}
+
+/** An agent found by a fleet scan (GET /fleet/candidates) */
+export interface FleetCandidate {
+  id: number;
+  fleet_id: string;
+  fleet: string;
+  tenant: string;
+  host: string;
+  port: number;
+  hostname: string;
+  os: string;
+  version: string;
+  first_seen: number;
+  last_seen: number;
+  state: 'awaiting' | 'accepted' | 'rejected';
+  agent_id: string | null;
+}
+
 export type Overwrite = 'never' | 'if_older' | 'always';
 
 export interface Gfs {
@@ -427,7 +472,8 @@ export type JobKind =
   | 'file_index'
   | 'offsite_list'
   | 'offsite_restore'
-  | 'offsite_attach';
+  | 'offsite_attach'
+  | 'fleet_scan';
 
 /** One snapshot of an `offsite_list` result (Phase 17d, `nexus-offsite list --json`). */
 export interface OffsiteListed {

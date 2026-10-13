@@ -3,7 +3,7 @@
   import { onMount } from 'svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
   import { notify } from '../lib/notify.svelte';
-  import { navigate } from '../lib/router.svelte';
+  import { navigate, route } from '../lib/router.svelte';
   import { agentStatus } from '../lib/jobs';
   import { fmtAgo, fmtBytes, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
@@ -11,6 +11,19 @@
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
+  import Fleet from './agents/Fleet.svelte';
+
+  // Phase 24d: tabs Agents | Fleet (fleet secrets, discovered agents, CSV bulk enrollment)
+  const TABS = ['agents', 'fleet'];
+  const tab = $derived(TABS.includes(route.query.get('tab') ?? '') ? route.query.get('tab')! : 'agents');
+  const tabsId = $props.id();
+  function keys(e: KeyboardEvent) {
+    if (!['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    const next = e.key === 'Home' ? 'agents' : e.key === 'End' ? 'fleet' : tab === 'agents' ? 'fleet' : 'agents';
+    navigate(`/agents?tab=${next}`);
+    queueMicrotask(() => document.getElementById(`${tabsId}-tab-${next}`)?.focus());
+  }
 
   let items: Agent[] = $state([]);
   let tenants: Tenant[] = $state([]);
@@ -144,9 +157,30 @@
 
 <div class="page-head">
   <h1>{t.agents.title}</h1>
-  <button type="button" class="primary" onclick={create}><IconPlus aria-hidden="true" />{t.agents.new}</button>
-  <p class="lede">{t.agents.intro}</p>
+  {#if tab === 'agents'}
+    <button type="button" class="primary" onclick={create}><IconPlus aria-hidden="true" />{t.agents.new}</button>
+  {/if}
+  <p class="lede">{tab === 'fleet' ? t.fleet.intro : t.agents.intro}</p>
 </div>
+
+<div class="tabs" role="tablist" aria-label={t.agents.title} tabindex="-1" onkeydown={keys}>
+  {#each TABS as x (x)}
+    <button
+      type="button"
+      role="tab"
+      id="{tabsId}-tab-{x}"
+      aria-selected={x === tab}
+      aria-controls="{tabsId}-panel"
+      tabindex={x === tab ? 0 : -1}
+      onclick={() => navigate(`/agents?tab=${x}`)}>{t.agents.tabs[x]}</button
+    >
+  {/each}
+</div>
+
+<div id="{tabsId}-panel" role="tabpanel" aria-labelledby="{tabsId}-tab-{tab}">
+{#if tab === 'fleet'}
+  <Fleet {tenants} />
+{:else}
 <ErrorBanner {error} />
 
 <div class="card">
@@ -223,6 +257,8 @@
       </table>
     </div>
   {/if}
+</div>
+{/if}
 </div>
 
 <Modal bind:open title={t.agents.new}>

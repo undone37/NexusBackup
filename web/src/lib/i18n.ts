@@ -555,6 +555,7 @@ export const en = {
       offsite_list: "List offsite copy",
       offsite_restore: "Fetch from offsite",
       offsite_attach: "Attach offsite copy",
+      fleet_scan: "Fleet discovery scan",
     } as Record<string, string>,
     result: "Result",
     valid: "The source is reachable and the credentials work.",
@@ -861,6 +862,75 @@ export const en = {
     limitsNone: "none",
     limitsShort: (bw: string, nice: number) =>
       [bw, nice ? `nice ${nice}` : ""].filter(Boolean).join(", "),
+    // Phase 24d
+    tabs: { agents: "Agents", fleet: "Fleet" } as Record<string, string>,
+  },
+  fleet: {
+    intro:
+      "Pre-installed agents (GPO, Intune, Ansible) carry a time-limited fleet secret and wait for the appliance. The appliance scans the ranges of each fleet secret and lists the agents it finds; accept them to enroll them into the fleet's tenant and group. Both sides prove knowledge of the secret before anything else is exchanged.",
+    secrets: "Fleet secrets",
+    new: "New fleet secret",
+    newTitle: "New fleet secret",
+    expires: "Valid until",
+    expiresDays: "Valid for (days, 1–30)",
+    maxUses: "Maximum enrollments (empty = unlimited)",
+    uses: "Enrollments",
+    usesOf: (n: number, max: number | null) => (max === null ? `${n}` : `${n} / ${max}`),
+    port: "Agent port",
+    ranges: "Ranges to scan",
+    rangesHint:
+      "One per line: IPv4 CIDR up to /22, IPv6 up to /118, an address or a host name. At most 32 entries and 4096 addresses. Empty: no scans (agents can still be found later when ranges are added to a new secret).",
+    autoAccept: "Accept found agents automatically",
+    autoAcceptHint:
+      "Off (recommended): every agent found waits for an explicit Accept. On: anyone holding the secret inside the ranges is enrolled without review.",
+    group: "Default group",
+    groupHint:
+      "A protection group of an agent source in the tenant, used as template: each new agent gets its own source and group with the same paths and policy.",
+    groupNone: "none (assign later)",
+    rules: "Group by host name",
+    rulesHint:
+      'One rule per line: pattern = group, e.g. "web-* = acme-web01". * and ? match, case-insensitive; the first match wins, otherwise the default group.',
+    rulesInvalid: (l: string) => `Rule "${l}": expected pattern = group.`,
+    lastScan: "Last scan",
+    awaiting: "Waiting",
+    state: "State",
+    states: { active: "Active", revoked: "Revoked", expired: "Expired", used: "Used up" } as Record<string, string>,
+    scan: "Scan now",
+    revoke: "Revoke",
+    revokeConfirm: (n: string) =>
+      `Revoke the fleet secret "${n}"? Agents holding it can no longer be found or enrolled; enrolled agents are not affected.`,
+    readOnly: "Only administrators create and revoke fleet secrets.",
+    secretTitle: (n: string) => `Fleet secret ${n}`,
+    secretOnce:
+      "This secret is shown only once. Copy it into your deployment (GPO, Intune, Ansible vault) now — it cannot be displayed again. Anyone holding it can register an agent that waits for acceptance.",
+    secret: "Fleet secret",
+    installLinux: "Linux (interactive): paste the secret when asked, then systemctl enable --now nexus-agent",
+    installFile: "Linux packages / Ansible: put the secret into this file (root, mode 0600) before the first start",
+    installWindows: "Windows (GPO / Intune):",
+    candidates: "Agents found",
+    candidatesIntro:
+      "Agents that proved knowledge of a fleet secret during a scan. Accepting one creates the agent in the fleet's tenant, assigns its group and starts the enrollment.",
+    hostname: "Host name",
+    address: "Address",
+    fleetCol: "Fleet secret",
+    seen: "Seen",
+    candStates: { awaiting: "Waiting for acceptance", accepted: "Accepted", rejected: "Rejected" } as Record<string, string>,
+    accept: "Accept",
+    reject: "Reject",
+    acceptConfirm: (h: string, a: string, tn: string) =>
+      `Accept "${h}" (${a}) into tenant ${tn} and enroll it? Check that you expect this host: the fleet secret may have leaked.`,
+    rejectConfirm: (h: string) => `Reject "${h}"? Later scans keep ignoring it.`,
+    accepted: (id: string) => `Accepted: agent ${id}, enrollment started.`,
+    bulk: "CSV bulk enrollment",
+    bulkIntro:
+      "Create many agents with one-time tokens at once. Columns (header line required): host, tenant, and optionally name, port, group. All rows are checked first; nothing is created if one row is invalid.",
+    bulkCsv: "CSV",
+    bulkFile: "Or load a file",
+    bulkSubmit: "Create agents",
+    bulkResult: (n: number) => `${n} agents created`,
+    bulkOnce:
+      "The tokens are shown only now. Download the CSV and hand each token to the host's installer; then click Enroll next to each agent.",
+    bulkDownload: "Download CSV",
   },
   repl: {
     primaryFingerprint:
