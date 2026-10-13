@@ -16,7 +16,7 @@ use catalog::rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-const SEARCHERS: &[&str] = &["admin", "operator", "tenant_admin", "tenant_user"];
+pub const SEARCHERS: &[&str] = &["admin", "operator", "tenant_admin", "tenant_user"];
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

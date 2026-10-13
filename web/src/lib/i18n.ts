@@ -90,6 +90,7 @@ export const en = {
     dashboard: "Dashboard",
     snapshots: "Snapshots",
     search: "Find files",
+    changes: "Snapshot changes",
     storage: "Storage",
     reports: "Reports",
     jobs: "Jobs",
@@ -430,6 +431,31 @@ export const en = {
     releaseQueued: "Hold released.",
     holdRange: "Hold a time range…",
     holdTitle: "Legal hold",
+    // Phase 21a: anomaly flags
+    anomalous: "Anomalous",
+    anomalousTitle: (reason: string) => `Flagged as anomalous: ${reason}`,
+    flagCleared: "Flag cleared",
+    flagClearedTitle: (by: string, at: string, note: string, reason: string) =>
+      `Cleared by ${by} on ${at}: ${note} (was: ${reason})`,
+    clearFlag: "Clear flag",
+    clearFlagLabel: (s: string, at: string) => `Clear the anomaly flag of ${s} from ${at}`,
+    clearTitle: "Clear anomaly flag",
+    clearIntro:
+      "Clearing the flag marks this snapshot as clean again: restore and hold dialogs offer it by default. Do this only after you have checked the source (for example in the snapshot diff). The reason stays visible, and your note goes into the audit log.",
+    clearNote: "Note (what you checked)",
+    clearSubmit: "Clear flag",
+    flagClearedOk: "Anomaly flag cleared.",
+    changes: "Changes",
+    changesLabel: (s: string, at: string) => `Changes in ${s} from ${at} against the previous snapshot`,
+    flaggedUsingClean: (flagged: string, reason: string, clean: string) =>
+      `The snapshot from ${flagged} is flagged as anomalous (${reason}). This dialog uses the latest clean snapshot before it, from ${clean}.`,
+    flaggedNoClean: (flagged: string, reason: string) =>
+      `The snapshot from ${flagged} is flagged as anomalous (${reason}). No clean snapshot of this source before it is kept.`,
+    flaggedUsingFlagged: (flagged: string, reason: string) =>
+      `You chose the flagged snapshot from ${flagged} (${reason}). It may contain encrypted or damaged files.`,
+    useFlagged: "Use the flagged snapshot instead",
+    useClean: "Use the latest clean snapshot",
+    flaggedSkipped: (at: string) => `newer flagged snapshot from ${at} skipped`,
     holdRangeTitle: "Legal hold for a time range",
     holdIntro:
       "A held snapshot is kept by retention, garbage collection, offsite retention and manual deletes until the hold is released. Setting it takes effect at once and is audited; releasing it needs approval.",
@@ -555,6 +581,8 @@ export const en = {
       inventory: "Refresh guest inventory",
       file_search: "File search",
       file_index: "File index",
+      file_changes: "File change signals",
+      snapshot_diff: "Snapshot diff",
       offsite_list: "List offsite copy",
       offsite_restore: "Fetch from offsite",
       offsite_attach: "Attach offsite copy",
@@ -657,6 +685,17 @@ export const en = {
       "This change allows more bandwidth or a wider sync window: it needs approval.",
   },
   sources: {
+    // Phase 21a: change trends (GET /stats/trends)
+    trends: "Change trends",
+    trendsIntro:
+      "New data and changed files of each protected system over its last 30 backups, oldest on the left. Red dots mark snapshots flagged as anomalous. A sudden spike is worth a look in the snapshot diff.",
+    trendSource: "Protected system",
+    trendBytes: "New data",
+    trendFiles: "Changed files",
+    trendLast: (v: string) => `last: ${v}`,
+    trendNoFiles: "no file index",
+    trendChart: (what: string, src: string, n: number) => `${what} of ${src} over the last ${n} backups`,
+    trendsEmpty: "No measured backups yet.",
     title: 'Sources',
     lede: 'Systems the appliance backs up: hypervisors, hosts, NAS systems, file shares and plugin sources.',
     new: 'New source',
@@ -1111,6 +1150,40 @@ export const en = {
     indexFilesShort: "File index",
     indexFilesOn: "File indexing switched on.",
     indexFilesOff: "File indexing switched off.",
+  },
+  /** Phase 21a: snapshot diff (POST /snapshots/diff) */
+  changes: {
+    title: "Snapshot changes",
+    lede: "Compare two snapshots of a source: which files were added, changed or deleted in between. Read-only, from the file name index; no file contents are read.",
+    tenant: "Tenant",
+    source: "Source",
+    base: "From (older)",
+    time: "To (newer)",
+    previous: "the previous snapshot",
+    filter: "Show",
+    all: "All changes",
+    added: "Added",
+    changed: "Changed",
+    deleted: "Deleted",
+    submit: "Compare",
+    working: "Comparing the file indexes…",
+    failed: "The comparison failed. The job log has the details.",
+    unindexed:
+      "One of the two snapshots has no file name index (VM and container disks are indexed only when the group indexes its guests' files). Nothing to compare.",
+    noBase: "This is the oldest kept snapshot of the source: there is nothing to compare it with.",
+    summary: (a: number, c: number, d: number) => `${a} added · ${c} changed · ${d} deleted`,
+    range: (from: number, to: number, total: number) => `${from}–${to} of ${total}`,
+    path: "Path",
+    change: "Change",
+    size: "Size",
+    modified: "Modified",
+    prev: "Previous page",
+    next: "Next page",
+    flagged: "flagged",
+    none: "No changes of this kind.",
+    pickSource: "Choose a source with at least two local snapshots.",
+    privacy:
+      "Only names, sizes and modification times from the sealed file index are compared. The comparison runs on the appliance with the tenant key and is recorded in the audit log.",
   },
   search: {
     title: "Find files",
@@ -1794,7 +1867,7 @@ export const en = {
       report: "A scheduled report could not be mailed. Check the SMTP server under Settings → Alert delivery (reachable, credentials) and the report's recipients on the Reports page, then use Send now. Resolves after the next successful send.",
       console_unlock: 'A one-time code for a root shell on the appliance console was issued. Make sure the request (Settings → Console access) was planned, then acknowledge.',
       console_root_shell: 'Someone opened a root shell on the appliance console. Confirm with the requester (or whoever holds the recovery key) what was done, check the audit log, then acknowledge.',
-      anomaly: 'Much more new data than usual, or new data that no longer compresses (typical for ransomware encrypting files). Check the source. A security officer can put the last good snapshot on legal hold right here, so that retention cannot remove it while you investigate.',
+      anomaly: 'Much more new data than usual, new data that no longer compresses, ransom-note file names or a mass rename of files (typical for ransomware). The snapshot is flagged as anomalous; compare it with the previous one under Snapshot changes and check the source. A security officer can put the last clean snapshot on legal hold right here, so that retention cannot remove it while you investigate, and clears the flag on the Snapshots page if it was a false alarm.',
       legal_hold_advisory: 'The primary holds this replicated snapshot under a legal hold. Holds are not applied here automatically: a security officer applies it with Apply hold. Resolves once applied or when the primary releases its hold.',
       disk: 'A disk or RAID array needs attention (SMART failing, bad sectors, temperature, NVMe wear, degraded or rebuilding array). Open Configuration → Hardware; replace a failed disk as the manual describes. Resolves when the disk or array is healthy again.',
       clock_skew: 'System time and the compliance clock (retention locks) differ. A lag after a restart is normal: the compliance clock catches up slowly and locks last longer meanwhile. A jump while running, or a compliance clock ahead of system time, means system time was changed by hand or a time source is wrong: check Diagnostics (time.sync, time.nts) and the audit log. Resolves when the difference is below a minute.',
@@ -2095,6 +2168,11 @@ export const en = {
         `Alert when a backup adds more than ${f} × the median of the last ${n} runs and more than ${g}, or when its new data compresses below 1.05 while the source usually compresses above 1.3. Needs 5 earlier runs.`,
       quorumHint:
         "Stricter thresholds apply at once. Switching detection off or raising the thresholds needs a second person when approvals are enabled.",
+      fileSignals:
+        "After each backup with a file name index, the files are also compared with the previous snapshot. A known ransom-note file name among the new files, or a mass rename (at least 50 files and 10 % of the files deleted while at least half as many files with extensions the source never had appear), raises the same alert and flags the snapshot. Restore and legal-hold dialogs then default to the latest clean snapshot.",
+      notes: "Extra ransom-note file names (one pattern per line)",
+      notesHint:
+        "Matched case-insensitively against the names of new files, with * and ? as wildcards, for example *_RECOVER_FILES*.txt. A built-in list of common ransom notes always applies. Removing a pattern needs approval.",
     },
   },
   /** Phase 14e: CSV exports and scheduled e-mail reports */

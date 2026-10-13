@@ -1315,14 +1315,14 @@ async fn storage_accounting_quota_and_anomaly_settings() {
     let r = t.get("/api/v1/settings/anomaly", &alice).await;
     assert_eq!(
         r.body,
-        json!({"enabled": true, "factor": 3.0, "history": 14, "floor_bytes": 1u64 << 30})
+        json!({"enabled": true, "factor": 3.0, "history": 14, "floor_bytes": 1u64 << 30, "ransom_notes": []})
     );
     let otto = t.login("otto").await;
     assert_eq!(
         t.get("/api/v1/settings/anomaly", &otto).await.status,
         StatusCode::FORBIDDEN
     );
-    let strict = json!({"enabled": true, "factor": 2.0, "history": 14, "floor_bytes": 1u64 << 30});
+    let strict = json!({"enabled": true, "factor": 2.0, "history": 14, "floor_bytes": 1u64 << 30, "ransom_notes": []});
     let r = t.put("/api/v1/settings/anomaly", &alice, strict.clone()).await;
     assert_eq!((r.status, &r.body), (StatusCode::OK, &strict));
     for bad in [
@@ -1336,7 +1336,7 @@ async fn storage_accounting_quota_and_anomaly_settings() {
             "{bad}"
         );
     }
-    let off = json!({"enabled": false, "factor": 2.0, "history": 14, "floor_bytes": 1u64 << 30});
+    let off = json!({"enabled": false, "factor": 2.0, "history": 14, "floor_bytes": 1u64 << 30, "ransom_notes": []});
     let r = t.put("/api/v1/settings/anomaly", &alice, off.clone()).await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
     let q = r.body["quorum_id"].as_i64().unwrap();
