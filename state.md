@@ -375,7 +375,25 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 - [x] config-restore.sh backup/fresh/restore/check: bundle on A, restore on a fresh B, A's admin signs in on B, tenant keys rekeyed from the escrow, 0 AVCs on A and B. Bugs fixed on the way: keyd could not publish the config backup key (SELinux), restore renamed across /var→/etc (EXDEV), offsite kept another installation's escrow silently (now refused)
 - [x] lab check lists every distinct AVC (tail -20 had hidden the keyd denial)
 - [x] network.sh (apply, egress, MTU ok/mismatch, mgmt rollback/confirm), disks.sh (RAID6/XFS create, fail, replace + rebuild, alerts resolve; mdadm needs CAP_MKNOD), grub-lock.sh, restore tests + recovery plan on PVE, lab/linux enroll/backup/incr/endpoint — all enforcing, 0 nexus AVCs
-- [ ] lab/edge (enrollment fixed: edge_enroll was refused as "invalid tenant"), lab/linux/bmr.sh rerun on the final image
+- [x] lab/edge: enroll, assign (rendezvous), refuse unknown certs, backup via the edge with 7444 blocked, endpoint request via the edge (start 2 s), signed edge update 0.1.0→0.1.1, check (443+7445 only, 0 AVCs). Fixed: edge_enroll refused as "invalid tenant"; edge image build; lab config lacked edge_update_dir
+- [ ] lab/linux/bmr.sh rerun on the final image
 - CI on bf5e4da: all Rust tests green; `prove pve-plugin/t` failed because the runner lacked libjson-perl (installed by the maintainer)
 - [x] CI: gh-runner rootless podman repaired by the maintainer (linger, store reset, XDG_RUNTIME_DIR in the runner .env)
 - [ ] screenshots regenerate, tag v0.1.0-alpha (draft)
+
+## Big lab: PVE host pve-test (2026-10-13)
+PVE 9.2 with a Windows DC (dc1dev), member server (member1dev, Server 2022) and Windows 11 client; driven
+through the PVE guest agent (`lab/windows/gexec.py`, no Windows passwords), dev control plane on the workstation.
+- [x] Windows agent on member1dev (`lab/windows/e2e.sh 101`): MSI install (auto/LocalSystem, 3 restart actions,
+  protected ACL, "not initialised" stop), enrollment (4 s, second enroll 409), VSS backup (9/9 writers, consistent,
+  no shadow copies left), incremental (USN: ~1130 unchanged, 1.4 KB transferred), restore identical (68 entries:
+  protected DACL + foreign owner, ADS incl. Zone.Identifier, hard links, symlinks, junction, long path, unicode,
+  attributes, times), restore through a planted junction writes nothing outside, MSI install refuses in-band
+  update (403), taskkill -> SCM restart, sc stop -> stays stopped
+- Fixed on the way (all had never run on Windows): MSI error 2613 (wixl sequenced RemoveExistingProducts inside
+  the script), service-setup lacked SERVICE_START (MSI 1722), agent refused IPv4 (Windows IPV6_V6ONLY default),
+  VSS GetSnapshotProperties returns S_OK with an empty struct on Server 2022 -> agent crashed in wcslen(NULL)
+  (device now via Query), API/UI refused Windows paths for sources and restore targets, desktop GUI had no icon
+  and its own green theme (now the web UI palette), package-check regexes (group members, CRLF)
+- [ ] DC (NTDS writer), Win11 client + GUI, fleet secret via MSI, MSI major upgrade, appliance VM on pve-test,
+  arm64 (emulated aarch64 VM)
