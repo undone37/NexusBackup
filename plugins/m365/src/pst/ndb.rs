@@ -562,6 +562,149 @@ mod tests {
         assert_eq!(u32::from_le_bytes(am[500..504].try_into().unwrap()), crc(&am[..496]));
     }
 
+    /// The block `bid` as written: checks its placement and trailer ([MS-PST] 2.2.2.8.1:
+    /// 64-byte aligned, `cb`, `wSig` per 5.5, CRC per 5.3, `bid`) → its data.
+    fn read_block(n: &mut Ndb<Cursor<Vec<u8>>>, bid: u64) -> Vec<u8> {
+        let e = *n.bbt.iter().find(|e| e.bid == bid).expect("BID in the BBT");
+        assert_eq!(e.ib % 64, 0, "block {bid:#x} at {:#x}", e.ib);
+        assert!(e.cb as usize <= BLOCK_DATA);
+        let size = (e.cb as usize + TRAILER).div_ceil(64) * 64;
+        let i = (e.ib - AMAP_FIRST) / AMAP_SPAN;
+        assert!(e.ib >= data_start(i) && e.ib + size as u64 <= region_start(i + 1));
+        let w = n.w.get_ref();
+        let b = &w[e.ib as usize..e.ib as usize + size];
+        let t = &b[size - TRAILER..];
+        let data = b[..e.cb as usize].to_vec();
+        assert_eq!(u16::from_le_bytes([t[0], t[1]]), e.cb);
+        assert_eq!(u16::from_le_bytes([t[2], t[3]]), sig(e.ib, bid));
+        assert_eq!(u32::from_le_bytes(t[4..8].try_into().unwrap()), crc(&data));
+        assert_eq!(u64::from_le_bytes(t[8..16].try_into().unwrap()), bid);
+        data
+    }
+
+    /// A data stream read back through its data tree, checking the XBLOCK / XXBLOCK
+    /// rules of [MS-PST] 2.2.2.8.3.1 / 2.2.2.8.3.2: btype 0x01, cLevel 1 / 2, cEnt
+    /// within one block, lcbTotal = the bytes below, internal BIDs for the tree and
+    /// external ones for the data; the data blocks of a raw stream are full (8176
+    /// bytes) except the last. → (bytes, tree depth)
+    fn read_stream(n: &mut Ndb<Cursor<Vec<u8>>>, bid: u64) -> (Vec<u8>, u8) {
+        let b = read_block(n, bid);
+        if bid & 2 == 0 {
+            return (b, 0);
+        }
+        assert_eq!(b[0], 0x01, "btype of {bid:#x}");
+        let level = b[1];
+        let cent = u16::from_le_bytes([b[2], b[3]]) as usize;
+        let lcb = u32::from_le_bytes(b[4..8].try_into().unwrap()) as usize;
+        assert!((1..=2).contains(&level) && (1..=X_MAX).contains(&cent));
+        assert_eq!(b.len(), 8 + 8 * cent, "no slack after rgbid");
+        let mut out = Vec::with_capacity(lcb);
+        for k in 0..cent {
+            let child = u64::from_le_bytes(b[8 + 8 * k..16 + 8 * k].try_into().unwrap());
+            let (bytes, depth) = read_stream(n, child);
+            assert_eq!(depth, level - 1, "child {k} of a level-{level} block");
+            if level == 1 && k + 1 < cent {
+                assert_eq!(bytes.len(), BLOCK_DATA, "data block {k} is full");
+            }
+            out.extend_from_slice(&bytes);
+        }
+        assert_eq!(out.len(), lcb, "lcbTotal");
+        (out, level)
+    }
+
+    /// Stream sizes at every data-tree boundary: one block, the first XBLOCK, a full
+    /// XBLOCK (1021 blocks), the first XXBLOCK — each read back byte for byte.
+    #[test]
+    fn data_trees_at_block_boundaries() {
+        let mut n = Ndb::new(Cursor::new(Vec::new())).unwrap();
+        let full = X_MAX * BLOCK_DATA;
+        let cases = [
+            (1, 0),
+            (3580, 0),
+            (BLOCK_DATA - 1, 0),
+            (BLOCK_DATA, 0),
+            (BLOCK_DATA + 1, 1),
+            (2 * BLOCK_DATA, 1),
+            (2 * BLOCK_DATA + 1, 1),
+            (300_000, 1),
+            (full - 1, 1),
+            (full, 1),
+            (full + 1, 2),
+            (full + BLOCK_DATA, 2),
+            (full + BLOCK_DATA + 1, 2),
+        ];
+        for (size, depth) in cases {
+            let bytes: Vec<u8> = (0..size as u32)
+                .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+                .collect();
+            let bid = n.data(&bytes).unwrap();
+            let (back, d) = read_stream(&mut n, bid);
+            assert_eq!(d, depth, "tree depth for {size} bytes");
+            assert!(back == bytes, "{size} bytes read back");
+        }
+        // heap / row-matrix streams keep their block boundaries
+        let blocks = vec![vec![1u8; 100], vec![2u8; BLOCK_DATA], vec![3u8; 7]];
+        let bid = n.data_blocks(&blocks).unwrap();
+        let b = read_block(&mut n, bid);
+        assert_eq!((b[0], b[1], u16::from_le_bytes([b[2], b[3]])), (1, 1, 3));
+        assert_eq!(
+            u32::from_le_bytes(b[4..8].try_into().unwrap()),
+            100 + BLOCK_DATA as u32 + 7
+        );
+        let mut out = Vec::new();
+        for k in 0..3 {
+            let child = u64::from_le_bytes(b[8 + 8 * k..16 + 8 * k].try_into().unwrap());
+            out.push(read_block(&mut n, child));
+        }
+        assert_eq!(out, blocks);
+        n.finish().unwrap();
+    }
+
+    /// Subnode trees around the SLBLOCK limit (340 entries): one SLBLOCK, then an
+    /// SIBLOCK over SLBLOCKs ([MS-PST] 2.2.2.8.3.3.1 / 2.2.2.8.3.3.2), entries sorted
+    /// by NID whatever the input order.
+    #[test]
+    fn subnode_trees_at_the_slblock_limit() {
+        for count in [1, SL_MAX - 1, SL_MAX, SL_MAX + 1, 2 * SL_MAX + 1] {
+            let mut n = Ndb::new(Cursor::new(Vec::new())).unwrap();
+            // descending NIDs: the writer has to sort them
+            let subs: Vec<SubEntry> = (0..count as u32)
+                .rev()
+                .map(|i| SubEntry {
+                    nid: ((i + 1) << 5) | 0x1F,
+                    data: 4 + 4 * u64::from(i),
+                    sub: 0,
+                })
+                .collect();
+            let bid = n.subnodes(subs).unwrap();
+            let b = read_block(&mut n, bid);
+            assert_eq!(b[0], 0x02);
+            let cent = u16::from_le_bytes([b[2], b[3]]) as usize;
+            let mut nids = Vec::new();
+            if count <= SL_MAX {
+                assert_eq!((b[1], cent), (0, count), "one SLBLOCK");
+                assert_eq!(b.len(), 8 + 24 * cent);
+                nids.extend((0..cent).map(|k| u64::from_le_bytes(b[8 + 24 * k..16 + 24 * k].try_into().unwrap())));
+            } else {
+                assert_eq!((b[1], cent), (1, count.div_ceil(SL_MAX)), "an SIBLOCK");
+                assert_eq!(b.len(), 8 + 16 * cent);
+                for k in 0..cent {
+                    let key = u64::from_le_bytes(b[8 + 16 * k..16 + 16 * k].try_into().unwrap());
+                    let child = u64::from_le_bytes(b[16 + 16 * k..24 + 16 * k].try_into().unwrap());
+                    let sl = read_block(&mut n, child);
+                    assert_eq!((sl[0], sl[1]), (0x02, 0));
+                    let first = u64::from_le_bytes(sl[8..16].try_into().unwrap());
+                    assert_eq!(key, first, "SIENTRY key = first NID of its SLBLOCK");
+                    let c = u16::from_le_bytes([sl[2], sl[3]]) as usize;
+                    nids.extend((0..c).map(|j| u64::from_le_bytes(sl[8 + 24 * j..16 + 24 * j].try_into().unwrap())));
+                }
+            }
+            let want: Vec<u64> = (0..count as u64).map(|i| ((i + 1) << 5) | 0x1F).collect();
+            assert_eq!(nids, want);
+            n.finish().unwrap();
+        }
+    }
+
     #[test]
     fn allocation_skips_the_next_regions_maps() {
         let mut n = Ndb::new(Cursor::new(Vec::new())).unwrap();
