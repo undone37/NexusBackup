@@ -137,7 +137,7 @@ impl Scheduler {
             .collect();
         for (src, t, lvl) in &snaps {
             self.db.conn().execute(
-                "INSERT INTO snapshots (tenant, source, time, local, offsite, consistency) VALUES (?1,?2,?3,0,0,?4)
+                "INSERT INTO snapshots (tenant, source, time, local, offsite, consistency) VALUES (?1,?2,?3,1,0,?4)
                  ON CONFLICT (tenant, source, time) DO UPDATE SET consistency=?4",
                 params![job.tenant, src, t, lvl],
             )?;

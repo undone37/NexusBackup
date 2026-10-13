@@ -177,3 +177,63 @@ fn allocation_reports_zero_regions() {
         "everything but the written MiB"
     );
 }
+
+/// Pipelined reads against a real qemu-nbd: the same bytes as one read at a time, any depth.
+#[test]
+fn read_many_matches_read_at() {
+    if Command::new("qemu-nbd").arg("--version").output().is_err() {
+        eprintln!("qemu-nbd missing, skipping");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let img = d.path().join("p.qcow2");
+    let img = img.to_str().unwrap();
+    run("qemu-img", &["create", "-q", "-f", "qcow2", img, "32M"]);
+    run(
+        "qemu-io",
+        &[
+            "-f",
+            "qcow2",
+            "-c",
+            "write -q -P 0x5a 1M 3M",
+            "-c",
+            "write -q -P 0xa5 20M 512k",
+            img,
+        ],
+    );
+    let sock = d.path().join("nbd.sock");
+    let _srv = Kill(
+        Command::new("qemu-nbd")
+            .args(["-r", "-f", "qcow2", "-k", sock.to_str().unwrap(), img])
+            .spawn()
+            .unwrap(),
+    );
+    let s = (0..100)
+        .find_map(|_| {
+            UnixStream::connect(&sock).ok().or_else(|| {
+                std::thread::sleep(Duration::from_millis(50));
+                None
+            })
+        })
+        .expect("qemu-nbd socket");
+    let mut c = nbd::Client::connect(s.try_clone().unwrap(), s, "", &[]).unwrap();
+    let ranges: Vec<(u64, u64)> = (0..32u64)
+        .map(|i| (i << 20, if i % 3 == 0 { 1 << 20 } else { 700_000 }))
+        .collect();
+    let mut want = Vec::new();
+    for &(o, l) in &ranges {
+        let mut b = vec![0u8; l as usize];
+        c.read_at(o, &mut b).unwrap();
+        want.push(b);
+    }
+    for depth in [1, 4, 16] {
+        let mut got = Vec::new();
+        c.read_many(&ranges, depth, |i, b| {
+            assert_eq!(i, got.len());
+            got.push(b);
+            Ok(())
+        })
+        .unwrap();
+        assert!(got == want, "depth {depth}");
+    }
+}

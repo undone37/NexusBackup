@@ -108,6 +108,7 @@ pub fn destroy_guest(api: &crate::api::Api, node: &str, kind: &str, vmid: u32) -
 /// recreated on `target_storage`, snapshot sections, locks, `onboot` and
 /// disks that were not backed up are dropped. `link_down` disconnects all NICs
 /// (avoids address conflicts with the still running original).
+#[allow(clippy::too_many_arguments)] // two plain flags; a struct for them would only rename the call sites
 pub fn ir_config(
     conf: &str,
     storage: &str,
@@ -116,6 +117,7 @@ pub fn ir_config(
     devices: &[String],
     target_storage: &str,
     link_down: bool,
+    fresh_tpm: bool,
 ) -> Result<IrConfig> {
     let mut map = BTreeMap::new();
     let mut lines = Vec::new();
@@ -176,7 +178,22 @@ pub fn ir_config(
             _ if is_disk_key(k) => {
                 if let Some(device) = map.get(k) {
                     if k == "tpmstate0" {
-                        bail!("VMs with a TPM state cannot be instantly recovered (swtpm needs a local raw image)");
+                        // swtpm needs a local raw image, not an NBD-backed overlay. A restore test
+                        // (isolated network) boots with a fresh vTPM: enough for boot / agent / port
+                        // checks; secrets sealed to the old TPM (BitLocker, Windows Hello) are not there.
+                        if !fresh_tpm {
+                            bail!(
+                                "VMs with a TPM state cannot be instantly recovered (swtpm needs a local raw image): \
+                                 use a full restore"
+                            );
+                        }
+                        let version = v
+                            .split(',')
+                            .find(|o| o.starts_with("version="))
+                            .unwrap_or("version=v2.0");
+                        push(k, format!("{target_storage}:1,{version}"));
+                        eprintln!("tpmstate0: fresh vTPM for the restore test (the backed-up TPM state is not used)");
+                        continue;
                     }
                     if !devices.contains(device) {
                         bail!("{k}: snapshot has no device {device}");
@@ -448,6 +465,7 @@ impl Cluster {
             &devices,
             target_storage,
             opts.link_down && bridge.is_none(),
+            bridge.is_some(),
         )?;
         if !plan.dropped.is_empty() {
             eprintln!("not backed up, left out: {}", plan.dropped.join(", "));
@@ -663,7 +681,17 @@ scsi0: local-lvm:vm-100-disk-0,size=2G
 
     #[test]
     fn rewrites_config() {
-        let c = ir_config(CONF, "nexus", 903, "nexus-100-1760000000", &devs(), "local-lvm", false).unwrap();
+        let c = ir_config(
+            CONF,
+            "nexus",
+            903,
+            "nexus-100-1760000000",
+            &devs(),
+            "local-lvm",
+            false,
+            false,
+        )
+        .unwrap();
         let p: BTreeMap<&str, &str> = c.params.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         assert_eq!(
             p["scsi0"],
@@ -714,7 +742,7 @@ scsi0: local-lvm:vm-100-disk-0,size=2G
 
     #[test]
     fn link_down_isolates_all_nics() {
-        let c = ir_config(CONF, "nexus", 903, "nexus-100-1", &devs(), "local-lvm", true).unwrap();
+        let c = ir_config(CONF, "nexus", 903, "nexus-100-1", &devs(), "local-lvm", true, false).unwrap();
         let p: BTreeMap<&str, &str> = c.params.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         assert_eq!(p["net0"], "virtio,bridge=vmbr1,link_down=1");
         assert_eq!(p["net1"], "e1000,bridge=vmbr0,firewall=1,link_down=1");
@@ -722,14 +750,46 @@ scsi0: local-lvm:vm-100-disk-0,size=2G
 
     #[test]
     fn refuses_unservable_configs() {
-        let missing = ir_config(CONF, "nexus", 903, "nexus-100-1", &["drive-scsi0".into()], "x", false);
+        let missing = ir_config(
+            CONF,
+            "nexus",
+            903,
+            "nexus-100-1",
+            &["drive-scsi0".into()],
+            "x",
+            false,
+            false,
+        );
         assert!(missing.unwrap_err().to_string().contains("no device drive-virtio0"));
         let tpm =
             "tpmstate0: local-lvm:vm-1-disk-1,size=4M,version=v2.0\n#qmdump#map:tpmstate0:drive-tpmstate0:l:raw:\n";
-        assert!(ir_config(tpm, "nexus", 9, "nexus-1-1", &["drive-tpmstate0".into()], "x", false).is_err());
-        assert!(ir_config("memory: 512\n", "nexus", 9, "nexus-1-1", &[], "x", false).is_err());
-        assert!(ir_config("template: 1\n", "nexus", 9, "nexus-1-1", &[], "x", false).is_err());
-        assert!(ir_config("garbage\n", "nexus", 9, "nexus-1-1", &[], "x", false).is_err());
+        assert!(ir_config(
+            tpm,
+            "nexus",
+            9,
+            "nexus-1-1",
+            &["drive-tpmstate0".into()],
+            "x",
+            false,
+            false
+        )
+        .is_err());
+        // a restore test (fresh_tpm) boots with a new vTPM on the target storage; the disks stay IR
+        let win = "scsi0: local-lvm:vm-1-disk-0,size=32G\n#qmdump#map:scsi0:drive-scsi0:l:raw:\n\
+                   tpmstate0: local-lvm:vm-1-disk-1,size=4M,version=v2.0\n#qmdump#map:tpmstate0:drive-tpmstate0:l:raw:\n";
+        let devs = ["drive-scsi0".to_string(), "drive-tpmstate0".to_string()];
+        let c = ir_config(win, "nexus", 9, "nexus-1-1", &devs, "vmpool", false, true).unwrap();
+        assert!(
+            c.params
+                .iter()
+                .any(|(k, v)| k == "tpmstate0" && v == "vmpool:1,version=v2.0"),
+            "{:?}",
+            c.params
+        );
+        assert_eq!(c.disks.iter().map(|d| d.key.as_str()).collect::<Vec<_>>(), ["scsi0"]);
+        assert!(ir_config("memory: 512\n", "nexus", 9, "nexus-1-1", &[], "x", false, false).is_err());
+        assert!(ir_config("template: 1\n", "nexus", 9, "nexus-1-1", &[], "x", false, false).is_err());
+        assert!(ir_config("garbage\n", "nexus", 9, "nexus-1-1", &[], "x", false, false).is_err());
     }
 
     #[test]

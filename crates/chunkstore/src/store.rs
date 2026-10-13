@@ -620,6 +620,20 @@ impl Store {
     /// Bytes [`Store::store_image_extents`] reads through `read_at` for these
     /// arguments (live progress: the total of a disk before it is read).
     pub fn image_extents_bytes(prev: Option<&Index>, chunk_size: usize, size: u64, dirty: &[(u64, u64)]) -> u64 {
+        Self::image_extents_reads(prev, chunk_size, size, dirty)
+            .iter()
+            .map(|(a, b)| b - a)
+            .sum()
+    }
+
+    /// The `(start, end)` ranges [`Store::store_image_extents`] passes to `read_at`, in
+    /// call order (a reader can fetch them ahead, e.g. pipelined NBD requests).
+    pub fn image_extents_reads(
+        prev: Option<&Index>,
+        chunk_size: usize,
+        size: u64,
+        dirty: &[(u64, u64)],
+    ) -> Vec<(u64, u64)> {
         let prev_size = match prev {
             Some(Index::Fixed { size, .. }) => *size,
             _ => 0,
@@ -628,8 +642,7 @@ impl Store {
         let mut i = 0;
         (0..size.div_ceil(cs))
             .flat_map(|n| chunk_reads(dirty, &mut i, n * cs, ((n + 1) * cs).min(size), prev_size))
-            .map(|(a, b)| b - a)
-            .sum()
+            .collect()
     }
 
     /// FastCDC chunking of one file; returns (chunks, size).

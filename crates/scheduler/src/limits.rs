@@ -81,7 +81,7 @@ impl Scheduler {
     pub(crate) fn backup_meta_bookkeeping(&self, job: &Job, log: &str) -> Result<()> {
         for (src, t, m) in backup_meta(log) {
             self.db.conn().execute(
-                "INSERT INTO snapshots (tenant, source, time, local, offsite, meta) VALUES (?1,?2,?3,0,0,?4)
+                "INSERT INTO snapshots (tenant, source, time, local, offsite, meta) VALUES (?1,?2,?3,1,0,?4)
                  ON CONFLICT (tenant, source, time) DO UPDATE SET meta = json_patch(COALESCE(meta,'{}'), ?4)",
                 params![job.tenant, src, t, m.to_string()],
             )?;

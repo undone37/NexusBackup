@@ -305,6 +305,125 @@ impl<R: Read, W: Write> Client<R, W> {
         Ok(())
     }
 
+    /// Reads `ranges` (`(offset, len)`, each at most [`MAX_REQUEST`]) with up to `depth`
+    /// requests in flight and hands each one's bytes to `sink(index, data)` in range order.
+    /// Replies may arrive in any order and interleave (structured replies); holes come back as
+    /// zeroes. At most `depth` ranges are held at once (in flight or waiting for delivery).
+    /// One request at a time pays a full round trip per read; over SSH that, not bandwidth,
+    /// limited VM backups.
+    pub fn read_many(
+        &mut self,
+        ranges: &[(u64, u64)],
+        depth: usize,
+        mut sink: impl FnMut(usize, Vec<u8>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        use std::collections::{BTreeMap, HashMap};
+        let depth = depth.max(1);
+        if let Some(r) = ranges.iter().find(|r| r.1 > MAX_REQUEST as u64) {
+            return Err(proto(format!("read of {} bytes exceeds one request", r.1)));
+        }
+        // cookie -> (index, offset, buffer)
+        let mut pending: HashMap<u64, (usize, u64, Vec<u8>)> = HashMap::new();
+        let mut ready: BTreeMap<usize, Vec<u8>> = BTreeMap::new();
+        let (mut next_send, mut next_out) = (0usize, 0usize);
+        while next_out < ranges.len() {
+            let mut sent = false;
+            while next_send < ranges.len() && pending.len() + ready.len() < depth {
+                let (off, len) = ranges[next_send];
+                self.cookie += 1;
+                let mut m = Vec::with_capacity(28);
+                m.extend(REQUEST_MAGIC.to_be_bytes());
+                m.extend(0u16.to_be_bytes());
+                m.extend(CMD_READ.to_be_bytes());
+                m.extend(self.cookie.to_be_bytes());
+                m.extend(off.to_be_bytes());
+                m.extend((len as u32).to_be_bytes());
+                self.w.write_all(&m)?;
+                pending.insert(self.cookie, (next_send, off, vec![0u8; len as usize]));
+                next_send += 1;
+                sent = true;
+            }
+            if sent {
+                self.w.flush()?;
+            }
+            if !pending.is_empty() {
+                match u32_(&mut self.r)? {
+                    SIMPLE_REPLY_MAGIC => {
+                        let err = u32_(&mut self.r)?;
+                        let cookie = u64_(&mut self.r)?;
+                        let (idx, _, mut buf) = pending
+                            .remove(&cookie)
+                            .ok_or_else(|| proto("reply for an unknown cookie"))?;
+                        if err != 0 {
+                            return Err(proto(format!("server error {err}")));
+                        }
+                        self.r.read_exact(&mut buf)?;
+                        ready.insert(idx, buf);
+                    }
+                    STRUCTURED_REPLY_MAGIC => {
+                        let flags = u16_(&mut self.r)?;
+                        let ty = u16_(&mut self.r)?;
+                        let cookie = u64_(&mut self.r)?;
+                        let len = u32_(&mut self.r)?;
+                        if len > MAX_REQUEST + 4096 {
+                            return Err(proto("reply chunk too large"));
+                        }
+                        let payload = bytes(&mut self.r, len as usize)?;
+                        let entry = pending
+                            .get_mut(&cookie)
+                            .ok_or_else(|| proto("reply for an unknown cookie"))?;
+                        if ty & 0x8000 != 0 {
+                            let msg = payload
+                                .get(6..)
+                                .map(|m| String::from_utf8_lossy(m).into_owned())
+                                .unwrap_or_default();
+                            return Err(proto(format!("read error: {msg}")));
+                        }
+                        if ty == REPLY_OFFSET_DATA || ty == REPLY_OFFSET_HOLE {
+                            if payload.len() < 8 {
+                                return Err(proto("short read chunk"));
+                            }
+                            let at =
+                                u64::from_be_bytes(payload[..8].try_into().unwrap()).wrapping_sub(entry.1) as usize;
+                            let n = if ty == REPLY_OFFSET_DATA {
+                                payload.len() - 8
+                            } else {
+                                u32::from_be_bytes(
+                                    payload
+                                        .get(8..12)
+                                        .ok_or_else(|| proto("short hole chunk"))?
+                                        .try_into()
+                                        .unwrap(),
+                                ) as usize
+                            };
+                            let dst = entry
+                                .2
+                                .get_mut(at..at.checked_add(n).ok_or_else(|| proto("read chunk out of range"))?)
+                                .ok_or_else(|| proto("read chunk out of range"))?;
+                            if ty == REPLY_OFFSET_DATA {
+                                dst.copy_from_slice(&payload[8..]);
+                            } else {
+                                dst.fill(0);
+                            }
+                        } else if ty != REPLY_NONE {
+                            return Err(proto(format!("unexpected read reply {ty}")));
+                        }
+                        if flags & REPLY_FLAG_DONE != 0 {
+                            let (idx, _, buf) = pending.remove(&cookie).unwrap();
+                            ready.insert(idx, buf);
+                        }
+                    }
+                    m => return Err(proto(format!("bad reply magic {m:#x}"))),
+                }
+            }
+            while let Some(buf) = ready.remove(&next_out) {
+                sink(next_out, buf)?;
+                next_out += 1;
+            }
+        }
+        Ok(())
+    }
+
     /// Extents `(offset, length, flags)` of meta context `ctx` over the whole export.
     pub fn block_status(&mut self, ctx: &str) -> io::Result<Vec<(u64, u64, u32)>> {
         let id = self
@@ -385,6 +504,62 @@ impl<R: Read, W: Write> Seek for Client<R, W> {
 
 #[cfg(test)]
 mod tests {
+
+    /// read_many with replies out of order and interleaved structured chunks (data, hole,
+    /// done on a NONE chunk) delivers every range intact and in range order.
+    #[test]
+    fn read_many_reorders_and_reassembles() {
+        fn chunk(flags: u16, ty: u16, cookie: u64, payload: &[u8]) -> Vec<u8> {
+            let mut m = Vec::new();
+            m.extend(STRUCTURED_REPLY_MAGIC.to_be_bytes());
+            m.extend(flags.to_be_bytes());
+            m.extend(ty.to_be_bytes());
+            m.extend(cookie.to_be_bytes());
+            m.extend((payload.len() as u32).to_be_bytes());
+            m.extend(payload);
+            m
+        }
+        let data = |off: u64, b: &[u8]| [&off.to_be_bytes()[..], b].concat();
+        // three reads of 8 bytes at 0, 100, 200 (cookies 1, 2, 3)
+        let mut r = Vec::new();
+        r.extend(chunk(0, REPLY_OFFSET_DATA, 3, &data(204, b"WXYZ"))); // cookie 3, second half first
+        r.extend(chunk(0, REPLY_OFFSET_DATA, 2, &data(100, b"ijklmnop")));
+        r.extend(chunk(0, REPLY_OFFSET_DATA, 3, &data(200, b"STUV")));
+        r.extend(chunk(REPLY_FLAG_DONE, REPLY_NONE, 3, &[]));
+        r.extend(chunk(REPLY_FLAG_DONE, REPLY_NONE, 2, &[]));
+        r.extend(chunk(0, REPLY_OFFSET_DATA, 1, &data(0, b"abcd")));
+        r.extend(chunk(
+            REPLY_FLAG_DONE,
+            REPLY_OFFSET_HOLE,
+            1,
+            &[&4u64.to_be_bytes()[..], &4u32.to_be_bytes()[..]].concat(),
+        ));
+        let mut c = Client {
+            r: std::io::Cursor::new(r),
+            w: Vec::new(),
+            size: 1 << 20,
+            pos: 0,
+            cookie: 0,
+            contexts: vec![],
+        };
+        let mut got = Vec::new();
+        c.read_many(&[(0, 8), (100, 8), (200, 8)], 3, |i, b| {
+            got.push((i, b));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            got,
+            vec![
+                (0, b"abcd\0\0\0\0".to_vec()),
+                (1, b"ijklmnop".to_vec()),
+                (2, b"STUVWXYZ".to_vec())
+            ]
+        );
+        // three requests went out before any reply was needed
+        assert_eq!(c.w.len(), 3 * 28);
+    }
+
     use super::*;
 
     fn optrep(opt: u32, ty: u32, data: &[u8]) -> Vec<u8> {
