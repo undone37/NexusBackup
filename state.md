@@ -347,7 +347,8 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 - [x] 21a anomalous snapshots, file-level change signals, snapshot diff, sparklines (v28)
 - [x] 21c passkeys (WebAuthn second factor, v31, T37)
 - [x] 21b incident mode, posture checks, session cap, DEK reminder (settings only, T40–T41)
-- [ ] 21d CVE scan + bit-rot repair; 21e YARA + secure restore + Entra ID
+- [x] 21d CVE scan (grype in release + weekly), CIS report, damaged-chunk detection + repair from offsite/primary (v32, T39, T42)
+- [ ] 21e YARA + secure restore + Entra ID
 
 ## Phase 25 — Recovery assurance (2026-10-13)
 - [ ] restore tests (isolated instant recovery + guest-agent checks), recovery plans, readiness checks, DR report (v34)
