@@ -2,7 +2,8 @@
 
 Every person who works with the appliance gets an own account with a role. There are two kinds of accounts:
 
-- **Local accounts** (appliance accounts) have a password and a TOTP authenticator. They are created by an
+- **Local accounts** (appliance accounts) have a password and a TOTP authenticator, optionally also
+  [passkeys](#passkeys) (security keys, phones, the computer's built-in authenticator). They are created by an
   administrator, but **the administrator never sets or learns another person's password or authenticator**: the new
   user activates the account with a one-time activation code and chooses both themselves.
 - **Single sign-on accounts** sign in through your organization's identity provider (Microsoft Entra ID, Keycloak,
@@ -168,7 +169,11 @@ You received a user name, an activation link and an activation code (or two halv
 
    ![Step 3: authenticator](images/activate-authenticator.png)
 
-5. Sign in with your user name, your new password and a code from the app.
+   Optionally register a **Passkey** in the same step: enter a name, click **Register passkey** and follow your
+   browser's prompt. For administrators and security officers the passkey is **required** while
+   [passkeys are required](#requiring-passkeys-for-administrators-and-security-officers); the step then says so.
+
+5. Sign in with your user name, your new password and a code from the app (or your passkey).
 
    ![Activation done](images/activate-done.png)
 
@@ -206,6 +211,10 @@ the account again with the new code as described above.
 
 For an administrator or security officer with approvals enabled, the new code is split like at creation and needs
 approval; the old credentials keep working until the request is approved.
+
+A **lost passkey** is handled the same way: remove it on **My account** if you can still sign in with another
+passkey or your authenticator code; otherwise ask for a new activation code. A new activation code (and the console
+break-glass reset) removes all passkeys of the account; you register new ones while activating.
 
 If you are the **only** administrator and lost your authenticator or password, nobody can issue you a new code in
 the web interface. Use the console break-glass procedure with the recovery key: see
@@ -254,8 +263,65 @@ restores protection, audited `tenant.enable`): schedules resume and the tenant's
 - Who may reach the sign-in page at all is set per network in **Settings → Firewall** (the web service's source
   list, an approval request for every change); see [02 Installation](02-installation.md#inbound-firewall).
 
-> **Status:** Local accounts support only TOTP authenticators. WebAuthn (security keys) is planned; with single
-> sign-on, the identity provider can require security keys.
+- Administrators and security officers can be required to use a passkey instead of an authenticator code: see
+  [Passkeys](#passkeys).
+
+### Passkeys
+
+A **passkey** (WebAuthn: a security key such as a YubiKey, a phone, or the computer's built-in authenticator such as
+Windows Hello or Touch ID) can replace the authenticator code as the **second factor** of a local account. Your
+password is still needed; the appliance has no sign-in with a passkey alone. Unlike a code, a passkey cannot be
+phished: the browser signs only for the appliance's own address.
+
+**Add a passkey:** **My account → Passkeys → Add passkey**. Enter a name (for example "YubiKey 5C"), confirm with
+**Your current password** and **Your authenticator code** (or leave the code empty to confirm with a passkey you
+already have), click **Add passkey** and follow the browser's prompt (touch the key, use the fingerprint, …). The
+list shows each passkey's name, algorithm (ES256 or EdDSA), the host name it belongs to, when it was added and last
+used. **Rename** and **Remove** act on one passkey (audited `passkey.register`, `passkey.rename`,
+`passkey.remove`). You can register up to 10.
+
+![My account: passkeys](images/account-passkeys.png)
+
+![Adding a passkey: re-authentication, then the browser's prompt](images/passkey-add.png)
+
+**Sign in with a passkey:** enter your user name and password, leave **Authenticator code** empty and click **Sign in
+with a passkey**. Wherever the appliance asks you to confirm it is you (password change, new activation codes,
+API tokens, ending all sessions), leave the authenticator code empty to confirm with a passkey instead.
+
+Things to know:
+
+- A passkey belongs to the **host name** the appliance was opened with when you registered it (the *relying party
+  ID*, for example `backup.example.com`). Open the appliance always under the same name. Passkeys do not work when
+  the appliance is opened by its IP address. An administrator can fix the name in **Settings → Security →
+  Passkeys → Relying party ID**; empty means "the host name this page is served on".
+- The appliance accepts any authenticator (no vendor attestation). A synced passkey (e.g. in a password manager or a
+  phone's cloud account) is as safe as that account.
+- If an authenticator reports a signature counter, every sign-in must count up; a cloned key is refused and the
+  attempt is audited (`auth.login_failed`, reason "signature counter …").
+- Single sign-on accounts have no passkeys on the appliance; their identity provider can require security keys.
+
+#### Requiring passkeys for administrators and security officers
+
+**Settings → Security → Passkeys → Require passkeys for admins and security officers** makes passkeys mandatory for
+local administrators and security officers: they sign in and confirm changes with a passkey only; authenticator
+codes are refused for them. Operators, tenant admins, tenant users and viewers keep using codes or passkeys as they
+like.
+
+![Settings → Security: passkeys](images/settings-passkeys.png)
+
+- Turning the requirement **on** applies at once (it only tightens sign-in). It is refused if your own account has
+  no passkey for the current host name, so that you cannot lock yourself out. The card lists the administrators and
+  security officers who still have no passkey: they cannot sign in once the requirement is on, until they get a new
+  activation code (and register a passkey while activating). Ask them to add a passkey first.
+- Turning it **off** or changing the relying party ID is an approval request (`security.passkeys`) while approvals
+  are enabled. The relying party ID cannot be changed while the requirement is on (all passkeys would stop working).
+- While it is on, an administrator or security officer cannot remove their last passkey, granting one of these roles
+  to an account without a passkey is refused (issue a new activation code with the role change instead), and new or
+  reset privileged accounts must register a passkey during activation.
+
+> **Status:** Passkeys are covered by API tests with a software authenticator (ES256 and Ed25519 keys, origin,
+> relying party, counter and policy checks) and by the demo backend; they were not yet tried with real security keys
+> and browsers in the VM lab. The browser's own passkey prompt does not appear in the screenshots.
 
 ### Your sessions (My account)
 

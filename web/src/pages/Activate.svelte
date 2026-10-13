@@ -2,6 +2,7 @@
   import { post, errText } from '../lib/api';
   import { route, href } from '../lib/router.svelte';
   import { t } from '../lib/i18n';
+  import { createPasskey, passkeysSupported } from '../lib/passkey';
   import Qr from '../components/Qr.svelte';
   import Logo from '../components/Logo.svelte';
   import AuthHero from '../components/AuthHero.svelte';
@@ -16,6 +17,11 @@
   let repeat = $state('');
   let totp = $state('');
   let enroll = $state<{ totp_uri: string; totp_secret: string } | null>(null);
+  // Phase 21c: a passkey registered in step 3 (required for admins / security officers by policy)
+  let passkeyRequired = $state(false);
+  let passkey: Record<string, any> | null = $state(null);
+  let passkeyName = $state('');
+  let withPasskey = $state(false);
   let busy = $state(false);
   let error: string | null = $state(null);
 
@@ -24,11 +30,13 @@
     busy = true;
     error = null;
     try {
-      const r = await post<{ name: string; totp_uri: string; totp_secret: string }>('/auth/activate/begin', {
+      const r = await post<{ name: string; totp_uri: string; totp_secret: string; passkey_required?: boolean }>('/auth/activate/begin', {
         name: name.trim(),
         code: code.trim(),
       });
       enroll = { totp_uri: r.data.totp_uri ?? '', totp_secret: r.data.totp_secret ?? '' };
+      passkeyRequired = !!r.data.passkey_required;
+      passkey = null;
       step = 2;
     } catch (err) {
       error = errText(err);
@@ -45,12 +53,32 @@
     else step = 3;
   }
 
-  async function complete(e: SubmitEvent) {
-    e.preventDefault();
+  async function registerPasskey() {
     busy = true;
     error = null;
     try {
-      await post('/auth/activate/complete', { name: name.trim(), code: code.trim(), password, totp: totp.trim() });
+      const o = await post<Record<string, any>>('/auth/activate/passkey', { name: name.trim(), code: code.trim() });
+      passkey = await createPasskey(o.data);
+    } catch (err) {
+      error = errText(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function complete(e: SubmitEvent) {
+    e.preventDefault();
+    if (passkeyRequired && !passkey) {
+      error = t.passkeys.activateMissing;
+      return;
+    }
+    busy = true;
+    error = null;
+    try {
+      const pk = passkey ? { passkey, passkey_name: passkeyName.trim() } : {};
+      await post('/auth/activate/complete', { name: name.trim(), code: code.trim(), password, totp: totp.trim(), ...pk });
+      withPasskey = !!passkey;
+      passkey = null;
       password = repeat = code = totp = '';
       enroll = null;
       step = 4;
@@ -150,13 +178,28 @@
           />
           <div class="hint" id="a-totp-hint">{t.activate.totpHint}</div>
         </div>
+        {#if passkeyRequired || passkeysSupported()}
+          <fieldset class="passkey-step">
+            <legend>{t.passkeys.activateTitle}</legend>
+            <p class={passkeyRequired ? 'banner info' : 'muted'}>{passkeyRequired ? t.passkeys.activateRequired : t.passkeys.activateOptional}</p>
+            {#if passkey}
+              <p class="banner ok" role="status">{t.passkeys.activateReady}</p>
+            {:else}
+              <div class="field">
+                <label for="a-pk-name">{t.passkeys.nameLabel}</label>
+                <input id="a-pk-name" bind:value={passkeyName} maxlength="64" placeholder={t.passkeys.namePlaceholder} autocomplete="off" />
+              </div>
+              <button type="button" onclick={registerPasskey} disabled={busy}>{t.passkeys.activateRegister}</button>
+            {/if}
+          </fieldset>
+        {/if}
         <div class="form-actions">
           <button type="button" onclick={() => (step = 2)}>{t.activate.back}</button>
           <button class="primary" type="submit" disabled={busy}>{busy ? t.activate.finishing : t.activate.finish}</button>
         </div>
       </form>
     {:else}
-      <p class="banner ok" role="status">{t.activate.done}</p>
+      <p class="banner ok" role="status">{withPasskey ? t.passkeys.doneWithPasskey : t.activate.done}</p>
       <p><a href={href('/')}>{t.activate.toLogin}</a></p>
     {/if}
   </div>

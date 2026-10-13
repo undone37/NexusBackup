@@ -3,6 +3,7 @@
   import { askConfirm } from '../lib/confirm.svelte';
   import { fmtAgo, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
+  import { secondFactor } from '../lib/passkey';
   import type { SessionInfo } from '../lib/types';
   import Modal from './Modal.svelte';
 
@@ -26,7 +27,9 @@
   async function confirmAll(e: SubmitEvent) {
     e.preventDefault();
     const r = await act(
-      post<{ revoked: number }>('/sessions/revoke-all', { current_password: re.password, current_totp: re.totp.trim() }),
+      secondFactor(re.totp).then((totp) =>
+        post<{ revoked: number }>('/sessions/revoke-all', { current_password: re.password, current_totp: totp }),
+      ),
       (d) => t.access.revokedN(d.revoked),
     );
     re = { password: '', totp: '' };
@@ -85,7 +88,8 @@
         </div>
         <div class="field">
           <label for="ra-totp">{t.users.currentTotp}</label>
-          <input id="ra-totp" bind:value={re.totp} required inputmode="numeric" pattern={'[0-9]{6}'} maxlength="6" autocomplete="one-time-code" />
+          <input id="ra-totp" bind:value={re.totp} inputmode="numeric" pattern={'[0-9]{6}'} maxlength="6" autocomplete="one-time-code" aria-describedby="ra-totp-hint" />
+          <div class="hint" id="ra-totp-hint">{t.passkeys.totpOrPasskey}</div>
         </div>
       </div>
       <div class="form-actions">
