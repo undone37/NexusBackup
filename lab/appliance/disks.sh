@@ -164,10 +164,11 @@ create() {
 	jq -e '.level == "raid6" and .role == "data" and (.mounts | index("/var/lib/nexus/chunkstore")) and .fs.type == "xfs"' \
 		<<<"$a" >/dev/null || die "array: $a"
 	[ "$(hw | jq -r .store.array)" = "$(jq -r .name <<<"$a")" ] || die "store not on the array"
-	con run 'findmnt -no FSTYPE,SOURCE,OPTIONS /var/lib/nexus/chunkstore; stat -c "%U %a %C" /var/lib/nexus/chunkstore;
+	# the serial console wraps at 80 columns: FSTYPE on a line of its own
+	con run 'findmnt -no FSTYPE /var/lib/nexus/chunkstore; findmnt -no SOURCE,OPTIONS /var/lib/nexus/chunkstore; stat -c "%U %a %C" /var/lib/nexus/chunkstore;
 		systemctl is-active nexus-scheduler.service; systemctl is-enabled var-lib-nexus-chunkstore.mount;
 		ls -Z /etc/systemd/system/var-lib-nexus-chunkstore.mount' | tee "$S/mount.txt"
-	grep -q '^xfs ' "$S/mount.txt" || die "store is not XFS"
+	grep -q '^xfs$' "$S/mount.txt" || die "store is not XFS"
 	grep -q '^nexus-chunkstore 700 system_u:object_r:nexus_store_t:s0' "$S/mount.txt" || die "store owner/mode/label"
 	grep -qx active "$S/mount.txt" || die "scheduler not running"
 	grep -q nexus_unit_file_t "$S/mount.txt" || die "mount unit label"
