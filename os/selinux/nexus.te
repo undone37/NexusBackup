@@ -1018,6 +1018,8 @@ manage_files_pattern(nexus_webapi_t, nexus_diag_var_lib_t, nexus_diag_var_lib_t)
 # up). Executing bash moves the shell to unconfined_t: the emergency root shell.
 
 allow nexus_consolegate_t self:capability { chown fowner dac_override dac_read_search ipc_lock };
+# chown of its state files: the kernel clears setgid bits instead (nothing to keep)
+dontaudit nexus_consolegate_t self:capability fsetid;
 # systemd-run --scope: PID 1 starts (and on timeout or a restarted gate stops) the shell's
 # transient scope; its password agent looks at /proc/sys/fs (found in the VM)
 allow nexus_consolegate_t init_t:system { start stop status };
@@ -1092,6 +1094,7 @@ gen_require(`
 	type mdadm_exec_t;
 	type systemd_userdbd_runtime_t;
 	type mount_var_run_t;
+	type debugfs_t;
 	type cert_t;
 	type mdadm_var_run_t;
 	type systemd_unit_file_t;
@@ -1115,6 +1118,8 @@ auth_read_passwd(nexus_disks_t)
 dontaudit nexus_disks_t systemd_userdbd_runtime_t:dir { search read };
 # lsblk probes /run/mount/utab; mount points come from /proc/self/mountinfo
 dontaudit nexus_disks_t mount_var_run_t:dir search;
+# mdadm probes /sys/kernel/debug (bdi, block); not needed
+dontaudit nexus_disks_t debugfs_t:dir search;
 # nexus-diag's posture checks resolve users through NSS (passwd suffices)
 dontaudit nexus_diag_t systemd_userdbd_runtime_t:dir { search read };
 dev_read_urand(nexus_disks_t)
