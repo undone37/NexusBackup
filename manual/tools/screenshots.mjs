@@ -650,6 +650,11 @@ async function main() {
       await until(`return !!document.querySelector('dialog[open] #l-bw')`, 'limits dialog');
       await shot('agent-limits');
       await closeDialogs();
+      // Phase 24a: endpoint status of a laptop (UI policy, laptop options, sessions)
+      await ev(`$rowClick('nb07', 'Endpoint'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #ep-bat') && document.body.innerText.includes('on the agent')`, 'endpoint dialog');
+      await shot('agent-endpoint');
+      await closeDialogs();
     }],
     ['replication', async () => {
       await go('/replication');
