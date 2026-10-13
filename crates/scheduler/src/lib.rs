@@ -64,6 +64,7 @@
 //! web-api). Structured results go into `jobs.result` (see [`Scheduler::finish`]).
 
 mod accounts;
+mod agent_updates;
 pub mod alerts;
 pub mod anomaly;
 mod bmr;
@@ -169,8 +170,13 @@ pub struct Config {
     pub nas_mount_socket: PathBuf,
     /// appliance CA for agents (created by nexus-agentctl on first use); default `<state_dir>/agent-ca`
     pub agent_ca_dir: Option<PathBuf>,
-    /// signed agent binaries for `agent_update` (nexus-agent, .sig, .version)
+    /// agent releases from the image (`<version>/manifest.json`, Phase 27) and the
+    /// single-binary update files of earlier releases (nexus-agent, .sig, .version)
     pub agent_update_dir: PathBuf,
+    /// signed agent releases uploaded in the web UI (Phase 27)
+    pub agent_release_upload: PathBuf,
+    /// keys agent release manifests must be signed with (the appliance's release keys)
+    pub agent_release_keys: PathBuf,
     /// signed edge proxy binary pushed by the edge links (nexus-edge, .sig, .version; edge.rs)
     pub edge_update_dir: PathBuf,
     pub alerts_config: PathBuf,
@@ -263,6 +269,8 @@ impl Default for Config {
             nas_mount_socket: nas::MOUNT_SOCKET.into(),
             agent_ca_dir: None,
             agent_update_dir: "/usr/share/nexus/agent".into(),
+            agent_release_upload: lib.join("agent-releases"),
+            agent_release_keys: "/etc/pki/nexus/cosign".into(),
             edge_update_dir: "/usr/share/nexus/edge".into(),
             alerts_config: "/etc/nexus/alerts.json".into(),
             nft_allowed: nftsync::ALLOWED_FILE.into(),
@@ -409,6 +417,8 @@ pub struct Scheduler {
     poll: endpoint::PollState,
     /// control links to the edge proxies (edge.rs)
     edges: edge::EdgeLinks,
+    /// last automatic-mode check of the agent releases (agent_updates.rs)
+    auto_checked: i64,
 }
 
 /// Agent ids: 16 lowercase hex characters (chosen by the web-api).
@@ -561,6 +571,7 @@ impl Scheduler {
             anchor_day: None,
             clock: Default::default(),
             poll: Default::default(),
+            auto_checked: 0,
             edges: Default::default(),
             alert_tx,
             host: alerts::hostname(),
@@ -791,6 +802,7 @@ impl Scheduler {
         self.log_err(|s| s.collect_agent_poll(None));
         self.log_err(|s| s.edge_links(now).map(drop));
         self.log_err(|s| s.start_agent_poll(now));
+        self.log_err(|s| s.agent_rollouts(now)); // agent_updates.rs
         self.log_err(|s| s.queue_config_backup(now));
         self.log_err(|s| s.queue_rekeys(now));
         // restore tests and recovery plans (recovery.rs)
@@ -1375,6 +1387,7 @@ impl Scheduler {
             self.attach_bookkeeping(&job, ok)?;
         }
         self.agent_bookkeeping(&job, &log)?;
+        let update_handled = job.kind == "agent_update" && self.update_bookkeeping(&job, state, &log)?;
         if job.kind == "bmr" || job.kind == "p2v" {
             self.rescue_bookkeeping(&job, &log, ok)?;
         }
@@ -1475,6 +1488,8 @@ impl Scheduler {
             Outcome::Cancelled => {}
             // recovery_finished raised restore_test / recovery_plan alerts
             Outcome::Failed { .. } if recovery => {}
+            // agent_update_failed (or nothing for a busy agent) instead of job_failed
+            Outcome::Failed { .. } if update_handled => {}
             Outcome::Failed { alert } => {
                 if alert.is_none() && self.retry_failed(&job, &log)? {
                     return Ok(()); // job_failed only after the last attempt
@@ -1598,6 +1613,7 @@ impl Scheduler {
                 "UPDATE agents SET last_seen=?2, version=?3, os=?4 WHERE id=?1 AND tenant=?5",
                 params![id, catalog::now(), short("version"), short("os"), job.tenant],
             )?;
+            self.agent_facts(id, &v)?;
         }
         Ok(())
     }
@@ -2874,13 +2890,8 @@ impl Scheduler {
             "agent_update" => {
                 let a = self.agent(tenant, p["agent_id"].as_str().unwrap_or_default())?;
                 plan.key = format!("agent:{}", a.id);
-                let (f, step) = self.agentctl(
-                    &dir,
-                    job,
-                    &a,
-                    "update",
-                    json!({"update_dir": self.cfg.agent_update_dir}),
-                )?;
+                let cfg = self.agent_update_config(p)?; // agent_updates.rs
+                let (f, step) = self.agentctl(&dir, job, &a, "update", cfg)?;
                 plan.files.push(f);
                 plan.steps.push(step);
             }

@@ -673,7 +673,9 @@ async function main() {
       await ev(`$rowClick('db01', 'New token'); return true;`);
       await confirmOk();
       await until(`return document.body.innerText.includes('One-time token')`, 'token dialog');
-      await shot('agent-token');
+      // Phase 27: the signed installers of the recommended release below the token
+      await until(`return document.querySelector('dialog[open]')?.innerText.includes('Signed installers of release')`, 'installer list');
+      await shot('agent-token', { height: 1350 });
       await closeDialogs();
       // Phase 15f: appliance-side limits of an agent (renewal and re-enroll are row actions)
       await ev(`$rowClick('web01', 'Limits'); return true;`);
@@ -699,6 +701,24 @@ async function main() {
       await go('/agents?tab=fleet');
       await until(`return document.body.innerText.includes('ws-041')`, 'fleet candidates');
       await shot('agents-fleet');
+    }],
+    // Phase 27: releases, versions, rollouts (seeded: 32 paused after a failed canary, 33 automatic and running)
+    ['agents-updates', async () => {
+      await go('/agents?tab=updates');
+      await until(`return document.body.innerText.includes('Recommended release: 0.10.0') && !!$row('canary failed')`, 'updates tab');
+      await shot('agents-updates', { height: 2300 });
+      await ev(`$rowClick('canary failed', 'Details'); return true;`);
+      await until(`return document.querySelector('dialog[open]')?.innerText.includes('msiexec exit code 1603')`, 'rollout details');
+      await shot('agents-rollout');
+      await closeDialogs();
+      await ev(`$click('New rollout'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #ro-version')`, 'new rollout dialog');
+      await ev(`$fill('#ro-scope', 'tag'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #ro-tag')`, 'tag field');
+      await ev(`$fill('#ro-tag', 'ring1'); $click('Add window'); return true;`);
+      await sleep(300);
+      await shot('agents-rollout-new', { height: 1500 });
+      await closeDialogs();
     }],
     // Phase 26: edge proxies (seeded dmz-edge online with nb07 routed through it, branch-edge awaiting enrollment)
     ['settings-edges', async () => {

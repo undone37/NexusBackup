@@ -12,6 +12,7 @@ pub mod edge;
 pub mod filter;
 pub mod glob;
 pub mod limit;
+pub mod releases;
 pub mod restore;
 pub mod server;
 pub mod tls;
@@ -151,10 +152,19 @@ pub fn status_common(paths: &Paths, version: &str) -> String {
     if let Some(p) = &packaged {
         out.push_str(&format!("installed from: {p} package\n"));
     }
-    if let Some(why) =
-        update::self_update_blocked(settings.as_ref().ok().and_then(|s| s.self_update), packaged.as_deref())
-    {
-        out.push_str(&format!("self-update: off; {why}\n"));
+    match update::self_update_blocked(settings.as_ref().ok().and_then(|s| s.self_update), packaged.as_deref()) {
+        Some(why) => out.push_str(&format!("self-update: off; {why}\n")),
+        None => out.push_str(&format!(
+            "self-update: allowed with {} updates from the appliance\n",
+            match packaged.as_deref() {
+                Some(p) => format!("{p} package"),
+                None => "binary".into(),
+            }
+        )),
+    }
+    let state = update::state_json(paths);
+    if state != "{}" {
+        out.push_str(&format!("last update: {state}\n"));
     }
     match cache::Cache::load(paths) {
         Some(c) => out.push_str(&format!("metadata cache: {} files from job {}\n", c.files.len(), c.job)),

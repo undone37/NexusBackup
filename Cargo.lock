@@ -75,6 +75,7 @@ dependencies = [
 name = "agent-conn"
 version = "0.1.0"
 dependencies = [
+ "agent-core",
  "agent-proto",
  "anyhow",
  "blake3",
@@ -166,6 +167,7 @@ dependencies = [
  "lz4_flex",
  "postcard",
  "serde",
+ "serde_json",
  "sha2 0.10.9",
 ]
 
@@ -5615,6 +5617,8 @@ dependencies = [
 name = "scheduler"
 version = "0.1.0"
 dependencies = [
+ "agent-core",
+ "agent-proto",
  "anyhow",
  "base64 0.22.1",
  "catalog",
@@ -7202,6 +7206,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tar",
  "tempfile",
  "tokio",
  "tokio-rustls",

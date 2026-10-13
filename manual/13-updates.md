@@ -165,20 +165,97 @@ Do not skip back more than one release.
 
 ## Agent updates
 
-Linux and Windows agents update themselves from signed releases the appliance sends to them.
+The appliance updates Linux and Windows agents in-band, over the same mutually authenticated connection it uses for
+backups. It can only choose **which signed release** goes to **which agent** and **when**: every agent checks the
+release signature against the release keys pinned on the host and refuses anything else.
 
-1. Open **Agents**.
-2. Click **Update agent** next to an enrolled agent and confirm.
-3. The job page opens. The agent checks the release signature against its pinned release keys, refuses a version
-   that is not newer, refuses while a backup or restore runs, replaces its binary (the old one is kept as `.prev`)
-   and restarts. The **Version** column shows the new version afterwards.
+### Where agent releases come from
 
-Only administrators can start agent updates.
+- **With the appliance image.** Each appliance update brings the agent release that belongs to it. No internet access
+  is needed, and air-gapped sites get agent updates together with the appliance.
+- **Signed upload.** An administrator uploads a release (the `.tar` from the release page) under
+  **Agents → Updates → Upload release**. The appliance accepts it only if its manifest verifies with a pinned release
+  key. Uploaded releases can be deleted again; releases from the image cannot.
 
-> **Status:** The appliance takes the agent release from `/usr/share/nexus/agent` in its image. The current image
-> **does not ship an agent bundle there yet**; the release process must add it. Agent self-update was tested in the
-> Linux lab VMs; on Windows, MSI installs refuse it and are updated with a newer MSI (major upgrade, tested on
-> Windows Server 2022).
+**Agents → Updates** lists the releases with their signature state, notes and artifacts (bundle binaries, `.deb` and
+`.rpm` packages per architecture, the Windows MSI and the desktop UI packages). The newest signed release is the
+**recommended** one. A release that does not verify is shown as **Not verified** with the reason and is never sent.
+
+![Agents → Updates: releases, agent versions, rollouts and automatic mode](images/agents-updates.png)
+
+### How each install type is updated
+
+| Install type | How the update is installed |
+|---|---|
+| Bundle (`install.sh`) and manual Windows install | The binary is replaced (the old one is kept as `.prev`) and the agent restarts. A start watchdog swaps `.prev` back if the new binary does not start listening. |
+| `.deb` package | `apt-get install` of the signed package (and of the desktop UI package, if installed), run as a separate systemd unit so it survives the agent's own restart. |
+| `.rpm` package | `dnf install` (rollback: `dnf downgrade`) the same way. |
+| MSI | `msiexec` installs the signed MSI (major upgrade) detached from the service; the MSI carries the desktop UI as well. |
+
+The host keeps the last word: `self_update = off` in `agent.conf` refuses every update. The default (`auto`) allows
+updates with the package type the agent was installed with; a package is never replaced by a binary swap. The
+agent records the result in its update state, and the appliance shows it in the **Update** column (Pending, Sending,
+Installing, Updated, Failed, Rolled back) with the error, for example the `msiexec` exit code.
+
+The **Agent versions** section groups enrolled agents by version and shows platform, architecture, install type,
+desktop UI version and tags. **Show: Outdated** lists agents below the recommended release, **Show: Unsupported**
+agents with protocol below 1.8 (agents of releases before this feature; only their bundle binary can be updated, once,
+after which they speak 1.8). **Update to …** updates a single agent at once. **Edit tags** sets tags such as
+`ring1`, which rollouts can target.
+
+### Rollouts
+
+A rollout updates many agents to one release, in waves:
+
+1. **New rollout**: choose the version and the scope: all agents, a tenant, a protection group, an operating system,
+   a tag or selected agents.
+2. **Canary wave**: a number or a percentage of the agents is updated first. The rest follows when all canaries have
+   finished and the **soak time** has passed. A failed canary pauses the rollout.
+3. **Concurrent updates** limits how many agents update at the same time.
+4. **Pause after failures** / **failure rate**: the rollout pauses when either limit is reached
+   (alert `rollout_paused`).
+5. **Maintenance windows** (UTC, optional): updates start only inside one of them. Blackout windows of the agents'
+   policies are always honoured.
+
+![New rollout: version, scope, canary wave, limits and maintenance windows](images/agents-rollout-new.png)
+
+The appliance never interrupts a backup: an agent with a running job is retried later. Agents that are offline
+(laptops, agents behind an edge proxy) are updated when they are reachable again. After an update the appliance
+waits up to 10 minutes for the agent to come back with the new version; otherwise the update counts as failed
+(alert `agent_update_failed`, resolved by the next successful update of that agent).
+
+**Details** shows every agent of a rollout with its wave, state, error and job. **Pause**, **Resume** and **Cancel
+rollout** control it; updates that already run finish. All actions are recorded in the audit log
+(`agent.rollout.*`).
+
+![Rollout details: a failed canary paused the rollout](images/agents-rollout.png)
+
+### Automatic updates
+
+Under **Automatic updates**, set a tenant (or one of its protection groups) to **Automatic**: when a new signed
+release arrives (for example with an appliance update), the appliance starts a rollout for the outdated agents of
+that scope by itself, inside the maintenance windows and with the canary settings given there. The default is
+**Manual**: an administrator starts every rollout.
+
+### Rollback
+
+Agents refuse older versions. To go back to an older signed release, start a rollout with **Rollback to an older
+signed release**. It needs approval by a second person (another administrator or a security officer, action
+`agent.rollback`) and starts only once approved. Agents accept a rollback only down to the oldest version their own
+release allows.
+
+### Installer downloads
+
+The enrollment token dialog of a new agent lists the signed installers of the recommended release (packages per
+architecture, MSI, install bundle, desktop UI) with their SHA-256 checksums. **Download** fetches the file from the
+appliance with a one-time download link (accounts with the download right). Compare the checksum on the host
+(`sha256sum`, `Get-FileHash`).
+
+Only administrators upload releases, start rollouts and change the automatic mode. Security officers, operators and
+viewers can look at the Updates tab.
+
+> **Lab status:** package and MSI updates through the appliance need the Linux and Windows lab runs (see
+> [16 Linux agent](16-linux-agent.md) and [17 Windows agent](17-windows-agent.md)).
 
 ## Plugin upgrades
 

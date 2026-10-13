@@ -1,6 +1,6 @@
 # Project State
 
-_Last updated: 2026-10-13_
+_Last updated: 2026-10-14_
 
 ## Decisions (see plan.md §2, docs/adr.md)
 - License AGPL-3.0 · AEAD XChaCha20-Poly1305 · git + GitHub Actions
@@ -436,6 +436,45 @@ through the PVE guest agent (`lab/windows/gexec.py`, no Windows passwords), dev 
   "grown" range overlapped); now each byte once (test `dirty_extents_read_each_byte_once`)
 - [ ] nexus-nas and the plugin host report no progress yet (log only); check on the real PVE host
 
+## Phase 27 — Agent updates pushed from the appliance (2026-10-14)
+Contract + deviations: docs/agent-update-plan.md "Implementation"; decisions plan.md Phase 27. Catalog v41, protocol v1.8,
+threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum action `agent.rollback`.
+- [x] 27a protocol v1.8: capability `update2`, host facts as caps (`arch=`, `install=`, `gui=`), `UpdateBegin/Ready/Chunk/
+  Commit/Staged/Status/State` (tags 49–55); v1.7 and older keep the single-frame `Update`
+- [x] 27a release store (`agent_core::releases`): `/usr/share/nexus/agent/<v>/` + `/var/lib/nexus/agent-releases/<v>/`,
+  signed `manifest.json` (`agent_proto::release`: per-OS/arch/install selection, desktop package with deb/rpm);
+  `release/packages.sh` builds the tree + `nexus-agent-release-<v>.tar`, `release/sign.sh sign-agent-release`,
+  `release/verify.sh --agent-release`, release workflow ships the signed tree via `os/agent-release/` (image)
+- [x] 27a agents: checks (self_update off, busy 409, own package type, manifest + artifact signatures, newer or approved
+  rollback >= `ROLLBACK_FLOOR`), staging, `update-pending.json` / `update-state.json` (reported by `UpdateStatus`), start
+  watchdog (third failed start puts `.prev` back; Linux + Windows), Linux deb/rpm via `systemd-run --unit=nexus-agent-update`
+  (apt-get / dnf / rpm, fixed argv, result from the unit + journal of this attempt), Windows MSI via detached msiexec (result
+  from the verbose log), `self_update = auto` default
+- [x] 27a appliance: `nexus-agentctl update` with the store (plan, chunked push with progress, reconnect check 2/10 min,
+  `update-result`), agent rows with arch/install/gui/protocol/tags/update state, installer downloads via download tokens
+- [x] 27b rollouts: scope (all/tenant/group/OS/tag/agents), canary count or %, soak, concurrency, failure threshold (count, or
+  share from 5 finished), pause/resume/cancel (audited), busy retried, unreachable / blacked-out agents held, maintenance windows
+  (UTC), agents already on the target skipped; alerts; API + UI (Agents > Updates)
+- [x] 27c automatic mode per tenant/group (one rollout per release and scope, every 10 min); rollback rollouts gated by quorum
+  `agent.rollback` (rejected/expired → `rejected`)
+- [x] Tests: agent-proto (tags, limits, selection, host facts), agent-core (version/rollback rules, announced checks, watchdog,
+  package settling, store), agent-linux (package argv without shell, unit states, swap/restore; interop: chunked update of the
+  real agent by the real agentctl incl. refusals), agent-windows (msiexec argv, MSI log parsing UTF-16, restore), catalog
+  (migration v41, scope/waves/skips, settings), web-api (upload/verify/list/delete/download, tags, roles, rollout states,
+  approved rollback, settings, tenant_admin route table), scheduler (release choice, waves, busy retry, holds, threshold +
+  alerts, windows, automatic mode, rollback approval/rejection)
+- [x] Lab (container, `lab/linux/update-deb.sh`, run 2026-10-14): real musl agents 0.1.0/0.1.1 as .deb (nfpm), release signed
+  with the TEST key by `release/sign.sh sign-agent-release` (cosign) and verified, Debian 13 with systemd in rootless podman:
+  0.1.0 -> 0.1.1 in-band via apt-get in the transient unit, postinst restart, update state `ok` in 6 s; same version refused;
+  a signed 9.9.9 .deb with an unmet dependency: apt-get exit 100 reported as `failed` with the apt output, agent stays on
+  0.1.1 and keeps serving. The failure log holds only this attempt (journal by invocation id).
+- [ ] Lab VMs (not run: the VMs were in use by parallel work): `lab/linux/e2e.sh <vm> agent agent_deb update_deb` (.deb on
+  deb-lvm through the appliance API), `.rpm` on alma-xfs (dnf path), desktop package with the GUI running, bundle binary
+  swap + watchdog on deb-plain, arm64 on the emulated aarch64 VM, an edge-connected laptop updated on reconnect
+- [ ] Windows lab: MSI update on Server 2022 / Windows 11 with the GUI running (service stays enrolled), msiexec outside the
+  service's job object, MSI failure log parsing (1603), watchdog revert of a manual install, rollback refused for MSI
+- [ ] Appliance image with a signed agent release (os/agent-release) built and booted; SELinux of the upload dir
+  (`nexus_agent_release_t`) and of nexus-agentctl reading /etc/pki/nexus/cosign checked under enforcing
 ## Phase 28 — Commvault Tier 1 (2026-10-14)
 - [x] catalog v43 (`groups.scan_schedule/scan_budget_min/file_hashes`, `snapshots.scan_state`, `hash_lists`,
   `tenant_lockdowns`, `login_devices`, `users.email`; migration test), alert kinds + hints, threat model T62–T63

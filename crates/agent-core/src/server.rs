@@ -178,6 +178,55 @@ pub trait Platform: Send + Sync + 'static {
     fn power_state(&self) -> agent_proto::PowerState {
         agent_proto::PowerState::default()
     }
+    /// Host facts for protocol v1.8 (`arch=`, `install=`, `gui=` capabilities).
+    /// Platforms without in-band updates (rescue agent) keep the default: no `update2`.
+    fn host_facts(&self) -> Option<agent_proto::release::HostFacts> {
+        None
+    }
+    /// The executable format check of a `binary` update (ELF for this architecture,
+    /// PE32+ x86-64).
+    fn native_binary(&self, _binary: &[u8]) -> bool {
+        false
+    }
+    /// Install verified, staged artifacts of one release (v1.8; the agent's own
+    /// artifact is the last one). Called after `update-pending.json` was written.
+    fn install_update(&self, _ctx: Ctx, _staged: &[Staged], _rollback: bool) -> Result<Installed, String> {
+        Err("this agent cannot install updates".into())
+    }
+    /// Result of a package install started by [`Platform::install_update`].
+    fn install_result(&self, _ctx: Ctx, _pending: &crate::update::Pending) -> crate::update::InstallResult {
+        crate::update::InstallResult::Unknown
+    }
+}
+
+/// A received and verified update artifact (`<state>/update/<file>`).
+#[derive(Clone, Debug)]
+pub struct Staged {
+    pub kind: String,
+    pub name: String,
+    pub path: PathBuf,
+    /// version of the program inside
+    pub version: String,
+}
+
+/// What [`Platform::install_update`] did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Installed {
+    /// the binary is swapped: answer `UpdateDone`, then restart (summary)
+    Restart(String),
+    /// an installer runs outside the agent and restarts it (summary, unit / log name)
+    Started(String, String),
+}
+
+/// An artifact being received (`UpdateBegin` .. `UpdateCommit`).
+struct Receiving {
+    announced: crate::update::Announced,
+    file: fs::File,
+    path: PathBuf,
+    hasher: sha2::Sha256,
+    written: u64,
+    sha256: [u8; 32],
+    signature: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -346,6 +395,7 @@ impl<P: Platform> Agent<P> {
     /// Accept loop: one thread per connection, at most `max_connections`.
     pub fn serve(self: Arc<Self>, listener: TcpListener) -> io::Result<()> {
         crate::edge::spawn(self.clone());
+        self.watch_updates();
         for conn in listener.incoming() {
             let tcp = match conn {
                 Ok(t) => t,
@@ -371,6 +421,20 @@ impl<P: Platform> Agent<P> {
             });
         }
         Ok(())
+    }
+
+    /// The agent listens: a binary swap that brought this version is done (start
+    /// watchdog, [`crate::update::mark_listening`]); a package install started by an
+    /// earlier process is settled now and every 30 s while it runs.
+    pub fn watch_updates(self: &Arc<Self>) {
+        let version = self.platform.host_info().agent_version;
+        crate::update::mark_listening(&self.paths, &version);
+        let me = self.clone();
+        // a cheap stat every 30 s; the outcome is reported with the next `UpdateStatus`
+        std::thread::spawn(move || loop {
+            crate::update::settle_package(&me.paths, &version, &|p| me.platform.install_result(me.ctx(), p));
+            std::thread::sleep(Duration::from_secs(30));
+        });
     }
 
     pub fn handle(&self, tcp: TcpStream) -> io::Result<()> {
@@ -430,6 +494,9 @@ impl<P: Platform> Agent<P> {
                     restore: None,
                     niced: false,
                     renew_key: None,
+                    receiving: None,
+                    staged: Vec::new(),
+                    staged_rollback: false,
                 };
                 let r = sess.run(&mut s);
                 sess.abort_all();
@@ -557,6 +624,11 @@ struct Session<'a, P: Platform> {
     niced: bool,
     /// key pair of a certificate renewal in progress (`RenewCert` → `RenewDone`)
     renew_key: Option<String>,
+    /// v1.8 update: the artifact being received and those already staged
+    receiving: Option<Receiving>,
+    staged: Vec<(Staged, crate::update::Announced)>,
+    /// `UpdateBegin.rollback` of the staged artifacts
+    staged_rollback: bool,
 }
 
 impl<P: Platform> Session<'_, P> {
@@ -596,6 +668,11 @@ impl<P: Platform> Session<'_, P> {
                         if !c.iter().any(|x| x == cap) {
                             c.push(cap.into());
                         }
+                    }
+                    // v1.8: chunked updates with the install's own package type
+                    if let Some(f) = self.agent.platform.host_facts() {
+                        c.push(agent_proto::CAP_UPDATE2.into());
+                        c.extend(f.to_caps());
                     }
                     c
                 },
@@ -728,6 +805,47 @@ impl<P: Platform> Session<'_, P> {
                     binary,
                     signature,
                 } => self.update(s, &version, &binary, &signature)?,
+                Message::UpdateBegin {
+                    kind,
+                    name,
+                    size,
+                    sha256,
+                    signature,
+                    manifest,
+                    manifest_sig,
+                    rollback,
+                } => {
+                    let r = self.update_begin(
+                        &kind,
+                        &name,
+                        size,
+                        sha256,
+                        signature,
+                        &manifest,
+                        &manifest_sig,
+                        rollback,
+                    );
+                    match r {
+                        Ok(()) => write_msg(s, &Message::UpdateReady)?,
+                        Err(Refused(code, msg)) => {
+                            log(format!("update refused: {msg}"));
+                            error(s, code, msg)?
+                        }
+                    }
+                }
+                Message::UpdateChunk { data } => {
+                    if let Err(Refused(code, msg)) = self.update_chunk(&data) {
+                        log(format!("update aborted: {msg}"));
+                        return error(s, code, msg);
+                    }
+                }
+                Message::UpdateCommit { apply } => self.update_commit(s, apply)?,
+                Message::UpdateStatus => write_msg(
+                    s,
+                    &Message::UpdateState {
+                        json: update_status(&self.agent.paths),
+                    },
+                )?,
                 Message::GetLayout => match self.agent.platform.layout() {
                     Ok(json) => write_msg(s, &Message::Layout { json })?,
                     Err(Refused(code, msg)) => error(s, code, msg)?,
@@ -1046,7 +1164,9 @@ impl<P: Platform> Session<'_, P> {
             return error(s, E_BUSY, "jobs are running; update refused");
         }
         let packaged = crate::update::packaged(&crate::update::package_marker());
-        if let Some(why) = crate::update::self_update_blocked(self.agent.settings.self_update, packaged.as_deref()) {
+        if let Some(why) = crate::update::self_update_blocked(self.agent.settings.self_update, packaged.as_deref())
+            .or_else(|| crate::update::binary_swap_blocked(packaged.as_deref()))
+        {
             log(format!("update refused: {why}"));
             return error(s, E_REFUSED, why);
         }
@@ -1067,6 +1187,271 @@ impl<P: Platform> Session<'_, P> {
                 error(s, E_REFUSED, e)
             }
         }
+    }
+
+    fn busy(&self) -> bool {
+        self.agent.active_jobs.load(Ordering::SeqCst) > 0 || self.restore.is_some()
+    }
+
+    fn update_abort(&mut self) {
+        if let Some(r) = self.receiving.take() {
+            drop(r.file);
+            let _ = fs::remove_file(&r.path);
+        }
+        self.staged.clear();
+        let _ = fs::remove_dir_all(crate::update::staging_dir(&self.agent.paths));
+    }
+
+    /// `UpdateBegin` (v1.8): every check that does not need the data.
+    #[allow(clippy::too_many_arguments)]
+    fn update_begin(
+        &mut self,
+        kind: &str,
+        name: &str,
+        size: u64,
+        sha256: [u8; 32],
+        signature: Vec<u8>,
+        manifest: &[u8],
+        manifest_sig: &[u8],
+        rollback: bool,
+    ) -> Result<(), Refused> {
+        let packaged = crate::update::packaged(&crate::update::package_marker());
+        if let Some(why) = crate::update::self_update_blocked(self.agent.settings.self_update, packaged.as_deref()) {
+            self.update_abort();
+            return Err(Refused(E_REFUSED, why));
+        }
+        if self.busy() {
+            self.update_abort();
+            return Err(Refused(E_BUSY, "jobs are running; update refused".into()));
+        }
+        let Some(host) = self.agent.platform.host_facts() else {
+            return Err(Refused(E_REFUSED, "this agent cannot install updates".into()));
+        };
+        if self.receiving.is_some() {
+            self.update_abort();
+            return Err(Refused(
+                E_BAD_REQUEST,
+                "UpdateBegin before the previous UpdateCommit".into(),
+            ));
+        }
+        let keys = crate::update::load_keys(&self.agent.paths.release_keys());
+        let current = self.agent.platform.host_info().agent_version;
+        let a = match crate::update::check_announced(
+            &keys,
+            manifest,
+            manifest_sig,
+            kind,
+            name,
+            size,
+            &sha256,
+            &host,
+            &current,
+            rollback,
+        ) {
+            Ok(a) => a,
+            Err(e) => {
+                self.update_abort();
+                return Err(Refused(E_REFUSED, e));
+            }
+        };
+        if let Some((_, first)) = self.staged.first() {
+            if first.manifest.version != a.manifest.version {
+                self.update_abort();
+                return Err(Refused(E_BAD_REQUEST, "artifacts of different releases".into()));
+            }
+        } else {
+            let _ = fs::remove_dir_all(crate::update::staging_dir(&self.agent.paths));
+        }
+        let dir = crate::update::staging_dir(&self.agent.paths);
+        crate::config::ensure_dir(&dir, 0o700).map_err(|e| Refused(E_INTERNAL, format!("{}: {e}", dir.display())))?;
+        let file_name = name.rsplit('/').next().unwrap_or(name);
+        let path = dir.join(file_name);
+        let _ = fs::remove_file(&path);
+        let mut o = fs::OpenOptions::new();
+        o.write(true).read(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            o.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let file = o
+            .open(&path)
+            .map_err(|e| Refused(E_INTERNAL, format!("{}: {e}", path.display())))?;
+        log(format!(
+            "receiving {name} ({size} bytes) of release {}{}",
+            a.manifest.version,
+            if rollback { " (rollback)" } else { "" }
+        ));
+        self.staged_rollback = rollback;
+        self.receiving = Some(Receiving {
+            announced: a,
+            file,
+            path,
+            hasher: <sha2::Sha256 as sha2::Digest>::new(),
+            written: 0,
+            sha256,
+            signature,
+        });
+        Ok(())
+    }
+
+    fn update_chunk(&mut self, data: &[u8]) -> Result<(), Refused> {
+        let Some(r) = self.receiving.as_mut() else {
+            return Err(Refused(E_BAD_REQUEST, "UpdateChunk without UpdateBegin".into()));
+        };
+        if r.written + data.len() as u64 > r.announced.artifact.size {
+            self.update_abort();
+            return Err(Refused(E_BAD_REQUEST, "more data than announced".into()));
+        }
+        if let Err(e) = r.file.write_all(data) {
+            self.update_abort();
+            return Err(Refused(E_INTERNAL, format!("writing the update: {e}")));
+        }
+        sha2::Digest::update(&mut r.hasher, data);
+        r.written += data.len() as u64;
+        Ok(())
+    }
+
+    fn update_commit(&mut self, s: &mut Stream, apply: bool) -> io::Result<()> {
+        let r = match self.commit_artifact() {
+            Ok(r) => r,
+            Err(Refused(code, msg)) => {
+                log(format!("update refused: {msg}"));
+                self.update_abort();
+                return error(s, code, msg);
+            }
+        };
+        self.staged.push(r);
+        if !apply {
+            return write_msg(s, &Message::UpdateStaged);
+        }
+        if self.busy() {
+            self.update_abort();
+            return error(s, E_BUSY, "jobs are running; update refused");
+        }
+        let staged: Vec<Staged> = self.staged.iter().map(|(s, _)| s.clone()).collect();
+        let Some((main, a)) = self
+            .staged
+            .iter()
+            .rev()
+            .find(|(s, _)| !s.kind.starts_with("desktop-"))
+            .cloned()
+        else {
+            self.update_abort();
+            return error(s, E_BAD_REQUEST, "no agent artifact staged");
+        };
+        let rollback = self.staged_rollback;
+        let paths = &self.agent.paths;
+        let current = self.agent.platform.host_info().agent_version;
+        let mut pending = crate::update::Pending {
+            kind: main.kind.clone(),
+            from: current.clone(),
+            to: a.manifest.version.clone(),
+            started: crate::update::now(),
+            starts: 0,
+            unit: String::new(),
+        };
+        if let Err(e) = crate::update::write_pending(paths, &pending) {
+            self.update_abort();
+            return error(s, E_INTERNAL, format!("update-pending.json: {e}"));
+        }
+        let _ = crate::update::write_state(
+            paths,
+            &crate::update::UpdateState {
+                state: "installing".into(),
+                kind: main.kind.clone(),
+                from: current.clone(),
+                to: a.manifest.version.clone(),
+                at: crate::update::now(),
+                error: String::new(),
+                log: vec![],
+            },
+        );
+        match self.agent.platform.install_update(self.agent.ctx(), &staged, rollback) {
+            Ok(Installed::Restart(msg)) => {
+                log(format!("{msg} (release signed by {})", a.key));
+                self.staged.clear();
+                write_msg(s, &Message::UpdateDone)?;
+                if self.agent.exit_on_update {
+                    s.conn.send_close_notify();
+                    let _ = s.flush();
+                    log("restarting into the new version");
+                    self.agent.platform.restart_after_update();
+                }
+                Ok(())
+            }
+            Ok(Installed::Started(msg, unit)) => {
+                log(format!("{msg} (release signed by {})", a.key));
+                pending.unit = unit;
+                let _ = crate::update::write_pending(paths, &pending);
+                self.staged.clear();
+                write_msg(s, &Message::UpdateDone)
+            }
+            Err(e) => {
+                log(format!("update failed: {e}"));
+                crate::update::finish(paths, &pending, "failed", &e, vec![]);
+                self.staged.clear();
+                error(s, E_INTERNAL, e)
+            }
+        }
+    }
+
+    /// The artifact of the current `UpdateBegin` is complete: size, SHA-256, its
+    /// signature (and for a binary its version marker and format).
+    fn commit_artifact(&mut self) -> Result<(Staged, crate::update::Announced), Refused> {
+        let Some(r) = self.receiving.take() else {
+            return Err(Refused(E_BAD_REQUEST, "UpdateCommit without UpdateBegin".into()));
+        };
+        let digest: [u8; 32] = sha2::Digest::finalize(r.hasher.clone()).into();
+        if r.written != r.announced.artifact.size || digest != r.sha256 {
+            let _ = fs::remove_file(&r.path);
+            return Err(Refused(
+                E_BAD_REQUEST,
+                "received data differs in size or SHA-256".into(),
+            ));
+        }
+        r.file
+            .sync_all()
+            .map_err(|e| Refused(E_INTERNAL, format!("writing the update: {e}")))?;
+        drop(r.file);
+        let data = fs::read(&r.path).map_err(|e| Refused(E_INTERNAL, format!("{}: {e}", r.path.display())))?;
+        let keys = crate::update::load_keys(&self.agent.paths.release_keys());
+        let ok = {
+            let p = &self.agent.platform;
+            crate::update::check_artifact_data(&r.announced, &data, &r.signature, &keys, &|b| p.native_binary(b))
+        };
+        drop(data);
+        if let Err(e) = ok {
+            let _ = fs::remove_file(&r.path);
+            return Err(Refused(E_REFUSED, e));
+        }
+        let a = r.announced;
+        Ok((
+            Staged {
+                kind: a.artifact.kind.clone(),
+                name: a.artifact.name.clone(),
+                path: r.path,
+                version: a.artifact.version.clone(),
+            },
+            a,
+        ))
+    }
+}
+
+/// `UpdateStatus`: the pending update (installing) or the last outcome.
+fn update_status(paths: &Paths) -> String {
+    match crate::update::read_pending(paths) {
+        Some(p) => serde_json::to_string(&crate::update::UpdateState {
+            state: "installing".into(),
+            kind: p.kind,
+            from: p.from,
+            to: p.to,
+            at: p.started,
+            error: String::new(),
+            log: vec![],
+        })
+        .unwrap_or_else(|_| "{}".into()),
+        None => crate::update::state_json(paths),
     }
 }
 

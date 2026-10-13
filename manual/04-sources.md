@@ -360,12 +360,17 @@ connects to) and **Port** (7444). The appliance creates a one-time token, valid 
 
 Copy the token now. If it is lost, click **New token** (an earlier unused token stops working).
 
+Below the token the dialog lists the **installers** of the recommended signed agent release that the appliance
+carries (`.deb`/`.rpm` per architecture, the Windows MSI, the Linux install bundle and the desktop UI packages) with
+their SHA-256 checksums. **Download** fetches one through a one-time download link (accounts with the download
+right), so hosts without internet access get the agent from the appliance.
+
 ### 2. Install the agent on the host
 
 Step-by-step guides for the host administrator, including firewall rules, `agent.conf` and troubleshooting:
 [16 Linux agent](16-linux-agent.md) and [17 Windows agent](17-windows-agent.md).
 
-Download the package for the host from the release page (see the README, "Downloads") and check it against
+Download the package for the host from the token dialog (above) or from the release page (see the README, "Downloads") and check it against
 `SHA256SUMS`. The release manager signs every package with the release key (`<file>.sig`, cosign). Install it, then
 enroll the agent with the token. The token is read from stdin, so it never appears in the process list or the shell
 history.
@@ -427,10 +432,10 @@ configuration. Enroll each host afterwards, for example with a remote PowerShell
 host's token into `nexus-agent.exe init --token -`. Open TCP 7444 in the Windows firewall for the appliance's
 address only. The MSI does not add a firewall rule.
 
-**Updates.** Package installations are updated with the package manager (new `.deb`/`.rpm`/`.msi`). The appliance's
-**Update agent** action is refused by them ("installed from a deb package …"), so the agent never replaces a file
-the package manager owns. To allow it anyway, set `self_update = on` in `agent.conf`. Bundle installations and manual
-Windows installations update themselves through **Update agent**.
+**Updates.** The appliance updates every install type with its own package type: `.deb` with apt, `.rpm` with dnf,
+the MSI with msiexec, bundle and manual Windows installs by replacing the binary. The agent never replaces a file a
+package manager owns. `self_update = off` in `agent.conf` keeps updates in your own hands (package manager, GPO,
+Intune). Rollouts, automatic mode and rollbacks: [13 Updates: Agent updates](13-updates.md#agent-updates).
 
 > **Status:** The Windows agent and its MSI were tested on Windows Server 2022 and Windows 11 (install, upgrade,
 > enrollment, VSS backup, restore). Server 2016/2019/2025, ReFS, SQL Server and Exchange are not tested yet; see
@@ -439,9 +444,6 @@ Windows installations update themselves through **Update agent**.
 > **Status:** The `.deb` and `.rpm` packages are installed and removed in Debian 13, AlmaLinux 10 and Fedora
 > containers at every release. The aarch64 packages are built and the binary is started under emulation. They have
 > not run on real arm64 hardware yet.
->
-> **Status:** The appliance image does not ship an agent bundle for **Update agent** yet (`/usr/share/nexus/agent`).
-> The release process must provide it.
 
 ### 3. Enroll
 
@@ -450,8 +452,9 @@ directions. The proof is bound to this TLS session, so it cannot be relayed by a
 issues the agent's client certificate and pins the agent's certificate. The status becomes **Enrolled**.
 Statuses: **Token pending** (waiting for enrollment), **Token expired** (issue a **New token**), **Enrolled**.
 
-- **Update agent** sends the current signed agent release. The agent verifies the signature, refuses downgrades,
-  and restarts. Agents installed from a package refuse it (see "Updates" above).
+- **Update agent** installs the recommended signed agent release with the agent's own install type (see "Updates"
+  above). The agent verifies the signatures, refuses downgrades, and restarts. Many agents at once:
+  **Agents → Updates** (rollouts).
 - **Re-enroll (new token)** replaces **New token** on an enrolled agent (see [Re-enrolling](#re-enrolling-an-agent)).
 - **Renew certificate** renews the agent's certificate now (see [Certificate renewal](#certificate-renewal)).
 - **Limits** sets a bandwidth and CPU limit for the agent's backups (see [Limits](#bandwidth-and-cpu-limits)).

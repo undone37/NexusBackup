@@ -330,12 +330,17 @@ impl Session {
                     bail!("agent reports id {id:?}, expected {agent_id:?}");
                 }
                 self.caps = caps.clone();
+                let facts = agent_proto::release::HostFacts::from_caps(&os, &caps);
                 Ok(AgentInfo {
                     agent_id: id,
-                    os,
                     kernel,
                     hostname,
                     version: agent_version,
+                    protocol: agent_proto::release::protocol_of(&caps).into(),
+                    arch: facts.arch,
+                    install: facts.install,
+                    gui_version: facts.gui_version,
+                    os,
                     caps,
                     via: self.via.into(),
                 })
@@ -360,4 +365,16 @@ pub struct AgentInfo {
     pub caps: Vec<String>,
     /// route of this session: `direct` or `edge`
     pub via: String,
+    /// v1.8 host facts (older agents: derived, see `HostFacts::from_caps`)
+    pub arch: String,
+    pub install: String,
+    pub gui_version: Option<String>,
+    /// "1.8" with chunked updates, else "1.7"
+    pub protocol: String,
+}
+
+impl AgentInfo {
+    pub fn facts(&self) -> agent_proto::release::HostFacts {
+        agent_proto::release::HostFacts::from_caps(&self.os, &self.caps)
+    }
 }

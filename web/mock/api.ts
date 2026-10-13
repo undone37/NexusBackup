@@ -166,6 +166,17 @@ interface Agent {
   edge_id?: string | null;
   via?: string | null;
   edge_pushed?: string | null;
+  /** Phase 27: host facts (protocol v1.8), tags, update state */
+  arch?: string | null;
+  install?: string | null;
+  gui_version?: string | null;
+  caps?: string[] | null;
+  tags?: string[];
+  update_target?: string | null;
+  update_state?: string | null;
+  update_error?: string | null;
+  update_attempts?: number;
+  update_at?: number | null;
 }
 interface Job {
   id: number;
@@ -1665,6 +1676,8 @@ function seed() {
   seedFleet(t);
   seedRecovery(t);
   seedEdges(t);
+  seedAgentUpdates(t);
+
   seedPhase28(t);
   seedPhase29(t);
 }
@@ -2115,6 +2128,12 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'agent.delete':
       db.agents = db.agents.filter((a) => a.id !== p.id);
       break;
+    case 'agent.rollback': {
+      // Phase 27: the approved rollback rollout starts
+      const r = rollouts.find((x) => x.id === p.id);
+      if (r && r.state === 'pending_approval') Object.assign(r, { state: 'running', wave_at: now() });
+      break;
+    }
     case 'source.delete':
       db.sources = db.sources.filter((g) => g.id !== p.id);
       break;
@@ -3174,7 +3193,20 @@ on('DELETE', '/replication/sources/:id', async (c, [id]) => {
 });
 
 // agents
-const pubAgent = ({ token_hash: _h, ...a }: Agent) => a;
+const pubAgent = ({ token_hash: _h, caps, ...a }: Agent) => ({
+  ...a,
+  arch: a.arch ?? null,
+  install: a.install ?? null,
+  gui_version: a.gui_version ?? null,
+  // Phase 27: "1.8" with the update2 capability, "1.7" for older agents, null = never seen
+  protocol: caps ? (caps.includes('update2') ? '1.8' : '1.7') : null,
+  tags: a.tags ?? [],
+  update_target: a.update_target ?? null,
+  update_state: a.update_state ?? null,
+  update_error: a.update_error ?? null,
+  update_attempts: a.update_attempts ?? 0,
+  update_at: a.update_at ?? null,
+});
 const AGENT_ID_RE = /^[0-9a-f]{16}$/;
 const findAgent = (u: User, id: string) => find(byTenant(u, db.agents), (a) => AGENT_ID_RE.test(id) && a.id === id, 'agent');
 // 128-bit one-time token, base32 (26 chars), valid 24 h; only its hash is stored.
@@ -6656,7 +6688,7 @@ async function handle(req: Req, res: Res) {
     }
     const bytes = method === 'GET' ? null : await readBody(req);
     // Plugin uploads are raw bundles, everything else JSON.
-    const raw = method === 'POST' && path === '/plugins' ? bytes : null;
+    const raw = method === 'POST' && (path === '/plugins' || path === '/agent-releases') ? bytes : null;
     const text = bytes && !raw ? bytes.toString('utf8') : '';
     let body: Json = {};
     if (text) {
@@ -8130,6 +8162,396 @@ on('PUT', '/agents/:id/edge', async (c, [id]) => {
   a.edge_id = edge_id;
   await audit(u.name, 'agent.edge', `agent/${a.id}`, { tenant: a.tenant, edge: edge_id, old });
   return [200, pubAgent(a)];
+});
+
+// Phase 27: agent releases, rollouts, automatic mode (docs/agent-update-plan.md "Implementation")
+type MockArtifact = { name: string; kind: string; os: string; arch: string; version: string; size: number; sha256: string };
+type MockRelease = {
+  version: string; source: 'image' | 'upload'; signed: boolean; key: string | null; error: string | null; protocol: string | null;
+  min_appliance: string | null; released: string | null; notes: string | null; artifacts: MockArtifact[];
+};
+type MockRolloutItem = {
+  agent_id: string; tenant: string; wave: number; state: string; job_id: number | null; attempts: number; error: string | null;
+  from_version: string | null; updated: number | null;
+};
+type MockRollout = {
+  id: number; version: string; scope: Json; canary: number; canary_pct: number | null; soak_minutes: number; concurrency: number;
+  max_failures: number; max_failure_pct: number; windows: Json[]; rollback: boolean; automatic: boolean; state: string; reason: string | null;
+  wave: number; quorum_id: number | null; created: number; created_by: string; finished: number | null; items: MockRolloutItem[];
+  /** mock-only: time of the last simulated step */
+  wave_at: number;
+};
+type MockUpdateSetting = {
+  tenant: string; group_id: number | null; mode: 'manual' | 'automatic'; windows: Json[]; canary: number; soak_minutes: number;
+  updated: number | null; updated_by: string | null;
+};
+const releases: MockRelease[] = [];
+const rollouts: MockRollout[] = [];
+const updateSettings: MockUpdateSetting[] = [];
+/** deterministic pseudo SHA-256 (no rand(): the seeded PRNG sequence of the other fixtures stays as it was) */
+const fakeSha = (s: string) => {
+  let out = '';
+  for (let k = 0; k < 8; k++) {
+    let h = (2166136261 ^ Math.imul(k + 1, 0x9e3779b1)) >>> 0;
+    for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619) >>> 0;
+    h = Math.imul(h ^ (h >>> 15), 0x85ebca6b) >>> 0;
+    out += ((h ^ (h >>> 13)) >>> 0).toString(16).padStart(8, '0');
+  }
+  return out;
+};
+function artifacts(v: string, gui: string): MockArtifact[] {
+  const a = (name: string, kind: string, os: string, arch: string, size: number, version = v): MockArtifact => ({
+    name, kind, os, arch, version, size, sha256: fakeSha(`${v}/${name}`),
+  });
+  const out: MockArtifact[] = [];
+  for (const [arch, deb] of [['x86_64', 'amd64'], ['aarch64', 'arm64']]) {
+    const d = `linux-${arch}`;
+    out.push(
+      a(`${d}/nexus-agent`, 'binary', 'linux', arch, 6_912_512),
+      a(`${d}/nexus-agent_${v}_${deb}.deb`, 'deb', 'linux', arch, 2_431_016),
+      a(`${d}/nexus-agent-${v}-1.${arch}.rpm`, 'rpm', 'linux', arch, 2_598_740),
+      a(`${d}/nexus-agent-desktop_${gui}-1_${deb}.deb`, 'desktop-deb', 'linux', arch, 4_120_332, gui),
+      a(`${d}/nexus-agent-desktop-${gui}-1.${arch}.rpm`, 'desktop-rpm', 'linux', arch, 4_377_904, gui),
+    );
+  }
+  out.push(
+    a(`linux-x86_64/nexus-agent-${v}-x86_64.tar.gz`, 'bundle', 'linux', 'x86_64', 2_802_118),
+    a('windows-x64/nexus-agent.exe', 'exe', 'windows', 'x86_64', 7_340_032),
+    a(`windows-x64/nexus-agent-${v}-x64.msi`, 'msi', 'windows', 'x86_64', 11_534_336),
+  );
+  return out;
+}
+const recommendedRelease = () =>
+  releases.filter((r) => r.signed).sort((a, b) => cmpVersion(b.version, a.version))[0]?.version ?? null;
+const isWindows = (a: Agent) => !!a.os?.startsWith('Windows');
+function seedAgentUpdates(t: number) {
+  releases.push(
+    {
+      version: '0.10.0', source: 'image', signed: true, key: 'nexus-release-2026.pub', error: null, protocol: '1.8', min_appliance: '1.4.0',
+      released: '2026-10-12', notes: 'Chunked in-band updates, package installs updated with apt/dnf/MSI, start watchdog.',
+      artifacts: artifacts('0.10.0', '0.10.0'),
+    },
+    {
+      version: '0.9.0', source: 'upload', signed: true, key: 'nexus-release-2026.pub', error: null, protocol: '1.7', min_appliance: '1.3.0',
+      released: '2026-09-02', notes: 'Edge proxy for roaming agents (kept for rollbacks).', artifacts: artifacts('0.9.0', '0.9.0'),
+    },
+    {
+      version: '0.11.0', source: 'upload', signed: false, key: null,
+      error: 'manifest.json.sig does not verify with any pinned release key', protocol: '1.8', min_appliance: '1.4.0', released: '2026-10-13',
+      notes: null, artifacts: artifacts('0.11.0', '0.11.0').slice(0, 3),
+    },
+  );
+  const by = (n: string) => db.agents.find((a) => a.name === n);
+  const web01 = by('web01');
+  const fs02 = by('fs02');
+  const nb07 = by('nb07');
+  const caps18 = ['lz4', 'poll', 'edge', 'update2'];
+  if (web01)
+    Object.assign(web01, {
+      version: '0.10.0', arch: 'x86_64', install: 'deb', caps: caps18, tags: ['ring1'],
+      update_target: '0.10.0', update_state: 'ok', update_attempts: 1, update_at: t - 3600 * 20,
+    });
+  if (fs02)
+    Object.assign(fs02, {
+      version: '0.9.0', arch: 'x86_64', install: 'msi', gui_version: '0.9.0', caps: caps18, tags: ['ring2'],
+      update_target: '0.10.0', update_state: 'failed', update_attempts: 1, update_at: t - 3600 * 19,
+      update_error: 'msiexec exit code 1603 (fatal error during installation); update-msi.log: "Error 1920. Service NexusAgent failed to start"',
+    });
+  if (nb07)
+    Object.assign(nb07, {
+      version: '0.9.0', arch: 'x86_64', install: 'deb', gui_version: '0.9.0', caps: caps18, tags: ['laptops'],
+      update_target: '0.10.0', update_state: 'pending', update_at: t - 1200,
+    });
+  // two more enrolled agents: an aarch64 rpm install and an old bundle install (protocol 1.7)
+  const extra = (id: string, name: string, host: string, os: string, o: Partial<Agent>): Agent => ({
+    id, tenant: 'initech', name, host, port: 7444, enrolled_at: t - 86400 * 90, cert_sha256: fakeSha(id), token_expires: null,
+    last_seen: t - 300, version: '0.9.0', os, token_hash: null, limits: {}, cert_issued: t - 86400 * 90,
+    cert_expires: t - 86400 * 90 + 3650 * 86400, cert_renewal_pending: false, reachable: true, last_poll: t - 90,
+    power: { on_battery: false, battery_percent: null, metered: false, network_name: null }, ui_policy: {}, ui_policy_version: 0,
+    ui_policy_seen: null, laptop: {}, missed_at: null, last_request: null, ...o,
+  });
+  db.agents.push(
+    extra('3f9a0c2e7b1d4e58', 'arm01', 'arm01.initech.example.com', 'AlmaLinux 10.0 (Purple Lion)', {
+      arch: 'aarch64', install: 'rpm', caps: caps18, tags: ['ring1'],
+    }),
+    extra('8d2b6e41a07c9f35', 'legacy03', '192.0.2.63', 'Debian GNU/Linux 12 (bookworm)', {
+      version: '0.8.0', arch: null, install: null, caps: ['lz4', 'poll'], tags: [],
+    }),
+  );
+  const ids: Record<string, string> = Object.fromEntries(db.agents.map((a) => [a.name, a.id]));
+  const item = (name: string, wave: number, state: string, o: Partial<MockRolloutItem> = {}): MockRolloutItem => ({
+    agent_id: ids[name] ?? name, tenant: db.agents.find((a) => a.name === name)?.tenant ?? 'acme', wave, state, job_id: null,
+    attempts: state === 'waiting' ? 0 : 1, error: null, from_version: '0.9.0', updated: t - 3600, ...o,
+  });
+  const base = { canary_pct: null, concurrency: 5, max_failures: 3, max_failure_pct: 20, rollback: false, quorum_id: null, wave_at: t };
+  rollouts.push(
+    {
+      ...base, id: 31, version: '0.9.0', scope: {}, canary: 1, soak_minutes: 60, windows: [], automatic: false, state: 'done', reason: null,
+      wave: 1, created: t - 86400 * 40, created_by: 'alice', finished: t - 86400 * 39,
+      items: [
+        item('web01', 0, 'ok', { from_version: '0.8.0', updated: t - 86400 * 40 + 900 }),
+        item('fs02', 1, 'ok', { from_version: '0.8.0', updated: t - 86400 * 39 }),
+        item('nb07', 1, 'ok', { from_version: '0.8.0', updated: t - 86400 * 39 }),
+      ],
+    },
+    {
+      ...base, id: 32, version: '0.10.0', scope: { tenant: 'acme' }, canary: 1, soak_minutes: 120,
+      windows: [{ days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], from: '19:00', to: '23:00' }], automatic: false, state: 'paused',
+      reason: 'canary failed: fs02 (msiexec exit code 1603)', wave: 0, created: t - 86400, created_by: 'alice', finished: null,
+      items: [
+        item('fs02', 0, 'failed', { error: 'msiexec exit code 1603 (fatal error during installation)', updated: t - 3600 * 19 }),
+        item('web01', 1, 'ok', { updated: t - 3600 * 20 }),
+        item('nb07', 1, 'waiting', { updated: null }),
+      ],
+    },
+    {
+      ...base, id: 33, version: '0.10.0', scope: { tenant: 'initech' }, canary: 1, soak_minutes: 60, windows: [], automatic: true,
+      state: 'running', reason: null, wave: 0, created: t - 1800, created_by: 'scheduler', finished: null,
+      items: [
+        item('arm01', 0, 'running', { updated: t - 120 }),
+        item('legacy03', 1, 'waiting', { from_version: '0.8.0', updated: null }),
+      ],
+    },
+  );
+  updateSettings.push({
+    tenant: 'initech', group_id: null, mode: 'automatic', windows: [{ days: [], from: '22:00', to: '05:00' }], canary: 1, soak_minutes: 60,
+    updated: t - 86400 * 3, updated_by: 'alice',
+  });
+  db.alerts.push(
+    mkAlert({
+      ts: t - 3600 * 19, severity: 'warning', kind: 'agent_update_failed', key: `agent_update_failed:${ids.fs02}`, tenant: 'acme',
+      message: 'agent fs02: update to 0.10.0 failed: msiexec exit code 1603 (fatal error during installation)',
+    }),
+    mkAlert({
+      ts: t - 3600 * 19, severity: 'warning', kind: 'rollout_paused', key: 'rollout_paused:32', tenant: null,
+      message: 'rollout 32 to 0.10.0 paused: canary failed: fs02 (msiexec exit code 1603)',
+    }),
+  );
+}
+function rolloutState(r: MockRollout) {
+  if (r.state === 'pending_approval' && r.quorum_id) {
+    const q = db.quorum.find((x) => x.id === r.quorum_id);
+    if (q && (q.state === 'rejected' || q.state === 'expired')) r.state = 'rejected';
+  }
+  return r.state;
+}
+/** mock scheduler: a running rollout moves one step about every 10 s while someone looks */
+function stepRollout(r: MockRollout) {
+  if (r.state !== 'running' || now() - r.wave_at < 10) return;
+  r.wave_at = now();
+  const wave = r.items.filter((i) => i.wave === r.wave);
+  const active = wave.find((i) => i.state === 'queued' || i.state === 'running');
+  if (active) {
+    const a = db.agents.find((x) => x.id === active.agent_id);
+    if (active.state === 'queued') active.state = 'running';
+    else {
+      // a protocol 1.7 agent with an unknown install type gets the old single-frame update: works for bundles only
+      active.state = 'ok';
+      if (a) Object.assign(a, { version: r.version, update_state: 'ok', update_target: r.version, update_at: now(), update_error: null });
+    }
+    active.updated = now();
+    return;
+  }
+  const next = wave.find((i) => i.state === 'waiting');
+  if (next) {
+    Object.assign(next, { state: 'queued', attempts: next.attempts + 1, updated: now() });
+    return;
+  }
+  if (r.wave === 0 && r.items.some((i) => i.wave === 1)) {
+    r.wave = 1;
+    return;
+  }
+  Object.assign(r, { state: 'done', finished: now() });
+}
+const rolloutCounts = (r: MockRollout) => {
+  const c: Record<string, number> = { total: r.items.length, waiting: 0, queued: 0, running: 0, ok: 0, failed: 0, skipped: 0, cancelled: 0 };
+  for (const i of r.items) c[i.state]++;
+  return c;
+};
+const pubRollout = (r: MockRollout) => {
+  const { items: _i, wave_at: _w, ...x } = r;
+  return { ...x, state: rolloutState(r), counts: rolloutCounts(r) };
+};
+const findRollout = (id: string) => find(rollouts, (r) => r.id === Number(id), 'rollout');
+const ROLLOUT_READERS: Role[] = ['admin', 'security_officer', 'operator', 'viewer'];
+function needAppliance(u: User | null, ...roles: Role[]) {
+  const x = need(u, ...roles);
+  if (x.tenant) throw new HttpError(403, 'forbidden: appliance-wide');
+  return x;
+}
+const validUpdateWindow = (w: Json) =>
+  !!w &&
+  Array.isArray(w.days) &&
+  w.days.every((d: unknown) => ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].includes(String(d))) &&
+  typeof w.from === 'string' &&
+  typeof w.to === 'string' &&
+  validWindow({ days: w.days, from: w.from, to: w.to });
+
+on('GET', '/agent-releases', (c) => {
+  need(c.user);
+  return [200, { recommended: recommendedRelease(), releases }];
+});
+on('POST', '/agent-releases', async (c) => {
+  const u = need(c.user, 'admin');
+  if (!String(c.headers['content-type'] ?? '').startsWith('application/x-tar')) throw new HttpError(415, 'Content-Type must be application/x-tar');
+  const raw = c.raw;
+  if (!raw?.length) throw new HttpError(400, 'empty release');
+  if (raw.length > 512 << 20) throw new HttpError(413, 'release larger than 512 MiB');
+  // Mock: every upload is "verified" and becomes the next patch version of the newest signed release
+  const [ma, mi, pa] = (recommendedRelease() ?? '0.10.0').split('.').map(Number);
+  const version = `${ma}.${mi}.${pa + 1}`;
+  if (releases.some((r) => r.version === version)) throw new HttpError(409, `release ${version} exists`);
+  releases.push({
+    version, source: 'upload', signed: true, key: 'nexus-release-2026.pub', error: null, protocol: '1.8', min_appliance: '1.4.0',
+    released: new Date(now() * 1000).toISOString().slice(0, 10), notes: 'Uploaded release', artifacts: artifacts(version, version),
+  });
+  await audit(u.name, 'agent.release.upload', `agent-release/${version}`, { version, bytes: raw.length });
+  return [201, { version }];
+});
+on('DELETE', '/agent-releases/:v', async (c, [v]) => {
+  const u = need(c.user, 'admin');
+  const r = find(releases, (x) => x.version === v, 'release');
+  if (r.source !== 'upload') throw new HttpError(409, 'releases from the image cannot be deleted');
+  if (rollouts.some((x) => x.version === v && ['running', 'paused', 'pending_approval'].includes(rolloutState(x))))
+    throw new HttpError(409, 'an active rollout uses this release');
+  releases.splice(releases.indexOf(r), 1);
+  await audit(u.name, 'agent.release.delete', `agent-release/${v}`, { version: v });
+  return [200, { version: v }];
+});
+on('POST', '/agent-releases/:v/download', async (c, [v]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  if (!canDownload(u)) throw new HttpError(403, 'this account may not download files');
+  const r = find(releases, (x) => x.version === v && x.signed, 'signed release');
+  const a = find(r.artifacts, (x) => x.name === c.body?.artifact, 'artifact');
+  const token = rand(32);
+  const expires = now() + 3600;
+  const filename = a.name.split('/').pop() ?? a.name;
+  db.downloads.set(token, { owner: u.name, filename, body: `mock installer ${a.name} (${a.sha256})\n`, expires });
+  return [200, { token, url: `/api/v1/downloads/${token}`, name: a.name, size: a.size, sha256: a.sha256, expires }];
+});
+on('PUT', '/agents/:id/tags', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const a = findAgent(u, id);
+  const tags = c.body?.tags;
+  if (!Array.isArray(tags) || tags.length > 16 || tags.some((x: unknown) => typeof x !== 'string' || !/^[a-z0-9_.-]{1,32}$/.test(x)))
+    throw new HttpError(400, 'tags: at most 16 of [a-z0-9_.-]{1,32}');
+  const old = a.tags ?? [];
+  a.tags = [...new Set(tags as string[])];
+  await audit(u.name, 'agent.tags', `agent/${a.id}`, { tenant: a.tenant, tags: a.tags, old });
+  return [200, pubAgent(a)];
+});
+on('GET', '/agent-rollouts', (c) => {
+  needAppliance(c.user, ...ROLLOUT_READERS);
+  rollouts.forEach(stepRollout);
+  return [200, [...rollouts].sort((a, b) => b.id - a.id).map(pubRollout)];
+});
+on('GET', '/agent-rollouts/:id', (c, [id]) => {
+  needAppliance(c.user, ...ROLLOUT_READERS);
+  const r = findRollout(id);
+  stepRollout(r);
+  const items = r.items.map((i) => ({
+    ...i,
+    name: db.agents.find((a) => a.id === i.agent_id)?.name ?? i.agent_id,
+    version: i.state === 'ok' ? r.version : null,
+  }));
+  return [200, { ...pubRollout(r), items }];
+});
+on('POST', '/agent-rollouts', async (c) => {
+  const u = needAppliance(c.user, 'admin');
+  const b = c.body ?? {};
+  const rel = find(releases, (x) => x.version === b.version && x.signed, 'signed release');
+  const scope: Json = b.scope ?? {};
+  for (const k of Object.keys(scope)) if (!['tenant', 'group_id', 'os', 'tag', 'agents'].includes(k)) throw new HttpError(400, `scope: unknown field ${k}`);
+  const int = (v: unknown, def: number, min: number, max: number, what: string) => {
+    if (v === undefined || v === null) return def;
+    if (!Number.isInteger(v) || (v as number) < min || (v as number) > max) throw new HttpError(400, `${what}: ${min}..=${max}`);
+    return v as number;
+  };
+  const canaryPct = b.canary_pct === undefined || b.canary_pct === null ? null : int(b.canary_pct, 10, 1, 100, 'canary_pct');
+  const canary = int(b.canary, 1, 0, 1000, 'canary');
+  const windows = Array.isArray(b.windows) ? b.windows : [];
+  if (!windows.every(validUpdateWindow)) throw new HttpError(400, 'windows: days Mon..Sun, from/to HH:MM, different');
+  const group = scope.group_id !== undefined ? find(db.groups, (g) => g.id === Number(scope.group_id), 'group') : null;
+  let pool = db.agents.filter((a) => a.cert_sha256);
+  if (scope.tenant) pool = pool.filter((a) => a.tenant === scope.tenant);
+  if (group) pool = pool.filter((a) => a.tenant === group.tenant && group.guests.includes(a.id));
+  if (scope.os) pool = pool.filter((a) => (scope.os === 'windows') === isWindows(a));
+  if (scope.tag) pool = pool.filter((a) => (a.tags ?? []).includes(scope.tag));
+  if (Array.isArray(scope.agents)) pool = pool.filter((a) => (scope.agents as string[]).includes(a.id));
+  if (!pool.length) throw new HttpError(400, 'scope: no enrolled agent matches');
+  const rollback = !!b.rollback;
+  const older = pool.some((a) => !!a.version && cmpVersion(rel.version, a.version) < 0);
+  if (older && !rollback) throw new HttpError(400, `version: ${rel.version} is older than agents in the scope (a downgrade needs rollback: true)`);
+  if (rollback && !older) throw new HttpError(400, 'rollback: no agent in the scope runs a newer version');
+  const nCanary = canaryPct !== null ? Math.max(1, Math.round((pool.length * canaryPct) / 100)) : canary;
+  let w0 = 0;
+  const items: MockRolloutItem[] = pool.map((a) => {
+    const current = !!a.version && cmpVersion(a.version, rel.version) === 0;
+    let wave = 1;
+    if (!current && w0 < nCanary) {
+      wave = 0;
+      w0++;
+    }
+    return {
+      agent_id: a.id, tenant: a.tenant, wave, state: current ? 'skipped' : 'waiting', job_id: null, attempts: 0,
+      error: current ? 'already runs this version' : null, from_version: a.version, updated: null,
+    };
+  });
+  const r: MockRollout = {
+    id: nextId(), version: rel.version, scope, canary, canary_pct: canaryPct, soak_minutes: int(b.soak_minutes, 60, 0, 10080, 'soak_minutes'),
+    concurrency: int(b.concurrency, 5, 1, 100, 'concurrency'), max_failures: int(b.max_failures, 3, 0, 10000, 'max_failures'),
+    max_failure_pct: int(b.max_failure_pct, 20, 0, 100, 'max_failure_pct'), windows, rollback, automatic: false,
+    state: rollback ? 'pending_approval' : 'running', reason: null, wave: w0 ? 0 : 1, quorum_id: null, created: now(), created_by: u.name,
+    finished: null, items, wave_at: now(),
+  };
+  rollouts.push(r);
+  await audit(u.name, 'agent.rollout.create', `rollout/${r.id}`, { version: r.version, scope, rollback, agents: items.length });
+  if (!rollback) return [201, pubRollout(r)];
+  const [st, body] = await quorum(u, 'agent.rollback', { id: r.id, version: r.version, scope }, { id: r.id });
+  if (st === 202) r.quorum_id = Number(body.quorum_id);
+  return [st, { ...pubRollout(r), ...body }];
+});
+for (const verb of ['pause', 'resume', 'cancel'] as const) {
+  on('POST', `/agent-rollouts/:id/${verb}`, async (c, [id]) => {
+    const u = needAppliance(c.user, 'admin');
+    const r = findRollout(id);
+    const st = rolloutState(r);
+    const ok = verb === 'pause' ? st === 'running' : verb === 'resume' ? st === 'paused' : ['running', 'paused', 'pending_approval'].includes(st);
+    if (!ok) throw new HttpError(409, `rollout is ${st}`);
+    if (verb === 'pause') Object.assign(r, { state: 'paused', reason: `paused by ${u.name}` });
+    if (verb === 'resume') Object.assign(r, { state: 'running', reason: null, wave_at: now() });
+    if (verb === 'cancel') {
+      Object.assign(r, { state: 'cancelled', finished: now() });
+      for (const i of r.items) if (i.state === 'waiting') Object.assign(i, { state: 'cancelled', updated: now() });
+    }
+    if (verb !== 'pause')
+      for (const a of db.alerts)
+        if (a.key === `rollout_paused:${r.id}` && !a.resolved_at) Object.assign(a, { resolved_at: now(), resolved_by: 'scheduler', auto: true });
+    await audit(u.name, `agent.rollout.${verb}`, `rollout/${r.id}`, { version: r.version });
+    return [200, pubRollout(r)];
+  });
+}
+on('GET', '/agent-update-settings', (c) => {
+  needAppliance(c.user, ...ROLLOUT_READERS);
+  return [200, updateSettings];
+});
+on('PUT', '/agent-update-settings', async (c) => {
+  const u = needAppliance(c.user, 'admin');
+  const b = c.body ?? {};
+  find(db.tenants, (x) => x.name === b.tenant, 'tenant');
+  const group_id = b.group_id ? Number(b.group_id) : null;
+  if (group_id !== null) find(db.groups, (g) => g.id === group_id && g.tenant === b.tenant, 'group in tenant');
+  if (!['manual', 'automatic'].includes(b.mode)) throw new HttpError(400, 'mode: manual or automatic');
+  const windows = Array.isArray(b.windows) ? b.windows : [];
+  if (!windows.every(validUpdateWindow)) throw new HttpError(400, 'windows: days Mon..Sun, from/to HH:MM, different');
+  const canary = Number.isInteger(b.canary) ? b.canary : 1;
+  const soak_minutes = Number.isInteger(b.soak_minutes) ? b.soak_minutes : 60;
+  const old = updateSettings.find((s) => s.tenant === b.tenant && (s.group_id ?? null) === group_id);
+  const next: MockUpdateSetting = { tenant: b.tenant, group_id, mode: b.mode, windows, canary, soak_minutes, updated: now(), updated_by: u.name };
+  if (old) Object.assign(old, next);
+  else updateSettings.push(next);
+  await audit(u.name, 'agent.update_settings', `tenant/${b.tenant}`, { tenant: b.tenant, group_id, mode: b.mode, windows, canary, soak_minutes });
+  return [200, next];
 });
 
 // ---------------------------------------------------------------- Phase 28: threat scans, hash hunt, lockdown, devices

@@ -92,6 +92,15 @@ struct AgentP {
     agent_id: String,
 }
 
+/// `agent_update`: the release to install (default: the recommended one).
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AgentUpdateP {
+    agent_id: String,
+    #[serde(default)]
+    version: Option<String>,
+}
+
 /// Name of an agent of `tenant`, or 400.
 fn agent_name(st: &St, tenant: &str, id: &str) -> ApiResult<String> {
     validate::agent_id(id)?;
@@ -371,7 +380,15 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
             r.agent_id = Some(target_agent);
             json!(r)
         }
-        "agent_update" | "agent_enroll" | "agent_renew" => {
+        "agent_update" => {
+            let a: AgentUpdateP = parse(p)?;
+            agent_name(st, tenant, &a.agent_id)?;
+            match crate::agent_updates::check_update_version(st, &a.agent_id, a.version.as_deref())? {
+                Some(v) => json!({"agent_id": a.agent_id, "version": v}),
+                None => json!({"agent_id": a.agent_id}),
+            }
+        }
+        "agent_enroll" | "agent_renew" => {
             let a: AgentP = parse(p)?;
             agent_name(st, tenant, &a.agent_id)?;
             json!(a)
@@ -854,6 +871,29 @@ pub async fn download(State(st): State<St>, ctx: Ctx, Path(token): Path<String>)
     }
     if token.len() != 64 || !token.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
         return Err(ApiError::not_found());
+    }
+    // agent installers (Phase 27): token from POST /agent-releases/{version}/download
+    if let Some((path, name)) = crate::agent_updates::installer_file(&st, &token, ctx.name())? {
+        let file = tokio::fs::File::open(&path).await.map_err(|_| ApiError::not_found())?;
+        let meta = file.metadata().await.map_err(|_| ApiError::not_found())?;
+        st.audit(
+            ctx.name(),
+            "download.get",
+            &format!("agent-installer/{name}"),
+            json!({"bytes": meta.len()}),
+        )?;
+        let mut res = Body::from_stream(tokio_util::io::ReaderStream::new(file)).into_response();
+        let h = res.headers_mut();
+        h.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/octet-stream"),
+        );
+        h.insert(header::CONTENT_LENGTH, HeaderValue::from(meta.len()));
+        h.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_str(&format!("attachment; filename=\"{name}\"")).map_err(|_| ApiError::not_found())?,
+        );
+        return Ok(res);
     }
     let job = st
         .cat

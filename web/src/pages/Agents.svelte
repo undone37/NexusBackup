@@ -16,15 +16,25 @@
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
   import Fleet from './agents/Fleet.svelte';
+  import Updates from './agents/Updates.svelte';
+  import AgentInstallers from '../components/AgentInstallers.svelte';
+  import type { AgentRelease, AgentReleases } from '../lib/types';
 
   // Phase 24d: tabs Agents | Fleet (fleet secrets, discovered agents, CSV bulk enrollment)
-  const TABS = ['agents', 'fleet'];
+  // Phase 27: Updates (releases, versions, rollouts, automatic mode)
+  const TABS = ['agents', 'fleet', 'updates'];
   const tab = $derived(TABS.includes(route.query.get('tab') ?? '') ? route.query.get('tab')! : 'agents');
   const tabsId = $props.id();
   function keys(e: KeyboardEvent) {
     if (!['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(e.key)) return;
     e.preventDefault();
-    const next = e.key === 'Home' ? 'agents' : e.key === 'End' ? 'fleet' : tab === 'agents' ? 'fleet' : 'agents';
+    const i = TABS.indexOf(tab);
+    const next =
+      e.key === 'Home'
+        ? TABS[0]
+        : e.key === 'End'
+          ? TABS[TABS.length - 1]
+          : TABS[(i + (e.key === 'ArrowRight' ? 1 : TABS.length - 1)) % TABS.length];
     navigate(`/agents?tab=${next}`);
     queueMicrotask(() => document.getElementById(`${tabsId}-tab-${next}`)?.focus());
   }
@@ -79,6 +89,18 @@
   function showToken(name: string, d: { token: string; install_command: string; token_expires: number | null }) {
     tok = { name, token: d.token, install_command: d.install_command, token_expires: d.token_expires ?? 0 };
     tokOpen = true;
+    loadInstallers();
+  }
+  // Phase 27: signed installers of the recommended release, offered next to the token
+  let installers: AgentRelease | null = $state(null);
+  async function loadInstallers() {
+    if (!can.download(session.user)) return;
+    try {
+      const r = await get<AgentReleases>('/agent-releases');
+      installers = r.releases.find((x) => x.version === r.recommended && x.signed) ?? null;
+    } catch {
+      installers = null;
+    }
   }
   $effect(() => {
     if (!tokOpen) tok = null;
@@ -181,7 +203,7 @@
   {#if tab === 'agents'}
     <button type="button" class="primary" onclick={create}><IconPlus aria-hidden="true" />{t.agents.new}</button>
   {/if}
-  <p class="lede">{tab === 'fleet' ? t.fleet.intro : t.agents.intro}</p>
+  {#if tab !== 'updates'}<p class="lede">{tab === 'fleet' ? t.fleet.intro : t.agents.intro}</p>{/if}
 </div>
 
 <div class="tabs" role="tablist" aria-label={t.agents.title} tabindex="-1" onkeydown={keys}>
@@ -201,6 +223,8 @@
 <div id="{tabsId}-panel" role="tabpanel" aria-labelledby="{tabsId}-tab-{tab}">
 {#if tab === 'fleet'}
   <Fleet {tenants} />
+{:else if tab === 'updates'}
+  <Updates {tenants} />
 {:else}
 <ErrorBanner {error} />
 
@@ -357,6 +381,10 @@
       <button type="button" class="small" onclick={() => copy(tok!.token)}>{t.users.copy}</button>
     </div>
     {#if tok.token_expires}<p class="muted">{t.agents.expires}: {fmtTime(tok.token_expires)}</p>{/if}
+    {#if can.download(session.user)}
+      <h3>{t.agentUpd.installers}</h3>
+      <AgentInstallers release={installers} />
+    {/if}
     <div class="form-actions">
       <button type="button" class="primary" onclick={() => (tokOpen = false)}>{t.close}</button>
     </div>

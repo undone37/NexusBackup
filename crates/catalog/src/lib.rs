@@ -9,6 +9,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod access;
+pub mod agent_updates;
 pub mod alerting;
 pub mod auth;
 pub mod console;
@@ -769,6 +770,57 @@ ALTER TABLE jobs ADD COLUMN live_log TEXT;
 ALTER TABLE jobs ADD COLUMN progress TEXT;
 "#;
 
+/// v41 (Phase 27, docs/agent-update-plan.md "Implementation"): agent updates pushed
+/// from the appliance. Per agent the host facts of protocol v1.8 (`arch`, `install`,
+/// `gui_version`, `caps` = JSON array of the last `HelloReply` capabilities), `tags`
+/// (rollout scope) and the update state (`update_target`, `update_state`,
+/// `update_error`, `update_attempts`, `update_at`). `agent_rollouts` (target version,
+/// scope, waves, concurrency, failure threshold, maintenance windows, rollback with
+/// approval, automatic) and their `agent_rollout_items` (one per agent);
+/// `agent_update_settings` (manual / automatic per tenant, `group_id` 0 = the whole
+/// tenant); `agent_downloads` (installer download tokens). Purely additive: the
+/// previous release ignores all of it.
+const SCHEMA_V41: &str = r#"
+ALTER TABLE agents ADD COLUMN arch TEXT;
+ALTER TABLE agents ADD COLUMN install TEXT;
+ALTER TABLE agents ADD COLUMN gui_version TEXT;
+ALTER TABLE agents ADD COLUMN caps TEXT;
+ALTER TABLE agents ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE agents ADD COLUMN update_target TEXT;
+ALTER TABLE agents ADD COLUMN update_state TEXT
+  CHECK (update_state IN ('pending','sending','installing','ok','failed','rolled_back'));
+ALTER TABLE agents ADD COLUMN update_error TEXT;
+ALTER TABLE agents ADD COLUMN update_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE agents ADD COLUMN update_at INTEGER;
+CREATE TABLE agent_rollouts (
+  id INTEGER PRIMARY KEY, version TEXT NOT NULL, scope TEXT NOT NULL DEFAULT '{}',
+  canary INTEGER NOT NULL DEFAULT 1, canary_pct INTEGER, soak_minutes INTEGER NOT NULL DEFAULT 60,
+  concurrency INTEGER NOT NULL DEFAULT 5, max_failures INTEGER NOT NULL DEFAULT 3,
+  max_failure_pct INTEGER NOT NULL DEFAULT 20, windows TEXT NOT NULL DEFAULT '[]',
+  rollback INTEGER NOT NULL DEFAULT 0, automatic INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL DEFAULT 'running'
+    CHECK (state IN ('pending_approval','running','paused','cancelled','done','rejected')),
+  reason TEXT, wave INTEGER NOT NULL DEFAULT 0, wave_done_at INTEGER, quorum_id INTEGER,
+  created INTEGER NOT NULL, created_by TEXT NOT NULL, finished INTEGER);
+CREATE TABLE agent_rollout_items (
+  rollout_id INTEGER NOT NULL REFERENCES agent_rollouts(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL, tenant TEXT NOT NULL, wave INTEGER NOT NULL DEFAULT 1,
+  state TEXT NOT NULL DEFAULT 'waiting'
+    CHECK (state IN ('waiting','queued','running','ok','failed','skipped','cancelled')),
+  job_id INTEGER, attempts INTEGER NOT NULL DEFAULT 0, error TEXT, from_version TEXT,
+  updated INTEGER NOT NULL, PRIMARY KEY (rollout_id, agent_id));
+CREATE INDEX agent_rollout_items_agent ON agent_rollout_items(agent_id);
+CREATE TABLE agent_update_settings (
+  tenant TEXT NOT NULL REFERENCES tenants(name), group_id INTEGER NOT NULL DEFAULT 0,
+  mode TEXT NOT NULL DEFAULT 'manual' CHECK (mode IN ('manual','automatic')),
+  windows TEXT NOT NULL DEFAULT '[]', canary INTEGER NOT NULL DEFAULT 1,
+  soak_minutes INTEGER NOT NULL DEFAULT 60, updated INTEGER NOT NULL, updated_by TEXT NOT NULL,
+  PRIMARY KEY (tenant, group_id));
+CREATE TABLE agent_downloads (
+  token TEXT PRIMARY KEY, version TEXT NOT NULL, artifact TEXT NOT NULL,
+  requested_by TEXT NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL);
+"#;
+
 /// v43 (Phase 28, docs/commvault-comparison.md Tier 1):
 /// - scheduled threat scans: `groups.scan_schedule` (schedule grammar of the
 ///   policies, NULL = off; the newest local snapshot of each of the group's
@@ -845,8 +897,8 @@ const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
-    SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V34, SCHEMA_V37, SCHEMA_V39, SCHEMA_V40, SCHEMA_V43,
-    SCHEMA_V44,
+    SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V34, SCHEMA_V37, SCHEMA_V39, SCHEMA_V40, SCHEMA_V41,
+    SCHEMA_V43, SCHEMA_V44,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -2950,6 +3002,57 @@ mod tests {
         .unwrap();
         let log: String = conn.query_row("SELECT log FROM jobs", [], |r| r.get(0)).unwrap();
         assert_eq!(log, "committed vm-100/5");
+    }
+
+    /// v41 (agent updates) on top of the previous catalog: existing agents get no
+    /// update state and no tags; rollouts, items, settings and download tokens work.
+    #[test]
+    fn migration_v41_agent_updates() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V41).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO tenants (name) VALUES ('t'); \
+                 INSERT INTO agents (id, tenant, name, host, port, version) VALUES ('0123456789abcdef', 't', 'web', 'h', 7444, '0.1.0');",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let (tags, state, attempts): (String, Option<String>, i64) = conn
+            .query_row("SELECT tags, update_state, update_attempts FROM agents", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!((tags.as_str(), state, attempts), ("[]", None, 0));
+        conn.execute_batch(
+            "UPDATE agents SET arch = 'x86_64', install = 'deb', caps = '[\"update2\"]', update_target = '0.2.0', \
+               update_state = 'installing', update_at = 5;
+             INSERT INTO agent_rollouts (version, scope, created, created_by) VALUES ('0.2.0', '{\"tenant\":\"t\"}', 1, 'alice');
+             INSERT INTO agent_rollout_items (rollout_id, agent_id, tenant, wave, updated) VALUES (1, '0123456789abcdef', 't', 0, 1);
+             INSERT INTO agent_update_settings (tenant, mode, updated, updated_by) VALUES ('t', 'automatic', 1, 'alice');
+             INSERT INTO agent_downloads (token, version, artifact, requested_by, created, expires) VALUES ('ab', '0.2.0', 'x.deb', 'alice', 1, 2);",
+        )
+        .unwrap();
+        let (state, wave): (String, i64) = conn
+            .query_row(
+                "SELECT r.state, i.wave FROM agent_rollouts r JOIN agent_rollout_items i ON i.rollout_id = r.id",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((state.as_str(), wave), ("running", 0));
+        assert!(conn.execute("UPDATE agents SET update_state = 'bogus'", []).is_err());
+        assert!(conn.execute("UPDATE agent_rollouts SET state = 'bogus'", []).is_err());
+        assert!(conn
+            .execute("UPDATE agent_update_settings SET mode = 'sometimes'", [])
+            .is_err());
     }
 
     /// v39 (edge proxies) on top of the previous catalog: agents keep working

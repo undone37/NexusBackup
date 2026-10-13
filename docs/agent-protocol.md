@@ -134,10 +134,11 @@ These pin down points the message table leaves open; an agent must behave as des
   ACLs, `security.*` labels and `trusted.*` of the other machine are dropped), alternate data streams
   (`win.ads`) only onto Windows agents. Skipped entries and xattrs are counted in the job log
   (`restore to another host: skipped …`), not reported as errors.
-- **Update.** The update directory (`/usr/share/nexus/agent`) holds `nexus-agent`, `nexus-agent.sig`,
-  `nexus-agent.version`; the whole binary travels in one frame, so it must stay below 8 MiB (open: chunked
-  update for bigger binaries). After `UpdateDone` the appliance reconnects (≤ 120 s) and expects the new
-  version in `HelloReply`.
+- **Update.** Agents before v1.8: the binary travels in one `Update` frame (below 8 MiB), from the release
+  store's `binary` artifact or, without any release in the store, the legacy files `nexus-agent`,
+  `nexus-agent.sig`, `nexus-agent.version` in `/usr/share/nexus/agent`. Agents with v1.8 get chunked
+  updates with their own package type (see "v1.8"). After `UpdateDone` the appliance reconnects (120 s for
+  binary swaps, 600 s for package installs) and expects the new version in `HelloReply`.
 - **Downloads** from tree snapshots need no agent: `nexus-agentctl files <agent> <time> ls|get` (same JSON
   and tar/zip formats as VM/CT files; tar keeps owners, modes, mtimes, links, devices and xattrs as PAX
   `SCHILY.xattr.*`).
@@ -355,15 +356,38 @@ edge relays its TLS records byte for byte; it holds no key of either side.
   keeps one `nexus-agentctl … edge-link` per enrolled edge (`edge-health`, `edge-wake`, `edge-log`, `edge-updated`
   lines) and enrolls edges with `edge-enroll` (`edge-enrolled {json}`).
 
+## v1.8 — agent updates pushed from the appliance (additive, Phase 27, docs/agent-update-plan.md)
+- **Capability `update2`** (agents built on `agent-core` with a platform that installs updates; not the rescue
+  agent). Host facts travel as capabilities as well: `arch=x86_64|aarch64`, `install=bundle|deb|rpm|msi|manual`,
+  `gui=<version>` (desktop UI package installed). They are not new `HelloReply` fields: `HelloReply` is a postcard
+  struct variant and an appliance would fail to decode an older agent's reply. `agent_proto::release::HostFacts`
+  parses them; agents without them are treated as bundle (Linux) or manual (Windows) installs on x86_64.
+- **Messages** (tags 49–55, appended after v1.7's `EdgeSet` = 48; checked by `agent-proto` tests):
+  `UpdateBegin { kind, name, size, sha256, signature, manifest, manifest_sig, rollback }` → `UpdateReady` | `Error`;
+  then `UpdateChunk { data }` (≤ 4 MiB each, no answer); `UpdateCommit { apply }` → `UpdateStaged` (more
+  artifacts follow, e.g. the desktop package of the same release) or, with `apply`, `UpdateDone` | `Error`.
+  `UpdateStatus` → `UpdateState { json }` (the agent's `update-state.json`, `{}` when no update ran; `state`
+  `installing` while an install runs). Limits: artifact 512 MiB, signature 64 KiB, manifest 256 KiB, name 200
+  bytes, state 16 KiB.
+- **Checks on the agent** before any data: `self_update = off` refuses; busy → `Error 409`; the artifact kind
+  must be the install's own; the release manifest must verify with a pinned release key and list the artifact
+  with this name, kind, OS, architecture, size and SHA-256; strictly newer, or with `rollback` older but not
+  below the agent's compiled-in `ROLLBACK_FLOOR`. After the data: SHA-256 and size, the artifact's own
+  signature, and for a binary the embedded version marker and the executable format.
+- **Errors**: 403 refused (self-update off, wrong kind, signature, version), 409 busy, 400 protocol violations
+  (data without `UpdateBegin`, more data than announced, size or hash mismatch), 500 install failures.
+- Release store, manifest format, installing, the start watchdog, the scheduler's rollouts and the API:
+  docs/agent-update-plan.md "Implementation".
+
 ## v1.8 notes — file hashes for the IOC hash hunt (additive, Phase 28, capability `file-hash`)
 Part of the v1.8 notes; the version number stays 1 (`VERSION`) and nothing changes for agents without the
 capability. Owned here: the two messages below; the rest of v1.8 (agent updates) is described in its own section.
 
 - **Capability `file-hash`** (`CAP_FILE_HASH`, all agents built on `agent-core`): the agent computes the SHA-256 of
   every file it reads in a scan when the appliance asks for it.
-- `ScanHashed { job, base }` (tag 49, appended after v1.7's `EdgeSet` = 48): like `Scan`. Sent instead of `Scan` only
+- `ScanHashed { job, base }` (tag 56, appended after the v1.8 update messages 49–55): like `Scan`. Sent instead of `Scan` only
   to agents with the capability, and only when the group has `file_hashes` on.
-- `EntryHashes { hashes: [Option<[u8; 32]>] }` (tag 50), agent → appliance, right after every `Entries` batch of a
+- `EntryHashes { hashes: [Option<[u8; 32]>] }` (tag 57), agent → appliance, right after every `Entries` batch of a
   `ScanHashed`: one element per entry of that batch, same order; `None` = not a regular file, not read in this scan
   (unchanged, taken from the agent's metadata cache) or the read failed. At most `MAX_BATCH` elements (`check`).
 - The agent hashes while it chunks (`agent_core::chunk`, same read; no second pass); a hash belongs to the file
