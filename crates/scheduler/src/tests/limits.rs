@@ -84,3 +84,33 @@ fn identity_and_zfs_references() {
     s.truenas_limits("t1", 5, &json!({}), &mut plain).unwrap();
     assert_eq!(plain, json!({}), "create mode: no references");
 }
+
+/// Instant disk recovery: only to a VM a group of the tenant protects on the
+/// snapshot's source; the CLI gets the slot and the move target.
+#[test]
+fn instant_disk_plan() {
+    let e = env(1);
+    let s = sched(&e);
+    let p = json!({"source": "vm-100", "time": 1700000000, "device": "drive-scsi1", "node": "n1",
+                   "target": 101, "key": "scsi5", "move_to": "local-lvm"});
+    let id = manual(&s, "instant_disk", "t1", p.clone());
+    let plan = s.plan(&s.job(id).unwrap()).unwrap();
+    assert_eq!(plan.key, "guest:t1/vm-100");
+    let Step::Cli { args, .. } = &plan.steps[0] else { panic!() };
+    assert_eq!(
+        args[1..].to_vec(),
+        ["instant-disk", "100", "1700000000", "drive-scsi1", "n1", "101", "--key", "scsi5", "--move-to", "local-lvm"]
+    );
+    // VM 300 belongs to tenant t2; 999 to nobody
+    for target in [300, 999] {
+        let mut q = p.clone();
+        q["target"] = json!(target);
+        let id = manual(&s, "instant_disk", "t1", q);
+        let err = s.plan(&s.job(id).unwrap()).unwrap_err().to_string();
+        assert!(err.contains("not protected by a group of tenant t1"), "{err}");
+    }
+    let mut bad = p.clone();
+    bad["device"] = json!("config");
+    let id = manual(&s, "instant_disk", "t1", bad);
+    assert!(s.plan(&s.job(id).unwrap()).is_err());
+}

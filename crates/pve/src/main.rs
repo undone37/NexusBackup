@@ -1,4 +1,4 @@
-//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | push-index | list | inventory`.
+//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | push-index | list | inventory`.
 //! `backup-all` backs up every guest in `vmids`, VM or container (type from /cluster/resources).
 
 use anyhow::{bail, Context, Result};
@@ -67,7 +67,7 @@ fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
-        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | push-index | list | inventory | task-stop <upid> | p2v <req.json> <layout.json> | p2v-cleanup <node> <vmid> <volid>");
+        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | push-index | list | inventory | task-stop <upid> | p2v <req.json> <layout.json> | p2v-cleanup <node> <vmid> <volid>");
     };
     let cfg: Config = serde_json::from_slice(&fs::read(cfg_path)?).context("config")?;
     // P2V (docs/bmr.md): API only, no store or keys
@@ -209,6 +209,34 @@ fn main() -> Result<()> {
             }
             if !r.move_errors.is_empty() {
                 bail!("disk moves failed: {}", r.move_errors.join("; "));
+            }
+        }
+        // instant disk recovery (Phase 22b): one disk attached to an existing VM
+        ("instant-disk", [vmid, time, device, node, target, opts @ ..]) => {
+            let (mut key, mut move_to) = (None, None);
+            let mut it = opts.iter();
+            while let Some(o) = it.next() {
+                match o.as_str() {
+                    "--key" => key = Some(it.next().context("--key <slot>")?.as_str()),
+                    "--move-to" => move_to = Some(it.next().context("--move-to <storage>")?.as_str()),
+                    x => bail!("instant-disk: unknown option {x}"),
+                }
+            }
+            let r = cluster.instant_disk(
+                &store,
+                vmid.parse()?,
+                time.parse()?,
+                device,
+                node,
+                target.parse()?,
+                key,
+                move_to,
+            )?;
+            for (disk, d) in &r.moves {
+                println!("{disk} moved in {d:.1?}");
+            }
+            if !r.move_errors.is_empty() {
+                bail!("disk move failed: {}", r.move_errors.join("; "));
             }
         }
         // resume serving an instant recovery (e.g. after an appliance restart)

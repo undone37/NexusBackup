@@ -1645,9 +1645,11 @@ impl Scheduler {
                 Some(r)
             }
             // `restored {json}` / `enrolled {json}` (nexus-agentctl, nexus-replica), `replicated {json}`
-            "restore_files" | "agent_enroll" | "replica_enroll" | "replica_sync" | "restore" | "restore_ct" => {
+            "restore_files" | "agent_enroll" | "replica_enroll" | "replica_sync" | "restore" | "restore_ct"
+            | "instant_disk" => {
                 let pfx = match job.kind.as_str() {
                     "restore_files" | "restore" | "restore_ct" => "restored ",
+                    "instant_disk" => "attached ",
                     "replica_sync" => "replicated ",
                     _ => "enrolled ",
                 };
@@ -2685,6 +2687,7 @@ impl Scheduler {
                 plan.steps.push(pve(args));
             }
             "restore_files" => return self.plan_restore_files(job, plan, replicated),
+            "instant_disk" => return self.plan_instant_disk(job, plan), // restore.rs
             "fleet_scan" => return self.plan_fleet_scan(job, plan),
             "agent_renew" => {
                 let a = self.agent(tenant, p["agent_id"].as_str().unwrap_or_default())?;
