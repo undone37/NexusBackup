@@ -457,6 +457,56 @@ Agent sources and NFS/SMB sources share the same selection rules:
   Windows agent backs up the volumes you list (mounted folders are not followed) and ignores this setting; NFS/SMB
   sources never descend into nested mounts.
 
+### Desktop agent: backup status for the user (Windows, Linux desktops)
+
+Users of a protected computer can see its backup status themselves, in the style of Veeam Agent for Windows: a tray
+icon and the **NexusBackup Agent** window. It only shows status and can request a backup; it cannot change the
+configuration or restore files (restores stay with the administrators on the appliance).
+
+- **Windows:** part of the agent MSI. It starts in the notification area at every logon (per-machine Run key; a
+  user can switch it off in Task Manager > Startup) and from the Start menu entry **NexusBackup Agent**.
+- **Linux desktops:** install `nexus-agent-desktop` (.deb / .rpm from the release page) next to `nexus-agent`. The
+  package adds nobody to any group: give each user who should see the status access with
+  `sudo usermod -aG nexus-agent-ui <user>` (effective after the next login). It starts in the tray at login; the
+  application menu entry **NexusBackup Agent** opens the window. GNOME shows the tray icon only with the
+  AppIndicator extension (enabled on Ubuntu); the menu entry works everywhere.
+
+**Tray icon.** The NexusBackup logo with a badge for the state; the tooltip names it (and the progress while a
+backup runs, otherwise the next backup):
+
+![Tray icon states](images/desktop-agent-tray-states.png)
+
+From left: no backup configured yet; waiting (first backup scheduled, or a requested backup waits for the
+appliance); backup running; last backup succeeded; last backup finished with warnings; last backup failed; last
+backup cancelled; not connected (the agent service does not answer, or the appliance has not reached this computer
+since the time shown, e.g. a laptop away from the office network). Right-click: **Open**, **Request backup now**,
+**Quit**; a left click opens the window.
+
+![Desktop agent window](images/desktop-agent-window.png)
+
+**Window.** The header shows who manages the computer (appliance name), with the header text and accent colour the
+administrator set for this agent. Below it:
+
+- **Status:** state, last successful backup, next backup, when the appliance last reached the computer.
+- **Request backup now:** queues a request; the appliance picks it up with its next check of the agent (about every
+  2 minutes) and starts the backup with the computer's normal job settings. One request per 10 minutes. The
+  administrator can hide the button (and the tray icon) per agent.
+- **Last 30 sessions:** one bar per session, oldest left. Green = success, yellow with **!** = warnings, red with
+  **X** = failed, grey with **-** = cancelled. **Height** switches between transferred data and duration. Hovering
+  a bar shows result, start time, duration and size; clicking it selects the session.
+- **Session list and details:** started, duration, transferred data; the details show read, transferred and new
+  data, warnings, the first error and the last lines of the job log.
+- **Notify me when a backup fails or ends with warnings:** a desktop notification per new problem; off by default,
+  stored per user.
+
+The window follows the light or dark setting of the desktop and works with the keyboard: arrow keys select a
+session, **T** switches the chart height, **B** requests a backup, **R** refreshes, **N** toggles notifications,
+**Esc** closes the window (the tray icon stays).
+
+> **Status:** built for Windows (x86_64) and Linux (x86_64, aarch64) and tested with a simulated agent service
+> (Linux, KDE Plasma). It has **not run on Windows** yet, and it needs an agent version that serves the local status
+> socket / pipe.
+
 ## TrueNAS
 
 Supported: TrueNAS Community Edition (tested: 25.10.7). The appliance creates a ZFS snapshot through the TrueNAS

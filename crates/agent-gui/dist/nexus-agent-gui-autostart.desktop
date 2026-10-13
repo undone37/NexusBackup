@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=NexusBackup Agent (tray)
+Comment=Tray icon with the backup status of this computer
+Exec=nexus-agent-gui
+Icon=nexus-agent-gui
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-KDE-autostart-after=panel

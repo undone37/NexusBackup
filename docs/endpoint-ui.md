@@ -41,3 +41,22 @@ the release page, Phase 19), FLR mount on the endpoint (restores stay admin-only
 - **GUI (Windows + Linux desktop):** `nexus-agent-gui` (Rust, iced + tray-icon), started per user session
   (Windows: Run key / Startup; Linux: XDG autostart), talks only to the local socket/pipe; packaged with the agent
   (MSI / .deb / .rpm, Phase 20) and as a separate "desktop" package for Linux workstations.
+
+## Status
+
+- **GUI (24c, `crates/agent-gui`, binary `nexus-agent-gui`):** implemented against the IPC contract
+  (`crates/agent-ui-proto`). iced 0.14 with the tiny-skia software renderer, run as a daemon: tray icon (tray-icon;
+  Windows notification area, Linux StatusNotifierItem via its pure-Rust ksni backend, no GTK) with the states
+  no job / waiting / running (progress in the tooltip) / requested / success / warning / error / cancelled /
+  not connected to the service / not reached by the appliance since …; each state has its own badge symbol, the
+  tooltip names it. Control Panel window: header (header text, accent colour, managed by), status card (state, last
+  success, next run, reachability, progress), bar chart of the last 30 sessions (colour + mark per result, height
+  transferred / duration, hover tooltip, click selects), session list with detail panel (summary, data, warnings,
+  first error, log tail), "Request backup now" (hidden by `hide_backup_now`, disabled while requested/running),
+  notification bar for service errors and request answers, optional desktop notification (per user, off by
+  default), light/dark from the OS, keyboard operation (arrows, Home/End, T, B, R, N, Esc). `hide_tray` removes the
+  tray; the menu entry still opens the window. Packaging: MSI (Run key + Start menu, docs/agent-windows.md) and
+  `nexus-agent-desktop` .deb/.rpm (docs/agent-linux.md). Tests: view model (state → icon/tooltip, chart scaling,
+  policy, notifications), IPC client against a fake service, icon rendering, headless rendering of the window
+  (iced_test) which also produces the manual screenshots. Tried on KDE Plasma (Wayland) against
+  `cargo run -p agent-gui --example fake-service`; **never run on Windows**.

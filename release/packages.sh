@@ -1,6 +1,7 @@
 #!/bin/bash
-# Agent packages for the release page: nexus-agent .deb + .rpm (x86_64, aarch64) and the
-# Windows agent as an MSI, plus SHA256SUMS. Everything runs in rootless podman containers
+# Agent packages for the release page: nexus-agent .deb + .rpm (x86_64, aarch64), the desktop
+# UI nexus-agent-desktop .deb + .rpm (x86_64, aarch64) and the Windows agent (with its desktop
+# UI) as an MSI, plus SHA256SUMS. Everything runs in rootless podman containers
 # (official Rust image, nfpm, Fedora msitools); nothing is installed on the host.
 #
 #   release/packages.sh [--test-key] [--no-arm64] [--no-msi]
@@ -10,7 +11,8 @@
 #   --no-msi    skip the Windows agent and its MSI
 #
 # Output: target/packages/{nexus-agent_<v>_amd64.deb, nexus-agent-<v>-1.x86_64.rpm,
-# nexus-agent_<v>_arm64.deb, nexus-agent-<v>-1.aarch64.rpm, nexus-agent-<v>-x64.msi, SHA256SUMS}.
+# nexus-agent_<v>_arm64.deb, nexus-agent-<v>-1.aarch64.rpm, nexus-agent-desktop_<v>-1_<arch>.deb,
+# nexus-agent-desktop-<v>-1.<arch>.rpm, nexus-agent-<v>-x64.msi, SHA256SUMS}.
 # The version is the agent's crate version (what self-update compares). Not signed here:
 # the release manager signs the files with release/sign.sh sign-blobs (docs/release.md).
 # Checks: release/test-packages.sh.
@@ -145,8 +147,39 @@ for t in "${targets[@]}"; do
 			-e PKG_ARCH="$arch" -e PKG_VERSION="$version" \
 			"$NFPM_IMAGE" pkg --config /stage/nfpm.yaml --packager "$p" --target /out/
 	done
+	cp "$stage/copyright" "$out/copyright"
+	sed "s/semver: $version-1/semver: @GVERSION@-1/; s/nexus-agent $version/nexus-agent-desktop @GVERSION@/" \
+		"$stage/changelog.yml" >"$out/changelog-desktop.yml"
 	rm -rf "$stage"
 done
+
+# --- Desktop UI: nexus-agent-gui (glibc, crates/agent-gui/build.sh) -----------------------
+gui_args=()
+[ $arm64 = 1 ] || gui_args+=(--no-arm64)
+[ $msi = 1 ] || gui_args+=(--no-windows)
+crates/agent-gui/build.sh "${gui_args[@]}"
+gversion=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/agent-gui/Cargo.toml | head -1)
+for t in "${targets[@]}"; do
+	case $t in
+	x86_64-*) arch=amd64 ;;
+	aarch64-*) arch=arm64 ;;
+	esac
+	stage=$out/stage-desktop-$arch
+	mkdir -p "$stage"
+	install -m 0755 target/agent-dist/gui/linux-$arch/nexus-agent-gui "$stage/"
+	install -m 0644 crates/agent-gui/dist/*.desktop crates/agent-gui/dist/nexus-agent-gui.svg "$stage/"
+	sed "s/@VERSION@/$version/" crates/agent-gui/dist/pkg/nfpm.yaml >"$stage/nfpm.yaml"
+	install -m 0755 crates/agent-gui/dist/pkg/postinst.sh "$stage/"
+	sed "s/@GVERSION@/$gversion/g" "$out/changelog-desktop.yml" >"$stage/changelog.yml"
+	cp "$out/copyright" "$stage/copyright"
+	for p in deb rpm; do
+		podman run --rm --security-opt label=disable -v "$PWD/$stage:/stage" -v "$PWD/$out:/out" -w /stage \
+			-e PKG_ARCH="$arch" -e PKG_VERSION="$gversion" \
+			"$NFPM_IMAGE" pkg --config /stage/nfpm.yaml --packager "$p" --target /out/
+	done
+	rm -rf "$stage"
+done
+rm -f "$out/copyright" "$out/changelog-desktop.yml"
 
 # --- Windows: nexus-agent.exe + MSI ------------------------------------------------------
 if [ $msi = 1 ]; then
@@ -157,7 +190,8 @@ if [ $msi = 1 ]; then
 	fi
 	stage=$out/stage-msi
 	mkdir -p "$stage"
-	cp target/agent-dist/windows/nexus-agent.exe crates/agent-windows/dist/nexus-agent.wxs "$stage/"
+	cp target/agent-dist/windows/nexus-agent.exe target/agent-dist/gui/windows/nexus-agent-gui.exe \
+		crates/agent-windows/dist/nexus-agent.wxs "$stage/"
 	cp target/agent-dist/windows/release-keys/*.pub "$stage/"
 	install -m 0644 docs/agent-windows.md "$stage/README.md"
 	echo msi >"$stage/package-managed.msi"
