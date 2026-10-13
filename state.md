@@ -355,3 +355,14 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 
 ## Runner note (2026-10-13)
 - CI failures on 970ede6/5233b5a were the self-hosted runner's shared rootless podman ("invalid internal status … podman system migrate") — transient, podman healthy again; not fixed on the host (would stop all containers). PG testbox now per-checkout (worktrees, runner).
+
+## Phase 22 — Network, PVE and NAS operations (2026-10-13)
+- [x] 22a network interfaces (nexus-net helper, bonds/VLAN/MTU/routes, interface-bound egress, MTU check, wizard step; T45–T46); VM lab `lab/appliance/network.sh` pending
+- [ ] 22b PVE/NAS/store operations
+
+## Phase 23 — Service providers and workloads (2026-10-13)
+- [ ] 23a billing export, per-tenant IdP, onboarding wizard, GFS simulator, keep-until, OpenAPI + nexusctl
+- [ ] 23b MySQL/MariaDB plugin, Windows workload runbooks
+
+## Phase 26 — Edge proxy (2026-10-13)
+- [ ] nexus-edge relay, agent rendezvous, appliance control channel, edge image
