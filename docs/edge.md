@@ -98,14 +98,14 @@ Protocol details (messages, framing, proofs, limits): docs/agent-protocol.md "v1
   edge log), never payload.
 - Never sees: backup data, file names, chunk hashes, tenant keys, the appliance CA key or any agent key.
 
-## Threat model (docs/threat-model.md T49–T52)
+## Threat model (docs/threat-model.md T53–T56)
 
 | | Threat | Outcome |
 |---|---|---|
-| T49 | Edge compromised (root on the VM) | DoS + metadata. No data (inner TLS end to end, no keys on the edge), cannot impersonate appliance or agent (pinned certificates on both ends), no path to the appliance (it only dials out and speaks a fixed message set). |
-| T50 | Internet scanning / flooding of 443 | mTLS before any parsing, unknown certificates fail the handshake; per-IP and per-certificate limits; only two ports; DoS of the edge path remains possible. |
-| T51 | Stolen laptop certificate used at the edge | Same power as the stolen key had before (pose as that agent); revoking the agent or its edge assignment removes the pin at the next config push. |
-| T52 | Leaked edge token, console access to the edge | Token proofs bound to the TLS session, one-time, 24 h; a rogue "appliance" paired with the edge cannot authenticate to agents; console re-init = DoS until re-enrolled. |
+| T53 | Edge compromised (root on the VM) | DoS + metadata. No data (inner TLS end to end, no keys on the edge), cannot impersonate appliance or agent (pinned certificates on both ends), no path to the appliance (it only dials out and speaks a fixed message set). |
+| T54 | Internet scanning / flooding of 443 | mTLS before any parsing, unknown certificates fail the handshake; per-IP and per-certificate limits; only two ports; DoS of the edge path remains possible. |
+| T55 | Stolen laptop certificate used at the edge | Same power as the stolen key had before (pose as that agent); revoking the agent or its edge assignment removes the pin at the next config push. |
+| T56 | Leaked edge token, console access to the edge | Token proofs bound to the TLS session, one-time, 24 h; a rogue "appliance" paired with the edge cannot authenticate to agents; console re-init = DoS until re-enrolled. |
 
 ## Open
 

@@ -86,6 +86,7 @@ mod lifecycle;
 mod offsite_ui;
 pub mod orphans;
 mod plugins;
+mod recovery;
 mod renewal;
 pub mod repair;
 pub mod replica;
@@ -764,6 +765,10 @@ impl Scheduler {
         self.log_err(|s| s.start_agent_poll(now));
         self.log_err(|s| s.queue_config_backup(now));
         self.log_err(|s| s.queue_rekeys(now));
+        // restore tests and recovery plans (recovery.rs)
+        self.log_err(|s| s.queue_restore_tests(now));
+        self.log_err(|s| s.queue_recovery_executes());
+        self.log_err(|s| s.queue_readiness(now));
         self.log_err(|s| s.start_jobs());
         let all = now.saturating_sub(self.last_refresh) >= self.cfg.refresh_secs;
         if all || !self.dirty.is_empty() {
@@ -1216,6 +1221,7 @@ impl Scheduler {
                 &format!("{} job {} ({}) failed: {msg}", job.kind, job.id, job.tenant),
                 lifecycle::tenant_of(job),
             )?;
+            self.recovery_unstartable(job, msg)?;
         }
         Ok(())
     }
@@ -1281,6 +1287,10 @@ impl Scheduler {
         )?;
         if job.kind == "report_send" && state != "cancelled" {
             return self.report_finished(&job, ok, &log, result.as_ref());
+        }
+        let recovery = recovery::KINDS.contains(&job.kind.as_str());
+        if recovery {
+            self.recovery_finished(&job, state, &log, f.stdout.as_deref())?;
         }
         if job.kind.starts_with("config_") && state != "cancelled" {
             return self.config_finished(&job, ok, &log, result.as_ref());
@@ -1395,6 +1405,8 @@ impl Scheduler {
             }
             Outcome::Quorum { message } => self.request_gc_quorum(&job, &message)?,
             Outcome::Cancelled => {}
+            // recovery_finished raised restore_test / recovery_plan alerts
+            Outcome::Failed { .. } if recovery => {}
             Outcome::Failed { alert } => {
                 if alert.is_none() && self.retry_failed(&job, &log)? {
                     return Ok(()); // job_failed only after the last attempt
@@ -2698,6 +2710,7 @@ impl Scheduler {
                 plan.steps.push(pve(args));
             }
             "restore_files" => return self.plan_restore_files(job, plan, replicated),
+            k if recovery::KINDS.contains(&k) => return self.plan_recovery(job, plan),
             "fleet_scan" => return self.plan_fleet_scan(job, plan),
             "edge_enroll" => return self.plan_edge_enroll(job, plan),
             "agent_renew" => {

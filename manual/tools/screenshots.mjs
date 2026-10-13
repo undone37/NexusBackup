@@ -1102,6 +1102,30 @@ async function main() {
       await shot('restore-scan-first', { height: 1100 });
       await closeDialogs();
     }],
+    // Phase 25: restore tests (seeded schedule and results, vm-101 failing) and recovery plans
+    ['recovery', async () => {
+      await login('admin');
+      await go('/restore-tests');
+      await until(`return !!document.querySelector('#rt-res-h') && document.querySelectorAll('tbody tr').length > 4`, 'restore test results');
+      await shot('restore-tests', { height: 1150 });
+      await ev(`$click('Test a snapshot'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #rt-guest')`, 'restore test dialog');
+      await ev(`const s = document.querySelector('#rt-guest'); s.value = 'initech/vm-100'; s.dispatchEvent(new Event('change')); return true;`);
+      await ev(`$fill('#rt-c-ports', '22, 443'); return true;`);
+      await shot('restore-test-dialog', { height: 1000 });
+      await closeDialogs();
+      await go('/recovery-plans');
+      await until(`return document.body.innerText.includes('erp-site-b')`, 'recovery plans');
+      await shot('recovery-plans', { height: 1250 });
+      await ev(`[...[...document.querySelectorAll('section.plan')].find((s) => s.innerText.includes('erp-site-b')).querySelectorAll('button')].find((b) => b.textContent.trim() === 'Edit').click(); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #rp-name')`, 'plan editor');
+      await shot('recovery-plan-edit', { height: 1250 });
+      await closeDialogs();
+      await ev(`[...[...document.querySelectorAll('section.plan')].find((s) => s.innerText.includes('erp-site-b')).querySelectorAll('button')].find((b) => b.textContent.trim() === 'Runs').click(); return true;`);
+      await until(`return !!document.querySelector('dialog[open] table')`, 'plan runs');
+      await shot('recovery-plan-runs');
+      await closeDialogs();
+    }],
     // Phase 17b: a security officer closes the vault; reopening is requested by an admin and approved
     ['vault-close', async () => {
       await login('so');
