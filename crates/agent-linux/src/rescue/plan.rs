@@ -283,7 +283,7 @@ pub fn plan(l: &Layout, targets: &[TargetDisk]) -> Result<Plan, String> {
             let full = format!("{}/{}", vg.name, lv.name);
             let c: Vec<String> = match lv.segtype.as_str() {
                 "thin-pool" => {
-                    let mut c: Vec<String> = ["lvm", "lvcreate", "-y", "-Wy", "-Zy", "--type", "thin-pool", "-l"]
+                    let mut c: Vec<String> = ["lvm", "lvcreate", "-y", "--type", "thin-pool", "-l"]
                         .iter()
                         .map(|s| s.to_string())
                         .collect();
@@ -484,7 +484,7 @@ mod tests {
         assert!(pool < thin);
         assert_eq!(
             lvs[pool],
-            "lvm lvcreate -y -Wy -Zy --type thin-pool -l 1024 --poolmetadatasize 4194304b -n pool vgdata"
+            "lvm lvcreate -y --type thin-pool -l 1024 --poolmetadatasize 4194304b -n pool vgdata"
         );
         assert_eq!(
             lvs[thin],

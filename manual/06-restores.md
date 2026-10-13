@@ -370,9 +370,9 @@ without anyone at the console, and the VM boots the restored system. Upload the 
 cluster once and enter its volume (e.g. `local:iso/nexus-rescue-0.1.0.iso`). The VM network must reach the
 appliance's web address (DHCP), and the appliance must reach the VM on port 7444.
 
-> **Status:** the layout capture, the recovery protocol, the disk plan and the API are covered by automated
-> tests. The end-to-end run in QEMU (`lab/linux/bmr.sh`) is described in `docs/bmr.md`; a run against real
-> hardware and a real PVE cluster is pending.
+> **Status:** tested end to end in QEMU (`lab/linux/bmr.sh`, `docs/bmr.md` "Lab"): a Debian 13 VM with LVM, a thin
+> pool and BIOS boot was recovered onto blank disks and booted with identical files. Not yet tested: a UEFI source
+> machine, real hardware, and "Restore as PVE VM" against a real Proxmox VE cluster.
 
 ## Plugin restores (PostgreSQL)
 

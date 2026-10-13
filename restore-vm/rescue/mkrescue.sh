@@ -46,7 +46,7 @@ install -D -m 0755 /src/udhcpc.script "$r/usr/share/nexus-rescue/udhcpc.script"
 cat >"$r/etc/lvm/lvm.conf" <<-'EOF'
 	devices { obtain_device_list_from_udev = 0 }
 	activation { udev_sync = 0 udev_rules = 0 }
-	global { use_lvmetad = 0 }
+	global { use_lvmetad = 0 thin_check_executable = "" }
 EOF
 echo nexus-rescue >"$r/etc/hostname"
 printf '127.0.0.1 localhost nexus-rescue\n' >"$r/etc/hosts"

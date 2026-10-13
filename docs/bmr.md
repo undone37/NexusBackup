@@ -162,3 +162,23 @@ appliance under another name. Optionally pin the web certificate (`appliance_sha
 (`lab/linux/e2e.sh`), boots a blank VM with two empty disks from the rescue ISO plus a config disk (built with
 xorriso; `advertise` = the host-forwarded agent port), lets the recovery run unattended, boots the restored VM and
 compares the host name and a sha256 sample of files. See the script header.
+
+Result 2026-10-13 (dev box, KVM, under heavy load): `deb-lvm` (Debian 13 cloud image, BIOS; root on a linear LV of a
+whole-disk PV, a thin pool with an XFS thin volume, PostgreSQL LV, ESP + BIOS boot partition on `vda`) — rescue
+check-in 17 s after boot, recovery (recreate + 1.7 GB restore + initramfs + grub) 63 s, first boot of the restored
+system 13 s, host name equal, sha256 of 2724 files (`/etc` without `/etc/lvm`, `/usr/bin`, `/usr/lib/modules`, the
+lab data incl. names with spaces and newlines) equal, all LVs and mounts present, PostgreSQL answers. Found and fixed
+on the way:
+
+- the agent unit's `ProtectKernelModules=yes` hid `/usr/lib/modules` from the agent: **every backup lacked the kernel
+  modules** and a recovered system could not mount its root (removed; module loading stays blocked by the missing
+  `CAP_SYS_MODULE` and the `@module` syscall filter);
+- `update-initramfs` / `dracut` in the chroot built a host-only image for the rescue system's tmpfs root (no disk or
+  device-mapper drivers): now generic (`MODULES=most` for that run, `dracut --no-hostonly`, `mkinitcpio -S autodetect`);
+- LVM's devices file (`/etc/lvm/devices/system.devices`) names PVs by hardware id: re-created for the new disks
+  (`vgimportdevices -a`) or removed;
+- thin pools are created without `-Wy` (unsupported for thin pools); the rescue's LVM skips `thin_check` for the fresh
+  pools.
+
+UEFI boot of the rescue ISO, network, config disk and disk detection were checked separately (OVMF); a UEFI source
+machine and a real PVE cluster (P2V) are still to be run by the lead.

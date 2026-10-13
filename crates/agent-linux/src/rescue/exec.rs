@@ -259,13 +259,31 @@ fn fixups(l: &Layout, plan: &Plan, root: &Path, log: &mut Log) -> Result<(), Str
         .and_then(|d| plan.disks.iter().find(|(s, _)| *s == d.path))
         .map(|(_, t)| t.clone())
         .ok_or("no boot disk in the plan")?;
+    // the LVM devices file names the PVs by hardware id (serial, WWID): on new disks
+    // LVM (and the initramfs, which copies it) would ignore every PV. Re-create it for
+    // the new disks; without it LVM uses all devices, which is fine as well.
+    let devices = root.join("etc/lvm/devices/system.devices");
+    if devices.exists() {
+        let _ = fs::remove_file(&devices);
+        match chroot(root, &["vgimportdevices", "-a"], log) {
+            Ok(_) => log.line("LVM devices file re-created for the new disks"),
+            Err(e) => log.line(format!("LVM devices file removed (LVM uses all devices): {e}")),
+        }
+    }
     // initramfs first: grub-mkconfig lists the kernels with their initramfs
+    // Generic images, never "host only": inside the chroot the tools would detect the
+    // rescue system's (tmpfs) root and leave out the disk and device-mapper drivers. The
+    // next kernel update on the restored system builds a host-only one again.
     if exists(root, "usr/sbin/update-initramfs") {
-        chroot(root, &["update-initramfs", "-u", "-k", "all"], log)?;
+        let conf = root.join("etc/initramfs-tools/conf.d/zz-nexus-rescue");
+        let _ = fs::write(&conf, "MODULES=most\n");
+        let r = chroot(root, &["update-initramfs", "-u", "-k", "all"], log);
+        let _ = fs::remove_file(&conf);
+        r?;
     } else if first_existing(root, &["usr/bin/dracut", "usr/sbin/dracut"]).is_some() {
-        chroot(root, &["dracut", "-f", "--regenerate-all"], log)?;
+        chroot(root, &["dracut", "-f", "--regenerate-all", "--no-hostonly"], log)?;
     } else if exists(root, "usr/bin/mkinitcpio") {
-        chroot(root, &["mkinitcpio", "-P"], log)?;
+        chroot(root, &["mkinitcpio", "-P", "-S", "autodetect"], log)?;
     } else {
         log.line("warning: no initramfs tool found (update-initramfs, dracut, mkinitcpio): initramfs kept as restored");
     }

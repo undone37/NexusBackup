@@ -52,7 +52,10 @@ tssh() {
 	ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
 		-o LogLevel=ERROR -i "$LAB_KEY" -p "$SSH_PORT" lab@127.0.0.1 "$@"
 }
-SAMPLE='sudo find /etc /usr/bin /home/lab /srv/xfs -xdev -type f -size -20M 2>/dev/null | LC_ALL=C sort | head -2000 | sudo xargs -d "\n" sha256sum'
+# NUL-separated: the lab data has names with spaces and newlines (sha256sum escapes them).
+# /etc/lvm is left out: LVM rewrites its metadata backups (snapshots after the backup,
+# activation on the recovered machine).
+SAMPLE='sudo find /etc /usr/bin /usr/lib/modules /home/lab /srv/xfs -xdev -path /etc/lvm -prune -o -type f -size -20M -print0 2>/dev/null | LC_ALL=C sort -z | head -z -n 3000 | sudo xargs -0 sha256sum'
 
 step_backup() {
 	login admin "$ADMIN_PW" "$ADMIN_TOTP"
@@ -81,6 +84,11 @@ step_backup() {
 	echo "TIME=$TIME" >"$S/bmr.env"
 	result backup_s $((SECONDS - t0))
 	result snapshot "$TIME"
+	step_sample
+}
+
+# the reference sample of the original VM (part of `backup`)
+step_sample() {
 	vm "$SAMPLE" >"$S/bmr.sample"
 	vm hostname >"$S/bmr.hostname"
 	result sample_files "$(wc -l <"$S/bmr.sample")"
@@ -161,9 +169,15 @@ step_verify() {
 		result sample_equal false
 		die "sample differs"
 	fi
-	tssh 'sudo lvs --noheadings -o vg_name,lv_name,segtype; findmnt -no SOURCE,TARGET / /srv/xfs /var/lib/postgresql' | sed 's/^/  restored: /' >&2
-	tssh 'sudo -u postgres psql -Atc "select count(*) from pg_database"' >/dev/null && result postgres true
+	# shellcheck disable=SC2016 # $m expands on the restored VM
+	tssh 'sudo lvs --noheadings -o vg_name,lv_name,segtype; for m in / /srv/xfs /var/lib/postgresql /boot/efi; do findmnt -no SOURCE,TARGET,FSTYPE "$m"; done' |
+		sed 's/^/  restored: /' >&2
 	tssh 'systemctl is-system-running --wait || true' | sed 's/^/  restored: /' >&2
+	if tssh 'sudo -u postgres psql -Atc "select count(*) from pg_database"' >/dev/null; then
+		result postgres true
+	else
+		result postgres false
+	fi
 }
 
 steps=${*:-backup recover verify}

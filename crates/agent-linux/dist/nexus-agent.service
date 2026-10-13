@@ -58,8 +58,9 @@ StateDirectory=nexus-agent
 StateDirectoryMode=0700
 NoNewPrivileges=yes
 ProtectKernelTunables=yes
-# dm-snapshot / dm-thin-pool are loaded at boot via /etc/modules-load.d/nexus-agent.conf
-ProtectKernelModules=yes
+# dm-snapshot / dm-thin-pool are loaded at boot via /etc/modules-load.d/nexus-agent.conf;
+# no module loading from the service: no CAP_SYS_MODULE, @module filtered
+# (ProtectKernelModules= is not used: see below)
 ProtectKernelLogs=yes
 ProtectClock=yes
 ProtectHostname=yes
@@ -80,6 +81,9 @@ SystemCallFilter=~@clock @cpu-emulation @debug @module @obsolete @raw-io @reboot
 #   ProtectSystem=      restore may write anywhere (incl. /etc, /usr with confirmation)
 #                       and self-update replaces /usr/local/sbin/nexus-agent
 #   ProtectHome=        /home and /root must be backed up and restorable
+#   ProtectKernelModules=  hides /usr/lib/modules: the kernel modules would be missing
+#                       from every backup and a bare-metal recovery would not boot
+#                       (found in the BMR lab); loading stays blocked (no CAP_SYS_MODULE, @module)
 #   PrivateTmp=         /tmp and /var/tmp are backed up as they are on the host
 #   PrivateDevices=     LVM/ZFS need /dev/mapper, /dev/zfs and the block devices
 #   RestrictSUIDSGID=   restoring setuid/setgid files is part of a faithful restore

@@ -20,7 +20,10 @@ mkdir -p "$out"
 agent=$root/target/x86_64-unknown-linux-musl/release/nexus-agent
 if [ -z "${SKIP_AGENT:-}" ] || [ ! -x "$agent" ]; then
 	rustup target list --installed | grep -qx x86_64-unknown-linux-musl || rustup target add x86_64-unknown-linux-musl
-	CARGO_PROFILE_RELEASE_LTO=true CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 CARGO_PROFILE_RELEASE_OPT_LEVEL=s \
+	# no musl cross compiler needed: the C/asm in the tree (ring, blake3) is freestanding
+	cc=gcc
+	command -v musl-gcc >/dev/null && cc=musl-gcc
+	CC_x86_64_unknown_linux_musl=$cc CARGO_PROFILE_RELEASE_LTO=true CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 CARGO_PROFILE_RELEASE_OPT_LEVEL=s \
 		CARGO_PROFILE_RELEASE_STRIP=symbols cargo build --manifest-path "$root/Cargo.toml" -q --locked \
 		-p agent-linux --release --target x86_64-unknown-linux-musl
 fi
