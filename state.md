@@ -403,3 +403,16 @@ through the PVE guest agent (`lab/windows/gexec.py`, no Windows passwords), dev 
   enrollment, backup, restore identical (1237 entries)
 - [ ] GUI on Windows checked by the maintainer (new icon + web UI palette), MSI major upgrade (needs a bumped
   version), appliance VM on pve-test backing up the Windows VMs through PVE
+
+## Live job progress (2026-10-13)
+- [x] Connectors print `progress {json}` lines on stderr (`chunkstore::progress`: item/part/done/total/entries/end,
+  `Meter` at most every 2 s); nexus-pve backup-all (per guest, per disk with the bytes to read, CT tar stream,
+  restores per served disk), nexus-agentctl backup (scan entries, transfer bytes), nexus-truenas (per dataset)
+- [x] Scheduler: output split into lines, progress lines kept out of the log and aggregated (current item, items
+  done, item/overall %, rate over ~10 s, ETA); writer thread per job writes `jobs.live_log` + `jobs.progress`
+  (catalog v40) every 2 s; final log/result unchanged; crash recovery keeps the partial output
+- [x] API `progress` on /jobs and /jobs/{id} (log so far while running); UI job page Progress card, jobs list
+  Progress column; mock + manual 03 (jobs-running.png, job-running.png)
+- Found on the way: `store_image_extents` read every chunk twice on a full read (no base: dirty extent and the
+  "grown" range overlapped); now each byte once (test `dirty_extents_read_each_byte_once`)
+- [ ] nexus-nas and the plugin host report no progress yet (log only); check on the real PVE host

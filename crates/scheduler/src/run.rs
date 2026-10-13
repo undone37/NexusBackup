@@ -12,7 +12,12 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use crate::progress::Tracker;
+use catalog::rusqlite;
+use chunkstore::progress::{Line, PREFIX};
 
 pub type KeySource = Arc<dyn Fn(&str) -> io::Result<Keyring> + Send + Sync>;
 
@@ -21,6 +26,8 @@ pub struct BoundedLog {
     buf: String,
     max: usize,
     truncated: bool,
+    /// changes so far (the live writer compares)
+    seq: u64,
 }
 
 impl BoundedLog {
@@ -29,10 +36,12 @@ impl BoundedLog {
             buf: String::new(),
             max: max.max(64),
             truncated: false,
+            seq: 0,
         }
     }
 
     pub fn push(&mut self, s: &str) {
+        self.seq += 1;
         self.buf.push_str(s);
         if self.buf.len() > self.max {
             let mut cut = self.buf.len() - self.max * 3 / 4;
@@ -55,6 +64,19 @@ impl BoundedLog {
         } else {
             self.buf
         }
+    }
+
+    /// The log so far, as [`BoundedLog::finish`] would return it.
+    pub fn snapshot(&self) -> String {
+        if self.truncated {
+            format!("[… earlier output truncated …]\n{}", self.buf)
+        } else {
+            self.buf.clone()
+        }
+    }
+
+    pub fn seq(&self) -> u64 {
+        self.seq
     }
 }
 
@@ -168,6 +190,61 @@ pub struct Ctx {
     pub store_options: fn() -> Options,
     pub log_max: usize,
     pub cancels: Cancels,
+    /// live view of running jobs (`jobs.live_log`, `jobs.progress`); None = only at the end
+    pub live: Option<LiveSink>,
+}
+
+/// Where and how often a running job's log so far and progress are written
+/// (docs/control-plane.md "Live progress"): from a thread of its own, only
+/// when something changed, so the connectors' pipes never wait for the catalog.
+pub struct LiveSink {
+    pub db: Arc<catalog::Catalog>,
+    pub every: Duration,
+}
+
+pub type Progress = Arc<Mutex<Tracker>>;
+
+/// Writes `live_log` / `progress` of job `id` every `every` while it runs.
+fn live_writer(
+    id: i64,
+    sink: &LiveSink,
+    log: Arc<Mutex<BoundedLog>>,
+    progress: Progress,
+    stop: mpsc::Receiver<()>,
+) -> std::thread::JoinHandle<()> {
+    let (db, every) = (sink.db.clone(), sink.every);
+    std::thread::spawn(move || {
+        let mut log_seq = 0;
+        while let Err(mpsc::RecvTimeoutError::Timeout) = stop.recv_timeout(every) {
+            let text = {
+                let l = log.lock().unwrap();
+                (l.seq() != log_seq).then(|| {
+                    log_seq = l.seq();
+                    l.snapshot()
+                })
+            };
+            // rewritten every round once there is progress: the rate decays while nothing arrives
+            let prog = progress.lock().unwrap().snapshot(Instant::now()).map(|v| v.to_string());
+            let r = match (text, prog) {
+                (None, None) => continue,
+                (Some(t), None) => db.conn().execute(
+                    "UPDATE jobs SET live_log = ?2 WHERE id = ?1 AND state = 'running'",
+                    rusqlite::params![id, t],
+                ),
+                (None, Some(p)) => db.conn().execute(
+                    "UPDATE jobs SET progress = ?2 WHERE id = ?1 AND state = 'running'",
+                    rusqlite::params![id, p],
+                ),
+                (Some(t), Some(p)) => db.conn().execute(
+                    "UPDATE jobs SET live_log = ?2, progress = ?3 WHERE id = ?1 AND state = 'running'",
+                    rusqlite::params![id, t, p],
+                ),
+            };
+            if let Err(e) = r {
+                eprintln!("job {id}: live progress not written: {e}");
+            }
+        }
+    })
 }
 
 /// Cancel requests for running jobs (Phase 13b, docs/control-plane.md "Run
@@ -255,6 +332,12 @@ pub fn write_private(dir: &Path, files: &[(String, Vec<u8>)]) -> io::Result<()> 
 
 pub fn execute(id: i64, plan: &Plan, ctx: &Ctx) -> Finished {
     let log = Arc::new(Mutex::new(BoundedLog::new(ctx.log_max)));
+    let progress: Progress = Default::default();
+    let (stop, stopped) = mpsc::channel();
+    let writer = ctx
+        .live
+        .as_ref()
+        .map(|sink| live_writer(id, sink, log.clone(), progress.clone(), stopped));
     let mut stdout = None;
     let outcome = match write_private(&plan.dir, &plan.files) {
         Err(e) => {
@@ -263,8 +346,12 @@ pub fn execute(id: i64, plan: &Plan, ctx: &Ctx) -> Finished {
                 .line(&format!("[scheduler] cannot write job config: {e}"));
             Outcome::Failed { alert: None }
         }
-        Ok(()) => run_steps(id, plan, ctx, &log, &mut stdout),
+        Ok(()) => run_steps(id, plan, ctx, &log, &progress, &mut stdout),
     };
+    drop(stop);
+    if let Some(w) = writer {
+        let _ = w.join(); // no live write after the final one (Scheduler::finish)
+    }
     let _ = fs::remove_dir_all(&plan.dir);
     if outcome != Outcome::Ok {
         if let Some(d) = &plan.download {
@@ -283,7 +370,16 @@ pub fn execute(id: i64, plan: &Plan, ctx: &Ctx) -> Finished {
     }
 }
 
-fn run_steps(id: i64, plan: &Plan, ctx: &Ctx, log: &Arc<Mutex<BoundedLog>>, stdout: &mut Option<String>) -> Outcome {
+fn run_steps(
+    id: i64,
+    plan: &Plan,
+    ctx: &Ctx,
+    log: &Arc<Mutex<BoundedLog>>,
+    progress: &Progress,
+    stdout: &mut Option<String>,
+) -> Outcome {
+    let clis = plan.steps.iter().filter(|s| matches!(s, Step::Cli { .. })).count() as u32;
+    let mut cli = 0;
     let needs_store = plan
         .steps
         .iter()
@@ -319,7 +415,9 @@ fn run_steps(id: i64, plan: &Plan, ctx: &Ctx, log: &Arc<Mutex<BoundedLog>>, stdo
                     bin.file_name().unwrap_or_default().to_string_lossy(),
                     args.join(" ")
                 ));
-                match run_cli(bin, args, log, *capture, Some((id, &ctx.cancels))) {
+                cli += 1;
+                progress.lock().unwrap().step(cli, clis);
+                match run_cli_live(bin, args, log, *capture, Some((id, &ctx.cancels)), Some(progress)) {
                     Ok((true, out)) => {
                         if *capture {
                             *stdout = Some(out);
@@ -529,6 +627,62 @@ pub fn run_cli(
     capture: bool,
     job: Option<(i64, &Cancels)>,
 ) -> io::Result<(bool, String)> {
+    run_cli_live(bin, args, log, capture, job, None)
+}
+
+/// Longest partial line held back (a longer one goes to the log as it is).
+const MAX_LINE: usize = 64 << 10;
+
+/// Splits output into lines: `progress {json}` lines go to `progress` (never
+/// into the log), everything else to the log, one lock per read.
+#[derive(Default)]
+struct Lines {
+    partial: Vec<u8>,
+}
+
+impl Lines {
+    fn feed(&mut self, data: &[u8], log: &Mutex<BoundedLog>, progress: Option<&Progress>, eof: bool) {
+        self.partial.extend_from_slice(data);
+        let mut text = String::new();
+        let mut lines = Vec::new();
+        let mut start = 0;
+        while let Some(n) = self.partial[start..].iter().position(|&b| b == b'\n') {
+            let line = &self.partial[start..start + n + 1];
+            start += n + 1;
+            if line.starts_with(PREFIX.as_bytes()) {
+                // malformed progress lines are dropped as well
+                lines.extend(Line::parse(&String::from_utf8_lossy(line)));
+            } else {
+                text.push_str(&String::from_utf8_lossy(line));
+            }
+        }
+        self.partial.drain(..start);
+        if eof || self.partial.len() > MAX_LINE {
+            text.push_str(&String::from_utf8_lossy(&self.partial));
+            self.partial.clear();
+        }
+        if !text.is_empty() {
+            log.lock().unwrap().push(&text);
+        }
+        if let (Some(p), false) = (progress, lines.is_empty()) {
+            let mut p = p.lock().unwrap();
+            let now = Instant::now();
+            for l in lines {
+                p.line(l, now);
+            }
+        }
+    }
+}
+
+/// [`run_cli`] with the child's progress lines going to `progress`.
+pub fn run_cli_live(
+    bin: &Path,
+    args: &[String],
+    log: &Arc<Mutex<BoundedLog>>,
+    capture: bool,
+    job: Option<(i64, &Cancels)>,
+    progress: Option<&Progress>,
+) -> io::Result<(bool, String)> {
     let mut cmd = Command::new(bin);
     cmd.args(args)
         .stdin(Stdio::null())
@@ -542,8 +696,10 @@ pub fn run_cli(
         c.spawned(id, child.id() as i32);
     }
     let pump = |mut r: Box<dyn Read + Send>, log: Arc<Mutex<BoundedLog>>, keep: bool| {
+        let progress = progress.cloned();
         std::thread::spawn(move || {
             let mut kept = Vec::new();
+            let mut lines = Lines::default();
             let mut buf = [0u8; 8192];
             loop {
                 match r.read(&mut buf) {
@@ -553,9 +709,10 @@ pub fn run_cli(
                             kept.extend_from_slice(&buf[..n]);
                         }
                     }
-                    Ok(n) => log.lock().unwrap().push(&String::from_utf8_lossy(&buf[..n])),
+                    Ok(n) => lines.feed(&buf[..n], &log, progress.as_ref(), false),
                 }
             }
+            lines.feed(&[], &log, progress.as_ref(), true);
             String::from_utf8_lossy(&kept).into_owned()
         })
     };
@@ -603,6 +760,25 @@ mod tests {
             vec!["UPID:pve1:3:c:", "UPID:pve1:1:a:", "UPID:pve2:2:b:"]
         );
         assert!(reported_upids("nothing\n").is_empty());
+    }
+
+    #[test]
+    fn progress_lines_split_across_reads_stay_out_of_the_log() {
+        let log = Mutex::new(BoundedLog::new(1 << 16));
+        let progress: Progress = Default::default();
+        let mut l = Lines::default();
+        l.feed(b"one\nprogress {\"item\":\"vm-1\",\"do", &log, Some(&progress), false);
+        l.feed(
+            b"ne\":7,\"total\":9}\ntwo\nprogress nonsense\nthr",
+            &log,
+            Some(&progress),
+            false,
+        );
+        assert_eq!(log.lock().unwrap().snapshot(), "one\ntwo\n");
+        l.feed(b"ee", &log, Some(&progress), true);
+        assert_eq!(log.lock().unwrap().snapshot(), "one\ntwo\nthree");
+        let p = progress.lock().unwrap().snapshot(Instant::now()).unwrap();
+        assert_eq!((p["item"].as_str(), p["done"].as_u64()), (Some("vm-1"), Some(7)));
     }
 
     #[test]

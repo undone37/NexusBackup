@@ -195,7 +195,14 @@ pub fn backup(
     }
     let mut remote = Remote::new(t);
     remote.pace = spec.pace.clone();
-    for (root, d) in &work {
+    for (i, (root, d)) in work.iter().enumerate() {
+        // live progress: one item per dataset (chunkstore::progress)
+        let mut item = chunkstore::progress::item(
+            &source_name(spec.source_id, &d.name),
+            Some(&d.name),
+            i as u32 + 1,
+            work.len() as u32,
+        );
         if !roots_ok.contains(&root) {
             continue;
         }
@@ -257,6 +264,7 @@ pub fn backup(
                     Err(e) => log(&format!("stats of {}/{}: {e}", rep.source, rep.time)),
                 }
                 r.committed.push(rep);
+                item.ok();
             }
             Err(e) => {
                 log(&format!("dataset {} failed: {e:#}", d.name));

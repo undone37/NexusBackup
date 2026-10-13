@@ -45,6 +45,13 @@ export function fmtRatio(x: number | null | undefined): string {
   return x === null || x === undefined || !Number.isFinite(x) ? '—' : `${x < 10 ? x.toFixed(x < 2 ? 2 : 1) : Math.round(x)}×`;
 }
 
+/** Bytes per second as decimal megabytes: "412 MB/s", "3.4 MB/s". */
+export function fmtRate(bps: number | null | undefined): string {
+  if (bps === null || bps === undefined || !Number.isFinite(bps)) return '—';
+  const mb = bps / 1e6;
+  return `${mb < 10 ? mb.toFixed(1) : Math.round(mb).toLocaleString('en-US')} MB/s`;
+}
+
 /** Seconds as a short duration: "45 s", "15 min", "3 h", "2 d". */
 export function fmtDuration(s: number | null | undefined): string {
   if (s === null || s === undefined || !Number.isFinite(s)) return '—';

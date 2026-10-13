@@ -770,6 +770,36 @@ export interface Job {
   retry_of?: number | null;
   not_before?: number | null;
   cancel_by?: string | null;
+  /** live progress of a running job (scheduler, docs/control-plane.md "Live progress"); null otherwise */
+  progress?: JobProgress | null;
+}
+
+/** Aggregated `progress {json}` lines of the connector (crates/scheduler/src/progress.rs). */
+export interface JobProgress {
+  item?: string | null;
+  label?: string | null;
+  item_index?: number | null;
+  items?: number | null;
+  items_done?: number;
+  part?: string | null;
+  part_index?: number | null;
+  parts?: number | null;
+  /** bytes of the current part */
+  done?: number | null;
+  total?: number | null;
+  entries?: number | null;
+  item_percent?: number | null;
+  percent?: number | null;
+  /** bytes moved so far over all items */
+  bytes?: number;
+  /** bytes/s over about the last 10 s */
+  rate?: number | null;
+  eta?: number | null;
+  item_eta?: number | null;
+  elapsed?: number;
+  updated?: number;
+  /** items in flight when several run at once (parallel guests) */
+  active?: { item?: string | null; label?: string | null; item_index?: number | null; part?: string | null; done?: number | null; total?: number | null; percent?: number | null }[];
 }
 
 export interface Snapshot {

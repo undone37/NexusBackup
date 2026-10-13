@@ -90,6 +90,7 @@ mod offsite_ui;
 pub mod orphans;
 mod plugins;
 mod priority;
+pub mod progress;
 mod recovery;
 mod renewal;
 pub mod repair;
@@ -181,6 +182,9 @@ pub struct Config {
     pub max_parallel: usize,
     /// bytes of output kept per job
     pub log_max: usize,
+    /// a running job's output so far and progress go to the catalog this often
+    /// (`jobs.live_log`, `jobs.progress`); 0 = only at the end
+    pub live_ms: u64,
     /// daily gc + verify per tenant
     pub maintenance: String,
     /// verify re-reads 1/verify_parts of the chunks per run (rolling)
@@ -263,6 +267,7 @@ impl Default for Config {
             poll_secs: 2,
             max_parallel: 4,
             log_max: 256 << 10,
+            live_ms: 2000,
             maintenance: "daily 03:00".into(),
             verify_parts: 7,
             refresh_secs: 900,
@@ -526,6 +531,10 @@ impl Scheduler {
             store_options,
             log_max: cfg.log_max,
             cancels: Default::default(),
+            live: (cfg.live_ms > 0).then(|| run::LiveSink {
+                db: db.clone(),
+                every: Duration::from_millis(cfg.live_ms),
+            }),
         });
         let mut s = Scheduler {
             cfg,
@@ -692,7 +701,9 @@ impl Scheduler {
         for (id, kind) in stale {
             self.db.conn().execute(
                 "UPDATE jobs SET state='failed', finished=?1, \
-                 log = log || '\n[scheduler] interrupted: the scheduler stopped while this job was running' \
+                 log = log || COALESCE(live_log, '') \
+                    || '\n[scheduler] interrupted: the scheduler stopped while this job was running', \
+                 live_log = NULL, progress = NULL \
                  WHERE id=?2 AND state='running'",
                 params![catalog::now(), id],
             )?;
@@ -1302,7 +1313,8 @@ impl Scheduler {
             _ => "failed",
         };
         self.db.conn().execute(
-            "UPDATE jobs SET state=?1, finished=?2, log=log || ?3, result=?4 WHERE id=?5",
+            "UPDATE jobs SET state=?1, finished=?2, log=log || ?3, result=?4, live_log=NULL, progress=NULL \
+             WHERE id=?5",
             params![
                 state,
                 catalog::now(),
@@ -2372,8 +2384,8 @@ impl Scheduler {
             "job": job.id,
         });
         if let Some(a) = a {
-            cfg["agent"] = json!({"id": a.id, "host": a.host, "port": a.port, "cert_sha256": a.cert_sha256,
-                                  "cert_sha256_next": a.cert_sha256_next});
+            cfg["agent"] = json!({"id": a.id, "name": a.name, "host": a.host, "port": a.port,
+                                  "cert_sha256": a.cert_sha256, "cert_sha256_next": a.cert_sha256_next});
             // roaming agent: direct first, then through its edge proxy (edge.rs)
             if let Ok(Some(e)) = self.agent_edge_route(&a.id) {
                 cfg["agent"]["edge"] = e;

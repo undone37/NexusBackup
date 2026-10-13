@@ -53,7 +53,7 @@ replicad); it streams replicad's answers to replication peers without opening st
 | `policies` | id, name, schedule (`daily HH:MM`, `hourly MM`, `every Nh [at MM]`, `every Nm` (Phase 18b, N ≥ 5 divides 60), `Mon,Wed HH:MM` / `Mon-Fri HH:MM`, `monthly D HH:MM`; `catalog::schedule`), gfs (JSON {daily,weekly,monthly,yearly}, Phase 18b optional `recent`: keep every snapshot of the last N hours before the newest, no lock beyond the commit lock; offsite/replication ignore it), offsite (bool); v14: retry (JSON {count, delay_min}, default 3 × 5 min), blackout (JSON [{days, from, to, abort}]), sla_minutes (NULL = none) |
 | `groups` | id, tenant, source_id, policy_id, name, guests (JSON [vmid]; linux source: [agent_id]; truenas: [dataset]; nfs/smb: []), mode (v13: `explicit` = guests; `all` = every present inventory guest of the source; `tags` = those with any tag of `selector`), selector (v13, JSON [tag]), exclude (v13, JSON [guest id], always wins). Resolution: `catalog::inventory::resolve`, used by the scheduler (`groups()`: queueing, plans, retention, offsite lag) and the web-api (dashboard, inventory) alike. A truenas group saved without datasets is `all` (resolved at run time, no longer frozen at save time); v14: timezone (IANA, default `UTC`), paused_until (NULL / unix time / -1 = indefinitely); v18: index_files (0/1, pve groups: index the files in VM/CT disks after each backup, docs/file-index.md) |
 | `inventory` (v13) | source_id (FK, ON DELETE CASCADE), guest (vmid / dataset / plugin guest id), name, kind, tags (JSON, e.g. `pool:x`, `tag:y`, `node:n`, `type:qemu`, `type:user`, `license:none`), seen, gone (NULL = present; set when a listing no longer contains the guest, row kept); PK (source_id, guest). Written by the scheduler from `inventory` / `plugin_guests` results. Groups of mode `all` / `tags` leave out guests tagged `license:none` or `site:team` unless the selector names that tag (`catalog::inventory::DEFAULT_OFF`: unlicensed Microsoft 365 users; team/group sites, backed up by their team / group guest) |
-| `jobs` | id, kind, tenant, params (JSON), state (`queued`,`running`,`ok`,`failed`,`cancelled`), requested_by, created, started, finished, log, result (JSON, NULL until finished ok; v3; a failed group backup: `{failed_guests}`); v14: not_before (retry delay), attempt, retry_of (first job of the chain), cancel_by (cancel request of a running job), sla_alerted |
+| `jobs` | id, kind, tenant, params (JSON), state (`queued`,`running`,`ok`,`failed`,`cancelled`), requested_by, created, started, finished, log, result (JSON, NULL until finished ok; v3; a failed group backup: `{failed_guests}`); v14: not_before (retry delay), attempt, retry_of (first job of the chain), cancel_by (cancel request of a running job), sla_alerted; v40: live_log, progress (JSON) while running (see "Live progress") |
 | `snapshots` | tenant, source (`vm-100`/`ct-200`/`host-<agent_id>`/`nas-<id>-<dataset>`/`share-<id>`), time, size, local, offsite, lock_until, verified — refreshed by scheduler |
 | `legal_holds` (v18) | id, tenant, source, time, state (`active`, `released`, `advisory`, `withdrawn`), reason, held_by, held_at, origin (replication source of an advisory), released_by (requester), approved_by, released_at; one open (`active`/`advisory`) row per snapshot (partial unique index), the rest is history. Not a foreign key: the snapshot row is rebuilt by the refresh. See "Legal hold" |
 | `quorum` | id, action, params (JSON), requested_by, created, decided_by, decided_at, state (`pending`,`approved`,`rejected`,`executed`,`expired`) |
@@ -342,6 +342,42 @@ mapped, setuid/setgid/sticky cleared, devices/sockets skipped, only xattrs the t
   `commit_snapshot` writes the indexes first and the manifest last (atomic rename), snapshots without a manifest are
   not listed, and unreferenced chunks go with the next GC after its grace period. In-process steps (retention, GC,
   verify) are not interrupted.
+
+## Live progress (`chunkstore::progress`, `scheduler/src/progress.rs`, `scheduler/src/run.rs`, catalog v40)
+- **Protocol** (connector → scheduler): a connector prints machine lines `progress {json}` on **stderr** (stdout may
+  be a captured job result), each one whole line (a single `write`, so parallel threads never interleave). Every field
+  is optional; a line is the current state, not a delta:
+  `item` (snapshot source, e.g. `vm-101`), `label` (guest / agent / dataset name), `item_index` (1-based), `items`,
+  `part` (disk `scsi0`, `tar stream`, `scan`, `transfer`), `part_index` (1-based), `parts`, `done` / `total` (bytes of
+  the part; `total` absent = unknown), `entries` (count for a part without a byte total), `end` (`ok` | `failed`: the
+  item ended). Example:
+  `progress {"item":"vm-101","label":"dc1dev","item_index":2,"items":3,"part":"scsi0","part_index":1,"parts":2,"done":1048576,"total":4294967296}`.
+  The helpers in `chunkstore::progress` (`item` / `start_item` / `end_item`, `Meter`, `Reader`) emit them; a `Meter`
+  prints at most every 2 s (plus at the start and end of a part), so the data path pays one clock read per call. An
+  item start also prints the human log line `item 2/3: vm-101 dc1dev` (stdout, stays in the log). The item context is
+  per thread (parallel guests). Emitters: nexus-pve `backup-all` (one item per guest; VM disks with `total` = the
+  bytes to read: dirty extents below the previous size plus any grown area, `Store::image_extents_bytes`; container
+  tar stream without a total; full VM restores per served disk), nexus-agentctl `backup` (item `host-<id>` named by
+  the agent's name, part `scan` counting entries, then `transfer` with the requested bytes as total; the scheduler
+  numbers the items by CLI step, one per agent), nexus-truenas (one item per dataset, no bytes). nexus-nas and the
+  plugin host report nothing yet (log only).
+- **Scheduler**: the output pumps split stdout/stderr into lines; `progress` lines (also malformed ones) never reach
+  the log, the tracker keeps the newest line per item and aggregates: current item (newest line), items done (`end`
+  lines; a finished CLI step ends its items), item fraction (`(part_index − 1 + done/total) / parts`), overall
+  percentage (`(items done + fractions in flight) / items`), bytes moved (sum of `done` increases), rate (bytes over a
+  sliding window of about 10 s, decaying while nothing arrives), `eta` (elapsed × (1 − f) / f over the overall
+  fraction; for a single item without `items`, remaining bytes / rate) and `item_eta`. A connector line without
+  `items` gets the CLI step as its item (`step index` of `steps`).
+- **Catalog**: a writer thread per running job writes `jobs.live_log` (the bounded log so far, same `log_max` and
+  truncation as the final log; only when it changed) and `jobs.progress` (the aggregate JSON: `item, label,
+  item_index, items, items_done, part, part_index, parts, done, total, entries, item_percent, percent, bytes, rate,
+  eta, item_eta, elapsed, updated`, plus `active` when several items run at once) every `live_ms` (default 2000,
+  0 = off), `WHERE state = 'running'`. The pipes never wait for the catalog: the pumps only append to memory. The
+  writer stops before the job's result is recorded; the final write is unchanged (`log = log || <bounded log>`) and
+  clears both columns. Jobs left running by a crashed scheduler keep their partial output (`log || live_log`, then the
+  "interrupted" note).
+- **API**: `GET /jobs` and `GET /jobs/{id}` return `progress` (null when none); while a job runs, `GET /jobs/{id}`
+  returns `log || live_log`, so the page shows the output so far.
 
 ## Bandwidth and sync windows, close vault (Phase 17a/b, `catalog::schedule`, `scheduler/src/windows.rs`)
 - **Window type** (`catalog::schedule`): `RateWindow {days, from, to, action: pause|limit, rate_bytes?}` and the

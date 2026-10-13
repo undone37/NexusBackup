@@ -2,7 +2,7 @@
 //! `backup-all` backs up every guest in `vmids`, VM or container (type from /cluster/resources).
 
 use anyhow::{bail, Context, Result};
-use chunkstore::{Options, Store};
+use chunkstore::{progress, Options, Store};
 use pve::api::{Api, ApiConfig};
 use pve::backup::{Cluster, SshNode};
 use serde::Deserialize;
@@ -247,10 +247,15 @@ fn main() -> Result<()> {
         // resume serving an instant recovery (e.g. after an appliance restart)
         ("ir-serve", [node, target]) => cluster.ir_resume(&store, node, target.parse()?)?,
         ("backup-all", []) => {
+            // guest names for the live progress (`item 2/3: vm-101 dc1dev`); none when unreadable
+            let names = cluster.guest_names().unwrap_or_default();
             // true = failed; every line is printed whole (parallel workers interleave lines only)
             let one = |store: &Store, vmid: u32| -> bool {
+                let index = vmids.iter().position(|v| *v == vmid).map_or(0, |i| i + 1);
+                let (item, label) = pve::backup::progress_item(vmid, &names);
+                progress::start_item(&item, label, index as u32, vmids.len() as u32);
                 let before = store.written();
-                match cluster.backup_guest(store, vmid) {
+                let failed = match cluster.backup_guest(store, vmid) {
                     Ok((m, read)) => {
                         println!("committed {}/{}", m.source, m.time);
                         match store.stats_line(&m, read, store.written().since(before)) {
@@ -263,7 +268,9 @@ fn main() -> Result<()> {
                         eprintln!("backup of guest {vmid} failed: {e:#}");
                         true
                     }
-                }
+                };
+                progress::end_item(!failed);
+                failed
             };
             let parallel = match cfg.max_parallel {
                 Some(m) if m < cfg.parallel => {

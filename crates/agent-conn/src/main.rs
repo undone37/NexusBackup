@@ -112,6 +112,9 @@ fn timeout() -> u64 {
 #[serde(deny_unknown_fields)]
 struct AgentCfg {
     id: String,
+    /// display name (live progress label)
+    #[serde(default)]
+    name: Option<String>,
     host: String,
     port: u16,
     #[serde(default)]
@@ -264,6 +267,7 @@ fn main() -> Result<()> {
             let pinned = Config {
                 agent: Some(AgentCfg {
                     id: a.id.clone(),
+                    name: None,
                     host: a.host.clone(),
                     port: a.port,
                     cert_sha256: Some(e.cert_sha256.clone()),
@@ -370,6 +374,7 @@ fn main() -> Result<()> {
             let pinned = Config {
                 agent: Some(AgentCfg {
                     id: a.id.clone(),
+                    name: None,
                     host: a.host.clone(),
                     port: a.port,
                     cert_sha256: Some(r.cert_sha256.clone()),
@@ -399,9 +404,9 @@ fn main() -> Result<()> {
                 limits: b.limits,
             };
             let written = store.written();
-            let r = backup::backup(&store, &mut map, &mut s, &cfg.agent()?.id, &spec, &mut |l| {
-                println!("{l}")
-            })?;
+            let agent = cfg.agent()?;
+            chunkstore::progress::name_item(&agent_conn::source_name(&agent.id), agent.name.as_deref());
+            let r = backup::backup(&store, &mut map, &mut s, &agent.id, &spec, &mut |l| println!("{l}"))?;
             s.close();
             for (what, h) in [("pre", &r.prepare_hook_log), ("post", &r.release_hook_log)] {
                 for l in h.lines() {
@@ -575,6 +580,7 @@ fn rescue(cfg: &Config) -> Result<()> {
     let pinned = Config {
         agent: Some(AgentCfg {
             id: a.id.clone(),
+            name: None,
             host: a.host.clone(),
             port: a.port,
             cert_sha256: Some(pin),

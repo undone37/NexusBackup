@@ -5,12 +5,13 @@
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
   import { route, navigate, href } from '../lib/router.svelte';
-  import { fmtAgo, fmtTime } from '../lib/format';
+  import { fmtAgo, fmtRate, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import { JOB_KINDS, kindLabel } from '../lib/jobs';
   import type { Job } from '../lib/types';
   import JobState from '../components/JobState.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
+  import ProgressBar from '../components/ProgressBar.svelte';
 
   const STATES = ['queued', 'running', 'ok', 'failed', 'cancelled'];
 
@@ -35,7 +36,7 @@
     // Refresh while anything is active.
     const iv = setInterval(() => {
       if (jobs.some((j) => j.state === 'queued' || j.state === 'running')) load();
-    }, 4000);
+    }, 2000);
     return () => clearInterval(iv);
   });
 
@@ -97,7 +98,8 @@
             <th scope="col">{t.state}</th>
             <th scope="col">{t.jobs.requestedBy}</th>
             <th scope="col">{t.jobs.created}</th>
-            <th scope="col" class="num">⏱</th>
+            <th scope="col">{t.jobs.progressCol}</th>
+            <th scope="col" class="num">{t.jobs.duration}</th>
             {#if can.cancelJob(session.user)}<th scope="col"><span class="visually-hidden">{t.actions}</span></th>{/if}
           </tr>
         </thead>
@@ -114,6 +116,20 @@
               >
               <td>{j.requested_by}</td>
               <td class="nowrap" title={fmtTime(j.created)}>{fmtAgo(j.created)}</td>
+              <td class="prog">
+                {#if j.state === 'running' && j.progress}
+                  {@const p = j.progress}
+                  <div class="pcell">
+                    <ProgressBar size="s" value={p.percent ?? p.item_percent} label={t.jobs.progress} />
+                    <span class="tabular small nowrap"
+                      >{(p.percent ?? p.item_percent) !== null && (p.percent ?? p.item_percent) !== undefined
+                        ? `${Math.round((p.percent ?? p.item_percent)!)} %`
+                        : ''}{p.rate ? ` · ${fmtRate(p.rate)}` : ''}</span
+                    >
+                  </div>
+                  {#if p.item}<div class="muted small mono nowrap">{p.item}{p.items && p.item_index ? ` (${p.item_index}/${p.items})` : ''}</div>{/if}
+                {/if}
+              </td>
               <td class="num">{duration(j)}</td>
               {#if can.cancelJob(session.user)}
                 <td class="actions">
@@ -131,3 +147,17 @@
     </div>
   {/if}
 </div>
+
+<style>
+  .small {
+    font-size: 0.8rem;
+  }
+  td.prog {
+    min-width: 11rem;
+  }
+  .pcell {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+</style>

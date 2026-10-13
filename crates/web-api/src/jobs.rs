@@ -744,15 +744,20 @@ fn job_json(r: &catalog::rusqlite::Row, with_log: bool) -> catalog::rusqlite::Re
         "result": r.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
         "attempt": r.get::<_, i64>(11)?, "retry_of": r.get::<_, Option<i64>>(12)?,
         "not_before": r.get::<_, Option<i64>>(13)?, "cancel_by": r.get::<_, Option<String>>(14)?,
+        // live progress of a running job (scheduler, docs/control-plane.md "Live progress")
+        "progress": r.get::<_, Option<String>>(15)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
     });
     if with_log {
-        v["log"] = json!(r.get::<_, String>(9)?);
+        // a running job: its output so far (`live_log`) after what was logged before it started
+        let mut log = r.get::<_, String>(9)?;
+        log.push_str(&r.get::<_, Option<String>>(16)?.unwrap_or_default());
+        v["log"] = json!(log);
     }
     Ok(v)
 }
 
 const JOB_COLS: &str = "id, kind, tenant, params, state, requested_by, created, started, finished, log, result, \
-                        attempt, retry_of, not_before, cancel_by";
+                        attempt, retry_of, not_before, cancel_by, progress, live_log";
 
 pub async fn list_jobs(State(st): State<St>, ctx: Ctx, Q(f): Q<JobFilter>) -> ApiResult<Json<Value>> {
     let c = st.cat.conn();

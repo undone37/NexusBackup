@@ -6,11 +6,12 @@
   import { can } from '../lib/roles';
   import { href } from '../lib/router.svelte';
   import { terminal, downloadUrl, kindLabel } from '../lib/jobs';
-  import { fmtBytes, fmtTime, fmtValue } from '../lib/format';
+  import { fmtBytes, fmtDuration, fmtRate, fmtTime, fmtValue } from '../lib/format';
   import { t } from '../lib/i18n';
   import type { Job } from '../lib/types';
   import JobState from '../components/JobState.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
+  import ProgressBar from '../components/ProgressBar.svelte';
 
   let { id }: { id: string } = $props();
 
@@ -34,6 +35,10 @@
   }
 
   const live = $derived(!!job && !terminal(job.state));
+  const prog = $derived(job?.state === 'running' ? (job.progress ?? null) : null);
+  // the connector reports about every 2 s while data flows; a long gap means it waits (vzdump start, a slow source)
+  const quiet = $derived(prog?.updated ? Math.max(0, Date.now() / 1000 - prog.updated) : 0);
+  const pctText = (p: number | null | undefined) => (p === null || p === undefined ? '' : `${p.toFixed(p >= 10 ? 0 : 1)} %`);
 
   onMount(() => {
     load();
@@ -118,6 +123,76 @@
       {/if}
     </section>
   </div>
+  {#if job.state === 'running'}
+    <section class="card progress" aria-labelledby="jpr">
+      <h2 id="jpr">{t.jobs.progress}</h2>
+      {#if !prog}
+        <p class="muted">{t.jobs.noProgress}</p>
+      {:else}
+        {#if prog.items}
+          <div class="pline">
+            <div class="phead">
+              <span>{t.jobs.overall}</span>
+              <span class="tabular">{pctText(prog.percent)}<span class="muted">{` · ${t.jobs.itemsDone(prog.items_done ?? 0, prog.items)}`}</span></span>
+            </div>
+            <ProgressBar value={prog.percent} label={t.jobs.overall} />
+          </div>
+        {/if}
+        {#if prog.item || prog.part}
+          <div class="pline">
+            <div class="phead">
+              <span>
+                {#if prog.item}<span class="mono">{prog.item}</span>{#if prog.label}<span class="muted">{` ${prog.label}`}</span>{/if}{/if}
+                {#if prog.part}<span class="muted">{`${prog.item ? ' · ' : ''}${t.jobs.part} `}</span><span class="mono">{prog.part}</span
+                  >{#if prog.parts && prog.parts > 1}<span class="muted">{` (${t.jobs.itemOf(prog.part_index ?? 1, prog.parts)})`}</span>{/if}{/if}
+              </span>
+              <span class="tabular">{pctText(prog.item_percent)}</span>
+            </div>
+            <ProgressBar value={prog.item_percent} label={t.jobs.current} />
+          </div>
+        {/if}
+        <dl class="kv pstats">
+          {#if prog.item_index && prog.items}
+            <dt>{t.jobs.item}</dt>
+            <dd class="tabular">{t.jobs.itemOf(prog.item_index, prog.items)}</dd>
+          {/if}
+          {#if prog.total !== null && prog.total !== undefined}
+            <dt>{t.jobs.part}</dt>
+            <dd class="tabular">{t.jobs.bytesOf(fmtBytes(prog.done ?? 0), fmtBytes(prog.total))}</dd>
+          {:else if prog.entries}
+            <dt>{t.jobs.part}</dt>
+            <dd class="tabular">{t.jobs.entries(prog.entries)}</dd>
+          {/if}
+          <dt>{t.jobs.transferred}</dt>
+          <dd class="tabular">{fmtBytes(prog.bytes ?? 0)}</dd>
+          <dt>{t.jobs.rate}</dt>
+          <dd class="tabular">{fmtRate(prog.rate)}</dd>
+          <dt>{t.jobs.eta}</dt>
+          <dd class="tabular">{prog.eta === null || prog.eta === undefined ? '—' : t.jobs.etaAbout(fmtDuration(prog.eta))}</dd>
+          <dt>{t.jobs.elapsed}</dt>
+          <dd class="tabular">{fmtDuration(prog.elapsed)}</dd>
+        </dl>
+        {#if quiet > 30}<p class="muted small">{t.jobs.stale(fmtDuration(quiet))}</p>{/if}
+        {#if prog.active && prog.active.length > 1}
+          <h3>{t.jobs.inFlight}</h3>
+          <div class="table-wrap">
+            <table>
+              <tbody>
+                {#each prog.active as a, i (a.item ?? i)}
+                  <tr>
+                    <td class="mono nowrap">{a.item}{#if a.label}<span class="muted">{` ${a.label}`}</span>{/if}</td>
+                    <td class="mono">{a.part ?? ''}</td>
+                    <td class="wide"><ProgressBar size="s" value={a.percent} label={a.item ?? ''} /></td>
+                    <td class="num">{pctText(a.percent)}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+      {/if}
+    </section>
+  {/if}
   {@const res = job.result}
   {#if res && job.kind.startsWith('plugin_') && job.kind !== 'plugin_backup'}
     <section class="card" aria-labelledby="jr">
@@ -191,3 +266,37 @@
 {:else if !error}
   <p class="muted" aria-busy="true">{t.loading}</p>
 {/if}
+
+<style>
+  .small {
+    font-size: 0.8rem;
+  }
+  .progress .pline {
+    display: grid;
+    gap: 0.35rem;
+    margin: 0 0 1rem;
+    max-width: 48rem;
+  }
+  .progress .phead {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: baseline;
+  }
+  .progress .pstats {
+    grid-template-columns: max-content 1fr max-content 1fr;
+    max-width: 48rem;
+  }
+  .progress h3 {
+    font-size: 0.95rem;
+    margin: 1rem 0 0.5rem;
+  }
+  .progress td.wide {
+    width: 50%;
+  }
+  @media (max-width: 720px) {
+    .progress .pstats {
+      grid-template-columns: max-content 1fr;
+    }
+  }
+</style>

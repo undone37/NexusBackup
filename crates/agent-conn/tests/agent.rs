@@ -330,8 +330,15 @@ fn backup_incremental_and_restore_roundtrip() {
     let pin = e.enroll();
     let store = e.store();
 
-    let r1 = e.backup(&store, &pin, 1).unwrap();
+    let (r1, lines) = chunkstore::progress::capture(|| e.backup(&store, &pin, 1));
+    let r1 = r1.unwrap();
     assert!(r1.consistent && r1.base.is_none());
+    // live progress: the scan counts entries, the transfer its bytes up to the total
+    let scan = lines.iter().rfind(|l| l.part.as_deref() == Some("scan")).unwrap();
+    assert_eq!(scan.entries, Some(r1.entries), "{lines:?}");
+    let xfer = lines.iter().rfind(|l| l.part.as_deref() == Some("transfer")).unwrap();
+    assert_eq!((xfer.done, xfer.total), (Some(r1.wanted_bytes), Some(r1.wanted_bytes)));
+    assert_eq!((xfer.part_index, xfer.parts), (Some(2), Some(2)));
     let t1 = r1.time;
     let first_wanted = e.agent.st.lock().unwrap().wanted.len();
     // data.bin == copy.bin: 5 chunks each, transferred once; + 3 small files (empty has none)

@@ -265,6 +265,38 @@ fn dirty_extents_incremental_matches_full_read() {
     assert_eq!(i4, full(&v4));
 }
 
+/// Every byte is read once (no base: the whole disk; base: dirty extents plus
+/// the grown tail), and `image_extents_bytes` predicts it (live progress total).
+#[test]
+fn dirty_extents_read_each_byte_once() {
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), 0, 0);
+    let cs = 65536usize;
+    let v1 = image(1);
+    let count = |prev: Option<&Index>, data: &[u8], dirty: &[(u64, u64)]| {
+        let mut read = 0u64;
+        let idx = s
+            .store_image_extents(prev, cs, data.len() as u64, dirty, |off, buf| {
+                read += buf.len() as u64;
+                buf.copy_from_slice(&data[off as usize..off as usize + buf.len()]);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(read, Store::image_extents_bytes(prev, cs, data.len() as u64, dirty));
+        (idx, read)
+    };
+    let (i1, r) = count(None, &v1, &[(0, v1.len() as u64)]);
+    assert_eq!(r, v1.len() as u64, "full read: once, not twice");
+    assert_eq!(i1, s.store_image(&v1[..], cs).unwrap());
+    let mut v2 = image(2);
+    v2.extend(vec![5u8; 1000]);
+    // dirty extent reaching into the grown tail: counted once
+    let dirty = [(65536u64, 131072u64), (6 * 65536 - 100, 1100)];
+    let (i2, r) = count(Some(&i1), &v2, &dirty);
+    assert_eq!(r, 131072 + 1100);
+    assert_eq!(i2, s.store_image(&v2[..], cs).unwrap());
+}
+
 #[test]
 fn image_reader_random_access() {
     let d = tempfile::tempdir().unwrap();

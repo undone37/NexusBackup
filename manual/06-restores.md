@@ -759,10 +759,11 @@ for restores, and for Teams conversations also `Teamwork.Migrate.All` and `Chann
 
 ## Follow a restore job
 
-Every restore is a job. The dialog opens the job page, which refreshes every 2 s while the job runs. All jobs
-are listed on **Jobs** (see [03 The web interface](03-web-interface.md)).
+Every restore is a job. The dialog opens the job page, which refreshes every 2 s while the job runs and shows the
+log so far; a full VM restore also reports progress per disk it serves to Proxmox VE. All jobs are listed on
+**Jobs** (see [03 The web interface](03-web-interface.md#jobs)).
 
-![A running job with its live log](images/job-running.png)
+![A running job with its progress and live log](images/job-running.png)
 
 ## Tenant users
 

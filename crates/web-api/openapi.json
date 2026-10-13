@@ -29,7 +29,12 @@
           "requested_by": { "type": "string" }, "created": { "type": "integer" },
           "started": { "type": ["integer", "null"] }, "finished": { "type": ["integer", "null"] },
           "result": { "type": ["object", "null"] }, "attempt": { "type": "integer" },
-          "log": { "type": "string", "description": "GET /jobs/{id} only" }
+          "progress": {
+            "type": ["object", "null"],
+            "description": "Live progress of a running job (null otherwise): item, label, item_index, items, items_done, part, part_index, parts, done, total (bytes of the part), entries, item_percent, percent (overall), bytes (moved so far), rate (bytes/s over ~10 s), eta, item_eta (s), elapsed, updated (unix time), active (items in flight when several run at once)",
+            "additionalProperties": true
+          },
+          "log": { "type": "string", "description": "GET /jobs/{id} only; while the job runs, the output so far (refreshed about every 2 s)" }
         }
       },
       "JobRequest": {
