@@ -406,6 +406,35 @@ fn consistency(c: &Connection, scope: Option<&str>) -> ApiResult<Value> {
     Ok(out)
 }
 
+/// Restore tests (Phase 25): the newest result per guest finished in the
+/// window: passed / failed, the failing guests, the last test.
+fn restore_tests(c: &Connection, scope: Option<&str>, days: i64, now: i64) -> ApiResult<Value> {
+    let since = (now.div_euclid(DAY) - days + 1) * DAY;
+    let rows: Vec<(String, String, String, i64)> = c
+        .prepare(
+            "SELECT tenant, source, state, finished FROM restore_tests t
+             WHERE finished >= ?1 AND (?2 IS NULL OR tenant = ?2) AND state IN ('passed', 'failed')
+               AND id = (SELECT x.id FROM restore_tests x WHERE x.tenant = t.tenant AND x.source = t.source
+                         AND x.state IN ('passed', 'failed') ORDER BY x.finished DESC, x.id DESC LIMIT 1)
+             ORDER BY tenant, source",
+        )?
+        .query_map(params![since, scope], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .collect::<Result<_, _>>()?;
+    let passed = rows.iter().filter(|r| r.2 == "passed").count();
+    let failing: Vec<Value> = rows
+        .iter()
+        .filter(|r| r.2 == "failed")
+        .take(WORST)
+        .map(|(t, s, _, f)| json!({"tenant": t, "source": s, "finished": f}))
+        .collect();
+    Ok(json!({
+        "tested": rows.len(), "passed": passed, "failed": rows.len() - passed,
+        "last": rows.iter().map(|r| r.3).max(), "failing": failing,
+    }))
+}
+
 pub fn compute(c: &Connection, scope: Option<&str>, days: i64, now: i64) -> ApiResult<Value> {
     Ok(json!({
         "generated": now, "days": days,
@@ -415,6 +444,7 @@ pub fn compute(c: &Connection, scope: Option<&str>, days: i64, now: i64) -> ApiR
         "capacity": capacity(c, scope, days, now)?,
         // same threshold as the scheduler's offsite_lag alert (48 h)
         "offsite": offsite(c, scope, days, now, 48 * 3600)?,
+        "restore_tests": restore_tests(c, scope, days, now)?,
     }))
 }
 

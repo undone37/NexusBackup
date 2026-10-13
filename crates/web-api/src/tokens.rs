@@ -75,6 +75,8 @@ const READ: &[&str] = &[
     "/dashboard",
     "/storage",
     "/stats/trends",
+    "/restore-tests",
+    "/recovery-plans",
     "/hardware",
     "/tenants",
     "/sources",
