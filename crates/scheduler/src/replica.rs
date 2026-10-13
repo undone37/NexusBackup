@@ -112,6 +112,9 @@ impl Scheduler {
 
     /// Secondary: one `replica_sync` per enrolled source and tenant when due.
     pub(crate) fn queue_replication(&mut self, now: i64) -> Result<()> {
+        if self.restore_priority()?.is_some() {
+            return Ok(()); // priority.rs
+        }
         let off = self.disabled_tenants()?;
         for s in self.replication_sources()? {
             if s.state != "enrolled" || !s.open(now) {

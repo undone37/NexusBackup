@@ -120,7 +120,8 @@ external KMS, SOAR marketplace apps.
 
 ### Network, virtual appliance, PVE, NAS, efficiency (later phase)
 Network step for extra interfaces (bond, VLAN, MTU, static routes, no-gateway data network; promised in plan §12,
-not built) and egress rules bound to interface roles; path-MTU self-check; "running NexusBackup as a VM" guidance
+built in Phase 22a: Settings → Network, docs/control-plane.md "Network interfaces") and egress rules bound to
+interface roles; path-MTU self-check; "running NexusBackup as a VM" guidance (manual 02)
 (never on the PVE cluster it protects; vTPM caveat; separate metadata/data disks); per-source and per-PVE-storage
 concurrency caps; appliance-side read rate limit for PVE/NAS/TrueNAS (reuse 17a windows), later PSI-based backoff;
 "restore priority" switch (holds schedules/GC/verify/offsite/replication during DR, auto-expires); VM identity per

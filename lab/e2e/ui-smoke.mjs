@@ -24,7 +24,7 @@ const PAGES = ['/', '/snapshots', '/snapshots?held=true', '/snapshots?where=offs
 // Phase 19b: a tenant admin's reduced navigation (only when the lab has such an account: TA_USER/TA_PW/TA_TOTP)
 const TENANT_PAGES = ['/', '/snapshots', '/search', '/changes', '/restore-tests', '/storage', '/reports', '/jobs', '/quorum', '/audit', '/sources', '/agents', '/agents?tab=fleet', '/groups',
   '/recovery-plans', '/users', '/account'];
-const TABS = ['approvals', 'alerts', 'sso', 'ssh', 'updates', 'anomaly', 'malware', 'diagnostics', 'configBackup', 'console', 'certificate', 'forwarding', 'security', 'firewall', 'vault', 'incident', 'edges'];
+const TABS = ['approvals', 'alerts', 'sso', 'ssh', 'updates', 'anomaly', 'malware', 'diagnostics', 'configBackup', 'console', 'certificate', 'forwarding', 'security', 'firewall', 'network', 'vault', 'incident', 'edges'];
 
 const b32 = (s) => {
   const a = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';

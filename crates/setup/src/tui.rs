@@ -3,7 +3,7 @@
 //! (ASCII plus box drawing and half blocks, 8 colours).
 
 use crate::{
-    challenge, check_password_pair, list_nics, parse_static, qr_lines, validate_username, Ipv4Config, KeyState,
+    challenge, check_password_pair, list_nics, parse_static, qr_lines, validate_username, Ipv4Config, KeyState, Link,
     NetConfig, Nic, RecoveryKey, Role, Setup, Step, TlsInfo, WEB_PORT,
 };
 use anyhow::Result;
@@ -247,6 +247,11 @@ const NET_ADDR: usize = 2;
 const NET_GW: usize = 3;
 const NET_DNS: usize = 4;
 const NET_HOST: usize = 5;
+const NET_BOND: usize = 6;
+const NET_BOND_MODE: usize = 7;
+const NET_VLAN: usize = 8;
+const NET_MTU: usize = 9;
+const BOND_MODES: [&str; 2] = ["active-backup", "802.3ad"];
 
 fn bold(s: impl Into<String>) -> Span<'static> {
     Span::styled(s.into(), Style::new().add_modifier(Modifier::BOLD))
@@ -257,6 +262,30 @@ fn warn(s: impl Into<String>) -> Line<'static> {
         s.into(),
         Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
     ))
+}
+
+/// The optional bond / VLAN / MTU fields of the network screen.
+fn parse_link(bond: &str, mode: &str, vlan: &str, mtu: &str) -> Result<Link> {
+    let bond: Vec<String> = bond
+        .split([',', ' '])
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let num = |s: &str, what: &str| -> Result<Option<u32>> {
+        match s.trim() {
+            "" => Ok(None),
+            v => v.parse().map(Some).map_err(|_| anyhow::anyhow!("invalid {what} {v:?}")),
+        }
+    };
+    let vlan = num(vlan, "VLAN ID")?
+        .map(|v| u16::try_from(v).map_err(|_| anyhow::anyhow!("VLAN ID must be 1 to 4094")))
+        .transpose()?;
+    Ok(Link {
+        bond_mode: (!bond.is_empty()).then(|| mode.to_owned()),
+        bond,
+        vlan,
+        mtu: num(mtu, "MTU")?,
+    })
 }
 
 impl App<'_> {
@@ -292,6 +321,10 @@ impl App<'_> {
             Field::text("Gateway", ""),
             Field::text("DNS servers", ""),
             Field::text("Hostname", &self.s.management().map(|m| m.0).unwrap_or_default()),
+            Field::text("Bond with NICs", ""),
+            Field::choice("Bond mode", vec!["active-backup".into(), "802.3ad (LACP)".into()]),
+            Field::text("VLAN ID", ""),
+            Field::text("MTU", ""),
         ]);
         // preselect the first NIC with link
         form.fields[NET_IF].choice = nics.iter().position(|n| n.up).unwrap_or(0);
@@ -445,6 +478,7 @@ impl App<'_> {
                     self.submit_network(form, nics, term)?
                 } else {
                     let dhcp = form.fields[NET_METHOD].choice == 1;
+                    form.fields[NET_BOND_MODE].enabled = !form.val(NET_BOND).trim().is_empty();
                     for i in [NET_ADDR, NET_GW, NET_DNS] {
                         form.fields[i].enabled = !dhcp;
                     }
@@ -817,10 +851,19 @@ impl App<'_> {
             parse_static(form.val(NET_ADDR), form.val(NET_GW), form.val(NET_DNS))
         };
         let host = form.val(NET_HOST).trim();
-        let cfg = ipv4.map(|ipv4| NetConfig {
-            nic,
-            ipv4,
-            hostname: (!host.is_empty()).then(|| host.to_owned()),
+        let link = parse_link(
+            form.val(NET_BOND),
+            BOND_MODES[form.fields[NET_BOND_MODE].choice.min(1)],
+            form.val(NET_VLAN),
+            form.val(NET_MTU),
+        );
+        let cfg = ipv4.and_then(|ipv4| {
+            Ok(NetConfig {
+                nic,
+                ipv4,
+                hostname: (!host.is_empty()).then(|| host.to_owned()),
+                link: link?,
+            })
         });
         let cfg = match cfg.and_then(|c| c.validate().map(|_| c)) {
             Ok(c) => c,
@@ -1042,6 +1085,7 @@ impl App<'_> {
                 let mut l = vec![
                     Line::from("Choose the management NIC. Only this network can reach the web UI (port 8443)."),
                     Line::from("Static: address with prefix (192.0.2.10/24); DNS comma-separated."),
+                    Line::from("Optional: more NICs to bond with it (comma-separated), a VLAN ID, an MTU."),
                     Line::from(""),
                 ];
                 l.extend(form.lines(cursor, y + 3, x));

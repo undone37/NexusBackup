@@ -47,7 +47,7 @@ not valid JSON, or if `bootc container lint` fails.
 | `systemd/10-nexus.preset` | `/usr/lib/systemd/system-preset/` | sshd off; nftables, chronyd, nexus-setup, nexus-nft-sync.{service,path,timer}, nexus-plugin-install.{service,path} on; keyd/web-api/scheduler off (nexus-setup enables them) |
 | `nftables.conf` | `/etc/sysconfig/nftables.conf` | default deny in and out, allow-list sets (see "Firewall") |
 | `etc/` | `/etc/` | `chrony.conf` (NTS only) and the update/signing files (containers policy, cosign key, update.conf, greenboot.conf, presets, tmpfiles for `/var/lib/nexus/update` and `/var/lib/nexus/diag`) |
-| `greenboot/usr/` | `/usr/` | `nexus-update` agent, `nexus-health` check, `nexus-diag` (self-checks, support bundles), `nexus-disks` (disks, SMART, data array), `nexus-grub-password` (boot menu password) and their units; the `emergency.service` drop-in (`SYSTEMD_SULOGIN_FORCE=0`) and `lib/bootc/kargs.d/10-nexus.toml` (`rd.shell=0 rd.emergency=reboot`) (`greenboot/tests/` stays out) |
+| `greenboot/usr/` | `/usr/` | `nexus-update` agent, `nexus-health` check, `nexus-diag` (self-checks, support bundles), `nexus-disks` (disks, SMART, data array), `nexus-net` (network interfaces, path-MTU check), `nexus-grub-password` (boot menu password) and their units; the `emergency.service` drop-in (`SYSTEMD_SULOGIN_FORCE=0`) and `lib/bootc/kargs.d/10-nexus.toml` (`rd.shell=0 rd.emergency=reboot`) (`greenboot/tests/` stays out) |
 | `selinux/nexus.{te,fc}` | module `nexus` | see "SELinux" |
 
 The root account is locked (`usermod -L`). Emergency access is through the local console only.
@@ -66,6 +66,7 @@ The root account is locked (`usermod -L`). Emergency access is through the local
 | `nexus-grub-password.service` | root | `unconfined_service_t` (script is bin_t, like nexus-update) | oneshot at every boot and when nexus-setup starts it: copies `/etc/nexus/grub-user.cfg` (only a `GRUB2_PASSWORD=grub.pbkdf2.sha512.…` line, `nexus_grub_user_t`) to `/boot/grub2/user.cfg` (0600), remounting `/boot` rw if it is mounted ro; no mount namespace for that reason; no network (Phase 18, docs/control-plane.md "Boot menu password") |
 | `nexus-diag.{service,path}` | root (+nexus-catalog) | `nexus_diag_t` → `journalctl_t`, `chronyc_t`, `iptables_t` | oneshot on `/var/lib/nexus/diag/request.json` (web-api, Settings → Diagnostics): self-checks + redacted support bundle into `/var/lib/nexus/diag/<id>/` (2770 root:nexus-webapi, pruned after 24 h); no inet sockets (`RestrictAddressFamilies=AF_UNIX AF_NETLINK`, `IPAddressDeny=any`; not `PrivateNetwork`, nft must list the host ruleset); bounding set NET_ADMIN, DAC_OVERRIDE, DAC_READ_SEARCH for the tools in their own domains (the policy grants nexus_diag_t no capability). `nexus-update` runs `nexus-diag checks` before staging/applying (in its own unconfined domain) |
 | `nexus-disks.{service,path,timer}` | root (+nexus-webapi) | `nexus_disks_t` | oneshot every 5 min and on `/var/lib/nexus/disks/req-*.json` (web-api, Configuration → Hardware): inventory, SMART, md arrays into `status.json`; approved layout requests (mdadm, mkfs.xfs, xfs_growfs, the store's mount unit); `PrivateNetwork`; bounding set SYS_RAWIO, SYS_ADMIN, DAC_READ_SEARCH (docs/hardware.md) |
+| `nexus-net.{service,path,timer}` | root (+nexus-webapi) | `nexus_net_t` | oneshot every 15 min and on `/var/lib/nexus/net/req-*.json` / `pending.json` (web-api, Settings → Network): NetworkManager keyfiles `nexus-*.nmconnection` + `nmcli` reload/up, rollback of an unconfirmed management change, hourly path-MTU check (ICMP echo); bounding set NET_RAW only (docs/control-plane.md "Network interfaces") |
 
 ### Hardening scores (`systemd-analyze security`, in the booted VM, systemd 257)
 
@@ -105,6 +106,8 @@ init_t ─ nexus-diag ────> nexus_diag_t       read-only: catalog, updat
                                              nexus_diag_var_lib_t; neverallow: inet sockets, keyd socket, keys/stores/credentials
 init_t ─ nexus-disks ───> nexus_disks_t      disks (smartctl, mdadm, mkfs.xfs, xfs_growfs in-domain), its dir, the store's
                                              mount unit, systemctl on nexus units; neverallow: inet, keys/catalog/store files
+init_t ─ nexus-net ─────> nexus_net_t        NetworkManager keyfiles, nmcli (D-Bus), ip (netlink), ICMP echo; also from
+                                             nexus-setup (console-apply); neverallow: TCP/UDP, keys/catalog/store files
 ```
 
 Data types are private: `nexus_keyd_var_lib_t` (keys; `neverallow` for everyone but keyd

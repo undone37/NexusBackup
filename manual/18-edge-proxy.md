@@ -115,7 +115,7 @@ installing a newer edge image (or `bootc switch` in a maintenance window), then 
 - **If the edge is compromised**, an attacker can stop laptops from being backed up through it and see connection
   metadata (which laptop was online from which address, when, and how much was transferred). They cannot read or
   change backup data, cannot pose as the appliance to a laptop or as a laptop to the appliance, and have no way into
-  the appliance: the appliance only connects out to the edge. Details: `docs/edge.md`, threat model T53–T56.
+  the appliance: the appliance only connects out to the edge. Details: `docs/edge.md`, threat model T53–T55.
 - A stolen laptop: remove the agent (or its edge assignment) on the appliance; the edge refuses its certificate from
   the next configuration push on.
 

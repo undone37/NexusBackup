@@ -62,6 +62,8 @@ pub struct Options {
     /// tests: called with the path after a file was opened, before it is read
     #[doc(hidden)]
     pub before_read: Option<ReadHook>,
+    /// appliance-side read limit of the source (Phase 22b), shared by all scan threads
+    pub limit: Option<std::sync::Arc<catalog::schedule::Throttle>>,
 }
 
 impl Default for Options {
@@ -73,6 +75,7 @@ impl Default for Options {
             filter: Filter::default(),
             batch: 256,
             before_read: None,
+            limit: None,
         }
     }
 }
@@ -602,7 +605,10 @@ impl Scan<'_> {
         if let Some(h) = &self.opts.before_read {
             h(&e.path);
         }
-        let mut f = std::fs::File::from(fd);
+        let mut f = catalog::schedule::Throttled {
+            inner: std::fs::File::from(fd),
+            limit: self.opts.limit.clone(),
+        };
         let s = match self.store.store_file_stats(&mut f) {
             Ok(s) => s,
             Err(err) => {
@@ -615,7 +621,7 @@ impl Scan<'_> {
                 return Err(Fatal(anyhow!("store: {msg}")));
             }
         };
-        let after = sys::fstatx(f.as_raw_fd(), true);
+        let after = sys::fstatx(f.inner.as_raw_fd(), true);
         inconsistent |= s.size != before.size
             || after.as_ref().map_or(true, |a| {
                 a.size != before.size || a.mtime_ns != before.mtime_ns || a.ctime_ns != before.ctime_ns

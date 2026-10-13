@@ -88,3 +88,70 @@ impl Scheduler {
         Ok(())
     }
 }
+
+impl Scheduler {
+    /// Instant disk recovery (Phase 22b, `nexus-pve instant-disk`): one disk of a
+    /// VM snapshot attached to an existing VM of the same source that a group of
+    /// the tenant protects (a tenant cannot hand its data to a VM it does not own,
+    /// nor touch other tenants' VMs). Exclusive per snapshot source, like
+    /// instant recovery; the job runs while the disk is served.
+    pub(crate) fn plan_instant_disk(&self, job: &Job, mut plan: crate::run::Plan) -> Result<crate::run::Plan> {
+        let p = &job.params;
+        let source = p["source"].as_str().context("source")?;
+        let vmid: u32 = source
+            .strip_prefix("vm-")
+            .and_then(|v| v.parse().ok())
+            .with_context(|| format!("instant_disk needs a vm-<vmid> snapshot, not {source:?}"))?;
+        let time = p["time"].as_u64().context("time")?;
+        let device = p["device"]
+            .as_str()
+            .filter(|d| d.strip_prefix("drive-").is_some_and(crate::selection::valid_disk_key))
+            .context("device: drive-<slot>")?;
+        let node = p["node"].as_str().filter(|n| pve_name(n)).context("node")?;
+        let target = p["target"]
+            .as_u64()
+            .and_then(|t| u32::try_from(t).ok())
+            .context("target")?;
+        let sid = self.resolve_source(job, Some(vmid))?;
+        let protected = self
+            .groups()?
+            .into_iter()
+            .any(|g| g.tenant == job.tenant && g.source_id == sid && g.guests.contains(&target));
+        if !protected {
+            bail!(
+                "VM {target} is not protected by a group of tenant {} on this source",
+                job.tenant
+            );
+        }
+        plan.key = format!("guest:{}/{source}", job.tenant);
+        plan.files = self.pve_config(&job.tenant, sid, &plan.dir, &[])?;
+        let mut args = vec![
+            plan.dir.join("pve.json").to_string_lossy().into_owned(),
+            "instant-disk".into(),
+            vmid.to_string(),
+            time.to_string(),
+            device.to_owned(),
+            node.to_owned(),
+            target.to_string(),
+        ];
+        if let Some(k) = p["key"].as_str() {
+            if !crate::selection::valid_disk_key(k) {
+                bail!("invalid key {k:?}");
+            }
+            args.extend(["--key".into(), k.to_owned()]);
+        }
+        if let Some(s) = p["move_to"].as_str() {
+            if !pve_name(s) {
+                bail!("invalid move_to {s:?}");
+            }
+            args.extend(["--move-to".into(), s.to_owned()]);
+        }
+        plan.steps.push(crate::run::Step::Cli {
+            bin: self.cfg.pve_bin.clone(),
+            args,
+            alert: None,
+            capture: false,
+        });
+        Ok(plan)
+    }
+}

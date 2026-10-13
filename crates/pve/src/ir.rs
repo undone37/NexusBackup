@@ -550,7 +550,7 @@ impl Cluster {
     /// `target` references no IR volume any more (or is gone), then stops all
     /// sessions. Moved disks no longer use the backing, so stopping is safe.
     #[allow(clippy::too_many_arguments)]
-    fn serve_ir<T>(
+    pub(crate) fn serve_ir<T>(
         &self,
         store: &Store,
         m: &chunkstore::Manifest,

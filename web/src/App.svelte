@@ -6,7 +6,7 @@
   import { can } from './lib/roles';
   import { t } from './lib/i18n';
   import { theme, setTheme, nextTheme } from './lib/theme.svelte';
-  import type { Alert, ConsoleShell, LoginResponse, QuorumRequest, User } from './lib/types';
+  import type { Alert, ConsoleShell, LoginResponse, QuorumRequest, RestorePriority, User } from './lib/types';
   import Logo from './components/Logo.svelte';
   import Notices from './components/Notices.svelte';
   import ConfirmDialog from './components/ConfirmDialog.svelte';
@@ -70,6 +70,7 @@
   import IconGlass from '@lucide/svelte/icons/shield-alert';
   import IconTerminal from '@lucide/svelte/icons/square-terminal';
   import IconSiren from '@lucide/svelte/icons/siren';
+  import IconLifeBuoy from '@lucide/svelte/icons/life-buoy';
   import { fmtTime } from './lib/format';
 
   type Allow = (u: User | null) => boolean;
@@ -166,6 +167,8 @@
       if (can.viewQuorum(u)) shell = me.console_shell ?? null;
       session.incident = me.incident ?? null;
     }
+    // Phase 22b: restore priority (banner for everyone)
+    session.priority = await get<RestorePriority>('/restore-priority').catch(() => session.priority);
     if (viewApprovals(u))
       pendingApprovals = await get<QuorumRequest[]>('/quorum')
         .then((q) => q.filter((x) => x.state === 'pending').length)
@@ -350,6 +353,16 @@
           <p>
             <strong>{t.incident.banner(incident.by, fmtTime(incident.since), incident.reason)}</strong>
             {#if can.viewQuorum(session.user)}<a href={href('/settings?tab=incident')}>{t.incident.open}</a>{/if}
+          </p>
+        </div>
+      {/if}
+      {#if session.priority?.active}
+        <div class="glass priority" role="status">
+          <IconLifeBuoy aria-hidden="true" />
+          <p>
+            <strong>{t.priority.banner(fmtTime(session.priority.until ?? 0), session.priority.by ?? '?', session.priority.reason ?? '')}</strong>
+            {t.priority.bannerHeld}
+            {#if can.backup(session.user) && !session.user.tenant}<a href={href('/')}>{t.priority.manage}</a>{/if}
           </p>
         </div>
       {/if}

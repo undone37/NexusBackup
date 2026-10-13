@@ -19,6 +19,7 @@
 /usr/libexec/nexus/nexus-tls		--	gen_context(system_u:object_r:nexus_tls_exec_t,s0)
 /usr/libexec/nexus/nexus-diag		--	gen_context(system_u:object_r:nexus_diag_exec_t,s0)
 /usr/libexec/nexus/nexus-disks		--	gen_context(system_u:object_r:nexus_disks_exec_t,s0)
+/usr/libexec/nexus/nexus-net		--	gen_context(system_u:object_r:nexus_net_exec_t,s0)
 /usr/libexec/nexus/nexus-console-gate	--	gen_context(system_u:object_r:nexus_consolegate_exec_t,s0)
 /usr/libexec/nexus/nexus-config-backup	--	gen_context(system_u:object_r:nexus_cfgbackup_exec_t,s0)
 
@@ -55,6 +56,7 @@
 /var/lib/nexus/tls(/.*)?			gen_context(system_u:object_r:nexus_tls_req_t,s0)
 /var/lib/nexus/diag(/.*)?			gen_context(system_u:object_r:nexus_diag_var_lib_t,s0)
 /var/lib/nexus/disks(/.*)?			gen_context(system_u:object_r:nexus_disks_var_lib_t,s0)
+/var/lib/nexus/net(/.*)?			gen_context(system_u:object_r:nexus_net_var_lib_t,s0)
 /var/lib/nexus/console-unlock(/.*)?		gen_context(system_u:object_r:nexus_console_unlock_t,s0)
 /var/lib/nexus/config-backup(/.*)?		gen_context(system_u:object_r:nexus_cfgbackup_var_lib_t,s0)
 

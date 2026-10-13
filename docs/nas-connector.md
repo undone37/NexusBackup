@@ -272,7 +272,15 @@ exhausted the inodes of a 16 GB ext4 (store moved to its own file system in the 
   source**; files that actually changed while read raise it every time (deduplicated while unacknowledged).
 - No restore into the share itself (download, or restore onto a host with an agent, Phase 15b).
 - Entries in memory until the commit (~0.7 KB per entry); proposal: split/streamed tree index in the
-  chunk store for 10M+ entry shares.
+  chunk store for 10M+ entry shares. Phase 22b mitigations (web-api `nasops.rs`): the sizing note on **Sources**
+  (newest run's `entries` from the job result × 800 B, warning ≥ 5M entries or > 25 % of MemTotal), **Split**
+  (`POST /sources/{id}/split {roots, password?, copy_groups}`: one share source per include root in one transaction,
+  groups copied, audited `source.split`; SMB passwords must be re-entered: sealed values are bound to the source
+  id), and the overlap warning (same kind/host/export or share, case-insensitive for SMB, overlapping include roots;
+  TrueNAS: nested datasets; computed over the sources the caller sees).
+- Skipped entries (Phase 22b): `GET /jobs/{id}/skipped.csv` turns the `error <path>: <reason>` lines (first 1000,
+  `MAX_ERRORS`) of a backup log into `path,reason,kind` CSV (formula-leading characters neutralised); the count of
+  the committed line tells how many were not listed.
 - One chunk file per small file (fsync each): full backups of millions of tiny files are bound by store
   writes; proposal: pack small files into shared chunks (would change the dedup unit).
 - Samba ChangeTime = mtime: same-size rewrites with a restored mtime are missed over SMB to Samba.

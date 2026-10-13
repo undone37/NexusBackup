@@ -233,6 +233,44 @@ Limits: VM templates cannot be backed up (fleecing). Container restores need sta
 `/var/tmp`, and every container backup reads the full tree. After a VM or host restart the dirty bitmap is lost,
 so the next backup re-reads the whole disk (it still transfers only changed chunks).
 
+### Limits: guests at once, busy storages, read rate
+
+Backups should not slow down a production cluster during the day. The **Limits** section of a Proxmox VE source
+(TrueNAS and NFS/SMB sources have the read limit only) bounds what the appliance does to it:
+
+![Limits of a Proxmox VE source](images/source-limits.png)
+
+| Field | Effect |
+|---|---|
+| **Guests at once (source cap)** | at most this many guests of the source are backed up at the same time (1–8), whatever a group's **Parallel guests** asks for. Empty: as the group says. |
+| **Guests at once per PVE storage** | one `storage=n` per line, e.g. `ceph-ssd=2`: a guest with a disk on that storage waits while n others with a disk there run; guests on other storages pass it. Useful for a busy Ceph pool or a slow NFS storage. |
+| **Read limit (MB/s)** | what the appliance reads from the source per second (all guests of a run together). Empty: unlimited. |
+| **Read-limit windows** | times with another rate in the chosen time zone, e.g. 50 MB/s on weekdays 07:00–19:00. The lowest active window applies and replaces the base rate. There is no pause window: a paused read would stall a running backup (and fill the fleecing storage). Keep backups out of office hours with a blackout window in the policy instead ([05 Policies and protection groups](05-policies-and-groups.md)). |
+
+Backups of one source never overlap (a second group's run waits for the first), so these limits bound everything
+the appliance reads from that source. The job log notes `parallel guests capped at 2 by the source`. The read limit
+paces VM disk reads (NBD), the container tar stream, TrueNAS walks and file contents, and the file contents of
+NFS/SMB shares.
+
+> **Status:** Unit- and integration-tested (scheduler, connectors against fakes). The lab check on a real PVE
+> cluster (two storages, `iotop` on the node while capped) is pending.
+
+### VM identity and reused VMIDs
+
+Every VM snapshot records the VM's identity from its configuration: the `vmgenid` and the SMBIOS UUID. When a VM is
+deleted and another one is created with the same VMID (or a VM is replaced by a restore), the identity changes. The
+appliance then:
+
+- marks the snapshot with **New VM identity** on **Snapshots** (the tooltip shows the old and new values);
+- raises the warning `vmid_reused` ([11 Alerts and monitoring](11-alerts-and-monitoring.md#alert-kinds));
+- starts a new chain: the new VM has no dirty bitmap from the old one, so its first backup reads all disks.
+
+![Snapshot with a new VM identity](images/snapshots-identity.png)
+
+The older snapshots of that VMID belong to the previous VM. They stay restorable and age out with the group's
+retention. Put them on legal hold if they must be kept longer, and check that the group still protects the VM
+you mean.
+
 ## Linux and Windows hosts (agents)
 
 The backup agent `nexus-agent` runs on the host and listens on **TCP 7444** (TLS 1.3). It never connects out. The
@@ -713,7 +751,28 @@ In a group you select datasets with checkboxes (none selected = all datasets of 
 for the next incremental run. Your own snapshots are never touched.
 
 Limits: a changed file is re-read completely. The certificate pin breaks when TrueNAS renews its certificate:
-backups fail with a TLS error until you update the source.
+backups fail with a TLS error until you update the source. A read limit (MB/s, with windows) works as for
+[Proxmox VE](#limits-guests-at-once-busy-storages-read-rate).
+
+### Use existing snapshots (periodic snapshot task)
+
+TrueNAS often takes periodic snapshots anyway (**Data Protection → Periodic Snapshot Tasks**, names like
+`auto-2026-10-14_00-00`). Tick **Use existing snapshots (periodic snapshot task)** and give the **Snapshot name
+prefix** (default `auto-`): each run then backs up the newest snapshot with that prefix of every dataset instead of
+creating and deleting `nexus-<source>-<time>` snapshots.
+
+- The next run diffs (`zfs diff`) the newest periodic snapshot against the one the last backup came from, so only
+  changes are read. The snapshot name is shown under the snapshot on **Snapshots** (`@auto-…`).
+- No new periodic snapshot since the last backup: the dataset is skipped (job log: `was already backed up; waiting
+  for the next periodic snapshot`), not failed. Schedule the group shortly after the periodic task.
+- If TrueNAS deleted the snapshot the last backup came from (its retention is shorter than the backup interval),
+  the run reads everything once.
+- Nothing is created or deleted on TrueNAS; the snapshot names must sort by time (the default naming does).
+- The forced command must allow these snapshot names: **paste the `authorized_keys` line again** after switching
+  the mode on.
+
+> **Status:** Tested against the fake TrueNAS (incremental, skip, lost reference). The lab run against a real
+> TrueNAS with a periodic snapshot task is pending.
 
 ### TrueNAS as a plugin (`plugin:truenas`)
 
@@ -795,8 +854,39 @@ every time.
 
 A share's group has no guest selection: it backs up the whole share. Snapshots are named `share-<source id>`.
 
-Limits: all entries are held in memory until the commit (about 0.5–0.7 KB per entry: plan RAM for shares with
-millions of files). Over SMB to Samba, a same-size rewrite with a restored mtime is not detected.
+Limits: all entries are held in memory until the commit. Over SMB to Samba, a same-size rewrite with a restored
+mtime is not detected. A read limit (MB/s, with windows) works as for
+[Proxmox VE](#limits-guests-at-once-busy-storages-read-rate).
+
+### Sizing, overlaps and splitting a share
+
+![Share sources with sizing note and overlap warning](images/sources-nas.png)
+
+- **Sizing note.** Under each share and TrueNAS source, **Sources** shows the entries of its newest backup and the
+  memory a run needs for them (about 0.8 KB per entry: the previous and the new tree are both in memory; the lab's
+  1-million-file share peaked at 0.73 GB). **split it** appears above 5 million entries or when a run needs more
+  than a quarter of the appliance's memory.
+- **Overlap warning.** **overlaps …** appears when another source backs up the same paths: the same server and
+  export or share (SMB share names ignore case) with overlapping include roots, or TrueNAS sources with nested
+  datasets. The files are then read and stored twice. Narrow the include roots or remove one of the sources.
+- **Split.** **Split…** turns one share into several sources, one per include root (e.g. `/Finance`, `/Projects`,
+  `/Home`): each gets its own snapshots, runs and retention and needs only the memory of its part. Optionally the
+  original source's groups (policy, schedule, time zone) are copied to every new source. For SMB, enter the
+  password again: the stored one is sealed to the original source. The original source stays as it is: delete it,
+  or narrow its include roots to what is left, once the new sources have backed up (until then the overlap warning
+  shows). Its snapshots stay until retention removes them.
+
+![Split a share by include roots](images/source-split.png)
+
+### Skipped files
+
+Entries a share backup could not read (permission denied, a file locked by another program, a path too long) are
+listed in the job log as `error <path>: <reason>`, nested mounts as notes. On the job page, **Skipped files (CSV)**
+downloads them as `path,reason,kind` (the connector lists the first 1000; a last row says how many more there
+were). File names that start with `=`, `+`, `-` or `@` are prefixed with `'` so spreadsheets do not run them as
+formulas.
+
+![Job with the skipped-files download](images/job-skipped-files.png)
 
 ## Plugin sources (PostgreSQL, Microsoft 365)
 
