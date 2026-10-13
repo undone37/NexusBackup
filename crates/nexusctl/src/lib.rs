@@ -26,6 +26,10 @@ commands:
   run <group-id> [--keep-until YYYY-MM-DD]                back up a group now (operator token);
                                                           keep the new snapshots until that day
   usage [--month YYYY-MM] [--tenant T] [--csv]            usage per tenant (billing)
+  files search <query> [--tenant T] [--source S] [--group N] [--kind K] [--ext E]
+               [--deleted only|exclude] [--limit N] [--cursor C]
+                                                          find files in all snapshots (file search
+                                                          index): one line per file, its versions
   openapi                                                 print the API description
 
 environment: NEXUS_URL, NEXUS_TOKEN, NEXUS_CA";
@@ -370,6 +374,40 @@ pub fn run(c: &Client, cmd: &[String], as_json: bool) -> Result<String> {
                         ],
                     ),
                 )
+            })
+        }
+        "files" => {
+            let Some((_, rest)) = args.split_first().filter(|(c, _)| *c == "search") else {
+                bail!("usage: nexusctl files search <query> [options]")
+            };
+            let (pos, mut o) = opts(
+                rest,
+                &["tenant", "source", "group", "kind", "ext", "deleted", "limit", "cursor", "mode"],
+                &[],
+            )?;
+            o.push(("q".into(), pos.join(" ")));
+            let v = c.get(&format!("/files/search{}", query(&o, &[])))?;
+            out(v, &|v| {
+                let mut rows_ = Vec::new();
+                for h in v["hits"].as_array().into_iter().flatten() {
+                    let newest = &h["versions"][0];
+                    rows_.push(vec![
+                        cell(&h["source"]),
+                        cell(&h["path"]),
+                        h["versions"].as_array().map_or(0, Vec::len).to_string(),
+                        bytes(&newest["size"]),
+                        iso(newest["mtime"].as_i64()),
+                        match newest["gone"].as_i64() {
+                            Some(g) => format!("gone {}", iso(Some(g))),
+                            None => "present".into(),
+                        },
+                    ]);
+                }
+                let mut t = table(&["source", "path", "versions", "size", "modified", "state"], rows_);
+                if let Some(n) = v["next"].as_str() {
+                    t.push_str(&format!("more: --cursor {n}\n"));
+                }
+                t
             })
         }
         "sources" => {

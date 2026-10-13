@@ -2,9 +2,9 @@
 //!
 //! Query text: `/` in it → a path glob on the guest path (`*` within one
 //! component, `**` across; anchored at the start when it begins with `/` or a
-//! drive, else at any component; without wildcards a path prefix); `*`/`?`
-//! without `/` → a name glob (no wildcard: substring); otherwise words, each
-//! of which must start a word of the path or occur in the name. Matching
+//! drive, else at any component; without wildcards a path prefix); `*`/`?` or a
+//! single term without `/` → a name glob (no wildcard: substring); several
+//! words → each must start a word of the path. Matching
 //! ignores case. Hits are files (source + path) ordered by path, each with all
 //! its versions; the cursor is the number of version documents consumed.
 
@@ -97,7 +97,7 @@ pub fn build(ix: &TenantIndex, r: &SearchReq) -> Result<Box<dyn Query>, String> 
     if !q.is_empty() {
         let mode = match r.mode {
             Mode::Auto if q.contains('/') => Mode::Path,
-            Mode::Auto if q.contains(['*', '?']) => Mode::Name,
+            Mode::Auto if q.contains(['*', '?']) || !q.contains(char::is_whitespace) => Mode::Name,
             Mode::Auto => Mode::Words,
             m => m,
         };
@@ -109,14 +109,12 @@ pub fn build(ix: &TenantIndex, r: &SearchReq) -> Result<Box<dyn Query>, String> 
                 if ws.is_empty() {
                     must.push((Occur::Must, regex(&name_regex(q), f.name_lc)?));
                 }
+                // each word starts a word of the path (prefix automaton on the token
+                // dictionary: fast; substrings are the name mode's job)
                 for w in ws.iter().take(8) {
                     let mut esc = String::new();
                     w.chars().for_each(|c| escape(c, &mut esc));
-                    let either: Vec<(Occur, Box<dyn Query>)> = vec![
-                        (Occur::Should, regex(&format!("{esc}.*"), f.tok)?),
-                        (Occur::Should, regex(&format!(".*{esc}.*"), f.name_lc)?),
-                    ];
-                    must.push((Occur::Must, Box::new(BooleanQuery::new(either))));
+                    must.push((Occur::Must, regex(&format!("{esc}.*"), f.tok)?));
                 }
             }
         }

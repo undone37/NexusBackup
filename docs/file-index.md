@@ -88,3 +88,51 @@ Benchmark (`cargo test -p scheduler --release search_benchmark -- --ignored --no
   nothing more. Names are shown as text, and every download or restore goes through the existing `files_get` /
   `restore_files` path checks.
 - **API tokens.** `POST /search` is not on the token allow-list.
+
+## Phase 31: VM files without the micro-VM, instant search (2026-10-14)
+
+Plan and decisions: `docs/file-index-v2-plan.md`. What changed against the sections above:
+
+**VM name indexes (31a).** `nexus-pve … files <vmid> <time> index` no longer boots the restore micro-VM. It starts
+`nexus-fsindex --helper` (crate `fsindex`) and answers its read requests from the chunk store; the helper never
+sees a key. The helper parses GPT/MBR (with logical partitions), LVM2 (linear, striped, mirror, raid1 by its first
+leg; a volume group with a missing PV is skipped as a whole), ext2/3/4 (`ext4-view`, the jbd2 journal is applied
+in memory only), NTFS (`ntfs`; size from `$DATA`, mtime from `$STANDARD_INFORMATION`, DOS 8.3 names and metadata
+files left out, Windows deduplication files counted), FAT12/16/32 (`fatfs`, writes refused by the device) and
+exFAT (own parser). Paths in the name index stay the file browser's (`vda1/…`, `lvm/<vg>-<lv>/…`), so open,
+download and restore work unchanged. The micro-VM walk is still available as `files … index-vm`.
+
+Every snapshot gets a sealed volume report `snapshots/<source>/<time>/fsindex` (chunkstore `snapfile.rs`): per
+volume the browse name, device, file system, label, UUID, PARTUUID, state (`indexed`, `skipped`, `unsupported`,
+`failed`, `partial`) with a reason, the guest mount point (from the root file system's `/etc/fstab`: `UUID=`,
+`LABEL=`, `PARTUUID=`, `/dev/mapper/…`, `/dev/<vg>/<lv>`; Windows `C:` = the NTFS volume with
+`Windows/System32`; else the label or `vol<N>`) and the chunks its parse read. A volume whose read chunks are
+unchanged in the next snapshot is not parsed again; its listing is copied from the previous name index (the cache
+key is the set of chunk ids, the granularity is the volume). XFS, btrfs and ZFS volumes are listed through the
+micro-VM when its image is installed (`NEXUS_FSINDEX_NO_VM` turns that off); BitLocker, LUKS, ReFS, Windows dynamic
+disks (LDM), Storage Spaces, md RAID, LVM thin/cache/VDO/RAID5 are reported with their reason.
+
+Lab measurement (restore-vm fixtures, 1.1 GB GPT disk with ext4, XFS, NTFS, btrfs, vfat, LVM; 256 MB ZFS disk):
+the helper lists the same entries as the micro-VM walk for ext4, NTFS, vfat and ext4-on-LVM in **0.14 s**
+(micro-VM: 8.8 s); with the micro-VM fallback for XFS/btrfs/ZFS the second snapshot took 9.7 s, the four
+unchanged volumes reused (`crates/pve/tests/restore_vm.rs` `fsindex_matches_micro_vm_listing`).
+
+`groups.index_files` is on by default for new Proxmox VE groups. The job result (catalog, plaintext) names only
+browse names, file systems, mount points, states and reasons; labels, UUIDs and fstab contents stay sealed.
+`snapshot_index` (catalog v42) keeps the state per VM/CT snapshot (`pending` while queued).
+
+**Search (31b).** `GET /api/v1/files/search` answers synchronously from `nexus-index` (crate `fileindex`): one
+Tantivy index per tenant under `/var/lib/nexus/index/<tenant>/`, every file sealed with the tenant keyring in
+256 KiB blocks (decrypted blocks in a cache bounded in bytes). Documents are file versions (source, guest path,
+browse path, size, mtime, kind, `first` snapshot, `gone` snapshot); the index follows the stores (sync after
+nudges from the scheduler and every 10 minutes: new snapshots are appended, anything else rebuilds that source
+from its sealed name indexes). Queries: path glob (`/` in the query; `*` within a folder, `**` across), name glob
+(`*`, `?`; no wildcard = substring) or words; filters for source, group, source kind, extension, size, modified
+time, files/folders, deleted files. Each hit is one file with all its versions and the local snapshots holding
+them; the answer also marks the snapshots of the hit sources that are not indexed (with the reason). Per group,
+`GET|PUT /groups/{id}/index-rules` scopes what goes into the search index (default excludes: Windows system
+folders, `/proc`, `/sys`, `/dev`, `/run`, `/tmp`, `/usr`, `/lib*`, `/boot`, `/var/cache`, `/var/tmp`,
+`/var/lib/docker`, `/var/lib/containerd`; `/var` stays searchable); the name indexes always hold everything.
+`POST /search` (the job above) stays as the fallback when nexus-index is not running. `nexusctl files search`.
+Alerts: `index_backlog` (a snapshot waits more than 48 h), `index_space` (indexing paused below the free-space
+floor). Threat model T60, T61.

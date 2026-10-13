@@ -165,8 +165,20 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
         .map(|(_, r)| r.volumes.iter().filter(|v| unchanged(v)).map(|v| (v.volume.key.clone(), v.clone())).collect())
         .unwrap_or_default();
     let helper = Helper::new(&helper_bin());
-    let mut listed = parent::list(&mut src, &helper, limits, &mut |v: &Volume| reusable.contains_key(&v.key))
-        .context("guest file systems")?;
+    // live progress (docs/control-plane.md "Live progress"): the volume being listed
+    let mut n = 0u32;
+    let mut listed = parent::list(&mut src, &helper, limits, &mut |v: &Volume| {
+        n += 1;
+        chunkstore::progress::Line {
+            item: Some(m.source.clone()),
+            part: Some(v.browse.clone()),
+            part_index: Some(n),
+            ..Default::default()
+        }
+        .print();
+        reusable.contains_key(&v.key)
+    })
+    .context("guest file systems")?;
     // fill the reused volumes from the previous snapshot's name index
     let mut reused = 0;
     if listed.iter().any(|l| l.reused) {
