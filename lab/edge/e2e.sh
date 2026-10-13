@@ -22,7 +22,7 @@
 #   e2e.sh all       everything above in order
 # Prereqs: lab/linux/e2e.sh appliance (dev control plane) and lab/linux/e2e.sh $VM agent backup.
 # env: VM (deb-plain), LAB (/home/ah/nexus-lab), IMG (localhost/nexus-edge-os:dev), PUB (18443),
-#      CTL (17445), ROOT/PORT (as lab/linux/e2e.sh), EDGE_UPDATE_DIR ($ROOT/edge-update: the
+#      CTL (17545; 17441..17445 are the lab VMs' agent ports), ROOT/PORT (as lab/linux/e2e.sh), EDGE_UPDATE_DIR ($ROOT/edge-update: the
 #      scheduler's `edge_update_dir` in the lab config), REQUEST_MAX (30)
 # Open (needs a second network): an nmap of the edge VM from outside; `check` reads the listening
 # sockets and the nft ruleset inside the VM instead (the host forwards only 443/7445 anyway).
@@ -31,7 +31,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 LAB=${LAB:-/home/ah/nexus-lab}
 IMG=${IMG:-localhost/nexus-edge-os:dev}
-export PUB=${PUB:-18443} CTL=${CTL:-17445}
+export PUB=${PUB:-18443} CTL=${CTL:-17545}
 export ROOT=${ROOT:-$repo/target/linux-root} PORT=${PORT:-18453}
 VM=${VM:-deb-plain}
 EDGE_UPDATE_DIR=${EDGE_UPDATE_DIR:-$ROOT/edge-update}

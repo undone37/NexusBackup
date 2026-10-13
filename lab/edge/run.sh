@@ -5,13 +5,13 @@
 #   run.sh console              attach to the serial console (socat, ^] quits)
 # Network: QEMU user networking (guest 10.0.2.15). Forwards on the host:
 #   127.0.0.1:$PUB (18443) -> 443  public agent port (lab VMs reach it as 10.0.2.2:$PUB)
-#   127.0.0.1:$CTL (17445) -> 7445 control port (the dev control plane on the host dials it)
+#   127.0.0.1:$CTL (17545) -> 7445 control port (the dev control plane on the host dials it)
 # env: LAB (/home/ah/nexus-lab), PUB, CTL, MEM (1024), CPUS (2)
 set -euo pipefail
 LAB=${LAB:-/home/ah/nexus-lab}
 D=$LAB/edge
 PUB=${PUB:-18443}
-CTL=${CTL:-17445}
+CTL=${CTL:-17545}
 MEM=${MEM:-1024}
 CPUS=${CPUS:-2}
 
