@@ -28,6 +28,7 @@ pub mod certs;
 pub mod console;
 pub mod dashboard;
 pub mod diag;
+pub mod endpoint;
 pub mod firewall;
 pub mod forwarding;
 pub mod hardware;
@@ -522,6 +523,9 @@ pub fn router(st: St) -> Router {
         .route("/agents/{id}/token", post(new_agent_token))
         .route("/agents/{id}/enroll", post(enroll_agent))
         .route("/agents/{id}/limits", axum::routing::put(selection::set_agent_limits))
+        .route("/agents/{id}/ui-policy", axum::routing::put(endpoint::set_ui_policy))
+        .route("/agents/{id}/laptop", axum::routing::put(endpoint::set_laptop))
+        .route("/agents/{id}/sessions", get(endpoint::agent_sessions))
         .route("/snapshots", get(list_snapshots))
         .route(
             "/snapshots/{tenant}/{source}/{time}",
