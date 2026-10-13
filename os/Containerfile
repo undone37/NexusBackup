@@ -134,6 +134,15 @@ COPY --from=rust /out/keyd /out/nexus-pve /out/nexus-offsite /out/nexus-web-api 
 # plugin console tool (verify/inspect bundles); the test plugin (nexus-test-plugin) is never shipped
 COPY --from=rust /out/nexus-plugin /usr/bin/nexus-plugin
 COPY --from=restorevm /out/vmlinuz /out/initrd.img /out/manifest.txt /usr/lib/nexus/restore-vm/
+# Signed agent releases shipped with this image (Phase 27, docs/agent-update-plan.md
+# "Release store"): os/agent-release/<version>/ (manifest.json + .sig, the artifacts + .sig)
+# is filled by the release process (release/packages.sh, release/sign.sh
+# sign-agent-release; lab builds sign with the TEST key) and empty in development builds.
+# The appliance verifies every manifest against its pinned keys before offering it.
+COPY os/agent-release/ /usr/share/nexus/agent/
+RUN rm -f /usr/share/nexus/agent/README.md \
+ && find /usr/share/nexus/agent -type d -exec chmod 0755 {} + \
+ && find /usr/share/nexus/agent -type f -exec chmod 0644 {} +
 RUN chmod 0755 /usr/libexec/nexus /usr/libexec/nexus/* /usr/bin/nexus-plugin \
  && test -z "$(find /usr /etc -name 'nexus-test-plugin*')" \
  && chmod 0644 /usr/lib/nexus/restore-vm/* \
@@ -172,6 +181,7 @@ RUN semodule -i /usr/share/selinux/packages/nexus/nexus.pp /usr/share/selinux/pa
  && matchpathcon /var/lib/nexus/plugins/x/1.0.0/bin/plugin | grep -q nexus_plugin_exec_t \
  && matchpathcon /var/lib/nexus/plugins/x/.1.0.0.tmp/bin/plugin | grep -q nexus_plugin_exec_t \
  && matchpathcon /var/lib/nexus/plugins-staging/x.nxplugin | grep -q nexus_plugin_staging_t \
+ && matchpathcon /var/lib/nexus/agent-releases/0.2.0/manifest.json | grep -q nexus_agent_release_t \
  && matchpathcon /etc/pki/nexus/plugin-keys/x.pub | grep -q cert_t \
  && matchpathcon /usr/libexec/nexus/nexus-tls | grep -q nexus_tls_exec_t \
  && matchpathcon /etc/nexus/tls/web.pem | grep -q nexus_tls_web_t \

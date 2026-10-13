@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 
 pub mod access;
 pub mod activation;
+pub mod agent_updates;
 pub mod agents;
 pub mod alerts;
 pub mod approvals;
@@ -156,6 +157,8 @@ pub struct AppState {
     pub oidc: crate::oidc::OidcState,
     /// web certificate files and the nexus-tls request dir (default: appliance paths)
     pub tls: std::sync::OnceLock<webtls::Paths>,
+    /// agent release store (Phase 27; default: env or appliance paths)
+    pub agent_releases: std::sync::OnceLock<crate::agent_updates::ReleasePaths>,
 }
 
 impl AppState {
@@ -188,6 +191,7 @@ impl AppState {
             dashboard: Default::default(),
             oidc: Default::default(),
             tls: std::sync::OnceLock::new(),
+            agent_releases: std::sync::OnceLock::new(),
         })
     }
 
@@ -335,6 +339,12 @@ impl ApiError {
     }
     pub fn conflict(m: impl Into<String>) -> Self {
         ApiError(StatusCode::CONFLICT, m.into())
+    }
+    /// A server-side failure (file system, worker task), logged.
+    pub fn internal(m: impl Into<String>) -> Self {
+        let m = m.into();
+        eprintln!("<3>web-api: {m}");
+        ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("internal error: {m}"))
     }
 }
 
@@ -580,6 +590,26 @@ pub fn router(st: St) -> Router {
         .route("/agents/{id}/sessions", get(endpoint::agent_sessions))
         // Phase 26: edge proxies for roaming agents (edges.rs)
         .route("/agents/{id}/edge", axum::routing::put(edges::set_agent_edge))
+        // Phase 27: agent updates (agent_updates.rs)
+        .route("/agents/{id}/tags", axum::routing::put(agent_updates::set_tags))
+        .route(
+            "/agent-releases",
+            get(agent_updates::list_releases)
+                .post(agent_updates::upload_release)
+                .layer(axum::extract::DefaultBodyLimit::max(agent_updates::MAX_UPLOAD as usize)),
+        )
+        .route("/agent-releases/{version}", axum::routing::delete(agent_updates::delete_release))
+        .route("/agent-releases/{version}/download", post(agent_updates::download_token))
+        .route(
+            "/agent-rollouts",
+            get(agent_updates::list_rollouts).post(agent_updates::create_rollout),
+        )
+        .route("/agent-rollouts/{id}", get(agent_updates::get_rollout))
+        .route("/agent-rollouts/{id}/{action}", post(agent_updates::rollout_action))
+        .route(
+            "/agent-update-settings",
+            get(agent_updates::list_settings).put(agent_updates::put_settings),
+        )
         .route("/edges", get(edges::list_edges).post(edges::create_edge))
         .route("/edges/{id}", axum::routing::delete(edges::delete_edge))
         .route("/edges/{id}/token", post(edges::new_edge_token))

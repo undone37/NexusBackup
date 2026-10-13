@@ -9,6 +9,9 @@ rust-version.workspace = true
 anyhow = "1"
 base64 = "0.22"
 catalog = { path = "../catalog" }
+# agent release store + manifest types (Phase 27 agent updates)
+agent-core = { path = "../agent-core" }
+agent-proto = { path = "../agent-proto" }
 nas = { path = "../nas", default-features = false }
 truenas = { path = "../truenas", default-features = false }
 chunkstore = { path = "../chunkstore" }

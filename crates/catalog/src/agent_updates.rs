@@ -248,6 +248,16 @@ pub fn create(
     if agents.is_empty() {
         bail!("the scope contains no enrolled agent");
     }
+    if agents
+        .iter()
+        .all(|a| skip_reason(a.version.as_deref(), &spec.version, spec.rollback).is_some())
+    {
+        bail!(
+            "no agent in the scope needs {} ({})",
+            spec.version,
+            if spec.rollback { "none runs a newer version" } else { "all run it or a newer one" }
+        );
+    }
     c.execute(
         "INSERT INTO agent_rollouts (version, scope, canary, canary_pct, soak_minutes, concurrency, max_failures, \
          max_failure_pct, windows, rollback, automatic, state, created, created_by) \

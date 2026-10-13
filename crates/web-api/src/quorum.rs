@@ -65,6 +65,7 @@ pub const WEB_ACTIONS: &[&str] = &[
     crate::keep::ACTION,
     crate::keep::SETTING_ACTION,
     crate::tenant_idp::ACTION,
+    catalog::agent_updates::ROLLBACK_ACTION,
 ];
 
 /// Who may approve or reject requests (never their own: see [`approve`]).
@@ -388,6 +389,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         crate::keep::ACTION => return crate::keep::execute(c, p, requested_by).map(Some),
         crate::keep::SETTING_ACTION => crate::keep::execute_setting(c, p)?,
         crate::tenant_idp::ACTION => crate::tenant_idp::execute(c, p)?,
+        catalog::agent_updates::ROLLBACK_ACTION => crate::agent_updates::execute_rollback(c, p)?,
         "agent.delete" => {
             let id = p["id"].as_str().unwrap_or_default();
             if crate::agents::agent_in_use(c, id)? {

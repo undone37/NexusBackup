@@ -52,6 +52,7 @@
 /var/lib/nexus/plugins(/.*)?			gen_context(system_u:object_r:nexus_plugin_data_t,s0)
 /var/lib/nexus/plugins/[^/]+/[^/]+/bin/plugin	--	gen_context(system_u:object_r:nexus_plugin_exec_t,s0)
 /var/lib/nexus/plugins-staging(/.*)?		gen_context(system_u:object_r:nexus_plugin_staging_t,s0)
+/var/lib/nexus/agent-releases(/.*)?		gen_context(system_u:object_r:nexus_agent_release_t,s0)
 /var/lib/nexus/update(/.*)?			gen_context(system_u:object_r:nexus_update_t,s0)
 /var/lib/nexus/tls(/.*)?			gen_context(system_u:object_r:nexus_tls_req_t,s0)
 /var/lib/nexus/diag(/.*)?			gen_context(system_u:object_r:nexus_diag_var_lib_t,s0)
