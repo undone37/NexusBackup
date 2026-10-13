@@ -107,13 +107,17 @@ dependencies = [
  "agent-conn",
  "agent-core",
  "agent-proto",
+ "agent-ui-proto",
  "base64 0.22.1",
  "blake3",
  "chunkstore",
  "libc",
+ "ratatui",
  "rcgen",
  "ring",
  "rustls",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 
