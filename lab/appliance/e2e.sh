@@ -103,7 +103,7 @@ api() {
 check() {
 	con run 'getenforce; echo "== domains"; ps -e -o label,user,pid,comm | grep -E "nexus|keyd|qemu" | grep -v grep
 echo "== permissive types in the loaded policy (nexus: none expected)"; cd /tmp && semodule -E permissivedomains >/dev/null && grep -c typepermissive permissivedomains.cil; grep nexus permissivedomains.cil; rm -f permissivedomains.cil; semodule -l | grep -i nexus
-echo "== AVCs since boot (ausearch)"; ausearch -m avc,user_avc,selinux_err -ts boot 2>&1 | tail -n 20
+echo "== AVCs since boot (ausearch, every distinct denial)"; ausearch -m avc,user_avc,selinux_err -ts boot 2>&1 | grep -oE "avc: .*|<no matches>" | sed -E "s/ pid=[0-9]+//; s/ ino=[0-9]+//" | sort | uniq -c
 echo "== nft sets"; nft list set inet nexus allowed_out_v4; nft list set inet nexus dns_servers_v4; nft list set inet nexus nts_servers_v4
 echo "== catalog secrets (review H-2: sealed / encrypted only)"; python3 -c "
 import json, sqlite3

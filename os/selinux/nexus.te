@@ -258,6 +258,8 @@ manage_dirs_pattern(nexus_keyd_t, nexus_keyd_var_lib_t, nexus_keyd_var_lib_t)
 manage_files_pattern(nexus_keyd_t, nexus_keyd_var_lib_t, nexus_keyd_var_lib_t)
 # the listening socket in /run/nexus-keyd (dir created by systemd, RuntimeDirectory=)
 manage_sock_files_pattern(nexus_keyd_t, nexus_keyd_var_run_t, nexus_keyd_var_run_t)
+# the configuration backup public key + kek.recovery published next to the socket (Phase config backup)
+manage_files_pattern(nexus_keyd_t, nexus_keyd_var_run_t, nexus_keyd_var_run_t)
 allow nexus_keyd_t self:unix_stream_socket { listen accept };
 # resolve the allowed peer user name (nexus-chunkstore) to its uid
 auth_read_passwd(nexus_keyd_t)
