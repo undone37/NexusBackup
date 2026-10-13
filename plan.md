@@ -755,6 +755,9 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
   threshold, busy/window handling; optional automatic mode; rollback only with approval; installer downloads from
   the appliance. Details and proposed decisions: `docs/agent-update-plan.md`.
 
+### Phase 28+ — Commvault-inspired items (proposed 2026-10-13)
+- Tier 1 (scheduled threat scans, IOC hash hunting, tenant lockdown, new-device sign-in notice) as Phase 28, Tier 2 as Phase 29; details and open questions: `docs/commvault-comparison.md`.
+
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
 ---
