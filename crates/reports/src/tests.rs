@@ -251,6 +251,55 @@ fn storage_report() {
     assert_eq!(t.rows.len(), 1);
 }
 
+#[test]
+fn usage_report() {
+    let cat = seeded();
+    let c = cat.conn();
+    c.execute_batch(&format!(
+        "INSERT INTO capacity_samples (day, tenant, used, logical, offsite) VALUES ('{}', 'acme', 500, 3000, 100);
+         INSERT INTO backup_stats (tenant, source, time, read, logical, new_chunks, new_plain, new_stored)
+           VALUES ('acme', 'vm-gone', {}, 1, 1, 1, 1, 1);",
+        day(NOW - 86400),
+        NOW - 4 * H
+    ))
+    .unwrap();
+    assert_eq!(usage::month_range("2026-10"), Some((1_790_812_800, 1_793_491_200)));
+    assert_eq!(
+        usage::month_range("2026-12").map(|r| day(r.1)),
+        Some("2027-01-01".into())
+    );
+    assert_eq!(usage::month_range("2026-13"), None);
+    assert_eq!(usage::month_range("26-1"), None);
+    let (from, to) = usage::month_range("2026-10").unwrap();
+    let t = generate(&c, Kind::Usage, None, from, to, NOW).unwrap();
+    assert_eq!(t.rows.len(), 2);
+    let r = &t.rows[0];
+    assert_eq!(col(&t, r, "tenant"), "acme");
+    assert_eq!(col(&t, r, "period_start"), "2026-10-01");
+    assert_eq!(col(&t, r, "period_end"), "2026-10-31");
+    // vm-100 and vm-101 (snapshots) plus vm-gone (stats of a pruned snapshot)
+    assert_eq!(col(&t, r, "objects"), "3");
+    assert_eq!(col(&t, r, "backups"), "3");
+    // samples of 2026-10-04 (100/1000), 10-11 (500/3000/100), 10-12 (300/1000)
+    assert_eq!(col(&t, r, "days_sampled"), "3");
+    assert_eq!(col(&t, r, "logical_avg_bytes"), "1667");
+    assert_eq!(col(&t, r, "logical_peak_bytes"), "3000");
+    assert_eq!(col(&t, r, "stored_avg_bytes"), "300");
+    assert_eq!(col(&t, r, "stored_peak_bytes"), "500");
+    assert_eq!(col(&t, r, "offsite_peak_bytes"), "100");
+    assert!(!col(&t, r, "tenant_uid").is_empty());
+    let g = &t.rows[1];
+    assert_eq!(
+        (col(&t, g, "objects"), col(&t, g, "days_sampled")),
+        ("0".into(), "0".into())
+    );
+    assert_eq!(col(&t, g, "stored_avg_bytes"), "");
+    // the previous month had nothing
+    let (from, to) = usage::month_range("2026-09").unwrap();
+    let t = generate(&c, Kind::Usage, Some("acme"), from, to, NOW).unwrap();
+    assert_eq!(col(&t, &t.rows[0], "objects"), "0");
+}
+
 fn sched(schedule: &str) -> Scheduled {
     Scheduled {
         name: "weekly-ops".into(),

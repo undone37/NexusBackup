@@ -98,6 +98,10 @@ pub struct Settings {
     /// time, entered by the admin); the scheduler alerts 90/30/7 days before
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_secret_expires: Option<i64>,
+    /// Phase 23a: the tenant whose own IdP this is (`tenant_idps`, crate::tenant_idp);
+    /// never stored, set when loaded from there
+    #[serde(skip)]
+    pub tenant: Option<String>,
 }
 
 impl Default for Settings {
@@ -114,7 +118,17 @@ impl Default for Settings {
             mappings: vec![],
             ca_pem: None,
             client_secret_expires: None,
+            tenant: None,
         }
+    }
+}
+
+/// Label of the encrypted client secret (bound to the tenant of a tenant IdP:
+/// a ciphertext cannot be moved into another tenant's settings).
+pub(crate) fn secret_label(tenant: Option<&str>) -> String {
+    match tenant {
+        Some(t) => format!("oidc/tenant/{t}/client_secret"),
+        None => SECRET_LABEL.into(),
     }
 }
 
@@ -123,7 +137,7 @@ pub fn load(c: &Connection) -> ApiResult<Option<Settings>> {
 }
 
 /// What `GET /settings/oidc` shows (secret write-only).
-fn public(s: &Settings, redirect_uri: &str) -> Value {
+pub(crate) fn public(s: &Settings, redirect_uri: &str) -> Value {
     let mut v = serde_json::to_value(s).unwrap_or(Value::Null);
     v["client_secret"] = Value::Null;
     if let Some(o) = v.as_object_mut() {
@@ -166,7 +180,7 @@ fn url_ok(u: &str) -> bool {
     url_parts(u).is_some_and(|(s, h, _)| s == "https" || loopback(&h))
 }
 
-fn validate_settings(c: &Connection, s: &Settings) -> ApiResult<()> {
+pub(crate) fn validate_settings(c: &Connection, s: &Settings) -> ApiResult<()> {
     let bad = |m: &str| Err(ApiError::bad(m.to_owned()));
     if !s.issuer.is_empty() && (s.issuer.len() > 512 || !url_ok(&s.issuer)) {
         return bad("issuer: https://host[:port][/path] (http only for loopback), no query or fragment");
@@ -231,7 +245,7 @@ fn validate_settings(c: &Connection, s: &Settings) -> ApiResult<()> {
 /// The redirect URI registered at the IdP: this appliance's callback, from the
 /// address the browser used (the IdP compares it with its registration). HTTP/2
 /// carries it as `:authority` (the request URI), HTTP/1.1 as the Host header.
-fn redirect_uri(uri: &Uri, h: &HeaderMap) -> String {
+pub(crate) fn redirect_uri(uri: &Uri, h: &HeaderMap) -> String {
     let host = uri
         .authority()
         .map(|a| a.as_str())
@@ -270,6 +284,9 @@ pub struct SettingsReq {
     ca_pem: Option<String>,
     #[serde(default)]
     client_secret_expires: Option<i64>,
+    /// tenant IdPs only (crate::tenant_idp): e-mail domains of the tenant's users
+    #[serde(default)]
+    pub(crate) domains: Option<Vec<String>>,
 }
 
 fn default_scopes() -> Vec<String> {
@@ -291,18 +308,30 @@ pub async fn get_settings(State(st): State<St>, ctx: Ctx, uri: Uri, headers: Hea
 /// Changes who can sign in: quorum `oidc.update` while approvals are enabled.
 pub async fn put_settings(State(st): State<St>, ctx: Ctx, J(r): J<SettingsReq>) -> ApiResult<Response> {
     ctx.require(&["admin"])?;
+    if r.domains.is_some() {
+        return Err(ApiError::bad("domains: only for a tenant's own IdP"));
+    }
     let old = load(&st.cat.conn())?;
+    let new = from_req(&st, r, old.as_ref(), None)?;
+    validate_settings(&st.cat.conn(), &new)?;
+    let p = json!({"settings": new, "old": old});
+    let o = request(&st, &ctx, "oidc.update", "settings/oidc", p)?;
+    Ok(accepted(o, json!({})))
+}
+
+/// The settings of a request (the client secret encrypted, or kept from `old`).
+pub(crate) fn from_req(st: &St, r: SettingsReq, old: Option<&Settings>, tenant: Option<&str>) -> ApiResult<Settings> {
     let client_secret = match r.client_secret {
-        None => old.as_ref().and_then(|o| o.client_secret.clone()),
+        None => old.and_then(|o| o.client_secret.clone()),
         Some(s) if s.is_empty() => None,
         Some(s) => {
             if !printable(&s, 1, 1024) {
                 return Err(ApiError::bad("client_secret: 1..=1024 printable characters"));
             }
-            Some(st.totp.encrypt_labeled(SECRET_LABEL, &s)?)
+            Some(st.totp.encrypt_labeled(&secret_label(tenant), &s)?)
         }
     };
-    let new = Settings {
+    Ok(Settings {
         enabled: r.enabled,
         issuer: r.issuer.trim().to_owned(),
         client_id: r.client_id.trim().to_owned(),
@@ -314,16 +343,13 @@ pub async fn put_settings(State(st): State<St>, ctx: Ctx, J(r): J<SettingsReq>) 
         mappings: r.mappings,
         ca_pem: r.ca_pem.filter(|p| !p.trim().is_empty()),
         client_secret_expires: r.client_secret_expires.filter(|t| *t > 0),
-    };
-    validate_settings(&st.cat.conn(), &new)?;
-    let p = json!({"settings": new, "old": old});
-    let o = request(&st, &ctx, "oidc.update", "settings/oidc", p)?;
-    Ok(accepted(o, json!({})))
+        tenant: tenant.map(str::to_owned),
+    })
 }
 
 /// Audit entry `settings.oidc` once a change is in effect (direct or approved).
 pub fn audit_applied(st: &St, actor: &str, s: &Settings) -> ApiResult<()> {
-    st.oidc.cache.lock().unwrap().take();
+    st.oidc.cache.lock().unwrap().clear();
     st.audit(
         actor,
         "settings.oidc",
@@ -395,8 +421,6 @@ struct JwkSet {
 }
 
 struct Cached {
-    /// issuer + CA the entry belongs to
-    key: String,
     disc: Discovery,
     at: Instant,
     keys: Vec<Jwk>,
@@ -411,11 +435,14 @@ struct Pending {
     next: String,
     redirect_uri: String,
     created: i64,
+    /// a tenant's own IdP (Phase 23a), else the appliance's
+    tenant: Option<String>,
 }
 
 #[derive(Default)]
 pub struct OidcState {
-    cache: Mutex<Option<Cached>>,
+    /// by issuer + CA (`cache_key`): the appliance's IdP and the tenants' own
+    cache: Mutex<HashMap<String, Cached>>,
     pending: Mutex<HashMap<String, Pending>>,
 }
 
@@ -501,21 +528,21 @@ fn cache_key(s: &Settings) -> String {
 /// firewall allow-list when they changed.
 async fn provider(st: &St, s: &Settings) -> anyhow::Result<(Discovery, Vec<Jwk>)> {
     let key = cache_key(s);
-    if let Some(c) = st.oidc.cache.lock().unwrap().as_ref() {
-        if c.key == key && c.at.elapsed() < DISCOVERY_TTL {
+    if let Some(c) = st.oidc.cache.lock().unwrap().get(&key) {
+        if c.at.elapsed() < DISCOVERY_TTL {
             return Ok((c.disc.clone(), c.keys.clone()));
         }
     }
     let disc = discover(s).await?;
     let keys = fetch_jwks(s, &disc).await?;
-    record_endpoints(st, &disc)?;
-    *st.oidc.cache.lock().unwrap() = Some(Cached {
-        key,
+    record_endpoints(st, &disc, s.tenant.as_deref())?;
+    let entry = Cached {
         disc: disc.clone(),
         at: Instant::now(),
         keys: keys.clone(),
         refreshed: None,
-    });
+    };
+    st.oidc.cache.lock().unwrap().insert(key, entry);
     Ok((disc, keys))
 }
 
@@ -528,22 +555,31 @@ async fn refresh_keys(st: &St, s: &Settings, d: &Discovery) -> anyhow::Result<Op
         .cache
         .lock()
         .unwrap()
-        .as_ref()
-        .is_none_or(|c| c.key != key || c.refreshed.is_none_or(|t| t.elapsed() >= JWKS_MIN_REFRESH));
+        .get(&key)
+        .is_none_or(|c| c.refreshed.is_none_or(|t| t.elapsed() >= JWKS_MIN_REFRESH));
     if !due {
         return Ok(None);
     }
     let keys = fetch_jwks(s, d).await?;
-    if let Some(c) = st.oidc.cache.lock().unwrap().as_mut().filter(|c| c.key == key) {
+    if let Some(c) = st.oidc.cache.lock().unwrap().get_mut(&key) {
         c.keys = keys.clone();
         c.refreshed = Some(Instant::now());
     }
     Ok(Some(keys))
 }
 
-fn record_endpoints(st: &St, d: &Discovery) -> anyhow::Result<()> {
+/// For the firewall allow-list: `settings.oidc_endpoints`, or a tenant IdP's
+/// `tenant_idps.endpoints`.
+fn record_endpoints(st: &St, d: &Discovery, tenant: Option<&str>) -> anyhow::Result<()> {
     let v = json!({"token_endpoint": d.token_endpoint, "jwks_uri": d.jwks_uri}).to_string();
     let c = st.cat.conn();
+    if let Some(t) = tenant {
+        c.execute(
+            "UPDATE tenant_idps SET endpoints = ?2 WHERE tenant = ?1 AND endpoints IS NOT ?2",
+            params![t, v],
+        )?;
+        return Ok(());
+    }
     if catalog::setting(&c, ENDPOINTS_SETTING)?.as_deref() != Some(v.as_str()) {
         catalog::set_setting(&c, ENDPOINTS_SETTING, &v)?;
     }
@@ -554,16 +590,23 @@ fn record_endpoints(st: &St, d: &Discovery) -> anyhow::Result<()> {
 pub async fn test_settings(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>> {
     ctx.require(&["admin"])?;
     let s = load(&st.cat.conn())?.unwrap_or_default();
+    let out = test_idp(&st, &s).await?;
+    st.audit(ctx.name(), "settings.oidc_test", "settings/oidc", out.clone())?;
+    Ok(Json(out))
+}
+
+/// Discovery + JWKS of `s` (the appliance's or a tenant's IdP), uncached.
+pub(crate) async fn test_idp(st: &St, s: &Settings) -> ApiResult<Value> {
     if s.issuer.is_empty() {
         return Err(ApiError::bad("no issuer configured"));
     }
-    st.oidc.cache.lock().unwrap().take();
+    st.oidc.cache.lock().unwrap().remove(&cache_key(s));
     // flat `{check: "ok" | "ok: detail" | "error: message"}` (contract clarification)
-    let out = match discover(&s).await {
+    Ok(match discover(s).await {
         Err(e) => json!({"discovery": format!("error: {e:#}")}),
         Ok(d) => {
-            record_endpoints(&st, &d)?;
-            let jwks = match fetch_jwks(&s, &d).await {
+            record_endpoints(st, &d, s.tenant.as_deref())?;
+            let jwks = match fetch_jwks(s, &d).await {
                 Ok(keys) => match keys.iter().filter(|k| key_alg_ok(k)).count() {
                     0 => "error: the JWKS has no RS256/ES256/PS256 signing key".to_owned(),
                     n => format!("ok: {n} keys"),
@@ -572,9 +615,7 @@ pub async fn test_settings(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Val
             };
             json!({"discovery": "ok", "jwks": jwks})
         }
-    };
-    st.audit(ctx.name(), "settings.oidc_test", "settings/oidc", out.clone())?;
-    Ok(Json(out))
+    })
 }
 
 // ---------------------------------------------------------------- ID token
@@ -783,8 +824,15 @@ type Provisioned = (User, Vec<(String, Value)>);
 
 /// Creates or refreshes the account of the token's subject. Inside one
 /// transaction; audit entries are returned for the caller to write.
+/// Accounts of a tenant's own IdP are keyed `tenant:<name>|<iss>|<sub>`: never the
+/// same account as one of the appliance's IdP (even with the same issuer), and
+/// always a tenant role of that tenant (the mappings allow nothing else, and
+/// [`pick_mapping`] is re-checked here).
 fn provision(st: &St, s: &Settings, claims: &Value) -> ApiResult<Result<Provisioned, Denied>> {
-    let sub = format!("{}|{}", s.issuer, claims["sub"].as_str().unwrap_or_default());
+    let mut sub = format!("{}|{}", s.issuer, claims["sub"].as_str().unwrap_or_default());
+    if let Some(t) = &s.tenant {
+        sub = format!("tenant:{t}|{sub}");
+    }
     let name = claims[&s.username_claim].as_str().unwrap_or_default().to_owned();
     let groups = claim_groups(claims, &s.groups_claim);
     let mut c = st.cat.conn();
@@ -807,6 +855,9 @@ fn provision(st: &St, s: &Settings, claims: &Value) -> ApiResult<Result<Provisio
         return Ok(Err(("denied", format!("no mapping matches the groups {groups:?}"))));
     };
     let tenant = m.tenants.first().cloned();
+    if s.tenant.is_some() && (tenant != s.tenant || !crate::tenancy::TENANT_ROLES.contains(&m.role.as_str())) {
+        return Ok(Err(("denied", "tenant IdP mapping outside its tenant".into())));
+    }
     if let Some(t) = &tenant {
         if catalog::tenants::disabled(&tx, t)? {
             return Ok(Err(("tenant_disabled", format!("tenant {t} is deactivated"))));
@@ -881,7 +932,11 @@ fn provision(st: &St, s: &Settings, claims: &Value) -> ApiResult<Result<Provisio
 /// `GET /auth/oidc` (no session): what the login page shows.
 pub async fn info(State(st): State<St>) -> ApiResult<Json<Value>> {
     let s = load(&st.cat.conn())?.unwrap_or_default();
-    Ok(Json(json!({"enabled": s.enabled, "label": s.label})))
+    // whether to show "sign in with your organisation" (tenant names are not listed)
+    let orgs = crate::tenant_idp::any_enabled(&st.cat.conn())?;
+    Ok(Json(
+        json!({"enabled": s.enabled, "label": s.label, "organizations": orgs}),
+    ))
 }
 
 /// Same-origin path only: `/…`, not `//…` or `/\…`, printable ASCII, no
@@ -928,11 +983,20 @@ fn fail(code: &str) -> Response {
 #[derive(Deserialize)]
 pub struct StartQuery {
     next: Option<String>,
+    /// Phase 23a: a tenant name or an e-mail address → that tenant's own IdP
+    org: Option<String>,
 }
 
-/// `GET /auth/oidc/start?next=/path` → 302 to the IdP.
+/// `GET /auth/oidc/start?next=/path[&org=<tenant or e-mail>]` → 302 to the IdP.
 pub async fn start(State(st): State<St>, uri: Uri, headers: HeaderMap, Q(q): Q<StartQuery>) -> ApiResult<Response> {
-    let s = load(&st.cat.conn())?.unwrap_or_default();
+    let org = q.org.as_deref().map(str::trim).filter(|o| !o.is_empty());
+    let s = match org {
+        Some(o) => match crate::tenant_idp::resolve(&st.cat.conn(), o)? {
+            Some(s) => s,
+            None => return Ok(fail("org")),
+        },
+        None => load(&st.cat.conn())?.unwrap_or_default(),
+    };
     if !s.enabled {
         return Ok(fail("disabled"));
     }
@@ -964,6 +1028,7 @@ pub async fn start(State(st): State<St>, uri: Uri, headers: HeaderMap, Q(q): Q<S
                 next: safe_next(q.next.as_deref()),
                 redirect_uri: redirect_uri.clone(),
                 created: now,
+                tenant: s.tenant.clone(),
             },
         );
     }
@@ -977,6 +1042,9 @@ pub async fn start(State(st): State<St>, uri: Uri, headers: HeaderMap, Q(q): Q<S
         .append_pair("nonce", &nonce)
         .append_pair("code_challenge", &challenge)
         .append_pair("code_challenge_method", "S256");
+    if let Some(hint) = org.filter(|o| o.contains('@') && printable(o, 3, 254)) {
+        url.query_pairs_mut().append_pair("login_hint", hint);
+    }
     Ok(redirect(
         url.as_str(),
         Some(format!(
@@ -1015,7 +1083,7 @@ async fn exchange(st: &St, s: &Settings, d: &Discovery, code: &str, p: &Pending)
         .header(header::ACCEPT, "application/json");
     match &s.client_secret {
         Some(enc) => {
-            let secret = st.totp.decrypt_labeled(SECRET_LABEL, enc)?;
+            let secret = st.totp.decrypt_labeled(&secret_label(s.tenant.as_deref()), enc)?;
             // RFC 6749 §2.3.1: both parts form-urlencoded before Basic
             let enc = |v: &str| form_urlencode(v);
             let basic = STANDARD.encode(format!("{}:{}", enc(&s.client_id), enc(&secret)));
@@ -1111,7 +1179,11 @@ pub async fn callback(
     let Some(code) = q.code.as_deref().filter(|c| printable(c, 1, 4096)) else {
         return deny("idp", "no code".into());
     };
-    let s = load(&st.cat.conn())?.unwrap_or_default();
+    // the IdP the login was started with (a tenant's own, Phase 23a)
+    let s = match &p.tenant {
+        Some(t) => crate::tenant_idp::load(&st.cat.conn(), t)?.unwrap_or_default(),
+        None => load(&st.cat.conn())?.unwrap_or_default(),
+    };
     if !s.enabled {
         return Ok(fail("disabled"));
     }

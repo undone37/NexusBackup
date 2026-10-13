@@ -14,10 +14,16 @@
 
   let mode: 'all' | 'some' | 'failed' = $state('all');
   let picked: (number | string)[] = $state([]);
+  // Phase 23a: keep the new snapshots until this day (store lock; approval beyond the limit)
+  let keep = $state(false);
+  let keepUntil = $state('');
+  const today = new Date(Date.now() + 86400e3).toISOString().slice(0, 10);
   $effect(() => {
     if (open) {
       mode = 'all';
       picked = [];
+      keep = false;
+      keepUntil = '';
     }
   });
 
@@ -35,6 +41,11 @@
     const params: Record<string, unknown> = { group_id: g.id };
     if (mode === 'some') params.guests = guests.filter((x) => picked.includes(x));
     if (mode === 'failed') params.failed_only = true;
+    if (keep) {
+      if (!keepUntil) return;
+      // the end of the chosen day (UTC): "until" covers that day
+      params.keep_until = Date.parse(`${keepUntil}T23:59:59Z`) / 1000;
+    }
     if (await act(post('/jobs', { kind: 'backup', tenant: g.tenant, params }), t.dash.backupQueued)) open = false;
   }
 </script>
@@ -57,6 +68,17 @@
           {/if}
         {/if}
         <label class="inline-check"><input type="radio" name="bn-mode" value="failed" bind:group={mode} />{t.runctl.failedOnly}</label>
+      </fieldset>
+      <fieldset class="field">
+        <legend>{t.sp.keep.legend}</legend>
+        <label class="inline-check"><input type="checkbox" bind:checked={keep} />{t.sp.keep.toggle}</label>
+        {#if keep}
+          <div class="field">
+            <label for="bn-keep">{t.sp.keep.until}</label>
+            <input id="bn-keep" type="date" min={today} bind:value={keepUntil} required aria-describedby="bn-keep-hint" />
+          </div>
+        {/if}
+        <p class="hint" id="bn-keep-hint">{t.sp.keep.hint}</p>
       </fieldset>
       <div class="form-actions">
         <button type="button" onclick={() => (open = false)}>{t.cancel}</button>

@@ -40,10 +40,12 @@ pub mod impersonate;
 pub mod incident;
 pub mod inventory;
 pub mod jobs;
+pub mod keep;
 pub mod nasops;
 pub mod network;
 pub mod offsite;
 pub mod oidc;
+pub mod openapi;
 pub mod ops;
 pub mod passkeys;
 pub mod plugins;
@@ -60,13 +62,16 @@ pub mod scan;
 pub mod search;
 pub mod selection;
 pub mod settings;
+pub mod simulate;
 pub mod spa;
 pub mod storage;
 pub mod tenancy;
+pub mod tenant_idp;
 pub mod tenant_key;
 pub mod tenants;
 pub mod tls;
 pub mod tokens;
+pub mod usage;
 pub mod validate;
 pub mod vault;
 
@@ -477,6 +482,11 @@ pub fn router(st: St) -> Router {
         .route("/auth/oidc/callback", get(oidc::callback))
         .route("/dashboard", get(dashboard::dashboard))
         .route("/storage", get(storage::storage))
+        // Phase 23a: billing usage, restore point simulator, keep-until limit, API description
+        .route("/usage", get(usage::usage))
+        .route("/policies/simulate", post(simulate::simulate_policy))
+        .route("/settings/keep-until", get(keep::get_setting).put(keep::put_setting))
+        .route("/openapi.json", get(openapi::document))
         .route("/reports/{file}", get(reports::export))
         .route(
             "/settings/reports",
@@ -659,6 +669,7 @@ pub fn router(st: St) -> Router {
         .merge(hardware::routes())
         .merge(network::routes())
         .merge(tenants::routes())
+        .merge(tenant_idp::routes())
         .merge(tenancy::routes())
         .merge(vault::routes())
         .merge(incident::routes())
@@ -683,6 +694,7 @@ pub fn router(st: St) -> Router {
         .nest(repl_proto::PREFIX, peer)
         .route("/health", get(health))
         .route("/metrics", get(metrics))
+        .route("/api/openapi.json", get(openapi::document))
         .fallback(spa::serve)
         .layer(axum::extract::DefaultBodyLimit::max(1 << 20))
         .layer(middleware::from_fn_with_state(st.clone(), tokens::layer))

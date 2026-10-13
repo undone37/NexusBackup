@@ -62,6 +62,9 @@ pub const WEB_ACTIONS: &[&str] = &[
     catalog::tenants::DISABLE_ACTION,
     crate::impersonate::ACTION,
     crate::incident::LEAVE,
+    crate::keep::ACTION,
+    crate::keep::SETTING_ACTION,
+    crate::tenant_idp::ACTION,
 ];
 
 /// Who may approve or reject requests (never their own: see [`approve`]).
@@ -290,6 +293,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
             crate::resources::tenant_deletable(c, name)?;
             catalog::tenancy::bury(c, name, requested_by)?;
             catalog::fleet::forget_tenant(c, name)?;
+            c.execute("DELETE FROM tenant_idps WHERE tenant = ?1", [name])?;
             changed(c.execute("DELETE FROM tenants WHERE name = ?1", [name])?)?;
             catalog::tenant_key::remove(c, name)?;
         }
@@ -381,6 +385,9 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         crate::firewall::ACTION => crate::firewall::execute(c, p)?,
         catalog::holds::RELEASE_ACTION => crate::holds::execute(c, p, approver, requested_by)?,
         crate::incident::LEAVE => crate::incident::execute(c, p, approver, requested_by)?,
+        crate::keep::ACTION => return crate::keep::execute(c, p, requested_by).map(Some),
+        crate::keep::SETTING_ACTION => crate::keep::execute_setting(c, p)?,
+        crate::tenant_idp::ACTION => crate::tenant_idp::execute(c, p)?,
         "agent.delete" => {
             let id = p["id"].as_str().unwrap_or_default();
             if crate::agents::agent_in_use(c, id)? {

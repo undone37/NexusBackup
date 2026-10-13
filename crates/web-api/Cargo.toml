@@ -24,6 +24,8 @@ nas = { path = "../nas", default-features = false }
 plugin-manager = { path = "../plugin-manager" }
 plugin-proto = { path = "../plugin-proto", features = ["bundle"] }
 reports = { path = "../reports" }
+# restore point simulator: the GFS rule retention runs (`retention::keep`; not the store)
+retention = { path = "../retention" }
 regex = { version = "1", default-features = false, features = ["std", "perf", "unicode"] }
 # protocol types only (no chunk store, no keyd): docs/replication.md §2
 repl_proto = { package = "replication", path = "../replication", default-features = false }

@@ -12,6 +12,8 @@
   import { bandwidthWeaker, timeZones, validRateWindow, type RateWindow } from '../lib/schedule';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import TenantRecoveryKey from '../components/TenantRecoveryKey.svelte';
+  import TenantWizard from '../components/TenantWizard.svelte';
+  import Sso from './settings/Sso.svelte';
   import Menu from '../components/Menu.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
   import IconCloud from '@lucide/svelte/icons/cloud';
@@ -25,6 +27,10 @@
   import { fetchFromOffsite, listedStatus } from '../lib/offsite';
 
   let items: Tenant[] = $state([]);
+  // Phase 23a: onboarding wizard, the tenant's own IdP
+  let wizardOpen = $state(false);
+  let idpOf: string | null = $state(null);
+  let idpOpen = $state(false);
   // tenant whose recovery key dialog is open (17e)
   let keyOf: string | null = $state(null);
   let error: string | null = $state(null);
@@ -86,6 +92,10 @@
     // `?offsite=<tenant>` opens that tenant's offsite copy (links, ui-smoke)
     const o = items.find((x) => x.name === route.query.get('offsite'));
     if (o && can.restore(session.user)) openCopy(o);
+    // `?wizard=1` / `?idp=<tenant>` (Phase 23a; links, ui-smoke)
+    if (route.query.get('wizard') && can.configure(session.user)) wizardOpen = true;
+    const i = items.find((x) => x.name === route.query.get('idp'));
+    if (i && canKey) ((idpOf = i.name), (idpOpen = true));
   });
 
   // Phase 17d: attach requests (`tenant.attach_offsite`) still open
@@ -330,7 +340,7 @@
 <div class="page-head">
   <h1>{t.tenants.title}</h1>
   {#if can.configure(session.user)}
-    <button type="button" class="primary" onclick={() => edit(null)}><IconPlus aria-hidden="true" />{t.tenants.new}</button>
+    <button type="button" class="primary" onclick={() => (wizardOpen = true)}><IconPlus aria-hidden="true" />{t.tenants.new}</button>
   {/if}
   {#if can.attachOffsite(session.user)}
     <button type="button" onclick={() => edit(null, true)}><IconLink aria-hidden="true" />{t.offsite.attach}</button>
@@ -420,6 +430,9 @@
                 {/if}
                 {/if}
                 {#if canKey}<button type="button" class="small" onclick={() => (keyOf = x.name)}>{t.tkey.button}</button>{/if}
+                {#if canKey}
+                  <button type="button" class="small" onclick={() => ((idpOf = x.name), (idpOpen = true))} aria-label={t.sp.idp.label(x.name)}>{t.sp.idp.button}</button>
+                {/if}
                 {#if can.configure(session.user)}
                   <button type="button" class="small danger" onclick={() => remove(x)}>{t.delete}</button>
                 {/if}
@@ -737,4 +750,9 @@
     <button type="button" onclick={check} disabled={checking}>{t.offsite.check}</button>
     <button type="button" onclick={() => (copyOpen = false)}>{t.close}</button>
   </div>
+</Modal>
+
+<TenantWizard bind:open={wizardOpen} ondone={load} />
+<Modal bind:open={idpOpen} wide title={idpOf ? t.sp.idp.title(idpOf) : ''}>
+  {#if idpOf}<Sso tenant={idpOf} />{/if}
 </Modal>

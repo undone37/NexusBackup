@@ -77,3 +77,13 @@ Either raises a critical `anomaly` alert naming tenant, source, the snapshot tim
 snapshot of the source before it (the restore point). Dedup prefix `change-rate anomaly on <tenant>/<source>`.
 `PUT /settings/anomaly` applies stricter values directly; disabling it or raising `factor` / `floor_bytes` goes
 through the approval gate (`settings.anomaly`, executed by the web-api). Phase 15c adds "hold last good snapshot".
+
+## Usage export (Phase 23a)
+
+Billing per tenant and calendar month (`reports::usage`, `GET /usage`, report type `usage`): **objects** = distinct
+sources with a `backup_stats` row or a snapshot in the period (pruned snapshots still count through their stats),
+**backups** = such (source, time) pairs, **logical / stored / offsite** = average and peak of the daily
+`capacity_samples` in the period (`logical`, the measured `used`, and since v37 `offsite` = logical size of the
+snapshots with an offsite copy that day), **days_sampled** = the samples found. Bill storage by `stored` (measured);
+the remote side of offsite copies is not measured. The CSV carries the immutable tenant uid for matching customers.
+

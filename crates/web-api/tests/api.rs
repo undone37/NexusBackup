@@ -3771,6 +3771,7 @@ fn registered_routes() -> std::collections::BTreeSet<(String, String)> {
         include_str!("../src/vault.rs"),
         include_str!("../src/incident.rs"),
         include_str!("../src/passkeys.rs"),
+        include_str!("../src/tenant_idp.rs"),
     ] {
         for piece in src.split(".route(").skip(1) {
             let piece = piece.split(".merge(").next().unwrap().split("\n}").next().unwrap();
@@ -4056,6 +4057,15 @@ async fn tenant_admin_routes_classified() {
         ("POST", "/auth/impersonation/end", "/api/v1/auth/impersonation/end".into(), e(), 'Y'),
         ("GET", "/policies/templates", "/api/v1/policies/templates".into(), none(), 'Y'),
         ("POST", "/policies/templates", "/api/v1/policies/templates".into(), Some(json!({"tier": "gold"})), 'N'),
+        // Phase 23a: usage (own tenant), simulator, keep-until limit, API description, tenant IdP
+        ("GET", "/usage", "/api/v1/usage".into(), none(), 'Y'),
+        ("POST", "/policies/simulate", "/api/v1/policies/simulate".into(), Some(json!({"schedule": "daily 22:00", "gfs": {"daily": 7, "weekly": 4, "monthly": 0, "yearly": 0}})), 'Y'),
+        ("GET", "/settings/keep-until", "/api/v1/settings/keep-until".into(), none(), 'N'),
+        ("PUT", "/settings/keep-until", "/api/v1/settings/keep-until".into(), Some(json!({"max_days": 30})), 'N'),
+        ("GET", "/openapi.json", "/api/v1/openapi.json".into(), none(), 'Y'),
+        ("GET", "/tenants/{name}/oidc", "/api/v1/tenants/acme/oidc".into(), none(), 'Y'),
+        ("PUT", "/tenants/{name}/oidc", "/api/v1/tenants/acme/oidc".into(), Some(json!({"enabled": false, "issuer": "", "client_id": "", "label": "x"})), 'N'),
+        ("POST", "/tenants/{name}/oidc/test", "/api/v1/tenants/acme/oidc/test".into(), e(), 'N'),
     ];
     let classified: std::collections::BTreeSet<(String, String)> =
         table.iter().map(|(m, p, ..)| (m.to_string(), p.to_string())).collect();

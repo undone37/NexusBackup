@@ -718,11 +718,26 @@ CREATE TABLE recovery_runs (
 CREATE INDEX recovery_runs_plan ON recovery_runs(plan_id, id);
 "#;
 
+/// v37 (Phase 23a, service-provider operations): `tenant_idps` — a tenant's own
+/// OIDC identity provider (`settings` = the same JSON as the appliance-wide
+/// `settings.oidc`, mappings limited to tenant roles of this tenant; `domains` =
+/// e-mail domains whose users the login page sends to it; `endpoints` = token
+/// and JWKS endpoints of the last discovery, for the firewall allow-list), and
+/// `capacity_samples.offsite` (logical bytes of the tenant's snapshots with an
+/// offsite copy that day, for the monthly usage export; NULL = not sampled).
+/// Purely additive: the previous release ignores both.
+const SCHEMA_V37: &str = r#"
+CREATE TABLE tenant_idps (
+  tenant TEXT PRIMARY KEY REFERENCES tenants(name), settings TEXT NOT NULL,
+  domains TEXT NOT NULL DEFAULT '[]', endpoints TEXT);
+ALTER TABLE capacity_samples ADD COLUMN offsite INTEGER;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
-    SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V34,
+    SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V34, SCHEMA_V37,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -2753,6 +2768,42 @@ mod tests {
         assert_eq!(n, 1);
         assert!(conn
             .execute("INSERT INTO yara_rules VALUES ('r.yar', 'x', 'cd', 'bob', 2)", [])
+            .is_err());
+    }
+
+    /// v37 (tenant IdPs, offsite capacity samples) on top of the previous catalog:
+    /// old samples have no offsite figure; an IdP row needs an existing tenant.
+    #[test]
+    fn migration_v37_tenant_idps() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V37).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO tenants (name) VALUES ('acme');
+                 INSERT INTO capacity_samples (day, tenant, used, logical) VALUES ('2026-10-11', 'acme', 1, 2);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let o: Option<i64> = conn
+            .query_row("SELECT offsite FROM capacity_samples", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(o, None);
+        conn.execute("INSERT INTO tenant_idps (tenant, settings) VALUES ('acme', '{}')", [])
+            .unwrap();
+        let domains: String = conn
+            .query_row("SELECT domains FROM tenant_idps", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(domains, "[]");
+        assert!(conn
+            .execute("INSERT INTO tenant_idps (tenant, settings) VALUES ('ghost', '{}')", [])
             .is_err());
     }
 }

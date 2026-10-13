@@ -1232,6 +1232,97 @@ async function main() {
       const q = (await api('GET', '/quorum')).body.find((x) => x.action === 'incident.leave' && x.state === 'pending');
       await api('POST', `/quorum/${q.id}/approve`);
     }],
+    // Phase 23a: billing usage, a tenant's own IdP, the onboarding wizard, the restore point preview
+    // (policy dialog and approval), "keep until" backups, the organisation sign-in. Runs after approvals
+    // were switched off; switches them on for the approval picture and off again.
+    ['provider', async () => {
+      // approvals off (they are after 'approvals-off'; when this scene runs alone, switch them off here)
+      const approvalsOff = async () => {
+        await login('admin');
+        if (!(await api('GET', '/settings/approvals')).body.enabled) return;
+        await api('PUT', '/settings/approvals', { enabled: false });
+        await login('so');
+        const d = (await api('GET', '/quorum')).body.find((x) => x.action === 'approvals.disable' && x.state === 'pending');
+        await api('POST', `/quorum/${d.id}/approve`);
+        await login('admin');
+      };
+      await approvalsOff();
+      await go('/storage');
+      await until(`return !!document.querySelector('#usage-h') && document.querySelector('#usage-h').closest('section').querySelector('tbody tr')`, 'usage section');
+      await ev(`document.querySelector('#usage-h').closest('section').scrollIntoView({ block: 'end' }); window.scrollBy(0, 40); return true;`);
+      await sleep(300);
+      await shot('storage-usage', { scrolled: true });
+      const r = await api('PUT', '/tenants/acme/oidc', {
+        enabled: true, issuer: 'https://login.acme.example.com/realms/acme', client_id: 'nexusbackup', client_secret: 'demo-secret',
+        scopes: ['openid', 'profile', 'email'], username_claim: 'preferred_username', groups_claim: 'groups', label: 'ACME login',
+        mappings: [{ group: 'backup-admins', role: 'tenant_admin', tenants: [] }, { group: 'it-staff', role: 'tenant_user', tenants: [] }],
+        domains: ['acme.example.com'],
+      });
+      if (r.status !== 200) throw new Error(`tenant IdP: ${JSON.stringify(r)}`);
+      await go('/tenants?idp=acme');
+      await until(`return document.querySelector('dialog[open]')?.innerText.includes('E-mail domains')`, 'tenant IdP dialog');
+      await sleep(400);
+      await shot('tenant-idp', { height: 1500 });
+      await closeDialogs();
+      await go('/tenants?wizard=1');
+      await until(`return !!document.querySelector('dialog[open] input[pattern]')`, 'wizard');
+      await ev(`$fill('input[pattern]', 'stark'); return true;`);
+      await ev(`$click('Next'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input[type=radio][value=gold]')`, 'tier step');
+      await ev(`document.querySelector('dialog[open] input[type=radio][value=gold]').click(); $fill('input[type=number]', '500'); return true;`);
+      await shot('tenant-wizard', { height: 1000 });
+      await ev(`$click('Next'); return true;`);
+      await until(`return document.querySelector('dialog[open]')?.innerText.includes('First tenant admin')`, 'admin step');
+      await ev(`$fill('input', 'pepper'); $click('Next'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input[type=radio][value=none]')`, 'offsite step');
+      await ev(`$click('Next'); return true;`);
+      await until(`return !!$button('Create tenant')`, 'review step');
+      await ev(`$click('Create tenant'); return true;`);
+      await until(`return document.querySelectorAll('dialog[open]').length === 2`, 'activation code', 15000);
+      await sleep(400);
+      await shot('tenant-wizard-done', { height: 1000 });
+      await closeDialogs();
+      // restore point preview in the policy dialog (dashed: the stored values)
+      await go('/policies');
+      await ev(`$rowClick('gold', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #p-sched')`, 'policy dialog');
+      await ev(`$fill('#p-daily', '7'); $fill('#p-monthly', '6'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] .sim .facts')`, 'restore point preview');
+      await ev(`document.querySelector('dialog[open] .sim').scrollIntoView({ block: 'center' }); return true;`);
+      await sleep(400);
+      await shot('policy-simulator', { height: 1100 });
+      await closeDialogs();
+      // "back up now, keep until"
+      await go('/groups');
+      await ev(`$rowClick('production', 'Back up now'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input[type=checkbox]')`, 'backup dialog');
+      await ev(`$check('input[type=checkbox]'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #bn-keep')`, 'keep-until date');
+      await ev(`$fill('#bn-keep', '2027-06-30'); return true;`);
+      await shot('backup-keep');
+      await closeDialogs();
+      // the same preview on a retention-weakening approval request
+      await api('PUT', '/settings/approvals', { enabled: true });
+      const gold = (await api('GET', '/policies')).body.find((p) => p.name === 'gold');
+      await api('PUT', `/policies/${gold.id}`, { ...gold, id: undefined, gfs: { ...gold.gfs, daily: 7, monthly: 6 } });
+      await login('so');
+      await go('/quorum');
+      await until(`return [...document.querySelectorAll('article')].some((a) => a.innerText.includes('policy update') && a.querySelector('.sim .facts'))`, 'approval with preview');
+      await ev(`[...document.querySelectorAll('article')].find((a) => a.innerText.includes('policy update')).querySelector('.sim').scrollIntoView({ block: 'end' }); window.scrollBy(0, 120); return true;`);
+      await sleep(400);
+      await shot('approval-simulator', { scrolled: true });
+      const q = (await api('GET', '/quorum')).body.find((x) => x.action === 'policy.update' && x.state === 'pending');
+      await api('POST', `/quorum/${q.id}/reject`);
+      await approvalsOff();
+      // the sign-in page offers the organisation sign-in once a tenant has its own IdP
+      jar.clear();
+      await cdp('Page.navigate', { url: 'about:blank' });
+      await sleep(200);
+      await cdp('Page.navigate', { url: BASE + '#/login' });
+      await until(`return !!document.querySelector('#l-org')`, 'organisation sign-in');
+      await ev(`$fill('#l-org', 'jane.doe@acme.example.com'); return true;`);
+      await shot('login-org');
+    }],
     ['login-sso', async () => {
       jar.clear();
       // a real IdP redirect is a full page load: a hash change alone keeps the old session state

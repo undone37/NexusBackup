@@ -9,6 +9,7 @@
   import KpiTile from '../components/KpiTile.svelte';
   import TrendLine from '../components/charts/TrendLine.svelte';
   import HBars from '../components/charts/HBars.svelte';
+  import UsageSection from '../components/UsageSection.svelte';
   import IconLayers from '@lucide/svelte/icons/layers';
   import IconIn from '@lucide/svelte/icons/arrow-down-to-line';
   import IconDisk from '@lucide/svelte/icons/hard-drive';
@@ -153,6 +154,8 @@
     {/if}
     <p class="hint">{t.storage.coverage(tot.snapshots, tot.snapshots_all)} {t.storage.approx}</p>
   </section>
+
+  <UsageSection />
 {:else if !error}
   <p class="muted" aria-busy="true">{t.loading}</p>
 {/if}

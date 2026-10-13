@@ -17,6 +17,13 @@
   let busy = $state(false);
   let error: string | null = $state(null);
   let oidc: OidcPublic | null = $state(null);
+  // Phase 23a: a tenant's own IdP, picked by e-mail address or tenant name
+  let org = $state('');
+  function orgSignIn(e: SubmitEvent) {
+    e.preventDefault();
+    if (!org.trim()) return;
+    location.href = `${API}/auth/oidc/start?next=${encodeURIComponent(next)}&org=${encodeURIComponent(org.trim())}`;
+  }
   // Phase 14d: the appliance's login banner (Settings → Security), plain text
   let banner = $state('');
   // single sign-on failures come back as /#/login?oidc_error=<code> (contract §2)
@@ -70,6 +77,17 @@
 <div class="login">
   <AuthHero />
   <div class="pane">
+    {#if oidc?.organizations}
+      <form class="org" onsubmit={orgSignIn} aria-labelledby="org-title">
+        <h2 id="org-title">{t.sp.login.title}</h2>
+        <div class="field">
+          <label for="l-org">{t.sp.login.field}</label>
+          <input id="l-org" bind:value={org} required autocomplete="email" autocapitalize="none" spellcheck="false" aria-describedby="l-org-hint" />
+          <div class="hint" id="l-org-hint">{t.sp.login.hint}</div>
+        </div>
+        <button type="submit"><IconKey aria-hidden="true" />{t.sp.login.submit}</button>
+      </form>
+    {/if}
     <form onsubmit={submit} aria-labelledby="login-title">
       <div class="brand"><Logo />{t.app}</div>
       <h1 id="login-title">{t.login.title}</h1>
@@ -112,3 +130,18 @@
     </form>
   </div>
 </div>
+
+<style>
+  .org {
+    padding-bottom: 1.25rem !important;
+    border-bottom: 1px solid var(--border);
+  }
+  .org h2 {
+    font-size: 1.1rem;
+    margin: 0 0 0.5rem;
+  }
+  .org button {
+    width: 100%;
+    min-height: 40px;
+  }
+</style>
