@@ -1,0 +1,29 @@
+{
+   "partitiontable": {
+      "label": "dos",
+      "id": "0x8e7f1a2b",
+      "device": "/dev/sda",
+      "unit": "sectors",
+      "partitions": [
+         {
+            "node": "/dev/sda1",
+            "start": 2048,
+            "size": 2097152,
+            "type": "83",
+            "bootable": true
+         },
+         {
+            "node": "/dev/sda2",
+            "start": 2099200,
+            "size": 31457280,
+            "type": "83"
+         },
+         {
+            "node": "/dev/sda3",
+            "start": 33556480,
+            "size": 4194304,
+            "type": "83"
+         }
+      ]
+   }
+}

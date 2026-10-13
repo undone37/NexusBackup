@@ -9,6 +9,9 @@
   import { t } from '../lib/i18n';
   import type { Agent, AgentToken, Tenant } from '../lib/types';
   import Modal from '../components/Modal.svelte';
+  import AgentsRescue from './AgentsRescue.svelte';
+  import { can } from '../lib/roles';
+  import { session } from '../lib/session.svelte';
   import AgentEndpoint from '../components/AgentEndpoint.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
@@ -47,6 +50,9 @@
   const statusCls = { enrolled: 'ok', pending: 'info', expired: 'warn' };
   const hasToken = (a: Agent) => a.token_expires !== null && a.token_expires > now;
   const shortFp = (fp: string) => (fp.length > 12 ? `${fp.slice(0, 12)}…` : fp);
+  // Phase 19a: bare-metal recovery / P2V (Linux agents only)
+  let rescue: ReturnType<typeof AgentsRescue> | undefined = $state();
+  const bmrOk = (a: Agent) => can.backup(session.user) && !a.os?.startsWith('Windows');
 
   // Create
   let open = $state(false);
@@ -286,6 +292,9 @@
                   <button type="button" class="small" onclick={() => update(a)}>{t.agents.update}</button>
                 {/if}
                 <button type="button" class="small" onclick={() => limits(a)}>{t.agents.limits}</button>
+                {#if bmrOk(a)}
+                  <button type="button" class="small" data-bmr={a.id} onclick={() => rescue?.openFor(a)}>{t.bmr.action}</button>
+                {/if}
                 {#if st === 'enrolled'}
                   <button type="button" class="small" onclick={() => endpoint(a)}>{t.ep.button}</button>
                 {/if}
@@ -300,6 +309,8 @@
 </div>
 {/if}
 </div>
+
+<AgentsRescue bind:this={rescue} agents={items} />
 
 <Modal bind:open title={t.agents.new}>
   <form onsubmit={save}>

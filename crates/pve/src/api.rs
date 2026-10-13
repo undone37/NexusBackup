@@ -69,6 +69,40 @@ impl Api {
         self.send(self.http.post(format!("{}{path}", self.base)).form(form))
     }
 
+    pub fn delete(&self, path: &str) -> Result<Value> {
+        self.send(self.http.delete(format!("{}{path}", self.base)))
+    }
+
+    /// File upload to a storage (`…/storage/{storage}/upload`, multipart with
+    /// `content` and `filename`); returns the task UPID if PVE started one.
+    pub fn upload(&self, path: &str, content: &str, filename: &str, data: &[u8]) -> Result<Option<String>> {
+        if !filename
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+        {
+            bail!("invalid upload file name {filename:?}");
+        }
+        let b = format!(
+            "nexus{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let mut body = format!(
+            "--{b}\r\nContent-Disposition: form-data; name=\"content\"\r\n\r\n{content}\r\n--{b}\r\nContent-Disposition: form-data; name=\"filename\"; filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .into_bytes();
+        body.extend_from_slice(data);
+        body.extend_from_slice(format!("\r\n--{b}--\r\n").as_bytes());
+        let v = self.send(
+            self.http
+                .post(format!("{}{path}", self.base))
+                .header("Content-Type", format!("multipart/form-data; boundary={b}"))
+                .body(body),
+        )?;
+        Ok(v.as_str().map(str::to_owned))
+    }
+
     /// Stops a running task (`DELETE /nodes/{node}/tasks/{upid}`; the node is
     /// the UPID's second field). A task that already ended is left alone.
     pub fn stop_task(&self, upid: &str) -> Result<()> {

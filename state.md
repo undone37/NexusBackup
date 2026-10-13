@@ -330,7 +330,7 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 ## Phase 19 — Tier 3 (2026-10-13)
 - [x] 19b tenant_admin, policy tiers, view as tenant, immutable tenant uid + tombstones (v25, T30–T32)
 - [x] 19c mail export eml/mbox/PST (plugin contract v1.9, m365 1.3.0); Outlook import lab pending
-- [ ] 19a BMR/P2V (rescue agent, layout capture, PVE P2V)
+- [x] 19a BMR/P2V (layout capture, rescue ISO, unattended P2V; lab: blank VM recovered + booted, v29, protocol v1.6)
 
 ## Phase 20 — Agent packages (2026-10-12)
 - [x] .deb/.rpm x86_64+aarch64, MSI (wixl), release packages job, sign-blobs / verify --blobs
@@ -345,4 +345,11 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 
 ## Phase 21 — Security and ransomware (2026-10-13)
 - [x] 21a anomalous snapshots, file-level change signals, snapshot diff, sparklines (v28)
-- [ ] 21b incident mode, posture checks, session cap, DEK reminder; 21c passkeys; 21d CVE scan + bit-rot repair; 21e YARA + secure restore + Entra ID
+- [x] 21c passkeys (WebAuthn second factor, v31, T37)
+- [ ] 21b incident mode, posture checks, session cap, DEK reminder (v30); 21d CVE scan + bit-rot repair; 21e YARA + secure restore + Entra ID
+
+## Phase 25 — Recovery assurance (2026-10-13)
+- [ ] restore tests (isolated instant recovery + guest-agent checks), recovery plans, readiness checks, DR report (v34)
+
+## Runner note (2026-10-13)
+- CI failures on 970ede6/5233b5a were the self-hosted runner's shared rootless podman ("invalid internal status … podman system migrate") — transient, podman healthy again; not fixed on the host (would stop all containers). PG testbox now per-checkout (worktrees, runner).

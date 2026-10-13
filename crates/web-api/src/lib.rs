@@ -42,10 +42,12 @@ pub mod jobs;
 pub mod offsite;
 pub mod oidc;
 pub mod ops;
+pub mod passkeys;
 pub mod plugins;
 pub mod quorum;
 pub mod replication;
 pub mod reports;
+pub mod rescue;
 pub mod resources;
 pub mod restores;
 pub mod runctl;
@@ -454,6 +456,7 @@ pub fn router(st: St) -> Router {
         .route("/auth/me", get(me))
         .route("/auth/activate/begin", post(activation::begin))
         .route("/auth/activate/complete", post(activation::complete))
+        .route("/auth/activate/passkey", post(activation::passkey_options))
         .route("/auth/tokens", get(tokens::list).post(tokens::create))
         .route("/auth/tokens/{id}", axum::routing::delete(tokens::revoke))
         .route("/certificate", get(certs::get_status))
@@ -531,6 +534,14 @@ pub fn router(st: St) -> Router {
         .route("/agents/{id}", axum::routing::delete(delete_agent))
         .route("/agents/{id}/token", post(new_agent_token))
         .route("/agents/{id}/enroll", post(enroll_agent))
+        // Phase 19a: bare-metal recovery / P2V (rescue.rs)
+        .route("/agents/{id}/rescue", post(crate::rescue::create))
+        .route("/agents/{id}/p2v", post(crate::rescue::p2v))
+        .route("/rescue", get(crate::rescue::list))
+        .route("/rescue/checkin", post(crate::rescue::checkin))
+        .route("/rescue/{id}", get(crate::rescue::get))
+        .route("/rescue/{id}/start", post(crate::rescue::start))
+        .route("/rescue/{id}/cancel", post(crate::rescue::cancel))
         .route("/agents/{id}/limits", axum::routing::put(selection::set_agent_limits))
         .route("/agents/bulk", post(fleet::bulk_agents))
         .route("/fleets", get(fleet::list_fleets).post(fleet::create_fleet))
@@ -604,6 +615,7 @@ pub fn router(st: St) -> Router {
         .route("/replication/sources/{id}/close", post(repl::close_source))
         .route("/replication/sources/{id}/reopen", post(repl::reopen_source))
         .merge(access::routes())
+        .merge(passkeys::routes())
         .merge(firewall::routes())
         .merge(holds::routes())
         .merge(hardware::routes())

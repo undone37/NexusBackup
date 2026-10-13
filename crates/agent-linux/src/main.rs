@@ -14,6 +14,7 @@ usage:
   nexus-agent init --fleet-secret <S> [--port 7444] [--state DIR] [--config DIR]
   nexus-agent run [--state DIR] [--config DIR]
   nexus-agent hooks test [--config DIR]
+  nexus-agent rescue [--rescue-config FILE]   (rescue ISO: bare-metal recovery console)
   nexus-agent version (or --version)
 end users (root or members of the group nexus-agent-ui):
   nexus-agent tui                        control panel: sessions, status, back up now
@@ -43,6 +44,7 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
     let mut token = None;
     let mut fleet = None;
     let mut port = None;
+    let mut rescue_config = None;
     let mut json = false;
     let mut limit = 20;
     let mut sock = PathBuf::from(endpoint::proto::SOCKET_PATH);
@@ -56,6 +58,7 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             "--port" => port = Some(val("--port")?.parse::<u16>().map_err(|_| "invalid --port")?),
             "--state" => paths.state = PathBuf::from(val("--state")?),
             "--config" => paths.config = PathBuf::from(val("--config")?),
+            "--rescue-config" => rescue_config = Some(PathBuf::from(val("--rescue-config")?)),
             "--json" => json = true,
             "--limit" => limit = val("--limit")?.parse::<usize>().map_err(|_| "invalid --limit")?,
             "--socket" => sock = PathBuf::from(val("--socket")?),
@@ -94,6 +97,10 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         ["run"] => run(paths),
+        ["rescue"] => {
+            nexus_agent::rescue::main(rescue_config)?;
+            Ok(ExitCode::SUCCESS)
+        }
         ["status"] => {
             let res = cli::run(&cli::Command::Status, &sock, json, Clock::Local);
             if let Ok(out) = &res {

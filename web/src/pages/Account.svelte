@@ -8,9 +8,10 @@
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import ApiTokens from '../components/ApiTokens.svelte';
   import SessionTable from '../components/SessionTable.svelte';
+  import Passkeys from '../components/Passkeys.svelte';
 
   // My account (Phase 14d): who I am, where I am signed in (every user may end their own
-  // sessions) and my API tokens.
+  // sessions), my passkeys (Phase 21c, local accounts) and my API tokens.
   let sessions: SessionInfo[] = $state([]);
   let error: string | null = $state(null);
   let loaded = $state(false);
@@ -62,5 +63,7 @@
     <SessionTable {sessions} onchange={load} />
   {/if}
 </section>
+
+{#if u && u.auth !== 'oidc'}<Passkeys />{/if}
 
 <ApiTokens />

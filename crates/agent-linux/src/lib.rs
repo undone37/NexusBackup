@@ -3,7 +3,9 @@
 
 pub mod endpoint;
 pub mod hooks;
+pub mod layout;
 pub mod power;
+pub mod rescue;
 pub mod restore;
 pub mod scan;
 pub mod server;

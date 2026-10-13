@@ -92,6 +92,8 @@ pub fn recover_admin(paths: &Paths, user: Option<&str>, force_solo: bool, recove
             params![id, catalog::NO_PASSWORD, digest, expires],
         )?;
         tx.execute("DELETE FROM sessions WHERE user_id = ?1", [id])?;
+        // lost passkeys too (Phase 21c): the owner registers new ones at activation
+        tx.execute("DELETE FROM passkeys WHERE user_id = ?1", [id])?;
         let msg = format!(
             "break-glass: admin account {name} was reset at the console with the recovery key{}; \
              verify with its owner that this was intended",
