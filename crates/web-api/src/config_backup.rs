@@ -48,8 +48,10 @@ fn latest(st: &St) -> Option<Value> {
     let d = dir(st);
     let s: Value = serde_json::from_slice(&std::fs::read(d.join("latest.json")).ok()?).ok()?;
     let bytes = std::fs::metadata(d.join(LATEST)).ok()?.len();
-    Some(json!({"appliance": s["appliance"], "created": s["created"], "bytes": bytes, "sha256": s["sha256"],
-                "files": s["files"].as_array().map(Vec::len)}))
+    Some(
+        json!({"appliance": s["appliance"], "created": s["created"], "bytes": bytes, "sha256": s["sha256"],
+                "files": s["files"].as_array().map(Vec::len)}),
+    )
 }
 
 fn job_row(r: &catalog::rusqlite::Row<'_>) -> catalog::rusqlite::Result<Value> {
@@ -57,9 +59,11 @@ fn job_row(r: &catalog::rusqlite::Row<'_>) -> catalog::rusqlite::Result<Value> {
     let result: Option<Value> = r
         .get::<_, Option<String>>(7)?
         .and_then(|s| serde_json::from_str(&s).ok());
-    Ok(json!({"id": r.get::<_, i64>(0)?, "kind": r.get::<_, String>(1)?, "state": r.get::<_, String>(2)?,
+    Ok(
+        json!({"id": r.get::<_, i64>(0)?, "kind": r.get::<_, String>(1)?, "state": r.get::<_, String>(2)?,
               "created": r.get::<_, i64>(3)?, "finished": r.get::<_, Option<i64>>(4)?,
-              "requested_by": r.get::<_, String>(5)?, "target": params["target"], "result": result}))
+              "requested_by": r.get::<_, String>(5)?, "target": params["target"], "result": result}),
+    )
 }
 
 const COLS: &str = "id, kind, state, created, finished, requested_by, params, result";
@@ -83,8 +87,10 @@ fn view(st: &St, c: &Connection) -> ApiResult<Value> {
     )?;
     let mut targets = Vec::new();
     let names: Vec<String> = c
-        .prepare("SELECT name FROM tenants WHERE json_valid(offsite) AND json_type(offsite, '$.remote') = 'object'
-         ORDER BY name")?
+        .prepare(
+            "SELECT name FROM tenants WHERE json_valid(offsite) AND json_type(offsite, '$.remote') = 'object'
+         ORDER BY name",
+        )?
         .query_map([], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
     for t in names {
@@ -131,7 +137,9 @@ pub async fn run(State(st): State<St>, ctx: Ctx) -> ApiResult<Response> {
         |r| r.get(0),
     )?;
     if busy > 0 {
-        return Err(ApiError::conflict("a configuration backup is already queued or running"));
+        return Err(ApiError::conflict(
+            "a configuration backup is already queued or running",
+        ));
     }
     let id = queue(&st, &ctx, "config_backup", json!({}))?;
     Ok((StatusCode::ACCEPTED, Json(json!({"job_id": id}))).into_response())
@@ -156,10 +164,16 @@ pub async fn download(State(st): State<St>, ctx: Ctx) -> ApiResult<Response> {
         json!({"kind": "config_backup", "bytes": meta.len(), "created": info["created"], "sha256": info["sha256"]}),
     )?;
     // the id is [a-z0-9-] (scheduler), so the header is plain ASCII
-    let name = format!("nexus-config-{appliance}-{}.bundle", info["created"].as_i64().unwrap_or(0));
+    let name = format!(
+        "nexus-config-{appliance}-{}.bundle",
+        info["created"].as_i64().unwrap_or(0)
+    );
     let mut res = Body::from_stream(tokio_util::io::ReaderStream::new(file)).into_response();
     let h = res.headers_mut();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
     h.insert(header::CONTENT_LENGTH, HeaderValue::from(meta.len()));
     if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{name}\"")) {
         h.insert(header::CONTENT_DISPOSITION, v);

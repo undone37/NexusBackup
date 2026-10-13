@@ -50,7 +50,11 @@ pub(crate) fn upload_alert_key(tenant: &str) -> String {
 fn request(dir: &Path, id: i64, appliance: &str) -> std::io::Result<()> {
     let tmp = dir.join(".request.json.tmp");
     let _ = fs::remove_file(&tmp);
-    let mut f = fs::OpenOptions::new().write(true).create_new(true).mode(0o660).open(&tmp)?;
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o660)
+        .open(&tmp)?;
     std::io::Write::write_all(&mut f, json!({"id": id, "appliance": appliance}).to_string().as_bytes())?;
     // the scheduler runs with UMask=0077; root reads it through the group anyway
     f.set_permissions(fs::Permissions::from_mode(0o660))?;
@@ -168,11 +172,17 @@ impl Scheduler {
                 let step = Box::new(move || {
                     request(&dir, id, &appliance).map_err(|e| format!("writing the request: {e}"))?;
                     let s = wait(&dir, id, timeout)?;
-                    Ok(json!({"appliance": s["appliance"], "created": s["created"], "bytes": s["bytes"],
+                    Ok(
+                        json!({"appliance": s["appliance"], "created": s["created"], "bytes": s["bytes"],
                               "sha256": s["sha256"], "files": s["files"]})
-                    .to_string())
+                        .to_string(),
+                    )
                 });
-                ("appliance:config_backup".to_owned(), vec![Step::Func(InProc(step))], vec![])
+                (
+                    "appliance:config_backup".to_owned(),
+                    vec![Step::Func(InProc(step))],
+                    vec![],
+                )
             }
             "config_rekey" => {
                 let target = job.params["target"].as_str().context("target missing")?;

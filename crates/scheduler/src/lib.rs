@@ -67,6 +67,7 @@ mod accounts;
 pub mod alerts;
 pub mod anomaly;
 pub mod clock;
+mod config_backup;
 pub mod consistency;
 pub mod disks;
 pub mod expiry;
@@ -76,7 +77,6 @@ pub mod forward;
 mod holds;
 mod inventory;
 mod lifecycle;
-mod config_backup;
 mod offsite_ui;
 pub mod orphans;
 mod plugins;
@@ -1486,9 +1486,7 @@ impl Scheduler {
                 Some(r)
             }
             "alert_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" | "file_search" | "file_index"
-            | "config_backup" => {
-                serde_json::from_str(stdout.unwrap_or_default()).ok()
-            }
+            | "config_backup" => serde_json::from_str(stdout.unwrap_or_default()).ok(),
             "offsite_list" => match serde_json::from_str::<Value>(stdout.unwrap_or_default().trim()) {
                 Ok(s @ Value::Array(_)) => Some(json!({ "snapshots": s })),
                 _ => {

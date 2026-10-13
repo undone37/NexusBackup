@@ -165,9 +165,8 @@ fn main() -> Result<()> {
             .into_iter()
             .filter(|(n, _)| n != "kek.recovery")
             .collect();
-        let vs = keyd::request_import_wrapped(&cfg.keyd_socket, &cfg.tenant, &files).context(
-            "keyd refused the keys: they were not made by this appliance's key (keyd journal)",
-        )?;
+        let vs = keyd::request_import_wrapped(&cfg.keyd_socket, &cfg.tenant, &files)
+            .context("keyd refused the keys: they were not made by this appliance's key (keyd journal)")?;
         let keys = keyd::fetch_keyring(&cfg.keyd_socket, &cfg.tenant).context("keyd")?;
         let store = Store::open(&cfg.store, keys, StoreOptions::default())?;
         let mut t = Target::open(&store, remote.as_ref(), cfg.state.clone(), opts())?;

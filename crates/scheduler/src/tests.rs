@@ -1964,11 +1964,11 @@ fn inventory_jobs_and_auto_protect() {
 mod accounts;
 /// Phase 18: compliance clock keeper and the `clock_skew` alert.
 mod clock;
+/// Appliance configuration backup (config_backup / config_upload).
+mod config_backup;
 /// Phase 14d certificate / secret / token expiry alerts.
 mod disks;
 mod expiry;
-/// Appliance configuration backup (config_backup / config_upload).
-mod config_backup;
 /// Phase 18: fleecing space alerts from nexus-pve's `fleecing-space` lines.
 mod fleecing;
 /// Phase 14a audit / alert forwarding.

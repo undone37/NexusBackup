@@ -119,7 +119,9 @@ impl T {
             .uri("/api/v1/auth/login")
             .header(header::HOST, "nexus.test")
             .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(json!({"name": name, "password": PW, "totp": code}).to_string()))
+            .body(Body::from(
+                json!({"name": name, "password": PW, "totp": code}).to_string(),
+            ))
             .unwrap();
         let res = self.app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK, "{name}");
@@ -169,7 +171,10 @@ async fn status_run_now_and_download() {
     let v = t.call(Method::GET, BASE, &sam).await;
     assert_eq!(v.status, StatusCode::OK);
     assert!(v.body["latest"].is_null() && v.body["last_success"].is_null());
-    assert_eq!(v.body["targets"][0]["tenant"], "acme", "only tenants with an offsite target");
+    assert_eq!(
+        v.body["targets"][0]["tenant"], "acme",
+        "only tenants with an offsite target"
+    );
     assert_eq!(v.body["targets"].as_array().unwrap().len(), 1);
     // no bundle yet
     assert_eq!(
@@ -191,12 +196,13 @@ async fn status_run_now_and_download() {
         t.call(Method::POST, &format!("{BASE}/run"), &alice).await.status,
         StatusCode::CONFLICT
     );
-    let (kind, tenant): (String, String) = t
-        .st
-        .cat
-        .conn()
-        .query_row("SELECT kind, tenant FROM jobs WHERE id = ?1", [job], |r| Ok((r.get(0)?, r.get(1)?)))
-        .unwrap();
+    let (kind, tenant): (String, String) =
+        t.st.cat
+            .conn()
+            .query_row("SELECT kind, tenant FROM jobs WHERE id = ?1", [job], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
     assert_eq!((kind.as_str(), tenant.as_str()), ("config_backup", "-"));
     assert!(t.audit("job.create").iter().any(|(a, _)| a == "alice"));
 
@@ -241,7 +247,11 @@ async fn status_run_now_and_download() {
     );
 
     // API tokens never reach these routes
-    for (m, p) in [(Method::GET, BASE), (Method::GET, "/settings/config-backup/download"), (Method::POST, "/settings/config-backup/run")] {
+    for (m, p) in [
+        (Method::GET, BASE),
+        (Method::GET, "/settings/config-backup/download"),
+        (Method::POST, "/settings/config-backup/run"),
+    ] {
         assert!(!web_api::tokens::allowed(true, &m, p) && !web_api::tokens::allowed(true, &m, &format!("/api/v1{p}")));
     }
 }

@@ -279,7 +279,10 @@ fn restore_config(args: &[String]) -> Result<ExitCode> {
                     .context("offsite target file")?;
             let nft = (real && !o.dry_run).then(|| std::path::Path::new("/usr/sbin/nft"));
             let (id, time, b) = setup::cfgbackup::fetch(&target, appliance.as_deref(), nft)?;
-            println!("Fetched the newest configuration backup of appliance {id} ({time}, {} bytes).", b.len());
+            println!(
+                "Fetched the newest configuration backup of appliance {id} ({time}, {} bytes).",
+                b.len()
+            );
             b
         }
         _ => bail!("give either a bundle file or --offsite TARGET.json"),
@@ -311,7 +314,9 @@ fn restore_config(args: &[String]) -> Result<ExitCode> {
         r.appliance, r.files
     );
     println!("Next: sign in to the web UI, upload the plugins again (if any), then recover the tenants' data:");
-    println!("Tenants -> Attach offsite copy, or nexus-offsite ... dr (manual chapter 14). Audited as setup.restore_config.");
+    println!(
+        "Tenants -> Attach offsite copy, or nexus-offsite ... dr (manual chapter 14). Audited as setup.restore_config."
+    );
     Ok(ExitCode::SUCCESS)
 }
 

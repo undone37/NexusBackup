@@ -69,7 +69,10 @@ fn helper_bundle_offsite_and_restore_config() {
         .status()
         .unwrap();
     let status: serde_json::Value = serde_json::from_slice(&fs::read(ctl.join("status.json")).unwrap()).unwrap();
-    assert_eq!((status["id"].as_i64(), status["state"].as_str()), (Some(8), Some("error")));
+    assert_eq!(
+        (status["id"].as_i64(), status["state"].as_str()),
+        (Some(8), Some("error"))
+    );
 
     // the scheduler's upload (offsite::config) into a local target
     let box_dir = tempfile::tempdir().unwrap();
@@ -94,7 +97,11 @@ fn helper_bundle_offsite_and_restore_config() {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        c.stdin.take().unwrap().write_all(format!("{key}\n").as_bytes()).unwrap();
+        c.stdin
+            .take()
+            .unwrap()
+            .write_all(format!("{key}\n").as_bytes())
+            .unwrap();
         c.wait_with_output().unwrap()
     };
     let out = restore(&keyd::format_recovery_key(&[1; 32]));

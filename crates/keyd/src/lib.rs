@@ -257,7 +257,10 @@ pub fn import_wrapped(dir: &Path, tenant: &str, files: &[(String, Vec<u8>)]) -> 
         new.push((v, k, bytes));
     }
     if new.is_empty() {
-        return Err(err(io::ErrorKind::NotFound, format!("escrow has no keys of tenant {tenant}")));
+        return Err(err(
+            io::ErrorKind::NotFound,
+            format!("escrow has no keys of tenant {tenant}"),
+        ));
     }
     let have = versions(dir, tenant)?;
     if !have.is_empty() {
@@ -998,7 +1001,11 @@ mod tests {
         let esc = export_escrow(a.path(), "acme").unwrap();
         // the new machine: kek.recovery from the bundle + recover
         let b = tempfile::tempdir().unwrap();
-        fs::write(b.path().join("kek.recovery"), fs::read(a.path().join("kek.recovery")).unwrap()).unwrap();
+        fs::write(
+            b.path().join("kek.recovery"),
+            fs::read(a.path().join("kek.recovery")).unwrap(),
+        )
+        .unwrap();
         recover(b.path(), &rk).unwrap();
         let sock = b.path().join("s");
         let l = UnixListener::bind(&sock).unwrap();
@@ -1007,13 +1014,21 @@ mod tests {
         std::thread::spawn(move || serve(l, &dir, uid));
         let deks: Vec<_> = esc.iter().filter(|(n, _)| n.starts_with("tenants/")).cloned().collect();
         assert_eq!(request_import_wrapped(&sock, "acme", &deks).unwrap(), vec![1, 2]);
-        assert_eq!(request_import_wrapped(&sock, "acme", &deks).unwrap(), vec![1, 2], "idempotent");
+        assert_eq!(
+            request_import_wrapped(&sock, "acme", &deks).unwrap(),
+            vec![1, 2],
+            "idempotent"
+        );
         assert_eq!(deks_of(a.path(), "acme"), deks_of(b.path(), "acme"));
         // another appliance's escrow does not unwrap under this KEK
         let c = tempfile::tempdir().unwrap();
         init(c.path()).unwrap();
         create_tenant(c.path(), "other").unwrap();
-        let foreign: Vec<_> = export_escrow(c.path(), "other").unwrap().into_iter().filter(|(n, _)| n.starts_with("tenants/")).collect();
+        let foreign: Vec<_> = export_escrow(c.path(), "other")
+            .unwrap()
+            .into_iter()
+            .filter(|(n, _)| n.starts_with("tenants/"))
+            .collect();
         assert!(request_import_wrapped(&sock, "other", &foreign).is_err());
         // a renamed file (other tenant label) is refused as well
         assert!(import_wrapped(b.path(), "beta", &deks).is_err());

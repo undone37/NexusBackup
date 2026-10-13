@@ -38,7 +38,11 @@ fn config_env(offsite_ok: bool) -> (Env, Scheduler) {
         &format!(
             "echo \"$@\" >> {}/offsite-calls; {}",
             p.display(),
-            if offsite_ok { "echo uploaded" } else { "echo 'connection refused' >&2; exit 1" }
+            if offsite_ok {
+                "echo uploaded"
+            } else {
+                "echo 'connection refused' >&2; exit 1"
+            }
         ),
     );
     e.cfg.offsite_bin = p.join("offsite");
@@ -64,15 +68,16 @@ fn backup_then_upload_to_every_target() {
     s.wait_idle(Duration::from_secs(30)).unwrap();
     let req = h.join().unwrap();
     assert_eq!(req["id"], id);
-    let appliance = catalog::setting(&s.db.conn(), crate::config_backup::APPLIANCE_ID).unwrap().unwrap();
+    let appliance = catalog::setting(&s.db.conn(), crate::config_backup::APPLIANCE_ID)
+        .unwrap()
+        .unwrap();
     assert_eq!(req["appliance"], appliance.as_str());
     assert_eq!(appliance.len(), 16);
     assert_eq!(state(&s, id), "ok");
-    let result: String = s
-        .db
-        .conn()
-        .query_row("SELECT result FROM jobs WHERE id = ?1", [id], |r| r.get(0))
-        .unwrap();
+    let result: String =
+        s.db.conn()
+            .query_row("SELECT result FROM jobs WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
     assert!(result.contains("\"bytes\":14"), "{result}");
 
     assert_eq!(
@@ -82,10 +87,19 @@ fn backup_then_upload_to_every_target() {
     );
     s.start_jobs().unwrap();
     s.wait_idle(Duration::from_secs(30)).unwrap();
-    assert_eq!(count(&s, "SELECT COUNT(*) FROM jobs WHERE kind = 'config_upload' AND state = 'ok'"), 1);
+    assert_eq!(
+        count(
+            &s,
+            "SELECT COUNT(*) FROM jobs WHERE kind = 'config_upload' AND state = 'ok'"
+        ),
+        1
+    );
     let calls = fs::read_to_string(e.d.path().join("offsite-calls")).unwrap();
     assert!(
-        calls.contains(&format!("config-put {}/latest.bundle {appliance} 1800000000", e.cfg.config_backup_dir.display())),
+        calls.contains(&format!(
+            "config-put {}/latest.bundle {appliance} 1800000000",
+            e.cfg.config_backup_dir.display()
+        )),
         "{calls}"
     );
     // the same id on the next run
@@ -98,7 +112,9 @@ fn failures_raise_keyed_warnings_that_resolve() {
     let open = |s: &Scheduler, key: &str| {
         count(
             s,
-            &format!("SELECT COUNT(*) FROM alerts WHERE key = '{key}' AND severity = 'warning' AND resolved_at IS NULL"),
+            &format!(
+                "SELECT COUNT(*) FROM alerts WHERE key = '{key}' AND severity = 'warning' AND resolved_at IS NULL"
+            ),
         )
     };
     manual(&s, "config_backup", "-", json!({}));
@@ -107,11 +123,12 @@ fn failures_raise_keyed_warnings_that_resolve() {
     s.wait_idle(Duration::from_secs(30)).unwrap();
     h.join().unwrap();
     assert_eq!(open(&s, "config_backup"), 1);
-    let msg: String = s
-        .db
-        .conn()
-        .query_row("SELECT message FROM alerts WHERE key = 'config_backup'", [], |r| r.get(0))
-        .unwrap();
+    let msg: String =
+        s.db.conn()
+            .query_row("SELECT message FROM alerts WHERE key = 'config_backup'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
     assert!(msg.contains("kek.recovery"), "{msg}");
     assert_eq!(count(&s, "SELECT COUNT(*) FROM jobs WHERE kind = 'config_upload'"), 0);
 
@@ -172,7 +189,10 @@ fn rekey_after_restore() {
     s.wait_idle(Duration::from_secs(30)).unwrap();
     assert_eq!(state(&s, b), "failed", "no backup before the keys are back");
     assert_eq!(
-        count(&s, "SELECT COUNT(*) FROM alerts WHERE key = 'config_restore:t1' AND resolved_at IS NULL"),
+        count(
+            &s,
+            "SELECT COUNT(*) FROM alerts WHERE key = 'config_restore:t1' AND resolved_at IS NULL"
+        ),
         1
     );
     let calls = fs::read_to_string(e.d.path().join("offsite-calls")).unwrap();
@@ -192,9 +212,15 @@ fn rekey_after_restore() {
     s.start_jobs().unwrap();
     s.wait_idle(Duration::from_secs(30)).unwrap();
     assert!(pending(&s).is_empty());
-    assert_eq!(count(&s, "SELECT COUNT(*) FROM audit WHERE action = 'tenant.keys_restored'"), 1);
     assert_eq!(
-        count(&s, "SELECT COUNT(*) FROM alerts WHERE key = 'config_restore:t1' AND resolved_at IS NULL"),
+        count(&s, "SELECT COUNT(*) FROM audit WHERE action = 'tenant.keys_restored'"),
+        1
+    );
+    assert_eq!(
+        count(
+            &s,
+            "SELECT COUNT(*) FROM alerts WHERE key = 'config_restore:t1' AND resolved_at IS NULL"
+        ),
         0
     );
 }

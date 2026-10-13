@@ -124,18 +124,24 @@ mod tests {
     fn endpoints() {
         let ep = |v: serde_json::Value| serde_json::from_value::<RemoteCfg>(v).unwrap().endpoint();
         assert_eq!(
-            ep(serde_json::json!({"type": "s3", "endpoint": "https://minio.lan:9000", "region": "r", "bucket": "b",
-                "access_key": "a", "secret_key_file": "/x"})),
+            ep(
+                serde_json::json!({"type": "s3", "endpoint": "https://minio.lan:9000", "region": "r", "bucket": "b",
+                "access_key": "a", "secret_key_file": "/x"})
+            ),
             Some(("minio.lan".into(), 9000))
         );
         assert_eq!(
-            ep(serde_json::json!({"type": "s3", "endpoint": "https://s3.example.com/", "region": "r", "bucket": "b",
-                "access_key": "a", "secret_key_file": "/x"})),
+            ep(
+                serde_json::json!({"type": "s3", "endpoint": "https://s3.example.com/", "region": "r", "bucket": "b",
+                "access_key": "a", "secret_key_file": "/x"})
+            ),
             Some(("s3.example.com".into(), 443))
         );
         assert_eq!(
-            ep(serde_json::json!({"type": "sftp", "host": "u1.your-storagebox.de", "user": "u1", "key_file": "/k",
-                "host_key": "ssh-ed25519 AAAA"})),
+            ep(
+                serde_json::json!({"type": "sftp", "host": "u1.your-storagebox.de", "user": "u1", "key_file": "/k",
+                "host_key": "ssh-ed25519 AAAA"})
+            ),
             Some(("u1.your-storagebox.de".into(), 23))
         );
     }

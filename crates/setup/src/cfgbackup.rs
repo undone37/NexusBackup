@@ -58,11 +58,7 @@ pub const INCLUDE: &[&str] = &[
     "etc/nexus/metrics-token",
 ];
 /// Directories recreated with their recorded mode/owner before the files (parents of single files).
-const PARENTS: &[&str] = &[
-    "var/lib/nexus/webapi",
-    "var/lib/nexus/scheduler",
-    "etc/nexus/tls",
-];
+const PARENTS: &[&str] = &["var/lib/nexus/webapi", "var/lib/nexus/scheduler", "etc/nexus/tls"];
 /// largest single file taken into a bundle
 const MAX_FILE: u64 = 256 << 20;
 
@@ -227,7 +223,10 @@ pub fn tick(dir: &Path, root: &Path, keyd_run: &Path) -> Result<bool> {
 }
 
 fn offsite_id_ok(id: &str) -> bool {
-    (1..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_digit() || b.is_ascii_lowercase() || b == b'-')
+    (1..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase() || b == b'-')
 }
 
 // ---------------------------------------------------------------- restore
@@ -268,7 +267,11 @@ pub fn fetch(target: &Value, appliance: Option<&str>, nft: Option<&Path>) -> Res
             .map(|a| a.ip())
             .collect();
         for a in addrs {
-            let set = if a.is_ipv4() { "allowed_out_v4" } else { "allowed_out_v6" };
+            let set = if a.is_ipv4() {
+                "allowed_out_v4"
+            } else {
+                "allowed_out_v6"
+            };
             opened.push(format!("inet nexus {set} {{ {a} . tcp . {port} }}"));
         }
         let script: String = opened.iter().map(|e| format!("add element {e}\n")).collect();
@@ -336,7 +339,7 @@ pub fn ssh_key(comment: &str) -> (Zeroizing<String>, String) {
 
 /// Header of a bundle without the key (shown before the recovery key is asked for).
 pub fn header(bundle: &[u8]) -> Result<Value> {
-    Ok(serde_json::from_slice(&config_bundle::header(bundle)?).context("bundle header")?)
+    serde_json::from_slice(&config_bundle::header(bundle)?).context("bundle header")
 }
 
 impl Setup {
@@ -374,7 +377,13 @@ impl Setup {
 
         mkdir(&keyd_dir, 0o700)?;
         mkdir(&keyd_dir.join("tenants"), 0o700)?;
-        self.write_file(&keyd_dir.join("kek.recovery"), &opened.kek_recovery, 0o600, Some("nexus-keyd"), Some("nexus-keyd"))?;
+        self.write_file(
+            &keyd_dir.join("kek.recovery"),
+            &opened.kek_recovery,
+            0o600,
+            Some("nexus-keyd"),
+            Some("nexus-keyd"),
+        )?;
         keyd::recover(&keyd_dir, &rk).context("re-sealing the KEK")?;
         for p in [keyd_dir.join("kek.local"), keyd_dir.join("tenants"), keyd_dir.clone()] {
             self.own(&p, Some("nexus-keyd"), Some("nexus-keyd"))?;
@@ -421,7 +430,11 @@ impl Setup {
         args.extend(relabel.iter().map(String::as_str));
         self.cmd("restorecon", &args)?;
         self.grub_password(&rk)?;
-        self.audit("setup.done", "appliance", json!({"restored": true, "dry_run": self.dry_run}))?;
+        self.audit(
+            "setup.done",
+            "appliance",
+            json!({"restored": true, "dry_run": self.dry_run}),
+        )?;
         self.write_file(
             &self.paths.setup_done,
             format!("restored {}\n", catalog::now()).as_bytes(),
@@ -544,7 +557,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (b, header) = create(old.path(), &run, tmp.path(), "a1b2c3", 1_800_000_000).unwrap();
         assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 0, "no plaintext left in tmp");
-        let files: Vec<&str> = header["files"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let files: Vec<&str> = header["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         for want in [
             CATALOG,
             "var/lib/nexus/webapi/totp.key",
@@ -565,10 +583,7 @@ mod tests {
         for never in ["pending", "chunkstore", "keyd"] {
             assert!(!files.iter().any(|f| f.contains(never)), "{never} in bundle");
         }
-        assert!(
-            !b.windows(7).any(|w| w == b"repl-ca"),
-            "no file content in the clear"
-        );
+        assert!(!b.windows(7).any(|w| w == b"repl-ca"), "no file content in the clear");
         assert_eq!(super::header(&b).unwrap()["appliance"], "a1b2c3");
 
         // a fresh appliance: the wizard ran up to the key step (own KEK, no tenants)
@@ -596,10 +611,16 @@ mod tests {
         // the old recovery key works on the new machine; the catalog is the old one
         keyd::check_recovery_key(&paths.keyd_dir, &rk).unwrap();
         let c = s.cat.conn();
-        let n: i64 = c.query_row("SELECT COUNT(*) FROM users WHERE name = 'alice'", [], |r| r.get(0)).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM users WHERE name = 'alice'", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 1);
         let a: String = c
-            .query_row("SELECT details FROM audit WHERE action = 'setup.restore_config'", [], |r| r.get(0))
+            .query_row(
+                "SELECT details FROM audit WHERE action = 'setup.restore_config'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(a.contains("a1b2c3"));
         let pending = catalog::setting(&c, REKEY_PENDING).unwrap().unwrap();

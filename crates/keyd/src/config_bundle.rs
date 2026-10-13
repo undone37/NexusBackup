@@ -227,7 +227,12 @@ pub fn open(bundle: &[u8], recovery_key: &str) -> io::Result<Opened> {
 }
 
 fn open_with_kek(p: &Parts<'_>, kek: &[u8; 32]) -> io::Result<Opened> {
-    let bad = || err(io::ErrorKind::InvalidData, "configuration bundle damaged or tampered with");
+    let bad = || {
+        err(
+            io::ErrorKind::InvalidData,
+            "configuration bundle damaged or tampered with",
+        )
+    };
     let key = Zeroizing::new(secret_of(kek).unseal(p.sealed_key).map_err(|_| bad())?);
     let key: &[u8; 32] = key[..].try_into().map_err(|_| bad())?;
     let (nonce, ct) = p.rest.split_at(24);
@@ -287,10 +292,7 @@ mod tests {
         assert_eq!(o.kek_recovery, kr);
 
         let wrong = crate::format_recovery_key(&[3; 32]);
-        assert_eq!(
-            open(&b, &wrong).err().unwrap().kind(),
-            io::ErrorKind::PermissionDenied
-        );
+        assert_eq!(open(&b, &wrong).err().unwrap().kind(), io::ErrorKind::PermissionDenied);
         // the clear header is authenticated, as is every payload byte
         let mut t = b.clone();
         t[12] ^= 1;
