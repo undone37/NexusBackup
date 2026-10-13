@@ -705,11 +705,12 @@ fn replication_jobs() {
 case "$2" in
 enroll) echo 'enrolled {{"cert_sha256":"{1}","tenants":["r1","r2"],"keyd_pub":"{2}"}}' ;;
 sync) if grep -q '"tenant": "r2"' "$1"; then echo 'key-mismatch {{"tenant":"r2","version":2}}'; exit 1; fi
-      echo 'replicated {{"imported":["vm-100/5"],"bytes_fetched":10,"remote":1,"key_versions":[1]}}' ;;
+      echo 'replicated {{"imported":["vm-100/5"],"bytes_fetched":10,"remote":1,"key_versions":[1],"tenant_uid":"{3}"}}' ;;
 esac"#,
             dir.display(),
             "c".repeat(64),
-            "d".repeat(64)
+            "d".repeat(64),
+            "e".repeat(32)
         ),
     );
     e.cfg.replica_bin = dir.join("replica");
@@ -802,6 +803,7 @@ esac"#,
     s.wait_idle(Duration::from_secs(20)).unwrap();
     let cfg: Value = serde_json::from_slice(&fs::read(dir.join("replica-sync.json")).unwrap()).unwrap();
     assert_eq!(cfg["gfs"], json!({"daily": 7}));
+    assert_eq!(cfg["tenant_uid"], Value::Null, "first sync: no uid recorded yet");
     let status: Value = serde_json::from_str(
         &s.db
             .conn()
@@ -811,6 +813,8 @@ esac"#,
     .unwrap();
     assert!(status["r1"]["last_ok"].is_i64(), "{status}");
     assert_eq!(status["r1"]["imported"], 1);
+    // Phase 19b: the primary tenant's uid, recorded at the first sync (passed to the next ones)
+    assert_eq!(status["r1"]["primary_uid"], json!("e".repeat(32)));
     assert!(status["r2"]["last_error"].is_string(), "{status}");
     let kinds: Vec<String> = {
         let c = s.db.conn();
@@ -2069,4 +2073,21 @@ fn consistency_recorded_and_policy_enforced() {
     assert_eq!(state(&s, d), "ok");
     assert_eq!(snap_level(&s).as_deref(), Some("application"));
     assert_eq!(open(&s), 0, "resolved by a snapshot that meets the policy");
+}
+
+/// `forward_test` stores its answer as the job result (it was dropped once:
+/// the forwarding "Send test message" then always showed nothing).
+#[test]
+fn forward_test_result_is_stored() {
+    let e = env(4);
+    let mut s = sched(&e);
+    let id = manual(&s, "forward_test", "-", json!({}));
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert_eq!(state(&s, id), "ok");
+    assert_eq!(
+        result_of(&s, id),
+        json!({"forwarding": "error: no sink configured"}),
+        "stored, not NULL"
+    );
 }

@@ -28,12 +28,14 @@ pub struct Object {
     pub deactivated: bool,
     /// names of the groups that back it up
     pub groups: Vec<String>,
+    /// policy tiers of those groups (bronze / silver / gold, Phase 19b)
+    pub tiers: Vec<String>,
 }
 
 /// Object key (tenant, first source) → object; one object in several groups
 /// counts once (shortest RPO).
 pub fn objects(c: &Connection, scope: Option<&str>, now: i64) -> rusqlite::Result<BTreeMap<(String, String), Object>> {
-    /// (tenant, source id, guests, schedule, kind, source name, config, auto, paused, group)
+    /// (tenant, source id, guests, schedule, kind, source name, config, auto, paused, (group, tier))
     type Row = (
         String,
         i64,
@@ -44,13 +46,13 @@ pub fn objects(c: &Connection, scope: Option<&str>, now: i64) -> rusqlite::Resul
         String,
         bool,
         bool,
-        String,
+        (String, Option<String>),
     );
     let rows: Vec<Row> = c
         .prepare(
             "SELECT g.tenant, g.source_id, g.guests, p.schedule, s.kind, s.name, s.config, g.mode, g.selector, g.exclude,
                     g.paused_until = -1 OR g.paused_until > ?2 OR s.maintenance_until = -1 OR s.maintenance_until > ?2,
-                    g.name
+                    g.name, p.tier
              FROM groups g JOIN policies p ON p.id = g.policy_id JOIN sources s ON s.id = g.source_id
              WHERE ?1 IS NULL OR g.tenant = ?1 ORDER BY g.id",
         )?
@@ -68,11 +70,12 @@ pub fn objects(c: &Connection, scope: Option<&str>, now: i64) -> rusqlite::Resul
             )?;
             let auto = catalog::inventory::auto(&mode);
             let paused = r.get::<_, Option<bool>>(10)?.unwrap_or(false);
-            Ok((r.get(0)?, sid, guests, r.get(3)?, kind, r.get(5)?, r.get(6)?, auto, paused, r.get(11)?))
+            let group = (r.get(11)?, r.get(12)?);
+            Ok((r.get(0)?, sid, guests, r.get(3)?, kind, r.get(5)?, r.get(6)?, auto, paused, group))
         })?
         .collect::<Result<_, _>>()?;
     let mut objs: BTreeMap<(String, String), Object> = BTreeMap::new();
-    for (tenant, sid, guests, schedule, kind, sname, cfg, auto, paused, group) in rows {
+    for (tenant, sid, guests, schedule, kind, sname, cfg, auto, paused, (group, tier)) in rows {
         let strs = || guests.iter().filter_map(Value::as_str).map(str::to_owned);
         let mut add: Vec<(Vec<String>, String)> = Vec::new();
         match kind.as_str() {
@@ -133,11 +136,15 @@ pub fn objects(c: &Connection, scope: Option<&str>, now: i64) -> rusqlite::Resul
                     paused,
                     deactivated: false,
                     groups: Vec::new(),
+                    tiers: Vec::new(),
                 });
             o.rpo = o.rpo.min(r);
             o.paused &= paused;
             if !o.groups.contains(&group) {
                 o.groups.push(group.clone());
+            }
+            if let Some(t) = tier.as_ref().filter(|t| !o.tiers.contains(t)) {
+                o.tiers.push(t.clone());
             }
         }
     }
@@ -296,6 +303,7 @@ pub const SLA_COLUMNS: &[&str] = &[
     "type",
     "tenant",
     "groups",
+    "tier",
     "object",
     "start",
     "end",
@@ -378,6 +386,7 @@ pub fn sla(c: &Connection, scope: Option<&str>, from: i64, to: i64, now: i64) ->
                     Cell::text("rpo_breach"),
                     Cell::text(&o.tenant),
                     Cell::text(o.groups.join(" ")),
+                    Cell::text(o.tiers.join(" ")),
                     Cell::text(&o.name),
                     Cell::Time(s),
                     if ongoing { Cell::Empty } else { Cell::Time(e) },
@@ -395,10 +404,10 @@ pub fn sla(c: &Connection, scope: Option<&str>, from: i64, to: i64, now: i64) ->
         Option<String>,
         Option<i64>,
         Option<i64>,
-        Option<i64>,
+        (Option<i64>, Option<String>),
     )> = c
         .prepare(
-            "SELECT a.ts, a.tenant, a.message, g.name, j.started, j.finished, p.sla_minutes FROM alerts a
+            "SELECT a.ts, a.tenant, a.message, g.name, j.started, j.finished, p.sla_minutes, p.tier FROM alerts a
              LEFT JOIN jobs j ON a.key = 'sla_missed:' || j.id
              LEFT JOIN groups g ON g.id = json_extract(j.params, '$.group_id')
              LEFT JOIN policies p ON p.id = g.policy_id
@@ -412,11 +421,11 @@ pub fn sla(c: &Connection, scope: Option<&str>, from: i64, to: i64, now: i64) ->
                 r.get(3)?,
                 r.get(4)?,
                 r.get(5)?,
-                r.get(6)?,
+                (r.get(6)?, r.get(7)?),
             ))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    for (ts, tenant, msg, group, started, finished, sla_min) in alerts {
+    for (ts, tenant, msg, group, started, finished, (sla_min, tier)) in alerts {
         let start = started.unwrap_or(ts);
         rows.push((
             start,
@@ -424,6 +433,7 @@ pub fn sla(c: &Connection, scope: Option<&str>, from: i64, to: i64, now: i64) ->
                 Cell::text("sla_missed"),
                 Cell::text(tenant.unwrap_or_default()),
                 Cell::text(group.unwrap_or_default()),
+                Cell::text(tier.unwrap_or_default()),
                 Cell::Empty,
                 Cell::Time(start),
                 Cell::opt_time(finished),

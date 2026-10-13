@@ -24,7 +24,7 @@ a different administrator or security officer must approve:
 | Updates | **Install now**: installing an available appliance update without waiting for the maintenance window (`update apply`) |
 | Monitoring | weakening anomaly detection (`settings anomaly`); disabling or removing an enabled forwarding sink, or changing its destination, certificate trust or headers (`settings forwarding`, see [Forwarding](#forwarding-to-a-siem)) |
 | Approvals | disabling the approval requirement itself (`approvals disable`; refused while vault mode is on) |
-| Tenants | deactivating a tenant (`tenant disable`, with the reason; backups stop). Reactivating needs no approval |
+| Tenants | deactivating a tenant (`tenant disable`, with the reason; backups stop). Reactivating needs no approval. Acting as a tenant's admin (`tenant impersonate`, see [09 Users and access](09-users-and-access.md#view-as-tenant-impersonation)); the read-only **View as tenant** needs none |
 | Vault mode | switching it on (`vault enable`) and off (`vault disable`, then the recovery key at the console); while it is on, every restore, mount and download (`vault restore`, the approver sees the jobs and their parameters). See [08 Replication](08-replication.md#vault-mode-secondary-only) |
 | Tenant recovery key | creating or replacing a tenant's recovery key (`tenant recovery_key`, **Tenants → Recovery key**): after the approval the requester shows the key once; see [14 Disaster recovery](14-disaster-recovery.md#the-tenant-recovery-key-optional) |
 | Console access | a root shell on the appliance console (`console unlock`, **Settings → Console access**): after the approval the requester shows the one-time code once; see [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console) |
@@ -32,6 +32,10 @@ a different administrator or security officer must approve:
 Rules:
 
 - The requester can never decide their own request. Any **other** enabled administrator or security officer can.
+- **Tenant admins** need the same approvals as administrators for the same actions (for example deleting a group or
+  moving it to a weaker policy). The approvers are always the provider's administrators and security officers: a
+  tenant admin never approves or rejects anything. The **Approvals** page of a tenant admin lists only their own
+  requests and their state.
 - A request expires after **72 hours** without a decision.
 - Approving runs the action immediately and cannot be undone. Some actions (the replication key export, a large GC, a snapshot delete, a restore that replaces the original, attaching an offsite copy)
   are carried out by the scheduler shortly after the approval; their state goes from **Approved** to **Executed**.
@@ -69,7 +73,7 @@ Administrators see the same page and can decide requests of others:
 
 ![Approvals as seen by the administrator who made the requests](images/approvals-admin.png)
 
-Operators can read the page but not decide.
+Operators can read the page but not decide; tenant admins see their own requests only.
 
 ## Enabling and disabling approvals
 
@@ -145,7 +149,8 @@ they cannot be used unnoticed.
 
 ## Audit log
 
-Open **Audit log** (administrators and security officers).
+Open **Audit log** (administrators and security officers; tenant admins see the entries concerning their tenant,
+see [Tenant-scoped audit log](#tenant-scoped-audit-log)).
 
 ![Audit log after verifying the chain](images/audit.png)
 
@@ -159,6 +164,8 @@ The filter bar narrows the list; click **Apply** (or press Enter), **Clear** sho
 - **Actor**: exactly this user (or `scheduler`, `web-api`, `system`, `setup`);
 - **Action**: actions starting with the text, for example `user.` for all account changes or `quorum.approve`;
 - **Target**: targets containing the text, for example `tenant/acme`;
+- **Tenant**: entries concerning this tenant (its objects, its jobs and accounts, and actions done while viewing as
+  the tenant);
 - **From** / **To**: days (in your browser's time zone, both inclusive).
 
 **Export CSV** downloads every entry matching the current filters as `nexus-audit.csv`, oldest first, with the
@@ -187,6 +194,18 @@ What is recorded:
 - job state changes and scheduler events (e.g. `gc.confirm_required`, replication sessions on the primary,
   `replication_peer.enrolled`);
 - the first-boot setup steps (`setup.*`).
+
+### Tenant-scoped audit log
+
+A tenant admin's **Audit log** shows only the entries concerning their tenant: changes to its sources, groups,
+agents and accounts, its jobs, sign-ins of its accounts, the provider's changes to the tenant (assigned policies,
+offsite target, deactivation) — and everything an administrator did while **viewing as the tenant**. Those entries
+carry the administrator's own name with the tenant, for example `alice impersonating:acme`, and the start and end
+of the view (`tenant.impersonate`, `tenant.impersonate_end`) are listed too. The tenant is derived from each entry
+(target, details, actor) and kept in a separate index: the hash chain itself is unchanged, and **Verify chain**
+stays with administrators and security officers.
+
+![The audit log of a tenant admin with the provider's "view as tenant" entries](images/audit-tenant-admin.png)
 
 ### Verifying the chain
 

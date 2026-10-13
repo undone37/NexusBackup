@@ -725,10 +725,11 @@ async fn tenant_user_isolation() {
     only_acme(&t.get("/api/v1/snapshots", &tina).await.body, "tenant");
     assert_eq!(t.get("/api/v1/snapshots?tenant=globex", &tina).await.body, json!([]));
     only_acme(&t.get("/api/v1/users", &tina).await.body, "tenant");
+    let uid = t.scalar::<String>("SELECT uid FROM tenants WHERE name = 'acme'");
     assert_eq!(
         t.get("/api/v1/tenants", &tina).await.body,
         json!([{"name": "acme", "offsite": {}, "quota_bytes": null, "disabled": false, "disabled_at": null,
-                 "disabled_by": null, "disabled_reason": null}])
+                 "disabled_by": null, "disabled_reason": null, "uid": uid, "policies": [], "tiers": []}])
     );
     assert_eq!(t.get("/api/v1/alerts", &tina).await.body, json!([]));
 
@@ -1580,6 +1581,7 @@ async fn rbac_matrix_and_audit_completeness() {
     t.add_user("rbac-victim", "operator", None);
     t.add_user("vic", "viewer", None);
     t.add_user("vera", "viewer", Some("acme"));
+    t.add_user("dana", "tenant_admin", Some("acme"));
     let victim = t.ids["rbac-victim"];
     let (agent, _) = add_agent(&t, &admin).await;
     t.st.cat
@@ -1596,6 +1598,7 @@ async fn rbac_matrix_and_audit_completeness() {
         ('T', t.login("tina").await),
         ('V', t.login("vic").await),
         ('W', t.login("vera").await),
+        ('D', t.login("dana").await),
     ];
     t.st.cat
         .conn()
@@ -1612,7 +1615,8 @@ async fn rbac_matrix_and_audit_completeness() {
     let qid = r.body["quorum_id"].as_i64().unwrap();
     let (src, grp, pol, job) = (ids["src_acme"], ids["grp_acme"], ids["policy"], ids["job_acme"]);
     // V = appliance-wide viewer, W = viewer of tenant acme: read-only
-    let all = "ASOTVW";
+    // D = tenant_admin of acme (Phase 19b; every other route: tenant_admin_routes_classified)
+    let all = "ASOTVWD";
 
     let calls: Vec<(Method, String, Option<Value>, &str)> = vec![
         (Method::GET, "/api/v1/auth/me".into(), None, all),
@@ -1635,15 +1639,15 @@ async fn rbac_matrix_and_audit_completeness() {
             Method::POST,
             "/api/v1/sources".into(),
             Some(json!({"tenant": "acme", "kind": "pve", "name": "rbac-s", "config": src_cfg(Some("x"))})),
-            "A",
+            "AD",
         ),
         (
             Method::PUT,
             format!("/api/v1/sources/{src}"),
             Some(json!({"name": "pve", "config": src_cfg(None)})),
-            "A",
+            "AD",
         ),
-        (Method::DELETE, format!("/api/v1/sources/{src}"), None, "A"),
+        (Method::DELETE, format!("/api/v1/sources/{src}"), None, "AD"),
         (Method::GET, "/api/v1/policies".into(), None, all),
         (
             Method::POST,
@@ -1665,13 +1669,13 @@ async fn rbac_matrix_and_audit_completeness() {
             Method::POST,
             "/api/v1/groups".into(),
             Some(json!({"tenant": "acme", "source_id": src, "policy_id": pol, "name": "rbac-g", "guests": [100]})),
-            "A",
+            "AD",
         ),
         (
             Method::PUT,
             format!("/api/v1/groups/{grp}"),
             Some(json!({"source_id": src, "policy_id": pol, "name": "prod", "guests": [100, 101, 102]})),
-            "A",
+            "AD",
         ),
         (Method::GET, "/api/v1/users".into(), None, all),
         (
@@ -1699,26 +1703,26 @@ async fn rbac_matrix_and_audit_completeness() {
             Method::POST,
             "/api/v1/agents".into(),
             Some(json!({"tenant": "acme", "name": "rbac-a", "host": "h"})),
-            "A",
+            "AD",
         ),
         (
             Method::POST,
             format!("/api/v1/agents/{agent}/token"),
             Some(json!({})),
-            "A",
+            "AD",
         ),
         (
             Method::POST,
             format!("/api/v1/agents/{agent}/enroll"),
             Some(json!({})),
-            "A",
+            "AD",
         ),
-        (Method::DELETE, format!("/api/v1/agents/{agent}"), None, "A"),
+        (Method::DELETE, format!("/api/v1/agents/{agent}"), None, "AD"),
         (
             Method::POST,
             "/api/v1/jobs".into(),
             Some(json!({"kind": "agent_update", "tenant": "acme", "params": {"agent_id": agent}})),
-            "A",
+            "AD",
         ),
         (
             Method::POST,
@@ -1727,7 +1731,7 @@ async fn rbac_matrix_and_audit_completeness() {
                 json!({"kind": "restore_files", "tenant": "acme", "params": {"source": format!("host-{agent}"),
                         "time": 2000, "paths": ["/etc"], "target": "/srv", "overwrite": "never", "confirm": "web01"}}),
             ),
-            "AOT",
+            "AOTD",
         ),
         (Method::GET, "/api/v1/snapshots".into(), None, all),
         (Method::GET, "/api/v1/jobs".into(), None, all),
@@ -1736,7 +1740,7 @@ async fn rbac_matrix_and_audit_completeness() {
             Method::POST,
             "/api/v1/jobs".into(),
             Some(json!({"kind": "backup", "tenant": "acme", "params": {"vmid": 100}})),
-            "AO",
+            "AOD",
         ),
         (
             Method::POST,
@@ -1744,19 +1748,19 @@ async fn rbac_matrix_and_audit_completeness() {
             Some(
                 json!({"kind": "files_list", "tenant": "acme", "params": {"source": "vm-100", "time": 1000, "path": "/"}}),
             ),
-            "AOT",
+            "AOTD",
         ),
         (
             Method::POST,
             format!("/api/v1/jobs/{job}/cancel"),
             Some(json!({})),
-            "AO",
+            "AOD",
         ),
         (
             Method::GET,
             format!("/api/v1/downloads/{}", "ab".repeat(32)),
             None,
-            "AOT",
+            "AOTD",
         ),
         (Method::GET, "/api/v1/storage".into(), None, all),
         (Method::GET, "/api/v1/dashboard".into(), None, all),
@@ -1802,8 +1806,8 @@ async fn rbac_matrix_and_audit_completeness() {
             Some(json!({"allow": ["10.0.0.0/8"], "enabled": true})),
             "A",
         ),
-        (Method::GET, "/api/v1/quorum".into(), None, "ASO"),
-        (Method::GET, "/api/v1/audit".into(), None, "AS"),
+        (Method::GET, "/api/v1/quorum".into(), None, "ASOD"),
+        (Method::GET, "/api/v1/audit".into(), None, "ASD"),
         (Method::GET, "/api/v1/audit/verify".into(), None, "AS"),
         (Method::GET, "/api/v1/alerts".into(), None, all),
         (
@@ -3735,5 +3739,637 @@ async fn tenant_offsite_windows_tighten_direct_weaken_quorum() {
         let r = put(with(weak.clone())).await;
         assert_eq!(r.status, StatusCode::ACCEPTED, "{weak}: {:?}", r.body);
     }
+    t.finish();
+}
+
+// ---------------------------------------------------------------- tenant admins (Phase 19b)
+
+/// Every `(METHOD, path)` the API router registers (lib.rs and the modules'
+/// `routes()`), read from the source: a new route fails
+/// [`tenant_admin_routes_classified`] until it is classified there.
+fn registered_routes() -> std::collections::BTreeSet<(String, String)> {
+    let lib = include_str!("../src/lib.rs");
+    let api = &lib[lib.find("let api = Router::new()").unwrap()..lib.find("let peer = Router::new()").unwrap()];
+    let mut out = std::collections::BTreeSet::new();
+    for src in [
+        api,
+        include_str!("../src/access.rs"),
+        include_str!("../src/firewall.rs"),
+        include_str!("../src/holds.rs"),
+        include_str!("../src/hardware.rs"),
+        include_str!("../src/tenants.rs"),
+        include_str!("../src/tenancy.rs"),
+        include_str!("../src/vault.rs"),
+    ] {
+        for piece in src.split(".route(").skip(1) {
+            let piece = piece.split(".merge(").next().unwrap().split("\n}").next().unwrap();
+            let path = piece.split('"').nth(1).unwrap();
+            for m in ["get", "post", "put", "delete"] {
+                let call = format!("{m}(");
+                let b = piece.as_bytes();
+                if piece
+                    .match_indices(&call)
+                    .any(|(i, _)| i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_'))
+                {
+                    out.insert((m.to_uppercase(), path.to_owned()));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Every route classified for `tenant_admin` (docs/control-plane.md "Tenant
+/// admins"): `Y` reaches the handler (never 401/403), `N` is always 403, `-`
+/// is public or session plumbing (not called here). Its own tenant only: the
+/// rows use objects of acme (dana's tenant).
+#[tokio::test]
+async fn tenant_admin_routes_classified() {
+    let mut t = T::new();
+    let admin = t.login("alice").await;
+    let ids = seed(&t, &admin).await;
+    let (agent, _) = add_agent(&t, &admin).await;
+    t.add_user("dana", "tenant_admin", Some("acme"));
+    let dana = t.login("dana").await;
+    let (src, grp, pol, job, tina) = (
+        ids["src_acme"],
+        ids["grp_acme"],
+        ids["policy"],
+        ids["job_acme"],
+        t.ids["tina"],
+    );
+    let r = t
+        .put("/api/v1/tenants/acme/policies", &admin, json!({"policy_ids": [pol]}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let snap = "/api/v1/snapshots/acme/vm-100/1000";
+    let none = || None::<Value>;
+    let oidc_off = json!({"enabled": false, "issuer": "", "client_id": "", "scopes": [], "username_claim": "x",
+                          "groups_claim": "x", "label": "x", "mappings": []});
+    let e = || Some(json!({}));
+    #[rustfmt::skip]
+    let table: Vec<(&str, &str, String, Option<Value>, char)> = vec![
+        ("GET", "/health", "/api/v1/health".into(), none(), '-'),
+        ("GET", "/metrics", "/api/v1/metrics".into(), none(), '-'),
+        ("POST", "/auth/login", "".into(), none(), '-'),
+        ("POST", "/auth/logout", "".into(), none(), '-'),
+        ("GET", "/auth/me", "/api/v1/auth/me".into(), none(), 'Y'),
+        ("POST", "/auth/activate/begin", "".into(), none(), '-'),
+        ("POST", "/auth/activate/complete", "".into(), none(), '-'),
+        ("GET", "/auth/tokens", "/api/v1/auth/tokens".into(), none(), 'Y'),
+        ("POST", "/auth/tokens", "/api/v1/auth/tokens".into(), Some(json!({"name": "x", "scope": "read", "days": 1})), 'Y'),
+        ("DELETE", "/auth/tokens/{id}", "/api/v1/auth/tokens/999".into(), none(), 'Y'),
+        ("GET", "/certificate", "/api/v1/certificate".into(), none(), 'N'),
+        ("POST", "/certificate/csr", "/api/v1/certificate/csr".into(), Some(json!({"cn": "x", "sans": []})), 'N'),
+        ("POST", "/certificate/install", "/api/v1/certificate/install".into(), Some(json!({"chain_pem": "x"})), 'N'),
+        ("POST", "/certificate/revert", "/api/v1/certificate/revert".into(), e(), 'N'),
+        ("GET", "/auth/oidc", "".into(), none(), '-'),
+        ("GET", "/auth/oidc/start", "".into(), none(), '-'),
+        ("GET", "/auth/oidc/callback", "".into(), none(), '-'),
+        ("GET", "/dashboard", "/api/v1/dashboard".into(), none(), 'Y'),
+        ("GET", "/storage", "/api/v1/storage".into(), none(), 'Y'),
+        ("GET", "/reports/{file}", "/api/v1/reports/sla.csv".into(), none(), 'Y'),
+        ("GET", "/settings/reports", "/api/v1/settings/reports".into(), none(), 'N'),
+        ("PUT", "/settings/reports", "/api/v1/settings/reports".into(), Some(json!({"reports": []})), 'N'),
+        ("POST", "/settings/reports/{name}/send", "/api/v1/settings/reports/x/send".into(), e(), 'N'),
+        ("PUT", "/tenants/{name}/quota", "/api/v1/tenants/acme/quota".into(), Some(json!({"quota_bytes": 1})), 'N'),
+        ("GET", "/tenants/{tenant}/recovery-key", "/api/v1/tenants/acme/recovery-key".into(), none(), 'N'),
+        ("POST", "/tenants/{tenant}/recovery-key", "/api/v1/tenants/acme/recovery-key".into(), e(), 'N'),
+        ("POST", "/tenants/{tenant}/recovery-key/{id}/show", "/api/v1/tenants/acme/recovery-key/1/show".into(), e(), 'N'),
+        ("GET", "/settings/anomaly", "/api/v1/settings/anomaly".into(), none(), 'N'),
+        ("PUT", "/settings/anomaly", "/api/v1/settings/anomaly".into(), Some(json!({"enabled": true, "factor": 3.0, "history": 14, "floor_bytes": 1u64 << 30})), 'N'),
+        ("GET", "/settings/oidc", "/api/v1/settings/oidc".into(), none(), 'N'),
+        ("PUT", "/settings/oidc", "/api/v1/settings/oidc".into(), Some(oidc_off.clone()), 'N'),
+        ("POST", "/settings/oidc/test", "/api/v1/settings/oidc/test".into(), Some(oidc_off), 'N'),
+        ("GET", "/settings/alerts", "/api/v1/settings/alerts".into(), none(), 'N'),
+        ("PUT", "/settings/alerts", "/api/v1/settings/alerts".into(), e(), 'N'),
+        ("POST", "/settings/alerts/test", "/api/v1/settings/alerts/test".into(), e(), 'N'),
+        ("GET", "/ssh-keys", "/api/v1/ssh-keys".into(), none(), 'N'),
+        ("POST", "/ssh-keys/{name}/rotate", "/api/v1/ssh-keys/x/rotate".into(), e(), 'N'),
+        ("POST", "/ssh-keys/{name}/retire", "/api/v1/ssh-keys/x/retire".into(), e(), 'N'),
+        ("GET", "/updates", "/api/v1/updates".into(), none(), 'N'),
+        ("POST", "/updates/check", "/api/v1/updates/check".into(), e(), 'N'),
+        ("POST", "/updates/apply", "/api/v1/updates/apply".into(), e(), 'N'),
+        ("GET", "/updates/registry", "/api/v1/updates/registry".into(), none(), 'N'),
+        ("PUT", "/updates/registry", "/api/v1/updates/registry".into(), Some(json!({"username": "bot", "token": "x"})), 'N'),
+        ("DELETE", "/updates/registry", "/api/v1/updates/registry".into(), none(), 'N'),
+        ("GET", "/diagnostics", "/api/v1/diagnostics".into(), none(), 'N'),
+        ("POST", "/diagnostics/checks", "/api/v1/diagnostics/checks".into(), e(), 'N'),
+        ("POST", "/diagnostics/bundle", "/api/v1/diagnostics/bundle".into(), e(), 'N'),
+        ("GET", "/diagnostics/{id}", "/api/v1/diagnostics/x".into(), none(), 'N'),
+        ("GET", "/diagnostics/{id}/download", "/api/v1/diagnostics/x/download".into(), none(), 'N'),
+        ("GET", "/settings/approvals", "/api/v1/settings/approvals".into(), none(), 'N'),
+        ("PUT", "/settings/approvals", "/api/v1/settings/approvals".into(), Some(json!({"enabled": true})), 'N'),
+        ("GET", "/gc/pending", "/api/v1/gc/pending".into(), none(), 'N'),
+        ("POST", "/gc/approve-large", "/api/v1/gc/approve-large".into(), Some(json!({"tenant": "acme"})), 'N'),
+        ("GET", "/tenants", "/api/v1/tenants".into(), none(), 'Y'),
+        ("POST", "/tenants", "/api/v1/tenants".into(), Some(json!({"name": "ta-new"})), 'N'),
+        ("POST", "/tenants/attach", "/api/v1/tenants/attach".into(), Some(json!({"name": "x", "offsite": {}})), 'N'),
+        ("POST", "/tenants/attach/{id}/run", "/api/v1/tenants/attach/1/run".into(), Some(json!({"recovery_key": "x"})), 'N'),
+        ("PUT", "/tenants/{name}", "/api/v1/tenants/acme".into(), Some(json!({"offsite": {}})), 'N'),
+        ("DELETE", "/tenants/{name}", "/api/v1/tenants/acme".into(), none(), 'N'),
+        ("GET", "/sources", "/api/v1/sources".into(), none(), 'Y'),
+        ("POST", "/sources", "/api/v1/sources".into(), Some(json!({"tenant": "acme", "kind": "pve", "name": "ta-s", "config": src_cfg(Some("x"))})), 'Y'),
+        ("PUT", "/sources/{id}", format!("/api/v1/sources/{src}"), Some(json!({"name": "pve", "config": src_cfg(None)})), 'Y'),
+        ("DELETE", "/sources/{id}", "/api/v1/sources/999".into(), none(), 'Y'),
+        ("GET", "/sources/{id}/inventory", format!("/api/v1/sources/{src}/inventory"), none(), 'Y'),
+        ("GET", "/policies", "/api/v1/policies".into(), none(), 'Y'),
+        ("POST", "/policies", "/api/v1/policies".into(), Some(json!({"name": "ta-p", "schedule": "daily 02:00", "gfs": {"daily": 1, "weekly": 0, "monthly": 0, "yearly": 0}})), 'N'),
+        ("PUT", "/policies/{id}", format!("/api/v1/policies/{pol}"), Some(policy(8, true)), 'N'),
+        ("DELETE", "/policies/{id}", format!("/api/v1/policies/{pol}"), none(), 'N'),
+        ("GET", "/groups", "/api/v1/groups".into(), none(), 'Y'),
+        ("POST", "/groups", "/api/v1/groups".into(), Some(json!({"tenant": "acme", "source_id": src, "policy_id": pol, "name": "ta-g", "guests": [100]})), 'Y'),
+        ("PUT", "/groups/{id}", format!("/api/v1/groups/{grp}"), Some(json!({"source_id": src, "policy_id": pol, "name": "prod", "guests": [100, 101, 102]})), 'Y'),
+        ("DELETE", "/groups/{id}", "/api/v1/groups/999".into(), none(), 'Y'),
+        ("POST", "/groups/{id}/pause", format!("/api/v1/groups/{grp}/pause"), Some(json!({"hours": 1})), 'Y'),
+        ("POST", "/groups/{id}/resume", format!("/api/v1/groups/{grp}/resume"), e(), 'Y'),
+        ("PUT", "/groups/{id}/index-files", format!("/api/v1/groups/{grp}/index-files"), Some(json!({"enabled": true})), 'Y'),
+        ("POST", "/search", "/api/v1/search".into(), Some(json!({"tenant": "acme", "query": "etc"})), 'Y'),
+        ("POST", "/sources/{id}/maintenance", format!("/api/v1/sources/{src}/maintenance"), Some(json!({"hours": 1})), 'Y'),
+        ("POST", "/sources/{id}/maintenance/end", format!("/api/v1/sources/{src}/maintenance/end"), e(), 'Y'),
+        ("GET", "/users", "/api/v1/users".into(), none(), 'Y'),
+        ("POST", "/users", "/api/v1/users".into(), Some(json!({"name": "ta-u", "role": "tenant_user"})), 'Y'),
+        ("PUT", "/users/{id}", format!("/api/v1/users/{tina}"), Some(json!({"can_download": false})), 'Y'),
+        ("GET", "/agents", "/api/v1/agents".into(), none(), 'Y'),
+        ("POST", "/agents", "/api/v1/agents".into(), Some(json!({"tenant": "acme", "name": "ta-a", "host": "h"})), 'Y'),
+        ("DELETE", "/agents/{id}", format!("/api/v1/agents/{agent}"), none(), 'Y'),
+        ("POST", "/agents/{id}/token", format!("/api/v1/agents/{agent}/token"), e(), 'Y'),
+        ("POST", "/agents/{id}/enroll", format!("/api/v1/agents/{agent}/enroll"), e(), 'Y'),
+        ("PUT", "/agents/{id}/limits", format!("/api/v1/agents/{agent}/limits"), Some(json!({"bwlimit": 1 << 20, "nice": 10})), 'Y'),
+        ("GET", "/snapshots", "/api/v1/snapshots".into(), none(), 'Y'),
+        ("DELETE", "/snapshots/{tenant}/{source}/{time}", snap.into(), none(), 'N'),
+        ("GET", "/jobs", "/api/v1/jobs".into(), none(), 'Y'),
+        ("POST", "/jobs", "/api/v1/jobs".into(), Some(json!({"kind": "backup", "tenant": "acme", "params": {"vmid": 100}})), 'Y'),
+        ("POST", "/restores", "/api/v1/restores".into(), Some(json!({"tenant": "acme", "items": []})), 'Y'),
+        ("GET", "/jobs/{id}", format!("/api/v1/jobs/{job}"), none(), 'Y'),
+        ("POST", "/jobs/{id}/cancel", format!("/api/v1/jobs/{job}/cancel"), e(), 'Y'),
+        ("GET", "/downloads/{token}", format!("/api/v1/downloads/{}", "ab".repeat(32)), none(), 'Y'),
+        ("GET", "/quorum", "/api/v1/quorum".into(), none(), 'Y'),
+        ("GET", "/console/unlock", "/api/v1/console/unlock".into(), none(), 'N'),
+        ("POST", "/console/unlock", "/api/v1/console/unlock".into(), Some(json!({"hours": 1, "reason": "x"})), 'N'),
+        ("DELETE", "/console/unlock/{id}", "/api/v1/console/unlock/1".into(), none(), 'N'),
+        ("POST", "/console/unlock/{id}/code", "/api/v1/console/unlock/1/code".into(), e(), 'N'),
+        ("POST", "/quorum/{id}/approve", "/api/v1/quorum/1/approve".into(), e(), 'N'),
+        ("POST", "/quorum/{id}/reject", "/api/v1/quorum/1/reject".into(), e(), 'N'),
+        ("GET", "/audit", "/api/v1/audit".into(), none(), 'Y'),
+        ("GET", "/audit/verify", "/api/v1/audit/verify".into(), none(), 'N'),
+        ("GET", "/audit.csv", "/api/v1/audit.csv".into(), none(), 'Y'),
+        ("GET", "/audit/forwarding", "/api/v1/audit/forwarding".into(), none(), 'N'),
+        ("GET", "/settings/forwarding", "/api/v1/settings/forwarding".into(), none(), 'N'),
+        ("PUT", "/settings/forwarding", "/api/v1/settings/forwarding".into(), Some(json!({"syslog": null, "https": null})), 'N'),
+        ("POST", "/settings/forwarding/test", "/api/v1/settings/forwarding/test".into(), e(), 'N'),
+        ("GET", "/alerts", "/api/v1/alerts".into(), none(), 'Y'),
+        ("POST", "/alerts/{id}/ack", "/api/v1/alerts/1/ack".into(), e(), 'N'),
+        ("POST", "/alerts/{id}/resolve", "/api/v1/alerts/1/resolve".into(), e(), 'N'),
+        ("GET", "/plugins", "/api/v1/plugins".into(), none(), 'Y'),
+        ("POST", "/plugins", "/api/v1/plugins".into(), e(), 'N'),
+        ("DELETE", "/plugins/{id}", "/api/v1/plugins/x".into(), none(), 'N'),
+        ("POST", "/plugins/{id}/enable", "/api/v1/plugins/x/enable".into(), e(), 'N'),
+        ("POST", "/plugins/{id}/disable", "/api/v1/plugins/x/disable".into(), e(), 'N'),
+        ("POST", "/plugins/{id}/activate", "/api/v1/plugins/x/activate".into(), Some(json!({"version": "1.0.0"})), 'N'),
+        ("GET", "/plugin-keys", "/api/v1/plugin-keys".into(), none(), 'N'),
+        ("POST", "/plugin-keys", "/api/v1/plugin-keys".into(), Some(json!({"publisher": "x", "public_key": "x"})), 'N'),
+        ("DELETE", "/plugin-keys/{fp}", "/api/v1/plugin-keys/x".into(), none(), 'N'),
+        ("GET", "/replication/peers", "/api/v1/replication/peers".into(), none(), 'N'),
+        ("POST", "/replication/peers", "/api/v1/replication/peers".into(), Some(json!({"name": "p", "tenants": ["acme"]})), 'N'),
+        ("DELETE", "/replication/peers/{id}", "/api/v1/replication/peers/x".into(), none(), 'N'),
+        ("POST", "/replication/peers/{id}/export-keys", "/api/v1/replication/peers/x/export-keys".into(), e(), 'N'),
+        ("GET", "/replication/sources", "/api/v1/replication/sources".into(), none(), 'N'),
+        ("POST", "/replication/sources", "/api/v1/replication/sources".into(), Some(json!({"name": "s", "url": "h", "code": "0123456789abcdef.ABCDEFGHIJKLMNOPQRSTUVWXYZ", "fingerprint": "ab".repeat(32), "tenants": ["dr1"], "schedule": "hourly 05"})), 'N'),
+        ("PUT", "/replication/sources/{id}", "/api/v1/replication/sources/1".into(), e(), 'N'),
+        ("DELETE", "/replication/sources/{id}", "/api/v1/replication/sources/1".into(), none(), 'N'),
+        ("POST", "/replication/sources/{id}/enroll", "/api/v1/replication/sources/1/enroll".into(), e(), 'N'),
+        ("POST", "/replication/sources/{id}/sync", "/api/v1/replication/sources/1/sync".into(), e(), 'N'),
+        ("POST", "/replication/sources/{id}/close", "/api/v1/replication/sources/1/close".into(), e(), 'N'),
+        ("POST", "/replication/sources/{id}/reopen", "/api/v1/replication/sources/1/reopen".into(), e(), 'N'),
+        ("GET", "/auth/banner", "".into(), none(), '-'),
+        ("GET", "/auth/sessions", "/api/v1/auth/sessions".into(), none(), 'Y'),
+        ("DELETE", "/auth/sessions/{id}", "/api/v1/auth/sessions/999999".into(), none(), 'Y'),
+        ("GET", "/sessions", "/api/v1/sessions".into(), none(), 'N'),
+        ("DELETE", "/sessions/{id}", "/api/v1/sessions/999999".into(), none(), 'N'),
+        ("POST", "/sessions/revoke-all", "/api/v1/sessions/revoke-all".into(), e(), 'N'),
+        ("POST", "/users/{id}/sessions/revoke", format!("/api/v1/users/{tina}/sessions/revoke"), e(), 'N'),
+        ("GET", "/settings/security", "/api/v1/settings/security".into(), none(), 'N'),
+        ("PUT", "/settings/session", "/api/v1/settings/session".into(), Some(json!({"idle_min": 30, "absolute_h": 12})), 'N'),
+        ("PUT", "/settings/dormant", "/api/v1/settings/dormant".into(), Some(json!({"days": 0})), 'N'),
+        ("PUT", "/settings/banner", "/api/v1/settings/banner".into(), Some(json!({"banner": "x"})), 'N'),
+        ("PUT", "/settings/mgmt-allow", "/api/v1/settings/mgmt-allow".into(), Some(json!({"mgmt_allow": ["10.0.0.0/8"]})), 'N'),
+        ("GET", "/firewall", "/api/v1/firewall".into(), none(), 'N'),
+        ("PUT", "/firewall/inbound/{service}", "/api/v1/firewall/inbound/icmp".into(), Some(json!({"allow": ["10.0.0.0/8"], "enabled": true})), 'N'),
+        ("GET", "/holds", "/api/v1/holds".into(), none(), 'Y'),
+        ("POST", "/holds", "/api/v1/holds".into(), Some(json!({"tenant": "acme", "source": "vm-100", "from": 0, "to": 100, "reason": "x"})), 'N'),
+        ("POST", "/snapshots/{tenant}/{source}/{time}/hold", format!("{snap}/hold"), Some(json!({"reason": "x"})), 'N'),
+        ("DELETE", "/snapshots/{tenant}/{source}/{time}/hold", format!("{snap}/hold"), none(), 'N'),
+        ("GET", "/hardware", "/api/v1/hardware".into(), none(), 'N'),
+        ("POST", "/hardware/scan", "/api/v1/hardware/scan".into(), e(), 'N'),
+        ("POST", "/hardware/selftest", "/api/v1/hardware/selftest".into(), Some(json!({"disk": "sda", "type": "short"})), 'N'),
+        ("POST", "/hardware/arrays", "/api/v1/hardware/arrays".into(), Some(json!({"role": "data", "level": "raid1", "disks": [], "confirm": "x"})), 'N'),
+        ("POST", "/hardware/arrays/{name}/spare", "/api/v1/hardware/arrays/md0/spare".into(), Some(json!({"disk": "sdb", "confirm": "x"})), 'N'),
+        ("POST", "/hardware/arrays/{name}/replace", "/api/v1/hardware/arrays/md0/replace".into(), Some(json!({"disk": "sdb", "confirm": "x"})), 'N'),
+        ("POST", "/hardware/arrays/{name}/grow", "/api/v1/hardware/arrays/md0/grow".into(), Some(json!({"disk": "sdb", "confirm": "x"})), 'N'),
+        ("POST", "/tenants/{name}/deactivate", "/api/v1/tenants/acme/deactivate".into(), Some(json!({"reason": "x"})), 'N'),
+        ("POST", "/tenants/{name}/reactivate", "/api/v1/tenants/acme/reactivate".into(), e(), 'N'),
+        ("GET", "/vault", "/api/v1/vault".into(), none(), 'Y'),
+        ("PUT", "/vault", "/api/v1/vault".into(), Some(json!({"enabled": true})), 'N'),
+        ("GET", "/tenants/tombstones", "/api/v1/tenants/tombstones".into(), none(), 'N'),
+        ("PUT", "/tenants/{name}/policies", "/api/v1/tenants/acme/policies".into(), Some(json!({"policy_ids": [pol]})), 'N'),
+        ("POST", "/tenants/{name}/impersonate", "/api/v1/tenants/acme/impersonate".into(), e(), 'N'),
+        ("POST", "/auth/impersonation/end", "/api/v1/auth/impersonation/end".into(), e(), 'Y'),
+        ("GET", "/policies/templates", "/api/v1/policies/templates".into(), none(), 'Y'),
+        ("POST", "/policies/templates", "/api/v1/policies/templates".into(), Some(json!({"tier": "gold"})), 'N'),
+    ];
+    let classified: std::collections::BTreeSet<(String, String)> =
+        table.iter().map(|(m, p, ..)| (m.to_string(), p.to_string())).collect();
+    assert_eq!(classified.len(), table.len(), "duplicate rows");
+    assert_eq!(
+        classified,
+        registered_routes(),
+        "every route classified for tenant_admin"
+    );
+    let mut wrong = vec![];
+    for (m, _, path, body, exp) in table {
+        if exp == '-' {
+            continue;
+        }
+        let method = Method::from_bytes(m.as_bytes()).unwrap();
+        let r = t.call(method, &path, Some(&dana), body).await;
+        let denied = r.status == StatusCode::FORBIDDEN || r.status == StatusCode::UNAUTHORIZED;
+        if (exp == 'Y') == denied || (exp == 'N' && r.status != StatusCode::FORBIDDEN) {
+            wrong.push(format!("{exp} {m} {path}: {} {}", r.status, r.body));
+        }
+    }
+    assert!(wrong.is_empty(), "tenant_admin:\n{}", wrong.join("\n"));
+    t.finish();
+}
+
+/// A tenant admin manages its own tenant only: groups with assigned policies,
+/// accounts with tenant roles, the same approvals as an admin (decided by the
+/// provider), no provider-side job kinds.
+#[tokio::test]
+async fn tenant_admin_scope_policies_users_and_approvals() {
+    let mut t = T::new();
+    let admin = t.login("alice").await;
+    let ids = seed(&t, &admin).await;
+    t.add_user("dana", "tenant_admin", Some("acme"));
+    let dana = t.login("dana").await;
+    let (src, pol) = (ids["src_acme"], ids["policy"]);
+    let weak = t
+        .post(
+            "/api/v1/policies",
+            &admin,
+            json!({"name": "weak", "schedule": "daily 03:00",
+               "gfs": {"daily": 1, "weekly": 0, "monthly": 0, "yearly": 0}, "offsite": false}),
+        )
+        .await
+        .body["id"]
+        .as_i64()
+        .unwrap();
+    let gold = t
+        .post("/api/v1/policies/templates", &admin, json!({"tier": "gold"}))
+        .await;
+    assert_eq!(gold.status, StatusCode::CREATED, "{:?}", gold.body);
+    assert_eq!(
+        (gold.body["tier"].clone(), gold.body["name"].clone()),
+        (json!("gold"), json!("Gold"))
+    );
+    assert_eq!(
+        t.post("/api/v1/policies/templates", &admin, json!({"tier": "gold"}))
+            .await
+            .status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        t.post("/api/v1/policies/templates", &admin, json!({"tier": "tin"}))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    let gold = gold.body["id"].as_i64().unwrap();
+    // nothing assigned: the policy of acme's existing group shows, no other
+    let names = |v: &Value| {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["id"].as_i64().unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&t.get("/api/v1/policies", &dana).await.body), vec![pol]);
+    let group = |name: &str, tenant: &str, policy: i64| json!({"tenant": tenant, "source_id": src, "policy_id": policy, "name": name, "guests": [100]});
+    let r = t.post("/api/v1/groups", &dana, group("g1", "acme", gold)).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "unassigned policy: {:?}", r.body);
+    let r = t
+        .put(
+            "/api/v1/tenants/acme/policies",
+            &admin,
+            json!({"policy_ids": [gold, weak, gold]}),
+        )
+        .await;
+    assert_eq!(r.body["policy_ids"], json!([weak.min(gold), weak.max(gold)]));
+    let tenants = t.get("/api/v1/tenants", &admin).await.body;
+    let acme = tenants
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["name"] == "acme")
+        .unwrap();
+    assert_eq!(
+        (acme["tiers"].clone(), acme["uid"].as_str().unwrap().len()),
+        (json!(["gold"]), 32)
+    );
+    let r = t.post("/api/v1/groups", &dana, group("g1", "acme", gold)).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    let g1 = r.body["id"].as_i64().unwrap();
+    assert_eq!(
+        t.post("/api/v1/groups", &dana, group("g2", "globex", gold))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let upd = |policy: i64| json!({"source_id": src, "policy_id": policy, "name": "g1", "guests": [100]});
+    let r = t
+        .put(&format!("/api/v1/groups/{}", ids["grp_globex"]), &dana, upd(gold))
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    // the old (unassigned) policy of acme's group stays, but cannot be chosen again
+    let r = t.put(&format!("/api/v1/groups/{g1}"), &dana, upd(pol)).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    // a weaker assigned policy: approval like for an admin; the provider decides
+    let r = t.put(&format!("/api/v1/groups/{g1}"), &dana, upd(weak)).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let q1 = r.body["quorum_id"].as_i64().unwrap();
+    assert_eq!(
+        t.post(&format!("/api/v1/quorum/{q1}/approve"), &dana, json!({}))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let r = t.delete(&format!("/api/v1/groups/{g1}"), &dana).await;
+    assert_eq!(
+        r.status,
+        StatusCode::ACCEPTED,
+        "group delete needs approval: {:?}",
+        r.body
+    );
+    let q2 = r.body["quorum_id"].as_i64().unwrap();
+    t.delete(&format!("/api/v1/groups/{}", ids["grp_globex"]), &admin).await;
+    let mine = t.get("/api/v1/quorum", &dana).await.body;
+    let qs: Vec<i64> = mine
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|q| q["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(qs, vec![q2, q1], "own requests only");
+    // unassigned meanwhile: the approval is refused
+    t.put("/api/v1/tenants/acme/policies", &admin, json!({"policy_ids": [gold]}))
+        .await;
+    let sam = t.login("sam").await;
+    assert_eq!(
+        t.post(&format!("/api/v1/quorum/{q1}/approve"), &sam, json!({}))
+            .await
+            .status,
+        StatusCode::CONFLICT
+    );
+    let r = t.post(&format!("/api/v1/quorum/{q2}/approve"), &sam, json!({})).await;
+    assert_eq!(r.body["state"], "executed", "{:?}", r.body);
+    assert_eq!(
+        t.delete(&format!("/api/v1/policies/{gold}"), &admin).await.status,
+        StatusCode::CONFLICT,
+        "still assigned"
+    );
+
+    // accounts: tenant roles in the own tenant only
+    for (body, want) in [
+        (json!({"name": "u1", "role": "tenant_user"}), StatusCode::CREATED),
+        (
+            json!({"name": "u2", "role": "viewer", "tenant": "acme"}),
+            StatusCode::CREATED,
+        ),
+        (json!({"name": "u3", "role": "tenant_admin"}), StatusCode::CREATED),
+        (json!({"name": "u4", "role": "admin"}), StatusCode::FORBIDDEN),
+        (json!({"name": "u5", "role": "operator"}), StatusCode::FORBIDDEN),
+        (json!({"name": "u6", "role": "security_officer"}), StatusCode::FORBIDDEN),
+        (
+            json!({"name": "u7", "role": "tenant_user", "tenant": "globex"}),
+            StatusCode::FORBIDDEN,
+        ),
+    ] {
+        let r = t.post("/api/v1/users", &dana, body.clone()).await;
+        assert_eq!(r.status, want, "{body}: {:?}", r.body);
+        if want == StatusCode::CREATED {
+            assert_eq!(r.body["user"]["tenant"], "acme");
+        }
+    }
+    let (tina, tom, otto) = (t.ids["tina"], t.ids["tom"], t.ids["otto"]);
+    for (id, body, want) in [
+        (tina, json!({"disabled": true}), StatusCode::OK),
+        (tina, json!({"role": "admin"}), StatusCode::FORBIDDEN),
+        (tina, json!({"role": "operator", "tenant": null}), StatusCode::FORBIDDEN),
+        (tina, json!({"tenant": "globex"}), StatusCode::FORBIDDEN),
+        (tina, json!({"role": "tenant_admin"}), StatusCode::OK),
+        (tom, json!({"disabled": true}), StatusCode::FORBIDDEN),
+        (otto, json!({"disabled": true}), StatusCode::FORBIDDEN),
+    ] {
+        let r = t.put(&format!("/api/v1/users/{id}"), &dana, body.clone()).await;
+        assert_eq!(r.status, want, "{id} {body}: {:?}", r.body);
+    }
+    let users = t.get("/api/v1/users", &dana).await.body;
+    assert!(users.as_array().unwrap().iter().all(|u| u["tenant"] == "acme"));
+
+    // jobs: backups and restores yes, the provider's maintenance no
+    let job = |kind: &str, params: Value| json!({"kind": kind, "tenant": "acme", "params": params});
+    let r = t.post("/api/v1/jobs", &dana, job("backup", json!({"vmid": 100}))).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    for kind in ["retention", "gc", "offsite", "verify"] {
+        assert_eq!(
+            t.post("/api/v1/jobs", &dana, job(kind, json!({}))).await.status,
+            StatusCode::FORBIDDEN,
+            "{kind}"
+        );
+    }
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &dana,
+            json!({"kind": "backup", "tenant": "globex", "params": {"vmid": 100}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        t.delete("/api/v1/snapshots/acme/vm-100/1000", &dana).await.status,
+        StatusCode::FORBIDDEN
+    );
+    t.finish();
+}
+
+/// "View as tenant": read-only by default, elevated only after approval;
+/// audited as the real admin plus `impersonating:<tenant>`, and those entries
+/// are in the tenant admin's audit view (which shows nothing of other tenants).
+#[tokio::test]
+async fn impersonation_is_scoped_approved_and_visible_to_the_tenant() {
+    let mut t = T::new();
+    let admin = t.login("alice").await;
+    seed(&t, &admin).await;
+    t.add_user("dana", "tenant_admin", Some("acme"));
+    let r = t.post("/api/v1/tenants/acme/impersonate", &admin, json!({})).await;
+    assert_eq!(
+        r.body["impersonating"],
+        json!({"tenant": "acme", "role": "viewer"}),
+        "{:?}",
+        r.body
+    );
+    let me = t.get("/api/v1/auth/me", &admin).await.body;
+    assert_eq!(
+        (
+            me["user"]["name"].clone(),
+            me["user"]["role"].clone(),
+            me["user"]["tenant"].clone()
+        ),
+        (json!("alice"), json!("viewer"), json!("acme"))
+    );
+    assert_eq!(me["impersonating"], json!({"tenant": "acme", "role": "viewer"}));
+    let srcs = t.get("/api/v1/sources", &admin).await.body;
+    assert!(srcs.as_array().unwrap().iter().all(|s| s["tenant"] == "acme"));
+    let body = json!({"tenant": "acme", "kind": "pve", "name": "imp", "config": src_cfg(Some("x"))});
+    assert_eq!(
+        t.post("/api/v1/sources", &admin, body.clone()).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        t.get("/api/v1/settings/approvals", &admin).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        t.post("/api/v1/tenants/globex/impersonate", &admin, json!({}))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let r = t
+        .post(
+            "/api/v1/auth/tokens",
+            &admin,
+            t.reauth("alice", json!({"name": "x", "scope": "read", "days": 1})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "no tokens while impersonating");
+    assert_eq!(
+        t.post("/api/v1/auth/impersonation/end", &admin, json!({})).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        t.get("/api/v1/auth/me", &admin).await.body["impersonating"],
+        Value::Null
+    );
+    assert_eq!(
+        t.post("/api/v1/auth/impersonation/end", &admin, json!({})).await.status,
+        StatusCode::CONFLICT
+    );
+
+    // elevated: approval by someone else; then the session acts as acme's tenant admin
+    let r = t
+        .post("/api/v1/tenants/acme/impersonate", &admin, json!({"elevated": true}))
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    assert_eq!(
+        t.get("/api/v1/auth/me", &admin).await.body["impersonating"],
+        Value::Null
+    );
+    let sam = t.login("sam").await;
+    let r = t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({})).await;
+    assert_eq!(r.body["state"], "executed", "{:?}", r.body);
+    let me = t.get("/api/v1/auth/me", &admin).await.body;
+    assert_eq!(me["impersonating"], json!({"tenant": "acme", "role": "tenant_admin"}));
+    assert_eq!(me["user"]["can_download"], false);
+    let r = t.post("/api/v1/sources", &admin, body).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    assert_eq!(t.get("/api/v1/quorum", &admin).await.status, StatusCode::OK);
+    assert_eq!(
+        t.post(&format!("/api/v1/quorum/{q}/approve"), &admin, json!({}))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let actor: String = t.scalar("SELECT actor FROM audit WHERE action = 'source.create' ORDER BY seq DESC LIMIT 1");
+    assert_eq!(actor, "alice impersonating:acme");
+    t.post("/api/v1/auth/impersonation/end", &admin, json!({})).await;
+    // approvals off: directly
+    t.set_approvals(false);
+    let r = t
+        .post("/api/v1/tenants/acme/impersonate", &admin, json!({"elevated": true}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(
+        t.get("/api/v1/auth/me", &admin).await.body["impersonating"]["role"],
+        "tenant_admin"
+    );
+    t.post("/api/v1/auth/impersonation/end", &admin, json!({})).await;
+    // demoted admins lose the view
+    t.post("/api/v1/tenants/acme/impersonate", &admin, json!({})).await;
+    t.st.cat
+        .conn()
+        .execute("UPDATE users SET role = 'operator' WHERE name = 'alice'", [])
+        .unwrap();
+    let me = t.get("/api/v1/auth/me", &admin).await.body;
+    assert_eq!(
+        (me["user"]["role"].clone(), me["impersonating"].clone()),
+        (json!("operator"), Value::Null)
+    );
+    t.st.cat
+        .conn()
+        .execute("UPDATE users SET role = 'admin' WHERE name = 'alice'", [])
+        .unwrap();
+
+    // the tenant's admin reads the impersonation entries, nothing of globex
+    let dana = t.login("dana").await;
+    let log = t.get("/api/v1/audit?limit=1000", &dana).await.body;
+    let log = log.as_array().unwrap();
+    assert!(log
+        .iter()
+        .any(|e| e["actor"] == "alice impersonating:acme" && e["action"] == "source.create"));
+    assert!(log
+        .iter()
+        .any(|e| e["action"] == "tenant.impersonate" && e["target"] == "tenant/acme"));
+    assert!(log.iter().any(|e| e["action"] == "tenant.impersonate_end"));
+    assert!(!log.iter().any(|e| e.to_string().contains("globex")), "{log:?}");
+    let all: i64 = t.scalar("SELECT COUNT(*) FROM audit");
+    assert!((log.len() as i64) < all);
+    let r = t.get("/api/v1/audit?tenant=globex", &dana).await.body;
+    assert_eq!(r.as_array().unwrap().len(), log.len(), "own tenant forced");
+    let csv = t.get("/api/v1/audit.csv", &dana).await;
+    assert!(!String::from_utf8_lossy(&csv.raw).contains("globex"));
+    let g = t.get("/api/v1/audit?tenant=globex", &admin).await.body;
+    assert!(
+        !g.as_array().unwrap().is_empty() && g.as_array().unwrap().iter().all(|e| e.to_string().contains("globex"))
+    );
+    t.finish();
+}
+
+/// Deleted tenant names are never handed out again; uids are fixed.
+#[tokio::test]
+async fn tenant_names_are_tombstoned_and_uids_immutable() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    t.set_approvals(false);
+    assert_eq!(
+        t.post("/api/v1/tenants", &admin, json!({"name": "temp"})).await.status,
+        StatusCode::CREATED
+    );
+    let uid: String = t.scalar("SELECT uid FROM tenants WHERE name = 'temp'");
+    let r = t.delete("/api/v1/tenants/temp", &admin).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let r = t.post("/api/v1/tenants", &admin, json!({"name": "temp"})).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.body);
+    let tomb = t.get("/api/v1/tenants/tombstones", &admin).await.body;
+    assert_eq!(tomb[0]["name"], "temp");
+    assert_eq!(tomb[0]["uid"], json!(uid));
+    assert_eq!(tomb[0]["deleted_by"], "alice");
+    assert!(t
+        .st
+        .cat
+        .conn()
+        .execute("UPDATE tenants SET uid = 'x' WHERE name = 'acme'", [])
+        .is_err());
     t.finish();
 }

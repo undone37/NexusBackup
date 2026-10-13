@@ -18,7 +18,14 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 /// Every role may export (tenant users and tenant-scoped viewers: own tenant).
-const READ: &[&str] = &["admin", "operator", "security_officer", "tenant_user", "viewer"];
+const READ: &[&str] = &[
+    "admin",
+    "operator",
+    "security_officer",
+    "tenant_admin",
+    "tenant_user",
+    "viewer",
+];
 const ADMIN: &[&str] = &["admin"];
 const SETTINGS_READ: &[&str] = &["admin", "security_officer"];
 const DAY: i64 = 86400;

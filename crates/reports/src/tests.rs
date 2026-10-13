@@ -13,8 +13,8 @@ fn seeded() -> Catalog {
             r#"INSERT INTO tenants (name) VALUES ('acme'), ('globex');
                INSERT INTO sources (id, tenant, kind, name, config) VALUES (1, 'acme', 'pve', 'pve-a', '{{}}'),
                  (2, 'globex', 'pve', 'pve-g', '{{}}');
-               INSERT INTO policies (id, name, schedule, gfs, offsite, sla_minutes) VALUES
-                 (1, 'daily', 'daily 22:00', '{{}}', 1, 60);
+               INSERT INTO policies (id, name, schedule, gfs, offsite, sla_minutes, tier) VALUES
+                 (1, 'daily', 'daily 22:00', '{{}}', 1, 60, 'gold');
                INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES
                  (1, 'acme', 1, 1, 'web', '[100, 101]'), (2, 'globex', 2, 1, 'erp', '[200]');
                INSERT INTO snapshots (tenant, source, time, size, local, offsite, lock_until, verified) VALUES
@@ -196,8 +196,10 @@ fn sla_report() {
     assert_eq!(col(&t, r, "start"), iso(NOW - 7 * 24 * H));
     assert_eq!(col(&t, r, "end"), iso(NOW - 3 * 24 * H));
     assert_eq!(col(&t, r, "target_hours"), "36");
+    assert_eq!(col(&t, &t.rows[0], "tier"), "gold");
     let r = &t.rows[1];
     assert_eq!(col(&t, r, "groups"), "web");
+    assert_eq!(col(&t, r, "tier"), "gold");
     assert_eq!(col(&t, r, "hours"), "3");
     assert_eq!(col(&t, r, "target_hours"), "1");
     let r = &t.rows[2];

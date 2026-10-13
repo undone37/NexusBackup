@@ -131,7 +131,7 @@ pub fn allowed(writes: bool, method: &Method, path: &str) -> bool {
 fn effective(scope: &str, role: &str) -> (String, bool) {
     match (scope, role) {
         ("operator", "admin" | "operator") => ("operator".into(), true),
-        ("operator", "tenant_user") => (role.into(), true),
+        ("operator", "tenant_user" | "tenant_admin") => (role.into(), true),
         _ => (role.into(), false),
     }
 }
@@ -294,6 +294,12 @@ pub struct CreateReq {
 /// turn into a credential that outlives it. OIDC accounts need a session that
 /// is at most 15 minutes old instead.
 pub async fn create(State(st): State<St>, ctx: Ctx, ClientIp(ip): ClientIp, J(r): J<CreateReq>) -> ApiResult<Response> {
+    if ctx.impersonating.is_some() {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "end the tenant view before creating API tokens".into(),
+        ));
+    }
     validate::name(&r.name, "name")?;
     if !(1..=MAX_DAYS).contains(&r.days) {
         return Err(ApiError::bad(format!("days: 1..={MAX_DAYS}")));
@@ -303,7 +309,7 @@ pub async fn create(State(st): State<St>, ctx: Ctx, ClientIp(ip): ClientIp, J(r)
         "operator" if effective("operator", &ctx.user.role).1 => {}
         "operator" => {
             return Err(ApiError::bad(
-                "scope: operator tokens need the admin, operator or tenant user role",
+                "scope: operator tokens need the admin, operator, tenant admin or tenant user role",
             ))
         }
         _ => return Err(ApiError::bad("scope: read or operator")),

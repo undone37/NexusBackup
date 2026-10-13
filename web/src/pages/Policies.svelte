@@ -3,7 +3,9 @@
   import { onMount } from 'svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
   import { t } from '../lib/i18n';
-  import type { Gfs, Policy, RequireConsistency } from '../lib/types';
+  import type { Gfs, Policy, PolicyTemplate, RequireConsistency, Tier } from '../lib/types';
+  import Menu from '../components/Menu.svelte';
+  import IconLayers from '@lucide/svelte/icons/layers';
   import Check from '../components/Check.svelte';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
@@ -28,7 +30,18 @@
     }
     loaded = true;
   }
-  onMount(load);
+  // Phase 19b: tier templates (Bronze / Silver / Gold), created in one click
+  let templates: PolicyTemplate[] = $state([]);
+  onMount(() => {
+    load();
+    get<PolicyTemplate[]>('/policies/templates')
+      .then((x) => (templates = x))
+      .catch(() => {});
+  });
+  async function fromTemplate(x: PolicyTemplate) {
+    if (await act(post<Policy>('/policies/templates', { tier: x.tier }), (p) => t.policies.templateCreated(p?.name ?? x.name))) load();
+  }
+  const TIERS: Tier[] = ['bronze', 'silver', 'gold'];
 
   let open = $state(false);
   let editing: Policy | null = $state(null);
@@ -43,6 +56,7 @@
     cons: { mode: 'off', level: 'crash' } as RequireConsistency,
     exclude: '',
     exclude_regex: '',
+    tier: '' as Tier | '',
   });
   const lines = (v: string) =>
     v
@@ -65,6 +79,7 @@
           cons: { ...(x.require_consistency ?? { mode: 'off', level: 'crash' }) },
           exclude: (x.file_filters?.exclude ?? []).join('\n'),
           exclude_regex: (x.file_filters?.exclude_regex ?? []).join('\n'),
+          tier: x.tier ?? '',
         }
       : blank();
     open = true;
@@ -89,6 +104,7 @@
       sla_minutes: f.sla === '' || f.sla === null ? null : Number(f.sla),
       require_consistency: f.cons,
       file_filters: { exclude: lines(f.exclude), exclude_regex: lines(f.exclude_regex) },
+      tier: f.tier || null,
     };
     // A weakening change comes back as 202 {quorum_id}; act() reports it as pending.
     const r = editing ? await act(put(`/policies/${editing.id}`, body), t.saved) : await act(post('/policies', body), t.created);
@@ -107,6 +123,14 @@
 <div class="page-head">
   <h1>{t.policies.title}</h1>
   <button type="button" class="primary" onclick={() => edit(null)}><IconPlus aria-hidden="true" />{t.policies.new}</button>
+  {#if templates.length}
+    <Menu
+      label={t.policies.fromTemplate}
+      small={false}
+      icon={IconLayers}
+      items={templates.map((x) => ({ label: x.name, hint: `${x.schedule} · ${x.gfs.daily}/${x.gfs.weekly}/${x.gfs.monthly}/${x.gfs.yearly}${x.offsite ? ' · offsite' : ''}`, title: t.policies.templateHint, onselect: () => fromTemplate(x) }))}
+    />
+  {/if}
   <p class="lede">{t.policies.lede}</p>
 </div>
 <ErrorBanner {error} />
@@ -137,7 +161,7 @@
         <tbody>
           {#each items as x (x.id)}
             <tr>
-              <td><strong>{x.name}</strong></td>
+              <td><strong>{x.name}</strong>{#if x.tier}<span class="chip accent">{t.tiers.names[x.tier]}</span>{/if}</td>
               <td class="mono">{x.schedule}</td>
               <td class="num nowrap">{x.gfs?.recent ? t.policies.hours(x.gfs.recent) : '—'}</td>
               {#each GFS as k (k)}<td class="num">{x.gfs?.[k] ?? 0}</td>{/each}
@@ -177,6 +201,14 @@
       <div class="field">
         <label for="p-name">{t.name}</label>
         <input id="p-name" bind:value={f.name} required />
+      </div>
+      <div class="field">
+        <label for="p-tier">{t.tiers.label}</label>
+        <select id="p-tier" bind:value={f.tier} aria-describedby="p-tier-hint">
+          <option value="">{t.tiers.none}</option>
+          {#each TIERS as k (k)}<option value={k}>{t.tiers.names[k]}</option>{/each}
+        </select>
+        <div class="hint" id="p-tier-hint">{t.policies.tierHint}</div>
       </div>
     </div>
     <fieldset>
