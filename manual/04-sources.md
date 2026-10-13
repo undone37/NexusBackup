@@ -427,9 +427,9 @@ address only. The MSI does not add a firewall rule.
 the package manager owns. To allow it anyway, set `self_update = on` in `agent.conf`. Bundle installations and manual
 Windows installations update themselves through **Update agent**.
 
-> **Status:** The Windows agent and its MSI are **built and checked on Linux only. They have never run on Windows.**
-> The MSI tables are validated with msitools, but no real installation has been tested. There is a manual test plan in
-> `docs/agent-windows.md`. Do not rely on them for production data before that test plan has been run.
+> **Status:** The Windows agent and its MSI were tested on Windows Server 2022 and Windows 11 (install, upgrade,
+> enrollment, VSS backup, restore). Server 2016/2019/2025, ReFS, SQL Server and Exchange are not tested yet; see
+> the test plan in `docs/agent-windows.md`.
 >
 > **Status:** The `.deb` and `.rpm` packages are installed and removed in Debian 13, AlmaLinux 10 and Fedora
 > containers at every release. The aarch64 packages are built and the binary is started under emulation. They have
@@ -646,8 +646,8 @@ tokens are shown only this once. Install each host with its token as in step 2, 
 agent.
 
 > **Status:** Fleet enrollment and CSV bulk enrollment are tested in unit and API tests and against the demo
-> backend. They have not run in the VM lab yet, and the MSI property `FLEETSECRET` has never run on Windows (as for
-> the whole Windows agent).
+> backend. Fleet enrollment through the MSI property `FLEETSECRET` was tested on Windows 11 (scan, accept,
+> enrolled, the secret is not in the MSI log); CSV bulk enrollment has not run in the VM lab yet.
 
 ### The agent as a restore target
 

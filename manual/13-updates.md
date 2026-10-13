@@ -177,7 +177,8 @@ Only administrators can start agent updates.
 
 > **Status:** The appliance takes the agent release from `/usr/share/nexus/agent` in its image. The current image
 > **does not ship an agent bundle there yet**; the release process must add it. Agent self-update was tested in the
-> Linux lab VMs. The Windows agent has never run on Windows.
+> Linux lab VMs; on Windows, MSI installs refuse it and are updated with a newer MSI (major upgrade, tested on
+> Windows Server 2022).
 
 ## Plugin upgrades
 

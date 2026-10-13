@@ -453,8 +453,8 @@ written.
 
 > **Status:** Linux restore was tested in the agent VM lab (Debian, AlmaLinux, Ubuntu, Fedora). Restores from
 > shares, TrueNAS, plugins and VM/CT files onto a host (Phase 15b) are tested against a fake agent, and restores onto
-> another host also against the real Linux agent; the VM lab run is pending. The Windows agent has been built and
-> unit-tested only. It has never run on Windows, so treat Windows restores as untested.
+> another host also against the real Linux agent; the VM lab run is pending. Restores with the Windows agent were tested
+> on Windows Server 2022 and Windows 11 (ACLs, owners, streams, links, junctions, long paths, confinement).
 
 ## Bare-metal recovery (Linux hosts)
 

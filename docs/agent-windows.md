@@ -8,10 +8,13 @@ is not Windows-specific is shared with the Linux agent in `crates/agent-core` (T
 enrollment / mTLS server, session state machine, FastCDC + BLAKE3 chunking, metadata
 cache, `Want` serving, restore stream handling, update signature verification).
 
-> **Test status:** there are no Windows test VMs yet (decision 2026-10-09). The
-> Windows binary is cross-compiled and the platform-independent logic is unit-tested on
-> Linux; **nothing has run on Windows**. See "Untested" and the manual test plan below
-> before using it on a real server.
+> **Test status:** Tested on Windows Server 2022 (member server and domain controller) and Windows 11 in the PVE lab (2026-10-13,
+> `lab/windows/e2e.sh`): MSI install, major upgrade and uninstall (also `PURGE=1`), fleet enrollment with
+> `FLEETSECRET`, token enrollment, VSS backups (all writers, NTDS on the DC), USN incrementals, restores (ACLs, owners,
+> streams, links, junctions, long paths), restore confinement and service recovery.
+> Not yet run: Server 2016/2019/2025, ReFS/FAT volumes, SQL Server and Exchange writers, Data
+> Deduplication/EFS files, USN journal wrap, GPO/Intune deployment, the 1 M file performance
+> run, self-update of a manual (non-MSI) install. See "Untested" and the manual test plan below.
 
 ## Build
 
@@ -74,8 +77,10 @@ Intune: line-of-business app (device context).
 
 Checked on Linux (`release/test-packages.sh`, msitools): tables present, ServiceInstall
 and ServiceControl rows, custom action types and conditions, upgrade code, no token
-property, x64 template, extracted file layout. **A real installation has not run on
-Windows** (no Windows VMs); add the MSI to the manual test plan below.
+property, x64 template, extracted file layout, the sequence positions of RemoveExistingProducts
+and PurgeData, HideTarget on FleetInit and the File.Version of both executables (all four were
+wrong in wixl's output and broke real installs; `release/packages.sh` corrects them with
+msibuild). Real installs, upgrades and uninstalls ran on Windows Server 2022 and Windows 11.
 
 ## Fleet deployment (GPO / Intune / Ansible)
 
@@ -401,36 +406,29 @@ next reboot". Refused while jobs or a restore run.
 - The cross-compile (with clippy `-D warnings` for the Windows target) is the test for
   everything in `src/win/`.
 
-## Untested (no Windows VMs — user decision 2026-10-09)
+## Tested on Windows, and what is still open
 
-Everything in `src/win/` has only been compiled, never executed:
+Ran on Windows Server 2022 (member1dev, dc1dev) and Windows 11 (client1dev) on 2026-10-13
+(`lab/windows/e2e.sh`, driven through the PVE guest agent): MSI steps 1, 2 (token + fleet), 3, 4 (DC: NTDS
+writer, restored `ntds.dit` in Clean Shutdown state), 5 (USN incrementals), 6 (subset: DACLs, protected ACLs,
+foreign owner, hidden/system/read-only, ADS incl. `Zone.Identifier`, hard links, symlinks, junction, path > 260,
+unicode names), 7 (junction planted in the target), 8 (refusal for MSI installs), 9 (taskkill restart, sc stop),
+11 (install, major upgrade with the GUI running, older MSI refused, uninstall, `PURGE=1`).
 
-- service install/uninstall/start/stop, failure-action restart, log redirection;
-- ACL application on `%ProgramData%\NexusAgent`;
-- privilege enabling; COM security initialisation;
-- the hand-written `IVssBackupComponents` vtable and the whole VSS sequence (snapshot
-  creation, device path, writer status, BackupComplete/AbortBackup, cleanup on crash),
-  `vss_exclude_writers`;
-- real behaviour of SQL Server, Exchange and AD (NTDS) writers (freeze/thaw, COPY
-  backups, failure reporting), and whether "participated" matches what an admin
-  expects (non-component mode: every non-excluded writer is asked to freeze);
-- USN journal ioctls (query/create/read, V2 vs V3 records actually returned, journal
-  ids of ReFS volumes), and the assumption that USN record file ids equal `FileIdInfo`
-  ids (NTFS: 64-bit FRN zero-extended; ReFS: 128-bit);
-- `FILE_STREAM_INFO` enumeration, `GetKernelObjectSecurity` sizes, reparse point
-  reads/writes, `FileRenameInfo` with a full `\\?\` path, `GetFinalPathNameByHandleW`
-  forms, held-handle share semantics as the confinement relies on them;
-- volume enumeration and folder mount points, `GetVolumePathNameW` for paths through
-  mount points;
-- restore of security descriptors with foreign SIDs, SACLs, read-only files, streams on
-  directories, hard links, junctions;
-- self-update by rename of the running image and the reboot fallback;
-- the MSI (install, major upgrade, uninstall, PURGE, the two custom actions);
-- background mode (`THREAD_MODE_BACKGROUND_BEGIN`) of the session thread for `Limits::nice`,
-  and the certificate swap (`agent.key`/`agent.crt` renames over existing files) on NTFS;
+Bugs found and fixed on the way: MSI error 2613 (sequence), `service-setup` without `SERVICE_START` (1722), the
+agent refused IPv4 (Windows `IPV6_V6ONLY` default), VSS `GetSnapshotProperties` returned S_OK with an empty
+struct (crash in `wcslen(NULL)`; the device now comes from `Query`), `PURGE=1` never ran (1721), the fleet secret
+in the verbose MSI log, the GUI deleted by a major upgrade (empty `File.Version`), Windows paths refused by the API.
 
-- interoperability with `agent-conn` over a real network (the protocol code is shared
-  and tested by the Linux interop test).
+Still open:
+
+- Windows Server 2016, 2019, 2025; ReFS, FAT/exFAT and folder-mounted volumes; USN journal wrap/recreate;
+- SQL Server and Exchange writers (freeze/thaw, COPY backups, `vss_exclude_writers`);
+- Data Deduplication and WOF-compressed files, EFS (expected error), SACL restore;
+- self-update of a manual (non-MSI) install by rename + the reboot fallback;
+- background I/O mode (`Limits::nice`), certificate renewal swap on NTFS;
+- GPO and Intune deployment; the 1 M file performance run (step 10);
+- desktop GUI operation by a user (step 12): checked visually by the maintainer.
 
 ## Manual test plan (Windows Server 2016, 2019, 2022, 2025)
 

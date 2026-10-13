@@ -3,8 +3,9 @@
 This chapter is for the administrator of a Windows server that the appliance backs up with the agent. The appliance
 side (creating the agent, the source and its paths) is in [04 Sources](04-sources.md#linux-and-windows-hosts-agents).
 
-> **Status:** The Windows agent and its MSI are **built and checked on Linux only. They have never run on Windows.**
-> Run the manual test plan in `docs/agent-windows.md` on a test server before you protect production data with it.
+> **Status:** Tested on Windows Server 2022 (member server, domain controller) and Windows 11: MSI install, upgrade
+> and uninstall, enrollment (token and fleet), VSS backup, restore. Server 2016/2019/2025, ReFS, SQL Server and
+> Exchange are not tested yet; run the test plan in `docs/agent-windows.md` for those before production use.
 
 ## How the agent works
 
@@ -91,7 +92,7 @@ New-NetFirewallRule -DisplayName "NexusBackup Agent" -Direction Inbound -Protoco
   (Agents → Fleet) and pass it to the MSI: `msiexec /i nexus-agent-<v>-x64.msi /qn FLEETSECRET=nxf1.…` (hidden
   from the MSI log; ignored on an already enrolled server). The appliance finds the agents in its scan of the
   fleet's address ranges; an administrator accepts them (or the fleet accepts them automatically). Chapter 4,
-  "Fleet enrollment". Not yet verified on a real Windows installation.
+  "Fleet enrollment". Tested on Windows 11.
 - **Enrollment with tokens:** tokens are per server and used once, so the MSI deliberately has no token property
   (MSI properties end up in installer logs and deployment configuration). Enroll each server afterwards, for example:
 
@@ -149,6 +150,8 @@ ACLs (and SACLs), owners, alternate data streams and timestamps.
   set `self_update = on`.
 - **Manual installation** (without MSI, `docs/agent-windows.md`): the appliance's **Update agent** verifies the
   release signature, refuses downgrades and restarts the service.
+- A desktop window or tray icon that is open during an MSI upgrade keeps running the old version until the user
+  signs out or restarts it; the files on disk are already the new ones.
 
 ## Re-enrolling and removing
 
