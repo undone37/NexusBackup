@@ -13,6 +13,7 @@
   import Certificate from './settings/Certificate.svelte';
   import Forwarding from './settings/Forwarding.svelte';
   import Diagnostics from './settings/Diagnostics.svelte';
+  import ConfigBackup from './settings/ConfigBackup.svelte';
   import Console from './settings/Console.svelte';
   import Security from './settings/Security.svelte';
   import Firewall from './settings/Firewall.svelte';
@@ -34,6 +35,7 @@
     { id: 'certificate', comp: Certificate, allow: officer },
     { id: 'forwarding', comp: Forwarding, allow: officer },
     { id: 'diagnostics', comp: Diagnostics, allow: officer },
+    { id: 'configBackup', comp: ConfigBackup, allow: officer },
     { id: 'console', comp: Console, allow: officer },
     { id: 'security', comp: Security, allow: officer },
     { id: 'firewall', comp: Firewall, allow: officer },
