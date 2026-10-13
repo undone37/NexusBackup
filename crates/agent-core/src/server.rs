@@ -257,7 +257,14 @@ pub fn load_mode(paths: &Paths, settings: &Settings) -> Result<Mode, String> {
 pub fn describe_mode(paths: &Paths, mode: Result<Mode, String>) -> String {
     match mode {
         Ok(Mode::Uninitialized) => "not initialised (run nexus-agent init --token <T>)".to_string(),
-        Ok(Mode::Enroll(_)) => format!("enrollment pending ({} failed proofs)", failures(paths)),
+        Ok(Mode::Enroll(_)) => match fs::read_to_string(paths.fleet()) {
+            Ok(id) => format!(
+                "awaiting fleet enrollment (fleet {}, {} failed proofs)",
+                id.trim(),
+                failures(paths)
+            ),
+            Err(_) => format!("enrollment pending ({} failed proofs)", failures(paths)),
+        },
         Ok(Mode::Locked(_)) => "LOCKED after failed enrollment proofs; run nexus-agent init again".to_string(),
         Ok(Mode::Mtls { agent_id, .. }) => format!("enrolled as {agent_id}"),
         Err(e) => format!("error: {e}"),
@@ -405,20 +412,13 @@ impl<P: Platform> Agent<P> {
         s.conn
             .export_keying_material(&mut ex, EXPORTER_LABEL, None)
             .map_err(io::Error::other)?;
-        let Message::Enroll { proof } = read_msg(s)? else {
-            return error(s, E_BAD_REQUEST, "expected Enroll");
+        let proof = match read_msg(s)? {
+            Message::Enroll { proof } => proof,
+            Message::FleetProbe { fleet_id, proof } => return self.fleet_probe(s, &token, &ex, &fleet_id, &proof),
+            _ => return error(s, E_BAD_REQUEST, "expected Enroll"),
         };
         if !proof_eq(&proof, &enroll_proof(&token, "appliance", &ex)) {
-            let n = failures(&self.paths) + 1;
-            write_atomic(&self.paths.failures(), n.to_string().as_bytes(), 0o600)?;
-            log(format!("enrollment proof rejected ({n}/{MAX_FAILED_PROOFS})"));
-            if n >= MAX_FAILED_PROOFS {
-                log("enrollment locked; run `nexus-agent init --token <T>` again");
-                if let Ok(m) = load_mode(&self.paths, &self.settings) {
-                    self.set_mode(m);
-                }
-            }
-            return error(s, E_AUTH, "enrollment proof rejected");
+            return self.proof_rejected(s);
         }
         let key = fs::read_to_string(self.paths.key())?;
         let csr_pem = tls::csr(&key).map_err(io::Error::other)?;
@@ -446,10 +446,57 @@ impl<P: Platform> Agent<P> {
         write_atomic(&self.paths.agent_id(), agent_id.as_bytes(), 0o644)?;
         fs::remove_file(self.paths.token())?;
         let _ = fs::remove_file(self.paths.failures());
+        let _ = fs::remove_file(self.paths.fleet());
         let m = load_mode(&self.paths, &self.settings).map_err(io::Error::other)?;
         self.set_mode(m);
         log(format!("enrolled as agent {agent_id}; token deleted, mTLS mode active"));
         Ok(())
+    }
+
+    fn proof_rejected(&self, s: &mut Stream) -> io::Result<()> {
+        let n = failures(&self.paths) + 1;
+        write_atomic(&self.paths.failures(), n.to_string().as_bytes(), 0o600)?;
+        log(format!("enrollment proof rejected ({n}/{MAX_FAILED_PROOFS})"));
+        if n >= MAX_FAILED_PROOFS {
+            log("enrollment locked; run `nexus-agent init` again");
+            if let Ok(m) = load_mode(&self.paths, &self.settings) {
+                self.set_mode(m);
+            }
+        }
+        error(s, E_AUTH, "enrollment proof rejected")
+    }
+
+    /// Fleet scan (docs/agent-protocol.md "Fleet enrollment"): the appliance proves
+    /// the fleet secret first; only then the agent proves it too and tells who it is.
+    /// A probe for another fleet (or a token-initialised agent) is no failed proof.
+    fn fleet_probe(
+        &self,
+        s: &mut Stream,
+        digest: &str,
+        ex: &[u8; 32],
+        fleet_id: &str,
+        proof: &[u8; 32],
+    ) -> io::Result<()> {
+        let ours = fs::read_to_string(self.paths.fleet()).unwrap_or_default();
+        if ours.trim().is_empty() || ours.trim() != fleet_id {
+            return error(s, E_AUTH, "not awaiting enrollment in this fleet");
+        }
+        if !proof_eq(proof, &enroll_proof(digest, "fleet-appliance", ex)) {
+            return self.proof_rejected(s);
+        }
+        let info = self.platform.host_info();
+        log(format!(
+            "fleet scan by an appliance of fleet {fleet_id}: waiting for acceptance"
+        ));
+        write_msg(
+            s,
+            &Message::FleetInfo {
+                proof: enroll_proof(digest, "fleet-agent", ex),
+                hostname: info.hostname,
+                os: info.os,
+                agent_version: info.agent_version,
+            },
+        )
     }
 }
 
@@ -925,6 +972,7 @@ impl<P: Platform> Session<'_, P> {
 fn msg_name(m: &Message) -> &'static str {
     match m {
         Message::Enroll { .. } | Message::EnrollReply { .. } | Message::EnrollDone { .. } => "Enroll*",
+        Message::FleetProbe { .. } | Message::FleetInfo { .. } => "Fleet*",
         Message::Hello { .. } => "Hello",
         Message::Error { .. } => "Error",
         _ => "(agent-to-appliance message)",

@@ -286,6 +286,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
             let name = p["name"].as_str().unwrap_or_default();
             crate::resources::tenant_deletable(c, name)?;
             catalog::tenancy::bury(c, name, requested_by)?;
+            catalog::fleet::forget_tenant(c, name)?;
             changed(c.execute("DELETE FROM tenants WHERE name = ?1", [name])?)?;
             catalog::tenant_key::remove(c, name)?;
         }

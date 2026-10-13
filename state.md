@@ -341,7 +341,8 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 
 ## Phase 24 — Endpoint UIs (2026-10-13)
 - [x] 24b Linux TUI + CLI (`nexus-agent tui|status|sessions|session|request-backup`, group nexus-agent-ui)
-- [ ] 24a protocol/IPC/poll, 24c GUI, 24d fleet enrollment
+- [x] 24a protocol v1.4 + poll + local IPC (v26), 24c desktop GUI (iced, tray, nexus-agent-desktop pkg, MSI), 24d fleet enrollment + CSV bulk (v27)
 
 ## Phase 21 — Security and ransomware (2026-10-13)
-- [ ] 21a anomalous snapshots, file-level change signals, snapshot diff, sparklines
+- [x] 21a anomalous snapshots, file-level change signals, snapshot diff, sparklines (v28)
+- [ ] 21b incident mode, posture checks, session cap, DEK reminder; 21c passkeys; 21d CVE scan + bit-rot repair; 21e YARA + secure restore + Entra ID

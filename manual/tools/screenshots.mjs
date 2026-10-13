@@ -671,6 +671,12 @@ async function main() {
       await shot('agent-endpoint');
       await closeDialogs();
     }],
+    // Phase 24d: fleet secrets, agents found by fleet scans, CSV bulk enrollment
+    ['agents-fleet', async () => {
+      await go('/agents?tab=fleet');
+      await until(`return document.body.innerText.includes('ws-041')`, 'fleet candidates');
+      await shot('agents-fleet');
+    }],
     ['replication', async () => {
       await go('/replication');
       await shot('replication');

@@ -463,6 +463,87 @@ Choose **Linux or Windows host (agent)**, the **Agent**, and:
 
 A group of an agent source backs up exactly that agent's host. Snapshots are named `host-<agent id>`.
 
+### Fleet enrollment (pre-installed agents)
+
+For many hosts, deploy the agent with your software distribution (GPO, Intune, Ansible) and let the appliance find
+it. Instead of one token per host, every host gets the same **fleet secret**: time-limited, reusable, and revocable.
+
+![Fleet tab of the Agents page](images/agents-fleet.png)
+
+**1. Create a fleet secret** (administrators only): on **Configuration → Agents → Fleet**, click **New fleet secret**
+and enter:
+
+- **Name** and **Tenant**: every agent enrolled with this secret belongs to this tenant.
+- **Valid for (days, 1–30)**: after that, nothing is scanned or enrolled with it any more.
+- **Maximum enrollments** (optional): the secret stops working after this many accepted agents.
+- **Agent port** (7444) and **Ranges to scan**: one entry per line. Allowed: an IPv4 network up to /22 (1024
+  addresses), an IPv6 network up to /118, a single address, or a host name. At most 32 entries and 4096 addresses.
+  The appliance's firewall allows outgoing connections to exactly these addresses on the agent port while the secret
+  is active.
+- **Default group** and **Group by host name**: the name of an existing protection group of an agent source in the
+  tenant, used as a template. Each accepted agent gets its own source (the template's paths, excludes and filters)
+  and its own group (the template's policy and settings). Rules have the form `pattern = group` (`*` and `?` match,
+  case-insensitive, the first matching rule wins, otherwise the default group). Without a group, create the source
+  later as in step 4 above.
+- **Accept found agents automatically**: off by default. Leave it off unless the ranges contain only hosts you
+  control: with it on, any host that holds the secret is enrolled without review.
+
+The secret is shown **once**, with the commands for each platform. Store it in your deployment tool (Ansible vault,
+Intune app configuration, GPO). **Revoke** stops it at once; already enrolled agents are not affected.
+
+**2. Deploy the agent with the secret:**
+
+- Linux, interactive: `sudo nexus-agent init --fleet-secret -` (paste the secret), then
+  `sudo systemctl enable --now nexus-agent`.
+- Linux packages (Ansible, scripts): write the secret to `/etc/nexus-agent/fleet-secret` (owner root, mode 0600),
+  then install the `.deb`/`.rpm`. The package starts the agent, which takes the secret over at its first start and
+  deletes the file. If the package was installed first, run `sudo systemctl enable --now nexus-agent` after writing the
+  file.
+- Windows: `msiexec /i nexus-agent-<version>-x64.msi /qn FLEETSECRET=<secret>` (GPO software installation or an
+  Intune line-of-business app). The property is not written to the MSI log. On a host that is already enrolled it is
+  ignored.
+
+docs/agent-linux.md and docs/agent-windows.md, section "Fleet deployment (GPO / Intune / Ansible)", have complete
+examples.
+
+**3. Accept the agents:** the appliance scans the ranges of every active fleet secret every 15 minutes (a **Fleet
+discovery scan** job; **Scan now** starts one at once). It connects only to the agent port, at most 20 connections
+per second. An agent answers only when the appliance proves that it knows the fleet secret, and then proves the
+same. Then it reports its host name, operating system and agent version. The secret itself never crosses the network.
+Agents found are listed under **Agents found** with the state **Waiting for acceptance**. Check that you expect
+each host, then click **Accept**: the appliance creates the agent (name = host name, address = the scanned address)
+in the fleet's tenant, assigns the group, and starts the enrollment job. Tenant admins accept agents of their own
+tenant. **Reject** hides a host from later scans. Accepting, rejecting and automatic acceptance are recorded in the
+audit log (`fleet.accept`, `fleet.reject`, `fleet.auto_accept`).
+
+> **Note:** If a fleet secret leaks, someone could start a rogue agent inside your ranges. It would wait for
+> acceptance, and with automatic acceptance it would become an agent of the tenant whose backups only ever contain its
+> own files: it cannot read other hosts' backups. Keep the validity short, set a maximum, keep automatic acceptance
+> off, and revoke the secret when the rollout is done.
+
+### CSV bulk enrollment
+
+To create many agents with one-time tokens at once (hosts that you install one by one, or with a tool that can pass a
+per-host token), use **CSV bulk enrollment** on the **Fleet** tab. The first line names the columns; `host` and
+`tenant` are required, `name` (default: the host), `port` (default 7444) and `group` (a template group as above) are
+optional:
+
+```csv
+host,tenant,name,group
+10.20.0.11,acme,web11,acme-web01
+10.20.0.12,acme,web12,acme-web01
+fs03.acme.example.com,acme,fs03,acme-fs02
+```
+
+All rows are checked first. If one row is wrong, nothing is created and the message names the line. At most 500 rows.
+The result lists the new agents; **Download CSV** saves them with their one-time tokens (valid for 24 hours). The
+tokens are shown only this once. Install each host with its token as in step 2, then click **Enroll** next to each
+agent.
+
+> **Status:** Fleet enrollment and CSV bulk enrollment are tested in unit and API tests and against the demo
+> backend. They have not run in the VM lab yet, and the MSI property `FLEETSECRET` has never run on Windows (as for
+> the whole Windows agent).
+
 ### The agent as a restore target
 
 An enrolled agent can also receive files from every other snapshot of its tenant: other hosts, NAS shares,

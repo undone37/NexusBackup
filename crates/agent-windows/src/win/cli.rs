@@ -24,6 +24,7 @@ const DISPLAY_NAME: &str = "NexusBackup Agent";
 const USAGE: &str = "\
 usage:
   nexus-agent.exe init --token <T|-> [--port 7444]   initialise enrollment (token from the UI)
+  nexus-agent.exe init --fleet-secret <S|->          initialise fleet enrollment (MSI FLEETSECRET=...)
   nexus-agent.exe install                            register + start the service (auto start, restart on failure)
   nexus-agent.exe uninstall                          stop and remove the service (keeps config/state)
   nexus-agent.exe service-setup                      MSI: secure %ProgramData%\\NexusAgent, failure actions of the service
@@ -32,7 +33,7 @@ usage:
   nexus-agent.exe run                                run in the foreground (debugging)
   nexus-agent.exe version
 options: --config DIR --state DIR (default %ProgramData%\\NexusAgent\\{config,state})
---token - reads the token from stdin (keeps it out of the process list)";
+--token - / --fleet-secret - read the value from stdin (keeps it out of the process list)";
 
 fn base_of(paths: &Paths) -> PathBuf {
     paths
@@ -61,11 +62,13 @@ pub fn main() -> ExitCode {
 fn real_main(args: &[String]) -> Result<ExitCode, String> {
     let mut paths = Paths::default();
     let (mut token, mut port, mut words, mut yes) = (None, None, vec![], false);
+    let mut fleet = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = |n: &str| it.next().cloned().ok_or(format!("{n} needs a value"));
         match a.as_str() {
             "--token" => token = Some(val("--token")?),
+            "--fleet-secret" => fleet = Some(val("--fleet-secret")?),
             "--port" => port = Some(val("--port")?.parse::<u16>().map_err(|_| "invalid --port")?),
             "--state" => paths.state = PathBuf::from(val("--state")?),
             "--config" => paths.config = PathBuf::from(val("--config")?),
@@ -81,18 +84,26 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
     }
     match words.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["init"] => {
-            let mut t = token.ok_or("init needs --token <T>")?;
+            let (prompt, mut t) = match (token, fleet) {
+                (Some(t), None) => ("One-time enrollment token: ", t),
+                (None, Some(f)) => ("Fleet secret: ", f),
+                _ => return Err("init needs --token <T> or --fleet-secret <S>".into()),
+            };
             if t == "-" {
                 t.clear();
                 if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-                    eprint!("One-time enrollment token: ");
+                    eprint!("{prompt}");
                 }
                 std::io::stdin().read_line(&mut t).map_err(|e| format!("stdin: {e}"))?;
             }
             secure(&paths)?;
-            let fp = agent_core::init(&paths, &t, port, &host::hostname())?;
+            let fp = if prompt.starts_with("Fleet") {
+                agent_core::init_fleet(&paths, &t, port, &host::hostname())?
+            } else {
+                agent_core::init(&paths, &t, port, &host::hostname())?
+            };
             println!(
-                "initialised for enrollment (token stored as sha256 only)\nenrollment certificate sha256 {fp}\n(re)start the service: sc.exe stop {SERVICE_NAME} & sc.exe start {SERVICE_NAME}"
+                "initialised for enrollment (stored as sha256 only)\nenrollment certificate sha256 {fp}\n(re)start the service: sc.exe stop {SERVICE_NAME} & sc.exe start {SERVICE_NAME}"
             );
             Ok(ExitCode::SUCCESS)
         }
@@ -338,6 +349,11 @@ fn run(paths: Paths, service: Option<()>) -> Result<(), String> {
     let platform = Windows {
         sacl: !failed.iter().any(|p| p == "SeSecurityPrivilege"),
     };
+    match agent_core::adopt_fleet_secret(&paths, &host::hostname()) {
+        Some(Ok(m)) => eprintln!("nexus-agent: {m}"),
+        Some(Err(e)) => eprintln!("nexus-agent: fleet secret: {e}"),
+        None => {}
+    }
     let agent = Agent::with_platform(platform, paths, settings.clone())?;
     match agent.mode() {
         // the MSI starts the service before enrollment: stop cleanly (no failure-action restarts)
