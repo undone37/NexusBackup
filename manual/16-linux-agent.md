@@ -418,7 +418,7 @@ setuid/setgid bits cleared.
 
 Every backup also records the machine's disk layout (partitions, LVM, file systems, boot loader). To rebuild the
 machine on empty disks or as a Proxmox VM (P2V), boot the **rescue ISO** from the release page on the target: see
-[06 Restores](06-restores.md) and `docs/bmr.md`. LUKS, md RAID and ZFS root layouts are not recreated automatically;
+[06 Restores: Bare-metal recovery](06-restores.md#bare-metal-recovery-linux-hosts). LUKS, md RAID and ZFS root layouts are not recreated automatically;
 Secure Boot must be off (the ISO is not signed yet).
 
 ## Re-enrolling, moving, removing
