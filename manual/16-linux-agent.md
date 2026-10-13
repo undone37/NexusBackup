@@ -91,6 +91,13 @@ sudo nexus-agent status
 whether self-update is allowed, the size of the metadata cache and, per mounted volume, the snapshot method the
 agent will use (check this before the first backup).
 
+**Many hosts (Ansible & co.):** instead of one token per host, use a time-limited **fleet secret** (Agents →
+Fleet): `sudo nexus-agent init --fleet-secret -`, or put the secret into `/etc/nexus-agent/fleet-secret` (root,
+0600) before installing the package — the agent adopts and deletes it at its first start and waits until the
+appliance finds it in a scan of the fleet's address ranges and an administrator accepts it (or automatically).
+Hosts with tokens can also be registered from a CSV file. See chapter 4, "Fleet enrollment" and "CSV bulk
+enrollment". `status` then shows `awaiting fleet enrollment`.
+
 ## 4. Open the firewall
 
 Allow TCP 7444 from the appliance's address only, for example:

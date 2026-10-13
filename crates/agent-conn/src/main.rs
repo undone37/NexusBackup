@@ -1,4 +1,4 @@
-//! `nexus-agentctl <config.json> enroll | backup | restore | update | hello | renew | poll |
+//! `nexus-agentctl <config.json> enroll | backup | restore | update | hello | renew | fleet-scan | poll |
 //! files <agent-id> <time> ls <dir> | files <agent-id> <time> get <out.tar|out.zip> <path>...`
 //!
 //! Spawned by the scheduler with a generated 0600 config (docs/agent-protocol.md
@@ -7,7 +7,8 @@
 //! `committed host-<id>/<time>`, `inconsistent host-<id>/<time>: …`,
 //! `restore` reads any file-tree snapshot of the tenant (`restore.source`) or,
 //! for VM/CT files, the tar `restore.tar` written by `nexus-pve` (then removed);
-//! `restored {json}`; `files … ls` prints the JSON listing only.
+//! `restored {json}`; `fleet-agent {json}` per agent found by `fleet-scan`;
+//! `files … ls` prints the JSON listing only.
 
 use agent_conn::backup::{self, Spec as BackupSpec};
 use agent_conn::ca::Ca;
@@ -47,6 +48,8 @@ struct Config {
     restore: Option<RestoreCfg>,
     #[serde(default)]
     update_dir: Option<PathBuf>,
+    #[serde(default)]
+    fleet: Option<FleetCfg>,
     #[serde(default = "timeout")]
     timeout_secs: u64,
     /// `poll`: the due agents (agent_conn::poll)
@@ -64,6 +67,33 @@ struct PollCfg {
 
 fn concurrency() -> usize {
     8
+}
+
+/// `fleet-scan`: the fleet id, the file with the fleet secret digest, the addresses
+/// (expanded ranges) and the agent port.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FleetCfg {
+    id: String,
+    digest_file: PathBuf,
+    port: u16,
+    targets: Vec<String>,
+    #[serde(default = "fleet_parallel")]
+    parallel: usize,
+    #[serde(default = "fleet_rate")]
+    rate: u32,
+    #[serde(default = "fleet_timeout")]
+    timeout_secs: u64,
+}
+
+fn fleet_parallel() -> usize {
+    8
+}
+fn fleet_rate() -> u32 {
+    20
+}
+fn fleet_timeout() -> u64 {
+    2
 }
 
 fn timeout() -> u64 {
@@ -166,7 +196,7 @@ impl Config {
 fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: nexus-agentctl <config.json> enroll | backup | restore | update | hello | renew | poll | files <agent-id> <time> ls <dir> | files <agent-id> <time> get <out.tar|out.zip> <path>...";
+    let usage = "usage: nexus-agentctl <config.json> enroll | backup | restore | update | hello | renew | fleet-scan | poll | files <agent-id> <time> ls <dir> | files <agent-id> <time> get <out.tar|out.zip> <path>...";
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
         bail!("{usage}");
     };
@@ -215,6 +245,27 @@ fn main() -> Result<()> {
                     Err(err) => return Err(err.context("enrolled, but the mTLS session check failed")),
                 }
             }
+        }
+        ("fleet-scan", []) => {
+            let f = cfg.fleet.as_ref().context("config: fleet missing")?;
+            let ca = Ca::load_or_create(&cfg.ca_dir)?;
+            let digest = fs::read_to_string(&f.digest_file)?;
+            let pace = agent_conn::fleet::Pace {
+                parallel: f.parallel,
+                rate: f.rate,
+                timeout: Duration::from_secs(f.timeout_secs.max(1)),
+            };
+            let t = Instant::now();
+            let n = agent_conn::fleet::scan(&ca, &f.targets, f.port, &f.id, digest.trim(), &pace, &|a| {
+                println!("fleet-agent {}", serde_json::to_string(a).unwrap_or_default())
+            });
+            println!(
+                "fleet {}: {} addresses scanned on port {} in {:.0?}, {n} agents awaiting enrollment",
+                f.id,
+                f.targets.len(),
+                f.port,
+                t.elapsed()
+            );
         }
         ("poll", []) => {
             let p = cfg.poll.as_ref().context("config: poll missing")?;

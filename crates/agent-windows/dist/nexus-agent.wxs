@@ -8,6 +8,11 @@
   No enrollment token property on purpose: tokens are one-time and per host, and MSI
   properties end up in logs, GPO/Intune configuration and process lists. Enroll with
   "nexus-agent.exe init" with the token on stdin (docs/agent-windows.md).
+  Fleet deployment (docs/agent-windows.md "Fleet deployment"): the reusable, time-limited
+  fleet secret from the appliance as a property,
+    msiexec /i nexus-agent-<v>-x64.msi /qn FLEETSECRET=nxf1.<id>.<secret>
+  initialises a new agent for fleet enrollment (ignored on an enrolled agent); the
+  appliance finds it in its next scan of the fleet's address ranges.
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*" Name="NexusBackup Agent" Language="1033" Version="$(var.Version)"
@@ -24,6 +29,8 @@
     <Property Id="ARPHELPLINK" Value="https://github.com/undone37/NexusBackup/blob/main/docs/agent-windows.md" />
     <Property Id="ARPNOMODIFY" Value="1" />
     <Property Id="ARPNOREPAIR" Value="1" />
+    <!-- the fleet secret is not written to the MSI log -->
+    <Property Id="MsiHiddenProperties" Value="FLEETSECRET" />
     <!-- PURGE (uninstall only): wixl does not list Secure="yes" properties in
          SecureCustomProperties (and refuses a second row), so it reaches the server side
          only for administrators; uninstalls run elevated anyway (admin, SYSTEM via GPO/Intune) -->
@@ -91,8 +98,14 @@
          runs while nexus-agent.exe is still there (the service is stopped by then) -->
     <CustomAction Id="PurgeData" FileKey="AgentExe" ExeCommand="purge-data --yes"
                   Execute="deferred" Impersonate="no" Return="ignore" />
+    <!-- FLEETSECRET (install only): "init" with the fleet secret after the ACL is set and before the
+         service starts (StartServices); refused on an enrolled agent, which must not fail
+         an upgrade (Return="ignore") -->
+    <CustomAction Id="FleetInit" FileKey="AgentExe" ExeCommand="init --fleet-secret &quot;[FLEETSECRET]&quot;"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
     <InstallExecuteSequence>
       <Custom Action="ServiceSetup" After="InstallServices">NOT REMOVE="ALL"</Custom>
+      <Custom Action="FleetInit" After="ServiceSetup">FLEETSECRET AND NOT REMOVE="ALL"</Custom>
       <Custom Action="PurgeData" After="DeleteServices">REMOVE="ALL" AND PURGE="1" AND NOT UPGRADINGPRODUCTCODE</Custom>
     </InstallExecuteSequence>
   </Product>

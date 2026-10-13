@@ -75,6 +75,7 @@ mod endpoint;
 pub mod expiry;
 pub mod firewall;
 mod fleecing;
+mod fleet;
 pub mod forward;
 mod holds;
 mod inventory;
@@ -737,6 +738,7 @@ impl Scheduler {
         self.log_err(|s| s.check_sla(now));
         self.log_err(|s| s.check_paused(now));
         self.log_err(|s| s.queue_inventory(now));
+        self.log_err(|s| s.queue_fleet_scans(now));
         self.log_err(|s| s.queue_reports(now));
         self.log_err(|s| s.collect_agent_poll(None));
         self.log_err(|s| s.start_agent_poll(now));
@@ -992,6 +994,8 @@ impl Scheduler {
             }
         }
         targets.extend(self.plugin_targets()?);
+        // fleet enrollment: the scanned ranges on the agent port (crate::fleet)
+        targets.extend(self.fleet_targets()?);
         for (_, o) in self.tenants()? {
             targets.extend(firewall::offsite_targets(&o));
         }
@@ -1270,6 +1274,9 @@ impl Scheduler {
             self.attach_bookkeeping(&job, ok)?;
         }
         self.agent_bookkeeping(&job, &log)?;
+        if job.kind == "fleet_scan" {
+            self.fleet_bookkeeping(&job, &log)?;
+        }
         self.endpoint_bookkeeping(&job, state, &log)?;
         if job.kind == "backup" {
             self.fleecing_bookkeeping(&job, &log)?;
@@ -2635,6 +2642,7 @@ impl Scheduler {
                 plan.steps.push(pve(args));
             }
             "restore_files" => return self.plan_restore_files(job, plan, replicated),
+            "fleet_scan" => return self.plan_fleet_scan(job, plan),
             "agent_renew" => {
                 let a = self.agent(tenant, p["agent_id"].as_str().unwrap_or_default())?;
                 if a.cert_sha256.is_none() {
@@ -2661,17 +2669,21 @@ impl Scheduler {
             "agent_enroll" => {
                 let a = self.agent(tenant, p["agent_id"].as_str().unwrap_or_default())?;
                 plan.key = format!("agent:{}", a.id);
-                let sealed = a
-                    .token_hash
-                    .as_deref()
-                    .context("agent has no enrollment token (create a new token first)")?;
-                if a.token_expires.is_none_or(|e| e <= catalog::now()) {
-                    bail!("the enrollment token of agent {} expired (create a new token)", a.name);
-                }
-                let digest = self
-                    .secrets
-                    .open(&catalog::secret::agent_token_location(&a.id, &a.host, a.port), sealed)
-                    .with_context(|| format!("agent {}", a.id))?;
+                let digest = if p["fleet_id"].is_string() {
+                    // accepted from a fleet scan: the fleet secret proves it (crate::fleet)
+                    self.fleet_enroll_digest(job, &a)?
+                } else {
+                    let sealed = a
+                        .token_hash
+                        .as_deref()
+                        .context("agent has no enrollment token (create a new token first)")?;
+                    if a.token_expires.is_none_or(|e| e <= catalog::now()) {
+                        bail!("the enrollment token of agent {} expired (create a new token)", a.name);
+                    }
+                    self.secrets
+                        .open(&catalog::secret::agent_token_location(&a.id, &a.host, a.port), sealed)
+                        .with_context(|| format!("agent {}", a.id))?
+                };
                 plan.files.push(("token".into(), digest.as_bytes().to_vec()));
                 let (f, step) = self.agentctl(&dir, job, &a, "enroll", json!({"token_file": dir.join("token")}))?;
                 plan.files.push(f);

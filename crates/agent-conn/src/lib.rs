@@ -10,6 +10,7 @@ pub mod backup;
 pub mod ca;
 pub mod enroll;
 pub mod files;
+pub mod fleet;
 pub mod map;
 pub mod poll;
 pub mod renew;
@@ -72,6 +73,8 @@ pub fn name(m: &Message) -> &'static str {
         Message::RenewCsr { .. } => "RenewCsr",
         Message::RenewDone { .. } => "RenewDone",
         Message::RenewOk => "RenewOk",
+        Message::FleetProbe { .. } => "FleetProbe",
+        Message::FleetInfo { .. } => "FleetInfo",
         Message::SessionSummary { .. } => "SessionSummary",
         Message::SummaryAck { .. } => "SummaryAck",
         Message::Poll { .. } => "Poll",

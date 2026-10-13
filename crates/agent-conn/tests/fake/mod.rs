@@ -40,6 +40,8 @@ pub struct CacheEntry {
 
 pub struct State {
     pub token_digest: Option<String>,
+    /// initialised with a fleet secret (`token_digest` is its digest)
+    pub fleet_id: Option<String>,
     pub key: KeyPair,
     pub self_signed: String,
     /// mTLS mode once set: (cert pem, ca pem)
@@ -90,6 +92,7 @@ impl FakeAgent {
             .pem();
         let st = Arc::new(Mutex::new(State {
             token_digest: token.map(token_digest),
+            fleet_id: token.and_then(fleet_id).map(str::to_owned),
             key,
             self_signed,
             enrolled: None,
@@ -403,6 +406,26 @@ fn enroll_step(s: &mut Tls, g: &mut State, m: Message) -> std::io::Result<()> {
                 },
             )
         }
+        Message::FleetProbe { fleet_id, proof } => match (&g.fleet_id, &g.token_digest) {
+            (Some(f), Some(d)) if *f == fleet_id && proof_eq(&proof, &enroll_proof(d, "fleet-appliance", &ex)) => {
+                write_msg(
+                    s,
+                    &Message::FleetInfo {
+                        proof: enroll_proof(d, "fleet-agent", &ex),
+                        hostname: "fake-host\u{1b}[2J".into(),
+                        os: "FakeOS 1".into(),
+                        agent_version: g.version.clone(),
+                    },
+                )
+            }
+            _ => write_msg(
+                s,
+                &Message::Error {
+                    code: 401,
+                    message: "not this fleet".into(),
+                },
+            ),
+        },
         Message::EnrollDone {
             cert_pem,
             ca_pem,

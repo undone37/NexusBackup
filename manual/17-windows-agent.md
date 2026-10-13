@@ -87,8 +87,13 @@ New-NetFirewallRule -DisplayName "NexusBackup Agent" -Direction Inbound -Protoco
 - **GPO:** Computer Configuration → Policies → Software Settings → Software installation → assign the MSI.
 - **Intune:** line-of-business app, install context **device**, command `msiexec /i nexus-agent-<v>-x64.msi /qn`.
 - **Firewall rule:** deploy the rule above with the same GPO (Windows Defender Firewall with Advanced Security).
-- **Enrollment:** tokens are per server and used once, so the MSI deliberately has no token property (MSI
-  properties end up in installer logs and deployment configuration). Enroll each server afterwards, for example:
+- **Fleet enrollment (recommended for many servers):** create a time-limited fleet secret on the appliance
+  (Agents → Fleet) and pass it to the MSI: `msiexec /i nexus-agent-<v>-x64.msi /qn FLEETSECRET=nxf1.…` (hidden
+  from the MSI log; ignored on an already enrolled server). The appliance finds the agents in its scan of the
+  fleet's address ranges; an administrator accepts them (or the fleet accepts them automatically). Chapter 4,
+  "Fleet enrollment". Not yet verified on a real Windows installation.
+- **Enrollment with tokens:** tokens are per server and used once, so the MSI deliberately has no token property
+  (MSI properties end up in installer logs and deployment configuration). Enroll each server afterwards, for example:
 
 ```powershell
 # run elevated on the server; $token comes from your secret store, never from a file share

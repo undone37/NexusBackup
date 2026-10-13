@@ -392,9 +392,15 @@ function planFor(kind: string, p: Json): string[] {
           : ['restore to another host: skipped 0 entries (devices, sockets, alternate data streams) and 12 xattrs the target cannot take']),
         `restore to ${p.target} finished`,
       ];
+    case 'fleet_scan':
+      return [
+        `scanning the ranges of fleet ${p.fleet_id} (port 7444, 8 parallel, at most 20 connections/s)`,
+        'fleet proof exchanged with 3 agents awaiting enrollment',
+        'candidates updated',
+      ];
     case 'agent_enroll':
       return [
-        `connecting to ${agName} with the one-time token`,
+        p.fleet_id ? `connecting to ${agName} with the fleet secret of fleet ${p.fleet_id}` : `connecting to ${agName} with the one-time token`,
         'token proof verified (bound to the TLS session)',
         'issued client certificate, pinned agent certificate',
         'agent enrolled',
@@ -1454,6 +1460,7 @@ function seed() {
   seedHardware(t);
   seedM365(t);
   seedTenantAdmin(t);
+  seedFleet(t);
 }
 
 /** Phase 19b: policy tiers, acme's assigned policies, its tenant admin "tara", a deleted tenant name.
@@ -5899,6 +5906,218 @@ on('POST', '/tenants/:tenant/recovery-key/:id/show', async (c, [tn, id]) => {
     kid, replaced, quorum_id: q.id, approved_by: q.decided_by, approvals: q.decided_by === q.requested_by ? 'disabled' : 'enabled',
   });
   return [200, { tenant, key, kid, replaced }];
+});
+
+// Phase 24d: fleet enrollment (fleet secrets, discovery candidates, CSV bulk enrollment)
+type MockFleet = {
+  id: string; name: string; tenant: string; created: number; created_by: string; expires: number;
+  max_uses: number | null; uses: number; revoked: boolean; auto_accept: boolean; port: number; ranges: string[];
+  group: string | null; group_rules: { pattern: string; group: string }[]; last_scan: number | null;
+};
+type MockCandidate = {
+  id: number; fleet_id: string; host: string; port: number; hostname: string; os: string; version: string;
+  first_seen: number; last_seen: number; state: 'awaiting' | 'accepted' | 'rejected'; agent_id: string | null;
+};
+const fleets: MockFleet[] = [];
+const candidates: MockCandidate[] = [];
+let candidateSeq = 0;
+/** fixed ids (no rand()): the seeded PRNG sequence of the other fixtures stays as it was */
+function seedFleet(t: number) {
+  fleets.push(
+    {
+      id: '3f9a1c07d2e84b56', name: 'acme-clients', tenant: 'acme', created: t - 86400 * 3, created_by: 'admin', expires: t + 86400 * 11,
+      max_uses: 200, uses: 1, revoked: false, auto_accept: false, port: 7444, ranges: ['198.51.100.0/24', 'build01.acme.example.com'],
+      group: 'acme-web01', group_rules: [{ pattern: 'fs*', group: 'acme-fs02' }], last_scan: t - 420,
+    },
+    {
+      id: '81c4e0b9a6f2d371', name: 'initech-pilot', tenant: 'initech', created: t - 86400 * 40, created_by: 'admin', expires: t - 86400 * 10,
+      max_uses: 10, uses: 3, revoked: true, auto_accept: true, port: 7444, ranges: ['192.0.2.0/26'], group: null, group_rules: [], last_scan: t - 86400 * 11,
+    },
+  );
+  const web01 = db.agents.find((a) => a.name === 'web01');
+  const c = (host: string, hostname: string, os: string, state: MockCandidate['state'], agent_id: string | null = null, age = 3600) =>
+    candidates.push({ id: ++candidateSeq, fleet_id: '3f9a1c07d2e84b56', host, port: 7444, hostname, os, version: '0.9.0', first_seen: t - age, last_seen: t - 420, state, agent_id });
+  c('198.51.100.41', 'ws-041', 'Windows 11 Pro (10.0.26100)', 'awaiting');
+  c('198.51.100.57', 'fs-branch2', 'Windows Server 2022 Standard (10.0.20348)', 'awaiting', null, 7200);
+  c('198.51.100.62', 'kiosk-07', 'Ubuntu 24.04.1 LTS', 'rejected', null, 86400);
+  if (web01) c(web01.host, 'web01', 'Debian GNU/Linux 13 (trixie)', 'accepted', web01.id, 86400 * 2);
+}
+const FLEET_ID_RE = /^[0-9a-f]{16}$/;
+const fleetActive = (f: MockFleet) => !f.revoked && f.expires > now() && (f.max_uses === null || f.uses < f.max_uses);
+const pubFleet = (f: MockFleet) => ({ ...f, awaiting: candidates.filter((c) => c.fleet_id === f.id && c.state === 'awaiting').length });
+/** a protection group of a linux source in the tenant (template for new agents) */
+function templateGroup(tenant: string, name: string, what: string) {
+  const g = db.groups.find((x) => x.tenant === tenant && x.name === name);
+  const src = g && db.sources.find((s) => s.id === g.source_id);
+  if (!g || src?.kind !== 'linux') throw new HttpError(400, `${what}: no protection group of a linux source named "${name}" in tenant ${tenant}`);
+  return { g, src };
+}
+/** number of addresses of one range entry (CIDR ≤ /22 resp. /118, an address or a host name) */
+function checkRange(r: string) {
+  const m = /^([0-9.]+|[0-9a-fA-F:]+)\/(\d+)$/.exec(r);
+  if (m) {
+    const v6 = m[1].includes(':');
+    const p = Number(m[2]);
+    if (v6 ? p < 118 || p > 128 : p < 22 || p > 32) throw new HttpError(400, `ranges: ${r}: at most /22 (IPv4) or /118 (IPv6)`);
+    return v6 ? 2 ** (128 - p) : 2 ** (32 - p);
+  }
+  if (!/^[A-Za-z0-9.:-]{1,253}$/.test(r)) throw new HttpError(400, `ranges: ${r}: CIDR, address or host name`);
+  return 1;
+}
+/** the new agent's own source + group, copied from the template group */
+function assignGroup(a: Agent, tenant: string, group: string | null) {
+  if (!group) return;
+  const { g, src } = templateGroup(tenant, group, 'group');
+  const s = { id: nextId(), tenant, kind: 'linux', name: `${a.name}-files`, config: { ...structuredClone(src.config), agent_id: a.id } as Json };
+  db.sources.push(s);
+  db.groups.push({ ...structuredClone(g), id: nextId(), source_id: s.id, name: `${tenant}-${a.name}`, guests: [a.id] });
+}
+function newAgent(tenant: string, name: string, host: string, port: number): Agent {
+  return {
+    id: rand(8), tenant, name, host, port, enrolled_at: null, cert_sha256: null, token_expires: null, last_seen: null, version: null,
+    os: null, token_hash: null, limits: {}, cert_issued: null, cert_expires: null, cert_renewal_pending: false,
+  } as Agent;
+}
+on('GET', '/fleets', (c) => {
+  need(c.user, 'admin');
+  return [200, fleets.map(pubFleet)];
+});
+on('POST', '/fleets', async (c) => {
+  const u = need(c.user, 'admin');
+  const { name, tenant, expires_days, max_uses = null, auto_accept = false, port = 7444, ranges = [], group = null, group_rules = [] } = c.body ?? {};
+  if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
+  find(db.tenants, (t) => t.name === tenant, 'tenant');
+  if (!(Number.isInteger(expires_days) && expires_days >= 1 && expires_days <= 30)) throw new HttpError(400, 'expires_days: 1..=30');
+  if (max_uses !== null && !(Number.isInteger(max_uses) && max_uses >= 1)) throw new HttpError(400, 'max_uses: at least 1');
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new HttpError(400, 'invalid port');
+  if (!Array.isArray(ranges) || ranges.length > 32) throw new HttpError(400, 'ranges: at most 32 entries');
+  if (ranges.reduce((n: number, r: string) => n + checkRange(r), 0) > 4096) throw new HttpError(400, 'ranges: at most 4096 addresses per fleet');
+  if (group) templateGroup(tenant, group, 'group');
+  for (const r of group_rules as { pattern: string; group: string }[]) {
+    if (!r.pattern || !/^[A-Za-z0-9.*?_-]{1,253}$/.test(r.pattern)) throw new HttpError(400, `group_rules: invalid pattern ${r.pattern}`);
+    templateGroup(tenant, r.group, 'group_rules');
+  }
+  const f: MockFleet = {
+    id: rand(8), name, tenant, created: now(), created_by: u.name, expires: now() + expires_days * 86400, max_uses, uses: 0,
+    revoked: false, auto_accept: !!auto_accept, port, ranges, group, group_rules, last_scan: null,
+  };
+  fleets.push(f);
+  const secret = `nxf1.${f.id}.${b32(26)}`;
+  await audit(u.name, 'fleet.create', `fleet/${f.id}`, { name, tenant, expires: f.expires, max_uses, auto_accept: f.auto_accept, ranges, group, group_rules });
+  return [
+    201,
+    {
+      ...pubFleet(f),
+      secret,
+      install: {
+        linux: 'sudo nexus-agent init --fleet-secret -',
+        linux_file: '/etc/nexus-agent/fleet-secret',
+        windows: 'msiexec /i nexus-agent-<version>-x64.msi /qn FLEETSECRET=<secret>',
+      },
+    },
+  ];
+});
+const findFleet = (id: string) => find(fleets, (f) => FLEET_ID_RE.test(id) && f.id === id, 'fleet');
+on('DELETE', '/fleets/:id', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const f = findFleet(id);
+  f.revoked = true;
+  await audit(u.name, 'fleet.revoke', `fleet/${f.id}`, { name: f.name, tenant: f.tenant });
+  return [200, pubFleet(f)];
+});
+on('POST', '/fleets/:id/scan', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const f = findFleet(id);
+  if (!fleetActive(f)) throw new HttpError(409, 'the fleet secret is revoked, expired or used up');
+  if (!f.ranges.length) throw new HttpError(409, 'the fleet has no ranges to scan');
+  const j = addJob('fleet_scan', f.tenant, { fleet_id: f.id }, u.name);
+  f.last_scan = now();
+  await audit(u.name, 'job.create', `job/${j.id}`, { kind: 'fleet_scan', tenant: f.tenant, params: j.params });
+  return [202, { id: j.id }];
+});
+const pubCandidate = (x: MockCandidate) => {
+  const f = fleets.find((y) => y.id === x.fleet_id)!;
+  return { ...x, fleet: f.name, tenant: f.tenant };
+};
+on('GET', '/fleet/candidates', (c) => [200, byTenant(need(c.user), candidates.map(pubCandidate))]);
+function findCandidate(u: User, id: string) {
+  const x = find(byTenant(u, candidates.map(pubCandidate)), (y) => y.id === Number(id), 'candidate');
+  needOwner(u, x.tenant);
+  return candidates.find((y) => y.id === x.id)!;
+}
+on('POST', '/fleet/candidates/:id/accept', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const x = findCandidate(u, id);
+  if (x.state !== 'awaiting') throw new HttpError(409, `candidate is ${x.state}`);
+  const f = findFleet(x.fleet_id);
+  if (!fleetActive(f)) throw new HttpError(409, 'the fleet secret is revoked, expired or used up');
+  let name = x.hostname;
+  if (db.agents.some((a) => a.tenant === f.tenant && a.name === name)) name = `${name}-${rand(3)}`;
+  const a = newAgent(f.tenant, name, x.host, x.port);
+  db.agents.push(a);
+  const glob = (p: string) => new RegExp(`^${p.replace(/[.]/g, '\\.').replace(/\*/g, '.*').replace(/\?/g, '.')}$`, 'i');
+  const rule = f.group_rules.find((r) => glob(r.pattern).test(x.hostname));
+  assignGroup(a, f.tenant, rule?.group ?? f.group);
+  f.uses += 1;
+  x.state = 'accepted';
+  x.agent_id = a.id;
+  const j = addJob('agent_enroll', f.tenant, { agent_id: a.id, fleet_id: f.id }, u.name);
+  await audit(u.name, 'fleet.accept', `fleet/${f.id}`, { tenant: f.tenant, candidate: x.id, host: x.host, hostname: x.hostname, agent_id: a.id, job: j.id });
+  return [200, { agent_id: a.id, job: j.id }];
+});
+on('POST', '/fleet/candidates/:id/reject', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const x = findCandidate(u, id);
+  if (x.state !== 'awaiting') throw new HttpError(409, `candidate is ${x.state}`);
+  x.state = 'rejected';
+  await audit(u.name, 'fleet.reject', `fleet/${x.fleet_id}`, { candidate: x.id, host: x.host, hostname: x.hostname });
+  return [200, pubCandidate(x)];
+});
+on('POST', '/agents/bulk', async (c) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  vaultRefuse('new agents');
+  const lines = String(c.body?.csv ?? '').split(/\r?\n/).map((l) => l.trim());
+  const head = (lines.shift() ?? '').split(',').map((h) => h.trim().toLowerCase());
+  for (const k of ['host', 'tenant']) if (!head.includes(k)) throw new HttpError(400, `line 1: column ${k} missing`);
+  const rows: { line: number; v: Record<string, string> }[] = [];
+  lines.forEach((l, i) => {
+    if (!l) return;
+    const cells = l.split(',').map((x) => x.trim());
+    rows.push({ line: i + 2, v: Object.fromEntries(head.map((h, j) => [h, cells[j] ?? ''])) });
+  });
+  if (!rows.length || rows.length > 500) throw new HttpError(400, 'csv: 1..=500 rows');
+  const seen = new Set<string>();
+  for (const { line, v } of rows) {
+    const err = (m: string) => new HttpError(400, `line ${line}: ${m}`);
+    const name = v.name || v.host;
+    if (!db.tenants.some((t) => t.name === v.tenant)) throw err('tenant does not exist');
+    if (u.role === 'tenant_admin' && u.tenant !== v.tenant) throw err('forbidden: another tenant');
+    if (!/^[A-Za-z0-9.:\[\]-]{1,253}$/.test(v.host)) throw err('invalid host');
+    if (!NAME_RE.test(name)) throw err('invalid name');
+    const port = v.port ? Number(v.port) : 7444;
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw err('invalid port');
+    if (db.agents.some((a) => a.tenant === v.tenant && a.name === name) || seen.has(`${v.tenant}/${name}`)) throw err('agent name exists in this tenant');
+    seen.add(`${v.tenant}/${name}`);
+    if (v.group) {
+      try {
+        templateGroup(v.tenant, v.group, 'group');
+      } catch (e) {
+        throw err((e as Error).message);
+      }
+    }
+  }
+  const out: Json[] = [];
+  const csv = ['name,tenant,host,port,group,agent_id,token,token_expires,install_command'];
+  for (const { v } of rows) {
+    const a = newAgent(v.tenant, v.name || v.host, v.host, v.port ? Number(v.port) : 7444);
+    const tok = await issueToken(a);
+    db.agents.push(a);
+    assignGroup(a, v.tenant, v.group || null);
+    out.push(pubAgent(a));
+    csv.push([a.name, a.tenant, a.host, a.port, v.group ?? '', a.id, tok.token, tok.token_expires, tok.install_command].join(','));
+  }
+  for (const a of out) await audit(u.name, 'agent.create', `agent/${a.id}`, { tenant: a.tenant, name: a.name, host: a.host, bulk: true });
+  return [201, { created: out.length, agents: out, csv: csv.join('\n') + '\n' }];
 });
 
 // ---------------------------------------------------------------- ransomware signals (Phase 21a)
