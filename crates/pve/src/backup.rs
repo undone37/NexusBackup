@@ -553,26 +553,45 @@ fn pull_device(
     limit: Option<&catalog::schedule::Throttle>,
     at: (u32, u32),
 ) -> Result<(Index, u64)> {
-    let mut child = Kill(
-        ssh.cmd(&format!("nbd {vmid}"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()?,
-    );
-    let r = BufReader::with_capacity(1 << 20, child.0.stdout.take().unwrap());
-    let w = BufWriter::new(child.0.stdin.take().unwrap());
     let ctx = dev.bitmap_name.as_ref().map(|b| format!("qemu:dirty-bitmap:{b}"));
     let meta: Vec<&str> = ctx
         .iter()
         .map(String::as_str)
         .filter(|_| dev.bitmap_mode != "none")
         .collect();
-    let mut c = nbd::Client::connect_opt(r, w, &dev.name, &meta, &[ALLOCATION])?;
-    if c.size() != dev.size {
-        bail!("export size {} != job size {}", c.size(), dev.size);
-    }
+    // base:allocation only for full reads (a reused bitmap names the few changed blocks; QEMU
+    // refused block status on a small EFI disk with both contexts: "can't get block status")
+    let full_read = dev.bitmap_mode != "reuse" || base.is_none();
+    let optional: &[&str] = if full_read { &[ALLOCATION] } else { &[] };
+    let connect = |meta: &[&str], optional: &[&str]| -> Result<(Kill, NbdClient)> {
+        let mut child = Kill(
+            ssh.cmd(&format!("nbd {vmid}"))
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()?,
+        );
+        let r = BufReader::with_capacity(1 << 20, child.0.stdout.take().unwrap());
+        let w = BufWriter::new(child.0.stdin.take().unwrap());
+        let c = nbd::Client::connect_opt(r, w, &dev.name, meta, optional)?;
+        if c.size() != dev.size {
+            bail!("export size {} != job size {}", c.size(), dev.size);
+        }
+        Ok((child, c))
+    };
+    // the ssh process lives as long as its connection (Kill on drop)
+    let (mut _session, mut c) = connect(&meta, optional)?;
     let dirty = match meta.first() {
-        Some(ctx) => nbd::flagged(&c.block_status(ctx)?, 1),
+        Some(ctx) => match c.block_status(ctx) {
+            Ok(e) => nbd::flagged(&e, 1),
+            Err(e) => {
+                // never fail the guest over the change list: a fresh connection without meta
+                // contexts and a full read of this device are always correct
+                println!("{}: dirty bitmap unreadable ({e}): reading the whole device", dev.name);
+                drop(c);
+                (_session, c) = connect(&[], &[])?;
+                vec![(0, dev.size)]
+            }
+        },
         None => vec![(0, dev.size)],
     };
     // regions the export reports as reading zero (unallocated / discarded) are filled locally,
@@ -735,6 +754,7 @@ fn zero_map(ssh: &SshNode, vmid: u32, export: &str, extents: &[(u64, u64)], at: 
 }
 
 const ALLOCATION: &str = "base:allocation";
+type NbdClient = nbd::Client<BufReader<std::process::ChildStdout>, BufWriter<std::process::ChildStdin>>;
 const NBD_STATE_ZERO: u32 = 2;
 
 /// `[off, off+len)` split at the zero extents (sorted, disjoint): `(start, end, is_zero)`.
