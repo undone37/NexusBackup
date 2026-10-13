@@ -84,6 +84,7 @@ name = "agent-core"
 version = "0.1.0"
 dependencies = [
  "agent-proto",
+ "agent-ui-proto",
  "base64 0.22.1",
  "blake3",
  "fastcdc",
@@ -95,6 +96,7 @@ dependencies = [
  "ring",
  "rustls",
  "serde",
+ "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "x509-parser",
@@ -147,6 +149,7 @@ version = "0.1.0"
 dependencies = [
  "agent-core",
  "agent-proto",
+ "agent-ui-proto",
  "blake3",
  "tempfile",
  "windows",

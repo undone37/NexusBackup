@@ -396,6 +396,54 @@ Changing limits is audited (`agent.limits`).
 > excludes, nested mounts and limits; the job log then says "this agent version ignores …: update the agent". A
 > renewal of an older agent fails with a hint to update or re-enroll it. Update the agent with **Update agent**.
 
+#### Endpoint status and laptops
+
+The appliance opens a short session to every enrolled agent every **2 minutes** (the agent still never connects
+out). The **Endpoint** column of the Agents page shows the result:
+
+- **Reachable** / **Not reachable** (hover: time of the last poll) / **Not polled yet**. An agent that does not
+  answer is polled less often (after 4, 8, then every 15 minutes) until it answers again; **Last seen** is the
+  last successful session of any kind.
+- **On battery (n %)** and **Metered network (name)**, as the agent reports them (Linux: `/sys/class/power_supply`
+  and NetworkManager; Windows: power status and the network cost of Windows).
+- **Backup requested …**: a user on the host asked for a backup (tray icon, `nexus-agent tui`). The poll picks the
+  request up and queues a backup of the agent in each of its groups; the job and the audit entry
+  `agent.request_backup` name the actor `agent:<id>`. At most one request per 10 minutes is accepted (the agent
+  refuses more, and so does the appliance: "Backup request refused (rate limited)").
+- **Missed run since …**: a scheduled run was skipped or failed and waits for the laptop (see below).
+
+**Endpoint** on an enrolled agent opens **Endpoint settings for <name>**:
+
+- **Endpoint UI (administrators)**: **Accent colour** (`#rrggbb`), **Header text** (shown instead of the product
+  name), **Hide "Back up now"** and **Hide the tray icon**. The policy reaches the agent with the next poll; the
+  dialog shows "Version n, applied on the agent" once the agent stored it. Only administrators change it
+  (audit `agent.ui_policy`).
+- **Laptop** (administrators and tenant administrators, audit `agent.laptop`):
+  - **Skip scheduled runs on battery below (%)** (0 = never) and **Skip scheduled runs on a metered network**: the
+    scheduler leaves the agent out of a scheduled group backup while the last poll (at most 10 minutes old) says
+    so. If every agent of the group is left out, the run is recorded as a cancelled job with the reason in its log
+    (no alert); otherwise the other agents run. Audit `agent.backup_skipped`.
+  - **Catch up missed runs when the laptop is back**: a scheduled run that was skipped, or that failed (e.g. the
+    laptop was off the network), is queued again as soon as a poll reaches the agent and it is fit (not on low
+    battery or a metered network), within **Catch up within (hours, 0 = 24)**. With this option a laptop that is
+    not reachable at the scheduled time is left out instead of failing the group's backup. Audit
+    `agent.missed_run_queued` / `agent.missed_run_expired`.
+  - "Back up now" requests from the endpoint and **Back up now** on the appliance always run.
+- **Sessions shown on the endpoint**: the last backups and file restores of the agent as its endpoint UI shows them
+  (result, time, transferred bytes, first error), and whether the agent already has them ("on the agent") or gets
+  them with the next poll ("pending"). The appliance sends each finished session's summary with the agent's part
+  of the job log (at most 200 lines); the agent keeps the last 100.
+
+![Endpoint settings of a laptop](images/agent-endpoint.png)
+
+On the host, `nexus-agent status --json` prints the agent's own view (state, last success, next run, last poll by
+the appliance, UI policy) for members of the group `nexus-agent-ui` and root.
+
+> **Status:** Needs an agent of this release (capability `poll`, protocol v1.4). Older agents are polled for
+> reachability and version only: they get no summaries, cannot request backups and report no power state, so the
+> battery and metered options have no effect for them (the "not reachable" rule does). The endpoint UIs
+> themselves (`nexus-agent tui`, the tray / control panel app) are described in the endpoint chapter.
+
 ### 4. Create the source
 
 ![Agent source form](images/source-agent.png)

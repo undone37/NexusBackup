@@ -144,6 +144,16 @@ interface Agent {
   cert_issued: number | null;
   cert_expires: number | null;
   cert_renewal_pending: boolean;
+  /** Phase 24a: endpoint status (poll), UI policy, laptop options */
+  reachable: boolean | null;
+  last_poll: number | null;
+  power: Json | null;
+  ui_policy: Json;
+  ui_policy_version: number;
+  ui_policy_seen: number | null;
+  laptop: Json;
+  missed_at: number | null;
+  last_request: Json | null;
 }
 interface Job {
   id: number;
@@ -214,6 +224,8 @@ const db = {
   /** kind: pve | linux | nfs | smb | plugin:<kind> */
   sources: [] as { id: number; tenant: string; kind: string; name: string; config: Json; maintenance_until?: number | null }[],
   agents: [] as Agent[],
+  /** Phase 24a: session summaries per agent id (newest first) */
+  agentSessions: {} as Record<string, Json[]>,
   replPeers: [] as Json[],
   replSources: [] as Json[],
   policies: [] as {
@@ -1050,12 +1062,45 @@ function seed() {
     cert_issued: state === 'enrolled' ? t - 86400 * 20 : null,
     cert_expires: state === 'enrolled' ? t - 86400 * 20 + 3650 * 86400 : null,
     cert_renewal_pending: false,
+    reachable: state === 'enrolled' ? true : null,
+    last_poll: state === 'enrolled' ? t - 70 : null,
+    power: state === 'enrolled' ? { on_battery: false, battery_percent: null, metered: false, network_name: null } : null,
+    ui_policy: {},
+    ui_policy_version: 0,
+    ui_policy_seen: null,
+    laptop: {},
+    missed_at: null,
+    last_request: null,
   });
   const web01 = agent('acme', 'web01', '198.51.100.31', 'enrolled', 'Debian GNU/Linux 13 (trixie)');
   const fs02 = agent('acme', 'fs02', 'fs02.acme.example.com', 'enrolled', 'Windows Server 2022 Standard (10.0.20348)');
   // Phase 15f: web01 is throttled during business-hours backups
   web01.limits = { bwlimit: 20 * 1024 * 1024, nice: 10 };
-  db.agents.push(web01, fs02, agent('initech', 'db01', 'db01.initech.example.com', 'pending'), agent('initech', 'build01', '192.0.2.40', 'expired'));
+  // Phase 24a: a laptop on battery that skipped last night's run and asked for a backup
+  const nb07 = agent('acme', 'nb07', 'nb07.acme.example.com', 'enrolled', 'Ubuntu 24.04.3 LTS');
+  nb07.power = { on_battery: true, battery_percent: 14, metered: false, network_name: 'ACME-Office' };
+  nb07.laptop = { min_battery: 20, skip_metered: true, run_missed: true, retry_hours: 24 };
+  nb07.missed_at = t - 3600 * 9;
+  nb07.last_request = { id: rand(8), queued_at: t - 400, received: t - 330, jobs: [], refused: null };
+  nb07.ui_policy = { accent: '#0a7f5a', header: 'ACME IT', hide_backup_now: false, hide_tray: false };
+  nb07.ui_policy_version = 2;
+  nb07.ui_policy_seen = 2;
+  fs02.reachable = false;
+  fs02.last_poll = t - 50;
+  db.agents.push(web01, fs02, nb07, agent('initech', 'db01', 'db01.initech.example.com', 'pending'), agent('initech', 'build01', '192.0.2.40', 'expired'));
+  for (const a of [web01, fs02, nb07]) {
+    db.agentSessions[a.id] = Array.from({ length: 8 }, (_, i) => {
+      const ended = t - 86400 * i - 3600 * 2;
+      const failed = a === nb07 && i === 1;
+      return {
+        job: 9000 - i * 10 - db.agents.indexOf(a), kind: 'Backup', started: ended - 600, ended,
+        result: failed ? 'Failed' : i === 3 ? 'Warning' : 'Success',
+        read_bytes: 4.2e9, transferred_bytes: failed ? 0 : 3.1e8 + i * 1e7, new_bytes: failed ? 0 : 9e7,
+        warnings: i === 3 ? 2 : 0, first_error: failed ? 'connect nb07.acme.example.com:7444: connection timed out' : '',
+        snapshot_time: failed ? null : ended - 60, delivered: i === 0 && a === fs02 ? null : ended + 120,
+      };
+    });
+  }
   const sWeb01 = {
     id: nextId(),
     tenant: 'acme',
@@ -2788,6 +2833,15 @@ on('POST', '/agents', async (c) => {
     cert_issued: null,
     cert_expires: null,
     cert_renewal_pending: false,
+    reachable: null,
+    last_poll: null,
+    power: null,
+    ui_policy: {},
+    ui_policy_version: 0,
+    ui_policy_seen: null,
+    laptop: {},
+    missed_at: null,
+    last_request: null,
   };
   const tok = await issueToken(a);
   db.agents.push(a);
@@ -2813,6 +2867,42 @@ on('PUT', '/agents/:id/limits', async (c, [id]) => {
   a.limits = { bwlimit, nice };
   await audit(u.name, 'agent.limits', `agent/${a.id}`, { new: a.limits, old });
   return [200, pubAgent(a)];
+});
+// Phase 24a: endpoint UI policy (admins), laptop options, session summaries
+on('PUT', '/agents/:id/ui-policy', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const a = findAgent(u, id);
+  const b = c.body ?? {};
+  for (const k of Object.keys(b)) if (!['accent', 'header', 'hide_backup_now', 'hide_tray'].includes(k)) throw new HttpError(400, `unknown field ${k}`);
+  const accent = b.accent ?? '';
+  const header = b.header ?? '';
+  if (accent && !/^#[0-9a-fA-F]{6}$/.test(accent)) throw new HttpError(400, 'accent: #rrggbb or empty');
+  if (header.length > 64 || /[\u0000-\u001f]/.test(header)) throw new HttpError(400, 'header: at most 64 characters, no control characters');
+  const old = a.ui_policy;
+  a.ui_policy = { accent, header, hide_backup_now: !!b.hide_backup_now, hide_tray: !!b.hide_tray };
+  a.ui_policy_version = (a.ui_policy_version ?? 0) + 1;
+  await audit(u.name, 'agent.ui_policy', `agent/${a.id}`, { tenant: a.tenant, new: a.ui_policy, old });
+  return [200, pubAgent(a)];
+});
+on('PUT', '/agents/:id/laptop', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const a = findAgent(u, id);
+  const b = c.body ?? {};
+  for (const k of Object.keys(b)) if (!['min_battery', 'skip_metered', 'run_missed', 'retry_hours'].includes(k)) throw new HttpError(400, `unknown field ${k}`);
+  const min_battery = b.min_battery ?? 0;
+  const retry_hours = b.retry_hours ?? 0;
+  if (!(Number.isInteger(min_battery) && min_battery >= 0 && min_battery <= 100)) throw new HttpError(400, 'min_battery: 0..=100');
+  if (!(Number.isInteger(retry_hours) && retry_hours >= 0 && retry_hours <= 336)) throw new HttpError(400, 'retry_hours: 0..=336');
+  const old = a.laptop;
+  a.laptop = { min_battery, skip_metered: !!b.skip_metered, run_missed: !!b.run_missed, retry_hours };
+  if (!a.laptop.run_missed) a.missed_at = null;
+  await audit(u.name, 'agent.laptop', `agent/${a.id}`, { tenant: a.tenant, new: a.laptop, old });
+  return [200, pubAgent(a)];
+});
+on('GET', '/agents/:id/sessions', (c, [id]) => {
+  const a = findAgent(need(c.user), id);
+  const limit = Math.min(Number(c.query.get('limit') ?? 30) || 30, 100);
+  return [200, (db.agentSessions[a.id] ?? []).slice(0, limit)];
 });
 on('POST', '/agents/:id/enroll', async (c, [id]) => {
   const u = need(c.user, 'admin', 'tenant_admin');

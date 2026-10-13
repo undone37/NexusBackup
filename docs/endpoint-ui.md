@@ -41,3 +41,39 @@ the release page, Phase 19), FLR mount on the endpoint (restores stay admin-only
 - **GUI (Windows + Linux desktop):** `nexus-agent-gui` (Rust, iced + tray-icon), started per user session
   (Windows: Run key / Startup; Linux: XDG autostart), talks only to the local socket/pipe; packaged with the agent
   (MSI / .deb / .rpm, Phase 20) and as a separate "desktop" package for Linux workstations.
+
+## Status (Phase 24a, protocol + appliance + service)
+
+Implemented:
+
+- **Protocol v1.4** (`agent-proto`, docs/agent-protocol.md "v1.4"): `SessionSummary`/`SummaryAck`, `Poll`/`PollReply`,
+  capability `poll`; old agents are polled with `Hello` only.
+- **Appliance:** scheduler `endpoint.rs` — poll every `agent_poll_secs` (120; `agent_poll_concurrency` 8) via
+  `nexus-agentctl poll` on a helper thread, backoff while unreachable, deactivated tenants skipped; summaries
+  (`agent_sessions`, newest 100 per agent) written when an agent backup / file restore finishes and the agent made
+  due at once; requests → backup jobs (`requested_by agent:<id>`); laptop policy per agent (`agents.laptop`:
+  `min_battery`, `skip_metered`, `run_missed`, `retry_hours`) applied to scheduled group runs, missed runs queued
+  when the agent is reachable and fit again. Catalog v26 (`agents.reachable, last_poll, poll_failures, power,
+  ui_policy, ui_policy_version, ui_policy_seen, laptop, missed_at, last_request`, table `agent_sessions`).
+  Web API: `PUT /agents/{id}/ui-policy` (admins), `PUT /agents/{id}/laptop` (tenant writers), `GET
+  /agents/{id}/sessions`; the agent list carries the new fields. UI: Agents page column **Endpoint**, dialog
+  **Endpoint settings** (manual 04 "Endpoint status and laptops").
+- **Agent service:** `agent_core::ui` — state file `<state>/ui-state.json` (root 0600: last 100 summaries, appliance
+  status + UI policy, queued requests, rate-limit time), running-backup progress (read / transferred bytes,
+  percent estimated from the last successful backup), request queue (1 per 10 minutes, refused while the policy
+  hides "back up now" or before enrollment), status `reachable` = a session of the appliance within 10 minutes.
+  - Linux: socket `/run/nexus-agent/ui.sock`, owner root, group `nexus-agent-ui` (if the group exists, else
+    root-only), mode 0660; the runtime directory is 0711 (traversal only; snapshot mount points below it are in the
+    service's private mount namespace). ≤ 8 UI connections. Power: `/sys/class/power_supply` (device batteries
+    ignored), metered + connection name from NetworkManager over D-Bus (`busctl`, else unknown).
+  - Windows: named pipe `\\.\pipe\nexus-agent-ui`, first instance created with `FILE_FLAG_FIRST_PIPE_INSTANCE`, remote
+    clients rejected, DACL `D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12008b;;;IU)` (interactive users: read + write data,
+    not FILE_CREATE_PIPE_INSTANCE). Power: `GetSystemPowerStatus`; metered: Network List Manager cost
+    (fixed / variable / over data limit / roaming).
+  - `nexus-agent status --json` (Linux) prints the IPC `status` reply.
+- **Local IPC contract:** crate `agent-ui-proto` (types, newline-delimited JSON framing, blocking client for the
+  socket / pipe), consumed by the TUI (24b) and the GUI (24c).
+
+Open / for the lab: the Windows pipe and power code are cross-compiled and unit-tested on Linux only (SDDL rules,
+value mapping); verify on a Windows VM: a standard user can `status` / `request_backup`, cannot create a pipe
+instance; laptop on battery reports `on_battery`.
