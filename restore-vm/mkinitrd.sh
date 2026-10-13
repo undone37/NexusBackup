@@ -48,7 +48,7 @@ pack() {
 r=$work/root
 skeleton "$r"
 install -m 0755 /out/agent "$r/init"
-copy_bin "$r" modprobe blkid lvm zpool zfs mdadm
+copy_bin "$r" modprobe blkid lvm zpool zfs mdadm yara yarac
 mkdir -p "$r/etc/lvm" "$r/lib/modules/$KVER"
 touch "$r/etc/lvm/lvm.conf"
 echo "nexus-restore-vm" >"$r/etc/hostname"
@@ -78,7 +78,7 @@ pack "$f" /out/fixture-overlay.img
 	echo "modules: $MODS"
 	echo "packages:"
 	dpkg-query -W -f '  ${Package} ${Version}\n' linux-image-"$KVER" zfs-dkms zfsutils-linux lvm2 mdadm \
-		util-linux kmod libc6 busybox-static e2fsprogs xfsprogs ntfs-3g btrfs-progs dosfstools fdisk
+		util-linux kmod libc6 busybox-static e2fsprogs xfsprogs ntfs-3g btrfs-progs dosfstools fdisk yara
 	echo "sha256:"
 	(cd /out && sha256sum vmlinuz initrd.img fixture-overlay.img agent | sed 's/^/  /')
 } >/out/manifest.txt

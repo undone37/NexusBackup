@@ -1,4 +1,4 @@
-//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | push-index | list | inventory`.
+//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] | push-index | list | inventory`.
 //! `backup-all` backs up every guest in `vmids`, VM or container (type from /cluster/resources).
 
 use anyhow::{bail, Context, Result};
@@ -58,7 +58,7 @@ fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
-        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | push-index | list | inventory | task-stop <upid>");
+        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] | push-index | list | inventory | task-stop <upid>");
     };
     let cfg: Config = serde_json::from_slice(&fs::read(cfg_path)?).context("config")?;
     if let ("inventory", []) = (cmd.as_str(), rest) {
@@ -80,6 +80,11 @@ fn main() -> Result<()> {
                 .map_err(Into::into);
         }
         ("files", [vmid, time, args @ ..]) => return pve::restorevm::cli(&store, vmid.parse()?, time.parse()?, args),
+        // opt-in YARA scan in the restore micro-VM (Phase 21e, any local snapshot)
+        ("scan", [source, time, rules, budget @ ..]) if budget.len() <= 1 => {
+            let budget = budget.first().map(|b| b.parse()).transpose()?;
+            return pve::scan::cli(&store, source, time.parse()?, std::path::Path::new(rules), budget);
+        }
         ("list", []) => {
             println!("{}", serde_json::to_string_pretty(&pve::backup::build_index(&store)?)?);
             return Ok(());

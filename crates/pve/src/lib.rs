@@ -12,3 +12,4 @@ pub mod ir;
 pub mod parallel;
 pub mod restore;
 pub mod restorevm;
+pub mod scan;
