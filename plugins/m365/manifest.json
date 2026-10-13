@@ -1,7 +1,7 @@
 {
   "id": "m365",
   "name": "Microsoft 365",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "publisher": "nexusbackup",
   "api": 1,
   "kinds": [
@@ -121,7 +121,28 @@
       "guests": { "title": "Users (mailbox + OneDrive), sites, teams and Microsoft 365 groups", "list": true },
       "backup": { "incremental": true, "consistent": "item" },
       "restores": [
-        { "id": "download", "title": "Download (mail .eml, events .ics, contacts .vcf, files, threads and conversations .json)" },
+        {
+          "id": "download",
+          "title": "Download (mail .eml, mbox or PST; events .ics, contacts .vcf, files, threads and conversations .json)",
+          "params_schema": {
+            "type": "object",
+            "properties": {
+              "mail_format": {
+                "type": "string",
+                "title": "Mail format (eml = one file per message, mbox = one file per folder, pst = Outlook data file)",
+                "enum": ["eml", "mbox", "pst"],
+                "default": "eml"
+              },
+              "pst_max_gb": {
+                "type": "integer",
+                "title": "PST: split into files of at most this many GB",
+                "minimum": 1,
+                "maximum": 50,
+                "default": 20
+              }
+            }
+          }
+        },
         {
           "id": "to_original",
           "title": "Restore to the original user / site / team / group (into a new folder; group conversations: download only)",

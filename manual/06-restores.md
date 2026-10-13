@@ -427,11 +427,47 @@ calendar or channel.
 
 ### Download
 
-Click the download button (**Download (mail .eml, events .ics, contacts .vcf, files, threads and conversations .json)**), select
-folders or single items and prepare a tar or zip archive as described in
-[Browse files and download them](#browse-files-and-download-them-tar-or-zip). Mail opens in any mail client,
-`.ics` files in any calendar, `.vcf` files in any address book. Names containing `/` or `%` are shown encoded
-(`Projects%2F2026` is the folder `Projects/2026`).
+Click the download button (**Download (mail .eml, mbox or PST; events .ics, contacts .vcf, files, threads and
+conversations .json)**), select folders or single items and prepare a tar or zip archive as described in
+[Browse files and download them](#browse-files-and-download-them-tar-or-zip). `.ics` files open in any calendar,
+`.vcf` files in any address book. Names containing `/` or `%` are shown encoded (`Projects%2F2026` is the folder
+`Projects/2026`).
+
+#### Export formats for mail
+
+Above the download buttons, **Conversion** offers the **Mail format** of the selected mail (`mail/` and
+`recoverable/`):
+
+| Mail format | What the archive contains | Open it with |
+|---|---|---|
+| **eml** (default) | one `.eml` file per message in its folder, as stored | any mail client (drag and drop), double click |
+| **mbox** | one mbox file per mail folder, e.g. `mail/Inbox.mbox`, `mail/Inbox/Projects%2F2026.mbox` | Thunderbird (ImportExportTools NG), Apple Mail (File › Import Mailboxes), mutt, Evolution |
+| **pst** | an Outlook data file `<user>.pst` with the folder tree below **Top of Personal Folders**; Recoverable Items "Deletions" as `Recoverable Items/Deletions` | Outlook (Windows, classic) |
+
+Everything that is not mail (calendar, contacts, OneDrive files, chats) stays as stored in the same archive.
+**PST: split into files of at most this many GB** (1–50, default 20) splits large mailboxes into several files
+`<user>.pst`, `<user>-2.pst`, … (Outlook handles up to 50 GB per file; smaller files are easier to move).
+
+![Mailbox snapshot: mail and recoverable items selected, exported as PST in a zip archive](images/files-m365-pst.png)
+
+The plugin converts on the appliance, in its sandbox, without network access and without the source's
+credentials. A PST contains, per message: subject, sender, recipients (To, Cc, Bcc), dates, plain-text and HTML
+body, the internet headers, the message ID and the attachments (inline images included; attached messages as
+`.eml` files). Messages are marked read; categories, flags and Outlook-specific properties (Graph does not
+return them as MIME) are not part of the backup. Calendars and contacts stay `.ics` / `.vcf` files (import them in
+Outlook with **File › Open & Export › Import/Export**).
+
+Import the PST into Outlook (classic Outlook for Windows; the new Outlook and Outlook on the web cannot open PST
+files):
+
+1. Download the archive and extract `<user>.pst` (and `<user>-2.pst`, … if the mailbox was split).
+2. In Outlook choose **File › Open & Export › Open Outlook Data File** and select the `.pst` file. It appears as
+   **Microsoft 365 &lt;user&gt;** in the folder list; drag folders or messages into the mailbox.
+3. Or choose **File › Open & Export › Import/Export › Import from another program or file › Outlook Data File
+   (.pst)** to copy everything into a mailbox folder.
+
+Disk space: the export job needs free space on the appliance for the converted files and the archive (about
+twice the size of the selected mail at the end of the job; the archive is deleted after 24 hours).
 
 ### Restore to the original user, site, team or group
 
@@ -491,7 +527,10 @@ The app registration needs the write permissions listed in [04 Sources](04-sourc
 for restores, and for Teams conversations also `Teamwork.Migrate.All` and `Channel.Create`.
 
 > **Status:** Tested against a local Microsoft Graph simulation only. A run against a real Microsoft 365 tenant is
-> still pending; it also checks whether restored mails show up as drafts in Outlook.
+> still pending; it also checks whether restored mails show up as drafts in Outlook. The mail export was tested
+> with mails from the simulation: the PST files were read back with three independent readers (Microsoft's
+> `outlook-pst` library, `readpst` from libpst and `pffexport` from libpff), the mbox files with the mbox rules.
+> Opening an exported PST in Outlook itself has not been tested yet (lab step).
 
 ## Follow a restore job
 
