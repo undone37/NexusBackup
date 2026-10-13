@@ -514,6 +514,56 @@ What is **not** recovered this way:
 > The wizard screen and the restore on an installed appliance under SELinux have not been run yet
 > (`lab/appliance/config-restore.sh` covers the console command, the wizard screen is a manual check).
 
+## Recovery plans
+
+A recovery plan writes down how a site comes back: which guests, in which order, on which node and storage,
+on which networks. The appliance checks the plan every day, can test it isolated at any time and executes it
+for real after approval. Open **Configuration → Recovery plans**.
+
+![Recovery plans with readiness and the last test run](images/recovery-plans.png)
+
+**Create a plan** (admins and tenant admins): **New recovery plan**.
+
+![Editing a recovery plan](images/recovery-plan-edit.png)
+
+- **Proxmox VE source, target node, target storage:** where the guests come back. For a second site, add its
+  cluster as a source of the tenant.
+- **RPO (hours):** the readiness check fails when a guest's newest local snapshot is older.
+- **Isolated bridge for test runs:** a bridge or SDN VNet without an uplink. Empty: all links down (the guests
+  then cannot reach each other during a test run).
+- **Network mapping for an execution:** one line per bridge, `vmbr0 = vmbr20`. Unmapped bridges stay as backed
+  up.
+- **Guests (in boot order):** each guest with its **wave**, a **delay** in seconds and the checks of a restore
+  test (ports, custom command; see [06 Restores](06-restores.md#restore-tests)). Guests in the same wave start
+  together. A wave waits for its delay and starts when every guest of the previous wave passed its checks
+  (database first, then the application servers). **VMID on execution:** empty = the original VMID.
+
+**Readiness** (daily at 05:30 UTC, after every change and with **Check now**): a local snapshot within the RPO for
+every guest, the target node online, the target storage and the instant recovery storage active with room for the
+guests, the bridges present on the node, and no open restore test, verification or inventory alert of the
+tenant's guests. A plan that is not ready raises the warning **recovery_plan**; the next passed check resolves it.
+
+**Test run** (admins, operators, tenant admins): every guest boots isolated as in a restore test, wave by wave.
+All guests stay up until the last wave was checked, then all are destroyed. The results go into the restore test
+list and the run. A failed test run raises **recovery_plan**.
+
+**Execute (real DR):** restores every guest of the plan for real with a full restore of its newest local snapshot,
+under its original VMID and name (or the plan's VMID), with the network mapping applied, and starts it, wave by
+wave. A wave in which a guest fails stops the run; the remaining guests are reported as skipped (restore them one
+by one). Type the plan's name to request it. The execution always needs approval: another admin or security
+officer approves it on **Approvals** (the request shows the plan as it will run); with approvals disabled it runs
+at once (audited). A failed execution raises a critical **recovery_plan** alert.
+
+**Runs and the DR report:** **Runs** lists the test runs and executions with every guest's result. **DR report**
+downloads an HTML page with the plan as it ran, who requested and approved it, start and end, and per guest the
+snapshot used, the target, the boot time and every check. Print it to PDF from the browser for your records.
+
+![Runs of a recovery plan](images/recovery-plan-runs.png)
+
+> **Status:** Plans, readiness, test runs, approval and the DR report are covered by unit and integration tests
+> against a simulated Proxmox VE. A test run on the PVE lab is a lab step (`lab/e2e/m5-api.sh recovery-plan`); a
+> real execution on a second cluster has not been run yet.
+
 ## Practise
 
 Run a drill at least once a year and after major changes:
@@ -530,4 +580,5 @@ Run a drill at least once a year and after major changes:
 3. **Do a full DR drill** on spare hardware or a VM: install the image, run the procedure above for one tenant with
    the real recovery key and offsite credentials, restore one VM to a test node and boot it. Record the time it took.
 4. **For replication:** restore a file from the secondary while the primary is unreachable.
+   Run a **test run** of every recovery plan (above) and keep its DR report with the drill record.
 5. Record the drill in your own change log (date, tenant, snapshot, result, duration).
