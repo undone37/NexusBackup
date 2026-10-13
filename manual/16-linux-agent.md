@@ -410,6 +410,17 @@ setuid/setgid bits cleared.
   `/etc/systemd/system/nexus-agent.service`, then install the package; `/etc/nexus-agent` and its enrollment are
   kept.
 
+> **Update agents older than 0.1.0-alpha:** their systemd unit hid `/usr/lib/modules` from backups
+> (`ProtectKernelModules`), so their snapshots lack the kernel modules, and a bare-metal recovery from them does not
+> boot. Install the new package (or bundle) so the unit is replaced; the next backup is complete.
+
+## Bare-metal recovery
+
+Every backup also records the machine's disk layout (partitions, LVM, file systems, boot loader). To rebuild the
+machine on empty disks or as a Proxmox VM (P2V), boot the **rescue ISO** from the release page on the target: see
+[06 Restores](06-restores.md) and `docs/bmr.md`. LUKS, md RAID and ZFS root layouts are not recreated automatically;
+Secure Boot must be off (the ISO is not signed yet).
+
 ## Re-enrolling, moving, removing
 
 - **Host reinstalled or `/etc/nexus-agent` lost:** ask for a **New token** on the appliance (the agent keeps its id,
