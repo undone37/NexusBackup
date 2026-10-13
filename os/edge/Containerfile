@@ -83,8 +83,10 @@ COPY os/greenboot/usr/lib/systemd/system/emergency.service.d/10-nexus.conf \
      /usr/lib/systemd/system/emergency.service.d/10-nexus.conf
 COPY os/etc/systemd/system.conf.d/50-nexus-console.conf /etc/systemd/system.conf.d/50-nexus-console.conf
 # no automatic OS updates from a registry (the edge has no outbound HTTPS); see docs/edge.md
-COPY os/etc/systemd/system/bootc-fetch-apply-updates.timer os/etc/systemd/system/rpm-ostreed-automatic.timer \
-     /etc/systemd/system/
+# updates come from the appliance only: mask the image's own update timers (COPY cannot take the
+# repository's /dev/null symlinks)
+RUN ln -sf /dev/null /etc/systemd/system/bootc-fetch-apply-updates.timer \
+ && ln -sf /dev/null /etc/systemd/system/rpm-ostreed-automatic.timer
 RUN nft -c -f /etc/sysconfig/nftables.conf \
  && systemctl enable nftables.service chronyd.service nexus-edge.service nexus-edge-setup.service \
  && { systemctl disable sshd.service sshd.socket 2>/dev/null || true; } \
