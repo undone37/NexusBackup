@@ -1521,6 +1521,11 @@ button.icon svg {
 .login .button.sso {
   margin-bottom: 0.25rem;
 }
+.login button.passkey {
+  width: 100%;
+  min-height: 40px;
+  margin-top: 0.5rem;
+}
 .login .or {
   display: flex;
   align-items: center;

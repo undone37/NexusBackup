@@ -4,7 +4,7 @@
   import { session } from '../../lib/session.svelte';
   import { href } from '../../lib/router.svelte';
   import { t } from '../../lib/i18n';
-  import type { SecuritySettings, SessionInfo } from '../../lib/types';
+  import type { PasskeySettings, SecuritySettings, SessionInfo } from '../../lib/types';
   import ErrorBanner from '../../components/ErrorBanner.svelte';
   import SessionTable from '../../components/SessionTable.svelte';
 
@@ -18,6 +18,9 @@
   let dekDays = $state(365);
   let banner = $state('');
   let sessions: SessionInfo[] = $state([]);
+  // Phase 21c: passkey requirement for admins / security officers, relying party ID
+  let pk: PasskeySettings | null = $state(null);
+  let pkf = $state({ require_privileged: false, rp_id: '' });
   const isAdmin = $derived(session.user?.role === 'admin');
 
   async function load() {
@@ -28,6 +31,8 @@
       maxSessions = cur.max_sessions;
       dekDays = cur.dek_rotation_days;
       banner = cur.login_banner;
+      pk = await get<PasskeySettings>('/settings/passkeys');
+      pkf = { ...pk.policy };
       if (isAdmin) sessions = await get<SessionInfo[]>('/sessions');
       error = null;
     } catch (e) {
@@ -39,6 +44,10 @@
   async function saveSession(e: SubmitEvent) {
     e.preventDefault();
     if (await act(put('/settings/session', { idle_min: Number(sess.idle_min), absolute_h: Number(sess.absolute_h) }), t.saved)) load();
+  }
+  async function savePasskeys(e: SubmitEvent) {
+    e.preventDefault();
+    if (await act(put('/settings/passkeys', { require_privileged: pkf.require_privileged, rp_id: pkf.rp_id.trim() }), t.saved)) load();
   }
   async function saveDormant(e: SubmitEvent) {
     e.preventDefault();
@@ -66,6 +75,37 @@
     <div class="card-head"><h2 id="sec-mgmt">{t.access.mgmt}</h2></div>
     <p>{t.access.mgmtHint} <a href={href('/settings?tab=firewall')}>{t.access.mgmtLink}</a></p>
   </section>
+
+  {#if pk}
+    <section class="card settings-section" aria-labelledby="sec-pk">
+      <div class="card-head">
+        <h2 id="sec-pk">{t.passkeys.settingsTitle}</h2>
+        <span class="chip {pk.policy.require_privileged ? 'ok' : ''}">{pk.policy.require_privileged ? t.passkeys.on : t.passkeys.off}</span>
+      </div>
+      <p>{t.passkeys.settingsHint}</p>
+      {#if pk.pending}
+        <p class="banner pending"><span>{t.passkeys.pending(pk.pending)} <a href={href('/quorum')}>{t.nav.quorum}</a></span></p>
+      {/if}
+      {#if pk.without_passkey.length}
+        <p class="banner {pk.policy.require_privileged ? 'warn' : 'info'}">{t.passkeys.without(pk.without_passkey)}</p>
+      {:else if pk.rp_id}
+        <p class="muted">{t.passkeys.allHave}</p>
+      {/if}
+      <form onsubmit={savePasskeys}>
+        <fieldset disabled={!isAdmin}>
+          <div class="field">
+            <label class="inline-check"><input type="checkbox" bind:checked={pkf.require_privileged} />{t.passkeys.require}</label>
+          </div>
+          <div class="field">
+            <label for="sec-rp">{t.passkeys.rpId}</label>
+            <input id="sec-rp" bind:value={pkf.rp_id} placeholder={pk.rp_id ?? ''} autocapitalize="none" spellcheck="false" aria-describedby="sec-rp-hint" />
+            <div class="hint" id="sec-rp-hint">{t.passkeys.rpIdHint(pk.rp_id)}</div>
+          </div>
+        </fieldset>
+        {#if isAdmin}<div class="form-actions"><button type="submit" class="primary">{t.save}</button></div>{/if}
+      </form>
+    </section>
+  {/if}
 
   <section class="card settings-section" aria-labelledby="sec-sess">
     <div class="card-head"><h2 id="sec-sess">{t.access.timeouts}</h2></div>

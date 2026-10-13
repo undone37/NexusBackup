@@ -165,7 +165,8 @@ export const en = {
     name: "User name",
     password: "Password",
     totp: "Authenticator code",
-    totpHint: "6-digit code from your authenticator app",
+    totpHint: "6-digit code from your authenticator app — or leave it empty and sign in with a passkey",
+    totpMissing: "Enter the code from your authenticator app, or sign in with a passkey.",
     submit: "Sign in",
     busy: "Signing in…",
     activateLink: "Activate account",
@@ -2952,6 +2953,62 @@ export const en = {
       "To rebuild this tenant on another (set-up) appliance: nexus-offsite <config.json> dr --tenant-key /var/lib/nexus/keyd, with the key on standard input (manual chapter 14). The next offsite run uploads the escrow files for this key.",
     replaced: (kid: string) => `Replaced key ${kid}.`,
     readOnly: "Only administrators request a tenant recovery key.",
+  },
+  passkeys: {
+    title: "Passkeys",
+    lede: "A passkey (security key, phone or the computer's built-in authenticator) can replace the authenticator code as your second factor. Your password is still needed.",
+    requiredLede:
+      "Passkeys are required for your role: sign in and confirm changes with a passkey; authenticator codes are not accepted.",
+    add: "Add passkey",
+    adding: "Waiting for the passkey…",
+    nameLabel: "Name of the passkey",
+    namePlaceholder: "e.g. YubiKey 5C or Laptop",
+    addHint:
+      "Confirm with your current password and an authenticator code (or leave the code empty to confirm with an existing passkey). Your browser then asks for the new passkey.",
+    added: "Passkey added.",
+    renamed: "Passkey renamed.",
+    removed: "Passkey removed.",
+    rename: "Rename",
+    renamePrompt: "New name of the passkey",
+    remove: "Remove",
+    removeConfirm: (name: string) =>
+      `Remove the passkey "${name}"? You can no longer sign in with it. If it was lost, also tell an administrator.`,
+    alg: "Algorithm",
+    host: "Host name",
+    added_at: "Added",
+    lastUsed: "Last used",
+    none: "No passkeys yet.",
+    unsupported: "This browser does not support passkeys (WebAuthn).",
+    cancelled: "The passkey prompt was cancelled.",
+    totpOrPasskey: "Leave empty to confirm with a passkey instead.",
+    // login
+    signIn: "Sign in with a passkey",
+    signingIn: "Waiting for the passkey…",
+    loginHint: "Enter your user name and password, then use the authenticator code or your passkey.",
+    // activation
+    activateTitle: "Passkey",
+    activateOptional: "Optionally register a passkey now (security key, phone or this computer). You can add more later in My account.",
+    activateRequired: "Your role requires a passkey: register one now. Authenticator codes will not be accepted at sign-in.",
+    activateRegister: "Register passkey",
+    activateReady: "Passkey ready: it is saved when you activate the account.",
+    activateMissing: "Register a passkey first.",
+    doneWithPasskey: "Your account is active. Sign in with your user name, your new password and your passkey.",
+    // settings
+    settingsTitle: "Passkeys",
+    settingsHint:
+      "Passkeys are a second factor next to authenticator codes. When required, admins and security officers (local accounts) must sign in and confirm changes with a passkey. Turning the requirement on applies at once; turning it off or changing the host name needs approval.",
+    require: "Require passkeys for admins and security officers",
+    rpId: "Relying party ID (host name)",
+    rpIdHint: (cur: string | null) =>
+      cur
+        ? `Empty = the host name this page is served on (now: ${cur}). Passkeys only work for the host name they were registered on; an IP address cannot be used.`
+        : "Empty = the host name this page is served on. This page was opened by IP address: passkeys need a host name.",
+    without: (names: string[]) =>
+      `Admins and security officers without a passkey for this host name: ${names.join(', ')}. With the requirement on they cannot sign in until they register one (or get a new activation code).`,
+    allHave: "Every admin and security officer has a passkey for this host name.",
+    on: "required",
+    off: "optional",
+    pending: (id: number) => `Change waiting for approval (request #${id}).`,
   },
 };
 
