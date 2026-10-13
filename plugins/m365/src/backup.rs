@@ -11,6 +11,7 @@
 //!            channel-files/<channel>/<path>                private / shared channel sites
 //!            channels/<channel>/<date> <subject> ~<hash>.json   thread: root + replies
 //! g.<group>  conversations/<topic> ~<hash>.json            conversation: threads with posts
+//! e.directory users|groups|devices|applications|service-principals/<name> ~<hash>.json   (see `entra`)
 //!            calendar/<date> <subject> ~<hash>.ics         group calendar (if Graph allows)
 //!            files/<path>                                  groups that are not teams
 //! ```
@@ -48,6 +49,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[path = "chats.rs"]
 pub mod chats;
+#[path = "entra.rs"]
+pub mod entra;
 
 pub const X_ID: &[u8] = b"user.m365.id";
 pub const X_TAG: &[u8] = b"user.m365.tag";
@@ -491,6 +494,12 @@ pub fn run(ctx: &Ctx, c: &Config, g: Graph, guest: &Guest, sink: &mut Sink) -> R
             if c.teams_messages {
                 r.channels(t, started, chans)?;
             }
+        }
+        Guest::Directory => {
+            if !c.entra {
+                return Err(error(22, "Entra ID directory objects are disabled in the source"));
+            }
+            r.directory()?;
         }
         Guest::Group(gid) => {
             if !c.groups {

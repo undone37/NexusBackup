@@ -7,7 +7,7 @@ rust-version.workspace = true
 description = "NexusBackup Windows agent (nexus-agent.exe): VSS + USN journal file backup over mTLS"
 
 [[bin]]
-name = "nexus-agent"
+name = "nexus-agent-windows"  # shipped as nexus-agent.exe (build.sh); unique so cargo test --all does not overwrite agent-linux's nexus-agent
 path = "src/main.rs"
 
 [lib]

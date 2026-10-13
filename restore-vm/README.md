@@ -26,7 +26,7 @@ restore-vm/build.sh        # no root, no host packages; needs podman, rustup, ca
 - `Containerfile` builds a `debian:trixie` (main + contrib) builder image. It
   contains `linux-image-amd64` and the ZFS module, which `zfs-dkms` builds for
   exactly that kernel. It also contains the userland: kmod, util-linux
-  (blkid), lvm2, mdadm and zfsutils-linux. The fixture overlay additionally
+  (blkid), lvm2, mdadm, zfsutils-linux and yara (Phase 21e malware scan). The fixture overlay additionally
   gets busybox, sfdisk, e2fsprogs, xfsprogs, ntfs-3g, btrfs-progs and
   dosfstools. Podman caches the layers.
 - `mkinitrd.sh` runs in the container with `--network none`. It copies the
@@ -86,6 +86,14 @@ Each request is one JSON line. Each reply is one JSON line:
   `{"ok":{"entries":N,"errors":[…]}}`. GNU headers handle long names, binary
   size encoding (files over 8 GiB) and non-UTF-8 names. Unreadable files are
   zero-filled and listed in `errors`, so the archive stays valid.
+- `{"cmd":"rules","rules":[{"name","text"}…]}` compiles YARA rules with `yarac`
+  (Phase 21e, docs/malware-scan.md; one namespace per file).
+- `{"cmd":"scan","limits":{max_size,file_timeout,budget,threads}}` scans every
+  mounted file system with `yara --scan-list` (symlinks never followed) and
+  replies `{"ok":{files,skipped,errors,matches,matches_total,complete,seconds}}`.
+- `{"cmd":"scantar","limits":{…}}` replies `{"ok":"send"}`; the appliance then
+  sends `[u32 BE len][bytes]` frames of a tar (zero-length frame = end) of a
+  file-tree or container snapshot, and the agent replies with the report.
 - `{"cmd":"quit"}` powers off.
 
 ## Isolation properties
@@ -106,7 +114,7 @@ Each request is one JSON line. Each reply is one JSON line:
   dir), which is removed afterwards.
 - **Resource limits.** Default 1 GiB RAM, 2 vCPUs, KVM when `/dev/kvm` is
   usable, else TCG.
-- **Agent input validation.** Requests are at most 64 KiB, strict JSON.
+- **Agent input validation.** Requests are at most 8 MiB (YARA rules), strict JSON.
   Paths must be absolute and must not contain `.`, `..` or NUL; they are at
   most 4096 bytes. A path must lie inside a mountpoint. The part below the
   mountpoint is opened with `openat2(RESOLVE_IN_ROOT|RESOLVE_NO_MAGICLINKS)`,

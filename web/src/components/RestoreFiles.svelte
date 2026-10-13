@@ -8,6 +8,7 @@
   import type { Agent, Overwrite } from '../lib/types';
   import type { Snippet } from 'svelte';
   import Modal from './Modal.svelte';
+  import ScanFirst from './ScanFirst.svelte';
 
   // Restore files of a snapshot (host, NAS share / TrueNAS dataset, plugin file tree, or
   // VM/CT files through the restore micro-VM) onto a path of an agent of the same tenant.
@@ -46,6 +47,7 @@
   let agentId = $state('');
   let confirm = $state('');
   let busy = $state(false);
+  let scanFirst: '' | 'refuse' = $state('');
 
   // Reset the form each time the dialog opens; default target agent = the snapshot's own host.
   let wasOpen = false;
@@ -55,6 +57,7 @@
       target = '';
       overwrite = 'never';
       confirm = '';
+      scanFirst = '';
     }
     wasOpen = open;
   });
@@ -75,7 +78,7 @@
     e.preventDefault();
     if (!ready || !agent) return;
     busy = true;
-    const params = { source, time, paths, target, overwrite, confirm, agent_id: agent.id };
+    const params = { source, time, paths, target, overwrite, confirm, agent_id: agent.id, ...(scanFirst ? { scan_first: scanFirst } : {}) };
     const r = await act(post<{ id: number }>('/jobs', { kind: 'restore_files', tenant, params }), (d) =>
       t.snap.jobStarted(d.id),
     );
@@ -139,6 +142,7 @@
       </div>
     </div>
     {#if otherHost}<p class="banner info">{t.restoreFiles.otherHost}</p>{/if}
+    <ScanFirst bind:value={scanFirst} />
     {#if agent}
       <div class="field">
         <label for="{id}-confirm">{t.restoreFiles.confirm}</label>

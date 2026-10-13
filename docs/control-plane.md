@@ -898,6 +898,62 @@ Daily sealed bundle of the appliance configuration, so a replacement appliance c
 - Lab: `lab/appliance/config-restore.sh` (A backs up to the SFTP testbox; fresh B restores; tenant keys + offsite
   snapshots on B).
 
+## Restore tests and recovery plans (Phase 25, `pve/src/restoretest.rs`, `scheduler/src/recovery.rs`, `web-api/src/recovery.rs`, `reports/src/dr.rs`, catalog v34)
+
+SureBackup-style restore tests and recovery orchestration (docs/veeam-comparison.md rows 2 and 4).
+
+**`nexus-pve <cfg> restore-test <spec.json>`** runs a spec `{mode: test|execute, node, storage, bridge?,
+network_map?, vmid_base, guests: [{source, time, wave, delay, checks, target?}]}`:
+
+- test: a VM boots from instant-recovery overlays (`Cluster::ir_session`: never moved, served while it runs);
+  a container is fully restored (`restore_ct`, links down, `onboot=0`). NICs: `link_down=1`, or on the
+  isolated bridge with VLAN tags removed (`ir::isolate_net`). Name `nxtest-<name>`, VMIDs: the first free ones
+  from `vmid_base` (990000 + (job id mod 90) × 100). Waves start in order (each waits for its largest delay and
+  for the previous wave's checks); all guests stay up until the last wave was checked, then every guest is
+  destroyed (hard stop, `DELETE …?purge=1&destroy-unreferenced-disks=1`), also after a failed start or check
+  and on SIGTERM (job cancel: `restoretest::CANCEL`, the checks stop, guests are destroyed before exiting).
+- execute: full restore (`restore_vm`/`restore_ct`) under the original VMID and name (or `target`), bridges
+  renamed by `network_map` (`ir::map_net`), started, checked, kept. A wave with a failed guest stops the run
+  (later guests `skipped`).
+- checks: VM running; QEMU guest agent `ping` within `boot_timeout` (default 600 s); TCP ports listening
+  inside the guest via guest-agent `exec` of `ss -ltn || netstat -ltn` (Windows: `netstat -an -p TCP`, chosen by
+  `get-osinfo`), polled until all listen (boot timeout, at least 60 s after the agent answered); custom command
+  via guest-agent `exec` with expected exit code and `command_timeout`. Containers: the init PID still runs
+  after 10 s.
+- output: one `restore-test {json}` line per guest (state passed/failed/cancelled/skipped, target, name,
+  boot_secs, checks, error, destroyed); exit 1 unless all passed.
+
+**`nexus-pve <cfg> lab-check <spec.json>`**: node online (`/nodes`), target storage and IR storage status,
+bridges of the test bridge / network map missing on the node (`/nodes/{node}/network`, SDN VNets).
+
+**Scheduler jobs** (`recovery.rs`): `restore_test` (key `guest:<tenant>/<source>`, scheduled ones
+`restore_test:group/<id>`), `recovery_test` / `recovery_execute` (key `recovery_plan:<id>`, the plan of the
+`recovery_runs` row with the newest local snapshot per guest), `recovery_readiness` (daily 05:30 UTC per plan,
+first run when the web-api creates or changes a plan). Results → `restore_tests` rows and the run's `results`.
+Alerts: `restore_test:<tenant>/<source>` (warning, resolved by the next pass; test kinds only),
+`recovery_run:<plan>` (warning for a failed test run, critical for a failed execution), `recovery_ready:<plan>`
+(warning; checks: local snapshot within the RPO per guest, node online, storages active with free space ≥ the
+guests' snapshot sizes, bridges present, no open `restore_test:` alert of the plan's guests nor `verify:` /
+`inventory:` alert of the tenant). Group schedules (`restore_test_schedules`): newest local snapshot per guest
+every N days (first run at once). Approved `recovery_plan.execute` requests (not self-approved while approvals
+are on) become a run + `recovery_execute` job; the job sets the request `executed`.
+
+**API:**
+
+| Route | Who | |
+|---|---|---|
+| `GET /restore-tests?tenant&source&limit` | everyone (own tenant) | results, newest first |
+| `POST /jobs {kind: "restore_test", params: {source, time, node, storage, bridge?, checks?, source_id?}}` | admin, operator, tenant_admin | local snapshot required; containers: `boot_timeout` only |
+| `GET /restore-tests/schedules`, `PUT/DELETE /restore-tests/schedules/{group_id}` | read: everyone; write: admin, tenant_admin | PVE groups only, `every_days` 1–365 |
+| `GET/POST /recovery-plans`, `PUT/DELETE /recovery-plans/{id}` | read: everyone; write: admin, tenant_admin | ≤ 50 steps, waves 1–20, delay ≤ 3600 s, RPO 1–8760 h; runs survive a plan delete |
+| `POST /recovery-plans/{id}/readiness`, `/test` | admin, operator, tenant_admin | 202; one running run per plan |
+| `POST /recovery-plans/{id}/execute {confirm}` | admin, operator, tenant_admin (no API token) | typed plan name; approval `recovery_plan.execute` with the plan as it will run |
+| `GET /recovery-plans/{id}/runs`, `GET /recovery-runs/{id}/report` | everyone (own tenant) | DR report: self-contained HTML (CSP `default-src 'none'`), attachment |
+
+`GET /dashboard` has `restore_tests: {tested, passed, failed, last, failing}` (newest result per guest within the
+window). API tokens: `GET /restore-tests`, `GET /recovery-plans` (read scope). Vault mode: tests and test runs
+need no approval (isolated, destroyed, nothing leaves the cluster); an execution always goes through the gate.
+
 ## First boot (`nexus-setup`, console TUI)
 Network (NetworkManager, static/DHCP on the management NIC) → admin account + TOTP enrollment (QR in terminal, code confirmation) → second person: "create it now (recommended)" = security officer account + TOTP, entered at the console by that person, or "later" (audit `setup.second_person_later`; script mode `"second_person_later": true`) → `keyd init`: recovery key shown once, re-entry of 3 random groups required → TLS certificate (self-signed, SAN = hostname + IPs; fingerprint shown) → metrics token → `/var/lib/nexus/setup-done` (writes `settings.approvals_enabled`: enabled with two people, **disabled with a single administrator** — the TUI and the script output say so; audit `setup.approvals`) → enable `nexus-web-api`, `nexus-scheduler`, `nexus-keyd`, `nexus-replicad` (`nexus-nasmount.socket` is enabled by the image preset).
 

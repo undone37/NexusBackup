@@ -86,6 +86,7 @@ pub mod network;
 mod offsite_ui;
 pub mod orphans;
 mod plugins;
+mod recovery;
 mod renewal;
 pub mod repair;
 pub mod replica;
@@ -94,6 +95,7 @@ mod restore;
 mod restore_files;
 pub mod run;
 mod runctl;
+mod scan;
 pub mod schedule;
 pub mod search;
 mod selection;
@@ -751,6 +753,10 @@ impl Scheduler {
         self.log_err(|s| s.start_agent_poll(now));
         self.log_err(|s| s.queue_config_backup(now));
         self.log_err(|s| s.queue_rekeys(now));
+        // restore tests and recovery plans (recovery.rs)
+        self.log_err(|s| s.queue_restore_tests(now));
+        self.log_err(|s| s.queue_recovery_executes());
+        self.log_err(|s| s.queue_readiness(now));
         self.log_err(|s| s.start_jobs());
         let all = now.saturating_sub(self.last_refresh) >= self.cfg.refresh_secs;
         if all || !self.dirty.is_empty() {
@@ -1159,6 +1165,9 @@ impl Scheduler {
             if self.hold_offsite(&job)? {
                 continue; // pause window: waits for its end
             }
+            if self.hold_for_scan(&job)? {
+                continue; // scan first: waits for its snapshot_scan (scan.rs)
+            }
             let plan = match self.plan(&job) {
                 Ok(p) => p,
                 Err(e) => {
@@ -1212,6 +1221,7 @@ impl Scheduler {
                 &format!("{} job {} ({}) failed: {msg}", job.kind, job.id, job.tenant),
                 lifecycle::tenant_of(job),
             )?;
+            self.recovery_unstartable(job, msg)?;
         }
         Ok(())
     }
@@ -1260,7 +1270,7 @@ impl Scheduler {
             _ => "failed",
         };
         self.db.conn().execute(
-            "UPDATE jobs SET state=?1, finished=?2, log=?3, result=?4 WHERE id=?5",
+            "UPDATE jobs SET state=?1, finished=?2, log=log || ?3, result=?4 WHERE id=?5",
             params![
                 state,
                 catalog::now(),
@@ -1277,6 +1287,10 @@ impl Scheduler {
         )?;
         if job.kind == "report_send" && state != "cancelled" {
             return self.report_finished(&job, ok, &log, result.as_ref());
+        }
+        let recovery = recovery::KINDS.contains(&job.kind.as_str());
+        if recovery {
+            self.recovery_finished(&job, state, &log, f.stdout.as_deref())?;
         }
         if job.kind.starts_with("config_") && state != "cancelled" {
             return self.config_finished(&job, ok, &log, result.as_ref());
@@ -1343,6 +1357,9 @@ impl Scheduler {
         if ok && job.kind == "file_changes" {
             self.changes_bookkeeping(&job, result.as_ref())?;
         }
+        if job.kind == "snapshot_scan" {
+            self.scan_bookkeeping(&job, ok, result.as_ref())?;
+        }
         if job.kind == "gc" {
             self.orphan_bookkeeping(&job.tenant, f.stdout.as_deref())?;
         }
@@ -1385,6 +1402,8 @@ impl Scheduler {
             }
             Outcome::Quorum { message } => self.request_gc_quorum(&job, &message)?,
             Outcome::Cancelled => {}
+            // recovery_finished raised restore_test / recovery_plan alerts
+            Outcome::Failed { .. } if recovery => {}
             Outcome::Failed { alert } => {
                 if alert.is_none() && self.retry_failed(&job, &log)? {
                     return Ok(()); // job_failed only after the last attempt
@@ -1547,7 +1566,7 @@ impl Scheduler {
                 Some(r)
             }
             "alert_test" | "forward_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" | "file_search"
-            | "file_index" | "file_changes" | "snapshot_diff" | "config_backup" => {
+            | "file_index" | "file_changes" | "snapshot_diff" | "config_backup" | "snapshot_scan" => {
                 serde_json::from_str(stdout.unwrap_or_default()).ok()
             }
             "offsite_list" => match serde_json::from_str::<Value>(stdout.unwrap_or_default().trim()) {
@@ -2366,6 +2385,7 @@ impl Scheduler {
     }
 
     pub fn plan(&self, job: &Job) -> Result<Plan> {
+        Self::check_scanned(job)?; // scan.rs
         if let Some(plan) = self.plan_config(job)? {
             return Ok(plan); // config_backup.rs
         }
@@ -2440,6 +2460,9 @@ impl Scheduler {
         }
         if job.kind == "file_changes" || job.kind == "snapshot_diff" {
             return self.plan_changes(job, plan); // changes.rs
+        }
+        if job.kind == "snapshot_scan" {
+            return self.plan_scan(job, plan); // scan.rs
         }
         if job.kind.starts_with("offsite_") {
             return self.plan_offsite_ui(job, plan); // offsite_ui.rs
@@ -2680,6 +2703,7 @@ impl Scheduler {
                 plan.steps.push(pve(args));
             }
             "restore_files" => return self.plan_restore_files(job, plan, replicated),
+            k if recovery::KINDS.contains(&k) => return self.plan_recovery(job, plan),
             "fleet_scan" => return self.plan_fleet_scan(job, plan),
             "agent_renew" => {
                 let a = self.agent(tenant, p["agent_id"].as_str().unwrap_or_default())?;

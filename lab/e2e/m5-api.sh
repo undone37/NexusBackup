@@ -3,7 +3,7 @@
 # X-CSRF-Token, TLS verified against the appliance certificate.
 #   lab/e2e/m5.sh setup && lab/e2e/m5.sh start && lab/e2e/m5-api.sh [step...]
 # steps (default: all): config wait-backup check restore verify quorum phase13 legal-hold phase14d2 access diag audit
-#   (not in the default: offsite-fetch, Phase 17d: removes a local snapshot on disk, raises an inventory alert)
+#   (not in the default: restore-test, recovery-plan (Phase 25, boot guests on pve1); offsite-fetch, Phase 17d: removes a local snapshot on disk, raises an inventory alert)
 #   (not in the default: console, console-check; lab/appliance/console-gate.sh runs them; firewall: appliance VM
 #   only, uses lab/appliance/con.py for the console reset)
 # Lab inputs (env, defaults = dev machine, see lab/README.md):
@@ -678,6 +678,84 @@ step_audit() {
 	api so GET /audit/verify | jq -c . >&2
 	api so GET /audit/verify | jq -e .ok >/dev/null || die "audit chain"
 	api so GET "/audit?order=desc&limit=15" | jq -r '.[] | "  #\(.seq) \(.actor) \(.action) \(.target)"' >&2
+}
+
+# Phase 25: restore tests on the PVE lab (pve1, single node). vm-100 boots isolated from instant-recovery
+# overlays, ct-200 is restored to local-lvm with its links down; both are checked and destroyed again.
+# RT_AGENT=1: vm-100 has the QEMU guest agent (then also ping + tcp/22 inside the guest); default: running only.
+# Checks: results rows, no nxtest- guest left on the node, the restore_test alert of a failing test (bad command)
+# and its resolution, a cancel in the middle still destroys the guest.
+rt_leftovers() {
+	ssh -o BatchMode=yes -p 10022 -i "$LAB/lab_ed25519" -o UserKnownHostsFile="$LAB/known_hosts" root@localhost \
+		"qm list; pct list" | grep -c nxtest- || true
+}
+rt_run() { # rt_run SOURCE CHECKS-JSON -> job JSON
+	local src=$1 checks=$2 time r
+	time=$(api admin GET "/snapshots?tenant=lab&source=$src" | jq '[.[] | select(.local)] | max_by(.time).time')
+	r=$(api admin POST /jobs "$(jq -nc --arg s "$src" --argjson t "$time" --argjson c "$checks" \
+		'{kind:"restore_test", tenant:"lab", params:{source:$s, time:$t, node:"pve1", storage:"local-lvm", checks:$c}}')")
+	expect 202 "restore_test $src"
+	wait_job admin "$(jq -r .id <<<"$r")" 1800
+}
+step_restore_test() {
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	local vmc='{"agent":false}' j t0
+	[ "${RT_AGENT:-0}" = 1 ] && vmc='{"ports":[22],"command":["true"]}'
+	for spec in "vm-100 $vmc" 'ct-200 {}'; do
+		set -- $spec
+		t0=$(date +%s)
+		j=$(rt_run "$1" "$2")
+		[ "$(jq -r .state <<<"$j")" = ok ] || die "restore test $1: $(jq -r .log <<<"$j" | tail -n 20)"
+		log "restore test $1 passed in $(($(date +%s) - t0)) s: $(api admin GET "/restore-tests?source=$1&limit=1" | jq -c '.[0] | {state, target, name, boot_secs, checks: [.checks[] | .name]}')"
+	done
+	[ "$(rt_leftovers)" = 0 ] || die "nxtest- guests left on pve1"
+	# a failing check raises restore_test:lab/vm-100, the next pass resolves it
+	j=$(rt_run vm-100 '{"boot_timeout":30,"ports":[1]}')
+	[ "$(jq -r .state <<<"$j")" = failed ] || die "the failing restore test passed"
+	api admin GET "/alerts?state=open" | jq -e 'any(.[]; .key == "restore_test:lab/vm-100")' >/dev/null || die "no restore_test alert"
+	j=$(rt_run vm-100 "$vmc")
+	api admin GET "/alerts?state=open" | jq -e 'all(.[]; .key != "restore_test:lab/vm-100")' >/dev/null || die "restore_test alert not resolved"
+	# cancel while the guest runs: it is destroyed anyway
+	local time r id
+	time=$(api admin GET "/snapshots?tenant=lab&source=vm-100" | jq '[.[] | select(.local)] | max_by(.time).time')
+	r=$(api admin POST /jobs "$(jq -nc --argjson t "$time" '{kind:"restore_test", tenant:"lab", params:{source:"vm-100", time:$t, node:"pve1", storage:"local-lvm", checks:{boot_timeout:900}}}')")
+	id=$(jq -r .id <<<"$r")
+	for _ in $(seq 120); do [ "$(rt_leftovers)" -gt 0 ] && break; sleep 1; done
+	api admin POST "/jobs/$id/cancel" >/dev/null
+	j=$(wait_job admin "$id" 600)
+	[ "$(jq -r .state <<<"$j")" = cancelled ] || die "cancel: $(jq -r .state <<<"$j")"
+	[ "$(rt_leftovers)" = 0 ] || die "the cancelled test left its guest"
+	log "restore tests ok (failure alert raised and resolved, cancel cleaned up)"
+}
+
+# Phase 25: a recovery plan on the lab (vm-100 in wave 1, ct-200 in wave 2 after 10 s): readiness, isolated test
+# run, DR report. The real execution is not run here (it would restore over the lab's VMIDs 100/200: those
+# exist, so it fails by design); to try it, set targets to free VMIDs and approve as so.
+step_recovery_plan() {
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	local src r id run j
+	src=$(api admin GET /sources | jq '[.[] | select(.tenant == "lab" and .kind == "pve")][0].id')
+	r=$(api admin POST /recovery-plans "$(jq -nc --argjson s "$src" '{tenant:"lab", name:"lab-dr", source_id:$s, node:"pve1",
+		storage:"local-lvm", rpo_hours:48, steps:[{source:"vm-100", wave:1, checks:{agent:false}}, {source:"ct-200", wave:2, delay:10}]}')")
+	expect 201 "create recovery plan"
+	id=$(jq -r .id <<<"$r")
+	for _ in $(seq 300); do
+		r=$(api admin GET /recovery-plans | jq --argjson id "$id" '.[] | select(.id == $id)')
+		[ "$(jq -r '.readiness != null' <<<"$r")" = true ] && break
+		sleep 2
+	done
+	[ "$(jq -r .readiness.ok <<<"$r")" = true ] || die "plan not ready: $(jq -c .readiness <<<"$r")"
+	log "readiness: $(jq -c '[.readiness.checks[] | .name]' <<<"$r")"
+	r=$(api admin POST "/recovery-plans/$id/test")
+	expect 202 "test run"
+	run=$(jq -r .run_id <<<"$r")
+	j=$(wait_job admin "$(jq -r .job_id <<<"$r")" 3600)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "test run: $(jq -r .log <<<"$j" | tail -n 30)"
+	[ "$(rt_leftovers)" = 0 ] || die "test run left guests"
+	api admin GET "/recovery-runs/$run/report" >"$S/dr-report.html"
+	expect 200 "DR report"
+	grep -q "Recovery plan test run: lab-dr" "$S/dr-report.html" || die "DR report content"
+	log "recovery plan test run ok in $(jq '.finished - .started' <<<"$j") s; report $S/dr-report.html"
 }
 
 steps=("$@")

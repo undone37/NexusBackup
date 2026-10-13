@@ -78,6 +78,6 @@ over two snapshots). Only names, sizes and times; never contents.
 
 ## Not in this step
 
-Secure restore (docs/veeam-comparison.md row 8) needs the opt-in YARA scan of a snapshot in the restore micro-VM,
-a separate Phase 21 sub-step. Thresholds of the mass-rename rule are constants. The file browser and the file
+Secure restore (docs/veeam-comparison.md row 8) is the opt-in YARA scan of Phase 21e (docs/malware-scan.md); its
+matches set the same flag. Thresholds of the mass-rename rule are constants. The file browser and the file
 search do not warn about flagged snapshots.

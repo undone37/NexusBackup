@@ -7,7 +7,8 @@
 //! (document libraries of a site; the site collection and web GUIDs as base64url,
 //! the ids Graph uses do not fit the guest-id rules), `t.<group id>` (team files,
 //! private/shared channel files, channel messages), `g.<group id>` (Microsoft 365
-//! group: conversations, calendar, and the group's files unless it is a team).
+//! group: conversations, calendar, and the group's files unless it is a team),
+//! `e.directory` (Entra ID directory objects, export only: see `backup::entra`).
 //! Incremental backups: see `backup`.
 
 pub mod auth;
@@ -47,6 +48,9 @@ pub struct Config {
     pub groups: bool,
     /// 1:1 and group chats of users (export API, metered: opt-in)
     pub chats: bool,
+    /// Entra ID directory objects (users, groups + memberships, devices, app
+    /// registrations, service principals; extra permissions: opt-in)
+    pub entra: bool,
     /// `model` parameter of the Teams export API (`A`, `B`; None = evaluation mode)
     pub teams_model: Option<String>,
     pub sharepoint_host: Option<String>,
@@ -141,6 +145,7 @@ impl Config {
             teams_messages: flag("teams_messages", false),
             groups: flag("groups", true),
             chats: flag("chats", false),
+            entra: flag("entra", false),
             teams_model: match v["teams_export_model"].as_str().unwrap_or("B") {
                 "evaluation" => None,
                 m => Some(m.to_owned()),
@@ -152,7 +157,8 @@ impl Config {
             port,
             ca_cert: opt("ca_cert"),
         };
-        if !(c.exchange || c.onedrive || c.sharepoint || c.teams || c.teams_messages || c.groups || c.chats) {
+        if !(c.exchange || c.onedrive || c.sharepoint || c.teams || c.teams_messages || c.groups || c.chats || c.entra)
+        {
             return Err(("exchange", "select at least one workload".into()));
         }
         if c.files() && c.sharepoint_host.is_none() {
@@ -227,6 +233,8 @@ pub enum Guest {
     Team(String),
     /// Microsoft 365 group (group id)
     Group(String),
+    /// the tenant's Entra ID directory objects (one guest per source)
+    Directory,
 }
 
 fn guid_bytes(g: &str) -> Option<Vec<u8>> {
@@ -251,6 +259,7 @@ impl Guest {
             Guest::User(u) => format!("u.{}", u.to_ascii_lowercase()),
             Guest::Team(t) => format!("t.{}", t.to_ascii_lowercase()),
             Guest::Group(g) => format!("g.{}", g.to_ascii_lowercase()),
+            Guest::Directory => "e.directory".into(),
             Guest::Site(s, w) => {
                 let mut b = guid_bytes(s).unwrap_or_default();
                 b.extend(guid_bytes(w).unwrap_or_default());
@@ -265,6 +274,7 @@ impl Guest {
             "u" if guid_ok(v) => Some(Guest::User(v.into())),
             "t" if guid_ok(v) => Some(Guest::Team(v.into())),
             "g" if guid_ok(v) => Some(Guest::Group(v.into())),
+            "e" if v == "directory" => Some(Guest::Directory),
             "s" => {
                 let b = B64URL.decode(v).ok().filter(|b| b.len() == 32)?;
                 Some(Guest::Site(guid_str(&b[..16]), guid_str(&b[16..])))
@@ -561,6 +571,13 @@ impl Plugin for M365 {
                 return Ok(invalid("groups", missing(&e, "Group.Read.All")));
             }
         }
+        if c.entra {
+            for (url, perm) in backup::entra::CHECKS {
+                if let Err(e) = g.get(url, &[]) {
+                    return Ok(invalid("entra", missing(&e, perm)));
+                }
+            }
+        }
         Ok(Validation::Valid)
     }
 
@@ -687,6 +704,14 @@ impl Plugin for M365 {
                 Ok(())
             })?;
         }
+        if c.entra {
+            out.push(SdkGuest {
+                tags: vec!["type:directory".into()],
+                id: Guest::Directory.id(),
+                title: "Entra ID directory: users, groups, devices, app registrations (export only)".into(),
+                size: None,
+            });
+        }
         Ok(out)
     }
 
@@ -695,7 +720,7 @@ impl Plugin for M365 {
         let guest = ctx.guest().ok_or_else(|| {
             error(
                 22,
-                "select users, sites, teams or groups in the group: a tenant is backed up per object",
+                "select users, sites, teams, groups or the Entra ID directory in the group: a tenant is backed up per object",
             )
         })?;
         let guest = Guest::parse(guest).ok_or_else(|| error(22, format!("unknown guest {guest:?}")))?;
@@ -737,6 +762,7 @@ mod tests {
             u.clone(),
             Guest::Team("2c712604-1370-44e7-a1f5-426573fda80a".into()),
             Guest::Group("2c712604-1370-44e7-a1f5-426573fda80b".into()),
+            Guest::Directory,
         ] {
             assert!(plugin_sdk::proto::valid_guest_id(&g.id()));
             assert_eq!(Guest::parse(&g.id()).map(|x| x.id()), Some(g.id()));

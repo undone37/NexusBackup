@@ -22,6 +22,8 @@
 //! - further app registrations (`add_app`) with per-app throttling
 //!   (`throttle_app`) and per-app request counts; 1:1 and group chats
 //!   (`/users/{id}/chats/getAllMessages`, `/chats/{id}`, `/chats/{id}/messages`).
+//! - Entra ID directory objects: devices, app registrations, service principals,
+//!   group members and owners (`add_device`, `add_application`, `add_member`).
 
 #![allow(dead_code)]
 
@@ -189,6 +191,12 @@ pub struct Tenant {
     /// chats: (chat id, topic, member user ids) and their messages (chat id, json)
     pub chats: Vec<(String, String, Vec<String>)>,
     pub chat_msgs: Vec<(String, Value)>,
+    /// Entra ID: devices, applications, service principals (json); group members /
+    /// owners (group id, "members" | "owners", json)
+    pub devices: Vec<Value>,
+    pub applications: Vec<Value>,
+    pub service_principals: Vec<Value>,
+    pub members: Vec<(String, String, Value)>,
     // observations
     /// token → client id; Graph requests per client id
     pub token_app: HashMap<String, String>,
@@ -582,6 +590,40 @@ impl Tenant {
     /// A Microsoft 365 group that is not a team (site with a "Documents" library).
     pub fn add_group(&mut self, name: &str) -> String {
         self.add_group_entry(name, false).0
+    }
+
+    pub fn add_device(&mut self, name: &str) -> String {
+        let id = self.guid();
+        let device_id = self.guid();
+        self.devices
+            .push(json!({"id": id, "deviceId": device_id, "displayName": name,
+            "operatingSystem": "Windows", "operatingSystemVersion": "10.0.26100", "accountEnabled": true,
+            "trustType": "AzureAd", "registrationDateTime": iso(OLD)}));
+        id
+    }
+
+    /// An app registration and its service principal; returns the application object id.
+    pub fn add_application(&mut self, name: &str) -> String {
+        let (id, app_id, sp, key) = (self.guid(), self.guid(), self.guid(), self.guid());
+        self.applications
+            .push(json!({"id": id, "appId": app_id, "displayName": name,
+            "signInAudience": "AzureADMyOrg", "createdDateTime": iso(OLD),
+            "passwordCredentials": [{"displayName": "ci", "hint": "abc", "keyId": key}],
+            "requiredResourceAccess": [{"resourceAppId": "00000003-0000-0000-c000-000000000000",
+                "resourceAccess": [{"id": "df021288-bdef-4463-88db-98f22de89214", "type": "Role"}]}]}));
+        self.service_principals
+            .push(json!({"id": sp, "appId": app_id, "displayName": name,
+            "servicePrincipalType": "Application", "accountEnabled": true}));
+        id
+    }
+
+    /// A user as member (or owner) of a group.
+    pub fn add_member(&mut self, group: &str, user: &str, owner: bool) {
+        let u = self.users.iter().find(|u| u.id == user).unwrap();
+        let v = json!({"@odata.type": "#microsoft.graph.user", "id": u.id, "displayName": u.name,
+            "userPrincipalName": u.upn});
+        let rel = if owner { "owners" } else { "members" };
+        self.members.push((group.into(), rel.into(), v));
     }
 
     pub fn group(&self, id: &str) -> &Group {
@@ -1334,6 +1376,21 @@ impl Tenant {
                 Some(x) => j(200, self.group_json(x)),
                 None => not_found(),
             },
+            ("GET", ["groups", g, rel @ ("members" | "owners")]) => {
+                if !self.groups.iter().any(|x| x.id == *g) {
+                    return not_found();
+                }
+                let all = self
+                    .members
+                    .iter()
+                    .filter(|m| m.0 == *g && m.1 == *rel)
+                    .map(|m| m.2.clone())
+                    .collect();
+                self.page(req, all, None)
+            }
+            ("GET", ["devices"]) => self.page(req, self.devices.clone(), None),
+            ("GET", ["applications"]) => self.page(req, self.applications.clone(), None),
+            ("GET", ["servicePrincipals"]) => self.page(req, self.service_principals.clone(), None),
             ("GET", ["groups", g, "drive"]) => match self.groups.iter().find(|x| x.id == *g) {
                 Some(x) => j(200, json!({"id": x.drive})),
                 None => not_found(),
