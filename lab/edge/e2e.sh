@@ -102,6 +102,8 @@ step_check() {
 step_enroll() {
 	api_env
 	local r id tok j fp
+	# rerun-safe: drop the edge of an earlier run
+	for id in $(api admin GET /edges | jq -r '.[] | select(.name=="lab-edge") | .id'); do api admin DELETE "/edges/$id" >/dev/null; done
 	r=$(api admin POST /edges "$(jq -nc --argjson p "$CTL" --argjson pp "$PUB" \
 		'{name:"lab-edge", host:"127.0.0.1", port:$p, public_host:"10.0.2.2", public_port:$pp}')")
 	expect 201 "create edge"

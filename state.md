@@ -374,6 +374,8 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 - [x] forwarding.sh all (1..129 at both sinks, equal hashes, outage + backlog, quorum disable) and pve-nas-ops.sh all (priority, limits, identity, instant disk)
 - [x] config-restore.sh backup/fresh/restore/check: bundle on A, restore on a fresh B, A's admin signs in on B, tenant keys rekeyed from the escrow, 0 AVCs on A and B. Bugs fixed on the way: keyd could not publish the config backup key (SELinux), restore renamed across /var→/etc (EXDEV), offsite kept another installation's escrow silently (now refused)
 - [x] lab check lists every distinct AVC (tail -20 had hidden the keyd denial)
-- [ ] network.sh, disks.sh, grub-lock.sh, restore-test/recovery-plan, lab/edge, lab/linux/bmr.sh
+- [x] network.sh (apply, egress, MTU ok/mismatch, mgmt rollback/confirm), disks.sh (RAID6/XFS create, fail, replace + rebuild, alerts resolve; mdadm needs CAP_MKNOD), grub-lock.sh, restore tests + recovery plan on PVE, lab/linux enroll/backup/incr/endpoint — all enforcing, 0 nexus AVCs
+- [ ] lab/edge (enrollment fixed: edge_enroll was refused as "invalid tenant"), lab/linux/bmr.sh rerun on the final image
+- CI on bf5e4da: all Rust tests green; `prove pve-plugin/t` failed because the runner lacked libjson-perl (installed by the maintainer)
 - [x] CI: gh-runner rootless podman repaired by the maintainer (linger, store reset, XDG_RUNTIME_DIR in the runner .env)
 - [ ] screenshots regenerate, tag v0.1.0-alpha (draft)
