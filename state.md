@@ -372,6 +372,8 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 - Fixed by the lab: image web stage copies openapi.json; restorevm stage installs yara; guest selection accepts 100/"100"; dontaudit lsblk userdb; lab cancel step uses ct-200 only, auto group name unique
 - [x] `lab/appliance/e2e.sh all` on a fresh image: all 12 API steps, 0 nexus AVCs (only bootc's chcon probe)
 - [x] forwarding.sh all (1..129 at both sinks, equal hashes, outage + backlog, quorum disable) and pve-nas-ops.sh all (priority, limits, identity, instant disk)
-- [ ] network.sh, config-restore.sh, disks.sh, grub-lock.sh, restore-test/recovery-plan, lab/edge, lab/linux/bmr.sh
+- [x] config-restore.sh backup/fresh/restore/check: bundle on A, restore on a fresh B, A's admin signs in on B, tenant keys rekeyed from the escrow, 0 AVCs on A and B. Bugs fixed on the way: keyd could not publish the config backup key (SELinux), restore renamed across /var→/etc (EXDEV), offsite kept another installation's escrow silently (now refused)
+- [x] lab check lists every distinct AVC (tail -20 had hidden the keyd denial)
+- [ ] network.sh, disks.sh, grub-lock.sh, restore-test/recovery-plan, lab/edge, lab/linux/bmr.sh
 - [x] CI: gh-runner rootless podman repaired by the maintainer (linger, store reset, XDG_RUNTIME_DIR in the runner .env)
 - [ ] screenshots regenerate, tag v0.1.0-alpha (draft)
