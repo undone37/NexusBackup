@@ -276,6 +276,116 @@ pub enum Message {
         ca_pem: String,
     },
     RenewOk,
+    // --- v1.4, appended: endpoint status (only if HelloReply.caps contains CAP_POLL) ---
+    /// Appliance → agent after a backup / restore session ended: its summary for the
+    /// endpoint UI, the next scheduled run and the per-agent UI policy. Answered with
+    /// `SummaryAck`; the agent keeps the last 100 summaries.
+    SessionSummary {
+        summary: Summary,
+        status: ApplianceStatus,
+    },
+    SummaryAck {
+        job: u64,
+    },
+    /// Appliance → agent every few minutes (short session): the current appliance view,
+    /// and `ack` = ids of earlier `BackupRequest`s the appliance has acted on (the agent
+    /// drops them). Answered with `PollReply`.
+    Poll {
+        status: ApplianceStatus,
+        ack: Vec<String>,
+    },
+    PollReply {
+        /// "back up now" requests queued by local users, not yet acknowledged
+        requests: Vec<BackupRequest>,
+        power: PowerState,
+        /// `ApplianceStatus::policy_version` the agent stored
+        policy_version: u32,
+        /// a backup session is active on the agent right now
+        busy: bool,
+    },
+}
+
+/// Capability: the agent understands `SessionSummary` and `Poll` (v1.4).
+pub const CAP_POLL: &str = "poll";
+/// Longest `Summary::log_tail` (lines) and line length (bytes) accepted.
+pub const MAX_LOG_TAIL: usize = 200;
+pub const MAX_LOG_LINE: usize = 1024;
+/// At most this many requests in one `PollReply`.
+pub const MAX_REQUESTS: usize = 16;
+/// Longest free-text field (names, header, errors) accepted in v1.4 messages.
+pub const MAX_TEXT: usize = 256;
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionKind {
+    Backup,
+    Restore,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionResult {
+    Success,
+    Warning,
+    Failed,
+    Cancelled,
+}
+
+/// One finished backup / restore session of this agent (times: Unix seconds).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Summary {
+    /// appliance job id
+    pub job: u64,
+    pub kind: SessionKind,
+    pub started: u64,
+    pub ended: u64,
+    pub result: SessionResult,
+    pub read_bytes: u64,
+    pub transferred_bytes: u64,
+    pub new_bytes: u64,
+    pub warnings: u32,
+    /// "" = none
+    pub first_error: String,
+    pub snapshot_time: Option<u64>,
+    /// the session's job log lines (as shown to operators), last ≤ MAX_LOG_TAIL
+    pub log_tail: Vec<String>,
+}
+
+/// Branding / visibility of the endpoint UIs, set per agent by an administrator.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+pub struct UiPolicy {
+    /// `#rrggbb` or ""
+    pub accent: String,
+    /// "" = product name
+    pub header: String,
+    pub hide_backup_now: bool,
+    pub hide_tray: bool,
+}
+
+/// What the appliance tells the agent with every summary and poll.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct ApplianceStatus {
+    /// appliance display name ("managed by")
+    pub appliance: String,
+    pub now: u64,
+    pub next_run: Option<u64>,
+    pub ui_policy: UiPolicy,
+    pub policy_version: u32,
+}
+
+/// A "back up now" request queued on the agent by a local user.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BackupRequest {
+    /// random hex, ≤ 64 characters
+    pub id: String,
+    pub queued_at: u64,
+}
+
+/// Power and network state of the agent host (laptops). `None` = unknown.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+pub struct PowerState {
+    pub on_battery: Option<bool>,
+    pub battery_percent: Option<u8>,
+    pub metered: Option<bool>,
+    pub network_name: Option<String>,
 }
 
 /// Capability: the peer understands `WantLz4` / `ChunkLz4` / `RestoreChunkLz4`.
@@ -381,6 +491,32 @@ pub fn check(m: &Message) -> io::Result<()> {
         {
             return Err(bad("filters exceed limits"))
         }
+        Message::SessionSummary { summary, status } => {
+            let s = summary;
+            if s.log_tail.len() > MAX_LOG_TAIL
+                || s.log_tail.iter().any(|l| l.len() > MAX_LOG_LINE)
+                || s.first_error.len() > MAX_LOG_LINE
+                || !status_ok(status)
+            {
+                return Err(bad("session summary exceeds limits"));
+            }
+            return Ok(());
+        }
+        Message::Poll { status, ack } => {
+            if ack.len() > MAX_REQUESTS || ack.iter().any(|a| a.len() > 64) || !status_ok(status) {
+                return Err(bad("poll exceeds limits"));
+            }
+            return Ok(());
+        }
+        Message::PollReply { requests, power, .. } => {
+            if requests.len() > MAX_REQUESTS
+                || requests.iter().any(|r| r.id.len() > 64)
+                || power.network_name.as_ref().is_some_and(|n| n.len() > MAX_TEXT)
+            {
+                return Err(bad("poll reply exceeds limits"));
+            }
+            return Ok(());
+        }
         _ => return Ok(()),
     };
     if entries.len() > MAX_BATCH {
@@ -396,6 +532,10 @@ pub fn check(m: &Message) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn status_ok(s: &ApplianceStatus) -> bool {
+    s.appliance.len() <= MAX_TEXT && s.ui_policy.header.len() <= MAX_TEXT && s.ui_policy.accent.len() <= 16
 }
 
 /// Enrollment proof bound to one TLS session (`exporter` = TLS keying material
@@ -558,6 +698,85 @@ mod tests {
         )
         .unwrap();
         assert!(read_msg(&mut &buf[..]).is_err(), "filter count limit");
+    }
+
+    #[test]
+    fn v14_messages_keep_old_encodings() {
+        // RenewOk stays 35; the v1.4 variants follow
+        assert_eq!(postcard::to_stdvec(&Message::RenewOk).unwrap(), vec![35]);
+        let status = ApplianceStatus {
+            appliance: "nexus01".into(),
+            now: 1_700_000_000,
+            next_run: Some(1_700_003_600),
+            ui_policy: UiPolicy {
+                accent: "#0a7f5a".into(),
+                header: "ACME IT".into(),
+                hide_backup_now: false,
+                hide_tray: true,
+            },
+            policy_version: 3,
+        };
+        let sum = Message::SessionSummary {
+            summary: Summary {
+                job: 9,
+                kind: SessionKind::Backup,
+                started: 1,
+                ended: 2,
+                result: SessionResult::Warning,
+                read_bytes: 10,
+                transferred_bytes: 5,
+                new_bytes: 4,
+                warnings: 1,
+                first_error: "x".into(),
+                snapshot_time: Some(2),
+                log_tail: vec!["scan: 3 entries".into()],
+            },
+            status: status.clone(),
+        };
+        assert_eq!(postcard::to_stdvec(&sum).unwrap()[0], 36);
+        let poll = Message::Poll {
+            status,
+            ack: vec!["ab".into()],
+        };
+        assert_eq!(postcard::to_stdvec(&poll).unwrap()[0], 38);
+        let reply = Message::PollReply {
+            requests: vec![BackupRequest {
+                id: "ab".into(),
+                queued_at: 5,
+            }],
+            power: PowerState {
+                on_battery: Some(true),
+                battery_percent: Some(55),
+                metered: None,
+                network_name: Some("office".into()),
+            },
+            policy_version: 3,
+            busy: false,
+        };
+        for m in [sum, poll, reply, Message::SummaryAck { job: 9 }] {
+            let mut buf = Vec::new();
+            write_msg(&mut buf, &m).unwrap();
+            assert_eq!(read_msg(&mut &buf[..]).unwrap(), m);
+        }
+        // limits
+        let mut buf = Vec::new();
+        write_msg(
+            &mut buf,
+            &Message::PollReply {
+                requests: vec![
+                    BackupRequest {
+                        id: "x".into(),
+                        queued_at: 0
+                    };
+                    MAX_REQUESTS + 1
+                ],
+                power: PowerState::default(),
+                policy_version: 0,
+                busy: false,
+            },
+        )
+        .unwrap();
+        assert!(read_msg(&mut &buf[..]).is_err());
     }
 
     #[test]

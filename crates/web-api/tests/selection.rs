@@ -394,3 +394,94 @@ async fn agent_limits_renew_and_reenroll() {
         "the source keeps pointing at the agent"
     );
 }
+
+/// Phase 24a: endpoint status in the agent list, UI policy (admins), laptop
+/// options (tenant writers), session summaries (tenant-scoped, read).
+#[tokio::test]
+async fn agent_endpoint_policy_laptop_and_sessions() {
+    let t = T::new();
+    fixture(&t);
+    t.exec(&format!(
+        "UPDATE agents SET reachable = 1, last_poll = 50, power = '{{\"on_battery\":true,\"battery_percent\":40}}' WHERE id = '{AG}';
+         INSERT INTO tenants (name) VALUES ('other');
+         INSERT INTO agents (id, tenant, name, host, port) VALUES ('fedcba9876543210', 'other', 'x', 'h', 7444);
+         INSERT INTO agent_sessions (agent_id, job_id, tenant, summary, created) VALUES
+           ('{AG}', 4, 'acme', '{{\"job\":4,\"result\":\"Success\",\"log_tail\":[\"a\"]}}', 9),
+           ('{AG}', 5, 'acme', '{{\"job\":5,\"result\":\"Failed\",\"log_tail\":[\"b\"]}}', 10);"
+    ));
+    let (alice, otto, tina) = (t.login("alice").await, t.login("otto").await, t.login("tina").await);
+    let r = t.get("/api/v1/agents", &tina).await;
+    assert_eq!(r.body.as_array().unwrap().len(), 1, "tenant-scoped");
+    let a = &r.body[0];
+    assert_eq!(
+        (&a["reachable"], &a["power"]["battery_percent"]),
+        (&json!(true), &json!(40))
+    );
+    assert_eq!(
+        (&a["ui_policy"], &a["ui_policy_version"], &a["laptop"]),
+        (&json!({}), &json!(0), &json!({}))
+    );
+
+    // UI policy: admins only, validated, versioned, audited
+    let path = format!("/api/v1/agents/{AG}/ui-policy");
+    let pol = json!({"accent": "#0a7f5a", "header": "ACME IT", "hide_backup_now": true, "hide_tray": false});
+    for who in [&otto, &tina] {
+        assert_eq!(t.put(&path, who, pol.clone()).await.status, StatusCode::FORBIDDEN);
+    }
+    for bad in [
+        json!({"accent": "red"}),
+        json!({"header": "x".repeat(65)}),
+        json!({"other": 1}),
+    ] {
+        let st = t.put(&path, &alice, bad.clone()).await.status;
+        assert!(
+            st == StatusCode::BAD_REQUEST || st == StatusCode::UNPROCESSABLE_ENTITY,
+            "{bad}: {st}"
+        );
+    }
+    let r = t.put(&path, &alice, pol.clone()).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!((&r.body["ui_policy"], &r.body["ui_policy_version"]), (&pol, &json!(1)));
+    let r = t.put(&path, &alice, json!({})).await;
+    assert_eq!(r.body["ui_policy_version"], 2);
+    assert_eq!(
+        t.one::<i64>("SELECT COUNT(*) FROM audit WHERE action = 'agent.ui_policy'"),
+        2
+    );
+    assert_eq!(
+        t.put("/api/v1/agents/ffffffffffffffff/ui-policy", &alice, json!({}))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    // laptop options: tenant writers (not operators), bounded
+    let path = format!("/api/v1/agents/{AG}/laptop");
+    let lap = json!({"min_battery": 20, "skip_metered": true, "run_missed": true, "retry_hours": 12});
+    assert_eq!(t.put(&path, &otto, lap.clone()).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        t.put(&path, &alice, json!({"min_battery": 101})).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        t.put(&path, &alice, json!({"retry_hours": 400})).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    let r = t.put(&path, &alice, lap.clone()).await;
+    assert_eq!((r.status, &r.body["laptop"]), (StatusCode::OK, &lap));
+    assert_eq!(
+        t.one::<i64>("SELECT COUNT(*) FROM audit WHERE action = 'agent.laptop'"),
+        1
+    );
+
+    // sessions: newest first, no log lines; other tenants' agents are invisible
+    let r = t.get(&format!("/api/v1/agents/{AG}/sessions"), &tina).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.body[0]["job"], 5);
+    assert!(r.body[0].get("log_tail").is_none());
+    assert_eq!(r.body[1]["delivered"], Value::Null);
+    assert_eq!(
+        t.get("/api/v1/agents/fedcba9876543210/sessions", &tina).await.status,
+        StatusCode::NOT_FOUND
+    );
+}

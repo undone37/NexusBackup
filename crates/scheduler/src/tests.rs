@@ -1998,8 +1998,12 @@ mod accounts;
 mod changes;
 /// Phase 18: compliance clock keeper and the `clock_skew` alert.
 mod clock;
+/// Appliance configuration backup (config_backup / config_upload).
+mod config_backup;
 /// Phase 14d certificate / secret / token expiry alerts.
 mod disks;
+/// Phase 24a endpoint status: agent poll, requests, laptop policies, summaries.
+mod endpoint;
 mod expiry;
 /// Phase 18: fleecing space alerts from nexus-pve's `fleecing-space` lines.
 mod fleecing;

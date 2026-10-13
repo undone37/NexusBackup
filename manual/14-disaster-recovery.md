@@ -6,14 +6,17 @@ lost (hardware failure, fire, ransomware on the management network) and how the 
 > **Status:** A tenant's offsite copy can be attached to a running appliance in the web UI
 > ([Attach an offsite copy in the web UI](#attach-an-offsite-copy-in-the-web-ui)); the console procedure stays as the
 > fallback. Both are proven in integration tests and lab drills only (a fresh store, an SFTP test box and MinIO with
-> Object Lock); neither has been run on real hardware or against a real Hetzner Storage Box, and neither restores the
-> appliance configuration (see [What is not recovered](#what-is-not-recovered)). Practise it before you depend on it.
+> Object Lock); neither has been run on real hardware or against a real Hetzner Storage Box. The appliance
+> configuration comes back from the daily [configuration backup](#the-configuration-backup)
+> ([New appliance from a configuration backup](#new-appliance-from-a-configuration-backup)). Practise it before you
+> depend on it.
 
 ## What protects you
 
 | Scenario | What you need | Where the data comes from |
 |---|---|---|
 | Appliance lost, tenant has an offsite target | recovery key + offsite credentials (SFTP key or S3 access key) + new hardware | Storage Box or S3 bucket ([07 Offsite](07-offsite.md)) |
+| Appliance lost: same configuration, users, agents and peers on new hardware | recovery key + the access data of one offsite target (or a downloaded configuration backup) | [New appliance from a configuration backup](#new-appliance-from-a-configuration-backup) (below) |
 | A customer (tenant) rebuilds its own data elsewhere, without the appliance recovery key | that tenant's **tenant recovery key** + its offsite credentials + an appliance set up with the image | the tenant's offsite target ([Recover one tenant with its tenant recovery key](#recover-one-tenant-with-its-tenant-recovery-key)) |
 | Appliance lost, tenant is replicated | the secondary appliance (it has its own keys) | the secondary's local store ([08 Replication](08-replication.md)) |
 | Single snapshot damaged locally | nothing extra | `verify` finds it; restore an older snapshot, or fetch it from offsite (below) |
@@ -404,22 +407,112 @@ local administrator account.
 > console gate ([above](#emergency-root-shell-on-the-console)); the two together have not been run on real hardware.
 > A second administrator remains the better protection.
 
-## What is not recovered
+## The configuration backup
 
-The offsite copy and the replica contain **backup data and tenant keys only**. They do not contain the appliance
-configuration. After a total loss you must recreate by hand:
+Every day (02:30) the appliance makes a **configuration backup**: one sealed file (bundle) with everything a
+replacement appliance needs besides the backup data:
 
-- the catalog: tenants, sources, policies, protection groups, users and their roles, the settings (approvals, alert
-  delivery, single sign-on), alerts and job history, and the **audit log** (it lives only in the catalog; forwarding it off the appliance is not
-  implemented yet, see [10 Approvals and audit](10-approvals-and-audit.md));
-- `totp.key` (the key that encrypts the users' TOTP seeds) and `secrets.key` (the scheduler's key for source and
-  offsite secrets): users must enroll again and all source passwords, API tokens and keys must be entered again;
-- the agent CA: every Linux/Windows agent must be enrolled again with a new token ([04 Sources](04-sources.md));
-- replication peers and plugin installations (plugins must be uploaded and approved again, [12 Plugins](12-plugins.md));
-- SSH key files under `/etc/nexus/ssh/` and the offsite key files.
+- the catalog: tenants, sources, policies, protection groups, users and their roles and authenticators, API
+  tokens, settings (approvals, alert delivery, single sign-on, firewall), installed plugins and their trusted
+  publisher keys, alerts, job history and the **audit log**;
+- `totp.key` (the key of the users' TOTP seeds) and `secrets.key` (the key of the source and offsite secrets);
+- the agent CA (enrolled Linux/Windows agents keep working) and the replication identities (CA, client keys);
+- the appliance's SSH keys and known hosts (`/etc/nexus/ssh`: Proxmox VE nodes, Storage Boxes);
+- the TLS identity (self-signed certificate and key, which replication secondaries pin) and an imported web
+  certificate, and the metrics token.
 
-> **Status:** An appliance configuration backup is an open production item. Until it exists, keep an up-to-date
-> written record of your configuration (sources, policies, groups, offsite targets with pinned host keys, users).
+It does **not** contain backup data, the tenants' data keys (they are escrowed on each offsite target, see
+[The recovery key](#the-recovery-key)) or the master key itself (only `kek.recovery`, which needs the recovery key).
+Plugin programs are not included either: upload them again after a restore.
+
+The bundle is encrypted so that only the **recovery key** opens it: the key service publishes a public key derived
+from the master key, a helper without network access seals the bundle to it, and opening it needs the master key,
+which only the recovery key unwraps. Nobody can read the bundle without the recovery key, not even on the appliance.
+
+Where it goes:
+
+- to the offsite target of **every tenant** (except deactivated tenants), below `config/<appliance ID>/` (one file
+  per run, named by its time). Each target keeps the newest bundle of each of the last **14 days** and of each of the
+  last **12 months**; with S3 Object Lock every bundle is locked for 14 days, the monthly ones for six months;
+- the newest one stays on the appliance for **Download latest**.
+
+**Configuration → Settings → Backup of this appliance** (administrators and security officers) shows the last
+successful run, the newest bundle, the appliance ID, every offsite target with its last upload, and the recent runs.
+Administrators can **Run now** (for example after larger changes) and **Download latest** (needs the download
+permission; audited as `download.get`; no approval, because the bundle is useless without the recovery key). Keep a
+downloaded copy with your disaster recovery records, especially when no tenant has an offsite target.
+
+![Settings: Backup of this appliance](images/settings-config-backup.png)
+
+If a run fails, the warning alert `config_backup` is raised (key `config_backup`; `config_backup:<tenant>` when the
+upload to that tenant's target failed). It resolves after the next successful run.
+
+> **Status:** Implemented (unit and integration tests: a bundle made without the recovery key and opened with it, a
+> wrong key refused, every listed file present, retention on a target, restore end to end in a temporary root, API
+> roles and audit). The appliance VM drill (`lab/appliance/config-restore.sh`) is written but has not been run yet;
+> it has not been used on real hardware.
+
+## New appliance from a configuration backup
+
+Use this when the appliance is lost and a new one should take its place with the same configuration, users,
+agents and replication peers. You need:
+
+- the new hardware (or VM) with the appliance image installed, and a network address for it. Give it the **same
+  address and host name** as the lost appliance if you can: agents, replication peers and browsers know the old one;
+- the **recovery key of the lost appliance**;
+- either a downloaded bundle, or the access data of one of the tenants' **offsite targets** from your records: for a
+  Storage Box host, port, user, base directory and the **pinned host key**; for S3 endpoint, region, bucket, prefix,
+  access key and secret key.
+
+Steps at the console of the new appliance (first boot wizard on tty1):
+
+1. Do step **1. Management network** as usual.
+2. On the overview press **b** (*Restore a configuration backup*). Choose the target type with Left/Right.
+   - **Storage Box (SFTP):** the screen shows a new public key (`ssh-ed25519 … nexus-restore`). Add it to the
+     Storage Box's `authorized_keys` (Hetzner Robot or another machine), then type host, port, user, base directory
+     and the pinned host key.
+   - **S3:** type endpoint, region, bucket, prefix, access key, secret key and whether the provider needs path-style
+     URLs.
+   - **Appliance ID:** leave it empty unless the target holds configuration backups of several appliances (the
+     error message lists them; the ID is on the lost appliance's settings page and in your records).
+   - **Recovery key:** the lost appliance's key, 16 groups of 4 hex digits.
+
+   Press Enter on the last field. The wizard opens the outbound firewall for that target only, fetches the newest
+   bundle, checks the recovery key against it (a wrong key changes nothing) and restores every file with its owner,
+   permissions and SELinux label. The key service gets the lost appliance's master key back, so **the recovery key
+   stays the same**. The wizard then sets the boot menu password, writes `setup-done` and starts the services.
+3. Open the web interface and sign in with your **usual account** (password and authenticator of the lost
+   appliance). The audit log continues the lost appliance's log; the restore is recorded as `setup.restore_config`.
+4. The appliance now restores the **data keys of every tenant with an offsite target** from that target by itself
+   (job *Restore tenant keys from offsite*, no recovery key needed: the keys were wrapped with the restored master
+   key) and indexes the offsite copy. Until then no job runs for that tenant. When it has finished, the snapshots
+   appear on **Snapshots** as *offsite only*: **Fetch from offsite** what you need and restore it as usual
+   ([06 Restores](06-restores.md#restore-from-the-offsite-copy)). If it fails, the warning alert
+   `config_restore:<tenant>` names the reason; it is retried every hour.
+5. **Plugins:** upload the plugin bundles again (**Plugins**); they are marked *failed* with the note "restored from
+   a configuration backup" until then. Approve them as usual.
+6. **Different address?** If the new appliance has another address than the lost one, run
+   `nexus-setup --force-reconfigure-network` from a root shell on the console (new certificate) and tell the
+   replication peers and agents the new address.
+7. Backups, offsite copies, configuration backups and replication continue on their schedules, into the same stores
+   and offsite targets.
+
+From a downloaded bundle instead of an offsite target (root shell on the console, before first boot is finished,
+for example in a lab): `nexus-setup restore-config /path/config.bundle` (the recovery key is read from standard
+input). `nexus-setup restore-config --offsite target.json` takes a target file in the format of
+[Recover a tenant from the offsite copy](#recover-a-tenant-from-the-offsite-copy-console), step 2.
+
+What is **not** recovered this way:
+
+- the data of tenants **without** an offsite target (it was only on the lost appliance) and of replicated tenants
+  on a secondary (pair the secondary with its primary again, [08 Replication](08-replication.md));
+- configuration changes made after the newest configuration backup;
+- plugin programs (step 5) and the operating system's network configuration (step 1).
+
+> **Status:** The restore is tested in integration tests (temporary root: restore with the recovery key, wrong key
+> refused, owners and modes; tenant keys from the escrow with the restored master key; the scheduler waits for them).
+> The wizard screen and the restore on an installed appliance under SELinux have not been run yet
+> (`lab/appliance/config-restore.sh` covers the console command, the wizard screen is a manual check).
 
 ## Practise
 

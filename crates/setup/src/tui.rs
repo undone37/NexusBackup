@@ -207,6 +207,15 @@ enum Screen {
         info: TlsInfo,
     },
     Finish,
+    /// first boot on a replacement appliance: fetch a configuration backup from an
+    /// offsite target and restore it (crate::cfgbackup)
+    Restore {
+        form: Form,
+        sftp: bool,
+        /// the public half of the key generated for this restore (SFTP)
+        pubkey: String,
+        key_file: std::path::PathBuf,
+    },
     Done {
         lines: Vec<String>,
     },
@@ -379,6 +388,16 @@ impl App<'_> {
                     self.status = None;
                     self.advance()?;
                     return Ok(());
+                }
+                KeyCode::Char('b') if !self.reconfigure_only => {
+                    self.status = None;
+                    match self.restore_screen(true) {
+                        Ok(screen) => screen,
+                        Err(e) => {
+                            self.err(format!("{e:#}"));
+                            Screen::Overview { sel }
+                        }
+                    }
                 }
                 KeyCode::Char('r') => {
                     let step = Step::ALL[sel];
@@ -648,12 +667,143 @@ impl App<'_> {
                 _ => Screen::Finish,
             },
 
+            Screen::Restore {
+                mut form,
+                sftp,
+                pubkey,
+                key_file,
+            } => {
+                let was = form.fields[0].choice;
+                if k.code == KeyCode::Esc {
+                    let _ = std::fs::remove_file(&key_file);
+                    Screen::Overview { sel: 0 }
+                } else if form.handle(k) {
+                    self.busy(term, "Fetching the configuration backup and restoring it ...");
+                    match self.submit_restore(&form, sftp, &key_file) {
+                        Ok(lines) => {
+                            let _ = std::fs::remove_file(&key_file);
+                            self.status = None;
+                            Screen::Done { lines }
+                        }
+                        Err(e) => {
+                            self.err(format!("{e:#}"));
+                            Screen::Restore {
+                                form,
+                                sftp,
+                                pubkey,
+                                key_file,
+                            }
+                        }
+                    }
+                } else if form.fields[0].choice != was {
+                    // other target type: other fields (the generated key stays)
+                    let mut next = restore_form(!sftp);
+                    next.fields[0].choice = form.fields[0].choice;
+                    Screen::Restore {
+                        form: next,
+                        sftp: !sftp,
+                        pubkey,
+                        key_file,
+                    }
+                } else {
+                    Screen::Restore {
+                        form,
+                        sftp,
+                        pubkey,
+                        key_file,
+                    }
+                }
+            }
+
             Screen::Done { lines } => {
                 self.outcome = Some(Outcome::Completed);
                 Screen::Done { lines }
             }
         };
         Ok(())
+    }
+
+    /// New restore screen with a fresh SSH key (private tmp of the wizard, 0600).
+    fn restore_screen(&mut self, sftp: bool) -> Result<Screen> {
+        if self.s.paths.setup_done.exists() {
+            anyhow::bail!("this appliance is already set up");
+        }
+        let (pem, pubkey) = crate::cfgbackup::ssh_key("nexus-restore");
+        let key_file = std::env::temp_dir().join(format!("nexus-restore-{}.key", std::process::id()));
+        let _ = std::fs::remove_file(&key_file);
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&key_file)?
+                .write_all(pem.as_bytes())?;
+        }
+        Ok(Screen::Restore {
+            form: restore_form(sftp),
+            sftp,
+            pubkey,
+            key_file,
+        })
+    }
+
+    /// Fetch + restore; the lines of the Done screen.
+    fn submit_restore(&mut self, form: &Form, sftp: bool, key_file: &std::path::Path) -> Result<Vec<String>> {
+        let v = |i: usize| form.val(i).trim().to_owned();
+        let (remote, rest) = if sftp {
+            let port: u16 = v(2).parse().map_err(|_| anyhow::anyhow!("port: a number"))?;
+            (
+                serde_json::json!({"type": "sftp", "host": v(1), "port": port, "user": v(3), "base_dir": v(4),
+                                   "host_key": v(5), "key_file": key_file}),
+                6,
+            )
+        } else {
+            let secret = std::env::temp_dir().join(format!("nexus-restore-{}.s3", std::process::id()));
+            {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                let _ = std::fs::remove_file(&secret);
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&secret)?
+                    .write_all(form.val(6).as_bytes())?;
+            }
+            (
+                serde_json::json!({"type": "s3", "endpoint": v(1), "region": v(2), "bucket": v(3), "prefix": v(4),
+                                   "access_key": v(5), "secret_key_file": secret,
+                                   "path_style": form.fields[7].choice == 1}),
+                8,
+            )
+        };
+        let appliance = Some(v(rest)).filter(|a| !a.is_empty());
+        let real = self.s.paths.root == std::path::Path::new("/") && !self.s.dry_run;
+        let nft = real.then(|| std::path::Path::new("/usr/sbin/nft"));
+        let fetched = crate::cfgbackup::fetch(&serde_json::json!({ "remote": remote }), appliance.as_deref(), nft);
+        if !sftp {
+            let _ = std::fs::remove_file(std::env::temp_dir().join(format!("nexus-restore-{}.s3", std::process::id())));
+        }
+        let (id, _, bytes) = fetched?;
+        let r = self.s.restore_config(&bytes, form.val(rest + 1))?;
+        let mut l = vec![
+            format!("The configuration of appliance {id} was restored ({} files).", r.files),
+            format!("Bundle made on {} at unix time {}.", r.host, r.created),
+            String::new(),
+            "The services are started. The recovery key of the lost appliance stays valid;".into(),
+            "the administrators and their authenticators are those of the lost appliance.".into(),
+            String::new(),
+            "Next (manual chapter 14, New appliance from a configuration backup):".into(),
+            "  1. sign in to the web UI with your usual account".into(),
+            "  2. upload the plugins again, if any were installed".into(),
+            "  3. recover each tenant's data from its offsite copy (Tenants -> Attach".into(),
+            "     offsite copy, or nexus-offsite ... dr on the console)".into(),
+        ];
+        l.push(String::new());
+        l.extend(self.summary()?.into_iter().skip(1).take(3));
+        Ok(l)
     }
 
     fn submit_network(&mut self, form: Form, nics: Vec<Nic>, term: &mut Term) -> Result<Screen> {
@@ -877,10 +1027,14 @@ impl App<'_> {
                         "The key service was initialised but its recovery key was never confirmed.",
                     ));
                 }
+                l.push(Line::from(
+                    "Replacing a lost appliance? Set up the network (step 1), then press b to restore",
+                ));
+                l.push(Line::from("its configuration backup from an offsite target."));
                 (
                     "Overview".into(),
                     l,
-                    "Enter: continue  Up/Down + r: redo network/account/certificate  q: quit".into(),
+                    "Enter: continue  Up/Down + r: redo  b: restore a configuration backup  q: quit".into(),
                 )
             }
 
@@ -1143,6 +1297,24 @@ impl App<'_> {
                 ("Step 7: finish".into(), l, "Enter: finish  Esc: overview".into())
             }
 
+            Screen::Restore { form, sftp, pubkey, .. } => {
+                let mut l = if *sftp {
+                    vec![
+                        Line::from("Add this key to the Storage Box (authorized_keys), then fill in the target:"),
+                        Line::from(bold(pubkey.clone())),
+                    ]
+                } else {
+                    vec![Line::from("The S3 bucket of the lost appliance's offsite copy:")]
+                };
+                l.push(Line::from(
+                    "Host key / credentials from your records; the recovery key of the LOST appliance.",
+                ));
+                l.push(Line::from(""));
+                let top = y + l.len() as u16 + if *sftp { 1 } else { 0 };
+                l.extend(form.lines(cursor, top, x));
+                ("Restore a configuration backup".into(), l, form_help.into())
+            }
+
             Screen::Done { lines } => (
                 "Done".into(),
                 lines.iter().map(|s| Line::from(s.clone())).collect(),
@@ -1150,6 +1322,38 @@ impl App<'_> {
             ),
         }
     }
+}
+
+/// The target fields of the restore screen; `[0]` chooses the type.
+fn restore_form(sftp: bool) -> Form {
+    let kind = Field::choice("Offsite target", vec!["Storage Box (SFTP)".into(), "S3".into()]);
+    let mut f = if sftp {
+        vec![
+            kind,
+            Field::text("Host", ""),
+            Field::text("Port", "23"),
+            Field::text("User", ""),
+            Field::text("Base directory", ""),
+            Field::text("Pinned host key", ""),
+        ]
+    } else {
+        vec![
+            kind,
+            Field::text("Endpoint (https://)", ""),
+            Field::text("Region", ""),
+            Field::text("Bucket", ""),
+            Field::text("Prefix", ""),
+            Field::text("Access key", ""),
+            Field::secret("Secret key"),
+            Field::choice("Path-style URLs", vec!["no".into(), "yes".into()]),
+        ]
+    };
+    f.push(Field::text("Appliance id (opt.)", ""));
+    f.push(Field::secret("Recovery key"));
+    if !sftp {
+        f[0].choice = 1;
+    }
+    Form::new(f)
 }
 
 fn challenge_screen(key: RecoveryKey) -> Screen {

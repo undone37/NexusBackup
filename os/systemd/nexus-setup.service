@@ -37,7 +37,9 @@ UMask=0077
 # the service owners; root needs DAC override to write into keyd's 0700 dir),
 # chowns the files it creates to the service users, and drives NetworkManager,
 # hostnamed and systemd over D-Bus (those need uid 0, not capabilities).
-CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+# CAP_NET_ADMIN: nft opens the outbound firewall for one offsite target while a
+# configuration backup is fetched ("b" on the overview, replacement appliance).
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_NET_ADMIN
 AmbientCapabilities=
 ReadWritePaths=/var/lib/nexus /etc/nexus
 ProtectSystem=strict
@@ -65,9 +67,10 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@resources
 SystemCallErrorNumber=EPERM
-# D-Bus (system bus) and sysfs NIC info only; the wizard opens no IP sockets.
-RestrictAddressFamilies=AF_UNIX AF_NETLINK
-IPAddressDeny=any
+# D-Bus (system bus), sysfs NIC info, nft (netlink); IP only to fetch a configuration
+# backup from the offsite target the operator typed in (DNS + that target: the
+# nftables output policy drops everything else; SELinux allows the SSH/HTTP ports).
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
 
 [Install]
 WantedBy=multi-user.target

@@ -55,6 +55,8 @@ jobs:
         with:
           name: nexus-agent-windows
           path: target/agent-dist/windows/
+      # desktop UI (crates/agent-gui): Windows + Linux x86_64 builds, clippy for Windows
+      - run: crates/agent-gui/build.sh --no-arm64 --clippy
   audit:
     runs-on: self-hosted
     # audit-check reports through a check run

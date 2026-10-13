@@ -368,3 +368,102 @@ fn filters_limits_and_certificate_renewal() {
     let port2 = serve(&paths);
     session(&ca, port2, &n.cert_sha256).close();
 }
+
+/// Phase 24: a local user requests a backup over the UI socket, the appliance's
+/// poll delivers a session summary, picks the request up and acknowledges it.
+#[test]
+fn endpoint_status_poll_and_request() {
+    use agent_proto::{ApplianceStatus, SessionKind, SessionResult, Summary, UiPolicy};
+    let d = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let run = tempfile::tempdir().unwrap(); // socket paths are short (SUN_LEN)
+    let paths = Paths {
+        config: d.path().join("agent/etc"),
+        state: d.path().join("agent/state"),
+        run: run.path().to_path_buf(),
+    };
+    let ca = Ca::load_or_create(&d.path().join("ca")).unwrap();
+    nexus_agent::init(&paths, TOKEN, None).unwrap();
+    let mut agent = Agent::new(paths.clone(), Settings::default()).unwrap();
+    agent.exit_on_update = false;
+    let agent = Arc::new(agent);
+    fs::create_dir_all(&paths.run).unwrap();
+    let ul = agent_core::ui::unix::bind(&paths.ui_socket(), None).unwrap();
+    let a = agent.clone();
+    std::thread::spawn(move || agent_core::ui::unix::serve(a, ul));
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let a = agent.clone();
+    std::thread::spawn(move || a.serve(l));
+    let mut ui = agent_ui_proto::Client::connect(paths.ui_socket()).unwrap();
+    assert!(ui.request_backup().is_err(), "not enrolled yet");
+    let e = enroll::enroll(&ca, "127.0.0.1", port, &agent_proto::token_digest(TOKEN), ID, T).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+
+    let req = ui.request_backup().unwrap();
+    assert!(matches!(ui.request_backup(), Err(agent_ui_proto::Error::Refused(m)) if m.contains("try again")));
+    assert_eq!(ui.status().unwrap().state, agent_ui_proto::AgentState::Requested);
+
+    let status = ApplianceStatus {
+        appliance: "nexus01".into(),
+        now: 1,
+        next_run: Some(4_000_000_000),
+        ui_policy: UiPolicy {
+            header: "ACME".into(),
+            ..Default::default()
+        },
+        policy_version: 4,
+    };
+    let target = |ack: Vec<String>, summaries: Vec<Summary>| agent_conn::poll::Target {
+        id: ID.into(),
+        host: "127.0.0.1".into(),
+        port,
+        pins: vec![e.cert_sha256.clone()],
+        status: status.clone(),
+        ack,
+        summaries,
+    };
+    let sum = Summary {
+        job: 7,
+        kind: SessionKind::Backup,
+        started: 100,
+        ended: 200,
+        result: SessionResult::Success,
+        read_bytes: 1000,
+        transferred_bytes: 400,
+        new_bytes: 300,
+        warnings: 0,
+        first_error: String::new(),
+        snapshot_time: Some(150),
+        log_tail: vec!["scan: 3 entries".into()],
+    };
+    let mut out = vec![];
+    agent_conn::poll::poll_all(&ca, &[target(vec![], vec![sum])], 4, T, &mut |v| out.push(v));
+    let v = &out[0];
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["poll"], true);
+    assert_eq!(v["delivered"], serde_json::json!([7]));
+    assert_eq!(v["requests"][0]["id"], req.request_id.as_str());
+    assert_eq!(v["policy_version"], 4);
+    assert!(v["power"].is_object());
+
+    let st = ui.status().unwrap();
+    assert_eq!((st.agent_id.as_str(), st.enrolled, st.reachable), (ID, true, true));
+    assert_eq!(st.managed_by.as_deref(), Some("nexus01"));
+    assert_eq!(st.ui_policy.header.as_deref(), Some("ACME"));
+    assert_eq!((st.last_success, st.next_run), (Some(200), Some(4_000_000_000)));
+    let s = ui.sessions(Some(10)).unwrap();
+    assert_eq!((s.len(), s[0].id, s[0].new_bytes), (1, 7, 300));
+    assert_eq!(ui.session(7).unwrap().log_tail, vec!["scan: 3 entries".to_string()]);
+
+    // acknowledged: gone; the agent stays idle
+    let mut out = vec![];
+    agent_conn::poll::poll_all(&ca, &[target(vec![req.request_id], vec![])], 1, T, &mut |v| out.push(v));
+    assert_eq!(out[0]["requests"], serde_json::json!([]));
+    assert_eq!(ui.status().unwrap().state, agent_ui_proto::AgentState::Idle);
+    // an unreachable agent: an error line, no panic
+    let mut bad = target(vec![], vec![]);
+    bad.port = 1;
+    let mut out = vec![];
+    agent_conn::poll::poll_all(&ca, &[bad], 1, T, &mut |v| out.push(v));
+    assert_eq!(out[0]["ok"], false);
+}
