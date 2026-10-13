@@ -761,6 +761,13 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
   approval for restoring malware-flagged snapshots to production, scan back to the last clean snapshot, incident-mode
   freezes, privileged-activity risk signals) with Phase 29, Tier 2 as Phase 30; details: `docs/netbackup-comparison.md`.
 
+### Phase 31 — Guest file index without the restore micro-VM (proposed 2026-10-13 by user request)
+- VM/CT disk file systems (GPT/MBR, LVM2, NTFS, ext4, FAT; XFS/btrfs/LDM later) parsed read-only by a sandboxed
+  helper without keys (`nexus-fsindex`), incremental per changed metadata chunk; one search index per tenant in an
+  embedded Tantivy service (`nexus-index`) with sealed segments, file-version model (first seen / gone), instant
+  search API and UI with version timeline; the sealed per-snapshot name indexes stay the source of truth; the micro-VM
+  stays the fallback. OpenSearch and Meilisearch considered and not recommended. Details: `docs/file-index-v2-plan.md`.
+
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
 ---
