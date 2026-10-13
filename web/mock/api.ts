@@ -303,6 +303,8 @@ const db = {
   reports: [] as Json[],
   /** Phase 16a/b: nexus-disks status (GET /hardware) */
   hardware: {} as Json,
+  /** Phase 22a: nexus-net status (GET /network) */
+  network: {} as Json,
   /** Phase 19a: bare-metal recovery / P2V sessions (GET /rescue) */
   rescue: [] as Json[],
   /** Phase 21b setting `incident` (active or the last one) */
@@ -1493,6 +1495,7 @@ function seed() {
   seedAnomalies(t);
   seedDamage(t);
   seedHardware(t);
+  seedNetwork(t);
   seedM365(t);
   seedRescue(t);
   seedTenantAdmin(t);
@@ -2055,6 +2058,9 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'disks.replace':
     case 'disks.grow':
       hwExecute(action, p, by, qid);
+      break;
+    case 'network.apply':
+      netExecute(p, by, qid);
       break;
     case 'update.apply':
       if (db.updates.available) Object.assign(db.updates, { staged: { ...db.updates.available, since: now() }, status: 'staged' });
@@ -5298,6 +5304,7 @@ function diagChecks(t: number): Json[] {
     c('systemd.failed', 'Failed system services', 'pass', 1, 'no failed units'),
     c('bootc', 'OS image (bootc)', 'pass', 1, `booted ${db.updates.booted?.version}, rollback ${db.updates.rollback?.version}`),
     c('smart', 'Disk health (SMART)', 'skip', 1, 'smartctl not installed'),
+    c('network.mtu', 'Network: path MTU', 'warn', 2, '10.30.4.20 (data): interface bond0.20 has MTU 9000, the path takes 1500'),
     // Phase 21b security posture (recommendations: pass / warn, never update blockers)
     ...postureChecks().map((x) => c(x[0], x[1], x[2] ? 'pass' : 'warn', x[2] ? 1 : 2, x[3])),
   ];
@@ -5416,6 +5423,172 @@ on('GET', '/settings/config-backup/download', async (c) => {
   await audit(u.name, 'download.get', `config_backup/${l.appliance}`, { kind: 'config_backup', bytes: l.bytes, created: l.created, sha256: l.sha256 });
   c.res.setHeader('Content-Disposition', `attachment; filename="nexus-config-${l.appliance}-${l.created}.bundle"`);
   return [200, 'NXCFGB1 (mock bundle: sealed to the recovery key)\n', 'application/octet-stream'];
+});
+
+// ---------------------------------------------------------------- network (Phase 22a)
+// nexus-net as the web-api sees it (GET /network): devices, the applied configuration, a
+// management change waiting for its confirmation, the path-MTU results, operations.
+const NET_FIELDS = { ports: [], mode: null, parent: null, vlan_id: null, role: null, mtu: null, dhcp: false, addresses: [], gateway: null, dns: [], routes: [] };
+const netIface = (x: Json): Json => ({ ...structuredClone(NET_FIELDS), ...x });
+function seedNetwork(t: number) {
+  const nic = (name: string, mac: string, state: string, speed: number | null, master: string | null = null, addresses: string[] = []) => ({
+    name, kind: 'nic', mac, mtu: master ? 9000 : 1500, state, speed, master, addresses,
+  });
+  db.network = {
+    scanned: t - 240,
+    devices: [
+      nic('ens3', '3c:ec:ef:10:22:01', 'up', 1000, null, ['192.0.2.10/24']),
+      nic('ens4', '3c:ec:ef:10:22:02', 'up', 25000, 'bond0'),
+      nic('ens5', '3c:ec:ef:10:22:03', 'up', 25000, 'bond0'),
+      nic('ens6', '3c:ec:ef:10:22:04', 'up', 10000, null, ['172.16.50.5/24']),
+      nic('ens7', '3c:ec:ef:10:22:05', 'down', null),
+      { name: 'bond0', kind: 'bond', mac: '3c:ec:ef:10:22:02', mtu: 9000, state: 'up', speed: 50000, master: null, addresses: [] },
+      { name: 'bond0.20', kind: 'vlan', mac: '3c:ec:ef:10:22:02', mtu: 9000, state: 'up', speed: 50000, master: null, addresses: ['10.0.20.5/24'] },
+    ],
+    config: {
+      interfaces: [
+        netIface({ name: 'bond0', kind: 'bond', ports: ['ens4', 'ens5'], mode: '802.3ad', mtu: 9000 }),
+        netIface({ name: 'bond0.20', kind: 'vlan', parent: 'bond0', vlan_id: 20, role: 'data', mtu: 9000, addresses: ['10.0.20.5/24'], routes: [{ to: '10.30.0.0/16', via: '10.0.20.1' }] }),
+        netIface({ name: 'ens6', kind: 'ethernet', role: 'replication', addresses: ['172.16.50.5/24'] }),
+      ],
+      offsite_role: 'management',
+    },
+    management: { ifname: 'ens3', source: 'console' },
+    reset: null,
+    pending: null as Json | null,
+    mtu: {
+      ts: t - 1800,
+      results: [
+        { role: 'data', addr: '10.0.20.11', dev: 'bond0.20', expected_dev: 'bond0.20', mtu: 9000, result: 'ok', path_mtu: null },
+        { role: 'data', addr: '10.0.20.12', dev: 'bond0.20', expected_dev: 'bond0.20', mtu: 9000, result: 'ok', path_mtu: null },
+        { role: 'data', addr: '10.30.4.20', dev: 'bond0.20', expected_dev: 'bond0.20', mtu: 9000, result: 'mismatch', path_mtu: 1500 },
+        { role: 'replication', addr: '172.16.50.9', dev: 'ens6', expected_dev: 'ens6', mtu: 1500, result: 'ok', path_mtu: null },
+        { role: 'offsite', addr: '198.51.100.40', dev: 'ens3', expected_dev: null, mtu: 1500, result: 'no_reply', path_mtu: null },
+      ],
+    },
+    ops: [
+      { id: rand(16), op: 'apply', state: 'done', by: 'admin', quorum_id: null, created: t - 6 * 86400, finished: t - 6 * 86400 + 4, detail: 'applied: nexus-bond0, nexus-ens6, nexus-bond0.20', error: null },
+    ] as Json[],
+  };
+}
+function netView() {
+  const n = db.network;
+  const t = now();
+  if (n.pending && n.pending.deadline <= t) netFinish(false, null);
+  return {
+    available: true, stale: false, scanned: n.scanned, devices: n.devices, config: n.config, management: n.management, reset: n.reset,
+    pending: n.pending ? { id: n.pending.id, by: n.pending.by, deadline: n.pending.deadline, remaining: n.pending.deadline - t } : null,
+    mtu: n.mtu, ops: [...n.ops].sort((a: Json, b: Json) => b.created - a.created),
+    request_pending: db.quorum.filter((q) => q.action === 'network.apply' && q.state === 'pending').pop()?.id ?? null,
+    confirm_secs: 120, client_ip: CLIENT_IP,
+  };
+}
+const netMgmtChain = (c: Json) => {
+  const m = c.interfaces.find((i: Json) => i.role === 'management');
+  return JSON.stringify(m ? [m, c.interfaces.find((i: Json) => i.name === m.parent) ?? null] : []);
+};
+function netValidate(c: Json) {
+  const nics = db.network.devices.filter((d: Json) => d.kind === 'nic').map((d: Json) => d.name);
+  const used = new Map<string, string>();
+  const roles = new Set<string>();
+  const ifs: Json[] = Array.isArray(c?.interfaces) ? c.interfaces : [];
+  if (ifs.length > 16) throw new HttpError(400, 'at most 16 interfaces');
+  const take = (nic: string, what: string, n: string) => {
+    if (!nics.includes(nic)) throw new HttpError(400, `${n}: there is no network card "${nic}"`);
+    if (used.has(nic)) throw new HttpError(400, `${nic} is used twice (${used.get(nic)} and ${what})`);
+    used.set(nic, what);
+  };
+  for (const i of ifs) {
+    const n = String(i.name ?? '');
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$/.test(n)) throw new HttpError(400, `"${n}": an interface name has 1-15 letters, digits, '.', '_' or '-'`);
+    if (i.kind === 'ethernet') take(n, `interface ${n}`, n);
+    else if (i.kind === 'bond') {
+      if (!['active-backup', '802.3ad'].includes(i.mode)) throw new HttpError(400, `${n}: bond mode must be active-backup or 802.3ad (LACP)`);
+      if (!i.ports?.length || i.ports.length > 8) throw new HttpError(400, `${n}: a bond has 1 to 8 ports`);
+      for (const p of i.ports) take(p, `bond ${n}`, n);
+    } else if (i.kind === 'vlan') {
+      if (!(i.vlan_id >= 1 && i.vlan_id <= 4094)) throw new HttpError(400, `${n}: VLAN ID must be 1 to 4094`);
+      if (!ifs.some((x) => x.name === i.parent && x.kind !== 'vlan') && !nics.includes(i.parent)) throw new HttpError(400, `${n}: parent "${i.parent}" is neither a network card nor an interface here`);
+    } else throw new HttpError(400, `${n}: kind must be ethernet, bond or vlan`);
+    if (i.role) {
+      if (roles.has(i.role)) throw new HttpError(400, `only one interface can have the role ${i.role}`);
+      roles.add(i.role);
+    }
+    if (i.mtu != null && !(i.mtu >= 1280 && i.mtu <= 9216)) throw new HttpError(400, `${n}: MTU must be 1280 to 9216`);
+    for (const a of i.addresses ?? []) if (!/^[0-9a-fA-F:.]+\/\d{1,3}$/.test(a)) throw new HttpError(400, `${n}: "${a}" is not address/prefix (192.0.2.10/24)`);
+    if (i.gateway && i.role !== 'management') throw new HttpError(400, `${n}: only the management interface has a default gateway; reach other networks with routes`);
+    if (i.role === 'management' && !i.dhcp && !(i.addresses ?? []).length) throw new HttpError(400, `${n}: the management interface needs DHCP or an address`);
+    for (const r of i.routes ?? []) if (!/\/\d{1,3}$/.test(r.to) || /\/0$/.test(r.to)) throw new HttpError(400, `${n}: route "${r.to}" is not a network (10.30.0.0/16)`);
+  }
+  const hadMgmt = db.network.config.interfaces.some((i: Json) => i.role === 'management');
+  if (hadMgmt && !roles.has('management')) throw new HttpError(400, 'the management interface cannot be removed, only changed (or reset at the console)');
+  if (!roles.has('management') && used.has(db.network.management.ifname))
+    throw new HttpError(400, `${db.network.management.ifname} is the management network card (set at the console); it cannot be used as ${used.get(db.network.management.ifname)}. Give an interface the management role to move the management network.`);
+}
+function netFinish(keep: boolean, by: string | null) {
+  const n = db.network;
+  const p = n.pending;
+  if (!p) return;
+  const op = n.ops.find((o: Json) => o.id === p.id);
+  if (keep) Object.assign(op, { state: 'done', detail: `applied; management change confirmed by ${by}`, finished: now() });
+  else {
+    n.config = p.prev;
+    Object.assign(op, { state: 'rolled_back', detail: by ? `reverted by ${by}` : 'not confirmed within 120 s', finished: now() });
+  }
+  n.management = n.config.interfaces.some((i: Json) => i.role === 'management')
+    ? { ifname: n.config.interfaces.find((i: Json) => i.role === 'management').name, source: 'config' }
+    : { ifname: 'ens3', source: 'console' };
+  n.pending = null;
+}
+/** An approved network.apply: what nexus-net would do. */
+function netExecute(p: Json, by: string, qid: number) {
+  const n = db.network;
+  if (JSON.stringify(n.config) !== JSON.stringify(p.old)) {
+    n.ops.push({ id: rand(16), op: 'apply', state: 'refused', by, quorum_id: qid || null, created: now(), finished: now(), detail: null, error: 'the network configuration changed since this request was made; request the change again' });
+    return;
+  }
+  const prev = n.config;
+  n.config = structuredClone(p.config);
+  const id = rand(16);
+  if (netMgmtChain(prev) !== netMgmtChain(n.config)) {
+    n.ops.push({ id, op: 'apply', state: 'confirming', by, quorum_id: qid || null, created: now(), finished: null, detail: null, error: null });
+    n.pending = { id, by, deadline: now() + 120, prev };
+  } else {
+    n.ops.push({ id, op: 'apply', state: 'done', by, quorum_id: qid || null, created: now(), finished: now(), detail: `applied: ${n.config.interfaces.map((i: Json) => `nexus-${i.name}`).join(', ') || 'profiles removed'}`, error: null });
+  }
+}
+function netReader(c: { user: User | null }) {
+  const u = need(c.user, 'admin', 'security_officer', 'operator', 'viewer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  return u;
+}
+on('GET', '/network', (c) => (netReader(c), [200, netView()]));
+on('PUT', '/network', async (c) => {
+  const u = netReader(c);
+  need(u, 'admin');
+  const n = db.network;
+  if (n.pending && n.pending.deadline > now()) throw new HttpError(409, 'a change of the management interface waits for its confirmation; confirm or revert it first');
+  const cfg = { interfaces: (c.body.config?.interfaces ?? []).map(netIface), offsite_role: c.body.config?.offsite_role ?? 'management' };
+  if (JSON.stringify(cfg) === JSON.stringify(n.config)) return [200, { unchanged: true }];
+  netValidate(cfg);
+  return quorum(u, 'network.apply', { config: cfg, old: structuredClone(n.config), management_change: netMgmtChain(n.config) !== netMgmtChain(cfg) });
+});
+on('POST', '/network/confirm', async (c) => {
+  const u = need(netReader(c), 'admin');
+  const p = db.network.pending;
+  if (!p || p.id !== c.body.id || p.deadline <= now()) throw new HttpError(409, 'no such change waits for confirmation (confirmed, reverted or rolled back already)');
+  const keep = !!c.body.keep;
+  netFinish(keep, u.name);
+  await audit(u.name, keep ? 'network.confirm' : 'network.revert', 'network', { id: p.id, from: CLIENT_IP });
+  return [202, { id: p.id, keep }];
+});
+on('POST', '/network/mtu-check', async (c) => {
+  const u = need(netReader(c), 'admin', 'operator');
+  const id = rand(16);
+  db.network.ops.push({ id, op: 'mtu_check', state: 'done', by: u.name, quorum_id: null, created: now(), finished: now(), detail: 'path-MTU check requested', error: null });
+  db.network.mtu.ts = now();
+  await audit(u.name, 'network.mtu_check', 'network', { id });
+  return [202, { id, state: 'queued' }];
 });
 
 // ---------------------------------------------------------------- hardware (Phase 16a/b)

@@ -1664,3 +1664,74 @@ export interface Hardware {
   arrays: HwArray[];
   ops: HwOp[];
 }
+
+// Phase 22a: Settings → Network (GET /network, catalog::network)
+export type NetRole = 'management' | 'data' | 'replication';
+export interface NetRoute {
+  to: string;
+  via: string | null;
+}
+export interface NetIface {
+  name: string;
+  kind: 'ethernet' | 'bond' | 'vlan';
+  ports: string[];
+  mode: 'active-backup' | '802.3ad' | null;
+  parent: string | null;
+  vlan_id: number | null;
+  role: NetRole | null;
+  mtu: number | null;
+  dhcp: boolean;
+  addresses: string[];
+  gateway: string | null;
+  dns: string[];
+  routes: NetRoute[];
+}
+export interface NetConfig {
+  interfaces: NetIface[];
+  offsite_role: NetRole;
+}
+export interface NetDevice {
+  name: string;
+  kind: 'nic' | 'bond' | 'vlan' | 'bridge' | 'other';
+  mac: string;
+  mtu: number;
+  state: string;
+  speed: number | null;
+  master: string | null;
+  addresses: string[];
+}
+export interface NetMtuResult {
+  role: string;
+  addr: string;
+  dev: string | null;
+  expected_dev: string | null;
+  mtu: number | null;
+  result: 'ok' | 'mismatch' | 'no_reply' | 'no_route';
+  path_mtu: number | null;
+}
+export interface NetOp {
+  id: string;
+  op: 'apply' | 'mtu_check';
+  state: 'queued' | 'running' | 'confirming' | 'done' | 'refused' | 'error' | 'rolled_back';
+  by: string;
+  quorum_id: number | null;
+  created: number | null;
+  finished: number | null;
+  detail: string | null;
+  error: string | null;
+}
+export interface NetworkState {
+  available: boolean;
+  stale: boolean;
+  scanned: number | null;
+  devices: NetDevice[];
+  config: NetConfig;
+  management: { ifname: string | null; source: 'console' | 'config' } | null;
+  reset: number | null;
+  pending: { id: string; by: string; deadline: number; remaining: number } | null;
+  mtu: { ts: number; results: NetMtuResult[] } | null;
+  ops: NetOp[];
+  request_pending: number | null;
+  confirm_secs: number;
+  client_ip: string;
+}

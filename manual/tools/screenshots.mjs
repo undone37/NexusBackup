@@ -947,6 +947,16 @@ async function main() {
       await shot('firewall-edit', { height: 1000 });
       await closeDialogs();
     }],
+    // Phase 22a: Settings → Network (bond + VLAN for data, replication NIC, path MTU) + interface dialog
+    ['network', async () => {
+      await go('/settings?tab=network');
+      await until(`return document.body.innerText.includes('Path MTU') && document.body.innerText.includes('bond0.20')`, 'network tab');
+      await shot('settings-network', { height: 1900 });
+      await ev(`$rowClick('bond0.20', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #ni-vlan')`, 'interface dialog');
+      await shot('network-edit', { height: 1150 });
+      await closeDialogs();
+    }],
     // Phase 17c: Settings → Vault (the demo appliance is a primary: preconditions not met)
     ['vault', async () => {
       await go('/settings?tab=vault');
