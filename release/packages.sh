@@ -212,7 +212,9 @@ RUN dnf -y install --setopt=install_weak_deps=False msitools && dnf clean all")
 		sh -c "wixl -a x64 -D Version=$wversion -o /stage/$name nexus-agent.wxs &&
 		msibuild /stage/$name -q \"UPDATE InstallExecuteSequence SET Sequence = 1401 WHERE Action = 'RemoveExistingProducts'\" &&
 		msibuild /stage/$name -q \"UPDATE InstallExecuteSequence SET Sequence = 2001 WHERE Action = 'PurgeData'\" &&
-		msibuild /stage/$name -q \"UPDATE CustomAction SET Type = 11346 WHERE Action = 'FleetInit'\""
+		msibuild /stage/$name -q \"UPDATE CustomAction SET Type = 11346 WHERE Action = 'FleetInit'\" &&
+		msibuild /stage/$name -q \"UPDATE File SET Version = '$wversion.0' WHERE File = 'AgentExe'\" &&
+		msibuild /stage/$name -q \"UPDATE File SET Version = '$gversion.0' WHERE File = 'GuiExe'\""
 	# ^ wixl ignores After= relative to standard actions and appends RemoveExistingProducts and PurgeData after
 	#   the last custom action (found on Windows Server 2022):
 	#   - RemoveExistingProducts inside the install script without InstallExecute: error 2613, every install
@@ -222,6 +224,9 @@ RUN dnf -y install --setopt=install_weak_deps=False msitools && dnf clean all")
 	#   wixl also drops HideTarget: FleetInit (3154 = deferred, no impersonation, exe from a file) gets
 	#   msidbCustomActionTypeHideTarget (0x2000) = 11346, or the verbose log shows the fleet secret in its
 	#   CustomActionSchedule line (MsiHiddenProperties does not cover expanded targets).
+	#   wixl leaves File.Version empty: an existing file with a version resource (the GUI has one) beats an
+	#   "unversioned" new one, so a major upgrade kept nothing and RemoveExistingProducts deleted the GUI
+	#   (found with a 0.1.0 -> 0.1.1 upgrade on Windows Server 2022). Both executables get their versions.
 	mv "$stage/$name" "$out/"
 	rm -rf "$stage"
 fi

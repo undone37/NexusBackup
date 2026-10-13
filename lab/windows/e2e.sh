@@ -14,6 +14,7 @@
 #     confine  junction to C:\Windows inside the target: overwrite=always restore writes nothing under C:\Windows
 #     update   agent_update on an MSI install: refused ("package")
 #     service  taskkill /f -> SCM restarts the service; sc stop -> stays stopped; start again
+#     upgrade  (not default, MSI_NEW=<newer msi>) major upgrade keeps the enrollment, older MSI refused
 #     fleet    (not default) PURGE=1 uninstall, MSI with FLEETSECRET, fleet scan + accept -> enrolled
 #     ntds     (DC, not default) source with C:\Windows\NTDS: NTDS writer [ok], consistent
 # env: as lab/linux/e2e.sh (ROOT, PORT); MSI (target/packages/nexus-agent-<v>-x64.msi); HOST (VM address the
@@ -247,6 +248,32 @@ step_update() {
 	j=$(wait_job admin "$(jq -r .id <<<"$r")" 300)
 	[ "$(jq -r .state <<<"$j")" = failed ] || die "update of an MSI install was not refused"
 	result update_msi "refused: $(jq -r .log <<<"$j" | grep -iE 'package|msi|self.update' | head -1)"
+}
+
+# MSI major upgrade (MSI_NEW: a higher version, e.g. from a bumped source copy): installed over the old one,
+# the service runs the new version, still enrolled (a backup works and reports it); the older MSI is refused
+step_upgrade() {
+	state
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	[ -f "${MSI_NEW:-}" ] || die "MSI_NEW: path of a newer MSI"
+	local new j v
+	new=$(basename "$MSI_NEW" | sed -n 's/^nexus-agent-\(.*\)-x64\.msi$/\1/p')
+	"$here/gexec.py" "$VMID" --put "$MSI_NEW" 'C:\nexus-lab\agent-new.msi' >/dev/null
+	win '$p = Start-Process msiexec -Wait -PassThru -ArgumentList "/i C:\nexus-lab\agent-new.msi /qn /l*v C:\nexus-lab\msi-upgrade.log"; "msiexec exit $($p.ExitCode)"; (Get-Package "NexusBackup Agent").Version; Start-Sleep 5; (Get-Service NexusAgent).Status' | sed 's/^/  vm: /' >&2
+	v=$(win '(Get-Package "NexusBackup Agent").Version' | tr -d '\r\n')
+	[ "$v" = "$new" ] || die "installed version after the upgrade: $v (msiexec log: C:\\nexus-lab\\msi-upgrade.log)"
+	[ "$(win '(Get-Package "NexusBackup Agent" -AllVersions | Measure-Object).Count' | tr -d '\r\n')" = 1 ] || die "two versions installed side by side"
+	# the desktop GUI (running in a user session during the upgrade) is replaced, not lost
+	v=$(win '(Get-Item "C:\Program Files\NexusBackup Agent\nexus-agent-gui.exe" -ErrorAction SilentlyContinue).VersionInfo.FileVersion' | tr -d '\r\n')
+	[ "$v" = "$new" ] || [ "$v" = "$new.0" ] || die "nexus-agent-gui.exe after the upgrade: '${v:-missing}'"
+	j=$(backup)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "backup after the upgrade: $(jq -r .log <<<"$j" | tail -n 20)"
+	v=$(api admin GET /agents | jq -r --arg id "$AGENT" '.[] | select(.id==$id) | .version')
+	[ "$v" = "$new" ] || die "agent reports $v after the upgrade"
+	win '$p = Start-Process msiexec -Wait -PassThru -ArgumentList "/i C:\nexus-lab\agent.msi /qn"; "older MSI: exit $($p.ExitCode)"' | grep -qE 'exit (1638|1603)' ||
+		die "the older MSI was not refused"
+	[ "$(win '(Get-Package "NexusBackup Agent").Version' | tr -d '\r\n')" = "$new" ] || die "downgrade replaced $new"
+	result upgrade "major upgrade to $new: enrolled, backup ok; older MSI refused"
 }
 
 # fleet enrollment through the MSI: uninstall with PURGE=1 (enrollment gone), a fleet secret for this VM's

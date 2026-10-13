@@ -132,6 +132,11 @@ msiinfo export "$m" CustomAction | tee /tmp/ca
 grep -P "^ServiceSetup\t3090\tAgentExe\tservice-setup" /tmp/ca >/dev/null || fail "ServiceSetup: deferred, no impersonation, exe from file"
 grep -P "^PurgeData\t3154\tAgentExe\tpurge-data --yes" /tmp/ca >/dev/null || fail "PurgeData: deferred, no impersonation, ignore result"
 grep -P "^FleetInit\t11346\tAgentExe\tinit --fleet-secret \"\[FLEETSECRET\]\"" /tmp/ca >/dev/null || fail "FleetInit: deferred, no impersonation, ignore result, HideTarget (secret not in the MSI log)"
+# versioned executables: otherwise a major upgrade keeps the installed GUI (versioned) and then removes it
+msiinfo export "$m" File | tee /tmp/files | grep -P "^(AgentExe|GuiExe)\t" >/dev/null || fail "File table"
+for f in AgentExe GuiExe; do
+	grep -P "^$f\t[^\t]*\t[^\t]*\t[0-9]+\t[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\t" /tmp/files >/dev/null || fail "$f without File.Version"
+done
 msiinfo export "$m" InstallExecuteSequence | tee /tmp/seq
 grep -P "^ServiceSetup\tNOT REMOVE=\"ALL\"\t" /tmp/seq >/dev/null || fail "ServiceSetup condition"
 # Windows refuses RemoveExistingProducts inside the install script without InstallExecute (error 2613)
