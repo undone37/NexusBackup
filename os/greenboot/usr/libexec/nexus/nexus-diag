@@ -71,6 +71,9 @@ DEFAULTS = {
     "SYSTEMCTL": "systemctl",
     "AUSEARCH": "ausearch",
     "DISKS_STATUS": "/var/lib/nexus/disks/status.json",  # nexus-disks
+    "GRUB_USER": "/etc/nexus/grub-user.cfg",  # boot menu password hash (nexus-setup)
+    "GRUB_BOOT": "/boot/grub2/user.cfg",  # its installed copy (nexus-grub-password)
+    "DORMANT_ADMIN_DAYS": "90",  # posture: when the dormant-account setting is off
     "TIMEOUT": "120",  # per tool call
     "JOURNAL_MAX_MB": "64",  # per journal file in the bundle
 }
@@ -439,6 +442,147 @@ def smart():
     return "pass", 1, f"{len(st.get('disks') or [])} disk(s), {smart_ok} with SMART, {len(st.get('arrays') or [])} array(s) healthy"
 
 
+# ---------------------------------------------------------------- security posture (Phase 21b)
+# Recommendations, never update blockers: pass or warn (severity 2). Catalog based except the
+# boot menu password; the Security posture card (Settings → Diagnostics) shows these rows.
+
+PRIVILEGED = "role IN ('admin','security_officer') AND disabled = 0 AND activation_hash IS NULL AND (expires IS NULL OR expires > ?)"
+
+
+def posture(fn):
+    def run_():
+        if not os.path.exists(cfg("CATALOG")):
+            return "skip", 1, "no catalog (first-boot setup not finished)"
+        conn = catalog_conn()
+        try:
+            settings = dict(conn.execute("SELECT key, value FROM settings"))
+            ok, detail = fn(conn, settings, int(time.time()))
+        finally:
+            conn.close()
+        return ("pass", 1, detail) if ok else ("warn", 2, detail)
+    return run_
+
+
+def jsetting(settings, key, default):
+    try:
+        v = json.loads(settings[key])
+    except (KeyError, ValueError):
+        return default
+    return default if v is None else v
+
+
+def p_approvals(conn, settings, now):
+    on = settings.get("approvals_enabled") != "false"
+    n = conn.execute(f"SELECT COUNT(*) FROM users WHERE {PRIVILEGED}", (now,)).fetchone()[0]
+    d = f"approvals {'on' if on else 'off'}, {n} possible approver(s) (active admins and security officers)"
+    return on and n >= 3, d + ("" if on and n >= 3 else "; recommended: approvals on and at least 3 approvers")
+
+
+def p_forwarding(conn, settings, now):
+    f = jsetting(settings, "forwarding", {})
+    sinks = [k for k in ("syslog", "https") if isinstance(f.get(k), dict) and f[k].get("enabled", True)]
+    if not sinks:
+        return False, "no audit forwarding to a syslog or HTTPS receiver configured"
+    bad = []
+    for k in sinks:
+        row = conn.execute("SELECT last_ok, failing_since FROM forward_state WHERE sink = ?", (k,)).fetchone()
+        if not row or row[0] is None or row[1] is not None:
+            bad.append(k)
+    if bad:
+        return False, "forwarding not delivering: " + ", ".join(bad)
+    return True, "forwarding delivers to " + ", ".join(sinks)
+
+
+def p_offsite_lock(conn, settings, now):
+    unlocked = []
+    tenants = conn.execute("SELECT name, offsite FROM tenants ORDER BY name").fetchall()
+    for name, raw in tenants:
+        try:
+            remote = (json.loads(raw or "{}") or {}).get("remote")
+        except ValueError:
+            remote = None
+        if not (isinstance(remote, dict) and remote.get("type") == "s3" and remote.get("lock")):
+            unlocked.append(name)
+    if not tenants:
+        return False, "no tenants yet"
+    if unlocked:
+        return False, "no offsite copy with S3 Object Lock for: " + ", ".join(unlocked[:10]) + (" …" if len(unlocked) > 10 else "")
+    return True, f"{len(tenants)} tenant(s) copy offsite with S3 Object Lock"
+
+
+def p_inbound(conn, settings, now):
+    inbound = jsetting(settings, "inbound", None)
+    if isinstance(inbound, dict):
+        allow = ((inbound.get("services") or {}).get("web") or {}).get("allow") or []
+    else:
+        allow = jsetting(settings, "mgmt_allow", [])
+    if not allow:
+        return False, "the web UI and API accept connections from any address (no inbound allow-list)"
+    return True, "web UI and API restricted to " + ", ".join(allow[:5]) + (" …" if len(allow) > 5 else "")
+
+
+def p_certificate(conn, settings, now):
+    web = jsetting(settings, "tls_status", {}).get("web") or {}
+    if web.get("imported"):
+        return True, f"imported certificate {web.get('subject') or ''}".strip()
+    return False, "the self-signed certificate is in use; import one signed by your CA"
+
+
+def p_dormant_admins(conn, settings, now):
+    try:
+        days = int(settings.get("dormant_days") or 0)
+    except ValueError:
+        days = 0
+    days = days or int(cfg("DORMANT_ADMIN_DAYS"))
+    rows = conn.execute(
+        f"SELECT name FROM users WHERE {PRIVILEGED} AND COALESCE(last_login, created) < ? ORDER BY name",
+        (now, now - days * 86400)).fetchall()
+    if rows:
+        return False, f"no login for {days} days: " + ", ".join(r[0] for r in rows[:10])
+    return True, f"every admin and security officer logged in within {days} days"
+
+
+def p_totp(conn, settings, now):
+    local, oidc, missing = 0, 0, []
+    for name, auth, totp in conn.execute(
+            "SELECT name, auth, totp_secret FROM users WHERE disabled = 0 AND activation_hash IS NULL ORDER BY name"):
+        if auth == "oidc":
+            oidc += 1
+        elif totp:
+            local += 1
+        else:
+            missing.append(name)
+    if missing:
+        return False, "local accounts without TOTP: " + ", ".join(missing[:10])
+    d = f"{local} local account(s) with password + TOTP"
+    return True, d + (f"; {oidc} single sign-on account(s): the identity provider must enforce MFA" if oidc else "")
+
+
+def grub_password():
+    if not os.path.exists(cfg("GRUB_USER")):
+        return "warn", 2, "no boot menu password: set it with nexus-setup at the console"
+    try:
+        os.stat(cfg("GRUB_BOOT"))
+    except FileNotFoundError:
+        return "warn", 2, f"boot menu password set but not installed in {cfg('GRUB_BOOT')} (nexus-grub-password)"
+    except PermissionError:
+        pass  # /boot not readable from this caller: the configured hash is enough
+    return "pass", 1, "boot menu password set"
+
+
+def posture_checks():
+    return [
+        check("posture.approvals", "Security posture: approvals", posture(p_approvals)),
+        check("posture.forwarding", "Security posture: audit forwarding", posture(p_forwarding)),
+        check("posture.offsite_lock", "Security posture: offsite lock", posture(p_offsite_lock)),
+        check("posture.inbound", "Security posture: inbound allow-list", posture(p_inbound)),
+        check("posture.certificate", "Security posture: own web certificate", posture(p_certificate)),
+        check("posture.dormant_admins", "Security posture: dormant administrators", posture(p_dormant_admins)),
+        check("posture.totp", "Security posture: second factor", posture(p_totp)),
+        check("posture.grub", "Security posture: boot menu password", grub_password),
+    ]
+
+
 def checks():
     out = []
     for spec in cfg("DISKS").split():
@@ -458,7 +602,7 @@ def checks():
         check("bootc", "OS image (bootc)", bootc),
         check("smart", "Disk health (SMART)", smart),
     ]
-    return out
+    return out + posture_checks()
 
 
 def blocking(cs):

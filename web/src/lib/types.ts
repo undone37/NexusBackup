@@ -944,6 +944,33 @@ export interface LoginResponse {
   vault_mode?: boolean;
   /** Phase 19b: "view as tenant" is active in this session */
   impersonating?: Impersonation | null;
+  /** Phase 21b: incident mode is active (appliance-wide accounts only) */
+  incident?: IncidentBanner | null;
+}
+
+/** Phase 21b: the incident banner (GET /auth/me, /dashboard). */
+export interface IncidentBanner {
+  since: number;
+  by: string;
+  reason: string;
+}
+
+/** Phase 21b: GET /incident (the active or the last incident). */
+export interface Incident {
+  active: boolean;
+  since?: number;
+  by?: string;
+  reason?: string;
+  hold?: { tenants: string[]; sources: string[]; from: number; to: number } | null;
+  held?: string[];
+  paused?: { id: number; prev: number | null }[];
+  sessions_ended?: number;
+  tokens_revoked?: number;
+  ended_at?: number;
+  ended_by?: string;
+  approved_by?: string;
+  resumed?: number;
+  leave_quorum: number | null;
 }
 
 /** `GET /vault` (Phase 17c); `checks` and the requests only for appliance-wide roles. */
@@ -1147,6 +1174,8 @@ export type Sla = 'ok' | 'breach' | 'never' | 'paused' | 'deactivated';
 
 /** GET /dashboard?days=7|30 (§1). Byte counts; ratios and forecasts are null when unknown. */
 export interface Dashboard {
+  /** Phase 21b: incident mode is active */
+  incident?: IncidentBanner | null;
   /** Phase 15d: newest local snapshot per source, counted per level */
   consistency?: Record<string, number>;
   generated: number;
@@ -1410,6 +1439,10 @@ export interface SessionInfo {
 export interface SecuritySettings {
   session: { idle_min: number; absolute_h: number };
   dormant_days: number;
+  /** Phase 21b: concurrent sessions per account (default 5) */
+  max_sessions: number;
+  /** Phase 21b: DEK rotation reminder after this many days (0 = off, default 365) */
+  dek_rotation_days: number;
   login_banner: string;
   mgmt_allow: string[];
   client_ip: string;

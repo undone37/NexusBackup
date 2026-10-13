@@ -71,6 +71,7 @@ pub mod changes;
 pub mod clock;
 mod config_backup;
 pub mod consistency;
+mod dek_rotation;
 pub mod disks;
 mod endpoint;
 pub mod expiry;
@@ -760,6 +761,7 @@ impl Scheduler {
                 self.log_err(|s| s.queue_agent_renewals(now));
                 self.log_err(|s| forward::prune_outbox(&s.db, now));
                 self.log_err(|s| s.check_accounts(now));
+                self.log_err(|s| s.check_dek_rotation(now));
             }
         }
         self.log_err(|s| s.check_offsite_lag(now));

@@ -37,6 +37,7 @@ pub mod forwarding;
 pub mod hardware;
 pub mod holds;
 pub mod impersonate;
+pub mod incident;
 pub mod inventory;
 pub mod jobs;
 pub mod offsite;
@@ -622,6 +623,7 @@ pub fn router(st: St) -> Router {
         .merge(tenants::routes())
         .merge(tenancy::routes())
         .merge(vault::routes())
+        .merge(incident::routes())
         .fallback(api_not_found);
     // peer API: only on replication TLS connections (see `connection_scope`)
     let peer = Router::new()

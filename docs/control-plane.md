@@ -447,6 +447,13 @@ mapped, setuid/setgid/sticky cleared, devices/sockets skipped, only xattrs the t
 - **Settings** (`settings` table, admin writes, admin + security officer read `GET /settings/security` → `{session, dormant_days, login_banner, mgmt_allow, client_ip, client_allowed, pending: {session, mgmt_allow}}`):
   - `session` `{idle_min 5–120, absolute_h 1–24}` (`PUT /settings/session`): read on every request (open sessions included); a longer value in either field is quorum `security.session`, shorter applies directly (audited `security.session`).
   - `dormant_days` (`PUT /settings/dormant {days}`; 0 = off, the default, else 30–3650; audited `security.dormant`): the scheduler's refresh disables accounts with `COALESCE(last_login, created)` older than that (activated, unexpired, enabled accounts), never the last enabled local admin and, with approvals enabled, never an approver if fewer than two would remain; audited `user.dormant_disabled` (actor `scheduler`), info alert `account_dormant:<name>`. v15 backfills `last_login` with the upgrade time.
+  - `max_sessions` (Phase 21b; `PUT /settings/max-sessions {max}` 1–50, default 5; audited `security.max_sessions`):
+    `auth::new_session` deletes the account's sessions beyond the newest `max` (by `created`) after inserting the new
+    one; audited `session.limit` `{ended, max_sessions, ip}` (actor = the account).
+  - `dek_rotation_days` (Phase 21b; `PUT /settings/dek-rotation {days}` 0 = off or 30–3650, default 365; audited
+    `security.dek_rotation`): at every full refresh the scheduler asks keyd `dek-age <tenant>` (current version and the
+    mtime of its wrapped file) for each non-replicated tenant and raises the info alert `dek_rotation:<tenant>` when
+    older, else resolves it. Rotation stays the keyd CLI (`keyd tenant-rotate`, console root shell).
   - `login_banner` (`PUT /settings/banner {banner}`; ≤ 2000 characters, no control characters except newline and tab; audited `security.login_banner`); public `GET /auth/banner` → `{banner}`; the login page shows it as text (newlines kept, never HTML).
   - `mgmt_allow` (`PUT /settings/mgmt-allow {mgmt_allow: [cidr], force?, confirm?}`): since Phase 16c the source list of the inbound firewall's `web` service (see "Inbound firewall"); the route is an alias of `PUT /firewall/inbound/web` (quorum `firewall.inbound`), `GET /settings/security` keeps `mgmt_allow` / `client_allowed` / `pending.mgmt_allow` (web). Requests `security.mgmt_allow` made before the update still execute (into `web`).
 - **API tokens** (`tokens.rs`): a token of an expired or disabled (also dormant-disabled) user is refused (401) like its sessions; a viewer cannot create an `operator` token and a viewer token in the catalog stays read-only (`effective` keeps the role, no writes); tokens never download (`can_download` is cleared for token requests).
@@ -497,6 +504,35 @@ not in the store: the store's retention lock (`Manifest.lock_until`) can only gr
 - **Alerts:** `GET /alerts` rows carry `snapshot` `{tenant, source, time}` for `anomaly` (the "last snapshot before"
   named in the message) and `legal_hold_advisory`; the UI offers **Hold last good snapshot** / **Apply hold** there.
 - API tokens: `GET /holds` is readable with `read` scope; setting and releasing are closed to tokens.
+
+## Incident mode (Phase 21b, `web-api/src/incident.rs`)
+- `POST /incident {reason, hold?: {tenants: [] (= all), sources: [] (= all), from, to}, groups?: [id] (absent = all),
+  current_password, current_totp}`: security officer, not tenant-scoped, re-authenticated (`auth::reauth`); 409 while
+  active. One catalog transaction: legal holds via `holds::hold_one` (reason `incident: <reason>`, `held_by` = the
+  officer) for the snapshots in range; every chosen group not already paused indefinitely gets `paused_until = -1`
+  (its earlier value is kept as `prev`); `DELETE FROM sessions` except the caller's; `DELETE FROM api_tokens`; critical
+  alert `incident` (key `incident`); setting `incident` = `{active: true, since, by, reason, hold, held: ["t/s/time"],
+  paused: [{id, prev}], sessions_ended, tokens_revoked, alert}`. Audited `incident.enter` → 201 with that value.
+- While active: `POST /groups/{id}/resume` answers 409. `GET /auth/me` and `GET /dashboard` carry `incident:
+  {since, by, reason}` for accounts without tenant scope (null otherwise) — banner and dashboard card.
+- `GET /incident` (admin, security officer, operator, viewer; not tenant-scoped): the setting (or `{active: false}`)
+  plus `leave_quorum` (pending request id or null).
+- `POST /incident/leave` (security officer or admin) → 202 `{quorum_id}`: quorum action `incident.leave` `{since}`,
+  always pending (also with approvals disabled, like `approvals.disable`), executed by the web-api on approval by
+  another approver: groups still at `-1` get `prev` back (if it is `-1` or in the future) else NULL; the `incident` alert
+  is resolved; the setting keeps the record with `active: false, ended_at, ended_by, approved_by, resumed`. Holds stay.
+- Closed to API tokens (not on the allow-list). No catalog schema change.
+
+## Security posture (Phase 21b, `os/greenboot/usr/libexec/nexus/nexus-diag`)
+`nexus-diag` adds pass/warn checks (severity 2 at most, never update blockers) to `checks.json`, read from the catalog
+(read-only) except `posture.grub`: `posture.approvals` (approvals on and ≥ 3 possible approvers), `posture.forwarding`
+(an enabled sink, each with `forward_state.last_ok` and no `failing_since`), `posture.offsite_lock` (every tenant's
+offsite remote is S3 with `lock`), `posture.inbound` (`inbound.services.web.allow`, else `mgmt_allow`, non-empty),
+`posture.certificate` (`tls_status.web.imported`), `posture.dormant_admins` (no active admin/security officer with
+`COALESCE(last_login, created)` older than `dormant_days`, 90 when off), `posture.totp` (active local accounts have a
+TOTP secret; OIDC accounts noted), `posture.grub` (`/etc/nexus/grub-user.cfg` exists — SELinux `getattr` on
+`nexus_grub_user_t` — and `/boot/grub2/user.cfg` is installed; an access denial on the latter is tolerated). The UI shows
+them in the **Security posture** card of Settings → Diagnostics (latest run).
 
 ## Offsite in the UI (Phase 17d, `scheduler/src/offsite_ui.rs`, `web-api/src/offsite.rs`, `offsite/src/target/browse.rs`)
 No catalog migration. Job kinds (RBAC like restores: admin, operator, tenant_user in its tenant; never viewer or
