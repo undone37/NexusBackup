@@ -9,6 +9,7 @@
 #     setup    first boot through nexus-setup --script (lab/appliance/e2e.sh setup) with a static address
 #     source   tenant "lab", the node key + known_hosts on the appliance, the PVE source for the host
 #              (API token from $LAB/api-token.out, node key $LAB/appliance_ed25519, see manual/04)
+#     groups   policy "daily", groups windows (100-102) and lab-arm64 (200); GROUPS overrides
 #     stop     stop the tunnels
 # The host side (plugin package, storage `nexus`, user nexusbackup with the forced-command key, API token
 # nexus@pve!backup) is set up as in manual/04 "Proxmox VE"; state.md lists what was done on the lab host.
@@ -105,8 +106,31 @@ step_source() {
 	log "PVE source $NODE created"
 }
 
+# policy "daily" and the lab groups: windows = the host's Windows VMs, lab-arm64 = VM 200 (env GROUPS overrides:
+# "name:vmid,vmid name:vmid")
+step_groups() {
+	local S=$ROOT/run/api src pol g name ids
+	# shellcheck disable=SC1091
+	. "$ROOT/secrets.env"
+	# shellcheck source=lab/e2e/api-lib.sh
+	. "$repo/lab/e2e/api-lib.sh"
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	src=$(api admin GET /sources | jq -r --arg n "$NODE" '.[] | select(.name==$n) | .id')
+	[ -n "$src" ] || die "no source $NODE (step source)"
+	pol=$(api admin GET /policies | jq -r '.[] | select(.name=="daily") | .id')
+	[ -n "$pol" ] || pol=$(api admin POST /policies '{"name":"daily","schedule":"daily 22:00","gfs":{"daily":7,"weekly":4,"monthly":3,"yearly":1},"offsite":false}' | jq -r .id)
+	for g in ${GROUPS:-windows:100,101,102 lab-arm64:200}; do
+		name=${g%%:*} ids=${g#*:}
+		api admin GET /groups | jq -e --arg n "$name" '.[] | select(.name==$n)' >/dev/null && continue
+		api admin POST /groups "$(jq -nc --argjson s "$src" --argjson p "$pol" --arg n "$name" --arg ids "$ids" \
+			'{tenant:"lab", source_id:$s, policy_id:$p, name:$n, guests:($ids | split(",") | map(tonumber))}')" >/dev/null
+		expect 201 "group $name"
+		log "group $name: $ids"
+	done
+}
+
 steps=("$@")
-[ ${#steps[@]} -gt 0 ] || steps=(upload create tunnel setup source)
+[ ${#steps[@]} -gt 0 ] || steps=(upload create tunnel setup source groups)
 for s in "${steps[@]}"; do
 	log "== $s"
 	"step_$s"
