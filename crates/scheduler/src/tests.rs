@@ -1782,6 +1782,16 @@ fn backup_stats_and_anomaly_alert() {
         "{}",
         a[0].1
     );
+    // Phase 21a: the snapshot itself is flagged with the reason
+    let flag: Option<String> =
+        s.db.conn()
+            .query_row(
+                "SELECT anomaly FROM snapshots WHERE tenant='t1' AND source='vm-100' AND time=1006",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert!(flag.unwrap().starts_with("10.0 GiB new data"));
     // disabled by the setting
     catalog::set_setting(&s.db.conn(), "anomaly", r#"{"enabled": false}"#).unwrap();
     s.db.conn().execute("UPDATE alerts SET acked_by='op'", []).unwrap();
@@ -1987,6 +1997,8 @@ mod restore_files;
 mod runctl;
 /// Phase 15g file search and name index jobs.
 mod search;
+/// Phase 21a file-level change signals, snapshot flags and the snapshot diff.
+mod changes;
 /// Phase 17f tenant deactivation.
 mod tenants;
 /// Phase 17a/b bandwidth and sync windows, close vault.

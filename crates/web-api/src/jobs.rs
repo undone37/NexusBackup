@@ -807,7 +807,8 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
     let rows = c
         .prepare(&format!(
             "SELECT s.tenant, s.source, s.time, s.size, s.local, s.offsite, s.lock_until, s.verified, s.origin,
-                    h.id IS NOT NULL, s.consistency, s.meta, {} FROM snapshots s
+                    h.id IS NOT NULL, s.consistency, s.meta, s.anomaly, s.anomaly_at, s.anomaly_cleared_by,
+                    s.anomaly_cleared_at, s.anomaly_note, {} FROM snapshots s
              LEFT JOIN legal_holds h ON h.tenant = s.tenant AND h.source = s.source AND h.time = s.time
                AND h.state IN ('active','advisory')
              WHERE (?1 IS NULL OR s.tenant = ?1) AND (?2 IS NULL OR s.source = ?2) AND (?3 IS NULL OR s.tenant = ?3)
@@ -829,6 +830,14 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
                 "consistency": r.get::<_, Option<String>>(10)?,
                 // plugin snapshot metadata (v23), e.g. a recoverable range
                 "meta": r.get::<_, Option<String>>(11)?.and_then(|m| serde_json::from_str::<Value>(&m).ok()),
+                // Phase 21a: change-rate / file-level anomaly flag (cleared = clean again)
+                "anomaly": match r.get::<_, Option<String>>(12)? {
+                    Some(reason) => json!({"reason": reason, "at": r.get::<_, Option<i64>>(13)?,
+                        "cleared_by": r.get::<_, Option<String>>(14)?, "cleared_at": r.get::<_, Option<i64>>(15)?,
+                        "note": r.get::<_, Option<String>>(16)?}),
+                    None => Value::Null,
+                },
+                "anomalous": r.get::<_, Option<String>>(12)?.is_some() && r.get::<_, Option<i64>>(15)?.is_none(),
             }))
         })?
         .collect::<Result<Vec<_>, _>>()?;
