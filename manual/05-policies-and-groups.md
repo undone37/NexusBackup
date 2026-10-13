@@ -32,6 +32,26 @@ Click **New policy** (or **Edit** on an existing one) and fill in:
 How retention counts is explained in [01 Concepts](01-concepts.md#retention-gfs). A good starting point is the
 default 14 daily, 4 weekly, 6 monthly, 2 yearly.
 
+### Restore point preview
+
+Below the retention fields, **Restore point preview** runs the schedule forward for 400 days and applies the same
+retention rule the appliance uses after every run:
+
+- the chart shows how many restore points are kept over time (when you edit a policy, the dashed line is the policy
+  as it is now, the solid line with your change);
+- **Restore points** is the number at the end, split into recent, daily, weekly, monthly and yearly points (a point
+  can be several at once, so the sum of the GFS values is an upper bound), and **Oldest restore point then** how far
+  back you can restore;
+- **Estimated store use**: a compressed full copy of each source plus one run's new data per restore point, from the
+  **measured** backups of the policy's groups (for a new policy: of all sources). It is an estimate, not a promise:
+  the change between weekly or monthly points is usually smaller than 7 or 30 daily changes, and deduplication across
+  sources is not counted. Without measured backups no estimate is shown.
+
+![Restore point preview while editing a policy](images/policy-simulator.png)
+
+The same preview appears on the **Approvals** page for a change that lowers retention, so the approver sees what the
+change means (see [10 Approvals and audit](10-approvals-and-audit.md#deciding-requests)).
+
 ### Assigned policies and tiers
 
 Service providers sell protection levels. **Create from template** on the Policies page creates a ready-made tier
@@ -360,6 +380,17 @@ To stop backups of all groups of a source (for example during a host upgrade), p
 - **All guests of the group**,
 - **Selected guests** (groups with more than one guest), or
 - **Guests that failed in the last run**: refused when the group's last finished run did not fail.
+
+**Keep these snapshots until a date** (under **Retention**) keeps the snapshots this run writes at least until the
+end of the chosen day, in addition to the policy (for example before a migration, or the year-end state): they get a
+**store lock** to that date. Retention, garbage collection and **Delete** cannot remove them before, and nobody can
+shorten the lock, not even an administrator. The snapshots still count as ordinary restore points of the policy.
+Because such a lock cannot be undone and holds storage, a date further out than the limit under **Settings →
+Approvals → Backups kept until a date** (90 days by default, at most 10 years) needs approval: the backup starts
+once a second person approved it. Lowering that limit applies at once, raising it needs approval. The lock shows as
+**Locked until** on the Snapshots page; offsite copies keep their own retention.
+
+![Back up now and keep the snapshots until a date](images/backup-keep.png)
 
 ![Back up now inside a blackout window](images/group-backup-now.png)
 

@@ -199,6 +199,80 @@ pub fn compute(c: &Connection, scope: Option<&str>, now: i64) -> rusqlite::Resul
     }))
 }
 
+/// Inputs of the restore point simulator's size estimate (Phase 23a, web-api
+/// `simulate.rs`), from the measured `backup_stats` of the sources the scope
+/// covers (the groups of `policy_id`, else every source of the tenant scope):
+/// `full` = a compressed full copy of each source (latest logical size ÷ the
+/// measured compression), `delta` = one run's new stored data (per source the
+/// median `new_stored` of its last 30 backups, the first backup excluded).
+pub fn estimate(c: &Connection, policy_id: Option<i64>, scope: Option<&str>) -> rusqlite::Result<Option<Value>> {
+    let groups: Vec<(String, String, u64, Vec<Value>)> = c
+        .prepare(
+            "SELECT g.tenant, s.kind, g.source_id, g.guests FROM groups g JOIN sources s ON s.id = g.source_id
+             WHERE g.policy_id = ?1 AND (?2 IS NULL OR g.tenant = ?2)",
+        )?
+        .query_map(params![policy_id, scope], |r| {
+            let guests: String = r.get(3)?;
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get::<_, i64>(2)? as u64,
+                serde_json::from_str(&guests).unwrap_or_default(),
+            ))
+        })?
+        .collect::<Result<_, _>>()?;
+    // (tenant, source) -> rows newest first: (logical, new_plain, new_stored)
+    type Hist = Vec<(i64, i64, i64)>;
+    let mut per: BTreeMap<(String, String), Hist> = BTreeMap::new();
+    let mut q = c.prepare(
+        "SELECT tenant, source, logical, new_plain, new_stored FROM backup_stats WHERE ?1 IS NULL OR tenant = ?1
+         ORDER BY time DESC",
+    )?;
+    let rows = q.query_map([scope], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get(2)?,
+            r.get(3)?,
+            r.get(4)?,
+        ))
+    })?;
+    for row in rows {
+        let (t, src, l, p, st) = row?;
+        let covered = policy_id.is_none() || groups.iter().any(|g| g.0 == t && in_group(&g.1, g.2, &g.3, &src));
+        if covered {
+            per.entry((t, src)).or_default().push((l, p, st));
+        }
+    }
+    if per.is_empty() {
+        return Ok(None);
+    }
+    let (mut full, mut delta, mut samples, mut plain, mut stored) = (0f64, 0i64, 0usize, 0i64, 0i64);
+    for v in per.values() {
+        plain += v.iter().map(|r| r.1).sum::<i64>();
+        stored += v.iter().map(|r| r.2).sum::<i64>();
+        samples += v.len();
+        // the oldest row is the first full backup when the history is complete
+        if v.len() > 1 {
+            let mut d: Vec<i64> = v[..(v.len() - 1).min(30)].iter().map(|r| r.2).collect();
+            d.sort_unstable();
+            delta += d[d.len() / 2];
+        }
+    }
+    let compression = if stored > 0 {
+        (plain as f64 / stored as f64).max(1.0)
+    } else {
+        1.0
+    };
+    for v in per.values() {
+        full += v[0].0 as f64 / compression;
+    }
+    Ok(Some(json!({
+        "sources": per.len(), "samples": samples, "compression": compression,
+        "full": full.round() as i64, "delta": delta,
+    })))
+}
+
 pub const STORAGE_COLUMNS: &[&str] = &[
     "level",
     "tenant",

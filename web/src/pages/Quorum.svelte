@@ -10,6 +10,7 @@
   import type { Activation, ApprovalsState, GcPending, QuorumRequest } from '../lib/types';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import ActivationCode from '../components/ActivationCode.svelte';
+  import RestorePointPreview, { type SimInput } from '../components/RestorePointPreview.svelte';
 
   let items: QuorumRequest[] = $state([]);
   let error: string | null = $state(null);
@@ -64,6 +65,9 @@
   }
   const others = (q: QuorumRequest) => (q.params && 'old' in q.params ? [] : Object.entries(q.params ?? {}));
   const humanize = (a: string) => a.replace(/[_.]/g, ' ');
+  // Phase 23a: a retention-weakening policy change shows its restore point preview (old dashed)
+  const simOf = (p: Record<string, unknown> | undefined): SimInput | null =>
+    p && typeof p.schedule === 'string' && p.gfs && typeof p.gfs === 'object' ? { schedule: p.schedule, gfs: p.gfs as SimInput['gfs'] } : null;
 
   async function decide(q: QuorumRequest, verb: 'approve' | 'reject') {
     // approving executes an irreversible or weakening action: never on a single misclick
@@ -189,6 +193,12 @@
             </tbody>
           </table>
         </div>
+      {/if}
+      {#if q.action === 'policy.update' && q.state === 'pending'}
+        {@const now = simOf(q.params)}
+        {#if now}
+          <RestorePointPreview input={now} before={simOf(q.params?.old as Record<string, unknown> | undefined)} policyId={Number(q.params?.id) || null} />
+        {/if}
       {/if}
       {#if q.state === 'pending' && can.decideQuorum(session.user)}
         {#if own}

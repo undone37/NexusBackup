@@ -11,6 +11,7 @@
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import ScheduleInput from '../components/ScheduleInput.svelte';
   import BlackoutEditor from '../components/BlackoutEditor.svelte';
+  import RestorePointPreview, { type SimInput } from '../components/RestorePointPreview.svelte';
   import { validWindow, type BlackoutWindow } from '../lib/schedule';
   import { notify } from '../lib/notify.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
@@ -84,6 +85,18 @@
       : blank();
     open = true;
   }
+
+  // Phase 23a: restore point simulator; editing shows the stored values as a dashed line
+  const num = (v: unknown) => Math.max(0, Number(v) || 0);
+  const simOf = (schedule: string, g: Gfs): SimInput => ({
+    schedule: schedule.trim(),
+    gfs: { recent: num(g.recent), daily: num(g.daily), weekly: num(g.weekly), monthly: num(g.monthly), yearly: num(g.yearly) },
+  });
+  const simNow = $derived(simOf(f.schedule, f.gfs));
+  const simBefore = $derived.by(() => {
+    const e = editing as Policy | null;
+    return e ? simOf(e.schedule, e.gfs) : null;
+  });
 
   async function save(e: SubmitEvent) {
     e.preventDefault();
@@ -230,6 +243,7 @@
           </div>
         {/each}
       </div>
+      <RestorePointPreview input={simNow} before={simBefore} policyId={editing?.id ?? null} />
     </fieldset>
     <div class="field">
       <label class="inline-check"><input type="checkbox" bind:checked={f.offsite} />{t.policies.offsite}</label>

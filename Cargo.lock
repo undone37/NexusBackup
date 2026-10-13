@@ -979,6 +979,7 @@ dependencies = [
  "libc",
  "postcard",
  "rand 0.8.8",
+ "retention",
  "serde",
  "tempfile",
  "zeroize",
@@ -3709,6 +3710,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexusctl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "catalog",
+ "reqwest",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "web-api",
+]
+
+[[package]]
 name = "nftsync"
 version = "0.1.0"
 dependencies = [
@@ -5280,6 +5295,10 @@ dependencies = [
  "serde_json",
  "tar",
 ]
+
+[[package]]
+name = "retention"
+version = "0.1.0"
 
 [[package]]
 name = "rfc6979"
@@ -7152,6 +7171,7 @@ dependencies = [
  "replication",
  "reports",
  "reqwest",
+ "retention",
  "ring",
  "rustls",
  "rustls-pki-types",

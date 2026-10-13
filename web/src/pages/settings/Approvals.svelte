@@ -12,9 +12,17 @@
   let error: string | null = $state(null);
   const isAdmin = $derived(session.user?.role === 'admin');
 
+  // Phase 23a: "keep until" backups beyond this many days need approval
+  let keepDays: number | null = $state(null);
+  async function saveKeep(e: SubmitEvent) {
+    e.preventDefault();
+    if (await act(put('/settings/keep-until', { max_days: Number(keepDays) }), t.saved)) load();
+  }
+
   async function load() {
     try {
       settings = await get<ApprovalsState>('/settings/approvals');
+      keepDays = (await get<{ max_days: number }>('/settings/keep-until').catch(() => null))?.max_days ?? null;
       error = null;
     } catch (e) {
       error = errText(e);
@@ -55,4 +63,18 @@
       </div>
     {/if}
   </section>
+  {#if keepDays !== null}
+    <form class="card settings-section" aria-labelledby="q-keep" onsubmit={saveKeep}>
+      <h2 id="q-keep">{t.sp.keep.settingTitle}</h2>
+      <p class="muted">{t.sp.keep.settingIntro}</p>
+      <fieldset disabled={!isAdmin} class="plain">
+        <div class="field">
+          <label for="q-keep-days">{t.sp.keep.maxDays}</label>
+          <input id="q-keep-days" class="narrow" type="number" min="1" max="3650" bind:value={keepDays} required aria-describedby="q-keep-hint" />
+          <div class="hint" id="q-keep-hint">{t.sp.keep.maxDaysHint}</div>
+        </div>
+        {#if isAdmin}<div class="form-actions"><button type="submit" class="primary">{t.save}</button></div>{/if}
+      </fieldset>
+    </form>
+  {/if}
 {/if}

@@ -70,7 +70,7 @@ pub fn audit_actor(actor: &str) -> Cow<'_, str> {
         .map_or(Cow::Borrowed(actor), Cow::Owned)
 }
 
-const READ: &[&str] = &[
+pub const READ: &[&str] = &[
     "/auth/me",
     "/dashboard",
     "/storage",
@@ -96,9 +96,12 @@ const READ: &[&str] = &[
     "/replication/peers",
     "/replication/sources",
     "/plugins",
+    // Phase 23a: billing export (also as CSV), the API description
+    "/usage",
+    "/openapi.json",
 ];
 
-const OPERATE: &[&str] = &[
+pub const OPERATE: &[&str] = &[
     "/jobs",
     "/jobs/*/cancel",
     "/groups/*/pause",
