@@ -440,7 +440,7 @@ impl Setup {
         let mut args = vec!["enable", "--now"];
         args.extend(SERVICES);
         self.cmd("systemctl", &args)
-            .context("the configuration is restored, but starting the services failed; run: systemctl enable --now nexus-web-api nexus-scheduler nexus-keyd nexus-replicad")?;
+            .context("the configuration is restored, but starting the services failed; run: systemctl enable --now nexus-web-api nexus-scheduler nexus-keyd nexus-replicad nexus-index")?;
         Ok(r)
     }
 

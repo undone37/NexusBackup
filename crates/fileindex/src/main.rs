@@ -32,6 +32,13 @@ fn peer_uid(s: &UnixStream) -> std::io::Result<u32> {
     Ok(cred.uid)
 }
 
+fn uid_of(name: &str) -> Option<u32> {
+    let c = std::ffi::CString::new(name).ok()?;
+    // SAFETY: getpwnam at start (single thread), the entry is copied out at once
+    let p = unsafe { libc::getpwnam(c.as_ptr()) };
+    (!p.is_null()).then(|| unsafe { (*p).pw_uid })
+}
+
 fn serve(svc: &Service, mut s: UnixStream) {
     let _ = s.set_read_timeout(Some(Duration::from_secs(30)));
     let mut line = Vec::new();
@@ -68,8 +75,13 @@ fn main() -> anyhow::Result<()> {
     let keyd_socket = cfg.keyd_socket.clone();
     // SAFETY: getuid cannot fail
     let me = unsafe { libc::getuid() };
-    let mut allowed = cfg.allowed_uids.clone();
-    allowed.push(me);
+    let mut allowed = vec![me];
+    for u in &cfg.allowed_users {
+        match uid_of(u) {
+            Some(id) => allowed.push(id),
+            None => eprintln!("nexus-index: user {u} not found (not allowed on the socket)"),
+        }
+    }
     std::fs::create_dir_all(&cfg.index_base)?;
     let svc = Service::new(cfg, Arc::new(move |t: &str| keyd::fetch_keyring(&keyd_socket, t)));
     let _ = std::fs::remove_file(&sock);

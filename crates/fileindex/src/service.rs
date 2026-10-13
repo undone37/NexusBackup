@@ -32,8 +32,9 @@ pub struct Config {
     pub sync_secs: u64,
     /// readers of tenants idle this long are closed
     pub idle_secs: u64,
-    /// peers allowed on the socket (uids); empty: the service's own uid only
-    pub allowed_uids: Vec<u32>,
+    /// users allowed on the socket besides the service's own (the scheduler runs
+    /// as the same user); resolved at start
+    pub allowed_users: Vec<String>,
 }
 
 impl Default for Config {
@@ -47,7 +48,7 @@ impl Default for Config {
             floor_mb: 2048,
             sync_secs: 600,
             idle_secs: 900,
-            allowed_uids: Vec::new(),
+            allowed_users: vec!["nexus-webapi".into()],
         }
     }
 }

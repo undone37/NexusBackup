@@ -22,6 +22,8 @@
 /usr/libexec/nexus/nexus-net		--	gen_context(system_u:object_r:nexus_net_exec_t,s0)
 /usr/libexec/nexus/nexus-console-gate	--	gen_context(system_u:object_r:nexus_consolegate_exec_t,s0)
 /usr/libexec/nexus/nexus-config-backup	--	gen_context(system_u:object_r:nexus_cfgbackup_exec_t,s0)
+/usr/libexec/nexus/nexus-index		--	gen_context(system_u:object_r:nexus_index_exec_t,s0)
+/usr/libexec/nexus/nexus-fsindex	--	gen_context(system_u:object_r:nexus_fsindex_exec_t,s0)
 
 # restore micro-VM kernel + initramfs (read by the confined QEMU only)
 /usr/lib/nexus/restore-vm(/.*)?			gen_context(system_u:object_r:nexus_restorevm_image_t,s0)
@@ -59,6 +61,8 @@
 /var/lib/nexus/net(/.*)?			gen_context(system_u:object_r:nexus_net_var_lib_t,s0)
 /var/lib/nexus/console-unlock(/.*)?		gen_context(system_u:object_r:nexus_console_unlock_t,s0)
 /var/lib/nexus/config-backup(/.*)?		gen_context(system_u:object_r:nexus_cfgbackup_var_lib_t,s0)
+# file search index (Phase 31b): nexus-index only ([x]: m4 would expand index(…))
+/var/lib/nexus/inde[x](/.*)?			gen_context(system_u:object_r:nexus_index_var_lib_t,s0)
 
 # configuration and secrets
 /etc/nexus(/.*)?				gen_context(system_u:object_r:nexus_etc_t,s0)
@@ -70,6 +74,7 @@
 /etc/nexus/tls/pending(/.*)?			gen_context(system_u:object_r:nexus_tls_pending_t,s0)
 /etc/nexus/metrics-token		--	gen_context(system_u:object_r:nexus_webapi_secret_t,s0)
 /etc/nexus/ssh(/.*)?				gen_context(system_u:object_r:nexus_sshkey_t,s0)
+/etc/nexus/index\.json			--	gen_context(system_u:object_r:nexus_index_etc_t,s0)
 
 # runtime
 /run/nexus-keyd(/.*)?				gen_context(system_u:object_r:nexus_keyd_var_run_t,s0)
@@ -81,3 +86,4 @@
 /run/nexus-nasmount(/.*)?			gen_context(system_u:object_r:nexus_nasmount_var_run_t,s0)
 /run/nexus-nasmount\.[^/]+(/.*)?		gen_context(system_u:object_r:nexus_nasmount_var_run_t,s0)
 /run/nexus-console-gate(/.*)?			gen_context(system_u:object_r:nexus_consolegate_var_run_t,s0)
+/run/nexus-inde[x](/.*)?				gen_context(system_u:object_r:nexus_index_var_run_t,s0)

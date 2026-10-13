@@ -1403,3 +1403,76 @@ allow nexus_setup_t iptables_t:process2 { nnp_transition nosuid_transition };
 allow iptables_t nexus_setup_t:fd use;
 allow iptables_t nexus_setup_t:fifo_file rw_inherited_fifo_file_perms;
 allow iptables_t nexus_setup_t:process sigchld;
+
+########################################
+# Phase 31: guest file index without the restore micro-VM (docs/file-index-v2-plan.md)
+#
+#   nexus_pve_t ── nexus_fsindex_exec_t ──> nexus_fsindex_t   parser of UNTRUSTED guest file
+#                                          systems: only its stdin/stdout pipes, no files, no keys
+#   init_t ── nexus_index_exec_t ────────> nexus_index_t      search index: stores read-only,
+#                                          keyd, its sealed index dir, a socket; no network
+
+nexus_daemon(index)
+type nexus_index_var_lib_t;	# /var/lib/nexus/index: sealed Tantivy segments per tenant
+files_type(nexus_index_var_lib_t)
+type nexus_index_var_run_t;	# /run/nexus-index: the socket (web-api, scheduler)
+files_pid_file(nexus_index_var_run_t)
+type nexus_index_etc_t;		# /etc/nexus/index.json (optional settings)
+files_config_file(nexus_index_etc_t)
+
+# nexus-fsindex: deliberately NOT in nexus_domain (like nexus_plugin_t): guest file
+# system metadata is hostile input; the domain gets the few basics below and nothing
+# that every nexus service gets (no /var/lib/nexus, no /run, no sockets).
+type nexus_fsindex_t;
+domain_type(nexus_fsindex_t)
+role system_r types nexus_fsindex_t;
+type nexus_fsindex_exec_t;	# /usr/libexec/nexus/nexus-fsindex
+domain_entry_file(nexus_fsindex_t, nexus_fsindex_exec_t)
+
+# --- nexus-pve starts the helper per listing (crates/pve/src/fsindex.rs) and feeds it
+domtrans_pattern(nexus_pve_t, nexus_fsindex_exec_t, nexus_fsindex_t)
+allow nexus_pve_t nexus_fsindex_t:process2 { nnp_transition nosuid_transition };
+allow nexus_pve_t nexus_fsindex_t:process { sigkill signal };
+# domtrans_pattern gave: fd use, the parent's pipes, sigchld; stderr is the job log
+# pipe of the scheduler (inherited through nexus-pve)
+allow nexus_fsindex_t nexus_pve_t:fifo_file rw_inherited_fifo_file_perms;
+allow nexus_fsindex_t nexus_scheduler_t:fd use;
+allow nexus_fsindex_t nexus_scheduler_t:fifo_file { getattr write append ioctl };
+# its own rlimits (lowering only) before it reads input; seccomp needs no permission
+allow nexus_fsindex_t self:process { setrlimit getsched signal_perms };
+# dynamically linked: ld.so, ld.so.cache, glibc
+libs_use_ld_so(nexus_fsindex_t)
+libs_use_shared_libs(nexus_fsindex_t)
+# nothing else: no network, no other sockets, no data of the appliance
+neverallow nexus_fsindex_t self:{ tcp_socket udp_socket rawip_socket netlink_socket unix_dgram_socket } create;
+neverallow nexus_fsindex_t nexus_domain:unix_stream_socket connectto;
+neverallow nexus_fsindex_t { nexus_store_t nexus_keyd_var_lib_t nexus_keyd_var_run_t nexus_catalog_t nexus_escrow_t nexus_downloads_t nexus_sshkey_t nexus_etc_t nexus_scheduler_var_run_t nexus_scheduler_secret_t nexus_webapi_secret_t nexus_index_var_lib_t nexus_index_var_run_t }:file { read write append open create unlink rename execute };
+neverallow nexus_fsindex_t { nexus_store_t nexus_keyd_var_run_t nexus_catalog_t nexus_scheduler_var_run_t nexus_index_var_lib_t nexus_index_var_run_t }:dir { search read write add_name };
+neverallow { nexus_domain -nexus_pve_t } nexus_fsindex_t:process transition;
+
+# --- nexus-index: reads the tenant stores (sealed name indexes, fsindex reports),
+# never writes them; tenant keyrings from keyd (same Unix user as the scheduler,
+# keyd checks the peer uid); writes only its sealed index dir and its socket.
+list_dirs_pattern(nexus_index_t, nexus_store_t, nexus_store_t)
+read_files_pattern(nexus_index_t, nexus_store_t, nexus_store_t)
+manage_dirs_pattern(nexus_index_t, nexus_index_var_lib_t, nexus_index_var_lib_t)
+manage_files_pattern(nexus_index_t, nexus_index_var_lib_t, nexus_index_var_lib_t)
+manage_sock_files_pattern(nexus_index_t, nexus_index_var_run_t, nexus_index_var_run_t)
+allow nexus_index_t nexus_index_var_run_t:dir rw_dir_perms;
+allow nexus_index_t self:unix_stream_socket { listen accept };
+stream_connect_pattern(nexus_index_t, nexus_keyd_var_run_t, nexus_keyd_var_run_t, nexus_keyd_t)
+allow nexus_index_t nexus_etc_t:dir search_dir_perms;
+read_files_pattern(nexus_index_t, nexus_index_etc_t, nexus_index_etc_t)
+files_search_etc(nexus_index_t)
+# free space of the index file system (pause below the floor)
+fs_getattr_all_fs(nexus_index_t)
+# resolve the allowed peer user names
+auth_read_passwd(nexus_index_t)
+# the web-api (searches, status) and the scheduler (nudges, rules, health) connect
+stream_connect_pattern(nexus_webapi_t, nexus_index_var_run_t, nexus_index_var_run_t, nexus_index_t)
+stream_connect_pattern(nexus_scheduler_t, nexus_index_var_run_t, nexus_index_var_run_t, nexus_index_t)
+neverallow nexus_index_t self:{ tcp_socket udp_socket rawip_socket } create;
+neverallow nexus_index_t nexus_store_t:file { write append create unlink rename setattr };
+neverallow nexus_index_t nexus_store_t:dir { write add_name remove_name rmdir create };
+neverallow nexus_index_t { nexus_catalog_t nexus_escrow_t nexus_downloads_t nexus_sshkey_t nexus_scheduler_secret_t nexus_webapi_secret_t nexus_agent_ca_t }:file { read open };
+neverallow { nexus_domain -nexus_index_t } nexus_index_var_lib_t:file { read write open };

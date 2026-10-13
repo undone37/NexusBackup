@@ -44,12 +44,14 @@ pub const ACTOR: &str = "setup";
 pub const NM_CONNECTION: &str = "nexus-mgmt";
 /// `[0]` is restarted after a network reconfiguration (new TLS SAN). keyd is
 /// needed by the scheduler (tenant keys); it requires `keyd init` (done in setup).
-/// nexus-replicad serves replication peers through the web-api (docs/replication.md).
-pub const SERVICES: [&str; 4] = [
+/// nexus-replicad serves replication peers through the web-api (docs/replication.md);
+/// nexus-index is the file search (docs/file-index-v2-plan.md).
+pub const SERVICES: [&str; 5] = [
     "nexus-web-api.service",
     "nexus-scheduler.service",
     "nexus-keyd.service",
     "nexus-replicad.service",
+    "nexus-index.service",
 ];
 pub const WEB_PORT: u16 = 8443;
 /// Installs `/etc/nexus/grub-user.cfg` as `/boot/grub2/user.cfg` (also at every boot).
@@ -1240,7 +1242,7 @@ impl Setup {
         let mut args = vec!["enable", "--now"];
         args.extend(SERVICES);
         self.cmd("systemctl", &args)
-            .context("setup is complete, but starting the services failed; run: systemctl enable --now nexus-web-api nexus-scheduler nexus-keyd nexus-replicad")?;
+            .context("setup is complete, but starting the services failed; run: systemctl enable --now nexus-web-api nexus-scheduler nexus-keyd nexus-replicad nexus-index")?;
         Ok(())
     }
 

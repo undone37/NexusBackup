@@ -1,0 +1,69 @@
+[Unit]
+Description=NexusBackup file search index (sealed Tantivy index per tenant, docs/file-index-v2-plan.md)
+After=nexus-keyd.service
+Wants=nexus-keyd.service
+ConditionPathExists=/var/lib/nexus/setup-done
+
+[Service]
+Type=exec
+# settings: /etc/nexus/index.json if present (store and index paths, cache size,
+# free-space floor, sync interval, allowed socket users)
+ExecStart=/usr/libexec/nexus/nexus-index
+# Same uid as the scheduler: keyd hands tenant keyrings to that uid only (peer
+# check); confined by its own SELinux domain (nexus_index_t): stores read-only,
+# its sealed index dir, its socket, keyd; no catalog, no network.
+User=nexus-chunkstore
+Group=nexus-index
+SupplementaryGroups=nexus-keyd
+Restart=on-failure
+
+# Socket: 0750 nexus-chunkstore:nexus-index; the web-api is a member of
+# nexus-index, the scheduler is the owner; nexus-index also checks the peer uid.
+RuntimeDirectory=nexus-index
+RuntimeDirectoryMode=0750
+# sealed index segments (tmpfiles.d/nexus.conf: 0700)
+ReadWritePaths=/var/lib/nexus/index
+# the stores stay read-only (ProtectSystem=strict); other state is not visible
+InaccessiblePaths=-/var/lib/nexus/keyd -/var/lib/nexus/catalog -/var/lib/nexus/scheduler -/var/lib/nexus/escrow
+InaccessiblePaths=-/var/lib/nexus/offsite -/var/lib/nexus/downloads -/etc/nexus/ssh -/etc/nexus/tls
+UMask=0077
+# decrypted names live in memory: no core dumps
+LimitCORE=0
+# the decrypted block cache is bounded in index.json (cache_mb); this caps everything
+MemoryMax=4G
+
+# No network: AF_UNIX only (its socket, keyd).
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateIPC=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
