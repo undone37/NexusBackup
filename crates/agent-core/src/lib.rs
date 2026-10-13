@@ -162,3 +162,37 @@ pub fn status_common(paths: &Paths, version: &str) -> String {
     }
     out
 }
+
+/// The agent's TCP listener. `::` is one dual-stack socket (IPv6 + IPv4-mapped): Windows
+/// defaults to IPV6_V6ONLY=1, so a plain bind to `::` refused every IPv4 connection there
+/// (and on Linux with `net.ipv6.bindv6only=1`). Without IPv6 on the host, `::` falls back
+/// to `0.0.0.0`. Any other address is bound as given.
+pub fn listen(addr: &str, port: u16) -> std::io::Result<std::net::TcpListener> {
+    use socket2::{Domain, Socket, Type};
+    if addr != "::" {
+        return std::net::TcpListener::bind((addr, port));
+    }
+    let dual = || -> std::io::Result<std::net::TcpListener> {
+        let s = Socket::new(Domain::IPV6, Type::STREAM, None)?;
+        s.set_only_v6(false)?;
+        #[cfg(unix)]
+        s.set_reuse_address(true)?;
+        s.bind(&std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port)).into())?;
+        s.listen(128)?;
+        Ok(s.into())
+    };
+    dual().or_else(|_| std::net::TcpListener::bind(("0.0.0.0", port)))
+}
+
+#[cfg(test)]
+mod listen_tests {
+    #[test]
+    fn unspecified_accepts_ipv4_and_ipv6() {
+        let l = super::listen("::", 0).unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::net::TcpStream::connect(("127.0.0.1", port)).expect("IPv4 to the :: listener");
+        if l.local_addr().unwrap().is_ipv6() {
+            std::net::TcpStream::connect(("::1", port)).expect("IPv6 to the :: listener");
+        }
+    }
+}

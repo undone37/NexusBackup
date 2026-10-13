@@ -4,7 +4,6 @@ use super::{acl, host, sys, volumes, vss, Agent, Windows, PRIVILEGES};
 use agent_core::config::{Paths, Settings};
 use agent_core::server::Mode;
 use std::ffi::OsString;
-use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -163,7 +162,7 @@ fn install(paths: &Paths) -> Result<(), String> {
         None::<&str>,
         ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
     )
-    .map_err(|e| format!("service manager: {e}"))?;
+    .map_err(|e| format!("service manager: {}", werr(&e)))?;
     let mut launch: Vec<OsString> = vec![];
     if paths.config != Paths::default().config {
         launch.extend(["--config".into(), paths.config.clone().into_os_string()]);
@@ -186,16 +185,25 @@ fn install(paths: &Paths) -> Result<(), String> {
     };
     let s = m
         .create_service(&info, ServiceAccess::CHANGE_CONFIG | ServiceAccess::START)
-        .map_err(|e| format!("create service: {e}"))?;
+        .map_err(|e| format!("create service: {}", werr(&e)))?;
     let _ = s.set_description("NexusBackup pull-model backup agent (mTLS, VSS, USN journal)");
     failure_actions(&s)?;
-    s.start::<&str>(&[]).map_err(|e| format!("start service: {e}"))?;
+    s.start::<&str>(&[])
+        .map_err(|e| format!("start service: {}", werr(&e)))?;
     println!("service {SERVICE_NAME} installed and started");
     Ok(())
 }
 
 /// Restart after 2 s / 10 s / 60 s (counter reset after a day), also after a stop with a
 /// non-zero exit code (self-update exits with 75).
+/// windows-service errors print "IO error in winapi call" and keep the OS error as the source.
+fn werr(e: &windows_service::Error) -> String {
+    match std::error::Error::source(e) {
+        Some(src) => format!("{e}: {src}"),
+        None => e.to_string(),
+    }
+}
+
 fn failure_actions(s: &windows_service::service::Service) -> Result<(), String> {
     s.update_failure_actions(ServiceFailureActions {
         reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(86_400)),
@@ -216,10 +224,10 @@ fn failure_actions(s: &windows_service::service::Service) -> Result<(), String> 
             },
         ]),
     })
-    .map_err(|e| format!("failure actions: {e}"))?;
+    .map_err(|e| format!("failure actions: {}", werr(&e)))?;
     // a stop with a non-zero exit code (self-update) also triggers the restart
     s.set_failure_actions_on_non_crash_failures(true)
-        .map_err(|e| format!("failure actions flag: {e}"))
+        .map_err(|e| format!("failure actions flag: {}", werr(&e)))
 }
 
 /// The MSI registers the service itself (ServiceInstall table) and runs this deferred,
@@ -229,10 +237,11 @@ fn failure_actions(s: &windows_service::service::Service) -> Result<(), String> 
 fn service_setup(paths: &Paths) -> Result<(), String> {
     secure(paths)?;
     let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
-        .map_err(|e| format!("service manager: {e}"))?;
+        .map_err(|e| format!("service manager: {}", werr(&e)))?;
     let s = m
-        .open_service(SERVICE_NAME, ServiceAccess::CHANGE_CONFIG)
-        .map_err(|e| format!("open service: {e}"))?;
+        // SC_ACTION_RESTART in the failure actions needs SERVICE_START (else ERROR_ACCESS_DENIED)
+        .open_service(SERVICE_NAME, ServiceAccess::CHANGE_CONFIG | ServiceAccess::START)
+        .map_err(|e| format!("open service: {}", werr(&e)))?;
     failure_actions(&s)?;
     println!(
         "service {SERVICE_NAME}: failure actions set, {} secured",
@@ -243,15 +252,15 @@ fn service_setup(paths: &Paths) -> Result<(), String> {
 
 fn uninstall() -> Result<(), String> {
     let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
-        .map_err(|e| format!("service manager: {e}"))?;
+        .map_err(|e| format!("service manager: {}", werr(&e)))?;
     let s = m
         .open_service(
             SERVICE_NAME,
             ServiceAccess::STOP | ServiceAccess::DELETE | ServiceAccess::QUERY_STATUS,
         )
-        .map_err(|e| format!("open service: {e}"))?;
+        .map_err(|e| format!("open service: {}", werr(&e)))?;
     let _ = s.stop();
-    s.delete().map_err(|e| format!("delete service: {e}"))?;
+    s.delete().map_err(|e| format!("delete service: {}", werr(&e)))?;
     println!(
         "service {SERVICE_NAME} removed (config and state kept in {})",
         base_of(&Paths::default()).display()
@@ -366,14 +375,7 @@ fn run(paths: Paths, service: Option<()>) -> Result<(), String> {
         Mode::Enroll(_) => eprintln!("nexus-agent: waiting for enrollment by the appliance"),
         Mode::Mtls { agent_id, .. } => eprintln!("nexus-agent: enrolled as {agent_id}"),
     }
-    let listener = TcpListener::bind((settings.listen.as_str(), settings.port))
-        .or_else(|e| {
-            if settings.listen == "::" {
-                TcpListener::bind(("0.0.0.0", settings.port))
-            } else {
-                Err(e)
-            }
-        })
+    let listener = agent_core::listen(&settings.listen, settings.port)
         .map_err(|e| format!("listen {}:{}: {e}", settings.listen, settings.port))?;
     eprintln!(
         "nexus-agent {} listening on {}",

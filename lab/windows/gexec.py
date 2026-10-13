@@ -6,7 +6,7 @@ r"""Run PowerShell in a lab VM through the PVE guest agent (no guest password ne
 Env: PVE_LAB_URL, PVE_LAB_TOKEN (user@realm!id=secret), PVE_NODE (pve-test), GEXEC_TIMEOUT (600 s).
 Defaults are read from ~/nexus-lab/pve-lab.env when the variables are unset.
 """
-import base64, json, os, ssl, sys, time, urllib.request
+import base64, json, os, ssl, sys, time, urllib.error, urllib.request
 
 def env():
     p = os.path.expanduser("~/nexus-lab/pve-lab.env")
@@ -23,8 +23,15 @@ def api(method, path, body=None):
         "Authorization": f"PVEAPIToken={os.environ['PVE_LAB_TOKEN']}", "Content-Type": "application/json"})
     # ponytail: lab host has a self-signed cert; pin it if this ever leaves the lab
     ctx = ssl._create_unverified_context()
-    with urllib.request.urlopen(req, context=ctx, timeout=60) as r:
-        return json.loads(r.read().decode(errors="replace"), strict=False)["data"]
+    for attempt in range(36):
+        try:
+            with urllib.request.urlopen(req, context=ctx, timeout=60) as r:
+                return json.loads(r.read().decode(errors="replace"), strict=False)["data"]
+        except urllib.error.HTTPError as e:
+            # the guest agent answers "got timeout" while the VM is busy (msiexec, VSS); retry
+            if e.code != 500 or attempt == 35:
+                raise
+            time.sleep(5)
 
 def put(base, vmid, local, dest):
     data = open(local, "rb").read()
@@ -40,8 +47,12 @@ def put(base, vmid, local, dest):
         f"(Get-FileHash '{dest}').Hash", check=True)
 
 def run(base, script, check=False):
+    # the script goes in as a UTF-8 (BOM) .ps1: long or non-BMP command lines (emoji) hang the Windows guest agent
+    f = f"C:\\Windows\\Temp\\gexec-{os.getpid()}-{time.time_ns()}.ps1"
+    body = "\ufeff$ProgressPreference='SilentlyContinue'\n" + script + f"\nRemove-Item -LiteralPath '{f}'\n"
+    api("POST", f"{base}/file-write", {"file": f, "content": base64.b64encode(body.encode()).decode(), "encode": 0})
     pid = api("POST", f"{base}/exec", {"command": ["powershell", "-NoProfile", "-NonInteractive",
-        "-ExecutionPolicy", "Bypass", "-Command", "$ProgressPreference='SilentlyContinue'; " + script]})["pid"]
+        "-ExecutionPolicy", "Bypass", "-File", f]})["pid"]
     end = time.time() + int(os.environ.get("GEXEC_TIMEOUT", "600"))
     while time.time() < end:
         s = api("GET", f"{base}/exec-status?pid={pid}")

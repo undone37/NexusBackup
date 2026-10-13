@@ -134,12 +134,16 @@ grep -P "^PurgeData\t3154\tAgentExe\tpurge-data --yes" /tmp/ca >/dev/null || fai
 grep -P "^FleetInit\t3154\tAgentExe\tinit --fleet-secret \"\[FLEETSECRET\]\"" /tmp/ca >/dev/null || fail "FleetInit: deferred, no impersonation, ignore result"
 msiinfo export "$m" InstallExecuteSequence | tee /tmp/seq
 grep -P "^ServiceSetup\tNOT REMOVE=\"ALL\"\t" /tmp/seq >/dev/null || fail "ServiceSetup condition"
+# Windows refuses RemoveExistingProducts inside the install script without InstallExecute (error 2613)
+v=$(grep -P "^InstallValidate\t" /tmp/seq | cut -f3); i=$(grep -P "^InstallInitialize\t" /tmp/seq | cut -f3)
+r=$(grep -P "^RemoveExistingProducts\t" /tmp/seq | cut -f3)
+[ "$r" -gt "$v" ] && [ "$r" -lt "$i" ] || fail "RemoveExistingProducts ($r) not between InstallValidate and InstallInitialize"
 grep -P "^PurgeData\tREMOVE=\"ALL\" AND PURGE=\"1\" AND NOT UPGRADINGPRODUCTCODE\t" /tmp/seq >/dev/null || fail "PurgeData condition"
 grep -P "^FleetInit\tFLEETSECRET AND NOT REMOVE=\"ALL\"\t" /tmp/seq >/dev/null || fail "FleetInit condition"
 msiinfo export "$m" Upgrade | grep -qi "F0236C93-DDCE-4B09-A197-525C84656168" || fail "UpgradeCode"
 msiinfo export "$m" Property | tee /tmp/prop | grep -P "^(ProductVersion|UpgradeCode|ARPNOMODIFY|SecureCustomProperties)\t"
 ! grep -qi token /tmp/prop || fail "token property in the MSI"
-grep -qP "^MsiHiddenProperties\tFLEETSECRET$" /tmp/prop || fail "FLEETSECRET not hidden from the MSI log"
+grep -qP "^MsiHiddenProperties\tFLEETSECRET\r?$" /tmp/prop || fail "FLEETSECRET not hidden from the MSI log"
 msiinfo suminfo "$m" | grep -E "^(Template|Title|Subject)"
 msiinfo suminfo "$m" | grep -q "^Template: x64;" || fail "not an x64 package"
 rm -rf /tmp/x && mkdir /tmp/x && msiextract -C /tmp/x "$m" | sort | tee /tmp/files

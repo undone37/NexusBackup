@@ -92,7 +92,7 @@ Audited (`user.break_glass`), alert `break_glass` (critical), UI banner until ac
 Documented in manual/14-disaster-recovery.md ("Break-glass").
 
 ## Implementation notes and deviations (backend, 2026-10-11)
-Clarifications agreed with the UI (integrator) and choices where this contract was open. **Deviations are marked ⚠.**
+Clarifications agreed with the UI (integrator) and choices where this contract was open. **Deviations are marked (deviation).**
 - §1 `protection`: `objects = protected + unprotected`, `protected = sla_ok + sla_breach + never`; `never` = in a
   group, no successful backup; `unprotected` = known object in no group. Known objects without a group: enrolled
   agents and the guests of the last `plugin_guests` listing per plugin source (no PVE guest inventory exists in the
@@ -104,10 +104,10 @@ Clarifications agreed with the UI (integrator) and choices where this contract w
   (not measured separately yet), `reduction` = logical / physical. Tenant users get their tenant's `used`
   (= physical) and `null` for total/free/forecast/replication lag. `offsite.lock_coverage` = share of the local
   snapshots in scope under a retention lock. Additive: `break_glass` (see §7).
-- §2: ⚠ the client secret is encrypted with the web-api's own key (`enc:v1:`), not sealed to the scheduler — the
+- §2: (deviation) the client secret is encrypted with the web-api's own key (`enc:v1:`), not sealed to the scheduler — the
   web-api must send it to the token endpoint. Additive settings fields: `ca_pem` (private IdP CA), GET-only
   `redirect_uri` (to register at the IdP). Default scopes `["openid", "profile", "email"]` (no `groups` scope:
-  Entra has none; Keycloak needs a group mapper / client scope), groups claim `groups`. ⚠ Mappings: `tenants` stays
+  Entra has none; Keycloak needs a group mapper / client scope), groups claim `groups`. (deviation) Mappings: `tenants` stays
   an array but holds 0 or 1 entries — `tenant_user` exactly one, admin / security_officer / operator none (all
   tenants); anything else → 400 on PUT. Claims come from the ID token (configure the IdP to put the groups claim
   there). Accounts are matched by (issuer, `sub`), never by name; the name is `username_claim` as it is (may
@@ -126,7 +126,7 @@ Clarifications agreed with the UI (integrator) and choices where this contract w
 - §4: lists only key files below `/etc/nexus/ssh` that the configuration uses and that exist: PVE node keys
   (`nodes.*.key` of PVE sources, purpose "Proxmox VE nodes (forced command)") and SFTP offsite keys
   (`remote.key_file`, "Storage Box offsite (SFTP)"); TrueNAS sources keep their own per-source key pair (shown on
-  the source). The appliance generates a key only when rotating (ed25519, OpenSSH format). ⚠ After a rotation the entry shows the **new** key (to install on the
+  the source). The appliance generates a key only when rotating (ed25519, OpenSSH format). (deviation) After a rotation the entry shows the **new** key (to install on the
   sources) and the old one as `previous: {public_key, fingerprint, created}` (still the one in use) until
   `retire`; one entry per name. Retire → 202 `{job_id}` (job `ssh_key_retire`), 409 without a rotation.
 - §5: `staged` and `rollback` have the shape of `booted` (`{version, digest, since}`). `available` is set when an

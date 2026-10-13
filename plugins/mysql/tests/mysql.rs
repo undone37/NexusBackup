@@ -212,7 +212,7 @@ CREATE TABLE orders (id BIGINT AUTO_INCREMENT PRIMARY KEY, customer INT NOT NULL
   CONSTRAINT fk_customer FOREIGN KEY (customer) REFERENCES customer (id) ON DELETE CASCADE, KEY (status));
 CREATE TABLE logs (id INT PRIMARY KEY, msg VARCHAR(20)) ENGINE=MyISAM;
 INSERT INTO customer (email, name, note, created, ts) VALUES
-  ('a@x', 'Zoë 😀', 'line1\nline2 ''quoted'' \\ back\0nul', '2026-01-02 03:04:05.678', '2026-01-02 03:04:05'),
+  ('a@x', 'Zoë 𠀋', 'line1\nline2 ''quoted'' \\ back\0nul', '2026-01-02 03:04:05.678', '2026-01-02 03:04:05'),
   ('b@x', NULL, '', NULL, NULL);
 UPDATE customer SET secret = 9 WHERE id = 2;
 INSERT INTO orders (customer, price, qty, rate, ratio, status, tags, payload, raw, bits, day, tm, yr, uid) VALUES

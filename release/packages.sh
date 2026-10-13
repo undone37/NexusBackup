@@ -209,7 +209,11 @@ if [ $msi = 1 ]; then
 RUN dnf -y install --setopt=install_weak_deps=False msitools && dnf clean all")
 	name=nexus-agent-$wversion-x64.msi
 	podman run --rm --security-opt label=disable -v "$PWD/$stage:/stage" -w /stage "$msi_img" \
-		wixl -a x64 -D Version="$wversion" -o "/stage/$name" nexus-agent.wxs
+		sh -c "wixl -a x64 -D Version=$wversion -o /stage/$name nexus-agent.wxs &&
+		msibuild /stage/$name -q \"UPDATE InstallExecuteSequence SET Sequence = 1401 WHERE Action = 'RemoveExistingProducts'\""
+	# ^ wixl schedules RemoveExistingProducts after the last custom action, inside the install script without
+	#   InstallExecute: Windows refuses that (error 2613, every install failed on Windows Server 2022). 1401 =
+	#   right after InstallValidate, the WiX default (old version removed before the new one is installed).
 	mv "$stage/$name" "$out/"
 	rm -rf "$stage"
 fi

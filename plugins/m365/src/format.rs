@@ -534,7 +534,7 @@ mod tests {
 
     #[test]
     fn names_roundtrip() {
-        for n in ["Inbox", "a/b", "100%", ".", "..", "", "x\ny", "Ä ö 🎉", "%2F"] {
+        for n in ["Inbox", "a/b", "100%", ".", "..", "", "x\ny", "Ä ö 𠀋", "%2F"] {
             let e = encode_name(n);
             assert!(plugin_sdk::proto::valid_path(e.as_bytes()), "{n:?} → {e:?}");
             assert!(!e.contains('/'));

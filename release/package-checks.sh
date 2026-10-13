@@ -112,7 +112,7 @@ desktop-deb | desktop-rpm)
 	grep -qx "Exec=nexus-agent-gui --open" /usr/share/applications/nexus-agent-gui.desktop || fail "menu Exec"
 	grep -qx "Exec=nexus-agent-gui" /etc/xdg/autostart/nexus-agent-gui.desktop || fail "autostart Exec"
 	[ -f /usr/share/icons/hicolor/scalable/apps/nexus-agent-gui.svg ] || fail "icon"
-	! getent group nexus-agent-ui | grep -q ':.\+$' || fail "postinst added users to nexus-agent-ui"
+	! getent group nexus-agent-ui | grep -q ':[^:]\+$' || fail "postinst added users to nexus-agent-ui"
 	echo "desktop: ok"
 	;;
 lintian)

@@ -458,7 +458,7 @@ controller (NTDS), Exchange on 2019 if available.
 6. **Metadata:** files with explicit DACLs, inherited ACLs, a SACL (audit), owner not
    Administrators, hidden/system/read-only/not-indexed attributes, creation time,
    hard links, symlinks (file + dir, relative + absolute), junctions, folder mount point,
-   `Zone.Identifier` streams and a 100 MB ADS, names with emoji / unpaired surrogates
+   `Zone.Identifier` streams and a 100 MB ADS, names with supplementary-plane characters (e.g. U+2000B) / unpaired surrogates
    (created via PowerShell), paths > 260 chars, a dedup'ed file (Data Deduplication role,
    Server editions) and a compressed (WOF/NTFS) file, an EFS file (expect an error).
    Compare after restore with `icacls`, `Get-Item -Stream *`, `fsutil file queryfileid`,

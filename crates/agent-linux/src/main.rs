@@ -3,7 +3,6 @@
 use nexus_agent::config::{ensure_dir, Paths, Settings};
 use nexus_agent::endpoint::{self, cli, exit, Clock};
 use nexus_agent::{server, snapshot, sys};
-use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -223,14 +222,7 @@ fn run(paths: Paths) -> Result<ExitCode, String> {
         server::Mode::Enroll(_) => eprintln!("nexus-agent: waiting for enrollment by the appliance"),
         server::Mode::Mtls { agent_id, .. } => eprintln!("nexus-agent: enrolled as {agent_id}"),
     }
-    let listener = TcpListener::bind((settings.listen.as_str(), settings.port))
-        .or_else(|e| {
-            if settings.listen == "::" {
-                TcpListener::bind(("0.0.0.0", settings.port))
-            } else {
-                Err(e)
-            }
-        })
+    let listener = agent_core::listen(&settings.listen, settings.port)
         .map_err(|e| format!("listen {}:{}: {e}", settings.listen, settings.port))?;
     eprintln!(
         "nexus-agent {} listening on {}",

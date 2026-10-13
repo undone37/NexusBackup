@@ -316,7 +316,7 @@ mod tests {
         let cases: Vec<Vec<u16>> = vec![
             "plain.txt".encode_utf16().collect(),
             "Grüße €".encode_utf16().collect(),
-            "😀 emoji".encode_utf16().collect(),
+            "𠀋 supplementary".encode_utf16().collect(),
             vec![0xD800],                 // lone lead
             vec![b'a' as u16, 0xDC00],    // lone trail
             vec![0xDC00, 0xD800],         // reversed pair = two lone surrogates
