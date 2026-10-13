@@ -395,5 +395,11 @@ through the PVE guest agent (`lab/windows/gexec.py`, no Windows passwords), dev 
   VSS GetSnapshotProperties returns S_OK with an empty struct on Server 2022 -> agent crashed in wcslen(NULL)
   (device now via Query), API/UI refused Windows paths for sources and restore targets, desktop GUI had no icon
   and its own green theme (now the web UI palette), package-check regexes (group members, CRLF)
-- [ ] DC (NTDS writer), Win11 client + GUI, fleet secret via MSI, MSI major upgrade, appliance VM on pve-test,
-  arm64 (emulated aarch64 VM)
+- [x] DC dc1dev: MSI, enrollment, VSS backup (11/11 writers), NTDS writer [ok], restored ntds.dit "Clean Shutdown"
+- [x] Windows 11 client: MSI, enrollment, VSS backup, incremental, restore identical, confinement, service; fleet
+  enrollment through the MSI (PURGE=1 uninstall, FLEETSECRET, scan, accept, enrolled, backup). Fixed: PURGE=1 never
+  ran (wixl sequenced PurgeData after RemoveFiles, error 1721), fleet secret in the verbose MSI log (HideTarget)
+- [x] arm64: emulated aarch64 Debian 13 VM on pve-test (`lab/linux/remote.sh 10.2.34.210`): arm64 .deb installs,
+  enrollment, backup, restore identical (1237 entries)
+- [ ] GUI on Windows checked by the maintainer (new icon + web UI palette), MSI major upgrade (needs a bumped
+  version), appliance VM on pve-test backing up the Windows VMs through PVE
