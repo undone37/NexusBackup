@@ -386,6 +386,12 @@ running, `4` refused by the agent (rate limit, hidden by the administrator, unkn
 > **Status:** The control panel and the commands were tested against a simulated agent service (screens above are
 > rendered by the tests). Testing on a real host against the appliance's session summaries and poll is pending.
 
+## Desktop GUI and tray icon (Linux desktops)
+
+On workstations, install `nexus-agent-desktop_<v>-1_amd64.deb` / `nexus-agent-desktop-<v>-1.x86_64.rpm` next to the
+agent: it adds `nexus-agent-gui` (tray icon and window with the session chart) to the menu and the desktop autostart;
+users need to be in the group `nexus-agent-ui` (`sudo usermod -aG nexus-agent-ui alice`). See [04 Sources: Desktop agent](04-sources.md#desktop-agent-backup-status-for-the-user-windows-linux-desktops).
+
 ## Restores to this host
 
 Restores are started by the appliance administrator only (no self-service restore on the host). The agent writes

@@ -129,6 +129,13 @@ links and UNC paths are refused; list mounted volumes by their own path.
 Hooks are not supported on Windows; VSS writers provide application consistency. After each backup the agent reports
 every writer's state to the job log; a failed SQL Server, Exchange or AD writer marks the snapshot crash-consistent.
 
+## Tray icon and status window for users
+
+The MSI also installs `nexus-agent-gui.exe`: it starts at every user logon (Task Manager → Startup can switch it
+off) and shows the backup state in the notification area, the last 30 sessions as a chart and **Request backup
+now** (an administrator can hide it per agent). Users cannot restore or change anything. See
+[04 Sources: Desktop agent](04-sources.md#desktop-agent-backup-status-for-the-user-windows-linux-desktops).
+
 ## Restores to this server
 
 Restores are started by the appliance administrator only. The agent restores below the confirmed target path, with
