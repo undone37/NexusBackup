@@ -7,6 +7,8 @@ rust-version.workspace = true
 
 [dependencies]
 agent-proto = { path = "../agent-proto" }
+# release store + signature checks (Phase 27 agent updates)
+agent-core = { path = "../agent-core" }
 anyhow = "1"
 blake3 = "1"
 chunkstore = { path = "../chunkstore" }

@@ -133,8 +133,9 @@ pub struct Settings {
     pub hook_owner: u32,
     /// Windows: VSS writer class ids (comma separated) that must not take part
     pub vss_exclude_writers: String,
-    /// `self_update = on|off`; unset: on, except for package installs
-    /// ([`crate::update::self_update_blocked`])
+    /// `self_update = on|off|auto`; `None` = auto (the default): updates are allowed
+    /// with the install's own package type ([`crate::update::self_update_blocked`]);
+    /// `off` refuses every update
     pub self_update: Option<bool>,
     /// edge proxy (`host:port`) and its pinned certificate (SHA-256 hex), crate::edge;
     /// set here they override what the appliance pushed (`SetEdge`)
@@ -194,7 +195,16 @@ impl Settings {
                     s.self_update = Some(match v {
                         "on" | "yes" | "true" => true,
                         "off" | "no" | "false" => false,
-                        _ => return Err(format!("agent.conf line {}: self_update must be on or off", n + 1)),
+                        "auto" => {
+                            s.self_update = None;
+                            continue;
+                        }
+                        _ => {
+                            return Err(format!(
+                                "agent.conf line {}: self_update must be on, off or auto",
+                                n + 1
+                            ))
+                        }
                     })
                 }
                 _ => return Err(format!("agent.conf line {}: unknown key {k}", n + 1)),
@@ -312,6 +322,7 @@ mod tests {
         assert_eq!(s.self_update, None);
         assert_eq!(Settings::parse("self_update = on").unwrap().self_update, Some(true));
         assert_eq!(Settings::parse("self_update=off").unwrap().self_update, Some(false));
+        assert_eq!(Settings::parse("self_update = auto").unwrap().self_update, None);
         assert!(Settings::parse("self_update = maybe").is_err());
     }
 

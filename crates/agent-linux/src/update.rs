@@ -15,7 +15,7 @@
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Embedded in every build; found in update candidates to learn their real version.
 #[used]
@@ -45,6 +45,29 @@ pub fn apply(
 ) -> Result<String, String> {
     let (key, embedded) =
         agent_core::update::check_candidate(claimed, binary, signature, keys, current, is_native_elf)?;
+    swap(exe, binary)?;
+    Ok(format!("updated {current} -> {embedded} (signed by {key})"))
+}
+
+// ------------------------------------------------------------- Phase 27 (protocol v1.8)
+
+/// `arch=` capability of this build.
+pub fn arch() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else {
+        "x86_64"
+    }
+}
+
+/// ELF executable for this architecture (`binary` updates).
+pub fn native(b: &[u8]) -> bool {
+    is_native_elf(b)
+}
+
+/// Writes `binary` next to `exe` and renames it over `exe` atomically; the previous
+/// binary stays as `<exe>.prev` (start watchdog, manual rollback).
+pub fn swap(exe: &Path, binary: &[u8]) -> Result<(), String> {
     let dir = exe.parent().ok_or("executable has no directory")?;
     let name = exe
         .file_name()
@@ -75,7 +98,152 @@ pub fn apply(
         let _ = fs::remove_file(&tmp);
         return Err(format!("installing update: {e}"));
     }
-    Ok(format!("updated {current} -> {embedded} (signed by {key})"))
+    Ok(())
+}
+
+/// Start watchdog: put `<exe>.prev` back over `exe` (the previous binary stays
+/// available as `.prev` of the failed one is not kept: it did not start).
+pub fn restore_prev(exe: &Path) -> Result<(), String> {
+    let name = exe.file_name().ok_or("executable has no name")?.to_string_lossy();
+    let prev = exe.with_file_name(format!("{name}.prev"));
+    if !prev.is_file() {
+        return Err(format!("{} not found", prev.display()));
+    }
+    fs::rename(&prev, exe).map_err(|e| format!("{} -> {}: {e}", prev.display(), exe.display()))?;
+    if let Some(d) = exe.parent() {
+        let _ = fs::File::open(d).and_then(|d| d.sync_all());
+    }
+    Ok(())
+}
+
+/// Name of the transient unit that installs a package update.
+pub const UPDATE_UNIT: &str = "nexus-agent-update.service";
+
+/// Which programs exist on this host (absolute paths), for [`package_command`].
+pub struct Tools {
+    pub systemd_run: Option<PathBuf>,
+    pub apt_get: Option<PathBuf>,
+    pub dnf: Option<PathBuf>,
+    pub rpm: Option<PathBuf>,
+}
+
+impl Tools {
+    pub fn probe() -> Tools {
+        let find = |n: &str| crate::volumes::tool(n);
+        Tools {
+            systemd_run: find("systemd-run"),
+            apt_get: find("apt-get"),
+            dnf: find("dnf").or_else(|| find("dnf5")),
+            rpm: find("rpm"),
+        }
+    }
+}
+
+/// The command line that installs staged packages of `kind` (`deb` / `rpm`) in a
+/// transient systemd unit, so the upgrade survives the agent's own restart by the
+/// package's maintainer script. No shell and no appliance-supplied arguments: the
+/// program is fixed, the only variable parts are the absolute paths of the verified
+/// files below `staging` (desktop package first, in the same transaction).
+pub fn package_command(
+    kind: &str,
+    files: &[PathBuf],
+    staging: &Path,
+    rollback: bool,
+    tools: &Tools,
+) -> Result<Vec<String>, String> {
+    if files.is_empty() {
+        return Err("nothing to install".into());
+    }
+    let mut paths = Vec::new();
+    for f in files {
+        let s = f.to_str().ok_or("staged file name is not UTF-8")?;
+        if !f.is_absolute() || f.parent() != Some(staging) || s.contains(['\n', '\0']) {
+            return Err(format!("{s}: not a staged update file"));
+        }
+        let ext = if kind == "deb" { ".deb" } else { ".rpm" };
+        if !s.ends_with(ext) {
+            return Err(format!("{s}: not a {kind} package"));
+        }
+        paths.push(s.to_owned());
+    }
+    let run = tools.systemd_run.as_ref().ok_or("systemd-run not found (package updates need systemd)")?;
+    let mut argv: Vec<String> = vec![
+        run.to_string_lossy().into_owned(),
+        format!("--unit={UPDATE_UNIT}"),
+        "--description=NexusBackup agent update".into(),
+        "--property=TimeoutStartSec=30min".into(),
+        "--setenv=DEBIAN_FRONTEND=noninteractive".into(),
+        "--setenv=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into(),
+        "--".into(),
+    ];
+    match kind {
+        "deb" => {
+            let apt = tools.apt_get.as_ref().ok_or("apt-get not found")?;
+            argv.push(apt.to_string_lossy().into_owned());
+            argv.extend(["install", "-y", "-o", "Dpkg::Options::=--force-confold"].map(String::from));
+            if rollback {
+                argv.push("--allow-downgrades".into());
+            }
+        }
+        "rpm" => match (&tools.dnf, &tools.rpm) {
+            (Some(dnf), _) => {
+                argv.push(dnf.to_string_lossy().into_owned());
+                argv.push(if rollback { "downgrade" } else { "install" }.into());
+                argv.extend(["-y", "--disablerepo=*"].map(String::from));
+            }
+            (None, Some(rpm)) => {
+                argv.push(rpm.to_string_lossy().into_owned());
+                argv.push("-U".into());
+                if rollback {
+                    argv.push("--oldpackage".into());
+                }
+            }
+            (None, None) => return Err("neither dnf nor rpm found".into()),
+        },
+        _ => return Err(format!("{kind} is not a Linux package kind")),
+    }
+    argv.extend(paths);
+    Ok(argv)
+}
+
+/// State of the transient unit from `systemctl show --property=LoadState,ActiveState,Result,ExecMainStatus`.
+pub fn parse_unit_show(text: &str) -> agent_core::update::InstallResult {
+    use agent_core::update::InstallResult;
+    let get = |k: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(k).and_then(|v| v.strip_prefix('=')))
+            .unwrap_or("")
+            .trim()
+    };
+    match (get("LoadState"), get("ActiveState"), get("Result")) {
+        ("not-found", _, _) | ("", "", _) => InstallResult::Unknown,
+        (_, "active" | "activating" | "deactivating" | "reloading", _) => InstallResult::Running,
+        (_, "failed", r) | (_, "inactive", r) if r != "success" && !r.is_empty() => InstallResult::Failed(
+            format!(
+                "package install failed ({r}, exit status {})",
+                if get("ExecMainStatus").is_empty() {
+                    "?"
+                } else {
+                    get("ExecMainStatus")
+                }
+            ),
+            vec![],
+        ),
+        (_, "inactive", "success") => InstallResult::Succeeded,
+        _ => InstallResult::Unknown,
+    }
+}
+
+/// `dpkg-query` / `rpm -q` version of the desktop package (`0.1.0-1` → `0.1.0`).
+pub fn desktop_version(install: &str) -> Option<String> {
+    let (tool, args): (&str, &[&str]) = match install {
+        "deb" => ("dpkg-query", &["-W", "-f=${Version}", "nexus-agent-desktop"]),
+        "rpm" => ("rpm", &["-q", "--qf", "%{VERSION}", "nexus-agent-desktop"]),
+        _ => return None,
+    };
+    let out = crate::volumes::run_tool(tool, args).ok()?;
+    let v = out.trim().split(['-', '~', '+']).next()?.to_owned();
+    agent_proto::release::parse_version(&v).map(|_| v)
 }
 
 #[cfg(test)]
@@ -161,6 +329,126 @@ mod tests {
         assert_eq!(fs::read(t.path().join("nexus-agent.prev")).unwrap(), b"old");
         assert_eq!(fs::read_dir(t.path()).unwrap().count(), 2, "no temp files left");
     }
+
+    #[test]
+    fn package_commands_are_fixed_argv_without_a_shell() {
+        let staging = Path::new("/var/lib/nexus-agent/update");
+        let tools = Tools {
+            systemd_run: Some("/usr/bin/systemd-run".into()),
+            apt_get: Some("/usr/bin/apt-get".into()),
+            dnf: Some("/usr/bin/dnf".into()),
+            rpm: Some("/usr/bin/rpm".into()),
+        };
+        let deb = vec![
+            staging.join("nexus-agent-desktop_0.2.0-1_amd64.deb"),
+            staging.join("nexus-agent_0.2.0_amd64.deb"),
+        ];
+        let a = package_command("deb", &deb, staging, false, &tools).unwrap();
+        assert_eq!(a[0], "/usr/bin/systemd-run");
+        assert!(a.contains(&format!("--unit={UPDATE_UNIT}")));
+        let tail: Vec<&str> = a.iter().skip_while(|x| *x != "--").skip(1).map(String::as_str).collect();
+        assert_eq!(
+            tail,
+            [
+                "/usr/bin/apt-get",
+                "install",
+                "-y",
+                "-o",
+                "Dpkg::Options::=--force-confold",
+                "/var/lib/nexus-agent/update/nexus-agent-desktop_0.2.0-1_amd64.deb",
+                "/var/lib/nexus-agent/update/nexus-agent_0.2.0_amd64.deb"
+            ]
+        );
+        assert!(!a.iter().any(|x| x.contains("sh -c") || x == "/bin/sh"));
+        let a = package_command("deb", &deb[1..], staging, true, &tools).unwrap();
+        assert!(a.contains(&"--allow-downgrades".to_string()));
+        let rpm = vec![staging.join("nexus-agent-0.2.0-1.x86_64.rpm")];
+        let a = package_command("rpm", &rpm, staging, false, &tools).unwrap();
+        let tail: Vec<&str> = a.iter().skip_while(|x| *x != "--").skip(1).map(String::as_str).collect();
+        assert_eq!(
+            tail,
+            [
+                "/usr/bin/dnf",
+                "install",
+                "-y",
+                "--disablerepo=*",
+                "/var/lib/nexus-agent/update/nexus-agent-0.2.0-1.x86_64.rpm"
+            ]
+        );
+        let a = package_command("rpm", &rpm, staging, true, &tools).unwrap();
+        assert!(a.contains(&"downgrade".to_string()));
+        let no_dnf = Tools { dnf: None, ..tools };
+        let a = package_command("rpm", &rpm, staging, true, &no_dnf).unwrap();
+        assert!(a.ends_with(&[
+            "/usr/bin/rpm".to_string(),
+            "-U".into(),
+            "--oldpackage".into(),
+            "/var/lib/nexus-agent/update/nexus-agent-0.2.0-1.x86_64.rpm".into()
+        ]));
+        // only staged package files
+        for bad in [
+            vec![PathBuf::from("/tmp/nexus-agent_0.2.0_amd64.deb")],
+            vec![PathBuf::from("nexus-agent_0.2.0_amd64.deb")],
+            vec![staging.join("evil.sh")],
+            vec![staging.join("x/../../y.deb")],
+            vec![],
+        ] {
+            assert!(package_command("deb", &bad, staging, false, &no_dnf).is_err(), "{bad:?}");
+        }
+        assert!(package_command("msi", &deb, staging, false, &no_dnf).is_err());
+        let none = Tools {
+            systemd_run: None,
+            apt_get: None,
+            dnf: None,
+            rpm: None,
+        };
+        assert!(package_command("deb", &deb, staging, false, &none)
+            .unwrap_err()
+            .contains("systemd-run"));
+    }
+
+    #[test]
+    fn transient_unit_states() {
+        use agent_core::update::InstallResult;
+        let show = |l: &str, a: &str, r: &str, c: &str| {
+            format!("LoadState={l}\nActiveState={a}\nResult={r}\nExecMainStatus={c}\n")
+        };
+        assert_eq!(
+            parse_unit_show(&show("loaded", "active", "success", "0")),
+            InstallResult::Running
+        );
+        assert_eq!(
+            parse_unit_show(&show("loaded", "inactive", "success", "0")),
+            InstallResult::Succeeded
+        );
+        match parse_unit_show(&show("loaded", "failed", "exit-code", "100")) {
+            InstallResult::Failed(e, _) => assert!(e.contains("exit-code") && e.contains("100"), "{e}"),
+            r => panic!("{r:?}"),
+        }
+        assert_eq!(
+            parse_unit_show(&show("not-found", "inactive", "success", "0")),
+            InstallResult::Unknown
+        );
+        assert_eq!(parse_unit_show(""), InstallResult::Unknown);
+    }
+
+    #[test]
+    fn swap_keeps_prev_and_watchdog_restores_it() {
+        let t = tempfile::tempdir().unwrap();
+        let exe = t.path().join("nexus-agent");
+        fs::write(&exe, b"old").unwrap();
+        assert!(restore_prev(&exe).is_err(), "nothing to restore yet");
+        swap(&exe, b"new").unwrap();
+        assert_eq!(fs::read(&exe).unwrap(), b"new");
+        assert_eq!(fs::read(t.path().join("nexus-agent.prev")).unwrap(), b"old");
+        restore_prev(&exe).unwrap();
+        assert_eq!(fs::read(&exe).unwrap(), b"old");
+        assert!(!t.path().join("nexus-agent.prev").exists());
+        assert_eq!(fs::read_dir(t.path()).unwrap().count(), 1, "no temp files left");
+        assert!(native(&fake_binary("0.2.0")) == cfg!(target_arch = "x86_64"));
+        assert!(["x86_64", "aarch64"].contains(&arch()));
+    }
+
 
     #[test]
     fn key_parsing_and_versions() {

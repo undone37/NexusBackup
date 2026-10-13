@@ -88,6 +88,13 @@ pub fn name(m: &Message) -> &'static str {
         Message::RescueDone { .. } => "RescueDone",
         Message::SetEdge { .. } => "SetEdge",
         Message::EdgeSet => "EdgeSet",
+        Message::UpdateBegin { .. } => "UpdateBegin",
+        Message::UpdateReady => "UpdateReady",
+        Message::UpdateChunk { .. } => "UpdateChunk",
+        Message::UpdateCommit { .. } => "UpdateCommit",
+        Message::UpdateStaged => "UpdateStaged",
+        Message::UpdateStatus => "UpdateStatus",
+        Message::UpdateState { .. } => "UpdateState",
     }
 }
 

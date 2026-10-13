@@ -197,6 +197,17 @@ fn run(paths: Paths) -> Result<ExitCode, String> {
     // SAFETY: trivial syscall; private keys, caches and spool files are never group/world-readable
     unsafe { libc::umask(0o077) };
     std::hint::black_box(nexus_agent::update::VERSION_MARKER);
+    // start watchdog of a freshly swapped binary (docs/agent-update-plan.md): first, so
+    // a configuration the new version cannot load counts as a failed start as well
+    if let Ok(exe) = std::env::current_exe().and_then(std::fs::canonicalize) {
+        let restore = || nexus_agent::update::restore_prev(&exe);
+        if agent_core::update::watchdog_on_start(&paths, env!("CARGO_PKG_VERSION"), &restore)
+            == agent_core::update::Watchdog::Reverted
+        {
+            eprintln!("nexus-agent: the new version did not start; the previous binary is back, restarting");
+            return Ok(ExitCode::from(nexus_agent::update::RESTART_EXIT_CODE as u8));
+        }
+    }
     let settings = Settings::load(&paths)?;
     // before any thread exists: snapshot mounts stay in our own namespace
     if let Err(e) = sys::private_mount_namespace() {

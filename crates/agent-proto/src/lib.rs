@@ -8,6 +8,7 @@ use std::io::{self, Read, Write};
 
 pub mod edge;
 pub mod layout;
+pub mod release;
 
 pub const VERSION: u32 = 1;
 pub const DEFAULT_PORT: u16 = 7444;
@@ -360,7 +361,54 @@ pub enum Message {
     },
     /// Answer to `SetEdge`.
     EdgeSet,
+    // --- v1.8, appended: chunked updates and package installs (CAP_UPDATE2,
+    // docs/agent-update-plan.md "Implementation") ---
+    /// Appliance → agent: one artifact of a signed release follows in `UpdateChunk`s.
+    /// `kind` / `name` as in the release manifest; `signature` = cosign blob signature
+    /// of the artifact; `manifest` + `manifest_sig` = the signed `manifest.json`.
+    /// Answered with `UpdateReady` or `Error` (refused before any data is sent).
+    UpdateBegin {
+        kind: String,
+        name: String,
+        size: u64,
+        sha256: [u8; 32],
+        signature: Vec<u8>,
+        manifest: Vec<u8>,
+        manifest_sig: Vec<u8>,
+        /// an approved rollback to an older release (see `agent_core::update::ROLLBACK_FLOOR`)
+        rollback: bool,
+    },
+    UpdateReady,
+    /// The next piece of the artifact announced by `UpdateBegin` (no answer).
+    UpdateChunk {
+        data: Vec<u8>,
+    },
+    /// End of the artifact: the agent checks it; `apply = false` stages it (answer
+    /// `UpdateStaged`, more artifacts follow), `apply = true` installs everything staged
+    /// (answer `UpdateDone`, or `Error`).
+    UpdateCommit {
+        apply: bool,
+    },
+    UpdateStaged,
+    /// Appliance → agent: the agent's update state (`update-state.json`).
+    UpdateStatus,
+    /// `json` = `{state, kind, from, to, at, error, log}` or `{}` when no update ran.
+    UpdateState {
+        json: String,
+    },
 }
+
+/// Capability: the agent understands `UpdateBegin` / `UpdateChunk` / `UpdateCommit` /
+/// `UpdateStatus` (v1.8) and reports its host facts as `arch=`, `install=`, `gui=` caps
+/// ([`release::HostFacts`]).
+pub const CAP_UPDATE2: &str = "update2";
+/// Largest update artifact accepted (MSI with the desktop UI stays far below).
+pub const MAX_UPDATE: u64 = 512 << 20;
+/// Largest signature / manifest / state document in update messages.
+pub const MAX_SIGNATURE: usize = 64 << 10;
+pub const MAX_MANIFEST: usize = 256 << 10;
+pub const MAX_UPDATE_STATE: usize = 16 << 10;
+pub const MAX_ARTIFACT_NAME: usize = 200;
 
 /// Capability: the agent understands `SetEdge` and keeps an edge rendezvous (v1.7).
 pub const CAP_EDGE: &str = "edge";
@@ -562,6 +610,27 @@ pub fn check(m: &Message) -> io::Result<()> {
         }
         Message::SetEdge { addr, cert_sha256 } if addr.len() > MAX_TEXT || cert_sha256.len() > 64 => {
             return Err(bad("edge setting exceeds limits"))
+        }
+        Message::UpdateBegin {
+            kind,
+            name,
+            size,
+            signature,
+            manifest,
+            manifest_sig,
+            ..
+        } if kind.len() > 32
+            || name.len() > MAX_ARTIFACT_NAME
+            || *size > MAX_UPDATE
+            || signature.len() > MAX_SIGNATURE
+            || manifest_sig.len() > MAX_SIGNATURE
+            || manifest.len() > MAX_MANIFEST =>
+        {
+            return Err(bad("update exceeds limits"))
+        }
+        Message::UpdateChunk { data } if data.len() > MAX_CHUNK => return Err(bad("update chunk too large")),
+        Message::UpdateState { json } if json.len() > MAX_UPDATE_STATE => {
+            return Err(bad("update state too large"))
         }
         Message::SessionSummary { summary, status } => {
             let s = summary;
@@ -903,6 +972,64 @@ mod tests {
         )
         .unwrap();
         assert!(read_msg(&mut &buf[..]).is_err());
+    }
+
+    #[test]
+    fn v18_messages_are_appended() {
+        let begin = Message::UpdateBegin {
+            kind: "deb".into(),
+            name: "linux-x86_64/nexus-agent_0.2.0_amd64.deb".into(),
+            size: 10,
+            sha256: [7; 32],
+            signature: b"sig".to_vec(),
+            manifest: b"{}".to_vec(),
+            manifest_sig: b"msig".to_vec(),
+            rollback: false,
+        };
+        assert_eq!(postcard::to_stdvec(&begin).unwrap()[0], 49);
+        assert_eq!(postcard::to_stdvec(&Message::UpdateReady).unwrap(), vec![50]);
+        assert_eq!(postcard::to_stdvec(&Message::UpdateCommit { apply: true }).unwrap(), vec![52, 1]);
+        assert_eq!(postcard::to_stdvec(&Message::UpdateStaged).unwrap(), vec![53]);
+        assert_eq!(postcard::to_stdvec(&Message::UpdateStatus).unwrap(), vec![54]);
+        // the old single-frame update keeps its tag (old agents)
+        let old = Message::Update {
+            version: "0.2.0".into(),
+            binary: vec![1],
+            signature: vec![2],
+        };
+        assert_eq!(postcard::to_stdvec(&old).unwrap()[0], 23);
+        assert_eq!(postcard::to_stdvec(&Message::UpdateDone).unwrap(), vec![24]);
+        for m in [
+            begin.clone(),
+            Message::UpdateChunk { data: vec![1; 100] },
+            Message::UpdateState { json: "{}".into() },
+        ] {
+            let mut buf = Vec::new();
+            write_msg(&mut buf, &m).unwrap();
+            assert_eq!(read_msg(&mut &buf[..]).unwrap(), m);
+        }
+        for m in [
+            Message::UpdateChunk {
+                data: vec![0; MAX_CHUNK + 1],
+            },
+            Message::UpdateBegin {
+                kind: "binary".into(),
+                name: "x".into(),
+                size: MAX_UPDATE + 1,
+                sha256: [0; 32],
+                signature: vec![],
+                manifest: vec![],
+                manifest_sig: vec![],
+                rollback: false,
+            },
+            Message::UpdateState {
+                json: "x".repeat(MAX_UPDATE_STATE + 1),
+            },
+        ] {
+            let mut buf = Vec::new();
+            write_msg(&mut buf, &m).unwrap();
+            assert!(read_msg(&mut &buf[..]).is_err());
+        }
     }
 
     #[test]

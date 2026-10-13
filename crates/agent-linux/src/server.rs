@@ -9,7 +9,7 @@ use crate::scan::{Locator, Root, Scanner};
 use crate::snapshot::{self, Snap};
 use crate::{hooks, update, volumes};
 use agent_core::filter::Filter;
-use agent_core::server::{Ctx, HostInfo, Platform, PreparedJob, Refused, ScanError, ScanOutput};
+use agent_core::server::{Ctx, HostInfo, Installed, Platform, PreparedJob, Refused, ScanError, ScanOutput, Staged};
 use agent_proto::{Entry, Filters, Overwrite, Volume};
 use std::collections::HashSet;
 use std::fs;
@@ -27,7 +27,37 @@ pub use agent_core::server::{
 pub type Agent = agent_core::server::Agent<Linux>;
 
 #[derive(Default)]
-pub struct Linux;
+pub struct Linux {
+    /// the binary a `binary` update replaces (tests); default: the running executable
+    pub exe: Option<PathBuf>,
+    /// desktop package version (asked once: the process restarts after an update)
+    gui: std::sync::OnceLock<Option<String>>,
+}
+
+impl Linux {
+    pub fn with_exe(exe: PathBuf) -> Linux {
+        Linux {
+            exe: Some(exe),
+            ..Default::default()
+        }
+    }
+
+    fn exe(&self) -> Result<PathBuf, String> {
+        match &self.exe {
+            Some(e) => Ok(e.clone()),
+            None => std::env::current_exe()
+                .and_then(fs::canonicalize)
+                .map_err(|e| format!("current executable: {e}")),
+        }
+    }
+
+    fn install(&self) -> String {
+        agent_core::update::install_type(
+            agent_core::update::packaged(&agent_core::update::package_marker()).as_deref(),
+            "bundle",
+        )
+    }
+}
 
 pub struct Job {
     snaps: Vec<Snap>,
@@ -282,9 +312,7 @@ impl Platform for Linux {
     }
 
     fn update(&self, ctx: Ctx, version: &str, binary: &[u8], signature: &[u8]) -> Result<String, String> {
-        let exe = std::env::current_exe()
-            .and_then(fs::canonicalize)
-            .map_err(|e| format!("current executable: {e}"))?;
+        let exe = self.exe()?;
         let keys = update::load_keys(&ctx.paths.release_keys());
         update::apply(version, binary, signature, &keys, env!("CARGO_PKG_VERSION"), &exe)
     }
@@ -301,6 +329,103 @@ impl Platform for Linux {
 
     fn power_state(&self) -> agent_proto::PowerState {
         crate::power::state()
+    }
+
+    fn host_facts(&self) -> Option<agent_proto::release::HostFacts> {
+        let install = self.install();
+        let gui = self.gui.get_or_init(|| update::desktop_version(&install)).clone();
+        Some(agent_proto::release::HostFacts {
+            os: "linux".into(),
+            arch: update::arch().into(),
+            install,
+            gui_version: gui,
+        })
+    }
+
+    fn native_binary(&self, binary: &[u8]) -> bool {
+        update::native(binary)
+    }
+
+    fn install_update(&self, ctx: Ctx, staged: &[Staged], rollback: bool) -> Result<Installed, String> {
+        let main = staged.last().ok_or("nothing staged")?;
+        match main.kind.as_str() {
+            agent_proto::release::KIND_BINARY => {
+                if staged.len() != 1 {
+                    return Err("a binary update carries one artifact".into());
+                }
+                let exe = self.exe()?;
+                let data = fs::read(&main.path).map_err(|e| format!("{}: {e}", main.path.display()))?;
+                update::swap(&exe, &data)?;
+                let _ = fs::remove_file(&main.path);
+                Ok(Installed::Restart(format!(
+                    "updated {} -> {} ({})",
+                    env!("CARGO_PKG_VERSION"),
+                    main.version,
+                    exe.display()
+                )))
+            }
+            kind @ ("deb" | "rpm") => {
+                let files: Vec<PathBuf> = staged.iter().map(|s| s.path.clone()).collect();
+                let argv = update::package_command(
+                    kind,
+                    &files,
+                    &agent_core::update::staging_dir(ctx.paths),
+                    rollback,
+                    &update::Tools::probe(),
+                )?;
+                // a failed unit of an earlier attempt would block the name
+                let _ = crate::volumes::run_tool("systemctl", &["reset-failed", update::UPDATE_UNIT]);
+                let out = std::process::Command::new(&argv[0])
+                    .args(&argv[1..])
+                    .env_clear()
+                    .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+                    .stdin(std::process::Stdio::null())
+                    .output()
+                    .map_err(|e| format!("{}: {e}", argv[0]))?;
+                if !out.status.success() {
+                    return Err(format!(
+                        "systemd-run failed ({}): {}",
+                        out.status,
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ));
+                }
+                Ok(Installed::Started(
+                    format!(
+                        "installing {} with {} in {}",
+                        staged.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", "),
+                        argv.iter().skip_while(|a| *a != "--").nth(1).map_or("?", String::as_str),
+                        update::UPDATE_UNIT
+                    ),
+                    update::UPDATE_UNIT.into(),
+                ))
+            }
+            k => Err(format!("{k} artifacts are not installed on Linux")),
+        }
+    }
+
+    fn install_result(&self, _ctx: Ctx, pending: &agent_core::update::Pending) -> agent_core::update::InstallResult {
+        use agent_core::update::InstallResult;
+        let unit = if pending.unit.is_empty() {
+            update::UPDATE_UNIT
+        } else {
+            pending.unit.as_str()
+        };
+        let Ok(show) = crate::volumes::run_tool(
+            "systemctl",
+            &["show", unit, "--property=LoadState,ActiveState,Result,ExecMainStatus"],
+        ) else {
+            return InstallResult::Unknown;
+        };
+        match update::parse_unit_show(&show) {
+            InstallResult::Failed(e, _) => {
+                let log = crate::volumes::run_tool("journalctl", &["-u", unit, "-n", "30", "--no-pager", "-o", "cat"])
+                    .map(|t| agent_core::update::tail_lines(&t, 30))
+                    .unwrap_or_default();
+                let _ = crate::volumes::run_tool("systemctl", &["reset-failed", unit]);
+                InstallResult::Failed(e, log)
+            }
+            r => r,
+        }
     }
 }
 

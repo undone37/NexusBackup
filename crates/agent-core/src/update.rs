@@ -169,18 +169,449 @@ pub fn packaged(marker: &Path) -> Option<String> {
     })
 }
 
-/// Why `Update` is refused before any check, if it is: `self_update` in agent.conf
-/// wins; unset, package installs leave updates to the package manager (a self-update
-/// would replace a file the package owns, and the next package upgrade or repair would
-/// silently undo or fight it).
-pub fn self_update_blocked(setting: Option<bool>, packaged: Option<&str>) -> Option<String> {
-    match (setting, packaged) {
-        (Some(true), _) | (None, None) => None,
-        (Some(false), _) => Some("self-update is off (self_update = off in agent.conf)".into()),
-        (None, Some(p)) => Some(format!(
-            "installed from a {p} package: update it with the package manager (or set self_update = on in agent.conf)"
+/// Why every update is refused before any check, if it is: `self_update = off` in
+/// agent.conf always wins (the server owner keeps control). Unset (`auto`, the
+/// default) and `on` allow updates with the install's own package type
+/// ([`kind_allowed`]).
+pub fn self_update_blocked(setting: Option<bool>, _packaged: Option<&str>) -> Option<String> {
+    match setting {
+        Some(false) => Some("self-update is off (self_update = off in agent.conf)".into()),
+        _ => None,
+    }
+}
+
+/// The single-frame `Update` (protocol before v1.8) swaps the binary: never under a
+/// package manager (the package database would no longer be truthful).
+pub fn binary_swap_blocked(packaged: Option<&str>) -> Option<String> {
+    packaged.map(|p| {
+        format!(
+            "installed from a {p} package: it is updated with a {p} package (appliance with protocol v1.8), not by replacing the binary"
+        )
+    })
+}
+
+/// How this agent was installed: the package type of the marker, else `default`
+/// (`bundle` on Linux, `manual` on Windows).
+pub fn install_type(packaged: Option<&str>, default: &str) -> String {
+    match packaged {
+        Some(p @ ("deb" | "rpm" | "msi")) => p.to_string(),
+        Some(_) => "manual".into(),
+        None => default.into(),
+    }
+}
+
+/// Which artifact kinds an install type takes in-band (Phase 27): every install is
+/// updated with its own package type, bundles and manual installs by a binary swap.
+pub fn kind_allowed(install: &str, kind: &str) -> bool {
+    use agent_proto::release::*;
+    matches!(
+        (install, kind),
+        ("bundle" | "manual", KIND_BINARY)
+            | ("deb", KIND_DEB | KIND_DESKTOP_DEB)
+            | ("rpm", KIND_RPM | KIND_DESKTOP_RPM)
+            | ("msi", KIND_MSI)
+    )
+}
+
+/// Oldest release this build may be rolled back to (an approved rollback, protocol
+/// v1.8 `UpdateBegin.rollback`). Part of the signed binary: a compromised appliance
+/// cannot take an agent back below it. Raise it when a release fixes a security issue.
+pub const ROLLBACK_FLOOR: &str = "0.1.0";
+
+/// Version rule of an update: strictly newer, or (with `rollback`) strictly older but
+/// not below `floor`.
+pub fn check_version(target: &str, current: &str, rollback: bool, floor: &str) -> Result<(), String> {
+    let t = parse_version(target).ok_or_else(|| format!("bad version {target:?}"))?;
+    let c = parse_version(current).ok_or("bad current version")?;
+    if t == c {
+        return Err(format!("refusing reinstall: {target} is already running"));
+    }
+    if t > c {
+        return Ok(());
+    }
+    if !rollback {
+        return Err(format!("refusing downgrade: {target} is not newer than {current}"));
+    }
+    match parse_version(floor) {
+        Some(f) if t >= f => Ok(()),
+        _ => Err(format!(
+            "refusing rollback to {target}: below the oldest release this build allows ({floor})"
         )),
     }
+}
+
+/// An artifact announced by `UpdateBegin`, checked against its signed manifest
+/// (everything except the data itself, see [`check_artifact_data`]).
+#[derive(Debug, Clone)]
+pub struct Announced {
+    pub manifest: agent_proto::release::Manifest,
+    pub artifact: agent_proto::release::Artifact,
+    pub key: String,
+}
+
+/// All checks of an `UpdateBegin` before any data is accepted (docs/agent-update-plan.md
+/// "Agent checks"); `host` = the agent's own facts.
+#[allow(clippy::too_many_arguments)]
+pub fn check_announced(
+    keys: &[(String, Vec<u8>)],
+    manifest: &[u8],
+    manifest_sig: &[u8],
+    kind: &str,
+    name: &str,
+    size: u64,
+    sha256: &[u8; 32],
+    host: &agent_proto::release::HostFacts,
+    current: &str,
+    rollback: bool,
+) -> Result<Announced, String> {
+    if !kind_allowed(&host.install, kind) {
+        return Err(format!(
+            "a {kind} artifact cannot update a {} install (updates use the install's own package type)",
+            host.install
+        ));
+    }
+    let key = verify(manifest, manifest_sig, keys).map_err(|e| format!("release manifest: {e}"))?;
+    let m = agent_proto::release::Manifest::parse(manifest)?;
+    let a = m
+        .artifact(name)
+        .ok_or_else(|| format!("{name} is not part of release {}", m.version))?
+        .clone();
+    if a.kind != kind {
+        return Err(format!("{name} is a {} artifact, not {kind}", a.kind));
+    }
+    if a.os != host.os || a.arch != host.arch {
+        return Err(format!(
+            "{name} is for {}/{}, this host is {}/{}",
+            a.os, a.arch, host.os, host.arch
+        ));
+    }
+    if a.size != size || a.sha256 != agent_proto::release::hex(sha256) {
+        return Err(format!("{name}: size or SHA-256 differ from the signed manifest"));
+    }
+    // the desktop UI rides along with the agent package; the agent's version decides
+    if !kind.starts_with("desktop-") {
+        if a.version != m.version {
+            return Err(format!(
+                "{name}: version {} differs from the release {}",
+                a.version, m.version
+            ));
+        }
+        check_version(&m.version, current, rollback, ROLLBACK_FLOOR)?;
+    }
+    Ok(Announced {
+        manifest: m,
+        artifact: a,
+        key,
+    })
+}
+
+/// The received data: its own signature, and for a binary the embedded version
+/// marker and the executable format.
+pub fn check_artifact_data(
+    a: &Announced,
+    data: &[u8],
+    signature: &[u8],
+    keys: &[(String, Vec<u8>)],
+    native: &dyn Fn(&[u8]) -> bool,
+) -> Result<(), String> {
+    verify(data, signature, keys).map_err(|e| format!("{}: {e}", a.artifact.name))?;
+    if a.artifact.kind == agent_proto::release::KIND_BINARY {
+        let embedded = embedded_version(data)?;
+        if embedded != a.artifact.version {
+            return Err(format!(
+                "{}: the signed binary is {embedded}, the manifest says {}",
+                a.artifact.name, a.artifact.version
+            ));
+        }
+        if !native(data) {
+            return Err("not an executable for this platform and architecture".into());
+        }
+    }
+    Ok(())
+}
+
+// ------------------------------------------------------------------ update state
+
+/// `<state>/update-state.json`: the outcome of the last update, reported to the
+/// appliance (`UpdateStatus`).
+pub fn state_file(paths: &crate::config::Paths) -> PathBuf {
+    paths.state.join("update-state.json")
+}
+
+/// `<state>/update-pending.json`: an update in progress (written before installing,
+/// removed when its outcome is known). Also the start watchdog's counter.
+pub fn pending_file(paths: &crate::config::Paths) -> PathBuf {
+    paths.state.join("update-pending.json")
+}
+
+/// Directory the artifacts are received into (emptied before each update).
+pub fn staging_dir(paths: &crate::config::Paths) -> PathBuf {
+    paths.state.join("update")
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+pub struct UpdateState {
+    /// installing | ok | failed | rolled_back
+    pub state: String,
+    pub kind: String,
+    pub from: String,
+    pub to: String,
+    pub at: u64,
+    #[serde(default)]
+    pub error: String,
+    /// last lines of the installer's output (package installs)
+    #[serde(default)]
+    pub log: Vec<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+pub struct Pending {
+    pub kind: String,
+    pub from: String,
+    pub to: String,
+    pub started: u64,
+    /// starts of the new binary that did not reach "listening" (binary swaps)
+    #[serde(default)]
+    pub starts: u32,
+    /// transient systemd unit / installer log (package installs)
+    #[serde(default)]
+    pub unit: String,
+}
+
+pub fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+pub fn read_pending(paths: &crate::config::Paths) -> Option<Pending> {
+    serde_json::from_slice(&fs::read(pending_file(paths)).ok()?).ok()
+}
+
+pub fn write_pending(paths: &crate::config::Paths, p: &Pending) -> std::io::Result<()> {
+    crate::config::write_atomic(&pending_file(paths), &serde_json::to_vec(p)?, 0o600)
+}
+
+pub fn write_state(paths: &crate::config::Paths, s: &UpdateState) -> std::io::Result<()> {
+    let mut s = s.clone();
+    s.error = s.error.chars().take(1000).collect();
+    let skip = s.log.len().saturating_sub(40);
+    s.log = s.log.split_off(skip);
+    for l in &mut s.log {
+        *l = l.chars().take(300).collect();
+    }
+    crate::config::write_atomic(&state_file(paths), &serde_json::to_vec(&s)?, 0o600)
+}
+
+/// The state document for `UpdateState` (`{}` when no update ran).
+pub fn state_json(paths: &crate::config::Paths) -> String {
+    fs::read(state_file(paths))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<UpdateState>(&b).ok())
+        .and_then(|s| serde_json::to_string(&s).ok())
+        .filter(|j| j.len() <= agent_proto::MAX_UPDATE_STATE)
+        .unwrap_or_else(|| "{}".into())
+}
+
+/// Finishes a pending update with `state` (ok / failed / rolled_back).
+pub fn finish(paths: &crate::config::Paths, p: &Pending, state: &str, error: &str, log: Vec<String>) {
+    let _ = write_state(
+        paths,
+        &UpdateState {
+            state: state.into(),
+            kind: p.kind.clone(),
+            from: p.from.clone(),
+            to: p.to.clone(),
+            at: now(),
+            error: error.into(),
+            log,
+        },
+    );
+    let _ = fs::remove_file(pending_file(paths));
+    let _ = fs::remove_dir_all(staging_dir(paths));
+}
+
+/// What the start watchdog decided.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Watchdog {
+    /// nothing pending (or a package install: see [`settle_package`])
+    Continue,
+    /// the previous binary is back in place: exit so the service manager restarts it
+    Reverted,
+}
+
+/// Starts of a new binary allowed without reaching "listening" before the previous
+/// one is put back.
+pub const WATCHDOG_STARTS: u32 = 2;
+
+/// At the very start of `run`: counts this start of a freshly swapped binary; the
+/// third start without [`mark_listening`] puts `<exe>.prev` back (`restore` = the
+/// platform's rename of `.prev` over the running executable).
+pub fn watchdog_on_start(
+    paths: &crate::config::Paths,
+    current: &str,
+    restore: &dyn Fn() -> Result<(), String>,
+) -> Watchdog {
+    let Some(mut p) = read_pending(paths) else {
+        return Watchdog::Continue;
+    };
+    if p.kind != agent_proto::release::KIND_BINARY {
+        return Watchdog::Continue;
+    }
+    if current == p.from {
+        // the swap did not take (or the previous binary was put back by hand)
+        finish(
+            paths,
+            &p,
+            "rolled_back",
+            "the agent runs the previous version again",
+            vec![],
+        );
+        return Watchdog::Continue;
+    }
+    if current != p.to {
+        finish(
+            paths,
+            &p,
+            "failed",
+            &format!("the agent runs {current}, expected {}", p.to),
+            vec![],
+        );
+        return Watchdog::Continue;
+    }
+    if p.starts < WATCHDOG_STARTS {
+        p.starts += 1;
+        let _ = write_pending(paths, &p);
+        return Watchdog::Continue;
+    }
+    match restore() {
+        Ok(()) => {
+            finish(
+                paths,
+                &p,
+                "rolled_back",
+                &format!(
+                    "version {} did not start {} times in a row; the previous binary {} was put back",
+                    p.to,
+                    WATCHDOG_STARTS + 1,
+                    p.from
+                ),
+                vec![],
+            );
+            Watchdog::Reverted
+        }
+        Err(e) => {
+            finish(
+                paths,
+                &p,
+                "failed",
+                &format!("watchdog could not restore the previous binary: {e}"),
+                vec![],
+            );
+            Watchdog::Continue
+        }
+    }
+}
+
+/// The agent listens: a pending binary swap or package install that brought this
+/// version is done.
+pub fn mark_listening(paths: &crate::config::Paths, current: &str) {
+    if let Some(p) = read_pending(paths) {
+        if p.to == current {
+            finish(paths, &p, "ok", "", vec![]);
+        }
+    }
+}
+
+/// Outcome of a package install as the platform sees it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum InstallResult {
+    /// still running
+    Running,
+    /// the installer finished successfully
+    Succeeded,
+    /// the installer failed (error, last log lines)
+    Failed(String, Vec<String>),
+    /// nothing known about it (unit gone, no log)
+    Unknown,
+}
+
+/// Longest a package install may take before it counts as failed.
+pub const INSTALL_TIMEOUT_SECS: u64 = 30 * 60;
+/// After the installer ended successfully, how long the old agent waits to be
+/// restarted into the new version before it reports the update as failed.
+pub const RESTART_GRACE_SECS: u64 = 120;
+
+/// Settles a pending package install of a running agent (called at start and every
+/// 30 s): this version is the target: ok; else the installer's result decides.
+/// Returns true while it is still pending.
+pub fn settle_package(
+    paths: &crate::config::Paths,
+    current: &str,
+    result: &dyn Fn(&Pending) -> InstallResult,
+) -> bool {
+    settle_package_at(paths, current, result, now())
+}
+
+pub fn settle_package_at(
+    paths: &crate::config::Paths,
+    current: &str,
+    result: &dyn Fn(&Pending) -> InstallResult,
+    now: u64,
+) -> bool {
+    let Some(p) = read_pending(paths) else {
+        return false;
+    };
+    if p.kind == agent_proto::release::KIND_BINARY {
+        return false;
+    }
+    if p.to == current {
+        finish(paths, &p, "ok", "", vec![]);
+        return false;
+    }
+    match result(&p) {
+        InstallResult::Running if now < p.started + INSTALL_TIMEOUT_SECS => true,
+        InstallResult::Running => {
+            finish(
+                paths,
+                &p,
+                "failed",
+                "the package install did not finish within 30 minutes",
+                vec![],
+            );
+            false
+        }
+        InstallResult::Failed(e, log) => {
+            finish(paths, &p, "failed", &e, log);
+            false
+        }
+        InstallResult::Succeeded | InstallResult::Unknown if now < p.started + RESTART_GRACE_SECS => true,
+        InstallResult::Succeeded | InstallResult::Unknown => {
+            finish(
+                paths,
+                &p,
+                "failed",
+                &format!(
+                    "the package install ended but the agent still runs {current}, not {}",
+                    p.to
+                ),
+                vec![],
+            );
+            false
+        }
+    }
+}
+
+/// Splits installer output into its last `n` non-empty lines.
+pub fn tail_lines(text: &str, n: usize) -> Vec<String> {
+    let lines: Vec<String> = text
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let skip = lines.len().saturating_sub(n);
+    lines[skip..].to_vec()
 }
 
 #[cfg(test)]
@@ -241,12 +672,36 @@ mod tests {
         assert_eq!(packaged(&m).as_deref(), Some("deb"));
         fs::write(&m, "").unwrap();
         assert_eq!(packaged(&m).as_deref(), Some("package"));
+        // auto (unset) and on: allowed with the own package type; off always wins
         assert_eq!(self_update_blocked(None, None), None);
-        assert!(self_update_blocked(None, Some("rpm")).unwrap().contains("rpm package"));
+        assert_eq!(self_update_blocked(None, Some("rpm")), None);
         assert_eq!(self_update_blocked(Some(true), Some("msi")), None);
         assert!(self_update_blocked(Some(false), None)
             .unwrap()
             .contains("self_update = off"));
+        assert!(self_update_blocked(Some(false), Some("deb")).is_some());
+        // never a binary swap under a package manager
+        assert!(binary_swap_blocked(Some("deb")).unwrap().contains("deb package"));
+        assert_eq!(binary_swap_blocked(None), None);
+        assert_eq!(install_type(Some("deb"), "bundle"), "deb");
+        assert_eq!(install_type(Some("package"), "bundle"), "manual");
+        assert_eq!(install_type(None, "manual"), "manual");
+        for (install, kind, ok) in [
+            ("bundle", "binary", true),
+            ("manual", "binary", true),
+            ("deb", "deb", true),
+            ("deb", "desktop-deb", true),
+            ("deb", "binary", false),
+            ("deb", "rpm", false),
+            ("rpm", "rpm", true),
+            ("rpm", "desktop-rpm", true),
+            ("msi", "msi", true),
+            ("msi", "binary", false),
+            ("bundle", "deb", false),
+            ("bundle", "exe", false),
+        ] {
+            assert_eq!(kind_allowed(install, kind), ok, "{install} {kind}");
+        }
     }
 
     fn native(b: &[u8]) -> bool {
@@ -277,6 +732,226 @@ mod tests {
             ("k.pub".to_string(), "0.2.0".to_string())
         );
     }
+
+    #[test]
+    fn version_rules_with_rollback_floor() {
+        assert!(check_version("0.2.0", "0.1.0", false, "0.1.0").is_ok());
+        assert!(check_version("0.1.0", "0.1.0", true, "0.1.0").unwrap_err().contains("already"));
+        assert!(check_version("0.1.0", "0.2.0", false, "0.1.0").unwrap_err().contains("downgrade"));
+        assert!(check_version("0.1.0", "0.2.0", true, "0.1.0").is_ok());
+        assert!(check_version("0.1.5", "0.3.0", true, "0.2.0").unwrap_err().contains("oldest"));
+        assert!(check_version("0.2.0", "0.3.0", true, "0.2.0").is_ok());
+        assert!(check_version("x", "0.1.0", false, "0.1.0").is_err());
+        assert!(parse_version(ROLLBACK_FLOOR).is_some());
+    }
+
+    fn release(kp: &EcdsaKeyPair, data: &[(&str, &str, &str, &[u8])]) -> (Vec<u8>, Vec<u8>) {
+        use sha2::Digest;
+        let m = agent_proto::release::Manifest {
+            format: 1,
+            version: "0.2.0".into(),
+            protocol: "1.8".into(),
+            min_appliance: String::new(),
+            released: String::new(),
+            notes: String::new(),
+            artifacts: data
+                .iter()
+                .map(|(name, kind, arch, d)| agent_proto::release::Artifact {
+                    name: name.to_string(),
+                    kind: kind.to_string(),
+                    os: "linux".into(),
+                    arch: arch.to_string(),
+                    version: "0.2.0".into(),
+                    size: d.len() as u64,
+                    sha256: agent_proto::release::hex(&sha2::Sha256::digest(d)),
+                })
+                .collect(),
+        };
+        let json = serde_json::to_vec(&m).unwrap();
+        let sig = sign(kp, &json);
+        (json, sig)
+    }
+
+    fn sha(d: &[u8]) -> [u8; 32] {
+        use sha2::Digest;
+        sha2::Sha256::digest(d).into()
+    }
+
+    #[test]
+    fn announced_artifacts_are_checked_against_the_signed_manifest() {
+        let (kp, point) = keypair();
+        let keys = vec![("k.pub".to_string(), point)];
+        let bin = fake_binary("0.2.0");
+        let deb = b"!<arch>\ndebian-binary".to_vec();
+        let (m, msig) = release(
+            &kp,
+            &[
+                ("linux-x86_64/nexus-agent", "binary", "x86_64", &bin),
+                ("linux-x86_64/nexus-agent_0.2.0_amd64.deb", "deb", "x86_64", &deb),
+            ],
+        );
+        let host = |install: &str| agent_proto::release::HostFacts {
+            os: "linux".into(),
+            arch: "x86_64".into(),
+            install: install.into(),
+            gui_version: None,
+        };
+        let check = |m: &[u8], msig: &[u8], kind: &str, name: &str, d: &[u8], install: &str, cur: &str, rb: bool| {
+            check_announced(&keys, m, msig, kind, name, d.len() as u64, &sha(d), &host(install), cur, rb)
+        };
+        let a = check(&m, &msig, "deb", "linux-x86_64/nexus-agent_0.2.0_amd64.deb", &deb, "deb", "0.1.0", false)
+            .unwrap();
+        assert_eq!(a.manifest.version, "0.2.0");
+        assert_eq!(a.key, "k.pub");
+        // the data itself: its own signature
+        check_artifact_data(&a, &deb, &sign(&kp, &deb), &keys, &|_| false).unwrap();
+        assert!(check_artifact_data(&a, &deb, &sign(&kp, b"other"), &keys, &|_| false).is_err());
+        // binary: version marker and format
+        let b = check(&m, &msig, "binary", "linux-x86_64/nexus-agent", &bin, "bundle", "0.1.0", false).unwrap();
+        check_artifact_data(&b, &bin, &sign(&kp, &bin), &keys, &|x| x.starts_with(b"\x7fELF")).unwrap();
+        assert!(check_artifact_data(&b, &bin, &sign(&kp, &bin), &keys, &|_| false)
+            .unwrap_err()
+            .contains("platform"));
+        // install type decides the kind: no binary swap under dpkg, no deb on a bundle
+        assert!(check(&m, &msig, "binary", "linux-x86_64/nexus-agent", &bin, "deb", "0.1.0", false)
+            .unwrap_err()
+            .contains("own package type"));
+        assert!(check(&m, &msig, "deb", "linux-x86_64/nexus-agent_0.2.0_amd64.deb", &deb, "bundle", "0.1.0", false)
+            .is_err());
+        // unsigned / foreign-key manifest
+        let (other, _) = keypair();
+        assert!(check(&m, &sign(&other, &m), "deb", "linux-x86_64/nexus-agent_0.2.0_amd64.deb", &deb, "deb", "0.1.0", false)
+            .unwrap_err()
+            .contains("manifest"));
+        // not listed, wrong kind, wrong data
+        assert!(check(&m, &msig, "deb", "linux-x86_64/other.deb", &deb, "deb", "0.1.0", false).is_err());
+        assert!(check(&m, &msig, "deb", "linux-x86_64/nexus-agent", &bin, "deb", "0.1.0", false).is_err());
+        assert!(check(&m, &msig, "deb", "linux-x86_64/nexus-agent_0.2.0_amd64.deb", b"x", "deb", "0.1.0", false)
+            .unwrap_err()
+            .contains("SHA-256"));
+        // wrong architecture
+        let mut aarch = host("deb");
+        aarch.arch = "aarch64".into();
+        assert!(check_announced(
+            &keys,
+            &m,
+            &msig,
+            "deb",
+            "linux-x86_64/nexus-agent_0.2.0_amd64.deb",
+            deb.len() as u64,
+            &sha(&deb),
+            &aarch,
+            "0.1.0",
+            false
+        )
+        .unwrap_err()
+        .contains("aarch64"));
+        // downgrade only as a rollback, never below the floor
+        assert!(check(&m, &msig, "deb", "linux-x86_64/nexus-agent_0.2.0_amd64.deb", &deb, "deb", "0.3.0", false)
+            .unwrap_err()
+            .contains("downgrade"));
+        assert!(check(&m, &msig, "deb", "linux-x86_64/nexus-agent_0.2.0_amd64.deb", &deb, "deb", "0.3.0", true).is_ok());
+        assert!(check(&m, &msig, "deb", "linux-x86_64/nexus-agent_0.2.0_amd64.deb", &deb, "deb", "0.2.0", true).is_err());
+    }
+
+    fn paths() -> (tempfile::TempDir, crate::config::Paths) {
+        let t = tempfile::tempdir().unwrap();
+        let p = crate::config::Paths {
+            config: t.path().join("etc"),
+            state: t.path().join("state"),
+            run: t.path().join("run"),
+        };
+        fs::create_dir_all(&p.state).unwrap();
+        (t, p)
+    }
+
+    fn pending(kind: &str) -> Pending {
+        Pending {
+            kind: kind.into(),
+            from: "0.1.0".into(),
+            to: "0.2.0".into(),
+            started: 1000,
+            starts: 0,
+            unit: String::new(),
+        }
+    }
+
+    fn state(p: &crate::config::Paths) -> UpdateState {
+        serde_json::from_str(&state_json(p)).unwrap()
+    }
+
+    #[test]
+    fn start_watchdog_reverts_after_three_failed_starts() {
+        let (_t, p) = paths();
+        let restored = std::cell::Cell::new(0);
+        let restore = || {
+            restored.set(restored.get() + 1);
+            Ok(())
+        };
+        assert_eq!(watchdog_on_start(&p, "0.1.0", &restore), Watchdog::Continue);
+        write_pending(&p, &pending("binary")).unwrap();
+        // two starts of the new version that never listened
+        assert_eq!(watchdog_on_start(&p, "0.2.0", &restore), Watchdog::Continue);
+        assert_eq!(watchdog_on_start(&p, "0.2.0", &restore), Watchdog::Continue);
+        assert_eq!(read_pending(&p).unwrap().starts, 2);
+        // the third one puts the previous binary back
+        assert_eq!(watchdog_on_start(&p, "0.2.0", &restore), Watchdog::Reverted);
+        assert_eq!(restored.get(), 1);
+        assert!(read_pending(&p).is_none());
+        let s = state(&p);
+        assert_eq!((s.state.as_str(), s.from.as_str(), s.to.as_str()), ("rolled_back", "0.1.0", "0.2.0"));
+        // a new version that listens is done
+        write_pending(&p, &pending("binary")).unwrap();
+        assert_eq!(watchdog_on_start(&p, "0.2.0", &restore), Watchdog::Continue);
+        mark_listening(&p, "0.2.0");
+        assert!(read_pending(&p).is_none());
+        assert_eq!(state(&p).state, "ok");
+        // the old version came back (swap failed or reverted by hand)
+        write_pending(&p, &pending("binary")).unwrap();
+        assert_eq!(watchdog_on_start(&p, "0.1.0", &restore), Watchdog::Continue);
+        assert_eq!(state(&p).state, "rolled_back");
+        // a restore that fails is reported, the agent keeps running
+        write_pending(&p, &Pending { starts: 2, ..pending("binary") }).unwrap();
+        assert_eq!(watchdog_on_start(&p, "0.2.0", &|| Err("gone".into())), Watchdog::Continue);
+        assert!(state(&p).error.contains("gone"));
+        // package installs are not the watchdog's business
+        write_pending(&p, &Pending { starts: 9, ..pending("deb") }).unwrap();
+        assert_eq!(watchdog_on_start(&p, "0.2.0", &restore), Watchdog::Continue);
+        assert_eq!(read_pending(&p).unwrap().starts, 9);
+    }
+
+    #[test]
+    fn package_installs_settle_by_version_or_installer_result() {
+        let (_t, p) = paths();
+        let run = |_: &Pending| InstallResult::Running;
+        assert!(!settle_package_at(&p, "0.1.0", &run, 1000), "nothing pending");
+        write_pending(&p, &pending("deb")).unwrap();
+        assert!(settle_package_at(&p, "0.1.0", &run, 1100));
+        assert!(!settle_package_at(&p, "0.1.0", &run, 1000 + INSTALL_TIMEOUT_SECS));
+        assert!(state(&p).error.contains("30 minutes"));
+        // the new version runs: ok
+        write_pending(&p, &pending("rpm")).unwrap();
+        assert!(!settle_package_at(&p, "0.2.0", &run, 1100));
+        assert_eq!(state(&p).state, "ok");
+        // installer failed: error + log
+        write_pending(&p, &pending("deb")).unwrap();
+        let failed = |_: &Pending| InstallResult::Failed("exit status 100".into(), vec!["E: broken".into()]);
+        assert!(!settle_package_at(&p, "0.1.0", &failed, 1100));
+        let s = state(&p);
+        assert_eq!((s.state.as_str(), s.log.as_slice()), ("failed", &["E: broken".to_string()][..]));
+        // succeeded but the agent was not restarted into the new version
+        write_pending(&p, &pending("deb")).unwrap();
+        let ok = |_: &Pending| InstallResult::Succeeded;
+        assert!(settle_package_at(&p, "0.1.0", &ok, 1000 + RESTART_GRACE_SECS - 1));
+        assert!(!settle_package_at(&p, "0.1.0", &ok, 1000 + RESTART_GRACE_SECS));
+        assert!(state(&p).error.contains("still runs 0.1.0"));
+        // binary swaps are left to the watchdog
+        write_pending(&p, &pending("binary")).unwrap();
+        assert!(!settle_package_at(&p, "0.1.0", &failed, 1100));
+        assert!(read_pending(&p).is_some());
+        assert_eq!(tail_lines("a\n\nb\nc\n", 2), ["b", "c"]);
+    }
+
 
     #[test]
     fn key_parsing_and_versions() {
