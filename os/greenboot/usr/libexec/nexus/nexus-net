@@ -1,0 +1,960 @@
+#!/usr/bin/python3 -I
+# NexusBackup network interfaces (Phase 22a, docs/control-plane.md "Network interfaces"): extra
+# NICs, bonds (active-backup, 802.3ad), VLANs, MTU, static addresses and routes, interface roles
+# (management, data, replication), as requested from the web UI after approval.
+#
+#   nexus-net tick           what nexus-net.service runs (nexus-net.path when the web-api queues a
+#                            request or a management change waits for its confirmation; and
+#                            nexus-net.timer every 15 minutes): handle the queued requests, the
+#                            path-MTU check (hourly), write status.json
+#   nexus-net scan           print the status as JSON (console; changes nothing)
+#   nexus-net console-apply JSON
+#                            nexus-setup (console, root): apply a configuration that only holds
+#                            the management interface (bond / VLAN / MTU at first boot or after
+#                            a lock-out); replaces every interface added in the web UI; no
+#                            confirmation (the operator is at the console)
+#
+# Control directory (default /var/lib/nexus/net, 2771 root:nexus-webapi, tmpfiles.d/nexus-net.conf):
+#   req-<id>.json  written by the web-api (tmp + rename), at most 64 KiB, consumed (deleted) here:
+#                  {"id": <32 hex>, "op": ..., "by": <user>, "quorum_id": <int|null>, ...}
+#                  apply      config: {interfaces, offsite_role}, old: the configuration the request
+#                             was made against (refused if the applied one differs)
+#                  mtu_check  run the path-MTU check now
+#   confirm.json   web-api: {"id": <id of the pending apply>, "keep": true|false, "by": <user>}
+#   status.json    devices, the applied configuration, the management interface, a pending change,
+#                  the path-MTU results (0644: the scheduler binds egress to the role interfaces,
+#                  nexus-diag reports the MTU check)
+#   ops.json       the last operations with their outcome (0644: the scheduler audits them)
+#   config.json    the applied configuration and a hash of every keyfile written for it (0644)
+#   pending.json   a management change waiting for its confirmation: deadline, the previous
+#                  keyfiles (0600; a reboot inside the window rolls back at the next start)
+#
+# Keyfiles: /etc/NetworkManager/system-connections/nexus-*.nmconnection (0600 root). The management
+# interface is the profile nexus-mgmt (with nexus-mgmt-* for its bond ports), the name nexus-setup
+# uses at the console; every other interface is nexus-<name> (ports nexus-<name>-port-<nic>). While
+# the configuration has no management interface, nexus-setup's nexus-mgmt* profiles are left alone.
+# A change of the management interface (or what it sits on) is rolled back unless confirmed within
+# CONFIRM_SECS; any change whose activation fails is rolled back at once. When the keyfiles no
+# longer match what was written (nexus-setup reconfigured the network at the console), the applied
+# configuration is reset to empty.
+#
+# Path-MTU check: for every destination of a role in the firewall file the scheduler writes
+# (/run/nexus-nft/allowed.json "roles"), the route's interface and its MTU, then ICMP echo with
+# DF set at the full MTU (and, when that fails but a small one answers, a search for the path MTU).
+#
+# Runs as root in its own SELinux domain (nexus_net_t): NetworkManager keyfiles, nmcli over D-Bus,
+# `ip -j`, ICMP echo; never reads keys, the catalog or the store. Paths and tools can be overridden
+# through NEXUS_NET_* environment variables (tests). Stdlib only.
+
+import configparser
+import hashlib
+import ipaddress
+import json
+import os
+import re
+import socket
+import stat
+import struct
+import subprocess
+import sys
+import time
+import uuid
+
+DEFAULTS = {
+    "DIR": "/var/lib/nexus/net",
+    "NM_DIR": "/etc/NetworkManager/system-connections",
+    "SYS_NET": "/sys/class/net",
+    "ALLOWED": "/run/nexus-nft/allowed.json",
+    "CONFIRM_SECS": "120",
+    "MTU_INTERVAL": "3600",
+    "TIMEOUT": "60",
+    "NMCLI": "nmcli",
+    "IP": "ip",
+}
+ROLES = ("management", "data", "replication")
+BOND_MODES = ("active-backup", "802.3ad")
+OPS = ("apply", "mtu_check")
+KEEP_OPS = 30
+MAX_IFACES = 16
+MTU_MIN, MTU_MAX = 1280, 9216
+MAX_PROBES = 64
+IFNAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,14}")
+UUID_NS = uuid.UUID("6c4b1f0e-6a0e-4d4f-9a59-2f1f3c5e8d22")
+FIELDS = ("name", "kind", "ports", "mode", "parent", "vlan_id", "role", "mtu", "dhcp", "addresses", "gateway", "dns",
+          "routes")
+
+
+def cfg(name):
+    return os.environ.get("NEXUS_NET_" + name, DEFAULTS[name])
+
+
+def log(msg):
+    print(f"nexus-net: {msg}", file=sys.stderr, flush=True)
+
+
+def run(*argv, timeout=None):
+    """(exit code, stdout, stderr); 127 when the tool is missing. Never raises."""
+    try:
+        p = subprocess.run(
+            [cfg(argv[0].upper()), *argv[1:]],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            stdin=subprocess.DEVNULL,
+            timeout=timeout or float(cfg("TIMEOUT")),
+            env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
+        )
+        return p.returncode, p.stdout, p.stderr
+    except FileNotFoundError:
+        return 127, "", f"{argv[0]}: not installed"
+    except subprocess.TimeoutExpired:
+        return 124, "", f"{argv[0]}: timed out"
+
+
+class Refused(Exception):
+    """A precondition does not hold: nothing was changed."""
+
+
+# ---------------------------------------------------------------- host
+
+
+def read_text(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def devices():
+    """Every interface but lo: kind nic (physical), bond, vlan, bridge or other; MTU, state,
+    MAC, speed, the addresses `ip -j addr` reports."""
+    base = cfg("SYS_NET")
+    addrs = {}
+    rc, out, _ = run("ip", "-j", "addr", "show")
+    if rc == 0:
+        try:
+            for x in json.loads(out or "[]"):
+                addrs[x.get("ifname")] = [f"{a['local']}/{a['prefixlen']}" for a in x.get("addr_info") or []
+                                          if a.get("scope") != "link" and "local" in a]
+        except (ValueError, KeyError, TypeError):
+            pass
+    out = []
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        names = []
+    for n in names:
+        p = os.path.join(base, n)
+        if n == "lo" or not os.path.isdir(p):
+            continue
+        devtype = ""
+        for line in read_text(os.path.join(p, "uevent")).splitlines():
+            if line.startswith("DEVTYPE="):
+                devtype = line[8:]
+        if os.path.exists(os.path.join(p, "device")) and not devtype:
+            kind = "nic"
+        elif devtype in ("bond", "vlan", "bridge"):
+            kind = devtype
+        else:
+            kind = "other"
+        speed = read_text(os.path.join(p, "speed"))
+        master = os.path.basename(os.path.realpath(os.path.join(p, "master"))) \
+            if os.path.exists(os.path.join(p, "master")) else None
+        out.append({
+            "name": n, "kind": kind, "mac": read_text(os.path.join(p, "address")),
+            "mtu": int(read_text(os.path.join(p, "mtu")) or 0), "state": read_text(os.path.join(p, "operstate")),
+            "speed": int(speed) if speed.lstrip("-").isdigit() and int(speed) > 0 else None,
+            "master": master, "addresses": addrs.get(n, []),
+        })
+    return out
+
+
+def keyfile_path(name):
+    return os.path.join(cfg("NM_DIR"), name + ".nmconnection")
+
+
+def ini(text):
+    c = configparser.ConfigParser(interpolation=None, strict=False)
+    c.optionxform = str
+    try:
+        c.read_string(text or "")
+    except configparser.Error:
+        pass
+    return c
+
+
+def console_mgmt():
+    """The interface of nexus-setup's profile nexus-mgmt (None if there is none)."""
+    try:
+        with open(keyfile_path("nexus-mgmt")) as f:
+            c = ini(f.read())
+    except OSError:
+        return None
+    return c.get("connection", "interface-name", fallback=None)
+
+
+# ---------------------------------------------------------------- validation
+
+
+def net_of(s):
+    """`addr/prefix` → ip_interface (host bits allowed); ValueError otherwise."""
+    if not isinstance(s, str) or "/" not in s:
+        raise ValueError(s)
+    return ipaddress.ip_interface(s)
+
+
+def host_ok(ip):
+    return not (ip.is_unspecified or ip.is_loopback or ip.is_multicast or str(ip) == "255.255.255.255")
+
+
+def normalize(c):
+    """A configuration in canonical form (every key present), or ValueError for its shape."""
+    if c is None:
+        c = {}
+    if not isinstance(c, dict) or set(c) - {"interfaces", "offsite_role"}:
+        raise ValueError("bad config")
+    ifs = c.get("interfaces") or []
+    if not isinstance(ifs, list) or len(ifs) > MAX_IFACES:
+        raise ValueError(f"at most {MAX_IFACES} interfaces")
+    out = []
+    for i in ifs:
+        if not isinstance(i, dict) or set(i) - set(FIELDS):
+            raise ValueError("bad interface")
+        x = {k: i.get(k) for k in FIELDS}
+        for k in ("ports", "addresses", "dns", "routes"):
+            x[k] = x[k] or []
+            if not isinstance(x[k], list):
+                raise ValueError(f"bad {k}")
+        x["dhcp"] = bool(x["dhcp"])
+        for k in ("name", "kind", "mode", "parent", "role", "gateway"):
+            if x[k] is not None and not isinstance(x[k], str):
+                raise ValueError(f"bad {k}")
+        for k in ("vlan_id", "mtu"):
+            if x[k] is not None and (not isinstance(x[k], int) or isinstance(x[k], bool)):
+                raise ValueError(f"bad {k}")
+        if not all(isinstance(s, str) for s in x["ports"] + x["addresses"] + x["dns"]):
+            raise ValueError("bad list entry")
+        routes = []
+        for r in x["routes"]:
+            if not isinstance(r, dict) or set(r) - {"to", "via"} or not isinstance(r.get("to"), str) \
+                    or not isinstance(r.get("via"), (str, type(None))):
+                raise ValueError("bad route")
+            routes.append({"to": r["to"], "via": r.get("via")})
+        x["routes"] = routes
+        out.append(x)
+    role = c.get("offsite_role") or "management"
+    if role not in ROLES:
+        raise ValueError("bad offsite_role")
+    return {"interfaces": out, "offsite_role": role}
+
+
+def validate(c, nics, console_nic, had_mgmt):
+    """Raises Refused with the first problem (the rules of crates/catalog/src/network.rs)."""
+    ifs = c["interfaces"]
+    by_name = {i["name"]: i for i in ifs}
+    if len(by_name) != len(ifs):
+        raise Refused("each interface name once")
+    used, roles, addrs = {}, set(), set()
+
+    def use(nic, what, n):
+        if nic not in nics:
+            raise Refused(f"{n}: there is no network card {nic!r}")
+        if nic in used:
+            raise Refused(f"{nic} is used twice ({used[nic]} and {what})")
+        used[nic] = what
+
+    for i in ifs:
+        n = i["name"]
+        if not isinstance(n, str) or not IFNAME_RE.fullmatch(n) or n == "lo":
+            raise Refused(f"{n!r}: an interface name has 1-15 letters, digits, '.', '_' or '-'")
+        k = i["kind"]
+        if k == "ethernet":
+            if i["ports"] or i["mode"] or i["parent"] or i["vlan_id"] is not None:
+                raise Refused(f"{n}: a network card has no ports, mode, parent or VLAN ID")
+            use(n, f"interface {n}", n)
+        elif k == "bond":
+            if n in nics or i["parent"] or i["vlan_id"] is not None:
+                raise Refused(f"{n}: a bond needs a new name and no parent or VLAN ID")
+            if i["mode"] not in BOND_MODES:
+                raise Refused(f"{n}: bond mode must be active-backup or 802.3ad")
+            if not 1 <= len(i["ports"]) <= 8:
+                raise Refused(f"{n}: a bond has 1 to 8 ports")
+            for p in i["ports"]:
+                use(p, f"bond {n}", n)
+        elif k == "vlan":
+            if n in nics or i["ports"] or i["mode"]:
+                raise Refused(f"{n}: a VLAN needs a new name and no ports or mode")
+            if i["vlan_id"] is None or not 1 <= i["vlan_id"] <= 4094:
+                raise Refused(f"{n}: VLAN ID must be 1 to 4094")
+            p = i["parent"]
+            par = by_name.get(p)
+            if par is not None:
+                if par["kind"] == "vlan":
+                    raise Refused(f"{n}: a VLAN cannot sit on another VLAN")
+                if i["mtu"] and i["mtu"] > (par["mtu"] or 1500):
+                    raise Refused(f"{n}: MTU {i['mtu']} is larger than the MTU of {p}")
+            elif p not in nics:
+                raise Refused(f"{n}: parent {p!r} is neither a network card nor an interface here")
+            if any(x["kind"] == "bond" and p in x["ports"] for x in ifs):
+                raise Refused(f"{n}: {p} is a bond port; put the VLAN on the bond")
+            if any(x["kind"] == "vlan" and x is not i and x["parent"] == p and x["vlan_id"] == i["vlan_id"] for x in ifs):
+                raise Refused(f"{n}: VLAN {i['vlan_id']} on {p} twice")
+        else:
+            raise Refused(f"{n}: kind must be ethernet, bond or vlan")
+        r = i["role"]
+        if r is not None:
+            if r not in ROLES:
+                raise Refused(f"{n}: bad role")
+            if r in roles:
+                raise Refused(f"only one interface can have the role {r}")
+            roles.add(r)
+        mgmt = r == "management"
+        if i["mtu"] is not None and not MTU_MIN <= i["mtu"] <= MTU_MAX:
+            raise Refused(f"{n}: MTU must be {MTU_MIN} to {MTU_MAX}")
+        if len(i["addresses"]) > 8 or len(i["dns"]) > 4 or len(i["routes"]) > 32:
+            raise Refused(f"{n}: at most 8 addresses, 4 DNS servers and 32 routes")
+        nets = []
+        for a in i["addresses"]:
+            try:
+                x = net_of(a)
+            except ValueError:
+                raise Refused(f"{n}: {a!r} is not address/prefix")
+            if not host_ok(x.ip) or x.network.prefixlen == 0:
+                raise Refused(f"{n}: {a} is not a usable host address")
+            if x.ip in addrs:
+                raise Refused(f"{x.ip} is configured twice")
+            addrs.add(x.ip)
+            nets.append(x)
+        if mgmt and not i["dhcp"] and not nets:
+            raise Refused(f"{n}: the management interface needs DHCP or an address")
+        if i["gateway"] is not None:
+            if not mgmt:
+                raise Refused(f"{n}: only the management interface has a default gateway")
+            try:
+                g = ipaddress.ip_address(i["gateway"])
+            except ValueError:
+                raise Refused(f"{n}: bad gateway")
+            if (i["dhcp"] and g.version == 4) or not host_ok(g) or any(g == x.ip for x in nets) \
+                    or not any(g in x.network for x in nets):
+                raise Refused(f"{n}: gateway {g} must be another host in one of its subnets")
+        for d in i["dns"]:
+            try:
+                if not host_ok(ipaddress.ip_address(d)):
+                    raise ValueError
+            except ValueError:
+                raise Refused(f"{n}: DNS server {d!r} is not an address")
+        for rt in i["routes"]:
+            try:
+                to = ipaddress.ip_network(rt["to"], strict=True)
+                if "/" not in rt["to"]:
+                    raise ValueError
+            except ValueError:
+                raise Refused(f"{n}: route {rt['to']!r} is not a network")
+            if to.prefixlen == 0:
+                raise Refused(f"{n}: no default route here")
+            if rt["via"] is not None:
+                try:
+                    v = ipaddress.ip_address(rt["via"])
+                except ValueError:
+                    raise Refused(f"{n}: bad next hop")
+                if v.version != to.version or not host_ok(v):
+                    raise Refused(f"{n}: next hop {v} does not fit route {to}")
+                if not (i["dhcp"] and v.version == 4) and not any(v in x.network for x in nets):
+                    raise Refused(f"{n}: next hop {v} is not in a subnet of {n}")
+    if had_mgmt and "management" not in roles:
+        raise Refused("the management interface cannot be removed, only changed")
+    if "management" not in roles and console_nic in used:
+        raise Refused(f"{console_nic} is the management network card; it cannot be used as {used[console_nic]}")
+
+
+# ---------------------------------------------------------------- keyfiles
+
+
+def conn_id(i):
+    return "nexus-mgmt" if i["role"] == "management" else f"nexus-{i['name']}"
+
+
+def section(name, items):
+    lines = [f"[{name}]"] + [f"{k}={v}" for k, v in items if v is not None]
+    return "\n".join(lines) + "\n"
+
+
+def ip_sections(i):
+    mgmt = i["role"] == "management"
+    nets = [net_of(a) for a in i["addresses"]]
+    out = []
+    for ver, sec in ((4, "ipv4"), (6, "ipv6")):
+        mine = [x for x in nets if x.version == ver]
+        dhcp = i["dhcp"] and ver == 4
+        method = "auto" if dhcp else "manual" if mine else "disabled"
+        items = [("method", method)]
+        items += [(f"address{k + 1}", str(x)) for k, x in enumerate(mine)]
+        gw = i["gateway"]
+        if gw and ipaddress.ip_address(gw).version == ver:
+            items.append(("gateway", gw))
+        dns = [d for d in i["dns"] if ipaddress.ip_address(d).version == ver]
+        if dns and method != "disabled":
+            items += [("dns", ";".join(dns) + ";"), ("ignore-auto-dns", "true")]
+        routes = [r for r in i["routes"] if ipaddress.ip_network(r["to"]).version == ver]
+        items += [(f"route{k + 1}", r["to"] + (f",{r['via']}" if r["via"] else "")) for k, r in enumerate(routes)]
+        # only the management interface may carry the default route (also against DHCP on data)
+        if not mgmt and method != "disabled":
+            items.append(("never-default", "true"))
+        out.append(section(sec, items))
+    return out
+
+
+def keyfiles(c):
+    """{profile name: keyfile text} for a configuration."""
+    out = {}
+    for i in c["interfaces"]:
+        cid = conn_id(i)
+        con = [("id", cid), ("uuid", str(uuid.uuid5(UUID_NS, cid))), ("type", i["kind"]),
+               ("interface-name", i["name"]), ("autoconnect", "true"),
+               ("autoconnect-priority", "100" if i["role"] == "management" else "50")]
+        if i["kind"] == "bond":
+            con.append(("autoconnect-slaves", "1"))
+        parts = [section("connection", con)]
+        if i["kind"] == "bond":
+            opts = [("mode", i["mode"]), ("miimon", "100")]
+            if i["mode"] == "802.3ad":
+                opts += [("lacp_rate", "fast"), ("xmit_hash_policy", "layer3+4")]
+            parts.append(section("bond", opts))
+        if i["kind"] == "vlan":
+            parts.append(section("vlan", [("id", str(i["vlan_id"])), ("parent", i["parent"])]))
+        if i["mtu"]:
+            parts.append(section("ethernet", [("mtu", str(i["mtu"]))]))
+        parts += ip_sections(i)
+        out[cid] = "# written by nexus-net (Settings -> Network); changes here are overwritten\n" + "\n".join(parts)
+        for p in i["ports"]:
+            pid = f"{cid}-port-{p}"
+            port = [section("connection", [("id", pid), ("uuid", str(uuid.uuid5(UUID_NS, pid))), ("type", "ethernet"),
+                                           ("interface-name", p), ("master", i["name"]), ("slave-type", "bond"),
+                                           ("autoconnect", "true")])]
+            if i["mtu"]:
+                port.append(section("ethernet", [("mtu", str(i["mtu"]))]))
+            out[pid] = "# written by nexus-net (Settings -> Network); port of " + i["name"] + "\n" + "\n".join(port)
+    return out
+
+
+def sha(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def owned(name, manage_mgmt):
+    """Profiles this helper may write or remove (nexus-setup's nexus-mgmt* only while the
+    configuration manages the management interface)."""
+    return name.startswith("nexus-") and (manage_mgmt or not name.startswith("nexus-mgmt"))
+
+
+def current_keyfiles():
+    out = {}
+    d = cfg("NM_DIR")
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return out
+    for f in names:
+        if f.startswith("nexus-") and f.endswith(".nmconnection"):
+            p = os.path.join(d, f)
+            if os.path.isfile(p) and not os.path.islink(p):
+                with open(p) as fh:
+                    out[f[: -len(".nmconnection")]] = fh.read()
+    return out
+
+
+def write_keyfile(name, text):
+    p = keyfile_path(name)
+    tmp = os.path.join(cfg("NM_DIR"), f".{name}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    # NetworkManager ignores keyfiles readable by others
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, p)
+
+
+def put_files(want, have, manage_mgmt):
+    """Makes the owned keyfiles exactly `want`; returns the names written or removed."""
+    changed = []
+    for name, text in want.items():
+        if have.get(name) != text:
+            write_keyfile(name, text)
+            changed.append(name)
+    for name in have:
+        if name not in want and owned(name, manage_mgmt):
+            os.unlink(keyfile_path(name))
+            changed.append(name)
+    return changed
+
+
+def activate(names, files):
+    """`nmcli connection reload`, then up for each changed profile that exists (ports come up
+    with their bond; VLANs after their parents). Raises RuntimeError on the first failure."""
+    rc, out, err = run("nmcli", "connection", "reload")
+    if rc != 0:
+        raise RuntimeError(f"nmcli connection reload failed: {(err or out).strip()[:300]}")
+    ups = set()
+    for n in names:
+        if n not in files:
+            continue  # removed: NetworkManager drops the profile and its device with the reload
+        c = ini(files[n])
+        if c.get("connection", "slave-type", fallback=None):
+            n = c.get("connection", "master")  # the bond's profile brings its ports
+            n = next((k for k, t in files.items() if ini(t).get("connection", "interface-name", fallback=None) == n
+                      and not ini(t).get("connection", "slave-type", fallback=None)), None)
+            if n is None:
+                continue
+        ups.add(n)
+    order = sorted(ups, key=lambda n: (ini(files[n]).get("connection", "type", fallback="") == "vlan", n))
+    for n in order:
+        rc, out, err = run("nmcli", "--wait", "30", "connection", "up", "id", n, timeout=60)
+        if rc != 0:
+            raise RuntimeError(f"nmcli connection up {n} failed: {(err or out).strip()[:300]}")
+    return order
+
+
+# ---------------------------------------------------------------- state files
+
+
+def read_small(path, limit=65536):
+    """A control file written by a less privileged user: no symlinks, regular file only."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        return os.read(fd, limit + 1).decode("utf-8", "replace")
+    finally:
+        os.close(fd)
+
+
+def read_json(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def write_json(path, data, mode=0o644):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=1, sort_keys=True)
+        f.write("\n")
+    # the scheduler and nexus-diag (other users) read status.json, ops.json and config.json
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def path(name):
+    return os.path.join(cfg("DIR"), name)
+
+
+def applied():
+    """The applied configuration; reset to empty when its keyfiles were changed behind our back
+    (nexus-setup reconfigured the network at the console)."""
+    a = read_json(path("config.json"), None)
+    if not isinstance(a, dict):
+        return {"config": normalize(None), "files": {}}
+    have = current_keyfiles()
+    files = a.get("files") or {}
+    if any(sha(have.get(n, "")) != h for n, h in files.items()):
+        log("keyfiles changed outside nexus-net (console reconfiguration?): applied configuration reset")
+        a = {"config": normalize(None), "files": {}, "reset": int(time.time())}
+        write_json(path("config.json"), a)
+    try:
+        a["config"] = normalize(a.get("config"))
+    except ValueError:
+        a["config"] = normalize(None)
+    return a
+
+
+def parse_request(s):
+    """Validated request dict, or raises ValueError."""
+    if s is None or len(s) > 65536:
+        raise ValueError("missing or oversized request")
+    r = json.loads(s)
+    if not isinstance(r, dict):
+        raise ValueError("request is not an object")
+    if not re.fullmatch(r"[0-9a-f]{32}", str(r.get("id", ""))):
+        raise ValueError("bad id")
+    if r.get("op") not in OPS:
+        raise ValueError("bad op")
+    by = r.get("by")
+    if not isinstance(by, str) or not re.fullmatch(r"[A-Za-z0-9._@ -]{1,96}", by):
+        raise ValueError("bad by")
+    q = r.get("quorum_id")
+    if q is not None and (not isinstance(q, int) or isinstance(q, bool)):
+        raise ValueError("bad quorum_id")
+    out = {"id": r["id"], "op": r["op"], "by": by, "quorum_id": q}
+    if r["op"] == "apply":
+        out["config"] = normalize(r.get("config"))
+        out["old"] = normalize(r.get("old"))
+    return out
+
+
+# ---------------------------------------------------------------- apply / confirm / rollback
+
+
+def rollback(backup, manage_mgmt):
+    """Puts the previous keyfiles back and activates them (best effort: logged, never raises)."""
+    try:
+        have = current_keyfiles()
+        changed = put_files(backup, have, manage_mgmt)
+        activate(changed, backup)
+        return None
+    except Exception as e:
+        log(f"rollback: {type(e).__name__}: {e}")
+        return f"{type(e).__name__}: {e}"
+
+
+def confirmation(pid):
+    """keep (True), revert (False) or None from confirm.json for the pending change `pid`."""
+    s = read_small(path("confirm.json"), 4096)
+    if s is None:
+        return None
+    try:
+        c = json.loads(s)
+    except ValueError:
+        return None
+    if not isinstance(c, dict) or c.get("id") != pid:
+        return None
+    try:
+        os.unlink(path("confirm.json"))
+    except OSError:
+        pass
+    return bool(c.get("keep")), str(c.get("by") or "?")[:96]
+
+
+def wait_confirm(p, status_cb):
+    """Waits for the confirmation of pending change `p` until its deadline; True = keep."""
+    while time.time() < p["deadline"]:
+        c = confirmation(p["id"])
+        if c is not None:
+            p["decided_by"] = c[1]
+            return c[0]
+        status_cb()
+        time.sleep(1)
+    p["decided_by"] = None
+    return False
+
+
+def finish_pending(p, keep, record):
+    """Keeps or rolls back the pending change `p` and records the outcome."""
+    rec = p["rec"]
+    if keep:
+        write_json(path("config.json"), {"config": p["config"], "files": p["files"]})
+        rec.update(state="done", detail=f"applied; management change confirmed by {p.get('decided_by')}")
+    else:
+        err = rollback(p["backup"], True)
+        write_json(path("config.json"), p["prev"])
+        why = f"reverted by {p['decided_by']}" if p.get("decided_by") else \
+            f"not confirmed within {int(float(cfg('CONFIRM_SECS')))} s"
+        rec.update(state="rolled_back", detail=why, error=err)
+    rec["finished"] = int(time.time())
+    record(rec)
+    try:
+        os.unlink(path("pending.json"))
+    except OSError:
+        pass
+
+
+def op_apply(req, rec, record, status_cb):
+    cur = applied()
+    if req["old"] != cur["config"]:
+        raise Refused("the network configuration changed since this request was made; request the change again")
+    new = req["config"]
+    devs = devices()
+    nics = {d["name"] for d in devs if d["kind"] == "nic"}
+    had_mgmt = any(i["role"] == "management" for i in cur["config"]["interfaces"])
+    validate(new, nics, console_mgmt(), had_mgmt)
+    has_mgmt = any(i["role"] == "management" for i in new["interfaces"])
+    manage_mgmt = had_mgmt or has_mgmt
+    want = keyfiles(new)
+    have = current_keyfiles()
+    backup = {n: t for n, t in have.items() if owned(n, manage_mgmt)}
+    mgmt_change = manage_mgmt and any(
+        backup.get(n) != want.get(n) for n in set(backup) | set(want) if n.startswith("nexus-mgmt"))
+    changed = put_files(want, have, manage_mgmt)
+    files = {n: sha(t) for n, t in want.items()}
+    if not changed:
+        write_json(path("config.json"), {"config": new, "files": files})
+        return "nothing to change"
+    try:
+        up = activate(changed, want)
+    except Exception as e:
+        err = rollback(backup, manage_mgmt)
+        raise RuntimeError(f"{e}; previous configuration restored" + (f" (rollback: {err})" if err else ""))
+    if not mgmt_change:
+        write_json(path("config.json"), {"config": new, "files": files})
+        return "applied: " + (", ".join(up) or "profiles removed")
+    deadline = int(time.time() + float(cfg("CONFIRM_SECS")))
+    rec.update(state="confirming", deadline=deadline)
+    record(rec)
+    p = {"id": req["id"], "by": req["by"], "deadline": deadline, "backup": backup, "prev": cur,
+         "config": new, "files": files, "rec": rec}
+    write_json(path("pending.json"), p, 0o600)
+    keep = wait_confirm(p, status_cb)
+    finish_pending(p, keep, record)
+    return None
+
+
+# ---------------------------------------------------------------- path MTU
+
+
+def checksum(b):
+    if len(b) % 2:
+        b += b"\0"
+    s = sum(struct.unpack(f"!{len(b) // 2}H", b))
+    s = (s >> 16) + (s & 0xFFFF)
+    s += s >> 16
+    return ~s & 0xFFFF
+
+
+def ping(addr, size, timeout=1.0):
+    """ICMP echo of `size` bytes on the wire (IP header included) with DF set: 'ok', 'too_big'
+    (refused locally or a router reported fragmentation needed), 'timeout' or 'error: ...'."""
+    v6 = ":" in addr
+    fam, proto = (socket.AF_INET6, socket.IPPROTO_ICMPV6) if v6 else (socket.AF_INET, socket.IPPROTO_ICMP)
+    raw = False
+    try:
+        s = socket.socket(fam, socket.SOCK_DGRAM, proto)
+    except OSError:
+        try:
+            s = socket.socket(fam, socket.SOCK_RAW, proto)
+            raw = True
+        except OSError as e:
+            return f"error: {e.strerror}"
+    try:
+        # IP(V6)_MTU_DISCOVER = PROBE: DF set, the cached path MTU ignored (a fresh measurement)
+        if v6:
+            s.setsockopt(socket.IPPROTO_IPV6, 23, 3)
+        else:
+            s.setsockopt(socket.IPPROTO_IP, 10, 3)
+        s.settimeout(timeout)
+        s.connect((addr, 0))  # connected: ICMP errors (fragmentation needed) are reported to us
+        seq = os.getpid() & 0xFFFF
+        payload = b"N" * max(0, size - (48 if v6 else 28))
+        hdr = struct.pack("!BBHHH", 128 if v6 else 8, 0, 0, seq, 1)
+        if not v6:
+            hdr = struct.pack("!BBHHH", 8, 0, checksum(hdr + payload), seq, 1)
+        s.send(hdr + payload)
+        end = time.time() + timeout
+        while time.time() < end:
+            data = s.recv(65535)
+            if raw and not v6:
+                data = data[(data[0] & 0x0F) * 4:]
+            if data and data[0] == (129 if v6 else 0):
+                return "ok"
+        return "timeout"
+    except socket.timeout:
+        return "timeout"
+    except OSError as e:
+        if e.errno == 90:  # EMSGSIZE
+            return "too_big"
+        return f"error: {e.strerror or e}"
+    finally:
+        s.close()
+
+
+def route_dev(addr):
+    rc, out, _ = run("ip", "-j", "route", "get", addr)
+    if rc != 0:
+        return None
+    try:
+        return (json.loads(out) or [{}])[0].get("dev")
+    except (ValueError, IndexError, AttributeError):
+        return None
+
+
+def path_mtu(addr, lo, hi, probe):
+    """Largest size in [lo, hi) that passes (lo is known to pass)."""
+    while hi - lo > 8:
+        mid = (lo + hi) // 2
+        if probe(addr, mid) == "ok":
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def mtu_check(devs, probe=ping):
+    """Per role destination: route interface, its MTU, full-size DF echo."""
+    allowed = read_json(cfg("ALLOWED"), {})
+    mtus = {d["name"]: d["mtu"] for d in devs}
+    results = []
+    seen = set()
+    for role, r in sorted((allowed.get("roles") or {}).items()):
+        if not isinstance(r, dict):
+            continue
+        for e in r.get("endpoints") or []:
+            a = e.get("addr") if isinstance(e, dict) else None
+            try:
+                a = str(ipaddress.ip_address(a))
+            except ValueError:
+                continue
+            if (role, a) in seen or len(seen) >= MAX_PROBES:
+                continue
+            seen.add((role, a))
+            dev = route_dev(a)
+            mtu = mtus.get(dev) or 0
+            res = {"role": role, "addr": a, "dev": dev, "expected_dev": r.get("iface"), "mtu": mtu or None,
+                   "result": None, "path_mtu": None}
+            if not mtu:
+                res["result"] = "no_route"
+            elif probe(a, 1280 if ":" in a else 576) != "ok":
+                res["result"] = "no_reply"  # many hosts drop ping: nothing to judge
+            elif probe(a, mtu) == "ok":
+                res["result"] = "ok"
+            else:
+                res["result"] = "mismatch"
+                res["path_mtu"] = path_mtu(a, 1280 if ":" in a else 576, mtu, probe)
+            results.append(res)
+    return {"ts": int(time.time()), "results": results}
+
+
+# ---------------------------------------------------------------- status / tick
+
+
+def build_status(cur, prev, pending=None):
+    devs = devices()
+    has_mgmt = next((i["name"] for i in cur["config"]["interfaces"] if i["role"] == "management"), None)
+    mgmt = {"ifname": has_mgmt, "source": "config"} if has_mgmt else \
+        {"ifname": console_mgmt(), "source": "console"}
+    return {
+        "version": 1,
+        "scanned": int(time.time()),
+        "devices": devs,
+        "config": cur["config"],
+        "reset": cur.get("reset"),
+        "management": mgmt,
+        "pending": None if pending is None else
+        {"id": pending["id"], "by": pending["by"], "deadline": pending["deadline"]},
+        "mtu": prev.get("mtu"),
+        "confirm_secs": int(float(cfg("CONFIRM_SECS"))),
+    }
+
+
+def tick():
+    d = cfg("DIR")
+    prev = read_json(path("status.json"), {})
+    ops = read_json(path("ops.json"), [])
+
+    def record(rec):
+        nonlocal ops
+        ops = [o for o in ops if o.get("id") != rec["id"]] + [dict(rec)]
+        ops = ops[-KEEP_OPS:]
+        write_json(path("ops.json"), ops)
+
+    # a management change from a run that ended early (reboot, crash) inside its window
+    p = read_json(path("pending.json"), None)
+    if isinstance(p, dict) and p.get("id"):
+        st = build_status(applied(), prev, p)
+        write_json(path("status.json"), st)
+        keep = wait_confirm(p, lambda: None)
+        finish_pending(p, keep, record)
+
+    reqs = sorted(
+        (n for n in os.listdir(d) if re.fullmatch(r"req-[0-9a-f]{32}\.json", n)),
+        key=lambda n: os.lstat(os.path.join(d, n)).st_mtime,
+    )[:20]
+    mtu_now = False
+    for name in reqs:
+        fp = os.path.join(d, name)
+        s = read_small(fp)
+        try:
+            os.unlink(fp)  # consume first: a failing request cannot re-trigger the path unit forever
+        except FileNotFoundError:
+            pass
+        try:
+            req = parse_request(s)
+        except (ValueError, TypeError) as e:
+            log(f"ignoring {name}: {e}")
+            continue
+        params = {k: v for k, v in req.items() if k not in ("id", "op", "by", "quorum_id", "old")}
+        rec = {**{k: req[k] for k in ("id", "op", "by", "quorum_id")}, "params": params, "created": int(time.time()),
+               "state": "running", "error": None, "detail": None}
+        if req["op"] == "mtu_check":
+            mtu_now = True
+            rec.update(state="done", detail="path-MTU check requested", finished=int(time.time()))
+            record(rec)
+            continue
+        record(rec)
+        pending_box = {}
+
+        def status_cb():
+            # the web UI shows the countdown; written once, the loop only polls
+            if not pending_box:
+                pending_box["p"] = read_json(path("pending.json"), None)
+                write_json(path("status.json"), build_status(applied(), prev, pending_box["p"]))
+
+        try:
+            detail = op_apply(req, rec, record, status_cb)
+            if detail is not None:
+                rec.update(state="done", detail=detail, finished=int(time.time()))
+                record(rec)
+        except Refused as e:
+            rec.update(state="refused", error=str(e), finished=int(time.time()))
+            record(rec)
+        except Exception as e:
+            rec.update(state="error", error=f"{type(e).__name__}: {e}", finished=int(time.time()))
+            record(rec)
+        log(f"{req['op']} {req['id']} by {req['by']}: {rec['state']} {rec.get('error') or rec.get('detail')}")
+    cur = applied()
+    st = build_status(cur, prev)
+    last = (prev.get("mtu") or {}).get("ts") or 0
+    if mtu_now or time.time() - last >= float(cfg("MTU_INTERVAL")):
+        st["mtu"] = mtu_check(st["devices"])
+    write_json(path("status.json"), st)
+    return 0
+
+
+def console_apply(text):
+    """nexus-setup at the console: the management interface only, no confirmation."""
+    try:
+        new = normalize(json.loads(text))
+    except ValueError as e:
+        print(f"nexus-net: bad configuration: {e}", file=sys.stderr)
+        return 2
+    if [i["role"] for i in new["interfaces"] if i["role"]] != ["management"]:
+        print("nexus-net: console-apply takes the management interface (and its bond) only", file=sys.stderr)
+        return 2
+    nics = {d["name"] for d in devices() if d["kind"] == "nic"}
+    try:
+        validate(new, nics, None, False)
+    except Refused as e:
+        print(f"nexus-net: {e}", file=sys.stderr)
+        return 1
+    want = keyfiles(new)
+    have = current_keyfiles()
+    backup = {n: t for n, t in have.items() if owned(n, True)}
+    changed = put_files(want, have, True)
+    try:
+        activate(changed, want)
+    except Exception as e:
+        err = rollback(backup, True)
+        print(f"nexus-net: {e}; previous configuration restored{f' (rollback: {err})' if err else ''}", file=sys.stderr)
+        return 1
+    write_json(path("config.json"), {"config": new, "files": {n: sha(t) for n, t in want.items()}})
+    print(json.dumps({"applied": sorted(want)}))
+    return 0
+
+
+def main(argv):
+    if argv[1:] == ["scan"]:
+        print(json.dumps(build_status(applied(), read_json(path("status.json"), {})), indent=1))
+        return 0
+    if argv[1:] == ["tick"]:
+        return tick()
+    if len(argv) == 3 and argv[1] == "console-apply":
+        return console_apply(argv[2])
+    print("usage: nexus-net tick|scan|console-apply JSON", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

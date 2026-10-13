@@ -1,0 +1,14 @@
+[Unit]
+Description=NexusBackup network requests from the web UI (interfaces, path-MTU check)
+
+[Path]
+# nexus-web-api writes /var/lib/nexus/net/req-<id>.json (tmp + rename); nexus-net consumes
+# (deletes) them and records the outcome in ops.json.
+PathExistsGlob=/var/lib/nexus/net/req-*.json
+# a management change still waiting for its confirmation when the system went down (or the
+# helper died): decided as soon as possible (rolled back once its window has passed)
+PathExists=/var/lib/nexus/net/pending.json
+Unit=nexus-net.service
+
+[Install]
+WantedBy=paths.target

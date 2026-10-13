@@ -36,6 +36,8 @@ policy_module(nexus, 1.0.0)
 #                                                          public key, writes its dir; no network, no keyd
 #   init_t ── nexus_disks_exec_t ─────> nexus_disks_t      root oneshot, disks: SMART, mdadm, mkfs/xfs_growfs,
 #                                                          the store's mount unit; no network, no keys
+#   init_t ── nexus_net_exec_t ───────> nexus_net_t        root oneshot, network: NetworkManager keyfiles,
+#                                                          nmcli (D-Bus), netlink, ICMP echo; no TCP/UDP
 #   init_t ── nexus_consolegate_exec_t > nexus_consolegate_t  console gate on tty2 (root): unlock code or
 #                                                          recovery key ── shell_exec_t ──> unconfined_t
 #                                                          (the emergency root shell; the only way there)
@@ -1177,6 +1179,83 @@ neverallow nexus_disks_t self:{ tcp_socket udp_socket rawip_socket sctp_socket }
 neverallow nexus_disks_t { nexus_keyd_var_lib_t nexus_catalog_t nexus_escrow_t nexus_sshkey_t nexus_scheduler_secret_t nexus_webapi_secret_t nexus_webapi_var_lib_t nexus_agent_ca_t nexus_replicad_var_lib_t nexus_replica_key_t nexus_downloads_t nexus_etc_t nexus_store_t }:file { read write append open create unlink link rename setattr };
 neverallow nexus_disks_t { nexus_keyd_var_run_t nexus_scheduler_var_run_t nexus_replicad_var_run_t }:sock_file { write open };
 neverallow { nexus_domain -nexus_disks_t -nexus_webapi_t } nexus_disks_var_lib_t:file { write append create unlink rename };
+
+########################################
+# Network interfaces (Phase 22a, os/greenboot/usr/libexec/nexus/nexus-net, docs/control-plane.md
+# "Network interfaces"): root oneshot started by nexus-net.path (requests of the web-api in
+# /var/lib/nexus/net, a pending management change) and nexus-net.timer. It writes the
+# NetworkManager keyfiles nexus-*.nmconnection and activates them with `nmcli connection
+# reload / up`. Of the two ways to drive NetworkManager this is the smaller policy: nmcli has no
+# domain of its own to transition into (it is bin_t), so either way the D-Bus chat with
+# NetworkManager lands in this domain; writing keyfiles adds only one directory, while
+# building each profile through `nmcli connection add/modify` needs the same chat plus a
+# rollback that re-creates profiles field by field. Interfaces and routes over netlink (`ip -j`,
+# in this domain), ICMP echo for the path-MTU check. Never reads keys, the catalog,
+# credentials or the store; no TCP/UDP.
+
+nexus_daemon(net)
+type nexus_net_var_lib_t;	# /var/lib/nexus/net: requests + confirmation (web-api), status/ops/config/pending (nexus-net)
+files_type(nexus_net_var_lib_t)
+gen_require(`
+	type NetworkManager_etc_t;
+	type NetworkManager_etc_rw_t;
+	type ifconfig_exec_t;
+')
+
+# python3 with the standard library; nmcli (bin_t) and ip (ifconfig_exec_t) in this domain
+corecmd_exec_bin(nexus_net_t)
+can_exec(nexus_net_t, ifconfig_exec_t)
+libs_use_ld_so(nexus_net_t)
+libs_use_shared_libs(nexus_net_t)
+libs_read_lib_files(nexus_net_t)
+files_read_usr_files(nexus_net_t)
+files_read_etc_files(nexus_net_t)
+files_read_etc_runtime_files(nexus_net_t)
+auth_read_passwd(nexus_net_t)
+kernel_read_kernel_sysctls(nexus_net_t)
+kernel_read_network_state(nexus_net_t)
+# its control dir: consumes req-*.json and confirm.json, writes status/ops/config/pending
+manage_dirs_pattern(nexus_net_t, nexus_net_var_lib_t, nexus_net_var_lib_t)
+manage_files_pattern(nexus_net_t, nexus_net_var_lib_t, nexus_net_var_lib_t)
+# the keyfiles in /etc/NetworkManager/system-connections (new files get the dir's type)
+files_search_etc(nexus_net_t)
+allow nexus_net_t NetworkManager_etc_t:dir search_dir_perms;
+manage_files_pattern(nexus_net_t, NetworkManager_etc_rw_t, NetworkManager_etc_rw_t)
+# nmcli: NetworkManager over the system bus (reload, activate)
+dbus_system_bus_client(nexus_net_t)
+networkmanager_dbus_chat(nexus_net_t)
+allow nexus_net_t self:unix_dgram_socket create_socket_perms;
+# ip -j addr / ip -j route get
+allow nexus_net_t self:netlink_route_socket r_netlink_socket_perms;
+# path-MTU check: ICMP echo with DF over a ping socket, a raw socket where those are not allowed
+allow nexus_net_t self:capability net_raw;
+allow nexus_net_t self:{ icmp_socket rawip_socket } create_socket_perms;
+# the destinations per role: the scheduler's firewall file
+allow nexus_net_t nexus_nft_var_run_t:dir list_dir_perms;
+read_files_pattern(nexus_net_t, nexus_nft_var_run_t, nexus_nft_var_run_t)
+
+# web-api: req-<id>.json and confirm.json (tmp + rename) in, status.json / ops.json out
+allow nexus_webapi_t nexus_net_var_lib_t:dir rw_dir_perms;
+manage_files_pattern(nexus_webapi_t, nexus_net_var_lib_t, nexus_net_var_lib_t)
+# scheduler: interface-bound egress from status.json, audit of ops.json; nexus-diag: MTU check
+read_files_pattern({ nexus_scheduler_t nexus_diag_t }, nexus_net_var_lib_t, nexus_net_var_lib_t)
+# nexus-net.path (PathExistsGlob=req-*.json, PathExists=pending.json)
+allow init_t nexus_net_var_lib_t:dir { getattr search read watch };
+allow init_t nexus_net_var_lib_t:file { getattr read watch };
+# nexus-setup at the console: bond / VLAN / MTU of the management interface (console-apply)
+domtrans_pattern(nexus_setup_t, nexus_net_exec_t, nexus_net_t)
+allow nexus_setup_t nexus_net_t:process2 { nnp_transition nosuid_transition };
+allow nexus_net_t nexus_setup_t:fd use;
+allow nexus_net_t nexus_setup_t:fifo_file rw_inherited_fifo_file_perms;
+allow nexus_net_t nexus_setup_t:process sigchld;
+term_use_unallocated_ttys(nexus_net_t)
+
+# no TCP/UDP; never reads or writes keys, the catalog, credentials or store contents; only it
+# writes NetworkManager keyfiles among the nexus domains (nexus-setup goes through nmcli)
+neverallow nexus_net_t self:{ tcp_socket udp_socket sctp_socket } create;
+neverallow nexus_net_t { nexus_keyd_var_lib_t nexus_catalog_t nexus_escrow_t nexus_sshkey_t nexus_scheduler_secret_t nexus_webapi_secret_t nexus_webapi_var_lib_t nexus_agent_ca_t nexus_replicad_var_lib_t nexus_replica_key_t nexus_downloads_t nexus_etc_t nexus_store_t }:file { read write append open create unlink link rename setattr };
+neverallow { nexus_domain -nexus_net_t } NetworkManager_etc_rw_t:file { write append create unlink rename };
+neverallow { nexus_domain -nexus_net_t -nexus_webapi_t } nexus_net_var_lib_t:file { write append create unlink rename };
 
 ########################################
 # Configuration backup (docs/control-plane.md "Configuration backup",
