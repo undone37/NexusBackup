@@ -560,6 +560,24 @@ CREATE TABLE agent_sessions (
 CREATE INDEX agent_sessions_pending ON agent_sessions(agent_id) WHERE delivered IS NULL;
 "#;
 
+/// v28 (Phase 21a, docs/ransomware-signals.md): the anomaly flag of a
+/// snapshot (`snapshots.anomaly` = the reasons, NULL = clean; set by the
+/// scheduler's change-rate and file-level checks; a security officer clears it
+/// with a note: `anomaly_cleared_by/_at`, `anomaly_note`, the reason stays) and
+/// the file-level change counts of a backup against the previous snapshot
+/// (`backup_stats.files_added/_changed/_deleted`, NULL = not computed: no name
+/// index). Purely additive: the previous release ignores the columns.
+const SCHEMA_V28: &str = r#"
+ALTER TABLE snapshots ADD COLUMN anomaly TEXT;
+ALTER TABLE snapshots ADD COLUMN anomaly_at INTEGER;
+ALTER TABLE snapshots ADD COLUMN anomaly_cleared_by TEXT;
+ALTER TABLE snapshots ADD COLUMN anomaly_cleared_at INTEGER;
+ALTER TABLE snapshots ADD COLUMN anomaly_note TEXT;
+ALTER TABLE backup_stats ADD COLUMN files_added INTEGER;
+ALTER TABLE backup_stats ADD COLUMN files_changed INTEGER;
+ALTER TABLE backup_stats ADD COLUMN files_deleted INTEGER;
+"#;
+
 /// v31 (Phase 21c, passkeys, docs/control-plane.md "Passkeys"): `passkeys`
 /// holds the WebAuthn credentials registered as a second factor: credential id
 /// (base64url, unique appliance-wide), COSE algorithm (-7 ES256, -8 EdDSA), the
@@ -578,7 +596,7 @@ CREATE INDEX passkeys_user ON passkeys(user_id);
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
-    SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V31,
+    SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V28, SCHEMA_V31,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -2354,5 +2372,60 @@ mod tests {
             .query_row("SELECT uid FROM tenants WHERE name = 'initech'", [], |r| r.get(0))
             .unwrap();
         assert!(u.is_some_and(|u| u.len() == 32));
+    }
+
+    /// v28 (anomaly flags, file change counts) on top of the previous catalog:
+    /// existing snapshots are clean, existing stats have no counts; the previous
+    /// release still upserts snapshots and stats.
+    #[test]
+    fn migration_v28_anomaly_flags() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V28).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('t', 'host-a', 5, 1, 0);
+                 INSERT INTO backup_stats (tenant, source, time, read, logical, new_chunks, new_plain, new_stored)
+                   VALUES ('t', 'host-a', 5, 1, 1, 1, 1, 1);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let row: (Option<String>, Option<i64>) = conn
+                .query_row(
+                    "SELECT s.anomaly, b.files_added FROM snapshots s JOIN backup_stats b USING (tenant, source, time)",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(row, (None, None));
+            conn.execute("UPDATE snapshots SET anomaly = 'x', anomaly_at = 6", [])
+                .unwrap();
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        old.execute(
+            "INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('t', 'host-a', 5, 1, 0) \
+             ON CONFLICT (tenant, source, time) DO UPDATE SET local = 1",
+            [],
+        )
+        .unwrap();
+        old.execute(
+            "INSERT INTO backup_stats (tenant, source, time, read, logical, new_chunks, new_plain, new_stored) \
+             VALUES ('t', 'host-a', 7, 1, 1, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+        let a: Option<String> = old
+            .query_row("SELECT anomaly FROM snapshots WHERE time = 5", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(a.as_deref(), Some("x"), "the flag survives the refresh upsert");
     }
 }

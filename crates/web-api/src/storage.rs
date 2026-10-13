@@ -69,6 +69,11 @@ pub struct Anomaly {
     pub factor: f64,
     pub history: u64,
     pub floor_bytes: u64,
+    /// Phase 21a: extra ransom-note file name globs (case-insensitive, matched
+    /// against the last path component of new files; the scheduler's built-in
+    /// list `changes::RANSOM_NOTES` always applies)
+    #[serde(default)]
+    pub ransom_notes: Vec<String>,
 }
 
 impl Default for Anomaly {
@@ -78,6 +83,7 @@ impl Default for Anomaly {
             factor: 3.0,
             history: 14,
             floor_bytes: 1 << 30,
+            ransom_notes: Vec::new(),
         }
     }
 }
@@ -93,12 +99,25 @@ impl Anomaly {
         if !(1 << 20..=1 << 50).contains(&self.floor_bytes) {
             return Err(ApiError::bad("floor_bytes: 1 MiB..=1 PiB"));
         }
+        if self.ransom_notes.len() > 100
+            || self
+                .ransom_notes
+                .iter()
+                .any(|g| g.trim().is_empty() || g.len() > 100 || g.contains('/') || g.chars().any(char::is_control))
+        {
+            return Err(ApiError::bad(
+                "ransom_notes: at most 100 file name patterns of 1..=100 characters, no `/`",
+            ));
+        }
         Ok(())
     }
 
     /// Detection gets less sensitive (switched off, higher factor or floor, …).
     fn weaker_than(&self, old: &Anomaly) -> bool {
-        (old.enabled && !self.enabled) || self.factor > old.factor || self.floor_bytes > old.floor_bytes
+        (old.enabled && !self.enabled)
+            || self.factor > old.factor
+            || self.floor_bytes > old.floor_bytes
+            || old.ransom_notes.iter().any(|g| !self.ransom_notes.contains(g))
     }
 }
 
@@ -152,5 +171,18 @@ mod tests {
         };
         assert!(!strict.weaker_than(&d));
         assert!(d.weaker_than(&strict));
+        // adding ransom-note patterns is stricter, removing one weaker
+        let notes = Anomaly {
+            ransom_notes: vec!["*.note".into()],
+            ..d.clone()
+        };
+        assert!(!notes.weaker_than(&d));
+        assert!(d.weaker_than(&notes));
+        assert!(Anomaly {
+            ransom_notes: vec!["a/b".into()],
+            ..d.clone()
+        }
+        .check()
+        .is_err());
     }
 }

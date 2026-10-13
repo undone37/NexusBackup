@@ -66,6 +66,7 @@
 mod accounts;
 pub mod alerts;
 pub mod anomaly;
+pub mod changes;
 pub mod clock;
 mod config_backup;
 pub mod consistency;
@@ -1297,6 +1298,16 @@ impl Scheduler {
             self.inconsistent_alerts(job.id, &job.tenant, &log)?;
             self.record_stats(&job.tenant, &log)?;
             self.queue_name_index(&job, result.as_ref())?;
+            self.queue_changes_after_backup(&job.tenant, &log)?;
+        }
+        // file-level change signals (changes.rs): VM/CT once their disks are indexed
+        if ok && job.kind == "file_index" {
+            if let (Some(s), Some(t)) = (job.params["source"].as_str(), job.params["time"].as_i64()) {
+                self.queue_file_changes(&job.tenant, s, t)?;
+            }
+        }
+        if ok && job.kind == "file_changes" {
+            self.changes_bookkeeping(&job, result.as_ref())?;
         }
         if job.kind == "gc" {
             self.orphan_bookkeeping(&job.tenant, f.stdout.as_deref())?;
@@ -1499,7 +1510,9 @@ impl Scheduler {
                 Some(r)
             }
             "alert_test" | "forward_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" | "file_search"
-            | "file_index" | "config_backup" => serde_json::from_str(stdout.unwrap_or_default()).ok(),
+            | "file_index" | "file_changes" | "snapshot_diff" | "config_backup" => {
+                serde_json::from_str(stdout.unwrap_or_default()).ok()
+            }
             "offsite_list" => match serde_json::from_str::<Value>(stdout.unwrap_or_default().trim()) {
                 Ok(s @ Value::Array(_)) => Some(json!({ "snapshots": s })),
                 _ => {
@@ -2382,6 +2395,9 @@ impl Scheduler {
         };
         if job.kind == "file_search" || job.kind == "file_index" {
             return self.plan_files_index(job, plan);
+        }
+        if job.kind == "file_changes" || job.kind == "snapshot_diff" {
+            return self.plan_changes(job, plan); // changes.rs
         }
         if job.kind.starts_with("offsite_") {
             return self.plan_offsite_ui(job, plan); // offsite_ui.rs
