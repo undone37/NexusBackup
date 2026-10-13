@@ -140,3 +140,38 @@ fn dormant_accounts_and_expired_sessions() {
             .unwrap();
     assert_eq!(audits, 3);
 }
+
+/// DEK rotation reminder (Phase 21b): info alert past the interval, resolved
+/// after a rotation, off with 0.
+#[test]
+fn dek_rotation_reminder() {
+    let e = env(1);
+    let s = sched(&e);
+    let now = 1_000 * DAY;
+    let open = |s: &Scheduler| -> Vec<(String, String, Option<String>)> {
+        let c = s.db.conn();
+        let mut q = c
+            .prepare(
+                "SELECT key, severity, tenant FROM alerts WHERE kind = 'dek_rotation' AND resolved_at IS NULL ORDER BY key",
+            )
+            .unwrap();
+        q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let ages = |t1: i64| vec![("t1".to_owned(), 1, now - t1 * DAY), ("t2".to_owned(), 3, now - 10 * DAY)];
+    s.dek_reminders(now, &ages(365)).unwrap();
+    assert_eq!(
+        open(&s),
+        [("dek_rotation:t1".into(), "info".into(), Some("t1".into()))],
+        "default 365 days"
+    );
+    s.dek_reminders(now, &ages(2)).unwrap();
+    assert!(open(&s).is_empty(), "rotated: resolved");
+    catalog::set_setting(&s.db.conn(), catalog::access::DEK_ROTATION_DAYS, "0").unwrap();
+    s.dek_reminders(now, &ages(5000)).unwrap();
+    assert!(open(&s).is_empty(), "off");
+    // without keyd (tests) the periodic check is silent
+    s.check_dek_rotation(now).unwrap();
+}

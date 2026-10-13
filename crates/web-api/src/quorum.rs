@@ -59,6 +59,7 @@ pub const WEB_ACTIONS: &[&str] = &[
     catalog::vault::RESTORE,
     catalog::tenants::DISABLE_ACTION,
     crate::impersonate::ACTION,
+    crate::incident::LEAVE,
 ];
 
 /// Who may approve or reject requests (never their own: see [`approve`]).
@@ -373,6 +374,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         a if a.starts_with("security.") => crate::access::execute(c, a, p)?,
         crate::firewall::ACTION => crate::firewall::execute(c, p)?,
         catalog::holds::RELEASE_ACTION => crate::holds::execute(c, p, approver, requested_by)?,
+        crate::incident::LEAVE => crate::incident::execute(c, p, approver, requested_by)?,
         "agent.delete" => {
             let id = p["id"].as_str().unwrap_or_default();
             if crate::agents::agent_in_use(c, id)? {

@@ -3760,6 +3760,7 @@ fn registered_routes() -> std::collections::BTreeSet<(String, String)> {
         include_str!("../src/tenants.rs"),
         include_str!("../src/tenancy.rs"),
         include_str!("../src/vault.rs"),
+        include_str!("../src/incident.rs"),
     ] {
         for piece in src.split(".route(").skip(1) {
             let piece = piece.split(".merge(").next().unwrap().split("\n}").next().unwrap();
@@ -3956,6 +3957,11 @@ async fn tenant_admin_routes_classified() {
         ("PUT", "/settings/session", "/api/v1/settings/session".into(), Some(json!({"idle_min": 30, "absolute_h": 12})), 'N'),
         ("PUT", "/settings/dormant", "/api/v1/settings/dormant".into(), Some(json!({"days": 0})), 'N'),
         ("PUT", "/settings/banner", "/api/v1/settings/banner".into(), Some(json!({"banner": "x"})), 'N'),
+        ("PUT", "/settings/max-sessions", "/api/v1/settings/max-sessions".into(), Some(json!({"max": 5})), 'N'),
+        ("PUT", "/settings/dek-rotation", "/api/v1/settings/dek-rotation".into(), Some(json!({"days": 365})), 'N'),
+        ("GET", "/incident", "/api/v1/incident".into(), none(), 'N'),
+        ("POST", "/incident", "/api/v1/incident".into(), Some(json!({"reason": "x"})), 'N'),
+        ("POST", "/incident/leave", "/api/v1/incident/leave".into(), e(), 'N'),
         ("PUT", "/settings/mgmt-allow", "/api/v1/settings/mgmt-allow".into(), Some(json!({"mgmt_allow": ["10.0.0.0/8"]})), 'N'),
         ("GET", "/firewall", "/api/v1/firewall".into(), none(), 'N'),
         ("PUT", "/firewall/inbound/{service}", "/api/v1/firewall/inbound/icmp".into(), Some(json!({"allow": ["10.0.0.0/8"], "enabled": true})), 'N'),

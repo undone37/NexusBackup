@@ -154,6 +154,27 @@ pub fn rotate_tenant(dir: &Path, tenant: &str) -> io::Result<u32> {
     add_dek(dir, tenant, last + 1)
 }
 
+/// The current DEK version of a tenant and when it was written (file mtime:
+/// creation, rotation, or the import on a restored appliance), for the
+/// scheduler's rotation reminder (Phase 21b). No key material.
+pub fn dek_age(dir: &Path, tenant: &str) -> io::Result<(u32, i64)> {
+    let v = *versions(dir, tenant)?
+        .last()
+        .ok_or_else(|| err(io::ErrorKind::NotFound, format!("no tenant {tenant}")))?;
+    let m = fs::metadata(tenant_dir(dir, tenant)?.join(format!("dek.{v}")))?.modified()?;
+    let ts = m.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    Ok((v, ts))
+}
+
+/// Scheduler: [`dek_age`] over the socket.
+pub fn request_dek_age(socket: &Path, tenant: &str) -> io::Result<(u32, i64)> {
+    let b = request_raw(socket, &format!("dek-age {tenant}"), &[])?;
+    let s = String::from_utf8_lossy(&b);
+    let bad = || err(io::ErrorKind::InvalidData, "malformed dek-age answer");
+    let (v, ts) = s.split_once(' ').ok_or_else(bad)?;
+    Ok((v.parse().map_err(|_| bad())?, ts.parse().map_err(|_| bad())?))
+}
+
 pub fn tenant_deks(dir: &Path, tenant: &str) -> io::Result<Vec<(u32, Key)>> {
     let kek = unseal(dir)?;
     let td = tenant_dir(dir, tenant)?;
@@ -575,6 +596,7 @@ fn peer_uid(s: &UnixStream) -> io::Result<u32> {
 ///   (`dek.<v>` under this KEK, after a configuration restore) → N x u32 LE versions ([`import_wrapped`])
 /// - `attach-escrow <tenant> <len>\n` + `len` bytes (recovery key line, then escrow files
 ///   encoded like the `escrow` answer) → N x u32 LE versions now present ([`attach_escrow`])
+/// - `dek-age <tenant>\n` → `<version> <unix time written>` of the current DEK ([`dek_age`])
 ///
 /// Any error closes the connection without an answer.
 // ponytail: sequential accept loop; requests only happen at chunkstore start.
@@ -717,6 +739,10 @@ pub fn answer_with_body(dir: &Path, line: &str, body: &[u8]) -> io::Result<Zeroi
             );
         }
         return Ok(Zeroizing::new(vec![if changed { b'1' } else { b'0' }]));
+    }
+    if let Some(t) = line.strip_prefix("dek-age ") {
+        let (v, ts) = dek_age(dir, t)?;
+        return Ok(Zeroizing::new(format!("{v} {ts}").into_bytes()));
     }
     let tenant = match line.split_once(' ') {
         Some(("escrow", t)) => {
@@ -1194,6 +1220,30 @@ mod tests {
             .starts_with("tenant-")));
         assert!(request_tenant_recovery(&sock, "acme", None).unwrap());
         srv.join().unwrap();
+    }
+
+    #[test]
+    fn dek_age_over_the_socket() {
+        let d = tempfile::tempdir().unwrap();
+        init(d.path()).unwrap();
+        create_tenant(d.path(), "acme").unwrap();
+        let f = fs::File::options().write(true).open(d.path().join("tenants/acme/dek.1")).unwrap();
+        f.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_000_000)).unwrap();
+        assert_eq!(dek_age(d.path(), "acme").unwrap(), (1, 1_000_000));
+        rotate_tenant(d.path(), "acme").unwrap();
+        let sock = d.path().join("keyd.sock");
+        let l = UnixListener::bind(&sock).unwrap();
+        let dir = d.path().to_owned();
+        let me = unsafe { libc::getuid() };
+        let t = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let _ = handle(l.accept().unwrap().0, &dir, me);
+            }
+        });
+        let (v, ts) = request_dek_age(&sock, "acme").unwrap();
+        assert!(v == 2 && ts > 1_000_000, "the rotated version is current");
+        assert!(request_dek_age(&sock, "nobody").is_err());
+        t.join().unwrap();
     }
 
     #[test]

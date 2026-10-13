@@ -9,6 +9,9 @@
 //!   `PUT /settings/mgmt-allow` and the `mgmt_allow` field stay as aliases.
 //! - Dormant accounts (`dormant_days`, 0 = off) and the login banner: admin,
 //!   direct, audited. The scheduler disables dormant accounts.
+//! - Phase 21b: concurrent sessions per account (`max_sessions`, default 5; a
+//!   login ends the account's oldest sessions beyond it) and the DEK rotation
+//!   reminder interval (`dek_rotation_days`, default 365): admin, direct, audited.
 
 use crate::auth::{reauth, ClientIp, Ctx};
 use crate::quorum::gate;
@@ -37,6 +40,8 @@ pub fn routes() -> Router<St> {
         .route("/settings/security", get(get_security))
         .route("/settings/session", put(put_session))
         .route("/settings/dormant", put(put_dormant))
+        .route("/settings/max-sessions", put(put_max_sessions))
+        .route("/settings/dek-rotation", put(put_dek_rotation))
         .route("/settings/banner", put(put_banner))
         .route("/settings/mgmt-allow", put(put_mgmt_allow))
 }
@@ -199,6 +204,8 @@ pub async fn get_security(State(st): State<St>, ctx: Ctx, ClientIp(ip): ClientIp
     Ok(Json(json!({
         "session": access::session_limits(&c)?,
         "dormant_days": access::dormant_days(&c)?,
+        "max_sessions": access::max_sessions(&c)?,
+        "dek_rotation_days": access::dek_rotation_days(&c)?,
         "login_banner": access::login_banner(&c)?,
         "client_allowed": access::allows(&allow, &ip),
         "mgmt_allow": allow,
@@ -247,6 +254,48 @@ pub async fn put_dormant(State(st): State<St>, ctx: Ctx, J(r): J<DormantReq>) ->
         json!({"days": r.days, "old": old}),
     )?;
     Ok(Json(json!({"dormant_days": r.days})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MaxSessionsReq {
+    max: i64,
+}
+
+/// Concurrent sessions per account (Phase 21b): admin, direct, audited; applies
+/// at the next login of each account.
+pub async fn put_max_sessions(State(st): State<St>, ctx: Ctx, J(r): J<MaxSessionsReq>) -> ApiResult<Json<Value>> {
+    ctx.require(ADMIN)?;
+    if !(1..=access::MAX_SESSIONS_MAX).contains(&r.max) {
+        return Err(ApiError::bad(format!("max: 1..={}", access::MAX_SESSIONS_MAX)));
+    }
+    let old = access::max_sessions(&st.cat.conn())?;
+    catalog::set_setting(&st.cat.conn(), access::MAX_SESSIONS, &r.max.to_string())?;
+    st.audit(
+        ctx.name(),
+        "security.max_sessions",
+        "settings/max_sessions",
+        json!({"max": r.max, "old": old}),
+    )?;
+    Ok(Json(json!({"max_sessions": r.max})))
+}
+
+/// DEK rotation reminder interval (Phase 21b, scheduler `dek_rotation`): admin,
+/// direct, audited; 0 = off.
+pub async fn put_dek_rotation(State(st): State<St>, ctx: Ctx, J(r): J<DormantReq>) -> ApiResult<Json<Value>> {
+    ctx.require(ADMIN)?;
+    if r.days != 0 && !(30..=access::DORMANT_MAX).contains(&r.days) {
+        return Err(ApiError::bad(format!("days: 0 (off) or 30..={}", access::DORMANT_MAX)));
+    }
+    let old = access::dek_rotation_days(&st.cat.conn())?;
+    catalog::set_setting(&st.cat.conn(), access::DEK_ROTATION_DAYS, &r.days.to_string())?;
+    st.audit(
+        ctx.name(),
+        "security.dek_rotation",
+        "settings/dek_rotation_days",
+        json!({"days": r.days, "old": old}),
+    )?;
+    Ok(Json(json!({"dek_rotation_days": r.days})))
 }
 
 #[derive(Deserialize)]

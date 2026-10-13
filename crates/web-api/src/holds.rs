@@ -32,7 +32,7 @@ pub fn routes() -> Router<St> {
         .route("/snapshots/{tenant}/{source}/{time}/hold", post(set).delete(release))
 }
 
-fn reason(r: &str) -> ApiResult<String> {
+pub(crate) fn reason(r: &str) -> ApiResult<String> {
     let r = r.trim();
     if r.is_empty() || r.chars().count() > 500 || r.chars().any(char::is_control) {
         return Err(ApiError::bad("reason: 1 to 500 characters, one line"));
@@ -42,7 +42,7 @@ fn reason(r: &str) -> ApiResult<String> {
 
 /// Holds one snapshot (inside the caller's transaction): applies an advisory
 /// row, else inserts an active one. `None` if it is already held.
-fn hold_one(c: &Connection, tenant: &str, source: &str, time: i64, reason: &str, by: &str) -> ApiResult<Option<Value>> {
+pub(crate) fn hold_one(c: &Connection, tenant: &str, source: &str, time: i64, reason: &str, by: &str) -> ApiResult<Option<Value>> {
     let open: Option<(i64, String, Option<String>, String)> = c
         .query_row(
             "SELECT id, state, origin, held_by FROM legal_holds WHERE tenant = ?1 AND source = ?2 AND time = ?3
