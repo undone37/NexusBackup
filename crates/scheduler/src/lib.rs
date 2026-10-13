@@ -728,6 +728,7 @@ impl Scheduler {
         self.log_err(|s| s.queue_inventory(now));
         self.log_err(|s| s.queue_reports(now));
         self.log_err(|s| s.queue_config_backup(now));
+        self.log_err(|s| s.queue_rekeys(now));
         self.log_err(|s| s.start_jobs());
         let all = now.saturating_sub(self.last_refresh) >= self.cfg.refresh_secs;
         if all || !self.dirty.is_empty() {
@@ -2082,10 +2083,12 @@ impl Scheduler {
             let rows = st.query_map([], |r| r.get(0))?;
             rows.collect::<Result<_, _>>()?
         };
-        // replicated tenants get the primary's DEKs (keyd import-sealed), never a local one
+        // replicated tenants get the primary's DEKs (keyd import-sealed), never a local one;
+        // after a configuration restore the offsite escrow's (config_backup.rs)
         let replicated = self.replicated_tenants()?;
+        let restoring = self.rekey_pending()?;
         for t in tenants {
-            if self.keyed.contains(&t) || replicated.contains_key(&t) {
+            if self.keyed.contains(&t) || replicated.contains_key(&t) || restoring.contains(&t) {
                 continue;
             }
             (self.ctx.keys)(&t).with_context(|| format!("keys for tenant {t}"))?;
@@ -2304,6 +2307,12 @@ impl Scheduler {
     pub fn plan(&self, job: &Job) -> Result<Plan> {
         if let Some(plan) = self.plan_config(job)? {
             return Ok(plan); // config_backup.rs
+        }
+        if self.rekey_pending()?.contains(&job.tenant) {
+            bail!(
+                "the keys of tenant {} are still being restored from its offsite copy after the configuration restore",
+                job.tenant
+            );
         }
         if let Some(plan) = self.plan_appliance(job)? {
             return Ok(plan);

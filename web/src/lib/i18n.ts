@@ -529,6 +529,7 @@ export const en = {
       offsite_attach: "Attach offsite copy",
       config_backup: "Configuration backup",
       config_upload: "Upload configuration backup",
+      config_rekey: "Restore tenant keys from offsite",
     } as Record<string, string>,
     result: "Result",
     valid: "The source is reachable and the credentials work.",

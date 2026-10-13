@@ -153,3 +153,48 @@ fn daily_schedule() {
     s.queue_config_backup(s.now).unwrap();
     assert_eq!(jobs(&s), 2, "no helper dir: nothing queued");
 }
+
+/// After a configuration restore: the pending tenant gets `config_rekey`
+/// (nexus-offsite rekey), nothing else runs for it meanwhile; success clears it,
+/// a failure raises `config_restore:<t>` and is retried only after an hour.
+#[test]
+fn rekey_after_restore() {
+    let (e, mut s) = config_env(false);
+    let pending = |s: &Scheduler| s.rekey_pending().unwrap();
+    catalog::set_setting(&s.db.conn(), crate::config_backup::REKEY_PENDING, r#"["t1"]"#).unwrap();
+    let t0 = 1_800_000_000;
+    s.now = t0;
+    s.queue_rekeys(t0).unwrap();
+    s.queue_rekeys(t0).unwrap();
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM jobs WHERE kind = 'config_rekey'"), 1);
+    let b = manual(&s, "backup", "t1", json!({"group_id": 1}));
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(30)).unwrap();
+    assert_eq!(state(&s, b), "failed", "no backup before the keys are back");
+    assert_eq!(
+        count(&s, "SELECT COUNT(*) FROM alerts WHERE key = 'config_restore:t1' AND resolved_at IS NULL"),
+        1
+    );
+    let calls = fs::read_to_string(e.d.path().join("offsite-calls")).unwrap();
+    assert!(calls.contains(" rekey"), "{calls}");
+    // failed recently: not again yet
+    s.db.conn()
+        .execute("UPDATE jobs SET finished = ?1 WHERE kind = 'config_rekey'", [t0])
+        .unwrap();
+    s.queue_rekeys(t0 + 60).unwrap();
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM jobs WHERE kind = 'config_rekey'"), 1);
+    assert_eq!(pending(&s), ["t1"]);
+
+    // the offsite tool works now: retried after an hour, the tenant is released
+    fs::remove_file(e.d.path().join("offsite")).unwrap();
+    script(&e.d.path().join("offsite"), "echo rekey ok");
+    s.queue_rekeys(t0 + 3700).unwrap();
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(30)).unwrap();
+    assert!(pending(&s).is_empty());
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM audit WHERE action = 'tenant.keys_restored'"), 1);
+    assert_eq!(
+        count(&s, "SELECT COUNT(*) FROM alerts WHERE key = 'config_restore:t1' AND resolved_at IS NULL"),
+        0
+    );
+}

@@ -11,6 +11,13 @@
 //! - alerts (warning): `config_backup` (bundle not made), `config_backup:<tenant>`
 //!   (upload to that tenant's target failed); each resolves after the next success.
 //!
+//! - after `nexus-setup restore-config` (same KEK as the lost appliance) the setting
+//!   [`REKEY_PENDING`] lists the tenants with an offsite target: no local DEK is created
+//!   for them and no other job runs until `config_rekey {target}` (`nexus-offsite rekey`)
+//!   has installed their DEKs from the offsite escrow (wrapped under the restored KEK, no
+//!   recovery key needed) and indexed the copy. Failure: warning `config_restore:<tenant>`,
+//!   retried hourly.
+//!
 //! The appliance id (setting [`APPLIANCE_ID`]) is created on the first run and is
 //! part of the catalog, so a restored appliance keeps writing to the same folder.
 //!
@@ -20,6 +27,7 @@
 use crate::run::{InProc, Plan, Step};
 use crate::{Job, Scheduler};
 use anyhow::{Context, Result};
+use catalog::rusqlite::params;
 use catalog::schedule::Schedule;
 use serde_json::{json, Value};
 use std::fs;
@@ -30,6 +38,9 @@ use std::time::{Duration, Instant};
 pub const APPLIANCE_ID: &str = "appliance_id";
 pub const ALERT: &str = "config_backup";
 pub const LATEST: &str = "latest.bundle";
+/// written by nexus-setup restore-config: tenants whose DEKs come from their offsite escrow
+pub const REKEY_PENDING: &str = "config_restore_keys";
+const REKEY_RETRY_SECS: i64 = 3600;
 
 pub(crate) fn upload_alert_key(tenant: &str) -> String {
     format!("{ALERT}:{tenant}")
@@ -74,6 +85,46 @@ fn wait(dir: &Path, id: i64, timeout: Duration) -> Result<Value, String> {
 }
 
 impl Scheduler {
+    /// Tenants still waiting for their DEKs after a configuration restore.
+    pub(crate) fn rekey_pending(&self) -> Result<Vec<String>> {
+        Ok(catalog::setting(&self.db.conn(), REKEY_PENDING)?
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_default())
+    }
+
+    fn rekey_done(&self, tenant: &str, job: Option<i64>) -> Result<()> {
+        let left: Vec<String> = self.rekey_pending()?.into_iter().filter(|t| t != tenant).collect();
+        catalog::set_setting(&self.db.conn(), REKEY_PENDING, &json!(left).to_string())?;
+        self.db.audit(
+            crate::ACTOR,
+            "tenant.keys_restored",
+            &format!("tenant/{tenant}"),
+            &json!({"job": job, "after": "config_restore"}),
+        )?;
+        self.resolve(&format!("config_restore:{tenant}"))
+    }
+
+    /// One `config_rekey` per pending tenant (retried hourly after a failure); a
+    /// tenant whose keys keyd already has (console `nexus-offsite dr`) is done.
+    pub(crate) fn queue_rekeys(&mut self, now: i64) -> Result<()> {
+        for t in self.rekey_pending()? {
+            if keyd::fetch_keyring(&self.cfg.keyd_socket, &t).is_ok_and(|k| !k.versions().is_empty()) {
+                self.rekey_done(&t, None)?;
+                continue;
+            }
+            let blocked: i64 = self.db.conn().query_row(
+                "SELECT COUNT(*) FROM jobs WHERE kind = 'config_rekey' AND json_extract(params, '$.target') = ?1
+                 AND (state IN ('queued', 'running') OR (state = 'failed' AND finished > ?2))",
+                params![t, now - REKEY_RETRY_SECS],
+                |r| r.get(0),
+            )?;
+            if blocked == 0 {
+                self.insert_job("config_rekey", "-", &json!({"target": t}))?;
+            }
+        }
+        Ok(())
+    }
+
     /// The appliance id (16 hex digits), created on first use.
     pub(crate) fn appliance_id(&self) -> Result<String> {
         let c = self.db.conn();
@@ -123,6 +174,21 @@ impl Scheduler {
                 });
                 ("appliance:config_backup".to_owned(), vec![Step::Func(InProc(step))], vec![])
             }
+            "config_rekey" => {
+                let target = job.params["target"].as_str().context("target missing")?;
+                let o = self
+                    .offsite_cfg(target)?
+                    .with_context(|| format!("tenant {target} has no offsite target"))?;
+                let jd = self.job_dir(job.id);
+                let files = self.offsite_files(target, &o, &jd)?;
+                let step = Step::Cli {
+                    bin: self.cfg.offsite_bin.clone(),
+                    args: vec![jd.join("offsite.json").to_string_lossy().into_owned(), "rekey".into()],
+                    alert: None,
+                    capture: false,
+                };
+                (format!("config_rekey:{target}"), vec![step], files)
+            }
             "config_upload" => {
                 let p = &job.params;
                 let target = p["target"].as_str().context("target missing")?;
@@ -168,6 +234,23 @@ impl Scheduler {
             .rev()
             .find(|l| !l.trim().is_empty())
             .unwrap_or("see the job log");
+        if job.kind == "config_rekey" {
+            let t = job.params["target"].as_str().unwrap_or_default();
+            if ok {
+                return self.rekey_done(t, Some(job.id));
+            }
+            return self.raise(
+                "warning",
+                ALERT,
+                &format!("config_restore:{t}"),
+                &format!(
+                    "the keys of tenant {t} could not be restored from its offsite copy after the configuration restore \
+                     (job {}, retried hourly): {why}",
+                    job.id
+                ),
+                Some(t),
+            );
+        }
         if job.kind == "config_upload" {
             let t = job.params["target"].as_str().unwrap_or_default();
             if ok {

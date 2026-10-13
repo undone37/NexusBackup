@@ -34,6 +34,8 @@ pub const REQUEST: &str = "request.json";
 pub const STATUS: &str = "status.json";
 pub const LATEST: &str = "latest.bundle";
 pub const LATEST_INFO: &str = "latest.json";
+/// catalog setting (scheduler config_backup.rs): tenants whose DEKs come back from their offsite escrow
+pub const REKEY_PENDING: &str = "config_restore_keys";
 /// relative to `/`; the snapshot is taken with `VACUUM INTO` (consistent while in use)
 pub const CATALOG: &str = "var/lib/nexus/catalog/catalog.db";
 /// Files and directories (recursively) in the bundle, relative to `/`. Missing ones are skipped.
@@ -385,6 +387,18 @@ impl Setup {
              WHERE state IN ('pending', 'approved', 'installed', 'removing')",
             [],
         )?;
+        // tenants with an offsite target get their DEKs back from its escrow (wrapped under
+        // the restored KEK) before anything else runs for them: the scheduler's config_rekey
+        let rekey: Vec<String> = self
+            .cat
+            .conn()
+            .prepare(
+                "SELECT name FROM tenants WHERE json_valid(offsite) AND json_type(offsite, '$.remote') = 'object'
+                 ORDER BY name",
+            )?
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        catalog::set_setting(&self.cat.conn(), REKEY_PENDING, &json!(rekey).to_string())?;
         let r = Restored {
             appliance: h["appliance"].as_str().unwrap_or_default().to_owned(),
             created: h["created"].as_i64().unwrap_or_default(),
@@ -395,7 +409,8 @@ impl Setup {
             "setup.restore_config",
             "appliance",
             json!({"appliance": r.appliance, "bundle_created": r.created, "bundle_host": r.host, "files": r.files,
-                   "plugins_to_upload": plugins, "dry_run": self.dry_run}),
+                   "plugins_to_upload": plugins, "tenant_keys_from_offsite": rekey,
+                   "dry_run": self.dry_run}),
         )?;
         let root = self.paths.root.clone();
         let relabel: Vec<String> = ["var/lib/nexus", "etc/nexus"]
@@ -481,6 +496,7 @@ mod tests {
         cat.conn()
             .execute_batch(
                 "INSERT INTO users (name, password_hash, totp_secret, role, created) VALUES ('alice', 'h', 'enc', 'admin', 1);
+                 INSERT INTO tenants (name, offsite) VALUES ('acme', '{\"remote\":{\"type\":\"local\",\"path\":\"/b\"}}'), ('beta', '{}');
                  INSERT INTO settings (key, value) VALUES ('appliance_id', 'a1b2c3')
                    ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
             )
@@ -586,6 +602,8 @@ mod tests {
             .query_row("SELECT details FROM audit WHERE action = 'setup.restore_config'", [], |r| r.get(0))
             .unwrap();
         assert!(a.contains("a1b2c3"));
+        let pending = catalog::setting(&c, REKEY_PENDING).unwrap().unwrap();
+        assert_eq!(pending, r#"["acme"]"#, "only tenants with an offsite target");
         drop(c);
         assert!(paths.setup_done.exists());
         assert!(s.log.iter().any(|l| l.contains("restorecon -R")), "{:?}", s.log);

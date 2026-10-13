@@ -225,6 +225,61 @@ pub fn import_escrow(dir: &Path, files: &[(String, Vec<u8>)]) -> io::Result<()> 
     Ok(())
 }
 
+/// After a configuration restore (`config_bundle`, same KEK as the lost appliance):
+/// installs a tenant's DEKs from its offsite escrow, still wrapped under this
+/// KEK (`dek.<v>` files). Every file must unwrap with this KEK and the tenant's
+/// label, so nothing but this appliance's own keys can be installed; no recovery
+/// key is needed. Refused for replicated tenants and when a version exists with
+/// another key; idempotent. Returns the versions now present.
+pub fn import_wrapped(dir: &Path, tenant: &str, files: &[(String, Vec<u8>)]) -> io::Result<Vec<u32>> {
+    let td = tenant_dir(dir, tenant)?;
+    if td.join(ORIGIN).exists() {
+        return Err(err(
+            io::ErrorKind::PermissionDenied,
+            format!("tenant {tenant} is replicated from a primary"),
+        ));
+    }
+    let kek = unseal(dir)?;
+    let mut new = Vec::new();
+    for (name, bytes) in files {
+        let v: u32 = name
+            .rsplit('/')
+            .next()
+            .and_then(|f| f.strip_prefix("dek."))
+            .and_then(|v| v.parse().ok())
+            .ok_or_else(|| err(io::ErrorKind::InvalidInput, format!("unexpected escrow file {name:?}")))?;
+        let k = Zeroizing::new(unwrap_key(&kek, bytes, &label(tenant, v)).map_err(|_| {
+            err(
+                io::ErrorKind::PermissionDenied,
+                format!("{name} is not wrapped under this appliance's KEK"),
+            )
+        })?);
+        new.push((v, k, bytes));
+    }
+    if new.is_empty() {
+        return Err(err(io::ErrorKind::NotFound, format!("escrow has no keys of tenant {tenant}")));
+    }
+    let have = versions(dir, tenant)?;
+    if !have.is_empty() {
+        for (v, k) in tenant_deks(dir, tenant)? {
+            if new.iter().any(|(x, n, _)| *x == v && n[..] != k[..]) {
+                return Err(err(
+                    io::ErrorKind::AlreadyExists,
+                    format!("tenant {tenant} has another DEK v{v} on this appliance"),
+                ));
+            }
+        }
+    }
+    fs::create_dir_all(&td)?;
+    for (v, k, bytes) in &new {
+        if !have.contains(v) {
+            write_atomic(&td.join(format!("dek.{v}")), bytes)?;
+            tenant_key::on_new_dek(dir, tenant, *v, k)?;
+        }
+    }
+    versions(dir, tenant)
+}
+
 /// Upper bound for an `attach-escrow` body (recovery key + escrow files).
 pub const MAX_ATTACH: usize = 256 << 10;
 
@@ -513,6 +568,8 @@ fn peer_uid(s: &UnixStream) -> io::Result<u32> {
 /// - `import-sealed <tenant> <origin> <len>\n` + `len` bytes → N x u32 LE versions now present
 /// - `tenant-recovery <tenant> <pubkey hex | none>\n` → `1` (changed) or `0`: sets the
 ///   tenant recovery public key (`tenant_key::set`)
+/// - `import-wrapped <tenant> <len>\n` + escrow files encoded like the `escrow` answer
+///   (`dek.<v>` under this KEK, after a configuration restore) → N x u32 LE versions ([`import_wrapped`])
 /// - `attach-escrow <tenant> <len>\n` + `len` bytes (recovery key line, then escrow files
 ///   encoded like the `escrow` answer) → N x u32 LE versions now present ([`attach_escrow`])
 ///
@@ -558,7 +615,7 @@ fn body_len(line: &str) -> io::Result<Option<usize>> {
     let (rest, max) = match (line.strip_prefix("import-sealed "), line.strip_prefix("attach-escrow ")) {
         (Some(r), _) => (Some(r), MAX_EXPORT),
         (_, Some(r)) => (Some(r), MAX_ATTACH),
-        _ => (None, 0),
+        _ => (line.strip_prefix("import-wrapped "), MAX_ATTACH),
     };
     match rest {
         Some(rest) => {
@@ -625,6 +682,14 @@ pub fn answer_with_body(dir: &Path, line: &str, body: &[u8]) -> io::Result<Zeroi
         let rk = Zeroizing::new(String::from_utf8_lossy(&body[..nl]).into_owned());
         let vs = attach_escrow(dir, tenant, &rk, &parse_escrow(&body[nl + 1..])?)?;
         eprintln!("keyd: attached DEKs of tenant {tenant} from an offsite escrow: versions {vs:?}");
+        return Ok(Zeroizing::new(vs.iter().flat_map(|v| v.to_le_bytes()).collect()));
+    }
+    if let Some(rest) = line.strip_prefix("import-wrapped ") {
+        let [tenant, _len] = rest.split(' ').collect::<Vec<_>>()[..] else {
+            return Err(err(io::ErrorKind::InvalidInput, "import-wrapped <tenant> <len>"));
+        };
+        let vs = import_wrapped(dir, tenant, &parse_escrow(body)?)?;
+        eprintln!("keyd: restored DEKs of tenant {tenant} from its offsite escrow: versions {vs:?}");
         return Ok(Zeroizing::new(vs.iter().flat_map(|v| v.to_le_bytes()).collect()));
     }
     if let Some(rest) = line.strip_prefix("tenant-recovery ") {
@@ -758,6 +823,17 @@ pub fn request_attach(
     let mut body = Zeroizing::new(format!("{}\n", recovery_key.trim()).into_bytes());
     body.extend_from_slice(&encode_escrow(files));
     let b = request_raw(socket, &format!("attach-escrow {tenant} {}", body.len()), &body)?;
+    if b.len() % 4 != 0 {
+        return Err(err(io::ErrorKind::InvalidData, "malformed keyd answer"));
+    }
+    Ok(b.chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect())
+}
+
+/// nexus-offsite `rekey` (after a configuration restore): the tenant's wrapped DEKs
+/// from its offsite escrow to keyd ([`import_wrapped`]).
+pub fn request_import_wrapped(socket: &Path, tenant: &str, files: &[(String, Vec<u8>)]) -> io::Result<Vec<u32>> {
+    let body = encode_escrow(files);
+    let b = request_raw(socket, &format!("import-wrapped {tenant} {}", body.len()), &body)?;
     if b.len() % 4 != 0 {
         return Err(err(io::ErrorKind::InvalidData, "malformed keyd answer"));
     }
@@ -908,6 +984,43 @@ mod tests {
         init(c.path()).unwrap();
         create_tenant(c.path(), "acme").unwrap();
         assert!(attach_escrow(c.path(), "acme", &rk, &esc).is_err());
+    }
+
+    /// Configuration restore: same KEK on a new machine; the tenant's wrapped DEKs
+    /// from the offsite escrow go in over the socket without the recovery key;
+    /// another appliance's DEKs and conflicting versions are refused.
+    #[test]
+    fn import_wrapped_after_config_restore() {
+        let a = tempfile::tempdir().unwrap();
+        let rk = init(a.path()).unwrap();
+        create_tenant(a.path(), "acme").unwrap();
+        rotate_tenant(a.path(), "acme").unwrap();
+        let esc = export_escrow(a.path(), "acme").unwrap();
+        // the new machine: kek.recovery from the bundle + recover
+        let b = tempfile::tempdir().unwrap();
+        fs::write(b.path().join("kek.recovery"), fs::read(a.path().join("kek.recovery")).unwrap()).unwrap();
+        recover(b.path(), &rk).unwrap();
+        let sock = b.path().join("s");
+        let l = UnixListener::bind(&sock).unwrap();
+        let dir = b.path().to_owned();
+        let uid = unsafe { libc::getuid() };
+        std::thread::spawn(move || serve(l, &dir, uid));
+        let deks: Vec<_> = esc.iter().filter(|(n, _)| n.starts_with("tenants/")).cloned().collect();
+        assert_eq!(request_import_wrapped(&sock, "acme", &deks).unwrap(), vec![1, 2]);
+        assert_eq!(request_import_wrapped(&sock, "acme", &deks).unwrap(), vec![1, 2], "idempotent");
+        assert_eq!(deks_of(a.path(), "acme"), deks_of(b.path(), "acme"));
+        // another appliance's escrow does not unwrap under this KEK
+        let c = tempfile::tempdir().unwrap();
+        init(c.path()).unwrap();
+        create_tenant(c.path(), "other").unwrap();
+        let foreign: Vec<_> = export_escrow(c.path(), "other").unwrap().into_iter().filter(|(n, _)| n.starts_with("tenants/")).collect();
+        assert!(request_import_wrapped(&sock, "other", &foreign).is_err());
+        // a renamed file (other tenant label) is refused as well
+        assert!(import_wrapped(b.path(), "beta", &deks).is_err());
+    }
+
+    fn deks_of(d: &Path, t: &str) -> Vec<(u32, [u8; 32])> {
+        tenant_deks(d, t).unwrap().into_iter().map(|(v, k)| (v, *k)).collect()
     }
 
     #[test]

@@ -4,7 +4,8 @@
 //! recovery key; never on the command line, where other processes could read it) and
 //! `nexus-offsite <config.json> attach <key-file>` (web UI, Phase 17d: the escrow and the
 //! appliance recovery key go to keyd over its socket, the file is removed once read; then the
-//! inventory is rebuilt from the box).
+//! inventory is rebuilt from the box) and `nexus-offsite <config.json> rekey` (after a configuration
+//! restore: the tenant's DEKs, wrapped under the restored KEK, from the box to keyd; then the inventory).
 //!
 //! Appliance configuration backups (`offsite::config`): `config-put <bundle> <appliance-id> <time>`
 //! (scheduler, job `config_upload`), `config-list` and `config-get <out-file> [<appliance-id>]`
@@ -152,6 +153,28 @@ fn main() -> Result<()> {
         let packs = t.rebuild_from_remote()?;
         println!(
             "attach: keys recovered, {packs} packs and {} snapshots indexed",
+            t.snapshots()?.len()
+        );
+        return Ok(());
+    }
+
+    if cmd == "rekey" {
+        // after a configuration restore (same KEK): the tenant's wrapped DEKs from the box to
+        // keyd, no recovery key needed; then the inventory from the box
+        let files: Vec<(String, Vec<u8>)> = offsite::dr::appliance_escrow(remote.as_ref(), &cfg.tenant)?
+            .into_iter()
+            .filter(|(n, _)| n != "kek.recovery")
+            .collect();
+        let vs = keyd::request_import_wrapped(&cfg.keyd_socket, &cfg.tenant, &files).context(
+            "keyd refused the keys: they were not made by this appliance's key (keyd journal)",
+        )?;
+        let keys = keyd::fetch_keyring(&cfg.keyd_socket, &cfg.tenant).context("keyd")?;
+        let store = Store::open(&cfg.store, keys, StoreOptions::default())?;
+        let mut t = Target::open(&store, remote.as_ref(), cfg.state.clone(), opts())?;
+        let packs = t.rebuild_from_remote()?;
+        println!(
+            "rekey: keys of tenant {} restored (versions {vs:?}), {packs} packs and {} snapshots indexed",
+            cfg.tenant,
             t.snapshots()?.len()
         );
         return Ok(());
