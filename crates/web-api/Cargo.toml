@@ -18,6 +18,7 @@ agent-proto = { path = "../agent-proto" }
 # file filter validation exactly as the agents compile them (regex size limits)
 agent-core = { path = "../agent-core" }
 catalog = { path = "../catalog" }
+index-proto = { path = "../index-proto" }
 # web certificate: Settings → Certificate parsing, requests to nexus-tls
 webtls = { path = "../webtls" }
 nas = { path = "../nas", default-features = false }

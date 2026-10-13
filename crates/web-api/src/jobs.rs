@@ -920,7 +920,9 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
                     (SELECT json_object('job', job_id, 'finished', finished, 'matches', matches_total,
                        'complete', json(CASE WHEN complete = 1 THEN 'true' ELSE 'false' END)) FROM snapshot_scans x
                      WHERE x.tenant = s.tenant AND x.source = s.source AND x.time = s.time
-                     ORDER BY job_id DESC LIMIT 1) AS scan
+                     ORDER BY job_id DESC LIMIT 1) AS scan,
+                    (SELECT json_object('state', state, 'reason', reason) FROM snapshot_index y
+                     WHERE y.tenant = s.tenant AND y.source = s.source AND y.time = s.time) AS file_index
              FROM snapshots s
 
              LEFT JOIN legal_holds h ON h.tenant = s.tenant AND h.source = s.source AND h.time = s.time
@@ -931,6 +933,9 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
             crate::holds::COLUMNS
         ))?
         .query_map(params![f.tenant, f.source, ctx.scope(), f.held], |r| {
+            let idx = r
+                .get::<_, Option<String>>("file_index")?
+                .and_then(|v| serde_json::from_str::<Value>(&v).ok());
             let hold = if r.get::<_, bool>(9)? {
                 crate::holds::row(r)?
             } else {
@@ -957,6 +962,9 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
                 "damaged_at": r.get::<_, Option<i64>>("damaged_at")?,
                 // Phase 21e: the latest YARA scan `{job, finished, matches, complete}`
                 "scan": r.get::<_, Option<String>>("scan")?.and_then(|v| serde_json::from_str::<Value>(&v).ok()),
+                // Phase 31: file index state of VM/CT snapshots (catalog v42 snapshot_index)
+                "index_state": idx.as_ref().map(|v| v["state"].clone()),
+                "index_reason": idx.as_ref().map(|v| v["reason"].clone()),
             }))
         })?
         .collect::<Result<Vec<_>, _>>()?;

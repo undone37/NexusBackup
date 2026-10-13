@@ -77,6 +77,7 @@ mod edge;
 mod endpoint;
 pub mod expiry;
 pub mod firewall;
+mod fileindex;
 mod fleecing;
 mod fleet;
 pub mod forward;
@@ -144,6 +145,8 @@ pub struct Config {
     pub offsite_state_base: PathBuf,
     pub escrow_base: PathBuf,
     pub keyd_socket: PathBuf,
+    /// nexus-index (Phase 31b file search): nudges, rules, health (fileindex.rs)
+    pub index_socket: PathBuf,
     pub downloads: PathBuf,
     /// private (0700) dir for generated job configs
     pub runtime_dir: PathBuf,
@@ -246,6 +249,7 @@ impl Default for Config {
             offsite_state_base: lib.join("offsite"),
             escrow_base: lib.join("escrow"),
             keyd_socket: "/run/nexus-keyd/keyd.sock".into(),
+            index_socket: index_proto::DEFAULT_SOCKET.into(),
             downloads: lib.join("downloads"),
             runtime_dir: "/run/nexus-scheduler".into(),
             state_dir: lib.join("scheduler"),
@@ -804,6 +808,7 @@ impl Scheduler {
                 self.log_err(|s| forward::prune_outbox(&s.db, now));
                 self.log_err(|s| s.check_accounts(now));
                 self.log_err(|s| s.check_dek_rotation(now));
+                self.log_err(|s| s.index_maintenance(now));
             }
         }
         self.log_err(|s| s.check_offsite_lag(now));
@@ -1329,6 +1334,8 @@ impl Scheduler {
             &format!("job/{}", job.id),
             &json!({"kind": job.kind, "tenant": job.tenant}),
         )?;
+        // Phase 31: snapshot_index for file_index, nexus-index nudges (fileindex.rs)
+        self.index_after_job(&job, ok, result.as_ref(), &log)?;
         if job.kind == "report_send" && state != "cancelled" {
             return self.report_finished(&job, ok, &log, result.as_ref());
         }

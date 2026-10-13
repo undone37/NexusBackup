@@ -394,8 +394,10 @@ impl Scheduler {
                 continue;
             };
             if source.starts_with("vm-") || source.starts_with("ct-") {
-                self.insert_job("file_index", &job.tenant, &json!({"source": source, "time": time}))
+                let id = self
+                    .insert_job("file_index", &job.tenant, &json!({"source": source, "time": time}))
                     .context("queue file_index")?;
+                self.index_pending(&job.tenant, source, time, id)?;
             }
         }
         Ok(())

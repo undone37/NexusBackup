@@ -18,6 +18,99 @@
       "tenant": { "name": "tenant", "in": "query", "schema": { "type": "string" }, "description": "only this tenant (tenant-scoped users: their own)" }
     },
     "schemas": {
+      "FileSearch": {
+        "type": "object",
+        "description": "Hits of the instant file search (Phase 31b): one per file (source + path) with all its versions, newest first.",
+        "properties": {
+          "hits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "string",
+                  "examples": [
+                    "vm-100"
+                  ]
+                },
+                "path": {
+                  "type": "string",
+                  "description": "guest path as shown (`/etc/hosts`, `C:/Users/ann/x.docx`, `vol3/x`)"
+                },
+                "browse": {
+                  "type": "string",
+                  "description": "file-browser path (name index) for files_get / files_list / restores"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "file",
+                    "dir",
+                    "symlink",
+                    "other"
+                  ]
+                },
+                "versions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "size": {
+                        "type": "integer"
+                      },
+                      "mtime": {
+                        "type": "integer"
+                      },
+                      "first": {
+                        "type": "integer",
+                        "description": "first snapshot (time) holding this version"
+                      },
+                      "gone": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "description": "first later indexed snapshot without it; null: still present"
+                      },
+                      "times": {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        },
+                        "description": "local indexed snapshots holding it, newest first (empty: deleted)"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "cursor of the next page"
+          },
+          "elapsed_ms": {
+            "type": "integer"
+          },
+          "pending": {
+            "type": "integer",
+            "description": "snapshots waiting to be indexed"
+          },
+          "snapshots": {
+            "type": "object",
+            "description": "per hit source: every local snapshot with its index state (indexed, pending, partial, failed, off, unindexed) and reason",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      },
       "Error": { "type": "object", "properties": { "error": { "type": "string" } }, "required": ["error"] },
       "Object": { "type": "object", "additionalProperties": true },
       "List": { "type": "array", "items": { "$ref": "#/components/schemas/Object" } },
@@ -80,6 +173,289 @@
     }
   },
   "paths": {
+    "/files/search": {
+      "get": {
+        "summary": "Instant file search over the tenant's snapshots (nexus-index; audited as file.search)",
+        "tags": [
+          "data"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/tenant"
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "description": "name or path glob (`*`, `?`, `**` across folders in paths) or words; may be empty with a filter"
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "name",
+                "path",
+                "words"
+              ]
+            },
+            "description": "auto (default: `/` = path, `*`/`?` = name, else words), name, path, words"
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "one source (vm-100, host-a1, ...)"
+          },
+          {
+            "name": "group",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            },
+            "description": "sources of one protection group"
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "comma list of source kinds: vm, ct, host, nas, share, plugin"
+          },
+          {
+            "name": "ext",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "comma list of extensions without the dot"
+          },
+          {
+            "name": "size_min",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            },
+            "description": "bytes"
+          },
+          {
+            "name": "size_max",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            },
+            "description": "bytes"
+          },
+          {
+            "name": "mtime_from",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            },
+            "description": "unix seconds"
+          },
+          {
+            "name": "mtime_to",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            },
+            "description": "unix seconds"
+          },
+          {
+            "name": "entry",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "file",
+                "dir"
+              ]
+            },
+            "description": "files or folders only"
+          },
+          {
+            "name": "deleted",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "any",
+                "only",
+                "exclude"
+              ]
+            },
+            "description": "only: files no longer in the newest snapshot; exclude: present ones"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            },
+            "description": "files per page (default 50)"
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "`next` of the previous page"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileSearch"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/files/index-status": {
+      "get": {
+        "summary": "File search index status per tenant: versions, sealed size, pending snapshots, paused for space",
+        "tags": [
+          "monitoring"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/tenant"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Object"
+          }
+        }
+      }
+    },
+    "/files/index/rebuild": {
+      "post": {
+        "summary": "Rebuild a tenant's search index from the sealed name indexes (admin, session only; audited file.index_rebuild)",
+        "tags": [
+          "data"
+        ],
+        "x-token": false,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "tenant"
+                ],
+                "properties": {
+                  "tenant": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Object"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/groups/{id}/index-rules": {
+      "get": {
+        "summary": "Which files of the group's sources go into the search index (session only)",
+        "tags": [
+          "inventory"
+        ],
+        "x-token": false,
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Object"
+          }
+        }
+      },
+      "put": {
+        "summary": "Set the group's search scope: absolute rules, `/` separators, `/C/...` one drive, `*` within a component, most specific wins (admin, tenant admin; audited group.index_rules)",
+        "tags": [
+          "inventory"
+        ],
+        "x-token": false,
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "defaults": {
+                    "type": "boolean",
+                    "description": "leave out the system folders (default list)"
+                  },
+                  "include": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 64
+                  },
+                  "exclude": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 64
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Object"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/auth/me": { "get": { "summary": "The signed-in user (role, tenant)", "tags": ["account"], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
     "/dashboard": { "get": { "summary": "Dashboard KPIs (cached up to 60 s)", "tags": ["monitoring"], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
     "/storage": { "get": { "summary": "Storage accounting per tenant and group", "tags": ["monitoring"], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },

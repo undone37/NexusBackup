@@ -117,7 +117,7 @@ fn vm_index_follows_group_backups() {
     script(
         &p.join("pve2"),
         &format!(
-            "echo \"$@\" >> {0}/calls2\ncase \"$2\" in backup-all) echo committed vm-100/5;; files|ct-files) echo '{{\"entries\": 3, \"complete\": true}}';; esac",
+            "echo \"$@\" >> {0}/calls2\ncase \"$2\" in backup-all) echo committed vm-100/5;; files|ct-files) echo '{{\"entries\": 3, \"complete\": true, \"volumes\": [{{\"browse\": \"vda1\", \"state\": \"indexed\"}}, {{\"browse\": \"vdb1\", \"state\": \"unsupported\", \"reason\": \"BitLocker-encrypted volume\"}}]}}';; esac",
             p.display()
         ),
     );
@@ -140,6 +140,17 @@ fn vm_index_follows_group_backups() {
     run(&mut s, "backup", "t1", json!({"group_id": 1}));
     let jobs = index_jobs(&s);
     assert_eq!(jobs, vec![json!({"source": "vm-100", "time": 5})]);
+    // Phase 31: the snapshot's index state (pending while queued, then the job's result)
+    let state = |s: &Scheduler| -> (String, Option<String>, Option<i64>) {
+        s.db.conn()
+            .query_row(
+                "SELECT state, reason, entries FROM snapshot_index WHERE tenant='t1' AND source='vm-100' AND time=5",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+    };
+    assert_ne!(state(&s).0, "failed");
     // the queued job (and any later one) runs nexus-pve against the store only
     s.start_jobs().unwrap();
     s.wait_idle(Duration::from_secs(20)).unwrap();
@@ -154,6 +165,47 @@ fn vm_index_follows_group_backups() {
     assert_eq!(serde_json::from_str::<Value>(&r).unwrap()["entries"], 3);
     let calls = fs::read_to_string(p.join("calls2")).unwrap();
     assert!(calls.lines().any(|l| l.ends_with("files 100 5 index")), "{calls}");
+    // a volume the parser could not read: partial, with the reason (no file names)
+    assert_eq!(
+        state(&s),
+        ("partial".into(), Some("vdb1: BitLocker-encrypted volume".into()), Some(3))
+    );
+    // refresh: group -> sources for the search filter; a pending row older than 48 h alerts
+    s.index_pending("t1", "vm-100", 4, 1).unwrap();
+    s.db.conn().execute("UPDATE snapshot_index SET queued = 1 WHERE time = 4", []).unwrap();
+    s.index_maintenance(catalog::now()).unwrap();
+    let srcs: Vec<String> = s
+        .db
+        .conn()
+        .prepare("SELECT source FROM group_sources WHERE group_id = 1 ORDER BY source")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|x| x.unwrap())
+        .collect();
+    assert_eq!(srcs, ["ct-100", "vm-100"]);
+    let open: i64 = s
+        .db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM alerts WHERE kind = 'index_backlog' AND resolved_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(open, 1);
+    s.db.conn().execute("DELETE FROM snapshot_index WHERE time = 4", []).unwrap();
+    s.index_maintenance(catalog::now()).unwrap();
+    let open: i64 = s
+        .db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM alerts WHERE kind = 'index_backlog' AND resolved_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(open, 0, "resolved");
     let job = Job {
         id: 99,
         kind: "file_index".into(),

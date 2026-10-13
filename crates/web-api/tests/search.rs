@@ -256,3 +256,128 @@ async fn index_files_flag_pve_groups_admin_only() {
     let n: i64 = t.one("SELECT COUNT(*) FROM audit WHERE action = 'group.index_files' AND target = 'group/1'");
     assert_eq!(n, 1);
 }
+
+/// A stand-in for nexus-index on a Unix socket: records the requests, answers
+/// a search with two versions of one VM file and a status.
+fn fake_index(dir: &std::path::Path) -> (std::path::PathBuf, Arc<std::sync::Mutex<Vec<Value>>>) {
+    use std::io::{BufRead, Write};
+    let sock = dir.join("index.sock");
+    let l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let s2 = seen.clone();
+    std::thread::spawn(move || {
+        for c in l.incoming() {
+            let Ok(mut c) = c else { continue };
+            let mut line = String::new();
+            std::io::BufReader::new(&c).read_line(&mut line).unwrap();
+            let req: Value = serde_json::from_str(&line).unwrap();
+            let out = match req["op"].as_str() {
+                Some("search") if req["q"] == "boom" => json!({"err": "q: regex too large"}),
+                Some("search") => json!({"ok": {
+                    "hits": [{"source": "vm-100", "path": "/home/ann/report.docx", "browse": "vda2/ann/report.docx",
+                              "kind": "file", "versions": [
+                                  {"size": 9, "mtime": 30, "first": 300},
+                                  {"size": 5, "mtime": 10, "first": 100, "gone": 300}]}],
+                    "next": "50", "elapsed_ms": 3, "pending": 1,
+                    "sources": {"vm-100": {"indexed": [100, 200, 300], "unindexed": [400]}}}}),
+                _ => json!({"ok": {"tenants": [{"tenant": "acme", "docs": 2, "bytes": 4096, "sources": 1,
+                    "snapshots_indexed": 3, "snapshots_pending": 1, "snapshots_unindexed": 0}],
+                    "free_bytes": 1, "floor_bytes": 0, "paused": false, "cache_bytes": 0, "cache_limit": 1}}),
+            };
+            s2.lock().unwrap().push(req);
+            let _ = c.write_all(format!("{out}\n").as_bytes());
+        }
+    });
+    (sock, seen)
+}
+
+#[tokio::test]
+async fn instant_search_through_nexus_index() {
+    let t = T::new();
+    let (sock, seen) = fake_index(t._dir.path());
+    t.st.index_socket.set(sock).unwrap();
+    t.st.cat
+        .conn()
+        .execute_batch(
+            r#"INSERT INTO snapshots (tenant, source, time, size, local, offsite) VALUES
+                 ('acme', 'vm-100', 100, 1, 1, 0), ('acme', 'vm-100', 200, 1, 1, 0),
+                 ('acme', 'vm-100', 300, 1, 1, 0), ('acme', 'vm-100', 400, 1, 1, 0);
+               INSERT INTO snapshot_index (tenant, source, time, state, reason, queued, updated) VALUES
+                 ('acme', 'vm-100', 400, 'partial', 'vdb1: BitLocker-encrypted volume', 1, 1),
+                 ('acme', 'vm-100', 300, 'indexed', NULL, 1, 1);
+               INSERT INTO group_sources (group_id, tenant, source) VALUES (1, 'acme', 'vm-100'), (1, 'acme', 'ct-100');"#,
+        )
+        .unwrap();
+    let (alice, tina, vic) = (t.login("alice").await, t.login("tina").await, t.login("vic").await);
+    let r = t.get("/api/v1/files/search?q=report&group=1&ext=.DOCX,pdf&deleted=any", &tina).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let h = &r.body["hits"][0];
+    assert_eq!(h["path"], "/home/ann/report.docx");
+    // the local, indexed snapshots holding each version
+    assert_eq!(h["versions"][0]["times"], json!([300]));
+    assert_eq!(h["versions"][1]["times"], json!([200, 100]));
+    assert_eq!(r.body["next"], "50");
+    let marks = &r.body["snapshots"]["vm-100"];
+    assert_eq!(marks[0], json!({"time": 400, "state": "partial", "reason": "vdb1: BitLocker-encrypted volume"}));
+    assert_eq!(marks[1], json!({"time": 300, "state": "indexed"}));
+    // what nexus-index got: the tenant user's own tenant, the group's sources, clean extensions
+    let req = seen.lock().unwrap().last().unwrap().clone();
+    assert_eq!(req["tenant"], "acme");
+    assert_eq!(req["sources"], json!(["ct-100", "vm-100"]));
+    assert_eq!(req["ext"], json!(["docx", "pdf"]));
+    // scoping, roles, validation
+    assert_eq!(t.get("/api/v1/files/search?q=x&tenant=globex", &tina).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(t.get("/api/v1/files/search?q=x&tenant=acme", &vic).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(t.get("/api/v1/files/search?q=x", &alice).await.status, StatusCode::BAD_REQUEST, "tenant needed");
+    for bad in ["q=", "q=x&mode=regex", "q=x&limit=0", "q=x&source=../x", "q=x&group=2", "q=x&kind=disk", "q=x&bogus=1"] {
+        let r = t.get(&format!("/api/v1/files/search?tenant=acme&{bad}"), &alice).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}: {:?}", r.body);
+    }
+    // errors of the service itself are 400 with its message
+    let r = t.get("/api/v1/files/search?tenant=acme&q=boom", &alice).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(r.body["error"].as_str().unwrap().contains("regex"));
+    // audited with the query
+    let n: i64 = t.one("SELECT COUNT(*) FROM audit WHERE action = 'file.search' AND json_extract(details, '$.q') = 'report'");
+    assert_eq!(n, 1);
+    // status for the Storage page
+    let r = t.get("/api/v1/files/index-status", &tina).await;
+    assert_eq!((r.body["available"].clone(), r.body["tenants"][0]["docs"].clone()), (json!(true), json!(2)));
+    assert_eq!(seen.lock().unwrap().last().unwrap()["tenant"], "acme", "tenant users: their tenant");
+
+    // index rules per group
+    let r = t.get("/api/v1/groups/1/index-rules", &tina).await;
+    assert_eq!((r.body["defaults"].clone(), r.body["include"].clone()), (json!(true), json!([])));
+    assert!(r.body["default_excludes"].as_array().unwrap().contains(&json!("/Users/*/AppData")));
+    let otto = t.login("otto").await;
+    assert_eq!(
+        t.put("/api/v1/groups/1/index-rules", &otto, json!({"exclude": ["/srv/tmp"]})).await.status,
+        StatusCode::FORBIDDEN
+    );
+    for bad in [json!({"exclude": ["srv"]}), json!({"include": ["/a/../b"]}), json!({"exclude": vec!["/x"; 65]})] {
+        assert_eq!(t.put("/api/v1/groups/1/index-rules", &alice, bad).await.status, StatusCode::BAD_REQUEST);
+    }
+    let r = t
+        .put("/api/v1/groups/1/index-rules", &alice, json!({"defaults": false, "include": ["/var/log/"], "exclude": ["/C/Temp", "/C/Temp"]}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!((r.body["include"].clone(), r.body["exclude"].clone()), (json!(["/var/log"]), json!(["/C/Temp"])));
+    assert_eq!(t.get("/api/v1/groups/2/index-rules", &tina).await.status, StatusCode::NOT_FOUND, "other tenant");
+    let n: i64 = t.one("SELECT COUNT(*) FROM audit WHERE action = 'group.index_rules' AND target = 'group/1'");
+    assert_eq!(n, 1);
+    // the snapshot list carries the index state
+    let r = t.get("/api/v1/snapshots?source=vm-100", &alice).await;
+    let s400 = r.body.as_array().unwrap().iter().find(|s| s["time"] == 400).unwrap().clone();
+    assert_eq!((s400["index_state"].clone(), s400["index_reason"].clone()), (json!("partial"), json!("vdb1: BitLocker-encrypted volume")));
+}
+
+#[tokio::test]
+async fn search_without_nexus_index_is_503() {
+    let t = T::new();
+    t.st.index_socket.set(t._dir.path().join("missing.sock")).unwrap();
+    let alice = t.login("alice").await;
+    let r = t.get("/api/v1/files/search?tenant=acme&q=x", &alice).await;
+    assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE, "{:?}", r.body);
+    let r = t.get("/api/v1/files/index-status", &alice).await;
+    assert_eq!(r.body, json!({"available": false}));
+}

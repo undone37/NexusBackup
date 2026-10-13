@@ -32,6 +32,7 @@ pub mod dashboard;
 pub mod diag;
 pub mod edges;
 pub mod endpoint;
+pub mod filesearch;
 pub mod firewall;
 pub mod fleet;
 pub mod forwarding;
@@ -138,6 +139,8 @@ pub struct AppState {
     pub plugins: std::sync::OnceLock<crate::plugins::PluginPaths>,
     /// OS update control dir (default: env `NEXUS_UPDATE_DIR` or /var/lib/nexus/update)
     pub update_dir: std::sync::OnceLock<PathBuf>,
+    /// nexus-index socket (Phase 31b; default: env `NEXUS_INDEX_SOCKET` or /run/nexus-index/index.sock)
+    pub index_socket: std::sync::OnceLock<PathBuf>,
     /// diagnostics control dir (default: env `NEXUS_DIAG_DIR` or /var/lib/nexus/diag)
     pub diag_dir: std::sync::OnceLock<PathBuf>,
     /// nexus-config-backup control dir (default: env `NEXUS_CONFIG_BACKUP_DIR` or /var/lib/nexus/config-backup)
@@ -179,6 +182,7 @@ impl AppState {
             repl: crate::replication::ReplState::new(repl),
             plugins: std::sync::OnceLock::new(),
             update_dir: std::sync::OnceLock::new(),
+            index_socket: std::sync::OnceLock::new(),
             diag_dir: std::sync::OnceLock::new(),
             config_backup_dir: std::sync::OnceLock::new(),
             console_dir: std::sync::OnceLock::new(),
@@ -237,6 +241,11 @@ impl AppState {
     /// Appends an audit entry. Must not be called while holding `cat.conn()`.
     /// During an API token request the token's user is recorded as
     /// `<user> via token <name>`.
+    /// The nexus-index socket (Phase 31b file search).
+    pub fn index_socket(&self) -> &std::path::Path {
+        self.index_socket.get_or_init(crate::filesearch::default_socket)
+    }
+
     pub fn audit(&self, actor: &str, action: &str, target: &str, details: serde_json::Value) -> Result<(), ApiError> {
         let actor = crate::tokens::audit_actor(actor);
         self.cat
@@ -550,6 +559,10 @@ pub fn router(st: St) -> Router {
         .route("/groups/{id}/pause", post(runctl::pause_group))
         .route("/groups/{id}/index-files", put(search::put_index_files))
         .route("/search", post(search::search))
+        .route("/files/search", get(filesearch::search))
+        .route("/files/index-status", get(filesearch::index_status))
+        .route("/files/index/rebuild", post(filesearch::rebuild))
+        .route("/groups/{id}/index-rules", get(filesearch::get_rules).put(filesearch::put_rules))
         .route("/groups/{id}/resume", post(runctl::resume_group))
         .route("/sources/{id}/maintenance", post(runctl::start_maintenance))
         .route("/sources/{id}/maintenance/end", post(runctl::end_maintenance))

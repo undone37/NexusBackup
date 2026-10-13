@@ -767,11 +767,35 @@ ALTER TABLE jobs ADD COLUMN live_log TEXT;
 ALTER TABLE jobs ADD COLUMN progress TEXT;
 "#;
 
+/// v42 (Phase 31, guest file index without the micro-VM, docs/file-index-v2-plan.md):
+/// `snapshot_index` holds the file index state of VM/CT snapshots (`pending` when
+/// the scheduler queues `file_index`, then `indexed` / `partial` / `failed` with
+/// the per-volume summary from nexus-fsindex: device, fs, mount, state, reason;
+/// no labels, UUIDs or file names). File-tree snapshots (agents, NAS, plugins)
+/// have no row: their name index is written at commit. `groups.index_rules`
+/// (JSON `{defaults, include, exclude}`, NULL = defaults) scopes what goes into
+/// the search index. `group_sources` is the scheduler's resolved group ->
+/// source list (rewritten at refresh) for the search's group filter. Purely
+/// additive: the previous release ignores all three.
+const SCHEMA_V42: &str = r#"
+CREATE TABLE snapshot_index (
+  tenant TEXT NOT NULL, source TEXT NOT NULL, time INTEGER NOT NULL,
+  state TEXT NOT NULL, reason TEXT, entries INTEGER, volumes TEXT,
+  job_id INTEGER, queued INTEGER NOT NULL, updated INTEGER NOT NULL,
+  PRIMARY KEY (tenant, source, time));
+ALTER TABLE groups ADD COLUMN index_rules TEXT;
+CREATE TABLE group_sources (
+  group_id INTEGER NOT NULL, tenant TEXT NOT NULL, source TEXT NOT NULL,
+  PRIMARY KEY (group_id, source));
+CREATE INDEX group_sources_tenant ON group_sources(tenant, source);
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
     SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V34, SCHEMA_V37, SCHEMA_V39, SCHEMA_V40,
+    SCHEMA_V42,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -2839,6 +2863,54 @@ mod tests {
         assert!(conn
             .execute("INSERT INTO tenant_idps (tenant, settings) VALUES ('ghost', '{}')", [])
             .is_err());
+    }
+
+    /// v42 (Phase 31 file index) on top of the previous catalog: groups keep
+    /// working without rules, the new tables start empty and take rows.
+    #[test]
+    fn migration_v42_file_index() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V42).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                r#"INSERT INTO tenants (name) VALUES ('t');
+                 INSERT INTO sources (id, tenant, kind, name, config) VALUES (1, 't', 'pve', 'pve1', '{}');
+                 INSERT INTO policies (id, name, schedule, gfs) VALUES (1, 'p', 'daily 02:00', '{}');
+                 INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (1, 't', 1, 1, 'g', '[100]');"#,
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let rules: Option<String> = conn.query_row("SELECT index_rules FROM groups", [], |r| r.get(0)).unwrap();
+        assert_eq!(rules, None);
+        conn.execute_batch(
+            r#"UPDATE groups SET index_rules = '{"defaults":true,"include":["/var/log"],"exclude":[]}';
+               INSERT INTO snapshot_index (tenant, source, time, state, queued, updated) VALUES ('t', 'vm-100', 5, 'pending', 1, 1);
+               UPDATE snapshot_index SET state = 'partial', reason = 'vdb1: BitLocker-encrypted volume', entries = 42 WHERE source = 'vm-100';
+               INSERT INTO group_sources (group_id, tenant, source) VALUES (1, 't', 'vm-100'), (1, 't', 'ct-100');"#,
+        )
+        .unwrap();
+        let (st, n): (String, i64) = conn
+            .query_row("SELECT state, entries FROM snapshot_index", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((st.as_str(), n), ("partial", 42));
+        assert!(conn
+            .execute(
+                "INSERT INTO snapshot_index (tenant, source, time, state, queued, updated) VALUES ('t', 'vm-100', 5, 'x', 1, 1)",
+                []
+            )
+            .is_err());
+        let k: i64 = conn
+            .query_row("SELECT COUNT(*) FROM group_sources WHERE tenant = 't'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(k, 2);
     }
 
     /// v40 (live job progress) on top of the previous catalog: existing jobs
