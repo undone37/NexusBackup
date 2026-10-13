@@ -7,6 +7,7 @@ pub mod ct;
 pub mod exclude;
 pub mod files;
 pub mod fleecing;
+pub mod idr;
 pub mod inventory;
 pub mod ir;
 pub mod p2v;

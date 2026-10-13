@@ -2,13 +2,14 @@
   // Daily windows: start days, from/to (a time zone given by the caller).
   // mode blackout: policy blackout windows (13b, with "abort");
   // mode rate: bandwidth windows (17a, pause or limit with a rate);
-  // mode span: replication sync window (17a, days and times only).
+  // mode span: replication sync window (17a, days and times only);
+  // mode limit: read-limit windows of a source (22b, limit with a rate only, no pause).
   import { t } from '../lib/i18n';
   import { DAYS, type BlackoutWindow, type RateWindow, type Span } from '../lib/schedule';
   import IconPlus from '@lucide/svelte/icons/plus';
   import IconX from '@lucide/svelte/icons/x';
 
-  type Mode = 'blackout' | 'rate' | 'span';
+  type Mode = 'blackout' | 'rate' | 'span' | 'limit';
   type W = Span & Partial<BlackoutWindow> & Partial<RateWindow>;
   let {
     windows = $bindable([]),
@@ -20,6 +21,8 @@
   const fresh = (): W =>
     mode === 'rate'
       ? { days: [], from: '08:00', to: '18:00', action: 'pause' }
+      : mode === 'limit'
+        ? { days: [], from: '08:00', to: '18:00', action: 'limit', rate_bytes: 50e6 }
       : mode === 'span'
         ? { days: [], from: '22:00', to: '06:00' }
         : { days: [], from: '08:00', to: '18:00', abort: false };
@@ -56,7 +59,12 @@
           <label for="{idp}-to-{i}">{t.runctl.to}</label>
           <input id="{idp}-to-{i}" type="time" bind:value={w.to} required />
         </div>
-        {#if mode === 'rate'}
+        {#if mode === 'limit'}
+          <div class="field">
+            <label for="{idp}-rate-{i}">{t.windows.rate}</label>
+            <input id="{idp}-rate-{i}" type="number" min="0.01" step="any" required value={mbps(w)} oninput={(e) => setRate(w, e.currentTarget.value)} />
+          </div>
+        {:else if mode === 'rate'}
           <div class="field">
             <label for="{idp}-act-{i}">{t.windows.action}</label>
             <select id="{idp}-act-{i}" value={w.action} onchange={(e) => setAction(w, e.currentTarget.value)}>

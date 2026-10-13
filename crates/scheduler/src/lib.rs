@@ -83,9 +83,12 @@ mod holds;
 mod inventory;
 mod keep;
 mod lifecycle;
+mod limits;
+pub mod network;
 mod offsite_ui;
 pub mod orphans;
 mod plugins;
+mod priority;
 mod recovery;
 mod renewal;
 pub mod repair;
@@ -214,6 +217,8 @@ pub struct Config {
     pub forward_poll_secs: u64,
     /// nexus-disks status and operations (disks.rs; skipped while there is no status)
     pub disks_dir: PathBuf,
+    /// nexus-net status (interface roles for bound egress) and operations (network.rs)
+    pub net_dir: PathBuf,
     /// endpoint status poll of every enrolled agent (endpoint.rs); 0 = off
     pub agent_poll_secs: u64,
     /// agents polled at once
@@ -273,6 +278,7 @@ impl Default for Config {
             inventory_secs: 3600,
             forward_poll_secs: 5,
             disks_dir: catalog::hardware::DIR.into(),
+            net_dir: catalog::network::DIR.into(),
             agent_poll_secs: 120,
             agent_poll_concurrency: 8,
             config_backup: "daily 02:30".into(),
@@ -733,6 +739,7 @@ impl Scheduler {
         self.log_err(|s| s.queue_approved_gc());
         self.log_err(|s| s.queue_snapshot_deletes());
         self.log_err(|s| s.queue_restore_replaces());
+        self.log_err(|s| s.check_restore_priority(now)); // priority.rs
         self.log_err(|s| s.queue_scheduled(now));
         self.log_err(|s| s.queue_maintenance(now));
         self.log_err(|s| s.queue_replication(now));
@@ -776,6 +783,7 @@ impl Scheduler {
         self.log_err(|s| s.check_replication_lag(now));
         self.log_err(|s| s.check_forwarding(now));
         self.log_err(|s| s.check_disks(now));
+        self.log_err(|s| s.audit_net_ops());
         self.log_err(|s| s.check_clock());
         self.log_err(|s| s.check_disabled_tenants());
         self.log_err(|s| s.sync_firewall().map(drop));
@@ -930,6 +938,9 @@ impl Scheduler {
     }
 
     fn queue_scheduled(&mut self, now: i64) -> Result<()> {
+        if self.restore_priority()?.is_some() {
+            return Ok(()); // due slots run once it ends (priority.rs)
+        }
         let off = self.disabled_tenants()?;
         for g in self.groups()?.into_iter().filter(|g| !off.contains(&g.tenant)) {
             let ctl = self.control(g.id)?;
@@ -966,7 +977,11 @@ impl Scheduler {
 
     /// Writes the outbound allow-list (sources, offsite boxes, alert delivery)
     /// for nexus-nft-sync; the file only changes when the destinations do.
+    /// Sources and agents (role data), offsite targets and replication primaries
+    /// go into the file per role, bound to the role's interface when Settings →
+    /// Network gives it one (network.rs); everything else leaves through any.
     fn sync_firewall(&self) -> Result<bool> {
+        // role data: everything the appliance pulls backups from
         let mut targets = Vec::new();
         {
             let c = self.db.conn();
@@ -1009,13 +1024,16 @@ impl Scheduler {
         targets.extend(self.rescue_targets()?);
         // fleet enrollment: the scanned ranges on the agent port (crate::fleet)
         targets.extend(self.fleet_targets()?);
+        let data = std::mem::take(&mut targets);
+        let mut offsite = Vec::new();
         for (_, o) in self.tenants()? {
-            targets.extend(firewall::offsite_targets(&o));
+            offsite.extend(firewall::offsite_targets(&o));
         }
         // approved "attach an offsite copy" requests: the target before the tenant exists
-        targets.extend(self.attach_targets()?);
+        offsite.extend(self.attach_targets()?);
         // secondary: the primaries' management ports (docs/replication.md §10)
-        targets.extend(self.replication_targets()?);
+        let replication = self.replication_targets()?;
+        let roles = self.egress_roles([("data", data), ("offsite", offsite), ("replication", replication)]);
         if let Ok(a) = self.alerts_config() {
             targets.extend(firewall::alert_targets(&a));
         }
@@ -1024,11 +1042,17 @@ impl Scheduler {
         targets.extend(firewall::forward_targets(&fwd));
         // inbound: per-service source lists (Settings → Firewall; empty = any)
         let inbound = nftsync::inbound_map(catalog::firewall::load(&self.db.conn())?.effective());
-        let changed = nftsync::write_allowed(&self.cfg.nft_allowed, firewall::resolve(&targets), Some(&inbound))?;
+        let changed = nftsync::write_allowed(
+            &self.cfg.nft_allowed,
+            firewall::resolve(&targets),
+            Some(&inbound),
+            &roles,
+        )?;
         if changed {
             eprintln!(
-                "scheduler: firewall allow-list updated ({} destinations)",
-                targets.len()
+                "scheduler: firewall allow-list updated ({} destinations, {} by role)",
+                targets.len(),
+                roles.values().map(|r| r.endpoints.len()).sum::<usize>()
             );
         }
         Ok(changed)
@@ -1065,6 +1089,9 @@ impl Scheduler {
     }
 
     fn queue_maintenance(&mut self, now: i64) -> Result<()> {
+        if self.restore_priority()?.is_some() {
+            return Ok(());
+        }
         let sched = Schedule::parse(&self.cfg.maintenance)?;
         for (tenant, _) in self.tenants()? {
             if !valid_name(&tenant) || !self.cfg.store_base.join(&tenant).join("keycheck").exists() {
@@ -1141,9 +1168,13 @@ impl Scheduler {
             return Ok(());
         }
         let mut busy: HashSet<String> = self.running.values().cloned().collect();
+        let priority = self.restore_priority()?.is_some();
         for job in queued {
             if self.running.len() >= self.cfg.max_parallel {
                 break;
+            }
+            if self.held_by_priority(&job, priority)? {
+                continue; // restore priority: waits for its end
             }
             if self.hold_offsite(&job)? {
                 continue; // pause window: waits for its end
@@ -1304,6 +1335,7 @@ impl Scheduler {
         self.endpoint_bookkeeping(&job, state, &log)?;
         if job.kind == "backup" {
             self.fleecing_bookkeeping(&job, &log)?;
+            self.backup_meta_bookkeeping(&job, &log)?; // limits.rs
         }
         if job.kind.starts_with("ssh_key_") {
             self.publish_ssh_keys()?;
@@ -1590,6 +1622,16 @@ impl Scheduler {
                         let id = rest.split_whitespace().next()?;
                         let (s, t) = id.rsplit_once('/')?;
                         let mut v = json!({"source": s, "time": t.parse::<i64>().ok()?});
+                        if s.starts_with("nas-") || s.starts_with("share-") {
+                            // `… in <s>s: <n> entries, …` (Phase 22b sizing note, web-api nasops)
+                            if let Some(n) = rest
+                                .split_once(": ")
+                                .and_then(|(_, x)| x.split_once(" entries"))
+                                .and_then(|(n, _)| n.parse::<u64>().ok())
+                            {
+                                v["entries"] = json!(n);
+                            }
+                        }
                         if s.starts_with("nas-") {
                             // `…, <n> bytes transferred[, full read …]` (nexus-truenas)
                             if let Some(n) = rest
@@ -1636,6 +1678,7 @@ impl Scheduler {
                     .collect();
                 self.add_consistency(&job.tenant, log, &mut snaps);
                 snapmeta::attach(log, &mut snaps);
+                limits::attach_identity(log, &mut snaps); // VM identity (Phase 22b)
                 let warnings: u64 = snaps.iter().filter_map(|s| s["warnings"].as_u64()).sum();
                 let mut r = json!({ "snapshots": snaps });
                 if let [one] = snaps.as_slice() {
@@ -1651,9 +1694,11 @@ impl Scheduler {
                 Some(r)
             }
             // `restored {json}` / `enrolled {json}` (nexus-agentctl, nexus-replica), `replicated {json}`
-            "restore_files" | "agent_enroll" | "replica_enroll" | "replica_sync" | "restore" | "restore_ct" => {
+            "restore_files" | "agent_enroll" | "replica_enroll" | "replica_sync" | "restore" | "restore_ct"
+            | "instant_disk" => {
                 let pfx = match job.kind.as_str() {
                     "restore_files" | "restore" | "restore_ct" => "restored ",
+                    "instant_disk" => "attached ",
                     "replica_sync" => "replicated ",
                     _ => "enrolled ",
                 };
@@ -1924,6 +1969,8 @@ impl Scheduler {
             "nodes": nodes,
             "vmids": vmids,
         });
+        let mut cfg = cfg;
+        limits::pve_limits(&src, &mut cfg); // Phase 22b: caps and read limit
         files.push(("pve.json".into(), serde_json::to_vec_pretty(&cfg)?));
         Ok(files)
     }
@@ -1983,6 +2030,9 @@ impl Scheduler {
             "sudo": src["sudo"].as_bool().unwrap_or(true),
             "zfs_sudo": src["zfs_sudo"].as_bool().unwrap_or(true),
         });
+        let mut cfg = cfg;
+        // Phase 22b: read limit, "use existing snapshots" with the snapshots the last backups came from
+        self.truenas_limits(tenant, source_id, &src, &mut cfg)?;
         files.push(("truenas.json".into(), serde_json::to_vec_pretty(&cfg)?));
         Ok(files)
     }
@@ -2074,6 +2124,9 @@ impl Scheduler {
             if src[k].is_string() {
                 cfg[k] = src[k].clone();
             }
+        }
+        if src["read_limit"].is_object() {
+            cfg["read_limit"] = src["read_limit"].clone(); // Phase 22b
         }
         files.push(("nas.json".into(), serde_json::to_vec_pretty(&cfg)?));
         Ok(files)
@@ -2687,6 +2740,7 @@ impl Scheduler {
                 plan.steps.push(pve(args));
             }
             "restore_files" => return self.plan_restore_files(job, plan, replicated),
+            "instant_disk" => return self.plan_instant_disk(job, plan), // restore.rs
             k if recovery::KINDS.contains(&k) => return self.plan_recovery(job, plan),
             "fleet_scan" => return self.plan_fleet_scan(job, plan),
             "agent_renew" => {

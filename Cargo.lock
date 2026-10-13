@@ -3645,6 +3645,7 @@ dependencies = [
  "agent-conn",
  "agent-core",
  "anyhow",
+ "catalog",
  "chunkstore",
  "keyd",
  "libc",
@@ -4821,6 +4822,7 @@ version = "0.1.0"
 dependencies = [
  "agent-proto",
  "anyhow",
+ "catalog",
  "chunkstore",
  "keyd",
  "libc",
@@ -6680,6 +6682,7 @@ version = "0.1.0"
 dependencies = [
  "agent-conn",
  "anyhow",
+ "catalog",
  "chunkstore",
  "keyd",
  "libc",

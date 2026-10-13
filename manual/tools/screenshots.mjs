@@ -947,6 +947,16 @@ async function main() {
       await shot('firewall-edit', { height: 1000 });
       await closeDialogs();
     }],
+    // Phase 22a: Settings → Network (bond + VLAN for data, replication NIC, path MTU) + interface dialog
+    ['network', async () => {
+      await go('/settings?tab=network');
+      await until(`return document.body.innerText.includes('Path MTU') && document.body.innerText.includes('bond0.20')`, 'network tab');
+      await shot('settings-network', { height: 1900 });
+      await ev(`$rowClick('bond0.20', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #ni-vlan')`, 'interface dialog');
+      await shot('network-edit', { height: 1150 });
+      await closeDialogs();
+    }],
     // Phase 17c: Settings → Vault (the demo appliance is a primary: preconditions not met)
     ['vault', async () => {
       await go('/settings?tab=vault');
@@ -1117,6 +1127,54 @@ async function main() {
       await closeDialogs();
     }],
     // Phase 17b: a security officer closes the vault; reopening is requested by an admin and approved
+    // Phase 22b: source limits, NAS overlap / sizing / split, skipped files, VM identity,
+    // instant disk recovery, restore priority (turned off again at the end)
+    ['pve-nas-ops', async () => {
+      await login('admin');
+      await go('/sources');
+      await until(`return document.body.innerText.includes('overlaps')`, 'overlap warning');
+      await ev(`const r = $row('fs01-projects'); window.scrollTo(0, r.getBoundingClientRect().top + window.scrollY - 360); return true;`);
+      await shot('sources-nas', { scrolled: true });
+      await ev(`$rowClick('pve-cluster', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #lim-par')`, 'limits fieldset');
+      await ev(`document.querySelector('dialog[open] #lim-par').closest('fieldset').scrollIntoView(); return true;`);
+      await shot('source-limits', { height: 1100, scrolled: true });
+      await closeDialogs();
+      await ev(`$rowClick('fs01-data', 'Split'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #sp-roots')`, 'split dialog');
+      await ev(`$fill('#sp-roots', '/Finance\\n/Projects\\n/Home'); $fill('#sp-pw', 'demo-password'); return true;`);
+      await shot('source-split');
+      await closeDialogs();
+      const jobs = (await api('GET', '/jobs')).body.filter((j) => j.kind === 'backup' && j.tenant === 'acme');
+      for (const j of jobs) {
+        const d = (await api('GET', `/jobs/${j.id}`)).body;
+        if (!/^(\d{4}-\d\d-\d\dT\S+ )?error /m.test(d.log ?? '')) continue;
+        await go(`/jobs/${j.id}`);
+        await until(`return document.body.innerText.includes('Skipped files (CSV)')`, 'skipped files link');
+        await shot('job-skipped-files');
+        break;
+      }
+      await go('/snapshots?tenant=initech&source=vm-102');
+      await until(`return document.body.innerText.includes('New VM identity')`, 'identity chip');
+      await shot('snapshots-identity');
+      await go('/snapshots?source=vm-100');
+      await ev(`$rowClick('vm-100', 'Restore'); return true;`);
+      await until(`return !!$button('Attach one disk')`, 'restore menu');
+      await ev(`$click('Attach one disk'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #idr-target')`, 'instant disk dialog');
+      await ev(`$fill('#idr-target', '101'); $fill('#idr-move', 'local-lvm'); return true;`);
+      await shot('snapshot-instant-disk', { height: 1000 });
+      await closeDialogs();
+      await go('/');
+      await until(`return !!document.querySelector('#prio-r')`, 'restore priority card');
+      await ev(`$fill('#prio-h', '8'); $fill('#prio-r', 'DR of the ERP cluster, ticket 4711'); $click('Turn on'); return true;`);
+      await confirmOk();
+      await until(`return document.body.innerText.includes('Restore priority until')`, 'restore priority banner');
+      await settle();
+      await shot('restore-priority');
+      await ev(`$click('Turn off'); return true;`);
+      await until(`return !document.body.innerText.includes('Restore priority until')`, 'restore priority off');
+    }],
     ['vault-close', async () => {
       await login('so');
       await go('/replication');

@@ -15,6 +15,9 @@
 //!   "recovery_key": {"confirm_full": "only to confirm a key whose confirmation was interrupted"}
 //! }
 //! ```
+//! `"network"` may carry `"link": {"bond": ["eth1"], "bond_mode": "802.3ad", "vlan": 20,
+//! "mtu": 9000}` (each optional): the management interface as a bond, a tagged VLAN and/or
+//! with another MTU, written by nexus-net (Phase 22a).
 //! `"replace": true` in an account replaces an existing account of that role.
 //! The second person is optional: instead of `"security_officer"`, give
 //! `"second_person_later": true`; the appliance then starts with approvals

@@ -41,12 +41,15 @@ pub mod incident;
 pub mod inventory;
 pub mod jobs;
 pub mod keep;
+pub mod nasops;
+pub mod network;
 pub mod offsite;
 pub mod oidc;
 pub mod openapi;
 pub mod ops;
 pub mod passkeys;
 pub mod plugins;
+pub mod priority;
 pub mod quorum;
 pub mod recovery;
 pub mod replication;
@@ -142,6 +145,8 @@ pub struct AppState {
     pub console_dir: std::sync::OnceLock<PathBuf>,
     /// nexus-disks control dir (default: env `NEXUS_DISKS_DIR` or /var/lib/nexus/disks)
     pub disks_dir: std::sync::OnceLock<PathBuf>,
+    /// nexus-net control dir (default: env `NEXUS_NET_DIR` or /var/lib/nexus/net)
+    pub net_dir: std::sync::OnceLock<PathBuf>,
     /// nexus-nft-sync status file (default: env `NEXUS_NFT_STATUS` or /run/nexus-nft-status/status.json)
     pub nft_status: std::sync::OnceLock<PathBuf>,
     /// `GET /dashboard` answers, ≤ 60 s old
@@ -177,6 +182,7 @@ impl AppState {
             config_backup_dir: std::sync::OnceLock::new(),
             console_dir: std::sync::OnceLock::new(),
             disks_dir: std::sync::OnceLock::new(),
+            net_dir: std::sync::OnceLock::new(),
             nft_status: std::sync::OnceLock::new(),
             dashboard: Default::default(),
             oidc: Default::default(),
@@ -531,6 +537,11 @@ pub fn router(st: St) -> Router {
         .route("/sources", get(list_sources).post(create_source))
         .route("/sources/{id}", put(update_source).delete(delete_source))
         .route("/sources/{id}/inventory", get(inventory::list))
+        .route("/sources/{id}/split", post(nasops::split))
+        .route(
+            "/restore-priority",
+            get(priority::get).put(priority::put).delete(priority::delete),
+        )
         .route("/policies", get(list_policies).post(create_policy))
         .route("/policies/{id}", put(update_policy).delete(delete_policy))
         .route("/groups", get(list_groups).post(create_group))
@@ -604,6 +615,7 @@ pub fn router(st: St) -> Router {
         .route("/restores", post(restores::restore_many))
         .route("/jobs/{id}", get(get_job))
         .route("/jobs/{id}/cancel", post(cancel_job))
+        .route("/jobs/{id}/skipped.csv", get(nasops::skipped))
         .route("/downloads/{token}", get(download))
         .route("/quorum", get(list_quorum))
         .route("/console/unlock", get(console::list).post(console::request_unlock))
@@ -655,6 +667,7 @@ pub fn router(st: St) -> Router {
         .merge(firewall::routes())
         .merge(holds::routes())
         .merge(hardware::routes())
+        .merge(network::routes())
         .merge(tenants::routes())
         .merge(tenant_idp::routes())
         .merge(tenancy::routes())

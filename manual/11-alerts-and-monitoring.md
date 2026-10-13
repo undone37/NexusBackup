@@ -61,7 +61,7 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 | Category | Kinds |
 |---|---|
 | security | `anomaly`, `malware`, `console_unlock`, `console_root_shell`, `break_glass`, `firewall_reset`, `mgmt_allow_reset`, `legal_hold_advisory`, `cert_expiry`, `account_dormant`, `inventory`, `clock_skew`, `gc_quorum`, `gc_confirm`, `vault_disabled`, `incident`, `dek_rotation` |
-| backup | `job_failed`, `sla_missed`, `paused`, `consistency`, `backup_inconsistent`, `orphaned`, `verify`, `snapshot_damaged`, `offsite_lag`, `inventory_refresh`, `config` |
+| backup | `job_failed`, `sla_missed`, `paused`, `consistency`, `backup_inconsistent`, `orphaned`, `verify`, `snapshot_damaged`, `offsite_lag`, `inventory_refresh`, `config`, `vmid_reused`, `restore_priority` |
 | replication | every `replication_…` kind |
 | hardware | `disk`, `fleecing_space` |
 | system | `capacity`, `quota`, `forwarding`, `report`, `tenant_disabled`, `test` and any kind not listed |
@@ -86,6 +86,8 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 | `replication_verify` | critical | (secondary) replicated data failed verification; nothing was imported | — | check the primary; the next sync retries |
 | `vault_closed` | info | (secondary) a replication source was closed with **Close vault (pause pulling now)** | the source is reopened (after approval) | nothing while intended; see [08 Replication](08-replication.md#close-vault-pause-pulling-now) |
 | `config` | warning | the scheduler cannot use a group or replication source configuration | — | fix the configuration named in the message |
+| `vmid_reused` | warning | a VM's identity (vmgenid / SMBIOS UUID) changed between two backups: the VMID belongs to another VM now (`vmid_reused:<tenant>/vm-<id>`) | — (resolve by hand) | check that the group protects the VM you mean; the old snapshots belong to the previous VM. See [04 Sources](04-sources.md#vm-identity-and-reused-vmids) |
+| `restore_priority` | warning | restore priority is on (scheduled backups, GC, verify, offsite and replication are held) | it is turned off or expires | turn it off when the recovery is done. See [14 Disaster recovery](14-disaster-recovery.md#restore-priority) |
 | `orphaned` | info | snapshots of an object that is in no protection group of its tenant were found; they are pruned with the default retention (shown once per object) | — | put the object into a group if it should keep being protected with that group's retention, or ignore it; see [05 Policies and protection groups](05-policies-and-groups.md#snapshots-of-objects-in-no-group) |
 | `anomaly` | critical | a backup added far more new data than usual for its source, or new data that suddenly does not compress (see [Change-rate anomalies](#change-rate-anomalies)); or its files show ransom-note names or a mass rename ([File-level change signals](#file-level-change-signals)). The snapshot is flagged as anomalous | — | check the source for mass changes or encryption (ransomware), compare the snapshot with the previous one under **Snapshot changes**; a security officer puts the last clean snapshot on hold with **Hold last good snapshot** |
 | `malware` | critical | a YARA scan found matches of the uploaded rules in a snapshot (see [Malware scan (YARA)](#malware-scan-yara)); the snapshot is flagged as anomalous | — (resolve by hand) | open the scan results on **Snapshots**, check the files and the source; a security officer clears the flag if a rule was too broad |

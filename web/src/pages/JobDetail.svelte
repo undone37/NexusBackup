@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { askConfirm } from '../lib/confirm.svelte';
-  import { get, post, act, errText } from '../lib/api';
+  import { API, get, post, act, errText } from '../lib/api';
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
   import { href } from '../lib/router.svelte';
@@ -178,6 +178,14 @@
   {/if}
   <section class="card" aria-labelledby="jl">
     <h2 id="jl">{t.jobs.log}</h2>
+    {#if job.kind === 'backup' && /^(\d{4}-\d\d-\d\dT\S+ )?error /m.test(job.log ?? '')}
+      <!-- Phase 22b: entries a share backup could not read -->
+      <p>
+        <a class="button small" href={`${API}/jobs/${job.id}/skipped.csv`} download={`nexus-job-${job.id}-skipped.csv`} title={t.nas.skippedHint}
+          >{t.nas.skippedCsv}</a
+        >
+      </p>
+    {/if}
     <pre class="log" bind:this={logEl} aria-labelledby="jl">{job.log || '…'}</pre>
   </section>
 {:else if !error}

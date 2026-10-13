@@ -101,6 +101,25 @@ in its offsite copy, never other tenants' and never the appliance's key.
 - Who holds the key and the tenant's offsite credentials can read that tenant's offsite copy. Treat it like the
   recovery key, for one tenant.
 
+## Restore priority
+
+During a large recovery, background work competes with the restores for the disks and the network. An admin or
+operator turns **Restore priority** on (**Dashboard**) for 1 to 24 hours, with a reason:
+
+- no scheduled backups, GC, verification, file indexing, offsite uploads or replication syncs start; queued jobs of
+  these kinds wait (running ones finish);
+- restores and jobs started by hand (also **Back up now**) run as usual;
+- every user sees a banner with the end time; the warning `restore_priority` is open (and delivered like every
+  alert) while it is on;
+- it ends on its own; **Renew** restarts the period (at most 24 hours from now), **Turn off** ends it at once.
+  Backups that became due meanwhile run right afterwards, GC and verification on the next maintenance slot.
+
+Turning it on, renewing and turning off are audited (`restore_priority.on` / `.off`); the scheduler audits the
+expiry (`restore_priority.expire`). No approval is needed: it only delays background work and cannot be kept on
+without someone renewing it.
+
+![Restore priority on the dashboard](images/restore-priority.png)
+
 ## Incident: hold the good snapshots first
 
 When a source was encrypted or tampered with, or a legal case needs its backups, keep the snapshots before anything

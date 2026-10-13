@@ -495,6 +495,7 @@ when approvals are enabled.
 | **Console access** | requests for an emergency root shell on the appliance console, **Show code** (once), **Revoke** (administrators and security officers only) | [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console) |
 | **Security** | session timeouts, sessions per account, encryption key rotation reminder, dormant accounts, login banner; sessions of all users (administrators); a link to the firewall | [09 Users and access](09-users-and-access.md#sessions-and-sign-in-protection) |
 | **Firewall** | inbound rules per service (who may reach the web UI, ping), recent blocked attempts, the automatic outbound allow-list (read-only) | [02 Installation](02-installation.md#inbound-firewall) |
+| **Network** | network cards, bonds, VLANs, MTU, addresses and routes, the role of each interface (management, data, replication) and which one offsite copies use; a change needs approval, a management change also a confirmation within 120 s; the path-MTU check (**Check now**: administrators and operators) | [02 Installation](02-installation.md#network-interfaces) |
 | **Incident mode** | enter incident mode (security officers: hold snapshots, pause groups, end sessions and API tokens, critical alert) and request to leave it | [14 Disaster recovery](14-disaster-recovery.md#incident-mode) |
 | **Vault** | vault mode of a replication secondary: its preconditions, the request to switch it on, the two-step switch-off (administrators, security officers and operators read it) | [08 Replication](08-replication.md#vault-mode-secondary-only) |
 
@@ -517,6 +518,8 @@ when approvals are enabled.
 ![Settings: Console access](images/settings-console.png)
 
 ![Settings: Security](images/settings-security.png)
+
+![Settings: Network](images/settings-network.png)
 
 ## Messages and dialogs
 

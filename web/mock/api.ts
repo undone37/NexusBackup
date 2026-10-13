@@ -223,8 +223,10 @@ const db = {
     /** Phase 19b: immutable id (derived from the name in the mock when unset) */
     uid?: string;
   }[],
-  /** kind: pve | linux | nfs | smb | plugin:<kind> */
-  sources: [] as { id: number; tenant: string; kind: string; name: string; config: Json; maintenance_until?: number | null }[],
+  /** kind: pve | linux | nfs | smb | plugin:<kind>; `sizing_entries`: Phase 22b demo entry count of the newest share/TrueNAS run */
+  sources: [] as { id: number; tenant: string; kind: string; name: string; config: Json; maintenance_until?: number | null; sizing_entries?: number }[],
+  /** Phase 22b: the restore-priority switch (null = off) */
+  priority: null as { until: number; since: number; by: string; reason: string } | null,
   agents: [] as Agent[],
   /** Phase 24a: session summaries per agent id (newest first) */
   agentSessions: {} as Record<string, Json[]>,
@@ -308,6 +310,8 @@ const db = {
   reports: [] as Json[],
   /** Phase 16a/b: nexus-disks status (GET /hardware) */
   hardware: {} as Json,
+  /** Phase 22a: nexus-net status (GET /network) */
+  network: {} as Json,
   /** Phase 19a: bare-metal recovery / P2V sessions (GET /rescue) */
   rescue: [] as Json[],
   /** Phase 21b setting `incident` (active or the last one) */
@@ -345,7 +349,7 @@ function addJob(kind: string, tenant: string, params: Json, by: string, opts: Pa
     result: null,
     plan: planFor(kind, params),
     duration:
-      { files_list: 3, files_get: 5, backup: 12, restore: 16, restore_ct: 12, instant_recover: 10, restore_files: 8, agent_enroll: 5, agent_update: 6, agent_renew: 4 }[kind] ?? 8,
+      { files_list: 3, files_get: 5, backup: 12, restore: 16, restore_ct: 12, instant_recover: 10, instant_disk: 8, restore_files: 8, agent_enroll: 5, agent_update: 6, agent_renew: 4 }[kind] ?? 8,
     ...opts,
   };
   db.jobs.push(j);
@@ -503,6 +507,14 @@ function planFor(kind: string, p: Json): string[] {
         `live disk move to ${p.storage}: 25%`,
         `live disk move to ${p.storage}: 100%`,
         'instant recovery complete',
+      ];
+    case 'instant_disk':
+      return [
+        `exporting ${p.device} of ${src} @ ${p.time} via NBD over SSH to ${p.node}`,
+        `${p.device} attached to VM ${p.target} as ${p.key ?? 'scsi2'} (hot-plugged)`,
+        ...(p.move_to
+          ? [`live disk move of ${p.key ?? 'scsi2'} to ${p.move_to}: 40%`, `live disk move of ${p.key ?? 'scsi2'} to ${p.move_to}: 100%`, 'disk moved; serving stopped']
+          : [`serving ${p.key ?? 'scsi2'} until it is moved (qm disk move ${p.target} ${p.key ?? 'scsi2'} <storage> --delete 1) or detached`]),
       ];
     case 'bmr':
       return [
@@ -1085,6 +1097,16 @@ function seed() {
   });
   // `storage` = ID of the NexusBackup storage on the cluster (pvesm add nexusbackup nexus …)
   const sInitech = pve('initech', 'pve-cluster', '192.0.2.10', { pve1: '192.0.2.11', pve2: '192.0.2.12' }, 'nexus');
+  // Phase 22b: at most 2 guests at once, one on the Ceph pool, 50 MB/s during office hours
+  Object.assign(sInitech.config, {
+    max_parallel: 2,
+    storage_caps: { 'ceph-ssd': 1 },
+    read_limit: {
+      bwlimit: 200_000_000,
+      windows: [{ days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], from: '07:00', to: '19:00', action: 'limit', rate_bytes: 50_000_000 }],
+      timezone: 'Europe/Berlin',
+    },
+  });
   const sAcme = pve('acme', 'acme-pve', '198.51.100.10', { 'acme-pve1': '198.51.100.11' }, 'nexus');
   // globex takes no local backups (replicated tenant): its DR cluster is only a restore target.
   const sGlobex = pve('globex', 'globex-dr-pve', '203.0.113.20', { 'dr-pve1': '203.0.113.21' }, 'nexus');
@@ -1179,7 +1201,10 @@ function seed() {
       host: 'nas01.acme.example.com', port: 443, ca_pem: '-----BEGIN CERTIFICATE-----\n(TrueNAS certificate, demo)\n-----END CERTIFICATE-----\n', user: 'nexusbackup', token_secret: 'SECRET',
       ssh: { host: 'nas01.acme.example.com', port: 22, user: 'nexusbackup', host_key: DEMO_HOST_KEY('nas01'), key_pem: 'SECRET', public_key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIApplianceDemoPublicKey000000000000 nexus-appliance', from: '198.51.100.5' },
       datasets: ['tank/projects', 'tank/home'], recursive: false, sudo: true, zfs_sudo: true,
+      // Phase 22b: back up the periodic snapshots TrueNAS takes anyway
+      existing_snapshots: 'auto-',
     } as Json,
+    sizing_entries: 2_350_000,
   };
   // NFS/SMB shares (docs/nas-connector.md): one share per source, groups without guests.
   const sNfs = {
@@ -1188,15 +1213,25 @@ function seed() {
     kind: 'nfs' as const,
     name: 'filer-projects',
     config: { host: 'filer.acme.example.com', port: 2049, version: '4.2', export: '/export/projects', snapshot_dir: '.snapshot', snapshot_prefix: 'nightly.', snapshot_order: 'name', excludes: ['*.tmp'], threads: 16, xattrs: true, timeout_secs: 60 } as Json,
+    sizing_entries: 184_000,
   };
   const sSmb = {
     id: nextId(),
     tenant: 'acme',
     kind: 'smb' as const,
     name: 'fs01-data',
-    config: { host: 'fs01.acme.example.com', port: 445, version: '3.1.1', share: 'Data', user: 'svc-backup', domain: 'ACME', sec: 'ntlmssp', sign: true, seal: true, password: 'SECRET', excludes: [], threads: 16, xattrs: true, timeout_secs: 60 } as Json,
+    config: { host: 'fs01.acme.example.com', port: 445, version: '3.1.1', share: 'Data', user: 'svc-backup', domain: 'ACME', sec: 'ntlmssp', sign: true, seal: true, password: 'SECRET', excludes: [], threads: 16, xattrs: true, timeout_secs: 60, read_limit: { bwlimit: 80_000_000, timezone: 'Europe/Berlin' } } as Json,
+    sizing_entries: 6_400_000,
   };
-  db.sources.push(sWeb01, sFs02, sNas01, sNfs, sSmb);
+  // Phase 22b: a second source on the same share overlaps fs01-data (the overlap warning)
+  const sSmbProj = {
+    id: nextId(),
+    tenant: 'acme',
+    kind: 'smb' as const,
+    name: 'fs01-projects',
+    config: { host: 'fs01.acme.example.com', port: 445, version: '3.1.1', share: 'data', user: 'svc-backup', domain: 'ACME', sec: 'ntlmssp', sign: true, seal: true, password: 'SECRET', excludes: [], include: ['/Projects'], threads: 16, xattrs: true, timeout_secs: 60 } as Json,
+  };
+  db.sources.push(sWeb01, sFs02, sNas01, sNfs, sSmb, sSmbProj);
 
   // Plugins: PostgreSQL 1.0.0 installed, 1.1.0 uploaded and waiting for approval; TrueNAS plugin 1.0.0.
   // (Both carry the current manifest, so the UI shows today's PostgreSQL forms.)
@@ -1311,12 +1346,25 @@ function seed() {
   // Phase 17d: older monthlies of vm-100 only offsite (local retention pruned them)
   for (const d of [35, 66, 97]) db.snapshots.push(snap('initech', 'vm-100', day(d, 1), Math.round(39.6 * 2 ** 30), false, true, d === 35 ? day(d, 1) + 7200 : null));
   series('initech', 'vm-102', 30, { offsite: false, hh: 3 });
+  // Phase 22b: VM identity per snapshot; VMID 102 was deleted and re-created two days ago
+  {
+    const v = db.snapshots.filter((s) => s.tenant === 'initech' && s.source === 'vm-102').sort((a, b) => a.time - b.time);
+    const oldId = { vmgenid: '5b65ecd1-44f5-4b88-8b6c-96cd092a9d2e', smbios_uuid: '13e1fd94-5545-4e60-8309-3e50cb85a8c0' };
+    const newId = { vmgenid: 'c0a8f3e2-71d4-4b2a-9e55-0f3d2b7c1a90', smbios_uuid: '8f2e4c61-0b9d-4f7a-a3c2-5e1d9b6a7c34' };
+    v.forEach((s, i) => {
+      const fresh = i >= v.length - 2;
+      (s as Json).meta = { identity: { ...(fresh ? newId : oldId), changed: i === v.length - 2, previous: i === v.length - 2 ? oldId : null } };
+    });
+  }
   series('acme', 'vm-300', 60, { hh: 22, skip: 1 });
   series('acme', 'vm-301', 25, { hh: 22, skip: 1 });
   series('acme', `host-${web01.id}`, 0.4, { hh: 22, skip: 1 });
   series('acme', `host-${fs02.id}`, 210, { hh: 22, skip: 1, days: 6 });
   series('acme', `nas-${sNas01.id}-tank.projects`, 1_800, { hh: 22, skip: 1, days: 5 });
   series('acme', `nas-${sNas01.id}-tank.home`, 640, { hh: 22, skip: 1, days: 5 });
+  // Phase 22b: the periodic TrueNAS snapshot each dataset snapshot was read from
+  for (const s of db.snapshots.filter((x) => x.source.startsWith(`nas-${sNas01.id}-`)))
+    (s as Json).meta = { zfs_snapshot: `auto-${new Date((s.time - 1800) * 1000).toISOString().slice(0, 16).replace('T', '_').replace(':', '-')}` };
   series('acme', `share-${sNfs.id}`, 3, { hh: 22, skip: 1, days: 5 });
   series('acme', `share-${sSmb.id}`, 0.9, { hh: 3, offsite: false, days: 3 });
   series('acme', `plugin-truenas-${sNas02.id}-tank.media`, 2_400, { hh: 22, skip: 1, days: 3 });
@@ -1370,6 +1418,11 @@ function seed() {
     'mounting //fs01.acme.example.com/Data read-only (SMB 3.1.1, signed + encrypted)',
     'no NAS snapshot directory configured: reading the live share',
     'scan: 48,211 files, 921 MiB, 12 changed',
+    // Phase 22b: entries the scan could not read (Skipped files CSV on the job page)
+    'error Finance/2026/payroll.xlsx: open: Permission denied (os error 13)',
+    'error Finance/2026/~$payroll.xlsx: open: The process cannot access the file (sharing violation)',
+    'error note: Archive/old-dfs: nested mount, not descended',
+    `committed share-${sSmb.id}/${day(0, 3)} in 640.0s: 48211 entries, 12 files read (1048576 bytes), 48199 unchanged files reused, 3 new chunks, 1048576 bytes transferred, 1 inconsistent, 2 errors, 75 entries/s, live share (no NAS snapshot)`,
     `inconsistent share-${sSmb.id}`,
     'snapshot committed',
   ], 640, { snapshots: [{ source: `share-${sSmb.id}`, time: day(0, 3), consistent: false }] });
@@ -1418,6 +1471,11 @@ function seed() {
     mkAlert({
       ts: retry.finished, severity: 'critical', kind: 'job_failed', key: 'job_failed:initech/backup/vmid/101', tenant: 'initech',
       message: `backup job ${retry.id} (initech) failed: ${fleecing}`,
+    }),
+    mkAlert({
+      ts: t - 86400 * 2 + 3 * 3600, severity: 'warning', kind: 'vmid_reused', key: 'vmid_reused:initech/vm-102', tenant: 'initech',
+      message:
+        'vm-102: the VM identity changed in snapshot ' + String(day(1, 3)) + ' (vmgenid 5b65ecd1-44f5-4b88-8b6c-96cd092a9d2e → c0a8f3e2-71d4-4b2a-9e55-0f3d2b7c1a90, SMBIOS UUID 13e1fd94-5545-4e60-8309-3e50cb85a8c0 → 8f2e4c61-0b9d-4f7a-a3c2-5e1d9b6a7c34): the VMID was reused or the VM replaced; older snapshots of vm-102 belong to the previous VM',
     }),
     mkAlert({
       ts: retry.finished, severity: 'critical', kind: 'fleecing_space', key: 'fleecing_space:initech/pve2/local-lvm', tenant: 'initech',
@@ -1508,6 +1566,7 @@ function seed() {
   seedDamage(t);
   seedScans(t);
   seedHardware(t);
+  seedNetwork(t);
   seedM365(t);
   seedRescue(t);
   seedTenantAdmin(t);
@@ -1855,6 +1914,9 @@ function truenasConfig(cfg: Json, old?: Json): Json {
   if (!c.host) throw new HttpError(400, 'host: required');
   if (!Array.isArray(c.datasets) || !c.datasets.length || c.datasets.length > 64) throw new HttpError(400, 'datasets: 1 to 64 dataset names required');
   if (!String(c.ca_pem ?? '').includes('BEGIN CERTIFICATE')) throw new HttpError(400, 'ca_pem: PEM certificate required');
+  if (c.existing_snapshots !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(c.existing_snapshots))
+    throw new HttpError(400, 'existing_snapshots: the snapshot name prefix, [A-Za-z0-9][A-Za-z0-9_-]{0,31} (e.g. auto-)');
+  checkReadLimit(c.read_limit);
   if (!c.token_secret) {
     if (!old?.token_secret) throw new HttpError(400, 'token_secret (API key): required');
     c.token_secret = old.token_secret;
@@ -2083,6 +2145,9 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'disks.replace':
     case 'disks.grow':
       hwExecute(action, p, by, qid);
+      break;
+    case 'network.apply':
+      netExecute(p, by, qid);
       break;
     case 'update.apply':
       if (db.updates.available) Object.assign(db.updates, { staged: { ...db.updates.available, since: now() }, status: 'staged' });
@@ -2318,7 +2383,7 @@ on('POST', '/tenants/:name/reactivate', async (c, [name]) => {
 });
 
 // Phase 17c: vault mode (web-api `vault.rs`)
-const VAULT_KINDS = ['restore', 'restore_ct', 'instant_recover', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount', 'offsite_restore'];
+const VAULT_KINDS = ['restore', 'restore_ct', 'instant_recover', 'instant_disk', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount', 'offsite_restore'];
 function vaultRefuse(what: string) {
   if (db.vault.enabled) throw new HttpError(409, `vault mode is on: ${what} are not allowed on this appliance (Settings → Vault)`);
 }
@@ -2373,8 +2438,106 @@ async function vaultGate(u: User, tenant: string, jobs: { kind: string; params: 
   return [202, { quorum_id: q.id, vault: true }];
 }
 
+// Phase 22b: restore priority (web-api priority.rs)
+const prioValue = () => {
+  const p = db.priority && db.priority.until > now() ? db.priority : null;
+  return p ? { active: true, ...p, max_hours: 24 } : { active: false, max_hours: 24 };
+};
+on('GET', '/restore-priority', (c) => {
+  need(c.user);
+  return [200, prioValue()];
+});
+on('PUT', '/restore-priority', async (c) => {
+  const u = need(c.user, 'admin', 'operator');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  const h = Number(c.body.hours);
+  if (!(Number.isInteger(h) && h >= 1 && h <= 24)) throw new HttpError(400, 'hours: 1..=24 (renew it if the recovery takes longer)');
+  const old = db.priority && db.priority.until > now() ? db.priority : null;
+  db.priority = { until: now() + h * 3600, since: old?.since ?? now(), by: u.name, reason: String(c.body.reason ?? '').trim() };
+  await audit(u.name, 'restore_priority.on', 'restore_priority', { until: db.priority.until, hours: h, reason: db.priority.reason, renewed: !!old });
+  db.alerts = db.alerts.filter((a) => a.key !== 'restore_priority' || a.resolved_at);
+  db.alerts.push(mkAlert({ ts: now(), severity: 'warning', kind: 'restore_priority', key: 'restore_priority',
+    message: `restore priority is on (by ${u.name}${db.priority.reason ? `: ${db.priority.reason}` : ''}) until ${new Date(db.priority.until * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC: scheduled backups, GC, verify, offsite uploads and replication are held` }));
+  return [200, prioValue()];
+});
+on('DELETE', '/restore-priority', async (c) => {
+  const u = need(c.user, 'admin', 'operator');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  if (db.priority) {
+    await audit(u.name, 'restore_priority.off', 'restore_priority', { since: db.priority.since, until: db.priority.until });
+    db.priority = null;
+    for (const a of db.alerts) if (a.key === 'restore_priority' && !a.resolved_at) Object.assign(a, { resolved_at: now(), resolved_by: 'scheduler', auto: true });
+  }
+  return [200, prioValue()];
+});
+
 // sources
-on('GET', '/sources', (c) => [200, byTenant(need(c.user), db.sources).map(stripSource)]);
+on('GET', '/sources', (c) => [200, annotateSources(byTenant(need(c.user), db.sources).map(stripSource))]);
+/** Phase 22b (web-api nasops.rs): sizing note and overlap warning of share / TrueNAS sources. */
+const MEM_TOTAL = 32 * 2 ** 30;
+function annotateSources(rows: Json[]): Json[] {
+  const roots = (c: Json) => ((c.include ?? []).length ? c.include.map((r: string) => '/' + r.replace(/^\/+|\/+$/g, '')) : ['/']);
+  const cov = (s: Json): [string, string[]] | null => {
+    const c = s.config ?? {};
+    const host = String(c.host ?? '').toLowerCase();
+    if (s.kind === 'nfs') return [`nfs|${host}|${c.export}`, roots(c)];
+    if (s.kind === 'smb') return [`smb|${host}|${String(c.share).toLowerCase()}`, roots(c)];
+    if (s.kind === 'truenas') return [`truenas|${host}`, (c.datasets ?? []).map((d: string) => '/' + d)];
+    return null;
+  };
+  const under = (x: string, r: string) => r === '/' || x === r || x.startsWith(r + '/');
+  const cs = rows.map(cov);
+  return rows.map((s, i) => {
+    const mine = cs[i];
+    if (!mine) return s;
+    const overlaps = rows
+      .filter((_, j) => j !== i && cs[j]?.[0] === mine[0] && mine[1].some((a) => cs[j]![1].some((b) => under(a, b) || under(b, a))))
+      .map((o) => ({ id: o.id, name: o.name }));
+    const n = db.sources.find((x) => x.id === s.id)?.sizing_entries;
+    const est = n ? n * 800 : 0;
+    const { sizing_entries: _n, ...rest } = s;
+    return { ...rest, overlaps, sizing: n ? { entries: n, est_ram_bytes: est, mem_total: MEM_TOTAL, warn: n >= 5_000_000 || est * 4 > MEM_TOTAL } : null };
+  });
+}
+/** Phase 22b read limit (catalog::schedule::ReadLimit): bytes/s + limit windows, no pause. */
+function checkReadLimit(r: Json) {
+  if (r === undefined) return;
+  for (const k of Object.keys(r ?? {})) if (!['bwlimit', 'windows', 'timezone'].includes(k)) throw new HttpError(400, `read_limit: unknown field "${k}"`);
+  if (r.bwlimit !== undefined && !(r.bwlimit > 0)) throw new HttpError(400, 'read_limit.bwlimit: bytes per second > 0 (omit for unlimited)');
+  if ((r.windows ?? []).some((w: Json) => w.action !== 'limit' || !(w.rate_bytes > 0)))
+    throw new HttpError(400, 'read_limit.windows: only `limit` windows with rate_bytes > 0 (a paused read would stall a running backup; use a blackout window)');
+}
+function checkCaps(c: Json) {
+  if (c.max_parallel !== undefined && !(Number.isInteger(c.max_parallel) && c.max_parallel >= 1 && c.max_parallel <= 8)) throw new HttpError(400, 'max_parallel: 1..=8');
+  for (const [s, n] of Object.entries(c.storage_caps ?? {}))
+    if (!NAME_RE.test(s) || !(Number.isInteger(n) && (n as number) >= 1 && (n as number) <= 8)) throw new HttpError(400, 'storage_caps: 1..=8 guests per storage');
+  checkReadLimit(c.read_limit);
+}
+on('POST', '/sources/:id/split', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  vaultRefuse('new sources');
+  const s = find(byTenant(u, db.sources), (x) => x.id === Number(id), 'source');
+  if (s.kind !== 'nfs' && s.kind !== 'smb') throw new HttpError(400, 'only NFS and SMB share sources can be split');
+  const roots: string[] = (c.body.roots ?? []).map((r: string) => '/' + String(r).replace(/^\/+|\/+$/g, ''));
+  if (roots.length < 2 || roots.length > 32) throw new HttpError(400, 'roots: 2..=32 include roots');
+  const within: string[] = (s.config.include ?? []).length ? s.config.include : ['/'];
+  const under = (x: string, r: string) => r === '/' || x === r || x.startsWith(r + '/');
+  roots.forEach((a, i) => {
+    if (!within.some((w) => under(a, w))) throw new HttpError(400, `roots: ${a} is outside the source's include roots`);
+    if (roots.slice(0, i).some((b) => under(a, b) || under(b, a))) throw new HttpError(400, `roots: ${a} overlaps another root`);
+  });
+  if (s.kind === 'smb' && !c.body.password) throw new HttpError(400, 'password: required (the stored one is sealed to the original source)');
+  const ids: number[] = [];
+  roots.forEach((r, i) => {
+    const n = { id: nextId(), tenant: s.tenant, kind: s.kind, name: `${s.name.slice(0, 56)}-${i + 1}`, config: { ...structuredClone(s.config), include: [r], ...(c.body.password ? { password: c.body.password } : {}) } };
+    db.sources.push(n);
+    ids.push(n.id);
+    if (c.body.copy_groups !== false)
+      for (const g of db.groups.filter((x) => x.source_id === s.id)) db.groups.push({ ...structuredClone(g), id: nextId(), source_id: n.id, name: `${g.name.slice(0, 56)}-${i + 1}`, paused_until: null });
+  });
+  await audit(u.name, 'source.split', `source/${s.id}`, { tenant: s.tenant, roots, sources: ids });
+  return [201, { sources: ids }];
+});
 // linux source config: {agent_id, paths (absolute, 1..=64), excludes (0..=256), hooks}; unknown fields refused.
 function linuxConfig(tenant: string, cfg: Json): Json {
   for (const k of Object.keys(cfg ?? {}))
@@ -2411,12 +2574,13 @@ function selection(cfg: Json, agent: boolean): Json {
 
 // nfs/smb source config: NFS and SMB fields must not be mixed (deny_unknown_fields in the web-api).
 function shareConfig(kind: string, cfg: Json): Json {
-  const common = ['host', 'port', 'version', 'snapshot_dir', 'snapshot_prefix', 'snapshot_order', 'excludes', 'include', 'exclude_regex', 'threads', 'xattrs', 'timeout_secs'];
+  const common = ['host', 'port', 'version', 'snapshot_dir', 'snapshot_prefix', 'snapshot_order', 'excludes', 'include', 'exclude_regex', 'threads', 'xattrs', 'timeout_secs', 'read_limit'];
   const own = kind === 'nfs' ? ['export', 'mount_port'] : ['share', 'user', 'domain', 'sec', 'sign', 'seal', 'password', 'keytab', 'principal'];
   for (const k of Object.keys(cfg ?? {})) if (![...common, ...own].includes(k)) throw new HttpError(400, `config: unknown field "${k}"`);
   if (!cfg?.host) throw new HttpError(400, 'host: required');
   if (kind === 'nfs' && !String(cfg.export ?? '').startsWith('/')) throw new HttpError(400, 'export: absolute path required');
   if (kind === 'smb' && !cfg.share) throw new HttpError(400, 'share: required');
+  checkReadLimit(cfg.read_limit);
   const { include: _i, exclude_regex: _r, ...rest } = cfg;
   return { ...rest, ...selection(cfg, false) };
 }
@@ -2458,6 +2622,7 @@ on('POST', '/sources', async (c) => {
   }
   if (!config?.token_secret) throw new HttpError(400, 'token_secret required');
   noInlineSecrets(config.nodes);
+  checkCaps(config);
   const s = { id: nextId(), tenant, kind: 'pve' as const, name, config: config ?? {} };
   db.sources.push(s);
   await audit(u.name, 'source.create', `source/${s.id}`, { name });
@@ -2492,6 +2657,7 @@ on('PUT', '/sources/:id', async (c, [id]) => {
     return [200, stripSource(s)];
   }
   const cfg = { ...(c.body.config ?? {}) };
+  checkCaps(cfg);
   if (!cfg.token_secret) cfg.token_secret = s.config.token_secret;
   Object.assign(s, { name: c.body.name ?? s.name, config: cfg });
   await audit(u.name, 'source.update', `source/${s.id}`, {});
@@ -3788,11 +3954,33 @@ on('GET', '/jobs', (c) => {
   const xs = byTenant(u, db.jobs).filter((j) => (!s || j.state === s) && (!k || j.kind === k));
   return [200, xs.sort((a, b) => b.id - a.id).slice(0, 100).map((j) => pubJob(j, false))];
 });
+// Phase 22b (web-api nasops.rs): the `error …` lines of a backup log as CSV
+on('GET', '/jobs/:id/skipped.csv', (c, [id]) => {
+  const j = find(byTenant(need(c.user), db.jobs), (x) => x.id === Number(id), 'job');
+  if (j.kind !== 'backup') throw new HttpError(400, 'skipped files: backup jobs only');
+  const f = (s: string) => {
+    const v = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+    return /[",\r\n]/.test(v) ? `"${v.replaceAll('"', '""')}"` : v;
+  };
+  let out = 'path,reason,kind\r\n';
+  for (const raw of String(j.log ?? '').split('\n')) {
+    // the demo log lines carry a time stamp
+    const l = raw.replace(/^\d{4}-\d\d-\d\dT\S+ /, '');
+    if (!l.startsWith('error ')) continue;
+    let m = l.slice(6);
+    const note = m.startsWith('note: ');
+    if (note) m = m.slice(6);
+    const i = m.indexOf(': ');
+    out += `${f(i < 0 ? '' : m.slice(0, i))},${f(i < 0 ? m : m.slice(i + 2))},${note ? 'note' : 'error'}\r\n`;
+  }
+  c.res.setHeader('Content-Disposition', `attachment; filename="nexus-job-${j.id}-skipped.csv"`);
+  return [200, out, 'text/csv; charset=utf-8'];
+});
 on('GET', '/jobs/:id', (c, [id]) => {
   const u = need(c.user);
   return [200, pubJob(find(byTenant(u, db.jobs), (j) => j.id === Number(id), 'job'), true)];
 });
-const RESTORE_KINDS = ['restore', 'restore_ct', 'instant_recover', 'files_list', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount', 'offsite_list', 'offsite_restore'];
+const RESTORE_KINDS = ['restore', 'restore_ct', 'instant_recover', 'instant_disk', 'files_list', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount', 'offsite_list', 'offsite_restore'];
 /** Source + kind of a plugin snapshot name (plugin-<id>-<source id>[-<guest>]). */
 function pluginSnapshotKind(tenant: string, name: string) {
   const parts = name.replace(/^plugin-/, '').split('-');
@@ -3828,6 +4016,16 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
     }
   }
   if (kind === 'restore' || kind === 'restore_ct' || kind === 'instant_recover') checkRestore(kind, tenant, p);
+  if (kind === 'instant_disk') {
+    // Phase 22b (web-api jobs.rs; the target check is the scheduler's)
+    const slot = (k: unknown) => typeof k === 'string' && /^(scsi|virtio|sata|ide)\d{1,3}$/.test(k);
+    if (!String(p.source ?? '').startsWith('vm-')) throw new HttpError(400, 'source: instant_disk needs a vm-<vmid> snapshot');
+    if (!slot(String(p.device ?? '').replace(/^drive-/, '')) || !String(p.device).startsWith('drive-')) throw new HttpError(400, 'device: a data disk of the snapshot (drive-scsi1, …)');
+    if (p.key !== undefined && !slot(p.key)) throw new HttpError(400, 'key: a free disk slot of the target VM (scsi5, virtio2, …)');
+    if (!(p.target >= 100 && p.target <= 999999999)) throw new HttpError(400, 'vmid: must be within 100..=999999999');
+    if (p.move_to !== undefined && !NAME_RE.test(p.move_to)) throw new HttpError(400, 'move_to: invalid storage name');
+    if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time)) throw new HttpError(404, 'no such snapshot');
+  }
   if (kind === 'agent_enroll') throw new HttpError(400, 'use POST /agents/{id}/enroll');
   if (kind === 'restore_test') checkRestoreTest(tenant, p);
   if (kind === 'inventory') {
@@ -4200,6 +4398,7 @@ const ALERT_CATEGORY: Record<string, string> = {
   vault_disabled: 'security', incident: 'security', dek_rotation: 'security',
   job_failed: 'backup', sla_missed: 'backup', paused: 'backup', consistency: 'backup', backup_inconsistent: 'backup',
   orphaned: 'backup', verify: 'backup', snapshot_damaged: 'backup', offsite_lag: 'backup', inventory_refresh: 'backup', config: 'backup',
+  vmid_reused: 'backup', restore_priority: 'backup',
   disk: 'hardware', fleecing_space: 'hardware',
 };
 const alertCategory = (kind: string) => (kind.startsWith('replication_') ? 'replication' : (ALERT_CATEGORY[kind] ?? 'system'));
@@ -5522,6 +5721,7 @@ function diagChecks(t: number): Json[] {
     c('systemd.failed', 'Failed system services', 'pass', 1, 'no failed units'),
     c('bootc', 'OS image (bootc)', 'pass', 1, `booted ${db.updates.booted?.version}, rollback ${db.updates.rollback?.version}`),
     c('smart', 'Disk health (SMART)', 'skip', 1, 'smartctl not installed'),
+    c('network.mtu', 'Network: path MTU', 'warn', 2, '10.30.4.20 (data): interface bond0.20 has MTU 9000, the path takes 1500'),
     // Phase 21b security posture (recommendations: pass / warn, never update blockers)
     ...postureChecks().map((x) => c(x[0], x[1], x[2] ? 'pass' : 'warn', x[2] ? 1 : 2, x[3])),
   ];
@@ -5640,6 +5840,172 @@ on('GET', '/settings/config-backup/download', async (c) => {
   await audit(u.name, 'download.get', `config_backup/${l.appliance}`, { kind: 'config_backup', bytes: l.bytes, created: l.created, sha256: l.sha256 });
   c.res.setHeader('Content-Disposition', `attachment; filename="nexus-config-${l.appliance}-${l.created}.bundle"`);
   return [200, 'NXCFGB1 (mock bundle: sealed to the recovery key)\n', 'application/octet-stream'];
+});
+
+// ---------------------------------------------------------------- network (Phase 22a)
+// nexus-net as the web-api sees it (GET /network): devices, the applied configuration, a
+// management change waiting for its confirmation, the path-MTU results, operations.
+const NET_FIELDS = { ports: [], mode: null, parent: null, vlan_id: null, role: null, mtu: null, dhcp: false, addresses: [], gateway: null, dns: [], routes: [] };
+const netIface = (x: Json): Json => ({ ...structuredClone(NET_FIELDS), ...x });
+function seedNetwork(t: number) {
+  const nic = (name: string, mac: string, state: string, speed: number | null, master: string | null = null, addresses: string[] = []) => ({
+    name, kind: 'nic', mac, mtu: master ? 9000 : 1500, state, speed, master, addresses,
+  });
+  db.network = {
+    scanned: t - 240,
+    devices: [
+      nic('ens3', '3c:ec:ef:10:22:01', 'up', 1000, null, ['192.0.2.10/24']),
+      nic('ens4', '3c:ec:ef:10:22:02', 'up', 25000, 'bond0'),
+      nic('ens5', '3c:ec:ef:10:22:03', 'up', 25000, 'bond0'),
+      nic('ens6', '3c:ec:ef:10:22:04', 'up', 10000, null, ['172.16.50.5/24']),
+      nic('ens7', '3c:ec:ef:10:22:05', 'down', null),
+      { name: 'bond0', kind: 'bond', mac: '3c:ec:ef:10:22:02', mtu: 9000, state: 'up', speed: 50000, master: null, addresses: [] },
+      { name: 'bond0.20', kind: 'vlan', mac: '3c:ec:ef:10:22:02', mtu: 9000, state: 'up', speed: 50000, master: null, addresses: ['10.0.20.5/24'] },
+    ],
+    config: {
+      interfaces: [
+        netIface({ name: 'bond0', kind: 'bond', ports: ['ens4', 'ens5'], mode: '802.3ad', mtu: 9000 }),
+        netIface({ name: 'bond0.20', kind: 'vlan', parent: 'bond0', vlan_id: 20, role: 'data', mtu: 9000, addresses: ['10.0.20.5/24'], routes: [{ to: '10.30.0.0/16', via: '10.0.20.1' }] }),
+        netIface({ name: 'ens6', kind: 'ethernet', role: 'replication', addresses: ['172.16.50.5/24'] }),
+      ],
+      offsite_role: 'management',
+    },
+    management: { ifname: 'ens3', source: 'console' },
+    reset: null,
+    pending: null as Json | null,
+    mtu: {
+      ts: t - 1800,
+      results: [
+        { role: 'data', addr: '10.0.20.11', dev: 'bond0.20', expected_dev: 'bond0.20', mtu: 9000, result: 'ok', path_mtu: null },
+        { role: 'data', addr: '10.0.20.12', dev: 'bond0.20', expected_dev: 'bond0.20', mtu: 9000, result: 'ok', path_mtu: null },
+        { role: 'data', addr: '10.30.4.20', dev: 'bond0.20', expected_dev: 'bond0.20', mtu: 9000, result: 'mismatch', path_mtu: 1500 },
+        { role: 'replication', addr: '172.16.50.9', dev: 'ens6', expected_dev: 'ens6', mtu: 1500, result: 'ok', path_mtu: null },
+        { role: 'offsite', addr: '198.51.100.40', dev: 'ens3', expected_dev: null, mtu: 1500, result: 'no_reply', path_mtu: null },
+      ],
+    },
+    ops: [
+      { id: rand(16), op: 'apply', state: 'done', by: 'admin', quorum_id: null, created: t - 6 * 86400, finished: t - 6 * 86400 + 4, detail: 'applied: nexus-bond0, nexus-ens6, nexus-bond0.20', error: null },
+    ] as Json[],
+  };
+}
+function netView() {
+  const n = db.network;
+  const t = now();
+  if (n.pending && n.pending.deadline <= t) netFinish(false, null);
+  return {
+    available: true, stale: false, scanned: n.scanned, devices: n.devices, config: n.config, management: n.management, reset: n.reset,
+    pending: n.pending ? { id: n.pending.id, by: n.pending.by, deadline: n.pending.deadline, remaining: n.pending.deadline - t } : null,
+    mtu: n.mtu, ops: [...n.ops].sort((a: Json, b: Json) => b.created - a.created),
+    request_pending: db.quorum.filter((q) => q.action === 'network.apply' && q.state === 'pending').pop()?.id ?? null,
+    confirm_secs: 120, client_ip: CLIENT_IP,
+  };
+}
+const netMgmtChain = (c: Json) => {
+  const m = c.interfaces.find((i: Json) => i.role === 'management');
+  return JSON.stringify(m ? [m, c.interfaces.find((i: Json) => i.name === m.parent) ?? null] : []);
+};
+function netValidate(c: Json) {
+  const nics = db.network.devices.filter((d: Json) => d.kind === 'nic').map((d: Json) => d.name);
+  const used = new Map<string, string>();
+  const roles = new Set<string>();
+  const ifs: Json[] = Array.isArray(c?.interfaces) ? c.interfaces : [];
+  if (ifs.length > 16) throw new HttpError(400, 'at most 16 interfaces');
+  const take = (nic: string, what: string, n: string) => {
+    if (!nics.includes(nic)) throw new HttpError(400, `${n}: there is no network card "${nic}"`);
+    if (used.has(nic)) throw new HttpError(400, `${nic} is used twice (${used.get(nic)} and ${what})`);
+    used.set(nic, what);
+  };
+  for (const i of ifs) {
+    const n = String(i.name ?? '');
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$/.test(n)) throw new HttpError(400, `"${n}": an interface name has 1-15 letters, digits, '.', '_' or '-'`);
+    if (i.kind === 'ethernet') take(n, `interface ${n}`, n);
+    else if (i.kind === 'bond') {
+      if (!['active-backup', '802.3ad'].includes(i.mode)) throw new HttpError(400, `${n}: bond mode must be active-backup or 802.3ad (LACP)`);
+      if (!i.ports?.length || i.ports.length > 8) throw new HttpError(400, `${n}: a bond has 1 to 8 ports`);
+      for (const p of i.ports) take(p, `bond ${n}`, n);
+    } else if (i.kind === 'vlan') {
+      if (!(i.vlan_id >= 1 && i.vlan_id <= 4094)) throw new HttpError(400, `${n}: VLAN ID must be 1 to 4094`);
+      if (!ifs.some((x) => x.name === i.parent && x.kind !== 'vlan') && !nics.includes(i.parent)) throw new HttpError(400, `${n}: parent "${i.parent}" is neither a network card nor an interface here`);
+    } else throw new HttpError(400, `${n}: kind must be ethernet, bond or vlan`);
+    if (i.role) {
+      if (roles.has(i.role)) throw new HttpError(400, `only one interface can have the role ${i.role}`);
+      roles.add(i.role);
+    }
+    if (i.mtu != null && !(i.mtu >= 1280 && i.mtu <= 9216)) throw new HttpError(400, `${n}: MTU must be 1280 to 9216`);
+    for (const a of i.addresses ?? []) if (!/^[0-9a-fA-F:.]+\/\d{1,3}$/.test(a)) throw new HttpError(400, `${n}: "${a}" is not address/prefix (192.0.2.10/24)`);
+    if (i.gateway && i.role !== 'management') throw new HttpError(400, `${n}: only the management interface has a default gateway; reach other networks with routes`);
+    if (i.role === 'management' && !i.dhcp && !(i.addresses ?? []).length) throw new HttpError(400, `${n}: the management interface needs DHCP or an address`);
+    for (const r of i.routes ?? []) if (!/\/\d{1,3}$/.test(r.to) || /\/0$/.test(r.to)) throw new HttpError(400, `${n}: route "${r.to}" is not a network (10.30.0.0/16)`);
+  }
+  const hadMgmt = db.network.config.interfaces.some((i: Json) => i.role === 'management');
+  if (hadMgmt && !roles.has('management')) throw new HttpError(400, 'the management interface cannot be removed, only changed (or reset at the console)');
+  if (!roles.has('management') && used.has(db.network.management.ifname))
+    throw new HttpError(400, `${db.network.management.ifname} is the management network card (set at the console); it cannot be used as ${used.get(db.network.management.ifname)}. Give an interface the management role to move the management network.`);
+}
+function netFinish(keep: boolean, by: string | null) {
+  const n = db.network;
+  const p = n.pending;
+  if (!p) return;
+  const op = n.ops.find((o: Json) => o.id === p.id);
+  if (keep) Object.assign(op, { state: 'done', detail: `applied; management change confirmed by ${by}`, finished: now() });
+  else {
+    n.config = p.prev;
+    Object.assign(op, { state: 'rolled_back', detail: by ? `reverted by ${by}` : 'not confirmed within 120 s', finished: now() });
+  }
+  n.management = n.config.interfaces.some((i: Json) => i.role === 'management')
+    ? { ifname: n.config.interfaces.find((i: Json) => i.role === 'management').name, source: 'config' }
+    : { ifname: 'ens3', source: 'console' };
+  n.pending = null;
+}
+/** An approved network.apply: what nexus-net would do. */
+function netExecute(p: Json, by: string, qid: number) {
+  const n = db.network;
+  if (JSON.stringify(n.config) !== JSON.stringify(p.old)) {
+    n.ops.push({ id: rand(16), op: 'apply', state: 'refused', by, quorum_id: qid || null, created: now(), finished: now(), detail: null, error: 'the network configuration changed since this request was made; request the change again' });
+    return;
+  }
+  const prev = n.config;
+  n.config = structuredClone(p.config);
+  const id = rand(16);
+  if (netMgmtChain(prev) !== netMgmtChain(n.config)) {
+    n.ops.push({ id, op: 'apply', state: 'confirming', by, quorum_id: qid || null, created: now(), finished: null, detail: null, error: null });
+    n.pending = { id, by, deadline: now() + 120, prev };
+  } else {
+    n.ops.push({ id, op: 'apply', state: 'done', by, quorum_id: qid || null, created: now(), finished: now(), detail: `applied: ${n.config.interfaces.map((i: Json) => `nexus-${i.name}`).join(', ') || 'profiles removed'}`, error: null });
+  }
+}
+function netReader(c: { user: User | null }) {
+  const u = need(c.user, 'admin', 'security_officer', 'operator', 'viewer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  return u;
+}
+on('GET', '/network', (c) => (netReader(c), [200, netView()]));
+on('PUT', '/network', async (c) => {
+  const u = netReader(c);
+  need(u, 'admin');
+  const n = db.network;
+  if (n.pending && n.pending.deadline > now()) throw new HttpError(409, 'a change of the management interface waits for its confirmation; confirm or revert it first');
+  const cfg = { interfaces: (c.body.config?.interfaces ?? []).map(netIface), offsite_role: c.body.config?.offsite_role ?? 'management' };
+  if (JSON.stringify(cfg) === JSON.stringify(n.config)) return [200, { unchanged: true }];
+  netValidate(cfg);
+  return quorum(u, 'network.apply', { config: cfg, old: structuredClone(n.config), management_change: netMgmtChain(n.config) !== netMgmtChain(cfg) });
+});
+on('POST', '/network/confirm', async (c) => {
+  const u = need(netReader(c), 'admin');
+  const p = db.network.pending;
+  if (!p || p.id !== c.body.id || p.deadline <= now()) throw new HttpError(409, 'no such change waits for confirmation (confirmed, reverted or rolled back already)');
+  const keep = !!c.body.keep;
+  netFinish(keep, u.name);
+  await audit(u.name, keep ? 'network.confirm' : 'network.revert', 'network', { id: p.id, from: CLIENT_IP });
+  return [202, { id: p.id, keep }];
+});
+on('POST', '/network/mtu-check', async (c) => {
+  const u = need(netReader(c), 'admin', 'operator');
+  const id = rand(16);
+  db.network.ops.push({ id, op: 'mtu_check', state: 'done', by: u.name, quorum_id: null, created: now(), finished: now(), detail: 'path-MTU check requested', error: null });
+  db.network.mtu.ts = now();
+  await audit(u.name, 'network.mtu_check', 'network', { id });
+  return [202, { id, state: 'queued' }];
 });
 
 // ---------------------------------------------------------------- hardware (Phase 16a/b)

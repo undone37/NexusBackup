@@ -71,6 +71,7 @@ DEFAULTS = {
     "SYSTEMCTL": "systemctl",
     "AUSEARCH": "ausearch",
     "DISKS_STATUS": "/var/lib/nexus/disks/status.json",  # nexus-disks
+    "NET_STATUS": "/var/lib/nexus/net/status.json",  # nexus-net (path-MTU results)
     "GRUB_USER": "/etc/nexus/grub-user.cfg",  # boot menu password hash (nexus-setup)
     "GRUB_BOOT": "/boot/grub2/user.cfg",  # its installed copy (nexus-grub-password)
     "DORMANT_ADMIN_DAYS": "90",  # posture: when the dormant-account setting is off
@@ -442,6 +443,36 @@ def smart():
     return "pass", 1, f"{len(st.get('disks') or [])} disk(s), {smart_ok} with SMART, {len(st.get('arrays') or [])} array(s) healthy"
 
 
+def net_mtu():
+    """Path MTU to the destinations of each role as nexus-net last measured it (Phase 22a): ICMP
+    echo with DF at the interface MTU. nexus-diag itself sends nothing (it has no network)."""
+    try:
+        with open(cfg("NET_STATUS")) as f:
+            st = json.load(f)
+    except FileNotFoundError:
+        return "skip", 1, "no network status yet (nexus-net has not run)"
+    m = st.get("mtu") or {}
+    if not m.get("ts"):
+        return "skip", 1, "the path-MTU check has not run yet"
+    age = time.time() - m["ts"]
+    if age > 3 * 3600:
+        return "warn", 2, f"the path-MTU results are {age / 3600:.0f} h old: nexus-net.timer is not running"
+    res = m.get("results") or []
+    small = [f"{r.get('addr')} ({r.get('role')}): interface {r.get('dev')} has MTU {r.get('mtu')}, the path takes "
+             f"{r.get('path_mtu') or 'less'}" for r in res if r.get("result") == "mismatch"]
+    wrong = [f"{r.get('addr')} ({r.get('role')}) is routed through {r.get('dev')}, but the role's interface is "
+             f"{r.get('expected_dev')} (the firewall blocks it)" for r in res
+             if r.get("expected_dev") and r.get("dev") and r.get("dev") != r.get("expected_dev")]
+    if small or wrong:
+        return "warn", 2, "; ".join(small + wrong)
+    if not res:
+        return "pass", 1, "no source, offsite or replication destinations to check"
+    ok = sum(1 for r in res if r.get("result") == "ok")
+    silent = sum(1 for r in res if r.get("result") in ("no_reply", "no_route"))
+    return "pass", 1, f"{ok} destination(s) take the full interface MTU" + (
+        f"; {silent} did not answer ping (not judged)" if silent else "")
+
+
 # ---------------------------------------------------------------- security posture (Phase 21b)
 # Recommendations, never update blockers: pass or warn (severity 2). Catalog based except the
 # boot menu password; the Security posture card (Settings → Diagnostics) shows these rows.
@@ -601,6 +632,7 @@ def checks():
         check("systemd.failed", "Failed system services", failed_units),
         check("bootc", "OS image (bootc)", bootc),
         check("smart", "Disk health (SMART)", smart),
+        check("network.mtu", "Network: path MTU", net_mtu),
     ]
     return out + posture_checks()
 
