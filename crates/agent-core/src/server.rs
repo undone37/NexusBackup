@@ -387,11 +387,17 @@ impl<P: Platform> Agent<P> {
         }
         let r = match mode {
             Mode::Uninitialized => Ok(()),
-            Mode::Locked(_) => error(
-                &mut s,
-                E_LOCKED,
-                "enrollment locked after too many failed proofs; run nexus-agent init again",
-            ),
+            Mode::Locked(_) => {
+                // read the client's request first: closing with unread data makes the
+                // kernel send a RST that can overtake the answer (client sees EPIPE)
+                s.sock.set_read_timeout(Some(Duration::from_secs(30)))?;
+                let _ = read_msg(&mut s);
+                error(
+                    &mut s,
+                    E_LOCKED,
+                    "enrollment locked after too many failed proofs; run nexus-agent init again",
+                )
+            }
             Mode::Enroll(_) => self.enroll(&mut s),
             Mode::Mtls { agent_id, .. } => {
                 let id = s
