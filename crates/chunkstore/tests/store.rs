@@ -155,10 +155,18 @@ fn crash_child() {
     };
     let s = open(Path::new(&dir), 0, 0);
     let mut t = s.list_snapshots().unwrap().last().map_or(0, |m| m.time);
+    let progress = Path::new(&dir).join("progress");
     loop {
         t += 1;
         let idx = s.store_image(&image(t)[..], 65536).unwrap();
         s.commit_snapshot("vm", t, &[("disk", idx)]).unwrap();
+        // one byte per commit: the parent kills only after this round made progress
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&progress)
+            .unwrap();
+        std::io::Write::write_all(&mut f, b".").unwrap();
     }
 }
 
@@ -173,7 +181,19 @@ fn survives_kill_9() {
             .env("CHUNKSTORE_CRASH_DIR", d.path())
             .spawn()
             .unwrap();
-        std::thread::sleep(Duration::from_millis(150 + round * 37));
+        // wait for this round's first commit (slow CI runners need more than a fixed delay), then kill
+        // at a varying point of a later write
+        let progress = d.path().join("progress");
+        let before = std::fs::metadata(&progress).map_or(0, |m| m.len());
+        let start = std::time::Instant::now();
+        while std::fs::metadata(&progress).map_or(0, |m| m.len()) <= before {
+            assert!(
+                start.elapsed() < Duration::from_secs(60),
+                "child made no progress in round {round}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(20 + round * 37));
         child.kill().unwrap(); // SIGKILL on unix
         child.wait().unwrap();
     }

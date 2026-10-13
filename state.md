@@ -376,7 +376,7 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 - [x] lab check lists every distinct AVC (tail -20 had hidden the keyd denial)
 - [x] network.sh (apply, egress, MTU ok/mismatch, mgmt rollback/confirm), disks.sh (RAID6/XFS create, fail, replace + rebuild, alerts resolve; mdadm needs CAP_MKNOD), grub-lock.sh, restore tests + recovery plan on PVE, lab/linux enroll/backup/incr/endpoint — all enforcing, 0 nexus AVCs
 - [x] lab/edge: enroll, assign (rendezvous), refuse unknown certs, backup via the edge with 7444 blocked, endpoint request via the edge (start 2 s), signed edge update 0.1.0→0.1.1, check (443+7445 only, 0 AVCs). Fixed: edge_enroll refused as "invalid tenant"; edge image build; lab config lacked edge_update_dir
-- [ ] lab/linux/bmr.sh rerun on the final image
+- [x] lab/linux/bmr.sh with the current code: backup 332 s, check-in 13 s, recover 32 s, first boot 11 s; host name, 2723-file sample, LVM thin pool + XFS layout equal, PostgreSQL running
 - CI on bf5e4da: all Rust tests green; `prove pve-plugin/t` failed because the runner lacked libjson-perl (installed by the maintainer)
 - [x] CI: gh-runner rootless podman repaired by the maintainer (linger, store reset, XDG_RUNTIME_DIR in the runner .env)
 - [ ] screenshots regenerate, tag v0.1.0-alpha (draft)
