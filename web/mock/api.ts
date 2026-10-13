@@ -416,6 +416,15 @@ function planFor(kind: string, p: Json): string[] {
         'attach: keys recovered, 37 packs and 5 snapshots indexed',
       ];
     case 'files_get':
+      if (p.params?.mail_format)
+        // contract v1.9: the plugin converts (no secrets, no network), the host packs its output
+        return [
+          `$ nexus-pluginhost plugin.json export ${p.download_token}.${p.format} ${(p.paths ?? []).join(' ')}`,
+          'sandbox: landlock ABI 6 (tcp ports), seccomp allowlist, no_new_privs, memory 2048 MiB',
+          `plugin: converting mail as ${p.params.mail_format}${p.params.mail_format === 'pst' ? ` (files of at most ${p.params.pst_max_gb ?? 20} GB)` : ''}`,
+          `exported {"files": 4, "summary": "exported 5 messages as ${p.params.mail_format === 'pst' ? 'PST (u.0c9d1c7a-1111-4222-8333-444455556666.pst)' : 'mbox (4 folders)'}, 4 other items as stored"}`,
+          '4 entries written',
+        ];
       return [`mounting ${src} @ ${p.time}`, `packing ${(p.paths ?? []).length} path(s) as ${p.format}`, 'archive ready'];
     case 'restore':
     case 'restore_ct': {
@@ -636,6 +645,25 @@ function listDir(path: string, source: string): Json[] {
           '/data': [d('base'), d('global'), d('pg_wal'), f('PG_VERSION', 3), f('backup_manifest', 412_771), f('postgresql.auto.conf', 88)],
           '/wal': [f('00000001000000A200000041', 16 << 20), f('00000001000000A200000042', 16 << 20), f('00000001000000A200000043', 16 << 20)],
         };
+    return tree[path] ?? [];
+  }
+  if (source.startsWith('plugin-m365-')) {
+    // plugins/m365: a user's mailbox + OneDrive (mail as .eml per folder, docs/m365.md)
+    const tree: Record<string, Json[]> = {
+      '/': [d('calendar'), d('contacts'), d('mail'), d('onedrive'), d('recoverable')],
+      '/mail': [d('Inbox'), d('Sent Items')],
+      '/mail/Inbox': [d('Projects'), f('Quarterly report ~3f9a0c1d2e4b.eml', 412_771), f('Lunch on Friday ~9c1e22a0b7d4.eml', 6_211)],
+      '/mail/Inbox/Projects': [f('Kickoff agenda ~1b0e9d7c33a2.eml', 88_412)],
+      '/mail/Sent Items': [f('Re: Quarterly report ~77ad01c4e9b0.eml', 9_870)],
+      '/recoverable': [d('Deletions')],
+      '/recoverable/Deletions': [f('Old newsletter ~5e2c0f8a9d11.eml', 31_220)],
+      '/calendar': [d('Calendar')],
+      '/calendar/Calendar': [f('2026-10-12 Planning ~5eb8a464f306.ics', 2_104)],
+      '/contacts': [d('Contacts')],
+      '/contacts/Contacts': [f('Bob Builder ~0a1b2c3d4e5f.vcf', 611)],
+      '/onedrive': [d('Documents')],
+      '/onedrive/Documents': [f('budget-2026.xlsx', 501_877)],
+    };
     return tree[path] ?? [];
   }
   if (source.startsWith('nas-') || source.startsWith('share-') || source.startsWith('plugin-truenas-')) {
@@ -1396,7 +1424,7 @@ function seedM365(t: number) {
   if (start + 540 <= t) {
     const stamp = (i: number) => new Date((start + 2 + i * 90) * 1000).toISOString();
     const lines = [
-      'starting nexus-pluginhost: m365 1.2.0 (sandbox: landlock + seccomp)',
+      'starting nexus-pluginhost: m365 1.3.0 (sandbox: landlock + seccomp)',
       `base ${user}/${start - 86400} (18,422 entries)`,
       'plugin[warn]: skipped mail/Inbox/Quarterly report ~3f9a0c1d2e4b.eml: GET /v1.0/users/…/messages/…/$value: 500 ErrorInternalServerError',
       'plugin[warn]: skipped onedrive/Projects/model.xlsx: GET /v1.0/drives/…/items/…/content: 503 serviceNotAvailable',
@@ -3233,6 +3261,18 @@ on('POST', '/jobs', async (c) => {
   if (kind === 'files_list' && !String(params.path ?? '').startsWith('/')) throw new HttpError(400, 'path: must be absolute');
   checkJob(u, kind, tenant, params);
   if (kind === 'files_get' && !canDownload(u)) throw new HttpError(403, 'this account may not download files');
+  if (kind === 'files_get' && params.params && Object.keys(params.params).length) {
+    // contract v1.9: only plugin snapshots whose `download` has a params_schema (web-api jobs.rs)
+    const pid = /^plugin-([a-z0-9-]+?)-\d+/.exec(String(params.source ?? ''))?.[1];
+    const plugin = db.plugins.find((x: Json) => x.id === pid && x.current);
+    const schema = plugin?.manifest?.kinds?.[0]?.restores?.find((r: Json) => r.id === 'download')?.params_schema;
+    if (!schema) throw new HttpError(400, "params: this snapshot's download takes no parameters");
+    for (const [k, v] of Object.entries(params.params as Json)) {
+      const prop = schema.properties?.[k];
+      if (!prop) throw new HttpError(400, `params: unknown field ${k}`);
+      if (prop.enum && !prop.enum.includes(v)) throw new HttpError(400, `params.${k}: one of ${prop.enum.join(', ')}`);
+    }
+  }
   if (PAUSED_KINDS.includes(kind) && tenantOff(tenant)) throw new HttpError(409, `tenant ${tenant} is deactivated: no ${kind} jobs until it is reactivated`);
   if (kind === 'backup') backupGuests(params);
   if (params.replace) {

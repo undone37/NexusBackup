@@ -445,6 +445,9 @@ export const en = {
       "Select files or folders, then restore them onto a host with an agent.",
     streamsHint:
       "Application streams of this plugin backup (e.g. database dumps) are under .nexus-streams/.",
+    convert: "Conversion",
+    convertHint:
+      "The plugin converts the selection on the appliance (no network, no credentials), e.g. mail as mbox or Outlook PST. Everything else stays as stored.",
   },
   restoreFiles: {
     title: (s: string) => `Restore files from ${s}`,
