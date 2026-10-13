@@ -789,3 +789,46 @@ fn restore_to_another_host_from_share_plugin_and_vm_tar() {
         .filter(|x| x.path.starts_with(b"sda1"))
         .all(|x| x.uid == u32::MAX));
 }
+
+/// Fleet scan + enrollment with the fleet secret digest (docs/agent-protocol.md
+/// "Fleet enrollment"): only agents of the fleet answer, host info is sanitised, a
+/// wrong digest finds nothing, closed ports are skipped quietly.
+#[test]
+fn fleet_scan_then_enrollment() {
+    const FLEET: &str = "nxf1.0011223344556677.MFRGGZDFMZTWQ2LKNNWG23TPOA";
+    let d = tempfile::tempdir().unwrap();
+    let ca = Ca::load_or_create(&d.path().join("ca")).unwrap();
+    let agent = FakeAgent::start(d.path(), d.path(), Some(FLEET));
+    let closed = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let digest = agent_proto::token_digest(FLEET);
+    let pace = agent_conn::fleet::Pace {
+        parallel: 4,
+        rate: 50,
+        timeout: Duration::from_secs(2),
+    };
+    let found = std::sync::Mutex::new(Vec::new());
+    let targets = vec!["127.0.0.1".to_string(), "localhost".to_string()];
+    let n = agent_conn::fleet::scan(&ca, &targets, agent.port(), "0011223344556677", &digest, &pace, &|f| {
+        found.lock().unwrap().push(f.clone())
+    });
+    assert_eq!(n, 2);
+    let f = found.lock().unwrap()[0].clone();
+    assert_eq!(
+        (f.port, f.hostname.as_str(), f.os.as_str()),
+        (agent.port(), "fake-host[2J", "FakeOS 1")
+    );
+    let none = |id: &str, digest: &str, port: u16| {
+        agent_conn::fleet::scan(&ca, &targets[..1], port, id, digest, &pace, &|_| panic!("found"))
+    };
+    assert_eq!(
+        none(
+            "0011223344556677",
+            &agent_proto::token_digest("nxf1.0011223344556677.OTHER"),
+            agent.port()
+        ),
+        0
+    );
+    assert_eq!(none("ffffffffffffffff", &digest, agent.port()), 0);
+    assert_eq!(none("0011223344556677", &digest, closed), 0);
+    enroll::enroll(&ca, "127.0.0.1", agent.port(), &digest, ID, T).unwrap();
+}

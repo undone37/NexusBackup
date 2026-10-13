@@ -77,6 +77,41 @@ and ServiceControl rows, custom action types and conditions, upgrade code, no to
 property, x64 template, extracted file layout. **A real installation has not run on
 Windows** (no Windows VMs); add the MSI to the manual test plan below.
 
+## Fleet deployment (GPO / Intune / Ansible)
+
+For many machines the MSI takes a reusable, time-limited **fleet secret** from the appliance
+(Agents → Fleet → New fleet secret; manual chapter 04 "Fleet enrollment", protocol:
+docs/agent-protocol.md "Fleet enrollment"):
+
+```
+msiexec /i nexus-agent-<v>-x64.msi /qn FLEETSECRET=nxf1.<fleet id>.<secret>
+```
+
+- The deferred custom action `FleetInit` (LocalSystem, after `ServiceSetup`, before the
+  service starts) runs `nexus-agent.exe init --fleet-secret <secret>`: the agent keeps only
+  `token_digest(secret)` plus the fleet id and starts in enrollment mode ("awaiting fleet
+  enrollment") instead of stopping as "not initialised". The appliance finds it in its next
+  scan of the fleet's ranges; after acceptance (manual by default) the normal enrollment
+  follows.
+- `MsiHiddenProperties` keeps `FLEETSECRET` out of the MSI log. The custom action's command
+  line contains the secret while it runs (seconds, LocalSystem); GPO/Intune store it in their
+  deployment configuration. That is acceptable for a fleet secret, unlike a one-time per-host
+  token: it is time-limited (≤ 30 days), optionally capped, revocable, only usable inside the
+  scanned ranges, and a host enrolled with it still has to be accepted (docs/threat-model.md).
+- On an enrolled agent (upgrade, GPO re-run) `init --fleet-secret` is refused and the custom
+  action's failure is ignored (`Return="ignore"`): the enrollment is kept.
+- Without the MSI: `nexus-agent.exe init --fleet-secret -` (secret on stdin), then
+  `sc.exe start NexusAgent`.
+
+GPO: computer configuration → software installation cannot pass properties directly; use a
+transform (`.mst` setting `FLEETSECRET`, e.g. made with Orca) or a startup script running the
+`msiexec` line above. Intune: Windows app (Win32 or line-of-business), install command
+`msiexec /i nexus-agent-<v>-x64.msi /qn FLEETSECRET=<secret>`, device context. Allow TCP 7444
+from the appliance in the Windows firewall (GPO / Intune endpoint protection profile).
+
+**Untested on Windows** like the rest of the MSI (see below); `release/test-packages.sh`
+checks the custom action row and its condition on Linux.
+
 ## Desktop UI (`nexus-agent-gui.exe`)
 
 The MSI also installs the desktop UI from `crates/agent-gui` (shared with Linux desktops, docs/endpoint-ui.md):

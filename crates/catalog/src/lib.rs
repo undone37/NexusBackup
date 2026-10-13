@@ -13,6 +13,7 @@ pub mod alerting;
 pub mod auth;
 pub mod console;
 pub mod firewall;
+pub mod fleet;
 pub mod forwarding;
 pub mod hardware;
 pub mod holds;
@@ -560,6 +561,62 @@ CREATE TABLE agent_sessions (
 CREATE INDEX agent_sessions_pending ON agent_sessions(agent_id) WHERE delivered IS NULL;
 "#;
 
+/// v27 (Phase 24d, fleet enrollment, `catalog::fleet`): `fleets` (reusable,
+/// time-limited fleet secrets: digest sealed to the scheduler, expiry, max uses,
+/// auto-accept, agent port, address ranges to scan, default template group and
+/// hostname rules, revocation), `fleet_candidates` (agents a scan found awaiting
+/// enrollment: endpoint, reported hostname / OS / version, decision) and
+/// `agents.fleet_id` (enrolled with that fleet's secret instead of a token).
+/// Purely additive: the previous release ignores the tables and the column.
+const SCHEMA_V27: &str = r#"
+CREATE TABLE fleets (
+  id TEXT PRIMARY KEY, tenant TEXT NOT NULL REFERENCES tenants(name), name TEXT NOT NULL,
+  secret_hash TEXT NOT NULL, created INTEGER NOT NULL, created_by TEXT NOT NULL, expires INTEGER NOT NULL,
+  max_uses INTEGER, uses INTEGER NOT NULL DEFAULT 0, revoked INTEGER NOT NULL DEFAULT 0,
+  auto_accept INTEGER NOT NULL DEFAULT 0, port INTEGER NOT NULL, ranges TEXT NOT NULL DEFAULT '[]',
+  default_group TEXT, group_rules TEXT NOT NULL DEFAULT '[]', last_scan INTEGER);
+CREATE TABLE fleet_candidates (
+  id INTEGER PRIMARY KEY, fleet_id TEXT NOT NULL REFERENCES fleets(id), host TEXT NOT NULL, port INTEGER NOT NULL,
+  hostname TEXT NOT NULL, os TEXT NOT NULL, version TEXT NOT NULL, first_seen INTEGER NOT NULL,
+  last_seen INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'awaiting' CHECK (state IN ('awaiting','accepted','rejected')),
+  agent_id TEXT, decided_by TEXT, UNIQUE (fleet_id, host, port));
+ALTER TABLE agents ADD COLUMN fleet_id TEXT;
+"#;
+
+/// v28 (Phase 21a, docs/ransomware-signals.md): the anomaly flag of a
+/// snapshot (`snapshots.anomaly` = the reasons, NULL = clean; set by the
+/// scheduler's change-rate and file-level checks; a security officer clears it
+/// with a note: `anomaly_cleared_by/_at`, `anomaly_note`, the reason stays) and
+/// the file-level change counts of a backup against the previous snapshot
+/// (`backup_stats.files_added/_changed/_deleted`, NULL = not computed: no name
+/// index). Purely additive: the previous release ignores the columns.
+const SCHEMA_V28: &str = r#"
+ALTER TABLE snapshots ADD COLUMN anomaly TEXT;
+ALTER TABLE snapshots ADD COLUMN anomaly_at INTEGER;
+ALTER TABLE snapshots ADD COLUMN anomaly_cleared_by TEXT;
+ALTER TABLE snapshots ADD COLUMN anomaly_cleared_at INTEGER;
+ALTER TABLE snapshots ADD COLUMN anomaly_note TEXT;
+ALTER TABLE backup_stats ADD COLUMN files_added INTEGER;
+ALTER TABLE backup_stats ADD COLUMN files_changed INTEGER;
+ALTER TABLE backup_stats ADD COLUMN files_deleted INTEGER;
+"#;
+
+/// v31 (Phase 21c, passkeys, docs/control-plane.md "Passkeys"): `passkeys`
+/// holds the WebAuthn credentials registered as a second factor: credential id
+/// (base64url, unique appliance-wide), COSE algorithm (-7 ES256, -8 EdDSA), the
+/// raw public key (uncompressed P-256 point or Ed25519 key), the relying party ID
+/// it was registered for and the signature counter. Purely additive: the
+/// previous release ignores the table (passkey users sign in with TOTP there).
+const SCHEMA_V31: &str = r#"
+CREATE TABLE passkeys (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  cred_id TEXT NOT NULL UNIQUE, name TEXT NOT NULL, alg INTEGER NOT NULL CHECK (alg IN (-7, -8)),
+  public_key BLOB NOT NULL, rp_id TEXT NOT NULL, sign_count INTEGER NOT NULL DEFAULT 0,
+  created INTEGER NOT NULL, last_used INTEGER);
+CREATE INDEX passkeys_user ON passkeys(user_id);
+"#;
+
 /// v29 (Phase 19a, docs/bmr.md): `rescue_sessions` — bare-metal recovery / P2V of a
 /// Linux agent's host. `id` is the rescue agent's temporary agent id; `lookup` the
 /// public lookup key of the one-time recovery token (`agent_proto::rescue_lookup`);
@@ -567,8 +624,7 @@ CREATE INDEX agent_sessions_pending ON agent_sessions(agent_id) WHERE delivered 
 /// enrolled); `state` issued → waiting (checked in) → running → done | failed |
 /// cancelled | expired; `host`/`port`/`disks` from the rescue console's check-in;
 /// `snapshot_time` the chosen snapshot; `p2v` the PVE VM parameters (NULL = bare
-/// metal). Purely additive: the previous release never reads it. (v27 / v28 are
-/// reserved for Phases 24d / 21a.)
+/// metal). Purely additive: the previous release never reads it. (v30 is reserved; ordered before v31.)
 const SCHEMA_V29: &str = r#"
 CREATE TABLE rescue_sessions (
     id            TEXT PRIMARY KEY,
@@ -598,7 +654,8 @@ CREATE INDEX rescue_sessions_agent ON rescue_sessions (agent_id);
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
-    SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V29,
+    SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
+    SCHEMA_V29, SCHEMA_V31,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1356,6 +1413,50 @@ mod tests {
             })
             .unwrap();
         assert_eq!((state.as_str(), disks.as_str(), reboot), ("issued", "[]", true));
+    }
+
+    /// v31 (passkeys) on top of the previous catalog: the table starts empty,
+    /// credentials go when their user goes; the previous release still signs in.
+    #[test]
+    fn migration_v31_passkeys() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V31).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute(
+                "INSERT INTO users (name, password_hash, totp_secret, role, created) VALUES ('a', 'h', 's', 'admin', 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            conn.execute(
+                "INSERT INTO passkeys (user_id, cred_id, name, alg, public_key, rp_id, created) VALUES (1, 'x', 'k', -7, x'04', 'h', 1)",
+                [],
+            )
+            .unwrap();
+            assert!(conn
+                .execute(
+                    "INSERT INTO passkeys (user_id, cred_id, name, alg, public_key, rp_id, created) VALUES (1, 'y', 'k', -257, x'04', 'h', 1)",
+                    [],
+                )
+                .is_err());
+            conn.execute("DELETE FROM users", []).unwrap();
+            let n: i64 = conn
+                .query_row("SELECT COUNT(*) FROM passkeys", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0);
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        old.execute("UPDATE users SET last_login = 5", []).unwrap();
     }
 
     /// v26 (endpoint status) on top of the previous catalog: existing agents are
@@ -2271,6 +2372,47 @@ mod tests {
         old.execute("DELETE FROM snapshots WHERE tenant = 'acme'", []).unwrap();
     }
 
+    /// v27 (fleet enrollment) on top of the previous catalog: existing agents keep
+    /// working (no fleet), fleets and candidates can be stored, a candidate endpoint
+    /// is unique per fleet, the state is checked.
+    #[test]
+    fn migration_v27_fleets() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V27).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO tenants (name) VALUES ('acme');
+                 INSERT INTO agents (id, tenant, name, host, port) VALUES ('0123456789abcdef', 'acme', 'web', 'h', 7444);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let f: Option<String> = conn.query_row("SELECT fleet_id FROM agents", [], |r| r.get(0)).unwrap();
+        assert_eq!(f, None);
+        conn.execute_batch(
+            "INSERT INTO fleets (id, tenant, name, secret_hash, created, created_by, expires, port)
+               VALUES ('00112233aabbccdd', 'acme', 'f', 'sealed', 1, 'alice', 2, 7444);
+             INSERT INTO fleet_candidates (fleet_id, host, port, hostname, os, version, first_seen, last_seen)
+               VALUES ('00112233aabbccdd', '10.0.0.5', 7444, 'web-1', 'Debian', '0.1', 1, 1);",
+        )
+        .unwrap();
+        assert!(conn
+            .execute(
+                "INSERT INTO fleet_candidates (fleet_id, host, port, hostname, os, version, first_seen, last_seen)
+                 VALUES ('00112233aabbccdd', '10.0.0.5', 7444, 'x', 'x', 'x', 2, 2)",
+                [],
+            )
+            .is_err());
+        assert!(conn.execute("UPDATE fleet_candidates SET state = 'maybe'", []).is_err());
+    }
+
     /// v25 (tenant admins) on top of the previous catalog: existing tenants get
     /// distinct uids, new ones get one from the trigger; names and uids are
     /// immutable; old audit entries naming a tenant are indexed (chain intact);
@@ -2358,5 +2500,60 @@ mod tests {
             .query_row("SELECT uid FROM tenants WHERE name = 'initech'", [], |r| r.get(0))
             .unwrap();
         assert!(u.is_some_and(|u| u.len() == 32));
+    }
+
+    /// v28 (anomaly flags, file change counts) on top of the previous catalog:
+    /// existing snapshots are clean, existing stats have no counts; the previous
+    /// release still upserts snapshots and stats.
+    #[test]
+    fn migration_v28_anomaly_flags() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V28).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('t', 'host-a', 5, 1, 0);
+                 INSERT INTO backup_stats (tenant, source, time, read, logical, new_chunks, new_plain, new_stored)
+                   VALUES ('t', 'host-a', 5, 1, 1, 1, 1, 1);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            let row: (Option<String>, Option<i64>) = conn
+                .query_row(
+                    "SELECT s.anomaly, b.files_added FROM snapshots s JOIN backup_stats b USING (tenant, source, time)",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(row, (None, None));
+            conn.execute("UPDATE snapshots SET anomaly = 'x', anomaly_at = 6", [])
+                .unwrap();
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        old.execute(
+            "INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('t', 'host-a', 5, 1, 0) \
+             ON CONFLICT (tenant, source, time) DO UPDATE SET local = 1",
+            [],
+        )
+        .unwrap();
+        old.execute(
+            "INSERT INTO backup_stats (tenant, source, time, read, logical, new_chunks, new_plain, new_stored) \
+             VALUES ('t', 'host-a', 7, 1, 1, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+        let a: Option<String> = old
+            .query_row("SELECT anomaly FROM snapshots WHERE time = 5", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(a.as_deref(), Some("x"), "the flag survives the refresh upsert");
     }
 }

@@ -45,7 +45,27 @@ menu offers only the matching ones. The appliance refuses a restore that does no
 
 Use the **Tenant** and **Guest (e.g. vm-100)** filters to narrow the list. Each row shows **Local**,
 **Offsite** and **Verified** marks, the **Locked until** date and the **Consistency** of the snapshot. A
-locked snapshot cannot be deleted before that date (see [01 Concepts](01-concepts.md)).
+locked snapshot cannot be deleted before that date (see [01 Concepts](01-concepts.md)). **Changes** opens the
+snapshot diff against the previous snapshot ([11 Alerts and monitoring](11-alerts-and-monitoring.md#snapshot-changes-diff)).
+
+### Anomalous snapshots: restore the latest clean one
+
+A snapshot with a red **Anomalous** badge was flagged by the ransomware checks: far more new data than usual, data
+that no longer compresses, ransom-note file names or a mass rename of files (see
+[11 Alerts and monitoring](11-alerts-and-monitoring.md#flagged-snapshots)). Its files may be encrypted.
+
+Every restore dialog opened on a flagged snapshot (**Full restore**, **Instant recover**, plugin restores,
+**Restore to a host…**, **Restore to path**) and the **Legal hold…** dialog **switch to the latest clean snapshot
+before it**. A yellow notice names both snapshots; **Use the flagged snapshot instead** switches back (for example to
+fetch files changed after the last clean snapshot that were not hit), **Use the latest clean snapshot** returns.
+**Restore several** picks the latest clean snapshot of each guest and notes when a newer flagged one was skipped.
+Snapshots whose flag a security officer cleared (**Flag cleared**) count as clean.
+
+![The restore dialog of a flagged snapshot](images/restore-flagged-clean.png)
+
+> **Status:** "Secure restore" (scanning a snapshot with YARA rules in the restore micro-VM before restoring it) is
+> not part of this release; it is planned as a separate step. The file browser and **Find files** show flagged
+> snapshots without a notice.
 
 ### Consistency
 
@@ -639,8 +659,10 @@ The hold adds protection only; nothing else about the snapshot changes (restores
   **Put on hold**;
 - many snapshots at once, e.g. everything since an incident began: **Hold a time range…** at the top of
   **Snapshots**, choose the tenant, optionally one guest, the time range and the reason;
-- from a change-rate `anomaly` alert: **Hold last good snapshot** on **Alerts** puts the last snapshot before the
-  anomaly on hold (see [11 Alerts and monitoring](11-alerts-and-monitoring.md#change-rate-anomalies)).
+- from an `anomaly` alert: **Hold last good snapshot** on **Alerts** puts the last clean snapshot before the
+  anomaly on hold (see [11 Alerts and monitoring](11-alerts-and-monitoring.md#change-rate-anomalies));
+- **Legal hold…** on a flagged snapshot holds the latest clean snapshot before it by default; **Use the flagged
+  snapshot instead** holds the flagged one (for example as evidence).
 
 ![Holding every snapshot of a guest in a time range](images/snapshot-hold-range.png)
 

@@ -308,6 +308,7 @@ pub async fn put_mgmt_allow(
 pub fn execute(c: &Connection, action: &str, p: &Value) -> ApiResult<()> {
     let (key, current, new) = match action {
         "security.session" => (access::SESSION, json!(access::session_limits(c)?), &p["session"]),
+        crate::passkeys::ACTION => (crate::passkeys::POLICY, crate::passkeys::current(c)?, &p["passkeys"]),
         // requested before Phase 16c: becomes the inbound policy's `web` list
         "security.mgmt_allow" => {
             if json!(access::mgmt_allow(c)?) != p["old"] {

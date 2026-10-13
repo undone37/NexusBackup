@@ -25,12 +25,14 @@ pub mod alerts;
 pub mod approvals;
 pub mod auth;
 pub mod certs;
+pub mod changes;
 pub mod config_backup;
 pub mod console;
 pub mod dashboard;
 pub mod diag;
 pub mod endpoint;
 pub mod firewall;
+pub mod fleet;
 pub mod forwarding;
 pub mod hardware;
 pub mod holds;
@@ -40,6 +42,7 @@ pub mod jobs;
 pub mod offsite;
 pub mod oidc;
 pub mod ops;
+pub mod passkeys;
 pub mod plugins;
 pub mod quorum;
 pub mod replication;
@@ -453,6 +456,7 @@ pub fn router(st: St) -> Router {
         .route("/auth/me", get(me))
         .route("/auth/activate/begin", post(activation::begin))
         .route("/auth/activate/complete", post(activation::complete))
+        .route("/auth/activate/passkey", post(activation::passkey_options))
         .route("/auth/tokens", get(tokens::list).post(tokens::create))
         .route("/auth/tokens/{id}", axum::routing::delete(tokens::revoke))
         .route("/certificate", get(certs::get_status))
@@ -539,10 +543,23 @@ pub fn router(st: St) -> Router {
         .route("/rescue/{id}/start", post(crate::rescue::start))
         .route("/rescue/{id}/cancel", post(crate::rescue::cancel))
         .route("/agents/{id}/limits", axum::routing::put(selection::set_agent_limits))
+        .route("/agents/bulk", post(fleet::bulk_agents))
+        .route("/fleets", get(fleet::list_fleets).post(fleet::create_fleet))
+        .route("/fleets/{id}", axum::routing::delete(fleet::revoke_fleet))
+        .route("/fleets/{id}/scan", post(fleet::scan_fleet))
+        .route("/fleet/candidates", get(fleet::list_candidates))
+        .route("/fleet/candidates/{id}/accept", post(fleet::accept_candidate))
+        .route("/fleet/candidates/{id}/reject", post(fleet::reject_candidate))
         .route("/agents/{id}/ui-policy", axum::routing::put(endpoint::set_ui_policy))
         .route("/agents/{id}/laptop", axum::routing::put(endpoint::set_laptop))
         .route("/agents/{id}/sessions", get(endpoint::agent_sessions))
         .route("/snapshots", get(list_snapshots))
+        .route("/snapshots/diff", post(changes::diff))
+        .route(
+            "/snapshots/{tenant}/{source}/{time}/anomaly/clear",
+            post(changes::clear),
+        )
+        .route("/stats/trends", get(changes::trends))
         .route(
             "/snapshots/{tenant}/{source}/{time}",
             axum::routing::delete(delete_snapshot),
@@ -598,6 +615,7 @@ pub fn router(st: St) -> Router {
         .route("/replication/sources/{id}/close", post(repl::close_source))
         .route("/replication/sources/{id}/reopen", post(repl::reopen_source))
         .merge(access::routes())
+        .merge(passkeys::routes())
         .merge(firewall::routes())
         .merge(holds::routes())
         .merge(hardware::routes())

@@ -305,7 +305,25 @@ pub enum Message {
         /// a backup session is active on the agent right now
         busy: bool,
     },
-    // --- v1.5, appended: machine layout + bare-metal recovery (docs/bmr.md) ---
+    // --- v1.5, appended: fleet enrollment (docs/agent-protocol.md "v1.5"); sent in
+    // enrollment mode, before any Hello, so there is no capability to announce ---
+    /// Appliance → agent in enrollment mode, instead of `Enroll`: a scan for agents
+    /// initialised with a fleet secret. `proof` = [`enroll_proof`] of the fleet secret
+    /// digest with role `"fleet-appliance"`. Old agents fail to decode it (no failure
+    /// counted); agents of another fleet answer `Error` without counting a failure.
+    FleetProbe {
+        fleet_id: String,
+        proof: [u8; 32],
+    },
+    /// The agent's answer: its proof (role `"fleet-agent"`) and what the admin sees
+    /// before accepting it. The session ends here; enrollment is a later `Enroll`.
+    FleetInfo {
+        proof: [u8; 32],
+        hostname: String,
+        os: String,
+        agent_version: String,
+    },
+    // --- v1.6, appended: machine layout + bare-metal recovery (docs/bmr.md) ---
     /// Appliance → agent (CAP_LAYOUT), at the start of a backup: the machine layout.
     GetLayout,
     /// [`layout::Layout`] as JSON (at most `MAX_LAYOUT` bytes).
@@ -424,7 +442,7 @@ pub const CAP_LZ4: &str = "lz4";
 pub const CAP_PREPARE2: &str = "prepare2";
 /// Capability: the agent renews its certificate over the session (`RenewCert`).
 pub const CAP_RENEW: &str = "cert-renew";
-/// Capability: the agent answers `GetLayout` (Linux agents since v1.5).
+/// Capability: the agent answers `GetLayout` (Linux agents since v1.6).
 pub const CAP_LAYOUT: &str = "layout";
 /// Capability: a rescue agent (rescue ISO) that takes `RescueApply` / `RescueFinish`.
 pub const CAP_RESCUE: &str = "rescue";
@@ -610,6 +628,21 @@ pub fn rescue_lookup(token: &str) -> String {
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Fleet secrets (`nxf1.<fleet id: 16 hex>.<secret>`): the fleet id, if `s` is one.
+/// The id is not secret (it only lets an agent tell fleets apart); the whole string
+/// is, and both sides use its [`token_digest`] like an enrollment token's.
+pub fn fleet_id(s: &str) -> Option<&str> {
+    let mut it = s.trim().splitn(3, '.');
+    let (Some("nxf1"), Some(id), Some(rest)) = (it.next(), it.next(), it.next()) else {
+        return None;
+    };
+    (id.len() == 16
+        && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        && rest.len() >= 16
+        && rest.bytes().all(|b| b.is_ascii_alphanumeric()))
+    .then_some(id)
+}
+
 /// Constant-time comparison of two proofs.
 pub fn proof_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
@@ -726,6 +759,11 @@ mod tests {
         };
         assert_eq!(postcard::to_stdvec(&ex).unwrap()[0], 31);
         assert_eq!(postcard::to_stdvec(&Message::RenewOk).unwrap(), vec![35]);
+        let probe = Message::FleetProbe {
+            fleet_id: "0123456789abcdef".into(),
+            proof: [1; 32],
+        };
+        assert_eq!(postcard::to_stdvec(&probe).unwrap()[0], 40);
         let mut buf = Vec::new();
         write_msg(&mut buf, &ex).unwrap();
         assert_eq!(read_msg(&mut &buf[..]).unwrap(), ex);
@@ -829,14 +867,14 @@ mod tests {
     }
 
     #[test]
-    fn v15_messages_keep_old_encodings() {
-        assert_eq!(postcard::to_stdvec(&Message::GetLayout).unwrap(), vec![40]);
+    fn v16_messages_keep_old_encodings() {
+        assert_eq!(postcard::to_stdvec(&Message::GetLayout).unwrap(), vec![42]);
         let m = Message::RescueDone {
             job: 3,
             target: "/mnt/nexus-target".into(),
             log: "ok".into(),
         };
-        assert_eq!(postcard::to_stdvec(&m).unwrap()[0], 44);
+        assert_eq!(postcard::to_stdvec(&m).unwrap()[0], 46);
         let mut buf = Vec::new();
         write_msg(&mut buf, &m).unwrap();
         assert_eq!(read_msg(&mut &buf[..]).unwrap(), m);
@@ -893,6 +931,13 @@ mod tests {
         assert!(!proof_eq(&a, &enroll_proof("TOKEN", "appliance", &[8u8; 32])));
         assert_ne!(rescue_lookup("ABC"), token_digest("ABC"));
         assert_eq!(rescue_lookup("ABC\n").len(), 64);
+        assert_eq!(
+            fleet_id("nxf1.0123456789abcdef.ABCDEFGHIJKLMNOPQRSTUVWXYZ\n"),
+            Some("0123456789abcdef")
+        );
+        assert_eq!(fleet_id("nxf1.0123456789ABCDEF.ABCDEFGHIJKLMNOPQRSTUVWXYZ"), None);
+        assert_eq!(fleet_id("nxf1.0123456789abcdef.short"), None);
+        assert_eq!(fleet_id("ABCDEFGHIJKLMNOPQRSTUVWXYZ"), None);
         let d = token_digest("ABC\n");
         assert_eq!(d, token_digest("ABC"));
         assert_eq!(d, "b5d4045c3f466fa91fe2cc6abe79232a1a57cdf104f7a26e716e0a1e2789df78");

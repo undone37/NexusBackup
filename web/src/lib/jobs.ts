@@ -28,9 +28,12 @@ export const JOB_KINDS: JobKind[] = [
   'inventory',
   'file_search',
   'file_index',
+  'file_changes',
+  'snapshot_diff',
   'offsite_list',
   'offsite_restore',
   'offsite_attach',
+  'fleet_scan',
 ];
 
 /** Human-readable job kind (falls back to the raw kind for kinds the UI does not know yet). */

@@ -297,11 +297,31 @@ impl Limiter {
 pub struct LoginReq {
     name: String,
     password: String,
+    #[serde(default)]
     totp: String,
+    /// second factor instead of `totp` (crate::passkeys, options from `/auth/login/passkey`)
+    #[serde(default)]
+    passkey: Option<crate::passkeys::Assertion>,
 }
 
-/// Password, enabled state and TOTP code (the step is not consumed yet).
-/// Blocking (argon2): call from `spawn_blocking`.
+/// Login failure answer; mentions passkeys while the policy may refuse TOTP
+/// (the same text for every reason: no password oracle).
+fn login_failed(st: &AppState) -> ApiError {
+    let pk = crate::passkeys::policy(&st.cat.conn()).is_ok_and(|p| p.require_privileged);
+    ApiError(
+        StatusCode::UNAUTHORIZED,
+        if pk {
+            "invalid name, password or second factor (admins and security officers sign in with a passkey)"
+        } else {
+            "invalid name, password or TOTP code"
+        }
+        .into(),
+    )
+}
+
+/// Password, enabled state and TOTP code (the step is not consumed yet;
+/// `totp: None` = a passkey follows, step 0). TOTP is refused where the
+/// passkey policy applies. Blocking (argon2): call from `spawn_blocking`.
 fn check_credentials(
     st: &AppState,
     u: &User,
@@ -309,7 +329,7 @@ fn check_credentials(
     stored_seed: &str,
     last_step: i64,
     password: &str,
-    totp: &str,
+    totp: Option<&str>,
 ) -> Result<i64, &'static str> {
     if password.len() > 1024 {
         return Err("password too long");
@@ -327,6 +347,12 @@ fn check_credentials(
     }
     if u.expired(catalog::now()) {
         return Err("expired");
+    }
+    let Some(totp) = totp else {
+        return Ok(0);
+    };
+    if crate::passkeys::required(&st.cat.conn(), &u.role, &u.auth).unwrap_or(true) {
+        return Err("totp refused: passkey required");
     }
     let seed = st.totp.decrypt(&u.name, stored_seed).map_err(|e| {
         eprintln!("<3>web-api: {e:#}");
@@ -417,15 +443,28 @@ pub async fn reauth(
         [ctx.user.id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
+    // `current_totp` may carry a passkey assertion (JSON, crate::passkeys)
+    let passkey = totp
+        .trim_start()
+        .starts_with('{')
+        .then(|| serde_json::from_str::<crate::passkeys::Assertion>(&totp).map_err(|_| "passkey"));
     let (st2, u) = (st.clone(), ctx.user.clone());
-    let mut verdict =
-        tokio::task::spawn_blocking(move || check_credentials(&st2, &u, &hash, &seed, last_step, &password, &totp))
-            .await
-            .map_err(|e| anyhow::anyhow!("reauth task: {e}"))?;
+    let second = passkey.is_none().then_some(totp);
+    let mut verdict = tokio::task::spawn_blocking(move || {
+        check_credentials(&st2, &u, &hash, &seed, last_step, &password, second.as_deref())
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("reauth task: {e}"))?;
     if let Ok(step) = verdict {
-        if !consume_step(st, ctx.user.id, step)? {
-            verdict = Err("totp replay");
-        }
+        verdict = match &passkey {
+            Some(Err(e)) => Err(*e),
+            Some(Ok(a)) => {
+                crate::passkeys::verify_assertion(&st.cat.conn(), a, crate::passkeys::Purpose::Reauth, ctx.user.id)
+                    .map(|_| 0)
+            }
+            None if !consume_step(st, ctx.user.id, step)? => Err("totp replay"),
+            None => Ok(step),
+        };
     }
     if let Err(reason) = verdict {
         let target = format!("user/{}", ctx.name());
@@ -437,7 +476,7 @@ pub async fn reauth(
         )?;
         return Err(ApiError(
             StatusCode::FORBIDDEN,
-            "re-authentication failed: wrong current password or TOTP code".into(),
+            "re-authentication failed: wrong current password, TOTP code or passkey".into(),
         ));
     }
     st.limiter.lock().unwrap().clear(&ukey);
@@ -500,10 +539,11 @@ pub async fn login(
     if let Some((u, ..)) = row.as_mut() {
         u.disabled |= crate::tenants::blocked(&st.cat.conn(), u)?;
     }
-    let (password, totp, st2) = (r.password, r.totp, st.clone());
+    let (password, totp, passkey, st2) = (r.password, r.totp, r.passkey, st.clone());
+    let second = passkey.is_none().then_some(totp);
     let (user, mut verdict) = tokio::task::spawn_blocking(move || match row {
         Some((u, hash, secret, last_step)) => {
-            let v = check_credentials(&st2, &u, &hash, &secret, last_step, &password, &totp);
+            let v = check_credentials(&st2, &u, &hash, &secret, last_step, &password, second.as_deref());
             (Some(u), v)
         }
         None => {
@@ -515,9 +555,13 @@ pub async fn login(
     .await
     .map_err(|e| anyhow::anyhow!("login task: {e}"))?;
     if let (Some(u), Ok(step)) = (&user, verdict) {
-        if !consume_step(&st, u.id, step)? {
-            verdict = Err("totp replay");
-        }
+        verdict = match &passkey {
+            Some(a) => {
+                crate::passkeys::verify_assertion(&st.cat.conn(), a, crate::passkeys::Purpose::Login, u.id).map(|_| 0)
+            }
+            None if !consume_step(&st, u.id, step)? => Err("totp replay"),
+            None => Ok(step),
+        };
     }
     let verdict = verdict.map(|_| ());
 
@@ -530,17 +574,15 @@ pub async fn login(
                 (&ukey, &ikey, &ip),
                 json!({"ip": ip, "reason": reason}),
             )?;
-            return Err(ApiError(
-                StatusCode::UNAUTHORIZED,
-                "invalid name, password or TOTP code".into(),
-            ));
+            return Err(login_failed(&st));
         }
         (None, Ok(())) => unreachable!(),
     };
     st.limiter.lock().unwrap().clear(&ukey);
 
     let (cookie, csrf) = new_session(&st, user.id, &ip, &headers)?;
-    st.audit(&user.name, "auth.login", &target, json!({"ip": ip}))?;
+    let method = if passkey.is_some() { "passkey" } else { "totp" };
+    st.audit(&user.name, "auth.login", &target, json!({"ip": ip, "method": method}))?;
     let mut res = Json(json!({"csrf": csrf, "user": user})).into_response();
     res.headers_mut().insert(header::SET_COOKIE, cookie);
     Ok(res)

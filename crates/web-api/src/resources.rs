@@ -2303,6 +2303,8 @@ pub fn apply_user_update(c: &Connection, p: &Value) -> ApiResult<Value> {
             "UPDATE users SET password_hash = ?2, totp_secret = '', activation_hash = ?3, activation_expires = ?4 WHERE id = ?1",
             params![id, catalog::NO_PASSWORD, stored, expires],
         )?;
+        // a lost passkey is recovered this way: the person registers new ones
+        crate::passkeys::delete_for(c, id)?;
     }
     c.execute("DELETE FROM sessions WHERE user_id = ?1", [id])?;
     if catalog::approvals_enabled(c)? {
@@ -2429,6 +2431,18 @@ pub async fn update_user(
         ));
     }
     refuse_known_code_grant(&st.cat.conn(), &old, grant, r.new_activation)?;
+    // passkey policy (Phase 21c): a granted admin / security officer could not sign in
+    if grant
+        && !r.new_activation
+        && !old.pending_activation
+        && crate::passkeys::required(&st.cat.conn(), &role, &old.auth)?
+        && !crate::passkeys::has_any(&st.cat.conn(), &old)?
+    {
+        return Err(ApiError::conflict(
+            "passkeys are required for admins and security officers and this account has none: \
+             let the person register one first, or issue a new activation code with the role change",
+        ));
+    }
 
     let mut p = json!({"id": id, "name": old.name});
     if role != old.role {

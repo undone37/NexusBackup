@@ -91,6 +91,13 @@ sudo nexus-agent status
 whether self-update is allowed, the size of the metadata cache and, per mounted volume, the snapshot method the
 agent will use (check this before the first backup).
 
+**Many hosts (Ansible & co.):** instead of one token per host, use a time-limited **fleet secret** (Agents →
+Fleet): `sudo nexus-agent init --fleet-secret -`, or put the secret into `/etc/nexus-agent/fleet-secret` (root,
+0600) before installing the package — the agent adopts and deletes it at its first start and waits until the
+appliance finds it in a scan of the fleet's address ranges and an administrator accepts it (or automatically).
+Hosts with tokens can also be registered from a CSV file. See chapter 4, "Fleet enrollment" and "CSV bulk
+enrollment". `status` then shows `awaiting fleet enrollment`.
+
 ## 4. Open the firewall
 
 Allow TCP 7444 from the appliance's address only, for example:
@@ -378,6 +385,12 @@ running, `4` refused by the agent (rate limit, hidden by the administrator, unkn
 
 > **Status:** The control panel and the commands were tested against a simulated agent service (screens above are
 > rendered by the tests). Testing on a real host against the appliance's session summaries and poll is pending.
+
+## Desktop GUI and tray icon (Linux desktops)
+
+On workstations, install `nexus-agent-desktop_<v>-1_amd64.deb` / `nexus-agent-desktop-<v>-1.x86_64.rpm` next to the
+agent: it adds `nexus-agent-gui` (tray icon and window with the session chart) to the menu and the desktop autostart;
+users need to be in the group `nexus-agent-ui` (`sudo usermod -aG nexus-agent-ui alice`). See [04 Sources: Desktop agent](04-sources.md#desktop-agent-backup-status-for-the-user-windows-linux-desktops).
 
 ## Restores to this host
 

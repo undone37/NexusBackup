@@ -49,6 +49,7 @@ pub const WEB_ACTIONS: &[&str] = &[
     "settings.forwarding",
     "security.session",
     "security.mgmt_allow",
+    crate::passkeys::ACTION,
     crate::firewall::ACTION,
     catalog::holds::RELEASE_ACTION,
     "disks.create_array",
@@ -285,6 +286,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
             let name = p["name"].as_str().unwrap_or_default();
             crate::resources::tenant_deletable(c, name)?;
             catalog::tenancy::bury(c, name, requested_by)?;
+            catalog::fleet::forget_tenant(c, name)?;
             changed(c.execute("DELETE FROM tenants WHERE name = ?1", [name])?)?;
             catalog::tenant_key::remove(c, name)?;
         }

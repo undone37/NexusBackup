@@ -249,8 +249,42 @@ Local side (agent ↔ endpoint UIs): crate `agent-ui-proto`, docs/endpoint-ui.md
 socket reaches the appliance except the requests above; it cannot change configuration, start a restore or read
 backup data.
 
-## v1.5 — machine layout and bare-metal recovery (additive, Phase 19a, docs/bmr.md)
-Appended after `PollReply` (tags 40–44, checked by `agent-proto` tests); sent only to agents announcing them.
+## v1.5 — fleet enrollment (additive, Phase 24d)
+Pre-installed agents (GPO / Intune / Ansible) are initialised with a reusable, time-limited **fleet secret**
+instead of a per-host token; the appliance finds them by scanning admin-defined address ranges. Appended variants
+(tags 40–41, after v1.4's 36–39). No capability: the messages are sent in enrollment
+mode, before any `Hello`: `FleetProbe { fleet_id, proof }`, `FleetInfo { proof, hostname, os, agent_version }`.
+
+- Secret `nxf1.<fleet id: 16 hex>.<26 base32>`, created by an admin (expiry ≤ 30 days, optional maximum number of
+  uses, optional `auto_accept`, agent port, ranges: IPv4 CIDR /22../32, IPv6 /118../128, addresses, host names;
+  ≤ 32 entries, ≤ 4096 addresses), shown once. The appliance keeps `token_digest(secret)` sealed to the scheduler
+  (`fleets.secret_hash`, location `fleet/<id>`). The fleet id is not secret: it only lets an agent tell fleets apart.
+- Agent: `nexus-agent init --fleet-secret -` (stdin), MSI `FLEETSECRET=…` (custom action, `MsiHiddenProperties`),
+  or a package deployment's `/etc/nexus-agent/fleet-secret` (adopted and deleted at the next start; the unit starts
+  when it exists). The agent stores the digest as `token` plus the fleet id (`fleet`) and is in enrollment mode
+  ("awaiting fleet enrollment"). `init --fleet-secret` refuses an enrolled agent (re-enrollment needs a token).
+- Scan (`nexus-agentctl fleet-scan`, job `fleet_scan`, every 15 minutes per usable fleet, at most 8 connections at
+  a time and 20 per second, 2 s timeout, only the fleet port; the firewall allows exactly these addresses and port
+  while the fleet is usable): enrollment-mode TLS as above, then `FleetProbe` with
+  `proof = HMAC(digest, "fleet-appliance" || exporter)`. The agent answers `Error 401` without counting a failed
+  proof when it is not in this fleet (token-initialised agents included; agents before v1.5 cannot decode the
+  message and close the connection); a wrong proof for its own fleet counts like a failed enrollment proof (lock
+  after 5). Otherwise it answers `FleetInfo` with `proof = HMAC(digest, "fleet-agent" || exporter)` and its host
+  info — never before the appliance proved the secret, and the secret itself never crosses the wire. Distinct roles
+  keep probe proofs from passing as enrollment proofs. Output: `fleet-agent {"host","port","hostname","os","version"}`
+  (control characters stripped, 128 characters each).
+- Candidates (`fleet_candidates`, unique per fleet + endpoint, a decision sticks across scans) are accepted by an
+  admin or tenant admin of the fleet's tenant, or automatically (`auto_accept`): agent row (host = scanned address,
+  `agents.fleet_id`), a linux source + protection group copied from the template group of the first matching
+  hostname rule (else the fleet's default group), job `agent_enroll {agent_id, fleet_id}`, one use counted. That job
+  is the normal enrollment with the fleet digest in place of the token digest (revoked or expired fleets enroll
+  nobody; the use limit only gates new acceptances). Audit `fleet.create`, `fleet.revoke`, `fleet.accept`,
+  `fleet.auto_accept`, `fleet.reject`.
+- Trust: anyone holding the secret can run an agent that waits for acceptance (docs/threat-model.md); expiry,
+  maximum uses, the scanned ranges, manual acceptance by default and revocation bound that.
+
+## v1.6 — machine layout and bare-metal recovery (additive, Phase 19a, docs/bmr.md)
+Appended after `FleetInfo` (tags 42–46, checked by `agent-proto` tests); sent only to agents announcing them.
 
 - **Capability `layout`** (Linux agents): at the start of a backup the appliance sends `GetLayout`; the agent answers
   `Layout { json }` (`agent_proto::layout::Layout`, ≤ `MAX_LAYOUT` = 1 MiB, every field defaulted so other versions

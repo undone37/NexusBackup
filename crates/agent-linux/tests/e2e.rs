@@ -164,14 +164,17 @@ fn start_agent(dir: &Path) -> (Paths, SocketAddr) {
 
 /// Full appliance-side enrollment. Returns the CA used.
 fn enroll(addr: SocketAddr, agent_id: &str) -> Ca {
+    enroll_digest(addr, agent_id, &token_digest(TOKEN))
+}
+
+fn enroll_digest(addr: SocketAddr, agent_id: &str, key: &str) -> Ca {
     let ca = ca("nexus test appliance CA");
     let mut s = handshake(addr, enroll_client(), "agent.invalid").unwrap();
     let ex = exporter(&s);
-    let key = token_digest(TOKEN);
     write_msg(
         &mut s,
         &Message::Enroll {
-            proof: enroll_proof(&key, "appliance", &ex),
+            proof: enroll_proof(key, "appliance", &ex),
         },
     )
     .unwrap();
@@ -179,7 +182,7 @@ fn enroll(addr: SocketAddr, agent_id: &str) -> Ca {
         panic!("no EnrollReply")
     };
     assert!(
-        proof_eq(&proof, &enroll_proof(&key, "agent", &ex)),
+        proof_eq(&proof, &enroll_proof(key, "agent", &ex)),
         "agent proves the token too"
     );
     let mut csr = rcgen::CertificateSigningRequestParams::from_pem(&csr_pem).unwrap();
@@ -759,4 +762,80 @@ fn enrollment_locks_after_five_failed_proofs_until_reinit() {
     // re-init resets the lock; a new agent process (service restart) can enroll
     nexus_agent::init(&paths, TOKEN, None).unwrap();
     assert!(nexus_agent::status(&paths).contains("enrollment pending (0 failed proofs)"));
+}
+
+/// Fleet enrollment (docs/agent-protocol.md "Fleet enrollment"): a package-dropped
+/// fleet secret is adopted at start; probes of another fleet are no failed proofs,
+/// a wrong proof is; the right probe gets the agent's proof and host info; the
+/// normal enrollment with the fleet digest completes it.
+#[test]
+fn fleet_secret_probe_and_enrollment() {
+    const FLEET: &str = "nxf1.00112233aabbccdd.ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let t = tempfile::tempdir().unwrap();
+    let paths = Paths {
+        config: t.path().join("etc"),
+        state: t.path().join("state"),
+        run: t.path().join("run"),
+    };
+    fs::create_dir_all(&paths.config).unwrap();
+    fs::write(paths.fleet_secret(), "not a fleet secret\n").unwrap();
+    assert!(agent_core::adopt_fleet_secret(&paths, "web-07").unwrap().is_err());
+    assert!(!paths.fleet_secret().exists(), "a bad file is deleted too");
+    fs::write(paths.fleet_secret(), format!("{FLEET}\n")).unwrap();
+    agent_core::adopt_fleet_secret(&paths, "web-07").unwrap().unwrap();
+    assert!(!paths.fleet_secret().exists());
+    assert!(agent_core::adopt_fleet_secret(&paths, "web-07").is_none());
+    assert!(nexus_agent::status(&paths).contains("awaiting fleet enrollment (fleet 00112233aabbccdd, 0 failed proofs)"));
+    let mut agent = Agent::new(paths.clone(), Settings::default()).unwrap();
+    agent.exit_on_update = false;
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    std::thread::spawn(move || Arc::new(agent).serve(l));
+    let digest = token_digest(FLEET);
+    let probe = |fleet_id: &str, good: bool| {
+        let mut s = handshake(addr, enroll_client(), "agent").unwrap();
+        let ex = exporter(&s);
+        let proof = if good {
+            enroll_proof(&digest, "fleet-appliance", &ex)
+        } else {
+            [9; 32]
+        };
+        write_msg(
+            &mut s,
+            &Message::FleetProbe {
+                fleet_id: fleet_id.into(),
+                proof,
+            },
+        )
+        .unwrap();
+        (read_msg(&mut s).unwrap(), ex)
+    };
+    // another fleet: refused, not counted
+    assert!(matches!(
+        probe("ffffffffffffffff", true).0,
+        Message::Error { code: E_AUTH, .. }
+    ));
+    assert!(nexus_agent::status(&paths).contains("0 failed proofs"));
+    // right fleet, wrong proof: counted
+    assert!(matches!(
+        probe("00112233aabbccdd", false).0,
+        Message::Error { code: E_AUTH, .. }
+    ));
+    assert!(nexus_agent::status(&paths).contains("1 failed proofs"));
+    let (m, ex) = probe("00112233aabbccdd", true);
+    let Message::FleetInfo {
+        proof, agent_version, ..
+    } = m
+    else {
+        panic!("no FleetInfo: {m:?}")
+    };
+    assert!(proof_eq(&proof, &enroll_proof(&digest, "fleet-agent", &ex)));
+    assert_eq!(agent_version, env!("CARGO_PKG_VERSION"));
+    // the role labels keep a probe proof from passing as an enrollment proof
+    assert!(!proof_eq(&proof, &enroll_proof(&digest, "agent", &ex)));
+    enroll_digest(addr, "f1ee700000000001", &digest);
+    assert!(!paths.fleet().exists() && !paths.token().exists());
+    assert!(nexus_agent::status(&paths).contains("enrolled as f1ee700000000001"));
+    // a fleet secret never re-initialises an enrolled agent
+    assert!(nexus_agent::init_fleet(&paths, FLEET, None).is_err());
 }

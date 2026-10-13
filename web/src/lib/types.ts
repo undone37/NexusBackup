@@ -409,6 +409,51 @@ export interface RescueSession {
   token_valid: boolean;
 }
 
+/** Phase 24d: fleet secret (GET /fleets; the secret itself only in the POST answer) */
+export interface Fleet {
+  id: string;
+  name: string;
+  tenant: string;
+  created: number;
+  created_by: string;
+  expires: number;
+  max_uses: number | null;
+  uses: number;
+  revoked: boolean;
+  auto_accept: boolean;
+  port: number;
+  /** CIDR (≤ /22 resp. /118), addresses or host names the scheduler scans */
+  ranges: string[];
+  /** template group (protection group of a linux source) for new agents */
+  group: string | null;
+  group_rules: { pattern: string; group: string }[];
+  last_scan: number | null;
+  /** candidates awaiting acceptance */
+  awaiting: number;
+}
+
+export interface FleetCreated extends Fleet {
+  secret: string;
+  install: { linux: string; linux_file: string; windows: string };
+}
+
+/** An agent found by a fleet scan (GET /fleet/candidates) */
+export interface FleetCandidate {
+  id: number;
+  fleet_id: string;
+  fleet: string;
+  tenant: string;
+  host: string;
+  port: number;
+  hostname: string;
+  os: string;
+  version: string;
+  first_seen: number;
+  last_seen: number;
+  state: 'awaiting' | 'accepted' | 'rejected';
+  agent_id: string | null;
+}
+
 export type Overwrite = 'never' | 'if_older' | 'always';
 
 export interface Gfs {
@@ -527,9 +572,12 @@ export type JobKind =
   | 'inventory'
   | 'file_search'
   | 'file_index'
+  | 'file_changes'
+  | 'snapshot_diff'
   | 'offsite_list'
   | 'offsite_restore'
-  | 'offsite_attach';
+  | 'offsite_attach'
+  | 'fleet_scan';
 
 /** One snapshot of an `offsite_list` result (Phase 17d, `nexus-offsite list --json`). */
 export interface OffsiteListed {
@@ -652,6 +700,51 @@ export interface Snapshot {
   consistency?: Consistency | null;
   /** Phase 18b: plugin snapshot metadata (e.g. PostgreSQL's recoverable range), null = none */
   meta?: SnapshotMeta | null;
+  /** Phase 21a: change-rate or file-level anomaly flag (kept after a security officer cleared it) */
+  anomaly?: SnapshotAnomaly | null;
+  /** flagged and not cleared */
+  anomalous?: boolean;
+}
+
+export interface SnapshotAnomaly {
+  reason: string;
+  at: number | null;
+  cleared_by: string | null;
+  cleared_at: number | null;
+  note: string | null;
+}
+
+/** One changed path of a `snapshot_diff` job (POST /snapshots/diff). */
+export interface DiffEntry {
+  path: string;
+  change: 'added' | 'changed' | 'deleted';
+  kind: 'file' | 'dir' | 'symlink' | 'other';
+  size: number;
+  mtime: number;
+  old_size: number | null;
+  old_mtime: number | null;
+}
+
+/** `job.result` of a `snapshot_diff` job; `indexed: false` = a name index is missing. */
+export interface DiffResult {
+  indexed: boolean;
+  base: number | null;
+  time: number;
+  added?: number;
+  changed?: number;
+  deleted?: number;
+  /** entries of the selected change type */
+  total?: number;
+  offset?: number;
+  limit?: number;
+  entries?: DiffEntry[];
+}
+
+/** GET /stats/trends: the last 30 runs of one source, oldest first. */
+export interface SourceTrend {
+  tenant: string;
+  source: string;
+  runs: { time: number; new_plain: number; new_stored: number; files_changed: number | null; anomalous: boolean }[];
 }
 
 /** Plugin snapshot metadata (protocol v1.6 `SnapshotMeta`); known keys are shown. */
@@ -1297,6 +1390,8 @@ export interface AnomalySettings {
   factor: number;
   history: number;
   floor_bytes: number;
+  /** Phase 21a: extra ransom-note file name globs */
+  ransom_notes?: string[];
 }
 
 /** Phase 14d: GET /auth/sessions, GET /sessions. */
@@ -1320,6 +1415,24 @@ export interface SecuritySettings {
   client_ip: string;
   client_allowed: boolean;
   pending: { session: number | null; mgmt_allow: number | null };
+}
+
+/** Phase 21c: one of my passkeys (GET /auth/passkeys). */
+export interface Passkey {
+  id: number;
+  name: string;
+  alg: 'ES256' | 'EdDSA';
+  rp_id: string;
+  created: number;
+  last_used: number | null;
+}
+
+/** Phase 21c: GET /settings/passkeys (`rp_id` = effective host name, null if this page was opened by IP). */
+export interface PasskeySettings {
+  policy: { require_privileged: boolean; rp_id: string };
+  rp_id: string | null;
+  without_passkey: string[];
+  pending: number | null;
 }
 
 /** Phase 16c: one inbound service of GET /firewall (allow empty = any address). */

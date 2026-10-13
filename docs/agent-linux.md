@@ -126,6 +126,67 @@ swap is completed or rolled back at the next start). New connections use the new
 running ones keep theirs. Re-enrollment (`nexus-agent init` with a new token for the same
 agent) keeps the agent id.
 
+## Fleet deployment (GPO / Intune / Ansible)
+
+For many hosts, the agent is installed with a reusable, time-limited **fleet secret** instead of
+one token per host (Phase 24d; manual chapter 04 "Fleet enrollment"; protocol:
+docs/agent-protocol.md "Fleet enrollment"). An administrator creates the secret on the appliance
+(Agents → Fleet: tenant, validity ≤ 30 days, optional maximum of enrollments, address ranges to
+scan, template groups by host name pattern, manual or automatic acceptance). Format
+`nxf1.<fleet id>.<secret>`; the appliance keeps only its digest (sealed to the scheduler).
+
+On the host, either:
+
+- `sudo nexus-agent init --fleet-secret -` (secret on stdin), then
+  `sudo systemctl enable --now nexus-agent`; or
+- write the secret to `/etc/nexus-agent/fleet-secret` (root, 0600). At its first start
+  (`nexus-agent run`) the agent adopts it exactly as `init --fleet-secret` would and deletes the
+  file; on an agent that is already initialised the file is deleted and ignored. The unit starts
+  when `agent.key` **or** `fleet-secret` exists, and the package's postinst enables and starts
+  the service on a fresh install when the file is already there.
+
+The agent then stores `token_digest(secret)` in `token` plus the fleet id in `fleet` and waits
+in enrollment mode (`nexus-agent status`: "awaiting fleet enrollment"). It answers the
+appliance's scan only after the appliance proved knowledge of the secret, bound to the TLS
+session; a probe for another fleet is refused without counting as a failed proof. After the
+admin accepts it (or automatically, if the fleet says so) the normal enrollment follows (same
+proofs, CSR, certificate), the digest is deleted, and the agent is an ordinary enrolled agent.
+`init --fleet-secret` is refused on an enrolled agent (re-enroll with a one-time token).
+
+Ansible example (the secret from a vault variable; file first, then the package, so the
+postinst starts the agent):
+
+```yaml
+- name: NexusBackup agent (fleet enrollment)
+  hosts: backup_clients
+  become: true
+  tasks:
+    - name: Config directory
+      ansible.builtin.file: { path: /etc/nexus-agent, state: directory, owner: root, group: root, mode: "0700" }
+    - name: Fleet secret (adopted and deleted by the agent at its first start)
+      ansible.builtin.copy:
+        dest: /etc/nexus-agent/fleet-secret
+        content: "{{ nexus_fleet_secret }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      when: not (ansible_local.nexus_enrolled | default(false))
+    - name: Package
+      ansible.builtin.apt: { deb: "/tmp/nexus-agent_{{ nexus_version }}-1_amd64.deb" }
+      when: ansible_os_family == "Debian"
+    - name: Package (EL / Fedora)
+      ansible.builtin.dnf: { name: "/tmp/nexus-agent-{{ nexus_version }}-1.x86_64.rpm", disable_gpg_check: true }
+      when: ansible_os_family == "RedHat"
+    - name: Service (when the package was already installed)
+      ansible.builtin.systemd: { name: nexus-agent, enabled: true, state: started }
+```
+
+Copy the package to the host first and check it against `SHA256SUMS` / its cosign signature
+(docs/release.md); `disable_gpg_check` only because the rpm itself is not GPG-signed. Allow TCP
+7444 from the appliance. The appliance scans the fleet's ranges every 15 minutes (at most 8
+parallel connections, 20 per second, only the agent port).
+
 ## Backup
 
 - `Prepare`: run pre hooks (if `hooks`), then one snapshot per affected volume:

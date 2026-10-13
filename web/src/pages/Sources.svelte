@@ -18,6 +18,7 @@
   import { fmtTime } from '../lib/format';
   import { isPaused } from '../lib/schedule';
   import Inventory from '../components/Inventory.svelte';
+  import ChangeTrends from '../components/ChangeTrends.svelte';
   import FileSelection from '../components/FileSelection.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
 
@@ -618,6 +619,8 @@
     </div>
   {/if}
 </div>
+
+<ChangeTrends />
 
 <Modal bind:open title={editing ? `${t.groups.source}: ${editing.name}` : t.sources.new} wide>
   <form onsubmit={save}>
