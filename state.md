@@ -414,7 +414,14 @@ through the PVE guest agent (`lab/windows/gexec.py`, no Windows passwords), dev 
 - [x] byte-exact restore check (`lab/pvehost/verify.sh exact`, stopped VM 200, zvol sha256 equal) before and after
   the zero skip; zero blocks: base:allocation does not help on zvol/LVM (QEMU reports no holes on block devices),
   the node helper's `zeromap` scans the frozen export locally: VM 200 read 1.51 GB instead of 17.25 GB, restore identical
-- [ ] Windows full + incremental + restore test (`verify.sh windows`)
+- [x] Windows VMs 100-102 (3 x 120 GB) through PVE, zero skip on: full 3774 s (sequential) -> 2052 s with 4 chunk
+  workers + one NBD request per chunk; 79.5 of 386.6 GB read (zero map: ~80% of the disks empty); incremental 108 s
+  (1.95 GB read). Timing line: 28-37 ms per 4 MiB read waiting for the node, 67-89% of the time -> latency-bound;
+  pipelined NBD reads (8 in flight) built next
+- Fixed on the way: incrementals failed on EFI disks ("can't get block status": base:allocation only for full
+  reads, full-read fallback); the node's zero scan had no progress; snapshot rows were "not local" until the next
+  store scan (restore test 404 right after a backup); job logs had no times (time marks + column)
+- [ ] restore test vm-101 on pve-test; pipelined reads: byte-exact check + full run timing
 
 ## Live job progress (2026-10-13)
 - [x] Connectors print `progress {json}` lines on stderr (`chunkstore::progress`: item/part/done/total/entries/end,

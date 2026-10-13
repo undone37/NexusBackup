@@ -321,6 +321,11 @@ Requirements and limits:
 > by unit and integration tests against a simulated Proxmox VE. A run on the PVE lab is a lab step
 > (`lab/e2e/m5-api.sh restore-test`), not yet done; Windows guests (port probe with `netstat`) are untested.
 
+**VMs with a vTPM** (Windows 11, Windows Server with Secure Boot and BitLocker): the test VM boots with a **fresh
+vTPM**, because the TPM state cannot be served over the network like the disks. Boot, guest agent and port checks
+work; anything sealed to the original TPM (BitLocker without its recovery key, Windows Hello) is not available in the
+test. Instant recovery of such VMs is refused; use a full restore, which restores the TPM state.
+
 ## Browse files and download them (tar or zip)
 
 **Browse files** opens a file browser for the snapshot. The appliance reads the file system from the backup:

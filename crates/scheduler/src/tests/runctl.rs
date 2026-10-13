@@ -355,3 +355,26 @@ fn pve_backup_off_disks_are_a_warning() {
         "{r}"
     );
 }
+
+#[test]
+fn fresh_snapshot_rows_are_local_at_once() {
+    // rows created from a backup's own lines (identity, consistency) name a snapshot that was
+    // just committed to the local store: local = 1 before any store scan
+    let e = env(4);
+    connector(
+        &e,
+        "echo 'committed vm-100/9'; echo 'identity vm-100/9 {\"changed\":false,\"previous\":null,\"vmgenid\":\"x\"}'; echo 'consistency vm-100/9: application (guest-agent fs-freeze/fs-thaw)'",
+    );
+    let mut s = sched(&e);
+    let id = manual(&s, "backup", "t1", json!({"group_id": 1}));
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert_eq!(state(&s, id), "ok");
+    assert_eq!(
+        count(
+            &s,
+            "SELECT COUNT(*) FROM snapshots WHERE source = 'vm-100' AND time = 9 AND local = 1"
+        ),
+        1
+    );
+}

@@ -41,7 +41,9 @@ impl Scheduler {
                 continue;
             }
             self.db.conn().execute(
-                "INSERT INTO snapshots (tenant, source, time, local, offsite, meta) VALUES (?1,?2,?3,0,0,?4)
+                // the snapshot was just committed to the local store: local = 1 now, not after the
+                // next store scan (a restore test right after the backup found "no such local snapshot")
+                "INSERT INTO snapshots (tenant, source, time, local, offsite, meta) VALUES (?1,?2,?3,1,0,?4)
                  ON CONFLICT (tenant, source, time) DO UPDATE SET meta=?4",
                 params![job.tenant, src, t, m.to_string()],
             )?;

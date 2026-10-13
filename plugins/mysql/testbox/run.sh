@@ -71,10 +71,13 @@ secrets() {
 	[ -f "$dir/nexus.secret" ] || head -c 24 /dev/urandom | base64 | tr -d '/+=' >"$dir/nexus.secret"
 }
 
+# The box directory is mounted into both containers: ",z" (shared SELinux label). ",Z" gave each
+# container a private label in turn, so on an SELinux host (the AlmaLinux CI runner) the first one
+# lost access to its sshd host key ("kex_exchange_identification: Connection closed").
 run() { # flavor, db port, ssh port
 	local n=$NAME-$1
 	podman_purge "$n"
-	podman run -d --name "$n" --label nexus.checkout="$root" -p "127.0.0.1:$2:3306" -p "127.0.0.1:$3:22" -v "$dir/box:/testbox:ro,Z" \
+	podman run -d --name "$n" --label nexus.checkout="$root" -p "127.0.0.1:$2:3306" -p "127.0.0.1:$3:22" -v "$dir/box:/testbox:ro,z" \
 		-e MARIADB_ROOT_PASSWORD="$(cat "$dir/root.secret")" -e MYSQL_ROOT_PASSWORD="$(cat "$dir/root.secret")" \
 		-e NEXUS_PASSWORD="$(cat "$dir/nexus.secret")" "localhost/nexus-my-testbox:$1" >/dev/null
 }

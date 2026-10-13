@@ -531,3 +531,34 @@ fn extents_are_read_once() {
     let (_, n) = count(&v2, Some(&i1), &[tail]);
     assert_eq!(n, tail.1, "grown disk, tail dirty");
 }
+
+/// `image_extents_reads` names exactly the ranges `store_image_extents` reads, in order.
+#[test]
+fn image_extents_reads_match_the_callback() {
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), 0, 0);
+    let cs = 65536usize;
+    let v1 = image(1);
+    let all = [(0u64, v1.len() as u64)];
+    let i1 = s
+        .store_image_extents(None, cs, v1.len() as u64, &all, |o, b| {
+            b.copy_from_slice(&v1[o as usize..o as usize + b.len()]);
+            Ok(())
+        })
+        .unwrap();
+    let mut v2 = v1.clone();
+    v2.extend(vec![3u8; 100_000]);
+    let dirty = [(70_000u64, 5_000u64), (200_000, 70_000)];
+    let mut seen = Vec::new();
+    s.store_image_extents(Some(&i1), cs, v2.len() as u64, &dirty, |o, b| {
+        seen.push((o, o + b.len() as u64));
+        b.copy_from_slice(&v2[o as usize..o as usize + b.len()]);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(Store::image_extents_reads(Some(&i1), cs, v2.len() as u64, &dirty), seen);
+    assert_eq!(
+        Store::image_extents_bytes(Some(&i1), cs, v2.len() as u64, &dirty),
+        seen.iter().map(|(a, b)| b - a).sum::<u64>()
+    );
+}

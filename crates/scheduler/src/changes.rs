@@ -376,7 +376,7 @@ impl Scheduler {
             None => why.to_owned(),
         };
         c.execute(
-            "INSERT INTO snapshots (tenant, source, time, local, offsite, anomaly, anomaly_at) VALUES (?1,?2,?3,0,0,?4,?5)
+            "INSERT INTO snapshots (tenant, source, time, local, offsite, anomaly, anomaly_at) VALUES (?1,?2,?3,1,0,?4,?5)
              ON CONFLICT (tenant, source, time) DO UPDATE SET anomaly=?4, anomaly_at=?5,
                anomaly_cleared_by=NULL, anomaly_cleared_at=NULL, anomaly_note=NULL",
             params![tenant, source, time, reason, catalog::now()],
