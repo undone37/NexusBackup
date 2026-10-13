@@ -267,10 +267,14 @@ fn pst_with_independent_readers() {
     // libpst: folder counts and the attachment's bytes
     let log = run(&format!("mkdir -p /d/rp && readpst -D -S -o /d/rp /d/{name}"));
     for (folder, n) in [("Inbox", 3), ("Projects/2026", 1), ("Deletions", 1)] {
-        assert!(
-            log.contains(&format!("\"{folder}\" - {n} items done")),
-            "{folder}: {log}"
-        );
+        if !log.contains(&format!("\"{folder}\" - {n} items done")) {
+            // which item libpst skipped and why (seen once on the AlmaLinux CI runner only)
+            let dbg = run(&format!(
+                "mkdir -p /d/rp2 && readpst -D -S -d /d/dbg -o /d/rp2 /d/{name} >/dev/null 2>&1; \
+                 readpst -V | head -1; grep -inE 'skip|error|unknown|fail' /d/dbg | tail -n 40"
+            ));
+            panic!("{folder}: {log}\n--- readpst debug ---\n{dbg}");
+        }
     }
     let found: Vec<_> = walk(&d.path().join("rp"))
         .into_iter()

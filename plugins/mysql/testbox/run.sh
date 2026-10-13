@@ -47,6 +47,8 @@ secrets() {
 run() { # flavor, db port, ssh port
 	local n=$NAME-$1
 	podman rm -f "$n" >/dev/null 2>&1 || true
+	# a run killed while creating (CI cancel) leaves a storage-only container podman rm -f does not see
+	podman rm --storage "$n" >/dev/null 2>&1 || true
 	podman run -d --name "$n" --label nexus.checkout="$root" -p "127.0.0.1:$2:3306" -p "127.0.0.1:$3:22" -v "$dir/box:/testbox:ro,Z" \
 		-e MARIADB_ROOT_PASSWORD="$(cat "$dir/root.secret")" -e MYSQL_ROOT_PASSWORD="$(cat "$dir/root.secret")" \
 		-e NEXUS_PASSWORD="$(cat "$dir/nexus.secret")" "localhost/nexus-my-testbox:$1" >/dev/null

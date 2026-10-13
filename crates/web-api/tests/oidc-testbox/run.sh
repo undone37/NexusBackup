@@ -59,6 +59,8 @@ start)
 	fi
 	podman image exists "$IMG" || podman pull -q "$IMG" >/dev/null
 	podman rm -f "$NAME" >/dev/null 2>&1 || true
+	# a run killed while creating (CI cancel) leaves a storage-only container podman rm -f does not see
+	podman rm --storage "$NAME" >/dev/null 2>&1 || true
 	if [ "${TLS:-0}" = 1 ]; then
 		certs
 		podman run -d --name "$NAME" -p "127.0.0.1:$PORT:8443" \

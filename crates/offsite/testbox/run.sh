@@ -54,6 +54,8 @@ start)
 	keys
 	podman build -q --build-arg BASE="$BASE" -t "$IMG" -f "$here/Containerfile" "$here" >/dev/null
 	podman rm -f "$NAME" >/dev/null 2>&1 || true
+	# a run killed while creating (CI cancel) leaves a storage-only container podman rm -f does not see
+	podman rm --storage "$NAME" >/dev/null 2>&1 || true
 	podman run -d --name "$NAME" -e MAX_CONN="$MAX_CONN" -p "127.0.0.1:$PORT:22" \
 		-v "$dir/hostkey:/etc/ssh/hostkey:ro,Z" "$IMG" >/dev/null
 	wait_ready

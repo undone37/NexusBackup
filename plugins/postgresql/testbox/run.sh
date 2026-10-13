@@ -51,6 +51,8 @@ run() { # name, publish args…
 	local n=$1
 	shift
 	podman rm -f "$n" >/dev/null 2>&1 || true
+	# a run killed while creating (CI cancel) leaves a storage-only container podman rm -f does not see
+	podman rm --storage "$n" >/dev/null 2>&1 || true
 	podman run -d --name "$n" --label nexus.checkout="$root" "$@" -v "$dir/box:/testbox:ro,Z" \
 		-e POSTGRES_PASSWORD="$(cat "$dir/postgres.secret")" -e NEXUS_PASSWORD="$(cat "$dir/nexus.secret")" \
 		"$IMG" >/dev/null
