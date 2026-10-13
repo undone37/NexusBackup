@@ -192,6 +192,7 @@ RUN semodule -i /usr/share/selinux/packages/nexus/nexus.pp /usr/share/selinux/pa
 COPY os/systemd/*.service os/systemd/*.path os/systemd/*.timer os/systemd/*.socket /usr/lib/systemd/system/
 COPY os/systemd/10-nexus.preset /usr/lib/systemd/system-preset/10-nexus.preset
 COPY os/tmpfiles.d/nexus.conf /usr/lib/tmpfiles.d/nexus.conf
+COPY os/issue.d/50-nexus.issue /usr/lib/issue.d/50-nexus.issue
 
 # Firewall: EL's nftables.service loads /etc/sysconfig/nftables.conf.
 COPY os/nftables.conf /etc/sysconfig/nftables.conf
