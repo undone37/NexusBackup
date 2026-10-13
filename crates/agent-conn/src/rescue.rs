@@ -35,7 +35,7 @@ pub fn load_layout(store: &Store, agent: &str, time: u64) -> Result<String> {
         .find(|e| e.path == LAYOUT_PATH.as_bytes() && e.kind == TreeKind::File)
         .with_context(|| {
             format!(
-                "{}/{time} has no machine layout ({LAYOUT_PATH}): it was taken by an agent before 0.2 or the layout could not be recorded",
+                "{}/{time} has no machine layout ({LAYOUT_PATH}): it was taken by an agent without layout support (update the agent) or the layout could not be recorded",
                 m.source
             )
         })?;

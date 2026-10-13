@@ -214,3 +214,23 @@ All agents built on `agent-core` announce both capabilities.
   is resolved.
 - **Re-enrollment** keeps the agent id: a new token for an existing agent (`POST /agents/{id}/token`), `nexus-agent
   init` on the host, the usual enrollment; the scheduler replaces the pin and clears the renewal state.
+
+## v1.4 — machine layout and bare-metal recovery (additive, Phase 19a, docs/bmr.md)
+Appended after `RenewOk` (tags 36–40, checked by `agent-proto` tests); sent only to agents announcing them.
+
+- **Capability `layout`** (Linux agents): at the start of a backup the appliance sends `GetLayout`; the agent answers
+  `Layout { json }` (`agent_proto::layout::Layout`, ≤ `MAX_LAYOUT` = 1 MiB, every field defaulted so other versions
+  parse) or `Error` (then the backup continues without it). The appliance validates the JSON and adds
+  `.nexus-system/` (dir, 0700) and `.nexus-system/layout.json` (0600, uid 0) to the tree, replacing an entry of
+  that path the host might have.
+- **Capability `rescue`** (the rescue agent of the rescue ISO, `nexus-agent rescue`): `RescueApply { job, layout }`
+  → recreate the layout on the disks confirmed at the console and mount it; `RescueFinish { job, reboot }` → boot
+  loader, initramfs, unmount, and a reboot after the answer if asked. Both answer `RescueDone { job, target, log }`
+  (`target` = where the file systems are mounted, the restore target in between) or `Error` with the log. The
+  rescue agent refuses `Prepare`/`PrepareEx`/`Scan` and `Update`, and `RestoreBegin` before `RescueApply` or to
+  another target than the one it named.
+- Rescue enrollment is the ordinary enrollment with the one-time recovery token; the agent id is the session id
+  (`rescue_sessions.id`). `nexus-agentctl … rescue` prints `rescue-enrolled {json}`, `rescue-step
+  apply|restore|finish`, `rescue-done {json}`; `nexus-agentctl … layout <agent> <time> <out.json>` extracts a
+  snapshot's layout. The restore into the rescue agent keeps the full metadata of the original host (it is the
+  snapshot's own host: `target_agent` = the original agent id).

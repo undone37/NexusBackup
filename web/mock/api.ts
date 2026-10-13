@@ -280,6 +280,8 @@ const db = {
   reports: [] as Json[],
   /** Phase 16a/b: nexus-disks status (GET /hardware) */
   hardware: {} as Json,
+  /** Phase 19a: bare-metal recovery / P2V sessions (GET /rescue) */
+  rescue: [] as Json[],
 };
 const nextId = () => ++db.seq;
 
@@ -444,6 +446,17 @@ function planFor(kind: string, p: Json): string[] {
         `live disk move to ${p.storage}: 100%`,
         'instant recovery complete',
       ];
+    case 'bmr':
+      return [
+        `enrolling the rescue agent with the session's token proofs (host-${p.source_agent} @ ${p.time})`,
+        'reading .nexus-system/layout.json; partitions, RAID/LVM and file systems recreated on the confirmed disks',
+        'restoring files into /target',
+        'restoring files into /target: 100%',
+        'fstab / crypttab / boot loader adjusted, initramfs rebuilt',
+        'recovery complete',
+      ];
+    case 'p2v':
+      return ['creating the VM with disks sized like the snapshot layout', 'uploading the rescue config ISO', 'VM started from the rescue ISO', 'waiting for the rescue console to check in'];
     default:
       return [`${kind} started ${src}`, 'working…', 'working…', `${kind} finished`];
   }
@@ -1365,6 +1378,7 @@ function seed() {
   seedHolds(t);
   seedHardware(t);
   seedM365(t);
+  seedRescue(t);
 }
 
 /** Phase 18a: Microsoft 365 plugin with two apps, a second M365 tenant as restore target (tenant migration). */
@@ -2645,6 +2659,123 @@ on('DELETE', '/agents/:id', (c, [id]) => {
   const used = db.sources.find((s) => s.kind === 'linux' && s.config.agent_id === a.id);
   if (used) throw new HttpError(409, `agent is used by source "${used.name}"`);
   return quorum(u, 'agent.delete', { id: a.id, tenant: a.tenant, name: a.name });
+});
+
+// Phase 19a: bare-metal recovery and P2V (crates/web-api/src/rescue.rs)
+const RESCUE_TTL = 4 * 3600;
+const RESCUE_DISKS = [{ path: '/dev/sda', size: 21474836480 }];
+function newRescue(a: Agent, by: string, reboot: boolean, extra: Json = {}): Json {
+  for (const s of db.rescue) if (s.agent_id === a.id && (s.state === 'issued' || s.state === 'waiting')) s.state = 'cancelled';
+  const s: Json = {
+    id: rand(8), tenant: a.tenant, agent_id: a.id, token_expires: now() + RESCUE_TTL, state: 'issued', host: null, port: null, disks: [],
+    checked_in: null, snapshot_time: null, reboot, step: null, job_id: null, p2v: null, message: null, created: now(), created_by: by,
+    token_valid: true, ...extra,
+  };
+  db.rescue.unshift(s);
+  return s;
+}
+/** Seed: web01 has a finished recovery and a rescue console waiting for the snapshot choice. */
+function seedRescue(t: number) {
+  const web01 = db.agents.find((a) => a.name === 'web01');
+  if (!web01) return;
+  const snaps = db.snapshots.filter((x) => x.source === `host-${web01.id}`).sort((x, y) => y.time - x.time);
+  const done = newRescue(web01, 'admin', true);
+  const j = addJob('bmr', web01.tenant, { session: done.id, source_agent: web01.id, time: snaps[2]?.time ?? t }, 'admin');
+  Object.assign(j, { created: t - 6 * 86400, started: t - 6 * 86400 + 2, finished: t - 6 * 86400 + 900, state: 'ok', plan: [],
+    log: ['recreating partitions and file systems on /dev/sda (layout of the snapshot)', 'restoring 18,422 files (2.1 GiB)', 'boot loader installed (grub, EFI)', 'rebooting into the restored system'].join('\n') });
+  Object.assign(done, { state: 'done', host: '192.0.2.50', port: 7444, disks: RESCUE_DISKS, checked_in: t - 6 * 86400 - 300, snapshot_time: j.params.time,
+    step: 'finish', job_id: j.id, created: t - 6 * 86400 - 900, token_expires: t - 6 * 86400 - 900 + RESCUE_TTL, token_valid: false });
+  const w = newRescue(web01, 'admin', true);
+  Object.assign(w, { state: 'waiting', host: '192.0.2.50', port: 7444, disks: RESCUE_DISKS, checked_in: t - 120, created: t - 900, token_expires: t - 900 + RESCUE_TTL });
+}
+/** Session as the API shows it: expiry, job progress (step) and outcome follow the mock jobs. */
+function rescueView(s: Json): Json {
+  const t = now();
+  if ((s.state === 'issued' || s.state === 'waiting') && s.token_expires <= t) Object.assign(s, { state: 'expired', token_valid: false });
+  const pj = s.p2v_job ? db.jobs.find((j) => j.id === s.p2v_job) : undefined;
+  if (pj?.state === 'ok' && s.state === 'issued') {
+    // the VM booted the rescue ISO and checked in: the recovery starts unattended
+    Object.assign(s, { host: '192.0.2.51', port: 7444, disks: RESCUE_DISKS, checked_in: t, p2v: { ...s.p2v, vm: { vmid: s.p2v.vmid || 9001, node: s.p2v.node, config_volid: `${s.p2v.iso_storage}:iso/nexus-rescue-config-${s.id}.iso` } } });
+    const j = addJob('bmr', s.tenant, { session: s.id, source_agent: s.agent_id, time: s.snapshot_time }, 'rescue', { duration: 20 });
+    Object.assign(s, { state: 'running', job_id: j.id, step: null });
+  }
+  if (pj?.state === 'failed' && s.state === 'issued') Object.assign(s, { state: 'failed', message: 'creating the VM failed' });
+  const j = s.state === 'running' ? db.jobs.find((x) => x.id === s.job_id) : undefined;
+  if (j) {
+    const frac = j.started ? (t - j.started) / j.duration : 0;
+    s.step = frac < 0.3 ? 'apply' : frac < 0.85 ? 'restore' : 'finish';
+    if (j.state === 'ok') Object.assign(s, { state: 'done', step: 'finish', token_valid: false });
+    if (j.state === 'failed' || j.state === 'cancelled') Object.assign(s, { state: 'failed', token_valid: false, message: `job ${j.state}` });
+  }
+  const { p2v_job: _j, ...out } = s;
+  return { ...out, agent_name: db.agents.find((a) => a.id === s.agent_id)?.name ?? null };
+}
+const findRescue = (u: User, id: string) => find(byTenant(u, db.rescue as (Json & { tenant: string })[]), (s) => s.id === id, 'rescue session');
+const RESCUE_IDENT = /^[A-Za-z0-9._-]{1,128}$/;
+on('GET', '/rescue', (c) => [200, byTenant(need(c.user, 'admin', 'operator', 'viewer', 'security_officer'), db.rescue as (Json & { tenant: string })[]).map(rescueView)]);
+on('GET', '/rescue/:id', (c, [id]) => [200, rescueView(findRescue(need(c.user, 'admin', 'operator', 'viewer', 'security_officer'), id))]);
+on('POST', '/agents/:id/rescue', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'operator');
+  const a = findAgent(u, id);
+  vaultRefuse('bare-metal recoveries');
+  for (const k of Object.keys(c.body ?? {})) if (k !== 'reboot') throw new HttpError(400, `unknown field ${k}`);
+  const s = newRescue(a, u.name, c.body?.reboot ?? true);
+  await audit(u.name, 'rescue.create', `rescue/${s.id}`, { agent_id: a.id, tenant: a.tenant, token_expires: s.token_expires });
+  return [201, { ...rescueView(s), token: b32(26) }];
+});
+on('POST', '/rescue/:id/start', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'operator');
+  const s = findRescue(u, id);
+  rescueView(s);
+  if (s.state !== 'waiting') throw new HttpError(409, `the session is ${s.state}: the rescue console must have checked in (state waiting)`);
+  const time = Number(c.body?.time);
+  if (!db.snapshots.some((x) => x.tenant === s.tenant && x.source === `host-${s.agent_id}` && x.time === time)) throw new HttpError(400, 'time: no such snapshot of this host');
+  if (typeof c.body?.reboot === 'boolean') s.reboot = c.body.reboot;
+  const j = addJob('bmr', s.tenant, { session: s.id, source_agent: s.agent_id, time }, u.name, { duration: 30 });
+  Object.assign(s, { state: 'running', snapshot_time: time, job_id: j.id, step: 'restore', message: null });
+  await audit(u.name, 'rescue.start', `rescue/${s.id}`, { agent_id: s.agent_id, time, job: j.id, target: s.host, disks: s.disks });
+  return [202, { id: j.id }];
+});
+on('POST', '/rescue/:id/cancel', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'operator');
+  const s = findRescue(u, id);
+  rescueView(s);
+  if (s.state !== 'issued' && s.state !== 'waiting') throw new HttpError(409, 'only sessions that have not started can be cancelled (cancel the running job instead)');
+  Object.assign(s, { state: 'cancelled', token_valid: false });
+  await audit(u.name, 'rescue.cancel', `rescue/${s.id}`, { agent_id: s.agent_id });
+  return [200, rescueView(s)];
+});
+on('POST', '/agents/:id/p2v', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'operator');
+  const a = findAgent(u, id);
+  vaultRefuse('bare-metal recoveries');
+  const b = c.body ?? {};
+  for (const [k, v] of [['node', b.node], ['storage', b.storage]]) if (!RESCUE_IDENT.test(String(v ?? ''))) throw new HttpError(400, `${k}: invalid`);
+  const m = /^([A-Za-z0-9._-]+):iso\/([A-Za-z0-9._-]+)$/.exec(String(b.iso ?? ''));
+  if (!m) throw new HttpError(400, 'iso: expected <storage>:iso/<file>.iso');
+  const isoStorage = b.iso_storage || m[1];
+  const bridge = b.bridge || 'vmbr0';
+  for (const [k, v] of [['iso_storage', isoStorage], ['bridge', bridge]]) if (!RESCUE_IDENT.test(v)) throw new HttpError(400, `${k}: invalid`);
+  if (b.name && !RESCUE_IDENT.test(b.name)) throw new HttpError(400, 'name: invalid');
+  const vmid = Number(b.vmid ?? 0);
+  if (vmid !== 0 && !(vmid >= 100 && vmid <= 999999999)) throw new HttpError(400, 'vmid: 100..999999999');
+  const memory = Number(b.memory || 2048);
+  const cores = Number(b.cores || 2);
+  if (!(memory >= 512 && memory <= 1048576) || cores > 256) throw new HttpError(400, 'memory (MiB) or cores out of range');
+  if (b.appliance_sha256 && !/^[0-9a-fA-F]{64}$/.test(b.appliance_sha256)) throw new HttpError(400, 'appliance_sha256: 64 hex characters');
+  const src = db.sources.find((x) => x.id === Number(b.source_id) && x.tenant === a.tenant);
+  if (src?.kind !== 'pve') throw new HttpError(400, "source_id: not a PVE source of the agent's tenant");
+  const time = Number(b.time);
+  if (!db.snapshots.some((x) => x.tenant === a.tenant && x.source === `host-${a.id}` && x.time === time)) throw new HttpError(400, 'time: no such snapshot of this host');
+  const p2v = {
+    source_id: src.id, node: b.node, vmid, name: b.name ?? '', storage: b.storage, iso: b.iso, iso_storage: isoStorage, bridge, memory, cores,
+    appliance: b.appliance || String(c.headers.host ?? 'backup.example.com'), appliance_sha256: b.appliance_sha256 ?? '',
+  };
+  const s = newRescue(a, u.name, true, { snapshot_time: time, p2v });
+  const j = addJob('p2v', a.tenant, { session: s.id, source_agent: a.id, time }, u.name, { duration: 10 });
+  s.p2v_job = j.id;
+  await audit(u.name, 'rescue.p2v', `rescue/${s.id}`, { agent_id: a.id, time, job: j.id, vm: p2v });
+  return [202, { ...rescueView(s), p2v_job: j.id }];
 });
 
 // users

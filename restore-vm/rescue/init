@@ -1,0 +1,38 @@
+#!/bin/sh
+# PID 1 of the rescue system (docs/bmr.md): mounts the API file systems, loads
+# the drivers of the present hardware, then runs the recovery console
+# (`nexus-agent rescue`) on /dev/console. A shell follows if it ends without
+# rebooting.
+export PATH=/usr/sbin:/usr/bin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts /run /tmp
+mount -t devpts devpts /dev/pts
+mount -t tmpfs -o mode=0755 tmpfs /run
+mount -t tmpfs tmpfs /tmp
+[ -d /sys/firmware/efi/efivars ] && mount -t efivarfs efivarfs /sys/firmware/efi/efivars
+echo 1 >/proc/sys/kernel/printk 2>/dev/null
+hostname nexus-rescue
+ip link set lo up
+for m in virtio_pci virtio_blk virtio_scsi virtio_net sd_mod sr_mod ahci nvme ata_piix e1000 e1000e \
+	isofs ext4 xfs btrfs vfat nls_cp437 nls_iso8859_1 dm_mod dm_thin_pool efivarfs; do
+	modprobe -q "$m"
+done
+# drivers for everything else on the buses (twice: new devices appear behind controllers)
+for _ in 1 2; do
+	sort -u /sys/bus/*/devices/*/modalias 2>/dev/null | xargs -r modprobe -q -a 2>/dev/null
+	sleep 1
+done
+echo
+echo "NexusBackup bare-metal recovery ($(nexus-agent version))"
+# the last console= is /dev/console (the screen by default); copy the output to the
+# serial port too when there is one (VM serial logs, lab)
+last=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^console=//p' | tail -n 1)
+if [ "${last%%,*}" = tty0 ] && grep -q 'console=ttyS0' /proc/cmdline; then
+	nexus-agent rescue 2>&1 | tee /dev/ttyS0
+else
+	nexus-agent rescue
+fi
+echo "the recovery console ended; type 'reboot -f' to restart, 'nexus-agent rescue' to start over"
+exec setsid sh -c 'exec sh </dev/console >/dev/console 2>&1'

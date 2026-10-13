@@ -172,7 +172,7 @@ fn depth(mp: &str) -> usize {
 pub fn plan(l: &Layout, targets: &[TargetDisk]) -> Result<Plan, String> {
     let mut p = Plan::default();
     if l.disks.is_empty() {
-        return Err("the layout records no disks (was the snapshot taken by an agent older than 0.2?)".into());
+        return Err("the layout records no disks (see the layout notes in the backup job log)".into());
     }
     if targets.len() < l.disks.len() {
         return Err(format!(

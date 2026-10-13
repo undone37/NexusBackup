@@ -130,6 +130,19 @@ service) as owner; setuid/setgid/sticky bits are cleared, devices and sockets ar
 sent, and only `user.*` xattrs arrive (docs/agent-protocol.md "Restore to another host").
 Confinement, overwrite policy and confirmation are the same as for the own host's files.
 
+## Machine layout and rescue mode (Phase 19a)
+
+With every backup the agent reports the machine layout (`GetLayout`, capability `layout`, `src/layout.rs`):
+disks, partition tables, LVM (thin pools included), md RAID / LUKS (detected), file systems with UUIDs and labels,
+swap, firmware, boot loader, kernel command line, network. The appliance stores it as `.nexus-system/layout.json`
+in the snapshot. The tools it runs (`lsblk`, `sfdisk -J`, `lvm pvs/vgs/lvs`, `findmnt`, `blkid`, `ip`) are read-only;
+missing ones become notes in the layout.
+
+`nexus-agent rescue` is the recovery console of the rescue ISO (`restore-vm/rescue/`, `src/rescue/`): network,
+appliance address, recovery token, target disks confirmed by typing their names (or the `NEXUSCFG` config disk for
+P2V), check-in, then the appliance drives `RescueApply` / restore / `RescueFinish`. Everything else
+(backups, updates, restores outside `/mnt/nexus-target`) is refused in rescue mode. Details: docs/bmr.md.
+
 ## Self-update
 
 `Update.signature` = output of `cosign sign-blob --key <release key>` (base64 DER ECDSA
