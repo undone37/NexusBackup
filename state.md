@@ -428,3 +428,36 @@ through the PVE guest agent (`lab/windows/gexec.py`, no Windows passwords), dev 
 - Found on the way: `store_image_extents` read every chunk twice on a full read (no base: dirty extent and the
   "grown" range overlapped); now each byte once (test `dirty_extents_read_each_byte_once`)
 - [ ] nexus-nas and the plugin host report no progress yet (log only); check on the real PVE host
+
+## Phase 31 — Guest file index without the micro-VM, instant search (2026-10-14)
+- [x] 31a `nexus-fsindex` (crate fsindex): GPT/MBR (+EBR), LVM2 linear/striped/mirror/raid1, ext2/3/4 (ext4-view),
+  NTFS (ntfs), FAT (fatfs), exFAT (own); per-volume state + reason (BitLocker, LUKS, ReFS, LDM, Storage Spaces,
+  md, ZFS, LVM thin, missing PV, corrupt table, limits); fstab / Windows `C:` / label / vol<N> mapping; helper
+  sandbox (no_new_privs, rlimits, seccomp, SELinux `nexus_fsindex_t`), pipe protocol, parent validates everything;
+  per-volume reuse by chunk ids; micro-VM fallback for XFS/btrfs/ZFS; `nexus-pve files … index` uses it
+  (`index-vm` = old walk); sealed side file `fsindex`; live progress per volume
+- [x] Tests with real images built locally without root (mkfs.ext4 -d, mkfs.vfat+mtools, mkntfs+ntfs-3g, mkfs.exfat
+  + crafted entries, sgdisk, mkfs.xfs, mkswap, hand-written LVM metadata incl. striping): crates/fsindex/tests;
+  store integration with reuse/change (crates/pve/tests/fsindex.rs); micro-VM comparison (ignored test
+  `fsindex_matches_micro_vm_listing`): identical entries for ext4, NTFS, vfat, ext4-on-LVM, 0.14 s vs 8.8 s;
+  with fallback all seven file systems equal
+- [x] Fuzz targets (crates/fsindex/fuzz, lab/fuzz/run.sh, seeds in mkseeds.py): part_table, lvm_meta, ext4_walk,
+  ntfs_walk, fat_walk, exfat_walk, helper_frames, disk_walk; 5 min each locally; findings fixed + regression tests
+- [x] 31b `nexus-index` (crate fileindex): Tantivy in a sealing Directory (256 KiB sealed blocks + sealed table,
+  bounded decrypted block cache, idle readers closed), file-version documents, append / per-source rebuild, rules
+  (defaults keep /var), Windows agent drive letters, VM guest paths; socket protocol (crate index-proto);
+  benchmark 30 x 200k files: first ingest 23 s, 428k versions, 32 MiB sealed, searches 14-200 ms, append 1.5 s
+- [x] catalog v42 (snapshot_index, groups.index_rules, group_sources); scheduler: pending/indexed/partial/failed per
+  VM/CT snapshot, nudges, rules push, `index_backlog` / `index_space`; web-api `GET /files/search`,
+  `/files/index-status`, `POST /files/index/rebuild`, `GET|PUT /groups/{id}/index-rules`, index state on /snapshots,
+  503 + UI fallback to the job search; OpenAPI; nexusctl `files search`; tokens: search + status readable
+- [x] OS: nexus-index.service, SELinux `nexus_index_t` / `nexus_fsindex_t` + neverallows (policy built and
+  neverallow-checked in the AlmaLinux 10 selinux stage, file contexts verified with matchpathcon), sysusers,
+  tmpfiles, Containerfile, setup enables nexus-index
+- [x] UI: instant Find files with filters + version timeline, group search scope, Storage index section, snapshot
+  index chips, alert texts; mock; manual 03/05/06/11 + screenshots; ui-smoke
+- [ ] Lab on the PVE host (Windows Server 2022 / Windows 11 / DC VMs, Debian LVM + XFS) not run; image build of the
+  full appliance not run (only the SELinux stage)
+- [ ] 31c: XFS walker, LVM thin, btrfs, Windows LDM, drive letters from the SYSTEM hive, owners/SIDs, per-directory
+  reuse, content hashes
+

@@ -771,6 +771,32 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
   embedded Tantivy service (`nexus-index`) with sealed segments, file-version model (first seen / gone), instant
   search API and UI with version timeline; the sealed per-snapshot name indexes stay the source of truth; the micro-VM
   stays the fallback. OpenSearch and Meilisearch considered and not recommended. Details: `docs/file-index-v2-plan.md`.
+- **Implemented 31a + 31b (2026-10-14).** Crates `fsindex` (nexus-fsindex helper + parent side), `fileindex`
+  (nexus-index service), `index-proto`; catalog v42; threat model T60, T61; alerts `index_backlog`, `index_space`;
+  audit `file.search`, `group.index_rules`, `file.index_rebuild`. Deviations from docs/file-index-v2-plan.md:
+  - Per-chunk metadata cache at **volume** granularity: a volume is reused (no parse) when every chunk id its last
+    parse read is unchanged; finer (per directory) reuse needs parsers without internal caches (the ext4/NTFS/FAT
+    crates cache blocks), deferred to 31c.
+  - ext4: the crate `ext4-view` applies the jbd2 journal in memory (read-only, nothing written); NTFS `$LogFile`
+    and FAT/exFAT are not replayed and a dirty volume is marked "crash-consistent". XFS, btrfs and ZFS are listed
+    through the restore micro-VM when its image is installed (fallback inside the same job) instead of being only
+    reported; md RAID, LDM, Storage Spaces, LVM thin/cache/VDO/RAID5, BitLocker, LUKS, ReFS are reported per volume.
+  - Panics of the third-party parser crates are contained per volume (catch_unwind; the volume is `failed`), and
+    their fuzz targets count hangs, memory blowups and aborts, not panics (`ntfs` turns a short read into a panic,
+    `fatfs` has debug overflow asserts). Own parsers (partition tables, LVM, exFAT, protocol) must not panic.
+  - Guest paths: the name index keeps the file browser's paths (`vda1/…`) so open/download/restore stay unchanged;
+    the mount mapping lives in the sealed per-snapshot report `fsindex` and the search index shows guest paths
+    (`/home/…`, `C:/Users/…`, label or `vol<N>`).
+  - `index_files` is on by default for **new** Proxmox VE groups; existing groups keep their setting (no lab
+    measurement of the per-snapshot cost on the PVE lab host yet: decision 4 asks for one first).
+  - nexus-index runs as `nexus-chunkstore` (keyd hands keyrings to one uid) with its own SELinux domain and group
+    `nexus-index` for the socket; one-uid split of keyd stays an open item (threat model).
+  - Snapshot deletion does not cancel a running `file_index` job (the job fails on the missing snapshot; the next
+    sync drops the versions). The nightly compare is the periodic sync (every 10 min) comparing the index payload with
+    the stores; rebuild per source on any difference other than appended snapshots.
+  - Owner/SID filters, XFS walker, LVM thin, btrfs, LDM, Windows drive letters from the SYSTEM hive, per-directory
+    reuse, content hashes: 31c (open). Lab runs on the PVE lab host (Windows Server / Windows 11 / DC VMs) not done
+    (not allowed in this run); compared against the micro-VM on the restore-vm fixtures instead.
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
