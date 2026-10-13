@@ -433,6 +433,8 @@ fn endpoint_status_poll_and_request() {
         status: status.clone(),
         ack,
         summaries,
+        edge: None,
+        set_edge: None,
     };
     let sum = Summary {
         job: 7,

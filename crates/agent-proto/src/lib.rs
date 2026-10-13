@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::io::{self, Read, Write};
 
+pub mod edge;
 pub mod layout;
 
 pub const VERSION: u32 = 1;
@@ -350,7 +351,19 @@ pub enum Message {
         target: String,
         log: String,
     },
+    /// v1.7 (CAP_EDGE), appliance → agent: keep a rendezvous connection to this edge
+    /// proxy (`addr` = `host:port`, `cert_sha256` = pinned edge certificate); an empty
+    /// `addr` removes it. `agent.conf` (`edge`, `edge_sha256`) takes precedence.
+    SetEdge {
+        addr: String,
+        cert_sha256: String,
+    },
+    /// Answer to `SetEdge`.
+    EdgeSet,
 }
+
+/// Capability: the agent understands `SetEdge` and keeps an edge rendezvous (v1.7).
+pub const CAP_EDGE: &str = "edge";
 
 /// Capability: the agent understands `SessionSummary` and `Poll` (v1.4).
 pub const CAP_POLL: &str = "poll";
@@ -546,6 +559,9 @@ pub fn check(m: &Message) -> io::Result<()> {
         }
         Message::Layout { json } | Message::RescueApply { layout: json, .. } if json.len() > MAX_LAYOUT => {
             return Err(bad("layout too large"))
+        }
+        Message::SetEdge { addr, cert_sha256 } if addr.len() > MAX_TEXT || cert_sha256.len() > 64 => {
+            return Err(bad("edge setting exceeds limits"))
         }
         Message::SessionSummary { summary, status } => {
             let s = summary;
@@ -860,6 +876,29 @@ mod tests {
                 power: PowerState::default(),
                 policy_version: 0,
                 busy: false,
+            },
+        )
+        .unwrap();
+        assert!(read_msg(&mut &buf[..]).is_err());
+    }
+
+    #[test]
+    fn v17_messages_are_appended() {
+        let m = Message::SetEdge {
+            addr: "edge.example.com:443".into(),
+            cert_sha256: "ab".repeat(32),
+        };
+        assert_eq!(postcard::to_stdvec(&m).unwrap()[0], 47);
+        assert_eq!(postcard::to_stdvec(&Message::EdgeSet).unwrap(), vec![48]);
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &m).unwrap();
+        assert_eq!(read_msg(&mut &buf[..]).unwrap(), m);
+        let mut buf = Vec::new();
+        write_msg(
+            &mut buf,
+            &Message::SetEdge {
+                addr: "x".repeat(MAX_TEXT + 1),
+                cert_sha256: String::new(),
             },
         )
         .unwrap();

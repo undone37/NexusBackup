@@ -6,7 +6,7 @@
   import { t } from '../lib/i18n';
   import { session } from '../lib/session.svelte';
   import { href } from '../lib/router.svelte';
-  import type { Agent, AgentLaptop, AgentSession, AgentUiPolicy } from '../lib/types';
+  import type { Agent, AgentLaptop, AgentSession, AgentUiPolicy, Edge } from '../lib/types';
   import Modal from './Modal.svelte';
   import ErrorBanner from './ErrorBanner.svelte';
 
@@ -17,6 +17,9 @@
   let lap: AgentLaptop = $state({ min_battery: 0, skip_metered: false, run_missed: false, retry_hours: 0 });
   let sessions: AgentSession[] = $state([]);
   let sessErr: string | null = $state(null);
+  // Phase 26: reach via an edge proxy (admins; GET /edges is admin only)
+  let edges: Edge[] = $state([]);
+  let edgeId = $state('');
 
   $effect(() => {
     if (!open || !agent) return;
@@ -26,6 +29,11 @@
     lap = { min_battery: l.min_battery ?? 0, skip_metered: !!l.skip_metered, run_missed: !!l.run_missed, retry_hours: l.retry_hours ?? 0 };
     sessions = [];
     sessErr = null;
+    edgeId = agent.edge_id ?? '';
+    if (isAdmin)
+      get<Edge[]>('/edges')
+        .then((e) => (edges = e.filter((x) => x.enrolled_at || x.id === agent.edge_id)))
+        .catch(() => (edges = []));
     get<AgentSession[]>(`/agents/${encodeURIComponent(agent.id)}/sessions?limit=10`)
       .then((s) => (sessions = s))
       .catch((e) => (sessErr = errText(e)));
@@ -48,6 +56,12 @@
       retry_hours: Number(lap.retry_hours) || 0,
     };
     if (await act(put(`/agents/${encodeURIComponent(agent.id)}/laptop`, body), t.saved)) onsaved();
+  }
+
+  async function saveEdge(e: SubmitEvent) {
+    e.preventDefault();
+    if (!agent) return;
+    if (await act(put(`/agents/${encodeURIComponent(agent.id)}/edge`, { edge_id: edgeId || null }), t.saved)) onsaved();
   }
 
   const resultCls: Record<string, string> = { Success: 'ok', Warning: 'warn', Failed: 'bad', Cancelled: 'info' };
@@ -101,6 +115,22 @@
       <label class="inline-check"><input type="checkbox" bind:checked={lap.run_missed} />{t.ep.runMissed}</label>
       <div class="form-actions"><button type="submit" class="primary">{t.ep.saveLaptop}</button></div>
     </form>
+
+    {#if isAdmin}
+      <h3>{t.ep.edge}</h3>
+      <form onsubmit={saveEdge}>
+        <div class="field">
+          <label for="ep-edge">{t.ep.edge}</label>
+          <select id="ep-edge" bind:value={edgeId} aria-describedby="ep-edge-hint">
+            <option value="">{t.ep.edgeNone}</option>
+            {#each edges as x (x.id)}<option value={x.id}>{x.name} ({x.public_host}:{x.public_port})</option>{/each}
+          </select>
+          <div class="hint" id="ep-edge-hint">{t.ep.edgeHint}</div>
+        </div>
+        {#if agent.edge_id}<p class="muted">{t.ep.edgePushed(agent.edge_pushed ?? null)}</p>{/if}
+        <div class="form-actions"><button type="submit" class="primary">{t.ep.saveEdge}</button></div>
+      </form>
+    {/if}
 
     <h3>{t.ep.sessions}</h3>
     <ErrorBanner error={sessErr} />

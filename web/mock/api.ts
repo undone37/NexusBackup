@@ -154,6 +154,10 @@ interface Agent {
   laptop: Json;
   missed_at: number | null;
   last_request: Json | null;
+  /** Phase 26: reach via an edge proxy, route of the last session, edge setting confirmed by the agent */
+  edge_id?: string | null;
+  via?: string | null;
+  edge_pushed?: string | null;
 }
 interface Job {
   id: number;
@@ -1501,6 +1505,7 @@ function seed() {
   seedRescue(t);
   seedTenantAdmin(t);
   seedFleet(t);
+  seedEdges(t);
 }
 
 /** Phase 19b: policy tiers, acme's assigned policies, its tenant admin "tara", a deleted tenant name.
@@ -6866,3 +6871,120 @@ function seedScans(t: number) {
       }),
     );
 }
+
+// Phase 26: edge proxies for roaming agents (admin only; docs/edge.md)
+type MockEdge = {
+  id: string; name: string; host: string; port: number; public_host: string; public_port: number; cert_sha256: string | null;
+  enrolled_at: number | null; token_hash: string | null; token_expires: number | null; last_seen: number | null; version: string | null;
+  health: Json | null; log: string[];
+};
+const edges: MockEdge[] = [];
+/** fixed ids (no rand()): the seeded PRNG sequence of the other fixtures stays as it was */
+function seedEdges(t: number) {
+  const nb07 = db.agents.find((a) => a.name === 'nb07');
+  edges.push(
+    {
+      id: '5b2e9d40c1f7a863', name: 'dmz-edge', host: '10.20.0.5', port: 7445, public_host: 'edge.acme.example.com', public_port: 443,
+      cert_sha256: '7c1f0a9e5d3b2c4a6f8e0d1c2b3a4f5e6d7c8b9a0f1e2d3c4b5a6f7e8d9c0b1a', enrolled_at: t - 86400 * 6, token_hash: null, token_expires: null,
+      last_seen: t - 12, version: '0.9.0',
+      health: { version: '0.9.0', uptime_secs: 86400 * 3 + 4000, agents_online: nb07 ? [nb07.id] : [], connections: 3, relays: 1, refused: 214, rate_limited: 37, configured: true },
+      log: [
+        'refused handshake from 203.0.113.77: unknown client certificate',
+        nb07 ? `agent ${nb07.id} rendezvous from 192.0.2.188` : 'agent rendezvous',
+        nb07 ? `relay to agent ${nb07.id} opened` : 'relay opened',
+        nb07 ? `relay to agent ${nb07.id} closed after 4.1 GiB, 612 s` : 'relay closed',
+      ],
+    },
+    {
+      id: 'a04c7e19b3d58f62', name: 'branch-edge', host: '10.30.0.5', port: 7445, public_host: '198.51.100.200', public_port: 443,
+      cert_sha256: null, enrolled_at: null, token_hash: 'x', token_expires: t + 86400 - 1800, last_seen: null, version: null, health: null, log: [],
+    },
+  );
+  if (nb07) {
+    nb07.edge_id = '5b2e9d40c1f7a863';
+    nb07.via = 'edge';
+    nb07.edge_pushed = 'edge.acme.example.com:443';
+  }
+}
+const pubEdge = ({ token_hash: _h, ...e }: MockEdge) => ({
+  ...e,
+  online: e.last_seen !== null && now() - e.last_seen <= 120,
+  agents: db.agents.filter((a) => a.edge_id === e.id).length,
+});
+const findEdge = (id: string) => find(edges, (e) => e.id === id, 'edge');
+async function edgeToken(e: MockEdge) {
+  const token = b32(26);
+  e.token_hash = await sha256(token);
+  e.token_expires = now() + 86400;
+  return { id: e.id, token, expires: e.token_expires, setup: 'nexus-edge init --token -' };
+}
+on('GET', '/edges', (c) => {
+  need(c.user, 'admin');
+  return [200, [...edges].sort((a, b) => a.name.localeCompare(b.name)).map(pubEdge)];
+});
+on('POST', '/edges', async (c) => {
+  const u = need(c.user, 'admin');
+  const { name, host, port = 7445, public_host, public_port = 443 } = c.body ?? {};
+  if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
+  for (const h of [host, public_host]) if (!/^[A-Za-z0-9.:\[\]-]{1,253}$/.test(h ?? '')) throw new HttpError(400, 'invalid host');
+  for (const p of [port, public_port]) if (!Number.isInteger(p) || p < 1 || p > 65535) throw new HttpError(400, 'port, public_port: must be 1..=65535');
+  if (edges.some((e) => e.name === name)) throw new HttpError(409, 'an edge with this name exists');
+  const e: MockEdge = {
+    id: rand(8), name, host, port, public_host, public_port, cert_sha256: null, enrolled_at: null, token_hash: null, token_expires: null,
+    last_seen: null, version: null, health: null, log: [],
+  };
+  edges.push(e);
+  const tok = await edgeToken(e);
+  await audit(u.name, 'edge.create', `edge/${e.id}`, pubEdge(e));
+  return [201, { ...pubEdge(e), ...tok }];
+});
+on('POST', '/edges/:id/token', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const e = findEdge(id);
+  const tok = await edgeToken(e);
+  await audit(u.name, 'edge.token', `edge/${e.id}`, { token_expires: tok.expires, reenroll: e.enrolled_at !== null });
+  return [200, tok];
+});
+on('POST', '/edges/:id/enroll', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const e = findEdge(id);
+  if (!e.token_hash || !e.token_expires || e.token_expires <= now())
+    throw new HttpError(409, 'no valid enrollment token: create a new token and enter it on the edge console');
+  const j = addJob('edge_enroll', '-', { edge_id: e.id }, u.name, { state: 'ok', started: now(), finished: now(), log: `edge-enrolled {"edge_id":"${e.id}"}\n` });
+  // the mock "enrolls" at once
+  e.cert_sha256 = rand(32);
+  e.enrolled_at = now();
+  e.token_hash = null;
+  e.token_expires = null;
+  e.last_seen = now();
+  e.version = '0.9.0';
+  e.health = { version: '0.9.0', uptime_secs: 5, agents_online: [], connections: 0, relays: 0, refused: 0, rate_limited: 0, configured: true };
+  await audit(u.name, 'job.create', `job/${j.id}`, { kind: 'edge_enroll', params: j.params });
+  await audit(u.name, 'edge.enroll', `edge/${e.id}`, { job: j.id });
+  return [202, { id: j.id }];
+});
+on('DELETE', '/edges/:id', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const e = findEdge(id);
+  let n = 0;
+  for (const a of db.agents)
+    if (a.edge_id === e.id) {
+      a.edge_id = null;
+      n++;
+    }
+  edges.splice(edges.indexOf(e), 1);
+  await audit(u.name, 'edge.delete', `edge/${e.id}`, { name: e.name, host: e.host, public_host: e.public_host, agents: n });
+  return [200, { id: e.id, agents: n }];
+});
+on('PUT', '/agents/:id/edge', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const a = findAgent(u, id);
+  const b = c.body ?? {};
+  for (const k of Object.keys(b)) if (k !== 'edge_id') throw new HttpError(400, `unknown field ${k}`);
+  const edge_id = b.edge_id ?? null;
+  if (edge_id !== null && !edges.some((e) => e.id === edge_id)) throw new HttpError(400, 'edge_id: no such edge');
+  const old = a.edge_id ?? null;
+  a.edge_id = edge_id;
+  await audit(u.name, 'agent.edge', `agent/${a.id}`, { tenant: a.tenant, edge: edge_id, old });
+  return [200, pubAgent(a)];
+});

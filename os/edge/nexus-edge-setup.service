@@ -1,0 +1,24 @@
+[Unit]
+Description=NexusBackup edge proxy console (tty1: network, enrollment token, status)
+After=systemd-user-sessions.service systemd-sysusers.service systemd-tmpfiles-setup.service
+After=systemd-vconsole-setup.service NetworkManager.service plymouth-quit-wait.service
+Wants=NetworkManager.service
+
+[Service]
+# The only console program: a fixed menu, no shell (all gettys are masked in the image).
+ExecStart=/usr/libexec/nexus-edge/nexus-edge-setup
+Restart=always
+RestartSec=1
+StandardInput=tty-force
+StandardOutput=tty
+StandardError=journal
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+Environment=TERM=linux
+UMask=0077
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

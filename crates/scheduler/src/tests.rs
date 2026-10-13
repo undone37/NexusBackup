@@ -2004,6 +2004,8 @@ mod clock;
 mod config_backup;
 /// Phase 14d certificate / secret / token expiry alerts.
 mod disks;
+/// Phase 26 edge proxies: routes, SetEdge push, control links, wakes, enrollment.
+mod edge;
 /// Phase 24a endpoint status: agent poll, requests, laptop policies, summaries.
 mod endpoint;
 mod expiry;

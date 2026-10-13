@@ -30,6 +30,7 @@ pub mod config_backup;
 pub mod console;
 pub mod dashboard;
 pub mod diag;
+pub mod edges;
 pub mod endpoint;
 pub mod firewall;
 pub mod fleet;
@@ -555,6 +556,12 @@ pub fn router(st: St) -> Router {
         .route("/agents/{id}/ui-policy", axum::routing::put(endpoint::set_ui_policy))
         .route("/agents/{id}/laptop", axum::routing::put(endpoint::set_laptop))
         .route("/agents/{id}/sessions", get(endpoint::agent_sessions))
+        // Phase 26: edge proxies for roaming agents (edges.rs)
+        .route("/agents/{id}/edge", axum::routing::put(edges::set_agent_edge))
+        .route("/edges", get(edges::list_edges).post(edges::create_edge))
+        .route("/edges/{id}", axum::routing::delete(edges::delete_edge))
+        .route("/edges/{id}/token", post(edges::new_edge_token))
+        .route("/edges/{id}/enroll", post(edges::enroll_edge))
         .route("/snapshots", get(list_snapshots))
         .route("/snapshots/diff", post(changes::diff))
         .route(

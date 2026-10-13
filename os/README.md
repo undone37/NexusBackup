@@ -328,3 +328,14 @@ but finds no sigstore attachment, so the lab resolves the registry name through
   `unconfined_service_t`, `mac_admin` denied) shows up in `ausearch` on every
   nexus-update/bootc run; harmless, not a nexus domain.
 - **nftables reload:** `systemctl reload nftables` empties the sets until the next nft-sync trigger (timer ≤ 30 min or any config change).
+
+## Edge proxy image (`os/edge/`, Phase 26, docs/edge.md)
+
+A second, minimal bootc image for the internet-facing edge proxy: only `nexus-edge` (user `nexus-edge`, SELinux domain
+`nexus_edge_t` from `edge/selinux/nexus_edge.te`, 7445/tcp labelled by `nexus_edge-port.cil`), nftables (input 443 +
+7445, output DNS/NTP/DHCP only), chrony and nmtui; no SSH, every getty masked, tty1 runs the fixed setup menu
+`nexus-edge-setup` (network, enrollment token, control-port restriction). Release keys for pushed updates:
+`/usr/share/nexus-edge/release-keys` (build arg `RELEASE_KEYS`, lab: `release/testkey`).
+`os/edge/build.sh [--test-key] [--qcow2] [--iso] [--lab-disk OUT]`; the selinux stage alone:
+`podman build --target selinux -f os/edge/Containerfile .` (neverallow check). VM lab: `lab/edge/e2e.sh`. Not built in
+CI yet.

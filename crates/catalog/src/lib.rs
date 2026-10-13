@@ -679,11 +679,34 @@ CREATE TABLE snapshot_scans (
 CREATE INDEX snapshot_scans_snapshot ON snapshot_scans(tenant, source, time);
 "#;
 
+/// v39 (Phase 26, docs/edge.md): edge proxies for roaming agents. `edges`
+/// (appliance-wide, admin-managed): the control address the appliance dials
+/// (`host:port`), the public address agents dial (`public_host:public_port`), the
+/// pinned edge certificate after enrollment, the sealed one-time enrollment token
+/// (location `catalog::secret::edge_token_location`), and what the control link
+/// reports (`last_seen`, `version`, `health` JSON, `log` = JSON array of the newest
+/// lines). Per agent: `edge_id` (reach via this edge; direct first, then the edge),
+/// `via` (route of the last successful session: `direct` | `edge`) and
+/// `edge_pushed` (edge setting the agent confirmed with `EdgeSet`, protocol v1.7).
+/// Purely additive: the previous release ignores the table and the columns.
+const SCHEMA_V39: &str = r#"
+CREATE TABLE edges (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+  host TEXT NOT NULL, port INTEGER NOT NULL DEFAULT 7445,
+  public_host TEXT NOT NULL, public_port INTEGER NOT NULL DEFAULT 443,
+  cert_sha256 TEXT, token_hash TEXT, token_expires INTEGER, enrolled_at INTEGER,
+  last_seen INTEGER, version TEXT, health TEXT, log TEXT,
+  created INTEGER NOT NULL, created_by TEXT NOT NULL);
+ALTER TABLE agents ADD COLUMN edge_id TEXT;
+ALTER TABLE agents ADD COLUMN via TEXT;
+ALTER TABLE agents ADD COLUMN edge_pushed TEXT;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
-    SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33,
+    SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V39,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -2656,5 +2679,50 @@ mod tests {
         assert!(conn
             .execute("INSERT INTO yara_rules VALUES ('r.yar', 'x', 'cd', 'bob', 2)", [])
             .is_err());
+    }
+
+    /// v39 (edge proxies) on top of the previous catalog: agents keep working
+    /// without an edge.
+    #[test]
+    fn migration_v39_edges() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V39).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO tenants (name) VALUES ('t'); \
+                 INSERT INTO agents (id, tenant, name, host, port) VALUES ('0123456789abcdef', 't', 'lap', 'h', 7444);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let e: Option<String> = conn.query_row("SELECT edge_id FROM agents", [], |r| r.get(0)).unwrap();
+        assert_eq!(e, None);
+        conn.execute_batch(
+            "INSERT INTO edges (id, name, host, public_host, created, created_by) \
+             VALUES ('e1', 'dmz', '10.0.0.5', 'edge.example.com', 1, 'alice');
+             UPDATE agents SET edge_id = 'e1', via = 'edge';",
+        )
+        .unwrap();
+        let ports: (i64, i64) = conn
+            .query_row("SELECT port, public_port FROM edges", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(ports, (7445, 443));
+        assert!(
+            conn.execute(
+                "INSERT INTO edges (id, name, host, public_host, created, created_by) VALUES ('e2', 'dmz', 'x', 'y', 1, 'a')",
+                [],
+            )
+            .is_err(),
+            "names are unique"
+        );
     }
 }

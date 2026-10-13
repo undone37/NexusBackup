@@ -6,8 +6,9 @@
 //! bounded concurrency; one `poll {json}` line per agent.
 
 use crate::ca::Ca;
-use crate::tls::{session_config_pins, Session};
-use agent_proto::{ApplianceStatus, Message, Summary, CAP_POLL};
+use crate::edge::EdgeTarget;
+use crate::tls::{session_config_pins, Route, Session};
+use agent_proto::{ApplianceStatus, Message, Summary, CAP_EDGE, CAP_POLL};
 use anyhow::{bail, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -30,6 +31,20 @@ pub struct Target {
     /// summaries not yet delivered (oldest first)
     #[serde(default)]
     pub summaries: Vec<Summary>,
+    /// edge proxy of the agent (tried when the direct connection fails)
+    #[serde(default)]
+    pub edge: Option<EdgeTarget>,
+    /// edge setting to push (`SetEdge`, v1.7; empty `addr` removes it)
+    #[serde(default)]
+    pub set_edge: Option<SetEdge>,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct SetEdge {
+    pub addr: String,
+    #[serde(default)]
+    pub cert_sha256: String,
 }
 
 /// One agent: never fails, the error goes into the result line.
@@ -51,9 +66,24 @@ fn session(ca: &Ca, t: &Target, timeout: Duration, delivered: &mut Vec<u64>) -> 
         bail!("agent {:?} is not enrolled", t.id);
     }
     let pins: Vec<&str> = t.pins.iter().map(String::as_str).collect();
-    let mut s = Session::connect(&t.host, t.port, session_config_pins(ca, &t.id, &pins)?, timeout)?;
+    let route = Route {
+        host: &t.host,
+        port: t.port,
+        edge: t.edge.as_ref(),
+    };
+    let mut s = Session::connect_route(&route, ca, &t.id, session_config_pins(ca, &t.id, &pins)?, timeout)?;
     let info = s.hello(&t.id)?;
     let mut out = json!({"info": info, "poll": s.has_cap(CAP_POLL)});
+    if let Some(e) = t.set_edge.as_ref().filter(|_| s.has_cap(CAP_EDGE)) {
+        s.send(&Message::SetEdge {
+            addr: e.addr.clone(),
+            cert_sha256: e.cert_sha256.clone(),
+        })?;
+        match s.recv()? {
+            Message::EdgeSet => out["edge_set"] = json!(e.addr),
+            m => bail!("unexpected answer to SetEdge: {}", crate::name(&m)),
+        }
+    }
     if !s.has_cap(CAP_POLL) {
         s.close();
         return Ok(out);

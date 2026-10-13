@@ -6,7 +6,9 @@ side (creating the agent, the source and its paths) is in [04 Sources](04-source
 ## How the agent works
 
 - `nexus-agent` is one static binary (no dependencies). It runs as a root systemd service and **listens on TCP
-  7444** (TLS 1.3). It never connects out; the appliance connects to it.
+  7444** (TLS 1.3). It never connects out to the appliance; the appliance connects to it. A laptop outside the
+  office can additionally keep a connection to an **edge proxy** through which the appliance reaches it (TLS end
+  to end): [18 Edge proxy for roaming laptops](18-edge-proxy.md).
 - Trust: a one-time enrollment token from the appliance, then mutual TLS with certificates from the appliance's CA.
   The agent accepts only the appliance that enrolled it.
 - Each backup takes a snapshot of the affected volumes (LVM thin or thick, ZFS, btrfs), reads the files from the
@@ -128,6 +130,8 @@ are an error**: the agent refuses to start rather than silently ignore a typo. R
 | `appliance_id` | – | accept only this appliance id (pinning, if several appliances share a CA) |
 | `max_connections` | `4` | concurrent appliance sessions (1–64) |
 | `self_update` | on for bundles, off for packages | allow the appliance's **Update agent** |
+| `edge` | – | `host:port` of an edge proxy for roaming laptops (with `edge_sha256`); normally pushed by the appliance, see [18 Edge proxy](18-edge-proxy.md) |
+| `edge_sha256` | – | SHA-256 fingerprint of the edge proxy's certificate (pinned) |
 
 Example:
 
@@ -341,7 +345,8 @@ transferred.
 ```
 
 If the appliance has not reached the computer for a while (a laptop away from the office network or the VPN), the
-header shows when it was last reached. A missed scheduled backup runs when the computer is reachable again.
+header shows when it was last reached. A missed scheduled backup runs when the computer is reachable again. Laptops
+assigned to an edge proxy stay reachable outside the office: [18 Edge proxy for roaming laptops](18-edge-proxy.md).
 
 ```text
 ┌ NexusBackup Agent ───────────────────────────────────────────────────────────┐

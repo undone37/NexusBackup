@@ -5,7 +5,9 @@
 //! them in `<state>/ui-state.json` (root only) and answers the local IPC requests
 //! (`status`, `sessions`, `session`, `request_backup`) from memory. A "back up now"
 //! request is only queued here: the appliance picks it up with its next `Poll`
-//! (the agent never connects out) and acknowledges it in the poll after that.
+//! (the agent never connects out to the appliance; with an edge proxy it tells the
+//! edge at once, crate::edge, so that poll comes within seconds) and acknowledges it
+//! in the poll after that.
 
 use crate::config::{write_atomic, Paths};
 use crate::server::{log, Agent, Mode, Platform};
@@ -46,6 +48,8 @@ pub struct Ui {
     path: std::path::PathBuf,
     state: Mutex<State>,
     progress: Mutex<Option<Progress>>,
+    /// told about every accepted request (edge rendezvous, crate::edge)
+    waker: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
 
 pub fn now() -> u64 {
@@ -110,7 +114,13 @@ impl Ui {
             path,
             state: Mutex::new(state),
             progress: Mutex::new(None),
+            waker: Mutex::new(None),
         }
+    }
+
+    /// Notified after every accepted "back up now" request.
+    pub fn set_waker(&self, tx: std::sync::mpsc::Sender<()>) {
+        *lock(&self.waker) = Some(tx);
     }
 
     fn save(&self, st: &State) {
@@ -183,6 +193,10 @@ impl Ui {
         st.last_request = Some(now);
         self.save(&st);
         log(format!("backup requested by a local user (request {})", r.id));
+        drop(st);
+        if let Some(w) = lock(&self.waker).as_ref() {
+            let _ = w.send(());
+        }
         Ok(ui::Requested {
             request_id: r.id,
             queued_at: now,

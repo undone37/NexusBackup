@@ -302,3 +302,50 @@ Appended after `FleetInfo` (tags 42–46, checked by `agent-proto` tests); sent 
   apply|restore|finish`, `rescue-done {json}`; `nexus-agentctl … layout <agent> <time> <out.json>` extracts a
   snapshot's layout. The restore into the rescue agent keeps the full metadata of the original host (it is the
   snapshot's own host: `target_agent` = the original agent id).
+
+## v1.7 — edge proxy (additive, Phase 26, docs/edge.md)
+Roaming laptops are reached through an **edge proxy** (`nexus-edge`, a separate VM in a DMZ or the client network)
+without a VPN and without any connection into the appliance. The appliance↔agent session itself is unchanged: the
+appliance still opens the normal mTLS session (appliance CA client certificate, agent certificate pinned) and the
+edge relays its TLS records byte for byte; it holds no key of either side.
+
+- **Capability `edge`** (all agents built on `agent-core`): `SetEdge { addr, cert_sha256 }` → `EdgeSet` (tags 47, 48,
+  appended after v1.6's `RescueDone` = 46; checked by `agent-proto` tests). Sent in a poll session when the agent's
+  edge assignment on the appliance differs from what it last confirmed (`agents.edge_pushed`). `addr` =
+  `host:port` of the edge's public port (empty = no edge), `cert_sha256` = the pinned edge certificate. The agent
+  stores it in `<state>/edge.json` (root 0600); `edge` / `edge_sha256` in `agent.conf` override it. Agents without
+  the capability are configured only through `agent.conf`.
+- **Agent ↔ edge** (public port, default 443): TLS 1.3, ALPN `nexus-edge/1`; the agent presents its agent
+  certificate as client certificate and pins the edge certificate by SHA-256. Only enrolled agents (mTLS mode) use
+  the edge; enrollment stays direct. Messages (`agent_proto::edge::EdgeMsg`, frame `u32 BE length | postcard`,
+  ≤ 64 KiB on this port):
+  - `Rendezvous` — long-lived connection kept by the agent (reconnect with backoff 5 s … 5 min); the edge sends
+    `Ping` every 30 s (the agent reconnects after 90 s without one) and `Connect { nonce }` when the appliance asked
+    for a session.
+  - `Stream { nonce }` — a new connection that becomes the relayed stream for that nonce (16 random bytes, single
+    use, valid for 15 s, only for the agent id of the certificate that registered the rendezvous). Right after it
+    the agent runs its normal **TLS server** (`server::Agent`, mTLS mode) over this connection.
+  - `Wake` — a short connection after a local "back up now" request: the edge passes the agent id to the appliance
+    at once, which then polls the agent through the edge (the request is still collected by `Poll` as in v1.4).
+- **Appliance ↔ edge** (control port, default 7445): TLS 1.3, ALPN `nexus-edge/1`, appliance client certificate
+  (`CN=nexus-appliance:<id>` of the agent CA), edge certificate pinned. Frames as above, ≤ 32 MiB (updates).
+  - Enrollment: `Enroll { proof }` → `Enrolled { proof, version }` with
+    `proof = HMAC-SHA256(token digest, role || TLS-exporter("nexus-edge enroll", 32))`, role `"edge-appliance"` /
+    `"edge"`. The edge then pins the client certificate of this session, the appliance the edge certificate. Token
+    one-time, 24 h, digest sealed to the scheduler (`edge/<id>/token@<host>:<port>`); 5 wrong proofs lock the edge
+    until `nexus-edge init` runs again.
+  - `Configure { ca_pem, agents: [{ id, pins }], limits }` → `Ok`: the appliance agent CA certificate and, per
+    agent assigned to this edge, the accepted certificate fingerprints (current + renewed); limits = connections per
+    minute per IP / per agent and the connection cap.
+  - `Wait { secs }` → `Events { health, wakes, log }`: long poll; answers at once when a wake is pending. `health`
+    = `{version, uptime_secs, cert_sha256, agents_online, connections, relays, refused, rate_limited, configured}`;
+    `log` = new log lines (connection metadata only, never payload).
+  - `Update { version, binary, signature }` → `Ok`: cosign blob signature checked against the release keys baked
+    into the edge image (`/usr/share/nexus-edge/release-keys`), newer version only; stored in
+    `/var/lib/nexus-edge/update/`, the edge exits and systemd restarts it into the verified binary.
+  - `Open { agent_id }` → `Opened` (then raw bytes: the inner TLS session) or `Error { code, message }` (agent not
+    connected: 404, the agent did not open the stream within 15 s: 504).
+- **Appliance side:** per agent `edge_id`; `nexus-agentctl` tries the agent directly (3 s connect timeout when an
+  edge is assigned), then through the edge, and prints `"via": "direct" | "edge"` in `agent-info`. The scheduler
+  keeps one `nexus-agentctl … edge-link` per enrolled edge (`edge-health`, `edge-wake`, `edge-log`, `edge-updated`
+  lines) and enrolls edges with `edge-enroll` (`edge-enrolled {json}`).

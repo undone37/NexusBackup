@@ -1,0 +1,75 @@
+policy_module(nexus_edge, 1.0.0)
+
+########################################
+# NexusBackup edge proxy (Phase 26, docs/edge.md): one internet-facing daemon.
+#
+#   init_t ── nexus_edge_exec_t ──> nexus_edge_t   binds 443 (agents) + 7445 (appliance control),
+#                                                  its state dir, the pinned release keys in /usr;
+#                                                  no outbound connections except DNS
+#
+# The state dir holds only the edge's own TLS key, the token digest, the appliance pin and
+# the pushed configuration (CA certificate, agent certificate pins): no backup data, no
+# appliance or agent keys. Updates pushed by the appliance land in update/ labelled
+# nexus_edge_exec_t (written by nexus-edge after the signature check, re-verified before it
+# execs them); that W+X type is confined to this one domain.
+########################################
+
+gen_require(`
+	type init_t;
+')
+
+type nexus_edge_t;
+type nexus_edge_exec_t;
+init_daemon_domain(nexus_edge_t, nexus_edge_exec_t)
+# NoNewPrivileges=yes in the unit
+allow init_t nexus_edge_t:process2 { nnp_transition nosuid_transition };
+
+type nexus_edge_var_lib_t;
+files_type(nexus_edge_var_lib_t)
+type nexus_edge_control_port_t;
+corenet_port(nexus_edge_control_port_t)
+
+########################################
+# Basics of a Rust program on glibc (as nexus_domain in os/selinux/nexus.te)
+
+allow nexus_edge_t self:process { signal_perms getsched };
+allow nexus_edge_t self:fifo_file rw_fifo_file_perms;
+allow nexus_edge_t self:unix_stream_socket create_stream_socket_perms;
+kernel_read_system_state(nexus_edge_t)
+dev_read_sysfs(nexus_edge_t)
+fs_read_cgroup_files(nexus_edge_t)
+dev_read_urand(nexus_edge_t)
+miscfiles_read_localization(nexus_edge_t)
+logging_send_syslog_msg(nexus_edge_t)
+
+########################################
+# Listeners: 443 (http_port_t in the base policy) and 7445 (nexus_edge-port.cil)
+
+allow nexus_edge_t self:capability net_bind_service;
+allow nexus_edge_t self:tcp_socket create_stream_socket_perms;
+allow nexus_edge_t self:tcp_socket { listen accept };
+corenet_tcp_bind_generic_node(nexus_edge_t)
+corenet_tcp_bind_http_port(nexus_edge_t)
+allow nexus_edge_t nexus_edge_control_port_t:tcp_socket name_bind;
+# no name_connect at all: the edge never opens a connection (reverse DNS of peers is not used)
+
+########################################
+# State: key, certificate, token digest, pins, pushed config; update/ (exec type)
+
+files_search_var_lib(nexus_edge_t)
+manage_dirs_pattern(nexus_edge_t, nexus_edge_var_lib_t, nexus_edge_var_lib_t)
+manage_files_pattern(nexus_edge_t, nexus_edge_var_lib_t, nexus_edge_var_lib_t)
+filetrans_pattern(nexus_edge_t, nexus_edge_var_lib_t, nexus_edge_exec_t, dir, "update")
+manage_dirs_pattern(nexus_edge_t, nexus_edge_exec_t, nexus_edge_exec_t)
+manage_files_pattern(nexus_edge_t, nexus_edge_exec_t, nexus_edge_exec_t)
+# exec the verified update in the same domain (no transition)
+can_exec(nexus_edge_t, nexus_edge_exec_t)
+# pinned release keys (/usr/share/nexus-edge/release-keys)
+files_read_usr_files(nexus_edge_t)
+
+########################################
+# Boundaries
+
+# The edge never connects out. No allow rule here grants name_connect; a neverallow is not
+# possible because the base policy's init module grants daemons connections behind a
+# boolean (nis_enabled). The nftables output chain drops everything but DNS/NTP/DHCP.

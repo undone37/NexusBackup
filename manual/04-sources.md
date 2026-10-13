@@ -429,6 +429,8 @@ out). The **Endpoint** column of the Agents page shows the result:
     not reachable at the scheduled time is left out instead of failing the group's backup. Audit
     `agent.missed_run_queued` / `agent.missed_run_expired`.
   - "Back up now" requests from the endpoint and **Back up now** on the appliance always run.
+  - **Reach via edge**: an edge proxy (Settings → **Edges**) through which the appliance reaches this laptop when
+    it is not reachable directly (direct first, then the edge); see [18 Edge proxy](18-edge-proxy.md).
 - **Sessions shown on the endpoint**: the last backups and file restores of the agent as its endpoint UI shows them
   (result, time, transferred bytes, first error), and whether the agent already has them ("on the agent") or gets
   them with the next poll ("pending"). The appliance sends each finished session's summary with the agent's part

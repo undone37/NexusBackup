@@ -116,6 +116,7 @@ error**: the service refuses to start rather than ignore a typo. Restart the ser
 | `max_connections` | `4` | concurrent appliance sessions (1–64) |
 | `vss_exclude_writers` | – | comma-separated VSS writer class ids (`{guid},{guid}`) that must not take part |
 | `self_update` | off for the MSI | allow the appliance's **Update agent** |
+| `edge`, `edge_sha256` | – | edge proxy `host:port` and its certificate fingerprint for laptops outside the office; normally pushed by the appliance: [18 Edge proxy](18-edge-proxy.md) |
 
 `vssadmin list writers` shows the writer class ids. Exclude a writer only if it fails every backup and its data is
 protected another way: its data is then only crash-consistent.

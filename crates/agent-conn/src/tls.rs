@@ -16,6 +16,7 @@ use rustls::{
     CertificateError, ClientConfig, ClientConnection, DigitallySignedStruct, Error, RootCertStore, SignatureScheme,
     StreamOwned,
 };
+use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
@@ -159,11 +160,31 @@ pub fn session_config_pins(ca: &Ca, agent_id: &str, pins: &[&str]) -> Result<Arc
     client_config(ca, Arc::new(v))
 }
 
+/// What a session runs over: a TCP connection to the agent, or a stream relayed by
+/// an edge proxy (crate::edge; the agent session's TLS runs inside it).
+pub trait Transport: Read + Write + Send {
+    fn set_read_timeout(&self, t: Option<Duration>) -> std::io::Result<()>;
+}
+
+impl Transport for TcpStream {
+    fn set_read_timeout(&self, t: Option<Duration>) -> std::io::Result<()> {
+        TcpStream::set_read_timeout(self, t)
+    }
+}
+
+impl Transport for StreamOwned<ClientConnection, TcpStream> {
+    fn set_read_timeout(&self, t: Option<Duration>) -> std::io::Result<()> {
+        self.sock.set_read_timeout(t)
+    }
+}
+
 /// One TLS connection to an agent; framing per agent-proto.
 pub struct Session {
-    pub s: StreamOwned<ClientConnection, TcpStream>,
+    pub s: StreamOwned<ClientConnection, Box<dyn Transport>>,
     /// capabilities from `HelloReply` (empty until `hello`)
     pub caps: Vec<String>,
+    /// `direct` or `edge`
+    pub via: &'static str,
 }
 
 impl Session {
@@ -172,42 +193,93 @@ impl Session {
     }
 }
 
+/// TCP connection with timeouts (`connect` ≤ `connect_timeout`).
+pub fn tcp(host: &str, port: u16, connect_timeout: Duration, timeout: Duration) -> Result<TcpStream> {
+    let addrs: Vec<_> = (host.trim_matches(['[', ']']), port)
+        .to_socket_addrs()
+        .with_context(|| format!("resolve {host}"))?
+        .collect();
+    let mut last = None;
+    let mut tcp = None;
+    for a in addrs {
+        match TcpStream::connect_timeout(&a, connect_timeout) {
+            Ok(t) => {
+                tcp = Some(t);
+                break;
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    let tcp = match (tcp, last) {
+        (Some(t), _) => t,
+        (None, Some(e)) => return Err(e).with_context(|| format!("connect {host}:{port}")),
+        (None, None) => bail!("{host}: no address"),
+    };
+    tcp.set_read_timeout(Some(timeout))?;
+    tcp.set_write_timeout(Some(timeout))?;
+    tcp.set_nodelay(true)?;
+    Ok(tcp)
+}
+
+/// How to reach an agent: its address, and optionally an edge proxy (tried when the
+/// direct connection fails).
+pub struct Route<'a> {
+    pub host: &'a str,
+    pub port: u16,
+    pub edge: Option<&'a crate::edge::EdgeTarget>,
+}
+
 impl Session {
     pub fn connect(host: &str, port: u16, cfg: Arc<ClientConfig>, timeout: Duration) -> Result<Session> {
-        let addrs: Vec<_> = (host.trim_matches(['[', ']']), port)
-            .to_socket_addrs()
-            .with_context(|| format!("resolve {host}"))?
-            .collect();
-        let mut last = None;
-        let mut tcp = None;
-        for a in addrs {
-            match TcpStream::connect_timeout(&a, timeout.min(Duration::from_secs(15))) {
-                Ok(t) => {
-                    tcp = Some(t);
-                    break;
-                }
-                Err(e) => last = Some(e),
+        let t = tcp(host, port, timeout.min(Duration::from_secs(15)), timeout)?;
+        Session::over(Box::new(t), cfg, &format!("{host}:{port}"), "direct")
+    }
+
+    /// Direct first (3 s to connect when an edge is set), then through the edge.
+    pub fn connect_route(
+        r: &Route,
+        ca: &Ca,
+        agent_id: &str,
+        cfg: Arc<ClientConfig>,
+        timeout: Duration,
+    ) -> Result<Session> {
+        let Some(edge) = r.edge else {
+            return Session::connect(r.host, r.port, cfg, timeout);
+        };
+        let direct = tcp(r.host, r.port, Duration::from_secs(3), timeout)
+            .and_then(|t| Session::over(Box::new(t), cfg.clone(), &format!("{}:{}", r.host, r.port), "direct"));
+        match direct {
+            Ok(s) => Ok(s),
+            Err(d) => {
+                let t = crate::edge::open(ca, edge, agent_id, timeout)
+                    .with_context(|| format!("direct: {d:#}; via edge {}:{}", edge.host, edge.port))?;
+                Session::over(
+                    t,
+                    cfg,
+                    &format!("agent {agent_id} via edge {}:{}", edge.host, edge.port),
+                    "edge",
+                )
             }
         }
-        let tcp = match (tcp, last) {
-            (Some(t), _) => t,
-            (None, Some(e)) => return Err(e).with_context(|| format!("connect {host}:{port}")),
-            (None, None) => bail!("{host}: no address"),
-        };
-        tcp.set_read_timeout(Some(timeout))?;
-        tcp.set_write_timeout(Some(timeout))?;
-        tcp.set_nodelay(true)?;
+    }
+
+    /// The agent-protocol TLS session over `t`.
+    pub fn over(t: Box<dyn Transport>, cfg: Arc<ClientConfig>, label: &str, via: &'static str) -> Result<Session> {
         let conn = ClientConnection::new(cfg, ServerName::try_from("nexus-agent").unwrap())?;
-        let mut s = StreamOwned::new(conn, tcp);
+        let mut s = StreamOwned::new(conn, t);
         while s.conn.is_handshaking() {
             s.conn
                 .complete_io(&mut s.sock)
-                .with_context(|| format!("TLS handshake with {host}:{port}"))?;
+                .with_context(|| format!("TLS handshake with {label}"))?;
         }
         if s.conn.alpn_protocol() != Some(ALPN) {
-            bail!("{host}:{port}: agent did not negotiate ALPN nexus-agent/1");
+            bail!("{label}: agent did not negotiate ALPN nexus-agent/1");
         }
-        Ok(Session { s, caps: Vec::new() })
+        Ok(Session {
+            s,
+            caps: Vec::new(),
+            via,
+        })
     }
 
     /// TLS exporter bound to this session (enrollment proofs).
@@ -265,6 +337,7 @@ impl Session {
                     hostname,
                     version: agent_version,
                     caps,
+                    via: self.via.into(),
                 })
             }
             m => bail!("unexpected answer to Hello: {}", crate::name(&m)),
@@ -285,4 +358,6 @@ pub struct AgentInfo {
     pub hostname: String,
     pub version: String,
     pub caps: Vec<String>,
+    /// route of this session: `direct` or `edge`
+    pub via: String,
 }

@@ -1,5 +1,5 @@
 //! `nexus-agentctl <config.json> enroll | backup | restore | update | hello | renew | fleet-scan | poll |
-//! rescue | layout <agent-id> <time> <out.json> |
+//! edge-enroll | edge-link | rescue | layout <agent-id> <time> <out.json> |
 //! files <agent-id> <time> ls <dir> | files <agent-id> <time> get <out.tar|out.zip> <path>...`
 //!
 //! Spawned by the scheduler with a generated 0600 config (docs/agent-protocol.md
@@ -13,10 +13,11 @@
 
 use agent_conn::backup::{self, Spec as BackupSpec};
 use agent_conn::ca::Ca;
+use agent_conn::edge::EdgeTarget;
 use agent_conn::files::{self, Format};
 use agent_conn::map::MapDb;
 use agent_conn::restore::{self, parse_overwrite, Spec as RestoreSpec};
-use agent_conn::tls::{session_config_pins, AgentInfo, Session};
+use agent_conn::tls::{session_config_pins, AgentInfo, Route, Session};
 use agent_conn::{enroll, tarbridge, update, valid_agent_id};
 use anyhow::{bail, Context, Result};
 use chunkstore::{Options, Store};
@@ -59,6 +60,9 @@ struct Config {
     /// `poll`: the due agents (agent_conn::poll)
     #[serde(default)]
     poll: Option<PollCfg>,
+    /// `edge-enroll` / `edge-link` (docs/edge.md)
+    #[serde(default)]
+    edge: Option<EdgeCfg>,
 }
 
 #[derive(Deserialize)]
@@ -115,6 +119,23 @@ struct AgentCfg {
     /// a renewed certificate issued but not yet confirmed (accepted as well)
     #[serde(default)]
     cert_sha256_next: Option<String>,
+    /// edge proxy of a roaming agent: tried when the direct connection fails
+    #[serde(default)]
+    edge: Option<EdgeTarget>,
+}
+
+/// `edge-enroll` / `edge-link`: the edge's control address, pin, token digest file
+/// (enrollment) and what the link pushes.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EdgeCfg {
+    id: String,
+    #[serde(flatten)]
+    target: EdgeTarget,
+    #[serde(default)]
+    token_file: Option<PathBuf>,
+    #[serde(default)]
+    link: Option<agent_conn::edge::LinkSpec>,
 }
 
 #[derive(Deserialize)]
@@ -188,9 +209,15 @@ impl Config {
             .as_deref()
             .context("agent is not enrolled (no certificate fingerprint)")?;
         let pins: Vec<&str> = std::iter::once(pin).chain(a.cert_sha256_next.as_deref()).collect();
-        let mut s = Session::connect(
-            &a.host,
-            a.port,
+        let route = Route {
+            host: &a.host,
+            port: a.port,
+            edge: a.edge.as_ref(),
+        };
+        let mut s = Session::connect_route(
+            &route,
+            ca,
+            &a.id,
             session_config_pins(ca, &a.id, &pins)?,
             Duration::from_secs(self.timeout_secs),
         )?;
@@ -210,7 +237,7 @@ impl Config {
 fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: nexus-agentctl <config.json> enroll | backup | restore | update | hello | renew | fleet-scan | poll | rescue | layout <agent-id> <time> <out.json> | files <agent-id> <time> ls <dir> | files <agent-id> <time> get <out.tar|out.zip> <path>...";
+    let usage = "usage: nexus-agentctl <config.json> enroll | backup | restore | update | hello | renew | fleet-scan | poll | edge-enroll | edge-link | rescue | layout <agent-id> <time> <out.json> | files <agent-id> <time> ls <dir> | files <agent-id> <time> get <out.tar|out.zip> <path>...";
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
         bail!("{usage}");
     };
@@ -241,6 +268,7 @@ fn main() -> Result<()> {
                     port: a.port,
                     cert_sha256: Some(e.cert_sha256.clone()),
                     cert_sha256_next: None,
+                    edge: a.edge.clone(),
                 }),
 
                 ..cfg
@@ -292,6 +320,33 @@ fn main() -> Result<()> {
                 &mut |v| println!("poll {v}"),
             );
         }
+        ("edge-enroll", []) => {
+            let e = cfg.edge.as_ref().context("config: edge missing")?;
+            let ca = Ca::load_or_create(&cfg.ca_dir)?;
+            let digest = fs::read_to_string(e.token_file.as_ref().context("config: token_file missing")?)?;
+            let r = agent_conn::edge::enroll(
+                &ca,
+                &e.target.host,
+                e.target.port,
+                digest.trim(),
+                Duration::from_secs(cfg.timeout_secs.min(60)),
+            )?;
+            println!(
+                "edge-enrolled {}",
+                json!({"edge_id": e.id, "cert_sha256": r.cert_sha256, "version": r.version})
+            );
+        }
+        ("edge-link", []) => {
+            let e = cfg.edge.as_ref().context("config: edge missing")?;
+            let ca = Ca::load_or_create(&cfg.ca_dir)?;
+            let spec = e.link.clone().unwrap_or_default();
+            agent_conn::edge::link(&ca, &e.target, &spec, &mut |l| {
+                use std::io::Write;
+                let mut o = std::io::stdout().lock();
+                let _ = writeln!(o, "{l}");
+                let _ = o.flush();
+            })?;
+        }
         ("hello", []) => {
             let ca = Ca::load_or_create(&cfg.ca_dir)?;
             cfg.session(&ca)?.0.close();
@@ -319,6 +374,7 @@ fn main() -> Result<()> {
                     port: a.port,
                     cert_sha256: Some(r.cert_sha256.clone()),
                     cert_sha256_next: None,
+                    edge: a.edge.clone(),
                 }),
                 ..cfg
             };
@@ -523,6 +579,7 @@ fn rescue(cfg: &Config) -> Result<()> {
             port: a.port,
             cert_sha256: Some(pin),
             cert_sha256_next: None,
+            edge: None,
         }),
         tenant: cfg.tenant.clone(),
         store: cfg.store.clone(),
@@ -536,6 +593,7 @@ fn rescue(cfg: &Config) -> Result<()> {
         rescue: None,
         poll: None,
         fleet: None,
+        edge: None,
         timeout_secs: cfg.timeout_secs,
     };
     let end = Instant::now() + Duration::from_secs(60);

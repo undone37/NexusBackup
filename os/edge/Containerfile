@@ -1,0 +1,104 @@
+# NexusBackup edge proxy OS image (Phase 26, docs/edge.md): a minimal bootc image that
+# runs only nexus-edge. Internet-facing: 443/tcp (agents) and 7445/tcp (the appliance's
+# control link) are the only open ports; no SSH, no web UI, no shell on the console.
+# Build from the repository root (the context needs crates/, plugins/, restore-vm/agent/,
+# os/ and release/keys/):
+#   podman build -f os/edge/Containerfile -t localhost/nexus-edge-os:dev .
+# Lab builds pin the test release key instead: --build-arg RELEASE_KEYS=release/testkey
+# Disk images: os/edge/build.sh.
+#
+# Stages: rust (nexus-edge on the target's glibc) -> selinux (policy module) -> final image.
+ARG BASE=quay.io/almalinuxorg/almalinux-bootc:10
+ARG RUST_VERSION=1.93.0
+
+# ---- Stage 1: nexus-edge (the workspace manifest needs every member present)
+FROM ${BASE} AS rust
+ARG RUST_VERSION
+ARG JOBS=8
+RUN dnf -y install --setopt=install_weak_deps=False gcc make \
+ && dnf clean all
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh \
+ && sh /tmp/rustup.sh -y --no-modify-path --profile minimal --default-toolchain ${RUST_VERSION} \
+ && rm /tmp/rustup.sh
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+COPY restore-vm/agent/ restore-vm/agent/
+COPY plugins/ plugins/
+RUN --mount=type=cache,target=/opt/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked -j ${JOBS} -p edge --bin nexus-edge \
+ && mkdir -p /out && cp target/release/nexus-edge /out/
+
+# ---- Stage 2: SELinux module + neverallow check (selinux-policy-devel never reaches the image)
+FROM ${BASE} AS selinux
+RUN dnf -y install --setopt=install_weak_deps=False selinux-policy-devel make \
+ && dnf clean all
+COPY os/edge/selinux/nexus_edge.te os/edge/selinux/nexus_edge.fc os/edge/selinux/nexus_edge-port.cil /build/
+RUN make -C /build -f /usr/share/selinux/devel/Makefile nexus_edge.pp \
+ && sed -i '/expand-check/d' /etc/selinux/semanage.conf \
+ && echo expand-check=1 >> /etc/selinux/semanage.conf \
+ && { semodule -i /build/nexus_edge.pp /build/nexus_edge-port.cil > /build/neverallow.log 2>&1 || true; } \
+ && ! grep -A4 'neverallow check failed at .*/nexus_edge/cil' /build/neverallow.log
+
+# ---- Stage 3: the edge image
+FROM ${BASE}
+ARG RELEASE_KEYS=release/keys
+ARG NEXUS_VERSION=0.0.0-dev
+
+# nftables + chrony are part of the base (asserted); nmtui for the console setup.
+RUN dnf -y install --setopt=install_weak_deps=False nftables chrony NetworkManager-tui \
+ && dnf clean all \
+ && rm -rf /var/cache/dnf /var/cache/ldconfig /var/lib/dnf /var/log/dnf* /var/log/hawkey.log \
+ && command -v nft nmtui chronyd >/dev/null
+
+COPY os/edge/sysusers.conf /usr/lib/sysusers.d/nexus-edge.conf
+COPY os/edge/tmpfiles.conf /usr/lib/tmpfiles.d/nexus-edge.conf
+RUN systemd-sysusers /usr/lib/sysusers.d/nexus-edge.conf
+
+COPY --from=rust /out/nexus-edge /usr/bin/nexus-edge
+COPY os/edge/nexus-edge-setup /usr/libexec/nexus-edge/nexus-edge-setup
+# release keys pinned for updates pushed by the appliance (same keys as agent self-update)
+COPY ${RELEASE_KEYS}/*.pub /usr/share/nexus-edge/release-keys/
+RUN chmod 0755 /usr/bin/nexus-edge /usr/libexec/nexus-edge /usr/libexec/nexus-edge/nexus-edge-setup \
+ && chmod 0644 /usr/share/nexus-edge/release-keys/*.pub \
+ && ls /usr/share/nexus-edge/release-keys/*.pub >/dev/null
+
+COPY --from=selinux /build/nexus_edge.pp /usr/share/selinux/packages/nexus-edge/nexus_edge.pp
+COPY os/edge/selinux/nexus_edge-port.cil /usr/share/selinux/packages/nexus-edge/nexus_edge-port.cil
+RUN semodule -i /usr/share/selinux/packages/nexus-edge/nexus_edge.pp \
+      /usr/share/selinux/packages/nexus-edge/nexus_edge-port.cil \
+ && semodule -l | grep -qx nexus_edge \
+ && matchpathcon /usr/bin/nexus-edge | grep -q nexus_edge_exec_t \
+ && matchpathcon /var/lib/nexus-edge/update/nexus-edge | grep -q nexus_edge_exec_t \
+ && matchpathcon /var/lib/nexus-edge/edge.key | grep -q nexus_edge_var_lib_t
+
+COPY os/edge/nexus-edge.service os/edge/nexus-edge-setup.service /usr/lib/systemd/system/
+COPY os/edge/nftables.conf /etc/sysconfig/nftables.conf
+COPY os/edge/control-sources.nft /etc/nexus-edge/control-sources.nft
+# boot hardening shared with the appliance: no rd.shell, sulogin refuses the locked root
+COPY os/greenboot/usr/lib/bootc/kargs.d/10-nexus.toml /usr/lib/bootc/kargs.d/10-nexus.toml
+COPY os/greenboot/usr/lib/systemd/system/emergency.service.d/10-nexus.conf \
+     /usr/lib/systemd/system/emergency.service.d/10-nexus.conf
+COPY os/etc/systemd/system.conf.d/50-nexus-console.conf /etc/systemd/system.conf.d/50-nexus-console.conf
+# no automatic OS updates from a registry (the edge has no outbound HTTPS); see docs/edge.md
+COPY os/etc/systemd/system/bootc-fetch-apply-updates.timer os/etc/systemd/system/rpm-ostreed-automatic.timer \
+     /etc/systemd/system/
+RUN nft -c -f /etc/sysconfig/nftables.conf \
+ && systemctl enable nftables.service chronyd.service nexus-edge.service nexus-edge-setup.service \
+ && { systemctl disable sshd.service sshd.socket 2>/dev/null || true; } \
+ && ! systemctl is-enabled -q sshd.service \
+ && usermod -L root && grep -q '^root:!' /etc/shadow \
+ && systemctl mask rescue.target rescue.service \
+ # the setup console owns tty1; no login prompt anywhere (VTs, serial)
+ && ln -sf /dev/null /etc/systemd/system/getty@.service \
+ && ln -sf /dev/null /etc/systemd/system/autovt@.service \
+ && ln -sf /dev/null /etc/systemd/system/serial-getty@.service \
+ && systemctl is-enabled -q nexus-edge.service nftables.service
+LABEL org.opencontainers.image.title="NexusBackup edge proxy" org.opencontainers.image.version=${NEXUS_VERSION}
+
+RUN find /etc /usr -xdev \( -type f -o -type d \) -perm /022 -not -path '/usr/share/doc/*' \
+      -exec chmod go-w {} + \
+ && test -z "$(find /etc /usr -xdev \( -type f -o -type d \) -perm /022 -not -path '/usr/share/doc/*')"
+RUN bootc container lint

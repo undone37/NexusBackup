@@ -3,7 +3,9 @@
 Goal (user request 2026-10-12): end users see the protection status of their own machine, in the style of
 Veeam Agent for Linux (ncurses control panel) and Veeam Agent for Windows (tray icon + Control Panel with a session
 chart). Decisions: plan.md §2 "Endpoint UIs (Phase 24)" — status + requests picked up by an appliance poll (the agent
-never connects out), laptops only on LAN/VPN, one Rust + iced GUI with a tray icon for Windows and Linux desktops, no
+never connects out), laptops only on LAN/VPN — since Phase 26 also anywhere through an edge proxy (docs/edge.md: the
+agent keeps an outbound connection to the edge, the appliance reaches it through the edge, a request is pushed through
+the edge at once) —, one Rust + iced GUI with a tray icon for Windows and Linux desktops, no
 self-service restore.
 
 ## What we take from Veeam (research 2026-10-12, Veeam Help Center 13.x)

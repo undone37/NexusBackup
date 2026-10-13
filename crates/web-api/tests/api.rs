@@ -3932,6 +3932,13 @@ async fn tenant_admin_routes_classified() {
         ("POST", "/fleets", "/api/v1/fleets".into(), Some(json!({"name": "f", "tenant": "acme", "expires_days": 1})), 'N'),
         ("DELETE", "/fleets/{id}", "/api/v1/fleets/0011223344556677".into(), none(), 'N'),
         ("POST", "/fleets/{id}/scan", "/api/v1/fleets/0011223344556677/scan".into(), e(), 'N'),
+        // Phase 26: edge proxies are appliance infrastructure (admin only)
+        ("GET", "/edges", "/api/v1/edges".into(), none(), 'N'),
+        ("POST", "/edges", "/api/v1/edges".into(), Some(json!({"name": "e", "host": "h", "public_host": "p"})), 'N'),
+        ("DELETE", "/edges/{id}", "/api/v1/edges/0011223344556677".into(), none(), 'N'),
+        ("POST", "/edges/{id}/token", "/api/v1/edges/0011223344556677/token".into(), e(), 'N'),
+        ("POST", "/edges/{id}/enroll", "/api/v1/edges/0011223344556677/enroll".into(), e(), 'N'),
+        ("PUT", "/agents/{id}/edge", "/api/v1/agents/0011223344556677/edge".into(), Some(json!({"edge_id": null})), 'N'),
         ("GET", "/fleet/candidates", "/api/v1/fleet/candidates".into(), none(), 'Y'),
         ("POST", "/fleet/candidates/{id}/accept", "/api/v1/fleet/candidates/999/accept".into(), e(), 'Y'),
         ("POST", "/fleet/candidates/{id}/reject", "/api/v1/fleet/candidates/999/reject".into(), e(), 'Y'),

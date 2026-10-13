@@ -110,6 +110,10 @@ impl Paths {
     pub fn ui_socket(&self) -> PathBuf {
         self.run.join("ui.sock")
     }
+    /// edge proxy pushed by the appliance (`SetEdge`, crate::edge)
+    pub fn edge(&self) -> PathBuf {
+        self.state.join("edge.json")
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -132,6 +136,10 @@ pub struct Settings {
     /// `self_update = on|off`; unset: on, except for package installs
     /// ([`crate::update::self_update_blocked`])
     pub self_update: Option<bool>,
+    /// edge proxy (`host:port`) and its pinned certificate (SHA-256 hex), crate::edge;
+    /// set here they override what the appliance pushed (`SetEdge`)
+    pub edge: Option<String>,
+    pub edge_sha256: Option<String>,
 }
 
 impl Default for Settings {
@@ -147,6 +155,8 @@ impl Default for Settings {
             hook_owner: 0,
             vss_exclude_writers: String::new(),
             self_update: None,
+            edge: None,
+            edge_sha256: None,
         }
     }
 }
@@ -178,6 +188,8 @@ impl Settings {
                 "appliance_id" => s.appliance_id = Some(v.to_string()).filter(|v| !v.is_empty()),
                 "max_connections" => s.max_connections = num(v)?.clamp(1, 64) as usize,
                 "vss_exclude_writers" => s.vss_exclude_writers = v.to_string(),
+                "edge" => s.edge = Some(v.to_string()).filter(|v| !v.is_empty()),
+                "edge_sha256" => s.edge_sha256 = Some(v.to_ascii_lowercase()).filter(|v| !v.is_empty()),
                 "self_update" => {
                     s.self_update = Some(match v {
                         "on" | "yes" | "true" => true,
@@ -187,6 +199,13 @@ impl Settings {
                 }
                 _ => return Err(format!("agent.conf line {}: unknown key {k}", n + 1)),
             }
+        }
+        if s.edge.is_some() || s.edge_sha256.is_some() {
+            crate::edge::validate(
+                s.edge.as_deref().unwrap_or_default(),
+                s.edge_sha256.as_deref().unwrap_or_default(),
+            )
+            .map_err(|e| format!("agent.conf: {e} (edge and edge_sha256 go together)"))?;
         }
         Ok(s)
     }

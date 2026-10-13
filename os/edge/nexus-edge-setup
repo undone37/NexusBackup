@@ -1,0 +1,110 @@
+#!/bin/bash
+# NexusBackup edge proxy console (tty1, nexus-edge-setup.service; docs/edge.md, manual chapter 18).
+# A fixed menu, no shell: network (nmtui), enrollment token, status (certificate fingerprint to
+# compare with the appliance), optional restriction of the control port, reboot.
+# Runs as root; nexus-edge itself runs as nexus-edge, so `init` runs as that user too.
+set -u
+trap '' INT QUIT TSTP
+
+EDGE=/usr/bin/nexus-edge
+SOURCES=/etc/nexus-edge/control-sources.nft
+
+as_edge() { runuser -u nexus-edge -- "$EDGE" "$@"; }
+
+pause() { read -r -p "Press Enter to continue " _ || true; }
+
+status() {
+	clear
+	echo "NexusBackup edge proxy — $(hostname)"
+	echo
+	ip -brief address show scope global 2>/dev/null | sed 's/^/  /'
+	echo
+	as_edge status 2>&1 | sed 's/^/  /'
+	echo
+	systemctl is-active -q nexus-edge.service && echo "  service: running" || echo "  service: NOT running (journal: nexus-edge)"
+}
+
+enroll() {
+	echo
+	echo "Enter the one-time token shown on the appliance (Settings > Edges > Add edge)."
+	echo "Re-entering a token drops the current enrollment."
+	local t
+	read -r -s -p "Token: " t || return
+	echo
+	[ -n "$t" ] || return
+	if printf '%s\n' "$t" | as_edge init --token -; then
+		systemctl restart nexus-edge.service
+		echo
+		echo "Token stored. Compare the fingerprint above with the one the appliance shows after"
+		echo "\"Connect\", then click Connect on the appliance."
+	else
+		echo "init failed"
+	fi
+	unset t
+	pause
+}
+
+restrict() {
+	echo
+	echo "Addresses or CIDRs allowed to reach the control port 7445 (the appliance's public"
+	echo "address as the edge sees it), separated by spaces. Empty = any address."
+	local line a v4=() v6=()
+	read -r -p "Sources: " line || return
+	for a in $line; do
+		if [[ $a =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}(/[0-9]{1,2})?$ ]]; then
+			v4+=("$a")
+		elif [[ $a =~ ^[0-9A-Fa-f:]+(/[0-9]{1,3})?$ && $a == *:* ]]; then
+			v6+=("$a")
+		else
+			echo "not an address: $a"
+			pause
+			return
+		fi
+	done
+	{
+		echo "# written by nexus-edge-setup $(date -u +%FT%TZ)"
+		if [ ${#v4[@]} -eq 0 ] && [ ${#v6[@]} -eq 0 ]; then
+			v4=(0.0.0.0/0)
+			v6=(::/0)
+		fi
+		if [ ${#v4[@]} -gt 0 ]; then
+			echo "add element inet edge control_v4 { $(
+				IFS=,
+				echo "${v4[*]}"
+			) }"
+		fi
+		if [ ${#v6[@]} -gt 0 ]; then
+			echo "add element inet edge control_v6 { $(
+				IFS=,
+				echo "${v6[*]}"
+			) }"
+		fi
+	} >"$SOURCES.tmp"
+	cp -p "$SOURCES" "$SOURCES.old"
+	mv "$SOURCES.tmp" "$SOURCES"
+	if nft -c -f /etc/sysconfig/nftables.conf 2>/dev/null && nft -f /etc/sysconfig/nftables.conf; then
+		echo "control port restricted to: ${line:-any address}"
+		rm -f "$SOURCES.old"
+	else
+		mv "$SOURCES.old" "$SOURCES"
+		echo "invalid; nothing changed"
+	fi
+	pause
+}
+
+while true; do
+	status
+	echo
+	echo "  1) Network (nmtui)"
+	echo "  2) Enrollment token"
+	echo "  3) Restrict the control port"
+	echo "  4) Refresh"
+	echo "  9) Reboot"
+	read -r -p "> " c || sleep 1
+	case ${c:-} in
+	1) nmtui ;;
+	2) enroll ;;
+	3) restrict ;;
+	9) systemctl reboot ;;
+	esac
+done

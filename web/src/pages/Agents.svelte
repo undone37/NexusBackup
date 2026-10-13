@@ -251,6 +251,7 @@
                   {:else}
                     <span class="chip info">{t.ep.neverPolled}</span>
                   {/if}
+                  {#if a.via === 'edge'}<span class="chip info">{t.ep.viaEdge}</span>{/if}
                   {#if a.power?.on_battery}
                     <div class="muted">{t.ep.onBattery(a.power.battery_percent != null ? String(a.power.battery_percent) : '')}</div>
                   {/if}
