@@ -62,6 +62,13 @@ Fields for both target types:
 Changing or removing a target that is already configured needs approval by a second person while approvals
 are enabled ([10 Approvals and audit](10-approvals-and-audit.md)). Setting the first target does not.
 
+**One target per installation.** The escrowed keys in `keys/` on the target are written once and never
+replaced, so that a compromised appliance cannot swap them. A reinstalled appliance (or another one) has new
+keys: pointed at a target or path that already holds keys of an earlier installation, every upload fails with
+"the offsite target holds other escrowed keys" and the tenant gets an offsite alert. Use a new target or
+path for the new installation. To rebuild from the old copy instead, use **Attach** (chapter 14) or a
+configuration backup restore.
+
 ## Bandwidth windows
 
 Bandwidth windows pause or slow down the uploads at certain times, for example during office hours when the
