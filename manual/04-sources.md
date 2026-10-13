@@ -243,11 +243,16 @@ Create a PVE user and an API token with privilege separation for the appliance. 
 pveum user add nexus@pve
 pveum user token add nexus@pve backup --privsep 1
 for role in PVEVMAdmin PVEDatastoreAdmin PVEAuditor; do
+  pveum acl modify / --users nexus@pve --roles "$role"
   pveum acl modify / --tokens 'nexus@pve!backup' --roles "$role"
 done
 # full restores attach the guest NIC to a bridge: SDN.Use on its zone
+pveum acl modify /sdn/zones/localnetwork --users nexus@pve --roles PVESDNUser
 pveum acl modify /sdn/zones/localnetwork --tokens 'nexus@pve!backup' --roles PVESDNUser
 ```
+
+A token with privilege separation gets the **intersection** of its own and its user's permissions: grant the roles
+to both, or the appliance sees no guests (empty inventory, "guest not found").
 
 > **Status:** These broad roles are lab settings. A minimal privilege set is still to be defined (listed as a
 > production gap).

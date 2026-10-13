@@ -12,6 +12,8 @@
 # env: IMG (localhost/nexus-os:dev; the lab image is $IMG-lab), LAB (/home/ah/nexus-lab), PORT (28443), ROOT (host-side state: $LAB/appliance/root)
 #      PVE=0: no PVE lab (setup skips the node key + known_hosts; for lab/linux/e2e.sh agent runs)
 #      CONSOLE (serial console socket, default $LAB/appliance/console.sock)
+#      NETWORK_JSON (setup: network answers merged over {nic, hostname}; default {"method": "dhcp"}),
+#        e.g. {"method":"static","address":"10.2.34.211","prefix":24,"gateway":"10.2.34.254","dns":["10.2.34.253"]}
 # Prereqs: lab/pve/start.sh (pve1 on 127.0.0.1:18006/10022), crates/offsite/testbox/run.sh start.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -54,7 +56,7 @@ setup() {
 	ap="admin-$(head -c 12 /dev/urandom | base64 | tr -d '/+=')"
 	sp="so-$(head -c 12 /dev/urandom | base64 | tr -d '/+=')"
 	printf "ADMIN_PW='%s'\nADMIN_TOTP='%s'\nSO_PW='%s'\nSO_TOTP='%s'\n" "$ap" "$as" "$sp" "$so" >"$ROOT/secrets.env"
-	nic=$(con run 'ls /sys/class/net | grep -v ^lo | head -1' | tr -d '\n')
+	nic=${NIC:-$(con run 'ls /sys/class/net | grep -v ^lo | head -1' | tr -d '\n')}
 	log "management NIC $nic"
 	local ac sc
 	ac=$(python3 "$repo/lab/e2e/totp.py" "$as")
@@ -63,7 +65,8 @@ setup() {
 	echo "$ac" >"$ROOT/run/api/admin.lastcode"
 	echo "$sc" >"$ROOT/run/api/so.lastcode"
 	jq -n --arg nic "$nic" --arg ap "$ap" --arg as "$as" --arg ac "$ac" --arg sp "$sp" --arg so "$so" --arg sc "$sc" \
-		'{network: {nic: $nic, method: "dhcp", hostname: "nexus-m5"},
+		--argjson net "${NETWORK_JSON:-"{\"method\": \"dhcp\"}"}" \
+		'{network: ({nic: $nic, hostname: "nexus-m5"} + $net),
 		  admin: {name: "admin", password: $ap, totp_secret: $as, totp_code: $ac},
 		  security_officer: {name: "so", password: $sp, totp_secret: $so, totp_code: $sc}}' >"$ROOT/answers.json"
 

@@ -271,13 +271,17 @@ sub ir_volume_size {
 # ---------------------------------------------------------------------------
 # configuration
 
-# Highest storage API version tested (PVE 9.2). Report the running version
-# within the tested range to avoid "older storage API" warnings; fall back to 11.
-use constant TESTED_APIVER => 14;
+# Highest storage API version reviewed (pve-storage ApiChangeLog) and tested: 16 (PVE 9.2.21).
+# 13: activate_volume/map_volume get $hints (ignored); 14: get_identity (base dies, allowed);
+# 15: volume_resize gets $snapname (ours always dies), volume_snapshot_info virtual-size (not
+# implemented: no snapshots); 16: format/volname helpers matter only for alloc_image/rename_volume
+# through the base (ours die / are not overridden). Report the running version within the
+# reviewed range, the reviewed maximum on newer PVE, 11 when PVE::Storage is absent.
+use constant TESTED_APIVER => 16;
 
 sub api {
     my $v = defined(&PVE::Storage::APIVER) ? PVE::Storage::APIVER() : 11;
-    return ($v >= 11 && $v <= TESTED_APIVER) ? $v : 11;
+    return $v < 11 ? 11 : $v > TESTED_APIVER ? TESTED_APIVER : $v;
 }
 
 sub type {
