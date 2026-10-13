@@ -1089,6 +1089,8 @@ files_type(nexus_disks_var_lib_t)
 gen_require(`
 	type mdadm_exec_t;
 	type systemd_userdbd_runtime_t;
+	type mount_var_run_t;
+	type cert_t;
 	type mdadm_var_run_t;
 	type systemd_unit_file_t;
 	type mount_t;
@@ -1109,6 +1111,8 @@ files_read_etc_runtime_files(nexus_disks_t)
 auth_read_passwd(nexus_disks_t)
 # lsblk -O resolves the OWNER column through systemd-userdb; the helper never uses it
 dontaudit nexus_disks_t systemd_userdbd_runtime_t:dir { search read };
+# lsblk probes /run/mount/utab; mount points come from /proc/self/mountinfo
+dontaudit nexus_disks_t mount_var_run_t:dir search;
 # nexus-diag's posture checks resolve users through NSS (passwd suffices)
 dontaudit nexus_diag_t systemd_userdbd_runtime_t:dir { search read };
 dev_read_urand(nexus_disks_t)
@@ -1209,6 +1213,8 @@ gen_require(`
 
 # python3 with the standard library; nmcli (bin_t) and ip (ifconfig_exec_t) in this domain
 corecmd_exec_bin(nexus_net_t)
+# nmcli's TLS library probes /etc/pki; nexus-net makes no TLS connections
+dontaudit nexus_net_t cert_t:dir search;
 can_exec(nexus_net_t, ifconfig_exec_t)
 libs_use_ld_so(nexus_net_t)
 libs_use_shared_libs(nexus_net_t)
