@@ -21,6 +21,7 @@
   import Vault from './settings/Vault.svelte';
   import Incident from './settings/Incident.svelte';
   import MalwareScan from './settings/MalwareScan.svelte';
+  import Edges from './settings/Edges.svelte';
 
   // Tabs per role (docs/phase12-contract.md: alerts + SSO readable by admins and security officers,
   // SSH keys + updates also by operators; diagnostics: checks for both, support bundles for admins;
@@ -46,6 +47,8 @@
     { id: 'network', comp: Network, allow: staff },
     { id: 'vault', comp: Vault, allow: staff },
     { id: 'incident', comp: Incident, allow: officer },
+    // Phase 26: edge proxies (GET /edges is admin only)
+    { id: 'edges', comp: Edges, allow: (u) => !u?.tenant && u?.role === 'admin' },
   ];
   const tabs = $derived(TABS.filter((x) => x.allow(session.user)));
   const tab = $derived(tabs.find((x) => x.id === route.query.get('tab')) ?? tabs[0]);

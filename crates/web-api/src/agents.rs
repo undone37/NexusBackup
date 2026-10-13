@@ -37,7 +37,7 @@ fn default_port() -> u16 {
 
 const COLS: &str = "id, tenant, name, host, port, enrolled_at, cert_sha256, token_expires, last_seen, version, os, \
                     limits, cert_issued, cert_expires, cert_sha256_next IS NOT NULL, reachable, last_poll, power, \
-                    ui_policy, ui_policy_version, ui_policy_seen, laptop, missed_at, last_request";
+                    ui_policy, ui_policy_version, ui_policy_seen, laptop, missed_at, last_request, edge_id, via, edge_pushed";
 
 fn agent_row(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
     Ok(json!({
@@ -56,6 +56,9 @@ fn agent_row(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
         "ui_policy": json_col(r, 18)?, "ui_policy_version": r.get::<_, i64>(19)?,
         "ui_policy_seen": r.get::<_, Option<i64>>(20)?, "laptop": json_col(r, 21)?,
         "missed_at": r.get::<_, Option<i64>>(22)?, "last_request": json_col(r, 23)?,
+        // Phase 26: reach via an edge proxy (crate::edges), route of the last session
+        "edge_id": r.get::<_, Option<String>>(24)?, "via": r.get::<_, Option<String>>(25)?,
+        "edge_pushed": r.get::<_, Option<String>>(26)?,
     }))
 }
 

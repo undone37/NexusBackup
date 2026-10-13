@@ -1,0 +1,7 @@
+# LAB ONLY: the edge image plus a root autologin on the serial console (ttyS0), so
+# lab/appliance/con.py (CONSOLE=$LAB/edge/console.sock) can drive the VM. The production
+# image masks every getty; this re-enables only the serial one. Never ship this.
+ARG IMAGE=localhost/nexus-edge-os:dev
+FROM ${IMAGE}
+RUN rm -f /etc/systemd/system/serial-getty@.service
+COPY lab/appliance/autologin.conf /usr/lib/systemd/system/serial-getty@ttyS0.service.d/lab-autologin.conf

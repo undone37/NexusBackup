@@ -1,0 +1,4 @@
+; NexusBackup edge proxy: 7445/tcp is the appliance control port (docs/edge.md).
+; portcon is not allowed in a refpolicy (.te) module; CIL modules may carry it.
+; Needs nexus_edge.pp (defines nexus_edge_control_port_t) loaded first.
+(portcon tcp 7445 (system_u object_r nexus_edge_control_port_t ((s0) (s0))))

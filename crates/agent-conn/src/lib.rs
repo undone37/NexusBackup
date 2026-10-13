@@ -8,6 +8,7 @@
 
 pub mod backup;
 pub mod ca;
+pub mod edge;
 pub mod enroll;
 pub mod files;
 pub mod fleet;
@@ -85,6 +86,8 @@ pub fn name(m: &Message) -> &'static str {
         Message::RescueApply { .. } => "RescueApply",
         Message::RescueFinish { .. } => "RescueFinish",
         Message::RescueDone { .. } => "RescueDone",
+        Message::SetEdge { .. } => "SetEdge",
+        Message::EdgeSet => "EdgeSet",
     }
 }
 

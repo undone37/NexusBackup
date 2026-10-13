@@ -65,6 +65,12 @@ pub fn agent_token_location(id: &str, host: &str, port: u16) -> String {
     format!("agent/{id}/token@{host}:{port}")
 }
 
+/// Location of an edge proxy's sealed enrollment token digest (`edges.token_hash`,
+/// docs/edge.md), bound to the edge id and its control address.
+pub fn edge_token_location(id: &str, host: &str, port: u16) -> String {
+    format!("edge/{id}/token@{host}:{port}")
+}
+
 /// Location of a rescue session's sealed recovery token digest
 /// (`rescue_sessions.token_hash`, docs/bmr.md), bound to the session's original agent.
 pub fn rescue_token_location(id: &str, agent: &str) -> String {

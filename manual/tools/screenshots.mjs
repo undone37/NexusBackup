@@ -695,6 +695,16 @@ async function main() {
       await until(`return document.body.innerText.includes('ws-041')`, 'fleet candidates');
       await shot('agents-fleet');
     }],
+    // Phase 26: edge proxies (seeded dmz-edge online with nb07 routed through it, branch-edge awaiting enrollment)
+    ['settings-edges', async () => {
+      await go('/settings?tab=edges');
+      await until(`return document.body.innerText.includes('dmz-edge') && document.body.innerText.includes('Awaiting enrollment')`, 'edge list');
+      await shot('settings-edges');
+      await ev(`$rowClick('dmz-edge', 'Details'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] pre.log')`, 'edge details');
+      await shot('settings-edges-details');
+      await closeDialogs();
+    }],
     ['replication', async () => {
       await go('/replication');
       await shot('replication');

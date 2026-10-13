@@ -1,0 +1,5 @@
+# Who may open the control port 7445 (rewritten by nexus-edge-setup, menu "Restrict the
+# control port"). Default: any address. Loaded after the table (nftables.conf flushes the
+# whole ruleset first, so only additions here).
+add element inet edge control_v4 { 0.0.0.0/0 }
+add element inet edge control_v6 { ::/0 }

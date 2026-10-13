@@ -35,7 +35,9 @@ const SUMMARIES_PER_POLL: i64 = 20;
 #[derive(Default)]
 pub(crate) struct PollState {
     /// agent → next poll time (absent = due)
-    next: HashMap<String, i64>,
+    pub(crate) next: HashMap<String, i64>,
+    /// agent → `edges` key of the `SetEdge` sent in the running round (edge.rs)
+    pushing: HashMap<String, String>,
     /// request ids to acknowledge with the next successful poll
     ack: HashMap<String, Vec<String>>,
     /// results of the running `nexus-agentctl poll` and when it started
@@ -109,6 +111,8 @@ struct EpAgent {
     power: Value,
     missed_at: Option<i64>,
     poll_failures: i64,
+    /// edge setting the agent confirmed (`SetEdge`, edge.rs)
+    edge_pushed: Option<String>,
 }
 
 /// The agent's lines of a (group) job log: from its `agent-info` line up to the next
@@ -213,7 +217,7 @@ impl Scheduler {
         let c = self.db.conn();
         let mut st = c.prepare(
             "SELECT id, tenant, host, port, cert_sha256, cert_sha256_next, ui_policy, ui_policy_version, laptop, \
-             reachable, last_poll, power, missed_at, poll_failures FROM agents \
+             reachable, last_poll, power, missed_at, poll_failures, edge_pushed FROM agents \
              WHERE cert_sha256 IS NOT NULL AND (?1 IS NULL OR id = ?1) ORDER BY id",
         )?;
         let rows = st.query_map([only], |r| {
@@ -239,6 +243,7 @@ impl Scheduler {
                 power: json(11)?,
                 missed_at: r.get(12)?,
                 poll_failures: r.get(13)?,
+                edge_pushed: r.get(14)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -306,12 +311,21 @@ impl Scheduler {
                 rows.filter_map(|s| s.ok().and_then(|s| serde_json::from_str(&s).ok()))
                     .collect()
             };
-            targets.push(json!({
+            let mut t = json!({
                 "id": a.id, "host": a.host, "port": a.port, "pins": a.pins,
                 "status": self.appliance_status(a, now),
                 "ack": self.poll.ack.get(&a.id).cloned().unwrap_or_default(),
                 "summaries": summaries,
-            }));
+            });
+            // edge proxy (edge.rs): route, and the setting the agent does not have yet
+            if let Some(e) = self.agent_edge_route(&a.id)? {
+                t["edge"] = e;
+            }
+            if let Some((set, key)) = self.agent_edge_push(&a.id, a.edge_pushed.as_deref())? {
+                t["set_edge"] = set;
+                self.poll.pushing.insert(a.id.clone(), key);
+            }
+            targets.push(t);
             // not again before this round is processed
             self.poll
                 .next
@@ -425,6 +439,16 @@ impl Scheduler {
         )?;
         self.poll.next.insert(id.to_owned(), now + base);
         self.poll.ack.remove(id);
+        if let Some(via) = v["info"]["via"].as_str().filter(|x| matches!(*x, "direct" | "edge")) {
+            self.db
+                .conn()
+                .execute("UPDATE agents SET via=?2 WHERE id=?1", params![id, via])?;
+        }
+        if let Some(key) = self.poll.pushing.remove(id).filter(|_| v["edge_set"].is_string()) {
+            self.db
+                .conn()
+                .execute("UPDATE agents SET edge_pushed=?2 WHERE id=?1", params![id, key])?;
+        }
         for job in v["delivered"]
             .as_array()
             .into_iter()

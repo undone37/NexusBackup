@@ -73,6 +73,7 @@ mod config_backup;
 pub mod consistency;
 mod dek_rotation;
 pub mod disks;
+mod edge;
 mod endpoint;
 pub mod expiry;
 pub mod firewall;
@@ -165,6 +166,8 @@ pub struct Config {
     pub agent_ca_dir: Option<PathBuf>,
     /// signed agent binaries for `agent_update` (nexus-agent, .sig, .version)
     pub agent_update_dir: PathBuf,
+    /// signed edge proxy binary pushed by the edge links (nexus-edge, .sig, .version; edge.rs)
+    pub edge_update_dir: PathBuf,
     pub alerts_config: PathBuf,
     /// outbound allow-list for nexus-nft-sync (skipped if its directory is missing)
     pub nft_allowed: PathBuf,
@@ -252,6 +255,7 @@ impl Default for Config {
             nas_mount_socket: nas::MOUNT_SOCKET.into(),
             agent_ca_dir: None,
             agent_update_dir: "/usr/share/nexus/agent".into(),
+            edge_update_dir: "/usr/share/nexus/edge".into(),
             alerts_config: "/etc/nexus/alerts.json".into(),
             nft_allowed: nftsync::ALLOWED_FILE.into(),
             firewall_settle_secs: 3,
@@ -390,6 +394,8 @@ pub struct Scheduler {
     clock: clock::Keeper,
     /// endpoint status poll of the agents (endpoint.rs)
     poll: endpoint::PollState,
+    /// control links to the edge proxies (edge.rs)
+    edges: edge::EdgeLinks,
 }
 
 /// Agent ids: 16 lowercase hex characters (chosen by the web-api).
@@ -538,6 +544,7 @@ impl Scheduler {
             anchor_day: None,
             clock: Default::default(),
             poll: Default::default(),
+            edges: Default::default(),
             alert_tx,
             host: alerts::hostname(),
             now: catalog::now(),
@@ -717,6 +724,14 @@ impl Scheduler {
                 }
                 // a job for a tenant created since the last tick needs its DEK first
                 self.log_err(|s| s.ensure_tenant_keys());
+                // "back up now" through an edge proxy: poll that agent at once (edge.rs)
+                self.log_err(|s| {
+                    s.collect_agent_poll(None)?;
+                    if s.edge_links(catalog::now())? {
+                        s.start_agent_poll(catalog::now())?;
+                    }
+                    Ok(())
+                });
                 self.log_err(|s| s.process_cancels());
                 self.log_err(|s| s.start_jobs());
             }
@@ -754,6 +769,7 @@ impl Scheduler {
         self.log_err(|s| s.queue_fleet_scans(now));
         self.log_err(|s| s.queue_reports(now));
         self.log_err(|s| s.collect_agent_poll(None));
+        self.log_err(|s| s.edge_links(now).map(drop));
         self.log_err(|s| s.start_agent_poll(now));
         self.log_err(|s| s.queue_config_backup(now));
         self.log_err(|s| s.queue_rekeys(now));
@@ -1024,6 +1040,8 @@ impl Scheduler {
         targets.extend(self.rescue_targets()?);
         // fleet enrollment: the scanned ranges on the agent port (crate::fleet)
         targets.extend(self.fleet_targets()?);
+        // edge proxies: control port (enrollment, link, relayed agent sessions)
+        targets.extend(self.edge_targets()?);
         let data = std::mem::take(&mut targets);
         let mut offsite = Vec::new();
         for (_, o) in self.tenants()? {
@@ -1328,6 +1346,9 @@ impl Scheduler {
         self.agent_bookkeeping(&job, &log)?;
         if job.kind == "bmr" || job.kind == "p2v" {
             self.rescue_bookkeeping(&job, &log, ok)?;
+        }
+        if job.kind == "edge_enroll" {
+            self.edge_bookkeeping(&job, &log)?;
         }
         if job.kind == "fleet_scan" {
             self.fleet_bookkeeping(&job, &log)?;
@@ -2353,6 +2374,10 @@ impl Scheduler {
         if let Some(a) = a {
             cfg["agent"] = json!({"id": a.id, "host": a.host, "port": a.port, "cert_sha256": a.cert_sha256,
                                   "cert_sha256_next": a.cert_sha256_next});
+            // roaming agent: direct first, then through its edge proxy (edge.rs)
+            if let Ok(Some(e)) = self.agent_edge_route(&a.id) {
+                cfg["agent"]["edge"] = e;
+            }
         }
         if let (Some(c), Some(e)) = (cfg.as_object_mut(), extra.as_object()) {
             c.extend(e.clone());
@@ -2743,6 +2768,7 @@ impl Scheduler {
             "instant_disk" => return self.plan_instant_disk(job, plan), // restore.rs
             k if recovery::KINDS.contains(&k) => return self.plan_recovery(job, plan),
             "fleet_scan" => return self.plan_fleet_scan(job, plan),
+            "edge_enroll" => return self.plan_edge_enroll(job, plan),
             "agent_renew" => {
                 let a = self.agent(tenant, p["agent_id"].as_str().unwrap_or_default())?;
                 if a.cert_sha256.is_none() {

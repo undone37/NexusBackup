@@ -38,7 +38,12 @@ const BATCH_BYTES: usize = 4 << 20;
 /// at most this many paths per `Prepare`
 pub const MAX_PATHS: usize = 1000;
 
-pub type Stream = StreamOwned<ServerConnection, TcpStream>;
+/// What a session runs over: a TCP connection, or a stream relayed by an edge proxy
+/// (crate::edge; the agent's TLS runs inside it end to end).
+pub trait Transport: io::Read + Write + Send {}
+impl<T: io::Read + Write + Send> Transport for T {}
+
+pub type Stream = StreamOwned<ServerConnection, Box<dyn Transport>>;
 
 /// What `HelloReply` reports about the host.
 #[derive(Clone, Debug, Default)]
@@ -192,7 +197,7 @@ pub struct Agent<P: Platform> {
     pub settings: Settings,
     mode: RwLock<Mode>,
     enroll_lock: Mutex<()>,
-    connections: AtomicUsize,
+    pub(crate) connections: AtomicUsize,
     active_jobs: AtomicUsize,
     /// restart after a successful self-update (off in tests)
     pub exit_on_update: bool,
@@ -340,6 +345,7 @@ impl<P: Platform> Agent<P> {
 
     /// Accept loop: one thread per connection, at most `max_connections`.
     pub fn serve(self: Arc<Self>, listener: TcpListener) -> io::Result<()> {
+        crate::edge::spawn(self.clone());
         for conn in listener.incoming() {
             let tcp = match conn {
                 Ok(t) => t,
@@ -371,14 +377,23 @@ impl<P: Platform> Agent<P> {
         tcp.set_read_timeout(Some(Duration::from_secs(3600)))?;
         tcp.set_write_timeout(Some(Duration::from_secs(600)))?;
         tcp.set_nodelay(true)?;
+        self.handle_transport(Box::new(tcp), true)
+    }
+
+    /// One session over `t`; streams relayed by an edge (`direct = false`) are
+    /// served only in mTLS mode (enrollment needs the direct path).
+    pub fn handle_transport(&self, t: Box<dyn Transport>, direct: bool) -> io::Result<()> {
         let mode = self.mode();
+        if !direct && !matches!(mode, Mode::Mtls { .. }) {
+            return Ok(());
+        }
         let cfg = match &mode {
             Mode::Uninitialized => return Ok(()),
             Mode::Enroll(c) | Mode::Locked(c) => c.clone(),
             Mode::Mtls { config, .. } => config.clone(),
         };
         let conn = ServerConnection::new(cfg).map_err(io::Error::other)?;
-        let mut s = StreamOwned::new(conn, tcp);
+        let mut s = StreamOwned::new(conn, t);
         while s.conn.is_handshaking() {
             s.conn.complete_io(&mut s.sock)?;
         }
@@ -576,6 +591,7 @@ impl<P: Platform> Session<'_, P> {
                         agent_proto::CAP_PREPARE2,
                         agent_proto::CAP_RENEW,
                         agent_proto::CAP_POLL,
+                        agent_proto::CAP_EDGE,
                     ] {
                         if !c.iter().any(|x| x == cap) {
                             c.push(cap.into());
@@ -626,6 +642,12 @@ impl<P: Platform> Session<'_, P> {
                     write_msg(s, &reply)?
                 }
                 Message::RenewDone { cert_pem, ca_pem } => self.renew_done(s, &cert_pem, &ca_pem)?,
+                Message::SetEdge { addr, cert_sha256 } => {
+                    match crate::edge::set(&self.agent.paths, &addr, &cert_sha256) {
+                        Ok(()) => write_msg(s, &Message::EdgeSet)?,
+                        Err(e) => error(s, E_BAD_REQUEST, e)?,
+                    }
+                }
                 Message::Writers { job } => match self.jobs.get(&job) {
                     Some(j) => write_msg(
                         s,

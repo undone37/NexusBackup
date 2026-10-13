@@ -1,0 +1,5 @@
+# NexusBackup edge proxy file contexts (see nexus_edge.te).
+/usr/bin/nexus-edge		--	gen_context(system_u:object_r:nexus_edge_exec_t,s0)
+/var/lib/nexus-edge(/.*)?		gen_context(system_u:object_r:nexus_edge_var_lib_t,s0)
+# verified updates pushed by the appliance (exec'd by nexus-edge after re-verification)
+/var/lib/nexus-edge/update(/.*)?	gen_context(system_u:object_r:nexus_edge_exec_t,s0)

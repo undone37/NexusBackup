@@ -340,6 +340,57 @@ export interface Agent {
   missed_at?: number | null;
   /** last "back up now" request from the endpoint */
   last_request?: AgentRequest | null;
+  /** Phase 26: reach via this edge proxy (direct first, then the edge; null = direct only) */
+  edge_id?: string | null;
+  /** route of the last successful session: direct | edge */
+  via?: string | null;
+  /** edge setting the agent confirmed (`host:port`; null = none pushed yet) */
+  edge_pushed?: string | null;
+}
+
+/** Phase 26: what the edge's control link reports (docs/edge.md) */
+export interface EdgeHealth {
+  version: string;
+  uptime_secs: number;
+  cert_sha256?: string;
+  agents_online: string[];
+  connections: number;
+  relays: number;
+  refused: number;
+  rate_limited: number;
+  configured: boolean;
+}
+
+/** Phase 26: an edge proxy for roaming agents (Settings → Edges, admins) */
+export interface Edge {
+  id: string;
+  name: string;
+  /** control address the appliance dials */
+  host: string;
+  port: number;
+  /** address the agents dial */
+  public_host: string;
+  public_port: number;
+  /** pinned edge certificate (null = not enrolled) */
+  cert_sha256: string | null;
+  enrolled_at: number | null;
+  token_expires: number | null;
+  last_seen: number | null;
+  online: boolean;
+  version: string | null;
+  health: EdgeHealth | null;
+  log: string[];
+  /** agents routed through this edge */
+  agents: number;
+}
+
+/** POST /edges, POST /edges/{id}/token: the one-time token, shown once */
+export interface EdgeToken {
+  id: string;
+  name?: string;
+  token: string;
+  expires: number;
+  setup: string;
 }
 
 export interface AgentPower {

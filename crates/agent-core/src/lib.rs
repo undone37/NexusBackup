@@ -8,6 +8,7 @@
 pub mod cache;
 pub mod chunk;
 pub mod config;
+pub mod edge;
 pub mod filter;
 pub mod glob;
 pub mod limit;
@@ -123,6 +124,13 @@ pub fn status_common(paths: &Paths, version: &str) -> String {
     }
     let mode = server::load_mode(paths, &settings.clone().unwrap_or_default());
     out.push_str(&format!("mode: {}\n", server::describe_mode(paths, mode)));
+    match edge::current(paths, &settings.clone().unwrap_or_default()) {
+        Some(e) => out.push_str(&format!(
+            "edge proxy: {} (certificate sha256 {})\n",
+            e.addr, e.cert_sha256
+        )),
+        None => out.push_str("edge proxy: none\n"),
+    }
     for (label, p) in [("agent cert", paths.cert()), ("CA cert", paths.ca())] {
         if let Ok(pem) = fs::read_to_string(&p) {
             if let Ok(mut c) = tls::certs_from_pem(&pem) {
