@@ -66,6 +66,7 @@
 mod accounts;
 pub mod alerts;
 pub mod anomaly;
+mod bmr;
 pub mod clock;
 pub mod consistency;
 pub mod disks;
@@ -968,6 +969,8 @@ impl Scheduler {
             }
         }
         targets.extend(self.plugin_targets()?);
+        // checked-in rescue agents (bare-metal recovery, bmr.rs)
+        targets.extend(self.rescue_targets()?);
         for (_, o) in self.tenants()? {
             targets.extend(firewall::offsite_targets(&o));
         }
@@ -1243,6 +1246,9 @@ impl Scheduler {
             self.attach_bookkeeping(&job, ok)?;
         }
         self.agent_bookkeeping(&job, &log)?;
+        if job.kind == "bmr" || job.kind == "p2v" {
+            self.rescue_bookkeeping(&job, &log, ok)?;
+        }
         if job.kind == "backup" {
             self.fleecing_bookkeeping(&job, &log)?;
         }
@@ -2345,6 +2351,11 @@ impl Scheduler {
         };
         if job.kind == "file_search" || job.kind == "file_index" {
             return self.plan_files_index(job, plan);
+        }
+        match job.kind.as_str() {
+            "bmr" => return self.plan_bmr(job, plan), // bmr.rs
+            "p2v" => return self.plan_p2v(job, plan),
+            _ => {}
         }
         if job.kind.starts_with("offsite_") {
             return self.plan_offsite_ui(job, plan); // offsite_ui.rs

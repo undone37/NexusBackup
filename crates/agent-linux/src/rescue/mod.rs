@@ -39,7 +39,7 @@ pub const TARGET: &str = "/mnt/nexus-target";
 pub const RUN: &str = "/run/nexus-rescue";
 /// Volume label of the config disk (P2V).
 pub const CONFIG_LABEL: &str = "NEXUSCFG";
-pub const CONFIG_FILE: &str = "nexus-rescue.json";
+pub const CONFIG_FILE: &str = "rescue.json";
 
 /// The agent platform of the rescue system.
 pub struct Rescue {
