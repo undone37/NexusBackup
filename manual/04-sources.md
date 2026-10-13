@@ -857,7 +857,8 @@ What the group selects decides the backup type:
 The **Microsoft 365** plugin (`m365`) backs up a Microsoft 365 tenant through Microsoft Graph: Exchange mailboxes
 (mail, calendars, contacts, and the Recoverable Items "Deletions" folder), OneDrive, SharePoint document libraries,
 Teams (team files incl. the sites of private and shared channels and, optionally, channel messages) and Microsoft
-365 groups (conversations, group files). It signs in as an **app registration** in your Entra ID with a **certificate**. There is no
+365 groups (conversations, group files). Optionally it also exports the **Entra ID directory** (users, groups
+with their members, devices, app registrations) as JSON files. It signs in as an **app registration** in your Entra ID with a **certificate**. There is no
 password and no client secret. Details and limits: `docs/m365.md` in the repository.
 
 Prepare Entra ID once (a Global or Application Administrator does this). The quickest way is one of the helper
@@ -865,10 +866,10 @@ scripts in the repository, run on your own admin computer (never on the applianc
 
 - `plugins/m365/tools/register-app.sh` needs the Azure CLI and OpenSSL. Sign in with
   `az login --tenant contoso.onmicrosoft.com --allow-no-subscriptions`, then run
-  `./register-app.sh` (add `--chats` or `--teams-messages` for those workloads, `--backup-only` for read-only
-  permissions).
+  `./register-app.sh` (add `--chats`, `--teams-messages` or `--entra` for those workloads, `--backup-only` for
+  read-only permissions).
 - `plugins/m365/tools/register-app.ps1 -TenantId contoso.onmicrosoft.com` needs PowerShell 7.3 or later with the
-  `Microsoft.Graph` module (same switches: `-Chats`, `-TeamsMessages`, `-BackupOnly`).
+  `Microsoft.Graph` module (same switches: `-Chats`, `-TeamsMessages`, `-Entra`, `-BackupOnly`).
 
 Both create the app registration and a certificate, grant the permissions of the table below with admin consent,
 and print the tenant ID, client ID, the SharePoint and OneDrive hosts and the paths of the certificate and key
@@ -897,6 +898,7 @@ files to paste into the form. Delete the output folder afterwards. To do it by h
    | Teams channel messages | `ChannelMessage.Read.All` | `Teamwork.Migrate.All`, `Channel.Create` |
    | Microsoft 365 groups | `Group.Read.All` | |
    | 1:1 and group chats | `Chat.Read.All`, `Chat.ReadBasic.All` | (download only) |
+   | Entra ID directory objects | `Group.Read.All`, `Device.Read.All`, `Application.Read.All` | (export only) |
 
 4. Only if you want **Teams channel messages**: Microsoft treats the export of channel messages as a *protected
    API*. Request access for your app through the form linked from https://aka.ms/teamsgraph/requestaccess.
@@ -919,7 +921,9 @@ fields (from the plugin manifest):
   snapshot), and **Teams export payment model (channel messages and chats)**: `B` (backup use, billed by Microsoft through an
   Azure subscription linked to the app), `A` (security/compliance licences) or `evaluation` (a small free monthly
   quota, for tests). **Microsoft 365 groups: conversations, calendar, files (needs Group.Read.All)** is on by
-  default; it also lets the plugin recognise team and group sites.
+  default; it also lets the plugin recognise team and group sites. **Entra ID directory objects: users, groups
+  with members, devices, app registrations (export only; …)** is off by default because it needs three more
+  permissions (table above).
 - **SharePoint host** (`contoso.sharepoint.com`) and **OneDrive host** (`contoso-my.sharepoint.com`): needed for
   OneDrive, SharePoint and Teams files. If you enter wrong values, validation tells you the right ones.
 - **Further app registrations (used round-robin; a throttled app hands over to the next)**: optional. Microsoft
@@ -948,6 +952,15 @@ object is refused: the plugin never backs up a whole tenant as one snapshot. Bac
 incremental: the plugin asks Microsoft only for what changed (mail folders and drives) or compares the lists
 (calendars, contacts, Teams messages), and unchanged items are not downloaded again.
 
+With **Entra ID directory objects** on, the list also offers **Entra ID directory: users, groups, devices, app
+registrations (export only)** (tag `type:directory`, snapshot `plugin-m365-<source>-e.directory`). Its snapshot has
+one JSON file per object in `users/`, `groups/` (with `members` and `owners`), `devices/`, `applications/` and
+`service-principals/`. Microsoft never hands out secrets or private keys, so app registrations contain only the
+metadata of their credentials. You can browse and **download** these files, for example to compare group
+memberships before and after an incident or to rebuild an object by hand. A restore into Entra ID is not offered:
+the plugin refuses **Restore to the original** and **Restore to another** for this snapshot. Directory roles,
+conditional-access policies and sign-in logs are not included.
+
 If single items cannot be read even after retries (Microsoft answers with a server error), the plugin skips them
 and the backup still completes: the job ends **ok** with a **warning** chip on **Jobs**, the job page names the
 first skipped items, and the dashboard counts the job as a warning. The next backup tries those items again. A user
@@ -964,5 +977,6 @@ without a mailbox or OneDrive is not an error; the job log notes it.
 > calendars: Microsoft documents no app permission for them, so on a real tenant the backup most likely only notes
 > "group calendar not readable". Versions 1.1 (further apps, chats, restore into another tenant, helper scripts) and
 > 1.2 (skipped items as warnings, Recoverable Items, private/shared channel sites, groups) are also tested against
-> the simulation only; the PowerShell helper has not been run yet.
+> the simulation only; the PowerShell helper has not been run yet. Version 1.4 (Entra ID directory objects, export
+> only) is likewise tested against the simulation only.
 
