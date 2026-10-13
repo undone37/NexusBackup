@@ -542,28 +542,7 @@ impl Store {
         let mut i = 0;
         for n in 0..size.div_ceil(cs) {
             let (start, end) = (n * cs, ((n + 1) * cs).min(size));
-            while i < dirty.len() && dirty[i].0 + dirty[i].1 <= start {
-                i += 1;
-            }
-            let mut reads: Vec<(u64, u64)> = dirty[i..]
-                .iter()
-                .take_while(|e| e.0 < end)
-                .map(|&(o, l)| (o.max(start), (o + l).min(end)))
-                .collect();
-            if prev_size < end {
-                reads.push((prev_size.max(start), end)); // grown disk / no base
-                                                         // merge with the dirty extents: a full backup (fresh bitmap: everything dirty,
-                                                         // no base) read every chunk twice before
-                reads.sort_unstable();
-                let mut merged: Vec<(u64, u64)> = Vec::with_capacity(reads.len());
-                for (a, b) in reads {
-                    match merged.last_mut() {
-                        Some(last) if a <= last.1 => last.1 = last.1.max(b),
-                        _ => merged.push((a, b)),
-                    }
-                }
-                reads = merged;
-            }
+            let reads = chunk_reads(dirty, &mut i, start, end, prev_size);
             let base = prev_chunks.get(n as usize);
             if reads.is_empty() && ((n + 1) * cs).min(prev_size) == end {
                 chunks.push(*base.unwrap());
@@ -586,6 +565,21 @@ impl Store {
             size,
             chunks,
         })
+    }
+
+    /// Bytes [`Store::store_image_extents`] reads through `read_at` for these
+    /// arguments (live progress: the total of a disk before it is read).
+    pub fn image_extents_bytes(prev: Option<&Index>, chunk_size: usize, size: u64, dirty: &[(u64, u64)]) -> u64 {
+        let prev_size = match prev {
+            Some(Index::Fixed { size, .. }) => *size,
+            _ => 0,
+        };
+        let cs = chunk_size.max(1) as u64;
+        let mut i = 0;
+        (0..size.div_ceil(cs))
+            .flat_map(|n| chunk_reads(dirty, &mut i, n * cs, ((n + 1) * cs).min(size), prev_size))
+            .map(|(a, b)| b - a)
+            .sum()
     }
 
     /// FastCDC chunking of one file; returns (chunks, size).
@@ -943,4 +937,24 @@ impl Store {
 
 fn invalid_ser(e: postcard::Error) -> io::Error {
     invalid(format!("serialization: {e}"))
+}
+
+/// The ranges of chunk `start..end` read from the source: its dirty extents
+/// below the previous size plus everything beyond it (grown disk / no base),
+/// without overlap. `i` = first extent that may touch the chunk (advanced).
+fn chunk_reads(dirty: &[(u64, u64)], i: &mut usize, start: u64, end: u64, prev_size: u64) -> Vec<(u64, u64)> {
+    while *i < dirty.len() && dirty[*i].0 + dirty[*i].1 <= start {
+        *i += 1;
+    }
+    let grown = prev_size.clamp(start, end);
+    let mut reads: Vec<(u64, u64)> = dirty[*i..]
+        .iter()
+        .take_while(|e| e.0 < grown)
+        .map(|&(o, l)| (o.max(start), (o + l).min(grown)))
+        .filter(|(a, b)| a < b)
+        .collect();
+    if grown < end {
+        reads.push((grown, end));
+    }
+    reads
 }

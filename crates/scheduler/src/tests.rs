@@ -114,6 +114,85 @@ fn fifo_with_per_source_exclusivity() {
     assert_eq!(fs::read_dir(&e.cfg.runtime_dir).unwrap().count(), 0, "job dirs removed");
 }
 
+/// Live progress (docs/control-plane.md "Live progress"): while the connector
+/// runs, the job row has its output so far and the aggregated progress; the
+/// final log has no `progress` lines and the result is the same as without them.
+#[test]
+fn live_log_and_progress_while_running() {
+    let mut e = env(4);
+    e.cfg.live_ms = 100;
+    let slow = e.d.path().join("slow-pve");
+    script(
+        &slow,
+        r#"echo "item 1/2: vm-100 web"
+echo 'progress {"item":"vm-100","label":"web","item_index":1,"items":2,"part":"scsi0","part_index":1,"parts":1,"done":0,"total":1000}' >&2
+sleep 0.3
+printf 'progress {"item":"vm-100","item_index":1,"items":2,"part":"scsi0","part_index":1,"parts":1,"done":500,"total":1000}\nhalfway\n' >&2
+sleep 2
+echo 'progress {"item":"vm-100","end":"ok"}' >&2
+echo 'progress {broken' >&2
+echo "committed vm-100/5"
+echo "committed vm-101/5""#,
+    );
+    let plain = e.d.path().join("plain-pve");
+    script(
+        &plain,
+        "echo \"item 1/2: vm-100 web\"\necho halfway\necho \"committed vm-100/5\"\necho \"committed vm-101/5\"",
+    );
+    let row = |s: &Scheduler, id: i64| -> (String, Option<String>, Option<String>, Option<String>) {
+        s.db.conn()
+            .query_row(
+                "SELECT log, live_log, progress, result FROM jobs WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap()
+    };
+    let mut results = Vec::new();
+    for (bin, group) in [(&slow, 1), (&plain, 2)] {
+        e.cfg.pve_bin = bin.clone();
+        let mut s = sched(&e);
+        let id = manual(&s, "backup", "t1", json!({"group_id": group}));
+        s.start_jobs().unwrap();
+        if bin == &slow {
+            let end = Instant::now() + Duration::from_secs(10);
+            let (live, prog) = loop {
+                let (_, live, prog, _) = row(&s, id);
+                if let (Some(l), Some(p)) = (&live, &prog) {
+                    if l.contains("halfway") && p.contains("500") {
+                        break (l.clone(), p.clone());
+                    }
+                }
+                assert!(Instant::now() < end, "no live progress: {live:?} {prog:?}");
+                std::thread::sleep(Duration::from_millis(50));
+            };
+            assert_eq!(state(&s, id), "running");
+            assert!(
+                live.contains("item 1/2: vm-100 web") && !live.contains("progress {"),
+                "{live}"
+            );
+            let p: Value = serde_json::from_str(&prog).unwrap();
+            assert_eq!(p["item"], "vm-100");
+            assert_eq!(p["label"], "web");
+            assert_eq!(p["part"], "scsi0");
+            assert_eq!((p["done"].as_u64(), p["total"].as_u64()), (Some(500), Some(1000)));
+            assert_eq!((p["items"].as_u64(), p["items_done"].as_u64()), (Some(2), Some(0)));
+            assert_eq!(p["item_percent"], 50.0);
+            assert_eq!(p["percent"], 25.0);
+            assert_eq!(p["bytes"], 500);
+        }
+        s.wait_idle(Duration::from_secs(20)).unwrap();
+        assert_eq!(state(&s, id), "ok");
+        let (log, live, prog, result) = row(&s, id);
+        assert_eq!((live, prog), (None, None), "cleared at the end");
+        assert!(!log.contains("progress {") && !log.contains("progress"), "{log}");
+        assert!(log.contains("halfway\n") && log.contains("committed vm-101/5"), "{log}");
+        results.push(result);
+    }
+    assert_eq!(results[0], results[1], "result unchanged by progress lines");
+    assert!(results[0].as_deref().unwrap_or_default().contains("vm-101"));
+}
+
 #[test]
 fn bounded_parallelism_and_cancel() {
     let e = env(1);
@@ -557,6 +636,7 @@ fn truenas_jobs() {
         store_options: test_opts,
         log_max: 1 << 20,
         cancels: Default::default(),
+        live: None,
     };
     let f = run::execute(1, &plan, &ctx);
     assert_eq!(f.outcome, Outcome::Ok, "{}", f.log);

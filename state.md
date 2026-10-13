@@ -410,5 +410,18 @@ through the PVE guest agent (`lab/windows/gexec.py`, no Windows passwords), dev 
   reviewed); manual granted the PVE roles to the token only (privsep = intersection: empty inventory); VMs whose disks
   have `backup=0` ended "ok" with only EFI/TPM state (now a warning); every full VM backup read each block twice
   (chunkstore merged ranges); zero/unallocated regions were transported (now skipped via base:allocation);
-  no live progress for running jobs (in progress)
+  no live progress for running jobs (now: progress lines, live log, job page + list)
 - [ ] redeploy with the fixes, full + incremental backup of the Windows VMs, byte-exact restore check
+
+## Live job progress (2026-10-13)
+- [x] Connectors print `progress {json}` lines on stderr (`chunkstore::progress`: item/part/done/total/entries/end,
+  `Meter` at most every 2 s); nexus-pve backup-all (per guest, per disk with the bytes to read, CT tar stream,
+  restores per served disk), nexus-agentctl backup (scan entries, transfer bytes), nexus-truenas (per dataset)
+- [x] Scheduler: output split into lines, progress lines kept out of the log and aggregated (current item, items
+  done, item/overall %, rate over ~10 s, ETA); writer thread per job writes `jobs.live_log` + `jobs.progress`
+  (catalog v40) every 2 s; final log/result unchanged; crash recovery keeps the partial output
+- [x] API `progress` on /jobs and /jobs/{id} (log so far while running); UI job page Progress card, jobs list
+  Progress column; mock + manual 03 (jobs-running.png, job-running.png)
+- Found on the way: `store_image_extents` read every chunk twice on a full read (no base: dirty extent and the
+  "grown" range overlapped); now each byte once (test `dirty_extents_read_each_byte_once`)
+- [ ] nexus-nas and the plugin host report no progress yet (log only); check on the real PVE host

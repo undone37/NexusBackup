@@ -12,6 +12,7 @@ use crate::tls::Session;
 use crate::{hex, name, source_name, valid_rel_path, TREE_INDEX};
 use agent_proto::{BaseRef, Entry, Filters, Hash, Kind, Limits, Message, ScanStats, CAP_PREPARE2, MAX_BATCH};
 use anyhow::{bail, Context, Result};
+use chunkstore::progress::Meter;
 use chunkstore::{ChunkId, Index, Manifest, Store, TreeEntry, TreeKind};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -311,9 +312,12 @@ fn collect_and_commit(
     let mut entries: Vec<Entry> = Vec::new();
     let mut seen: HashSet<Vec<u8>> = HashSet::new();
     let mut lens: HashMap<Hash, u32> = HashMap::new();
+    // live progress (chunkstore::progress): entries of the scan, then the bytes requested
+    let mut meter = Meter::new("scan", 1, 2, None);
     loop {
         match s.recv()? {
             Message::Entries { batch } => {
+                meter.add_entries(batch.len() as u64);
                 for e in batch {
                     if e.path.is_empty() || e.path == b"." {
                         continue; // the root itself
@@ -368,6 +372,8 @@ fn collect_and_commit(
         }
     }
     want.sort_unstable(); // deterministic order (tests, agent-side locality is the agent's job)
+    meter.finish();
+    let mut meter = Meter::new("transfer", 2, 2, Some(want.iter().map(|h| u64::from(lens[h])).sum()));
     let lz4 = s.has_cap(agent_proto::CAP_LZ4);
     for batch in want.chunks(MAX_BATCH) {
         let (job, hashes) = (spec.job, batch.to_vec());
@@ -415,6 +421,7 @@ fn collect_and_commit(
                     let (id, new) = store.insert_chunk(&data)?;
                     r.wanted_chunks += 1;
                     r.wanted_bytes += data.len() as u64;
+                    meter.add(data.len() as u64);
                     r.wire_bytes += wire as u64;
                     r.new_chunks += u64::from(new);
                     keyed.insert(hash, id);
@@ -427,6 +434,7 @@ fn collect_and_commit(
         }
         map.put_all(&learned).context("mapping index")?;
     }
+    meter.finish();
     log(&format!(
         "transfer: {} chunks ({} bytes) requested, {} bytes on the wire{}, {} new in the store",
         r.wanted_chunks,

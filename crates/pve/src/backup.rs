@@ -5,6 +5,7 @@ use crate::api::Api;
 use crate::exclude::{self, Excluded};
 use crate::fleecing::{self, Level};
 use anyhow::{bail, Context, Result};
+use chunkstore::progress::Meter;
 use chunkstore::store::IMAGE_CHUNK_SIZE;
 use chunkstore::{FileEntry, Index, Manifest, Store};
 use serde::{Deserialize, Serialize};
@@ -127,6 +128,15 @@ pub fn source_name(vmid: u32) -> String {
     format!("vm-{vmid}")
 }
 
+/// Live progress item of a guest: its snapshot source (`vm-101` / `ct-200`)
+/// and name, from [`Cluster::guest_names`] (unknown guests count as VMs).
+pub fn progress_item(vmid: u32, names: &BTreeMap<u32, (String, String)>) -> (String, Option<&str>) {
+    match names.get(&vmid) {
+        Some((kind, name)) => (format!("{kind}-{vmid}"), Some(name.as_str()).filter(|n| !n.is_empty())),
+        None => (source_name(vmid), None),
+    }
+}
+
 impl Cluster {
     /// (node, type) of a guest; type is "qemu" or "lxc".
     pub fn guest(&self, vmid: u32) -> Result<(String, String)> {
@@ -137,6 +147,24 @@ impl Cluster {
             .find(|r| r["vmid"].as_u64() == Some(vmid as u64))
             .and_then(|r| Some((r["node"].as_str()?.to_owned(), r["type"].as_str()?.to_owned())))
             .with_context(|| format!("guest {vmid} not found in cluster"))
+    }
+
+    /// (`vm` | `ct`, name) of every guest of the cluster (one `/cluster/resources`
+    /// call; live progress labels).
+    pub fn guest_names(&self) -> Result<BTreeMap<u32, (String, String)>> {
+        let res = self.api.get("/cluster/resources?type=vm")?;
+        Ok(res
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| {
+                let kind = if r["type"].as_str()? == "lxc" { "ct" } else { "vm" };
+                Some((
+                    u32::try_from(r["vmid"].as_u64()?).ok()?,
+                    (kind.to_owned(), r["name"].as_str().unwrap_or_default().to_owned()),
+                ))
+            })
+            .collect())
     }
 
     /// (node, type) of every guest of the cluster (one `/cluster/resources` call).
@@ -327,6 +355,8 @@ impl Cluster {
             println!("disk {key} of VM {vmid} has backup=0: skipped by PVE");
         }
         let excluded = self.exclude.get(&vmid).map(Vec::as_slice).unwrap_or_default();
+        let parts = job.devices.iter().filter(|d| !excluded.contains(&d.name)).count() as u32;
+        let mut part = 0;
         let mut skipped = Excluded {
             mode: self.exclude_mode,
             disks: Vec::new(),
@@ -353,7 +383,9 @@ impl Cluster {
                 ("reuse", _) => bail!("{}: PVE reuses a dirty bitmap but no base snapshot exists", dev.name),
                 _ => None,
             };
-            let (idx, n) = pull_device(store, ssh, vmid, dev, base.as_ref(), self.read_limit.as_deref())
+            part += 1;
+            let at = (part, parts);
+            let (idx, n) = pull_device(store, ssh, vmid, dev, base.as_ref(), self.read_limit.as_deref(), at)
                 .with_context(|| format!("device {}", dev.name))?;
             read += n;
             names.push(dev.name.as_str());
@@ -481,7 +513,12 @@ impl Cluster {
                 continue;
             }
             let idx = store.load_index(m, &device)?;
-            serve_device(store, ssh, archive, &device, &idx).with_context(|| format!("serve {device}"))?;
+            // progress: devices of the snapshot (PVE asks for them one by one)
+            let at = (
+                served.len() as u32,
+                m.indexes.iter().filter(|i| *i != "config").count() as u32,
+            );
+            serve_device(store, ssh, archive, &device, &idx, at).with_context(|| format!("serve {device}"))?;
         }
     }
 
@@ -504,7 +541,9 @@ impl Drop for Kill {
     }
 }
 
-/// Returns the device index and the bytes read from the export.
+/// Returns the device index and the bytes read from the export. Progress:
+/// part `at.0` of `at.1` with the bytes to read (dirty extents and grown area)
+/// as its total (chunkstore::progress).
 fn pull_device(
     store: &Store,
     ssh: &SshNode,
@@ -512,6 +551,7 @@ fn pull_device(
     dev: &Device,
     base: Option<&Index>,
     limit: Option<&catalog::schedule::Throttle>,
+    at: (u32, u32),
 ) -> Result<(Index, u64)> {
     let mut child = Kill(
         ssh.cmd(&format!("nbd {vmid}"))
@@ -542,6 +582,8 @@ fn pull_device(
         None => Vec::new(),
     };
     let (mut read, mut skipped) = (0, 0);
+    let total = Store::image_extents_bytes(base, IMAGE_CHUNK_SIZE, dev.size, &dirty);
+    let mut meter = Meter::new(exclude::disk_key(&dev.name), at.0, at.1, Some(total));
     let idx = store.store_image_extents(base, IMAGE_CHUNK_SIZE, dev.size, &dirty, |off, buf| {
         for (a, b, is_zero) in split_zero(&zero, off, buf.len() as u64) {
             let part = &mut buf[(a - off) as usize..(b - off) as usize];
@@ -556,8 +598,10 @@ fn pull_device(
                 }
             }
         }
+        meter.add(buf.len() as u64);
         Ok(())
     })?;
+    meter.finish();
     c.disconnect()?;
     if skipped > 0 {
         println!("{}: {skipped} bytes unallocated (zero), not transferred", dev.name);
@@ -590,10 +634,17 @@ fn split_zero(zero: &[(u64, u64)], off: u64, len: u64) -> Vec<(u64, u64, bool)> 
     out
 }
 
-fn serve_device(store: &Store, ssh: &SshNode, archive: &str, device: &str, idx: &Index) -> Result<()> {
+fn serve_device(store: &Store, ssh: &SshNode, archive: &str, device: &str, idx: &Index, at: (u32, u32)) -> Result<()> {
     let mut img = store.image_reader(idx)?;
     let size = img.size();
-    serve(ssh, archive, device, size, |off, buf| img.read_at(off, buf))
+    let mut meter = Meter::new(exclude::disk_key(device), at.0, at.1, Some(size));
+    serve(ssh, archive, device, size, |off, buf| {
+        img.read_at(off, buf)?;
+        meter.add(buf.len() as u64);
+        Ok(())
+    })?;
+    meter.finish();
+    Ok(())
 }
 
 fn serve(
@@ -776,6 +827,22 @@ mod tests {
 
     use super::*;
     use crate::exclude::{Disk, Mode};
+
+    #[test]
+    fn progress_items_name_the_guest() {
+        let names = BTreeMap::from([
+            (101, ("vm".to_owned(), "dc1dev".to_owned())),
+            (200, ("ct".to_owned(), String::new())),
+        ]);
+        assert_eq!(progress_item(101, &names), ("vm-101".into(), Some("dc1dev")));
+        assert_eq!(progress_item(200, &names), ("ct-200".into(), None));
+        assert_eq!(progress_item(7, &names), ("vm-7".into(), None));
+        let (item, label) = progress_item(101, &names);
+        assert_eq!(
+            chunkstore::progress::item_line(&item, label, 2, 3),
+            "item 2/3: vm-101 dc1dev"
+        );
+    }
 
     #[test]
     fn identity_of_a_config() {

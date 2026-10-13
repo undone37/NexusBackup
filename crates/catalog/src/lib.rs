@@ -756,11 +756,22 @@ ALTER TABLE agents ADD COLUMN via TEXT;
 ALTER TABLE agents ADD COLUMN edge_pushed TEXT;
 "#;
 
+/// v40 (live job progress, docs/control-plane.md "Live progress"): while a
+/// job runs, the scheduler writes its output so far to `jobs.live_log` and the
+/// aggregated `progress {json}` lines of the connector to `jobs.progress`
+/// (about every 2 s). The final output is appended to `jobs.log` as before and
+/// both columns are cleared when the job ends. Purely additive: the previous
+/// release ignores them (and shows the log only at the end).
+const SCHEMA_V40: &str = r#"
+ALTER TABLE jobs ADD COLUMN live_log TEXT;
+ALTER TABLE jobs ADD COLUMN progress TEXT;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
-    SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V34, SCHEMA_V37, SCHEMA_V39,
+    SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V34, SCHEMA_V37, SCHEMA_V39, SCHEMA_V40,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -2828,6 +2839,42 @@ mod tests {
         assert!(conn
             .execute("INSERT INTO tenant_idps (tenant, settings) VALUES ('ghost', '{}')", [])
             .is_err());
+    }
+
+    /// v40 (live job progress) on top of the previous catalog: existing jobs
+    /// have neither; a running job gets both, the old release's final write
+    /// (`log = log || …`) still works.
+    #[test]
+    fn migration_v40_job_progress() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V40).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO jobs (kind, tenant, params, state, requested_by, created) VALUES ('backup','t','{}','running','s',1);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let (l, pr): (Option<String>, Option<String>) = conn
+            .query_row("SELECT live_log, progress FROM jobs", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((l, pr), (None, None));
+        conn.execute_batch(
+            r#"UPDATE jobs SET live_log = 'item 1/2: vm-100' || char(10), progress = '{"items":2}';
+               UPDATE jobs SET state = 'ok', log = log || 'committed vm-100/5', live_log = NULL, progress = NULL;"#,
+        )
+        .unwrap();
+        let log: String = conn.query_row("SELECT log FROM jobs", [], |r| r.get(0)).unwrap();
+        assert_eq!(log, "committed vm-100/5");
     }
 
     /// v39 (edge proxies) on top of the previous catalog: agents keep working

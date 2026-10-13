@@ -378,13 +378,32 @@ browser at that folder), **Download** or, for host snapshots, **Restore…**. De
 
 ![Jobs](images/jobs.png)
 
-All jobs, newest first (the 100 most recent). Filter by **State** and **Kind**. The list refreshes every 4 seconds
-while jobs are queued or running. Click a job number to see its details.
+All jobs, newest first (the 100 most recent). Filter by **State** and **Kind**. The list refreshes every 2 seconds
+while jobs are queued or running. For a running job the **Progress** column shows a bar with the overall
+percentage, the current read rate and the current item (for example `vm-101 (2/3)`). Click a job number to see its
+details.
+
+![Running jobs with their progress](images/jobs-running.png)
 
 The job page shows kind, state, tenant, who requested it (`scheduler` for scheduled work), the times and the
-parameters. While the job runs, the log refreshes every 2 seconds (**Live — refreshing every 2 s**).
+parameters. While the job runs, the page refreshes every 2 seconds (**Live — refreshing every 2 s**) and shows:
 
-![A running offsite copy](images/job-running.png)
+- **Progress**: the **Overall** bar (items done of all items, plus the share of the current item), and a bar for
+  the current item with the guest (or agent, dataset) and its name, and the part being read: the disk of a VM
+  (`scsi0`, 1 of 2), the tar stream of a container, the scan and then the chunk transfer of an agent.
+- **Item** (2 of 3), **Part** (bytes read of the bytes to read; for an incremental VM backup only the changed
+  areas count, so 41 GiB of a 200 GiB disk can be the whole work), **Read so far** (all items), **Current rate**
+  (MB/s over the last 10 seconds), **Time remaining** (estimated from the progress so far, so it settles after a
+  few minutes) and **Running for**. When several guests are backed up at once (parallel guests), a table lists each
+  of them with its own bar.
+- The **Log** so far, following the newest line (scroll up to stop following). Output reaches the page about every
+  2 seconds; progress reports themselves are not part of the log.
+
+If the connector has not reported for a while (for example while Proxmox VE prepares the vzdump task, or a slow
+source), the page says so below the figures; the figures are those of the last report. Jobs without progress reports
+(retention, GC, most restores) show the log only. The **Overall** bar of an agent group counts one item per agent.
+
+![A running backup: item 2 of 3, first of two disks](images/job-running.png)
 
 ![A failed backup with its log](images/job-failed.png)
 

@@ -369,6 +369,9 @@ async function main() {
     ['jobs', async () => {
       await go('/jobs');
       await shot('jobs');
+      // live progress column of the running jobs
+      await go('/jobs?state=running', 2500);
+      await shot('jobs-running', { height: 420 });
       const jobs = (await api('GET', '/jobs')).body;
       const failed = jobs.find((j) => j.kind === 'backup' && j.state === 'failed' && j.params.group_id && !j.retry_of);
       const smb = jobs.filter((j) => j.kind === 'backup' && j.tenant === 'acme' && j.state === 'ok').find((j) => j.params.group_id);

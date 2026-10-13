@@ -440,6 +440,25 @@ async fn backup_now_guests_failed_only_and_cancel_running() {
         (r.body["cancel_by"].clone(), r.body["attempt"].clone()),
         (json!("otto"), json!(1))
     );
+    assert_eq!(r.body["progress"], Value::Null);
+    // live progress (scheduler): the output so far follows what was logged before the start
+    t.exec(&format!(
+        r#"UPDATE jobs SET log = 'queued note' || char(10), live_log = 'item 1/2: vm-101 web' || char(10),
+           progress = '{{"item":"vm-101","items":2,"percent":12.5,"rate":1048576}}' WHERE id = {id}"#
+    ));
+    let r = t.get(&format!("/api/v1/jobs/{id}"), &otto).await;
+    assert_eq!(r.body["log"], "queued note\nitem 1/2: vm-101 web\n");
+    assert_eq!(
+        (
+            r.body["progress"]["item"].clone(),
+            r.body["progress"]["percent"].clone()
+        ),
+        (json!("vm-101"), json!(12.5))
+    );
+    let list = t.get("/api/v1/jobs?state=running", &otto).await.body;
+    let row = list.as_array().unwrap().iter().find(|j| j["id"] == id).unwrap();
+    assert_eq!(row["progress"]["rate"], 1048576);
+    assert!(row.get("log").is_none());
     t.exec(&format!("UPDATE jobs SET state = 'ok' WHERE id = {id}"));
     assert_eq!(
         t.post(&format!("/api/v1/jobs/{id}/cancel"), &otto, json!({}))

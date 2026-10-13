@@ -49,6 +49,7 @@ interface Res {
 
 type Role = 'admin' | 'security_officer' | 'operator' | 'tenant_admin' | 'tenant_user' | 'viewer';
 type Json = Record<string, any>;
+const GiB = 2 ** 30;
 
 class HttpError extends Error {
   constructor(
@@ -183,6 +184,13 @@ interface Job {
   not_before?: number | null;
   cancel_by?: string | null;
   cancel_at?: number;
+  /** live progress plan (scheduler `jobs.progress`): items with their parts; byte total null = unknown */
+  items?: ProgressItem[];
+}
+interface ProgressItem {
+  item: string;
+  label?: string | null;
+  parts: { part: string; total: number | null }[];
 }
 
 interface MockGroup {
@@ -1512,6 +1520,28 @@ function seed() {
     'offsite copy complete',
   ];
   running.created = t - 5;
+  // a nightly backup that is still running: live progress on the job pages (item 2 of 3, first disk)
+  const live = addJob('backup', 'initech', { group_id: gProd.id }, 'scheduler', { duration: 2400 });
+  live.items = [
+    { item: 'vm-100', label: 'erp-app', parts: [{ part: 'scsi0', total: 18.4 * GiB }, { part: 'efidisk0', total: 528 << 10 }] },
+    { item: 'vm-101', label: 'erp-db', parts: [{ part: 'scsi0', total: 41.2 * GiB }, { part: 'scsi1', total: 6.8 * GiB }] },
+    { item: 'ct-200', label: 'proxy', parts: [{ part: 'tar stream', total: null }] },
+  ];
+  live.plan = [
+    `$ nexus-pve job-${live.id}/pve.json backup-all`,
+    'item 1/3: vm-100 erp-app',
+    'fleecing storage local-lvm on node pve1: 412 GiB free (61 %)',
+    'committed vm-100/' + String(t - 1500),
+    'item 2/3: vm-101 erp-db',
+    'excluded disk scsi2 of VM 101 (107374182400 bytes): not backed up',
+    'fleecing storage local-lvm on node pve2: 188 GiB free (44 %)',
+    'committed vm-101/' + String(t + 600),
+    'item 3/3: ct-200 proxy',
+    'vzdump task for CT 200 started on node pve1 (suspend mode)',
+    'reading the tar stream from node pve1',
+    'committed ct-200/' + String(t + 1300),
+  ];
+  Object.assign(live, { created: t - 905, started: t - 900, state: 'running' });
 
   // Alerts (messages as the scheduler writes them)
   // (13f lifecycle: repeats counted on the open alert, success paths resolve them)
@@ -3995,9 +4025,61 @@ on('GET', '/snapshots', (c) => {
     .filter((s) => !held || s.hold);
   return [200, xs.sort((a, b) => b.time - a.time)];
 });
+/** Progress items of a backup job when the seed gave none: its guests / agents with typical parts. */
+function progressItems(j: Job): ProgressItem[] {
+  if (j.kind !== 'backup') return [];
+  const g = db.groups.find((x) => x.id === j.params.group_id);
+  const src = db.sources.find((x) => x.id === g?.source_id);
+  if (src && src.kind !== 'pve' && src.kind !== 'linux') return [{ item: String(src.name ?? src.kind), parts: [{ part: 'data', total: null }] }];
+  const guests = j.params.vmid ? [j.params.vmid] : j.params.agent_id ? [j.params.agent_id] : g ? resolveGuests(g) : [];
+  return guests.map((v, i) => {
+    const item = guestName(v);
+    if (item.startsWith('host-'))
+      return { item, label: db.agents.find((a) => a.id === v)?.name ?? null, parts: [{ part: 'scan', total: null }, { part: 'transfer', total: 2 * GiB }] };
+    if (item.startsWith('ct-')) return { item, label: GUEST_NAMES[`${j.tenant}/${v}`] ?? null, parts: [{ part: 'tar stream', total: null }] };
+    return { item, label: GUEST_NAMES[`${j.tenant}/${v}`] ?? null, parts: [{ part: 'scsi0', total: (6 + 4 * i) * GiB }] };
+  });
+}
+/** Like the scheduler's aggregate of the connectors' `progress {json}` lines (crates/scheduler/src/progress.rs). */
+function mockProgress(j: Job): Json | null {
+  if (j.state !== 'running' || j.started === null) return null;
+  const items = j.items ?? progressItems(j);
+  if (!items.length) return null;
+  const t = now();
+  const n = items.length;
+  const elapsed = Math.max(0, t - j.started);
+  const frac = Math.min(0.995, elapsed / j.duration);
+  const idx = Math.min(n - 1, Math.floor(frac * n));
+  const it = items[idx];
+  const within = frac * n - idx;
+  const parts = it.parts.length;
+  const pidx = Math.min(parts - 1, Math.floor(within * parts));
+  const part = it.parts[pidx];
+  const pf = within * parts - pidx;
+  const secs = j.duration / n / parts;
+  const size = part.total ?? 3.2 * GiB;
+  const rate = Math.round((size / secs) * (0.93 + 0.07 * Math.sin(t / 7)));
+  const done = Math.round(pf * size);
+  const before = items.slice(0, idx).reduce((a, x) => a + x.parts.reduce((b, p) => b + (p.total ?? 3.2 * GiB), 0), 0)
+    + it.parts.slice(0, pidx).reduce((b, p) => b + (p.total ?? 3.2 * GiB), 0);
+  const r1 = (x: number) => Math.round(x * 1000) / 10;
+  const known = part.total !== null;
+  const itemFrac = known ? (pidx + pf) / parts : null;
+  return {
+    item: it.item, label: it.label ?? null, item_index: idx + 1, items: n, items_done: idx,
+    part: part.part, part_index: pidx + 1, parts, done: known ? done : null, total: part.total,
+    entries: part.part === 'scan' ? Math.round(pf * 412_000) : null,
+    item_percent: itemFrac === null ? null : r1(itemFrac),
+    percent: r1((idx + (itemFrac ?? 0)) / n),
+    bytes: before + done, rate,
+    eta: Math.max(0, Math.round(j.duration - elapsed)),
+    item_eta: known ? Math.round((size - done) / rate) : null,
+    elapsed, updated: t,
+  };
+}
 const pubJob = (j: Job, withLog: boolean) => {
-  const { plan: _p, duration: _d, fail: _f, cancel_at: _c, log, ...rest } = j;
-  const out = { attempt: 1, retry_of: null, not_before: null, cancel_by: null, ...rest };
+  const { plan: _p, duration: _d, fail: _f, cancel_at: _c, items: _i, log, ...rest } = j;
+  const out = { attempt: 1, retry_of: null, not_before: null, cancel_by: null, ...rest, progress: mockProgress(j) };
   return withLog ? { ...out, log } : out;
 };
 on('GET', '/jobs', (c) => {
