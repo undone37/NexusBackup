@@ -11,7 +11,7 @@ const USAGE: &str = "\
 usage:
   nexus-agent init --token <T> [--port 7444] [--state DIR] [--config DIR]
   nexus-agent run [--state DIR] [--config DIR]
-  nexus-agent status [--state DIR] [--config DIR]
+  nexus-agent status [--json] [--state DIR] [--config DIR]
   nexus-agent hooks test [--config DIR]
   nexus-agent version (or --version)
 defaults: --config /etc/nexus-agent --state /var/lib/nexus-agent
@@ -33,6 +33,7 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
     let mut token = None;
     let mut port = None;
     let mut words = vec![];
+    let mut json = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().cloned().ok_or(format!("{name} needs a value"));
@@ -42,6 +43,7 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             "--state" => paths.state = PathBuf::from(val("--state")?),
             "--config" => paths.config = PathBuf::from(val("--config")?),
             "--version" | "-V" => words.push("version".into()),
+            "--json" => json = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(ExitCode::SUCCESS);
@@ -67,6 +69,7 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         ["run"] => run(paths),
+        ["status"] if json => status_json(),
         ["status"] => {
             print!("{}", nexus_agent::status(&paths));
             Ok(ExitCode::SUCCESS)
@@ -83,6 +86,45 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         _ => Err(USAGE.into()),
+    }
+}
+
+/// `nexus-agent status --json`: the service's view over the local UI socket
+/// (agent_ui_proto `status`), for scripts and the lab.
+fn status_json() -> Result<ExitCode, String> {
+    let mut c = agent_ui_proto::Client::connect_default().map_err(|e| {
+        format!(
+            "{}: {e} (is the service running and are you in group {}?)",
+            agent_ui_proto::SOCKET_PATH,
+            agent_ui_proto::SOCKET_GROUP
+        )
+    })?;
+    let st = c.status().map_err(|e| e.to_string())?;
+    println!("{}", serde_json::to_string_pretty(&st).map_err(|e| e.to_string())?);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The local UI socket (docs/endpoint-ui.md): `/run/nexus-agent/ui.sock`, group
+/// `nexus-agent-ui`; the run directory only allows traversal (0711).
+fn serve_ui(agent: &Arc<server::Agent>) {
+    let paths = &agent.paths;
+    if let Err(e) = ensure_dir(&paths.run, 0o711) {
+        eprintln!("nexus-agent: {}: {e}; no local UI socket", paths.run.display());
+        return;
+    }
+    let group = agent_core::ui::unix::group_id(agent_ui_proto::SOCKET_GROUP);
+    if group.is_none() {
+        eprintln!(
+            "nexus-agent: group {} missing: the UI socket is root-only",
+            agent_ui_proto::SOCKET_GROUP
+        );
+    }
+    match agent_core::ui::unix::bind(&paths.ui_socket(), group) {
+        Ok(l) => {
+            let a = agent.clone();
+            std::thread::spawn(move || agent_core::ui::unix::serve(a, l));
+        }
+        Err(e) => eprintln!("nexus-agent: {}: {e}; no local UI socket", paths.ui_socket().display()),
     }
 }
 
@@ -121,6 +163,8 @@ fn run(paths: Paths) -> Result<ExitCode, String> {
         env!("CARGO_PKG_VERSION"),
         listener.local_addr().map_err(|e| e.to_string())?
     );
-    Arc::new(agent).serve(listener).map_err(|e| e.to_string())?;
+    let agent = Arc::new(agent);
+    serve_ui(&agent);
+    agent.serve(listener).map_err(|e| e.to_string())?;
     Ok(ExitCode::SUCCESS)
 }

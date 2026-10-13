@@ -20,6 +20,9 @@ if { [ -x /usr/sbin/lvm ] || [ -x /sbin/lvm ]; } && [ ! -e /etc/modules-load.d/n
 	modprobe dm-thin-pool 2>/dev/null || true
 fi
 
+# local users in this group may use the endpoint UIs (/run/nexus-agent/ui.sock, docs/endpoint-ui.md)
+getent group nexus-agent-ui >/dev/null 2>&1 || groupadd --system nexus-agent-ui 2>/dev/null || true
+
 systemd=0
 [ -d /run/systemd/system ] && systemd=1
 [ $systemd = 1 ] && systemctl daemon-reload >/dev/null 2>&1 || true

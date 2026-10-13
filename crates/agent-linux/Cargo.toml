@@ -17,7 +17,9 @@ path = "src/lib.rs"
 [dependencies]
 agent-core = { path = "../agent-core" }
 agent-proto = { path = "../agent-proto" }
+agent-ui-proto = { path = "../agent-ui-proto" }
 libc = "0.2"
+serde_json = "1"
 
 [dev-dependencies]
 # interop test against the real appliance side (tests/interop.rs)
