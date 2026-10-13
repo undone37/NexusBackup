@@ -11,7 +11,8 @@
 #   nbd <vmid>                  pipe stdin/stdout <-> the job's NBD unix socket
 #   zeromap <vmid> <export>     read the extents given on stdin ({"extents":[[off,len],…],
 #                               "granularity":65536}) from the job's NBD export locally and
-#                               print the all-zero blocks ({"zero":[[off,len],…],"scanned":n}):
+#                               print the all-zero blocks ({"zero":[[off,len],…],"scanned":n};
+#                               "zeromap-progress <bytes>" on stderr every 2 s):
 #                               zvols and LVM report no holes to QEMU, so the appliance would
 #                               transfer every zero block of a thin disk
 #   done <vmid> ok              signal success to the waiting backup_vm
@@ -252,7 +253,7 @@ sub cmd_zeromap {
     my $size = nbd_go($s, $export);
     my $zeros = "\0" x $g;
     my @zero;
-    my ($scanned, $cookie) = (0, 0);
+    my ($scanned, $cookie, $last_report) = (0, 0, time());
     for my $e ($reqj->{extents}->@*) {
         fail(1, 'zeromap: invalid extent') if ref($e) ne 'ARRAY' || @$e != 2;
         my ($o, $l) = @$e;
@@ -267,6 +268,10 @@ sub cmd_zeromap {
             my $len = $end - $pos < $NBD_READ ? $end - $pos : $NBD_READ;
             my $data = nbd_read($s, $pos, $len, ++$cookie);
             $scanned += $len;
+            if (time() - $last_report >= 2) {    # the appliance shows this as progress
+                $last_report = time();
+                syswrite(STDERR, "zeromap-progress $scanned\n");
+            }
             for (my $b = 0; $b < $len; $b += $g) {
                 next if substr($data, $b, $g) ne $zeros;
                 my $at = $pos + $b;

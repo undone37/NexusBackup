@@ -584,7 +584,7 @@ fn pull_device(
     if zero.is_empty() {
         // zvols and LVM report no holes to QEMU: the node helper scans the frozen export
         // locally and names the all-zero blocks (an older helper refuses: nothing skipped)
-        zero = zero_map(ssh, vmid, &dev.name, &scan_extents(base, dev.size, &dirty));
+        zero = zero_map(ssh, vmid, &dev.name, &scan_extents(base, dev.size, &dirty), at);
     }
     let (mut read, mut skipped) = (0, 0);
     let total = Store::image_extents_bytes(base, IMAGE_CHUNK_SIZE, dev.size, &dirty);
@@ -635,17 +635,62 @@ fn scan_extents(base: Option<&Index>, size: u64, dirty: &[(u64, u64)]) -> Vec<(u
     out.into_iter().map(|(a, b)| (a, b - a)).collect()
 }
 
-/// All-zero 64 KiB blocks within `extents`, scanned by the node helper (`zeromap`).
-fn zero_map(ssh: &SshNode, vmid: u32, export: &str, extents: &[(u64, u64)]) -> Vec<(u64, u64)> {
+/// All-zero 64 KiB blocks within `extents`, scanned by the node helper (`zeromap`); its
+/// `zeromap-progress <bytes>` lines on stderr become a progress part of their own.
+fn zero_map(ssh: &SshNode, vmid: u32, export: &str, extents: &[(u64, u64)], at: (u32, u32)) -> Vec<(u64, u64)> {
+    use std::io::{BufRead, Read, Write};
     if extents.is_empty() {
         return Vec::new();
     }
-    let req = serde_json::json!({ "extents": extents, "granularity": 65536 });
+    let total: u64 = extents.iter().map(|e| e.1).sum();
+    println!("{export}: scanning {total} bytes on the node for empty blocks");
+    let req = serde_json::json!({ "extents": extents, "granularity": 65536 }).to_string();
     let started = std::time::Instant::now();
-    let r = ssh
-        .run(&format!("zeromap {vmid} {export}"), Some(req.to_string().as_bytes()))
-        .and_then(|out| Ok(serde_json::from_slice::<serde_json::Value>(&out)?));
-    match r {
+    let run = || -> Result<serde_json::Value> {
+        let mut child = Kill(
+            ssh.cmd(&format!("zeromap {vmid} {export}"))
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?,
+        );
+        child.0.stdin.take().unwrap().write_all(req.as_bytes())?; // dropped: EOF for the helper
+        let mut out = child.0.stdout.take().unwrap();
+        let reader = std::thread::spawn(move || {
+            let mut v = Vec::new();
+            out.read_to_end(&mut v).map(|_| v)
+        });
+        let mut meter = Meter::new(
+            &format!("{} (scanning for empty blocks)", exclude::disk_key(export)),
+            at.0,
+            at.1,
+            Some(total),
+        );
+        let (mut seen, mut errors) = (0u64, Vec::new());
+        for line in BufReader::new(child.0.stderr.take().unwrap()).lines() {
+            let line = line?;
+            match line
+                .strip_prefix("zeromap-progress ")
+                .and_then(|n| n.trim().parse::<u64>().ok())
+            {
+                Some(n) if n >= seen => {
+                    meter.add(n - seen);
+                    seen = n;
+                }
+                _ => errors.push(line),
+            }
+        }
+        meter.finish();
+        let status = child.0.wait()?;
+        let out = reader
+            .join()
+            .map_err(|_| anyhow::anyhow!("zeromap reader panicked"))??;
+        if !status.success() {
+            anyhow::bail!("{status}: {}", errors.join("; "));
+        }
+        Ok(serde_json::from_slice(&out)?)
+    };
+    match run() {
         Ok(v) => {
             let zero: Vec<(u64, u64)> = v["zero"]
                 .as_array()
