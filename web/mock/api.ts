@@ -449,7 +449,7 @@ function planFor(kind: string, p: Json): string[] {
     case 'bmr':
       return [
         `enrolling the rescue agent with the session's token proofs (host-${p.source_agent} @ ${p.time})`,
-        'reading .nexus-system/layout.json; partitions, RAID/LVM and file systems recreated on the confirmed disks',
+        'reading .nexus-system/layout.json; partitions, LVM and file systems recreated on the confirmed disks',
         'restoring files into /target',
         'restoring files into /target: 100%',
         'fstab / crypttab / boot loader adjusted, initramfs rebuilt',

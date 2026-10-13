@@ -826,7 +826,7 @@ export const en = {
     action: "Bare-metal recovery",
     title: (n: string) => `Bare-metal recovery of ${n}`,
     intro:
-      "Restores the whole machine from a host snapshot onto new or wiped disks: partitions, RAID/LVM, file systems and the boot loader are recreated from the layout stored with the snapshot, then the files are restored. The target machine boots the NexusBackup rescue ISO, which checks in with the appliance using a one-time recovery token.",
+      "Restores the whole machine from a host snapshot onto new or wiped disks: partitions, LVM, file systems and the boot loader are recreated (not LUKS, software RAID or ZFS) from the layout stored with the snapshot, then the files are restored. The target machine boots the NexusBackup rescue ISO, which checks in with the appliance using a one-time recovery token.",
     issueTitle: "1. Issue a recovery token",
     reboot: "Reboot into the restored system when done",
     issue: "Issue recovery token",
