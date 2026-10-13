@@ -499,4 +499,39 @@ is(code(cmd => "ct-restore-serve $archive"), 1, 'ct-restore-serve: refuses a VM 
     ok(!-e $csock, 'ct-restore-serve: socket removed');
 }
 
+# --- zeromap (against a real qemu-nbd when installed) --------------------------
+SKIP: {
+    skip('qemu-nbd/qemu-img not installed', 4)
+        if system('qemu-nbd --version >/dev/null 2>&1') != 0 || system('qemu-img --version >/dev/null 2>&1') != 0;
+    my $img = "$tmp/zm.raw";
+    system('qemu-img', 'create', '-q', '-f', 'raw', $img, '8M') == 0 or die;
+    open(my $fh, '+<', $img) or die;
+    binmode($fh);
+    seek($fh, 1024 * 1024, 0);
+    print {$fh} ("\xab" x (512 * 1024));
+    close($fh);
+    my $zsock = "$tmp/zm.sock";
+    my $pid = fork();
+    if ($pid == 0) {
+        exec('qemu-nbd', '-r', '-f', 'raw', '-x', 'drive-scsi0', '-k', $zsock, $img);
+        POSIX::_exit(127);
+    }
+    for (1 .. 100) { last if -S $zsock; select(undef, undef, undef, 0.05) }
+    write_job(101, $zsock);
+    my ($zrc, $zout) = run_helper(
+        cmd => 'zeromap 101 drive-scsi0',
+        stdin => '{"extents":[[0,8388608]],"granularity":65536}',
+    );
+    is($zrc, 0, 'zeromap: exit 0');
+    my $z = eval { JSON->new->decode($zout) } // {};
+    is_deeply($z->{zero}, [[0, 1048576], [1572864, 6815744]], 'zeromap: zero runs around the data');
+    is($z->{scanned}, 8388608, 'zeromap: scanned the whole extent');
+    is(code(cmd => 'zeromap 101 drive-scsi0', stdin => '{"extents":[[0,1]],"granularity":3}'), 1,
+        'zeromap: invalid granularity refused');
+    kill('TERM', $pid);
+    waitpid($pid, 0);
+}
+is(code(cmd => 'zeromap 100'), 2, 'zeromap without export: usage error');
+is(code(cmd => 'zeromap 100 ../x'), 2, 'zeromap with a bad export name: usage error');
+
 done_testing();

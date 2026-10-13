@@ -577,10 +577,15 @@ fn pull_device(
     };
     // regions the export reports as reading zero (unallocated / discarded) are filled locally,
     // never transported; plain holes without NBD_STATE_ZERO are read (their content is unspecified)
-    let zero = match c.context_id(ALLOCATION) {
+    let mut zero = match c.context_id(ALLOCATION) {
         Some(_) => nbd::flagged(&c.block_status(ALLOCATION)?, NBD_STATE_ZERO),
         None => Vec::new(),
     };
+    if zero.is_empty() {
+        // zvols and LVM report no holes to QEMU: the node helper scans the frozen export
+        // locally and names the all-zero blocks (an older helper refuses: nothing skipped)
+        zero = zero_map(ssh, vmid, &dev.name, &scan_extents(base, dev.size, &dirty));
+    }
     let (mut read, mut skipped) = (0, 0);
     let total = Store::image_extents_bytes(base, IMAGE_CHUNK_SIZE, dev.size, &dirty);
     let mut meter = Meter::new(exclude::disk_key(&dev.name), at.0, at.1, Some(total));
@@ -607,6 +612,62 @@ fn pull_device(
         println!("{}: {skipped} bytes unallocated (zero), not transferred", dev.name);
     }
     Ok((idx, read))
+}
+
+/// Ranges a backup reads: the dirty extents plus a grown (or never backed up) tail, merged.
+fn scan_extents(base: Option<&Index>, size: u64, dirty: &[(u64, u64)]) -> Vec<(u64, u64)> {
+    let prev = match base {
+        Some(Index::Fixed { size, .. }) => *size,
+        _ => 0,
+    };
+    let mut r: Vec<(u64, u64)> = dirty.iter().map(|&(o, l)| (o, (o + l).min(size))).collect();
+    if prev < size {
+        r.push((prev, size));
+    }
+    r.sort_unstable();
+    let mut out: Vec<(u64, u64)> = Vec::new();
+    for (a, b) in r.into_iter().filter(|(a, b)| a < b) {
+        match out.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    out.into_iter().map(|(a, b)| (a, b - a)).collect()
+}
+
+/// All-zero 64 KiB blocks within `extents`, scanned by the node helper (`zeromap`).
+fn zero_map(ssh: &SshNode, vmid: u32, export: &str, extents: &[(u64, u64)]) -> Vec<(u64, u64)> {
+    if extents.is_empty() {
+        return Vec::new();
+    }
+    let req = serde_json::json!({ "extents": extents, "granularity": 65536 });
+    let started = std::time::Instant::now();
+    let r = ssh
+        .run(&format!("zeromap {vmid} {export}"), Some(req.to_string().as_bytes()))
+        .and_then(|out| Ok(serde_json::from_slice::<serde_json::Value>(&out)?));
+    match r {
+        Ok(v) => {
+            let zero: Vec<(u64, u64)> = v["zero"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|e| Some((e[0].as_u64()?, e[1].as_u64()?)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            println!(
+                "{export}: zero map scanned on the node in {:.1?}: {} bytes zero of {}",
+                started.elapsed(),
+                zero.iter().map(|z| z.1).sum::<u64>(),
+                v["scanned"].as_u64().unwrap_or(0)
+            );
+            zero
+        }
+        Err(e) => {
+            println!("{export}: no zero map from the node ({e:#}): every block is transferred");
+            Vec::new()
+        }
+    }
 }
 
 const ALLOCATION: &str = "base:allocation";
@@ -807,6 +868,24 @@ pub fn build_index(store: &Store) -> Result<serde_json::Value> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn scan_extents_merge_dirty_and_tail() {
+        let fixed = |size| Index::Fixed {
+            chunk_size: 65536,
+            size,
+            chunks: vec![],
+        };
+        // full backup: dirty = whole disk, no base: one range
+        assert_eq!(scan_extents(None, 1000, &[(0, 1000)]), vec![(0, 1000)]);
+        // incremental with a grown disk: dirty ranges plus the new tail, overlaps merged
+        assert_eq!(
+            scan_extents(Some(&fixed(600)), 1000, &[(100, 50), (550, 100)]),
+            vec![(100, 50), (550, 450)]
+        );
+        // nothing changed: nothing to scan
+        assert!(scan_extents(Some(&fixed(1000)), 1000, &[]).is_empty());
+    }
 
     #[test]
     fn split_zero_regions() {

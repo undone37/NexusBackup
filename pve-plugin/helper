@@ -9,6 +9,11 @@
 # Commands (from SSH_ORIGINAL_COMMAND; see docs/pve-connector.md):
 #   job <vmid>                  print the job JSON, exit 1 if there is none
 #   nbd <vmid>                  pipe stdin/stdout <-> the job's NBD unix socket
+#   zeromap <vmid> <export>     read the extents given on stdin ({"extents":[[off,len],…],
+#                               "granularity":65536}) from the job's NBD export locally and
+#                               print the all-zero blocks ({"zero":[[off,len],…],"scanned":n}):
+#                               zvols and LVM report no holes to QEMU, so the appliance would
+#                               transfer every zero block of a thin disk
 #   done <vmid> ok              signal success to the waiting backup_vm
 #   done <vmid> fail <msg>      signal failure
 #   put-index <storeid>         replace the catalog from stdin (max 64 MiB JSON)
@@ -146,6 +151,139 @@ sub cmd_nbd {
     slog('info', "nbd $vmid: connected to $path");
 
     pipe_stdio($sock, "nbd $vmid");
+}
+
+# ---------------------------------------------------------------------------
+# zeromap: a minimal NBD client (fixed newstyle, OPT_GO, simple replies, READ)
+
+my $ZEROMAP_MAX_IN = 16 * 1024 * 1024;    # extents JSON
+my $NBD_READ = 4 * 1024 * 1024;
+
+sub read_full {
+    my ($fh, $len, $what) = @_;
+    my $buf = '';
+    while (length($buf) < $len) {
+        my $n = sysread($fh, $buf, $len - length($buf), length($buf));
+        if (!defined($n)) {
+            next if $!{EINTR};
+            fail(1, "zeromap: $what: $!");
+        }
+        fail(1, "zeromap: $what: unexpected EOF") if $n == 0;
+    }
+    return $buf;
+}
+
+sub write_full {
+    my ($fh, $data) = @_;
+    my $off = 0;
+    while ($off < length($data)) {
+        my $w = syswrite($fh, $data, length($data) - $off, $off);
+        if (!defined($w)) {
+            next if $!{EINTR};
+            fail(1, "zeromap: write: $!");
+        }
+        $off += $w;
+    }
+}
+
+sub nbd_go {
+    my ($s, $export) = @_;
+    my $hello = read_full($s, 18, 'greeting');
+    fail(1, 'zeromap: not a newstyle NBD server') if substr($hello, 0, 16) ne 'NBDMAGICIHAVEOPT';
+    my $flags = unpack('n', substr($hello, 16, 2));
+    fail(1, 'zeromap: server lacks fixed newstyle') if !($flags & 1);
+    write_full($s, pack('N', 1 | ($flags & 2)));    # FIXED_NEWSTYLE (+ NO_ZEROES if offered)
+    my $data = pack('N', length($export)) . $export . pack('n', 0);
+    write_full($s, 'IHAVEOPT' . pack('NN', 7, length($data)) . $data);    # OPT_GO
+    my $size;
+    while (1) {
+        my ($magic_hi, $magic_lo, $opt, $type, $len) = unpack('NNNNN', read_full($s, 20, 'option reply'));
+        fail(1, 'zeromap: bad option reply') if $magic_hi != 0x0003e889 || $magic_lo != 0x045565a9;
+        my $d = $len ? read_full($s, $len, 'option data') : '';
+        last if $type == 1;    # REP_ACK
+        if ($type == 3 && length($d) >= 12 && unpack('n', $d) == 0) {    # REP_INFO / INFO_EXPORT
+            my ($hi, $lo) = unpack('NN', substr($d, 2, 8));
+            $size = $hi * 4294967296 + $lo;
+        } elsif ($type & 0x80000000) {
+            fail(1, "zeromap: export $export refused (" . sprintf('%#x', $type) . ")");
+        }
+    }
+    fail(1, 'zeromap: no export size') if !defined($size);
+    return $size;
+}
+
+sub nbd_read {
+    my ($s, $off, $len, $cookie) = @_;
+    my $req = pack('NnnNNNNN', 0x25609513, 0, 0, 0, $cookie,
+        int($off / 4294967296), $off % 4294967296, $len);
+    write_full($s, $req);
+    my ($magic, $err, $c_hi, $c_lo) = unpack('NNNN', read_full($s, 16, 'reply'));
+    fail(1, 'zeromap: bad reply magic') if $magic != 0x67446698;
+    fail(1, "zeromap: read error $err at $off") if $err;
+    return read_full($s, $len, 'read data');
+}
+
+sub cmd_zeromap {
+    my ($vmid, $export) = @_;
+    my $raw = read_job($vmid) // fail(1, "zeromap $vmid: no job");
+    my $job = eval { JSON->new->utf8->decode($raw) };
+    fail(1, "zeromap $vmid: invalid job file") if ref($job) ne 'HASH';
+    my $path = $job->{nbd_socket};
+    fail(1, "zeromap $vmid: job has no valid nbd_socket")
+        if !defined($path) || ref($path) || $path !~ m!^/!;
+
+    binmode(STDIN);
+    my $in = '';
+    while (1) {
+        my $n = sysread(STDIN, $in, 65536, length($in));
+        fail(1, 'zeromap: stdin: ' . $!) if !defined($n) && !$!{EINTR};
+        last if defined($n) && $n == 0;
+        fail(1, 'zeromap: request too large') if length($in) > $ZEROMAP_MAX_IN;
+    }
+    my $reqj = eval { JSON->new->utf8->decode($in) };
+    fail(1, 'zeromap: invalid request') if ref($reqj) ne 'HASH' || ref($reqj->{extents}) ne 'ARRAY';
+    my $g = $reqj->{granularity} // 65536;
+    fail(1, 'zeromap: invalid granularity')
+        if ref($g) || $g !~ m/^\d+\z/ || $g < 4096 || $g > $NBD_READ || $NBD_READ % $g;
+
+    my $s = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => $path)
+        or fail(1, "zeromap $vmid: connect to $path failed: $!");
+    binmode($s);
+    my $size = nbd_go($s, $export);
+    my $zeros = "\0" x $g;
+    my @zero;
+    my ($scanned, $cookie) = (0, 0);
+    for my $e ($reqj->{extents}->@*) {
+        fail(1, 'zeromap: invalid extent') if ref($e) ne 'ARRAY' || @$e != 2;
+        my ($o, $l) = @$e;
+        fail(1, 'zeromap: invalid extent')
+            if grep { ref($_) || !defined($_) || !m/^\d+\z/ } ($o, $l);
+        # whole blocks only: a partial block at either end is simply transferred
+        my $start = int(($o + $g - 1) / $g) * $g;
+        my $end = $o + $l;
+        $end = $size if $end > $size;
+        $end -= $end % $g;
+        for (my $pos = $start; $pos < $end; $pos += $NBD_READ) {
+            my $len = $end - $pos < $NBD_READ ? $end - $pos : $NBD_READ;
+            my $data = nbd_read($s, $pos, $len, ++$cookie);
+            $scanned += $len;
+            for (my $b = 0; $b < $len; $b += $g) {
+                next if substr($data, $b, $g) ne $zeros;
+                my $at = $pos + $b;
+                if (@zero && $zero[-1][0] + $zero[-1][1] == $at) {
+                    $zero[-1][1] += $g;
+                } else {
+                    push @zero, [$at, $g];
+                }
+            }
+        }
+    }
+    write_full($s, pack('NnnNNNNN', 0x25609513, 0, 2, 0, 0, 0, 0, 0));    # NBD_CMD_DISC
+    close($s);
+    binmode(STDOUT);
+    print STDOUT JSON->new->utf8->canonical->encode({ zero => \@zero, scanned => $scanned + 0 });
+    slog('info', "zeromap $vmid $export: scanned $scanned bytes, " . scalar(@zero) . " zero runs");
+    exit(0);
 }
 
 # Full-duplex byte pipe stdin -> $sock and $sock -> stdout; exits the process.
@@ -418,6 +556,9 @@ my $printable = join(' ', $cmd, @args);
 if ($cmd eq 'job' || $cmd eq 'nbd') {
     usage_error($printable) if @args != 1 || $args[0] !~ $VMID_RE;
     $cmd eq 'job' ? cmd_job($args[0]) : cmd_nbd($args[0]);
+} elsif ($cmd eq 'zeromap') {
+    usage_error($printable) if @args != 2 || $args[0] !~ $VMID_RE || $args[1] !~ $DEVICE_RE;
+    cmd_zeromap(@args);
 } elsif ($cmd eq 'done') {
     usage_error($printable) if @args < 2 || $args[0] !~ $VMID_RE;
     cmd_done(@args);

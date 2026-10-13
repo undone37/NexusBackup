@@ -51,6 +51,7 @@ Fleecing is mandatory for provider VM backups; the appliance passes
 4. Appliance, over SSH (`ssh nexusbackup@<node> <cmd>`):
    - `job <vmid>` → prints the job JSON (exit 1 if not present yet; appliance polls while the task runs).
    - per device: `nbd <vmid>` → helper connects to `nbd_socket` and pipes stdio; appliance does the NBD handshake with export = device name and meta context `qemu:dirty-bitmap:<bitmap_name>`.
+   - zero regions: the appliance also requests `base:allocation` (optional) and fills `NBD_STATE_ZERO` extents locally; if that yields nothing (block-device storage), it asks `zeromap <vmid> <device>` for the extents it is about to read and skips the all-zero 64 KiB blocks. Only blocks reported zero are skipped; the restore is byte-identical (lab/pvehost/verify.sh exact).
    - Reads only dirty extents (clean extents are unreadable on snapshot-access exports). Chunks with clean parts are completed from the previous snapshot's chunk. `bitmap_mode` `new`/`none` ⇒ whole device dirty, no base needed.
    - Commits the snapshot durably, **then** `done <vmid> ok` (QEMU commits the bitmap only when `backup_vm` returns normally; the snapshot must exist before that). On any failure before commit: `done <vmid> fail <reason>`.
 5. Appliance waits for the task, then pushes the catalog: `put-index <storeid>` with `index.json` on stdin, to **every** node of the cluster (so `list_volumes` / "Show Configuration" work on all nodes).
@@ -162,6 +163,7 @@ Plugin uses it for `list_volumes`, `archive_get_guest_config`, `archive_get_fire
 |---|---|
 | `job <vmid>` | print job JSON or exit 1 |
 | `nbd <vmid>` | pipe stdio ⇄ job's NBD socket |
+| `zeromap <vmid> <export>` | read the extents from stdin (`{"extents":[[off,len],…],"granularity":65536}`) from the job's NBD export on the node and print the all-zero blocks (`{"zero":[[off,len],…],"scanned":n}`); used when `base:allocation` reports no zero ranges (zvols, LVM: QEMU sees no holes on block devices), so zero blocks of thin disks are not transferred |
 | `done <vmid> ok` / `done <vmid> fail <msg>` | write the done file (`fail` requires a message) |
 | `put-index <storeid>` | atomically replace `/var/lib/nexusbackup/<storeid>/index.json` from stdin (max 64 MiB, JSON object with `archives` array; optional top-level `total`/`used` feed `status`) |
 | `restore-job <archive>` | print the pending restore request JSON or exit 1 (VM and container) |
