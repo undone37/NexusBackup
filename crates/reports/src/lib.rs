@@ -23,6 +23,7 @@ use catalog::rusqlite::{self, Connection};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
+pub mod dr;
 pub mod protection;
 pub mod storage;
 pub mod usage;

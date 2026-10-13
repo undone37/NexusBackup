@@ -1284,6 +1284,8 @@ export interface Dashboard {
     last_verify: number | null;
     verify_failed: number;
   };
+  /** Phase 25: the newest restore test result per guest within the window */
+  restore_tests?: { tested: number; passed: number; failed: number; last: number | null; failing: { tenant: string; source: string; finished: number }[] };
 }
 
 /** GET /auth/oidc (no session). */
@@ -1749,4 +1751,114 @@ export interface Usage {
   to: number;
   complete: boolean;
   tenants: UsageRow[];
+}
+
+// ---- Phase 25: restore tests and recovery plans
+
+/** Checks of a restore test (VMs: guest agent, ports, command; containers: boot timeout only). */
+export interface RtChecks {
+  boot_timeout?: number;
+  agent?: boolean;
+  ports?: number[];
+  command?: string[];
+  expect_exit?: number;
+  command_timeout?: number;
+}
+
+export interface RtCheck {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+/** GET /restore-tests */
+export interface RestoreTest {
+  id: number;
+  tenant: string;
+  source: string;
+  time: number;
+  job_id: number;
+  run_id: number | null;
+  state: 'passed' | 'failed' | 'cancelled' | 'skipped';
+  started: number;
+  finished: number;
+  target: number | null;
+  name: string | null;
+  boot_secs: number | null;
+  checks: RtCheck[] | null;
+  error: string | null;
+  destroyed: boolean | null;
+}
+
+/** GET /restore-tests/schedules */
+export interface RtSchedule {
+  group_id: number;
+  group: string;
+  tenant: string;
+  every_days: number;
+  node: string;
+  storage: string;
+  bridge: string | null;
+  checks: RtChecks;
+  last_run: number | null;
+}
+
+export interface PlanStep {
+  source: string;
+  wave: number;
+  delay?: number;
+  checks?: RtChecks;
+  target?: number;
+}
+
+export interface Readiness {
+  ok: boolean;
+  at: number;
+  checks: RtCheck[];
+}
+
+/** GET /recovery-plans */
+export interface RecoveryPlan {
+  id: number;
+  tenant: string;
+  name: string;
+  source_id: number;
+  node: string;
+  storage: string;
+  test_bridge: string | null;
+  network_map: Record<string, string>;
+  steps: PlanStep[];
+  rpo_hours: number;
+  readiness: Readiness | null;
+  created: number;
+  created_by: string;
+  last_run: { id: number; mode: 'test' | 'execute'; state: string; started: number; finished: number | null } | null;
+}
+
+export interface RunResult {
+  source: string;
+  time?: number;
+  wave?: number;
+  target?: number | null;
+  name?: string;
+  state?: string;
+  started?: number;
+  finished?: number;
+  boot_secs?: number | null;
+  checks?: RtCheck[];
+  error?: string | null;
+  destroyed?: boolean | null;
+}
+
+/** GET /recovery-plans/{id}/runs */
+export interface RecoveryRun {
+  id: number;
+  mode: 'test' | 'execute';
+  state: 'running' | 'passed' | 'failed' | 'cancelled';
+  requested_by: string;
+  quorum_id: number | null;
+  job_id: number | null;
+  results: RunResult[];
+  started: number;
+  finished: number | null;
 }

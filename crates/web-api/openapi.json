@@ -95,6 +95,8 @@
     },
     "/stats/trends": { "get": { "summary": "Change-rate trends per source", "tags": ["monitoring"], "parameters": [{ "$ref": "#/components/parameters/tenant" }], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
     "/scans": { "get": { "summary": "Malware scan results of snapshots", "tags": ["monitoring"], "parameters": [{ "$ref": "#/components/parameters/tenant" }, { "name": "source", "in": "query", "schema": { "type": "string" } }, { "name": "time", "in": "query", "schema": { "type": "integer" } }, { "name": "limit", "in": "query", "schema": { "type": "integer" } }], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
+    "/restore-tests": { "get": { "summary": "Restore test results (Phase 25)", "tags": ["monitoring"], "parameters": [{ "$ref": "#/components/parameters/tenant" }], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
+    "/recovery-plans": { "get": { "summary": "Recovery plans with their last readiness check (Phase 25)", "tags": ["inventory"], "parameters": [{ "$ref": "#/components/parameters/tenant" }], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
     "/hardware": { "get": { "summary": "Disks, arrays and sensors", "tags": ["monitoring"], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
     "/tenants": { "get": { "summary": "Tenants", "tags": ["inventory"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
     "/sources": { "get": { "summary": "Sources (PVE, agents, NAS, TrueNAS, plugins); secrets never included", "tags": ["inventory"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },

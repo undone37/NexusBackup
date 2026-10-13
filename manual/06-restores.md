@@ -241,6 +241,59 @@ Limits:
 > **Status:** Lab-verified on PVE 9.2 (single node). Behaviour after a node reboot during instant recovery is
 > untested.
 
+## Restore tests
+
+A backup is only as good as the restore. A **restore test** proves that a VM or container snapshot boots: the
+appliance starts an isolated copy of it on a Proxmox node, checks it and destroys it again. Open **Monitor →
+Restore tests**.
+
+![Restore tests: the production group's schedule and the latest results](images/restore-tests.png)
+
+What a test does:
+
+1. **Start isolated.** A VM boots straight from the backup (the instant recovery overlays, nothing is copied
+   and no disk is moved). A container is restored fully to the target storage (Proxmox VE has no overlay for
+   containers). The copy gets the next free VMID from 990000 upwards and the name `nxtest-<name>`. All its
+   network links are down, or, if you name an **isolated bridge or VNet**, its NICs are on that bridge (VLAN
+   tags removed). Use a bridge without an uplink: then the guests of a recovery plan reach each other and
+   nothing else.
+2. **Check.** VMs: the VM runs, and the QEMU guest agent answers within the **boot timeout** (default 600 s).
+   Optional: **TCP ports that must listen** (checked inside the guest through the guest agent with `ss` or
+   `netstat`, because the network is isolated) and a **custom check command** run through the guest agent with
+   its expected exit code (for example `systemctl is-active nginx`). Containers: the init process must still
+   run 10 s after the start (containers have no guest agent).
+3. **Destroy.** The copy is stopped and destroyed with its disks, always: also when the start or a check
+   failed and when you cancel the job. If destroying fails, the result says so and names the VMID; remove that
+   guest on the node by hand (its name starts with `nxtest-`).
+
+Every tested snapshot gets a result row (passed or failed, the checks, the boot time and the job). A failed test
+raises the warning **restore_test** for that guest; the next passed test resolves it. The dashboard tile
+**Restore tests** shows how many guests passed their newest test in the selected period.
+
+**Test a snapshot now:** click **Test a snapshot**, choose the guest and the snapshot, the target node and
+storage, optionally the isolated bridge, and the checks.
+
+![Test a snapshot](images/restore-test-dialog.png)
+
+**Test regularly:** **Add schedule** tests the newest local snapshot of every guest of a protection group every
+N days (one guest at a time, the first run right away). The schedule belongs to a group of a Proxmox VE source;
+deleting the group deletes the schedule.
+
+Who: admins, operators and tenant admins start tests; admins and tenant admins edit schedules; everyone sees
+the results of their tenants. Tenant users do not start tests.
+
+Requirements and limits:
+
+- The QEMU guest agent must be installed and enabled in the VM (option **QEMU Guest Agent** in Proxmox VE), or
+  untick **QEMU guest agent must answer** (then only "running" is checked; ports and commands need the agent).
+- VMs with a TPM state and templates cannot be booted from the backup (as for instant recovery).
+- A container test needs space for the whole container on the target storage while it runs.
+- Many guests in a schedule run one after another; plan the interval so that one round fits.
+
+> **Status:** The test flow (waves, checks, always destroying, cancellation) and the scheduler and API are covered
+> by unit and integration tests against a simulated Proxmox VE. A run on the PVE lab is a lab step
+> (`lab/e2e/m5-api.sh restore-test`), not yet done; Windows guests (port probe with `netstat`) are untested.
+
 ## Browse files and download them (tar or zip)
 
 **Browse files** opens a file browser for the snapshot. The appliance reads the file system from the backup:

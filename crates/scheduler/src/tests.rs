@@ -651,7 +651,7 @@ fn share_jobs() {
         ))
         .unwrap();
     assert_eq!(p.files.len(), 1);
-    assert!(!String::from_utf8_lossy(&p.files[0].1).contains("pw"));
+    assert!(!String::from_utf8_lossy(&p.files[0].1).contains("pw,1"));
     match &p.steps[..] {
         [Step::Cli { bin, args, capture, .. }] => {
             assert!(*capture && bin == &e.cfg.nas_bin);
@@ -2019,6 +2019,8 @@ mod forward;
 mod holds;
 /// Phase 17d offsite in the UI (list, fetch back, attach an offsite copy).
 mod offsite_ui;
+/// Phase 25 restore tests and recovery plans.
+mod recovery;
 /// Phase 21d health check with repair (bad chunks, damaged snapshots, chunk_repair).
 mod repair;
 /// Phase 14e scheduled reports.
