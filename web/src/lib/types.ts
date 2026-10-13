@@ -1774,6 +1774,8 @@ export interface NetworkState {
   request_pending: number | null;
   confirm_secs: number;
   client_ip: string;
+}
+
 // ---- Phase 25: restore tests and recovery plans
 
 /** Checks of a restore test (VMs: guest agent, ports, command; containers: boot timeout only). */
