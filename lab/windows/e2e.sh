@@ -132,11 +132,13 @@ step_enroll() {
 	win "& '$EXE' status" | sed 's/^/  vm: /' >&2
 }
 
-backup() { # -> job json
-	local r
+backup() { # -> job json; the snapshot time goes to the VM's env file (LAST)
+	local r j
 	r=$(api admin POST /jobs "$(jq -nc --arg t "$TENANT" --arg a "$AGENT" '{kind:"backup", tenant:$t, params:{agent_id:$a}}')")
 	expect 202 "backup"
-	wait_job admin "$(jq -r .id <<<"$r")" 3600
+	j=$(wait_job admin "$(jq -r .id <<<"$r")" 3600)
+	[ "$(jq -r .result.time <<<"$j")" = null ] || echo "LAST=$(jq -r .result.time <<<"$j")" >>"$S/win-$VMID.env"
+	echo "$j"
 }
 committed() { jq -r .log <<<"$1" | grep -m1 '^committed ' || true; }
 
@@ -173,7 +175,16 @@ step_incr() {
 	result incr "$(sed -n 's/.* \([0-9]*\) unchanged files.*/\1/p' <<<"$c") unchanged, $(sed -n 's/.*chunks transferred (\([0-9]*\) bytes.*/\1/p' <<<"$c") bytes transferred"
 }
 
-latest() { api admin GET "/snapshots?tenant=$TENANT" | jq -r --arg s "host-$AGENT" '[.[] | select(.source==$s and .local)] | max_by(.time) | .time'; }
+# the last backup's snapshot, once the catalog lists it (refreshed asynchronously)
+latest() {
+	local i
+	for i in $(seq 90); do
+		api admin GET "/snapshots?tenant=$TENANT" | jq -e --arg s "host-$AGENT" --argjson t "$LAST" '.[] | select(.source==$s and .time==$t)' >/dev/null && break
+		[ "$i" = 90 ] && die "snapshot $LAST not in the catalog"
+		sleep 2
+	done
+	echo "$LAST"
+}
 restore() { # target overwrite -> job json
 	local r
 	r=$(api admin POST /jobs "$(jq -nc --arg t "$TENANT" --arg s "host-$AGENT" --argjson tm "$(latest)" --arg d "$DATA" --arg tg "$1" --arg o "$2" --arg c "$NAME" \
@@ -222,12 +233,18 @@ step_confine() {
 step_update() {
 	state
 	login admin "$ADMIN_PW" "$ADMIN_TOTP"
-	local r j
+	local r j u=$ROOT/agent-update w=$repo/target/agent-dist/windows
+	# one update directory per appliance today (no per-OS bundles): stage the Windows build, signed
+	mkdir -p "$u"
+	install -m 0644 "$w/nexus-agent.exe" "$u/nexus-agent"
+	install -m 0644 "$w/nexus-agent.version" "$u/nexus-agent.version"
+	COSIGN_KEY=$repo/release/testkey/TEST-cosign.key COSIGN_PASSWORD=nexus-test-key \
+		"$repo/release/sign.sh" sign-blob "$u/nexus-agent" "$u/nexus-agent.sig" >/dev/null
 	r=$(api admin POST /jobs "$(jq -nc --arg t "$TENANT" --arg a "$AGENT" '{kind:"agent_update", tenant:$t, params:{agent_id:$a}}')")
 	expect 202 "agent_update"
 	j=$(wait_job admin "$(jq -r .id <<<"$r")" 300)
 	[ "$(jq -r .state <<<"$j")" = failed ] || die "update of an MSI install was not refused"
-	result update_msi "refused: $(jq -r .log <<<"$j" | grep -iE 'package|msi|self.update|no update' | head -1)"
+	result update_msi "refused: $(jq -r .log <<<"$j" | grep -iE 'package|msi|self.update' | head -1)"
 }
 
 step_service() {

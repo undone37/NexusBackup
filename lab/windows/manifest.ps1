@@ -17,6 +17,8 @@ Get-ChildItem -LiteralPath $root -Recurse -Force -Attributes !Offline | Sort-Obj
             ForEach-Object { "$($_.Stream)=$($_.Length)" }) -join ','
         $hash = (Get-FileHash -LiteralPath $_.FullName).Hash
     }
+    # hard link partners are paths inside the tree; symlink/junction targets are restored verbatim
+    $link = if ($_.LinkType -eq 'HardLink') { 'HardLink>' + (($_.Target | ForEach-Object { $_.Replace($root, '<root>') }) -join ',') } else { "$($_.LinkType)>$($_.Target)" }
     $prot = if ($acl.AreAccessRulesProtected) { 'protected' } else { 'inherits' }
-    "$rel|$attr|$($_.LastWriteTimeUtc.ToString('o'))|$($_.CreationTimeUtc.ToString('o'))|$($acl.Owner)|$prot|$explicit|$streams|$($_.LinkType)>$($_.Target)|$hash"
+    "$rel|$attr|$($_.LastWriteTimeUtc.ToString('o'))|$($_.CreationTimeUtc.ToString('o'))|$($acl.Owner)|$prot|$explicit|$streams|$link|$hash"
 }
