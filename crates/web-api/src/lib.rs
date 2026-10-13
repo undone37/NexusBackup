@@ -46,6 +46,7 @@ pub mod ops;
 pub mod passkeys;
 pub mod plugins;
 pub mod quorum;
+pub mod recovery;
 pub mod replication;
 pub mod reports;
 pub mod rescue;
@@ -569,6 +570,22 @@ pub fn router(st: St) -> Router {
             "/scan/rules/{name}",
             axum::routing::put(scan::put_rule).delete(scan::delete_rule),
         )
+        .route("/restore-tests", get(recovery::list_tests))
+        .route("/restore-tests/schedules", get(recovery::list_schedules))
+        .route(
+            "/restore-tests/schedules/{group_id}",
+            put(recovery::put_schedule).delete(recovery::delete_schedule),
+        )
+        .route("/recovery-plans", get(recovery::list_plans).post(recovery::create_plan))
+        .route(
+            "/recovery-plans/{id}",
+            put(recovery::update_plan).delete(recovery::delete_plan),
+        )
+        .route("/recovery-plans/{id}/readiness", post(recovery::readiness))
+        .route("/recovery-plans/{id}/test", post(recovery::test_run))
+        .route("/recovery-plans/{id}/execute", post(recovery::execute))
+        .route("/recovery-plans/{id}/runs", get(recovery::runs))
+        .route("/recovery-runs/{id}/report", get(recovery::report))
         .route(
             "/snapshots/{tenant}/{source}/{time}",
             axum::routing::delete(delete_snapshot),

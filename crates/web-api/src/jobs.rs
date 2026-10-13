@@ -547,6 +547,8 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
             }
             json!(m)
         }
+        // Phase 25: an isolated restore test (recovery.rs)
+        "restore_test" => crate::recovery::check_test(st, tenant, p)?,
         _ => return Err(ApiError::bad("kind: unknown job kind")),
     })
 }
