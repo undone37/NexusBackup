@@ -9,6 +9,8 @@
 //! snapshots/<source>/<time>/<name>.idx
 //! snapshots/<source>/<time>/names      sealed file name index (names.rs; file trees)
 //! snapshots/<source>/<time>/manifest   written last = commit point
+//! badchunks                        chunks that failed verify (health.rs)
+//! chunks/<hex[..4]>/<hex>.bad      a corrupt chunk moved aside
 //! ```
 
 use crate::clock::ComplianceClock;
@@ -351,7 +353,15 @@ impl Store {
         self.clock.now()
     }
 
-    fn chunk_path(&self, id: &ChunkId) -> PathBuf {
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub(crate) fn chunk_lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.chunk_lock.lock().unwrap()
+    }
+
+    pub(crate) fn chunk_path(&self, id: &ChunkId) -> PathBuf {
         let h = hex(id);
         self.root.join("chunks").join(&h[..4]).join(h)
     }
@@ -821,7 +831,7 @@ impl Store {
 
     /// All chunk IDs referenced by committed snapshots. Any unreadable
     /// manifest or index is an error: never sweep on an incomplete mark.
-    fn mark(&self) -> io::Result<HashSet<ChunkId>> {
+    pub(crate) fn mark(&self) -> io::Result<HashSet<ChunkId>> {
         let mut marked = HashSet::new();
         for m in self.list_snapshots()? {
             for name in &m.indexes {

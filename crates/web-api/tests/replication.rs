@@ -1243,3 +1243,40 @@ fn source_windows_close_and_reopen() {
         assert!(acts.iter().any(|x| x == a), "{a} missing in {acts:?}");
     }
 }
+
+/// Phase 21d: a chunk that failed verify on the secondary is fetched again from
+/// the primary (verified before it is stored).
+#[test]
+fn bad_chunk_on_the_secondary_repaired_from_the_primary() {
+    let (p, s, _, _) = enrolled();
+    let t = p.target();
+    s.sync(&t, "acme").unwrap();
+    let st = s.store("acme");
+    let m = st.list_snapshots().unwrap().remove(0);
+    let id = *st.load_index(&m, "drive-scsi0").unwrap().chunk_ids()[0];
+    let h = repl_proto::hex(&id);
+    let f = s.dir.path().join("store/acme/chunks").join(&h[..4]).join(&h);
+    let mut b = std::fs::read(&f).unwrap();
+    b[40] ^= 0xff;
+    std::fs::write(&f, &b).unwrap();
+    let v = st.verify(|_| true).unwrap();
+    assert_eq!(v.corrupt, vec![id]);
+    st.mark_bad(&v.corrupt).unwrap();
+    assert!(st.is_damaged(&m).unwrap());
+    let r = client::repair(&SyncParams {
+        target: t,
+        cred_dir: s.creds(),
+        tenant: "acme".into(),
+        store: s.dir.path().join("store/acme"),
+        keyd_socket: s.keyd_sock.clone(),
+        gfs: Default::default(),
+        parallel: 1,
+        bandwidth: Default::default(),
+        held: Default::default(),
+        tenant_uid: None,
+    })
+    .unwrap();
+    assert_eq!((r.repaired, r.unavailable), (1, 0));
+    assert!(!st.is_damaged(&m).unwrap());
+    assert!(st.verify(|_| true).unwrap().corrupt.is_empty());
+}

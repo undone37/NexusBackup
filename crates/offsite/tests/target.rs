@@ -438,3 +438,44 @@ fn listing_and_fetch_back_survives_local_retention() {
     assert_eq!((deleted, locked), (2, 1), "the fetched copy stays while its lock runs");
     assert!(a.load_manifest("vm-1", t0).is_ok());
 }
+
+/// Phase 21d: a chunk that failed local verify comes back from the offsite pack.
+#[test]
+fn bad_chunk_repaired_from_offsite() {
+    let d = tempfile::tempdir().unwrap();
+    let box_ = LocalDir(d.path().join("box"));
+    let a = store(&d.path().join("a"));
+    let now = a.compliance_now().unwrap();
+    backup(&a, now - 2 * DAY, 0);
+    let mut t = Target::open(&a, &box_, d.path().join("state"), Options::default()).unwrap();
+    assert_eq!(t.upload().unwrap().snapshots, 1);
+    let m = a.load_manifest("vm-1", now - 2 * DAY).unwrap();
+    let ids: Vec<_> = a.load_index(&m, "disk").unwrap().chunk_ids().into_iter().copied().collect();
+    let h = chunkstore::crypto::hex(&ids[3]);
+    let path = d.path().join("a/chunks").join(&h[..4]).join(&h);
+    let mut b = std::fs::read(&path).unwrap();
+    b[50] ^= 0xff;
+    std::fs::write(&path, b).unwrap();
+    let v = a.verify(|_| true).unwrap();
+    a.mark_bad(&v.corrupt).unwrap();
+    assert!(a.is_damaged(&m).unwrap());
+    // the next backup of the same data stores the chunk again (no dedup against the bad copy)
+    backup(&a, now - DAY, 1);
+    assert!(!a.is_damaged(&m).unwrap());
+    let r = a.repair_from(|id| t.fetch_chunk(id).map_err(std::io::Error::other)).unwrap();
+    assert_eq!((r.repaired, r.unavailable), (0, 0));
+
+    // a chunk only the offsite copy can provide
+    std::fs::remove_file(&path).unwrap();
+    let v = a.verify(|_| true).unwrap();
+    assert_eq!(v.missing, vec![ids[3]]);
+    a.mark_bad(&v.missing).unwrap();
+    // a damaged snapshot not offsite yet is not uploaded
+    let st = t.upload().unwrap();
+    assert_eq!((st.snapshots, st.damaged.len()), (0, 1));
+    let r = a.repair_from(|id| t.fetch_chunk(id).map_err(std::io::Error::other)).unwrap();
+    assert_eq!((r.repaired, r.unavailable), (1, 0));
+    assert!(a.bad_chunks().unwrap().is_empty());
+    assert_eq!(restored(&a, now - 2 * DAY), image(0));
+    assert_eq!(t.upload().unwrap().snapshots, 1);
+}

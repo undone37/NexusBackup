@@ -1,4 +1,4 @@
-//! `nexus-offsite <config.json> upload | retention | gc | verify [packs] | check | list [--json]
+//! `nexus-offsite <config.json> upload | retention | gc | verify [packs] | check | repair | list [--json]
 //! | restore <source> <time> [<keep-secs>]`, `nexus-offsite <config.json> dr [--tenant-key] <keyd-dir>`
 //! (fresh appliance: the appliance recovery key on stdin, or with `--tenant-key` the tenant
 //! recovery key; never on the command line, where other processes could read it) and
@@ -118,7 +118,7 @@ fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
-        bail!("usage: nexus-offsite <config.json> upload | retention | gc | verify [packs] | check | list [--json] | restore <source> <time> [<keep-secs>] | dr [--tenant-key] <keyd-dir> | attach <recovery-key-file> | config-put <bundle> <appliance-id> <time> | config-list | config-get <out-file> [<appliance-id>]");
+        bail!("usage: nexus-offsite <config.json> upload | retention | gc | verify [packs] | check | repair | list [--json] | restore <source> <time> [<keep-secs>] | dr [--tenant-key] <keyd-dir> | attach <recovery-key-file> | config-put <bundle> <appliance-id> <time> | config-list | config-get <out-file> [<appliance-id>]");
     };
     if cmd.starts_with("config-") {
         return config_cmd(cfg_path, cmd, rest);
@@ -236,6 +236,12 @@ fn main() -> Result<()> {
                 "uploaded {} snapshots, {} packs, {} chunks, {} bytes",
                 st.snapshots, st.packs, st.chunks, st.bytes
             );
+            if !st.damaged.is_empty() {
+                println!(
+                    "not uploaded (bad chunks, repair first): {}",
+                    st.damaged.join(", ")
+                );
+            }
         }
         ("retention", []) => {
             let held = cfg.held.iter().cloned().collect();
@@ -246,6 +252,24 @@ fn main() -> Result<()> {
             println!("offsite retention: kept {k}, deleted {d}, still locked {l}");
         }
         ("gc", []) => println!("{:?}", t.gc()?),
+        ("repair", []) => {
+            // Phase 21d: bad chunks (local verify) from the offsite packs, verified before stored
+            let mut failed = 0;
+            let r = store.repair_from(|id| {
+                t.fetch_chunk(id).or_else(|e| {
+                    eprintln!("chunk {}: {e:#}", chunkstore::crypto::hex(id));
+                    failed += 1;
+                    Ok(None)
+                })
+            })?;
+            println!(
+                "repair {}",
+                serde_json::json!({"source": "offsite", "repaired": r.repaired, "unavailable": r.unavailable})
+            );
+            if failed > 0 && r.repaired == 0 {
+                bail!("offsite target unreachable: {failed} chunk(s) could not be fetched");
+            }
+        }
         ("verify", n) => {
             let n = n.first().map(|s| s.parse()).transpose()?.unwrap_or(3);
             let (packs, bad) = t.verify_sample(n)?;
