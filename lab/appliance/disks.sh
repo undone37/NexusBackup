@@ -45,6 +45,7 @@ hw() { api admin GET /hardware; }
 rescan() {
 	local before after
 	before=$(hw | jq -r '.scanned // 0')
+	sleep 1.1 # `scanned` has second resolution: a scan in the same second as the last one looks old
 	api admin POST /hardware/scan '{}' >/dev/null
 	expect 202 "POST /hardware/scan"
 	for _ in $(seq 60); do

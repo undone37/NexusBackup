@@ -1096,6 +1096,12 @@ gen_require(`
 	type mount_var_run_t;
 	type debugfs_t;
 	type device_t;
+	attribute device_node;
+	type hugetlbfs_t;
+	type proc_kcore_t;
+	type initctl_t;
+	type init_var_run_t;
+	type sysctl_vm_t;
 	type cert_t;
 	type mdadm_var_run_t;
 	type systemd_unit_file_t;
@@ -1121,6 +1127,14 @@ dontaudit nexus_disks_t systemd_userdbd_runtime_t:dir { search read };
 dontaudit nexus_disks_t mount_var_run_t:dir search;
 # mdadm probes /sys/kernel/debug (bdi, block); not needed
 dontaudit nexus_disks_t debugfs_t:dir search;
+# mdadm scans every node in /dev (and a few others) for array members: getattr only, not needed
+dontaudit nexus_disks_t device_node:chr_file getattr;
+dontaudit nexus_disks_t { hugetlbfs_t }:dir getattr;
+dontaudit nexus_disks_t { proc_kcore_t }:file getattr;
+dontaudit nexus_disks_t { initctl_t }:fifo_file getattr;
+dontaudit nexus_disks_t { init_var_run_t }:chr_file getattr;
+# mkfs.xfs reads vm.max_map_count
+dontaudit nexus_disks_t sysctl_vm_t:file { read open };
 # nexus-diag's posture checks resolve users through NSS (passwd suffices)
 dontaudit nexus_diag_t systemd_userdbd_runtime_t:dir { search read };
 dev_read_urand(nexus_disks_t)
