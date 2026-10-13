@@ -33,7 +33,11 @@ installed() { # installed deb|rpm
 	grep -qx "ExecStart=/usr/bin/nexus-agent run" /usr/lib/systemd/system/nexus-agent.service || fail "unit ExecStart"
 	! grep -q /usr/local /usr/lib/systemd/system/nexus-agent.service || fail "unit still names /usr/local"
 	[ "$(cat /usr/lib/nexus-agent/package-managed)" = "$1" ] || fail "package marker"
-	nexus-agent status >/tmp/status
+	getent group nexus-agent-ui >/dev/null || fail "group nexus-agent-ui"
+	# exit 3: the service is not running (not enrolled); root still gets the local diagnostics
+	rc=0
+	nexus-agent status >/tmp/status || rc=$?
+	[ $rc = 3 ] || fail "status exit code $rc (want 3: service not running)"
 	cat /tmp/status
 	grep -q "^installed from: $1 package" /tmp/status || fail "status: package"
 	grep -q "^self-update: off; installed from a $1 package" /tmp/status || fail "status: self-update"

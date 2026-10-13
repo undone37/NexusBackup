@@ -17,6 +17,7 @@ Click **New policy** (or **Edit** on an existing one) and fill in:
 | Field | Meaning |
 |---|---|
 | **Name** | e.g. `gold`, `databases-hourly` |
+| **Tier** | optional: **Bronze**, **Silver** or **Gold**; shown in the SLA report and on the Tenants page (see [Assigned policies and tiers](#assigned-policies-and-tiers)) |
 | **Schedule** | when the group's backup runs, in the **time zone of the group** (see [Schedules](#schedules)) |
 | **Retention (GFS)** | **Keep all snapshots of the last N hours** (0 = off, see [Frequent runs](#frequent-runs-keep-all-recent-snapshots)), then how many **Daily**, **Weekly**, **Monthly** and **Yearly** restore points to keep (0 = none of that class) |
 | **Copy offsite** | upload the snapshots to the tenant's offsite target after each backup |
@@ -30,6 +31,28 @@ Click **New policy** (or **Edit** on an existing one) and fill in:
 
 How retention counts is explained in [01 Concepts](01-concepts.md#retention-gfs). A good starting point is the
 default 14 daily, 4 weekly, 6 monthly, 2 yearly.
+
+### Assigned policies and tiers
+
+Service providers sell protection levels. **Create from template** on the Policies page creates a ready-made tier
+in one click (its name is the tier's; adjust it afterwards like any policy):
+
+| Tier | Schedule | Retention (daily / weekly / monthly / yearly) | Offsite |
+|---|---|---|---|
+| **Bronze** | daily 02:00 | 7 / 4 / 3 / 0 | no |
+| **Silver** | daily 01:00 | 14 / 8 / 12 / 0 | yes |
+| **Gold** | every 6 h at :15 | 30 / 12 / 24 / 7 | yes |
+
+![Creating a policy from a tier template](images/policies-templates.png)
+
+An administrator then **assigns** policies to a tenant: **Configuration → Tenants**, **Edit** in the **Assigned
+policies** column. The tenant's **tenant admins** (see [09 Users and access](09-users-and-access.md#tenant-admins-service-providers))
+see only these policies (and those its groups already use) and can create or change protection groups only with an
+assigned one; administrators are not restricted. Removing an assignment does not change existing groups. A policy
+assigned to a tenant cannot be deleted. The tiers of the assigned policies appear as badges next to the tenant's
+name, and the **SLA** report names the tier of the policy behind each breach (column `tier`).
+
+![Assigning policies to a tenant](images/tenants-assigned-policies.png)
 
 ### Frequent runs: keep all recent snapshots
 

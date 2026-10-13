@@ -330,6 +330,16 @@ impl Secondary {
     }
 
     fn sync_bw(&self, t: &Target, tenant: &str, bandwidth: Bandwidth) -> anyhow::Result<client::SyncReport> {
+        self.sync_with(t, tenant, bandwidth, None)
+    }
+
+    fn sync_with(
+        &self,
+        t: &Target,
+        tenant: &str,
+        bandwidth: Bandwidth,
+        tenant_uid: Option<String>,
+    ) -> anyhow::Result<client::SyncReport> {
         client::sync(
             &SyncParams {
                 target: t.clone(),
@@ -341,6 +351,7 @@ impl Secondary {
                 parallel: 4,
                 bandwidth,
                 held: Default::default(),
+                tenant_uid,
             },
             &mut |l| eprintln!("replica: {l}"),
         )
@@ -558,6 +569,26 @@ fn tampered_chunk_is_not_imported() {
     assert!(!st.has_chunk(&repl_proto::unhex(name).unwrap().try_into().unwrap()));
     // session end recorded the error
     assert!(p.audit_actions().iter().any(|a| a == "replication.session_end"));
+}
+
+/// Phase 19b: the primary reports the tenant's immutable uid; a secondary that
+/// replicated another uid under the same name (deleted and re-created tenant)
+/// fetches nothing; no recorded uid (first sync, legacy) syncs as before.
+#[test]
+fn tenant_uid_is_checked_by_the_secondary() {
+    let (p, s, _, _) = enrolled();
+    let t = p.target();
+    let uid = catalog::tenancy::uid(&p.st.cat.conn(), "acme").unwrap().unwrap();
+    let r = s.sync_with(&t, "acme", Default::default(), None).unwrap();
+    assert_eq!(r.tenant_uid.as_deref(), Some(uid.as_str()));
+    let e = s
+        .sync_with(&t, "acme", Default::default(), Some("0".repeat(32)))
+        .unwrap_err();
+    assert!(
+        e.downcast_ref::<VerifyFailed>().is_some() && format!("{e:#}").contains("uid"),
+        "{e:#}"
+    );
+    assert!(s.sync_with(&t, "acme", Default::default(), Some(uid)).is_ok());
 }
 
 #[test]

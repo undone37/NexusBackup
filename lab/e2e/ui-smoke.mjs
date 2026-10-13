@@ -2,7 +2,8 @@
 // headless Chrome, opens every page and every Settings tab in light and dark theme, and fails on
 // uncaught exceptions, console errors, CSP violations and /api answers >= 400.
 //   ROOT=<appliance root> PORT=<api port> node --experimental-websocket lab/e2e/ui-smoke.mjs [out-dir]   (node 20)
-// ROOT holds secrets.env (ADMIN_PW/ADMIN_TOTP/SO_PW/SO_TOTP) and etc/nexus/tls/cert.pem (pinned).
+// ROOT holds secrets.env (ADMIN_PW/ADMIN_TOTP/SO_PW/SO_TOTP, optionally TA_USER/TA_PW/TA_TOTP for a tenant
+// admin, Phase 19b) and etc/nexus/tls/cert.pem (pinned).
 import { spawn, execSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
 import { writeFileSync, mkdirSync, readFileSync, existsSync, rmSync } from 'node:fs';
@@ -20,7 +21,10 @@ rmSync(`${OUT}/profile`, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
 const PAGES = ['/', '/snapshots', '/snapshots?held=true', '/snapshots?where=offsite', '/tenants?offsite=lab', '/search', '/storage', '/reports', '/jobs', '/alerts', '/quorum', '/audit', '/tenants', '/sources', '/agents',
   '/replication', '/policies', '/groups', '/users', '/plugins', '/hardware', '/account'];
-const TABS = ['approvals', 'alerts', 'sso', 'ssh', 'updates', 'anomaly', 'diagnostics', 'console', 'certificate', 'forwarding', 'security', 'firewall', 'vault'];
+// Phase 19b: a tenant admin's reduced navigation (only when the lab has such an account: TA_USER/TA_PW/TA_TOTP)
+const TENANT_PAGES = ['/', '/snapshots', '/search', '/storage', '/reports', '/jobs', '/quorum', '/audit', '/sources', '/agents', '/groups',
+  '/users', '/account'];
+const TABS = ['approvals', 'alerts', 'sso', 'ssh', 'updates', 'anomaly', 'diagnostics', 'configBackup', 'console', 'certificate', 'forwarding', 'security', 'firewall', 'vault'];
 
 const b32 = (s) => {
   const a = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -139,6 +143,12 @@ for (const [user, pw, secret] of [['admin', sec.ADMIN_PW, sec.ADMIN_TOTP], ['so'
       await visit(`#/settings?tab=${tab}`, theme, user);
     }
   }
+}
+if (sec.TA_PW && sec.TA_TOTP) {
+  const user = sec.TA_USER ?? 'tara';
+  await signIn(user, sec.TA_PW, sec.TA_TOTP);
+  await cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
+  for (const p of TENANT_PAGES) await visit('#' + p, 'light', user);
 }
 ws.close();
 chrome.kill();

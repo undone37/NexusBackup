@@ -31,6 +31,9 @@ policy_module(nexus, 1.0.0)
 #                                                          certificate (the only writer), no network
 #   init_t ── nexus_diag_exec_t ──────> nexus_diag_t       root oneshot, diagnostics: reads journal/audit/
 #                                                          nft/chrony/catalog, writes its dir, no network
+#   init_t ── nexus_cfgbackup_exec_t ─> nexus_cfgbackup_t  root oneshot, configuration backup: reads the
+#                                                          catalog and the key files, seals them to keyd's
+#                                                          public key, writes its dir; no network, no keyd
 #   init_t ── nexus_disks_exec_t ─────> nexus_disks_t      root oneshot, disks: SMART, mdadm, mkfs/xfs_growfs,
 #                                                          the store's mount unit; no network, no keys
 #   init_t ── nexus_consolegate_exec_t > nexus_consolegate_t  console gate on tty2 (root): unlock code or
@@ -227,7 +230,9 @@ neverallow nexus_restorevm_t nexus_keyd_t:unix_stream_socket connectto;
 neverallow nexus_restorevm_t self:{ tcp_socket udp_socket } create;
 # The agent CA keys sign agent certificates and authenticate the appliance to every
 # agent: only nexus-agentctl reads them (not even the scheduler that spawns it).
-neverallow { nexus_domain -nexus_agentctl_t } nexus_agent_ca_t:file { read open };
+# Exception in this and the following key rules: nexus-config-backup reads them into the
+# sealed configuration backup (section "Configuration backup" at the end).
+neverallow { nexus_domain -nexus_agentctl_t -nexus_cfgbackup_t } nexus_agent_ca_t:file { read open };
 # The web API never reads chunks, keys or the PVE/SFTP credentials (nor the
 # replication CA key: it only gets the CA certificate from replicad's runtime dir).
 neverallow nexus_webapi_t { nexus_store_t nexus_keyd_var_lib_t nexus_sshkey_t nexus_scheduler_var_run_t nexus_replicad_var_lib_t nexus_replica_key_t }:file { read open };
@@ -241,8 +246,8 @@ neverallow nexus_replicad_t nexus_store_t:dir { write add_name remove_name rmdir
 neverallow nexus_replicad_t nexus_keyd_var_run_t:sock_file { write open };
 neverallow nexus_replicad_t { nexus_keyd_var_run_t nexus_catalog_t }:dir search;
 neverallow nexus_replicad_t self:{ tcp_socket udp_socket } create;
-neverallow { nexus_domain -nexus_replicad_t } nexus_replicad_var_lib_t:file { read open };
-neverallow { nexus_domain -nexus_replica_t } nexus_replica_key_t:file { read open };
+neverallow { nexus_domain -nexus_replicad_t -nexus_cfgbackup_t } nexus_replicad_var_lib_t:file { read open };
+neverallow { nexus_domain -nexus_replica_t -nexus_cfgbackup_t } nexus_replica_key_t:file { read open };
 
 ########################################
 # keyd: own state + socket. No network (PrivateNetwork=yes in the unit as well).
@@ -545,14 +550,14 @@ allow iptables_t nexus_nftsync_t:process sigchld;
 # The scheduler alone creates and reads its sealing key (created with O_EXCL, no temp file).
 manage_files_pattern(nexus_scheduler_t, nexus_store_t, nexus_scheduler_secret_t)
 filetrans_pattern(nexus_scheduler_t, nexus_store_t, nexus_scheduler_secret_t, file, "secrets.key")
-neverallow { nexus_domain -nexus_scheduler_t } nexus_scheduler_secret_t:file { read open };
+neverallow { nexus_domain -nexus_scheduler_t -nexus_cfgbackup_t } nexus_scheduler_secret_t:file { read open };
 # web-api state dir holds the TOTP seed key; setup creates it on first boot (as root,
 # chowned to nexus-webapi), web-api creates it only if missing and no seed is encrypted yet.
 manage_files_pattern(nexus_webapi_t, nexus_webapi_var_lib_t, nexus_webapi_var_lib_t)
 manage_dirs_pattern(nexus_setup_t, nexus_webapi_var_lib_t, nexus_webapi_var_lib_t)
 manage_files_pattern(nexus_setup_t, nexus_webapi_var_lib_t, nexus_webapi_var_lib_t)
 filetrans_pattern(nexus_setup_t, nexus_var_lib_t, nexus_webapi_var_lib_t, dir, "webapi")
-neverallow { nexus_domain -nexus_webapi_t -nexus_setup_t } nexus_webapi_var_lib_t:file { read open };
+neverallow { nexus_domain -nexus_webapi_t -nexus_setup_t -nexus_cfgbackup_t } nexus_webapi_var_lib_t:file { read open };
 
 ########################################
 # nexus-agentctl (crate agent-conn): backup/restore/update/enrollment of Linux and
@@ -1169,3 +1174,114 @@ neverallow nexus_disks_t self:{ tcp_socket udp_socket rawip_socket sctp_socket }
 neverallow nexus_disks_t { nexus_keyd_var_lib_t nexus_catalog_t nexus_escrow_t nexus_sshkey_t nexus_scheduler_secret_t nexus_webapi_secret_t nexus_webapi_var_lib_t nexus_agent_ca_t nexus_replicad_var_lib_t nexus_replica_key_t nexus_downloads_t nexus_etc_t nexus_store_t }:file { read write append open create unlink link rename setattr };
 neverallow nexus_disks_t { nexus_keyd_var_run_t nexus_scheduler_var_run_t nexus_replicad_var_run_t }:sock_file { write open };
 neverallow { nexus_domain -nexus_disks_t -nexus_webapi_t } nexus_disks_var_lib_t:file { write append create unlink rename };
+
+########################################
+# Configuration backup (docs/control-plane.md "Configuration backup",
+# crates/setup/src/cfgbackup.rs): nexus-config-backup, root oneshot with
+# CAP_DAC_READ_SEARCH only, started by nexus-config-backup.path when the scheduler writes
+# /var/lib/nexus/config-backup/request.json. Reads the catalog (VACUUM INTO its private
+# /tmp) and the key files, seals them to the public key keyd publishes in /run/nexus-keyd
+# and writes the bundle into its control dir. The scheduler uploads it with nexus-offsite,
+# the web-api serves it to administrators. nexus-setup restore-config puts it back.
+
+nexus_daemon(cfgbackup)
+type nexus_cfgbackup_var_lib_t;	# /var/lib/nexus/config-backup: request (scheduler), status + bundle (helper)
+files_type(nexus_cfgbackup_var_lib_t)
+type nexus_cfgbackup_tmp_t;	# the catalog snapshot in its private /tmp, until sealed
+files_tmp_file(nexus_cfgbackup_tmp_t)
+
+# read 0600 files of the other service users; nothing else
+allow nexus_cfgbackup_t self:capability dac_read_search;
+auth_read_passwd(nexus_cfgbackup_t)
+kernel_read_kernel_sysctls(nexus_cfgbackup_t)
+files_read_etc_files(nexus_cfgbackup_t)
+# its control dir: consumes request.json, writes status.json / latest.json / latest.bundle
+manage_dirs_pattern(nexus_cfgbackup_t, nexus_cfgbackup_var_lib_t, nexus_cfgbackup_var_lib_t)
+manage_files_pattern(nexus_cfgbackup_t, nexus_cfgbackup_var_lib_t, nexus_cfgbackup_var_lib_t)
+# the catalog snapshot
+files_search_tmp(nexus_cfgbackup_t)
+manage_files_pattern(nexus_cfgbackup_t, nexus_cfgbackup_tmp_t, nexus_cfgbackup_tmp_t)
+files_tmp_filetrans(nexus_cfgbackup_t, nexus_cfgbackup_tmp_t, file)
+allow nexus_cfgbackup_t nexus_cfgbackup_tmp_t:file map;
+# catalog, read-only (like nexus-diag: SQLite as root tries the -shm read-write first)
+list_dirs_pattern(nexus_cfgbackup_t, nexus_catalog_t, nexus_catalog_t)
+read_files_pattern(nexus_cfgbackup_t, nexus_catalog_t, nexus_catalog_t)
+allow nexus_cfgbackup_t nexus_catalog_t:file map;
+dontaudit nexus_cfgbackup_t nexus_catalog_t:file { write setattr };
+# keyd's published public key and kek.recovery (never the socket, never keyd's state)
+allow nexus_cfgbackup_t nexus_keyd_var_run_t:dir search_dir_perms;
+allow nexus_cfgbackup_t nexus_keyd_var_run_t:file read_file_perms;
+# the key files (bundle contents, crates/setup/src/cfgbackup.rs INCLUDE)
+allow nexus_cfgbackup_t nexus_store_t:dir { getattr search };
+list_dirs_pattern(nexus_cfgbackup_t, nexus_webapi_var_lib_t, nexus_webapi_var_lib_t)
+read_files_pattern(nexus_cfgbackup_t, nexus_webapi_var_lib_t, nexus_webapi_var_lib_t)
+read_files_pattern(nexus_cfgbackup_t, nexus_store_t, nexus_scheduler_secret_t)
+list_dirs_pattern(nexus_cfgbackup_t, nexus_agent_ca_t, nexus_agent_ca_t)
+read_files_pattern(nexus_cfgbackup_t, nexus_agent_ca_t, nexus_agent_ca_t)
+list_dirs_pattern(nexus_cfgbackup_t, nexus_replica_key_t, nexus_replica_key_t)
+read_files_pattern(nexus_cfgbackup_t, nexus_replica_key_t, nexus_replica_key_t)
+list_dirs_pattern(nexus_cfgbackup_t, nexus_replicad_var_lib_t, nexus_replicad_var_lib_t)
+read_files_pattern(nexus_cfgbackup_t, nexus_replicad_var_lib_t, nexus_replicad_var_lib_t)
+files_search_etc(nexus_cfgbackup_t)
+allow nexus_cfgbackup_t nexus_etc_t:dir { getattr search };
+list_dirs_pattern(nexus_cfgbackup_t, nexus_sshkey_t, nexus_sshkey_t)
+read_files_pattern(nexus_cfgbackup_t, nexus_sshkey_t, nexus_sshkey_t)
+list_dirs_pattern(nexus_cfgbackup_t, nexus_webapi_secret_t, nexus_webapi_secret_t)
+read_files_pattern(nexus_cfgbackup_t, nexus_webapi_secret_t, nexus_webapi_secret_t)
+read_files_pattern(nexus_cfgbackup_t, nexus_webapi_secret_t, nexus_tls_web_t)
+
+# nexus-config-backup.path (PathExists=request.json): systemd reads and watches it
+allow init_t nexus_cfgbackup_var_lib_t:dir { getattr search read watch };
+allow init_t nexus_cfgbackup_var_lib_t:file { getattr read watch };
+# scheduler: request.json (tmp + rename), status / bundle back
+allow nexus_scheduler_t nexus_cfgbackup_var_lib_t:dir rw_dir_perms;
+manage_files_pattern(nexus_scheduler_t, nexus_cfgbackup_var_lib_t, nexus_cfgbackup_var_lib_t)
+# nexus-offsite (config_upload): reads the sealed bundle
+list_dirs_pattern(nexus_offsite_t, nexus_cfgbackup_var_lib_t, nexus_cfgbackup_var_lib_t)
+read_files_pattern(nexus_offsite_t, nexus_cfgbackup_var_lib_t, nexus_cfgbackup_var_lib_t)
+# web-api: status and the download (Settings -> Backup of this appliance)
+list_dirs_pattern(nexus_webapi_t, nexus_cfgbackup_var_lib_t, nexus_cfgbackup_var_lib_t)
+read_files_pattern(nexus_webapi_t, nexus_cfgbackup_var_lib_t, nexus_cfgbackup_var_lib_t)
+
+# No network, never keyd (socket or state), never writes anything but its dir and tmp,
+# never reads stores, escrow, downloads, job configs, plugin uploads or the pending CSR key.
+neverallow nexus_cfgbackup_t self:{ tcp_socket udp_socket rawip_socket sctp_socket } create;
+neverallow nexus_cfgbackup_t nexus_keyd_var_run_t:sock_file { write open };
+neverallow nexus_cfgbackup_t { nexus_keyd_var_lib_t nexus_store_t nexus_escrow_t nexus_downloads_t nexus_scheduler_var_run_t nexus_plugin_staging_t nexus_tls_pending_t }:file { read open };
+neverallow nexus_cfgbackup_t { nexus_catalog_t nexus_var_lib_t nexus_etc_t nexus_webapi_secret_t nexus_tls_web_t nexus_sshkey_t nexus_webapi_var_lib_t nexus_scheduler_secret_t nexus_agent_ca_t nexus_replica_key_t nexus_replicad_var_lib_t nexus_keyd_var_run_t }:file { write append create unlink rename setattr };
+neverallow nexus_cfgbackup_t self:capability ~dac_read_search;
+# only the helper writes bundles and answers (the scheduler writes the request)
+neverallow { nexus_domain -nexus_cfgbackup_t -nexus_scheduler_t } nexus_cfgbackup_var_lib_t:file { write append create rename };
+
+# --- restore (nexus-setup restore-config, first boot; nexus_setup_t). Files are staged in
+# /var/lib/nexus/.config-restore (nexus_var_lib_t) with their owner and mode, renamed into
+# their directories and relabelled with restorecon: setup never reads them back and never
+# gets read access to the key types. The bundle can come from an offsite target: the
+# wizard opens the outbound firewall for that target (nft) and connects to it.
+gen_require(`
+	type setfiles_t;
+')
+# the throwaway SSH key / S3 secret of the fetch, in the wizard's private /tmp
+type nexus_setup_tmp_t;
+files_tmp_file(nexus_setup_tmp_t)
+files_search_tmp(nexus_setup_t)
+manage_files_pattern(nexus_setup_t, nexus_setup_tmp_t, nexus_setup_tmp_t)
+files_tmp_filetrans(nexus_setup_t, nexus_setup_tmp_t, file)
+allow nexus_setup_t { nexus_store_t nexus_agent_ca_t nexus_replica_key_t nexus_replicad_var_lib_t nexus_sshkey_t }:dir { getattr search open read write add_name remove_name create setattr };
+seutil_domtrans_setfiles(nexus_setup_t)
+allow nexus_setup_t setfiles_t:process2 { nnp_transition nosuid_transition };
+allow setfiles_t nexus_setup_t:fd use;
+allow setfiles_t nexus_setup_t:fifo_file rw_inherited_fifo_file_perms;
+allow setfiles_t nexus_setup_t:process sigchld;
+sysnet_dns_name_resolve(nexus_setup_t)
+allow nexus_setup_t self:tcp_socket create_stream_socket_perms;
+allow nexus_setup_t self:udp_socket create_socket_perms;
+corenet_tcp_connect_ssh_port(nexus_setup_t)
+corenet_tcp_connect_telnetd_port(nexus_setup_t)
+corenet_tcp_connect_http_port(nexus_setup_t)
+corenet_tcp_connect_all_unreserved_ports(nexus_setup_t)
+iptables_domtrans(nexus_setup_t)
+allow nexus_setup_t iptables_t:process2 { nnp_transition nosuid_transition };
+allow iptables_t nexus_setup_t:fd use;
+allow iptables_t nexus_setup_t:fifo_file rw_inherited_fifo_file_perms;
+allow iptables_t nexus_setup_t:process sigchld;

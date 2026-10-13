@@ -11,7 +11,6 @@ use catalog::rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-const OPS: &[&str] = &["admin", "operator"];
 /// Kinds a tenant_user may request (restores only, own tenant).
 const RESTORE_KINDS: &[&str] = &[
     "restore",
@@ -26,8 +25,14 @@ const RESTORE_KINDS: &[&str] = &[
     "offsite_list",
     "offsite_restore",
 ];
-/// Kinds only an admin may request (they change software or trust on a host).
+/// Kinds only an admin may request (they change software or trust on a host);
+/// tenant admins too, for their own tenant's agents (Phase 19b).
 const ADMIN_KINDS: &[&str] = &["agent_update", "agent_enroll", "agent_renew"];
+/// Appliance maintenance: never requested by a tenant admin (retention, GC,
+/// offsite copy and verification belong to the provider).
+const PROVIDER_KINDS: &[&str] = &["offsite", "retention", "gc", "verify"];
+/// Start and cancel jobs of a tenant (scoped by `Ctx::sees`).
+const RUNNERS: &[&str] = &["admin", "operator", "tenant_admin"];
 pub const DOWNLOAD_TTL_SECS: i64 = 24 * 3600;
 
 #[derive(Deserialize)]
@@ -157,6 +162,11 @@ struct FilesGetP {
     time: i64,
     paths: Vec<String>,
     format: String,
+    /// plugin snapshots (contract v1.9): conversion parameters of the plugin's
+    /// `download` restore (its `params_schema`, e.g. M365 `mail_format`); the plugin
+    /// then converts the selection (`nexus-pluginhost export`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    params: Option<Value>,
     /// set by the web-api: the scheduler writes `<downloads>/<token>.<format>`
     #[serde(default, skip_deserializing)]
     download_token: String,
@@ -381,6 +391,23 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
                 return Err(ApiError::bad("format: tar or zip"));
             }
             snapshot_exists(st, tenant, &f.source, f.time)?;
+            if f.params
+                .as_ref()
+                .is_some_and(|v| v.is_null() || v.as_object().is_some_and(|o| o.is_empty()))
+            {
+                f.params = None;
+            }
+            if let Some(v) = &f.params {
+                let schema = plugin_proto::parse_source_name(&f.source)
+                    .filter(|_| f.source.starts_with("plugin-"))
+                    .and_then(|(pid, sid, _)| {
+                        let (cur, spec) = crate::plugins::source_of(&st.cat.conn(), tenant, sid as i64).ok()?;
+                        let r = spec.restores.into_iter().find(|r| r.id == "download")?;
+                        (cur.id == pid).then_some(r.params_schema).flatten()
+                    })
+                    .ok_or_else(|| ApiError::bad("params: this snapshot's download takes no parameters"))?;
+                crate::plugins::check_schema(&schema, v, "params", &[])?;
+            }
             f.download_token = random_hex();
             json!(f)
         }
@@ -522,6 +549,7 @@ pub async fn create_job(State(st): State<St>, ctx: Ctx, J(r): J<JobReq>) -> ApiR
         "admin" => true,
         "operator" => !ADMIN_KINDS.contains(&r.kind.as_str()),
         "tenant_user" => RESTORE_KINDS.contains(&r.kind.as_str()),
+        "tenant_admin" => !PROVIDER_KINDS.contains(&r.kind.as_str()),
         "viewer" | "security_officer" => false,
         _ => false,
     };
@@ -583,7 +611,7 @@ fn request_replace(
     tenant: &str,
     mut params: Value,
 ) -> ApiResult<crate::quorum::Outcome> {
-    ctx.require(OPS)?;
+    ctx.require(RUNNERS)?;
     if ctx.token.is_some() {
         return Err(ApiError(
             StatusCode::FORBIDDEN,
@@ -678,7 +706,7 @@ pub async fn get_job(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> Api
 /// SIGKILL after 30 s; the job ends `cancelled`). Answers the state after the
 /// request: `cancelled` or `cancelling`.
 pub async fn cancel_job(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
-    ctx.require(OPS)?;
+    ctx.require(RUNNERS)?;
     let state = {
         let c = st.cat.conn();
         let (state, replace): (String, bool) = c

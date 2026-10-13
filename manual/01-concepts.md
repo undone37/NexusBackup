@@ -23,8 +23,10 @@ A **tenant** is a separate customer or organizational unit. Each tenant has:
 - its own offsite target (one Storage Box or S3 bucket per tenant).
 
 Data of different tenants is never deduplicated against each other. That is deliberate: it keeps tenants
-cryptographically separated. The appliance is designed for up to five tenants. Users can be limited to one tenant
-(see [09 Users and access](09-users-and-access.md)).
+cryptographically separated. The appliance is designed for up to five tenants. Users can be limited to one tenant,
+and a **tenant admin** can run a tenant for a customer (see [09 Users and access](09-users-and-access.md)). A tenant
+has an immutable ID and cannot be renamed; the name of a deleted tenant is never used again, because its keys and
+offsite paths are bound to the name (see [Tenant names and IDs](09-users-and-access.md#tenant-names-and-ids)).
 
 ## Forever-full snapshots
 

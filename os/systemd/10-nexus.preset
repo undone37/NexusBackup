@@ -21,6 +21,8 @@ enable nexus-plugin-install.service
 enable nexus-plugin-install.path
 # Web certificate helper (CSR / import / revert requests from the web-api).
 enable nexus-tls.path
+# Appliance configuration backup helper (requests from the scheduler's config_backup job).
+enable nexus-config-backup.path
 # nexus-keyd, nexus-web-api and nexus-scheduler are enabled by nexus-setup
 # (`systemctl enable --now`) as its last step.
 disable nexus-keyd.service

@@ -16,7 +16,7 @@ use catalog::rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-const SEARCHERS: &[&str] = &["admin", "operator", "tenant_user"];
+const SEARCHERS: &[&str] = &["admin", "operator", "tenant_admin", "tenant_user"];
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -100,7 +100,7 @@ pub async fn put_index_files(
     Path(id): Path<i64>,
     J(r): J<IndexFilesReq>,
 ) -> ApiResult<Response> {
-    ctx.require(&["admin"])?;
+    ctx.require(crate::auth::TENANT_WRITERS)?;
     let kind: String = st
         .cat
         .conn()

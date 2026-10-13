@@ -192,3 +192,10 @@ plugins are signed with the release key via `release/sign.sh sign-blob <bundle> 
 Installing on an appliance: an admin adds your public key under Plugins → Publisher keys (a security officer
 approves), then uploads bundle + signature (another approval). The appliance shows publisher, signing key, digests,
 kinds, endpoints and sandbox limits before the approval.
+
+## Export (contract v1.9)
+A plugin whose manifest gives its `download` restore a `params_schema` implements `Plugin::export(ctx, ex)`:
+page through the selection with `ex.list(|entry| …)`, read files with `ex.read_all(path, max)` or
+`ex.reader(path)`, and write the download's files with `ex.output("name")` (an `Output`: `Write + Seek`, call
+`finish()`). No network and no credentials are available. Microsoft 365 uses it for mbox / PST (docs/m365.md);
+test it with `plugin_sdk::testing::Host::export(source, time, paths, params, out)`.

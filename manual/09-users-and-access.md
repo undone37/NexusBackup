@@ -16,22 +16,71 @@ Every person who works with the appliance gets an own account with a role. There
 | **Administrator** | configure tenants, sources, agents, policies, groups, users, replication, plugins and **Settings** (approvals, alert delivery, single sign-on, appliance SSH keys, updates); run backups and restores; enable approvals; confirm a large GC while approvals are disabled; read the audit log | approve own requests |
 | **Security officer** | approve or reject requests of others; read everything incl. the audit log and verify the chain; read replication, plugins and all **Settings** tabs | change configuration, run backups or restores |
 | **Operator** | run backups (**Back up now**), restores and file downloads; cancel queued jobs; acknowledge alerts; start a replication sync; read approvals, replication, plugins and the **Settings** tabs Approvals, Appliance SSH keys and Updates | change configuration, approve requests, read the audit log |
+| **Tenant admin** | within one tenant: manage its accounts (tenant admins, tenant users, viewers), sources, agents and protection groups (with the policies the provider assigned to the tenant); run backups, restores, file searches and downloads; read its jobs, reports, its own approval requests and the audit entries concerning the tenant | anything outside the tenant; Settings, approving requests, offsite targets, keys and recovery keys, quotas, deleting snapshots, legal holds, replication, plugins, firewall, hardware, vault; creating administrators, security officers or operators |
 | **Tenant user** | see one tenant's dashboard, snapshots and jobs; restore and download that tenant's data | everything else |
 | **Viewer** | read-only: the dashboard, snapshots (and their file lists), jobs and their logs, storage, sources, groups, policies, agents and users of its scope; with no tenant also the alerts | run any job (no backups, no restores, not even browsing files), download, acknowledge alerts, see approvals, the audit log, replication, plugins or settings, change anything |
 
 Any account except administrators and security officers can be limited to one tenant with the **Tenant** field
-(required for tenant users, optional for viewers: a viewer without a tenant sees all tenants, for example an
+(required for tenant admins and tenant users, optional for viewers: a viewer without a tenant sees all tenants, for example an
 auditor or a management dashboard). Tenant-scoped accounts see only their tenant's data and do not see alerts,
 approvals, replication or settings. Secrets (source passwords, keys, tokens) are never shown to anybody; they are
 write-only.
 
-The role list also contains **Tenant admin** in the catalog; it is reserved for a later release and cannot be
-assigned yet.
+### Tenant admins (service providers)
+
+A **tenant admin** runs one tenant on behalf of a customer while the provider keeps the appliance: the customer's
+own administrator manages the tenant's accounts, sources, agents and protection groups, and backs up and restores
+on their own. The provider decides the protection on offer: a tenant admin's groups can only use the policies an
+administrator **assigned** to the tenant (**Configuration → Tenants**, **Assigned policies**; see
+[05 Policies and groups](05-policies-and-groups.md#assigned-policies-and-tiers)). A tenant admin
+
+- sees a reduced navigation: Dashboard, Snapshots, Find files, Storage, Reports, Jobs, Approvals (their own
+  requests), Audit log (their tenant), Sources, Agents, Protection groups and Users;
+- creates and changes accounts of their own tenant only, with the roles tenant admin, tenant user and viewer
+  (activation codes and new activation codes work as for administrators); the tenant cannot be changed;
+- needs the same approvals as an administrator: deleting a group, source or agent and weakening changes (another
+  policy with less retention) wait for an administrator or security officer of the provider — a tenant admin never
+  approves anything, not even another tenant admin's request ([10 Approvals and audit](10-approvals-and-audit.md));
+- may download restored files by default (**May download files**, like tenant users).
+
+![The Users page of a tenant admin](images/users-tenant-admin.png)
+
+### View as tenant (impersonation)
+
+To see what a customer sees, an administrator opens **Configuration → Tenants**, **View as tenant** on the tenant's
+row:
+
+![View as tenant: read-only view or act as tenant admin](images/tenants-view-as.png)
+
+- **Read-only view** starts at once: the session continues as a *viewer of that tenant* (the intersection of the
+  administrator's rights and the tenant's scope), so nothing can be changed and nothing outside the tenant is
+  visible. A banner shows the view; **End view** returns to the administrator's own role.
+- **Act as tenant admin** gives the session the tenant admin's rights in that tenant. It needs approval by another
+  administrator or security officer while approvals are enabled (`tenant impersonate`); once approved, the
+  requesting session switches. Downloads stay off in both modes.
+
+![The banner while viewing as a tenant](images/impersonation-banner.png)
+
+Everything done while viewing is audited under the administrator's own name with the tenant, for example
+`alice impersonating:acme`, and these entries — like starting and ending the view — appear in **the tenant's own
+audit log**, which its tenant admins can read. The view ends with the session at the latest.
+
+### Tenant names and IDs
+
+A tenant cannot be renamed, and the name of a deleted tenant is never used again: encryption keys, the key escrow
+and the offsite paths are bound to the name, and a new tenant with an old name could be confused with the old one
+(for example by a replication secondary). **Configuration → Tenants** lists **Deleted tenant names** for
+administrators and security officers. Every tenant also has an immutable **Tenant ID** (128 bit, shown under its
+name; click to copy); replication checks it in addition to the name.
+
+> **Status:** Tenant admins, assigned policies, "view as tenant", the tenant-scoped audit log and the tenant name
+> rules are covered by API tests and the demo backend; they were not yet run in the VM lab.
 
 ### Download privilege
 
 Downloading restored files to the browser (**Files → Prepare download**) is a separate privilege, **May download
-files**, set per account on the **Users** page. By default administrators, operators and tenant users have it;
+files**, set per account on the **Users** page. By default administrators, operators, tenant admins and tenant
+users have it;
 viewers and security officers do not (they cannot request it either: viewers run no jobs, and a security officer's
 job is approvals and the audit log). Without it, the Files page still lists the files but offers no download, and
 the API refuses `files_get` jobs and download links (403), also for downloads prepared before the privilege was
@@ -275,7 +324,8 @@ hash of it and cannot show it again. The dialog shows a `curl` example.
   (what the user's role may read).
 - **Operator:** in addition, start jobs (backups, restores, verify, …) and cancel them, pause and resume protection
   groups, start and end source maintenance, acknowledge alerts and start a replication sync. An administrator's
-  operator token acts as an operator; a tenant user's stays a tenant user in their tenant. Security officers and
+  operator token acts as an operator; a tenant user's stays a tenant user and a tenant admin's a tenant admin in
+  their tenant (still limited to the endpoints above). Security officers and
   viewers can create read-only tokens only.
 
 **Never with a token**, whatever the scope: approving or rejecting requests, changing settings, users or tokens,
@@ -323,7 +373,7 @@ How it works:
 - **SSO accounts never take over local accounts.** Accounts are matched by the IdP's subject, not by name. If a local
   account already has the same user name, the SSO sign-in is refused (audited as `auth.oidc_denied`).
 - **The highest privilege wins.** If several mappings match, the user gets the role of the highest-privileged one:
-  Administrator, then Security officer, then Operator, then Tenant user, then Viewer.
+  Administrator, then Security officer, then Operator, then Tenant admin, then Tenant user, then Viewer.
 - **Multi-factor authentication is the IdP's job.** Single sign-on accounts have no password and no authenticator on
   the appliance and cannot use the appliance sign-in form. Enforce MFA at the IdP (see the examples below).
 - **Local accounts keep working** as break-glass access, for example when the IdP is down. Keep at least one local
@@ -404,7 +454,8 @@ Open **Configuration → Settings → Single sign-on** (administrators; security
    | **Button text on the sign-in page** | e.g. `Sign in with Keycloak` (required, at most 64 characters) |
 
 2. Under **Group mappings**, click **Add mapping** for each group: **IdP group** (the group name or ID exactly as the
-   IdP sends it), **Role**, and, for the roles **Tenant user** (required) and **Viewer** (optional), the one
+   IdP sends it), **Role**, and, for the roles **Tenant admin** and **Tenant user** (required) and **Viewer**
+   (optional), the one
    **Tenant** the user may see (an appliance account belongs to one tenant or to all; the other roles always see all
    tenants). The
    bin icon removes a mapping. While the list is empty, the page warns "No mappings yet: nobody can sign in with

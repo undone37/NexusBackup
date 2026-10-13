@@ -32,6 +32,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use zeroize::Zeroizing;
 
+pub mod cfgbackup;
 pub mod gate;
 pub mod grub;
 pub mod recover;
@@ -58,6 +59,8 @@ pub const GRUB_UNIT: &str = "nexus-grub-password.service";
 
 #[derive(Clone, Debug)]
 pub struct Paths {
+    /// `--root` (`/` on the appliance): prefix of the restored configuration files
+    pub root: PathBuf,
     pub catalog: PathBuf,
     pub keyd_dir: PathBuf,
     pub tls_dir: PathBuf,
@@ -76,6 +79,7 @@ impl Paths {
     pub fn under(root: &Path) -> Paths {
         let p = |rel: &str| root.join(rel);
         Paths {
+            root: root.to_owned(),
             catalog: p("var/lib/nexus/catalog/catalog.db"),
             keyd_dir: p("var/lib/nexus/keyd"),
             tls_dir: p("etc/nexus/tls"),

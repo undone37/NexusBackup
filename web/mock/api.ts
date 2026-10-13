@@ -2,7 +2,7 @@
 // and `npm run preview`. Vite server middleware only — never part of the build output.
 //
 // Users (password "nexus", any 6-digit TOTP code): admin, so, so2, op, acme (tenant_user of "acme"),
-// auditor (viewer, all tenants), acme-view (viewer of "acme").
+// auditor (viewer, all tenants), acme-view (viewer of "acme"), tara (tenant_admin of "acme", Phase 19b).
 // "newop" is pending activation: sign-in page → "Activate account", code DEMO-ACTIVATE-NEWOP-2026
 // (any 6-digit authenticator code is accepted). Approvals start enabled with pending requests.
 //
@@ -44,7 +44,7 @@ interface Res {
   end(body?: string): void;
 }
 
-type Role = 'admin' | 'security_officer' | 'operator' | 'tenant_user' | 'viewer';
+type Role = 'admin' | 'security_officer' | 'operator' | 'tenant_admin' | 'tenant_user' | 'viewer';
 type Json = Record<string, any>;
 
 class HttpError extends Error {
@@ -208,6 +208,8 @@ const db = {
     disabled_at?: number | null;
     disabled_by?: string | null;
     disabled_reason?: string | null;
+    /** Phase 19b: immutable id (derived from the name in the mock when unset) */
+    uid?: string;
   }[],
   /** kind: pve | linux | nfs | smb | plugin:<kind> */
   sources: [] as { id: number; tenant: string; kind: string; name: string; config: Json; maintenance_until?: number | null }[],
@@ -225,6 +227,8 @@ const db = {
     sla_minutes?: number | null;
     require_consistency?: { mode: string; level: string };
     file_filters?: { exclude: string[]; exclude_regex: string[] };
+    /** Phase 19b: bronze | silver | gold */
+    tier?: string | null;
   }[],
   groups: [] as MockGroup[],
   /** Phase 13c: guest inventory per source id (GET /sources/{id}/inventory) */
@@ -236,7 +240,10 @@ const db = {
   quorum: [] as Json[],
   audit: [] as Json[],
   alerts: [] as Json[],
-  sessions: new Map<string, { id: number; userId: number; csrf: string; created: number; last: number; ip: string; ua: string }>(),
+  sessions: new Map<string, { id: number; userId: number; csrf: string; created: number; last: number; ip: string; ua: string; imp?: { tenant: string; role: 'viewer' | 'tenant_admin' } }>(),
+  /** Phase 19b: policies assigned to tenants (tenant admins use only these), deleted tenant names */
+  tenantPolicies: {} as Record<string, number[]>,
+  tombstones: [] as { name: string; uid: string | null; deleted_at: number; deleted_by: string }[],
   downloads: new Map<string, { owner: string; filename: string; body: string; expires: number }>(),
   failures: new Map<string, { count: number; until: number }>(),
   quorumSecrets: new Map<number, Json>(),
@@ -256,6 +263,8 @@ const db = {
   pullAuth: null as null | { username: string },
   /** Phase 14b diagnostics runs (GET /diagnostics) */
   diag: [] as Json[],
+  /** appliance configuration backup: the bundle on disk (latest.json of nexus-config-backup) */
+  cfgBackup: { appliance_id: null as string | null, latest: null as Json | null },
   /** Phase 13e setting `anomaly` */
   anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30 } as Json,
   /** Phase 14a setting `forwarding` (header values: plaintext here, null in responses) */
@@ -283,7 +292,10 @@ const db = {
 };
 const nextId = () => ++db.seq;
 
+// Phase 19b: the request being served impersonates a tenant: its audit actor is `<admin> impersonating:<tenant>`.
+let impersonator: { name: string; tenant: string } | null = null;
 async function audit(actor: string, action: string, target: string, details: Json = {}, at?: number) {
+  if (impersonator && actor === impersonator.name) actor = `${actor} impersonating:${impersonator.tenant}`;
   const prev = db.audit.length ? db.audit[db.audit.length - 1].hash : '0'.repeat(64);
   const seq = db.audit.length + 1;
   const ts = at ?? now();
@@ -416,6 +428,15 @@ function planFor(kind: string, p: Json): string[] {
         'attach: keys recovered, 37 packs and 5 snapshots indexed',
       ];
     case 'files_get':
+      if (p.params?.mail_format)
+        // contract v1.9: the plugin converts (no secrets, no network), the host packs its output
+        return [
+          `$ nexus-pluginhost plugin.json export ${p.download_token}.${p.format} ${(p.paths ?? []).join(' ')}`,
+          'sandbox: landlock ABI 6 (tcp ports), seccomp allowlist, no_new_privs, memory 2048 MiB',
+          `plugin: converting mail as ${p.params.mail_format}${p.params.mail_format === 'pst' ? ` (files of at most ${p.params.pst_max_gb ?? 20} GB)` : ''}`,
+          `exported {"files": 4, "summary": "exported 5 messages as ${p.params.mail_format === 'pst' ? 'PST (u.0c9d1c7a-1111-4222-8333-444455556666.pst)' : 'mbox (4 folders)'}, 4 other items as stored"}`,
+          '4 entries written',
+        ];
       return [`mounting ${src} @ ${p.time}`, `packing ${(p.paths ?? []).length} path(s) as ${p.format}`, 'archive ready'];
     case 'restore':
     case 'restore_ct': {
@@ -481,6 +502,7 @@ function tick() {
       if (j.kind.startsWith('plugin_')) pluginResult(j, t);
       if (j.kind === 'inventory' || j.kind === 'plugin_guests') inventoryResult(j, t);
       if (j.kind === 'report_send') reportSent(j);
+      if (j.kind === 'config_backup') cfgBackupDone(j, t);
       if (j.kind.startsWith('offsite_')) offsiteResult(j, t);
       const ag = db.agents.find((a) => a.id === j.params.agent_id);
       if (j.kind === 'agent_enroll' && ag) {
@@ -636,6 +658,25 @@ function listDir(path: string, source: string): Json[] {
           '/data': [d('base'), d('global'), d('pg_wal'), f('PG_VERSION', 3), f('backup_manifest', 412_771), f('postgresql.auto.conf', 88)],
           '/wal': [f('00000001000000A200000041', 16 << 20), f('00000001000000A200000042', 16 << 20), f('00000001000000A200000043', 16 << 20)],
         };
+    return tree[path] ?? [];
+  }
+  if (source.startsWith('plugin-m365-')) {
+    // plugins/m365: a user's mailbox + OneDrive (mail as .eml per folder, docs/m365.md)
+    const tree: Record<string, Json[]> = {
+      '/': [d('calendar'), d('contacts'), d('mail'), d('onedrive'), d('recoverable')],
+      '/mail': [d('Inbox'), d('Sent Items')],
+      '/mail/Inbox': [d('Projects'), f('Quarterly report ~3f9a0c1d2e4b.eml', 412_771), f('Lunch on Friday ~9c1e22a0b7d4.eml', 6_211)],
+      '/mail/Inbox/Projects': [f('Kickoff agenda ~1b0e9d7c33a2.eml', 88_412)],
+      '/mail/Sent Items': [f('Re: Quarterly report ~77ad01c4e9b0.eml', 9_870)],
+      '/recoverable': [d('Deletions')],
+      '/recoverable/Deletions': [f('Old newsletter ~5e2c0f8a9d11.eml', 31_220)],
+      '/calendar': [d('Calendar')],
+      '/calendar/Calendar': [f('2026-10-12 Planning ~5eb8a464f306.ics', 2_104)],
+      '/contacts': [d('Contacts')],
+      '/contacts/Contacts': [f('Bob Builder ~0a1b2c3d4e5f.vcf', 611)],
+      '/onedrive': [d('Documents')],
+      '/onedrive/Documents': [f('budget-2026.xlsx', 501_877)],
+    };
     return tree[path] ?? [];
   }
   if (source.startsWith('nas-') || source.startsWith('share-') || source.startsWith('plugin-truenas-')) {
@@ -1360,11 +1401,34 @@ function seed() {
   seedPhase14d2(t);
   seedReports(t);
   seedDiag(t);
+  seedCfgBackup(t);
   seedConsole(t);
   seedTenantKeys(t);
   seedHolds(t);
   seedHardware(t);
   seedM365(t);
+  seedTenantAdmin(t);
+}
+
+/** Phase 19b: policy tiers, acme's assigned policies, its tenant admin "tara", a deleted tenant name.
+ *  Fixed ids (not nextId()) so the ids of the earlier seed stay as they were. */
+function seedTenantAdmin(t: number) {
+  for (const [name, tier] of [['gold', 'gold'], ['silver', 'silver'], ['bronze', 'bronze']]) {
+    const p = db.policies.find((x) => x.name === name);
+    if (p) p.tier = tier;
+  }
+  const ids = (names: string[]) => db.policies.filter((p) => names.includes(p.name)).map((p) => p.id);
+  db.tenantPolicies.acme = ids(['gold', 'silver', 'databases-hourly']);
+  db.tenantPolicies.initech = ids(['silver', 'bronze']);
+  db.users.push({
+    id: 90_001, name: 'tara', role: 'tenant_admin', tenant: 'acme', disabled: false, created: t - 86400 * 12,
+    password: 'nexus', totp_secret: b32(), last_login: t - 86400,
+  });
+  db.users.push({
+    id: 90_002, name: 'acme-ops', role: 'tenant_user', tenant: 'acme', disabled: false, created: t - 86400 * 4,
+    password: 'nexus', totp_secret: b32(), last_login: t - 3 * 86400,
+  });
+  db.tombstones.push({ name: 'hooli', uid: '5d1f0c2e9a7b4c3d8e6f1a2b3c4d5e6f', deleted_at: t - 86400 * 33, deleted_by: 'admin' });
 }
 
 /** Phase 18a: Microsoft 365 plugin with two apps, a second M365 tenant as restore target (tenant migration). */
@@ -1396,7 +1460,7 @@ function seedM365(t: number) {
   if (start + 540 <= t) {
     const stamp = (i: number) => new Date((start + 2 + i * 90) * 1000).toISOString();
     const lines = [
-      'starting nexus-pluginhost: m365 1.2.0 (sandbox: landlock + seccomp)',
+      'starting nexus-pluginhost: m365 1.3.0 (sandbox: landlock + seccomp)',
       `base ${user}/${start - 86400} (18,422 entries)`,
       'plugin[warn]: skipped mail/Inbox/Quarterly report ~3f9a0c1d2e4b.eml: GET /v1.0/users/…/messages/…/$value: 500 ErrorInternalServerError',
       'plugin[warn]: skipped onedrive/Projects/model.xlsx: GET /v1.0/drives/…/items/…/content: 503 serviceNotAvailable',
@@ -1548,7 +1612,7 @@ const pub = (u: User) => ({
   expires: u.expires ?? null,
   last_login: u.last_login ?? null,
 });
-const canDownload = (u: User) => u.can_download ?? ['admin', 'operator', 'tenant_user'].includes(u.role);
+const canDownload = (u: User) => u.can_download ?? ['admin', 'operator', 'tenant_admin', 'tenant_user'].includes(u.role);
 const PRIV: Role[] = ['admin', 'security_officer'];
 const ACT_SECS = 72 * 3600;
 const normCode = (s: string) => s.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
@@ -1570,6 +1634,42 @@ function need(u: User | null, ...roles: Role[]): User {
   if (!u) throw new HttpError(401, 'not signed in');
   if (roles.length && !roles.includes(u.role)) throw new HttpError(403, `requires role ${roles.join(' or ')}`);
   return u;
+}
+/** Phase 19b: tenant-owned config — admins anywhere, tenant admins in their own tenant. */
+function needOwner(u: User | null, tenant: string): User {
+  const x = need(u, 'admin', 'tenant_admin');
+  if (x.role === 'tenant_admin' && x.tenant !== tenant) throw new HttpError(403, 'forbidden: another tenant');
+  return x;
+}
+/** Roles a tenant admin may hand out (own tenant only). */
+const TENANT_ROLES: Role[] = ['tenant_admin', 'tenant_user', 'viewer'];
+/** A tenant admin's groups use only the policies the provider assigned to the tenant. */
+function assignedPolicy(u: User, tenant: string, policyId: number) {
+  if (u.role === 'tenant_admin' && !(db.tenantPolicies[tenant] ?? []).includes(policyId))
+    throw new HttpError(400, 'policy_id: not assigned to this tenant (ask your provider)');
+}
+/** Policy tier templates (web-api `tenancy::TEMPLATES`). */
+const TEMPLATES = [
+  { tier: 'bronze', name: 'Bronze', schedule: 'daily 02:00', gfs: { recent: 0, daily: 7, weekly: 4, monthly: 3, yearly: 0 }, offsite: false },
+  { tier: 'silver', name: 'Silver', schedule: 'daily 01:00', gfs: { recent: 0, daily: 14, weekly: 8, monthly: 12, yearly: 0 }, offsite: true },
+  { tier: 'gold', name: 'Gold', schedule: 'every 6h at 15', gfs: { recent: 0, daily: 30, weekly: 12, monthly: 24, yearly: 7 }, offsite: true },
+];
+/** Tenant of an audit entry (web-api: `audit_tenants`, derived from actor, details and target). */
+function auditTenant(e: Json): string | null {
+  const imp = /impersonating:(\S+)$/.exec(e.actor)?.[1];
+  if (imp) return imp;
+  if (typeof e.details?.tenant === 'string') return e.details.tenant;
+  if (typeof e.details?.params?.tenant === 'string') return e.details.params.tenant;
+  const [kind, id] = String(e.target).split('/');
+  if (kind === 'tenant' || kind === 'snapshot') return id ?? null;
+  const n = Number(id);
+  const pick = (xs: { id: unknown; tenant: string | null }[]) => xs.find((x) => x.id === n || x.id === id)?.tenant ?? null;
+  if (kind === 'source') return pick(db.sources);
+  if (kind === 'group') return pick(db.groups);
+  if (kind === 'agent') return pick(db.agents);
+  if (kind === 'job') return pick(db.jobs);
+  if (kind === 'user') return pick(db.users);
+  return null;
 }
 const byTenant = <T extends { tenant: string }>(u: User, xs: T[]) => (u.tenant ? xs.filter((x) => x.tenant === u.tenant) : xs);
 function find<T>(xs: T[], pred: (x: T) => boolean, what: string): T {
@@ -1769,7 +1869,16 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'tenant.delete':
       db.tenants = db.tenants.filter((g) => g.name !== p.name);
       tenantKeys.delete(p.name);
+      // Phase 19b: the name is never used again
+      db.tombstones.push({ name: p.name, uid: tenantUid(p.name), deleted_at: now(), deleted_by: by });
+      delete db.tenantPolicies[p.name];
       break;
+    case 'tenant.impersonate': {
+      const sess = [...db.sessions.values()].find((x) => x.id === p.session);
+      if (!sess) throw new HttpError(409, 'the requesting session has ended: request again');
+      sess.imp = { tenant: p.tenant, role: 'tenant_admin' };
+      break;
+    }
     case 'settings.anomaly':
       db.anomaly = structuredClone(p.anomaly);
       break;
@@ -1926,19 +2035,67 @@ on('GET', '/auth/me', (c) => {
   const u = need(c.user);
   return [
     200,
-    { user: pub(u), csrf: db.sessions.get(c.sid!)!.csrf, console_shell: u.tenant || u.role === 'tenant_user' ? null : consoleShell, vault_mode: db.vault.enabled },
+    {
+      user: pub(u),
+      csrf: db.sessions.get(c.sid!)!.csrf,
+      console_shell: u.tenant || u.role === 'tenant_user' ? null : consoleShell,
+      vault_mode: db.vault.enabled,
+      impersonating: db.sessions.get(c.sid!)!.imp ?? null,
+    },
   ];
+});
+// Phase 19b: "view as tenant" (read-only at once) / "act as tenant admin" (approval `tenant.impersonate`)
+on('POST', '/tenants/:name/impersonate', async (c, [name]) => {
+  const u = need(c.user, 'admin');
+  const tenant = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant').name;
+  const sess = db.sessions.get(c.sid!)!;
+  if (!c.body.elevated) {
+    sess.imp = { tenant, role: 'viewer' };
+    await audit(u.name, 'tenant.impersonate', `tenant/${tenant}`, { tenant, role: 'viewer' });
+    return [200, { impersonating: sess.imp }];
+  }
+  const [st, out] = await quorum(u, 'tenant.impersonate', { tenant, user: u.name, session: sess.id, role: 'tenant_admin' });
+  return [st, st === 200 ? { ...out, impersonating: sess.imp } : out];
+});
+on('POST', '/auth/impersonation/end', async (c) => {
+  const u = need(c.user);
+  const sess = db.sessions.get(c.sid!)!;
+  if (!sess.imp) throw new HttpError(409, 'not viewing as a tenant');
+  await audit(u.name, 'tenant.impersonate_end', `tenant/${sess.imp.tenant}`, { tenant: sess.imp.tenant });
+  delete sess.imp;
+  impersonator = null;
+  return [200, { ok: true }];
 });
 
 // tenants
 const NAME_RE = /^(?!\.)[A-Za-z0-9._-]{1,64}$/;
-on('GET', '/tenants', (c) => [200, db.tenants.filter((t) => !need(c.user).tenant || t.name === c.user!.tenant).map((t) => ({ ...t, offsite: publicOffsite(t.offsite) }))]);
+const tenantUid = (name: string) => [...name.padEnd(16, '0')].map((ch, i) => ((ch.charCodeAt(0) * 31 + i * 7) & 0xff).toString(16).padStart(2, '0')).join('').slice(0, 32);
+const tiersOf = (name: string) => [...new Set((db.tenantPolicies[name] ?? []).map((id) => db.policies.find((p) => p.id === id)?.tier).filter(Boolean))];
+on('GET', '/tenants', (c) => [
+  200,
+  db.tenants
+    .filter((t) => !need(c.user).tenant || t.name === c.user!.tenant)
+    .map((t) => ({ ...t, offsite: publicOffsite(t.offsite), uid: t.uid ?? tenantUid(t.name), policies: db.tenantPolicies[t.name] ?? [], tiers: tiersOf(t.name) })),
+]);
+on('GET', '/tenants/tombstones', (c) => (need(c.user, 'admin', 'security_officer'), [200, db.tombstones]));
+on('PUT', '/tenants/:name/policies', async (c, [name]) => {
+  const u = need(c.user, 'admin');
+  const tn = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant').name;
+  const ids: number[] = c.body.policy_ids;
+  if (!Array.isArray(ids) || ids.some((id) => !db.policies.some((p) => p.id === id))) throw new HttpError(400, 'policy_ids: ids of existing policies');
+  const old = db.tenantPolicies[tn] ?? [];
+  db.tenantPolicies[tn] = [...new Set(ids)].sort((a, b) => a - b);
+  await audit(u.name, 'tenant.policies', `tenant/${tn}`, { tenant: tn, policy_ids: db.tenantPolicies[tn], old });
+  return [200, { tenant: tn, policy_ids: db.tenantPolicies[tn] }];
+});
 on('POST', '/tenants', async (c) => {
   const u = need(c.user, 'admin');
   vaultRefuse('new tenants');
   const name = String(c.body.name ?? '').trim();
   if (!NAME_RE.test(name)) throw new HttpError(400, 'invalid tenant name');
   if (db.tenants.some((t) => t.name === name)) throw new HttpError(409, 'tenant exists');
+  if (db.tombstones.some((t) => t.name === name))
+    throw new HttpError(409, 'tenant name was used before by a deleted tenant: choose another name (keys and offsite paths are bound to names)');
   const offsite = tenantOffsite(c.body.offsite);
   db.tenants.push({ name, offsite });
   await audit(u.name, 'tenant.create', `tenant/${name}`, {});
@@ -2123,7 +2280,7 @@ function shareConfig(kind: string, cfg: Json): Json {
 }
 
 on('POST', '/sources', async (c) => {
-  const u = need(c.user, 'admin');
+  const u = needOwner(c.user, c.body.tenant);
   vaultRefuse('new sources');
   const { tenant, name, config, kind = 'pve' } = c.body;
   find(db.tenants, (t) => t.name === tenant, 'tenant');
@@ -2165,8 +2322,8 @@ on('POST', '/sources', async (c) => {
   return [201, stripSource(s)];
 });
 on('PUT', '/sources/:id', async (c, [id]) => {
-  const u = need(c.user, 'admin');
-  const s = find(db.sources, (x) => x.id === Number(id), 'source');
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const s = find(byTenant(u, db.sources), (x) => x.id === Number(id), 'source');
   if (s.kind.startsWith('plugin:')) {
     Object.assign(s, { name: c.body.name ?? s.name, config: pluginSourceConfig(s.kind, c.body.config, s.config) });
     await audit(u.name, 'source.update', `source/${s.id}`, {});
@@ -2199,16 +2356,40 @@ on('PUT', '/sources/:id', async (c, [id]) => {
   return [200, stripSource(s)];
 });
 on('DELETE', '/sources/:id', (c, [id]) => {
-  const s = find(db.sources, (x) => x.id === Number(id), 'source');
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const s = find(byTenant(u, db.sources), (x) => x.id === Number(id), 'source');
   if (db.groups.some((g) => g.source_id === s.id)) throw new HttpError(409, 'source is still used by groups');
-  return quorum(need(c.user, 'admin'), 'source.delete', { id: s.id, name: s.name });
+  return quorum(u, 'source.delete', { id: s.id, tenant: s.tenant, name: s.name });
 });
 
 // policies
-on('GET', '/policies', (c) => (need(c.user), [200, db.policies.map((p) => ({ file_filters: { exclude: [], exclude_regex: [] }, ...p }))]));
+// Phase 19b: tenant-scoped users see the policies assigned to their tenant or used by its groups
+const visiblePolicy = (u: User, id: number) =>
+  !u.tenant || (db.tenantPolicies[u.tenant] ?? []).includes(id) || db.groups.some((g) => g.tenant === u.tenant && g.policy_id === id);
+on('GET', '/policies', (c) => {
+  const u = need(c.user);
+  return [200, db.policies.filter((p) => visiblePolicy(u, p.id)).map((p) => ({ file_filters: { exclude: [], exclude_regex: [] }, tier: null, ...p }))];
+});
+const TIERS = ['bronze', 'silver', 'gold'];
+const checkTier = (x: unknown) => {
+  if (x !== undefined && x !== null && !TIERS.includes(String(x))) throw new HttpError(400, 'tier: bronze, silver, gold or null');
+  return (x as string | null | undefined) ?? null;
+};
+on('GET', '/policies/templates', (c) => (need(c.user), [200, TEMPLATES]));
+on('POST', '/policies/templates', async (c) => {
+  const u = need(c.user, 'admin');
+  const tpl = TEMPLATES.find((x) => x.tier === c.body.tier);
+  if (!tpl) throw new HttpError(400, 'tier: bronze, silver or gold');
+  const name = String(c.body.name ?? tpl.name);
+  if (db.policies.some((x) => x.name === name)) throw new HttpError(409, 'a policy with this name exists');
+  const p = { id: nextId(), name, schedule: tpl.schedule, gfs: { ...tpl.gfs }, offsite: tpl.offsite, tier: tpl.tier, ...runControl({ schedule: tpl.schedule }) };
+  db.policies.push(p);
+  await audit(u.name, 'policy.create', `policy/${p.id}`, { ...p, template: tpl.tier });
+  return [201, p];
+});
 on('POST', '/policies', async (c) => {
   const u = need(c.user, 'admin');
-  const p = { id: nextId(), name: c.body.name, schedule: c.body.schedule, gfs: c.body.gfs, offsite: !!c.body.offsite, ...runControl(c.body) };
+  const p = { id: nextId(), name: c.body.name, schedule: c.body.schedule, gfs: c.body.gfs, offsite: !!c.body.offsite, tier: checkTier(c.body.tier), ...runControl(c.body) };
   db.policies.push(p);
   await audit(u.name, 'policy.create', `policy/${p.id}`, p);
   return [201, p];
@@ -2216,7 +2397,7 @@ on('POST', '/policies', async (c) => {
 on('PUT', '/policies/:id', async (c, [id]) => {
   const u = need(c.user, 'admin');
   const p = find(db.policies, (x) => x.id === Number(id), 'policy');
-  const after = { name: c.body.name, schedule: c.body.schedule, gfs: c.body.gfs, offsite: !!c.body.offsite, ...runControl(c.body) };
+  const after = { name: c.body.name, schedule: c.body.schedule, gfs: c.body.gfs, offsite: !!c.body.offsite, tier: checkTier(c.body.tier), ...runControl(c.body) };
   if (weakens(p, after)) return quorum(u, 'policy.update', { id: p.id, ...after, old: structuredClone(p) });
   Object.assign(p, after);
   await audit(u.name, 'policy.update', `policy/${p.id}`, after);
@@ -2224,6 +2405,7 @@ on('PUT', '/policies/:id', async (c, [id]) => {
 });
 on('DELETE', '/policies/:id', (c, [id]) => {
   const p = find(db.policies, (x) => x.id === Number(id), 'policy');
+  if (Object.values(db.tenantPolicies).some((ids) => ids.includes(p.id))) throw new HttpError(409, 'policy is assigned to tenants');
   return quorum(need(c.user, 'admin'), 'policy.delete', { id: p.id, name: p.name });
 });
 
@@ -2349,7 +2531,8 @@ function groupSelection(src: (typeof db.sources)[number], b: Json): Pick<MockGro
 const disksAdded = (a: Record<string, string[]> = {}, b: Record<string, string[]> = {}) =>
   Object.entries(b).some(([k, l]) => l.some((d) => !(a[k] ?? []).includes(d)));
 on('POST', '/groups', async (c) => {
-  const u = need(c.user, 'admin');
+  const u = needOwner(c.user, c.body.tenant);
+  assignedPolicy(u, c.body.tenant, Number(c.body.policy_id));
   vaultRefuse('new protection groups');
   const g: MockGroup = { id: nextId(), tenant: c.body.tenant, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), name: c.body.name, guests: c.body.guests ?? [], mode: 'explicit', selector: [], exclude: [], timezone: checkTz(c.body.timezone), paused_until: null };
   const src = find(db.sources, (s) => s.id === g.source_id && s.tenant === g.tenant, 'source in tenant');
@@ -2360,8 +2543,9 @@ on('POST', '/groups', async (c) => {
   return [201, g];
 });
 on('PUT', '/groups/:id', async (c, [id]) => {
-  const u = need(c.user, 'admin');
-  const g = find(db.groups, (x) => x.id === Number(id), 'group');
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
+  if (Number(c.body.policy_id) !== g.policy_id) assignedPolicy(u, g.tenant, Number(c.body.policy_id));
   if ('tenant' in c.body) throw new HttpError(400, 'unknown field `tenant`');
   const src = find(db.sources, (s) => s.id === Number(c.body.source_id) && s.tenant === g.tenant, 'source in tenant');
   const next = { name: c.body.name, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), guests: c.body.guests ?? [], ...checkMode(src, c.body), timezone: checkTz(c.body.timezone), ...groupSelection(src, c.body) };
@@ -2375,8 +2559,8 @@ on('PUT', '/groups/:id', async (c, [id]) => {
   return [200, g];
 });
 on('PUT', '/groups/:id/index-files', async (c, [id]) => {
-  const u = need(c.user, 'admin');
-  const g = find(db.groups, (x) => x.id === Number(id), 'group');
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
   const src = db.sources.find((s) => s.id === g.source_id);
   if (src?.kind !== 'pve') throw new HttpError(400, 'index_files applies to Proxmox VE groups (VM/CT disks); other snapshots are always indexed');
   if (typeof c.body?.enabled !== 'boolean') throw new HttpError(400, 'enabled: true or false');
@@ -2385,8 +2569,9 @@ on('PUT', '/groups/:id/index-files', async (c, [id]) => {
   return [200, { id: g.id, index_files: g.index_files }];
 });
 on('DELETE', '/groups/:id', (c, [id]) => {
-  const g = find(db.groups, (x) => x.id === Number(id), 'group');
-  return quorum(need(c.user, 'admin'), 'group.delete', { id: g.id, name: g.name });
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
+  return quorum(u, 'group.delete', { id: g.id, tenant: g.tenant, name: g.name });
 });
 
 // run control (Phase 13b): pause / resume groups, source maintenance
@@ -2396,7 +2581,7 @@ const pauseUntil = (b: Json) => {
   return Number(b.until);
 };
 on('POST', '/groups/:id/pause', async (c, [id]) => {
-  const u = need(c.user, 'admin', 'operator');
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin');
   const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
   g.paused_until = pauseUntil(c.body ?? {});
   await audit(u.name, 'group.pause', `group/${g.id}`, { tenant: g.tenant, paused_until: g.paused_until });
@@ -2410,7 +2595,7 @@ on('POST', '/groups/:id/pause', async (c, [id]) => {
   return [200, { id: g.id, paused_until: g.paused_until }];
 });
 on('POST', '/groups/:id/resume', async (c, [id]) => {
-  const u = need(c.user, 'admin', 'operator');
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin');
   const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
   g.paused_until = null;
   // like the scheduler's next tick: the group's `paused` warning resolves itself
@@ -2419,14 +2604,14 @@ on('POST', '/groups/:id/resume', async (c, [id]) => {
   return [200, { id: g.id, paused_until: null }];
 });
 on('POST', '/sources/:id/maintenance', async (c, [id]) => {
-  const u = need(c.user, 'admin', 'operator');
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin');
   const s = find(byTenant(u, db.sources), (x) => x.id === Number(id), 'source');
   s.maintenance_until = pauseUntil(c.body ?? {});
   await audit(u.name, 'source.maintenance', `source/${s.id}`, { tenant: s.tenant, maintenance_until: s.maintenance_until });
   return [200, { id: s.id, maintenance_until: s.maintenance_until }];
 });
 on('POST', '/sources/:id/maintenance/end', async (c, [id]) => {
-  const u = need(c.user, 'admin', 'operator');
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin');
   const s = find(byTenant(u, db.sources), (x) => x.id === Number(id), 'source');
   s.maintenance_until = null;
   await audit(u.name, 'source.maintenance_end', `source/${s.id}`, { tenant: s.tenant, maintenance_until: null });
@@ -2578,7 +2763,7 @@ async function issueToken(a: Agent) {
 }
 on('GET', '/agents', (c) => [200, byTenant(need(c.user), db.agents).map(pubAgent)]);
 on('POST', '/agents', async (c) => {
-  const u = need(c.user, 'admin');
+  const u = needOwner(c.user, c.body.tenant);
   vaultRefuse('new agents');
   const { tenant, name, host, port = 7444 } = c.body;
   find(db.tenants, (t) => t.name === tenant, 'tenant');
@@ -2610,7 +2795,7 @@ on('POST', '/agents', async (c) => {
   return [201, { ...pubAgent(a), ...tok }];
 });
 on('POST', '/agents/:id/token', async (c, [id]) => {
-  const u = need(c.user, 'admin');
+  const u = need(c.user, 'admin', 'tenant_admin');
   const a = findAgent(u, id);
   const tok = await issueToken(a);
   await audit(u.name, 'agent.token', `agent/${a.id}`, { token_expires: tok.token_expires });
@@ -2630,7 +2815,7 @@ on('PUT', '/agents/:id/limits', async (c, [id]) => {
   return [200, pubAgent(a)];
 });
 on('POST', '/agents/:id/enroll', async (c, [id]) => {
-  const u = need(c.user, 'admin');
+  const u = need(c.user, 'admin', 'tenant_admin');
   const a = findAgent(u, id);
   if (!a.token_hash || !a.token_expires || a.token_expires <= now()) throw new HttpError(409, 'no valid enrollment token; issue a new token first');
   if (db.jobs.some((j) => j.kind === 'agent_enroll' && j.params.agent_id === a.id && (j.state === 'queued' || j.state === 'running')))
@@ -2640,7 +2825,7 @@ on('POST', '/agents/:id/enroll', async (c, [id]) => {
   return [202, { id: j.id }];
 });
 on('DELETE', '/agents/:id', (c, [id]) => {
-  const u = need(c.user, 'admin');
+  const u = need(c.user, 'admin', 'tenant_admin');
   const a = findAgent(u, id);
   const used = db.sources.find((s) => s.kind === 'linux' && s.config.agent_id === a.id);
   if (used) throw new HttpError(409, `agent is used by source "${used.name}"`);
@@ -2648,10 +2833,21 @@ on('DELETE', '/agents/:id', (c, [id]) => {
 });
 
 // users
-on('GET', '/users', (c) => (need(c.user, 'admin'), [200, db.users.map(pub)]));
+on('GET', '/users', (c) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  return [200, db.users.filter((x) => !u.tenant || x.tenant === u.tenant).map(pub)];
+});
 on('POST', '/users', async (c) => {
-  const u = need(c.user, 'admin');
-  const { name, role, tenant, can_download, expires } = c.body;
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const { name, role, can_download, expires } = c.body;
+  let { tenant } = c.body;
+  // Phase 19b: a tenant admin creates tenant admins, tenant users and viewers of its own tenant only
+  if (u.role === 'tenant_admin') {
+    if (!TENANT_ROLES.includes(role)) throw new HttpError(403, 'tenant admins create tenant_admin, tenant_user and viewer accounts only');
+    tenant ??= u.tenant;
+    if (tenant !== u.tenant) throw new HttpError(403, 'forbidden: another tenant');
+  }
+  if (role === 'tenant_admin' && !tenant) throw new HttpError(400, 'tenant: required for tenant_admin');
   if ('password' in c.body) throw new HttpError(400, 'unknown field `password`: users set their own password at activation');
   if (!NAME_RE.test(String(name ?? ''))) throw new HttpError(400, 'invalid user name');
   if (db.users.some((x) => x.name === name)) throw new HttpError(409, 'user exists');
@@ -2660,7 +2856,6 @@ on('POST', '/users', async (c) => {
   // enables them. The requester gets only the first half of the activation code.
   const priv = PRIV.includes(role);
   const gated = priv && db.approvals;
-  if (role === 'tenant_admin') throw new HttpError(400, 'role: must be admin, security_officer, operator, tenant_user or viewer');
   const n: User = { id: nextId(), name, password: '', role, tenant: tenant || null, disabled: gated, created: now(), totp_secret: '', can_download: can_download ?? null, expires: expires ?? null };
   db.users.push(n);
   const activation = startActivation(n, gated);
@@ -2669,9 +2864,14 @@ on('POST', '/users', async (c) => {
   return [201, { user: pub(n), activation }];
 });
 on('PUT', '/users/:id', async (c, [id]) => {
-  const u = need(c.user, 'admin');
-  const x = find(db.users, (y) => y.id === Number(id), 'user');
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const x = find(db.users, (y) => y.id === Number(id) && (!u.tenant || y.tenant === u.tenant), 'user');
   const b = c.body;
+  if (u.role === 'tenant_admin') {
+    if (!TENANT_ROLES.includes(x.role) || (b.role !== undefined && !TENANT_ROLES.includes(b.role)))
+      throw new HttpError(403, 'tenant admins manage tenant_admin, tenant_user and viewer accounts only');
+    if (b.tenant !== undefined && b.tenant !== u.tenant) throw new HttpError(403, 'forbidden: another tenant');
+  }
   const own = x.id === u.id;
   if (x.auth === 'oidc' && (b.password || b.reset_totp || b.new_activation || (b.role !== undefined && b.role !== x.role) || (b.tenant !== undefined && (b.tenant || null) !== x.tenant)))
     throw new HttpError(409, 'single sign-on account: role and tenants come from the group mapping, credentials from the identity provider');
@@ -3202,7 +3402,7 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
     }
   }
   if (kind === 'agent_update' || kind === 'agent_renew') {
-    if (u.role !== 'admin') throw new HttpError(403, 'requires role admin');
+    if (u.role !== 'admin' && u.role !== 'tenant_admin') throw new HttpError(403, 'requires role admin or tenant_admin');
     const a = find(db.agents, (x) => x.id === p.agent_id && x.tenant === tenant, 'agent in tenant');
     if (a.enrolled_at === null) throw new HttpError(409, 'agent is not enrolled');
   }
@@ -3224,8 +3424,11 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
   }
 }
 on('POST', '/jobs', async (c) => {
-  const u = need(c.user, 'admin', 'operator', 'tenant_user');
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'tenant_user');
   const { kind, tenant, params = {} } = c.body;
+  // Phase 19b: tenant admins run everything within their tenant except the provider's maintenance
+  if (u.role === 'tenant_admin' && (tenant !== u.tenant || ['offsite', 'retention', 'gc', 'verify'].includes(kind)))
+    throw new HttpError(403, 'tenant admins run backups, restores and agent jobs of their own tenant only');
   if (typeof kind === 'string' && kind.startsWith('plugin_') && !['plugin_validate', 'plugin_guests', 'plugin_backup', 'plugin_restore', 'plugin_mount'].includes(kind))
     throw new HttpError(400, `unknown job kind ${kind}`);
   if (u.role === 'tenant_user' && (!RESTORE_KINDS.includes(kind) || tenant !== u.tenant)) throw new HttpError(403, 'tenant users may only restore within their tenant');
@@ -3233,11 +3436,23 @@ on('POST', '/jobs', async (c) => {
   if (kind === 'files_list' && !String(params.path ?? '').startsWith('/')) throw new HttpError(400, 'path: must be absolute');
   checkJob(u, kind, tenant, params);
   if (kind === 'files_get' && !canDownload(u)) throw new HttpError(403, 'this account may not download files');
+  if (kind === 'files_get' && params.params && Object.keys(params.params).length) {
+    // contract v1.9: only plugin snapshots whose `download` has a params_schema (web-api jobs.rs)
+    const pid = /^plugin-([a-z0-9-]+?)-\d+/.exec(String(params.source ?? ''))?.[1];
+    const plugin = db.plugins.find((x: Json) => x.id === pid && x.current);
+    const schema = plugin?.manifest?.kinds?.[0]?.restores?.find((r: Json) => r.id === 'download')?.params_schema;
+    if (!schema) throw new HttpError(400, "params: this snapshot's download takes no parameters");
+    for (const [k, v] of Object.entries(params.params as Json)) {
+      const prop = schema.properties?.[k];
+      if (!prop) throw new HttpError(400, `params: unknown field ${k}`);
+      if (prop.enum && !prop.enum.includes(v)) throw new HttpError(400, `params.${k}: one of ${prop.enum.join(', ')}`);
+    }
+  }
   if (PAUSED_KINDS.includes(kind) && tenantOff(tenant)) throw new HttpError(409, `tenant ${tenant} is deactivated: no ${kind} jobs until it is reactivated`);
   if (kind === 'backup') backupGuests(params);
   if (params.replace) {
     // Phase 15a: an approval request (`restore.replace`), never a plain job; not for tenant users
-    need(u, 'admin', 'operator');
+    need(u, 'admin', 'operator', 'tenant_admin');
     const { replace: _r, ...rest } = params;
     return quorum(u, 'restore.replace', { tenant, kind, params: rest });
   }
@@ -3254,7 +3469,7 @@ on('POST', '/jobs', async (c) => {
 });
 // Phase 15a: several guests in one request, one job each (web-api `restores.rs`)
 on('POST', '/restores', async (c) => {
-  const u = need(c.user, 'admin', 'operator', 'tenant_user');
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'tenant_user');
   const b = c.body;
   if (u.tenant && u.tenant !== b.tenant) throw new HttpError(403, 'forbidden');
   find(db.tenants, (t) => t.name === b.tenant, 'tenant');
@@ -3281,8 +3496,8 @@ on('POST', '/restores', async (c) => {
   return [202, { ids }];
 });
 on('POST', '/jobs/:id/cancel', async (c, [id]) => {
-  const u = need(c.user, 'admin', 'operator');
-  const j = find(db.jobs, (x) => x.id === Number(id), 'job');
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin');
+  const j = find(byTenant(u, db.jobs), (x) => x.id === Number(id), 'job');
   // Phase 13b: a running job gets a cancel request that the scheduler carries out
   if (j.state === 'running') {
     if (j.params.replace) throw new HttpError(409, 'a running restore that replaces the original cannot be cancelled');
@@ -3375,7 +3590,7 @@ function searchResult(p: Json, tenant: string) {
   return { matches, scanned, unindexed, truncated, elapsed_ms: Date.now() - t0 + 412 };
 }
 on('POST', '/search', async (c) => {
-  const u = need(c.user, 'admin', 'operator', 'tenant_user');
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'tenant_user');
   const b = c.body ?? {};
   const tenant = String(b.tenant ?? '');
   if (u.tenant && u.tenant !== tenant) throw new HttpError(403, 'forbidden');
@@ -3395,9 +3610,11 @@ on('POST', '/search', async (c) => {
 
 // quorum
 on('GET', '/quorum', (c) => {
-  need(c.user, 'admin', 'security_officer', 'operator');
+  const u = need(c.user, 'admin', 'security_officer', 'operator', 'tenant_admin');
   for (const q of db.quorum) if (q.state === 'pending' && now() - q.created > 72 * 3600) q.state = 'expired';
-  return [200, [...db.quorum].sort((a, b) => b.id - a.id).map((q) => ({ ...q, expires: q.created + 72 * 3600 }))];
+  // Phase 19b: tenant admins see the requests they made, nothing else
+  const mine = (q: (typeof db.quorum)[number]) => u.role !== 'tenant_admin' || q.requested_by === u.name;
+  return [200, db.quorum.filter(mine).sort((a, b) => b.id - a.id).map((q) => ({ ...q, expires: q.created + 72 * 3600 }))];
 });
 for (const verb of ['approve', 'reject'] as const) {
   on('POST', `/quorum/:id/${verb}`, async (c, [id]) => {
@@ -3424,7 +3641,9 @@ for (const verb of ['approve', 'reject'] as const) {
 
 // audit
 // filters as the web-api: actor exact, action prefix, target substring, from/to unix seconds
-function auditFiltered(q: URLSearchParams): Json[] {
+// (Phase 19b: `tenant` = entries concerning that tenant; forced to their own for tenant admins)
+function auditFiltered(q: URLSearchParams, scope: string | null = null): Json[] {
+  const tenant = scope ?? (q.get('tenant') || null);
   const after = Number(q.get('after') ?? 0);
   const before = q.get('before');
   const [actor, action, target] = ['actor', 'action', 'target'].map((k) => q.get(k) || null);
@@ -3438,21 +3657,22 @@ function auditFiltered(q: URLSearchParams): Json[] {
       (!action || e.action.startsWith(action)) &&
       (!target || e.target.includes(target)) &&
       (from === null || e.ts >= from) &&
-      (to === null || e.ts <= to),
+      (to === null || e.ts <= to) &&
+      (!tenant || auditTenant(e) === tenant),
   );
 }
 on('GET', '/audit', (c) => {
-  need(c.user, 'admin', 'security_officer');
+  const u = need(c.user, 'admin', 'security_officer', 'tenant_admin');
   const before = c.query.get('before');
   const limit = Math.min(Number(c.query.get('limit') ?? 500), 1000);
   const desc = before !== null || c.query.get('order') === 'desc';
-  const xs = auditFiltered(c.query);
+  const xs = auditFiltered(c.query, u.role === 'tenant_admin' ? u.tenant : null);
   return [200, (desc ? [...xs].reverse() : xs).slice(0, limit)];
 });
 async function auditCsv(u: User, q: URLSearchParams): Promise<string> {
   const shown: Json = {};
-  for (const k of ['actor', 'action', 'target', 'from', 'to', 'after', 'before']) if (q.get(k)) shown[k] = /^(from|to|after|before)$/.test(k) ? Number(q.get(k)) : q.get(k);
-  const rows = auditFiltered(q);
+  for (const k of ['actor', 'action', 'target', 'tenant', 'from', 'to', 'after', 'before']) if (q.get(k)) shown[k] = /^(from|to|after|before)$/.test(k) ? Number(q.get(k)) : q.get(k);
+  const rows = auditFiltered(q, u.role === 'tenant_admin' ? u.tenant : null);
   await audit(u.name, 'audit.export', 'audit', shown);
   const f = (s: string) => (/[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
   return ['seq,ts,actor,action,target,details,prev_hash,hash', ...rows.map((e) => [e.seq, e.ts, f(e.actor), f(e.action), f(e.target), f(JSON.stringify(e.details)), e.prev_hash, e.hash].join(','))].join('\r\n') + '\r\n';
@@ -4095,18 +4315,21 @@ function reportTable(u: User, kind: string, scope: string | null, from: number, 
         ]),
       ];
     const rows: [number, unknown[]][] = [];
+    // Phase 19b: the tiers of the policies behind the groups (web-api SLA column `tier`)
+    const tierOf = (tenant: string, names: string[]) =>
+      [...new Set(names.map((n) => db.policies.find((p) => p.id === db.groups.find((g) => g.tenant === tenant && g.name === n)?.policy_id)?.tier).filter(Boolean))].join(' ');
     for (const { o, last, sla, groups } of objs) {
       const limit = o.rpo_s * 1.5;
       if (sla === 'breach' && last) {
         const s = Math.max(last.time + limit, from);
         const e = Math.min(t, to);
-        if (s < e) rows.push([s, ['rpo_breach', o.tenant, groups, o.name, isoTime(s), '', hours(e - s), hours(limit), `ongoing: no good backup since ${isoTime(last.time)}`]]);
+        if (s < e) rows.push([s, ['rpo_breach', o.tenant, groups, tierOf(o.tenant, o.groups), o.name, isoTime(s), '', hours(e - s), hours(limit), `ongoing: no good backup since ${isoTime(last.time)}`]]);
       }
     }
     for (const a of db.alerts.filter((x) => x.kind === 'sla_missed' && x.ts >= from && x.ts < to && (!scope || x.tenant === scope)))
-      rows.push([a.ts, ['sla_missed', a.tenant ?? '', /group (\S+)/.exec(a.message)?.[1] ?? '', '', isoTime(a.ts), '', '', '', a.message]]);
+      rows.push([a.ts, ((g) => ['sla_missed', a.tenant ?? '', g, tierOf(a.tenant ?? '', [g]), '', isoTime(a.ts), '', '', '', a.message])(/group (\S+)/.exec(a.message)?.[1] ?? '')]);
     rows.sort((a, b) => a[0] - b[0]);
-    return [['type', 'tenant', 'groups', 'object', 'start', 'end', 'hours', 'target_hours', 'detail'], rows.map((r) => r[1])];
+    return [['type', 'tenant', 'groups', 'tier', 'object', 'start', 'end', 'hours', 'target_hours', 'detail'], rows.map((r) => r[1])];
   }
   if (kind === 'failed') {
     const jobs = db.jobs.filter((j) => j.state === 'failed' && j.finished && j.finished >= from && j.finished < to && (!scope || j.tenant === scope));
@@ -4256,7 +4479,7 @@ on('GET', '/dashboard', (c) => {
 
 // ---- OIDC (§2). The mock has no identity provider: "start" goes straight to the callback, which
 // signs in as the SSO demo user lwagner (Keycloak groups: nexus-operators).
-const MAPPING_ROLES = ['admin', 'security_officer', 'operator', 'tenant_user', 'viewer'];
+const MAPPING_ROLES = ['admin', 'security_officer', 'operator', 'tenant_admin', 'tenant_user', 'viewer'];
 const pubOidc = () => {
   const { client_secret, ...rest } = db.oidc;
   return { ...structuredClone(rest), client_secret_set: !!client_secret };
@@ -4311,7 +4534,7 @@ on('PUT', '/settings/oidc', async (c) => {
     if (!String(m.group ?? '').trim()) throw new HttpError(400, 'mappings: group required');
     if (!MAPPING_ROLES.includes(m.role)) throw new HttpError(400, `mappings: unknown role ${m.role}`);
     if (!Array.isArray(m.tenants) || m.tenants.some((n: string) => !db.tenants.some((x) => x.name === n))) throw new HttpError(400, 'mappings: unknown tenant');
-    if (m.role === 'tenant_user' && !m.tenants.length) throw new HttpError(400, 'mappings: tenant users need a tenant');
+    if ((m.role === 'tenant_user' || m.role === 'tenant_admin') && m.tenants.length !== 1) throw new HttpError(400, 'mappings: tenant users and tenant admins need exactly one tenant');
   }
   const next = {
     enabled: !!b.enabled, issuer: b.issuer, client_id: String(b.client_id).trim(), scopes: b.scopes, label: String(b.label).trim(),
@@ -4684,6 +4907,71 @@ on('GET', '/diagnostics/:id', (c, [id]) => {
   const v = diagView(u, find(db.diag, (x) => x.id === id, 'diagnostics run'));
   if (!v) throw new HttpError(404, 'diagnostics run not found');
   return [200, v];
+});
+
+// ---- appliance configuration backup (Settings -> Backup of this appliance)
+const cfgTargets = () => db.tenants.filter((x) => x.offsite?.remote).map((x) => x.name);
+const CFG_FILES = 14;
+function cfgBackupDone(j: Job, t: number) {
+  const c = db.cfgBackup;
+  c.appliance_id ??= '3f9a0c51d2e8b746';
+  c.latest = { appliance: c.appliance_id, created: t, bytes: 1_843_200 + Math.floor(Math.random() * 20_000), sha256: rand(32), files: CFG_FILES };
+  j.result = { appliance: c.appliance_id, created: t, bytes: c.latest.bytes, sha256: c.latest.sha256, files: CFG_FILES };
+  for (const target of cfgTargets())
+    addJob('config_upload', '-', { target, appliance: c.appliance_id, created: t, backup_job: j.id }, 'scheduler', {
+      plan: [`uploaded config/${c.appliance_id}/${t}.bundle (${c.latest.bytes} bytes)`],
+      duration: 3,
+    });
+}
+function seedCfgBackup(t: number) {
+  for (const d of [2, 1]) {
+    const at = t - d * 86400 + 3600;
+    const j = addJob('config_backup', '-', {}, 'scheduler', { state: 'ok', created: at, started: at, finished: at + 6, log: 'nexus-config-backup: bundle sealed' });
+    cfgBackupDone(j, at + 6);
+    for (const u of db.jobs.filter((x) => x.kind === 'config_upload' && x.state === 'queued'))
+      Object.assign(u, { state: 'ok', created: at + 6, started: at + 7, finished: at + 12, log: u.plan.join('\n') });
+  }
+}
+const cfgReader = (c: { user: User | null }) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  if (u.tenant) throw new HttpError(403, 'appliance-wide');
+  return u;
+};
+const cfgRun = (j: Job) => ({ id: j.id, kind: j.kind, state: j.state, created: j.created, finished: j.finished, requested_by: j.requested_by, target: j.params.target ?? null, result: j.result ?? null });
+on('GET', '/settings/config-backup', (c) => {
+  cfgReader(c);
+  const jobs = db.jobs.filter((j) => j.kind === 'config_backup' || j.kind === 'config_upload');
+  const last = (pred: (j: Job) => boolean) => jobs.filter(pred).at(-1) ?? null;
+  const okAt = (pred: (j: Job) => boolean) => last((j) => pred(j) && j.state === 'ok')?.finished ?? null;
+  return [200, {
+    appliance_id: db.cfgBackup.appliance_id,
+    last_success: okAt((j) => j.kind === 'config_backup'),
+    running: jobs.some((j) => j.kind === 'config_backup' && ['queued', 'running'].includes(j.state)),
+    latest: db.cfgBackup.latest,
+    targets: cfgTargets().map((tenant) => {
+      const mine = (j: Job) => j.kind === 'config_upload' && j.params.target === tenant;
+      const l = last(mine);
+      return { tenant, last: l && cfgRun(l), last_ok: okAt(mine) };
+    }),
+    runs: jobs.slice(-20).reverse().map(cfgRun),
+  }];
+});
+on('POST', '/settings/config-backup/run', async (c) => {
+  const u = need(c.user, 'admin');
+  if (u.tenant) throw new HttpError(403, 'appliance-wide');
+  if (db.jobs.some((j) => j.kind === 'config_backup' && ['queued', 'running'].includes(j.state))) throw new HttpError(409, 'a configuration backup is already queued or running');
+  const j = addJob('config_backup', '-', {}, u.name, { plan: ['request written', 'nexus-config-backup: catalog snapshot', 'nexus-config-backup: bundle sealed'], duration: 4 });
+  await audit(u.name, 'job.create', `job/${j.id}`, { kind: 'config_backup', params: {} });
+  return [202, { job_id: j.id }];
+});
+on('GET', '/settings/config-backup/download', async (c) => {
+  const u = need(c.user, 'admin');
+  if (u.tenant || !canDownload(u)) throw new HttpError(403, 'forbidden');
+  const l = db.cfgBackup.latest;
+  if (!l) throw new HttpError(404, 'not found');
+  await audit(u.name, 'download.get', `config_backup/${l.appliance}`, { kind: 'config_backup', bytes: l.bytes, created: l.created, sha256: l.sha256 });
+  c.res.setHeader('Content-Disposition', `attachment; filename="nexus-config-${l.appliance}-${l.created}.bundle"`);
+  return [200, 'NXCFGB1 (mock bundle: sealed to the recovery key)\n', 'application/octet-stream'];
 });
 
 // ---------------------------------------------------------------- hardware (Phase 16a/b)
@@ -5108,6 +5396,15 @@ async function handle(req: Req, res: Res) {
         user = db.users.find((u) => u.id === sess.userId && !u.disabled && !tenantOff(u.tenant) && !(u.expires && u.expires <= now())) ?? null;
       }
     }
+    // Phase 19b: "view as tenant" — the admin acts with the role intersection inside that tenant
+    impersonator = null;
+    if (user && sess?.imp) {
+      if (user.role !== 'admin') delete sess.imp;
+      else {
+        impersonator = { name: user.name, tenant: sess.imp.tenant };
+        user = { ...user, role: sess.imp.role, tenant: sess.imp.tenant, can_download: false };
+      }
+    }
     if (method !== 'GET' && path !== '/auth/login' && !path.startsWith('/auth/activate/') && user && req.headers['x-csrf-token'] !== sess?.csrf) {
       throw new HttpError(403, 'CSRF token missing or invalid');
     }
@@ -5122,7 +5419,7 @@ async function handle(req: Req, res: Res) {
       return send(200, d.body, 'application/octet-stream');
     }
     if (path === '/audit.csv' && method === 'GET') {
-      const u = need(user, 'admin', 'security_officer');
+      const u = need(user, 'admin', 'security_officer', 'tenant_admin');
       res.setHeader('Content-Disposition', 'attachment; filename="nexus-audit.csv"');
       return send(200, await auditCsv(u, url.searchParams), 'text/csv; charset=utf-8');
     }
@@ -5289,6 +5586,14 @@ export function mockApi(): Plugin {
       [t - 5400, 'admin', 'job.create', 'job/backup', { kind: 'backup', tenant: 'initech', params: { vmid: 101 } }],
       [t - 3605, 'unknown-user', 'auth.login_failed', 'session', {}],
       [t - 86400 * 8, 'admin', 'settings.forwarding', 'settings/forwarding', { syslog: { host: 'siem.example.com', port: 6514 }, https: null }],
+      // Phase 19b: acme's tenant admin and the provider's "view as tenant"
+      [t - 86400 * 12, 'admin', 'tenant.policies', 'tenant/acme', { tenant: 'acme', policy_ids: db.tenantPolicies.acme, old: [] }],
+      [t - 86400 * 12 + 60, 'admin', 'user.create', 'user/90001', { name: 'tara', role: 'tenant_admin', tenant: 'acme' }],
+      [t - 86400 * 4, 'tara', 'user.create', 'user/90002', { name: 'acme-ops', role: 'tenant_user', tenant: 'acme' }],
+      [t - 7200, 'admin', 'tenant.impersonate', 'tenant/acme', { tenant: 'acme', role: 'viewer' }],
+      [t - 7100, 'admin impersonating:acme', 'job.create', 'job/files_list', { kind: 'files_list', tenant: 'acme', params: { source: 'vm-100', path: '/' } }],
+      [t - 6900, 'admin impersonating:acme', 'tenant.impersonate_end', 'tenant/acme', { tenant: 'acme' }],
+      [t - 86400 * 33, 'admin', 'tenant.delete', 'tenant/hooli', { tenant: 'hooli', approvals: 'disabled' }],
     ];
     // the scheduler's daily anchor (head seq + hash leave the box with the forwarding)
     for (let d = 7; d >= 1; d--) hist.push([t - 86400 * d - 3000, 'scheduler', 'audit.anchor', 'audit/chain', { head_seq: 0, head_hash: '' }]);

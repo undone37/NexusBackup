@@ -50,6 +50,12 @@ fn run(args: &[String]) -> io::Result<()> {
             let listener = UnixListener::bind(socket)?;
             // umask 077 made it 0600; the chunkstore user connects via group nexus-keyd
             std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o660))?;
+            // public material for the configuration backup helper (nexus-config-backup)
+            if let Some(run) = Path::new(socket).parent() {
+                if let Err(e) = keyd::config_bundle::publish(Path::new(dir), run) {
+                    eprintln!("keyd: warning: cannot publish the configuration backup key: {e}");
+                }
+            }
             keyd::serve(listener, Path::new(dir), uid)?
         }
         ["export-escrow", dir, tenant, out] => {

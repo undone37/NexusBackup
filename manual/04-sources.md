@@ -254,6 +254,9 @@ Copy the token now. If it is lost, click **New token** (an earlier unused token 
 
 ### 2. Install the agent on the host
 
+Step-by-step guides for the host administrator, including firewall rules, `agent.conf` and troubleshooting:
+[16 Linux agent](16-linux-agent.md) and [17 Windows agent](17-windows-agent.md).
+
 Download the package for the host from the release page (see the README, "Downloads") and check it against
 `SHA256SUMS`. The release manager signs every package with the release key (`<file>.sig`, cosign). Install it, then
 enroll the agent with the token. The token is read from stdin, so it never appears in the process list or the shell
@@ -506,6 +509,11 @@ session, **T** switches the chart height, **B** requests a backup, **R** refresh
 > **Status:** built for Windows (x86_64) and Linux (x86_64, aarch64) and tested with a simulated agent service
 > (Linux, KDE Plasma). It has **not run on Windows** yet, and it needs an agent version that serves the local status
 > socket / pipe.
+
+### On the endpoint: status and backup now
+
+End users of a host see its backup status with `nexus-agent tui` (Linux): see
+[16 Linux agent](16-linux-agent.md#on-the-endpoint-status-and-backup-now).
 
 ## TrueNAS
 

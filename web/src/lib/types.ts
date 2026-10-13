@@ -3,7 +3,16 @@
 
 import type { BlackoutWindow, RateWindow, Span } from './schedule';
 
-export type Role = 'admin' | 'security_officer' | 'operator' | 'tenant_user' | 'viewer';
+export type Role = 'admin' | 'security_officer' | 'operator' | 'tenant_admin' | 'tenant_user' | 'viewer';
+
+/** Phase 19b: policy tiers (templates; shown in the SLA report and the tenant overview). */
+export type Tier = 'bronze' | 'silver' | 'gold';
+
+/** "View as tenant" (Phase 19b): the admin's session acts in this role within the tenant. */
+export interface Impersonation {
+  tenant: string;
+  role: 'viewer' | 'tenant_admin';
+}
 
 export interface User {
   id: number;
@@ -110,6 +119,29 @@ export interface Tenant {
   disabled_at?: number | null;
   disabled_by?: string | null;
   disabled_reason?: string | null;
+  /** Phase 19b: immutable 128-bit id (32 hex), used for replication matching */
+  uid?: string;
+  /** Phase 19b: policies the provider assigned (a tenant admin may use only these) */
+  policies?: number[];
+  /** tiers of the assigned policies */
+  tiers?: Tier[];
+}
+
+/** A deleted tenant name (Phase 19b): never re-created. */
+export interface TenantTombstone {
+  name: string;
+  uid: string | null;
+  deleted_at: number;
+  deleted_by: string;
+}
+
+/** `GET /policies/templates` (Phase 19b). */
+export interface PolicyTemplate {
+  tier: Tier;
+  name: string;
+  schedule: string;
+  gfs: Gfs;
+  offsite: boolean;
 }
 
 /** Config of a `pve` source. */
@@ -300,6 +332,8 @@ export interface Policy {
   require_consistency?: RequireConsistency;
   /** Phase 15e: global excludes for every agent and share source of the policy's groups */
   file_filters: FileFilters;
+  /** Phase 19b: policy tier (Bronze/Silver/Gold) or none */
+  tier?: Tier | null;
 }
 
 export interface FileFilters {
@@ -713,6 +747,8 @@ export interface LoginResponse {
   console_shell?: ConsoleShell | null;
   /** Phase 17c: vault mode is on (restores and downloads need approval) */
   vault_mode?: boolean;
+  /** Phase 19b: "view as tenant" is active in this session */
+  impersonating?: Impersonation | null;
 }
 
 /** `GET /vault` (Phase 17c); `checks` and the requests only for appliance-wide roles. */
@@ -1087,6 +1123,28 @@ export interface DiagCheck {
   detail: string;
   /** anchor in the user manual, e.g. "15-troubleshooting-faq.md#check-disk-var" */
   manual: string;
+}
+
+/** one config_backup / config_upload job (GET /settings/config-backup) */
+export interface ConfigBackupRun {
+  id: number;
+  kind: 'config_backup' | 'config_upload';
+  state: string;
+  created: number;
+  finished: number | null;
+  requested_by: string;
+  target: string | null;
+  result: { bytes?: number; files?: string[] | number } | null;
+}
+
+/** GET /settings/config-backup */
+export interface ConfigBackupStatus {
+  appliance_id: string | null;
+  last_success: number | null;
+  running: boolean;
+  latest: { appliance: string; created: number; bytes: number; sha256: string | null; files: number | null } | null;
+  targets: { tenant: string; last: ConfigBackupRun | null; last_ok: number | null }[];
+  runs: ConfigBackupRun[];
 }
 
 /** GET /diagnostics/{id} */

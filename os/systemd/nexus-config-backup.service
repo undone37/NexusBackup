@@ -1,0 +1,64 @@
+[Unit]
+Description=NexusBackup appliance configuration backup (sealed bundle of the catalog and key files)
+# Started by nexus-config-backup.path. docs/control-plane.md "Configuration backup".
+ConditionPathExists=/var/lib/nexus/setup-done
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/nexus/nexus-config-backup tick
+# Root with one capability: CAP_DAC_READ_SEARCH reads the 0600 key files of the other
+# service users (TOTP key, scheduler secrets key, agent CA, replication keys, SSH keys,
+# TLS key); it can write nothing outside its control dir (2770 root:nexus-catalog,
+# results 0640 for the scheduler and the web-api). SELinux (nexus_cfgbackup_t) limits
+# the reads to exactly these files and the catalog. The bundle is sealed to keyd's
+# published public key: this helper holds nothing that opens a bundle.
+User=root
+Group=nexus-catalog
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+AmbientCapabilities=
+UMask=0027
+LimitCORE=0
+TimeoutStartSec=30min
+Nice=10
+IOSchedulingClass=idle
+
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nexus/config-backup
+# not configuration (and never read): KEK and tenant keys, stores, escrow, offsite
+# inventories, downloads, plugin uploads, the pending CSR key, job configs
+InaccessiblePaths=-/var/lib/nexus/keyd -/var/lib/nexus/chunkstore -/var/lib/nexus/escrow
+InaccessiblePaths=-/var/lib/nexus/offsite -/var/lib/nexus/downloads -/var/lib/nexus/plugins-staging
+InaccessiblePaths=-/etc/nexus/tls/pending -/run/nexus-scheduler
+# the catalog snapshot (VACUUM INTO) lives only in this private /tmp until it is sealed
+PrivateTmp=yes
+
+# No network at all.
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+
+NoNewPrivileges=yes
+PrivateDevices=yes
+ProtectHome=yes
+PrivateIPC=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM

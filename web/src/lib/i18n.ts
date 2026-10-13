@@ -44,6 +44,7 @@ export const en = {
     admin: "Administrator",
     security_officer: "Security officer",
     operator: "Operator",
+    tenant_admin: "Tenant admin",
     tenant_user: "Tenant user",
     viewer: "Viewer",
   } as Record<string, string>,
@@ -124,6 +125,33 @@ export const en = {
       light: "switch to dark",
       dark: "follow the system",
     } as Record<string, string>,
+  },
+  // Phase 19b: "view as tenant" (impersonation)
+  impersonate: {
+    view: "View as tenant",
+    viewReadOnly: "Read-only view",
+    viewShort: "what its viewers see; audited",
+    actShort: "the tenant admin's rights; needs approval",
+    viewHint:
+      "Opens a read-only view of this tenant (what its viewers see). Your actions are audited as yours, marked with the tenant, and the tenant's own admins can see them in their audit log.",
+    act: "Act as tenant admin",
+    actHint:
+      "Acting with the tenant admin's rights needs approval by a second person while approvals are enabled.",
+    actConfirm: (tn: string) =>
+      `Request to act as tenant admin of "${tn}"? Another administrator or security officer must approve; your session switches once it is approved.`,
+    viewConfirm: (tn: string) =>
+      `Open a read-only view of tenant "${tn}"? You can end it at any time from the banner.`,
+    started: (tn: string) => `Now viewing tenant ${tn}.`,
+    ended: "Back to your own role.",
+    end: "End view",
+    bannerView: (tn: string) => `Viewing as tenant ${tn} (read-only).`,
+    bannerAct: (tn: string) => `Acting as tenant admin of ${tn}.`,
+    bannerAudit: "Everything you do is audited and visible to the tenant's admins.",
+  },
+  tiers: {
+    label: "Tier",
+    none: "No tier",
+    names: { bronze: "Bronze", silver: "Silver", gold: "Gold" } as Record<string, string>,
   },
   glass: {
     text: (msg: string) =>
@@ -445,6 +473,9 @@ export const en = {
       "Select files or folders, then restore them onto a host with an agent.",
     streamsHint:
       "Application streams of this plugin backup (e.g. database dumps) are under .nexus-streams/.",
+    convert: "Conversion",
+    convertHint:
+      "The plugin converts the selection on the appliance (no network, no credentials), e.g. mail as mbox or Outlook PST. Everything else stays as stored.",
   },
   restoreFiles: {
     title: (s: string) => `Restore files from ${s}`,
@@ -527,6 +558,9 @@ export const en = {
       offsite_list: "List offsite copy",
       offsite_restore: "Fetch from offsite",
       offsite_attach: "Attach offsite copy",
+      config_backup: "Configuration backup",
+      config_upload: "Upload configuration backup",
+      config_rekey: "Restore tenant keys from offsite",
     } as Record<string, string>,
     result: "Result",
     valid: "The source is reachable and the credentials work.",
@@ -585,6 +619,21 @@ export const en = {
     lockHint:
       "Only for buckets created with Object Lock. Use credentials without DeleteObjectVersion (docs/s3-offsite.md).",
     locked: "locked",
+    // Phase 19b: tenant admins, policy assignment, immutable ids
+    uid: "Tenant ID",
+    uidHint: "Immutable; replication checks it in addition to the name.",
+    uidCopied: "Tenant ID copied.",
+    assigned: "Assigned policies",
+    assignedHint:
+      "A tenant admin of this tenant can only use these policies for its protection groups. Admins are not restricted.",
+    assignedNone: "none assigned",
+    assignedN: (n: number) => `${n} polic${n === 1 ? "y" : "ies"}`,
+    assignedSaved: "Assigned policies saved.",
+    tombstones: "Deleted tenant names",
+    tombstonesHint:
+      "A deleted tenant's name is never used again: its keys, escrow and offsite paths stay bound to that name.",
+    deletedAt: "Deleted",
+    deletedBy: "By",
     windowsHint:
       "Pause or limit offsite uploads at certain times, for example during business hours. An upload that would start in a pause waits for its end; a running one holds before its next pack. Tightening applies directly; allowing more bandwidth needs approval, like other changes of an existing offsite target.",
   },
@@ -926,6 +975,12 @@ export const en = {
       "Applied to every agent and share source of the groups using this policy, in addition to the source's own excludes.",
     globalExclude: "Glob excludes (one per line)",
     globalRegex: "Regex excludes (one per line)",
+    // Phase 19b: tiers and templates
+    fromTemplate: "Create from template",
+    templateHint:
+      "Ready-made tiers: Bronze (daily, 7 days / 4 weeks / 3 months, no offsite), Silver (daily, 14 / 8 / 12 months, offsite), Gold (every 6 h, 30 / 12 / 24 months / 7 years, offsite). Adjust afterwards like any policy.",
+    templateCreated: (n: string) => `Policy ${n} created.`,
+    tierHint: "Shown in the SLA report and on the Tenants page.",
   },
   groups: {
     title: "Protection groups",
@@ -1065,7 +1120,9 @@ export const en = {
     new: "New user",
     role: "Role",
     tenantHint:
-      "Required for tenant users, optional for viewers; empty = all tenants",
+      "Required for tenant users and tenant admins, optional for viewers; empty = all tenants",
+    tenantAdminHint:
+      "As tenant admin you manage the accounts of your tenant: tenant admins, tenant users and viewers.",
     password: "Password",
     passwordNew: "New password (leave empty to keep)",
     passwordOwn: "New password for your own account (leave empty to keep)",
@@ -1130,6 +1187,7 @@ export const en = {
       certificate: "Certificate",
       forwarding: "Forwarding",
       diagnostics: "Diagnostics",
+      configBackup: "Backup of this appliance",
       console: "Console access",
       security: "Security",
       firewall: "Firewall",
@@ -1343,6 +1401,31 @@ export const en = {
       since: (s: string) => `since ${s}`,
       none: "none",
     },
+    cfgb: {
+      intro:
+        "Every day the appliance seals its configuration (catalog with users, sources, policies, settings and audit log; the TOTP and secrets keys; agent CA; replication identities; SSH keys; TLS identity) into one bundle and uploads it to every tenant's offsite target. The bundle opens only with the appliance recovery key. Use it to set up a replacement appliance (manual chapter 14).",
+      status: "Status",
+      lastSuccess: "Last successful backup",
+      never: "No configuration backup yet.",
+      latest: "Latest bundle",
+      latestInfo: (size: string, files: number, ago: string) => `${size}, ${files} files, made ${ago}`,
+      applianceId: "Appliance ID",
+      applianceIdHint: "Folder on the offsite targets: config/<appliance ID>/",
+      run: "Run now",
+      running: "Running…",
+      started: "Configuration backup started.",
+      download: "Download latest",
+      downloadHint: "Encrypted to the recovery key: keep it with your disaster recovery records. Downloads are audited.",
+      targets: "Offsite targets",
+      noTargets: "No tenant has an offsite target: the bundle stays on this appliance. Download it regularly or configure an offsite target.",
+      target: "Tenant (offsite target)",
+      lastUpload: "Last upload",
+      lastOk: "Last successful upload",
+      runs: "Recent runs",
+      kind: "Run",
+      by: "Requested by",
+      retention: "Kept on each target: the newest bundle of each of the last 14 days and of each of the last 12 months.",
+    },
     diag: {
       intro:
         'Self-checks of the appliance (disks, time, firewall, keys, certificate, audit log, catalog, SELinux, services, OS image) and support bundles. The same checks run before every update; a failed check of severity "error" or "critical" stops the update.',
@@ -1539,6 +1622,7 @@ export const en = {
     approved: "Approved.",
     rejected: "Rejected.",
     onlyPending: "Pending only",
+    ownOnly: "Your requests. An administrator or security officer of the provider decides them.",
     ownRequest:
       "You requested this — another administrator or security officer must decide.",
     settingsLink: "Approval settings",
@@ -1569,6 +1653,10 @@ export const en = {
     actorPh: "exact user, e.g. admin",
     actionPh: "prefix, e.g. user.",
     targetPh: "contains, e.g. tenant/acme",
+    tenant: "Tenant",
+    tenantPh: "tenant name, e.g. acme",
+    tenantScoped: (tn: string) =>
+      `Entries concerning tenant ${tn}, including the provider's actions while viewing as your tenant.`,
     from: "From",
     to: "To",
     apply: "Apply",
