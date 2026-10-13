@@ -25,7 +25,7 @@
 
 <div class="chart" bind:clientWidth={w}>
   <svg class="plot" width={w} {height} viewBox="0 0 {w} {height}" role="img" aria-label={title}>
-    {#each items as it, i (it.label)}
+    {#each items as it, i (i)}
       {@const y = i * ROW + 6}
       <text class="label" x="0" y={y + 13}>{it.label}</text>
       <rect class="hbar-track" x={LABEL} {y} width={bw} height="16" rx="4" />
@@ -35,6 +35,6 @@
   </svg>
   <table class="visually-hidden">
     <caption>{title}</caption>
-    <tbody>{#each items as it (it.label)}<tr><th scope="row">{it.label}</th><td>{fmt(it.value)}</td></tr>{/each}</tbody>
+    <tbody>{#each items as it, i (i)}<tr><th scope="row">{it.label}</th><td>{fmt(it.value)}</td></tr>{/each}</tbody>
   </table>
 </div>

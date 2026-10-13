@@ -612,11 +612,13 @@ async function main() {
     ['tenants', async () => {
       await go('/tenants');
       await shot('tenants');
-      await ev(`$rowClick('acme', 'Edit'); return true;`);
+      // the row's first "Edit" opens the assigned policies (aria-label set); the tenant's own Edit has none
+      const editTenant = (name) => ev(`[...$row(${JSON.stringify(name)}).querySelectorAll('button')].find((b) => b.textContent.trim() === 'Edit' && !b.hasAttribute('aria-label')).click(); return true;`);
+      await editTenant('acme');
       await until(`return !!document.querySelector('dialog[open] #t-ep')`, 'tenant dialog');
       await shot('tenant-s3', { height: 1250 });
       await closeDialogs();
-      await ev(`$rowClick('initech', 'Edit'); return true;`);
+      await editTenant('initech');
       await until(`return !!document.querySelector('dialog[open] #t-host')`, 'tenant dialog');
       await shot('tenant-sftp', { height: 1250 });
       await closeDialogs();
