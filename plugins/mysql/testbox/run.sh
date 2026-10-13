@@ -18,7 +18,10 @@ dir=$root/target/my-testbox
 # git worktrees and CI runner checkouts (parallel test runs) get their own container names and ports, so one run
 # cannot remove or reuse another's testbox; the main checkout keeps the defaults (lab scripts).
 k=0
-XX
+case $root in */worktrees/* | */_work/*) k=$(($(printf %s "$root" | cksum | cut -d' ' -f1) % 400 + 1)) ;; esac
+# CI: ports per workflow run too; a container stuck in "stopping" keeps its port forwarder, which
+# accepts and drops connections (mysql tests: "ssh 127.0.0.1:27257: Disconnected")
+[ -z "${GITHUB_RUN_ID:-}" ] || k=$(($(printf %s "$root$GITHUB_RUN_ID" | cksum | cut -d' ' -f1) % 400 + 1))
 MARIADB_PORT=${MARIADB_PORT:-$((23306 + k * 10))}
 MARIADB_SSH_PORT=${MARIADB_SSH_PORT:-$((23307 + k * 10))}
 MYSQL_PORT=${MYSQL_PORT:-$((23308 + k * 10))}

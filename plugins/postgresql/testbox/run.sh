@@ -20,7 +20,10 @@ PG=${PG:-17}
 # git worktrees and CI runner checkouts (parallel test runs) get their own container names and ports, so one run
 # cannot remove or reuse another's testbox; the main checkout keeps the defaults (lab scripts).
 k=0
-XX
+case $root in */worktrees/* | */_work/*) k=$(($(printf %s "$root" | cksum | cut -d' ' -f1) % 400 + 1)) ;; esac
+# CI: ports per workflow run too; a container stuck in "stopping" keeps its port forwarder, which
+# accepts and drops connections (mysql tests: "ssh 127.0.0.1:27257: Disconnected")
+[ -z "${GITHUB_RUN_ID:-}" ] || k=$(($(printf %s "$root$GITHUB_RUN_ID" | cksum | cut -d' ' -f1) % 400 + 1))
 PORT=${PORT:-$((15432 + k * 10))}
 ALT_PORT=${ALT_PORT:-$((15433 + k * 10))}
 SSH_PORT=${SSH_PORT:-$([ $k = 0 ] && echo 12222 || echo $((12225 + k * 10)))}
