@@ -591,6 +591,8 @@ pub async fn login(
 /// A new session for `user_id` (local login and OIDC callback alike) from
 /// `ip` with the request's user agent: the `Set-Cookie` value and the CSRF
 /// token. Expired sessions are purged; the account's `last_login` is set.
+/// Beyond the per-account cap (`max_sessions`, Phase 21b) the oldest sessions
+/// of the account end (audited `session.limit`).
 pub fn new_session(st: &AppState, user_id: i64, ip: &str, headers: &HeaderMap) -> ApiResult<(HeaderValue, String)> {
     let now = catalog::now();
     let (token, csrf) = (random_hex(), random_hex());
@@ -614,6 +616,22 @@ pub fn new_session(st: &AppState, user_id: i64, ip: &str, headers: &HeaderMap) -
         params![sha256_hex(token.as_bytes()), user_id, csrf, now, ip, ua],
     )?;
     c.execute("UPDATE users SET last_login = ?2 WHERE id = ?1", params![user_id, now])?;
+    let max = catalog::access::max_sessions(&c)?;
+    let dropped = c.execute(
+        "DELETE FROM sessions WHERE id IN (SELECT id FROM sessions WHERE user_id = ?1
+         ORDER BY created DESC, id DESC LIMIT -1 OFFSET ?2)",
+        params![user_id, max],
+    )?;
+    if dropped > 0 {
+        let name: String = c.query_row("SELECT name FROM users WHERE id = ?1", [user_id], |r| r.get(0))?;
+        drop(c);
+        st.audit(
+            &name,
+            "session.limit",
+            &format!("user/{name}"),
+            json!({"ended": dropped, "max_sessions": max, "ip": ip}),
+        )?;
+    }
     let cookie = format!(
         "{COOKIE}={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={}",
         lim.absolute_secs()
@@ -645,12 +663,13 @@ pub async fn me(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<serde_json::Va
     let bg = crate::dashboard::break_glass(&st.cat.conn(), &ctx)?;
     let shell = crate::console::shell_banner(&st.cat.conn(), &ctx)?;
     let vault = catalog::vault::enabled(&st.cat.conn())?;
+    let incident = crate::incident::banner(&st.cat.conn(), &ctx)?;
     let imp = ctx
         .impersonating
         .as_ref()
         .map(|t| json!({"tenant": t, "role": ctx.user.role}));
     Ok(Json(
         json!({"user": ctx.user, "csrf": ctx.csrf, "break_glass": bg, "console_shell": shell, "vault_mode": vault,
-               "impersonating": imp}),
+               "impersonating": imp, "incident": incident}),
     ))
 }

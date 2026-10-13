@@ -2,6 +2,7 @@
 
 pub mod clock;
 pub mod crypto;
+pub mod health;
 pub mod names;
 pub mod retention;
 pub mod store;

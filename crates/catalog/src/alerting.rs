@@ -30,6 +30,7 @@ pub fn rank(severity: &str) -> u8 {
 const HINTS: &[(&str, &str)] = &[
     ("job_failed", "Open the job log on the Jobs page, fix the cause (source reachable, credentials, space) and run the job again. The alert resolves itself after the next successful run."),
     ("verify", "Stored data failed verification. Do not delete snapshots; check the store disks (SMART) and the offsite target, then run Verify again. Resolves after a successful verify."),
+    ("snapshot_damaged", "Snapshots reference chunks that failed verification. Do not delete them; run Repair on the Snapshots page (fetches the chunks from the offsite target or the replication primary). The next backup of each affected source reads its data in full. Resolves when no snapshot is damaged any more."),
     ("inventory", "Snapshots disappeared or differ from the catalog. Check the store and the offsite target for manual deletion or tampering and review the audit log. Resolves after a clean offsite check."),
     ("capacity", "The store is filling up. Shorten retention, run GC or add disks. Resolves when usage drops below the threshold."),
     ("offsite_lag", "Offsite copies are behind. Check the offsite target (reachable, credentials, quota) and the offsite job logs. Resolves when the copy has caught up."),
@@ -56,6 +57,8 @@ const HINTS: &[(&str, &str)] = &[
     ("tenant_disabled", "The tenant is deactivated (Tenants page): no backups, offsite copies or replication run for it and its accounts cannot sign in; its other alerts are suppressed. Retention keeps running. Reactivate it on the Tenants page when it is needed again."),
     ("vault_disabled", "Vault mode was switched off at the console with the recovery key after an approved request. Confirm with the people who requested and approved it (audit: vault.disable)."),
     ("config_backup", "The appliance configuration backup (catalog, key files) could not be made or uploaded to an offsite target. Open Configuration → Settings → Backup of this appliance and the job log; check that nexus-keyd runs and the offsite target is reachable, then Run now. Resolves after the next successful run (per target)."),
+    ("incident", "A security officer put the appliance into incident mode: snapshots in the chosen range are held, backup groups are paused, every other session and all API tokens were ended. Investigate; leaving incident mode needs a second approver (Settings → Incident mode). Resolves when incident mode ends."),
+    ("dek_rotation", "The tenant's data encryption key is older than the configured rotation interval (Settings → Security). Rotate it at the appliance console (root shell): runuser -u nexus-keyd -- /usr/libexec/nexus/keyd tenant-rotate /var/lib/nexus/keyd <tenant>. New snapshots use the new key, older ones stay readable; on a replication primary export the keys again afterwards. Resolves once rotated."),
     ("malware", "The YARA scan found matches of the administrators' rules in a snapshot (rule and path: Snapshots page, scan results). The snapshot is flagged as anomalous, so restores and holds default to an earlier clean snapshot, and restores with Scan first are refused or run with the network disconnected. Check the files and the source; if a rule was too broad, a security officer clears the flag on the Snapshots page. Resolve the alert by hand."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
@@ -80,6 +83,8 @@ const CATEGORY: &[(&str, &str)] = &[
     ("gc_quorum", "security"),
     ("gc_confirm", "security"),
     ("vault_disabled", "security"),
+    ("incident", "security"),
+    ("dek_rotation", "security"),
     ("job_failed", "backup"),
     ("sla_missed", "backup"),
     ("paused", "backup"),
@@ -87,6 +92,7 @@ const CATEGORY: &[(&str, &str)] = &[
     ("backup_inconsistent", "backup"),
     ("orphaned", "backup"),
     ("verify", "backup"),
+    ("snapshot_damaged", "backup"),
     ("offsite_lag", "backup"),
     ("inventory_refresh", "backup"),
     ("config", "backup"),

@@ -293,6 +293,8 @@ const db = {
   security: {
     session: { idle_min: 30, absolute_h: 12 },
     dormant_days: 90,
+    max_sessions: 5,
+    dek_rotation_days: 365,
     login_banner: 'Authorised use only. Activity on this appliance is recorded in a tamper-evident audit log.',
   },
   /** Phase 16c setting `inbound`: per-service source lists (empty = any) */
@@ -306,6 +308,8 @@ const db = {
   hardware: {} as Json,
   /** Phase 19a: bare-metal recovery / P2V sessions (GET /rescue) */
   rescue: [] as Json[],
+  /** Phase 21b setting `incident` (active or the last one) */
+  incident: null as Json | null,
 };
 const nextId = () => ++db.seq;
 
@@ -360,6 +364,13 @@ function planFor(kind: string, p: Json): string[] {
     ];
   const psrc = db.sources.find((s) => s.id === Number(p.source_id));
   switch (kind) {
+    case 'chunk_repair':
+      return [
+        'nexus-offsite repair: 2 bad chunk(s) of tenant ' + (p.tenant ?? 'initech'),
+        'fetched 2 sealed chunks from packs 3f/3f91…, 8a/8a02… (verified: AEAD + keyed hash)',
+        'repair {"source":"offsite","repaired":2,"unavailable":0}',
+        'health: 0 bad chunks, 0 damaged snapshots',
+      ];
     case 'plugin_validate':
       return [`starting nexus-pluginhost for ${psrc?.kind} (source ${psrc?.name})`, 'sandbox: landlock + seccomp active', 'Validate: connecting to the endpoint', 'done'];
     case 'plugin_guests':
@@ -538,6 +549,7 @@ function tick() {
       if (j.kind === 'report_send') reportSent(j);
       if (j.kind === 'config_backup') cfgBackupDone(j, t);
       if (j.kind.startsWith('offsite_')) offsiteResult(j, t);
+      if (j.kind === 'chunk_repair') repairDone(j, t);
       const ag = db.agents.find((a) => a.id === j.params.agent_id);
       if (j.kind === 'agent_enroll' && ag) {
         Object.assign(ag, { enrolled_at: t, cert_sha256: rand(32), token_expires: null, token_hash: null, last_seen: t });
@@ -592,6 +604,15 @@ function tick() {
       }
     }
   }
+}
+
+/** Phase 21d: the chunks came back from the offsite copy (crates/scheduler/src/repair.rs). */
+function repairDone(j: Job, t: number) {
+  const healed = (db.snapshots as Json[]).filter((x) => x.tenant === j.tenant && x.damaged);
+  for (const x of healed) Object.assign(x, { damaged: null, damaged_at: null });
+  for (const a of db.alerts.filter((x) => x.key === `snapshot_damaged:${j.tenant}` && !x.resolved_at))
+    Object.assign(a, { resolved_at: t, resolved_by: 'scheduler', auto: true });
+  if (healed.length) void audit('scheduler', 'snapshot.repaired', `tenant/${j.tenant}`, { job: j.id, snapshots: healed.map((x) => `${x.source}/${x.time}`) });
 }
 
 /** Phase 17d: what the scheduler does after the offsite jobs (crates/scheduler/src/offsite_ui.rs). */
@@ -1473,6 +1494,7 @@ function seed() {
   seedTenantKeys(t);
   seedHolds(t);
   seedAnomalies(t);
+  seedDamage(t);
   seedScans(t);
   seedHardware(t);
   seedM365(t);
@@ -2008,6 +2030,18 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       addJob(p.kind, p.tenant, { ...p.params, replace: true, quorum_id: qid, requested_by: by }, 'scheduler');
       break;
     }
+    case 'incident.leave': {
+      const v = db.incident;
+      if (!v?.active || v.since !== p.since) throw new HttpError(409, 'this incident is no longer active');
+      let resumed = 0;
+      for (const g of v.paused) {
+        const x = db.groups.find((y) => y.id === g.id);
+        if (x && x.paused_until === -1) (x.paused_until = g.prev === -1 || (g.prev && g.prev > now()) ? g.prev : null, resumed++);
+      }
+      for (const a of db.alerts) if (a.key === 'incident' && !a.resolved_at) Object.assign(a, { resolved_at: now(), resolved_by: decider || by });
+      Object.assign(v, { active: false, ended_at: now(), ended_by: by, approved_by: decider || by, resumed });
+      break;
+    }
     case 'snapshot.hold_release': {
       const h = find(db.holds, (x) => x.id === p.hold_id && x.state === 'active', 'active hold');
       Object.assign(h, { state: 'released', released_by: by, approved_by: decider || by, released_at: now() });
@@ -2100,6 +2134,11 @@ on('POST', '/auth/login', async (c) => {
   const ua = String(c.headers['user-agent'] ?? '').slice(0, 256);
   db.sessions.set(sid, { id: nextId(), userId: u.id, csrf, created: now(), last: now(), ip: '198.51.100.17', ua });
   u.last_login = now();
+  // Phase 21b: beyond `max_sessions` the account's oldest sessions end
+  const mine = [...db.sessions.entries()].filter(([, x]) => x.userId === u.id).sort((a, b) => b[1].created - a[1].created || b[1].id - a[1].id);
+  const over = mine.slice(db.security.max_sessions);
+  for (const [k] of over) db.sessions.delete(k);
+  if (over.length) await audit(u.name, 'session.limit', `user/${u.name}`, { ended: over.length, max_sessions: db.security.max_sessions });
   c.res.setHeader('Set-Cookie', `nx_session=${sid}; HttpOnly; SameSite=Strict; Path=/`);
   await audit(u.name, 'auth.login', 'session', { method: passkey ? 'passkey' : 'totp' });
   return [200, { csrf, user: pub(u) }];
@@ -2119,6 +2158,7 @@ on('GET', '/auth/me', (c) => {
       console_shell: u.tenant || u.role === 'tenant_user' ? null : consoleShell,
       vault_mode: db.vault.enabled,
       impersonating: db.sessions.get(c.sid!)!.imp ?? null,
+      incident: incidentBanner(u),
     },
   ];
 });
@@ -2674,6 +2714,7 @@ on('POST', '/groups/:id/pause', async (c, [id]) => {
 });
 on('POST', '/groups/:id/resume', async (c, [id]) => {
   const u = need(c.user, 'admin', 'operator', 'tenant_admin');
+  if (db.incident?.active) throw new HttpError(409, 'incident mode is active: groups stay paused until it is left (approval)');
   const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
   g.paused_until = null;
   // like the scheduler's next tick: the group's `paused` warning resolves itself
@@ -3561,6 +3602,22 @@ on('PUT', '/settings/dormant', async (c) => {
   db.security.dormant_days = days;
   return [200, { dormant_days: days }];
 });
+on('PUT', '/settings/max-sessions', async (c) => {
+  const u = need(c.user, 'admin');
+  const max = c.body.max;
+  if (!Number.isInteger(max) || max < 1 || max > 50) throw new HttpError(400, 'max: 1..=50');
+  await audit(u.name, 'security.max_sessions', 'settings/max_sessions', { max, old: db.security.max_sessions });
+  db.security.max_sessions = max;
+  return [200, { max_sessions: max }];
+});
+on('PUT', '/settings/dek-rotation', async (c) => {
+  const u = need(c.user, 'admin');
+  const days = c.body.days;
+  if (!Number.isInteger(days) || (days !== 0 && (days < 30 || days > 3650))) throw new HttpError(400, 'days: 0 (off) or 30..=3650');
+  await audit(u.name, 'security.dek_rotation', 'settings/dek_rotation_days', { days, old: db.security.dek_rotation_days });
+  db.security.dek_rotation_days = days;
+  return [200, { dek_rotation_days: days }];
+});
 on('PUT', '/settings/banner', async (c) => {
   const u = need(c.user, 'admin');
   const text = String(c.body.banner ?? '').replace(/\s+$/, '');
@@ -3809,12 +3866,15 @@ on('POST', '/jobs', async (c) => {
   const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'tenant_user');
   const { kind, tenant, params = {} } = c.body;
   // Phase 19b: tenant admins run everything within their tenant except the provider's maintenance
-  if (u.role === 'tenant_admin' && (tenant !== u.tenant || ['offsite', 'retention', 'gc', 'verify'].includes(kind)))
+  if (u.role === 'tenant_admin' && (tenant !== u.tenant || ['offsite', 'retention', 'gc', 'verify', 'chunk_repair'].includes(kind)))
     throw new HttpError(403, 'tenant admins run backups, restores and agent jobs of their own tenant only');
   if (typeof kind === 'string' && kind.startsWith('plugin_') && !['plugin_validate', 'plugin_guests', 'plugin_backup', 'plugin_restore', 'plugin_mount'].includes(kind))
     throw new HttpError(400, `unknown job kind ${kind}`);
   if (u.role === 'tenant_user' && (!RESTORE_KINDS.includes(kind) || tenant !== u.tenant)) throw new HttpError(403, 'tenant users may only restore within their tenant');
   find(db.tenants, (t) => t.name === tenant, 'tenant');
+  // Phase 21d: admin only, no parameters
+  if (kind === 'chunk_repair' && u.role !== 'admin') throw new HttpError(403, 'forbidden');
+  if (kind === 'chunk_repair' && Object.keys(params).length) throw new HttpError(400, 'params: chunk_repair takes no parameters');
   if (kind === 'files_list' && !String(params.path ?? '').startsWith('/')) throw new HttpError(400, 'path: must be absolute');
   const scanFirst = takeScanFirst(kind, params);
   checkJob(u, kind, tenant, params);
@@ -4105,9 +4165,9 @@ const ALERT_CATEGORY: Record<string, string> = {
   anomaly: 'security', malware: 'security', console_unlock: 'security', console_root_shell: 'security', break_glass: 'security',
   mgmt_allow_reset: 'security', firewall_reset: 'security', legal_hold_advisory: 'security', cert_expiry: 'security',
   account_dormant: 'security', inventory: 'security', clock_skew: 'security', gc_quorum: 'security', gc_confirm: 'security',
-  vault_disabled: 'security',
+  vault_disabled: 'security', incident: 'security', dek_rotation: 'security',
   job_failed: 'backup', sla_missed: 'backup', paused: 'backup', consistency: 'backup', backup_inconsistent: 'backup',
-  orphaned: 'backup', verify: 'backup', offsite_lag: 'backup', inventory_refresh: 'backup', config: 'backup',
+  orphaned: 'backup', verify: 'backup', snapshot_damaged: 'backup', offsite_lag: 'backup', inventory_refresh: 'backup', config: 'backup',
   disk: 'hardware', fleecing_space: 'hardware',
 };
 const alertCategory = (kind: string) => (kind.startsWith('replication_') ? 'replication' : (ALERT_CATEGORY[kind] ?? 'system'));
@@ -4857,10 +4917,10 @@ on('GET', '/dashboard', (c) => {
   const days = c.query.get('days') === '7' ? 7 : 30;
   const key = `${u.tenant ?? '*'}/${days}`;
   const hit = dashCache.get(key);
-  if (hit && now() - hit.at < 60) return [200, hit.body];
+  if (hit && now() - hit.at < 60) return [200, { ...hit.body, incident: incidentBanner(u) }];
   const body = dashboard(u, days);
   dashCache.set(key, { at: now(), body });
-  return [200, body];
+  return [200, { ...body, incident: incidentBanner(u) }];
 });
 
 // ---- OIDC (§2). The mock has no identity provider: "start" goes straight to the callback, which
@@ -5130,6 +5190,7 @@ function seedPhase14d2(t: number) {
   ];
   db.alerts.push(
     mkAlert({ ts: t - 86400 * 3, severity: 'info', kind: 'cert_expiry', key: `cert_expiry:token:${p14.tokens[1].id}`, message: 'API token ci-restore-test of admin expires in 5 day(s)' }),
+    mkAlert({ ts: t - 86400 * 2, severity: 'info', kind: 'dek_rotation', key: 'dek_rotation:initech', tenant: 'initech', message: 'tenant initech: data encryption key v1 is 371 days old (rotation interval 365 days); rotate it at the console with keyd tenant-rotate' }),
     mkAlert({ ts: t - 86400 * 6, severity: 'warning', kind: 'cert_expiry', key: 'cert_expiry:oidc_secret', message: 'The OIDC client secret (create a new one at the IdP, enter it in Settings → Single sign-on) expires in 24 day(s)' }),
   );
   db.oidc.client_secret_expires = t + 86400 * 24;
@@ -5242,6 +5303,8 @@ function diagChecks(t: number): Json[] {
     c('systemd.failed', 'Failed system services', 'pass', 1, 'no failed units'),
     c('bootc', 'OS image (bootc)', 'pass', 1, `booted ${db.updates.booted?.version}, rollback ${db.updates.rollback?.version}`),
     c('smart', 'Disk health (SMART)', 'skip', 1, 'smartctl not installed'),
+    // Phase 21b security posture (recommendations: pass / warn, never update blockers)
+    ...postureChecks().map((x) => c(x[0], x[1], x[2] ? 'pass' : 'warn', x[2] ? 1 : 2, x[3])),
   ];
 }
 function seedDiag(t: number) {
@@ -6193,6 +6256,98 @@ on('POST', '/tenants/:tenant/recovery-key/:id/show', async (c, [tn, id]) => {
   return [200, { tenant, key, kid, replaced }];
 });
 
+// ---------------------------------------------------------------- Phase 21b: incident mode, security posture
+
+function incidentBanner(u: User): Json | null {
+  if (u.tenant || u.role === 'tenant_user' || !db.incident?.active) return null;
+  const { since, by, reason } = db.incident;
+  return { since, by, reason };
+}
+const incidentLeaveQuorum = () => db.quorum.find((q) => q.action === 'incident.leave' && q.state === 'pending')?.id ?? null;
+on('GET', '/incident', (c) => {
+  const u = need(c.user, 'admin', 'security_officer', 'operator', 'viewer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  return [200, { ...(db.incident ?? { active: false }), leave_quorum: incidentLeaveQuorum() }];
+});
+on('POST', '/incident', async (c) => {
+  const u = need(c.user, 'security_officer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  const b = c.body ?? {};
+  const reason = String(b.reason ?? '').trim();
+  if (!reason || reason.length > 500 || /[\u0000-\u001f]/.test(reason)) throw new HttpError(400, 'reason: 1 to 500 characters, one line');
+  if (!b.current_password || !b.current_totp) throw new HttpError(400, 'current_password and current_totp are required');
+  if (b.current_password !== u.password || !/^\d{6}$/.test(String(b.current_totp))) throw new HttpError(403, 're-authentication failed: wrong current password or TOTP code');
+  if (db.incident?.active) throw new HttpError(409, 'incident mode is already active');
+  const h = b.hold ?? null;
+  const held: string[] = [];
+  if (h) {
+    if (h.from > h.to) throw new HttpError(400, 'hold: from must not be after to');
+    const tenants: string[] = h.tenants?.length ? h.tenants : db.tenants.map((x) => x.name);
+    for (const t of tenants) if (!db.tenants.some((x) => x.name === t)) throw new HttpError(400, `hold: no tenant ${t}`);
+    for (const x of db.snapshots)
+      if (tenants.includes(x.tenant) && x.time >= h.from && x.time <= h.to && (!h.sources?.length || h.sources.includes(x.source)))
+        if (holdOne(x.tenant, x.source, x.time, `incident: ${reason}`, u.name)) held.push(`${x.tenant}/${x.source}/${x.time}`);
+  }
+  const ids: number[] | null = Array.isArray(b.groups) ? b.groups : null;
+  for (const id of ids ?? []) if (!db.groups.some((g) => g.id === id)) throw new HttpError(400, `groups: no group ${id}`);
+  const paused: Json[] = [];
+  for (const g of db.groups) {
+    if ((ids && !ids.includes(g.id)) || g.paused_until === -1) continue;
+    paused.push({ id: g.id, prev: g.paused_until ?? null });
+    g.paused_until = -1;
+  }
+  let sessions = 0;
+  for (const sid of [...db.sessions.keys()]) if (sid !== c.sid) (db.sessions.delete(sid), sessions++);
+  const tokens = p14.tokens.length;
+  p14.tokens.length = 0;
+  const t = now();
+  const msg = `incident mode entered by ${u.name}: ${reason} (${held.length} snapshots held, ${paused.length} groups paused, ${sessions} sessions and ${tokens} API tokens ended)`;
+  const alert = mkAlert({ ts: t, severity: 'critical', kind: 'incident', key: 'incident', message: msg });
+  db.alerts.push(alert);
+  db.incident = { active: true, since: t, by: u.name, reason, hold: h ? { tenants: h.tenants ?? [], sources: h.sources ?? [], from: h.from, to: h.to } : null, held, paused, sessions_ended: sessions, tokens_revoked: tokens, alert: alert.id };
+  dashCache.clear();
+  await audit(u.name, 'incident.enter', 'appliance', { incident: db.incident });
+  return [201, db.incident];
+});
+on('POST', '/incident/leave', async (c) => {
+  const u = need(c.user, 'security_officer', 'admin');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  if (!db.incident?.active) throw new HttpError(409, 'incident mode is not active');
+  if (incidentLeaveQuorum()) throw new HttpError(409, 'leaving incident mode is already requested');
+  // always a second person, even with approvals disabled
+  const q = { id: nextId(), action: 'incident.leave', params: { since: db.incident.since }, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
+  db.quorum.push(q);
+  await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action: q.action, params: q.params });
+  return [202, { quorum_id: q.id }];
+});
+
+/** [id, title, ok, detail] as nexus-diag's posture checks would find the mock appliance. */
+function postureChecks(): [string, string, boolean, string][] {
+  const t = now();
+  const approvers = db.users.filter((u) => ['admin', 'security_officer'].includes(u.role) && !u.disabled && !u.tenant);
+  const dormantDays = db.security.dormant_days || 90;
+  const dormant = approvers.filter((u) => (u.last_login ?? 0) < t - dormantDays * DAY).map((u) => u.name);
+  const sinks = ['syslog', 'https'].filter((k) => db.forwarding[k]?.enabled);
+  const failing = sinks.filter((k) => db.forwardErr[k]);
+  const unlocked = db.tenants.filter((x) => !(x.offsite?.remote?.type === 's3' && x.offsite.remote.lock)).map((x) => x.name);
+  const allow = db.firewall.web.allow;
+  return [
+    ['posture.approvals', 'Security posture: approvals', db.approvals && approvers.length >= 3,
+      `approvals ${db.approvals ? 'on' : 'off'}, ${approvers.length} possible approver(s) (active admins and security officers)`],
+    ['posture.forwarding', 'Security posture: audit forwarding', sinks.length > 0 && !failing.length,
+      !sinks.length ? 'no audit forwarding to a syslog or HTTPS receiver configured' : failing.length ? `forwarding not delivering: ${failing.join(', ')}` : `forwarding delivers to ${sinks.join(', ')}`],
+    ['posture.offsite_lock', 'Security posture: offsite lock', !unlocked.length,
+      unlocked.length ? `no offsite copy with S3 Object Lock for: ${unlocked.join(', ')}` : `${db.tenants.length} tenant(s) copy offsite with S3 Object Lock`],
+    ['posture.inbound', 'Security posture: inbound allow-list', allow.length > 0,
+      allow.length ? `web UI and API restricted to ${allow.join(', ')}` : 'the web UI and API accept connections from any address (no inbound allow-list)'],
+    ['posture.certificate', 'Security posture: own web certificate', !!p14.cert.web, p14.cert.web ? 'imported certificate CN=backup.example.com' : 'the self-signed certificate is in use; import one signed by your CA'],
+    ['posture.dormant_admins', 'Security posture: dormant administrators', !dormant.length,
+      dormant.length ? `no login for ${dormantDays} days: ${dormant.join(', ')}` : `every admin and security officer logged in within ${dormantDays} days`],
+    ['posture.totp', 'Security posture: second factor', true, `${db.users.filter((u) => !u.disabled).length} local account(s) with password + TOTP`],
+    ['posture.grub', 'Security posture: boot menu password', true, 'boot menu password set'],
+  ];
+}
+
 // Phase 24d: fleet enrollment (fleet secrets, discovery candidates, CSV bulk enrollment)
 type MockFleet = {
   id: string; name: string; tenant: string; created: number; created_by: string; expires: number;
@@ -6512,6 +6667,20 @@ on('GET', '/stats/trends', (c) => {
   });
   return [200, out];
 });
+
+/** Phase 21d: verify found two bad chunks in initech's store; two snapshots of vm-102 reference them. */
+function seedDamage(t: number) {
+  const snaps = (db.snapshots as Json[]).filter((s) => s.tenant === 'initech' && s.source === 'vm-102' && s.local).sort((a, b) => b.time - a.time);
+  const hit = snaps.slice(1, 3);
+  if (!hit.length) return;
+  hit.forEach((s, i) => Object.assign(s, { damaged: i + 1, damaged_at: t - 5 * 3600 }));
+  db.alerts.push(
+    mkAlert({
+      ts: t - 5 * 3600, severity: 'critical', kind: 'snapshot_damaged', key: 'snapshot_damaged:initech', tenant: 'initech',
+      message: `${hit.length} snapshot(s) of tenant initech reference 2 chunk(s) that failed verification: ${hit.map((s) => `vm-102/${s.time}`).join(', ')}. Run Repair on the Snapshots page; the next backup of these sources reads in full.`,
+    }),
+  );
+}
 
 function seedAnomalies(t: number) {
   const newest = (tenant: string, source: string, n = 0) =>

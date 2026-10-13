@@ -60,8 +60,8 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 
 | Category | Kinds |
 |---|---|
-| security | `anomaly`, `malware`, `console_unlock`, `console_root_shell`, `break_glass`, `firewall_reset`, `mgmt_allow_reset`, `legal_hold_advisory`, `cert_expiry`, `account_dormant`, `inventory`, `clock_skew`, `gc_quorum`, `gc_confirm`, `vault_disabled` |
-| backup | `job_failed`, `sla_missed`, `paused`, `consistency`, `backup_inconsistent`, `orphaned`, `verify`, `offsite_lag`, `inventory_refresh`, `config` |
+| security | `anomaly`, `malware`, `console_unlock`, `console_root_shell`, `break_glass`, `firewall_reset`, `mgmt_allow_reset`, `legal_hold_advisory`, `cert_expiry`, `account_dormant`, `inventory`, `clock_skew`, `gc_quorum`, `gc_confirm`, `vault_disabled`, `incident`, `dek_rotation` |
+| backup | `job_failed`, `sla_missed`, `paused`, `consistency`, `backup_inconsistent`, `orphaned`, `verify`, `snapshot_damaged`, `offsite_lag`, `inventory_refresh`, `config` |
 | replication | every `replication_…` kind |
 | hardware | `disk`, `fleecing_space` |
 | system | `capacity`, `quota`, `forwarding`, `report`, `tenant_disabled`, `test` and any kind not listed |
@@ -73,6 +73,7 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 | `sla_missed` | warning | a group backup runs longer than its policy's **Run-time SLA** (one alert per job) | — | check why the run is slow (source load, network, a hanging guest); cancel it on **Jobs** if needed, or raise the SLA |
 | `paused` | warning | a group was paused, or a source put into maintenance, for more than 7 days or indefinitely (one alert per pause) | the group is resumed / the maintenance ends (next scheduler tick) | make sure the pause is intended; **Resume** the group / **End maintenance** when the work is done |
 | `verify` | critical | the daily verification found missing or corrupt chunks (locally or in the offsite sample) | the tenant's next verification succeeds | see [15 Troubleshooting](15-troubleshooting-faq.md#verification-failed); do not run GC until it is understood |
+| `snapshot_damaged` | critical | snapshots reference chunks that failed verification; the message names up to 10 of them (one alert per tenant) | no snapshot of the tenant is damaged any more (after **Repair**, or after a verification that finds the data stored again) | run **Repair** on **Snapshots**, see [Verification and repair](#verification-and-repair); do not delete the damaged snapshots |
 | `inventory` | critical | the offsite inventory check found packs missing on the target or unknown packs there; or a locked snapshot disappeared from the local store | the tenant's next offsite job (with its inventory check) succeeds | treat as a possible attack or storage fault; check the offsite target, see [07 Offsite copies](07-offsite.md) |
 | `capacity` | warning | the chunk store is more than 75 % full | usage is back under 75 % | add storage, or review retention; GC only frees chunks no snapshot uses any more |
 | `offsite_lag` | warning | the oldest snapshot not yet offsite is more than 48 hours old (one alert per tenant) | the tenant's offsite copy has caught up | check the tenant's offsite jobs and the target's reachability and space |
@@ -92,6 +93,8 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 | `quota` | warning at 80 %, critical at 100 % | a tenant's store reached 80 % or 100 % of its soft quota (**Tenants**); one alert per tenant, escalated at 100 % | usage is back under 80 % | review retention or what the tenant backs up, or raise the quota; backups continue either way |
 | `cert_expiry` | info at 90 days, warning at 30, critical at 7 (API tokens: info, last 7 days) | a certificate, the IdP client secret or an API token expires soon (see [Expiry warnings](#expiry-warnings)); one alert per item, escalated | renewed (new certificate, new secret date, token revoked or replaced) | renew as the message says |
 | `account_dormant` | info | an account was disabled because nobody signed in with it for the configured number of days (**Settings → Security → Dormant accounts**; one alert per account) | — | re-enable the account on **Users** if it is still needed, else leave it disabled. See [09 Users and access](09-users-and-access.md#dormant-accounts) |
+| `incident` | critical | a security officer entered incident mode (holds, paused groups, sessions and API tokens ended) | incident mode is left (approved) | investigate; see [14 Disaster recovery](14-disaster-recovery.md#incident-mode) |
+| `dek_rotation` | info | a tenant's data encryption key is older than the reminder interval (**Settings → Security**; one alert per tenant) | the key is rotated, or the reminder is switched off | rotate at the console; see [14 Disaster recovery](14-disaster-recovery.md#rotating-a-tenants-encryption-key) |
 | `firewall_reset` | warning | every inbound firewall restriction was cleared on the console (`nexus-setup reset-firewall`) | — | confirm with the person who did it, then set correct source lists in **Settings → Firewall**. See [02 Installation](02-installation.md#inbound-firewall) |
 | `tenant_disabled` | info | a tenant is deactivated (**Tenants**); its other alerts are muted meanwhile (one alert per tenant) | the tenant is reactivated | nothing, if intended; reactivate the tenant when it is needed again. See [09 Users and access](09-users-and-access.md#deactivating-a-tenant) |
 | `vault_disabled` | warning | vault mode was switched off at the console (`nexus-setup vault-disable`) after an approved request | — | confirm with the requester and the approver (audit `vault.disable`), then acknowledge. See [08 Replication](08-replication.md#vault-mode-secondary-only) |
@@ -104,6 +107,52 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 | `fleecing_space` | critical | the fleecing storage of a Proxmox node is below the guard of its source (the VM was skipped) or below the critical level (a running VM backup was cancelled); one alert per node and storage (`fleecing_space:<tenant>/<node>/<storage>`) | a later backup finds enough room on that storage | free space in the storage (usually `local-lvm`), or choose a larger fleecing storage or other limits on the source. See [04 Sources](04-sources.md#proxmox-ve) |
 | `clock_skew` | warning above 1 minute, critical above 10 minutes; info for a lag after a restart | system time and the compliance clock (the clock of retention locks, [01 Concepts](01-concepts.md#retention-locks-and-the-compliance-clock)) differ: system time jumped ahead while the appliance was running, or the compliance clock is ahead (system time moved back); info: the compliance clock was already behind when the scheduler started (the appliance was off) | the difference is under a minute | find out who or what changed the time (Diagnostics: `time.sync`, `time.nts`; the audit log). Locks are never shortened: the compliance clock moves towards system time by at most 0.1 % of the elapsed time. See [15 Troubleshooting](15-troubleshooting-faq.md#check-time-compliance) |
 | `forwarding` | warning | audit / alert forwarding to a syslog or HTTPS sink has failed for 15 minutes (one alert per sink; the message names the destination and the error) | the sink delivers again (or is disabled / removed) | check the receiver (reachable, certificate, token) and **Settings → Forwarding** (**Send test message**); nothing is lost, the backlog follows. See [10 Approvals and audit](10-approvals-and-audit.md#forwarding-to-a-siem) |
+
+## Verification and repair
+
+Every night the `verify` job re-reads one seventh of the stored chunks: after seven days every chunk has been read
+once. It also checks every night that each chunk a snapshot needs is present. If it finds a corrupt or missing chunk:
+
+- the chunk goes on the tenant's **bad-chunk list** and a corrupt copy is moved aside. New backups never reuse it:
+  when a source delivers the same data again, the appliance stores the chunk again, and that also heals older
+  snapshots that need the same chunk;
+- the next backup of each affected source does not build on the damaged snapshot. A Proxmox VM gets a fresh dirty
+  bitmap and its disks are read in full once. An agent re-reads every file instead of using its change cache. A
+  plugin source makes a full backup. NFS/SMB shares and TrueNAS datasets re-read the affected files;
+- the affected snapshots are marked **Damaged** on **Snapshots**, with the number of bad chunks in the tooltip. A red
+  banner per tenant names how many there are, and the critical `snapshot_damaged` alert lists them. The `verify`
+  alert stays open as well;
+- if the tenant has an offsite target or is a replication secondary, a **Repair** job starts by itself.
+
+![Damaged snapshots with the Repair banner](images/snapshots-damaged.png)
+
+**Repair** (administrators, **Snapshots** page, per tenant) starts a `chunk_repair` job. It fetches each bad chunk
+by its id from the tenant's **offsite target**. On a **replication secondary** it fetches the chunk from the
+**primary**, but only while the replication source is open and inside its sync window. Every chunk is fully
+checked with the tenant key before it is stored. A tampered or wrong copy is refused and counted as
+**unavailable**. When all chunks of a snapshot are back, its **Damaged** mark goes, the audit log records
+`snapshot.repaired`, and the `snapshot_damaged` alert resolves itself once no damaged snapshot is left.
+
+![Confirming a repair](images/snapshot-repair.png)
+
+What to do when chunks fail verification:
+
+1. Check the store disks (**Configuration → Hardware**, SMART) and the file system. Bit rot rarely affects a single
+   chunk only.
+2. Run **Repair**. Its job log shows how many chunks came back (`repaired`) and how many no copy had
+   (`unavailable`).
+3. If some remain unavailable: let the next backup of the affected sources run. If the source still has the same
+   data, it is stored again. Otherwise restore those guests or files from an older healthy snapshot. The damaged
+   snapshots stay readable apart from the lost chunks: a restore fails only where it reaches one.
+4. Run **Verify** again (Jobs). The `verify` alert resolves after a verification without findings.
+
+Do not delete damaged snapshots and do not approve large garbage collections while chunks are bad: a later repair
+needs the snapshot to know which chunks belong to it.
+
+> **Status:** implemented and tested against a local store, an offsite directory target and a replication primary
+> in integration tests; the repair from a real Storage Box / S3 target and the PVE full re-read after a damaged base
+> still need a run in the lab. A primary cannot repair from its secondary (the secondary does not serve data);
+> use the offsite copy there. The daily share means bit rot in a chunk can stay unnoticed for up to seven days.
 
 ## Expiry warnings
 

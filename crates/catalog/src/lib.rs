@@ -651,6 +651,15 @@ CREATE TABLE rescue_sessions (
 CREATE INDEX rescue_sessions_agent ON rescue_sessions (agent_id);
 "#;
 
+/// v32 (Phase 21d, health check with repair): snapshots that reference chunks
+/// which failed verify (`damaged` = number of distinct bad chunks, NULL =
+/// healthy; `damaged_at` = first detection). Set and cleared by the scheduler
+/// after verify and `chunk_repair` jobs. Purely additive.
+const SCHEMA_V32: &str = r#"
+ALTER TABLE snapshots ADD COLUMN damaged INTEGER;
+ALTER TABLE snapshots ADD COLUMN damaged_at INTEGER;
+"#;
+
 /// v33 (Phase 21e, docs/malware-scan.md): the opt-in YARA scan. `yara_rules`
 /// (admin-supplied rule files, appliance-wide, no feed: name, text, sha256,
 /// uploader) and `snapshot_scans` (one row per finished `snapshot_scan` job:
@@ -674,7 +683,7 @@ const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
-    SCHEMA_V29, SCHEMA_V31, SCHEMA_V33,
+    SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -2574,6 +2583,44 @@ mod tests {
             .query_row("SELECT anomaly FROM snapshots WHERE time = 5", [], |r| r.get(0))
             .unwrap();
         assert_eq!(a.as_deref(), Some("x"), "the flag survives the refresh upsert");
+    }
+
+    /// v32 (damaged snapshots) on top of the previous catalog: existing
+    /// snapshots are healthy; the flag survives the scheduler's refresh upsert.
+    #[test]
+    fn migration_v32_damaged_snapshots() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V32).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('t', 'vm-1', 5, 1, 0);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let d: Option<i64> = conn
+            .query_row("SELECT damaged FROM snapshots", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(d, None);
+        conn.execute("UPDATE snapshots SET damaged = 2, damaged_at = 6", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('t', 'vm-1', 5, 1, 0) \
+             ON CONFLICT (tenant, source, time) DO UPDATE SET local = 1",
+            [],
+        )
+        .unwrap();
+        let d: Option<i64> = conn
+            .query_row("SELECT damaged FROM snapshots", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(d, Some(2));
     }
 
     /// v33 (YARA rules, scan results) on top of the previous catalog.

@@ -1,4 +1,4 @@
-//! `nexus-replica <config.json> enroll|sync` (secondary, spawned by the
+//! `nexus-replica <config.json> enroll|sync|repair` (secondary, spawned by the
 //! scheduler; docs/replication.md §4, §7).
 //!
 //! Config: `{source_id, name, url, connect_addr?, cert_pin, peer_id, cred_dir,
@@ -7,12 +7,13 @@
 //! time] under a local legal hold)}`.
 //!
 //! Output lines the scheduler parses: `enrolled {json}`, `replicated {json}`,
-//! `key-mismatch {json}`, `verify-failed {json}`.
+//! `key-mismatch {json}`, `verify-failed {json}`, `repair {json}` (bad chunks fetched
+//! from the primary, Phase 21d).
 
 use anyhow::{bail, Context, Result};
 use catalog::schedule::{self, Bandwidth, RateWindow};
 use chunkstore::retention::Gfs;
-use replication::client::{enroll, sync, EnrollParams, KeysMissing, SyncParams, VerifyFailed};
+use replication::client::{enroll, repair, sync, EnrollParams, KeysMissing, SyncParams, VerifyFailed};
 use replication::http::Target;
 use serde::Deserialize;
 use serde_json::json;
@@ -58,7 +59,7 @@ fn run() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg, cmd] = args.as_slice() else {
-        bail!("usage: nexus-replica <config.json> enroll|sync");
+        bail!("usage: nexus-replica <config.json> enroll|sync|repair");
     };
     let c: Config = serde_json::from_slice(&std::fs::read(cfg)?).context("config")?;
     let mut target = Target::parse(&c.url, &c.cert_pin)?;
@@ -77,7 +78,7 @@ fn run() -> Result<()> {
             })?;
             println!("enrolled {}", serde_json::to_string(&e)?);
         }
-        "sync" => {
+        "sync" | "repair" => {
             schedule::check_windows(&c.windows)?;
             let d = Gfs::default();
             let g = c.gfs.unwrap_or_default();
@@ -103,6 +104,14 @@ fn run() -> Result<()> {
                 held: c.held.into_iter().collect(),
                 tenant_uid: c.tenant_uid,
             };
+            if cmd == "repair" {
+                let r = repair(&p)?;
+                println!(
+                    "repair {}",
+                    json!({"source": "replica", "repaired": r.repaired, "unavailable": r.unavailable})
+                );
+                return Ok(());
+            }
             let tenant = p.tenant.clone();
             let r = sync(&p, &mut |l| println!("{l}"));
             match r {

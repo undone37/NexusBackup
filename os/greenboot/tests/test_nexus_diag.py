@@ -170,6 +170,8 @@ class Host(unittest.TestCase):
             "NEXUS_DIAG_DISKS": f"store={self.d / 'store'} var={self.d}",
             "NEXUS_DIAG_HEALTH": str(HEALTH),
             "NEXUS_DIAG_DISKS_STATUS": str(self.d / "disks.json"),
+            "NEXUS_DIAG_GRUB_USER": str(self.d / "grub-user.cfg"),
+            "NEXUS_DIAG_GRUB_BOOT": str(self.d / "grub-boot.cfg"),
             # the temp dirs live on the build host's disk (a CI runner may be > 90 % full)
             "NEXUS_DIAG_DISK_WARN_PCT": "101",
             "NEXUS_DIAG_DISK_FAIL_PCT": "101",
@@ -199,8 +201,12 @@ class Host(unittest.TestCase):
         self._db = db = sqlite3.connect(self.d / "catalog.db")
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("CREATE TABLE audit (seq INTEGER PRIMARY KEY, ts INTEGER, actor TEXT, action TEXT, target TEXT, details TEXT, prev_hash TEXT, hash TEXT)")
-        db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, password_hash TEXT)")
-        db.execute("INSERT INTO users (name, password_hash) VALUES ('alice', '$argon2id$secret')")
+        db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, password_hash TEXT, totp_secret TEXT NOT NULL DEFAULT '',"
+                   " role TEXT NOT NULL DEFAULT 'operator', disabled INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL DEFAULT 0,"
+                   " activation_hash TEXT, auth TEXT NOT NULL DEFAULT 'local', expires INTEGER, last_login INTEGER)")
+        db.execute("INSERT INTO users (name, password_hash, totp_secret, role) VALUES ('alice', '$argon2id$secret', 'enc', 'admin')")
+        db.execute("CREATE TABLE tenants (name TEXT PRIMARY KEY, offsite TEXT NOT NULL DEFAULT '{}')")
+        db.execute("CREATE TABLE forward_state (sink TEXT PRIMARY KEY, dest TEXT, last_ok INTEGER, failing_since INTEGER)")
         db.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)")
         self.clock(2, 0)
         prev = "0" * 64
@@ -226,7 +232,7 @@ class Host(unittest.TestCase):
 class Checks(Host):
     def test_healthy_host(self):
         self_signed(self.d / "cert.pem", 365)
-        cs = self.by_id(self.m.checks())
+        cs = {k: v for k, v in self.by_id(self.m.checks()).items() if not k.startswith("posture.")}
         self.assertEqual(
             sorted(cs),
             sorted(["disk.store", "disk.var", "time.sync", "time.nts", "time.compliance", "egress", "keyd", "tls.cert", "audit.chain",
@@ -367,6 +373,69 @@ class Checks(Host):
         self.assertIn("selinux", {c["id"] for c in json.loads(p.stdout)})
 
 
+class Posture(Host):
+    POSTURE = ["posture.approvals", "posture.forwarding", "posture.offsite_lock", "posture.inbound", "posture.certificate",
+               "posture.dormant_admins", "posture.totp", "posture.grub"]
+
+    def posture(self):
+        return {k: v for k, v in self.by_id(self.m.checks()).items() if k.startswith("posture.")}
+
+    def test_weak_defaults_warn_never_block(self):
+        cs = self.posture()
+        self.assertEqual(sorted(cs), sorted(self.POSTURE))
+        for cid, c in cs.items():
+            want = "pass" if cid == "posture.totp" else "warn"
+            self.assertEqual((c["status"], c["severity"]), (want, 1 if want == "pass" else 2), c)
+            self.assertEqual(c["manual"], "15-troubleshooting-faq.md#check-" + cid.replace(".", "-"))
+        self.assertEqual(self.m.blocking(list(cs.values())), [])
+        self.assertIn("1 possible approver", cs["posture.approvals"]["detail"])
+        self.assertIn("alice", cs["posture.dormant_admins"]["detail"])
+
+    def test_hardened_appliance_passes(self):
+        now = int(time.time())
+        db = self._db
+        db.execute("UPDATE users SET last_login = ?", (now,))
+        for n, role, auth in (("sam", "security_officer", "local"), ("carl", "admin", "oidc")):
+            db.execute("INSERT INTO users (name, totp_secret, role, auth, last_login) VALUES (?, ?, ?, ?, ?)",
+                       (n, "enc" if auth == "local" else "", role, auth, now))
+        db.execute("INSERT INTO users (name, role, activation_hash) VALUES ('new', 'admin', 'h')")  # pending: ignored
+        lock = {"remote": {"type": "s3", "lock": True}}
+        db.execute("INSERT INTO tenants VALUES ('acme', ?)", (json.dumps(lock),))
+        db.execute("INSERT INTO forward_state VALUES ('syslog', 'x', ?, NULL)", (now,))
+        for k, v in {
+            "forwarding": {"syslog": {"host": "siem"}},
+            "inbound": {"services": {"web": {"allow": ["10.0.0.0/8"]}}},
+            "tls_status": {"web": {"imported": True, "subject": "CN=nexus.example"}},
+        }.items():
+            db.execute("INSERT INTO settings VALUES (?, ?)", (k, json.dumps(v)))
+        db.commit()
+        (self.d / "grub-user.cfg").write_text("GRUB2_PASSWORD=grub.pbkdf2.sha512.x")
+        (self.d / "grub-boot.cfg").write_text("GRUB2_PASSWORD=grub.pbkdf2.sha512.x")
+        cs = self.posture()
+        for cid, c in cs.items():
+            self.assertEqual(c["status"], "pass", c)
+        self.assertIn("identity provider must enforce MFA", cs["posture.totp"]["detail"])
+        # forwarding failing, an S3 target without lock, a dormant officer, approvals off, GRUB not installed
+        db.execute("UPDATE forward_state SET failing_since = 1")
+        db.execute("INSERT INTO tenants VALUES ('globex', '{\"remote\": \"sftp\"}')")
+        db.execute("UPDATE users SET last_login = 1 WHERE name = 'sam'")
+        db.execute("INSERT INTO settings VALUES ('approvals_enabled', 'false')")
+        db.commit()
+        (self.d / "grub-boot.cfg").unlink()
+        cs = self.posture()
+        for cid in ("posture.forwarding", "posture.offsite_lock", "posture.dormant_admins", "posture.approvals", "posture.grub"):
+            self.assertEqual(cs[cid]["status"], "warn", cs[cid])
+        self.assertIn("globex", cs["posture.offsite_lock"]["detail"])
+        self.assertIn("sam", cs["posture.dormant_admins"]["detail"])
+
+    def test_no_catalog_skips(self):
+        self._db.close()
+        self._db = None
+        (self.d / "catalog.db").unlink()
+        cs = self.posture()
+        self.assertEqual(cs["posture.approvals"]["status"], "skip")
+
+
 class Requests(Host):
     ID = "0123456789abcdef0123456789abcdef"
 
@@ -406,7 +475,7 @@ class Requests(Host):
         self.assertIn("login password=[REDACTED]", text["journal-nexus.txt"])
         self.assertNotIn("hunter2", "".join(text.values()))
         stats = json.loads(text["catalog-stats.json"])
-        self.assertEqual(stats["rows"], {"audit": 3, "settings": 1, "users": 1})
+        self.assertEqual(stats["rows"], {"audit": 3, "forward_state": 0, "settings": 1, "tenants": 0, "users": 1})
         self.assertEqual(stats["audit_actions"], {"auth.login": 2, "setup.init": 1})
         self.assertNotIn("argon2id", "".join(text.values()))
         m = json.loads(text["manifest.json"])

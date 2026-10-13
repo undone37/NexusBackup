@@ -116,6 +116,44 @@ restore points on schedule.
 4. When the case is closed, request **Release hold** for each snapshot; a second approver confirms it. Retention then
    prunes them on its normal schedule.
 
+### Incident mode
+
+For a suspected attack on the appliance itself or on the sources it protects (ransomware, a stolen administrator
+account), a **security officer** can do all of the containment in one step: **Configuration → Settings → Incident
+mode**.
+
+![Settings: Incident mode](images/settings-incident.png)
+
+1. Enter a **Reason** (the ticket number; it appears in the banner and the audit log).
+2. **Hold snapshots:** the tenants (none selected = all tenants), optionally sources (comma-separated; empty = all)
+   and the time range whose snapshots are put on legal hold, as with **Hold a time range…** above.
+3. **Pause backup groups:** all groups, or only the chosen ones. They are paused indefinitely, so a source that is
+   being encrypted does not push more changed data into the store (and retention does not start counting the new,
+   bad snapshots as "the last seven").
+4. Confirm with your password and a fresh authenticator code, then **Enter incident mode**.
+
+At once, in one step: the holds are set, the groups are paused, **every session except yours ends and every API token
+is revoked** (whoever used a stolen session or token is locked out; colleagues sign in again), and the critical
+alert `incident` is raised. Every appliance-wide account sees a red banner, and the dashboard shows the incident.
+While incident mode is active no group can be resumed. Everything is audited (`incident.enter` lists what was held
+and paused).
+
+![Settings: Incident mode is active](images/settings-incident-active.png)
+
+![Dashboard during incident mode](images/dashboard-incident.png)
+
+**Leaving** needs a second person, also when approvals are switched off: a security officer or an administrator
+clicks **Request to leave incident mode**, and *another* administrator or security officer approves it on
+**Approvals** (`incident.leave`). Approving resumes the groups the incident paused (a group that was paused until a
+date before the incident gets that pause back), resolves the alert and removes the banner. The **holds stay**: release
+each one when the case is closed (step 4 above). Revoked API tokens do not come back; create new ones.
+
+Before you leave incident mode: restore and check the affected systems from held snapshots, change the passwords of
+accounts that may be compromised, and review the audit log of the incident period.
+
+> **Status:** Implemented in Phase 21b and tested in the API (`crates/web-api/tests/incident.rs`) and the demo
+> backend; a run on the appliance image (lab) is pending.
+
 ## Attach an offsite copy in the web UI
 
 Use this on a new appliance that went through first boot normally (it has its own recovery key). You need:
@@ -355,6 +393,33 @@ and acknowledge the alerts (administrators and security officers).
 > **Status:** Implemented in Phase 14 (console gate `nexus-console-gate` on tty2, the web interface, unit and API
 > tests). The appliance VM test (`lab/appliance/console-gate.sh`) drives a second instance of the gate over the
 > serial console, because the lab VM has no screen for tty2. It has not been used on real hardware yet.
+
+## Rotating a tenant's encryption key
+
+Every tenant's data is encrypted with its own data encryption key (DEK), wrapped by the appliance's key-encryption
+key. Rotating it creates a new key version: new snapshots are encrypted with it, older snapshots stay readable with
+the older versions (they are kept). **Settings → Security → Encryption key rotation reminder** (default 365 days,
+0 = off) makes the appliance raise the info alert `dek_rotation` for each tenant whose current key is older than that;
+replicated tenants (on a secondary) are skipped, their keys are rotated on the primary.
+
+Rotation is done in an emergency root shell on the console (see the next section):
+
+```
+runuser -u nexus-keyd -- /usr/libexec/nexus/keyd tenant-rotate /var/lib/nexus/keyd <tenant>
+```
+
+It prints the new version (`acme: DEK v2`). The alert resolves within minutes. Afterwards:
+
+- The next offsite copy uploads the new wrapped key with the escrow files (no action needed).
+- On a replication **primary**, export the keys to each secondary again (**Replication → Export keys**, needs
+  approval); until then the secondary raises `replication_keys` for snapshots with the new version.
+- If the tenant has a tenant recovery key, keyd seals the new version to it automatically.
+
+The age is the time the key file was written: on an appliance rebuilt from a configuration backup or recovered from
+offsite, the reminder counts from the recovery.
+
+> **Status:** The reminder is implemented in Phase 21b (scheduler and key daemon tests). Rotation itself is the key
+> daemon's command-line tool; a web action for it is not planned.
 
 ## Break-glass: the only administrator lost their authenticator
 

@@ -71,6 +71,7 @@ pub mod changes;
 pub mod clock;
 mod config_backup;
 pub mod consistency;
+mod dek_rotation;
 pub mod disks;
 mod endpoint;
 pub mod expiry;
@@ -85,6 +86,7 @@ mod offsite_ui;
 pub mod orphans;
 mod plugins;
 mod renewal;
+pub mod repair;
 pub mod replica;
 pub mod report_mail;
 mod restore;
@@ -761,6 +763,7 @@ impl Scheduler {
                 self.log_err(|s| s.queue_agent_renewals(now));
                 self.log_err(|s| forward::prune_outbox(&s.db, now));
                 self.log_err(|s| s.check_accounts(now));
+                self.log_err(|s| s.check_dek_rotation(now));
             }
         }
         self.log_err(|s| s.check_offsite_lag(now));
@@ -1331,6 +1334,9 @@ impl Scheduler {
         }
         if job.kind == "gc" {
             self.orphan_bookkeeping(&job.tenant, f.stdout.as_deref())?;
+        }
+        if job.kind == "verify" || job.kind == "chunk_repair" {
+            self.health_bookkeeping(&job, f.stdout.as_deref())?; // repair.rs
         }
         if ok && job.kind == "snapshot_delete" {
             let p = &job.params;
@@ -2430,6 +2436,9 @@ impl Scheduler {
         }
         if job.kind.starts_with("offsite_") {
             return self.plan_offsite_ui(job, plan); // offsite_ui.rs
+        }
+        if job.kind == "chunk_repair" {
+            return self.plan_chunk_repair(plan); // repair.rs
         }
         if job.kind == "retention"
             && (p["plugin"] == true || p["source"].as_str().is_some_and(|s| s.starts_with("plugin-")))

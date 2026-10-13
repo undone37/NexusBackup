@@ -16,10 +16,17 @@ pub const LOGIN_BANNER: &str = "login_banner";
 /// JSON array of CIDRs allowed to reach the management port; empty = any.
 /// Since Phase 16c a mirror of the inbound policy's `web` list (crate::firewall).
 pub const MGMT_ALLOW: &str = "mgmt_allow";
+/// concurrent sessions per account (Phase 21b); a new login ends the oldest beyond it
+pub const MAX_SESSIONS: &str = "max_sessions";
+/// days after which a tenant DEK should be rotated (info alert `dek_rotation`, Phase 21b); 0 = off
+pub const DEK_ROTATION_DAYS: &str = "dek_rotation_days";
 
 pub const BANNER_MAX: usize = 2000;
 pub const MGMT_MAX: usize = 64;
 pub const DORMANT_MAX: i64 = 3650;
+pub const DEFAULT_MAX_SESSIONS: i64 = 5;
+pub const MAX_SESSIONS_MAX: i64 = 50;
+pub const DEFAULT_DEK_ROTATION_DAYS: i64 = 365;
 
 /// Session timeouts (defaults: 30 min idle, 12 h absolute).
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -73,6 +80,21 @@ pub fn dormant_days(c: &Connection) -> rusqlite::Result<i64> {
         .and_then(|v| v.parse::<i64>().ok())
         .filter(|d| (0..=DORMANT_MAX).contains(d))
         .unwrap_or(0))
+}
+
+pub fn max_sessions(c: &Connection) -> rusqlite::Result<i64> {
+    Ok(crate::setting(c, MAX_SESSIONS)?
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|n| (1..=MAX_SESSIONS_MAX).contains(n))
+        .unwrap_or(DEFAULT_MAX_SESSIONS))
+}
+
+/// Absent = the default (365); 0 = off.
+pub fn dek_rotation_days(c: &Connection) -> rusqlite::Result<i64> {
+    Ok(crate::setting(c, DEK_ROTATION_DAYS)?
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|d| *d == 0 || (30..=DORMANT_MAX).contains(d))
+        .unwrap_or(DEFAULT_DEK_ROTATION_DAYS))
 }
 
 pub fn login_banner(c: &Connection) -> rusqlite::Result<String> {
@@ -200,6 +222,16 @@ mod tests {
         crate::set_setting(&conn, SESSION, r#"{"idle_min":1,"absolute_h":2}"#).unwrap();
         assert_eq!(session_limits(&conn).unwrap(), d, "out of range: defaults");
         assert_eq!(dormant_days(&conn).unwrap(), 0);
+        assert_eq!(
+            (max_sessions(&conn).unwrap(), dek_rotation_days(&conn).unwrap()),
+            (5, 365)
+        );
+        crate::set_setting(&conn, MAX_SESSIONS, "0").unwrap();
+        crate::set_setting(&conn, DEK_ROTATION_DAYS, "0").unwrap();
+        assert_eq!(
+            (max_sessions(&conn).unwrap(), dek_rotation_days(&conn).unwrap()),
+            (5, 0)
+        );
         crate::set_setting(&conn, MGMT_ALLOW, r#"["10.1.0.0/16","bad"]"#).unwrap();
         assert_eq!(mgmt_allow(&conn).unwrap(), vec!["10.1.0.0/16"]);
     }

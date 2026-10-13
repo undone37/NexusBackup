@@ -33,6 +33,7 @@
   import IconDiff from '@lucide/svelte/icons/file-diff';
   import IconCheck from '@lucide/svelte/icons/shield-check';
   import IconCloudDown from '@lucide/svelte/icons/cloud-download';
+  import IconWrench from '@lucide/svelte/icons/wrench';
   import IconScan from '@lucide/svelte/icons/scan-search';
   import ScanFirst from '../components/ScanFirst.svelte';
   import ScanResults from '../components/ScanResults.svelte';
@@ -453,6 +454,17 @@
     await act(del(path), t.snap.deleteQueued);
   }
 
+  // Phase 21d: damaged snapshots per tenant, repaired per tenant
+  const damagedByTenant = $derived(
+    [...snaps.filter((s) => s.damaged).reduce((m, s) => m.set(s.tenant, (m.get(s.tenant) ?? 0) + 1), new Map<string, number>())],
+  );
+
+  async function repair(tenant: string) {
+    if (!(await askConfirm(t.snap.repairConfirm(tenant)))) return;
+    const r = await act(post<{ id: number }>('/jobs', { kind: 'chunk_repair', tenant, params: {} }), t.snap.repairQueued);
+    if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
+  }
+
   async function fetchBack(s: Snapshot) {
     const id = await fetchFromOffsite(s.tenant, s.source, s.time);
     if (id) navigate(`/jobs/${id}`);
@@ -507,6 +519,17 @@
 <ErrorBanner {error} />
 {#if session.vault}<p class="banner pending" role="status">{t.vault.restoreHint}</p>{/if}
 
+{#each damagedByTenant as [tn, n] (tn)}
+  <div class="banner error damaged" role="alert">
+    <span>{t.snap.damagedBanner(n, tn)}</span>
+    {#if can.repair(session.user)}
+      <button type="button" class="small" onclick={() => repair(tn)} aria-label={t.snap.repairLabel(tn)}
+        ><IconWrench aria-hidden="true" />{t.snap.repair}</button
+      >
+    {/if}
+  </div>
+{/each}
+
 <div class="card">
   {#if !loaded}
     <p class="muted" aria-busy="true">{t.loading}</p>
@@ -549,6 +572,11 @@
                   </div>
                 {/if}
                 {#if s.origin}<div><span class="chip info">{t.snap.replicatedFrom(s.origin)}</span></div>{/if}
+                {#if s.damaged}
+                  <div>
+                    <span class="chip bad" title={t.snap.damagedTitle(s.damaged, fmtTime(s.damaged_at ?? 0))}>{t.snap.damaged}</span>
+                  </div>
+                {/if}
                 {#if s.anomalous && s.anomaly}
                   <div><span class="chip bad" title={t.snap.anomalousTitle(s.anomaly.reason)}>{t.snap.anomalous}</span></div>
                   <div class="muted small reason">{s.anomaly.reason}</div>
@@ -917,6 +945,14 @@
 
 
 <style>
+  .damaged {
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+  .damaged button {
+    flex: none;
+  }
   .check-list {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(22rem, 1fr));

@@ -3,6 +3,8 @@ import type { Role, User } from './types';
 // UI-side mirror of the RBAC table. Only used to hide controls — the server decides.
 export const can = {
   configure: (u: User | null) => u?.role === 'admin',
+  // Phase 21d: fetch bad chunks back from offsite / the replication primary
+  repair: (u: User | null) => u?.role === 'admin',
   // Tenant-owned config (sources, agents, groups, the tenant's users): admins, and tenant admins
   // within their own tenant (Phase 19b).
   manageTenant: (u: User | null) => u?.role === 'admin' || u?.role === 'tenant_admin',

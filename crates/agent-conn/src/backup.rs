@@ -115,11 +115,19 @@ pub fn backup(
     spec: &Spec,
     log: &mut dyn FnMut(&str),
 ) -> Result<Report> {
-    let base = last_snapshot(store, agent_id)?;
+    let newest = last_snapshot(store, agent_id)?;
+    // a base with bad chunks (verify): no base, so the agent re-reads instead of using its cache
+    let base = match newest {
+        Some(t) if store.is_damaged(&store.load_manifest(&source_name(agent_id), t)?)? => {
+            log("base snapshot references bad chunks (verify): full read without the agent's metadata cache");
+            None
+        }
+        b => b,
+    };
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let mut r = Report {
         source: source_name(agent_id),
-        time: now.max(base.map_or(0, |b| b + 1)),
+        time: now.max(newest.map_or(0, |b| b + 1)),
         base,
         ..Default::default()
     };

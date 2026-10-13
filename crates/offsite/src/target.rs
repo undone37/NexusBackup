@@ -75,6 +75,8 @@ pub struct UploadStats {
     pub packs: usize,
     pub chunks: usize,
     pub bytes: u64,
+    /// `source/time` not uploaded: they reference bad chunks (verify, Phase 21d)
+    pub damaged: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -320,6 +322,10 @@ impl<'a> Target<'a> {
         let mut st = UploadStats::default();
         for m in self.store.list_snapshots()? {
             if done.contains(&(m.source.clone(), m.time)) {
+                continue;
+            }
+            if self.store.is_damaged(&m)? {
+                st.damaged.push(format!("{}/{}", m.source, m.time));
                 continue;
             }
             self.upload_snapshot(&m, &mut st)
@@ -641,6 +647,19 @@ impl<'a> Target<'a> {
         }
         r.unknown.sort();
         Ok(r)
+    }
+
+    /// The sealed bytes of one chunk from its pack (`None`: not offsite). Used
+    /// by `Store::repair_from`, which verifies them before they are stored.
+    pub fn fetch_chunk(&self, id: &ChunkId) -> Result<Option<Vec<u8>>> {
+        let Some(loc) = self.inv.get(id) else {
+            return Ok(None);
+        };
+        Ok(Some(self.remote.get(
+            &pack::remote_path(&loc.pack),
+            loc.offset,
+            Some(loc.len as u64),
+        )?))
     }
 
     /// Fetches an offsite snapshot into the local store (chunks verified on insert).

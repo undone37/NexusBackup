@@ -966,6 +966,9 @@ allow nexus_diag_t nexus_keyd_var_run_t:sock_file getattr;
 files_search_etc(nexus_diag_t)
 allow nexus_diag_t nexus_etc_t:dir search_dir_perms;
 read_files_pattern(nexus_diag_t, nexus_webapi_secret_t, nexus_webapi_secret_t)
+# security posture (Phase 21b): whether a boot menu password hash exists (stat only, never read);
+# /boot/grub2/user.cfg is only stat()ed and a denial there is tolerated by the script
+allow nexus_diag_t nexus_grub_user_t:file getattr;
 # disk usage: statfs of the store, /var, /sysroot, /boot
 fs_getattr_all_fs(nexus_diag_t)
 allow nexus_diag_t nexus_store_t:dir getattr;

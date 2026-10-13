@@ -306,6 +306,8 @@ impl Cluster {
         let time = job.time()?;
         let source = source_name(vmid);
         let prev = store.list_snapshots()?.into_iter().rfind(|m| m.source == source);
+        // build_index hid its devices from the node (fresh bitmaps); a reuse now is a stale node index
+        let prev_damaged = prev.as_ref().map(|m| store.is_damaged(m)).transpose()?.unwrap_or(false);
         let (mut names, mut indexes, mut read) = (Vec::new(), Vec::new(), 0);
         for key in exclude::backup_off(&job.config) {
             println!("disk {key} of VM {vmid} has backup=0: skipped by PVE");
@@ -327,6 +329,12 @@ impl Cluster {
                 continue;
             }
             let base = match (dev.bitmap_mode.as_str(), &prev) {
+                ("reuse", Some(_)) if prev_damaged => {
+                    bail!(
+                        "{}: the base snapshot references bad chunks (verify), but PVE reuses its dirty bitmap",
+                        dev.name
+                    )
+                }
                 ("reuse", Some(m)) if m.indexes.contains(&dev.name) => Some(store.load_index(m, &dev.name)?),
                 ("reuse", _) => bail!("{}: PVE reuses a dirty bitmap but no base snapshot exists", dev.name),
                 _ => None,
@@ -596,6 +604,9 @@ pub fn build_index(store: &Store) -> Result<serde_json::Value> {
             }
         }
         let size = device_sizes.values().sum();
+        // a base with bad chunks (chunkstore::health) must not be built upon: without its
+        // devices the node starts fresh bitmaps, so the next backup reads the disks in full
+        let devices = if store.is_damaged(&m)? { Vec::new() } else { devices };
         let mut config = read_config(store, &m, "qemu-server.conf")?.unwrap_or_default();
         if let Some(x) = read_excluded(store, &m)? {
             let (c, placeholders) = x.catalog(&config);
@@ -674,5 +685,28 @@ mod tests {
         assert_eq!(a[1]["device_sizes"], serde_json::json!({"drive-scsi0": 1 << 20}));
         let c = a[1]["config"].as_str().unwrap();
         assert!(!c.contains("scsi1") && c.contains("scsi0:"), "{c}");
+    }
+
+    /// Phase 21d: a newest snapshot with bad chunks lists no devices, so the node
+    /// answers `new` (fresh bitmap, full read) instead of reusing its bitmap.
+    #[test]
+    fn damaged_base_hides_its_devices_from_the_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = chunkstore::Keyring::new("t", &[(1, [7; 32])]);
+        let store = Store::open(dir.path(), keys, chunkstore::Options::default()).unwrap();
+        let m = snapshot(&store, 1760000000, Mode::Placeholder);
+        let disk = store.load_index(&m, "drive-scsi0").unwrap();
+        assert_eq!(
+            build_index(&store).unwrap()["archives"][0]["devices"],
+            serde_json::json!(["drive-scsi0"])
+        );
+        store.mark_bad(disk.chunk_ids()).unwrap();
+        let idx = build_index(&store).unwrap();
+        assert_eq!(idx["archives"][0]["devices"], serde_json::json!([]));
+        assert_eq!(
+            idx["archives"][0]["device_sizes"]["drive-scsi0"],
+            1 << 20,
+            "restore sizes stay"
+        );
     }
 }
