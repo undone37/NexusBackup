@@ -3760,6 +3760,7 @@ fn registered_routes() -> std::collections::BTreeSet<(String, String)> {
         include_str!("../src/tenants.rs"),
         include_str!("../src/tenancy.rs"),
         include_str!("../src/vault.rs"),
+        include_str!("../src/passkeys.rs"),
     ] {
         for piece in src.split(".route(").skip(1) {
             let piece = piece.split(".merge(").next().unwrap().split("\n}").next().unwrap();
@@ -3816,6 +3817,16 @@ async fn tenant_admin_routes_classified() {
         ("GET", "/auth/me", "/api/v1/auth/me".into(), none(), 'Y'),
         ("POST", "/auth/activate/begin", "".into(), none(), '-'),
         ("POST", "/auth/activate/complete", "".into(), none(), '-'),
+        ("POST", "/auth/activate/passkey", "".into(), none(), '-'),
+        ("POST", "/auth/login/passkey", "".into(), none(), '-'),
+        ("GET", "/auth/passkeys", "/api/v1/auth/passkeys".into(), none(), 'Y'),
+        ("POST", "/auth/passkeys/register/begin", "/api/v1/auth/passkeys/register/begin".into(), e(), 'Y'),
+        ("POST", "/auth/passkeys/register", "/api/v1/auth/passkeys/register".into(), e(), 'Y'),
+        ("POST", "/auth/passkeys/challenge", "/api/v1/auth/passkeys/challenge".into(), e(), 'Y'),
+        ("PUT", "/auth/passkeys/{id}", "/api/v1/auth/passkeys/999".into(), Some(json!({"name": "x"})), 'Y'),
+        ("DELETE", "/auth/passkeys/{id}", "/api/v1/auth/passkeys/999".into(), none(), 'Y'),
+        ("GET", "/settings/passkeys", "/api/v1/settings/passkeys".into(), none(), 'N'),
+        ("PUT", "/settings/passkeys", "/api/v1/settings/passkeys".into(), e(), 'N'),
         ("GET", "/auth/tokens", "/api/v1/auth/tokens".into(), none(), 'Y'),
         ("POST", "/auth/tokens", "/api/v1/auth/tokens".into(), Some(json!({"name": "x", "scope": "read", "days": 1})), 'Y'),
         ("DELETE", "/auth/tokens/{id}", "/api/v1/auth/tokens/999".into(), none(), 'Y'),

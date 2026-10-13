@@ -40,6 +40,7 @@ pub mod jobs;
 pub mod offsite;
 pub mod oidc;
 pub mod ops;
+pub mod passkeys;
 pub mod plugins;
 pub mod quorum;
 pub mod replication;
@@ -452,6 +453,7 @@ pub fn router(st: St) -> Router {
         .route("/auth/me", get(me))
         .route("/auth/activate/begin", post(activation::begin))
         .route("/auth/activate/complete", post(activation::complete))
+        .route("/auth/activate/passkey", post(activation::passkey_options))
         .route("/auth/tokens", get(tokens::list).post(tokens::create))
         .route("/auth/tokens/{id}", axum::routing::delete(tokens::revoke))
         .route("/certificate", get(certs::get_status))
@@ -589,6 +591,7 @@ pub fn router(st: St) -> Router {
         .route("/replication/sources/{id}/close", post(repl::close_source))
         .route("/replication/sources/{id}/reopen", post(repl::reopen_source))
         .merge(access::routes())
+        .merge(passkeys::routes())
         .merge(firewall::routes())
         .merge(holds::routes())
         .merge(hardware::routes())

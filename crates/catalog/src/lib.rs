@@ -560,10 +560,25 @@ CREATE TABLE agent_sessions (
 CREATE INDEX agent_sessions_pending ON agent_sessions(agent_id) WHERE delivered IS NULL;
 "#;
 
+/// v31 (Phase 21c, passkeys, docs/control-plane.md "Passkeys"): `passkeys`
+/// holds the WebAuthn credentials registered as a second factor: credential id
+/// (base64url, unique appliance-wide), COSE algorithm (-7 ES256, -8 EdDSA), the
+/// raw public key (uncompressed P-256 point or Ed25519 key), the relying party ID
+/// it was registered for and the signature counter. Purely additive: the
+/// previous release ignores the table (passkey users sign in with TOTP there).
+const SCHEMA_V31: &str = r#"
+CREATE TABLE passkeys (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  cred_id TEXT NOT NULL UNIQUE, name TEXT NOT NULL, alg INTEGER NOT NULL CHECK (alg IN (-7, -8)),
+  public_key BLOB NOT NULL, rp_id TEXT NOT NULL, sign_count INTEGER NOT NULL DEFAULT 0,
+  created INTEGER NOT NULL, last_used INTEGER);
+CREATE INDEX passkeys_user ON passkeys(user_id);
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
-    SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26,
+    SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V31,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1293,6 +1308,50 @@ mod tests {
             })
             .unwrap();
         assert_eq!(n, 3);
+    }
+
+    /// v31 (passkeys) on top of the previous catalog: the table starts empty,
+    /// credentials go when their user goes; the previous release still signs in.
+    #[test]
+    fn migration_v31_passkeys() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V31).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute(
+                "INSERT INTO users (name, password_hash, totp_secret, role, created) VALUES ('a', 'h', 's', 'admin', 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        {
+            let conn = c.conn();
+            conn.execute(
+                "INSERT INTO passkeys (user_id, cred_id, name, alg, public_key, rp_id, created) VALUES (1, 'x', 'k', -7, x'04', 'h', 1)",
+                [],
+            )
+            .unwrap();
+            assert!(conn
+                .execute(
+                    "INSERT INTO passkeys (user_id, cred_id, name, alg, public_key, rp_id, created) VALUES (1, 'y', 'k', -257, x'04', 'h', 1)",
+                    [],
+                )
+                .is_err());
+            conn.execute("DELETE FROM users", []).unwrap();
+            let n: i64 = conn
+                .query_row("SELECT COUNT(*) FROM passkeys", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0);
+        }
+        drop(c);
+        let old = Connection::open(&p).unwrap();
+        old.execute("UPDATE users SET last_login = 5", []).unwrap();
     }
 
     /// v26 (endpoint status) on top of the previous catalog: existing agents are

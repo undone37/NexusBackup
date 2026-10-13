@@ -49,6 +49,7 @@ pub const WEB_ACTIONS: &[&str] = &[
     "settings.forwarding",
     "security.session",
     "security.mgmt_allow",
+    crate::passkeys::ACTION,
     crate::firewall::ACTION,
     catalog::holds::RELEASE_ACTION,
     "disks.create_array",
