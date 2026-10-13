@@ -757,6 +757,9 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
 
 ### Phase 28+ — Commvault-inspired items (proposed 2026-10-13)
 - Tier 1 (scheduled threat scans, IOC hash hunting, tenant lockdown, new-device sign-in notice) as Phase 28, Tier 2 as Phase 29; details and open questions: `docs/commvault-comparison.md`.
+- NetBackup-inspired items (proposed 2026-10-13): Tier 1 (scheduled full read with change-tracking drift check,
+  approval for restoring malware-flagged snapshots to production, scan back to the last clean snapshot, incident-mode
+  freezes, privileged-activity risk signals) with Phase 29, Tier 2 as Phase 30; details: `docs/netbackup-comparison.md`.
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
