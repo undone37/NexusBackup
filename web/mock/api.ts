@@ -279,6 +279,9 @@ const db = {
   cfgBackup: { appliance_id: null as string | null, latest: null as Json | null },
   /** Phase 13e setting `anomaly` */
   anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30, ransom_notes: [] } as Json,
+  /** Phase 21e: admin-supplied YARA rule files and finished snapshot scans */
+  yaraRules: [] as Json[],
+  scans: [] as Json[],
   /** Phase 14a setting `forwarding` (header values: plaintext here, null in responses) */
   forwarding: {
     syslog: { enabled: true, host: 'siem.example.com', port: 6514, ca_pem: null, pin_sha256: '3f'.repeat(32), app_name: 'nexus', facility: 13 },
@@ -1457,6 +1460,7 @@ function seed() {
   seedTenantKeys(t);
   seedHolds(t);
   seedAnomalies(t);
+  seedScans(t);
   seedHardware(t);
   seedM365(t);
   seedTenantAdmin(t);
@@ -1513,7 +1517,7 @@ function seedM365(t: number) {
   if (start + 540 <= t) {
     const stamp = (i: number) => new Date((start + 2 + i * 90) * 1000).toISOString();
     const lines = [
-      'starting nexus-pluginhost: m365 1.3.0 (sandbox: landlock + seccomp)',
+      'starting nexus-pluginhost: m365 1.4.0 (sandbox: landlock + seccomp)',
       `base ${user}/${start - 86400} (18,422 entries)`,
       'plugin[warn]: skipped mail/Inbox/Quarterly report ~3f9a0c1d2e4b.eml: GET /v1.0/users/…/messages/…/$value: 500 ErrorInternalServerError',
       'plugin[warn]: skipped onedrive/Projects/model.xlsx: GET /v1.0/drives/…/items/…/content: 503 serviceNotAvailable',
@@ -3407,7 +3411,7 @@ on('GET', '/snapshots', (c) => {
   const held = c.query.get('held') === 'true';
   const xs = byTenant(u, db.snapshots as any[])
     .filter((s) => (!tq || s.tenant === tq) && (!sq || s.source === sq))
-    .map((s) => ({ ...s, hold: holdView(openHold(s.tenant, s.source, s.time)), anomaly: s.anomaly ?? null, anomalous: anomalous(s) }))
+    .map((s) => ({ ...s, hold: holdView(openHold(s.tenant, s.source, s.time)), anomaly: s.anomaly ?? null, anomalous: anomalous(s), scan: scanSummary(s) }))
     .filter((s) => !held || s.hold);
   return [200, xs.sort((a, b) => b.time - a.time)];
 });
@@ -3532,6 +3536,7 @@ on('POST', '/jobs', async (c) => {
   if (u.role === 'tenant_user' && (!RESTORE_KINDS.includes(kind) || tenant !== u.tenant)) throw new HttpError(403, 'tenant users may only restore within their tenant');
   find(db.tenants, (t) => t.name === tenant, 'tenant');
   if (kind === 'files_list' && !String(params.path ?? '').startsWith('/')) throw new HttpError(400, 'path: must be absolute');
+  const scanFirst = takeScanFirst(kind, params);
   checkJob(u, kind, tenant, params);
   if (kind === 'files_get' && !canDownload(u)) throw new HttpError(403, 'this account may not download files');
   if (kind === 'files_get' && params.params && Object.keys(params.params).length) {
@@ -3558,7 +3563,7 @@ on('POST', '/jobs', async (c) => {
   const p = kind === 'files_get' ? { ...params, download_token: rand(32) } : params;
   const gated = await vaultGate(u, tenant, [{ kind, params: p }]);
   if (gated) return gated;
-  const j = addJob(kind, tenant, p, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
+  const j = scanFirst ? scanFirstJob(u, kind, tenant, p, scanFirst) : addJob(kind, tenant, p, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
   if (kind.startsWith('plugin_')) j.duration = { plugin_validate: 3, plugin_guests: 3, plugin_restore: 14, plugin_mount: 6 }[kind as string] ?? 10;
   if (kind === 'inventory') j.duration = 3;
   if (kind === 'offsite_list') j.duration = 3;
@@ -3817,7 +3822,7 @@ function mkAlert(a: Json): Json {
 /** Like catalog::alerting::category (Phase 18). */
 const ALERT_CATEGORIES = ['security', 'backup', 'replication', 'hardware', 'system', 'audit'];
 const ALERT_CATEGORY: Record<string, string> = {
-  anomaly: 'security', console_unlock: 'security', console_root_shell: 'security', break_glass: 'security',
+  anomaly: 'security', malware: 'security', console_unlock: 'security', console_root_shell: 'security', break_glass: 'security',
   mgmt_allow_reset: 'security', firewall_reset: 'security', legal_hold_advisory: 'security', cert_expiry: 'security',
   account_dormant: 'security', inventory: 'security', clock_skew: 'security', gc_quorum: 'security', gc_confirm: 'security',
   vault_disabled: 'security',
@@ -6257,4 +6262,158 @@ function seedAnomalies(t: number) {
       reason: '48.0 GiB new data, limit 18.0 GiB (3× the median 6.0 GiB of the last 14 runs)', at: fa.time + 1300,
       cleared_by: 'so', cleared_at: fa.time + 86400, note: 'Database reorganisation by the DBA (change CHG-2291), checked with the application owner',
     };
+}
+
+// ---------------------------------------------------------------- Phase 21e: YARA scan (docs/malware-scan.md)
+
+const SCAN_FIRST_KINDS = ['restore', 'restore_ct', 'instant_recover', 'restore_files', 'files_get', 'plugin_restore'];
+const scanSummary = (s: Json) => {
+  const x = (db.scans as Json[]).filter((y) => y.tenant === s.tenant && y.source === s.source && y.time === s.time).sort((a, b) => b.job - a.job)[0];
+  return x ? { job: x.job, finished: x.finished, matches: x.matches_total, complete: x.complete } : null;
+};
+const ruleLabel = () => (db.yaraRules as Json[]).map((r) => `${r.name}@${r.sha256.slice(0, 12)}`).join(',');
+const sha = (text: string) => {
+  let h = '';
+  for (let i = 0; i < 8; i++) h += Math.floor(noise(`${i}:${text}`) * 1e8).toString(16).padStart(8, '0');
+  return h;
+};
+
+/** `scan_first` of a job request (web-api scan::take_scan_first): validated and removed. */
+function takeScanFirst(kind: string, params: Json): string | null {
+  const v = params.scan_first;
+  delete params.scan_first;
+  if (v === undefined || v === null) return null;
+  if (!SCAN_FIRST_KINDS.includes(kind)) throw new HttpError(400, 'scan_first: only for restores and downloads');
+  if (v === 'link_down' && !['restore', 'restore_ct', 'instant_recover'].includes(kind))
+    throw new HttpError(400, 'scan_first: link_down only for VM and container restores');
+  if (v !== 'refuse' && v !== 'link_down') throw new HttpError(400, 'scan_first: refuse or link_down');
+  if (!db.yaraRules.length) throw new HttpError(409, 'scan_first: no YARA rules uploaded (Settings → Malware scan)');
+  return v;
+}
+
+/** The scan result the mock "finds": matches for snapshots seeded as infected. */
+function mockScan(j: Job, tenant: string, source: string, time: number) {
+  const known = (db.snapshots as Json[]).find((x) => x.tenant === tenant && x.source === source && x.time === time);
+  const hits: Json[] = known?.infected ?? [];
+  const r = { files: 18_412, skipped: 3, errors: 0, matches: hits, matches_total: hits.length, complete: true, seconds: 412, source, time };
+  j.duration = 6;
+  j.plan = ['booting the restore micro-VM (no network, disks read-only)', `compiling ${db.yaraRules.length} rule file(s)`, `scanning ${source}`, `${hits.length} matches`];
+  j.result = r;
+  db.scans.push({ job: j.id, tenant, finished: now() + 6, rules: ruleLabel(), ...r });
+  if (hits.length && known) {
+    const why = `YARA: ${hits.length} matches (${[...new Set(hits.map((m) => m.rule))].slice(0, 3).join(', ')})`;
+    known.anomaly = { reason: known.anomaly?.reason && !known.anomaly.cleared_at ? `${known.anomaly.reason}; ${why}` : why, at: now(), cleared_by: null, cleared_at: null, note: null };
+  }
+  return hits.length;
+}
+
+/** A restore with `scan_first`: its scan job first, then the restore (refused or with the NICs down on a hit). */
+function scanFirstJob(u: User, kind: string, tenant: string, p: Json, mode: string): Job {
+  const scan = addJob('snapshot_scan', tenant, { source: p.source, time: p.time, for_job: null }, 'scheduler');
+  const hits = mockScan(scan, tenant, p.source, p.time);
+  const params = { ...p, scan_first: mode, scan_job: scan.id };
+  if (!hits) return addJob(kind, tenant, { ...params, scan: { job: scan.id, matches: 0 } }, u.name);
+  if (mode === 'link_down')
+    return addJob(kind, tenant, { ...params, link_down: true, scan: { job: scan.id, matches: hits } }, u.name, {
+      log: `[scheduler] scan first: ${hits} YARA matches in the snapshot (scan job ${scan.id}); restoring with the network disconnected\n`,
+    });
+  return addJob(kind, tenant, params, u.name, { fail: `scan first: ${hits} YARA matches in the snapshot (scan job ${scan.id}); restore refused` });
+}
+
+on('GET', '/scan/rules', (c) => {
+  need(c.user, 'admin', 'security_officer');
+  return [200, (db.yaraRules as Json[]).map(({ text: _t, ...r }) => r).sort((a, b) => (a.name < b.name ? -1 : 1))];
+});
+on('PUT', '/scan/rules/:name', async (c, [name]) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  const n = decodeURIComponent(name);
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(n)) throw new HttpError(400, 'name: [A-Za-z0-9._-]{1,64} without a leading dot');
+  const text = String(c.body?.text ?? '');
+  if (!text.trim() || text.length > 256 * 1024) throw new HttpError(400, 'text: 1 to 256 KiB of YARA rules');
+  if (!text.includes('rule')) throw new HttpError(400, 'text: no YARA rule in the file');
+  const others = (db.yaraRules as Json[]).filter((r) => r.name !== n);
+  if (others.length >= 50 || others.reduce((x, r) => x + r.size, 0) + text.length > 2 ** 20)
+    throw new HttpError(400, 'at most 50 rule files and 1 MiB together');
+  const r = { name: n, text, size: text.length, sha256: sha(text), uploaded_by: u.name, uploaded_at: now() };
+  db.yaraRules = [...others, r];
+  const out = { name: n, size: r.size, sha256: r.sha256 };
+  await audit(u.name, 'scan.rules_put', `yara_rule/${n}`, out);
+  return [200, out];
+});
+on('DELETE', '/scan/rules/:name', async (c, [name]) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  const n = decodeURIComponent(name);
+  const r = find(db.yaraRules as Json[], (x) => x.name === n, 'rule file');
+  db.yaraRules = (db.yaraRules as Json[]).filter((x) => x !== r);
+  await audit(u.name, 'scan.rules_delete', `yara_rule/${n}`, { sha256: r.sha256 });
+  return [204, null];
+});
+on('POST', '/snapshots/:tenant/:source/:time/scan', async (c, [tenant, source, time]) => {
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'security_officer');
+  const [tn, src, tm] = [decodeURIComponent(tenant), decodeURIComponent(source), Number(time)];
+  if (u.tenant && u.tenant !== tn) throw new HttpError(403, 'forbidden');
+  const b = c.body?.budget_min;
+  if (b !== undefined && !(Number.isInteger(b) && b >= 1 && b <= 1440)) throw new HttpError(400, 'budget_min: 1..=1440');
+  find(db.snapshots as Json[], (y) => y.tenant === tn && y.source === src && y.time === tm && y.local, 'local snapshot');
+  if (!db.yaraRules.length) throw new HttpError(409, 'no YARA rules uploaded (Settings → Malware scan)');
+  const params: Json = { source: src, time: tm, ...(b ? { budget: b * 60 } : {}) };
+  const j = addJob('snapshot_scan', tn, params, u.name);
+  const hits = mockScan(j, tn, src, tm);
+  if (hits)
+    db.alerts.push(
+      mkAlert({
+        ts: now(), severity: 'critical', kind: 'malware', key: `malware:${tn}/${src}`, tenant: tn,
+        message: `YARA scan of ${tn}/${src} snapshot ${tm}: YARA: ${hits} matches, e.g. ${j.result!.matches[0].rule} in ${j.result!.matches[0].path}`,
+      }),
+    );
+  await audit(u.name, 'snapshot.scan_request', `snapshot/${tn}/${src}/${tm}`, { tenant: tn, job: j.id, params });
+  return [202, { id: j.id }];
+});
+on('GET', '/scans', (c) => {
+  const u = need(c.user);
+  const [tq, sq, tm] = [c.query.get('tenant'), c.query.get('source'), c.query.get('time')];
+  const xs = byTenant(u, db.scans as any[]).filter((x) => (!tq || x.tenant === tq) && (!sq || x.source === sq) && (!tm || x.time === Number(tm)));
+  return [200, xs.sort((a, b) => b.job - a.job).slice(0, 50)];
+});
+
+function seedScans(t: number) {
+  const text = [
+    'rule LockBit3_Ransom_Note {',
+    '  meta: description = "LockBit 3.0 ransom note"',
+    '  strings: $a = "~~~ LockBit 3.0" ascii wide',
+    '  condition: $a',
+    '}',
+  ].join('\n');
+  db.yaraRules.push(
+    { name: 'lockbit.yar', text, size: text.length, sha256: sha(text), uploaded_by: 'so', uploaded_at: t - 86400 * 6 },
+    { name: 'webshells.yar', text: 'rule Php_Webshell { strings: $a = "eval(base64_decode(" condition: $a }', size: 70, sha256: sha('ws'), uploaded_by: 'so', uploaded_at: t - 86400 * 20 },
+  );
+  const newest = (tenant: string, source: string, n = 0) =>
+    (db.snapshots as Json[]).filter((s) => s.tenant === tenant && s.source === source && s.local).sort((a, b) => b.time - a.time)[n];
+  // the encrypted file server (seedAnomalies): ransom notes found by the rules
+  const fs = db.agents.find((a) => a.name === 'fs02');
+  const enc = fs && newest('acme', `host-${fs.id}`);
+  if (enc)
+    enc.infected = [
+      { rule: 'lockbit.yar:LockBit3_Ransom_Note', path: 'Users/HOW_TO_DECRYPT.txt' },
+      { rule: 'lockbit.yar:LockBit3_Ransom_Note', path: 'Users/anna/Documents/HOW_TO_DECRYPT.txt' },
+      { rule: 'lockbit.yar:LockBit3_Ransom_Note', path: 'Shares/Finance/HOW_TO_DECRYPT.txt' },
+    ];
+  // finished scans: the infected one and a clean one before it, plus a clean VM
+  const done = (s: Json | undefined, at: number) => {
+    if (!s) return;
+    const j = addJob('snapshot_scan', s.tenant, { source: s.source, time: s.time }, 'so', { state: 'ok', started: at - 400, finished: at });
+    mockScan(j, s.tenant, s.source, s.time);
+    db.scans[db.scans.length - 1].finished = at;
+  };
+  if (fs) done(newest('acme', `host-${fs.id}`, 1), t - 86400 * 2);
+  done(enc, (enc?.time ?? t) + 5400);
+  done(newest('initech', 'vm-100'), t - 3600);
+  if (enc)
+    db.alerts.push(
+      mkAlert({
+        ts: enc.time + 5400, severity: 'critical', kind: 'malware', key: `malware:acme/${enc.source}`, tenant: 'acme',
+        message: `YARA scan of acme/${enc.source} snapshot ${enc.time}: YARA: 3 matches (lockbit.yar:LockBit3_Ransom_Note), e.g. lockbit.yar:LockBit3_Ransom_Note in Users/HOW_TO_DECRYPT.txt`,
+      }),
+    );
 }

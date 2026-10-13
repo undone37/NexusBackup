@@ -60,7 +60,7 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 
 | Category | Kinds |
 |---|---|
-| security | `anomaly`, `console_unlock`, `console_root_shell`, `break_glass`, `firewall_reset`, `mgmt_allow_reset`, `legal_hold_advisory`, `cert_expiry`, `account_dormant`, `inventory`, `clock_skew`, `gc_quorum`, `gc_confirm`, `vault_disabled` |
+| security | `anomaly`, `malware`, `console_unlock`, `console_root_shell`, `break_glass`, `firewall_reset`, `mgmt_allow_reset`, `legal_hold_advisory`, `cert_expiry`, `account_dormant`, `inventory`, `clock_skew`, `gc_quorum`, `gc_confirm`, `vault_disabled` |
 | backup | `job_failed`, `sla_missed`, `paused`, `consistency`, `backup_inconsistent`, `orphaned`, `verify`, `offsite_lag`, `inventory_refresh`, `config` |
 | replication | every `replication_…` kind |
 | hardware | `disk`, `fleecing_space` |
@@ -87,6 +87,7 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 | `config` | warning | the scheduler cannot use a group or replication source configuration | — | fix the configuration named in the message |
 | `orphaned` | info | snapshots of an object that is in no protection group of its tenant were found; they are pruned with the default retention (shown once per object) | — | put the object into a group if it should keep being protected with that group's retention, or ignore it; see [05 Policies and protection groups](05-policies-and-groups.md#snapshots-of-objects-in-no-group) |
 | `anomaly` | critical | a backup added far more new data than usual for its source, or new data that suddenly does not compress (see [Change-rate anomalies](#change-rate-anomalies)); or its files show ransom-note names or a mass rename ([File-level change signals](#file-level-change-signals)). The snapshot is flagged as anomalous | — | check the source for mass changes or encryption (ransomware), compare the snapshot with the previous one under **Snapshot changes**; a security officer puts the last clean snapshot on hold with **Hold last good snapshot** |
+| `malware` | critical | a YARA scan found matches of the uploaded rules in a snapshot (see [Malware scan (YARA)](#malware-scan-yara)); the snapshot is flagged as anomalous | — (resolve by hand) | open the scan results on **Snapshots**, check the files and the source; a security officer clears the flag if a rule was too broad |
 | `legal_hold_advisory` | warning | (secondary) the primary holds a replicated snapshot under a legal hold; not applied here (one alert per snapshot) | a security officer applies the hold, or the primary releases it | decide whether the hold applies here too; **Apply hold** on the alert. See [08 Replication](08-replication.md#legal-holds-from-the-primary) |
 | `quota` | warning at 80 %, critical at 100 % | a tenant's store reached 80 % or 100 % of its soft quota (**Tenants**); one alert per tenant, escalated at 100 % | usage is back under 80 % | review retention or what the tenant backs up, or raise the quota; backups continue either way |
 | `cert_expiry` | info at 90 days, warning at 30, critical at 7 (API tokens: info, last 7 days) | a certificate, the IdP client secret or an API token expires soon (see [Expiry warnings](#expiry-warnings)); one alert per item, escalated | renewed (new certificate, new secret date, token revoked or replaced) | renew as the message says |
@@ -207,6 +208,37 @@ log (`snapshot.diff`). Snapshots without a file index (VM disks of groups that d
 offsite-only copies) cannot be compared.
 
 ![Snapshot changes: a mass rename with ransom notes](images/snapshot-changes.png)
+
+### Malware scan (YARA)
+
+Snapshots can be scanned for malware with **YARA rules you supply** — there is no rule feed. Upload rule files on
+**Settings → Malware scan** (administrators and security officers): one `.yar` file at a time, up to 50 files of
+256 KiB, 1 MiB together; the same name replaces a file, **Delete** removes it. Every change is audited with the
+file's SHA-256 (`scan.rules_put`, `scan.rules_delete`). Matches are shown as `<file>:<rule>`.
+
+![Settings → Malware scan](images/settings-malware-scan.png)
+
+**Scan** on a local snapshot (**Snapshots**; administrators, operators, tenant administrators and security officers)
+starts a **Malware scan (YARA)** job. It runs inside the restore micro-VM, never on the appliance itself: no network,
+the snapshot's disks attached read-only. VM disks are mounted in the micro-VM; the files of agent, NAS, share,
+plugin and container snapshots are streamed into it. Limits: files over 64 MiB are skipped, 60 seconds per file,
+2 vCPUs, 4 hours per scan, one scan at a time. A scan that reaches its time limit is reported as **Scan
+incomplete**.
+
+The snapshot then shows **Scanned: clean**, **Malware: <n> matches** or **Scan incomplete**; click it for the
+results (rule and path of every match, the first 1000 kept; files, skipped files and errors; the rule set used).
+A match flags the snapshot as anomalous (reason `YARA: <n> matches (…)`, see [Flagged snapshots](#flagged-snapshots))
+and raises the critical `malware` alert. Audit: `snapshot.scan_request`, `snapshot.scan`.
+
+![A snapshot with matches](images/snapshots-scan.png)
+
+![Scan results](images/snapshot-scan-results.png)
+
+The same scan can run before a restore: **Scan first** in the restore dialogs, see
+[06 Restores](06-restores.md#scan-first-secure-restore).
+
+> **Status:** Rules are compiled in the micro-VM at the start of each scan, so a syntax error only shows as a
+> failed scan job (with the compiler's message). Scans run on request or before a restore, not after every backup.
 
 ### Change trends
 

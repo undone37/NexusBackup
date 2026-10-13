@@ -1035,6 +1035,30 @@ async function main() {
       await closeDialogs();
       await login('admin');
     }],
+    // Phase 21e: YARA rule files, scan results of a snapshot, "scan first" in the restore dialog
+    ['malware-scan', async () => {
+      await login('so');
+      await go('/settings?tab=malware');
+      await until(`return !!document.querySelector('#ms-text') && document.body.innerText.includes('lockbit.yar')`, 'malware scan settings');
+      await shot('settings-malware-scan');
+      const fs02 = (await api('GET', '/agents')).body.find((a) => a.name === 'fs02');
+      await go(`/snapshots?source=host-${fs02.id}`);
+      await until(`return !!$button('Malware: 3 matches')`, 'scanned snapshot');
+      await shot('snapshots-scan');
+      await ev(`$click('Malware: 3 matches'); return true;`);
+      await until(`return !!document.querySelector('dialog[open]') && document.querySelector('dialog[open]').innerText.includes('HOW_TO_DECRYPT')`, 'scan results');
+      await shot('snapshot-scan-results');
+      await closeDialogs();
+      await login('admin');
+      await go('/snapshots?source=vm-100');
+      await ev(`$rowClick('vm-100', 'Restore'); return true;`);
+      await until(`return !!$button('Full restore')`, 'restore menu');
+      await ev(`$click('Full restore'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] select[id$="-scan"]')`, 'restore dialog');
+      await ev(`$fill('select[id$="-scan"]', 'link_down'); return true;`);
+      await shot('restore-scan-first', { height: 1100 });
+      await closeDialogs();
+    }],
     // Phase 17b: a security officer closes the vault; reopening is requested by an admin and approved
     ['vault-close', async () => {
       await login('so');

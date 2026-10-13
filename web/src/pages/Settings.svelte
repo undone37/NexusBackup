@@ -18,6 +18,7 @@
   import Security from './settings/Security.svelte';
   import Firewall from './settings/Firewall.svelte';
   import Vault from './settings/Vault.svelte';
+  import MalwareScan from './settings/MalwareScan.svelte';
 
   // Tabs per role (docs/phase12-contract.md: alerts + SSO readable by admins and security officers,
   // SSH keys + updates also by operators; diagnostics: checks for both, support bundles for admins;
@@ -32,6 +33,7 @@
     { id: 'ssh', comp: SshKeys, allow: staff },
     { id: 'updates', comp: Updates, allow: staff },
     { id: 'anomaly', comp: Anomaly, allow: officer },
+    { id: 'malware', comp: MalwareScan, allow: officer },
     { id: 'certificate', comp: Certificate, allow: officer },
     { id: 'forwarding', comp: Forwarding, allow: officer },
     { id: 'diagnostics', comp: Diagnostics, allow: officer },

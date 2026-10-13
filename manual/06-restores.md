@@ -63,9 +63,34 @@ Snapshots whose flag a security officer cleared (**Flag cleared**) count as clea
 
 ![The restore dialog of a flagged snapshot](images/restore-flagged-clean.png)
 
-> **Status:** "Secure restore" (scanning a snapshot with YARA rules in the restore micro-VM before restoring it) is
-> not part of this release; it is planned as a separate step. The file browser and **Find files** show flagged
-> snapshots without a notice.
+> **Status:** The file browser and **Find files** show flagged snapshots without a notice.
+
+### Scan first (secure restore)
+
+When YARA rules are uploaded (**Settings → Malware scan**, see
+[11 Alerts and monitoring](11-alerts-and-monitoring.md#malware-scan-yara)), the **Full restore**, **Instant
+recover**, plugin restore and **Restore to a host…** dialogs offer **Scan first (YARA)**:
+
+- **Off: restore at once** (default);
+- **Scan; on a match refuse the restore**: the restore job waits on **Jobs** (state *queued*, log "scan first:
+  snapshot_scan job … queued") until the snapshot was scanned in the restore micro-VM. Clean: it runs. A match, or a
+  scan that ran out of time: the job fails with "scan first: … restore refused" (audit `restore.refused`);
+- **Scan; on a match restore with the network disconnected** (full restore and instant recovery only): on a match
+  the guest is restored anyway, with every network card disconnected (`link_down`, audit `restore.link_down`), so
+  you can inspect or clean it without it reaching the network.
+
+A scan that fails (no rules any more, rules that do not compile, the micro-VM did not start) always refuses the
+restore. A match also flags the snapshot and raises a `malware` alert, so the next restore dialog defaults to the
+latest clean snapshot before it. Scanning a large VM takes time (one scan at a time, at most 4 hours); for
+urgent restores scan the snapshot ahead (**Scan** on **Snapshots**).
+
+![Scan first in the restore dialog](images/restore-scan-first.png)
+
+> **Status:** The scan runs in the restore micro-VM with Debian's `yara` 4.5. The micro-VM test boots it with real
+> file systems (ext4, XFS, NTFS, btrfs, vfat, LVM, ZFS) and a file-tree tar and checks matches, skipped large files
+> and that symlinks are not followed; the hold-and-verdict logic is covered by scheduler tests. A run on the
+> appliance VM against a real VM snapshot is a lab step that is still open. **Restore several** and downloads from
+> the file browser have no scan-first option in the UI.
 
 ### Consistency
 
