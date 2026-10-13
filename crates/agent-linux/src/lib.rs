@@ -3,6 +3,7 @@
 
 pub mod endpoint;
 pub mod hooks;
+pub mod power;
 pub mod restore;
 pub mod scan;
 pub mod server;
@@ -23,6 +24,14 @@ pub fn init(paths: &Paths, token: &str, port: Option<u16>) -> Result<String, Str
     let fp = agent_core::init(paths, token, port, &sys::uname().1)?;
     Ok(format!(
         "initialised for enrollment (token stored as sha256 only)\nenrollment certificate sha256 {fp}\n(re)start the service: systemctl restart nexus-agent"
+    ))
+}
+
+/// `nexus-agent init --fleet-secret <S>` (docs/agent-linux.md "Fleet deployment").
+pub fn init_fleet(paths: &Paths, secret: &str, port: Option<u16>) -> Result<String, String> {
+    let fp = agent_core::init_fleet(paths, secret, port, &sys::uname().1)?;
+    Ok(format!(
+        "initialised for fleet enrollment (secret stored as sha256 only)\nenrollment certificate sha256 {fp}\nstart the service: systemctl enable --now nexus-agent; the appliance finds it in its next scan"
     ))
 }
 

@@ -1,10 +1,12 @@
 //! File layout and `agent.conf` settings (shared by all agents).
 //!
 //! Linux: `/etc/nexus-agent` (0700 root): `agent.conf`, `token` (sha256 of the enrollment
-//! token), `agent.key` (private key, 0600), `enroll.crt` (self-signed, enrollment mode),
+//! token or fleet secret), `fleet` (fleet id), `fleet-secret` (dropped by a package
+//! deployment, adopted at the next start), `agent.key` (private key, 0600), `enroll.crt` (self-signed, enrollment mode),
 //! `agent.crt` + `ca.crt` + `agent.id` (after enrollment), `hooks.d/{pre,post}/`,
 //! `release-keys/*.pub` (pinned cosign keys for self-update).
-//! `/var/lib/nexus-agent` (0700): `enroll.failures`, `cache/`, `spool/`, `snapshots.journal`.
+//! `/var/lib/nexus-agent` (0700): `enroll.failures`, `cache/`, `spool/`, `snapshots.journal`, `ui-state.json`.
+//! `/run/nexus-agent` (0711): snapshot mount points, `ui.sock` (root:nexus-agent-ui 0660).
 //!
 //! Windows: the same names below `%ProgramData%\NexusAgent\config` and `...\state`; the
 //! directory `%ProgramData%\NexusAgent` carries a protected ACL (SYSTEM + Administrators
@@ -57,6 +59,16 @@ impl Paths {
     pub fn token(&self) -> PathBuf {
         self.config.join("token")
     }
+    /// fleet id while awaiting fleet enrollment (`init --fleet-secret`; `token` then
+    /// holds the fleet secret's digest)
+    pub fn fleet(&self) -> PathBuf {
+        self.config.join("fleet")
+    }
+    /// fleet secret dropped by a package deployment (Ansible, MSI `FLEETSECRET`):
+    /// adopted and deleted at the next start ([`crate::adopt_fleet_secret`])
+    pub fn fleet_secret(&self) -> PathBuf {
+        self.config.join("fleet-secret")
+    }
     pub fn key(&self) -> PathBuf {
         self.config.join("agent.key")
     }
@@ -89,6 +101,14 @@ impl Paths {
     }
     pub fn journal(&self) -> PathBuf {
         self.state.join("snapshots.journal")
+    }
+    /// session summaries, appliance status and queued requests for the endpoint UIs
+    pub fn ui_state(&self) -> PathBuf {
+        self.state.join("ui-state.json")
+    }
+    /// local IPC socket of the endpoint UIs (Linux)
+    pub fn ui_socket(&self) -> PathBuf {
+        self.run.join("ui.sock")
     }
 }
 

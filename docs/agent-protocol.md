@@ -214,3 +214,71 @@ All agents built on `agent-core` announce both capabilities.
   is resolved.
 - **Re-enrollment** keeps the agent id: a new token for an existing agent (`POST /agents/{id}/token`), `nexus-agent
   init` on the host, the usual enrollment; the scheduler replaces the pin and clears the renewal state.
+
+## v1.4 — endpoint status (additive, Phase 24a)
+Appended after `RenewOk` (tags 36–39, checked by `agent-proto` tests); sent only to agents announcing **capability
+`poll`** (all agents built on `agent-core`). Older agents keep working: the appliance only opens the session and
+says `Hello` (reachability, version, OS).
+
+- `SessionSummary { summary, status }` → `SummaryAck { job }`: after a backup or file restore of the agent the
+  scheduler stores one `Summary { job, kind: Backup|Restore, started, ended, result: Success|Warning|Failed|Cancelled,
+  read_bytes, transferred_bytes, new_bytes, warnings, first_error, snapshot_time, log_tail }` (catalog
+  `agent_sessions`; `log_tail` = the agent's part of the job log, ≤ 200 lines of ≤ 1 KiB) and delivers it with the
+  next poll session (oldest first, ≤ 20 per session) until acknowledged. The agent keeps the newest 100 (by end
+  time, one per job) in `<state>/ui-state.json` (root only).
+- `Poll { status, ack }` → `PollReply { requests, power, policy_version, busy }`: every 2 minutes per enrolled agent
+  of an active tenant (`nexus-agentctl <cfg> poll`, one process for all due agents, ≤ 8 sessions at once, 20 s I/O
+  timeout; backoff 4, 8, 15 minutes while unreachable). `status = ApplianceStatus { appliance, now, next_run,
+  ui_policy: UiPolicy { accent, header, hide_backup_now, hide_tray }, policy_version }` (also part of every
+  `SessionSummary`). `requests` = "back up now" requests queued by local users (`BackupRequest { id ≤ 64 hex,
+  queued_at }`, ≤ 16); the agent keeps each until an `ack` names it (or 7 days), so a scheduler restart between
+  queueing and acknowledging repeats it — the scheduler deduplicates by id (jobs carry `request_id`). `power =
+  PowerState { on_battery, battery_percent, metered, network_name }` (each optional = unknown). `busy` = a backup
+  session is active on the agent.
+- Limits (receiver-checked): `log_tail` ≤ 200 lines, lines and `first_error` ≤ 1024 bytes, `appliance` / `header` ≤
+  256 bytes, `accent` ≤ 16, `ack` / `requests` ≤ 16 entries with ids ≤ 64 bytes, `network_name` ≤ 256 bytes.
+- Output of `nexus-agentctl … poll`: one line `poll {"agent_id", "ok", "error"?, "info", "poll", "delivered":
+  [job…], "requests": [{id, queued_at}], "power", "policy_version", "busy"}` per agent (request ids other than hex
+  are dropped). The scheduler records `agents.reachable / last_poll / last_seen / poll_failures / power /
+  ui_policy_seen`, marks summaries delivered, queues one backup per group of the agent for a new request
+  (`requested_by = agent:<id>`, params `{group_id, guests: [id], request_id}`; at most one per 10 minutes; audit
+  `agent.request_backup` with actor `agent:<id>`) and acknowledges it in the next poll. Laptop policies
+  (`agents.laptop`) and missed runs: docs/endpoint-ui.md.
+
+Local side (agent ↔ endpoint UIs): crate `agent-ui-proto`, docs/endpoint-ui.md "Local IPC". Nothing on the local
+socket reaches the appliance except the requests above; it cannot change configuration, start a restore or read
+backup data.
+
+## v1.5 — fleet enrollment (additive, Phase 24d)
+Pre-installed agents (GPO / Intune / Ansible) are initialised with a reusable, time-limited **fleet secret**
+instead of a per-host token; the appliance finds them by scanning admin-defined address ranges. Appended variants
+(tags 40–41, after v1.4's 36–39). No capability: the messages are sent in enrollment
+mode, before any `Hello`: `FleetProbe { fleet_id, proof }`, `FleetInfo { proof, hostname, os, agent_version }`.
+
+- Secret `nxf1.<fleet id: 16 hex>.<26 base32>`, created by an admin (expiry ≤ 30 days, optional maximum number of
+  uses, optional `auto_accept`, agent port, ranges: IPv4 CIDR /22../32, IPv6 /118../128, addresses, host names;
+  ≤ 32 entries, ≤ 4096 addresses), shown once. The appliance keeps `token_digest(secret)` sealed to the scheduler
+  (`fleets.secret_hash`, location `fleet/<id>`). The fleet id is not secret: it only lets an agent tell fleets apart.
+- Agent: `nexus-agent init --fleet-secret -` (stdin), MSI `FLEETSECRET=…` (custom action, `MsiHiddenProperties`),
+  or a package deployment's `/etc/nexus-agent/fleet-secret` (adopted and deleted at the next start; the unit starts
+  when it exists). The agent stores the digest as `token` plus the fleet id (`fleet`) and is in enrollment mode
+  ("awaiting fleet enrollment"). `init --fleet-secret` refuses an enrolled agent (re-enrollment needs a token).
+- Scan (`nexus-agentctl fleet-scan`, job `fleet_scan`, every 15 minutes per usable fleet, at most 8 connections at
+  a time and 20 per second, 2 s timeout, only the fleet port; the firewall allows exactly these addresses and port
+  while the fleet is usable): enrollment-mode TLS as above, then `FleetProbe` with
+  `proof = HMAC(digest, "fleet-appliance" || exporter)`. The agent answers `Error 401` without counting a failed
+  proof when it is not in this fleet (token-initialised agents included; agents before v1.5 cannot decode the
+  message and close the connection); a wrong proof for its own fleet counts like a failed enrollment proof (lock
+  after 5). Otherwise it answers `FleetInfo` with `proof = HMAC(digest, "fleet-agent" || exporter)` and its host
+  info — never before the appliance proved the secret, and the secret itself never crosses the wire. Distinct roles
+  keep probe proofs from passing as enrollment proofs. Output: `fleet-agent {"host","port","hostname","os","version"}`
+  (control characters stripped, 128 characters each).
+- Candidates (`fleet_candidates`, unique per fleet + endpoint, a decision sticks across scans) are accepted by an
+  admin or tenant admin of the fleet's tenant, or automatically (`auto_accept`): agent row (host = scanned address,
+  `agents.fleet_id`), a linux source + protection group copied from the template group of the first matching
+  hostname rule (else the fleet's default group), job `agent_enroll {agent_id, fleet_id}`, one use counted. That job
+  is the normal enrollment with the fleet digest in place of the token digest (revoked or expired fleets enroll
+  nobody; the use limit only gates new acceptances). Audit `fleet.create`, `fleet.revoke`, `fleet.accept`,
+  `fleet.auto_accept`, `fleet.reject`.
+- Trust: anyone holding the secret can run an agent that waits for acceptance (docs/threat-model.md); expiry,
+  maximum uses, the scanned ranges, manual acceptance by default and revocation bound that.

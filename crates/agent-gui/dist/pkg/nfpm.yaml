@@ -1,0 +1,92 @@
+# nexus-agent-desktop .deb / .rpm (nfpm, run from its container by release/packages.sh).
+# Paths are relative to the staging directory release/packages.sh prepares:
+#   nexus-agent-gui (glibc binary from crates/agent-gui/build.sh), the .desktop files and the
+#   icon of crates/agent-gui/dist, copyright, changelog.yml, postinst.sh. @VERSION@ = the
+#   agent version (sed by release/packages.sh: nfpm does not expand variables in depends).
+name: nexus-agent-desktop
+arch: ${PKG_ARCH}
+platform: linux
+version: ${PKG_VERSION}
+release: "1"
+section: admin
+priority: optional
+maintainer: NexusBackup maintainers <undone37@users.noreply.github.com>
+vendor: NexusBackup
+homepage: https://github.com/undone37/NexusBackup
+license: AGPL-3.0-only
+description: |-
+  NexusBackup desktop agent (tray icon and status window)
+  The desktop agent shows the backup status of this computer: tray icon with
+  the protection state, last sessions as a bar chart, session details, and a
+  "request backup now" button. It talks only to the local nexus-agent
+  service; users need membership in its status group (docs/agent-linux.md).
+changelog: changelog.yml
+
+# winit/softbuffer open X11, Wayland and xkbcommon at run time (dlopen), the binary itself
+# links only glibc; the tray uses D-Bus (StatusNotifierItem) without GTK
+overrides:
+  deb:
+    depends:
+      - nexus-agent (>= @VERSION@)
+      - libc6 (>= 2.31)
+    recommends:
+      - libxkbcommon0
+      - libxkbcommon-x11-0
+      - libx11-6
+      - libx11-xcb1
+      - libxcursor1
+      - libxrandr2
+      - libxi6
+      - libwayland-client0
+      - libwayland-cursor0
+      - fonts-dejavu-core
+  rpm:
+    depends:
+      - nexus-agent >= @VERSION@
+    recommends:
+      - libxkbcommon
+      - libxkbcommon-x11
+      - libX11
+      - libX11-xcb
+      - libXcursor
+      - libXrandr
+      - libXi
+      - libwayland-client
+      - libwayland-cursor
+
+contents:
+  - src: nexus-agent-gui
+    dst: /usr/bin/nexus-agent-gui
+    file_info: { mode: 0755 }
+  - src: nexus-agent-gui.desktop
+    dst: /usr/share/applications/nexus-agent-gui.desktop
+    file_info: { mode: 0644 }
+  # every desktop user; one user opts out with a copy containing Hidden=true in
+  # ~/.config/autostart/nexus-agent-gui.desktop
+  - src: nexus-agent-gui-autostart.desktop
+    dst: /etc/xdg/autostart/nexus-agent-gui.desktop
+    type: config|noreplace
+    file_info: { mode: 0644 }
+  - src: nexus-agent-gui.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/nexus-agent-gui.svg
+    file_info: { mode: 0644 }
+  - src: copyright
+    dst: /usr/share/doc/nexus-agent-desktop/copyright
+    type: doc
+    packager: rpm
+    file_info: { mode: 0644 }
+  - src: copyright
+    dst: /usr/share/doc/nexus-agent-desktop/copyright
+    packager: deb
+    file_info: { mode: 0644 }
+
+scripts:
+  postinstall: postinst.sh
+
+rpm:
+  group: Applications/Archiving
+  summary: NexusBackup desktop agent (tray icon and status window)
+  compression: zstd
+
+deb:
+  compression: xz

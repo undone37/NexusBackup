@@ -77,6 +77,63 @@ and ServiceControl rows, custom action types and conditions, upgrade code, no to
 property, x64 template, extracted file layout. **A real installation has not run on
 Windows** (no Windows VMs); add the MSI to the manual test plan below.
 
+## Fleet deployment (GPO / Intune / Ansible)
+
+For many machines the MSI takes a reusable, time-limited **fleet secret** from the appliance
+(Agents → Fleet → New fleet secret; manual chapter 04 "Fleet enrollment", protocol:
+docs/agent-protocol.md "Fleet enrollment"):
+
+```
+msiexec /i nexus-agent-<v>-x64.msi /qn FLEETSECRET=nxf1.<fleet id>.<secret>
+```
+
+- The deferred custom action `FleetInit` (LocalSystem, after `ServiceSetup`, before the
+  service starts) runs `nexus-agent.exe init --fleet-secret <secret>`: the agent keeps only
+  `token_digest(secret)` plus the fleet id and starts in enrollment mode ("awaiting fleet
+  enrollment") instead of stopping as "not initialised". The appliance finds it in its next
+  scan of the fleet's ranges; after acceptance (manual by default) the normal enrollment
+  follows.
+- `MsiHiddenProperties` keeps `FLEETSECRET` out of the MSI log. The custom action's command
+  line contains the secret while it runs (seconds, LocalSystem); GPO/Intune store it in their
+  deployment configuration. That is acceptable for a fleet secret, unlike a one-time per-host
+  token: it is time-limited (≤ 30 days), optionally capped, revocable, only usable inside the
+  scanned ranges, and a host enrolled with it still has to be accepted (docs/threat-model.md).
+- On an enrolled agent (upgrade, GPO re-run) `init --fleet-secret` is refused and the custom
+  action's failure is ignored (`Return="ignore"`): the enrollment is kept.
+- Without the MSI: `nexus-agent.exe init --fleet-secret -` (secret on stdin), then
+  `sc.exe start NexusAgent`.
+
+GPO: computer configuration → software installation cannot pass properties directly; use a
+transform (`.mst` setting `FLEETSECRET`, e.g. made with Orca) or a startup script running the
+`msiexec` line above. Intune: Windows app (Win32 or line-of-business), install command
+`msiexec /i nexus-agent-<v>-x64.msi /qn FLEETSECRET=<secret>`, device context. Allow TCP 7444
+from the appliance in the Windows firewall (GPO / Intune endpoint protection profile).
+
+**Untested on Windows** like the rest of the MSI (see below); `release/test-packages.sh`
+checks the custom action row and its condition on Linux.
+
+## Desktop UI (`nexus-agent-gui.exe`)
+
+The MSI also installs the desktop UI from `crates/agent-gui` (shared with Linux desktops, docs/endpoint-ui.md):
+tray icon with the protection state and a Control Panel window (status, bar chart of the last 30 sessions, session
+details, "Request backup now"). It talks only to the agent service's named pipe `\\.\pipe\nexus-agent-ui` (local
+interactive users; nothing on the pipe changes configuration or reads backup data) and never to the network.
+
+- Cross-compiled with the agent's mingw builder image: `crates/agent-gui/build.sh` (also Linux x86_64/aarch64;
+  `--clippy` for the Windows target). iced with the tiny-skia software renderer (no GPU driver needed, works over RDP),
+  tray via tray-icon (Win32 notification area). Imports only Windows system DLLs (checked by the script); about 3.5 MB.
+- MSI: `C:\Program Files\NexusBackup Agent\nexus-agent-gui.exe`, Start menu entry "NexusBackup Agent" (`--open`), and
+  the **per-machine** Run key `HKLM\Software\Microsoft\Windows\CurrentVersion\Run\NexusBackupAgentGui`, so it starts
+  in the tray at every user logon (decision: the MSI is per machine and GPO/Intune deploy it in device context; a
+  per-user HKCU entry would need every user to run an installer). Users switch it off in Task Manager > Startup;
+  administrators remove the value by GPO. One instance per logon session (named mutex).
+- Updates: the GUI is replaced by the next MSI (major upgrade); a running GUI keeps the file in use, so Windows
+  Installer asks to close it (interactive) or replaces it at the next restart (`/qn`).
+- Desktop notifications on failed / warning backups are off by default; the setting is per user
+  (`%APPDATA%\NexusBackup\agent-gui.json`).
+- **Untested on Windows** like the agent itself (no Windows VMs): the tray, pipe access for non-admin users and the
+  Run key belong to the manual test plan below.
+
 ## Manual install (without the MSI)
 
 As Administrator, on the server:
@@ -384,3 +441,10 @@ controller (NTDS), Exchange on 2019 if available.
     refused; `msiexec /x … /qn` → service and Program Files gone, `%ProgramData%\NexusAgent`
     kept; reinstall → enrolled again; `msiexec /x … /qn PURGE=1` → `%ProgramData%\NexusAgent`
     gone. Deploy once through a GPO (computer software installation) and once through Intune.
+12. **Desktop UI:** after the MSI, log on as a non-admin user (also over RDP): tray icon appears
+    (Run key), tooltip shows the state; the Start menu entry opens the window; a second start
+    does not create a second tray icon; "Request backup now" queues a request (shown as
+    *Requested*, started by the next appliance poll), a second request within 10 minutes is
+    refused; stop the service → icon "not connected to the service"; enable notifications and
+    let a backup fail → toast; light/dark follow the Windows setting; keyboard-only operation
+    (arrows, T, B, R, N, Esc); uninstall while the GUI runs.

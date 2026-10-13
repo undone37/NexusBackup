@@ -4,12 +4,15 @@
 #
 #   e2e.sh appliance            dev control plane: lab/e2e/m5.sh setup + start (ROOT, PORT below)
 #   e2e.sh restart | stop       restart (new binaries, same state) or stop it
-#   e2e.sh <vm> [steps]         default steps: agent backup incr restore download db update
+#   e2e.sh <vm> [steps]         default steps: agent backup incr endpoint restore download db update
 #     agent     create the agent (API), install the bundle with the token on the VM, enroll (job)
 #     backup    hook(s) on the VM, linux source + policy (daily, next minute) + group, wait for the
 #               scheduled backup; consistent=true expected unless the VM has no snapshots
 #               (deb-plain: consistent=false + backup_inconsistent alert)
 #     incr      change a few files, manual backup: transferred bytes must stay small
+#     endpoint  (Phase 24a) UI socket perms; the poll delivers the summaries (nexus-agent status --json:
+#               last success, reachable, managed by); request_backup over the socket -> a backup job
+#               requested by agent:<id> runs, its summary reaches the agent; a 2nd request is rate limited
 #     restore   restore_files (wrong confirm refused, confirm = agent name) to /restore/<n>,
 #               compare owners/modes/mtimes/xattrs/ACLs/content (lab/linux/manifest.py)
 #     download  files_get tar + zip of the data directory, content checked against the VM
@@ -261,6 +264,57 @@ step_incr() {
 	echo "B2=$(jq -r .result.time <<<"$j")" >>"$S/$VM.env"
 }
 
+# one request over the agent's UI socket (as root: the lab user is not in nexus-agent-ui)
+ui_call() {
+	vm "sudo python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(\"/run/nexus-agent/ui.sock\"); s.sendall(sys.argv[1].encode()+b\"\\n\"); print(s.makefile().readline().strip())' '$1'"
+}
+
+step_endpoint() {
+	state
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	# socket: root:nexus-agent-ui 0660 (root-only if the group is missing); the lab user has no access
+	local perm
+	perm=$(vm 'stat -c %a:%G /run/nexus-agent/ui.sock')
+	result ui_socket "$perm"
+	case $perm in 660:nexus-agent-ui | 660:root) ;; *) die "ui.sock permissions $perm" ;; esac
+	if vm "python3 -c 'import socket; socket.socket(socket.AF_UNIX).connect(\"/run/nexus-agent/ui.sock\")'" 2>/dev/null; then
+		die "a user outside nexus-agent-ui reached the UI socket"
+	fi
+	# the poll (agent_poll_secs 10 in the lab) delivers the summaries of the earlier backups
+	local st i
+	for i in $(seq 60); do
+		st=$(vm 'sudo /usr/local/sbin/nexus-agent status --json')
+		jq -e '.reachable and .last_success != null and .managed_by != null' <<<"$st" >/dev/null && break
+		[ "$i" = 60 ] && die "agent status after polls: $st"
+		sleep 2
+	done
+	jq -c '{state, reachable, last_success, next_run, managed_by}' <<<"$st" >&2
+	api admin GET /agents | jq -e --arg id "$AGENT" '.[] | select(.id==$id) | .reachable == true and .last_poll != null' >/dev/null ||
+		die "appliance did not record the poll"
+	# "back up now" from the endpoint
+	local r rid j id
+	r=$(ui_call '{"op":"request_backup"}')
+	rid=$(jq -er .request_id <<<"$r") || die "request_backup: $r"
+	ui_call '{"op":"request_backup"}' | jq -e '.ok == false' >/dev/null || die "second request not rate limited"
+	for i in $(seq 90); do
+		id=$(api admin GET /jobs | jq -r --arg r "$rid" '[.[] | select(.params.request_id==$r)] | .[0].id // empty')
+		[ -n "$id" ] && break
+		[ "$i" = 90 ] && die "no backup job for request $rid"
+		sleep 2
+	done
+	j=$(wait_job admin "$id" 1800)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "requested backup: $(jq -r .log <<<"$j" | tail -n 20)"
+	[ "$(jq -r .requested_by <<<"$j")" = "agent:$AGENT" ] || die "requested_by $(jq -r .requested_by <<<"$j")"
+	for i in $(seq 60); do
+		ui_call '{"op":"sessions","limit":5}' | jq -e --argjson j "$id" '.sessions[0].id == $j' >/dev/null && break
+		[ "$i" = 60 ] && die "summary of job $id did not reach the agent"
+		sleep 2
+	done
+	r=$(ui_call "{\"op\":\"session\",\"id\":$id}")
+	jq -e '.result == "success" and (.log_tail | length) > 0' <<<"$r" >/dev/null || die "session $id on the agent: $r"
+	result endpoint_request_job "$id"
+}
+
 latest() { api admin GET "/snapshots?tenant=$TENANT" | jq -r --arg s "host-$AGENT" '[.[] | select(.source==$s and .local)] | max_by(.time) | .time'; }
 
 step_restore() {
@@ -471,7 +525,7 @@ step_update() {
 }
 
 steps=("$@")
-[ ${#steps[@]} -gt 0 ] || steps=(agent backup incr restore download db update)
+[ ${#steps[@]} -gt 0 ] || steps=(agent backup incr endpoint restore download db update)
 for s in "${steps[@]}"; do
 	log "== $VM: $s"
 	"step_$s"

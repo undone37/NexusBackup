@@ -29,6 +29,9 @@
   import IconGavel from '@lucide/svelte/icons/gavel';
   import IconUnlock from '@lucide/svelte/icons/lock-open';
   import HoldDialog from '../components/HoldDialog.svelte';
+  import FlaggedNotice from '../components/FlaggedNotice.svelte';
+  import IconDiff from '@lucide/svelte/icons/file-diff';
+  import IconCheck from '@lucide/svelte/icons/shield-check';
   import IconCloudDown from '@lucide/svelte/icons/cloud-download';
   import { fetchFromOffsite } from '../lib/offsite';
 
@@ -110,7 +113,7 @@
   const isMount = (r: PluginRestore | null) => r?.id === 'mount';
 
   function openPluginRestore(s: Snapshot, r: PluginRestore) {
-    prSnap = s;
+    prSnap = preferClean(s);
     prRestore = r;
     prValues = initValues(r.params_schema);
     prErrors = {};
@@ -190,6 +193,37 @@
   }
 
   const guestNames = $derived([...new Set(snaps.map((s) => s.source))].sort());
+
+  // Phase 21a: dialogs opened on a flagged snapshot default to the latest clean one before it
+  const cleanBefore = (s: Snapshot) =>
+    snaps
+      .filter((x) => x.tenant === s.tenant && x.source === s.source && x.local && !x.anomalous && x.time < s.time)
+      .sort((a, b) => b.time - a.time)[0] ?? null;
+  let flaggedOf: Snapshot | null = $state(null);
+  function preferClean(s: Snapshot): Snapshot {
+    flaggedOf = s.anomalous ? s : null;
+    return s.anomalous ? (cleanBefore(s) ?? s) : s;
+  }
+
+  // A security officer clears a flag (false alarm) with a note (audited).
+  let clearOpen = $state(false);
+  let clearSnap: Snapshot | null = $state(null);
+  let clearNote = $state('');
+  async function submitClear(e: SubmitEvent) {
+    e.preventDefault();
+    if (!clearSnap) return;
+    const s = clearSnap;
+    busy = true;
+    const ok = await act(
+      post(`/snapshots/${encodeURIComponent(s.tenant)}/${encodeURIComponent(s.source)}/${s.time}/anomaly/clear`, { note: clearNote.trim() }),
+      t.snap.flagClearedOk,
+    );
+    busy = false;
+    if (ok) {
+      clearOpen = false;
+      load();
+    }
+  }
   const now = Date.now() / 1000;
 
   // Restore / instant-recover dialog
@@ -216,7 +250,7 @@
   const nodeNames = $derived(nodesOf((sel as Snapshot | null)?.tenant));
 
   function openRestore(s: Snapshot, m: 'restore' | 'instant') {
-    sel = s;
+    sel = preferClean(s);
     mode = m;
     target = '';
     node = '';
@@ -276,10 +310,14 @@
   let groups: Group[] = $state([]);
   const manyLatest = $derived.by(() => {
     const m = new Map<string, Snapshot>();
+    // the latest clean snapshot of each guest (Phase 21a)
     for (const s of snaps)
-      if (s.tenant === manyTenant && s.local && /^(vm|ct)-\d+$/.test(s.source) && (m.get(s.source)?.time ?? -1) < s.time) m.set(s.source, s);
+      if (s.tenant === manyTenant && s.local && !s.anomalous && /^(vm|ct)-\d+$/.test(s.source) && (m.get(s.source)?.time ?? -1) < s.time)
+        m.set(s.source, s);
     return [...m.values()].sort((a, b) => a.source.localeCompare(b.source, undefined, { numeric: true }));
   });
+  const newerFlagged = (s: Snapshot) =>
+    snaps.filter((x) => x.tenant === s.tenant && x.source === s.source && x.local && x.anomalous && x.time > s.time).sort((a, b) => b.time - a.time)[0];
   const manyPicked = $derived(manyLatest.filter((s) => manyChecked[s.source]));
   const manyTenants = $derived([...new Set(snaps.filter((s) => /^(vm|ct)-/.test(s.source)).map((s) => s.tenant))].sort());
 
@@ -335,7 +373,7 @@
   let rfOpen = $state(false);
   let rfSnap: Snapshot | null = $state(null);
   function openRestoreFiles(s: Snapshot) {
-    rfSnap = s;
+    rfSnap = preferClean(s);
     rfOpen = true;
   }
 
@@ -373,7 +411,7 @@
   let holdTarget: Snapshot | null = $state(null);
   let holdReason = $state('');
   function openHold(s: Snapshot | null) {
-    holdTarget = s;
+    holdTarget = s ? preferClean(s) : (flaggedOf = null);
     holdReason = s?.hold?.state === 'advisory' ? s.hold.reason : '';
     holdOpen = true;
   }
@@ -383,6 +421,7 @@
     if (await act(del(path), t.snap.releaseQueued)) load();
   }
   const showActions = $derived(can.restore(session.user) || can.hold(session.user) || can.releaseHold(session.user));
+  const holdSnap = $derived(holdTarget as Snapshot | null);
   async function remove(s: Snapshot) {
     if (!(await askConfirm(t.snap.deleteConfirm(s.source, fmtTime(s.time))))) return;
     const path = `/snapshots/${encodeURIComponent(s.tenant)}/${encodeURIComponent(s.source)}/${s.time}`;
@@ -485,6 +524,18 @@
                   </div>
                 {/if}
                 {#if s.origin}<div><span class="chip info">{t.snap.replicatedFrom(s.origin)}</span></div>{/if}
+                {#if s.anomalous && s.anomaly}
+                  <div><span class="chip bad" title={t.snap.anomalousTitle(s.anomaly.reason)}>{t.snap.anomalous}</span></div>
+                  <div class="muted small reason">{s.anomaly.reason}</div>
+                {:else if s.anomaly}
+                  <div>
+                    <span
+                      class="chip info plain"
+                      title={t.snap.flagClearedTitle(s.anomaly.cleared_by ?? '?', fmtTime(s.anomaly.cleared_at ?? 0), s.anomaly.note ?? '', s.anomaly.reason)}
+                      >{t.snap.flagCleared}</span
+                    >
+                  </div>
+                {/if}
                 {#if offsiteOnly(s)}<div><span class="chip info plain">{t.offsite.onlyOffsite}</span></div>{/if}
                 {#if s.hold?.state === 'active'}
                   <div>
@@ -526,6 +577,21 @@
                       <Menu label={t.snap.restoreMenu} ariaLabel={t.snap.restoreMenuLabel(s.source)} {items} />
                     {/if}
                   {/if}
+                  {#if can.restore(session.user) && s.local}
+                    <a
+                      class="button small"
+                      href={href('/changes' + qs({ tenant: s.tenant, source: s.source, time: s.time }))}
+                      aria-label={t.snap.changesLabel(s.source, fmtTime(s.time))}><IconDiff aria-hidden="true" />{t.snap.changes}</a
+                    >
+                  {/if}
+                  {#if can.hold(session.user) && s.anomalous}
+                    <button
+                      type="button"
+                      class="small"
+                      onclick={() => ((clearSnap = s), (clearNote = ''), (clearOpen = true))}
+                      aria-label={t.snap.clearFlagLabel(s.source, fmtTime(s.time))}><IconCheck aria-hidden="true" />{t.snap.clearFlag}</button
+                    >
+                  {/if}
                   {#if can.hold(session.user) && s.hold?.state !== 'active'}
                     <button type="button" class="small" onclick={() => openHold(s)} aria-label={t.snap.holdLabel(s.source, fmtTime(s.time))}
                       ><IconGavel aria-hidden="true" />{s.hold ? t.snap.applyHold : t.snap.hold}</button
@@ -557,6 +623,7 @@
   {#if sel}
     <form onsubmit={startRestore}>
       <p class="muted">{sel.tenant} · {fmtTime(sel.time)}</p>
+      {#if flaggedOf}<FlaggedNotice flagged={flaggedOf} clean={cleanBefore(flaggedOf)} using={sel} onswitch={(x) => (sel = x)} />{/if}
       {#if mode === 'instant'}<p class="banner info">{t.snap.instantHint}</p>{/if}
       <div class="field">
         <label for="r-node">{t.snap.node}</label>
@@ -651,7 +718,8 @@
             <label class="inline-check"
               ><input type="checkbox" bind:checked={manyChecked[s.source]} /><span class="mono">{s.source}</span>
               <span class="muted">{fmtTime(s.time)}</span>
-              <ConsistencyBadge level={s.consistency} /></label
+              <ConsistencyBadge level={s.consistency} />
+              {#if newerFlagged(s)}<span class="chip warn plain">{t.snap.flaggedSkipped(fmtTime(newerFlagged(s).time))}</span>{/if}</label
             >
           {/each}
         </div>
@@ -704,6 +772,7 @@
         {prSnap.tenant} · {fmtTime(prSnap.time)}
         {#if prRestore.app_specific}<span class="chip info">{t.snap.appSpecific}</span>{/if}
       </p>
+      {#if flaggedOf}<FlaggedNotice flagged={flaggedOf} clean={cleanBefore(flaggedOf)} using={prSnap} onswitch={(x) => (prSnap = x)} />{/if}
       {#if range && hasTimeTarget}
         <div class="range" role="group" aria-labelledby="pr-range-label">
           <p id="pr-range-label">
@@ -771,11 +840,35 @@
   tenant={route.query.get('tenant') ?? ''}
   sources={guestNames}
   ondone={load}
-/>
+>
+  {#if flaggedOf && holdSnap}
+    <FlaggedNotice flagged={flaggedOf} clean={cleanBefore(flaggedOf)} using={holdSnap} onswitch={(x) => (holdTarget = x)} />
+  {/if}
+</HoldDialog>
 
 {#if rfSnap}
-  <RestoreFiles bind:open={rfOpen} tenant={rfSnap.tenant} source={rfSnap.source} time={rfSnap.time} paths={['/']} {agents} />
+  <RestoreFiles bind:open={rfOpen} tenant={rfSnap.tenant} source={rfSnap.source} time={rfSnap.time} paths={['/']} {agents}>
+    {#if flaggedOf}<FlaggedNotice flagged={flaggedOf} clean={cleanBefore(flaggedOf)} using={rfSnap} onswitch={(x) => (rfSnap = x)} />{/if}
+  </RestoreFiles>
 {/if}
+
+<Modal bind:open={clearOpen} title={t.snap.clearTitle}>
+  {#if clearSnap}
+    <form onsubmit={submitClear}>
+      <p><span class="mono">{clearSnap.source}</span> · {clearSnap.tenant} · {fmtTime(clearSnap.time)}</p>
+      <p class="banner warn">{clearSnap.anomaly?.reason}</p>
+      <p class="muted">{t.snap.clearIntro}</p>
+      <div class="field">
+        <label for="clear-note">{t.snap.clearNote}</label>
+        <input id="clear-note" bind:value={clearNote} required maxlength="1000" />
+      </div>
+      <div class="form-actions">
+        <button type="button" onclick={() => (clearOpen = false)}>{t.cancel}</button>
+        <button type="submit" class="primary" disabled={busy || !clearNote.trim()}>{t.snap.clearSubmit}</button>
+      </div>
+    </form>
+  {/if}
+</Modal>
 
 
 <style>
@@ -797,6 +890,10 @@
   }
   .range p {
     margin: 0 0 0.25rem;
+  }
+  .reason {
+    max-width: 22rem;
+    font-size: 0.8rem;
   }
   /* legal-hold badge: the gavel replaces the chip dot */
   .chip.hold :global(svg) {

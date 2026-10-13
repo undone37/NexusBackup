@@ -665,6 +665,17 @@ async function main() {
       await until(`return !!document.querySelector('dialog[open] #l-bw')`, 'limits dialog');
       await shot('agent-limits');
       await closeDialogs();
+      // Phase 24a: endpoint status of a laptop (UI policy, laptop options, sessions)
+      await ev(`$rowClick('nb07', 'Endpoint'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #ep-bat') && document.body.innerText.includes('on the agent')`, 'endpoint dialog');
+      await shot('agent-endpoint');
+      await closeDialogs();
+    }],
+    // Phase 24d: fleet secrets, agents found by fleet scans, CSV bulk enrollment
+    ['agents-fleet', async () => {
+      await go('/agents?tab=fleet');
+      await until(`return document.body.innerText.includes('ws-041')`, 'fleet candidates');
+      await shot('agents-fleet');
     }],
     ['replication', async () => {
       await go('/replication');
@@ -991,6 +1002,37 @@ async function main() {
       await confirmOk();
       await settle();
       await shot('snapshots-held');
+      await login('admin');
+    }],
+    // Phase 21a: flagged snapshots, restores defaulting to the latest clean one, the snapshot diff,
+    // change trends, clearing a flag (security officer)
+    ['ransomware', async () => {
+      await login('admin');
+      await go('/snapshots?source=vm-301');
+      await until(`return document.body.innerText.includes('Anomalous')`, 'flagged snapshot');
+      await shot('snapshots-anomalous');
+      await ev(`$rowClick('Anomalous', 'Restore'); return true;`);
+      await until(`return !!$button('Full restore')`, 'restore menu');
+      await ev(`$click('Full restore'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #r-target')`, 'restore dialog');
+      await shot('restore-flagged-clean', { height: 1000 });
+      await closeDialogs();
+      const fs02 = (await api('GET', '/agents')).body.find((a) => a.name === 'fs02');
+      await go(`/changes?tenant=acme&source=host-${fs02.id}`);
+      await until(`return document.body.innerText.includes('HOW_TO_DECRYPT')`, 'snapshot diff', 30000);
+      await settle();
+      await shot('snapshot-changes');
+      await go('/sources');
+      await until(`return !!document.querySelector('#trends-h') && !!document.querySelector('svg.spark')`, 'change trends');
+      await ev(`document.querySelector('#trends-h').scrollIntoView(); window.scrollBy(0, -80); return true;`);
+      await shot('sources-trends', { scrolled: true });
+      await login('so');
+      await go('/snapshots?source=vm-301');
+      await ev(`$rowClick('Anomalous', 'Clear flag'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #clear-note')`, 'clear flag dialog');
+      await ev(`$fill('#clear-note', 'Checked: bulk import of encrypted archives by the backup team (ticket 4711)'); return true;`);
+      await shot('snapshot-clear-flag');
+      await closeDialogs();
       await login('admin');
     }],
     // Phase 17b: a security officer closes the vault; reopening is requested by an admin and approved

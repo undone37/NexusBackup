@@ -25,11 +25,14 @@ pub mod alerts;
 pub mod approvals;
 pub mod auth;
 pub mod certs;
+pub mod changes;
 pub mod config_backup;
 pub mod console;
 pub mod dashboard;
 pub mod diag;
+pub mod endpoint;
 pub mod firewall;
+pub mod fleet;
 pub mod forwarding;
 pub mod hardware;
 pub mod holds;
@@ -529,7 +532,23 @@ pub fn router(st: St) -> Router {
         .route("/agents/{id}/token", post(new_agent_token))
         .route("/agents/{id}/enroll", post(enroll_agent))
         .route("/agents/{id}/limits", axum::routing::put(selection::set_agent_limits))
+        .route("/agents/bulk", post(fleet::bulk_agents))
+        .route("/fleets", get(fleet::list_fleets).post(fleet::create_fleet))
+        .route("/fleets/{id}", axum::routing::delete(fleet::revoke_fleet))
+        .route("/fleets/{id}/scan", post(fleet::scan_fleet))
+        .route("/fleet/candidates", get(fleet::list_candidates))
+        .route("/fleet/candidates/{id}/accept", post(fleet::accept_candidate))
+        .route("/fleet/candidates/{id}/reject", post(fleet::reject_candidate))
+        .route("/agents/{id}/ui-policy", axum::routing::put(endpoint::set_ui_policy))
+        .route("/agents/{id}/laptop", axum::routing::put(endpoint::set_laptop))
+        .route("/agents/{id}/sessions", get(endpoint::agent_sessions))
         .route("/snapshots", get(list_snapshots))
+        .route("/snapshots/diff", post(changes::diff))
+        .route(
+            "/snapshots/{tenant}/{source}/{time}/anomaly/clear",
+            post(changes::clear),
+        )
+        .route("/stats/trends", get(changes::trends))
         .route(
             "/snapshots/{tenant}/{source}/{time}",
             axum::routing::delete(delete_snapshot),

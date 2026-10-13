@@ -10,8 +10,10 @@
 Description=NexusBackup agent
 After=network-online.target local-fs.target
 Wants=network-online.target
-# `nexus-agent init --token <T>` creates the key; without it there is nothing to serve
-ConditionPathExists=/etc/nexus-agent/agent.key
+# `nexus-agent init --token <T>` creates the key; without it there is nothing to serve,
+# unless a package deployment dropped a fleet secret (adopted at start, docs/agent-linux.md)
+ConditionPathExists=|/etc/nexus-agent/agent.key
+ConditionPathExists=|/etc/nexus-agent/fleet-secret
 
 [Service]
 Type=simple
@@ -51,7 +53,9 @@ CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_FOWNER CAP_CHOWN 
 # unshares its own mount namespace when started outside systemd)
 PrivateMounts=yes
 RuntimeDirectory=nexus-agent
-RuntimeDirectoryMode=0700
+# 0711: the local UI socket ui.sock (root:nexus-agent-ui 0660) must be reachable;
+# snapshot mount points below it stay private (PrivateMounts) and are not listable
+RuntimeDirectoryMode=0711
 StateDirectory=nexus-agent
 StateDirectoryMode=0700
 NoNewPrivileges=yes

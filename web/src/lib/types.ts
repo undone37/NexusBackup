@@ -290,6 +290,67 @@ export interface Agent {
   cert_expires: number | null;
   /** a renewed certificate was issued but no session confirmed it yet */
   cert_renewal_pending: boolean;
+  /** Phase 24a endpoint status (scheduler poll every 2 min; null = never polled) */
+  reachable?: boolean | null;
+  last_poll?: number | null;
+  power?: AgentPower | null;
+  ui_policy?: AgentUiPolicy | Record<string, never>;
+  ui_policy_version?: number;
+  /** version the agent has stored (null = not yet delivered) */
+  ui_policy_seen?: number | null;
+  laptop?: AgentLaptop | Record<string, never>;
+  /** a skipped / failed scheduled run waits for the agent (run_missed) */
+  missed_at?: number | null;
+  /** last "back up now" request from the endpoint */
+  last_request?: AgentRequest | null;
+}
+
+export interface AgentPower {
+  on_battery: boolean | null;
+  battery_percent: number | null;
+  metered: boolean | null;
+  network_name: string | null;
+}
+
+/** PUT /agents/{id}/ui-policy (admins): branding / visibility of the endpoint UIs */
+export interface AgentUiPolicy {
+  accent: string;
+  header: string;
+  hide_backup_now: boolean;
+  hide_tray: boolean;
+}
+
+/** PUT /agents/{id}/laptop: skip scheduled runs on battery / metered networks, catch up missed runs */
+export interface AgentLaptop {
+  min_battery: number;
+  skip_metered: boolean;
+  run_missed: boolean;
+  retry_hours: number;
+}
+
+export interface AgentRequest {
+  id: string;
+  queued_at: number | null;
+  received: number;
+  jobs: number[];
+  refused: string | null;
+}
+
+/** GET /agents/{id}/sessions: what the endpoint UI shows (newest first) */
+export interface AgentSession {
+  job: number;
+  kind: 'Backup' | 'Restore';
+  started: number;
+  ended: number;
+  result: 'Success' | 'Warning' | 'Failed' | 'Cancelled';
+  read_bytes: number;
+  transferred_bytes: number;
+  new_bytes: number;
+  warnings: number;
+  first_error: string;
+  snapshot_time: number | null;
+  /** the agent acknowledged it (null = waits for the next poll) */
+  delivered: number | null;
 }
 
 /** PUT /agents/{id}/limits: bytes/s (0 = unlimited, else >= 65536) and nice 0..19 */
@@ -306,6 +367,51 @@ export interface AgentToken {
 }
 
 export type AgentStatus = 'enrolled' | 'pending' | 'expired';
+
+/** Phase 24d: fleet secret (GET /fleets; the secret itself only in the POST answer) */
+export interface Fleet {
+  id: string;
+  name: string;
+  tenant: string;
+  created: number;
+  created_by: string;
+  expires: number;
+  max_uses: number | null;
+  uses: number;
+  revoked: boolean;
+  auto_accept: boolean;
+  port: number;
+  /** CIDR (≤ /22 resp. /118), addresses or host names the scheduler scans */
+  ranges: string[];
+  /** template group (protection group of a linux source) for new agents */
+  group: string | null;
+  group_rules: { pattern: string; group: string }[];
+  last_scan: number | null;
+  /** candidates awaiting acceptance */
+  awaiting: number;
+}
+
+export interface FleetCreated extends Fleet {
+  secret: string;
+  install: { linux: string; linux_file: string; windows: string };
+}
+
+/** An agent found by a fleet scan (GET /fleet/candidates) */
+export interface FleetCandidate {
+  id: number;
+  fleet_id: string;
+  fleet: string;
+  tenant: string;
+  host: string;
+  port: number;
+  hostname: string;
+  os: string;
+  version: string;
+  first_seen: number;
+  last_seen: number;
+  state: 'awaiting' | 'accepted' | 'rejected';
+  agent_id: string | null;
+}
 
 export type Overwrite = 'never' | 'if_older' | 'always';
 
@@ -425,9 +531,12 @@ export type JobKind =
   | 'inventory'
   | 'file_search'
   | 'file_index'
+  | 'file_changes'
+  | 'snapshot_diff'
   | 'offsite_list'
   | 'offsite_restore'
-  | 'offsite_attach';
+  | 'offsite_attach'
+  | 'fleet_scan';
 
 /** One snapshot of an `offsite_list` result (Phase 17d, `nexus-offsite list --json`). */
 export interface OffsiteListed {
@@ -550,6 +659,51 @@ export interface Snapshot {
   consistency?: Consistency | null;
   /** Phase 18b: plugin snapshot metadata (e.g. PostgreSQL's recoverable range), null = none */
   meta?: SnapshotMeta | null;
+  /** Phase 21a: change-rate or file-level anomaly flag (kept after a security officer cleared it) */
+  anomaly?: SnapshotAnomaly | null;
+  /** flagged and not cleared */
+  anomalous?: boolean;
+}
+
+export interface SnapshotAnomaly {
+  reason: string;
+  at: number | null;
+  cleared_by: string | null;
+  cleared_at: number | null;
+  note: string | null;
+}
+
+/** One changed path of a `snapshot_diff` job (POST /snapshots/diff). */
+export interface DiffEntry {
+  path: string;
+  change: 'added' | 'changed' | 'deleted';
+  kind: 'file' | 'dir' | 'symlink' | 'other';
+  size: number;
+  mtime: number;
+  old_size: number | null;
+  old_mtime: number | null;
+}
+
+/** `job.result` of a `snapshot_diff` job; `indexed: false` = a name index is missing. */
+export interface DiffResult {
+  indexed: boolean;
+  base: number | null;
+  time: number;
+  added?: number;
+  changed?: number;
+  deleted?: number;
+  /** entries of the selected change type */
+  total?: number;
+  offset?: number;
+  limit?: number;
+  entries?: DiffEntry[];
+}
+
+/** GET /stats/trends: the last 30 runs of one source, oldest first. */
+export interface SourceTrend {
+  tenant: string;
+  source: string;
+  runs: { time: number; new_plain: number; new_stored: number; files_changed: number | null; anomalous: boolean }[];
 }
 
 /** Plugin snapshot metadata (protocol v1.6 `SnapshotMeta`); known keys are shown. */
@@ -1195,6 +1349,8 @@ export interface AnomalySettings {
   factor: number;
   history: number;
   floor_bytes: number;
+  /** Phase 21a: extra ransom-note file name globs */
+  ransom_notes?: string[];
 }
 
 /** Phase 14d: GET /auth/sessions, GET /sessions. */

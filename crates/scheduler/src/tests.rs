@@ -1800,6 +1800,16 @@ fn backup_stats_and_anomaly_alert() {
         "{}",
         a[0].1
     );
+    // Phase 21a: the snapshot itself is flagged with the reason
+    let flag: Option<String> =
+        s.db.conn()
+            .query_row(
+                "SELECT anomaly FROM snapshots WHERE tenant='t1' AND source='vm-100' AND time=1006",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert!(flag.unwrap().starts_with("10.0 GiB new data"));
     // disabled by the setting
     catalog::set_setting(&s.db.conn(), "anomaly", r#"{"enabled": false}"#).unwrap();
     s.db.conn().execute("UPDATE alerts SET acked_by='op'", []).unwrap();
@@ -1984,15 +1994,21 @@ fn inventory_jobs_and_auto_protect() {
 }
 /// Phase 14d account housekeeping and the management allow-list.
 mod accounts;
+/// Phase 21a file-level change signals, snapshot flags and the snapshot diff.
+mod changes;
 /// Phase 18: compliance clock keeper and the `clock_skew` alert.
 mod clock;
 /// Appliance configuration backup (config_backup / config_upload).
 mod config_backup;
 /// Phase 14d certificate / secret / token expiry alerts.
 mod disks;
+/// Phase 24a endpoint status: agent poll, requests, laptop policies, summaries.
+mod endpoint;
 mod expiry;
 /// Phase 18: fleecing space alerts from nexus-pve's `fleecing-space` lines.
 mod fleecing;
+/// Phase 24d fleet enrollment (scan, auto-accept, enrollment with the fleet secret).
+mod fleet;
 /// Phase 14a audit / alert forwarding.
 mod forward;
 /// Phase 15c legal holds (retention, orphan sweep, delete, offsite config, advisories).

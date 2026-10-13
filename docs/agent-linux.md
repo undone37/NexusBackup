@@ -52,6 +52,34 @@ warnings (accepted): no man page, 0700 directories under `/etc`, maintainer scri
 repositories) is not done: there is no repository yet; the files are signed with cosign
 (docs/release.md).
 
+## Desktop package (`nexus-agent-desktop`)
+
+For Linux workstations and laptops: `nexus-agent-desktop_<v>-1_{amd64,arm64}.deb`,
+`nexus-agent-desktop-<v>-1.{x86_64,aarch64}.rpm` (release/packages.sh), depends on `nexus-agent` of the same version
+or newer. It installs `nexus-agent-gui` (crates/agent-gui; tray icon + status window, docs/endpoint-ui.md), the menu
+entry `/usr/share/applications/nexus-agent-gui.desktop` ("NexusBackup Agent", opens the window), the XDG autostart
+entry `/etc/xdg/autostart/nexus-agent-gui.desktop` (tray at every desktop login; a user switches it off with a copy
+containing `Hidden=true` in `~/.config/autostart/`) and the icon in `/usr/share/icons/hicolor/scalable/apps/`.
+
+- **Access:** the GUI reads the agent service's socket `/run/nexus-agent/ui.sock` (group `nexus-agent-ui`, 0660).
+  The package adds **nobody** to that group; the administrator decides who sees the status:
+  `usermod -aG nexus-agent-ui <user>` (effective after the next login). Without it the window says so.
+- **Binary:** glibc build on Debian 11 (`crates/agent-gui/build.sh`): runs on glibc ≥ 2.31 (Debian 11+, Ubuntu
+  20.04+, RHEL/Alma/Rocky 9+, Fedora, openSUSE Leap 15.4+). It links only glibc; the display libraries are loaded at
+  run time and are present on every desktop (package recommends): X11 or Wayland client libraries and xkbcommon
+  (Debian/Ubuntu: `libx11-6 libx11-xcb1 libxcursor1 libxrandr2 libxi6 libxkbcommon0 libxkbcommon-x11-0
+  libwayland-client0 libwayland-cursor0`; Fedora/RHEL: `libX11 libX11-xcb libXcursor libXrandr libXi libxkbcommon
+  libxkbcommon-x11 libwayland-client libwayland-cursor`; openSUSE: `libX11-6 libxkbcommon0 libwayland-client0`) and
+  a sans-serif font (DejaVu, Noto, …). Rendering is software (tiny-skia): no GPU driver or OpenGL needed.
+- **Tray:** StatusNotifierItem over D-Bus (pure Rust, no GTK or libappindicator): shown by KDE Plasma, Xfce, Cinnamon,
+  MATE, LXQt, Budgie; **GNOME needs the "AppIndicator and KStatusNotifierItem Support" extension** (Ubuntu ships it
+  enabled). Without a tray host the menu entry still opens the window; a second start only opens the window of the
+  running instance.
+- **Per-user settings:** `~/.config/nexus-agent-gui/settings.json` (notifications on failure/warning, off by
+  default; chart metric). Notifications go through the desktop's notification service (D-Bus).
+- Checked by `release/test-packages.sh`: refused without `nexus-agent`, installed with it on debian:13 and fedora,
+  `desktop-file-validate`, `--version`, no users added to `nexus-agent-ui`.
+
 ## Install from the bundle (any systemd distribution)
 
 ```
@@ -97,6 +125,67 @@ swaps `agent.key` + `agent.crt` atomically (`*.new` files, certificate last; an 
 swap is completed or rolled back at the next start). New connections use the new identity;
 running ones keep theirs. Re-enrollment (`nexus-agent init` with a new token for the same
 agent) keeps the agent id.
+
+## Fleet deployment (GPO / Intune / Ansible)
+
+For many hosts, the agent is installed with a reusable, time-limited **fleet secret** instead of
+one token per host (Phase 24d; manual chapter 04 "Fleet enrollment"; protocol:
+docs/agent-protocol.md "Fleet enrollment"). An administrator creates the secret on the appliance
+(Agents → Fleet: tenant, validity ≤ 30 days, optional maximum of enrollments, address ranges to
+scan, template groups by host name pattern, manual or automatic acceptance). Format
+`nxf1.<fleet id>.<secret>`; the appliance keeps only its digest (sealed to the scheduler).
+
+On the host, either:
+
+- `sudo nexus-agent init --fleet-secret -` (secret on stdin), then
+  `sudo systemctl enable --now nexus-agent`; or
+- write the secret to `/etc/nexus-agent/fleet-secret` (root, 0600). At its first start
+  (`nexus-agent run`) the agent adopts it exactly as `init --fleet-secret` would and deletes the
+  file; on an agent that is already initialised the file is deleted and ignored. The unit starts
+  when `agent.key` **or** `fleet-secret` exists, and the package's postinst enables and starts
+  the service on a fresh install when the file is already there.
+
+The agent then stores `token_digest(secret)` in `token` plus the fleet id in `fleet` and waits
+in enrollment mode (`nexus-agent status`: "awaiting fleet enrollment"). It answers the
+appliance's scan only after the appliance proved knowledge of the secret, bound to the TLS
+session; a probe for another fleet is refused without counting as a failed proof. After the
+admin accepts it (or automatically, if the fleet says so) the normal enrollment follows (same
+proofs, CSR, certificate), the digest is deleted, and the agent is an ordinary enrolled agent.
+`init --fleet-secret` is refused on an enrolled agent (re-enroll with a one-time token).
+
+Ansible example (the secret from a vault variable; file first, then the package, so the
+postinst starts the agent):
+
+```yaml
+- name: NexusBackup agent (fleet enrollment)
+  hosts: backup_clients
+  become: true
+  tasks:
+    - name: Config directory
+      ansible.builtin.file: { path: /etc/nexus-agent, state: directory, owner: root, group: root, mode: "0700" }
+    - name: Fleet secret (adopted and deleted by the agent at its first start)
+      ansible.builtin.copy:
+        dest: /etc/nexus-agent/fleet-secret
+        content: "{{ nexus_fleet_secret }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      when: not (ansible_local.nexus_enrolled | default(false))
+    - name: Package
+      ansible.builtin.apt: { deb: "/tmp/nexus-agent_{{ nexus_version }}-1_amd64.deb" }
+      when: ansible_os_family == "Debian"
+    - name: Package (EL / Fedora)
+      ansible.builtin.dnf: { name: "/tmp/nexus-agent-{{ nexus_version }}-1.x86_64.rpm", disable_gpg_check: true }
+      when: ansible_os_family == "RedHat"
+    - name: Service (when the package was already installed)
+      ansible.builtin.systemd: { name: nexus-agent, enabled: true, state: started }
+```
+
+Copy the package to the host first and check it against `SHA256SUMS` / its cosign signature
+(docs/release.md); `disable_gpg_check` only because the rpm itself is not GPG-signed. Allow TCP
+7444 from the appliance. The appliance scans the fleet's ranges every 15 minutes (at most 8
+parallel connections, 20 per second, only the agent port).
 
 ## Backup
 

@@ -66,13 +66,16 @@
 mod accounts;
 pub mod alerts;
 pub mod anomaly;
+pub mod changes;
 pub mod clock;
 mod config_backup;
 pub mod consistency;
 pub mod disks;
+mod endpoint;
 pub mod expiry;
 pub mod firewall;
 mod fleecing;
+mod fleet;
 pub mod forward;
 mod holds;
 mod inventory;
@@ -205,6 +208,10 @@ pub struct Config {
     pub forward_poll_secs: u64,
     /// nexus-disks status and operations (disks.rs; skipped while there is no status)
     pub disks_dir: PathBuf,
+    /// endpoint status poll of every enrolled agent (endpoint.rs); 0 = off
+    pub agent_poll_secs: u64,
+    /// agents polled at once
+    pub agent_poll_concurrency: usize,
     /// appliance configuration backup (config_backup.rs): schedule, control dir of
     /// nexus-config-backup (skipped when missing), how long a run may take
     pub config_backup: String,
@@ -260,6 +267,8 @@ impl Default for Config {
             inventory_secs: 3600,
             forward_poll_secs: 5,
             disks_dir: catalog::hardware::DIR.into(),
+            agent_poll_secs: 120,
+            agent_poll_concurrency: 8,
             config_backup: "daily 02:30".into(),
             config_backup_dir: lib.join("config-backup"),
             config_backup_timeout_secs: 1800,
@@ -367,6 +376,8 @@ pub struct Scheduler {
     anchor_day: Option<i64>,
     /// the tenants' compliance clocks, kept running (clock.rs)
     clock: clock::Keeper,
+    /// endpoint status poll of the agents (endpoint.rs)
+    poll: endpoint::PollState,
 }
 
 /// Agent ids: 16 lowercase hex characters (chosen by the web-api).
@@ -514,6 +525,7 @@ impl Scheduler {
             cancel_sent: HashMap::new(),
             anchor_day: None,
             clock: Default::default(),
+            poll: Default::default(),
             alert_tx,
             host: alerts::hostname(),
             now: catalog::now(),
@@ -726,7 +738,10 @@ impl Scheduler {
         self.log_err(|s| s.check_sla(now));
         self.log_err(|s| s.check_paused(now));
         self.log_err(|s| s.queue_inventory(now));
+        self.log_err(|s| s.queue_fleet_scans(now));
         self.log_err(|s| s.queue_reports(now));
+        self.log_err(|s| s.collect_agent_poll(None));
+        self.log_err(|s| s.start_agent_poll(now));
         self.log_err(|s| s.queue_config_backup(now));
         self.log_err(|s| s.queue_rekeys(now));
         self.log_err(|s| s.start_jobs());
@@ -932,7 +947,7 @@ impl Scheduler {
             )?;
             // paused, source in maintenance, blackout: a slot that passed meanwhile runs afterwards
             if sched.due(last, now) && ctl.hold(now).is_none() {
-                self.insert_job("backup", &g.tenant, &json!({"group_id": g.id}))?;
+                self.queue_group_backup(&g, now)?; // laptop policies (endpoint.rs)
             }
         }
         Ok(())
@@ -979,6 +994,8 @@ impl Scheduler {
             }
         }
         targets.extend(self.plugin_targets()?);
+        // fleet enrollment: the scanned ranges on the agent port (crate::fleet)
+        targets.extend(self.fleet_targets()?);
         for (_, o) in self.tenants()? {
             targets.extend(firewall::offsite_targets(&o));
         }
@@ -1257,6 +1274,10 @@ impl Scheduler {
             self.attach_bookkeeping(&job, ok)?;
         }
         self.agent_bookkeeping(&job, &log)?;
+        if job.kind == "fleet_scan" {
+            self.fleet_bookkeeping(&job, &log)?;
+        }
+        self.endpoint_bookkeeping(&job, state, &log)?;
         if job.kind == "backup" {
             self.fleecing_bookkeeping(&job, &log)?;
         }
@@ -1284,6 +1305,16 @@ impl Scheduler {
             self.inconsistent_alerts(job.id, &job.tenant, &log)?;
             self.record_stats(&job.tenant, &log)?;
             self.queue_name_index(&job, result.as_ref())?;
+            self.queue_changes_after_backup(&job.tenant, &log)?;
+        }
+        // file-level change signals (changes.rs): VM/CT once their disks are indexed
+        if ok && job.kind == "file_index" {
+            if let (Some(s), Some(t)) = (job.params["source"].as_str(), job.params["time"].as_i64()) {
+                self.queue_file_changes(&job.tenant, s, t)?;
+            }
+        }
+        if ok && job.kind == "file_changes" {
+            self.changes_bookkeeping(&job, result.as_ref())?;
         }
         if job.kind == "gc" {
             self.orphan_bookkeeping(&job.tenant, f.stdout.as_deref())?;
@@ -1486,7 +1517,9 @@ impl Scheduler {
                 Some(r)
             }
             "alert_test" | "forward_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" | "file_search"
-            | "file_index" | "config_backup" => serde_json::from_str(stdout.unwrap_or_default()).ok(),
+            | "file_index" | "file_changes" | "snapshot_diff" | "config_backup" => {
+                serde_json::from_str(stdout.unwrap_or_default()).ok()
+            }
             "offsite_list" => match serde_json::from_str::<Value>(stdout.unwrap_or_default().trim()) {
                 Ok(s @ Value::Array(_)) => Some(json!({ "snapshots": s })),
                 _ => {
@@ -2370,6 +2403,9 @@ impl Scheduler {
         if job.kind == "file_search" || job.kind == "file_index" {
             return self.plan_files_index(job, plan);
         }
+        if job.kind == "file_changes" || job.kind == "snapshot_diff" {
+            return self.plan_changes(job, plan); // changes.rs
+        }
         if job.kind.starts_with("offsite_") {
             return self.plan_offsite_ui(job, plan); // offsite_ui.rs
         }
@@ -2606,6 +2642,7 @@ impl Scheduler {
                 plan.steps.push(pve(args));
             }
             "restore_files" => return self.plan_restore_files(job, plan, replicated),
+            "fleet_scan" => return self.plan_fleet_scan(job, plan),
             "agent_renew" => {
                 let a = self.agent(tenant, p["agent_id"].as_str().unwrap_or_default())?;
                 if a.cert_sha256.is_none() {
@@ -2632,17 +2669,21 @@ impl Scheduler {
             "agent_enroll" => {
                 let a = self.agent(tenant, p["agent_id"].as_str().unwrap_or_default())?;
                 plan.key = format!("agent:{}", a.id);
-                let sealed = a
-                    .token_hash
-                    .as_deref()
-                    .context("agent has no enrollment token (create a new token first)")?;
-                if a.token_expires.is_none_or(|e| e <= catalog::now()) {
-                    bail!("the enrollment token of agent {} expired (create a new token)", a.name);
-                }
-                let digest = self
-                    .secrets
-                    .open(&catalog::secret::agent_token_location(&a.id, &a.host, a.port), sealed)
-                    .with_context(|| format!("agent {}", a.id))?;
+                let digest = if p["fleet_id"].is_string() {
+                    // accepted from a fleet scan: the fleet secret proves it (crate::fleet)
+                    self.fleet_enroll_digest(job, &a)?
+                } else {
+                    let sealed = a
+                        .token_hash
+                        .as_deref()
+                        .context("agent has no enrollment token (create a new token first)")?;
+                    if a.token_expires.is_none_or(|e| e <= catalog::now()) {
+                        bail!("the enrollment token of agent {} expired (create a new token)", a.name);
+                    }
+                    self.secrets
+                        .open(&catalog::secret::agent_token_location(&a.id, &a.host, a.port), sealed)
+                        .with_context(|| format!("agent {}", a.id))?
+                };
                 plan.files.push(("token".into(), digest.as_bytes().to_vec()));
                 let (f, step) = self.agentctl(&dir, job, &a, "enroll", json!({"token_file": dir.join("token")}))?;
                 plan.files.push(f);

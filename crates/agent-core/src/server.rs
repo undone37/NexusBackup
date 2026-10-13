@@ -150,6 +150,10 @@ pub trait Platform: Send + Sync + 'static {
     fn update(&self, ctx: Ctx, version: &str, binary: &[u8], signature: &[u8]) -> Result<String, String>;
     /// Called after `UpdateDone` was sent (if `exit_on_update`): restart into the new binary.
     fn restart_after_update(&self) -> !;
+    /// Battery / metered network state for `PollReply` (laptop policies); unknown by default.
+    fn power_state(&self) -> agent_proto::PowerState {
+        agent_proto::PowerState::default()
+    }
 }
 
 #[derive(Clone)]
@@ -173,6 +177,8 @@ pub struct Agent<P: Platform> {
     active_jobs: AtomicUsize,
     /// restart after a successful self-update (off in tests)
     pub exit_on_update: bool,
+    /// endpoint status for the local UIs (crate::ui)
+    pub ui: crate::ui::Ui,
 }
 
 static LOG_TIMESTAMPS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -251,7 +257,14 @@ pub fn load_mode(paths: &Paths, settings: &Settings) -> Result<Mode, String> {
 pub fn describe_mode(paths: &Paths, mode: Result<Mode, String>) -> String {
     match mode {
         Ok(Mode::Uninitialized) => "not initialised (run nexus-agent init --token <T>)".to_string(),
-        Ok(Mode::Enroll(_)) => format!("enrollment pending ({} failed proofs)", failures(paths)),
+        Ok(Mode::Enroll(_)) => match fs::read_to_string(paths.fleet()) {
+            Ok(id) => format!(
+                "awaiting fleet enrollment (fleet {}, {} failed proofs)",
+                id.trim(),
+                failures(paths)
+            ),
+            Err(_) => format!("enrollment pending ({} failed proofs)", failures(paths)),
+        },
         Ok(Mode::Locked(_)) => "LOCKED after failed enrollment proofs; run nexus-agent init again".to_string(),
         Ok(Mode::Mtls { agent_id, .. }) => format!("enrolled as {agent_id}"),
         Err(e) => format!("error: {e}"),
@@ -280,13 +293,14 @@ impl<P: Platform> Agent<P> {
         let mode = load_mode(&paths, &settings)?;
         Ok(Agent {
             platform,
-            paths,
             settings,
             mode: RwLock::new(mode),
             enroll_lock: Mutex::new(()),
             connections: AtomicUsize::new(0),
             active_jobs: AtomicUsize::new(0),
             exit_on_update: true,
+            ui: crate::ui::Ui::load(&paths),
+            paths,
         })
     }
 
@@ -398,20 +412,13 @@ impl<P: Platform> Agent<P> {
         s.conn
             .export_keying_material(&mut ex, EXPORTER_LABEL, None)
             .map_err(io::Error::other)?;
-        let Message::Enroll { proof } = read_msg(s)? else {
-            return error(s, E_BAD_REQUEST, "expected Enroll");
+        let proof = match read_msg(s)? {
+            Message::Enroll { proof } => proof,
+            Message::FleetProbe { fleet_id, proof } => return self.fleet_probe(s, &token, &ex, &fleet_id, &proof),
+            _ => return error(s, E_BAD_REQUEST, "expected Enroll"),
         };
         if !proof_eq(&proof, &enroll_proof(&token, "appliance", &ex)) {
-            let n = failures(&self.paths) + 1;
-            write_atomic(&self.paths.failures(), n.to_string().as_bytes(), 0o600)?;
-            log(format!("enrollment proof rejected ({n}/{MAX_FAILED_PROOFS})"));
-            if n >= MAX_FAILED_PROOFS {
-                log("enrollment locked; run `nexus-agent init --token <T>` again");
-                if let Ok(m) = load_mode(&self.paths, &self.settings) {
-                    self.set_mode(m);
-                }
-            }
-            return error(s, E_AUTH, "enrollment proof rejected");
+            return self.proof_rejected(s);
         }
         let key = fs::read_to_string(self.paths.key())?;
         let csr_pem = tls::csr(&key).map_err(io::Error::other)?;
@@ -439,10 +446,57 @@ impl<P: Platform> Agent<P> {
         write_atomic(&self.paths.agent_id(), agent_id.as_bytes(), 0o644)?;
         fs::remove_file(self.paths.token())?;
         let _ = fs::remove_file(self.paths.failures());
+        let _ = fs::remove_file(self.paths.fleet());
         let m = load_mode(&self.paths, &self.settings).map_err(io::Error::other)?;
         self.set_mode(m);
         log(format!("enrolled as agent {agent_id}; token deleted, mTLS mode active"));
         Ok(())
+    }
+
+    fn proof_rejected(&self, s: &mut Stream) -> io::Result<()> {
+        let n = failures(&self.paths) + 1;
+        write_atomic(&self.paths.failures(), n.to_string().as_bytes(), 0o600)?;
+        log(format!("enrollment proof rejected ({n}/{MAX_FAILED_PROOFS})"));
+        if n >= MAX_FAILED_PROOFS {
+            log("enrollment locked; run `nexus-agent init` again");
+            if let Ok(m) = load_mode(&self.paths, &self.settings) {
+                self.set_mode(m);
+            }
+        }
+        error(s, E_AUTH, "enrollment proof rejected")
+    }
+
+    /// Fleet scan (docs/agent-protocol.md "Fleet enrollment"): the appliance proves
+    /// the fleet secret first; only then the agent proves it too and tells who it is.
+    /// A probe for another fleet (or a token-initialised agent) is no failed proof.
+    fn fleet_probe(
+        &self,
+        s: &mut Stream,
+        digest: &str,
+        ex: &[u8; 32],
+        fleet_id: &str,
+        proof: &[u8; 32],
+    ) -> io::Result<()> {
+        let ours = fs::read_to_string(self.paths.fleet()).unwrap_or_default();
+        if ours.trim().is_empty() || ours.trim() != fleet_id {
+            return error(s, E_AUTH, "not awaiting enrollment in this fleet");
+        }
+        if !proof_eq(proof, &enroll_proof(digest, "fleet-appliance", ex)) {
+            return self.proof_rejected(s);
+        }
+        let info = self.platform.host_info();
+        log(format!(
+            "fleet scan by an appliance of fleet {fleet_id}: waiting for acceptance"
+        ));
+        write_msg(
+            s,
+            &Message::FleetInfo {
+                proof: enroll_proof(digest, "fleet-agent", ex),
+                hostname: info.hostname,
+                os: info.os,
+                agent_version: info.agent_version,
+            },
+        )
     }
 }
 
@@ -492,7 +546,12 @@ impl<P: Platform> Session<'_, P> {
                 caps: {
                     let mut c = info.caps;
                     // wire compression, filters + limits and certificate renewal live in the shared core
-                    for cap in [agent_proto::CAP_LZ4, agent_proto::CAP_PREPARE2, agent_proto::CAP_RENEW] {
+                    for cap in [
+                        agent_proto::CAP_LZ4,
+                        agent_proto::CAP_PREPARE2,
+                        agent_proto::CAP_RENEW,
+                        agent_proto::CAP_POLL,
+                    ] {
                         if !c.iter().any(|x| x == cap) {
                             c.push(cap.into());
                         }
@@ -502,6 +561,7 @@ impl<P: Platform> Session<'_, P> {
             },
         )?;
         log(format!("session with appliance {}", self.appliance));
+        self.agent.ui.seen(crate::ui::now());
         loop {
             let m = match read_msg(s) {
                 Ok(m) => m,
@@ -530,6 +590,16 @@ impl<P: Platform> Session<'_, P> {
                     limits,
                 } => self.prepare(s, job, paths, excludes, filters, limits, hooks)?,
                 Message::RenewCert => self.renew_begin(s)?,
+                Message::SessionSummary { summary, status } => {
+                    let job = summary.job;
+                    self.agent.ui.record_summary(summary, status, crate::ui::now());
+                    write_msg(s, &Message::SummaryAck { job })?
+                }
+                Message::Poll { status, ack } => {
+                    let power = self.agent.platform.power_state();
+                    let reply = self.agent.ui.poll(status, &ack, power, crate::ui::now());
+                    write_msg(s, &reply)?
+                }
                 Message::RenewDone { cert_pem, ca_pem } => self.renew_done(s, &cert_pem, &ca_pem)?,
                 Message::Writers { job } => match self.jobs.get(&job) {
                     Some(j) => write_msg(
@@ -646,6 +716,7 @@ impl<P: Platform> Session<'_, P> {
             }
         }
         self.agent.active_jobs.fetch_add(1, Ordering::SeqCst);
+        self.agent.ui.job_started(crate::ui::now());
         self.jobs.insert(
             job,
             Job {
@@ -680,6 +751,9 @@ impl<P: Platform> Session<'_, P> {
         let mut batch: Vec<Entry> = vec![];
         let mut bytes = 0usize;
         let mut emit = |e: Entry| -> io::Result<()> {
+            if e.kind == agent_proto::Kind::File && !e.unchanged {
+                agent.ui.job_progress(e.size, 0);
+            }
             bytes += 96
                 + e.path.len()
                 + e.link_target.as_ref().map_or(0, Vec::len)
@@ -737,7 +811,9 @@ impl<P: Platform> Session<'_, P> {
             return error(s, E_UNKNOWN_JOB, format!("job {job} has no scan"));
         };
         let mut missing = vec![];
+        let ui = &self.agent.ui;
         let mut pace = |n: usize| {
+            ui.job_progress(0, n as u64);
             if let Some(b) = bucket.as_mut() {
                 b.throttle(n as u64);
             }
@@ -801,6 +877,7 @@ impl<P: Platform> Session<'_, P> {
         }
         text.push_str(&agent.platform.finish_job(ctx, j.inner, job, success));
         agent.active_jobs.fetch_sub(1, Ordering::SeqCst);
+        agent.ui.job_ended();
         log(format!("job {job} released (success={success})"));
         Some(text)
     }
@@ -895,6 +972,7 @@ impl<P: Platform> Session<'_, P> {
 fn msg_name(m: &Message) -> &'static str {
     match m {
         Message::Enroll { .. } | Message::EnrollReply { .. } | Message::EnrollDone { .. } => "Enroll*",
+        Message::FleetProbe { .. } | Message::FleetInfo { .. } => "Fleet*",
         Message::Hello { .. } => "Hello",
         Message::Error { .. } => "Error",
         _ => "(agent-to-appliance message)",

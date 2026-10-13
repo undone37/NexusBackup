@@ -144,6 +144,16 @@ interface Agent {
   cert_issued: number | null;
   cert_expires: number | null;
   cert_renewal_pending: boolean;
+  /** Phase 24a: endpoint status (poll), UI policy, laptop options */
+  reachable: boolean | null;
+  last_poll: number | null;
+  power: Json | null;
+  ui_policy: Json;
+  ui_policy_version: number;
+  ui_policy_seen: number | null;
+  laptop: Json;
+  missed_at: number | null;
+  last_request: Json | null;
 }
 interface Job {
   id: number;
@@ -214,6 +224,8 @@ const db = {
   /** kind: pve | linux | nfs | smb | plugin:<kind> */
   sources: [] as { id: number; tenant: string; kind: string; name: string; config: Json; maintenance_until?: number | null }[],
   agents: [] as Agent[],
+  /** Phase 24a: session summaries per agent id (newest first) */
+  agentSessions: {} as Record<string, Json[]>,
   replPeers: [] as Json[],
   replSources: [] as Json[],
   policies: [] as {
@@ -266,7 +278,7 @@ const db = {
   /** appliance configuration backup: the bundle on disk (latest.json of nexus-config-backup) */
   cfgBackup: { appliance_id: null as string | null, latest: null as Json | null },
   /** Phase 13e setting `anomaly` */
-  anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30 } as Json,
+  anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30, ransom_notes: [] } as Json,
   /** Phase 14a setting `forwarding` (header values: plaintext here, null in responses) */
   forwarding: {
     syslog: { enabled: true, host: 'siem.example.com', port: 6514, ca_pem: null, pin_sha256: '3f'.repeat(32), app_name: 'nexus', facility: 13 },
@@ -380,9 +392,15 @@ function planFor(kind: string, p: Json): string[] {
           : ['restore to another host: skipped 0 entries (devices, sockets, alternate data streams) and 12 xattrs the target cannot take']),
         `restore to ${p.target} finished`,
       ];
+    case 'fleet_scan':
+      return [
+        `scanning the ranges of fleet ${p.fleet_id} (port 7444, 8 parallel, at most 20 connections/s)`,
+        'fleet proof exchanged with 3 agents awaiting enrollment',
+        'candidates updated',
+      ];
     case 'agent_enroll':
       return [
-        `connecting to ${agName} with the one-time token`,
+        p.fleet_id ? `connecting to ${agName} with the fleet secret of fleet ${p.fleet_id}` : `connecting to ${agName} with the one-time token`,
         'token proof verified (bound to the TLS session)',
         'issued client certificate, pinned agent certificate',
         'agent enrolled',
@@ -1050,12 +1068,45 @@ function seed() {
     cert_issued: state === 'enrolled' ? t - 86400 * 20 : null,
     cert_expires: state === 'enrolled' ? t - 86400 * 20 + 3650 * 86400 : null,
     cert_renewal_pending: false,
+    reachable: state === 'enrolled' ? true : null,
+    last_poll: state === 'enrolled' ? t - 70 : null,
+    power: state === 'enrolled' ? { on_battery: false, battery_percent: null, metered: false, network_name: null } : null,
+    ui_policy: {},
+    ui_policy_version: 0,
+    ui_policy_seen: null,
+    laptop: {},
+    missed_at: null,
+    last_request: null,
   });
   const web01 = agent('acme', 'web01', '198.51.100.31', 'enrolled', 'Debian GNU/Linux 13 (trixie)');
   const fs02 = agent('acme', 'fs02', 'fs02.acme.example.com', 'enrolled', 'Windows Server 2022 Standard (10.0.20348)');
   // Phase 15f: web01 is throttled during business-hours backups
   web01.limits = { bwlimit: 20 * 1024 * 1024, nice: 10 };
-  db.agents.push(web01, fs02, agent('initech', 'db01', 'db01.initech.example.com', 'pending'), agent('initech', 'build01', '192.0.2.40', 'expired'));
+  // Phase 24a: a laptop on battery that skipped last night's run and asked for a backup
+  const nb07 = agent('acme', 'nb07', 'nb07.acme.example.com', 'enrolled', 'Ubuntu 24.04.3 LTS');
+  nb07.power = { on_battery: true, battery_percent: 14, metered: false, network_name: 'ACME-Office' };
+  nb07.laptop = { min_battery: 20, skip_metered: true, run_missed: true, retry_hours: 24 };
+  nb07.missed_at = t - 3600 * 9;
+  nb07.last_request = { id: rand(8), queued_at: t - 400, received: t - 330, jobs: [], refused: null };
+  nb07.ui_policy = { accent: '#0a7f5a', header: 'ACME IT', hide_backup_now: false, hide_tray: false };
+  nb07.ui_policy_version = 2;
+  nb07.ui_policy_seen = 2;
+  fs02.reachable = false;
+  fs02.last_poll = t - 50;
+  db.agents.push(web01, fs02, nb07, agent('initech', 'db01', 'db01.initech.example.com', 'pending'), agent('initech', 'build01', '192.0.2.40', 'expired'));
+  for (const a of [web01, fs02, nb07]) {
+    db.agentSessions[a.id] = Array.from({ length: 8 }, (_, i) => {
+      const ended = t - 86400 * i - 3600 * 2;
+      const failed = a === nb07 && i === 1;
+      return {
+        job: 9000 - i * 10 - db.agents.indexOf(a), kind: 'Backup', started: ended - 600, ended,
+        result: failed ? 'Failed' : i === 3 ? 'Warning' : 'Success',
+        read_bytes: 4.2e9, transferred_bytes: failed ? 0 : 3.1e8 + i * 1e7, new_bytes: failed ? 0 : 9e7,
+        warnings: i === 3 ? 2 : 0, first_error: failed ? 'connect nb07.acme.example.com:7444: connection timed out' : '',
+        snapshot_time: failed ? null : ended - 60, delivered: i === 0 && a === fs02 ? null : ended + 120,
+      };
+    });
+  }
   const sWeb01 = {
     id: nextId(),
     tenant: 'acme',
@@ -1405,9 +1456,11 @@ function seed() {
   seedConsole(t);
   seedTenantKeys(t);
   seedHolds(t);
+  seedAnomalies(t);
   seedHardware(t);
   seedM365(t);
   seedTenantAdmin(t);
+  seedFleet(t);
 }
 
 /** Phase 19b: policy tiers, acme's assigned policies, its tenant admin "tara", a deleted tenant name.
@@ -2788,6 +2841,15 @@ on('POST', '/agents', async (c) => {
     cert_issued: null,
     cert_expires: null,
     cert_renewal_pending: false,
+    reachable: null,
+    last_poll: null,
+    power: null,
+    ui_policy: {},
+    ui_policy_version: 0,
+    ui_policy_seen: null,
+    laptop: {},
+    missed_at: null,
+    last_request: null,
   };
   const tok = await issueToken(a);
   db.agents.push(a);
@@ -2813,6 +2875,42 @@ on('PUT', '/agents/:id/limits', async (c, [id]) => {
   a.limits = { bwlimit, nice };
   await audit(u.name, 'agent.limits', `agent/${a.id}`, { new: a.limits, old });
   return [200, pubAgent(a)];
+});
+// Phase 24a: endpoint UI policy (admins), laptop options, session summaries
+on('PUT', '/agents/:id/ui-policy', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const a = findAgent(u, id);
+  const b = c.body ?? {};
+  for (const k of Object.keys(b)) if (!['accent', 'header', 'hide_backup_now', 'hide_tray'].includes(k)) throw new HttpError(400, `unknown field ${k}`);
+  const accent = b.accent ?? '';
+  const header = b.header ?? '';
+  if (accent && !/^#[0-9a-fA-F]{6}$/.test(accent)) throw new HttpError(400, 'accent: #rrggbb or empty');
+  if (header.length > 64 || /[\u0000-\u001f]/.test(header)) throw new HttpError(400, 'header: at most 64 characters, no control characters');
+  const old = a.ui_policy;
+  a.ui_policy = { accent, header, hide_backup_now: !!b.hide_backup_now, hide_tray: !!b.hide_tray };
+  a.ui_policy_version = (a.ui_policy_version ?? 0) + 1;
+  await audit(u.name, 'agent.ui_policy', `agent/${a.id}`, { tenant: a.tenant, new: a.ui_policy, old });
+  return [200, pubAgent(a)];
+});
+on('PUT', '/agents/:id/laptop', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const a = findAgent(u, id);
+  const b = c.body ?? {};
+  for (const k of Object.keys(b)) if (!['min_battery', 'skip_metered', 'run_missed', 'retry_hours'].includes(k)) throw new HttpError(400, `unknown field ${k}`);
+  const min_battery = b.min_battery ?? 0;
+  const retry_hours = b.retry_hours ?? 0;
+  if (!(Number.isInteger(min_battery) && min_battery >= 0 && min_battery <= 100)) throw new HttpError(400, 'min_battery: 0..=100');
+  if (!(Number.isInteger(retry_hours) && retry_hours >= 0 && retry_hours <= 336)) throw new HttpError(400, 'retry_hours: 0..=336');
+  const old = a.laptop;
+  a.laptop = { min_battery, skip_metered: !!b.skip_metered, run_missed: !!b.run_missed, retry_hours };
+  if (!a.laptop.run_missed) a.missed_at = null;
+  await audit(u.name, 'agent.laptop', `agent/${a.id}`, { tenant: a.tenant, new: a.laptop, old });
+  return [200, pubAgent(a)];
+});
+on('GET', '/agents/:id/sessions', (c, [id]) => {
+  const a = findAgent(need(c.user), id);
+  const limit = Math.min(Number(c.query.get('limit') ?? 30) || 30, 100);
+  return [200, (db.agentSessions[a.id] ?? []).slice(0, limit)];
 });
 on('POST', '/agents/:id/enroll', async (c, [id]) => {
   const u = need(c.user, 'admin', 'tenant_admin');
@@ -3309,7 +3407,7 @@ on('GET', '/snapshots', (c) => {
   const held = c.query.get('held') === 'true';
   const xs = byTenant(u, db.snapshots as any[])
     .filter((s) => (!tq || s.tenant === tq) && (!sq || s.source === sq))
-    .map((s) => ({ ...s, hold: holdView(openHold(s.tenant, s.source, s.time)) }))
+    .map((s) => ({ ...s, hold: holdView(openHold(s.tenant, s.source, s.time)), anomaly: s.anomaly ?? null, anomalous: anomalous(s) }))
     .filter((s) => !held || s.hold);
   return [200, xs.sort((a, b) => b.time - a.time)];
 });
@@ -4177,16 +4275,19 @@ on('PUT', '/tenants/:name/quota', async (c, [name]) => {
 on('GET', '/settings/anomaly', (c) => (need(c.user, 'admin', 'security_officer'), [200, db.anomaly]));
 on('PUT', '/settings/anomaly', async (c) => {
   const u = need(c.user, 'admin');
-  const { enabled, factor, history, floor_bytes, ...rest } = c.body;
+  const { enabled, factor, history, floor_bytes, ransom_notes = [], ...rest } = c.body;
   if (Object.keys(rest).length) throw new HttpError(400, `unknown field \`${Object.keys(rest)[0]}\``);
   if (typeof enabled !== 'boolean') throw new HttpError(400, 'enabled: boolean required');
   if (!(factor >= 1.5 && factor <= 100)) throw new HttpError(400, 'factor: 1.5..=100');
   if (!(Number.isInteger(history) && history >= 5 && history <= 100)) throw new HttpError(400, 'history: 5..=100 runs');
   if (!(Number.isInteger(floor_bytes) && floor_bytes >= 2 ** 20 && floor_bytes <= 2 ** 50)) throw new HttpError(400, 'floor_bytes: 1 MiB..=1 PiB');
-  const next = { enabled, factor, history, floor_bytes };
+  if (!Array.isArray(ransom_notes) || ransom_notes.length > 100 || ransom_notes.some((g: unknown) => typeof g !== 'string' || !g.trim() || g.length > 100 || g.includes('/')))
+    throw new HttpError(400, 'ransom_notes: at most 100 file name patterns of 1..=100 characters, no `/`');
+  const next = { enabled, factor, history, floor_bytes, ransom_notes };
   const old = db.anomaly;
   // weakening the detection (a ransomware signal) needs approval
-  if ((old.enabled && !enabled) || factor > old.factor || floor_bytes > old.floor_bytes)
+  const dropped = (old.ransom_notes ?? []).some((g: string) => !ransom_notes.includes(g));
+  if ((old.enabled && !enabled) || factor > old.factor || floor_bytes > old.floor_bytes || dropped)
     return quorum(u, 'settings.anomaly', { anomaly: next, old: structuredClone(old) });
   db.anomaly = next;
   await audit(u.name, 'settings.anomaly', 'settings/anomaly', next);
@@ -5806,3 +5907,354 @@ on('POST', '/tenants/:tenant/recovery-key/:id/show', async (c, [tn, id]) => {
   });
   return [200, { tenant, key, kid, replaced }];
 });
+
+// Phase 24d: fleet enrollment (fleet secrets, discovery candidates, CSV bulk enrollment)
+type MockFleet = {
+  id: string; name: string; tenant: string; created: number; created_by: string; expires: number;
+  max_uses: number | null; uses: number; revoked: boolean; auto_accept: boolean; port: number; ranges: string[];
+  group: string | null; group_rules: { pattern: string; group: string }[]; last_scan: number | null;
+};
+type MockCandidate = {
+  id: number; fleet_id: string; host: string; port: number; hostname: string; os: string; version: string;
+  first_seen: number; last_seen: number; state: 'awaiting' | 'accepted' | 'rejected'; agent_id: string | null;
+};
+const fleets: MockFleet[] = [];
+const candidates: MockCandidate[] = [];
+let candidateSeq = 0;
+/** fixed ids (no rand()): the seeded PRNG sequence of the other fixtures stays as it was */
+function seedFleet(t: number) {
+  fleets.push(
+    {
+      id: '3f9a1c07d2e84b56', name: 'acme-clients', tenant: 'acme', created: t - 86400 * 3, created_by: 'admin', expires: t + 86400 * 11,
+      max_uses: 200, uses: 1, revoked: false, auto_accept: false, port: 7444, ranges: ['198.51.100.0/24', 'build01.acme.example.com'],
+      group: 'acme-web01', group_rules: [{ pattern: 'fs*', group: 'acme-fs02' }], last_scan: t - 420,
+    },
+    {
+      id: '81c4e0b9a6f2d371', name: 'initech-pilot', tenant: 'initech', created: t - 86400 * 40, created_by: 'admin', expires: t - 86400 * 10,
+      max_uses: 10, uses: 3, revoked: true, auto_accept: true, port: 7444, ranges: ['192.0.2.0/26'], group: null, group_rules: [], last_scan: t - 86400 * 11,
+    },
+  );
+  const web01 = db.agents.find((a) => a.name === 'web01');
+  const c = (host: string, hostname: string, os: string, state: MockCandidate['state'], agent_id: string | null = null, age = 3600) =>
+    candidates.push({ id: ++candidateSeq, fleet_id: '3f9a1c07d2e84b56', host, port: 7444, hostname, os, version: '0.9.0', first_seen: t - age, last_seen: t - 420, state, agent_id });
+  c('198.51.100.41', 'ws-041', 'Windows 11 Pro (10.0.26100)', 'awaiting');
+  c('198.51.100.57', 'fs-branch2', 'Windows Server 2022 Standard (10.0.20348)', 'awaiting', null, 7200);
+  c('198.51.100.62', 'kiosk-07', 'Ubuntu 24.04.1 LTS', 'rejected', null, 86400);
+  if (web01) c(web01.host, 'web01', 'Debian GNU/Linux 13 (trixie)', 'accepted', web01.id, 86400 * 2);
+}
+const FLEET_ID_RE = /^[0-9a-f]{16}$/;
+const fleetActive = (f: MockFleet) => !f.revoked && f.expires > now() && (f.max_uses === null || f.uses < f.max_uses);
+const pubFleet = (f: MockFleet) => ({ ...f, awaiting: candidates.filter((c) => c.fleet_id === f.id && c.state === 'awaiting').length });
+/** a protection group of a linux source in the tenant (template for new agents) */
+function templateGroup(tenant: string, name: string, what: string) {
+  const g = db.groups.find((x) => x.tenant === tenant && x.name === name);
+  const src = g && db.sources.find((s) => s.id === g.source_id);
+  if (!g || src?.kind !== 'linux') throw new HttpError(400, `${what}: no protection group of a linux source named "${name}" in tenant ${tenant}`);
+  return { g, src };
+}
+/** number of addresses of one range entry (CIDR ≤ /22 resp. /118, an address or a host name) */
+function checkRange(r: string) {
+  const m = /^([0-9.]+|[0-9a-fA-F:]+)\/(\d+)$/.exec(r);
+  if (m) {
+    const v6 = m[1].includes(':');
+    const p = Number(m[2]);
+    if (v6 ? p < 118 || p > 128 : p < 22 || p > 32) throw new HttpError(400, `ranges: ${r}: at most /22 (IPv4) or /118 (IPv6)`);
+    return v6 ? 2 ** (128 - p) : 2 ** (32 - p);
+  }
+  if (!/^[A-Za-z0-9.:-]{1,253}$/.test(r)) throw new HttpError(400, `ranges: ${r}: CIDR, address or host name`);
+  return 1;
+}
+/** the new agent's own source + group, copied from the template group */
+function assignGroup(a: Agent, tenant: string, group: string | null) {
+  if (!group) return;
+  const { g, src } = templateGroup(tenant, group, 'group');
+  const s = { id: nextId(), tenant, kind: 'linux', name: `${a.name}-files`, config: { ...structuredClone(src.config), agent_id: a.id } as Json };
+  db.sources.push(s);
+  db.groups.push({ ...structuredClone(g), id: nextId(), source_id: s.id, name: `${tenant}-${a.name}`, guests: [a.id] });
+}
+function newAgent(tenant: string, name: string, host: string, port: number): Agent {
+  return {
+    id: rand(8), tenant, name, host, port, enrolled_at: null, cert_sha256: null, token_expires: null, last_seen: null, version: null,
+    os: null, token_hash: null, limits: {}, cert_issued: null, cert_expires: null, cert_renewal_pending: false,
+  } as Agent;
+}
+on('GET', '/fleets', (c) => {
+  need(c.user, 'admin');
+  return [200, fleets.map(pubFleet)];
+});
+on('POST', '/fleets', async (c) => {
+  const u = need(c.user, 'admin');
+  const { name, tenant, expires_days, max_uses = null, auto_accept = false, port = 7444, ranges = [], group = null, group_rules = [] } = c.body ?? {};
+  if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
+  find(db.tenants, (t) => t.name === tenant, 'tenant');
+  if (!(Number.isInteger(expires_days) && expires_days >= 1 && expires_days <= 30)) throw new HttpError(400, 'expires_days: 1..=30');
+  if (max_uses !== null && !(Number.isInteger(max_uses) && max_uses >= 1)) throw new HttpError(400, 'max_uses: at least 1');
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new HttpError(400, 'invalid port');
+  if (!Array.isArray(ranges) || ranges.length > 32) throw new HttpError(400, 'ranges: at most 32 entries');
+  if (ranges.reduce((n: number, r: string) => n + checkRange(r), 0) > 4096) throw new HttpError(400, 'ranges: at most 4096 addresses per fleet');
+  if (group) templateGroup(tenant, group, 'group');
+  for (const r of group_rules as { pattern: string; group: string }[]) {
+    if (!r.pattern || !/^[A-Za-z0-9.*?_-]{1,253}$/.test(r.pattern)) throw new HttpError(400, `group_rules: invalid pattern ${r.pattern}`);
+    templateGroup(tenant, r.group, 'group_rules');
+  }
+  const f: MockFleet = {
+    id: rand(8), name, tenant, created: now(), created_by: u.name, expires: now() + expires_days * 86400, max_uses, uses: 0,
+    revoked: false, auto_accept: !!auto_accept, port, ranges, group, group_rules, last_scan: null,
+  };
+  fleets.push(f);
+  const secret = `nxf1.${f.id}.${b32(26)}`;
+  await audit(u.name, 'fleet.create', `fleet/${f.id}`, { name, tenant, expires: f.expires, max_uses, auto_accept: f.auto_accept, ranges, group, group_rules });
+  return [
+    201,
+    {
+      ...pubFleet(f),
+      secret,
+      install: {
+        linux: 'sudo nexus-agent init --fleet-secret -',
+        linux_file: '/etc/nexus-agent/fleet-secret',
+        windows: 'msiexec /i nexus-agent-<version>-x64.msi /qn FLEETSECRET=<secret>',
+      },
+    },
+  ];
+});
+const findFleet = (id: string) => find(fleets, (f) => FLEET_ID_RE.test(id) && f.id === id, 'fleet');
+on('DELETE', '/fleets/:id', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const f = findFleet(id);
+  f.revoked = true;
+  await audit(u.name, 'fleet.revoke', `fleet/${f.id}`, { name: f.name, tenant: f.tenant });
+  return [200, pubFleet(f)];
+});
+on('POST', '/fleets/:id/scan', async (c, [id]) => {
+  const u = need(c.user, 'admin');
+  const f = findFleet(id);
+  if (!fleetActive(f)) throw new HttpError(409, 'the fleet secret is revoked, expired or used up');
+  if (!f.ranges.length) throw new HttpError(409, 'the fleet has no ranges to scan');
+  const j = addJob('fleet_scan', f.tenant, { fleet_id: f.id }, u.name);
+  f.last_scan = now();
+  await audit(u.name, 'job.create', `job/${j.id}`, { kind: 'fleet_scan', tenant: f.tenant, params: j.params });
+  return [202, { id: j.id }];
+});
+const pubCandidate = (x: MockCandidate) => {
+  const f = fleets.find((y) => y.id === x.fleet_id)!;
+  return { ...x, fleet: f.name, tenant: f.tenant };
+};
+on('GET', '/fleet/candidates', (c) => [200, byTenant(need(c.user), candidates.map(pubCandidate))]);
+function findCandidate(u: User, id: string) {
+  const x = find(byTenant(u, candidates.map(pubCandidate)), (y) => y.id === Number(id), 'candidate');
+  needOwner(u, x.tenant);
+  return candidates.find((y) => y.id === x.id)!;
+}
+on('POST', '/fleet/candidates/:id/accept', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const x = findCandidate(u, id);
+  if (x.state !== 'awaiting') throw new HttpError(409, `candidate is ${x.state}`);
+  const f = findFleet(x.fleet_id);
+  if (!fleetActive(f)) throw new HttpError(409, 'the fleet secret is revoked, expired or used up');
+  let name = x.hostname;
+  if (db.agents.some((a) => a.tenant === f.tenant && a.name === name)) name = `${name}-${rand(3)}`;
+  const a = newAgent(f.tenant, name, x.host, x.port);
+  db.agents.push(a);
+  const glob = (p: string) => new RegExp(`^${p.replace(/[.]/g, '\\.').replace(/\*/g, '.*').replace(/\?/g, '.')}$`, 'i');
+  const rule = f.group_rules.find((r) => glob(r.pattern).test(x.hostname));
+  assignGroup(a, f.tenant, rule?.group ?? f.group);
+  f.uses += 1;
+  x.state = 'accepted';
+  x.agent_id = a.id;
+  const j = addJob('agent_enroll', f.tenant, { agent_id: a.id, fleet_id: f.id }, u.name);
+  await audit(u.name, 'fleet.accept', `fleet/${f.id}`, { tenant: f.tenant, candidate: x.id, host: x.host, hostname: x.hostname, agent_id: a.id, job: j.id });
+  return [200, { agent_id: a.id, job: j.id }];
+});
+on('POST', '/fleet/candidates/:id/reject', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const x = findCandidate(u, id);
+  if (x.state !== 'awaiting') throw new HttpError(409, `candidate is ${x.state}`);
+  x.state = 'rejected';
+  await audit(u.name, 'fleet.reject', `fleet/${x.fleet_id}`, { candidate: x.id, host: x.host, hostname: x.hostname });
+  return [200, pubCandidate(x)];
+});
+on('POST', '/agents/bulk', async (c) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  vaultRefuse('new agents');
+  const lines = String(c.body?.csv ?? '').split(/\r?\n/).map((l) => l.trim());
+  const head = (lines.shift() ?? '').split(',').map((h) => h.trim().toLowerCase());
+  for (const k of ['host', 'tenant']) if (!head.includes(k)) throw new HttpError(400, `line 1: column ${k} missing`);
+  const rows: { line: number; v: Record<string, string> }[] = [];
+  lines.forEach((l, i) => {
+    if (!l) return;
+    const cells = l.split(',').map((x) => x.trim());
+    rows.push({ line: i + 2, v: Object.fromEntries(head.map((h, j) => [h, cells[j] ?? ''])) });
+  });
+  if (!rows.length || rows.length > 500) throw new HttpError(400, 'csv: 1..=500 rows');
+  const seen = new Set<string>();
+  for (const { line, v } of rows) {
+    const err = (m: string) => new HttpError(400, `line ${line}: ${m}`);
+    const name = v.name || v.host;
+    if (!db.tenants.some((t) => t.name === v.tenant)) throw err('tenant does not exist');
+    if (u.role === 'tenant_admin' && u.tenant !== v.tenant) throw err('forbidden: another tenant');
+    if (!/^[A-Za-z0-9.:\[\]-]{1,253}$/.test(v.host)) throw err('invalid host');
+    if (!NAME_RE.test(name)) throw err('invalid name');
+    const port = v.port ? Number(v.port) : 7444;
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw err('invalid port');
+    if (db.agents.some((a) => a.tenant === v.tenant && a.name === name) || seen.has(`${v.tenant}/${name}`)) throw err('agent name exists in this tenant');
+    seen.add(`${v.tenant}/${name}`);
+    if (v.group) {
+      try {
+        templateGroup(v.tenant, v.group, 'group');
+      } catch (e) {
+        throw err((e as Error).message);
+      }
+    }
+  }
+  const out: Json[] = [];
+  const csv = ['name,tenant,host,port,group,agent_id,token,token_expires,install_command'];
+  for (const { v } of rows) {
+    const a = newAgent(v.tenant, v.name || v.host, v.host, v.port ? Number(v.port) : 7444);
+    const tok = await issueToken(a);
+    db.agents.push(a);
+    assignGroup(a, v.tenant, v.group || null);
+    out.push(pubAgent(a));
+    csv.push([a.name, a.tenant, a.host, a.port, v.group ?? '', a.id, tok.token, tok.token_expires, tok.install_command].join(','));
+  }
+  for (const a of out) await audit(u.name, 'agent.create', `agent/${a.id}`, { tenant: a.tenant, name: a.name, host: a.host, bulk: true });
+  return [201, { created: out.length, agents: out, csv: csv.join('\n') + '\n' }];
+});
+
+// ---------------------------------------------------------------- ransomware signals (Phase 21a)
+// Snapshot anomaly flags (cleared by a security officer), the snapshot diff job (computed from
+// the mock file trees) and per-source change trends.
+
+const RENAMED = /\.(pdf|docx|xlsx|odt|txt|sql|jpg|png)$/;
+/** The mock tree of a snapshot; a snapshot flagged for a mass rename shows the encryption. */
+function mockTree(s: Json): { path: string; kind: string; size: number; mtime: number }[] {
+  const xs = walkSnapshot(s.source, s.time);
+  if (!String(s.anomaly?.reason ?? '').includes('mass rename')) return xs;
+  const out = xs.map((e) => (e.kind === 'file' && RENAMED.test(e.path) ? { ...e, path: `${e.path}.lockbit3`, size: e.size + 512, mtime: s.time - 900 } : e));
+  for (const d of xs.filter((e) => e.kind === 'dir').slice(0, 12)) out.push({ path: `${d.path}/HOW_TO_DECRYPT.txt`, kind: 'file', size: 2210, mtime: s.time - 880 });
+  return out;
+}
+function mockDiff(base: Json, cur: Json) {
+  const map = (s: Json) => new Map(mockTree(s).filter((e) => e.kind !== 'dir').map((e) => [e.path, e]));
+  const [b, c] = [map(base), map(cur)];
+  const out: Json[] = [];
+  for (const [p, e] of c) {
+    const o = b.get(p);
+    if (!o) out.push({ path: p, change: 'added', kind: e.kind, size: e.size, mtime: e.mtime, old_size: null, old_mtime: null });
+    else if (o.size !== e.size || o.mtime !== e.mtime)
+      out.push({ path: p, change: 'changed', kind: e.kind, size: e.size, mtime: e.mtime, old_size: o.size, old_mtime: o.mtime });
+  }
+  for (const [p, e] of b) if (!c.has(p)) out.push({ path: p, change: 'deleted', kind: e.kind, size: e.size, mtime: e.mtime, old_size: e.size, old_mtime: e.mtime });
+  return out.sort((x, y) => (x.path < y.path ? -1 : 1));
+}
+const anomalous = (s: Json) => !!s.anomaly && !s.anomaly.cleared_at;
+
+on('POST', '/snapshots/diff', async (c) => {
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'tenant_user');
+  const b = c.body ?? {};
+  const tenant = String(b.tenant ?? '');
+  if (u.tenant && u.tenant !== tenant) throw new HttpError(403, 'forbidden');
+  const time = Number(b.time);
+  if (b.base !== undefined && b.base !== null && !(Number(b.base) < time)) throw new HttpError(400, 'base: an earlier snapshot than time');
+  if (b.change && !['added', 'changed', 'deleted'].includes(b.change)) throw new HttpError(400, 'change: added, changed or deleted');
+  const limit = b.limit ?? 200;
+  if (!(Number.isInteger(limit) && limit >= 1 && limit <= 1000)) throw new HttpError(400, 'limit: 1..=1000');
+  const offset = Number(b.offset ?? 0);
+  const local = (db.snapshots as Json[]).filter((s) => s.tenant === tenant && s.source === b.source && s.local);
+  const cur = local.find((s) => s.time === time);
+  if (!cur) throw new HttpError(404, `no local snapshot ${b.source}/${time}`);
+  const base = b.base ? local.find((s) => s.time === Number(b.base)) : local.filter((s) => s.time < time).sort((x, y) => y.time - x.time)[0];
+  if (b.base && !base) throw new HttpError(404, `no local snapshot ${b.source}/${b.base}`);
+  const p: Json = { tenant, source: b.source, time, ...(b.base ? { base: Number(b.base) } : {}), ...(b.change ? { change: b.change } : {}), offset, limit };
+  const j = addJob('snapshot_diff', tenant, p, u.name);
+  j.duration = 1;
+  j.plan = [`comparing the file indexes of ${b.source}`, 'done'];
+  if (!base) j.result = { indexed: false, base: null, time };
+  else if (/^(vm|ct)-/.test(b.source) && !vmIndexed(tenant, b.source)) j.result = { indexed: false, base: base.time, time };
+  else {
+    const all = mockDiff(base, cur);
+    const n = (k: string) => all.filter((x) => x.change === k).length;
+    const sel = all.filter((x) => !b.change || x.change === b.change);
+    j.result = { indexed: true, base: base.time, time, added: n('added'), changed: n('changed'), deleted: n('deleted'), total: sel.length, offset, limit, entries: sel.slice(offset, offset + limit) };
+  }
+  await audit(u.name, 'snapshot.diff', `job/${j.id}`, p);
+  return [202, { id: j.id }];
+});
+
+on('POST', '/snapshots/:tenant/:source/:time/anomaly/clear', async (c, [tenant, source, time]) => {
+  const u = need(c.user, 'security_officer');
+  const [tn, src, tm] = [decodeURIComponent(tenant), decodeURIComponent(source), Number(time)];
+  if (u.tenant && u.tenant !== tn) throw new HttpError(403, 'forbidden');
+  const note = String(c.body?.note ?? '').trim();
+  if (!note || note.length > 1000) throw new HttpError(400, 'note: 1 to 1000 characters, one line');
+  const s = find(db.snapshots as Json[], (y) => y.tenant === tn && y.source === src && y.time === tm, 'snapshot');
+  if (!anomalous(s)) throw new HttpError(409, 'snapshot is not flagged as anomalous');
+  Object.assign(s.anomaly, { cleared_by: u.name, cleared_at: now(), note });
+  const out = { tenant: tn, reason: s.anomaly.reason, note };
+  await audit(u.name, 'snapshot.anomaly_clear', `snapshot/${tn}/${src}/${tm}`, out);
+  return [200, out];
+});
+
+/** Stable pseudo-random 0..1 per key (trend figures stay put across reloads). */
+function noise(k: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < k.length; i++) h = Math.imul(h ^ k.charCodeAt(i), 16777619);
+  return ((h >>> 0) % 1000) / 1000;
+}
+on('GET', '/stats/trends', (c) => {
+  const u = need(c.user);
+  const tq = c.query.get('tenant');
+  const by = new Map<string, Json[]>();
+  for (const s of byTenant(u, db.snapshots as any[]).filter((x) => x.local && (!tq || x.tenant === tq))) {
+    const k = `${s.tenant}\0${s.source}`;
+    by.set(k, [...(by.get(k) ?? []), s]);
+  }
+  const out = [...by.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, xs]) => {
+    const [tenant, source] = k.split('\0');
+    const indexed = !/^(vm|ct)-/.test(source) || vmIndexed(tenant, source);
+    const runs = xs
+      .sort((a, b) => a.time - b.time)
+      .slice(-30)
+      .map((s) => {
+        const r = noise(`${source}/${s.time}`);
+        const bad = !!s.anomaly;
+        const plain = Math.round(s.size * (0.004 + r * 0.012) * (bad ? 14 : 1));
+        return {
+          time: s.time, new_plain: plain, new_stored: Math.round(plain * (bad ? 0.99 : 0.48)),
+          files_changed: indexed ? Math.round((40 + r * 160) * (bad ? 30 : 1)) : null, anomalous: anomalous(s),
+        };
+      });
+    return { tenant, source, runs };
+  });
+  return [200, out];
+});
+
+function seedAnomalies(t: number) {
+  const newest = (tenant: string, source: string, n = 0) =>
+    (db.snapshots as Json[]).filter((s) => s.tenant === tenant && s.source === source && s.local).sort((a, b) => b.time - a.time)[n];
+  // the change-rate anomaly of the seeded alert (seedHolds) flags its snapshot
+  const bad = newest('acme', 'vm-301');
+  if (bad) bad.anomaly = { reason: '21.4 GiB new data that does not compress (1.01, usually 2.08): possibly encrypted', at: bad.time + 1500, cleared_by: null, cleared_at: null, note: null };
+  // a file-level finding on the fs02 file server: mass rename + ransom notes
+  const fs = db.agents.find((a) => a.name === 'fs02');
+  const enc = fs && newest('acme', `host-${fs.id}`);
+  if (enc) {
+    const prev = newest('acme', enc.source, 1);
+    enc.anomaly = {
+      reason: '12 ransom-note file name(s), e.g. Users/HOW_TO_DECRYPT.txt; mass rename: 412 of 2,906 files deleted, 412 added with new extensions (.lockbit3, .txt)',
+      at: enc.time + 2400, cleared_by: null, cleared_at: null, note: null,
+    };
+    db.alerts.push(
+      mkAlert({
+        ts: enc.time + 2400, severity: 'critical', kind: 'anomaly', key: `anomaly:acme/${enc.source}`, tenant: 'acme',
+        message: `file-level anomaly on acme/${enc.source}: snapshot ${enc.time}: ${enc.anomaly.reason} (424 added, 3 changed, 412 deleted); last snapshot before: ${enc.source}/${prev?.time ?? 0}`,
+      }),
+    );
+  }
+  // an older false alarm on initech, cleared with a note
+  const fa = newest('initech', 'vm-102', 4);
+  if (fa)
+    fa.anomaly = {
+      reason: '48.0 GiB new data, limit 18.0 GiB (3× the median 6.0 GiB of the last 14 runs)', at: fa.time + 1300,
+      cleared_by: 'so', cleared_at: fa.time + 86400, note: 'Database reorganisation by the DBA (change CHG-2291), checked with the application owner',
+    };
+}
