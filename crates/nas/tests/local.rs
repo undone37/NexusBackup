@@ -67,6 +67,7 @@ fn opts(threads: usize) -> scan::Options {
         filter: agent_core::filter::Filter::globs(agent_core::glob::Excludes::new(&ex)),
         batch: 7,
         before_read: None,
+        limit: None,
     }
 }
 
@@ -367,4 +368,29 @@ fn include_roots_and_regex_excludes() {
     let many_files = paths.iter().filter(|p| p.starts_with("many/f")).count();
     assert_eq!(many_files, 100, "f0900..f0999");
     assert!(paths.contains(&"many/hl3".to_string()));
+}
+
+/// The read limit (Phase 22b) paces file content reads: 3 MiB at 2 MiB/s take
+/// about a second longer than unlimited.
+#[test]
+fn read_limit_paces_content() {
+    let d = tempfile::tempdir().unwrap();
+    let share = d.path().join("share");
+    fs::create_dir_all(&share).unwrap();
+    let data: Vec<u8> = (0..3u32 << 20).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
+    fs::write(share.join("big"), &data).unwrap();
+    let root = mount::open_local(&share).unwrap();
+    let st = store(&d.path().join("store"));
+    let lim = catalog::schedule::ReadLimit {
+        bwlimit: Some(2 << 20),
+        ..Default::default()
+    };
+    let o = scan::Options {
+        limit: lim.throttle().unwrap(),
+        ..opts(4)
+    };
+    let t = std::time::Instant::now();
+    let (_, r) = scan::scan(&st, &root, &o, None, &quiet).unwrap();
+    assert_eq!(r.bytes_read, 3 << 20);
+    assert!(t.elapsed() >= std::time::Duration::from_millis(1300), "{:?}", t.elapsed());
 }

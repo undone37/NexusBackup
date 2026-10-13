@@ -17,6 +17,7 @@ pub mod fleet;
 pub mod forwarding;
 pub mod hardware;
 pub mod holds;
+pub mod priority;
 pub mod inventory;
 pub mod schedule;
 pub mod secret;

@@ -3644,6 +3644,7 @@ dependencies = [
  "agent-conn",
  "agent-core",
  "anyhow",
+ "catalog",
  "chunkstore",
  "keyd",
  "libc",

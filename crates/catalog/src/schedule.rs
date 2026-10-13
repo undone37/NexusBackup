@@ -657,7 +657,7 @@ impl Throttle {
 /// (PVE, TrueNAS, NFS/SMB) and handed to the connector unchanged. Pause windows
 /// are refused: a paused read would stall a running backup (VM fleecing grows);
 /// keep backups out of a time span with a blackout window instead.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ReadLimit {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -670,6 +670,16 @@ pub struct ReadLimit {
 
 fn utc_name() -> String {
     "UTC".into()
+}
+
+impl Default for ReadLimit {
+    fn default() -> Self {
+        ReadLimit {
+            bwlimit: None,
+            windows: Vec::new(),
+            timezone: utc_name(),
+        }
+    }
 }
 
 impl ReadLimit {

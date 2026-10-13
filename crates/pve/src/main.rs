@@ -41,6 +41,9 @@ struct Config {
     /// appliance-side read limit of the source (Phase 22b)
     #[serde(default)]
     read_limit: Option<catalog::schedule::ReadLimit>,
+    /// `backup-all`: per-source cap of `parallel` (source `max_parallel`, Phase 22b)
+    #[serde(default)]
+    max_parallel: Option<usize>,
     /// `backup-all`: at most this many guests at once with a disk on the storage (source `storage_caps`)
     #[serde(default)]
     storage_caps: std::collections::HashMap<String, usize>,
@@ -229,7 +232,14 @@ fn main() -> Result<()> {
                     }
                 }
             };
-            let failed: Vec<u32> = if cfg.parallel <= 1 || vmids.len() <= 1 {
+            let parallel = match cfg.max_parallel {
+                Some(m) if m < cfg.parallel => {
+                    println!("note: parallel guests capped at {m} by the source (group asks for {})", cfg.parallel);
+                    m.max(1)
+                }
+                _ => cfg.parallel,
+            };
+            let failed: Vec<u32> = if parallel <= 1 || vmids.len() <= 1 {
                 vmids.iter().copied().filter(|&vmid| one(&store, vmid)).collect()
             } else {
                 let nodes = cluster.guest_nodes()?;
@@ -253,7 +263,7 @@ fn main() -> Result<()> {
                     })
                     .collect();
                 // each guest gets its own Store handle: `written()` deltas stay per snapshot
-                let res = pve::parallel::run(&items, cfg.parallel.min(8), &cfg.storage_caps, |&vmid| {
+                let res = pve::parallel::run(&items, parallel.min(8), &cfg.storage_caps, |&vmid| {
                     let own = keyd::fetch_keyring(&keyd_socket, &tenant)
                         .context("keyd")
                         .and_then(|k| Ok(Store::open(&store_root, k, Options::default())?));

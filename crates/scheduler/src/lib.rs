@@ -82,9 +82,11 @@ pub mod forward;
 mod holds;
 mod inventory;
 mod lifecycle;
+mod limits;
 mod offsite_ui;
 pub mod orphans;
 mod plugins;
+mod priority;
 mod renewal;
 pub mod repair;
 pub mod replica;
@@ -730,6 +732,7 @@ impl Scheduler {
         self.log_err(|s| s.queue_approved_gc());
         self.log_err(|s| s.queue_snapshot_deletes());
         self.log_err(|s| s.queue_restore_replaces());
+        self.log_err(|s| s.check_restore_priority(now)); // priority.rs
         self.log_err(|s| s.queue_scheduled(now));
         self.log_err(|s| s.queue_maintenance(now));
         self.log_err(|s| s.queue_replication(now));
@@ -923,6 +926,9 @@ impl Scheduler {
     }
 
     fn queue_scheduled(&mut self, now: i64) -> Result<()> {
+        if self.restore_priority()?.is_some() {
+            return Ok(()); // due slots run once it ends (priority.rs)
+        }
         let off = self.disabled_tenants()?;
         for g in self.groups()?.into_iter().filter(|g| !off.contains(&g.tenant)) {
             let ctl = self.control(g.id)?;
@@ -1058,6 +1064,9 @@ impl Scheduler {
     }
 
     fn queue_maintenance(&mut self, now: i64) -> Result<()> {
+        if self.restore_priority()?.is_some() {
+            return Ok(());
+        }
         let sched = Schedule::parse(&self.cfg.maintenance)?;
         for (tenant, _) in self.tenants()? {
             if !valid_name(&tenant) || !self.cfg.store_base.join(&tenant).join("keycheck").exists() {
@@ -1134,9 +1143,13 @@ impl Scheduler {
             return Ok(());
         }
         let mut busy: HashSet<String> = self.running.values().cloned().collect();
+        let priority = self.restore_priority()?.is_some();
         for job in queued {
             if self.running.len() >= self.cfg.max_parallel {
                 break;
+            }
+            if self.held_by_priority(&job, priority)? {
+                continue; // restore priority: waits for its end
             }
             if self.hold_offsite(&job)? {
                 continue; // pause window: waits for its end
@@ -1289,6 +1302,7 @@ impl Scheduler {
         self.endpoint_bookkeeping(&job, state, &log)?;
         if job.kind == "backup" {
             self.fleecing_bookkeeping(&job, &log)?;
+            self.backup_meta_bookkeeping(&job, &log)?; // limits.rs
         }
         if job.kind.starts_with("ssh_key_") {
             self.publish_ssh_keys()?;
@@ -1615,6 +1629,7 @@ impl Scheduler {
                     .collect();
                 self.add_consistency(&job.tenant, log, &mut snaps);
                 snapmeta::attach(log, &mut snaps);
+                limits::attach_identity(log, &mut snaps); // VM identity (Phase 22b)
                 let warnings: u64 = snaps.iter().filter_map(|s| s["warnings"].as_u64()).sum();
                 let mut r = json!({ "snapshots": snaps });
                 if let [one] = snaps.as_slice() {
@@ -1903,6 +1918,8 @@ impl Scheduler {
             "nodes": nodes,
             "vmids": vmids,
         });
+        let mut cfg = cfg;
+        limits::pve_limits(&src, &mut cfg); // Phase 22b: caps and read limit
         files.push(("pve.json".into(), serde_json::to_vec_pretty(&cfg)?));
         Ok(files)
     }
@@ -1962,6 +1979,9 @@ impl Scheduler {
             "sudo": src["sudo"].as_bool().unwrap_or(true),
             "zfs_sudo": src["zfs_sudo"].as_bool().unwrap_or(true),
         });
+        let mut cfg = cfg;
+        // Phase 22b: read limit, "use existing snapshots" with the snapshots the last backups came from
+        self.truenas_limits(tenant, source_id, &src, &mut cfg)?;
         files.push(("truenas.json".into(), serde_json::to_vec_pretty(&cfg)?));
         Ok(files)
     }
@@ -2053,6 +2073,9 @@ impl Scheduler {
             if src[k].is_string() {
                 cfg[k] = src[k].clone();
             }
+        }
+        if src["read_limit"].is_object() {
+            cfg["read_limit"] = src["read_limit"].clone(); // Phase 22b
         }
         files.push(("nas.json".into(), serde_json::to_vec_pretty(&cfg)?));
         Ok(files)
