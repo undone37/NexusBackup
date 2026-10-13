@@ -2460,6 +2460,20 @@ impl Scheduler {
         if let Some(plan) = self.plan_appliance(job)? {
             return Ok(plan);
         }
+        // appliance-wide (tenant "-"), no store: before the tenant checks below
+        if job.kind == "edge_enroll" {
+            let plan = Plan {
+                key: "edge".into(),
+                tenant: job.tenant.clone(),
+                store: self.cfg.store_base.clone(),
+                dir: self.job_dir(job.id),
+                files: Vec::new(),
+                steps: Vec::new(),
+                download: None,
+                held: Default::default(),
+            };
+            return self.plan_edge_enroll(job, plan); // edge.rs
+        }
         let tenant = job.tenant.as_str();
         if !valid_name(tenant) {
             bail!("invalid tenant {tenant:?}");
@@ -2768,7 +2782,6 @@ impl Scheduler {
             "instant_disk" => return self.plan_instant_disk(job, plan), // restore.rs
             k if recovery::KINDS.contains(&k) => return self.plan_recovery(job, plan),
             "fleet_scan" => return self.plan_fleet_scan(job, plan),
-            "edge_enroll" => return self.plan_edge_enroll(job, plan),
             "agent_renew" => {
                 let a = self.agent(tenant, p["agent_id"].as_str().unwrap_or_default())?;
                 if a.cert_sha256.is_none() {

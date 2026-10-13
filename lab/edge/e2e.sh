@@ -166,6 +166,7 @@ step_refuse() {
 
 step_via() {
 	api_env
+	vm 'command -v nft >/dev/null || sudo apt-get install -y -q nftables >/dev/null' || die "cannot install nftables in $VM"
 	vm 'sudo nft add table inet nexuslab && sudo nft add chain inet nexuslab in "{ type filter hook input priority -10; }" &&
 		sudo nft add rule inet nexuslab in tcp dport 7444 drop' || die "cannot block 7444 in $VM"
 	local r j t0=$SECONDS

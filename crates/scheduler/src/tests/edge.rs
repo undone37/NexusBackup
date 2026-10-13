@@ -149,6 +149,10 @@ fn enrollment_pins_the_edge_and_drops_the_token() {
         tenant: "-".into(),
         params: json!({"edge_id": "e2"}),
     };
+    // appliance-wide job (tenant "-"): planning must not stop at the tenant name check
+    if let Err(e) = s.plan(&job) {
+        assert!(!format!("{e:#}").contains("invalid tenant"), "{e:#}");
+    }
     let log = format!(
         "edge-enrolled {}\nedge-enrolled {}\n",
         json!({"edge_id": "e1", "cert_sha256": "00".repeat(32), "version": "0.1.0"}),
