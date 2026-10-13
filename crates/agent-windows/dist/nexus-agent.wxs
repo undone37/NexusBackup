@@ -29,6 +29,10 @@
     <Property Id="ARPHELPLINK" Value="https://github.com/undone37/NexusBackup/blob/main/docs/agent-windows.md" />
     <Property Id="ARPNOMODIFY" Value="1" />
     <Property Id="ARPNOREPAIR" Value="1" />
+    <!-- app icon (crates/agent-gui/dist/nexus-agent-gui.ico, also embedded in the exe):
+         Start menu shortcut and Apps & features -->
+    <Icon Id="NexusAgent.ico" SourceFile="nexus-agent-gui.ico" />
+    <Property Id="ARPPRODUCTICON" Value="NexusAgent.ico" />
     <!-- the fleet secret is not written to the MSI log -->
     <Property Id="MsiHiddenProperties" Value="FLEETSECRET" />
     <!-- PURGE (uninstall only): wixl does not list Secure="yes" properties in
@@ -61,7 +65,7 @@
             <!-- not advertised (a Shortcut nested in File becomes an advertised one in wixl) -->
             <Shortcut Id="GuiStartMenu" Directory="ProgramMenuFolder" Name="NexusBackup Agent"
                       Description="Backup status of this computer" Target="[#GuiExe]" Arguments="--open"
-                      WorkingDirectory="INSTALLDIR" />
+                      WorkingDirectory="INSTALLDIR" Icon="NexusAgent.ico" />
             <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Run"
                            Name="NexusBackupAgentGui" Type="string" Value="&quot;[INSTALLDIR]nexus-agent-gui.exe&quot;" />
           </Component>

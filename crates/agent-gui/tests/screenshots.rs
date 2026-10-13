@@ -7,7 +7,7 @@
 use iced::window;
 use iced_test::simulator;
 use nexus_agent_gui::app::App;
-use nexus_agent_gui::{demo, icon, model};
+use nexus_agent_gui::{demo, icon, model, palette};
 use std::path::{Path, PathBuf};
 
 const NOW: u64 = 1_791_900_000; // fixed: identical screenshots on every run
@@ -71,11 +71,17 @@ fn control_panel_renders_light_and_dark() {
             .map(|p| p[0] as u64 + p[1] as u64 + p[2] as u64)
             .sum::<u64>()
             / (w * h) as u64;
-        // the chart draws bars in the result colours: some pure-ish green pixels exist
-        assert!(
-            px.chunks(4).any(|p| p[1] > 140 && p[0] < 60 && p[2] < 110),
-            "no success bar"
-        );
+        // web UI palette: success bars in --c-ok, navy header (no policy accent in the demo),
+        // page background --bg
+        let k = palette::tokens(dark);
+        let has = |c: u32| {
+            let c = [(c >> 16) as u8, (c >> 8) as u8, c as u8];
+            px.chunks(4).any(|p| p[..3] == c)
+        };
+        assert!(has(k.c_ok), "no success bar (dark {dark})");
+        assert!(has(k.navy), "no navy header (dark {dark})");
+        assert!(has(k.bg), "no page background (dark {dark})");
+        assert!(has(k.surface), "no card surface (dark {dark})");
         means.push(mean);
     }
     assert!(means[0] > means[1] + 150, "dark mode is darker: {means:?}");

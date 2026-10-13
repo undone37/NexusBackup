@@ -8,5 +8,6 @@ pub mod demo;
 pub mod icon;
 pub mod ipc;
 pub mod model;
+pub mod palette;
 pub mod settings;
 pub mod tray;
