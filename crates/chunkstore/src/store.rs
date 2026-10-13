@@ -15,6 +15,7 @@
 
 use crate::clock::ComplianceClock;
 use crate::crypto::{hex, invalid, parse_hex, ChunkId, Keyring};
+use crate::pipeline::{ChunkSink, Job};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashSet};
 use std::fs::{self, File};
@@ -39,6 +40,10 @@ pub struct Options {
     pub gc_max_delete_fraction: f64,
     /// Compliance clock forward slew (calibration knob, see clock.rs).
     pub clock_slew: f64,
+    /// Threads that hash, compress, seal and write chunks while the caller
+    /// reads the next ones (`store_image*`, `store_file*`, `insert_chunks_parallel`).
+    /// 0 = `NEXUS_CHUNK_WORKERS` if set, else min(available cores, 8).
+    pub chunk_workers: usize,
 }
 
 impl Default for Options {
@@ -48,6 +53,7 @@ impl Default for Options {
             gc_grace_secs: 86400,
             gc_max_delete_fraction: 0.2,
             clock_slew: crate::clock::DEFAULT_SLEW,
+            chunk_workers: 0,
         }
     }
 }
@@ -257,6 +263,7 @@ pub struct Store {
     meta_lock: Mutex<()>,
     dirty_dirs: Mutex<HashSet<PathBuf>>,
     written: Mutex<Written>,
+    workers: usize,
 }
 
 pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
@@ -322,6 +329,7 @@ impl Store {
             return Err(io::Error::last_os_error());
         }
         let clock = ComplianceClock::shared(root.join("clock"), opts.clock_slew)?;
+        let workers = crate::pipeline::resolve_workers(opts.chunk_workers);
         Ok(Store {
             root,
             keys,
@@ -331,7 +339,25 @@ impl Store {
             meta_lock: Mutex::new(()),
             dirty_dirs: Mutex::new(HashSet::new()),
             written: Mutex::new(Written::default()),
+            workers,
         })
+    }
+
+    /// Insert threads used per pipeline (`Options::chunk_workers`, resolved).
+    pub fn chunk_workers(&self) -> usize {
+        self.workers
+    }
+
+    /// Inserts chunks on `chunk_workers()` threads while `produce` keeps
+    /// reading on the calling thread: it pushes each chunk's data in order into
+    /// the sink. Returns (id, sealed bytes written or 0 if the chunk existed)
+    /// per chunk in push order; the first error (of `produce` or a worker)
+    /// stops the pipeline and is returned. See pipeline.rs.
+    pub fn insert_chunks_parallel<E: From<io::Error> + Send>(
+        &self,
+        produce: impl FnOnce(&mut ChunkSink<'_, '_, E>) -> Result<(), E>,
+    ) -> Result<Vec<(ChunkId, u64)>, E> {
+        crate::pipeline::run(self, self.workers, produce)
     }
 
     pub fn keys(&self) -> &Keyring {
@@ -447,8 +473,15 @@ impl Store {
         let sealed = sealed()?;
         let dir = path.parent().unwrap();
         fs::create_dir_all(dir)?;
-        let tmp = dir.join(format!("{}.tmp{}", hex(id), rand::random::<u32>()));
-        let mut f = File::create(&tmp)?;
+        // create_new: two workers storing the same chunk never share a temp file
+        let (tmp, mut f) = loop {
+            let tmp = dir.join(format!("{}.tmp{}", hex(id), rand::random::<u32>()));
+            match File::options().write(true).create_new(true).open(&tmp) {
+                Ok(f) => break (tmp, f),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            }
+        };
         f.write_all(&sealed)?;
         f.sync_all()?;
         let _g = self.chunk_lock.lock().unwrap();
@@ -497,20 +530,21 @@ impl Store {
 
     /// Fixed-size chunking of a block device / image.
     pub fn store_image(&self, mut r: impl Read, chunk_size: usize) -> io::Result<Index> {
-        let mut buf = vec![0u8; chunk_size];
-        let (mut size, mut chunks) = (0u64, Vec::new());
-        loop {
+        let mut size = 0u64;
+        let chunks = self.insert_chunks_parallel::<io::Error>(|sink| loop {
+            let mut buf = sink.buffer(chunk_size);
             let n = read_full(&mut r, &mut buf)?;
             if n == 0 {
-                break;
+                return Ok(());
             }
-            chunks.push(self.insert_chunk(&buf[..n])?.0);
+            buf.truncate(n);
+            sink.push(buf)?;
             size += n as u64;
-        }
+        })?;
         Ok(Index::Fixed {
             chunk_size: chunk_size as u32,
             size,
-            chunks,
+            chunks: chunks.into_iter().map(|(id, _)| id).collect(),
         })
     }
 
@@ -519,6 +553,11 @@ impl Store {
     /// area beyond the previous size) are read via `read_at`: PVE snapshot-access
     /// exports refuse reads of clean areas. Clean parts of a partly dirty chunk are
     /// taken from the previous snapshot's chunk. `prev = None` reads everything.
+    ///
+    /// `read_at` runs on the calling thread, in offset order, one call per read
+    /// range; the chunks go to `chunk_workers()` threads (pipeline.rs) that also
+    /// do the merge with the previous chunk (decrypt + verify of the base), so
+    /// the reads keep streaming while earlier chunks are sealed and written.
     pub fn store_image_extents(
         &self,
         prev: Option<&Index>,
@@ -537,33 +576,44 @@ impl Store {
             None => (0, &[][..]),
         };
         let cs = chunk_size as u64;
-        let mut buf = vec![0u8; chunk_size];
-        let mut chunks = Vec::with_capacity(size.div_ceil(cs) as usize);
-        let mut i = 0;
-        for n in 0..size.div_ceil(cs) {
-            let (start, end) = (n * cs, ((n + 1) * cs).min(size));
-            let reads = chunk_reads(dirty, &mut i, start, end, prev_size);
-            let base = prev_chunks.get(n as usize);
-            if reads.is_empty() && ((n + 1) * cs).min(prev_size) == end {
-                chunks.push(*base.unwrap());
-                continue;
+        // Ok(id): reused from the previous index; Err(n): n-th chunk handed to the workers
+        let mut plan: Vec<Result<ChunkId, usize>> = Vec::with_capacity(size.div_ceil(cs) as usize);
+        let stored = self.insert_chunks_parallel::<io::Error>(|sink| {
+            let mut i = 0;
+            for n in 0..size.div_ceil(cs) {
+                let (start, end) = (n * cs, ((n + 1) * cs).min(size));
+                let reads = chunk_reads(dirty, &mut i, start, end, prev_size);
+                let base = prev_chunks.get(n as usize);
+                if reads.is_empty() && ((n + 1) * cs).min(prev_size) == end {
+                    plan.push(Ok(*base.unwrap()));
+                    continue;
+                }
+                let len = (end - start) as usize;
+                let mut buf = sink.buffer(len);
+                let (mut holes, mut at) = (Vec::new(), 0);
+                for (a, b) in reads {
+                    let (a, b) = ((a - start) as usize, (b - start) as usize);
+                    read_at(start + a as u64, &mut buf[a..b])?;
+                    if at < a {
+                        holes.push((at, a));
+                    }
+                    at = b;
+                }
+                if at < len {
+                    holes.push((at, len));
+                }
+                plan.push(Err(sink.feed(Job {
+                    buf,
+                    holes,
+                    base: base.copied(),
+                })?));
             }
-            let chunk = &mut buf[..(end - start) as usize];
-            chunk.fill(0);
-            if let Some(id) = base {
-                let old = self.read_chunk(id)?;
-                let k = old.len().min(chunk.len());
-                chunk[..k].copy_from_slice(&old[..k]);
-            }
-            for (a, b) in reads {
-                read_at(a, &mut chunk[(a - start) as usize..(b - start) as usize])?;
-            }
-            chunks.push(self.insert_chunk(chunk)?.0);
-        }
+            Ok(())
+        })?;
         Ok(Index::Fixed {
             chunk_size: chunk_size as u32,
             size,
-            chunks,
+            chunks: plan.into_iter().map(|c| c.unwrap_or_else(|k| stored[k].0)).collect(),
         })
     }
 
@@ -589,16 +639,39 @@ impl Store {
     }
 
     /// Like `store_file`, also counting the chunks that were not in the store yet.
+    /// A file of more than one chunk is inserted on `chunk_workers()` threads
+    /// while the next chunks are read (pipeline.rs); a one-chunk file inline.
     pub fn store_file_stats(&self, r: impl Read) -> io::Result<FileStats> {
+        let mut cdc = fastcdc::v2020::StreamCDC::new(r, CDC_MIN, CDC_AVG, CDC_MAX);
+        let mut next = || cdc.next().transpose().map_err(io::Error::other);
+        let mut lens = Vec::new();
+        let ids = match (next()?, next()?) {
+            (None, _) => Vec::new(),
+            (Some(c), None) => {
+                lens.push(c.length);
+                vec![self.insert_chunk_stored(&c.data)?]
+            }
+            (Some(a), Some(b)) => self.insert_chunks_parallel::<io::Error>(|sink| {
+                let mut c = Some(a);
+                let mut pending = Some(b);
+                while let Some(chunk) = c {
+                    lens.push(chunk.length);
+                    sink.push(chunk.data)?;
+                    c = match pending.take() {
+                        Some(p) => Some(p),
+                        None => next()?,
+                    };
+                }
+                Ok(())
+            })?,
+        };
         let mut s = FileStats::default();
-        for c in fastcdc::v2020::StreamCDC::new(r, CDC_MIN, CDC_AVG, CDC_MAX) {
-            let c = c.map_err(io::Error::other)?;
-            let (id, stored) = self.insert_chunk_stored(&c.data)?;
+        for ((id, stored), len) in ids.into_iter().zip(lens) {
             s.chunks.push(id);
-            s.size += c.length as u64;
+            s.size += len as u64;
             if stored > 0 {
                 s.new_chunks += 1;
-                s.new_bytes += c.length as u64;
+                s.new_bytes += len as u64;
                 s.new_stored += stored;
             }
         }

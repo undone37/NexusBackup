@@ -587,7 +587,9 @@ fn pull_device(
         zero = zero_map(ssh, vmid, &dev.name, &scan_extents(base, dev.size, &dirty), at);
     }
     let (mut read, mut skipped) = (0, 0);
-    // where the time goes: NBD read round trips (request -> complete reply) vs. local work
+    // where the time goes: NBD read round trips (request -> complete reply) vs. the rest of the
+    // reading thread's time; the chunks are sealed and written by the store's worker threads
+    // meanwhile, so a low share means the reader waited for the workers (full queue): CPU/disk-bound
     let (mut requests, mut waited, started) = (0u64, std::time::Duration::ZERO, std::time::Instant::now());
     let total = Store::image_extents_bytes(base, IMAGE_CHUNK_SIZE, dev.size, &dirty);
     let mut meter = Meter::new(exclude::disk_key(&dev.name), at.0, at.1, Some(total));
@@ -620,11 +622,12 @@ fn pull_device(
     if requests > 0 {
         let total = started.elapsed();
         println!(
-            "{}: {requests} NBD reads, {read} bytes in {total:.1?} ({:.0} MB/s): {:.2} ms per read waiting for the node, {:.0}% of the time",
+            "{}: {requests} NBD reads, {read} bytes in {total:.1?} ({:.0} MB/s): {:.2} ms per read waiting for the node, {:.0}% of the time ({} chunk workers)",
             dev.name,
             read as f64 / total.as_secs_f64().max(1e-3) / 1e6,
             waited.as_secs_f64() * 1e3 / requests as f64,
-            100.0 * waited.as_secs_f64() / total.as_secs_f64().max(1e-3)
+            100.0 * waited.as_secs_f64() / total.as_secs_f64().max(1e-3),
+            store.chunk_workers()
         );
     }
     Ok((idx, read))

@@ -383,8 +383,10 @@ fn collect_and_commit(
             Message::Want { job, hashes }
         })?;
         let mut pending: HashSet<Hash> = batch.iter().copied().collect();
-        let mut learned = Vec::with_capacity(batch.len());
-        loop {
+        // received in order on this thread; keyed hash, zstd, seal and write run on the
+        // store's chunk workers meanwhile (chunkstore pipeline.rs)
+        let mut got: Vec<Hash> = Vec::with_capacity(batch.len());
+        let ids = store.insert_chunks_parallel::<anyhow::Error>(|sink| loop {
             let (hash, data, wire) = match s.recv()? {
                 Message::Chunk { hash, data } => {
                     let n = data.len();
@@ -399,35 +401,35 @@ fn collect_and_commit(
                         .with_context(|| format!("chunk {}: bad LZ4 data", hex(&hash)))?;
                     (hash, raw, data.len())
                 }
-                Message::WantDone => break,
+                Message::WantDone => return Ok(()),
                 m => bail!("unexpected message during chunk transfer: {}", name(&m)),
             };
-            {
-                {
-                    if !pending.remove(&hash) {
-                        bail!("agent sent chunk {} that was not requested (or twice)", hex(&hash));
-                    }
-                    if data.len() != lens[&hash] as usize {
-                        bail!(
-                            "chunk {}: {} bytes received, {} announced",
-                            hex(&hash),
-                            data.len(),
-                            lens[&hash]
-                        );
-                    }
-                    if blake3::hash(&data).as_bytes() != &hash {
-                        bail!("chunk {}: data does not match its BLAKE3 hash; rejected", hex(&hash));
-                    }
-                    let (id, new) = store.insert_chunk(&data)?;
-                    r.wanted_chunks += 1;
-                    r.wanted_bytes += data.len() as u64;
-                    meter.add(data.len() as u64);
-                    r.wire_bytes += wire as u64;
-                    r.new_chunks += u64::from(new);
-                    keyed.insert(hash, id);
-                    learned.push((hash, id, data.len() as u32));
-                }
+            if !pending.remove(&hash) {
+                bail!("agent sent chunk {} that was not requested (or twice)", hex(&hash));
             }
+            if data.len() != lens[&hash] as usize {
+                bail!(
+                    "chunk {}: {} bytes received, {} announced",
+                    hex(&hash),
+                    data.len(),
+                    lens[&hash]
+                );
+            }
+            if blake3::hash(&data).as_bytes() != &hash {
+                bail!("chunk {}: data does not match its BLAKE3 hash; rejected", hex(&hash));
+            }
+            r.wanted_chunks += 1;
+            r.wanted_bytes += data.len() as u64;
+            meter.add(data.len() as u64);
+            r.wire_bytes += wire as u64;
+            got.push(hash);
+            sink.push(data)?;
+        })?;
+        let mut learned = Vec::with_capacity(got.len());
+        for (hash, (id, stored)) in got.into_iter().zip(ids) {
+            r.new_chunks += u64::from(stored > 0);
+            keyed.insert(hash, id);
+            learned.push((hash, id, lens[&hash]));
         }
         if !pending.is_empty() {
             bail!("agent did not deliver {} of the requested chunks", pending.len());

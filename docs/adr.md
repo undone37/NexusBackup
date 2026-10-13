@@ -28,6 +28,14 @@ Status of all records below: **Accepted (2026-10-08)**.
 
 ## ADR-007 Chunking
 - **Decision:** Fixed 4 MiB chunks for block devices (dirty-bitmap aligned); FastCDC 128 KiB / 512 KiB / 4 MiB for files.
+- **Insert path (2026-10):** the caller's thread reads the source in order; each chunk goes through a bounded queue to
+  `chunk_workers` threads (`Options::chunk_workers`, 0 = `NEXUS_CHUNK_WORKERS` or min(cores, 8)) that merge
+  partly dirty image chunks with the previous chunk, compute the keyed ID, dedup-check, compress, seal and write
+  (`chunkstore/src/pipeline.rs`). Results are put back in chunk order, so the index is the same for any worker
+  count. At most ~2 × workers + 1 chunks are in flight; the first error stops the reader and is returned. Used by
+  `store_image*`, `store_file*` (files of more than one chunk) and the agent chunk transfer
+  (`Store::insert_chunks_parallel`). Two workers storing the same chunk race safely: unique temp files
+  (`create_new`), the rename under the chunk lock decides, the loser drops its copy and counts nothing.
 
 ## ADR-008 Keyed chunk IDs, no cross-tenant dedup
 - **Decision:** Chunk ID = BLAKE3 keyed hash with a key derived from the tenant DEK and key version.
