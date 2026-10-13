@@ -197,6 +197,18 @@ fn pst_with_independent_readers() {
     if let Ok(keep) = std::env::var("NEXUS_PST_KEEP") {
         std::fs::write(keep, &t[&name]).unwrap(); // for looking at it with other readers
     }
+    // the same snapshot gives the same file, byte for byte (folders sorted, messages in
+    // the listing's path order, no clock or random input)
+    let again = d.path().join("pst2.tar");
+    s.h.export(
+        &s.source,
+        s.time,
+        &["/".to_owned()],
+        json!({"mail_format": "pst"}),
+        &again,
+    )
+    .unwrap();
+    assert!(untar(&again)[&name] == t[&name], "deterministic PST");
     assert!(t.keys().any(|k| k.starts_with("calendar/")), "non-mail items as stored");
 
     let tree = pstread::read_back(&pst);
@@ -264,13 +276,22 @@ fn pst_with_independent_readers() {
         assert!(o.status.success(), "{script}: {text}");
         text
     };
-    // libpst: folder counts and the attachment's bytes
-    let log = run(&format!("mkdir -p /d/rp && readpst -D -S -o /d/rp /d/{name}"));
+    // libpst: folder counts and the attachment's bytes. `-j 0`: no worker processes.
+    // By default readpst forks per folder / message, and the child's freopen() of the
+    // inherited FILE (fclose syncs the offset of the shared open file description)
+    // races with the parent's fseeko() + fread(): about 1 run in 240 the parent read
+    // wrong bytes for the very same PST ("1 items skipped", or no PDF written);
+    // with -j 0 none in 1440 runs.
+    let log = run(&format!("mkdir -p /d/rp && readpst -j 0 -D -S -o /d/rp /d/{name}"));
     for (folder, n) in [("Inbox", 3), ("Projects/2026", 1), ("Deletions", 1)] {
-        assert!(
-            log.contains(&format!("\"{folder}\" - {n} items done")),
-            "{folder}: {log}"
-        );
+        if !log.contains(&format!("\"{folder}\" - {n} items done")) {
+            // which item libpst skipped and why
+            let dbg = run(&format!(
+                "mkdir -p /d/rp2 && readpst -j 0 -D -S -d /d/dbg -o /d/rp2 /d/{name} >/dev/null 2>&1; \
+                 readpst -V | head -1; grep -aiE 'skip|error|unknown|fail' /d/dbg | tail -n 40"
+            ));
+            panic!("{folder}: {log}\n--- readpst debug ---\n{dbg}");
+        }
     }
     let found: Vec<_> = walk(&d.path().join("rp"))
         .into_iter()

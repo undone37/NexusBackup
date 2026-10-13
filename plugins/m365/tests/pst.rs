@@ -177,3 +177,42 @@ fn allocation_maps_match_a_rebuild() {
     // free space as rebuilt
     assert_eq!(&ours[180 + 20..180 + 28], &theirs[180 + 20..180 + 28], "cbAMapFree");
 }
+
+/// Attachments whose sizes sit on every heap / data-tree boundary (heap item limit
+/// 3580, one block 8176, XBLOCK, full XBLOCK of 1021 blocks, XXBLOCK), in both
+/// orders and one per message, read back byte for byte by outlook-pst.
+#[test]
+fn attachments_at_block_boundaries() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("b.pst");
+    let mut w = PstWriter::new(File::create(&path).unwrap(), "Boundaries", [3; 16]).unwrap();
+    let f = w.folder(&["Inbox".into()]);
+    let full = 1021 * 8176;
+    let sizes = [1, 3580, 3581, 8175, 8176, 8177, 16352, 16353, 300_000, full, full + 1];
+    let files: Vec<(String, Vec<u8>)> = sizes
+        .iter()
+        .enumerate()
+        .map(|(k, &n)| (format!("a{k:02}-{n}.bin"), pattern(n, k as u8)))
+        .collect();
+    w.add_message(f, message("ascending", 0, files.clone())).unwrap();
+    let mut rev = files.clone();
+    rev.reverse();
+    w.add_message(f, message("descending", 1, rev.clone())).unwrap();
+    for (k, file) in files.iter().enumerate() {
+        w.add_message(f, message(&format!("single {k}"), 2 + k, vec![file.clone()]))
+            .unwrap();
+    }
+    w.finish().unwrap();
+    if let Ok(keep) = std::env::var("NEXUS_PST_KEEP") {
+        std::fs::copy(&path, keep).unwrap(); // for looking at it with other readers
+    }
+    let t = read_back(&path);
+    let inbox = &t["Inbox"];
+    assert_eq!(inbox.len(), 2 + sizes.len());
+    let find = |s: &str| &inbox.iter().find(|m| m.0 == s).unwrap().2;
+    assert!(*find("ascending") == files, "ascending");
+    assert!(*find("descending") == rev, "descending");
+    for (k, file) in files.iter().enumerate() {
+        assert!(find(&format!("single {k}"))[0] == *file, "{}", file.0);
+    }
+}
