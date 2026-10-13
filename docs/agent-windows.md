@@ -122,6 +122,10 @@ interactive users; nothing on the pipe changes configuration or reads backup dat
 - Cross-compiled with the agent's mingw builder image: `crates/agent-gui/build.sh` (also Linux x86_64/aarch64;
   `--clippy` for the Windows target). iced with the tiny-skia software renderer (no GPU driver needed, works over RDP),
   tray via tray-icon (Win32 notification area). Imports only Windows system DLLs (checked by the script); about 3.5 MB.
+- App icon: `crates/agent-gui/dist/nexus-agent-gui.ico` (16–256 px, the logo of the web UI; generated from
+  `src/icon.rs` and checked by `tests/icon_files.rs`) is embedded into the exe by `build.rs` with the builder's
+  mingw `windres`, together with a version resource ("NexusBackup Agent" in Task Manager). The window sets it as its
+  taskbar and title bar icon; the MSI uses it for the Start menu shortcut and Apps & features (`ARPPRODUCTICON`).
 - MSI: `C:\Program Files\NexusBackup Agent\nexus-agent-gui.exe`, Start menu entry "NexusBackup Agent" (`--open`), and
   the **per-machine** Run key `HKLM\Software\Microsoft\Windows\CurrentVersion\Run\NexusBackupAgentGui`, so it starts
   in the tray at every user logon (decision: the MSI is per machine and GPO/Intune deploy it in device context; a

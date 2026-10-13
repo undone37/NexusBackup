@@ -1,5 +1,6 @@
 //! Tray and window icons: the web UI logo (web/src/favicon.svg) with a state badge in the
-//! lower right corner, rasterised with tiny-skia (no image files to ship).
+//! lower right corner, rasterised with tiny-skia. The plain logo is also the Windows exe icon
+//! (dist/nexus-agent-gui.ico, generated from `rgba` by tests/icon_files.rs).
 
 use crate::model::Badge;
 use tiny_skia::{Color, FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, Transform};
@@ -20,17 +21,18 @@ fn stroke(width: f32) -> Stroke {
     }
 }
 
-/// Badge colour (RGB), shared with the window's status card.
+/// Badge colour (RGB), shared with the window's status card: the web UI's status colours
+/// (src/palette.rs, light variants: the icon looks the same on light and dark panels).
 pub fn badge_color(b: Badge) -> u32 {
+    let k = &crate::palette::LIGHT;
     match b {
-        Badge::None => 0x0d1b2e,
-        Badge::Clock => 0x2563eb,
-        Badge::Play => 0x2563eb,
-        Badge::Check => 0x1f9d55,
-        Badge::Warn => 0xe0a100,
-        Badge::Cross => 0xd13438,
-        Badge::Stop => 0x7a7a7a,
-        Badge::Offline => 0x6b7280,
+        Badge::None => k.navy,
+        Badge::Clock | Badge::Play => k.info,
+        Badge::Check => k.c_ok,
+        Badge::Warn => k.c_warn,
+        Badge::Cross => k.c_bad,
+        Badge::Stop => k.muted,
+        Badge::Offline => k.navy_muted,
     }
 }
 

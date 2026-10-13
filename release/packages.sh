@@ -191,7 +191,7 @@ if [ $msi = 1 ]; then
 	fi
 	stage=$out/stage-msi
 	mkdir -p "$stage"
-	cp target/agent-dist/windows/nexus-agent.exe target/agent-dist/gui/windows/nexus-agent-gui.exe \
+	cp target/agent-dist/windows/nexus-agent.exe target/agent-dist/gui/windows/nexus-agent-gui.exe crates/agent-gui/dist/nexus-agent-gui.ico \
 		crates/agent-windows/dist/nexus-agent.wxs "$stage/"
 	cp target/agent-dist/windows/release-keys/*.pub "$stage/"
 	install -m 0644 docs/agent-windows.md "$stage/README.md"

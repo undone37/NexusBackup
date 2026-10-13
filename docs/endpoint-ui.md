@@ -85,7 +85,10 @@ instance; laptop on battery reports `on_battery`.
   Windows notification area, Linux StatusNotifierItem via its pure-Rust ksni backend, no GTK) with the states
   no job / waiting / running (progress in the tooltip) / requested / success / warning / error / cancelled /
   not connected to the service / not reached by the appliance since …; each state has its own badge symbol, the
-  tooltip names it. Control Panel window: header (header text, accent colour, managed by), status card (state, last
+  tooltip names it. Colours are the appliance web UI's (`src/palette.rs` mirrors the tokens of `web/src/app.css`,
+  light and dark): navy header as the web UI's sidebar (the policy's accent colour instead, if set), teal accent,
+  white / navy-grey cards on the page background, semantic ok / warn / bad colours for results. Control Panel
+  window: header (header text, accent colour, managed by), status card (state, last
   success, next run, reachability, progress), bar chart of the last 30 sessions (colour + mark per result, height
   transferred / duration, hover tooltip, click selects), session list with detail panel (summary, data, warnings,
   first error, log tail), "Request backup now" (hidden by `hide_backup_now`, disabled while requested/running),
@@ -95,4 +98,5 @@ instance; laptop on battery reports `on_battery`.
   `nexus-agent-desktop` .deb/.rpm (docs/agent-linux.md). Tests: view model (state → icon/tooltip, chart scaling,
   policy, notifications), IPC client against a fake service, icon rendering, headless rendering of the window
   (iced_test) which also produces the manual screenshots. Tried on KDE Plasma (Wayland) against
-  `cargo run -p agent-gui --example fake-service`; **never run on Windows**.
+  `cargo run -p agent-gui --example fake-service`; first run on Windows Server 2022 by a user (reported the missing
+  exe icon and the colours that differed from the web UI, both fixed).

@@ -733,8 +733,9 @@ since the time shown, e.g. a laptop away from the office network). Right-click: 
 
 ![Desktop agent window](images/desktop-agent-window.png)
 
-**Window.** The header shows who manages the computer (appliance name), with the header text and accent colour the
-administrator set for this agent. Below it:
+**Window.** In the colours of the appliance web UI (navy header, teal buttons). The header shows who manages the
+computer (appliance name), with the header text and accent colour the administrator set for this agent (the accent
+colour replaces the navy header and the teal). Below it:
 
 - **Status:** state, last successful backup, next backup, when the appliance last reached the computer.
 - **Request backup now:** queues a request; the appliance picks it up with its next check of the agent (about every
@@ -753,7 +754,7 @@ session, **T** switches the chart height, **B** requests a backup, **R** refresh
 **Esc** closes the window (the tray icon stays).
 
 > **Status:** built for Windows (x86_64) and Linux (x86_64, aarch64) and tested with a simulated agent service
-> (Linux, KDE Plasma). It has **not run on Windows** yet, and it needs an agent version that serves the local status
+> (Linux, KDE Plasma); first runs on Windows Server 2022. It needs an agent version that serves the local status
 > socket / pipe.
 
 ### On the endpoint: status and backup now

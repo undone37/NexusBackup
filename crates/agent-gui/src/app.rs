@@ -3,6 +3,7 @@
 
 use crate::ipc::{self, Endpoint, Snapshot};
 use crate::model::{self, Metric, TrayState};
+use crate::palette::{self, rgb};
 use crate::settings::{self, Settings};
 use crate::tray::{self, Tray};
 use agent_ui_proto::{Session, SessionDetail, SessionResult};
@@ -299,6 +300,15 @@ impl App {
                 self.notice = None;
                 Task::none()
             }
+            #[cfg(windows)]
+            Message::Opened(id) => Task::batch([
+                window::raw_id::<Message>(id).then(|hwnd| {
+                    set_exe_icon(hwnd);
+                    Task::none()
+                }),
+                Task::done(Message::Refresh),
+            ]),
+            #[cfg(not(windows))]
             Message::Opened(_) => Task::done(Message::Refresh),
             Message::Closed(id) => {
                 if self.window == Some(id) {
@@ -367,24 +377,29 @@ impl App {
         })
     }
 
+    /// The web UI's palette (src/palette.rs); an accent colour from the UI policy replaces
+    /// the teal accent (buttons, header).
     pub fn theme(&self, _: window::Id) -> Theme {
         let dark = self.mode == theme::Mode::Dark;
-        let mut p = if dark {
-            theme::Palette::DARK
-        } else {
-            theme::Palette::LIGHT
+        let t = palette::tokens(dark);
+        let mut p = theme::Palette {
+            background: rgb(t.bg),
+            text: rgb(t.text),
+            primary: rgb(t.accent),
+            success: rgb(t.ok),
+            warning: rgb(t.warn),
+            danger: rgb(t.bad),
         };
-        p.primary = if dark { rgb(0x2ec4b2) } else { rgb(0x0f766e) };
-        p.success = rgb(RESULT_COLORS[0]);
-        p.danger = rgb(RESULT_COLORS[2]);
-        if let Some([r, g, b]) = self
-            .status()
-            .and_then(|s| s.ui_policy.accent.as_deref())
-            .and_then(model::parse_accent)
-        {
+        if let Some([r, g, b]) = self.policy_accent() {
             p.primary = Color::from_rgb8(r, g, b);
         }
         Theme::custom(if dark { "NexusBackup dark" } else { "NexusBackup light" }, p)
+    }
+
+    fn policy_accent(&self) -> Option<[u8; 3]> {
+        self.status()
+            .and_then(|s| s.ui_policy.accent.as_deref())
+            .and_then(model::parse_accent)
     }
 
     pub fn view(&self, _: window::Id) -> Element<'_, Message> {
@@ -408,6 +423,7 @@ impl App {
         let agent = status
             .map(|s| format!("Agent {} · version {}", s.agent_id, s.version))
             .unwrap_or_default();
+        let branded = self.policy_accent().is_some();
         let header = container(
             row![
                 text(title).size(22),
@@ -418,11 +434,18 @@ impl App {
         )
         .padding([12, 18])
         .width(Length::Fill)
-        .style(|t: &Theme| {
-            let p = t.extended_palette().primary.base;
+        .style(move |t: &Theme| {
+            // navy chrome as the web UI's sidebar; the administrator's accent colour instead
+            let (bg, fg) = if branded {
+                let p = t.extended_palette().primary.base;
+                (p.color, p.text)
+            } else {
+                let k = palette::of(t);
+                (rgb(k.navy), rgb(k.navy_text))
+            };
             container::Style {
-                background: Some(p.color.into()),
-                text_color: Some(p.text),
+                background: Some(bg.into()),
+                text_color: Some(fg),
                 ..Default::default()
             }
         });
@@ -503,12 +526,7 @@ impl App {
                 .align_y(iced::Alignment::Center),
             );
         }
-        body = body.push(
-            container(card)
-                .padding(14)
-                .width(Length::Fill)
-                .style(container::bordered_box),
-        );
+        body = body.push(container(card).padding(14).width(Length::Fill).style(card_style));
 
         // session chart
         let sessions = self.sessions();
@@ -561,7 +579,7 @@ impl App {
                 .spacing(8),
             )
             .padding(14)
-            .style(container::bordered_box),
+            .style(card_style),
         );
 
         // session list + detail panel
@@ -591,7 +609,7 @@ impl App {
                     row![
                         text(format!("{} {}{kind}", model::result_symbol(r), model::result_label(r)))
                             .width(110)
-                            .color(result_color(r)),
+                            .style(result_text(r)),
                         text(model::fmt_time(s.started)).width(140),
                         text(model::fmt_duration(model::duration(s))).width(100),
                         text(model::fmt_bytes(s.transferred_bytes)).width(Length::Fill),
@@ -610,11 +628,11 @@ impl App {
                 container(scrollable(list).height(260))
                     .width(Length::FillPortion(3))
                     .padding(8)
-                    .style(container::bordered_box),
+                    .style(card_style),
                 container(detail)
                     .width(Length::FillPortion(2))
                     .padding(12)
-                    .style(container::bordered_box),
+                    .style(card_style),
             ]
             .spacing(14),
         );
@@ -660,7 +678,7 @@ impl App {
                 model::result_symbol(s.result),
                 model::result_label(s.result)
             ))
-            .color(result_color(s.result)),
+            .style(result_text(s.result)),
             kv("Started", model::fmt_time(s.started)),
             kv("Ended", model::fmt_time(s.ended)),
             kv("Duration", model::fmt_duration(model::duration(s))),
@@ -677,7 +695,7 @@ impl App {
             c = c.push(
                 text(format!("First error: {e}"))
                     .size(13)
-                    .color(result_color(SessionResult::Failed)),
+                    .style(result_text(SessionResult::Failed)),
             );
         }
         if !d.log_tail.is_empty() {
@@ -686,27 +704,99 @@ impl App {
                 container(scrollable(text(d.log_tail.join("\n")).font(Font::MONOSPACE).size(11)).height(110))
                     .padding(6)
                     .width(Length::Fill)
-                    .style(container::rounded_box),
+                    .style(|t: &Theme| {
+                        let k = palette::of(t);
+                        container::Style {
+                            background: Some(rgb(k.surface_2).into()),
+                            border: iced::Border::default().rounded(6),
+                            ..Default::default()
+                        }
+                    }),
             );
         }
         c.into()
     }
 }
 
-/// success, warning, failed, cancelled
-const RESULT_COLORS: [u32; 4] = [0x1f9d55, 0xd08c00, 0xd13438, 0x8a8a8a];
-
-fn rgb(c: u32) -> Color {
-    Color::from_rgb8((c >> 16) as u8, (c >> 8) as u8, c as u8)
+/// Windows: winit sets only the small (title bar) icon from `window_settings().icon`; the
+/// taskbar and Alt+Tab show the big one. Both from the exe's icon resource (build.rs) at the
+/// system sizes. `hwnd`: the winit window id, which is the HWND on Windows.
+#[cfg(windows)]
+fn set_exe_icon(hwnd: u64) {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, LoadImageW, SendMessageW, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTCOLOR, SM_CXICON,
+        SM_CXSMICON, WM_SETICON,
+    };
+    // SAFETY: plain Win32 calls; the icon handles stay alive with the window (never freed,
+    // the process exits with it); a missing resource returns null and is skipped
+    unsafe {
+        let module = GetModuleHandleW(std::ptr::null());
+        for (kind, metric) in [(ICON_BIG, SM_CXICON), (ICON_SMALL, SM_CXSMICON)] {
+            let s = GetSystemMetrics(metric);
+            // MAKEINTRESOURCEW(1)
+            let h = LoadImageW(
+                module,
+                1 as windows_sys::core::PCWSTR,
+                IMAGE_ICON,
+                s,
+                s,
+                LR_DEFAULTCOLOR,
+            );
+            if !h.is_null() {
+                SendMessageW(
+                    hwnd as windows_sys::Win32::Foundation::HWND,
+                    WM_SETICON,
+                    kind as usize,
+                    h as isize,
+                );
+            }
+        }
+    }
 }
 
-fn result_color(r: SessionResult) -> Color {
+/// Result as text colour (web UI status colours: readable on the surfaces).
+fn result_color(t: &Theme, r: SessionResult) -> Color {
+    let k = palette::of(t);
     rgb(match r {
-        SessionResult::Success => RESULT_COLORS[0],
-        SessionResult::Warning => RESULT_COLORS[1],
-        SessionResult::Failed => RESULT_COLORS[2],
-        SessionResult::Cancelled => RESULT_COLORS[3],
+        SessionResult::Success => k.ok,
+        SessionResult::Warning => k.warn,
+        SessionResult::Failed => k.bad,
+        SessionResult::Cancelled => k.muted,
     })
+}
+
+fn result_text(r: SessionResult) -> impl Fn(&Theme) -> text::Style {
+    move |t| text::Style {
+        color: Some(result_color(t, r)),
+    }
+}
+
+/// Result as chart fill (web UI chart colours).
+fn result_fill(t: &Theme, r: SessionResult) -> Color {
+    let k = palette::of(t);
+    rgb(match r {
+        SessionResult::Success => k.c_ok,
+        SessionResult::Warning => k.c_warn,
+        SessionResult::Failed => k.c_bad,
+        SessionResult::Cancelled => k.c_neutral,
+    })
+}
+
+/// Card: white (dark: navy-grey) surface with a hairline border on the page background, as
+/// the web UI's cards.
+fn card_style(t: &Theme) -> container::Style {
+    let k = palette::of(t);
+    container::Style {
+        background: Some(rgb(k.surface).into()),
+        text_color: Some(rgb(k.text)),
+        border: iced::Border {
+            width: 1.0,
+            radius: 8.0.into(),
+            color: rgb(k.border),
+        },
+        ..Default::default()
+    }
 }
 
 fn badge_symbol(b: model::Badge) -> &'static str {
@@ -739,15 +829,17 @@ fn bar<'a>(msg: String, error: bool, dismiss: Option<Message>) -> Element<'a, Me
         .padding([8, 12])
         .width(Length::Fill)
         .style(move |t: &Theme| {
-            let p = if error {
-                t.extended_palette().danger.weak
+            // web UI notices: status colour on its soft background
+            let k = palette::of(t);
+            let (bg, fg) = if error {
+                (k.bad_soft, k.bad)
             } else {
-                t.extended_palette().primary.weak
+                (k.info_soft, k.info)
             };
             container::Style {
-                background: Some(p.color.into()),
-                text_color: Some(p.text),
-                border: iced::Border::default().rounded(4),
+                background: Some(rgb(bg).into()),
+                text_color: Some(rgb(fg)),
+                border: iced::Border::default().rounded(6),
                 ..Default::default()
             }
         })
@@ -802,13 +894,13 @@ impl canvas::Program<Message> for Chart {
         cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut f = canvas::Frame::new(renderer, bounds.size());
-        let pal = theme.extended_palette();
-        let fg = pal.background.base.text;
+        let k = palette::of(theme);
+        let fg = rgb(k.text);
         let (top, base) = (18.0, bounds.height - 2.0);
         f.fill_rectangle(
             Point::new(0.0, base),
             Size::new(bounds.width, 1.0),
-            pal.background.strong.color,
+            rgb(k.border_strong),
         );
         if self.bars.is_empty() {
             f.fill_text(canvas::Text {
@@ -825,7 +917,7 @@ impl canvas::Program<Message> for Chart {
             let h = (base - top) * b.height;
             let x = (first + i) as f32 * w + w * 0.15;
             let bw = w * 0.7;
-            f.fill_rectangle(Point::new(x, base - h), Size::new(bw, h), result_color(b.result));
+            f.fill_rectangle(Point::new(x, base - h), Size::new(bw, h), result_fill(theme, b.result));
             if self.selected == Some(b.id) || *hovered == Some(i) {
                 let path = canvas::Path::rectangle(Point::new(x - 1.5, base - h - 1.5), Size::new(bw + 3.0, h + 1.5));
                 f.stroke(&path, canvas::Stroke::default().with_color(fg).with_width(2.0));
@@ -849,12 +941,12 @@ impl canvas::Program<Message> for Chart {
             let x = (p.x + 12.0).min(bounds.width - tw).max(0.0);
             let y = (p.y - 34.0).max(0.0);
             let bg = canvas::Path::rounded_rectangle(Point::new(x, y), Size::new(tw, 24.0), 4.0.into());
-            f.fill(&bg, pal.background.weak.color);
-            f.stroke(&bg, canvas::Stroke::default().with_color(pal.background.strong.color));
+            f.fill(&bg, rgb(k.surface_2));
+            f.stroke(&bg, canvas::Stroke::default().with_color(rgb(k.border_strong)));
             f.fill_text(canvas::Text {
                 content: tip.clone(),
                 position: Point::new(x + 8.0, y + 5.0),
-                color: pal.background.weak.text,
+                color: fg,
                 size: 12.into(),
                 ..Default::default()
             });
