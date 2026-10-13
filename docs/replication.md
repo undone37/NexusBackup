@@ -229,6 +229,16 @@ held_by, held_at}]`, the primary's active holds; 404 from older primaries = none
 never enforced until a security officer of the secondary applies one. The secondary's own active holds go to
 `nexus-replica` as `held` and are skipped by its retention (step 6).
 
+### Tenant uid (Phase 19b)
+`POST …/session` answers `{session, tenant_uid}`: the tenant's immutable uid on the primary (catalog v25). The
+secondary records it per source and tenant in `replication_sources.status[<tenant>].primary_uid` at the first sync
+that reports one (trust on first use) and passes it to every later `nexus-replica sync` (`tenant_uid` in the job
+config); a primary that reports another uid for the name is a different tenant (deleted and re-created) — the sync
+fetches nothing and fails as `verify-failed` (critical `replication_verify` alert). Backwards compatible: a primary
+before 19b sends no uid (name only, as before); a secondary before 19b ignores the field. Tenant names on a primary
+cannot be reused after deletion either (docs/control-plane.md "Tenant admins"). Decision: DEK labels, AADs, escrow
+paths and `keys/tenants/<name>` stay bound to the name; the uid is an additional identity check only.
+
 ## 8. Catalog (v7)
 
 | Table | Columns |

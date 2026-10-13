@@ -6,7 +6,7 @@
 //! bound to agent id + endpoint); the scheduler's `agent_enroll` job proves it
 //! to the agent. Deleting an agent needs a quorum.
 
-use crate::auth::Ctx;
+use crate::auth::{Ctx, TENANT_WRITERS};
 use crate::quorum::gate;
 use crate::{validate, ApiError, ApiResult, St, J};
 use axum::extract::{Path, State};
@@ -18,7 +18,6 @@ use catalog::secret::agent_token_location;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-const ADMIN: &[&str] = &["admin"];
 pub const TOKEN_TTL_SECS: i64 = 24 * 3600;
 pub const DEFAULT_PORT: u16 = 7444;
 
@@ -97,7 +96,8 @@ pub async fn list_agents(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value
 }
 
 pub async fn create_agent(State(st): State<St>, ctx: Ctx, J(r): J<AgentReq>) -> ApiResult<Response> {
-    ctx.require(ADMIN)?;
+    ctx.require(TENANT_WRITERS)?;
+    ctx.owns(&r.tenant)?;
     crate::vault::refuse(&st.cat.conn(), "new agents")?;
     validate::name(&r.name, "name")?;
     validate::host(&r.host)?;
@@ -131,8 +131,9 @@ pub async fn create_agent(State(st): State<St>, ctx: Ctx, J(r): J<AgentReq>) -> 
 /// keeps the agent id: sources, groups and `host-<id>` snapshots stay attached,
 /// the new certificate replaces the pinned one when the enrollment job ran.
 pub async fn new_agent_token(State(st): State<St>, ctx: Ctx, Path(id): Path<String>) -> ApiResult<Json<Value>> {
-    ctx.require(ADMIN)?;
+    ctx.require(TENANT_WRITERS)?;
     let a = agent_value(&st.cat.conn(), &id)?.ok_or_else(ApiError::not_found)?;
+    ctx.owns(a["tenant"].as_str().unwrap_or_default())?;
     let (host, port) = (
         a["host"].as_str().unwrap_or_default(),
         a["port"].as_u64().unwrap_or_default() as u16,
@@ -156,7 +157,7 @@ pub async fn new_agent_token(State(st): State<St>, ctx: Ctx, Path(id): Path<Stri
 
 /// Queues an `agent_enroll` job (202 `{id}`); 409 without a valid token.
 pub async fn enroll_agent(State(st): State<St>, ctx: Ctx, Path(id): Path<String>) -> ApiResult<Response> {
-    ctx.require(ADMIN)?;
+    ctx.require(TENANT_WRITERS)?;
     let (tenant, valid) = {
         let c = st.cat.conn();
         let (tenant, has, expires): (String, bool, Option<i64>) = c
@@ -169,6 +170,7 @@ pub async fn enroll_agent(State(st): State<St>, ctx: Ctx, Path(id): Path<String>
             .ok_or_else(ApiError::not_found)?;
         (tenant, has && expires.is_some_and(|e| e > catalog::now()))
     };
+    ctx.owns(&tenant)?;
     if !valid {
         return Err(ApiError::conflict(
             "no valid enrollment token: create a new token and run the install command on the host",
@@ -204,10 +206,11 @@ pub fn agent_in_use(c: &Connection, id: &str) -> ApiResult<bool> {
 }
 
 pub async fn delete_agent(State(st): State<St>, ctx: Ctx, Path(id): Path<String>) -> ApiResult<Response> {
-    ctx.require(ADMIN)?;
+    ctx.require(TENANT_WRITERS)?;
     let a = {
         let c = st.cat.conn();
         let a = agent_value(&c, &id)?.ok_or_else(ApiError::not_found)?;
+        ctx.owns(a["tenant"].as_str().unwrap_or_default())?;
         if agent_in_use(&c, &id)? {
             return Err(ApiError::conflict("agent is still used by a source"));
         }

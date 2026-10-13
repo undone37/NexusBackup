@@ -1,16 +1,26 @@
-import type { User } from './types';
+import type { Impersonation, User } from './types';
 
 // The CSRF token lives in memory only (never localStorage); after a reload it is
 // recovered from GET /auth/me.
 // `vault`: vault mode is on (Phase 17c; from GET /auth/me): restore buttons become requests.
-export const session = $state<{ user: User | null; csrf: string | null; ready: boolean; vault: boolean }>({
+// `impersonating`: "view as tenant" is active (Phase 19b; from GET /auth/me): banner + end button.
+export const session = $state<{
+  user: User | null;
+  csrf: string | null;
+  ready: boolean;
+  vault: boolean;
+  impersonating: Impersonation | null;
+}>({
   user: null,
   csrf: null,
   ready: false,
   vault: false,
+  impersonating: null,
 });
 
 export function setSession(user: User | null, csrf: string | null) {
   session.user = user;
   session.csrf = csrf;
+  // a new session never starts impersonating; callers set it from GET /auth/me
+  session.impersonating = null;
 }

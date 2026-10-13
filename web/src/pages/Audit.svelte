@@ -5,6 +5,12 @@
   import { t } from '../lib/i18n';
   import type { AuditEntry, AuditVerify, ForwardingStatus } from '../lib/types';
   import ErrorBanner from '../components/ErrorBanner.svelte';
+  import { session } from '../lib/session.svelte';
+  import { can } from '../lib/roles';
+
+  // Phase 19b: tenant admins read the entries concerning their own tenant (the server forces the
+  // filter); appliance-wide auditors may filter by tenant.
+  const scoped = $derived(session.user?.role === 'tenant_admin');
 
   let entries: AuditEntry[] = $state([]);
   let error: string | null = $state(null);
@@ -14,8 +20,8 @@
   let verifying = $state(false);
   let fwd: ForwardingStatus | null = $state(null);
   // filter form (applied on submit) and the filters of the list shown
-  let form = $state({ actor: '', action: '', target: '', from: '', to: '' });
-  let applied = $state({ actor: '', action: '', target: '', from: '', to: '' });
+  let form = $state({ actor: '', action: '', target: '', tenant: '', from: '', to: '' });
+  let applied = $state({ actor: '', action: '', target: '', tenant: '', from: '', to: '' });
 
   // dates of the form → unix seconds (local day boundaries)
   const day = (d: string, end: boolean) => (d ? Math.floor(new Date(`${d}T${end ? '23:59:59' : '00:00:00'}`).getTime() / 1000) : undefined);
@@ -23,6 +29,7 @@
     actor: applied.actor.trim(),
     action: applied.action.trim(),
     target: applied.target.trim(),
+    tenant: applied.tenant.trim(),
     from: day(applied.from, false),
     to: day(applied.to, true),
   });
@@ -51,7 +58,7 @@
   }
   onMount(() => {
     loadMore();
-    loadForwarding();
+    if (can.verifyAudit(session.user)) loadForwarding();
   });
 
   function apply(e?: SubmitEvent) {
@@ -63,7 +70,7 @@
     loadMore();
   }
   function clear() {
-    form = { actor: '', action: '', target: '', from: '', to: '' };
+    form = { actor: '', action: '', target: '', tenant: '', from: '', to: '' };
     apply();
   }
 
@@ -91,12 +98,15 @@
   <h1>{t.audit.title}</h1>
   <div class="tools">
     <a class="button" href={csvHref} download="nexus-audit.csv" title={t.audit.exportHint}>{t.audit.exportCsv}</a>
-    <button type="button" class="primary" onclick={runVerify} disabled={verifying}>
-      {verifying ? t.audit.verifying : t.audit.verify}
-    </button>
+    {#if can.verifyAudit(session.user)}
+      <button type="button" class="primary" onclick={runVerify} disabled={verifying}>
+        {verifying ? t.audit.verifying : t.audit.verify}
+      </button>
+    {/if}
   </div>
   <p class="lede">{t.audit.lede}</p>
 </div>
+{#if scoped && session.user?.tenant}<p class="muted">{t.audit.tenantScoped(session.user.tenant)}</p>{/if}
 
 {#if verify}
   <div class="banner {verify.ok ? 'ok' : 'error'}" role="status">{verify.text}</div>
@@ -152,6 +162,12 @@
     <label for="a-target">{t.audit.target}</label>
     <input id="a-target" class="mono" bind:value={form.target} placeholder={t.audit.targetPh} spellcheck="false" />
   </div>
+  {#if !scoped}
+    <div class="field">
+      <label for="a-tenant">{t.audit.tenant}</label>
+      <input id="a-tenant" bind:value={form.tenant} placeholder={t.audit.tenantPh} spellcheck="false" />
+    </div>
+  {/if}
   <div class="field narrow">
     <label for="a-from">{t.audit.from}</label>
     <input id="a-from" type="date" bind:value={form.from} />

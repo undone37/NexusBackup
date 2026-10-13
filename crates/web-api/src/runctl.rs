@@ -12,7 +12,8 @@ use catalog::schedule::{self, Window};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-const OPS: &[&str] = &["admin", "operator"];
+/// tenant admins: their own tenant's groups and sources (Phase 19b)
+const OPS: &[&str] = &["admin", "operator", "tenant_admin"];
 const MAX_PAUSE: i64 = 366 * 86400;
 
 #[derive(Deserialize)]

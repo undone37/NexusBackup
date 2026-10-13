@@ -146,6 +146,10 @@ pub struct SyncParams {
     /// `(source, time)` under a legal hold applied on this appliance: kept by
     /// the local retention
     pub held: BTreeSet<(String, u64)>,
+    /// the primary tenant's uid seen before (Phase 19b): a primary that
+    /// reports another uid for the name serves a different tenant (deleted and
+    /// re-created) and is refused. `None`: first sync or a legacy primary.
+    pub tenant_uid: Option<String>,
 }
 
 #[derive(Serialize, Debug, Default)]
@@ -168,6 +172,8 @@ pub struct SyncReport {
     pub key_versions: Vec<u32>,
     /// the primary's legal holds (advisory; empty from primaries before 15c)
     pub holds: Vec<HoldInfo>,
+    /// the primary tenant's immutable uid (None from primaries before 19b)
+    pub tenant_uid: Option<String>,
     pub secs: f64,
 }
 
@@ -254,9 +260,17 @@ pub fn sync(p: &SyncParams, log: &mut dyn FnMut(&str)) -> Result<SyncReport> {
     let session = sess["session"].as_str().unwrap_or_default().to_owned();
     let mut report = SyncReport {
         tenant: p.tenant.clone(),
+        tenant_uid: sess["tenant_uid"].as_str().map(str::to_owned),
         ..Default::default()
     };
-    let r = sync_inner(p, &mut peer, cfg, &mut report, log);
+    let r = match (&p.tenant_uid, &report.tenant_uid) {
+        (Some(want), Some(got)) if want != got => Err(anyhow::Error::new(VerifyFailed(format!(
+            "tenant {} on the primary has uid {got}, this secondary replicates uid {want}: \
+             a different tenant with the same name (deleted and re-created?); nothing fetched",
+            p.tenant
+        )))),
+        _ => sync_inner(p, &mut peer, cfg, &mut report, log),
+    };
     report.secs = t0.elapsed().as_secs_f64();
     let end = SessionEnd {
         snapshots: report.imported.len() as u64,
