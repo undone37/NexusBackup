@@ -1,6 +1,7 @@
 name: release
 # Tag v* -> build the bootc appliance image, push it to ghcr.io, attach an SBOM, and
-# open a DRAFT GitHub release with the digest; then the agent packages (.deb/.rpm/.msi). CI does NOT sign: the release key is
+# open a DRAFT GitHub release with the digest; then a grype CVE scan (fails on critical CVEs with a
+# fix, report attached) and the agent packages (.deb/.rpm/.msi). CI does NOT sign: the release key is
 # offline. The release manager signs the printed digest with release/sign.sh, checks
 # it with release/verify.sh and moves the channel tag with release/promote.sh
 # (docs/release.md).
@@ -72,6 +73,19 @@ jobs:
           podman run --rm "$img" sh -c 'systemctl is-enabled nexus-update.timer greenboot-healthcheck.service &&
             test "$(systemctl is-enabled bootc-fetch-apply-updates.timer)" = masked'
 
+      - name: CIS report (OpenSCAP, informational)
+        # a throw-away container of the image evaluates the CIS server L1 profile; never a gate
+        continue-on-error: true
+        run: release/cis-report.sh localhost/nexus-os:release out/cis
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        continue-on-error: true
+        with:
+          name: cis-report
+          path: out/cis/
+          if-no-files-found: ignore
+
       - name: Push (version tag only; appliances follow the channel tag set by promote.sh)
         id: push
         run: |
@@ -142,6 +156,54 @@ jobs:
             echo
             echo "Next: \`release/sign.sh sign $IMAGE_REF\` (offline key), \`release/verify.sh --policy\`, \`release/promote.sh\`."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  cve:
+    # grype CVE scan of the pushed image (release/cve-scan.sh: pinned grype image run in podman,
+    # vulnerability DB cached in the podman volume nexus-grype-db; nothing installed on the runner).
+    # The report (table + JSON) is uploaded as an artifact and attached to the draft release;
+    # a critical CVE with a fixed package version fails the job (rebuild: --pull=always takes the fix).
+    needs: image
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Scan
+        id: scan
+        continue-on-error: true
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          release/cve-scan.sh "registry:${{ needs.image.outputs.image }}" out
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cve-report
+          path: out/grype*
+
+      - name: Attach the report to the draft release
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp out/grype.txt out/cve-report.txt
+          cp out/grype.json out/cve-report.json
+          gh release upload "$GITHUB_REF_NAME" out/cve-report.txt out/cve-report.json --clobber
+          {
+            echo "### CVE scan (grype)"
+            echo
+            if [ -s out/grype-blocking.txt ]; then
+              echo "Critical CVEs with a fix available (rebuild the release):"
+              echo '```'; cat out/grype-blocking.txt; echo '```'
+            else
+              echo "No critical CVE with a fix available. Full table: cve-report.txt on the release."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: No critical CVE with a fix available
+        if: steps.scan.outcome != 'success'
+        run: |
+          cat out/grype-blocking.txt 2>/dev/null || echo "the scan did not complete"
+          exit 1
 
   packages:
     # Agent packages next to the image: nexus-agent and nexus-agent-desktop .deb/.rpm

@@ -144,6 +144,40 @@ podman is the only host tool needed, plus `jq`/`openssl` for check-trust.
 `release/test-local.sh` runs this whole chain against a throwaway `registry:2` on
 127.0.0.1 with the TEST key and a freshly generated untrusted key.
 
+### CVE scan and CIS report (Phase 21d)
+
+- The `cve` job of `release.yml` (after the image job) runs `release/cve-scan.sh
+  registry:<image@digest> out`: grype from its pinned image (`GRYPE_IMAGE` in
+  `release/config.env`, by digest) in rootless podman with the podman login as registry
+  credential; its vulnerability DB is cached in the podman volume `nexus-grype-db` (delete
+  it with `podman volume rm nexus-grype-db`; it is downloaded again). Output:
+  `grype.txt` (table), `grype.json` (all matches) and `grype-blocking.txt`. Both reports are
+  uploaded as the `cve-report` artifact and attached to the draft release as
+  `cve-report.txt` / `cve-report.json`; the job summary lists the blocking findings.
+- **Gate:** a **critical** CVE whose package has a **fixed version** fails the job. Do not
+  publish the draft then: tag a new patch release. The build pulls the base image with
+  `--pull=always`, so a rebuild picks up the fixed package. Critical CVEs without a fix and
+  all lower severities are in the report but do not fail the release. Review them before
+  publishing.
+- **CIS report (informational):** the image job runs `release/cis-report.sh
+  localhost/nexus-os:release out/cis`. A throw-away container of the image installs
+  `openscap-scanner` + `scap-security-guide` and evaluates the CIS server level 1 profile
+  (`cis-report.html`, `cis-results.xml`, uploaded as the `cis-report` artifact). The image is
+  not changed (`podman run --rm`). Rules about the kernel, boot loader, mounts and running
+  services cannot be judged in a container, so the report never fails the workflow. Use it
+  as a review aid.
+- **Weekly re-scan:** `.github/workflows/cve.yml` scans the published channel tag
+  (`:stable`, or any tag via `gh workflow run cve.yml -f tag=vX.Y.Z`) every Monday, because
+  new CVEs are published after a release. It does not build anything. CI does not scan on
+  every main push: that would need a full image build per push.
+- Locally: `release/cve-scan.sh registry:ghcr.io/undone37/nexusbackup:vX.Y.Z out` (after
+  `podman login ghcr.io`). The grype container cannot see the host's podman storage. To scan
+  an image that was not pushed, save it into the output directory first:
+  `podman save --format oci-archive -o out/img.tar localhost/nexus-os:dev &&
+  release/cve-scan.sh oci-archive:/out/img.tar out`.
+- Nothing is installed on the runner: both tools run in containers, as syft, oras and
+  cosign do.
+
 ## Updates on the appliance (`nexus-update`)
 
 Units (in `/usr/lib/systemd/system`, enabled by preset `05-nexus-update.preset`):

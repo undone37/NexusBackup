@@ -453,6 +453,16 @@ fn sync_inner(
 /// The id must be the one requested next; lengths are bounded before allocating.
 /// (The sealed bytes are verified by the caller's `insert_chunk_raw`.)
 pub fn read_chunk_frame(r: &mut impl Read, want: &ChunkId) -> Result<Vec<u8>> {
+    read_frame(r, want)?.ok_or_else(|| {
+        anyhow!(
+            "chunk {} is missing on the primary (removed by its GC since the listing?): retry the sync",
+            hex(want)
+        )
+    })
+}
+
+/// [`read_chunk_frame`]; `None` for a chunk the primary does not have.
+fn read_frame(r: &mut impl Read, want: &ChunkId) -> Result<Option<Vec<u8>>> {
     let mut head = [0u8; 36];
     r.read_exact(&mut head).context("chunk stream truncated")?;
     if head[..32] != want[..] {
@@ -460,10 +470,7 @@ pub fn read_chunk_frame(r: &mut impl Read, want: &ChunkId) -> Result<Vec<u8>> {
     }
     let len = u32::from_be_bytes(head[32..].try_into().unwrap());
     if len == MISSING {
-        bail!(
-            "chunk {} is missing on the primary (removed by its GC since the listing?): retry the sync",
-            hex(want)
-        );
+        return Ok(None);
     }
     if u64::from(len) > MAX_CHUNK {
         return Err(anyhow::Error::new(VerifyFailed(format!(
@@ -473,7 +480,35 @@ pub fn read_chunk_frame(r: &mut impl Read, want: &ChunkId) -> Result<Vec<u8>> {
     }
     let mut data = vec![0u8; len as usize];
     r.read_exact(&mut data).context("chunk stream truncated")?;
-    Ok(data)
+    Ok(Some(data))
+}
+
+/// Health check with repair (Phase 21d): the bad chunks of the local store
+/// (found by verify) are fetched one by one from the primary and stored after
+/// full verification ([`Store::repair_from`]). Chunks the primary no longer has
+/// count as unavailable; an unreachable primary fails the repair.
+pub fn repair(p: &SyncParams) -> Result<chunkstore::health::Repair> {
+    let cfg = client_config(&p.target.pin, ALPN_PEER, Some(load_creds(&p.cred_dir)?))?;
+    let keys = keyd::fetch_keyring(&p.keyd_socket, &p.tenant).context("keyd")?;
+    let store = Store::open(&p.store, keys, Options::default())?;
+    let path = format!("{PREFIX}/tenants/{}/chunks", p.tenant);
+    let mut conn: Option<Conn> = None;
+    let mut fetch = |id: &ChunkId| -> Result<Option<Vec<u8>>> {
+        if conn.is_none() {
+            conn = Some(Conn::connect(&p.target, cfg.clone())?);
+        }
+        let r = conn
+            .as_mut()
+            .unwrap()
+            .request("POST", &path, Some("application/octet-stream"), id)
+            .and_then(|r| r.ok())
+            .and_then(|mut r| read_frame(&mut r, id));
+        if r.is_err() {
+            conn = None; // reconnect for the next chunk
+        }
+        r
+    };
+    Ok(store.repair_from(|id| fetch(id).map_err(|e| std::io::Error::other(format!("{e:#}"))))?)
 }
 
 /// Downloads `ids` over `p.parallel` connections; every chunk is verified

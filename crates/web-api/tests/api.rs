@@ -4230,7 +4230,7 @@ async fn tenant_admin_scope_policies_users_and_approvals() {
     let job = |kind: &str, params: Value| json!({"kind": kind, "tenant": "acme", "params": params});
     let r = t.post("/api/v1/jobs", &dana, job("backup", json!({"vmid": 100}))).await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
-    for kind in ["retention", "gc", "offsite", "verify"] {
+    for kind in ["retention", "gc", "offsite", "verify", "chunk_repair"] {
         assert_eq!(
             t.post("/api/v1/jobs", &dana, job(kind, json!({}))).await.status,
             StatusCode::FORBIDDEN,
@@ -4421,5 +4421,50 @@ async fn tenant_names_are_tombstoned_and_uids_immutable() {
         .conn()
         .execute("UPDATE tenants SET uid = 'x' WHERE name = 'acme'", [])
         .is_err());
+    t.finish();
+}
+
+/// Phase 21d: `chunk_repair` is admin-only (no parameters), and the snapshot
+/// list carries the damage flag of the last verify / repair.
+#[tokio::test]
+async fn chunk_repair_is_admin_only_and_snapshots_show_damage() {
+    let t = T::new();
+    t.st.cat
+        .conn()
+        .execute_batch(
+            "INSERT INTO snapshots (tenant, source, time, local, offsite, damaged, damaged_at) \
+             VALUES ('acme', 'vm-100', 1000, 1, 0, 2, 5), ('acme', 'vm-100', 2000, 1, 0, NULL, NULL);",
+        )
+        .unwrap();
+    let job = |p: Value| json!({"kind": "chunk_repair", "tenant": "acme", "params": p});
+    for (who, want) in [
+        ("otto", StatusCode::FORBIDDEN),
+        ("tina", StatusCode::FORBIDDEN),
+        ("sam", StatusCode::FORBIDDEN),
+        ("alice", StatusCode::ACCEPTED),
+    ] {
+        let s = t.login(who).await;
+        let r = t.post("/api/v1/jobs", &s, job(json!({}))).await;
+        assert_eq!(r.status, want, "{who}: {:?}", r.body);
+    }
+    let alice = t.login("alice").await;
+    let r = t.post("/api/v1/jobs", &alice, job(json!({"source": "vm-100"}))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "no parameters");
+    let tina = t.login("tina").await;
+    let snaps = t.get("/api/v1/snapshots?tenant=acme", &tina).await.body;
+    let by_time = |time: i64| {
+        snaps
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["time"] == time)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(
+        (by_time(1000)["damaged"].clone(), by_time(1000)["damaged_at"].clone()),
+        (json!(2), json!(5))
+    );
+    assert_eq!(by_time(2000)["damaged"], Value::Null);
     t.finish();
 }

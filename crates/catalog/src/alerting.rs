@@ -30,6 +30,7 @@ pub fn rank(severity: &str) -> u8 {
 const HINTS: &[(&str, &str)] = &[
     ("job_failed", "Open the job log on the Jobs page, fix the cause (source reachable, credentials, space) and run the job again. The alert resolves itself after the next successful run."),
     ("verify", "Stored data failed verification. Do not delete snapshots; check the store disks (SMART) and the offsite target, then run Verify again. Resolves after a successful verify."),
+    ("snapshot_damaged", "Snapshots reference chunks that failed verification. Do not delete them; run Repair on the Snapshots page (fetches the chunks from the offsite target or the replication primary). The next backup of each affected source reads its data in full. Resolves when no snapshot is damaged any more."),
     ("inventory", "Snapshots disappeared or differ from the catalog. Check the store and the offsite target for manual deletion or tampering and review the audit log. Resolves after a clean offsite check."),
     ("capacity", "The store is filling up. Shorten retention, run GC or add disks. Resolves when usage drops below the threshold."),
     ("offsite_lag", "Offsite copies are behind. Check the offsite target (reachable, credentials, quota) and the offsite job logs. Resolves when the copy has caught up."),
@@ -89,6 +90,7 @@ const CATEGORY: &[(&str, &str)] = &[
     ("backup_inconsistent", "backup"),
     ("orphaned", "backup"),
     ("verify", "backup"),
+    ("snapshot_damaged", "backup"),
     ("offsite_lag", "backup"),
     ("inventory_refresh", "backup"),
     ("config", "backup"),

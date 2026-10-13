@@ -786,6 +786,43 @@ appliance **without** the appliance recovery key (which opens every tenant).
   belongs to the old appliance): give the rebuilt tenant a new target or prefix. (After a configuration restore the
   KEK is the old one, so that appliance continues into the same targets.)
 
+## Health check with repair (Phase 21d, `chunkstore::health`, `scheduler/src/repair.rs`, catalog v32)
+
+- **Bad-chunk list:** the `verify` job re-reads its daily share of chunks and checks that every
+  referenced chunk exists. Each corrupt or missing chunk goes on the tenant store's list
+  `<store>/badchunks` (hex ids). A corrupt file is renamed to `chunks/<prefix>/<hex>.bad`
+  (kept for inspection, removed when the chunk is healthy again or no longer referenced; GC
+  ignores it). With the chunk file gone, any writer that gets the same plaintext from a source
+  stores the chunk again (the chunk id is the keyed hash of the plaintext). A chunk counts as
+  healthy again as soon as a valid file is back in place. `Store::prune_bad` (after verify and
+  repair) re-reads it and drops the entry.
+- **No incremental on a damaged base** (`Store::is_damaged`: the snapshot references a listed
+  chunk without a file): `nexus-pve` lists no devices for that snapshot in the index it pushes to
+  the node, so PVE answers `new` (fresh dirty bitmap, full read). If the node still reuses a
+  bitmap, the backup fails instead of building on the bad base. The agent connector sends no
+  `base` (the agent re-reads every file instead of using its metadata cache). The plugin host
+  gives the plugin no base. NAS/TrueNAS re-read a file whose chunks are absent. The agent
+  mapping index and replication fetch absent chunks again by themselves. `nexus-offsite upload`
+  skips damaged snapshots that are not offsite yet.
+- **Catalog and alerts:** the verify step and `chunk_repair` print
+  `{"health": {"bad_chunks", "new_bad", "damaged": [{source, time, chunks}]}}`. The scheduler
+  sets `snapshots.damaged` (number of bad chunks) and `damaged_at` (first detection), and
+  clears both for snapshots that are healthy again. It audits `snapshot.damaged` /
+  `snapshot.repaired` (actor `scheduler`, target `tenant/<t>`) and keeps one critical alert
+  `snapshot_damaged:<tenant>` that names up to 10 snapshots. The alert resolves when no
+  damaged snapshot is left. `GET /snapshots` returns `damaged` / `damaged_at`.
+- **`chunk_repair {}`** (admin only, `POST /jobs`; tenant admins and operators get 403, it is
+  provider maintenance like verify): steps `nexus-offsite repair` (tenant with an offsite
+  target: the chunk's pack location from the local offsite inventory, one range read per
+  chunk) and/or `nexus-replica repair` (replicated tenant: `POST /replication/v1/tenants/<t>/chunks`
+  on the primary, only while the replication source is enrolled, open and inside its sync
+  window, i.e. while the firewall allows the connection). Then a store step reports `health`.
+  Every fetched chunk is stored only after the full AEAD + keyed-hash check
+  (`insert_chunk_raw`). Chunks the source does not have count as `unavailable`. With neither
+  source the job fails at planning. The scheduler queues `chunk_repair` by itself after a
+  verify that found new bad chunks, if a source exists and none is queued yet. A primary
+  cannot repair from its secondary: the secondary serves nothing.
+
 ## Configuration backup (`keyd::config_bundle`, `setup/src/cfgbackup.rs`, `scheduler/src/config_backup.rs`, `web-api/src/config_backup.rs`)
 Daily sealed bundle of the appliance configuration, so a replacement appliance can take over (manual chapter 14
 "New appliance from a configuration backup"; Veeam comparison item 1).

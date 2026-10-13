@@ -361,6 +361,13 @@ function planFor(kind: string, p: Json): string[] {
     ];
   const psrc = db.sources.find((s) => s.id === Number(p.source_id));
   switch (kind) {
+    case 'chunk_repair':
+      return [
+        'nexus-offsite repair: 2 bad chunk(s) of tenant ' + (p.tenant ?? 'initech'),
+        'fetched 2 sealed chunks from packs 3f/3f91…, 8a/8a02… (verified: AEAD + keyed hash)',
+        'repair {"source":"offsite","repaired":2,"unavailable":0}',
+        'health: 0 bad chunks, 0 damaged snapshots',
+      ];
     case 'plugin_validate':
       return [`starting nexus-pluginhost for ${psrc?.kind} (source ${psrc?.name})`, 'sandbox: landlock + seccomp active', 'Validate: connecting to the endpoint', 'done'];
     case 'plugin_guests':
@@ -539,6 +546,7 @@ function tick() {
       if (j.kind === 'report_send') reportSent(j);
       if (j.kind === 'config_backup') cfgBackupDone(j, t);
       if (j.kind.startsWith('offsite_')) offsiteResult(j, t);
+      if (j.kind === 'chunk_repair') repairDone(j, t);
       const ag = db.agents.find((a) => a.id === j.params.agent_id);
       if (j.kind === 'agent_enroll' && ag) {
         Object.assign(ag, { enrolled_at: t, cert_sha256: rand(32), token_expires: null, token_hash: null, last_seen: t });
@@ -593,6 +601,15 @@ function tick() {
       }
     }
   }
+}
+
+/** Phase 21d: the chunks came back from the offsite copy (crates/scheduler/src/repair.rs). */
+function repairDone(j: Job, t: number) {
+  const healed = (db.snapshots as Json[]).filter((x) => x.tenant === j.tenant && x.damaged);
+  for (const x of healed) Object.assign(x, { damaged: null, damaged_at: null });
+  for (const a of db.alerts.filter((x) => x.key === `snapshot_damaged:${j.tenant}` && !x.resolved_at))
+    Object.assign(a, { resolved_at: t, resolved_by: 'scheduler', auto: true });
+  if (healed.length) void audit('scheduler', 'snapshot.repaired', `tenant/${j.tenant}`, { job: j.id, snapshots: healed.map((x) => `${x.source}/${x.time}`) });
 }
 
 /** Phase 17d: what the scheduler does after the offsite jobs (crates/scheduler/src/offsite_ui.rs). */
@@ -1474,6 +1491,7 @@ function seed() {
   seedTenantKeys(t);
   seedHolds(t);
   seedAnomalies(t);
+  seedDamage(t);
   seedHardware(t);
   seedM365(t);
   seedRescue(t);
@@ -3844,12 +3862,15 @@ on('POST', '/jobs', async (c) => {
   const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'tenant_user');
   const { kind, tenant, params = {} } = c.body;
   // Phase 19b: tenant admins run everything within their tenant except the provider's maintenance
-  if (u.role === 'tenant_admin' && (tenant !== u.tenant || ['offsite', 'retention', 'gc', 'verify'].includes(kind)))
+  if (u.role === 'tenant_admin' && (tenant !== u.tenant || ['offsite', 'retention', 'gc', 'verify', 'chunk_repair'].includes(kind)))
     throw new HttpError(403, 'tenant admins run backups, restores and agent jobs of their own tenant only');
   if (typeof kind === 'string' && kind.startsWith('plugin_') && !['plugin_validate', 'plugin_guests', 'plugin_backup', 'plugin_restore', 'plugin_mount'].includes(kind))
     throw new HttpError(400, `unknown job kind ${kind}`);
   if (u.role === 'tenant_user' && (!RESTORE_KINDS.includes(kind) || tenant !== u.tenant)) throw new HttpError(403, 'tenant users may only restore within their tenant');
   find(db.tenants, (t) => t.name === tenant, 'tenant');
+  // Phase 21d: admin only, no parameters
+  if (kind === 'chunk_repair' && u.role !== 'admin') throw new HttpError(403, 'forbidden');
+  if (kind === 'chunk_repair' && Object.keys(params).length) throw new HttpError(400, 'params: chunk_repair takes no parameters');
   if (kind === 'files_list' && !String(params.path ?? '').startsWith('/')) throw new HttpError(400, 'path: must be absolute');
   checkJob(u, kind, tenant, params);
   if (kind === 'files_get' && !canDownload(u)) throw new HttpError(403, 'this account may not download files');
@@ -4141,7 +4162,7 @@ const ALERT_CATEGORY: Record<string, string> = {
   account_dormant: 'security', inventory: 'security', clock_skew: 'security', gc_quorum: 'security', gc_confirm: 'security',
   vault_disabled: 'security', incident: 'security', dek_rotation: 'security',
   job_failed: 'backup', sla_missed: 'backup', paused: 'backup', consistency: 'backup', backup_inconsistent: 'backup',
-  orphaned: 'backup', verify: 'backup', offsite_lag: 'backup', inventory_refresh: 'backup', config: 'backup',
+  orphaned: 'backup', verify: 'backup', snapshot_damaged: 'backup', offsite_lag: 'backup', inventory_refresh: 'backup', config: 'backup',
   disk: 'hardware', fleecing_space: 'hardware',
 };
 const alertCategory = (kind: string) => (kind.startsWith('replication_') ? 'replication' : (ALERT_CATEGORY[kind] ?? 'system'));
@@ -6641,6 +6662,20 @@ on('GET', '/stats/trends', (c) => {
   });
   return [200, out];
 });
+
+/** Phase 21d: verify found two bad chunks in initech's store; two snapshots of vm-102 reference them. */
+function seedDamage(t: number) {
+  const snaps = (db.snapshots as Json[]).filter((s) => s.tenant === 'initech' && s.source === 'vm-102' && s.local).sort((a, b) => b.time - a.time);
+  const hit = snaps.slice(1, 3);
+  if (!hit.length) return;
+  hit.forEach((s, i) => Object.assign(s, { damaged: i + 1, damaged_at: t - 5 * 3600 }));
+  db.alerts.push(
+    mkAlert({
+      ts: t - 5 * 3600, severity: 'critical', kind: 'snapshot_damaged', key: 'snapshot_damaged:initech', tenant: 'initech',
+      message: `${hit.length} snapshot(s) of tenant initech reference 2 chunk(s) that failed verification: ${hit.map((s) => `vm-102/${s.time}`).join(', ')}. Run Repair on the Snapshots page; the next backup of these sources reads in full.`,
+    }),
+  );
+}
 
 function seedAnomalies(t: number) {
   const newest = (tenant: string, source: string, n = 0) =>

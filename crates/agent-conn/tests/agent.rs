@@ -832,3 +832,31 @@ fn fleet_scan_then_enrollment() {
     assert_eq!(none("0011223344556677", &digest, closed), 0);
     enroll::enroll(&ca, "127.0.0.1", agent.port(), &digest, ID, T).unwrap();
 }
+
+/// Phase 21d: a base snapshot with a bad chunk is not built upon: no base (the
+/// agent re-reads instead of using its cache) and the bad chunk is sent again.
+#[test]
+fn damaged_base_means_full_read_and_the_chunk_is_stored_again() {
+    let e = Env::new();
+    let pin = e.enroll();
+    let store = e.store();
+    let t1 = e.backup(&store, &pin, 1).unwrap().time;
+    let host = tree(&store, t1)
+        .into_iter()
+        .find(|x| x.path == b"etc/hostname")
+        .unwrap();
+    store.mark_bad(&host.chunks).unwrap();
+    let m1 = store.list_snapshots().unwrap().remove(0);
+    assert!(store.is_damaged(&m1).unwrap());
+    let r2 = e.backup(&store, &pin, 2).unwrap();
+    assert!(r2.base.is_none(), "no incremental on a damaged base");
+    assert!(r2.time > t1);
+    assert_eq!(
+        r2.wanted_chunks, 1,
+        "only the bad chunk travels again (the rest is mapped)"
+    );
+    assert!(
+        !store.is_damaged(&m1).unwrap(),
+        "re-stored: the old snapshot is whole again"
+    );
+}
