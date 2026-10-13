@@ -138,6 +138,15 @@ for (const [user, pw, secret] of [['admin', sec.ADMIN_PW, sec.ADMIN_TOTP], ['so'
   for (const theme of ['light', 'dark']) {
     await cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
     for (const p of PAGES) await visit('#' + p, theme, user);
+    // Phase 19a: the bare-metal recovery dialog of the first Linux agent (admins/operators, when there is one)
+    await visit('#/agents', theme, user);
+    if (await ev(`const b = document.querySelector('button[data-bmr]'); b?.click(); return !!b;`)) {
+      where = `${user}/${theme}#/agents (bare-metal recovery dialog)`;
+      if (!(await until(`return !!document.querySelector('dialog[open]')`, 5000))) problems.push(`${where}: dialog did not open`);
+      await sleep(1000);
+      visited.push(where);
+      await ev(`document.querySelectorAll('dialog[open]').forEach((d) => d.close()); return true;`);
+    }
     for (const tab of TABS) {
       // tabs the role may not see fall back to the first one: still a valid render
       await visit(`#/settings?tab=${tab}`, theme, user);

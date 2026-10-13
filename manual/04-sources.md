@@ -553,6 +553,18 @@ source and no group: create and enroll it as above. Files from another machine a
 user (root for the installed service), setuid/setgid bits are cleared, and only extended attributes the host can
 store are kept. The agent writes only below the target directory you choose, after you typed its name.
 
+### Machine layout (bare-metal recovery)
+
+With every backup the Linux agent also records how the machine is built: its disks and partitions, LVM volume
+groups and volumes, file systems with their UUIDs and labels, swap, UEFI or BIOS boot, the boot loader, the kernel
+command line and the network addresses. The appliance keeps this in the snapshot as `.nexus-system/layout.json`
+(you see it in the file browser). It is what a bare-metal recovery or "Restore as PVE VM" rebuilds the disks from
+([06 Restores](06-restores.md#bare-metal-recovery-linux-hosts)). The backup job log shows a line
+`layout: N disk(s), …` and a `layout note` for anything that could not be recorded.
+
+For a recovery that boots, back up the whole system: path `/` with **Include nested mounts**, so `/boot` and the
+EFI system partition are in the snapshot too.
+
 ### Consistency on Linux
 
 For each volume, the agent takes a snapshot before reading:

@@ -338,7 +338,19 @@ fn filters_limits_and_certificate_renewal() {
         .iter()
         .map(|e| String::from_utf8_lossy(&e.path).trim_start_matches(&rel).to_owned())
         .collect();
-    assert_eq!(names, ["", "/keep", "/keep/a.bin", "/keep/sub", "/keep/sub/c.txt"]);
+    // plus the machine layout the appliance adds (docs/bmr.md)
+    assert_eq!(
+        names,
+        [
+            "",
+            "/keep",
+            "/keep/a.bin",
+            "/keep/sub",
+            "/keep/sub/c.txt",
+            ".nexus-system",
+            ".nexus-system/layout.json"
+        ]
+    );
 
     // renewal over the session
     let mut s = session(&ca, port, &pin);

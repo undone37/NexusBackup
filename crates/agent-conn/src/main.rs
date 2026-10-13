@@ -1,4 +1,5 @@
 //! `nexus-agentctl <config.json> enroll | backup | restore | update | hello | renew | fleet-scan | poll |
+//! rescue | layout <agent-id> <time> <out.json> |
 //! files <agent-id> <time> ls <dir> | files <agent-id> <time> get <out.tar|out.zip> <path>...`
 //!
 //! Spawned by the scheduler with a generated 0600 config (docs/agent-protocol.md
@@ -48,6 +49,9 @@ struct Config {
     restore: Option<RestoreCfg>,
     #[serde(default)]
     update_dir: Option<PathBuf>,
+    /// bare-metal recovery onto the rescue agent `agent` (docs/bmr.md)
+    #[serde(default)]
+    rescue: Option<RescueCfg>,
     #[serde(default)]
     fleet: Option<FleetCfg>,
     #[serde(default = "timeout")]
@@ -143,6 +147,16 @@ struct RestoreCfg {
     tar: Option<PathBuf>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RescueCfg {
+    /// the original agent (`host-<id>` snapshot)
+    source_agent: String,
+    time: u64,
+    #[serde(default)]
+    reboot: bool,
+}
+
 /// Removes the staging tar of a VM/CT file restore on every exit path.
 struct RemoveOnDrop(Option<PathBuf>);
 impl Drop for RemoveOnDrop {
@@ -196,7 +210,7 @@ impl Config {
 fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: nexus-agentctl <config.json> enroll | backup | restore | update | hello | renew | fleet-scan | poll | files <agent-id> <time> ls <dir> | files <agent-id> <time> get <out.tar|out.zip> <path>...";
+    let usage = "usage: nexus-agentctl <config.json> enroll | backup | restore | update | hello | renew | fleet-scan | poll | rescue | layout <agent-id> <time> <out.json> | files <agent-id> <time> ls <dir> | files <agent-id> <time> get <out.tar|out.zip> <path>...";
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
         bail!("{usage}");
     };
@@ -431,6 +445,14 @@ fn main() -> Result<()> {
                 }
             }
         }
+        ("layout", [agent, time, out]) => {
+            if !valid_agent_id(agent) {
+                bail!("invalid agent id");
+            }
+            let json = agent_conn::rescue::load_layout(&cfg.store()?, agent, time.parse()?)?;
+            fs::write(out, json)?;
+        }
+        ("rescue", []) => rescue(&cfg)?,
         ("files", [agent, time, op, args @ ..]) => {
             if !valid_agent_id(agent) {
                 bail!("invalid agent id");
@@ -455,5 +477,94 @@ fn main() -> Result<()> {
         }
         _ => bail!("{usage}"),
     }
+    Ok(())
+}
+
+/// `rescue`: enroll the rescue agent with the recovery token (if not done yet),
+/// then the recovery. Lines for the scheduler: `rescue-enrolled {json}`,
+/// `rescue-step <apply|restore|finish>`, `rescue-done {json}`.
+fn rescue(cfg: &Config) -> Result<()> {
+    let rc = cfg.rescue.as_ref().context("config: rescue missing")?;
+    if !valid_agent_id(&rc.source_agent) {
+        bail!("invalid source agent id");
+    }
+    let ca = Ca::load_or_create(&cfg.ca_dir)?;
+    let a = cfg.agent()?;
+    let store = cfg.store()?;
+    // fail early (before the token is spent) if the snapshot cannot be recovered
+    agent_conn::rescue::load_layout(&store, &rc.source_agent, rc.time)?;
+    let pin = match &a.cert_sha256 {
+        Some(p) => p.clone(),
+        None => {
+            let digest = fs::read_to_string(cfg.token_file.as_ref().context("config: token_file missing")?)?;
+            // the firewall may open the rescue address only with the next scheduler tick
+            let end = Instant::now() + Duration::from_secs(120);
+            let e = loop {
+                match enroll::enroll(&ca, &a.host, a.port, digest.trim(), &a.id, Duration::from_secs(60)) {
+                    Ok(e) => break e,
+                    Err(e) if Instant::now() < end && format!("{e:#}").contains("connect") => {
+                        eprintln!("waiting for the rescue agent: {e:#}");
+                        std::thread::sleep(Duration::from_secs(5));
+                    }
+                    Err(e) => return Err(e.context("enrolling the rescue agent")),
+                }
+            };
+            println!(
+                "rescue-enrolled {}",
+                json!({"agent_id": a.id, "cert_sha256": e.cert_sha256})
+            );
+            e.cert_sha256
+        }
+    };
+    let pinned = Config {
+        agent: Some(AgentCfg {
+            id: a.id.clone(),
+            host: a.host.clone(),
+            port: a.port,
+            cert_sha256: Some(pin),
+            cert_sha256_next: None,
+        }),
+        tenant: cfg.tenant.clone(),
+        store: cfg.store.clone(),
+        keyd_socket: cfg.keyd_socket.clone(),
+        ca_dir: cfg.ca_dir.clone(),
+        job: cfg.job,
+        token_file: None,
+        backup: None,
+        restore: None,
+        update_dir: None,
+        rescue: None,
+        poll: None,
+        fleet: None,
+        timeout_secs: cfg.timeout_secs,
+    };
+    let end = Instant::now() + Duration::from_secs(60);
+    let (mut s, _) = loop {
+        match pinned.session(&ca) {
+            Ok(x) => break x,
+            Err(e) if Instant::now() < end => {
+                eprintln!("waiting for the rescue agent's mTLS listener: {e:#}");
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            Err(e) => return Err(e),
+        }
+    };
+    let map = MapDb::open(cfg.store.as_deref().unwrap())?;
+    let t = Instant::now();
+    let spec = agent_conn::rescue::Spec {
+        job: cfg.job,
+        agent: rc.source_agent.clone(),
+        time: rc.time,
+        reboot: rc.reboot,
+    };
+    let st = agent_conn::rescue::recover(&store, &map, &mut s, &spec, &mut |l| println!("{l}"), &mut |st| {
+        println!("rescue-step {st}")
+    })?;
+    s.close();
+    println!(
+        "rescue-done {}",
+        json!({"files": st.files, "dirs": st.dirs, "bytes": st.bytes, "errors": st.errors.len(),
+               "seconds": t.elapsed().as_secs(), "reboot": rc.reboot})
+    );
     Ok(())
 }

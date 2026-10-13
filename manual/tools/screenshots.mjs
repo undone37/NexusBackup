@@ -671,6 +671,14 @@ async function main() {
       await shot('agent-endpoint');
       await closeDialogs();
     }],
+    // Phase 19a: bare-metal recovery of web01, whose rescue console checked in (seeded session "waiting")
+    ['agents-bmr', async () => {
+      await go('/agents');
+      await ev(`$rowClick('web01', 'Bare-metal recovery'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] select[id^="bmr-snap-"]')`, 'recovery dialog with snapshot picker');
+      await shot('agents-bmr', { height: 1500 });
+      await closeDialogs();
+    }],
     // Phase 24d: fleet secrets, agents found by fleet scans, CSV bulk enrollment
     ['agents-fleet', async () => {
       await go('/agents?tab=fleet');

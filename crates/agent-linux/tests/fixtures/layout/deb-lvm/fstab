@@ -1,0 +1,5 @@
+/dev/mapper/vg0-root / ext4 rw,discard,errors=remount-ro 0 1
+UUID=7C2E-1A0B /boot/efi vfat defaults 0 0
+/dev/mapper/vg0-swap none swap sw 0 0
+/dev/vgdata/data /var/lib/postgresql ext4 defaults 0 2
+LABEL=srvxfs /srv/xfs xfs defaults 0 2

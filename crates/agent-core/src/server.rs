@@ -150,6 +150,25 @@ pub trait Platform: Send + Sync + 'static {
     fn update(&self, ctx: Ctx, version: &str, binary: &[u8], signature: &[u8]) -> Result<String, String>;
     /// Called after `UpdateDone` was sent (if `exit_on_update`): restart into the new binary.
     fn restart_after_update(&self) -> !;
+    /// `GetLayout` (CAP_LAYOUT): the machine layout as JSON (`agent_proto::layout`).
+    fn layout(&self) -> Result<String, Refused> {
+        Err(Refused(
+            E_BAD_REQUEST,
+            "this agent does not record the machine layout".into(),
+        ))
+    }
+    /// `RescueApply` (rescue agents only): recreate the layout on the confirmed disks
+    /// and mount it. Returns (restore target, log).
+    fn rescue_apply(&self, _ctx: Ctx, _job: u64, _layout: &str) -> Result<(String, String), Refused> {
+        Err(Refused(E_REFUSED, "not a rescue agent".into()))
+    }
+    /// `RescueFinish` (rescue agents only): boot loader, initramfs, unmount. Returns
+    /// (target, log).
+    fn rescue_finish(&self, _ctx: Ctx, _job: u64) -> Result<(String, String), Refused> {
+        Err(Refused(E_REFUSED, "not a rescue agent".into()))
+    }
+    /// After `RescueDone` of a `RescueFinish { reboot: true }` was sent.
+    fn reboot(&self) {}
     /// Battery / metered network state for `PollReply` (laptop policies); unknown by default.
     fn power_state(&self) -> agent_proto::PowerState {
         agent_proto::PowerState::default()
@@ -675,6 +694,26 @@ impl<P: Platform> Session<'_, P> {
                     binary,
                     signature,
                 } => self.update(s, &version, &binary, &signature)?,
+                Message::GetLayout => match self.agent.platform.layout() {
+                    Ok(json) => write_msg(s, &Message::Layout { json })?,
+                    Err(Refused(code, msg)) => error(s, code, msg)?,
+                },
+                Message::RescueApply { job, layout } => {
+                    let r = self.agent.platform.rescue_apply(self.agent.ctx(), job, &layout);
+                    self.rescue_reply(s, job, r)?
+                }
+                Message::RescueFinish { job, reboot } => {
+                    let r = self.agent.platform.rescue_finish(self.agent.ctx(), job);
+                    let ok = r.is_ok();
+                    self.rescue_reply(s, job, r)?;
+                    if ok && reboot {
+                        s.conn.send_close_notify();
+                        let _ = s.flush();
+                        log("rescue finished: rebooting");
+                        self.agent.platform.reboot();
+                        return Ok(());
+                    }
+                }
                 other => return error(s, E_BAD_REQUEST, format!("unexpected message {}", msg_name(&other))),
             }
         }
@@ -853,6 +892,13 @@ impl<P: Platform> Session<'_, P> {
                     missing.join(",")
                 ),
             )
+        }
+    }
+
+    fn rescue_reply(&mut self, s: &mut Stream, job: u64, r: Result<(String, String), Refused>) -> io::Result<()> {
+        match r {
+            Ok((target, log)) => write_msg(s, &Message::RescueDone { job, target, log }),
+            Err(Refused(code, msg)) => error(s, code, msg),
         }
     }
 

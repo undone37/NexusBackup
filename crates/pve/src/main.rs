@@ -58,9 +58,23 @@ fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
-        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | push-index | list | inventory | task-stop <upid>");
+        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | push-index | list | inventory | task-stop <upid> | p2v <req.json> <layout.json> | p2v-cleanup <node> <vmid> <volid>");
     };
     let cfg: Config = serde_json::from_slice(&fs::read(cfg_path)?).context("config")?;
+    // P2V (docs/bmr.md): API only, no store or keys
+    match (cmd.as_str(), rest) {
+        ("p2v", [req, layout]) => {
+            let a = api(cfg.api.context("p2v: this configuration has no PVE API")?)?;
+            let req: pve::p2v::Req = serde_json::from_slice(&fs::read(req)?).context("p2v request")?;
+            let l: agent_proto::layout::Layout = serde_json::from_slice(&fs::read(layout)?).context("layout")?;
+            return pve::p2v::run(&a, &req, &l);
+        }
+        ("p2v-cleanup", [node, vmid, volid]) => {
+            let a = api(cfg.api.context("p2v-cleanup: this configuration has no PVE API")?)?;
+            return pve::p2v::cleanup(&a, node, vmid.parse()?, volid);
+        }
+        _ => {}
+    }
     if let ("inventory", []) = (cmd.as_str(), rest) {
         // the cluster's guests (auto-protect, docs/control-plane.md): API only, no store or keys
         let a = cfg.api.context("inventory: this configuration has no PVE API")?;

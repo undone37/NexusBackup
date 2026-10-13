@@ -368,6 +368,47 @@ export interface AgentToken {
 
 export type AgentStatus = 'enrolled' | 'pending' | 'expired';
 
+/** Phase 19a: bare-metal recovery / P2V session (GET /rescue). */
+export type RescueState = 'issued' | 'waiting' | 'running' | 'done' | 'failed' | 'cancelled' | 'expired';
+export interface RescueP2v {
+  source_id: number;
+  node: string;
+  vmid: number;
+  name: string;
+  storage: string;
+  iso: string;
+  iso_storage: string;
+  bridge: string;
+  memory: number;
+  cores: number;
+  appliance: string;
+  appliance_sha256: string;
+  /** the created VM (once the p2v job made it) */
+  vm?: { vmid: number; node: string; config_volid: string };
+}
+export interface RescueSession {
+  id: string;
+  tenant: string;
+  agent_id: string;
+  agent_name: string | null;
+  token_expires: number;
+  state: RescueState;
+  /** where the rescue console listens (after its check-in) */
+  host: string | null;
+  port: number | null;
+  disks: { path: string; size: number }[];
+  checked_in: number | null;
+  snapshot_time: number | null;
+  reboot: boolean;
+  step: 'apply' | 'restore' | 'finish' | null;
+  job_id: number | null;
+  p2v: RescueP2v | null;
+  message: string | null;
+  created: number;
+  created_by: string;
+  token_valid: boolean;
+}
+
 /** Phase 24d: fleet secret (GET /fleets; the secret itself only in the POST answer) */
 export interface Fleet {
   id: string;

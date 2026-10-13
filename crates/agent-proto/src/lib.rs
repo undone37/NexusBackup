@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::io::{self, Read, Write};
 
+pub mod layout;
+
 pub const VERSION: u32 = 1;
 pub const DEFAULT_PORT: u16 = 7444;
 pub const ALPN: &[u8] = b"nexus-agent/1";
@@ -321,6 +323,33 @@ pub enum Message {
         os: String,
         agent_version: String,
     },
+    // --- v1.6, appended: machine layout + bare-metal recovery (docs/bmr.md) ---
+    /// Appliance → agent (CAP_LAYOUT), at the start of a backup: the machine layout.
+    GetLayout,
+    /// [`layout::Layout`] as JSON (at most `MAX_LAYOUT` bytes).
+    Layout {
+        json: String,
+    },
+    /// Appliance → rescue agent (CAP_RESCUE): recreate partitions, LVM, file systems
+    /// and swap of `layout` (JSON) on the disks confirmed at the rescue console and
+    /// mount them below the restore target. Answered with `RescueDone`.
+    RescueApply {
+        job: u64,
+        layout: String,
+    },
+    /// Appliance → rescue agent after the restore: fix up the restored system
+    /// (`/etc/fstab` UUIDs, boot loader, initramfs), unmount; `reboot` after the answer.
+    RescueFinish {
+        job: u64,
+        reboot: bool,
+    },
+    /// Answer to `RescueApply` / `RescueFinish`: what was done (one step per line);
+    /// `target` = where the file systems are mounted (the restore target).
+    RescueDone {
+        job: u64,
+        target: String,
+        log: String,
+    },
 }
 
 /// Capability: the agent understands `SessionSummary` and `Poll` (v1.4).
@@ -413,6 +442,12 @@ pub const CAP_LZ4: &str = "lz4";
 pub const CAP_PREPARE2: &str = "prepare2";
 /// Capability: the agent renews its certificate over the session (`RenewCert`).
 pub const CAP_RENEW: &str = "cert-renew";
+/// Capability: the agent answers `GetLayout` (Linux agents since v1.6).
+pub const CAP_LAYOUT: &str = "layout";
+/// Capability: a rescue agent (rescue ISO) that takes `RescueApply` / `RescueFinish`.
+pub const CAP_RESCUE: &str = "rescue";
+/// Largest layout JSON accepted (a machine with hundreds of LVs stays far below).
+pub const MAX_LAYOUT: usize = 1 << 20;
 
 /// File selection beyond the glob `excludes` of `Prepare` (docs/agent-protocol.md
 /// "Filters"). Precedence: excluded (glob or regex) wins over included.
@@ -509,6 +544,9 @@ pub fn check(m: &Message) -> io::Result<()> {
         {
             return Err(bad("filters exceed limits"))
         }
+        Message::Layout { json } | Message::RescueApply { layout: json, .. } if json.len() > MAX_LAYOUT => {
+            return Err(bad("layout too large"))
+        }
         Message::SessionSummary { summary, status } => {
             let s = summary;
             if s.log_tail.len() > MAX_LOG_TAIL
@@ -577,6 +615,17 @@ pub fn token_digest(token: &str) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// Public lookup key of a recovery token (docs/bmr.md "Recovery token"): the rescue
+/// console sends it with its check-in, the appliance stores it in clear to find the
+/// session. It reveals nothing about the token digest the enrollment proofs use.
+pub fn rescue_lookup(token: &str) -> String {
+    use sha2::Digest;
+    let mut h = Sha256::new();
+    h.update(b"nexus-rescue-lookup\0");
+    h.update(token_digest(token).as_bytes());
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Fleet secrets (`nxf1.<fleet id: 16 hex>.<secret>`): the fleet id, if `s` is one.
@@ -818,6 +867,29 @@ mod tests {
     }
 
     #[test]
+    fn v16_messages_keep_old_encodings() {
+        assert_eq!(postcard::to_stdvec(&Message::GetLayout).unwrap(), vec![42]);
+        let m = Message::RescueDone {
+            job: 3,
+            target: "/mnt/nexus-target".into(),
+            log: "ok".into(),
+        };
+        assert_eq!(postcard::to_stdvec(&m).unwrap()[0], 46);
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &m).unwrap();
+        assert_eq!(read_msg(&mut &buf[..]).unwrap(), m);
+        let mut buf = Vec::new();
+        write_msg(
+            &mut buf,
+            &Message::Layout {
+                json: "x".repeat(MAX_LAYOUT + 1),
+            },
+        )
+        .unwrap();
+        assert!(read_msg(&mut &buf[..]).is_err(), "layout size limit");
+    }
+
+    #[test]
     fn lz4_wire_compression() {
         let text = b"backup ".repeat(70_000);
         let c = lz4_pack(&text).expect("compressible");
@@ -857,6 +929,8 @@ mod tests {
         assert!(!proof_eq(&a, &enroll_proof("TOKEN", "agent", &ex)));
         assert!(!proof_eq(&a, &enroll_proof("OTHER", "appliance", &ex)));
         assert!(!proof_eq(&a, &enroll_proof("TOKEN", "appliance", &[8u8; 32])));
+        assert_ne!(rescue_lookup("ABC"), token_digest("ABC"));
+        assert_eq!(rescue_lookup("ABC\n").len(), 64);
         assert_eq!(
             fleet_id("nxf1.0123456789abcdef.ABCDEFGHIJKLMNOPQRSTUVWXYZ\n"),
             Some("0123456789abcdef")

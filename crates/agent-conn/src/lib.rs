@@ -14,6 +14,7 @@ pub mod fleet;
 pub mod map;
 pub mod poll;
 pub mod renew;
+pub mod rescue;
 pub mod restore;
 pub mod tarbridge;
 pub mod tls;
@@ -79,6 +80,11 @@ pub fn name(m: &Message) -> &'static str {
         Message::SummaryAck { .. } => "SummaryAck",
         Message::Poll { .. } => "Poll",
         Message::PollReply { .. } => "PollReply",
+        Message::GetLayout => "GetLayout",
+        Message::Layout { .. } => "Layout",
+        Message::RescueApply { .. } => "RescueApply",
+        Message::RescueFinish { .. } => "RescueFinish",
+        Message::RescueDone { .. } => "RescueDone",
     }
 }
 
