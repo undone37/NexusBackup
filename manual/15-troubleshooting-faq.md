@@ -208,10 +208,14 @@ create the replication source again with it.
 A `verify` alert means missing or corrupt chunks in the local store or in the sampled offsite packs.
 
 1. Do not confirm or approve garbage collections until the cause is known.
-2. Read the verify job's log: it names the chunks and the affected snapshots.
+2. Read the verify job's log (counts of corrupt and missing chunks). **Snapshots** marks the
+   affected snapshots **Damaged**, and the `snapshot_damaged` alert names them.
 3. Check the appliance's disks (hardware errors, file system).
-4. Restore affected guests from an older snapshot, from the offsite copy (command line, see
-   [14 Disaster recovery](14-disaster-recovery.md)) or from the replication secondary.
+4. Run **Repair** on **Snapshots** (administrators). It fetches the bad chunks from the offsite
+   target or, on a replication secondary, from the primary. See
+   [11 Alerts and monitoring](11-alerts-and-monitoring.md#verification-and-repair).
+5. Chunks that no copy has come back when the source delivers the same data again in its next
+   (full) backup. Otherwise restore the affected guests from an older snapshot.
 
 An `inventory` alert (packs missing on the offsite target, or a locked snapshot missing locally) can mean an attack.
 Check the target's own snapshots (Storage Box) or object versions (S3) and the audit log.

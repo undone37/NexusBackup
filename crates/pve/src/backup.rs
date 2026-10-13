@@ -330,7 +330,10 @@ impl Cluster {
             }
             let base = match (dev.bitmap_mode.as_str(), &prev) {
                 ("reuse", Some(_)) if prev_damaged => {
-                    bail!("{}: the base snapshot references bad chunks (verify), but PVE reuses its dirty bitmap", dev.name)
+                    bail!(
+                        "{}: the base snapshot references bad chunks (verify), but PVE reuses its dirty bitmap",
+                        dev.name
+                    )
                 }
                 ("reuse", Some(m)) if m.indexes.contains(&dev.name) => Some(store.load_index(m, &dev.name)?),
                 ("reuse", _) => bail!("{}: PVE reuses a dirty bitmap but no base snapshot exists", dev.name),
@@ -693,10 +696,17 @@ mod tests {
         let store = Store::open(dir.path(), keys, chunkstore::Options::default()).unwrap();
         let m = snapshot(&store, 1760000000, Mode::Placeholder);
         let disk = store.load_index(&m, "drive-scsi0").unwrap();
-        assert_eq!(build_index(&store).unwrap()["archives"][0]["devices"], serde_json::json!(["drive-scsi0"]));
+        assert_eq!(
+            build_index(&store).unwrap()["archives"][0]["devices"],
+            serde_json::json!(["drive-scsi0"])
+        );
         store.mark_bad(disk.chunk_ids()).unwrap();
         let idx = build_index(&store).unwrap();
         assert_eq!(idx["archives"][0]["devices"], serde_json::json!([]));
-        assert_eq!(idx["archives"][0]["device_sizes"]["drive-scsi0"], 1 << 20, "restore sizes stay");
+        assert_eq!(
+            idx["archives"][0]["device_sizes"]["drive-scsi0"],
+            1 << 20,
+            "restore sizes stay"
+        );
     }
 }

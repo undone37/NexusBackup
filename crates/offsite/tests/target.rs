@@ -450,7 +450,13 @@ fn bad_chunk_repaired_from_offsite() {
     let mut t = Target::open(&a, &box_, d.path().join("state"), Options::default()).unwrap();
     assert_eq!(t.upload().unwrap().snapshots, 1);
     let m = a.load_manifest("vm-1", now - 2 * DAY).unwrap();
-    let ids: Vec<_> = a.load_index(&m, "disk").unwrap().chunk_ids().into_iter().copied().collect();
+    let ids: Vec<_> = a
+        .load_index(&m, "disk")
+        .unwrap()
+        .chunk_ids()
+        .into_iter()
+        .copied()
+        .collect();
     let h = chunkstore::crypto::hex(&ids[3]);
     let path = d.path().join("a/chunks").join(&h[..4]).join(&h);
     let mut b = std::fs::read(&path).unwrap();
@@ -462,7 +468,9 @@ fn bad_chunk_repaired_from_offsite() {
     // the next backup of the same data stores the chunk again (no dedup against the bad copy)
     backup(&a, now - DAY, 1);
     assert!(!a.is_damaged(&m).unwrap());
-    let r = a.repair_from(|id| t.fetch_chunk(id).map_err(std::io::Error::other)).unwrap();
+    let r = a
+        .repair_from(|id| t.fetch_chunk(id).map_err(std::io::Error::other))
+        .unwrap();
     assert_eq!((r.repaired, r.unavailable), (0, 0));
 
     // a chunk only the offsite copy can provide
@@ -473,7 +481,9 @@ fn bad_chunk_repaired_from_offsite() {
     // a damaged snapshot not offsite yet is not uploaded
     let st = t.upload().unwrap();
     assert_eq!((st.snapshots, st.damaged.len()), (0, 1));
-    let r = a.repair_from(|id| t.fetch_chunk(id).map_err(std::io::Error::other)).unwrap();
+    let r = a
+        .repair_from(|id| t.fetch_chunk(id).map_err(std::io::Error::other))
+        .unwrap();
     assert_eq!((r.repaired, r.unavailable), (1, 0));
     assert!(a.bad_chunks().unwrap().is_empty());
     assert_eq!(restored(&a, now - 2 * DAY), image(0));

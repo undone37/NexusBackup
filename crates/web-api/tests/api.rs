@@ -4427,8 +4427,19 @@ async fn chunk_repair_is_admin_only_and_snapshots_show_damage() {
     assert_eq!(r.status, StatusCode::BAD_REQUEST, "no parameters");
     let tina = t.login("tina").await;
     let snaps = t.get("/api/v1/snapshots?tenant=acme", &tina).await.body;
-    let by_time = |time: i64| snaps.as_array().unwrap().iter().find(|s| s["time"] == time).unwrap().clone();
-    assert_eq!((by_time(1000)["damaged"].clone(), by_time(1000)["damaged_at"].clone()), (json!(2), json!(5)));
+    let by_time = |time: i64| {
+        snaps
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["time"] == time)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(
+        (by_time(1000)["damaged"].clone(), by_time(1000)["damaged_at"].clone()),
+        (json!(2), json!(5))
+    );
     assert_eq!(by_time(2000)["damaged"], Value::Null);
     t.finish();
 }

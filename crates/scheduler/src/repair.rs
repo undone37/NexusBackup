@@ -36,7 +36,10 @@ pub(crate) fn health_json(store: &Store, new_bad: usize) -> std::io::Result<Stri
         .into_iter()
         .map(|d| json!({"source": d.source, "time": d.time, "chunks": d.chunks}))
         .collect();
-    Ok(json!({"health": {"bad_chunks": store.bad_chunks()?.len(), "new_bad": new_bad, "damaged": damaged}}).to_string())
+    Ok(
+        json!({"health": {"bad_chunks": store.bad_chunks()?.len(), "new_bad": new_bad, "damaged": damaged}})
+            .to_string(),
+    )
 }
 
 /// After a local verify: the failed chunks on the bad list, then the health report.
@@ -61,14 +64,9 @@ impl Scheduler {
                 capture: false,
             });
         }
-        if let Some((file, step)) = self.replica_repair(&tenant, &plan.dir)? {
-            plan.files.push(file);
-            plan.steps.push(step);
-        }
+        self.replica_repair(&mut plan)?;
         if plan.steps.is_empty() {
-            bail!(
-                "tenant {tenant} has no repair source: neither an offsite target nor an open replication source"
-            );
+            bail!("tenant {tenant} has no repair source: neither an offsite target nor an open replication source");
         }
         plan.steps.push(Step::Store(StoreOp(Box::new(|s: &Store| {
             health_json(s, 0).map_err(|e| format!("health report: {e}"))
@@ -99,7 +97,12 @@ impl Scheduler {
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|d| Some(((d["source"].as_str()?.to_owned(), d["time"].as_i64()?), d["chunks"].as_i64()?)))
+            .filter_map(|d| {
+                Some((
+                    (d["source"].as_str()?.to_owned(), d["time"].as_i64()?),
+                    d["chunks"].as_i64()?,
+                ))
+            })
             .collect();
         let before: Vec<(String, i64)> = {
             let c = self.db.conn();
@@ -170,7 +173,11 @@ impl Scheduler {
                 now.len(),
                 h["bad_chunks"],
                 names.join(", "),
-                if more > 0 { format!(" and {more} more") } else { String::new() }
+                if more > 0 {
+                    format!(" and {more} more")
+                } else {
+                    String::new()
+                }
             ),
             Some(t),
         )?;

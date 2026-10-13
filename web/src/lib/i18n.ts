@@ -431,6 +431,17 @@ export const en = {
     releaseQueued: "Hold released.",
     holdRange: "Hold a time range…",
     holdTitle: "Legal hold",
+    // Phase 21d: health check with repair
+    damaged: "Damaged",
+    damagedTitle: (n: number, since: string) =>
+      `${n} chunk(s) of this snapshot failed verification (since ${since}). Restores of the affected files fail until it is repaired.`,
+    damagedBanner: (n: number, tenant: string) =>
+      `${n} snapshot(s) of tenant ${tenant} reference data that failed verification. The next backup of each affected source reads in full; Repair fetches the data from the offsite target or the replication primary.`,
+    repair: "Repair",
+    repairLabel: (tenant: string) => `Repair the damaged snapshots of tenant ${tenant}`,
+    repairConfirm: (tenant: string) =>
+      `Fetch the chunks that failed verification for tenant ${tenant} from its offsite target or replication primary? Every chunk is verified before it is stored.`,
+    repairQueued: "Repair job queued.",
     // Phase 21a: anomaly flags
     anomalous: "Anomalous",
     anomalousTitle: (reason: string) => `Flagged as anomalous: ${reason}`,
@@ -587,6 +598,7 @@ export const en = {
       offsite_restore: "Fetch from offsite",
       offsite_attach: "Attach offsite copy",
       fleet_scan: "Fleet discovery scan",
+      chunk_repair: "Repair bad chunks",
       config_backup: "Configuration backup",
       config_upload: "Upload configuration backup",
       config_rekey: "Restore tenant keys from offsite",
@@ -1922,6 +1934,7 @@ export const en = {
     hints: {
       job_failed: 'Open the job log on the Jobs page, fix the cause (source reachable, credentials, space) and run the job again. The alert resolves itself after the next successful run.',
       verify: 'Stored data failed verification. Do not delete snapshots; check the store disks (SMART) and the offsite target, then run Verify again. Resolves after a successful verify.',
+      snapshot_damaged: 'Snapshots reference chunks that failed verification. Do not delete them; run Repair on the Snapshots page (fetches the chunks from the offsite target or the replication primary). The next backup of each affected source reads its data in full. Resolves when no snapshot is damaged any more.',
       inventory: 'Snapshots disappeared or differ from the catalog. Check the store and the offsite target for manual deletion or tampering and review the audit log. Resolves after a clean offsite check.',
       capacity: 'The store is filling up. Shorten retention, run GC or add disks. Resolves when usage drops below the threshold.',
       offsite_lag: 'Offsite copies are behind. Check the offsite target (reachable, credentials, quota) and the offsite job logs. Resolves when the copy has caught up.',

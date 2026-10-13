@@ -2458,8 +2458,10 @@ mod tests {
                 c.execute_batch(m).unwrap();
                 c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
             }
-            c.execute_batch("INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('t', 'vm-1', 5, 1, 0);")
-                .unwrap();
+            c.execute_batch(
+                "INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('t', 'vm-1', 5, 1, 0);",
+            )
+            .unwrap();
         }
         let c = Catalog::open(&p).unwrap();
         let conn = c.conn();

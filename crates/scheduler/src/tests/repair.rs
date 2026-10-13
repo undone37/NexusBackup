@@ -60,29 +60,40 @@ fn verify_flags_damage_and_repair_heals_it() {
             )
             .unwrap();
     assert!(msg.contains("vm-100/1000"), "{msg}");
-    assert_eq!(count(&s, "SELECT COUNT(*) FROM audit WHERE action='snapshot.damaged'"), 1);
+    assert_eq!(
+        count(&s, "SELECT COUNT(*) FROM audit WHERE action='snapshot.damaged'"),
+        1
+    );
     assert!(!store.has_chunk(&id), "the corrupt copy was moved aside");
     let snap = store.load_manifest("vm-100", 1000).unwrap();
     assert!(store.is_damaged(&snap).unwrap(), "no incremental on top of it");
-    let repair: i64 = s
-        .db
-        .conn()
-        .query_row("SELECT id FROM jobs WHERE kind='chunk_repair' AND tenant='t1'", [], |r| r.get(0))
-        .unwrap();
+    let repair: i64 =
+        s.db.conn()
+            .query_row(
+                "SELECT id FROM jobs WHERE kind='chunk_repair' AND tenant='t1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
 
     s.start_jobs().unwrap();
     s.wait_idle(Duration::from_secs(20)).unwrap();
     assert_eq!(state(&s, repair), "ok");
-    assert!(fs::read_to_string(p.join("offsite-calls")).unwrap().contains(" repair\n"));
+    assert!(fs::read_to_string(p.join("offsite-calls"))
+        .unwrap()
+        .contains(" repair\n"));
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM snapshots WHERE damaged IS NOT NULL"), 0);
     assert_eq!(
-        count(&s, "SELECT COUNT(*) FROM snapshots WHERE damaged IS NOT NULL"),
+        count(
+            &s,
+            "SELECT COUNT(*) FROM alerts WHERE key='snapshot_damaged:t1' AND resolved_at IS NULL"
+        ),
         0
     );
     assert_eq!(
-        count(&s, "SELECT COUNT(*) FROM alerts WHERE key='snapshot_damaged:t1' AND resolved_at IS NULL"),
-        0
+        count(&s, "SELECT COUNT(*) FROM audit WHERE action='snapshot.repaired'"),
+        1
     );
-    assert_eq!(count(&s, "SELECT COUNT(*) FROM audit WHERE action='snapshot.repaired'"), 1);
     assert!(!store.is_damaged(&snap).unwrap());
     assert!(store.bad_chunks().unwrap().is_empty());
 

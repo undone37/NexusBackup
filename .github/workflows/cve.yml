@@ -1,0 +1,38 @@
+name: cve
+# Weekly grype CVE scan of the image appliances follow (the channel tag set by
+# release/promote.sh), because new CVEs appear after a release. No build: only the
+# pinned grype image runs in podman (release/cve-scan.sh); nothing is installed on the
+# runner. Scanning on every main push would need a full image build each time, so the
+# release workflow scans each new image and this job re-checks the published one.
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "image tag or channel to scan"
+        default: stable
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  scan:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Release constants
+        run: grep -E '^[A-Z_][A-Z0-9_]*=' release/config.env >> "$GITHUB_ENV"
+
+      - name: Scan
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          release/cve-scan.sh "registry:$NEXUS_IMAGE_REPO:${{ inputs.tag || 'stable' }}" out
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cve-report
+          path: out/grype*

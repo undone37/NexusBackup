@@ -517,6 +517,7 @@ export type JobKind =
   | 'retention'
   | 'gc'
   | 'verify'
+  | 'chunk_repair'
   | 'restore_files'
   | 'agent_update'
   | 'agent_enroll'
@@ -663,6 +664,9 @@ export interface Snapshot {
   anomaly?: SnapshotAnomaly | null;
   /** flagged and not cleared */
   anomalous?: boolean;
+  /** Phase 21d: number of referenced chunks that failed verify (null = healthy) */
+  damaged?: number | null;
+  damaged_at?: number | null;
 }
 
 export interface SnapshotAnomaly {

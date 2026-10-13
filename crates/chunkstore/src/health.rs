@@ -112,7 +112,13 @@ impl Store {
         for m in self.list_snapshots()? {
             let mut hit: HashSet<ChunkId> = HashSet::new();
             for name in &m.indexes {
-                hit.extend(self.load_index(&m, name)?.chunk_ids().into_iter().filter(|id| bad.contains(*id)).copied());
+                hit.extend(
+                    self.load_index(&m, name)?
+                        .chunk_ids()
+                        .into_iter()
+                        .filter(|id| bad.contains(*id))
+                        .copied(),
+                );
             }
             if !hit.is_empty() {
                 out.push(Damaged {
@@ -275,10 +281,22 @@ mod tests {
                 Ok(Some(replica.read_chunk_raw(id)?))
             })
             .unwrap();
-        assert_eq!(r, Repair { repaired: 2, unavailable: 1 });
+        assert_eq!(
+            r,
+            Repair {
+                repaired: 2,
+                unavailable: 1
+            }
+        );
         assert_eq!(s.bad_chunks().unwrap(), BTreeSet::from([c]));
         let r = s.repair_from(|_| Ok(None)).unwrap();
-        assert_eq!(r, Repair { repaired: 0, unavailable: 1 });
+        assert_eq!(
+            r,
+            Repair {
+                repaired: 0,
+                unavailable: 1
+            }
+        );
         // once no snapshot references it, the entry goes
         let snaps = s.list_snapshots().unwrap();
         s.delete_snapshot(&snaps[0].source, snaps[0].time).unwrap();

@@ -447,6 +447,16 @@ async function main() {
       await shot('snapshot-delete');
       await closeDialogs();
     }],
+    // Phase 21d: verify found bad chunks; the damaged snapshots and the Repair action (admin)
+    ['snapshots-damaged', async () => {
+      await go('/snapshots?tenant=initech&source=vm-102');
+      await until(`return !!$button('Repair')`, 'damaged banner');
+      await shot('snapshots-damaged');
+      await ev(`$click('Repair'); return true;`);
+      await until(`return !!$button('Confirm')`, 'repair confirmation');
+      await shot('snapshot-repair');
+      await closeDialogs();
+    }],
     ['files', async () => {
       const s = data.vm100;
       await go(`/files?tenant=${s.tenant}&source=${s.source}&time=${s.time}&path=/`);

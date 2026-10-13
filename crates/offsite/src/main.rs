@@ -237,10 +237,7 @@ fn main() -> Result<()> {
                 st.snapshots, st.packs, st.chunks, st.bytes
             );
             if !st.damaged.is_empty() {
-                println!(
-                    "not uploaded (bad chunks, repair first): {}",
-                    st.damaged.join(", ")
-                );
+                println!("not uploaded (bad chunks, repair first): {}", st.damaged.join(", "));
             }
         }
         ("retention", []) => {

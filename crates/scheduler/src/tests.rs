@@ -2015,12 +2015,12 @@ mod forward;
 mod holds;
 /// Phase 17d offsite in the UI (list, fetch back, attach an offsite copy).
 mod offsite_ui;
+/// Phase 21d health check with repair (bad chunks, damaged snapshots, chunk_repair).
+mod repair;
 /// Phase 14e scheduled reports.
 mod report_mail;
 /// Phase 15b restore to a host (VM/CT files through a staging tar).
 mod restore_files;
-/// Phase 21d health check with repair (bad chunks, damaged snapshots, chunk_repair).
-mod repair;
 /// Phase 13b run control (pause, blackout, retries, SLA, cancel).
 mod runctl;
 /// Phase 15g file search and name index jobs.
