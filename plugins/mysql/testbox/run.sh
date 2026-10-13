@@ -93,6 +93,21 @@ ready() {
 	return 1
 }
 
+# the plugin reaches the server over SSH: a key login must work (CI on AlmaLinux: "Disconnected");
+# on failure the client's and the container's view go to stderr
+ssh_ok() { # flavor port
+	local o=(-i "$dir/client_ed25519" -p "$2" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10)
+	for _ in $(seq 20); do
+		ssh "${o[@]}" mysql@127.0.0.1 true 2>/dev/null && return 0
+		sleep 0.5
+	done
+	echo "run.sh: ssh to $NAME-$1 (port $2) fails:" >&2
+	ssh -v "${o[@]}" mysql@127.0.0.1 true 2>&1 | tail -n 25 >&2 || true
+	podman exec "$NAME-$1" sh -c 'ps -ef | grep -v grep | grep sshd; ls -ln /testbox /home/mysql/.ssh; id mysql' >&2 || true
+	podman logs --tail 30 "$NAME-$1" >&2 || true
+	return 1
+}
+
 # containers of checkouts that no longer exist (deleted worktrees) are removed at every start
 prune() {
 	podman ps -a --filter label=nexus.checkout --format '{{.Names}} {{.Labels}}' 2>/dev/null |
@@ -111,6 +126,8 @@ start)
 	run mysql "$MYSQL_PORT" "$MYSQL_SSH_PORT"
 	ready mariadb
 	ready mysql
+	ssh_ok mariadb "$MARIADB_SSH_PORT"
+	ssh_ok mysql "$MYSQL_SSH_PORT"
 	echo "my-testbox up: MariaDB on 127.0.0.1:$MARIADB_PORT (ssh $MARIADB_SSH_PORT), MySQL on 127.0.0.1:$MYSQL_PORT (ssh $MYSQL_SSH_PORT)"
 	;;
 prune) prune ;;
