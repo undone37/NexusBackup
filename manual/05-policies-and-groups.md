@@ -229,6 +229,8 @@ A Proxmox VE group has two more settings in its dialog:
   them over the cluster nodes (the next guest goes to the node with the fewest running backups). Snapshots, the
   per-guest statistics, retries of failed guests and **Cancel** work per guest as before; a cancel stops every running
   vzdump task. The same setting runs several guests of a **plugin** group (e.g. several PostgreSQL databases) at once.
+  The source can cap it (**Guests at once (source cap)**, and per PVE storage, see
+  [04 Sources](04-sources.md#limits-guests-at-once-busy-storages-read-rate)).
 
 Excluding another disk backs up less: like a weaker policy it needs approval when approvals are enabled. Removing an
 excluded disk, the restore choice and **Guests backed up at once** take effect immediately.
