@@ -86,7 +86,7 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 | `vault_closed` | info | (secondary) a replication source was closed with **Close vault (pause pulling now)** | the source is reopened (after approval) | nothing while intended; see [08 Replication](08-replication.md#close-vault-pause-pulling-now) |
 | `config` | warning | the scheduler cannot use a group or replication source configuration | — | fix the configuration named in the message |
 | `orphaned` | info | snapshots of an object that is in no protection group of its tenant were found; they are pruned with the default retention (shown once per object) | — | put the object into a group if it should keep being protected with that group's retention, or ignore it; see [05 Policies and protection groups](05-policies-and-groups.md#snapshots-of-objects-in-no-group) |
-| `anomaly` | critical | a backup added far more new data than usual for its source, or new data that suddenly does not compress (see [Change-rate anomalies](#change-rate-anomalies)) | — | check the source for mass changes or encryption (ransomware); a security officer puts the last good snapshot on hold with **Hold last good snapshot** |
+| `anomaly` | critical | a backup added far more new data than usual for its source, or new data that suddenly does not compress (see [Change-rate anomalies](#change-rate-anomalies)); or its files show ransom-note names or a mass rename ([File-level change signals](#file-level-change-signals)). The snapshot is flagged as anomalous | — | check the source for mass changes or encryption (ransomware), compare the snapshot with the previous one under **Snapshot changes**; a security officer puts the last clean snapshot on hold with **Hold last good snapshot** |
 | `legal_hold_advisory` | warning | (secondary) the primary holds a replicated snapshot under a legal hold; not applied here (one alert per snapshot) | a security officer applies the hold, or the primary releases it | decide whether the hold applies here too; **Apply hold** on the alert. See [08 Replication](08-replication.md#legal-holds-from-the-primary) |
 | `quota` | warning at 80 %, critical at 100 % | a tenant's store reached 80 % or 100 % of its soft quota (**Tenants**); one alert per tenant, escalated at 100 % | usage is back under 80 % | review retention or what the tenant backs up, or raise the quota; backups continue either way |
 | `cert_expiry` | info at 90 days, warning at 30, critical at 7 (API tokens: info, last 7 days) | a certificate, the IdP client secret or an API token expires soon (see [Expiry warnings](#expiry-warnings)); one alert per item, escalated | renewed (new certificate, new secret date, token revoked or replaced) | renew as the message says |
@@ -143,9 +143,82 @@ change-rate anomaly on acme/share-6: snapshot 1791580000: 412.0 GiB new data, li
 12.0 GiB of the last 14 runs); last snapshot before: share-6/1791493600
 ```
 
-The message names the tenant, the source, the time of the suspicious snapshot and the **last snapshot before** it:
-the one to restore from if the data was encrypted. While the alert is open, further anomalies of the same source
-raise its count instead of a second alert.
+The message names the tenant, the source, the time of the suspicious snapshot and the **last snapshot before** it
+that is not flagged itself: the one to restore from if the data was encrypted. While the alert is open, further
+anomalies of the same source raise its count instead of a second alert.
+
+### Flagged snapshots
+
+The suspicious snapshot itself is **flagged as anomalous** (with the reason) as well. On **Snapshots** it carries a
+red **Anomalous** badge and the reason. Every restore dialog (full restore, instant recovery, plugin restores,
+restore to a host) and the legal hold dialog opened on a flagged snapshot **default to the latest clean snapshot
+before it**. A notice says so and offers **Use the flagged snapshot instead**, for example to recover the files that
+were not encrypted. **Restore several** uses the latest clean snapshot of each guest and marks the guests whose newer
+snapshot was skipped.
+
+![A flagged snapshot on the Snapshots page](images/snapshots-anomalous.png)
+
+![The restore dialog defaults to the latest clean snapshot](images/restore-flagged-clean.png)
+
+A **security officer** clears a flag after checking that it was a false alarm (a planned migration, a bulk import of
+compressed archives): **Clear flag** on the snapshot, with a note on what was checked. The snapshot counts as clean
+again; the badge changes to **Flag cleared** (the reason, who cleared it and the note stay visible), and the audit
+log records `snapshot.anomaly_clear` with the note. Clearing the flag does not resolve the alert: resolve that on
+**Alerts** as usual. A flag is set again if a later check finds something new in the same snapshot.
+
+![Clear anomaly flag](images/snapshot-clear-flag.png)
+
+### File-level change signals
+
+After every backup that has a **file name index** (agents, NAS shares, TrueNAS datasets and plugin snapshots always;
+VM and container disks when their group indexes the guests' files, see
+[06 Restores](06-restores.md#find-a-file)), the appliance compares the new snapshot's files with those of the
+previous snapshot of the same source (job **File change signals**). It counts **added**, **changed** (size or
+modification time) and **deleted** files; folders are not counted. A critical `anomaly` alert is raised and the
+snapshot flagged when
+
+- a new file has a **known ransom-note name** (for example `HOW_TO_DECRYPT.txt`, `README_FOR_DECRYPT.txt`,
+  `!!!READ_ME!!!.txt`, `Restore-My-Files.txt`; a small built-in list, case-insensitive), or one of the extra patterns
+  in **Settings → Anomaly detection**, or
+- the files were **mass renamed**: at least 50 files and at least 10 % of the source's files were deleted, while at
+  least half as many new files have extensions the previous snapshot never had (`report.docx` →
+  `report.docx.lockbit3`).
+
+Example message:
+
+```text
+file-level anomaly on acme/host-2b0adb454bd754fc: snapshot 1791928800: 12 ransom-note file name(s), e.g.
+Users/HOW_TO_DECRYPT.txt; mass rename: 412 of 2906 files deleted, 412 added with new extensions (.lockbit3, .txt)
+(424 added, 3 changed, 412 deleted); last snapshot before: host-2b0adb454bd754fc/1791842400
+```
+
+The counts are kept per backup and drawn as **Change trends** on the **Sources** page.
+
+### Snapshot changes (diff)
+
+**Monitor → Snapshot changes** (or **Changes** on a snapshot) compares two snapshots of a source: choose the source,
+the newer snapshot (**To**) and the older one (**From**, default the previous snapshot), optionally only **Added**,
+**Changed** or **Deleted**, then **Compare**. The list shows each path with its size and modification time (before →
+after for changed files), 200 per page; a path opens the file browser in the snapshot that has it. Flagged snapshots
+are marked in the lists.
+
+The comparison runs on the appliance as a **Snapshot diff** job with the tenant key: it reads only the sealed file
+name indexes (names, sizes, times), never file contents. It is open to the roles that may search files
+(administrators, operators, tenant administrators and tenant users for their own tenant) and recorded in the audit
+log (`snapshot.diff`). Snapshots without a file index (VM disks of groups that do not index their guests' files,
+offsite-only copies) cannot be compared.
+
+![Snapshot changes: a mass rename with ransom notes](images/snapshot-changes.png)
+
+### Change trends
+
+**Configuration → Sources** ends with **Change trends**: for each protected system the new data and the number of
+changed files (added + changed + deleted) of its last 30 backups, oldest on the left, with the last value next to
+it. A red dot marks a flagged snapshot; hover a point for its time and value. **no file index** means the source's
+snapshots have no name index (only new data is shown). The figures come from the same per-backup statistics as the
+storage accounting ([03 The web interface](03-web-interface.md#storage)).
+
+![Change trends on the Sources page](images/sources-trends.png)
 
 A **security officer** sees **Hold last good snapshot** on the alert. It opens the legal hold dialog for that snapshot
 with a prepared reason; after **Put on hold** no retention, garbage collection or delete removes it until a release
@@ -156,13 +229,20 @@ its retention.
 
 The thresholds are in **Configuration → Settings → Anomaly detection** (administrators; security officers read
 only): **Detect unusual change rates**, **Alert above this multiple of the median**, **Median over the last runs**
-and **Never alert below (GiB of new data)**. Stricter values apply at once; switching detection off or raising the
-multiple or the floor needs a second person when approvals are enabled (request `settings.anomaly`).
+and **Never alert below (GiB of new data)**, plus **Extra ransom-note file names** (one pattern per line, `*` and `?`
+as wildcards, matched against the names of new files). Switching detection off also switches the file-level signals
+off (the change counts are still kept). Stricter values and new patterns apply at once; switching detection off,
+raising the multiple or the floor, or removing a pattern needs a second person when approvals are enabled (request
+`settings.anomaly`).
 
 ![Settings: Anomaly detection](images/settings-anomaly.png)
 
 > **Status:** The figures come from the connectors' per-backup statistics, introduced in this release. Backups taken
-> before carry none, so detection starts after 5 backups per source with this release.
+> before carry none, so detection starts after 5 backups per source with this release. File-level signals and flags
+> exist since Phase 21a: snapshots taken before are neither flagged nor counted. The built-in ransom-note list is
+> small and fixed (no update feed); the mass-rename thresholds are fixed. A ransomware that keeps file names and
+> extensions is caught only by the change-rate rules. Scanning snapshot contents (YARA) for a "secure restore" is a
+> later step.
 
 ## Delivery: notification rules
 

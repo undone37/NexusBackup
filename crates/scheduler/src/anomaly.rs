@@ -7,7 +7,10 @@
 //!   encrypted files do not compress).
 //!
 //! Both need at least `MIN_HISTORY` earlier runs. Setting `anomaly`:
-//! `{enabled, factor, history, floor_bytes}`.
+//! `{enabled, factor, history, floor_bytes, ransom_notes}` (the last: extra
+//! ransom-note name globs for the file-level signals, `changes.rs`). A finding
+//! also flags the snapshot (`snapshots.anomaly`, Phase 21a); the alert names
+//! the newest clean snapshot before it.
 
 use crate::stats::Stats;
 use crate::Scheduler;
@@ -28,6 +31,8 @@ pub struct Config {
     /// runs of the median
     pub history: usize,
     pub floor_bytes: u64,
+    /// extra ransom-note file name globs (changes.rs adds them to its own list)
+    pub ransom_notes: Vec<String>,
 }
 
 impl Default for Config {
@@ -37,6 +42,7 @@ impl Default for Config {
             factor: 3.0,
             history: 14,
             floor_bytes: 1 << 30,
+            ransom_notes: Vec::new(),
         }
     }
 }
@@ -118,7 +124,7 @@ impl Scheduler {
         if !cfg.enabled {
             return Ok(());
         }
-        let (history, before): (Vec<(u64, u64)>, Option<i64>) = {
+        let history: Vec<(u64, u64)> = {
             let c = self.db.conn();
             let mut st = c.prepare(
                 "SELECT new_plain, new_stored FROM backup_stats WHERE tenant=?1 AND source=?2 AND time < ?3
@@ -127,13 +133,7 @@ impl Scheduler {
             let rows = st.query_map(params![tenant, s.source, s.time, cfg.history as i64], |r| {
                 Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64))
             })?;
-            let h = rows.collect::<std::result::Result<_, _>>()?;
-            let before = c.query_row(
-                "SELECT MAX(time) FROM snapshots WHERE tenant=?1 AND source=?2 AND time < ?3",
-                params![tenant, s.source, s.time],
-                |r| r.get(0),
-            )?;
-            (h, before)
+            rows.collect::<std::result::Result<_, _>>()?
         };
         let Some(f) = check(&cfg, &history, s.new_plain, s.new_stored) else {
             return Ok(());
@@ -152,10 +152,8 @@ impl Scheduler {
                 human(s.new_plain)
             ),
         };
-        let last = match before {
-            Some(t) => format!("last snapshot before: {}/{t}", s.source),
-            None => "no earlier snapshot is kept".into(),
-        };
+        self.flag_snapshot(tenant, &s.source, s.time, &what)?;
+        let last = self.last_clean(tenant, &s.source, s.time)?;
         self.raise(
             "critical",
             "anomaly",

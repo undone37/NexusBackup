@@ -441,6 +441,10 @@ Reviewed with the implementation (2026-10-10):
   - two `lru` 0.12 unsoundness advisories (RUSTSEC-2026-0002, -0253) via ratatui.
 
   All warnings are reachable only from the first-boot console TUI (`crates/setup`) and get no untrusted input. Recommendation: bump ratatui when a release with lru ≥ 0.16 is available.
+- **Desktop agent GUI (Phase 24, `crates/agent-gui`):** iced (tiny-skia software renderer, no GPU stack) and
+  tray-icon with its pure-Rust StatusNotifierItem backend (ksni, licence Unlicense, allowed in `deny.toml`) instead of
+  GTK. `ttf-parser` (via cosmic-text/fontdb) is unmaintained (RUSTSEC-2026-0192, ignored in `deny.toml`): it parses
+  only the fonts installed on the user's desktop, the GUI receives no network input (local agent socket/pipe only).
 - **`cargo deny check`** with the new `deny.toml`: advisories / bans / licenses / sources **ok**.
   - **Licenses:** only permissive or weak-copyleft licenses compatible with AGPL-3.0.
   - **Sources:** crates.io only, no git dependencies.

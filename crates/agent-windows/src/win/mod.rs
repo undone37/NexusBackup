@@ -3,6 +3,8 @@
 pub mod acl;
 pub mod cli;
 pub mod host;
+pub mod pipe;
+pub mod power;
 pub mod restore;
 pub mod source;
 pub mod sys;
@@ -363,5 +365,8 @@ impl Platform for Windows {
     fn restart_after_update(&self) -> ! {
         // the service control manager restarts the service (failure actions)
         std::process::exit(update::RESTART_EXIT_CODE)
+    }
+    fn power_state(&self) -> agent_proto::PowerState {
+        power::state()
     }
 }

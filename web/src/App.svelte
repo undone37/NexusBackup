@@ -18,6 +18,7 @@
   import Reports from './pages/Reports.svelte';
   import Files from './pages/Files.svelte';
   import Search from './pages/Search.svelte';
+  import Changes from './pages/Changes.svelte';
   import Jobs from './pages/Jobs.svelte';
   import JobDetail from './pages/JobDetail.svelte';
   import Alerts from './pages/Alerts.svelte';
@@ -38,6 +39,7 @@
   import IconVault from '@lucide/svelte/icons/lock-keyhole';
   import IconSnapshots from '@lucide/svelte/icons/database-backup';
   import IconSearch from '@lucide/svelte/icons/file-search';
+  import IconCompare from '@lucide/svelte/icons/git-compare';
   import IconStorage from '@lucide/svelte/icons/hard-drive';
   import IconReports from '@lucide/svelte/icons/file-spreadsheet';
   import IconJobs from '@lucide/svelte/icons/list-checks';
@@ -79,6 +81,7 @@
     { path: '/', comp: Dashboard, allow: always, nav: t.nav.dashboard, section: 'monitor', icon: IconDashboard },
     { path: '/snapshots', comp: Snapshots, allow: always, nav: t.nav.snapshots, section: 'monitor', icon: IconSnapshots },
     { path: '/search', comp: Search, allow: can.restore, nav: t.nav.search, section: 'monitor', icon: IconSearch },
+    { path: '/changes', comp: Changes, allow: can.restore, nav: t.nav.changes, section: 'monitor', icon: IconCompare },
     { path: '/storage', comp: Storage, allow: always, nav: t.nav.storage, section: 'monitor', icon: IconStorage },
     { path: '/reports', comp: Reports, allow: always, nav: t.nav.reports, section: 'monitor', icon: IconReports },
     { path: '/files', comp: Files, allow: can.restore },

@@ -293,6 +293,10 @@ impl Platform for Linux {
         // systemd restarts the service (RestartForceExitStatus=75)
         std::process::exit(update::RESTART_EXIT_CODE)
     }
+
+    fn power_state(&self) -> agent_proto::PowerState {
+        crate::power::state()
+    }
 }
 
 pub fn os_name() -> String {

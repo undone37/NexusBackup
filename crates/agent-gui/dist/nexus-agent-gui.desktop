@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=NexusBackup Agent
+GenericName=Backup status
+Comment=Backup status of this computer and backup requests to the NexusBackup appliance
+Exec=nexus-agent-gui --open
+Icon=nexus-agent-gui
+Terminal=false
+Categories=System;Archiving;
+Keywords=backup;restore point;
+StartupWMClass=nexus-agent-gui

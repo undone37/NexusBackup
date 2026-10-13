@@ -8,6 +8,9 @@ all-features = false
 # unmaintained/unsound crates are reported; the ones below are reviewed in
 # docs/security-review.md and only reachable from the first-boot TUI (ratatui)
 ignore = [
+    # ttf-parser unmaintained (via iced/cosmic-text/fontdb): only in nexus-agent-gui, parses
+    # the fonts installed on the desktop (no untrusted input); docs/security-review.md
+    "RUSTSEC-2026-0192",
 ]
 
 [licenses]
@@ -28,6 +31,8 @@ allow = [
     "0BSD",
     "AGPL-3.0-only",
     "OpenSSL",
+    # ksni (tray icon on Linux, nexus-agent-gui): public-domain dedication
+    "Unlicense",
 ]
 confidence-threshold = 0.8
 

@@ -9,6 +9,7 @@
 //! by `build.sh`).
 
 pub mod confine;
+pub mod endpoint;
 pub mod meta;
 pub mod paths;
 pub mod scan;
