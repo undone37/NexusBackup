@@ -329,3 +329,29 @@ fn blackout_abort_cancels_older_runs_only() {
     s.process_cancels().unwrap();
     s.wait_idle(Duration::from_secs(20)).unwrap();
 }
+
+#[test]
+fn pve_backup_off_disks_are_a_warning() {
+    // a VM whose disk has PVE backup=0: committed, but the job result carries a warning
+    // (the dashboard shows it), never a plain "ok" with the system disk missing
+    let e = env(4);
+    connector(
+        &e,
+        "echo 'committed vm-100/9'; echo 'warnings vm-100/9: 1 disk(s) not in the snapshot, Proxmox VE option backup=0: scsi0'",
+    );
+    let mut s = sched(&e);
+    let id = manual(&s, "backup", "t1", json!({"group_id": 1}));
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert_eq!(state(&s, id), "ok");
+    let r: String =
+        s.db.conn()
+            .query_row("SELECT result FROM jobs WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+    let r: Value = serde_json::from_str(&r).unwrap();
+    assert_eq!(
+        (&r["warnings"], &r["snapshots"][0]["warnings"]),
+        (&json!(1), &json!(1)),
+        "{r}"
+    );
+}

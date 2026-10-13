@@ -322,7 +322,8 @@ impl Cluster {
             None => None,
         };
         let (mut names, mut indexes, mut read) = (Vec::new(), Vec::new(), 0);
-        for key in exclude::backup_off(&job.config) {
+        let backup_off = exclude::backup_off(&job.config);
+        for key in &backup_off {
             println!("disk {key} of VM {vmid} has backup=0: skipped by PVE");
         }
         let excluded = self.exclude.get(&vmid).map(Vec::as_slice).unwrap_or_default();
@@ -369,6 +370,15 @@ impl Cluster {
         indexes.push(Index::Dynamic { entries });
         let refs: Vec<(&str, Index)> = names.into_iter().zip(indexes).collect();
         let m = store.commit_snapshot(&source, time, &refs)?;
+        // not an error (the admin's PVE setting), but never a silent "ok": the scheduler
+        // turns this line into a backup warning (dashboard, job state)
+        if !backup_off.is_empty() {
+            println!(
+                "warnings {source}/{time}: {} disk(s) not in the snapshot, Proxmox VE option backup=0: {}",
+                backup_off.len(),
+                backup_off.join(", ")
+            );
+        }
         let id = Identity::of(&job.config);
         let previous = prev_conf.as_deref().map(Identity::of);
         let changed = previous.as_ref().is_some_and(|p| id.differs(p));

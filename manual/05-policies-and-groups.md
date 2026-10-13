@@ -238,6 +238,8 @@ A Proxmox VE group has two more settings in its dialog:
   swap disk) or `virtio2`. Enter them for **all guests of the group** or for single guests (by VM ID). Disks that
   have `backup=0` in Proxmox VE are skipped by PVE itself as before; the job log names them ("disk scsi2 of VM 101
   has backup=0: skipped by PVE"), and excluded disks too ("excluded disk scsi1 of VM 101 (… bytes): not backed up").
+  A VM with `backup=0` disks ends the job **with a warning** (Dashboard, Jobs), so a system disk that someone excluded
+  in PVE does not go unnoticed. Check `backup=0` on the VM's disks when a VM backup is suspiciously small.
   Containers are not affected: exclude a mount point there with `backup=0` in PVE.
 - **On restore, excluded disks are**:
   - **recreated empty (original size and settings)** (default): the restored VM gets the disk with its original size and options, filled with
