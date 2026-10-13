@@ -1053,7 +1053,211 @@ export const en = {
     limitsShort: (bw: string, nice: number) =>
       [bw, nice ? `nice ${nice}` : ""].filter(Boolean).join(", "),
     // Phase 24d
-    tabs: { agents: "Agents", fleet: "Fleet" } as Record<string, string>,
+    tabs: { agents: "Agents", fleet: "Fleet", updates: "Updates" } as Record<string, string>,
+  },
+  // Phase 27: agent updates pushed from the appliance (docs/agent-update-plan.md)
+  agentUpd: {
+    intro:
+      "Signed agent releases ship with the appliance image or are uploaded here. The appliance only chooses which signed release goes to which agent and when; the agents verify the release key themselves. Package installs (deb, rpm, MSI) are updated with their own package type.",
+    releases: "Releases",
+    recommended: "Recommended",
+    recommendedIs: (v: string) => `Recommended release: ${v} (the newest signed release).`,
+    noRecommended:
+      "No signed agent release is available. Releases come with the appliance image, or upload a signed release.",
+    source: "Source",
+    sources: { image: "Image", upload: "Uploaded" } as Record<string, string>,
+    signature: "Signature",
+    signedBy: (k: string) => `Signed (${k})`,
+    unsigned: "Not verified",
+    released: "Released",
+    notes: "Notes",
+    artifacts: "Artifacts",
+    artifactsN: (n: number) => `${n} ${n === 1 ? "artifact" : "artifacts"}`,
+    upload: "Upload release",
+    uploadHint:
+      "A release tar as produced by the release process (manifest.json, manifest.json.sig, the artifacts and their signatures). It is accepted only if the manifest verifies with a pinned release key.",
+    uploaded: (v: string) => `Release ${v} uploaded and verified.`,
+    deleteRelease: (v: string) => `uploaded release ${v}`,
+    readOnly: "Only administrators upload releases and start rollouts.",
+    // versions overview
+    versions: "Agent versions",
+    versionsIntro:
+      "Enrolled agents by version. Outdated: below the recommended release. Unsupported: protocol below 1.8 (only the binary of a bundle install can be updated, in one step).",
+    filter: "Show",
+    filters: { all: "All agents", outdated: "Outdated", unsupported: "Unsupported" } as Record<string, string>,
+    perVersion: (v: string, n: number) => `${v}: ${n}`,
+    unknownVersion: "unknown",
+    platform: "Platform",
+    install: "Install type",
+    installs: {
+      bundle: "Bundle",
+      deb: "deb package",
+      rpm: "rpm package",
+      msi: "MSI",
+      manual: "Manual",
+    } as Record<string, string>,
+    gui: (v: string) => `Desktop UI ${v}`,
+    protocol: (p: string) => `Protocol ${p}`,
+    outdated: "Outdated",
+    unsupported: "Unsupported",
+    tags: "Tags",
+    editTags: "Edit tags",
+    tagsTitle: (n: string) => `Tags of ${n}`,
+    tagsLabel: "Tags (comma separated)",
+    tagsHint:
+      "Up to 16 tags of lower-case letters, digits, dot, dash and underscore (at most 32 characters each). Rollouts can target a tag, e.g. ring1.",
+    tagsInvalid: (x: string) => `Invalid tag "${x}".`,
+    updateState: "Update",
+    updateStates: {
+      pending: "Pending",
+      sending: "Sending",
+      installing: "Installing",
+      ok: "Updated",
+      failed: "Failed",
+      rolled_back: "Rolled back",
+    } as Record<string, string>,
+    target: (v: string) => `target ${v}`,
+    attempts: (n: number) => `${n} ${n === 1 ? "attempt" : "attempts"}`,
+    updateTo: (v: string) => `Update to ${v}`,
+    updateConfirm: (n: string, v: string) =>
+      `Update "${n}" to the signed release ${v}? The agent restarts (package installs run their package manager).`,
+    current: "Current",
+    noAgents: "No enrolled agents match.",
+    // rollouts
+    rollouts: "Rollouts",
+    rolloutsIntro:
+      "A rollout updates many agents in waves: canary agents first, the rest after the soak time. Busy agents are retried, offline ones are caught up when they are back; failures beyond the threshold pause it.",
+    newRollout: "New rollout",
+    noRollouts: "No rollouts yet.",
+    version: "Version",
+    scope: "Scope",
+    scopes: {
+      all: "All agents",
+      tenant: "Tenant",
+      group: "Protection group",
+      os: "Operating system",
+      tag: "Tag",
+      agents: "Selected agents",
+    } as Record<string, string>,
+    scopeText: (s: { tenant?: string; group?: string; os?: string; tag?: string; agents?: number }) =>
+      s.agents !== undefined
+        ? `${s.agents} selected ${s.agents === 1 ? "agent" : "agents"}`
+        : s.group
+          ? `group ${s.group}`
+          : s.tenant
+            ? `tenant ${s.tenant}`
+            : s.os
+              ? `OS ${s.os}`
+              : s.tag
+                ? `tag ${s.tag}`
+                : "all agents",
+    oses: { linux: "Linux", windows: "Windows" } as Record<string, string>,
+    progress: "Progress",
+    progressText: (c: { ok: number; failed: number; total: number }) =>
+      `${c.ok} of ${c.total} updated${c.failed ? `, ${c.failed} failed` : ""}`,
+    progressLabel: (v: string) => `Progress of the rollout to ${v}`,
+    wave: "Wave",
+    waves: { 0: "Canary", 1: "Rest" } as Record<number, string>,
+    rolloutStates: {
+      pending_approval: "Waiting for approval",
+      running: "Running",
+      paused: "Paused",
+      cancelled: "Cancelled",
+      done: "Done",
+      rejected: "Rejected",
+    } as Record<string, string>,
+    itemStates: {
+      waiting: "Waiting",
+      queued: "Queued",
+      running: "Running",
+      ok: "Updated",
+      failed: "Failed",
+      skipped: "Skipped",
+      cancelled: "Cancelled",
+    } as Record<string, string>,
+    rollback: "Rollback",
+    automatic: "Automatic",
+    createdBy: (by: string, at: string) => `${by}, ${at}`,
+    details: "Details",
+    detailsTitle: (id: number, v: string) => `Rollout #${id} to ${v}`,
+    pause: "Pause",
+    resume: "Resume",
+    cancelRollout: "Cancel rollout",
+    cancelConfirm: (v: string) =>
+      `Cancel the rollout to ${v}? Waiting agents are not updated; updates that already run finish.`,
+    pauseConfirm: (v: string) => `Pause the rollout to ${v}? Running updates finish; no new ones start.`,
+    paused: "Paused.",
+    resumed: "Resumed.",
+    cancelled: "Cancelled.",
+    agent: "Agent",
+    fromTo: (a: string | null, b: string | null) => `${a ?? "?"} to ${b ?? "?"}`,
+    job: (id: number) => `Job ${id}`,
+    counts: (c: { waiting: number; queued: number; running: number; skipped: number }) =>
+      [
+        c.running ? `${c.running} running` : "",
+        c.queued ? `${c.queued} queued` : "",
+        c.waiting ? `${c.waiting} waiting` : "",
+        c.skipped ? `${c.skipped} skipped` : "",
+      ]
+        .filter(Boolean)
+        .join(", "),
+    // new rollout dialog
+    canaryMode: "Canary wave",
+    canaryCount: "Number of agents",
+    canaryPct: "Percent of the agents",
+    canary: "Canary agents",
+    canaryPctLabel: "Canary (percent)",
+    canaryHint:
+      "These agents are updated first; the rest follows when all of them finished and the soak time has passed. A failed canary pauses the rollout.",
+    soak: "Soak time (minutes)",
+    concurrency: "Concurrent updates",
+    maxFailures: "Pause after failures",
+    maxFailurePct: "Pause after failure rate (%)",
+    thresholdHint: "The rollout pauses when either limit is reached (0 = no limit of that kind).",
+    windows: "Maintenance windows (UTC)",
+    windowsHint: "Updates start only inside one of these windows. None: at any time. Blackout windows of the agents' policies are always honoured.",
+    rollbackLabel: "Rollback to an older signed release",
+    rollbackHint:
+      "Downgrades are refused unless the rollout is a rollback. A rollback needs approval by a second person (another administrator or a security officer); agents accept it only down to the oldest version their release allows.",
+    rollbackNeeded: (v: string, cur: string) =>
+      `${v} is older than agents running ${cur}: only a rollback can install it.`,
+    created: (id: number) => `Rollout #${id} started.`,
+    selectAgents: "Agents",
+    selectAgentsHint: "Hold Ctrl or Shift to select several agents.",
+    scopeNone: "Choose what the rollout covers.",
+    // automatic mode
+    auto: "Automatic updates",
+    autoIntro:
+      "Per tenant or protection group: in automatic mode a new signed release (for example from an appliance update) rolls out by itself inside the maintenance windows, with the canary settings below. Manual (default): an administrator starts each rollout.",
+    noSettings: "All tenants update manually.",
+    mode: "Mode",
+    modes: { manual: "Manual", automatic: "Automatic" } as Record<string, string>,
+    group: "Protection group",
+    wholeTenant: "whole tenant",
+    addSetting: "Set mode",
+    settingTitle: "Automatic updates",
+    anyTime: "any time",
+    daily: "daily",
+    windowsShort: (n: number) => `${n} ${n === 1 ? "window" : "windows"}`,
+    soakShort: (m: number) => `soak ${m} min`,
+    canaryShort: (n: number) => `canary ${n}`,
+    // installer downloads
+    installers: "Installers",
+    installersIntro: (v: string) =>
+      `Signed installers of release ${v}. Compare the SHA-256 after the download (sha256sum, Get-FileHash).`,
+    installersNone: "No installer is available (no signed release on the appliance).",
+    download: "Download",
+    downloadLabel: (n: string) => `Download ${n}`,
+    kinds: {
+      deb: "Debian / Ubuntu package",
+      rpm: "RHEL / Fedora / SUSE package",
+      msi: "Windows installer (agent + desktop UI)",
+      bundle: "Linux install bundle (any distribution)",
+      exe: "Windows binary",
+      binary: "Linux binary",
+      "desktop-deb": "Desktop UI, deb package",
+      "desktop-rpm": "Desktop UI, rpm package",
+    } as Record<string, string>,
   },
   fleet: {
     intro:
@@ -2247,6 +2451,10 @@ export const en = {
       malware: "The YARA scan found matches of the administrators' rules in a snapshot (rule and path: Snapshots page, scan results). The snapshot is flagged as anomalous, so restores and holds default to an earlier clean snapshot, and restores with Scan first are refused or run with the network disconnected. Check the files and the source; if a rule was too broad, a security officer clears the flag on the Snapshots page. Resolve the alert by hand.",
       vault_closed:
         "A replication source was closed with Close vault (pause pulling now): no syncs, the primary is not reachable from here. Nothing to do while that is intended; reopening needs approval (Replication page). Resolves when the source is reopened.",
+      agent_update_failed:
+        "An agent update failed (signature, version, package install or the agent did not come back with the new version). Open the job log of the agent_update job and the agent's update state on Agents > Updates; fix the cause and update again. Resolves after the next successful update of that agent.",
+      rollout_paused:
+        "An agent rollout was paused: a canary failed or the failure threshold was reached. Check the failed agents on Agents > Updates, then resume or cancel the rollout. Resolves when the rollout is resumed, cancelled or done.",
     } as Record<string, string>,
   },
   hw: {

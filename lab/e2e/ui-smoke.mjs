@@ -19,10 +19,10 @@ const sec = Object.fromEntries(
 const BASE = `https://nexus-m5:${PORT}/`;
 rmSync(`${OUT}/profile`, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
-const PAGES = ['/', '/snapshots', '/snapshots?held=true', '/snapshots?where=offsite', '/tenants?offsite=lab', '/tenants?wizard=1', '/tenants?idp=lab', '/search', '/changes', '/restore-tests', '/storage', '/reports', '/jobs', '/alerts', '/quorum', '/audit', '/tenants', '/sources', '/agents', '/agents?tab=fleet',
+const PAGES = ['/', '/snapshots', '/snapshots?held=true', '/snapshots?where=offsite', '/tenants?offsite=lab', '/tenants?wizard=1', '/tenants?idp=lab', '/search', '/changes', '/restore-tests', '/storage', '/reports', '/jobs', '/alerts', '/quorum', '/audit', '/tenants', '/sources', '/agents', '/agents?tab=fleet', '/agents?tab=updates',
   '/replication', '/recovery-plans', '/policies', '/groups', '/users', '/plugins', '/hardware', '/account'];
 // Phase 19b: a tenant admin's reduced navigation (only when the lab has such an account: TA_USER/TA_PW/TA_TOTP)
-const TENANT_PAGES = ['/', '/snapshots', '/search', '/changes', '/restore-tests', '/storage', '/reports', '/jobs', '/quorum', '/audit', '/sources', '/agents', '/agents?tab=fleet', '/groups',
+const TENANT_PAGES = ['/', '/snapshots', '/search', '/changes', '/restore-tests', '/storage', '/reports', '/jobs', '/quorum', '/audit', '/sources', '/agents', '/agents?tab=fleet', '/agents?tab=updates', '/groups',
   '/recovery-plans', '/users', '/account'];
 const TABS = ['approvals', 'alerts', 'sso', 'ssh', 'updates', 'anomaly', 'malware', 'diagnostics', 'configBackup', 'console', 'certificate', 'forwarding', 'security', 'firewall', 'network', 'vault', 'incident', 'edges'];
 
@@ -147,6 +147,12 @@ for (const [user, pw, secret] of [['admin', sec.ADMIN_PW, sec.ADMIN_TOTP], ['so'
       visited.push(where);
       await ev(`document.querySelectorAll('dialog[open]').forEach((d) => d.close()); return true;`);
     }
+    // Phase 27: Agents > Updates: the releases and versions sections render (rollouts for appliance roles)
+    await visit('#/agents?tab=updates', theme, user);
+    where = `${user}/${theme}#/agents?tab=updates (sections)`;
+    if (!(await until(`return !!document.querySelector('[data-testid="agent-releases"]') && !!document.querySelector('[data-testid="agent-versions"]') && !!document.querySelector('[data-testid="agent-rollouts"]')`, 10000)))
+      problems.push(`${where}: releases, versions or rollouts section missing`);
+    visited.push(where);
     for (const tab of TABS) {
       // tabs the role may not see fall back to the first one: still a valid render
       await visit(`#/settings?tab=${tab}`, theme, user);

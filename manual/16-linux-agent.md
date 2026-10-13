@@ -129,7 +129,7 @@ are an error**: the agent refuses to start rather than silently ignore a typo. R
 | `spool_max_bytes` | `2147483648` | spool for files read without a snapshot |
 | `appliance_id` | – | accept only this appliance id (pinning, if several appliances share a CA) |
 | `max_connections` | `4` | concurrent appliance sessions (1–64) |
-| `self_update` | on for bundles, off for packages | allow the appliance's **Update agent** |
+| `self_update` | `auto` | `off`: refuse every update from the appliance; `auto`/`on`: allow updates with the install's own type (binary swap for bundles, apt/dnf for packages) |
 | `edge` | – | `host:port` of an edge proxy for roaming laptops (with `edge_sha256`); normally pushed by the appliance, see [18 Edge proxy](18-edge-proxy.md) |
 | `edge_sha256` | – | SHA-256 fingerprint of the edge proxy's certificate (pinned) |
 
@@ -406,11 +406,24 @@ setuid/setgid bits cleared.
 
 ## Updates
 
-- **Packages:** install the newer `.deb`/`.rpm` (`apt install ./…`, `dnf upgrade ./…`). The service restarts; the
-  enrollment stays. The appliance's **Update agent** is refused for package installations, unless you set
-  `self_update = on`.
-- **Bundle:** the appliance administrator clicks **Update agent**. The agent verifies the release signature against
-  `/etc/nexus-agent/release-keys/`, refuses downgrades and updates only while idle.
+Updates normally come from the appliance (single agents or rollouts, see
+[13 Updates: Agent updates](13-updates.md#agent-updates)). In every case the agent first checks the signed release
+manifest and the file's own signature against `/etc/nexus-agent/release-keys/`, refuses older versions (except an
+approved rollback, and never below the oldest version its release allows) and updates only while no backup or
+restore runs.
+
+- **Packages:** the agent installs the signed `.deb`/`.rpm` it received with `apt-get install` / `dnf install` in a
+  transient systemd unit (`nexus-agent-update.service`, no shell, only the received files), together with
+  `nexus-agent-desktop` if the desktop UI is installed. The package's own scripts restart the service; the
+  enrollment stays. You can still update by hand: `apt install ./…`, `dnf upgrade ./…`.
+- **Bundle:** the agent replaces `/usr/local/sbin/nexus-agent` (the old binary stays as `nexus-agent.prev`) and
+  restarts. **Start watchdog:** if the new binary fails to start listening three times in a row, the agent swaps
+  `.prev` back and reports **Rolled back**.
+- **Result:** `/var/lib/nexus-agent/update-state.json` (state, versions, error, last lines of the package manager's
+  output); the appliance reads it on the next connection and shows it under **Agents → Updates**. The install log is
+  also in `journalctl -u nexus-agent-update`.
+- **Keep updates local:** `self_update = off` in `agent.conf` refuses every update from the appliance (for hosts
+  managed by your own package pipeline).
 - **Switching from the bundle to the package:** remove `/usr/local/sbin/nexus-agent` and
   `/etc/systemd/system/nexus-agent.service`, then install the package; `/etc/nexus-agent` and its enrollment are
   kept.
@@ -444,8 +457,12 @@ Secure Boot must be off (the ISO is not signed yet).
 | Service does not start after editing `agent.conf` | `journalctl -u nexus-agent`: the line number of the unknown key or bad value |
 | Backup is crash-consistent, "no snapshot support for …" | volume not on LVM/ZFS/btrfs, or the volume group has no free space: raise free space, use thin LVM, or dump databases with a pre hook |
 | "pre hook failed" | `sudo nexus-agent hooks test` |
-| **Update agent** refused, "installed from a deb package" | update with the package manager, or set `self_update = on` |
+| Update refused, "self-update is off" | `self_update = off` in `agent.conf`: update with the package manager, or remove the line |
+| Update **Failed** with an apt/dnf error | `journalctl -u nexus-agent-update`, `/var/lib/nexus-agent/update-state.json`; a held or broken package database blocks it |
+| Update **Rolled back** | the new binary did not start: `journalctl -u nexus-agent`; the previous binary runs again |
 | Logs | `journalctl -u nexus-agent` (the job log with hook output is also on the appliance's Jobs page) |
 
 > **Status:** packages are tested in Debian 13, AlmaLinux 10 and Fedora containers at every release; the agent has
-> run end to end in the lab with LVM thin/thick, ZFS and btrfs. arm64 packages have not run on real hardware.
+> run end to end in the lab with LVM thin/thick, ZFS and btrfs. arm64 packages have not run on real hardware. Package
+> updates pushed from the appliance (apt/dnf in a transient unit) are covered by unit tests; the lab run on the Linux
+> VMs is still open.

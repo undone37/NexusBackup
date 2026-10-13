@@ -346,6 +346,145 @@ export interface Agent {
   via?: string | null;
   /** edge setting the agent confirmed (`host:port`; null = none pushed yet) */
   edge_pushed?: string | null;
+  /** Phase 27 (protocol v1.8 host facts, null = not reported yet / older agent) */
+  arch?: string | null;
+  /** bundle | deb | rpm | msi | manual */
+  install?: string | null;
+  gui_version?: string | null;
+  /** "1.8" with chunked updates, "1.7" = older (single-frame binary updates only); null = unknown */
+  protocol?: string | null;
+  tags?: string[];
+  update_target?: string | null;
+  update_state?: AgentUpdateState | null;
+  update_error?: string | null;
+  update_attempts?: number;
+  update_at?: number | null;
+}
+
+/** Phase 27: per-agent update state (docs/agent-update-plan.md "Implementation") */
+export type AgentUpdateState = 'pending' | 'sending' | 'installing' | 'ok' | 'failed' | 'rolled_back';
+
+export interface AgentArtifact {
+  /** relative path in the release (linux-x86_64/nexus-agent_0.2.0_amd64.deb, ...) */
+  name: string;
+  /** binary | deb | rpm | msi | desktop-deb | desktop-rpm | bundle | exe */
+  kind: string;
+  os: string;
+  arch: string;
+  version: string;
+  size: number;
+  sha256: string;
+}
+
+export interface AgentRelease {
+  version: string;
+  source: 'image' | 'upload';
+  signed: boolean;
+  /** name of the pinned key that verified the manifest */
+  key: string | null;
+  error: string | null;
+  protocol: string | null;
+  min_appliance: string | null;
+  released: string | null;
+  notes: string | null;
+  artifacts: AgentArtifact[];
+}
+
+export interface AgentReleases {
+  /** newest signed release (null = none) */
+  recommended: string | null;
+  releases: AgentRelease[];
+}
+
+export interface AgentDownload {
+  token: string;
+  url: string;
+  name: string;
+  size: number;
+  sha256: string;
+  expires: number;
+}
+
+export interface RolloutScope {
+  tenant?: string;
+  group_id?: number;
+  os?: string;
+  tag?: string;
+  agents?: string[];
+}
+
+export interface UpdateWindow {
+  days: string[];
+  from: string;
+  to: string;
+}
+
+export type RolloutState = 'pending_approval' | 'running' | 'paused' | 'cancelled' | 'done' | 'rejected';
+export type RolloutItemState = 'waiting' | 'queued' | 'running' | 'ok' | 'failed' | 'skipped' | 'cancelled';
+
+export interface RolloutCounts {
+  total: number;
+  waiting: number;
+  queued: number;
+  running: number;
+  ok: number;
+  failed: number;
+  skipped: number;
+  cancelled: number;
+}
+
+export interface Rollout {
+  id: number;
+  version: string;
+  scope: RolloutScope;
+  canary: number;
+  canary_pct: number | null;
+  soak_minutes: number;
+  concurrency: number;
+  max_failures: number;
+  max_failure_pct: number;
+  windows: UpdateWindow[];
+  rollback: boolean;
+  automatic: boolean;
+  state: RolloutState;
+  reason: string | null;
+  /** 0 = canary wave, 1 = the rest */
+  wave: number;
+  quorum_id: number | null;
+  created: number;
+  created_by: string;
+  finished: number | null;
+  counts: RolloutCounts;
+}
+
+export interface RolloutItem {
+  agent_id: string;
+  name: string;
+  tenant: string;
+  wave: number;
+  state: RolloutItemState;
+  job_id: number | null;
+  attempts: number;
+  error: string | null;
+  from_version: string | null;
+  version: string | null;
+  updated: number | null;
+}
+
+export interface RolloutDetail extends Rollout {
+  items: RolloutItem[];
+}
+
+export interface AgentUpdateSetting {
+  tenant: string;
+  /** null / 0 = the whole tenant */
+  group_id: number | null;
+  mode: 'manual' | 'automatic';
+  windows: UpdateWindow[];
+  canary: number;
+  soak_minutes: number;
+  updated: number | null;
+  updated_by: string | null;
 }
 
 /** Phase 26: what the edge's control link reports (docs/edge.md) */

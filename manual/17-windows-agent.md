@@ -5,7 +5,9 @@ side (creating the agent, the source and its paths) is in [04 Sources](04-source
 
 > **Status:** Tested on Windows Server 2022 (member server, domain controller) and Windows 11: MSI install, upgrade
 > and uninstall, enrollment (token and fleet), VSS backup, restore. Server 2016/2019/2025, ReFS, SQL Server and
-> Exchange are not tested yet; run the test plan in `docs/agent-windows.md` for those before production use.
+> Exchange are not tested yet; run the test plan in `docs/agent-windows.md` for those before production use. MSI
+> updates pushed from the appliance (detached `msiexec`, enrollment kept, desktop UI updated, start watchdog of manual
+> installs) are covered by unit tests only; the Windows lab run is still open.
 
 ## How the agent works
 
@@ -116,7 +118,7 @@ error**: the service refuses to start rather than ignore a typo. Restart the ser
 | `appliance_id` | – | accept only this appliance id |
 | `max_connections` | `4` | concurrent appliance sessions (1–64) |
 | `vss_exclude_writers` | – | comma-separated VSS writer class ids (`{guid},{guid}`) that must not take part |
-| `self_update` | off for the MSI | allow the appliance's **Update agent** |
+| `self_update` | `auto` | `off`: refuse every update from the appliance (servers updated only by GPO/Intune); `auto`/`on`: allow updates with the install's own type (MSI for MSI installs, binary swap for manual installs) |
 | `edge`, `edge_sha256` | – | edge proxy `host:port` and its certificate fingerprint for laptops outside the office; normally pushed by the appliance: [18 Edge proxy](18-edge-proxy.md) |
 
 `vssadmin list writers` shows the writer class ids. Exclude a writer only if it fails every backup and its data is
@@ -145,11 +147,21 @@ ACLs (and SACLs), owners, alternate data streams and timestamps.
 
 ## Updates
 
-- **MSI:** install the newer MSI the same way (GPO/Intune update). It replaces the old version in place and keeps the
-  enrollment; a downgrade is refused. The appliance's **Update agent** is refused for MSI installations, unless you
-  set `self_update = on`.
-- **Manual installation** (without MSI, `docs/agent-windows.md`): the appliance's **Update agent** verifies the
-  release signature, refuses downgrades and restarts the service.
+Updates normally come from the appliance (single agents or rollouts, see
+[13 Updates: Agent updates](13-updates.md#agent-updates)). The agent first checks the signed release manifest and the
+file's own signature against `%ProgramData%\NexusAgent\config\release-keys\`, refuses older versions (except an
+approved rollback) and updates only while no backup or restore runs.
+
+- **MSI:** the agent starts `msiexec /i <signed MSI> /qn /norestart /l*v
+  %ProgramData%\NexusAgent\state\update-msi.log` detached from the service, so the installer can stop and replace
+  the service. The major upgrade keeps the enrollment and updates the desktop UI too. The result (and on failure the
+  `msiexec` exit code with the end of the log) is reported on the next connection and shown under
+  **Agents → Updates**. GPO/Intune updates with a newer MSI keep working as before; set `self_update = off` if only
+  your deployment tool may update.
+- **Manual installation** (without MSI, `docs/agent-windows.md`): the binary is replaced (the old one stays as
+  `nexus-agent.exe.prev`) and the service restarts. **Start watchdog:** if the new binary fails to start listening
+  three times in a row, the agent swaps `.prev` back and reports **Rolled back**.
+- **Result file:** `%ProgramData%\NexusAgent\state\update-state.json`.
 - A desktop window or tray icon that is open during an MSI upgrade keeps running the old version until the user
   signs out or restarts it; the files on disk are already the new ones.
 
@@ -169,4 +181,5 @@ ACLs (and SACLs), owners, alternate data streams and timestamps.
 | Service stops right after start | not enrolled yet (normal), or `agent.conf` error: see `%ProgramData%\NexusAgent\state\nexus-agent.log` |
 | Snapshot crash-consistent | job log lists the failed writers; `vssadmin list writers`, shadow storage space (`vssadmin list shadowstorage`) |
 | First backup after a long time reads everything | the USN journal wrapped or was recreated; normal, the next one is incremental again |
-| **Update agent** refused, "installed from a msi package" | update with the MSI, or set `self_update = on` |
+| Update refused, "self-update is off" | `self_update = off` in `agent.conf`: update with the MSI, or remove the line |
+| Update **Failed**, msiexec exit code 1603 / 1618 | `%ProgramData%\NexusAgent\state\update-msi.log` (1618: another installation was running; the rollout retries later) |
