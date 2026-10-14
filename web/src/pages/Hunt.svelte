@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { rowLink } from '../lib/rowlink';
+  import { rowClick } from '../lib/rowlink';
   import { onDestroy, onMount } from 'svelte';
   import { get, post, errText, qs } from '../lib/api';
   import { route, href, navigate } from '../lib/router.svelte';
@@ -219,7 +219,11 @@
               <td class="num">{fmtBytes(m.size)}</td>
               <td class="mono" title={m.sha256}>{m.sha256.slice(0, 16)}…</td>
               <td>{m.lists.join(', ')}</td>
-              <td class="mono">{m.source}</td>
+              <td>
+                {#if agents.find((a) => `host-${a.id}` === m.source)}{agents.find((a) => `host-${a.id}` === m.source)!.name}
+                  <div class="muted small mono">{m.source}</div>
+                {:else}<span class="mono">{m.source}</span>{/if}
+              </td>
               <td>
                 {#if m.times.length > 1}
                   <select class="auto" aria-label={t.threat.version(m.path)} value={timeOf(m)} onchange={(ev) => (chosen[k] = Number(ev.currentTarget.value))}>
@@ -270,7 +274,8 @@
         <tbody>
           {#each hunts as j (j.id)}
             {@const n = hits(j)}
-            <tr use:rowLink={`/jobs/${j.id}`}>
+            <!-- a finished hunt opens its results here, a running one its job -->
+            <tr use:rowClick={() => (j.state === 'ok' ? navigate('/hunt' + qs({ job: j.id })) : navigate(`/jobs/${j.id}`))}>
               <td class="nowrap"><a href={href(`/jobs/${j.id}`)}>{fmtTime(j.created)}</a></td>
               <td>{j.tenant}</td>
               <td>
