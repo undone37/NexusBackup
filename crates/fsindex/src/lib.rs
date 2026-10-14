@@ -143,6 +143,9 @@ pub struct Limits {
     pub max_entries: u64,
     /// seconds
     pub budget_secs: u64,
+    /// which share of the directory trees this helper walks (Phase 32)
+    #[serde(default)]
+    pub part: Part,
 }
 
 impl Default for Limits {
@@ -150,7 +153,55 @@ impl Default for Limits {
         Limits {
             max_entries: 5_000_000,
             budget_secs: 3600,
+            part: Part::default(),
         }
+    }
+}
+
+/// Helper `index` of `count` walking one volume together (Phase 32): directories
+/// above [`PART_DEPTH`] are walked by all of them (to find the ones below) but
+/// their entries come from helper 0; every directory at or below that depth
+/// belongs to one helper by a hash of its first [`PART_DEPTH`] path components,
+/// which walks it and emits its entries. Every entry comes from exactly one helper.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct Part {
+    pub index: u32,
+    pub count: u32,
+}
+
+impl Default for Part {
+    fn default() -> Self {
+        Part { index: 0, count: 1 }
+    }
+}
+
+/// Directory depth from which the trees are split between helpers (root = 0:
+/// `Windows/System32` and `Users/alice` are split, `Windows` is not).
+pub const PART_DEPTH: usize = 2;
+
+impl Part {
+    /// The helper that owns directory `rel` at `depth` (its entries, below
+    /// [`PART_DEPTH`] also its walk).
+    fn owner(&self, rel: &str, depth: usize) -> u32 {
+        if self.count <= 1 || depth < PART_DEPTH {
+            return 0;
+        }
+        // FNV-1a of the first PART_DEPTH components: stable across processes
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in rel.split('/').take(PART_DEPTH).collect::<Vec<_>>().join("/").bytes() {
+            h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+        (h % u64::from(self.count)) as u32
+    }
+
+    /// Whether this helper reads directory `rel` at `depth`.
+    pub fn walks(&self, rel: &str, depth: usize) -> bool {
+        depth < PART_DEPTH || self.owner(rel, depth) == self.index
+    }
+
+    /// Whether this helper emits the entries of directory `rel` at `depth`.
+    pub fn owns(&self, rel: &str, depth: usize) -> bool {
+        self.owner(rel, depth) == self.index
     }
 }
 
@@ -189,6 +240,39 @@ pub fn dm_name(vg: &str, lv: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parts_own_every_directory_once() {
+        let parts: Vec<Part> = (0..4).map(|index| Part { index, count: 4 }).collect();
+        let mut used = [0u32; 4];
+        for i in 0..400 {
+            for (rel, depth) in [
+                (String::new(), 0),
+                (format!("d{i}"), 1),
+                (format!("d{}/s{i}", i % 7), 2),
+                (format!("d{}/s{i}/x/y", i % 7), 4),
+            ] {
+                let owners: Vec<u32> = parts.iter().filter(|p| p.owns(&rel, depth)).map(|p| p.index).collect();
+                assert_eq!(owners.len(), 1, "{rel}");
+                if depth < PART_DEPTH {
+                    assert_eq!(owners, [0], "{rel}: the top levels belong to helper 0");
+                    assert!(
+                        parts.iter().all(|p| p.walks(&rel, depth)),
+                        "everyone walks the top levels"
+                    );
+                } else {
+                    used[owners[0] as usize] += 1;
+                    let walkers: Vec<u32> = parts.iter().filter(|p| p.walks(&rel, depth)).map(|p| p.index).collect();
+                    assert_eq!(walkers, owners, "{rel}: only its owner walks it");
+                }
+            }
+        }
+        // a directory's subtree stays with its owner
+        let o = |rel: &str, d| parts.iter().find(|p| p.owns(rel, d)).unwrap().index;
+        assert_eq!(o("Windows/WinSxS", 2), o("Windows/WinSxS/amd64_x/y", 4));
+        assert!(used.iter().all(|&n| n > 100), "spread over all helpers: {used:?}");
+        assert!(Part::default().walks("a/b/c", 3) && Part::default().owns("a/b/c", 3));
+    }
 
     #[test]
     fn names() {

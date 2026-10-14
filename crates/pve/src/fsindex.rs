@@ -21,6 +21,8 @@ use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// Decrypted chunks kept for the helper's reads, least recently used out (it
@@ -33,13 +35,48 @@ const VERSION: u32 = 1;
 /// File systems the micro-VM mounts that the helper does not parse.
 const VM_FALLBACK: &[&str] = &["xfs", "btrfs", "zfs_member"];
 
+/// (disk, chunk index) and the decoded chunk
+type Cached = ((usize, u64), Arc<Vec<u8>>);
+
 struct StoreSource<'a> {
     store: &'a Store,
     names: Vec<String>,
     disks: Vec<(u64, u64, &'a [ChunkId])>,
-    cache: VecDeque<((usize, u64), Vec<u8>)>,
+    /// shared by the helpers of one listing; a miss decodes outside the lock (in parallel)
+    cache: Mutex<VecDeque<Cached>>,
     /// chunks read from the store (cache misses)
-    loads: u64,
+    loads: AtomicU64,
+}
+
+impl StoreSource<'_> {
+    /// Chunk `n` of disk `d`, decoded (cache, else the store).
+    fn chunk(&self, d: usize, n: u64) -> io::Result<Arc<Vec<u8>>> {
+        {
+            let mut c = self.cache.lock().unwrap();
+            if let Some(i) = c.iter().position(|(k, _)| *k == (d, n)) {
+                // least recently used out: a hit moves to the front
+                let hit = c.remove(i).expect("position in range");
+                let data = hit.1.clone();
+                c.push_front(hit);
+                return Ok(data);
+            }
+        }
+        // ponytail: two helpers missing the same chunk at once decode it twice; an in-flight set if that shows
+        self.loads.fetch_add(1, Ordering::Relaxed);
+        let id = self.disks[d]
+            .2
+            .get(n as usize)
+            .ok_or_else(|| io::Error::other("chunk outside the index"))?;
+        let data = Arc::new(self.store.read_chunk(id)?);
+        let mut c = self.cache.lock().unwrap();
+        if !c.iter().any(|(k, _)| *k == (d, n)) {
+            if c.len() >= CHUNK_CACHE {
+                c.pop_back();
+            }
+            c.push_front(((d, n), data.clone()));
+        }
+        Ok(data)
+    }
 }
 
 impl Source for StoreSource<'_> {
@@ -52,36 +89,15 @@ impl Source for StoreSource<'_> {
     fn chunk_size(&self, d: usize) -> u64 {
         self.disks[d].0
     }
-    fn read(&mut self, d: usize, off: u64, buf: &mut [u8]) -> io::Result<()> {
-        let (cs, size, ids) = self.disks[d];
+    fn read(&self, d: usize, off: u64, buf: &mut [u8]) -> io::Result<()> {
+        let (cs, size, _) = self.disks[d];
         if off.checked_add(buf.len() as u64).is_none_or(|e| e > size) {
             return Err(io::Error::other("read beyond the image end"));
         }
         let mut done = 0;
         while done < buf.len() {
             let pos = off + done as u64;
-            let n = pos / cs;
-            let i = match self.cache.iter().position(|(k, _)| *k == (d, n)) {
-                Some(i) => {
-                    // least recently used out: a hit moves to the front
-                    let hit = self.cache.remove(i).expect("position in range");
-                    self.cache.push_front(hit);
-                    0
-                }
-                None => {
-                    self.loads += 1;
-                    let id = ids
-                        .get(n as usize)
-                        .ok_or_else(|| io::Error::other("chunk outside the index"))?;
-                    let data = self.store.read_chunk(id)?;
-                    if self.cache.len() >= CHUNK_CACHE {
-                        self.cache.pop_back();
-                    }
-                    self.cache.push_front(((d, n), data));
-                    0
-                }
-            };
-            let data = &self.cache[i].1;
+            let data = self.chunk(d, pos / cs)?;
             let at = (pos % cs) as usize;
             if at >= data.len() {
                 return Err(io::Error::other("short chunk"));
@@ -146,7 +162,7 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
     if idx.is_empty() {
         bail!("snapshot has no disk images");
     }
-    let mut src = StoreSource {
+    let src = StoreSource {
         store,
         names: idx.iter().map(|(n, _)| n.clone()).collect(),
         disks: idx
@@ -160,8 +176,8 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
                 _ => unreachable!(),
             })
             .collect(),
-        cache: VecDeque::new(),
-        loads: 0,
+        cache: Mutex::new(VecDeque::new()),
+        loads: AtomicU64::new(0),
     };
     let disk_no: HashMap<String, usize> = src.names.iter().enumerate().map(|(i, n)| (n.clone(), i)).collect();
     let prev = previous(store, m);
@@ -188,7 +204,11 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
                 .collect()
         })
         .unwrap_or_default();
-    let helper = Helper::new(&helper_bin());
+    // Phase 32: one helper per CPU (up to 8) walks the NTFS / ext4 trees together
+    let helper = Helper {
+        parts: std::thread::available_parallelism().map_or(1, |n| n.get().min(8)) as u32,
+        ..Helper::new(&helper_bin())
+    };
     // live progress (docs/control-plane.md "Live progress"): the volume being listed, its
     // entries so far and an estimate of all (the previous snapshot's count of the same
     // volume, else the walker's from the file system metadata), at most every EVERY
@@ -205,7 +225,7 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
     let mut last: Option<std::time::Instant> = None;
     let started = std::time::Instant::now();
     let mut listed = parent::list_with_progress(
-        &mut src,
+        &src,
         &helper,
         limits,
         &mut |v: &Volume| reusable.contains_key(&v.key),
@@ -233,7 +253,7 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
     eprintln!(
         "fsindex: volumes listed in {:.1?}, {} chunk(s) read from the store",
         started.elapsed(),
-        src.loads
+        src.loads.load(Ordering::Relaxed)
     );
     // fill the reused volumes from the previous snapshot's name index
     let mut reused = 0;

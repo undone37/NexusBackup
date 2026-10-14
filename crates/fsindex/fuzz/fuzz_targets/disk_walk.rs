@@ -39,6 +39,7 @@ fuzz_target!(|data: &[u8]| {
     let limits = fsindex::Limits {
         max_entries: 100_000,
         budget_secs: 10,
+        ..Default::default()
     };
     let _ = fsindex::walk::run(io, &["d0".to_string()], limits, &mut Null);
 });

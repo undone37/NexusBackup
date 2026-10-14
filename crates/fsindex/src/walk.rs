@@ -63,6 +63,16 @@ impl Out<'_> {
         }
     }
 
+    /// Whether this helper reads directory `rel` at `depth` ([`crate::Part`]).
+    pub fn walks(&self, rel: &str, depth: usize) -> bool {
+        self.limits.part.walks(rel, depth)
+    }
+
+    /// Whether this helper emits the entries of directory `rel` at `depth`.
+    pub fn owns(&self, rel: &str, depth: usize) -> bool {
+        self.limits.part.owns(rel, depth)
+    }
+
     /// A directory that could not be read (the volume becomes `partial`).
     pub fn note(&mut self, _info: &mut Volume, msg: String) {
         self.notes += 1;

@@ -143,6 +143,17 @@ the helper lists the same entries as the micro-VM walk for ext4, NTFS, vfat and 
 (micro-VM: 8.8 s); with the micro-VM fallback for XFS/btrfs/ZFS the second snapshot took 9.7 s, the four
 unchanged volumes reused (`crates/pve/tests/restore_vm.rs` `fsindex_matches_micro_vm_listing`).
 
+**Parallel walk (Phase 32).** `nexus-pve` starts one helper per CPU (up to 8) for a listing; each stays
+single-threaded and sandboxed (seccomp, no threads or processes). The NTFS and ext4 trees are split between them
+(`fsindex::Part`): directories above depth 2 are walked by all of them (to find the ones below) and listed by helper 0,
+every directory from depth 2 down belongs to one helper by an FNV hash of its first two path components; FAT, exFAT
+and the volume layout come from helper 0 alone. The parent serves each helper on its own thread with one shared LRU
+cache of 128 decoded chunks (a miss decrypts and decompresses outside the lock, so in parallel) and merges the
+listings per volume (worst state, union of the read chunks, entries sorted by path). Lab (Windows Server C:, 391k
+entries): 150-217 s with one helper and a FIFO cache of 32, 82-90 s with the LRU cache; most of it decrypting the
+4779 chunks the walk touches (directory index blocks are spread over the whole volume). One huge directory (WinSxS)
+stays with one helper.
+
 `groups.index_files` is on by default for new Proxmox VE groups. The job result (catalog, plaintext) names only
 browse names, file systems, mount points, states and reasons; labels, UUIDs and fstab contents stay sealed.
 `snapshot_index` (catalog v42) keeps the state per VM/CT snapshot (`pending` while queued).

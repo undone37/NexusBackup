@@ -53,17 +53,26 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
     // NTFS has no directory hard links: a directory seen twice is a loop
     let mut visited = std::collections::HashSet::from([ROOT]);
     while let Some((rec, rel, depth)) = stack.pop() {
+        if !out.walks(&rel, depth) {
+            continue; // another helper's share
+        }
+        // emits this directory's entries (else only looks for its subdirectories)
+        let own = out.owns(&rel, depth);
         let dir = match ntfs.file(&mut fs, rec) {
             Ok(d) => d,
             Err(e) => {
-                out.note(info, format!("/{rel}: {e}"));
+                if own {
+                    out.note(info, format!("/{rel}: {e}"));
+                }
                 continue;
             }
         };
         let idx = match dir.directory_index(&mut fs) {
             Ok(i) => i,
             Err(e) => {
-                out.note(info, format!("/{rel}: {e}"));
+                if own {
+                    out.note(info, format!("/{rel}: {e}"));
+                }
                 continue;
             }
         };
@@ -73,7 +82,9 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             let e = match e {
                 Ok(e) => e,
                 Err(err) => {
-                    out.note(info, format!("/{rel}: {err}"));
+                    if own {
+                        out.note(info, format!("/{rel}: {err}"));
+                    }
                     break;
                 }
             };
@@ -88,7 +99,7 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             let name = key.name().to_string_lossy();
             // a hard link may show up once per name; the same name twice is a broken index
             if !seen.insert(name.clone()) || name.is_empty() || name.contains('/') {
-                info.skipped_entries += 1;
+                info.skipped_entries += u64::from(own);
                 continue;
             }
             let path = if rel.is_empty() {
@@ -97,13 +108,13 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                 format!("{rel}/{name}")
             };
             if path.len() > MAX_PATH {
-                info.skipped_entries += 1;
+                info.skipped_entries += u64::from(own);
                 continue;
             }
             let file = match ntfs.file(&mut fs, num) {
                 Ok(f) => f,
                 Err(_) => {
-                    info.skipped_entries += 1;
+                    info.skipped_entries += u64::from(own);
                     continue;
                 }
             };
@@ -125,9 +136,9 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                 _ => KIND_FILE,
             };
             if tag == Some(TAG_DEDUP) {
-                info.dedup_files += 1;
+                info.dedup_files += u64::from(own);
             }
-            let size = if kind == KIND_FILE {
+            let size = if kind == KIND_FILE && own {
                 match file.data(&mut fs, "") {
                     Some(Ok(item)) => item.to_attribute().map_or(key.data_size(), |a| a.value_length()),
                     _ => 0,
@@ -142,10 +153,10 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             {
                 info.windows = true;
             }
-            if !out.emit(info, &path, size, nt_to_unix(mtime), kind)? {
+            if own && !out.emit(info, &path, size, nt_to_unix(mtime), kind)? {
                 return Ok(());
             }
-            if kind == KIND_DIR {
+            if kind == KIND_DIR && out.walks(&path, depth + 1) {
                 if depth + 1 >= MAX_DEPTH {
                     out.note(info, format!("/{path}: nested too deeply"));
                     continue;

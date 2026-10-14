@@ -20,6 +20,7 @@ fuzz_target!(|data: &[u8]| {
     let limits = fsindex::Limits {
         max_entries: 100_000,
         budget_secs: 10,
+        ..Default::default()
     };
     static QUIET: std::sync::Once = std::sync::Once::new();
     QUIET.call_once(|| std::panic::set_hook(Box::new(|_| {})));

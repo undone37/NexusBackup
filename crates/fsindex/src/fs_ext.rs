@@ -24,10 +24,17 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
     }
     let mut stack: Vec<(PathBuf, String, usize)> = vec![(PathBuf::new("/"), String::new(), 0)];
     while let Some((dir, rel, depth)) = stack.pop() {
+        if !out.walks(&rel, depth) {
+            continue; // another helper's share
+        }
+        // emits this directory's entries (else only looks for its subdirectories)
+        let own = out.owns(&rel, depth);
         let rd = match fs.read_dir(&dir) {
             Ok(r) => r,
             Err(e) => {
-                out.note(info, format!("/{rel}: {e}"));
+                if own {
+                    out.note(info, format!("/{rel}: {e}"));
+                }
                 continue;
             }
         };
@@ -35,7 +42,9 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             let e = match e {
                 Ok(e) => e,
                 Err(err) => {
-                    out.note(info, format!("/{rel}: {err}"));
+                    if own {
+                        out.note(info, format!("/{rel}: {err}"));
+                    }
                     break;
                 }
             };
@@ -51,7 +60,7 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                 format!("{rel}/{name}")
             };
             if path.len() > MAX_PATH {
-                info.skipped_entries += 1;
+                info.skipped_entries += u64::from(own);
                 continue;
             }
             let (kind, size, mtime) = match e.metadata() {
@@ -69,14 +78,14 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                     (k, if k == KIND_FILE { m.len() } else { 0 }, m.modified().seconds())
                 }
                 Err(_) => {
-                    info.skipped_entries += 1;
+                    info.skipped_entries += u64::from(own);
                     continue;
                 }
             };
-            if !out.emit(info, &path, size, mtime, kind)? {
+            if own && !out.emit(info, &path, size, mtime, kind)? {
                 return Ok(());
             }
-            if kind == KIND_DIR {
+            if kind == KIND_DIR && out.walks(&path, depth + 1) {
                 if depth + 1 >= MAX_DEPTH {
                     out.note(info, format!("/{path}: nested too deeply"));
                     continue;

@@ -107,7 +107,7 @@ impl Source for Files {
     fn chunk_size(&self, _: usize) -> u64 {
         4 << 20
     }
-    fn read(&mut self, d: usize, off: u64, buf: &mut [u8]) -> io::Result<()> {
+    fn read(&self, d: usize, off: u64, buf: &mut [u8]) -> io::Result<()> {
         self.disks[d].read_exact_at(buf, off)
     }
 }
@@ -117,23 +117,46 @@ fn helper() -> Helper {
 }
 
 fn list(paths: &[&Path]) -> Vec<Listed> {
-    let mut src = Files {
+    let src = Files {
         disks: paths.iter().map(|p| File::open(p).unwrap()).collect(),
     };
     // live progress: (entries so far, the walker's estimate) per volume
     let mut seen: std::collections::HashMap<String, (u64, Option<u64>)> = Default::default();
-    let l = parent::list_with_progress(
-        &mut src,
-        &helper(),
-        Limits::default(),
-        &mut |_| false,
-        &mut |v, n, e| {
-            let s = seen.entry(v.key.clone()).or_default();
-            s.0 = n;
-            s.1 = e.or(s.1);
-        },
-    )
+    let l = parent::list_with_progress(&src, &helper(), Limits::default(), &mut |_| false, &mut |v, n, e| {
+        let s = seen.entry(v.key.clone()).or_default();
+        s.0 = n;
+        s.1 = e.or(s.1);
+    })
     .unwrap();
+    // Phase 32: three helpers splitting the NTFS / ext4 trees list exactly the same
+    let src3 = Files {
+        disks: paths.iter().map(|p| File::open(p).unwrap()).collect(),
+    };
+    let three = Helper { parts: 3, ..helper() };
+    let mut l3 = parent::list(&src3, &three, Limits::default(), &mut |_| false).unwrap();
+    let key = |x: &Listed| {
+        let mut e: Vec<_> = x
+            .entries
+            .iter()
+            .map(|e| (e.path.clone(), e.size, e.mtime, e.kind))
+            .collect();
+        e.sort();
+        (
+            x.volume.key.clone(),
+            x.volume.state.clone(),
+            x.volume.windows,
+            x.volume.entries,
+            e,
+        )
+    };
+    l3.sort_by(|a, b| a.volume.key.cmp(&b.volume.key));
+    let mut l1: Vec<_> = l.iter().map(key).collect();
+    l1.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        l3.iter().map(key).collect::<Vec<_>>(),
+        l1,
+        "3 helpers list what 1 lists"
+    );
     for x in l.iter().filter(|x| x.volume.state == "indexed") {
         let (n, e) = seen[&x.volume.key];
         assert_eq!(
@@ -676,17 +699,18 @@ fn reuse_skips_the_parse() {
     ) {
         return;
     }
-    let mut src = Files {
+    let src = Files {
         disks: vec![File::open(&img).unwrap()],
     };
-    let l = parent::list(&mut src, &helper(), Limits::default(), &mut |v| v.fs == "ext4").unwrap();
+    let l = parent::list(&src, &helper(), Limits::default(), &mut |v| v.fs == "ext4").unwrap();
     assert!(l[0].reused && l[0].entries.is_empty() && l[0].reads.is_empty());
     // limits: the listing stops and says so
     let lim = Limits {
         max_entries: 3,
         budget_secs: 60,
+        ..Default::default()
     };
-    let l = parent::list(&mut src, &helper(), lim, &mut |_| false).unwrap();
+    let l = parent::list(&src, &helper(), lim, &mut |_| false).unwrap();
     assert_eq!((l[0].volume.state.as_str(), l[0].entries.len()), ("partial", 3));
     assert!(l[0].volume.reason.as_deref().unwrap().contains("entry limit"));
 }
