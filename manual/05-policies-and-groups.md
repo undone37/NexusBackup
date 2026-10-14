@@ -12,6 +12,9 @@ Open **Configuration → Policies**.
 
 ![Policies](images/policies.png)
 
+**Used by** says how many protection groups use the policy ("no group" for one nobody uses yet); a click on a row
+opens the policy.
+
 Click **New policy** (or **Edit** on an existing one) and fill in:
 
 | Field | Meaning |
@@ -132,6 +135,10 @@ rule: a guest shows **RPO breached** when its newest snapshot is older than 1.5 
 Open **Configuration → Protection groups**.
 
 ![Protection groups](images/groups.png)
+
+The list shows for every group its **Last backup** (state and how long ago; a click opens that job; "never backed
+up" for a new group) and when the policy's schedule starts the **next** one. It refreshes every 15 seconds while the
+page is open. A click on a row opens the group's settings.
 
 A group belongs to one tenant and one source and uses one policy. Click **New group** and choose **Tenant**,
 **Name**, **Source** (only sources of that tenant are offered), **Policy** and **Time zone** (an IANA name such as

@@ -64,6 +64,8 @@ hidden; open it with the **Menu** button at the top left.
 **Top bar.** From left to right:
 
 - the breadcrumb: group and page, e.g. **Monitor / Dashboard**;
+- the **Running jobs** button (pulse icon) with the number of jobs running right now; the icon pulses while
+  something runs, a click lists the running jobs (refreshed every 10 seconds, on every page);
 - the **Approvals** button (stamp icon) with the number of pending requests, for roles that see approvals;
 - the **Alerts** button (bell icon) with the number of open alerts, for roles that see alerts;
 - the **theme** button (see below);
@@ -119,6 +121,11 @@ part shows key figures (KPIs) and charts; below them is the per-guest **Protecti
 The header shows when the figures were computed (**Updated …**) and what they cover: **All tenants**, or your tenant
 for tenant-scoped accounts. **7 days** / **30 days** switches the period of the job figures and charts (remembered
 for the browser session). The key figures refresh every minute, the table below every 30 seconds.
+
+**Running now** (below the restore priority) lists the jobs that run at this moment, every 3 seconds: what they
+work on (group, guest), the current item and part, a progress bar with the percentage, the rate (MB/s, or entries/s
+for a file index) and the time left; jobs that report no figures show how long they run. A click on a row opens the
+job, **queued** opens the jobs waiting for their turn. Every key-figure tile opens the page its figure comes from.
 
 ### Terms used on the dashboard
 
