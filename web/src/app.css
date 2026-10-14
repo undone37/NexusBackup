@@ -1140,13 +1140,13 @@ button.ghost:hover {
 }
 
 /* tabs (Settings) */
+/* tabs wrap onto a second row instead of hiding behind the right edge (Settings has many) */
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.25rem;
   margin: 0 0 1.1rem;
   border-bottom: 1px solid var(--border);
-  overflow-x: auto;
-  scrollbar-width: none;
 }
 .tabs [role='tab'] {
   position: relative;
@@ -2183,4 +2183,12 @@ tr.changed td {
   overflow-wrap: anywhere;
   max-height: 14rem;
   overflow-y: auto;
+}
+
+/* audit log: long details folded (Audit.svelte) */
+pre.audit-json {
+  margin: 0.35rem 0 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 0.78rem;
 }

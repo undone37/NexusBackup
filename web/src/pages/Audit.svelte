@@ -7,6 +7,7 @@
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
+  import { href } from '../lib/router.svelte';
 
   // Phase 19b: tenant admins read the entries concerning their own tenant (the server forces the
   // filter); appliance-wide auditors may filter by tenant.
@@ -206,8 +207,20 @@
               <td class="nowrap">{fmtTime(e.ts)}</td>
               <td>{e.actor}</td>
               <td class="mono">{e.action}</td>
-              <td class="mono">{e.target}</td>
-              <td class="mono details">{JSON.stringify(e.details)}</td>
+              <td class="mono">
+                <!-- jobs and approvals open from their entries -->
+                {#if /^job\/\d+$/.test(e.target)}<a href={href(`/${e.target.replace('job/', 'jobs/')}`)}>{e.target}</a>
+                {:else if /^quorum\/\d+$/.test(e.target)}<a href={href('/quorum')}>{e.target}</a>
+                {:else}{e.target}{/if}
+              </td>
+              <td class="mono details">
+                {#if JSON.stringify(e.details).length > 120}
+                  <details>
+                    <summary>{JSON.stringify(e.details).slice(0, 110)}…</summary>
+                    <pre class="audit-json">{JSON.stringify(e.details, null, 2)}</pre>
+                  </details>
+                {:else}{JSON.stringify(e.details)}{/if}
+              </td>
               <td class="hash" title={`${e.hash}\nprev ${e.prev_hash}`}>{short(e.hash)}</td>
             </tr>
           {/each}
