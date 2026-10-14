@@ -152,6 +152,12 @@ impl T {
         }
     }
 
+    fn reauth(&self, name: &str, extra: Value) -> Value {
+        let mut v = json!({"current_password": PW, "current_totp": self.code(name)});
+        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        v
+    }
+
     fn exec(&self, sql: &str) {
         self.st.cat.conn().execute_batch(sql).unwrap();
     }
@@ -287,4 +293,210 @@ async fn anomaly_sensitivity_and_trends() {
         ),
         1
     );
+}
+
+/// Just-in-time elevation: eligibility is a gated grant; the session acts in
+/// the eligible role after re-authentication until it ends, expires or the
+/// person signs out; with the setting it is an approval; info alert per
+/// elevation; tenant users and wrong credentials are refused.
+#[tokio::test]
+async fn role_elevation() {
+    let t = T::new();
+    let (alice, sam, tina) = (t.login("alice").await, t.login("sam").await, t.login("tina").await);
+    let otto_id = t.ids["otto"];
+    // a tenant user can never be eligible; an eligible role is admin or security_officer
+    let r = t
+        .put(
+            &format!("/api/v1/users/{}", t.ids["tina"]),
+            &alice,
+            json!({"eligible_role": "admin"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    let r = t
+        .put(
+            &format!("/api/v1/users/{otto_id}"),
+            &alice,
+            json!({"eligible_role": "operator"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    // granting eligibility is a privilege grant: approval
+    let r = t
+        .put(
+            &format!("/api/v1/users/{otto_id}"),
+            &alice,
+            json!({"eligible_role": "admin"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    let r = t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(
+        t.one::<String>(&format!("SELECT eligible_role FROM users WHERE id = {otto_id}")),
+        "admin"
+    );
+    let otto = t.login("otto").await;
+    let me = t.get("/api/v1/auth/me", &otto).await.body;
+    assert_eq!(
+        (me["user"]["eligible_role"].clone(), me["elevation"].clone()),
+        (json!("admin"), Value::Null)
+    );
+    assert_eq!(
+        t.get("/api/v1/settings/anomaly", &otto).await.status,
+        StatusCode::FORBIDDEN
+    );
+
+    // refused: not eligible for that role, out-of-range time, no reason, wrong password
+    let ask = |role: &str, minutes: i64| json!({"role": role, "minutes": minutes, "reason": "patch window"});
+    let r = t
+        .post(
+            "/api/v1/auth/elevate",
+            &otto,
+            t.reauth("otto", ask("security_officer", 30)),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    let r = t
+        .post("/api/v1/auth/elevate", &otto, t.reauth("otto", ask("admin", 5)))
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let r = t
+        .post(
+            "/api/v1/auth/elevate",
+            &otto,
+            t.reauth("otto", json!({"role": "admin", "minutes": 30, "reason": " "})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let mut bad = t.reauth("otto", ask("admin", 30));
+    bad["current_password"] = json!("wrong");
+    assert_eq!(
+        t.post("/api/v1/auth/elevate", &otto, bad).await.status,
+        StatusCode::FORBIDDEN
+    );
+    let r = t
+        .post("/api/v1/auth/elevate", &tina, t.reauth("tina", ask("admin", 30)))
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+
+    // elevated for 30 minutes
+    let r = t
+        .post("/api/v1/auth/elevate", &otto, t.reauth("otto", ask("admin", 30)))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let until = r.body["elevated"]["until"].as_i64().unwrap();
+    assert!(until >= catalog::now() + 29 * 60);
+    let me = t.get("/api/v1/auth/me", &otto).await.body;
+    assert_eq!(me["user"]["role"], "admin");
+    assert_eq!(
+        (
+            me["elevation"]["role"].clone(),
+            me["elevation"]["standing_role"].clone()
+        ),
+        (json!("admin"), json!("operator"))
+    );
+    assert_eq!(t.get("/api/v1/settings/anomaly", &otto).await.status, StatusCode::OK);
+    assert_eq!(
+        t.one::<String>("SELECT severity FROM alerts WHERE kind = 'role_elevation' AND resolved_at IS NULL"),
+        "info"
+    );
+    assert_eq!(
+        t.one::<i64>("SELECT COUNT(*) FROM audit WHERE action = 'role.elevate'"),
+        1
+    );
+    let users = t.get("/api/v1/users", &alice).await.body;
+    let row = users
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["name"] == "otto")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (row["role"].clone(), row["elevated_until"].clone()),
+        (json!("operator"), json!(until))
+    );
+    // once at a time
+    let r = t
+        .post("/api/v1/auth/elevate", &otto, t.reauth("otto", ask("admin", 30)))
+        .await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    // back to the standing role
+    let r = t.post("/api/v1/auth/elevate/end", &otto, json!({})).await;
+    assert_eq!((r.status, r.body["role"].clone()), (StatusCode::OK, json!("operator")));
+    assert_eq!(
+        t.get("/api/v1/settings/anomaly", &otto).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        t.one::<i64>("SELECT COUNT(*) FROM alerts WHERE kind = 'role_elevation' AND resolved_at IS NULL"),
+        0
+    );
+    assert_eq!(
+        t.post("/api/v1/auth/elevate/end", &otto, json!({})).await.status,
+        StatusCode::CONFLICT
+    );
+
+    // expiry: noticed by the next request
+    let r = t
+        .post("/api/v1/auth/elevate", &otto, t.reauth("otto", ask("admin", 15)))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    t.exec("UPDATE sessions SET elevated_until = 1 WHERE elevated_role IS NOT NULL");
+    let me = t.get("/api/v1/auth/me", &otto).await.body;
+    assert_eq!(
+        (me["user"]["role"].clone(), me["elevation"].clone()),
+        (json!("operator"), Value::Null)
+    );
+    assert_eq!(
+        t.one::<i64>("SELECT COUNT(*) FROM audit WHERE action = 'role.elevate_end' AND details LIKE '%expired%'"),
+        1
+    );
+
+    // with the approval setting: a request, applied to the requesting session when approved
+    let r = t
+        .put("/api/v1/settings/elevation", &alice, json!({"approval": true}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let r = t
+        .post("/api/v1/auth/elevate", &otto, t.reauth("otto", ask("admin", 60)))
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    assert_eq!(t.get("/api/v1/auth/me", &otto).await.body["user"]["role"], "operator");
+    let r = t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({})).await;
+    assert_eq!(
+        (r.status, r.body["state"].clone()),
+        (StatusCode::OK, json!("executed")),
+        "{:?}",
+        r.body
+    );
+    assert_eq!(t.get("/api/v1/auth/me", &otto).await.body["user"]["role"], "admin");
+    // signing out ends it (and resolves the alert)
+    t.post("/api/v1/auth/logout", &otto, json!({})).await;
+    assert_eq!(
+        t.one::<i64>("SELECT COUNT(*) FROM alerts WHERE kind = 'role_elevation' AND resolved_at IS NULL"),
+        0
+    );
+    // switching the approval off again is a weakening: approval
+    let r = t
+        .put("/api/v1/settings/elevation", &alice, json!({"approval": false}))
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let sec = t.get("/api/v1/settings/security", &alice).await.body;
+    assert_eq!(sec["elevation"]["settings"]["approval"], true);
+    assert!(sec["elevation"]["pending"].is_i64());
+    // removing the eligible role applies at once and ends the sessions
+    let otto = t.login("otto").await;
+    let r = t
+        .put(
+            &format!("/api/v1/users/{otto_id}"),
+            &alice,
+            json!({"eligible_role": null}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(t.get("/api/v1/auth/me", &otto).await.status, StatusCode::UNAUTHORIZED);
 }

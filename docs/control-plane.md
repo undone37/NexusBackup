@@ -62,7 +62,7 @@ replicad); it streams replicad's answers to replication peers without opening st
 | `forward_state` (v16) | sink PK (`syslog`,`https`), dest, audit_seq, event_seq (last delivered), last_ok, last_error, last_error_ts, failing_since |
 | `alerts` | id, ts (first seen), severity, kind, message (latest), acked_by; v12 (13f lifecycle): key (dedup key, one open alert per key), tenant, count, last_ts, resolved_at, resolved_by, note, auto (resolved by the scheduler), notified_ts (last delivery; NULL = due) |
 | Phase 28 (v43) | `groups.scan_schedule` (schedule grammar, NULL = off), `groups.scan_budget_min`, `groups.file_hashes`; `snapshots.scan_state` (`clean`/`hit`/`incomplete`, NULL = unscanned); `hash_lists` (name PK, hashes (normalised hex lines), count, sha256, uploaded_by, uploaded_at); `tenant_lockdowns` (tenant PK, active, state JSON); `login_devices` (user_id FK ON DELETE CASCADE, fingerprint, family, prefix, first_seen, last_seen; PK (user_id, fingerprint)); `users.email` — see "Tenant lockdown", "New-device sign-in", docs/malware-scan.md, docs/file-index.md |
-| Phase 30 (v45) | `backup_stats.secs` (the backup's duration from `nexus-stats`, NULL for older rows); `anomaly_sensitivity` (tenant, source, level `low`/`medium`/`high`, set_by, set_at; PK (tenant, source); no row = `medium`) — see docs/ransomware-signals.md "Duration and dedup rate" |
+| Phase 30 (v45) | `backup_stats.secs` (the backup's duration from `nexus-stats`, NULL for older rows); `anomaly_sensitivity` (tenant, source, level `low`/`medium`/`high`, set_by, set_at; PK (tenant, source); no row = `medium`) — see docs/ransomware-signals.md "Duration and dedup rate"; `users.eligible_role` (`admin`/`security_officer`, NULL = none), `sessions.elevated_role` + `sessions.elevated_until` — see "Role elevation" |
 | `replication_peers` (v7, primary) | id (16 hex), name, tenants (JSON), state (`pending`,`approved`,`enrolled`,`revoked`), cert_sha256, keyd_pub, token_hash (`sealed:v1:` to replicad), token_expires, enroll_failures, key_exports (JSON, DEKs sealed to the peer's keyd), created, created_by, enrolled_at, last_seen, revoked |
 | `replication_sources` (v7, secondary) | id, name, url (`host:port`), peer_id, cert_pin, tenants (JSON), schedule, gfs, bwlimit, token_hash (`sealed:v1:` to the scheduler), state (`enrolling`,`enrolled`,`failed`), cert_sha256, keyd_pub, created, last_sync, status (JSON per tenant); v24: windows, sync_window (JSON), timezone, closed_until (-1 = until reopened), closed_by, closed_at |
 
@@ -82,6 +82,34 @@ Every mutating API call and every job state change appends one entry (`catalog::
 Setting `forwarding` (`catalog::forwarding`): `{syslog: {enabled, host, port=6514, ca_pem?, pin_sha256?, app_name="nexus", facility=13}?, https: {enabled, url (https), headers {name: sealed value}, batch_max=100, ca_pem?, pin_sha256?, format="json_array"|"splunk_hec", index? (HEC only, `[a-z0-9_-]{1,80}`)}?}`. Header values are sealed to the scheduler at `settings/forwarding/https/<header>@<url>` and write-only (null in GET; null in PUT = keep, refused when the URL changes). TLS trust: `ca_pem` (CA → chain + host name verified; a certificate in it also counts as an exact pin), `pin_sha256` (SHA-256 of the leaf DER), neither = web PKI roots; no insecure mode. Weakening (an enabled sink disabled or removed; host/port/url, ca_pem, pin_sha256 or headers of an enabled sink changed) → quorum `settings.forwarding` (`{forwarding, old}`, executed by the web-api, refused when the setting changed since the request); anything else applies directly (audit `settings.forwarding`, headers null).
 
 Scheduler thread `forward.rs` (every `forward_poll_secs`, default 5): per enabled sink, cursor row in `forward_state` (reset to 0/0 when `dest` changes, so a new destination gets the whole chain), up to 20 batches per round of audit entries `seq > audit_seq` first, then outbox events `seq > event_seq`; the cursor advances only after the batch was delivered (at least once, in order per stream, never skipped). Syslog: one TLS connection per batch (≤ 200 messages), RFC 5424 `<PRI>1 TIMESTAMP HOST APP - MSGID [nexus@32473 …] MSG` with RFC 5425 octet counting (`LEN SP MSG`), MSGID `audit` (SD `seq hash actor action target`), `alert` (`outbox_seq id event severity kind key tenant`), `job` (`outbox_seq id kind tenant state requested_by`), `test`; delivered = close_notify sent and the receiver closed without a reset. `32473` is the documentation PEN (RFC 5612), constant `catalog::forwarding::PEN`. HTTPS: POST of a JSON array (`{type: audit, category: "audit", seq, ts, actor, action, target, details, prev_hash, hash, host}`, `{type: alert|job, category, …payload, outbox_seq, event_ts, host[, alert_url]}`), or with `format: splunk_hec` (Phase 18) one HEC event per line `{time, host, source: "nexusbackup", sourcetype: "_json", index?, event: <the same object>}` (`forward::hec_body`; the HEC token is an ordinary sealed header, `Authorization: Splunk <token>`, which the UI preset adds); 2xx = delivered. `category` (Phase 18): `catalog::alerting::category(kind)` for alerts (security, backup, replication, hardware, system), `audit`, `backup` / `replication` (replica_* kinds) for jobs; syslog SD param `category` in all three MSGIDs. Format and index are format options (no approval). Failure: `last_error`, `failing_since` recorded, retry after 10 s doubling to 5 min; the tick raises `forwarding:<sink>` (warning, kind `forwarding`) after 15 min and resolves it once `failing_since` is cleared (delivered) or the sink is disabled. The allow-list gets every configured sink (syslog host:port, URL host:port). SELinux: `nexus_scheduler_t` may connect to `syslog_tls_port_t` (6514) besides http and unreserved ports. Job `forward_test` (appliance, in-process): one test record to every configured sink → `{syslog?, https?: "ok" | "error: …"}`.
+
+## Role elevation (Phase 30, `catalog::elevation`, `web-api/src/elevation.rs`)
+- An appliance-wide **local** account with the standing role `operator` or `viewer` may hold an **eligible role**
+  (`users.eligible_role`: `admin` or `security_officer`). Set with `PUT /users/{id} {eligible_role}` (admins; `null`
+  removes it). Granting it is a privilege grant: the quorum `user.update` while approvals are enabled. A role or
+  tenant change that rules it out (another standing role, a tenant, single sign-on) drops it; every user change ends
+  the account's sessions and with them any elevation.
+- `POST /auth/elevate {role, minutes, reason, current_password, current_totp}` (browser sessions only, not while
+  impersonating, one elevation per session): `role` = the eligible role, `minutes` 15..=480, `reason` one line up to
+  200 characters; re-authentication as in the other re-authentications (TOTP code or passkey assertion JSON; when the
+  passkey policy requires passkeys for the role, only a passkey). Then the session acts in that role
+  (`sessions.elevated_role/elevated_until`): the `Ctx` extractor swaps `user.role` while `elevated_until > now`, the
+  eligible role still matches and the standing role is still operator or viewer; otherwise it clears the elevation
+  and audits `role.elevate_end` with `reason: expired`. Setting `elevation` `{approval}` (default off): with
+  `approval: true` the elevation is the quorum `role.elevate` (executed by the web-api on approval, applied to the
+  requesting session if it still exists, time counted from then). Answer `{elevated: {role, until}}`, audited
+  `role.elevate`.
+- Each elevation raises an info alert `role_elevation` (security category, key `role_elevation:<user id>:<session
+  id>`), resolved when it ends: `POST /auth/elevate/end` (audited `role.elevate_end`), sign-out, or the scheduler's
+  account housekeeping for expired elevations and ended sessions.
+- `GET /auth/me` → `elevation: null | {role, until, standing_role}`; `GET /users` rows carry `eligible_role` and
+  `elevated_until`. API tokens never elevate (their role is the standing one); the possible approvers (quorum, posture)
+  count standing admins and security officers only, so an appliance never depends on an elevation to approve one.
+- `PUT /settings/elevation {approval}` (admins): switching the approval on applies at once, off is the approval
+  `security.elevation` (a weakening request for the risk signals). `GET /settings/security` → `elevation: {settings,
+  pending, min_minutes, max_minutes}`.
+- Posture check `posture.standing_admins` (nexus-diag): warns when more than two active accounts hold the admin role
+  permanently (`NEXUS_DIAG_STANDING_ADMINS_MAX`, default 2: a break-glass account and one more).
 
 ## Roles (RBAC)
 | Capability | admin | security_officer | operator | tenant_admin (19b) | tenant_user | viewer (v15) |

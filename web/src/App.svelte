@@ -11,6 +11,7 @@
   import Notices from './components/Notices.svelte';
   import ConfirmDialog from './components/ConfirmDialog.svelte';
   import StepUpDialog from './components/StepUpDialog.svelte';
+  import ElevateDialog from './components/ElevateDialog.svelte';
   import Login from './pages/Login.svelte';
   import Activate from './pages/Activate.svelte';
   import Dashboard from './pages/Dashboard.svelte';
@@ -76,6 +77,7 @@
   import IconLifeBuoy from '@lucide/svelte/icons/life-buoy';
   import IconSnowflake from '@lucide/svelte/icons/snowflake';
   import IconStepUp from '@lucide/svelte/icons/user-lock';
+  import IconElevate from '@lucide/svelte/icons/shield-plus';
   import { fmtTime } from './lib/format';
 
   type Allow = (u: User | null) => boolean;
@@ -186,6 +188,9 @@
       session.incident = me.incident ?? null;
       session.freeze = me.freeze ?? null;
       session.stepUp = me.step_up ?? null;
+      // Phase 30: an elevation that ended (expiry, another tab) brings the standing role back
+      if ((me.elevation?.until ?? null) !== (session.elevation?.until ?? null) || me.user.role !== u.role) session.user = me.user;
+      session.elevation = me.elevation ?? null;
     }
     // Phase 22b: restore priority (banner for everyone)
     session.priority = await get<RestorePriority>('/restore-priority').catch(() => session.priority);
@@ -223,6 +228,7 @@
       session.incident = me.incident ?? null;
       session.freeze = me.freeze ?? null;
       session.stepUp = me.step_up ?? null;
+      session.elevation = me.elevation ?? null;
     } catch {
       setSession(null, null);
     }
@@ -248,6 +254,17 @@
       session.impersonating = me.impersonating ?? null;
     }
     navigate('/tenants');
+  }
+
+  // Phase 30: just-in-time role elevation
+  let elevateOpen = $state(false);
+  async function endElevation() {
+    if (!(await act(post('/auth/elevate/end'), t.p30.elev.ended))) return;
+    const me = await get<LoginResponse>('/auth/me').catch(() => null);
+    if (me) {
+      setSession(me.user, me.csrf);
+      session.elevation = me.elevation ?? null;
+    }
   }
 
   function skipToMain() {
@@ -352,6 +369,11 @@
             <small>{t.roles[session.user.role]}{session.user.tenant ? ` · ${session.user.tenant}` : ''}</small>
           </span>
         </a>
+        {#if session.user.eligible_role && !session.elevation && !session.impersonating}
+          <button type="button" class="icon-btn" onclick={() => (elevateOpen = true)} aria-label={t.p30.elev.open(t.roles[session.user.eligible_role])} title={t.p30.elev.open(t.roles[session.user.eligible_role])}
+            ><IconElevate aria-hidden="true" /></button
+          >
+        {/if}
         <button type="button" class="icon-btn" onclick={logout} aria-label={t.nav.logout} title={t.nav.logout}><IconLogout aria-hidden="true" /></button>
       </header>
 
@@ -386,6 +408,16 @@
             {frozen.tenants.join(' · ')}
             {#if can.lockdown(session.user)}<a href={href(frozen.parts.length ? '/settings?tab=incident' : '/tenants')}>{t.p29.freeze.manage}</a>{/if}
           </p>
+        </div>
+      {/if}
+      {#if session.elevation}
+        <div class="glass priority" role="status">
+          <IconElevate aria-hidden="true" />
+          <p>
+            <strong>{t.p30.elev.banner(t.roles[session.elevation.role], fmtTime(session.elevation.until))}</strong>
+            {t.p30.elev.bannerStanding(t.roles[session.elevation.standing_role])}
+          </p>
+          <button type="button" class="small" onclick={endElevation}>{t.p30.elev.end}</button>
         </div>
       {/if}
       {#if session.stepUp}
@@ -445,3 +477,4 @@
 <Notices />
 <ConfirmDialog />
 <StepUpDialog />
+<ElevateDialog bind:open={elevateOpen} />

@@ -33,6 +33,7 @@ pub mod dashboard;
 pub mod devices;
 pub mod diag;
 pub mod edges;
+pub mod elevation;
 pub mod endpoint;
 pub mod filesearch;
 pub mod firewall;
@@ -750,6 +751,7 @@ pub fn router(st: St) -> Router {
         .merge(threat::routes())
         .merge(devices::routes())
         .merge(risk::routes())
+        .merge(elevation::routes())
         .merge(fullread::routes())
         .fallback(api_not_found);
     // peer API: only on replication TLS connections (see `connection_scope`)

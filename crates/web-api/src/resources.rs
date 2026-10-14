@@ -2173,6 +2173,10 @@ pub struct UserUpdate {
     /// unix time, or `null` = never expires
     #[serde(default, deserialize_with = "present")]
     expires: Option<Value>,
+    /// Phase 30: `admin` | `security_officer` the account may elevate to just in
+    /// time (appliance-wide local operators and viewers), `null` = none
+    #[serde(default, deserialize_with = "present")]
+    eligible_role: Option<Value>,
     /// own account only
     #[serde(default)]
     password: Option<String>,
@@ -2240,7 +2244,9 @@ pub async fn list_users(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>
         ))?
         .query_map([ctx.scope()], |r| User::from_row(r, 0))?
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(Json(json!(rows)))
+    let mut rows: Vec<Value> = rows.into_iter().map(|u| json!(u)).collect();
+    crate::elevation::user_extras(&c, &mut rows)?;
+    Ok(Json(Value::Array(rows)))
 }
 
 /// Creates an account pending activation and returns its one-time activation
@@ -2366,6 +2372,12 @@ pub fn apply_user_update(c: &Connection, p: &Value) -> ApiResult<Value> {
     if let Some(e) = p.get("expires") {
         c.execute("UPDATE users SET expires = ?2 WHERE id = ?1", params![id, e.as_i64()])?;
     }
+    if let Some(e) = p.get("eligible_role") {
+        c.execute(
+            "UPDATE users SET eligible_role = ?2 WHERE id = ?1",
+            params![id, e.as_str()],
+        )?;
+    }
     if let Some(h) = p["password_hash"].as_str() {
         c.execute("UPDATE users SET password_hash = ?2 WHERE id = ?1", params![id, h])?;
     }
@@ -2428,7 +2440,8 @@ pub async fn update_user(
     if old.auth == "oidc" {
         let role_change = r.role.as_ref().is_some_and(|x| *x != old.role);
         let tenant_change = r.tenant.as_ref().is_some_and(|t| t.as_str() != old.tenant.as_deref());
-        if r.password.is_some() || r.reset_totp || r.new_activation || role_change || tenant_change {
+        let eligible = r.eligible_role.as_ref().is_some_and(|e| !e.is_null());
+        if r.password.is_some() || r.reset_totp || r.new_activation || role_change || tenant_change || eligible {
             return Err(ApiError::bad(
                 "OIDC account: credentials, role and tenant come from the identity provider (mappings); \
                  only `disabled`, `can_download` and `expires` can be changed here",
@@ -2475,6 +2488,25 @@ pub async fn update_user(
     };
     crate::tenancy::check_user_change(&ctx, Some(&old), &role, tenant.as_deref())?;
     let disabled = r.disabled.unwrap_or(old.disabled);
+    // Phase 30: an eligible role needs an appliance-wide local operator or viewer; a role
+    // or tenant change that rules it out drops it
+    let eligible: Option<String> = match &r.eligible_role {
+        None => old.eligible_role.clone(),
+        Some(Value::Null) => None,
+        Some(Value::String(e)) if catalog::elevation::ELIGIBLE.contains(&e.as_str()) => {
+            if !catalog::elevation::can_hold(&role, tenant.as_deref(), &old.auth) {
+                return Err(ApiError::bad(
+                    "eligible_role: only appliance-wide local operators and viewers can be eligible for a role",
+                ));
+            }
+            Some(e.clone())
+        }
+        Some(_) => return Err(ApiError::bad("eligible_role: admin, security_officer or null")),
+    };
+    let eligible = eligible.filter(|_| catalog::elevation::can_hold(&role, tenant.as_deref(), &old.auth));
+    if eligible.is_some() && ctx.is_tenant_admin() {
+        return Err(ApiError::forbidden());
+    }
     let expires = match &r.expires {
         None => old.expires,
         Some(Value::Null) => None,
@@ -2508,7 +2540,9 @@ pub async fn update_user(
     let grant = validate::privileged(&role) && !disabled && !(was_priv && old.role == role);
     let removes_last = was_priv && (disabled || role != old.role) && others_enabled == 0;
     let cred_reset = r.new_activation && (validate::privileged(&old.role) || validate::privileged(&role));
-    let gated = grant || removes_last || cred_reset;
+    // an eligible role is a (deferred) grant of admin / security officer
+    let grant_eligible = eligible.is_some() && !disabled && eligible != old.eligible_role;
+    let gated = grant || removes_last || cred_reset || grant_eligible;
     if !approvals && removes_last && old.role == "admin" {
         return Err(ApiError::conflict(
             "the last enabled admin cannot be disabled or demoted",
@@ -2543,6 +2577,9 @@ pub async fn update_user(
     }
     if expires != old.expires {
         p["expires"] = json!(expires);
+    }
+    if eligible != old.eligible_role {
+        p["eligible_role"] = json!(eligible);
     }
     if let Some(pw) = r.password {
         if pw.len() > 1024 {

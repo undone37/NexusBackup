@@ -869,6 +869,12 @@ Deviations from the proposal (docs/netbackup-comparison.md "Tier 2") and decisio
   (`nexus-stats` `secs`). Sensitivity per source (`low`/`medium`/`high`, default medium) scales all three rules;
   lowering it is the approval `anomaly.sensitivity`. Duration alone raises a warning, everything else critical; all
   findings flag the snapshot and share the `anomaly` alert kind and key.
+- **Role elevation:** per session (not per account): other sessions and API tokens keep the standing role. Only
+  appliance-wide **local** operators and viewers can hold an eligible role (single sign-on accounts get their role from
+  the IdP mapping); granting it is the approval `user.update` like granting the role. The approval for each elevation
+  (`role.elevate`) is a setting, off by default (the proposal: "optionally"); switching it off is itself an approval.
+  The passkey policy of the eligible role applies to the elevation. Possible approvers stay the standing admins and
+  security officers. Posture check `posture.standing_admins` warns above two standing admins (break-glass + one).
 
 ### Phase 31 — Guest file index without the restore micro-VM (proposed 2026-10-13 by user request)
 - VM/CT disk file systems (GPT/MBR, LVM2, NTFS, ext4, FAT; XFS/btrfs/LDM later) parsed read-only by a sandboxed

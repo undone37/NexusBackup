@@ -30,6 +30,17 @@ export interface User {
   /** no sign-in from then on (unix time); null = never */
   expires?: number | null;
   last_login?: number | null;
+  /** Phase 30: the role this account may elevate to just in time (operators and viewers) */
+  eligible_role?: Role | null;
+  /** Phase 30 (GET /users): one of its sessions is elevated until then */
+  elevated_until?: number | null;
+}
+
+/** Phase 30: GET /auth/me `elevation` (this session acts in `role` until `until`). */
+export interface Elevation {
+  role: Role;
+  until: number;
+  standing_role: Role;
 }
 
 /** One-time activation code (or half of it) as returned by user create / new_activation / approve. */
@@ -1498,6 +1509,8 @@ export interface LoginResponse {
   freeze?: FreezeBanner | null;
   /** Phase 29: the account is marked by a risk signal: sensitive requests need a step-up */
   step_up?: StepUpState | null;
+  /** Phase 30: this session is elevated just in time */
+  elevation?: Elevation | null;
 }
 
 /** Phase 21b: the incident banner (GET /auth/me, /dashboard). */
@@ -2011,6 +2024,8 @@ export interface SecuritySettings {
   client_ip: string;
   client_allowed: boolean;
   pending: { session: number | null; mgmt_allow: number | null };
+  /** Phase 30: role elevation (`approval`: every elevation needs a second person) */
+  elevation: { settings: { approval: boolean }; pending: number | null; min_minutes: number; max_minutes: number };
 }
 
 /** Phase 21c: one of my passkeys (GET /auth/passkeys). */

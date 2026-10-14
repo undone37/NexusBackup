@@ -74,6 +74,7 @@ const HINTS: &[(&str, &str)] = &[
     ("login_new_device", "An account signed in from a browser family and client network it never used before (the message names both). If that was the account owner (new laptop, travel, a changed network), acknowledge and resolve the alert. If not, disable the account on the Users page, end its sessions and review the audit log for what it did."),
     ("change_tracking", "A scheduled full read of a source found data that changed since the previous snapshot although its change tracking (Proxmox VE dirty bitmap, agent metadata cache or USN journal, NAS metadata cache, ZFS diff) had not reported it (examples in the message and on the Dashboard, Change tracking). Snapshots taken with change tracking since the last verified full read may miss these changes. The newest snapshot is complete (it was read in full). Find the cause (storage or hypervisor bug, restored or cloned disks, tools that preserve timestamps, ransomware that does), keep the full-read interval short until it is understood, and resolve the alert by hand."),
     ("user_risk", "An account did something unusual for it (the message names the rule: sign-in at an hour it never used, a burst of requests that weaken protection, many deletes in a short time, far more downloads than usual). Until the mark ends or a security officer clears it, the account must re-enter its password and second factor before its next change in each session, and its API tokens cannot change anything. Ask the account owner; if it was not them, disable the account, end its sessions and review the audit log."),
+    ("role_elevation", "An account with an eligible role elevated one of its sessions to administrator or security officer for a limited time (the message names the account, the role, the end time and the reason; Phase 30). Nothing to do if the elevation was expected; if not, end the account's sessions on the Users page, remove its eligible role and review the audit log (role.elevate). Resolves when the elevation ends."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
 
@@ -103,6 +104,7 @@ const CATEGORY: &[(&str, &str)] = &[
     ("tenant_lockdown", "security"),
     ("login_new_device", "security"),
     ("user_risk", "security"),
+    ("role_elevation", "security"),
     ("dek_rotation", "security"),
     ("job_failed", "backup"),
     ("sla_missed", "backup"),
@@ -401,6 +403,7 @@ mod tests {
             ("tenant_lockdown", "security"),
             ("login_new_device", "security"),
             ("user_risk", "security"),
+            ("role_elevation", "security"),
             ("change_tracking", "backup"),
             ("something_new", "system"),
         ] {

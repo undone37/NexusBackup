@@ -14,6 +14,7 @@ pub mod alerting;
 pub mod anomaly;
 pub mod auth;
 pub mod console;
+pub mod elevation;
 pub mod firewall;
 pub mod fleet;
 pub mod forwarding;
@@ -921,7 +922,11 @@ ALTER TABLE sessions ADD COLUMN step_up_at INTEGER;
 /// - backup-duration and dedup-rate anomalies: `backup_stats.secs` (the
 ///   backup's duration from the connector's `nexus-stats` line, NULL for older
 ///   rows) and `anomaly_sensitivity`, the per-source sensitivity of the anomaly
-///   checks (`low` | `medium` | `high`; no row = `medium`).
+///   checks (`low` | `medium` | `high`; no row = `medium`);
+/// - just-in-time role elevation: `users.eligible_role` (`admin` |
+///   `security_officer` an operator or viewer may elevate to, NULL = none) and
+///   `sessions.elevated_role` / `sessions.elevated_until` (the session acts in
+///   that role until then; catalog::elevation).
 ///
 /// Purely additive: the previous release ignores the columns and tables.
 const SCHEMA_V45: &str = r#"
@@ -930,6 +935,9 @@ CREATE TABLE anomaly_sensitivity (
   tenant TEXT NOT NULL, source TEXT NOT NULL,
   level TEXT NOT NULL CHECK (level IN ('low','medium','high')),
   set_by TEXT NOT NULL, set_at INTEGER NOT NULL, PRIMARY KEY (tenant, source));
+ALTER TABLE users ADD COLUMN eligible_role TEXT CHECK (eligible_role IN ('admin','security_officer'));
+ALTER TABLE sessions ADD COLUMN elevated_role TEXT;
+ALTER TABLE sessions ADD COLUMN elevated_until INTEGER;
 "#;
 
 const MIGRATIONS: &[&str] = &[
@@ -3319,7 +3327,8 @@ mod tests {
             c.execute_batch(
                 "INSERT INTO tenants (name) VALUES ('t');
                  INSERT INTO backup_stats (tenant, source, time, read, logical, new_chunks, new_plain, new_stored)
-                   VALUES ('t','vm-1',1,1,1,1,1,1);",
+                   VALUES ('t','vm-1',1,1,1,1,1,1);
+                 INSERT INTO users (name, password_hash, totp_secret, role, created) VALUES ('ann','x','y','operator',1);",
             )
             .unwrap();
         }
@@ -3340,5 +3349,18 @@ mod tests {
                 []
             )
             .is_err());
+        // no eligible role, no elevated session; only admin / security_officer are eligible roles
+        let e: Option<String> = conn
+            .query_row("SELECT eligible_role FROM users", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(e, None);
+        conn.execute("UPDATE users SET eligible_role = 'admin'", []).unwrap();
+        assert!(conn.execute("UPDATE users SET eligible_role = 'operator'", []).is_err());
+        conn.execute(
+            "INSERT INTO sessions (id_hash, user_id, csrf, created, last_seen, ip, user_agent, elevated_role, elevated_until)
+             VALUES ('h', 1, 'c', 1, 1, '', '', 'admin', 99)",
+            [],
+        )
+        .unwrap();
     }
 }

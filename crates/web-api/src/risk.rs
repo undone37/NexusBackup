@@ -67,6 +67,7 @@ const WEAKENING: &[&str] = &[
     "settings.forwarding",
     "settings.anomaly",
     catalog::anomaly::LOWER_ACTION,
+    catalog::elevation::SETTING_ACTION,
     "replication_peer.delete",
     "replication_source.delete",
     catalog::holds::RELEASE_ACTION,

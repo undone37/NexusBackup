@@ -3777,6 +3777,7 @@ fn registered_routes() -> std::collections::BTreeSet<(String, String)> {
         include_str!("../src/tenant_idp.rs"),
         include_str!("../src/fullread.rs"),
         include_str!("../src/risk.rs"),
+        include_str!("../src/elevation.rs"),
     ] {
         for piece in src.split(".route(").skip(1) {
             let piece = piece.split(".merge(").next().unwrap().split("\n}").next().unwrap();
@@ -4124,6 +4125,10 @@ async fn tenant_admin_routes_classified() {
         ("POST", "/auth/step-up", "/api/v1/auth/step-up".into(), e(), 'Y'),
         ("GET", "/risk", "/api/v1/risk".into(), none(), 'N'),
         ("POST", "/users/{id}/risk/clear", "/api/v1/users/1/risk/clear".into(), e(), 'N'),
+        // Phase 30: role elevation is for appliance-wide accounts (a tenant admin is never eligible)
+        ("POST", "/auth/elevate", "/api/v1/auth/elevate".into(), Some(json!({"role": "admin", "minutes": 30, "reason": "x"})), 'N'),
+        ("POST", "/auth/elevate/end", "/api/v1/auth/elevate/end".into(), e(), 'Y'),
+        ("PUT", "/settings/elevation", "/api/v1/settings/elevation".into(), Some(json!({"approval": true})), 'N'),
     ];
     let classified: std::collections::BTreeSet<(String, String)> =
         table.iter().map(|(m, p, ..)| (m.to_string(), p.to_string())).collect();

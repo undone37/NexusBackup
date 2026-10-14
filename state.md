@@ -594,7 +594,15 @@ Scope: docs/netbackup-comparison.md "Tier 2", one item after the other (code, te
   sensitivity low/medium/high; one `anomaly` alert per run, every finding flags the snapshot;
   `PUT /stats/sensitivity` (lowering = approval `anomaly.sensitivity`), trends with read/secs/sensitivity; UI
   (Change trends: duration sparkline, sensitivity select), mock, manual 11, docs/ransomware-signals.md
-- [ ] 2 just-in-time role elevation
+- [x] 2 just-in-time role elevation: `users.eligible_role` (admin / security officer for appliance-wide local
+  operators and viewers; granting = approval `user.update`), `sessions.elevated_role/elevated_until`
+  (catalog::elevation); `POST /auth/elevate` (15 min..8 h, reason, password + TOTP or passkey; passkey only when the
+  passkey policy covers the role), optional approval `role.elevate` (setting `elevation.approval`, switching it off =
+  approval `security.elevation`), `POST /auth/elevate/end`, sign-out / expiry / account change end it; info alert
+  `role_elevation` (resolved at the end, scheduler housekeeping for expired ones), audit `role.elevate(_end)`;
+  `/auth/me` `elevation`, `/users` `eligible_role` + `elevated_until`; posture check `posture.standing_admins`
+  (nexus-diag, > 2 standing admins); UI: Elevate button + dialog, banner with End now, Users page eligible role,
+  Settings → Security "Role elevation"; mock; manual 09/11/15, docs/control-plane.md "Role elevation", T66
 - [ ] 3 instant rollback of a PVE VM
 - [ ] 4 hybrid post-quantum key wrapping
 - [ ] 5 second offsite copy with its own retention

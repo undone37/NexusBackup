@@ -49,7 +49,9 @@
 
   let open = $state(false);
   let editing: User | null = $state(null);
-  let f = $state({ name: '', password: '', role: 'operator' as Role, tenant: '', disabled: false, canDownload: true, expires: '' });
+  let f = $state({ name: '', password: '', role: 'operator' as Role, tenant: '', disabled: false, canDownload: true, expires: '', eligible: '' });
+  // Phase 30: an eligible role for appliance-wide local operators and viewers (just-in-time elevation)
+  const canBeEligible = $derived((f.role === 'operator' || f.role === 'viewer') && !f.tenant && !isSso(editing) && !tenantAdmin);
   // Phase 14d: download privilege defaults by role; expiry as a date (end of that day, local time)
   const roleDownloads = (r: Role) => r === 'admin' || r === 'operator' || r === 'tenant_admin' || r === 'tenant_user';
   const dateOf = (ts: number | null | undefined) => {
@@ -99,6 +101,7 @@
       disabled: x?.disabled ?? false,
       canDownload: x?.can_download ?? true,
       expires: dateOf(x?.expires),
+      eligible: x?.eligible_role ?? '',
     };
     downloadTouched = false;
     re = { password: '', totp: '' };
@@ -127,6 +130,8 @@
       const body: Record<string, unknown> = isSso(editing) ? { disabled: f.disabled } : { role: f.role, tenant, disabled: f.disabled };
       if (f.canDownload !== editing.can_download) body.can_download = f.canDownload;
       if (tsOf(f.expires) !== (editing.expires ?? null)) body.expires = tsOf(f.expires);
+      const eligible = canBeEligible ? f.eligible || null : null;
+      if (eligible !== (editing.eligible_role ?? null)) body.eligible_role = eligible;
       const id = editing.id;
       const extra = f.password && isSelf(editing) ? reauth().then((a) => ({ password: f.password, ...a })) : Promise.resolve({});
       const r = await act(
@@ -234,7 +239,11 @@
           {#each items as x (x.id)}
             <tr>
               <td><strong>{x.name}</strong></td>
-              <td>{t.roles[x.role] ?? x.role}</td>
+              <td>
+                {t.roles[x.role] ?? x.role}
+                {#if x.eligible_role}<span class="chip accent" title={t.p30.elev.eligibleHint}>{t.p30.elev.eligibleChip(t.roles[x.eligible_role])}</span>{/if}
+                {#if x.elevated_until}<span class="chip warn">{t.p30.elev.elevatedChip(fmtTime(x.elevated_until))}</span>{/if}
+              </td>
               <td>{x.tenant ?? t.allTenants}</td>
               <td>
                 {#if x.disabled && x.pending_activation}
@@ -319,6 +328,17 @@
       </fieldset>
     {/if}
     {#if privileged && editing?.role !== f.role}<p class="banner info">{t.users.privilegedHint}</p>{/if}
+    {#if editing && !tenantAdmin && !isSso(editing)}
+      <div class="field">
+        <label for="u-eligible">{t.p30.elev.eligible}</label>
+        <select id="u-eligible" bind:value={f.eligible} disabled={!canBeEligible} aria-describedby="u-eligible-hint">
+          <option value="">{t.p30.elev.eligibleNone}</option>
+          <option value="admin">{t.roles.admin}</option>
+          <option value="security_officer">{t.roles.security_officer}</option>
+        </select>
+        <div class="hint" id="u-eligible-hint">{t.p30.elev.eligibleHint}</div>
+      </div>
+    {/if}
     {#if f.role === 'viewer'}<p class="muted">{t.access.viewerHint}</p>{/if}
     <div class="form-grid">
       <div class="field">

@@ -7,6 +7,9 @@
 //! enabled, an admin or security officer whose loss would leave fewer than two
 //! possible approvers (nobody could approve re-enabling anyone). Pending
 //! activations are not dormant (their code expires on its own).
+//!
+//! Phase 30: the info alerts of just-in-time elevations that ended without a
+//! request (expired, session gone) are resolved (catalog::elevation).
 
 use crate::{Scheduler, ACTOR};
 use anyhow::Result;
@@ -22,6 +25,7 @@ impl Scheduler {
                 "DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE expires IS NOT NULL AND expires <= ?1)",
                 [now],
             )?;
+            catalog::elevation::resolve_ended(&c, ACTOR)?;
             (n, catalog::access::dormant_days(&c)?)
         };
         if ended > 0 {

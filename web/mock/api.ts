@@ -133,6 +133,8 @@ interface User {
   risk_since?: number | null;
   risk_until?: number | null;
   risk_reason?: string | null;
+  /** Phase 30: role this operator / viewer may elevate to just in time */
+  eligible_role?: Role | null;
 }
 interface Agent {
   id: string;
@@ -293,7 +295,7 @@ const db = {
   quorum: [] as Json[],
   audit: [] as Json[],
   alerts: [] as Json[],
-  sessions: new Map<string, { id: number; userId: number; csrf: string; created: number; last: number; ip: string; ua: string; imp?: { tenant: string; role: 'viewer' | 'tenant_admin' }; step_up_at?: number }>(),
+  sessions: new Map<string, { id: number; userId: number; csrf: string; created: number; last: number; ip: string; ua: string; imp?: { tenant: string; role: 'viewer' | 'tenant_admin' }; step_up_at?: number; elev?: { role: Role; until: number } }>(),
   /** Phase 19b: policies assigned to tenants (tenant admins use only these), deleted tenant names */
   tenantPolicies: {} as Record<string, number[]>,
   tombstones: [] as { name: string; uid: string | null; deleted_at: number; deleted_by: string }[],
@@ -320,6 +322,8 @@ const db = {
   cfgBackup: { appliance_id: null as string | null, latest: null as Json | null },
   /** Phase 13e setting `anomaly` */
   anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30, ransom_notes: [] } as Json,
+  /** Phase 30: role elevation needs a second person */
+  elevation: { approval: false },
   /** Phase 30: per-source anomaly sensitivity (`tenant/source` -> level; missing = medium) */
   sensitivity: { 'initech/vm-102': 'high' } as Record<string, string>,
   /** Phase 21e: admin-supplied YARA rule files and finished snapshot scans */
@@ -1123,6 +1127,10 @@ function seed() {
   const contractor = mk('contractor', 'operator', null, t - 86400 * 20);
   Object.assign(contractor, { can_download: false, expires: day(-30, 0), last_login: t - 86400 * 5 });
   db.users.push(contractor);
+  // Phase 30: a team lead who administers just in time (operator, eligible for admin)
+  const lead = mk('lead', 'operator', null, t - 86400 * 40);
+  Object.assign(lead, { eligible_role: 'admin', last_login: t - 86400 });
+  db.users.push(lead);
   // the admin's other sessions (Account → Sessions)
   const admin0 = db.users[0];
   db.sessions.set('a1'.repeat(32), { id: 1, userId: admin0.id, csrf: 'x', created: t - 3 * 3600, last: t - 1200, ip: '198.51.100.23', ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0' });
@@ -1931,6 +1939,7 @@ const pub = (u: User) => ({
   can_download: canDownload(u),
   expires: u.expires ?? null,
   last_login: u.last_login ?? null,
+  eligible_role: u.eligible_role ?? null,
 });
 const canDownload = (u: User) => u.can_download ?? ['admin', 'operator', 'tenant_admin', 'tenant_user'].includes(u.role);
 const PRIV: Role[] = ['admin', 'security_officer'];
@@ -2213,6 +2222,11 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'settings.anomaly':
       db.anomaly = structuredClone(p.anomaly);
       break;
+    case 'role.elevate':
+      return startElevation(p);
+    case 'security.elevation':
+      db.elevation = structuredClone(p.elevation);
+      break;
     case 'anomaly.sensitivity': {
       const k = `${p.tenant}/${p.source}`;
       if ((db.sensitivity[k] ?? 'medium') !== p.old)
@@ -2415,6 +2429,8 @@ on('POST', '/auth/login', async (c) => {
   return [200, { csrf, user: pub(u) }];
 });
 on('POST', '/auth/logout', (c) => {
+  const s = c.sid ? db.sessions.get(c.sid) : undefined;
+  if (s?.elev) resolveElevation(s.userId, s.id);
   if (c.sid) db.sessions.delete(c.sid);
   c.res.setHeader('Set-Cookie', 'nx_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
   return [200, { ok: true }];
@@ -2432,8 +2448,80 @@ on('GET', '/auth/me', (c) => {
       incident: incidentBanner(u),
       freeze: freezeBanner(u),
       step_up: stepUpState(u, c.sid),
+      elevation: elevationOf(u, c.sid),
     },
   ];
+});
+
+// Phase 30: just-in-time role elevation
+function elevationOf(u: User, sid: string | null): Json | null {
+  const e = sid ? db.sessions.get(sid)?.elev : undefined;
+  if (!e) return null;
+  const standing = db.users.find((x) => x.id === u.id)?.role ?? u.role;
+  return { role: e.role, until: e.until, standing_role: standing };
+}
+function resolveElevation(userId: number, sessionId: number) {
+  for (const a of db.alerts.filter((x) => x.key === `role_elevation:${userId}:${sessionId}` && !x.resolved_at))
+    Object.assign(a, { resolved_at: now(), resolved_by: 'web-api', auto: true });
+}
+function startElevation(p: Json): Json {
+  const s = [...db.sessions.values()].find((x) => x.id === p.session && x.userId === p.user_id);
+  const x = db.users.find((y) => y.id === p.user_id && y.eligible_role === p.role && !y.disabled);
+  if (!s || !x) throw new HttpError(409, 'the requesting session has ended or the account is no longer eligible: reject this request and ask again');
+  const until = now() + p.minutes * 60;
+  s.elev = { role: p.role, until };
+  const hm = new Date(until * 1000).toISOString().slice(11, 16);
+  db.alerts.push(
+    mkAlert({
+      ts: now(), severity: 'info', kind: 'role_elevation', key: `role_elevation:${x.id}:${s.id}`, tenant: null,
+      message: `account ${x.name} (${x.role}) elevated to ${p.role} for ${p.minutes} min (until ${hm} UTC): ${p.reason}`,
+    }),
+  );
+  return { elevated: { role: p.role, until } };
+}
+on('POST', '/auth/elevate', async (c) => {
+  const u = need(c.user);
+  const sess = db.sessions.get(c.sid!)!;
+  if (sess.imp) throw new HttpError(403, 'forbidden');
+  if (sess.elev) throw new HttpError(409, 'this session is elevated already: end the elevation first');
+  const real = db.users.find((x) => x.id === u.id)!;
+  const { role, minutes, reason, current_password, current_totp } = c.body ?? {};
+  if (real.eligible_role !== role || !['operator', 'viewer'].includes(real.role) || real.tenant || real.auth === 'oidc')
+    throw new HttpError(403, `this account is not eligible for the role ${role}`);
+  if (!(Number.isInteger(minutes) && minutes >= 15 && minutes <= 480)) throw new HttpError(400, 'minutes: 15..=480');
+  const why = String(reason ?? '').trim();
+  if (!why || why.length > 200) throw new HttpError(400, 'reason: 1 to 200 characters, one line');
+  if (current_password !== real.password || !secondOk(real, current_totp)) {
+    await audit(u.name, 'auth.reauth_failed', `user/${u.name}`, { for: 'role elevation' });
+    throw new HttpError(403, 're-authentication failed: wrong current password, TOTP code or passkey');
+  }
+  const p = { user: u.name, user_id: u.id, session: sess.id, role, minutes, reason: why };
+  if (db.elevation.approval) return quorum(u, 'role.elevate', p);
+  const out = startElevation(p);
+  await audit(u.name, 'role.elevate', `user/${u.name}`, { params: p });
+  return [200, out];
+});
+on('POST', '/auth/elevate/end', async (c) => {
+  const u = need(c.user);
+  const sess = db.sessions.get(c.sid!)!;
+  if (!sess.elev) throw new HttpError(409, 'this session is not elevated');
+  const role = sess.elev.role;
+  delete sess.elev;
+  resolveElevation(u.id, sess.id);
+  const standing = db.users.find((x) => x.id === u.id)!.role;
+  await audit(u.name, 'role.elevate_end', `user/${u.name}`, { role, standing_role: standing, reason: 'ended' });
+  return [200, { role: standing }];
+});
+on('PUT', '/settings/elevation', async (c) => {
+  const u = need(c.user, 'admin');
+  const { approval, ...rest } = c.body ?? {};
+  if (Object.keys(rest).length) throw new HttpError(400, `unknown field \`${Object.keys(rest)[0]}\``);
+  if (typeof approval !== 'boolean') throw new HttpError(400, 'approval: boolean required');
+  const p = { elevation: { approval }, old: structuredClone(db.elevation) };
+  if (db.elevation.approval && !approval) return quorum(u, 'security.elevation', p);
+  db.elevation = { approval } as typeof db.elevation;
+  await audit(u.name, 'security.elevation', 'settings/elevation', p);
+  return [200, { approval }];
 });
 // Phase 19b: "view as tenant" (read-only at once) / "act as tenant admin" (approval `tenant.impersonate`)
 on('POST', '/tenants/:name/impersonate', async (c, [name]) => {
@@ -3505,7 +3593,9 @@ on('POST', '/agents/:id/p2v', async (c, [id]) => {
 // users
 on('GET', '/users', (c) => {
   const u = need(c.user, 'admin', 'tenant_admin');
-  return [200, db.users.filter((x) => !u.tenant || x.tenant === u.tenant).map(pub)];
+  const elevated = (id: number) =>
+    Math.max(0, ...[...db.sessions.values()].filter((s) => s.userId === id && s.elev && s.elev.until > now()).map((s) => s.elev!.until)) || null;
+  return [200, db.users.filter((x) => !u.tenant || x.tenant === u.tenant).map((x) => ({ ...pub(x), elevated_until: elevated(x.id) }))];
 });
 on('POST', '/users', async (c) => {
   const u = need(c.user, 'admin', 'tenant_admin');
@@ -3567,6 +3657,17 @@ on('PUT', '/users/:id', async (c, [id]) => {
     if (b.expires && (p.role ?? x.role) === 'admin' && !others.length) throw new HttpError(409, 'expires: the last admin without an expiry date cannot get one');
     p.expires = b.expires ?? null;
   }
+  // Phase 30: an eligible role for appliance-wide local operators and viewers
+  const role1 = p.role ?? x.role;
+  const tenant1 = p.tenant !== undefined ? p.tenant : x.tenant;
+  const holds = ['operator', 'viewer'].includes(role1) && !tenant1 && x.auth !== 'oidc';
+  if (b.eligible_role !== undefined && b.eligible_role !== null) {
+    if (!PRIV.includes(b.eligible_role)) throw new HttpError(400, 'eligible_role: admin, security_officer or null');
+    if (!holds) throw new HttpError(400, 'eligible_role: only appliance-wide local operators and viewers can be eligible for a role');
+    if (u.role === 'tenant_admin') throw new HttpError(403, 'forbidden');
+  }
+  const eligible = holds ? (b.eligible_role !== undefined ? b.eligible_role : (x.eligible_role ?? null)) : null;
+  if (eligible !== (x.eligible_role ?? null)) p.eligible_role = eligible;
   if (b.password) p.password = b.password;
   const extra: Json = {};
   if (b.reset_totp) {
@@ -3582,7 +3683,8 @@ on('PUT', '/users/:id', async (c, [id]) => {
     db.approvals &&
     ((p.role && PRIV.includes(p.role)) || // granting
       (isPriv && x.disabled && p.disabled === false) || // re-enabling
-      (isPriv && b.new_activation)); // new credentials for another privileged user
+      (isPriv && b.new_activation) || // new credentials for another privileged user
+      (p.eligible_role && !(p.disabled ?? x.disabled))); // an eligible role is a deferred grant
   if (gated) {
     // Credentials are applied on approval but never shown in the quorum params.
     const { password, totp_secret, ...shown } = p;
@@ -3789,6 +3891,7 @@ const securityState = () => {
     client_ip: CLIENT_IP,
     client_allowed: !allow.length || allow.some((c) => inCidr(CLIENT_IP, c)),
     pending: { session: pend('security.session'), mgmt_allow: fwPending('web') },
+    elevation: { settings: structuredClone(db.elevation), pending: pend('security.elevation'), min_minutes: 15, max_minutes: 480 },
   };
 };
 on('GET', '/auth/banner', () => [200, { banner: db.security.login_banner }]);
@@ -4916,7 +5019,7 @@ const ALERT_CATEGORY: Record<string, string> = {
   mgmt_allow_reset: 'security', firewall_reset: 'security', legal_hold_advisory: 'security', cert_expiry: 'security',
   account_dormant: 'security', inventory: 'security', clock_skew: 'security', gc_quorum: 'security', gc_confirm: 'security',
   vault_disabled: 'security', incident: 'security', dek_rotation: 'security',
-  scan_hit: 'security', hash_hunt_hit: 'security', tenant_lockdown: 'security', login_new_device: 'security', user_risk: 'security', change_tracking: 'backup',
+  scan_hit: 'security', hash_hunt_hit: 'security', tenant_lockdown: 'security', login_new_device: 'security', user_risk: 'security', role_elevation: 'security', change_tracking: 'backup',
   job_failed: 'backup', sla_missed: 'backup', paused: 'backup', consistency: 'backup', backup_inconsistent: 'backup',
   orphaned: 'backup', verify: 'backup', snapshot_damaged: 'backup', offsite_lag: 'backup', inventory_refresh: 'backup', config: 'backup',
   vmid_reused: 'backup', restore_priority: 'backup', index_backlog: 'backup', index_space: 'system',
@@ -6952,6 +7055,14 @@ async function handle(req: Req, res: Res) {
         user = db.users.find((u) => u.id === sess.userId && !u.disabled && !tenantOff(u.tenant) && !(u.expires && u.expires <= now())) ?? null;
       }
     }
+    // Phase 30: just-in-time elevation of this session (ends at expiry or when the account changed)
+    if (user && sess?.elev) {
+      if (sess.elev.until > now() && user.eligible_role === sess.elev.role && ['operator', 'viewer'].includes(user.role)) user = { ...user, role: sess.elev.role };
+      else {
+        delete sess.elev;
+        resolveElevation(user.id, sess.id);
+      }
+    }
     // Phase 19b: "view as tenant" — the admin acts with the role intersection inside that tenant
     impersonator = null;
     if (user && sess?.imp) {
@@ -7805,6 +7916,10 @@ function postureChecks(): [string, string, boolean, string][] {
   const failing = sinks.filter((k) => db.forwardErr[k]);
   const unlocked = db.tenants.filter((x) => !(x.offsite?.remote?.type === 's3' && x.offsite.remote.lock)).map((x) => x.name);
   const allow = db.firewall.web.allow;
+  // Phase 30: standing administrators vs. just-in-time elevation
+  const standing = db.users.filter((u) => u.role === 'admin' && !u.disabled && !u.act && !u.tenant).map((u) => u.name);
+  const jit = db.users.filter((u) => u.eligible_role && !u.disabled).length;
+  const jitTail = jit ? `; ${jit} account(s) elevate just in time` : '';
   return [
     ['posture.approvals', 'Security posture: approvals', db.approvals && approvers.length >= 3,
       `approvals ${db.approvals ? 'on' : 'off'}, ${approvers.length} possible approver(s) (active admins and security officers)`],
@@ -7817,6 +7932,10 @@ function postureChecks(): [string, string, boolean, string][] {
     ['posture.certificate', 'Security posture: own web certificate', !!p14.cert.web, p14.cert.web ? 'imported certificate CN=backup.example.com' : 'the self-signed certificate is in use; import one signed by your CA'],
     ['posture.dormant_admins', 'Security posture: dormant administrators', !dormant.length,
       dormant.length ? `no login for ${dormantDays} days: ${dormant.join(', ')}` : `every admin and security officer logged in within ${dormantDays} days`],
+    ['posture.standing_admins', 'Security posture: standing administrators', standing.length <= 2,
+      standing.length > 2
+        ? `${standing.length} standing administrators (${standing.join(', ')}); keep at most 2 (break-glass and one more) and give the others an eligible role${jitTail}`
+        : `${standing.length} standing administrator(s)${jitTail}`],
     ['posture.totp', 'Security posture: second factor', true, `${db.users.filter((u) => !u.disabled).length} local account(s) with password + TOTP`],
     ['posture.grub', 'Security posture: boot menu password', true, 'boot menu password set'],
   ];

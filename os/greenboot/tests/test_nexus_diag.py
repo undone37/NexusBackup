@@ -204,7 +204,7 @@ class Host(unittest.TestCase):
         db.execute("CREATE TABLE audit (seq INTEGER PRIMARY KEY, ts INTEGER, actor TEXT, action TEXT, target TEXT, details TEXT, prev_hash TEXT, hash TEXT)")
         db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, password_hash TEXT, totp_secret TEXT NOT NULL DEFAULT '',"
                    " role TEXT NOT NULL DEFAULT 'operator', disabled INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL DEFAULT 0,"
-                   " activation_hash TEXT, auth TEXT NOT NULL DEFAULT 'local', expires INTEGER, last_login INTEGER)")
+                   " activation_hash TEXT, auth TEXT NOT NULL DEFAULT 'local', expires INTEGER, last_login INTEGER, eligible_role TEXT)")
         db.execute("INSERT INTO users (name, password_hash, totp_secret, role) VALUES ('alice', '$argon2id$secret', 'enc', 'admin')")
         db.execute("CREATE TABLE tenants (name TEXT PRIMARY KEY, offsite TEXT NOT NULL DEFAULT '{}')")
         db.execute("CREATE TABLE forward_state (sink TEXT PRIMARY KEY, dest TEXT, last_ok INTEGER, failing_since INTEGER)")
@@ -398,7 +398,7 @@ class Checks(Host):
 
 class Posture(Host):
     POSTURE = ["posture.approvals", "posture.forwarding", "posture.offsite_lock", "posture.inbound", "posture.certificate",
-               "posture.dormant_admins", "posture.totp", "posture.grub"]
+               "posture.dormant_admins", "posture.standing_admins", "posture.totp", "posture.grub"]
 
     def posture(self):
         return {k: v for k, v in self.by_id(self.m.checks()).items() if k.startswith("posture.")}
@@ -407,7 +407,7 @@ class Posture(Host):
         cs = self.posture()
         self.assertEqual(sorted(cs), sorted(self.POSTURE))
         for cid, c in cs.items():
-            want = "pass" if cid == "posture.totp" else "warn"
+            want = "pass" if cid in ("posture.totp", "posture.standing_admins") else "warn"
             self.assertEqual((c["status"], c["severity"]), (want, 1 if want == "pass" else 2), c)
             self.assertEqual(c["manual"], "15-troubleshooting-faq.md#check-" + cid.replace(".", "-"))
         self.assertEqual(self.m.blocking(list(cs.values())), [])
@@ -450,6 +450,22 @@ class Posture(Host):
             self.assertEqual(cs[cid]["status"], "warn", cs[cid])
         self.assertIn("globex", cs["posture.offsite_lock"]["detail"])
         self.assertIn("sam", cs["posture.dormant_admins"]["detail"])
+
+    def test_standing_admins(self):
+        db = self._db
+        for n in ("bob", "carl"):
+            db.execute("INSERT INTO users (name, totp_secret, role) VALUES (?, 'enc', 'admin')", (n,))
+        db.execute("INSERT INTO users (name, totp_secret, role, eligible_role) VALUES ('otto', 'enc', 'operator', 'admin')")
+        db.commit()
+        c = self.posture()["posture.standing_admins"]
+        self.assertEqual(c["status"], "warn", c)
+        self.assertIn("3 standing administrators (alice, bob, carl)", c["detail"])
+        self.assertIn("1 account(s) elevate just in time", c["detail"])
+        db.execute("UPDATE users SET role = 'operator', eligible_role = 'admin' WHERE name = 'carl'")
+        db.commit()
+        c = self.posture()["posture.standing_admins"]
+        self.assertEqual(c["status"], "pass", c)
+        self.assertEqual(c["detail"], "2 standing administrator(s); 2 account(s) elevate just in time")
 
     def test_no_catalog_skips(self):
         self._db.close()

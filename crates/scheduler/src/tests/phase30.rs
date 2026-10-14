@@ -106,3 +106,36 @@ fn duration_and_dedup_rate_anomalies() {
         .unwrap();
     assert_eq!(alerts_of(&s, "anomaly").len(), 2, "38 minutes are under the low limit");
 }
+
+/// Role elevation: the housekeeping resolves the info alert of an elevation
+/// that ended by itself and keeps the one of a running elevation.
+#[test]
+fn ended_elevations_resolve_their_alert() {
+    let e = env(1);
+    let s = sched(&e);
+    let c = || s.db.conn();
+    c().execute_batch(
+        "INSERT INTO users (id, name, password_hash, totp_secret, role, created, eligible_role)
+           VALUES (50, 'bob', 'x', 'y', 'operator', 1, 'admin');
+         INSERT INTO sessions (id, id_hash, user_id, csrf, created, last_seen) VALUES (1, 'a', 50, 'c', 1, 1),
+           (2, 'b', 50, 'c', 1, 1);",
+    )
+    .unwrap();
+    catalog::elevation::start(&c(), 1, 50, "admin", 15, "patch")
+        .unwrap()
+        .unwrap();
+    catalog::elevation::start(&c(), 2, 50, "admin", 15, "patch")
+        .unwrap()
+        .unwrap();
+    c().execute("UPDATE sessions SET elevated_until = 10 WHERE id = 2", [])
+        .unwrap();
+    s.check_accounts(catalog::now()).unwrap();
+    let open: Vec<String> = c()
+        .prepare("SELECT key FROM alerts WHERE kind = 'role_elevation' AND resolved_at IS NULL")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(open, vec!["role_elevation:50:1".to_owned()]);
+}

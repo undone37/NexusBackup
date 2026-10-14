@@ -416,6 +416,39 @@ mode if needed ([14 Disaster recovery](14-disaster-recovery.md#incident-mode)).
 > **Status:** Implemented in Phase 29 (API tests, demo backend). Single sign-on accounts have no local password: they
 > cannot complete the step-up in this version; clear their mark after checking with the owner.
 
+### Just-in-time elevation
+
+People who administer the appliance now and then do not need the administrator role all day. Give them a lower
+standing role, **Operator** or **Viewer**, and an **eligible role** (**Administrator** or **Security officer**): when
+they need it, they elevate one session to it for a limited time, and a stolen password or session of that account is
+worth much less the rest of the time.
+
+**Set it up:** on the **Users** page, **Edit** the account (an appliance-wide local operator or viewer: no tenant, no
+single sign-on) and choose the **Eligible role (just in time)**. Granting it needs a second person when approvals are
+enabled, like granting the role itself. Choosing **None** removes it at once. The Users page shows the eligible role
+and, while an elevation lasts, **elevated until** with its end.
+
+**Elevate:** the account sees an **Elevate** button (shield icon) in the top bar. Choose for how long (15 minutes to
+8 hours), enter a reason (a ticket number, for example) and confirm with your password and an authenticator code,
+or leave the code empty to use a passkey (only a passkey when passkeys are required for that role). The session then
+acts in the eligible role; a banner shows the role and the end time. **End now** in the banner, signing out, or any
+change of the account ends it earlier; other sessions of the account and its API tokens keep the standing role.
+
+![Elevate just in time](images/elevate-dialog.png)
+
+![The banner of an elevated session](images/elevated-banner.png)
+
+Every elevation raises an info alert `role_elevation` (resolved when it ends) and is audited (`role.elevate`,
+`role.elevate_end`). Under **Settings → Security → Role elevation** an administrator can require a **second person
+for every elevation**: the elevation then becomes a request (`role.elevate`) on the **Approvals** page and starts when
+it is approved. Switching that requirement off again needs approval.
+
+The posture check **standing administrators** (Settings → Diagnostics) warns when more than two accounts hold the
+administrator role permanently: keep a break-glass account and one more, and give everybody else an eligible role.
+
+> **Status:** Implemented in Phase 30 (API and housekeeping tests, demo backend). Single sign-on accounts cannot hold
+> an eligible role in this version (their role comes from the identity provider's group mapping).
+
 ### Concurrent sessions
 
 **Settings → Security → Sessions per account** limits how many browsers may be signed in with one account at the

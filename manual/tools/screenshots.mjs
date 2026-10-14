@@ -1559,6 +1559,21 @@ async function main() {
       await settle();
       await login('admin');
     }],
+    // Phase 30: just-in-time elevation of the operator "lead" (eligible for admin)
+    ['p30-elevation', async () => {
+      await login('lead');
+      await ev(`document.querySelector('header button[aria-label^="Elevate to"]').click(); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #el-reason')`, 'elevate dialog');
+      await ev(`$fill('#el-min', '60'); $fill('#el-reason', 'CHG-2231: rotate the web certificate'); $fill('#el-pw', 'nexus'); $fill('#el-totp', '492039'); return true;`);
+      await shot('elevate-dialog');
+      await ev(`$click('Elevate'); return true;`);
+      await until(`return !document.querySelector('dialog[open]') && document.body.innerText.includes('Elevated to Administrator')`, 'elevated banner');
+      await settle();
+      await shot('elevated-banner');
+      await ev(`$click('End now'); return true;`);
+      await settle();
+      await login('admin');
+    }],
   ];
 
   let failed = 0;
