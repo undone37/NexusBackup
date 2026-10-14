@@ -849,6 +849,16 @@ export const en = {
     trendNoFiles: "no file index",
     trendChart: (what: string, src: string, n: number) => `${what} of ${src} over the last ${n} backups`,
     trendsEmpty: "No measured backups yet.",
+    // Phase 30: duration and dedup rate, per-source sensitivity
+    trendDuration: "Duration",
+    trendNoDuration: "not measured",
+    trendNew: (pct: string) => `${pct} of the data read was new`,
+    sensitivity: "Sensitivity",
+    sensitivityLabel: (src: string) => `Anomaly sensitivity of ${src}`,
+    sensLevel: { low: "Low", medium: "Medium", high: "High" } as Record<string, string>,
+    sensHint:
+      "How readily a backup counts as anomalous: new data, data that did not deduplicate and the backup's duration against the system's own median. High flags smaller deviations; lowering it needs approval by a second person.",
+    sensSaved: (src: string, level: string) => `Sensitivity of ${src}: ${level}.`,
     title: 'Sources',
     lede: 'Systems the appliance backs up: hypervisors, hosts, NAS systems, file shares and plugin sources.',
     new: 'New source',

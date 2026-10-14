@@ -1265,11 +1265,25 @@ export interface DiffResult {
   entries?: DiffEntry[];
 }
 
+/** Phase 30: per-source sensitivity of the anomaly checks. */
+export type Sensitivity = 'low' | 'medium' | 'high';
+
 /** GET /stats/trends: the last 30 runs of one source, oldest first. */
 export interface SourceTrend {
   tenant: string;
   source: string;
-  runs: { time: number; new_plain: number; new_stored: number; files_changed: number | null; anomalous: boolean }[];
+  /** Phase 30 */
+  sensitivity: Sensitivity;
+  runs: {
+    time: number;
+    new_plain: number;
+    new_stored: number;
+    files_changed: number | null;
+    anomalous: boolean;
+    /** Phase 30: bytes read and the backup's duration (null: older connector) */
+    read: number;
+    secs: number | null;
+  }[];
 }
 
 /** Plugin snapshot metadata (protocol v1.6 `SnapshotMeta`); known keys are shown. */

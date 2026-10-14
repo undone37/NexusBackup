@@ -30,6 +30,8 @@ pub const IMAGE_CHUNK_SIZE: usize = 4 << 20;
 pub const CDC_MIN: u32 = 128 << 10;
 pub const CDC_AVG: u32 = 512 << 10;
 pub const CDC_MAX: u32 = 4 << 20;
+/// Longest backup duration `stats_line` reports (`secs`): 7 days.
+pub const STATS_MAX_SECS: u64 = 7 * 86_400;
 
 pub struct Options {
     /// Lock every new snapshot gets (plan: 14 days).
@@ -490,15 +492,25 @@ impl Store {
     /// The connectors' machine-readable per-snapshot line (docs/storage-accounting.md):
     /// `nexus-stats {"source","time","read","logical","new_chunks","new_plain","new_stored"}`.
     /// `read` = bytes read from the source, `logical` = the snapshot's size (sum of
-    /// its indexes), `new` = `written().since(<before the snapshot>)`.
+    /// its indexes), `new` = `written().since(<before the snapshot>)`. Phase 30:
+    /// `secs` = seconds from the snapshot time (taken when the backup started) to
+    /// this line, the backup's duration; left out when the snapshot time lies in
+    /// the future or more than [`STATS_MAX_SECS`] back (imports, tests).
     pub fn stats_line(&self, m: &Manifest, read: u64, new: Written) -> io::Result<String> {
         let mut logical = 0;
         for i in &m.indexes {
             logical += self.load_index(m, i)?.size();
         }
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let secs = now
+            .checked_sub(m.time)
+            .filter(|s| *s <= STATS_MAX_SECS)
+            .map_or_else(String::new, |s| format!(",\"secs\":{s}"));
         // source names pass check_name(): no JSON escaping needed
         Ok(format!(
-            "nexus-stats {{\"source\":\"{}\",\"time\":{},\"read\":{read},\"logical\":{logical},\"new_chunks\":{},\"new_plain\":{},\"new_stored\":{}}}",
+            "nexus-stats {{\"source\":\"{}\",\"time\":{},\"read\":{read},\"logical\":{logical},\"new_chunks\":{},\"new_plain\":{},\"new_stored\":{}{secs}}}",
             m.source, m.time, new.chunks, new.plain, new.stored
         ))
     }

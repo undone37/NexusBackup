@@ -13,15 +13,18 @@ Phase 13d/e. User-facing description: manual chapters 03 (Storage page) and 11 (
    snapshot's new data. After every commit it prints one line (`Store::stats_line`):
 
    ```text
-   nexus-stats {"source":"vm-100","time":1791580000,"read":…,"logical":…,"new_chunks":…,"new_plain":…,"new_stored":…}
+   nexus-stats {"source":"vm-100","time":1791580000,"read":…,"logical":…,"new_chunks":…,"new_plain":…,"new_stored":…,"secs":…}
    ```
+
+   `secs` (Phase 30) = seconds from the snapshot time (taken when the backup of that snapshot started) to the
+   line, the backup's duration; left out when the snapshot time lies in the future or more than 7 days back.
 
    `logical` = sum of the snapshot's index sizes (same as `snapshots.size`), `read` = bytes read from the source:
    | connector | `read` |
    |---|---|
    | nexus-pve, VM | bytes read over NBD (dirty extents for incrementals, everything for a full) |
    | nexus-pve, CT | size of the tar stream |
-   | nexus-agentctl | chunk bytes transferred by the agent |
+   | nexus-agentctl | bytes the agent read from its disks (changed files; Phase 30, before: the chunk bytes it transferred) |
    | nexus-nas | bytes of files read (changed files) |
    | nexus-truenas | bytes received over SSH (diff + walk + content), per dataset snapshot |
    | nexus-pluginhost | bytes received from the plugin, per guest snapshot |
@@ -77,6 +80,8 @@ Either raises a critical `anomaly` alert naming tenant, source, the snapshot tim
 snapshot of the source before it (the restore point). Dedup prefix `change-rate anomaly on <tenant>/<source>`.
 `PUT /settings/anomaly` applies stricter values directly; disabling it or raising `factor` / `floor_bytes` goes
 through the approval gate (`settings.anomaly`, executed by the web-api). Phase 15c adds "hold last good snapshot".
+Phase 30 adds the dedup-rate and duration rules and a per-source sensitivity (docs/ransomware-signals.md "Duration
+and dedup rate").
 
 ## Usage export (Phase 23a)
 

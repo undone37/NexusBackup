@@ -320,6 +320,8 @@ const db = {
   cfgBackup: { appliance_id: null as string | null, latest: null as Json | null },
   /** Phase 13e setting `anomaly` */
   anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30, ransom_notes: [] } as Json,
+  /** Phase 30: per-source anomaly sensitivity (`tenant/source` -> level; missing = medium) */
+  sensitivity: { 'initech/vm-102': 'high' } as Record<string, string>,
   /** Phase 21e: admin-supplied YARA rule files and finished snapshot scans */
   yaraRules: [] as Json[],
   scans: [] as Json[],
@@ -2211,6 +2213,14 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'settings.anomaly':
       db.anomaly = structuredClone(p.anomaly);
       break;
+    case 'anomaly.sensitivity': {
+      const k = `${p.tenant}/${p.source}`;
+      if ((db.sensitivity[k] ?? 'medium') !== p.old)
+        throw new HttpError(409, 'the object changed since this request was made; reject it and request the change again');
+      if (p.level === 'medium') delete db.sensitivity[k];
+      else db.sensitivity[k] = p.level;
+      break;
+    }
     case 'security.passkeys':
       pk.policy = structuredClone(p.passkeys);
       break;
@@ -8122,14 +8132,37 @@ on('GET', '/stats/trends', (c) => {
         const r = noise(`${source}/${s.time}`);
         const bad = !!s.anomaly;
         const plain = Math.round(s.size * (0.004 + r * 0.012) * (bad ? 14 : 1));
+        // Phase 30: bytes read and duration (an anomalous run reads about as much, nothing deduplicates, takes longer)
+        const read = Math.round(s.size * (0.02 + r * 0.01));
+        const secs = Math.round((/^vm-/.test(source) ? 240 : 90) * (0.8 + r * 0.4) * (bad ? 3.4 : 1));
         return {
           time: s.time, new_plain: plain, new_stored: Math.round(plain * (bad ? 0.99 : 0.48)),
           files_changed: indexed ? Math.round((40 + r * 160) * (bad ? 30 : 1)) : null, anomalous: anomalous(s),
+          read, secs,
         };
       });
-    return { tenant, source, runs };
+    return { tenant, source, sensitivity: db.sensitivity[`${tenant}/${source}`] ?? 'medium', runs };
   });
   return [200, out];
+});
+
+// Phase 30: per-source sensitivity; raising applies at once, lowering needs approval
+const LEVELS = ['low', 'medium', 'high'];
+on('PUT', '/stats/sensitivity', async (c) => {
+  const u = need(c.user, 'admin', 'security_officer', 'tenant_admin');
+  const { tenant, source, level, ...rest } = c.body;
+  if (Object.keys(rest).length) throw new HttpError(400, `unknown field \`${Object.keys(rest)[0]}\``);
+  if (!LEVELS.includes(level)) throw new HttpError(400, 'level: low, medium or high');
+  if (u.tenant && u.tenant !== tenant) throw new HttpError(403, 'forbidden');
+  if (!db.tenants.some((t) => t.name === tenant)) throw new HttpError(404, 'not found');
+  const k = `${tenant}/${source}`;
+  const old = db.sensitivity[k] ?? 'medium';
+  const p = { tenant, source, level, old };
+  if (LEVELS.indexOf(level) < LEVELS.indexOf(old)) return quorum(u, 'anomaly.sensitivity', p);
+  if (level === 'medium') delete db.sensitivity[k];
+  else db.sensitivity[k] = level;
+  await audit(u.name, 'anomaly.sensitivity', `stats/${k}`, p);
+  return [200, p];
 });
 
 /** Phase 21d: verify found two bad chunks in initech's store; two snapshots of vm-102 reference them. */

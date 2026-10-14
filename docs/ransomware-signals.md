@@ -73,8 +73,48 @@ over two snapshots). Only names, sizes and times; never contents.
 ## Trends
 
 `GET /stats/trends?tenant=` (any role, tenant-scoped; also for `read` API tokens): per `(tenant, source)` the last
-30 `backup_stats` rows, oldest first, `{time, new_plain, new_stored, files_changed, anomalous}` with
-`files_changed` = added + changed + deleted (null without a name index). Shown on **Sources** as sparklines.
+30 `backup_stats` rows, oldest first, `{time, new_plain, new_stored, files_changed, anomalous, read, secs}` with
+`files_changed` = added + changed + deleted (null without a name index) and `secs` = the backup's duration (null
+from connectors before Phase 30), plus the source's `sensitivity`. Shown on **Sources** as sparklines.
+
+## Duration and dedup rate (Phase 30)
+
+Two more signals next to the change rate (`scheduler/src/anomaly.rs`), with the same median-of-history model over
+the source's last `history` runs (setting `anomaly`) and at least 5 earlier runs:
+
+- **Dedup rate**: the share of the data read that did not deduplicate, `new_plain / read` (capped at 100 %). A
+  finding when it is above max(factor x its median, floor) and at least `floor_bytes / 4` were read. Critical. An
+  agent that rewrites the same files every night usually adds a few percent of what it reads; after encryption
+  everything it reads is new. A VM whose dirty regions are always new (median near 100 %) cannot pass the floor, so
+  the rule stays quiet there and the change-rate rule watches it.
+- **Duration**: `secs` above max(factor x the median duration, median + margin). Alone a **warning** (slow storage or
+  a busy network look the same); together with another finding the alert is critical. Runs without a duration
+  (older connectors) do not count; the rule needs 5 runs with one.
+
+The doc's proposal said "new-chunk ratio (unique / logical)"; unique / logical is the change rate divided by the
+size and adds nothing to the volume rule, so the dedup rate is measured against the data **read**. For agents
+`read` is now what the agent read from its disks (changed files) instead of the chunk bytes it sent, which were
+already only the part the appliance did not have (docs/storage-accounting.md).
+
+**Sensitivity per source** (`anomaly_sensitivity`, catalog v45; no row = `medium`) instead of raw thresholds:
+
+| level | change rate (x the setting's `factor`) | dedup rate | duration |
+|---|---|---|---|
+| low | 1.5 (4.5 with the default 3) | 4 x median, at least 90 % | 4 x median, at least median + 30 min |
+| medium | 1 (3) | 3 x median, at least 75 % | 3 x median, at least median + 15 min |
+| high | 2/3 (2, never below 1.5) | 2 x median, at least 50 % | 2 x median, at least median + 5 min |
+
+`PUT /stats/sensitivity {tenant, source, level}`: admins, security officers and tenant admins (own tenant). Raising
+applies at once (audited `anomaly.sensitivity`); lowering weakens a ransomware signal and goes through the approval
+gate (`anomaly.sensitivity`, executed by the web-api, refused when the level changed since the request or while the
+tenant is locked down; it counts as a weakening request for the risk signals). The configuration freeze of incident
+mode refuses both.
+
+One alert per run under the existing key `anomaly:<tenant>/<source>` (kind `anomaly`): the prefix names the first
+finding (`change-rate anomaly`, `dedup-rate anomaly`, `backup-duration anomaly`), the level when it is not medium, then
+every finding, e.g. `dedup-rate anomaly on acme/host-a1 (sensitivity high): snapshot 1791580000: 60 % of the 1.5 GiB
+read did not deduplicate (usually 5 %, limit 50 %); last snapshot before: host-a1/1791493600`. Every finding flags
+the snapshot like the change-rate rule (so a production restore of it needs `restore.infected`, Phase 29).
 
 ## Not in this step
 

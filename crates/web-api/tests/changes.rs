@@ -346,9 +346,11 @@ async fn trends_per_source() {
     let r = t.get("/api/v1/stats/trends", &tina).await;
     assert_eq!(
         r.body,
-        json!([{"tenant": "acme", "source": "share-3", "runs": [
-            {"time": 1, "new_plain": 100, "new_stored": 50, "files_changed": null, "anomalous": false},
-            {"time": 2, "new_plain": 900, "new_stored": 880, "files_changed": 302, "anomalous": true}]}])
+        json!([{"tenant": "acme", "source": "share-3", "sensitivity": "medium", "runs": [
+            {"time": 1, "new_plain": 100, "new_stored": 50, "files_changed": null, "anomalous": false,
+             "read": 1, "secs": null},
+            {"time": 2, "new_plain": 900, "new_stored": 880, "files_changed": 302, "anomalous": true,
+             "read": 1, "secs": null}]}])
     );
     let r = t.get("/api/v1/stats/trends?tenant=globex", &tina).await;
     assert_eq!(r.body, json!([]));

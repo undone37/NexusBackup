@@ -860,6 +860,16 @@ Deviations from the proposal (docs/netbackup-comparison.md) and decisions taken 
   get 428 on their first change until `POST /auth/step-up`; tokens of a marked account cannot write; security
   officers and admins list and clear marks (not their own).
 
+### Phase 30 — NetBackup Tier 2 (implemented 2026-10-14)
+Backup-duration and dedup-rate anomalies, just-in-time role elevation, instant rollback of a PVE VM, hybrid
+post-quantum key wrapping, a second offsite copy with its own retention (catalog v45, threat model T66–T69).
+Deviations from the proposal (docs/netbackup-comparison.md "Tier 2") and decisions taken on the way:
+- **Anomalies:** the dedup rate is new data / data **read** (not unique / logical, which is the change rate divided
+  by the size); agents now report what they read from their disks as `read`. Duration = snapshot time to commit
+  (`nexus-stats` `secs`). Sensitivity per source (`low`/`medium`/`high`, default medium) scales all three rules;
+  lowering it is the approval `anomaly.sensitivity`. Duration alone raises a warning, everything else critical; all
+  findings flag the snapshot and share the `anomaly` alert kind and key.
+
 ### Phase 31 — Guest file index without the restore micro-VM (proposed 2026-10-13 by user request)
 - VM/CT disk file systems (GPT/MBR, LVM2, NTFS, ext4, FAT; XFS/btrfs/LDM later) parsed read-only by a sandboxed
   helper without keys (`nexus-fsindex`), incremental per changed metadata chunk; one search index per tenant in an

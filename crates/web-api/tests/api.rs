@@ -3976,6 +3976,8 @@ async fn tenant_admin_routes_classified() {
         ("POST", "/snapshots/diff", "/api/v1/snapshots/diff".into(), Some(json!({"tenant": "acme", "source": "vm-100", "time": 1000})), 'Y'),
         ("POST", "/snapshots/{tenant}/{source}/{time}/anomaly/clear", format!("{snap}/anomaly/clear"), Some(json!({"note": "x"})), 'N'),
         ("GET", "/stats/trends", "/api/v1/stats/trends".into(), none(), 'Y'),
+        // Phase 30: sensitivity of its own sources
+        ("PUT", "/stats/sensitivity", "/api/v1/stats/sensitivity".into(), Some(json!({"tenant": "acme", "source": "vm-100", "level": "high"})), 'Y'),
         ("POST", "/snapshots/{tenant}/{source}/{time}/scan", format!("{snap}/scan"), e(), 'Y'),
         ("GET", "/scans", "/api/v1/scans".into(), none(), 'Y'),
         ("GET", "/scan/rules", "/api/v1/scan/rules".into(), none(), 'N'),

@@ -584,3 +584,17 @@ so per node the guests run one after the other; parallelism comes from nodes, gr
   serialised by the node lock, needs a second PVE node to show the speed-up)
 - [ ] open: per-directory reuse of unchanged Windows volumes (31c) would cut the file index of a running system
   volume from 150 s to seconds
+
+## Phase 30 — NetBackup Tier 2 (2026-10-14)
+Scope: docs/netbackup-comparison.md "Tier 2", one item after the other (code, tests, docs, UI, manual). Catalog v45
+(`SCHEMA_V45`, all Phase 30 schema changes), threat model T66-T69.
+- [x] 1 backup-duration and dedup-rate anomalies: `nexus-stats` carries `secs` (snapshot time to commit), agents
+  report the bytes they read as `read`; `backup_stats.secs`, `anomaly_sensitivity` (catalog::anomaly); scheduler
+  dedup-rate rule (new / read, critical) and duration rule (warning alone) next to the change rate, per-source
+  sensitivity low/medium/high; one `anomaly` alert per run, every finding flags the snapshot;
+  `PUT /stats/sensitivity` (lowering = approval `anomaly.sensitivity`), trends with read/secs/sensitivity; UI
+  (Change trends: duration sparkline, sensitivity select), mock, manual 11, docs/ransomware-signals.md
+- [ ] 2 just-in-time role elevation
+- [ ] 3 instant rollback of a PVE VM
+- [ ] 4 hybrid post-quantum key wrapping
+- [ ] 5 second offsite copy with its own retention

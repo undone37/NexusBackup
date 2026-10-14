@@ -655,6 +655,7 @@ pub fn router(st: St) -> Router {
             post(changes::clear),
         )
         .route("/stats/trends", get(changes::trends))
+        .route("/stats/sensitivity", put(changes::put_sensitivity))
         .route("/snapshots/{tenant}/{source}/{time}/scan", post(scan::scan_snapshot))
         .route("/snapshots/{tenant}/{source}/{time}/scan-back", post(scan::scan_back))
         .route("/scans", get(scan::list_scans))

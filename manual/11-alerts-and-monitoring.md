@@ -91,7 +91,7 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 | `index_backlog` | warning | a snapshot has waited more than 48 hours to be added to the file search (one alert per tenant) | the waiting snapshots are indexed | check the **File index** jobs on **Jobs** and the index service; files of those snapshots are not found by **Find files** meanwhile, browsing and restores work. See [06 Restores](06-restores.md#find-a-file) |
 | `index_space` | warning | file indexing paused: the volume holding the search index is below its free space floor | indexing runs again | free space on the store (retention, GC) or add disks; **Storage** shows the index size and the free space. See [03 The web interface](03-web-interface.md#storage) |
 | `orphaned` | info | snapshots of an object that is in no protection group of its tenant were found; they are pruned with the default retention (shown once per object) | — | put the object into a group if it should keep being protected with that group's retention, or ignore it; see [05 Policies and protection groups](05-policies-and-groups.md#snapshots-of-objects-in-no-group) |
-| `anomaly` | critical | a backup added far more new data than usual for its source, or new data that suddenly does not compress (see [Change-rate anomalies](#change-rate-anomalies)); or its files show ransom-note names or a mass rename ([File-level change signals](#file-level-change-signals)). The snapshot is flagged as anomalous | — | check the source for mass changes or encryption (ransomware), compare the snapshot with the previous one under **Snapshot changes**; a security officer puts the last clean snapshot on hold with **Hold last good snapshot** |
+| `anomaly` | critical (warning: duration alone) | a backup added far more new data than usual for its source, new data that suddenly does not compress, data that suddenly does not deduplicate, or a backup that took far longer than usual (see [Change-rate anomalies](#change-rate-anomalies)); or its files show ransom-note names or a mass rename ([File-level change signals](#file-level-change-signals)). The snapshot is flagged as anomalous | — | check the source for mass changes or encryption (ransomware), compare the snapshot with the previous one under **Snapshot changes**; a security officer puts the last clean snapshot on hold with **Hold last good snapshot** |
 | `malware` | critical | a YARA scan found matches of the uploaded rules in a snapshot (see [Malware scan (YARA)](#malware-scan-yara)); the snapshot is flagged as anomalous | — (resolve by hand) | open the scan results on **Snapshots**, check the files and the source; a security officer clears the flag if a rule was too broad |
 | `scan_hit` | critical | a **scheduled** scan of a protection group found matches in the newest snapshot of a source (`scan_hit:<tenant>/<source>`); the snapshot is flagged | — (resolve by hand) | as `malware`; the recovery calendar shows the snapshot red. See [Scheduled scans](#scheduled-scans-and-the-recovery-calendar) |
 | `hash_hunt_hit` | critical | an IOC hash hunt found files whose SHA-256 is on an uploaded list (`hash_hunt_hit:<tenant>`); the snapshots holding them are flagged | — (resolve by hand) | open the results on **Hash hunt**; check the source machine; restore a clean version. See [IOC hash hunt](#ioc-hash-hunt) |
@@ -214,16 +214,39 @@ deduplication, before compression) with the same source's history. It raises a c
   1.3), and it is more than a quarter of that 1 GiB floor. Encrypted files do not compress, so this is the typical
   signature of ransomware encrypting a share or a server.
 
-Both rules need at least 5 earlier backups of the source. Example message:
+Two more checks watch how the backup behaved:
+
+- **Dedup rate:** the share of the data read that turned out to be new (did not deduplicate) is far above the
+  source's usual share (3 x its median and at least 75 %), and at least a quarter of the 1 GiB floor was read. A
+  server that rewrites the same files every night usually adds a few percent of what it reads; after encryption
+  nothing deduplicates any more. Critical.
+- **Duration:** the backup took far longer than usual (3 x the median and at least 15 minutes more). On its own this
+  is a **warning**, since slow storage or a busy network look the same; together with another finding the alert is
+  critical.
+
+All rules need at least 5 earlier backups of the source (the duration rule 5 backups whose duration was measured:
+backups taken before this release have none). Example message:
 
 ```text
 change-rate anomaly on acme/share-6: snapshot 1791580000: 412.0 GiB new data, limit 36.0 GiB (3× the median
 12.0 GiB of the last 14 runs); last snapshot before: share-6/1791493600
 ```
 
+```text
+dedup-rate anomaly on acme/host-a1 (sensitivity high): snapshot 1791580000: 60 % of the 1.5 GiB read did not
+deduplicate (usually 5 %, limit 50 %); last snapshot before: host-a1/1791493600
+```
+
 The message names the tenant, the source, the time of the suspicious snapshot and the **last snapshot before** it
 that is not flagged itself: the one to restore from if the data was encrypted. While the alert is open, further
 anomalies of the same source raise its count instead of a second alert.
+
+**Sensitivity per source.** Each protected system has a sensitivity: **Low**, **Medium** (the default) or **High**.
+High flags smaller deviations (change rate 2 x the median, dedup rate 2 x its median and at least 50 %, duration 2 x
+and at least 5 minutes more); Low only large ones (4.5 x, 4 x and at least 90 %, 4 x and at least 30 minutes more).
+Set it in **Change trends** on the **Sources** page (administrators, security officers and tenant admins for their
+own systems). Raising it applies at once; lowering it weakens a ransomware signal and needs a second person when
+approvals are enabled (request `anomaly.sensitivity`).
 
 ### Flagged snapshots
 
@@ -402,9 +425,10 @@ snapshots could not be searched. Audit: `hash_hunt.request`, `hash_hunt.hits`.
 
 ### Change trends
 
-**Configuration → Sources** ends with **Change trends**: for each protected system the new data and the number of
-changed files (added + changed + deleted) of its last 30 backups, oldest on the left, with the last value next to
-it. A red dot marks a flagged snapshot; hover a point for its time and value. **no file index** means the source's
+**Configuration → Sources** ends with **Change trends**: for each protected system the new data, the number of
+changed files (added + changed + deleted) and the duration of its last 30 backups, oldest on the left, with the last
+value next to it (hover the last new-data value for the share of the data read that was new), and its anomaly
+**Sensitivity**. A red dot marks a flagged snapshot; hover a point for its time and value. **no file index** means the source's
 snapshots have no name index (only new data is shown). The figures come from the same per-backup statistics as the
 storage accounting ([03 The web interface](03-web-interface.md#storage)).
 
