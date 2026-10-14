@@ -320,16 +320,35 @@ impl<'a> Target<'a> {
     pub fn upload(&mut self) -> Result<UploadStats> {
         let done: HashSet<(String, u64)> = self.snapshots()?.into_iter().collect();
         let mut st = UploadStats::default();
+        // damaged snapshots stay local (repair first); the rest are the progress items
+        let mut todo: Vec<Manifest> = Vec::new();
         for m in self.store.list_snapshots()? {
             if done.contains(&(m.source.clone(), m.time)) {
                 continue;
             }
             if self.store.is_damaged(&m)? {
                 st.damaged.push(format!("{}/{}", m.source, m.time));
-                continue;
+            } else {
+                todo.push(m);
             }
-            self.upload_snapshot(&m, &mut st)
-                .with_context(|| format!("upload {}/{}", m.source, m.time))?;
+        }
+        for (i, m) in todo.iter().enumerate() {
+            // live progress (docs/control-plane.md "Live progress"): one item per snapshot
+            let item = format!("{}/{}", m.source, m.time);
+            let line = |end: Option<&str>| chunkstore::progress::Line {
+                item: Some(item.clone()),
+                item_index: Some(i as u32 + 1),
+                items: Some(todo.len() as u32),
+                part: Some("upload".into()),
+                end: end.map(str::to_owned),
+                ..Default::default()
+            };
+            line(None).print();
+            let r = self
+                .upload_snapshot(m, &mut st)
+                .with_context(|| format!("upload {}/{}", m.source, m.time));
+            line(Some(if r.is_ok() { "ok" } else { "failed" })).print();
+            r?;
             st.snapshots += 1;
         }
         Ok(st)

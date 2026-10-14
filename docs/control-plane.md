@@ -367,7 +367,8 @@ mapped, setuid/setgid/sticky cleared, devices/sockets skipped, only xattrs the t
   numbers the items by CLI step, one per agent), nexus-truenas (one item per dataset, no bytes), nexus-pve `files …
   index` (item = the snapshot source, part = each parsed volume `vdb3 (ntfs)`, `entries` from the helper's batches
   with `entries_total` = the same volume's count in the previous snapshot, else the walker's estimate: ext4 used
-  inodes from the superblock, NTFS MFT records; helper frame `P`; FAT/exFAT count only). nexus-nas and the
+  inodes from the superblock, NTFS MFT records; helper frame `P`; FAT/exFAT count only), nexus-offsite upload (one
+  item per snapshot uploaded, `source/time`, part `upload`; damaged snapshots are no items). nexus-nas and the
   plugin host report nothing yet (log only).
 - **Scheduler**: the output pumps split stdout/stderr into lines; `progress` lines (also malformed ones) never reach
   the log, the tracker keeps the newest line per item and aggregates: current item (newest line), items done (`end`
