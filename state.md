@@ -560,7 +560,11 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
 - [x] 31c per-directory reuse (NTFS): records of what each directory's listing read (side file `fsindex-dirs`),
   unchanged directories taken over from the previous name index without reading them, also with parallel helpers;
   ext4 excluded (ext4-view caches blocks, read sets would be incomplete); tests: a second listing with the history
-  lists the same and reads less, a dropped record is listed again, NTFS records always have their read set
+  lists the same and reads less, a dropped record is listed again, NTFS records always have their read set;
+  the $MFT record (read by crate ntfs on every lookup) is left out of the read sets, the MFT's data runs are the
+  layout signature instead. Lab (Windows Server C:, 391k entries, 94,230 directories): second snapshot 77,911
+  directories taken over, 2,841 chunks decrypted instead of 7,176, 19 s instead of 33 s (first snapshot of the
+  day 150-217 s before Phase 32)
 - [ ] 31c: XFS walker, LVM thin, btrfs, Windows LDM, drive letters from the SYSTEM hive, owners/SIDs, content hashes
 
 
