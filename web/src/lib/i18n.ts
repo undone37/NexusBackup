@@ -1599,7 +1599,11 @@ export const en = {
     bwlimit: "Bandwidth limit (MB/s, empty = unlimited)",
     lastSync: "Last sync",
     syncNow: "Sync now",
-    syncStarted: (n: number) => `${n} sync job(s) started.`,
+    syncStarted: (n: number) =>
+      n ? `${n} sync job${n === 1 ? '' : 's'} started.` : 'Nothing started: a sync of every tenant is already queued or running.',
+    syncRunning: (tenant: string, id: number) => `${tenant}: syncing now (job #${id})`,
+    syncQueued: (tenant: string, id: number) => `${tenant}: sync queued (job #${id})`,
+    moreLabel: (name: string) => `More actions for replication source ${name}`,
     newCode: "New code",
     newCodePrompt: "Enrollment code from the primary (<peer-id>.<token>):",
     deleteSourceWhat: (n: string) =>

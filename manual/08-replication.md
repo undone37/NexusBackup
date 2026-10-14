@@ -70,7 +70,7 @@ person's approval (**Approvals**, action `replication peer create`). The code wo
 ![New replication source on the secondary](images/replication-source-new.png)
 
 A tenant that already has local groups, agents or keys on the secondary cannot be a replicated tenant. If the
-enrollment failed or the code was used up, ask the primary for a new code and click **New code** on the
+enrollment failed or the code was used up, ask the primary for a new code and click **More** > **New code** on the
 source.
 
 ## Step 3 — On the primary: approve the key export
@@ -90,7 +90,9 @@ versions under **Keys exported**.
 ## Syncing
 
 - The secondary runs one **Replication sync** job per tenant on the source's **Schedule**. Click
-  **Sync now** to start one immediately, or **Schedule** to change the schedule.
+  **Sync now** to start one immediately, or **More** > **Schedule** to change the schedule. While a sync
+  is queued or running, **Last sync** shows it per tenant with a link to its job, and **Sync now** is greyed out.
+  The page refreshes itself every 15 seconds.
 - A sync fetches only snapshots that are missing locally **and** that the secondary's own retention keeps.
   Every chunk is verified (authenticated decryption and keyed hash) before it is stored. If anything fails
   verification, nothing of that snapshot is imported, and a `replication_verify` alert is raised.
@@ -98,7 +100,7 @@ versions under **Keys exported**.
 
 ## Sync window and bandwidth windows
 
-Click **Windows** on a source (administrators) to restrict when and how fast the secondary pulls:
+Click **More** > **Windows** on a source (administrators) to restrict when and how fast the secondary pulls:
 
 - **Sync window**: syncs run only inside these windows (start days, **From**, **To**; none = always). Outside
   them the firewall of the secondary does not even let it reach the primary, so the copy is offline most of the
@@ -119,7 +121,7 @@ schedule's runs fall into it; the `replication_lag` alert still fires after 48 h
 
 ## Close vault (pause pulling now)
 
-**Close vault (pause pulling now)** on a source (administrator or security officer) cuts the secondary off from that primary
+**More** > **Close vault (pause pulling now)** on a source (administrator or security officer) cuts the secondary off from that primary
 immediately, for example when the primary may be compromised. It acts on this one replication source only and is
 not the same as [vault mode](#vault-mode-secondary-only), the appliance-wide profile below; both can be used together.
 
@@ -132,7 +134,7 @@ not the same as [vault mode](#vault-mode-secondary-only), the appliance-wide pro
 
 ![A closed vault on the secondary](images/replication-closed.png)
 
-**Request reopening** asks for the source to be opened again. Another administrator or security officer
+**More** > **Request reopening** asks for the source to be opened again. Another administrator or security officer
 approves it on the **Approvals** page (action `replication.reopen`); syncs resume with the next scheduled run.
 With approvals disabled the source reopens at once. The API also accepts a closing time
 (`POST /api/v1/replication/sources/{id}/close` with `{"until": <unix time>}`); a closure can be extended but never
@@ -174,7 +176,7 @@ approves it after comparing the key service fingerprint. The next sync imports t
 - **Primary:** **Delete** on a peer revokes it (approval needed while approvals are enabled). Its certificate
   is refused on the next request, even on an open connection. Its token and key exports are dropped. A peer
   that is still awaiting approval is revoked at once, without an approval.
-- **Secondary:** **Delete** on a source stops replication. The replicated snapshots stay under the
+- **Secondary:** **More** > **Delete** on a source stops replication. The replicated snapshots stay under the
   secondary's retention.
 
 A peer certificate cannot be renewed in place. Delete the peer and create a new one (the certificates are

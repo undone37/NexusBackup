@@ -2,13 +2,16 @@
   import { askConfirm, askText } from '../lib/confirm.svelte';
   // Appliance replication (docs/replication.md): peers on the primary, sources on the secondary.
   import { onMount } from 'svelte';
+  import Menu, { type MenuItem } from '../components/Menu.svelte';
+  import { jobLink } from '../lib/jobs';
+  import { href } from '../lib/router.svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
   import { notify } from '../lib/notify.svelte';
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
   import { fmtAgo, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
-  import type { ReplicationPeer, ReplicationSource, Tenant } from '../lib/types';
+  import type { Job, ReplicationPeer, ReplicationSource, Tenant } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import BlackoutEditor from '../components/BlackoutEditor.svelte';
@@ -27,6 +30,8 @@
   let peers: ReplicationPeer[] = $state([]);
   let sources: ReplicationSource[] = $state([]);
   let tenants: Tenant[] = $state([]);
+  // queued / running replica_sync jobs by replication source (shown in the source row)
+  let syncing: Record<number, Job[]> = $state({});
   let error: string | null = $state(null);
   let loaded = $state(false);
   let now = $state(Date.now() / 1000);
@@ -39,6 +44,13 @@
         get<ReplicationSource[]>('/replication/sources'),
         get<Tenant[]>('/tenants'),
       ]);
+      const busy = (await Promise.all([get<Job[]>('/jobs?state=running'), get<Job[]>('/jobs?state=queued')])).flat();
+      const by: Record<number, Job[]> = {};
+      for (const j of busy) {
+        const id = j.params?.replication_source_id;
+        if (j.kind === 'replica_sync' && typeof id === 'number') (by[id] ??= []).push(j);
+      }
+      syncing = by;
       error = null;
     } catch (e) {
       error = errText(e);
@@ -46,7 +58,14 @@
     now = Date.now() / 1000;
     loaded = true;
   }
-  onMount(load);
+  onMount(() => {
+    load();
+    // sync state and last sync stay current (nothing reloads while a dialog is open)
+    const iv = setInterval(() => {
+      if (document.visibilityState === 'visible' && !peerOpen && !srcOpen && !winOpen && !codeOpen) load();
+    }, 15000);
+    return () => clearInterval(iv);
+  });
 
   const stateCls: Record<string, string> = {
     pending: 'info',
@@ -133,8 +152,10 @@
     }
   }
   async function syncNow(s: ReplicationSource) {
-    const r = await act(post<{ jobs: number[] }>(`/replication/sources/${s.id}/sync`, {}), (d) =>
-      t.repl.syncStarted(d.jobs.length),
+    const r = await act(
+      post<{ jobs: number[] }>(`/replication/sources/${s.id}/sync`, {}),
+      (d) => t.repl.syncStarted(d.jobs.length),
+      (d) => (d.jobs.length ? jobLink({ id: d.jobs[0] }) : null),
     );
     if (r) load();
   }
@@ -198,6 +219,18 @@
   async function reopen(s: ReplicationSource) {
     if (!(await askConfirm(t.repl.reopenConfirm(s.name)))) return;
     if (await act(post(`/replication/sources/${s.id}/reopen`, {}), t.repl.reopenDone)) load();
+  }
+
+  function sourceActions(s: ReplicationSource): MenuItem[] {
+    const out: MenuItem[] = [];
+    if (can.closeVault(session.user))
+      out.push(closed(s) ? { label: t.repl.reopen, onselect: () => reopen(s) } : { label: t.repl.closeVault, onselect: () => closeVault(s) });
+    if (admin) {
+      out.push({ label: t.repl.schedule, onselect: () => setSchedule(s) }, { label: t.repl.windows, onselect: () => editWindows(s) });
+      if (s.state !== 'enrolled') out.push({ label: t.repl.newCode, onselect: () => newCode(s) });
+      out.push({ label: t.delete, onselect: () => removeSource(s) });
+    }
+    return out;
   }
 
   async function copy(text: string) {
@@ -326,6 +359,9 @@
                 {/if}
               </td>
               <td>
+                {#each syncing[s.id] ?? [] as j (j.id)}
+                  <div><a class="chip info" href={href(`/jobs/${j.id}`)}>{j.state === 'running' ? t.repl.syncRunning(j.tenant, j.id) : t.repl.syncQueued(j.tenant, j.id)}</a></div>
+                {/each}
                 {#each s.tenants as tn (tn)}
                   {@const st = s.status?.[tn]}
                   <div>
@@ -338,25 +374,11 @@
                 {/each}
               </td>
               <td class="mono">{s.keyd_fingerprint ?? '—'}</td>
-              <td class="actions stack">
+              <td class="actions">
                 {#if s.state === 'enrolled' && !closed(s) && syncOpen(s.sync_window ?? [], s.timezone ?? 'UTC', now) && can.syncReplication(session.user)}
-                  <button type="button" class="small" onclick={() => syncNow(s)}>{t.repl.syncNow}</button>
+                  <button type="button" class="small" disabled={!!syncing[s.id]?.length} onclick={() => syncNow(s)}>{t.repl.syncNow}</button>
                 {/if}
-                {#if can.closeVault(session.user)}
-                  {#if closed(s)}
-                    <button type="button" class="small" onclick={() => reopen(s)}>{t.repl.reopen}</button>
-                  {:else}
-                    <button type="button" class="small danger" onclick={() => closeVault(s)}>{t.repl.closeVault}</button>
-                  {/if}
-                {/if}
-                {#if admin}
-                  <button type="button" class="small" onclick={() => setSchedule(s)}>{t.repl.schedule}</button>
-                  <button type="button" class="small" onclick={() => editWindows(s)}>{t.repl.windows}</button>
-                  {#if s.state !== 'enrolled'}
-                    <button type="button" class="small" onclick={() => newCode(s)}>{t.repl.newCode}</button>
-                  {/if}
-                  <button type="button" class="small danger" onclick={() => removeSource(s)}>{t.delete}</button>
-                {/if}
+                {#if sourceActions(s).length}<Menu label={t.agents.more} ariaLabel={t.repl.moreLabel(s.name)} items={sourceActions(s)} />{/if}
               </td>
             </tr>
           {/each}
@@ -485,14 +507,3 @@
     </div>
   </form>
 </Modal>
-
-<style>
-  /* the source row has up to five actions: let them wrap instead of widening the table */
-  td.stack {
-    white-space: normal;
-    min-width: 15rem;
-  }
-  td.stack > button {
-    margin: 0.15rem 0 0.15rem 0.35rem;
-  }
-</style>
