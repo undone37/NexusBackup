@@ -906,6 +906,16 @@ T70–T75. Decisions and deviations:
   user headers) do not offer a client-credentials grant for integrations, so their native schemes are used. No
   ticket templates (fixed summary and description). Alerts already open when a rule is added get tickets too
   (rate-limited to 50 operations per rule and minute). Details: docs/control-plane.md "PSA ticketing".
+- **Tenant-side approvers** (implemented): opt-in per tenant (admin or the tenant's own admin, immediate; off =
+  approval `tenant.approvers.disable`, gated itself); gated: snapshot delete, hold release, weakening group /
+  policy changes (policy: every tenant with a group on it), group delete, tenant update / disable / delete, replication
+  key export. The provider's approval and the tenant's in any order; refusal final (open question 5); 24 h wait per
+  account after becoming tenant admin, activation or re-enabling (SQL trigger on `users`), `tenant_approver` alert
+  during the wait. Decisions taken: the 24 h wait applies to tenant-side approvers only (appliance approvers already
+  have split activation codes; applying it there would block fresh installations for a day); with approvals disabled
+  gated requests still wait for the tenant; a tenant admin's own request counts as the tenant's consent;
+  impersonating sessions never decide; source/agent/policy deletion are not gated (refused while in use, no data
+  effect). Details: docs/control-plane.md "Tenant-side approvers".
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 

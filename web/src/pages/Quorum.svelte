@@ -11,6 +11,7 @@
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import ActivationCode from '../components/ActivationCode.svelte';
   import RestorePointPreview, { type SimInput } from '../components/RestorePointPreview.svelte';
+  import TenantApprovers from '../components/TenantApprovers.svelte';
 
   let items: QuorumRequest[] = $state([]);
   let error: string | null = $state(null);
@@ -69,12 +70,19 @@
   const simOf = (p: Record<string, unknown> | undefined): SimInput | null =>
     p && typeof p.schedule === 'string' && p.gfs && typeof p.gfs === 'object' ? { schedule: p.schedule, gfs: p.gfs as SimInput['gfs'] } : null;
 
+  // Phase 33: this tenant admin's open decision on a request (its tenant requires its own approval)
+  const myTenant = (q: QuorumRequest) =>
+    can.decideTenantSide(session.user) ? (q.tenant_approvals ?? []).find((x) => x.tenant === session.user?.tenant && !x.decision) : undefined;
+
   async function decide(q: QuorumRequest, verb: 'approve' | 'reject') {
-    // approving executes an irreversible or weakening action: never on a single misclick
+    // approving executes an irreversible or weakening action: never on a single misclick;
+    // a tenant's refusal is final, so it is confirmed as well
     if (verb === 'approve' && !(await askConfirm(t.quorum.approveConfirm(q.id, humanize(q.action), q.requested_by)))) return;
+    if (verb === 'reject' && myTenant(q) && !(await askConfirm(t.quorum.refuseConfirm(q.id, humanize(q.action))))) return;
     const ok = await act(
-      post<{ activation?: Activation }>(`/quorum/${q.id}/${verb}`),
-      verb === 'approve' ? t.quorum.approved : t.quorum.rejected,
+      post<{ activation?: Activation; state?: string; waiting_for?: string[] }>(`/quorum/${q.id}/${verb}`),
+      (d) =>
+        verb === 'reject' ? t.quorum.rejected : d.state === 'pending' && d.waiting_for?.length ? t.quorum.waitingFor(d.waiting_for.join(', ')) : t.quorum.approved,
     );
     // approving a privileged account's activation releases the second half of its code to the approver
     const a = ok && !ok.quorum ? ok.data.activation : undefined;
@@ -104,10 +112,14 @@
     {/if}
     <label class="inline-check"><input type="checkbox" bind:checked={onlyPending} />{t.quorum.onlyPending}</label>
   </div>
-  <p class="lede">{own ? t.quorum.ownOnly : t.quorum.intro}</p>
+  <p class="lede">{own ? t.quorum.ownTenantIntro : t.quorum.intro}</p>
 </div>
 
 <ErrorBanner {error} />
+
+{#if own && session.user?.tenant}
+  <TenantApprovers tenant={session.user.tenant} />
+{/if}
 
 {#if gc.length}
   <section class="card" aria-labelledby="q-gc">
@@ -166,6 +178,21 @@
           <dt>{t.quorum.decided}</dt>
           <dd>{q.decided_by} · {fmtTime(q.decided_at)}</dd>
         {/if}
+        {#if q.approved_by && q.state === 'pending'}
+          <dt>{t.quorum.providerApproved}</dt>
+          <dd>{q.approved_by} · {fmtTime(q.approved_at)}</dd>
+        {/if}
+        {#each q.tenant_approvals ?? [] as d (d.tenant)}
+          <dt>{t.quorum.tenantSide}: {d.tenant}</dt>
+          <dd>
+            {#if d.decision}
+              <span class="chip {d.decision === 'rejected' ? 'bad' : 'ok'}">{t.quorum.decisions[d.decision]}</span>
+              {d.decided_by} · {fmtTime(d.decided_at)}
+            {:else}
+              <span class="chip warn">{t.quorum.waiting}</span>
+            {/if}
+          </dd>
+        {/each}
         {#each others(q) as [k, v] (k)}
           <dt>{k}</dt>
           <dd class="mono">{fmtValue(v)}</dd>
@@ -200,7 +227,13 @@
           <RestorePointPreview input={now} before={simOf(q.params?.old as Record<string, unknown> | undefined)} policyId={Number(q.params?.id) || null} />
         {/if}
       {/if}
-      {#if q.state === 'pending' && can.decideQuorum(session.user)}
+      {#if q.state === 'pending' && myTenant(q) && !own}
+        <div class="form-actions">
+          <button type="button" class="danger" onclick={() => decide(q, 'reject')}>{t.quorum.refuseTenant}</button>
+          <button type="button" class="primary" onclick={() => decide(q, 'approve')}>{t.quorum.approveTenant}</button>
+        </div>
+      {/if}
+      {#if q.state === 'pending' && can.decideQuorum(session.user) && !q.approved_by}
         {#if own}
           <p class="muted">{t.quorum.ownRequest}</p>
         {:else}

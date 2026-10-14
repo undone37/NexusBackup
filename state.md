@@ -595,3 +595,9 @@ Phase 30's), threat model T70–T75.
   Autotask servers), web-api `tests/phase33.rs`, catalog migration; UI rule editor, mock, manual 11, screenshots
   (scene `p33psa`)
 - [ ] lab: PSA ticketing against real HaloPSA / ConnectWise / Autotask sandboxes (needs vendor test instances)
+- [x] tenant-side approvers: `tenant_approvals`, `quorum_tenants`, `quorum.approved_by/at`, `users.approver_since` +
+  trigger (catalog v46, `catalog::approvers`), quorum co-approval (any order, refusal final, 24 h wait, approvals-off
+  path, own consent, impersonation refused), `GET/PUT /tenants/{name}/approvers`, scheduler `tenant_approver` alert;
+  tests: catalog unit + migration, web-api `tests/phase33.rs` (three scenarios), tenant-admin route classification,
+  scheduler `tests/phase33.rs`; UI (Approvals page box and tenant decisions, Tenants page Approvers dialog + chip),
+  mock, manual 10/11, screenshot (scene `p33approvers`), threat model T71

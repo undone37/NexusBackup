@@ -282,7 +282,8 @@ pub async fn list_tenants(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Valu
         "SELECT name, offsite, quota_bytes, disabled, disabled_at, disabled_by, disabled_reason, uid,
            (SELECT json_group_array(tp.policy_id) FROM tenant_policies tp WHERE tp.tenant = tenants.name),
            (SELECT json_group_array(DISTINCT p.tier) FROM tenant_policies tp JOIN policies p ON p.id = tp.policy_id
-            WHERE tp.tenant = tenants.name AND p.tier IS NOT NULL)
+            WHERE tp.tenant = tenants.name AND p.tier IS NOT NULL),
+           EXISTS (SELECT 1 FROM tenant_approvals ta WHERE ta.tenant = tenants.name)
          FROM tenants WHERE ?1 IS NULL OR name = ?1 ORDER BY name",
     )?;
     let rows = s
@@ -296,7 +297,9 @@ pub async fn list_tenants(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Valu
                       "quota_bytes": r.get::<_, Option<i64>>(2)?, "disabled": r.get::<_, bool>(3)?,
                       "disabled_at": r.get::<_, Option<i64>>(4)?, "disabled_by": r.get::<_, Option<String>>(5)?,
                       "disabled_reason": r.get::<_, Option<String>>(6)?, "uid": r.get::<_, Option<String>>(7)?,
-                      "policies": list(8)?, "tiers": list(9)?}))
+                      "policies": list(8)?, "tiers": list(9)?,
+                      // Phase 33: the tenant's own admins co-approve destroying or weakening requests
+                      "tenant_approvals": r.get::<_, bool>(10)?}))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(Value::Array(rows)))

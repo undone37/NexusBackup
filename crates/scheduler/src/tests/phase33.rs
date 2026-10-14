@@ -436,3 +436,60 @@ fn psa_test_and_sealing() {
     catalog::set_setting(&s.db.conn(), "alert_rules", &moved.to_string()).unwrap();
     assert!(s.alerts_config().is_err());
 }
+
+/// Tenant-side approvers: an account that becomes an approver of an opted-in
+/// tenant after the opt-in raises `tenant_approver` once (tenant set); the
+/// approvers at opt-in time, other tenants and other roles do not.
+#[test]
+fn new_tenant_approver_alert() {
+    let mut e = env(1);
+    e.cfg.psa_poll_secs = 0;
+    let s = sched(&e);
+    let now = catalog::now();
+    s.db.conn()
+        .execute_batch(&format!(
+            "INSERT INTO tenant_approvals (tenant, enabled_at, enabled_by) VALUES ('t1', {t}, 'alice');
+             INSERT INTO users (name, password_hash, totp_secret, role, tenant, created, approver_since) VALUES
+               ('old', 'x', 'y', 'tenant_admin', 't1', 1, NULL),
+               ('new', 'x', 'y', 'tenant_admin', 't1', 1, {n}),
+               ('other', 'x', 'y', 'tenant_admin', 't2', 1, {n}),
+               ('user', 'x', 'y', 'tenant_user', 't1', 1, {n});",
+            t = now - 3600,
+            n = now - 60
+        ))
+        .unwrap();
+    s.check_tenant_approvers(now).unwrap();
+    s.check_tenant_approvers(now + 30).unwrap();
+    let rows: Vec<(String, String, Option<String>, i64)> =
+        s.db.conn()
+            .prepare("SELECT severity, message, tenant, count FROM alerts WHERE kind = 'tenant_approver'")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        (rows[0].0.as_str(), rows[0].2.as_deref(), rows[0].3),
+        ("warning", Some("t1"), 1)
+    );
+    assert!(
+        rows[0]
+            .1
+            .contains("account new becomes a tenant-side approver of tenant t1"),
+        "{}",
+        rows[0].1
+    );
+    // resolved by hand: not raised again for the same change
+    s.db.conn()
+        .execute("UPDATE alerts SET resolved_at = 1 WHERE kind = 'tenant_approver'", [])
+        .unwrap();
+    s.check_tenant_approvers(now + 60).unwrap();
+    let n: i64 =
+        s.db.conn()
+            .query_row("SELECT COUNT(*) FROM alerts WHERE kind = 'tenant_approver'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+    assert_eq!(n, 1);
+}

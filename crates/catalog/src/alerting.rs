@@ -75,6 +75,7 @@ const HINTS: &[(&str, &str)] = &[
     ("login_new_device", "An account signed in from a browser family and client network it never used before (the message names both). If that was the account owner (new laptop, travel, a changed network), acknowledge and resolve the alert. If not, disable the account on the Users page, end its sessions and review the audit log for what it did."),
     ("change_tracking", "A scheduled full read of a source found data that changed since the previous snapshot although its change tracking (Proxmox VE dirty bitmap, agent metadata cache or USN journal, NAS metadata cache, ZFS diff) had not reported it (examples in the message and on the Dashboard, Change tracking). Snapshots taken with change tracking since the last verified full read may miss these changes. The newest snapshot is complete (it was read in full). Find the cause (storage or hypervisor bug, restored or cloned disks, tools that preserve timestamps, ransomware that does), keep the full-read interval short until it is understood, and resolve the alert by hand."),
     ("user_risk", "An account did something unusual for it (the message names the rule: sign-in at an hour it never used, a burst of requests that weaken protection, many deletes in a short time, far more downloads than usual). Until the mark ends or a security officer clears it, the account must re-enter its password and second factor before its next change in each session, and its API tokens cannot change anything. Ask the account owner; if it was not them, disable the account, end its sessions and review the audit log."),
+    ("tenant_approver", "An account becomes a tenant-side approver of a tenant that requires its own approval for destroying or weakening changes (the message names the account and from when it may approve: 24 hours after it became a tenant admin, was activated or re-enabled). If the tenant's administrators expected it, resolve the alert. If not, disable the account at once on the Users page and review the audit log: a new approver set up by someone else could approve deletions of the tenant's backups."),
     ("psa", "Opening, updating or closing tickets in the PSA of the named alert rule has failed for 15 minutes (the message names the rule and the error). Check the rule under Settings → Alert delivery (URL, credentials, customer and board or queue, closed status) and that the PSA is reachable; use Test on the rule. Nothing is lost: tickets are opened, noted and closed when it works again. Resolves after the next successful round."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
@@ -106,6 +107,7 @@ const CATEGORY: &[(&str, &str)] = &[
     ("login_new_device", "security"),
     ("user_risk", "security"),
     ("dek_rotation", "security"),
+    ("tenant_approver", "security"),
     ("job_failed", "backup"),
     ("sla_missed", "backup"),
     ("paused", "backup"),
@@ -467,6 +469,8 @@ mod tests {
             ("login_new_device", "security"),
             ("user_risk", "security"),
             ("change_tracking", "backup"),
+            ("tenant_approver", "security"),
+            ("psa", "system"),
             ("something_new", "system"),
         ] {
             assert_eq!(category(kind), cat, "{kind}");

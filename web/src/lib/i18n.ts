@@ -2468,6 +2468,7 @@ export const en = {
     actions: {
       'restore.infected': "restore of a flagged snapshot to production",
       'incident.freeze.lift': "lift freezes",
+      'tenant.approvers.disable': "stop requiring the tenant's approval",
     } as Record<string, string>,
     states: {
       pending: "Pending",
@@ -2476,6 +2477,46 @@ export const en = {
       executed: "Executed",
       expired: "Expired",
     } as Record<string, string>,
+    // Phase 33: tenant-side approvers
+    providerApproved: "Provider approval",
+    tenantSide: "Tenant approval",
+    decisions: {
+      approved: "approved",
+      rejected: "refused",
+      requested: "requested by its approver",
+    } as Record<string, string>,
+    waiting: "waiting",
+    waitingFor: (tenants: string) => `Approved on your side. The request now waits for the approvers of ${tenants}.`,
+    ownTenantIntro:
+      "Your requests, and requests of the provider that delete or weaken your tenant's backups: they need your approval as well, and your refusal is final.",
+    approveTenant: "Approve for my tenant",
+    refuseTenant: "Refuse",
+    refuseConfirm: (id: number, action: string) =>
+      `Refuse request #${id} (${action})? A refusal is final: the provider cannot approve the request any more.`,
+  },
+  // Phase 33: tenant-side approvers
+  tappr: {
+    title: "Tenant approvers",
+    button: "Approvers",
+    label: (n: string) => `Tenant approvers of ${n}`,
+    intro:
+      "With tenant approvers, deleting snapshots, releasing legal holds, weakening retention, deactivating or deleting the tenant, changing its offsite target and exporting its keys to a replication partner also need the approval of one of the tenant's own administrators. Their refusal is final. A new tenant administrator may decide 24 hours after the account became one (or was activated or re-enabled).",
+    on: "Required",
+    off: "Not required",
+    since: (who: string, when: string) => `Required since ${when} (switched on by ${who}).`,
+    approvers: "Approvers",
+    none: "The tenant has no activated tenant administrator.",
+    eligible: "may decide",
+    eligibleFrom: (when: string) => `may decide from ${when}`,
+    enable: "Require tenant approvals",
+    enableConfirm: (n: string) =>
+      `Require the approval of ${n}'s administrators for deleting or weakening changes? Switching it off later needs their approval too.`,
+    enabled: "Tenant approvals are now required.",
+    disable: "Request to stop requiring them",
+    disableConfirm:
+      "Request to stop requiring tenant approvals? The provider and one of the tenant's administrators must approve it.",
+    disablePending: (id: number) => `A request to stop requiring them is pending (#${id}).`,
+    chip: "tenant approves",
   },
   audit: {
     title: "Audit log",
@@ -2629,6 +2670,8 @@ export const en = {
         "An agent update failed (signature, version, package install or the agent did not come back with the new version). Open the job log of the agent_update job and the agent's update state on Agents > Updates; fix the cause and update again. Resolves after the next successful update of that agent.",
       rollout_paused:
         "An agent rollout was paused: a canary failed or the failure threshold was reached. Check the failed agents on Agents > Updates, then resume or cancel the rollout. Resolves when the rollout is resumed, cancelled or done.",
+      tenant_approver:
+        "An account becomes a tenant-side approver of a tenant that requires its own approval for deleting or weakening changes (the message names the account and from when it may decide: 24 hours after it became a tenant administrator, was activated or re-enabled). If the tenant's administrators expected it, resolve the alert. If not, disable the account at once on the Users page and review the audit log.",
       psa:
         "Opening, updating or closing tickets in the PSA of the named alert rule has failed for 15 minutes (the message names the rule and the error). Check the rule under Settings → Alert delivery (URL, credentials, customer and board or queue, closed status) and that the PSA is reachable; use Test on the rule. Nothing is lost: tickets are opened, noted and closed when it works again. Resolves after the next successful round.",
     } as Record<string, string>,

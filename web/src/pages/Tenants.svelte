@@ -8,6 +8,7 @@
   import { copyText } from '../lib/clipboard';
   import { setSession } from '../lib/session.svelte';
   import Modal from '../components/Modal.svelte';
+  import TenantApprovers from '../components/TenantApprovers.svelte';
   import BlackoutEditor from '../components/BlackoutEditor.svelte';
   import { bandwidthWeaker, timeZones, validRateWindow, type RateWindow } from '../lib/schedule';
   import ErrorBanner from '../components/ErrorBanner.svelte';
@@ -34,6 +35,9 @@
   let idpOpen = $state(false);
   // tenant whose recovery key dialog is open (17e)
   let keyOf: string | null = $state(null);
+  // Phase 33: tenant-side approvers of one tenant
+  let apprOf: string | null = $state(null);
+  let apprOpen = $state(false);
   let error: string | null = $state(null);
   let loaded = $state(false);
 
@@ -459,6 +463,7 @@
                 {:else if !lockOf(x.name)}
                   <span class="chip ok">{t.tdis.active}</span>
                 {/if}
+                {#if x.tenant_approvals}<span class="chip accent">{t.tappr.chip}</span>{/if}
                 {#if lockOf(x.name)}
                   {@const l = lockOf(x.name)!}
                   <span class="chip bad" title={t.lockdown.chipTitle(l.by, fmtTime(l.since), l.reason)}>{t.lockdown.chip}</span>
@@ -517,6 +522,7 @@
                     <button type="button" class="small" onclick={() => liftFreeze(x)} aria-label={t.p29.freeze.liftLabel(x.name)}>{t.p29.freeze.lift}</button>
                   {/if}
                 {/if}
+                <button type="button" class="small" onclick={() => ((apprOf = x.name), (apprOpen = true))} aria-label={t.tappr.label(x.name)}>{t.tappr.button}</button>
                 {#if canKey}<button type="button" class="small" onclick={() => (keyOf = x.name)}>{t.tkey.button}</button>{/if}
                 {#if canKey}
                   <button type="button" class="small" onclick={() => ((idpOf = x.name), (idpOpen = true))} aria-label={t.sp.idp.label(x.name)}>{t.sp.idp.button}</button>
@@ -843,6 +849,10 @@
 <TenantWizard bind:open={wizardOpen} ondone={load} />
 <Modal bind:open={idpOpen} wide title={idpOf ? t.sp.idp.title(idpOf) : ''}>
   {#if idpOf}<Sso tenant={idpOf} />{/if}
+</Modal>
+
+<Modal bind:open={apprOpen} wide title={apprOf ? t.tappr.label(apprOf) : ''}>
+  {#if apprOf}<TenantApprovers tenant={apprOf} />{/if}
 </Modal>
 
 <Modal bind:open={ldOpen} title={ldOf ? t.lockdown.title(ldOf.name) : ''}>

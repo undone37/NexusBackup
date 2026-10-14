@@ -129,6 +129,8 @@ interface User {
   can_download?: boolean | null;
   expires?: number | null;
   last_login?: number | null;
+  /** Phase 33: when it last became a tenant admin, was activated or re-enabled (unset = created) */
+  approver_since?: number | null;
   /** Phase 29: risk-signal mark (step-up required until `risk_until`) */
   risk_since?: number | null;
   risk_until?: number | null;
@@ -291,6 +293,8 @@ const db = {
   /** Phase 15c legal holds (catalog v18 `legal_holds`, with history) */
   holds: [] as Json[],
   quorum: [] as Json[],
+  // Phase 33: tenants whose own admins co-approve destroying or weakening requests
+  tenantApprovals: {} as Record<string, { enabled_at: number; enabled_by: string }>,
   audit: [] as Json[],
   alerts: [] as Json[],
   sessions: new Map<string, { id: number; userId: number; csrf: string; created: number; last: number; ip: string; ua: string; imp?: { tenant: string; role: 'viewer' | 'tenant_admin' }; step_up_at?: number }>(),
@@ -1662,6 +1666,18 @@ function seed() {
   q('replication_peer.create', { id: peerId, name: 'dr-site', tenants: ['acme'] }, 'admin', t - 86400 * 21, 'executed', 'so');
   q('replication.key_export', { peer: peerId, keyd_fingerprint: peerKeyd, tenants: ['acme'] }, 'admin', t - 86400 * 20, 'executed', 'so2');
   q('source.delete', { id: 42, name: 'old-esx-import' }, 'admin', t - 86400 * 9, 'rejected', 'so');
+  // Phase 33: acme requires its own approval (tara); a snapshot delete the provider approved waits for it
+  db.tenantApprovals.acme = { enabled_at: t - 86400 * 10, enabled_by: 'tara' };
+  {
+    const s = (db.snapshots as any[]).filter((x) => x.tenant === 'acme' && x.local && !x.origin).sort((a, b) => a.time - b.time)[0];
+    if (s) {
+      const x = q('snapshot.delete', { tenant: 'acme', source: s.source, time: s.time }, 'admin', t - 3 * 3600);
+      Object.assign(x, {
+        approved_by: 'so', approved_at: t - 2 * 3600,
+        tenant_approvals: [{ tenant: 'acme', decided_by: null, decided_at: null, decision: null }],
+      });
+    }
+  }
   // Phase 17d: an approved "attach offsite copy" waiting for the requester's recovery key
   q('tenant.attach_offsite', {
     name: 'umbrella',
@@ -2007,7 +2023,37 @@ function find<T>(xs: T[], pred: (x: T) => boolean, what: string): T {
 const SCHEDULER_ACTIONS = ['recovery_plan.execute', 'replication.key_export', 'gc_large', 'console.unlock', 'tenant.recovery_key', 'tenant.attach_offsite', 'vault.disable'];
 // 202 {quorum_id, ...extra} like web-api's `accepted()`; with approvals disabled the
 // action runs at once (200 {approvals: "disabled", executed}).
+// Phase 33 (catalog::approvers): the opted-in tenants an action destroys or weakens
+const APPROVER_WAIT = 86400;
+function gatedTenants(action: string, p: Json): string[] {
+  let ts: string[] = [];
+  if (['snapshot.delete', 'snapshot.hold_release', 'tenant.approvers.disable'].includes(action)) ts = [p.tenant];
+  else if (['tenant.disable', 'tenant.delete', 'tenant.update'].includes(action)) ts = [p.name];
+  else if (['group.update', 'group.delete'].includes(action)) ts = db.groups.filter((g) => g.id === Number(p.id)).map((g) => g.tenant);
+  else if (action === 'policy.update') ts = db.groups.filter((g) => g.policy_id === Number(p.id)).map((g) => g.tenant);
+  else if (action === 'replication.key_export') ts = p.tenants ?? [];
+  return [...new Set(ts.filter((t) => t && db.tenantApprovals[t]))].sort();
+}
+const tenantApprovers = (tenant: string) =>
+  db.users
+    .filter((x) => x.role === 'tenant_admin' && x.tenant === tenant && !x.disabled && !x.act)
+    .map((x) => ({ name: x.name, eligible_from: (x.approver_since ?? x.created ?? 0) + APPROVER_WAIT }));
+const ownConsent = (tenant: string, by: string) => tenantApprovers(tenant).some((a) => a.name === by && a.eligible_from <= now());
+const tenantRows = (action: string, p: Json, by: string) =>
+  gatedTenants(action, p).map((tenant) =>
+    ownConsent(tenant, by)
+      ? { tenant, decided_by: by, decided_at: now(), decision: 'requested' }
+      : { tenant, decided_by: null, decided_at: null, decision: null },
+  );
 async function quorum(u: User, action: string, params: Json, extra: Json = {}): Promise<[number, Json]> {
+  const tenant_approvals = tenantRows(action, params, u.name);
+  if (!db.approvals && tenant_approvals.some((x) => !x.decision)) {
+    const q = { id: nextId(), action, params, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending',
+                approved_by: u.name, approved_at: now(), tenant_approvals };
+    db.quorum.push(q);
+    await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action, params, tenant_approvers: tenant_approvals.map((x) => x.tenant) });
+    return [202, { quorum_id: q.id, ...extra }];
+  }
   if (!db.approvals) {
     if (SCHEDULER_ACTIONS.includes(action)) {
       const q = { id: nextId(), action, params, requested_by: u.name, created: now(), decided_by: u.name, decided_at: now(), state: 'approved' };
@@ -2019,7 +2065,8 @@ async function quorum(u: User, action: string, params: Json, extra: Json = {}): 
     await audit(u.name, action, action, { approvals: 'disabled', params });
     return [200, { approvals: 'disabled', executed: true, ...extra }];
   }
-  const q = { id: nextId(), action, params, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
+  const q = { id: nextId(), action, params, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending',
+              approved_by: null, approved_at: null, tenant_approvals };
   db.quorum.push(q);
   await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action, params });
   return [202, { quorum_id: q.id, ...extra }];
@@ -2281,6 +2328,9 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'tenant.lockdown.lift':
       liftLockdown(p, by, decider);
       break;
+    case 'tenant.approvers.disable':
+      delete db.tenantApprovals[p.tenant];
+      break;
     // Phase 29
     case 'restore.infected':
       if (restoresFrozen(p.tenant)) throw new HttpError(409, 'incident mode: restores to production are frozen');
@@ -2458,8 +2508,41 @@ on('GET', '/tenants', (c) => [
   200,
   db.tenants
     .filter((t) => !need(c.user).tenant || t.name === c.user!.tenant)
-    .map((t) => ({ ...t, offsite: publicOffsite(t.offsite), uid: t.uid ?? tenantUid(t.name), policies: db.tenantPolicies[t.name] ?? [], tiers: tiersOf(t.name) })),
+    .map((t) => ({
+      ...t, offsite: publicOffsite(t.offsite), uid: t.uid ?? tenantUid(t.name), policies: db.tenantPolicies[t.name] ?? [], tiers: tiersOf(t.name),
+      tenant_approvals: !!db.tenantApprovals[t.name],
+    })),
 ]);
+// Phase 33: tenant-side approvers (web-api approvers.rs)
+const approversView = (tenant: string) => {
+  const on = db.tenantApprovals[tenant];
+  return {
+    tenant, enabled: !!on, enabled_at: on?.enabled_at ?? null, enabled_by: on?.enabled_by ?? null, wait_hours: 24,
+    approvers: tenantApprovers(tenant).map((a) => ({ ...a, eligible: a.eligible_from <= now() })),
+    disable_request: db.quorum.find((q) => q.action === 'tenant.approvers.disable' && q.state === 'pending' && q.params.tenant === tenant)?.id ?? null,
+  };
+};
+on('GET', '/tenants/:name/approvers', (c, [name]) => {
+  const u = need(c.user, 'admin', 'security_officer', 'operator', 'viewer', 'tenant_admin');
+  const tn = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant').name;
+  if (u.tenant && u.tenant !== tn) throw new HttpError(403, 'forbidden');
+  return [200, approversView(tn)];
+});
+on('PUT', '/tenants/:name/approvers', async (c, [name]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const tn = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant').name;
+  if (u.tenant && u.tenant !== tn) throw new HttpError(403, 'forbidden');
+  if (c.body?.enabled === true) {
+    if (db.tenantApprovals[tn]) throw new HttpError(409, 'tenant-side approvers are already required');
+    if (!tenantApprovers(tn).length) throw new HttpError(409, 'the tenant has no activated tenant admin who could approve');
+    db.tenantApprovals[tn] = { enabled_at: now(), enabled_by: u.name };
+    await audit(u.name, 'tenant.approvers', `tenant/${tn}`, { tenant: tn, enabled: true });
+    return [200, approversView(tn)];
+  }
+  if (!db.tenantApprovals[tn]) throw new HttpError(409, 'tenant-side approvers are not required');
+  if (approversView(tn).disable_request) throw new HttpError(409, 'a request to switch them off is already pending');
+  return quorum(u, 'tenant.approvers.disable', { tenant: tn });
+});
 on('GET', '/tenants/tombstones', (c) => (need(c.user, 'admin', 'security_officer'), [200, db.tombstones]));
 on('PUT', '/tenants/:name/policies', async (c, [name]) => {
   const u = need(c.user, 'admin');
@@ -4797,17 +4880,44 @@ on('PUT', '/groups/:id/index-rules', async (c, [id]) => {
 on('GET', '/quorum', (c) => {
   const u = need(c.user, 'admin', 'security_officer', 'operator', 'tenant_admin');
   for (const q of db.quorum) if (q.state === 'pending' && now() - q.created > 72 * 3600) q.state = 'expired';
-  // Phase 19b: tenant admins see the requests they made, nothing else
-  const mine = (q: (typeof db.quorum)[number]) => u.role !== 'tenant_admin' || q.requested_by === u.name;
-  return [200, db.quorum.filter(mine).sort((a, b) => b.id - a.id).map((q) => ({ ...q, expires: q.created + 72 * 3600 }))];
+  // Phase 19b: tenant admins see the requests they made; Phase 33: and those their tenant co-approves
+  const mine = (q: (typeof db.quorum)[number]) =>
+    u.role !== 'tenant_admin' || q.requested_by === u.name || (q.tenant_approvals ?? []).some((x: Json) => x.tenant === u.tenant);
+  return [200, db.quorum.filter(mine).sort((a, b) => b.id - a.id).map((q) => ({ approved_by: null, approved_at: null, tenant_approvals: [], ...q, expires: q.created + 72 * 3600 }))];
 });
 for (const verb of ['approve', 'reject'] as const) {
   on('POST', `/quorum/:id/${verb}`, async (c, [id]) => {
-    const u = need(c.user, 'admin', 'security_officer');
+    const u = need(c.user, 'admin', 'security_officer', 'tenant_admin');
     const q = find(db.quorum, (x) => x.id === Number(id), 'quorum request');
     if (q.state !== 'pending') throw new HttpError(409, `request is ${q.state}`);
     if (q.requested_by === u.name) throw new HttpError(403, 'the requester cannot decide their own request');
-    Object.assign(q, { decided_by: u.name, decided_at: now(), state: verb === 'approve' ? 'approved' : 'rejected' });
+    // Phase 33: tenant side (final refusal) and the provider's approval while tenants still decide
+    const rows: Json[] = q.tenant_approvals ?? [];
+    if (u.role === 'tenant_admin') {
+      if (db.sessions.get(c.sid!)?.imp) throw new HttpError(403, 'forbidden');
+      const row = rows.find((x) => x.tenant === u.tenant && !x.decision);
+      if (!row) throw new HttpError(409, "this request does not wait for your tenant's decision");
+      const from = tenantApprovers(u.tenant!).find((a) => a.name === u.name)?.eligible_from ?? Infinity;
+      if (from > now()) throw new HttpError(403, `a new tenant approver may decide 24 hours after becoming one, from ${from} (unix time)`);
+      Object.assign(row, { decided_by: u.name, decided_at: now(), decision: verb === 'approve' ? 'approved' : 'rejected' });
+      await audit(u.name, `quorum.${verb}`, `quorum/${q.id}`, { action: q.action, side: 'tenant', tenant: u.tenant });
+      if (verb === 'reject') {
+        Object.assign(q, { decided_by: u.name, decided_at: now(), state: 'rejected' });
+        return [200, q];
+      }
+      const waiting = rows.filter((x) => !x.decision).map((x) => x.tenant);
+      if (waiting.length || !q.approved_by) return [200, { id: q.id, state: 'pending', waiting_for: waiting, provider_approved: !!q.approved_by }];
+    } else if (verb === 'approve') {
+      const waiting = rows.filter((x) => !x.decision).map((x) => x.tenant);
+      if (waiting.length) {
+        if (q.approved_by) throw new HttpError(409, `already approved by the provider; waiting for the approvers of ${waiting.join(', ')}`);
+        Object.assign(q, { approved_by: u.name, approved_at: now() });
+        await audit(u.name, 'quorum.approve', `quorum/${q.id}`, { action: q.action, state: 'pending', waiting_for: waiting });
+        return [200, { id: q.id, state: 'pending', waiting_for: waiting, provider_approved: true }];
+      }
+    }
+    const decider = u.role === 'tenant_admin' ? q.approved_by : u.name;
+    Object.assign(q, { decided_by: decider, decided_at: now(), state: verb === 'approve' ? 'approved' : 'rejected' });
     await audit(u.name, `quorum.${verb}`, `quorum/${q.id}`, { action: q.action });
     if (verb === 'reject' && q.action === 'plugin.install') {
       const e = db.plugins.find((x) => x.id === q.params.id && x.version === q.params.version);

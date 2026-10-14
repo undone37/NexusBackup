@@ -730,7 +730,8 @@ administrator gets the role `tenant_admin`, always scoped to exactly one tenant 
   holds, reports, plugins list, vault state), its own approval requests (`GET /quorum`: requests it made) and the
   audit entries concerning its tenant (below).
 - **Never**: global settings (security, OIDC, alerts, forwarding, reports schedule, anomaly, updates, SSH keys,
-  certificates, diagnostics, firewall, hardware, console, vault), approvals (deciding or the setting), policies
+  certificates, diagnostics, firewall, hardware, console, vault), approvals (the setting; deciding only the tenant
+  side of its tenant's requests, Phase 33 "Tenant-side approvers"), policies
   (create/change/delete), tenants (create, offsite target `PUT /tenants/{name}`, quota, deactivation, delete,
   recovery key, policy assignment), snapshot deletion and legal holds, replication, plugin install/keys, all-sessions
   views, audit chain verification. `tests/api.rs` `tenant_admin_routes_classified` classifies every registered route
@@ -743,7 +744,9 @@ administrator gets the role `tenant_admin`, always scoped to exactly one tenant 
   cannot be deleted (409). `GET /tenants` adds `uid`, `policies` (ids) and `tiers`.
 - **Approvals**: a tenant admin's gated requests (group delete, weakening group change, source/agent delete,
   replace-original restore, vault-mode restores) need the same approval as an admin's; approvers stay admins and
-  security officers of the provider (never the tenant admin, never the requester).
+  security officers of the provider (never the requester). Phase 33: a tenant that opted in to tenant-side
+  approvers additionally decides, through its tenant admins, the requests that destroy or weaken its data (section
+  "Tenant-side approvers").
 - **Policy tiers**: `policies.tier` (`bronze` / `silver` / `gold` / NULL; settable in `POST/PUT /policies`);
   `GET /policies/templates`, `POST /policies/templates {tier, name?}` (admin; audited `policy.create`): Bronze daily
   02:00, 7/4/3/0, no offsite; Silver daily 01:00, 14/8/12/0, offsite; Gold every 6 h, 30/12/24/7, offsite. The SLA
@@ -1201,3 +1204,33 @@ for critical else 2), `POST /Tickets/{id}/Notes`, `PATCH /Tickets` (`status`). R
 and token hosts are on the egress allow-list (`firewall::alert_targets`). `POST /settings/alerts/test {rule}` opens a
 ticket and closes it at once (`psa: "ok (ticket <id> opened and closed)"`). `GET /alerts` lists each alert's tickets
 (`tickets: [{rule, vendor, ticket, closed}]`).
+
+## Tenant-side approvers (Phase 33, `catalog::approvers`, `web-api/src/approvers.rs`, `web-api/src/quorum.rs`)
+Opt-in per tenant (`tenant_approvals`, catalog v46): `PUT /tenants/{name}/approvers {enabled: true}` by an admin or
+a tenant admin of that tenant (not while impersonating), at once, audited `tenant.approvers`; refused (409) without an
+activated tenant admin. `GET /tenants/{name}/approvers` (provider roles, the tenant's admins) returns `{enabled,
+enabled_at, enabled_by, wait_hours, approvers: [{name, eligible_from, eligible}], disable_request}`; `GET /tenants`
+adds `tenant_approvals: bool`. `{enabled: false}` requests the approval action `tenant.approvers.disable`.
+- **Gated requests** (`catalog::approvers::affected`): `snapshot.delete`, `snapshot.hold_release`,
+  `tenant.approvers.disable` (params `tenant`), `tenant.disable`, `tenant.delete`, `tenant.update` (`name`),
+  `group.update` (weakening) and `group.delete` (the group's tenant), `policy.update` (weakening; every tenant with a
+  group on the policy), `replication.key_export` (`tenants`). For each opted-in tenant among them the request gets a
+  `quorum_tenants` row when it is made (tenants that opted in later are added when someone decides).
+- **Deciding**: `POST /quorum/{id}/approve|reject` is open to tenant admins for their tenant's open row (not the
+  requester, not an impersonating session, never an API token; 409 when the request does not wait for their tenant).
+  The account must be an eligible approver: enabled, activated, unexpired tenant admin of the tenant whose
+  `users.approver_since` (NULL = `created`) is at least 24 hours old. A trigger sets `approver_since` when the role or
+  tenant changes, the activation completes (also after an account reset) or a disabled account is enabled again. A
+  provider approval while tenant rows are open is recorded in `quorum.approved_by/at` (answer `{state: "pending",
+  waiting_for}`; a second provider approval is 409); the decision that completes the request executes it with the
+  provider's approver as `approver`/`decided_by`. A tenant's rejection rejects the request (final). A request made
+  by an eligible approver of the tenant marks its row `requested` (the tenant's consent). With approvals disabled a
+  gated request still becomes a pending row with `approved_by` = requester. `GET /quorum` adds `approved_by`,
+  `approved_at`, `tenant_approvals: [{tenant, decided_by, decided_at, decision}]`; tenant admins see their own requests
+  and those with a row of their tenant. Audit: `quorum.request` names `tenant_approvers`, decisions carry `side:
+  tenant`.
+- **New approvers**: the scheduler raises `tenant_approver` (warning, security, tenant set, key
+  `tenant_approver:<tenant>:<user id>:<approver_since>`) once for each account that becomes an approver of an opted-in
+  tenant after its opt-in (within 7 days), naming when it may decide.
+- The previous release ignores the tables: a rollback would execute gated requests without the tenant (documented
+  in docs/threat-model.md T71).

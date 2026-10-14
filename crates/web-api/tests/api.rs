@@ -729,7 +729,8 @@ async fn tenant_user_isolation() {
     assert_eq!(
         t.get("/api/v1/tenants", &tina).await.body,
         json!([{"name": "acme", "offsite": {}, "quota_bytes": null, "disabled": false, "disabled_at": null,
-                 "disabled_by": null, "disabled_reason": null, "uid": uid, "policies": [], "tiers": []}])
+                 "disabled_by": null, "disabled_reason": null, "uid": uid, "policies": [], "tiers": [],
+                 "tenant_approvals": false}])
     );
     assert_eq!(t.get("/api/v1/alerts", &tina).await.body, json!([]));
 
@@ -3777,6 +3778,7 @@ fn registered_routes() -> std::collections::BTreeSet<(String, String)> {
         include_str!("../src/tenant_idp.rs"),
         include_str!("../src/fullread.rs"),
         include_str!("../src/risk.rs"),
+        include_str!("../src/approvers.rs"),
     ] {
         for piece in src.split(".route(").skip(1) {
             let piece = piece.split(".merge(").next().unwrap().split("\n}").next().unwrap();
@@ -4005,8 +4007,9 @@ async fn tenant_admin_routes_classified() {
         ("POST", "/console/unlock", "/api/v1/console/unlock".into(), Some(json!({"hours": 1, "reason": "x"})), 'N'),
         ("DELETE", "/console/unlock/{id}", "/api/v1/console/unlock/1".into(), none(), 'N'),
         ("POST", "/console/unlock/{id}/code", "/api/v1/console/unlock/1/code".into(), e(), 'N'),
-        ("POST", "/quorum/{id}/approve", "/api/v1/quorum/1/approve".into(), e(), 'N'),
-        ("POST", "/quorum/{id}/reject", "/api/v1/quorum/1/reject".into(), e(), 'N'),
+        // Phase 33: tenant admins decide the tenant side of requests concerning their tenant
+        ("POST", "/quorum/{id}/approve", "/api/v1/quorum/999999/approve".into(), e(), 'Y'),
+        ("POST", "/quorum/{id}/reject", "/api/v1/quorum/999999/reject".into(), e(), 'Y'),
         ("GET", "/audit", "/api/v1/audit".into(), none(), 'Y'),
         ("GET", "/audit/verify", "/api/v1/audit/verify".into(), none(), 'N'),
         ("GET", "/audit.csv", "/api/v1/audit.csv".into(), none(), 'Y'),
@@ -4122,6 +4125,9 @@ async fn tenant_admin_routes_classified() {
         ("POST", "/auth/step-up", "/api/v1/auth/step-up".into(), e(), 'Y'),
         ("GET", "/risk", "/api/v1/risk".into(), none(), 'N'),
         ("POST", "/users/{id}/risk/clear", "/api/v1/users/1/risk/clear".into(), e(), 'N'),
+        // Phase 33: tenant-side approvers of the own tenant
+        ("GET", "/tenants/{name}/approvers", "/api/v1/tenants/acme/approvers".into(), none(), 'Y'),
+        ("PUT", "/tenants/{name}/approvers", "/api/v1/tenants/acme/approvers".into(), Some(json!({"enabled": false})), 'Y'),
     ];
     let classified: std::collections::BTreeSet<(String, String)> =
         table.iter().map(|(m, p, ..)| (m.to_string(), p.to_string())).collect();

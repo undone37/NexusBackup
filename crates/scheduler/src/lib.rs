@@ -67,6 +67,7 @@ mod accounts;
 mod agent_updates;
 pub mod alerts;
 pub mod anomaly;
+mod approvers;
 mod bmr;
 pub mod changes;
 pub mod clock;
@@ -870,6 +871,7 @@ impl Scheduler {
         self.log_err(|s| s.check_replication_lag(now));
         self.log_err(|s| s.check_forwarding(now));
         self.log_err(|s| s.check_psa(now));
+        self.log_err(|s| s.check_tenant_approvers(now));
         self.log_err(|s| s.check_disks(now));
         self.log_err(|s| s.audit_net_ops());
         self.log_err(|s| s.check_clock());

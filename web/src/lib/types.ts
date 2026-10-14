@@ -125,6 +125,8 @@ export interface Tenant {
   policies?: number[];
   /** tiers of the assigned policies */
   tiers?: Tier[];
+  /** Phase 33: the tenant's own admins co-approve destroying or weakening requests */
+  tenant_approvals?: boolean;
 }
 
 /** A deleted tenant name (Phase 19b): never re-created. */
@@ -1392,6 +1394,30 @@ export interface QuorumRequest {
   decided_by: string | null;
   decided_at: number | null;
   state: QuorumState;
+  /** Phase 33: the provider's approval while tenants still decide */
+  approved_by?: string | null;
+  approved_at?: number | null;
+  /** Phase 33: tenants that must co-approve and their decisions */
+  tenant_approvals?: TenantDecision[];
+}
+
+/** Phase 33: one tenant's side of a request (`requested` = the requester is its approver). */
+export interface TenantDecision {
+  tenant: string;
+  decided_by: string | null;
+  decided_at: number | null;
+  decision: 'approved' | 'rejected' | 'requested' | null;
+}
+
+/** Phase 33: GET /tenants/{name}/approvers */
+export interface TenantApprovers {
+  tenant: string;
+  enabled: boolean;
+  enabled_at: number | null;
+  enabled_by: string | null;
+  wait_hours: number;
+  approvers: { name: string; eligible_from: number; eligible: boolean }[];
+  disable_request: number | null;
 }
 
 export interface AuditEntry {

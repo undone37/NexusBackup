@@ -24,6 +24,7 @@ pub mod agent_updates;
 pub mod agents;
 pub mod alerts;
 pub mod approvals;
+pub mod approvers;
 pub mod auth;
 pub mod certs;
 pub mod changes;
@@ -741,6 +742,7 @@ pub fn router(st: St) -> Router {
         .merge(hardware::routes())
         .merge(network::routes())
         .merge(tenants::routes())
+        .merge(approvers::routes())
         .merge(tenant_idp::routes())
         .merge(tenancy::routes())
         .merge(vault::routes())

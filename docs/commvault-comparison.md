@@ -41,7 +41,7 @@ Status: **has** = built (lab-proven at least), **partial** = some of it built or
 | Immutability | retention lock on plans (disable needs a Commvault authorization code), HyperScale X WORM [9] | extend-only store locks on a compliance clock, S3 Object Lock offsite | has |
 | Scale-out | HyperScale X clusters | single appliance by decision (docs/scale-out.md) | missing (by design) |
 | **Security / cyber resilience** | | | |
-| Multi-person authorization | per operation, approver groups, exclusions, MSP + tenant two-level routing, 24 h wait for new approvers [10] | quorum on all destructive/weakening actions; split activation codes for privileged accounts | has (no tenant-side approvers) |
+| Multi-person authorization | per operation, approver groups, exclusions, MSP + tenant two-level routing, 24 h wait for new approvers [10] | quorum on all destructive/weakening actions; split activation codes for privileged accounts; tenant-side approvers with a 24 h wait (Phase 33) | has |
 | Anomaly detection | ML anomaly on backups, file-activity anomaly and honeypot files on clients [11] | change-rate anomalies, ransom-note names, mass renames, snapshot diff, trend sparklines | has |
 | Malware scan of backups | Threat Scan: signatures, ML, entropy, YARA + IOC hash hunting on the backup index, scheduled scans, recovery calendar [3][12] | YARA scan in an offline restore micro-VM, on demand, "scan first" restores and scheduled per group with a recovery calendar; IOC hash hunt over per-file SHA-256 (Phase 28; VM disk files not hashed yet) | has |
 | Clean restore point | Synthetic Recovery: newest clean version of each file across backups [13] | restore dialogs default to the newest clean snapshot | partial |
@@ -173,7 +173,9 @@ Effort: S = days, M = 1–2 weeks, L = more. Phase numbers are suggestions (Phas
 4. **Scheduled scans and capacity (#1):** one scan at a time stays; with "after each backup" on many groups the
    queue may never drain. Proposal: daily-latest as the only automatic mode in the first version.
 5. **Tenant-side approvers (Tier 2):** should a tenant admin's refusal be final, or can two appliance-side approvers
-   override (MSP emergency)? Proposal: final, with the MSP's legal-hold path as the safety valve.
+   override (MSP emergency)? Proposal: final, with the MSP's legal-hold path as the safety valve. **Decided
+   2026-10-14 (Phase 33): final**; the 24 h wait applies to tenant-side approvers only (appliance approvers keep the
+   split activation codes).
 6. **VMware transport:** VDDK is proprietary and cannot ship in the AGPL image; alternatives are HTTPS datastore
    reads of snapshot disks plus `QueryChangedDiskAreas`, or nbdkit with a customer-supplied VDDK. Needs a spike
    before the item is scheduled.

@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub mod access;
 pub mod agent_updates;
 pub mod alerting;
+pub mod approvers;
 pub mod auth;
 pub mod console;
 pub mod firewall;
@@ -921,10 +922,33 @@ ALTER TABLE sessions ADD COLUMN step_up_at INTEGER;
 ///   opened for an alert key (`ticket` = the PSA's ID; `noted_*` = what the last
 ///   note reported; `closed` set when the alert was resolved and the ticket
 ///   closed; at most one open ticket per rule and key), and `psa_state`, the
-///   rule's last success / failure (the `psa` alert after 15 minutes).
+///   rule's last success / failure (the `psa` alert after 15 minutes);
+/// - tenant-side approvers (`catalog::approvers`): `tenant_approvals` (tenants
+///   that opted in), `quorum_tenants` (per request the tenants that must
+///   co-approve and their decision: `approved`, `rejected`, or `requested` when
+///   the requester is an eligible approver of it), `quorum.approved_by/at` (the
+///   provider's approval while tenant decisions are still open) and
+///   `users.approver_since` (when the account last became a tenant admin, was
+///   activated or re-enabled; NULL = `created`), kept by a trigger.
 ///
-/// Purely additive: the previous release ignores the tables.
+/// Purely additive: the previous release ignores the tables and columns (and
+/// would execute requests without the tenants' approval: no rollback while
+/// tenant-side approvers are in use).
 const SCHEMA_V46: &str = r#"
+CREATE TABLE tenant_approvals (tenant TEXT PRIMARY KEY, enabled_at INTEGER NOT NULL, enabled_by TEXT NOT NULL);
+CREATE TABLE quorum_tenants (
+  quorum_id INTEGER NOT NULL REFERENCES quorum(id) ON DELETE CASCADE, tenant TEXT NOT NULL,
+  decided_by TEXT, decided_at INTEGER, decision TEXT CHECK (decision IN ('approved','rejected','requested')),
+  PRIMARY KEY (quorum_id, tenant));
+ALTER TABLE quorum ADD COLUMN approved_by TEXT;
+ALTER TABLE quorum ADD COLUMN approved_at INTEGER;
+ALTER TABLE users ADD COLUMN approver_since INTEGER;
+CREATE TRIGGER users_approver_since AFTER UPDATE OF role, tenant, activation_hash, disabled ON users
+  WHEN NEW.role IS NOT OLD.role OR NEW.tenant IS NOT OLD.tenant
+    OR (OLD.activation_hash IS NOT NULL AND NEW.activation_hash IS NULL) OR (OLD.disabled = 1 AND NEW.disabled = 0)
+BEGIN
+  UPDATE users SET approver_since = CAST(strftime('%s', 'now') AS INTEGER) WHERE id = NEW.id;
+END;
 CREATE TABLE psa_tickets (
   id INTEGER PRIMARY KEY, rule TEXT NOT NULL, key TEXT NOT NULL, vendor TEXT NOT NULL, ticket TEXT NOT NULL,
   alert_id INTEGER NOT NULL, opened INTEGER NOT NULL, noted_count INTEGER NOT NULL, noted_at INTEGER NOT NULL,
@@ -3308,7 +3332,7 @@ mod tests {
     /// v44 and v46): no tickets; one open ticket per rule and key, closed ones
     /// may repeat.
     #[test]
-    fn migration_v46_psa_tickets() {
+    fn migration_v46_psa_tickets_and_tenant_approvers() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.db");
         let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V46).unwrap();
@@ -3339,5 +3363,24 @@ mod tests {
         assert!(add(None).is_err(), "one open ticket per rule and key");
         conn.execute("INSERT INTO psa_state (rule, failing_since) VALUES ('r', 3)", [])
             .unwrap();
+        // tenant-side approvers: no tenant opted in, no approver_since yet; decisions go with the request
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tenant_approvals", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+        conn.execute_batch(
+            "INSERT INTO quorum (id, action, params, requested_by, created, state) VALUES (1, 'x', '{}', 'a', 1, 'pending');
+             INSERT INTO quorum_tenants (quorum_id, tenant) VALUES (1, 't');",
+        )
+        .unwrap();
+        assert!(conn
+            .execute("UPDATE quorum_tenants SET decision = 'maybe'", [])
+            .is_err());
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        conn.execute("DELETE FROM quorum", []).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM quorum_tenants", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "decisions go with the request");
     }
 }

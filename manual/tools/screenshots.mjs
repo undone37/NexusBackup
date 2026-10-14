@@ -1573,6 +1573,14 @@ async function main() {
       await until(`return document.body.innerText.includes('HaloPSA ticket 48213')`, 'alert with ticket');
       await shot('alerts-psa-ticket');
     }],
+    // Phase 33: tenant-side approvers as seen by the tenant admin of acme (a snapshot delete waits for acme)
+    ['p33approvers', async () => {
+      await login('tara');
+      await go('/quorum');
+      await until(`return document.body.innerText.includes('Tenant approvers') && document.body.innerText.includes('Approve for my tenant')`, 'tenant approvals');
+      await shot('approvals-tenant-side', { height: 1150 });
+      await login('admin');
+    }],
   ];
 
   let failed = 0;
